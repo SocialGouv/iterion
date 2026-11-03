@@ -240,10 +240,12 @@ func TestTheNothingHeldDefaultKeepsTheBareMeterWithoutAnAmbientSpend(t *testing.
 // funds an account whose walls never land there — opencode its own config, a
 // gateway spec the deployment's OPENAI_COMPATIBLE pair, a zai/moonshot spec
 // that provider's own env (zai: refused outright, the registry has no factory
-// for it), a GLM id z.ai's synthesis, a claw openai id the pod's openai env —
-// and keying any of them on the ambient meter parks the run on a wall
-// another vendor's account raised. Metering side and reading side must agree:
-// the reading side books every one of these shapes on nobody.
+// for it), a GLM id headed to api.anthropic.com on this pod (no base URL: the
+// provider refuses the id before any account wall), a claw openai id the
+// pod's openai env — and keying any of them on the ambient meter parks the
+// run on a wall another vendor's account raised. Metering side and reading
+// side must agree: the reading side books every one of these shapes on
+// nobody.
 func TestTheNothingHeldMeterJudgesOnlyTheShapesTheAmbientAccountFunds(t *testing.T) {
 	blankAnthropicWireEnv(t)
 	t.Setenv("ANTHROPIC_API_KEY", "sk-pod")
@@ -278,14 +280,14 @@ func TestTheNothingHeldMeterJudgesOnlyTheShapesTheAmbientAccountFunds(t *testing
 		{"zai supervisor", func() (string, bool) { return keys.supervisorKey(ctx, "zai/glm-4.6") }, "supervisorKey(zai/glm-4.6)", "the registry has no zai factory — the spec is refused"},
 		{"moonshot supervisor", func() (string, bool) { return keys.supervisorKey(ctx, "moonshot/kimi-k2") }, "supervisorKey(moonshot/kimi-k2)", "the registry reads MOONSHOT_API_KEY"},
 		{"gateway supervisor", func() (string, bool) { return keys.supervisorKey(ctx, "openai_compatible/glm-5.3") }, "supervisorKey(openai_compatible/glm-5.3)", "the registry reads the deployment's gateway pair"},
-		{"GLM supervisor", func() (string, bool) { return keys.supervisorKey(ctx, "anthropic/glm-5.3") }, "supervisorKey(anthropic/glm-5.3)", "the synthesis reads the pod's ZAI env"},
+		{"GLM supervisor", func() (string, bool) { return keys.supervisorKey(ctx, "anthropic/glm-5.3") }, "supervisorKey(anthropic/glm-5.3)", "no base URL: api.anthropic.com refuses the id before any account wall"},
 		{"openai supervisor", func() (string, bool) { return keys.supervisorKey(ctx, "openai/gpt-6") }, "supervisorKey(openai/gpt-6)", "the registry reads OPENAI_API_KEY"},
 		{"opencode route", func() (string, bool) {
 			return keys.routeKey(ctx, model.WireRoute{NodeID: "n2", Backend: delegate.BackendOpenCode, Model: "anthropic/claude-opus-5-5", Readable: true})
 		}, "routeKey(opencode)", "opencode resolves its own config"},
 		{"claw GLM route", func() (string, bool) {
 			return keys.routeKey(ctx, model.WireRoute{NodeID: "n3", Backend: delegate.BackendClaw, Model: "anthropic/glm-5.3", Readable: true})
-		}, "routeKey(claw glm)", "the z.ai synthesis funds the id"},
+		}, "routeKey(claw glm)", "no base URL: api.anthropic.com refuses the id before any account wall"},
 		{"claw openai route", func() (string, bool) {
 			return keys.routeKey(ctx, model.WireRoute{NodeID: "n4", Backend: delegate.BackendClaw, Model: "openai/gpt-6", Readable: true})
 		}, "routeKey(claw openai)", "the pod's openai env funds the id"},
@@ -299,6 +301,58 @@ func TestTheNothingHeldMeterJudgesOnlyTheShapesTheAmbientAccountFunds(t *testing
 		if key, metered := tc.key(); metered {
 			t.Errorf("%s = %q metered=%v, want not metered — %s, an account whose walls never land on the ambient meter", tc.call, key, metered, tc.funds)
 		}
+	}
+}
+
+// The ambient gateway funds a GLM id. The ambient-forfait deployment —
+// ANTHROPIC_BASE_URL at a z.ai-compatible gateway beside an ambient
+// ANTHROPIC_AUTH_TOKEN — walks a GLM id through the env factory exactly like
+// a non-GLM one (the token rides as the request's bearer to the operator's
+// gateway), so the ambient meter is where its walls land: a GLM supervisor
+// spec and a claw GLM route park on it like any other shape the account
+// funds. Where the pod's ZAI env is live the synthesis intercepts and z.ai's
+// account pays — not this meter; where the factory drops the credential the
+// id would ride (a z.ai/bigmodel base URL keeps no bearer, api.anthropic.com
+// serves no GLM id) nothing spends and nothing is metered.
+func TestTheAmbientGatewayFundsAGLMID(t *testing.T) {
+	blankAnthropicWireEnv(t)
+	t.Setenv("ANTHROPIC_BASE_URL", "https://llm-gw.example.test/anthropic")
+	t.Setenv("ANTHROPIC_AUTH_TOKEN", "tok-pod-gateway")
+	want := usagecap.Key(delegate.BackendClaudeCode, usagecap.ScopePlatform, secrets.FingerprintSHA256("tok-pod-gateway"))
+	ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{})
+	keys := usageCapCredKeys(ctx, &queue.RunMessage{TenantID: "team-b"})
+
+	if key, metered := keys.supervisorKey(ctx, "anthropic/glm-5.3"); !metered || key != want {
+		t.Errorf("the GLM supervisor on the ambient gateway = %q metered=%v, want the ambient meter — the env factory serves the id from the pod's token", key, metered)
+	}
+	clawGLM := model.WireRoute{NodeID: "n1", Backend: delegate.BackendClaw, Model: "anthropic/glm-5.3", Readable: true}
+	if key, metered := keys.routeKey(ctx, clawGLM); !metered || key != want {
+		t.Errorf("the claw GLM route on the ambient gateway = %q metered=%v, want the ambient meter — its spec resolves from the pod's token", key, metered)
+	}
+
+	// The synthesis intercepts where the pod's ZAI env is live: z.ai's
+	// account, whose walls never land on this meter.
+	t.Setenv("ZAI_API_KEY", "zai-pod")
+	if _, metered := keys.supervisorKey(ctx, "anthropic/glm-5.3"); metered {
+		t.Error("metered a GLM supervisor on a pod whose ZAI env funds the synthesis — another vendor's account")
+	}
+	if _, metered := keys.routeKey(ctx, clawGLM); metered {
+		t.Error("metered a claw GLM route on a pod whose ZAI env funds the synthesis — another vendor's account")
+	}
+	t.Setenv("ZAI_API_KEY", "")
+
+	// api.anthropic.com does not serve the id: no base URL, no account wall
+	// whatever credential the pod carries.
+	t.Setenv("ANTHROPIC_BASE_URL", "")
+	if _, metered := keys.supervisorKey(ctx, "anthropic/glm-5.3"); metered {
+		t.Error("metered a GLM supervisor headed to api.anthropic.com — the provider refuses the id before any account wall")
+	}
+
+	// On the vendor's own hostnames the factory drops the bearer: the client
+	// resolves credential-less and no account spends.
+	t.Setenv("ANTHROPIC_BASE_URL", "https://api.z.ai/api/anthropic")
+	if _, metered := keys.supervisorKey(ctx, "anthropic/glm-5.3"); metered {
+		t.Error("metered a GLM supervisor on a z.ai base URL — the factory drops the bearer, no credential rides")
 	}
 }
 
@@ -338,5 +392,34 @@ func TestUsageCapPreflight_TheAmbientWallParksOnlyTheRoutesThatSpendIt(t *testin
 	}
 	if err := preflightWithSupervisors(t, caps, secrets.WithCredentials(context.Background(), secrets.Credentials{}), supervised("anthropic/claude-opus-5-5"), ""); err == nil {
 		t.Error("started an anthropic-pinned supervisor on the pod's capped ambient credential")
+	}
+}
+
+// End to end on the gateway pod: the capped ambient wall stops the GLM
+// supervisor whose spec the env factory funds from the same token, and
+// launches the same spec past the wall once the pod's ZAI env funds the
+// synthesis instead.
+func TestUsageCapPreflight_TheAmbientGatewayWallStopsAGLMSupervisor(t *testing.T) {
+	blankAnthropicWireEnv(t)
+	t.Setenv("ANTHROPIC_BASE_URL", "https://llm-gw.example.test/anthropic")
+	t.Setenv("ANTHROPIC_AUTH_TOKEN", "tok-pod-gateway-e2e")
+	t.Setenv("ITERION_DEFAULT_SUPERVISOR_MODEL", "")
+	t.Setenv("ITERION_SUPERVISORS", "")
+	t.Setenv("ITERION_FORBID_SUBSCRIPTION_OAUTH", "")
+	caps := usagecap.NewMemStore()
+	weekCapped(t, caps, platformKey(secrets.FingerprintSHA256("tok-pod-gateway-e2e")), time.Now().UTC().Add(30*time.Hour))
+
+	supervised := func(model string) *ir.Workflow {
+		wf := chainWorkflow(agentRoute("impl", delegate.BackendOpenCode, "", "anthropic/claude-opus-5-5"))
+		wf.Supervisors = []*ir.Supervisor{{Name: "pacer", Model: model}}
+		return wf
+	}
+	ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{})
+	if err := preflightWithSupervisors(t, caps, ctx, supervised("anthropic/glm-5.3"), ""); err == nil {
+		t.Error("started a GLM supervisor on the pod's capped ambient gateway credential — the factory serves the id from that token")
+	}
+	t.Setenv("ZAI_API_KEY", "zai-pod-e2e")
+	if err := preflightWithSupervisors(t, caps, ctx, supervised("anthropic/glm-5.3"), ""); err != nil {
+		t.Errorf("parked a GLM supervisor on the ambient wall with the pod's ZAI env live: %v — the synthesis funds the id from z.ai's account", err)
 	}
 }

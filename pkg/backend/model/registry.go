@@ -214,9 +214,7 @@ func (r *Registry) registerDefaults() {
 		// So the warning below is about COST, not viability: the operator is
 		// spending a different pot than the plan they may think they are using.
 		// ITERION_FORBID_SUBSCRIPTION_OAUTH=1 refuses this path outright.
-		lowBase := strings.ToLower(baseURL)
-		isZAI := strings.Contains(lowBase, "z.ai") || strings.Contains(lowBase, "bigmodel")
-		if apiKey == "" && authToken != "" && !isZAI {
+		if apiKey == "" && authToken != "" && !baseURLNamesZAI(baseURL) {
 			// The opt-out has to be enforced HERE, not only in the backend's
 			// ctx-credentials check: locally the token arrives through the
 			// environment, so there are no per-run credentials to inspect and
@@ -715,6 +713,48 @@ func glmBaseURL(operatorBase string) string {
 		return operatorBase
 	}
 	return secrets.ZAIDefaultBaseURL
+}
+
+// baseURLNamesZAI reports that an ANTHROPIC_BASE_URL value names z.ai's own
+// published ensemble (api.z.ai or Zhipu's open.bigmodel.cn) — the one
+// destination where an ANTHROPIC_AUTH_TOKEN is a vendor BYOK credential and
+// not the Claude subscription bearer the forfait arm would otherwise set.
+// One predicate for every reader of that env pair, so none of them can drift
+// from the others on a hostname spelling.
+func baseURLNamesZAI(baseURL string) bool {
+	lowBase := strings.ToLower(baseURL)
+	return strings.Contains(lowBase, "z.ai") || strings.Contains(lowBase, "bigmodel")
+}
+
+// AmbientEnvFundsGLM reports whether a GLM id on the anthropic wire, with
+// nothing held, walks the anthropic env factory into the pod's ambient
+// ANTHROPIC credential — the same walk a non-GLM id takes, so the ambient
+// account is its next funder and its walls are the id's. The factory's own
+// order decides each arm:
+//
+//   - ZAI_API_KEY set: the synthesis intercepts first and serves the id from
+//     z.ai's account — another vendor's, whose walls never land on the
+//     ambient meter. Not the ambient env.
+//   - ANTHROPIC_BASE_URL empty: the destination is api.anthropic.com, which
+//     does not serve the id — the request dies a provider refusal no account
+//     wall raised, whatever credential it carried. Not the ambient env.
+//   - ANTHROPIC_API_KEY set: the key rides as x-api-key to the gateway the
+//     operator named. The ambient env.
+//   - ANTHROPIC_AUTH_TOKEN set: the bearer rides only where the factory
+//     keeps it — a base URL that is not z.ai/bigmodel's; on the vendor's own
+//     hostnames the factory drops it and the client resolves credential-less.
+//
+// The meter-side mirror of the factory's GLM walk (the usage-cap pre-flight
+// asks it where this factory would build the client): one reader here, beside
+// the factory, so the meter cannot grow a second description of the order.
+func AmbientEnvFundsGLM() bool {
+	if os.Getenv("ZAI_API_KEY") != "" || os.Getenv("ANTHROPIC_BASE_URL") == "" {
+		return false
+	}
+	if os.Getenv("ANTHROPIC_API_KEY") != "" {
+		return true
+	}
+	return os.Getenv("ANTHROPIC_AUTH_TOKEN") != "" && !baseURLNamesZAI(os.Getenv("ANTHROPIC_BASE_URL"))
 }
 
 // ResolveWithContext is the BYOK-aware variant of Resolve.

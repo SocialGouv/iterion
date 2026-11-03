@@ -378,17 +378,23 @@ func (k runCredKeys) routeKey(ctx context.Context, route model.WireRoute) (key s
 // the only shape the nothing-held meter may judge. claw routes on the
 // anthropic wire resolve through the registry's env factory and their spawn
 // carries the pod's anthropic env (inherited on the host, the forwarded
-// channels in a sandbox) — except a GLM id, whose key is z.ai's: the
-// synthesis reads the pod's ZAI env, another vendor's account, and without it
-// the id is refused or 404s, never capped. pi resolves providers from the
-// env allowlist it is handed, the pod's ANTHROPIC_API_KEY included, so an
-// anthropic hint names the ambient account too; a bare pi model names
-// nothing. Every other backend funds from config iterion does not read.
+// channels in a sandbox) — a GLM id included, unless a synthesis can fire it
+// or the factory drops the credential it would ride (model.AmbientEnvFundsGLM,
+// the factory's own order; z.ai's account is never a meter this cap keeps).
+// pi resolves providers from the env allowlist it is handed, the pod's
+// ANTHROPIC_API_KEY included, so an anthropic hint names the ambient account
+// too; a bare pi model names nothing. Every other backend funds from config
+// iterion does not read.
 func nothingHeldFundsTheAmbientAccount(route model.WireRoute, hint string) bool {
 	switch route.Backend {
 	case delegate.BackendClaw:
-		return wireForRoute(route.Backend, route.Model) == anthropicWire &&
-			!model.GLMOnAnthropicWire(route.Model)
+		if wireForRoute(route.Backend, route.Model) != anthropicWire {
+			return false
+		}
+		// A GLM id rides the same ambient anthropic credential a non-GLM id
+		// does, wherever the factory walks it there instead of handing the
+		// id to a synthesis or to no credential at all.
+		return !model.GLMOnAnthropicWire(route.Model) || model.AmbientEnvFundsGLM()
 	case delegate.BackendPi:
 		if h := strings.ToLower(strings.TrimSpace(hint)); h != "" {
 			return h == string(secrets.ProviderAnthropic)
@@ -930,9 +936,12 @@ func supervisorRouteID(name string, i int) string {
 // keyed on that env's own meter (nothingHeldKey, the account's fingerprinted
 // label), since a claw supervisor reports no readings of its own and the
 // account's refusals are the only evidence it produces. A GLM id there the
-// z.ai key: the registry has no zai factory, so with none held the spec is
-// refused (a hint) or the synthesis reads the pod's ZAI env — another
-// vendor's account the cap keeps no meter for — and it is not metered.
+// z.ai key where a synthesis can fire it — the run's held zai slot, or the
+// pod's ZAI_API_KEY — and the pod's ambient anthropic env exactly as a
+// non-GLM id spends it otherwise (model.AmbientEnvFundsGLM, the factory's
+// own order: the gateway credential rides, api.anthropic.com and a
+// credential-less pod refuse the id before any account wall), so the ambient
+// meter is its ledger where the ambient account is the next funder.
 // `zai/…` and `moonshot/…` that provider's key, a gateway spec the run's
 // gateway pair; with none held the registry reads each provider's OWN pod
 // env (MOONSHOT_API_KEY, the OPENAI_COMPATIBLE pair) or refuses — never the
@@ -951,9 +960,18 @@ func (k runCredKeys) supervisorKey(ctx context.Context, spec string) (key string
 	case secrets.ProviderAnthropic:
 		if model.GLMOnAnthropicWire(spec) {
 			if slot = heldForRoute(creds, string(secrets.ProviderZAI)); slot == "" {
-				// The GLM id funds z.ai's account next — the pod's ZAI env
-				// the synthesis reads, or a typed refusal — never the pod's
-				// ambient anthropic one. Not metered.
+				if model.AmbientEnvFundsGLM() {
+					// No z.ai synthesis to intercept it: the env factory
+					// walks the GLM id into the pod's ambient anthropic env
+					// exactly as it walks a non-GLM one — the gateway
+					// deployment spends the ambient credential on the id —
+					// and that env's own meter is where the account's
+					// evidence lives (nothingHeldKey).
+					return k.nothingHeldKey(), true
+				}
+				// The pod's ZAI env funds the synthesis (z.ai's account,
+				// never a meter this cap keeps), or the id rides no ambient
+				// credential to a destination that serves it. Not metered.
 				return "", false
 			}
 			return k.keyForSlot(slot), true

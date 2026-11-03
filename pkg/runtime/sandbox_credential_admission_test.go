@@ -167,6 +167,21 @@ func TestForkRunWithANamelessHeaderBlockIsRefused(t *testing.T) {
 	}
 }
 
+// TestForkRunWithAnEmptyAuthorizationLineIsRefused is the value-less control:
+// an Authorization line whose value is empty puts no credential on the
+// request — the pod's only claim to one dies "Not logged in" at the node,
+// past the gate. The probe answers on the usable-credential reading (the
+// same one the ambient meter keys), so the run keeps the typed refusal.
+func TestForkRunWithAnEmptyAuthorizationLineIsRefused(t *testing.T) {
+	clearCredentialEnv(t)
+	t.Setenv("ANTHROPIC_CUSTOM_HEADERS", "Authorization:")
+	err := credentialAdmissionRun(t, credentialWorkflow("review", "claude_code", "none"), store.RunTrustFork, nil)
+	var rerr *RuntimeError
+	if !errors.As(err, &rerr) || rerr.Code != ErrCodeSandboxCredentialUnreachable {
+		t.Fatalf("fork run with an empty-valued Authorization line = %v, want the typed credential refusal", err)
+	}
+}
+
 // TestForkRunWithMountedLoginAdmits: while host_state is mounted (nothing
 // on main floors it for an untrusted run), the operator's file-based login
 // DOES reach a docker sandbox — refusing here would kill a run that works.

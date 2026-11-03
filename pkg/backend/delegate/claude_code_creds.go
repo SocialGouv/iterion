@@ -794,7 +794,7 @@ func spawnEnvValue(credEnv map[string]string, key string, sandboxed bool) string
 // ambientCredentialChannels are the variables an operator's own Anthropic auth
 // lives in, in the CLI's documented precedence order. ANTHROPIC_CUSTOM_HEADERS
 // is read beside them (spawnAuthorizationHeader): only an Authorization line
-// in it is a credential.
+// with a value in it is a credential.
 var ambientCredentialChannels = []string{
 	"ANTHROPIC_AUTH_TOKEN",
 	"ANTHROPIC_API_KEY",
@@ -960,11 +960,17 @@ func spawnCloudProviderSwitches(credEnv map[string]string, sandboxed bool) (on, 
 }
 
 // spawnAuthorizationHeader reports that the ANTHROPIC_CUSTOM_HEADERS value the
-// spawn carries holds an Authorization line. One reading for both consumers —
-// the ambient channel list and the record's own field — so a route that names
-// the header and a route that does not cannot disagree about it being there.
+// spawn carries holds an Authorization credential — a line of the name whose
+// value is not empty (credheader.LineValue, the reading
+// ambientAuthorizationValue keys the ambient meter with). One reading for
+// every consumer — the credential admission probe, the ambient channel list,
+// the record's own field and the meter — so none of them can admit or name a
+// block whose Authorization line authenticates nothing: an empty value puts
+// no credential on the request, and admitting it launches a run that dies
+// "Not logged in" past the gate instead of taking the typed refusal.
 func spawnAuthorizationHeader(credEnv map[string]string, sandboxed bool) bool {
-	return carriesAuthorizationHeader(spawnEnvValue(credEnv, "ANTHROPIC_CUSTOM_HEADERS", sandboxed))
+	_, ok := ambientAuthorizationValue(credEnv, sandboxed)
+	return ok
 }
 
 // spawnCustomHeaders reports that the spawn carries a non-empty
@@ -984,7 +990,8 @@ func spawnAuthorizationHeader(credEnv map[string]string, sandboxed bool) bool {
 // is in the path and, wherever a CLI reads it, its lines go out over the headers
 // that CLI's own auth set.
 // The strong claim — that it carries a credential, over the route's own — stays
-// with the one name the CLI's auth uses (carriesAuthorizationHeader).
+// with the one name the CLI's auth uses (spawnAuthorizationHeader, the
+// usable-credential reading the admission probe and the ambient meter share).
 //
 // Blank is empty, as it is for the CLI's own parser (claw's
 // ParseCustomHeaders returns no header for a whitespace-only value): a variable
@@ -992,43 +999,6 @@ func spawnAuthorizationHeader(credEnv map[string]string, sandboxed bool) bool {
 // operator to a channel that carries nothing.
 func spawnCustomHeaders(credEnv map[string]string, sandboxed bool) bool {
 	return strings.TrimSpace(spawnEnvValue(credEnv, "ANTHROPIC_CUSTOM_HEADERS", sandboxed)) != ""
-}
-
-// carriesAuthorizationHeader reports that an ANTHROPIC_CUSTOM_HEADERS value
-// carries an Authorization header: a credential of its own, which the CLI
-// applies LAST — over the header its own auth set — so an ambient one
-// authenticates a route the engine never funded (facadeRouteEnv clears the
-// variable for that reason).
-//
-// The format is the CLI's: newline-separated "Name: Value" lines, blank ones
-// skipped. claw's ParseCustomHeaders is the same reader, and a test pins this
-// predicate against it rather than against a second description of the format.
-// Only the header NAME decides, so a VALUE mentioning the word carries no
-// credential; the value itself is named nowhere — redactAuthRender does not
-// cover this variable.
-//
-// The reading is per LINE, which is deliberately more lenient than that parser
-// on a block it refuses outright — a comment line, a line with no name. Where
-// the provider resolves its identity from the environment — claw's api.Client
-// path (anthropic, zai, moonshot) and its vertex and foundry providers — the
-// parse error travels up INSTEAD of the request, so that CLI renders no auth
-// failure on such a block and the lenient answer costs nothing. Where a reader
-// drops the bad line instead, the Authorization line is what authenticated;
-// where it never reads the variable at all (claw's bedrock provider ignores
-// the headers and signs with the AWS chain), an auth render still follows. The
-// variable is in the spawn's path in every one of those cases, the engine did
-// not clear it, and a malformed block is itself what the operator has to go and
-// fix: sending them to it is the answer each time.
-//
-// The walk itself lives in internal/credheader, which the claw sandbox
-// crossing reads the same block with (forwardableProviderEnv refuses a
-// credential line rather than carrying it into a container): one reader, so
-// the two cannot disagree about a \r line ending, a colon in a value or the
-// word in a value instead of a name. The claim made HERE stays the strong,
-// narrow one — the name the route's own bearer travels in — while the
-// crossing refuses every name a provider's auth sets.
-func carriesAuthorizationHeader(headers string) bool {
-	return credheader.CarriesName(headers, credheader.NameAuthorization)
 }
 
 // facadeKeyFromProcessEnv reports that the key a facade route spends is the one

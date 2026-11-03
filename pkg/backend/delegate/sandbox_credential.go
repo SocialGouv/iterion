@@ -77,14 +77,16 @@ func ClaudeCodeSandboxCredential(ctx context.Context, providerHint string, home 
 		if key := credEnvChannel(ambient, claudeSandboxCredentialEnvKeys); key != "" {
 			return "the launcher env forwarded into the container (" + key + ")", true
 		}
-		// An Authorization line in the forwarded custom-header block is a
-		// credential the same spawn carries: named so a header-only pod is
-		// not refused as credential-less. The strong reading
-		// (spawnAuthorizationHeader), not the block's presence — a block of
-		// other header names carries nothing the CLI would authenticate
-		// with, and naming it would admit a launch that dies "Not logged in".
-		// sandboxed=true: the answer is the forwarded map alone — the
-		// container's env, no host fallback (spawnEnvValue).
+		// An Authorization credential in the forwarded custom-header block is
+		// a credential the same spawn carries: named so a header-only pod is
+		// not refused as credential-less. The strong usable-credential
+		// reading (spawnAuthorizationHeader — a line of the name WITH a
+		// value, the same one the ambient meter keys), not the block's
+		// presence — a block of other header names, or an Authorization line
+		// whose value is empty, carries nothing the CLI would authenticate
+		// with, and naming either would admit a launch that dies
+		// "Not logged in". sandboxed=true: the answer is the forwarded map
+		// alone — the container's env, no host fallback (spawnEnvValue).
 		if spawnAuthorizationHeader(ambient, true) {
 			return "the launcher env forwarded into the container (ANTHROPIC_CUSTOM_HEADERS)", true
 		}
