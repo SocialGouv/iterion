@@ -53,11 +53,13 @@ func (s *FilesystemRunStore) ReserveCredSlot(ctx context.Context, fingerprint, r
 		}
 		switch {
 		case held >= 0 && len(holders) <= max:
-			holders[held].at = now
-			return CredSlotAdmission{Granted: true, Held: len(holders)}, nil
+			at := NextCredSlotInstant(holders[held].at, now)
+			holders[held].at = at
+			return CredSlotAdmission{Granted: true, Held: len(holders), At: at}, nil
 		case held < 0 && len(holders) < max:
-			s.credSlots[fingerprint] = append(holders, credSlotHolder{runID: runID, at: now})
-			return CredSlotAdmission{Granted: true, Held: len(holders) + 1}, nil
+			at := NextCredSlotInstant(time.Time{}, now)
+			s.credSlots[fingerprint] = append(holders, credSlotHolder{runID: runID, at: at})
+			return CredSlotAdmission{Granted: true, Held: len(holders) + 1, At: at}, nil
 		}
 		// Full of other runs — or, under a cap lowered below its holders,
 		// over it with this run among them. Once, re-read the holders
@@ -86,14 +88,18 @@ func (s *FilesystemRunStore) evictStaleCredSlotHolders(ctx context.Context, fing
 	return len(holders) - len(kept)
 }
 
-// ReleaseCredSlot implements CredSlotStore.
-func (s *FilesystemRunStore) ReleaseCredSlot(_ context.Context, fingerprint, runID string) error {
+// ReleaseCredSlot implements CredSlotStore: the entry of runID admitted at
+// `at`, and no other.
+func (s *FilesystemRunStore) ReleaseCredSlot(_ context.Context, fingerprint, runID string, at time.Time) error {
 	if fingerprint == "" || runID == "" {
 		return fmt.Errorf("store: release cred slot: fingerprint and run id are required (fingerprint=%q run=%q)", fingerprint, runID)
 	}
+	if at.IsZero() {
+		return fmt.Errorf("store: release cred slot %s of run %s: no admission instant — a release names the admission it undoes", fingerprint, runID)
+	}
 	s.credSlotMu.Lock()
 	defer s.credSlotMu.Unlock()
-	s.pullCredSlotHolder(fingerprint, runID)
+	s.pullCredSlotHolder(fingerprint, func(h credSlotHolder) bool { return h.runID == runID && h.at.Equal(at) })
 	return nil
 }
 
@@ -104,17 +110,17 @@ func (s *FilesystemRunStore) dropCredSlotHolder(runID string) {
 	s.credSlotMu.Lock()
 	defer s.credSlotMu.Unlock()
 	for fingerprint := range s.credSlots {
-		s.pullCredSlotHolder(fingerprint, runID)
+		s.pullCredSlotHolder(fingerprint, func(h credSlotHolder) bool { return h.runID == runID })
 	}
 }
 
-// pullCredSlotHolder removes runID from one row, dropping the row once it
-// names nobody. Called under credSlotMu.
-func (s *FilesystemRunStore) pullCredSlotHolder(fingerprint, runID string) {
+// pullCredSlotHolder removes the entries of one row that match, dropping
+// the row once it names nobody. Called under credSlotMu.
+func (s *FilesystemRunStore) pullCredSlotHolder(fingerprint string, match func(credSlotHolder) bool) {
 	holders := s.credSlots[fingerprint]
 	kept := holders[:0:0]
 	for _, h := range holders {
-		if h.runID != runID {
+		if !match(h) {
 			kept = append(kept, h)
 		}
 	}

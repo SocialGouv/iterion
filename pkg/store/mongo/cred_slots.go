@@ -35,7 +35,9 @@ import (
 // at}), and a re-admission never leaves that entry in place — it moves the
 // entry's instant forward in a conditional write (refreshCredSlotHolder),
 // so the judged entry no longer exists when the pull lands. The filesystem
-// twin needs neither: one mutex holds its whole decision.
+// twin needs neither: one mutex holds its whole decision. A release names
+// its admission's entry the same way, on both twins: a failed resume's undo
+// that lands after another resume re-admitted the run leaves that entry.
 
 // credSlotHolderDoc is one admitted run and the instant of its latest
 // admission — what store.CredSlotGrace is measured from when its document is
@@ -89,6 +91,7 @@ func (s *Store) ReserveCredSlot(ctx context.Context, fingerprint, runID string, 
 	reconciled := false
 	for round := 0; round < credSlotReserveRounds; round++ {
 		var after credSlotDoc
+		pushed := store.NextCredSlotInstant(time.Time{}, now)
 		err := s.credSlots.FindOneAndUpdate(ctx,
 			bson.M{
 				"_id":            fingerprint,
@@ -97,13 +100,13 @@ func (s *Store) ReserveCredSlot(ctx context.Context, fingerprint, runID string, 
 				fmt.Sprintf("holders.%d", max-1): bson.M{"$exists": false},
 			},
 			bson.M{
-				"$push": bson.M{"holders": credSlotHolderDoc{RunID: runID, At: now}},
+				"$push": bson.M{"holders": credSlotHolderDoc{RunID: runID, At: pushed}},
 				"$set":  bson.M{"updated_at": now},
 			},
 			options.FindOneAndUpdate().SetReturnDocument(options.After),
 		).Decode(&after)
 		if err == nil {
-			return store.CredSlotAdmission{Granted: true, Held: len(after.Holders)}, nil
+			return store.CredSlotAdmission{Granted: true, Held: len(after.Holders), At: pushed}, nil
 		}
 		if !errors.Is(err, mongo.ErrNoDocuments) {
 			return store.CredSlotAdmission{}, fmt.Errorf("store/mongo: reserve cred slot %s for run %s: %w", fingerprint, runID, err)
@@ -114,12 +117,12 @@ func (s *Store) ReserveCredSlot(ctx context.Context, fingerprint, runID string, 
 			return store.CredSlotAdmission{}, fmt.Errorf("store/mongo: read cred slot row %s: %w", fingerprint, err)
 		}
 		if held, ok := current.holder(runID); ok && len(current.Holders) <= max {
-			refreshed, err := s.refreshCredSlotHolder(ctx, fingerprint, held, max, now)
+			at, refreshed, err := s.refreshCredSlotHolder(ctx, fingerprint, held, max, now)
 			if err != nil {
 				return store.CredSlotAdmission{}, err
 			}
 			if refreshed {
-				return store.CredSlotAdmission{Granted: true, Held: len(current.Holders)}, nil
+				return store.CredSlotAdmission{Granted: true, Held: len(current.Holders), At: at}, nil
 			}
 			// The entry or the row moved since the read — pulled, admitted
 			// again by another call, or grown past this cap: decide again
@@ -157,17 +160,17 @@ const credSlotReserveRounds = 32
 // refreshCredSlotHolder re-admits a holder in place: one conditional write
 // that moves its entry's instant forward while the row still names that
 // exact entry and holds no more than max runs — a cap lowered below its
-// holders re-admits none of them. Reports whether the write landed.
+// holders re-admits none of them. Reports the new instant and whether the
+// write landed.
 //
 // The new instant is what an eviction already in flight cannot match: its
-// $pull names the entry it judged, and the entry it would take is gone. The
-// instant is strictly later at the millisecond BSON keeps, or the refreshed
-// entry would be the judged one again.
-func (s *Store) refreshCredSlotHolder(ctx context.Context, fingerprint string, held credSlotHolderDoc, max int, now time.Time) (bool, error) {
-	at := now.Truncate(time.Millisecond)
-	if !at.After(held.At) {
-		at = held.At.Add(time.Millisecond)
-	}
+// $pull names the entry it judged, and the entry it would take is gone —
+// and so is the one an earlier admission's undo names (ReleaseCredSlot).
+// It is strictly later at the millisecond BSON keeps
+// (store.NextCredSlotInstant), or the refreshed entry would be the judged
+// one again.
+func (s *Store) refreshCredSlotHolder(ctx context.Context, fingerprint string, held credSlotHolderDoc, max int, now time.Time) (time.Time, bool, error) {
+	at := store.NextCredSlotInstant(held.At, now)
 	judged := bson.M{"run_id": held.RunID, "at": held.At}
 	res, err := s.credSlots.UpdateOne(ctx,
 		bson.M{
@@ -180,9 +183,9 @@ func (s *Store) refreshCredSlotHolder(ctx context.Context, fingerprint string, h
 		options.UpdateOne().SetArrayFilters([]any{bson.M{"held.run_id": held.RunID, "held.at": held.At}}),
 	)
 	if err != nil {
-		return false, fmt.Errorf("store/mongo: re-admit run %s to cred slot %s: %w", held.RunID, fingerprint, err)
+		return time.Time{}, false, fmt.Errorf("store/mongo: re-admit run %s to cred slot %s: %w", held.RunID, fingerprint, err)
 	}
-	return res.MatchedCount == 1, nil
+	return at, res.MatchedCount == 1, nil
 }
 
 // evictStaleCredSlotHolders pulls every holder whose run no longer spends
@@ -211,13 +214,18 @@ func (s *Store) evictStaleCredSlotHolders(ctx context.Context, fingerprint strin
 	return evicted, nil
 }
 
-// ReleaseCredSlot implements store.CredSlotStore.
-func (s *Store) ReleaseCredSlot(ctx context.Context, fingerprint, runID string) error {
+// ReleaseCredSlot implements store.CredSlotStore: the $pull names the entry
+// of runID admitted at `at`, so an entry written since by another admission
+// of the run is not matched.
+func (s *Store) ReleaseCredSlot(ctx context.Context, fingerprint, runID string, at time.Time) error {
 	if fingerprint == "" || runID == "" {
 		return fmt.Errorf("store/mongo: release cred slot: fingerprint and run id are required (fingerprint=%q run=%q)", fingerprint, runID)
 	}
+	if at.IsZero() {
+		return fmt.Errorf("store/mongo: release cred slot %s of run %s: no admission instant — a release names the admission it undoes", fingerprint, runID)
+	}
 	if _, err := s.credSlots.UpdateOne(ctx, bson.M{"_id": fingerprint},
-		bson.M{"$pull": bson.M{"holders": bson.M{"run_id": runID}}, "$set": bson.M{"updated_at": time.Now().UTC()}}); err != nil {
+		bson.M{"$pull": bson.M{"holders": bson.M{"run_id": runID, "at": at}}, "$set": bson.M{"updated_at": time.Now().UTC()}}); err != nil {
 		return fmt.Errorf("store/mongo: release cred slot %s of run %s: %w", fingerprint, runID, err)
 	}
 	return nil

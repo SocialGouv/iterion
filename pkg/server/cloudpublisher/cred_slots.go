@@ -99,43 +99,52 @@ func (r *credSlotRefusal) Error() string {
 
 func (r *credSlotRefusal) Unwrap() error { return ErrCredentialAtCapacity }
 
+// heldCredSlot is a slot an admission holds: the key, and the instant of
+// the ledger entry that admission wrote (store.CredSlotAdmission.At) — what
+// its undo names, so it never gives back an entry a later admission of the
+// same run wrote since.
+type heldCredSlot struct {
+	credSlotWant
+	at time.Time
+}
+
 // admitCredSlots reserves one slot per capped key the resolution sealed, in
-// stamp order. The first full key refuses the whole admission: the slots
-// taken before it are given back, and the refusal names the key. A store
-// error is an error, never a pass — a hard cap that fails open on a blip is
-// the advisory ceiling this step replaces.
-func (p *Publisher) admitCredSlots(ctx context.Context, runID string, wants []credSlotWant) (*credSlotRefusal, error) {
+// stamp order, and returns the slots it holds. The first full key refuses
+// the whole admission: the slots taken before it are given back, and the
+// refusal names the key. A store error is an error, never a pass — a hard
+// cap that fails open on a blip is the advisory ceiling this step replaces.
+func (p *Publisher) admitCredSlots(ctx context.Context, runID string, wants []credSlotWant) ([]heldCredSlot, *credSlotRefusal, error) {
 	if len(wants) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 	ledger := store.AsCredSlotStore(p.store)
 	if ledger == nil {
 		w := wants[0]
-		return nil, fmt.Errorf("cloudpublisher: run %s: api-key(%s) %q carries max_concurrent_runs=%d but this run store hosts no credential-slot ledger (store.CredSlotStore) — the cap cannot be enforced", runID, w.provider, w.name, w.max)
+		return nil, nil, fmt.Errorf("cloudpublisher: run %s: api-key(%s) %q carries max_concurrent_runs=%d but this run store hosts no credential-slot ledger (store.CredSlotStore) — the cap cannot be enforced", runID, w.provider, w.name, w.max)
 	}
-	var held []credSlotWant
+	var held []heldCredSlot
 	for _, w := range wants {
 		adm, err := ledger.ReserveCredSlot(ctx, w.fingerprint, runID, w.max)
 		if err != nil {
 			p.releaseCredSlots(ctx, runID, held)
-			return nil, fmt.Errorf("cloudpublisher: run %s: reserve a slot of api-key(%s) %q: %w", runID, w.provider, w.name, err)
+			return nil, nil, fmt.Errorf("cloudpublisher: run %s: reserve a slot of api-key(%s) %q: %w", runID, w.provider, w.name, err)
 		}
 		if !adm.Granted {
 			p.releaseCredSlots(ctx, runID, held)
-			return &credSlotRefusal{want: w, held: adm.Held}, nil
+			return nil, &credSlotRefusal{want: w, held: adm.Held}, nil
 		}
-		held = append(held, w)
+		held = append(held, heldCredSlot{credSlotWant: w, at: adm.At})
 	}
-	return nil, nil
+	return held, nil, nil
 }
 
-// releaseCredSlots gives back the slots of wants for runID — the undo of an
-// admission whose launch or resume did not land. Detached from the caller's
-// context: a cancelled request must still give the slots back, or the key
-// stays short of them until the reconcile of a later refusal evicts the
-// holder past its grace.
-func (p *Publisher) releaseCredSlots(ctx context.Context, runID string, wants []credSlotWant) {
-	if len(wants) == 0 {
+// releaseCredSlots gives back the slots held for runID — the undo of an
+// admission whose launch or resume did not land, each by the entry that
+// admission wrote. Detached from the caller's context: a cancelled request
+// must still give the slots back, or the key stays short of them until the
+// reconcile of a later refusal evicts the holder past its grace.
+func (p *Publisher) releaseCredSlots(ctx context.Context, runID string, held []heldCredSlot) {
+	if len(held) == 0 {
 		return
 	}
 	ledger := store.AsCredSlotStore(p.store)
@@ -144,9 +153,9 @@ func (p *Publisher) releaseCredSlots(ctx context.Context, runID string, wants []
 	}
 	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), credSlotReleaseTimeout)
 	defer cancel()
-	for _, w := range wants {
-		if err := ledger.ReleaseCredSlot(rctx, w.fingerprint, runID); err != nil {
-			p.logger.Warn("cloudpublisher: run %s: release the slot of api-key(%s) %q: %v — the key stays one slot short until the ledger's reconcile evicts the holder", runID, w.provider, w.name, err)
+	for _, h := range held {
+		if err := ledger.ReleaseCredSlot(rctx, h.fingerprint, runID, h.at); err != nil {
+			p.logger.Warn("cloudpublisher: run %s: release the slot of api-key(%s) %q: %v — the key stays one slot short until the ledger's reconcile evicts the holder", runID, h.provider, h.name, err)
 		}
 	}
 }

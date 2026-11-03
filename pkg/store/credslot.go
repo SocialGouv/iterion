@@ -46,19 +46,40 @@ type CredSlotStore interface {
 	// taking a second one — a resume's re-resolution reserves what the run
 	// holds — while the row is within max: under a cap lowered below its
 	// holders, a holder's re-admission waits like a newcomer's until enough
-	// of the others stop spending. Every admission moves the holder's
-	// instant forward, so an eviction judged before it misses the entry.
+	// of the others stop spending. Every admission writes the holder's entry
+	// at a new instant (NextCredSlotInstant), returned as the admission's
+	// At: the entry's identity, so an eviction or a release judged against
+	// an earlier admission misses it.
 	// max <= 0 is a caller error: an uncapped key reserves nothing.
 	ReserveCredSlot(ctx context.Context, fingerprint, runID string, max int) (CredSlotAdmission, error)
-	// ReleaseCredSlot gives back the slot runID holds under fingerprint, if
-	// any: the undo of an admission whose launch or resume did not land.
-	ReleaseCredSlot(ctx context.Context, fingerprint, runID string) error
+	// ReleaseCredSlot gives back the slot runID holds under fingerprint by
+	// the admission at `at` (its CredSlotAdmission.At), if it still does:
+	// the undo of an admission whose launch or resume did not land. A run
+	// admitted again since — another resume of it, landed between this
+	// caller's admission and its undo — holds a later entry, which is that
+	// admission's to give back and stays. A zero `at` is a caller error.
+	ReleaseCredSlot(ctx context.Context, fingerprint, runID string, at time.Time) error
 }
 
 // CredSlotAdmission is what ReserveCredSlot decided.
 type CredSlotAdmission struct {
 	Granted bool
 	Held    int
+	// At is the instant of the run's entry once Granted — its identity for
+	// ReleaseCredSlot. Zero when refused.
+	At time.Time
+}
+
+// NextCredSlotInstant is the instant an admission writes on a holder's
+// entry: now at the millisecond BSON keeps, strictly after prev — the
+// instant of the entry it replaces, zero for a new one — so no two
+// admissions of one holder share an identity. Shared by both twins.
+func NextCredSlotInstant(prev, now time.Time) time.Time {
+	at := now.UTC().Truncate(time.Millisecond)
+	if !at.After(prev) {
+		at = prev.UTC().Truncate(time.Millisecond).Add(time.Millisecond)
+	}
+	return at
 }
 
 // AsCredSlotStore returns s as CredSlotStore when the backend hosts the

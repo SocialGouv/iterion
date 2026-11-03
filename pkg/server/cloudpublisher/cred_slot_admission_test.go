@@ -442,7 +442,7 @@ func (f *failingLedger) Unwrap() store.RunStore { return f.RunStore }
 func (f *failingLedger) ReserveCredSlot(context.Context, string, string, int) (store.CredSlotAdmission, error) {
 	return store.CredSlotAdmission{}, errors.New("ledger unavailable")
 }
-func (f *failingLedger) ReleaseCredSlot(context.Context, string, string) error { return nil }
+func (f *failingLedger) ReleaseCredSlot(context.Context, string, string, time.Time) error { return nil }
 
 // A ledger error refuses the launch and persists nothing: a hard cap that
 // fails open on a blip is the advisory ceiling this step replaces.
@@ -659,7 +659,7 @@ func (f *cappedFixture) ledgerHolders(t *testing.T, fp string) int {
 	if err != nil || !adm.Granted {
 		t.Fatalf("probe the holders of %s: %+v %v", fp, adm, err)
 	}
-	if err := ledger.ReleaseCredSlot(f.ctx, fp, probe); err != nil {
+	if err := ledger.ReleaseCredSlot(f.ctx, fp, probe, adm.At); err != nil {
 		t.Fatalf("release the probe of %s: %v", fp, err)
 	}
 	return adm.Held - 1
@@ -859,8 +859,8 @@ func (s *failingKeyLedger) ReserveCredSlot(ctx context.Context, fp, runID string
 	}
 	return s.ledger.ReserveCredSlot(ctx, fp, runID, max)
 }
-func (s *failingKeyLedger) ReleaseCredSlot(ctx context.Context, fp, runID string) error {
-	return s.ledger.ReleaseCredSlot(ctx, fp, runID)
+func (s *failingKeyLedger) ReleaseCredSlot(ctx context.Context, fp, runID string, at time.Time) error {
+	return s.ledger.ReleaseCredSlot(ctx, fp, runID, at)
 }
 
 // A store error on a later key gives back the slot taken on the earlier
@@ -900,4 +900,68 @@ func TestCredSlotAdmission_AParkNothingWakesSaysSo(t *testing.T) {
 	if strings.Contains(r.Error, "resumes by itself") || !strings.Contains(r.Error, "nothing resumes the run by itself") {
 		t.Fatalf("the parked row says %q — on a store with no durable retry it must say nothing wakes it", r.Error)
 	}
+}
+
+// revertThenResume lets another resume of the same run land right after a
+// failed resume's flip is reverted and before that resume goes on to its
+// undo — the window between the two.
+type revertThenResume struct {
+	store.RunStore
+	flipper store.QueuedFlipper
+	after   func()
+}
+
+func (s *revertThenResume) Unwrap() store.RunStore { return s.RunStore }
+func (s *revertThenResume) FlipToQueued(ctx context.Context, id string, from store.RunStatus, at time.Time) (store.QueuedFlip, bool, error) {
+	return s.flipper.FlipToQueued(ctx, id, from, at)
+}
+func (s *revertThenResume) RevertQueuedFlip(ctx context.Context, id string, flip store.QueuedFlip, runErr string) (bool, error) {
+	reverted, err := s.flipper.RevertQueuedFlip(ctx, id, flip, runErr)
+	if reverted && s.after != nil {
+		after := s.after
+		s.after = nil
+		after()
+	}
+	return reverted, err
+}
+
+// A failed resume's undo gives back the slot ITS admission wrote, never one
+// written since: another resume of the run — the sweeper's, an operator's —
+// can flip the reverted run and re-admit it before the failed one reaches
+// its undo, and that resume's run executes on the slot. Released by run
+// alone, the slot went with the undo: the run ran with no slot while the
+// next launch took it, two runs on a cap of one. Red when the release
+// ignores which admission it undoes.
+func TestCredSlotAdmission_AFailedResumesUndoLeavesALaterAdmissionsSlot(t *testing.T) {
+	f := newCappedFixture(t, 1)
+	p := f.publisher()
+	if err := f.launch(t, p, "run-a", nil); err != nil {
+		t.Fatalf("launch run-a: %v", err)
+	}
+	f.park(t, "run-a")
+	p.publishRun = func(context.Context, *queue.RunMessage) error { return errors.New("nats: no responders") }
+	p.store = &revertThenResume{
+		RunStore: f.spy,
+		flipper:  store.AsQueuedFlipper(f.spy),
+		after: func() {
+			if err := f.resume(t, f.publisher(), "run-a"); err != nil {
+				t.Fatalf("the second resume of run-a: %v", err)
+			}
+		},
+	}
+	if err := f.resume(t, p, "run-a"); err == nil {
+		t.Fatal("a resume whose publish failed returned nil")
+	}
+	if r := f.load(t, "run-a"); r.Status != store.RunStatusQueued {
+		t.Fatalf("run-a status=%s, want queued by the second resume", r.Status)
+	}
+	if n := f.ledgerHolders(t, cappedFP); n != 1 {
+		t.Fatalf("the key names %d holders, want run-a's — the failed resume's undo took the slot the second resume holds", n)
+	}
+	p.store = f.spy
+	p.publishRun = f.published.publish
+	if err := f.launch(t, p, "run-b", nil); err != nil {
+		t.Fatalf("launch run-b: %v", err)
+	}
+	f.assertParked(t, "run-b")
 }

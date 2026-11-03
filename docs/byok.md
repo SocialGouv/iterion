@@ -185,7 +185,9 @@ slot. A holder whose run document does not exist yet keeps its slot for
 is pulled from every row at once, on both stores. The one explicit release
 is the undo of a launch or a resume that **provably** never handed the run
 on — no row persisted, or a rollback that ended or reverted the row it
-wrote. A publish can report an error after its message landed: the slot
+wrote — and it names the entry its own admission wrote, like the eviction:
+a resume of the same run that re-admitted it before that undo ran keeps
+its slot. A publish can report an error after its message landed: the slot
 then stays, the rollback leaves a row a runner already claimed to that
 runner, and the reconcile frees the slot once the run stops spending.
 Because the reconcile reads the stamp, a resume that reserves a capped key

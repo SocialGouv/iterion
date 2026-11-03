@@ -3837,7 +3837,7 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 	// back under a run that runs lets the next admission take it, the cap
 	// exceeded by one until the run ends. Kept, the slots follow the run
 	// document like any holder's (store.CredSlotHolderStale).
-	var heldSlots []credSlotWant
+	var heldSlots []heldCredSlot
 	defer func() {
 		if launched || parked {
 			return
@@ -3878,17 +3878,16 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 	//     retry armed, and nothing is queued — rather than refusing it: a
 	//     webhook delivery has nobody to click again. A store error refuses
 	//     the launch, never admits it.
-	refusal, err := p.admitCredSlots(ctx, runID, creds.credSlots)
+	held, refusal, err := p.admitCredSlots(ctx, runID, creds.credSlots)
 	if err != nil {
 		return runview.LaunchSubmission{}, err
 	}
+	heldSlots = held
 	// One read of the durable retry for the park's words and its arming,
 	// so the row never promises a wake the store cannot arm.
 	retryStore := store.AsRunRetryStore(p.store)
 	if refusal != nil {
 		parkRunOnCredSlot(r, refusal, retryStore)
-	} else {
-		heldSlots = creds.credSlots
 	}
 	launchStatus = r.Status
 	// PersistLaunchRun, not a PersistLaunch closure over r: a scheduler's
@@ -4240,8 +4239,11 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 	// admission take it — the cap exceeded by one until the run ends. A
 	// flip the rollback could not revert keeps its slots: the ledger follows
 	// the run document, and a refusal's reconcile evicts the holder once
-	// the run stops holding one (store.CredSlotHolderStale).
-	var heldSlots []credSlotWant
+	// the run stops holding one (store.CredSlotHolderStale). Each slot goes
+	// back by the entry this resume's admission wrote: another resume of
+	// the run can flip the reverted run and re-admit it before this undo
+	// runs, and the entry it writes is its own.
+	var heldSlots []heldCredSlot
 	defer func() {
 		if republished {
 			return
@@ -4456,14 +4458,14 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 	// sweeper asks again free of charge (ErrCredentialAtCapacity). Granted,
 	// the slots are the rollback's to give back, and only with a reverted
 	// flip (heldSlots).
-	refusal, admitErr := p.admitCredSlots(secretsCtx, spec.RunID, creds.credSlots)
+	held, refusal, admitErr := p.admitCredSlots(secretsCtx, spec.RunID, creds.credSlots)
 	if admitErr != nil {
 		return admitErr
 	}
 	if refusal != nil {
 		return fmt.Errorf("cloudpublisher: run %s stays parked: %w", spec.RunID, refusal)
 	}
-	heldSlots = creds.credSlots
+	heldSlots = held
 	// Re-resolved on resume too: the engine re-mirrors skills on every resume,
 	// so a resumed run must carry the same payload a fresh launch would.
 	contributions, contribErr := resolveContributionsFor(ctx, wf, "", prior.TenantID, spec.RunID, p.pluginSources, p.logger)

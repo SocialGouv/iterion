@@ -4670,22 +4670,38 @@ func testCredSlotLedger(t *testing.T, s store.RunStore) {
 	mk("slot_a", store.RunStatusRunning, fp)
 	mk("slot_b", store.RunStatusQueued, fp)
 	mk("slot_c", store.RunStatusRunning, fp)
-	if adm := reserve("slot_a", 2); !adm.Granted || adm.Held != 1 {
-		t.Fatalf("first admission: %+v, want granted with 1 holder", adm)
+	firstA := reserve("slot_a", 2)
+	if !firstA.Granted || firstA.Held != 1 || firstA.At.IsZero() {
+		t.Fatalf("first admission: %+v, want granted with 1 holder and its entry's instant", firstA)
 	}
-	if adm := reserve("slot_b", 2); !adm.Granted || adm.Held != 2 {
-		t.Fatalf("second admission: %+v, want granted with 2 holders", adm)
+	admB := reserve("slot_b", 2)
+	if !admB.Granted || admB.Held != 2 {
+		t.Fatalf("second admission: %+v, want granted with 2 holders", admB)
 	}
-	if adm := reserve("slot_c", 2); adm.Granted || adm.Held != 2 {
+	if adm := reserve("slot_c", 2); adm.Granted || adm.Held != 2 || !adm.At.IsZero() {
 		t.Fatalf("a third run was admitted on a cap of two: %+v", adm)
 	}
 	// A holder is admitted again without a second slot — a resume's
-	// re-resolution reserves what the run holds.
-	if adm := reserve("slot_a", 2); !adm.Granted || adm.Held != 2 {
-		t.Fatalf("re-admitting a holder: %+v, want granted with the same 2 holders", adm)
+	// re-resolution reserves what the run holds — on an entry of its own:
+	// a later instant than the admission before it.
+	againA := reserve("slot_a", 2)
+	if !againA.Granted || againA.Held != 2 || !againA.At.After(firstA.At) {
+		t.Fatalf("re-admitting a holder: %+v after %+v, want granted with the same 2 holders on a later instant", againA, firstA)
+	}
+	// A release names the admission it undoes: the undo of slot_a's first
+	// admission, landing after its second, leaves the second's entry — a
+	// newcomer is still refused while slot_a and slot_b both spend.
+	if err := ledger.ReleaseCredSlot(ctx, fp, "slot_a", firstA.At); err != nil {
+		t.Fatalf("ReleaseCredSlot(slot_a, first admission): %v", err)
+	}
+	if adm := reserve("slot_c", 2); adm.Granted || adm.Held != 2 {
+		t.Fatalf("the undo of an earlier admission took the entry a later one wrote: %+v", adm)
+	}
+	if err := ledger.ReleaseCredSlot(ctx, fp, "slot_a", time.Time{}); err == nil {
+		t.Fatal("ReleaseCredSlot with no admission instant must refuse")
 	}
 	// The undo of an admission gives the slot back.
-	if err := ledger.ReleaseCredSlot(ctx, fp, "slot_b"); err != nil {
+	if err := ledger.ReleaseCredSlot(ctx, fp, "slot_b", admB.At); err != nil {
 		t.Fatalf("ReleaseCredSlot: %v", err)
 	}
 	if adm := reserve("slot_c", 2); !adm.Granted || adm.Held != 2 {

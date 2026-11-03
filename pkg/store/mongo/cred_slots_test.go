@@ -172,7 +172,8 @@ func TestCredSlots_RacingReservationsAdmitExactlyTheCap(t *testing.T) {
 		}
 	}
 	// One slot given back, the refused racers race again: exactly one more.
-	if err := s.ReleaseCredSlot(tctx, fp, granted[0]); err != nil {
+	first, _ := row.holder(granted[0])
+	if err := s.ReleaseCredSlot(tctx, fp, granted[0], first.At); err != nil {
 		t.Fatalf("ReleaseCredSlot: %v", err)
 	}
 	var refused []string
