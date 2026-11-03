@@ -56,7 +56,7 @@ func TestRegisterSandboxLocalTools_ScratchDirIsAReadRoot(t *testing.T) {
 
 	// The scope the proxy builds carries the scratch: the brief reads.
 	reg := tool.NewRegistry()
-	if err := registerSandboxLocalTools(reg, workspace, scratch, nil, 0); err != nil {
+	if err := registerSandboxLocalTools(reg, workspace, scratch, nil, 0, nil, false); err != nil {
 		t.Fatalf("registerSandboxLocalTools: %v", err)
 	}
 	brief := filepath.Join(scratch, "briefs", "lot-01.md")
@@ -81,7 +81,7 @@ func TestRegisterSandboxLocalTools_ScratchDirIsAReadRoot(t *testing.T) {
 	// pre-#2650 envelope, or the AddExtraRoot call removed), the same brief
 	// is outside every root and the read refuses.
 	bare := tool.NewRegistry()
-	if err := registerSandboxLocalTools(bare, workspace, "", nil, 0); err != nil {
+	if err := registerSandboxLocalTools(bare, workspace, "", nil, 0, nil, false); err != nil {
 		t.Fatalf("registerSandboxLocalTools without scratch: %v", err)
 	}
 	if _, err := readFile(t, bare, brief); err == nil || !strings.Contains(err.Error(), "outside workspace") {

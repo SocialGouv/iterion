@@ -761,6 +761,9 @@ func (b *ClaudeCodeBackend) buildSpawnOptions(task Task) ([]claudesdk.Option, fu
 	amb := claudeAmbient(task)
 	reportLegacySources(b.Logger, amb)
 	opts = append(opts, amb.settingSourcesOption())
+	if dir, ok := skillChannelAddDir(task); ok {
+		opts = append(opts, claudesdk.WithAddDirs(dir))
+	}
 	// Setting sources are inherited (above); MCP servers are NOT. The node's
 	// resolved MCP set — .bot `mcp_server:`/`mcp:` blocks, the repo's
 	// .mcp.json via autoload_project, iterion's ask_user/board servers —
@@ -2434,4 +2437,27 @@ func promptWithTimeout(ctx context.Context, prompt string, killCmd func(), opts 
 		go func() { <-ch }()
 		return nil, fmt.Errorf("claude prompt cancelled: %w", ctx.Err())
 	}
+}
+
+// skillChannelAddDir decides whether this spawn carries the run's pinned
+// skill channel root as --add-dir (iterion#1719): the engine re-carried the
+// skills it OWNS into a root it alone writes, in the .claude/skills layout,
+// and --add-dir is the CLI's documented discovery for skills outside the
+// working tree. The floor that keeps the checkout's own .claude/skills out
+// (withholding the project setting source) is #1730's untrusted-lane work;
+// this restores the bot's OWN skills once it stands.
+//
+// Host runs (and the noop driver's host passthrough, which shares the
+// filesystem) get the absolute path. A container driver's workspace is not
+// this process's filesystem, and the run-owned bind mount that would carry
+// an out-of-workspace root is the admission half's design (#1730) — there
+// the channel is not armed and the node runs without the skills.
+func skillChannelAddDir(task Task) (string, bool) {
+	if task.SkillChannelRoot == "" {
+		return "", false
+	}
+	if task.Sandbox == nil || task.Sandbox.Driver() == "noop" {
+		return task.SkillChannelRoot, true
+	}
+	return "", false
 }

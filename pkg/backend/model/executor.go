@@ -138,6 +138,19 @@ type ClawExecutor struct {
 	// workspace this run (SetMirroredSkills), as opposed to whatever the
 	// target repo ships at the same path.
 	mirroredSkills []string
+	// skillAllowlist is the pinned name → path set the `skill` tool serves
+	// when the run's workspace is untrusted (SetSkillAllowlist, #1719): a
+	// non-nil pointer — empty map included — arms the pinned mode, nil
+	// keeps the workspace walk. Atomic because the engine arms it at run
+	// start while a node may already be executing (same doctrine as
+	// SetWorkDir, #2897). Paths are ABSOLUTE host paths into the run's
+	// engine-owned skill channel root.
+	skillAllowlist atomic.Pointer[map[string]string]
+	// skillChannelRoot is the engine-owned directory that re-carries the
+	// run's owned skills in the .claude/skills layout for the backends that
+	// discover skills by directory (claude_code's --add-dir), set by
+	// SetSkillChannelRoot on an untrusted run; empty = no channel.
+	skillChannelRoot atomic.Value // string
 
 	// slashWarnedOnce keeps a workspace-command divergence notice to one
 	// line per command file per run, across nodes and parallel branches.
@@ -1230,6 +1243,45 @@ func (e *ClawExecutor) SetSkillHints(hints map[string]string) {
 // Execute; not safe to call concurrently.
 func (e *ClawExecutor) SetMirroredSkills(paths []string) {
 	e.mirroredSkills = paths
+}
+
+// SetSkillAllowlist arms the pinned skill mode (#1719): a non-nil map —
+// empty included — makes the `skill` tool serve exactly those name → path
+// entries and refuse everything else; nil disarms it and restores the
+// workspace walk. The engine arms it for a run whose workspace is
+// untrusted, once the mirror pass has decided which skills the run owns.
+// Safe to call before Execute and concurrently with in-flight Execute: the
+// field is atomic, read per tool call.
+func (e *ClawExecutor) SetSkillAllowlist(allowed map[string]string) {
+	if allowed == nil {
+		e.skillAllowlist.Store(nil)
+		return
+	}
+	e.skillAllowlist.Store(&allowed)
+}
+
+// SkillAllowlist is the provider shape the tool registry consults per
+// `skill` call: (set, armed).
+func (e *ClawExecutor) SkillAllowlist() (map[string]string, bool) {
+	if m := e.skillAllowlist.Load(); m != nil {
+		return *m, true
+	}
+	return nil, false
+}
+
+// SetSkillChannelRoot records the engine-owned directory the run's owned
+// skills were re-carried into (the .claude/skills layout) for the backends
+// that discover skills by directory. Empty clears it.
+func (e *ClawExecutor) SetSkillChannelRoot(dir string) {
+	e.skillChannelRoot.Store(dir)
+}
+
+// SkillChannelRoot reports the armed skill channel root, "" when none.
+func (e *ClawExecutor) SkillChannelRoot() string {
+	if v := e.skillChannelRoot.Load(); v != nil {
+		return v.(string)
+	}
+	return ""
 }
 
 // SetWorkDir updates the working directory for backend subprocesses

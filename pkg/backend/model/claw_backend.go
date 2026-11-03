@@ -20,6 +20,8 @@ import (
 	"github.com/SocialGouv/claw-code-go/pkg/api"
 	"github.com/SocialGouv/claw-code-go/pkg/api/hooks"
 
+	"path/filepath"
+
 	"github.com/SocialGouv/iterion/internal/credheader"
 	"github.com/SocialGouv/iterion/internal/envtrust"
 	"github.com/SocialGouv/iterion/pkg/backend/compatgw"
@@ -2161,6 +2163,28 @@ func (b *ClawBackend) runnerIOTask(task delegate.Task) delegate.IOTask {
 	// outside the workspace bind, and claude_code's Read reaches them —
 	// without the root a sandboxed claw node reads none of them.
 	ioTask.ScratchDir = sandboxScratchContainerDir
+	// The pinned skill set crosses workspace-RELATIVE: the host's absolute
+	// paths would not exist in the container, and the runner joins each
+	// entry against its own workspace (cmd/iterion registerSandboxLocalTools).
+	// An entry that does not relativize is an engine bug — the channel root
+	// lives inside the workspace — so it crosses absolute (the in-container
+	// read then fails loudly) rather than being silently dropped.
+	if task.SkillAllowlist != nil {
+		rel := make(map[string]string, len(task.SkillAllowlist))
+		for name, p := range task.SkillAllowlist {
+			r, err := filepath.Rel(task.WorkDir, p)
+			if err != nil || strings.HasPrefix(r, "..") {
+				if b.logger != nil {
+					b.logger.Warn("[%s#%d/claw] skill allowlist entry %q (%q) is outside the workspace — crossing absolute, the runner cannot serve it", task.NodeID, task.Iteration, name, p)
+				}
+				rel[name] = p
+				continue
+			}
+			rel[name] = r
+		}
+		ioTask.SkillAllowlist = rel
+		ioTask.SkillAllowlistArmed = true
+	}
 	ioTask.SlashCommandMaxBytes = b.slashCommandCeiling
 	// executeViaSandboxRunner wraps the runner in the node's session and ends
 	// it: the runner draws none of its own.

@@ -1037,7 +1037,9 @@ func (e *Engine) applyLibrarySkills() (owned []string, complete bool, err error)
 
 // applyMirroredSkills hands the executor the skill directories iterion OWNS in
 // this workspace, so a backend can tell them from whatever the target
-// repository ships under the same .claude/skills/ path.
+// repository ships under the same .claude/skills/ path. On an untrusted run it
+// also arms the pinned skill channel (#1719): the allowlist the `skill` tool
+// serves and the --add-dir root a directory-discovering backend reads.
 //
 // The workspace is an untrusted checkout, so this cannot be rediscovered by
 // reading it back — a repo can write any file, including one that looks like
@@ -1051,6 +1053,37 @@ func (e *Engine) applyMirroredSkills(owned []string) {
 	if s, ok := e.executor.(mirroredSkillSetter); ok {
 		s.SetMirroredSkills(owned)
 	}
+	// The untrusted-workspace skill channel (#1719): on a checkout the
+	// operator does not control, the walked skill roots answer with what
+	// the repository planted, so the run serves ONLY the owned set — the
+	// claw `skill` tool pins it (ExecuteSkillPinned) and claude_code
+	// discovers the channel root through --add-dir. A trusted run keeps the
+	// walk, unchanged. A channel that cannot be built arms the EMPTY set:
+	// falling back to the walk on error is exactly the hole.
+	type skillChannelSetter interface {
+		SetSkillAllowlist(map[string]string)
+		SetSkillChannelRoot(string)
+	}
+	s, ok := e.executor.(skillChannelSetter)
+	if !ok {
+		return
+	}
+	if e.trust.Trusted() {
+		s.SetSkillAllowlist(nil)
+		s.SetSkillChannelRoot("")
+		return
+	}
+	root, allowlist, err := mirrorSkillChannel(e.workDir, owned, e.logger)
+	if err != nil {
+		if e.logger != nil {
+			e.logger.Warn("runtime: the skill channel could not be built (%v) — the untrusted run's skill tool serves NOTHING rather than walking the checkout", err)
+		}
+		s.SetSkillAllowlist(map[string]string{})
+		s.SetSkillChannelRoot("")
+		return
+	}
+	s.SetSkillAllowlist(allowlist)
+	s.SetSkillChannelRoot(root)
 }
 
 // applyPresetFocus wires the selected preset's launch-time bias into the

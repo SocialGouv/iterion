@@ -867,6 +867,13 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 	// #2889). The closure is the one the read scope was built with, so all
 	// surfaces share one source by construction.
 	clawDefaults.WorkspaceProvider = workspaceProvider
+	// The pinned skill mode (iterion#1719) is armed by the engine AFTER the
+	// registry exists — the mirror pass runs at run start — so the registry
+	// consults the executor's live answer per `skill` call, the same
+	// closure doctrine as workspaceProvider (#2870).
+	clawDefaults.SkillAllowlist = func() (map[string]string, bool) {
+		return executor.SkillAllowlist()
+	}
 	if planDir != "" {
 		clawDefaults.PlanMode = &clawtools.PlanModeState{Active: &planActive, Dir: planDir}
 	}

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"path/filepath"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -333,7 +334,13 @@ func relaySessionMirrorGap(d *proxyDispatcher, stderr io.Writer, reason string, 
 // commandMaxBytes is the launcher's resolved ceiling for `command`
 // (delegate.IOTask.SlashCommandMaxBytes): 0 — a launcher that predates the
 // field — leaves the built-in default, as it did.
-func registerSandboxLocalTools(reg *tool.Registry, workspace, scratchDir string, subagent tool.SubagentRunner, commandMaxBytes int) error {
+//
+// skillAllowlist is the launcher's pinned skill set, workspace-relative
+// (delegate.IOTask.SkillAllowlist): when skillArmed, the `skill` tool serves
+// exactly those entries — joined against THIS container's workspace — and
+// refuses everything else, so a checkout under review cannot plant a skill
+// under a walked root (iterion#1719). Disarmed, the workspace walk stands.
+func registerSandboxLocalTools(reg *tool.Registry, workspace, scratchDir string, subagent tool.SubagentRunner, commandMaxBytes int, skillAllowlist map[string]string, skillArmed bool) error {
 	readScope := tool.NewReadScope(workspace)
 	readScope.AddExtraRoot(scratchDir)
 	if err := tool.RegisterClawBuiltinsWithScope(reg, readScope, nil); err != nil {
@@ -345,7 +352,24 @@ func registerSandboxLocalTools(reg *tool.Registry, workspace, scratchDir string,
 	if err := tool.RegisterClawSimple(reg); err != nil {
 		return err
 	}
-	if err := tool.RegisterClawSkill(reg, workspace); err != nil {
+	skillProvider := tool.SkillAllowlistProvider(func() (map[string]string, bool) {
+		if !skillArmed {
+			return nil, false
+		}
+		joined := make(map[string]string, len(skillAllowlist))
+		for name, p := range skillAllowlist {
+			if filepath.IsAbs(p) {
+				// An entry that would not relativize crossed absolute: its
+				// in-container read fails loudly rather than resolving to
+				// whatever the workspace holds at a mis-joined path.
+				joined[name] = p
+				continue
+			}
+			joined[name] = filepath.Join(workspace, p)
+		}
+		return joined, true
+	})
+	if err := tool.RegisterClawSkillWithSources(reg, func() string { return workspace }, skillProvider); err != nil {
 		return err
 	}
 	// The `command` tool reads the CONTAINER's workspace through the same
@@ -390,8 +414,10 @@ func makeHybridToolDefs(
 	modelReg *model.Registry,
 	hooks model.EventHooks,
 	commandMaxBytes int,
+	skillAllowlist map[string]string,
+	skillArmed bool,
 ) ([]delegate.ToolDef, error) {
-	return buildHybridToolDefs(defs, d, workspace, sandboxLocalToolRegistrar(scratchDir, modelReg, hooks, commandMaxBytes))
+	return buildHybridToolDefs(defs, d, workspace, sandboxLocalToolRegistrar(scratchDir, modelReg, hooks, commandMaxBytes, skillAllowlist, skillArmed))
 }
 
 // sandboxLocalToolRegistrar closes the in-container registration over what a
@@ -409,10 +435,10 @@ func makeHybridToolDefs(
 // one does (model.ParentLoop, which the in-container Execute fills from the
 // forwarded task). Lifecycle hooks are nil, as they are for this runner's own
 // loop — the launcher owns that layer.
-func sandboxLocalToolRegistrar(scratchDir string, modelReg *model.Registry, hooks model.EventHooks, commandMaxBytes int) func(*tool.Registry, string) error {
+func sandboxLocalToolRegistrar(scratchDir string, modelReg *model.Registry, hooks model.EventHooks, commandMaxBytes int, skillAllowlist map[string]string, skillArmed bool) func(*tool.Registry, string) error {
 	return func(reg *tool.Registry, workspace string) error {
 		return registerSandboxLocalTools(reg, workspace, scratchDir,
-			model.NewSubagentRunner(modelReg, reg, hooks, nil, ""), commandMaxBytes)
+			model.NewSubagentRunner(modelReg, reg, hooks, nil, ""), commandMaxBytes, skillAllowlist, skillArmed)
 	}
 }
 

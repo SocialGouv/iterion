@@ -770,6 +770,20 @@ type Task struct {
 	// back can do it. The engine populates this; nothing in the repo can.
 	MirroredSkills []string
 
+	// SkillAllowlist, when non-nil, is the pinned name → path set the `skill`
+	// tool serves (iterion#1719): the run's workspace is untrusted, so the
+	// walked roots would answer with text the checkout planted. Paths are
+	// absolute HOST paths into the engine-owned skill channel root; the
+	// sandbox crossing re-roots them workspace-relative for the runner
+	// (delegate.IOTask.SkillAllowlist). Nil = the workspace walk, unchanged.
+	SkillAllowlist map[string]string
+
+	// SkillChannelRoot is the engine-owned directory that re-carries the
+	// run's owned skills in the .claude/skills layout, for the backends that
+	// discover skills by directory (claude_code's --add-dir). Empty = no
+	// channel (a trusted run discovers the workspace's skills natively).
+	SkillChannelRoot string
+
 	// PresetFragment is the resolved launch-time preset bias appended to the
 	// system prompt under a "## Focus" section. It carries the selected
 	// file-based preset's prompt body (template-expanded) plus an optional

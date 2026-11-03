@@ -1501,6 +1501,13 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 	task.CursorFragments = resolveCursorFragments(f.cursors, e.cursors)
 	task.SkillHints = e.resolveSkillHints(f.skills)
 	task.MirroredSkills = e.mirroredSkills
+	// The pinned skill mode is a RUN property the engine arms (untrusted
+	// workspace, #1719): every node of the run serves the same pinned set,
+	// and the sandbox crossing re-roots it for the runner.
+	if allowed, armed := e.SkillAllowlist(); armed {
+		task.SkillAllowlist = allowed
+	}
+	task.SkillChannelRoot = e.SkillChannelRoot()
 	task.SharedStateDir = e.sharedStateDir
 	e.applyPresetFragment(&task, input, td)
 

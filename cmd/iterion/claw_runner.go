@@ -168,7 +168,7 @@ func runClawRunner(ctx context.Context, stdin io.Reader, stdout, stderr io.Write
 	// tools, never the launcher's). Both are used once more below.
 	registry := model.NewSandboxRunnerRegistry()
 	relayHooks := relayEventHooks(dispatcher, stderr)
-	toolDefs, toolErr := makeHybridToolDefs(ioTask.ToolDefs, dispatcher, workspace, ioTask.ScratchDir, registry, relayHooks, ioTask.SlashCommandMaxBytes)
+	toolDefs, toolErr := makeHybridToolDefs(ioTask.ToolDefs, dispatcher, workspace, ioTask.ScratchDir, registry, relayHooks, ioTask.SlashCommandMaxBytes, ioTask.SkillAllowlist, ioTask.SkillAllowlistArmed)
 	if toolErr != nil {
 		return emitFatal(dispatcher, stderr, fmt.Errorf("build the in-container tool set: %w", toolErr))
 	}
