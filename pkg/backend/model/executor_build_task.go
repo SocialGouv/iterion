@@ -1878,9 +1878,11 @@ func (e *ClawExecutor) applyMemorySpec(task *delegate.Task, m *ir.Memory) {
 // applyPresetFragment wires the launch-time preset bias ("## Focus")
 // onto the task: the preset's prompt body {{vars}}-resolved against
 // this node's context, plus an optional relevant-skills hint line.
-// Applies run-wide to every LLM node, so a "sous-bot" focus (e.g.
-// Willy as improve-quality SRE) shapes the reviewer and fixer alike
-// without the author wiring it into each prompt.
+// buildTask is its one caller, so the bias reaches every model task the
+// run builds — the set ir.Workflow.RendersPresetPrompt counts, not every
+// LLM node — and a "sous-bot" focus (e.g. Willy as improve-quality SRE)
+// shapes the reviewer and fixer alike without the author wiring it into
+// each prompt.
 func (e *ClawExecutor) applyPresetFragment(task *delegate.Task, input map[string]any, td *TemplateData) {
 	if e.presetPrompt == "" && len(e.presetSkills) == 0 {
 		return

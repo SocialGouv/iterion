@@ -406,9 +406,12 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 
 	// Fold the bundle's file-based presets (presets/<name>.md) into the
 	// workflow's preset set so `--preset <name>` resolves them and their var
-	// overrides flow through buildRunInputs. The engine re-applies this as a
-	// backstop and logs any malformed preset files.
-	runtime.MergeBundlePresets(wf, bundleHandle, nil)
+	// overrides flow through buildRunInputs. The run's logger carries what
+	// the merge finds — a malformed preset file, a prompt body whose
+	// `{{secrets.X}}` reaches a sink its secret withholds — on the command
+	// that is about to pay for the run, not only on the engine's backstop
+	// pass.
+	runtime.MergeBundlePresets(wf, bundleHandle, opts.Preset, logger)
 
 	inputs, err := buildRunInputs(wf, opts.Preset, opts.Vars, opts.AllowUnknownInputs)
 	if err != nil {

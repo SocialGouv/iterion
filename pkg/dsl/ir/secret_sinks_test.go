@@ -126,7 +126,15 @@ func TestC323AReferenceAtAnUngrantedSinkIsRefusedOnTheReference(t *testing.T) {
 			if len(msgs) == 0 {
 				t.Fatalf("C323 did not fire on {{secrets.tok}} at the %s sink of a `sinks: [agent]` secret:\n%v", site.sink, refused.Diagnostics)
 			}
-			for _, want := range []string{"reaches the " + site.sink + " sink", `secret "tok" does not grant (sinks: [agent])`, "add `" + site.sink + "`"} {
+			// The remedy is the site's: a sink that consumes the value's
+			// text is granted; an `images:` path is a file the backend
+			// opens, so its remedy is the secret's file form
+			// (TestAnImagePathsSecretRefIsCheckedAtCompileTime).
+			remedy := "add `" + site.sink + "`"
+			if strings.Contains(site.body, "images:") {
+				remedy = "`as: file`"
+			}
+			for _, want := range []string{"reaches the " + site.sink + " sink", `secret "tok" does not grant (sinks: [agent])`, remedy} {
 				if !strings.Contains(msgs[0], want) {
 					t.Errorf("C323 message does not carry %q:\n%s", want, msgs[0])
 				}
@@ -375,13 +383,19 @@ func TestAnImagePathsSecretRefIsCheckedAtCompileTime(t *testing.T) {
 	if len(msgs) == 0 {
 		t.Fatalf("C323 did not fire on the images path of a `sinks: [command]` secret:\n%v", refused.Diagnostics)
 	}
-	for _, want := range []string{`agent node "vision" images`, "reaches the prompt sink", `secret "tok" does not grant (sinks: [command])`, "add `prompt`"} {
+	// The remedy is the images site's own: the backend opens the rendered
+	// path as a file, which a value secret's text never is whatever it
+	// grants — so the finding points at the file form, never at `prompt`.
+	for _, want := range []string{`agent node "vision" images`, "reaches the prompt sink", `secret "tok" does not grant (sinks: [command])`, "`as: file`", "{{secrets.tok.path}}"} {
 		if !strings.Contains(msgs[0], want) {
 			t.Errorf("C323 message does not carry %q:\n%s", want, msgs[0])
 		}
 	}
+	if strings.Contains(msgs[0], "add `prompt`") {
+		t.Errorf("C323 on an images path offers the prompt body's remedy, which buys a clean compile and a missing image:\n%s", msgs[0])
+	}
 	if !hasDiagAtSeverity(refused, string(DiagSecretSinkUngranted), SeverityError) {
-		t.Error("C323 on an images path is not an error: the run would render the placeholder of a secret whose grants withhold the prompt sink")
+		t.Error("C323 on an images path is not an error: the resolver leaves the reference as written, so the path reaches the backend as literal DSL text and the declaration's refusal is silently void")
 	}
 
 	// The same reference on a judge: the walk reads the shared LLM field

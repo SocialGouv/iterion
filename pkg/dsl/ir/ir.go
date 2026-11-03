@@ -1574,8 +1574,10 @@ type Preset struct {
 	// Description is a one-line summary surfaced in the studio Launch picker.
 	// File-based presets only.
 	Description string
-	// Prompt is the bias fragment appended to every LLM node's system prompt
-	// under a "## Focus" section at run time (see delegate.Task.PresetFragment).
+	// Prompt is the bias fragment appended to the system prompt of every
+	// model task the run builds, under a "## Focus" section at run time (see
+	// delegate.Task.PresetFragment; Workflow.RendersPresetPrompt says which
+	// node kinds build one).
 	// Supports `{{vars.X}}` template refs, resolved per node. File-based only.
 	Prompt string
 	// Skills lists bundle skill names this preset makes relevant (e.g.

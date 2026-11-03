@@ -1090,13 +1090,14 @@ func (e *Engine) applyMirroredSkills(owned []string) {
 // run. It first folds the bundle's file-based presets into the workflow as
 // a backstop for paths that compiled without the bundle (studio in-process,
 // cloud runner), then pushes the selected preset's prompt fragment + skill
-// hints into the executor so every LLM node's system prompt gains a
-// "## Focus" section (see delegate.Task.BuildSystemPrompt). Var-only presets
+// hints into the executor so the system prompt of every model task the run
+// builds gains a "## Focus" section (see delegate.Task.BuildSystemPrompt).
+// Var-only presets
 // (no prompt, no skills) are a no-op here — their overrides already flowed
 // through the launch wiring. The executor focus is best-effort: only
 // ClawExecutor implements SetPresetFocus.
 func (e *Engine) applyPresetFocus() {
-	MergeBundlePresets(e.workflow, e.bundle, e.logger)
+	MergeBundlePresets(e.workflow, e.bundle, e.preset, e.logger)
 	if e.preset == "" {
 		return
 	}

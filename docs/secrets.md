@@ -526,7 +526,9 @@ run time, from the same declaration: `Materialize` (the `agent` sink) and
 the authored-body materialisers leave a placeholder its secret does not
 grant AS WRITTEN; the prompt path renders a value secret only when it grants
 `prompt`, so a prompt-like surface the compiler never walked (a bundle
-preset's prompt) keeps the reference as written; and the
+preset's prompt, merged after compilation) keeps the reference as written —
+`iterion validate` refuses that reference on the preset file (C323,
+`pkg/bundlelint`) and every launch path says it through the merge; and the
 inspecting proxy substitutes on the wire only a secret granting `egress` —
 content DLP still refuses a real value toward an unapproved host, whatever
 the grants. A call that carried the placeholder of a secret the proxy — not

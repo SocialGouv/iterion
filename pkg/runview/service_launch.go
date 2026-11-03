@@ -460,10 +460,10 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 	// studio `--preset <name>` selection resolves a file-based sous-bot — not
 	// just an in-source presets: entry — and its var overrides apply below.
 	// The engine re-applies this as a backstop and also pushes the prompt
-	// bias + skill hints into every LLM node ("## Focus"). The bundle is
-	// the one the compile used — one open, one truth.
+	// bias + skill hints into every model task it builds ("## Focus"). The
+	// bundle is the one the compile used — one open, one truth.
 	if launchBundle != nil {
-		runtime.MergeBundlePresets(wf, launchBundle, runLogger)
+		runtime.MergeBundlePresets(wf, launchBundle, spec.Preset, runLogger)
 	}
 
 	inputs := make(map[string]any, len(spec.Vars))

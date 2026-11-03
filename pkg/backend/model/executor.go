@@ -1213,10 +1213,11 @@ func (e *ClawExecutor) SetVars(vars map[string]any) {
 
 // SetPresetFocus records the selected launch-time preset's prompt bias and
 // relevant-skill hints. The engine calls this at run start (and on resume)
-// for the `--preset <name>` selection; every LLM node then renders a
-// "## Focus" section in its system prompt (see executeBackend). The prompt
-// is stored raw and {{vars.X}}-resolved per node. Empty args clear the
-// focus. Must be called before Execute; not safe to call concurrently.
+// for the `--preset <name>` selection; every model task the run builds then
+// renders a "## Focus" section in its system prompt (applyPresetFragment,
+// from buildTask). The prompt is stored raw and {{vars.X}}-resolved per
+// node. Empty args clear the focus. Must be called before Execute; not safe
+// to call concurrently.
 func (e *ClawExecutor) SetPresetFocus(prompt string, skills []string) {
 	e.presetPrompt = prompt
 	e.presetSkills = skills

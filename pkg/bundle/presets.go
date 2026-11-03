@@ -21,6 +21,12 @@ type PresetSpec struct {
 	// the file stem unless the frontmatter `name:` overrides it.
 	Name string
 
+	// Path is the file this preset was read from, as the loader reached it.
+	// A frontmatter `name:` detaches the id from the file name, so a reader
+	// that reports a finding on a preset — the bundle lint, the merge —
+	// names the page an operator opens rather than guessing it from Name.
+	Path string
+
 	// DisplayName is the operator-facing label (e.g. "Improve Quality
 	// (SRE)"). Optional; the studio falls back to Name.
 	DisplayName string
@@ -41,9 +47,9 @@ type PresetSpec struct {
 	// prompt section and in the studio.
 	Skills []string
 
-	// Prompt is the markdown body: the bias appended to every LLM node's
-	// system prompt at run time. Supports `{{vars.X}}` template refs,
-	// resolved per node. Empty for a var-only preset.
+	// Prompt is the markdown body: the bias appended at run time to the
+	// system prompt of every model task the run builds. Supports `{{vars.X}}`
+	// template refs, resolved per task. Empty for a var-only preset.
 	Prompt string
 }
 
@@ -125,6 +131,7 @@ func loadPresetFile(path string) (PresetSpec, error) {
 	}
 	return PresetSpec{
 		Name:        name,
+		Path:        path,
 		DisplayName: fm.DisplayName,
 		Description: fm.Description,
 		Vars:        fm.Vars,
