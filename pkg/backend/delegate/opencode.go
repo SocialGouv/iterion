@@ -487,6 +487,12 @@ func opencodeLegacyMapEffort(effort string) []string {
 //	{"type":"text","sessionID":"…","part":{"text":"…"}}
 //	{"type":"step_finish","sessionID":"…","part":{"tokens":{…},"cost":0.01}}
 //	{"type":"error","sessionID":"…","error":{"name":"…","data":{"message":"…"}}}
+//	{"type":"error","sessionID":"…","error":{"type":"…","message":"…"}}
+//
+// The last two are the same event in the 1.x and 2.x envelope shapes, both
+// read by openCodeErrorMessage. A 2.x error travels on stdout even when the
+// process exits non-zero, which is why the shared path parses the stream on
+// a failing exit too (CLIAgentBackend.failureReason).
 //
 // Token semantics follow opencode's own accounting (session.ts getUsage):
 // `output` EXCLUDES reasoning and `input` EXCLUDES the cache halves, so both
@@ -566,20 +572,33 @@ func openCodeCacheTokens(tokens map[string]any) int {
 	return asInt(cache["read"]) + asInt(cache["write"])
 }
 
-// openCodeErrorMessage renders an opencode error envelope, preferring the
-// nested human message over the error's class name.
+// openCodeErrorMessage renders an opencode error envelope, preferring a human
+// message over the error's class, across both envelope shapes the CLI has
+// shipped: `{"name":…,"data":{"message":…}}` on the 1.x line and
+// `{"type":…,"message":…}` on 2.x (measured on 2.2.5: `provider.no-route` /
+// "Model unavailable: …", `unknown` / "--fork requires --continue or
+// --session"). Reading only the 1.x keys returned "" for every 2.x failure,
+// and parseOpenCodeOutput then reported no error at all.
 func openCodeErrorMessage(raw any) string {
 	err, ok := raw.(map[string]any)
 	if !ok {
 		return ""
 	}
 	if data, ok := err["data"].(map[string]any); ok {
-		if msg, ok := data["message"].(string); ok && strings.TrimSpace(msg) != "" {
-			return strings.TrimSpace(msg)
+		if msg := openCodeErrorField(data, "message"); msg != "" {
+			return msg
 		}
 	}
-	if name, ok := err["name"].(string); ok {
-		return strings.TrimSpace(name)
+	for _, key := range []string{"message", "name", "type"} {
+		if msg := openCodeErrorField(err, key); msg != "" {
+			return msg
+		}
 	}
 	return ""
+}
+
+// openCodeErrorField reads one trimmed string field of an error envelope.
+func openCodeErrorField(envelope map[string]any, key string) string {
+	s, _ := envelope[key].(string)
+	return strings.TrimSpace(s)
 }

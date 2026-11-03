@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -233,6 +234,50 @@ printf '%s\n' '{"role":"meta","type":"session.resume_hint","session_id":"s9"}'
 	}
 	if res.Tokens != 0 {
 		t.Errorf("Tokens = %d, want 0 when kimi reports no usage", res.Tokens)
+	}
+}
+
+// TestCLIAgentNonZeroExitCarriesTheParsedReason is the chokepoint every
+// CLI-agent backend crosses: a CLI that reports WHY in its machine-readable
+// stream on STDOUT while exiting non-zero, with nothing on stderr, must
+// surface that reason — `exit status 1` alone names nothing. stderr is logged
+// and kept on the Result; stdout was dropped before the parse, so the only
+// copy of the sentence died with it.
+func TestCLIAgentNonZeroExitCarriesTheParsedReason(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fake CLI is POSIX-only")
+	}
+	fake := filepath.Join(t.TempDir(), "fakecli")
+	script := "#!/bin/sh\nprintf '%s\\n' 'FATAL: the provider has no route for that model'\nexit 1\n"
+	if err := os.WriteFile(fake, []byte(script), 0o755); err != nil { // #nosec G306 — test fixture must be executable
+		t.Fatal(err)
+	}
+	proto := CLIAgentProtocol{
+		Name:           "stubagent",
+		DefaultBinary:  "stubagent",
+		PromptViaStdin: true,
+		ParseOutputRich: func(stdout string) CLIAgentParse {
+			if reason, ok := strings.CutPrefix(strings.TrimSpace(stdout), "FATAL: "); ok {
+				return CLIAgentParse{Err: fmt.Errorf("delegate: stubagent: %s", reason)}
+			}
+			return CLIAgentParse{Text: stdout}
+		},
+	}
+	b := &CLIAgentBackend{Protocol: proto, Command: fake, Logger: testLogger()}
+	res, err := b.Execute(context.Background(), Task{NodeID: "n1", UserPrompt: "x"})
+	if err == nil {
+		t.Fatalf("a non-zero exit succeeded with %v", res.Output)
+	}
+	if !strings.Contains(err.Error(), "the provider has no route for that model") {
+		t.Fatalf("error = %v, want the stream's own reason", err)
+	}
+	// The process error stays wrapped: a caller matching on it still can.
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("error = %v, want the process failure still wrapped", err)
+	}
+	if res.ExitCode != 1 {
+		t.Errorf("ExitCode = %d, want 1", res.ExitCode)
 	}
 }
 

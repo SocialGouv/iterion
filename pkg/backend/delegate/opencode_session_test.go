@@ -419,6 +419,35 @@ func TestOpenCodeEffortWithoutAModelIsWarned(t *testing.T) {
 	}
 }
 
+// TestOpenCodeFailureReasonTravelsOnStdout: on the 2.x line opencode reports
+// WHY in its JSON stream on STDOUT and leaves stderr empty, even when the
+// process exits non-zero (measured on 2.2.5: a model no provider serves →
+// `{"error":{"type":"provider.no-route","message":"Model unavailable: …"}}`,
+// exit 1, no stderr). The node must carry that sentence, not `exit status 1`.
+func TestOpenCodeFailureReasonTravelsOnStdout(t *testing.T) {
+	bin, _, _ := fakeOpenCode2xSessions(t)
+	ws := t.TempDir()
+	if err := os.Mkdir(filepath.Join(ws, ".git"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	res, err := NewOpenCodeBackend(testLogger(), bin).Execute(context.Background(), Task{
+		NodeID:     "n1",
+		WorkDir:    ws,
+		BaseDir:    ws,
+		UserPrompt: "x",
+		Model:      "nosuch/model",
+	})
+	if err == nil {
+		t.Fatalf("a model no provider serves succeeded with %v", res.Output)
+	}
+	if !strings.Contains(err.Error(), "Model unavailable: nosuch/model") {
+		t.Fatalf("error = %v, want the CLI's own reason from its stdout stream", err)
+	}
+	if strings.TrimSpace(res.Stderr) != "" {
+		t.Fatalf("Stderr = %q, want empty — the reason travelled on stdout alone", res.Stderr)
+	}
+}
+
 func readFileString(t *testing.T, path string) string {
 	t.Helper()
 	raw, err := os.ReadFile(path) // #nosec G304 — a path the test itself created.

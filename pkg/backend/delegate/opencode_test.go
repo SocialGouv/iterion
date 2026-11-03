@@ -269,6 +269,39 @@ func TestParseOpenCodeOutput(t *testing.T) {
 		}
 	})
 
+	// The 2.x envelope carries `type` + `message` and neither `data` nor
+	// `name`, so a reader of the 1.x keys alone reported no error at all.
+	// Every line below is a verbatim 2.2.5 measurement.
+	for _, tc := range []struct {
+		name, stream, want string
+	}{
+		{
+			name:   "a 2.x provider refusal carries its message",
+			stream: `{"type":"error","timestamp":1793656111152,"sessionID":"ses_e61c3c152ffeiYZhwYVaPh5OHc","error":{"type":"provider.no-route","message":"Model unavailable: scripted/m1"}}`,
+			want:   "Model unavailable: scripted/m1",
+		},
+		{
+			name:   "a 2.x argv refusal carries its sentence",
+			stream: `{"type":"error","timestamp":1,"sessionID":"","error":{"type":"unknown","message":"--fork requires --continue or --session"}}`,
+			want:   "--fork requires --continue or --session",
+		},
+		{
+			name:   "a 2.x error with no message falls back to its type",
+			stream: `{"type":"error","sessionID":"s","error":{"type":"provider.no-route"}}`,
+			want:   "provider.no-route",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := parseOpenCodeOutput(tc.stream)
+			if got.Err == nil {
+				t.Fatalf("Err = nil, want %q", tc.want)
+			}
+			if !strings.Contains(got.Err.Error(), tc.want) {
+				t.Errorf("Err = %v, want %q", got.Err, tc.want)
+			}
+		})
+	}
+
 	t.Run("unparseable stdout is handed back whole", func(t *testing.T) {
 		got := parseOpenCodeOutput("not json at all")
 		if got.Text != "not json at all" {

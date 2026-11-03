@@ -451,6 +451,17 @@ func (b *CLIAgentBackend) Execute(ctx context.Context, task Task) (Result, error
 		BackendName: backendName,
 	}
 	if err != nil {
+		// An agent CLI can report WHY on its STDOUT stream while exiting
+		// non-zero, with nothing on stderr — opencode 2.x prints
+		// `{"type":"error",…,"error":{"message":"--fork requires --continue
+		// or --session"}}` there and leaves stderr empty. stderr is logged
+		// line by line and kept on the Result; stdout was dropped, so the
+		// node reported a bare `exit status 1` and the CLI's own sentence
+		// was lost. Read it with the protocol's own parser, the same reader
+		// that would have read it on a zero exit.
+		if reason := b.failureReason(proto, stdout); reason != "" {
+			return result, fmt.Errorf("%w: %s", err, reason)
+		}
 		return result, err
 	}
 
@@ -776,6 +787,24 @@ func linkShadowHome(realHome, shadowHome string, excluded []string) error {
 // fail OPEN (#498 review, R1f6137).
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
+}
+
+// failureReason renders what the CLI said about its own failure, for a
+// process exit the OS reported as a failure. The protocol's parser owns the
+// stream's shape, so a CLI whose reason travels in its machine-readable
+// stream is read the same way whatever the exit code. The parsed error
+// already names the backend, which the wrapping error does too, so the
+// duplicate prefix is dropped. Empty when the stream says nothing: a
+// transport failure keeps the error it has.
+func (b *CLIAgentBackend) failureReason(proto CLIAgentProtocol, stdout string) string {
+	if strings.TrimSpace(stdout) == "" {
+		return ""
+	}
+	parsed := b.parseStdout(proto, stdout)
+	if parsed.Err == nil {
+		return ""
+	}
+	return strings.TrimPrefix(parsed.Err.Error(), "delegate: "+proto.Name+": ")
 }
 
 // parseStdout applies the protocol's parser, preferring the rich contract.
