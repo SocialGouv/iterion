@@ -1666,11 +1666,11 @@ func (c credResolution) applyTo(r *store.Run) {
 	r.CredFingerprints = s.Fingerprints
 	r.CredentialTiers = s.Tiers
 	r.SkippedCredReopensAt = s.SkippedReopensAt
-	// Both stores clear this on a stamp — "a re-resolution is a fresh
-	// attempt, it counts until it proves idle". At launch the document is
-	// new and the marker is already nil, so this changes nothing today; it
-	// is here so the in-memory twin cannot answer differently from the
-	// persisted one if it is ever applied to a loaded run.
+	// Both stores clear the model-idle marker on a stamp — a re-resolution
+	// is a fresh attempt. At launch the document is new and the marker is
+	// already nil, so this changes nothing today; it is here so the
+	// in-memory twin cannot answer differently from the persisted one if it
+	// is ever applied to a loaded run.
 	r.LLMIdleSince = nil
 }
 

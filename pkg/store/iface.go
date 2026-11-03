@@ -122,16 +122,17 @@ type RunStore interface {
 	// a credential that is no longer the one it was refused.
 	//
 	// SetRunLLMIdle marks the run as executing no model-calling node
-	// (idleSince set) or as spending again (nil) — see Run.LLMIdleSince.
-	// SetRunCredStamp also clears the marker: a re-resolution is a fresh
-	// attempt, which counts until it proves idle.
+	// (idleSince set) or as spending again (nil) — see Run.LLMIdleSince: an
+	// observability marker, not a slot release. SetRunCredStamp also clears
+	// it: a re-resolution is a fresh attempt.
 	//
 	// CountAliveRunsWithCredFingerprint counts runs in the queued or
-	// running states stamped with fingerprint whose LLMIdleSince is nil,
-	// excluding excludeRunID (the run being resolved is already persisted
-	// and must not count itself toward its own ceiling). Deliberately NOT
-	// tenant-scoped: a platform key serves every tenant on one ceiling,
-	// and a tenant key's runs all live in one tenant anyway.
+	// running states stamped with fingerprint, model-idle or not
+	// (Run.SpendsCredential), excluding excludeRunID (the run being
+	// resolved is already persisted and must not count itself toward its
+	// own ceiling). Deliberately NOT tenant-scoped: a platform key serves
+	// every tenant on one ceiling, and a tenant key's runs all live in one
+	// tenant anyway.
 	SetRunCredStamp(ctx context.Context, runID string, stamp RunCredStamp) error
 	SetRunLLMIdle(ctx context.Context, runID string, idleSince *time.Time) error
 	CountAliveRunsWithCredFingerprint(ctx context.Context, fingerprint, excludeRunID string) (int, error)

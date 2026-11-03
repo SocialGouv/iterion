@@ -127,7 +127,8 @@ func TestCredSlotHolderStale(t *testing.T) {
 		stale bool
 	}{
 		{"spending holder stays", spending, nil, old, false},
-		{"model-idle holder goes", idle, nil, old, true},
+		// A lent slot has no path back at the next model node: idle keeps it.
+		{"model-idle holder stays", idle, nil, old, false},
 		{"parked holder goes", parked, nil, old, true},
 		{"re-stamped holder goes", restamped, nil, old, true},
 		{"missing document inside the grace stays", nil, ErrRunNotFound, fresh, false},

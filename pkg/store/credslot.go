@@ -20,13 +20,18 @@ import (
 // free slots exactly K succeed, whatever replica each ran on.
 //
 // The ledger never becomes a second truth. A slot is released by what
-// already releases one today — the run going terminal, parking, pausing,
-// marking itself model-idle, or re-stamping onto another credential — and a
-// refusal re-reads the row's holders against the run documents before it is
-// final (CredSlotHolderStale): a holder whose run no longer spends the
-// credential is evicted and the admission retried once. The one release a
-// caller performs itself is the undo of an admission its own launch or
-// resume could not finish (ReleaseCredSlot).
+// already releases one today — the run going terminal, parking, pausing, or
+// re-stamping onto another credential — and a refusal re-reads the row's
+// holders against the run documents before it is final
+// (CredSlotHolderStale): a holder whose run no longer spends the credential
+// is evicted and the admission retried once. A model-idle run
+// (Run.LLMIdleSince) KEEPS its slot: a slot lent out while the run executes
+// tool-only work has no path back when its next model node starts — nothing
+// in the runner can wait for the ledger at a node start — so a cap that
+// released it would admit one run past the cap on every wake. The marker
+// stays observability. The one release a caller performs itself is the undo
+// of an admission its own launch or resume could not finish
+// (ReleaseCredSlot).
 //
 // A capability rather than part of RunStore, like RunRetryStore: the cloud
 // publisher is its only caller, and a decorator that does not carry it must
@@ -63,12 +68,14 @@ func AsCredSlotStore(s RunStore) CredSlotStore { return capability[CredSlotStore
 const CredSlotGrace = 2 * time.Minute
 
 // SpendsCredential reports whether the run holds a slot of the credential
-// with this fingerprint right now: alive (RunStatus.HoldsCredentialSlot), not
-// model-idle, and stamped with the fingerprint. The one predicate the
-// alive-run count, the ledger's reconcile and the filesystem twin read, so
-// none can answer differently from the others.
+// with this fingerprint right now: alive (RunStatus.HoldsCredentialSlot) and
+// stamped with the fingerprint. Model-idle (LLMIdleSince) releases nothing
+// — the ledger's rule above. The one predicate the alive-run count, the
+// ledger's reconcile and the filesystem twin read, so none can answer
+// differently from the others; the Mongo count's query filter is its
+// mirror, witnessed by the CredFingerprintMeter conformance row.
 func (r *Run) SpendsCredential(fingerprint string) bool {
-	if r == nil || fingerprint == "" || !r.Status.HoldsCredentialSlot() || r.LLMIdleSince != nil {
+	if r == nil || fingerprint == "" || !r.Status.HoldsCredentialSlot() {
 		return false
 	}
 	for _, fp := range r.CredFingerprints {

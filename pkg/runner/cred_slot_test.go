@@ -11,9 +11,10 @@ import (
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
-// #661 — the run releases its key's slot the moment its last model node
-// finishes and takes it back the moment one starts: a sixty-minute
-// tool-only verify gate between two agent passes holds a slot for nobody.
+// #661 — the run is marked model-idle the moment its last model node
+// finishes and un-marked the moment one starts: a sixty-minute tool-only
+// verify gate between two agent passes reads as idle on the run's views
+// (the marker is observability; the cap counts the run regardless).
 func TestCredSlotTracker_IdleBetweenModelNodes(t *testing.T) {
 	var writes []*time.Time
 	now := time.Date(2026, 9, 4, 14, 0, 0, 0, time.UTC)
@@ -30,7 +31,7 @@ func TestCredSlotTracker_IdleBetweenModelNodes(t *testing.T) {
 	if len(writes) != 0 {
 		t.Fatalf("a model node starting on a counting run wrote %d marker(s)", len(writes))
 	}
-	// Its finish releases the slot, once.
+	// Its finish writes the idle marker, once.
 	tr.observe(ev(store.EventNodeFinished, "campaign"))
 	if len(writes) != 1 || writes[0] == nil || !writes[0].Equal(now) {
 		t.Fatalf("finish of the last model node: writes = %v, want one idle marker at %s", writes, now)
@@ -42,17 +43,17 @@ func TestCredSlotTracker_IdleBetweenModelNodes(t *testing.T) {
 	if len(writes) != 1 {
 		t.Fatalf("tool-only events wrote markers: %v", writes)
 	}
-	// The loop comes back to the agent: the slot is taken again.
+	// The loop comes back to the agent: the marker is cleared again.
 	tr.observe(ev(store.EventNodeStarted, "campaign"))
 	if len(writes) != 2 || writes[1] != nil {
 		t.Fatalf("a model node restarting on an idle run: writes = %v, want a nil (cleared) marker", writes)
 	}
-	// Two model nodes in parallel branches: the slot is held until BOTH
-	// have finished.
+	// Two model nodes in parallel branches: the run stays un-marked until
+	// BOTH have finished.
 	tr.observe(ev(store.EventNodeStarted, "judge"))
 	tr.observe(ev(store.EventNodeFinished, "campaign"))
 	if len(writes) != 2 {
-		t.Fatalf("one of two concurrent model nodes finishing released the slot: %v", writes)
+		t.Fatalf("one of two concurrent model nodes finishing wrote the idle marker: %v", writes)
 	}
 	tr.observe(ev(store.EventNodeFinished, "judge"))
 	if len(writes) != 3 || writes[2] == nil {

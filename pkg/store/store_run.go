@@ -1358,9 +1358,9 @@ func (s *FilesystemRunStore) SetRunBudgetSnapshot(_ context.Context, runID strin
 	return s.writeRun(r)
 }
 
-// CountAliveRunsWithCredFingerprint counts queued/running, not-idle runs
-// stamped with fingerprint (see RunStore). Scan-and-filter like the other
-// fs-side reverse queries — local scale, no secondary index.
+// CountAliveRunsWithCredFingerprint counts queued/running runs stamped with
+// fingerprint, model-idle or not (see RunStore). Scan-and-filter like the
+// other fs-side reverse queries — local scale, no secondary index.
 func (s *FilesystemRunStore) CountAliveRunsWithCredFingerprint(ctx context.Context, fingerprint, excludeRunID string) (int, error) {
 	if fingerprint == "" {
 		return 0, nil

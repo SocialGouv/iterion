@@ -1021,11 +1021,12 @@ type Run struct {
 	// LLMIdleSince is set while the run executes NO model-calling node —
 	// the last one finished at this instant and none has started since —
 	// and nil while one is running, while the run is queued, or before its
-	// first model call (a run about to spend counts). The per-key
-	// concurrency ceiling counts alive runs whose marker is nil: a run in a
-	// sixty-minute tool-only verify gate holds its key's slot for nobody.
-	// Cleared by every credential re-stamp (a resumed attempt starts over)
-	// and toggled by the runner at each model node's start and finish.
+	// first model call. Observability (the run views show it): the per-key
+	// concurrency cap counts an idle run like a spending one, because a
+	// slot lent out during tool-only work has no path back when the next
+	// model node starts (SpendsCredential). Cleared by every credential
+	// re-stamp (a resumed attempt starts over) and toggled by the runner at
+	// each model node's start and finish.
 	LLMIdleSince *time.Time `json:"llm_idle_since,omitempty" bson:"llm_idle_since,omitempty"`
 	// ParentNodeID is the IR node id of the subbot node in the parent
 	// workflow that spawned this child run; empty for root runs and

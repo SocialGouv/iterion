@@ -164,14 +164,14 @@ and leaves the run parked. The launch API answers such a park with
 `failure_code` says `CRED_SLOT_WAIT`.
 
 The ledger never becomes a second truth. Nothing releases a slot
-explicitly: a holder is free when its run stops counting under the three
+explicitly: a holder is free when its run stops counting under the two
 rules below, and a refusal re-reads the row's holders against their run
 documents before it is final (`store.CredSlotHolderStale`), evicting the
 ones that no longer spend the key and retrying the admission once. A holder
 whose run document does not exist yet keeps its slot for
 `store.CredSlotGrace` (a launch reserves before it persists); a deleted run
-is pulled from every row at once. A run counts against a key only when
-**all three** hold:
+is pulled from every row at once, on both stores. A run counts against a
+key only when **both** hold:
 
 1. **It is alive** — `queued` or `running` (`RunStatus.HoldsCredentialSlot`).
    A parked or paused run spends nothing while it waits, and its resume
@@ -185,13 +185,19 @@ is pulled from every row at once. A run counts against a key only when
    holds no slot on the z.ai facade key it also carries. A run with an
    unpinned or unresolvable route keeps every fingerprint (it takes
    whatever the process holds — fail open toward protection).
-3. **It is not model-idle.** The runner sets `run.llm_idle_since` the moment
-   the run's last model-calling node finishes and clears it the moment one
-   starts (concurrent branches are counted, not flipped), so a
-   sixty-minute tool-only verify gate between two agent passes holds a slot
-   for nobody. A run counts from claim until it proves idle, and every
-   re-stamp starts it over. Explicit toggles, not a lease: a pod that dies
-   mid-node leaves a run the orphan sweeper parks, and rule 1 releases it.
+**Model-idle is not a release.** The runner sets `run.llm_idle_since` the
+moment the run's last model-calling node finishes and clears it the moment
+one starts (concurrent branches are counted, not flipped; every re-stamp
+clears it), so a run sitting in a sixty-minute tool-only verify gate between
+two agent passes reads as idle on its views — but it keeps its slot. A slot
+lent out there would have no path back: nothing in the runner can wait for
+the ledger when the next model node starts, so a cap that released it would
+admit one run past the cap on every wake, and a cap of one would ping-pong
+two runs through a park and a fresh pod at each hand-off. Under the hard
+cap the gate's slot stays taken, and a launch on that key parks until the
+run ends; raising `max_concurrent_runs` is the operator's lever. Explicit
+toggles, not a lease: a pod that dies mid-node leaves a run the orphan
+sweeper parks, and rule 1 releases it.
 
 Everything uncertain counts (over-protection), never the reverse: a count
 error leaves the walk's skip unapplied for that resolution and is logged —

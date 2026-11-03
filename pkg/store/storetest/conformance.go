@@ -4044,9 +4044,11 @@ func testCredFingerprintMeter(t *testing.T, s store.RunStore) {
 		t.Fatalf("a resolution that sealed nothing must clear CredentialTiers, got %v (%v)", got.CredentialTiers, err)
 	}
 
-	// The model-idle marker: a running run executing no model-calling node
-	// holds its key's slot for nobody. Only fp_run1 (running) carries
-	// fp-zai at this point (fp_run2 was re-stamped to fp-anthropic).
+	// The model-idle marker is observability: a running run executing no
+	// model-calling node KEEPS its key's slot (nothing takes a lent slot
+	// back when its next model node starts — store.Run.SpendsCredential),
+	// so the count does not move with the marker. Only fp_run1 (running)
+	// carries fp-zai at this point (fp_run2 was re-stamped to fp-anthropic).
 	if n, err = s.CountAliveRunsWithCredFingerprint(ctx, "fp-zai", ""); err != nil || n != 1 {
 		t.Fatalf("alive(fp-zai) before idle = %d/%v, want 1", n, err)
 	}
@@ -4057,18 +4059,21 @@ func testCredFingerprintMeter(t *testing.T, s store.RunStore) {
 	if got, err = s.LoadRun(ctx, "fp_run1"); err != nil || got.LLMIdleSince == nil || !got.LLMIdleSince.Equal(idle) {
 		t.Fatalf("LLMIdleSince = %v (%v), want %v", got.LLMIdleSince, err, idle)
 	}
-	if n, err = s.CountAliveRunsWithCredFingerprint(ctx, "fp-zai", ""); err != nil || n != 0 {
-		t.Fatalf("alive(fp-zai) with fp_run1 idle = %d/%v, want 0 — an idle run must not hold a slot", n, err)
+	if n, err = s.CountAliveRunsWithCredFingerprint(ctx, "fp-zai", ""); err != nil || n != 1 {
+		t.Fatalf("alive(fp-zai) with fp_run1 idle = %d/%v, want 1 — an idle run keeps its slot; the marker is not a release", n, err)
 	}
-	// The next model node clears it: the run counts again.
+	// The next model node clears the marker; the count was never about it.
 	if err := s.SetRunLLMIdle(ctx, "fp_run1", nil); err != nil {
 		t.Fatalf("SetRunLLMIdle(nil): %v", err)
+	}
+	if got, err = s.LoadRun(ctx, "fp_run1"); err != nil || got.LLMIdleSince != nil {
+		t.Fatalf("SetRunLLMIdle(nil) must clear the marker, got %v (%v)", got.LLMIdleSince, err)
 	}
 	if n, err = s.CountAliveRunsWithCredFingerprint(ctx, "fp-zai", ""); err != nil || n != 1 {
 		t.Fatalf("alive(fp-zai) after the marker cleared = %d/%v, want 1", n, err)
 	}
-	// A re-stamp (a resumed attempt's re-resolution) starts over: an idle
-	// marker left by the previous attempt must not exempt the new one.
+	// A re-stamp (a resumed attempt's re-resolution) starts over: the idle
+	// marker left by the previous attempt is cleared.
 	if err := s.SetRunLLMIdle(ctx, "fp_run1", &idle); err != nil {
 		t.Fatalf("SetRunLLMIdle: %v", err)
 	}
@@ -4691,14 +4696,16 @@ func testCredSlotLedger(t *testing.T, s store.RunStore) {
 	if adm := reserve("slot_d", 2); !adm.Granted || adm.Held != 2 {
 		t.Fatalf("a finished holder kept its slot: %+v", adm)
 	}
-	// A model-idle holder spends nothing: its slot is free.
+	// A model-idle holder KEEPS its slot: nothing takes a lent slot back
+	// when its next model node starts, so the cap counts it
+	// (store.Run.SpendsCredential) and the marker stays observability.
 	idleAt := time.Now().UTC()
 	if err := s.SetRunLLMIdle(ctx, "slot_c", &idleAt); err != nil {
 		t.Fatalf("SetRunLLMIdle: %v", err)
 	}
 	mk("slot_e", store.RunStatusRunning, fp)
-	if adm := reserve("slot_e", 2); !adm.Granted || adm.Held != 2 {
-		t.Fatalf("a model-idle holder kept its slot: %+v", adm)
+	if adm := reserve("slot_e", 2); adm.Granted || adm.Held != 2 {
+		t.Fatalf("a model-idle holder lost its slot: %+v — its next model node would spend past the cap", adm)
 	}
 	// A holder re-stamped onto another credential no longer holds this one.
 	if err := s.SetRunCredStamp(ctx, "slot_d", store.RunCredStamp{Fingerprints: []string{"fp-other"}}); err != nil {
