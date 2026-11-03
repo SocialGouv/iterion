@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/queue"
 )
@@ -148,7 +149,7 @@ func TestPrepareRepoWorkspace_RefusesAPinItCannotEnforce(t *testing.T) {
 		RepoSHA:         "", // nothing to fetch
 		RepoSHAExpected: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
 	}
-	_, _, err := r.prepareRepoWorkspace(context.Background(), msg)
+	_, _, err := r.prepareRepoWorkspace(context.Background(), &ir.Workflow{}, msg)
 	if err == nil {
 		t.Fatal("prepareRepoWorkspace = nil for a pin with no ref — the run would execute the clone's default branch while its document advertises an admitted commit")
 	}

@@ -490,27 +490,40 @@ secrets:
 `sinks: [prompt, egress]` keeps a token out of every command line and every
 container: the agent's `curl` carries the placeholder, the proxy substitutes
 it toward the approved host, and nothing in the workspace ever holds the
-value — short of the clone credential of a cloud run, below. `sinks:
-[command]` keeps a password off the model's path entirely: the placeholder
-a model would emit is left as written, and one a model wrote into DATA — an
-output a prompt or an edge carries into a tool body through
-`{{outputs.x}}`, `{{input.x}}`, `{{vars.x}}` — is defused before the body's
-materialiser scans it (`DefuseUngranted`: the agent sink's, whatever body
-it lands in). Only the author's own `{{secrets.X}}` resolves under
-`command` and `params`. `sinks: []` reads as no list — every sink — since
-the printers and the JSON transport drop an empty list, and a meaning they
-could not keep would change on the way.
+value — a cloud run's clone credential needs the `file` sink and refuses the
+run without it, below. `sinks: [command]` keeps a password off the model's
+path entirely: the placeholder a model would emit is left as written, and
+one a model wrote into DATA — an output a prompt or an edge carries into a
+tool body through `{{outputs.x}}`, `{{input.x}}`, `{{vars.x}}` — is defused
+before the body's materialiser scans it (`DefuseUngranted`: the agent
+sink's, whatever body it lands in). Only the author's own `{{secrets.X}}`
+resolves under `command` and `params`. `sinks: []` reads as no list — every
+sink — since the printers and the JSON transport drop an empty list, and a
+meaning they could not keep would change on the way.
 
-Three things the grants do NOT govern, said here rather than discovered: the
-clone credential of a cloud run (`forge_token`, `gitlab_token`,
-`github_token`, read from the store by name) is the runner's own channel,
-written to the workspace's git credential store whatever the declaration
-says — keep a secret the grants should keep out of the workspace under
-another name than the one the runner clones with; `ITERION_SECRETS_PLACEHOLDERS=off`
-renders a declared secret's VALUE wherever its grants let it render, prompts
-included, since the switch asks for values; and an explicit `egress` grant
-on a secret with no `hosts:` is substituted toward ANY host (C324 says so
-at compile time — scope it).
+**The clone credential of a cloud run is governed, and it needs `file`.** A
+repo-targeted run clones with the first of `forge_token`, `gitlab_token`,
+`github_token` its bundle carries a value for, and the runner keeps THAT
+token in the clone's own credential store (`.git/iterion-credentials`,
+rewritten on every rotation) so the agent's late `git push` re-reads a live
+one. That store is a file the workspace holds, so the clone credential
+spends the `file` sink: a declaration that withholds it fails the run,
+typed (`CAPABILITY_UNSUPPORTED`, cause `runtime.SecretGrantUnservableError`)
+before the first node, naming the secret and both remedies — grant it
+`file`, or declare the withheld value under a name the runner never clones
+with. The refusal takes the credential back from the clone's store — its
+only location at that point: the run's sandbox has not started, so no pod
+copy exists yet (the remover covers a live copy-based sandbox's copy too, for
+any later caller) — and a refused run leaves no token in the tree. The
+secret the rotation refreshes is the one the clone authenticated with, never
+another name of the precedence. A secret with no `sinks:` grants every sink
+and is never refused here.
+
+Two things the grants do NOT govern, said here rather than discovered:
+`ITERION_SECRETS_PLACEHOLDERS=off` renders a declared secret's VALUE
+wherever its grants let it render, prompts included, since the switch asks
+for values; and an explicit `egress` grant on a secret with no `hosts:` is
+substituted toward ANY host (C324 says so at compile time — scope it).
 
 What the compiler refuses: a `sinks:` entry outside the vocabulary, a sink
 named twice, `prompt` alone (it hands a model the placeholder and resolves

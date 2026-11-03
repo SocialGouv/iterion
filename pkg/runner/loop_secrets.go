@@ -235,7 +235,12 @@ func (r *Runner) refreshGitCredentialsOnce(ctx context.Context, tenantID, secret
 
 // gitCredentialSecretRef returns the store id backing the run's forge token,
 // or "" when the run has no refreshable one (snapshot-only, or no store).
-// Mirrors the name precedence cloneRepo uses to pick the token.
+//
+// The id is the one of the secret the clone ACTUALLY authenticated with
+// (cloneCredentialToken), never the first ref'd name of the precedence: a
+// run can carry a snapshot-only forge_token beside a ref'd gitlab_token, and
+// refreshing the other secret's record rewrites the clone's credential store
+// with a token git never cloned with, under grants nobody read.
 func (r *Runner) gitCredentialSecretRef(ctx context.Context) string {
 	if r.cfg.GenericSecrets == nil || r.cfg.Sealer == nil {
 		return ""
@@ -244,12 +249,11 @@ func (r *Runner) gitCredentialSecretRef(ctx context.Context) string {
 	if !ok {
 		return ""
 	}
-	for _, name := range []string{"forge_token", "gitlab_token", "github_token"} {
-		if id := creds.GenericRefs[name]; id != "" {
-			return id
-		}
+	name, _ := cloneCredentialToken(ctx)
+	if name == "" {
+		return ""
 	}
-	return ""
+	return creds.GenericRefs[name]
 }
 
 // sandboxFileSecretRefs returns the file secrets of wf that carry a store

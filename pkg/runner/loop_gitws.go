@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	gitlib "github.com/SocialGouv/iterion/pkg/git"
 	"github.com/SocialGouv/iterion/pkg/internal/proc"
 	"github.com/SocialGouv/iterion/pkg/internal/strutil"
@@ -185,7 +186,13 @@ func (r *Runner) recordWorkspaceReset(ctx context.Context, msg *queue.RunMessage
 // parked on the forge (restoreBankedChain). The second return value is the
 // baseline the run's work is measured against: the restored chain's own base
 // when a chain was restored, "" when the clone's HEAD is the baseline.
-func (r *Runner) prepareRepoWorkspace(ctx context.Context, msg *queue.RunMessage) (string, string, error) {
+// wf is the run's compiled workflow, never nil: the clone credential's own
+// declaration is read from it (refuseUngrantedCloneCredential), so a run
+// whose forge secret withholds the `file` sink the credential store needs
+// is refused here rather than served — and a run that holds a credential
+// with no workflow to read is refused too, never served on grants nobody
+// read.
+func (r *Runner) prepareRepoWorkspace(ctx context.Context, wf *ir.Workflow, msg *queue.RunMessage) (string, string, error) {
 	// A pin with no ref to fetch would never be compared: verifyFetchedCommit
 	// is reached only from inside the `RepoSHA != ""` block below, so such a
 	// message would run the clone's DEFAULT BRANCH while the run document
@@ -280,13 +287,13 @@ func (r *Runner) prepareRepoWorkspace(ctx context.Context, msg *queue.RunMessage
 		return "", "", fmt.Errorf("mkdir repo parent: %w", err)
 	}
 
-	cloneURL, tok, appBotLogin := msg.RepoURL, "", ""
+	cloneURL, appBotLogin := msg.RepoURL, ""
+	_, tok := cloneCredentialToken(ctx)
 	if creds, ok := secrets.CredentialsFromContext(ctx); ok {
-		tok = strutil.FirstNonBlank(creds.GenericSecret("forge_token"), creds.GenericSecret("gitlab_token"), creds.GenericSecret("github_token"))
 		appBotLogin = creds.ForgeAppBotLogin
-		if tok != "" {
-			cloneURL = injectGitToken(msg.RepoURL, tok)
-		}
+	}
+	if tok != "" {
+		cloneURL = injectGitToken(msg.RepoURL, tok)
 	}
 
 	// -c http.followRedirects=false closes SSRF vector (b): a 302 from the
@@ -370,6 +377,12 @@ func (r *Runner) prepareRepoWorkspace(ctx context.Context, msg *queue.RunMessage
 		// works now and 403s hours later at push time — the exact failure this
 		// removes, and the hardest kind to attribute.
 		return "", "", fmt.Errorf("runner: wire git credentials for %s: %w", msg.RunID, err)
+	}
+	// The credential is in the tree now, which is exactly what the clone
+	// secret's `sinks:` may withhold: refuse the run before a node runs, and
+	// take the credential back (ADR-146's clone-credential follow-up).
+	if err := r.refuseUngrantedCloneCredential(ctx, wf, msg.RunID, dir); err != nil {
+		return "", "", err
 	}
 	seedRunScratchIgnore(dir)
 	r.cfg.Logger.Info("runner: cloned %s@%s for run %s", msg.RepoURL, msg.RepoSHA, msg.RunID)
@@ -868,10 +881,7 @@ func (r *Runner) pushLFSObjects(ctx context.Context, msg *queue.RunMessage, work
 		return "" // nothing in the tree is LFS-tracked: the push carries no pointer
 	}
 	branch := "iterion/run-" + msg.RunID
-	tok := ""
-	if creds, ok := secrets.CredentialsFromContext(ctx); ok {
-		tok = strutil.FirstNonBlank(creds.GenericSecret("forge_token"), creds.GenericSecret("gitlab_token"), creds.GenericSecret("github_token"))
-	}
+	_, tok := cloneCredentialToken(ctx)
 	// A bare sha: git-lfs cannot resolve a `<sha>:<refspec>` argument, and a
 	// push of that shape exits 0 having uploaded nothing.
 	// lfs.allowincompletepush is a config VALUE the run can write in its own
@@ -1133,10 +1143,7 @@ func (r *Runner) hostHasCommit(ctx context.Context, workDir, sha string) bool {
 // recovery banks the pod-side commit directly.
 func (r *Runner) pushBank(ctx context.Context, msg *queue.RunMessage, workDir, head, finalStatus string) {
 	branch := "iterion/run-" + msg.RunID
-	tok := ""
-	if creds, ok := secrets.CredentialsFromContext(ctx); ok {
-		tok = strutil.FirstNonBlank(creds.GenericSecret("forge_token"), creds.GenericSecret("gitlab_token"), creds.GenericSecret("github_token"))
-	}
+	_, tok := cloneCredentialToken(ctx)
 	attempts, allowed, pushErr := r.pushBankWithRetry(ctx, msg, workDir, tok, branch, head, finalStatus)
 	if !allowed {
 		return // the richer-chain guard recorded its own refusal

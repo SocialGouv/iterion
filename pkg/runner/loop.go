@@ -2619,7 +2619,7 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 	gitBase := ""
 	if strings.TrimSpace(msg.RepoURL) != "" {
 		cloneStart := time.Now()
-		repoDir, baseline, derr := r.prepareRepoWorkspace(ctx, msg)
+		repoDir, baseline, derr := r.prepareRepoWorkspace(ctx, wf, msg)
 		// Observed on BOTH outcomes (a clone that limps 10 minutes into an
 		// auth failure is exactly what the histogram exists to show), with
 		// the same nil guard every other Metrics site carries.
