@@ -58,14 +58,27 @@ green.
   `mongo-conformance`, `golangci`, `brand`, `revi/review` — and
   `nats-conformance` once an admin adds it to ruleset 18857412.
   `test` and `race` are AGGREGATOR CONTEXTS, not test-running jobs: the work
-  lives in the gated legs (`test-unit`, `test-e2e`, `studio`, the
+  lives in the gated legs (`test-unit`, the `test-e2e` matrix, `studio`, the
   `race-shard` matrix) that run in the queue behind them, and each aggregator
   re-verifies every leg's conclusion under `if: ${{ !cancelled() && <tap skip> }}`
   — the run-state clause combined with the one verified skip
   ([below](#the-one-verified-skip-the-homebrew-tap-update)), so an aggregator
   skips exactly the entries its legs skip and runs on every other one. The
   required NAMES stay stable — a PR that renamed one could never pass its own
-  queue build — while work scales sideways (shards, new legs). The legs
+  queue build — while work scales sideways (shards, new legs). `test-e2e`
+  partitions Go's discovered top-level Test, Example and Fuzz corpus names
+  into four shards; subtests follow their parent, and each shard keeps the
+  900-second test timeout. Reproduce one with
+  `pattern=$(go run -mod=vendor ./scripts/ci/testshards -tests ./e2e -n 4 -i 0)`
+  then `go test -mod=vendor -count=1 -run "$pattern" -timeout 900s ./e2e`,
+  in the same devbox and build environment, under `set -euo pipefail`.
+  Discovery has its own configurable `-list-timeout` (five minutes; zero
+  disables it); its failure stops execution. Discovery owns a Unix process
+  group through cancellation and output drainage, using the shared
+  `ITERION_PROC_WAIT_DELAY` override; a descendant starting another session
+  escapes that group. This new test-discovery mode refuses Windows, whose
+  process helper cannot provide group ownership. Package sharding is unchanged.
+  The legs
   themselves carry the tap skip and nothing else, a contract `internal/ciguard`'s
   `gatedJobs` enforces: a leg any other condition skips reports Success on the
   pull request while reddening its queue entry forever, and a leg without the

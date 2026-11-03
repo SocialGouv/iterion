@@ -8,6 +8,7 @@
 //	testshards                          # debug dump of every shard (n=3)
 //	testshards -n 3 -i 0                # shard 0 of 3, space-joined for `go test`
 //	testshards -n 3 -i 1 -skip '(^|/)e2e$' -weights scripts/ci/test-shards-weights.tsv
+//	testshards -tests ./e2e -n 4 -i 0   # a -run regexp over Go's test inventory
 //
 // Consume it through an assignment, never inline command substitution —
 // `go test ... $(go run ... testshards ...)` throws the exit code away, so an
@@ -15,6 +16,11 @@
 //
 //	pkgs=$(go run -mod=vendor ./scripts/ci/testshards -n 3 -i 0)
 //	go test -race -mod=vendor -count=1 $pkgs   # any nonzero exit aborts here
+//
+// With -tests, assign the pattern separately and pass it QUOTED to -run.
+// Test, Example and Fuzz corpus names are partitioned; subtests stay with
+// their parent. Discovery and execution must use the same package and build
+// environment. -list-timeout bounds compilation, init and TestMain too.
 //
 // Without -weights the balance is FNV-1a of the import path mod n. With
 // -weights (TSV: import-path TAB seconds, # comments) it is LPT bin-packing in
@@ -44,6 +50,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 func main() {
@@ -52,9 +59,21 @@ func main() {
 	all := flag.Bool("all", false, "dump every shard with counts and weights")
 	skip := flag.String("skip", "", "regexp of import paths to exclude from the partition")
 	weights := flag.String("weights", "", "TSV file of import-path TAB seconds to balance by duration (LPT) instead of hashing")
+	tests := flag.String("tests", "", "partition the top-level Test/Example/Fuzz names in one package; print a go test -run pattern")
+	listTimeout := flag.Duration("list-timeout", 5*time.Minute, "deadline for -tests discovery, including compilation and TestMain (0 disables)")
 	flag.Parse()
 
-	if err := run(*n, *i, *all, *skip, *weights); err != nil {
+	var err error
+	if *tests != "" {
+		if *skip != "" || *weights != "" {
+			err = fail(2, "-tests cannot be combined with package -skip or -weights")
+		} else {
+			err = runTests(*n, *i, *all, *tests, *listTimeout, os.Stdout)
+		}
+	} else {
+		err = run(*n, *i, *all, *skip, *weights)
+	}
+	if err != nil {
 		fmt.Fprintln(os.Stderr, "testshards:", err)
 		var e *exitError
 		if errors.As(err, &e) {
