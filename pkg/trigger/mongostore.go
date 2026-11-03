@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"maps"
 	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -75,11 +74,7 @@ var subscriptionHealthFields = []string{
 // the stored stamps (absent ones stay absent), as the webhooks twin keeps
 // last_used_at.
 func (s *MongoSubscriptionStore) Update(ctx context.Context, sub Subscription) error {
-	filter := bson.M{"_id": sub.ID, "version": sub.Version}
-	if sub.Version == 0 {
-		delete(filter, "version")
-		filter["$or"] = bson.A{bson.M{"version": 0}, bson.M{"version": bson.M{"$exists": false}}}
-	}
+	filter := storekit.VersionCAS(sub.ID, sub.Version)
 	sub.Version++
 	raw, err := bson.Marshal(sub)
 	if err != nil {
@@ -185,97 +180,28 @@ func (s *MongoSubscriptionStore) Delete(ctx context.Context, id string) error {
 }
 
 // ClearCredentialPins removes every pin entry whose value names recordID —
-// the Mongo twin of the memory store's value-scoped drop. The entry names
-// come from a read taken HERE, not from the caller's listing copy, and each
-// removal is one $unset whose filter still matches the dead value, so a
-// health stamp, a pin edit, or a second record's sweep landing in between
-// survives untouched. Each real removal also $inc's the row's version, so a
-// full-document editor holding a pre-sweep snapshot conflicts and re-reads
-// instead of writing the swept pin back — no update lane resurrects a swept
-// pin; the row born mid-delete is the write routes' landed-pin
-// reconciliation's to sweep. A zero match on an entry means it moved or the
-// row died between the read and this write — the stored state is already
-// the wanted one, so nothing to clear is not a failure. Addressability is
-// two arms, not an assumption: an entry whose name holds '.' or '$' is
-// unreachable by any path, so it clears by rewriting the subdocument under
-// a version CAS (clearUnaddressablePin) — the routes' name guard keeps NEW
-// names addressable, and the webhooks twin carries the same arm for rows
-// that predate it.
+// the Mongo twin of the memory store's value-scoped drop, run by the clear
+// both pin-bearing stores share (storekit.MongoPinClear): judged against the
+// row as the store holds it at write time, one value-guarded $unset per
+// entry with a version bump, and a version-CAS rewrite for a name no path
+// can address. No update lane resurrects a swept pin — a full-document
+// editor holding a pre-sweep snapshot conflicts on the bumped version — and
+// the row born mid-delete is the write routes' landed-pin reconciliation's
+// to sweep.
 func (s *MongoSubscriptionStore) ClearCredentialPins(ctx context.Context, id, recordID string) (bool, error) {
-	sub, err := s.Get(ctx, id)
-	if err != nil {
-		return false, err
-	}
-	cleared := false
-	for _, field := range []struct {
-		path   string
-		pins   map[string]string
-		pinsOf func(Subscription) map[string]string
-	}{
-		{"key_overrides", sub.KeyOverrides, func(c Subscription) map[string]string { return c.KeyOverrides }},
-		{"secret_overrides", sub.SecretOverrides, func(c Subscription) map[string]string { return c.SecretOverrides }},
-	} {
-		for name, val := range field.pins {
-			if val != recordID {
-				continue
-			}
-			if !storekit.PinNameAddressable(name) {
-				dropped, err := s.clearUnaddressablePin(ctx, id, field.path, field.pinsOf, name, recordID)
-				if err != nil {
-					return false, err
-				}
-				cleared = cleared || dropped
-				continue
-			}
-			res, err := s.coll.UpdateOne(ctx,
-				bson.M{"_id": id, field.path + "." + name: recordID},
-				bson.M{"$unset": bson.M{field.path + "." + name: ""}, "$inc": bson.M{"version": 1}})
-			if err != nil {
-				return false, fmt.Errorf("trigger: clear subscription credential pins: %w", err)
-			}
-			cleared = cleared || res.MatchedCount > 0
-		}
-	}
-	return cleared, nil
+	return storekit.MongoPinClear[Subscription]{
+		Coll:    s.coll,
+		Get:     s.Get,
+		Version: func(sub Subscription) int64 { return sub.Version },
+		Fields:  subscriptionPinFields,
+		Op:      "trigger: clear subscription credential pins",
+	}.Clear(ctx, id, recordID)
 }
 
-// clearPinCASAttempts bounds the rewrite arm's read-CAS retries. Each
-// attempt re-reads, so a writer that moved the row between the read and
-// the CAS wins it and the retry judges the row as the store now holds it
-// — a stale map is never written back. Exhaustion needs a writer moving
-// the row on every attempt of a rare legacy arm; it refuses explicitly
-// rather than reporting a clear that did not happen.
-const clearPinCASAttempts = 5
-
-// clearUnaddressablePin drops an entry whose stored name a Mongo path
-// cannot address (a legacy '.'/'$' name — the routes' validators refuse
-// new ones). The rewrite is value-guarded: the entry must still name
-// recordID on the row as THIS attempt read it, so an entry that moved or
-// was re-pointed between the caller's listing and here is already the
-// wanted state, not a failure. Twin of MongoConfigStore.clearUnaddressablePin.
-func (s *MongoSubscriptionStore) clearUnaddressablePin(ctx context.Context, id, path string, pinsOf func(Subscription) map[string]string, name, recordID string) (bool, error) {
-	for attempt := 0; attempt < clearPinCASAttempts; attempt++ {
-		row, err := s.Get(ctx, id)
-		if err != nil {
-			return false, err
-		}
-		pins := pinsOf(row)
-		if cur, ok := pins[name]; !ok || cur != recordID {
-			return false, nil
-		}
-		wanted := maps.Clone(pins)
-		delete(wanted, name)
-		res, err := s.coll.UpdateOne(ctx,
-			bson.M{"_id": id, "version": row.Version},
-			bson.M{"$set": bson.M{path: wanted}, "$inc": bson.M{"version": 1}})
-		if err != nil {
-			return false, fmt.Errorf("trigger: clear subscription credential pins: %w", err)
-		}
-		if res.MatchedCount > 0 {
-			return true, nil
-		}
-	}
-	return false, fmt.Errorf("trigger: clear subscription credential pins: the subdocument rewrite never landed on %s after %d attempts — the row keeps moving", id, clearPinCASAttempts)
+// subscriptionPinFields are the subscription's two credential-pin maps.
+var subscriptionPinFields = []storekit.PinField[Subscription]{
+	{Path: "key_overrides", Of: func(sub Subscription) map[string]string { return sub.KeyOverrides }},
+	{Path: "secret_overrides", Of: func(sub Subscription) map[string]string { return sub.SecretOverrides }},
 }
 
 func (s *MongoSubscriptionStore) ListByTenant(ctx context.Context, tenantID string) ([]Subscription, error) {
