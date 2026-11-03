@@ -47,12 +47,12 @@ const (
 	// holder works: the run of failures is cleared and the circuit closes.
 	VerdictProgressed
 	// VerdictUnreachable is a pass that attempted work, none of which
-	// succeeded, whose first failure was a transport one — the class a peer
-	// on another node may well not share (per-node DNS, a NetworkPolicy,
-	// conntrack). K of these in a row end the term.
+	// succeeded, one of whose causes was a transport failure — the class a
+	// peer on another node may well not share (per-node DNS, a
+	// NetworkPolicy, conntrack). K of these in a row end the term.
 	VerdictUnreachable
 	// VerdictRefused is a pass that attempted work, none of which succeeded,
-	// whose failure was not a transport one: the far side answered, and
+	// none of whose causes was a transport failure: the far side answered, and
 	// answered no. The answer coming back is itself proof this replica
 	// reaches it, so the run of transport failures is cleared — while a
 	// refusal is not progress, and does not close the circuit. Handing over
@@ -234,7 +234,17 @@ func (p *Pass) Verdict() PassVerdict {
 // Typed, never by message: the causes the probe of #2685 named — per-node
 // DNS, a NetworkPolicy, conntrack — reach a caller as *net.DNSError or a
 // syscall errno inside an HTTP client's *url.Error, which errors.As
-// traverses.
+// traverses. Two seams widen that, each explained where it is read below: a
+// multi-cause error is classified by agreement over ALL its causes, and a net
+// whose far side this package cannot type declares it (Unreachable, or a
+// LeaseUnreachable() bool method on its own error type).
+//
+// The rule reaches as far as the causes it is GIVEN, and it is given ONE
+// error: a pass handed several — one per worker of a sweep that renews two
+// credential families, one per item of a net that records item by item —
+// picks a single cause to classify (Pass.Attempted), so collecting a sweep's
+// own causes into one aggregate is the RECORDER's half of the rule. A net
+// that drops them keeps a verdict decided by the order its causes arrived in.
 //
 // context.Canceled is false: it is the term ending, not the egress failing.
 // context.DeadlineExceeded is true — it is how a call to an unreachable peer
@@ -242,8 +252,70 @@ func (p *Pass) Verdict() PassVerdict {
 // record the expiry of its OWN context as a failure, or every shutdown under
 // a deadline would read as a handover.
 func TransportFailure(err error) bool {
-	if err == nil || errors.Is(err, context.Canceled) {
+	if err == nil {
 		return false
+	}
+	// A MULTI-CAUSE error carries one cause per item of a sweep that did not
+	// abort on the first failure (errors.Join, or any error whose Unwrap
+	// answers []error). Nothing orders those items — a Mongo page sorted on
+	// an expiry, items running in parallel — so the agreement rule is STATED
+	// here instead of being inherited from errors.Is's traversal: a cause
+	// that names a reach failure decides, in EVERY order the causes were
+	// collected in, and causes that name none leave the pass refused.
+	//
+	// Inherited traversal is not the same answer: errors.Is(joined,
+	// context.Canceled) is true as soon as ONE item was cut off by the term
+	// ending, which made the guard below answer "not transport" for a pass
+	// whose other item had met per-node DNS. Per cause, that cancellation is
+	// evidence about nothing and the DNS failure still decides.
+	//
+	// The trade-off, stated: a sweep mixing refusals with one unreachable
+	// item hands its net over instead of keeping it. That direction is
+	// bounded — K consecutive such passes end one term, and the sick-terms
+	// circuit stops a fleet from bouncing the lease with nobody working —
+	// while the other direction is unbounded: a holder that reaches nothing
+	// keeps its net for as long as one refusal lands in each of its passes.
+	//
+	// A cause naming a reach failure DECIDES; none doing so settles nothing,
+	// because the aggregate answers for the ITEMS alone. The chain ABOVE it
+	// carries a net's own declaration — Unreachable over the error a sweep
+	// hands back, a LeaseUnreachable type holding a joined cause — so that
+	// declaration is read here, and the branch falls THROUGH to the typed
+	// guards below. They traverse the items as a tree too, which can only
+	// ADD a true to the answer the rule above left false: the bounded
+	// direction.
+	if causes := multiCauses(err); len(causes) > 0 {
+		for _, cause := range causes {
+			if TransportFailure(cause) {
+				return true
+			}
+		}
+		// The net's declaration over the WHOLE sweep is read HERE, above the
+		// cancellation guard, for the very reason the causes are classified
+		// one at a time: errors.Is traverses an aggregate as a tree, so ONE
+		// item the term ending cut off would answer for the sweep and veto
+		// the declaration sitting above it — the net said "this node never
+		// got there" and the verdict said "the far side answered", which is
+		// the answer that CLEARS the run of unreachable passes a handover
+		// counts (#2685). A sweep is the term ending only when EVERY one of
+		// its causes is.
+		if !everyCauseIsTheTermEnding(causes) && declaredUnreachable(err) {
+			return true
+		}
+	}
+	if errors.Is(err, context.Canceled) {
+		return false
+	}
+	// A net that KNOWS its failure was a reach failure says so, and the
+	// declaration decides: what a net's far side IS, and which of its
+	// answers mean the node never got there, is the net's own business —
+	// this package types none of them (Unreachable, LeaseUnreachable).
+	//
+	// Only a true declaration decides. A type that answers false is not a
+	// veto: it keeps the typed classes below, so a declaration can never
+	// make this classifier answer LESS than it did before the type existed.
+	if declaredUnreachable(err) {
+		return true
 	}
 	// A resolver flap is typed, including NXDOMAIN: a half-broken resolver
 	// answers "no such host" for a name that resolves on every other node,
@@ -270,6 +342,116 @@ func TransportFailure(err error) bool {
 	// reaches here as the timeout of a bounded call.
 	var netErr net.Error
 	return errors.As(err, &netErr) && netErr.Timeout()
+}
+
+// Unreachable marks err as a failure to REACH the far side, for a net whose
+// far side TransportFailure cannot type on its own: a gateway's 502/503/504
+// on a per-node egress path, a driver that reports its transport errors as
+// text, a proxy's own error page. The net that made the call is the only code
+// that knows what its far side is, and this is how it says so —
+// TransportFailure answers true for the result, which is the class that ends
+// a term rather than the class that clears the run of failures a handover
+// counts. The error marked may be a whole sweep's aggregate (errors.Join):
+// the mark sits above the causes, and it decides for the sweep the way a
+// per-cause mark decides for its item — unless the term ending cut off EVERY
+// one of them, which is the term ending and not a far side nobody reached.
+// Nesting changes neither answer: a sweep whose causes are themselves sweeps
+// is read down to its items.
+//
+// Additive in both directions: the mark wraps err, so every errors.Is and
+// errors.As a caller already runs keeps answering the same, and a cause that
+// is NOT marked is classified exactly as before. A type that owns the answer
+// for all its values declares it instead, with a LeaseUnreachable() bool
+// method — forge.StatusError answers it for an upstream 5xx — and needs no
+// wrapper at the call site.
+//
+// A nil err stays nil: there is no failure to mark.
+func Unreachable(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &unreachableError{cause: err}
+}
+
+// unreachableError is the mark Unreachable adds. Its message is the cause's,
+// verbatim: the declaration is TYPED, and a log line that gained a prefix
+// would be the second place to maintain it.
+type unreachableError struct{ cause error }
+
+func (e *unreachableError) Error() string          { return e.cause.Error() }
+func (e *unreachableError) Unwrap() error          { return e.cause }
+func (e *unreachableError) LeaseUnreachable() bool { return true }
+
+// declaredUnreachable reports whether any error in err's chain declares
+// itself a reach failure. The WHOLE chain, not errors.As's first match: a
+// wrapper that answers false would otherwise shadow the declaration of the
+// cause it wraps, which is the "two guards covering each other" shape — and
+// a declaration is only ever read as true (TransportFailure).
+//
+// The chain here STOPS at a multi-cause error, whose items TransportFailure
+// has already classified one at a time: what is left to read is the chain
+// above the aggregate, which is where a net marks a whole sweep.
+func declaredUnreachable(err error) bool {
+	for err != nil {
+		if d, ok := err.(interface{ LeaseUnreachable() bool }); ok && d.LeaseUnreachable() {
+			return true
+		}
+		u, ok := err.(interface{ Unwrap() error })
+		if !ok {
+			return false
+		}
+		err = u.Unwrap()
+	}
+	return false
+}
+
+// everyCauseIsTheTermEnding reports whether every cause of a sweep's
+// aggregate is the term ending. ONE item cut off that way is evidence about
+// nothing — the sweep still met whatever its other items met, and a net's
+// declaration over it still holds — while a sweep every item of which the
+// term cut off IS the term ending, which no declaration turns into an egress
+// failure.
+//
+// A cause that is ITSELF an aggregate is asked the same question about its
+// own causes, at every depth, instead of being handed to errors.Is: that
+// traversal reads an aggregate as a tree, so ONE cancelled item would answer
+// for the sub-sweep holding it — the very contamination this predicate
+// removes one level up. A sweep of sweeps therefore reads exactly as the flat
+// sweep of the same items does.
+func everyCauseIsTheTermEnding(causes []error) bool {
+	if len(causes) == 0 {
+		return false
+	}
+	for _, cause := range causes {
+		if inner := multiCauses(cause); len(inner) > 0 {
+			if !everyCauseIsTheTermEnding(inner) {
+				return false
+			}
+			continue
+		}
+		if !errors.Is(cause, context.Canceled) {
+			return false
+		}
+	}
+	return true
+}
+
+// multiCauses answers the causes of the nearest multi-cause error in err's
+// chain, or nil when there is none. Nearest, rather than err itself, because
+// a sweep's aggregate reaches its consumer wrapped in the sweep's own
+// context ("forge: refresh %d connections: %w") as often as bare.
+func multiCauses(err error) []error {
+	for err != nil {
+		if multi, ok := err.(interface{ Unwrap() []error }); ok {
+			return multi.Unwrap()
+		}
+		u, ok := err.(interface{ Unwrap() error })
+		if !ok {
+			return nil
+		}
+		err = u.Unwrap()
+	}
+	return nil
 }
 
 // Health lets a term end on the work failing, backs this replica off before
