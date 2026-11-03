@@ -76,14 +76,22 @@ func TestCLILiveOpenCodeSessionResume(t *testing.T) {
 	// scratch service config pins a free port, and what the test started it
 	// stops — a service left holding a port and a deleted scratch home would
 	// break the operator's next opencode run.
-	mustWriteFile(t, filepath.Join(tmp, "config", "opencode", "service.json"),
-		"{\n  \"port\": "+strconv.Itoa(freeLocalPort(t))+"\n}\n")
-	t.Cleanup(func() {
-		stop := exec.Command(cli, "service", "stop") // #nosec G204 — the located CLI.
-		if out, err := stop.CombinedOutput(); err != nil {
-			t.Errorf("stopping the service this test started: %v: %s", err, out)
-		}
-	})
+	//
+	// Both halves are 2.x-only: the 1.x line has no background service and
+	// no `service` subcommand, so an unconditional cleanup would fail the
+	// test on the very host the 1.x assertions below exist for. One probe
+	// for the whole test, reused by those assertions.
+	major := openCodeMajorVersion(t, cli, nil)
+	if major >= 2 {
+		mustWriteFile(t, filepath.Join(tmp, "config", "opencode", "service.json"),
+			"{\n  \"port\": "+strconv.Itoa(freeLocalPort(t))+"\n}\n")
+		t.Cleanup(func() {
+			stop := exec.Command(cli, "service", "stop") // #nosec G204 — the located CLI.
+			if out, err := stop.CombinedOutput(); err != nil {
+				t.Errorf("stopping the service this test started: %v: %s", err, out)
+			}
+		})
+	}
 
 	repo := filepath.Join(tmp, "repo")
 	for _, args := range [][]string{
@@ -156,7 +164,7 @@ func TestCLILiveOpenCodeSessionResume(t *testing.T) {
 	// as an EMPTY conversation and nothing distinguishes it from a fresh one.
 	const unknown = "ses_doesnotexist"
 	gone, goneErr := turn(t, "x", unknown, false)
-	if major := openCodeMajorVersion(t, cli, nil); major >= 2 {
+	if major >= 2 {
 		if goneErr != nil {
 			t.Fatalf("opencode %d.x creates a session under an unknown id, but the resume failed: %v (stderr %q)", major, goneErr, gone.Stderr)
 		}
