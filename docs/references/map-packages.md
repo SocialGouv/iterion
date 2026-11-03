@@ -34,6 +34,7 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `internal/ciguard` | holds tests that keep this repository's CI configuration honest from inside the test suite, where a required check can see them. | — |
 | `internal/corpusreading` | reads the committed corpus the way internal/mdcode's four first-party readers do — every tracked .md, .yaml and .yml outside the skipped trees that… | — |
 | `internal/credheader` | reads ANTHROPIC_CUSTOM_HEADERS-format text — the newline-separated "Name: Value" lines a Claude-Code-compatible CLI applies LAST on every request… | — |
+| `internal/detecttest` | stages the host pkg/backend/detect probes, for a witness whose verdict follows a host detection report: the provider keys it names and a claude_code… | — |
 | `internal/docsguard` | holds tests that keep this repository's documentation honest from inside the test suite, where a required check can see them. | `FS` |
 | `internal/dotenv` | parses dotenv files the way every iterion loader plants them: ONE Go reader for the CLI's cwd walk (cmd/iterion applyDotEnv), the studio's… | — |
 | `internal/envtrust` | tells apart the environment iterion INHERITED from the part a project `.env` filled in. | — |

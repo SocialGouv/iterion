@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/SocialGouv/iterion/internal/detecttest"
 	"github.com/SocialGouv/iterion/internal/gittest"
 	"github.com/SocialGouv/iterion/pkg/cli"
 	"github.com/SocialGouv/iterion/pkg/runview"
@@ -22,8 +23,14 @@ import (
 // node, which is the failure the launch refusal #2258 closed for new runs
 // only.
 //
-// Mutant: the RefuseFrozenPin call removed from RunResumeWithFile → the
-// refusal half reds (the resume proceeds into the engine).
+// Both halves judge one staged host (internal/detecttest): an Anthropic key
+// and the claude_code CLI the claude slot's routes pin (#1221), never the
+// machine's own credentials or CLI.
+//
+// Mutants: the RefuseFrozenPin call removed from RunResumeWithFile → the
+// refusal half reds (the resume proceeds into the engine); the route
+// judgement blind to the installed CLI (InventoryFromReport reading
+// Available alone) → the served half reds.
 
 // monoFamilyCLIBot declares the opt-in var the topology reads, so the
 // judgement applies to this bot at all.
@@ -35,29 +42,6 @@ vars:
 workflow frozen_pin:
   entry: done
 `
-
-// isolateHostFamiliesCLI pins what detect.Detect can see to exactly the
-// provider keys named: a scratch HOME and empty credential homes so no
-// forfait, codex login or OAuth bridge is found, and every family-bearing
-// variable cleared before the wanted ones are set. Without it this witness
-// would read the developer's own keys and be green or red by accident.
-// Values are literals written here; no host value is ever read or printed.
-func isolateHostFamiliesCLI(t *testing.T, available ...string) {
-	t.Helper()
-	t.Setenv("HOME", t.TempDir())
-	t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
-	t.Setenv("CODEX_HOME", t.TempDir())
-	t.Setenv("ITERION_BACKEND_PREFERENCE", "")
-	for _, name := range []string{
-		"ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN",
-		"ZAI_API_KEY", "OPENAI_API_KEY", "OPENAI_BASE_URL",
-	} {
-		t.Setenv(name, "")
-	}
-	for _, name := range available {
-		t.Setenv(name, "sk-witness-not-a-real-key")
-	}
-}
 
 // seedFrozenPinCLIRun parks a run whose inputs carry the family its launch
 // resolved, the way a launch leaves them on the document.
@@ -104,7 +88,7 @@ func seedFrozenPinCLIRun(t *testing.T, family string) (bot, storeDir, runID stri
 func TestResume_CLIRefusesAPinThisHostCannotServe(t *testing.T) {
 	hermeticSandbox(t)
 	t.Chdir(gittest.SourceRepo(t))
-	isolateHostFamiliesCLI(t, "ANTHROPIC_API_KEY")
+	detecttest.StageClaudeCodeHost(t, "ANTHROPIC_API_KEY")
 	bot, storeDir, runID, frozen, st := seedFrozenPinCLIRun(t, "gpt")
 
 	ctx := context.Background()
@@ -130,12 +114,13 @@ func TestResume_CLIRefusesAPinThisHostCannotServe(t *testing.T) {
 	}
 }
 
-// The same lane resumes normally when a credential still serves the frozen
-// family: this refuses a dead configuration, not resumes.
+// The same lane resumes normally when the host still serves the frozen
+// family — a credential to spend and the claude_code CLI its routes run on:
+// this refuses a dead configuration, not resumes.
 func TestResume_CLIAcceptsAPinThisHostServes(t *testing.T) {
 	hermeticSandbox(t)
 	t.Chdir(gittest.SourceRepo(t))
-	isolateHostFamiliesCLI(t, "ANTHROPIC_API_KEY")
+	detecttest.StageClaudeCodeHost(t, "ANTHROPIC_API_KEY")
 	bot, storeDir, runID, _, st := seedFrozenPinCLIRun(t, "claude")
 
 	ctx := context.Background()

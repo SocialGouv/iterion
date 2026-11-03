@@ -6,10 +6,16 @@
 // publisher branch here: a host detection report describes this server's
 // environment, never a queued run's sealed credentials.
 //
+// Every witness judges one staged host (internal/detecttest): an Anthropic
+// key and the claude_code CLI the claude slot's routes pin (#1221), never the
+// machine's own credentials or CLI.
+//
 // Mutants: the RefuseFrozenPin call removed → the refusal half reds; the
 // call moved ABOVE the publisher branch → the cloud-lane half reds (a
 // queued run would be judged against the wrong credential set); the
-// judgement made unconditional → the served half reds.
+// judgement made unconditional → the served half reds; the route judgement
+// blind to the installed CLI (InventoryFromReport reading Available alone)
+// → the served half reds.
 
 package runview
 
@@ -23,6 +29,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/internal/detecttest"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -37,29 +44,6 @@ vars:
 workflow operator_resume:
   entry: done
 `
-
-// isolateHostFamilies pins what detect.Detect can see to exactly the
-// provider keys named: a scratch HOME and empty credential homes so no
-// forfait, codex login or OAuth bridge is found, and every family-bearing
-// variable cleared before the wanted ones are set. Without it this witness
-// would read the developer's own keys and be green or red by accident.
-// Values are literals written here; no host value is ever read or printed.
-func isolateHostFamilies(t *testing.T, available ...string) {
-	t.Helper()
-	t.Setenv("HOME", t.TempDir())
-	t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
-	t.Setenv("CODEX_HOME", t.TempDir())
-	t.Setenv("ITERION_BACKEND_PREFERENCE", "")
-	for _, name := range []string{
-		"ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN",
-		"ZAI_API_KEY", "OPENAI_API_KEY", "OPENAI_BASE_URL",
-	} {
-		t.Setenv(name, "")
-	}
-	for _, name := range available {
-		t.Setenv(name, "sk-witness-not-a-real-key")
-	}
-}
 
 // seedFrozenPinRun parks a run whose inputs carry the family the launch
 // resolved, the way a launch leaves them on the document.
@@ -110,7 +94,7 @@ func frozenPinService(t *testing.T, opts ...ServiceOption) (*Service, string, st
 func TestResume_LocalLaneRefusesAPinThisHostCannotServe(t *testing.T) {
 	t.Setenv("ITERION_RUNS_DETACHED", "0")
 	t.Setenv("ITERION_SANDBOX_DEFAULT", "none")
-	isolateHostFamilies(t, "ANTHROPIC_API_KEY")
+	detecttest.StageClaudeCodeHost(t, "ANTHROPIC_API_KEY")
 	svc, botPath, hash := frozenPinService(t)
 	const runID = "run-local-dead-pin"
 	frozen := seedFrozenPinRun(t, svc, runID, hash, "gpt")
@@ -140,12 +124,13 @@ func TestResume_LocalLaneRefusesAPinThisHostCannotServe(t *testing.T) {
 	}
 }
 
-// The same lane resumes normally when a credential still serves the frozen
-// family: this refuses a dead configuration, not resumes.
+// The same lane resumes normally when the host still serves the frozen
+// family — a credential to spend and the claude_code CLI its routes run on:
+// this refuses a dead configuration, not resumes.
 func TestResume_LocalLaneAcceptsAPinThisHostServes(t *testing.T) {
 	t.Setenv("ITERION_RUNS_DETACHED", "0")
 	t.Setenv("ITERION_SANDBOX_DEFAULT", "none")
-	isolateHostFamilies(t, "ANTHROPIC_API_KEY")
+	detecttest.StageClaudeCodeHost(t, "ANTHROPIC_API_KEY")
 	svc, botPath, hash := frozenPinService(t)
 	const runID = "run-local-served-pin"
 	seedFrozenPinRun(t, svc, runID, hash, "claude")
@@ -171,7 +156,7 @@ func TestResume_LocalLaneAcceptsAPinThisHostServes(t *testing.T) {
 // credential at all would be refused for a family its bundle may well
 // serve.
 func TestResume_TheCloudLaneIsNotJudgedAgainstThisHost(t *testing.T) {
-	isolateHostFamilies(t, "ANTHROPIC_API_KEY")
+	detecttest.StageClaudeCodeHost(t, "ANTHROPIC_API_KEY")
 	publisher := &operatorResumePublisher{}
 	svc, botPath, hash := frozenPinService(t, WithLaunchPublisher(publisher))
 	const runID = "run-queued-dead-pin"
