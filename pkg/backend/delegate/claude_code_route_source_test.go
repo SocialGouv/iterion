@@ -39,10 +39,27 @@ func TestAnthropicRouteSourceAgreesWithTheSession(t *testing.T) {
 		// one account on both lanes, not the bare credential-less label.
 		{name: "the pod's header credential", ambient: map[string]string{"ANTHROPIC_CUSTOM_HEADERS": "Authorization: Bearer gw-secret"},
 			want: ambientEnvSource("Bearer gw-secret")},
-		{name: "the pod's bearer and header credential together", ambient: map[string]string{
+		// The header line replaces the bearer on both lanes: one credential,
+		// the line's.
+		{name: "the pod's bearer under a header credential", ambient: map[string]string{
 			"ANTHROPIC_AUTH_TOKEN":     "pod-bearer",
 			"ANTHROPIC_CUSTOM_HEADERS": "X-Tenant: acme\nAuthorization: Bearer hdr-secret"},
-			want: ambientSetSource([2]string{"ANTHROPIC_AUTH_TOKEN", "pod-bearer"}, [2]string{"ANTHROPIC_CUSTOM_HEADERS", "Bearer hdr-secret"})},
+			want: ambientEnvSource("Bearer hdr-secret")},
+		{name: "the pod's key and bearer under a header credential", ambient: map[string]string{
+			"ANTHROPIC_AUTH_TOKEN":     "pod-bearer",
+			"ANTHROPIC_API_KEY":        "sk-pod",
+			"ANTHROPIC_CUSTOM_HEADERS": "Authorization: Bearer hdr-secret"},
+			want: ambientSetSource([2]string{"ANTHROPIC_API_KEY", "sk-pod"}, [2]string{"ANTHROPIC_CUSTOM_HEADERS:authorization", "Bearer hdr-secret"})},
+		{name: "the pod's key under an x-api-key line", ambient: map[string]string{
+			"ANTHROPIC_API_KEY":        "sk-pod",
+			"ANTHROPIC_CUSTOM_HEADERS": "x-api-key: hdr-key"},
+			want: ambientEnvSource("hdr-key")},
+		// An empty line erases the only token: no inherited credential names
+		// the spend on either lane.
+		{name: "the pod's bearer under an empty Authorization line", ambient: map[string]string{
+			"ANTHROPIC_AUTH_TOKEN":     "pod-bearer",
+			"ANTHROPIC_CUSTOM_HEADERS": "Authorization:"},
+			want: ambientSourceFamily},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

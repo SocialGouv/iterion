@@ -679,10 +679,9 @@ func detectProviders() []ProviderStatus {
 	// Anthropic credentials — otherwise the BYOK selection UI happily
 	// claimed anthropic was available when in fact only the z.ai
 	// façade was configured, and the resolver would pick anthropic
-	// models that 401'd against z.ai.
-	anthropicBase := strings.ToLower(os.Getenv("ANTHROPIC_BASE_URL"))
-	hasZAIBaseURL := strings.Contains(anthropicBase, "z.ai") ||
-		strings.Contains(anthropicBase, "bigmodel")
+	// models that 401'd against z.ai. The hostname reading is the claw
+	// registry's own (secrets.BaseURLNamesZAI), not a copy of it.
+	hasZAIBaseURL := secrets.BaseURLNamesZAI(os.Getenv("ANTHROPIC_BASE_URL"))
 	hasZAIKey := os.Getenv("ZAI_API_KEY") != ""
 	zaiAvailable := hasZAIKey ||
 		(hasZAIBaseURL && os.Getenv("ANTHROPIC_AUTH_TOKEN") != "")

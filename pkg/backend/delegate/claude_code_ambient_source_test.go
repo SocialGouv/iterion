@@ -265,19 +265,63 @@ func TestAnthropicRouteSource_TheLiveChannelSetNamesTheMeter(t *testing.T) {
 		t.Errorf("session label %q merged the node key's spend into the pod's meter", stamped)
 	}
 
-	// The custom-header Authorization rides with the tokens it sits beside,
-	// last in the order, the way the request carries them.
+	// A custom-header Authorization line REPLACES the bearer on the wire —
+	// the CLI applies the block last, by header name — and rides beside the
+	// key: the set is the key and the header credential, after the token
+	// channels under the block's name and its own, the bearer out of it.
 	t.Setenv("ANTHROPIC_CUSTOM_HEADERS", "Authorization: Bearer gw-secret")
-	wantThree := ambientSourcePrefix + secrets.FingerprintSHA256("ANTHROPIC_AUTH_TOKEN=10:pod-bearer\nANTHROPIC_API_KEY=6:sk-pod\nANTHROPIC_CUSTOM_HEADERS=16:Bearer gw-secret\n")
-	if source, _ := AnthropicRouteSource(ctx, ""); source != wantThree {
-		t.Errorf("source = %q, want %q — the header credential is in the set too", source, wantThree)
+	wantHeader := ambientSourcePrefix + secrets.FingerprintSHA256("ANTHROPIC_API_KEY=6:sk-pod\nANTHROPIC_CUSTOM_HEADERS:authorization=16:Bearer gw-secret\n")
+	if source, _ := AnthropicRouteSource(ctx, ""); source != wantHeader {
+		t.Errorf("source = %q, want %q — the header credential replaces the bearer it is applied over", source, wantHeader)
+	}
+}
+
+// A custom-header line named after a header the Anthropic wire's auth sets is
+// applied over it, last (claw's Identity.Apply, h.Set): an Authorization line
+// replaces every bearer channel, an x-api-key line the key, and a line whose
+// value is empty erases what it replaces — the request then carries no
+// credential under that name, and the meter keys none. A line of another name
+// replaces nothing on this wire. Each row is the account the request carries:
+// keying a channel the line displaced splits one account over two meters (the
+// claw lane keys what claw sends), and keying it on the displaced value
+// merges another account into this one.
+func TestAnthropicRouteSource_AHeaderLineReplacesTheChannelItNames(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		env  map[string]string
+		want string
+	}{
+		{"an Authorization line over the bearer", map[string]string{"ANTHROPIC_AUTH_TOKEN": "pod-bearer", "ANTHROPIC_CUSTOM_HEADERS": "Authorization: Bearer hdr-secret"}, ambientEnvSource("Bearer hdr-secret")},
+		{"an Authorization line over the OAuth token", map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat-pod", "ANTHROPIC_CUSTOM_HEADERS": "Authorization: Bearer hdr-secret"}, ambientEnvSource("Bearer hdr-secret")},
+		{"an x-api-key line over the key", map[string]string{"ANTHROPIC_API_KEY": "sk-pod", "ANTHROPIC_CUSTOM_HEADERS": "X-Tenant: acme\nx-api-key: hdr-key"}, ambientEnvSource("hdr-key")},
+		{"an empty Authorization line over the bearer", map[string]string{"ANTHROPIC_AUTH_TOKEN": "pod-bearer", "ANTHROPIC_CUSTOM_HEADERS": "Authorization:"}, ambientSourceFamily},
+		{"an empty x-api-key line over the key", map[string]string{"ANTHROPIC_API_KEY": "sk-pod", "ANTHROPIC_CUSTOM_HEADERS": "x-api-key:"}, ambientSourceFamily},
+		{"an empty Authorization line beside the key", map[string]string{"ANTHROPIC_API_KEY": "sk-pod", "ANTHROPIC_CUSTOM_HEADERS": "Authorization:"}, ambientEnvSource("sk-pod")},
+		{"an api-key line beside the key", map[string]string{"ANTHROPIC_API_KEY": "sk-pod", "ANTHROPIC_CUSTOM_HEADERS": "api-key: gw-key"}, ambientEnvSource("sk-pod")},
+		{"both lines over both tokens", map[string]string{"ANTHROPIC_AUTH_TOKEN": "pod-bearer", "ANTHROPIC_API_KEY": "sk-pod", "ANTHROPIC_CUSTOM_HEADERS": "x-api-key: hdr-key\nAuthorization: Bearer hdr-secret"},
+			ambientSetSource([2]string{"ANTHROPIC_CUSTOM_HEADERS:authorization", "Bearer hdr-secret"}, [2]string{"ANTHROPIC_CUSTOM_HEADERS:x-api-key", "hdr-key"})},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			clearRoutingEnv(t)
+			for k, v := range tc.env {
+				t.Setenv(k, v)
+			}
+			source, refused := AnthropicRouteSource(context.Background(), "")
+			if refused {
+				t.Fatal("the ambient route refused")
+			}
+			if source != tc.want {
+				t.Errorf("source = %q, want %q", source, tc.want)
+			}
+		})
 	}
 }
 
 // An Authorization line in the ambient ANTHROPIC_CUSTOM_HEADERS is a
 // credential the CLI applies OVER every route's auth
-// (spawnAuthorizationHeader): a pod authenticating through it keys its own
-// meter, not the bare credential-less label the per-borrower split charges.
+// (OverlayCustomHeaderCredentials): a pod authenticating through it keys its
+// own meter, not the bare credential-less label the per-borrower split
+// charges.
 func TestAnthropicRouteSource_AnAmbientAuthorizationHeaderNamesItsAccount(t *testing.T) {
 	clearRoutingEnv(t)
 	t.Setenv("ANTHROPIC_CUSTOM_HEADERS", "X-Tenant: acme\nAuthorization: Bearer gw-secret")

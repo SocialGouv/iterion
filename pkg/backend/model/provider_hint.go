@@ -179,14 +179,17 @@ func anthropicDirectEnvCredentials(ctx context.Context, modelID string) (anthrop
 	return anthropicEnvWalk{}, &ErrProviderHintUnfunded{Provider: "anthropic", Model: modelID}
 }
 
-// ForfaitWireBaseURL is the destination the run's Claude forfait is judged
-// against (secrets.AnthropicForfaitWireOK) when claw resolves spec under
-// hint: "" — the direct wire — for an id Anthropic serves under the
-// `provider: "anthropic"` hint, whose path skips ANTHROPIC_BASE_URL
-// (resolveAnthropicDirect → anthropicFromCtxForfaitOnWire), the env's
-// ANTHROPIC_BASE_URL on every other path (anthropicFromCtxForfait). A GLM id
-// is exempt from the hint branch and reads the env's.
-func ForfaitWireBaseURL(spec, hint string) string {
+// RunCredentialBaseURL is the destination claw sends the run's own Anthropic
+// credentials to — its key and its Claude forfait alike — when it resolves
+// spec under hint, and so what the forfait is judged against
+// (secrets.AnthropicForfaitWireOK): "" — the direct wire — for an id Anthropic
+// serves under the `provider: "anthropic"` hint, whose path skips
+// ANTHROPIC_BASE_URL (resolveAnthropicDirect: the key on a client with no base
+// URL, the forfait through anthropicFromCtxForfaitOnWire), the env's
+// ANTHROPIC_BASE_URL on every other path (the keyed factory,
+// anthropicFromCtxForfait). A GLM id is exempt from the hint branch and reads
+// the env's.
+func RunCredentialBaseURL(spec, hint string) string {
 	if HonoursProviderHintValue(delegate.BackendClaw, hint) && !GLMOnAnthropicWire(spec) {
 		return ""
 	}

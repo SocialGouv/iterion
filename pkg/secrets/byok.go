@@ -159,10 +159,10 @@ const ZAIDefaultBaseURL = "https://api.z.ai/api/anthropic"
 // ZAIChinaBaseURL is the mainland endpoint of the z.ai family's
 // Anthropic-compatible surface — Zhipu's open.bigmodel.cn, the GLM Coding
 // Plan's own path. The tree already classifies the host into the z.ai
-// family wherever it reads a base URL (backend/detect, the claw registry's
-// billing split, executor funding), so it is the vendor's own published
-// endpoint, not an operator destination: FacadeVendorEndpoints holds it
-// beside the default for exactly that.
+// family wherever it reads a base URL (BaseURLNamesZAI: backend/detect,
+// the claw registry's billing split, executor funding), so it is the
+// vendor's own published endpoint, not an operator destination:
+// FacadeVendorEndpoints holds it beside the default for exactly that.
 const ZAIChinaBaseURL = "https://open.bigmodel.cn/api/anthropic"
 
 // MoonshotDefaultBaseURL is the Anthropic-compatible endpoint Moonshot
@@ -221,6 +221,18 @@ func FacadeProviders() []Provider {
 		out = append(out, facade.provider)
 	}
 	return out
+}
+
+// BaseURLNamesZAI reports that an ANTHROPIC_BASE_URL value names the z.ai
+// family's own hosts (api.z.ai, Zhipu's open.bigmodel.cn) — the one
+// destination where an ANTHROPIC_AUTH_TOKEN is a vendor BYOK credential and
+// not the Claude subscription bearer. One predicate for every reader of that
+// env pair — the claw registry's env walk, the executor funding probe,
+// provider detection — so none of them can drift from the others on a
+// hostname spelling.
+func BaseURLNamesZAI(baseURL string) bool {
+	low := strings.ToLower(baseURL)
+	return strings.Contains(low, "z.ai") || strings.Contains(low, "bigmodel")
 }
 
 // XAIDefaultBaseURL is the host claw's OpenAI-compatible client targets

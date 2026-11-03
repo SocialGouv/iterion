@@ -81,22 +81,30 @@ func wireCredentials(t *testing.T, spec string) map[string]string {
 }
 
 // liveFromWire names what a request carried by the env channel each value
-// came from, so the expected fingerprint is read off the wire rather than off
-// a second description of the factory's order.
+// came from — a token variable, or a credential line of the custom-header
+// block under the block's name and its own — so the expected fingerprint is
+// read off the wire rather than off a second description of the factory's
+// order.
 func liveFromWire(t *testing.T, sent map[string]string) map[string]string {
 	t.Helper()
+	headers := os.Getenv("ANTHROPIC_CUSTOM_HEADERS")
 	live := map[string]string{}
 	if k := sent["x-api-key"]; k != "" {
-		if k != os.Getenv("ANTHROPIC_API_KEY") {
+		line, _ := credheader.LineValue(headers, credheader.NameXAPIKey)
+		switch {
+		case line != "" && k == line:
+			live["ANTHROPIC_CUSTOM_HEADERS:x-api-key"] = k
+		case k == os.Getenv("ANTHROPIC_API_KEY"):
+			live["ANTHROPIC_API_KEY"] = k
+		default:
 			t.Fatalf("bench: the request carried an x-api-key no channel of the row holds")
 		}
-		live["ANTHROPIC_API_KEY"] = k
 	}
 	if a := sent["authorization"]; a != "" {
-		line, _ := credheader.LineValue(os.Getenv("ANTHROPIC_CUSTOM_HEADERS"), credheader.NameAuthorization)
+		line, _ := credheader.LineValue(headers, credheader.NameAuthorization)
 		switch {
 		case line != "" && a == line:
-			live["ANTHROPIC_CUSTOM_HEADERS"] = a
+			live["ANTHROPIC_CUSTOM_HEADERS:authorization"] = a
 		case os.Getenv("ANTHROPIC_AUTH_TOKEN") != "" && a == "Bearer "+os.Getenv("ANTHROPIC_AUTH_TOKEN"):
 			live["ANTHROPIC_AUTH_TOKEN"] = os.Getenv("ANTHROPIC_AUTH_TOKEN")
 		default:
@@ -108,10 +116,14 @@ func liveFromWire(t *testing.T, sent map[string]string) map[string]string {
 
 // The meter names the account claw's client actually sends, read off the
 // wire: claw reads no CLAUDE_CODE_OAUTH_TOKEN, sends a key alone where a
-// bearer sits beside it, and lets an Authorization header line ride over the
-// bearer or beside the key. The claude CLI's reading of the same pod
-// (delegate.AmbientCredentialFingerprint) names another account on these
-// rows, which is what keyed claw's walls on a forfait it never spent.
+// bearer sits beside it, and applies the custom-header block last — an
+// Authorization line replaces the bearer and rides beside the key, an
+// x-api-key line replaces the key, an empty one erases what it replaces. The
+// claude CLI's reading of the same pod (delegate.AmbientCredentialFingerprint)
+// names another account on the claudeDiffers rows, which is what keyed claw's
+// walls on a forfait it never spent — and the SAME account on every other
+// row: where both lanes send one set they key one meter, or claw's routes
+// never meet the walls the claude_code sessions record.
 func TestAmbientEnvMeter_NamesTheCredentialClawSends(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -125,7 +137,10 @@ func TestAmbientEnvMeter_NamesTheCredentialClawSends(t *testing.T) {
 		{"a key beside a bearer", map[string]string{"ANTHROPIC_API_KEY": "sk-pod", "ANTHROPIC_AUTH_TOKEN": "tok-pod"}, "anthropic/claude-sonnet-4", true},
 		{"a bearer beside the forfait token", map[string]string{"ANTHROPIC_AUTH_TOKEN": "tok-pod", "CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat-forfait"}, "anthropic/claude-sonnet-4", true},
 		{"a key and a header credential", map[string]string{"ANTHROPIC_API_KEY": "sk-pod", "ANTHROPIC_CUSTOM_HEADERS": "X-Tenant: a\nAuthorization: Bearer hdr-pod"}, "anthropic/claude-sonnet-4", false},
-		{"a header credential over a bearer", map[string]string{"ANTHROPIC_AUTH_TOKEN": "tok-pod", "ANTHROPIC_CUSTOM_HEADERS": "Authorization: Bearer hdr-pod"}, "anthropic/claude-sonnet-4", true},
+		{"a header credential over a bearer", map[string]string{"ANTHROPIC_AUTH_TOKEN": "tok-pod", "ANTHROPIC_CUSTOM_HEADERS": "Authorization: Bearer hdr-pod"}, "anthropic/claude-sonnet-4", false},
+		{"an x-api-key line over the key", map[string]string{"ANTHROPIC_API_KEY": "sk-pod", "ANTHROPIC_CUSTOM_HEADERS": "x-api-key: hdr-key"}, "anthropic/claude-sonnet-4", false},
+		{"an x-api-key line beside a bearer", map[string]string{"ANTHROPIC_AUTH_TOKEN": "tok-pod", "ANTHROPIC_CUSTOM_HEADERS": "x-api-key: hdr-key"}, "anthropic/claude-sonnet-4", false},
+		{"an empty Authorization line over a bearer", map[string]string{"ANTHROPIC_AUTH_TOKEN": "tok-pod", "ANTHROPIC_CUSTOM_HEADERS": "Authorization:"}, "anthropic/claude-sonnet-4", false},
 		{"a GLM id on a keyed gateway", map[string]string{"ANTHROPIC_API_KEY": "sk-pod", "CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat-forfait"}, "anthropic/glm-5.3", true},
 		{"the forfait token alone", map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat-forfait"}, "anthropic/claude-sonnet-4", true},
 	} {
@@ -143,8 +158,12 @@ func TestAmbientEnvMeter_NamesTheCredentialClawSends(t *testing.T) {
 			if fp != want {
 				t.Errorf("AmbientEnvMeter(%s) = %q, want %q — the account the request carried", tc.spec, fp, want)
 			}
-			if claude := delegate.AmbientCredentialFingerprint(); tc.claudeDiffers && claude == want {
+			claude := delegate.AmbientCredentialFingerprint()
+			if tc.claudeDiffers && claude == want {
 				t.Fatalf("inert bench: the claude CLI's reading names the same account here")
+			}
+			if !tc.claudeDiffers && claude != want {
+				t.Errorf("the claude CLI's reading of this pod = %q, claw's = %q — both send the same set, so one account sits on two meters", claude, want)
 			}
 		})
 	}

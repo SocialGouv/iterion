@@ -42,6 +42,20 @@ func credEnvChannel(env map[string]string, keys []string) string {
 	return ""
 }
 
+// liveCredentialVariable names the variable a live credential set
+// (ambientCredentialLive) authenticates through: its first token channel in
+// claudeSandboxCredentialEnvKeys' order, else the custom-header block — the
+// only other thing such a set holds — else "" for an empty set.
+func liveCredentialVariable(live map[string]string) string {
+	if key := credEnvChannel(live, claudeSandboxCredentialEnvKeys); key != "" {
+		return key
+	}
+	if len(live) > 0 {
+		return "ANTHROPIC_CUSTOM_HEADERS"
+	}
+	return ""
+}
+
 // ClaudeCodeSandboxCredential is the per-backend predicate of #1768 for
 // claude_code: will a credential reach the process of a SANDBOXED
 // claude_code node — answered from what the spawn actually composes, not
@@ -73,22 +87,17 @@ func ClaudeCodeSandboxCredential(ctx context.Context, providerHint string, home 
 		return "the run's resolved credential (" + key + ")", true
 	}
 	if inheritAmbient {
-		ambient := ambientAnthropicEnvForSandbox()
-		if key := credEnvChannel(ambient, claudeSandboxCredentialEnvKeys); key != "" {
-			return "the launcher env forwarded into the container (" + key + ")", true
-		}
-		// An Authorization credential in the forwarded custom-header block is
-		// a credential the same spawn carries: named so a header-only pod is
-		// not refused as credential-less. The strong usable-credential
-		// reading (spawnAuthorizationHeader — a line of the name WITH a
-		// value, the same one the ambient meter keys), not the block's
-		// presence — a block of other header names, or an Authorization line
-		// whose value is empty, carries nothing the CLI would authenticate
-		// with, and naming either would admit a launch that dies
-		// "Not logged in". sandboxed=true: the answer is the forwarded map
-		// alone — the container's env, no host fallback (spawnEnvValue).
-		if spawnAuthorizationHeader(ambient, true) {
-			return "the launcher env forwarded into the container (ANTHROPIC_CUSTOM_HEADERS)", true
+		// The forwarded layer authenticates the spawn with the set the ambient
+		// meter keys (ambientCredentialLive): every token channel, with the
+		// custom-header block's credential lines applied over them. A
+		// header-only pod is named, not refused as credential-less; a block of
+		// other header names carries nothing the CLI authenticates with, and a
+		// line whose empty value erases the only token leaves nothing either —
+		// naming any of those would admit a launch that dies "Not logged in".
+		// sandboxed=true: the answer is the forwarded map alone — the
+		// container's env, no host fallback (spawnEnvValue).
+		if channel := liveCredentialVariable(ambientCredentialLive(ambientAnthropicEnvForSandbox(), true)); channel != "" {
+			return "the launcher env forwarded into the container (" + channel + ")", true
 		}
 	}
 	if home.Mounted && home.HomeDir != "" {

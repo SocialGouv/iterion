@@ -167,6 +167,36 @@ func TestForkRunWithANamelessHeaderBlockIsRefused(t *testing.T) {
 	}
 }
 
+// TestForkRunWithAForwardedXAPIKeyHeaderAdmits: an x-api-key line in the
+// forwarded block is applied over the key header the CLI's own auth sets, so
+// it is the credential a header-only pod spends — the probe reads the set the
+// ambient meter keys (every header the Anthropic wire's auth sets, not the
+// Authorization line alone) and admits it.
+func TestForkRunWithAForwardedXAPIKeyHeaderAdmits(t *testing.T) {
+	clearCredentialEnv(t)
+	t.Setenv("ANTHROPIC_CUSTOM_HEADERS", "x-api-key: gw-admission-key")
+	err := credentialAdmissionRun(t, credentialWorkflow("review", "claude_code", "none"), store.RunTrustFork, nil)
+	if !errors.Is(err, errCanaryStop) {
+		t.Fatalf("fork run with a forwarded x-api-key header = %v, want admission (canary)", err)
+	}
+}
+
+// TestForkRunWhoseOnlyTokenAnEmptyLineErasesIsRefused: an empty Authorization
+// line is applied too — over the bearer the forwarded ANTHROPIC_AUTH_TOKEN
+// sets — and the request then carries no credential at all. The token's
+// presence is not a credential on the wire; the run keeps the typed refusal
+// rather than dying "Not logged in" past the gate.
+func TestForkRunWhoseOnlyTokenAnEmptyLineErasesIsRefused(t *testing.T) {
+	clearCredentialEnv(t)
+	t.Setenv("ANTHROPIC_AUTH_TOKEN", "tok-admission-erased")
+	t.Setenv("ANTHROPIC_CUSTOM_HEADERS", "Authorization:")
+	err := credentialAdmissionRun(t, credentialWorkflow("review", "claude_code", "none"), store.RunTrustFork, nil)
+	var rerr *RuntimeError
+	if !errors.As(err, &rerr) || rerr.Code != ErrCodeSandboxCredentialUnreachable {
+		t.Fatalf("fork run whose only token an empty Authorization line erases = %v, want the typed credential refusal", err)
+	}
+}
+
 // TestForkRunWithAnEmptyAuthorizationLineIsRefused is the value-less control:
 // an Authorization line whose value is empty puts no credential on the
 // request — the pod's only claim to one dies "Not logged in" at the node,

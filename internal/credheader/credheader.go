@@ -4,14 +4,16 @@
 // answers the one question a credential boundary asks of such a block: which
 // of its lines authenticate.
 //
-// One reader for both sides of that boundary: the claude_code delegate names
+// One reader for every side of that boundary: the claude_code delegate names
 // the ambient Authorization line in an auth failure's remediation
-// (carriesAuthorizationHeader), and the claw sandbox crossing refuses to carry
-// a credential line into a container (forwardableProviderEnv). A second
-// description of the format is where the two drift apart — on a \r line
-// ending, a colon inside a value, the word in a value instead of a name — so
-// the walk lives here once and a test pins it against the CLI's own parser,
-// claw's api.ParseCustomHeaders, rather than against the documentation.
+// (spawnAuthorizationHeader), the usage meters key the credential lines the
+// request carries (delegate.OverlayCustomHeaderCredentials), and the claw
+// sandbox crossing refuses to carry a credential line into a container
+// (forwardableProviderEnv). A second description of the format is where they
+// drift apart — on a \r line ending, a colon inside a value, the word in a
+// value instead of a name — so the walk lives here once and a test pins it
+// against the CLI's own parser, claw's api.ParseCustomHeaders, rather than
+// against the documentation.
 //
 // The reading is per LINE, deliberately more lenient than that parser, which
 // refuses a whole block holding a line with no name: a line this package
@@ -30,6 +32,11 @@ import (
 // and foundry providers.
 const NameAuthorization = "authorization"
 
+// NameXAPIKey is the header an API key travels in on the Anthropic wire: claw
+// sets it from the key its client is built with (internal/api/auth.go,
+// internal/api/client.go).
+const NameXAPIKey = "x-api-key"
+
 // credentialNames are the header names a provider's own auth SETS, which an
 // ambient line of the same name replaces: http.Header.Set is last-write-wins
 // and the custom-header block is applied last, so such a line authenticates
@@ -44,7 +51,7 @@ const NameAuthorization = "authorization"
 // TestTheCredentialHeaderNamesCoverClawsOwnAuthHeaders (pkg/backend/model)
 // reads those names back out of the vendored CLI, so a provider claw gains
 // arrives covered here or red there.
-var credentialNames = []string{"api-key", NameAuthorization, "x-api-key"}
+var credentialNames = []string{"api-key", NameAuthorization, NameXAPIKey}
 
 // CredentialNames returns the credential header names, sorted and lower-case.
 // For the guard that derives them from the vendored CLI.
@@ -78,23 +85,32 @@ func CarriesName(raw, name string) bool {
 	return false
 }
 
-// LineValue returns the value of the LAST line whose header NAME is name.
-// The CLI applies the block per line into an http.Header, last write wins,
-// so a later line of the same name is the one the request carries — the
-// same order that puts the whole block over every route's own auth. The
-// value runs from the first colon, trimmed of the space around it, as the
-// CLI's own parser reads it (claw's ParseCustomHeaders). ok=false when raw
-// holds no line of that name, or one with an empty value — nothing the
-// request would carry.
-func LineValue(raw, name string) (value string, ok bool) {
+// Line returns the value of the LAST line whose header NAME is name, and
+// whether raw holds such a line at all — one with an empty value included.
+// The CLI applies the block per line into an http.Header, last write wins, so
+// a later line of the same name is the one the request carries — the same
+// order that puts the whole block over every route's own auth. An empty value
+// is applied too: claw's ParseCustomHeaders keeps the line and
+// Identity.Apply sets the header to "", which erases the credential the CLI's
+// own auth put under that name. The value runs from the first colon, trimmed
+// of the space around it, as that parser reads it.
+func Line(raw, name string) (value string, present bool) {
 	for _, line := range strings.Split(raw, "\n") {
 		lineName, lineValue, found := headerLine(line)
 		if !found || !strings.EqualFold(lineName, strings.TrimSpace(name)) {
 			continue
 		}
-		value, ok = lineValue, true
+		value, present = lineValue, true
 	}
-	return value, ok && value != ""
+	return value, present
+}
+
+// LineValue is the credential Line reads: the value the request carries
+// under name. ok=false when raw holds no line of that name, or one with an
+// empty value — no credential rides it, whatever that line erased.
+func LineValue(raw, name string) (value string, ok bool) {
+	value, present := Line(raw, name)
+	return value, present && value != ""
 }
 
 // StripCredentialLines returns raw without the lines whose header name

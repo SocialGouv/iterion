@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -847,5 +848,186 @@ func TestTheSandboxedPiRouteReadsTheContainersStore(t *testing.T) {
 	sandboxed.cfg.SandboxDefault = "auto"
 	if err := sandboxed.usageCapPreflight(ctx, piRun, &queue.RunMessage{RunID: "run-pi"}, iterlog.Nop()); err == nil {
 		t.Error("started a sandboxed pi run on the capped key the container spends")
+	}
+}
+
+// A GLM id the run holds no z.ai key for is not a nothing-held spec when the
+// run holds its own Anthropic key: claw's in-process resolution passes its z.ai
+// branch by and spends that key (the keyed factory, at the env's
+// ANTHROPIC_BASE_URL), so a claw supervisor and an in-process claw route are
+// judged on the run key's meter — the tenant's walls, not the pod account's,
+// which the call never spends. In the container the crossing pins a GLM node on
+// z.ai and carries no Anthropic key, so the sandboxed route spends the pod env
+// and keeps that meter. Where the destination is the real Anthropic API the id
+// is refused before any wall, whatever key rides, and nothing is metered.
+func TestAGLMIDSpendsTheRunsAnthropicKeyInProcess(t *testing.T) {
+	blankAnthropicWireEnv(t)
+	t.Setenv("ITERION_DEFAULT_SUPERVISOR_MODEL", "")
+	t.Setenv("ITERION_SUPERVISORS", "")
+	t.Setenv("ANTHROPIC_BASE_URL", "https://gw.example.test/anthropic")
+	t.Setenv("ANTHROPIC_AUTH_TOKEN", "tok-pod-gateway")
+	t.Cleanup(model.SetCredentialsLookup(model.RunCredentialsLookup))
+	ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{
+		APIKeys:      map[secrets.Provider]string{secrets.ProviderAnthropic: "sk-run"},
+		Fingerprints: map[string]string{string(secrets.ProviderAnthropic): "fp-run"},
+	})
+	runKey := usagecap.Key(delegate.BackendClaudeCode, usagecap.TenantScope("t"), "fp-run")
+	podKey := platformKey(secrets.FingerprintSHA256("tok-pod-gateway"))
+
+	client, err := model.NewRegistry().ResolveWithContext(ctx, "anthropic/glm-5.3")
+	if err != nil {
+		t.Fatalf("bench: the registry refused the GLM id: %v", err)
+	}
+	if got := reflect.ValueOf(client).Elem().FieldByName("APIKey").String(); got != "sk-run" {
+		t.Fatalf("bench: the registry built the GLM client on %q, want the run's own key", got)
+	}
+
+	keys := usageCapCredKeys(ctx, &queue.RunMessage{TenantID: "t"})
+	clawGLM := model.WireRoute{NodeID: "n1", Backend: delegate.BackendClaw, Model: "anthropic/glm-5.3", Readable: true}
+	if key, metered := keys.supervisorKey(ctx, "anthropic/glm-5.3", ""); !metered || key != runKey {
+		t.Errorf("the GLM supervisor = %q metered=%v, want the run key's meter %q — the registry spends it, not the pod's token", key, metered, runKey)
+	}
+	if key, metered := keys.routeKey(ctx, clawGLM); !metered || key != runKey {
+		t.Errorf("the in-process claw GLM route = %q metered=%v, want the run key's meter %q", key, metered, runKey)
+	}
+	keys.sandboxed = true
+	if key, metered := keys.routeKey(ctx, clawGLM); !metered || key != podKey {
+		t.Errorf("the sandboxed claw GLM route = %q metered=%v, want the pod account's meter %q — the crossing carries no Anthropic key for a GLM node", key, metered, podKey)
+	}
+	keys.sandboxed = false
+
+	for _, base := range []string{"", "https://api.anthropic.com"} {
+		t.Setenv("ANTHROPIC_BASE_URL", base)
+		if key, metered := keys.supervisorKey(ctx, "anthropic/glm-5.3", ""); metered {
+			t.Errorf("base %q: metered the GLM supervisor on %q — api.anthropic.com serves no GLM id, whatever key rides", base, key)
+		}
+		if key, metered := keys.routeKey(ctx, clawGLM); metered {
+			t.Errorf("base %q: metered the in-process claw GLM route on %q — api.anthropic.com serves no GLM id", base, key)
+		}
+	}
+	t.Setenv("ANTHROPIC_BASE_URL", "https://gw.example.test/anthropic")
+
+	// End to end: the run key's wall parks the run through its claw supervisor,
+	// the pod account's wall does not.
+	supervised := func() *ir.Workflow {
+		wf := chainWorkflow(agentRoute("impl", delegate.BackendOpenCode, "", "anthropic/claude-opus-5-5"))
+		wf.Supervisors = []*ir.Supervisor{{Name: "pacer", Model: "anthropic/glm-5.3"}}
+		return wf
+	}
+	resets := time.Now().UTC().Add(30 * time.Hour)
+	runWall := usagecap.NewMemStore()
+	weekCapped(t, runWall, platformKey("fp-run"), resets) // the pre-flight's message names no tenant
+	if err := preflightWithSupervisors(t, runWall, ctx, supervised(), ""); err == nil {
+		t.Error("started a run whose claw GLM supervisor spends the capped run key")
+	}
+	podWall := usagecap.NewMemStore()
+	weekCapped(t, podWall, podKey, resets)
+	if err := preflightWithSupervisors(t, podWall, ctx, supervised(), ""); err != nil {
+		t.Errorf("parked a run on the pod account's wall through a supervisor that spends the run's key: %v", err)
+	}
+}
+
+// One account, one meter, on every lane whose client applies the custom-header
+// block. A header line named after a header the Anthropic wire's auth sets
+// replaces what that auth put there: an Authorization line the bearer, an
+// x-api-key line the key. The claude_code route (the label its session stamps)
+// and the claw route (claw's own walk) send the same set and key the same
+// meter — claw records no readings, so the walls the claude_code sessions
+// measure are the only evidence its routes ever meet. pi reads no header
+// block: it sends the env key itself, another account.
+func TestOneHeaderAccountIsOneMeterAcrossLanes(t *testing.T) {
+	ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{})
+	ccRoute := model.WireRoute{NodeID: "cc", Backend: delegate.BackendClaudeCode, Model: "claude-opus-5-5", Readable: true}
+	clawRoute := model.WireRoute{NodeID: "claw", Backend: delegate.BackendClaw, Model: "claude-sonnet-4", Readable: true}
+	piRoute := model.WireRoute{NodeID: "pi", Backend: delegate.BackendPi, Hint: "anthropic", Model: "claude-opus-5-5", Readable: true}
+	for _, tc := range []struct {
+		name    string
+		env     map[string]string
+		account string // the credential the request carries
+		piSpend string // the value pi sends, "" where pi spends nothing iterion names
+	}{
+		{"an Authorization line over the pod's bearer", map[string]string{"ANTHROPIC_AUTH_TOKEN": "tok-pod", "ANTHROPIC_CUSTOM_HEADERS": "Authorization: Bearer hdr-pod"}, "Bearer hdr-pod", "tok-pod"},
+		{"an x-api-key line over the pod's key", map[string]string{"ANTHROPIC_API_KEY": "sk-pod", "ANTHROPIC_CUSTOM_HEADERS": "x-api-key: hdr-key"}, "hdr-key", "sk-pod"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			blankAnthropicWireEnv(t)
+			for k, v := range tc.env {
+				t.Setenv(k, v)
+			}
+			keys := usageCapCredKeys(ctx, &queue.RunMessage{TenantID: "team-b"})
+			want := platformKey(secrets.FingerprintSHA256(tc.account))
+			cc, ccMetered := keys.routeKey(ctx, ccRoute)
+			claw, clawMetered := keys.routeKey(ctx, clawRoute)
+			if !ccMetered || cc != want {
+				t.Errorf("the claude_code route = %q metered=%v, want the header account's meter %q", cc, ccMetered, want)
+			}
+			if !clawMetered || claw != want {
+				t.Errorf("the claw route = %q metered=%v, want the header account's meter %q", claw, clawMetered, want)
+			}
+			if pi, piMetered := keys.routeKey(ctx, piRoute); !piMetered || pi != platformKey(secrets.FingerprintSHA256(tc.piSpend)) || pi == want {
+				t.Errorf("the pi route = %q metered=%v, want the meter of the env value pi sends — pi reads no header block", pi, piMetered)
+			}
+
+			// End to end: the wall the claude_code sessions record on the
+			// account parks the claw route that spends it.
+			walled := usagecap.NewMemStore()
+			weekCapped(t, walled, want, time.Now().UTC().Add(30*time.Hour))
+			if err := preflightFor(t, walled, ctx, chainWorkflow(agentRoute("claw", delegate.BackendClaw, "", "claude-sonnet-4"))); err == nil {
+				t.Error("started a claw route on the capped header account it sends")
+			}
+		})
+	}
+}
+
+// An unlabelled reading — a binary that predates the source stamp — is charged
+// to the run's default, the meter the pre-flight reads for that same default
+// (defaultKey, usageCapKey): on a run holding nothing, the pod's ambient
+// account. On the bare meter instead, the wall it records lands where no
+// pre-flight of a nothing-held run on that pod ever reads. An unrecognised
+// label names no route either and lands with it; the bare "anthropic-env" — a
+// session that SAID no inherited credential named its spend — keeps the bare
+// meter. A run holding a legacy forfait record (no fingerprint) holds a
+// credential all the same: its default is that slot's fingerprint-less meter
+// on both sides, never the pod's account.
+func TestAnUnlabelledReadingLandsOnThePreflightsDefault(t *testing.T) {
+	blankAnthropicWireEnv(t)
+	t.Setenv("ANTHROPIC_API_KEY", "sk-pod")
+	ambient := platformKey(secrets.FingerprintSHA256("sk-pod"))
+	msg := &queue.RunMessage{RunID: "run-unlabelled", TenantID: "team-b"}
+	ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{})
+	keys := usageCapCredKeys(ctx, msg)
+	if got := usageCapKey(ctx, msg); got != ambient {
+		t.Fatalf("bench: the pre-flight default = %q, want the pod account's meter %q", got, ambient)
+	}
+	for _, source := range []string{"", "facade:https://gw.example.test/anthropic"} {
+		if got := keys.forSource(source); got != ambient {
+			t.Errorf("forSource(%q) = %q, want the pre-flight's default %q", source, got, ambient)
+		}
+	}
+	if got, bare := keys.forSource("anthropic-env"), platformKey(""); got != bare {
+		t.Errorf("forSource(anthropic-env) = %q, want the bare %q — the session said no inherited credential named its spend", got, bare)
+	}
+
+	// Through the recording side the runner wires: the reading the guard
+	// publishes with no source lands on the meter the next pre-flight reads.
+	caps := usagecap.NewMemStore()
+	g := capRunner(capTestPolicy(), caps, nil).usageGuardFor(ctx, msg, iterlog.Nop())
+	if g == nil {
+		t.Fatal("want a guard")
+	}
+	g.Observe(usagecap.Reading{Window: usagecap.WindowFiveHour, Utilization: 0.5, ObservedAt: time.Now().UTC()})
+	if got, err := caps.Latest(context.Background(), usageCapKey(ctx, msg)); err != nil || len(got) != 1 {
+		t.Errorf("the pre-flight's default meter holds %d reading(s) (err=%v), want the unlabelled one", len(got), err)
+	}
+
+	legacy := secrets.WithCredentials(context.Background(), secrets.Credentials{
+		OAuthCredentialFiles: map[string]string{string(secrets.OAuthKindClaudeCode): t.TempDir()},
+	})
+	fpLess := usagecap.Key(delegate.BackendClaudeCode, usagecap.TenantScope("team-b"), "")
+	if got := usageCapKey(legacy, msg); got != fpLess {
+		t.Errorf("a legacy forfait run's default = %q, want its fingerprint-less meter %q — the run spends its forfait, not the pod's account", got, fpLess)
+	}
+	if got := usageCapCredKeys(legacy, msg).forSource(""); got != fpLess {
+		t.Errorf("a legacy forfait run's unlabelled reading = %q, want %q", got, fpLess)
 	}
 }

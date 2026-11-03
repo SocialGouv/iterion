@@ -190,6 +190,40 @@ func TestLineValue_LastLineOfTheNameWins(t *testing.T) {
 	}
 }
 
+// Line answers what the CLI applies under a name: the LAST line's value, and
+// whether a line of the name is applied at all — an empty value included,
+// which claw's parser keeps and its identity sets over the header the CLI's
+// own auth put there, erasing it. Pinned against that parser on blocks it
+// accepts, for both names the Anthropic wire's auth sets.
+func TestLine_AgreesWithTheCLIsParser(t *testing.T) {
+	for _, raw := range []string{
+		"",
+		"X-Tenant: acme",
+		"Authorization: Bearer sk-x",
+		"Authorization:",
+		"Authorization:   ",
+		"x-api-key: k-1\nx-api-key: k-2",
+		"X-Tenant: acme\r\nAuthorization: Bearer a\r\nx-api-key:",
+		"authorization: bearer lower",
+	} {
+		headers, err := clawapi.ParseCustomHeaders(raw)
+		if err != nil {
+			t.Fatalf("bench: the CLI's parser refused %q: %v", raw, err)
+		}
+		for _, name := range []string{credheader.NameAuthorization, credheader.NameXAPIKey} {
+			wantValue, wantPresent := "", false
+			for k, v := range headers {
+				if strings.EqualFold(k, name) {
+					wantValue, wantPresent = v, true
+				}
+			}
+			if value, present := credheader.Line(raw, name); value != wantValue || present != wantPresent {
+				t.Errorf("Line(%q, %q) = %q, %v — the CLI applies %q, %v", raw, name, value, present, wantValue, wantPresent)
+			}
+		}
+	}
+}
+
 // The name set is the subject of the vendored-producer guard in
 // pkg/backend/model: keep it non-empty and lower-case here, or that guard
 // compares against nothing.

@@ -794,8 +794,9 @@ func spawnEnvValue(credEnv map[string]string, key string, sandboxed bool) string
 
 // ambientCredentialChannels are the variables an operator's own Anthropic auth
 // lives in, in the CLI's documented precedence order. ANTHROPIC_CUSTOM_HEADERS
-// is read beside them (spawnAuthorizationHeader): only an Authorization line
-// with a value in it is a credential.
+// is applied over them (OverlayCustomHeaderCredentials): an Authorization or
+// x-api-key line replaces the channels that header carries, and only such a
+// line with a value in it is a credential of its own.
 var ambientCredentialChannels = []string{
 	"ANTHROPIC_AUTH_TOKEN",
 	"ANTHROPIC_API_KEY",
@@ -857,12 +858,13 @@ func ambientCredChannels(credEnv, selected map[string]string, sandboxed bool) []
 // layer ambientAnthropicEnvForSandbox forwards on a sandboxed one, a node's
 // own ExtraEnv entry over either. The wire is not a precedence: a key and a
 // bearer both live go out together as x-api-key AND Authorization
-// (ambientCredChannels names the state), and an Authorization line in
-// ANTHROPIC_CUSTOM_HEADERS rides over every route's own auth — so the set is
-// every live channel, the header credential under its block's name. Empty
-// when no inherited credential names the spend: nothing inherited at all —
-// its "Not logged in" is a refusal, not an account — or a cloud mode
-// answering instead.
+// (ambientCredChannels names the state), so the set holds every live channel —
+// and then the ANTHROPIC_CUSTOM_HEADERS block, applied over them the way the
+// CLI applies it (OverlayCustomHeaderCredentials): its Authorization line
+// replaces the bearers, its x-api-key line the key. Empty when no inherited
+// credential names the spend: nothing inherited at all — its "Not logged in"
+// is a refusal, not an account — a block whose empty line erased the only
+// token, or a cloud mode answering instead.
 func ambientCredentialLive(env map[string]string, sandboxed bool) map[string]string {
 	if on, _ := spawnCloudProviderSwitches(env, sandboxed); len(on) > 0 {
 		return nil
@@ -873,8 +875,59 @@ func ambientCredentialLive(env map[string]string, sandboxed bool) map[string]str
 			live[k] = v
 		}
 	}
-	if v, ok := ambientAuthorizationValue(env, sandboxed); ok {
-		live["ANTHROPIC_CUSTOM_HEADERS"] = v
+	return OverlayCustomHeaderCredentials(live, spawnEnvValue(env, "ANTHROPIC_CUSTOM_HEADERS", sandboxed))
+}
+
+// anthropicWireAuthHeaders are the headers the Anthropic wire's own auth sets,
+// each with the env channels whose credential travels in it: Authorization the
+// bearers (ANTHROPIC_AUTH_TOKEN, and the claude CLI's CLAUDE_CODE_OAUTH_TOKEN),
+// x-api-key the key. A custom-header line of one of these names is applied
+// over that header — last, by name (claw's Identity.Apply: h.Set) — so it
+// REPLACES those channels on the wire, an empty value included, which erases
+// them. A line of any other name (api-key among them) sets a header no
+// Anthropic-wire auth sets: it rides beside the credential, never in its
+// place, and whether it authenticates anything is the operator's to know
+// (spawnCustomHeaders' weak claim).
+var anthropicWireAuthHeaders = []struct {
+	name     string
+	channels []string
+}{
+	{credheader.NameAuthorization, []string{"ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"}},
+	{credheader.NameXAPIKey, []string{"ANTHROPIC_API_KEY"}},
+}
+
+// customHeaderChannelPrefix opens the name a credential line of the
+// ANTHROPIC_CUSTOM_HEADERS block carries in a live set: the block's variable,
+// then the header's own name ("ANTHROPIC_CUSTOM_HEADERS:x-api-key").
+const customHeaderChannelPrefix = "ANTHROPIC_CUSTOM_HEADERS:"
+
+// OverlayCustomHeaderCredentials applies an ANTHROPIC_CUSTOM_HEADERS block
+// over live — the credential set a client's own auth sends, channel name to
+// value — and returns the set the request carries: each line named after a
+// header the Anthropic wire's auth sets (anthropicWireAuthHeaders, the last
+// line of the name, credheader.Line) removes the channels that header carried,
+// and rides as a credential of its own (customHeaderChannelPrefix + its name)
+// where its value is not empty. live may be nil.
+//
+// One overlay for every lane whose client applies the block — the claude
+// CLI's reading of a spawn (ambientCredentialLive) and claw's env factory
+// (model.AmbientEnvMeter) — so where the two send the same set they key one
+// meter, and a channel a header line displaced keys neither.
+func OverlayCustomHeaderCredentials(live map[string]string, headers string) map[string]string {
+	for _, h := range anthropicWireAuthHeaders {
+		value, present := credheader.Line(headers, h.name)
+		if !present {
+			continue
+		}
+		if live == nil {
+			live = map[string]string{}
+		}
+		for _, ch := range h.channels {
+			delete(live, ch)
+		}
+		if value != "" {
+			live[customHeaderChannelPrefix+h.name] = value
+		}
 	}
 	return live
 }
@@ -883,9 +936,10 @@ func ambientCredentialLive(env map[string]string, sandboxed bool) map[string]str
 // set — channel name to value, for every channel a request carries: a single
 // credential digests its bare value, the shape sessions already carry; several
 // digest their length-prefixed rendering (ambientCredentialSet), in
-// ambientForwardedChannels' order with the header credential last — a channel
-// outside that list after them, by name — so a channel appearing or leaving
-// renders a different meter. "" for an empty set.
+// ambientForwardedChannels' order, then every channel outside that list by
+// name — the custom-header block's credential lines among them
+// (customHeaderChannelPrefix) — so a channel appearing or leaving renders a
+// different meter. "" for an empty set.
 //
 // It is the one digest of the ambient family's fingerprinted label, read by
 // every lane that names an inherited account: a claude_code session over the
@@ -919,15 +973,6 @@ func AmbientCredentialSetFingerprint(live map[string]string) string {
 	default:
 		return secrets.FingerprintSHA256(ambientCredentialSet(pairs))
 	}
-}
-
-// ambientAuthorizationValue is the credential an ambient ANTHROPIC_CUSTOM_HEADERS
-// block authenticates with: the value of its last Authorization line
-// (credheader.LineValue — the CLI applies the block per line, last write
-// wins). ok=false when the block carries none, or one with an empty value —
-// nothing the request would carry.
-func ambientAuthorizationValue(env map[string]string, sandboxed bool) (string, bool) {
-	return credheader.LineValue(spawnEnvValue(env, "ANTHROPIC_CUSTOM_HEADERS", sandboxed), credheader.NameAuthorization)
 }
 
 // ambientCredentialSet renders a multi-channel live set as one string the
@@ -993,15 +1038,16 @@ func spawnCloudProviderSwitches(credEnv map[string]string, sandboxed bool) (on, 
 
 // spawnAuthorizationHeader reports that the ANTHROPIC_CUSTOM_HEADERS value the
 // spawn carries holds an Authorization credential — a line of the name whose
-// value is not empty (credheader.LineValue, the reading
-// ambientAuthorizationValue keys the ambient meter with). One reading for
-// every consumer — the credential admission probe, the ambient channel list,
-// the record's own field and the meter — so none of them can admit or name a
-// block whose Authorization line authenticates nothing: an empty value puts
-// no credential on the request, and admitting it launches a run that dies
-// "Not logged in" past the gate instead of taking the typed refusal.
+// value is not empty (credheader.LineValue), the remediation's reading: the
+// ambient channel list and the record's own field. The meter and the
+// credential admission probe read the whole block (ambientCredentialLive,
+// through OverlayCustomHeaderCredentials), which keys this same value as the
+// line's credential. Neither names a block whose Authorization line
+// authenticates nothing: an empty value puts no credential on the request,
+// and admitting it launches a run that dies "Not logged in" past the gate
+// instead of taking the typed refusal.
 func spawnAuthorizationHeader(credEnv map[string]string, sandboxed bool) bool {
-	_, ok := ambientAuthorizationValue(credEnv, sandboxed)
+	_, ok := credheader.LineValue(spawnEnvValue(credEnv, "ANTHROPIC_CUSTOM_HEADERS", sandboxed), credheader.NameAuthorization)
 	return ok
 }
 

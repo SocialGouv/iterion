@@ -2,7 +2,6 @@ package model
 
 import (
 	"context"
-	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/secrets"
 )
@@ -45,8 +44,8 @@ func anthropicFunding(ctx context.Context) string {
 	// The env pair, with the factory's own shape: AUTH_TOKEN is spent via
 	// the OAuth branch, which a z.ai/bigmodel base URL gates OFF — counting
 	// it there would bless a dispatch the factory sends out credential-less.
-	base := strings.ToLower(envGetenv(ctx, "ANTHROPIC_BASE_URL"))
-	isZAI := strings.Contains(base, "z.ai") || strings.Contains(base, "bigmodel")
+	// The factory's own hostname predicate, not a copy of it.
+	isZAI := secrets.BaseURLNamesZAI(envGetenv(ctx, "ANTHROPIC_BASE_URL"))
 	if envGetenv(ctx, "ANTHROPIC_API_KEY") != "" || (envGetenv(ctx, "ANTHROPIC_AUTH_TOKEN") != "" && !isZAI) {
 		return "the environment's anthropic credential"
 	}

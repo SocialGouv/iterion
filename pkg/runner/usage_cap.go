@@ -80,12 +80,18 @@ type runCredKeys struct {
 	// the pod env (ambientRefused). It is the meter key of the nothing-held
 	// default, not a slot of the run: no label of the run resolves to it, only
 	// a session with no credential of its own spends it. A claw call reads its
-	// own channels instead (clawNothingHeldKey).
+	// own channels instead (clawUnslottedKey).
 	ambientFP string
 	// ambientRefused is the stamp (secrets.Credentials.AmbientRefused): every
 	// fallback of the run to the pod env answers a typed refusal, so its
 	// nothing-held spend stays on the no-credential meter.
 	ambientRefused bool
+	// defaultHeld: the run holds a default credential on the anthropic wire —
+	// a key of the run's own, a forfait dir — fingerprinted or not. A legacy
+	// OAuth record carries no fingerprint (firstHeld cannot name it) and is
+	// still what the run's sessions spend: its default is that slot's
+	// fingerprint-less meter, never the pod's ambient account.
+	defaultHeld bool
 	// sandboxed is the run's sandbox as the pre-flight reads it
 	// (usageCapPreflight: the mode the floored workflow resolves — every node
 	// shares the run's sandbox): a claw node then resolves in the container,
@@ -189,6 +195,7 @@ func usageCapCredKeys(ctx context.Context, msg *queue.RunMessage) runCredKeys {
 		return anyTenant, anyOrg, anyHeld
 	}
 	anyTenant, anyOrg, anyDefault := scopeOf(false)
+	k.defaultHeld = anyDefault
 	if !anyDefault {
 		anyTenant, anyOrg, _ = scopeOf(true)
 	}
@@ -232,10 +239,12 @@ func usageCapCredKeys(ctx context.Context, msg *queue.RunMessage) runCredKeys {
 // on. The source labels are providerFingerprint's vocabulary: a facade URL
 // is a facade token, "anthropic-direct" the Anthropic API key,
 // "anthropic-oauth" the OAuth dir. An empty label (older binary) falls back
-// to the bundle-default precedence, secrets.AnthropicWireSlotOrder —
-// anthropicCredEnvForCLI's contract, read from the list it is written
-// against. A rotated token therefore opens a fresh meter instead of
-// inheriting the readings of the account it replaced.
+// to the run's default (defaultKey): the bundle-default precedence,
+// secrets.AnthropicWireSlotOrder — anthropicCredEnvForCLI's contract, read
+// from the list it is written against — and on a run holding none of it the
+// meter of the session that spends the pod's env, the one the pre-flight
+// reads for that same default. A rotated token therefore opens a fresh meter
+// instead of inheriting the readings of the account it replaced.
 //
 // An ambient-credential label ("anthropic-env:<fingerprint>") is the POD's
 // inherited key — or a node's own key on top of it — and it is ONE account
@@ -272,48 +281,53 @@ func usageCapCredKeys(ctx context.Context, msg *queue.RunMessage) runCredKeys {
 //
 // An UNRECOGNISED facade label (an operator base URL forwarded from the
 // ambient env, a label from a binary that predates the stamp) names no slot at
-// all, and there the bundle default is the only answer available.
+// all, and there the run's default is the only answer available, as for an
+// empty one.
 func (k runCredKeys) forSource(source string) string {
 	if fp, ok := delegate.AmbientSourceFingerprint(source); ok {
 		return usagecap.Key(delegate.BackendClaudeCode, usagecap.ScopePlatform, fp)
 	}
-	return k.keyForSlot(k.slotForSource(source))
+	if slot, named := k.slotForSource(source); named {
+		return k.keyForSlot(slot)
+	}
+	return k.defaultKey()
 }
 
 // slotForSource names the slot a reading's source label is charged to — ""
-// when no bundle credential ran — by the rules forSource documents. The
-// whole "anthropic-env" family lands here: bare for a session whose spend
-// no inherited credential names, fingerprinted labels being answered by forSource
-// before this walk, and a fingerprint-less member (a hand-written label, a
-// future shape) charging nobody rather than the bundle default.
-func (k runCredKeys) slotForSource(source string) string {
+// when the route it names ran on no bundle credential — by the rules
+// forSource documents, and named=false for a label that names no route at
+// all (an empty one, an unrecognised one), which the run's default answers.
+// The whole "anthropic-env" family is named: bare for a session whose spend
+// no inherited credential names, fingerprinted labels being answered by
+// forSource before this walk, and a fingerprint-less member (a hand-written
+// label, a future shape) charging nobody rather than the run's default.
+func (k runCredKeys) slotForSource(source string) (slot string, named bool) {
 	switch {
 	case strings.HasPrefix(source, "facade:"):
 		if s := delegate.AnthropicWireFacadeSlot(source); s != "" {
-			return s
+			return s, true
 		}
 	case source == "anthropic-direct":
 		if k.anthropicFP != "" {
-			return string(secrets.ProviderAnthropic)
+			return string(secrets.ProviderAnthropic), true
 		}
-		return ""
+		return "", true
 	case source == "anthropic-oauth":
 		if k.oauthFP != "" {
-			return string(secrets.OAuthKindClaudeCode)
+			return string(secrets.OAuthKindClaudeCode), true
 		}
-		return ""
+		return "", true
 	case delegate.IsAmbientSource(source):
-		return ""
+		return "", true
 	}
-	_, slot := k.firstHeld()
-	return slot
+	return "", false
 }
 
 // keyForSlot is the meter key the readings of one credential slot land on:
 // the slot's own ledger scope — a shared tier's pinned key is metered on its
 // owner's ledger even when the run itself is tenant-scoped — and its
-// fingerprint. "" is the run's scope with no credential, where a session on
-// the pod's ambient env records.
+// fingerprint. "" is the run's scope with no credential, where a session
+// whose spend no credential names records (the bare "anthropic-env").
 func (k runCredKeys) keyForSlot(slot string) string {
 	return usagecap.Key(delegate.BackendClaudeCode, k.scopeFor(slot), k.bySlot(slot))
 }
@@ -334,14 +348,16 @@ func (k runCredKeys) keyForSlot(slot string) string {
 // are not metered; other backends route on the spec, as the spend ledger books
 // them (credentialSlotForRoute). A slot off the anthropic wire is not what the
 // cap meters. A nothing-held answer is metered only on a claw anthropic-wire
-// spec, read off claw's own resolution (clawNothingHeldKey): the account the
-// request carries, by the channels claw's client reads, where a wall this cap
-// keeps can stand in its way at all. Every other nothing-held shape funds
-// elsewhere or is unreadable — opencode resolves its own config, a gateway
-// route the deployment's gateway pair, a vendor id its own pod env — and the
-// reading side books every one of those on nobody, so keying it here would
-// park the run on evidence no spend of its can raise. A route the walk cannot
-// read keeps the run's default credential — defaultKey, the ledger the coming
+// spec, read off claw's own resolution (clawUnslottedKey): the run's Anthropic
+// key where claw still reaches it past the slots the ledger's walk names — a
+// GLM id with no z.ai key, in process — else the account the request carries,
+// by the channels claw's client reads, where a wall this cap keeps can stand
+// in its way at all. Every other nothing-held shape funds elsewhere or is
+// unreadable — opencode resolves its own config, a gateway route the
+// deployment's gateway pair, a vendor id its own pod env — and the reading
+// side books every one of those on nobody, so keying it here would park the
+// run on evidence no spend of its can raise. A route the walk cannot read
+// keeps the run's default credential — defaultKey, the ledger the coming
 // session writes.
 func (k runCredKeys) routeKey(ctx context.Context, route model.WireRoute) (key string, metered bool) {
 	if !route.Readable {
@@ -388,25 +404,40 @@ func (k runCredKeys) routeKey(ctx context.Context, route model.WireRoute) (key s
 		return "", false
 	}
 	if slot == "" {
-		// Nothing of the run funds the route. A claw spec on the anthropic
-		// wire resolves through the pod env — inherited in process, the
-		// crossing's in the container — and is read off claw's own walk; a pi
-		// route on its Anthropic provider was answered above, and pi's other
-		// providers, like every other backend, fund from config iterion does
-		// not read: an account whose walls never land on this meter. Not
+		// No slot the ledger's walk names funds the route. A claw spec on the
+		// anthropic wire still resolves — through the run's Anthropic key in
+		// process, through the pod env otherwise (inherited in process, the
+		// crossing's in the container) — and is read off claw's own walk; a
+		// pi route on its Anthropic provider was answered above, and pi's
+		// other providers, like every other backend, fund from config iterion
+		// does not read: an account whose walls never land on this meter. Not
 		// metered.
 		if route.Backend == delegate.BackendClaw && wireForRoute(route.Backend, route.Model) == anthropicWire {
-			return k.clawNothingHeldKey(route.Model, hint, k.sandboxed)
+			return k.clawUnslottedKey(creds, route.Model, hint, k.sandboxed)
 		}
 		return "", false
 	}
 	return k.keyForSlot(slot), true
 }
 
-// clawNothingHeldKey is the meter key of a claw call on the anthropic wire
-// that nothing of the run funds — a claw node's route (in the container on a
-// sandboxed run), a supervisor's spec (always in process) — and whether the
-// cap meters it at all, read off claw's own resolution under the hint it
+// clawUnslottedKey is the meter key of a claw call on the anthropic wire that
+// no slot its caller's walk named funds — a claw node's route (in the
+// container on a sandboxed run), a supervisor's spec (always in process) —
+// and whether the cap meters it at all. One place for both callers, in claw's
+// own order.
+//
+// The run's Anthropic key comes first where claw's resolution still reaches
+// it. In process, ResolveWithContext spends it on every anthropic spec its
+// earlier branches pass by (the keyed factory, APIKeyForRoute) — a GLM id
+// with no z.ai key of the run included, which both callers' walks answer with
+// the z.ai slot alone — at the destination model.RunCredentialBaseURL names;
+// a GLM id bound for the real Anthropic wire there (model.GLMUnservedAt)
+// meets no wall and is not metered. In the container the crossing carries
+// that key only for a node whose spec pins anthropic, which a GLM spec does
+// not (forwardableProviderEnv pins it on zai), and such a route named the
+// slot already.
+//
+// Past it, the pod env, read off claw's own resolution under the hint it
 // resolves with (model.AmbientEnvMeter): the account the request carries, by
 // the channels claw's client reads. Never the claude CLI's reading of the pod
 // (ambientFP): claw reads no CLAUDE_CODE_OAUTH_TOKEN and sends a key alone
@@ -422,7 +453,15 @@ func (k runCredKeys) routeKey(ctx context.Context, route model.WireRoute) (key s
 // refuses before any client exists (no client, no account — the typed refusal
 // is the answer and the route's own fallbacks fire), z.ai's synthesis, a GLM
 // id no destination of the env serves.
-func (k runCredKeys) clawNothingHeldKey(spec, hint string, sandboxed bool) (string, bool) {
+func (k runCredKeys) clawUnslottedKey(creds secrets.Credentials, spec, hint string, sandboxed bool) (string, bool) {
+	if !sandboxed {
+		if slot := heldForRoute(creds, string(secrets.ProviderAnthropic)); slot != "" {
+			if model.GLMUnservedAt(spec, model.RunCredentialBaseURL(spec, hint)) {
+				return "", false
+			}
+			return k.keyForSlot(slot), true
+		}
+	}
 	fp, metered := model.AmbientEnvMeter(spec, hint, sandboxed)
 	if !metered {
 		return "", false
@@ -452,17 +491,22 @@ func (k runCredKeys) firstHeld() (fp, slot string) {
 	return "", ""
 }
 
-// defaultKey is the meter key the pre-flight reads for a spend it cannot
-// attribute to a route: the run's default credential when the bundle holds
-// one (forSource's "" answer), and when it holds none, the ledger the coming
-// session writes — the pod's ambient account's meter where the pod carries
-// the credential (nothingHeldKey), the bare no-credential meter where it does
-// not. Keying the nothing-held arm on the bare meter would read a ledger no
-// ambient wall ever lands on: the account's refusals travel under its
-// fingerprinted label.
+// defaultKey is the meter of a spend nothing attributes — a reading whose
+// label names no route (forSource) and a route the pre-flight cannot read
+// (routeKey), one meter for both sides: the run's default credential when the
+// bundle holds one — its fingerprint's meter, the scope's fingerprint-less
+// one for a legacy record that carries none — and when it holds none, the
+// ledger the coming session writes — the pod's ambient account's meter where
+// the pod carries the credential (nothingHeldKey), the bare no-credential
+// meter where it does not. Keying the nothing-held arm on the bare meter
+// would read a ledger no ambient wall ever lands on: the account's refusals
+// travel under its fingerprinted label.
 func (k runCredKeys) defaultKey() string {
 	if _, slot := k.firstHeld(); slot != "" {
 		return k.keyForSlot(slot)
+	}
+	if k.defaultHeld {
+		return k.keyForSlot("")
 	}
 	return k.nothingHeldKey()
 }
@@ -479,9 +523,9 @@ func (k runCredKeys) nothingHeldKey() string {
 	return k.keyForSlot("")
 }
 
-// usageCapKey is the run's DEFAULT credential key — the one a session with no
-// source label is charged to, and what the pre-flight reads for a route it
-// cannot read (runCredKeys.routeKey).
+// usageCapKey is the run's DEFAULT credential key (runCredKeys.defaultKey) —
+// the one a session with no source label is charged to (forSource), and what
+// the pre-flight reads for a route it cannot read (runCredKeys.routeKey).
 func usageCapKey(ctx context.Context, msg *queue.RunMessage) string {
 	return usageCapCredKeys(ctx, msg).defaultKey()
 }
@@ -974,21 +1018,24 @@ func supervisorRouteID(name string, i int) string {
 // `anthropic/…` (no GLM id) the Anthropic key held for the route, else the
 // Claude forfait while claw takes it — not under
 // ITERION_FORBID_SUBSCRIPTION_OAUTH, not behind a non-Anthropic destination
-// (model.ForfaitWireBaseURL: the env's ANTHROPIC_BASE_URL, the direct wire
+// (model.RunCredentialBaseURL: the env's ANTHROPIC_BASE_URL, the direct wire
 // under the `provider: "anthropic"` hint) — else the pod env, read off claw's
-// own walk (clawNothingHeldKey): the account its client carries, the
+// own walk (clawUnslottedKey): the account its client carries, the
 // no-credential meter where it carries none of the env's, nothing where claw
-// refuses the walk. A GLM id there the run's held z.ai key, else that same
-// walk: the pod's ZAI_API_KEY synthesis, a destination that serves no GLM id
-// and a request with no credential spend no wall this cap keeps; the
-// account the request carries otherwise. A claw supervisor reports no
-// readings of its own, so the account's refusals the other lanes record are
-// the only evidence it has. `zai/…` and `moonshot/…` that provider's key, a
-// gateway spec the run's gateway pair; with none held the registry reads each
-// provider's OWN pod env (MOONSHOT_API_KEY, the OPENAI_COMPATIBLE pair) or
-// refuses — never the pod's anthropic ambient env — so they are not metered
-// either. A spec the registry cannot parse spends nothing; any other provider
-// is off the wire the cap meters.
+// refuses the walk. A GLM id there the run's held z.ai key, else the run's
+// Anthropic key — the keyed factory past the z.ai branch, at the env's
+// destination, not metered where that is the real Anthropic wire — else that
+// same walk (clawUnslottedKey holds both, in that order): the pod's
+// ZAI_API_KEY synthesis, a destination that serves no GLM id and a request
+// with no credential spend no wall this cap keeps; the account the request
+// carries otherwise. A claw supervisor reports no readings of its own, so the
+// account's refusals the other lanes record are the only evidence it has.
+// `zai/…` and `moonshot/…` that provider's key, a gateway spec the run's
+// gateway pair; with none held the registry reads each provider's OWN pod env
+// (MOONSHOT_API_KEY, the OPENAI_COMPATIBLE pair) or refuses — never the pod's
+// anthropic ambient env — so they are not metered either. A spec the registry
+// cannot parse spends nothing; any other provider is off the wire the cap
+// meters.
 func (k runCredKeys) supervisorKey(ctx context.Context, spec, hint string) (key string, metered bool) {
 	// Read as the registry reads it: untrimmed, case-sensitive.
 	provider, _, err := model.ParseModelSpec(spec)
@@ -1001,19 +1048,21 @@ func (k runCredKeys) supervisorKey(ctx context.Context, spec, hint string) (key 
 	case secrets.ProviderAnthropic:
 		if model.GLMOnAnthropicWire(spec) {
 			if slot = heldForRoute(creds, string(secrets.ProviderZAI)); slot == "" {
-				return k.clawNothingHeldKey(spec, hint, false)
+				// No z.ai key of the run: the run's Anthropic key, else the
+				// pod env, in process.
+				return k.clawUnslottedKey(creds, spec, hint, false)
 			}
 			return k.keyForSlot(slot), true
 		}
 		slot = heldForRoute(creds, string(secrets.ProviderAnthropic))
 		if slot == "" && creds.OAuthDir(string(secrets.OAuthKindClaudeCode)) != "" &&
-			!secrets.ForbidSubscriptionOAuth() && secrets.AnthropicForfaitWireOK(model.ForfaitWireBaseURL(spec, hint)) {
+			!secrets.ForbidSubscriptionOAuth() && secrets.AnthropicForfaitWireOK(model.RunCredentialBaseURL(spec, hint)) {
 			slot = string(secrets.OAuthKindClaudeCode)
 		}
 		if slot == "" {
 			// Nothing the run holds funds this spec: claw resolves it from
 			// the pod env, in process.
-			return k.clawNothingHeldKey(spec, hint, false)
+			return k.clawUnslottedKey(creds, spec, hint, false)
 		}
 	case secrets.ProviderZAI, secrets.ProviderMoonshot:
 		slot = heldForRoute(creds, provider)
