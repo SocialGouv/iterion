@@ -152,6 +152,13 @@ type PiBackend struct {
 // piRecordAuthRefusal): both transports produce the typed error here, so
 // this is the one place that sees every one of them.
 func (b *PiBackend) Execute(ctx context.Context, task Task) (Result, error) {
+	// The ambient half of the stamp doctrine (PiAnthropicAmbientSource): a
+	// session spending the pod's inherited account names that account, not the
+	// provider slug's slot label. Task and TaskHooks travel by value, so the
+	// wrap lives and dies with one Execute call.
+	if label := PiAnthropicAmbientSource(ctx, task.Model, task.ProviderHint); label != "" {
+		task.Hooks.OnUsageWindow = piStampAmbientSource(task.Hooks.OnUsageWindow, label)
+	}
 	res, err := b.execute(ctx, task)
 	return res, b.recordAuthRefusal(task, err)
 }
@@ -197,6 +204,12 @@ func (b *PiBackend) recordAuthRefusal(task Task, err error) error {
 	return err
 }
 
+// PiUsageSourceDirect is the direct-anthropic label of the source vocabulary
+// piUsageSource mints: the run's own Anthropic API key, a SLOT of the run. A
+// session spending the pod's inherited account instead stamps
+// PiAnthropicAmbientSource's label over it (piStampAmbientSource).
+const PiUsageSourceDirect = "anthropic-direct"
+
 // The facade source labels a pi node emits. pi reaches these vendors through
 // its OWN first-class providers rather than a base-URL redirect, so there is
 // no facade URL to render and the label is fixed. Exported because the
@@ -220,7 +233,7 @@ const (
 func piUsageSource(provider string) string {
 	switch strings.ToLower(strings.TrimSpace(provider)) {
 	case "anthropic":
-		return "anthropic-direct"
+		return PiUsageSourceDirect
 	case "zai":
 		return PiUsageSourceZAI
 	// pi's own id for Moonshot, which is what piResolveModel returns after
@@ -230,6 +243,70 @@ func piUsageSource(provider string) string {
 		return PiUsageSourceMoonshot
 	}
 	return ""
+}
+
+// PiAnthropicAmbientSource names the usage-meter source a pi session whose
+// provider resolves to Anthropic stamps when the credential it spends is the
+// pod's inherited one: the fingerprinted ambient label (providerFingerprint's
+// ambient shape) the runner's meter keys on the platform account's meter — the
+// meter its nothing-held pre-flight reads for a pi route with an anthropic
+// hint (the route spends that account whatever backend serves it, so a wall
+// one pi run measures must reach every other borrower's pre-flight,
+// claude_code's readings included). The provider slug alone cannot say this:
+// its refusal label names the Anthropic API key as a SLOT OF THE RUN, and a
+// run holding none books its refusal on the fingerprint-less meter no
+// pre-flight of the shape ever reads — the split between the two sides of the
+// pi lane this label closes.
+//
+// "" when the spend is not the pod's inherited account: the run carries an
+// anthropic credential of its own (piResolveEnv or piRouteEnv put it in the
+// env, and the slot label is the right one), the run refused the pod env (the
+// ADR-131 stamp — its nothing-held default spends nothing of the pod's, and
+// its pre-flight reads the bare meter the slot label books on), or the pod
+// inherits no credential a direct call could spend — nothing at all ("Not
+// logged in" is a refusal, not an account) or a cloud-provider switch
+// answering instead.
+//
+// Task.ExtraEnv is not composed here, as AnthropicRouteSource documents: the
+// lanes that compose a run env run no meter pre-flight, so a lane that both
+// reads this and feeds an anthropic credential through pi's ExtraEnv must
+// compose those entries first.
+func PiAnthropicAmbientSource(ctx context.Context, model, hint string) string {
+	provider, _ := piResolveModel(model, hint)
+	if provider != "anthropic" {
+		return ""
+	}
+	if creds, ok := secrets.CredentialsFromContext(ctx); ok {
+		if creds.AmbientRefused {
+			return ""
+		}
+		if creds.APIKeyForRoute(secrets.ProviderAnthropic) != "" {
+			return ""
+		}
+	}
+	if fp := AmbientCredentialFingerprint(); fp != "" {
+		return ambientSourcePrefix + fp
+	}
+	return ""
+}
+
+// piStampAmbientSource wraps an OnUsageWindow hook so a reading pi minted for
+// its Anthropic provider names the account that actually spent it — the
+// sibling of stampUsageSource, whose clamp is the empty label rather than the
+// slot one. pi derives its source from the provider slug (piUsageSource) and
+// cannot see which env funded it; the pod's ambient account is not a slot of
+// the run, so the wrap overrides exactly that label and lets every other
+// source pass untouched.
+func piStampAmbientSource(inner func(usagecap.Reading) error, label string) func(usagecap.Reading) error {
+	if inner == nil {
+		return nil
+	}
+	return func(r usagecap.Reading) error {
+		if r.Source == PiUsageSourceDirect {
+			r.Source = label
+		}
+		return inner(r)
+	}
 }
 
 func (b *PiBackend) execute(ctx context.Context, task Task) (Result, error) {

@@ -304,6 +304,62 @@ func TestTheNothingHeldMeterJudgesOnlyTheShapesTheAmbientAccountFunds(t *testing
 	}
 }
 
+// The pi lane names ONE meter on both sides. pi resolves its providers from
+// the env allowlist it is handed, the pod's ANTHROPIC_API_KEY included, so a
+// route with an anthropic hint and no credential of the run spends the pod's
+// ambient account — the pre-flight reads that account's meter for the shape
+// (the pi row above) — and the refusal pi records must land on the SAME
+// meter, or the wall one pi run measures reaches no pi pre-flight ever: the
+// account's pi evidence would be dead letters and the next identical run
+// starts and spends past it, the per-borrower split this file exists to keep
+// closed, reopened between the two sides of one lane.
+func TestThePiLaneNamesOneMeterOnBothSides(t *testing.T) {
+	blankAnthropicWireEnv(t)
+	t.Setenv("ANTHROPIC_API_KEY", "sk-pod")
+	ambient := usagecap.Key(delegate.BackendClaudeCode, usagecap.ScopePlatform, secrets.FingerprintSHA256("sk-pod"))
+	ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{})
+	keys := usageCapCredKeys(ctx, &queue.RunMessage{TenantID: "team-b"})
+
+	// The refusal pi stamps (the minter its Execute wraps the hook with — one
+	// decision, both sides) must parse as an account and book on the meter
+	// the pre-flight reads.
+	label := delegate.PiAnthropicAmbientSource(ctx, "claude-opus-5-5", "anthropic")
+	if _, ok := delegate.AmbientSourceFingerprint(label); !ok {
+		t.Fatalf("the pi refusal stamps %q, which names no account at all", label)
+	}
+	if got := keys.forSource(label); got != ambient {
+		t.Fatalf("the pi refusal books on %q, want the pod account's meter %q — no pre-flight reads the meter it wrote", got, ambient)
+	}
+	piRoute := model.WireRoute{NodeID: "n7", Backend: delegate.BackendPi, Hint: "anthropic", Model: "claude-opus-5-5", Readable: true}
+	if key, metered := keys.routeKey(ctx, piRoute); !metered || key != ambient {
+		t.Fatalf("the pi route pre-flight = %q metered=%v, want %q", key, metered, ambient)
+	}
+
+	// End to end across tenants: the wall tenant A's pi run measured parks
+	// tenant B's identical pi route.
+	store := usagecap.NewMemStore()
+	ctxA := secrets.WithCredentials(context.Background(), secrets.Credentials{
+		APIKeys:      map[secrets.Provider]string{secrets.ProviderZAI: "zai-team-a"},
+		Fingerprints: map[string]string{string(secrets.ProviderZAI): "fp-zai-a"},
+	})
+	if err := store.Record(context.Background(), usageCapCredKeys(ctxA, &queue.RunMessage{TenantID: "team-a"}).forSource(label), usagecap.Reading{
+		Window:      usagecap.WindowFiveHour,
+		Utilization: 1,
+		Status:      usagecap.StatusRejected,
+		ObservedAt:  time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	readings, err := store.Latest(context.Background(), ambient)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pol := usagecap.Policy{FiveHour: usagecap.WindowPolicy{MaxPercent: 80, Mode: usagecap.ModeSoft}}
+	if d := usagecap.Preflight(readings, pol, time.Now().UTC(), usagecap.DefaultTrust()); !d.Blocked {
+		t.Fatalf("tenant B's pi pre-flight read %d readings and did not block — the wall the pi lane measured reached no meter it reads", len(readings))
+	}
+}
+
 // The ambient gateway funds a GLM id. The ambient-forfait deployment —
 // ANTHROPIC_BASE_URL at a z.ai-compatible gateway beside an ambient
 // ANTHROPIC_AUTH_TOKEN — walks a GLM id through the env factory exactly like
