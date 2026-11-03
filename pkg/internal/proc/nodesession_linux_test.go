@@ -703,15 +703,18 @@ func (w *nodeWorld) check(r SweepReport, err error) {
 		// its absence here costs that window no coverage.
 		w.t.Run("respawner's replacement", func(t *testing.T) {
 			if !sighted[child] {
-				// The sweep ended before the replacement joined the session:
-				// two scans in a row found nothing while it was still
-				// forking — its environ is unreadable for the instant of an
-				// exec, and its parent, the respawner, is gone by then, so
-				// neither the entry nor a live ancestor names it. Judging it
-				// here would be a verdict on how fast this machine starts a
-				// process.
+				// The sweep never sighted the replacement, for one of two
+				// reasons this test cannot tell apart. It ended before the
+				// replacement joined the session: two scans in a row found
+				// nothing while it was still forking — its environ is
+				// unreadable for the instant of an exec, and its parent, the
+				// respawner, is gone by then, so neither the entry nor a live
+				// ancestor names it — and judging that here would be a verdict
+				// on how fast this machine starts a process. Or it found the
+				// replacement and never filed it, which is the defect the
+				// staged window below exists for.
 				w.strays = append(w.strays, child)
-				t.Skipf("the sweep returned before the respawner's replacement (pid %d) joined the session: the window is judged by TestSweepStopsAProcessThatShowsAfterAnEmptyScan, whose `replacement` joins after a scan of the TERM phase that found members — staged instead of raced", child)
+				t.Skipf("the sweep never sighted the respawner's replacement (pid %d) — it returned before the replacement joined the session, or found it and never filed it: the window is judged by TestSweepStopsAProcessThatShowsAfterAnEmptyScan, whose `replacement` joins after a scan of the TERM phase that found members — staged instead of raced", child)
 			}
 			w.marked["respawner's replacement"] = child
 		})
