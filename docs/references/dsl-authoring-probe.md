@@ -52,11 +52,11 @@ perfect bot proves the docs suffice, not that the skill does.
 
 A spec that cites the tree makes a claim about it. Each spec that opens an
 existing file carries a `file | lines | holds` table, read at test time by
-`TestAuthoringProbeSpecsNameTargetsThatExist` in `internal/docsguard`: the
-paths must exist, each count must be within a quarter of `wc -l` (with 100
-lines of slack), and every structure a `holds` cell names must still be in
-that file. The dated rows below are observations rather than guidance and
-stay out of its reach.
+`TestAuthoringProbeSpecsNameTargetsThatExist` in `internal/docsguard`, which
+also holds the page to its own name: the paths must exist, `wc -l` must match
+each count within a quarter of the claim (never less than 100 lines), and
+every structure a `holds` cell names must still be in that file. The dated
+rows below are observations rather than guidance and stay out of its reach.
 
 ### Spec 1 — creation (the plan's ten requirements)
 
@@ -106,12 +106,13 @@ no longer writing the node: it is the three slots the new lens has to join,
 which the spec names because the agent has to honour all three.
 
 1. The branch: an edge off `router fan:`, which `router topology:` reaches
-   only on `review_mode == 'dual' || review_tier == 'audit'`.
+   only on `vars.review_mode == 'dual' || vars.review_tier == 'audit'`.
 2. The merge slot: `compute merge_reviews:` normalises per FAMILY
    (`claude_*` and `gpt_*`, each guarded by its own `_ran` flag) and
    `schema review_output:` constrains `family` to those two, so a third
    lens has nowhere to land until both are widened.
-3. The absence: every merged key carries an `if()` fallback, because a run
+3. The absence: every merged value carries an `if()` fallback (the two
+   `_ran` flags and `review_scope` read the outputs bare), because a run
    that did not schedule the lens renders a reference to an absent node as
    a literal placeholder — which reads to the merging agent as a broken
    template rather than as "that lens did not run".
@@ -119,11 +120,12 @@ which the spec names because the agent has to honour all three.
 Checklist: the new node and its two edges; `schema family_reviews:` declares
 the lens's keys and `compute merge_reviews:` fills them, fallback included;
 `compute pr_gate:` and the verdict's own counts untouched; validating the
-unit adds no error and no warning (as shipped it has 0 errors and 32 C315
-warnings, one per route read from the environment, plus C251 on a build
-with no orderable version); the diff touches those four files and nothing
-else, and adds under 120 lines — a judge of the glance tier's size is ~25,
-its user prompt ~30, the schema and merge keys ~17, the edges ~6, and
+unit adds no error and no warning to what it ships with (no error; C315 on
+each route field and tool body that reads the environment, ADR-132 stage 1, a
+count measured per build rather than pinned here; C251 on a build with no
+orderable version); the diff touches those four files and nothing else,
+and adds under 120 lines — a judge of the glance tier's size is ~25, its
+user prompt ~30, the schema and merge keys ~17, the edges ~6, and
 rendering the new block ~10.
 
 ### Spec 3 — repair from diagnostics
@@ -133,7 +135,7 @@ would. Each break has a site in that file and raises exactly one error:
 
 | file | lines | holds |
 |---|---|---|
-| `examples/review-merge-gate.bot` | 123 | `workflow review_merge_gate:` and `human ship_review:`, the node four of the five breaks edit |
+| `examples/review-merge-gate.bot` | 123 | `workflow review_merge_gate:`, whose edges two of the five breaks edit, and `human ship_review:`, the node the other three edit |
 
 | break | the edit | code |
 |---|---|---|
