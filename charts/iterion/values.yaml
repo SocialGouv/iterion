@@ -17,6 +17,21 @@ image:
   # given its own image must be pinned there too.
   # See docs/cloud-deployment.md#pinning-the-image.
   digest: ""
+  # Opt-in guard for a production install: when true the render FAILS unless
+  # every iterion pod image is a digest reference (`repo@sha256:<64 hex>`) —
+  # the server and runner (`digest` above), `runner.image`,
+  # `runnerPools[].image`, and, with runner.sandbox.enabled, the `sandbox:
+  # auto` image: a pool's own `env.ITERION_SANDBOX_DEFAULT_IMAGE`, and
+  # `config.extraEnv.ITERION_SANDBOX_DEFAULT_IMAGE` whenever a pod reads it
+  # there (the shared runner, or a pool without its own). Out of its reach: the helm test pod (busybox), the
+  # devStack images (dev-only), and the platform setting `sandbox.default_image`
+  # (`iterion remote admin sandbox set --default-image`), which overrides the
+  # env at publish time from the DB — keep it unset or a digest reference. Helm
+  # has no warning channel, so the guard is a refusal, and opt-in is the escape
+  # hatch: false changes nothing. Set it true in the GitOps values that already
+  # pin by digest, so a hurried hotfix cannot slide an install back to a moving
+  # tag unnoticed.
+  requireDigest: false
   pullPolicy: IfNotPresent
 
 imagePullSecrets: []
@@ -148,11 +163,13 @@ runner:
   # image's `iterion` ENTRYPOINT runs and `args` becomes the subcommand.
   command: []
   args: ["runner"]
-  # image (optional, full "repo:tag") overrides the shared iterion.image for the
-  # RUNNER pods only — e.g. ghcr.io/socialgouv/iterion-runner-devbox:edge, the
-  # devbox-first-class runner where bots `devbox run` the target repo's toolchain
-  # (cross-language/version). Empty = the shared iterion.image (server + runner
-  # identical, today's behaviour).
+  # image (optional, full "repo:tag" or "repo@sha256:…") overrides the shared
+  # iterion.image for the RUNNER pods only — e.g.
+  # ghcr.io/socialgouv/iterion-runner-devbox:edge, the devbox-first-class runner
+  # where bots `devbox run` the target repo's toolchain (cross-language/version).
+  # Empty = the shared iterion.image (server + runner identical). Consumed
+  # verbatim: `image.digest` does not reach it, so a production install pins
+  # it as `repo@sha256:…` itself (image.requireDigest refuses a tag here).
   image: ""
   imagePullPolicy: ""
   # podSecurityContext / containerSecurityContext override the shared
@@ -334,6 +351,7 @@ runnerPools: []
 #  - name: honorabilite
 #    replicas: 1
 #    # image: "ghcr.io/socialgouv/iterion-runner-devbox:v3.246.0"
+#    # (a digest reference, "…@sha256:…", under image.requireDigest)
 #    gateway:
 #      baseUrl: "https://<regional-gateway>"
 #      existingSecret: "iterion-pool-honorabilite-gateway"

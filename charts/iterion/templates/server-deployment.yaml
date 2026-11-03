@@ -59,7 +59,7 @@ spec:
       terminationGracePeriodSeconds: {{ .Values.server.terminationGracePeriodSeconds | default 60 }}
       containers:
         - name: iterion
-          image: {{ include "iterion.image" . }}
+          image: {{ include "iterion.serverImage" . | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           securityContext:
             {{- toYaml .Values.containerSecurityContext | nindent 12 }}

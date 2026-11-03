@@ -76,11 +76,7 @@ spec:
       terminationGracePeriodSeconds: {{ $.Values.runner.terminationGracePeriodSeconds | default 90 }}
       containers:
         - name: iterion-runner
-          {{- if $pool.image }}
-          image: {{ $pool.image | quote }}
-          {{- else }}
-          image: {{ include "iterion.image" $ }}
-          {{- end }}
+          image: {{ include "iterion.runnerPoolImage" (dict "root" $ "pool" $pool) | quote }}
           imagePullPolicy: {{ $.Values.runner.imagePullPolicy | default $.Values.image.pullPolicy }}
           securityContext:
             {{- toYaml (default $.Values.containerSecurityContext $.Values.runner.containerSecurityContext) | nindent 12 }}
@@ -179,6 +175,10 @@ spec:
             {{- $pins := list }}
             {{- range $key, $value := $env }}
             {{- if ne $key "ITERION_BOT_VARS_ENV_PINS" }}
+            {{- if eq $key "ITERION_SANDBOX_DEFAULT_IMAGE" }}
+            {{- /* The pool's own `sandbox: auto` image overrides the ConfigMap's: same digest guard as the shared one. */ -}}
+            {{- $_ := include "iterion.pinnedImage" (dict "root" $ "field" (printf "runnerPools[%s].env.ITERION_SANDBOX_DEFAULT_IMAGE" $pool.name) "ref" (toString $value)) }}
+            {{- end }}
             - name: {{ $key }}
               value: {{ $value | quote }}
             {{- if regexMatch "^ITERION_[A-Z0-9_]+$" $key }}

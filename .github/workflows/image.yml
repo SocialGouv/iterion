@@ -9,7 +9,7 @@ name: 🐳 Container Image
 #   this (image.yml)        → iterion (server) amd64      ⟹ SIGNAL "server ready"
 #   runner-image.yml        → runner-devbox amd64          ⟹ SIGNAL "runner ready"  (workflow_run)
 #   sandbox-images.yml      → bases + finalizes            (off deploy path)
-#   release-images.yml      → everything multiarch+signed  (tags only, off deploy path)
+#   release-images.yml      → runner + sandbox multiarch+signed (tags only: prod's digest bump, no rollout signal)
 #
 # amd64-only on purpose, main AND tags: the OVH clusters are amd64 (12/12
 # nodes), so the deployable tag must not wait on the slower arm64 leg. arm64 is

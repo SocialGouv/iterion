@@ -211,6 +211,29 @@ describe("admin console screens / per-page gate", () => {
     expect(screen.queryByRole("navigation", { name: "Admin console" })).toBeNull();
   });
 
+  // The sandbox override bypasses the chart's digest guard, so the server's
+  // warning about a stored moving tag is the page's only signal: shown when
+  // the view carries one, absent otherwise.
+  it("SandboxPage shows the server's digest warning for a stored moving tag", async () => {
+    const warning =
+      'sandbox default_image "ghcr.io/socialgouv/iterion-sandbox-full:edge" is not a digest reference (repo@sha256:<64 hex>)';
+    getSandboxSettings.mockResolvedValue({
+      effective_default_image: "ghcr.io/socialgouv/iterion-sandbox-full:edge",
+      origin: "db",
+      stored: { default_image: "ghcr.io/socialgouv/iterion-sandbox-full:edge", updated_at: "2026-11-03T00:00:00Z" },
+      warning,
+    });
+    mountScreen("/settings/sandbox", SandboxPage);
+    expect(await screen.findByLabelText("Default image")).toBeTruthy();
+    expect(screen.getByRole("status").textContent).toBe(warning);
+  });
+
+  it("SandboxPage shows no digest warning for a pinned or inherited image", async () => {
+    mountScreen("/settings/sandbox", SandboxPage);
+    expect(await screen.findByLabelText("Default image")).toBeTruthy();
+    expect(screen.queryByRole("status")).toBeNull();
+  });
+
   // T5's affordance lives in a row of the spend table, so it only exists once
   // the view carries a credential.
   it("CredentialSpendPage offers the per-credential cap-reset action on each row", async () => {

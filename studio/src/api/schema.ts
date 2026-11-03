@@ -8241,6 +8241,7 @@ export interface components {
             effective_default_image: string;
             origin: string;
             stored?: components["schemas"]["Sandbox"];
+            warning?: string;
         };
         setOrgStatusReq: {
             reason?: string;

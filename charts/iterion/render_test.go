@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
@@ -1522,6 +1523,185 @@ func TestChartRenderForfaitSecret(t *testing.T) {
 		}
 		if optional != true {
 			t.Fatalf("iterion-forfait secretRef optional = %v, want true: a hand-managed Secret that is absent must not block the runner", optional)
+		}
+	})
+}
+
+// The image references a pod runs, and the guard behind `image.requireDigest`.
+// `image.digest` pins the SHARED reference (server + runner + a pool with no
+// image of its own) and refuses any shape but `sha256:<64 hex>`; a
+// `runner.image` / `runnerPools[].image` is consumed verbatim. With
+// `image.requireDigest: true` the render refuses every pod image that is not
+// `repo@sha256:…`, the `sandbox: auto` image included once the sandbox is
+// enabled — the chart's witness that a production install pinned by digest
+// cannot slide back to a moving tag unnoticed. The default stays false:
+// nothing changes for an install that never opted in.
+func TestChartRenderImagePinning(t *testing.T) {
+	const digest = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	const runnerRef = "ghcr.io/socialgouv/iterion-runner-devbox@" + digest
+	const sandboxRef = "ghcr.io/socialgouv/iterion-sandbox-full@" + digest
+	prod := []string{"-f", "values-prod.yaml"}
+	pool := []string{
+		"--set", "runnerPools[0].name=alpha",
+		"--set", "runnerPools[0].gateway.baseUrl=https://gateway.alpha.example",
+		"--set", "runnerPools[0].gateway.existingSecret=iterion-pool-alpha-gateway",
+	}
+	containerImages := func(t *testing.T, docs []map[string]any, name string) []string {
+		t.Helper()
+		spec := podSpec(t, docs, "Deployment", name)
+		var out []string
+		for _, key := range []string{"initContainers", "containers"} {
+			list, _ := spec[key].([]any)
+			for _, c := range list {
+				out = append(out, fmt.Sprint(dig(c, "image")))
+			}
+		}
+		if len(out) == 0 {
+			t.Fatalf("Deployment %s renders no container image", name)
+		}
+		return out
+	}
+	assertAll := func(t *testing.T, got []string, want string) {
+		t.Helper()
+		for _, img := range got {
+			if img != want {
+				t.Fatalf("container image %q, want %q (all: %v)", img, want, got)
+			}
+		}
+	}
+
+	t.Run("the default pins nothing: a tag, and requireDigest stays off", func(t *testing.T) {
+		docs := manifests(t, mustRender(t, prod...))
+		for _, name := range []string{"iterion", "iterion-runner"} {
+			for _, img := range containerImages(t, docs, name) {
+				if !strings.HasPrefix(img, "ghcr.io/socialgouv/iterion:") || strings.Contains(img, "@") {
+					t.Fatalf("%s image = %q, want the shared repository with a tag", name, img)
+				}
+			}
+		}
+	})
+
+	t.Run("image.digest pins the shared reference on the server, the runner and a pool without its own image", func(t *testing.T) {
+		// runner.cache.enabled renders the runner's init container, which
+		// resolves the same shared reference as the runner container.
+		docs := manifests(t, mustRender(t, append(append(prod, pool...),
+			"--set", "image.digest="+digest,
+			"--set", "runner.cache.enabled=true")...))
+		want := "ghcr.io/socialgouv/iterion@" + digest
+		for _, name := range []string{"iterion", "iterion-runner", "iterion-runner-pool-alpha"} {
+			assertAll(t, containerImages(t, docs, name), want)
+		}
+		if got := len(containerImages(t, docs, "iterion-runner")); got != 2 {
+			t.Fatalf("iterion-runner renders %d container images, want 2 (init-runner-cache + iterion-runner)", got)
+		}
+	})
+
+	t.Run("runner.image and runnerPools[].image are consumed verbatim", func(t *testing.T) {
+		docs := manifests(t, mustRender(t, append(append(prod, pool...),
+			"--set", "image.digest="+digest,
+			"--set", "runner.image=ghcr.io/socialgouv/iterion-runner-devbox:edge",
+			"--set", "runnerPools[0].image=ghcr.io/socialgouv/iterion-runner-devbox:v3.246.0")...))
+		assertAll(t, containerImages(t, docs, "iterion"), "ghcr.io/socialgouv/iterion@"+digest)
+		assertAll(t, containerImages(t, docs, "iterion-runner"), "ghcr.io/socialgouv/iterion-runner-devbox:edge")
+		assertAll(t, containerImages(t, docs, "iterion-runner-pool-alpha"), "ghcr.io/socialgouv/iterion-runner-devbox:v3.246.0")
+	})
+
+	t.Run("image.digest refuses every shape but sha256:<64 hex>", func(t *testing.T) {
+		for _, bad := range []string{"sha256:abc", "v4.7.1", "ghcr.io/socialgouv/iterion@" + digest, "@" + digest} {
+			mustRefuse(t, "image.digest must be", append(prod, "--set", "image.digest="+bad)...)
+		}
+	})
+
+	t.Run("requireDigest refuses a moving tag and names the field to fix", func(t *testing.T) {
+		on := slices.Clip(append(prod, "--set", "image.requireDigest=true"))
+		mustRefuse(t, "image (the server image)", on...)
+		mustRefuse(t, "image.requireDigest=true", on...)
+		mustRefuse(t, "runner.image resolves to \"ghcr.io/socialgouv/iterion-runner-devbox:edge\"", append(on,
+			"--set", "image.digest="+digest,
+			"--set", "runner.image=ghcr.io/socialgouv/iterion-runner-devbox:edge")...)
+		mustRefuse(t, "runnerPools[alpha].image resolves to", append(append(on, pool...),
+			"--set", "image.digest="+digest,
+			"--set", "runnerPools[0].image=ghcr.io/socialgouv/iterion-runner-devbox:v3.246.0")...)
+		// A digest in the wrong field is still a tag reference.
+		mustRefuse(t, "runner.image resolves to", append(on,
+			"--set", "image.digest="+digest,
+			"--set", "runner.image=ghcr.io/socialgouv/iterion-runner-devbox:"+digest)...)
+		// A bare digest without a repository is the InvalidImageName shape
+		// only kubelet would reject: the guard is anchored at both ends.
+		mustRefuse(t, "runner.image resolves to \"@"+digest+"\"", append(on,
+			"--set", "image.digest="+digest,
+			"--set", "runner.image=@"+digest)...)
+	})
+
+	t.Run("requireDigest reaches the sandbox: auto image once the sandbox is enabled", func(t *testing.T) {
+		on := slices.Clip(append(prod, "--set", "image.requireDigest=true", "--set", "image.digest="+digest, "--set", "runner.image="+runnerRef))
+		// Sandbox disabled: no per-run pod, nothing to pin.
+		mustRender(t, on...)
+		enabled := slices.Clip(append(on, "--set", "runner.sandbox.enabled=true"))
+		mustRefuse(t, "config.extraEnv.ITERION_SANDBOX_DEFAULT_IMAGE", enabled...)
+		mustRefuse(t, "config.extraEnv.ITERION_SANDBOX_DEFAULT_IMAGE", append(enabled,
+			"--set", "config.extraEnv.ITERION_SANDBOX_DEFAULT_IMAGE=ghcr.io/socialgouv/iterion-sandbox-full:edge")...)
+		pinned := slices.Clip(append(enabled, "--set", "config.extraEnv.ITERION_SANDBOX_DEFAULT_IMAGE="+sandboxRef))
+		mustRender(t, pinned...)
+		// A pool's own env block overrides the ConfigMap's value: guarded too.
+		mustRefuse(t, "runnerPools[alpha].env.ITERION_SANDBOX_DEFAULT_IMAGE", append(append(pinned, pool...),
+			"--set", "runnerPools[0].image="+runnerRef,
+			"--set", "runnerPools[0].env.ITERION_SANDBOX_DEFAULT_IMAGE=ghcr.io/socialgouv/iterion-sandbox-full:edge")...)
+	})
+
+	t.Run("requireDigest asks for the shared sandbox: auto image only when a pod reads it", func(t *testing.T) {
+		// Pools only, every pool pinning its own image: the ConfigMap's
+		// value reaches no pod, so its absence is not refused.
+		poolsOnly := slices.Clip(append(append(prod, pool...),
+			"--set", "image.requireDigest=true",
+			"--set", "image.digest="+digest,
+			"--set", "runner.enabled=false",
+			"--set", "runner.sandbox.enabled=true",
+			"--set", "runnerPools[0].image="+runnerRef,
+			"--set", "runnerPools[0].env.ITERION_SANDBOX_DEFAULT_IMAGE="+sandboxRef))
+		mustRender(t, poolsOnly...)
+		// A second pool without its own value reads the ConfigMap's: refused.
+		mustRefuse(t, "config.extraEnv.ITERION_SANDBOX_DEFAULT_IMAGE", append(poolsOnly,
+			"--set", "runnerPools[1].name=beta",
+			"--set", "runnerPools[1].gateway.baseUrl=https://gateway.beta.example",
+			"--set", "runnerPools[1].gateway.existingSecret=iterion-pool-beta-gateway",
+			"--set", "runnerPools[1].image="+runnerRef)...)
+		// The shared runner reads it too, whatever the pools pin.
+		mustRefuse(t, "config.extraEnv.ITERION_SANDBOX_DEFAULT_IMAGE", append(poolsOnly,
+			"--set", "runner.enabled=true",
+			"--set", "runner.image="+runnerRef)...)
+	})
+
+	t.Run("requireDigest renders a fully pinned install unchanged", func(t *testing.T) {
+		// runner.cache.enabled adds the runner's init container, which runs
+		// the same image as the runner container and is asserted with it.
+		args := append(append(prod, pool...),
+			"--set", "image.requireDigest=true",
+			"--set", "image.digest="+digest,
+			"--set", "runner.cache.enabled=true",
+			"--set", "runner.image="+runnerRef,
+			"--set", "runner.sandbox.enabled=true",
+			"--set", "config.extraEnv.ITERION_SANDBOX_DEFAULT_IMAGE="+sandboxRef,
+			"--set", "runnerPools[0].image="+runnerRef,
+			"--set", "runnerPools[0].env.ITERION_SANDBOX_DEFAULT_IMAGE="+sandboxRef)
+		docs := manifests(t, mustRender(t, args...))
+		assertAll(t, containerImages(t, docs, "iterion"), "ghcr.io/socialgouv/iterion@"+digest)
+		assertAll(t, containerImages(t, docs, "iterion-runner"), runnerRef)
+		if got := len(containerImages(t, docs, "iterion-runner")); got != 2 {
+			t.Fatalf("iterion-runner renders %d container images, want 2 (init-runner-cache + iterion-runner)", got)
+		}
+		assertAll(t, containerImages(t, docs, "iterion-runner-pool-alpha"), runnerRef)
+		if got := fmt.Sprint(dig(must(t, docs, "ConfigMap", "iterion-config"), "data", "ITERION_SANDBOX_DEFAULT_IMAGE")); got != sandboxRef {
+			t.Fatalf("ConfigMap ITERION_SANDBOX_DEFAULT_IMAGE = %q, want %q", got, sandboxRef)
+		}
+		// The shared ConfigMap's value is also the proof the checklist asks for:
+		// every image string in the render ends in a digest.
+		for _, name := range []string{"iterion", "iterion-runner", "iterion-runner-pool-alpha"} {
+			for _, img := range containerImages(t, docs, name) {
+				if !strings.Contains(img, "@sha256:") {
+					t.Fatalf("%s image %q is not digest-pinned under requireDigest", name, img)
+				}
+			}
 		}
 	})
 }

@@ -538,13 +538,31 @@ image:
 ```
 
 ```sh
-# resolve the moving tag to the digest it currently points at
-gh api /orgs/<org>/packages/container/iterion/versions \
-  --jq '[.[]|select(.metadata.container.tags|index("edge"))][0].name'
+# resolve a tag to the digest it points at — the signed release tag for prod,
+# the moving tag for a dev install
+gh api /orgs/SocialGouv/packages/container/iterion/versions \
+  --jq '[.[]|select(.metadata.container.tags|index("v4.7.1"))][0].name'
+# the release tags are cosign-signed (keyless, SBOM attested): verify the
+# digest you are about to commit against the workflow identity that built
+# it — the identity is the reusable workflow AT a release tag ref, so a
+# signature the same workflow issued on another ref does not pass. The
+# registry path is lowercase (`socialgouv`); the identity is the repository's
+# own, case-sensitive spelling (`SocialGouv`)
+cosign verify ghcr.io/socialgouv/iterion@sha256:… \
+  --certificate-identity-regexp \
+    '^https://github\.com/SocialGouv/iterion/\.github/workflows/_build-image\.yml@refs/tags/v[0-9]' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
 
 The trade-off is real and yours: a digest turns each deploy into an explicit
-bump instead of a `rollout restart`.
+bump instead of a `rollout restart`. That bump is the deploy gesture of
+SocialGouv's prod: resolve the release's digest per package — `iterion` for
+the server (`image.digest`), `iterion-runner-devbox` for the runner
+(`runner.image`, a `…@sha256:…` reference) and `iterion-sandbox-full` for the
+`sandbox: auto` image (`config.extraEnv.ITERION_SANDBOX_DEFAULT_IMAGE`) —
+commit the three in the GitOps values, let ArgoCD sync. Only the `:vX.Y.Z`
+tags are signed — `:edge` is amd64-only, unsigned and ephemeral, a dev
+install's tag, never a prod reference.
 
 > **Once `digest` is set in a values file, every `--set image.tag=…` becomes a
 > silent no-op** — the upgrade succeeds, no PodTemplate field changes, nothing
@@ -565,9 +583,33 @@ image keeps the hazard until it is pinned there too. That half matters more
 under the rollout epoch: a pod created from an old ReplicaSet keeps its
 literal `ITERION_RUNNER_EPOCH` while pulling whatever the tag means now.
 
-(SocialGouv's own prod values do pin the runner by digest, for a second
-reason: a moving tag rolled the runner Deployment on every merge to main and
-killed in-flight runs. That is a values-level choice, not a chart default.)
+(SocialGouv's own prod values pin the server, the runner and the `sandbox:
+auto` image by digest, the runner for a second reason: a moving tag rolled
+the runner Deployment on every merge to main and killed in-flight runs. That
+is a values-level choice, not a chart default.)
+
+**`image.requireDigest: true`** is the guard that keeps such an install
+pinned: the render then refuses — with the values path to fix — any iterion
+pod image that is not `repo@sha256:<64 hex>`: the server and runner
+(`image.digest` unset, or a tag in `runner.image`), a `runnerPools[].image`,
+and, once `runner.sandbox.enabled` is on, the `sandbox: auto` image — a
+pool's own `env.ITERION_SANDBOX_DEFAULT_IMAGE`, and
+`config.extraEnv.ITERION_SANDBOX_DEFAULT_IMAGE` whenever a pod reads it there
+(the shared runner, or a pool whose `env` block does not set its own; a
+pools-only install with every pool pinned is not asked for it). The helm test pod (`busybox`) and the devStack images (dev-only)
+stay out of it. Helm has no warning channel, so the guard is a refusal and
+opt-in is its escape hatch: the default is false and an install that never
+set it renders exactly as before. Set it in the GitOps values that already
+pin by digest, so a hurried hotfix cannot slide them back to a moving tag.
+
+One sibling of that env sits outside the render guard: the platform setting
+`sandbox.default_image` (`iterion remote admin sandbox set --default-image`,
+[platform bots § sandbox](platform-bots.md)) overrides
+`ITERION_SANDBOX_DEFAULT_IMAGE` at publish time from the DB, with no chart in
+the path. The server accepts any non-blank reference there and warns — in
+its log and in the response the CLI prints — when the value is not
+`repo@sha256:…`; on a digest-pinned install keep it unset or a digest
+reference.
 
 ### Verifying that an infra-apps push landed (ArgoCD sync liveness)
 

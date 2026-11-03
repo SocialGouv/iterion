@@ -1,6 +1,8 @@
 // Sandbox console (super-admin, cloud): the `sandbox: auto` default image.
 // A blank field inherits the env/built-in pin; a ref (ideally an @sha256
-// digest) overrides it. Save sends the field only when it changed.
+// digest) overrides it. Save sends the field only when it changed. The
+// override sits outside the chart's image.requireDigest render guard, so the
+// server names a stored moving tag in `warning` and the page shows it.
 
 import { useState } from "react";
 import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -91,6 +93,11 @@ export default function SandboxPage() {
           disabled={busy}
           onChange={(e) => setImage(e.target.value)}
         />
+        {view?.warning ? (
+          <div role="status" className="mt-1 text-caption text-warning-fg break-all">
+            {view.warning}
+          </div>
+        ) : null}
         <div className="mt-1 text-caption text-fg-subtle space-y-0.5">
           <div>
             Effective:{" "}

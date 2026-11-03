@@ -68,6 +68,25 @@ data:
   # Cloud runners pin it to none (docs/sandbox.md) — coupled to
   # runner.sandbox.enabled like ITERION_POD_IP + the sandbox RBAC.
   ITERION_SANDBOX_HOST_STATE: "none"
+  {{- if .Values.image.requireDigest }}
+  {{- /* Every per-run sandbox pod of a `sandbox: auto` bot runs the image
+     ITERION_SANDBOX_DEFAULT_IMAGE names; left unset, the binary falls back
+     to a version TAG of iterion-sandbox-slim (pkg/runtime/sandbox_default_image.go),
+     so the guard needs the name spelled in config.extraEnv — but only when a
+     pod reads it from here: the shared runner, or a pool whose env block
+     does not set its own (that one is guarded at the pool's site). A
+     pools-only install with every pool pinned has no reader to guard. */ -}}
+  {{- $readsShared := .Values.runner.enabled }}
+  {{- range .Values.runnerPools }}
+  {{- if not (hasKey (.env | default dict) "ITERION_SANDBOX_DEFAULT_IMAGE") }}
+  {{- $readsShared = true }}
+  {{- end }}
+  {{- end }}
+  {{- if $readsShared }}
+  {{- $sandboxImage := get (.Values.config.extraEnv | default dict) "ITERION_SANDBOX_DEFAULT_IMAGE" | default "" | toString }}
+  {{- $_ := include "iterion.pinnedImage" (dict "root" . "field" "config.extraEnv.ITERION_SANDBOX_DEFAULT_IMAGE (the sandbox: auto image of the shared runner and of every pool without its own env.ITERION_SANDBOX_DEFAULT_IMAGE, required under image.requireDigest with runner.sandbox.enabled)" "ref" $sandboxImage) }}
+  {{- end }}
+  {{- end }}
   {{- else }}
   # Sibling-pod sandboxing is NOT provisioned on this deployment (no sandbox
   # RBAC, no ITERION_POD_IP): neutralize any bot-declared `sandbox:` block at

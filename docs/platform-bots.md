@@ -390,5 +390,8 @@ hardcoded constants (auto-review fan-out, `/revi approve`, the merge-queue
 auto-heal, the issue-labeled implementer lane) — a symbol-sweep test keeps
 new code from re-hardcoding them. The sandbox image is pinned per message
 so a redelivery or checkpoint re-claim reruns in the same environment;
-prefer an `@sha256` digest ref. On a store outage both resolvers serve the
+prefer an `@sha256` digest ref — the override sits outside the chart's
+`image.requireDigest` render guard, so a moving tag here is accepted and
+warned about (server log + the `warning` field the CLI prints), never
+refused. On a store outage both resolvers serve the
 last-known value (logged) — availability over freshness, the caps posture.

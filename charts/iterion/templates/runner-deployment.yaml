@@ -59,11 +59,7 @@ spec:
         # image) making the RWX volume group-writable; use a storageClass that
         # honours fsGroup, or pre-chown the volume.
         - name: init-runner-cache
-          {{- if .Values.runner.image }}
-          image: {{ .Values.runner.image | quote }}
-          {{- else }}
-          image: {{ include "iterion.image" . }}
-          {{- end }}
+          image: {{ include "iterion.runnerImage" . | quote }}
           imagePullPolicy: {{ .Values.runner.imagePullPolicy | default .Values.image.pullPolicy }}
           securityContext:
             {{- toYaml (default .Values.containerSecurityContext .Values.runner.containerSecurityContext) | nindent 12 }}
@@ -74,11 +70,7 @@ spec:
       {{- end }}
       containers:
         - name: iterion-runner
-          {{- if .Values.runner.image }}
-          image: {{ .Values.runner.image | quote }}
-          {{- else }}
-          image: {{ include "iterion.image" . }}
-          {{- end }}
+          image: {{ include "iterion.runnerImage" . | quote }}
           imagePullPolicy: {{ .Values.runner.imagePullPolicy | default .Values.image.pullPolicy }}
           securityContext:
             {{- toYaml (default .Values.containerSecurityContext .Values.runner.containerSecurityContext) | nindent 12 }}

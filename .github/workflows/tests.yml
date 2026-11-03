@@ -1102,12 +1102,17 @@ jobs:
           # an assertion that actually passed.
           helm template t charts/iterion --set image.tag=edge \
             --set "image.digest=$digest" > /tmp/render-digest.yaml
-          grep -q "image: ghcr.io/socialgouv/iterion@$digest" /tmp/render-digest.yaml
-          # ...and that NOTHING still resolves through the tag. The render has
-          # two iterion.image containers (server + runner fallback) and grep -q
-          # stops at the first, so a refactor routing only one of them through
-          # the digest would otherwise still pass.
-          if grep -q "image: ghcr.io/socialgouv/iterion:edge" /tmp/render-digest.yaml; then
+          # The render has two shared-reference containers (server + runner
+          # fallback): count them, so a refactor routing only one through the
+          # digest goes red. The patterns accept the reference quoted or bare,
+          # so a quoting change in a template cannot blind either check.
+          pinned=$(grep -cE "image: \"?ghcr\.io/socialgouv/iterion@$digest\"?$" /tmp/render-digest.yaml || true)
+          if [ "$pinned" -lt 2 ]; then
+            echo "::error::$pinned container(s) resolved to the digest reference, want the server and the runner (2)"
+            exit 1
+          fi
+          # ...and that NOTHING still resolves through a tag.
+          if grep -qE 'image: "?ghcr\.io/socialgouv/iterion:' /tmp/render-digest.yaml; then
             echo "::error::a container still resolved through image.tag despite image.digest being set"
             exit 1
           fi
