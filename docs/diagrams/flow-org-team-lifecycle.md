@@ -2,7 +2,7 @@
 
 An org and the teams under it share one status field written by different callers, and only an org can be scheduled for deletion and then swept away with everything its teams own.
 
-> Drawn from the code at commit `f564846d3`; how this page is kept true: [README](README.md).
+> Drawn from the code at commit `f564846d3`, except the write story of the create paths — the compensation of `CreateOrgFor` landed later, at `cca8ed4a0`, and the personal space's own plus the best-effort landing stamp later still, with #2655. How this page is kept true: [README](README.md).
 
 ## The status machine — one type, two accepted sets
 
@@ -100,9 +100,9 @@ The two enforcement points read the same predicate and disagree on a degraded st
 
 | Actor | Action | Code |
 |---|---|---|
-| super-admin | create an org: the org row, the owner's org membership, then a seeded default team — three writes, no transaction | `handleAdminCreateOrg`, `auth.Service.CreateOrgFor`, `UpsertOrgMembership` |
+| super-admin | create an org: the org row, the owner's org membership, then a seeded default team and its owner grant — four writes, no transaction, all four compensated | `handleAdminCreateOrg`, `auth.Service.CreateOrgFor`, `createTeamIn`, `provisionUndo` |
 | org admin | add a team to an org they administer, or to the JWT's active org | `handleCreateOrgTeam`, `handleCreateTeam`, `CreateTeamFor` |
-| a new user | open signup, a first OIDC login granted no team, or an admin-created user: an org and a team of its own, with the owner memberships — the only writer of `Personal: true`, the flag the team delete answers 422 | `registerOpen`, `CreateUserAndPersonalTeam`, `createPersonalOrg`, `createPersonalTeam` |
+| a new user | open signup, a first OIDC login granted no team, or an admin-created user: an org and a team of its own, with the owner memberships — the only writer of `Personal: true`, the flag the team delete answers 422; its four writes are one compensated unit, so a signup that cannot finish leaves no personal org or team holding the slugs | `registerOpen`, `CreateUserAndPersonalTeam`, `createPersonalTeam`, `createPersonalSpaceIn`, `createPersonalOrg` |
 | operator | backfill a pre-org deployment: an org per team, then relink the team — the one write that moves a team under another org's status, and the reverse unlinks it | `cli.MigrateTeamsToOrgs`, `createOrgUniqueSlug`, `linkTeam`, `ReverseTeamsToOrgs`, `identity.TeamPatch` |
 | team or org admin | rename a team through a patch, so a rename cannot carry back the status it read | `handleUpdateTeam`, `identity.MongoStore.PatchTeam` |
 | org admin | set a team's status, with the suspension trio in the same write | `handleSetTeamStatus`, `identity.TeamPatch` |
@@ -118,6 +118,10 @@ The two enforcement points read the same predicate and disagree on a degraded st
 | server | on an inbound delivery, check the tenant before stamping the synthetic identity | `webhookAuth` |
 | studio | Admin → Organisations → status section and danger zone | `OrgStatusSection.tsx`, `OrgDangerZone.tsx` |
 | operator CLI | `iterion remote teams status` / `delete`, `iterion remote admin orgs status` / `delete` / `restore` — the status word is forwarded verbatim, so `pending_deletion` reaches the org route from a shell | `cmd/iterion/remote_team_lifecycle.go`, `cmd/iterion/remote_admin.go` |
+
+Neither create path has a transaction, so each one COMPENSATES instead: a write pushes its undo onto a `provisionUndo` once it has answered, and a later failure runs them newest-first (`compensate`, bounded and detached from the caller's cancellation, every step keyed to an id that call minted). `CreateOrgFor` owns the undo of the org, its owner membership, the seeded team and that team's owner grant — `createTeamIn` is its read-free write phase, which pushes and lets the owner compensate; `createPersonalTeam` owns the same four for a personal space (`createPersonalSpaceIn`, `createPersonalOrg`), for all three of its callers. So no org and no team of a provisioning that could not finish holds the slug a retry asks for — unless the compensation itself fails, which the error names row by row, because that row is what the retry collides with.
+
+What a compensation does NOT undo is the ACCOUNT row a signup wrote before its space: the identity store has no account delete, so the email stays taken and the retry answers 409 `email already taken` — and the account itself still SIGNS IN with that password, team-less and org-less, since no path provisions a space for an account that already exists, so an operator has to invite it to a team (an SSO first login is luckier only in that its link was written first, so its retry signs in and provisions nothing either). The landing defaults that point an account at its space, and the last-login stamp beside them, are written best-effort and logged (`patchBestEffort`): refusing them would answer 500 over an account that is complete and signs in, and the next sign-in resolves the active team from the membership anyway.
 
 ## States
 

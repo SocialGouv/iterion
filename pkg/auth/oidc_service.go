@@ -206,11 +206,13 @@ func (s *Service) loginWithExternal(ctx context.Context, ext oidc.ExternalUser, 
 			return LoginResult{}, terr
 		}
 		patch.DefaultOrgID = &space.orgID
-		patch.DefaultTeamID = &space.teamID
+		patch.DefaultTeamID = &space.team.ID
 	}
-	if u, err = s.store.PatchUser(ctx, u.ID, patch); err != nil {
-		return LoginResult{}, err
-	}
+	// Best-effort, logged: the account, its SSO link and its grants are
+	// written, and an SSO first login that answers an error over them cannot
+	// be retried — the second attempt finds the email taken and, under the
+	// default config, answers 409 link_required forever (patchBestEffort).
+	u = s.patchBestEffort(ctx, u, patch, "the landing defaults of the new SSO account")
 	return s.finishNewAccountLogin(ctx, u, preferredTeam, userAgent, ip, desktop)
 }
 
@@ -242,10 +244,10 @@ func (s *Service) provisionSubmitter(ctx context.Context, ext oidc.ExternalUser,
 	}); err != nil {
 		return LoginResult{}, err
 	}
-	// The stamp alone, on the account this call just created.
-	if u, err = s.store.PatchUser(ctx, u.ID, identity.UserPatch{LastLoginAt: &now}); err != nil {
-		return LoginResult{}, err
-	}
+	// The stamp alone, on the account this call just created — best-effort
+	// and logged: LastLoginAt is cosmetic, and the account plus its SSO link
+	// are already written (patchBestEffort).
+	u = s.patchBestEffort(ctx, u, identity.UserPatch{LastLoginAt: &now}, "the sign-in stamp of the new submitter account")
 	// No team: the login lands with an empty active team.
 	return s.finishNewAccountLogin(ctx, u, "", userAgent, ip, desktop)
 }
@@ -406,12 +408,10 @@ func (s *Service) loginWithExternalForOrg(ctx context.Context, ext oidc.External
 	}, identity.MembershipSourceOIDCSSO, now); err != nil {
 		return LoginResult{}, err
 	}
-	// The stamp alone, on the account this call just created. Best-effort:
-	// LastLoginAt is cosmetic; a store outage surfaces at the session write
-	// on the next line.
-	if patched, uerr := s.store.PatchUser(ctx, u.ID, identity.UserPatch{LastLoginAt: &now}); uerr == nil {
-		u = patched
-	}
+	// The stamp alone, on the account this call just created. Best-effort,
+	// through the one tolerant writer, so the cause reaches the log instead
+	// of nothing at all (patchBestEffort).
+	u = s.patchBestEffort(ctx, u, identity.UserPatch{LastLoginAt: &now}, "the sign-in stamp of the new org SSO account")
 	return s.finishNewAccountLogin(ctx, u, tenantID, userAgent, ip, desktop)
 }
 
