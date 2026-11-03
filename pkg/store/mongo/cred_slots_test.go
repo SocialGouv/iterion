@@ -2,7 +2,9 @@ package mongo
 
 import (
 	"context"
+	"fmt"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -76,5 +78,110 @@ func TestCredSlots_AHolderWithNoRunDocumentIsEvictedPastTheGrace(t *testing.T) {
 	}
 	if row.holds("live") {
 		t.Fatalf("a deleted run still holds a slot: %+v", row.Holders)
+	}
+}
+
+// The cap's headline property on the production ledger: of N reservations
+// racing for a key with K free slots, exactly K are granted, whichever
+// connection each ran on. The filesystem twin proves this under one mutex;
+// here the conditional update itself — `holders.<max-1>` absent, `$push`
+// in the same write — is what decides, so this is the witness the deployed
+// guarantee rests on. Every racer has a stamped, queued run document, as a
+// launch's does once it persists, so no holder is evictable. Red when the
+// room check leaves the update's filter (every racer is granted).
+func TestCredSlots_RacingReservationsAdmitExactlyTheCap(t *testing.T) {
+	uri := os.Getenv("ITERION_TEST_MONGO_URI")
+	if uri == "" {
+		t.Skip("ITERION_TEST_MONGO_URI not set; skipping Mongo cred-slot test")
+	}
+	ctx, cancel := mongotest.Ctx(t)
+	defer cancel()
+	s, err := New(ctx, Config{URI: uri, Database: "iterion_credslots_race_" + bsonNonce(t), Blob: newInMemoryBlob()})
+	if err != nil {
+		t.Fatalf("mongo New: %v", err)
+	}
+	t.Cleanup(func() {
+		drop, dropCancel := mongotest.TeardownCtx()
+		defer dropCancel()
+		_ = s.db.Drop(drop)
+		_ = s.Close(drop)
+	})
+	const (
+		fp     = "fp-raced"
+		cap    = 3
+		racers = 16
+	)
+	tctx := store.WithIdentity(context.Background(), "_test", "_test")
+	ids := make([]string, racers)
+	for i := range ids {
+		ids[i] = fmt.Sprintf("racer-%02d", i)
+		if _, err := s.CreateRun(tctx, ids[i], "demo", nil); err != nil {
+			t.Fatalf("CreateRun %s: %v", ids[i], err)
+		}
+		if err := s.SetRunCredStamp(tctx, ids[i], store.RunCredStamp{Fingerprints: []string{fp}}); err != nil {
+			t.Fatalf("SetRunCredStamp %s: %v", ids[i], err)
+		}
+	}
+	race := func(ids []string) (granted []string) {
+		var mu sync.Mutex
+		var wg sync.WaitGroup
+		start := make(chan struct{})
+		errs := make([]error, len(ids))
+		for i, id := range ids {
+			wg.Add(1)
+			go func(i int, id string) {
+				defer wg.Done()
+				<-start
+				adm, err := s.ReserveCredSlot(tctx, fp, id, cap)
+				if err != nil {
+					errs[i] = err
+					return
+				}
+				mu.Lock()
+				defer mu.Unlock()
+				if adm.Granted {
+					granted = append(granted, id)
+				} else if adm.Held != cap {
+					errs[i] = fmt.Errorf("refused %s reports %d holders, want the cap %d", id, adm.Held, cap)
+				}
+			}(i, id)
+		}
+		close(start)
+		wg.Wait()
+		for _, err := range errs {
+			if err != nil {
+				t.Fatalf("ReserveCredSlot: %v", err)
+			}
+		}
+		return granted
+	}
+	granted := race(ids)
+	if len(granted) != cap {
+		t.Fatalf("%d of %d racers were granted a slot on a cap of %d: %v", len(granted), racers, cap, granted)
+	}
+	var row credSlotDoc
+	if err := s.credSlots.FindOne(ctx, bson.M{"_id": fp}).Decode(&row); err != nil {
+		t.Fatalf("read row: %v", err)
+	}
+	if len(row.Holders) != cap {
+		t.Fatalf("the row names %d holders after the race, want %d: %+v", len(row.Holders), cap, row.Holders)
+	}
+	for _, id := range granted {
+		if !row.holds(id) {
+			t.Fatalf("granted run %s is not a holder of the row: %+v", id, row.Holders)
+		}
+	}
+	// One slot given back, the refused racers race again: exactly one more.
+	if err := s.ReleaseCredSlot(tctx, fp, granted[0]); err != nil {
+		t.Fatalf("ReleaseCredSlot: %v", err)
+	}
+	var refused []string
+	for _, id := range ids {
+		if !row.holds(id) {
+			refused = append(refused, id)
+		}
+	}
+	if again := race(refused); len(again) != 1 {
+		t.Fatalf("%d of %d refused racers were granted the one freed slot: %v", len(again), len(refused), again)
 	}
 }
