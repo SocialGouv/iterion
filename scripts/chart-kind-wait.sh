@@ -146,7 +146,6 @@ raw=$(awk '
   # content lines can be told from the structure that follows the scalar.
   function block_open(s,    t) {
     t = s
-    sub(/\r$/, "", t)
     sub(/[ \t]+#.*/, "", t)
     sub(/[ \t]+$/, "", t)
     if (t !~ /^[ \t]*[^ \t#][^:]*:[ \t]*[|>][|+0-9-]*$/) return 0
@@ -156,10 +155,14 @@ raw=$(awk '
   }
   BEGIN { doc = 0; sdoc = -1; in_block = 0; bind = 0 }
   {
+    # A CRLF ending is the LF ending to go-yaml: the CR goes once, here,
+    # so every rule below reads the line helm reads — `---` followed by
+    # a CR is still a document boundary, `server:` still the block.
+    sub(/\r$/, "")
     # Block scalar content is raw text: go-yaml reads no key in it, so
     # blank and deeper lines are skipped whole while a scalar is open;
     # any other line ends the scalar and is read like the rest.
-    if (in_block && ($0 ~ /^[ \t]*\r?$/ || (match($0, /^[ \t]+/) && RLENGTH > bind)))
+    if (in_block && ($0 ~ /^[ \t]*$/ || (match($0, /^[ \t]+/) && RLENGTH > bind)))
       next
     in_block = 0
     if (flow_scan($0)) {
@@ -179,11 +182,10 @@ raw=$(awk '
   # 4.1.1 renders no field for a knob the earlier block alone held), so
   # sizing the watch from it repeats the #2780 failure with the guard
   # green.
-  /^[^ \t\r#]/ { top = $1; sub(/\r$/, "", top); sub(/:$/, "", top); gsub(/^["'"'"']+|["'"'"']+$/, "", top); ind = 0; if (top == "server") { if (sdoc == doc) v = ""; sdoc = doc } }
+  /^[^ \t#]/ { top = $1; sub(/:$/, "", top); gsub(/^["'"'"']+|["'"'"']+$/, "", top); ind = 0; if (top == "server") { if (sdoc == doc) v = ""; sdoc = doc } }
   top == "server" && ind == 0 && $0 ~ /^[ \t]+[^ \t#]/ { match($0, /^[ \t]+/); ind = RLENGTH }
   top == "server" && ind > 0 && $0 !~ /^[ \t]*#/ && match($0, /^[ \t]+/) && RLENGTH == ind {
     line = $0
-    sub(/\r$/, "", line)
     key = line
     sub(/^[ \t]+/, "", key)
     sub(/:.*/, "", key)

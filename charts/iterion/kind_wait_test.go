@@ -190,6 +190,31 @@ func TestChartKindWaitDerivesAndRefuses(t *testing.T) {
 				t.Fatalf("chart-kind-wait = %q, want %q — the 600 from the earlier document survives the --- boundary", got, want)
 			}
 		})
+		t.Run("a CRLF document boundary keeps it as well", func(t *testing.T) {
+			// A CRLF ending is the LF ending to go-yaml, so `---` followed
+			// by a CR is the same boundary: the knob from the earlier
+			// document survives the re-open in the later one. A reader
+			// whose boundary pattern misses the CR collapses the two
+			// documents into one, takes the re-open for a same-document
+			// repeat and refuses a file helm installs with the 600 it
+			// spells. The same-document re-open still drops it under CRLF:
+			// the mirror that keeps the normalisation from blurring the
+			// two scoping rules.
+			stdout, stderr, err := runKindWait(t, valuesFile(t, "server:\r\n  progressDeadlineSeconds: 600\r\n---\r\nserver:\r\n  replicas: 1\r\n"))
+			if err != nil {
+				t.Fatalf("chart-kind-wait refused a knob helm keeps across the CRLF document boundary — %s", strings.TrimSpace(stderr))
+			}
+			if got, want := strings.TrimSpace(stdout), "720s"; got != want {
+				t.Fatalf("chart-kind-wait = %q, want %q — the 600 from the earlier document survives the CRLF --- boundary", got, want)
+			}
+			_, stderr, err = runKindWait(t, valuesFile(t, "server:\r\n  progressDeadlineSeconds: 600\r\nserver:\r\n  replicas: 1\r\n"))
+			if err == nil {
+				t.Fatalf("chart-kind-wait sized the watch from the earlier block's 600 under CRLF — the re-open in the same document drops it whatever the line ending")
+			}
+			if !strings.Contains(stderr, "does not set server.progressDeadlineSeconds") {
+				t.Fatalf("refusal does not route to the unset path — stderr: %s", strings.TrimSpace(stderr))
+			}
+		})
 		t.Run("a last zero hides the earlier deadline", func(t *testing.T) {
 			_, stderr, err := runKindWait(t, valuesFile(t, "server:\n  progressDeadlineSeconds: 600\nserver:\n  progressDeadlineSeconds: 0\n"))
 			if err == nil {
