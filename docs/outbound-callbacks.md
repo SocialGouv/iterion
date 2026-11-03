@@ -125,12 +125,16 @@ attacker-influenced. Before delivering, iterion vets it
 
 - scheme must be `http` or `https`;
 - the host must resolve **exclusively** to public-unicast addresses —
-  loopback, link-local, RFC-1918 private ranges, and cloud-metadata
-  endpoints (e.g. `169.254.169.254`) are refused;
-- unresolvable hosts and cluster-internal aliases
-  (`*.svc.cluster.local`, `kubernetes.default`,
-  `metadata.google.internal`) are refused;
-- resolution **fails closed**;
+  loopback, link-local, RFC-1918 private ranges, the shared CGNAT space
+  (`100.64.0.0/10`), cloud-metadata endpoints (e.g. `169.254.169.254`)
+  and the IPv6 transition addresses that carry one of them (NAT64, 6to4;
+  the NAT64 local-use prefix `64:ff9b:1::/48` whole) are refused;
+- names no public host carries are refused before any lookup: a single
+  label (`localhost`, a Service's short name), `kubernetes.default`, and
+  every name under `.svc`, `.cluster.local`, `.internal` (e.g.
+  `metadata.google.internal`), `.local`, `.localhost` or `.localdomain`;
+  any other name is looked up absolute, so no search domain completes it;
+- unresolvable hosts are refused, and resolution **fails closed**;
 - the delivery dials the vetted address directly and **never consults an
   ambient proxy** (`HTTP_PROXY` / `HTTPS_PROXY`) — a proxy hop would steer
   the delivery around the guard, and a proxy-form request would carry the
@@ -153,7 +157,8 @@ ITERION_COMPLETION_WEBHOOK_ALLOW_PRIVATE=1
 on the iterion **server** (and on cloud **runner** pods, if applicable)
 to relax the guard and permit private/loopback callback URLs. Off by
 default — cloud runners must not be able to gateway into a private
-network.
+network. The deprecated IPv4-compatible form (`::a.b.c.d`) stays refused:
+no setting lifts it.
 
 ## Implementation map
 

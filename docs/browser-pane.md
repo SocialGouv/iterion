@@ -35,8 +35,9 @@ echo "[iterion] preview_url=https://my-preview.example.com"
 - `scope=internal` routes through `/api/runs/:id/preview`, which strips
   frame-blocking headers and re-frames with a strict CSP sandbox. Only
   use it for URLs the run itself published — in cloud mode the proxy
-  refuses RFC1918, link-local, cloud-metadata, and `*.svc.cluster.local`
-  addresses to mitigate SSRF.
+  refuses RFC1918, CGNAT, link-local and cloud-metadata addresses, and
+  the names no public host carries (`*.svc.cluster.local`, a single
+  label, …), to mitigate SSRF.
 
 ### Headline result-links (`kind=pr` / `deploy` / `app` / `deliverable`)
 
