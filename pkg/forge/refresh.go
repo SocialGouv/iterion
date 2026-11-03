@@ -95,22 +95,24 @@ func (w *RefreshWorker) RunOnce(ctx context.Context) (int, error) {
 		return 0, fmt.Errorf("forge: list expiring connections: %w", err)
 	}
 	refreshed := 0
-	var firstErr error
+	// Every connection's failure, keyed by the connection it belongs to
+	// (sweepCauses): the caller classifies what it is given, and an elected
+	// sweep's verdict must not depend on the order this query listed the
+	// connections in.
+	var causes sweepCauses
 	for _, conn := range due {
 		// A sweep whose term ended starts no further renewal: what is left
 		// is the successor's, whose term opens with a pass.
 		if ctx.Err() != nil {
-			return refreshed, firstErr
+			return refreshed, causes.err()
 		}
 		if err := w.refreshOne(ctx, conn); err != nil {
-			if firstErr == nil {
-				firstErr = err
-			}
+			causes.add(conn.ID, err)
 			continue
 		}
 		refreshed++
 	}
-	return refreshed, firstErr
+	return refreshed, causes.err()
 }
 
 // refreshOne renews one connection. Ordering is load-bearing: the
