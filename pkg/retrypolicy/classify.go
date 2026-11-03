@@ -77,6 +77,11 @@ var classification = map[store.FailureCode]Disposition{
 	store.FailureUsageLimitBlocked:   DispositionTransient, // the window reopens; the retry is armed for that instant
 	store.FailureNetworkTransient:    DispositionTransient,
 	store.FailureToolFailedTransient: DispositionTransient,
+	// Parked on a credential's hard concurrency cap: a slot frees when one
+	// of the runs holding it ends, and waiting is exactly what helps. The
+	// sweeper asks again on its own cadence (store.RetryReasonCredSlot); a
+	// CLI loop may re-drive it like any other wait.
+	store.FailureCredSlotWait: DispositionTransient,
 
 	// Infrastructure — the run never failed; a healthy pod is the cure.
 	store.FailureInterrupted:         DispositionInfrastructure, // runner drain, lost heartbeat
