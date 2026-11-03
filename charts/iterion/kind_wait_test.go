@@ -102,8 +102,9 @@ func TestChartKindWaitFollowsTheValuesDeadline(t *testing.T) {
 // scratch values files: the margin arithmetic, the two block orders
 // (runner's knob before or after the server's), the whitespace forms
 // go-yaml tolerates, and the refusals — an unset knob, a zero, a
-// non-integer, a missing file, and the runner's own deadline, which is
-// not the server's.
+// non-integer, a second document, a tab in the indentation, a deadline
+// beyond the int32 the field holds, a missing file, and the runner's own
+// deadline, which is not the server's.
 func TestChartKindWaitDerivesAndRefuses(t *testing.T) {
 	t.Run("deadline plus the 120s margin", func(t *testing.T) {
 		stdout, stderr, err := runKindWait(t, valuesFile(t, "mode: cloud\nserver:\n  progressDeadlineSeconds: 600\n"))
@@ -136,26 +137,26 @@ func TestChartKindWaitDerivesAndRefuses(t *testing.T) {
 	})
 
 	t.Run("the last duplicate declaration wins", func(t *testing.T) {
-		// go-yaml — helm's values parser — scopes duplicate declarations
-		// (both rules proven on helm 4.1.1 through helm template): inside
-		// one document a repeated server block replaces the whole map, so
-		// a knob the earlier block alone held renders no field, while ---
-		// documents merge per key, so a knob from an earlier document
-		// survives a later one that does not repeat it. Both-declared
-		// forms render the last value through either rule, so the watch
-		// must follow the declaration the install runs with — a block
-		// left at first-wins sizes the watch for a deadline the install
-		// does not have, the #2780 failure with every gate green.
+		// go-yaml — helm's values parser — replaces the whole server map
+		// when the block repeats inside a document (helm 3.20.2 and 4.1.1
+		// alike, through helm template): the later block's knob is the one
+		// that renders, and a continuation recorded under the earlier knob
+		// goes with the map it folded into (helm 3.20.2 renders 1200 for
+		// the third form, probe-measured). The watch must follow the
+		// declaration the install runs with — a block left at first-wins
+		// sizes the watch for a deadline the install does not have, the
+		// #2780 failure with every gate green — and a continuation the
+		// re-open dropped must not refuse a file helm installs. A second
+		// document is refused outright: the multi-document witness below.
 		for _, tc := range []struct{ name, content, want string }{
 			{"repeated block, 600 then 1200", "server:\n  progressDeadlineSeconds: 600\nserver:\n  progressDeadlineSeconds: 1200\n", "1320s"},
 			{"repeated block, 1200 then 600", "server:\n  progressDeadlineSeconds: 1200\nserver:\n  progressDeadlineSeconds: 600\n", "720s"},
-			{"second document, 600 then 1200", "server:\n  progressDeadlineSeconds: 600\n---\nserver:\n  progressDeadlineSeconds: 1200\n", "1320s"},
-			{"second document, 1200 then 600", "server:\n  progressDeadlineSeconds: 1200\n---\nserver:\n  progressDeadlineSeconds: 600\n", "720s"},
+			{"repeated block, a continuation under the earlier knob", "server:\n  progressDeadlineSeconds: 600\n    0\nserver:\n  progressDeadlineSeconds: 1200\n", "1320s"},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
 				stdout, stderr, err := runKindWait(t, valuesFile(t, tc.content))
 				if err != nil {
-					t.Fatalf("chart-kind-wait refused a duplicate form helm merges — %s", strings.TrimSpace(stderr))
+					t.Fatalf("chart-kind-wait refused a duplicate form helm installs — %s", strings.TrimSpace(stderr))
 				}
 				if got, want := strings.TrimSpace(stdout), tc.want; got != want {
 					t.Fatalf("chart-kind-wait = %q, want %q — the watch must follow the declaration go-yaml leaves last", got, want)
@@ -177,48 +178,97 @@ func TestChartKindWaitDerivesAndRefuses(t *testing.T) {
 				t.Fatalf("refusal does not route to the unset path — stderr: %s", strings.TrimSpace(stderr))
 			}
 		})
-		t.Run("a document boundary keeps the declaration the earlier document held", func(t *testing.T) {
-			// The knob from the earlier document renders across every
-			// marker go-yaml reads as a document boundary (helm 3.20.2,
-			// probe-measured: 600 for each form below) — the mirror
-			// witness that keeps the drop from overshooting onto every
-			// block open. A column-0 `---` is the boundary with nothing,
-			// a comment or trailing blanks after it; a column-0 `...`
-			// ends the document and the next line opens the next one,
-			// with or without a `---` of its own. A boundary rule pinned
-			// to a bare `---` reads the commented, blank-trailed or `...`
-			// forms as a same-document re-open and refuses a file helm
-			// installs with the 600 it spells.
+		t.Run("content past a document boundary is refused", func(t *testing.T) {
+			// helm 3.20.2 — the devbox pin — reads the first document of a
+			// values file alone (probe-measured: `600 --- 1200` renders 600,
+			// `1200 --- 600` renders 1200, a knob only in the second
+			// document renders nothing and Kubernetes' 600 s default
+			// applies), while helm 4.1.1 merges `---` documents per key, and
+			// CI's setup-helm pins no version. A guard that models either
+			// rule sizes the watch wrong on the other helm — the #2780
+			// failure with every witness green — so the content that follows
+			// a boundary is refused, naming both lines, for every marker
+			// form go-yaml reads as one: a column-0 `---` with nothing, a
+			// comment or trailing blanks after it, a column-0 `...`, and a
+			// `...` followed by a `---`.
 			for _, boundary := range []string{"---", "--- # c", "---  ", "---\t", "...", "... # end", "...\n---"} {
-				stdout, stderr, err := runKindWait(t, valuesFile(t, "server:\n  progressDeadlineSeconds: 600\n"+boundary+"\nserver:\n  replicas: 1\n"))
-				if err != nil {
-					t.Fatalf("chart-kind-wait refused a knob helm keeps across the %q document boundary — %s", boundary, strings.TrimSpace(stderr))
+				content := "server:\n  progressDeadlineSeconds: 600\n" + boundary + "\nserver:\n  replicas: 1\n"
+				stdout, stderr, err := runKindWait(t, valuesFile(t, content))
+				if err == nil {
+					t.Fatalf("chart-kind-wait printed %q across the %q document boundary — helm 3 reads the first document alone and helm 4 merges them, so no watch fits both", strings.TrimSpace(stdout), boundary)
 				}
-				if got, want := strings.TrimSpace(stdout), "720s"; got != want {
-					t.Fatalf("chart-kind-wait = %q, want %q — the 600 from the earlier document survives the %q boundary", got, want, boundary)
+				contentLine := fmt.Sprintf("content at line %d", 4+strings.Count(boundary, "\n"))
+				for _, want := range []string{"more than one document", "boundary at line 3", contentLine} {
+					if !strings.Contains(stderr, want) {
+						t.Fatalf("refusal across %q does not name %q — stderr: %s", boundary, want, strings.TrimSpace(stderr))
+					}
+				}
+			}
+			// The first document helm 3.20.2 reads can be the empty one: two
+			// leading markers, or the knob declared only after a boundary,
+			// render no server deadline (probe-measured: the 1800 of the
+			// values-dev base shows through). Both are the same refusal, not
+			// a watch sized from a knob helm never reads.
+			for _, content := range []string{
+				"---\n---\nserver:\n  progressDeadlineSeconds: 600\n",
+				"--- # a\n---\nserver:\n  progressDeadlineSeconds: 600\n",
+				"server:\n  replicas: 1\n---\nserver:\n  progressDeadlineSeconds: 600\n",
+			} {
+				stdout, stderr, err := runKindWait(t, valuesFile(t, content))
+				if err == nil {
+					t.Fatalf("chart-kind-wait printed %q for %q — helm 3 reads the first document alone, which holds no knob", strings.TrimSpace(stdout), content)
+				}
+				if !strings.Contains(stderr, "more than one document") {
+					t.Fatalf("refusal of %q does not name the second document — stderr: %s", content, strings.TrimSpace(stderr))
 				}
 			}
 		})
-		t.Run("a CRLF document boundary keeps it as well", func(t *testing.T) {
-			// A CRLF ending is the LF ending to go-yaml, so `---` followed
-			// by a CR is the same boundary: the knob from the earlier
-			// document survives the re-open in the later one. A reader
-			// whose boundary pattern misses the CR collapses the two
-			// documents into one, takes the re-open for a same-document
-			// repeat and refuses a file helm installs with the 600 it
-			// spells. The same-document re-open still drops it under CRLF:
-			// the mirror that keeps the normalisation from blurring the
-			// two scoping rules.
-			stdout, stderr, err := runKindWait(t, valuesFile(t, "server:\r\n  progressDeadlineSeconds: 600\r\n---\r\nserver:\r\n  replicas: 1\r\n"))
-			if err != nil {
-				t.Fatalf("chart-kind-wait refused a knob helm keeps across the CRLF document boundary — %s", strings.TrimSpace(stderr))
+		t.Run("a boundary nothing reads past is not a second document", func(t *testing.T) {
+			// A column-0 `---` before any content is the explicit start of
+			// the first document, comment lines before it included, and a
+			// trailing marker that only blank or comment lines follow opens
+			// a document neither helm reads anything from: helm 3.20.2
+			// renders 600 for every form below (probe-measured), and a merge
+			// of nothing changes nothing on helm 4. A rule that refuses every
+			// marker refuses files both helms install.
+			for _, form := range []string{
+				"---\nserver:\n  progressDeadlineSeconds: 600\n",
+				"--- # a\nserver:\n  progressDeadlineSeconds: 600\n",
+				"# c\n---\nserver:\n  progressDeadlineSeconds: 600\n",
+				"server:\n  progressDeadlineSeconds: 600\n---\n",
+				"server:\n  progressDeadlineSeconds: 600\n--- # end\n",
+				"server:\n  progressDeadlineSeconds: 600\n---\n# only a comment\n",
+				"server:\n  progressDeadlineSeconds: 600\n...\n",
+				"server:\n  progressDeadlineSeconds: 600\n... # end\n# c\n",
+				"server:\n  progressDeadlineSeconds: 600\n...\n---\n",
+			} {
+				stdout, stderr, err := runKindWait(t, valuesFile(t, form))
+				if err != nil {
+					t.Fatalf("chart-kind-wait refused %q — no content follows the boundary, and both helms install the 600 it spells; stderr: %s", form, strings.TrimSpace(stderr))
+				}
+				if got, want := strings.TrimSpace(stdout), "720s"; got != want {
+					t.Fatalf("chart-kind-wait = %q, want %q on %q", got, want, form)
+				}
 			}
-			if got, want := strings.TrimSpace(stdout), "720s"; got != want {
-				t.Fatalf("chart-kind-wait = %q, want %q — the 600 from the earlier document survives the CRLF --- boundary", got, want)
+		})
+		t.Run("a CRLF document boundary is the boundary too", func(t *testing.T) {
+			// A CRLF ending is the LF ending to go-yaml, so `---` followed
+			// by a CR is the same boundary: the content after it is the
+			// second document, refused like the LF form. A reader whose
+			// boundary pattern misses the CR reads the marker as a plain
+			// column-0 key, takes the re-open for a same-document repeat and
+			// refuses on the unset path instead; the mirror below keeps the
+			// same-document re-open on that path under CRLF.
+			_, stderr, err := runKindWait(t, valuesFile(t, "server:\r\n  progressDeadlineSeconds: 600\r\n---\r\nserver:\r\n  replicas: 1\r\n"))
+			if err == nil {
+				t.Fatalf("chart-kind-wait sized the watch across a CRLF document boundary — the second document is refused whatever the line ending")
+			}
+			if !strings.Contains(stderr, "more than one document") {
+				t.Fatalf("refusal does not name the second document — stderr: %s", strings.TrimSpace(stderr))
 			}
 			_, stderr, err = runKindWait(t, valuesFile(t, "server:\r\n  progressDeadlineSeconds: 600\r\nserver:\r\n  replicas: 1\r\n"))
 			if err == nil {
-				t.Fatalf("chart-kind-wait sized the watch from the earlier block's 600 under CRLF — the re-open in the same document drops it whatever the line ending")
+				t.Fatalf("chart-kind-wait sized the watch from the earlier block's 600 under CRLF — the re-open drops it whatever the line ending")
 			}
 			if !strings.Contains(stderr, "does not set server.progressDeadlineSeconds") {
 				t.Fatalf("refusal does not route to the unset path — stderr: %s", strings.TrimSpace(stderr))
@@ -414,13 +464,30 @@ func TestChartKindWaitDerivesAndRefuses(t *testing.T) {
 		}
 	})
 
-	t.Run("a deadline beyond the exact integer range is refused", func(t *testing.T) {
-		_, stderr, err := runKindWait(t, valuesFile(t, "server:\n  progressDeadlineSeconds: 123456789012345678901234567890\n"))
-		if err == nil {
-			t.Fatalf("chart-kind-wait accepted a 30-digit deadline — the watch is printed through awk doubles, which round past 2^53, so the printed wait would not be the deadline the file sets")
+	t.Run("a deadline beyond the int32 the field holds is refused", func(t *testing.T) {
+		// The Deployment's progressDeadlineSeconds is an int32: 2147483648
+		// fits no install (helm 3.20.2 renders it as 2.147483648e+09, a
+		// number the field cannot hold), so the guard refuses it instead
+		// of printing 2147483768s for a watch the install never runs. The
+		// int32 bound also keeps the margin arithmetic exact in awk
+		// doubles, where a 2^53 bound on the deadline alone let
+		// 9007199254740991 print a rounded wait. 2147483647 is the last
+		// value accepted, so the bound is the field's, not one off it.
+		for _, form := range []string{"2147483648", "-2147483649", "9007199254740991", "123456789012345678901234567890"} {
+			stdout, stderr, err := runKindWait(t, valuesFile(t, "server:\n  progressDeadlineSeconds: "+form+"\n"))
+			if err == nil {
+				t.Fatalf("chart-kind-wait printed %q for %q — beyond the int32 the Deployment field holds, no install carries it", strings.TrimSpace(stdout), form)
+			}
+			if !strings.Contains(stderr, "int32") {
+				t.Fatalf("refusal of %q does not name the int32 — stderr: %s", form, strings.TrimSpace(stderr))
+			}
 		}
-		if !strings.Contains(stderr, "exact integer range") {
-			t.Fatalf("refusal does not name the range — stderr: %s", strings.TrimSpace(stderr))
+		stdout, stderr, err := runKindWait(t, valuesFile(t, "server:\n  progressDeadlineSeconds: 2147483647\n"))
+		if err != nil {
+			t.Fatalf("chart-kind-wait refused the largest int32 — %s", strings.TrimSpace(stderr))
+		}
+		if got, want := strings.TrimSpace(stdout), "2147483767s"; got != want {
+			t.Fatalf("chart-kind-wait = %q, want %q — the largest int32 plus the 120 s margin, exact", got, want)
 		}
 	})
 
@@ -459,6 +526,94 @@ func TestChartKindWaitDerivesAndRefuses(t *testing.T) {
 			if !strings.Contains(stderr, "not an integer") {
 				t.Fatalf("refusal of %q does not name the bad value — stderr: %s", form, strings.TrimSpace(stderr))
 			}
+		}
+	})
+
+	t.Run("a form helm resolves that the guard does not is refused naming the guard's reach", func(t *testing.T) {
+		// helm 3.20.2 renders a deadline the install runs with from each
+		// form below (probe-measured: `&d 600` and `!!int 600` render 600,
+		// the literal block renders 600, `"600 # x"` renders `600 # x` and
+		// `" 600"` renders ` 600`, both read back as 600 in the applied
+		// manifest). A line reader resolves none of them, so the refusal
+		// stands, but its cause must be the guard's own reach: a message
+		// that claims go-yaml hands the value over verbatim and the API
+		// refuses the Deployment is false for every one of them.
+		for _, form := range []string{"&d 600", "!!int 600", "|\n    600", `"600 # x"`, `" 600"`} {
+			stdout, stderr, err := runKindWait(t, valuesFile(t, "server:\n  progressDeadlineSeconds: "+form+"\n"))
+			if err == nil {
+				t.Fatalf("chart-kind-wait printed %q for %q — a line reader cannot resolve it, so it must refuse rather than guess", strings.TrimSpace(stdout), form)
+			}
+			if !strings.Contains(stderr, "not an integer this guard resolves") {
+				t.Fatalf("refusal of %q does not name the guard's reach — stderr: %s", form, strings.TrimSpace(stderr))
+			}
+			if strings.Contains(stderr, "API refuses") {
+				t.Fatalf("refusal of %q claims the API refuses the Deployment — helm renders a deadline the install runs with; stderr: %s", form, strings.TrimSpace(stderr))
+			}
+		}
+	})
+
+	t.Run("a colon glued to its value separates no key", func(t *testing.T) {
+		// go-yaml reads a block mapping separator only as a colon that
+		// whitespace or the line end follows: `progressDeadlineSeconds:600`
+		// is one plain scalar, so `server` is the string it spells and
+		// helm refuses the file (the values schema wants an object; with a
+		// key after it, "mapping values are not allowed in this context").
+		// A reader that cuts the key at any colon prints 720s for a file
+		// that never installs.
+		for _, form := range []string{
+			"server:\n  progressDeadlineSeconds:600\n",
+			"server:\n  progressDeadlineSeconds :600\n",
+			"server:\n  progressDeadlineSeconds:600\n  replicas: 1\n",
+			"server:\n  \"progressDeadlineSeconds\":600\n",
+		} {
+			stdout, stderr, err := runKindWait(t, valuesFile(t, form))
+			if err == nil {
+				t.Fatalf("chart-kind-wait printed %q for %q — the glued colon separates no key, and helm refuses the file", strings.TrimSpace(stdout), form)
+			}
+			if !strings.Contains(stderr, "does not set server.progressDeadlineSeconds") {
+				t.Fatalf("refusal of %q does not route to the unset path — stderr: %s", form, strings.TrimSpace(stderr))
+			}
+		}
+	})
+
+	t.Run("a tab in the indentation is refused at its line", func(t *testing.T) {
+		// go-yaml reads no tab as indentation — "found character that
+		// cannot start any token" on a key, a comment or a whitespace-only
+		// line, "found a tab character where an indentation space is
+		// expected" inside a block scalar short of its indent column — so
+		// helm refuses every file below (probe-measured on helm 3.20.2).
+		// The guard names the first such line instead of printing 720s for
+		// an install that never starts. A tab past the content column of a
+		// block scalar is a character of the string and the file installs:
+		// the mirror at the end.
+		for _, tc := range []struct{ content, line string }{
+			{"server:\n\tprogressDeadlineSeconds: 600\n", "line 2"},
+			{"server:\n \tprogressDeadlineSeconds: 600\n", "line 2"},
+			{"server:\n  progressDeadlineSeconds: 600\n\t0\n", "line 3"},
+			{"server:\n\t# c\n  progressDeadlineSeconds: 600\n", "line 2"},
+			{"server:\n  progressDeadlineSeconds: 600\n\t\n", "line 3"},
+			{"\tfoo: 1\nserver:\n  progressDeadlineSeconds: 600\n", "line 1"},
+			{"server:\n  notes: |\n    a\n\tb\n  progressDeadlineSeconds: 600\n", "line 4"},
+			{"server:\n  notes: |\n    \tb\n  progressDeadlineSeconds: 600\n", "line 3"},
+			{"server:\n  notes: |\n    a\n\t\n    b\n  progressDeadlineSeconds: 600\n", "line 4"},
+			{"server:\n  notes: |\n    a\n   \tb\n  progressDeadlineSeconds: 600\n", "line 4"},
+		} {
+			stdout, stderr, err := runKindWait(t, valuesFile(t, tc.content))
+			if err == nil {
+				t.Fatalf("chart-kind-wait printed %q for %q — go-yaml refuses the tab, so helm never installs the file", strings.TrimSpace(stdout), tc.content)
+			}
+			for _, want := range []string{"with a tab", tc.line} {
+				if !strings.Contains(stderr, want) {
+					t.Fatalf("refusal of %q does not name %q — stderr: %s", tc.content, want, strings.TrimSpace(stderr))
+				}
+			}
+		}
+		stdout, stderr, err := runKindWait(t, valuesFile(t, "server:\n  notes: |\n    a\n    \tb\n  progressDeadlineSeconds: 600\n"))
+		if err != nil {
+			t.Fatalf("chart-kind-wait refused a tab past the block scalar's content column — a character of the string, and helm installs the file; stderr: %s", strings.TrimSpace(stderr))
+		}
+		if got, want := strings.TrimSpace(stdout), "720s"; got != want {
+			t.Fatalf("chart-kind-wait = %q, want %q — a tab inside the block scalar's content changes nothing", got, want)
 		}
 	})
 

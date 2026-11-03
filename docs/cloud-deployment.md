@@ -61,11 +61,16 @@ decides whether a slow install is called **Failed**. The helper refuses every
 values file whose knob it cannot read as the positive integer go-yaml would
 hand the install, and names the cause: unset or zero (either would silently
 shrink the watch to Kubernetes' default 600 s — a `0` renders through a
-`with` that skips it anyway), negative or not an integer (helm renders such a
-value verbatim and the API refuses the Deployment), beyond the exact integer
-range the helper computes with, or written in a form a line reader cannot
-pair with its key — a flow mapping left open past its line, a scalar on the
-line after the key, a value continued onto a deeper line, an anchor or a
+`with` that skips it anyway), negative, beyond the int32 the Deployment field
+holds, not a form the helper resolves (it reads a bare or quoted decimal and
+the integer spellings go-yaml does; a tag, an anchor or a block scalar may
+still render a deadline for helm, and the refusal says the helper proves
+nothing about them rather than claiming the API refuses them), content past a
+document boundary (helm 3 reads the first document alone, helm 4 merges them
+per key, and the two install sites pin no common helm), a tab in the
+indentation (go-yaml refuses it, so helm refuses the file), or a form a line
+reader cannot pair with its key — a flow mapping left open past its line, a
+scalar on the line after the key, a value continued onto a deeper line, a
 merge key.
 
 ## Topology
