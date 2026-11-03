@@ -1,6 +1,6 @@
 # ADR-153: Ports are a semantics the engine RUNS, not a declaration — the contract surface holds, the fan-out owes four slices, and a contract's verifiable clauses are checked by nothing
 
-- **Status**: Accepted (2026-11-03) — on the clauses below, each read from the tree at `70b5b1972` and cited by file and line. The axes named under *What is not promised* are **not** decided here. **No code changes with it** beyond the five doc texts in `pkg/dsl/ir` and `pkg/dsl/spec` that stated or implied the opposite of clause 4; every slice under *Consequences* is owed, each with its own witness and its owner package.
+- **Status**: Accepted (2026-11-03) — on the clauses below, each read from the tree at `70b5b1972` and cited by file and line. The axes named under *What is not promised* are **not** decided here. **No code changes with it** beyond the five doc texts in `pkg/dsl/ir` and `pkg/dsl/spec` that stated or implied the opposite of clause 4; every slice under *Consequences* is owed, each with its own witness and its owner package. The two decisions this record first published as the operator's, each under a default, were taken on 2026-11-03 (*Consequences*): #1165 closes by absorption — its lots on main, six slices filed under #1402, the rest left to a future record (*Consequences*) — as its default read; and clause 4 ships as a positioned warning on each unverified clause plus the sweep that pins the evaluator's absence, not as run-time evaluation — its default's choice, in a per-clause form where the default read one warning naming every family.
 - **Date**: 2026-11-03
 - **Authors**: devthejo (session with Claude Opus 5), on the design shape ADR-143/144 set: decide what the tree backs, name what it does not.
 - **Decides for**: [#1165](https://github.com/SocialGouv/iterion/issues/1165) ("design: contrats publics composables et exécution par ports"), under the epic [#1402](https://github.com/SocialGouv/iterion/issues/1402). PR [#1216](https://github.com/SocialGouv/iterion/pull/1216) proposed the whole of it and was closed unmerged — not by its review, but because the DSL programme had shipped the property registry, `dsl: 2` and `import` underneath it; the concept was harvested as lot 4bis of #1010, whose record is [099-public-contracts.md](099-public-contracts.md).
@@ -175,9 +175,11 @@ than none"** ([099-public-contracts.md](099-public-contracts.md) lines 24-26)
    `dsl.md` one directory away. That sentence and its peers — `PublicCriterion`'s
    doc, `PublicCriteria`'s, `compilePublicCriterion`'s and C303's
    catalogue hint, each of which scoped "not evaluated" to an unregistered
-   kind — not ADR-099, are what change with this record. The verdict on the class is the operator's:
-   a warning that names every unenforced family plus a sweep pinning the
-   absence, or enforcement at the executor seam (see *Consequences*).
+   kind — not ADR-099, are what change with this record. The verdict on the
+   class is the operator's, decided on 2026-11-03: a positioned warning on
+   each unverified clause plus a sweep pinning the evaluator's absence
+   ([#2941](https://github.com/SocialGouv/iterion/issues/2941)), not enforcement at the executor seam (see
+   *Consequences*).
 
 5. **Per-element identity is POSITIONAL, and main refuses rather than isolates
    per element.** Lot 5 asks to persist invocation and element identities and
@@ -290,12 +292,15 @@ than none"** ([099-public-contracts.md](099-public-contracts.md) lines 24-26)
   (lot 7). Absent, and out of this record's scope.
 - **Exactly-once external effects.** #1165 says so itself: idempotence or
   verification, never a general guarantee.
-- **The verdict on clause 4.** A warning plus an absence sweep, or enforcement
-  at the executor seam: the operator's call, below.
+- **Run-time evaluation of clause 4's families.** The operator decided on
+  2026-11-03 for the warning and the absence sweep; enforcement at the
+  executor seam can fail runs that pass today and owes its own coexistence
+  decision before any slice claims it.
 
 ## Consequences
 
-- **#1165 closes by absorption, and the slices below are filed under #1402.**
+- **#1165 closes by absorption, and the six slices below are filed under the
+  public-contracts epic #1402 as #2939-#2944** — decision (a) below.
   Lots 1, 2 and the subbot half of lot 6 are on main under other names, with
   their markers: the contract surface and its eight registry kinds, C300-C304
   and C310, the bundlelint pair C254/C255, the AST/JSON/unparse round trip, the `ContractSince` release floor
@@ -304,8 +309,13 @@ than none"** ([099-public-contracts.md](099-public-contracts.md) lines 24-26)
   the deployment-compatibility probe `iterion contracts` (build, queue and
   store schema versions, read from the executable alone — `build_skew` stays
   unknown by design, and it reads no bot's contract), and the runtime
-  projection of a child's ports. Lots 3, 4 and 7 and half of 5 are not, and are the list
-  below. The epic #1402 is the container; a second one next to it is the
+  projection of a child's ports. The six slices below carry part of lot 5 —
+  its ceiling, its stable order, its empty-collection signal and its element
+  identity — plus clause 1's schema identity and clause 4. They do not carry
+  lots 3 and 4 (the port graph and the data-availability scheduler, which
+  ADR-099 § 3 refuses), lot 6's legacy adapter, lot 7 or lot 5's per-element
+  isolation: #1165's closure leaves those to a future record, and *What is not
+  promised* lists them. The epic #1402 is the container; a second one next to it is the
   confusion the 2026-09-18 `epic:` → `design:` retitle was meant to end.
 - **The boundary with #1006**, agreed before either record is written so
   neither re-decides the other: **reliability (#1006) owns the bounded
@@ -316,7 +326,7 @@ than none"** ([099-public-contracts.md](099-public-contracts.md) lines 24-26)
   owner package. Every witness is built in **both** completion orders where a
   fact depends on one, and each must be seen red on its own assertion with the
   defect put back:
-  1. **The schema-identity chokepoint** — `pkg/dsl/ir` (the digest),
+  1. **The schema-identity chokepoint** ([#2939](https://github.com/SocialGouv/iterion/issues/2939)) — `pkg/dsl/ir` (the digest),
      `pkg/bundlelint` (the comparison). Witness: a parent and a child each
      declaring `schema Dossier` with different fields draw C255's warning,
      while a child the caller could not read still draws nothing. M. Two
@@ -326,33 +336,43 @@ than none"** ([099-public-contracts.md](099-public-contracts.md) lines 24-26)
      `contracts` by `reflect.DeepEqual`
      ([equiv.go:104-105](../../pkg/dsl/ir/equiv.go)), so contract equivalence
      starts depending on a schema's field set.
-  2. **The deterministic capture** — `pkg/runtime`. Witness: twelve branches
+  2. **The deterministic capture** ([#2940](https://github.com/SocialGouv/iterion/issues/2940)) — `pkg/runtime`. Witness: twelve branches
      fed reversed then forward, the surviving `rs.outputs` and the
      `_failed_branches` sequence identical, once under `-race` with a mutex in
      the observer. S. The four texts that describe the old capture — C310's
      row, its catalogue entry, its code comment and its `warnf` — move with
      it, and the slice names that re-sorting changes which error
      `quotedBranchError` / `rootCauseBranchErr` quote for n ≥ 10.
-  3. **The unenforced clause families** — `pkg/dsl/ir` under option A,
-     `pkg/runtime` under option B. Witness under A: a registered criterion, a
-     `min_items` and a `file.min_bytes` each draw the warning that names them
-     unchecked, plus a reachability sweep asserting `CompilePublicCriterion`
-     has no caller outside `pkg/dsl` — so the day an enforcement site appears,
-     the sweep reddens and the warning is removed deliberately. S as a
-     warning, M-L as enforcement.
-  4. **The expansion ceiling `max_expansion:`** — `pkg/dsl/spec`, `pkg/dsl/ir`,
+  3. **The unenforced clause families** ([#2941](https://github.com/SocialGouv/iterion/issues/2941)) — `pkg/dsl/ir`,
+     the warning the operator decided on 2026-11-03, not enforcement in
+     `pkg/runtime`. Witness: a registered criterion, a `min_items` and a
+     `file.min_bytes` each draw a positioned warning that names that clause
+     unchecked, plus a reachability sweep over every symbol that reaches an
+     evaluator rather than one name: no reference outside `pkg/dsl` to `CompilePublicCriterion`,
+     `LookupPublicCriterion` or `PublicCriteria`, each of which reaches an
+     evaluator through `PublicCriterionSpec.Compile` — so the day one of those
+     symbols is named outside `pkg/dsl`, the sweep reddens and the criteria
+     warning is removed deliberately. An evaluator carried out of `pkg/dsl`
+     by a `pkg/dsl` type or helper — a `func(any) error` field on
+     `ir.PublicCriterion`, an exported `pkg/dsl/ir` function that runs one —
+     names none of the three and escapes the sweep, so the slice that adds
+     such a carrier extends the sweep to it in the same change. The sweep pins the `criteria:`
+     family only: enforcing `min_items` / `max_items` or `file:` needs no
+     criterion symbol, so their warnings have no absence pin, and the slice
+     that enforces either family removes its warning with it. S.
+  4. **The expansion ceiling `max_expansion:`** ([#2942](https://github.com/SocialGouv/iterion/issues/2942)) — `pkg/dsl/spec`, `pkg/dsl/ir`,
      `pkg/runtime`. Witness: an over-long array draws the typed refusal AND a
      counting `NodeExecutor` records **zero** branch starts — the effect, not
      the message; a second case with no property behaves exactly as main does
      today. M.
-  5. **The empty-collection warning** — `pkg/dsl/ir`. Witness: a
+  5. **The empty-collection warning** ([#2943](https://github.com/SocialGouv/iterion/issues/2943)) — `pkg/dsl/ir`. Witness: a
      `fan_out_each` whose template reaches no convergence point draws a
      positioned warning naming the single-run behaviour, one with a
      convergence node draws nothing, and `TestFanOutEach_EmptyArray` and
      `TestFanOutEach_EmptyArrayClearsRestoredParallelCheckpoint` stay green —
      they pin the run-time behaviour this slice must not move. S.
   6. **The input-ordered complete collection, and the element identity it
-     keys on** — `pkg/runtime`, with `pkg/store` for the persisted identity.
+     keys on** ([#2944](https://github.com/SocialGouv/iterion/issues/2944)) — `pkg/runtime`, with `pkg/store` for the persisted identity.
      Witness: twelve elements whose executors finish in reversed order arrive
      input-ordered and complete; `wait_all` refuses an incomplete collection
      and nothing partial reaches the collector; under `await: best_effort` the
@@ -361,13 +381,19 @@ than none"** ([099-public-contracts.md](099-public-contracts.md) lines 24-26)
      own ticket, after slice 2. It must refuse a second array axis **by name**
      — #1165 forbids an implicit zip and an implicit cartesian product, so the
      next variant must not need an engine `if`.
-- **Decisions left to the operator**, each with the default this record
-  publishes under if nothing is said: **(a)** #1165 closes by absorption and
-  the six slices are filed under #1402 — the alternative is keeping #1165
-  open as the living design, at the cost of a second container; **(b)** clause
-  4 ships as **a warning plus the absence sweep** — the alternative is
-  enforcement at the executor seam, which makes the promise true and can fail
-  runs that pass today, so it owes its own coexistence decision.
+- **Decisions the operator took on 2026-11-03.** This record first published
+  both as the operator's, each under the default it would publish under if
+  nothing was said; the operator took (a) as its default and (b) as its
+  default's choice in a per-clause form, so the record states them as
+  decided: **(a)** #1165 closes by absorption and the six slices are
+  filed under #1402 as #2939-#2944 — keeping #1165 open as the living design
+  was the alternative, at the cost of a second container; **(b)** clause 4
+  ships as **a positioned warning on each unverified clause plus the sweep
+  that pins the evaluator's absence** (#2941) — the default's choice in its
+  per-clause form, where the published default read one warning naming every
+  unenforced family. Enforcement at the executor seam was the alternative: it
+  makes the promise true, is sized L, and can fail runs that pass today, so it
+  owes its own coexistence decision and is not taken here.
 - **No new diagnostic code is claimed by this record.** The slices that need
   one pick it at their final rebase on `main`, by symbol and not by digit; the
   codes this record cites — C243, C244, C246, C253, C254, C255, C300-C305,
