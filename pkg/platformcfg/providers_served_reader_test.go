@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"go/ast"
 	"go/parser"
+	"go/printer"
 	"go/token"
 	"sort"
 	"strings"
@@ -36,6 +37,11 @@ const providersServedField = "ProvidersServed"
 // offender; the coverage check below is what distinguishes "no reader" from
 // "this walk no longer matches the field".
 //
+// The match keys on the field NAME, on any receiver, so a selector of that
+// name on an unrelated type is reported too: every site is printed with its
+// receiver, which is what makes such a hit self-diagnosing. The guard holds
+// no allowlist — a site it must tolerate is a change to this code.
+//
 // Writes are out of scope on purpose: the super-admin registry route decodes
 // the operator's JSON into the struct, so the field is written without any
 // file naming it. "Recorded" is exactly that write.
@@ -62,7 +68,7 @@ func TestProvidersServedHasNoProductionReader(t *testing.T) {
 			switch node := n.(type) {
 			case *ast.SelectorExpr:
 				if node.Sel.Name == providersServedField {
-					readers = append(readers, fmt.Sprintf("%s:%d", rel, fset.Position(node.Sel.Pos()).Line))
+					readers = append(readers, fmt.Sprintf("%s:%d (%s)", rel, fset.Position(node.Sel.Pos()).Line, exprText(fset, node)))
 				}
 			case *ast.Field:
 				for _, name := range node.Names {
@@ -77,11 +83,21 @@ func TestProvidersServedHasNoProductionReader(t *testing.T) {
 
 	sort.Strings(readers)
 	if len(readers) > 0 {
-		t.Errorf("%d production site(s) now read RunnerPool.%s:\n  %s\n"+
-			"The field's doc comment and the residual list of docs/sovereign-pools.md both say it is recorded and read by nothing. Say what the reader does in those two places, then this guard's allowance belongs here.",
-			len(readers), providersServedField, strings.Join(readers, "\n  "))
+		t.Errorf("%d production site(s) now read .%s:\n  %s\n"+
+			"The field's doc comment and the residual list of docs/sovereign-pools.md both say RunnerPool.%s is recorded and read by nothing: say what the reader does in those two places. This guard holds no allowlist — the receiver is printed above because the sweep keys on the field name, and a site this guard must tolerate (that name on another type) is a change to its code.",
+			len(readers), providersServedField, strings.Join(readers, "\n  "), providersServedField)
 	}
 	if declarations == 0 {
 		t.Fatalf("no struct field named %s in the module's non-test Go: the field was renamed or removed, so this guard is UNLOCKED rather than clean — it reports readers only", providersServedField)
 	}
+}
+
+// exprText renders an expression as source, so a reported site names the
+// receiver the sweep matched on and not only the field.
+func exprText(fset *token.FileSet, e ast.Expr) string {
+	var b strings.Builder
+	if err := printer.Fprint(&b, fset, e); err != nil {
+		return "<unprintable: " + err.Error() + ">"
+	}
+	return b.String()
 }
