@@ -587,9 +587,15 @@ func validateRepoTarget(ctx context.Context, repoURL, repoSHA string) (net.IP, e
 	// which re-validates and pins the resolved IP at the moment of the dial.
 	// ssh remotes are not proxied — for them this pre-check, the hosts pin and
 	// the pod egress policy remain the guard.
+	// The hatch is named on the refusal it lifts (httpdial.ErrNotPublic)
+	// alone: a malformed name or a failed lookup stays refused whatever the
+	// hatch says, and naming it there is advice about the wrong problem.
 	ip, err := httpdial.ResolvePublicHost(ctx, host, !allowPrivate)
-	if err != nil {
+	if errors.Is(err, httpdial.ErrNotPublic) {
 		return nil, fmt.Errorf("runner: repo host %q is not a public address (set ITERION_RUNNER_CLONE_ALLOW_PRIVATE=1 to allow internal forges): %w", host, err)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("runner: repo host %q refused: %w", host, err)
 	}
 	return ip, nil
 }

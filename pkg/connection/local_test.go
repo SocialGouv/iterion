@@ -2,6 +2,7 @@ package connection_test
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/connector/exec"
 	"github.com/SocialGouv/iterion/pkg/connector/spec"
+	"github.com/SocialGouv/iterion/pkg/secure/httpdial"
 )
 
 // A self-hosted Forgejo is the whole point of the connector this catalog
@@ -80,6 +82,45 @@ func TestLocalHTTPClientDoesNotSuggestTheHatchForAnUnresolvableHost(t *testing.T
 	}
 	if strings.Contains(err.Error(), connection.AllowPrivateHostsEnv) {
 		t.Errorf("a DNS failure must not name %s, got: %v", connection.AllowPrivateHostsEnv, err)
+	}
+}
+
+// The hint rides every refusal the hatch lifts — the guard's ErrNotPublic —
+// and says what it is: not a public address. A reserved cluster name is
+// refused before any lookup, so no second lookup can explain it, yet the
+// hatch lifts it; a shared (CGNAT) address is neither private nor loopback.
+// A malformed host is no address class, and gets no hint.
+func TestLocalHTTPClientNamesTheHatchOnEveryLiftableRefusal(t *testing.T) {
+	t.Setenv(connection.AllowPrivateHostsEnv, "")
+	for _, target := range []string{"http://gw.example.svc/v1", "http://100.64.0.1:9/v1"} {
+		_, err := connection.LocalHTTPClient().Get(target)
+		if !errors.Is(err, httpdial.ErrNotPublic) {
+			t.Fatalf("%s = %v; want the guard's refusal", target, err)
+		}
+		if !strings.Contains(err.Error(), connection.AllowPrivateHostsEnv) || !strings.Contains(err.Error(), "not a public address") {
+			t.Errorf("%s = %v; want the refusal to name %s and say the host is not a public address", target, err, connection.AllowPrivateHostsEnv)
+		}
+	}
+	if _, err := connection.LocalHTTPClient().Get("http://gw..example.test/v1"); err == nil || strings.Contains(err.Error(), connection.AllowPrivateHostsEnv) {
+		t.Errorf("a malformed host = %v; want a refusal that names no hatch", err)
+	}
+}
+
+// The advice given when a connection is added is the dial's own verdict: it
+// names the hatch for a host the strict guard refuses and the hatch lifts,
+// and stays silent for one no hatch lifts.
+func TestUnreachableBaseURLAdvisesOnEveryLiftableRefusal(t *testing.T) {
+	t.Setenv(connection.AllowPrivateHostsEnv, "")
+	ctx := context.Background()
+	for _, base := range []string{"http://gw.example.svc", "http://100.64.0.1:3000"} {
+		if advice := connection.UnreachableBaseURL(ctx, base); !strings.Contains(advice, connection.AllowPrivateHostsEnv) || !strings.Contains(advice, "not a public address") {
+			t.Errorf("UnreachableBaseURL(%s) = %q; want advice naming %s for a host that is not a public address", base, advice, connection.AllowPrivateHostsEnv)
+		}
+	}
+	for _, base := range []string{"http://gw..example.test", "http://[::127.0.0.1]:3000"} {
+		if advice := connection.UnreachableBaseURL(ctx, base); advice != "" {
+			t.Errorf("UnreachableBaseURL(%s) = %q; want no advice — no hatch lifts this refusal", base, advice)
+		}
 	}
 }
 

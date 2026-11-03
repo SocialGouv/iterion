@@ -136,6 +136,25 @@ func TestValidateRepoTargetHostGuard(t *testing.T) {
 	}
 }
 
+// The hatch's advice rides only the refusal the hatch lifts — one wrapping
+// httpdial.ErrNotPublic. A malformed host is refused with no such advice,
+// the hatch set or not: setting it would change nothing.
+func TestValidateRepoTargetNamesTheHatchOnlyOnALiftableRefusal(t *testing.T) {
+	ctx := context.Background()
+	for _, hatch := range []string{"", "1"} {
+		t.Setenv("ITERION_RUNNER_CLONE_ALLOW_PRIVATE", hatch)
+		_, err := validateRepoTarget(ctx, "https://gw..example.test/org/repo.git", "main")
+		if err == nil || strings.Contains(err.Error(), "ITERION_RUNNER_CLONE_ALLOW_PRIVATE") {
+			t.Errorf("hatch=%q: a malformed host = %v; want a refusal that names no hatch", hatch, err)
+		}
+	}
+	t.Setenv("ITERION_RUNNER_CLONE_ALLOW_PRIVATE", "")
+	_, err := validateRepoTarget(ctx, "https://10.0.0.5/org/repo.git", "main")
+	if err == nil || !strings.Contains(err.Error(), "ITERION_RUNNER_CLONE_ALLOW_PRIVATE=1") {
+		t.Errorf("a private host = %v; want the refusal naming the hatch that lifts it", err)
+	}
+}
+
 // TestGitAuthorIdentity pins the committer identity seeded into a cloud
 // clone: the neutral bot fallback (RFC 2606 .invalid domain so GitHub can
 // never attribute it to a real account) and the per-deployment env override.
