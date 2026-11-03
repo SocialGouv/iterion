@@ -580,11 +580,12 @@ const (
 	//     cap — the set the host holds, a retried drain's attempts counted
 	//     together; the member the meter stopped on is dropped, what landed
 	//     before it uploads), "unsettled" (the tree kept changing under the
-	//     archiver past the retry budget; what uploads is the union of
-	//     every attempt's members as far as the cap holds it, a stale
-	//     superset of the pod's final tree), "archiver" (the pod's archiver
-	//     failed for a cause no retry cures), "refused" (the host could not
-	//     land the set: a host list, write or replace that failed),
+	//     archiver past the retry budget; after more than one attempt what
+	//     uploads is the union of every attempt's members as far as the cap
+	//     holds it, a stale superset of the pod's final tree — a single
+	//     attempt uploads its own raced archive), "archiver" (the pod's
+	//     archiver failed for a cause no retry cures), "refused" (the host
+	//     could not land the set: a host list, write or replace that failed),
 	//     "declined" (the set landed short only of the members counted under
 	//     declined_count); "mixed" when the declared dirs were lost for
 	//     different reasons, "unknown" when the driver typed none
@@ -593,9 +594,12 @@ const (
 	//     the drain did not land — an earlier attempt raced a writer and no
 	//     settled attempt swept what it landed (a later member that needed
 	//     their room under the cap may have swept some of it), so a file the
-	//     pod's final tree no longer has may upload: always true for
-	//     "unsettled", true for any other reason that followed a raced
-	//     attempt. Always sent
+	//     pod's final tree no longer has may upload: true for any reason
+	//     that followed a raced attempt, "unsettled" of more than one
+	//     attempt included; false where no earlier attempt ran — an
+	//     "unsettled" drain whose one attempt was its whole retry budget
+	//     (ITERION_SANDBOX_EXPORT_ATTEMPTS=1) or the only one before its
+	//     deadline. Always sent
 	//   - declined: the members the host declined on principle, each
 	//     {dir, name, why} — dir the declared container path, name the
 	//     member's path under it, why a stable token

@@ -1,6 +1,7 @@
 package kubernetes
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -394,5 +395,52 @@ func TestExportWorkspace_RunsThePodTarUntranslated(t *testing.T) {
 	}
 	if got := args(); !strings.Contains(got, " -- env LC_ALL="+sandbox.TarLocale+" tar -C ") {
 		t.Fatalf("the pod tar does not run under LC_ALL=%s: kubectl %s", sandbox.TarLocale, got)
+	}
+}
+
+// streamingArchiverShim plants a fake kubectl, returned by path, whose archive is head
+// followed by body zero bytes, streamed and never held, and which marks a
+// file once the last of them is written: the mark exists exactly when
+// whatever read its stdout read the whole archive. The streamers' stderr is
+// /dev/null, so the shim alone holds the pipe the driver reads stderr from.
+func streamingArchiverShim(t *testing.T, head []byte, body int64) (kubectl Kubectl, streamedToTheEnd string) {
+	t.Helper()
+	isolateExecEnvironment(t)
+	if _, err := exec.LookPath("head"); err != nil {
+		t.Skip("head not on PATH")
+	}
+	shimDir := t.TempDir()
+	headFile := filepath.Join(shimDir, "archive-head")
+	if err := os.WriteFile(headFile, head, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	streamedToTheEnd = filepath.Join(shimDir, "streamed-to-the-end")
+	shim := "#!/bin/sh\n" +
+		"cat '" + headFile + "' 2>/dev/null || exit 1\n" +
+		"head -c " + strconv.FormatInt(body, 10) + " /dev/zero 2>/dev/null || exit 1\n" +
+		": > '" + streamedToTheEnd + "'\n"
+	bin := filepath.Join(shimDir, kubeBinaryName)
+	if err := os.WriteFile(bin, []byte(shim), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", shimDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return Kubectl(bin), streamedToTheEnd
+}
+
+// TestExportWorkspace_StopsThePodArchiverOnceTheExtractFails: an extract that
+// failed lands nothing more of the archive — here a stream that is no
+// archive — so the export stops the pod's archiver instead of reading the
+// rest of its stream only to throw it away until the export's deadline.
+func TestExportWorkspace_StopsThePodArchiverOnceTheExtractFails(t *testing.T) {
+	ws := exportTarget(t)
+	const body = 32 << 20
+	kubectl, streamedToTheEnd := streamingArchiverShim(t, bytes.Repeat([]byte{'x'}, 512), body)
+
+	err := exportRun(ws, kubectl).ExportWorkspace(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "read the pod's archive") {
+		t.Fatalf("ExportWorkspace = %v, want the stream that is no archive reported", err)
+	}
+	if _, statErr := os.Stat(streamedToTheEnd); statErr == nil {
+		t.Errorf("the pod's archiver streamed its whole archive after the extract failed — the export read %d bytes it would never land", body)
 	}
 }

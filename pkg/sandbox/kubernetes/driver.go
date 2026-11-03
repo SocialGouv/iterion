@@ -1548,7 +1548,11 @@ func (r *Run) exportOnce(ctx context.Context, hostDst string) (retryable bool, e
 		"env", "LC_ALL=" + sandbox.TarLocale, "tar", "-C", r.prepared.workspace}
 	kubectlArgs = append(kubectlArgs, tarExcludeArgs()...)
 	kubectlArgs = append(kubectlArgs, "-cf", "-", ".")
-	podTar := r.driver.kubectl.cmdContext(ctx, kubectlArgs...)
+	// The archiver's own cancel: an extract that stops reading stops it
+	// (stopPodArchiver).
+	archiverCtx, stopArchiver := context.WithCancel(ctx)
+	defer stopArchiver()
+	podTar := r.driver.kubectl.cmdContext(archiverCtx, kubectlArgs...)
 
 	pipe, err := podTar.StdoutPipe()
 	if err != nil {
@@ -1565,10 +1569,9 @@ func (r *Run) exportOnce(ctx context.Context, hostDst string) (retryable bool, e
 	// the sandbox.
 	extracted, xerr := r.extractExport(pipe, hostDst)
 	if xerr != nil {
-		// Drain, so the pod's archiver sees its reader go away rather than
-		// block on a full pipe, then report the extraction error.
-		_, _ = io.Copy(io.Discard, pipe)
-		_ = podTar.Wait()
+		// The extract is done reading: the archiver is stopped, never read
+		// to its end for nothing, then the extraction error is reported.
+		stopPodArchiver(stopArchiver, podTar)
 		return false, nil, fmt.Errorf("extract the export into %s: %w", hostDst, xerr)
 	}
 	if err := podTar.Wait(); err != nil {
@@ -1576,6 +1579,21 @@ func (r *Run) exportOnce(ctx context.Context, hostDst string) (retryable bool, e
 		return onlyTarRaceWarnings(err, stderr), nil, fmt.Errorf("in-pod tar %s: %w\n%s", r.prepared.workspace, err, stderr)
 	}
 	return false, extracted, nil
+}
+
+// stopPodArchiver ends a pod archiver whose stream the host stopped reading:
+// an extract that failed lands nothing more of the archive, and reading the
+// rest only to throw it away would stream every byte a tool left behind —
+// past the run-files cap, tens of gigabytes — through the teardown until
+// its deadline killed kubectl. stop cancels the context the archiver was
+// started under (Kubectl.cmdContext), which kills kubectl and closes the
+// exec stream, so the pod's tar loses its reader. Wait reaps kubectl, its
+// wait on pipes a credential plugin may still hold bounded by the command's
+// WaitDelay; its error is the stop's own, the caller reports the extract's.
+// The workspace export and the run-files drain both end an extract here.
+func stopPodArchiver(stop context.CancelFunc, archiver *exec.Cmd) {
+	stop()
+	_ = archiver.Wait()
 }
 
 // fixupWorkspaceGitScript re-anchors the copied clone's git plumbing on

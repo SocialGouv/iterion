@@ -322,12 +322,16 @@ every cloud deliverable disappear (#2668) — and the event carries a
 stable `reason` (`sandbox.ReadBackLossReason`: `over_cap`, `unsettled`,
 `archiver`, `refused`, `declined`), read off the typed error the driver
 returns, so a cap reached is told from a tool still writing at teardown
-without parsing the prose. An `unsettled` drain leaves the **union** of
-its attempts' members on the host — a stale superset of the pod's final
-tree, so a file the run removed between attempts may still upload; so
-does any other failure that follows an attempt which raced a writer,
-since it ends the drain before a settled attempt sweeps; the event's
-`stale: true` and its error say so. A member the host declines on
+without parsing the prose. An `unsettled` drain of more than one
+attempt leaves the **union** of its attempts' members on the host — a
+stale superset of the pod's final tree, so a file the run removed
+between attempts may still upload; so does any other failure that
+follows an attempt which raced a writer, since it ends the drain before
+a settled attempt sweeps; the event's `stale: true` and its error say
+so. One raced attempt alone — the whole budget at
+`ITERION_SANDBOX_EXPORT_ATTEMPTS=1`, or the only one before the drain's
+deadline — leaves its own archive and no union: `unsettled`,
+`stale: false`. A member the host declines on
 principle (an unsafe name, a link that leaves the tree, a hardlink to no
 file the archive landed, a kind it does not write back, a pre-drain
 tree where the archive carries a file or a link) is skipped, and the

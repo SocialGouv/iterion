@@ -23,13 +23,16 @@ const (
 	// pod.
 	ReadBackOverCap ReadBackLossReason = "over_cap"
 	// ReadBackUnsettled: the tree kept changing under the pod's archiver
-	// past the retry budget — a tool was still writing at teardown. What
-	// stays on the host is the UNION of every attempt's members (tar never
-	// deletes and no attempt settled for the sweep to keep against), as
-	// far as the dir's cap holds it — a later attempt's member that needed
-	// the room swept what only earlier attempts landed: a stale superset
-	// of the pod's final tree, so a file the run removed between attempts
-	// may be among what uploads (ReadBackLoss.Stale).
+	// past the retry budget — a tool was still writing at teardown. When
+	// more than one attempt ran, what stays on the host is the UNION of
+	// every attempt's members (tar never deletes and no attempt settled
+	// for the sweep to keep against), as far as the dir's cap holds it — a
+	// later attempt's member that needed the room swept what only earlier
+	// attempts landed: a stale superset of the pod's final tree, so a file
+	// the run removed between attempts may be among what uploads
+	// (ReadBackLoss.Stale). A single attempt — a retry budget of one, or a
+	// drain whose context ended before the second — leaves its own raced
+	// archive and no union: not stale.
 	ReadBackUnsettled ReadBackLossReason = "unsettled"
 	// ReadBackArchiver: the pod's archiver failed for a cause no retry
 	// cures — kubectl exec refused, tar died, the stream was cut or was no
@@ -169,9 +172,11 @@ type ReadBackLoss struct {
 	// drain did not land: an earlier attempt raced a writer, tar never
 	// deletes, and no settled attempt swept what it landed (a later member
 	// that needed their room under the cap may have swept some of it) — so
-	// a file the pod's final tree no longer has may upload. Always true for
-	// ReadBackUnsettled; true for any other loss that followed a raced
-	// attempt.
+	// a file the pod's final tree no longer has may upload. True for any
+	// loss that followed a raced attempt, ReadBackUnsettled of more than
+	// one attempt included; false where no earlier attempt ran — a first
+	// attempt's failure, or an unsettled drain whose one attempt was all it
+	// had.
 	Stale bool
 }
 

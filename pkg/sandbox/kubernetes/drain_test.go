@@ -611,7 +611,7 @@ func TestDrainFileMeterStopsOneBytePastTheBudget(t *testing.T) {
 // same class as the cap: a member that did not arrive whole must not stand
 // at its path, and the failure names the archiver, not the host.
 func TestExtractDrainDropsAMemberThePodStreamCutShort(t *testing.T) {
-	hostDst := t.TempDir()
+	hostDst := drainRootDir(t)
 	var archive bytes.Buffer
 	tw := tar.NewWriter(&archive)
 	if err := tw.WriteHeader(&tar.Header{Name: "whole.txt", Size: 5, Typeflag: tar.TypeReg, Mode: 0o600}); err != nil {
@@ -652,7 +652,7 @@ func TestExtractDrainDropsAMemberThePodStreamCutShort(t *testing.T) {
 }
 
 func TestExtractDrainRefusesASetOverTheCap(t *testing.T) {
-	hostDst := t.TempDir()
+	hostDst := drainRootDir(t)
 	// One archive carrying one byte past the cap, streamed (never held in
 	// memory whole): the drain must fail with its own cause, not land a
 	// silently truncated set. The cap is the dir's own figure, handed in
@@ -709,7 +709,7 @@ func TestExtractDrainRefusesASetOverTheCap(t *testing.T) {
 // carry. The budget of 0 reads as "nothing more fits", not as "one byte
 // more arrives": the whole dir must drain clean, every member landed.
 func TestExtractDrainAcceptsTheExactCapPlusATrailingZeroByteMember(t *testing.T) {
-	hostDst := t.TempDir()
+	hostDst := drainRootDir(t)
 	const capBytes int64 = 4 << 10
 	pr, pw := io.Pipe()
 	go func() {
@@ -763,7 +763,7 @@ func (zeros) Read(p []byte) (int, error) {
 // resumed run whose previous attempt drained `out/` and whose tool now
 // writes `out` as a file, paying every later deliverable for one name.
 func TestExtractDrainSkipsAPreDrainTreeAndLandsTheMembersAfterIt(t *testing.T) {
-	hostDst := t.TempDir()
+	hostDst := drainRootDir(t)
 	keep := filepath.Join(hostDst, "out", "keep.md")
 	if err := os.MkdirAll(filepath.Dir(keep), 0o755); err != nil {
 		t.Fatal(err)
@@ -938,7 +938,7 @@ func TestExtractDrainLandsAHardlinkAsAMeteredCopy(t *testing.T) {
 		}, map[string]string{"./report.html": "0123456789", "./after.txt": "ok"})
 	}
 	t.Run("within the cap both names land, billed twice", func(t *testing.T) {
-		hostDst := t.TempDir()
+		hostDst := drainRootDir(t)
 		x, err := drainRun(nil, "").extractDrain(members(), hostDst, nil, nil, newDrainState(22))
 		if err != nil {
 			t.Fatalf("extractDrain = %v, want the hardlink landed as a copy", err)
@@ -957,7 +957,7 @@ func TestExtractDrainLandsAHardlinkAsAMeteredCopy(t *testing.T) {
 		}
 	})
 	t.Run("the copy that takes the set past the cap is the failure", func(t *testing.T) {
-		hostDst := t.TempDir()
+		hostDst := drainRootDir(t)
 		_, err := drainRun(nil, "").extractDrain(members(), hostDst, nil, nil, newDrainState(15))
 		if got := sandbox.ReadBackLossReasonOf(err); got != sandbox.ReadBackOverCap {
 			t.Fatalf("extractDrain = %v (reason %q), want %q at the link — a copy the meter never bills lets two names of one file double the set past its cap", err, got, sandbox.ReadBackOverCap)
@@ -974,7 +974,7 @@ func TestExtractDrainLandsAHardlinkAsAMeteredCopy(t *testing.T) {
 // it still land. A pax global header is archive metadata, never a member to
 // decline.
 func TestExtractDrainNamesEveryMemberItDeclines(t *testing.T) {
-	hostDst := t.TempDir()
+	hostDst := drainRootDir(t)
 	archive := tarArchive(t, []*tar.Header{
 		{Name: "pax_global_header", Typeflag: tar.TypeXGlobalHeader, PAXRecords: map[string]string{"comment": "archive metadata"}},
 		{Name: "../escape.txt", Typeflag: tar.TypeReg, Mode: 0o644},
@@ -1019,7 +1019,7 @@ func TestExtractDrainNamesEveryMemberItDeclines(t *testing.T) {
 // — is declined like any other, never a failure that ends the extract.
 func TestExtractDrainLandsAHardlinkOnlyFromAFileThisArchiveLanded(t *testing.T) {
 	t.Run("a file the host held before the drain is no target", func(t *testing.T) {
-		hostDst := t.TempDir()
+		hostDst := drainRootDir(t)
 		if err := os.WriteFile(filepath.Join(hostDst, "store-own.txt"), []byte("the store's, not the pod's"), 0o644); err != nil {
 			t.Fatal(err)
 		}
@@ -1043,7 +1043,7 @@ func TestExtractDrainLandsAHardlinkOnlyFromAFileThisArchiveLanded(t *testing.T) 
 		}
 	})
 	t.Run("a landed target a later member took is declined, not fatal", func(t *testing.T) {
-		hostDst := t.TempDir()
+		hostDst := drainRootDir(t)
 		// A raced archive: sub/a.txt lands, then sub arrives as a FILE —
 		// the dir this extract built is replaced, a.txt with it — then a
 		// hardlink names the a.txt that no longer stands.
@@ -1065,7 +1065,7 @@ func TestExtractDrainLandsAHardlinkOnlyFromAFileThisArchiveLanded(t *testing.T) 
 		}
 	})
 	t.Run("a landed target a later link redirected away is declined, not fatal", func(t *testing.T) {
-		hostDst := t.TempDir()
+		hostDst := drainRootDir(t)
 		// p/a.txt lands, then p arrives as a link to the tree's own q/ —
 		// the dir this extract built goes, a.txt with it, and the path now
 		// resolves through the link to a file nobody landed: the name is
@@ -1313,6 +1313,19 @@ func extractInto(t *testing.T, hostDst string, s *drainState, hdrs []*tar.Header
 	return drainRun(nil, "").extractDrain(tarArchive(t, hdrs, bodies), hostDst, nil, nil, s)
 }
 
+// drainRootDir is a fresh host dir as extractDrain receives it: resolved by
+// drainRoot, the way drainRunFilesDir resolves every declared dir before
+// its first attempt — a temp dir reached through a link of the platform's
+// own is otherwise a root every landing reads as outside.
+func drainRootDir(t *testing.T) string {
+	t.Helper()
+	root, err := drainRoot(t.TempDir())
+	if err != nil {
+		t.Fatalf("resolve the test's host dir: %v", err)
+	}
+	return root
+}
+
 // TestTheDrainMeterFollowsTheBytes pins, in the archive orders the shim
 // cannot choose, the two guards that keep the meter on the bytes the host
 // holds: a link that replaces a file takes that file's bytes off the
@@ -1321,7 +1334,7 @@ func extractInto(t *testing.T, hostDst string, s *drainState, hdrs []*tar.Header
 func TestTheDrainMeterFollowsTheBytes(t *testing.T) {
 	const capBytes = 10
 	t.Run("a raced file replaced by a link gives its room back", func(t *testing.T) {
-		hostDst := t.TempDir()
+		hostDst := drainRootDir(t)
 		s := newDrainState(capBytes)
 		if _, err := extractInto(t, hostDst, s, []*tar.Header{
 			{Name: "./link", Typeflag: tar.TypeReg, Mode: 0o644},
@@ -1338,7 +1351,7 @@ func TestTheDrainMeterFollowsTheBytes(t *testing.T) {
 		}
 	})
 	t.Run("a file counts where it landed, not under the name that reached it", func(t *testing.T) {
-		hostDst := t.TempDir()
+		hostDst := drainRootDir(t)
 		s := newDrainState(capBytes)
 		// A crafted archive: p links to q, p/a.txt lands through it at
 		// q/a.txt, then p becomes a real dir and p/a.txt a link — a removal
@@ -1366,7 +1379,7 @@ func TestTheDrainMeterFollowsTheBytes(t *testing.T) {
 		}
 	})
 	t.Run("a sweep that takes a link in a member's path re-reads where it lands", func(t *testing.T) {
-		hostDst := t.TempDir()
+		hostDst := drainRootDir(t)
 		s := newDrainState(capBytes)
 		if _, err := extractInto(t, hostDst, s, []*tar.Header{
 			{Name: "./q/", Typeflag: tar.TypeDir, Mode: 0o755},
@@ -1414,5 +1427,198 @@ func TestExportRunFilesDrainsIntoAHostDirReachedThroughALink(t *testing.T) {
 	}
 	if got, err := os.ReadFile(filepath.Join(realDir, "out", "deep.bin")); err != nil || len(got) != 2 {
 		t.Errorf("out/deep.bin = %v (%v), want the nested member landed", got, err)
+	}
+}
+
+// TestExportRunFilesJudgesAHostDirReachedThroughALinkWhereItStands: every
+// judgment the drain makes of what the host held before it — the proof a
+// raced dir's removal stands on, the sweep a settled attempt runs, and the
+// one a member that needs the room runs — reads the directory the writes
+// land in. A snapshot taken through a host dir that is itself a link sees
+// the link alone: a pre-drain tree then reads as a raced one and is
+// removed, a pre-drain file as a raced leftover, and a sweep handed the
+// link walks nothing. One scenario per judgment.
+func TestExportRunFilesJudgesAHostDirReachedThroughALinkWhereItStands(t *testing.T) {
+	const preDrain = "the store held me before the drain"
+	// linkedHostDir is a host dir reached through a link of its own, the
+	// directory the link names, and a pre-drain file written at rel there.
+	linkedHostDir := func(t *testing.T, rel string) (via, realDir, own string) {
+		t.Helper()
+		realDir = t.TempDir()
+		via = filepath.Join(t.TempDir(), "store")
+		if err := os.Symlink(realDir, via); err != nil {
+			t.Skipf("symlinks unavailable: %v", err)
+		}
+		own = filepath.Join(realDir, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(own), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(own, []byte(preDrain), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return via, realDir, own
+	}
+	wantIntact := func(t *testing.T, own string) {
+		t.Helper()
+		if got, err := os.ReadFile(own); err != nil || string(got) != preDrain {
+			t.Errorf("pre-drain %s = %q (%v), want it intact — the drain took what the host already had", own, got, err)
+		}
+	}
+	t.Run("a pre-drain tree where the archive carries a file is declined, never removed", func(t *testing.T) {
+		via, realDir, own := linkedHostDir(t, "keep/old.txt")
+		kubectl, calls := exportShim(t, podTree(t, map[string]string{"keep": "the pod settled on a file", "report.md": "# complete"}), 0, "")
+		r := drainRun([]sandbox.ReadBackDir{{ContainerPath: "/iterion/artifact-files", HostDir: via}}, kubectl)
+
+		wantDeclinedLoss(t, r.ExportRunFiles(context.Background()), sandbox.ReadBackDeclinedMember{Dir: "/iterion/artifact-files", Name: "keep", Why: sandbox.DeclinedPreDrainTree})
+		wantIntact(t, own)
+		if got, err := os.ReadFile(filepath.Join(realDir, "report.md")); err != nil || string(got) != "# complete" {
+			t.Errorf("report.md = %q (%v), want the rest of the set landed past the declined member", got, err)
+		}
+		if calls() != 1 {
+			t.Errorf("the drain archived the pod %d times, want once", calls())
+		}
+	})
+	t.Run("a retried drain sweeps what only the raced attempt landed", func(t *testing.T) {
+		fastExportRetries(t)
+		via, realDir, own := linkedHostDir(t, "host-own.txt")
+		kubectl, calls := exportShimSeq(t, []string{
+			podTree(t, map[string]string{"report.md": "# partial", "stale.txt": "the pod dropped me before the settled archive"}),
+			podTree(t, map[string]string{"report.md": "# complete"}),
+		}, 1, measuredRaceStderr)
+		r := drainRun([]sandbox.ReadBackDir{{ContainerPath: "/iterion/artifact-files", HostDir: via}}, kubectl)
+
+		if err := r.ExportRunFiles(context.Background()); err != nil {
+			t.Fatalf("ExportRunFiles = %v, want the raced drain retried to success", err)
+		}
+		if _, err := os.Lstat(filepath.Join(realDir, "stale.txt")); !os.IsNotExist(err) {
+			t.Errorf("stale.txt stands (%v) — the sweep walked the link instead of the dir it names, and the clean verdict covers a file the pod no longer has", err)
+		}
+		wantIntact(t, own)
+		if got, err := os.ReadFile(filepath.Join(realDir, "report.md")); err != nil || string(got) != "# complete" {
+			t.Errorf("report.md = %q (%v), want the settled archive's member", got, err)
+		}
+		if calls() != 2 {
+			t.Errorf("the drain archived the pod %d times, want the raced attempt retried once", calls())
+		}
+	})
+	t.Run("the sweep a member that needs the room runs never takes a pre-drain file", func(t *testing.T) {
+		fastExportRetries(t)
+		via, realDir, own := linkedHostDir(t, "host-own.txt")
+		// The raced attempt lands 8 bytes the settled archive no longer
+		// carries; the settled member's 8 need their room under a 10-byte
+		// cap, and the sweep that frees it runs mid-attempt.
+		kubectl, calls := exportShimSeq(t, []string{
+			podTree(t, map[string]string{"scratch.bin": "01234567"}),
+			podTree(t, map[string]string{"report.md": "abcdefgh"}),
+		}, 1, measuredRaceStderr)
+		r := drainRun([]sandbox.ReadBackDir{{ContainerPath: "/iterion/artifact-files", HostDir: via, CapBytes: 10}}, kubectl)
+
+		if err := r.ExportRunFiles(context.Background()); err != nil {
+			t.Fatalf("ExportRunFiles = %v, want the settled member landed in the room the raced leftover held", err)
+		}
+		wantIntact(t, own)
+		if _, err := os.Lstat(filepath.Join(realDir, "scratch.bin")); !os.IsNotExist(err) {
+			t.Errorf("scratch.bin stands (%v), want it swept for the settled member's room", err)
+		}
+		if got, err := os.ReadFile(filepath.Join(realDir, "report.md")); err != nil || string(got) != "abcdefgh" {
+			t.Errorf("report.md = %q (%v), want the settled member whole", got, err)
+		}
+		if calls() != 2 {
+			t.Errorf("the drain archived the pod %d times, want the raced attempt then the settled one", calls())
+		}
+	})
+}
+
+// TestExportRunFilesStopsThePodArchiverOnceTheExtractFails: an extract the
+// cap ended lands nothing more of the archive, so the drain stops the pod's
+// archiver instead of reading the rest of its stream only to throw it away —
+// a tool that wrote far past the cap would otherwise stream every byte of it
+// through the teardown until the drain's deadline killed kubectl.
+func TestExportRunFilesStopsThePodArchiverOnceTheExtractFails(t *testing.T) {
+	const body = 32 << 20
+	// The archive's head: one member declaring far more than the cap lets
+	// land; its body follows from the shim, streamed.
+	var head bytes.Buffer
+	if err := tar.NewWriter(&head).WriteHeader(&tar.Header{Name: "big.bin", Size: body, Typeflag: tar.TypeReg, Mode: 0o644}); err != nil {
+		t.Fatal(err)
+	}
+	kubectl, streamedToTheEnd := streamingArchiverShim(t, head.Bytes(), body)
+	r := drainRun([]sandbox.ReadBackDir{{ContainerPath: "/iterion/artifact-files", HostDir: t.TempDir(), CapBytes: 16}}, kubectl)
+
+	err := r.ExportRunFiles(context.Background())
+	if got := sandbox.ReadBackLossReasonOf(err); got != sandbox.ReadBackOverCap {
+		t.Fatalf("ExportRunFiles = %v (reason %q), want %q", err, got, sandbox.ReadBackOverCap)
+	}
+	if _, statErr := os.Stat(streamedToTheEnd); statErr == nil {
+		t.Errorf("the pod's archiver streamed its whole archive after the cap ended the extract — the drain read %d bytes it would never land", body)
+	}
+}
+
+// TestExportRunFilesSaysOneRacedAttemptLeftNoUnion: the stale mark says a
+// raced attempt's members may stand beside those of the attempt that ended
+// the drain — it needs an earlier attempt. One raced archive alone, whether
+// the retry budget allowed no other (ITERION_SANDBOX_EXPORT_ATTEMPTS=1, an
+// accepted override) or the drain's context ended the wait for the next, is
+// unsettled — the tree changed under it — and no union: neither the event's
+// mark nor the error may call it a stale superset. Abandoned after a second
+// attempt, the union is there, and so is the mark.
+func TestExportRunFilesSaysOneRacedAttemptLeftNoUnion(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		attempts string
+		// pause is the first pause between attempts; abandonAfter the retry
+		// line the drain's context is cancelled on (0: never). An abandoned
+		// wait is pinned by a pause no test outlasts, or by a second pause
+		// twice the first, the context already done before it starts.
+		pause        string
+		abandonAfter int
+		wantCalls    int
+		wantStale    bool
+	}{
+		{name: "a retry budget of one", attempts: "1", pause: "5ms", wantCalls: 1},
+		{name: "a retry abandoned after the first attempt", attempts: "3", pause: "1h", abandonAfter: 1, wantCalls: 1},
+		{name: "a retry abandoned after the second attempt", attempts: "3", pause: "50ms", abandonAfter: 2, wantCalls: 2, wantStale: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("ITERION_SANDBOX_EXPORT_ATTEMPTS", tc.attempts)
+			t.Setenv("ITERION_SANDBOX_EXPORT_RETRY_PAUSE", tc.pause)
+			hostDst := t.TempDir()
+			kubectl, calls := exportShimSeq(t, []string{
+				podTree(t, map[string]string{"report.md": "# first", "first.txt": "only the first archive carries me"}),
+				podTree(t, map[string]string{"report.md": "# second"}),
+			}, 99, measuredRaceStderr)
+			r := drainRun([]sandbox.ReadBackDir{{ContainerPath: "/iterion/artifact-files", HostDir: hostDst}}, kubectl)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			retries := 0
+			r.driver.logger = iterlog.New(iterlog.LevelWarn, io.Discard)
+			r.driver.logger.SetHook(func(_ iterlog.Level, msg string, _ map[string]any) {
+				if strings.Contains(msg, "retrying") {
+					if retries++; retries == tc.abandonAfter {
+						cancel()
+					}
+				}
+			})
+
+			err := r.ExportRunFiles(ctx)
+			if got := sandbox.ReadBackLossReasonOf(err); got != sandbox.ReadBackUnsettled {
+				t.Fatalf("ExportRunFiles = %v (reason %q), want %q — every attempt that ran raced a writer", err, got, sandbox.ReadBackUnsettled)
+			}
+			if n := calls(); n != tc.wantCalls {
+				t.Fatalf("the drain archived the pod %d times, want %d — the scenario never reached the verdict it pins", n, tc.wantCalls)
+			}
+			if got := sandbox.ReadBackStaleOf(err); got != tc.wantStale {
+				t.Errorf("ReadBackStaleOf = %t after %d attempt(s), want %t — the mark says an earlier attempt's members may stand beside the last one's", got, tc.wantCalls, tc.wantStale)
+			}
+			if says := strings.Contains(err.Error(), "stale superset"); says != tc.wantStale {
+				t.Errorf("error = %v\nnames a stale superset: %t, want %t", err, says, tc.wantStale)
+			}
+			// The disk the verdict describes: the first archive's own member
+			// stands either way — alone with its archive after one attempt,
+			// beside a second archive that lacks it after two.
+			if _, statErr := os.Stat(filepath.Join(hostDst, "first.txt")); statErr != nil {
+				t.Errorf("first.txt = %v, want the first archive's member standing", statErr)
+			}
+		})
 	}
 }
