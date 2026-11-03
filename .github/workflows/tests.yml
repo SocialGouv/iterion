@@ -401,8 +401,8 @@ jobs:
         run: go test -mod=vendor -tags live -count=1 -run '^$' ./...
 
   test-e2e:
-    # The e2e half. Its own pod, parallel with test-unit, so the suite's
-    # ~9 minutes stop appending to the unit floor. It rebuilds the studio
+    # Partition top-level test families across four pods: the growing e2e
+    # package exceeded its 900s ceiling in one pod (#2911). Each rebuilds the studio
     # frontend because `pkg/server/static/` is gitignored and embedded with
     # `//go:embed all:static` — the e2e server boots against nothing without
     # it, and artifact-sharing would serialize this job behind `studio`
@@ -413,6 +413,10 @@ jobs:
     if: "!startsWith(github.event.merge_group.head_commit.message || github.event.pull_request.title, 'chore(brew): update tap to ')"
     runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || 'arc-runners' }}
     timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
     env:
       CGO_ENABLED: "0"
     steps:
@@ -462,23 +466,16 @@ jobs:
           rm -rf ../pkg/server/static/assets ../pkg/server/static/index.html
           cp -r dist/* ../pkg/server/static/
 
-      - name: E2E tests
-        # The ONLY run of the e2e package in this workflow (the unit job
-        # excludes it). The number bounds a HANG, not a slow machine: a
-        # timeout that a healthy run can reach is a coin flip that ejects PRs
-        # from the merge queue with a panic dump naming whichever test
-        # happened to be in flight.
-        #
-        # The suite runs its tests in parallel (t.Parallel() on every row that
-        # owns its state; e2e/main_test.go caps how many run at once, because
-        # these tests wait on background loops and oversubscription starves
-        # them). Measured 2026-09-07 on a 32-core box, whole package, the two
-        # runs back to back: 503.8 s at -parallel 1, 114.5 s capped — a 4.4x
-        # cut. CI runners are smaller than that box, so the wall is longer
-        # here (9-10 min measured 2026-10-04) and the 900 s hang bound now
-        # carries less headroom than it did on the big box: the job budget is
-        # the real ceiling.
-        run: go test -mod=vendor -count=1 -v -timeout 900s ./e2e/...
+      - name: E2E tests (shard ${{ matrix.shard }} of 4)
+        # Discovery includes Test, Example and Fuzz corpus names. Subtests
+        # stay with their parent. All legs use one commit and Go's own
+        # inventory; a discovery failure must stop before running any test.
+        # The per-shard hang bound and e2e/main_test.go's parallel cap stay.
+        shell: bash
+        run: |
+          set -euo pipefail
+          pattern=$(go run -mod=vendor ./scripts/ci/testshards -tests ./e2e -n 4 -i ${{ matrix.shard }} -list-timeout 5m)
+          go test -mod=vendor -count=1 -v -run "$pattern" -timeout 900s ./e2e
 
   studio:
     # The studio half: eslint + tsc -b + vitest, plus the two drift checks

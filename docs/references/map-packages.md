@@ -245,6 +245,7 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `pkg/subbotcontracts` | reads the `subbot` children of a workflow for the contracts they keep — what bundlelint holds a parent's `with:` to (C255). | — |
 | `pkg/subbotsource` | resolves the source reference carried by a subbot node. | — |
 | `pkg/supervise` | implements LLM-driven supervisor agents that watch a running iterion workflow from a separate goroutine/process and enqueue steering messages the… | `Evaluator`, `IdempotentInjector`, `Injector`, `Observer`, `WatcherProgressStoreProvider` |
+| `pkg/testinventory` | reads Go's runnable test names without executing their bodies. | — |
 | `pkg/treenoise` | the canonical list of "tree noise": paths the run's own setup and tooling write into the workspace, which never count as the pass's work — the… | — |
 | `pkg/trigger` | the unifying spine for event-driven runs. | `BoardEffect`, `EffectLabelConsumer`, `EffectOutbox`, `LabelConsumer`, `Launcher`, `Nudger`, `ProjectionBindings`, `ProjectionEffect`, `Publisher`, `SubscriptionStore` |
 | `pkg/usagecap` | stops a deployment from spending its LLM subscription down to the provider's own wall. | `PolicySource`, `SettingsStore`, `Store` |
