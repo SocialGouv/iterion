@@ -19,10 +19,11 @@
     "webkitgtk_4_1@latest",
     "golangci-lint@latest",
     "jq@latest",
-    "git@2.55.0"
+    "git@2.55.0",
+    "yq-go@4.53.3"
   ],
   "shell": {
     "init_hook": [],
-    "scripts": {}
+    "scripts":   {}
   }
 }

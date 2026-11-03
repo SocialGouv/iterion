@@ -283,7 +283,7 @@ targets:`, 1)
 // and the lint enforces it — so the summary the drafting agent reads must
 // carry the decision the brief already took, not leave it to be guessed.
 func TestAssessmentBriefSummaryCarriesTheSweepDecision(t *testing.T) {
-	requireAssessmentTools(t)
+	requireAssessmentTools(t, "python3", "git", "yq")
 	with := strings.Replace(aGoodBrief, `    target: "5.1"`,
 		"    target: \"5.1\"\n    crosses_major: true", 1)
 	if with == aGoodBrief {
@@ -309,7 +309,7 @@ func TestAssessmentBriefSummaryCarriesTheSweepDecision(t *testing.T) {
 }
 
 func TestAssessmentBriefRefusesATargetWithoutAComponent(t *testing.T) {
-	requireAssessmentTools(t)
+	requireAssessmentTools(t, "python3", "git", "yq")
 	broken := strings.Replace(aGoodBrief, `  - component: "the runtime"`,
 		"  - name: node", 1)
 	if broken == aGoodBrief {
