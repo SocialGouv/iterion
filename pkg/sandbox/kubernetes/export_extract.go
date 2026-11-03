@@ -169,19 +169,26 @@ func (r *Run) writeExportFile(abs string, hdr *tar.Header, src io.Reader) error 
 	return nil
 }
 
-// writeExportSymlink recreates a symlink the run's work left in the
-// workspace — a repository may legitimately hold some — but only where the
-// link resolves inside the exported tree. A link pointing out of it is the
-// member that turns a later write into a write anywhere. Reports whether the
-// link was written.
-func (r *Run) writeExportSymlink(root, abs string, hdr *tar.Header) (bool, error) {
-	target := hdr.Linkname
-	resolved := target
+// symlinkLanding is where a link member written at abs would resolve, and
+// whether that is inside root. A link pointing out of the tree is the
+// member that turns a later write into a write anywhere; the export and
+// the drain both refuse it on this one predicate.
+func symlinkLanding(root, abs, target string) (resolved string, inside bool) {
+	resolved = target
 	if !filepath.IsAbs(resolved) {
 		resolved = filepath.Join(filepath.Dir(abs), target)
 	}
 	resolved = filepath.Clean(resolved)
-	if resolved != root && !strings.HasPrefix(resolved, root+string(os.PathSeparator)) {
+	return resolved, resolved == root || strings.HasPrefix(resolved, root+string(os.PathSeparator))
+}
+
+// writeExportSymlink recreates a symlink the run's work left in the
+// workspace — a repository may legitimately hold some — but only where the
+// link resolves inside the exported tree (symlinkLanding). Reports whether
+// the link was written.
+func (r *Run) writeExportSymlink(root, abs string, hdr *tar.Header) (bool, error) {
+	target := hdr.Linkname
+	if _, inside := symlinkLanding(root, abs, target); !inside {
 		r.driver.logger.Warn("sandbox: export skipped the link %s -> %s: it leaves the exported workspace", abs, target)
 		return false, nil
 	}

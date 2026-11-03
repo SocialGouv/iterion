@@ -2849,11 +2849,15 @@ func drainRunFilesOnCleanup(
 	ctx, cancel := context.WithTimeout(context.Background(), sandboxRunFilesDrainTimeout)
 	defer cancel()
 	if err := exporter.ExportRunFiles(ctx); err != nil {
+		// The reason is read off the error the driver typed, never off
+		// its text: a reader of the run groups losses by the token.
+		reason := sandbox.ReadBackLossReasonOf(err)
 		if logger != nil {
-			logger.Warn("runtime: sandbox run-files drain FAILED — what landed before the failure still uploads, so the panel may read partial rather than empty; the rest is lost with the sandbox (ADR-143): %v", err)
+			logger.Warn("runtime: sandbox run-files drain FAILED (%s) — what landed before the failure still uploads, so the panel may read partial rather than empty; the rest is lost with the sandbox (ADR-143): %v", reason, err)
 		}
 		_ = emitEvent(store.EventSandboxRunFilesDrainFailed, map[string]any{
 			"driver": run.Driver(),
+			"reason": string(reason),
 			"error":  err.Error(),
 		})
 		return

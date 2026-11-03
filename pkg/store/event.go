@@ -574,7 +574,16 @@ const (
 	// distinguishable from a run that wrote nothing, because an empty
 	// artifact-files panel is the silence #2668 is about. Data:
 	//   - driver: the sandbox driver
-	//   - error: the drain failure
+	//   - reason: a stable token (sandbox.ReadBackLossReason), the twin of
+	//     run_attachment_lost's — "over_cap" (the set outgrew the cap; the
+	//     member the meter stopped on is dropped), "unsettled" (the tree
+	//     kept changing under the archiver past the retry budget),
+	//     "archiver" (the pod's archiver failed for a cause no retry
+	//     cures), "refused" (the host refused to land the set: a pre-drain
+	//     entry in the way, a host write that failed); "mixed" when the
+	//     declared dirs were lost for different reasons, "unknown" when the
+	//     driver typed none
+	//   - error: the drain failure, every lost dir's cause joined
 	EventSandboxRunFilesDrainFailed EventType = "sandbox_runfiles_drain_failed"
 	// EventSandboxHostBindsDropped fires when the selected driver has no
 	// host filesystem and the runtime removes the host bind mounts the run

@@ -318,10 +318,16 @@ bridges it to the durable read source. A drain that fails is
 `sandbox_runfiles_drain_failed` on the run — a failed drain must stay
 distinguishable from a run that wrote nothing, because an empty
 artifact-files panel is exactly the silence that once made every
-cloud deliverable disappear (#2668). The set is capped, and the cap is
+cloud deliverable disappear (#2668) — and the event carries a stable
+`reason` (`sandbox.ReadBackLossReason`: `over_cap`, `unsettled`,
+`archiver`, `refused`), read off the typed error the driver returns,
+so a cap reached is told from a tool still writing at teardown without
+parsing the prose. The set is capped, and the cap is
 named and metered (`sandbox.ReadBackCapBytes`): the emptyDir's
 sizeLimit spends it on the pod, the drain's meter enforces it on the
-host. What the contract does not promise: a pod that dies before
+host — a member that takes the set past the cap is dropped, never
+landed cut short, so what the panel serves is whole or absent. What
+the contract does not promise: a pod that dies before
 teardown takes its `emptyDir` with it — bytes that must survive an
 abrupt end are published as the run goes (`attachment=`), not left for
 the drain.

@@ -5,9 +5,11 @@ import (
 	"context"
 	"errors"
 	"os/exec"
+	"slices"
 	"strings"
 	"testing"
 
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -203,6 +205,20 @@ func TestDrainRunFilesOnCleanupSurfacesAFailedDrain(t *testing.T) {
 		if errText, _ := events[0].Data["error"].(string); !strings.Contains(errText, "kubectl exec failed") {
 			t.Errorf("event error = %v, want the drain's own cause", events[0].Data["error"])
 		}
+		if events[0].Data["reason"] != string(sandbox.ReadBackUnknown) {
+			t.Errorf("event reason = %v, want %q — a failure the driver typed nothing on is said to be untyped, never guessed", events[0].Data["reason"], sandbox.ReadBackUnknown)
+		}
+	})
+	t.Run("a typed loss carries its reason as a stable token", func(t *testing.T) {
+		events = nil
+		run := &drainFakeRun{exportErr: &sandbox.ReadBackLoss{Reason: sandbox.ReadBackOverCap, Err: errors.New("the run's read-back set is over the 256 MiB cap (ADR-143) at big.bin")}}
+		drainRunFilesOnCleanup(run, nil, emit)
+		if len(events) != 1 || events[0].Type != store.EventSandboxRunFilesDrainFailed {
+			t.Fatalf("events = %+v, want one sandbox_runfiles_drain_failed", events)
+		}
+		if events[0].Data["reason"] != string(sandbox.ReadBackOverCap) {
+			t.Errorf("event reason = %v, want %q — a reader tells a cap reached from a tool still writing without parsing the prose", events[0].Data["reason"], sandbox.ReadBackOverCap)
+		}
 	})
 	t.Run("a clean drain stays silent", func(t *testing.T) {
 		events = nil
@@ -244,11 +260,84 @@ func TestAFailedDrainWarnsThePartialUploadNotAnEmptyPanel(t *testing.T) {
 	}
 }
 
+// TestTheSandboxTeardownDrainsTheRunFilesBeforeTheSandboxGoes: the drain
+// is wired at ONE site — the cleanup startSandbox returns — and the
+// witnesses above call drainRunFilesOnCleanup by hand, so the call itself
+// had none: with that line removed from the cleanup, every test in this
+// package stayed green while a pod's run files were never collected
+// (#2668 reopened in silence). This drives the production cleanup on a
+// pod-shaped driver and counts the drain on the run the driver started —
+// once, and before the sandbox's own Cleanup, because the bytes only exist
+// in the pod until then.
+func TestTheSandboxTeardownDrainsTheRunFilesBeforeTheSandboxGoes(t *testing.T) {
+	t.Setenv("ITERION_MODE", "local") // pin the factory's preference order to docker,podman,noop
+	st := tmpStore(t)
+	ctx := context.Background()
+	const runID = "run-drain-wiring"
+	if _, err := st.CreateRun(ctx, runID, "drain", nil); err != nil {
+		t.Fatal(err)
+	}
+	fake := &drainFakeRun{}
+	wf := &ir.Workflow{
+		Name:    "drain",
+		Sandbox: &ir.SandboxSpec{Mode: "inline", Image: "example.invalid/iterion-sandbox:test", HostState: "none"},
+	}
+	e := New(wf, st, newStubExecutor(),
+		WithLogger(iterlog.Nop()),
+		WithWorkDir(t.TempDir()),
+		WithSandboxDrivers(map[string]sandbox.DriverConstructor{
+			"docker": func() (sandbox.Driver, error) { return &drainingDriver{run: fake}, nil },
+		}),
+	)
+	cleanup, err := e.startSandbox(ctx, runID, e.workDir, "", nil)
+	if err != nil {
+		t.Fatalf("startSandbox: %v", err)
+	}
+	if fake.drained != 0 {
+		t.Fatalf("drained = %d before the teardown, want 0 — the drain is the teardown's, not the start's", fake.drained)
+	}
+	cleanup()
+	if fake.drained != 1 {
+		t.Fatalf("drained = %d after the teardown, want exactly 1 — the cleanup did not drain the pod's run files (trace %v)", fake.drained, fake.trace)
+	}
+	drain, shutdown := slices.Index(fake.trace, "drain"), slices.Index(fake.trace, "cleanup")
+	if shutdown < 0 {
+		t.Fatalf("trace = %v, want the sandbox's own Cleanup in it — the teardown did not run, so the order proves nothing", fake.trace)
+	}
+	if drain > shutdown {
+		t.Fatalf("trace = %v, want the drain BEFORE the sandbox's Cleanup — after it, the pod and its bytes are gone", fake.trace)
+	}
+}
+
+// drainingDriver is a pod-shaped driver — no host filesystem — whose Start
+// hands the runtime a run carrying the export seam: the teardown's drain
+// call on that run is what the wiring witness counts.
+type drainingDriver struct {
+	run *drainFakeRun
+}
+
+func (d *drainingDriver) Name() string { return "docker" }
+
+func (d *drainingDriver) Capabilities() sandbox.Capabilities {
+	return sandbox.Capabilities{SupportsImage: true, SupportsMounts: true}
+}
+
+func (d *drainingDriver) Prepare(_ context.Context, spec sandbox.Spec) (sandbox.PreparedSpec, error) {
+	return stallingPrepared{spec: spec}, nil
+}
+
+func (d *drainingDriver) Start(context.Context, sandbox.PreparedSpec, sandbox.RunInfo) (sandbox.Run, error) {
+	return d.run, nil
+}
+
 // drainFakeRun implements the widened export seam and counts the drain
-// call, so the wiring (not the driver) is what the assertions measure.
+// call, so the wiring (not the driver) is what the assertions measure;
+// trace records the drain and the sandbox's Cleanup in the order the
+// teardown made them.
 type drainFakeRun struct {
 	exportErr error
 	drained   int
+	trace     []string
 }
 
 func (r *drainFakeRun) Driver() string { return "kubernetes" }
@@ -257,6 +346,7 @@ func (r *drainFakeRun) ExportWorkspace(context.Context) error { return nil }
 
 func (r *drainFakeRun) ExportRunFiles(context.Context) error {
 	r.drained++
+	r.trace = append(r.trace, "drain")
 	return r.exportErr
 }
 
@@ -268,7 +358,10 @@ func (r *drainFakeRun) Exec(context.Context, []string, sandbox.ExecOpts) (sandbo
 	return sandbox.ExecResult{}, nil
 }
 
-func (r *drainFakeRun) Cleanup(context.Context) error { return nil }
+func (r *drainFakeRun) Cleanup(context.Context) error {
+	r.trace = append(r.trace, "cleanup")
+	return nil
+}
 
 // plainFakeRun is a bind-mount driver's run: no export seam at all.
 type plainFakeRun struct{}
