@@ -430,21 +430,6 @@ func validateForgeBaseURL(raw string) (string, error) {
 	return "https://" + u.Host, nil
 }
 
-// validateKeyOverrides rejects a machine lane's key override that references
-// a BYOK key the caller's tenant doesn't own, whose provider doesn't match,
-// or that the lane's own actor could never spend. The resolver is already
-// tenant-scoped (a foreign key_id silently won't match in secrets.Resolve),
-// so the cross-org arm is a fail-fast UX guard, not the security boundary;
-// the spendability arm is the opposite — it is the ONLY place that arm can be
-// enforced, because an unspendable pin produces no refusal downstream at all.
-// Both machine lanes that carry pins share it: the webhook routes and the
-// trigger subscription routes.
-//
-// actor is the identity the launch will resolve credentials under
-// (webhookActor / triggerSpineActor for the machine lanes). It fails CLOSED:
-// an empty actor matches no key's scope, so an unknown lane is treated as a
-// machine lane rather than skipping the arm — a credential guard with an
-// unused opt-out is a seam for the next caller's false negative.
 // validateCredentialPinKeys rejects a pin name a Mongo path cannot address.
 // Both stores hold the pins as one subdocument and the sweep's $unset
 // addresses each entry as "<field>.<name>", so a name holding a dot reads
@@ -468,6 +453,21 @@ func validateCredentialPinKeys(field string, pins map[string]string) error {
 	return nil
 }
 
+// validateKeyOverrides rejects a machine lane's key override that references
+// a BYOK key the caller's tenant doesn't own, whose provider doesn't match,
+// or that the lane's own actor could never spend. The resolver is already
+// tenant-scoped (a foreign key_id silently won't match in secrets.Resolve),
+// so the cross-org arm is a fail-fast UX guard, not the security boundary;
+// the spendability arm is the opposite — it is the ONLY place that arm can be
+// enforced, because an unspendable pin produces no refusal downstream at all.
+// Both machine lanes that carry pins share it: the webhook routes and the
+// trigger subscription routes.
+//
+// actor is the identity the launch will resolve credentials under
+// (webhookActor / triggerSpineActor for the machine lanes). It fails CLOSED:
+// an empty actor matches no key's scope, so an unknown lane is treated as a
+// machine lane rather than skipping the arm — a credential guard with an
+// unused opt-out is a seam for the next caller's false negative.
 func (s *Server) validateKeyOverrides(ctx context.Context, tenantID, actor string, overrides map[string]string) error {
 	if err := validateCredentialPinKeys("key_overrides", overrides); err != nil {
 		return err
