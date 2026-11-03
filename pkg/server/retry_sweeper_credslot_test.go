@@ -49,6 +49,32 @@ func TestSweepDueRetries_ACredentialSlotWaitIsDeferredFreeOfCharge(t *testing.T)
 	}
 }
 
+// A run armed for a USAGE WINDOW whose resume finds its key full waits for a
+// slot now: the deferral re-tags the row cred_slot in the same write, or
+// every reader keyed on the reason — the probe pass under a short floor,
+// UsageParkWall's notices, the audit trail — keeps treating it as the
+// provider wall it no longer waits on. Red when the deferral passes no
+// reason (the row keeps usage_window).
+func TestSweepDueRetries_AUsageWindowRowRefusedOnTheCapIsRetaggedAsASlotWait(t *testing.T) {
+	st := newFakeRetryStore()
+	st.claimWins["run-wall"] = true
+	resumer := &fakeResumer{failing: fmt.Errorf("cloudpublisher: run run-wall stays parked: %w", cloudpublisher.ErrCredentialAtCapacity)}
+	s := newRetrySweeperServer(t, st, resumer)
+
+	now := time.Now().UTC()
+	ref := dueRef("run-wall", now.Add(-time.Minute))
+	ref.RetryState.Reason = store.RetryReasonUsageWindow
+	ref.RetryState.Code = string(store.FailureUsageLimitBlocked)
+	s.sweepDueRetries(context.Background(), &fakeRetryLister{refs: []mongostore.RetryDueRef{ref}}, resumer, now)
+
+	if _, ok := st.rearmed["run-wall"]; !ok {
+		t.Fatal("the slot wait was not deferred: DelayRunRetry never ran")
+	}
+	if got := st.delayedAs["run-wall"]; got != store.RetryReasonCredSlot {
+		t.Fatalf("the deferral tagged the row %q, want %q — a usage-window row refused on the cap waits for a slot now", got, store.RetryReasonCredSlot)
+	}
+}
+
 // The wait is bounded by the run's own max_wait, measured from the first
 // arming: a key busy for days must not hold a parked run forever. Past it
 // the run is abandoned, naming the cap.

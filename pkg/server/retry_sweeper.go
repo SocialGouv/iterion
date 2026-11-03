@@ -193,7 +193,7 @@ func (s *Server) resumeDueRetry(ctx context.Context, retryStore store.RunRetrySt
 		if circuitErr != nil {
 			s.warnf("retry sweeper: run %s: cannot read retry circuit (%v) — proceeding with the per-run retry", ref.ID, circuitErr)
 		} else if delayedUntil, shouldDelay := circuitRetryDelayAt(ref, run, circuit, decisionNow); shouldDelay {
-			delayed, delayErr := retryStore.DelayRunRetry(runCtx, ref.ID, ref.RetryAfter(), delayedUntil)
+			delayed, delayErr := retryStore.DelayRunRetry(runCtx, ref.ID, ref.RetryAfter(), delayedUntil, "", "")
 			if delayErr != nil {
 				adm.rollback(s.logger)
 				s.warnf("retry sweeper: run %s: cannot delay retry behind open circuit: %v", ref.ID, delayErr)
@@ -589,6 +589,13 @@ func (s *Server) infof(format string, args ...any) {
 // is abandoned with the key named, so a key busy for days does not hold a
 // parked run forever.
 //
+// The deferral re-tags the row as a slot wait (RetryReasonCredSlot): a run
+// armed for a usage window whose resume found its key full waits for a slot
+// now, and a row still tagged usage_window would be read as the provider
+// wall it no longer waits on — by UsageParkWall's notices, by the audit
+// trail, and by the probe pass whenever the operator's floor is under the
+// slot cadence.
+//
 // The CAS is the armed instant the scan read: the claim left it in place and
 // the resume's rollback put the run back around it, so a row an operator
 // resumed or another pass settled in between is left to whoever moved it.
@@ -607,7 +614,7 @@ func (s *Server) deferCredSlotRetry(ctx context.Context, retryStore store.RunRet
 		return
 	}
 	at := now.Add(cloudpublisher.CredSlotProbeInterval)
-	delayed, err := retryStore.DelayRunRetry(ctx, ref.ID, ref.RetryAfter(), at)
+	delayed, err := retryStore.DelayRunRetry(ctx, ref.ID, ref.RetryAfter(), at, store.RetryReasonCredSlot, string(store.FailureCredSlotWait))
 	if err != nil {
 		s.warnf("retry sweeper: run %s: cannot defer the credential-slot wait: %v", ref.ID, err)
 		return

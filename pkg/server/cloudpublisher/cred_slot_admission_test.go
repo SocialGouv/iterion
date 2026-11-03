@@ -57,7 +57,7 @@ func (s *ledgerRetrySpy) ScheduleRunRetry(_ context.Context, runID string, at, _
 	return true, 1, nil
 }
 
-func (s *ledgerRetrySpy) DelayRunRetry(context.Context, string, time.Time, time.Time) (bool, error) {
+func (s *ledgerRetrySpy) DelayRunRetry(context.Context, string, time.Time, time.Time, string, string) (bool, error) {
 	return false, nil
 }
 func (s *ledgerRetrySpy) PullRunRetry(context.Context, string, time.Time, time.Time) (bool, error) {

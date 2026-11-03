@@ -167,10 +167,12 @@ func (s *Store) ScheduleRunRetry(ctx context.Context, runID string, at, wall tim
 	return true, attempt, nil
 }
 
-// DelayRunRetry moves an existing intent behind a shared circuit without
-// charging a new attempt. The exact retry_after CAS means a stale sweeper can
-// neither overwrite a newer arm nor resurrect an operator-resumed run.
-func (s *Store) DelayRunRetry(ctx context.Context, runID string, expectedAfter, delayedUntil time.Time) (bool, error) {
+// DelayRunRetry moves an existing intent — behind a shared circuit, or to a
+// credential slot's next ask — without charging a new attempt. The exact
+// retry_after CAS means a stale sweeper can neither overwrite a newer arm nor
+// resurrect an operator-resumed run. A non-empty reason or code re-tags the
+// wait in the same write (store.RunRetryStore).
+func (s *Store) DelayRunRetry(ctx context.Context, runID string, expectedAfter, delayedUntil time.Time, reason, code string) (bool, error) {
 	now := time.Now().UTC()
 	filter := withTenantFilter(ctx, bson.M{
 		"_id":                    runID,
@@ -180,14 +182,21 @@ func (s *Store) DelayRunRetry(ctx context.Context, runID string, expectedAfter, 
 	// Runs armed by versions predating ScheduledAt need a fixed anchor on the
 	// first deferral. Use the CAS-protected old retry_after as the best durable
 	// origin and preserve it on every later delay.
-	update := mongo.Pipeline{{{Key: "$set", Value: bson.M{
+	set := bson.M{
 		retryPath("retry_after"): delayedUntil.UTC(),
 		retryPath("scheduled_at"): bson.M{"$ifNull": bson.A{
 			"$" + retryPath("scheduled_at"), expectedAfter.UTC(),
 		}},
 		retryPath("claimed_at"): "$$REMOVE",
 		"updated_at":            now,
-	}}}}
+	}
+	if reason != "" {
+		set[retryPath("reason")] = reason
+	}
+	if code != "" {
+		set[retryPath("code")] = code
+	}
+	update := mongo.Pipeline{{{Key: "$set", Value: set}}}
 	res, err := s.runs.UpdateOne(ctx, filter, versionRunUpdate(update))
 	if err != nil {
 		return false, fmt.Errorf("store/mongo: delay retry %s: %w", runID, err)

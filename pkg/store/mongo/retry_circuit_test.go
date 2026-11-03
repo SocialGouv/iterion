@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
+
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 func TestRetryCircuitFailureOpensAndSuccessCloses(t *testing.T) {
@@ -98,7 +100,7 @@ func TestDelayRunRetryAnchorsLegacyIntent(t *testing.T) {
 	if _, err := s.runs.UpdateOne(ctx, withTenantFilter(ctx, bson.M{"_id": "run-delay-legacy"}), bson.M{"$unset": bson.M{retryPath("scheduled_at"): ""}}); err != nil {
 		t.Fatal(err)
 	}
-	if delayed, err := s.DelayRunRetry(ctx, "run-delay-legacy", original, original.Add(time.Hour)); err != nil || !delayed {
+	if delayed, err := s.DelayRunRetry(ctx, "run-delay-legacy", original, original.Add(time.Hour), "", ""); err != nil || !delayed {
 		t.Fatalf("DelayRunRetry = (%v, %v)", delayed, err)
 	}
 	run, err := s.LoadRun(ctx, "run-delay-legacy")
@@ -125,7 +127,7 @@ func TestDelayRunRetryDoesNotConsumeAttempt(t *testing.T) {
 	}
 	scheduledAt := *armed.RetryState.ScheduledAt
 	delayedUntil := original.Add(time.Hour)
-	delayed, err := s.DelayRunRetry(ctx, "run-delay", original, delayedUntil)
+	delayed, err := s.DelayRunRetry(ctx, "run-delay", original, delayedUntil, "", "")
 	if err != nil || !delayed {
 		t.Fatalf("DelayRunRetry = (%v, %v), want (true, nil)", delayed, err)
 	}
@@ -138,5 +140,40 @@ func TestDelayRunRetryDoesNotConsumeAttempt(t *testing.T) {
 	}
 	if run.RetryState.ScheduledAt == nil || !run.RetryState.ScheduledAt.Equal(scheduledAt) {
 		t.Fatalf("scheduled_at after delay = %v, want preserved %v", run.RetryState.ScheduledAt, scheduledAt)
+	}
+	if run.RetryState.Reason != "usage_window" || run.RetryState.Code != "USAGE_LIMIT_BLOCKED" {
+		t.Fatalf("a deferral passing no reason re-tagged the row: %q/%q, want usage_window/USAGE_LIMIT_BLOCKED kept", run.RetryState.Reason, run.RetryState.Code)
+	}
+}
+
+// A deferral that names a reason re-tags the wait in the same write, still
+// free of attempts: a usage-window row whose resume was refused on a
+// credential's concurrency cap waits for a slot now (store.RetryReasonCredSlot).
+func TestDelayRunRetryRetagsTheWait(t *testing.T) {
+	s := retryTestStore(t)
+	ctx := retryCtx()
+	seedFailedResumable(t, s, "run-retag")
+
+	original := time.Now().UTC().Add(-time.Minute).Truncate(time.Millisecond)
+	if scheduled, _, err := s.ScheduleRunRetry(ctx, "run-retag", original, original, "usage_window", "USAGE_LIMIT_BLOCKED", 3); err != nil || !scheduled {
+		t.Fatalf("ScheduleRunRetry = (%v, %v)", scheduled, err)
+	}
+	delayedUntil := original.Add(2 * time.Minute)
+	delayed, err := s.DelayRunRetry(ctx, "run-retag", original, delayedUntil, store.RetryReasonCredSlot, string(store.FailureCredSlotWait))
+	if err != nil || !delayed {
+		t.Fatalf("DelayRunRetry = (%v, %v), want (true, nil)", delayed, err)
+	}
+	run, err := s.LoadRun(ctx, "run-retag")
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	if run.RetryState == nil || run.RetryState.Reason != store.RetryReasonCredSlot || run.RetryState.Code != string(store.FailureCredSlotWait) {
+		t.Fatalf("retry state after a re-tagging delay = %+v, want reason %q code %q", run.RetryState, store.RetryReasonCredSlot, store.FailureCredSlotWait)
+	}
+	if run.RetryState.Attempts != 1 || run.RetryState.RetryAfter == nil || !run.RetryState.RetryAfter.Equal(delayedUntil) {
+		t.Fatalf("a re-tagging delay must spend no attempt and move the instant: %+v", run.RetryState)
+	}
+	if store.UsageParkWall(run.Status, run.RetryState) != (time.Time{}) {
+		t.Fatal("a row re-tagged as a slot wait still reads as parked on a usage wall")
 	}
 }

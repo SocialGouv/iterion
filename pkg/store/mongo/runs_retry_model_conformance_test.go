@@ -461,10 +461,10 @@ func applyRetryOp(ctx context.Context, real *Store, model *retryprobetest.Store,
 		return fmt.Sprintf("%v/%d", ok, attempt), err
 	case opDelay:
 		if onStore {
-			ok, err := real.DelayRunRetry(ctx, runID, expected, at)
+			ok, err := real.DelayRunRetry(ctx, runID, expected, at, "", "")
 			return fmt.Sprintf("%v", ok), err
 		}
-		ok, err := model.DelayRunRetry(ctx, runID, expected, at)
+		ok, err := model.DelayRunRetry(ctx, runID, expected, at, "", "")
 		return fmt.Sprintf("%v", ok), err
 	case opPull:
 		if onStore {

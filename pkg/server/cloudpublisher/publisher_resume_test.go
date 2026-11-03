@@ -112,7 +112,7 @@ func (r *retryStoreSpy) RearmProbedRunRetry(_ context.Context, _ string, _, _ ti
 	return false, nil
 }
 
-func (r *retryStoreSpy) DelayRunRetry(_ context.Context, _ string, _, _ time.Time) (bool, error) {
+func (r *retryStoreSpy) DelayRunRetry(_ context.Context, _ string, _, _ time.Time, _, _ string) (bool, error) {
 	return false, nil
 }
 func (r *retryStoreSpy) ClaimRunRetry(_ context.Context, runID string, _ time.Time) (bool, error) {
