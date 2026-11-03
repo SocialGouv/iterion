@@ -140,6 +140,56 @@ The handler also accepts `pending_deletion`, the soft-delete state that
 posted here it blocks the org without that deadline, and the purge
 sweeper only lists orgs whose `purge_after` has passed.
 
+What the nightly purge (02:00 UTC, on the one replica holding the
+`org-purge-sweeper` lease, plus a catch-up at each lease term's start)
+removes once that deadline has passed
+([pkg/cloud/orgsweep/sweep.go](../pkg/cloud/orgsweep/sweep.go)): every
+run of every team the org still lists — a team deleted through the team
+door took no runs with it, and the purge no longer sees them
+([flow-org-team-lifecycle.md](diagrams/flow-org-team-lifecycle.md)) — one
+by one through the run store, with the objects it owns in the bucket (`artifacts/`, `attachments/`, `tools/`,
+`ir/<run>.json` and the bundle snapshots `ir/<run>-bundle-<digest>.json`,
+`sessions/`, `runfiles/` under the run id); then every team-scoped
+and org-scoped Mongo collection, the audit rows keyed by the org AND by
+each of its teams, the org's sealed credentials and routing policies; then
+the identity rows (teams, memberships, invitations, the org). What it
+leaves, on purpose: the `users` rows and their SSO links — a user outlives
+their orgs and may be re-invited; erasing an account is a separate,
+explicit gesture — a user's own sessions and personal forfait. The order
+is the safety: no Mongo row is swept while a run's objects are still in
+the bucket, so a failed or interrupted purge leaves the org pending and
+the next sweep, on any replica, resumes it. A run that is not terminal
+(running, queued, paused) is not deleted — the engine
+may still write its objects — and withholds the sweep the same way until
+it ends: cancel it to let the purge finish.
+
+`ITERION_ORG_PURGE_RUN_BATCH` bounds the run deletes one pass attempts
+per org (a run delete is paginated S3 work; failed attempts count): once
+reached, the pass stops before any collection sweep, logs `resumes at the
+next sweep`, and the org is purged over several nights. Unset or `0` is no
+bound — the org goes in one pass; a value that is not a non-negative
+integer refuses to start the server rather than read as `0`.
+
+**Restoring during a purge.** `POST /api/admin/orgs/{id}/restore` is
+accepted as long as the org is `pending_deletion`, including after its
+`purge_after` has passed. The purge re-reads the org before every run
+delete and before its first collection sweep, so a restore stops it at the
+next step — but the runs a pass already deleted (with their objects) are
+gone for good: a restore after the deadline, or between two nights of a
+batched purge, returns the org without them. The sweep logs it as a
+warning: `left purge eligibility mid-purge … N run(s) already deleted`.
+
+**A purge that never finishes.** A run whose delete keeps failing (a
+bucket permission, an object under legal hold) or that never ends keeps
+the org `pending_deletion` with a warning each night —
+`orgsweep: purge org <id> … could not be deleted, the Mongo sweep is
+withheld`. Fix the cause (cancel the run, repair the bucket access) and the
+next sweep finishes. When the objects cannot be deleted at all, set
+`ITERION_ORG_PURGE_FORCE_SWEEP=<org id>` on the server and restart it: the
+purge of that org goes past the runs it cannot delete, names each in a
+warning, and leaves their objects in the bucket — unattributed, so record
+the run ids from that warning before removing the variable.
+
 UI path: Admin → Organisations → Acme → toggle status.
 
 ### 1.5 Audit log

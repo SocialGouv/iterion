@@ -597,17 +597,32 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	}
 
 	// Org purge sweeper: nightly hard-purge of orgs whose soft-delete grace has
-	// elapsed — all team-scoped data across the cloud collections, then the
-	// identity cascade. Multi-replica-safe (idempotent; PurgeOrg no-ops once the
-	// org is gone).
+	// elapsed — every run of every team with its blobs through the run store,
+	// then all team-scoped data across the cloud collections, then the
+	// identity cascade. Elected on one replica by the server's lease
+	// (idempotent: PurgeOrg no-ops once the org is gone, and a deferred or
+	// failed pass leaves the org pending for the next). The run batch is the
+	// operator's bound on one pass; the force list is the escape hatch for an
+	// org a run withholds for good.
 	var orgPurgeSweeper *orgsweep.Sweeper
 	if authStack.authSvc != nil {
+		runBatch, err := orgsweep.RunBatchFromEnv()
+		if err != nil {
+			return err
+		}
+		forceSweep := orgsweep.ForceSweepFromEnv()
+		for id := range forceSweep {
+			logger.Warn("orgsweep: %s names org %s — its purge sweeps past the runs it cannot delete, abandoning their objects in the bucket", orgsweep.ForceSweepEnv, id)
+		}
 		orgPurgeSweeper = &orgsweep.Sweeper{
 			Purger: &orgsweep.Purger{
-				DB:      st.DB(),
-				Store:   authStack.identityStore,
-				Cascade: authStack.authSvc.DeleteOrgCascade,
-				Logger:  logger,
+				DB:         st.DB(),
+				Store:      authStack.identityStore,
+				Cascade:    authStack.authSvc.DeleteOrgCascade,
+				Logger:     logger,
+				Runs:       st,
+				RunBatch:   runBatch,
+				ForceSweep: forceSweep,
 			},
 			HourUTC: 2,
 			Logger:  logger,
@@ -896,11 +911,13 @@ func buildCloudStores(ctx context.Context, st *mongostore.Store, logger *iterlog
 	}
 
 	// Hosted marketplace (Mongo-backed) — opt-in for cloud via
-	// ITERION_CLOUD_MARKETPLACE because the submit/install paths are
-	// local-mode only today (cloud is rejected pending a vetted submission
-	// flow — see pkg/server/marketplace_routes.go). When enabled it surfaces
-	// the read-only browse view + sets marketplace_enabled. Local self-host
-	// wires a JSONStore unconditionally in pkg/cli/studio.go.
+	// ITERION_CLOUD_MARKETPLACE. When enabled it serves the public browse
+	// view (account ids and moderation metadata projected away for
+	// non-owners — marketplace.ForViewer), authenticated submissions that
+	// land pending moderation, and the moderation queue; the install and
+	// uninstall paths stay local-only (see pkg/server/marketplace_routes.go).
+	// It also sets marketplace_enabled. Local self-host wires a JSONStore
+	// unconditionally in pkg/cli/studio.go.
 	marketplaceEnabled, _ := strconv.ParseBool(os.Getenv("ITERION_CLOUD_MARKETPLACE"))
 
 	schemas := []schemaEnsurer{

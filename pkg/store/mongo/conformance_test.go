@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -375,7 +376,16 @@ func (b *inMemoryBlob) DeleteRunIR(_ context.Context, runID string) error {
 	if err != nil {
 		return err
 	}
+	bundles, err := blob.IRBundleSnapshotPrefix(runID)
+	if err != nil {
+		return err
+	}
 	delete(b.data, key)
+	for k := range b.data {
+		if strings.HasPrefix(k, bundles) {
+			delete(b.data, k)
+		}
+	}
 	return nil
 }
 

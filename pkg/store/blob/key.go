@@ -125,6 +125,22 @@ func irBlobKey(runID string) (string, error) {
 	return fmt.Sprintf("ir/%s.json", runID), nil
 }
 
+// IRBundleSnapshotPrefix is the S3 key prefix of a run's immutable bundle
+// snapshots: the publisher parks one out of band under the IR key of
+// "<run_id>-bundle-<digest>" (ir/<run_id>-bundle-<digest>.json) when it
+// exceeds the queue payload. Keyed by the run id alone like every run key
+// space, so DeleteRunIR sweeps it with the run's canonical IR. The run id is
+// sanitised, and the "-bundle-" suffix keeps the prefix off another run whose
+// id merely starts with this one — the same "-bundle-" convention the IR read
+// mediation splits on (store/mongo GetIRBlob), which assumes no run id
+// carries it.
+func IRBundleSnapshotPrefix(runID string) (string, error) {
+	if err := store.SanitizePathComponent("run_id", runID); err != nil {
+		return "", fmt.Errorf("blob: invalid run_id: %w", err)
+	}
+	return fmt.Sprintf("ir/%s-bundle-", runID), nil
+}
+
 // validateIRBlobKey re-derives the canonical IR key from a storage key
 // carried on the wire (queue.IRRef.StorageKey) and confirms they match,
 // so a tampered or malformed reference can never escape the ir/ prefix.

@@ -29,6 +29,32 @@ func prefixSweeps() []prefixSweep {
 		{"DeleteRunToolBlobs", "tools/run-a/tu-1/output", func(ctx context.Context, c *S3Client) error { return c.DeleteRunToolBlobs(ctx, "run-a") }},
 		{"DeleteRunFiles", "runfiles/run-a/out/report.txt", func(ctx context.Context, c *S3Client) error { return c.DeleteRunFiles(ctx, "run-a") }},
 		{"DeleteUpload", "uploads/run-a/brief.pdf", func(ctx context.Context, c *S3Client) error { return c.DeleteUpload(ctx, "run-a") }},
+		{"DeleteRunIR", "ir/run-a-bundle-d1.json", func(ctx context.Context, c *S3Client) error { return c.DeleteRunIR(ctx, "run-a") }},
+	}
+}
+
+// DeleteRunIR takes the run's canonical IR AND every bundle snapshot the
+// publisher parked under the run id — keyed by the run id alone, a snapshot
+// left behind names no tenant once the run row is gone — and nothing of
+// run-a-b, whose IR keys start with run-a's.
+func TestS3DeleteRunIRSweepsTheBundleSnapshots(t *testing.T) {
+	f, srv := newFakeS3(t, "b")
+	c := newTestS3Client(t, srv.URL, "b")
+	own := []string{"ir/run-a.json", "ir/run-a-bundle-sha256-aa.json", "ir/run-a-bundle-sha256-bb.json"}
+	seed(f, own...)
+	seed(f, foreignKeys...)
+	if err := c.DeleteRunIR(context.Background(), "run-a"); err != nil {
+		t.Fatalf("DeleteRunIR: %v", err)
+	}
+	for _, k := range own {
+		if f.has(k) {
+			t.Fatalf("DeleteRunIR left %s in the bucket", k)
+		}
+	}
+	for _, k := range foreignKeys {
+		if !f.has(k) {
+			t.Fatalf("DeleteRunIR deleted %s, which is not run-a's", k)
+		}
 	}
 }
 
@@ -51,6 +77,8 @@ var foreignKeys = []string{
 	"tools/run-a-b/tu-1/output",
 	"runfiles/run-a-b/out/report.txt",
 	"uploads/run-a-b/brief.pdf",
+	"ir/run-a-b.json",
+	"ir/run-a-b-bundle-d1.json",
 	"artifacts/run-b/plan/0.json",
 	"README-real.txt",
 }

@@ -121,7 +121,7 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `pkg/cli` | implements the iterion command-line interface. | `ReliabilityRunSource` |
 | `pkg/clock` | provides a small Clock abstraction so time-dependent logic (notably the per-day spend-cap reset) can be driven by a fake clock in tests. | `Clock` |
 | `pkg/cloud/metrics` | centralises the Prometheus metrics exposed by the cloud-mode iterion server and runner pods. | — |
-| `pkg/cloud/orgsweep` | nightly-purges organizations that were soft-deleted (Status == pending_deletion) once their grace window (Org.PurgeAfter) has elapsed. | — |
+| `pkg/cloud/orgsweep` | nightly-purges organizations that were soft-deleted (Status == pending_deletion) once their grace window (Org.PurgeAfter) has elapsed. | `RunStore` |
 | `pkg/cloud/tracing` | wires the OpenTelemetry trace SDK so the spans emitted by pkg/runtime, pkg/runner, and pkg/server are actually exported. | — |
 | `pkg/cloudsched` | the cloud-mode recurring-bot scheduler: a per-org store of cron-scheduled bots and a multi-replica-safe ticker that fires each due schedule exactly… | `Store` |
 | `pkg/config` | loads iterion runtime configuration from environment variables and an optional YAML file. | — |

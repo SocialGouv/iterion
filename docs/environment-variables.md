@@ -352,6 +352,17 @@ This is the *per-run* bound. The *per-org* monthly cost cap, run quota,
 concurrency and launch rate are a separate admission layer with its own
 variables — see [quotas-and-limits.md](quotas-and-limits.md).
 
+## Org purge (cloud)
+
+The nightly sweeper that hard-purges an org once its soft-delete grace has
+elapsed ([cloud-admin-guide.md](cloud-admin-guide.md#14-suspend-or-set-an-org-to-read-only)).
+Set on the **server** Deployment; read at start.
+
+| Variable | Effect | Default |
+|---|---|---|
+| `ITERION_ORG_PURGE_RUN_BATCH` | Run deletes one nightly pass **attempts** per purged org — failed ones included, so a bucket outage cannot stretch a pass over every run — each with its objects in the bucket, before it defers the rest to the next sweep (`ErrPurgeDeferred`): the pass stops before any collection sweep and the org stays pending. Each pass re-lists the live runs of the org's teams, so a small batch multiplies the listings by the nights the org takes to drain. A value that is not a non-negative integer refuses to start the server rather than read as `0`. | `0` (no bound: the org goes in one pass) |
+| `ITERION_ORG_PURGE_FORCE_SWEEP` | Comma-separated org ids whose purge sweeps Mongo even though some of their runs could not be deleted — a delete that keeps failing, or a run that is not terminal. Each abandoned run is named in a warning; its objects stay in the bucket, no longer attributable to the org. A forced org is purged in one pass (the run batch does not apply to it). The escape hatch for an org a run withholds for good; every forced id is logged at start. | unset (nothing forced) |
+
 ## Merge gate (server)
 
 The cadence of the [merge-gate sweep](merge-gate.md#two-triggers-because-one-event-is-not-a-guarantee),

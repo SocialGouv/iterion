@@ -110,6 +110,10 @@ func TestMarketplace_CloudModerationFlow(t *testing.T) {
 	if len(list.Bots) != 1 || list.Bots[0].Slug != "cloudbot" {
 		t.Fatalf("moderation queue = %+v", list.Bots)
 	}
+	// The moderation queue stays whole: the moderator needs the submitter.
+	if list.Bots[0].SubmittedBy != "u1" {
+		t.Fatalf("moderation queue lost submitted_by: %+v", list.Bots[0])
+	}
 
 	// A non-admin cannot approve; the super-admin can.
 	if rec := doAs(t, srv, user, http.MethodPost, "/api/v1/marketplace/moderation/cloudbot/approve", ""); rec.Code != http.StatusForbidden {
@@ -125,4 +129,41 @@ func TestMarketplace_CloudModerationFlow(t *testing.T) {
 	if len(list.Bots) != 1 || list.Bots[0].Status != marketplace.StatusApproved {
 		t.Fatalf("post-approve anon browse = %+v", list.Bots)
 	}
+
+	// The public view: the approved entry carries submitted_by (u1) and
+	// reviewed_by/reviewed_at (root) in the store, but neither an
+	// anonymous reader nor another authenticated user gets them; the
+	// submitter and the super-admin still do.
+	other := &auth.Identity{UserID: "u2", TeamID: "orgA"}
+	decodeList := func(rec *httptest.ResponseRecorder) map[string]any {
+		t.Helper()
+		var raw struct {
+			Bots []map[string]any `json:"bots"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &raw); err != nil {
+			t.Fatalf("decode raw list: %v", err)
+		}
+		if len(raw.Bots) != 1 {
+			t.Fatalf("raw list = %d entries; %s", len(raw.Bots), rec.Body.String())
+		}
+		return raw.Bots[0]
+	}
+	decodeOne := func(rec *httptest.ResponseRecorder) map[string]any {
+		t.Helper()
+		if rec.Code != http.StatusOK {
+			t.Fatalf("detail = %d; %s", rec.Code, rec.Body.String())
+		}
+		var raw map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &raw); err != nil {
+			t.Fatalf("decode raw detail: %v", err)
+		}
+		return raw
+	}
+	assertPublicMarketplaceView(t, "anon browse", decodeList(doAs(t, srv, nil, http.MethodGet, "/api/v1/marketplace/bots", "")))
+	assertPublicMarketplaceView(t, "anon detail", decodeOne(doAs(t, srv, nil, http.MethodGet, "/api/v1/marketplace/bots/cloudbot", "")))
+	assertPublicMarketplaceView(t, "other user browse", decodeList(doAs(t, srv, other, http.MethodGet, "/api/v1/marketplace/bots", "")))
+	assertPublicMarketplaceView(t, "other user detail", decodeOne(doAs(t, srv, other, http.MethodGet, "/api/v1/marketplace/bots/cloudbot", "")))
+	assertViewerOnlyKeysPresent(t, "owner browse", decodeList(doAs(t, srv, user, http.MethodGet, "/api/v1/marketplace/bots", "")), "submitted_by", "reviewed_by", "reviewed_at")
+	assertViewerOnlyKeysPresent(t, "owner detail", decodeOne(doAs(t, srv, user, http.MethodGet, "/api/v1/marketplace/bots/cloudbot", "")), "submitted_by", "reviewed_by", "reviewed_at")
+	assertViewerOnlyKeysPresent(t, "super-admin detail", decodeOne(doAs(t, srv, admin, http.MethodGet, "/api/v1/marketplace/bots/cloudbot", "")), "submitted_by", "reviewed_by", "reviewed_at")
 }
