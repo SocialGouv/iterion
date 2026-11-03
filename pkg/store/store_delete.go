@@ -43,7 +43,7 @@ func (s *FilesystemRunStore) DeleteRun(_ context.Context, id string) error {
 	if err := sanitizePathComponent("run ID", id); err != nil {
 		return err
 	}
-	if err := s.deleteRunLocked(id); err != nil {
+	if err := s.deleteRunContent(id); err != nil {
 		return err
 	}
 	// The credential-slot ledger (credslot_fs.go) names the run inside the
@@ -55,8 +55,9 @@ func (s *FilesystemRunStore) DeleteRun(_ context.Context, id string) error {
 	return nil
 }
 
-// deleteRunLocked writes the tombstone and removes the run's content under mu.
-func (s *FilesystemRunStore) deleteRunLocked(id string) error {
+// deleteRunContent writes the tombstone and removes the run's content under
+// mu, which it takes itself (a *Locked helper is one whose caller holds mu).
+func (s *FilesystemRunStore) deleteRunContent(id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	dir := filepath.Join(s.root, "runs", id)
