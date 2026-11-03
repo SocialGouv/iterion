@@ -343,9 +343,12 @@ The consequence for authoring: **do not separate a node that mutates the
 workspace from the node that persists the mutation by a resumable boundary
 unless something checks the two still agree.** Either commit inside the
 mutating node, or have the persisting step verify against the tree rather than
-against the upstream node's claim (`dep-update-guard`'s `commit_check` is the
-worked example — it compares `align.applied` with the branch head and blocks on
-a contradiction). Git is the durable state; an uncommitted working tree is not.
+against the upstream node's claim (`dep-update-guard` is the worked example —
+`align_probe` checks `align`'s claim the moment it returns, against the tree it
+left and against the PR's own commits, and `commit_check` blocks when either
+shows work the branch head does not carry; the reading of commits survives the
+fresh clone a resume starts from, the reading of the tree does not). Git is the
+durable state; an uncommitted working tree is not.
 
 ### The scratch travels in its own bank
 

@@ -319,6 +319,10 @@ prompt align_system:
   Emit `align_output`: applied, files_changed, breaking_summary (what
   broke and how you aligned it, per package), needs_human, human_question
   (empty unless needs_human), summary.
+  `files_changed` lists every FILE this run modified, created or deleted,
+  one entry per file: its path relative to the repository root, unquoted
+  and unescaped (e.g. docs/résumé.md) — every file inside a new directory,
+  never a directory, a glob or a comment; a rename lists both paths.
 
   ### PR context (operator)
   {{vars.scope_notes}}
@@ -441,10 +445,11 @@ prompt commit_system:
 
   PROCEDURE:
     1. `git status --porcelain` — enumerate the dirty files. If there is
-       NOTHING to commit (alignment applied no changes), set
-       committed=false, pushed=false, summary "no alignment needed", and
-       stop. (The bump itself is already committed by the bot — you only
-       add alignment.)
+       NOTHING to commit (the working tree matches the branch head), set
+       committed=false, pushed=false, summary "nothing to commit: the
+       working tree matches the branch head.", and stop. (The bump itself is
+       already committed by the bot — you only add alignment; and on a pass
+       the alignment's own push relaunched, the head already carries it.)
     2. Stage ONLY the alignment files (the ones `align` changed). Do not
        stage scratch/build output.
     3. Match the repo's commit convention (read `git log --oneline -20`).
@@ -549,6 +554,32 @@ schema align_output:
   human_question: string
   summary: string
 
+## What `align` left behind, read by git right after it returns: the tree
+## against the commit this run read, and align's claim against the PR's own
+## commits.
+schema align_probe_input:
+  ## head_sha: prepare.head_sha, the commit this run read.
+  head_sha: string
+  ## claimed: align.files_changed — JSON, one shell word the program parses.
+  claimed: json
+
+schema align_probe_output:
+  ## pending: the workspace holds work head_sha does not — tracked edits (the
+  ## index included), new files git does not ignore, or a stash of head_sha —
+  ## the canonical tree noise aside.
+  pending: bool
+  ## carried: align claimed at least one file, and the PR's own commits
+  ## (merge-base..head_sha) change every one of them, matched exactly. Read
+  ## from commits, so a fresh clone reads it the same; no merge-base, false.
+  carried: bool
+  ## paths: the pending paths; unaccounted: the claimed paths the PR does not
+  ## change. Each capped at 50.
+  paths: string[]
+  unaccounted: string[]
+  ## reason: what the probe found, safe to publish — file names in code spans.
+  ## A tree the probe cannot read reads pending and not carried.
+  reason: string
+
 schema align_gate_input:
   needs_human: bool
 
@@ -605,10 +636,12 @@ schema commit_input:
 schema commit_check_output:
   ## did_commit: the branch head moved, and this run is what moved it.
   did_commit: bool
-  ## alignment_lost: `align` reported edits, and none of them reached the
-  ## branch. Reading the shas alone cannot tell that apart from "the bump
-  ## needed no alignment" — both land on an unmoved head — so without this
-  ## flag a vanished alignment is reported as a clean bump and merges.
+  ## alignment_lost: `align` reported edits, the branch head did not move,
+  ## and align_probe could not account for them on it — work still pending in
+  ## the workspace, or a claim the PR's own commits do not carry. Reading the
+  ## shas alone cannot tell that apart from "the bump needed no alignment" —
+  ## both land on an unmoved head — so without this flag a vanished alignment
+  ## is reported as a clean bump and merges.
   alignment_lost: bool
 
 schema commit_output:
@@ -862,6 +895,213 @@ print(json.dumps({'is_empty': len(files)==0 and not degraded, 'dep_files': dep,
                   'head_sha': head_sha}))
 "`
   output: prepare_output
+
+## align_probe — what `align` left behind, read by git right after it
+## returns. `applied` is the agent saying it edited; two readings decide
+## whether those edits reached, or still have to reach, the branch.
+##
+## pending: the workspace holds work the commit this run read lacks — tracked
+## edits, the index, new files git does not ignore, a stash of that commit
+## holding more than the tree noise. Read against the read commit, never the
+## local HEAD, so a commit the agent made locally counts too. A submodule
+## counts when its recorded commit moved — the one change a superproject
+## commit can carry — whatever .gitmodules ignores; dirt inside it does not.
+##
+## carried: align claimed at least one file, and the PR's own commits —
+## merge-base(base, head)..head, matched path by path, exactly — change every
+## one of them. It separates the two passes that leave the same clean tree
+## behind. On the pass the alignment's own push relaunches, align re-applies
+## edits the head already carries — a no-op it still reports as applied — and
+## its claim is carried (buildkit-operator#50). On a first pass whose edits
+## vanished — reverted, reset away, never written — the claim names files the
+## bump does not change, so it is not. No merge-base, no carried: an
+## approximate range can read a bare bump as carrying a claim.
+##
+## No identity, no forge: a committer is forgeable and differs per
+## credential. carried reads commits, so a fresh clone reads it the same — and
+## a fresh clone is what this probe measures whenever a resume re-executes it.
+## A resume restarts on the node its checkpoint is anchored on: the failing
+## one after a failure, the last finished one after a crash, the refused one
+## after a budget stop; the runner re-clones for it. What the readings cannot
+## see: on a pass whose head already carries an alignment, new edits to files
+## the PR already changes that vanish before commit; a claim confined to files
+## the bump itself changes (a lockfile refresh, say). A claimed path the engine
+## itself writes (the canonical tree noise) counts only when the PR changes it.
+tool align_probe:
+  command: `printf '%s' {{input.claimed}} | WS={{vars.workspace_dir}} BASE={{vars.base_ref}} HEAD_SHA={{input.head_sha}} python3 -I -c "
+import os, subprocess, json, sys, posixpath, unicodedata
+ws = os.environ.get('WS', '').strip()
+base = os.environ.get('BASE', '').strip() or 'main'
+head = os.environ.get('HEAD_SHA', '').strip()
+# Variables that point a git command at another repository, index or object
+# store (pkg/git.SanitizeEnv), or read every pathspec literally -- which turns
+# the noise exclusions into paths that match nothing. None may leak in from
+# the environment this probe was spawned with.
+drop = ('GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_OBJECT_DIRECTORY',
+        'GIT_ALTERNATE_OBJECT_DIRECTORIES', 'GIT_COMMON_DIR', 'GIT_NAMESPACE',
+        'GIT_LITERAL_PATHSPECS', 'GIT_GLOB_PATHSPECS', 'GIT_NOGLOB_PATHSPECS',
+        'GIT_ICASE_PATHSPECS')
+genv = dict((k, v) for k, v in os.environ.items() if k not in drop)
+def plain(p):
+    # File names come from the repository and land in a PR comment: control,
+    # format and separator characters and backticks replaced, so a name inside
+    # its code span can neither break the markdown, mention anyone, nor
+    # reorder the text around it.
+    return ''.join('?' if c == chr(96) or unicodedata.category(c) in ('Cc', 'Cf', 'Zl', 'Zp') else c for c in p)
+def shown(paths):
+    spans = [chr(96) + plain(p)[:120] + chr(96) for p in paths[:10]]
+    more = len(paths) - len(spans)
+    return ', '.join(spans) + (' and ' + str(more) + ' more' if more > 0 else '')
+def emit(pending, carried, paths, unaccounted, said):
+    # The hold comment publishes the reason ahead of align's own prose, in
+    # a paragraph of its own.
+    print(json.dumps({'pending': pending, 'carried': carried, 'paths': paths[:50],
+                      'unaccounted': unaccounted[:50], 'reason': 'Checked after align: ' + said}))
+    raise SystemExit(0)
+def undecided(what, detail=''):
+    # What this probe cannot read proves nothing about the alignment: pending
+    # and not carried, the strict reading -- never a green one. The detail
+    # goes to the node log, not into the PR comment.
+    sys.stderr.write('align_probe: ' + what + (': ' + detail if detail else '') + chr(10))
+    emit(True, False, [], [], 'undecided (' + what + '), so nothing align claimed is taken as on the branch')
+if not ws or not head:
+    undecided('no workspace or no head sha')
+noise = os.environ.get('ITERION_TREE_NOISE', '').split()
+if not noise:
+    undecided('ITERION_TREE_NOISE is not provisioned', 'the engine writes cannot be told from the run ones')
+# The claim arrives on stdin, not in the environment: an environment string
+# past 128 KiB stops python3 from starting at all.
+try:
+    claimed = json.loads(sys.stdin.read() or '[]')
+except ValueError:
+    claimed = None
+if not isinstance(claimed, list) or not all(isinstance(c, str) for c in claimed):
+    undecided('the files align claims are not a list of paths')
+def git(args):
+    try:
+        p = subprocess.run(['git', '-C', ws] + args, capture_output=True, timeout=60, env=genv)
+    except (OSError, subprocess.SubprocessError) as e:
+        undecided('git ' + args[0] + ' did not run', str(e))
+    if p.returncode != 0 and args[0] != 'merge-base':
+        undecided('git ' + args[0] + ' exited ' + str(p.returncode), p.stderr.decode(errors='replace').strip()[:300])
+    return p
+def names(args):
+    return [n for n in git(args).stdout.decode(errors='replace').split(chr(0)) if n]
+# pending -- the working tree, then the index, against the commit this run
+# read; then the new files git does not ignore. The canonical tree noise rides
+# every read.
+tracked = names(['diff', '--no-renames', '--ignore-submodules=dirty', '--name-only', '-z', head, '--', ':/'] + os.environ.get('ITERION_TREE_NOISE', '').split())
+staged = names(['diff', '--cached', '--no-renames', '--ignore-submodules=dirty', '--name-only', '-z', head, '--', ':/'] + os.environ.get('ITERION_TREE_NOISE', '').split())
+untracked = names(['ls-files', '--others', '--exclude-standard', '-z', '--', ':/'] + os.environ.get('ITERION_TREE_NOISE', '').split())
+# A stash counts when this run made it: its base is the read commit and it
+# holds more than the tree noise. A stash of another commit is not this run's
+# (a local worktree shares refs/stash with the checkout it was made from).
+stashed = False
+for entry in git(['stash', 'list', '--format=%H %P']).stdout.decode(errors='replace').splitlines():
+    shas = entry.split()
+    if len(shas) < 2 or shas[1] != head:
+        continue
+    if names(['diff', '--no-renames', '--name-only', '-z', head, shas[0], '--', ':/'] + noise):
+        stashed = True
+    elif len(shas) > 3:
+        # The untracked parent. A stash --all also holds ignored files,
+        # which are not work either.
+        kept = names(['diff-tree', '--root', '-r', '--no-commit-id', '--name-only', '-z', shas[3], '--', ':/'] + noise)
+        if kept:
+            try:
+                p = subprocess.run(['git', '-C', ws, 'check-ignore', '-z', '--stdin', '--no-index'], input=chr(0).join(kept).encode(), capture_output=True, timeout=60, env=genv)
+            except (OSError, subprocess.SubprocessError) as e:
+                undecided('git check-ignore did not run', str(e))
+            ignored = set(n for n in p.stdout.decode(errors='replace').split(chr(0)) if n)
+            if any(n not in ignored for n in kept):
+                stashed = True
+paths = sorted(set(tracked + staged + untracked))
+pending = bool(paths) or stashed
+# carried -- the PR's own commits: merge-base(base, head)..head, the base
+# branch or its remote-tracking ref, never the tree. No merge-base, no
+# carried.
+bases = []
+for cand in (base, 'origin/' + base):
+    mb = git(['merge-base', cand, head])
+    if mb.returncode == 0:
+        bases.append(mb.stdout.decode(errors='replace').strip())
+# The newest of those merge-bases: a stale local base would widen the range
+# into the base's own commits. Two that diverge give no range at all.
+ref = ''
+for m in bases:
+    if all(o == m or git(['merge-base', '--is-ancestor', o, m]).returncode == 0 for o in bases):
+        ref = m
+        break
+changed = set()
+if ref:
+    changed = set(unicodedata.normalize('NFC', n) for n in names(['diff', '--no-renames', '--ignore-submodules=dirty', '--name-only', '-z', ref, head, '--']))
+roots = []
+for r in (posixpath.normpath(ws), os.path.realpath(ws)):
+    if r not in roots:
+        roots.append(r)
+def unquoted(c):
+    # git C-quotes a name holding special bytes (core.quotePath): a claim
+    # copied from its output is undone back to the name itself.
+    if len(c) > 1 and c[0] == c[-1] == chr(34):
+        try:
+            return c[1:-1].encode('latin-1').decode('unicode_escape').encode('latin-1').decode('utf-8')
+        except (UnicodeError, ValueError):
+            return c
+    return c
+def norm(c):
+    # A repository-relative path however the agent spelled it: git quoting
+    # undone, ./ and redundant separators collapsed, the workspace prefix
+    # removed from an absolute path (as given or with its symlinks
+    # resolved), NFC. A NUL names no file: kept as is, it reads unaccounted.
+    c = unicodedata.normalize('NFC', unquoted(c.strip()))
+    if not c or chr(0) in c:
+        return c
+    c = posixpath.normpath(c)
+    if c.startswith('/'):
+        for spelled in (c, os.path.realpath(c)):
+            for r in roots:
+                if spelled.startswith(r + '/'):
+                    return spelled[len(r) + 1:]
+        return c
+    return '' if c == '.' else c
+want = []
+for c in claimed:
+    # A rename, in the notation git itself prints, claims both of its paths.
+    for part in c.split(' -> '):
+        w = norm(part)
+        if w and w not in want:
+            want.append(w)
+def is_noise(w):
+    for spec in noise:
+        p = spec.split(')', 1)[1] if spec.startswith(':(') else spec
+        if p.endswith('*'):
+            if w.startswith(p[:-1]):
+                return True
+        elif w == p or w.startswith(p + '/'):
+            return True
+    return False
+counted = [w for w in want if w in changed or not is_noise(w)]
+unaccounted = [w for w in counted if w not in changed]
+carried = bool(ref) and bool(counted) and not unaccounted
+said = []
+if paths:
+    said.append('the workspace holds ' + str(len(paths)) + ' path(s) ' + head[:12] + ' lacks: ' + shown(paths))
+if stashed:
+    said.append('a stash of ' + head[:12] + ' holds work set aside')
+if not ref:
+    said.append('no merge-base between ' + shown([base]) + ' and ' + head[:12] + ', so no claim is taken as on the branch')
+elif not want:
+    said.append('align named no file it changed')
+elif not counted:
+    said.append('align named only files the engine itself writes')
+elif unaccounted:
+    said.append('align claims ' + shown(unaccounted) + ', which this PR' + chr(39) + 's commits do not change as named')
+else:
+    said.append('this PR changes every file align claims (' + str(len(counted)) + ')')
+emit(pending, carried, paths, unaccounted, '; '.join(said))
+"`
+  input: align_probe_input
+  output: align_probe_output
 
 ## verify_run — the DETERMINISTIC truth oracle before commit: re-runs
 ## the agent-prepared verify.sh and reports the REAL exit code (v2 —
@@ -1573,7 +1813,7 @@ tool post_feedback:
         "hold_lost_alignment": "\U0001F6D1 HOLD — the alignment for this bump is NOT on the branch",
         "hold_delivery_permission": "\U0001F6D1 HOLD — this bump's alignment edits a workflow file, and the delivery permission for it was refused",
         "committed":      "✅ Aligned — code updated on this branch; review & merge",
-        "clean":          "✅ Safe bump — no code alignment needed",
+        "clean":          "✅ Safe bump — nothing left to align",
     }
     parts = ["**" + badges.get(s(verdict), "ℹ️ Vetty review") + "**", ""]
     def section(title, body):
@@ -1598,7 +1838,7 @@ tool post_feedback:
            # reported no summary — and a reader who cannot find the section
            # doubts the HOLD instead of acting on it.
            "hold_lost_alignment": "Held — the code alignment this run produced for the bump is NOT on this branch: "
-                                  "nothing was committed and the head is still the bot's bump commit. Re-run Vetty on "
+                                  "nothing was committed and the branch head did not move. Re-run Vetty on "
                                   "this PR to redo it; merging as-is ships the bump without it.",
            # TWO causes reach this verdict, and both are ANSWERED refusals:
            # a permission the App does not hold (the preflight's verdict) and
@@ -1622,7 +1862,7 @@ tool post_feedback:
                                        "and refresh its token, then re-run Vetty on this PR; a classic token "
                                        "short of a scope — reissue it as the refusal names, then re-run "
                                        "Vetty. Either way the alignment can also be applied by hand.",
-           "clean": "Nothing to align."}.get(s(verdict), "")
+           "clean": "Nothing left to align."}.get(s(verdict), "")
     did = (s(commit_summary) + " " if s(commit_summary) else "") + did + \
         " **Vetty never merges past a check** — whether this lands is the repo's own required checks' decision, " \
         "and only the exact commit reported above can be merged."
@@ -1676,7 +1916,7 @@ tool post_feedback:
     # because the generic "no blocking findings (≥threshold)" phrasing assumes
     # a severity floor, and this gate turns on the audit verdict instead.
     gate_note = {
-        "clean": "supply-chain audit clean; no alignment needed, build verified",
+        "clean": "supply-chain audit clean; nothing left to align, build verified",
         "committed": "supply-chain audit clean; alignment committed, build verified",
         "hold_security": "supply-chain risk: the bump was not applied",
         "hold_unstable": "build/tests not green after alignment",
@@ -2331,11 +2571,25 @@ compute validate_gate:
 ## alongside them: not to trust the agent — the sha comparison still decides
 ## what was COMMITTED — but so that a claim contradicted by the branch blocks
 ## instead of passing for a bump that never needed anything.
+##
+## A THIRD state wears the same shape and is the opposite verdict: the head
+## this run read already carries the alignment. The push that `commit` makes
+## fires the forge's synchronize event, which relaunches the review on that
+## commit; `align` then re-applies the same edits onto a tree that carries
+## them and still claims applied, `commit` has nothing to commit, and the
+## shas show an unmoved head. Reading that as "lost" turns the gate red on
+## the very pass that should confirm the work, and the arming the previous
+## pass placed can never fire (buildkit-operator#50). `align_probe` settles
+## it with two readings: the alignment is lost if the workspace still holds
+## work the read head lacks, or if the PR's own commits do not change every
+## file align claims. `carried` is read negated on purpose: a reading that
+## is missing — a run resumed from a checkpoint older than the probe — is
+## not carried, so it holds. Who committed the head plays no part.
 compute commit_check:
   output: commit_check_output
   expr:
     did_commit: "outputs.commit.sha != '' && outputs.commit.sha != outputs.prepare.head_sha"
-    alignment_lost: "outputs.align.applied && !(outputs.commit.sha != '' && outputs.commit.sha != outputs.prepare.head_sha)"
+    alignment_lost: "outputs.align.applied && (outputs.align_probe.pending || !outputs.align_probe.carried) && !(outputs.commit.sha != '' && outputs.commit.sha != outputs.prepare.head_sha)"
 
 ## preflight_standdown — the input `arm_automerge` needs on the one refusal
 ## path where the bot publishes no verdict of its own. A preflight that did
@@ -2452,7 +2706,13 @@ workflow dep_update_guard:
     bump_summary: "{{outputs.prepare.bump_summary}}"
   }
 
-  align -> align_gate with {
+  ## Read what `align` left before anything else can touch the workspace.
+  align -> align_probe with {
+    head_sha: "{{outputs.prepare.head_sha}}",
+    claimed: "{{outputs.align.files_changed}}",
+  }
+
+  align_probe -> align_gate with {
     needs_human: "{{outputs.align.needs_human}}"
   }
 
@@ -2563,7 +2823,15 @@ workflow dep_update_guard:
     pr_url: "{{vars.pr_url}}",
     verdict: "hold_lost_alignment",
     audit_summary: "{{outputs.security_audit.summary}}",
-    align_summary: "{{outputs.align.breaking_summary}}",
+    ## What align_probe found, in its own words — work still in the
+    ## workspace, a claim the PR does not carry, or a reading it could not
+    ## make — in its own paragraph AHEAD of align's prose: a blank line does
+    ## not close a fence or an HTML block that prose leaves open, so only
+    ## coming first keeps the reason out of it. A reading missing from an
+    ## older checkpoint leaves no dangling text.
+    align_summary: `{{outputs.align_probe.reason}}
+
+{{outputs.align.breaking_summary}}`,
     validate_summary: "deterministic verify green (exit 0); log tail: {{outputs.verify_run.log_tail}}",
     commit_summary: "{{outputs.commit.summary}}",
     ## The head did not move — that IS this verdict: align claimed edits and
@@ -2583,6 +2851,10 @@ workflow dep_update_guard:
     audited_sha: "{{outputs.commit.sha}}",
   }
 
+  ## `clean` also covers the re-applied alignment: the head read already
+  ## carries it (nothing pending, and the PR changes every file align
+  ## claims), nothing moved, the verdict covers that head, and the arming of
+  ## the pass that pushed it stands.
   commit_check -> post_feedback else with {
     pr_url: "{{vars.pr_url}}",
     verdict: "clean",

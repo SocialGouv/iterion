@@ -34,6 +34,9 @@ security_audit (agent, read-only)     malware, typosquats, compromised-maintaine
 audit_gate     (compute, GATE)        only `safe` proceeds; else → hold_security
 align          (agent, mutating)      align consuming code to the breaking change;
                                       flags a structuring decision instead of guessing
+align_probe    (tool, deterministic)  git reads what align left: work still pending
+                                      in the workspace, and whether the PR's own
+                                      commits change every file align claims
 align_gate     (compute, GATE)        needs_human → escalate
 escalate       (human, llm_or_human)  auto-answers a routine question, pauses for a
                                       real architectural decision → needs_decision
@@ -54,7 +57,9 @@ preflight_standdown (compute)         the one refusal that publishes nothing: no
                                       take a previous pass's arming down, run ends
                                       FORGE_PREFLIGHT_UNAVAILABLE
 commit         (agent)                commit + push the alignment onto the PR branch
-commit_check   (compute, GATE)        reads the shas, not the agent's claim:
+commit_check   (compute, GATE)        decides from the sha `commit` reports against
+                                      the head `prepare` read, and from align_probe's
+                                      readings — never from the agents' summaries:
                                       committed | clean | hold_lost_alignment
 post_feedback  (tool, deterministic)  compose + POST the verdict comment (and the
                                       commit status) over the forge REST API — no LLM

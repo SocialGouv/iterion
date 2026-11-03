@@ -1,7 +1,7 @@
 name: dep-update-guard
 display_name: Vetty
 icon: 💂
-version: 2.11.0
+version: 2.11.1
 ## Arming ownership (#1634): `respect_human_arming` is declared in main.bot's
 ## vars, like `arm_automerge`, and defaults to true. Read enabledBy.login and
 ## the forge_token's viewer.login together; preserve another actor's arming
@@ -9,6 +9,30 @@ version: 2.11.0
 ## Unknown ownership is preserved too. False (or null on old node inputs)
 ## keeps the historical disarm/replace policy, now naming the displaced owner.
 ## This bounds the 2.9.x takeover policy below; merge-queue entries are unchanged.
+## 2.11.1 — a re-applied alignment is no longer reported as a lost one. The
+## push `commit` makes fires the forge's synchronize event, which relaunches
+## the review on the alignment commit itself; `align` re-applied the same
+## edits (a no-op it still claims), `commit` had nothing to commit, and
+## commit_check read the unmoved head as `hold_lost_alignment` — so every
+## bump that needed an alignment went red on the pass meant to confirm it,
+## and the arming the first pass placed never fired (buildkit-operator#50).
+## The new `align_probe` tool node reads two things right after `align`
+## returns: whether the workspace still holds work the read commit lacks
+## (tracked edits, the index, new files git does not ignore, a stash of that
+## commit; the canonical tree noise aside), and whether the PR's own commits
+## change every file align claims, matched exactly. The alignment is lost
+## when either reading fails and the head never moved. No identity is read —
+## a committer is forgeable and differs per credential. The reading of
+## commits is what a fresh clone cannot erase, so the death-before-commit
+## case 2.7.0 closed stays closed for any claim on a file the bump does not
+## change, even when a resume re-runs the probe; a reading it cannot make, or
+## one missing from an older checkpoint, holds. What it does not see: a claim
+## confined to files the bump itself changes (a lockfile refresh), and new
+## edits a re-run makes to files the PR already changes that vanish before
+## commit. The `clean` texts and the commit agent's nothing-to-commit summary
+## now say "nothing left to align" / "nothing to commit", true on both passes;
+## align's files_changed is now a contract: one repository-relative file path
+## per entry, unquoted and unescaped — every file, never a directory.
 ## 2.11.0 — the delivery hold needs an ANSWERED refusal, and nothing else can
 ## reach it. Three rounds of hardening each found one more transport shape
 ## published as a blocking verdict on a third party's pull request: a
