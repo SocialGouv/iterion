@@ -267,10 +267,10 @@ func routeSchemas() map[string]routeOp {
 			},
 		},
 		"PATCH /api/teams/{id}/bots/{bot_id}/bindings/{binding_id}": {
-			request:         botBindingReq{},
+			request:         botBindingPatchReq{},
 			requestOptional: true, // every field is a partial update
 			response:        secrets.BotSecretBinding{},
-			description:     "Patch a binding's mutable payload (the name it resolves under, the secret or pinned source, the egress hosts). The merged record is re-validated against its kind. The degraded readout is the engine's — a PATCH neither sets nor clears it.",
+			description:     "Patch a binding's mutable payload (the name it resolves under, the secret or pinned source, the egress hosts). The merged record is re-validated against its kind. The kind itself is immutable — a kind in the request is ignored — and the degraded readout is the engine's: a PATCH neither sets nor clears it.",
 			errors: map[int]string{
 				http.StatusBadRequest:  "the merged record contradicts its kind, or the referenced credential is not bindable",
 				http.StatusForbidden:   "admin or owner required",
@@ -279,7 +279,8 @@ func routeSchemas() map[string]routeOp {
 			},
 		},
 		"DELETE /api/teams/{id}/bots/{bot_id}/bindings/{binding_id}": {
-			description: "Delete a binding. 204 on success.",
+			responseStatus: http.StatusNoContent,
+			description:    "Delete a binding. 204 on success.",
 			errors: map[int]string{
 				http.StatusForbidden: "admin or owner required",
 				http.StatusNotFound:  "no binding with this id on this bot",

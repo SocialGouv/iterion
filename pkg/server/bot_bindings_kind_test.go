@@ -146,3 +146,41 @@ func TestBotBinding_APayloadThatContradictsItsKindIsRefused(t *testing.T) {
 		})
 	}
 }
+
+// A PATCH carrying a kind is a no-op for the kind: a binding's kind is
+// immutable (changing it is a delete + create, an auditable act, not an
+// edit), and the route must answer 200 with the kind UNMOVED rather than
+// apply it or refuse it. The spec's PATCH schema doesn't list kind at all
+// (botBindingPatchReq) — this test is the handler half of that contract.
+func TestBotBinding_APatchCarryingAKindIsIgnored(t *testing.T) {
+	s := newBindingTestServer(t)
+	ctx := superAdminCtx()
+	if err := s.genericSecrets.Create(ctx, secrets.GenericSecret{ID: "sec1", ScopeTeamID: "t1", Name: "org_gitlab", SealedSecret: []byte("x"), CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	w := httptest.NewRecorder()
+	s.handleCreateBotBinding(w, bindReq(ctx, "POST", bindingsBase, `{"secret_id":"sec1","secret_name_for_workflow":"GITLAB_TOKEN"}`, "t1", "doki", ""))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create: code=%d body=%s", w.Code, w.Body.String())
+	}
+	var created secrets.BotSecretBinding
+	if err := json.Unmarshal(w.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+
+	w = httptest.NewRecorder()
+	s.handleUpdateBotBinding(w, bindReq(ctx, "PATCH", bindingsBase+"/"+created.ID, `{"kind":"context","allowed_hosts":["gitlab.example.com"]}`, "t1", "doki", created.ID))
+	if w.Code != http.StatusOK {
+		t.Fatalf("patch with a kind: code=%d body=%s, want 200 — the kind is ignored, not refused", w.Code, w.Body.String())
+	}
+	got, err := s.botBindings.Get(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.EffectiveKind() != secrets.BindingKindSecret {
+		t.Errorf("the kind moved to %q under a PATCH — it is immutable", got.EffectiveKind())
+	}
+	if len(got.AllowedHosts) != 1 || got.AllowedHosts[0] != "gitlab.example.com" {
+		t.Errorf("the mutable field did not land: %+v", got.AllowedHosts)
+	}
+}

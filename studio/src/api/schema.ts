@@ -4191,7 +4191,7 @@ export interface paths {
         head?: never;
         /**
          * PATCH /api/teams/{id}/bots/{bot_id}/bindings/{binding_id}
-         * @description Patch a binding's mutable payload (the name it resolves under, the secret or pinned source, the egress hosts). The merged record is re-validated against its kind. The degraded readout is the engine's — a PATCH neither sets nor clears it.
+         * @description Patch a binding's mutable payload (the name it resolves under, the secret or pinned source, the egress hosts). The merged record is re-validated against its kind. The kind itself is immutable — a kind in the request is ignored — and the degraded readout is the engine's: a PATCH neither sets nor clears it.
          */
         patch: operations["patchTeamsByIdBotsByBotIdBindingsByBindingId"];
         trace?: never;
@@ -7790,6 +7790,12 @@ export interface components {
                 [key: string]: string;
             };
             sync_every_seconds?: number;
+        };
+        botBindingPatchReq: {
+            allowed_hosts?: string[];
+            context?: components["schemas"]["ContextSource"];
+            secret_id?: string;
+            secret_name_for_workflow?: string;
         };
         botBindingReq: {
             allowed_hosts?: string[];
@@ -15128,6 +15134,13 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
+            /** @description No Content */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
             /** @description admin or owner required */
             403: {
                 headers: {
@@ -15157,7 +15170,7 @@ export interface operations {
         };
         requestBody?: {
             content: {
-                "application/json": components["schemas"]["botBindingReq"];
+                "application/json": components["schemas"]["botBindingPatchReq"];
             };
         };
         responses: {

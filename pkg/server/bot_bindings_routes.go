@@ -31,6 +31,19 @@ type botBindingReq struct {
 	Context               *secrets.ContextSource `json:"context,omitempty"`
 }
 
+// botBindingPatchReq is the PATCH's writable surface, declared for the
+// OpenAPI registry: the handler decodes botBindingReq but IGNORES a kind in
+// a PATCH — a binding's kind is immutable (changing it is a delete +
+// create, so the change is an auditable act, not an edit) — and a spec that
+// listed kind as writable would teach a generated client a write that
+// silently does nothing.
+type botBindingPatchReq struct {
+	SecretID              *string                `json:"secret_id,omitempty"`
+	SecretNameForWorkflow *string                `json:"secret_name_for_workflow,omitempty"`
+	AllowedHosts          []string               `json:"allowed_hosts,omitempty"`
+	Context               *secrets.ContextSource `json:"context,omitempty"`
+}
+
 // BindingContextNotMaterialisedCode is the stable code a client reads when it
 // creates a context binding on a deployment that cannot materialise it into
 // runs (no pinned-source fetcher wired): the only part of a 501 body that

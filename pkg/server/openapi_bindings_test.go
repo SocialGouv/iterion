@@ -50,6 +50,32 @@ func TestTheSpecCarriesTheBotBindingsSurface(t *testing.T) {
 		t.Errorf("GET 200 items $ref = %q, want BotSecretBinding", ref)
 	}
 
+	// The DELETE's success is a bodyless 204, and the spec says so: an entry
+	// that only described it in prose would leave a generated client without
+	// the status to expect.
+	byID := paths["/api/teams/{id}/bots/{bot_id}/bindings/{binding_id}"].(map[string]any)
+	del := byID["delete"].(map[string]any)
+	noContent, ok := del["responses"].(map[string]any)["204"].(map[string]any)
+	if !ok {
+		t.Fatalf("DELETE bindings has no 204 response entry: %+v", del["responses"])
+	}
+	if _, hasContent := noContent["content"]; hasContent {
+		t.Errorf("the 204 carries a content schema: %+v — a bodyless success must not pretend a body", noContent)
+	}
+
+	// The PATCH's request schema is the WRITABLE surface: no kind — the
+	// handler ignores it (a binding's kind is immutable), and listing it
+	// would teach a client a write that silently does nothing.
+	patch := byID["patch"].(map[string]any)
+	patchReq := patch["requestBody"].(map[string]any)["content"].(map[string]any)["application/json"].(map[string]any)["schema"].(map[string]any)
+	if ref, _ := patchReq["$ref"].(string); ref != "#/components/schemas/botBindingPatchReq" {
+		t.Fatalf("PATCH requestBody $ref = %q, want botBindingPatchReq", ref)
+	}
+	patchProps := schemas["botBindingPatchReq"].(map[string]any)["properties"].(map[string]any)
+	if _, exposed := patchProps["kind"]; exposed {
+		t.Errorf("the PATCH schema exposes kind as writable — the route ignores it: %v", patchProps)
+	}
+
 	// The record the list serves: the kind discriminator, the context
 	// payload, and the engine's readout — the fields a BindingsTab renders.
 	binding := schemas["BotSecretBinding"].(map[string]any)

@@ -4582,6 +4582,26 @@
         ],
         "type": "object"
       },
+      "botBindingPatchReq": {
+        "properties": {
+          "allowed_hosts": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "context": {
+            "$ref": "#/components/schemas/ContextSource"
+          },
+          "secret_id": {
+            "type": "string"
+          },
+          "secret_name_for_workflow": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
       "botBindingReq": {
         "properties": {
           "allowed_hosts": {
@@ -13597,6 +13617,9 @@
         "description": "Delete a binding. 204 on success.",
         "operationId": "deleteTeamsByIdBotsByBotIdBindingsByBindingId",
         "responses": {
+          "204": {
+            "description": "No Content"
+          },
           "403": {
             "description": "admin or owner required"
           },
@@ -13636,13 +13659,13 @@
         }
       ],
       "patch": {
-        "description": "Patch a binding's mutable payload (the name it resolves under, the secret or pinned source, the egress hosts). The merged record is re-validated against its kind. The degraded readout is the engine's — a PATCH neither sets nor clears it.",
+        "description": "Patch a binding's mutable payload (the name it resolves under, the secret or pinned source, the egress hosts). The merged record is re-validated against its kind. The kind itself is immutable — a kind in the request is ignored — and the degraded readout is the engine's: a PATCH neither sets nor clears it.",
         "operationId": "patchTeamsByIdBotsByBotIdBindingsByBindingId",
         "requestBody": {
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/botBindingReq"
+                "$ref": "#/components/schemas/botBindingPatchReq"
               }
             }
           },
