@@ -73,12 +73,50 @@ func TestStageModelPairKeyed(t *testing.T) {
 		// nothing — a re-prefixed invalid spec would dispatch nowhere.
 		{HarnessClaudeCode, "anthropic_key", "openai_compatible/mistral", "", false},
 		{HarnessClaw, "anthropic_key", "openai_compatible/mistral", "", false},
+		// The gateway's own ids are provider-first, so its spelling nests:
+		// the nested spec maps exactly as the one-segment one, never as an
+		// anthropic-wire id re-prefixed into `anthropic/openai_compatible/…`.
+		{HarnessClaw, "anthropic_key", "openai_compatible/scaleway/glm-5.3", "", false},
+		{HarnessClaw, "zai_key", "openai_compatible/scaleway/glm-5.3", "", false},
+		{HarnessClaudeCode, "anthropic_key", "openai_compatible/scaleway/glm-5.3", "", false},
+		// The wholesale crossing answers both spellings alike: familyNone
+		// classifies standard and crosses to the class's openai rendering —
+		// a vendor openai key serving a node written for the gateway.
+		{HarnessClaw, "openai_key", "openai_compatible/mistral", "openai/gpt-6-sol", true},
+		{HarnessClaw, "openai_key", "openai_compatible/scaleway/glm-5.3", "openai/gpt-6-sol", true},
+		// The trap: a provider-first id WITHOUT the gateway prefix is no
+		// gateway spec and no family's own id — no same-family mapping serves
+		// it, and the crossing never sends it to the vendor endpoint as
+		// written (`openai/gpt-oss-120b`).
+		{HarnessClaw, "anthropic_key", "scaleway/gpt-oss-120b", "", false},
+		{HarnessClaw, "zai_key", "scaleway/gpt-oss-120b", "", false},
+		{HarnessClaudeCode, "anthropic_key", "scaleway/gpt-oss-120b", "", false},
+		{HarnessClaw, "openai_key", "scaleway/gpt-oss-120b", "openai/gpt-6-sol", true},
 		{"pi", CredClaudeForfait, "claude-opus-5-5", "", false},
 	}
 	for _, tt := range tests {
-		got, ok, _ := StageModel(tt.harness, tt.credential, tt.nodeModel, ResolveClasses(nil))
+		got, ok, reason := StageModel(tt.harness, tt.credential, tt.nodeModel, ResolveClasses(nil))
 		if ok != tt.ok || (ok && got != tt.want) {
 			t.Errorf("StageModel(%s, %s, %s) = %q, %v — want %q, %v", tt.harness, tt.credential, tt.nodeModel, got, ok, tt.want, tt.ok)
+		}
+		// The shipped table is full, so every refusal here is structural.
+		if !ok && reason != ReasonNoMapping {
+			t.Errorf("StageModel(%s, %s, %s) refused with %q, want %q", tt.harness, tt.credential, tt.nodeModel, reason, ReasonNoMapping)
+		}
+	}
+
+	// The two gateway spellings agree on every pair the default order
+	// lists, the crossings included: the nesting belongs to the gateway's
+	// id, never to a second family reading.
+	for _, pair := range DefaultPairOrder {
+		h, c, err := ParsePair(pair)
+		if err != nil {
+			t.Fatalf("default order entry %q: %v", pair, err)
+		}
+		oneModel, oneOK, oneReason := StageModel(h, c, "openai_compatible/glm-5.3", ResolveClasses(nil))
+		nestedModel, nestedOK, nestedReason := StageModel(h, c, "openai_compatible/scaleway/glm-5.3", ResolveClasses(nil))
+		if oneModel != nestedModel || oneOK != nestedOK || oneReason != nestedReason {
+			t.Errorf("%s: openai_compatible/glm-5.3 → (%q, %v, %q) but openai_compatible/scaleway/glm-5.3 → (%q, %v, %q) — the gateway spellings disagree", pair, oneModel, oneOK, oneReason, nestedModel, nestedOK, nestedReason)
 		}
 	}
 	// A node with no model maps nothing: a modelless stage is never born.

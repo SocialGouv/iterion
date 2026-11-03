@@ -139,16 +139,29 @@ const (
 // `openai/…`, `gpt-*` and `codex/…` are the openai family; `anthropic/…`
 // and bare ids (claude-*, glm-*, anything else the anthropic-wire
 // endpoints answer) are the anthropic-wire family. The bare id is what
-// the per-credential spellings re-prefix. An UNRECOGNIZED single-segment
-// prefix (`openai_compatible/<id>` — the gateway spelling, whose
-// credential no sealed channel serves) yields familyNone. The
-// same-family mappings refuse it and the stage drops, named; the
-// WHOLESALE crossings do NOT — familyNone classifies standard and
-// crosses to the class's openai rendering, exactly as any foreign model
-// (the pre-class behavior for that spelling, pinned by test) — a
-// re-prefixed invalid spec would dispatch nowhere, and the crossing at
-// least spends a servable credential saying so.
+// the per-credential spellings re-prefix.
+//
+// A gateway spec (`openai_compatible/<id>`) yields familyNone with the
+// WHOLE spec as the bare id, and its prefix is read before the
+// single-slash cut: a gateway id is whatever the gateway serves, often
+// provider-first (`openai_compatible/scaleway/glm-5.3`), and past the cut
+// that nested spelling would read as a bare anthropic-wire id, re-prefixed
+// into `anthropic/openai_compatible/…`. Any other UNRECOGNIZED
+// single-segment prefix (`scaleway/gpt-oss-120b`, a slash inside a model
+// id) yields familyNone too. The same-family mappings refuse familyNone
+// and the stage drops, named; the WHOLESALE crossings do NOT — familyNone
+// classifies standard and crosses to the class's openai rendering,
+// exactly as any foreign model (pinned by test) — a re-prefixed invalid
+// spec would dispatch nowhere, and the crossing at least spends a
+// servable credential saying so.
+//
+// The prefix is the in-package ProviderOpenAICompatible, the spelling
+// dispatch routes the gateway on (a drift test pins it to
+// modelroute.OpenAICompatible): llmroute stays the zero-dependency leaf.
 func modelFamily(spec string) (family, bare string) {
+	if strings.HasPrefix(spec, ProviderOpenAICompatible+"/") {
+		return familyNone, spec
+	}
 	if before, after, found := strings.Cut(spec, "/"); found && !strings.Contains(after, "/") {
 		switch before {
 		case "openai", "codex":

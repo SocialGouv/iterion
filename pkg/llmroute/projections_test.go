@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/backend/model"
+	"github.com/SocialGouv/iterion/pkg/backend/modelroute"
 	"github.com/SocialGouv/iterion/pkg/cloudsched"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/llmroute"
@@ -83,6 +84,21 @@ func TestVocabulariesAgreeWithTheCodeThatReadsThem(t *testing.T) {
 			if llmroute.HonoursProviderHintValue(h, p) != model.HonoursProviderHintValue(h, p) {
 				t.Fatalf("HonoursProviderHintValue(%q, %q): llmroute=%v model=%v — the twin drifted", h, p, llmroute.HonoursProviderHintValue(h, p), model.HonoursProviderHintValue(h, p))
 			}
+		}
+	}
+}
+
+// The stage mapping reads the gateway prefix through the in-package
+// constant (llmroute imports no model package), so the constant must stay
+// the prefix dispatch routes the gateway on — the nested spelling
+// included, whose first segment alone names the route.
+func TestGatewayPrefixIsTheDispatchRoutingPrefix(t *testing.T) {
+	if llmroute.ProviderOpenAICompatible != modelroute.OpenAICompatible {
+		t.Fatalf("llmroute.ProviderOpenAICompatible = %q, modelroute.OpenAICompatible = %q — the stage mapping and dispatch read different gateway prefixes", llmroute.ProviderOpenAICompatible, modelroute.OpenAICompatible)
+	}
+	for _, spec := range []string{"openai_compatible/glm-5.3", "openai_compatible/scaleway/glm-5.3"} {
+		if !modelroute.Parse(spec).Gateway() {
+			t.Errorf("dispatch reads %q as no gateway route — the stage mapping treats it as one", spec)
 		}
 	}
 }
