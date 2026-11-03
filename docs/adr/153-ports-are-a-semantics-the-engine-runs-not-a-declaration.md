@@ -1,6 +1,6 @@
 # ADR-153: Ports are a semantics the engine RUNS, not a declaration — the contract surface holds, the fan-out owes four slices, and a contract's verifiable clauses are checked by nothing
 
-- **Status**: Accepted (2026-11-03) — on the clauses below, each read from the tree at `70b5b1972` and cited by file and line. The axes named under *What is not promised* are **not** decided here. **No code changes with it** beyond the three comments in `pkg/dsl/ir` and `pkg/dsl/spec` that stated the opposite of clause 4; every slice under *Consequences* is owed, each with its own witness and its owner package.
+- **Status**: Accepted (2026-11-03) — on the clauses below, each read from the tree at `70b5b1972` and cited by file and line. The axes named under *What is not promised* are **not** decided here. **No code changes with it** beyond the five doc texts in `pkg/dsl/ir` and `pkg/dsl/spec` that stated or implied the opposite of clause 4; every slice under *Consequences* is owed, each with its own witness and its owner package.
 - **Date**: 2026-11-03
 - **Authors**: devthejo (session with Claude Opus 5), on the design shape ADR-143/144 set: decide what the tree backs, name what it does not.
 - **Decides for**: [#1165](https://github.com/SocialGouv/iterion/issues/1165) ("design: contrats publics composables et exécution par ports"), under the epic [#1402](https://github.com/SocialGouv/iterion/issues/1402). PR [#1216](https://github.com/SocialGouv/iterion/pull/1216) proposed the whole of it and was closed unmerged — not by its review, but because the DSL programme had shipped the property registry, `dsl: 2` and `import` underneath it; the concept was harvested as lot 4bis of #1010, whose record is [099-public-contracts.md](099-public-contracts.md).
@@ -106,7 +106,8 @@ than none"** ([099-public-contracts.md](099-public-contracts.md) lines 24-26)
    the budget's `max_parallel_branches`, which the registry itself calls
    "Concurrent branches" ([spec.go:605](../../pkg/dsl/spec/spec.go)). A
    model-produced array of ten thousand items therefore creates ten thousand
-   invocations and discovers the problem by spending the budget. The ceiling
+   branches in one invocation and discovers the problem by spending the
+   budget. The ceiling
    ships as **`max_expansion:`** on the `fan_out_each` router, refused at
    resolve time **before** `ensureParallelInvocation`, naming the count it saw
    and the ceiling it was given. The word matters: `max_items` is already a
@@ -167,12 +168,14 @@ than none"** ([099-public-contracts.md](099-public-contracts.md) lines 24-26)
    asserts no evaluation**: it says that `PublicCriteria` ships the evaluators
    with a machine-readable parameter declaration and that
    `CompilePublicCriterion` validates the parameters and returns the
-   evaluator, which is true. The sentence that promises an evaluation is a
-   **code comment**, [contracts.go:10](../../pkg/dsl/ir/contracts.go): "so the
-   runtime compiles a criterion's evaluator when it runs." Nothing does, and
-   it contradicts `dsl.md` one directory away. That line and its two peers —
-   the `Registered` field's doc, and `PublicCriteria`'s — not ADR-099, are what
-   change with this record. The verdict on the class is the operator's:
+   evaluator, which is true. The sentence that promised an evaluation was a
+   **code comment**, `PublicContract`'s doc in
+   [contracts.go](../../pkg/dsl/ir/contracts.go): "so the runtime compiles a
+   criterion's evaluator when it runs." Nothing does, and it contradicted
+   `dsl.md` one directory away. That sentence and its peers — `PublicCriterion`'s
+   doc, `PublicCriteria`'s, `compilePublicCriterion`'s and C303's
+   catalogue hint, each of which scoped "not evaluated" to an unregistered
+   kind — not ADR-099, are what change with this record. The verdict on the class is the operator's:
    a warning that names every unenforced family plus a sweep pinning the
    absence, or enforcement at the executor seam (see *Consequences*).
 
@@ -298,8 +301,10 @@ than none"** ([099-public-contracts.md](099-public-contracts.md) lines 24-26)
   and C310, the bundlelint pair C254/C255, the AST/JSON/unparse round trip, the `ContractSince` release floor
   in the single `syntaxFloors` table, the contract pinned on the run doc
   (`store.Run.PublicContract`, [run.go:1047-1054](../../pkg/store/run.go)),
-  the admission probe `iterion contracts`, and the runtime projection of a
-  child's ports. Lots 3, 4 and 7 and half of 5 are not, and are the list
+  the deployment-compatibility probe `iterion contracts` (build, queue and
+  store schema versions, read from the executable alone — `build_skew` stays
+  unknown by design, and it reads no bot's contract), and the runtime
+  projection of a child's ports. Lots 3, 4 and 7 and half of 5 are not, and are the list
   below. The epic #1402 is the container; a second one next to it is the
   confusion the 2026-09-18 `epic:` → `design:` retitle was meant to end.
 - **The boundary with #1006**, agreed before either record is written so
@@ -369,7 +374,8 @@ than none"** ([099-public-contracts.md](099-public-contracts.md) lines 24-26)
   C310 — all exist on main.
 - **A record is not a capability.** Nothing executable depends on this file;
   what lands with it is the comment class that stated the opposite of clause 4
-  — three doc comments in `pkg/dsl/ir` and `pkg/dsl/spec`. The generated
+  — four doc comments and C303's catalogue hint in `pkg/dsl/ir` and
+  `pkg/dsl/spec`. The generated
   surfaces that describe C303's scope (the registry's property doc, and the
   grammar, properties, SKILL and quickref pages derived from it) are accurate
   about C303 and are slice 3's to widen, not a comment fix's.
