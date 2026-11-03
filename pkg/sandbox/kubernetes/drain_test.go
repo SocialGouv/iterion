@@ -335,12 +335,45 @@ func TestExportRunFilesCuresATypeFlipBetweenAttempts(t *testing.T) {
 		if err == nil {
 			t.Fatal("ExportRunFiles = nil, want the removal refused — a tree holding pre-drain state is not the drain's to take")
 		}
-		if !strings.Contains(err.Error(), "keep.md") {
+		// The dir itself predates the drain, and the walk names it first —
+		// the strongest witness, found before any entry under it.
+		if !strings.Contains(err.Error(), "but sub predates the drain") {
 			t.Errorf("error = %v, want the pre-drain entry the proof found named in the cause", err)
 		}
 		got, readErr := os.ReadFile(keep)
 		if readErr != nil || string(got) != "the store held me before the drain" {
 			t.Errorf("pre-drain keep.md = %q (%v), want it intact under the refused removal", got, readErr)
+		}
+		if calls() != 1 {
+			t.Errorf("the drain archived the pod %d times, want the refusal to end it — no retry cures it", calls())
+		}
+	})
+	t.Run("a pre-drain dir alone under the path is not the drain's to take", func(t *testing.T) {
+		// The flip's other blind spot: a dirs-only pre-drain tree holds no
+		// file the proof could name — the removal must refuse on the dirs
+		// half of the before snapshot all the same, or a dir the host
+		// already had is taken wherever nothing under it matched.
+		hostDst := t.TempDir()
+		pre := filepath.Join(hostDst, "sub", "keepdir")
+		if err := os.MkdirAll(pre, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		settled := podTree(t, map[string]string{"sub": "the pod settled on a file"})
+		kubectl, calls := exportShim(t, settled, 0, "")
+		r := drainRun([]sandbox.ReadBackDir{{ContainerPath: "/iterion/artifact-files", HostDir: hostDst}}, kubectl)
+
+		err := r.ExportRunFiles(context.Background())
+		if err == nil {
+			t.Fatal("ExportRunFiles = nil, want the removal refused — a dirs-only tree the host already had is not the drain's to take")
+		}
+		if !strings.Contains(err.Error(), "but sub predates the drain") {
+			t.Errorf("error = %v, want the pre-drain dir named in the cause", err)
+		}
+		if info, statErr := os.Stat(filepath.Join(hostDst, "sub")); statErr != nil || !info.IsDir() {
+			t.Errorf("pre-drain sub = (%v, %v), want the dir the host already had intact", info, statErr)
+		}
+		if _, statErr := os.Stat(pre); statErr != nil {
+			t.Errorf("pre-drain sub/keepdir = %v, want the whole pre-drain tree intact", statErr)
 		}
 		if calls() != 1 {
 			t.Errorf("the drain archived the pod %d times, want the refusal to end it — no retry cures it", calls())
@@ -398,7 +431,7 @@ func TestExtractDrainRefusesASetOverTheCap(t *testing.T) {
 		pw.CloseWithError(tw.Close())
 	}()
 	r := drainRun(nil, "")
-	drained, _, err := r.extractDrain(pr, hostDst, nil)
+	drained, _, err := r.extractDrain(pr, hostDst, nil, nil)
 	if err == nil {
 		t.Fatal("extractDrain = nil, want the over-cap refusal")
 	}
@@ -439,7 +472,7 @@ func TestExtractDrainAcceptsTheExactCapPlusATrailingZeroByteMember(t *testing.T)
 		pw.CloseWithError(tw.Close())
 	}()
 	r := drainRun(nil, "")
-	drained, landed, err := r.extractDrain(pr, hostDst, nil)
+	drained, landed, err := r.extractDrain(pr, hostDst, nil, nil)
 	if err != nil {
 		t.Fatalf("extractDrain = %v, want the exact-cap set to drain clean", err)
 	}
