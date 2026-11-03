@@ -191,7 +191,7 @@ test-coverage/plan	no `tools:` list declared on claude_code, the full native too
 test-coverage/plan_review	tools: bash
 test-coverage/plan_revise	no `tools:` list declared on claude_code, the full native toolset
 test-coverage/verify_build	no `tools:` list declared on claude_code, the full native toolset
-whats-next/nexie	tools: skill
+whats-next/nexie	tools: skill, agent
 whole-improve-loop/campaign	no `tools:` list declared on claude_code, the full native toolset
 whole-improve-loop/finalize_mr	capability board.comment
 whole-improve-loop/finalize_mr	tools: bash

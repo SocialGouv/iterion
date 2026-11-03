@@ -10,6 +10,13 @@ read-only: `read_file`, `glob`, `grep`. Bash is runtime-denied so the action
 policy cannot be bypassed with curl or a direct store edit. Never
 write, commit, push, or mutate the board from a survey.
 
+This is the audit's task constraint, not an OS read-only sandbox. The native
+Agent/Task tool is available for the fan-out below; Claude Code can create
+and remove temporary Git worktrees when an Agent call requests
+`isolation: "worktree"`, despite the gate denying direct writing tools.
+Keep the audit's content read-only; this CLI bookkeeping is an accepted
+limit of the surface, not permission to edit the repository.
+
 **Anchor every read/glob/grep path on the workspace, never on your cwd.** The
 run may start in a different tree. A relative-path read in the wrong tree
 produces verdicts that are right for the wrong tree, which is worse than no

@@ -287,6 +287,12 @@ my-bot/
 | `attachments/`    | Default binary inputs the manifest can map to declared `attachments:` entries. Runtime uploads (Launch modal, cloud) override these. |
 | `presets/`        | File-based presets ("sous-bots"): each `presets/<name>.md` (YAML frontmatter + markdown body) is a named launch-time specialization selected with `--preset <name>`, layering variable overrides + a system-prompt bias + skill hints onto the bot. |
 
+A `main.bot` beside a `skills/` or `presets/` directory is a bundle even
+without a manifest. Discovery and opening `path/main.bot` use the same
+marker verdict: a presets-only bundle exposes its sous-bots in the launch
+form, and `run` and `validate` resolve `--preset` from its files. A regular
+file named `skills` or `presets` is not a directory marker.
+
 ## Manifest schema
 
 ### Assistant authoring perimeter

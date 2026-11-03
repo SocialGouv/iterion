@@ -369,7 +369,7 @@ agent nexie:
   ## the mode is best-effort, which is why the prompt tells Nexie her
   ## memory may be gone rather than promising it.
   session: inherit_if_available
-  tools: [read_file, glob, grep, skill]
+  tools: [read_file, glob, grep, skill, agent]
   capabilities: [board.read]
   ## A study's board-execution turn alone runs 30-40 board calls
   ## (epic + framed tickets + labels + set_bot + promotions) on top
@@ -418,16 +418,17 @@ compute gate:
 
 ## ─── Workflow ─────────────────────────────────────────────────────
 workflow whats_next:
-  ## Nexie mutates the board and memory, never the repo — a git
-  ## worktree would only produce phantom storage branches (bilan
-  ## 2026-06-22) and aim workspace_dir at a tree without .iterion.
+  ## The conversation stays in the operator's workspace so it reads the
+  ## intended board. Native Agent calls may create temporary Git worktrees
+  ## when they request isolation; the audit remains read-only by instruction,
+  ## not by an OS sandbox (documented in skills/repo-survey.md).
   worktree: none
   ## A host action policy is not a boundary if the model can bypass it with
   ## curl or a direct board.json edit. Write-shaped primitives are therefore
-  ## removed at the runtime gate. Internal board.read and ask_user tools are
+  ## removed at the runtime gate for direct calls. Internal board.read and ask_user tools are
   ## infrastructure and remain available through their own contracts.
   permission: deny
-  allow: ["Read(**)", "Glob", "Grep", "Skill"]
+  allow: ["Read(**)", "Glob", "Grep", "Skill", "Agent", "Task"]
   deny: ["Bash", "Write", "Edit", "NotebookEdit", "WebFetch"]
 
   entry: seed

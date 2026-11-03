@@ -1,7 +1,9 @@
 name: whats-next
 display_name: Nexie
 icon: 🧭
-version: 0.3.10
+version: 0.3.11
+## 0.3.11 — the declared tools and permission gate admit the subagent
+## calls the roadmap-study audit asks Nexie to make.
 ## 0.3.10 — the bundle stops selling a durable CONTEXT_BRIEF it has no path
 ## to write: `memory_*` is claw-only and Nexie's `tools:` list and runtime
 ## gate both withhold the write surface, so the prompt's prohibition is the
