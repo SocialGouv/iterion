@@ -202,9 +202,9 @@ func openCodeProjectTrusted() bool {
 // refuseUntrustedOpenCodeProject refuses a run whose workspace would hand
 // opencode code to execute.
 //
-// opencode loads project resources from every `.opencode/` directory between
-// the working directory and the repository root, plus an `opencode.json` at
-// any of those levels — and it EXECUTES what it finds, in the process holding
+// opencode loads project resources from every `.opencode/` directory at or
+// above the working directory, plus an `opencode.json` at any of those levels
+// — and it EXECUTES what it finds, in the process holding
 // the run's credentials: `plugin/*.ts` and `tool/*.ts` are imported as
 // modules, and a `package.json` there is installed with its lifecycle scripts.
 // Trusting a checked-out repository therefore turns prompt injection into code
@@ -262,9 +262,14 @@ func refuseUntrustedOpenCodeProject(workDir string) error {
 //     cwd the kernel reports resolved. A lexical walk over a path that
 //     crosses a symlink screens directories the CLI never reads, and misses
 //     the ones it does.
-//   - It stops at the GIT WORKTREE ROOT: a plugin one level above a git root
-//     is not loaded. Below that root is the checkout, which is the untrusted
-//     surface; a tree with no repository is climbed well past four levels.
+//   - It does NOT stop at a git worktree root. 1.1.19 stopped there, and
+//     this walk mirrored it; 2.2.5 climbs STRAIGHT PAST a `.git` and loads
+//     an ancestor's plugin (measured end to end by the live screen bench,
+//     TestLive_Feat_OpenCodeProjectScreen). A host carries one line or the
+//     other, so the walk takes the UNION of their two reaches: a stop
+//     predicate stronger than the CLI's is a hole, and that one was
+//     measured open. What a level ABOVE the checkout costs is a refusal the
+//     operator lifts with the trust hatch, which is the cheaper side.
 //   - The operator's HOME is never screened. `~/.opencode` exists on every
 //     host where opencode is installed — it is the installer's own root — so
 //     screening it would refuse every run, and it is the operator's
@@ -294,9 +299,6 @@ func openCodeProjectLevels(workDir string) ([]string, error) {
 			return levels, nil
 		}
 		levels = append(levels, dir)
-		if isGitWorktreeRoot(dir) {
-			return levels, nil
-		}
 		if parent := filepath.Dir(dir); parent != dir {
 			dir = parent
 			continue
@@ -304,7 +306,7 @@ func openCodeProjectLevels(workDir string) ([]string, error) {
 		return levels, nil // filesystem root
 	}
 	return nil, fmt.Errorf(
-		"workspace %q has more than %d path components above it and no repository root: cannot screen it for opencode resources",
+		"workspace %q has more than %d path components above it and reaches neither the operator's home nor the filesystem root: cannot screen it for opencode resources",
 		work, openCodeMaxProjectLevels)
 }
 
@@ -319,21 +321,6 @@ func openCodeOperatorHome() string {
 		return resolved
 	}
 	return home
-}
-
-// isGitWorktreeRoot reports whether dir holds a `.git` entry — a directory
-// for a primary checkout, a file for a linked worktree or a submodule.
-// Either truncates opencode's own walk, so either truncates this one.
-//
-// Stat, never Lstat: Lstat sees strictly more entries, and every entry it
-// sees that Stat does not — a DANGLING `.git` symlink, a symlink loop —
-// would stop this walk while opencode's (stat-based) climbs straight past it
-// and loads the parent's resources. A stop predicate stronger than the CLI's
-// is a hole, and this one was measured open end to end. A Stat error also
-// reads as "not a root", so the walk climbs and screens more: fail-closed.
-func isGitWorktreeRoot(dir string) bool {
-	_, err := os.Stat(filepath.Join(dir, ".git"))
-	return err == nil
 }
 
 // openCodeResourceAt names the opencode resource found at one directory

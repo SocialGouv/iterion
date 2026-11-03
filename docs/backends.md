@@ -3108,9 +3108,9 @@ loaded, a marshalled policy, `ask` refused, the `list` → `ls` canonical row
 
 #### ⚠️ The target repository runs as code
 
-opencode loads project resources from **every `.opencode/` directory between
-the working directory and the repository root, and from an `opencode.json`
-(or `.jsonc`) at any of those levels** — and it EXECUTES what it finds,
+opencode loads project resources from **every `.opencode/` directory at or
+above the working directory, and from an `opencode.json` (or `.jsonc`) at any
+of those levels** — and it EXECUTES what it finds,
 inside the process holding the run's credentials: `plugin/*.ts` and
 `tool/*.ts` are imported as modules, and a `package.json` there is installed
 with its lifecycle scripts. No config entry and no flag are needed. Against
@@ -3129,9 +3129,14 @@ executes inside the agent process; refusing to run against an untrusted
 checkout (set ITERION_OPENCODE_TRUST_PROJECT=1 for a repository you own)
 ```
 
-The walk stops at the **git worktree root**, which is opencode's own stop
-(measured: a plugin one level above a git root is not loaded); above that is
-the operator's own tree, not the untrusted checkout.
+The walk stops at the **operator's HOME** or the filesystem root — never at
+a git worktree root. 1.1.19 stopped at a `.git` and iterion mirrored it;
+2.2.5 climbs straight past one and loads the ancestor's plugin (measured by
+the live screen bench). A host carries one line or the other, so the walk
+takes the union of their two reaches: a stop predicate stronger than the
+CLI's is a hole. A resource the operator keeps ABOVE a checkout is therefore
+refused too — lift it with `ITERION_OPENCODE_TRUST_PROJECT=1`, which is the
+cheaper side of the trade.
 
 This is a refusal rather than a flag because opencode offers no way to turn
 the discovery off: `OPENCODE_DISABLE_PROJECT_CONFIG`, `OPENCODE_PURE` and

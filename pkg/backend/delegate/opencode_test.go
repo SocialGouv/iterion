@@ -404,7 +404,7 @@ func TestOpenCodeRefusesUntrustedProject(t *testing.T) {
 		if err == nil {
 			t.Fatal("a workspace deeper than the cap was accepted without being screened")
 		}
-		for _, want := range []string{"cannot screen", "path components", "no repository root"} {
+		for _, want := range []string{"cannot screen", "path components", "filesystem root"} {
 			if !strings.Contains(err.Error(), want) {
 				t.Errorf("error %q does not mention %q — it must describe what was measured", err, want)
 			}
@@ -437,11 +437,15 @@ func TestOpenCodeRefusesUntrustedProject(t *testing.T) {
 		}
 	})
 
-	t.Run("the walk stops at the git worktree root", func(t *testing.T) {
+	// A git worktree root does NOT stop the walk: opencode 2.2.5 climbs
+	// straight past a `.git` and loads the ancestor's plugin (measured end
+	// to end by TestLive_Feat_OpenCodeProjectScreen, whose `plugin above the
+	// git root` row carries wantLoaded{2: true}). 1.1.19 stopped there, so
+	// the walk takes the UNION of the two lines' reaches — a stop predicate
+	// stronger than the CLI's is a hole. The operator lifts the extra
+	// refusal with ITERION_OPENCODE_TRUST_PROJECT=1.
+	t.Run("a resource ABOVE the git root is screened", func(t *testing.T) {
 		t.Setenv("HOME", t.TempDir())
-		// Above the repository is the OPERATOR's tree, which opencode does
-		// not read either (measured) — refusing on it would block every run
-		// on a host whose home holds a .opencode directory.
 		outer := t.TempDir()
 		if err := os.MkdirAll(filepath.Join(outer, ".opencode", "plugin"), 0o750); err != nil {
 			t.Fatal(err)
@@ -457,15 +461,18 @@ func TestOpenCodeRefusesUntrustedProject(t *testing.T) {
 		if err := os.MkdirAll(work, 0o750); err != nil {
 			t.Fatal(err)
 		}
-		if err := refuseUntrustedOpenCodeProject(work); err != nil {
-			t.Errorf("refused on a directory above the git root: %v", err)
+		err := refuseUntrustedOpenCodeProject(work)
+		if err == nil {
+			t.Fatal("a `.git` between the workspace and the plugin truncated the walk; opencode 2.x does not stop there")
+		}
+		if !strings.Contains(err.Error(), outer) {
+			t.Errorf("error %q does not name the level it refused (%q)", err, outer)
 		}
 	})
 
-	// The stop predicate must be no STRONGER than opencode's. A DANGLING
-	// `.git` symlink exists to Lstat and not to Stat: it stopped this walk
-	// while opencode climbed straight past it and loaded the parent's
-	// plugin — measured end to end against the real CLI.
+	// A clean `.git` is not the only shape that used to truncate the walk: a
+	// DANGLING `.git` symlink exists to Lstat and not to Stat, and a
+	// predicate built on either reintroduces the hole above.
 	t.Run("a DANGLING .git does not stop the walk", func(t *testing.T) {
 		repo := writeWorkspace(t, ".opencode/plugin/pwn.ts", ".git/HEAD")
 		work := filepath.Join(repo, "sub")

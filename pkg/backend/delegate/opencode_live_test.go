@@ -79,11 +79,10 @@ func TestLive_Feat_OpenCodeProjectScreen(t *testing.T) {
 		{name: "ancestor hidden behind a dangling .git", files: []string{".opencode/plugin/pwn.ts", ".git/HEAD"}, workRel: "sub", danglingGit: true, wantLoaded: map[int]bool{1: true, 2: true}, wantRefused: true},
 		// 1.x stopped at the git root; 2.x climbs STRAIGHT PAST it (measured
 		// on 2.2.5: the marker is written, and the server subscribes to every
-		// ancestor up to `/`). iterion's screen still stops at the git root,
-		// so this row is the one layout where the CLI loads what iterion
-		// accepts — the bench says so by failing, and the bound is the
-		// operator's call, not this row's.
-		{name: "plugin above the git root", files: []string{".opencode/plugin/pwn.ts", "repo/.git/HEAD"}, workRel: "repo/sub", wantLoaded: map[int]bool{1: false, 2: true}, wantRefused: false},
+		// ancestor up to `/`). iterion's screen takes the UNION of the two
+		// reaches, so this layout is refused on either line — on 1.x that is
+		// fail-CLOSED, on 2.x it is the only answer that is not a hole.
+		{name: "plugin above the git root", files: []string{".opencode/plugin/pwn.ts", "repo/.git/HEAD"}, workRel: "repo/sub", wantLoaded: map[int]bool{1: false, 2: true}, wantRefused: true},
 	}
 
 	for _, tc := range cases {
@@ -114,7 +113,7 @@ func TestLive_Feat_OpenCodeProjectScreen(t *testing.T) {
 				t.Fatalf("opencode %d.x is not measured by this row: re-measure it before trusting any verdict against this build", major)
 			}
 
-			loaded := openCodeLoadsFrom(t, bin, work, marker)
+			loaded := openCodeLoadsFrom(t, bin, work, marker, major)
 			if loaded != want {
 				t.Fatalf("the CLI (%d.x) loaded=%v, want %v — this row no longer exercises what it names, so its verdict proves nothing", major, loaded, want)
 			}
@@ -123,17 +122,13 @@ func TestLive_Feat_OpenCodeProjectScreen(t *testing.T) {
 			if refused != tc.wantRefused {
 				t.Fatalf("iterion refused=%v, want %v — the screen no longer answers this layout the way the bench measured it", refused, tc.wantRefused)
 			}
+			// The bench's whole reason to exist: iterion must never ACCEPT a
+			// layout the CLI loads from. Every row pins both sides above, so
+			// this verdict is expected to be unreachable — it is the net
+			// under a row whose two pins drift apart, and under a release
+			// that starts reading a level the screen stopped at.
 			if loaded && !refused {
-				// The screen's bound, stated rather than implied: it stops at
-				// the git worktree root, so a resource ABOVE the checkout is
-				// the HOST's own tree — the line the home exclusion already
-				// draws — and not a repository iterion was handed. 1.x did
-				// not read there either; 2.x does (measured), so the gap is
-				// real, and widening the screen is a decision for #2915's
-				// owner, not for this row. Any layout AT or BELOW the
-				// checkout carries wantRefused: true, so a fail-open there
-				// reddens on the assertion above.
-				t.Logf("opencode %d.x loaded a resource from %q, above the checkout, where iterion's screen does not reach", major, work)
+				t.Fatalf("opencode %d.x executed a workspace resource from %q and iterion accepted the layout", major, work)
 			}
 			if !loaded && refused {
 				t.Logf("iterion refuses a layout the CLI did not load from (%q): fail-closed, but worth knowing", work)
@@ -196,7 +191,7 @@ const openCodeBenchModel = "iterion-bench/no-such-model"
 // argv comes from the PRODUCTION path — opencodeProtocol through buildArgs —
 // so the bench cannot drift into a dialect the backend does not speak, and a
 // change that breaks the argv breaks this bench too.
-func openCodeLoadsFrom(t *testing.T, bin, work, marker string) bool {
+func openCodeLoadsFrom(t *testing.T, bin, work, marker string, major int) bool {
 	t.Helper()
 	b := &CLIAgentBackend{Protocol: opencodeProtocol}
 	task := Task{UserPrompt: "say hi", Model: openCodeBenchModel}
@@ -209,7 +204,14 @@ func openCodeLoadsFrom(t *testing.T, bin, work, marker string) bool {
 	// by PID …") and the loser loads nothing — and a service started on a
 	// scratch home would outlive the bench holding that port. It does not
 	// change what the project loader reads: the plugin executes either way.
-	args = append([]string{"--standalone"}, args...)
+	//
+	// Keyed on the MAJOR: both the flag and the service it opts out of are
+	// 2.x features, and the usage guard below would read a 1.x host's
+	// "Unrecognized flag: --standalone" as a broken bench — turning every
+	// 1.x verdict this table pins into an unreachable row.
+	if major >= 2 {
+		args = append([]string{"--standalone"}, args...)
+	}
 	cmd := exec.Command(bin, args...) // #nosec G204 — the located CLI, argv from the protocol.
 	cmd.Stdin = strings.NewReader(stdinPrompt)
 	cmd.Env = openCodeBenchEnv(t)
