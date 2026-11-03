@@ -542,6 +542,98 @@ func TestGetModels_CloudTeamGatewayKeyUnlocksClawOnly(t *testing.T) {
 	}
 }
 
+// A key whose audience names bots or repositories proves nothing on a
+// catalog request, which names neither: Resolve withholds such a key from
+// every launch outside its audience, so the specs it alone would fund read
+// "unknown" — never a blocking unreachable — and the backend it alone would
+// light stays dark. Each case runs its key unrestricted first, so the
+// audience is the one thing that changes the answer.
+func TestGetModels_CloudAudienceRestrictedKeyIsUnproven(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "")
+	t.Setenv("XAI_API_KEY", "")
+	t.Setenv("OPENAI_COMPATIBLE_BASE_URL", "")
+	t.Setenv("OPENAI_COMPATIBLE_API_KEY", "")
+	cases := []struct {
+		name     string
+		tenant   string
+		provider secrets.Provider
+		baseURL  string
+		bots     []string
+		repos    []string
+		spec     string
+		backend  string
+	}{
+		{
+			name: "a team gateway key restricted to a repository", tenant: "team-a",
+			provider: secrets.ProviderOpenAICompatible, baseURL: "https://gw.example.com",
+			repos: []string{"acme/other-repo"}, spec: "openai_compatible/scaleway/glm-5.3", backend: detect.BackendClaw,
+		},
+		{
+			name: "a team gateway key restricted to a bot", tenant: "team-a",
+			provider: secrets.ProviderOpenAICompatible, baseURL: "https://gw.example.com",
+			bots: []string{"other-bot"}, spec: "openai_compatible/scaleway/glm-5.3", backend: detect.BackendClaw,
+		},
+		{
+			name: "a team anthropic key restricted to a bot", tenant: "team-a",
+			provider: secrets.ProviderAnthropic,
+			bots:     []string{"other-bot"}, spec: "anthropic/claude-opus-5", backend: detect.BackendClaudeCode,
+		},
+		{
+			name: "a platform xai key restricted to a repository", tenant: secrets.PlatformTenantID,
+			provider: secrets.ProviderXAI,
+			repos:    []string{"acme/other-repo"}, spec: "xai/grok-3", backend: detect.BackendClaw,
+		},
+	}
+	answer := func(t *testing.T, tenant string, p secrets.Provider, baseURL string, bots, repos []string, spec, backend string) (modelcatalog.Entry, bool) {
+		t.Helper()
+		srv, keys, _ := newCloudModelsServer(t, newFakeDLQQueue())
+		if err := keys.Create(context.Background(), secrets.ApiKey{
+			ID:           secrets.NewApiKeyID(),
+			TenantID:     tenant,
+			ScopeTeamID:  tenant,
+			Provider:     p,
+			BaseURL:      baseURL,
+			Name:         "audience",
+			SealedSecret: []byte("sealed:audience-key"),
+			CreatedAt:    time.Now().UTC(),
+			Bots:         bots,
+			Repos:        repos,
+		}); err != nil {
+			t.Fatalf("create key: %v", err)
+		}
+		rec, cat := getModels(t, srv, "?spec="+spec, cloudIdentity("team-a", "alice"))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
+		}
+		e, ok := cat.Find(spec)
+		if !ok {
+			t.Fatalf("missing %s: %v", spec, cat.SortedSpecs())
+		}
+		lit := false
+		for _, b := range cat.Backends {
+			if b.Name == backend {
+				lit = b.Available
+			}
+		}
+		return e, lit
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			open, openLit := answer(t, tc.tenant, tc.provider, tc.baseURL, nil, nil, tc.spec, tc.backend)
+			if !open.Usable || open.Reachability != modelcatalog.ReachabilityCloud || !openLit {
+				t.Fatalf("control: the same key with no audience = %+v (%s lit %v), want cloud-proven", open, tc.backend, openLit)
+			}
+			got, lit := answer(t, tc.tenant, tc.provider, tc.baseURL, tc.bots, tc.repos, tc.spec, tc.backend)
+			if got.Usable || got.Reachability != modelcatalog.ReachabilityUnknown {
+				t.Errorf("%s = usable %v, reachability %q — want unknown: the request names no bot or repository, so a key restricted to some proves nothing for it", tc.spec, got.Usable, got.Reachability)
+			}
+			if lit {
+				t.Errorf("%s lit by a key whose audience this request cannot satisfy", tc.backend)
+			}
+		})
+	}
+}
+
 func getModelCaps(t *testing.T, base, spec, provider string) (modelCapabilitiesResponse, int) {
 	t.Helper()
 	q := url.Values{"spec": {spec}}
