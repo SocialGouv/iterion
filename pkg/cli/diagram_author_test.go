@@ -405,7 +405,7 @@ func TestTheDiagramOfADocumentIsTheDiagramOfItsBotOverTheCorpus(t *testing.T) {
 	}
 	root := inTempWorkspace(t)
 	for _, tree := range []string{"bots", "examples"} {
-		copyTreeForTest(t, filepath.Join(repo, tree), filepath.Join(root, tree))
+		copyAuthoringCorpusForTest(t, filepath.Join(repo, tree), filepath.Join(root, tree))
 	}
 	var bots []string
 	for _, tree := range []string{"bots", "examples"} {
@@ -522,13 +522,61 @@ func TestTheDiagramOfADocumentIsTheDiagramOfItsBotOverTheCorpus(t *testing.T) {
 	}
 }
 
-// copyTreeForTest copies the regular files of src under dst, directories
-// created as needed; a symlink is skipped.
-func copyTreeForTest(t *testing.T, src, dst string) {
+func TestAuthoringCorpusCopyOwnsItsRuntimeState(t *testing.T) {
+	src, dst := t.TempDir(), t.TempDir()
+	doc := writeBot(t, filepath.Join(src, "main.bot.yaml"), helloDocWith(""))
+	if result, err := RunFmt(t.Context(), FmtOptions{Paths: []string{doc}, To: "bot"}); err != nil {
+		t.Fatalf("prepare the source with the real formatter: %v (%v)", err, result.Refused)
+	}
+	state := filepath.Join(src, ".iterion", "authoring")
+	if info, err := os.Stat(state); err != nil || !info.IsDir() {
+		t.Fatalf("the formatter did not establish source authoring state: %v", err)
+	}
+	private := []string{
+		filepath.Join(".iterion", "authoring", "host-only-state"),
+		filepath.Join("fragments", ".iterion", "run", "host-only-state"),
+	}
+	for _, path := range private {
+		writeBot(t, filepath.Join(src, path), "source session state\n")
+	}
+	resources := map[string]string{
+		filepath.Join("prompts", "context.md"):              "author context\n",
+		filepath.Join("assets", ".iterion"):                 "a regular authored file\n",
+		filepath.Join("assets", ".iterion-example", "data"): "an authored resource directory\n",
+	}
+	for path, body := range resources {
+		writeBot(t, filepath.Join(src, path), body)
+	}
+	copyAuthoringCorpusForTest(t, src, dst)
+	if err := os.Remove(filepath.Join(dst, "main.bot")); err != nil {
+		t.Fatal(err)
+	}
+	if result, err := RunFmt(t.Context(), FmtOptions{Paths: []string{filepath.Join(dst, "main.bot.yaml")}, To: "bot"}); err != nil {
+		t.Fatalf("the copied corpus must acquire its own authoring lock: %v (%v)", err, result.Refused)
+	}
+	for _, path := range private {
+		if _, err := os.Stat(filepath.Join(dst, path)); !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("source session state crossed the corpus boundary at %s: %v", path, err)
+		}
+	}
+	for path, want := range resources {
+		got, err := os.ReadFile(filepath.Join(dst, path))
+		if err != nil || string(got) != want {
+			t.Errorf("authored resource %s = %q, %v; want %q", path, got, err, want)
+		}
+	}
+}
+
+// copyAuthoringCorpusForTest copies regular authoring files, excluding the
+// source session's .iterion directories and symlinks. The copy owns its state.
+func copyAuthoringCorpusForTest(t *testing.T, src, dst string) {
 	t.Helper()
 	err := filepath.WalkDir(src, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
+		}
+		if d.IsDir() && d.Name() == ".iterion" {
+			return filepath.SkipDir
 		}
 		rel, err := filepath.Rel(src, p)
 		if err != nil {
