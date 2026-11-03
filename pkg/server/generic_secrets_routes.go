@@ -211,7 +211,7 @@ func (s *Server) handleDeleteGenericSecret(w http.ResponseWriter, r *http.Reques
 			// attempt: the retry must finish that sweep —
 			// retryCredentialPinSweep — before the 404 answers, never
 			// answer 404 over pins that may still stand.
-			tenantID := r.PathValue("id")
+			tenantID := pinSweepTenant(ctx)
 			healed, healErr := s.retryCredentialPinSweep(r, tenantID, secretID)
 			if healErr != nil {
 				httpError(w, http.StatusInternalServerError, "secret %s is deleted, but clearing the pins that name it still fails: %v — a surviving pin keeps its workflow secret unfilled until it is cleared", secretID, healErr)
@@ -243,7 +243,7 @@ func (s *Server) handleDeleteGenericSecret(w http.ResponseWriter, r *http.Reques
 	// workflow secret's fill with nobody watching.
 	sweepCtx, sweepCancel := context.WithTimeout(context.WithoutCancel(r.Context()), pinSweepTimeout)
 	defer sweepCancel()
-	swept, sweepErr := s.sweepCredentialPins(sweepCtx, rec.ScopeTeamID, rec.ID)
+	swept, sweepErr := s.sweepCredentialPins(sweepCtx, pinSweepTenant(ctx), rec.ID)
 	meta := map[string]any{"name": rec.Name}
 	if len(swept) > 0 {
 		meta["pins_cleared"] = swept

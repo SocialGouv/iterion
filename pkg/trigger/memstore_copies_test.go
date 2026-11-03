@@ -10,7 +10,7 @@ import (
 // value-scoped clear), so a Subscription crossing ANY boundary shares
 // nothing with the store: a reader holding a pre-clear copy keeps seeing the
 // pins the store has since dropped, and a caller's payload never becomes the
-// store's mutation surface (#2644 round 4). Each arm is deterministic:
+// store's mutation surface (#2644). Each arm is deterministic:
 // without the boundary copies the shared map shows the clear.
 func TestMemorySubscriptionStoreBoundariesHandOutPrivateCopies(t *testing.T) {
 	ctx := context.Background()
@@ -95,7 +95,7 @@ func TestMemorySubscriptionStoreBoundariesHandOutPrivateCopies(t *testing.T) {
 // copies, where ranging a handed-out map while the clear deletes from the
 // store's map is Go's unrecoverable "concurrent map iteration and map
 // write" — the local single-host server dying on a credential delete that
-// races any trigger view or launch (#2644 round 4).
+// races any trigger view or launch (#2644).
 func TestMemorySubscriptionStorePinClearDoesNotRaceReaders(t *testing.T) {
 	ctx := context.Background()
 	st := NewMemorySubscriptionStore()

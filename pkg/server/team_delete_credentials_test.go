@@ -100,6 +100,10 @@ func deleteMyKey(srv *Server, keyID, userID, activeTeam string) *httptest.Respon
 // the owner's to delete, and that one answers 204.
 func TestDeleteApiKey_AMissIs404NotASuccessReceipt(t *testing.T) {
 	srv, spy, _, _ := byokServer(t)
+	// A miss reaches the retry's pin heal, whose gate reads the caller's
+	// team grant: a member revoking a personal key holds none, the heal
+	// refuses, and the 404 stands bare.
+	wireIdentityStore(t, srv)
 	ctx := store.WithTenant(context.Background(), "team-a")
 	if err := spy.Create(ctx, secrets.ApiKey{
 		ID: "key-personal", ScopeTeamID: "team-a", ScopeUserID: "u2",
@@ -133,6 +137,7 @@ func TestDeleteApiKey_AMissIs404NotASuccessReceipt(t *testing.T) {
 // answers 404 too — the two surfaces change together.
 func TestDeleteGenericSecret_AMissIs404NotASuccessReceipt(t *testing.T) {
 	srv := &Server{genericSecrets: secrets.NewMemoryGenericSecretStore()}
+	wireIdentityStore(t, srv)
 	ctx := store.WithTenant(context.Background(), "team-a")
 	if err := srv.genericSecrets.Create(ctx, secrets.GenericSecret{
 		ID: "sec-personal", ScopeTeamID: "team-a", ScopeUserID: "u2",

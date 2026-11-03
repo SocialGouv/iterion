@@ -358,6 +358,120 @@ func TestDeleteGenericSecret_RetryFinishesAnInterruptedSweep(t *testing.T) {
 	}
 }
 
+// deleteMySecret runs DELETE /api/me/secrets/{secretID} as userID whose
+// active team is activeTeam: no {id} in the path, the tenant stamped by
+// requireAuth from the caller's active team (deleteMyKey is the api-key
+// twin).
+func deleteMySecret(srv *Server, secretID, userID, activeTeam string) *httptest.ResponseRecorder {
+	r := httptest.NewRequest(http.MethodDelete, "/api/me/secrets/"+secretID, nil)
+	r.SetPathValue("secret_id", secretID)
+	ctx := auth.WithIdentity(r.Context(), auth.Identity{UserID: userID, TeamID: activeTeam})
+	r = r.WithContext(store.WithTenant(ctx, activeTeam))
+	w := httptest.NewRecorder()
+	srv.handleDeleteGenericSecret(w, r)
+	return w
+}
+
+// wireIdentityStore gives srv the identity store a real server always has,
+// holding the memberships given — none for a caller with no grant. A gate
+// that reads a grant (the retry's pin heal on a miss, the mutation gate on
+// a team-wide record) then judges the caller from the store, never from a
+// super-admin short-circuit, and never dereferences a store the fixture
+// does not have.
+func wireIdentityStore(t *testing.T, srv *Server, memberships ...identity.Membership) {
+	t.Helper()
+	ids := identity.NewMemoryStore()
+	for _, mb := range memberships {
+		if err := ids.UpsertMembership(context.Background(), mb); err != nil {
+			t.Fatal(err)
+		}
+	}
+	authSvc := &auth.Service{}
+	authSvc.SetStoreForTest(ids)
+	srv.authSvc = authSvc
+}
+
+// teamAdminGrant is the membership the /api/me witnesses delete under: a
+// team admin, whose right to delete a team-wide record and to sweep the
+// team's pins is the same grant.
+func teamAdminGrant(userID, teamID string) identity.Membership {
+	return identity.Membership{UserID: userID, TeamID: teamID, Role: identity.RoleAdmin}
+}
+
+// TestDeleteMyApiKey_RetryFinishesAnInterruptedSweep: the /api/me route
+// carries no team in its path, yet a team-wide key is deletable there — the
+// store reads run under the active team requireAuth stamped, and a team
+// admin passes the mutation gate — so both the sweep and its retry run
+// under that tenant. Deriving the retry's tenant from the path (the mutant)
+// finds none here, and the retry answers a bare 404 over the standing pin
+// — the silent skip the heal exists to close.
+func TestDeleteMyApiKey_RetryFinishesAnInterruptedSweep(t *testing.T) {
+	srv, spy, _, auditStore := newPinSweepServer(t)
+	wireIdentityStore(t, srv, teamAdminGrant("u-admin", "team-a"))
+	dead := seedSweepKey(t, spy, "team-a", "key-dead", secrets.ProviderAnthropic)
+	mem := webhooks.NewMemoryConfigStore()
+	seedSweepWebhook(t, mem, webhooks.Config{ID: "wh-1", TenantID: "team-a",
+		KeyOverrides: map[string]string{"anthropic": dead.ID}})
+	srv.webhookConfigs = failingPinSweep{ConfigStore: mem}
+
+	if w := deleteMyKey(srv, dead.ID, "u-admin", "team-a"); w.Code != http.StatusInternalServerError {
+		t.Fatalf("delete through /api/me with a broken sweep = %d body=%s, want 500 — a 204 means the sweep never listed the active team's pins", w.Code, w.Body.String())
+	}
+	if _, err := spy.Get(store.WithTenant(context.Background(), "team-a"), dead.ID); !errors.Is(err, secrets.ErrApiKeyNotFound) {
+		t.Fatalf("the key survived the failed sweep (%v)", err)
+	}
+
+	srv.webhookConfigs = mem
+	if w := deleteMyKey(srv, dead.ID, "u-admin", "team-a"); w.Code != http.StatusNotFound {
+		t.Fatalf("retry through /api/me = %d body=%s, want 404", w.Code, w.Body.String())
+	}
+	wh1, err := mem.Get(context.Background(), "wh-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(wh1.KeyOverrides) != 0 {
+		t.Fatalf("the /api/me retry answered 404 over a standing pin: %v — the heal must sweep under the active team the route's reads ran under", wh1.KeyOverrides)
+	}
+	if cleared := sweptSurfaces(t, auditStore, "team-a", "byok.deleted"); len(cleared) != 1 || cleared[0] != "webhook wh-1" {
+		t.Fatalf("the heal's audit receipt = %v, want [webhook wh-1]", cleared)
+	}
+}
+
+// TestDeleteMySecret_RetryFinishesAnInterruptedSweep is the secret twin on
+// its own /api/me route: same shape, its own 404 branch.
+func TestDeleteMySecret_RetryFinishesAnInterruptedSweep(t *testing.T) {
+	srv, _, _, auditStore := newPinSweepServer(t)
+	wireIdentityStore(t, srv, teamAdminGrant("u-admin", "team-a"))
+	if err := srv.genericSecrets.Create(store.WithTenant(t.Context(), "team-a"), secrets.GenericSecret{
+		ID: "sec-1", ScopeTeamID: "team-a", Name: "FORGE_TOKEN", CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	mem := webhooks.NewMemoryConfigStore()
+	seedSweepWebhook(t, mem, webhooks.Config{ID: "wh-1", TenantID: "team-a",
+		SecretOverrides: map[string]string{"forge_token": "sec-1"}})
+	srv.webhookConfigs = failingPinSweep{ConfigStore: mem}
+
+	if w := deleteMySecret(srv, "sec-1", "u-admin", "team-a"); w.Code != http.StatusInternalServerError {
+		t.Fatalf("delete through /api/me with a broken sweep = %d body=%s, want 500 — a 204 means the sweep never listed the active team's pins", w.Code, w.Body.String())
+	}
+
+	srv.webhookConfigs = mem
+	if w := deleteMySecret(srv, "sec-1", "u-admin", "team-a"); w.Code != http.StatusNotFound {
+		t.Fatalf("retry through /api/me = %d body=%s, want 404", w.Code, w.Body.String())
+	}
+	wh1, err := mem.Get(context.Background(), "wh-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(wh1.SecretOverrides) != 0 {
+		t.Fatalf("the /api/me retry answered 404 over a standing pin: %v — the heal must sweep under the active team the route's reads ran under", wh1.SecretOverrides)
+	}
+	if cleared := sweptSurfaces(t, auditStore, "team-a", "secret.deleted"); len(cleared) != 1 || cleared[0] != "webhook wh-1" {
+		t.Fatalf("the heal's audit receipt = %v, want [webhook wh-1]", cleared)
+	}
+}
+
 // TestDeleteApiKey_TheHealDemandsTheTenantRight: the 404 path has no row to
 // read a scope from, so the heal gates on the tenant itself — and it must
 // demand the same right the delete demands for a team-scoped record

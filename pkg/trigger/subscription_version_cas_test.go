@@ -73,9 +73,9 @@ func assertUpdateIsAVersionCAS(t *testing.T, st SubscriptionStore, ctx context.C
 // assertPinSweepConflictsAStaleEditor pins the resurrection witness: an
 // editor whose snapshot predates the sweep's clear cannot write the swept
 // pin back — the write conflicts and the retry re-reads the swept (cleared)
-// row. This is the PUT window of #2644 round 4: a read before the delete's
-// sweep and a write after it used to land the dead pin permanently, with no
-// sweep ever coming behind the delete's 204.
+// row. This is the PUT window of #2644: without the version bump, a read
+// before the delete's sweep and a write after it land the dead pin
+// permanently, with no sweep ever coming behind the delete's 204.
 func assertPinSweepConflictsAStaleEditor(t *testing.T, st SubscriptionStore, ctx context.Context) {
 	t.Helper()
 	if err := st.Create(ctx, Subscription{

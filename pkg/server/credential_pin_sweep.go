@@ -126,17 +126,17 @@ func pinsName(pins map[string]string, recordID string) bool {
 // every webhook and subscription. The clear matches pins by value, so the
 // pass is idempotent and sweeps nothing for a record that never had pins.
 //
-// The tenant comes from the request scope — the same derivation the route's
-// store reads use — and the record id from the path, the two facts a delete
-// retry still carries. The pass runs detached (pinSweepTimeout): the caller
-// may be gone, the sweep must not. Scoped routes with no tenant in the path
-// (the /api/me deletes) sweep nothing: their user-scoped records are never
-// pinnable, and a tenant-less sweep would be unscoped. A caller the gate
-// refuses sweeps nothing either and gets the route's bare 404 — the same
-// answer a caller with no standing gets for any record. A gate the identity
-// store cannot ANSWER (an outage, not a refusal) is an error the delete
-// route answers 5xx: a 404 there would be the silent skip the heal exists
-// to close, with the pins still standing and nothing logged.
+// The tenant is the route's read scope (pinSweepTenant) and the record id
+// the path's, the two facts a delete retry still carries. The pass runs
+// detached (pinSweepTimeout): the caller may be gone, the sweep must not.
+// A read scope with no tenant sweeps nothing — a tenant-less sweep would
+// be unscoped — and no cloud route reaches this pass without one: the
+// Mongo stores refuse a tenant-less read before any "not found". A caller
+// the gate refuses sweeps nothing either and gets the route's bare 404 —
+// the same answer a caller with no standing gets for any record. A gate
+// the identity store cannot ANSWER (an outage, not a refusal) is an error
+// the delete route answers 5xx: a 404 there would be the silent skip the
+// heal exists to close, with the pins still standing and nothing logged.
 func (s *Server) retryCredentialPinSweep(r *http.Request, tenantID, recordID string) ([]string, error) {
 	if tenantID == "" {
 		return nil, nil
@@ -160,6 +160,22 @@ func (s *Server) retryCredentialPinSweep(r *http.Request, tenantID, recordID str
 // pin that leaves standing seals the team's default with nobody watching.
 func pinGuardCtx(r *http.Request) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.WithoutCancel(r.Context()), pinSweepTimeout)
+}
+
+// pinSweepTenant names the tenant a delete sweeps pins under: the tenant
+// the route's store reads ran under — the team in the path, the org
+// credential tier's reserved scope, the platform scope the admin routes
+// stamp, or the caller's active team on the /api/me routes (the auth
+// middleware's stamp, under which a team-wide key or secret is as
+// deletable as under its team path). That read scope is the record's own
+// tenant — the stores filter the read on it — and the pins' — the
+// write-time validators admit a same-tenant record only — so the first
+// pass and the retry derive the one tenant from the one source, with or
+// without the row, and sweep the same rows. A read scope with no tenant
+// (a tenant-less fixture) names nothing to sweep under.
+func pinSweepTenant(ctx context.Context) string {
+	tenantID, _ := store.TenantFromContext(ctx)
+	return tenantID
 }
 
 // landedPins is what a pin-landing write learns from reconcileLandedPins

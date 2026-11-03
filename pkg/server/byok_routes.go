@@ -754,7 +754,7 @@ func (s *Server) handleDeleteApiKeyIn(w http.ResponseWriter, r *http.Request, sc
 			// half and happened first): the retry must finish that sweep —
 			// retryCredentialPinSweep — before the 404 answers, never
 			// answer 404 over pins that may still stand.
-			scopeTenant := apiKeyScopeTenant(r, scopeOverride)
+			scopeTenant := pinSweepTenant(ctx)
 			healed, healErr := s.retryCredentialPinSweep(r, scopeTenant, keyID)
 			if healErr != nil {
 				httpError(w, http.StatusInternalServerError, "api key %s is deleted, but clearing the pins that name it still fails: %v — a surviving pin still reads as live and seals the team default until it is cleared", keyID, healErr)
@@ -788,7 +788,7 @@ func (s *Server) handleDeleteApiKeyIn(w http.ResponseWriter, r *http.Request, sc
 	// default with nobody watching.
 	sweepCtx, sweepCancel := context.WithTimeout(context.WithoutCancel(r.Context()), pinSweepTimeout)
 	defer sweepCancel()
-	swept, sweepErr := s.sweepCredentialPins(sweepCtx, key.TenantID, key.ID)
+	swept, sweepErr := s.sweepCredentialPins(sweepCtx, pinSweepTenant(ctx), key.ID)
 	meta := map[string]any{"name": key.Name, "provider": string(key.Provider)}
 	if len(swept) > 0 {
 		meta["pins_cleared"] = swept
@@ -799,18 +799,6 @@ func (s *Server) handleDeleteApiKeyIn(w http.ResponseWriter, r *http.Request, sc
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
-}
-
-// apiKeyScopeTenant names the tenant a delete retry sweeps under — the same
-// derivation apiKeyScopeCtx makes for the store reads, minus the context: a
-// scope override IS the tenant (the org credential tier); otherwise the
-// path's team id is, and a route with neither (the /api/me deletes) has no
-// tenant to sweep under.
-func apiKeyScopeTenant(r *http.Request, scopeOverride string) string {
-	if scopeOverride != "" {
-		return scopeOverride
-	}
-	return r.PathValue("id")
 }
 
 func (s *Server) canMutateApiKey(ctx context.Context, id auth.Identity, k secrets.ApiKey) bool {
