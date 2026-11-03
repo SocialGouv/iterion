@@ -2267,7 +2267,7 @@ fail audit_integrity:
 fail unexpected_refusal:
   description: "a tool node refused with a code the graph does not route"
   code: UNEXPECTED_REFUSAL
-  message: "a node refused with an unrouted code: {{outputs.bank_static.fail_code}}{{outputs.render.fail_code}}{{outputs.ledger_replay.fail_code}}{{outputs.worklist.fail_code}}{{outputs.fold_probe.fail_code}}{{outputs.fold_final.fail_code}}{{outputs.draft_report.fail_code}}{{outputs.refute_apply.fail_code}}{{outputs.final_report.fail_code}}{{outputs.deliver.fail_code}} — {{outputs.bank_static.reason}}{{outputs.render.reason}}{{outputs.ledger_replay.reason}}{{outputs.worklist.reason}}{{outputs.fold_probe.reason}}{{outputs.fold_final.reason}}{{outputs.draft_report.reason}}{{outputs.refute_apply.reason}}{{outputs.final_report.reason}}{{outputs.deliver.reason}}"
+  message: "a node refused with an unrouted code: {{outputs.bank_static.fail_code}}{{outputs.render.fail_code}}{{outputs.ledger_replay.fail_code}}{{outputs.worklist.fail_code}}{{outputs.fold_probe.fail_code}}{{outputs.fold_final.fail_code}}{{outputs.draft_report.fail_code}}{{outputs.refute_apply.fail_code}}{{outputs.final_report.fail_code}}{{outputs.deliver.fail_code}}{{outputs.publish_diff.fail_code}} — {{outputs.bank_static.reason}}{{outputs.render.reason}}{{outputs.ledger_replay.reason}}{{outputs.worklist.reason}}{{outputs.fold_probe.reason}}{{outputs.fold_final.reason}}{{outputs.draft_report.reason}}{{outputs.refute_apply.reason}}{{outputs.final_report.reason}}{{outputs.deliver.reason}}{{outputs.publish_diff.reason}}"
 
 fail adjudication_incomplete:
   description: "criteria still « à évaluer » after the fold, with require_complete"
