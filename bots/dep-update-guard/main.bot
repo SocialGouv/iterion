@@ -514,6 +514,14 @@ schema prepare_output:
   ## head_sha: the commit this run read. The audit, the alignment and the
   ## verdict are all statements ABOUT this commit and no other.
   head_sha: string
+  ## head_committer: the committer email git wrote on head_sha — read from
+  ## the object, never from the PR metadata.
+  head_committer: string
+  ## head_is_own_alignment: that committer is the delivery App itself, so the
+  ## head IS an alignment an earlier pass of this bot pushed (the push fired
+  ## the synchronize that launched this run). `commit_check` reads it to keep
+  ## a re-applied alignment from being reported as a lost one.
+  head_is_own_alignment: bool
 
 schema audit_input:
   bump_summary: string
@@ -855,11 +863,24 @@ non = [f for f in files if f not in dep]
 # can prove it targets what was audited, rather than whatever the branch holds
 # by the time anyone looks again.
 head_sha = git(['rev-parse', 'HEAD'])[1].strip()
+# The head may already BE this bot's alignment: the push the commit node
+# makes fires the forge's synchronize event, which relaunches the review on
+# that very commit. On that run the align node re-applies the same edits onto
+# a tree that carries them (a no-op), the commit node has nothing to commit,
+# and the shas read an unmoved head -- the exact shape of a LOST alignment.
+# The committer git wrote on the head is what tells them apart: a GitHub App
+# commits as <id>+<slug>[bot]@users.noreply.github.com, an identity only a
+# token of that App can produce. Read from the object, never from the PR
+# metadata. (No backticks in this comment: a backtick here would close the
+# DSL command string.)
+head_committer = git(['log', '-1', '--format=%ce'])[1].strip()
+head_is_own = head_committer.endswith('[bot]@users.noreply.github.com') and '+iterion-forge-' in head_committer
 print(json.dumps({'is_empty': len(files)==0 and not degraded, 'dep_files': dep,
                   'changed_files': len(files), 'bump_summary': summary,
                   'has_non_dep_changes': len(non)>0, 'no_manifest': no_manifest,
                   'degraded': bool(degraded), 'degraded_reason': degraded,
-                  'head_sha': head_sha}))
+                  'head_sha': head_sha, 'head_committer': head_committer,
+                  'head_is_own_alignment': head_is_own}))
 "`
   output: prepare_output
 
@@ -2331,11 +2352,22 @@ compute validate_gate:
 ## alongside them: not to trust the agent — the sha comparison still decides
 ## what was COMMITTED — but so that a claim contradicted by the branch blocks
 ## instead of passing for a bump that never needed anything.
+##
+## A THIRD state wears the lost-alignment shape and is the opposite verdict:
+## the head this run read already IS the bot's own alignment. The push that
+## `commit` makes fires the forge's synchronize event, which relaunches the
+## review on that commit; `align` then re-applies the same edits onto a tree
+## that carries them, `commit` has nothing to commit, and the shas show an
+## unmoved head. Reading that as "lost" turns the gate red on the very pass
+## that should confirm the work, and the arming the previous pass placed can
+## never fire (buildkit-operator#50). `prepare` settles it from the committer
+## git wrote on the head: the delivery App's own identity means nothing was
+## lost — the alignment is the head.
 compute commit_check:
   output: commit_check_output
   expr:
     did_commit: "outputs.commit.sha != '' && outputs.commit.sha != outputs.prepare.head_sha"
-    alignment_lost: "outputs.align.applied && !(outputs.commit.sha != '' && outputs.commit.sha != outputs.prepare.head_sha)"
+    alignment_lost: "outputs.align.applied && !outputs.prepare.head_is_own_alignment && !(outputs.commit.sha != '' && outputs.commit.sha != outputs.prepare.head_sha)"
 
 ## preflight_standdown — the input `arm_automerge` needs on the one refusal
 ## path where the bot publishes no verdict of its own. A preflight that did
@@ -2583,6 +2615,9 @@ workflow dep_update_guard:
     audited_sha: "{{outputs.commit.sha}}",
   }
 
+  ## `clean` also covers the re-applied alignment: the head read IS the
+  ## alignment (prepare.head_is_own_alignment), nothing moved, the verdict
+  ## covers that head, and the arming of the pass that pushed it stands.
   commit_check -> post_feedback else with {
     pr_url: "{{vars.pr_url}}",
     verdict: "clean",

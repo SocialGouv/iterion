@@ -143,12 +143,12 @@ func TestDepUpdateGuardLostAlignmentPredicate(t *testing.T) {
 		t.Fatalf("commit_check is %T, want a compute node", cr.Workflow.Nodes["commit_check"])
 	}
 
-	eval := func(t *testing.T, key string, applied bool, commitSHA, headSHA string) bool {
+	eval := func(t *testing.T, key string, applied bool, commitSHA, headSHA string, headIsOwn bool) bool {
 		t.Helper()
 		outputs := map[string]map[string]any{
 			"align":   {"applied": applied},
 			"commit":  {"sha": commitSHA},
-			"prepare": {"head_sha": headSHA},
+			"prepare": {"head_sha": headSHA, "head_is_own_alignment": headIsOwn},
 		}
 		for _, e := range check.Exprs {
 			if e.Key != key {
@@ -176,9 +176,24 @@ func TestDepUpdateGuardLostAlignmentPredicate(t *testing.T) {
 		applied    bool
 		commitSHA  string
 		headSHA    string
+		headIsOwn  bool
 		wantLost   bool
 		wantCommit bool
 	}{
+		{
+			// buildkit-operator#50 (2026-11-03): run 1 aligned and pushed
+			// fb4a7353; its push fired `synchronize`, and run 2 read THAT
+			// commit as its head. `align` re-applied the same edits (a no-op
+			// on a tree that already carried them), `commit` had nothing to
+			// commit, and the shas read "unmoved head" — the lost-alignment
+			// shape, except nothing was lost: the alignment IS the head. The
+			// gate went red and the arming from run 1 could never fire.
+			// Nothing in the run's own outputs tells the two apart; the
+			// committer git wrote on the head does — it is the delivery App.
+			name:    "align re-applied onto a head that is already the bot's own alignment: nothing lost",
+			applied: true, commitSHA: "", headSHA: "fb4a73531d04c5dc1d04c5dc1d04c5dc1d04c5dc", headIsOwn: true,
+			wantLost: false, wantCommit: false,
+		},
 		{
 			// iterion#400. The one the gate has to start catching.
 			name:    "align applied, head unmoved: the alignment vanished",
@@ -209,10 +224,10 @@ func TestDepUpdateGuardLostAlignmentPredicate(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := eval(t, "alignment_lost", tc.applied, tc.commitSHA, tc.headSHA); got != tc.wantLost {
+			if got := eval(t, "alignment_lost", tc.applied, tc.commitSHA, tc.headSHA, tc.headIsOwn); got != tc.wantLost {
 				t.Errorf("alignment_lost = %v, want %v", got, tc.wantLost)
 			}
-			if got := eval(t, "did_commit", tc.applied, tc.commitSHA, tc.headSHA); got != tc.wantCommit {
+			if got := eval(t, "did_commit", tc.applied, tc.commitSHA, tc.headSHA, tc.headIsOwn); got != tc.wantCommit {
 				t.Errorf("did_commit = %v, want %v", got, tc.wantCommit)
 			}
 		})

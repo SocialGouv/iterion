@@ -35,12 +35,14 @@ func TestDepUpdateGuardPrepareClassifies(t *testing.T) {
 	command := toolCommand(t, "dep-update-guard/main.bot", "prepare")
 
 	type prepareResult struct {
-		IsEmpty      bool     `json:"is_empty"`
-		DepFiles     []string `json:"dep_files"`
-		ChangedFiles int      `json:"changed_files"`
-		BumpSummary  string   `json:"bump_summary"`
-		NoManifest   bool     `json:"no_manifest"`
-		Degraded     bool     `json:"degraded"`
+		IsEmpty            bool     `json:"is_empty"`
+		DepFiles           []string `json:"dep_files"`
+		ChangedFiles       int      `json:"changed_files"`
+		BumpSummary        string   `json:"bump_summary"`
+		NoManifest         bool     `json:"no_manifest"`
+		Degraded           bool     `json:"degraded"`
+		HeadCommitter      string   `json:"head_committer"`
+		HeadIsOwnAlignment bool     `json:"head_is_own_alignment"`
 	}
 
 	run := func(t *testing.T, ws, base string) prepareResult {
@@ -130,6 +132,44 @@ func TestDepUpdateGuardPrepareClassifies(t *testing.T) {
 			}
 		})
 	}
+
+	// The head's committer decides whether the head is the bot's own earlier
+	// alignment (buildkit-operator#50: the push `commit` makes relaunches the
+	// review on that commit, and a re-applied alignment must not read as a
+	// lost one). Only the delivery App's identity counts; a human or renovate
+	// committer on the head means an alignment claimed and not committed IS
+	// lost.
+	t.Run("head committed by the delivery App is the bot's own alignment", func(t *testing.T) {
+		ws := bumpRepo(t, map[string]string{"go.mod": "module x\n\ngo 1.26\n"})
+		res := run(t, ws, "main")
+		if res.HeadIsOwnAlignment {
+			t.Fatalf("a head committed by %q read as the bot's own alignment", res.HeadCommitter)
+		}
+		if err := os.WriteFile(filepath.Join(ws, "main.go"), []byte("package x\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		git(t, ws, "add", "-A")
+		// The committer is read from the object, and git takes it from the
+		// GIT_COMMITTER_* environment before any -c user.email — which is also
+		// how the runner seeds the App's identity into the sandbox. So the
+		// fixture sets the environment, exactly as the real commit happens.
+		cmd := gittest.Cmd(ws, "commit", "-qm", "chore(deps): align code for the bump")
+		cmd.Env = append(cmd.Env,
+			"GIT_AUTHOR_NAME=iterion-forge-core[bot]",
+			"GIT_AUTHOR_EMAIL=327430414+iterion-forge-core[bot]@users.noreply.github.com",
+			"GIT_COMMITTER_NAME=iterion-forge-core[bot]",
+			"GIT_COMMITTER_EMAIL=327430414+iterion-forge-core[bot]@users.noreply.github.com")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("commit as the delivery App: %v (%s)", err, out)
+		}
+		res = run(t, ws, "main")
+		if !res.HeadIsOwnAlignment {
+			t.Fatalf("a head committed by the delivery App (%q) did not read as the bot's own alignment", res.HeadCommitter)
+		}
+		if !strings.HasSuffix(res.HeadCommitter, "[bot]@users.noreply.github.com") {
+			t.Errorf("head_committer = %q, want the App's noreply identity as git wrote it", res.HeadCommitter)
+		}
+	})
 
 	// A PR touching files no pattern recognises must still hand the auditor
 	// the real diff — widened to the FULL change set — and say so, rather

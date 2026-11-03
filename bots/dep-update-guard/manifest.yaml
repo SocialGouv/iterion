@@ -1,7 +1,7 @@
 name: dep-update-guard
 display_name: Vetty
 icon: 💂
-version: 2.11.0
+version: 2.11.1
 ## Arming ownership (#1634): `respect_human_arming` is declared in main.bot's
 ## vars, like `arm_automerge`, and defaults to true. Read enabledBy.login and
 ## the forge_token's viewer.login together; preserve another actor's arming
