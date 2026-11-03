@@ -99,6 +99,10 @@ var teamScopedCollections = []string{
 	// connector connections (pkg/connection) — a credential is scoped to one
 	// team, every store read filters on it
 	"connections",
+	// published connector packages (pkg/connection, #2757) — the team tier;
+	// the platform tier's rows live under the "platform:" sentinel tenant,
+	// which no org purge names
+	"connector_packages",
 	// control-plane audit (pkg/audit) — written under BOTH scopes: a
 	// team-scoped row carries tenant_id == the team id (auditTenant: the
 	// member.added with the member's email, team.status_changed, …), an

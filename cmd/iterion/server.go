@@ -764,10 +764,14 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		BotBindings:      stores.botBindings,
 		ForgeConnections: stores.forgeConn,
 		Connections:      stores.connections,
-		// The cloud resolves a credential's package against the packages
-		// compiled into this binary: the only tier a cloud plane serves until
-		// the team tier lands (ADR-098).
-		ConnectorCatalog:            connection.BakedCatalog(),
+		// The cloud catalog (#2757): the platform tier over the baked floor.
+		// The TEAM tier is per-tenant, so it composes where a tenant is known
+		// — ConnectorPackageStore below, which the facade's per-grant path
+		// reads. The CRUD's static view is the tenant-blind half of the same
+		// composition (a connection's package check at creation does not read
+		// the team's own tier: the grant precedes the package).
+		ConnectorCatalog:            connection.NewLayeredCatalog(connection.PlatformCatalog(stores.connectorPkgs), connection.BakedCatalog()),
+		ConnectorPackageStore:       stores.connectorPkgs,
 		ForgeIntegrations:           stores.forgeIntegration,
 		BoardBindings:               stores.boardBinding,
 		ProvisionApprovals:          stores.forgeApprovals,
@@ -894,6 +898,7 @@ type cloudStores struct {
 	configShares     *configshare.MongoStore
 	forgeConn        *connection.MongoForgeStore
 	connections      *connection.MongoStore
+	connectorPkgs    *connection.MongoPackageStore
 	forgeIntegration *forge.MongoRepoIntegrationStore
 	boardBinding     *forge.MongoBoardBindingStore
 	forgeApprovals   *forge.MongoProvisionApprovalStore
@@ -944,6 +949,7 @@ func buildCloudStores(ctx context.Context, st *mongostore.Store, logger *iterlog
 		configShares:     configshare.NewMongoStore(st.DB()),
 		forgeConn:        connection.NewMongoForgeStore(st.DB()),
 		connections:      connection.NewMongoStore(st.DB()),
+		connectorPkgs:    connection.NewMongoPackageStore(st.DB()),
 		forgeIntegration: forge.NewMongoRepoIntegrationStore(st.DB()),
 		boardBinding:     forge.NewMongoBoardBindingStore(st.DB()),
 		forgeApprovals:   forge.NewMongoProvisionApprovalStore(st.DB()),
@@ -997,6 +1003,7 @@ func buildCloudStores(ctx context.Context, st *mongostore.Store, logger *iterlog
 		{"webhooks", func(c context.Context) error { return webhooks.EnsureSchema(c, st.DB()) }},
 		{"forge_connections", s.forgeConn.EnsureSchema},
 		{"connections", s.connections.EnsureSchema},
+		{"connector_packages", s.connectorPkgs.EnsureSchema},
 		{"repo_integrations", s.forgeIntegration.EnsureSchema},
 		{"forge_board_bindings", s.boardBinding.EnsureSchema},
 		{"forge_provision_approvals", s.forgeApprovals.EnsureSchema},

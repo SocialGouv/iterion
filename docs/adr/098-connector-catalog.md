@@ -257,9 +257,21 @@ therefore leaves the previous install serving, instead of emptying a tier of
 a connector nobody asked to remove.
 
 What a git source still does NOT do: there is no lockfile for connector
-packages, no `connectors update`, and no team-tier publication (2757.3/.4) —
-the install is an operator's deliberate act on one machine, and the pin
-record is what a later update story will read.
+packages and no `connectors update` — the install is an operator's deliberate
+act on one machine, and the pin record is what a later update story will read.
+
+**The durable tiers landed** (#2757.3/.4): `connection.PackageStore` holds a
+published package as a validated file map (publish loads it through the same
+loader a run resolves with — validated before it can serve), with memory and
+Mongo (`connector_packages`) twins. `TeamCatalog` and `PlatformCatalog` are
+the tier implementations, composed by `CloudCatalogs` as **team → platform →
+baked**, the bot distribution's own precedence; the cloud facade composes the
+team tier per grant (`CatalogForTenant`). The *writer* of those tiers — the
+publication route, with the platform tier's super-admin gate — is the route
+lot this ADR keeps separate; the seam, the stores and the precedence are what
+this lot owed. The size limit the P0 measurement owed is decided here:
+`MaxPackageBytes` = 12 MiB, above the largest measured package (GitHub,
+~4.7 MiB), under the 16 MiB BSON document cap.
 
 ### 6. `tool` gains a third recipe rather than a new node type
 

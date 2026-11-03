@@ -356,6 +356,9 @@ type Server struct {
 	// (pkg/connection). Nil in local mode — see Config.Connections.
 	connectionStore  connection.Store
 	connectorCatalog connection.Catalog
+	// connectorPackages is the durable tier store (#2757): non-nil in cloud,
+	// it lets the facade compose the team tier per grant.
+	connectorPackages connection.PackageStore
 	// connectorCatalogRun is the per-run catalog builder the facade serves
 	// from (Config.ConnectorCatalogForRun): nil in cloud, where the shared
 	// catalog has no workspace tier to vary.
@@ -741,9 +744,13 @@ func (s *Server) boardMCPServiceOption(logger *iterlog.Logger, runStore store.Ru
 			Store:         s.connectionStore,
 			Catalog:       s.connectorCatalog,
 			CatalogForRun: s.connectorCatalogRun,
-			Sealer:        s.sealer,
-			Client:        client,
-			Logger:        s.logger,
+			// The team tier composes per grant when the durable tiers are
+			// wired (#2757): the facade knows the tenant from the grant, which
+			// is the one place a per-tenant catalog can be built.
+			CatalogForTenant: s.catalogForTenant,
+			Sealer:           s.sealer,
+			Client:           client,
+			Logger:           s.logger,
 		}, s.boardMCPTokens)
 	}
 	reg := s.boardMCPTokens
@@ -800,6 +807,17 @@ func (s *Server) boardMCPServiceOption(logger *iterlog.Logger, runStore store.Ru
 		}
 		return token
 	}, reg.Revoke), true
+}
+
+// catalogForTenant builds the catalog one tenant's facade calls resolve
+// through: the durable distribution tiers (#2757), team → platform → baked.
+// Nil when the package store is not wired, so the facade keeps serving the
+// static catalog — a deployment without the store has no team tier to compose.
+func (s *Server) catalogForTenant(tenantID string) connection.Catalog {
+	if s.connectorPackages == nil {
+		return nil
+	}
+	return connection.NewLayeredCatalog(connection.CloudCatalogs(s.connectorPackages, tenantID)...)
 }
 
 // New creates a new studio server.
@@ -940,6 +958,7 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 		botBindings:         cfg.BotBindings,
 		forgeConnections:    cfg.ForgeConnections,
 		connectionStore:     cfg.Connections,
+		connectorPackages:   cfg.ConnectorPackageStore,
 		connectorCatalog:    cfg.ConnectorCatalog,
 		connectorCatalogRun: cfg.ConnectorCatalogForRun,
 		pluginSources:       cfg.PluginSources,

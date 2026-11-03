@@ -1,0 +1,261 @@
+package connection_test
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
+
+	"github.com/SocialGouv/iterion/pkg/connection"
+	"github.com/SocialGouv/iterion/pkg/connector/spec"
+	"github.com/SocialGouv/iterion/pkg/internal/mongotest"
+)
+
+// newTestMongoPackageStore builds the Mongo twin over a fresh database, gated
+// on ITERION_TEST_MONGO_URI like every mongo suite in this tree (the
+// mongo-conformance CI job's package list names ./pkg/connection/...).
+func newTestMongoPackageStore(t *testing.T) *connection.MongoPackageStore {
+	t.Helper()
+	uri := os.Getenv("ITERION_TEST_MONGO_URI")
+	if uri == "" {
+		t.Skip("ITERION_TEST_MONGO_URI not set")
+	}
+	client, err := mongo.Connect(options.Client().ApplyURI(uri))
+	if err != nil {
+		t.Fatalf("mongo connect: %v", err)
+	}
+	nonce := make([]byte, 4)
+	_, _ = rand.Read(nonce)
+	db := client.Database("iterion_conn_pkgs_" + hex.EncodeToString(nonce))
+	t.Cleanup(func() {
+		drop, dropCancel := mongotest.TeardownCtx()
+		defer dropCancel()
+		_ = db.Drop(drop)
+		_ = client.Disconnect(drop)
+	})
+	return connection.NewMongoPackageStore(db)
+}
+
+// publishedFiles builds a VALID package as a file map through the format's
+// own writer, so the fixture is what a publisher would write rather than a
+// hand-spelled YAML that drifts from the loader. id parameterises the
+// connector id so a test can publish the same package under two names.
+func publishedFiles(t *testing.T, id string) map[string]string {
+	t.Helper()
+	pkg := &spec.Package{
+		Connector: spec.Connector{
+			SchemaVersion: spec.SchemaVersion, ID: id, Version: "1.0.0",
+			DisplayName: "Probe", Description: "the test connector",
+			BaseURL: spec.BaseURL{Default: "https://probe.example"},
+			Auth: []spec.AuthScheme{
+				{ID: "token", Kind: spec.AuthAPIKey, In: "header", Name: "Authorization"},
+			},
+			Maturity: spec.MaturityExperimental,
+		},
+		Ops: []spec.OpsFile{{
+			SchemaVersion: spec.SchemaVersion, Connector: id, Domain: "issue",
+			Operations: []spec.Operation{{
+				ID: id + ".issue.get", Resource: "issue", Verb: "get",
+				HTTP:   spec.HTTPBinding{Method: "GET", Path: "/issues/{id}"},
+				Effect: spec.EffectRead, Deterministic: true,
+				Params:      []spec.Param{{Key: "id", Name: "id", In: spec.InPath, Type: "integer", Required: true}},
+				Results:     []spec.ResultCase{{Status: 200}},
+				Security:    []spec.SecurityRequirement{{Terms: []spec.SecurityTerm{{SchemeID: "token"}}}},
+				Description: "get one issue",
+			}},
+		}},
+	}
+	dir := t.TempDir()
+	if err := spec.Write(dir, pkg); err != nil {
+		t.Fatalf("spec.Write: %v", err)
+	}
+	var files map[string]string
+	err := filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		rel, err := filepath.Rel(dir, p)
+		if err != nil {
+			return err
+		}
+		body, err := os.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		if files == nil {
+			files = map[string]string{}
+		}
+		files[filepath.ToSlash(rel)] = string(body)
+		return nil
+	})
+	if err != nil || len(files) == 0 {
+		t.Fatalf("fixture copied nothing (err=%v) — the test would prove nothing", err)
+	}
+	return files
+}
+
+func publish(t *testing.T, st connection.PackageStore, tenant, id string) {
+	t.Helper()
+	if err := st.Publish(context.Background(), connection.StoredPackage{
+		TenantID: tenant, ConnectorID: id, Files: publishedFiles(t, id), CreatedBy: "test",
+	}); err != nil {
+		t.Fatalf("publish %s/%s: %v", tenant, id, err)
+	}
+}
+
+// The store contract, held against both twins (#2757): publish validates
+// before it serves, reads are tenant-scoped in the signature, and the
+// durable tiers answer the same way in memory and in Mongo.
+func TestPackageStore_PublishGetRetractAcrossTwins(t *testing.T) {
+	run := func(t *testing.T, st connection.PackageStore) {
+		ctx := context.Background()
+		publish(t, st, "team-a", "probe")
+
+		got, err := st.Get(ctx, "team-a", "probe")
+		if err != nil {
+			t.Fatalf("get: %v", err)
+		}
+		if got.ContentHash == "" || got.CreatedAt.IsZero() {
+			t.Errorf("the publish must record the hash and the timestamps: %+v", got)
+		}
+		// Tenant-scoped in the signature: another tenant's id reads not-found.
+		if _, err := st.Get(ctx, "team-b", "probe"); err == nil {
+			t.Fatal("a package read across tenants must miss")
+		}
+
+		// Republish replaces: one row per (tenant, connector).
+		publish(t, st, "team-a", "probe")
+		rows, err := st.ListByTenant(ctx, "team-a")
+		if err != nil || len(rows) != 1 {
+			t.Fatalf("list after republish: %v rows=%d", err, len(rows))
+		}
+
+		if err := st.Retract(ctx, "team-a", "probe"); err != nil {
+			t.Fatalf("retract: %v", err)
+		}
+		if _, err := st.Get(ctx, "team-a", "probe"); err == nil {
+			t.Fatal("a retracted package must not serve")
+		}
+		if err := st.Retract(ctx, "team-a", "probe"); err == nil {
+			t.Fatal("retracting an absent package must answer not-found")
+		}
+	}
+	t.Run("memory", func(t *testing.T) { run(t, connection.NewMemoryPackageStore()) })
+	t.Run("mongo", func(t *testing.T) {
+		st := newTestMongoPackageStore(t)
+		run(t, st)
+	})
+}
+
+// The publish gate: what must NOT reach a tier.
+func TestPackageStore_PublishRefusesWhatCannotServe(t *testing.T) {
+	st := connection.NewMemoryPackageStore()
+	ctx := context.Background()
+
+	for _, tc := range []struct {
+		name    string
+		mutate  func(*connection.StoredPackage)
+		wantMsg string
+	}{
+		{"no files", func(p *connection.StoredPackage) { p.Files = nil }, "no files"},
+		{"a path that escapes", func(p *connection.StoredPackage) {
+			p.Files["../evil.yaml"] = "id: evil"
+		}, "plain relative name"},
+		{"the id the content declares differs", func(p *connection.StoredPackage) {
+			p.ConnectorID = "other"
+		}, "declares id"},
+		{"a malformed document", func(p *connection.StoredPackage) {
+			p.Files["connector.yaml"] = "schema_version: 1\nid: probe\nversion: 1.0.0\nauth: ["
+		}, "does not load"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pkg := connection.StoredPackage{TenantID: "team-a", ConnectorID: "probe", Files: publishedFiles(t, "probe")}
+			tc.mutate(&pkg)
+			err := st.Publish(ctx, pkg)
+			if err == nil {
+				t.Fatalf("want a refusal mentioning %q", tc.wantMsg)
+			}
+			if !strings.Contains(err.Error(), tc.wantMsg) {
+				t.Errorf("refusal = %v, want it to mention %q", err, tc.wantMsg)
+			}
+			// And the refusal left nothing serving.
+			if _, gerr := st.Get(ctx, "team-a", "probe"); gerr == nil {
+				t.Fatal("a refused publish must leave no row serving")
+			}
+		})
+	}
+}
+
+// The precedence, witnessed in both directions (#2757's done-when): team over
+// platform, platform over baked, and the tier that SERVED is named in the
+// answer each time.
+func TestCloudTiers_ThePrecedenceHoldsInBothDirections(t *testing.T) {
+	store := connection.NewMemoryPackageStore()
+	publish(t, store, connection.PlatformTenantID, "probe")
+	cat := connection.NewLayeredCatalog(connection.CloudCatalogs(store, "team-a")...)
+
+	// Only the platform holds it: the platform tier serves and says so.
+	_, tier, err := cat.Package("probe")
+	if err != nil || tier.Kind != connection.TierPlatform {
+		t.Fatalf("platform-only: tier=%v err=%v", tier.Kind, err)
+	}
+
+	// The team publishes the same id: the team's package wins, NAMED.
+	publish(t, store, "team-a", "probe")
+	_, tier, err = cat.Package("probe")
+	if err != nil || tier.Kind != connection.TierTeam {
+		t.Fatalf("team shadowing the platform: tier=%v err=%v — the shadow must be visible, not silent", tier.Kind, err)
+	}
+
+	// The floor serves what neither tier holds.
+	_, tier, err = cat.Package("forgejo")
+	if err != nil || tier.Kind != connection.TierBaked {
+		t.Fatalf("the baked floor: tier=%v err=%v", tier.Kind, err)
+	}
+
+	// Another tenant has no team row: the platform tier serves it.
+	catB := connection.NewLayeredCatalog(connection.CloudCatalogs(store, "team-b")...)
+	if _, tier, err := catB.Package("probe"); err != nil || tier.Kind != connection.TierPlatform {
+		t.Fatalf("team-b reads the platform's package: tier=%v err=%v", tier.Kind, err)
+	}
+}
+
+// A tier that HOLDS the package and cannot serve it stops the search: the
+// team's broken row must not fall through to the platform's sound one — that
+// fall-through is validation becoming selection, the defect the layered
+// catalog's error discipline exists against.
+func TestCloudTiers_ABrokenTeamRowStopsTheSearch(t *testing.T) {
+	store := connection.NewMemoryPackageStore()
+	publish(t, store, connection.PlatformTenantID, "probe")
+	broken := &brokenPackageStore{PackageStore: store, tenant: "team-a"}
+	cat := connection.NewLayeredCatalog(
+		connection.TeamCatalog(broken, "team-a"),
+		connection.PlatformCatalog(store),
+		connection.BakedCatalog(),
+	)
+	_, _, err := cat.Package("probe")
+	if err == nil || !strings.Contains(err.Error(), "does not load") {
+		t.Fatalf("err = %v — the team's broken row must stop the search, not fall through to the platform's", err)
+	}
+}
+
+// brokenPackageStore answers one tenant's Get with a row that cannot load —
+// the state a hand edit or a migration leaves behind.
+type brokenPackageStore struct {
+	connection.PackageStore
+	tenant string
+}
+
+func (s *brokenPackageStore) Get(ctx context.Context, tenantID, connectorID string) (connection.StoredPackage, error) {
+	if tenantID == s.tenant {
+		return connection.StoredPackage{TenantID: tenantID, ConnectorID: connectorID,
+			Files: map[string]string{"connector.yaml": "schema_version: 1\nid: " + connectorID + "\nversion: ["}}, nil
+	}
+	return s.PackageStore.Get(ctx, tenantID, connectorID)
+}

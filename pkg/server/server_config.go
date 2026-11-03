@@ -260,6 +260,11 @@ type Config struct {
 	// `iterion connections` is the surface.
 	Connections      connection.Store
 	ConnectorCatalog connection.Catalog
+	// ConnectorPackageStore wires the durable distribution tiers (#2757):
+	// when set, the facade's per-grant catalog composes team → platform →
+	// baked (connection.CloudCatalogs) for the grant's tenant. Nil leaves the
+	// static ConnectorCatalog serving every call.
+	ConnectorPackageStore connection.PackageStore
 	// ConnectorCatalogForRun builds the catalog ONE run's facade calls
 	// resolve through, from that run's own workspace and trust — the shape
 	// runview.LocalConnectors already resolves nodes through. Local launches

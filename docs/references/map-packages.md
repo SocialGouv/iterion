@@ -129,7 +129,7 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `pkg/cloudsched` | the cloud-mode recurring-bot scheduler: a per-org store of cron-scheduled bots and a multi-replica-safe ticker that fires each due schedule exactly… | `Store` |
 | `pkg/config` | loads iterion runtime configuration from environment variables and an optional YAML file. | — |
 | `pkg/configshare` | the scoped, self-service config-file editor: a per-(bot × repo × config-file × category) grant, addressed by a dynamic URL and authenticated by… | `Store` |
-| `pkg/connection` | what authenticates a connector call: the binding between a tenant, a connector package, an instance of that vendor, and the credential to reach it. | `Catalog`, `ForgeStore`, `Store` |
+| `pkg/connection` | what authenticates a connector call: the binding between a tenant, a connector package, an instance of that vendor, and the credential to reach it. | `Catalog`, `ForgeStore`, `PackageStore`, `Store` |
 | `pkg/connector/exec` | turns a declared operation into an HTTP call and its answer into a typed result. | — |
 | `pkg/connector/facade` | the MCP offer over a connector package (ADR-098 §2, #2758): a connector's operations exposed to an agent as MCP tools, with the model choosing among… | — |
 | `pkg/connector/gen` | turns a vendor API description into a connector package. | — |

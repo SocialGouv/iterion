@@ -53,6 +53,12 @@ type ConnectorMCPDeps struct {
 	// packages in, so it must open for the run whose workspace it is and for
 	// no other.
 	CatalogForRun func(workDir string, trust connection.ActionTrust) (connection.Catalog, error)
+	// CatalogForTenant builds the catalog one TENANT's calls resolve through:
+	// the durable distribution tiers (#2757) composed team → platform → baked
+	// for that tenant. Wired by cloud; nil leaves Catalog serving every call.
+	// Local runs never set it — their per-workspace tier is CatalogForRun's,
+	// and the two hooks answer two different "whose packages" questions.
+	CatalogForTenant func(tenantID string) connection.Catalog
 }
 
 // RegisterConnectorMCPRoutes wires the facade endpoint onto mux — the
@@ -108,6 +114,9 @@ func (h *connectorMCPHandler) theFacade() (*facade.Facade, error) {
 // local path is low-rate (a handful of calls per node), and a stale answer
 // here is the project tier serving packages the workspace no longer has.
 func (h *connectorMCPHandler) catalogFor(grant boardMCPGrant) (connection.Catalog, error) {
+	if h.deps.CatalogForTenant != nil && grant.TenantID != "" {
+		return h.deps.CatalogForTenant(grant.TenantID), nil
+	}
 	if h.deps.CatalogForRun == nil {
 		return h.deps.Catalog, nil
 	}

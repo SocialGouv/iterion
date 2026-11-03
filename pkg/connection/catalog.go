@@ -90,9 +90,9 @@ func (t Tier) String() string {
 //
 // An interface because the tiers differ and the resolver must not DEPEND on
 // which one answered: a directory on a laptop, a team-authored package in
-// Mongo, a platform override, a marketplace entry. The three-tier resolution
-// lands later; what matters now is that nothing downstream is written against
-// a filesystem.
+// Mongo, a platform override, the packages baked into the binary. The tiers
+// themselves landed with #2757: the local pair in local.go, the durable team
+// and platform tiers in tier_store.go, the floor in this file.
 type Catalog interface {
 	// Package returns the connector's package and the tier that served it,
 	// or an error naming what was looked for. Implementations must be safe
