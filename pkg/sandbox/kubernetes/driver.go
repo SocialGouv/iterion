@@ -527,6 +527,7 @@ func (d *Driver) Capabilities() sandbox.Capabilities {
 		SupportsMounts:         true,  // V2-7 — type=pvc / type=configmap / type=secret
 		SupportsHostBindMounts: false, // pods have no host filesystem — type=bind is rejected; the iterion/rtk binaries are baked into the sandbox image
 		SupportsHostDirCopy:    true,  // a directory streams into the pod the way the workspace does (RunInfo.SeedDirs → an emptyDir per seed + tar over kubectl exec)
+		SupportsReadBackDrain:  true,  // a declared read-back path is an emptyDir the pod keeps, drained at teardown (RunInfo.ReadBackDirs → Run.ExportRunFiles, ADR-143)
 		SupportsNetworkPolicy:  true,  // V2-5 — synthesised per-run; CNI must enforce
 		SupportsPostCreate:     true,
 		SupportsRemoteUser:     true,

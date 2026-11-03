@@ -336,15 +336,36 @@ set — but never in silence: the drain's verdict is `declined` (or the
 failure's own reason, when one followed), and the event lists each
 member under `declined` as `{dir, name, why}` with a
 `sandbox.ReadBackDeclineWhy` token, the first 100 in path order and the
-total in `declined_count`. A hardlink to a file the same archive landed — tar
+total in `declined_count`. The bound holds at every site an archive's
+names reach (`sandbox.ReadBackDeclinedListed`): the drain keeps the
+first 100 a dir declined and counts the rest, and the runner's log —
+teed into the store in cloud — carries at most 100 per-member lines per
+declared dir (a declined member, a raced leftover swept) and one line
+counting the ones held back, so an archive of a hundred thousand fifos
+costs a counter, not a hundred thousand records. A hardlink to a file the same archive landed — tar
 carries every name of a file but the first that way — lands as a copy,
 metered like the file. Each declared dir's set is capped, and the cap
 is named and metered **on the host, in the drain**: the member that
 takes the set past the figure is dropped, never landed cut short, what
 landed before it stays and the rest stays in the pod, so what the panel
-serves is whole or absent. The storage is decided on the mounts the pod
+serves is whole or absent. The meter counts what the host holds, never
+one archive alone: a retried drain's attempts are one set — each file
+once, at the size its latest landing left — so a tool still writing at
+teardown under rotating names cannot land the cap once per attempt, and
+a later attempt's member that needs the room only an earlier attempt's
+leftovers hold sweeps those first (the sweep a settled attempt runs,
+run early), so an archive that settles is never refused for what a
+raced one left. Driver-owned storage is laid only on a driver that
+drains it — `Capabilities.SupportsReadBackDrain`, the way out as
+`SupportsHostDirCopy` is the way in (kubernetes) — and a driver with
+neither a host bind nor the drain (noop, whose commands run on the
+host) leaves the path **unserved**: no storage, no variable, no
+declaration, and a warning in the runner's log, never a directory
+nothing collects. The storage is decided on the mounts the pod
 keeps, by the nearest one at or above the path (`sandbox.MountServing`
-— the predicate that also judges what a dropped host bind took with it):
+— the predicate that also judges what a dropped host bind took with it;
+a mount's fields read as the drivers read them, the last one naming a
+key winning, `sandbox.MountField`):
 a bot's own writable mount **at** the path is the path's storage (a pvc
 there drains what it holds, earlier runs' files included — the author's
 choice); a mount **above** the path holds it in its tree, never as a

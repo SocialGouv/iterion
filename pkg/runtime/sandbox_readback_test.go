@@ -38,6 +38,7 @@ func (d *runInfoCapturingDriver) Capabilities() sandbox.Capabilities {
 		SupportsImage:          true,
 		SupportsMounts:         true,
 		SupportsHostBindMounts: false, // the pod case: no host filesystem
+		SupportsReadBackDrain:  true,  // …and the drain that stands in for it
 		SupportsPostCreate:     true,
 	}
 }
@@ -309,6 +310,37 @@ func TestTheRunFilesDeclarationFollowsTheStorage(t *testing.T) {
 	})
 }
 
+// TestTheRunFilesPathNeedsADriverThatDrainsIt: a driver with no host
+// filesystem serves the run-files path only when it drains it at teardown
+// (Capabilities.SupportsReadBackDrain) — the emptyDir is half of a pair,
+// and the drain is the half that brings the files back. A driver with
+// neither (noop's shape, whose commands run on the host) gets no storage,
+// no variable and no declaration: an emptyDir there is a directory nothing
+// collects, the variable a promise about it a host-executed tool would
+// follow to /iterion/artifact-files on the host itself — and the next
+// driver without binds would inherit that promise with no drain behind it.
+// The refusal is loud: the runner's log says the panel stays empty.
+func TestTheRunFilesPathNeedsADriverThatDrainsIt(t *testing.T) {
+	var buf bytes.Buffer
+	p := canaryParams(t)
+	p.Logger = iterlog.New(iterlog.LevelWarn, &buf)
+	spec := buildSandboxSpecOn(t, &specCapturingDriver{noDrain: true}, p)
+	if v, ok := spec.Env[runFilesEnvVar]; ok {
+		t.Errorf("spec.Env[%s] = %q on a driver that neither binds nor drains — a promise about a directory nothing collects", runFilesEnvVar, v)
+	}
+	if len(spec.ReadBackPaths) != 0 {
+		t.Errorf("spec.ReadBackPaths = %v, want none — no driver will drain them", spec.ReadBackPaths)
+	}
+	for _, m := range spec.Mounts {
+		if strings.Contains(m, "type=emptydir") {
+			t.Errorf("the runtime laid %q on a driver with no drain — storage nothing collects (mounts: %v)", m, spec.Mounts)
+		}
+	}
+	if !strings.Contains(buf.String(), "left unserved") {
+		t.Errorf("runner log = %q, want the unserved path said — an empty panel nobody explained is the silence #2668 is about", buf.String())
+	}
+}
+
 // TestThePodRunSkipsItsOwnStorageWhenABotMountServesTheTarget: the
 // runtime's emptyDir is the run-files path's storage only when nothing
 // else keeps it. A bot's own kept mount at the target (a PVC mounted for
@@ -431,7 +463,7 @@ func TestDrainRunFilesOnCleanupSurfacesAFailedDrain(t *testing.T) {
 	t.Run("the declined list is bounded, its count is not", func(t *testing.T) {
 		events = nil
 		var many []sandbox.ReadBackDeclinedMember
-		for i := runFilesDeclinedListed + 50; i > 0; i-- {
+		for i := sandbox.ReadBackDeclinedListed + 50; i > 0; i-- {
 			many = append(many, sandbox.ReadBackDeclinedMember{Dir: "/iterion/artifact-files", Name: fmt.Sprintf("fifo-%04d", i), Why: sandbox.DeclinedKind})
 		}
 		run := &drainFakeRun{exportErr: &sandbox.ReadBackLoss{Reason: sandbox.ReadBackDeclined, Err: errors.New("declined"), Declined: many}}
@@ -440,14 +472,35 @@ func TestDrainRunFilesOnCleanupSurfacesAFailedDrain(t *testing.T) {
 			t.Fatalf("events = %+v, want one", events)
 		}
 		listed, _ := events[0].Data["declined"].([]map[string]any)
-		if len(listed) != runFilesDeclinedListed {
-			t.Fatalf("the event names %d members, want the first %d", len(listed), runFilesDeclinedListed)
+		if len(listed) != sandbox.ReadBackDeclinedListed {
+			t.Fatalf("the event names %d members, want the first %d", len(listed), sandbox.ReadBackDeclinedListed)
 		}
 		if listed[0]["name"] != "fifo-0001" {
 			t.Errorf("the first listed member is %v, want fifo-0001 — the bound keeps the first in path order, not the archive's", listed[0]["name"])
 		}
-		if events[0].Data["declined_count"] != runFilesDeclinedListed+50 {
-			t.Errorf("event declined_count = %v, want every declined member counted (%d)", events[0].Data["declined_count"], runFilesDeclinedListed+50)
+		if events[0].Data["declined_count"] != sandbox.ReadBackDeclinedListed+50 {
+			t.Errorf("event declined_count = %v, want every declined member counted (%d)", events[0].Data["declined_count"], sandbox.ReadBackDeclinedListed+50)
+		}
+	})
+	// The driver bounds what it keeps at the source (ReadBackDeclinedSet):
+	// a loss names the first members and counts all of them, so the
+	// event's count is the loss's, never the length of what it names.
+	t.Run("the count is the loss's, past what it names", func(t *testing.T) {
+		events = nil
+		named := []sandbox.ReadBackDeclinedMember{
+			{Dir: "/iterion/artifact-files", Name: "fifo-00001", Why: sandbox.DeclinedKind},
+			{Dir: "/iterion/artifact-files", Name: "fifo-00002", Why: sandbox.DeclinedKind},
+		}
+		run := &drainFakeRun{exportErr: &sandbox.ReadBackLoss{Reason: sandbox.ReadBackDeclined, Err: errors.New("declined"), Declined: named, DeclinedCount: 100000}}
+		drainRunFilesOnCleanup(run, nil, emit)
+		if len(events) != 1 {
+			t.Fatalf("events = %+v, want one", events)
+		}
+		if got := events[0].Data["declined_count"]; got != 100000 {
+			t.Errorf("event declined_count = %v, want the loss's 100000 — the event counted what the loss names, not what the host declined", got)
+		}
+		if listed, _ := events[0].Data["declined"].([]map[string]any); len(listed) != len(named) {
+			t.Errorf("the event names %d members, want the %d the loss names", len(listed), len(named))
 		}
 	})
 	t.Run("a clean drain stays silent", func(t *testing.T) {
@@ -549,7 +602,7 @@ type drainingDriver struct {
 func (d *drainingDriver) Name() string { return "docker" }
 
 func (d *drainingDriver) Capabilities() sandbox.Capabilities {
-	return sandbox.Capabilities{SupportsImage: true, SupportsMounts: true}
+	return sandbox.Capabilities{SupportsImage: true, SupportsMounts: true, SupportsReadBackDrain: true}
 }
 
 func (d *drainingDriver) Prepare(_ context.Context, spec sandbox.Spec) (sandbox.PreparedSpec, error) {

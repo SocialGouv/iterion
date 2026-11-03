@@ -618,10 +618,12 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 	// runtime names it in spec.ReadBackPaths exactly when it also arranges
 	// the storage that serves it — the host bind on a driver with a
 	// filesystem, driver-owned storage (an emptyDir, its drained set
-	// capped) on a driver with none — and the spec is refused at
-	// admission if the pairing is broken. The value the bot gave the
-	// run-files variable before the runtime's own took its place; handed
-	// back if that promise is withdrawn (finalizeMountsForDriver).
+	// capped) on a driver that drains it at teardown
+	// (Capabilities.SupportsReadBackDrain), nothing on a driver with
+	// neither — and the spec is refused at admission if the pairing is
+	// broken. The value the bot gave the run-files variable before the
+	// runtime's own took its place; handed back if that promise is
+	// withdrawn (finalizeMountsForDriver).
 	botRunFilesDir := ""
 	var readBackDirs []sandbox.ReadBackDir
 	if p.RunFilesHostDir != "" {
@@ -635,9 +637,20 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 			// that drains it — the source of the drain's figure. It stays
 			// empty on a bind driver, whose manifest entry nothing drains.
 			var servingMount string
-			if caps.SupportsHostBindMounts {
+			switch {
+			case caps.SupportsHostBindMounts:
 				runFilesContainerPath = addOptionalBindMount(spec, p.RunFilesHostDir, target, target, "run-files", false, logger)
-			} else {
+			case !caps.SupportsReadBackDrain:
+				// No host filesystem to bind the path with and no drain to
+				// bring its content back (noop runs its commands on the
+				// host): storage laid here would be a directory nothing
+				// collects, and the variable a promise about it — #815's
+				// defect, on the next driver that inherits the emptyDir
+				// without the drain. Nothing is laid, named or declared.
+				if logger != nil {
+					logger.Warn("runtime: sandbox: run-files path %s left unserved — the %s driver neither binds a host directory nor drains a read-back path; %s is not set and nothing is collected, so the artifact-files panel stays empty for this run", target, driver.Name(), runFilesEnvVar)
+				}
+			default:
 				// Storage the driver keeps: an emptyDir at the declared
 				// path. It carries NO sizeLimit: a kubelet evicts the WHOLE
 				// pod when an emptyDir's usage passes its sizeLimit — the
@@ -2856,14 +2869,6 @@ func exportSandboxWorkspaceOnCleanup(
 // runner's lease is unwound on).
 const sandboxRunFilesDrainTimeout = 2 * time.Minute
 
-// runFilesDeclinedListed bounds how many declined members one
-// sandbox_runfiles_drain_failed event names — the first ones in dir and
-// name order; declined_count carries the total, and the runner's log warned
-// every one as the drain skipped it. The bound keeps the event deliverable:
-// an archive of a hundred thousand fifos would otherwise ride one record of
-// the run's stream, and an event the store refuses says nothing at all.
-const runFilesDeclinedListed = 100
-
 // drainRunFilesOnCleanup performs the read-back drain (ADR-143 §3-4) at
 // sandbox teardown: a driver that carries the run's declared read-back
 // paths streams them into the run file store's dir BEFORE the sandbox is
@@ -2907,13 +2912,21 @@ func drainRunFilesOnCleanup(
 			// carry stale members cannot tell a false from an absent field.
 			"stale": sandbox.ReadBackStaleOf(err),
 		}
-		if declined := sandbox.ReadBackDeclinedOf(err); len(declined) > 0 {
-			listed := make([]map[string]any, 0, min(len(declined), runFilesDeclinedListed))
-			for _, m := range declined[:min(len(declined), runFilesDeclinedListed)] {
+		// The declined members, bounded at the source and here alike
+		// (sandbox.ReadBackDeclinedListed): the event names the first ones
+		// in dir and name order and counts every one — a count the loss
+		// carries, never the length of what it names. The bound keeps the
+		// event deliverable: an archive of a hundred thousand fifos would
+		// otherwise ride one record of the run's stream, and an event the
+		// store refuses says nothing at all.
+		if count := sandbox.ReadBackDeclinedCountOf(err); count > 0 {
+			declined := sandbox.ReadBackDeclinedOf(err)
+			listed := make([]map[string]any, 0, min(len(declined), sandbox.ReadBackDeclinedListed))
+			for _, m := range declined[:min(len(declined), sandbox.ReadBackDeclinedListed)] {
 				listed = append(listed, map[string]any{"dir": m.Dir, "name": m.Name, "why": string(m.Why)})
 			}
 			data["declined"] = listed
-			data["declined_count"] = len(declined)
+			data["declined_count"] = count
 		}
 		_ = emitEvent(store.EventSandboxRunFilesDrainFailed, data)
 		return

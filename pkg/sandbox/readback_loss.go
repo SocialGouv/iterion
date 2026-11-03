@@ -16,16 +16,20 @@ import (
 type ReadBackLossReason string
 
 const (
-	// ReadBackOverCap: the dir's set outgrew its cap (ReadBackDir.Cap). The
-	// member the meter stopped on is dropped, what the attempt landed before
-	// it stays, and the rest stays in the pod.
+	// ReadBackOverCap: the dir's set outgrew its cap (ReadBackDir.Cap) — the
+	// set the host holds, every attempt of a retried drain counted
+	// together, never one archive alone. The member the meter stopped on
+	// is dropped, what landed before it stays, and the rest stays in the
+	// pod.
 	ReadBackOverCap ReadBackLossReason = "over_cap"
 	// ReadBackUnsettled: the tree kept changing under the pod's archiver
 	// past the retry budget — a tool was still writing at teardown. What
 	// stays on the host is the UNION of every attempt's members (tar never
-	// deletes and no attempt settled for the sweep to keep against): a
-	// stale superset of the pod's final tree, so a file the run removed
-	// between attempts may be among what uploads (ReadBackLoss.Stale).
+	// deletes and no attempt settled for the sweep to keep against), as
+	// far as the dir's cap holds it — a later attempt's member that needed
+	// the room swept what only earlier attempts landed: a stale superset
+	// of the pod's final tree, so a file the run removed between attempts
+	// may be among what uploads (ReadBackLoss.Stale).
 	ReadBackUnsettled ReadBackLossReason = "unsettled"
 	// ReadBackArchiver: the pod's archiver failed for a cause no retry
 	// cures — kubectl exec refused, tar died, the stream was cut or was no
@@ -37,10 +41,11 @@ const (
 	// that is ReadBackDeclined, and the drain goes on past it.
 	ReadBackRefused ReadBackLossReason = "refused"
 	// ReadBackDeclined: the set landed short of members the host declined
-	// on principle (ReadBackDeclineWhy), each one named on the loss
-	// (ReadBackLoss.Declined); every other member landed. A drain that
-	// declined members and then failed carries its failure's own reason,
-	// with the declined members beside it.
+	// on principle (ReadBackDeclineWhy), every one counted on the loss
+	// (ReadBackLoss.DeclinedCount) and the first ReadBackDeclinedListed
+	// named (ReadBackLoss.Declined); every other member landed. A drain
+	// that declined members and then failed carries its failure's own
+	// reason, with the declined members beside it.
 	ReadBackDeclined ReadBackLossReason = "declined"
 	// ReadBackMixed: the declared dirs were lost for different reasons; the
 	// joined error names each dir's own.
@@ -88,6 +93,59 @@ type ReadBackDeclinedMember struct {
 	Why ReadBackDeclineWhy
 }
 
+// ReadBackDeclinedListed bounds how many declined members a drain names one
+// by one — on its loss (ReadBackLoss.Declined, per declared dir), on the
+// sandbox_runfiles_drain_failed event across the dirs, and in the runner's
+// log: the count carries every one (ReadBackLoss.DeclinedCount). An archive
+// is the pod's to fill, and every name it holds is a record somewhere — an
+// archive of a hundred thousand fifos must cost a counter, not a hundred
+// thousand entries in memory, in the run's log and on its stream.
+const ReadBackDeclinedListed = 100
+
+// compareDeclined is the one order declined members are named in — dir,
+// then name, then why — whatever order the dirs drained or the archives
+// carried them in: the bound keeps the first ones in it, the event lists
+// them in it.
+func compareDeclined(a, b ReadBackDeclinedMember) int {
+	return cmp.Or(cmp.Compare(a.Dir, b.Dir), cmp.Compare(a.Name, b.Name), cmp.Compare(a.Why, b.Why))
+}
+
+// ReadBackDeclinedSet collects the members one drain declines, bounded
+// however many the archive carries: Count is every one, List the first
+// ReadBackDeclinedListed in dir, name and why order — the same members
+// whichever order they arrived in. The zero value is ready to use.
+type ReadBackDeclinedSet struct {
+	count int
+	// kept holds at most twice the bound between two trims: a trim keeps
+	// the bound's first in order, so what was dropped can never be among
+	// the first again — every later arrival only competes with them.
+	kept []ReadBackDeclinedMember
+}
+
+// Add records one declined member.
+func (s *ReadBackDeclinedSet) Add(m ReadBackDeclinedMember) {
+	s.count++
+	s.kept = append(s.kept, m)
+	if len(s.kept) >= 2*ReadBackDeclinedListed {
+		s.trim()
+	}
+}
+
+// Count is how many members were declined in all.
+func (s *ReadBackDeclinedSet) Count() int { return s.count }
+
+// List returns the first ReadBackDeclinedListed declined members in dir,
+// name and why order — a slice the caller owns.
+func (s *ReadBackDeclinedSet) List() []ReadBackDeclinedMember {
+	s.trim()
+	return slices.Clone(s.kept)
+}
+
+func (s *ReadBackDeclinedSet) trim() {
+	slices.SortStableFunc(s.kept, compareDeclined)
+	s.kept = slices.Clip(s.kept[:min(len(s.kept), ReadBackDeclinedListed)])
+}
+
 // ReadBackLoss is one drain failure typed with its reason. The driver wraps
 // the cause at the site that knows why; the wraps above it — fmt.Errorf's
 // %w, the errors.Join across declared dirs — keep it readable with
@@ -98,12 +156,20 @@ type ReadBackLoss struct {
 	Err    error
 	// Declined names the members the host declined in the attempt that
 	// ended the dir's drain, whatever Reason ended it: a drain that
-	// declined members and then failed carries both facts.
+	// declined members and then failed carries both facts. At most the
+	// first ReadBackDeclinedListed in dir, name and why order
+	// (ReadBackDeclinedSet); DeclinedCount says how many there were.
 	Declined []ReadBackDeclinedMember
+	// DeclinedCount is how many members that attempt declined in all —
+	// Declined's length when it named every one. Read through
+	// ReadBackDeclinedCountOf, which takes the larger of the two, so a loss
+	// built without the count still counts what it names.
+	DeclinedCount int
 	// Stale marks a set that may hold members the attempt that ended the
 	// drain did not land: an earlier attempt raced a writer, tar never
-	// deletes, and no settled attempt swept what it landed — so a file the
-	// pod's final tree no longer has may upload. Always true for
+	// deletes, and no settled attempt swept what it landed (a later member
+	// that needed their room under the cap may have swept some of it) — so
+	// a file the pod's final tree no longer has may upload. Always true for
 	// ReadBackUnsettled; true for any other loss that followed a raced
 	// attempt.
 	Stale bool
@@ -163,10 +229,13 @@ func ReadBackLossReasonOf(err error) ReadBackLossReason {
 	return reasons[0]
 }
 
-// ReadBackDeclinedOf lists every member the host declined across the
-// branches of a drain failure, ordered by dir, name and why — the order the
-// event lists them in, whatever order the archives carried them in. A nil
-// error, or one no branch of which declined anything, lists none.
+// ReadBackDeclinedOf lists the members the host declined that the branches
+// of a drain failure name, ordered by dir, name and why — the order the
+// event lists them in, whatever order the archives carried them in. Each
+// branch names at most its own first ReadBackDeclinedListed
+// (ReadBackLoss.Declined), so the first ReadBackDeclinedListed of this
+// list are the first of every declined member. A nil error, or one no
+// branch of which declined anything, lists none.
 func ReadBackDeclinedOf(err error) []ReadBackDeclinedMember {
 	if err == nil {
 		return nil
@@ -177,10 +246,24 @@ func ReadBackDeclinedOf(err error) []ReadBackDeclinedMember {
 			out = append(out, loss.Declined...)
 		}
 	})
-	slices.SortStableFunc(out, func(a, b ReadBackDeclinedMember) int {
-		return cmp.Or(cmp.Compare(a.Dir, b.Dir), cmp.Compare(a.Name, b.Name), cmp.Compare(a.Why, b.Why))
-	})
+	slices.SortStableFunc(out, compareDeclined)
 	return out
+}
+
+// ReadBackDeclinedCountOf is how many members the host declined across the
+// branches of a drain failure — every one, named or not: each branch counts
+// its DeclinedCount, or the members it names when that is larger.
+func ReadBackDeclinedCountOf(err error) int {
+	if err == nil {
+		return 0
+	}
+	total := 0
+	eachReadBackBranch(err, func(loss *ReadBackLoss) {
+		if loss != nil {
+			total += max(loss.DeclinedCount, len(loss.Declined))
+		}
+	})
+	return total
 }
 
 // ReadBackStaleOf reports whether any branch of a drain failure left a set

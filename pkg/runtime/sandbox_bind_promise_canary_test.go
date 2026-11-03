@@ -43,8 +43,12 @@ import (
 
 // specCapturingDriver records the spec handed to Prepare and then refuses
 // to Start: the canary reads what the runtime BUILT, and nothing must run.
+// Without host binds it is the pod's shape — kubernetes drains the
+// read-back paths it cannot bind — unless noDrain makes it a driver with
+// neither (noop's shape).
 type specCapturingDriver struct {
 	hostBinds bool
+	noDrain   bool
 	captured  sandbox.Spec
 }
 
@@ -57,6 +61,7 @@ func (d *specCapturingDriver) Capabilities() sandbox.Capabilities {
 		SupportsImage:          true,
 		SupportsMounts:         true,
 		SupportsHostBindMounts: d.hostBinds,
+		SupportsReadBackDrain:  !d.hostBinds && !d.noDrain,
 		SupportsPostCreate:     true,
 		SupportsRemoteUser:     true,
 	}
@@ -75,12 +80,20 @@ func (d *specCapturingDriver) Start(context.Context, sandbox.PreparedSpec, sandb
 // with the given host-bind capability and returns the spec it produced.
 func buildSandboxSpecFor(t *testing.T, hostBinds bool, p SandboxParams) sandbox.Spec {
 	t.Helper()
+	return buildSandboxSpecOn(t, &specCapturingDriver{hostBinds: hostBinds}, p)
+}
+
+// buildSandboxSpecOn runs the production mount wiring against d, logging
+// to p.Logger when the caller set one.
+func buildSandboxSpecOn(t *testing.T, d *specCapturingDriver, p SandboxParams) sandbox.Spec {
+	t.Helper()
 	t.Setenv("ITERION_MODE", "local") // pin the factory preference to docker,podman,noop
-	d := &specCapturingDriver{hostBinds: hostBinds}
 	p.Drivers = map[string]sandbox.DriverConstructor{
 		"docker": func() (sandbox.Driver, error) { return d, nil },
 	}
-	p.Logger = iterlog.Nop()
+	if p.Logger == nil {
+		p.Logger = iterlog.Nop()
+	}
 	p.EmitEvent = func(store.EventType, map[string]any) error { return nil }
 	if _, err := resolveAndStartSandbox(context.Background(), p); !errors.Is(err, errCanaryStop) {
 		t.Fatalf("resolveAndStartSandbox = %v, want the canary driver's refusal — the wiring did not reach Prepare, so this test proves nothing", err)
@@ -166,14 +179,15 @@ func TestSandboxSpec_NoPromiseSurvivesTheBindThatServedIt(t *testing.T) {
 func TestSandboxSpec_TheRunFilesPathIsNamedExactlyWhenAMountServesIt(t *testing.T) {
 	p := canaryParams(t)
 	for _, tc := range []struct {
-		name      string
-		hostBinds bool
+		name   string
+		driver specCapturingDriver
 	}{
-		{"a driver with a host filesystem", true},
-		{"a driver without one (the pod case)", false},
+		{"a driver with a host filesystem", specCapturingDriver{hostBinds: true}},
+		{"a driver without one that drains (the pod case)", specCapturingDriver{}},
+		{"a driver with neither (noop's shape)", specCapturingDriver{noDrain: true}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			spec := buildSandboxSpecFor(t, tc.hostBinds, p)
+			spec := buildSandboxSpecOn(t, &tc.driver, p)
 			named := strings.TrimSpace(spec.Env[runFilesEnvVar])
 			// Asked of the path the runtime NAMED, not of the one the
 			// params declared: a variable pointing somewhere else is the

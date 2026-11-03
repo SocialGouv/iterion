@@ -3,6 +3,8 @@ package kubernetes
 import (
 	"strings"
 	"testing"
+
+	"github.com/SocialGouv/iterion/pkg/sandbox"
 )
 
 // The emptydir mount type: how a declared read-back path is served on a
@@ -150,5 +152,47 @@ func TestTranslateMounts_RefusesTwoMountsAtOneTarget(t *testing.T) {
 		"type=emptydir,target=/data/scratch",
 	}); err != nil {
 		t.Errorf("translateMounts = %v, want nested targets through", err)
+	}
+}
+
+// TestTheMountReadersAgreeWithTheParser: outside this driver, one reader
+// answers what a mount's target, size and readonly flag are
+// (sandbox.MountField) — admission and the serving predicate ask it which
+// path a mount serves, the drain which figure its set is metered on, the
+// runtime whether a tool can write there. The driver mounts what
+// parseMount reads. A key written twice is where two parsers part ways —
+// this one assigns every field it meets, so the last wins — and each
+// disagreement is a decision made about a volume the pod does not have:
+// a declaration served at a path the pod mounts elsewhere, a 1Gi meter on
+// a 100Gi volume, a read-only path a tool is told to write.
+func TestTheMountReadersAgreeWithTheParser(t *testing.T) {
+	for _, m := range []string{
+		"type=emptydir,target=/a",
+		"type=emptydir,target=/a,dst=/b",
+		"type=emptydir,dst=/b,destination=/c,target=/d",
+		"type=emptydir,target=/a,size=1Gi,size=100Gi",
+		"type=emptydir, target = /a , size = 2Gi ",
+		"type=pvc,source=claim,target=/a,readonly",
+		"type=pvc,source=claim,target=/a,readonly,readonly=false",
+		"type=pvc,source=claim,target=/a,readonly=false,ro",
+		"type=pvc,source=claim,target=/a,ro=true,readonly=0",
+		"type=secret,source=sec,target=/a,key=k",
+	} {
+		parsed, err := parseMount(m)
+		if err != nil {
+			t.Fatalf("parseMount(%q) = %v — the fixture must be a mount the driver accepts", m, err)
+		}
+		if got := sandbox.MountTargetOf(m); got != parsed.Target {
+			t.Errorf("MountTargetOf(%q) = %q, the driver mounts it at %q", m, got, parsed.Target)
+		}
+		if got := sandbox.MountSizeOf(m); got != parsed.Size {
+			t.Errorf("MountSizeOf(%q) = %q, the driver sizes it %q", m, got, parsed.Size)
+		}
+		if got := sandbox.MountReadOnlyOf(m); got != parsed.ReadOnly {
+			t.Errorf("MountReadOnlyOf(%q) = %v, the driver mounts it readOnly=%v", m, got, parsed.ReadOnly)
+		}
+		if typ, _, _ := sandbox.MountField(m, "type"); MountType(typ) != parsed.Type {
+			t.Errorf("MountField(%q, type) = %q, the driver reads %q", m, typ, parsed.Type)
+		}
 	}
 }

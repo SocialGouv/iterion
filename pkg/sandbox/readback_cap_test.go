@@ -88,11 +88,56 @@ func TestMountSizeOf(t *testing.T) {
 		"type=emptydir,target=/iterion/artifact-files":           "",
 		"type=pvc,source=persist,target=/iterion/artifact-files": "",
 		"": "",
+		// The size written twice is the last one, the sizeLimit the
+		// kubernetes driver renders: the drain meters the volume's own
+		// figure, never the one the pod does not have.
+		"type=emptydir,target=/x,size=1Gi,size=100Gi": "100Gi",
 	}
 	for in, want := range cases {
 		if got := MountSizeOf(in); got != want {
 			t.Errorf("MountSizeOf(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// TestMountFieldReadsAsTheDriversDo: docker's --mount parser and the
+// kubernetes driver's both assign a key each time they meet it, so the
+// LAST field naming a key — under any of its aliases — is the one the
+// container gets. A reader that kept the first would reason about a mount
+// the pod never had: admission and the serving predicate about one path
+// while the pod mounts another, the drain metering one size while the
+// volume has another.
+func TestMountFieldReadsAsTheDriversDo(t *testing.T) {
+	for _, tc := range []struct {
+		mount, target string
+		readOnly      bool
+	}{
+		{"type=emptydir,target=/a", "/a", false},
+		{"type=emptydir,target=/a,dst=/b", "/b", false},
+		{"type=emptydir,dst=/b,destination=/c", "/c", false},
+		{"type=emptydir, target = /a ,target=/d ", "/d", false},
+		{"type=pvc,source=x,target=/a,readonly", "/a", true},
+		{"type=pvc,source=x,target=/a,ro=true", "/a", true},
+		{"type=pvc,source=x,target=/a,readonly,readonly=false", "/a", false},
+		{"type=pvc,source=x,target=/a,readonly=false,ro", "/a", true},
+		{"type=pvc,source=x,target=/a,ro=maybe", "/a", false},
+		{"type=pvc,source=x,target", "", false},
+		{"", "", false},
+		// docker folds a key's case: TARGET is its target, RO its flag
+		{"type=bind,source=/x,TARGET=/a,RO", "/a", true},
+	} {
+		if got := MountTargetOf(tc.mount); got != tc.target {
+			t.Errorf("MountTargetOf(%q) = %q, want %q", tc.mount, got, tc.target)
+		}
+		if got := MountReadOnlyOf(tc.mount); got != tc.readOnly {
+			t.Errorf("MountReadOnlyOf(%q) = %v, want %v", tc.mount, got, tc.readOnly)
+		}
+	}
+	if v, bare, found := MountField("type=pvc,readonly,source=x", "readonly", "ro"); v != "" || !bare || !found {
+		t.Errorf("MountField(bare readonly) = (%q, %v, %v), want the bare field found", v, bare, found)
+	}
+	if _, _, found := MountField("type=pvc,source=x", "readonly", "ro"); found {
+		t.Error("MountField found a key no field names")
 	}
 }
 

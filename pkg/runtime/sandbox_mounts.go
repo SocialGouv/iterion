@@ -842,16 +842,14 @@ func mountTarget(entry string) string {
 }
 
 // mountSource extracts the source= path from a docker --mount spec entry of
-// the form "source=…,target=…,type=bind[,readonly]". Returns "" when the
-// entry carries no source= field — the mirror of [mountTarget], for the
-// readers that must answer about where a mount REACHES (the host side)
-// rather than where it lands.
+// the form "source=…,target=…,type=bind[,readonly]" ("src" is the same
+// key's alias). Returns "" when the entry carries no source= field — the
+// mirror of [mountTarget], for the readers that must answer about where a
+// mount REACHES (the host side) rather than where it lands. The last such
+// field, as docker binds it (sandbox.MountField).
 func mountSource(entry string) string {
-	for _, field := range strings.Split(entry, ",") {
-		field = strings.TrimSpace(field)
-		if v, ok := strings.CutPrefix(field, "source="); ok {
-			return v
-		}
+	if v, bare, ok := sandbox.MountField(entry, "source", "src"); ok && !bare {
+		return v
 	}
 	return ""
 }
@@ -1162,67 +1160,33 @@ func runFilesPodStorage(kept []string, target string) (bots, unserved string) {
 
 // mountIsReadOnly reports whether a mount the pod keeps serves its target
 // read-only: a configmap or a secret volume always does (the kubelet
-// mounts both read-only), any other type when it carries the readonly flag
-// — bare, or `readonly=`/`ro=` a true value, the forms the kubernetes
-// driver's parser accepts.
+// mounts both read-only), any other type when its readonly flag is set —
+// read as the drivers read it, the last `readonly`/`ro` field winning
+// (sandbox.MountReadOnlyOf).
 func mountIsReadOnly(mount string) bool {
-	if mountIsAPIData(mount) {
-		return true
-	}
-	for _, part := range strings.Split(mount, ",") {
-		k, v, hasValue := strings.Cut(strings.TrimSpace(part), "=")
-		switch strings.TrimSpace(k) {
-		case "readonly", "ro":
-			if !hasValue {
-				return true
-			}
-			if b, err := strconv.ParseBool(strings.TrimSpace(v)); err == nil && b {
-				return true
-			}
-		}
-	}
-	return false
+	return mountIsAPIData(mount) || sandbox.MountReadOnlyOf(mount)
 }
 
 // mountIsAPIData reports whether a mount is a configmap or a secret volume
 // — the API data volumes the kubelet writes itself, read-only in the
-// container, and lays nested mount points in.
+// container, and lays nested mount points in. The type is the mount's last
+// `type=` field, the one the driver renders (sandbox.MountField).
 func mountIsAPIData(mount string) bool {
-	for _, part := range strings.Split(mount, ",") {
-		k, v, ok := strings.Cut(strings.TrimSpace(part), "=")
-		if ok && strings.TrimSpace(k) == "type" {
-			switch strings.TrimSpace(v) {
-			case "configmap", "secret":
-				return true
-			}
-			return false
-		}
-	}
-	return false
+	typ, _, _ := sandbox.MountField(mount, "type")
+	return typ == "configmap" || typ == "secret"
 }
 
 // mountIsHostBind reports whether a docker-style mount string is a host bind
 // mount: an explicit type=bind, or — docker's default — a source= with no
 // explicit type. pvc/configmap/secret/emptydir types are never host binds.
+// Each field is the last one naming it, as the drivers read it
+// (sandbox.MountField).
 func mountIsHostBind(mount string) bool {
-	var typ string
-	hasSource := false
-	for _, part := range strings.Split(mount, ",") {
-		kv := strings.SplitN(strings.TrimSpace(part), "=", 2)
-		if len(kv) != 2 {
-			continue
-		}
-		switch strings.TrimSpace(kv[0]) {
-		case "type":
-			typ = strings.TrimSpace(kv[1])
-		case "source", "src":
-			hasSource = true
-		}
-	}
-	if typ != "" {
+	if typ, bare, ok := sandbox.MountField(mount, "type"); ok && !bare && typ != "" {
 		return typ == "bind"
 	}
-	return hasSource
+	_, bare, hasSource := sandbox.MountField(mount, "source", "src")
+	return hasSource && !bare
 }
 
 // addWorktreeGitMount bind-mounts the source repo's `.git` directory

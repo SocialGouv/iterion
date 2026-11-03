@@ -33,6 +33,14 @@ func TestCapabilitiesAdvertisedFeatures(t *testing.T) {
 	if !caps.SupportsMounts {
 		t.Error("V2-7 must advertise SupportsMounts (PVC/ConfigMap/Secret are wired)")
 	}
+	// ADR-143: a pod has no host filesystem to bind the run-files path
+	// with; the driver keeps an emptyDir there and drains it at teardown.
+	// The runtime lays that storage only on a driver that says so — false
+	// here, and every cloud run's artifact-files panel reads empty again.
+	if !caps.SupportsReadBackDrain {
+		t.Error("kubernetes driver must advertise SupportsReadBackDrain (Run.ExportRunFiles drains RunInfo.ReadBackDirs)")
+	}
+	var _ sandbox.WorkspaceExporter = (*Run)(nil)
 }
 
 func TestPrepareRejectsBuild(t *testing.T) {

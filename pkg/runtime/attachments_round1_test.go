@@ -25,7 +25,7 @@ type copyPods struct {
 }
 
 func (d *copyPods) Capabilities() sandbox.Capabilities {
-	return sandbox.Capabilities{SupportsImage: true, SupportsMounts: true, SupportsHostDirCopy: true}
+	return sandbox.Capabilities{SupportsImage: true, SupportsMounts: true, SupportsHostDirCopy: true, SupportsReadBackDrain: true}
 }
 
 func (d *copyPods) Start(ctx context.Context, prepared sandbox.PreparedSpec, info sandbox.RunInfo) (sandbox.Run, error) {

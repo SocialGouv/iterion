@@ -37,6 +37,7 @@ func (d *seedCapturingDriver) Capabilities() sandbox.Capabilities {
 		SupportsMounts:         true,
 		SupportsHostBindMounts: false,
 		SupportsHostDirCopy:    d.copy,
+		SupportsReadBackDrain:  d.copy, // the copying shape is kubernetes's, which drains its read-back paths too
 		SupportsPostCreate:     true,
 		SupportsRemoteUser:     true,
 	}

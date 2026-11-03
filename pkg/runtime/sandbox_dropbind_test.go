@@ -233,6 +233,12 @@ func TestMountIsReadOnly(t *testing.T) {
 		{"type=pvc,source=claim,target=/data,readonly=false", false},
 		{"type=pvc,source=claim,target=/data", false},
 		{"type=emptydir,target=/work,size=1Gi", false},
+		// a flag written twice reads as the drivers read it: the last one
+		{"type=pvc,source=claim,target=/data,readonly,readonly=false", false},
+		{"type=pvc,source=claim,target=/data,readonly=false,ro", true},
+		// and so does a type written twice
+		{"type=pvc,source=claim,target=/etc/cfg,type=configmap", true},
+		{"type=configmap,source=cm,target=/data,type=pvc", false},
 	}
 	for _, c := range cases {
 		if got := mountIsReadOnly(c.mount); got != c.want {

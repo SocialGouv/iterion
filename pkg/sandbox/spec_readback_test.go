@@ -49,6 +49,26 @@ func TestValidateReadBackPathServedByAMountIsAccepted(t *testing.T) {
 	}
 }
 
+// TestValidateReadsTheTargetTheDriverMounts: a mount whose target is
+// written twice is mounted at the last one, and admission asks the same
+// question of it — a declaration is served by where the volume IS, never
+// by the target the driver overrode.
+func TestValidateReadsTheTargetTheDriverMounts(t *testing.T) {
+	spec := &Spec{
+		Mode:          ModeInline,
+		Image:         "example.invalid/sbx:test",
+		Mounts:        []string{"type=emptydir,target=/elsewhere,dst=/iterion/artifact-files"},
+		ReadBackPaths: []string{"/iterion/artifact-files"},
+	}
+	if err := spec.Validate(); err != nil {
+		t.Errorf("Validate = %v, want the path the mount's last target serves accepted", err)
+	}
+	spec.Mounts = []string{"type=emptydir,target=/iterion/artifact-files,dst=/elsewhere"}
+	if err := spec.Validate(); err == nil {
+		t.Error("Validate = nil, want the path refused — the driver mounts that volume at /elsewhere")
+	}
+}
+
 func TestValidateReadBackPathShape(t *testing.T) {
 	cases := []struct {
 		name string

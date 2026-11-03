@@ -3,6 +3,8 @@ package sandbox
 import (
 	"fmt"
 	"path"
+	"slices"
+	"strconv"
 	"strings"
 )
 
@@ -448,24 +450,62 @@ func MountServing(mounts []string, containerPath string) string {
 	return serving
 }
 
-// MountTargetOf extracts a mount string's `target=` field ("dst" and
-// "destination" are the same key's aliases), "" when it names none. The
-// one parser of the mount-target grammar: admission and every runtime
-// mount reader parse through it, so an alias added here is visible to
-// all of them — a second parser reads the language the day it was
-// written and never hears about the next alias.
-func MountTargetOf(m string) string {
+// MountField reads one key of a mount string — comma-separated fields, each
+// `key=value` or a bare `key`, the grammar of `sandbox.mounts:` entries and
+// of docker's `--mount` — the way the drivers read it: the LAST field
+// naming any of keys wins. Docker's `--mount` parser and the kubernetes
+// driver's both assign a key each time they meet it, so
+// `target=/a,dst=/b` mounts at /b and `size=1Gi,size=100Gi` sizes the
+// volume at 100Gi; a reader that kept the first would reason about a mount
+// the container never had. A key matches whatever its case, as docker
+// folds it (the kubernetes parser refuses any spelling but the lowercase
+// one keys are given in, so no mount it accepts reads differently). Keys
+// and values are trimmed; bare reports a field written with no `=`
+// (`readonly`), found whether any field named the key at all. The one
+// reader of a mount's fields outside the drivers' own parsers: admission,
+// the runtime's mount readers and the drain's figure all read through it,
+// so they never disagree with each other on a duplicated key or an alias.
+func MountField(m string, keys ...string) (value string, bare, found bool) {
 	for _, part := range strings.Split(m, ",") {
-		k, v, ok := strings.Cut(strings.TrimSpace(part), "=")
-		if !ok {
+		k, v, hasValue := strings.Cut(strings.TrimSpace(part), "=")
+		if k = strings.ToLower(strings.TrimSpace(k)); k == "" || !slices.Contains(keys, k) {
 			continue
 		}
-		switch strings.TrimSpace(k) {
-		case "target", "dst", "destination":
-			return strings.TrimSpace(v)
-		}
+		value, bare, found = strings.TrimSpace(v), !hasValue, true
+	}
+	return value, bare, found
+}
+
+// MountTargetOf extracts a mount string's `target=` field ("dst" and
+// "destination" are the same key's aliases), "" when it names none — the
+// last such field, as the drivers mount it ([MountField]). Admission and
+// every runtime mount reader ask it, so an alias added here is visible to
+// all of them — a second parser reads the language the day it was written
+// and never hears about the next alias.
+func MountTargetOf(m string) string {
+	if v, bare, ok := MountField(m, "target", "dst", "destination"); ok && !bare {
+		return v
 	}
 	return ""
+}
+
+// MountReadOnlyOf reports whether a mount string sets its readonly flag, as
+// the drivers read it ([MountField]): the last `readonly`/`ro` field, bare
+// or a value strconv.ParseBool reads true — `readonly,readonly=false` is
+// writable. A value ParseBool refuses reads false: both drivers refuse
+// that mount outright. A type that is read-only whatever its flags (a
+// configmap or a secret volume) is the caller's to add: this reads the
+// flag the author wrote.
+func MountReadOnlyOf(m string) bool {
+	v, bare, ok := MountField(m, "readonly", "ro")
+	if !ok {
+		return false
+	}
+	if bare {
+		return true
+	}
+	b, err := strconv.ParseBool(v)
+	return err == nil && b
 }
 
 func validEnvName(name string) bool {

@@ -81,6 +81,81 @@ func TestReadBackDeclinedOf(t *testing.T) {
 	}
 }
 
+// TestReadBackDeclinedSetIsBounded: an archive is the pod's to fill, so the
+// set a drain keeps of what it declined is bounded however many arrive —
+// the count is every one, the list the first ReadBackDeclinedListed in dir,
+// name and why order, the same whichever order they arrived in, and what
+// the set holds never grows past twice the bound.
+func TestReadBackDeclinedSetIsBounded(t *testing.T) {
+	const n = 10 * ReadBackDeclinedListed
+	member := func(i int) ReadBackDeclinedMember {
+		return ReadBackDeclinedMember{Dir: "/d", Name: fmt.Sprintf("fifo-%05d", i), Why: DeclinedKind}
+	}
+	want := make([]ReadBackDeclinedMember, 0, ReadBackDeclinedListed)
+	for i := 1; i <= ReadBackDeclinedListed; i++ {
+		want = append(want, member(i))
+	}
+	for _, order := range []struct {
+		name string
+		at   func(k int) int
+	}{
+		{"ascending", func(k int) int { return k + 1 }},
+		{"descending", func(k int) int { return n - k }},
+		{"interleaved", func(k int) int { return (k*7919)%n + 1 }},
+	} {
+		t.Run(order.name, func(t *testing.T) {
+			var s ReadBackDeclinedSet
+			for k := 0; k < n; k++ {
+				s.Add(member(order.at(k)))
+				if len(s.kept) > 2*ReadBackDeclinedListed {
+					t.Fatalf("after %d members the set holds %d, want at most %d — the bound is the memory's too", k+1, len(s.kept), 2*ReadBackDeclinedListed)
+				}
+			}
+			if s.Count() != n {
+				t.Errorf("Count = %d, want every member counted (%d)", s.Count(), n)
+			}
+			if got := s.List(); !reflect.DeepEqual(got, want) {
+				t.Errorf("List = %d members from %v, want the first %d in name order", len(got), got[:min(3, len(got))], ReadBackDeclinedListed)
+			}
+		})
+	}
+	t.Run("a set under the bound lists every member, in order", func(t *testing.T) {
+		var s ReadBackDeclinedSet
+		s.Add(member(2))
+		s.Add(member(1))
+		if got, want := s.List(), []ReadBackDeclinedMember{member(1), member(2)}; !reflect.DeepEqual(got, want) || s.Count() != 2 {
+			t.Errorf("List = %+v (count %d), want %+v", got, s.Count(), want)
+		}
+	})
+}
+
+// TestReadBackDeclinedCountOf: the count is the loss's — every member the
+// host declined, named or not — summed across the branches of a join; a
+// loss built without a count counts what it names.
+func TestReadBackDeclinedCountOf(t *testing.T) {
+	named := []ReadBackDeclinedMember{{Dir: "/a", Name: "x", Why: DeclinedKind}, {Dir: "/a", Name: "y", Why: DeclinedKind}}
+	for _, tc := range []struct {
+		name string
+		err  error
+		want int
+	}{
+		{"nil counts nothing", nil, 0},
+		{"an untyped failure counts nothing", errors.New("kubectl exec failed"), 0},
+		{"the loss's count, past what it names", &ReadBackLoss{Reason: ReadBackDeclined, Err: errors.New("x"), Declined: named, DeclinedCount: 5000}, 5000},
+		{"a loss without a count counts what it names", &ReadBackLoss{Reason: ReadBackDeclined, Err: errors.New("x"), Declined: named}, 2},
+		{"every branch of a join", errors.Join(
+			&ReadBackLoss{Reason: ReadBackDeclined, Err: errors.New("a"), Declined: named, DeclinedCount: 300},
+			fmt.Errorf("drain: %w", &ReadBackLoss{Reason: ReadBackArchiver, Err: errors.New("b"), Declined: named}),
+		), 302},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ReadBackDeclinedCountOf(tc.err); got != tc.want {
+				t.Fatalf("ReadBackDeclinedCountOf(%v) = %d, want %d", tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
 // The stale mark is read off the loss too: one stale branch makes the run's
 // set one that may carry members its pod no longer has.
 func TestReadBackStaleOf(t *testing.T) {

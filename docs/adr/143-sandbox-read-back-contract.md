@@ -3,7 +3,7 @@
 - **Status**: Accepted
 - **Date**: 2026-10-28
 - **Authors**: devthejo (session with Claude), operator-arbitrated — the #2668 lane, arbitration of 2026-10-28: "2668.3 = ADR d'abord, le canari RÉÉCRIT pour le nouveau contrat"
-- **Landed by this change**: the contract and the rewritten canary. Landed since: the `WorkspaceExporter` widening with the kubernetes drain (emptyDir at the declared path, the drain at teardown, the `sandbox_runfiles_drain_failed` event, the named cap) and the `pkg/store/mongo` run-files twin. Still owed: the `deliverables:` collector (#2690) and the pod-side read of declared workspace files it needs on a pod.
+- **Landed by this change**: the contract and the rewritten canary. Landed since: the `WorkspaceExporter` widening with the kubernetes drain (emptyDir at the declared path, the drain at teardown, the `SupportsReadBackDrain` capability, the `sandbox_runfiles_drain_failed` event, the named cap) and the `pkg/store/mongo` run-files twin. Still owed: the `deliverables:` collector (#2690) and the pod-side read of declared workspace files it needs on a pod.
 - **Relates to**: [082-sandbox-by-default.md](082-sandbox-by-default.md) and [031-sandbox-one-long-lived-sleep-infinity-container-per-run.md](031-sandbox-one-long-lived-sleep-infinity-container-per-run.md) (this names a new clause of the driver contract they set) · [sandbox.md](../sandbox.md#a-promise-the-driver-drops-takes-its-variable-with-it) (its "Known gap — run-files on pods" is what this closes) · [attachments.md](../attachments.md) (`required=true`, the loud half of #2668)
 
 ## Context
@@ -57,7 +57,13 @@ needs the CONTENT afterwards, when the pod is gone.
    `WorkspaceExporter` is widened past the workspace to carry it — one
    capability exporting a declared SET of paths — rather than a second,
    parallel export seam (modularity: the next variant would need an
-   engine `if`).
+   engine `if`). A driver says it drains
+   (`Capabilities.SupportsReadBackDrain`), and the runtime lays the
+   driver-owned storage and names the path only on one that does: a
+   driver with neither a host bind nor the drain gets no storage, no
+   variable and no declaration — the storage would be a directory
+   nothing collects, and the next driver without binds would inherit the
+   promise with no drain behind it.
 
 4. **A drain that fails is an event, never an empty set.** The precedent
    is exact and already in the tree: `sandbox_workspace_export_failed`
@@ -97,7 +103,10 @@ needs the CONTENT afterwards, when the pod is gone.
   cap is the slice's to name and to meter — never "whatever the pod
   wrote". The meter lives on the host, in the drain, per declared dir,
   with the serving mount's own `size=` and `ITERION_SANDBOX_READBACK_CAP`
-  as its escape hatches. The pod side carries no `sizeLimit` for it: a
+  as its escape hatches, and it meters what the host holds — every
+  attempt of a retried drain counted together, since tar never deletes
+  and an unsettled drain keeps them all — never one archive alone. The
+  pod side carries no `sizeLimit` for it: a
   kubelet evicts the whole pod once an emptyDir's usage passes its
   `sizeLimit`, which would end the run mid-flight with nothing drained
   or exported, where the contract promises a dropped member and the rest

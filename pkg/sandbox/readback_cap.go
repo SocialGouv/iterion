@@ -16,7 +16,10 @@ import (
 // ([ReadBackDir.CapBytes], resolved by [ReadBackCapFor]) — and it lives on
 // the host, in the drain: the member that takes a dir's set past its cap
 // is dropped and reported, what landed before it stays, and the pod and
-// the rest of the run go on. The pod side carries NO sizeLimit for it: a
+// the rest of the run go on. The set is what the host holds — every
+// attempt of a retried drain counted together, since tar never deletes
+// and a drain no attempt settles keeps them all — never one archive
+// alone. The pod side carries NO sizeLimit for it: a
 // kubelet evicts the WHOLE pod when an emptyDir's usage passes its
 // sizeLimit, which would end the run mid-flight — no drain, no workspace
 // export — where the contract promises a dropped member. Same class as
@@ -70,17 +73,12 @@ func ReadBackCapText(capBytes int64) string {
 }
 
 // MountSizeOf extracts a mount string's `size=` field — the emptyDir
-// sizeLimit the kubernetes driver renders — "" when it names none. Parsed
-// here, beside [MountTargetOf], so the mount grammar keeps one reader.
+// sizeLimit the kubernetes driver renders — "" when it names none: the
+// last such field, the one the driver renders ([MountField]), so the
+// figure the drain meters is the volume's own.
 func MountSizeOf(m string) string {
-	for _, part := range strings.Split(m, ",") {
-		k, v, ok := strings.Cut(strings.TrimSpace(part), "=")
-		if !ok {
-			continue
-		}
-		if strings.TrimSpace(k) == "size" {
-			return strings.TrimSpace(v)
-		}
+	if v, bare, ok := MountField(m, "size"); ok && !bare {
+		return v
 	}
 	return ""
 }

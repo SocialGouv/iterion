@@ -281,6 +281,20 @@ type Capabilities struct {
 	// instead; a driver with neither capability is refused those runs.
 	SupportsHostDirCopy bool
 
+	// SupportsReadBackDrain means the driver serves a declared read-back
+	// path ([Spec.ReadBackPaths], ADR-143) with storage it keeps — an
+	// emptyDir on kubernetes — and drains that storage into the host at
+	// teardown: its [Run] implements [WorkspaceExporter], whose
+	// ExportRunFiles reads [RunInfo.ReadBackDirs]. The way out, as
+	// SupportsHostDirCopy is the way in. The runtime lays that storage
+	// and names the path only on a driver that says so: a driver with
+	// neither this nor a host bind to serve the path with leaves it
+	// unserved — no storage, no variable, no declaration — rather than
+	// promise a directory nothing collects (#815's defect, on the next
+	// driver). True on kubernetes; docker and podman serve the path with
+	// a host bind instead; false on noop, whose commands run on the host.
+	SupportsReadBackDrain bool
+
 	// SupportsNetworkPolicy means the driver enforces
 	// [Spec.Network] rules. False on noop and on cloud V1 (where
 	// the runner pod is the sandbox and per-run policy isn't applied).
