@@ -197,15 +197,15 @@ the retry either finds the run free or meets a live owner. One that finds the
 lease held by another runner backs off towards the longest a lease is held
 once its run can be resumed: the engine's teardown, cancelled or parked, then
 the runner's post-engine steps — the git snapshot, the bank, the artifact
-upload — within the runner's lease ceiling (about 56 minutes, most of it the
+upload — within the runner's lease ceiling (about 58 minutes, most of it the
 bank's own budget), then the lease's lapse. Its retries double from one lease
-interval to a last one that waits that whole hold (1 min, 1 min 48, 3 min 35
-… 57 min with the defaults), so a resume delivered while the previous
+interval to a last one that waits that whole hold (1 min, 1 min 51, 3 min 43
+… 59 min with the defaults), so a resume delivered while the previous
 execution still unwinds outlives it, whichever delivery first met the lock —
 unless no retry is left. The queue's worst-case redelivery window counts each
 of the `MaxDeliver` deliveries at the longest delay its rank can take —
 `AckWait`, the schema and epoch delays, the lease TTL, or that back-off —
-about 2 h 30 with the defaults, and the orphan sweeper's queued-staleness
+about 2 h 34 with the defaults, and the orphan sweeper's queued-staleness
 cutoff tracks it. On its last allowed attempt the original message is archived on
 the DLQ and `run_delivery_exhausted` lands on the run's timeline. Either way
 the run itself is untouched — without the lock no writer may change its

@@ -1232,11 +1232,12 @@ func TestBankScratchOnCleanup_retriesItsRecordThroughAFailover(t *testing.T) {
 }
 
 // TestSandboxTeardownBudget_coversTheScratchBank: the lease the runner holds
-// past a cancellation covers every step of the teardown, the scratch's bank
-// included — its archive and upload, its record, the resume of what its
-// quiesce stopped — or a sibling takes the run while its bank still lands.
+// past a cancellation covers every step of the teardown, the run-files
+// drain and the scratch's bank included — its archive and upload, its
+// record, the resume of what its quiesce stopped — or a sibling takes the
+// run while its bank still lands.
 func TestSandboxTeardownBudget_coversTheScratchBank(t *testing.T) {
-	steps := sandboxHeadCaptureTimeout + sandboxWorkspaceExportTimeout + sandboxShutdownTimeout
+	steps := sandboxHeadCaptureTimeout + sandboxWorkspaceExportTimeout + sandboxRunFilesDrainTimeout + sandboxShutdownTimeout
 	bank := scratchBankTimeout + scratchBankRecordBudget + scratchResumeBudget
 	if SandboxTeardownBudget < steps+bank {
 		t.Fatalf("SandboxTeardownBudget = %s, want at least %s: the teardown's steps (%s) and the scratch bank's (%s)", SandboxTeardownBudget, steps+bank, steps, bank)

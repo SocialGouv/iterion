@@ -4,7 +4,10 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os/exec"
+	"path"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -148,11 +151,13 @@ func TestTheDrainManifestCarriesTheServingMountsCap(t *testing.T) {
 		t.Setenv(sandbox.ReadBackCapEnv, "")
 		p := canaryParams(t)
 		p.RunFilesHostDir = t.TempDir()
-		// The bind is how the bot serves the path on a host; on the pod it
-		// is dropped, and the sized emptyDir above the path holds the files.
+		// The bind is how the bot serves the path on a host — listed first,
+		// so a figure asked of every mount meets it before the emptyDir; on
+		// the pod it is dropped, and the sized emptyDir at the same path
+		// holds the files.
 		p.Workflow.Sandbox.Mounts = []string{
 			"type=bind,source=/host/persist,target=/iterion/artifact-files",
-			"type=emptydir,target=/iterion,size=2Gi",
+			"type=emptydir,target=/iterion/artifact-files,size=2Gi",
 		}
 		info := buildRunInfoFor(t, p)
 		if len(info.ReadBackDirs) != 1 {
@@ -162,6 +167,89 @@ func TestTheDrainManifestCarriesTheServingMountsCap(t *testing.T) {
 			t.Errorf("drain cap = %d, want the 2 GiB of the emptyDir the pod keeps — a dropped bind serves nothing, so it names no figure", got)
 		}
 	})
+	t.Run("a mount above the path names no figure: the runtime's own emptyDir holds the files", func(t *testing.T) {
+		t.Setenv(sandbox.ReadBackCapEnv, "")
+		p := canaryParams(t)
+		p.RunFilesHostDir = t.TempDir()
+		p.Workflow.Sandbox.Mounts = []string{"type=emptydir,target=/iterion,size=2Gi"}
+		info := buildRunInfoFor(t, p)
+		if len(info.ReadBackDirs) != 1 {
+			t.Fatalf("RunInfo carries %d read-back dirs, want 1: %#v", len(info.ReadBackDirs), info.ReadBackDirs)
+		}
+		if got := info.ReadBackDirs[0].CapBytes; got != sandbox.ReadBackCapBytes {
+			t.Errorf("drain cap = %d, want the %d default — the files live in the runtime's own emptyDir at the path, which names no size, not in the parent's 2 GiB volume", got, sandbox.ReadBackCapBytes)
+		}
+	})
+}
+
+// TestThePodRunLaysItsOwnStorageBeneathAMountAboveThePath: a mount above
+// the run-files path holds the path in its tree, never as a directory it
+// promises — the path may not exist (the drain's in-pod tar -C then fails
+// on every run that wrote nothing: a false loss), a configmap or a secret
+// parent is read-only, and a pvc parent would drain every earlier run's
+// files into this run's set. The runtime lays its own emptyDir AT the path
+// beneath it: a directory that exists, starts empty and takes writes.
+func TestThePodRunLaysItsOwnStorageBeneathAMountAboveThePath(t *testing.T) {
+	for _, parent := range []string{
+		"type=pvc,source=persist,target=/iterion",
+		"type=emptydir,target=/iterion",
+		// The kubelet creates the mount points nested in a configmap or a
+		// secret volume before it mounts it read-only.
+		"type=configmap,source=cfg,target=/iterion",
+		"type=secret,source=sec,target=/iterion",
+	} {
+		t.Run(parent, func(t *testing.T) {
+			p := canaryParams(t)
+			p.Workflow.Sandbox.Mounts = []string{parent}
+			spec := buildSandboxSpecFor(t, false, p)
+			serving := mountServing(spec.Mounts, "/iterion/artifact-files")
+			if path.Clean(mountTarget(serving)) != "/iterion/artifact-files" || !strings.Contains(serving, "type=emptydir") {
+				t.Fatalf("the nearest mount serving the path is %q, want the runtime's emptyDir AT it — a parent's tree is no directory anyone promised (mounts: %v)", serving, spec.Mounts)
+			}
+			if spec.Env[runFilesEnvVar] != "/iterion/artifact-files" {
+				t.Errorf("spec.Env[%s] = %q, want the path the emptyDir serves", runFilesEnvVar, spec.Env[runFilesEnvVar])
+			}
+			if len(spec.ReadBackPaths) != 1 || spec.ReadBackPaths[0] != "/iterion/artifact-files" {
+				t.Errorf("spec.ReadBackPaths = %v, want the declared path", spec.ReadBackPaths)
+			}
+		})
+	}
+}
+
+// TestAReadOnlyMountLeavesTheRunFilesPathUnserved: a read-only mount AT the
+// path — or a read-only pvc or emptyDir above it, where no container
+// runtime can create a mount point — leaves no storage a tool could write.
+// Nothing is declared, named or drained: the variable would name a
+// directory no tool can fill (#815's defect), and the drain would collect
+// the mount's own content as the run's files.
+func TestAReadOnlyMountLeavesTheRunFilesPathUnserved(t *testing.T) {
+	for _, mount := range []string{
+		"type=configmap,source=cfg,target=/iterion/artifact-files",
+		"type=secret,source=sec,target=/iterion/artifact-files",
+		"type=pvc,source=shared,target=/iterion/artifact-files,readonly",
+		"type=pvc,source=shared,target=/iterion,ro=true",
+		"type=emptydir,target=/iterion,readonly",
+	} {
+		t.Run(mount, func(t *testing.T) {
+			p := canaryParams(t)
+			p.Workflow.Sandbox.Mounts = []string{mount}
+			spec := buildSandboxSpecFor(t, false, p)
+			if v, ok := spec.Env[runFilesEnvVar]; ok {
+				t.Errorf("spec.Env[%s] = %q, want it unset — no tool can write the path it names", runFilesEnvVar, v)
+			}
+			if len(spec.ReadBackPaths) != 0 {
+				t.Errorf("spec.ReadBackPaths = %v, want none — nothing the run wrote can be there to drain", spec.ReadBackPaths)
+			}
+			for _, m := range spec.Mounts {
+				if m != mount && strings.Contains(m, "type=emptydir") {
+					t.Errorf("the runtime laid %q under a read-only mount — a mount point no container runtime can create there (mounts: %v)", m, spec.Mounts)
+				}
+			}
+			if info := buildRunInfoFor(t, p); len(info.ReadBackDirs) != 0 {
+				t.Errorf("RunInfo carries %d read-back dirs, want none: %#v", len(info.ReadBackDirs), info.ReadBackDirs)
+			}
+		})
+	}
 }
 
 // TestTheRunFilesDeclarationFollowsTheStorage: the spec declares the
@@ -295,6 +383,71 @@ func TestDrainRunFilesOnCleanupSurfacesAFailedDrain(t *testing.T) {
 		}
 		if events[0].Data["reason"] != string(sandbox.ReadBackOverCap) {
 			t.Errorf("event reason = %v, want %q — a reader tells a cap reached from a tool still writing without parsing the prose", events[0].Data["reason"], sandbox.ReadBackOverCap)
+		}
+	})
+	t.Run("the members the host declined are named on the event", func(t *testing.T) {
+		events = nil
+		run := &drainFakeRun{exportErr: &sandbox.ReadBackLoss{
+			Reason: sandbox.ReadBackDeclined,
+			Err:    errors.New("kubernetes: drain /iterion/artifact-files: the host declined 2 member(s)"),
+			Declined: []sandbox.ReadBackDeclinedMember{
+				{Dir: "/iterion/artifact-files", Name: "pipe", Why: sandbox.DeclinedKind},
+				{Dir: "/iterion/artifact-files", Name: "latest.html", Why: sandbox.DeclinedHardlinkTarget},
+			},
+		}}
+		drainRunFilesOnCleanup(run, nil, emit)
+		if len(events) != 1 || events[0].Type != store.EventSandboxRunFilesDrainFailed {
+			t.Fatalf("events = %+v, want one sandbox_runfiles_drain_failed — a set short of a member is a loss on the run, not a log line", events)
+		}
+		data := events[0].Data
+		if data["reason"] != string(sandbox.ReadBackDeclined) {
+			t.Errorf("event reason = %v, want %q", data["reason"], sandbox.ReadBackDeclined)
+		}
+		want := []map[string]any{
+			{"dir": "/iterion/artifact-files", "name": "latest.html", "why": string(sandbox.DeclinedHardlinkTarget)},
+			{"dir": "/iterion/artifact-files", "name": "pipe", "why": string(sandbox.DeclinedKind)},
+		}
+		if !reflect.DeepEqual(data["declined"], want) {
+			t.Errorf("event declined = %#v, want %#v — every member, by name, in path order", data["declined"], want)
+		}
+		if data["declined_count"] != 2 {
+			t.Errorf("event declined_count = %v, want 2", data["declined_count"])
+		}
+		if data["stale"] != false {
+			t.Errorf("event stale = %v, want false sent — a reader cannot tell a false from an absent field", data["stale"])
+		}
+	})
+	t.Run("a set that may hold a raced attempt's leftovers says so", func(t *testing.T) {
+		events = nil
+		run := &drainFakeRun{exportErr: &sandbox.ReadBackLoss{Reason: sandbox.ReadBackOverCap, Err: errors.New("over the cap, after a raced attempt"), Stale: true}}
+		drainRunFilesOnCleanup(run, nil, emit)
+		if len(events) != 1 || events[0].Data["stale"] != true {
+			t.Fatalf("events = %+v, want one event with stale=true — over_cap alone reads as the failing attempt's partial set", events)
+		}
+		if _, listed := events[0].Data["declined"]; listed {
+			t.Errorf("event declined = %v on a drain that declined nothing, want the field absent", events[0].Data["declined"])
+		}
+	})
+	t.Run("the declined list is bounded, its count is not", func(t *testing.T) {
+		events = nil
+		var many []sandbox.ReadBackDeclinedMember
+		for i := runFilesDeclinedListed + 50; i > 0; i-- {
+			many = append(many, sandbox.ReadBackDeclinedMember{Dir: "/iterion/artifact-files", Name: fmt.Sprintf("fifo-%04d", i), Why: sandbox.DeclinedKind})
+		}
+		run := &drainFakeRun{exportErr: &sandbox.ReadBackLoss{Reason: sandbox.ReadBackDeclined, Err: errors.New("declined"), Declined: many}}
+		drainRunFilesOnCleanup(run, nil, emit)
+		if len(events) != 1 {
+			t.Fatalf("events = %+v, want one", events)
+		}
+		listed, _ := events[0].Data["declined"].([]map[string]any)
+		if len(listed) != runFilesDeclinedListed {
+			t.Fatalf("the event names %d members, want the first %d", len(listed), runFilesDeclinedListed)
+		}
+		if listed[0]["name"] != "fifo-0001" {
+			t.Errorf("the first listed member is %v, want fifo-0001 — the bound keeps the first in path order, not the archive's", listed[0]["name"])
+		}
+		if events[0].Data["declined_count"] != runFilesDeclinedListed+50 {
+			t.Errorf("event declined_count = %v, want every declined member counted (%d)", events[0].Data["declined_count"], runFilesDeclinedListed+50)
 		}
 	})
 	t.Run("a clean drain stays silent", func(t *testing.T) {

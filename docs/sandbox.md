@@ -314,30 +314,48 @@ mounts, never inferred), **served by storage the driver owns** (an
 `sandbox.mounts:` on kubernetes too), and **drained at teardown**
 (`WorkspaceExporter.ExportRunFiles`, the export seam's second half)
 into the run file store's directory, from where the runner's upload
-bridges it to the durable read source. A drain that fails is
-`sandbox_runfiles_drain_failed` on the run — a failed drain must stay
-distinguishable from a run that wrote nothing, because an empty
-artifact-files panel is exactly the silence that once made every
-cloud deliverable disappear (#2668) — and the event carries a stable
-`reason` (`sandbox.ReadBackLossReason`: `over_cap`, `unsettled`,
-`archiver`, `refused`), read off the typed error the driver returns,
-so a cap reached is told from a tool still writing at teardown without
-parsing the prose. An `unsettled` drain leaves the **union** of its
-attempts' members on the host — a stale superset of the pod's final
-tree, so a file the run removed between attempts may still upload; the
-event's error says so. A member the host declines on principle (an
-unsafe name, a link that leaves the tree, a kind it does not write
-back, a pre-drain tree where the archive carries a file or a link) is
-skipped and logged, and the members after it still land — one
-collision never costs the rest of the set. Each declared dir's set is
-capped, and the cap is named and metered **on the host, in the
-drain**: the member that takes the set past the figure is dropped,
-never landed cut short, what landed before it stays and the rest stays
-in the pod, so what the panel serves is whole or absent. The figure is
-the serving mount's to name (`sandbox.ReadBackCapFor`) — the nearest
-mount the pod keeps at or above the path (`sandbox.MountServing`),
-never a host bind the driver drops: a bot that serves the path with its
-own
+bridges it to the durable read source. A drain that loses files is
+`sandbox_runfiles_drain_failed` on the run — a lossy drain must stay
+distinguishable from a run that wrote nothing, because an empty or
+partial artifact-files panel is exactly the silence that once made
+every cloud deliverable disappear (#2668) — and the event carries a
+stable `reason` (`sandbox.ReadBackLossReason`: `over_cap`, `unsettled`,
+`archiver`, `refused`, `declined`), read off the typed error the driver
+returns, so a cap reached is told from a tool still writing at teardown
+without parsing the prose. An `unsettled` drain leaves the **union** of
+its attempts' members on the host — a stale superset of the pod's final
+tree, so a file the run removed between attempts may still upload; so
+does any other failure that follows an attempt which raced a writer,
+since it ends the drain before a settled attempt sweeps; the event's
+`stale: true` and its error say so. A member the host declines on
+principle (an unsafe name, a link that leaves the tree, a hardlink to no
+file the archive landed, a kind it does not write back, a pre-drain
+tree where the archive carries a file or a link) is skipped, and the
+members after it still land — one collision never costs the rest of the
+set — but never in silence: the drain's verdict is `declined` (or the
+failure's own reason, when one followed), and the event lists each
+member under `declined` as `{dir, name, why}` with a
+`sandbox.ReadBackDeclineWhy` token, the first 100 in path order and the
+total in `declined_count`. A hardlink to a file the same archive landed — tar
+carries every name of a file but the first that way — lands as a copy,
+metered like the file. Each declared dir's set is capped, and the cap
+is named and metered **on the host, in the drain**: the member that
+takes the set past the figure is dropped, never landed cut short, what
+landed before it stays and the rest stays in the pod, so what the panel
+serves is whole or absent. The storage is decided on the mounts the pod
+keeps, by the nearest one at or above the path (`sandbox.MountServing`
+— the predicate that also judges what a dropped host bind took with it):
+a bot's own writable mount **at** the path is the path's storage (a pvc
+there drains what it holds, earlier runs' files included — the author's
+choice); a mount **above** the path holds it in its tree, never as a
+directory anyone promised, so the runtime lays its own `emptyDir` at the
+path beneath it; and a read-only mount at the path — or a read-only pvc
+or emptydir above it, where no container runtime can create a mount
+point (the kubelet lays them in configmap and secret volumes only) —
+leaves the path **unserved**: the variable is not set and nothing is
+drained, with a warning in the runner's log. The figure is the serving
+mount's to name (`sandbox.ReadBackCapFor`), never a host bind's the
+driver drops: a bot that serves the path with its own
 `type=emptydir,target=/iterion/artifact-files,size=2Gi` is metered at
 2 GiB — the author's explicit choice, never cut down to the default —
 `ITERION_SANDBOX_READBACK_CAP` overrides the default for every dir

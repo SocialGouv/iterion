@@ -565,14 +565,15 @@ const (
 	//   - error: the export failure
 	EventSandboxWorkspaceExportFailed EventType = "sandbox_workspace_export_failed"
 	// EventSandboxRunFilesDrainFailed fires when the read-back drain of a
-	// declared run-files path (ADR-143) fails at sandbox teardown: the
-	// container wrote its artifact files into the emptyDir the driver
-	// served, and the bytes were not recovered into the run file store
-	// before the pod went away. The sibling of
-	// EventSandboxWorkspaceExportFailed and the answer to the same
-	// question ADR-143 §4 asks — a drain that failed must stay
-	// distinguishable from a run that wrote nothing, because an empty
-	// artifact-files panel is the silence #2668 is about. Data:
+	// declared run-files path (ADR-143) fails at sandbox teardown, or lands
+	// its set short of members the host declined: the container wrote its
+	// artifact files into the emptyDir the driver served, and some or all
+	// of the bytes were not recovered into the run file store before the
+	// pod went away. The sibling of EventSandboxWorkspaceExportFailed and
+	// the answer to the same question ADR-143 §4 asks — a drain that lost
+	// files must stay distinguishable from a run that wrote nothing,
+	// because an empty or partial artifact-files panel is the silence
+	// #2668 is about. Data:
 	//   - driver: the sandbox driver
 	//   - reason: a stable token (sandbox.ReadBackLossReason), the twin of
 	//     run_attachment_lost's — "over_cap" (the dir's set outgrew its
@@ -582,10 +583,26 @@ const (
 	//     every attempt's members, a stale superset of the pod's final
 	//     tree), "archiver" (the pod's archiver failed for a cause no retry
 	//     cures), "refused" (the host could not land the set: a host list,
-	//     write or replace that failed); "mixed" when the declared dirs
-	//     were lost for different reasons, "unknown" when the driver typed
-	//     none
+	//     write or replace that failed), "declined" (the set landed short
+	//     only of the members listed under declined); "mixed" when the
+	//     declared dirs were lost for different reasons, "unknown" when the
+	//     driver typed none
 	//   - error: the drain failure, every lost dir's cause joined
+	//   - stale: whether the set may hold members the attempt that ended
+	//     the drain did not land — an earlier attempt raced a writer and no
+	//     settled attempt swept what it landed, so a file the pod's final
+	//     tree no longer has may upload: always true for "unsettled", true
+	//     for any other reason that followed a raced attempt. Always sent
+	//   - declined: the members the host declined on principle, each
+	//     {dir, name, why} — dir the declared container path, name the
+	//     member's path under it, why a stable token
+	//     (sandbox.ReadBackDeclineWhy): "unsafe_name", "link_leaves_tree",
+	//     "hardlink_target" (a hardlink to no file the archive landed — one
+	//     to a landed file lands as a copy), "kind" (a device, a fifo),
+	//     "pre_drain_tree"; the first 100 in dir and name order. Present
+	//     only when the host declined any, whatever the reason
+	//   - declined_count: how many members the host declined in all — the
+	//     runner's log warned each one. Present with declined
 	EventSandboxRunFilesDrainFailed EventType = "sandbox_runfiles_drain_failed"
 	// EventSandboxHostBindsDropped fires when the selected driver has no
 	// host filesystem and the runtime removes the host bind mounts the run

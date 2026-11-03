@@ -98,6 +98,41 @@ func TestDropUnsupportedHostBindsWithdrawsTheRunFilesEnv(t *testing.T) {
 			t.Fatalf("a value under the dropped bind was handed back: %q", v)
 		}
 	})
+	// The nearest mount decides, asked through sandbox.MountServing — the
+	// predicate the runtime's own storage decision asks — one scenario per
+	// nesting direction.
+	t.Run("a kept mount nested under a dropped bind still serves the variable", func(t *testing.T) {
+		spec := &sandbox.Spec{
+			Mounts: []string{
+				"type=bind,source=/host/iterion,target=/iterion",
+				"type=emptydir,target=" + path,
+			},
+			Env: map[string]string{runFilesEnvVar: path},
+		}
+		report := dropUnsupportedHostBinds(spec, "", nil)
+		if spec.Env[runFilesEnvVar] != path {
+			t.Fatalf("%s withdrawn although the emptyDir at %s still serves it: env %v", runFilesEnvVar, path, spec.Env)
+		}
+		if len(report.Withdrawn) != 0 || len(report.HandedBack) != 0 {
+			t.Errorf("the report withdraws %v / hands back %v — a false withdrawal on the run's stream", report.Withdrawn, report.HandedBack)
+		}
+		if want := []string{"/iterion"}; !reflect.DeepEqual(report.Targets, want) {
+			t.Errorf("the report names %v as dropped, want %v", report.Targets, want)
+		}
+	})
+	t.Run("a bind nested under a kept mount takes its own target with it", func(t *testing.T) {
+		spec := &sandbox.Spec{
+			Mounts: []string{
+				"type=emptydir,target=/iterion",
+				"type=bind,source=/var/lib/iterion/run-files/r1,target=" + path,
+			},
+			Env: map[string]string{runFilesEnvVar: path},
+		}
+		dropUnsupportedHostBinds(spec, "", nil)
+		if v, ok := spec.Env[runFilesEnvVar]; ok {
+			t.Fatalf("%s still set to %q — the bind that served the path is gone, and the emptyDir above holds no directory there", runFilesEnvVar, v)
+		}
+	})
 	t.Run("a spaced field or a trailing slash names the same directory", func(t *testing.T) {
 		for _, mount := range []string{
 			"type=bind, source=/var/lib/iterion/run-files/r1, target=" + path,
@@ -162,6 +197,48 @@ func TestFinalizeMountsForDriver(t *testing.T) {
 			t.Fatalf("spec changed on a driver that honours binds: env %v mounts %v", spec.Env, spec.Mounts)
 		}
 	})
+}
+
+// TestTheRunFilesVariableSurvivesABotBindAboveItsStorage drives the real
+// wiring: a bot's host bind at a parent of the run-files path is dropped on
+// a pod, and the runtime's emptyDir laid AT the path still serves it — the
+// runtime decides storage and the bind-dropping rule judges what a dropped
+// bind took with the same serving predicate, so one cannot lay storage the
+// other then declares gone.
+func TestTheRunFilesVariableSurvivesABotBindAboveItsStorage(t *testing.T) {
+	p := canaryParams(t)
+	p.Workflow.Sandbox.Mounts = []string{"type=bind,source=/host/iterion,target=/iterion"}
+	spec := buildSandboxSpecFor(t, false, p)
+	if spec.Env[runFilesEnvVar] != "/iterion/artifact-files" {
+		t.Fatalf("spec.Env[%s] = %q, want the path the runtime's emptyDir serves — withdrawn, the pod drains a dir no tool was told about (mounts: %v)", runFilesEnvVar, spec.Env[runFilesEnvVar], spec.Mounts)
+	}
+	if len(spec.ReadBackPaths) != 1 {
+		t.Errorf("spec.ReadBackPaths = %v, want the declared path", spec.ReadBackPaths)
+	}
+}
+
+func TestMountIsReadOnly(t *testing.T) {
+	cases := []struct {
+		mount string
+		want  bool
+	}{
+		// the API data volumes the kubelet always mounts read-only
+		{"type=configmap,source=cm,target=/etc/cfg", true},
+		{"type=secret,source=sec,target=/run/secrets/x", true},
+		// every flag form the kubernetes driver's parser accepts
+		{"type=pvc,source=claim,target=/data,readonly", true},
+		{"type=pvc,source=claim,target=/data,ro", true},
+		{"type=pvc,source=claim,target=/data,readonly=true", true},
+		{"type=pvc,source=claim,target=/data, ro = 1", true},
+		{"type=pvc,source=claim,target=/data,readonly=false", false},
+		{"type=pvc,source=claim,target=/data", false},
+		{"type=emptydir,target=/work,size=1Gi", false},
+	}
+	for _, c := range cases {
+		if got := mountIsReadOnly(c.mount); got != c.want {
+			t.Errorf("mountIsReadOnly(%q) = %v, want %v", c.mount, got, c.want)
+		}
+	}
 }
 
 func TestMountIsHostBind(t *testing.T) {

@@ -3,6 +3,7 @@ package sandbox
 import (
 	"errors"
 	"fmt"
+	"reflect"
 	"testing"
 )
 
@@ -47,5 +48,61 @@ func TestReadBackLossIsATransparentWrap(t *testing.T) {
 	}
 	if !errors.Is(fmt.Errorf("drain: %w", loss), cause) {
 		t.Error("errors.Is does not reach the cause through the typed loss")
+	}
+}
+
+// The declined members travel on the loss of the dir that declined them and
+// are read back across every branch, in one order whatever order the dirs
+// drained or the archives carried them in — the order the event lists, and
+// the order its bound keeps the first of.
+func TestReadBackDeclinedOf(t *testing.T) {
+	a := ReadBackDeclinedMember{Dir: "/a", Name: "z.html", Why: DeclinedHardlinkTarget}
+	b := ReadBackDeclinedMember{Dir: "/a", Name: "b.fifo", Why: DeclinedKind}
+	c := ReadBackDeclinedMember{Dir: "/b", Name: "a.lnk", Why: DeclinedLinkLeavesTree}
+	for _, tc := range []struct {
+		name string
+		err  error
+		want []ReadBackDeclinedMember
+	}{
+		{"nil declines nothing", nil, nil},
+		{"an untyped failure declines nothing", errors.New("kubectl exec failed"), nil},
+		{"one dir's members, ordered by name", &ReadBackLoss{Reason: ReadBackDeclined, Err: errors.New("x"), Declined: []ReadBackDeclinedMember{a, b}}, []ReadBackDeclinedMember{b, a}},
+		{"a wrap above the loss keeps them readable", fmt.Errorf("drain: %w", &ReadBackLoss{Reason: ReadBackOverCap, Err: errors.New("x"), Declined: []ReadBackDeclinedMember{a}}), []ReadBackDeclinedMember{a}},
+		{"every branch of a join, ordered by dir then name", errors.Join(
+			&ReadBackLoss{Reason: ReadBackDeclined, Err: errors.New("b"), Declined: []ReadBackDeclinedMember{c}},
+			&ReadBackLoss{Reason: ReadBackArchiver, Err: errors.New("a"), Declined: []ReadBackDeclinedMember{a, b}},
+		), []ReadBackDeclinedMember{b, a, c}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ReadBackDeclinedOf(tc.err); !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("ReadBackDeclinedOf(%v) = %+v, want %+v", tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
+// The stale mark is read off the loss too: one stale branch makes the run's
+// set one that may carry members its pod no longer has.
+func TestReadBackStaleOf(t *testing.T) {
+	stale := &ReadBackLoss{Reason: ReadBackOverCap, Err: errors.New("over"), Stale: true}
+	clean := &ReadBackLoss{Reason: ReadBackOverCap, Err: errors.New("over")}
+	for _, tc := range []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil is not stale", nil, false},
+		{"an untyped failure is not marked", errors.New("kubectl exec failed"), false},
+		{"a loss without the mark", clean, false},
+		{"a marked loss", stale, true},
+		{"a wrap above the mark keeps it readable", fmt.Errorf("drain: %w", stale), true},
+		{"one stale branch of a join, last", errors.Join(clean, stale), true},
+		{"one stale branch of a join, first", errors.Join(stale, clean), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ReadBackStaleOf(tc.err); got != tc.want {
+				t.Fatalf("ReadBackStaleOf(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
 	}
 }

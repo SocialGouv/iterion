@@ -1065,54 +1065,46 @@ func (d droppedBinds) payload(driver string) map[string]any {
 // wrapper redirecting its report into it died on "Directory nonexistent"
 // before the oracle ran, and four lots read an oracle verdict out of an
 // environment failure. The rule is keyed on the mounts, not on who set the
-// variable: a target a dropped bind served is gone unless a mount the driver
-// honours (pvc, configmap, secret, emptydir) still serves it, and a value naming a path
-// no bind ever served is a promise the runtime never made. botRunFilesDir is
-// the value the runtime overwrote when it added its bind: handed back when
-// the runtime's promise is withdrawn, unless it names a dropped target too.
-// The returned report lists what went: every dropped bind's target, and the
-// variable withdrawn or handed back.
+// variable: a value goes when the mount that served it was a dropped bind —
+// the NEAREST mount at or above it, asked through sandbox.MountServing, the
+// one serving predicate the runtime's own storage decision asks too, a kept
+// mount winning a tie at the same target. So a kept mount (pvc, configmap,
+// secret, emptydir) nested under a dropped bind still serves its tree, a
+// bind nested under a kept mount took its own target with it, and a value
+// naming a path no bind ever served is a promise the runtime never made.
+// botRunFilesDir is the value the runtime overwrote when it named its own:
+// handed back when the runtime's promise is withdrawn, unless a dropped bind
+// served it too. The returned report lists what went: every dropped bind's
+// target, and the variable withdrawn or handed back.
 func dropUnsupportedHostBinds(spec *sandbox.Spec, botRunFilesDir string, logger *iterlog.Logger) droppedBinds {
 	var report droppedBinds
-	// Targets compare cleaned: a trailing slash or a spaced field is the same
-	// directory, and a miss here recreates the incident this rule closes.
-	target := func(m string) string {
-		if t := mountTarget(m); t != "" {
-			return path.Clean(t)
-		}
-		return ""
-	}
-	gone := map[string]bool{}
+	var binds []string
 	for _, m := range spec.Mounts {
 		if mountIsHostBind(m) {
-			if t := target(m); t != "" {
-				gone[t] = true
-				report.Targets = append(report.Targets, t)
+			binds = append(binds, m)
+			// Targets compare cleaned: a trailing slash or a spaced field is
+			// the same directory, and a miss here recreates the incident this
+			// rule closes.
+			if t := mountTarget(m); t != "" {
+				report.Targets = append(report.Targets, path.Clean(t))
 			}
 		}
 	}
 	sort.Strings(report.Targets)
 	spec.Mounts = dropHostBindMounts(spec.Mounts, logger)
-	for _, m := range spec.Mounts {
-		delete(gone, target(m))
-	}
-	// A value goes when it names a dropped target OR a path under one: a
-	// directory under a bind that is gone is gone with it.
-	underDropped := func(dir string) bool {
-		value := path.Clean(dir)
-		for t := range gone {
-			if value == t || strings.HasPrefix(value, t+"/") {
-				return true
-			}
-		}
-		return false
+	// The kept mounts are listed first, so MountServing's first-of-equals
+	// hands a tie at one target to the mount the pod still has.
+	everyMount := append(append(make([]string, 0, len(spec.Mounts)+len(binds)), spec.Mounts...), binds...)
+	servedByDropped := func(dir string) bool {
+		serving := sandbox.MountServing(everyMount, dir)
+		return serving != "" && mountIsHostBind(serving)
 	}
 	dir, set := spec.Env[runFilesEnvVar]
-	if !set || !underDropped(dir) {
+	if !set || !servedByDropped(dir) {
 		return report
 	}
 	report.Withdrawn = append(report.Withdrawn, runFilesEnvVar)
-	if botRunFilesDir != "" && !underDropped(botRunFilesDir) {
+	if botRunFilesDir != "" && !servedByDropped(botRunFilesDir) {
 		spec.Env[runFilesEnvVar] = botRunFilesDir
 		report.HandedBack = map[string]string{runFilesEnvVar: botRunFilesDir}
 		if logger != nil {
@@ -1125,6 +1117,88 @@ func dropUnsupportedHostBinds(spec *sandbox.Spec, botRunFilesDir string, logger 
 		logger.Warn("runtime: sandbox: %s withdrawn — the bind serving %s was dropped with the other host binds; tools writing run files fall back to a temp dir", runFilesEnvVar, dir)
 	}
 	return report
+}
+
+// runFilesPodStorage decides what serves the declared run-files path target
+// on a driver with no host filesystem, asked of the mounts the pod keeps
+// through the one serving predicate (sandbox.MountServing, the nearest mount
+// at or above the path):
+//
+//   - a writable mount AT the path is the bot's own storage for it,
+//     returned as bots: a second volumeMount at one mountPath is a pod the
+//     API server refuses, and its size= names the drain's figure. A pvc
+//     there persists across runs, so the set drains what it holds — earlier
+//     runs' files included: storage the author chose for the path;
+//   - nothing at the path returns two empties: the runtime lays its own
+//     emptyDir there, nested beneath whatever holds the parent. A parent
+//     volume holds the path in its tree, never as a directory it promises:
+//     the path may not exist (the drain's in-pod tar -C then fails on every
+//     run that wrote nothing), a configmap or a secret parent is read-only,
+//     and a pvc parent would drain every earlier run's files into this one's
+//     set — a fresh emptyDir at the path answers all three;
+//   - a read-only mount at the path, or a read-only mount above it that the
+//     kubelet lays no mount point in, leaves the path unserved, returned
+//     with why: no tool can write it, and no storage can be laid there. The
+//     kubelet creates the mount points nested in a configmap or a secret
+//     volume before it mounts it read-only; a container runtime cannot
+//     create one inside any other read-only volume, and the pod would not
+//     start.
+func runFilesPodStorage(kept []string, target string) (bots, unserved string) {
+	nearest := sandbox.MountServing(kept, target)
+	if nearest == "" {
+		return "", ""
+	}
+	at := path.Clean(mountTarget(nearest)) == path.Clean(target)
+	switch {
+	case at && mountIsReadOnly(nearest):
+		return "", fmt.Sprintf("the bot's mount %q serves it read-only", nearest)
+	case at:
+		return nearest, ""
+	case mountIsReadOnly(nearest) && !mountIsAPIData(nearest):
+		return "", fmt.Sprintf("the bot's read-only mount %q holds its parent, and no mount point can be created inside it", nearest)
+	}
+	return "", ""
+}
+
+// mountIsReadOnly reports whether a mount the pod keeps serves its target
+// read-only: a configmap or a secret volume always does (the kubelet
+// mounts both read-only), any other type when it carries the readonly flag
+// — bare, or `readonly=`/`ro=` a true value, the forms the kubernetes
+// driver's parser accepts.
+func mountIsReadOnly(mount string) bool {
+	if mountIsAPIData(mount) {
+		return true
+	}
+	for _, part := range strings.Split(mount, ",") {
+		k, v, hasValue := strings.Cut(strings.TrimSpace(part), "=")
+		switch strings.TrimSpace(k) {
+		case "readonly", "ro":
+			if !hasValue {
+				return true
+			}
+			if b, err := strconv.ParseBool(strings.TrimSpace(v)); err == nil && b {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// mountIsAPIData reports whether a mount is a configmap or a secret volume
+// — the API data volumes the kubelet writes itself, read-only in the
+// container, and lays nested mount points in.
+func mountIsAPIData(mount string) bool {
+	for _, part := range strings.Split(mount, ",") {
+		k, v, ok := strings.Cut(strings.TrimSpace(part), "=")
+		if ok && strings.TrimSpace(k) == "type" {
+			switch strings.TrimSpace(v) {
+			case "configmap", "secret":
+				return true
+			}
+			return false
+		}
+	}
+	return false
 }
 
 // mountIsHostBind reports whether a docker-style mount string is a host bind

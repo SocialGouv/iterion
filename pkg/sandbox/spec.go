@@ -427,10 +427,12 @@ func (s *Spec) Validate() error {
 // (ReadBackCapFor). The one reading of "does a mount serve this path":
 // the admission half of the read-back contract (the declaration is asked
 // of the mounts as they stand, not of the driver's intentions), the
-// runtime's decision to add or skip its own storage at a declared path,
-// and the drain's figure all ask it here — a serving predicate kept in
-// two places answers differently the day one copy stops matching the
-// other.
+// runtime's decision to add or skip its own storage at a declared path
+// (it asks whether the nearest kept mount sits AT the path — a parent
+// holds the path in its tree, never as a directory it promises), the
+// bind-dropping rule's judgment of what a dropped bind took with it, and
+// the drain's figure all ask it here — a serving predicate kept in two
+// places answers differently the day one copy stops matching the other.
 func MountServing(mounts []string, containerPath string) string {
 	want := path.Clean(containerPath)
 	serving, depth := "", -1

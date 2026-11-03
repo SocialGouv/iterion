@@ -650,28 +650,39 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 				// writes. Kept by dropUnsupportedHostBinds (it is not a
 				// host bind), so the variable naming it survives.
 				//
-				// Skipped when a mount this driver keeps already serves the
-				// target: the bot's own pvc/configmap/secret/emptydir at (or
-				// above) the path is the storage the read-back contract
-				// points at, and a second volumeMount at the same mountPath
-				// is a pod the API server refuses. Host binds are not kept
-				// here (the driver has no filesystem to bind from — they are
-				// dropped at finalizeMountsForDriver), so they never count as
-				// serving. The declaration and the variable stand either
-				// way: the drain reads whatever mount serves the path, and
-				// the bot's own storage carries the run's files.
+				// Asked of the mounts this driver keeps — host binds are
+				// dropped at finalizeMountsForDriver, so they serve nothing
+				// here — which of them, if any, is the path's storage
+				// (runFilesPodStorage): the bot's own writable mount AT the
+				// path is, and a second volumeMount at one mountPath is a
+				// pod the API server refuses; a mount above the path is
+				// not, and the emptyDir is laid at the path beneath it; a
+				// read-only one leaves the path unserved.
 				kept := make([]string, 0, len(spec.Mounts))
 				for _, m := range spec.Mounts {
 					if !mountIsHostBind(m) {
 						kept = append(kept, m)
 					}
 				}
-				servingMount = sandbox.MountServing(kept, target)
-				if servingMount == "" {
+				bots, unserved := runFilesPodStorage(kept, target)
+				switch {
+				case unserved != "":
+					// No storage a tool could write: nothing is declared,
+					// named or drained — the variable would be a promise
+					// about a directory no tool can fill (#815's defect),
+					// and the drain would collect the mount's own content
+					// as the run's files.
+					if logger != nil {
+						logger.Warn("runtime: sandbox: run-files path %s left unserved — %s; %s is not set and nothing is drained, so the artifact-files panel stays empty for this run", target, unserved, runFilesEnvVar)
+					}
+				case bots != "":
+					servingMount = bots
+					runFilesContainerPath = target
+				default:
 					servingMount = "type=emptydir,target=" + target
 					spec.Mounts = append(spec.Mounts, servingMount)
+					runFilesContainerPath = target
 				}
-				runFilesContainerPath = target
 			}
 			if runFilesContainerPath != "" {
 				// Tool scripts find the path via $ITERION_ARTIFACT_FILES_DIR
@@ -2845,6 +2856,14 @@ func exportSandboxWorkspaceOnCleanup(
 // runner's lease is unwound on).
 const sandboxRunFilesDrainTimeout = 2 * time.Minute
 
+// runFilesDeclinedListed bounds how many declined members one
+// sandbox_runfiles_drain_failed event names — the first ones in dir and
+// name order; declined_count carries the total, and the runner's log warned
+// every one as the drain skipped it. The bound keeps the event deliverable:
+// an archive of a hundred thousand fifos would otherwise ride one record of
+// the run's stream, and an event the store refuses says nothing at all.
+const runFilesDeclinedListed = 100
+
 // drainRunFilesOnCleanup performs the read-back drain (ADR-143 §3-4) at
 // sandbox teardown: a driver that carries the run's declared read-back
 // paths streams them into the run file store's dir BEFORE the sandbox is
@@ -2855,10 +2874,11 @@ const sandboxRunFilesDrainTimeout = 2 * time.Minute
 // nothing by construction.
 //
 // Runs on its own background ctx, like the workspace export beside it: a
-// cancelled run still flushes what it produced. A failure is loud (warn +
-// event), never silent — ADR-143 §4: a drain that fails must be
-// distinguishable from a run that wrote nothing, and an empty
-// artifact-files panel is exactly the silence this ticket is about.
+// cancelled run still flushes what it produced. A loss is loud (warn +
+// event), never silent — ADR-143 §4: a drain that fails, or lands its set
+// short of members the host declined, must be distinguishable from a run
+// that wrote nothing, and an empty or partial artifact-files panel is
+// exactly the silence this ticket is about.
 func drainRunFilesOnCleanup(
 	run sandbox.Run,
 	logger *iterlog.Logger,
@@ -2871,17 +2891,31 @@ func drainRunFilesOnCleanup(
 	ctx, cancel := context.WithTimeout(context.Background(), sandboxRunFilesDrainTimeout)
 	defer cancel()
 	if err := exporter.ExportRunFiles(ctx); err != nil {
-		// The reason is read off the error the driver typed, never off
-		// its text: a reader of the run groups losses by the token.
+		// Every fact is read off the error the driver typed, never off
+		// its text: a reader of the run groups losses by the token, finds
+		// the members the host declined by name, and learns whether the
+		// set may hold a raced attempt's leftovers.
 		reason := sandbox.ReadBackLossReasonOf(err)
 		if logger != nil {
-			logger.Warn("runtime: sandbox run-files drain FAILED (%s) — what landed before the failure still uploads, so the panel may read partial rather than empty; the rest is lost with the sandbox (ADR-143): %v", reason, err)
+			logger.Warn("runtime: sandbox run-files drain FAILED (%s) — what landed still uploads, so the panel may read partial rather than empty; the rest is lost with the sandbox (ADR-143): %v", reason, err)
 		}
-		_ = emitEvent(store.EventSandboxRunFilesDrainFailed, map[string]any{
+		data := map[string]any{
 			"driver": run.Driver(),
 			"reason": string(reason),
 			"error":  err.Error(),
-		})
+			// Always sent, both ways: a reader filtering the sets that may
+			// carry stale members cannot tell a false from an absent field.
+			"stale": sandbox.ReadBackStaleOf(err),
+		}
+		if declined := sandbox.ReadBackDeclinedOf(err); len(declined) > 0 {
+			listed := make([]map[string]any, 0, min(len(declined), runFilesDeclinedListed))
+			for _, m := range declined[:min(len(declined), runFilesDeclinedListed)] {
+				listed = append(listed, map[string]any{"dir": m.Dir, "name": m.Name, "why": string(m.Why)})
+			}
+			data["declined"] = listed
+			data["declined_count"] = len(declined)
+		}
+		_ = emitEvent(store.EventSandboxRunFilesDrainFailed, data)
 		return
 	}
 	if logger != nil {

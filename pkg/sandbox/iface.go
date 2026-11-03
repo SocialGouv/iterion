@@ -188,8 +188,11 @@ type WorkspaceExporter interface {
 	// ([RunInfo.ReadBackDirs]) from the container into the host directory
 	// each entry names, so the run file store receives what the container
 	// wrote (ADR-143 §3: the drain is the clause that makes naming the
-	// path legal). No-op when nothing was declared. A drain that fails is
-	// an event on the run, never an empty set — the caller surfaces it.
+	// path legal). No-op when nothing was declared. A drain that loses
+	// files — it fails, or its set lands short of members the host
+	// declined — returns a typed loss (ReadBackLoss: its reason, the
+	// declined members, the stale mark), and the caller surfaces it as an
+	// event on the run: never an empty set, never a partial one in silence.
 	ExportRunFiles(ctx context.Context) error
 }
 
