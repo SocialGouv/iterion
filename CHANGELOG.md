@@ -3,6 +3,182 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [5.5.0](https://github.com/SocialGouv/iterion/compare/v5.4.1...v5.5.0) (2026-11-03)
+
+### Features
+
+* **audit:** sign-ins join the audit log (ADR-157) ([#2997](https://github.com/SocialGouv/iterion/issues/2997)) ([0d0da96](https://github.com/SocialGouv/iterion/commit/0d0da969511c87e818dc46c2b604e077bee985fa))
+
+    <details><summary>why</summary>
+
+    Every handler that mints or refuses a session now writes an audit event: `auth.login.succeeded` (org-scoped on the session's active org, a platform row when there is none) and `auth.login.failed` (platform scope, typed reason). The attempted identifier is never stored in clear: `meta.subject_hash` is an HMAC-SHA256 under a key derived from the signer (`iterion/audit/subject/v1`), truncated to 16 hex. The client IP comes from `clientIP` (forwarded header behind a trusted peer), the refresh is…
+
+    </details>
+* **cloud:** a converged auto_merge run is landed by the instance and a subbot declares the landing ([#2713](https://github.com/SocialGouv/iterion/issues/2713)) ([6556933](https://github.com/SocialGouv/iterion/commit/655693368a58fdf98b2bc29b718eee3667e96296)), references [#618](https://github.com/SocialGouv/iterion/issues/618)
+
+    <details><summary>why</summary>
+
+    The launch intent (auto_merge) had no instance-side consumer on the cloud plane: the runner banks the run's tree, the doc records the intent, and the merge of the banked branch waited for a human — a campaign lot whose own gate said converged waited 6-9h for that click (#618). And a supervisor bot could not declare the intent on a lot it launches: the subbot node had no landing surface.
+
+    </details>
+* **connection:** the connector webhook lane — a Forgejo event believed on the connection's grant, declared by the package ([f5b1c48](https://github.com/SocialGouv/iterion/commit/f5b1c48d200e4620774b4c89517727d496d7a54f)), references [#2761](https://github.com/SocialGouv/iterion/issues/2761)
+
+    <details><summary>why</summary>
+
+    The last piece of #2761: the inbound half of the connector contract, one vertical proof on Forgejo.
+
+    </details>
+* **server:** the cloud authoring surface resolves a declared fragment ([4a85fd9](https://github.com/SocialGouv/iterion/commit/4a85fd986361d83eaa8f6a4a76b7469e341564b8)), references [#65](https://github.com/SocialGouv/iterion/issues/65) [#1934](https://github.com/SocialGouv/iterion/issues/1934) [#2865](https://github.com/SocialGouv/iterion/issues/2865) [#2827](https://github.com/SocialGouv/iterion/issues/2827)
+
+    <details><summary>why</summary>
+
+    A consumer bundle that declares `dependencies.fragments` instead of shipping the fragment launches fine since 327c064d6, but that state was unreachable from the studio: the bot-source write gate is an absolute refusal over main.bot, so the `import` the declaration exists for could never land. A probe bundle declaring forge-auth whose workflow USES a node of it answered E046 for the import AND C002 for the node that references what the fragment declares, so tolerating the import alone would…
+
+    </details>
+
+### Bug Fixes
+
+* **bots:** Vetty decides a lost alignment from the workspace and the PR's commits ([#2983](https://github.com/SocialGouv/iterion/issues/2983)) ([308d91e](https://github.com/SocialGouv/iterion/commit/308d91ee030d30aad170583bb00c24154047772d)), references [buildkit-operator#50](https://github.com/buildkit-operator/issues/50) [bko#50](https://github.com/bko/issues/50)
+
+    <details><summary>why</summary>
+
+    On a dependency PR that needs code alignment, Vetty commits the fix and pushes it; that push fires the forge's synchronize event, which relaunches the review on the alignment commit itself. On that pass align re-applies the same edits onto a tree that already carries them (a no-op), commit has nothing to commit, and the shas read an unmoved head — the exact shape of a LOST alignment. commit_check then held the PR red (hold_lost_alignment) and the arming the first pass placed could never fire.…
+
+    </details>
+* **cloudpublisher:** every launch-persistence attempt saves the run from its initial state ([bd8f665](https://github.com/SocialGouv/iterion/commit/bd8f6652e142c801cf603cf063f8ea3f911bb9be)), references [#2723](https://github.com/SocialGouv/iterion/issues/2723)
+
+    <details><summary>why</summary>
+
+    A launch persisted under a scheduler's admission is written inside the Mongo transaction cloudsched.MongoStore.WithSchedule installs, and the driver replays that transaction's callback on a TransientTransactionError. The callback closed over one run value, and mongo.Store.SaveRun advances r.CASVersion in place on a successful write, so the save was a read-modify-write on the caller's own state: the aborted attempt's insert was rolled back but its version advance was not, and the replay offered…
+
+    </details>
+* **connection:** the connector lane refuses a dead credential and honors the operator's narrowings ([dc715e3](https://github.com/SocialGouv/iterion/commit/dc715e3206d8b1d4be6a965ade17e654973c8ab6)), references [#2761](https://github.com/SocialGouv/iterion/issues/2761) [#2761](https://github.com/SocialGouv/iterion/issues/2761)
+
+    <details><summary>why</summary>
+
+    Review round 1 on the #2761 lane, four findings, each pinned by a witness that was watched red under its mutant first.
+
+    </details>
+* **detect,reviewtopology:** BinaryFound holds at every step and on every CLI, the facade route's auth is pinned ([#1221](https://github.com/SocialGouv/iterion/issues/1221), review round) ([30bd5b3](https://github.com/SocialGouv/iterion/commit/30bd5b396c93d62fd157c066816cf99c9bc0ad7b))
+
+    <details><summary>why</summary>
+
+    The adversarial review of the route-level publication:
+
+    </details>
+* **dsl:** merge_into is refused at compile like merge_strategy ([#2713](https://github.com/SocialGouv/iterion/issues/2713)) ([b07089b](https://github.com/SocialGouv/iterion/commit/b07089bfcbec3b5e6402e50c35c6c50457cf1300))
+
+    <details><summary>why</summary>
+
+    Round-4 review, finding 4 (low). validateSubbotLanding checked merge_strategy's enum but not merge_into: a free-form value — a padded branch name, a stray word — compiled, and the child's finalize died at merge time with merge_status=failed, the router burning its bounded retries before the alert. Loud and bounded, but the refuse-where-written treatment merge_strategy gets names it at compile, where the author is still looking at the line.
+
+    </details>
+* **dsl:** the C004 remedy names the subbot merge_strategy carrier ([#2713](https://github.com/SocialGouv/iterion/issues/2713)) ([2c3ac5d](https://github.com/SocialGouv/iterion/commit/2c3ac5d3a14686d11a9ffbba00b176e7fd1423d2))
+
+    <details><summary>why</summary>
+
+    The subbot's invalid `merge_strategy:` rides C004 as one of the "refusals that have no code of their own" — but both surfaces that enumerate that family named only the tool-recipe members: the catalogue's fix line (what HintFor serves to `iterion validate`, the studio badge and the MCP result) and the C004 row of docs/references/diagnostics.md. An author refused for `merge_strategy: rebase` who grepped the code landed on a remedy that did not know the refusal existed — the drift…
+
+    </details>
+* **fswatch,runtime,sandbox,server,git:** a parse reads the subprocess's stdout, never the stream the environment talks on ([1ba3438](https://github.com/SocialGouv/iterion/commit/1ba3438e45310c8fb3d566c564adfe1cbc241459)), references [#2781](https://github.com/SocialGouv/iterion/issues/2781) [#2900](https://github.com/SocialGouv/iterion/issues/2900)
+
+    <details><summary>why</summary>
+
+    The raw-watcher inventory ran `go list -e -test -export -deps -json ./...` and decoded cmd.CombinedOutput(). Where the module cache is read-only the toolchain says so on stderr, that line lands inside the JSON stream, and the decode stops at "invalid character 'g'" after 14.6 MB: the test rendered its verdict on the machine instead of on this module's Add calls. CI is green because its cache is writable, so the class only ever fires on an operator's tree.
+
+    </details>
+* **model:** a wire-reported stream stall carries iterion's own idle verdict ([e8dc48d](https://github.com/SocialGouv/iterion/commit/e8dc48dd6bd00a4f911c455c05253a119ced0606)), references [#2052](https://github.com/SocialGouv/iterion/issues/2052)
+
+    <details><summary>why</summary>
+
+    claw's SSE readers run their own idle watchdog (CLAW_STREAM_IDLE_TIMEOUT, 5 min by default) on the OpenAI chat, foundry and Responses wires, and it fires well before iterion's hot tier (15 min). Driving the chat and Responses wires into a real stall on acebd5cf1 and reading the verdicts: the stall arrives as a plain retryable *APIError — isRetryable true but on the STANDARD budget (3 attempts, not the transient 6), and isDelegateRetryable false, so the delegate loop around the node does not…
+
+    </details>
+* **routing:** a finalize that refused to merge is never landed behind its back ([#2713](https://github.com/SocialGouv/iterion/issues/2713)) ([65c251a](https://github.com/SocialGouv/iterion/commit/65c251a4dae4941bf9be06c45b064513df2e9fa4))
+
+    <details><summary>why</summary>
+
+    The run doc's merge_status=skipped is the worktree finalize's own refusal to merge — a wip-banked HEAD (unreviewed output the run chose not to commit) or no merge target at all (a detached HEAD, whose only "target" would be whatever the repo root has checked out at merge time). Neither router lane read it: EvaluateAutoMerge granted landing on the intent alone and Evaluate granted it on success_when, the only guard downstream excluded merged, and the merge action itself claims from skipped by…
+
+    </details>
+* **routing:** the sweep nets read the merge_into opt-out folded ([#2713](https://github.com/SocialGouv/iterion/issues/2713)) ([9a6d766](https://github.com/SocialGouv/iterion/commit/9a6d766084620f0ea43325158716360379bbb637))
+
+    <details><summary>why</summary>
+
+    Round-4 review, finding 1 (medium). The mongo sweep net's intent arm matched merge_into exactly ($nin ["none"], case-sensitive, untrimmed) while the ONE canonical reading — routing.EvaluateAutoMerge, now pkg/store.MergeIntoOptOut, the FS twin beside it — folds the field (case-insensitive, trimmed, the way the runtime's finalize reads it). A run doc carrying " None " or " none " was admitted by the mongo arm and declined by the router's pre-claim gate on the same doc: the decline settles no…
+
+    </details>
+* **routing:** the sweep nets refuse the unbanked intent shape ([#2713](https://github.com/SocialGouv/iterion/issues/2713)) ([c1c781a](https://github.com/SocialGouv/iterion/commit/c1c781acb53383acb872fb0e6df0aafc03d8dfb2))
+
+    <details><summary>why</summary>
+
+    Round-3 review, finding 2. The intent arm admitted the one declined shape its own doctrine forgot to mirror: the router's bank gate declines a merge decision on FinalBranch/FinalCommit empty BEFORE any claim (the terminal status lands before the bank push, measured up to 10+ minutes on large repos), yet both nets swept the shape — the FS twin filtered failed/none/skipped/bank-error but not unbanked, the mongo twin likewise, and the conformance suite pinned the unbanked run as swept ("an…
+
+    </details>
+* **runview:** the persistence merge target reads the current vocabulary folded ([#2713](https://github.com/SocialGouv/iterion/issues/2713)) ([bf3eda2](https://github.com/SocialGouv/iterion/commit/bf3eda2c1ef2e4c564b32aece198b09d4e1b9b8f))
+
+    <details><summary>why</summary>
+
+    resolveMergeTargetForPersistence matched "current" with an exact string compare while every other reader of the same field folds it — the compile's validation (ToLower+TrimSpace), store.MergeIntoOptOut (EqualFold), the engine's own finalize (resolveMergeTarget). A merge_into spelled "Current"/"CURRENT" — accepted by the folded vocabulary — reached the instance intent landing (API-launched cloud run; unreachable from DSL subbots, whose finalize folds) as a literal branch name: the repo-targeted…
+
+    </details>
+* **sandbox:** the image ENV screen answers the ITERION_ namespace by sub-class, so a planted runner switch is emptied ([3c76a84](https://github.com/SocialGouv/iterion/commit/3c76a84b9ea27b30098e39c2203fb07a673ee7dd)), references [#2844](https://github.com/SocialGouv/iterion/issues/2844) [#2859](https://github.com/SocialGouv/iterion/issues/2859)
+
+    <details><summary>why</summary>
+
+    The image ENV screen partitions the deny class by what the runtime does when an IMAGE bakes a name in: the credential/routing sub-class is overridden with `--env NAME=`, the rest is reported and keeps the image's value (ARB-121). `ITERION_` was on the reported side WHOLESALE, for a measured reason — iterion's own images bake ITERION_VERSION, ITERION_COMMIT and ITERION_BOTS_PATH — and the namespace is mixed, so the credential/routing members rode with the rest.
+
+    </details>
+* **secrets,sandbox:** one endpoint identity for every routing verdict, bigmodel on the egress ([3713c54](https://github.com/SocialGouv/iterion/commit/3713c54a28c95bf324404635857780a9ea3e9082)), references [#2891](https://github.com/SocialGouv/iterion/issues/2891)
+
+    <details><summary>why</summary>
+
+    Two bounded mediums from the kimi52 #2772 round-3 H-10, closed by the round-1 and round-2 reviews together.
+
+    </details>
+* **server:** the gate sweep's pass reports the forge its offers reached, not its scan ([99b796d](https://github.com/SocialGouv/iterion/commit/99b796d88a6d1d4d226fd1ffbc4473905c427ac0)), references [#2685](https://github.com/SocialGouv/iterion/issues/2685) [#2825](https://github.com/SocialGouv/iterion/issues/2825)
+
+    <details><summary>why</summary>
+
+    Measured on acebd5cf1: one pass over a window holding a dead gating run whose every offer failed with a *net.DNSError inside a *url.Error reported `progressed`, and so did a pass over a window where every run owed nothing, and one whose run document could not be read — four windows, one verdict. The sweep recorded `Succeeded()` for its ListNotifiableRuns scan, and lease.Pass.Verdict answers VerdictProgressed on any success, so the offers the pass then made could not change its verdict. A holder…
+
+    </details>
+* **server:** the router's attach log names both routing carriers ([#2713](https://github.com/SocialGouv/iterion/issues/2713)) ([fe4b185](https://github.com/SocialGouv/iterion/commit/fe4b185f801e8a9651a78f764bef8737ab107701))
+
+    <details><summary>why</summary>
+
+    Round-4 review, finding 3 (low). The startup line still said "policy-carrying terminal runs are decided by their launch-frozen contract" — half of the two carriers the router has served since the intent lane landed. The line is the incident-time grep surface: an operator grepping it for what decides a run would read a router that decides contracts only. It now names both — the launch-frozen contract, or the auto_merge launch intent.
+
+    </details>
+* **subbot:** a landing intent a worktree:none child cannot act on is refused at launch ([#2713](https://github.com/SocialGouv/iterion/issues/2713)) ([0254882](https://github.com/SocialGouv/iterion/commit/0254882e1976a32924a664a340e649dbab7b11af))
+
+    <details><summary>why</summary>
+
+    C329 refuses auto_merge on a subbot node without `isolated:` — the parent's compile closes the dead intent where the node is written. One level down it stayed open: the child .bot's own `worktree: none` removes the finalization the isolated child was granted, and nothing read the child's declaration — the parent's compile never opens the child .bot, the engine honours none by running in place, and the intent sat on the run doc with FinalBranch empty. Nothing signals from there: no local merge…
+
+    </details>
+* **subbot:** a landing intent the cloud plane cannot act on is refused at launch ([#2713](https://github.com/SocialGouv/iterion/issues/2713)) ([e89b6eb](https://github.com/SocialGouv/iterion/commit/e89b6ebc76ff48c00f2a68d9f54f25af74563bfe))
+
+    <details><summary>why</summary>
+
+    Round-3 review, finding 1. The C329 remedy — declare `isolated: true` — produced a dead intent on the cloud plane: a run store with no filesystem root runs every `worktree: auto` child IN PLACE (engine_run's decisive arm), so wtCtx stays nil and finalizeOnExit returns at once; a subbot child is never banked either (the bank serves queue-delivered runs only, a child rides its parent's delivery), so FinalBranch stays empty forever and the router's bank gate declines silently on every sweep — no…
+
+    </details>
+* **subbot:** every child-launch host arms and refuses the landing intent ([#2713](https://github.com/SocialGouv/iterion/issues/2713)) ([35d0bf4](https://github.com/SocialGouv/iterion/commit/35d0bf4648f4f0b574eddc2ee03688e6a5ff703c))
+
+    <details><summary>why</summary>
+
+    The launch guard refused a landing intent the child cannot act on at two of the four child-launch sites only: the CLI runner `iterion run` and `iterion resume` share (pkg/cli) and the dispatcher daemon's direct engine path (pkg/dispatcher) wired WithIsolatedChild but neither WithAutoMerge/WithMergeInto/WithMergeStrategy nor the guard, so a compile-clean `auto_merge:` subbot never landed there and no diagnostic said why. Both hosts now call RefuseUnlandableSubbotLanding right after the child…
+
+    </details>
+* **subbot:** the launch guard reads the engine's worktree predicate ([#2713](https://github.com/SocialGouv/iterion/issues/2713)) ([f3aef79](https://github.com/SocialGouv/iterion/commit/f3aef799461cc2618151d1c2172fcafa7b623ade))
+
+    <details><summary>why</summary>
+
+    Round-4 review, finding 2 (low). RefuseUnlandableSubbotLanding refused only `worktree: none` while the engine builds a child worktree for the canonical `auto` and NOTHING else (engine_run's decisive arm): an unset or foreign mode over a rooted store passed the guard yet ran the child in place — the same dead intent. Unreachable from the shipped hosts today (the compile canonicalizes empty to "auto" and C142 refuses the rest), but the arm mirrored the author's vocabulary instead of the engine's…
+
+    </details>
+
 ## [5.4.1](https://github.com/SocialGouv/iterion/compare/v5.4.0...v5.4.1) (2026-11-03)
 
 ### Bug Fixes
