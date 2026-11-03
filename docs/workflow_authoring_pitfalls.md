@@ -357,8 +357,9 @@ work-list enumerated, verify.sh written — the remaining units are bounded
 and well-specified, and a cheaper model performs equivalently on them.
 Spend the strong model on discovery / design / judgment nodes and pin
 `model:` per node accordingly; downgrade the mechanical tail. The shipped
-precedent: review topology `auto` resolves to mono — the second family is
-a deliberate spend, not a default.
+precedent: review topology `auto` resolves to mono wherever a detected
+family's slot can serve it (a backed family with none refuses the launch,
+#1221) — the second family is a deliberate spend, not a default.
 
 ### A lens must own a failure class
 

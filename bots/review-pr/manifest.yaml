@@ -35,8 +35,15 @@ version: 0.9.18
 ## issues nor write its report. Unchanged for every other family: dual and
 ## mono-claude keep `converge`, its GLM rescue route and its dials
 ## byte-for-byte. The guard reads `vars.mono_family` alone, so a launch
-## keeping that pin while fanning both reviewers (`review_tier: audit`, or an
-## explicit `--var review_mode=dual`) merges on the twin too. The two prompts
+## keeping that pin while fanning both reviewers (`review_tier: audit`, which
+## the topology resolver never reads) merges on the twin too wherever a
+## DETECTED family serves the pin; an explicit `--var review_mode=dual`
+## instead resolves dual and the resolver DELETES the pin, so that launch
+## merges on `converge` wherever the injection runs (every lane but a cloud
+## launch whose bundle resolved no family, which injects nothing and keeps
+## the pin) — and so does the audit gesture on a host detecting no
+## participating family at all, which resolves dual for the same reason,
+## while a pin no family serves refuses the launch outright. The two prompts
 ## shared by nodes on two routes say what each route holds: the merge
 ## paragraph names the shell on the claude route, which declares no tool
 ## list, and the reviewers' names the claw slots' declared `bash` — a

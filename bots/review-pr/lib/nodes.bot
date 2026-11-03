@@ -17,15 +17,27 @@ dsl: 2
 ## edges).
 ##
 ## The guard reads that ONE var, so it follows the launch's pin and not the
-## topology the run ends up with: a `review_tier: audit` launch, or an
-## explicit `--var review_mode=dual`, carrying `mono_family=gpt` fans BOTH
-## reviewers and still merges on the twin. Deliberate — that pin is the
+## topology the run ends up with: a `review_tier: audit` launch carrying
+## `mono_family=gpt` fans BOTH reviewers and still merges on the twin
+## wherever a DETECTED family serves that pin — reviewtopology reads no
+## `review_tier`, so the mode resolves off the credentials, mono, and the pin
+## wins over the resolver's preference. Deliberate: that pin is the
 ## operator's explicit choice, and on a GPT-only tenant (where InjectAll
 ## injects it) putting the merge back on the Anthropic wire is the very
-## failure #2467 closes. A webhook launch reaches this node whenever the
-## publisher resolved dual, because reviewtopology.InjectIfDeclaredFamilies
-## deletes `mono_family` there and the var falls back to its declared
-## "claude" default.
+## failure #2467 closes. The same gesture on a set that CANNOT serve the pin
+## refuses the launch (RefusePinnedFamily, judged on the mono path), and on a
+## host detecting no participating family at all it resolves dual and deletes
+## the pin like any dual, so the unconditional fallback answers there.
+##
+## This node is also the one a DUAL launch reaches, an explicit
+## `--var review_mode=dual --var mono_family=gpt` included, wherever the
+## injection runs: reviewtopology.InjectIfDeclaredFamilies deletes
+## `mono_family` on a dual resolution, so the var falls back to its declared
+## "claude" default. The three in-process lanes (pkg/cli, pkg/runview,
+## pkg/dispatcher) inject unconditionally; a cloud launch whose sealed
+## bundle resolved no family does not inject at all (it rides the runner's
+## env fallback), so an explicit pin survives there and the twin below
+## answers instead.
 agent converge:
   ## Dedicated env (NOT ITERION_VIBE_MODEL_CLAUDE, which pins the
   ## REVIEWER): the merge is near-mechanical — dedupe, threshold, cap and

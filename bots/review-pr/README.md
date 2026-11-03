@@ -91,7 +91,7 @@ All inputs are workflow `vars` (override with `--var name=value`):
 | `report_path` | `.review-pr/findings.md` | Markdown report destination (gitignorable; not under `.iterion/`). |
 | `pr_url` | `""` | When set, ALSO publish the review onto this PR (see below). Empty = board + report only. |
 | `pr_review_mode` | `inline` | How the PR review is posted: `inline` (per-line comments) or `summary` (one comment). |
-| `review_mode` | `mono` | Reviewer topology: `mono` (default), `dual`, or `auto` (launch-time resolver also resolves to mono). |
+| `review_mode` | `mono` | Reviewer topology: `mono`, `dual`, or `auto`. `mono` is the DECLARED default, read only where no injection runs (a cloud launch whose sealed bundle resolved no family); every injecting lane resolves an UNSET `review_mode` as `auto`, which lands on mono wherever a detected family's slot has a servable route — a backed family with none (a z.ai key without the claude_code CLI) refuses the launch (#1221) — and on dual where no family is detected at all, so a familyless host runs dual unless `--var review_mode=mono` is passed. |
 | `mono_family` | `claude` | Family used in mono mode: `claude` or `gpt`. |
 | `gate_enabled` | `true` | Ask the server to post a deterministic commit-status gate with the review. |
 | `gate_severity` | `high` | Lowest finding severity that makes the gate fail. |
@@ -433,18 +433,66 @@ reading the usage-cap pre-flight folds
 | merge | `converge` — `claude_code` + opus 5.5 + `anthropic`, with the GLM rescue route below it | `converge_gpt` — `claw` + `openai/gpt-6-sol`, no hint, no rescue route (claw reads none) | `ITERION_VIBE_{MODEL,BACKEND,PROVIDER}_EMIT` / `…_EMIT_GPT` |
 | pacer supervisor | `pacer` — `anthropic/claude-opus-5-5`, watching `reviewer_claude` | `pacer_gpt` — `openai/gpt-6-sol`, watching `reviewer_gpt` | `ITERION_VIBE_MODEL_SUPERVISOR` / `…_SUPERVISOR_GPT`, or `ITERION_SUPERVISORS=off` |
 
-The column heading is the LAUNCH VAR, not the topology. A webhook launch the
-publisher resolved dual carries no `mono_family` at all
-(`reviewtopology.InjectIfDeclaredFamilies` deletes it there), so the var falls
-back to its declared `claude` default and the left column holds. A launch that
-keeps the pin while fanning both reviewers — `review_tier: audit`, or an
-explicit `--var review_mode=dual --var mono_family=gpt` — reviews
-cross-family and **merges on `converge_gpt`**: the pin is the operator's
-explicit choice, and on a GPT-only tenant (where `InjectAll` injects it)
-sending the merge back to the Anthropic wire is the failure this release
-closes. The published run table names the merge model that actually ran
-(`ai_converge_model`, carried through `pr_gate`), so a cross-family review
-merged on gpt-6-sol says so.
+The column heading is the LAUNCH VAR, not the topology — and **a dual
+resolution the injection runs on carries no launch var at all**:
+`InjectIfDeclaredFamilies` writes the resolved mode and *deletes*
+`mono_family`, which its own contract calls meaningless in dual. **The three
+in-process lanes inject unconditionally** (`pkg/cli/run.go`, `pkg/runview`'s
+in-process lane, `pkg/dispatcher`) — and the detached lane
+(`ITERION_RUNS_DETACHED=1`) injects in the `iterion run` child it spawns, off
+THAT process's own detection. So an explicit `--var review_mode=dual --var
+mono_family=gpt` loses the pin exactly like a resolved dual: the var falls
+back to its declared `claude` default and **the merge lands on `converge`**,
+on the Anthropic wire
+(`TestReviewPrAnExplicitlyDualLaunchDropsTheGptMergePin`, `bots`). Nothing
+warns about the drop — the launch logs only `review topology: dual`, since
+`Injection.Summary()` names a family only when one survives; a C1xx on that
+deletion is #1828's open remedy.
+
+**One lane does not inject at all: a cloud launch whose sealed bundle
+resolved no participating family** (`pkg/server/cloudpublisher`, guarded on
+`len(creds.families.Families()) > 0`, the folded family set of the route
+inventory), because an empty set means the run rides the RUNNER's env
+fallback and the server cannot read it. That launch is queued with its vars
+verbatim and nothing re-judges them on the pod, so an explicit
+`--var review_mode=dual --var mono_family=gpt` keeps its pin there and **does
+merge on `converge_gpt`** while both reviewers fan
+(`TestSubmitLaunchKeepsAnExplicitPinWhenTheBundleResolvedNothing`,
+`pkg/server/cloudpublisher`). A dual resolution does not refuse an unservable
+pin either: `RefusePinnedFamily` is judged on the mono path only.
+
+**`review_tier: audit` keeps the pin wherever a DETECTED family serves it**,
+while fanning both reviewers: `reviewtopology` never reads `review_tier`, so
+the mode resolves off the credentials alone — mono on the preferred detected
+family whose slot has a servable route, and the pin wins over that
+preference wherever the set serves it (`gpt` beside a claude credential).
+The fan is not that resolution: it is the `topology -> fan` edge's own guard
+on `vars.review_tier == 'audit'`, which `tier_expand` only restates as the
+`effective_review_mode` the report carries.
+
+The same gesture has three other outcomes, all decided by the FAMILY SET and
+none of them lane-dependent: a pin **no detected family serves refuses the
+launch** (`RefusePinnedFamily`, judged on the mono path — `gpt` asked for on
+a claude-only host); a detected family **whose slot has no servable route
+refuses it too** (#1221 — a z.ai key on a host without the claude_code CLI
+backs `claude` and nothing can run it), the pin named where there is one and
+the resolver's own choice judged where there is none, so `auto` never lands
+on mono there either; and a host where detection finds **no participating
+family at all** resolves `auto` to dual, which deletes the pin like any
+other dual and lands the merge back on `converge`, unwarned. That host is not
+hypothetical: `pkg/backend/detect` backs `claude` on an `ANTHROPIC_API_KEY`
+or claude_code's OAuth and `zai` on a `ZAI_API_KEY` or a z.ai/bigmodel base
+URL with its auth token, so a non-z.ai Anthropic-compatible gateway
+(`ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN`) or a Moonshot/xAI-only key
+runs this bot while backing no family at all. The four outcomes are one
+witness, five arms (`TestReviewPrAnExplicitlyDualLaunchDropsTheGptMergePin`,
+`bots`).
+
+On a GPT-only tenant
+`InjectAll` injects `gpt` itself, mono, and sending the merge back to the
+Anthropic wire there is the failure this release closes. The published run
+table names the merge model that actually ran (`ai_converge_model`, carried
+through `pr_gate`), so a cross-family review merged on gpt-6-sol says so.
 
 **The trade, named: Opus 5.5 is no longer the default merger of a mono-GPT
 review.** A deployment that wants it back dials the twin

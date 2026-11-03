@@ -143,10 +143,14 @@ contract of the v2 campaign shape; those five no longer declare the
 
 Two catalog bots still do, and are the topology's live consumers:
 `review-pr` (bots/review-pr/main.bot:188,193) and `evolve`
-(bots/evolve/main.bot:37,41). Both default to `mono` — since the
-2026-07-29 resolver change, `auto` itself resolves to mono, so
-cross-family confirmation is an explicit `--var review_mode=dual` rather
-than something a host opts into by having two providers configured.
+(bots/evolve/main.bot:37,41). Both declare `mono` as their default — read
+only where no injection runs, every injecting lane resolving an unset
+`review_mode` as `auto` — and since the 2026-07-29 resolver change, `auto`
+itself resolves to mono on any detected family whose slot has a servable
+route (a backed family with none refuses the launch, #1221; dual only where
+none is detected at all), so cross-family confirmation is an explicit
+`--var review_mode=dual` rather than something a host opts into by having
+two providers configured.
 
 The MACHINERY built here stays, deliberately:
 - `pkg/reviewtopology` (resolution + `InjectIfDeclared`) and its three

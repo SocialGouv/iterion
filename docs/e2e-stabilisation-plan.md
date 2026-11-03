@@ -36,9 +36,9 @@ Repeated from #1424 verbatim so the plan cannot drift from its own definition:
 | runtime | 60 | 59 | 1 | 0 | 0 | 0 |
 | cli | 57 | 57 | 0 | 0 | 0 | 0 |
 | dsl | 51 | 49 | 0 | 0 | 2 | 0 |
-| cloud | 48 | 48 | 0 | 0 | 0 | 0 |
+| cloud | 50 | 50 | 0 | 0 | 0 | 0 |
+| bots | 31 | 29 | 1 | 0 | 0 | 1 |
 | server-api | 31 | 31 | 0 | 0 | 0 | 0 |
-| bots | 30 | 28 | 1 | 0 | 0 | 1 |
 | backends | 19 | 15 | 3 | 0 | 0 | 1 |
 | studio-ui | 15 | 15 | 0 | 0 | 0 | 0 |
 | dispatcher | 14 | 14 | 0 | 0 | 0 | 0 |
@@ -46,14 +46,14 @@ Repeated from #1424 verbatim so the plan cannot drift from its own definition:
 | reliability | 14 | 9 | 0 | 4 | 1 | 0 |
 | triggers | 13 | 13 | 0 | 0 | 0 | 0 |
 | persistence | 9 | 9 | 0 | 0 | 0 | 0 |
+| plugins | 9 | 7 | 2 | 0 | 0 | 0 |
 | sandbox | 9 | 8 | 0 | 0 | 0 | 1 |
 | webhooks | 9 | 9 | 0 | 0 | 0 | 0 |
 | observability | 8 | 8 | 0 | 0 | 0 | 0 |
-| plugins | 9 | 7 | 2 | 0 | 0 | 0 |
 | forge | 7 | 7 | 0 | 0 | 0 | 0 |
 | integrations | 6 | 3 | 0 | 0 | 0 | 3 |
 | desktop | 1 | 0 | 0 | 0 | 1 | 0 |
-| Total | 424 | 402 | 7 | 4 | 5 | 6 |
+| Total | 427 | 405 | 7 | 4 | 5 | 6 |
 
 The surface axis is the matrix's **Family** column — the one the gate reads and
 the "front door per family" section documents. The `ID` prefix is a naming
