@@ -90,6 +90,9 @@
     "probes": {
       "type": "object"
     },
+    "quota": {
+      "type": "object"
+    },
     "runner": {
       "type": "object"
     },

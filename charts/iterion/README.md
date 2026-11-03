@@ -54,6 +54,7 @@ groups:
 | `service` / `ingress` | Exposure; pair ingress TLS with your issuer |
 | `probes` | `/healthz` liveness, `/readyz` readiness (Mongo/NATS/S3 pings) |
 | `networkPolicy` | Opt-in deny-all egress + allowlist (see `examples/networkpolicy-egress.yaml`) |
+| `quota` | Namespace compute ceiling: a ResourceQuota (`requests.cpu`/`requests.memory`/`pods`) + the LimitRange that gives request-less sidecars a default request. Off by default; size it per deployment (sandbox pods request 2 CPU / 4 Gi each) and keep surge headroom — quota admission is PriorityClass-blind |
 | `metrics` | `podMonitor.*` scrape config + `prometheusRule.*` alert packs: the control-plane starter (DLQ depth, heartbeat errors, orphan recoveries, launch denials, webhook throttling), `prometheusRule.datastores.*` (a replica missing or restarting per store, valkey replication and AOF, SeaweedFS volumes and leader, MongoDB members — and an absent-signal rule per exporter family, so a signal nobody scrapes pages) and the backup rules when `backup.enabled` |
 | `backup` | The off-cluster copy of the artifact bucket: one rclone CronJob per tier (daily `sync` keeping deletions, weekly and monthly `snapshot`s), image pinned by digest, destination credentials by `existingSecret` only, every run checked — [docs/cloud-backup.md](../../docs/cloud-backup.md#blob-backup) |
 | `persistence` | local-mode PVC only |
@@ -62,6 +63,15 @@ groups:
 
 ## Upgrade notes
 
+- **`quota.*`** — new namespace compute ceiling (opt-in, off by default;
+  `values-prod.yaml` enables it at 64 CPU / 160Gi / 150 pods). A ResourceQuota
+  rejects pods past the allocation at admission — a campaign fan-out can
+  multiply sandbox pods past the runner pool, and PriorityClass does not
+  exempt the surge pods from that refusal. The bundled LimitRange gives
+  every container a default request so quota admission stays open for
+  sidecars that ship none — a container limited BELOW the defaults
+  (memory < 128Mi, cpu < 100m) without an explicit request must declare
+  its requests.
 - **Generation-aware rollout** — first ship wire v12 with
   `config.rollout.runnerEpoch: 0`, then raise it to `1` in a separate release.
   Increment it for runner-code rollouts. Never `helm rollback` to a lower

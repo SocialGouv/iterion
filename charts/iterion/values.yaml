@@ -737,6 +737,27 @@ networkPolicy:
     # what you want; opt-out of NetworkPolicy entirely instead).
     extraAllow: []
 
+# --- Namespace compute ceiling ---------------------------------------
+# A ResourceQuota bounding the namespace's pod requests (plus the LimitRange
+# that gives request-less sidecars a default, so admission stays open).
+# Off by default; sizing is a deployment decision, not a chart constant:
+# fixed infra + runner slots × sandbox request (2 CPU / 4 Gi each) +
+# fan-out headroom. The runner pool size is the graceful concurrency lever;
+# the quota rejects overflow pods at admission instead of starving
+# co-hosted workloads. CPU stays limit-free (defaultRequest only). At the
+# ceiling, quota admission is PriorityClass-blind: the server/runner surge
+# pods are refused like any other pod, so keep replica headroom or drain
+# the fan-out before rolling. Note the LimitRange floor: a container
+# limited below the defaults (memory < 128Mi, cpu < 100m) without an
+# explicit request would be refused by admission — declare its requests.
+quota:
+  enabled: false
+  requestsCpu: ""    # required when enabled, e.g. "64"
+  requestsMemory: "" # required when enabled, e.g. 160Gi
+  pods: ""           # required when enabled, e.g. "150"
+  defaultRequestCpu: 100m
+  defaultRequestMemory: 128Mi
+
 # --- Observability --------------------------------------------------
 metrics:
   enabled: false
