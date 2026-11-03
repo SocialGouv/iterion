@@ -350,7 +350,12 @@ func (p *Policy) SetPathRoot(dir string) {
 // filesystem path the gate can bound — the read family, the write family,
 // the listing, and BOTH search families (workspace_grep is deliberately
 // not a `grep` alias in the catalogue, so a `Grep(...)` row does not reach
-// it and it needs its own).
+// it and it needs its own). The catalogue keeps no enumeration of
+// path-taking tools, so this table is one of THREE a new path-carrying
+// tool must join: summarize (what the call's candidates are),
+// pathInputKeys (which input keys hold the paths), and this one (what an
+// engine-armed tree deny covers). A tool added to fewer than the three is
+// a tree an agent can still read through it.
 var pathTreeTools = []string{"Read", "Write", "Edit", "NotebookEdit", "LS", "Grep", "Glob", "workspace_grep"}
 
 // DenyPathTrees arms the policy with engine-owned deny rules bounding each
@@ -901,6 +906,11 @@ func globToRegexp(glob string) (*regexp.Regexp, error) {
 // when adding a tool. The FIRST candidate is the one an operator approval
 // is scoped to and the one messages quote (messages.go), so a new
 // candidate is appended, never prepended.
+//
+// A new path-carrying tool joins THREE tables together, no enumeration
+// derives them: this switch (what the call's candidates are),
+// pathInputKeys (which input keys hold the paths), and pathTreeTools (what
+// an engine-armed tree deny covers).
 func summarize(canon string, input map[string]any, root string) []string {
 	switch canon {
 	case "bash", "diagnostic_shell":
@@ -1025,6 +1035,11 @@ func foldPathSpelling(s string) string {
 // tool family, primaryPath the one summarize reads — the first present,
 // in the order the gate has always read them. A deny is matched against
 // all of them, so the two must not drift: one table, read twice.
+//
+// A new path-carrying tool joins THREE tables together, no enumeration
+// derives them: this one (which input keys hold the paths), summarize
+// (what the call's candidates are), and pathTreeTools (what an
+// engine-armed tree deny covers).
 func pathInputKeys(canon string) []string {
 	switch canon {
 	case "read", "write", "edit", "notebookedit":

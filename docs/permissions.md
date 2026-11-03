@@ -334,7 +334,13 @@ Matching semantics (`pkg/backend/permission`):
   runs in (so an absolute rule bounds `./secrets/key`, and a relative path
   cannot climb out of the workspace past a deny), and with the symlinks of
   its existing prefix resolved — `/tmp/s` → `/run/iterion/secrets` does not
-  walk past a deny, not even for a file that does not exist yet.
+  walk past a deny, not even for a file that does not exist yet. Known
+  limit, pre-dating the fold work and tracked as #2918: the RAW spelling
+  is among the candidates on the allow side too, so a narrow allow
+  (`Read(/work/**)`) is met by a `..`-carrying spelling
+  (`/work/../secrets/x`) whose cleaned form would not match — bound a
+  directory for certain on the `deny:` side, which the engine-armed secret
+  trees below do for the run's credential locations.
 - **Glob / Grep** (and claw's `workspace_grep`) patterns match the search
   pattern OR the search ROOT, each spelling of the root offered bare and
   under a `path:` prefix: `Grep(path:/run/iterion/secrets/**)` names the

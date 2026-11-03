@@ -150,3 +150,34 @@ func TestDenyPathTreesOutranksAnAuthorAllow(t *testing.T) {
 		t.Errorf("an author allow reopened the armed tree: got %v, want Deny", got)
 	}
 }
+
+// TestAGrantDoesNotReopenAnEngineDeny pins the rank the bound claims: an
+// engine-armed tree judges WITH the author's denies, BEFORE the grants —
+// an operator approval outranks an ask rule, never a deny, and the engine
+// bound is a deny. Judged after the grants, a run-level `Read(**)` grant
+// would reopen the secret trees the run was armed against, and the refusal
+// would depend on which half of the gate a one-line reorder touched.
+func TestAGrantDoesNotReopenAnEngineDeny(t *testing.T) {
+	p := mustPolicy(t, ModeAsk, nil, nil, nil)
+	p.AddGrantRule("Read(**)")
+	p.AddGrantRule("Write(**)")
+	if err := p.DenyPathTrees("/run/iterion/secrets"); err != nil {
+		t.Fatalf("DenyPathTrees: %v", err)
+	}
+	for _, tc := range []struct {
+		tool  string
+		input map[string]any
+	}{
+		{"Read", map[string]any{"file_path": "/run/iterion/secrets/token"}},
+		{"Write", map[string]any{"file_path": "/run/iterion/secrets/token"}},
+	} {
+		if got, _ := p.Evaluate(tc.tool, tc.input); got != Deny {
+			t.Errorf("a %s grant reopened the armed tree: Evaluate = %v, want Deny", tc.tool, got)
+		}
+	}
+	// The grant itself still decides outside the tree: the bound narrows
+	// the grant, it does not eat it.
+	if got, _ := p.Evaluate("Read", map[string]any{"file_path": "/work/pkg/x.go"}); got != Allow {
+		t.Errorf("the granted read outside the tree = %v, want Allow", got)
+	}
+}
