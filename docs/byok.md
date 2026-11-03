@@ -144,10 +144,13 @@ the cap:
   while the row has room — so of N concurrent admissions on a key with K
   free slots exactly K succeed, whatever replica each ran on. A pinned key,
   a restored key and a resumed run all pass through it; a resumed run's own
-  slot is admitted again without taking a second one. A key lent through
-  the [credential pool](credential-pool.md) is admitted on the same row by
-  the borrower's launch — the grant carries the donor key's cap, so one
-  ledger governs the key whoever runs on it; the pledge's own
+  slot is admitted again in place, without taking a second one, while the
+  row is within the cap — **lower `max_concurrent_runs`** below the runs
+  holding the key and none of them is re-admitted (a paused one's resume
+  waits like a newcomer's) until enough of the others stop spending. A key
+  lent through the [credential pool](credential-pool.md) is admitted on the
+  same row by the borrower's launch — the grant carries the donor key's
+  cap, so one ledger governs the key whoever runs on it; the pledge's own
   `max_concurrent_runs` is the donor's lending dial on top. A store error
   refuses the launch, never admits it.
 
@@ -170,14 +173,24 @@ the key is still full answers 429 and leaves the run parked. The launch API
 answers such a park with `status: failed_resumable` (never `running` or
 `queued`); the run's `failure_code` says `CRED_SLOT_WAIT`.
 
-The ledger never becomes a second truth. Nothing releases a slot
-explicitly: a holder is free when its run stops counting under the two
-rules below, and a refusal re-reads the row's holders against their run
-documents before it is final (`store.CredSlotHolderStale`), evicting the
-ones that no longer spend the key and retrying the admission once. A holder
-whose run document does not exist yet keeps its slot for
+The ledger never becomes a second truth. A holder is free when its run
+stops counting under the two rules below, and a refusal re-reads the row's
+holders against their run documents before it is final
+(`store.CredSlotHolderStale`), evicting the ones that no longer spend the
+key and retrying the admission once. The eviction names the exact entry it
+judged, and every admission moves its holder's instant forward, so a run
+resumed on another replica between the judgment and the eviction keeps its
+slot. A holder whose run document does not exist yet keeps its slot for
 `store.CredSlotGrace` (a launch reserves before it persists); a deleted run
-is pulled from every row at once, on both stores. A run counts against a
+is pulled from every row at once, on both stores. The one explicit release
+is the undo of a launch or a resume that **provably** never handed the run
+on — no row persisted, or a rollback that ended or reverted the row it
+wrote. A publish can report an error after its message landed: the slot
+then stays, the rollback leaves a row a runner already claimed to that
+runner, and the reconcile frees the slot once the run stops spending.
+Because the reconcile reads the stamp, a resume that reserves a capped key
+is refused when its re-stamp fails: a run whose document does not name the
+key it holds would be evicted while it executes. A run counts against a
 key only when **both** hold:
 
 1. **It is alive** — `queued` or `running` (`RunStatus.HoldsCredentialSlot`).
