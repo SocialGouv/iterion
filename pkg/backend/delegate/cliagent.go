@@ -450,23 +450,13 @@ func (b *CLIAgentBackend) Execute(ctx context.Context, task Task) (Result, error
 		Stderr:      truncate(stderr, 8192),
 		BackendName: backendName,
 	}
-	if err != nil {
-		// An agent CLI can report WHY on its STDOUT stream while exiting
-		// non-zero, with nothing on stderr — opencode 2.x prints
-		// `{"type":"error",…,"error":{"message":"--fork requires --continue
-		// or --session"}}` there and leaves stderr empty. stderr is logged
-		// line by line and kept on the Result; stdout was dropped, so the
-		// node reported a bare `exit status 1` and the CLI's own sentence
-		// was lost. Read it with the protocol's own parser, the same reader
-		// that would have read it on a zero exit.
-		if reason := b.failureReason(proto, stdout); reason != "" {
-			return result, fmt.Errorf("%w: %s", err, reason)
-		}
-		return result, err
-	}
-
-	// Parse the CLI's stdout into the assistant's final text, then apply the
-	// shared schema-aware fallback so `output:` schemas behave uniformly.
+	// ONE parse for both exits. The stream the CLI wrote is the same text
+	// whatever the OS reported about the process, and what it says about the
+	// turn — the session it minted, the tokens and the cost it spent — is
+	// observable on a FAILING node too: a turn that minted a session and
+	// then died mid-stream (a provider refusal, a quota) must still report
+	// that id, or `session: inherit` cannot continue the conversation the
+	// CLI actually holds, and the spend would be booked as zero.
 	parsed := b.parseStdout(proto, stdout)
 
 	if b.Logger != nil {
@@ -482,6 +472,29 @@ func (b *CLIAgentBackend) Execute(ctx context.Context, task Task) (Result, error
 	result.ContextWindow = parsed.ContextWindow
 	result.PeakInputTokens = parsed.PeakInputTokens
 
+	if err != nil {
+		// The usage half of AnnotateResultUsage: the spend of a failing turn
+		// is still a spend. Its Output half has nothing to annotate here —
+		// the schema parse below belongs to a turn that finished.
+		AnnotateResultUsage(&result, task.Model, parsed.InputTokens, parsed.OutputTokens, parsed.CostUSD)
+		// An agent CLI can report WHY on its STDOUT stream while exiting
+		// non-zero, with nothing on stderr — opencode 2.x prints
+		// `{"type":"error",…,"error":{"message":"--fork requires --continue
+		// or --session"}}` there and leaves stderr empty. stderr is logged
+		// line by line and kept on the Result; stdout was dropped, so the
+		// node reported a bare `exit status 1` and the CLI's own sentence
+		// was lost. The output-schema parse stays on the zero-exit arm
+		// below: a partial transcript is not the turn's answer, and running
+		// it here would report a ParseFallback for a parse the node never
+		// reached.
+		if reason := failureReason(proto, parsed); reason != "" {
+			return result, fmt.Errorf("%w: %s", err, reason)
+		}
+		return result, err
+	}
+
+	// Apply the shared schema-aware fallback so `output:` schemas behave
+	// uniformly.
 	text := parsed.Text
 	output, rawLen, fallback := parseSDKOutput(&text, nil, task.OutputSchema)
 	result.Output = output
@@ -492,7 +505,8 @@ func (b *CLIAgentBackend) Execute(ctx context.Context, task Task) (Result, error
 
 	// A failure the CLI encoded in its stream while exiting zero. Reported
 	// after the Result is filled in so the partial transcript, tokens and
-	// cost are still observable on the failing node.
+	// cost are still observable on the failing node — the same reason the
+	// non-zero arm above fills them before it returns.
 	if parsed.Err != nil {
 		return result, parsed.Err
 	}
@@ -789,27 +803,6 @@ func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
 }
 
-// setSpawnWorkDir points a host spawn at dir and makes PWD agree with it.
-//
-// An agent CLI that reads PWD instead of its real working directory would
-// otherwise work on the ENGINE's checkout: the inherited environment carries
-// the engine's PWD, and the spawn only changes the process's cwd. Measured on
-// opencode 2.2.5, which resolves its PROJECT from the variable — with PWD
-// naming another directory the workspace's own `.opencode/` is never read,
-// the agent gets the engine's instructions, and iterion's workspace screen
-// guards a tree the CLI never opened.
-//
-// cmd.Env must already be set: the override is APPENDED, which is the value
-// exec.Cmd.Env keeps for a duplicate key. An empty dir leaves both alone —
-// the spawn then inherits the engine's cwd, and PWD already names it.
-func setSpawnWorkDir(cmd *exec.Cmd, dir string) {
-	if dir == "" {
-		return
-	}
-	cmd.Dir = dir
-	cmd.Env = append(cmd.Env, "PWD="+dir)
-}
-
 // failureReason renders what the CLI said about its own failure, for a
 // process exit the OS reported as a failure. The protocol's parser owns the
 // stream's shape, so a CLI whose reason travels in its machine-readable
@@ -817,11 +810,17 @@ func setSpawnWorkDir(cmd *exec.Cmd, dir string) {
 // already names the backend, which the wrapping error does too, so the
 // duplicate prefix is dropped. Empty when the stream says nothing: a
 // transport failure keeps the error it has.
-func (b *CLIAgentBackend) failureReason(proto CLIAgentProtocol, stdout string) string {
-	if strings.TrimSpace(stdout) == "" {
-		return ""
-	}
-	parsed := b.parseStdout(proto, stdout)
+//
+// The sentence lands in the error's TEXT, which [IsNetworkError] matches
+// against the full networkErrorSignatures list, so a stream reason can
+// re-type a non-zero exit as transient for the executor's retry loop. That
+// is the channel a zero exit already used (parsed.Err is returned verbatim
+// there), and it is deliberate: a structured error EVENT is the CLI's own
+// claim, not the free-form stderr that transportErrorSignatures exists to
+// distrust. The cost is the one bounded, backed-off retry
+// networkErrorSignatures prices in; the gain is a provider blip absorbed
+// fast instead of aborting the run.
+func failureReason(proto CLIAgentProtocol, parsed CLIAgentParse) string {
 	if parsed.Err == nil {
 		return ""
 	}
@@ -1173,7 +1172,7 @@ func (b *CLIAgentBackend) runOnce(ctx context.Context, task Task, binary string,
 		// A process the agent detached may keep its stdout: once the agent has
 		// exited, its output is not waited for past this, and the run ends.
 		drainBound = proc.SetWaitDelay(cmd, cliAgentWaitDelay)
-		setSpawnWorkDir(cmd, task.WorkDir)
+		proc.SetWorkDir(cmd, task.WorkDir)
 		cmd.Stdin = stdin
 	}
 	cmd.Stdout = &outBuf

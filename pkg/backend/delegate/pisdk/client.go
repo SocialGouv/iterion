@@ -9,6 +9,8 @@ import (
 	"os/exec"
 	"sync"
 	"time"
+
+	"github.com/SocialGouv/iterion/pkg/internal/proc"
 )
 
 // Ported from packages/coding-agent/src/modes/rpc/rpc-client.ts, whose
@@ -154,12 +156,14 @@ func (c *Client) Start(ctx context.Context) error {
 			return errors.New("pisdk: no binary configured")
 		}
 		c.cmd = exec.CommandContext(ctx, c.opts.Binary, argv...) // #nosec G204 — argv is caller-configured, not attacker-controlled
-		if c.opts.Dir != "" {
-			c.cmd.Dir = c.opts.Dir
-		}
 		if c.opts.Env != nil {
 			c.cmd.Env = c.opts.Env
 		}
+		// Env BEFORE the working directory: the shared gesture appends PWD
+		// to whatever environment the child will get, and pi — a TS/Bun
+		// harness like opencode, which resolves its project from the
+		// variable — must not read the ENGINE's checkout from a stale PWD.
+		proc.SetWorkDir(c.cmd, c.opts.Dir)
 	}
 
 	// Both arms: cancellation must reach pi's own children, not just pi.

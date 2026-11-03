@@ -894,7 +894,7 @@ func (b *ClaudeCodeBackend) buildSpawnOptions(task Task) ([]claudesdk.Option, fu
 			sort.Strings(keys)
 			cmd := exec.CommandContext(ctx, path, args...)
 			cmd.Env = hostSpawnEnv(env)
-			setSpawnWorkDir(cmd, cwd)
+			proc.SetWorkDir(cmd, cwd)
 			files.pinHost(cmd, flagSettings)
 			b.Logger.Info("claude-code: host exec %v (cwd=%s, stdin=%v, task_env_keys=%v)",
 				redactedArgvPreview(path, cmd.Args[1:]), cwd, openStdin, keys)
@@ -2322,7 +2322,7 @@ func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, task Task, session
 			// inherited env (CLAUDE_CODE_EFFORT_LEVEL is always present, so the
 			// strip always fired). Per-task entries stay last so they still win.
 			cmd.Env = hostSpawnEnv(env)
-			setSpawnWorkDir(cmd, cwd)
+			proc.SetWorkDir(cmd, cwd)
 			files.pinHost(cmd, flagSettings)
 			captureCmd(cmd)
 			fe.started()

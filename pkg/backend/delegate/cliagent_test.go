@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -278,6 +279,65 @@ func TestCLIAgentNonZeroExitCarriesTheParsedReason(t *testing.T) {
 	}
 	if res.ExitCode != 1 {
 		t.Errorf("ExitCode = %d, want 1", res.ExitCode)
+	}
+}
+
+// TestCLIAgentNonZeroExitReportsWhatTheTurnSpent is the other half of the
+// same chokepoint: a turn that MINTED a session and spent tokens before it
+// died must report both. The session id is what `session: inherit` continues
+// the CLI's own conversation with, and a spend reported as zero is a spend
+// the run never books.
+func TestCLIAgentNonZeroExitReportsWhatTheTurnSpent(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fake CLI is POSIX-only")
+	}
+	fake := filepath.Join(t.TempDir(), "fakecli")
+	// A turn that answered, then failed mid-stream, then exited non-zero —
+	// the shape of a provider refusal or a quota on an established session.
+	script := "#!/bin/sh\n" +
+		"printf '%s\\n' 'MINTED ses_minted 40 10'\n" +
+		"printf '%s\\n' 'FATAL: the provider has no route for that model'\n" +
+		"exit 1\n"
+	if err := os.WriteFile(fake, []byte(script), 0o755); err != nil { // #nosec G306 — test fixture must be executable
+		t.Fatal(err)
+	}
+	proto := CLIAgentProtocol{
+		Name:           "stubagent",
+		DefaultBinary:  "stubagent",
+		PromptViaStdin: true,
+		ParseOutputRich: func(stdout string) CLIAgentParse {
+			parse := CLIAgentParse{}
+			for _, line := range strings.Split(strings.TrimSpace(stdout), "\n") {
+				switch fields := strings.Fields(line); {
+				case len(fields) == 4 && fields[0] == "MINTED":
+					parse.SessionID = fields[1]
+					parse.InputTokens, _ = strconv.Atoi(fields[2])
+					parse.OutputTokens, _ = strconv.Atoi(fields[3])
+					parse.CostUSD = 0.25
+				case strings.HasPrefix(line, "FATAL: "):
+					parse.Err = fmt.Errorf("delegate: stubagent: %s", strings.TrimPrefix(line, "FATAL: "))
+				}
+			}
+			return parse
+		},
+	}
+	b := &CLIAgentBackend{Protocol: proto, Command: fake, Logger: testLogger()}
+	res, err := b.Execute(context.Background(), Task{NodeID: "n1", UserPrompt: "x", Model: "prov/m1"})
+	if err == nil {
+		t.Fatalf("a non-zero exit succeeded with %v", res.Output)
+	}
+	if res.SessionID != "ses_minted" {
+		t.Errorf("SessionID = %q, want the id the failing turn minted", res.SessionID)
+	}
+	if res.Tokens != 50 {
+		t.Errorf("Tokens = %d, want 50 — the spend of a failing turn is still a spend", res.Tokens)
+	}
+	if res.CostUSD != 0.25 {
+		t.Errorf("CostUSD = %v, want the cost the CLI reported", res.CostUSD)
+	}
+	// Both halves travel together: the reason too.
+	if !strings.Contains(err.Error(), "no route for that model") {
+		t.Errorf("error = %v, want the stream's own reason", err)
 	}
 }
 

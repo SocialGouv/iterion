@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/SocialGouv/iterion/pkg/internal/proc"
 )
 
 // TestLive_Feat_OpenCodeProjectScreen is a CONFORMANCE bench, not a unit
@@ -214,7 +216,7 @@ func openCodeLoadsFrom(t *testing.T, bin, work, marker string) bool {
 	// The same gesture the production spawn makes: opencode resolves its
 	// project from PWD, so the bench would otherwise screen one directory
 	// and ask the CLI about another.
-	setSpawnWorkDir(cmd, work)
+	proc.SetWorkDir(cmd, work)
 	var out strings.Builder
 	cmd.Stdout, cmd.Stderr = &out, &out
 

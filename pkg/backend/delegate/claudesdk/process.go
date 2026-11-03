@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/internal/clilocate"
+	"github.com/SocialGouv/iterion/pkg/internal/proc"
 
 	"github.com/SocialGouv/iterion/internal/envtrust"
 )
@@ -293,10 +294,13 @@ func spawnProcess(ctx context.Context, cliPath string, args []string, opts spawn
 		}
 	} else {
 		cmd = exec.CommandContext(ctx, cliPath, args...)
-		if opts.Cwd != "" {
-			cmd.Dir = opts.Cwd
-		}
 		cmd.Env = mergeCmdEnv(os.Environ(), opts.Env)
+		// Env BEFORE the working directory: the shared gesture appends PWD
+		// to the environment the child will get, so a CLI that resolves
+		// project-local resources from the variable reads the workspace and
+		// not the engine's checkout. The CommandBuilder arm above makes the
+		// same call for the same reason.
+		proc.SetWorkDir(cmd, opts.Cwd)
 	}
 
 	// Pipes are file descriptors in the parent process; if a later step
