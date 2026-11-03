@@ -287,6 +287,40 @@ func collectAllRefs(w *Workflow, promptSpans map[string]ast.Span, edgeSpans map[
 		}
 	}
 
+	// LLM node `images:` refs — the image paths a node hands its backend.
+	// The runtime renders each path through the SAME resolver a prompt body
+	// goes through (resolveTemplate, pkg/backend/model), which materialises
+	// `{{secrets.X}}` at the prompt sink — ResolveSecretRefAt(Prompt, …) —
+	// so the sink here is `prompt` and the compile verdict matches what the
+	// run renders. The field was outside the walk, so an image path was the
+	// one prompt-sink text no check read: a secret whose grants withhold
+	// `prompt` reached the harness as a resolvable placeholder (C323), and a
+	// typo'd `{{outputs.gen.file}}` resolved to an empty path at the one
+	// moment the node needed the image.
+	for _, n := range w.Nodes {
+		f := llmFieldsOf(n)
+		if f == nil {
+			continue
+		}
+		for _, image := range f.Images {
+			refs, err := ParseRefs(image)
+			if err != nil {
+				// The declaration already drew C004 for this text
+				// (buildLLMNodeShared), naming the node and the parse
+				// error; one defect, one diagnostic.
+				continue
+			}
+			for _, ref := range refs {
+				out = append(out, refContext{
+					Ref:      ref,
+					NodeID:   n.NodeID(),
+					Location: fmt.Sprintf("%s node %q images", n.NodeKind(), n.NodeID()),
+					Sink:     secretsink.Prompt,
+				})
+			}
+		}
+	}
+
 	// Fail node `message:` refs. Same argument the ScriptRefs comment
 	// above makes: the message is what the operator reads INSTEAD of the
 	// generic "workflow reached fail node", so a typo'd

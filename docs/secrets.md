@@ -516,7 +516,8 @@ What the compiler refuses: a `sinks:` entry outside the vocabulary, a sink
 named twice, `prompt` alone (it hands a model the placeholder and resolves
 it nowhere), an `as: file` secret whose list lacks `file`, a value secret
 granting `file` (C322); two declarations whose names derive one placeholder
-(`tok`, `_tok` — C090); a reference in a prompt body, a tool `command:` /
+(`tok`, `_tok` — C090); a reference in a prompt body, an LLM node's
+`images:` path (the run renders it at the `prompt` sink), a tool `command:` /
 `postcondition:` / `script:` or an action `params:` whose secret does not
 grant that sink (C323, naming the sink and the grant). A file secret's
 reference renders its mounted path and is never refused per reference — the
@@ -525,7 +526,7 @@ run time, from the same declaration: `Materialize` (the `agent` sink) and
 the authored-body materialisers leave a placeholder its secret does not
 grant AS WRITTEN; the prompt path renders a value secret only when it grants
 `prompt`, so a prompt-like surface the compiler never walked (a bundle
-preset's prompt, an `images:` path) keeps the reference as written; and the
+preset's prompt) keeps the reference as written; and the
 inspecting proxy substitutes on the wire only a secret granting `egress` —
 content DLP still refuses a real value toward an unapproved host, whatever
 the grants. A call that carried the placeholder of a secret the proxy — not

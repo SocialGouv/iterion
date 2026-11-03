@@ -62,6 +62,17 @@ workflow w:
   entry: kick
   kick -> done
 `},
+	{secretsink.Prompt, `agent vision:
+  model: "m"
+  images: ["{{secrets.tok}}/shot.png"]
+  output: out
+
+workflow w:
+  worktree: none
+  sandbox: none
+  entry: vision
+  vision -> done
+`},
 	{secretsink.Params, `tool comment:
   action: forgejo.issue.comment
   connection: c
@@ -342,5 +353,74 @@ func TestASecretsGrantsReachTheIRWithTheAllDefault(t *testing.T) {
 		if !all.Grants(sink) {
 			t.Errorf("a secret with no sinks: does not grant %s — the default is every sink", sink)
 		}
+	}
+}
+
+// imageNodeSource is an LLM node of the given kind whose single `images:`
+// entry holds the path under test.
+func imageNodeSource(kind, image string) string {
+	return kind + " vision:\n  model: \"m\"\n  images: [\"" + image + "\"]\n  output: out\n\nworkflow w:\n  worktree: none\n  sandbox: none\n  entry: vision\n  vision -> done\n"
+}
+
+// An `images:` path is rendered by the run through the same resolver a prompt
+// body goes through, which materialises `{{secrets.X}}` at the PROMPT sink —
+// so the compile checks read it as they read a prompt body: the grant (C323),
+// the declaration (C093) and the template itself (C004). The field was
+// outside collectAllRefs' walk, so none of the three fired on it.
+func TestAnImagePathsSecretRefIsCheckedAtCompileTime(t *testing.T) {
+	// The grant: a secret granting `command` alone does not reach the prompt
+	// sink an image path renders at.
+	refused := compileText(t, secretSinkSource(secretsink.Command, imageNodeSource("agent", "{{secrets.tok}}/a.png")))
+	msgs := diagMessages(refused, DiagSecretSinkUngranted)
+	if len(msgs) == 0 {
+		t.Fatalf("C323 did not fire on the images path of a `sinks: [command]` secret:\n%v", refused.Diagnostics)
+	}
+	for _, want := range []string{`agent node "vision" images`, "reaches the prompt sink", `secret "tok" does not grant (sinks: [command])`, "add `prompt`"} {
+		if !strings.Contains(msgs[0], want) {
+			t.Errorf("C323 message does not carry %q:\n%s", want, msgs[0])
+		}
+	}
+	if !hasDiagAtSeverity(refused, string(DiagSecretSinkUngranted), SeverityError) {
+		t.Error("C323 on an images path is not an error: the run would render the placeholder of a secret whose grants withhold the prompt sink")
+	}
+
+	// The same reference on a judge: the walk reads the shared LLM field
+	// group, not one node kind.
+	judged := compileText(t, secretSinkSource(secretsink.Command, imageNodeSource("judge", "{{secrets.tok}}/a.png")))
+	if msgs := diagMessages(judged, DiagSecretSinkUngranted); len(msgs) == 0 || !strings.Contains(msgs[0], `judge node "vision" images`) {
+		t.Fatalf("C323 did not fire on a judge node's images path:\n%v", judged.Diagnostics)
+	}
+
+	// Granted, the same path compiles clean. `prompt` alone resolves nothing
+	// (C322), so the grant names a second resolving sink beside it.
+	granted := compileText(t, secretSinkSource(secretsink.Prompt+", "+secretsink.Agent, imageNodeSource("agent", "{{secrets.tok}}/a.png")))
+	for _, code := range []DiagCode{DiagSecretSinkUngranted, DiagSecretSinkInvalid} {
+		if anyDiag(granted, string(code)) {
+			t.Errorf("%s fires on an images path whose secret grants the prompt sink:\n%v", code, granted.Diagnostics)
+		}
+	}
+
+	// The declaration: an undeclared secret in the same position.
+	unknown := compileText(t, secretSinkSource(secretsink.Command, imageNodeSource("agent", "{{secrets.nope}}/a.png")))
+	if msgs := diagMessages(unknown, DiagUnknownSecret); len(msgs) == 0 || !strings.Contains(msgs[0], `agent node "vision" images`) {
+		t.Fatalf("C093 did not name the images path of an undeclared secret:\n%v", unknown.Diagnostics)
+	}
+
+	// The template: a malformed image path is said at the declaration, never
+	// dropped to surface as an empty `-i` argument.
+	malformed := compileText(t, secretSinkSource(secretsink.Command, imageNodeSource("agent", "{{secrets.tok")))
+	if msgs := diagMessages(malformed, DiagBadTemplateRef); len(msgs) == 0 || !strings.Contains(msgs[0], `agent "vision" images`) {
+		t.Fatalf("C004 did not name a malformed images template:\n%v", malformed.Diagnostics)
+	}
+}
+
+// The non-secret namespaces of an image path are judged there too: an
+// `{{outputs.X.field}}` naming a node the workflow does not declare is the
+// same typo it is in a prompt body (C029), and resolved to an empty path it
+// would only surface as a missing file at run time.
+func TestAnImagePathsOutputRefIsCheckedAtCompileTime(t *testing.T) {
+	got := compileText(t, secretSinkSource("", imageNodeSource("agent", "{{outputs.nosuch.file}}")))
+	if msgs := diagMessages(got, DiagUnknownRefNode); len(msgs) == 0 || !strings.Contains(msgs[0], `agent node "vision" images`) {
+		t.Fatalf("C029 did not name the images path of an unknown output node:\n%v", got.Diagnostics)
 	}
 }

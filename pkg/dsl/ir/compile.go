@@ -1129,6 +1129,16 @@ func (c *compiler) buildLLMNodeShared(kind, name string, d *ast.LLMDecl) (LLMFie
 	c.validatePromptRef(name, "user", d.User)
 	model := resolveSupervisorModel(d.Model)
 	c.checkModelOrBackend(kind, name, model, d.Backend)
+	// An image path is a template the run renders (validate_refs' images
+	// walk reads the same refs), so a malformed one is said here, where a
+	// tool's command and a prompt body have theirs said — never dropped to
+	// surface as an empty `-i` argument at the one moment the node needed
+	// the file.
+	for _, image := range d.Images {
+		if _, err := ParseRefs(image); err != nil {
+			c.errorfAt(DiagBadTemplateRef, name, "", "%s %q images: %v", kind, name, err)
+		}
+	}
 	// Apply workflow-level interaction default when node doesn't set one.
 	interaction := d.Interaction
 	if interaction == InteractionNone {
