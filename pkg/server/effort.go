@@ -270,16 +270,17 @@ func (s *Server) handleEffortCapabilities(w http.ResponseWriter, r *http.Request
 		// static set to look up. These are the levels iterion PASSES THROUGH
 		// verbatim (xhigh and ultracode collapse onto high before argv, so
 		// offering them here would promise a level the backend substitutes).
-		// `none` is deliberately absent although opencodeMapEffort passes it
-		// through: whether a model carries a "none" variant is exactly the
-		// per-model fact iterion cannot enumerate, and on 2.x an uncarried
-		// variant is a hard refusal (measured on 2.2.5: `Variant unavailable
-		// for scripted/m1: nonexistentvariant`, exit 1), so an offered
-		// off-switch would turn a legal workflow into a failed node on every
-		// model that does not carry one — the same caution that gates none to
-		// known carriers on the codex arm. (On 1.1.19 the same variant was
-		// dropped in SILENCE, which was the earlier reason for the same
-		// answer.)
+		// Said honestly, because the measurement does not discriminate: on
+		// 2.x an uncarried variant is a HARD refusal (measured on 2.2.5:
+		// `Variant unavailable for scripted/m1: nonexistentvariant`, exit 1),
+		// and every level below carries that same per-model risk. They are
+		// offered because low/medium/high/max are the names a reasoning
+		// model's own options usually carry; `none` is withheld because an
+		// off-switch variant is rare enough that offering it would be a
+		// promise about most models rather than a few — the same caution that
+		// gates none to known carriers on the codex arm. (On 1.1.19 an
+		// uncarried variant was dropped in SILENCE, so the exposure is new
+		// with the 2.x line, not the reason for the answer.)
 		writeJSON(w, effortCapabilitiesResponse{
 			Supported: []string{"low", "medium", "high", "max"},
 			// No documented default: with no variant, the model's own
