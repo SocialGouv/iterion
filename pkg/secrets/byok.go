@@ -287,10 +287,13 @@ type ApiKey struct {
 	// fair-usage frequency limits publish NO numeric bound to adapt to —
 	// the operator sets one here, and the resolver's usable-predicate
 	// walks past a key at its ceiling exactly like a refused one, so the
-	// next key or tier serves instead of tripping the provider. A SOFT
-	// cap by design: the refused-key restore still hands the key out when
-	// no other tier could serve its wire — progress beats the ceiling
-	// when the alternative is a run with no credential at all.
+	// next key or tier serves instead of tripping the provider. That skip
+	// is the CHOOSER, not the enforcer: a key_overrides pin bypasses it and
+	// the refused-key restore undoes it on purpose (a parked run with a
+	// durable retry beats one with no credential at all). Enforcement is
+	// the publisher's admission step after the key is chosen — an atomic
+	// per-fingerprint reservation (store.CredSlotStore) that PARKS the run
+	// on a full key instead of refusing it (store.FailureCredSlotWait).
 	MaxConcurrentRuns int `bson:"max_concurrent_runs,omitempty" json:"max_concurrent_runs,omitempty"`
 	// BaseURL is the gateway root of an openai_compatible key (no trailing
 	// slash, no `/v1`; https). Required for that provider, refused on every
@@ -482,6 +485,11 @@ type Resolution struct {
 	// its row carries. It rides with the plaintext into the bundle
 	// (RunBundle.APIBaseURLs): the key is one credential with its URL.
 	BaseURL string
+	// MaxConcurrentRuns and Name carry the chosen key's cap and label out
+	// of the walk: the publisher's admission step reserves a slot of the
+	// cap after the key is chosen, and names the key when it parks a run.
+	MaxConcurrentRuns int
+	Name              string
 }
 
 // Resolve returns at most one ApiKey for each requested provider,
@@ -668,11 +676,13 @@ func buildResolution(k ApiKey, sealer Sealer, currentUserID string) (Resolution,
 		scope = "user"
 	}
 	r := Resolution{
-		Provider:    k.Provider,
-		KeyID:       k.ID,
-		SealedBlob:  k.SealedSecret,
-		SourceScope: scope,
-		Fingerprint: k.Fingerprint,
+		Provider:          k.Provider,
+		KeyID:             k.ID,
+		SealedBlob:        k.SealedSecret,
+		SourceScope:       scope,
+		Fingerprint:       k.Fingerprint,
+		MaxConcurrentRuns: k.MaxConcurrentRuns,
+		Name:              k.Name,
 	}
 	// Only a gateway key's URL travels: a vendor row's base_url column
 	// (refused by the routes, writable by hand in the store) is bound by

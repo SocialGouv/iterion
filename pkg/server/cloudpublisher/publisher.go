@@ -661,6 +661,9 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	// provider in BOTH channels needs per-channel stamps (schema 27's
 	// vocabulary) before it can meter honestly — PR-C' owns that.
 	apiKeyFPs := map[secrets.Provider]string{}
+	// The capped keys every tier seals, by fingerprint, for the admission
+	// step after the walk (cred_slots.go); narrowed to the stamp at the end.
+	wants := credSlotWants{}
 
 	skippedForfaits := skippedForfaits{}
 	// Every tier's walk reports here what its audience kept out, so the one
@@ -792,6 +795,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 						}
 						setAPIKey(&bundle, prov, string(r.Plaintext), r.BaseURL, r.Fingerprint, false)
 						apiKeyFPs[prov] = r.Fingerprint
+						wants.note(r.Fingerprint, r.MaxConcurrentRuns, prov, r.Name)
 						usedIDs = append(usedIDs, r.KeyID)
 					}
 					p.warnRefusedPins(ctx, runID, tenantID, botID, overrides, resolved, withheld, allowed, pairRefusals, policy.sealableSlot)
@@ -812,7 +816,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 							if len(r.Plaintext) == 0 {
 								continue
 							}
-							skippedAPIKeys.remember(prov, skippedAPIKey{plaintext: string(r.Plaintext), baseURL: r.BaseURL, keyID: r.KeyID, fingerprint: r.Fingerprint})
+							skippedAPIKeys.remember(prov, skippedAPIKey{plaintext: string(r.Plaintext), baseURL: r.BaseURL, keyID: r.KeyID, fingerprint: r.Fingerprint, maxConcurrentRuns: r.MaxConcurrentRuns, name: r.Name})
 						}
 					}
 					// Bumping last_used_at is best-effort observability, not on
@@ -1020,7 +1024,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 				//    neither takes a stranger's donation while either is available.
 				//    Fills per WIRE FAMILY like the platform tier, so an org key can
 				//    never shadow a credential the team already holds in another shape.
-				p.fillFromOrg(ctx, runID, orgID, tenantID, botID, audienceBotID, withheld, &bundle, apiKeyFPs, skips, skippedAPIKeys, skippedForfaits, pinnedSet, policy, orgNative)
+				p.fillFromOrg(ctx, runID, orgID, tenantID, botID, audienceBotID, withheld, &bundle, apiKeyFPs, wants, skips, skippedAPIKeys, skippedForfaits, pinnedSet, policy, orgNative)
 
 			case credentialTierPool:
 				// 5. Mutualised pool — the LAST resort, and only for a run that has no
@@ -1106,7 +1110,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 				//    run runs on its donor — filling alongside would outrank the lent
 				//    credential while still consuming the donor's quota and slot.
 				if res.grant == nil {
-					p.fillFromPlatform(ctx, runID, orgID, tenantID, botID, audienceBotID, withheld, &bundle, skippedAPIKeys, apiKeyFPs, skips, skippedForfaits, pinnedSet, policy, platformNative)
+					p.fillFromPlatform(ctx, runID, orgID, tenantID, botID, audienceBotID, withheld, &bundle, skippedAPIKeys, apiKeyFPs, wants, skips, skippedForfaits, pinnedSet, policy, platformNative)
 				}
 
 			case credentialTierRestore:
@@ -1161,6 +1165,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 					restoreKey := func(prov secrets.Provider, sk skippedAPIKey, outcome sealOutcome) {
 						pinnedOnly := fillAPIKeySlotAs(&bundle, taken, prov, sk.plaintext, sk.baseURL, sk.fingerprint, outcome)
 						apiKeyFPs[prov] = sk.fingerprint
+						wants.note(sk.fingerprint, sk.maxConcurrentRuns, prov, sk.name)
 						if sk.platform {
 							bundle.PlatformSourced[string(prov)] = true
 						}
@@ -1401,6 +1406,10 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 		}
 	}
 	sort.Strings(res.fingerprints)
+	// The capped keys among them, in that order: what the admission step
+	// reserves (cred_slots.go). Read off the stamp, so a key the stamp
+	// narrows out holds no slot either.
+	res.credSlots = wants.sealed(res.fingerprints)
 
 	// Which TIERS funded the run — the same spendable narrowing, but walked
 	// over the slots the bundle actually SEALED rather than over the
@@ -1615,6 +1624,11 @@ type credResolution struct {
 	// parks on the credential it fell THROUGH to retries when the one it
 	// was refused reopens, not when the fallback does.
 	skippedReopensAt time.Time
+	// credSlots are the capped API keys the stamp names, in stamp order —
+	// the slots the admission step must hold before the run is queued
+	// (cred_slots.go). Narrowed like fingerprints: a key sealed for a route
+	// the run never takes holds no slot.
+	credSlots []credSlotWant
 }
 
 // stamp is the run-document form of the resolution.
@@ -1946,7 +1960,7 @@ func setOAuthCredential(bundle *secrets.RunBundle, kind string, payload []byte, 
 //
 // botID is the run's raw bot id, the key the budget floor matches;
 // audienceBotID is its canonical spelling, read by the BYOK audience only.
-func (p *Publisher) fillFromPlatform(ctx context.Context, runID, orgID, tenantID, botID, audienceBotID string, withheld *audienceWithholdings, bundle *secrets.RunBundle, skippedAPIKeys skippedAPIKeys, apiKeyFPs map[secrets.Provider]string, skips *skipTracker, skippedForfaits skippedForfaits, pinned map[string]bool, policy sharedTierPolicy, native *tierNative) {
+func (p *Publisher) fillFromPlatform(ctx context.Context, runID, orgID, tenantID, botID, audienceBotID string, withheld *audienceWithholdings, bundle *secrets.RunBundle, skippedAPIKeys skippedAPIKeys, apiKeyFPs map[secrets.Provider]string, wants credSlotWants, skips *skipTracker, skippedForfaits skippedForfaits, pinned map[string]bool, policy sharedTierPolicy, native *tierNative) {
 	if p.sealer == nil {
 		return
 	}
@@ -2088,6 +2102,7 @@ func (p *Publisher) fillFromPlatform(ctx context.Context, runID, orgID, tenantID
 						pinnedOnly := fillAPIKeySlotAs(bundle, taken, prov, string(r.Plaintext), r.BaseURL, r.Fingerprint, outcome)
 						bundle.PlatformSourced[string(prov)] = true
 						apiKeyFPs[prov] = r.Fingerprint
+						wants.note(r.Fingerprint, r.MaxConcurrentRuns, prov, r.Name)
 						usedIDs = append(usedIDs, r.KeyID)
 						if pinnedOnly {
 							p.logger.Info("cloudpublisher: platform credential used run=%s slot=%s (pinned route only — %s)", runID, prov, routeOnlyWhy(familyTaken, policy))
@@ -2126,7 +2141,7 @@ func (p *Publisher) fillFromPlatform(ctx context.Context, runID, orgID, tenantID
 						if len(r.Plaintext) == 0 {
 							continue
 						}
-						skippedAPIKeys.remember(prov, skippedAPIKey{plaintext: string(r.Plaintext), baseURL: r.BaseURL, keyID: r.KeyID, fingerprint: r.Fingerprint, platform: true})
+						skippedAPIKeys.remember(prov, skippedAPIKey{plaintext: string(r.Plaintext), baseURL: r.BaseURL, keyID: r.KeyID, fingerprint: r.Fingerprint, platform: true, maxConcurrentRuns: r.MaxConcurrentRuns, name: r.Name})
 					}
 				}
 			}
@@ -2206,6 +2221,11 @@ type skippedAPIKey struct {
 	// a restored credential must carry the provenance its meter keys on,
 	// or one org subscription is charged once per borrowing team.
 	org bool
+	// maxConcurrentRuns and name ride with the candidate for the reason the
+	// fingerprint does: a restored key is admitted against its cap like a
+	// chosen one, and the park names it.
+	maxConcurrentRuns int
+	name              string
 }
 
 // providersWithoutKey returns the subset of provs that filled no API-key
@@ -2805,8 +2825,9 @@ func (p *Publisher) apiKeyUsable(ctx context.Context, scope, runID, botID string
 		// Providers with fair-usage frequency limits publish no numeric
 		// bound to adapt to; the operator sets one on the key, and the
 		// walk passes a full key over exactly like a refused one. Fails
-		// OPEN on a count error: the ceiling is protection against
-		// tripping a provider, not a correctness invariant.
+		// OPEN on a count error: this skip only CHOOSES the key — the
+		// admission step after the walk (admitCredSlots) is the cap's
+		// enforcer, atomic on the slot ledger, and it fails closed.
 		if k.MaxConcurrentRuns > 0 && p.store != nil && k.Fingerprint != "" {
 			n, err := p.store.CountAliveRunsWithCredFingerprint(ctx, k.Fingerprint, runID)
 			if err != nil {
@@ -3804,8 +3825,9 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 	//    ctx: a launch failed BY request cancellation must not also doom the
 	//    rollback.
 	persisted := false
+	parked := false
 	defer func() {
-		if !persisted || launched {
+		if !persisted || launched || parked {
 			return
 		}
 		cause := "launch failed before its queue message was published"
@@ -3816,6 +3838,43 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		defer rbCancel()
 		if uerr := store.FailRunAtLaunch(rbCtx, p.store, runID, cause); uerr != nil {
 			retErr = errors.Join(retErr, fmt.Errorf("cloudpublisher: mark run %s failed after launch failure (run may be stuck queued): %w", runID, uerr))
+		}
+	}()
+	// 2b. The HARD per-key concurrency cap, after the key is chosen and
+	//     before anything is persisted or published (cred_slots.go): one
+	//     atomic reservation per capped key the stamp names. A full key
+	//     PARKS the launch — the row is written failed_resumable with its
+	//     retry armed, and nothing is queued — rather than refusing it: a
+	//     webhook delivery has nobody to click again. A store error refuses
+	//     the launch, never admits it.
+	refusal, err := p.admitCredSlots(ctx, runID, creds.credSlots)
+	if err != nil {
+		return 0, err
+	}
+	if refusal != nil {
+		parkRunOnCredSlot(r, refusal)
+		if err := store.PersistLaunchRun(ctx, r, p.store.SaveRun); err != nil {
+			return 0, fmt.Errorf("cloudpublisher: save parked run: %w", err)
+		}
+		persisted = true
+		// A parked row nothing wakes is a stuck run: an arming that fails
+		// leaves the deferred choke point above to mark the row
+		// LAUNCH_FAILED, which the caller re-does.
+		if err := p.armCredSlotRetry(ctx, r, refusal); err != nil {
+			return 0, err
+		}
+		parked = true
+		if p.metrics != nil {
+			p.metrics.RunsCreatedTotal.WithLabelValues(string(store.RunStatusFailedResumable)).Inc()
+		}
+		return 0, nil
+	}
+	// The slots are this launch's only once it publishes: every exit before
+	// that gives them back, or the key stays short of them for the grace the
+	// ledger's reconcile allows a missing run document.
+	defer func() {
+		if !launched {
+			p.releaseCredSlots(ctx, runID, creds.credSlots)
 		}
 	}()
 	// PersistLaunchRun, not a PersistLaunch closure over r: a scheduler's
@@ -4331,6 +4390,23 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 			return fmt.Errorf("refusing to resume: %w", err)
 		}
 	}
+	// The HARD per-key concurrency cap, asked again on every resume
+	// (cred_slots.go): the slot this run held from a previous attempt is
+	// admitted again without taking a second one; a key full of OTHER runs
+	// keeps the run parked — the rollback above puts it back, and the retry
+	// sweeper asks again free of charge (ErrCredentialAtCapacity).
+	refusal, admitErr := p.admitCredSlots(secretsCtx, spec.RunID, creds.credSlots)
+	if admitErr != nil {
+		return admitErr
+	}
+	if refusal != nil {
+		return fmt.Errorf("cloudpublisher: run %s stays parked: %w", spec.RunID, refusal)
+	}
+	defer func() {
+		if !republished {
+			p.releaseCredSlots(secretsCtx, spec.RunID, creds.credSlots)
+		}
+	}()
 	// Re-resolved on resume too: the engine re-mirrors skills on every resume,
 	// so a resumed run must carry the same payload a fresh launch would.
 	contributions, contribErr := resolveContributionsFor(ctx, wf, "", prior.TenantID, spec.RunID, p.pluginSources, p.logger)

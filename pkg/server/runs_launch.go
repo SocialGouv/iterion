@@ -25,6 +25,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/routing"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/runview"
+	"github.com/SocialGouv/iterion/pkg/server/cloudpublisher"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -1205,6 +1206,12 @@ func (s *Server) writeResumeError(w http.ResponseWriter, r *http.Request, err er
 		code = artifactContractIncompatibleErrorCode
 	case errors.Is(err, runview.ErrRunNotResumable):
 		status, code = http.StatusConflict, runNotResumableErrorCode
+	case errors.Is(err, cloudpublisher.ErrCredentialAtCapacity):
+		// The key the run sealed is full of other runs: the run stays
+		// parked and its sweeper asks again — the answer the launch gate
+		// gives a concurrency cap, with the same remedy (wait, or free a
+		// slot).
+		status = http.StatusTooManyRequests
 	}
 	body := map[string]any{"error": fmt.Sprintf("resume: %v", err)}
 	if code != "" {

@@ -79,6 +79,7 @@ func (p *Publisher) fillFromOrg(
 	withheld *audienceWithholdings,
 	bundle *secrets.RunBundle,
 	apiKeyFPs map[secrets.Provider]string,
+	wants credSlotWants,
 	skips *skipTracker,
 	skippedAPIKeys skippedAPIKeys,
 	skippedForfaits skippedForfaits,
@@ -216,6 +217,7 @@ func (p *Publisher) fillFromOrg(
 						pinnedOnly := fillAPIKeySlotAs(bundle, taken, prov, string(r.Plaintext), r.BaseURL, r.Fingerprint, outcome)
 						bundle.OrgSourced[string(prov)] = true
 						apiKeyFPs[prov] = r.Fingerprint
+						wants.note(r.Fingerprint, r.MaxConcurrentRuns, prov, r.Name)
 						usedIDs = append(usedIDs, r.KeyID)
 						if pinnedOnly {
 							p.logger.Info("cloudpublisher: org credential used run=%s org=%s slot=%s fp=%s (pinned route only — %s)", runID, orgID, prov, r.Fingerprint, routeOnlyWhy(familyTaken, policy))
@@ -250,6 +252,7 @@ func (p *Publisher) fillFromOrg(
 							skippedAPIKeys.remember(prov, skippedAPIKey{
 								plaintext: string(r.Plaintext), baseURL: r.BaseURL, keyID: r.KeyID,
 								fingerprint: r.Fingerprint, org: true,
+								maxConcurrentRuns: r.MaxConcurrentRuns, name: r.Name,
 							})
 						}
 					}

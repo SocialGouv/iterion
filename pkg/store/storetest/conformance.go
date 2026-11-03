@@ -98,6 +98,7 @@ func RunWithOpts(t *testing.T, factory Factory, opts Opts) {
 	t.Run("RunsForPR", func(t *testing.T) { testRunsForPR(t, factory(t)) })
 	t.Run("ScheduleReverseQuery", func(t *testing.T) { testScheduleReverseQuery(t, factory(t)) })
 	t.Run("CredFingerprintMeter", func(t *testing.T) { testCredFingerprintMeter(t, factory(t)) })
+	t.Run("CredSlotLedger", func(t *testing.T) { testCredSlotLedger(t, factory(t)) })
 	t.Run("SetRunBudgetOverrides", func(t *testing.T) { testSetRunBudgetOverrides(t, factory(t)) })
 	t.Run("SetRunnerVersion", func(t *testing.T) { testSetRunnerVersion(t, factory(t)) })
 	t.Run("SetRunBudgetSnapshot", func(t *testing.T) { testSetRunBudgetSnapshot(t, factory(t)) })
@@ -4606,5 +4607,128 @@ func testAttachmentsMetaJSONFilename(t *testing.T, s store.RunStore) {
 	}
 	if list, err := s.ListAttachments(ctx, runID); err != nil || len(list) != 0 {
 		t.Fatalf("after DeleteRunAttachments: %+v, %v; want none", list, err)
+	}
+}
+
+// testCredSlotLedger exercises the credential-slot ledger behind the hard
+// per-key concurrency cap (store.CredSlotStore): the cap, the idempotent
+// re-admission of a holder, the release, and the reconcile that evicts a
+// holder whose run stopped spending the credential — terminal, model-idle,
+// re-stamped onto another key — before a refusal is final. Both twins, one
+// row: the publisher's admission reads whichever store the deployment has.
+func testCredSlotLedger(t *testing.T, s store.RunStore) {
+	t.Helper()
+	ctx := testCtx()
+	ledger := store.AsCredSlotStore(s)
+	if ledger == nil {
+		t.Fatal("the store must host the credential-slot ledger (store.CredSlotStore)")
+	}
+
+	mk := func(id string, status store.RunStatus, fps ...string) {
+		if _, err := s.CreateRun(ctx, id, "demo", nil); err != nil {
+			t.Fatalf("CreateRun %s: %v", id, err)
+		}
+		r, err := s.LoadRun(ctx, id)
+		if err != nil {
+			t.Fatalf("LoadRun %s: %v", id, err)
+		}
+		r.Status = status
+		if err := s.SaveRun(ctx, r); err != nil {
+			t.Fatalf("SaveRun %s: %v", id, err)
+		}
+		if len(fps) > 0 {
+			if err := s.SetRunCredStamp(ctx, id, store.RunCredStamp{Fingerprints: fps}); err != nil {
+				t.Fatalf("SetRunCredStamp %s: %v", id, err)
+			}
+		}
+	}
+	flip := func(id string, status store.RunStatus) {
+		r, err := s.LoadRun(ctx, id)
+		if err != nil {
+			t.Fatalf("LoadRun %s: %v", id, err)
+		}
+		r.Status = status
+		if err := s.SaveRun(ctx, r); err != nil {
+			t.Fatalf("SaveRun %s: %v", id, err)
+		}
+	}
+	const fp = "fp-capped"
+	reserve := func(id string, max int) store.CredSlotAdmission {
+		adm, err := ledger.ReserveCredSlot(ctx, fp, id, max)
+		if err != nil {
+			t.Fatalf("ReserveCredSlot(%s, max=%d): %v", id, max, err)
+		}
+		return adm
+	}
+
+	mk("slot_a", store.RunStatusRunning, fp)
+	mk("slot_b", store.RunStatusQueued, fp)
+	mk("slot_c", store.RunStatusRunning, fp)
+	if adm := reserve("slot_a", 2); !adm.Granted || adm.Held != 1 {
+		t.Fatalf("first admission: %+v, want granted with 1 holder", adm)
+	}
+	if adm := reserve("slot_b", 2); !adm.Granted || adm.Held != 2 {
+		t.Fatalf("second admission: %+v, want granted with 2 holders", adm)
+	}
+	if adm := reserve("slot_c", 2); adm.Granted || adm.Held != 2 {
+		t.Fatalf("a third run was admitted on a cap of two: %+v", adm)
+	}
+	// A holder is admitted again without a second slot — a resume's
+	// re-resolution reserves what the run holds.
+	if adm := reserve("slot_a", 2); !adm.Granted || adm.Held != 2 {
+		t.Fatalf("re-admitting a holder: %+v, want granted with the same 2 holders", adm)
+	}
+	// The undo of an admission gives the slot back.
+	if err := ledger.ReleaseCredSlot(ctx, fp, "slot_b"); err != nil {
+		t.Fatalf("ReleaseCredSlot: %v", err)
+	}
+	if adm := reserve("slot_c", 2); !adm.Granted || adm.Held != 2 {
+		t.Fatalf("after a release: %+v, want granted with 2 holders", adm)
+	}
+	// A holder that went terminal is evicted on the next refusal.
+	flip("slot_a", store.RunStatusFinished)
+	mk("slot_d", store.RunStatusRunning, fp)
+	if adm := reserve("slot_d", 2); !adm.Granted || adm.Held != 2 {
+		t.Fatalf("a finished holder kept its slot: %+v", adm)
+	}
+	// A model-idle holder spends nothing: its slot is free.
+	idleAt := time.Now().UTC()
+	if err := s.SetRunLLMIdle(ctx, "slot_c", &idleAt); err != nil {
+		t.Fatalf("SetRunLLMIdle: %v", err)
+	}
+	mk("slot_e", store.RunStatusRunning, fp)
+	if adm := reserve("slot_e", 2); !adm.Granted || adm.Held != 2 {
+		t.Fatalf("a model-idle holder kept its slot: %+v", adm)
+	}
+	// A holder re-stamped onto another credential no longer holds this one.
+	if err := s.SetRunCredStamp(ctx, "slot_d", store.RunCredStamp{Fingerprints: []string{"fp-other"}}); err != nil {
+		t.Fatalf("SetRunCredStamp: %v", err)
+	}
+	mk("slot_f", store.RunStatusRunning, fp)
+	if adm := reserve("slot_f", 2); !adm.Granted || adm.Held != 2 {
+		t.Fatalf("a re-stamped holder kept its slot: %+v", adm)
+	}
+	// Two spending holders, no slot free: the refusal is final.
+	mk("slot_g", store.RunStatusRunning, fp)
+	if adm := reserve("slot_g", 2); adm.Granted || adm.Held != 2 {
+		t.Fatalf("a run was admitted past two spending holders: %+v", adm)
+	}
+	// A reservation with no run document yet keeps its slot: the launch
+	// persists the run after it reserves (store.CredSlotGrace).
+	const fresh = "fp-fresh"
+	if adm, err := ledger.ReserveCredSlot(ctx, fresh, "slot_ghost", 1); err != nil || !adm.Granted {
+		t.Fatalf("reserving before the run document exists: %+v %v", adm, err)
+	}
+	mk("slot_h", store.RunStatusRunning, fresh)
+	if adm, err := ledger.ReserveCredSlot(ctx, fresh, "slot_h", 1); err != nil || adm.Granted {
+		t.Fatalf("a holder reserved moments ago with no document yet was evicted: %+v %v", adm, err)
+	}
+	// Caller errors, never silent: an uncapped key reserves nothing, and a
+	// reservation must name a key.
+	if _, err := ledger.ReserveCredSlot(ctx, fp, "slot_a", 0); err == nil {
+		t.Fatal("ReserveCredSlot(max=0) must refuse: an uncapped key reserves nothing")
+	}
+	if _, err := ledger.ReserveCredSlot(ctx, "", "slot_a", 1); err == nil {
+		t.Fatal("ReserveCredSlot with no fingerprint must refuse")
 	}
 }

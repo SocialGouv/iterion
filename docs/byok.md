@@ -108,7 +108,7 @@ One document per key, sealed at rest. [pkg/secrets/byok.go](../pkg/secrets/byok.
 | `last_used_at` | best-effort observability: bumped by id at resolution (`MarkUsed`, detached off the launch path) and by **fingerprint** at the START and END of every runner attempt (`MarkFingerprintUsed`). The start stamp lands once the run is ADMITTED, after the usage-cap pre-flight: a run parked on a ceiling never held the key and never dates it. Nothing moves it during a turn, so a long attempt shows its start until it ends. **Scope follows the key's tier**: a tenant's own key is bumped under the run's tenant only, so a different tenant that stored the byte-identical secret never reads its own key as "in use" (the studio shows this field as exactly that, before a rotate or delete); a platform-tier or pool-lent key (`RunBundle.PlatformSourced` / `PoolSourced`) is bumped across tenants, because its row lives under the platform sentinel or in the donor's tenant and it serves every tenant |
 | `alive_runs` (view only) | how many runs count against this key's ceiling right now — the same query the launch walk asks ([what counts](#concurrency-ceiling--what-counts)). Present whatever `max_concurrent_runs` is, so "is this key in use?" has an answer; absent (not zero) when there is nothing to count with (no fingerprint on a legacy row, no run store, a logged store error). The run side of the same audit is `cred_fingerprints` / `llm_idle_since` on `GET /api/runs/{id}` |
 | `refused_until` / `refused_reason` (view only) | set when the PROVIDER is currently turning this credential away — a dead token, a fair-usage refusal, a spent org ceiling, an exhausted window — folded from the shared usage ledger by `usagecap.RefusedUntil`, the same reading the launch walk acts on ([usage-caps.md](usage-caps.md)). Absent when nothing is refusing the key, and on a fingerprint-less row (which names a slot, not a credential). This is the only place a **pinned** refused key is visible: a webhook `key_overrides` pin bypasses the skip by design, so the walk leaves no skip log |
-| `max_concurrent_runs` | optional ceiling on how many alive runs may hold this key at once (`0` = uncapped) — the operator-side answer to providers whose fair-usage limits publish no numeric bound. What counts is defined in [Concurrency ceiling — what counts](#concurrency-ceiling--what-counts) |
+| `max_concurrent_runs` | optional **hard** cap on how many alive runs may hold this key at once (`0` = uncapped) — the operator-side answer to providers whose fair-usage limits publish no numeric bound. Enforced by an atomic per-key reservation at launch and at every resume; a full key **parks** the run (`CRED_SLOT_WAIT`, resumed by itself when a slot frees) instead of refusing it. What counts, and how the cap is enforced, is defined in [Concurrency ceiling — what counts](#concurrency-ceiling--what-counts) |
 | `bots` | optional **workload audience**: the bot ids whose runs may draw on this key. Empty admits every bot. See [Workload audience](#workload-audience--what-a-key-is-for) |
 | `expires_at` | optional |
 
@@ -124,12 +124,49 @@ events, artifacts, or returned by the API.
 
 ## Concurrency ceiling — what counts
 
-`max_concurrent_runs` is enforced at resolution
-(`cloudpublisher.apiKeyUsable`): a key at its ceiling is passed over like a
-refused one and the walk hands the next key of that provider over (or the
-next tier). The count is `CountAliveRunsWithCredFingerprint` on the run
-store — both twins, one conformance row — and a run counts against a key
-only when **all three** hold:
+`max_concurrent_runs` is enforced in two halves, and only the second one is
+the cap:
+
+- **The walk chooses.** At resolution (`cloudpublisher.apiKeyUsable`) a key
+  at its ceiling is passed over like a refused one and the walk hands the
+  next key of that provider over (or the next tier). The count is
+  `CountAliveRunsWithCredFingerprint` on the run store — both twins, one
+  conformance row. This half is advisory by construction: it reads the run
+  documents before this run is written (two publisher replicas admit on the
+  same reading), a `key_overrides` pin bypasses it, and the refused-key
+  restore undoes it on purpose.
+- **The admission enforces.** After the key is chosen and before anything
+  is persisted or published, the publisher reserves one slot per capped key
+  the run's stamp names on the **credential-slot ledger**
+  (`store.CredSlotStore`: Mongo collection `cred_slots`, one row per
+  fingerprint listing the runs that hold a slot; an in-memory twin on the
+  filesystem store). The reservation is one conditional write — add the run
+  while the row has room — so of N concurrent admissions on a key with K
+  free slots exactly K succeed, whatever replica each ran on. A pinned key,
+  a restored key and a resumed run all pass through it; a resumed run's own
+  slot is admitted again without taking a second one. A store error
+  refuses the launch, never admits it.
+
+A **full key parks the run instead of refusing it**: the row is written
+`failed_resumable` under `CRED_SLOT_WAIT` with a durable retry armed
+(`retry_state.reason = cred_slot`), and the retry sweeper asks for a slot
+again every `cloudpublisher.CredSlotProbeInterval` (2 min) — free of
+attempts, since no ask reaches the provider — until a slot frees or the
+run's `max_wait` passes, at which point the run is abandoned naming the
+key. A webhook delivery has nobody to click again; a parked run keeps its
+place, its inputs and its pull request's pending check. An operator's
+`resume` of a parked run while the key is still full answers 429 and
+leaves the run parked.
+
+The ledger never becomes a second truth. Nothing releases a slot
+explicitly: a holder is free when its run stops counting under the three
+rules below, and a refusal re-reads the row's holders against their run
+documents before it is final (`store.CredSlotHolderStale`), evicting the
+ones that no longer spend the key and retrying the admission once. A holder
+whose run document does not exist yet keeps its slot for
+`store.CredSlotGrace` (a launch reserves before it persists); a deleted run
+is pulled from every row at once. A run counts against a key only when
+**all three** hold:
 
 1. **It is alive** — `queued` or `running` (`RunStatus.HoldsCredentialSlot`).
    A parked or paused run spends nothing while it waits, and its resume
@@ -152,7 +189,8 @@ only when **all three** hold:
    mid-node leaves a run the orphan sweeper parks, and rule 1 releases it.
 
 Everything uncertain counts (over-protection), never the reverse: a count
-error leaves the ceiling unapplied for that resolution and is logged.
+error leaves the walk's skip unapplied for that resolution and is logged —
+the admission still decides, and it fails closed.
 
 ## Workload audience — what a key is FOR
 
@@ -167,10 +205,11 @@ funded yesterday. Same asymmetry, and same reason, as
 
 Three properties decide where it is enforced, and they are the whole design:
 
-1. **It is a gate, not a ceiling.** `max_concurrent_runs` rides
+1. **It is a gate, not a ceiling.** The walk's ceiling skip rides
    `apiKeyUsable`, whose refusals the refused-key restore deliberately undoes
-   — progress beats a soft cap. An audience must survive that path, so it is
-   checked inside `secrets.Resolve` itself.
+   — the cap itself is enforced after the walk, by the slot admission, which
+   parks. An audience must survive that path, so it is checked inside
+   `secrets.Resolve` itself.
 2. **A pin does not lift it.** `key_overrides` is honoured over the
    usable-predicate by design; the audience is read *before* that exemption,
    or "pin the key" would be the documented way around it.

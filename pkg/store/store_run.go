@@ -1366,15 +1366,7 @@ func (s *FilesystemRunStore) CountAliveRunsWithCredFingerprint(ctx context.Conte
 		return 0, nil
 	}
 	ids, err := s.filterRunsSorted(ctx, func(r *Run) bool {
-		if r.ID == excludeRunID || !r.Status.HoldsCredentialSlot() || r.LLMIdleSince != nil {
-			return false
-		}
-		for _, fp := range r.CredFingerprints {
-			if fp == fingerprint {
-				return true
-			}
-		}
-		return false
+		return r.ID != excludeRunID && r.SpendsCredential(fingerprint)
 	})
 	if err != nil {
 		return 0, err

@@ -638,6 +638,13 @@ func (p *RunLLMRoutePolicy) ProviderAllowlist() []string {
 // run invisible to the pass that probes it.
 const RetryReasonUsageWindow = "usage_window"
 
+// RetryReasonCredSlot is the failure class of a park on a credential's hard
+// concurrency cap (FailureCredSlotWait). The wait ends when a run holding a
+// slot ends, which names no instant: the sweeper asks again on a cadence of
+// its own, and the probe pass — keyed on RetryReasonUsageWindow — never
+// pulls such a row forward for a provider wall it is not waiting on.
+const RetryReasonCredSlot = "cred_slot"
+
 // RunRetryState is the live retry bookkeeping for a run whose failure is
 // waiting on a provider quota window to reopen.
 //

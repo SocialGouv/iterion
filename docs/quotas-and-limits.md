@@ -206,7 +206,12 @@ is a separate question with its own two gates — the org's
 platform tier's `platform_credentials` audience (which tenants may draw on
 the deployment's). Both are documented in
 [cloud-llm-credentials.md](cloud-llm-credentials.md); neither denies a
-launch, they decide what the run is handed.
+launch, they decide what the run is handed. A third, per-credential limit
+lives on the key itself: `max_concurrent_runs`
+([byok.md](byok.md#concurrency-ceiling--what-counts)) is a hard cap held by an
+atomic reservation at launch and resume, and a full key **parks** the run
+(`CRED_SLOT_WAIT`, resumed by itself when a slot frees) rather than denying
+it — only an operator's resume of a run still waiting answers 429.
 
 The override-field semantics are pinned in
 [pkg/server/launch_gate.go:orValue](../pkg/server/launch_gate.go) (the

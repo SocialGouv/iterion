@@ -51,6 +51,7 @@ const (
 	colRunTags        = "run_tags"
 	colRetryCircuits  = "retry_circuits"
 	colStagedUploads  = "staged_uploads"
+	colCredSlots      = "cred_slots"
 )
 
 // Config bundles the connection settings for a MongoRunStore.
@@ -117,6 +118,7 @@ type Store struct {
 	runTags            *mongo.Collection
 	retryCircuits      *mongo.Collection
 	stagedUploads      *mongo.Collection
+	credSlots          *mongo.Collection
 	blob               blob.Client
 	logger             *iterlog.Logger
 	lockProv           LockProvider
@@ -227,6 +229,7 @@ func New(ctx context.Context, cfg Config) (*Store, error) {
 		runTags:            db.Collection(colRunTags),
 		retryCircuits:      db.Collection(colRetryCircuits),
 		stagedUploads:      db.Collection(colStagedUploads),
+		credSlots:          db.Collection(colCredSlots),
 		blob:               cfg.Blob,
 		logger:             cfg.Logger,
 		lockProv:           cfg.LockProvider,

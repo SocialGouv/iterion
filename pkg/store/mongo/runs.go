@@ -182,6 +182,15 @@ func (s *Store) DeleteRun(ctx context.Context, id string) error {
 	if _, err := s.runSeq.DeleteMany(ctx, seqFilter); err != nil {
 		return fmt.Errorf("store/mongo: delete run_seq for run %s: %w", id, err)
 	}
+	// The credential-slot ledger (cred_slots.go) is keyed by FINGERPRINT and
+	// names the run inside its holders array, tenant-blind: a platform key's
+	// row lists every tenant's runs. Pulled by that key, so a deleted run frees
+	// its slot now rather than when a refusal's reconcile finds its document
+	// gone past the grace.
+	if _, err := s.credSlots.UpdateMany(ctx, bson.M{"holders.run_id": id},
+		bson.M{"$pull": bson.M{"holders": bson.M{"run_id": id}}, "$set": bson.M{"updated_at": time.Now().UTC()}}); err != nil {
+		return fmt.Errorf("store/mongo: release cred slots of run %s: %w", id, err)
+	}
 	children := []struct {
 		name string
 		coll *mongo.Collection

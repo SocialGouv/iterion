@@ -78,6 +78,12 @@ type FilesystemRunStore struct {
 	seqSeed    map[string]bool  // run_id → seq has been seeded from disk
 	signingKey []byte           // HMAC key for presigned attachment URLs (lazy)
 
+	// credSlotMu guards credSlots, the in-memory half of the credential-slot
+	// ledger (CredSlotStore, credslot_fs.go). Its own lock: the reconcile
+	// loads run documents while holding it, and nothing takes mu then it.
+	credSlotMu sync.Mutex
+	credSlots  map[string][]credSlotHolder
+
 	// inboxVersion is incremented on every user-message write so a
 	// hot-path consumer (the agent-loop inbox drainer) can cheap-skip
 	// loading the JSONL when nothing changed. Read+write under `mu`.
