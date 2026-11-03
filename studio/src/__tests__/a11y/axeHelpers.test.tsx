@@ -14,6 +14,7 @@ import {
   AXE_WCAG_TAGS,
   axeRunOptions,
   expectNoViolationsStrict,
+  expectUniqueAccessibleNames,
 } from "./axeHelpers";
 
 afterEach(cleanup);
@@ -459,5 +460,528 @@ describe("one net, no second one", () => {
       .filter(([, src]) => /\bexpectNoViolations\s*\(/.test(src))
       .map(([path]) => path);
     expect(lax).toHaveLength(0);
+  });
+});
+
+// The seam that replaced five hand-rolled copies (#2591). axe has no rule
+// for two controls answering to one name, so this helper IS the net for the
+// repeated-row-action class — which makes it the guard of a guard again: a
+// reader that mis-reads a name in either direction turns the pins built on
+// it into decoration.
+describe("expectUniqueAccessibleNames — the collision axe has no rule for", () => {
+  it("fails on two controls answering to one name", () => {
+    const { container } = render(
+      <main>
+        <table>
+          <tbody>
+            <tr>
+              <td>ANTHROPIC_KEY</td>
+              <td>
+                <button type="button">Delete</button>
+              </td>
+            </tr>
+            <tr>
+              <td>OPENAI_KEY</td>
+              <td>
+                <button type="button">Delete</button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </main>,
+    );
+    expect(() =>
+      expectUniqueAccessibleNames(container, "two rows", { roles: ["button"], count: 2 }),
+    ).toThrow(/sharing one accessible name/);
+    expect(() =>
+      expectUniqueAccessibleNames(container, "two rows", { roles: ["button"], count: 2 }),
+    ).toThrow(/button "Delete" — 2 controls answer to it/);
+  });
+
+  it("passes once each row qualifies its own control", () => {
+    const { container } = render(
+      <main>
+        <button type="button" aria-label="Delete ANTHROPIC_KEY">
+          Delete
+        </button>
+        <button type="button" aria-label="Delete OPENAI_KEY">
+          Delete
+        </button>
+      </main>,
+    );
+    expect(() =>
+      expectUniqueAccessibleNames(container, "qualified", {
+        roles: ["button"],
+        expected: ["Delete ANTHROPIC_KEY", "Delete OPENAI_KEY"],
+      }),
+    ).not.toThrow();
+  });
+
+  // The four mechanisms. `aria-label ?? textContent` — what the five copies
+  // read — reports a correctly-named control on three of them.
+  it("reads a name given by aria-labelledby, not just by aria-label", () => {
+    const { container } = render(
+      <main>
+        <span id="scope-label">Scope</span>
+        <div role="radiogroup" aria-labelledby="scope-label">
+          <input type="radio" name="scope" aria-label="Global" />
+        </div>
+      </main>,
+    );
+    expect(() =>
+      expectUniqueAccessibleNames(container, "radiogroup", { roles: ["radiogroup"], count: 1 }),
+    ).not.toThrow();
+  });
+
+  it("reads a name given by the control's own <label>", () => {
+    const { container } = render(
+      <main>
+        <label htmlFor="host">Allowed host</label>
+        <input id="host" type="text" />
+      </main>,
+    );
+    expect(() =>
+      expectUniqueAccessibleNames(container, "labelled field", { roles: ["textbox"], count: 1 }),
+    ).not.toThrow();
+  });
+
+  it("reads a name given by title alone — axe's `label` rule accepts one", () => {
+    const { container } = render(
+      <main>
+        <button type="button" title="Poll now" />
+      </main>,
+    );
+    expect(() =>
+      expectUniqueAccessibleNames(container, "title-named", { roles: ["button"], count: 1 }),
+    ).not.toThrow();
+  });
+
+  it("normalises a name split across nodes and drops the aria-hidden glyph", () => {
+    const { container } = render(
+      <main>
+        <button type="button">
+          <span aria-hidden="true">▶</span> Launch <span>run</span>
+        </button>
+        <button type="button">
+          <span aria-hidden="true">▶</span> Launch <span>run</span>
+        </button>
+      </main>,
+    );
+    // `textContent` un-normalised is "▶ Launch\n  run": the real algorithm
+    // answers to neither that nor the glyph, so the read has to normalise
+    // AND skip the hidden subtree — otherwise the sweep fails as "not found"
+    // instead of as the collision it is.
+    expect(() =>
+      expectUniqueAccessibleNames(container, "split name", { roles: ["button"], count: 2 }),
+    ).toThrow(/button "Launch run" — 2 controls answer to it/);
+  });
+
+  it("reads an icon-only control named by the glyph's own aria-label", () => {
+    const { container } = render(
+      <main>
+        <button type="button">
+          <span role="img" aria-label="Rotate ANTHROPIC_KEY" />
+        </button>
+      </main>,
+    );
+    expect(() =>
+      expectUniqueAccessibleNames(container, "glyph-named", { roles: ["button"], count: 1 }),
+    ).not.toThrow();
+  });
+
+  it("refuses a placeholder-only control — a placeholder is not a name (#2591)", () => {
+    const { container } = render(
+      <main>
+        <input type="text" placeholder="Search secrets…" />
+      </main>,
+    );
+    expect(() =>
+      expectUniqueAccessibleNames(container, "placeholder only", {
+        roles: ["textbox"],
+        count: 1,
+      }),
+    ).toThrow(/a placeholder is not a name/);
+  });
+
+  it("throws a reading error, never a pass, when the algorithm answers to something else", () => {
+    // This reader loads no stylesheet and reads no inline style; the
+    // algorithm drops a `display: none` descendant. A reader that disagrees
+    // with the algorithm must say so — the alternative is a sweep that
+    // silently judges names nobody hears.
+    const { container } = render(
+      <main>
+        <button type="button">
+          <span style={{ display: "none" }}>Legacy </span>Save
+        </button>
+      </main>,
+    );
+    expect(() =>
+      expectUniqueAccessibleNames(container, "mis-read", { roles: ["button"], count: 1 }),
+    ).toThrow(/reading error, never a pass/);
+  });
+
+  it("reads the contents of the roles the algorithm names by them, and of no other", () => {
+    // A `role="combobox"` showing its value is named by nothing: the reader
+    // agrees with the algorithm and reports the control UNNAMED rather than
+    // offering a name nobody hears.
+    const { container } = render(
+      <main>
+        <div role="combobox" tabIndex={0}>
+          anthropic/claude
+        </div>
+      </main>,
+    );
+    expect(() =>
+      expectUniqueAccessibleNames(container, "value-only", { roles: ["combobox"], count: 1 }),
+    ).toThrow(/a combobox carries no name to read/);
+  });
+
+  it("drops an aria-hidden glyph from a referenced or associated label, as the algorithm does", () => {
+    const { container } = render(
+      <main>
+        <span id="lbl">
+          <span aria-hidden="true">★</span>Name
+        </span>
+        <input aria-labelledby="lbl" type="text" />
+        <label htmlFor="host">
+          <span aria-hidden="true">★</span>Host
+        </label>
+        <input id="host" type="text" />
+      </main>,
+    );
+    expect(() =>
+      expectUniqueAccessibleNames(container, "glyphs", {
+        roles: ["textbox"],
+        expected: ["Name", "Host"],
+      }),
+    ).not.toThrow();
+  });
+
+  it("judges each role on its own — one name on a button and a checkbox is two announcements", () => {
+    const { container } = render(
+      <main>
+        <button type="button">Draft</button>
+        <label htmlFor="draft">Draft</label>
+        <input id="draft" type="checkbox" />
+      </main>,
+    );
+    expect(() =>
+      expectUniqueAccessibleNames(container, "two roles", {
+        roles: ["button", "checkbox"],
+        count: 2,
+      }),
+    ).not.toThrow();
+  });
+
+  // `matching` carries the surface's COUNT claim and nothing else. A scope
+  // that also hid collisions would be blind to the one regression this net
+  // exists for — a NEW repeated row action, whose name is by construction a
+  // name no existing scope mentions.
+  const scopedRows = (): HTMLElement =>
+    render(
+      <main>
+        <button type="button">Open run A</button>
+        <button type="button">Open run B</button>
+        {/* Two legitimate repeats: every row's avatar runs the same filter. */}
+        <button type="button" aria-label="Filter by bot">
+          avatar
+        </button>
+        <button type="button" aria-label="Filter by bot">
+          avatar
+        </button>
+      </main>,
+    ).container;
+
+  it("exempts only the names the surface declares repeatable, and keeps the count scoped", () => {
+    const container = scopedRows();
+    expect(() =>
+      expectUniqueAccessibleNames(container, "scoped", {
+        roles: [
+          { role: "button", matching: [/^Open run /], repeatable: [/^Filter by /] },
+        ],
+        count: 2,
+      }),
+    ).not.toThrow();
+  });
+
+  it("judges a repeat the arithmetic scope does not mention", () => {
+    const container = scopedRows();
+    expect(() =>
+      expectUniqueAccessibleNames(container, "scoped", {
+        roles: [{ role: "button", matching: [/^Open run /] }],
+        count: 2,
+      }),
+    ).toThrow(/button "Filter by bot" — 2 controls answer to it/);
+  });
+
+  it("refuses an unnamed control the arithmetic scope does not mention", () => {
+    const { container } = render(
+      <main>
+        <button type="button">Open run A</button>
+        <button type="button" />
+      </main>,
+    );
+    expect(() =>
+      expectUniqueAccessibleNames(container, "scoped", {
+        roles: [{ role: "button", matching: [/^Open run /] }],
+        count: 1,
+      }),
+    ).toThrow(/carries no name to read/);
+  });
+
+  // `roles` carries the surface's ARITHMETIC claim; it is not the guard's
+  // eyes. The regression this net exists for is a control a later change
+  // ADDS, and its role is by construction one nobody declared — every pin on
+  // the five row surfaces #2591 qualified declares `button` alone.
+  it("judges a collision in a role the surface never declared", () => {
+    const { container } = render(
+      <main>
+        <button type="button" aria-label="Rotate ANTHROPIC_KEY">
+          Rotate
+        </button>
+        <button type="button" aria-label="Rotate OPENAI_KEY">
+          Rotate
+        </button>
+        <input type="checkbox" aria-label="Select row" />
+        <input type="checkbox" aria-label="Select row" />
+      </main>,
+    );
+    expect(() =>
+      expectUniqueAccessibleNames(container, "rows", { roles: ["button"], count: 2 }),
+    ).toThrow(/checkbox "Select row" — 2 controls answer to it/);
+  });
+
+  it("keeps the undeclared roles out of the arithmetic claim", () => {
+    const { container } = render(
+      <main>
+        <button type="button">Rotate A</button>
+        <button type="button">Rotate B</button>
+        <input type="checkbox" aria-label="Select A" />
+        <input type="text" aria-label="Rename A" />
+      </main>,
+    );
+    // The count is the two buttons: a number that moved with every widget on
+    // the surface would be one its author could not state.
+    expect(() =>
+      expectUniqueAccessibleNames(container, "rows", { roles: ["button"], count: 2 }),
+    ).not.toThrow();
+  });
+
+  it("leaves an unnamed control in an undeclared role to axe and the source scans", () => {
+    const { container } = render(
+      <main>
+        <button type="button">Rotate A</button>
+        <input type="checkbox" />
+      </main>,
+    );
+    // axe's `label` judges it in the entry beside this one; a pin reddening
+    // here would make it its whole surface's auditor.
+    expect(() =>
+      expectUniqueAccessibleNames(container, "rows", { roles: ["button"], count: 1 }),
+    ).not.toThrow();
+  });
+
+  it("leaves an unlabelled <select> in an undeclared role to axe — its options are not a name", () => {
+    const { container } = render(
+      <main>
+        <button type="button">Rotate A</button>
+        <select>
+          <option>Alpha</option>
+          <option>Beta</option>
+        </select>
+      </main>,
+    );
+    expect(() =>
+      expectUniqueAccessibleNames(container, "rows", { roles: ["button"], count: 1 }),
+    ).not.toThrow();
+    // Declared, the same control is the author's to see.
+    expect(() =>
+      expectUniqueAccessibleNames(container, "rows", { roles: ["button", "combobox"], count: 2 }),
+    ).toThrow(/a combobox carries no name to read/);
+  });
+
+  it("leaves a control it mis-reads in an undeclared role to axe, and throws on a declared one", () => {
+    const { container } = render(
+      <main>
+        <button type="button">Rotate A</button>
+        <a href="/x">
+          <span style={{ display: "none" }}>Legacy </span>Open
+        </a>
+      </main>,
+    );
+    expect(() =>
+      expectUniqueAccessibleNames(container, "rows", { roles: ["button"], count: 1 }),
+    ).not.toThrow();
+    expect(() =>
+      expectUniqueAccessibleNames(container, "rows", { roles: ["button", "link"], count: 2 }),
+    ).toThrow(/reading error, never a pass/);
+  });
+
+  // An option is reached through its listbox, a radio through its group, a
+  // tab through its tablist, a menu item through its menu: the items of two
+  // composites are distinct announcements, and a surface with two labelled
+  // <select>s sharing an option text owes no waiver.
+  it("judges an option, radio, tab or menu item among the items of its own composite", () => {
+    const { container } = render(
+      <main>
+        <button type="button">Save</button>
+        <label htmlFor="s1">Scope A</label>
+        <select id="s1">
+          <option>global</option>
+          <option>project</option>
+        </select>
+        <label htmlFor="s2">Scope B</label>
+        <select id="s2">
+          <option>global</option>
+          <option>project</option>
+        </select>
+        <fieldset>
+          <legend>Notify</legend>
+          <label>
+            <input type="radio" name="notify" /> Yes
+          </label>
+          <label>
+            <input type="radio" name="notify" /> No
+          </label>
+        </fieldset>
+        <fieldset>
+          <legend>Archive</legend>
+          <label>
+            <input type="radio" name="archive" /> Yes
+          </label>
+          <label>
+            <input type="radio" name="archive" /> No
+          </label>
+        </fieldset>
+        <div role="tablist" aria-label="Run">
+          <button type="button" role="tab">
+            Overview
+          </button>
+        </div>
+        <div role="tablist" aria-label="Bot">
+          <button type="button" role="tab">
+            Overview
+          </button>
+        </div>
+        <div role="menu" aria-label="Run">
+          <div role="menuitem" tabIndex={-1}>
+            Open
+          </div>
+        </div>
+        <div role="menu" aria-label="Bot">
+          <div role="menuitem" tabIndex={-1}>
+            Open
+          </div>
+        </div>
+      </main>,
+    );
+    expect(() =>
+      expectUniqueAccessibleNames(container, "composites", { roles: ["button"], count: 1 }),
+    ).not.toThrow();
+    // Declared, an item is scoped the same way: the count is the items read.
+    expect(() =>
+      expectUniqueAccessibleNames(container, "composites", { roles: ["tab"], count: 2 }),
+    ).not.toThrow();
+  });
+
+  it("still fails two items of ONE composite answering to one name", () => {
+    const { container } = render(
+      <main>
+        <button type="button">Save</button>
+        <label htmlFor="s1">Scope</label>
+        <select id="s1">
+          <option>global</option>
+          <option>global</option>
+        </select>
+        <div role="radiogroup" aria-label="Notify">
+          <input type="radio" aria-label="Yes" />
+          <input type="radio" aria-label="Yes" />
+        </div>
+        <div role="tablist" aria-label="Run">
+          <button type="button" role="tab">
+            Overview
+          </button>
+          <button type="button" role="tab">
+            Overview
+          </button>
+        </div>
+      </main>,
+    );
+    const sweep = () =>
+      expectUniqueAccessibleNames(container, "one composite", { roles: ["button"], count: 1 });
+    expect(sweep).toThrow(/option "global" — 2 controls answer to it in one <select>/);
+    expect(sweep).toThrow(/radio "Yes" — 2 controls answer to it in one <div role="radiogroup">/);
+    expect(sweep).toThrow(/tab "Overview" — 2 controls answer to it in one <div role="tablist">/);
+  });
+
+  it("groups native radios by name when no radiogroup scopes them", () => {
+    const { container } = render(
+      <main>
+        <button type="button">Save</button>
+        <input type="radio" name="notify" aria-label="Yes" />
+        <input type="radio" name="notify" aria-label="Yes" />
+        <input type="radio" name="archive" aria-label="Yes" />
+      </main>,
+    );
+    expect(() =>
+      expectUniqueAccessibleNames(container, "native groups", { roles: ["button"], count: 1 }),
+    ).toThrow(/radio "Yes" — 2 controls answer to it$/m);
+  });
+
+  it("reports a repeatable pattern that exempted nothing — a waiver nobody can check", () => {
+    const { container } = render(
+      <main>
+        <button type="button">Open run A</button>
+        <button type="button">Open run B</button>
+      </main>,
+    );
+    expect(() =>
+      expectUniqueAccessibleNames(container, "stale waiver", {
+        roles: [{ role: "button", repeatable: [/^Filter by /] }],
+        count: 2,
+      }),
+    ).toThrow(/repeatable patterns that exempted nothing/);
+  });
+
+  it("refuses a sweep that declares nothing — an empty surface would pass it", () => {
+    const { container } = render(<main />);
+    expect(() =>
+      expectUniqueAccessibleNames(container, "vacuous", { roles: ["button"] }),
+    ).toThrow(/declares a role and what it read/);
+    // And the declaration bites: nothing rendered, so the floor fails.
+    expect(() =>
+      expectUniqueAccessibleNames(container, "vacuous", { roles: ["button"], atLeast: 1 }),
+    ).toThrow(/read 0 control\(s\), fewer than the 1 declared/);
+  });
+
+  // Each of these is the vacuous sweep spelled as a declaration: it reads
+  // nothing, finds no collision, and passes. The guard has to refuse the
+  // SHAPE, not just the absent key.
+  it("refuses a claim of zero, and a sweep with no role at all", () => {
+    const { container } = render(<main />);
+    for (const scope of [
+      { roles: ["button"], expected: [] },
+      { roles: ["button"], count: 0 },
+      { roles: ["button"], atLeast: 0 },
+      { roles: [], count: 2 },
+    ]) {
+      expect(() => expectUniqueAccessibleNames(container, "vacuous", scope)).toThrow(
+        /declares a role and what it read/,
+      );
+    }
+  });
+
+  it("fails when the names read are not the ones the surface declares", () => {
+    const { container } = render(
+      <main>
+        <button type="button">Rotate ANTHROPIC_KEY</button>
+      </main>,
+    );
+    expect(() =>
+      expectUniqueAccessibleNames(container, "drifted", {
+        roles: ["button"],
+        expected: ["Rotate ANTHROPIC_KEY", "Delete ANTHROPIC_KEY"],
+      }),
+    ).toThrow(/the names read are not the ones declared/);
   });
 });

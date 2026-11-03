@@ -127,6 +127,7 @@ export default function SecretsTab({ teamID, canManage }: Props) {
         />
         <SecretsTable
           caption="Team secrets"
+          scopeLabel="team"
           secrets={teamSecrets}
           loading={loading}
           emptyText={
@@ -148,6 +149,7 @@ export default function SecretsTab({ teamID, canManage }: Props) {
         />
         <SecretsTable
           caption="My secrets"
+          scopeLabel="personal"
           secrets={mySecrets}
           loading={loading}
           emptyText="No personal secrets yet."
@@ -203,7 +205,17 @@ function SecretsSectionHeader({
         <p className="text-xs text-fg-subtle mt-0.5">{description}</p>
       </div>
       {onCreate && (
-        <Button size="sm" variant="primary" onClick={onCreate}>
+        // The tab renders this header twice — team secrets and personal
+        // secrets — so both buttons read "Add secret" and announce the same
+        // thing. The accessible name carries the section it adds to; the
+        // visible word stays first, so the name contains the label
+        // (SC 2.5.3) and the visible text is untouched.
+        <Button
+          size="sm"
+          variant="primary"
+          aria-label={`Add secret (${title})`}
+          onClick={onCreate}
+        >
           Add secret
         </Button>
       )}
@@ -213,6 +225,7 @@ function SecretsSectionHeader({
 
 function SecretsTable({
   caption,
+  scopeLabel,
   secrets,
   loading,
   emptyText,
@@ -221,6 +234,12 @@ function SecretsTable({
   onDelete,
 }: {
   caption: string;
+  /**
+   * The scope this table's rows belong to, for their actions' accessible
+   * names. The tab renders TWO of these tables and one secret name can
+   * exist in both, so the name alone leaves two rows announcing "Rotate".
+   */
+  scopeLabel: string;
   secrets: GenericSecretView[];
   loading: boolean;
   emptyText: string;
@@ -257,13 +276,21 @@ function SecretsTable({
             <Td align="right" className="space-x-1 whitespace-nowrap">
               {canManage && (
                 <>
-                  <Button size="sm" variant="ghost" onClick={() => onRotate(s)}>
+                  {/* Visible word first, so the name contains the label
+                      (SC 2.5.3); the visible text is untouched. */}
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    aria-label={`Rotate ${s.name} (${scopeLabel})`}
+                    onClick={() => onRotate(s)}
+                  >
                     Rotate
                   </Button>
                   <Button
                     size="sm"
                     variant="ghost"
                     className="text-danger"
+                    aria-label={`Delete ${s.name} (${scopeLabel})`}
                     onClick={() => onDelete(s)}
                   >
                     Delete
