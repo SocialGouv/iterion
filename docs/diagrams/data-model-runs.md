@@ -313,14 +313,14 @@ erDiagram
 
 ## Where a run's bytes live
 
-Outside Mongo, a cloud run writes into six S3 key spaces of one bucket — beside a seventh, `uploads/`, where the server stages what a launch form uploads before any run exists — and one NATS KV bucket, and its launch travels on a JetStream subject; a second KV bucket holds the fleet's rollout epoch. The marked participants of Block 3 are the two stores a run itself writes; the streams are transport rather than state, so no entity draws them.
+Outside Mongo, a cloud run writes into six S3 key spaces of one bucket — beside a seventh, `uploads/`, where the server stages what a launch form uploads before any run exists — and one NATS KV bucket, and its launch travels on a JetStream subject; a second KV bucket holds the fleet's rollout epoch. The marked participants of Block 3 are the two stores a run itself writes; the streams are transport rather than state, so no entity draws them. The six run key spaces are keyed by the run id alone, with no tenant in the key: they are deleted by `store.DeleteRun` — `DELETE /api/runs/{id}`, and the org purge, which deletes each run of a purged org through it before any Mongo row goes ([flow-org-team-lifecycle.md](flow-org-team-lifecycle.md)).
 
 | store | key or name | what it holds |
 | --- | --- | --- |
 | S3, bucket `iterion-artifacts` (the default name) | `artifacts/<run>/<node>/<version>.json` | one object per artifact revision of a node |
 | S3 | `attachments/<run>/<name>/<file>` | the attachment bodies `runs.attachments` indexes — plus the reserved name `__gitdiff`, where a per-file diff too large to inline is offloaded and deliberately left OUT of that index |
 | S3 | `tools/<run>/<toolUseID>/input` · `/output` | one object per tool call and direction |
-| S3 | `ir/<run>.json` | the compiled IR when it rides out of band |
+| S3 | `ir/<run>.json` · `ir/<run>-bundle-<digest>.json` | the compiled IR when it rides out of band, and the immutable bundle snapshot when it exceeds the queue payload — both deleted by `DeleteRunIR` |
 | S3 | `sessions/<run>/<ref>` | the backend conversation a resume reattaches to |
 | S3 | `runfiles/<run>/<rel path>` | tool-produced files |
 | S3 | `uploads/<upload>/<file>` | an upload a launch form staged and no run claimed yet — reached only through its `staged_uploads` record, read under the tenant filter, never presigned, swept after an hour (bytes, then record) |

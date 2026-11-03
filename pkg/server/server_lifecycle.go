@@ -406,11 +406,10 @@ func (s *Server) ListenAndServe() error {
 		})
 	}
 	// Org purge sweeper: nightly hard-purge of soft-deleted orgs past their
-	// grace. Idempotent across replicas (no leader election needed).
-	if s.cfg.OrgPurgeSweeper != nil {
-		s.goUntilShutdown("server.orgPurgeSweeper", func(ctx context.Context) {
-			s.cfg.OrgPurgeSweeper.Run(ctx)
-		})
+	// grace, on the ONE replica holding its lease (runElectedOrgPurge): the
+	// purge is idempotent, its S3 cost is not.
+	if s.orgPurgeStarts() {
+		s.goUntilShutdown("server.orgPurgeSweeper", s.runElectedOrgPurge)
 	}
 	// Cloud board dispatcher: claim + run eligible cards across all tenants.
 	// Multi-replica-safe via the per-card Claim CAS (no leader election).

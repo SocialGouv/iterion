@@ -572,7 +572,8 @@ type Config struct {
 	ScheduledBots cloudsched.Store
 
 	// OrgPurgeSweeper, when set (cloud mode), runs a nightly sweep that
-	// hard-purges orgs whose soft-delete grace has elapsed. nil disables it.
+	// hard-purges orgs whose soft-delete grace has elapsed, on the one replica
+	// holding its lease (runElectedOrgPurge). nil disables it.
 	OrgPurgeSweeper *orgsweep.Sweeper
 
 	// Bots configures the /api/v1/bots endpoints used by the studio

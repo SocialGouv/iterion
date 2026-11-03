@@ -139,9 +139,10 @@ type Client interface {
 	// reference can never widen the key space.
 	GetIRBlob(ctx context.Context, storageKey string) ([]byte, error)
 
-	// DeleteRunIR removes the `ir/<runID>.json` blob. Best-effort, part of
-	// the per-run cleanup sweep alongside DeleteRun / DeleteRunToolBlobs.
-	// Idempotent: deleting a non-existent key returns nil.
+	// DeleteRunIR removes the `ir/<runID>.json` blob and the run's bundle
+	// snapshots (`ir/<runID>-bundle-<digest>.json`, IRBundleSnapshotPrefix),
+	// part of the per-run cleanup sweep alongside DeleteRun /
+	// DeleteRunToolBlobs. Idempotent: deleting a non-existent key returns nil.
 	DeleteRunIR(ctx context.Context, runID string) error
 
 	// PutBackendSession stores a packed CLI session (ADR-089) under

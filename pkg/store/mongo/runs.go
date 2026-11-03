@@ -732,11 +732,28 @@ func (s *Store) ListRunsForPR(ctx context.Context, prURL string) ([]string, erro
 // given (tenant-wrapped) filter, projecting _id and sorting by
 // created_at ascending. Shared by the reverse-tree queries.
 func (s *Store) listRunIDsBy(ctx context.Context, filter bson.M, what string) ([]string, error) {
-	cur, err := s.runs.Find(
-		ctx,
-		notDeleted(withTenantFilter(ctx, filter)),
-		options.Find().SetProjection(bson.M{"_id": 1}).SetSort(bson.D{{Key: "created_at", Value: 1}}),
-	)
+	return s.findRunIDs(ctx, filter,
+		options.Find().SetProjection(bson.M{"_id": 1}).SetSort(bson.D{{Key: "created_at", Value: 1}}), what)
+}
+
+// ListRunIDsForPurge returns the ids of the live (not deleted) runs of the
+// tenant the context carries, in no particular order — the org purge's
+// question (pkg/cloud/orgsweep), asked once per team of an org past its
+// grace. Unsorted and projected on _id, its tenant_id equality is served by
+// the tenant-prefixed run indexes rather than ListRuns' scan and in-memory
+// sort. A context without a tenant is refused: the unscoped answer would hand
+// every run of every tenant to a delete loop.
+func (s *Store) ListRunIDsForPurge(ctx context.Context) ([]string, error) {
+	if _, ok := store.TenantFromContext(ctx); !ok {
+		return nil, fmt.Errorf("store/mongo: list runs for purge: no tenant in the context — refused, the answer feeds a delete loop")
+	}
+	return s.findRunIDs(ctx, bson.M{}, options.Find().SetProjection(bson.M{"_id": 1}), "list runs for purge")
+}
+
+// findRunIDs runs a Find over the runs collection with the given
+// (tenant-wrapped, tombstones excluded) filter and returns the ids.
+func (s *Store) findRunIDs(ctx context.Context, filter bson.M, opts *options.FindOptionsBuilder, what string) ([]string, error) {
+	cur, err := s.runs.Find(ctx, notDeleted(withTenantFilter(ctx, filter)), opts)
 	if err != nil {
 		return nil, fmt.Errorf("store/mongo: %s: %w", what, err)
 	}
