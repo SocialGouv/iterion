@@ -1,8 +1,8 @@
-# ADR-154: The sovereign pool boundary is a namespace and an enforced proxy
+# ADR-154: The sovereign pool boundary is the pool's own RBAC, a standing policy and an enforced proxy
 
-- **Status**: Proposed (2026-11-03) — D27 (the operator) decided the mechanism, an in-cluster enforced egress proxy per pool. The SHAPE below is this wave's default answer to fleet question #97, the entry filed for this ticket on 2026-11-02, which the operator has not answered; the chart, proxy and broker slices wait on that verdict and nothing in them starts before it. The record becomes Accepted in the commit that lands the first SHAPE slice (decisions 1-4), which is after that verdict: none of the owed items 1 to 5 is a SHAPE slice — item 3 implements decision 8, item 5 decision 6, and items 1, 2 and 4 implement no decision at all — so all five land while this record is still Proposed.
+- **Status**: Proposed (2026-11-03) — D27 (the operator) decided the mechanism, an in-cluster enforced egress proxy per pool. The operator decided the SHAPE on 2026-11-03, in his words « Namespace partagé, RBAC propre au pool et NetworkPolicy. »: the pool stays in the release's namespace, under a ServiceAccount and a Role of its own, behind a standing NetworkPolicy. This record was first published with this wave's default answer, a namespace per pool; the shape was the operator's to decide and his verdict chose the other one, so the record follows it — decisions 1 to 4 and 7, the consequences and owed items 4 and 6 that assumed a pool namespace or spoke to it are rewritten, and the per-pool namespace stands under *Options considered* as rejected, the verdict its reason. The file name keeps the first wording, because renaming a record breaks every link to it; the title now states the decision. The record becomes Accepted in the commit that lands the first SHAPE slice (decisions 1-4), which the verdict unblocks: none of the owed items 1 to 5 is a SHAPE slice — item 3 implements decision 8, item 5 decision 6, and items 1, 2 and 4 implement no decision at all — so all five may land while this record is still Proposed.
 - **Date**: 2026-11-03
-- **Authors**: devthejo (session with Claude Opus 5), for [#2029](https://github.com/SocialGouv/iterion/issues/2029) P5
+- **Authors**: devthejo (sessions with Claude Opus 5, and Claude Opus 5.5 for the verdict), for [#2029](https://github.com/SocialGouv/iterion/issues/2029) P5
 - **Relates to**: [sovereign-pools.md](../sovereign-pools.md) (the twelve links of the chain that ship today) · [cloud-deployment.md](../cloud-deployment.md) (`runnerPools[]`, the bring-up) · [ADR-123](123-run-bundle-dek-in-envelope.md) (the per-run DEK: why a pool pod holds no key material) · [ADR-131](131-tenant-gateway-credential.md) (the tenant gateway credential, and the run's frozen content boundary) · [ADR-070](070-kubernetes-sandbox-orphan-gc.md) (the sandbox orphan GC the pool's Role must keep serving)
 
 ## Context
@@ -25,7 +25,16 @@ rather than a patch:
    (`runner-pool-deployment.yaml`, `serviceAccountName`), and a
    NetworkPolicy is ADDITIVE: a pod that may author one may widen its own
    egress. The ticket's own words — "the boundary must be immutable to the
-   runner".
+   runner". The same ServiceAccount is the server's and the shared
+   runner's (`server-deployment.yaml`, `runner-deployment.yaml`), and the
+   rule is a namespace-bound `Role` with no `resourceNames`, so every pod
+   that mounts it may author or delete any NetworkPolicy of the release's
+   namespace. That Role renders only where the release provisions the
+   sandbox: `runner-rbac.yaml` is wrapped in `serviceAccount.create` and
+   `runner.sandbox.enabled`, the chart default leaves the sandbox off and
+   `values-prod.yaml` does not turn it on — there the chart binds the
+   ServiceAccount to no Role, and no identity it renders may author a
+   policy.
 2. **No pool has a boundary of its own.** One release-wide policy selects
    "server, runner, pools, backup" together
    (`charts/iterion/templates/networkpolicy.yaml`), it is off by default
@@ -56,39 +65,67 @@ re-opened. **Per-pool sealing keys** are superseded by
 [ADR-123](123-run-bundle-dek-in-envelope.md): `cmd/iterion/runner.go` builds
 the transition ring only while the deployment still mounts key material, and
 the pool template keeps `ITERION_SECRETS_KEY*` out of the pod — what remains
-owed is a test pinning that invariant, not a key scheme. **The storage
-residual** stays as [sovereign-pools.md](../sovereign-pools.md) already
-accepts it: the pool pod takes the deployment-wide storage secret, and what
-the code guarantees is tenant mediation on every blob read.
+owed is a test pinning that invariant, not a key scheme. The shared
+namespace bounds what that invariant says: it is the pod's ENV. The Secret
+that carries `ITERION_SECRETS_KEY` (`secret-auth.yaml`) lives in the
+release's namespace, so any Role there that grants `secrets` `get` can read
+it through the API, and any that grants `update`, `patch` or `delete` can
+replace or remove it — the pool's own Role included wherever it renders,
+which keeps `get`, `patch` and `delete` (decision 2, and its consequence
+below). **The storage residual** stays as
+[sovereign-pools.md](../sovereign-pools.md) already accepts it: the pool pod
+takes the deployment-wide storage secret, and what the code guarantees is
+tenant mediation on every blob read.
 
 ## Options considered
 
-**What makes the boundary immutable to the runner.**
+**Where the boundary lives, and who may author it.**
 
 - *A — a NAMESPACE per pool, rendered by the same release.* The runner's
   Role is namespace-bound (`kind: Role`, bound to `.Release.Namespace`), so
   a pool's own Role simply does not carry `networkpolicies` `create` or
   `delete`, and the standing policy in that namespace cannot be weakened
-  by anything running in it. The kubernetes sandbox driver needs no change
+  by anything running in it: a pod the pool creates there falls under that
+  namespace's deny whatever its labels, and may only name a ServiceAccount
+  of that namespace, none of which carries the verbs. The kubernetes sandbox driver needs no change
   to follow: it reads its namespace from its own service-account mount
   (`pkg/sandbox/kubernetes.Detect`), so a pool pod places its sandbox
   siblings in the pool's namespace by construction. Cost: a second
   SA/Role/RoleBinding set, a namespace template, a release that now writes
-  outside its own namespace, and reaching the stores from a second one —
-  cross-namespace Service DNS where a sub-chart bundles them, the same
-  external endpoints as today where they are managed. **Chosen** — it is
-  the only shape that answers an operator audit asking "can the pod that
-  holds this team's code widen its own egress?" with *no*, on paper and in
-  the cluster.
-- *B — keep the shared namespace, drop the authoring verbs from a
-  pool-scoped Role.* Cheap: no DNS change, no namespace. Rejected: any
-  OTHER pod of the namespace may still author an additive policy the CNI
-  unions in, so the boundary stays weakenable from inside — it loses
-  exactly the audit above.
+  outside its own namespace, reaching the stores from a second one
+  (cross-namespace Service DNS where a sub-chart bundles them), and pools
+  out of the release PodMonitor's reach. It was this wave's default and
+  this record's first decision, as the only shape that answers an operator
+  audit asking "can any identity of the namespace that holds this team's
+  code widen its egress?" with *no*. **Rejected by the operator's verdict
+  of 2026-11-03**, which chose B knowing that cost; it stays, with C, the
+  structural answer should B's residual be judged unacceptable.
+- *B — keep the shared namespace: the pool's own ServiceAccount and Role,
+  without the authoring verbs, and a standing NetworkPolicy over the
+  pool's pods.* Less change: no namespace template, no release writing
+  outside its namespace, no store address changing, the release
+  PodMonitor keeping the pools. Its cost, stated when it was chosen:
+  another identity of the namespace can still widen the additive policy —
+  wherever the release provisions the sandbox (`runner.sandbox.enabled`),
+  the server and the shared runner, which keep the shared ServiceAccount's
+  `networkpolicies` `create` and `delete` (Consequences counts them
+  exactly); where it does not, the chart default, the chart renders no
+  Role and the cost is the operator's own bindings. **Chosen** — the operator decided it
+  on 2026-11-03: « Namespace partagé, RBAC propre au pool et
+  NetworkPolicy. » (a shared namespace, the pool's own RBAC, and
+  NetworkPolicy). Measured against the chart, the cost is wider than it
+  was stated for a pool that runs the sandbox: the pool's own token can no
+  longer AUTHOR a policy, but the verbs it keeps for the sandbox driver — `pods/exec`, `pods` `create`,
+  `secrets` `create` and `get` — reach the shared ServiceAccount's token
+  and let it create a pod no policy selects, so through them it can still
+  widen its own egress (Consequences gives each path). The audit question
+  above, asked of the whole namespace or of such a pool's own token,
+  answers *yes*; a pool without the sandbox mounts no token (decision 2),
+  so asked of its token it answers *no*. This record keeps the verdict and states the measured cost, which
+  is what the operator weighs should the residual be revisited.
 - *C — a Helm release per pool.* Strongest isolation, highest operating
   cost (a release, a values file and an ArgoCD application per team).
-  Rejected for now; option A keeps one release and reaches the same blast
-  radius.
+  Rejected for now; with A it remains the structural answer named above.
 
 **The per-run NetworkPolicy the sandbox driver synthesises.**
 
@@ -96,7 +133,8 @@ The driver locks each sandbox sibling's egress to its runner pod's CONNECT
 proxy plus kube-dns, and its inbound to that same pod IP; when it cannot
 (no pod IP) it REFUSES to start the run rather than downgrade isolation in
 silence. A pool pod does NOT meet that refusal: the chart wires
-`ITERION_POD_IP` for a pool Deployment too, so the pod has the env and
+`ITERION_POD_IP` for a pool Deployment too (under the same
+`runner.sandbox.enabled` as the shared runner's), so the pod has the env and
 loses the authoring verbs instead — it fails one step later, as
 `kubernetes: apply netpolicy: … forbidden` at the manifest apply. Same
 direction, different error, and a remedy an operator reads as RBAC where
@@ -106,9 +144,19 @@ interpret a Forbidden.
 
 - *Keep the authoring verbs on a pool.* Rejected by the ticket's own
   promise.
-- *A standing namespace-wide default-deny policy, and a pool pod that
-  DECLARES it.* The standing policy covers the pool's pods and their
-  sandbox siblings (same namespace), so it must itself carry what the
+- *A standing default-deny policy over the pool's pods, and a pool pod
+  that DECLARES it.* The standing policy covers the pool's pods and their
+  sandbox siblings, selected by the pool's label (decision 1). Its
+  allowances are the pool's, so it cannot select the whole namespace; and
+  a separate namespace-wide default-deny is no substitute, because
+  NetworkPolicy is a union — a deny-all cuts exactly the pods no other
+  policy admits, which is every pod of the release when the release-wide
+  policy is off (`networkPolicy.enabled: false`, the chart default) and,
+  when it is on, the NATS sub-chart's pods, for which the chart ships no
+  policy, plus any workload of the operator's in that namespace
+  (Consequences weighs it as a hardening). The driver's
+  `iterion.io/managed` label alone selects every runner's siblings, so
+  the pool label is the selector. So it must itself carry what the
   per-run policy granted — a sibling reaching its runner pod's CONNECT
   proxy, which the driver advertises as the runner's own pod IP — and what
   the per-run policy DENIED, because `BuildNetworkPolicy` is two-sided:
@@ -122,13 +170,16 @@ interpret a Forbidden.
   it the driver cannot tell "no policy because RBAC refused" from "no
   policy needed", and continuing silently is the exact footgun its
   fail-closed refusal exists to prevent. **Chosen**, with its isolation
-  delta recorded under Consequences: in both directions a namespace-wide
-  rule says "the pool's runner pods" where the per-run rule pinned one
-  `/32`.
+  delta recorded under Consequences: in both directions a pool-wide rule
+  says "the pool's runner pods" where the per-run rule pinned one `/32`.
 - *A ValidatingAdmissionPolicy refusing NetworkPolicy from the pool's SA.*
   Same effect, one more cluster-scoped object the operator must install and
-  keep. Rejected as the primary mechanism; it remains available as
-  defence in depth.
+  keep. Rejected as the primary mechanism. In the shared namespace
+  admission is also the only layer that could close B's residual, because
+  RBAC scopes a rule by namespace, resource and name, never by what an
+  object selects or carries — and the residual is more than NetworkPolicy
+  writes (Consequences) — so it stays a named later hardening, not a
+  promise of this record.
 
 **How the pool pod's own egress crosses the proxy.**
 
@@ -187,68 +238,123 @@ field would be the THIRD.
 
 ## Decision
 
-1. **A pool is a namespace.** `runnerPools[].namespace` is required when the
-   boundary is enforced, and the release renders it.
-2. **A pool has its own ServiceAccount and Role**, carrying what the sandbox
-   driver and the orphan GC need (pods, exec, logs, status, the per-run
-   Secrets) and, on `networkpolicies`, `list` alone — never `create`,
-   never `delete`. `create` is what widens the pod's own egress
-   (measurement 1) and `delete` would remove the standing policy itself,
-   while `list` is the orphan reaper's, exactly as `runner-rbac.yaml` and
-   [sandbox.md](../sandbox.md) already say of the Secrets: `reapKinds` in
-   `pkg/sandbox/kubernetes/orphans.go` sweeps pod, Secret AND
-   networkpolicy, a kind it cannot list is a returned error, and both
-   callers (`pkg/runner/reaper.go`, `pkg/runview/service_lifecycle.go`)
-   log it as a warning every pass — a permanent `Forbidden` line in the one
-   place an operator watches for the plaintext-credential Secret that
-   leaks when the sweep fails. Nothing else needs a verb there: a pool
-   namespace holds no per-run policy (decision 3), so the sweep's list
-   comes back empty, and the driver's teardown delete is gated on the
-   apply having happened (`networkPolicyApplied`, driver.go), so it is
-   never attempted either.
-3. **A standing default-deny NetworkPolicy, both directions**, lives in the
-   pool's namespace, and the road a pool run travels is named in it
-   allowance by allowance — the list belongs to the decision, because a
-   missing allowance is a time-out, not a refusal, which is what
-   `charts/iterion/values-prod.yaml` already warns of the release-wide
-   policy. **Egress**: kube-dns; the kube-apiserver the sandbox driver's
-   `kubectl` dials for every apply, exec, logs and delete (as an endpoint
-   `ipBlock` — a `podSelector` cannot name it where the control plane is
-   managed); the stores — Mongo, NATS and S3 wherever the install puts
-   them, a `namespaceSelector` where a sub-chart bundles them and operator
-   CIDR or endpoint data where they are managed, which is what
-   `values-prod.yaml` ships (`nats.enabled: false`, external Mongo and
-   S3); the pool's own runner pods, intra-namespace, for the sibling →
+1. **A pool's boundary lives in the release's namespace and is keyed by the
+   pool's label** — the operator's verdict of 2026-11-03. No namespace is
+   rendered and no store address changes. Every pod of a pool carries
+   `iterion.io/runner-pool: <name>`: its runner pods already do (the pod
+   template of `runner-pool-deployment.yaml`), its egress proxy does
+   (decision 4), and its sandbox siblings do once the driver stamps it from
+   the pool pod's `ITERION_RUNNER_POOL` — today `BuildPodManifest` labels a
+   sibling with `iterion.io/managed`, `iterion.io/run-id`,
+   `iterion.io/component` and, when the run has a friendly name,
+   `iterion.io/run-name`, and with no pool label, so in a namespace both
+   share, a pool's siblings are indistinguishable from the shared
+   runner's. The objects of
+   decisions 2 and 3 select by that label.
+2. **A pool has its own ServiceAccount and Role**, in the release's
+   namespace, and the pool Deployment names that ServiceAccount where it
+   names `iterion.serviceAccountName` today. The pool's Role and
+   RoleBinding render under `runner-rbac.yaml`'s own condition,
+   `serviceAccount.create` and `runner.sandbox.enabled`: the Role exists to
+   serve the sandbox driver, and a pool without the kubernetes sandbox
+   needs no API access at all — the shared configmap then renders
+   `ITERION_SANDBOX_OVERRIDE: "none"`, so `runSandboxReaper` returns before
+   any call, and the pool template renders no `ITERION_POD_IP`. Such a
+   pool pod renders `automountServiceAccountToken: false`, as the backup
+   CronJob does, and gets no Role; today it mounts a token the chart binds
+   to no Role. Where the operator brings the ServiceAccount
+   (`serviceAccount.create: false`) the chart renders no RBAC today and
+   renders none for a pool either: the pool's binding is the operator's
+   gesture. Where the Role renders, it carries what the sandbox driver and
+   the orphan GC call — `pods` (get, list, watch, create, delete),
+   `pods/exec` (create, get), `pods/log`, `pods/status` and `secrets` (get,
+   list, create, patch, delete: the per-run Secrets the driver applies and
+   the sweep reaps) — which is `runner-rbac.yaml`'s set less two grants.
+   `secrets` `update` goes: the driver writes a Secret only through a
+   client-side `kubectl apply` (`runtime.go`), which reads, then creates or
+   patches and never replaces, as `runner-rbac.yaml`'s own comment says,
+   and its other `kubectl` gestures are `delete`, `wait`, `exec` and `get`.
+   The `networkpolicies` rule goes WHOLE. `create` is what widens the pod's own egress directly
+   (measurement 1) and `delete` would remove the standing policy itself.
+   Dropping the rule removes the direct gesture, not the indirect ones:
+   the verbs kept reach the shared ServiceAccount's token and create pods
+   no policy selects (Consequences), and the driver cannot work without
+   any of them. The first draft of this decision kept `list` for the orphan
+   reaper: `reapKinds` in `pkg/sandbox/kubernetes/orphans.go` sweeps pod,
+   Secret AND networkpolicy, a kind it cannot list is a returned error, and
+   both callers (`pkg/runner/reaper.go`, `pkg/runview/service_lifecycle.go`)
+   log it as a warning every pass. That held in a pool namespace, where the
+   list came back empty. In the shared namespace `listManagedResources`
+   lists by `iterion.io/managed` across the whole namespace, so a pool's
+   sweep would list the shared runner's per-run policies too and meet
+   `Forbidden` deleting any orphan among them — the permanent warning line
+   in the one place an operator watches for the plaintext-credential Secret
+   that leaks when the sweep fails. So a pool pod that declares the
+   standing boundary (decision 3) sweeps pods and Secrets and skips the
+   networkpolicy kind: it creates none, and the shared runner's sweep,
+   which keeps both verbs, reaps that kind namespace-wide. The driver's
+   teardown delete is gated on the apply having happened
+   (`networkPolicyApplied`, driver.go), so it is never attempted either.
+   What the Role keeps reaches the whole namespace — a Role is scoped by
+   namespace, not by label — and Consequences says what that is.
+3. **A standing default-deny NetworkPolicy, both directions, selects the
+   pool's pods** — by the label of decision 1, never the whole namespace,
+   which the server and the shared runner share — and the road a pool run
+   travels is named in it allowance by allowance. The list belongs to the
+   decision, because a missing allowance is a time-out, not a refusal,
+   which is what `charts/iterion/values-prod.yaml` already warns of the
+   release-wide policy. **Egress**: kube-dns; the kube-apiserver the
+   sandbox driver's `kubectl` dials for every apply, exec, logs and delete,
+   owed only where the pool runs the sandbox (as an endpoint `ipBlock` — a `podSelector` cannot name it where the
+   control plane is managed); the stores — Mongo, NATS and S3 wherever the
+   install puts them, a `podSelector` where the release bundles them, as
+   the release-wide policy already names its dev stores and the NATS
+   sub-chart, and operator CIDR or endpoint data where they are managed,
+   which is what `values-prod.yaml` ships (`nats.enabled: false`, external
+   Mongo and S3); the pool's own runner pods, for the sibling →
    CONNECT-proxy hop; the pool's egress-proxy Service; the PROXY's own
-   egress to the pool's gateway host, because a namespace-wide rule
-   selects every pod of the namespace, the proxy's included, and decision
-   6 treats that host as normally public — so it enters as operator CIDR
-   data, for the same reason as the forge; the forge, which git leaves the
-   pod for directly — the clone guard is a loopback proxy that re-resolves
-   and dials the repo host itself rather than chaining to the pool's
-   proxy — and which therefore enters the policy as operator CIDR data,
-   decision 6's host NAMES being enforceable only at a proxy; and a
-   per-pool `extraAllow`, the twin of the chart's
-   `networkPolicy.egress.extraAllow`, so a pool that needs one more peer
-   never has to disable its boundary. **Ingress**, the half the per-run
-   policy also carried: the sandbox siblings — selectable by the
-   `iterion.io/managed` label the driver stamps on every one of them —
-   accept the pool's runner pods and nothing else, the standing twin of
-   the per-run `/32`; the proxy accepts the pool's runner pods only, which
-   closes back the reach the egress half hands the siblings; the runner
-   pods accept the pool's own pods, for that same CONNECT-proxy hop; the
-   runner pods' metrics port, which Prometheus scrapes from a namespace of
-   the operator's — its own rule, unscoped exactly as the release policy
-   keeps the metrics rule it already ships, or scoped by a
-   `namespaceSelector` list in the idiom of
-   `networkPolicy.ingress.controllerNamespaces`; and a per-pool ingress
-   `extraAllow`, the twin of the chart's
+   egress to the pool's gateway host, because the policy selects every pod
+   of the pool, the proxy's included, and decision 6 treats that host as
+   normally public — so it enters as operator CIDR data, for the same
+   reason as the forge; the forge, which git leaves the pod for directly —
+   the clone guard is a loopback proxy that re-resolves and dials the repo
+   host itself rather than chaining to the pool's proxy — and which
+   therefore enters the policy as operator CIDR data, decision 6's host
+   NAMES being enforceable only at a proxy; and a per-pool `extraAllow`,
+   the twin of the chart's `networkPolicy.egress.extraAllow`, so a pool
+   that needs one more peer never has to disable its boundary.
+   **Ingress**, the half the per-run policy also carried: the sandbox
+   siblings — selectable by the pool label of decision 1 — accept the
+   pool's runner pods and nothing else, the standing twin of the per-run
+   `/32`; the proxy accepts the pool's runner pods only, which closes back
+   the reach the egress half hands the siblings; the runner pods accept
+   the pool's own pods, for that same CONNECT-proxy hop; the runner pods'
+   metrics port, which Prometheus scrapes from a namespace of the
+   operator's — its own rule, unscoped exactly as the release policy keeps
+   the metrics rule it already ships, or scoped by a `namespaceSelector`
+   list in the idiom of `networkPolicy.ingress.controllerNamespaces`; and a
+   per-pool ingress `extraAllow`, the twin of the chart's
    `networkPolicy.ingress.extraAllow`, as the egress half has — a pool
    whose boundary lacks one inbound peer must not have to disable it. The
    kubelet's probes are host traffic no policy sees, as the chart's
    dev-store policy already records.
+   **No other policy the chart ships selects a pool pod.** The release-wide
+   policy selects `iterion.selectorLabels` minus the dev stores, which
+   takes in every pool pod today; NetworkPolicy is a union, so with both
+   rendered its egress `extraAllow` and its ingress rules would widen
+   every pool. Under an enforced boundary its `podSelector` excludes the
+   pool's components, as it already excludes the dev stores.
    The pool pod declares that the standing boundary exists, so the sandbox
    driver's fail-closed refusal keeps biting everywhere else.
+   **The standing policy and the proxy's objects carry no
+   `iterion.io/managed` label.** The orphan sweep lists by that label
+   across the namespace (`listManagedResources`) and treats a managed
+   object with no `iterion.io/run-id` as an orphan (`ReapOrphanResources`,
+   and `sandboxResourceReapable` in `pkg/runner/reaper.go`: no run owner,
+   reap). The shared runner's sweep would delete the standing policy,
+   leaving the pool's pods selected by no policy — the residual's
+   strongest gesture, reached by accident — and a pool's own sweep would
+   delete its proxy pod.
 4. **The egress proxy is the Nth variant of an existing seam, not a new
    component family.** `pkg/sandbox/netproxy` already enforces a host
    policy on every CONNECT, authenticates with `Proxy-Authorization:
@@ -256,9 +362,13 @@ field would be the THIRD.
    guard is variant 1 (a long-lived netproxy with a one-host allowlist and
    connect-time SSRF re-resolution). The pool's proxy is variant 2, with
    one difference that is the whole point: it runs OUT of the pod it
-   bounds — its own Deployment, in the pool's namespace, which is why the
-   standing policy above selects it like any other pod there. An in-pod
-   loopback proxy is bypassable by the process it is meant to bound.
+   bounds — its own Deployment, in the release's namespace and carrying its
+   pool's label, which is why the standing policy above selects it like any
+   other pod of the pool. An in-pod loopback proxy is bypassable by the
+   process it is meant to bound. The proxy calls no API, so it mounts no
+   ServiceAccount token (`automountServiceAccountToken: false`, as the
+   backup CronJob already renders): in a namespace where a shared identity
+   may author policies, a pod that needs no token holds none.
 5. **The denied-connection proof is produced by the proxy's refusal hook.**
    netproxy logs nothing of its own — it calls `OnBlocked(host, reason)`,
    and the per-run variant turns that into a typed run event
@@ -275,7 +385,11 @@ field would be the THIRD.
    pool Deployment mounting its own Secret, absent credentials keeping
    today's connect exactly as it is. The broker's accounts and subject
    ACLs are the operator's gesture, documented with the subject list a
-   pool needs.
+   pool needs. The shared namespace changes who can reach that Secret, not
+   the decision: like the pool's gateway Secret, it is readable by every
+   Role of the namespace that grants `secrets` `get`, and replaceable or
+   deletable by every one that grants `update`, `patch` or `delete`,
+   another pool's included (Consequences).
 8. **`iterion_dlq_depth_by_pool{pool=…}` joins the unlabelled gauge**, fed
    from the sweeper's existing registry walk, keeping its fail-closed
    posture (an unreadable leg holds the last value; no zero is written).
@@ -288,47 +402,153 @@ field would be the THIRD.
 
 - **The companion pages become stale the day the chart slice lands, not
   before.** [sovereign-pools.md](../sovereign-pools.md) opens with "there is
-  no dedicated namespace and no egress filtering" and
+  no dedicated namespace and no egress filtering",
   [cloud-deployment.md](../cloud-deployment.md) repeats it under *Sovereign
-  runner pools*. Both are TRUE today; the chart slice owns their rewrite,
-  and this record is what they will point at.
-- **Reaching the stores becomes explicit, and their address is the
-  install's.** Bundled by a sub-chart, Mongo, NATS and S3 are
-  cross-namespace Services: a store reached today by a short name needs
-  its fully qualified form, and the policy names them by selector.
-  Managed — what `values-prod.yaml` ships, on the `ovh-prod` target this
-  record names below — they sit outside the cluster and the policy can
-  only carry the operator's CIDR or endpoint data. Either way all three,
-  plus the kube-apiserver the sandbox driver shells `kubectl` at, must be
-  in the list: a store it forgets is the time-out mode above, the pool pod
+  runner pools*, and adds that the pool pods use the release-wide policy,
+  which decision 3 ends. All of it is TRUE today; the chart slice owns their
+  rewrite — the egress half changes, "no dedicated namespace" stays true by
+  the verdict — and this record is what they will point at.
+- **The residual the verdict accepts: the authoring verbs stay in the
+  namespace, one step from the pool's own token — wherever the release
+  provisions the sandbox.** `runner-rbac.yaml` renders under
+  `serviceAccount.create` and `runner.sandbox.enabled`; the chart default
+  leaves the sandbox off and `values-prod.yaml` does not turn it on, and
+  there no Role renders, so no identity the release renders may author a
+  policy and what remains is the operator's own bindings. Where the
+  sandbox is on, exactly one identity the chart renders may author a
+  NetworkPolicy: the shared ServiceAccount
+  (`iterion.serviceAccountName`), bound by `runner-rbac.yaml`'s Role to
+  `networkpolicies` `get/list/create/delete` — no `patch`, no `update`, no
+  `resourceNames`, so the rule reaches every policy of the namespace. Its
+  token is mounted by the server Deployment, the shared runner Deployment
+  and, until decision 2 lands, every pool Deployment; the backup CronJob
+  names it with `automountServiceAccountToken: false`, the sandbox siblings
+  render `automountServiceAccountToken: false` (`BuildPodManifest`), and
+  the dev stores mount none. After decision 2 the server and the shared
+  runner keep it, because the shared runner's per-run policies need it.
+  With `create`, either may add a policy selecting a pool's pods, which
+  the CNI unions into the pool's allowance; with `delete`, either may
+  remove the pool's standing policy outright — the stronger of the two,
+  since the pool's pods are then selected by no policy at all and their
+  egress is open. The shared runner executes every non-sovereign team's
+  runs, and where a run executes without a sandbox
+  (`ITERION_SANDBOX_OVERRIDE=none`) the runner process is the isolation
+  boundary: a compromise of the shared tier is one API call from a
+  sovereign pool's network boundary. Beyond the chart, any identity the
+  operator binds in that namespace counts too.
+  The token of a pool that runs the sandbox reaches the same verbs through
+  what decision 2 keeps, because a Role cannot scope those verbs by label
+  and decision 3 lets the pool's pods reach the kube-apiserver; a pool
+  without the sandbox mounts no token (decision 2), and none of these
+  paths exists for it:
+  - `pods/exec` into the server or the shared runner pod — both run
+    `iterion.image`, a Debian image with a shell and `kubectl` — acts with
+    the shared ServiceAccount token they mount;
+  - `pods` `create` may name any ServiceAccount of the namespace (the
+    Kubernetes RBAC good-practice guide: the right to create a pod is
+    implicitly the API access of every ServiceAccount there), so a pod
+    the pool creates under the shared one, then execs into, holds its
+    `networkpolicies` `create` and `delete`; `secrets` `create` and `get`
+    reach the same token through a `kubernetes.io/service-account-token`
+    Secret annotated with the shared ServiceAccount's name;
+  - a pod the pool creates without the release's selector labels is
+    selected by no policy the chart ships, so its egress is open, and one
+    created under the shared runner's labels takes the release-wide
+    policy's allowances.
+  So under B a sandbox pool's token can no longer author a policy, and can still
+  widen its own egress by creating a workload or exec'ing into one. The
+  cost as stated when the operator chose B named the other identities
+  only; this is the measured one. What still holds after any of these
+  paths is the credential fact of the Context for iterion's own calls: the
+  pool pod's env holds no vendor key, so a mis-routed call fails at
+  authentication, as it does today. A process driving the pool's token is
+  not bounded by it: it reads the platform's vendor keys
+  (`secret-llm.yaml`) as it reads any Secret of the namespace (below).
+- **What the pool's own Role still reaches, namespace-wide.** A Role is
+  scoped by namespace, not by label, and the namespace is the release's.
+  Where it renders (a pool that runs the sandbox, decision 2), the pool's
+  `secrets` verbs — get, list, create, patch and delete: `kubectl apply`
+  reads the named per-run Secret before it creates or patches it, the
+  sweep lists by label and deletes — reach every Secret there, both ways. Read: `secret-auth.yaml`'s, which carries
+  `ITERION_SECRETS_KEY`; the platform's vendor keys (`secret-llm.yaml`'s,
+  or the operator's `secrets.llm.existingSecret`);
+  another pool's gateway and broker Secrets; the shared runner's per-run
+  Secrets. Write: it can overwrite or delete any of them — the platform
+  key the server and the shared runner mount, another pool's gateway or
+  broker credential, a substitution and not only a read. Its `pods/exec`
+  `create` reaches every pod there, the server's included, and its `pods`
+  `delete` every pod there — the server, the shared runner, other pools'
+  runner pods and proxies, and every sandbox sibling (the sweep is built
+  to reach siblings: a healthy runner reaps a dead one's orphans) — so a
+  denial of the shared tier is one call away. The reverse holds too: the
+  shared identity's `pods/exec` reaches a pool's pods, and the gateway
+  credential in their env. `runner-pool-deployment.yaml` already records
+  the Secrets half for today ("can read the namespace's Secrets for the
+  sandbox reaper"); a pool namespace would have closed it, and the verdict
+  keeps it. It is why owed item 4 pins the pod's ENV, not what its token
+  can read.
+- **What narrows the residual now, and what only names a later
+  hardening.** In reach, in the chart slice: a render test pinning the pool
+  Role's rules to exactly the set of decision 2 — no `networkpolicies`
+  rule, no `secrets` `update` — and the pool Deployment's ServiceAccount
+  to the pool's own; the same test with the sandbox off, where no pool
+  Role renders and the pool pod mounts no token; a render test that no
+  NetworkPolicy the chart ships, the pool's own excepted, selects a pool
+  pod; and one that the standing policy and the proxy's objects carry no
+  `iterion.io/managed` label (decision 3). Those pin what this repository renders and
+  say nothing of what an identity of the namespace — the pool's own token
+  included — authors, creates or execs at run time.
+  Named as a later hardening, not promised by this record: admission (a
+  ValidatingAdmissionPolicy) over every gesture the residual counts — a
+  NetworkPolicy that selects a pool's pods, or the delete of a pool's
+  standing policy, from any identity but the deploy's; a pod the pool's
+  ServiceAccount creates without the pool label or under another
+  ServiceAccount; a `kubernetes.io/service-account-token` Secret it
+  creates; and its `pods/exec` into a pod that is not its own sibling,
+  where the request names the pod but does not carry its labels, so
+  whether a policy can key it is for that hardening to prove. Not decided
+  here either: a namespace-wide catch-all default-deny. Where the
+  release-wide policy is on it closes the unselected-pod path and cuts the
+  NATS sub-chart's pods unless the chart grows them a policy; where it is
+  off it cuts every pod of the release; and it leaves the exec and
+  ServiceAccount paths, and a pod created under the shared runner's
+  labels, untouched. Should an audit require *no* to "can any identity of
+  this namespace, the pool's own included, widen this team's egress?",
+  options A and C are the structural answers.
+- **Reaching the stores keeps its addresses and becomes explicit.** The
+  pool shares the release's namespace, so a store reached today by a short
+  name keeps it. Bundled by the release, Mongo, NATS and S3 are pods of
+  that namespace, which the policy names by selector. Managed — what
+  `values-prod.yaml` ships, on the `ovh-prod` target this record names
+  below — they sit outside the cluster and the policy can only carry the
+  operator's CIDR or endpoint data. Either way all three, plus the
+  kube-apiserver the sandbox driver shells `kubectl` at, must be in the
+  list: a store it forgets is the time-out mode above, the pool pod
   holding its `ITERION_MONGO_URI` and never reaching the row.
-- **A pool in its own namespace leaves the release's PodMonitor behind.**
-  `charts/iterion/templates/prometheus-podmonitor.yaml` carries no
+- **The release PodMonitor keeps the pools, and the policy must let it
+  in.** `charts/iterion/templates/prometheus-podmonitor.yaml` carries no
   `namespaceSelector`, so prometheus-operator discovers pods in the
-  PodMonitor's own namespace. A pool pod is a target of it only while it
-  shares that namespace: it carries `iterion.selectorLabels`, which is the
-  PodMonitor's whole selector, and names its port `metrics` — and
-  `values-prod.yaml` ships `metrics.podMonitor.enabled: true`, so the day a
-  pool is activated there it is scraped. Decision 1 moves it out of reach
-  before any policy applies, so the chart slice owes the PodMonitor a
-  `namespaceSelector` over the pool namespaces, or one PodMonitor per pool
-  namespace; `metrics.podMonitor.namespace` names a single namespace and
-  does not answer N pools. Forgotten, this is the time-out mode in its
-  quietest form: the pool's series stop, its target reads down, and
-  nothing in iterion errors.
+  PodMonitor's own namespace, which a pool pod shares: it carries
+  `iterion.selectorLabels`, which is the PodMonitor's whole selector, and
+  names its port `metrics` — and `values-prod.yaml` ships
+  `metrics.podMonitor.enabled: true`, so the day a pool is activated there
+  it is scraped. No PodMonitor change is owed; decision 3's metrics
+  ingress rule is. Forgotten, it is the time-out mode in its quietest
+  form: the pool's series stop, its target reads down, and nothing in
+  iterion errors.
 - **A standing rule is coarser than the per-run rule it replaces, in both
   directions.** Outbound, the per-run policy pinned a sibling to its own
-  runner pod by `/32`; a namespace-wide rule can only say "the pool's
-  runner pods", and the pool's egress-proxy Service becomes addressable
-  from the siblings too — which the standing inbound rule closes back, the
-  proxy accepting the runner pods alone. Inbound, a sibling accepted its
-  own runner pod's `/32` and now accepts any runner pod of the pool. What
+  runner pod by `/32`; a pool-wide rule can only say "the pool's runner
+  pods", and the pool's egress-proxy Service becomes addressable from the
+  siblings too — which the standing inbound rule closes back, the proxy
+  accepting the runner pods alone. Inbound, a sibling accepted its own
+  runner pod's `/32` and now accepts any runner pod of the pool. What
   separates two runs at that layer is then netproxy's token, fresh per run
   — so the pool proxy MUST require its own, or a sibling crosses the pool
   boundary without its run's `network:` allowlist. Where the authoring
-  verbs are still granted (a shared-namespace install), the per-run policy
-  stays the finer instrument in both directions and is still
-  synthesised.
+  verbs are still granted — the shared runner, and a pool rendered with
+  `boundary.enforced: false` — the per-run policy stays the finer
+  instrument in both directions and is still synthesised.
 - **Git stays outside the by-name rule until the clone guard chains.**
   The forge is an IP-layer allowance because the clone guard dials the
   repo host itself; teaching it to chain to the pool's proxy would put
@@ -354,10 +574,11 @@ field would be the THIRD.
   `ITERION_TEST_NATS_URI` is set, so it only runs in the nats-conformance
   CI job. A change to the pool's `Connect` path is unwitnessed locally.
 - **What stays the operator's gesture**, outside this repository: the
-  namespace's existence in GitOps if ArgoCD manages namespaces, the pool's
-  gateway Secret, the broker's accounts and subject ACLs, and the
-  activation of a pool on `ovh-prod` with its denied-connection log
-  captured as the receipt.
+  pool's gateway Secret, the broker's accounts and subject ACLs, every
+  binding added in the release's namespace beyond the chart's (each one
+  counts in the residual above) — a pool's own binding included, where
+  the operator brings the ServiceAccount — and the activation of a pool on
+  `ovh-prod` with its denied-connection log captured as the receipt.
 
 ## State of play — what ships today, by witness
 
@@ -421,9 +642,11 @@ field would be the THIRD.
 3. **`iterion_dlq_depth_by_pool`.** Witness:
    `TestDLQDepthCarriesThePoolLabel` — the new assertion is the label; the
    fail-closed leg is already pinned.
-4. **The unwitnessed invariant: a pool pod holds no key material.** A chart
-   render test asserting no `ITERION_SECRETS_KEY*` in env or `envFrom`,
-   exactly two auth keys by `secretKeyRef`, and the env-pin union. Witness:
+4. **The unwitnessed invariant: a pool pod's env holds no key material.** A
+   chart render test asserting no `ITERION_SECRETS_KEY*` in env or
+   `envFrom`, exactly two auth keys by `secretKeyRef`, and the env-pin
+   union. The invariant is the env's; what the pool's token can read in the
+   shared namespace is the residual recorded under Consequences. Witness:
    `TestChartRenderRunnerPoolCarriesNoPlatformKeyMaterial`, after `helm
    dependency build`.
 5. **Decision 6's registry projection.** `platformcfg.RunnerPool` gains the
@@ -440,15 +663,24 @@ field would be the THIRD.
    the registry entry for its pool: disagreement warns and boot continues,
    agreement is silent, an unreadable registry warns naming the read
    error and never passes silently.
-6. **Then, after the operator's verdict**: the namespace + RBAC + standing
-   policy render (witness: the pool Role carries `networkpolicies` `list`
-   and neither `create` nor `delete`, the policy renders both
-   policyTypes with exactly its allowed peers, `boundary.enforced: false`
-   renders the legacy shape and warns), the egress proxy (witness: a host
-   outside the policy is refused and the refusal is logged with the host
-   and the pool),
-   and the broker credential (witness: the credential reaches the client
-   options; absent, today's connect is unchanged).
+6. **Then, the SHAPE slices the operator's verdict unblocked**: the pool's
+   label, RBAC and standing policy (witness: the pool Deployment names the
+   pool's own ServiceAccount; the pool Role's rules are exactly decision
+   2's and carry no `networkpolicies` rule and no `secrets` `update`; with
+   `runner.sandbox.enabled` off no pool Role renders and the pool pod
+   mounts no token; the standing policy selects the pool label, renders
+   both policyTypes with exactly its allowed peers and carries no
+   `iterion.io/managed` label;
+   no other rendered NetworkPolicy selects a pool pod; the driver stamps
+   the pool label on a pool pod's siblings and, under the declaration,
+   skips both the per-run policy and the networkpolicy sweep;
+   `boundary.enforced: false` renders the legacy shape and warns), the
+   egress proxy (witness: a host outside the policy is refused and the
+   refusal is logged with the host and the pool; the proxy pod mounts no
+   ServiceAccount token and its objects carry no `iterion.io/managed`
+   label), and the broker credential (witness: the
+   credential reaches the client options; absent, today's connect is
+   unchanged).
 
 Item 5, the registry's gateway-host projection, is the highest-leverage small
 slice of the list: it is also the input D27's by-name policy needs, and it
