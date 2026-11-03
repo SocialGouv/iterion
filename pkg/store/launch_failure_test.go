@@ -84,3 +84,64 @@ func TestFailRunAtLaunch_NeverLeavesAnEmptyError(t *testing.T) {
 		t.Fatal("run.Error is empty")
 	}
 }
+
+// The conditional form ends a run only while it still has the status its
+// launch persisted. A runner that claimed the attempt — a publish can report
+// an error after its message landed — owns the run: neither its status nor
+// its timeline is touched. Red when the conditional form writes
+// unconditionally.
+func TestFailRunAtLaunchIf_LeavesAClaimedRunToItsRunner(t *testing.T) {
+	s, err := New(t.TempDir())
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	ctx := context.Background()
+	for _, id := range []string{"run-claimed", "run-unclaimed"} {
+		if _, err := s.CreateRun(ctx, id, "wf", nil); err != nil {
+			t.Fatalf("CreateRun %s: %v", id, err)
+		}
+		if err := s.UpdateRunStatus(ctx, id, RunStatusQueued, ""); err != nil {
+			t.Fatalf("queue %s: %v", id, err)
+		}
+	}
+	if ok, err := s.UpdateRunStatusIf(ctx, "run-claimed", RunStatusRunning, "", []RunStatus{RunStatusQueued}); err != nil || !ok {
+		t.Fatalf("claim run-claimed: changed=%v err=%v", ok, err)
+	}
+
+	ended, err := FailRunAtLaunchIf(ctx, s, "run-claimed", "nats: timeout waiting for ack", RunStatusQueued)
+	if err != nil || ended {
+		t.Fatalf("FailRunAtLaunchIf on a claimed run = %v, %v; want not ended", ended, err)
+	}
+	r, err := s.LoadRun(ctx, "run-claimed")
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	if r.Status != RunStatusRunning || r.FailureCode != "" {
+		t.Fatalf("claimed run: status=%s code=%q, want running with no failure code", r.Status, r.FailureCode)
+	}
+	events, err := s.LoadEvents(ctx, "run-claimed")
+	if err != nil {
+		t.Fatalf("LoadEvents: %v", err)
+	}
+	for _, e := range events {
+		if e.Type == EventRunFailed {
+			t.Fatal("a run_failed event was written for a run its runner executes")
+		}
+	}
+
+	ended, err = FailRunAtLaunchIf(ctx, s, "run-unclaimed", "nats: no responders", RunStatusQueued)
+	if err != nil || !ended {
+		t.Fatalf("FailRunAtLaunchIf on a run still queued = %v, %v; want ended", ended, err)
+	}
+	r, err = s.LoadRun(ctx, "run-unclaimed")
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	if r.Status != RunStatusFailed || r.FailureCode != FailureLaunchFailed {
+		t.Fatalf("unclaimed run: status=%s code=%q, want failed/%s", r.Status, r.FailureCode, FailureLaunchFailed)
+	}
+
+	if _, err := FailRunAtLaunchIf(ctx, s, "run-unclaimed", "x"); err == nil {
+		t.Fatal("FailRunAtLaunchIf with no expected status must refuse, never write unconditionally")
+	}
+}

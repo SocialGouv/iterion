@@ -646,3 +646,109 @@ func TestCredSlotAdmission_APoolLentKeyIsNotedAgainstItsOwnCap(t *testing.T) {
 		t.Fatalf("lent key noted as %+v, want fingerprint=%s max=2 provider=xai name=lent-capped — the donor record's own cap and label", w, lentFP)
 	}
 }
+
+// ledgerHolders counts the runs holding a slot of fp right now without
+// running the ledger's reconcile: a probe reservation on a cap no row
+// reaches is never refused, so it evicts nobody, and it gives its slot back
+// at once.
+func (f *cappedFixture) ledgerHolders(t *testing.T, fp string) int {
+	t.Helper()
+	ledger := store.AsCredSlotStore(f.spy)
+	const probe = "probe-holders"
+	adm, err := ledger.ReserveCredSlot(f.ctx, fp, probe, 1<<20)
+	if err != nil || !adm.Granted {
+		t.Fatalf("probe the holders of %s: %+v %v", fp, adm, err)
+	}
+	if err := ledger.ReleaseCredSlot(f.ctx, fp, probe); err != nil {
+		t.Fatalf("release the probe of %s: %v", fp, err)
+	}
+	return adm.Held - 1
+}
+
+// A launch whose publish reports an error AFTER the message landed and a
+// runner claimed it keeps its slot, and its claimed row: the rollback ends
+// the row only while it is still queued for this launch, and gives the
+// slots back only with that end. Red when the release fires on every
+// unpublished exit (the next launch is queued past the cap), and when the
+// rollback fails the claimed row unconditionally (the row reads failed
+// under a run that executes, and the next refusal's reconcile evicts it).
+func TestCredSlotAdmission_ALaunchWhosePublishLandedKeepsItsSlot(t *testing.T) {
+	f := newCappedFixture(t, 1)
+	p := f.publisher()
+	// The message lands and the runner claims the attempt before the
+	// publisher hears back: the row is running when the error returns.
+	p.publishRun = func(_ context.Context, m *queue.RunMessage) error {
+		r := f.load(t, m.RunID)
+		r.Status = store.RunStatusRunning
+		if err := f.spy.SaveRun(f.ctx, r); err != nil {
+			t.Fatalf("claim %s: %v", m.RunID, err)
+		}
+		return errors.New("ack timeout after the broker accepted the message")
+	}
+	if err := f.launch(t, p, "run-a", nil); err == nil {
+		t.Fatal("a launch whose publish reported an error returned nil")
+	}
+	if r := f.load(t, "run-a"); r.Status != store.RunStatusRunning {
+		t.Fatalf("run-a status=%s code=%s after the publish error, want running — the rollback must not end a claimed attempt", r.Status, r.FailureCode)
+	}
+	if n := f.ledgerHolders(t, cappedFP); n != 1 {
+		t.Fatalf("the key names %d holders, want run-a's slot kept", n)
+	}
+	// The slot is still run-a's: the next launch on the key parks.
+	p.publishRun = f.published.publish
+	if err := f.launch(t, p, "run-b", nil); err != nil {
+		t.Fatalf("launch run-b: %v", err)
+	}
+	f.assertParked(t, "run-b")
+}
+
+// A publish that fails while the row is still queued for this launch ends
+// the row and gives the slot back at once: no runner will execute it — a
+// delivery that lands later finds a failed row and is dropped.
+func TestCredSlotAdmission_ALaunchWhosePublishFailedGivesItsSlotBack(t *testing.T) {
+	f := newCappedFixture(t, 1)
+	p := f.publisher()
+	p.publishRun = func(context.Context, *queue.RunMessage) error { return errors.New("nats: no responders") }
+	if err := f.launch(t, p, "run-a", nil); err == nil {
+		t.Fatal("a launch whose publish failed returned nil")
+	}
+	if r := f.load(t, "run-a"); r.Status != store.RunStatusFailed || r.FailureCode != store.FailureLaunchFailed {
+		t.Fatalf("run-a: status=%s code=%s, want failed/%s", r.Status, r.FailureCode, store.FailureLaunchFailed)
+	}
+	if n := f.ledgerHolders(t, cappedFP); n != 0 {
+		t.Fatalf("the key names %d holders after a launch that never left its launch path, want none", n)
+	}
+}
+
+// unsavableRun refuses to persist one run: the launch's one SaveRun fails.
+type unsavableRun struct {
+	store.RunStore
+	runID string
+}
+
+func (s *unsavableRun) Unwrap() store.RunStore { return s.RunStore }
+func (s *unsavableRun) SaveRun(ctx context.Context, r *store.Run) error {
+	if r.ID == s.runID {
+		return errors.New("runs collection unavailable")
+	}
+	return s.RunStore.SaveRun(ctx, r)
+}
+
+// A launch whose row never persisted gives its slot back at once: no row
+// means no message either (the publish follows the persist), and a holder
+// with no run document keeps its slot for the reconcile's whole grace — the
+// next launch on the key would park for minutes behind a run that never
+// existed. Red when the release is dropped from that exit.
+func TestCredSlotAdmission_ALaunchThatNeverPersistedGivesItsSlotBack(t *testing.T) {
+	f := newCappedFixture(t, 1)
+	p := f.publisher()
+	p.store = &unsavableRun{RunStore: f.spy, runID: "run-lost"}
+	if err := f.launch(t, p, "run-lost", nil); err == nil || !strings.Contains(err.Error(), "runs collection unavailable") {
+		t.Fatalf("launch err=%v, want the save's own error", err)
+	}
+	p.store = f.spy
+	if err := f.launch(t, p, "run-next", nil); err != nil {
+		t.Fatalf("launch run-next: %v", err)
+	}
+	f.assertQueued(t, "run-next")
+}

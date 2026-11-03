@@ -3824,8 +3824,26 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 	//    rollback.
 	persisted := false
 	parked := false
+	// launchStatus is the status the one persist below writes — queued, or
+	// failed_resumable for a park — and the only status the rollback ends.
+	var launchStatus store.RunStatus
+	// heldSlots are the credential slots this launch's admission holds
+	// (cred_slots.go), set once it is granted. Given back by the rollback
+	// below ONLY when the launch provably never handed the run on: no row
+	// persisted (the publish follows the persist, so no message either), or
+	// a row the rollback itself ended. A publish can report an error after
+	// its message landed — an ack timeout, a context cancelled past the
+	// send — and a runner may claim and execute that attempt; a slot given
+	// back under a run that runs lets the next admission take it, the cap
+	// exceeded by one until the run ends. Kept, the slots follow the run
+	// document like any holder's (store.CredSlotHolderStale).
+	var heldSlots []credSlotWant
 	defer func() {
-		if !persisted || launched || parked {
+		if launched || parked {
+			return
+		}
+		if !persisted {
+			p.releaseCredSlots(ctx, runID, heldSlots)
 			return
 		}
 		cause := "launch failed before its queue message was published"
@@ -3834,8 +3852,23 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		}
 		rbCtx, rbCancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 		defer rbCancel()
-		if uerr := store.FailRunAtLaunch(rbCtx, p.store, runID, cause); uerr != nil {
-			retErr = errors.Join(retErr, fmt.Errorf("cloudpublisher: mark run %s failed after launch failure (run may be stuck queued): %w", runID, uerr))
+		// Conditional on the status this launch persisted, like the resume's
+		// rollback: a runner that claimed a message the publish reported as
+		// failed owns the run, and a row marked failed under it would read
+		// as a run that never left its launch path while it executes — and
+		// hand its slot to the next refusal's reconcile.
+		ended, uerr := store.FailRunAtLaunchIf(rbCtx, p.store, runID, cause, launchStatus)
+		switch {
+		case ended:
+			// Ended, its timeline aside: no executor will run this row.
+			p.releaseCredSlots(rbCtx, runID, heldSlots)
+			if uerr != nil {
+				retErr = errors.Join(retErr, fmt.Errorf("cloudpublisher: run %s marked failed after launch failure: %w", runID, uerr))
+			}
+		case uerr != nil:
+			retErr = errors.Join(retErr, fmt.Errorf("cloudpublisher: mark run %s failed after launch failure (run may be stuck %s): %w", runID, launchStatus, uerr))
+		default:
+			p.logger.Warn("cloudpublisher: run %s: the launch failed (%s) but the row is no longer %s — a runner claimed the attempt whose publish reported the failure, or the run moved on; the run and its credential slots are left to it", runID, cause, launchStatus)
 		}
 	}()
 	// 2b. The HARD per-key concurrency cap, after the key is chosen and
@@ -3852,15 +3885,9 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 	if refusal != nil {
 		parkRunOnCredSlot(r, refusal)
 	} else {
-		// The slots are this launch's only once it publishes: every exit
-		// before that gives them back, or the key stays short of them for
-		// the grace the ledger's reconcile allows a missing run document.
-		defer func() {
-			if !launched {
-				p.releaseCredSlots(ctx, runID, creds.credSlots)
-			}
-		}()
+		heldSlots = creds.credSlots
 	}
+	launchStatus = r.Status
 	// PersistLaunchRun, not a PersistLaunch closure over r: a scheduler's
 	// guard runs this write in a transaction the driver replays, and SaveRun
 	// advances r.CASVersion in place — so the replay has to start from the
@@ -3986,7 +4013,8 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		LLMProviders: policyProviders(spec.LLMRoutePolicy),
 	}
 	if err := p.publish(ctx, msg); err != nil {
-		// The deferred choke point above flips the row to failed.
+		// The deferred choke point above flips the row to failed — while it
+		// is still queued for this launch.
 		return runview.LaunchSubmission{}, fmt.Errorf("cloudpublisher: publish: %w", err)
 	}
 	launched = true

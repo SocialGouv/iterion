@@ -30,8 +30,10 @@ import (
 // in the runner can wait for the ledger at a node start — so a cap that
 // released it would admit one run past the cap on every wake. The marker
 // stays observability. The one release a caller performs itself is the undo
-// of an admission its own launch or resume could not finish
-// (ReleaseCredSlot).
+// of an admission whose launch or resume provably never handed the run on
+// (ReleaseCredSlot): an attempt whose queue message may have landed keeps
+// its slots, and the reconcile frees them once its run document stops
+// spending.
 //
 // A capability rather than part of RunStore, like RunRetryStore: the cloud
 // publisher is its only caller, and a decorator that does not carry it must
