@@ -31,9 +31,12 @@ import (
 // today: the entry is appended at spawn time and never reaches LaunchEnv or
 // platformcfg.
 //
-// Sandboxed spawns do NOT cross this helper: a sandbox driver owns the
-// child's environment and cwd (docker/kubectl `--workdir` plus the image's
-// own PWD), so the gesture belongs to each driver, not to its caller.
+// Sandboxed spawns cross it through their driver, not their caller: a
+// container driver owns the child's environment and cwd (docker/kubectl
+// `--workdir` plus the image's own PWD), and the noop driver — a host spawn
+// with no image — calls this helper itself. A spawn whose exec.Cmd another
+// module owns carries the same entry through that module's environment
+// option: codex's SDK spawn takes WorkDirEnvKey in codexSpawnEnv.
 func SetWorkDir(cmd *exec.Cmd, dir string) {
 	if dir == "" {
 		return
@@ -42,5 +45,10 @@ func SetWorkDir(cmd *exec.Cmd, dir string) {
 	if cmd.Env == nil {
 		cmd.Env = os.Environ()
 	}
-	cmd.Env = append(cmd.Env, "PWD="+dir)
+	cmd.Env = append(cmd.Env, WorkDirEnvKey+"="+dir)
 }
+
+// WorkDirEnvKey is the variable SetWorkDir writes. A spawn whose exec.Cmd
+// this package cannot reach (an SDK-owned child) sets it through the SDK's
+// own environment option, to the same directory it hands the SDK as cwd.
+const WorkDirEnvKey = "PWD"
