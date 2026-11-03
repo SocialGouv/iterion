@@ -789,6 +789,27 @@ func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
 }
 
+// setSpawnWorkDir points a host spawn at dir and makes PWD agree with it.
+//
+// An agent CLI that reads PWD instead of its real working directory would
+// otherwise work on the ENGINE's checkout: the inherited environment carries
+// the engine's PWD, and the spawn only changes the process's cwd. Measured on
+// opencode 2.2.5, which resolves its PROJECT from the variable — with PWD
+// naming another directory the workspace's own `.opencode/` is never read,
+// the agent gets the engine's instructions, and iterion's workspace screen
+// guards a tree the CLI never opened.
+//
+// cmd.Env must already be set: the override is APPENDED, which is the value
+// exec.Cmd.Env keeps for a duplicate key. An empty dir leaves both alone —
+// the spawn then inherits the engine's cwd, and PWD already names it.
+func setSpawnWorkDir(cmd *exec.Cmd, dir string) {
+	if dir == "" {
+		return
+	}
+	cmd.Dir = dir
+	cmd.Env = append(cmd.Env, "PWD="+dir)
+}
+
 // failureReason renders what the CLI said about its own failure, for a
 // process exit the OS reported as a failure. The protocol's parser owns the
 // stream's shape, so a CLI whose reason travels in its machine-readable
@@ -1152,9 +1173,7 @@ func (b *CLIAgentBackend) runOnce(ctx context.Context, task Task, binary string,
 		// A process the agent detached may keep its stdout: once the agent has
 		// exited, its output is not waited for past this, and the run ends.
 		drainBound = proc.SetWaitDelay(cmd, cliAgentWaitDelay)
-		if task.WorkDir != "" {
-			cmd.Dir = task.WorkDir
-		}
+		setSpawnWorkDir(cmd, task.WorkDir)
 		cmd.Stdin = stdin
 	}
 	cmd.Stdout = &outBuf

@@ -94,6 +94,15 @@ func TestCLILiveOpenCodeSessionResume(t *testing.T) {
 			t.Fatalf("git %v: %v: %s", args, err, out)
 		}
 	}
+	// The project the CLI resolves must be the NODE's workspace. opencode 2.x
+	// reads the project's AGENTS.md into the prompt it sends, and it resolves
+	// the project from PWD rather than from its own cwd (measured on 2.2.5),
+	// so a spawn that left the engine's PWD in place would send the ENGINE's
+	// instructions and read the engine's checkout — while iterion's workspace
+	// screen guarded a tree the CLI never opened. The scripted model records
+	// what it was sent, so this token is the authority.
+	const projectToken = "PROJECT-INSTRUCTIONS-OSPREY-5"
+	mustWriteFile(t, filepath.Join(repo, "AGENTS.md"), "# project instructions\n\n"+projectToken+"\n")
 
 	b := NewOpenCodeBackend(testLogger(), cli)
 	turn := func(t *testing.T, prompt, sessionID string, fork bool) (Result, error) {
@@ -119,6 +128,7 @@ func TestCLILiveOpenCodeSessionResume(t *testing.T) {
 	if fresh.SessionID == "" {
 		t.Fatal("the fresh turn reported no session id")
 	}
+	model.requireAgentTurns(t, projectToken)
 
 	resumed, err := turn(t, second, fresh.SessionID, false)
 	if err != nil {
