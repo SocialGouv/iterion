@@ -24,6 +24,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/tool"
 	"github.com/SocialGouv/iterion/pkg/backend/toolcatalog"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/google/uuid"
 )
 
@@ -197,7 +198,30 @@ func (e *ClawExecutor) resolvePermissionPolicy(f backendFields) (*permission.Pol
 	// `worktree: auto`, and the gate rebuilt in a child process receives
 	// this value through PolicyConfig.
 	pol.SetPathRoot(e.WorkDir())
+	// The per-node secrets bound (#1710): every gated node is refused the
+	// run's well-known secret locations by construction — the mounted file
+	// secrets and the seeded CLI credential directories — so "the agent
+	// cannot read the secrets" is a guarantee of the gate, not a belt the
+	// author has to remember to buckle. A location a given run does not
+	// populate costs a deny rule that matches nothing. The shell stays
+	// unbound: it is the legitimate sink channel a secret is spent through.
+	if err := pol.DenyPathTrees(secretGateLocations()...); err != nil {
+		return nil, err
+	}
 	return pol, nil
+}
+
+// secretGateLocations are the well-known locations a run's secrets and
+// seeded credentials occupy inside a sandbox (pkg/secrets), armed as deny
+// trees on every gated node's policy. The runner already refuses a file
+// secret mounted outside SecretFilesMountDir, so the constant covers every
+// per-secret mount path too.
+func secretGateLocations() []string {
+	return []string{
+		secrets.SecretFilesMountDir,
+		secrets.ClaudeCodeSandboxConfigDir,
+		secrets.CodexSandboxConfigDir,
+	}
 }
 
 // GateCanAsk reports whether the permission gate this executor arms for node

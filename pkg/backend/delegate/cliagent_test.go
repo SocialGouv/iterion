@@ -467,7 +467,11 @@ func TestExternalHookPolicyDropsOnlyClawOnlyAskRules(t *testing.T) {
 		Ask:    []string{},
 		Deny:   []string{"Bash(rm:*)"},
 		Grants: []string{"Read(docs/**)"},
-		Exempt: []string{"ask_user"},
+		// The policy carries no engine-armed tree, but Config() renders
+		// every list non-nil — the field exists since #1710's per-node
+		// secret bound.
+		EngineDeny: []string{},
+		Exempt:     []string{"ask_user"},
 	}
 	if actual := got.Config(); !reflect.DeepEqual(actual, want) {
 		t.Fatalf("external hook policy = %+v, want %+v", actual, want)

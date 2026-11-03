@@ -139,12 +139,19 @@ func (d Decision) String() string {
 // lists, and engine-owned operator grants. The zero value (ModeOff, no rules)
 // is a disabled gate.
 type Policy struct {
-	Mode   Mode
-	allow  []rule
-	ask    []rule
-	deny   []rule
-	grants []rule // operator-approved, engine-owned rules; never declared in a workflow
-	scoped bool   // any rule has an (arg) pattern → Evaluate must summarize
+	Mode  Mode
+	allow []rule
+	ask   []rule
+	deny  []rule
+	// engineDeny holds the rules the ENGINE arms on the policy (the
+	// per-node secret trees, DenyPathTrees), kept beside — never inside —
+	// the author's deny list: the serialised config carries them on their
+	// own field, so a reader of PolicyConfig.Deny sees exactly the rules
+	// the workflow and the run declared. They judge with the same rank as
+	// an author deny (they win in every mode, no grant reopens them).
+	engineDeny []rule
+	grants     []rule // operator-approved, engine-owned rules; never declared in a workflow
+	scoped     bool   // any rule has an (arg) pattern → Evaluate must summarize
 	// exempt is the set of tool names the runtime explicitly marked as its
 	// own infrastructure (registration-linked, in addition to the reserved
 	// MCP namespace IsInfrastructureTool recognises). Keyed by canonical
@@ -168,6 +175,11 @@ type PolicyConfig struct {
 	Deny   []string `json:"deny,omitempty"`
 	Grants []string `json:"grants,omitempty"`
 	Exempt []string `json:"exempt,omitempty"`
+	// EngineDeny carries the engine-armed deny rules (DenyPathTrees)
+	// separately from the author-declared Deny list, so the boundary the
+	// engine set survives the process boundary without impersonating a
+	// rule the workflow wrote.
+	EngineDeny []string `json:"engine_deny,omitempty"`
 	// PathRoot travels with the rules because path normalisation is part of
 	// matching: a gate reconstructed without it would resolve a relative
 	// path differently from the engine, and the same call would reach two
@@ -193,13 +205,14 @@ func (p *Policy) Config() PolicyConfig {
 	}
 	sort.Strings(exempt)
 	return PolicyConfig{
-		Mode:     p.Mode.String(),
-		Allow:    raw(p.allow),
-		Ask:      raw(p.ask),
-		Deny:     raw(p.deny),
-		Grants:   raw(p.grants),
-		Exempt:   exempt,
-		PathRoot: p.pathRoot,
+		Mode:       p.Mode.String(),
+		Allow:      raw(p.allow),
+		Ask:        raw(p.ask),
+		Deny:       raw(p.deny),
+		Grants:     raw(p.grants),
+		EngineDeny: raw(p.engineDeny),
+		Exempt:     exempt,
+		PathRoot:   p.pathRoot,
 	}
 }
 
@@ -215,6 +228,16 @@ func NewPolicyFromConfig(cfg PolicyConfig) (*Policy, error) {
 	}
 	for _, rule := range cfg.Grants {
 		p.AddGrantRule(rule)
+	}
+	for _, raw := range cfg.EngineDeny {
+		r, err := parseRule(raw)
+		if err != nil {
+			// The engine wrote these; one that does not parse is a version
+			// skew across the process boundary, and silently dropping a
+			// SECURITY rule would reopen the tree it bounded. Fail loud.
+			return nil, fmt.Errorf("engine deny rule %q: %w", raw, err)
+		}
+		p.addEngineDeny(r)
 	}
 	p.MarkExempt(cfg.Exempt...)
 	p.SetPathRoot(cfg.PathRoot)
@@ -323,6 +346,55 @@ func (p *Policy) SetPathRoot(dir string) {
 	p.pathRoot = strings.TrimSpace(dir)
 }
 
+// pathTreeTools are the canonical tool spellings whose argument is a
+// filesystem path the gate can bound — the read family, the write family,
+// the listing, and BOTH search families (workspace_grep is deliberately
+// not a `grep` alias in the catalogue, so a `Grep(...)` row does not reach
+// it and it needs its own).
+var pathTreeTools = []string{"Read", "Write", "Edit", "NotebookEdit", "LS", "Grep", "Glob", "workspace_grep"}
+
+// DenyPathTrees arms the policy with engine-owned deny rules bounding each
+// directory for every path-anchored tool family — the shape that keeps a
+// run's mounted secrets and seeded credential directories off a gated agent
+// (#1710's per-node secrets bound: resolvePermissionPolicy arms it on every
+// gated node). The rules judge with the author's deny list at the same
+// rank — they win in every mode, no grant or allow can reopen them — but
+// stay distinguishable from it: PolicyConfig carries them on its own
+// field, so a gate rebuilt in another process refuses the same directories
+// without the engine's bound impersonating a rule the workflow wrote. Bash
+// is deliberately NOT bound: the shell is the legitimate sink channel (a
+// command may pass the mounted path to a program that spends the secret),
+// only the agent READING the plaintext is refused.
+func (p *Policy) DenyPathTrees(dirs ...string) error {
+	for _, dir := range dirs {
+		dir = strings.TrimSpace(dir)
+		if dir == "" {
+			continue
+		}
+		clean := filepath.Clean(dir)
+		for _, tool := range pathTreeTools {
+			raw := tool + "(" + clean + "/**)"
+			r, err := parseRule(raw)
+			if err != nil {
+				// The directories are engine constants; a rule that does
+				// not parse is a bug here, not operator input to skip.
+				return fmt.Errorf("path-tree deny %q: %w", raw, err)
+			}
+			p.addEngineDeny(r)
+		}
+	}
+	return nil
+}
+
+// addEngineDeny appends one engine-armed deny rule, keeping the scoped
+// flag true to what the rule carries.
+func (p *Policy) addEngineDeny(r rule) {
+	if r.argRe != nil {
+		p.scoped = true
+	}
+	p.engineDeny = append(p.engineDeny, r)
+}
+
 // isExempt reports whether a tool call must bypass the gate — either the
 // runtime explicitly marked it (MarkExempt) or it lives in iterion's
 // reserved MCP namespace (IsInfrastructureTool).
@@ -349,6 +421,13 @@ func (p *Policy) isExempt(toolName string) bool {
 //
 // The returned string is the matched rule (or "" for the mode default)
 // — used for the human prompt / deny reason.
+//
+// The CLOSING verdicts (deny, and the ask that outranks an allow) read the
+// folded candidate set — a path's case/slash-folded spellings included — so
+// a spelling trick cannot slip a refused directory past a `Read(**)` allow
+// the ask was written to re-gate. The OPENING verdicts (grant, allow) stay
+// on the spellings of the same file: a fold may name a different file on a
+// case-sensitive file system, and a grant must never widen to it.
 func (p *Policy) Evaluate(toolName string, input map[string]any) (Decision, string) {
 	if !p.Enabled() {
 		return Allow, ""
@@ -360,16 +439,21 @@ func (p *Policy) Evaluate(toolName string, input map[string]any) (Decision, stri
 	if p.isExempt(toolName) {
 		return Allow, ""
 	}
-	if r, ok := p.matchingDeny(toolName, input); ok {
+	canon, open, closed := p.candidateSets(toolName, input)
+	if r, ok := matchAny(p.deny, toolName, canon, closed); ok {
 		return Deny, r.raw
 	}
-	canon, cands := p.toolSummary(toolName, input)
-	if r, ok := matchAny(p.grants, toolName, canon, cands); ok {
+	// The engine-armed trees judge with the author's denies and below them,
+	// so a matched author rule is the one the refusal message quotes.
+	if r, ok := matchAny(p.engineDeny, toolName, canon, closed); ok {
+		return Deny, r.raw
+	}
+	if r, ok := matchAny(p.grants, toolName, canon, open); ok {
 		return Allow, r.raw
 	}
 	// A scoped ask is deliberately stronger than every allow. This lets an
 	// operator re-gate a single otherwise auto-allowed command.
-	if r, ok := matchScoped(p.ask, toolName, canon, cands, false); ok {
+	if r, ok := matchScoped(p.ask, toolName, canon, closed, false); ok {
 		return Ask, r.raw
 	}
 	// A bare exact-tool ask is a generic fallback, so an authored literal
@@ -377,15 +461,15 @@ func (p *Policy) Evaluate(toolName string, input map[string]any) (Decision, stri
 	// automatic. Do not extend this to tool globs, wildcard/prefix arguments,
 	// or catch-all asks: those remain approval gates.
 	if r, ok := matchBareExactTool(p.ask, toolName, canon); ok {
-		if allow, ok := matchScoped(p.allow, toolName, canon, cands, true); ok {
+		if allow, ok := matchScoped(p.allow, toolName, canon, open, true); ok {
 			return Allow, allow.raw
 		}
 		return Ask, r.raw
 	}
-	if r, ok := matchAny(p.ask, toolName, canon, cands); ok {
+	if r, ok := matchAny(p.ask, toolName, canon, closed); ok {
 		return Ask, r.raw
 	}
-	if r, ok := matchAny(p.allow, toolName, canon, cands); ok {
+	if r, ok := matchAny(p.allow, toolName, canon, open); ok {
 		return Allow, r.raw
 	}
 	switch p.Mode {
@@ -478,23 +562,28 @@ func (p *Policy) leavesSpelling(name string) bool {
 }
 
 func (p *Policy) matchingDeny(toolName string, input map[string]any) (rule, bool) {
-	canon := canonicalToolName(toolName)
-	var cands []string
-	if p.scoped {
-		cands = atLeastOne(denyCandidates(canon, input, p.pathRoot))
+	canon, _, closed := p.candidateSets(toolName, input)
+	if r, ok := matchAny(p.deny, toolName, canon, closed); ok {
+		return r, true
 	}
-	return matchAny(p.deny, toolName, canon, cands)
+	return matchAny(p.engineDeny, toolName, canon, closed)
 }
 
-func (p *Policy) toolSummary(toolName string, input map[string]any) (string, []string) {
-	canon := canonicalToolName(toolName)
-	// summarize is only needed by scoped (arg-pattern) rules; skip the work
-	// entirely when every rule is bare (the common deny: [Bash] shape).
-	var cands []string
-	if p.scoped {
-		cands = atLeastOne(summarize(canon, input, p.pathRoot))
+// candidateSets renders the two candidate lists a call is judged against:
+// the OPEN set (summarize — spellings of the same file, read by the
+// verdicts that open: grants and allows) and the CLOSED set
+// (denyCandidates — every path the call names, folded spellings included,
+// read by the verdicts that close: denies and asks). Both are only needed
+// by scoped (arg-pattern) rules; skip the work entirely when every rule is
+// bare (the common deny: [Bash] shape).
+func (p *Policy) candidateSets(toolName string, input map[string]any) (canon string, open, closed []string) {
+	canon = canonicalToolName(toolName)
+	if !p.scoped {
+		return canon, nil, nil
 	}
-	return canon, cands
+	return canon,
+		atLeastOne(summarize(canon, input, p.pathRoot)),
+		atLeastOne(denyCandidates(canon, input, p.pathRoot))
 }
 
 // rule is a parsed permission entry: a tool matcher plus an optional
@@ -875,11 +964,18 @@ func summarize(canon string, input map[string]any, root string) []string {
 // mode" true whichever key the tool picks, while an allow stays on the
 // single path summarize chose, or naming an allowed path beside a
 // forbidden one would authorise the forbidden one.
+//
+// The path spellings are also offered FOLDED (foldedPathDimension): a deny
+// is a closing verdict, so the fold can only cost a refusal, never a leak
+// — the asymmetry the ask side shares and the allow side does not.
 func denyCandidates(canon string, input map[string]any, root string) []string {
 	cands := summarize(canon, input, root)
 	// The primary path is already expanded; expanding a repeated value
 	// again would pay its filesystem walk twice for the same spellings.
 	expanded := []string{primaryPath(canon, input)}
+	for _, c := range foldedPathDimension(canon, expanded[0], root) {
+		cands = appendUnique(cands, c)
+	}
 	for _, key := range pathInputKeys(canon) {
 		raw := str(input, key)
 		if raw == "" || slices.Contains(expanded, raw) {
@@ -889,8 +985,40 @@ func denyCandidates(canon string, input map[string]any, root string) []string {
 		for _, c := range pathDimension(canon, raw, root) {
 			cands = appendUnique(cands, c)
 		}
+		for _, c := range foldedPathDimension(canon, raw, root) {
+			cands = appendUnique(cands, c)
+		}
 	}
 	return cands
+}
+
+// foldedPathDimension renders the case/slash-folded twin of every spelling
+// pathDimension offers, in the doctrine of the read-scope guard
+// (CredentialReadGuard, iterion#2868): a file system that folds case makes
+// `.ENV` and `.env` the same file, so a rule compared in one spelling only
+// is a bypass of itself, and filepath.ToSlash folds the separator where
+// the platform treats `\` as one. The fold is offered on the CLOSING side
+// of the gate alone (deny, and the ask that outranks an allow): on a
+// case-sensitive file system a folded spelling may name a DIFFERENT file,
+// so a deny over-refusing costs a refusal while an allow over-matching
+// would hand over a path the operator never wrote — summarize's candidates
+// stay spellings of the same file.
+func foldedPathDimension(canon, raw, root string) []string {
+	out := []string{}
+	for _, s := range pathDimension(canon, raw, root) {
+		out = appendUnique(out, foldPathSpelling(s))
+	}
+	return out
+}
+
+// foldPathSpelling folds one path spelling for comparison: slash-spelled
+// and case-folded. The `path:` dimension prefix is preserved so a rule
+// naming the search root explicitly still meets the folded candidate.
+func foldPathSpelling(s string) string {
+	if rest, ok := strings.CutPrefix(s, "path:"); ok {
+		return "path:" + foldPathSpelling(rest)
+	}
+	return strings.ToLower(filepath.ToSlash(s))
 }
 
 // pathInputKeys names every input key that holds a filesystem path for a

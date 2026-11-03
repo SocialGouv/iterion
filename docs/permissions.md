@@ -351,6 +351,15 @@ Matching semantics (`pkg/backend/permission`):
   claude_code's `Read` reads `file_path`). An `allow` stays on the single
   path, or naming an allowed file beside a forbidden one would authorise the
   forbidden one.
+- A **deny** (and an `ask:`, which outranks an allow) also matches the
+  path's FOLDED spellings — slash-spelled and case-folded, the fold the
+  read-scope guard applies (iterion#2868): a file system that folds case
+  makes `/RUN/ITERION/SECRETS/x` the file `Read(/run/iterion/secrets/**)`
+  names, and a rule compared in one spelling only is a bypass of itself.
+  The fold feeds the closing verdicts alone: on a case-sensitive file
+  system a folded spelling may name a DIFFERENT file, so an allow or a
+  grant never matches it — over-refusing costs a refusal, over-granting
+  would cost a leak.
 - The gate never rewrites the RULE — it matches what the operator wrote. A
   rule naming a path FRAGMENT still wraps it in stars (`Read(**.env)`);
   `Read(.env*)` remains inert against `/home/u/repo/.env`.
@@ -365,6 +374,22 @@ pattern does not, which is what makes `allow: ["Grep(path:src/**)"]` a usable
 bound. A pattern-shaped rule keeps matching the pattern: a scoped rule on a
 search tool matches EITHER dimension, so the way to bound a directory for
 certain is the `deny:` side, which wins in every mode.
+
+**The run's secret locations are denied by construction (#1710).** Every
+gated node's policy is armed by the engine with deny trees over the
+well-known secret locations — the mounted file secrets
+(`/run/iterion/secrets`) and the seeded CLI credential directories
+(`/tmp/iterion-claude-config`, `/tmp/iterion-codex-config`) — for the whole
+read AND write families, the listing and both search tools. "The agent
+cannot read the secrets" is a guarantee of the gate, not a `deny:` rule
+every author has to remember, and the write half keeps an agent from
+replacing the credential a seeded CLI spends. These rules are engine-owned:
+no `allow:` or operator grant reopens them (deny wins in every mode), and
+they travel with the serialised policy to a child-process gate. The shell
+is deliberately NOT bound — it is the legitimate sink channel a secret is
+spent through (`curl --cert /run/iterion/secrets/mtls.pem …`), only the
+agent reading the plaintext is refused. `permission: off` disables the
+gate whole, bound included — that remains the escape hatch.
 
 **Cross-backend parity.** The same rule gates the matching tool on every
 supported route: a single `Bash(...)` rule covers claude_code's `Bash`,
