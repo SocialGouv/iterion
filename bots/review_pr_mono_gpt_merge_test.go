@@ -1,6 +1,8 @@
 package bots
 
 import (
+	"errors"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -8,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
+	"github.com/SocialGouv/iterion/pkg/backend/detect"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/backend/toolcatalog"
 	"github.com/SocialGouv/iterion/pkg/bundle"
@@ -324,14 +327,24 @@ func TestReviewPrBothGateEdgesMapTheWholePayload(t *testing.T) {
 // not be launch-decidable, which would leave both twins reachable and defeat
 // the prune the whole change rests on).
 //
-// A launch that keeps the pin while fanning BOTH reviewers — `review_tier:
-// audit`, or an explicit `--var review_mode=dual --var mono_family=gpt` —
-// merges on the twin. Deliberate: that pin is the operator's explicit choice,
-// and on a GPT-only tenant (where reviewtopology.InjectAll injects it)
-// sending the merge back to the Anthropic wire is the failure #2467 closes.
-// A webhook launch the publisher resolved DUAL carries no `mono_family` at
-// all (InjectIfDeclaredFamilies deletes it), so the var falls back to its
-// declared "claude" default and the Anthropic merge step holds.
+// These cases measure the GUARD, over var maps handed straight to the filter:
+// a map that still carries `mono_family=gpt` merges on the twin whatever the
+// mode beside it, and one carrying no pin merges on the Anthropic step.
+// Deliberate: the pin is the operator's explicit choice, and on a GPT-only
+// tenant (where reviewtopology.InjectAll injects it, mono) sending the merge
+// back to the Anthropic wire is the failure #2467 closes.
+//
+// Which maps a LAUNCH produces is a different question, and the injection
+// answers it where it runs: a dual resolution — a publisher-resolved one and
+// an explicit `--var review_mode=dual` alike — deletes `mono_family`, so the
+// var falls back to its declared "claude" default and the Anthropic merge
+// step holds (TestReviewPrAnExplicitlyDualLaunchDropsTheGptMergePin below).
+// The cloud lane whose sealed bundle resolved no family skips the injection
+// (pkg/server/cloudpublisher, guarded on len(creds.families.Families()) > 0:
+// the run
+// rides the runner's env fallback), so it DOES produce the dual+pin map of
+// the second case below — pinned beside the skip itself by
+// TestSubmitLaunchKeepsAnExplicitPinWhenTheBundleResolvedNothing.
 func TestReviewPrTheMergeGuardFollowsTheLaunchPinNotTheTopology(t *testing.T) {
 	wf := reviewPrWorkflow(t)
 	reaches := func(open ir.EdgeFilter, id string) bool {
@@ -349,7 +362,11 @@ func TestReviewPrTheMergeGuardFollowsTheLaunchPinNotTheTopology(t *testing.T) {
 			wantGptMergeOnly: true,
 		},
 		{
-			what:             "an explicitly dual launch keeps a pinned gpt family on the twin",
+			// The map an injection-less lane produces (an empty cloud
+			// bundle), and the one every injecting lane deletes the pin
+			// out of. It pins the guard's own reading — the mode beside
+			// the pin decides nothing here.
+			what:             "a map carrying both a dual mode and the pin merges on the twin",
 			vars:             map[string]any{"review_mode": "dual", "mono_family": "gpt", "review_tier": "guard"},
 			wantFan:          true,
 			wantGptMergeOnly: true,
@@ -376,6 +393,150 @@ func TestReviewPrTheMergeGuardFollowsTheLaunchPinNotTheTopology(t *testing.T) {
 			if gpt != tc.wantGptMergeOnly || claude == tc.wantGptMergeOnly {
 				t.Errorf("reaches(converge_gpt) = %v, reaches(converge) = %v — want the gpt twin alone = %v; the guard is `vars.mono_family == 'gpt'` and the README's route table and lib/nodes.bot both say so",
 					gpt, claude, tc.wantGptMergeOnly)
+			}
+		})
+	}
+}
+
+// The merge pin an operator writes BESIDE an explicit `review_mode=dual`
+// does not survive an injecting launch, and `review_tier: audit` saves it
+// only where the host's credentials can: the FAMILY SET decides the pin's
+// fate, never the lane. The three in-process lanes run
+// `reviewtopology.InjectAll` over the launch inputs unconditionally
+// (pkg/cli/run.go, pkg/runview/service_launch.go,
+// pkg/dispatcher/engine_runner.go — and the detached lane re-injects inside
+// the `iterion run` it spawns, off that process's own detection), a dual
+// resolution carries no family, and InjectIfDeclaredFamilies then DELETES
+// `mono_family` rather than leave a value the injected mode contradicts. The
+// var falls back to its declared "claude" default, so the merge lands on
+// `converge` and on the Anthropic wire — #1828's own failure, reached
+// through a pin an operator was told would hold. The fourth lane is
+// conditional and keeps the pin when it skips:
+// TestSubmitLaunchKeepsAnExplicitPinWhenTheBundleResolvedNothing
+// (pkg/server/cloudpublisher) owns that arm, because it is a property of the
+// LANE and not of this bot's graph.
+//
+// `review_tier: audit` is read by no resolver (grep: pkg/reviewtopology
+// never names it), so the mode resolves off the credentials alone and the
+// gesture has FOUR outcomes, each an arm below:
+//   - a set that serves the pin resolves mono and HONOURS it (the pin wins
+//     over the resolver's claude preference), and the fan is the bot's own
+//     `topology -> fan` edge, guarded on `vars.review_tier` — `tier_expand`
+//     only restates that predicate as the report's `effective_review_mode`;
+//   - a set that cannot serve the pin REFUSES the launch
+//     (RefusePinnedFamily, judged on the mono path only);
+//   - a detected family whose slot has no servable ROUTE refuses it too
+//     (#1221): a z.ai key on a host without the claude_code CLI backs
+//     `claude` and nothing can run it. The pin is named where there is one,
+//     and the resolver's OWN choice is judged where there is none — so
+//     `auto` never lands on mono there, pin or no pin;
+//   - a set with NO participating family resolves `auto` to DUAL and deletes
+//     the pin like any dual. A non-z.ai Anthropic-compatible gateway
+//     (ANTHROPIC_BASE_URL + ANTHROPIC_AUTH_TOKEN, no ANTHROPIC_API_KEY) or a
+//     Moonshot/xAI-only key detects exactly that while running this bot, so
+//     there the recommended gesture sends the merge back to the Anthropic
+//     wire with nothing warning about it.
+//
+// Read THROUGH the injection for that reason: a var map handed straight to
+// the edge filter measures the guard, and the guard is not the launch —
+// TestReviewPrTheMergeGuardFollowsTheLaunchPinNotTheTopology above holds the
+// guard's half, on maps this one proves a launch may never produce.
+func TestReviewPrAnExplicitlyDualLaunchDropsTheGptMergePin(t *testing.T) {
+	wf := reviewPrWorkflow(t)
+	both := reviewtopology.InventoryFromCredentialNames([]string{"anthropic", "openai"}, nil)
+	claudeOnly := reviewtopology.InventoryFromCredentialNames([]string{"anthropic"}, nil)
+	// The HOST shapes, read as detection reports them: nothing at all, and a
+	// z.ai key with no claude_code CLI to run the claude slot on.
+	nothing := reviewtopology.InventoryFromReport(detect.Report{})
+	zaiNoCLI := reviewtopology.InventoryFromReport(detect.Report{
+		Providers: []detect.ProviderStatus{{Name: "zai", Available: true}},
+		Backends:  []detect.BackendStatus{{Name: detect.BackendClaudeCode, BinaryFound: false}},
+	})
+	reaches := func(open ir.EdgeFilter, id string) bool {
+		return wf.CanReachVia(open, func(n ir.Node) bool { return n != nil && n.NodeID() == id })
+	}
+	for _, tc := range []struct {
+		what         string
+		fams         reviewtopology.FamilyInventory
+		launch       map[string]any
+		wantRefusal  bool
+		wantMode     string
+		wantPin      string
+		wantGptMerge bool
+	}{
+		{
+			what:         "an explicit dual launch loses the pin, so the claude merge holds",
+			fams:         both,
+			launch:       map[string]any{"review_mode": "dual", "mono_family": "gpt", "review_tier": "guard"},
+			wantMode:     reviewtopology.ModeDual,
+			wantPin:      "",
+			wantGptMerge: false,
+		},
+		{
+			what:         "the audit tier keeps the pin and merges on the twin where the set serves it",
+			fams:         both,
+			launch:       map[string]any{"mono_family": "gpt", "review_tier": "audit"},
+			wantMode:     reviewtopology.ModeMono,
+			wantPin:      reviewtopology.FamilyGPT,
+			wantGptMerge: true,
+		},
+		{
+			// The gateway / Moonshot-only host: nothing backs a review
+			// family, so `auto` resolves DUAL and the audit pin dies with
+			// it on every injecting lane, the gesture notwithstanding.
+			what:         "the audit tier loses the pin where no family is detected at all",
+			fams:         nothing,
+			launch:       map[string]any{"mono_family": "gpt", "review_tier": "audit"},
+			wantMode:     reviewtopology.ModeDual,
+			wantPin:      "",
+			wantGptMerge: false,
+		},
+		{
+			// The third outcome: mono resolves, the pin names a family the
+			// set cannot serve, and no run starts at all.
+			what:        "the audit tier refuses the launch where the detected set cannot serve the pin",
+			fams:        claudeOnly,
+			launch:      map[string]any{"mono_family": "gpt", "review_tier": "audit"},
+			wantRefusal: true,
+		},
+		{
+			// The fourth outcome (#1221), with NO pin at all: `claude` is
+			// backed by the z.ai key, its slot has no servable route without
+			// the CLI, and the resolver's own choice is judged on the routes
+			// — `auto` does not land on mono here, it refuses.
+			what:        "the audit tier refuses the launch where the detected family's slot has no servable route, pin or no pin",
+			fams:        zaiNoCLI,
+			launch:      map[string]any{"review_tier": "audit"},
+			wantRefusal: true,
+		},
+	} {
+		t.Run(tc.what, func(t *testing.T) {
+			inputs := maps.Clone(tc.launch)
+			_, err := reviewtopology.InjectAll(wf, inputs, tc.fams, "")
+			if tc.wantRefusal {
+				if !errors.Is(err, reviewtopology.ErrUnservableFamily) {
+					t.Fatalf("InjectAll err = %v, want ErrUnservableFamily — a mono resolution no route can serve refuses the launch, the pin (RefusePinnedFamily) and the resolver's own choice (#1221) alike, on the mono path only", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("InjectAll refused this launch: %v — want a resolution and not a refusal here: only the mono path judges a pin", err)
+			}
+			if got, _ := inputs[reviewtopology.VarReviewMode].(string); got != tc.wantMode {
+				t.Errorf("the injected review_mode is %q, want %q — the premise of the pin's fate", got, tc.wantMode)
+			}
+			got, _ := inputs[reviewtopology.VarMonoFamily].(string)
+			if got != tc.wantPin {
+				t.Errorf("mono_family after the injection is %q, want %q — a dual resolution deletes the pin (reviewtopology.InjectIfDeclaredFamilies), and `review_tier: audit` resolves dual too wherever no participating family is detected", got, tc.wantPin)
+			}
+			// The topology the ENGINE then walks: the filter stacks the
+			// workflow's declared defaults under these inputs, so a deleted
+			// pin reads as the declared "claude".
+			open := wf.LaunchVarEdgeFilter(inputs)
+			gpt, claude := reaches(open, "converge_gpt"), reaches(open, "converge")
+			if gpt != tc.wantGptMerge || claude == tc.wantGptMerge {
+				t.Errorf("after the injection reaches(converge_gpt) = %v, reaches(converge) = %v — want the gpt twin alone = %v; README.md's route table states this launch's outcome",
+					gpt, claude, tc.wantGptMerge)
 			}
 		})
 	}

@@ -32,10 +32,15 @@ dsl: 2
 vars:
   ## REVIEW TOPOLOGY (ADR-052). "mono" runs ONE family reviewer, "dual"
   ## runs both and cross-confirms. Dual costs a full reviewer pass per
-  ## family on every round, so mono is the default; dual is a deliberate
-  ## opt-in (`--var review_mode=dual`). "auto" is resolved at LAUNCH by
-  ## pkg/reviewtopology from the host's detected credentials and also
-  ## lands on mono — it only picks the family for you.
+  ## family on every round, so "mono" is the DECLARED default; dual is a
+  ## deliberate opt-in (`--var review_mode=dual`). That default is read only
+  ## where no injection runs (a cloud launch whose sealed bundle resolved no
+  ## family): every injecting lane resolves an UNSET review_mode as "auto",
+  ## at LAUNCH, by pkg/reviewtopology from the host's detected credentials.
+  ## "auto" lands on mono wherever a detected family's slot has a servable
+  ## route — it only picks the family for you — REFUSES the launch where the
+  ## backed family's slot has none (#1221), and lands on dual where no
+  ## family is detected at all, which deletes a mono_family pin with it.
   review_mode: string [enum: "auto", "mono", "dual"] = "mono"
   ## Which family runs in mono. Overwritten by the launch-time resolver
   ## when only one family is usable on the host.

@@ -296,18 +296,27 @@ vars:
   ## REVIEW TOPOLOGY (ADR-052). "mono" runs ONE family reviewer; "dual"
   ## runs both and cross-confirms. Dual costs a full reviewer pass per
   ## family on EVERY review — and with the merge gate wired, every push
-  ## re-reviews — so mono is the default and dual is a deliberate opt-in
-  ## (`--var review_mode=dual`, or the launch flag). "auto" is resolved at
-  ## LAUNCH by pkg/reviewtopology from the host's detected credentials and
-  ## also lands on mono; it only picks the family for you.
+  ## re-reviews — so "mono" is the DECLARED default and dual is a
+  ## deliberate opt-in (`--var review_mode=dual`, or the launch flag). That
+  ## default is read only where no injection runs (a cloud launch whose
+  ## sealed bundle resolved no family): every injecting lane resolves an
+  ## UNSET review_mode as "auto", at LAUNCH, by pkg/reviewtopology from the
+  ## host's detected credentials. "auto" lands on mono wherever a detected
+  ## family's slot has a servable route (two of them included — it prefers
+  ## claude) and only picks the family for you; a backed family whose slot
+  ## has no servable route (a z.ai key without the claude_code CLI) REFUSES
+  ## the launch (#1221). With NO participating family detected it resolves
+  ## DUAL instead — so a familyless host runs dual unless review_mode=mono
+  ## is passed — and an explicit mono_family pin is deleted with it.
   ##
   ## Cross-family confirmation is worth paying for on a high-stakes diff,
   ## not on every routine push: a finding either reviewer raises is still
   ## reported, dual only adds the `cross-confirmed by both reviewers` tag.
   ##
   ## `review_tier: "audit"` forces the dual fan-out regardless of what this
-  ## resolves to (see `tier_expand`'s `effective_review_mode` below) — dual
-  ## IS audit's defining spend. An explicit `--var review_mode=dual` on any
+  ## resolves to: the `topology -> fan` edge guards on `vars.review_tier`
+  ## itself, and `tier_expand`'s `effective_review_mode` only restates that
+  ## predicate for the report — dual IS audit's defining spend. An explicit `--var review_mode=dual` on any
   ## tier also forces it, unchanged from before #685.
   review_mode: string [enum: "auto", "mono", "dual"] = "mono"
   ## Which family runs in mono. Overwritten by the launch-time resolver

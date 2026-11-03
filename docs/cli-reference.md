@@ -186,7 +186,7 @@ Launch-time graph overrides:
 | `--fallback <backend>:<model>` | Run-level fallback route taken when an agent node's primary fails, e.g. `claw:openai/gpt-5.5`. Applies only to agent nodes that declare no `fallbacks:` of their own, never to judges, and uses the default trigger set (`usage_window`, `unavailable`) — author a `fallbacks:` block for anything finer. See [ADR-087](adr/087-cross-backend-model-fallback-chain.md). |
 | `--max-cost-usd`, `--max-duration`, `--max-tokens`, `--max-iterations`, `--max-parallel-branches` | Override non-zero workflow budget fields. |
 | `--loop-budget-guard on\|off` | Decline a loop back-edge the remaining budget cannot fund, so the run leaves through its own exit path with the work it banked instead of dying mid-iteration. Empty inherits the loop clause `guard:` then the workflow `loop_budget_guard:` then `ITERION_LOOP_BUDGET_GUARD`; default on. |
-| `--review-mode mono\|dual\|auto` | Select the reviewer topology for workflows that declare a `review_mode` var (currently `review-pr` and `evolve`). `mono` runs one family, `dual` runs both, and `auto` resolves to mono on the preferred detected family. No-op for other workflows. |
+| `--review-mode mono\|dual\|auto` | Select the reviewer topology for workflows that declare a `review_mode` var (currently `review-pr` and `evolve`). `mono` runs one family, `dual` runs both, and `auto` resolves to mono on the preferred detected family whose slot has a servable route — a backed family with none refuses the launch (#1221), and dual only where no participating family is detected at all, which deletes an explicit `mono_family` pin with it. No-op for other workflows. |
 
 Access/isolation:
 

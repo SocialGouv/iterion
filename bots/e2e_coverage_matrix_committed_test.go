@@ -34,7 +34,7 @@ const (
 	committedMatrixRel = "docs/e2e-coverage-matrix.md"
 	stabilisationPlan  = "docs/e2e-stabilisation-plan.md"
 
-	// The committed matrix has 401 rows; a parse that reads a handful has
+	// The committed matrix has 427 rows; a parse that reads a handful has
 	// stopped early (a stray prose line, a fence, a renamed header) and must
 	// not certify the file by reading almost none of it.
 	committedMatrixRowFloor = 350
