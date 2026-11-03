@@ -223,6 +223,8 @@ func IterionSpec() Spec {
 			{"boardWriteDenial", "pkg/server/board_cloud_routes.go"},
 			{"triggerWriteAuth", "pkg/server/triggers_routes.go"},
 			{"triggerWriteDenial", "pkg/server/triggers_routes.go"},
+			{"memoryWriteAuth", "pkg/server/memory_routes.go"},
+			{"memoryWriteDenial", "pkg/server/memory_routes.go"},
 			{"runWSMutatingTypes", "pkg/server/runs_ws.go"},
 			{"HasRole", "pkg/auth/identity.go"},
 		},

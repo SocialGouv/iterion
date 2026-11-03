@@ -74,8 +74,13 @@ func (s *Server) handleCredentialPreview(w http.ResponseWriter, r *http.Request)
 			httpError(w, http.StatusNotFound, "webhook not found")
 			return
 		}
-		cfg, err := s.webhookConfigs.Get(r.Context(), req.Source.ID)
-		if errors.Is(err, webhooks.ErrNotFound) || err == nil && cfg.TenantID != teamID {
+		// The id rides the REQUEST BODY here rather than the path, and the
+		// clause is the by-id CRUD's own (readWebhookForTenant): an absent
+		// and a foreign config answer the same 404. A read that failed is
+		// NOT a refusal — it answers 503, which is why this lane reads the
+		// error rather than the CRUD's collapsed form.
+		cfg, err := s.readWebhookForTenant(r.Context(), teamID, req.Source.ID)
+		if errors.Is(err, webhooks.ErrNotFound) {
 			httpError(w, http.StatusNotFound, "webhook not found")
 			return
 		}

@@ -172,12 +172,34 @@ func normalizeBotScope(botIDs []string, wildcard bool) ([]string, bool, error) {
 	return botIDs, false, nil
 }
 
-// webhookForTenant fetches a config and asserts it belongs to teamID
-// (defence in depth on top of the role gate). Returns ok=false having
-// already written the response.
+// readWebhookForTenant is the foreignness clause itself, in ONE place: a
+// config addressed by a CALLER-supplied id serves a team only when it is
+// stamped with that team — the gate above only proves standing in the team
+// named in the path, so without this an admin of team A would read, patch,
+// delete and rotate team B's webhook by guessing its id.
+//
+// A foreign config is indistinguishable from an absent one, which is what
+// keeps ids from being enumerable across tenants: both answer
+// webhooks.ErrNotFound. A read that FAILED returns the store's own error, so
+// a caller that must tell a transient fault from a refusal can
+// (handleCredentialPreview answers that one 503).
+func (s *Server) readWebhookForTenant(ctx context.Context, teamID, webhookID string) (webhooks.Config, error) {
+	cfg, err := s.webhookConfigs.Get(ctx, webhookID)
+	if err != nil {
+		return webhooks.Config{}, err
+	}
+	if cfg.TenantID != teamID {
+		return webhooks.Config{}, webhooks.ErrNotFound
+	}
+	return cfg, nil
+}
+
+// webhookForTenant is the by-id CRUD's rendering of that clause: one 404 for
+// an absent id, a foreign config and an unreadable store alike. Returns
+// ok=false having already written the response.
 func (s *Server) webhookForTenant(w http.ResponseWriter, r *http.Request, teamID, webhookID string) (webhooks.Config, bool) {
-	cfg, err := s.webhookConfigs.Get(r.Context(), webhookID)
-	if err != nil || cfg.TenantID != teamID {
+	cfg, err := s.readWebhookForTenant(r.Context(), teamID, webhookID)
+	if err != nil {
 		httpError(w, http.StatusNotFound, "webhook not found")
 		return webhooks.Config{}, false
 	}

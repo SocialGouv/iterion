@@ -136,15 +136,14 @@ Three parts of this record read differently in the code today.
   `canEditConfigShares`, so a `config_editor` also creates, edits and deletes
   the team's authored bot bundles
   ([pkg/server/auth_authz.go](../../pkg/server/auth_authz.go)). And "nothing
-  else" bounds only the routes that consult a team gate: for example, the
-  tenant-scoped shared-knowledge memory routes
-  ([pkg/server/memory_routes.go](../../pkg/server/memory_routes.go)) carry
-  `requireAuth` and scope by tenant alone, so any authenticated principal of
-  the team reaches them (a global-space write stays super-admin-only, through
-  `requireMemoryWriteAuth`). So do the run list and its stats
-  (`GET /api/runs`, `GET /api/v1/runs/stats`), which scope by the active team
-  with no role read: a `config_editor` lists its team's runs though every
-  by-id read answers it 404. The trigger-subscription CRUD
-  ([pkg/server/triggers_routes.go](../../pkg/server/triggers_routes.go)) takes
-  the member rung at its mount, so a `config_editor` reads subscriptions and
-  cannot write one.
+  else" bounds only the routes that consult a team gate: for example, the run
+  list and its stats (`GET /api/runs`, `GET /api/v1/runs/stats`) scope by the
+  active team with no role read, so a `config_editor` lists its team's runs
+  though every by-id read answers it 404. The trigger-subscription CRUD
+  ([pkg/server/triggers_routes.go](../../pkg/server/triggers_routes.go)) and
+  the tenant-scoped shared-knowledge memory routes
+  ([pkg/server/memory_routes.go](../../pkg/server/memory_routes.go)) take the
+  member rung at their mount, so a `config_editor` reads a team's
+  subscriptions and its memory spaces and writes neither (a global-space
+  write stays super-admin-only underneath that rung, through
+  `requireMemoryWriteAuth`).

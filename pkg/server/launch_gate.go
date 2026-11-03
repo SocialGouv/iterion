@@ -733,7 +733,8 @@ func (s *Server) writeLaunchDenial(w http.ResponseWriter, r *http.Request, d *la
 
 // writeRungDenial renders the same envelope for the member rung taken at a
 // MOUNT (mutatingRungAuth, board_cloud_routes.go): the caller was changing a
-// board or a team's automation, not launching a run. Same token, status,
+// board, a team's automation or its shared knowledge, not launching a run.
+// Same token, status,
 // Retry-After, origin reflection and zero-status floor — the renderer below
 // holds all of it — and deliberately no counter: a refused board write is
 // not a refused launch, and four of them must not read as four refused
