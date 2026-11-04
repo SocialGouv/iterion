@@ -260,10 +260,10 @@ func routeSchemas() map[string]routeOp {
 			responseStatus: http.StatusCreated,
 			description:    "Create a bot binding. One workflow name binds once per bot (secret or context alike). A context binding is refused 501 on a deployment that cannot materialise it.",
 			errors: map[int]string{
-				http.StatusBadRequest:          "the payload contradicts its kind (Validate), or secret_id / context.secret_id is not a team-scoped secret of this org",
-				http.StatusForbidden:           "admin or owner required",
-				http.StatusConflict:            "a binding for this workflow name already exists on this bot",
-				http.StatusNotImplemented:      "context_binding_not_materialised — a context binding on a deployment with no pinned-source fetcher wired would be an operator-visible no-op",
+				http.StatusBadRequest:     "the payload contradicts its kind (Validate), or secret_id / context.secret_id is not a team-scoped secret of this org",
+				http.StatusForbidden:      "admin or owner required",
+				http.StatusConflict:       "a binding for this workflow name already exists on this bot",
+				http.StatusNotImplemented: "context_binding_not_materialised — a context binding on a deployment with no pinned-source fetcher wired would be an operator-visible no-op",
 			},
 		},
 		"PATCH /api/teams/{id}/bots/{bot_id}/bindings/{binding_id}": {
@@ -272,10 +272,10 @@ func routeSchemas() map[string]routeOp {
 			response:        secrets.BotSecretBinding{},
 			description:     "Patch a binding's mutable payload (the name it resolves under, the secret or pinned source, the egress hosts). The merged record is re-validated against its kind. The kind itself is immutable — a kind in the request is ignored — and the degraded readout is the engine's: a PATCH neither sets nor clears it.",
 			errors: map[int]string{
-				http.StatusBadRequest:  "the merged record contradicts its kind, or the referenced credential is not bindable",
-				http.StatusForbidden:   "admin or owner required",
-				http.StatusNotFound:    "no binding with this id on this bot",
-				http.StatusConflict:    "the new name is already bound on this bot",
+				http.StatusBadRequest: "the merged record contradicts its kind, or the referenced credential is not bindable",
+				http.StatusForbidden:  "admin or owner required",
+				http.StatusNotFound:   "no binding with this id on this bot",
+				http.StatusConflict:   "the new name is already bound on this bot",
 			},
 		},
 		"DELETE /api/teams/{id}/bots/{bot_id}/bindings/{binding_id}": {
