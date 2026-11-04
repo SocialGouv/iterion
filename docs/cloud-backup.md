@@ -434,27 +434,30 @@ finding, not a formality.
    done. Everything below is read on the LIVE side (its API, or its Mongo
    when the live server is gone but the database answers), never from the
    dump.
-   - **The set is defined by a rule, not a list.** Read every live
+   - **The set is every row, not a filter.** Read every live
      `audit_events` row, both scopes (`platform` and `tenant`, which also
      holds the org-scoped rows), with `created_at` after the dump's
      `<start>` (a margin: what the dump already holds replays as a no-op),
-     and keep the actions matching `*.deleted`, `*.removed`, `*.revoked`,
-     `*.rotated`, `*.role_changed`, `*.status_changed`, `*.updated`,
-     `*.deletion_scheduled`, `*.deletion_canceled`,
-     `user.password_changed`, `user.password_reset`.
+     and go through all of them, oldest first: any action after the backup
+     changed, removed or restricted something the dump holds as it was —
+     a list of action patterns misses the next one (`user.sessions_revoked`,
+     `team.run_visibility_changed`, `forge.connection.token_replaced` fit
+     none of the obvious suffixes). A row whose object the restored side
+     does not hold is a creation after the backup, lost with the
+     [RPO](#recovery-objectives): there is nothing to replay for it.
      [cloud-admin-guide.md §1.5](cloud-admin-guide.md#15-audit-log) lists
      the stable tokens; the `auditTenant`/`auditOrg`/`auditPlatform`/
      `auditSystem` call sites are authoritative. Among them, a
      `schedule.deleted` brings back a schedule that launches a bot again,
-     a `run.deleted` brings back a run and its content, and a `*.updated`
-     can undo a restriction: `user.updated` carries an account's status
+     a `run.deleted` brings back a run and its content, and an update can
+     undo a restriction: `user.updated` carries an account's status
      (disabled) and its super-admin flag (demoted), `schedule.updated` a
      disabled schedule, `platform.settings.sandbox.updated` a tightened
      egress.
-   - **Removals, demotions and suspensions are redone** through the
-     restored API: delete again what was deleted, remove the member,
-     revoke the token or the sessions, set the role or the status the live
-     side holds.
+   - **Removals, demotions, revocations and suspensions are redone**
+     through the restored API: delete again what was deleted, remove the
+     member, revoke the token or the sessions, set the role, the status or
+     the visibility the live side holds.
    - **Updates are reconciled with the live object**: read it on the live
      side and write its current value on the restored side — for
      `user.updated`, the account's status and super-admin flag
