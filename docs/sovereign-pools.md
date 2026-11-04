@@ -297,7 +297,11 @@ pod gateway nor supplies execution credentials or a run content boundary.
 `iterion_dlq_depth_by_pool{pool="alpha"}` exposes each enabled registry pool,
 including its real zero; it does not add a shared-pool label. A complete
 sample removes retired labels. Any failed read retains the previous complete
-sample for both metrics rather than publishing a partial total.
+sample for both metrics rather than publishing a partial total. The pool-labelled
+family is published by one atomic swap of an immutable sample. A collection
+that overlaps a refresh retains its complete previous sample, including the
+values Prometheus reads after collection; it cannot observe the reset between
+polls or a partially populated set of pool labels.
 
 The rendered-pod witness checks pool containers, init containers and their
 referenced configuration for platform sealing-key names and test key

@@ -71,7 +71,7 @@ type Registry struct {
 	// success-only counter cannot distinguish from "nothing to do".
 	OrphanSweepErrors *prometheus.CounterVec // stage (scan|lease|flip)
 	DLQDepth          prometheus.Gauge
-	DLQDepthByPool    *prometheus.GaugeVec // pool; registry-known non-disabled pools
+	DLQDepthByPool    *GaugeSnapshot // pool; registry-known non-disabled pools
 	// Provider usage-window retries. The pair is what makes the wait
 	// auditable: scheduled counts runs parked for a later reset, resumed
 	// counts the ones a sweeper actually brought back. A growing gap means
@@ -294,10 +294,10 @@ func New() *Registry {
 		Help: "1 when the platform override of this slug and the bundle below it cannot be ordered — a free-form or suffixed version, or a side that declares no version at all — so no staleness verdict is made either way. Informational: no alert rule reads this series.",
 	}, []string{"slug"})
 
-	r.DLQDepthByPool = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+	r.DLQDepthByPool = newGaugeSnapshot(prometheus.GaugeOpts{
 		Name: "iterion_dlq_depth_by_pool",
 		Help: "Messages parked on each registry-known, non-disabled runner pool DLQ.",
-	}, []string{"pool"})
+	}, "pool")
 
 	reg.MustRegister(
 		r.RunsCreatedTotal, r.RunsActive, r.RunDurationSeconds,
