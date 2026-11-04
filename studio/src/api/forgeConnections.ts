@@ -15,7 +15,7 @@ export type ForgeKind = "oauth_app" | "github_app" | "pat";
 export type ForgeConnectionStatus = "active" | "needs_reauth" | "revoked" | "degraded";
 
 export type ForgeConnection = Omit<
-  components["schemas"]["Connection"],
+  components["schemas"]["ForgeConnection"],
   "provider" | "kind" | "status"
 > & {
   provider: ForgeProvider;
