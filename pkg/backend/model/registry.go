@@ -663,10 +663,9 @@ type anthropicEnvWalk struct {
 // built from w, by the env channel each value came from — the vocabulary
 // delegate.AmbientCredentialSetFingerprint digests: the bearer it sends as its
 // OAuth token, else its x-api-key. A bearer read from disk names no channel of
-// the env. The ANTHROPIC_CUSTOM_HEADERS block claw's client identity applies
-// over these, last, is the caller's to overlay
-// (delegate.OverlayCustomHeaderCredentials): it crosses no sandbox boundary
-// with its credential lines.
+// the env. No line of the ANTHROPIC_CUSTOM_HEADERS block rides over these:
+// the engine's client refuses the ambient block (NoAmbientHeaders), and the
+// crossing strips its credential lines.
 func (w anthropicEnvWalk) liveCredentials() map[string]string {
 	live := map[string]string{}
 	switch {
@@ -794,14 +793,14 @@ func anthropicEnvCredentials(ctx context.Context, modelID string) (anthropicEnvW
 // fingerprint names the account the request spends, in the digest every
 // lane's ambient label keys on (delegate.AmbientCredentialSetFingerprint),
 // over the credentials claw's client carries: its x-api-key or the bearer it
-// sends in the key's place (anthropicEnvWalk.liveCredentials), with the
-// ANTHROPIC_CUSTOM_HEADERS block its client identity applies over them, last
-// (delegate.OverlayCustomHeaderCredentials — an Authorization line replaces
-// the bearer, an x-api-key line the key, an empty one erases what it
-// replaces). Those are claw's channels, not the claude CLI's
-// (delegate.AmbientCredentialFingerprint): claw reads no
-// CLAUDE_CODE_OAUTH_TOKEN, and where a key and a bearer both sit in the env it
-// sends the key alone.
+// sends in the key's place (anthropicEnvWalk.liveCredentials). Those are
+// claw's channels, not the claude CLI's (delegate.AmbientCredentialFingerprint):
+// claw reads no CLAUDE_CODE_OAUTH_TOKEN, where a key and a bearer both sit in
+// the env it sends the key alone, and no credential line of the
+// ANTHROPIC_CUSTOM_HEADERS block rides — in process the engine's client
+// refuses the ambient block (withClientIdentity sets NoAmbientHeaders), in the
+// container the block crosses without its credential lines
+// (forwardableProviderEnv). In process and sandboxed, the same set.
 //
 // metered=false where no wall this cap keeps stands in the call's way:
 //   - the walk refuses before any client exists — the ZAI_API_KEY synthesis's
@@ -813,18 +812,13 @@ func anthropicEnvCredentials(ctx context.Context, modelID string) (anthropicEnvW
 //   - a GLM id bound for the real Anthropic wire (GLMUnservedAt), which
 //     serves no GLM id;
 //   - a GLM id whose request carries no credential at all, the bearer dropped
-//     on z.ai's own hostnames or erased by an empty header line.
+//     on z.ai's own hostnames.
 //
 // metered=true with fingerprint "" where the client carries none of the env's
 // credentials: this host's Claude Code login read from disk, or — an id
 // Anthropic serves — no credential at all. No inherited variable names that
 // spend; it is the no-credential meter's.
-//
-// sandboxed reads the env a sandboxed claw node's in-container factory
-// rebuilds from (forwardableProviderEnv): the header block crosses without
-// its credential lines, so none of them rides there. A supervisor calls its
-// model in process and is never sandboxed.
-func AmbientEnvMeter(spec, hint string, sandboxed bool) (fingerprint string, metered bool) {
+func AmbientEnvMeter(spec, hint string) (fingerprint string, metered bool) {
 	id := strings.TrimSpace(spec)
 	if prefix, rest, cut := strings.Cut(id, "/"); cut && strings.EqualFold(strings.TrimSpace(prefix), string(secrets.ProviderAnthropic)) {
 		id = rest
@@ -846,9 +840,6 @@ func AmbientEnvMeter(spec, hint string, sandboxed bool) (fingerprint string, met
 		return "", false
 	}
 	live := w.liveCredentials()
-	if !sandboxed {
-		live = delegate.OverlayCustomHeaderCredentials(live, os.Getenv("ANTHROPIC_CUSTOM_HEADERS"))
-	}
 	if glm && len(live) == 0 {
 		return "", false
 	}

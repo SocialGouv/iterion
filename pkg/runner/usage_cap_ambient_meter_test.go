@@ -1068,24 +1068,27 @@ func TestAGLMIDSpendsTheRunsAnthropicKeyInProcess(t *testing.T) {
 	}
 }
 
-// One account, one meter, on every lane whose client applies the custom-header
-// block. A header line named after a header the Anthropic wire's auth sets
-// replaces what that auth put there: an Authorization line the bearer, an
-// x-api-key line the key. The claude_code route (the label its session stamps)
-// and the claw route (claw's own walk) send the same set and key the same
-// meter — claw records no readings, so the walls the claude_code sessions
-// measure are the only evidence its routes ever meet. pi reads no header
-// block: it sends the env key itself, another account.
-func TestOneHeaderAccountIsOneMeterAcrossLanes(t *testing.T) {
+// One account, one meter, on the lane whose client applies the custom-header
+// block — and the env's own account on every lane whose client does not. A
+// header line named after a header the Anthropic wire's auth sets replaces
+// what that auth put there for the claude CLI: an Authorization line the
+// bearer, an x-api-key line the key, so the claude_code route (the label its
+// session stamps) keys the header's account. claw's engine client refuses the
+// ambient block (withClientIdentity sets NoAmbientHeaders) and the sandbox
+// crossing strips its credential lines, so a claw route sends the env value
+// itself — pi's account, which reads no header block either. A wall the
+// claude_code sessions record on the header account parks no claw route; a
+// wall on the env account does.
+func TestAHeaderAccountIsMeteredOnlyOnTheLaneThatSendsIt(t *testing.T) {
 	ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{})
 	ccRoute := model.WireRoute{NodeID: "cc", Backend: delegate.BackendClaudeCode, Model: "claude-opus-5-5", Readable: true}
 	clawRoute := model.WireRoute{NodeID: "claw", Backend: delegate.BackendClaw, Model: "claude-sonnet-4", Readable: true}
 	piRoute := model.WireRoute{NodeID: "pi", Backend: delegate.BackendPi, Hint: "anthropic", Model: "claude-opus-5-5", Readable: true}
 	for _, tc := range []struct {
-		name    string
-		env     map[string]string
-		account string // the credential the request carries
-		piSpend string // the value pi sends, "" where pi spends nothing iterion names
+		name     string
+		env      map[string]string
+		header   string // the credential the claude CLI's request carries
+		envSpend string // the env value claw and pi send
 	}{
 		{"an Authorization line over the pod's bearer", map[string]string{"ANTHROPIC_AUTH_TOKEN": "tok-pod", "ANTHROPIC_CUSTOM_HEADERS": "Authorization: Bearer hdr-pod"}, "Bearer hdr-pod", "tok-pod"},
 		{"an x-api-key line over the pod's key", map[string]string{"ANTHROPIC_API_KEY": "sk-pod", "ANTHROPIC_CUSTOM_HEADERS": "x-api-key: hdr-key"}, "hdr-key", "sk-pod"},
@@ -1096,25 +1099,32 @@ func TestOneHeaderAccountIsOneMeterAcrossLanes(t *testing.T) {
 				t.Setenv(k, v)
 			}
 			keys := usageCapCredKeys(ctx, &queue.RunMessage{TenantID: "team-b"})
-			want := platformKey(secrets.FingerprintSHA256(tc.account))
+			headerKey := platformKey(secrets.FingerprintSHA256(tc.header))
+			envKey := platformKey(secrets.FingerprintSHA256(tc.envSpend))
 			cc, ccMetered := keys.routeKey(ctx, ccRoute)
 			claw, clawMetered := keys.routeKey(ctx, clawRoute)
-			if !ccMetered || cc != want {
-				t.Errorf("the claude_code route = %q metered=%v, want the header account's meter %q", cc, ccMetered, want)
+			if !ccMetered || cc != headerKey {
+				t.Errorf("the claude_code route = %q metered=%v, want the header account's meter %q", cc, ccMetered, headerKey)
 			}
-			if !clawMetered || claw != want {
-				t.Errorf("the claw route = %q metered=%v, want the header account's meter %q", claw, clawMetered, want)
+			if !clawMetered || claw != envKey {
+				t.Errorf("the claw route = %q metered=%v, want the env account's meter %q — claw's client sends no ambient header line", claw, clawMetered, envKey)
 			}
-			if pi, piMetered := keys.routeKey(ctx, piRoute); !piMetered || pi != platformKey(secrets.FingerprintSHA256(tc.piSpend)) || pi == want {
-				t.Errorf("the pi route = %q metered=%v, want the meter of the env value pi sends — pi reads no header block", pi, piMetered)
+			if pi, piMetered := keys.routeKey(ctx, piRoute); !piMetered || pi != envKey {
+				t.Errorf("the pi route = %q metered=%v, want the meter of the env value pi sends %q — pi reads no header block", pi, piMetered, envKey)
 			}
 
-			// End to end: the wall the claude_code sessions record on the
-			// account parks the claw route that spends it.
-			walled := usagecap.NewMemStore()
-			weekCapped(t, walled, want, time.Now().UTC().Add(30*time.Hour))
-			if err := preflightFor(t, walled, ctx, chainWorkflow(agentRoute("claw", delegate.BackendClaw, "", "claude-sonnet-4"))); err == nil {
-				t.Error("started a claw route on the capped header account it sends")
+			// End to end: the header account's wall parks no claw route, the
+			// env account's does.
+			resets := time.Now().UTC().Add(30 * time.Hour)
+			headerWall := usagecap.NewMemStore()
+			weekCapped(t, headerWall, headerKey, resets)
+			if err := preflightFor(t, headerWall, ctx, chainWorkflow(agentRoute("claw", delegate.BackendClaw, "", "claude-sonnet-4"))); err != nil {
+				t.Errorf("parked a claw route on the header account its request never carries: %v", err)
+			}
+			envWall := usagecap.NewMemStore()
+			weekCapped(t, envWall, envKey, resets)
+			if err := preflightFor(t, envWall, ctx, chainWorkflow(agentRoute("claw", delegate.BackendClaw, "", "claude-sonnet-4"))); err == nil {
+				t.Error("started a claw route on the capped env account it sends")
 			}
 		})
 	}

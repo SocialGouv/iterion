@@ -319,7 +319,7 @@ func TestAnthropicRouteSource_AHeaderLineReplacesTheChannelItNames(t *testing.T)
 
 // An Authorization line in the ambient ANTHROPIC_CUSTOM_HEADERS is a
 // credential the CLI applies OVER every route's auth
-// (OverlayCustomHeaderCredentials): a pod authenticating through it keys its
+// (overlayCustomHeaderCredentials): a pod authenticating through it keys its
 // own meter, not the bare credential-less label the per-borrower split
 // charges.
 func TestAnthropicRouteSource_AnAmbientAuthorizationHeaderNamesItsAccount(t *testing.T) {

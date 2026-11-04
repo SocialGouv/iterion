@@ -474,7 +474,7 @@ func (k runCredKeys) clawUnslottedKey(creds secrets.Credentials, spec, hint stri
 	if k.ambientRefused {
 		return "", false
 	}
-	fp, metered := model.AmbientEnvMeter(spec, hint, sandboxed)
+	fp, metered := model.AmbientEnvMeter(spec, hint)
 	if !metered {
 		return "", false
 	}

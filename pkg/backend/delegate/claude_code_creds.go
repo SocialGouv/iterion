@@ -794,7 +794,7 @@ func spawnEnvValue(credEnv map[string]string, key string, sandboxed bool) string
 
 // ambientCredentialChannels are the variables an operator's own Anthropic auth
 // lives in, in the CLI's documented precedence order. ANTHROPIC_CUSTOM_HEADERS
-// is applied over them (OverlayCustomHeaderCredentials): an Authorization or
+// is applied over them (overlayCustomHeaderCredentials): an Authorization or
 // x-api-key line replaces the channels that header carries, and only such a
 // line with a value in it is a credential of its own.
 var ambientCredentialChannels = []string{
@@ -860,7 +860,7 @@ func ambientCredChannels(credEnv, selected map[string]string, sandboxed bool) []
 // bearer both live go out together as x-api-key AND Authorization
 // (ambientCredChannels names the state), so the set holds every live channel —
 // and then the ANTHROPIC_CUSTOM_HEADERS block, applied over them the way the
-// CLI applies it (OverlayCustomHeaderCredentials): its Authorization line
+// CLI applies it (overlayCustomHeaderCredentials): its Authorization line
 // replaces the bearers, its x-api-key line the key. Empty when no inherited
 // credential names the spend: nothing inherited at all — its "Not logged in"
 // is a refusal, not an account — a block whose empty line erased the only
@@ -875,7 +875,7 @@ func ambientCredentialLive(env map[string]string, sandboxed bool) map[string]str
 			live[k] = v
 		}
 	}
-	return OverlayCustomHeaderCredentials(live, spawnEnvValue(env, "ANTHROPIC_CUSTOM_HEADERS", sandboxed))
+	return overlayCustomHeaderCredentials(live, spawnEnvValue(env, "ANTHROPIC_CUSTOM_HEADERS", sandboxed))
 }
 
 // anthropicWireAuthHeaders are the headers the Anthropic wire's own auth sets,
@@ -901,7 +901,7 @@ var anthropicWireAuthHeaders = []struct {
 // then the header's own name ("ANTHROPIC_CUSTOM_HEADERS:x-api-key").
 const customHeaderChannelPrefix = "ANTHROPIC_CUSTOM_HEADERS:"
 
-// OverlayCustomHeaderCredentials applies an ANTHROPIC_CUSTOM_HEADERS block
+// overlayCustomHeaderCredentials applies an ANTHROPIC_CUSTOM_HEADERS block
 // over live — the credential set a client's own auth sends, channel name to
 // value — and returns the set the request carries: each line named after a
 // header the Anthropic wire's auth sets (anthropicWireAuthHeaders, the last
@@ -909,11 +909,12 @@ const customHeaderChannelPrefix = "ANTHROPIC_CUSTOM_HEADERS:"
 // and rides as a credential of its own (customHeaderChannelPrefix + its name)
 // where its value is not empty. live may be nil.
 //
-// One overlay for every lane whose client applies the block — the claude
-// CLI's reading of a spawn (ambientCredentialLive) and claw's env factory
-// (model.AmbientEnvMeter) — so where the two send the same set they key one
-// meter, and a channel a header line displaced keys neither.
-func OverlayCustomHeaderCredentials(live map[string]string, headers string) map[string]string {
+// The claude CLI applies the block (ambientCredentialLive reads a spawn with
+// it); claw's engine client does not — it refuses the ambient block
+// (model's withClientIdentity sets NoAmbientHeaders) — so a pod that
+// authenticates through a header line keys two accounts across the two lanes,
+// each the one its request carries.
+func overlayCustomHeaderCredentials(live map[string]string, headers string) map[string]string {
 	for _, h := range anthropicWireAuthHeaders {
 		value, present := credheader.Line(headers, h.name)
 		if !present {
@@ -1041,7 +1042,7 @@ func spawnCloudProviderSwitches(credEnv map[string]string, sandboxed bool) (on, 
 // value is not empty (credheader.LineValue), the remediation's reading: the
 // ambient channel list and the record's own field. The meter and the
 // credential admission probe read the whole block (ambientCredentialLive,
-// through OverlayCustomHeaderCredentials), which keys this same value as the
+// through overlayCustomHeaderCredentials), which keys this same value as the
 // line's credential. Neither names a block whose Authorization line
 // authenticates nothing: an empty value puts no credential on the request,
 // and admitting it launches a run that dies "Not logged in" past the gate
