@@ -20,6 +20,23 @@ import (
 // the refusal must lift with the measurement, not outlive it.
 var cliAbsentProtocols = []CLIAgentProtocol{kimiProtocol, grokProtocol, opencodeProtocol}
 
+// stageHostCLI puts an executable named name first on PATH for the test's
+// duration. A witness that dispatches one of cliAbsentProtocols on the host
+// (no sandbox, or the noop driver) and is about something else than the
+// image gap stages its CLI, so the gate answers the same on a host that
+// carries the CLI and on one that does not (a CI runner).
+func stageHostCLI(t *testing.T, name string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fake CLI is POSIX-only")
+	}
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, name), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil { // #nosec G306 — test fixture must be executable
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
 // TestRefuseAbsentImageCLINamesTheBackend: on a host whose PATH cannot
 // resolve the CLI, the dispatch of each unwired backend is refused BEFORE any
 // spawn, with a typed error that names the backend and the executable — the

@@ -484,6 +484,9 @@ func TestOpenCodeResolveEnvPinsHostState(t *testing.T) {
 // TYPED capability refusal, so recovery classifies it CAPABILITY_UNSUPPORTED
 // (deterministic, never retried) instead of an untyped spawn-class error.
 func TestOpenCodeRefusesGatedNode(t *testing.T) {
+	// The witness is about the gate, not the image gap (#1643): the host
+	// carries an opencode, so the answer is the same on a CI runner.
+	stageHostCLI(t, "opencode")
 	policy, err := permission.NewPolicy(permission.ModeDeny, nil, nil, []string{"Bash"})
 	if err != nil {
 		t.Fatal(err)
@@ -519,6 +522,7 @@ func TestOpenCodeRefusesGatedNode(t *testing.T) {
 // same typed refusal, named permission-ask — an ask verdict cannot pause an
 // opencode run (headless auto-rejects, --auto auto-allows).
 func TestOpenCodeRefusesAskGatedNode(t *testing.T) {
+	stageHostCLI(t, "opencode")
 	policy, err := permission.NewPolicy(permission.ModeAsk, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
