@@ -19,6 +19,12 @@ import (
 // adoptJSONObjectText keeps a parse-fallback text that IS a JSON object as
 // the structured answer: the parsed map becomes the output and the result
 // stops being a fallback. Any other text stays a parse fallback.
+//
+// Every key of that map is model-written, so the `_`-prefixed ones are
+// dropped: they name what the executor and the backend stamp on a result —
+// `_needs_interaction` and `_interaction_questions` raise a pause, a
+// permission prompt included — and the model's text must not be able to
+// raise one.
 func adoptJSONObjectText(result *delegate.Result) {
 	if !result.ParseFallback {
 		return
@@ -29,6 +35,11 @@ func adoptJSONObjectText(result *delegate.Result) {
 	}
 	var parsed map[string]any
 	if json.Unmarshal([]byte(text), &parsed) == nil && parsed != nil {
+		for key := range parsed {
+			if strings.HasPrefix(key, "_") {
+				delete(parsed, key)
+			}
+		}
 		result.Output = parsed
 		result.ParseFallback = false
 	}

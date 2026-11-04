@@ -14,10 +14,15 @@ import (
 func TestR3ConvergencePreservesChildBudgetHint(t *testing.T) {
 	wf := validationWorkflow()
 	e := New(wf, tmpStore(t), newStubExecutor())
-	child := &RuntimeError{Code: ErrCodeBudgetExceeded, Cause: ErrBudgetExceeded, Hint: "raise the child budget in child.bot before resuming"}
+	child := &RuntimeError{Code: ErrCodeBudgetExceeded, Message: "CHILD-DETAIL", Cause: ErrBudgetExceeded, Hint: "raise the child budget in child.bot before resuming"}
 	_, err := e.processConvergence(e.newRunState("fan", nil), "my_agent", []*branchResult{{branchID: "a", err: child}}, nil, nil)
 	if !errors.Is(err, ErrBudgetExceeded) || RemedyOf(err).Hint != child.Hint {
 		t.Fatalf("child remedy lost: %v / %+v", err, RemedyOf(err))
+	}
+	// The branch's error is quoted once: the message carries it, the cause
+	// is the sentinel.
+	if n := strings.Count(err.Error(), "CHILD-DETAIL"); n != 1 {
+		t.Fatalf("the branch's error appears %d times in %q, want once", n, err.Error())
 	}
 }
 

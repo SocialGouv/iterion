@@ -38,8 +38,14 @@ func ClassifyError(err error) ErrorCode {
 	// its stderr is data, and an HTTP-looking line in it ("status code 400",
 	// "error 401") says nothing about the model provider. Every execution
 	// boundary carries this type, `iterion resume` and child runs included.
+	// The network reading still applies: a command whose own I/O hit a
+	// reset connection or a DNS timeout gets the network backoff, as any
+	// other failure does.
 	var toolFailure *model.ToolExecutionError
 	if errors.As(err, &toolFailure) {
+		if matchesNetworkTransient(strings.ToLower(err.Error())) {
+			return ErrCodeNetworkTransient
+		}
 		return ErrCodeExecutionFailed
 	}
 	// A credential the provider rejected. Checked by TYPE, before any
@@ -216,12 +222,22 @@ func ClassifyError(err error) ErrorCode {
 	if strings.Contains(msg, "error 403") || strings.Contains(msg, "error 401") {
 		return ErrCodeAuthFailed
 	}
-	for _, needle := range networkTransientNeedles {
-		if strings.Contains(msg, needle) {
-			return ErrCodeNetworkTransient
-		}
+	if matchesNetworkTransient(msg) {
+		return ErrCodeNetworkTransient
 	}
 	return ErrCodeExecutionFailed
+}
+
+// matchesNetworkTransient is the ONE reading of networkTransientNeedles:
+// the tool branch and the flattened-string fallback of ClassifyError both
+// call it. msg is lowercase.
+func matchesNetworkTransient(msg string) bool {
+	for _, needle := range networkTransientNeedles {
+		if strings.Contains(msg, needle) {
+			return true
+		}
+	}
+	return false
 }
 
 // modelUnavailableNeedles enumerates lowercase substrings that say the

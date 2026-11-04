@@ -85,7 +85,9 @@ func (e *Engine) processConvergence(rs *runState, convergenceNodeID string, resu
 					Message: fmt.Sprintf("convergence at %s (wait_all): %d of %d branch(es) refused on a spent budget: %v", convergenceNodeID, budgetFailures, len(failedBranches), firstBudgetErr),
 					NodeID:  convergenceNodeID,
 					Hint:    hint,
-					Cause:   firstBudgetErr,
+					// The sentinel, not firstBudgetErr: Message already quotes
+					// the branch's error, and Error() appends the cause.
+					Cause: ErrBudgetExceeded,
 				}
 			}
 			msg := fmt.Sprintf("convergence at %s (wait_all): %d branch(es) failed: %v",

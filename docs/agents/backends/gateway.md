@@ -26,5 +26,7 @@ values normalize case/whitespace and accept integers 1–100. Old runners ignore
 the variable, so no deployment order is required. Delegation, interaction and
 cut-turn recovery share the mapping. Only closed-list, typed provider parameter
 refusals park as `PROVIDER_REQUEST_INVALID`; model prose and tool stderr do not.
+A sandboxed node's refusal arrives typed only from a runner image of the same
+release: an older runner sends its text alone, which stays `EXECUTION_FAILED`.
 The [gateway and correction contracts](../../backends.md#the-openai-compatible-gateway-openai_compatible)
 list the values, deployment example and Claude Code's untyped-error limitation.
