@@ -466,6 +466,8 @@ var crossingSpellings = map[string]string{
 	"hostCodexForfait":                   "asks whether a project .env planted the switch, and names it in the refusal: a planted order ships nothing into the container",
 	"workspaceAgentMaxBytes":             "asks whether a project .env planted the ceiling override, and denies a planted value its authority — the host resolves the default, and forwardableProviderEnv's branch crosses the explicit empty in its place",
 	"(anthropicEnvWalk).liveCredentials": "names the env channel each credential of a built walk came from, as a map key the usage-cap meter digests (delegate.AmbientCredentialSetFingerprint) — no read: the walk's values were read where the factory reads them",
+	"stampedCrossingFunds":               "reads a stamped run's composed dispatch env over clawSandboxCredentialEnvKeys, asking whether a channel of the run is set — a map read the scan cannot see; the answer decides the typed refusal, nothing is forwarded",
+	"stampWithheldEnvName":               "names the subscription refusal a stamped run's crossing keeps forwarding while it blanks the pod's credentials — a comparison, no read",
 }
 
 // envStateConsults answer for a name from state other than the process env,

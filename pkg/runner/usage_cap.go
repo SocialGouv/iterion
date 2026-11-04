@@ -452,9 +452,12 @@ func (k runCredKeys) routeKey(ctx context.Context, route model.WireRoute) (key s
 // where no wall this cap keeps stands in the call's way: a walk claw refuses
 // before any client exists (no client, no account — the typed refusal is the
 // answer and the route's own fallbacks fire), which is every walk of a
-// stamped run past its own key (secrets.Credentials.AmbientRefused: the pod
-// env answers ErrAmbientCredentialRefused), z.ai's synthesis, a GLM id no
-// destination of the env serves.
+// stamped run past its own key (secrets.Credentials.AmbientRefused): the
+// registry answers ErrAmbientCredentialRefused in process, and the crossing
+// does for the container — it carries none of the pod's credentials and
+// refuses a node nothing of the run funds before any runner starts
+// (model.ClawSandboxCredential reads that crossing) — z.ai's synthesis, a GLM
+// id no destination of the env serves.
 func (k runCredKeys) clawUnslottedKey(creds secrets.Credentials, spec, hint string, sandboxed bool) (string, bool) {
 	if !sandboxed {
 		if slot := heldForRoute(creds, string(secrets.ProviderAnthropic)); slot != "" {
@@ -464,6 +467,8 @@ func (k runCredKeys) clawUnslottedKey(creds secrets.Credentials, spec, hint stri
 			return k.keyForSlot(slot), true
 		}
 	}
+	// The stamp refuses the pod env, never the run's own key: its walk past
+	// the arm above is refused, the one before it spends.
 	if k.ambientRefused {
 		return "", false
 	}

@@ -53,7 +53,10 @@ var clawSandboxCredentialEnvKeys = []string{
 //
 // A gateway-env misconfiguration (err) answers "no channel": the node
 // would fail at dispatch on that error anyway, and a refusal naming the
-// credential gap is the more honest failure for an untrusted run.
+// credential gap is the more honest failure for an untrusted run. So does a
+// stamped run's node that no credential of the run funds: the crossing
+// carries none of the pod's and refuses the dispatch
+// (ErrAmbientCredentialRefused).
 func ClawSandboxCredential(ctx context.Context, model string, home delegate.SandboxHomeState) (channel string, ok bool) {
 	env, _, err := forwardableProviderEnv(ctx, model, "")
 	if err == nil {

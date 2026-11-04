@@ -224,9 +224,10 @@ func TestTheNothingHeldDefaultReadsTheAmbientLedger(t *testing.T) {
 // nothing-held default — an unreadable route, an unlabelled reading — stays
 // on the no-credential meter, never the account's (the stamp read in
 // usageCapCredKeys). A claw walk into the pod env, a supervisor's or a
-// route's, in process or in the container, is refused before any client
-// exists and meters nothing (clawUnslottedKey). The unstamped twin on the same
-// pod reads the account on every row, so the stamp alone decides each one.
+// route's, is refused before any client exists — by the registry in process,
+// by the crossing for the container — and meters nothing (clawUnslottedKey).
+// The unstamped twin on the same pod reads the account on every row, so the
+// stamp alone decides each one.
 func TestAStampedRunReadsNothingOfThePodsAccount(t *testing.T) {
 	blankAnthropicWireEnv(t)
 	t.Setenv("ITERION_DEFAULT_SUPERVISOR_MODEL", "")
@@ -254,6 +255,9 @@ func TestAStampedRunReadsNothingOfThePodsAccount(t *testing.T) {
 			t.Fatalf("inert bench: the unstamped claw route (sandboxed=%v) = %q metered=%v, want the account's meter %q", sandboxed, key, metered, ambient)
 		}
 	}
+	if _, ok := model.ClawSandboxCredential(unstampedCtx, clawRoute.Model, delegate.SandboxHomeState{}); !ok {
+		t.Fatal("inert bench: the unstamped crossing hands the container no credential on a pod that carries one")
+	}
 
 	ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{AmbientRefused: true})
 	stamped := usageCapCredKeys(ctx, msg)
@@ -272,11 +276,16 @@ func TestAStampedRunReadsNothingOfThePodsAccount(t *testing.T) {
 		t.Errorf("a stamped run's unlabelled reading = %q, want the bare %q", got, bare)
 	}
 
-	// The claw walk: the registry answers the typed refusal before any client
-	// exists, so the meter names nothing.
+	// The claw walk: in process the registry answers the typed refusal before
+	// any client exists, and in the container's stead the crossing hands it
+	// none of the pod's credentials and refuses the dispatch — so the meter
+	// names nothing.
 	var refusal *model.ErrAmbientCredentialRefused
 	if _, err := model.NewRegistry().ResolveWithContext(ctx, supSpec); !errors.As(err, &refusal) {
 		t.Fatalf("bench: the registry on a stamped run = %v, want the typed ambient refusal", err)
+	}
+	if channel, ok := model.ClawSandboxCredential(ctx, clawRoute.Model, delegate.SandboxHomeState{}); ok {
+		t.Fatalf("bench: the crossing hands a stamped run's container %s — the pod's account would fund the claw route", channel)
 	}
 	if key, metered := stamped.supervisorKey(ctx, supSpec, ""); metered {
 		t.Errorf("a stamped run's supervisor = %q metered — its walk into the pod env is refused, no account spends", key)
@@ -310,6 +319,51 @@ func TestAStampedRunReadsNothingOfThePodsAccount(t *testing.T) {
 	}
 	if err := preflightFor(t, bothWalls, ctx, clawRun); err != nil {
 		t.Errorf("parked a stamped claw run: %v — its walk into the pod env is refused, no wall stands in its way", err)
+	}
+}
+
+// The stamp refuses the pod env, never the run's own key. In process, a GLM
+// id with no z.ai key of the run walks past the z.ai branch to the keyed
+// factory, which spends the run's Anthropic key at the env's destination — a
+// gateway here, which can serve the id — so the registry builds the client:
+// the stamp's refusal comes after that arm, and so does the meter's. The
+// supervisor and the claw route meter the run's key, not nothing, and not
+// the pod's account beside it; a wall on that key parks the claw run.
+func TestAStampedRunMetersTheOwnKeyItsClawWalkSpends(t *testing.T) {
+	blankAnthropicWireEnv(t)
+	t.Setenv("ITERION_DEFAULT_SUPERVISOR_MODEL", "")
+	t.Setenv("ITERION_SUPERVISORS", "")
+	t.Setenv("ANTHROPIC_API_KEY", "sk-pod")
+	t.Setenv("ANTHROPIC_BASE_URL", "https://gateway.example/anthropic")
+	t.Cleanup(model.SetCredentialsLookup(model.RunCredentialsLookup))
+	const spec = "anthropic/glm-5.3"
+	ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{
+		AmbientRefused: true,
+		APIKeys:        map[secrets.Provider]string{secrets.ProviderAnthropic: "sk-run"},
+		Fingerprints:   map[string]string{string(secrets.ProviderAnthropic): "fp-run"},
+	})
+	// The message preflightFor hands the pre-flight, so both read one scope.
+	keys := usageCapCredKeys(ctx, &queue.RunMessage{RunID: "run-routes"})
+	want := keys.keyForSlot(string(secrets.ProviderAnthropic))
+	if want == keys.keyForSlot("") || want == platformKey(secrets.FingerprintSHA256("sk-pod")) {
+		t.Fatalf("inert bench: the run key's meter %q is the bare one or the pod account's", want)
+	}
+	route := model.WireRoute{NodeID: "impl", Backend: delegate.BackendClaw, Model: spec, Readable: true}
+	hint := model.RouteProviderHint(ctx, route.Backend, route.Hint, route.Model)
+	if _, err := model.NewRegistry().ResolveWithContext(model.WithProviderHint(ctx, hint), spec); err != nil {
+		t.Fatalf("bench: the registry refused a stamped run's own key on %s: %v", spec, err)
+	}
+
+	if key, metered := keys.supervisorKey(ctx, spec, ""); !metered || key != want {
+		t.Errorf("a stamped run's supervisor on %s = %q metered=%v, want the run key's meter %q — the keyed factory spends it", spec, key, metered, want)
+	}
+	if key, metered := keys.routeKey(ctx, route); !metered || key != want {
+		t.Errorf("a stamped run's claw route on %s = %q metered=%v, want the run key's meter %q", spec, key, metered, want)
+	}
+	caps := usagecap.NewMemStore()
+	weekCapped(t, caps, want, time.Now().UTC().Add(30*time.Hour))
+	if err := preflightFor(t, caps, ctx, chainWorkflow(agentRoute("impl", delegate.BackendClaw, "", spec))); err == nil {
+		t.Error("a stamped claw run started on the capped key its walk spends")
 	}
 }
 

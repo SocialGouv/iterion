@@ -2538,6 +2538,16 @@ type crossingRefusals struct {
 	planted []string
 }
 
+// Under the ambient stamp (secrets.Credentials.AmbientRefused) the crossing
+// is the in-process registry's twin: the run's own credentials are its only
+// funds, and every fallback to the pod env answers a typed refusal
+// (#2005, ADR-131 §7). The container never learns the stamp — ctx does not
+// cross — so the crossing enforces it on the launcher side: a credential of
+// the pod crosses as the explicit empty (stampWithheldEnvName), the
+// operator's env gateway does not stand in for a run that holds no pair, and
+// a node no credential of the run funds is refused here,
+// ErrAmbientCredentialRefused, before any runner starts (stampedCrossingFunds)
+// — not sent on to resolve on nothing in the container.
 func forwardableProviderEnv(ctx context.Context, model, providerHint string) (map[string]string, crossingRefusals, error) {
 	env := map[string]string{}
 	var refused crossingRefusals
@@ -2546,6 +2556,7 @@ func forwardableProviderEnv(ctx context.Context, model, providerHint string) (ma
 		creds = secrets.Credentials{}
 		ok = false
 	}
+	stamped := ok && creds.AmbientRefused
 	for _, name := range providerCredentialEnvVars {
 		v := envGetenv(ctx, name)
 		// A value a workspace .env planted on the host is the repository
@@ -2602,11 +2613,19 @@ func forwardableProviderEnv(ctx context.Context, model, providerHint string) (ma
 			env[name] = kept
 			continue
 		}
+		// The pod's credential is not a stamped run's money. It crosses as the
+		// explicit empty rather than absent, so that no value the container
+		// itself carries under that name stands in for it either; the run's
+		// own key for the node overwrites it below.
+		withheld := stamped && stampWithheldEnvName(name)
+		if withheld {
+			v = ""
+		}
 		// A planted name crosses as the explicit empty even when its class
 		// skips host-unset names (the keys above): the empty reads as "auth
 		// attempted, invalid" there — loud, where an absent name is the one
 		// the runner's workspace .env auto-load would fill.
-		if v != "" || planted {
+		if v != "" || planted || withheld {
 			env[name] = v
 		}
 	}
@@ -2692,6 +2711,12 @@ func forwardableProviderEnv(ctx context.Context, model, providerHint string) (ma
 				env[compatgw.BaseURLEnv] = baseURL
 				pairServed = true
 			}
+		}
+		if !pairServed && stamped {
+			// The operator's env gateway is the pod's money: a stamped run
+			// with no pair of its own is refused, as checkGatewaySource
+			// refuses it at the dispatch seam.
+			return nil, crossingRefusals{}, &ErrAmbientCredentialRefused{Provider: string(secrets.ProviderOpenAICompatible), Spec: model}
 		}
 		if !pairServed {
 			// The read is envtrust.Inherited, not os.Getenv: a gateway route a
@@ -2882,7 +2907,45 @@ func forwardableProviderEnv(ctx context.Context, model, providerHint string) (ma
 			return nil, crossingRefusals{}, err
 		}
 	}
+	if stamped && !stampedCrossingFunds(env, nodeProv) {
+		provider, _, _ := ParseModelSpec(model)
+		return nil, crossingRefusals{}, &ErrAmbientCredentialRefused{Provider: provider, Spec: model}
+	}
 	return env, refused, nil
+}
+
+// stampWithheldEnvName reports whether the host value of a forwarded name is
+// a credential of the pod, which a stamped run's crossing never carries: every
+// credential-shaped name (envtrust.CredentialShapedName — the keys, the
+// bearer, the AWS key pair and session token) but
+// ITERION_FORBID_SUBSCRIPTION_OAUTH, a refusal that authenticates nothing and
+// that, withheld, would let the container spend a run's forfait the operator
+// closed. The header block never reaches the question: its own branch crosses
+// it without its credential lines.
+func stampWithheldEnvName(name string) bool {
+	return envtrust.CredentialShapedName(name) && name != "ITERION_FORBID_SUBSCRIPTION_OAUTH"
+}
+
+// stampedCrossingFunds reports whether a stamped run's crossing hands the node
+// a credential of the run its provider reads. Under the stamp the pod's
+// credentials crossed empty and the host's ChatGPT forfait stays home
+// (hostCodexForfait), so every channel left in env
+// (clawSandboxCredentialEnvKeys) is the run's own — the node's key and the
+// key pinned for its route, its Claude forfait's config dir, its gateway pair
+// — save CODEX_HOME, which points every node at the run's ChatGPT forfait
+// and funds an openai node alone. nodeProv is the crossing's own reading of
+// the node's provider; "" narrowed nothing, and no channel is ruled out.
+func stampedCrossingFunds(env map[string]string, nodeProv secrets.Provider) bool {
+	for _, key := range clawSandboxCredentialEnvKeys {
+		if env[key] == "" {
+			continue
+		}
+		if key == "CODEX_HOME" && nodeProv != "" && nodeProv != secrets.ProviderOpenAI {
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 // claw declares no forfait-first provider (delegate.RegisterForfaitFirst).
