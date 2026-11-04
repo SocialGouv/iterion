@@ -5,7 +5,10 @@ runner pool**: a dedicated set of runner pods whose only LLM credential is the
 team's own OpenAI-compatible gateway, and whose runs are isolated from the
 other tenants by code — routing, admission and credentials, not network
 fencing (the deployment stays the shared iterion.cloud install; there is no
-dedicated namespace and no egress filtering).
+dedicated namespace and no egress filtering in this implementation). The
+operator-selected next deployment boundary is pool-specific RBAC and
+NetworkPolicy in the shared namespace; those separate changes must be
+deployed before claiming network enforcement.
 
 The isolation chain, in the order a run meets it:
 
@@ -44,7 +47,7 @@ The isolation chain, in the order a run meets it:
 6. **Credentials**: a pool pod carries only its pool's gateway secret — no
    vendor keys are mounted. A mis-routed vendor call fails at
    authentication, not at egress; the network is not the enforcement layer
-   (operator decision: the shared install, isolation by code). The
+   (the current shared install enforces this boundary in code). The
    per-run credential bundle seals under a fresh per-run DEK that
    travels in the run's own queue message (ADR-123) — a runner pod
    holds no platform key material at all — and binds to tenant, pool
@@ -232,20 +235,82 @@ Operator notes:
 
 ## Operations
 
-- `GET|PUT /api/admin/runner-pools` — the registry (super-admin; wholesale
-  replace, validated: pool name grammar, duplicate names, lifecycle
-  states; audited with the previous state).
-- `PUT /api/admin/teams/{id}/runner-pool` — the mapping (super-admin;
-  refuses pools the registry does not know).
-- `GET /api/admin/dlq?pool=<p>` and the peek/replay/discard routes take the
-  same `?pool=` parameter — each pool parks on its own DLQ stream, and the
-  depth gauge sums the shared DLQ with every registry-known pool's.
-- The pool refusal is typed (`runview.ErrPoolContentRefused`): pin the
-  surface's model to the pool's `openai_compatible/*` gateway and provide
-  that gateway credential to the process, or run the surface on the pool.
-- The orphan sweeper's queued-pass skip counts pool consumers' backlogs;
-  an unreadable pool backlog DEFERS the orphan verdict rather than
-  flipping a run that is waiting its turn.
+The super-admin CLI uses the same audited routes as the API:
+
+```sh
+iterion remote admin runner-pools list
+iterion remote admin runner-pools set --data @pools.json
+iterion remote admin teams runner-pool TEAM --pool alpha
+iterion remote admin teams runner-pool TEAM --clear
+iterion remote admin teams llm-fallback TEAM --policy none
+iterion remote admin teams llm-fallback TEAM --clear
+iterion remote admin dlq list --pool alpha
+iterion remote admin dlq show 42 --pool alpha
+iterion remote admin dlq replay 42 --pool alpha
+iterion remote admin dlq delete 42 --pool alpha
+```
+
+`runner-pools set` replaces the whole registry: read it first and retain the
+other pools. Mapping requires exactly one of `--pool` and `--clear`;
+fallback requires exactly one of `--policy none|platform` and `--clear`.
+Clearing fallback restores the default platform policy. DLQ sequence IDs
+are positive integers; omitting `--pool` addresses the shared DLQ.
+
+### Moving a team between pools
+
+Changing or clearing a mapping checks every queued or running run of that
+team, including running runs idle between model calls. A known nonempty
+answer refuses with HTTP 409, the run IDs and the drain remedy. Missing
+store capability or unreadable/incomplete run metadata refuses with 503,
+including with `--force`. A no-op mapping does not need this read.
+
+Stop new submissions **and resumes** for the team first. If its old pool is
+dedicated, put that registry entry in `draining`, then wait for queued and
+running work to finish before changing the mapping. A shared source has no
+registry entry to drain: stop the team's ingress and wait; disabling the
+destination does not drain the shared source. Parked runs do not execute,
+and their later resume still refuses a changed immutable pool stamp.
+
+This read is a cutover backstop, not a distributed launch lock: a new launch
+after the read can race the mapping write. `--force` deliberately bypasses a
+known nonempty answer (`?force=1`), and both audit scopes retain `forced`
+and `alive_runs`. It never invents an empty answer after a failed read.
+
+### Registry host projection
+
+An entry may record `gateway_base_url` and `forge_hosts` alongside its
+lifecycle. The gateway is an HTTP(S) URL with a host and valid port, without
+credentials, query or fragment. Forge entries are bare hosts with optional
+ports. Validation makes no DNS request and preserves the operator's literal
+values. Private, loopback and cluster-local destinations remain accepted;
+GET/PUT responses derive `C213` warnings rather than persisting a second copy.
+
+At pool-runner boot, the registry gateway host and effective port are compared
+with `OPENAI_COMPATIBLE_BASE_URL`. Case, a trailing DNS dot and default ports
+do not create false mismatches. A missing/unreadable projection or mismatch
+emits one warning and boot continues. This projection neither rewrites the
+pod gateway nor supplies execution credentials or a run content boundary.
+
+### DLQ and boundary readback
+
+`iterion_dlq_depth` retains the total shared-plus-pools depth.
+`iterion_dlq_depth_by_pool{pool="alpha"}` exposes each enabled registry pool,
+including its real zero; it does not add a shared-pool label. A complete
+sample removes retired labels. Any failed read retains the previous complete
+sample for both metrics rather than publishing a partial total.
+
+The rendered-pod witness checks pool containers, init containers and their
+referenced configuration for platform sealing-key names and test key
+material. JWT and authenticated Mongo key references are explicitly allowed,
+as is the pool's own gateway credential. The operator-managed storage Secret
+is an opaque approved input; a render cannot inspect its deployed contents
+or establish that namespace RBAC prevents a pod from reading other Secrets.
+
+The pool content refusal is typed (`runview.ErrPoolContentRefused`): pin the
+surface's model to the pool's `openai_compatible/*` gateway and provide that
+gateway credential to the process, or run the surface on the pool. The orphan
+sweeper includes pool consumers' backlogs; an unreadable backlog defers its
+verdict instead of failing queued work.
 
 ## Deliberate residuals
 
@@ -258,6 +323,3 @@ Operator notes:
   module's own production Go, so one cannot land one without saying what it
   does; a test fixture, a bson projection on the column or a studio client
   reading the JSON field is outside its reach.
-- The pool DLQ API surface (list/peek/replay/discard per pool) is wired;
-  the per-pool labeled depth gauge and the `admin dlq` CLI pool flag are
-  follow-ups.

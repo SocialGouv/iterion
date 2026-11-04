@@ -11,6 +11,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/identity"
 	"github.com/SocialGouv/iterion/pkg/platformcfg"
 	"github.com/SocialGouv/iterion/pkg/queue"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 func (s *Server) registerAdminTeamRoutes() {
@@ -78,6 +79,31 @@ func (s *Server) handleAdminSetTeamRunnerPool(w http.ResponseWriter, r *http.Req
 			return
 		}
 	}
+	// Force bypasses a known live-run answer only. Unknown state cannot be
+	// represented honestly in the boundary audit, so still refuses.
+	forceValue := r.URL.Query().Get("force")
+	if forceValue != "" && forceValue != "1" {
+		httpError(w, http.StatusBadRequest, "force must be 1 when explicitly requested")
+		return
+	}
+	forced := forceValue == "1"
+	aliveRuns := []string{}
+	if cur.RunnerPool != pool {
+		reader := store.AsTeamAliveRunsReader(s.cfg.Store)
+		if reader == nil {
+			httpError(w, http.StatusServiceUnavailable, "cannot verify team cutover: alive-run reader unavailable")
+			return
+		}
+		aliveRuns, err = reader.ListAliveRunsForTeam(store.WithTenant(r.Context(), teamID), teamID)
+		if err != nil {
+			httpError(w, http.StatusServiceUnavailable, "cannot verify team cutover: alive runs unreadable: %v", err)
+			return
+		}
+		if len(aliveRuns) > 0 && !forced {
+			httpError(w, http.StatusConflict, "team %q has %d alive runs %v: stop new launches and resumes, set the old dedicated pool draining, wait for these runs to end, then change the mapping (force=1 explicitly overrides this backstop)", teamID, len(aliveRuns), aliveRuns)
+			return
+		}
+	}
 	updated, err := s.authStore().PatchTeam(r.Context(), teamID, identity.TeamPatch{RunnerPool: &pool})
 	if err != nil {
 		// The store-level backstop (the partial unique index) spoke: name
@@ -99,11 +125,11 @@ func (s *Server) handleAdminSetTeamRunnerPool(w http.ResponseWriter, r *http.Req
 	// org's own audit view, org mirror so the org admin sees the change that
 	// will refuse their resumes and launches.
 	s.auditTenant(r, teamID, "team.runner_pool_set", "team", teamID, map[string]any{
-		"runner_pool": pool, "previous": cur.RunnerPool,
+		"runner_pool": pool, "previous": cur.RunnerPool, "forced": forced, "alive_runs": aliveRuns,
 	})
 	if cur.OrgID != "" {
 		s.auditOrg(r, cur.OrgID, "team.runner_pool_set", "team", teamID, map[string]any{
-			"runner_pool": pool, "previous": cur.RunnerPool,
+			"runner_pool": pool, "previous": cur.RunnerPool, "forced": forced, "alive_runs": aliveRuns,
 		})
 	}
 	writeJSON(w, toTeamSummaryView(updated))
@@ -174,7 +200,7 @@ func (s *Server) handleAdminGetRunnerPools(w http.ResponseWriter, r *http.Reques
 		httpError(w, http.StatusInternalServerError, "%v", err)
 		return
 	}
-	writeJSON(w, rec)
+	writeJSON(w, runnerPoolRegistryView(rec))
 }
 
 // handleAdminPutRunnerPools replaces the registry WHOLESALE — entries are
@@ -202,5 +228,5 @@ func (s *Server) handleAdminPutRunnerPools(w http.ResponseWriter, r *http.Reques
 	s.auditPlatform(r, "", "platform.settings.runner_pools.updated", "platform_settings", platformcfg.FamilyRunnerPools, map[string]any{
 		"pools": len(rec.Pools),
 	})
-	writeJSON(w, rec)
+	writeJSON(w, runnerPoolRegistryView(&rec))
 }

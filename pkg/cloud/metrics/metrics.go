@@ -71,6 +71,7 @@ type Registry struct {
 	// success-only counter cannot distinguish from "nothing to do".
 	OrphanSweepErrors *prometheus.CounterVec // stage (scan|lease|flip)
 	DLQDepth          prometheus.Gauge
+	DLQDepthByPool    *prometheus.GaugeVec // pool; registry-known non-disabled pools
 	// Provider usage-window retries. The pair is what makes the wait
 	// auditable: scheduled counts runs parked for a later reset, resumed
 	// counts the ones a sweeper actually brought back. A growing gap means
@@ -293,6 +294,11 @@ func New() *Registry {
 		Help: "1 when the platform override of this slug and the bundle below it cannot be ordered — a free-form or suffixed version, or a side that declares no version at all — so no staleness verdict is made either way. Informational: no alert rule reads this series.",
 	}, []string{"slug"})
 
+	r.DLQDepthByPool = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "iterion_dlq_depth_by_pool",
+		Help: "Messages parked on each registry-known, non-disabled runner pool DLQ.",
+	}, []string{"pool"})
+
 	reg.MustRegister(
 		r.RunsCreatedTotal, r.RunsActive, r.RunDurationSeconds,
 		r.WSConnections, r.MongoChangeStreamLagS,
@@ -301,7 +307,7 @@ func New() *Registry {
 		r.RunnerAdmissionRejected, r.RolloutEpochRegression,
 		r.WebhookDeliveriesTotal, r.WebhookThrottledTotal,
 		r.AuthLoginsTotal, r.AuthPasswordResetsTotal,
-		r.LaunchDeniedTotal, r.RunsOrphanRecovered, r.OrphanSweepErrors, r.DLQDepth,
+		r.LaunchDeniedTotal, r.RunsOrphanRecovered, r.OrphanSweepErrors, r.DLQDepth, r.DLQDepthByPool,
 		r.BotOverrideShadowsNewer, r.BotShadowCheckUnavailable, r.BotOverrideUnorderableVersion,
 		r.RunsUsageWindowBlocked, r.RunsRetryScheduled,
 		r.RunsRetryResumed, r.RunsRetryPending, r.RunsRetrySweeps, r.RunsRetryProbes,

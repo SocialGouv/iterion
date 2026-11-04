@@ -166,20 +166,21 @@ func (s *Server) poolBacklogs(ctx context.Context, leases runLeaseChecker) (uint
 	return total, true
 }
 
-// dlqGaugeValue sums the shared DLQ depth with every registry-known
-// pool's own DLQ stream. The second return is false when a leg cannot be
+// dlqGaugeSnapshot sums the shared DLQ depth with every registry-known
+// pool's own DLQ stream. The last return is false when a leg cannot be
 // read — the caller HOLDS the last gauge value instead of publishing a
 // partial sum that reads as a calm during exactly the storm the gauge
 // exists to surface.
-func (s *Server) dlqGaugeValue(ctx context.Context) (uint64, bool) {
+func (s *Server) dlqGaugeSnapshot(ctx context.Context) (uint64, map[string]uint64, bool) {
+	byPool := make(map[string]uint64)
 	depth, err := s.queue.DLQDepth(ctx)
 	if err != nil {
-		return 0, false
+		return 0, nil, false
 	}
 	if s.runnerPoolsStore != nil {
 		rec, rerr := s.runnerPoolsStore.Get(ctx)
 		if rerr != nil {
-			return 0, false
+			return 0, nil, false
 		}
 		if rec != nil {
 			for _, p := range rec.Pools {
@@ -188,13 +189,34 @@ func (s *Server) dlqGaugeValue(ctx context.Context) (uint64, bool) {
 				}
 				pd, perr := s.queue.PoolDLQDepth(ctx, p.Name)
 				if perr != nil {
-					return 0, false
+					return 0, nil, false
 				}
+				byPool[p.Name] = pd
 				depth += pd
 			}
 		}
 	}
-	return depth, true
+	return depth, byPool, true
+}
+
+// Keep the aggregate reader for callers that only need the historical sum.
+func (s *Server) dlqGaugeValue(ctx context.Context) (uint64, bool) {
+	depth, _, ok := s.dlqGaugeSnapshot(ctx)
+	return depth, ok
+}
+
+// Publish only a complete sample. Retired/disabled pools disappear after a
+// successful registry read; any unreadable leg preserves every previous series.
+func (s *Server) updateDLQGauges(ctx context.Context) {
+	depth, byPool, ok := s.dlqGaugeSnapshot(ctx)
+	if !ok {
+		return
+	}
+	s.cfg.Metrics.DLQDepth.Set(float64(depth))
+	s.cfg.Metrics.DLQDepthByPool.Reset()
+	for pool, n := range byPool {
+		s.cfg.Metrics.DLQDepthByPool.WithLabelValues(pool).Set(float64(n))
+	}
 }
 
 // runQueueSweeper loops until ctx is cancelled. Started by
@@ -217,9 +239,7 @@ func (s *Server) runQueueSweeper(ctx context.Context, lister staleRunLister, lea
 			// An unreadable leg HOLDS the last value: zeroing on a broker
 			// error would paint the calm exactly when the broker struggles.
 			if s.queue != nil && s.cfg.Metrics != nil {
-				if depth, ok := s.dlqGaugeValue(ctx); ok {
-					s.cfg.Metrics.DLQDepth.Set(float64(depth))
-				}
+				s.updateDLQGauges(ctx)
 			}
 		}
 	}

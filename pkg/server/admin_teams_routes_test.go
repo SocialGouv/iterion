@@ -11,6 +11,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/audit"
 	"github.com/SocialGouv/iterion/pkg/identity"
 	"github.com/SocialGouv/iterion/pkg/platformcfg"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // The F2 core at the route layer: the delegated caps route is a PATCH —
@@ -21,7 +22,7 @@ import (
 // TestUpdateTeamHasNoProductionCallers, which makes the whole-doc revert
 // uncommittable.
 func TestOrgTeamCaps_PatchPreservesTheRunnerPool(t *testing.T) {
-	s, _, done := newApprovalTestServer(t)
+	s, _, done := newPoolMappingTestServer(t)
 	defer done()
 
 	pool := "honorabilite"
@@ -52,7 +53,7 @@ func TestOrgTeamCaps_PatchPreservesTheRunnerPool(t *testing.T) {
 // The only writer of the mapping: the super-admin route. Set, clear, and
 // grammar-refuse — audited, and refused for a team that does not exist.
 func TestAdminSetTeamRunnerPool(t *testing.T) {
-	s, _, done := newApprovalTestServer(t)
+	s, _, done := newPoolMappingTestServer(t)
 	defer done()
 
 	call := func(body string) *httptest.ResponseRecorder {
@@ -119,7 +120,7 @@ func TestAdminSetTeamRunnerPool(t *testing.T) {
 // posture, reset to the default, grammar-refuse the rest — audited in both
 // scopes, and refused for a team that does not exist.
 func TestAdminSetTeamLLMFallback(t *testing.T) {
-	s, _, done := newApprovalTestServer(t)
+	s, _, done := newPoolMappingTestServer(t)
 	defer done()
 
 	call := func(body string) *httptest.ResponseRecorder {
@@ -187,7 +188,7 @@ func TestAdminSetTeamLLMFallback(t *testing.T) {
 // the test server proves both arms. Red when the existence check is
 // dropped.
 func TestAdminSetTeamRunnerPool_RequiresARegisteredPool(t *testing.T) {
-	s, _, done := newApprovalTestServer(t)
+	s, _, done := newPoolMappingTestServer(t)
 	defer done()
 	s.runnerPoolsStore = platformcfg.NewMemoryStore[platformcfg.RunnerPools]()
 	if err := s.runnerPoolsStore.Put(context.Background(), platformcfg.RunnerPools{Pools: []platformcfg.RunnerPool{
@@ -217,7 +218,7 @@ func TestAdminSetTeamRunnerPool_RequiresARegisteredPool(t *testing.T) {
 // the holder unmapping frees the pool; a team re-mapping itself is
 // fine. Red when the holder check is dropped.
 func TestAdminSetTeamRunnerPool_OneTeamPerPool(t *testing.T) {
-	s, _, done := newApprovalTestServer(t)
+	s, _, done := newPoolMappingTestServer(t)
 	defer done()
 	s.auditStore = audit.NewMemoryStore()
 	if _, err := s.authStore().CreateTeam(context.Background(), identity.Team{
@@ -271,4 +272,17 @@ func TestAdminSetTeamLLMFallback_SuperAdminOnly(t *testing.T) {
 	if code, _ := llmDo(t, hs, http.MethodPut, "/api/admin/teams/t1/llm-fallback", adminTok, `{"llm_fallback":"none"}`); code == http.StatusForbidden {
 		t.Fatal("super-admin PUT = 403 — the gate ate the super-admin")
 	}
+}
+
+// Mapping tests wire a real empty store: no store is unknown, not drained.
+func newPoolMappingTestServer(t *testing.T) (*Server, *mockGitLab, func()) {
+	t.Helper()
+	s, gl, done := newApprovalTestServer(t)
+	runs, err := store.New(t.TempDir())
+	if err != nil {
+		done()
+		t.Fatal(err)
+	}
+	s.cfg.Store = runs
+	return s, gl, done
 }
