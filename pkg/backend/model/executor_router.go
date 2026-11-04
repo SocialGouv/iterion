@@ -21,10 +21,12 @@ import (
 // stops being a fallback. Any other text stays a parse fallback.
 //
 // Every key of that map is model-written, so the `_`-prefixed ones are
-// dropped: they name what the executor and the backend stamp on a result —
-// `_needs_interaction` and `_interaction_questions` raise a pause, a
-// permission prompt included — and the model's text must not be able to
-// raise one.
+// dropped: they name what the executor and the backend stamp on a result,
+// and `_needs_interaction` / `_interaction_questions` raise a pause, a
+// permission prompt included. This covers the text this adoption reads; a
+// JSON text the backend's own parse already took as the answer (claw's
+// shaped-object harvest, claude_code's structuredObject) keeps those keys
+// (#3055).
 func adoptJSONObjectText(result *delegate.Result) {
 	if !result.ParseFallback {
 		return

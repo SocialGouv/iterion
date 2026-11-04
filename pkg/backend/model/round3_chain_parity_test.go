@@ -71,8 +71,9 @@ func TestR3_ParseFailureFallbackParity(t *testing.T) {
 	}
 }
 
-// r4ForgedTextBackend answers like the claude_code CLI with a parse-fallback
-// text that IS a JSON object, carrying the pause keys a backend sets.
+// r4ForgedTextBackend returns a parse fallback whose text IS a JSON object
+// carrying the pause keys a backend sets — the input adoptJSONObjectText
+// reads, whatever backend hands it.
 type r4ForgedTextBackend struct {
 	mu    sync.Mutex
 	calls int
@@ -87,9 +88,9 @@ func (b *r4ForgedTextBackend) Execute(_ context.Context, _ delegate.Task) (deleg
 	return delegate.Result{Output: map[string]any{"text": text}, ParseFallback: true, Tokens: 10, CostUSD: 0.01, BackendName: delegate.BackendClaudeCode}, nil
 }
 
-// A JSON object the model wrote as text is adopted as its answer, never as
-// a pause request: the pause keys belong to the backend that builds the
-// result, so a model-written one cannot raise a permission prompt.
+// A parse-fallback JSON text is adopted as the answer, never as a pause
+// request: adoptJSONObjectText drops the model-written pause keys, so this
+// path cannot raise a permission prompt.
 func TestR4_AdoptedTextCannotForgeAPause(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("TMPDIR", t.TempDir())
