@@ -313,7 +313,12 @@ finding, not a formality.
      `networkPolicy.ingress.extraAllow` naming only the source of the
      port-forward of step 5 (the node, as an `ipBlock`);
    - every runner at 0 — `runner.replicas`, each pool's replicas, and KEDA
-     off or paused — until step 7.
+     off or paused — until step 7;
+   - the Kubernetes sandbox off for the whole drill, `runner.sandbox.enabled:
+     false` (the pools follow it): a sandbox pod carries other labels than
+     the release's pods, so the chart's NetworkPolicy does not select it, and
+     a restored runner creating one would reach the outside with restored
+     credentials.
 2. **Restore the blob bucket first** — Mongo references blob keys, so
    the keys must exist before any run doc consults them. From the chart's
    off-cluster copy, run rclone the other way round, into the RESTORE
@@ -448,14 +453,12 @@ finding, not a formality.
 7. **Resume a paused run**, still under the egress of step 1 (the most
    stringent path: it exercises Mongo, blob, and the checkpoint together).
    Bring one runner up and resume a run chosen to have no external effect —
-   a drill tenant's, or one whose credentials step 6 has cut. A run on the
-   Kubernetes sandbox also needs the cluster's own API server — the runner
-   deletes and creates its sandbox pod through it — and the sandbox pod's
-   connection back to the runner (the proxy the runner advertises on its
-   pod IP, `ITERION_POD_IP`): add the API server's in-cluster address
-   (the `kubernetes` service's endpoint, as an `ipBlock`) to
-   `networkPolicy.egress.extraAllow` for the drill, nothing outside the
-   cluster. Scheduled
+   a drill tenant's, or one whose credentials step 6 has cut — and one that
+   does not need the Kubernetes sandbox, which step 1 keeps off. Rehearsing
+   a sandboxed resume needs a drill-only NetworkPolicy the chart does not
+   ship: one selecting every sandbox pod and denying its egress but the
+   runner's proxy (`ITERION_POD_IP`) and the cluster's API server, with the
+   matching ingress on the runner's proxy port; it is outside this drill. Scheduled
    runs queued since step 5 reach that runner too: the egress of step 1 is
    what keeps them from acting outside.
 8. **Tear down** the restore namespace. Add the row to the
