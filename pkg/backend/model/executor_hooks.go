@@ -119,13 +119,16 @@ type DelegateInfo struct {
 	// Consumers must not read it as "what served": recordServed is
 	// suppressed and the event carries skipped:true.
 	Skipped bool
-	// SpendCrossesProviders marks Tokens and CostUSD as a fallback chain's
-	// fold of spend made under more than one plan join — a primary that
-	// burned on one provider before another served (chainOutcome's field of
-	// the same name). Provider then names where the figure is booked, not
-	// where all of it ran: the runner's credential plan places none of it,
-	// counting a miss that voids the fine table.
-	SpendCrossesProviders bool
+	// FoldedSpend itemises the part of Tokens and CostUSD a fallback chain
+	// folded in from the routes it abandoned after they spent (chainOutcome's
+	// field of the same name), one slice per abandoned attempt, each under
+	// the labels of the route that spent it. The rest of the figure is the
+	// spend of the route this event names. A consumer that books per route
+	// or per credential books each slice on its own route: the event's
+	// labels name only where the chain ended — a claude_code primary that
+	// burned a lent subscription before a claw rung served on another
+	// provider leaves both slices in one figure.
+	FoldedSpend []SpendSlice
 	// Fingerprint is the provider fingerprint of the session behind this
 	// delegation ("anthropic-oauth", "facade:<slot>:<base url>", …), as the
 	// backend reported it. It is the ROUTING DECISION, taken before the
@@ -135,6 +138,21 @@ type DelegateInfo struct {
 	// source of the model_served_via_facade event on the FINISHED path
 	// only, which is what keeps that event's name true.
 	Fingerprint string
+}
+
+// SpendSlice is one abandoned chain route's spend inside a delegate event's
+// folded figure (DelegateInfo.FoldedSpend), labelled like the event's own
+// figure is: the backend that spent it, the route's model spec and the model
+// the backend reported, the provider word it served under
+// (servingProvider), and the session's credential label.
+type SpendSlice struct {
+	BackendName    string
+	RouteModel     string
+	EffectiveModel string
+	Provider       string
+	Fingerprint    string
+	Tokens         int
+	CostUSD        float64
 }
 
 // delegateInfoFromResult fills the result-derived fields of a DelegateInfo —

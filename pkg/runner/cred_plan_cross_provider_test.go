@@ -5,7 +5,6 @@ import (
 	"context"
 	"maps"
 	"math"
-	"strings"
 	"testing"
 	"time"
 
@@ -22,8 +21,9 @@ import (
 // production hooks, the meter's plan join and the broker's booking. The
 // chain books its failed routes' spend on the ONE delegate event of the
 // route that ends it, and the plan keys one credential per (node,
-// provider): a fold spanning two providers fits no row, and a table that
-// placed it whole on the serving word's row would book the donor short.
+// provider): the event itemises each abandoned route's slice, and the meter
+// books each on its own row — a table that placed the fold whole on the
+// serving word's row would book the donor short.
 
 // crossProviderNode is the door-served shape: the node's own route spends
 // the donor's lent Claude subscription (anthropic), its `gpt` rung the
@@ -78,32 +78,31 @@ func runCrossProviderChain(t *testing.T, plan map[string]string, primaryUSD floa
 	return usage
 }
 
-// TestRecordPoolSpend_aFoldAcrossProvidersBooksTheWholeAttempt: the review's
-// probe, mirrored onto the seeded donor. The primary burns $5 twice on the
-// donor's subscription and fails; the codex rung serves for $0.10 on the
-// team's own key. The one delegate_finished carries $10.10 under "openai":
-// joined whole, the fine table books it on the team's key and the donor $0
-// for $10 that ran on their credential. The fold voids the table instead —
-// the coarse booking charges the donor the whole attempt — and the report
-// names the run.
+// TestRecordPoolSpend_aFoldAcrossProvidersBooksEachSliceOnItsRow: the
+// review's probe, mirrored onto the seeded donor. The primary burns $5
+// twice on the donor's subscription and fails; the codex rung serves for
+// $0.10 on the team's own key. The one delegate_finished carries $10.10
+// under "openai": joined whole, the fine table books it on the team's key
+// and the donor $0 for $10 that ran on their credential. The event itemises
+// the primary's slice instead, the meter books it on the donor's row and
+// the rung's own $0.10 on the team's, and the table rides.
 //
 // The exhausted twin: the rung fails too, and the delegate_error that books
-// the chain's whole spend ($5 ×2 + $0.10 ×2) under the rung's word voids the
-// table the same way.
+// the chain's whole spend ($5 ×2 + $0.10 ×2) under the rung's labels splits
+// the same way.
 //
 // Control: the same chain whose primary spent nothing folds nothing, so the
-// table rides and books the donor's empty slice ($0, no warn) — a flag
-// raised on every fall-through would void the fine table on every door run.
-func TestRecordPoolSpend_aFoldAcrossProvidersBooksTheWholeAttempt(t *testing.T) {
+// table books the donor's empty slice ($0, no warn).
+func TestRecordPoolSpend_aFoldAcrossProvidersBooksEachSliceOnItsRow(t *testing.T) {
 	ctx := context.Background()
 
 	for _, tc := range []struct {
 		name    string
 		rungErr error
-		want    float64
+		rung    float64
 	}{
-		{"the primary spent on the donor, the rung served", nil, 10.10},
-		{"the primary spent on the donor, the rung failed too", &delegate.ErrTransient{Reason: "overloaded"}, 10.20},
+		{"the primary spent on the donor, the rung served", nil, 0.10},
+		{"the primary spent on the donor, the rung failed too", &delegate.ErrTransient{Reason: "overloaded"}, 0.20},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var buf bytes.Buffer
@@ -113,8 +112,15 @@ func TestRecordPoolSpend_aFoldAcrossProvidersBooksTheWholeAttempt(t *testing.T) 
 			usage := runCrossProviderChain(t, plan, 5, tc.rungErr)
 
 			costUSD, _, _, _ := usage.RunTotals()
-			if math.Abs(costUSD-tc.want) > 1e-9 {
-				t.Fatalf("the run totals = $%.6f, want the chain's folded $%.2f — test premise broken", costUSD, tc.want)
+			if math.Abs(costUSD-(10+tc.rung)) > 1e-9 {
+				t.Fatalf("the run totals = $%.6f, want the chain's folded $%.2f — test premise broken", costUSD, 10+tc.rung)
+			}
+			rows, miss := usage.fineSnapshot()
+			if miss.observations != 0 {
+				t.Fatalf("the plan missed %+v — every slice of the fold has its own row", miss)
+			}
+			if math.Abs(rows[donorFingerprint].CostUSD-10) > 1e-9 || math.Abs(rows["fp-own-openai"].CostUSD-tc.rung) > 1e-9 {
+				t.Fatalf("the fine rows = %+v, want the donor's $10 and the team's $%.2f", rows, tc.rung)
 			}
 			h.runner.recordPoolSpend(&queue.RunMessage{RunID: "run-1", TenantID: "team-1", CredPlan: plan}, usage, nil, false)
 
@@ -122,11 +128,11 @@ func TestRecordPoolSpend_aFoldAcrossProvidersBooksTheWholeAttempt(t *testing.T) 
 			if err != nil {
 				t.Fatalf("usage: %v", err)
 			}
-			if math.Abs(day.CostUSD-tc.want) >= 1e-3 {
-				t.Fatalf("the donor's ledger = $%.4f, want the whole $%.2f — a fold spanning two providers fits no plan row, so the fine table must void", day.CostUSD, tc.want)
+			if math.Abs(day.CostUSD-10) >= 1e-3 {
+				t.Fatalf("the donor's ledger = $%.4f, want the $10 that ran on their subscription — the rung's spend ran on the team's key", day.CostUSD)
 			}
-			if !strings.Contains(buf.String(), voidedTableWarn) || !strings.Contains(buf.String(), "run-1") {
-				t.Fatalf("the report logged %q, want the voided-table warn naming the run", buf.String())
+			if buf.Len() != 0 {
+				t.Fatalf("a table every slice joined logged %q, want silence", buf.String())
 			}
 		})
 	}
@@ -152,13 +158,17 @@ func TestRecordPoolSpend_aFoldAcrossProvidersBooksTheWholeAttempt(t *testing.T) 
 	})
 }
 
-// TestRecordPoolSpend_aFoldEndingOnTheGatewayStillVoids: an env-funded route
-// places nobody and voids nothing by design — but a fold that ENDS on one
-// names only where the chain finished. The donor's $10 burned on the
-// primary rides inside the gateway rung's figure; excusing it as env-funded
-// would ship a table without the donor's slice.
-func TestRecordPoolSpend_aFoldEndingOnTheGatewayStillVoids(t *testing.T) {
+// TestRecordPoolSpend_aFoldEndingOnTheGatewayBooksTheDonorsSlice: an
+// env-funded route places nobody and voids nothing by design — and a fold
+// that ENDS on one names only where the chain finished. The donor's $10
+// burned on the primary rides inside the gateway rung's figure, itemised:
+// it books on the donor's row, the gateway's own $0.50 on nobody, and the
+// table rides. Booked whole on the gateway's labels, the donor's slice
+// would be placed on nobody.
+func TestRecordPoolSpend_aFoldEndingOnTheGatewayBooksTheDonorsSlice(t *testing.T) {
+	var buf bytes.Buffer
 	h := newPoolHarnessForRun(t, credpoolLimitsForFine(), "run-1")
+	h.runner.cfg.Logger = iterlog.New(iterlog.LevelWarn, &buf)
 	plan := finePlan(t)
 	usage := newMetricsEmitter(&recordingEmitter{}, metrics.New(), plan)
 	hooks := model.NewStoreEventHooks(
@@ -166,7 +176,11 @@ func TestRecordPoolSpend_aFoldEndingOnTheGatewayStillVoids(t *testing.T) {
 	)
 	hooks.OnDelegateFinished("impl", model.DelegateInfo{
 		BackendName: delegate.BackendClaw, RouteModel: "openai_compatible/team-a/m",
-		Tokens: 1000, CostUSD: 10, SpendCrossesProviders: true,
+		Tokens: 1050, CostUSD: 10.5,
+		FoldedSpend: []model.SpendSlice{{
+			BackendName: delegate.BackendClaudeCode, RouteModel: "anthropic/claude-opus-5",
+			Fingerprint: "anthropic-oauth", Tokens: 1000, CostUSD: 10,
+		}},
 	})
 	h.runner.recordPoolSpend(&queue.RunMessage{RunID: "run-1", TenantID: "team-1", CredPlan: plan}, usage, nil, false)
 
@@ -174,8 +188,11 @@ func TestRecordPoolSpend_aFoldEndingOnTheGatewayStillVoids(t *testing.T) {
 	if err != nil {
 		t.Fatalf("usage: %v", err)
 	}
-	if day.CostUSD != 10 {
-		t.Fatalf("the donor's ledger = $%.2f, want the whole $10 — the gateway route the fold ended on does not fund the slice it carries", day.CostUSD)
+	if math.Abs(day.CostUSD-10) >= 1e-3 {
+		t.Fatalf("the donor's ledger = $%.4f, want their $10 — the gateway route the fold ended on does not fund the slice it carries", day.CostUSD)
+	}
+	if buf.Len() != 0 {
+		t.Fatalf("the report logged %q, want silence — the donor's slice joins their row, the gateway's is env-funded", buf.String())
 	}
 }
 

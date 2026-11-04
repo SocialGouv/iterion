@@ -1148,11 +1148,12 @@ func putDelegateModelFields(data map[string]any, info DelegateInfo) {
 	if info.Provider != "" {
 		data["provider"] = info.Provider
 	}
-	// The provider word above names where the figure is booked; this key
-	// says the figure also folds another provider's spend, which no single
-	// credential-plan row can place (#2288).
-	if info.SpendCrossesProviders {
-		data["spend_crosses_providers"] = true
+	// The labels above name the route the figure ends on; this key itemises
+	// the part of it a fallback chain folded in from the routes it
+	// abandoned, so a per-route or per-credential consumer books each slice
+	// where it ran (#2288).
+	if len(info.FoldedSpend) > 0 {
+		data["folded_spend"] = foldedSpendPayload(info.FoldedSpend)
 	}
 	if info.ContextWindow > 0 {
 		data["context_window"] = info.ContextWindow
@@ -1163,6 +1164,35 @@ func putDelegateModelFields(data map[string]any, info DelegateInfo) {
 	if info.PeakInputTokens > 0 {
 		data["context_used"] = info.PeakInputTokens
 	}
+}
+
+// foldedSpendPayload is the event form of a delegate's folded slices, in
+// their fold order: each slice under the keys the event names its own
+// figure with (`backend`, `route_model`, `effective_model`, `provider`,
+// `fingerprint`, `tokens`, `cost_usd`), empties and a zero cost omitted —
+// an absent `cost_usd` is an unpriced slice, never a free one. JSON-shaped
+// ([]any of map[string]any) so the persisted event and the live one read
+// alike.
+func foldedSpendPayload(slices []SpendSlice) []any {
+	out := make([]any, 0, len(slices))
+	for _, s := range slices {
+		entry := map[string]any{"backend": s.BackendName, "tokens": s.Tokens}
+		for key, v := range map[string]string{
+			"route_model":     s.RouteModel,
+			"effective_model": s.EffectiveModel,
+			"provider":        s.Provider,
+			"fingerprint":     s.Fingerprint,
+		} {
+			if v != "" {
+				entry[key] = v
+			}
+		}
+		if s.CostUSD > 0 {
+			entry["cost_usd"] = s.CostUSD
+		}
+		out = append(out, entry)
+	}
+	return out
 }
 
 // sameServedModel reports whether a backend's effective model is the one
