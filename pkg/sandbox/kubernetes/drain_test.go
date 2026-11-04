@@ -987,11 +987,23 @@ func tarArchive(t *testing.T, hdrs []*tar.Header, bodies map[string]string) *byt
 // failFor calls, writes stderr after the archive and exits 1.
 func archiveShimSeq(t *testing.T, archives [][]byte, failFor int, stderr string) (kubectl Kubectl, calls func() int) {
 	t.Helper()
+	return archiveShimSeqLaying(t, archives, failFor, stderr, "")
+}
+
+// archiveShimSeqLaying is archiveShimSeq whose call len(archives) first
+// runs lay, a shell script — a writer beside the drain, between its
+// attempts; "" runs nothing.
+func archiveShimSeqLaying(t *testing.T, archives [][]byte, failFor int, stderr, lay string) (kubectl Kubectl, calls func() int) {
+	t.Helper()
 	isolateExecEnvironment(t)
 	shimDir := t.TempDir()
 	counter := filepath.Join(shimDir, "calls")
 	errFile := filepath.Join(shimDir, "stderr")
 	if err := os.WriteFile(errFile, []byte(stderr+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	layFile := filepath.Join(shimDir, "lay.sh")
+	if err := os.WriteFile(layFile, []byte(lay+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	files := make([]string, len(archives))
@@ -1004,6 +1016,7 @@ func archiveShimSeq(t *testing.T, archives [][]byte, failFor int, stderr string)
 	shim := "#!/bin/sh\n" +
 		"n=$(cat '" + counter + "' 2>/dev/null || echo 0); n=$((n+1)); echo \"$n\" > '" + counter + "'\n" +
 		"case \"$n\" in\n" + srcCases(files) + "esac\n" +
+		"if [ \"$n\" -eq " + strconv.Itoa(len(archives)) + " ]; then sh '" + layFile + "' || exit 3; fi\n" +
 		"cat \"$src\" || exit 2\n" +
 		"if [ \"$n\" -le " + strconv.Itoa(failFor) + " ]; then cat '" + errFile + "' >&2; exit 1; fi\n" +
 		"exit 0\n"

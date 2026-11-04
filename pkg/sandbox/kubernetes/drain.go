@@ -185,7 +185,11 @@ func settleUnsettledDrain(dir sandbox.ReadBackDir, ran int, why string, last err
 // the one key the landed record, the meter, the sweeps and the declines
 // share, and the key a walk of the tree meets the entry under. An entry
 // standing on a member's path as anything but a directory — a link above
-// all — can decline the member, never redirect it.
+// all — can decline the member, never redirect it; so can a name the host's
+// filesystem folds onto an entry it lists under another spelling (case, or
+// Unicode normalization): a name reaches an entry only where the directory
+// lists it under exactly that spelling (drainDir.spells), so one entry
+// never answers to two keys.
 type drainTree struct {
 	root *drainDir
 }
@@ -230,6 +234,9 @@ const (
 	entryFile
 	entryLink
 	entryOther
+	// entryFolded: the name reaches an entry its directory lists under
+	// another spelling — what a filesystem that folds names answers.
+	entryFolded
 )
 
 var (
@@ -239,6 +246,9 @@ var (
 	// errNotDrainFile is a name the drain would read a file at that
 	// stands as no regular file: a link, a directory, another kind.
 	errNotDrainFile = errors.New("not a regular file")
+	// errFoldedName is a name the host's filesystem folds onto an entry
+	// its directory lists under another spelling (entryFolded).
+	errFoldedName = errors.New("the host's filesystem lists the entry this name reaches under another spelling")
 )
 
 // join is where name under d stands on the host, for messages.
@@ -254,14 +264,23 @@ func joinKey(key, name string) string {
 	return key + "/" + name
 }
 
+// drainBlocked is the first component of a member's path the drain cannot
+// enter: its key, and why — standing as no directory (errNotDrainDir: a
+// link, a file, another kind), listed under another spelling
+// (errFoldedName), or, where nothing is made, not standing at all
+// (fs.ErrNotExist).
+type drainBlocked struct {
+	key string
+	why error
+}
+
 // parent opens the directory the entry at key stands in: each component of
 // key's parent chain entered from the root in turn (drainDir.child), one
 // missing made when create is set — and recorded as the drain's own
-// (drainState.made). blocked is the key of the first component standing as
-// no directory — a link, a file, another kind — or, without create, not
-// standing at all: nothing under it is reachable where its name spells, and
+// (drainState.made). blocked is the first component the drain cannot enter
+// (drainBlocked): nothing under it is reachable where its name spells, and
 // the drain reaches nothing any other way. The caller releases dir.
-func (t *drainTree) parent(key string, create bool, s *drainState) (dir *drainDir, base, blocked string, err error) {
+func (t *drainTree) parent(key string, create bool, s *drainState) (dir *drainDir, base string, blocked *drainBlocked, err error) {
 	parts := strings.Split(key, "/")
 	dir = t.root
 	for i, part := range parts[:len(parts)-1] {
@@ -273,15 +292,15 @@ func (t *drainTree) parent(key string, create bool, s *drainState) (dir *drainDi
 			}
 		}
 		t.release(dir)
-		if errors.Is(err, errNotDrainDir) || errors.Is(err, fs.ErrNotExist) {
-			return nil, "", strings.Join(parts[:i+1], "/"), nil
+		if errors.Is(err, errNotDrainDir) || errors.Is(err, errFoldedName) || errors.Is(err, fs.ErrNotExist) {
+			return nil, "", &drainBlocked{key: strings.Join(parts[:i+1], "/"), why: err}, nil
 		}
 		if err != nil {
-			return nil, "", "", err
+			return nil, "", nil, err
 		}
 		dir = next
 	}
-	return dir, parts[len(parts)-1], "", nil
+	return dir, parts[len(parts)-1], nil, nil
 }
 
 // drainSpot is where one member lands: the directory it is written in,
@@ -293,13 +312,14 @@ type drainSpot struct {
 }
 
 // spot readies the place the member at key lands, its parent chain made as
-// it needs (parent), or the decline that place earns: a component standing
-// as no directory (blockedDecline), or a name longer than the host's
+// it needs (parent), or the decline that place earns: a component the drain
+// cannot enter (blockedDecline), a name the host's filesystem folds onto
+// another spelling (foldedDecline), or a name longer than the host's
 // filesystem holds. Only the host's own failure to read or create is an
 // error. The caller releases the spot's dir.
 func (t *drainTree) spot(key string, s *drainState) (drainSpot, *drainDecline, error) {
 	dir, base, blocked, err := t.parent(key, true, s)
-	if err == nil && blocked != "" {
+	if err == nil && blocked != nil {
 		return drainSpot{}, blockedDecline(key, blocked, s), nil
 	}
 	kind := entryNone
@@ -314,21 +334,38 @@ func (t *drainTree) spot(key string, s *drainState) (drainSpot, *drainDecline, e
 	if err != nil {
 		return drainSpot{}, nil, lost(sandbox.ReadBackRefused, fmt.Errorf("reach %s: %w", t.at(key), err))
 	}
+	if kind == entryFolded {
+		t.release(dir)
+		return drainSpot{}, foldedDecline(key, key), nil
+	}
 	return drainSpot{dir: dir, base: base, kind: kind}, nil, nil
 }
 
-// blockedDecline is the decline of the member at key whose path meets, at
-// blocked, an entry standing as no directory. The drain writes through no
-// such entry. One the drain did not make is the host's, and the reason the
-// member is declined is the host's entry (pre_drain_file). One the drain
-// made — a link or a file an archive laid there, this one or a raced
-// attempt's, where no dir member came first to replace it — leaves the
-// member's name nowhere it can be written as it spells (unsafe_name).
-func blockedDecline(key, blocked string, s *drainState) *drainDecline {
-	if s.made[blocked] {
-		return declined(sandbox.DeclinedUnsafeName, "sandbox: drain refused %s: its path crosses %s, which the pod's archive laid as no directory — the drain writes through no link", key, blocked)
+// blockedDecline is the decline of the member at key whose path meets an
+// entry the drain cannot enter (drainBlocked). A name folded onto another
+// spelling is the host's filesystem's (foldedDecline). Otherwise the entry
+// stands as no directory, and the drain writes through no such entry. One
+// the drain did not make is the host's, and the reason the member is
+// declined is the host's entry (pre_drain_file). One the drain made — a
+// link or a file an archive laid there, this one or a raced attempt's,
+// where no dir member came first to replace it — leaves the member's name
+// nowhere it can be written as it spells (unsafe_name).
+func blockedDecline(key string, blocked *drainBlocked, s *drainState) *drainDecline {
+	switch {
+	case errors.Is(blocked.why, errFoldedName):
+		return foldedDecline(key, blocked.key)
+	case s.made[blocked.key]:
+		return declined(sandbox.DeclinedUnsafeName, "sandbox: drain refused %s: its path crosses %s, which the pod's archive laid as no directory — the drain writes through no link", key, blocked.key)
 	}
-	return declined(sandbox.DeclinedPreDrainFile, "sandbox: drain skipped %s: %s predates the drain and stands where its path needs a directory — not the drain's to remove or write through", key, blocked)
+	return declined(sandbox.DeclinedPreDrainFile, "sandbox: drain skipped %s: %s predates the drain and stands where its path needs a directory — not the drain's to remove or write through", key, blocked.key)
+}
+
+// foldedDecline is the decline of the member at key whose path names, at
+// folded, an entry the host's filesystem lists under another spelling: the
+// name reaches an entry it does not spell, so the member cannot be written
+// where its name spells (unsafe_name).
+func foldedDecline(key, folded string) *drainDecline {
+	return declined(sandbox.DeclinedUnsafeName, "sandbox: drain refused %s: the host's filesystem folds %s onto an entry it lists under another spelling (case, or Unicode normalization) — a member lands only where its name spells", key, folded)
 }
 
 // drainDecline is one member the host declines: why, the token the run's
@@ -806,7 +843,7 @@ func (t *drainTree) openLanded(key string, s *drainState) (*os.File, error) {
 	if err != nil {
 		return nil, lost(sandbox.ReadBackRefused, fmt.Errorf("reach %s: %w", t.at(key), err))
 	}
-	if blocked != "" {
+	if blocked != nil {
 		return nil, nil
 	}
 	defer t.release(dir)
@@ -964,21 +1001,19 @@ func (r *Run) dropRacedDrainDir(t *drainTree, sp drainSpot, key string, s *drain
 	if sp.kind != entryDir {
 		return "", nil
 	}
-	if !s.made[key] {
-		return key, nil
-	}
-	tree, err := sp.dir.child(sp.base)
-	if err != nil {
-		return "", lost(sandbox.ReadBackRefused, fmt.Errorf("read %s: %w", t.at(key), err))
-	}
-	defer tree.close()
-	if kept, err = firstNotMade(tree, key, s); err != nil || kept != "" {
+	if kept, err = firstNotMade(sp.dir, sp.base, key, s); err != nil || kept != "" {
 		if err != nil {
 			return "", lost(sandbox.ReadBackRefused, fmt.Errorf("read %s: %w", t.at(key), err))
 		}
 		return kept, nil
 	}
-	if err := removeDrainTree(tree, key, s); err != nil {
+	tree, err := sp.dir.child(sp.base)
+	if err != nil {
+		return "", lost(sandbox.ReadBackRefused, fmt.Errorf("read %s: %w", t.at(key), err))
+	}
+	err = removeDrainTree(tree, key, s)
+	tree.close()
+	if err != nil {
 		return "", lost(sandbox.ReadBackRefused, fmt.Errorf("replace %s: %w", t.at(key), err))
 	}
 	if err := sp.dir.remove(sp.base, true); err != nil {
@@ -988,33 +1023,31 @@ func (r *Run) dropRacedDrainDir(t *drainTree, sp drainSpot, key string, s *drain
 	return "", nil
 }
 
-// firstNotMade is the key of the first entry under d (at key), in name
-// order and depth first, the drain did not make — "" when it made them
-// all.
-func firstNotMade(d *drainDir, key string, s *drainState) (string, error) {
-	names, err := d.names()
+// firstNotMade is the key of the first entry of the tree standing at name
+// under d (at key) — the entry itself first, then what it holds, depth
+// first in name order — the drain did not make: "" when it made them all.
+// One judgment for every entry: a directory the drain made holds only what
+// it made unless something beside the drain wrote there, and the walk
+// proves it rather than assume it before anything is removed.
+func firstNotMade(d *drainDir, name, key string, s *drainState) (string, error) {
+	if !s.made[key] {
+		return key, nil
+	}
+	kind, err := d.kind(name)
+	if err != nil || kind != entryDir {
+		return "", err
+	}
+	sub, err := d.child(name)
 	if err != nil {
 		return "", err
 	}
-	for _, name := range names {
-		k := joinKey(key, name)
-		if !s.made[k] {
-			return k, nil
-		}
-		kind, err := d.kind(name)
-		if err != nil {
-			return "", err
-		}
-		if kind != entryDir {
-			continue
-		}
-		sub, err := d.child(name)
-		if err != nil {
-			return "", err
-		}
-		kept, err := firstNotMade(sub, k, s)
-		sub.close()
-		if err != nil || kept != "" {
+	defer sub.close()
+	names, err := sub.names()
+	if err != nil {
+		return "", err
+	}
+	for _, n := range names {
+		if kept, err := firstNotMade(sub, n, joinKey(key, n), s); err != nil || kept != "" {
 			return kept, err
 		}
 	}

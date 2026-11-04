@@ -338,8 +338,10 @@ archive landed, a kind it does not write back, a pre-drain tree where the
 archive carries a file or a link, a pre-drain file or link where it
 carries a dir or another link, or on its path — the drain writes every
 member beneath the host dir through no link, so a link can decline a
-member, never redirect it, and only a member carrying bytes overwrites
-what the host held) is
+member, never redirect it, a name a filesystem that folds case or
+Unicode normalization resolves to an entry listed under another
+spelling is declined, never landed on it, and only a member carrying
+bytes overwrites what the host held) is
 skipped, and the members after it still land — one collision never costs
 the rest of the set — but never in silence: the drain's verdict is `declined` (or the
 failure's own reason, when one followed), and the event lists each

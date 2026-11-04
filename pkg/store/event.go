@@ -604,7 +604,9 @@ const (
 	//     {dir, name, why} — dir the declared container path, name the
 	//     member's path under it, why a stable token
 	//     (sandbox.ReadBackDeclineWhy): "unsafe_name" (a name the host
-	//     cannot write where it spells — the drain writes through no link),
+	//     cannot write where it spells — the drain writes through no link,
+	//     nor onto an entry a filesystem that folds names lists under
+	//     another spelling),
 	//     "link_leaves_tree",
 	//     "unwritable_link" (a link the kernel refuses to create: an empty
 	//     target, or one too long for a path),

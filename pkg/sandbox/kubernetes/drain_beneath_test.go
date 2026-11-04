@@ -5,10 +5,16 @@ package kubernetes
 import (
 	"archive/tar"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"slices"
+	"sort"
 	"strings"
+	"syscall"
 	"testing"
+
+	"golang.org/x/sys/unix"
 
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 )
@@ -48,6 +54,59 @@ func (e hostEntry) lay(t *testing.T, root string) {
 	if err := os.WriteFile(at, []byte(e.body), 0o644); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// layScript is the shell script that lays entries under root — a writer
+// beside the drain (archiveShimSeqLaying): files and directories only.
+func layScript(t *testing.T, root string, entries []hostEntry) string {
+	t.Helper()
+	var b strings.Builder
+	for _, e := range entries {
+		at := filepath.Join(root, filepath.FromSlash(e.path))
+		if strings.Contains(at+e.body, "'") || e.target != "" || e.gone {
+			t.Fatalf("layScript lays files and dirs named and filled without a quote, not %+v", e)
+		}
+		if e.dir {
+			b.WriteString("mkdir -p '" + at + "' || exit 1\n")
+			continue
+		}
+		b.WriteString("mkdir -p '" + filepath.Dir(at) + "' && printf '%s' '" + e.body + "' > '" + at + "' || exit 1\n")
+	}
+	return b.String()
+}
+
+// foldDrainNames makes every name the drain hands the kernel resolve, for
+// the test, as on a filesystem that folds case and preserves it — APFS's
+// default, a casefold directory: to the entry its directory holds under the
+// same name in any case, the exact spelling first, or as spelled when none
+// stands there. No filesystem this suite runs on folds names.
+func foldDrainNames(t *testing.T) {
+	t.Helper()
+	drainFold = func(d *drainDir, name string) string {
+		fd, err := unix.Openat(d.fd, ".", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+		if err != nil {
+			t.Errorf("fold %s: list its directory: %v", name, err)
+			return name
+		}
+		f := os.NewFile(uintptr(fd), d.path)
+		names, err := f.Readdirnames(-1)
+		_ = f.Close()
+		if err != nil {
+			t.Errorf("fold %s: list its directory: %v", name, err)
+			return name
+		}
+		if slices.Contains(names, name) {
+			return name
+		}
+		sort.Strings(names)
+		for _, n := range names {
+			if strings.EqualFold(n, name) {
+				return n
+			}
+		}
+		return name
+	}
+	t.Cleanup(func() { drainFold = nil })
 }
 
 // check reports how what stands at e's path under root differs from e,
@@ -143,14 +202,18 @@ func deepMember(t *testing.T, root string) string {
 // (counted, named on the loss the run's event carries), never redirect it.
 // One scenario per way a host entry or an earlier member once sent a write
 // elsewhere, or judged it by a name it did not land at: each attempt but
-// the last races a writer, and the last settles.
+// the last races a writer, and the last settles. A fold scenario runs on a
+// filesystem that folds case (foldDrainNames); between lays host entries
+// before the last attempt, a writer beside the drain.
 func TestTheDrainLandsEachMemberWhereItsNameSpells(t *testing.T) {
 	const pre = "the host held me before the drain"
 	scratch := []podMember{podFile("./scratch.txt", "only the raced attempt carries me")}
 	for _, tc := range []struct {
 		name     string
+		fold     bool
 		pre      []hostEntry
 		attempts [][]podMember
+		between  []hostEntry
 		declined []sandbox.ReadBackDeclinedMember
 		want     []hostEntry
 	}{
@@ -235,6 +298,112 @@ func TestTheDrainLandsEachMemberWhereItsNameSpells(t *testing.T) {
 				{Name: "l/x", Why: sandbox.DeclinedUnsafeName},
 			},
 			want: []hostEntry{hostGone("d/x"), hostGone("h")},
+		},
+		// A hardlink's copy is read from the entry standing at its target's
+		// name, judged where it stands: a file this archive landed there
+		// that a later member re-pointed or took is no file it landed.
+		{
+			name:     "a hardlink to a landed name a later link re-pointed at a host file",
+			pre:      []hostEntry{hostFile("store/own.txt", pre)},
+			attempts: [][]podMember{{podFile("./own.txt", "the pod's"), podLink("./own.txt", "store/own.txt"), podHardlink("./borrowed.txt", "./own.txt"), podFile("./after.md", "# complete")}},
+			declined: []sandbox.ReadBackDeclinedMember{{Name: "borrowed.txt", Why: sandbox.DeclinedHardlinkTarget}},
+			want:     []hostEntry{hostLink("own.txt", "store/own.txt"), hostFile("store/own.txt", pre), hostGone("borrowed.txt"), hostFile("after.md", "# complete")},
+		},
+		{
+			name:     "a hardlink to a landed name a later dir took",
+			attempts: [][]podMember{{podFile("./a.txt", "a"), podDir("./a.txt/"), podHardlink("./h", "./a.txt"), podFile("./after.md", "# complete")}},
+			declined: []sandbox.ReadBackDeclinedMember{{Name: "h", Why: sandbox.DeclinedHardlinkTarget}},
+			want:     []hostEntry{hostDir("a.txt"), hostGone("h"), hostFile("after.md", "# complete")},
+		},
+		{
+			name:     "a hardlink to a landed name whose parent a later member took",
+			attempts: [][]podMember{{podFile("./d/sub/a.txt", "a"), podFile("./d", "now a file"), podDir("./d/"), podHardlink("./h", "./d/sub/a.txt"), podFile("./after.md", "# complete")}},
+			declined: []sandbox.ReadBackDeclinedMember{{Name: "h", Why: sandbox.DeclinedHardlinkTarget}},
+			want:     []hostEntry{hostDir("d"), hostGone("d/sub"), hostGone("h"), hostFile("after.md", "# complete")},
+		},
+		// A tree the drain did not make — the host's from before the drain,
+		// or written beside the drain since — is never removed for a member
+		// that carries a file or a link there, however empty.
+		{
+			name:     "a file over an empty host dir",
+			pre:      []hostEntry{hostDir("out")},
+			attempts: [][]podMember{{podFile("./out", "the pod's"), podFile("./after.md", "# complete")}},
+			declined: []sandbox.ReadBackDeclinedMember{{Name: "out", Why: sandbox.DeclinedPreDrainTree}},
+			want:     []hostEntry{hostDir("out"), hostFile("after.md", "# complete")},
+		},
+		{
+			name:     "a link over an empty host dir",
+			pre:      []hostEntry{hostDir("out")},
+			attempts: [][]podMember{{podLink("./out", "after.md"), podFile("./after.md", "# complete")}},
+			declined: []sandbox.ReadBackDeclinedMember{{Name: "out", Why: sandbox.DeclinedPreDrainTree}},
+			want:     []hostEntry{hostDir("out"), hostFile("after.md", "# complete")},
+		},
+		{
+			name:     "a file over a raced dir a host writer filled between attempts",
+			attempts: [][]podMember{{podFile("./d/sub/x", "raced")}, {podFile("./d", "the pod settled on a file"), podFile("./after.md", "# complete")}},
+			between:  []hostEntry{hostFile("d/sub/host.txt", pre)},
+			declined: []sandbox.ReadBackDeclinedMember{{Name: "d", Why: sandbox.DeclinedPreDrainTree}},
+			want:     []hostEntry{hostFile("d/sub/host.txt", pre), hostGone("d/sub/x"), hostFile("after.md", "# complete")},
+		},
+		// The sweep removes a dir only a raced attempt made once it is
+		// empty: one the settled attempt filled again without naming it
+		// stands with what it holds.
+		{
+			name:     "a raced dir the settled archive fills without naming it",
+			attempts: [][]podMember{{podFile("./d/x", "raced")}, {podFile("./d/y", "settled")}},
+			want:     []hostEntry{hostFile("d/y", "settled"), hostGone("d/x")},
+		},
+		// On a filesystem that folds names, a name reaches an entry only
+		// where its directory lists it under exactly that spelling: one
+		// entry never answers to two keys, so the sweep, the landed record
+		// and the declines all name the entry the walk meets.
+		{
+			name: "a folding filesystem lands every name as the archive spells it",
+			fold: true,
+			pre:  []hostEntry{hostFile("Report.md", pre), hostDir("Sub")},
+			attempts: [][]podMember{scratch,
+				{podFile("./Report.md", "# settled"), podDir("./Sub/"), podFile("./Sub/x", "x"), podHardlink("./Sub/h", "./Sub/x"), podLink("./latest", "Report.md")}},
+			want: []hostEntry{hostFile("Report.md", "# settled"), hostFile("Sub/x", "x"), hostFile("Sub/h", "x"), hostLink("latest", "Report.md"), hostGone("scratch.txt")},
+		},
+		{
+			name: "a dir the host's filesystem folds onto a raced attempt's spelling",
+			fold: true,
+			attempts: [][]podMember{{podDir("./Out/"), podFile("./Out/a.txt", "raced")},
+				{podDir("./out/"), podFile("./out/a.txt", "settled")}},
+			declined: []sandbox.ReadBackDeclinedMember{
+				{Name: "out", Why: sandbox.DeclinedUnsafeName},
+				{Name: "out/a.txt", Why: sandbox.DeclinedUnsafeName},
+			},
+			want: []hostEntry{hostGone("Out"), hostGone("out")},
+		},
+		{
+			name:     "two names the host's filesystem folds onto one entry",
+			fold:     true,
+			attempts: [][]podMember{{podFile("./README.md", "# upper"), podFile("./readme.md", "# lower"), podFile("./after.md", "# complete")}},
+			declined: []sandbox.ReadBackDeclinedMember{{Name: "readme.md", Why: sandbox.DeclinedUnsafeName}},
+			want:     []hostEntry{hostFile("README.md", "# upper"), hostGone("readme.md"), hostFile("after.md", "# complete")},
+		},
+		{
+			name:     "a path through a dir the host's filesystem folds",
+			fold:     true,
+			attempts: [][]podMember{{podDir("./Out/"), podFile("./out/a.txt", "# lower"), podFile("./after.md", "# complete")}},
+			declined: []sandbox.ReadBackDeclinedMember{{Name: "out/a.txt", Why: sandbox.DeclinedUnsafeName}},
+			want:     []hostEntry{hostDir("Out"), hostGone("Out/a.txt"), hostFile("after.md", "# complete")},
+		},
+		{
+			name:     "a path through a file the host's filesystem folds",
+			fold:     true,
+			attempts: [][]podMember{{podFile("./Out", "a file"), podFile("./out/a.txt", "# lower"), podFile("./after.md", "# complete")}},
+			declined: []sandbox.ReadBackDeclinedMember{{Name: "out/a.txt", Why: sandbox.DeclinedUnsafeName}},
+			want:     []hostEntry{hostFile("Out", "a file"), hostFile("after.md", "# complete")},
+		},
+		{
+			name: "a hardlink to a name the host's filesystem now folds onto another",
+			fold: true,
+			attempts: [][]podMember{{podFile("./d/a.txt", "a"), podFile("./d", "now a file"), podDir("./d/"),
+				podFile("./d/A.TXT", "the other spelling"), podHardlink("./h", "./d/a.txt"), podFile("./after.md", "# complete")}},
+			declined: []sandbox.ReadBackDeclinedMember{{Name: "h", Why: sandbox.DeclinedHardlinkTarget}},
+			want:     []hostEntry{hostFile("d/A.TXT", "the other spelling"), hostGone("h"), hostFile("after.md", "# complete")},
 		},
 		// A member that carries none of the set's bytes never takes what
 		// the host held.
@@ -380,8 +549,11 @@ func TestTheDrainLandsEachMemberWhereItsNameSpells(t *testing.T) {
 				}
 				archives[i] = tarArchive(t, hdrs, bodies).Bytes()
 			}
-			kubectl, calls := archiveShimSeq(t, archives, len(archives)-1, measuredRaceStderr)
+			kubectl, calls := archiveShimSeqLaying(t, archives, len(archives)-1, measuredRaceStderr, layScript(t, hostDst, tc.between))
 			r := drainRun([]sandbox.ReadBackDir{{ContainerPath: "/iterion/artifact-files", HostDir: hostDst}}, kubectl)
+			if tc.fold {
+				foldDrainNames(t)
+			}
 
 			err := r.ExportRunFiles(context.Background())
 			if n := calls(); n != len(archives) {
@@ -406,4 +578,97 @@ func TestTheDrainLandsEachMemberWhereItsNameSpells(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestTheDrainListsNoDirectoryItBuiltItself: an entry the drain created
+// stands under the name it handed the kernel, where nothing stood under any
+// spelling, so the drain knows that spelling without reading its directory
+// back (drainDir.spells): a drain into an empty host dir lists none, its
+// parents made, its files landed and read again for a hardlink's copy, its
+// links renamed into place.
+func TestTheDrainListsNoDirectoryItBuiltItself(t *testing.T) {
+	hostDst := drainRootDir(t)
+	tree := openTestTree(t, hostDst)
+	x, err := drainRun(nil, "").extractDrain(tarArchive(t, []*tar.Header{
+		{Name: "./a/", Typeflag: tar.TypeDir, Mode: 0o755},
+		{Name: "./a/b/c/x", Typeflag: tar.TypeReg, Mode: 0o644},
+		{Name: "./a/b/y", Typeflag: tar.TypeReg, Mode: 0o644},
+		{Name: "./h", Typeflag: tar.TypeLink, Linkname: "./a/b/c/x"},
+		{Name: "./l", Typeflag: tar.TypeSymlink, Linkname: "a/b/y"},
+	}, map[string]string{"./a/b/c/x": "x", "./a/b/y": "y"}), tree, newDrainState(sandbox.ReadBackCapBytes))
+	if err != nil || x.declined.Count() != 0 {
+		t.Fatalf("extractDrain = %v, declined %+v, want every member landed", err, x.declined.List())
+	}
+	if got, readErr := os.ReadFile(filepath.Join(hostDst, "h")); readErr != nil || string(got) != "x" {
+		t.Fatalf("h = %q (%v), want the hardlink's copy of a/b/c/x", got, readErr)
+	}
+	if n := tree.root.spelling.listings; n != 0 {
+		t.Errorf("the drain listed %d directories, want none — every entry it reached is one it created", n)
+	}
+}
+
+// TestTheDrainDirHoldsItsOwnPromises: the directory calls every judgment
+// rests on, each asked directly of the entry the archive cannot lay there
+// — a root replaced by a link since it was resolved, a fifo where a file is
+// read, a directory that keeps its entries in no name order.
+func TestTheDrainDirHoldsItsOwnPromises(t *testing.T) {
+	t.Run("the root is opened where it was resolved, never through a link standing there since", func(t *testing.T) {
+		dir := drainRootDir(t)
+		if err := os.Mkdir(filepath.Join(dir, "real"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink("real", filepath.Join(dir, "link")); err != nil {
+			t.Fatal(err)
+		}
+		if d, err := openDrainRoot(filepath.Join(dir, "link")); err == nil {
+			d.close()
+			t.Fatalf("openDrainRoot opened a link, want it refused — the writes would land where the link points now")
+		}
+		d, err := openDrainRoot(filepath.Join(dir, "real"))
+		if err != nil {
+			t.Fatalf("openDrainRoot(real) = %v, want the directory opened", err)
+		}
+		d.close()
+	})
+	t.Run("a fifo where a file is read is no file, and the read never waits for a writer", func(t *testing.T) {
+		dir := drainRootDir(t)
+		if err := syscall.Mkfifo(filepath.Join(dir, "fifo"), 0o644); err != nil {
+			t.Skipf("no fifo on this filesystem: %v", err)
+		}
+		d, err := openDrainRoot(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer d.close()
+		if f, err := d.openFile("fifo"); !errors.Is(err, errNotDrainFile) {
+			if f != nil {
+				_ = f.Close()
+			}
+			t.Errorf("openFile(fifo) = %v, want errNotDrainFile", err)
+		}
+	})
+	t.Run("a listing is in name order whatever order the directory keeps", func(t *testing.T) {
+		dir := drainRootDir(t)
+		// Created in no order a directory could keep as name order —
+		// neither its own nor the reverse.
+		created := []string{"m", "c", "x", "a", "q", "f", "z", "b", "k", "t", "e", "w", "h", "p", "d"}
+		for _, name := range created {
+			if err := os.WriteFile(filepath.Join(dir, name), nil, 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		d, err := openDrainRoot(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer d.close()
+		got, err := d.names()
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := slices.Sorted(slices.Values(created))
+		if !slices.Equal(got, want) {
+			t.Errorf("names() = %v, want %v — a walk meets entries in one order, whatever the directory keeps", got, want)
+		}
+	})
 }

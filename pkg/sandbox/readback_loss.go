@@ -66,8 +66,10 @@ type ReadBackDeclineWhy string
 const (
 	// DeclinedUnsafeName: the member cannot be written where its name
 	// spells — absolute, climbing out of the tree, longer than the host can
-	// name, or crossing a link or a file the archive itself laid on its
-	// path: the drain writes through no link.
+	// name, crossing a link or a file the archive itself laid on its path
+	// (the drain writes through no link), or reaching an entry the host's
+	// filesystem lists under another spelling (one that folds case or
+	// Unicode normalization: one entry never answers to two names).
 	DeclinedUnsafeName ReadBackDeclineWhy = "unsafe_name"
 	// DeclinedLinkLeavesTree: a symlink whose target resolves outside the
 	// tree — read from the directory the link lands in, the way the kernel
