@@ -103,8 +103,7 @@ func commitAttestedAuthoring(ctx context.Context, root string, paths []string, h
 	if err != nil {
 		return "", err
 	}
-	var major, minor int
-	if _, err := fmt.Sscanf(version, "git version %d.%d", &major, &minor); err != nil || major < 2 || (major == 2 && minor < 46) {
+	if !gitVersionAtLeast(version, 2, 46) {
 		return "", errors.New("attested authoring commits require Git 2.46 or newer for guarded ref transactions")
 	}
 	indexPath, err := runAuthoringGit(ctx, root, "rev-parse", "--path-format=absolute", "--git-path", "index")

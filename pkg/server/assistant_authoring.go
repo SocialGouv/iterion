@@ -1319,7 +1319,8 @@ func prepareAuthoringGitPublish(r *http.Request, target *authoringTarget, req au
 }
 
 // push publishes the pinned commit and answers it. The remote is reached
-// with the bot tree let go; the pre-push hook runs under tree, held again.
+// with the bot tree let go; a pre-push hook runs under tree, held again —
+// how depends on the git (pushRunsHookUnderTree).
 func (p authoringGitPublication) push(ctx context.Context, tree *treeHold) (string, error) {
 	remoteBefore, err := runAuthoringGit(ctx, p.root, "ls-remote", "origin", p.dest)
 	if err != nil {
@@ -1328,12 +1329,9 @@ func (p authoringGitPublication) push(ctx context.Context, tree *treeHold) (stri
 	if strings.TrimSpace(remoteBefore) != "" {
 		return "", authoringConflictError{"remote branch already exists; publication never overwrites it"}
 	}
-	if err := p.prePush(ctx, tree); err != nil {
-		return "", err
-	}
 	// A branch created between ls-remote and push is safe: non-force push
-	// rejects it rather than overwriting it. The hook ran above.
-	if _, err := runAuthoringGit(ctx, p.root, "push", "--no-verify", "--porcelain", "origin", p.head+":"+p.dest); err != nil {
+	// rejects it rather than overwriting it.
+	if err := p.pushRunningPrePushUnderTree(ctx, tree); err != nil {
 		return "", err
 	}
 	remoteAfter, err := runAuthoringGit(ctx, p.root, "ls-remote", "origin", p.dest)
@@ -1347,6 +1345,82 @@ func (p authoringGitPublication) push(ctx context.Context, tree *treeHold) (stri
 	return p.head, nil
 }
 
+// gitHookRunToStdinMinor is the first git 2.x whose `git hook run` takes
+// --to-stdin, which hands the pre-push hook the update a push hands it.
+const gitHookRunToStdinMinor = 40
+
+// pushRunningPrePushUnderTree pushes the pinned commit with its pre-push
+// hook run under the bot tree's lock, never skipped. A git from 2.40 runs
+// the hook itself under the lock (prePush: `git hook run`, which finds a
+// hook file and a hook set in the config alike) and pushes --no-verify with
+// the lock let go. An older git has neither that command nor hooks set in
+// the config, and its push runs the hook found at the effective hooks path:
+// with none there, it pushes with a plain `git push`, the lock let go; with
+// one, the push holds the lock throughout, the network included — the
+// writers of the tree wait the push out, the hook reads the tree they write.
+// A version that does not parse takes the older git's way, which every git
+// runs.
+func (p authoringGitPublication) pushRunningPrePushUnderTree(ctx context.Context, tree *treeHold) error {
+	refspec := p.head + ":" + p.dest
+	version, err := runAuthoringGit(ctx, p.root, "version")
+	if err != nil {
+		return err
+	}
+	if gitVersionAtLeast(version, 2, gitHookRunToStdinMinor) {
+		if err := p.prePush(ctx, tree); err != nil {
+			return err
+		}
+		_, err := runAuthoringGit(ctx, p.root, "push", "--no-verify", "--porcelain", "origin", refspec)
+		return err
+	}
+	hooked, err := p.hasPrePushHookFile(ctx)
+	if err != nil {
+		return err
+	}
+	if hooked {
+		if err := tree.take(ctx); err != nil {
+			return err
+		}
+		defer tree.leave()
+	}
+	_, err = runAuthoringGit(ctx, p.root, "push", "--porcelain", "origin", refspec)
+	return err
+}
+
+// hasPrePushHookFile reports whether the repository's effective hooks path
+// holds a pre-push hook: a file at `git rev-parse --git-path
+// hooks/pre-push`, which honours core.hooksPath and answers relative to the
+// top of the working tree unless absolute. A file git skips (not executable)
+// counts too: it costs the push's wait, never a hook run outside the lock.
+func (p authoringGitPublication) hasPrePushHookFile(ctx context.Context) (bool, error) {
+	out, err := runAuthoringGit(ctx, p.root, "rev-parse", "--git-path", "hooks/pre-push")
+	if err != nil {
+		return false, err
+	}
+	path := strings.TrimSuffix(out, "\n")
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(p.root, path)
+	}
+	info, err := os.Stat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("inspect the pre-push hook %s: %w", path, err)
+	}
+	return !info.IsDir(), nil
+}
+
+// gitVersionAtLeast reports whether `git version`'s answer names a git at
+// least major.minor; an answer that does not parse names none.
+func gitVersionAtLeast(version string, major, minor int) bool {
+	var gotMajor, gotMinor int
+	if _, err := fmt.Sscanf(version, "git version %d.%d", &gotMajor, &gotMinor); err != nil {
+		return false
+	}
+	return gotMajor > major || (gotMajor == major && gotMinor >= minor)
+}
+
 // prePush runs the repository's pre-push hook under the bot tree's lock, as
 // git's own push would run it: the remote's name and each push URL as its
 // arguments, on its stdin the one update this publication makes — the
@@ -1354,7 +1428,8 @@ func (p authoringGitPublication) push(ctx context.Context, tree *treeHold) (stri
 // does not have. A hook reads the worktree (a linter, a test run), so it
 // cannot run inside the push, which reaches the network: the push runs with
 // --no-verify once the hook has passed. A hook that reaches the network
-// itself (git-lfs uploads its objects from it) does so under the lock.
+// itself (git-lfs uploads its objects from it) does so under the lock. It
+// needs git 2.40 (`git hook run --to-stdin`).
 func (p authoringGitPublication) prePush(ctx context.Context, tree *treeHold) error {
 	urlsOut, err := runAuthoringGit(ctx, p.root, "remote", "get-url", "--push", "--all", "origin")
 	if err != nil {
