@@ -217,7 +217,7 @@ func Install(ctx context.Context, opts Options) (*Result, error) {
 		}
 	}
 
-	res := &Result{Name: name, Source: opts.Source, Ref: ref, InstalledPath: target, CatalogError: catalogError}
+	res := &Result{Name: name, Source: origin.Source, Ref: origin.Ref, InstalledPath: target, CatalogError: catalogError}
 	if installed, derr := bundle.OpenDir(target); derr == nil {
 		if installed.SkillsDir != "" {
 			if ents, _ := os.ReadDir(installed.SkillsDir); ents != nil {
@@ -231,6 +231,37 @@ func Install(ctx context.Context, opts Options) (*Result, error) {
 		}
 	}
 	return res, nil
+}
+
+// Checkout resolves opts.Source to a local checkout — it clones a git URL
+// into a temp dir and uses a local directory in place — and returns the
+// Options an Install of that checkout takes, with the cleanup that drops the
+// clone. The clone is an install's only network: Install of the returned
+// Options reads and writes local files alone, so a caller that orders its
+// writes of the workspace clones first, outside that order. The returned
+// Options keep the source the caller named — as the origin the install
+// records and the source its Result reports — never the temp checkout.
+func Checkout(ctx context.Context, opts Options) (Options, func(), error) {
+	if strings.TrimSpace(opts.Source) == "" {
+		return opts, func() {}, fmt.Errorf("a git URL or local path is required")
+	}
+	url, ref := splitSourceRef(opts.Source)
+	if opts.Ref != "" {
+		ref = opts.Ref
+	}
+	if info, err := os.Stat(url); err == nil && info.IsDir() {
+		return opts, func() {}, nil
+	}
+	repoRoot, cleanup, err := resolveRepoRoot(ctx, url, ref)
+	if err != nil {
+		return opts, func() {}, err
+	}
+	local := opts
+	local.Source, local.Ref = repoRoot, ""
+	if local.Origin == nil {
+		local.Origin = &Origin{Source: opts.Source, Ref: ref, SourcePath: opts.Path}
+	}
+	return local, cleanup, nil
 }
 
 // refuseUnrecordedReplacement holds --force to what the flag itself says it

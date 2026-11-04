@@ -100,12 +100,14 @@ func (s *Server) handleAssistantDependencyBotsUpdate(w http.ResponseWriter, r *h
 		return
 	}
 
-	release, ok := s.lockBotTree(w, r, botTreeWriterDependencyUpdate)
-	if !ok {
-		return
-	}
-	defer release()
-	result, err := assistantDependencyBotsUpdateInPaths(r.Context(), workDir, req, discoveryPaths)
+	result, err := assistantDependencyBotsUpdateHolding(r.Context(), workDir, req, discoveryPaths, assistantDependencyHolds{
+		tree: func(ctx context.Context) (func(), error) {
+			return s.holdBotTreeWrites(ctx, botTreeWriterDependencyUpdate)
+		},
+		git: func(ctx context.Context) (func(), error) {
+			return s.holdAuthoringGitWrites(ctx, botTreeWriterDependencyUpdate)
+		},
+	})
 	if err != nil {
 		s.authoringError(w, r, err)
 		return
@@ -133,7 +135,14 @@ func (s *Server) handleAssistantDependencyBotsLocalize(w http.ResponseWriter, r 
 	}
 	// The consumer bundle is resolved under the lock its write holds: a
 	// bundle resolved before it may be another one by the time of the
-	// write.
+	// write. The localization reaches no network, and from its copy to its
+	// lock's sync the tree is provisional: both locks are held throughout,
+	// the repository's first.
+	releaseGit, ok := s.lockAuthoringGit(w, r, botTreeWriterDependencyLocalize)
+	if !ok {
+		return
+	}
+	defer releaseGit()
 	release, ok := s.lockBotTree(w, r, botTreeWriterDependencyLocalize)
 	if !ok {
 		return
@@ -184,10 +193,39 @@ func assistantDependencyBotsUpdate(ctx context.Context, workdir string, req assi
 	return assistantDependencyBotsUpdateInPaths(ctx, workdir, req, nil)
 }
 
-func assistantDependencyBotsUpdateInPaths(ctx context.Context, workdir string, req assistantDependencyBotsUpdateRequest, discovery []string) (response assistantDependencyBotsUpdateResponse, err error) {
+func assistantDependencyBotsUpdateInPaths(ctx context.Context, workdir string, req assistantDependencyBotsUpdateRequest, discovery []string) (assistantDependencyBotsUpdateResponse, error) {
+	return assistantDependencyBotsUpdateHolding(ctx, workdir, req, discovery, assistantDependencyHolds{})
+}
+
+// assistantDependencyHolds are the server's write locks a dependency update
+// takes, each around the phase it orders; a nil member takes nothing.
+type assistantDependencyHolds struct {
+	tree, git func(context.Context) (func(), error)
+}
+
+func (h assistantDependencyHolds) take(ctx context.Context, lock func(context.Context) (func(), error)) (func(), error) {
+	if lock == nil {
+		return func() {}, nil
+	}
+	return lock(ctx)
+}
+
+// assistantDependencyBotsUpdateHolding runs the update in three phases. The
+// workspace, its lock, its cache and the repository's state are snapshotted
+// under the bot tree's lock; the candidate is fetched and staged privately
+// under none — that is where the network is; and the commit installs it
+// under the repository's lock, then the tree's, verifying every snapshot
+// first. A writer that changed what the snapshot holds in between makes the
+// update the conflict (409) its stale snapshot is.
+func assistantDependencyBotsUpdateHolding(ctx context.Context, workdir string, req assistantDependencyBotsUpdateRequest, discovery []string, holds assistantDependencyHolds) (response assistantDependencyBotsUpdateResponse, err error) {
 	if err = validateAssistantDependencyBotsUpdate(req); err != nil {
 		return response, err
 	}
+	releaseTree, err := holds.take(ctx, holds.tree)
+	if err != nil {
+		return response, err
+	}
+	defer func() { releaseTree() }()
 	workdir, err = filepath.Abs(workdir)
 	if err != nil {
 		return response, err
@@ -235,8 +273,36 @@ func assistantDependencyBotsUpdateInPaths(ctx context.Context, workdir string, r
 		return response, err
 	}
 	defer func() { err = transaction.discard(err) }()
-	prepared, err := transaction.prepare(ctx, req)
+	if err = transaction.snapshot(ctx, req); err != nil {
+		return response, err
+	}
+	// A remote source is fetched with no lock held; a local one is a read of
+	// the filesystem — perhaps of the workspace itself — and is fetched under
+	// the locks the commit takes, the repository's before the tree's.
+	remote := !botdeps.SourceIsLocal(workdir, previous)
+	releaseTree()
+	var prepared *botdeps.PreparedUpdate
+	var fetched botdeps.SyncResult
+	if remote {
+		if prepared, fetched, err = transaction.fetch(ctx, req); err != nil {
+			return response, err
+		}
+	}
+	releaseGit, err := holds.take(ctx, holds.git)
 	if err != nil {
+		return response, err
+	}
+	defer releaseGit()
+	if releaseTree, err = holds.take(ctx, holds.tree); err != nil {
+		releaseTree = func() {}
+		return response, err
+	}
+	if !remote {
+		if prepared, fetched, err = transaction.fetch(ctx, req); err != nil {
+			return response, err
+		}
+	}
+	if err = transaction.stage(ctx, prepared, fetched); err != nil {
 		return response, err
 	}
 	commit, err := commitAttestedAuthoringFilesWithDependency(ctx, root, []string{lockRel}, map[string]string{lockRel: contentSHA256(string(prepared.CandidateLock))}, req.Message, transaction)

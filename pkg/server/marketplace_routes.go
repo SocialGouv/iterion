@@ -328,18 +328,26 @@ func (s *Server) handleMarketplaceInstall(w http.ResponseWriter, r *http.Request
 		// path sends it so re-installing a drifted version succeeds instead
 		// of erroring "already exists".
 		force := strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("force")), "true")
-		release, ok := s.lockBotTree(w, r, botTreeWriterMarketplace)
-		if !ok {
-			return
-		}
-		defer release()
-		res, err := botinstall.Install(r.Context(), botinstall.Options{
+		// The clone runs before the bot tree's lock is taken, the install of
+		// the checkout under it.
+		opts, cleanup, err := botinstall.Checkout(r.Context(), botinstall.Options{
 			Source:  entry.RepoURL,
 			Ref:     entry.Ref,
 			Path:    entry.Subpath,
 			Force:   force,
 			Workdir: s.cfg.WorkDir,
 		})
+		defer cleanup()
+		if err != nil {
+			s.httpErrorFor(w, r, http.StatusBadRequest, "marketplace: install: %v", err)
+			return
+		}
+		release, ok := s.lockBotTree(w, r, botTreeWriterMarketplace)
+		if !ok {
+			return
+		}
+		defer release()
+		res, err := botinstall.Install(r.Context(), opts)
 		if err != nil {
 			s.httpErrorFor(w, r, http.StatusBadRequest, "marketplace: install: %v", err)
 			return

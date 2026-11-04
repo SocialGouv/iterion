@@ -19,15 +19,37 @@ manifest, a unit's siblings, a bundle to validate. Those reads ran outside
 any lock, and a publication moves the live file aside before it moves its
 successor in — so a loser of a write race read a half-written tree and
 answered a request error (404, 400, 422), or acted on another bot (a rename
-in between). Every server handler that writes the bot tree, or resolves a
-bot and then writes, therefore takes the server's bot tree write lock
-(`holdBotTreeWrites`, `pkg/server/bot_tree_lock.go`) BEFORE it resolves
-anything, and holds it through its write; the per-file locks come after it.
-The key is the whole tree: no per-bot key exists before the resolution a
-rename re-points. Writers queue in arrival order; reads take nothing; a
-request that ends while it waits answers 503 `bot_tree_busy`, nothing
-written. The lock is the process's — across processes the per-file locks
-remain the order.
+in between). Every server handler that writes the bot tree, or copies a
+bot's files into what it writes (the trigger route's subscription), therefore
+takes the server's bot tree write lock (`holdBotTreeWrites`,
+`pkg/server/bot_tree_lock.go`) BEFORE it resolves anything, and holds it
+through its write; the per-file locks come after it. The key is the whole
+tree: no per-bot key exists before the resolution a rename re-points.
+
+What a holder does under it is local work. The network runs outside: an
+install clones before it takes the lock, a publication pins its commit under
+the lock and pushes once it is released, a dependency update fetches a
+remote source between a snapshot taken under the lock and a commit that
+verifies that snapshot under it again (409 when a writer changed it). An
+authoring git commit lets the tree go once its files are staged; its hooks,
+signature and publication run under the repository's lock alone
+(`holdAuthoringGitWrites`), which orders the server's writers of the
+repository's index and is always taken first. The dependency actions keep the
+tree from their install to their publication — the tree is provisional in
+between — so their commit's hooks and signature are the one external work
+under it. A request body is read before either lock.
+
+Writers queue in arrival order and wait as long as their request: one that
+ends first answers 503 `bot_tree_busy`, nothing written. Reads take nothing.
+Both locks are the process's — across processes the per-file locks remain
+the order.
+
+What the lock leaves open is the readers' side: a read that crosses a
+publication's window — a run launch, a card's bot check, a run start's
+catalogue refresh, another process — sees the bot missing. Most answer that
+read and nothing persists; the run start's refresh writes it into its
+catalogue until the next refresh. A process lock cannot reach those readers;
+a publication that swaps the file in one rename would.
 
 ## The lock a refresh holds
 

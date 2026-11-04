@@ -144,14 +144,38 @@ func syncOne(ctx context.Context, workdir, name string, dep botlock.Dependency) 
 // an existing target or regenerating any live catalog. Sources are still
 // resolved against the real workspace, independently of the destination.
 func StageOne(ctx context.Context, workdir, dest, name string, dep botlock.Dependency) (SyncResult, error) {
-	if !filepath.IsAbs(workdir) || !filepath.IsAbs(dest) {
-		return SyncResult{}, fmt.Errorf("bot dependencies: private staging requires absolute workspace and destination paths")
-	}
-	result, err := materializeOne(ctx, workdir, dest, name, dep, true)
+	result, err := FetchOne(ctx, workdir, dest, name, dep)
 	if err != nil {
 		return result, err
 	}
-	return resolveSharedDepsInto(workdir, result)
+	return ResolveStaged(workdir, result)
+}
+
+// FetchOne is StageOne's fetch: the pinned source is fetched — the network,
+// for a remote one — verified against its pin and installed into the
+// caller-owned private destination, its shared dependencies left
+// unresolved. It reads nothing of the workspace but a local source, so a
+// caller that orders its writes of the workspace fetches a remote source
+// outside that order and calls ResolveStaged inside it.
+func FetchOne(ctx context.Context, workdir, dest, name string, dep botlock.Dependency) (SyncResult, error) {
+	if !filepath.IsAbs(workdir) || !filepath.IsAbs(dest) {
+		return SyncResult{}, fmt.Errorf("bot dependencies: private staging requires absolute workspace and destination paths")
+	}
+	return materializeOne(ctx, workdir, dest, name, dep, true)
+}
+
+// ResolveStaged resolves the shared dependencies of a bundle FetchOne
+// staged, against the workspace's producers.
+func ResolveStaged(workdir string, staged SyncResult) (SyncResult, error) {
+	return resolveSharedDepsInto(workdir, staged)
+}
+
+// SourceIsLocal reports whether dep's source is a local directory — absolute,
+// or relative to workdir — so that fetching it reads the filesystem, not the
+// network.
+func SourceIsLocal(workdir string, dep botlock.Dependency) bool {
+	info, err := os.Stat(resolveLocalSource(workdir, dep.Source))
+	return err == nil && info.IsDir()
 }
 
 func materializeOne(ctx context.Context, workdir, dest, name string, dep botlock.Dependency, private bool) (SyncResult, error) {

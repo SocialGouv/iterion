@@ -241,6 +241,20 @@ func prepareAssistantDependencyTransaction(ctx context.Context, root, workdir, l
 }
 
 func (t *assistantDependencyTransaction) prepare(ctx context.Context, req assistantDependencyBotsUpdateRequest) (*botdeps.PreparedUpdate, error) {
+	if err := t.snapshot(ctx, req); err != nil {
+		return nil, err
+	}
+	prepared, fetched, err := t.fetch(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	return prepared, t.stage(ctx, prepared, fetched)
+}
+
+// snapshot records the installed copy of the dependency and its origin as
+// the workspace holds them: local reads only, which the commit verifies
+// again before it installs anything.
+func (t *assistantDependencyTransaction) snapshot(ctx context.Context, req assistantDependencyBotsUpdateRequest) error {
 	t.cachePath = filepath.Join(t.cacheParent, req.Name)
 	t.stagePath = filepath.Join(t.stageParent, req.Name)
 	t.backupPath = filepath.Join(t.dir, "original-cache")
@@ -253,78 +267,95 @@ func (t *assistantDependencyTransaction) prepare(ctx context.Context, req assist
 	if errors.Is(err, os.ErrNotExist) {
 		t.originParentInfo = nil
 	} else if err != nil {
-		return nil, err
+		return err
 	} else if !t.originParentInfo.IsDir() {
-		return nil, errors.New(".origins must be a real directory, not a symlink")
+		return errors.New(".origins must be a real directory, not a symlink")
 	}
 	t.originalOrigin, err = dependencySnapshot(ctx, t.originPath)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	if t.originalOrigin.info != nil {
 		if !t.originalOrigin.info.Mode().IsRegular() {
-			return nil, errors.New("dependency origin must be a regular file")
+			return errors.New("dependency origin must be a regular file")
 		}
 		t.oldOriginLocation = t.originPath
 	}
 	t.originalCache, err = dependencySnapshot(ctx, t.cachePath)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	if t.originalCache.info != nil {
 		if !t.originalCache.info.IsDir() {
-			return nil, errors.New("installed dependency must be a real directory")
+			return errors.New("installed dependency must be a real directory")
 		}
 		if _, err = bundle.ContentHashDir(t.cachePath); err != nil {
-			return nil, err
+			return err
 		}
 		t.oldLocation = t.cachePath
 	}
+	return nil
+}
+
+// fetch resolves the requested pin — the network, for a remote source: the
+// source is fetched, verified and installed in the transaction's private
+// directory. It reads nothing of the workspace but its lock file, replaced
+// whole by every writer and checked against the snapshot here, and a local
+// source.
+func (t *assistantDependencyTransaction) fetch(ctx context.Context, req assistantDependencyBotsUpdateRequest) (*botdeps.PreparedUpdate, botdeps.SyncResult, error) {
 	prepared, err := botdeps.PrepareUpdate(ctx, botdeps.UpdateOptions{Workdir: t.workdir, Name: req.Name, Ref: req.Ref})
 	if err != nil {
-		return nil, err
+		return nil, botdeps.SyncResult{}, err
 	}
 	if !bytes.Equal(prepared.OriginalLock, t.originalLock) || prepared.OriginalMode != t.lockState.info.Mode().Perm() || prepared.Dependency.Ref != req.Ref || bytes.Equal(prepared.CandidateLock, t.originalLock) {
-		return nil, authoringConflictError{"dependency preparation does not match the original lock and requested pin"}
+		return nil, botdeps.SyncResult{}, authoringConflictError{"dependency preparation does not match the original lock and requested pin"}
 	}
 	t.candidateLock = prepared.CandidateLock
 	if err = os.WriteFile(filepath.Join(t.dir, "candidate.lock"), t.candidateLock, 0o600); err != nil {
-		return nil, err
+		return nil, botdeps.SyncResult{}, err
 	}
 	t.candidateBytesState, err = dependencySnapshot(ctx, filepath.Join(t.dir, "candidate.lock"))
 	if err != nil {
-		return nil, err
+		return nil, botdeps.SyncResult{}, err
 	}
-	if _, err = botdeps.StageOne(ctx, t.workdir, t.stageParent, req.Name, prepared.Dependency); err != nil {
-		return nil, err
+	fetched, err := botdeps.FetchOne(ctx, t.workdir, t.stageParent, req.Name, prepared.Dependency)
+	if err != nil {
+		return nil, botdeps.SyncResult{}, err
 	}
+	return prepared, fetched, nil
+}
+
+// stage completes the fetched candidate against the workspace — its shared
+// dependencies resolved from the producers installed there — and records
+// what the commit installs.
+func (t *assistantDependencyTransaction) stage(ctx context.Context, prepared *botdeps.PreparedUpdate, fetched botdeps.SyncResult) error {
+	if _, err := botdeps.ResolveStaged(t.workdir, fetched); err != nil {
+		return err
+	}
+	var err error
 	t.candidateCache, err = dependencySnapshot(ctx, t.stagePath)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	t.newLocation = t.stagePath
 
 	t.stageOriginInfo, err = os.Lstat(filepath.Dir(t.stagedOrigin))
 	if err != nil {
-		return nil, err
+		return err
 	}
 	t.candidateOrigin, err = dependencySnapshot(ctx, t.stagedOrigin)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	provenance, err := botinstall.ReadOrigin(t.stagePath)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	if provenance.Ref != prepared.Dependency.Ref || provenance.SourcePath != prepared.Dependency.Path || provenance.Source == "" {
-		return nil, errors.New("candidate origin differs from verified dependency")
+		return errors.New("candidate origin differs from verified dependency")
 	}
 	t.newOriginLocation = t.stagedOrigin
-
-	if err = t.record(); err != nil {
-		return nil, err
-	}
-	return prepared, nil
+	return t.record()
 }
 
 func (t *assistantDependencyTransaction) otherState(ctx context.Context) (string, string, error) {

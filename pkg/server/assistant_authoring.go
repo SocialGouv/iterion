@@ -287,8 +287,16 @@ func (s *Server) handleAuthoringGitCommit(w http.ResponseWriter, r *http.Request
 		s.httpErrorFor(w, r, http.StatusBadRequest, "%v", err)
 		return
 	}
-	// The perimeter and the attested bytes are read under the lock the
-	// commit holds: never between another writer's two moves.
+	// The repository's lock is held through the commit: the index is the
+	// commit's until it publishes. The perimeter, the attested bytes and the
+	// staging read the tree under its lock, released once the files are
+	// staged: the hooks, the signature and the publication read nothing of
+	// the tree, and no other writer of it waits on them.
+	releaseGit, ok := s.lockAuthoringGitForEditor(w, r, botTreeWriterAuthoringGitCommit, req.EditorPath)
+	if !ok {
+		return
+	}
+	defer releaseGit()
 	release, ok := s.lockBotTreeForEditor(w, r, botTreeWriterAuthoringGitCommit, req.EditorPath)
 	if !ok {
 		return
@@ -299,7 +307,7 @@ func (s *Server) handleAuthoringGitCommit(w http.ResponseWriter, r *http.Request
 		s.authoringError(w, r, err)
 		return
 	}
-	commit, files, err := authoringGitCommit(r, target, req)
+	commit, files, err := authoringGitCommit(r, target, req, release)
 	if err != nil {
 		s.authoringError(w, r, err)
 		return
@@ -321,8 +329,10 @@ func (s *Server) handleAuthoringGitPublish(w http.ResponseWriter, r *http.Reques
 		s.httpErrorFor(w, r, http.StatusBadRequest, "%v", err)
 		return
 	}
-	// The perimeter the publication checks and the HEAD it pushes are read
-	// under the lock the authoring commits hold, through the push.
+	// The perimeter the publication checks and the HEAD it pins are read
+	// under the bot tree's lock; the remote is reached once it is released,
+	// with the commit pinned there — a commit landing meanwhile moves HEAD,
+	// never what this publication pushes.
 	release, ok := s.lockBotTreeForEditor(w, r, botTreeWriterAuthoringGitPush, req.EditorPath)
 	if !ok {
 		return
@@ -333,7 +343,13 @@ func (s *Server) handleAuthoringGitPublish(w http.ResponseWriter, r *http.Reques
 		s.authoringError(w, r, err)
 		return
 	}
-	commit, err := authoringGitPublish(r, target, req)
+	publication, err := prepareAuthoringGitPublish(r, target, req)
+	if err != nil {
+		s.authoringError(w, r, err)
+		return
+	}
+	release()
+	commit, err := publication.push(r.Context())
 	if err != nil {
 		s.authoringError(w, r, err)
 		return
@@ -1214,7 +1230,11 @@ func (s *Server) rollbackAuthoring(transactions []*authoringLocalTransaction) []
 // than a shell: the model cannot inject options, choose a repository, or run
 // a second command. A dirty worktree is normal; a non-selected staged path is
 // not, because it could otherwise ride into this commit.
-func authoringGitCommit(r *http.Request, target *authoringTarget, req authoringGitCommitRequest) (string, []string, error) {
+// authoringGitCommit commits the declared files the request attests, as the
+// host reads them. staged runs once they are staged into the commit's own
+// index, before the repository's hooks: what the commit holds is decided
+// there, and nothing after it reads the tree.
+func authoringGitCommit(r *http.Request, target *authoringTarget, req authoringGitCommitRequest, staged func()) (string, []string, error) {
 	if target.files != nil {
 		return "", nil, errors.New("git commits are unavailable for cloud bot sources without a connected repository")
 	}
@@ -1256,45 +1276,55 @@ func authoringGitCommit(r *http.Request, target *authoringTarget, req authoringG
 		expectedHashes[path] = requested.ExpectedSHA256
 	}
 
-	head, err := commitAttestedAuthoringFiles(r.Context(), gitRoot, paths, expectedHashes, strings.TrimSpace(req.Message))
+	head, err := commitAttestedAuthoringFilesStaged(r.Context(), gitRoot, paths, expectedHashes, strings.TrimSpace(req.Message), staged)
 	return head, paths, err
 }
 
-// authoringGitPublish exposes one deliberately narrow network mutation: push
-// the current immutable HEAD of the active local authoring repository to a
-// fresh origin branch. It neither chooses a remote nor accepts a refspec.
-func authoringGitPublish(r *http.Request, target *authoringTarget, req authoringGitPublishRequest) (string, error) {
+// authoringGitPublication is one deliberately narrow network mutation: push
+// the immutable commit that was the active local authoring repository's HEAD
+// to a fresh origin branch. It neither chooses a remote nor accepts a
+// refspec. prepareAuthoringGitPublish pins it from local state only; push
+// reaches the remote.
+type authoringGitPublication struct {
+	root, head, dest string
+}
+
+func prepareAuthoringGitPublish(r *http.Request, target *authoringTarget, req authoringGitPublishRequest) (authoringGitPublication, error) {
 	if target.files != nil {
-		return "", errors.New("git publication is unavailable for cloud bot sources without a connected repository")
+		return authoringGitPublication{}, errors.New("git publication is unavailable for cloud bot sources without a connected repository")
 	}
 	if target.bootstrapManifest != "" {
-		return "", errors.New("git publication requires a declared authoring perimeter")
+		return authoringGitPublication{}, errors.New("git publication requires a declared authoring perimeter")
 	}
 	rootOut, err := runAuthoringGit(r.Context(), target.workDir, "rev-parse", "--show-toplevel")
 	if err != nil {
-		return "", err
+		return authoringGitPublication{}, err
 	}
 	root, err := filepath.EvalSymlinks(strings.TrimSpace(rootOut))
 	if err != nil {
-		return "", fmt.Errorf("resolve Git root: %w", err)
+		return authoringGitPublication{}, fmt.Errorf("resolve Git root: %w", err)
 	}
 	headOut, err := runAuthoringGit(r.Context(), root, "rev-parse", "HEAD")
 	if err != nil {
-		return "", err
+		return authoringGitPublication{}, err
 	}
 	head := strings.TrimSpace(headOut)
 	resolvedOut, err := runAuthoringGit(r.Context(), root, "rev-parse", "--verify", req.Commit+"^{commit}")
 	if err != nil || strings.TrimSpace(resolvedOut) != head {
-		return "", authoringConflictError{"requested commit is not the current repository HEAD"}
+		return authoringGitPublication{}, authoringConflictError{"requested commit is not the current repository HEAD"}
 	}
 	if _, err := runAuthoringGit(r.Context(), root, "check-ref-format", "--branch", req.Branch); err != nil {
-		return "", fmt.Errorf("invalid branch: %w", err)
+		return authoringGitPublication{}, fmt.Errorf("invalid branch: %w", err)
 	}
 	if _, err := runAuthoringGit(r.Context(), root, "remote", "get-url", "origin"); err != nil {
-		return "", errors.New("origin remote is required for authoring publication")
+		return authoringGitPublication{}, errors.New("origin remote is required for authoring publication")
 	}
-	dest := "refs/heads/" + req.Branch
-	remoteBefore, err := runAuthoringGit(r.Context(), root, "ls-remote", "origin", dest)
+	return authoringGitPublication{root: root, head: head, dest: "refs/heads/" + req.Branch}, nil
+}
+
+// push publishes the pinned commit and answers it.
+func (p authoringGitPublication) push(ctx context.Context) (string, error) {
+	remoteBefore, err := runAuthoringGit(ctx, p.root, "ls-remote", "origin", p.dest)
 	if err != nil {
 		return "", err
 	}
@@ -1303,18 +1333,18 @@ func authoringGitPublish(r *http.Request, target *authoringTarget, req authoring
 	}
 	// A branch created between ls-remote and push is safe: non-force push
 	// rejects it rather than overwriting it.
-	if _, err := runAuthoringGit(r.Context(), root, "push", "--porcelain", "origin", head+":"+dest); err != nil {
+	if _, err := runAuthoringGit(ctx, p.root, "push", "--porcelain", "origin", p.head+":"+p.dest); err != nil {
 		return "", err
 	}
-	remoteAfter, err := runAuthoringGit(r.Context(), root, "ls-remote", "origin", dest)
+	remoteAfter, err := runAuthoringGit(ctx, p.root, "ls-remote", "origin", p.dest)
 	if err != nil {
-		return head, fmt.Errorf("published %s but could not verify remote branch; no rollback was attempted: %w", head, err)
+		return p.head, fmt.Errorf("published %s but could not verify remote branch; no rollback was attempted: %w", p.head, err)
 	}
 	fields := strings.Fields(remoteAfter)
-	if len(fields) < 2 || fields[0] != head || fields[1] != dest {
-		return head, fmt.Errorf("published %s but remote branch verification diverged; no rollback was attempted", head)
+	if len(fields) < 2 || fields[0] != p.head || fields[1] != p.dest {
+		return p.head, fmt.Errorf("published %s but remote branch verification diverged; no rollback was attempted", p.head)
 	}
-	return head, nil
+	return p.head, nil
 }
 
 func runAuthoringGit(ctx context.Context, workDir string, args ...string) (string, error) {
@@ -1400,7 +1430,7 @@ type authoringForbiddenError struct{ message string }
 func (e authoringForbiddenError) Error() string { return e.message }
 
 func (s *Server) authoringError(w http.ResponseWriter, r *http.Request, err error) {
-	if s.writeStoredFileRefusal(w, r, err) {
+	if s.writeStoredFileRefusal(w, r, err) || s.writeBotTreeWait(w, r, err) {
 		return
 	}
 	var conflict authoringConflictError

@@ -115,16 +115,19 @@ type Server struct {
 	// raced the write, read nil, and skipped the very wait the drain
 	// depends on — caught by -race).
 	boardDispDone chan struct{}
-	// botTreeWrites orders every write of the bot tree, the bounded
-	// dependency actions among them: two confirmed Copi cards never race
-	// over one bots.lock. The workdir such an action writes to is
+	// botTreeWrites orders every write of the bot tree, and
+	// authoringGitWrites every write of the repository's index
+	// (bot_tree_lock.go says what each covers). Neither is held across the
+	// network: a dependency update fetches between its snapshot and its
+	// commit, under neither. The workdir such an action writes to is
 	// SNAPSHOTTED under stateMu before the work starts, not held across it —
 	// the work clones a remote repository, and an RWMutex read lock held
 	// over a network call blocks every other stateMu reader once a writer
 	// queues behind it. The snapshot keeps the guarantee that mattered: the
 	// request is served against the project it was admitted for, even if a
 	// switch lands mid-clone.
-	botTreeWrites botTreeWriteLock
+	botTreeWrites      orderedLock
+	authoringGitWrites orderedLock
 	// currentProjectID is the id of the registry entry matching
 	// cfg.WorkDir. Surfaced by /api/server/info (polled by the SPA);
 	// caching it here avoids a disk read on every poll.

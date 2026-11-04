@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -58,12 +60,17 @@ func newTreeChoreography(t *testing.T) *treeChoreography {
 	t.Helper()
 	c := &treeChoreography{t: t, waits: map[string]chan struct{}{}}
 	botTreeWriteHook = func(event, writer string) {
-		if event != "wait" {
+		key := writer
+		switch event {
+		case botTreeWaitEvent:
+		case authoringGitWaitEvent:
+			key = gitWaitKey(writer)
+		default:
 			return
 		}
 		c.mu.Lock()
 		defer c.mu.Unlock()
-		ch := c.waitChan(writer)
+		ch := c.waitChan(key)
 		select {
 		case <-ch:
 		default:
@@ -98,8 +105,13 @@ func newTreeChoreography(t *testing.T) *treeChoreography {
 	return c
 }
 
+// gitWaitKey is the key first and waitChan know a wait on the repository's
+// lock by: a writer's name on its own is its wait on the bot tree's.
+func gitWaitKey(writer string) string { return authoringGitWaitEvent + "/" + writer }
+
 // waitChan is writer's wait signal, closed at the first wait on the tree's
-// lock of a writer of that name. c.mu is held.
+// lock of a writer of that name — on the repository's, for a gitWaitKey.
+// c.mu is held.
 func (c *treeChoreography) waitChan(writer string) chan struct{} {
 	ch, ok := c.waits[writer]
 	if !ok {
@@ -885,6 +897,8 @@ func TestEveryBotTreeWriterTakesTheWriteLock(t *testing.T) {
 		// handler wrote that it must not have, "" when nothing.
 		setup func(t *testing.T) (*Server, http.HandlerFunc, *http.Request, func() string)
 	}
+	// The handlers that read no request body.
+	bodyless := map[string]bool{botTreeWriterMarketplace: true, botTreeWriterMarketplaceRemove: true}
 	absent := func(paths ...string) func() string {
 		return func() string {
 			for _, p := range paths {
@@ -1040,15 +1054,22 @@ func TestEveryBotTreeWriterTakesTheWriteLock(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer release()
+			body := countRequestBody(t, r)
 			c := newTreeChoreography(t)
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
 			req := c.start(handler, r.WithContext(ctx))
 			outcome := c.first(req, tc.writer)
+			read := body.read.Load()
 			cancel()
 			rec := c.answer(req, tc.writer)
 			if outcome != treeQueued {
 				t.Fatalf("%s %s while the test held the bot tree's lock: %d %s", tc.writer, outcome, rec.Code, rec.Body.String())
+			}
+			// The body is read before the lock is taken: a client that
+			// stalls its body never holds every writer of the tree.
+			if !bodyless[tc.writer] && read != body.size {
+				t.Fatalf("%s queued on the bot tree's lock having read %d of its %d body bytes: its client's pace holds the lock", tc.writer, read, body.size)
 			}
 			var busy struct {
 				Code string `json:"error_code"`
@@ -1061,6 +1082,67 @@ func TestEveryBotTreeWriterTakesTheWriteLock(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("the writers of the repository's index take its lock", func(t *testing.T) {
+		var gitCommit func(t *testing.T) (*Server, http.HandlerFunc, *http.Request, func() string)
+		for _, tc := range cases {
+			if tc.writer == botTreeWriterAuthoringGitCommit {
+				gitCommit = tc.setup
+			}
+		}
+		for _, tc := range []struct {
+			writer string
+			setup  func(t *testing.T) (*Server, http.HandlerFunc, *http.Request, func() string)
+		}{
+			{botTreeWriterAuthoringGitCommit, gitCommit},
+			{botTreeWriterDependencyUpdate, func(t *testing.T) (*Server, http.HandlerFunc, *http.Request, func() string) {
+				s, ref := assistantDependencyFixture(t)
+				lock := filepath.Join(s.cfg.WorkDir, "bots.lock")
+				before := unchanged(t, lock)
+				return s, s.handleAssistantDependencyBotsUpdate, treeJSON(t, http.MethodPost, "/api/v1/assistant/dependencies/bots-update", assistantDependencyBotsUpdateRequest{Name: "shared-planner", Ref: ref, Message: "chore(bots): refresh shared planner"}), func() string {
+					if what := before(); what != "" {
+						return what
+					}
+					if left, _ := filepath.Glob(filepath.Join(s.cfg.WorkDir, ".git", "iterion-dependency-*")); len(left) != 0 {
+						return left[0]
+					}
+					return ""
+				}
+			}},
+			{botTreeWriterDependencyLocalize, func(t *testing.T) (*Server, http.HandlerFunc, *http.Request, func() string) {
+				s, root, _ := assistantDependencyLocalizeFixture(t)
+				return s, s.handleAssistantDependencyBotsLocalize, treeJSON(t, http.MethodPost, "/api/v1/assistant/dependencies/bots-localize", assistantDependencyBotsLocalizeRequest{EditorPath: "bots/planner/main.bot", Name: "shared-planner", Message: "localize shared planner"}), absent(filepath.Join(root, "bots", "planner", "plugins"))
+			}},
+		} {
+			t.Run(tc.writer, func(t *testing.T) {
+				s, handler, r, written := tc.setup(t)
+				release, err := s.holdAuthoringGitWrites(t.Context(), "the test")
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer release()
+				c := newTreeChoreography(t)
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				req := c.start(handler, r.WithContext(ctx))
+				outcome := c.first(req, gitWaitKey(tc.writer))
+				cancel()
+				rec := c.answer(req, tc.writer)
+				if outcome != treeQueued {
+					t.Fatalf("%s %s while the test held the repository's lock: %d %s", tc.writer, outcome, rec.Code, rec.Body.String())
+				}
+				var busy struct {
+					Code string `json:"error_code"`
+				}
+				if rec.Code != http.StatusServiceUnavailable || json.Unmarshal(rec.Body.Bytes(), &busy) != nil || busy.Code != botTreeBusyCode {
+					t.Fatalf("%s = %d %s; want 503 %s", tc.writer, rec.Code, rec.Body.String(), botTreeBusyCode)
+				}
+				if what := written(); what != "" {
+					t.Fatalf("%s wrote %s while it waited for the repository's lock", tc.writer, what)
+				}
+			})
+		}
+	})
 
 	t.Run("a preview and a stored commit take nothing", func(t *testing.T) {
 		s, editor, path := authoring(t)
@@ -1091,4 +1173,31 @@ func TestEveryBotTreeWriterTakesTheWriteLock(t *testing.T) {
 			requireTreeAnswer(t, tc.name, rec, tc.code, tc.want)
 		}
 	})
+}
+
+// countedBody is a request body that counts the bytes its handler read.
+type countedBody struct {
+	r    io.Reader
+	size int64
+	read atomic.Int64
+}
+
+func (b *countedBody) Read(p []byte) (int, error) {
+	n, err := b.r.Read(p)
+	b.read.Add(int64(n))
+	return n, err
+}
+
+func (b *countedBody) Close() error { return nil }
+
+// countRequestBody replaces r's body with one that counts what is read of it.
+func countRequestBody(t *testing.T, r *http.Request) *countedBody {
+	t.Helper()
+	payload, err := io.ReadAll(r.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := &countedBody{r: bytes.NewReader(payload), size: int64(len(payload))}
+	r.Body = body
+	return body
 }

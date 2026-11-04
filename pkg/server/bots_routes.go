@@ -237,6 +237,12 @@ func (s *Server) handleBotsPut(w http.ResponseWriter, r *http.Request) {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "bots: missing name")
 		return
 	}
+	// The body is read before the lock: a client's pace never holds it.
+	var req botUpdateRequest
+	if err := readJSON(r, &req); err != nil {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "invalid request: %v", err)
+		return
+	}
 	// The bundle the name maps to is resolved under the lock the edit holds
 	// through its write and the entry it answers: a manifest another writer
 	// has moved aside, or a rename that re-points the name, is never what
@@ -285,12 +291,6 @@ func (s *Server) handleBotsPut(w http.ResponseWriter, r *http.Request) {
 			"bots: %q is an installed package (.botz/): its manifest is the package's, and an update replaces it whole — set its visibility in this workspace with the Catalog manager's toggle (PUT /api/v1/bots/%s/overlay), which an update leaves alone, and edit its metadata in the package's source", name, name)
 		return
 	}
-	var req botUpdateRequest
-	if err := readJSON(r, &req); err != nil {
-		s.httpErrorFor(w, r, http.StatusBadRequest, "invalid request: %v", err)
-		return
-	}
-
 	manifestPath := filepath.Join(entry.Path, bundle.ManifestFile)
 	patch := bundle.ManifestPatch{
 		DisplayName: req.DisplayName,
@@ -526,12 +526,10 @@ func (s *Server) handleBotInstall(w http.ResponseWriter, r *http.Request) {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "bots: url is required")
 		return
 	}
-	release, ok := s.lockBotTree(w, r, botTreeWriterBotInstall)
-	if !ok {
-		return
-	}
-	defer release()
-	res, err := botinstall.Install(r.Context(), botinstall.Options{
+	// The clone is the network and writes nothing of the workspace: it runs
+	// before the bot tree's lock is taken, and the install of the checkout
+	// under it.
+	opts, cleanup, err := botinstall.Checkout(r.Context(), botinstall.Options{
 		Source:  req.URL,
 		Ref:     req.Ref,
 		Path:    req.Path,
@@ -539,6 +537,17 @@ func (s *Server) handleBotInstall(w http.ResponseWriter, r *http.Request) {
 		Force:   req.Force,
 		Workdir: s.cfg.WorkDir,
 	})
+	defer cleanup()
+	if err != nil {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "bots: install: %v", err)
+		return
+	}
+	release, ok := s.lockBotTree(w, r, botTreeWriterBotInstall)
+	if !ok {
+		return
+	}
+	defer release()
+	res, err := botinstall.Install(r.Context(), opts)
 	if err != nil {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "bots: install: %v", err)
 		return

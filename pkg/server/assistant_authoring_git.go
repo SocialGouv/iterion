@@ -81,10 +81,27 @@ func (g authoringGitIndex) tree(ctx context.Context, parent string, paths []stri
 }
 
 func commitAttestedAuthoringFiles(ctx context.Context, root string, paths []string, hashes map[string]string, message string) (published string, err error) {
-	return commitAttestedAuthoringFilesWithDependency(ctx, root, paths, hashes, message, nil)
+	return commitAttestedAuthoringFilesStaged(ctx, root, paths, hashes, message, nil)
 }
 
+// commitAttestedAuthoringFilesStaged is commitAttestedAuthoringFiles calling
+// staged, when set, once the attested files are staged into the commit's own
+// index and verified there: from that point the commit reads nothing of the
+// worktree, so a caller holding the tree for its staging lets it go before
+// the hooks, the signature and the publication.
+func commitAttestedAuthoringFilesStaged(ctx context.Context, root string, paths []string, hashes map[string]string, message string, staged func()) (published string, err error) {
+	return commitAttestedAuthoring(ctx, root, paths, hashes, message, nil, staged)
+}
+
+// commitAttestedAuthoringFilesWithDependency commits a dependency
+// transaction's lock: it installs the candidate into the worktree before the
+// hooks and restores it on failure, so the tree is the transaction's through
+// the publication and nothing is let go at the staging.
 func commitAttestedAuthoringFilesWithDependency(ctx context.Context, root string, paths []string, hashes map[string]string, message string, dependency *assistantDependencyTransaction) (published string, err error) {
+	return commitAttestedAuthoring(ctx, root, paths, hashes, message, dependency, nil)
+}
+
+func commitAttestedAuthoring(ctx context.Context, root string, paths []string, hashes map[string]string, message string, dependency *assistantDependencyTransaction, onStaged func()) (published string, err error) {
 	version, err := runAuthoringGit(ctx, root, "version")
 	if err != nil {
 		return "", err
@@ -203,6 +220,9 @@ func commitAttestedAuthoringFilesWithDependency(ctx context.Context, root string
 	verifiedTree, err := g.tree(ctx, parent, paths, hashes)
 	if err != nil {
 		return "", err
+	}
+	if onStaged != nil {
+		onStaged()
 	}
 	// Update only selected entries in a COPY of the editor's index. Preserve
 	// unrelated entry flags and cached metadata, not merely their blob bytes.
