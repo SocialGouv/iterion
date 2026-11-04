@@ -4800,6 +4800,72 @@ func testCredSlotLedger(t *testing.T, s store.RunStore) {
 	if adm, err := ledger.ReserveCredSlot(ctx, resumed, "res_self", 1); err != nil || !adm.Granted || adm.Held != 1 {
 		t.Fatalf("the other run ended: %+v %v, want the resume admitted alone", adm, err)
 	}
+	// Nor is any other run in that window: two resumes on one key overlap —
+	// two replicas' sweepers, two operators — and each claims its run (the
+	// flip to queued) before it asks, so each document spends the key while
+	// the other's admission decides. Of the two, the first to ask takes the
+	// free slot and the second is refused on it; adopted, each would refuse
+	// the other on a key nobody holds.
+	flipper := store.AsQueuedFlipper(s)
+	if flipper == nil {
+		t.Fatal("the store must flip a resumed run to queued (store.QueuedFlipper)")
+	}
+	claim := func(id, fingerprint string) store.QueuedFlip {
+		mk(id, store.RunStatusFailedResumable, fingerprint)
+		fl, ok, err := flipper.FlipToQueued(ctx, id, store.RunStatusFailedResumable, time.Now())
+		if err != nil || !ok {
+			t.Fatalf("FlipToQueued %s: changed=%v %v", id, ok, err)
+		}
+		return fl
+	}
+	const overlap = "fp-overlap"
+	claim("ovl_a", overlap)
+	claim("ovl_b", overlap)
+	if adm, err := ledger.ReserveCredSlot(ctx, overlap, "ovl_a", 1); err != nil || !adm.Granted || adm.Held != 1 {
+		t.Fatalf("the first of two overlapping resumes asked on a free key: %+v %v, want admitted alone — it adopted the other resume, whose own admission had not decided", adm, err)
+	}
+	if adm, err := ledger.ReserveCredSlot(ctx, overlap, "ovl_b", 1); err != nil || adm.Granted || adm.Held != 1 {
+		t.Fatalf("the second of two overlapping resumes: %+v %v, want refused on the slot the first holds", adm, err)
+	}
+	// Refused, the second resume's flip is reverted, and the revert takes
+	// the pending admission with it: the run is put back as it was.
+	flC := claim("ovl_c", "fp-overlap-revert")
+	if reverted, err := flipper.RevertQueuedFlip(ctx, "ovl_c", flC, "refused"); err != nil || !reverted {
+		t.Fatalf("RevertQueuedFlip ovl_c: reverted=%v %v", reverted, err)
+	}
+	if r, err := s.LoadRun(ctx, "ovl_c"); err != nil || r.CredAdmissionPending {
+		t.Fatalf("a reverted flip left the pending admission on the run (load err=%v)", err)
+	}
+	// Once a resume's admission has decided, its run is a fact like any
+	// other: settled, a resumed run on a key the row does not name — capped
+	// after the resume asked — is adopted by that key's next admission. A
+	// settle that names an earlier flip than the run's leaves it awaiting.
+	if err := ledger.SettleCredSlotAdmission(ctx, "set_none", time.Time{}); err == nil {
+		t.Fatal("SettleCredSlotAdmission with no flip marker must refuse")
+	}
+	const settled = "fp-settled"
+	flSet := claim("set_a", settled)
+	flStale := claim("set_b", settled)
+	if err := ledger.SettleCredSlotAdmission(ctx, "set_a", flSet.At); err != nil {
+		t.Fatalf("SettleCredSlotAdmission set_a: %v", err)
+	}
+	if err := ledger.SettleCredSlotAdmission(ctx, "set_b", flStale.At.Add(-time.Millisecond)); err != nil {
+		t.Fatalf("SettleCredSlotAdmission set_b on an earlier marker: %v", err)
+	}
+	mk("set_new", waiting, settled)
+	if adm, err := ledger.ReserveCredSlot(ctx, settled, "set_new", 1); err != nil || adm.Granted || adm.Held != 1 {
+		t.Fatalf("a newcomer beside one settled resume and one still awaiting its admission: %+v %v, want refused with the settled one adopted, alone", adm, err)
+	}
+	// The pending admission is read on a queued run only: a resume whose
+	// settle never landed runs once a runner claims it, and a running run
+	// spends its keys as a fact whatever its marker says.
+	const claimed = "fp-claimed"
+	claim("clm_a", claimed)
+	flip("clm_a", store.RunStatusRunning)
+	mk("clm_new", waiting, claimed)
+	if adm, err := ledger.ReserveCredSlot(ctx, claimed, "clm_new", 1); err != nil || adm.Granted || adm.Held != 1 {
+		t.Fatalf("a newcomer beside a running resume whose settle never landed: %+v %v, want refused with the running one adopted", adm, err)
+	}
 	// A reservation with no run document yet keeps its slot: the launch
 	// persists the run after it reserves (store.CredSlotGrace).
 	const fresh = "fp-fresh"

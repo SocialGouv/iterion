@@ -694,6 +694,7 @@ func (s *FilesystemRunStore) FlipToQueued(_ context.Context, id string, from Run
 	}}
 	transitionRunStatus(r, RunStatusQueued, "", RunOutcomeMeta{})
 	r.QueuedAt = &marker
+	r.CredAdmissionPending = true
 	if err := s.writeRun(r); err != nil {
 		return QueuedFlip{}, false, err
 	}
@@ -735,6 +736,7 @@ func (s *FilesystemRunStore) RevertQueuedFlip(_ context.Context, id string, flip
 	r.WorkflowSources = slices.Clone(prior.WorkflowSources)
 	r.WorkflowHash = prior.WorkflowHash
 	r.AwaitAnswersWaits = nil
+	r.CredAdmissionPending = false
 	r.UpdatedAt = time.Now().UTC()
 	if err := s.writeRun(r); err != nil {
 		return false, err

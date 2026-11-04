@@ -76,13 +76,13 @@ func (s *FilesystemRunStore) ReserveCredSlot(ctx context.Context, fingerprint, r
 }
 
 // adoptUnledgeredCredSlotHolders names in the row of fingerprint every run
-// other than runID whose document spends it (Run.SpendsCredential) and that
-// the row does not name — the adoption store.CredSlotStore's admission
-// performs before it decides, outside the cap. Called under credSlotMu; the
-// scan takes no store lock.
+// other than runID whose document spends it with no admission of its own
+// still to come (Run.CredSlotAdoptable) and that the row does not name —
+// the adoption store.CredSlotStore's admission performs before it decides,
+// outside the cap. Called under credSlotMu; the scan takes no store lock.
 func (s *FilesystemRunStore) adoptUnledgeredCredSlotHolders(ctx context.Context, fingerprint, runID string, now time.Time) error {
 	spenders, err := s.filterRunsSorted(ctx, func(r *Run) bool {
-		return r.ID != runID && r.SpendsCredential(fingerprint)
+		return r.ID != runID && r.CredSlotAdoptable(fingerprint)
 	})
 	if err != nil {
 		return fmt.Errorf("store: reserve cred slot %s for run %s: list the runs that spend it: %w", fingerprint, runID, err)
@@ -129,6 +129,29 @@ func (s *FilesystemRunStore) ReleaseCredSlot(_ context.Context, fingerprint, run
 	s.credSlotMu.Lock()
 	defer s.credSlotMu.Unlock()
 	s.pullCredSlotHolder(fingerprint, func(h credSlotHolder) bool { return h.runID == runID && h.at.Equal(at) })
+	return nil
+}
+
+// SettleCredSlotAdmission implements CredSlotStore: under the store lock,
+// like the flip it settles, so it lands on the document that flip wrote or
+// on none.
+func (s *FilesystemRunStore) SettleCredSlotAdmission(_ context.Context, runID string, queuedAt time.Time) error {
+	if runID == "" || queuedAt.IsZero() {
+		return fmt.Errorf("store: settle the cred slot admission of run %q: run id and the flip's queued_at are required (queued_at=%v)", runID, queuedAt)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, err := s.loadRunRaw(runID)
+	if err != nil {
+		return fmt.Errorf("store: settle the cred slot admission of run %s: %w", runID, err)
+	}
+	if !r.AwaitsCredSlotAdmission() || r.QueuedAt == nil || !r.QueuedAt.Equal(queuedAt) {
+		return nil
+	}
+	r.CredAdmissionPending = false
+	if err := s.writeRun(r); err != nil {
+		return fmt.Errorf("store: settle the cred slot admission of run %s: %w", runID, err)
+	}
 	return nil
 }
 

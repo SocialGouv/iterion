@@ -168,6 +168,25 @@ func (p *Publisher) releaseCredSlots(ctx context.Context, runID string, held []h
 	}
 }
 
+// settleCredSlotAdmission tells the ledger that the admission of the resume
+// whose flip is `flip` has decided — granted, or nothing capped to ask: the
+// flip marked the run as awaiting it (store.Run.AwaitsCredSlotAdmission),
+// and no admission of another run adopts such a run. Settled, the run's
+// document spends its keys as a fact, adopted on a key capped after this
+// resume. A store that cannot flip (zero flip) marked nothing. A failed
+// settle leaves the run unadopted until a runner claims it (running, no
+// longer queued) — said loudly, and the resume goes on: its capped keys
+// already name it.
+func (p *Publisher) settleCredSlotAdmission(ctx context.Context, runID string, flip store.QueuedFlip) {
+	ledger := store.AsCredSlotStore(p.store)
+	if ledger == nil || flip.At.IsZero() {
+		return
+	}
+	if err := ledger.SettleCredSlotAdmission(ctx, runID, flip.At); err != nil {
+		p.logger.Warn("cloudpublisher: run %s: settle its credential-slot admission: %v — while it stays queued, no admission counts it on a key capped after this resume", runID, err)
+	}
+}
+
 // parkRunOnCredSlot writes the park onto the IN-MEMORY launch document, the
 // launch path's one persist being what lands it: failed_resumable under
 // FailureCredSlotWait, with the refusal as the run's own words. The

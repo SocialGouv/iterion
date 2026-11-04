@@ -499,7 +499,9 @@ type QueuedFlipper interface {
 	// FlipToQueued moves the run from `from` to queued, its attempt marker
 	// stamped at NextQueuedAt(at, the marker it replaces), and returns what
 	// the run was before, read in the same atomic operation. changed=false
-	// when the run is not `from`.
+	// when the run is not `from`. The same write sets
+	// Run.CredAdmissionPending: the resume's credential-slot admission is
+	// still to come.
 	FlipToQueued(ctx context.Context, id string, from RunStatus, at time.Time) (flip QueuedFlip, changed bool, err error)
 	// RevertQueuedFlip puts flip.Prior back — only while the run is still
 	// queued with flip.At as its marker: a run claimed, cancelled, or queued
@@ -508,7 +510,7 @@ type QueuedFlipper interface {
 	// must not read as superseded by a flip nothing published, and the run's
 	// episode and continuation are the prior state's, not a new outcome.
 	// runErr, when not empty, replaces the prior error: why the resume was
-	// refused.
+	// refused. The revert clears Run.CredAdmissionPending with the rest.
 	RevertQueuedFlip(ctx context.Context, id string, flip QueuedFlip, runErr string) (changed bool, err error)
 }
 

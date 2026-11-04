@@ -4469,6 +4469,7 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 		return fmt.Errorf("cloudpublisher: resume of run %s refused before publishing, the run put back as it was: %w", spec.RunID, refusal)
 	}
 	heldSlots = held
+	p.settleCredSlotAdmission(ctx, spec.RunID, flip)
 	// Re-resolved on resume too: the engine re-mirrors skills on every resume,
 	// so a resumed run must carry the same payload a fresh launch would.
 	contributions, contribErr := resolveContributionsFor(ctx, wf, "", prior.TenantID, spec.RunID, p.pluginSources, p.logger)

@@ -1028,6 +1028,15 @@ type Run struct {
 	// re-stamp (a resumed attempt starts over) and toggled by the runner at
 	// each model node's start and finish.
 	LLMIdleSince *time.Time `json:"llm_idle_since,omitempty" bson:"llm_idle_since,omitempty"`
+	// CredAdmissionPending is set by a resume's flip to queued
+	// (QueuedFlipper.FlipToQueued) and cleared once that resume's
+	// credential-slot admission has decided (CredSlotStore.
+	// SettleCredSlotAdmission) or its flip is reverted. Read only on a
+	// queued run (AwaitsCredSlotAdmission): the resume claims the run before
+	// it resolves and asks the ledger, so for that window the document
+	// spends the keys its stamp names while the run's own admission is still
+	// to come.
+	CredAdmissionPending bool `json:"cred_admission_pending,omitempty" bson:"cred_admission_pending,omitempty"`
 	// ParentNodeID is the IR node id of the subbot node in the parent
 	// workflow that spawned this child run; empty for root runs and
 	// non-subbot children.

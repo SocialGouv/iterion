@@ -192,14 +192,14 @@ func (s *Store) refreshCredSlotHolder(ctx context.Context, fingerprint string, h
 }
 
 // adoptUnledgeredCredSlotHolders names in the row every run other than
-// runID whose document spends the credential (spendsCredentialFilter, the
-// query form of store.Run.SpendsCredential) and that the row does not name —
+// runID whose document spends the credential with no admission of its own
+// still to come (credSlotAdoptableFilter) and that the row does not name —
 // the adoption store.CredSlotStore's admission performs before it decides.
 // Each push is conditional on the row still not naming the run, so two
 // admissions adopting at once write one entry, and it carries no room check:
 // the run already spends the key, and the row says so even past the cap.
 func (s *Store) adoptUnledgeredCredSlotHolders(ctx context.Context, fingerprint, runID string, now time.Time) error {
-	cur, err := s.runs.Find(ctx, spendsCredentialFilter(fingerprint, runID), options.Find().SetProjection(bson.M{"_id": 1}))
+	cur, err := s.runs.Find(ctx, credSlotAdoptableFilter(fingerprint, runID), options.Find().SetProjection(bson.M{"_id": 1}))
 	if err != nil {
 		return fmt.Errorf("store/mongo: reserve cred slot %s for run %s: list the runs that spend it: %w", fingerprint, runID, err)
 	}
@@ -228,6 +228,39 @@ func (s *Store) adoptUnledgeredCredSlotHolders(ctx context.Context, fingerprint,
 			}); err != nil {
 			return fmt.Errorf("store/mongo: adopt run %s into cred slot %s: %w", sp.ID, fingerprint, err)
 		}
+	}
+	return nil
+}
+
+// credSlotAdoptableFilter selects the runs an admission adopts — the query
+// form of store.Run.CredSlotAdoptable: the runs that spend the credential
+// (spendsCredentialFilter) but a queued resume whose own admission is still
+// to come (store.Run.AwaitsCredSlotAdmission).
+func credSlotAdoptableFilter(fingerprint, excludeRunID string) bson.M {
+	filter := spendsCredentialFilter(fingerprint, excludeRunID)
+	filter["$nor"] = bson.A{bson.M{"status": string(store.RunStatusQueued), "cred_admission_pending": true}}
+	return filter
+}
+
+// SettleCredSlotAdmission implements store.CredSlotStore: one conditional
+// write that matches the run only while it is still queued for the flip at
+// queuedAt, so a later flip's pending admission is never settled by an
+// earlier one. Tenant-scoped like the flip it settles.
+func (s *Store) SettleCredSlotAdmission(ctx context.Context, runID string, queuedAt time.Time) error {
+	if runID == "" || queuedAt.IsZero() {
+		return fmt.Errorf("store/mongo: settle the cred slot admission of run %q: run id and the flip's queued_at are required (queued_at=%v)", runID, queuedAt)
+	}
+	filter := notDeleted(withTenantFilter(ctx, bson.M{
+		"_id":                    runID,
+		"status":                 string(store.RunStatusQueued),
+		"queued_at":              queuedAt,
+		"cred_admission_pending": true,
+	}))
+	if _, err := s.runs.UpdateOne(ctx, filter, versionRunUpdate(bson.M{
+		"$unset": bson.M{"cred_admission_pending": ""},
+		"$set":   bson.M{"updated_at": time.Now().UTC()},
+	})); err != nil {
+		return fmt.Errorf("store/mongo: settle the cred slot admission of run %s: %w", runID, err)
 	}
 	return nil
 }

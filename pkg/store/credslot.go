@@ -30,16 +30,20 @@ import (
 // before the ledger existed, launched while the key had no cap, or whose
 // entry an undo took after another admission of the run landed — so a cap
 // set on a key in use counts the runs already on it, and a key over its new
-// cap refuses newcomers until enough of them end. A model-idle run
-// (Run.LLMIdleSince) KEEPS its slot: a slot lent out while the run executes
-// tool-only work has no path back when its next model node starts — nothing
-// in the runner can wait for the ledger at a node start — so a cap that
-// released it would admit one run past the cap on every wake. The marker
-// stays observability. The one release a caller performs itself is the undo
-// of an admission whose launch or resume provably never handed the run on
-// (ReleaseCredSlot): an attempt whose queue message may have landed keeps
-// its slots, and the reconcile frees them once its run document stops
-// spending.
+// cap refuses newcomers until enough of them end. A run whose own
+// admission is still to come is no such fact: a resume claims its run (the
+// flip to queued) before it resolves and asks, and until that admission
+// decides (SettleCredSlotAdmission) the run is its own admission's to
+// decide, never another's to adopt (Run.AwaitsCredSlotAdmission). A
+// model-idle run (Run.LLMIdleSince) KEEPS its slot: a slot lent out while
+// the run executes tool-only work has no path back when its next model node
+// starts — nothing in the runner can wait for the ledger at a node start —
+// so a cap that released it would admit one run past the cap on every wake.
+// The marker stays observability. The one release a caller performs itself
+// is the undo of an admission whose launch or resume provably never handed
+// the run on (ReleaseCredSlot): an attempt whose queue message may have
+// landed keeps its slots, and the reconcile frees them once its run
+// document stops spending.
 //
 // A capability rather than part of RunStore, like RunRetryStore: the cloud
 // publisher is its only caller, and a decorator that does not carry it must
@@ -49,14 +53,16 @@ type CredSlotStore interface {
 	// Granted is false when the row is full of runs that still spend the
 	// credential; Held reports how many hold a slot after the call either
 	// way. Before deciding it adopts every other run that spends the
-	// credential (Run.SpendsCredential) and that the row does not name,
-	// outside the cap — a fact, not an admission; runID itself is left to
-	// its own admission, so a resume that re-stamped its run before asking
-	// is decided, never adopted. A run already holding a slot is admitted
-	// again in place, without taking a second one — a resume's
-	// re-resolution reserves what the run holds — while the row is within
-	// max: under a cap lowered below its holders, a holder's re-admission
-	// waits like a newcomer's until enough of the others stop spending.
+	// credential and that the row does not name, outside the cap — a fact,
+	// not an admission (Run.CredSlotAdoptable). runID itself is left to its
+	// own admission, so a resume that re-stamped its run before asking is
+	// decided, never adopted; so is every other resume whose admission has
+	// not decided yet (Run.AwaitsCredSlotAdmission). A run already holding
+	// a slot is admitted again in place, without taking a second one — a
+	// resume's re-resolution reserves what the run holds — while the row is
+	// within max: under a cap lowered below its holders, a holder's
+	// re-admission waits like a newcomer's until enough of the others stop
+	// spending.
 	// Every admission writes the holder's entry at a new instant
 	// (NextCredSlotInstant), returned as the admission's At: the entry's
 	// identity, so an eviction or a release judged against an earlier
@@ -70,6 +76,13 @@ type CredSlotStore interface {
 	// caller's admission and its undo — holds a later entry, which is that
 	// admission's to give back and stays. A zero `at` is a caller error.
 	ReleaseCredSlot(ctx context.Context, fingerprint, runID string, at time.Time) error
+	// SettleCredSlotAdmission clears Run.CredAdmissionPending once the
+	// admission of the resume that flipped runID to queued at queuedAt
+	// (QueuedFlip.At) has decided: from then on the run's document spends
+	// its keys as a fact, which an admission adopts on a key whose row does
+	// not name it — one capped after the resume. A run no longer queued for
+	// that flip is left alone. A zero queuedAt is a caller error.
+	SettleCredSlotAdmission(ctx context.Context, runID string, queuedAt time.Time) error
 }
 
 // CredSlotAdmission is what ReserveCredSlot decided.
@@ -122,6 +135,26 @@ func (r *Run) SpendsCredential(fingerprint string) bool {
 		}
 	}
 	return false
+}
+
+// AwaitsCredSlotAdmission reports whether the run is queued for a resume
+// whose credential-slot admission has not decided yet
+// (CredAdmissionPending). Its document spends what its stamp names, yet no
+// admission of another run adopts it: its own admission says whether it
+// holds a slot, and a refused one puts it back as it was. Adopted, two
+// resumes asking on one key at once would each count the other and both be
+// refused on a slot nobody holds.
+func (r *Run) AwaitsCredSlotAdmission() bool {
+	return r != nil && r.Status.IsQueued() && r.CredAdmissionPending
+}
+
+// CredSlotAdoptable reports whether an admission on the credential with
+// this fingerprint adopts the run when the ledger's row does not name it:
+// the run spends the credential (SpendsCredential) and no admission of its
+// own is still to come (AwaitsCredSlotAdmission). Shared by both twins'
+// adoption; the Mongo query filter is its mirror.
+func (r *Run) CredSlotAdoptable(fingerprint string) bool {
+	return r.SpendsCredential(fingerprint) && !r.AwaitsCredSlotAdmission()
 }
 
 // CredSlotHolderStale decides whether a ledger holder may be evicted, from

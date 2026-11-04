@@ -443,6 +443,7 @@ func (f *failingLedger) ReserveCredSlot(context.Context, string, string, int) (s
 	return store.CredSlotAdmission{}, errors.New("ledger unavailable")
 }
 func (f *failingLedger) ReleaseCredSlot(context.Context, string, string, time.Time) error { return nil }
+func (f *failingLedger) SettleCredSlotAdmission(context.Context, string, time.Time) error { return nil }
 
 // A ledger error refuses the launch and persists nothing: a hard cap that
 // fails open on a blip is the advisory ceiling this step replaces.
@@ -862,6 +863,9 @@ func (s *failingKeyLedger) ReserveCredSlot(ctx context.Context, fp, runID string
 func (s *failingKeyLedger) ReleaseCredSlot(ctx context.Context, fp, runID string, at time.Time) error {
 	return s.ledger.ReleaseCredSlot(ctx, fp, runID, at)
 }
+func (s *failingKeyLedger) SettleCredSlotAdmission(ctx context.Context, runID string, queuedAt time.Time) error {
+	return s.ledger.SettleCredSlotAdmission(ctx, runID, queuedAt)
+}
 
 // A store error on a later key gives back the slot taken on the earlier
 // one, like a refusal: the launch is refused with nothing persisted, and a
@@ -976,4 +980,151 @@ func TestCredSlotAdmission_AFailedResumesUndoLeavesALaterAdmissionsSlot(t *testi
 		t.Fatalf("launch run-b: %v", err)
 	}
 	f.assertParked(t, "run-b")
+}
+
+// overlappingResumes interleaves two resumes of two runs on one key the way
+// two replicas' sweepers do: the second resume claims its run while the
+// first is between its own claim and its admission, and each admission
+// decides while the other run is still queued — before either is put back.
+type overlappingResumes struct {
+	store.RunStore
+	flipper          store.QueuedFlipper
+	ledger           store.CredSlotStore
+	first, second    string
+	startSecond      func()
+	secondFlipped    chan struct{}
+	secondDone       chan struct{}
+	firstDone        chan struct{}
+	firstDecided     chan struct{}
+	secondDecided    chan struct{}
+	startOnce        sync.Once
+	firstDecidedOnce sync.Once
+}
+
+func (s *overlappingResumes) Unwrap() store.RunStore { return s.RunStore }
+
+func (s *overlappingResumes) FlipToQueued(ctx context.Context, id string, from store.RunStatus, at time.Time) (store.QueuedFlip, bool, error) {
+	flip, changed, err := s.flipper.FlipToQueued(ctx, id, from, at)
+	switch id {
+	case s.first:
+		s.startOnce.Do(func() {
+			go s.startSecond()
+			select {
+			case <-s.secondFlipped:
+			case <-s.secondDone:
+			}
+		})
+	case s.second:
+		close(s.secondFlipped)
+	}
+	return flip, changed, err
+}
+
+func (s *overlappingResumes) RevertQueuedFlip(ctx context.Context, id string, flip store.QueuedFlip, runErr string) (bool, error) {
+	return s.flipper.RevertQueuedFlip(ctx, id, flip, runErr)
+}
+
+func (s *overlappingResumes) ReserveCredSlot(ctx context.Context, fp, runID string, max int) (store.CredSlotAdmission, error) {
+	switch runID {
+	case s.first:
+		adm, err := s.ledger.ReserveCredSlot(ctx, fp, runID, max)
+		s.firstDecidedOnce.Do(func() { close(s.firstDecided) })
+		select {
+		case <-s.secondDecided:
+		case <-s.secondDone:
+		}
+		return adm, err
+	case s.second:
+		select {
+		case <-s.firstDecided:
+		case <-s.firstDone:
+		}
+		adm, err := s.ledger.ReserveCredSlot(ctx, fp, runID, max)
+		close(s.secondDecided)
+		return adm, err
+	}
+	return s.ledger.ReserveCredSlot(ctx, fp, runID, max)
+}
+
+func (s *overlappingResumes) ReleaseCredSlot(ctx context.Context, fp, runID string, at time.Time) error {
+	return s.ledger.ReleaseCredSlot(ctx, fp, runID, at)
+}
+
+func (s *overlappingResumes) SettleCredSlotAdmission(ctx context.Context, runID string, queuedAt time.Time) error {
+	return s.ledger.SettleCredSlotAdmission(ctx, runID, queuedAt)
+}
+
+// Two runs parked on a full key are resumed together once its holder ends —
+// two replicas' sweepers on two due rows — and each claims its run before
+// it asks, so each run's document spends the key while the other decides.
+// Exactly one of them is queued on the freed slot and the other is put back
+// parked; the one queued settles its admission and the one put back keeps no
+// pending admission. Red when an admission adopts a resume whose own
+// admission has not decided (each counts the other: both put back on a key
+// nobody holds), and when the granted resume never settles.
+func TestCredSlotAdmission_TwoOverlappingResumesQueueExactlyOne(t *testing.T) {
+	f := newCappedFixture(t, 1)
+	p := f.publisher()
+	if err := f.launch(t, p, "run-holder", nil); err != nil {
+		t.Fatalf("launch run-holder: %v", err)
+	}
+	for _, id := range []string{"run-l1", "run-l2"} {
+		if err := f.launch(t, p, id, nil); err != nil {
+			t.Fatalf("launch %s: %v", id, err)
+		}
+		f.assertParked(t, id)
+	}
+	holder := f.load(t, "run-holder")
+	holder.Status = store.RunStatusFinished
+	if err := f.spy.SaveRun(f.ctx, holder); err != nil {
+		t.Fatalf("finish run-holder: %v", err)
+	}
+
+	ov := &overlappingResumes{
+		RunStore:      f.spy,
+		flipper:       store.AsQueuedFlipper(f.spy),
+		ledger:        store.AsCredSlotStore(f.spy),
+		first:         "run-l1",
+		second:        "run-l2",
+		secondFlipped: make(chan struct{}),
+		secondDone:    make(chan struct{}),
+		firstDone:     make(chan struct{}),
+		firstDecided:  make(chan struct{}),
+		secondDecided: make(chan struct{}),
+	}
+	replica1, replica2 := f.publisher(), f.publisher()
+	replica1.store, replica2.store = ov, ov
+	var secondErr error
+	ov.startSecond = func() {
+		defer close(ov.secondDone)
+		secondErr = f.resume(t, replica2, "run-l2")
+	}
+	firstErr := f.resume(t, replica1, "run-l1")
+	close(ov.firstDone)
+	<-ov.secondDone
+
+	queued := 0
+	for id, err := range map[string]error{"run-l1": firstErr, "run-l2": secondErr} {
+		r := f.load(t, id)
+		switch {
+		case err == nil:
+			queued++
+			f.assertQueued(t, id)
+			if r.CredAdmissionPending {
+				t.Fatalf("run %s was queued with its admission still pending — no admission adopts it on a key capped later", id)
+			}
+		case errors.Is(err, ErrCredentialAtCapacity):
+			if r.Status != store.RunStatusFailedResumable || r.CredAdmissionPending {
+				t.Fatalf("run %s refused: status=%s pending=%v, want put back parked with no pending admission", id, r.Status, r.CredAdmissionPending)
+			}
+		default:
+			t.Fatalf("resume of %s: %v", id, err)
+		}
+	}
+	if queued != 1 {
+		t.Fatalf("%d of two overlapping resumes were queued on a free slot of a cap of one (run-l1 err=%v, run-l2 err=%v), want exactly one", queued, firstErr, secondErr)
+	}
+	if n := f.ledgerHolders(t, cappedFP); n != 1 {
+		t.Fatalf("the key names %d holders, want the queued resume alone", n)
+	}
 }

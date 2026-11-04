@@ -1147,8 +1147,9 @@ func (s *Store) CountAliveRunsWithCredFingerprint(ctx context.Context, fingerpri
 
 // spendsCredentialFilter selects the runs that spend the credential with this
 // fingerprint, excludeRunID aside: the query form of store.Run.SpendsCredential,
-// read by the alive-run count and by the slot ledger's adoption alike. No
-// tenant filter — a platform key serves every tenant on one cap.
+// read by the alive-run count and, narrowed (credSlotAdoptableFilter), by the
+// slot ledger's adoption. No tenant filter — a platform key serves every
+// tenant on one cap.
 func spendsCredentialFilter(fingerprint, excludeRunID string) bson.M {
 	holding := make([]string, 0, 2)
 	for _, st := range store.AllRunStatuses {
@@ -1638,6 +1639,10 @@ func (s *Store) FlipToQueued(ctx context.Context, id string, from store.RunStatu
 	at = store.QueuedFlipAt(at)
 	set := statusTransitionSet(store.RunStatusQueued, "", store.RunOutcomeMeta{}, time.Now().UTC())
 	set["queued_at"] = queuedAtMarkerExpr(at)
+	// The resume's credential-slot admission is still to come
+	// (store.Run.AwaitsCredSlotAdmission). A boolean is a literal in a
+	// pipeline stage.
+	set["cred_admission_pending"] = true
 	filter := notDeleted(withTenantFilter(ctx, bson.M{"_id": id, "status": from}))
 	opts := options.FindOneAndUpdate().
 		SetReturnDocument(options.Before).
@@ -1672,7 +1677,7 @@ func (s *Store) RevertQueuedFlip(ctx context.Context, id string, flip store.Queu
 		runErr = prior.Error
 	}
 	set := bson.M{"status": prior.Status, "updated_at": time.Now().UTC()}
-	unset := bson.M{"await_answers_waits": ""}
+	unset := bson.M{"await_answers_waits": "", "cred_admission_pending": ""}
 	field := func(key string, val any, empty bool) {
 		if empty {
 			unset[key] = ""
