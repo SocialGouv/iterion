@@ -147,7 +147,9 @@ the cap:
   slot is admitted again in place, without taking a second one, while the
   row is within the cap — **lower `max_concurrent_runs`** below the runs
   holding the key and none of them is re-admitted (a paused one's resume
-  waits like a newcomer's) until enough of the others stop spending. A key
+  waits like a newcomer's) until enough of the others stop spending; two of
+  them resuming at the same instant can each count the other, queued, and
+  both be put back once — the next ask evicts the one put back. A key
   lent through the [credential pool](credential-pool.md) is admitted on the
   same row by the borrower's launch — the grant carries the donor key's
   cap, so one ledger governs the key whoever runs on it; the pledge's own
@@ -192,7 +194,9 @@ watch re-delivers its episode, the workspace hand-off backs off, and an
 assistant mission puts the refused activation, action resume or result
 delivery back to prepared and asks again one probe interval out
 (`wait_until` on the receipt), spending none of its action budget, up to its
-TTL; an operator is answered 429.
+TTL; an operator is answered 429 with `error_code: credential_at_capacity` —
+on `resume`, `answer-human`, an async answer's auto-resume and a host event
+alike — and the WebSocket answer fails with that code.
 
 The ledger never becomes a second truth. A holder is free when its run
 stops counting under the two rules below, and a refusal re-reads the row's
@@ -211,20 +215,25 @@ an undo another admission of the run outran — outside the cap, as the fact
 they are. **Setting `max_concurrent_runs` on a key in use** therefore counts
 the runs already on it at the first admission: a key with three runs alive
 and a new cap of two refuses (parks) every newcomer — pinned, restored or
-chosen — until two of the three end. The run an admission decides is never
-adopted by it: a resume that re-stamped its run before asking is decided by
-its own admission. The one explicit release
-is the undo of a launch or a resume that **provably** never handed the run
-on — no row persisted, or a rollback that ended or reverted the row it
-wrote — and it names the entry its own admission wrote, like the eviction:
-a resume of the same run that re-admitted it before that undo ran keeps
-its slot. A publish can report an error after its message landed: the slot
-then stays, the rollback leaves a row a runner already claimed to that
-runner, and the reconcile frees the slot once the run stops spending.
-Because the reconcile reads the stamp, a resume that reserves a capped key
-is refused when its re-stamp fails: a run whose document does not name the
-key it holds would be evicted while it executes. A run counts against a
-key only when **both** hold:
+chosen — until two of the three end. No admission adopts a resume whose own
+admission has not decided: a resume claims its run (the flip to `queued`,
+which marks it `cred_admission_pending`) before it resolves and asks, and
+until its admission decides — the publisher then settles the mark — or its
+rollback clears it, the run is that admission's to decide. Two parked runs
+resumed together on a freed slot therefore queue one and put the other
+back, rather than each counting the other and both waiting on a key nobody
+holds. The mark is read on a queued run only: a run a runner claimed counts
+whatever it says. The one explicit release is the undo of a launch or a
+resume that **provably** never handed the run on — no row persisted, or a
+rollback that ended or reverted the row it wrote — and it names the entry
+its own admission wrote, like the eviction: a resume of the same run that
+re-admitted it before that undo ran keeps its slot. A publish can report
+an error after its message landed: the slot then stays, the rollback leaves
+a row a runner already claimed to that runner, and the reconcile frees the
+slot once the run stops spending. Because the reconcile reads the stamp, a
+resume that reserves a capped key is refused when its re-stamp fails: a run
+whose document does not name the key it holds would be evicted while it
+executes. A run counts against a key only when **both** hold:
 
 1. **It is alive** — `queued` or `running` (`RunStatus.HoldsCredentialSlot`).
    A parked or paused run spends nothing while it waits, and its resume

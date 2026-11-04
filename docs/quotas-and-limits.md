@@ -211,7 +211,8 @@ lives on the key itself: `max_concurrent_runs`
 ([byok.md](byok.md#concurrency-ceiling--what-counts)) is a hard cap held by an
 atomic reservation at launch and resume, and a full key **parks** a launch
 (`CRED_SLOT_WAIT`, asked again until a slot frees or its `max_wait` passes)
-rather than denying it — an operator's resume on a full key answers 429.
+rather than denying it — an operator's resume on a full key answers 429
+(`credential_at_capacity`), whichever surface resumes it.
 
 The override-field semantics are pinned in
 [pkg/server/launch_gate.go:orValue](../pkg/server/launch_gate.go) (the
