@@ -3,7 +3,6 @@
 - [154 — The sovereign pool boundary](154-the-sovereign-pool-boundary-is-a-namespace-and-an-enforced-proxy.md): in the release's shared namespace, the pool's own ServiceAccount and Role without the policy-authoring verbs, a standing default-deny policy over the pool's pods, and an enforced egress proxy out of the pod.
 - [138 — Forge provisioning identities](138-forge-provisioning-immutable-identities.md): immutable webhook epochs, optimistic activation, write redirects and the hybrid reconciler boundary.
 - [156 — Bearer token hashing doctrine](156-bearer-token-hashing-doctrine.md): a stored bearer token is its unsalted SHA-256 digest (CSPRNG ≥ 128 bits); HMAC under a derived key is for derivations, never for a human-chosen input.
-- [155 — Reserved capacity is a durable allocation](155-reserved-capacity-is-a-durable-allocation.md): one ledger behind the window, dollar, slot and pool axes, an acquire that is a single conditional write, a settle, a sweep that carries correctness — and reservable execution capacity.
 - [155 — Reserved capacity is a durable allocation](155-reserved-capacity-is-a-durable-allocation.md): one ledger behind the window, dollar, slot and pool axes, an acquire that is a single compensated write, a settle, a sweep that carries correctness — and reservable execution capacity.
 
 One decision per file, named `NNN-kebab-title.md`, where `NNN` is the next
