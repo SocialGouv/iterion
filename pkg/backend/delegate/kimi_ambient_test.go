@@ -215,6 +215,14 @@ func TestKimiSandboxedRunKeepsTheContainersHome(t *testing.T) {
 
 func TestKimiNoopSandboxIsServedTheOverlay(t *testing.T) {
 	isolateUserHome(t)
+	// The noop driver is a host dispatch, so the image-gap gate (#1643)
+	// refuses kimi unless its CLI resolves on this host's PATH: the host
+	// carries one, and the witness stays about the overlay.
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "kimi"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil { // #nosec G306 — test fixture must be executable
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	home := kimiAmbientHome(t)
 	run := &recordingRun{driver: "noop", script: `printf '%s\n' '{"role":"assistant","content":"done"}'`}
 	task := Task{NodeID: "n", UserPrompt: "hi", Sandbox: run, AmbientContext: ambient.Workspace, AmbientContextSource: "node", ExtraEnv: []string{"KIMI_CODE_HOME=" + home}}
