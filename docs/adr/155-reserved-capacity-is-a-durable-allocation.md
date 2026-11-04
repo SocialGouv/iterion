@@ -503,6 +503,8 @@ Nothing here is built. The first unit rebases on the landing of
 `leap/credpool-fingerprint` and `leap/usagecap-ambient-key`, which hold
 `pkg/credpool`, `pkg/runner/usage_cap.go` and the publisher.
 
+> **Amended 2026-11-04 ([ADR-161](161-one-resolver-decides-the-credential-a-call-spends.md), debt-leap #112).** Units 4 and 6 wait on ADR-161's U2, not on the bench landing; the other units start from main.
+
 1. **`pkg/capacityledger`** — the leaf, both twins, the conformance suite.
    Witness: a table test on the judgement over the POST-ADMIT total, and
    the suite run against both twins. Three rows carry it, because the
