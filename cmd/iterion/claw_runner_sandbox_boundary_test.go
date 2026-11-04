@@ -167,7 +167,7 @@ func newBoundaryProbe(t *testing.T, advertised []string) (map[string]delegate.To
 
 	dispatcher, stub := newStubLauncher(t)
 
-	hybrid, err := makeHybridToolDefs(advertise(advertised), dispatcher, t.TempDir(), "", model.NewRegistry(), model.EventHooks{}, 0)
+	hybrid, err := makeHybridToolDefs(advertise(advertised), dispatcher, t.TempDir(), "", model.NewRegistry(), model.EventHooks{}, 0, nil, false)
 	if err != nil {
 		t.Fatalf("makeHybridToolDefs refused the advertised set, so the probe cannot tell the paths apart: %v", err)
 	}
@@ -320,7 +320,7 @@ func TestHybridToolDefs_RefusesWhatTheContainerCannotExecute(t *testing.T) {
 		// refused, never proxied.
 		{"some_future_claw_tool", "no sandbox placement is declared"},
 	} {
-		_, err := makeHybridToolDefs(advertise([]string{tc.name}), dispatcher, t.TempDir(), "", model.NewRegistry(), model.EventHooks{}, 0)
+		_, err := makeHybridToolDefs(advertise([]string{tc.name}), dispatcher, t.TempDir(), "", model.NewRegistry(), model.EventHooks{}, 0, nil, false)
 		if err == nil {
 			t.Errorf("%q was accepted by the runner; it has no in-container form, so accepting it means proxying it to the host", tc.name)
 			continue
@@ -393,7 +393,7 @@ func TestHybridToolDefs_LocalRegistrationFailureIsFatal(t *testing.T) {
 // refuses a node it should have run.
 func TestRegisterSandboxLocalTools_CoversTheWholeSandboxSet(t *testing.T) {
 	reg := tool.NewRegistry()
-	if err := registerSandboxLocalTools(reg, t.TempDir(), "", nil, 0); err != nil {
+	if err := registerSandboxLocalTools(reg, t.TempDir(), "", nil, 0, nil, false); err != nil {
 		t.Fatalf("registerSandboxLocalTools: %v", err)
 	}
 
@@ -436,7 +436,7 @@ func TestRegisterSandboxLocalTools_CommandRegistersWithTheLaunchersCeiling(t *te
 	answer := func(t *testing.T, ceiling int) string {
 		t.Helper()
 		reg := tool.NewRegistry()
-		if err := registerSandboxLocalTools(reg, ws, "", nil, ceiling); err != nil {
+		if err := registerSandboxLocalTools(reg, ws, "", nil, ceiling, nil, false); err != nil {
 			t.Fatalf("registerSandboxLocalTools(ceiling=%d): %v", ceiling, err)
 		}
 		td, err := reg.Resolve("command")

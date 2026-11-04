@@ -42,14 +42,16 @@ schedule tick, trigger spine, retry sweeper). The rung is fail-closed: an
 identity carrying neither a `member` role nor one of those kinds is
 refused.
 
-The same rung guards the surfaces that FILL a queue a machine principal
-drains. The board's Ready column is one: the dispatcher drains it under a
-principal the gate exempts, so a card written ready is a launch its author
-asked the platform to perform. A trigger subscription is the other: the
-spine evaluates it against every matching event and launches under the
-same kind of exempt principal, so a stored subscription is a standing
-launch order. The rung is therefore taken at the mount, by every
-state-changing method of:
+The same rung guards the surfaces a machine principal CONSUMES. The
+board's Ready column is one: the dispatcher drains it under a principal
+the gate exempts, so a card written ready is a launch its author asked
+the platform to perform. A trigger subscription is another: the spine
+evaluates it against every matching event and launches under the same
+kind of exempt principal, so a stored subscription is a standing launch
+order. A team's memory space is the third: the engine reads its documents
+back into every agent run that opens the space, so a document written
+there is instruction the platform will follow. The rung is therefore
+taken at the mount, by every state-changing method of:
 
 - the three board registrars — `registerPipelineBoardRoutes`
   (`/api/v1/pipeline-board/…`), `registerCloudBoardRoutes` (the
@@ -57,7 +59,10 @@ state-changing method of:
   `registerBoardForgeRoutes` (the per-card push / pull-request / merge
   endpoints under the same `/api/v1/native/` prefix);
 - `registerTriggerRoutes` — `/api/v1/triggers` and
-  `/api/v1/bots/{name}/triggers/from-invocation`.
+  `/api/v1/bots/{name}/triggers/from-invocation`;
+- `registerMemoryRoutes` — the seven `/api/memory/*` routes, where the
+  write, the delete and the import take it (a global-space mutation then
+  takes platform authority on top, `requireMemoryWriteAuth`).
 
 Each answers the same `member_role_required` (403), with a detail naming
 what the caller was changing; `GET`/`HEAD` stay readable by a `viewer`.
@@ -201,7 +206,13 @@ is a separate question with its own two gates — the org's
 platform tier's `platform_credentials` audience (which tenants may draw on
 the deployment's). Both are documented in
 [cloud-llm-credentials.md](cloud-llm-credentials.md); neither denies a
-launch, they decide what the run is handed.
+launch, they decide what the run is handed. A third, per-credential limit
+lives on the key itself: `max_concurrent_runs`
+([byok.md](byok.md#concurrency-ceiling--what-counts)) is a hard cap held by an
+atomic reservation at launch and resume, and a full key **parks** a launch
+(`CRED_SLOT_WAIT`, asked again until a slot frees or its `max_wait` passes)
+rather than denying it — an operator's resume on a full key answers 429
+(`credential_at_capacity`), whichever surface resumes it.
 
 The override-field semantics are pinned in
 [pkg/server/launch_gate.go:orValue](../pkg/server/launch_gate.go) (the
@@ -341,6 +352,13 @@ node's route from three events, in order: `delegate_started.declared_model`
   another model (an `ANTHROPIC_MODEL` override), never re-routed by the
   reported id's spelling — OpenRouter reports `anthropic/claude-sonnet-4.5`
   for the model it served.
+- A fallback chain books the routes it abandoned after they spent on the one
+  `delegate_finished` / `delegate_error` that ends it, and itemises them in
+  `folded_spend` (each slice's `backend`, `route_model`, `provider`,
+  `fingerprint`, `tokens`, `cost_usd`): the meter keys each slice on its own
+  route and the rest of the figure on the event's. A claw slice whose loop
+  the meter already priced step by step is not counted again, whichever
+  route ended the chain.
 - Without either fact (an older runner, a backend reporting a bare id), the
   route is rebuilt from the declaration: a report equal to the declared
   model's wire id keeps the declared route; a report whose prefix is a
@@ -474,7 +492,11 @@ gates already enforce.
 >
 > A real guarantee needs durable allocation — reserve at admission, settle
 > against actual spend when the attempt ends, reconcile on crash — tracked on
-> [#950](https://github.com/SocialGouv/iterion/issues/950) and not built.
+> [#950](https://github.com/SocialGouv/iterion/issues/950) and **not built**.
+> Its design is
+> [ADR-155](adr/155-reserved-capacity-is-a-durable-allocation.md): what this
+> deployment enforces is what is documented above, not what that record
+> decides.
 
 The difference is not academic. On 2026-09-08 campaign bots and the PR
 reviewer shared one Anthropic subscription; when its five-hour window closed
@@ -788,6 +810,9 @@ accounting lives in the Mongo counters above.
 | `iterion_runs_retry_resumed_total` | `result` (`enqueued` / `abandoned` / `failed`) | Retry-sweeper outcomes for due runs; `enqueued` includes the resumes a pull-forward probe caused, countable against `iterion_runs_retry_probes_total` |
 | `iterion_runs_retry_pending` | — | Due-retry rows observed in the latest bounded sweep (sampled gauge); probe-pulled rows are due rows, so a parked fleet keeps a floor under it |
 | `iterion_runs_retry_sweeps_total` | — | Retry-sweeper passes; flat at zero in cloud means the sweeper is not running, not merely idle |
+| `iterion_bot_override_shadows_newer` | `slug` | 1 while a **platform** bot override is strictly older than the bundle this deployment would otherwise serve — the override wins by design, so the newer baked bundle does not run until it is re-pushed or dropped ([platform-bots.md](platform-bots.md#an-override-outlives-the-release-that-made-it-necessary)). Sampled every five minutes — twelve readings inside the hour its alert waits — with every row rewritten per pass and the vanished slugs retired after those writes, so a dropped override loses its series rather than paging forever, while no scrape reads an empty inventory for one that is still shadowing |
+| `iterion_bot_shadow_check_unavailable` | — | 1 when a leg of that check could not be read (the catalog walk, or the platform rows), including a deployment with no bot root on disk at all. The per-slug gauges then HOLD their last values: a check that could not run must not publish the same zero as a clean inventory |
+| `iterion_bot_override_unorderable_version` | `slug` | 1 when the override and the bundle below it cannot be ordered (`Manifest.version` is free-form, so a suffixed pin parses as nothing; and a manifest is optional on both sides, so either may declare no version), and no staleness verdict is made either way. Never the clean 0 of a row with nothing to report: the override still outranks what sits below it. Informational: no alert rule reads this series, because a page on a version iterion cannot order is one nobody can clear |
 | `iterion_runs_retry_probes_total` | `result` (`pulled` / `still_blocked` / `stood_down`) | Pull-forward probes of a not-yet-due wait, by what the probe FOUND: `pulled` is the pod spent, `still_blocked` the preflight refusing again, `stood_down` a pull whose resume never reached the runner — `pulled` minus the other two found the window reopened, which is how a wasted pod is told from a useful one. A probe spends no attempt and no monthly run-quota unit, unless the due pass reaches its resume more than the marker's TTL (1 h) after the pull: that resume IS metered and the park it causes charges an attempt, up to `max_attempts` of each per run — while the probes themselves stay bounded by `budget` per provider wall, because the ledger belongs to the wall ([scheduling.md](scheduling.md#retry--a-provider-quota-window-is-waited-out-not-re-attempted)) |
 
 The starter alert pack
@@ -799,6 +824,8 @@ fires:
 - **IterionDLQNotEmpty** when `iterion_dlq_depth > 0` for 10 minutes.
 - **IterionRunnerHeartbeatErrors** on `increase(iterion_runner_heartbeat_errors_total[5m]) > 3`.
 - **IterionOrphanRunsRecovered** on `increase(iterion_runs_orphan_recovered_total[30m]) > 0`.
+- **IterionBotOverrideShadowsNewer** at `max by (slug) (iterion_bot_override_shadows_newer) > 0` for an hour — aggregated across replicas because each pod measures its OWN baked image against the shared platform rows, so an un-aggregated expression is one page per pod.
+- **IterionBotShadowCheckUnavailable** when `max(iterion_bot_shadow_check_unavailable) == 1` for 30 minutes: while it fires, no override can be certified current.
 
 The thresholds are deliberately conservative starting points — tune
 them per deployment.

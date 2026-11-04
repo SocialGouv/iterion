@@ -26,6 +26,23 @@ type ConfigStore interface {
 	// DisableProvision disables one immutable endpoint without replacing policy.
 	// It also works on a frozen migration source; authority must match.
 	DisableProvision(ctx context.Context, id, integrationID string) error
+	// ClearCredentialPins removes, from the config as the store holds it
+	// NOW, every key_overrides / secret_overrides entry whose value names
+	// recordID, reporting whether it removed any. The judgment happens at
+	// write time against the stored row — never against the caller's
+	// listing copy — so a pin edit or a second record's sweep landing
+	// between the caller's list and this clear survives untouched, and a
+	// swept pin cannot resurrect through a writer that validates after the
+	// delete — the write-time validators refuse a dead record's id; a write
+	// that validated while the record lived can still land after the
+	// sweep's listing, and that write's own route re-checks the records its
+	// landed pins name and calls this clear for a revoked one (the delete's
+	// listing never saw the row). Each real removal bumps version, so an
+	// editor holding a pre-sweep snapshot conflicts and re-reads instead of
+	// writing the swept pin back; a clear that removes nothing writes
+	// nothing and moves no version. ErrNotFound when the config is gone; a
+	// config holding no such entry is a no-op, not an error.
+	ClearCredentialPins(ctx context.Context, id, recordID string) (bool, error)
 	Delete(ctx context.Context, id string) error
 	ListByTenant(ctx context.Context, tenantID string) ([]Config, error)
 	MarkUsed(ctx context.Context, id string, t time.Time) error

@@ -161,14 +161,32 @@ func (r *authRateLimiter) refund(key string, cfg authBucketCfg) {
 // limitRoute wraps an HTTP handler with per-IP rate limiting. The
 // `keyExtra` arg adds a per-route tier (e.g. login also rate-limits
 // by email so distributed attempts against one account get caught).
+// The per-IP bucket is the bare client IP, shared by every route wrapped
+// here: a bucket refills at its CALLER's rate, so only routes that spend
+// the same budget belong on it — a public read with a generous rate goes
+// through limitRouteScoped instead.
 func (s *Server) limitRoute(cfg authBucketCfg, keyExtra func(*http.Request) string) func(http.HandlerFunc) http.HandlerFunc {
+	return s.limitRouteScoped("", cfg, keyExtra)
+}
+
+// limitRouteScoped is limitRoute with a per-IP bucket of its own, keyed
+// "<scope>:<ip>". The limiter refills a bucket at the rate of whichever
+// route calls it, so a generous route sharing the bare-IP bucket of the
+// login family would refill the login budget on every anonymous read; a
+// scope keeps the two budgets apart. An empty scope is the shared bare-IP
+// bucket.
+func (s *Server) limitRouteScoped(scope string, cfg authBucketCfg, keyExtra func(*http.Request) string) func(http.HandlerFunc) http.HandlerFunc {
 	return func(next http.HandlerFunc) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
 			if s.authLimiter == nil {
 				next(w, r)
 				return
 			}
-			keys := []string{s.clientIP(r)}
+			ipKey := s.clientIP(r)
+			if scope != "" {
+				ipKey = scope + ":" + ipKey
+			}
+			keys := []string{ipKey}
 			if keyExtra != nil {
 				if extra := keyExtra(r); extra != "" {
 					keys = append(keys, extra)

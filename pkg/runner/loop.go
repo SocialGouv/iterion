@@ -2619,7 +2619,7 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 	gitBase := ""
 	if strings.TrimSpace(msg.RepoURL) != "" {
 		cloneStart := time.Now()
-		repoDir, baseline, derr := r.prepareRepoWorkspace(ctx, msg)
+		repoDir, baseline, derr := r.prepareRepoWorkspace(ctx, wf, msg)
 		// Observed on BOTH outcomes (a clone that limps 10 minutes into an
 		// auth failure is exactly what the histogram exists to show), with
 		// the same nil guard every other Metrics site carries.
@@ -2748,7 +2748,11 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 	// BEFORE the executor so the executor's agent-stream lines (the
 	// `[node#iter/backend]` tool/LLM tags the studio's per-node Logs tab
 	// filters on) persist too — not only the engine's node-level lines.
-	runLogger := r.cfg.Logger
+	// A FORK even without a RunLogStore: this handle is what buildExecutor
+	// sets the run's secret matcher on (iterion#2822), and the pod runs
+	// many runs through one r.cfg.Logger — setting it there would let the
+	// next run replace this one's matcher mid-flight.
+	runLogger := r.cfg.Logger.WithOwnRedactor()
 	if ls := store.AsRunLogStore(r.cfg.Store); ls != nil {
 		idCtx := store.WithIdentity(context.Background(), msg.TenantID, msg.OwnerID)
 		seed, serr := ls.RunLogSize(idCtx, msg.RunID)
@@ -2759,7 +2763,7 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 		defer func() { _ = w.Close() }()
 		r.registerLogWriter(msg.RunID, w)
 		defer r.unregisterLogWriter(msg.RunID)
-		runLogger = r.cfg.Logger.WithWriter(io.MultiWriter(r.cfg.Logger.Writer(), w))
+		runLogger = runLogger.WithWriter(io.MultiWriter(r.cfg.Logger.Writer(), w))
 	}
 
 	// DSL-declared supervisors run on the pod alongside the engine —
@@ -3031,8 +3035,8 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 	// type-assertion probes inside the engine — silently, since each one
 	// degrades rather than errors.
 	engineOpts = append(engineOpts, runtime.WithEventObserver(usage.observe))
-	// Credential-slot occupancy: release the run's per-key concurrency
-	// slot while no model-calling node executes (cred_slot.go).
+	// Model-idle marker: the run reads as executing no model-calling node on
+	// its views while none does (cred_slot.go); the cap counts it still.
 	if slots := r.credSlotObserver(ctx, msg, wf, runLogger); slots != nil {
 		engineOpts = append(engineOpts, runtime.WithEventObserver(slots.observe))
 	}
@@ -3493,7 +3497,7 @@ func (r *Runner) executorSpec(ctx context.Context, msg *queue.RunMessage, wf *ir
 	// (and the per-run totals) as they are written to Mongo. Wrapping
 	// at the runner boundary keeps pkg/backend/model free of any
 	// metrics dependency.
-	usage := newMetricsEmitter(emitter, r.cfg.Metrics)
+	usage := newMetricsEmitter(emitter, r.cfg.Metrics, msg.CredPlan)
 	vars, err := stringifyVars(msg.Vars)
 	if err != nil {
 		return zero, nil, err

@@ -59,7 +59,7 @@ stateDiagram-v2
 | GitHub | return `installation_id` on the public Setup URL | `handleForgeGitHubAppCallback`, `forgeStateStore.take` |
 | server | prove the completing user owns the installation | `forgegithub.VerifyInstallationOwnership`, `AppConfig.UserAuthConfigured` |
 | forge | report the approved permissions, then mint | `InstallationInfo`, `RuntimePermissionsFor`, `SecurityReadInstallationPermissions`, `MintInstallationToken` |
-| store | persist the connection and audit it | `forge.SealOAuthTokens`, `ConnectionStore.Create`, `auditTenant` |
+| store | persist the connection and audit it | `connection.SealForgeOAuthTokens`, `connection.ForgeStore.Create`, `auditTenant` |
 | studio | preview exactly what the enable will subscribe to | `handlePreviewForgeEnable`, `forge.PreviewEnable`, `forge.ToNativeEvents` |
 | team admin | request the enable | `handleEnableForgeRepoBots`, `canManageTeam`, `forgeConnForTenant` |
 | server | apply the org ex-ante gate | `provisionOrgRequiringApproval`, `Org.RequireProvisionApproval`, `teamFundsItsOwnRuns` |

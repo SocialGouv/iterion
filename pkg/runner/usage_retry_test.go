@@ -571,7 +571,7 @@ func (c *cancelAwareStore) RearmProbedRunRetry(ctx context.Context, _ string, at
 	return true, nil
 }
 
-func (c *cancelAwareStore) DelayRunRetry(ctx context.Context, _ string, _, _ time.Time) (bool, error) {
+func (c *cancelAwareStore) DelayRunRetry(ctx context.Context, _ string, _, _ time.Time, _, _ string) (bool, error) {
 	return false, ctx.Err()
 }
 

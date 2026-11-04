@@ -62,6 +62,11 @@ type refContext struct {
 	// and C151 fire there too. The check stays separate from InWith so
 	// the two positions can carry their own phrasing.
 	InComputeExpr bool
+	// ImagePath is true for a reference in an LLM node's `images:` entry:
+	// rendered at the prompt sink like a prompt body, but consumed as a
+	// FILE the backend opens, so the grant finding's remedy there is the
+	// file form of the secret, never a sink grant (imagePathSecretRemedy).
+	ImagePath bool
 	// Sink names the materialization sink the text that holds the reference
 	// feeds (pkg/dsl/secretsink): a prompt body, a tool node's authored
 	// command/postcondition/script, an action's params. Empty where the
@@ -283,6 +288,42 @@ func collectAllRefs(w *Workflow, promptSpans map[string]ast.Span, edgeSpans map[
 						Sink:     secretsink.Params,
 					})
 				}
+			}
+		}
+	}
+
+	// LLM node `images:` refs — the image paths a node hands its backend.
+	// The runtime renders each path through the SAME resolver a prompt body
+	// goes through (resolveTemplate, pkg/backend/model), which materialises
+	// `{{secrets.X}}` at the prompt sink — ResolveSecretRefAt(Prompt, …) —
+	// so the sink here is `prompt` and the compile verdict matches what the
+	// run renders. The field was outside the walk, so an image path was the
+	// one prompt-sink text no check read: the resolver leaves the reference
+	// of a secret whose grants withhold `prompt` AS WRITTEN, so the path
+	// reached the backend as literal DSL text with nothing said (C323), and
+	// a typo'd `{{outputs.gen.file}}` resolved to an empty path at the one
+	// moment the node needed the image.
+	for _, n := range w.Nodes {
+		f := llmFieldsOf(n)
+		if f == nil {
+			continue
+		}
+		for _, image := range f.Images {
+			refs, err := ParseRefs(image)
+			if err != nil {
+				// The declaration already drew C004 for this text
+				// (buildLLMNodeShared), naming the node and the parse
+				// error; one defect, one diagnostic.
+				continue
+			}
+			for _, ref := range refs {
+				out = append(out, refContext{
+					Ref:       ref,
+					NodeID:    n.NodeID(),
+					Location:  fmt.Sprintf("%s node %q images", n.NodeKind(), n.NodeID()),
+					Sink:      secretsink.Prompt,
+					ImagePath: true,
+				})
 			}
 		}
 	}
@@ -856,7 +897,6 @@ func (c *compiler) validateSecretsRef(w *Workflow, rc refContext) {
 	if len(rc.Ref.Path) == 0 {
 		return
 	}
-	name := rc.Ref.Path[0]
 	if rc.InWith {
 		c.refErrorf(rc, DiagWithSecretRef,
 			"%s: reference %s cannot travel through a data mapping — a `with:` value or a fail `message:` resolves it to nil; move the reference to the execution sink that uses the secret (a tool's `command:`/`script:`/`postcondition:`, a tool action's `params:` value, or a prompt body), the only places the runtime materialises it",
@@ -869,39 +909,18 @@ func (c *compiler) validateSecretsRef(w *Workflow, rc refContext) {
 			rc.Location, expr.Excerpt(rc.Ref.Raw))
 		return
 	}
-	secret, ok := w.Secrets[name]
-	if !ok {
-		c.refErrorf(rc, DiagUnknownSecret,
-			"%s: reference %s targets undeclared secret %q",
-			rc.Location, expr.Excerpt(rc.Ref.Raw), expr.Excerpt(name))
-		return
+	// The declaration, the grant and the sub-field are secretRefVerdict's:
+	// one matcher, read here and by the readers of a text this walk never
+	// reaches (ir.PromptSecretRefIssues, a bundle preset's body), so the
+	// same reference cannot draw two different verdicts. The grant's remedy
+	// is the site's: a sink that consumes the value's text is granted, an
+	// image path needs the secret's file form.
+	grantRemedy := secretGrantRemedy(rc.Sink)
+	if rc.ImagePath {
+		grantRemedy = imagePathSecretRemedy(rc.Ref.Path[0])
 	}
-	if len(rc.Ref.Path) == 1 {
-		// The grant check: a VALUE secret's reference materialises the value
-		// at the sink the text feeds, so the secret must grant that sink. A
-		// file secret's reference renders its mounted path wherever it
-		// stands — the value reaches the run through the mount, which the
-		// `file` grant on the declaration covers — so it is not checked per
-		// reference. A sub-field reference is judged below first: one the
-		// secret has not (C095) is refused for that alone.
-		if rc.Sink != "" && !secret.IsFile() && !secret.Grants(rc.Sink) {
-			c.refErrorf(rc, DiagSecretSinkUngranted,
-				"%s: reference %s reaches the %s sink, which secret %q does not grant (sinks: [%s]) — add `%s` to its sinks: list, or move the reference to a sink it grants",
-				rc.Location, expr.Excerpt(rc.Ref.Raw), rc.Sink, expr.Excerpt(name), strings.Join(secret.Sinks, ", "), rc.Sink)
-		}
-		return
-	}
-	sub := rc.Ref.Path[1]
-	if sub != "path" {
-		c.refErrorf(rc, DiagSecretSubfield,
-			"%s: reference %s uses unknown secret sub-field %q (expected: path)",
-			rc.Location, expr.Excerpt(rc.Ref.Raw), expr.Excerpt(sub))
-		return
-	}
-	if !secret.IsFile() {
-		c.refErrorf(rc, DiagSecretSubfield,
-			"%s: reference %s uses .path on non-file secret %q",
-			rc.Location, expr.Excerpt(rc.Ref.Raw), expr.Excerpt(name))
+	if code, reason := secretRefVerdict(w, rc.Ref, rc.Sink, grantRemedy); code != "" {
+		c.refErrorf(rc, code, "%s: %s", rc.Location, reason)
 	}
 }
 

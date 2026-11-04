@@ -125,8 +125,9 @@ type RunHeader struct {
 	// GRANTED log line stays the place where slot, tier and fingerprint are
 	// read together.
 	CredentialTiers []string `json:"credential_tiers,omitempty"`
-	// LLMIdleSince is set while the run executes no model-calling node —
-	// it then holds none of its credentials' concurrency slots.
+	// LLMIdleSince is set while the run executes no model-calling node.
+	// Observability: the run keeps its credentials' concurrency slots until
+	// it ends (store.Run.SpendsCredential).
 	LLMIdleSince *time.Time `json:"llm_idle_since,omitempty"`
 	// SkippedCredReopensAt is when the earliest credential the launch's
 	// resolution passed over reopens — the instant a usage-window retry may

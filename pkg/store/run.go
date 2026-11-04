@@ -638,6 +638,13 @@ func (p *RunLLMRoutePolicy) ProviderAllowlist() []string {
 // run invisible to the pass that probes it.
 const RetryReasonUsageWindow = "usage_window"
 
+// RetryReasonCredSlot is the failure class of a park on a credential's hard
+// concurrency cap (FailureCredSlotWait). The wait ends when a run holding a
+// slot ends, which names no instant: the sweeper asks again on a cadence of
+// its own, and the probe pass — keyed on RetryReasonUsageWindow — never
+// pulls such a row forward for a provider wall it is not waiting on.
+const RetryReasonCredSlot = "cred_slot"
+
 // RunRetryState is the live retry bookkeeping for a run whose failure is
 // waiting on a provider quota window to reopen.
 //
@@ -1014,12 +1021,22 @@ type Run struct {
 	// LLMIdleSince is set while the run executes NO model-calling node —
 	// the last one finished at this instant and none has started since —
 	// and nil while one is running, while the run is queued, or before its
-	// first model call (a run about to spend counts). The per-key
-	// concurrency ceiling counts alive runs whose marker is nil: a run in a
-	// sixty-minute tool-only verify gate holds its key's slot for nobody.
-	// Cleared by every credential re-stamp (a resumed attempt starts over)
-	// and toggled by the runner at each model node's start and finish.
+	// first model call. Observability (the run views show it): the per-key
+	// concurrency cap counts an idle run like a spending one, because a
+	// slot lent out during tool-only work has no path back when the next
+	// model node starts (SpendsCredential). Cleared by every credential
+	// re-stamp (a resumed attempt starts over) and toggled by the runner at
+	// each model node's start and finish.
 	LLMIdleSince *time.Time `json:"llm_idle_since,omitempty" bson:"llm_idle_since,omitempty"`
+	// CredAdmissionPending is set by a resume's flip to queued
+	// (QueuedFlipper.FlipToQueued) and cleared once that resume's
+	// credential-slot admission has decided (CredSlotStore.
+	// SettleCredSlotAdmission) or its flip is reverted. Read only on a
+	// queued run (AwaitsCredSlotAdmission): the resume claims the run before
+	// it resolves and asks the ledger, so for that window the document
+	// spends the keys its stamp names while the run's own admission is still
+	// to come.
+	CredAdmissionPending bool `json:"cred_admission_pending,omitempty" bson:"cred_admission_pending,omitempty"`
 	// ParentNodeID is the IR node id of the subbot node in the parent
 	// workflow that spawned this child run; empty for root runs and
 	// non-subbot children.

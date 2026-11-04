@@ -80,11 +80,47 @@ sink, before persistence:
   kept as is — the heuristic pass never redacts one, trailing sentence
   punctuation included,
 - run.log — every record the run's logger keeps, at the logger itself
-  (`Logger.WithRedactor`, wired by `runview.BuildExecutor` from this guard;
-  [ADR-149](adr/149-the-run-logger-redacts-what-it-keeps.md)) — block bodies,
-  tool sidecar blobs, and turn-snapshot conversations keep their own eager
-  pass (their stores bypass the redacting wrapper, or the text is cut before
-  it is logged).
+  (`Logger.WithRedactor`; [ADR-149](adr/149-the-run-logger-redacts-what-it-keeps.md)).
+  The pass is installed on the RUN's logger, once, by
+  `runview.BuildExecutor` — `Logger.SetRedactor`, where the guard is built —
+  so it reaches the handle the launch surface still holds and everything
+  forked from it afterwards: the executor's tree (the agent stream, the tool
+  hints, the delegate registry), the engine, the run's supervisors, and the
+  **non-event** lines of a surface's own prose (`executor close`, an MCP
+  server's quoted stderr, a launch-input refusal). `runtime.New` /
+  `runtime.NewFromRecipe` install it again on the ENGINE's fork, from the
+  scrubber its executor carries, so an engine built without BuildExecutor —
+  a dry run, a benchmark, a test — covers its **non-event** lines too: a
+  workspace-snapshot diagnostic quoting a git command's combined output, a
+  worktree or skill-mirror warning, a capture error naming what it read.
+  The slot is per HANDLE, which is why a run's logger is always a fork
+  (`iterlog.WithOwnRedactor`, a per-run tee): a surface that handed its
+  process logger would install one run's matcher where the next run replaces
+  it, and a second install on one handle says so in the log. What is NOT
+  covered by either point: a logger nobody set the matcher on, i.e. the pod's
+  own process logger — the lines `pkg/runner` logs on `r.cfg.Logger` and the
+  dispatcher runner on `r.logger`, which reach the pod's stderr, not run.log.
+  Nor a run this process does not hold: a finalize or reconcile another
+  process's run owes (`Service.runLoggerFor`) logs on a fork of the service
+  logger that carries no matcher, because the guard lives with the run's own
+  launch. Block bodies, tool sidecar blobs and turn-snapshot conversations
+  keep their own eager pass (their stores bypass the redacting wrapper), and
+  so does every producer that CUTS text before logging it — the cut runs
+  after the run's pass (`Logger.Redact` on the logger, `Task.RedactSecrets`
+  on the delegate backends: `pkg/supervise`'s steer line, the pi backend's
+  steer, UI-decline and ask_user lines, the codex terminal-error quote and
+  its tool-error content, the claw IPC decode-error quote), because a value
+  the cut split is a value no matcher recognises. The display helpers that
+  cut what they render sit in the same class, so the backends hand them
+  already-redacted text: the codex tool-use header (`toolUseDetail`, 100-byte
+  detail over leaves `secretguard.RedactLeaves` crossed first) and the claw
+  ones (the delegate bridge's 57-byte hint and 100-byte result preview, the
+  in-process header detail — `secretguard.RedactJSON` over the raw input,
+  the output redacted before `tooldisplay.ResultDisplay`); the claude_code
+  stream already did (`RedactLeaves` before `toolUseDetail`,
+  `redactForRunLog` before `ResultDisplay`). The relay payloads keep their
+  clamps unredacted on purpose: their reader is the container's loop, not
+  the operator's log.
 
 Values iterion only scrubs — the run's provider keys, the process's own
 secret-named environment, and credentials a server mints for a run (the forge
@@ -226,6 +262,68 @@ form in every hook/log:
   compress — rtk typed by the agent, or run by an operator's own rtk hook —
   still gets it from its environment only, which the operator's shell rc or
   `BASH_ENV` can replace.
+- **A materialised environment never rides the container runtime's command
+  line.** `docker exec` is handed the NAME alone (`--env K`), with the value
+  in the docker client's own environment — where a name-only flag is read
+  from — so a host process list, world-readable for the whole life of the
+  exec (for an agent node, the node's), shows the names and nothing else.
+  The provider credential a sandboxed runner spends travels the same
+  channel. A value too multi-line for a command line is carried intact
+  there; only a NUL is refused, which no process environment holds.
+  The exception is a name the HOST side reads, because the client's own
+  environment is the one channel such a name may not use: a
+  container-chosen HOME decides which daemon receives the exec, and a
+  container-chosen `LD_PRELOAD` runs the container's code in the client
+  itself. Four answers, each a DERIVATION and not a roll-call of names,
+  because a roll-call is how podman's own endpoint family got out of the
+  first one: the two CLIs' exact names outside any namespace of their own (`runtimeClientEnvNames`: HOME, PATH, TMPDIR, the
+  TLS roots, REGISTRY_AUTH_FILE, the storage pair, LANG/LANGUAGE) and their
+  configuration NAMESPACES (`runtimeClientEnvPrefixes`: `DOCKER_`,
+  `CONTAINER_`, `CONTAINERS_`, `PODMAN_` — which subcommand of one binary
+  reads which name is a version detail iterion does not track); the rest of
+  the locale family, `LC_`; the `*_PROXY` family in either case, which Go's
+  own net/http consults for every request the client sends; and
+  `envtrust.ExecutionGradeName`, the repository's execution class, already
+  the subject of the dotenv plant gate, the bot-variable gate and the
+  devcontainer deny class. Measured, not reasoned: with
+  `CONTAINER_HOST=tcp://…` in its environment, podman 4.9.3 dials that
+  endpoint with no `--remote` flag and POSTs `/libpod/containers/<id>/exec`
+  there with the whole `Env` array in the body; with `HTTP_PROXY` in its
+  environment and a `tcp://` daemon, docker 29.9.2 sends the same
+  conversation in absolute form through the host named — so a
+  container-destined proxy name becomes the CLIENT's proxy, which is why
+  that family sits on this side of the channel and not, as it briefly did,
+  on the name-only one.
+  Those names keep the pair on the argv — the channel they had before
+  #2845 — and the residual is said out loud AND warned by name where it
+  happens: a name answering here can hold a credential too
+  (`NPM_CONFIG__AUTH`, `CONTAINER_PASSPHRASE`, the proxy URL's own per-run
+  token), and its value is then in every uid's reach for the exec's life.
+  Warned, never dropped — the operator asked the container to have it.
+  Deliver such a credential under a name the host side does not consume, or
+  as a file secret. Open point: the channel that would end the residual is
+  a per-exec `--env-file`, which the CLI reads and which is neither the
+  argv nor the client's environment (nothing in production parses the EXEC
+  argv's `--env`, unlike the creation argv the image env screen audits); it
+  needs a 0600 file outliving `Run.Command`, which returns a command it
+  never starts, so it is a shape decision rather than a patch.
+  A name holding a `*` takes NEITHER form — `podman exec --env NAME*` with
+  no value is a host-environment glob, and the pair form would put the
+  value on the argv with no host-side reader to serve — so it is skipped
+  with a warning naming it, and the container's creation env
+  (`sandbox.env:`) is where a literal `*` name is set.
+  The container's CREATION argv still carries values, for the length of that
+  one call, and each is driver- or operator-chosen: the spec's
+  `sandbox.env:` (paths, ids, the mount path of a file secret — no declared
+  secret value reaches it, the materialiser being a host closure, though a
+  `${localEnv:VAR}` in it resolves to the host value the operator named,
+  credential included, by `expandSandboxSpec`), the egress proxy's
+  `*_PROXY` pairs, whose endpoint URL holds the per-run proxy
+  token the container's own environment publishes anyway, and the JVM
+  truststore trio, whose password is a constant of iterion's own source
+  guarding a world-readable store that holds a public CA certificate. The
+  kubernetes driver still carries a per-exec value on the pod exec's own
+  argv, as an `env K=V` segment (#2845).
 - Both consume `delegate.Task.MaterializeSecrets` (a closure set by the
   executor), so `pkg/backend/delegate` stays decoupled from secretguard.
 - Its mirror, `delegate.Task.UnmaterializeSecrets` (`Guard.Unmaterialize`),
@@ -236,7 +334,8 @@ form in every hook/log:
   leaves it on.
 - **The model boundary.** What a model READS goes out in placeholder form
   whatever produced it: the rendered system and user prompts, the user
-  content blocks and the preset focus of every task cross into a backend
+  content blocks, the auto-memory section, the calibration fragments, the
+  skill hints and the preset focus of every task cross into a backend
   through one seam (`ClawExecutor.executeDelegate`, `Guard.RedactForModel`),
   which turns every known value back into its placeholder — a value an
   upstream node printed and a prompt reads through `{{outputs.A.x}}`, an
@@ -261,7 +360,49 @@ form in every hook/log:
   on every backend (the record keeps it whole), and the executor's DIRECT
   model calls — the human stand-in, the interaction stand-in, the review
   companion, the self-repair rung, the structured-output recovery — cross
-  it too (`generationForModel`).
+  it too (`generationForModel`). Three model-read texts take their pass
+  elsewhere, each for a structural reason. The mounted-secret hints are the
+  guard's OWN composition — a secret's declared name, its mount path, its
+  env-var name, never a value — so the boundary leaves them whole rather
+  than corrupting the reference the instruction exists to give. A routing
+  handoff is a FILE, which the incoming harness's prompt splices in from
+  inside the backend (`Task.HandoffSection`), downstream of the seam: its
+  grant pass therefore runs where the transcript is WRITTEN
+  (`HandoffRecorder.Seal`), which is also where the crossing's own fallback
+  data lands — the values are already placeholders there, since the
+  recorder observes post-redaction events. And a backend composes some text
+  for ITSELF rather than out of a task field — the instruction files it
+  reads under the work dir, the workspace-memory index and autoload a store
+  hands it — which no field pass can reach: those take the SAME pass
+  through `Task.ScreenModelText`, which the task carries from the seam to
+  wherever each backend composes them (claw at the request it builds and,
+  for the memory turn its compaction re-injects for the summariser, at that
+  hook — no request ever carries the turn itself; pi at its
+  `project_context` suffix), so a value an earlier node's agent wrote into
+  a `CLAUDE.md` or a memory entry reaches the next model as its
+  placeholder. `workspace` is the DEFAULT ambient policy, so that walk is on
+  unless the author turns it off. codex, claude_code and the other CLI
+  agents are out of reach by construction and need nothing: their own
+  binary loads the instruction files inside the child, and iterion never
+  composes that text — as does pi under `all`. Two sweeps keep the list
+  honest. `TestEveryModelReadTextOfATaskCrossesTheBoundary` reads what
+  `BuildSystemPrompt`, `HandoffPrompt` and the two ambient composers
+  compose and refuses a field, a new string leaf of one, or a new helper or
+  method a composer grows through, that the boundary neither turns back nor
+  records a reason for. `TestEveryWriterOfSelfComposedModelTextNamesItsChokepoint`
+  reads claw's package for the gestures that make a text no field holds — a
+  system block appended, a compaction hook installed, a turn marked
+  injected — and refuses a writer that names no chokepoint; it keys on
+  those gestures, not on every message the loop builds.
+- **Residual: the in-container claw runner screens none of what it composes
+  for itself.** A sandboxed claw node rebuilds its task from the `IOTask`
+  wire, which carries no closure by design (secret materialisation stays on
+  the parent side), and the container builds no guard of its own — so the
+  instruction-file block it composes in there is screened by nothing, while
+  the prompts it receives were screened on the host before the hop. Closing
+  it means either composing that block on the host or giving the runner a
+  guard; until then a declared secret written into a workspace instruction
+  file is readable by the next sandboxed node on that workspace.
 - A verified action's self-repair (`policy: recover`) quotes the failing
   command and its output to a model: both in placeholder form.
 - Both turn known values back into placeholders in the output of every tool
@@ -349,33 +490,49 @@ secrets:
 `sinks: [prompt, egress]` keeps a token out of every command line and every
 container: the agent's `curl` carries the placeholder, the proxy substitutes
 it toward the approved host, and nothing in the workspace ever holds the
-value — short of the clone credential of a cloud run, below. `sinks:
-[command]` keeps a password off the model's path entirely: the placeholder
-a model would emit is left as written, and one a model wrote into DATA — an
-output a prompt or an edge carries into a tool body through
-`{{outputs.x}}`, `{{input.x}}`, `{{vars.x}}` — is defused before the body's
-materialiser scans it (`DefuseUngranted`: the agent sink's, whatever body
-it lands in). Only the author's own `{{secrets.X}}` resolves under
-`command` and `params`. `sinks: []` reads as no list — every sink — since
-the printers and the JSON transport drop an empty list, and a meaning they
-could not keep would change on the way.
+value — a cloud run's clone credential needs the `file` sink and refuses the
+run without it, below. `sinks: [command]` keeps a password off the model's
+path entirely: the placeholder a model would emit is left as written, and
+one a model wrote into DATA — an output a prompt or an edge carries into a
+tool body through `{{outputs.x}}`, `{{input.x}}`, `{{vars.x}}` — is defused
+before the body's materialiser scans it (`DefuseUngranted`: the agent
+sink's, whatever body it lands in). Only the author's own `{{secrets.X}}`
+resolves under `command` and `params`. `sinks: []` reads as no list — every
+sink — since the printers and the JSON transport drop an empty list, and a
+meaning they could not keep would change on the way.
 
-Three things the grants do NOT govern, said here rather than discovered: the
-clone credential of a cloud run (`forge_token`, `gitlab_token`,
-`github_token`, read from the store by name) is the runner's own channel,
-written to the workspace's git credential store whatever the declaration
-says — keep a secret the grants should keep out of the workspace under
-another name than the one the runner clones with; `ITERION_SECRETS_PLACEHOLDERS=off`
-renders a declared secret's VALUE wherever its grants let it render, prompts
-included, since the switch asks for values; and an explicit `egress` grant
-on a secret with no `hosts:` is substituted toward ANY host (C324 says so
-at compile time — scope it).
+**The clone credential of a cloud run is governed, and it needs `file`.** A
+repo-targeted run clones with the first of `forge_token`, `gitlab_token`,
+`github_token` its bundle carries a value for, and the runner keeps THAT
+token in the clone's own credential store (`.git/iterion-credentials`,
+rewritten on every rotation) so the agent's late `git push` re-reads a live
+one. That store is a file the workspace holds, so the clone credential
+spends the `file` sink: a declaration that withholds it fails the run,
+typed (`CAPABILITY_UNSUPPORTED`, cause `runtime.SecretGrantUnservableError`)
+before the clone, naming the secret and both remedies — grant it `file`, or
+declare the withheld value under a name the runner never clones with. The
+verdict reads the compiled workflow and the sealed bundle, both in hand
+before any workspace exists, so a refused run spends no clone, no workspace
+and no forge connection, and its token is never written anywhere. Only an
+accepted workspace keeps its clone: every other end of the preparation — a
+refusal, or a failure after the clone — removes the run's clone directory,
+so no failed run leaves a token-bearing tree in the runner's workdir. The
+secret the rotation refreshes is the one the clone authenticated with, never
+another name of the precedence. A secret with no `sinks:` grants every sink
+and is never refused here.
+
+Two things the grants do NOT govern, said here rather than discovered:
+`ITERION_SECRETS_PLACEHOLDERS=off` renders a declared secret's VALUE
+wherever its grants let it render, prompts included, since the switch asks
+for values; and an explicit `egress` grant on a secret with no `hosts:` is
+substituted toward ANY host (C324 says so at compile time — scope it).
 
 What the compiler refuses: a `sinks:` entry outside the vocabulary, a sink
 named twice, `prompt` alone (it hands a model the placeholder and resolves
 it nowhere), an `as: file` secret whose list lacks `file`, a value secret
 granting `file` (C322); two declarations whose names derive one placeholder
-(`tok`, `_tok` — C090); a reference in a prompt body, a tool `command:` /
+(`tok`, `_tok` — C090); a reference in a prompt body, an LLM node's
+`images:` path (the run renders it at the `prompt` sink), a tool `command:` /
 `postcondition:` / `script:` or an action `params:` whose secret does not
 grant that sink (C323, naming the sink and the grant). A file secret's
 reference renders its mounted path and is never refused per reference — the
@@ -384,7 +541,9 @@ run time, from the same declaration: `Materialize` (the `agent` sink) and
 the authored-body materialisers leave a placeholder its secret does not
 grant AS WRITTEN; the prompt path renders a value secret only when it grants
 `prompt`, so a prompt-like surface the compiler never walked (a bundle
-preset's prompt, an `images:` path) keeps the reference as written; and the
+preset's prompt, merged after compilation) keeps the reference as written —
+`iterion validate` refuses that reference on the preset file (C323,
+`pkg/bundlelint`) and every launch path says it through the merge; and the
 inspecting proxy substitutes on the wire only a secret granting `egress` —
 content DLP still refuses a real value toward an unapproved host, whatever
 the grants. A call that carried the placeholder of a secret the proxy — not

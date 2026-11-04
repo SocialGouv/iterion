@@ -250,8 +250,8 @@ jobs:
       - name: Install yq (pinned)
         run: |
           set -eu
-          curl -fsSL -o /tmp/yq https://github.com/mikefarah/yq/releases/download/v4.52.4/yq_linux_amd64
-          echo "0c4d965ea944b64b8fddaf7f27779ee3034e5693263786506ccd1c120f184e8c  /tmp/yq" | sha256sum -c -
+          curl -fsSL -o /tmp/yq https://github.com/mikefarah/yq/releases/download/v4.53.3/yq_linux_amd64
+          echo "fa52a4e758c63d38299163fbdd1edfb4c4963247918bf9c1c5d31d84789eded4  /tmp/yq" | sha256sum -c -
           sudo install -m 0755 /tmp/yq /usr/local/bin/yq
           yq --version
 
@@ -388,8 +388,8 @@ jobs:
       - name: Install yq (pinned)
         run: |
           set -eu
-          curl -fsSL -o /tmp/yq https://github.com/mikefarah/yq/releases/download/v4.52.4/yq_linux_amd64
-          echo "0c4d965ea944b64b8fddaf7f27779ee3034e5693263786506ccd1c120f184e8c  /tmp/yq" | sha256sum -c -
+          curl -fsSL -o /tmp/yq https://github.com/mikefarah/yq/releases/download/v4.53.3/yq_linux_amd64
+          echo "fa52a4e758c63d38299163fbdd1edfb4c4963247918bf9c1c5d31d84789eded4  /tmp/yq" | sha256sum -c -
           sudo install -m 0755 /tmp/yq /usr/local/bin/yq
           yq --version
 
@@ -617,8 +617,8 @@ jobs:
       - name: Install yq (pinned)
         run: |
           set -eu
-          curl -fsSL -o /tmp/yq https://github.com/mikefarah/yq/releases/download/v4.52.4/yq_linux_amd64
-          echo "0c4d965ea944b64b8fddaf7f27779ee3034e5693263786506ccd1c120f184e8c  /tmp/yq" | sha256sum -c -
+          curl -fsSL -o /tmp/yq https://github.com/mikefarah/yq/releases/download/v4.53.3/yq_linux_amd64
+          echo "fa52a4e758c63d38299163fbdd1edfb4c4963247918bf9c1c5d31d84789eded4  /tmp/yq" | sha256sum -c -
           sudo install -m 0755 /tmp/yq /usr/local/bin/yq
           yq --version
 
@@ -865,7 +865,23 @@ jobs:
     # Keep the same fork/bot isolation and operator escape hatch as every
     # other job using the scale set.
     runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || 'arc-runners' }}
-    timeout-minutes: 25
+    # 79 m sits 3 m above the 76 m floor (25 + 32 + 19, witnessed in
+    # charts/iterion/kind_wait_test.go): a 25 m budget for the preamble
+    # (checkout, Go setup, image build, kind up, image load, chart deps),
+    # sized on arc-runners, where it measured 5.9-20.3 m over 90 runs of
+    # 3-4 Nov 2026 — 15 m for its steps (worst 14.8 m) and the 10 m Setup
+    # Go's cache restore stalls before its own segment timeout gives up (5 of
+    # those runs); the ubuntu-latest fallback measured 3.7-5.4 m (38 runs).
+    # Then the 32 m helm cap the install derives from the deadline its own
+    # render gives the server Deployment (values-dev's 1800 s, read by
+    # scripts/chart-kind-wait.sh); and the steps after the install, which a
+    # slow install that succeeds still runs, each capped by its own
+    # timeout-minutes (19 m together). The install and those steps end on a
+    # message — helm's timeout or a step's own. The preamble, the job's
+    # setup and its post steps carry no timeout-minutes of their own: a slow run
+    # ends on a message rather than the runner kill's silence only while
+    # they fit the budget and the 3 m above the floor.
+    timeout-minutes: 79
     env:
       KIND_CLUSTER: iterion-e2e
       IMG: iterion-e2e:ci
@@ -903,6 +919,20 @@ jobs:
       - name: Set up Helm
         uses: Azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
 
+      # The wait helper reads the install's own render through yq
+      # (scripts/chart-kind-wait.sh). Pinned by version and digest
+      # (mikefarah/yq, the implementation its expressions are written for),
+      # not taken from the runner image's inventory, at the version the root
+      # devbox locks — every yq download of the workflows alike
+      # (TestChartKindWaitToolchainPinsYq reds on a drift).
+      - name: Install yq (pinned)
+        run: |
+          set -eu
+          curl -fsSL -o /tmp/yq https://github.com/mikefarah/yq/releases/download/v4.53.3/yq_linux_amd64
+          echo "fa52a4e758c63d38299163fbdd1edfb4c4963247918bf9c1c5d31d84789eded4  /tmp/yq" | sha256sum -c -
+          sudo install -m 0755 /tmp/yq /usr/local/bin/yq
+          yq --version
+
       - name: Build chart dependencies
         # The sub-charts declared in Chart.yaml are not vendored in git
         # (charts/iterion/charts/ is gitignored). Mirror what `task chart:kind`
@@ -912,26 +942,36 @@ jobs:
       - name: Helm install (values-dev.yaml)
         # CI-specific overrides on top of values-dev.yaml: the image built
         # above, metrics on, auth off. The dev stores (devStack.*) run on
-        # emptyDirs: no PVC binding to wait for. --timeout 10m covers the
-        # image pulls of a cold kind node.
+        # emptyDirs: no PVC binding to wait for. One argument list feeds the
+        # wait helper and the install: the client wait derives from the
+        # deadline this install's own render gives the server Deployment
+        # (scripts/chart-kind-wait.sh runs `helm template` on the same
+        # arguments), so a slow-registry day exhausts the deadline's budget
+        # instead of a fixed cap while the workload is still Progressing.
         run: |
           set -euo pipefail
+          install=(
+            "${RELEASE}" ./charts/iterion
+            --namespace "${NS}"
+            --values ./charts/iterion/values-dev.yaml
+            --set "image.repository=$(echo ${IMG} | cut -d: -f1)"
+            --set "image.tag=$(echo ${IMG} | cut -d: -f2)"
+            --set "image.pullPolicy=Never"
+            --set "metrics.enabled=true"
+            --set "config.disableAuth=true"
+          )
+          KIND_WAIT=$(sh scripts/chart-kind-wait.sh "${install[@]}")
           kubectl create namespace "${NS}"
-          helm install "${RELEASE}" ./charts/iterion \
-            --namespace "${NS}" \
-            --values ./charts/iterion/values-dev.yaml \
-            --set "image.repository=$(echo ${IMG} | cut -d: -f1)" \
-            --set "image.tag=$(echo ${IMG} | cut -d: -f2)" \
-            --set "image.pullPolicy=Never" \
-            --set "metrics.enabled=true" \
-            --set "config.disableAuth=true" \
-            --wait --timeout 10m
+          helm install "${install[@]}" --wait --timeout "${KIND_WAIT}"
 
       - name: Wait for /readyz on server
         # `iterion.fullname` renders as `<release>-iterion` for the
         # server (no `-server` suffix); the runner template appends
         # `-runner`. Mismatched names here would silently hang for the
         # full --timeout before erroring.
+        # Each step after the install carries its own cap (the job cap's
+        # floor sums them): here the two 180 s waits.
+        timeout-minutes: 7
         run: |
           set -euo pipefail
           kubectl -n "${NS}" wait --for=condition=Available --timeout=180s \
@@ -940,6 +980,7 @@ jobs:
             deployment/${RELEASE}-iterion-runner
 
       - name: Port-forward server
+        timeout-minutes: 2 # 30 probes a second apart
         run: |
           kubectl -n "${NS}" port-forward svc/${RELEASE}-iterion 4891:4891 &
           # Give port-forward a moment to come up before curl-ing.
@@ -967,6 +1008,7 @@ jobs:
         # The previous source mixed YAML idioms with the DSL and 400'd
         # at parse time on `:8` — see commit history for the parse
         # error trace from the cloud-e2e diagnostics.
+        timeout-minutes: 3 # the 90 s poll and its requests
         run: |
           set -euo pipefail
           SOURCE=$'schema result:\n  stdout: string\n\ntool t1:\n  command: "echo hello cloud"\n  output: result\n\nworkflow ci_smoke:\n  entry: t1\n  t1 -> done\n'
@@ -994,6 +1036,7 @@ jobs:
         # Confirms N1 wiring (post-fix from cloud_ready_review.md): the
         # registered counters are actually incremented by the live
         # cloudpublisher / runner code paths, not just declared.
+        timeout-minutes: 2 # a 3 s settle and two scrapes
         run: |
           set -euo pipefail
           kubectl -n "${NS}" port-forward svc/${RELEASE}-iterion 9090:9090 &
@@ -1006,6 +1049,7 @@ jobs:
 
       - name: Dump diagnostics on failure
         if: failure()
+        timeout-minutes: 5 # pods, events, descriptions and logs
         run: |
           kubectl -n "${NS}" get pods -o wide
           # Events sorted by timestamp surface image-pull, probe, and
@@ -1072,7 +1116,7 @@ jobs:
     # merge-queue note at the top of this file.
     if: github.event_name != 'merge_group'
     # Catches values typing drift cheaply (~30s) so a broken values.yaml
-    # surfaces before the 25-minute cloud-e2e kind cluster bootstrap. The
+    # surfaces before the cloud-e2e kind cluster bootstrap. The
     # --strict pass on values-prod.yaml additionally rejects unknown
     # keys, the most common foot-gun on a Helm chart upgrade.
     runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || 'arc-runners' }}
@@ -1123,6 +1167,18 @@ jobs:
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version-file: go.mod
+      # The kind-wait witnesses run scripts/chart-kind-wait.sh, which reads
+      # the render through yq; without it on PATH they would SKIP, and the
+      # chart gate requires its tools here (REQUIRE=1 below). Pinned by
+      # version and digest (mikefarah/yq), at the version the root devbox
+      # locks (TestChartKindWaitToolchainPinsYq reds on a drift).
+      - name: Install yq (pinned)
+        run: |
+          set -eu
+          curl -fsSL -o /tmp/yq https://github.com/mikefarah/yq/releases/download/v4.53.3/yq_linux_amd64
+          echo "fa52a4e758c63d38299163fbdd1edfb4c4963247918bf9c1c5d31d84789eded4  /tmp/yq" | sha256sum -c -
+          sudo install -m 0755 /tmp/yq /usr/local/bin/yq
+          yq --version
       - name: chart render tests (dead selectors, backup and alert guards)
         # The Go half of `task chart:check`: renders the chart (dev, prod,
         # pools) and confronts every anti-affinity / spread / PDB selector with

@@ -448,19 +448,52 @@ func providerLabel(p string) string {
 
 // servingProvider names the provider of the route a chain element ran: the
 // effective hint the build resolved (RouteProviderHint's GLM→zai minting
-// included), and on claw — which routes on the model spec and leaves the
-// hint empty — the provider the spec pins (zai for `anthropic/glm-*`).
+// included), and on claw — which routes on the model spec — the provider
+// the spec pins (zai for `anthropic/glm-*`).
+//
+// On claw the prefix answers OVER the hint: the registry reads the hint at
+// exactly one switch (forcing Anthropic-direct for models Anthropic serves)
+// and never lets it name a different slot than the spec's own — the
+// credential crossing forwards no hint-named slot either — so a hint whose
+// value differs from the prefix describes a spend claw never makes. The
+// hint answers only for a spec that names no prefix (which claw refuses at
+// Execute, so the word is inert there).
+//
+// codex answers openai, hint or none: the CLI reads no hint and serves one
+// provider — the run's openai key, else its codex forfait
+// (delegate.codexCredEnvForCLI) — so a hint-less codex route still names
+// the provider its spend books on, and a hint naming another describes a
+// spend codex never makes.
+//
+// The word leaves FOLDED on every backend (lower-case, trimmed): the
+// credential plan's keys and every join compare the folded form — the
+// walk's hint() and the chain parse fold the same way — so a route whose
+// `provider:` text is not lower-case (an authored route, a ${VAR}
+// expansion) must not stamp a word the plan can never match.
+//
 // "" when the route deferred to the wire's default precedence: what served
 // there is a fact of the credential the process held, which the session
 // fingerprint reports on the backends that have one.
 func servingProvider(backendName string, task *delegate.Task) string {
-	if task.ProviderHint != "" {
-		return task.ProviderHint
-	}
-	if backendName == delegate.BackendClaw {
+	switch backendName {
+	case delegate.BackendClaw:
 		if p := clawPinnedProvider(task.Model); p.Valid() {
 			return string(p)
 		}
+	case delegate.BackendCodex:
+		return string(secrets.ProviderOpenAI)
+	}
+	return strings.ToLower(strings.TrimSpace(task.ProviderHint))
+}
+
+// clawSpecProvider is the provider word for a HINT-LESS claw generation —
+// the human node's LLM half, the review companion, a subagent loop: the
+// spec's own pin, GLM folded (clawPinnedProvider). It is servingProvider's
+// answer for a task that names no hint, so the step events those loops
+// emit carry the same word a node's own loop stamps.
+func clawSpecProvider(spec string) string {
+	if p := clawPinnedProvider(spec); p.Valid() {
+		return string(p)
 	}
 	return ""
 }
@@ -689,18 +722,53 @@ type chainSpend struct {
 	// unreported counts the failed routes' calls whose usage the provider
 	// did not report: their tokens and cost above are a lower bound.
 	unreported int
+	// slices itemises the spend above per abandoned attempt that spent,
+	// under the labels of the element that spent it — what the delegate
+	// event carrying the folded figure hands its consumers
+	// (DelegateInfo.FoldedSpend), so each slice books on its own route and
+	// credential rather than on the route that ended the chain.
+	slices []SpendSlice
 }
 
-// spendLabel names the element a skip's folded spend is booked on.
+// spendLabel names the element an attempt's spend is booked on — its
+// provider included (servingProvider at the attempt), the word the runner's
+// credential-plan join reads before any re-derivation from the model.
 type spendLabel struct {
-	backend, model, effective, fingerprint string
+	backend, model, provider, effective, fingerprint string
 }
 
-func (s *chainSpend) add(r delegate.Result) {
+// attemptLabel labels one executed element's attempt: the backend its
+// result names (else the one it was dispatched to), the route's model spec
+// and provider word as they stood when it ran — a later build rewrites the
+// shared task — and the model and session label its result reports.
+func attemptLabel(backendName string, task *delegate.Task, r delegate.Result) spendLabel {
+	return spendLabel{
+		backend:     firstNonEmpty(r.BackendName, backendName),
+		model:       task.Model,
+		provider:    servingProvider(backendName, task),
+		effective:   r.EffectiveModel,
+		fingerprint: r.SessionFingerprint,
+	}
+}
+
+// add folds one abandoned element's result, on naming the element that
+// spent it (attemptLabel).
+func (s *chainSpend) add(r delegate.Result, on spendLabel) {
 	s.tokens += r.Tokens
 	s.duration += r.Duration
 	s.costUSD += r.CostUSD
 	s.unreported += r.UnreportedCalls
+	if r.Tokens > 0 || r.CostUSD > 0 {
+		s.slices = append(s.slices, SpendSlice{
+			BackendName:    on.backend,
+			RouteModel:     on.model,
+			EffectiveModel: on.effective,
+			Provider:       on.provider,
+			Fingerprint:    on.fingerprint,
+			Tokens:         r.Tokens,
+			CostUSD:        r.CostUSD,
+		})
+	}
 }
 
 // applyTo folds the accumulated spend into the winning result.
@@ -991,12 +1059,28 @@ type chainOutcome struct {
 	// last that executed) — the route its folded spend is booked on; on a
 	// failure, the last one that executed. Empty when no element ran.
 	Route string
-	// Provider is the provider of the element that SERVED (the resolved
-	// hint, or the spec prefix's pin on claw): the selected route is
-	// provider AND model bound together (#2772), so the outcome carries
-	// both. Empty when the serving route deferred to the wire's default
-	// precedence — never a guess at what the process happened to hold.
+	// Provider is the provider of the element Route names (the resolved
+	// hint, or the spec prefix's pin on claw, servingProvider): the element
+	// that SERVED, and on a skip or a failure the one its spend is booked
+	// on. The selected route is provider AND model bound together (#2772),
+	// so the outcome carries both — and the runner's credential-plan join
+	// reads this word before any re-derivation from the model (#2288),
+	// which names nothing for a bare id and the prefix's provider over a
+	// hint-steered route. Empty when that route deferred to the wire's
+	// default precedence — never a guess at what the process happened to
+	// hold. Only a served outcome stamps it on the node's output
+	// (stampServingRoute).
 	Provider string
+	// FoldedSpend itemises the spend Result folds in from the elements the
+	// walk abandoned (chainSpend.slices), each slice under the labels of the
+	// element that spent it; the rest of Result's figure is the spend of the
+	// element Provider, BackendName and Route name. The delegate event
+	// carries it (DelegateInfo.FoldedSpend): a primary that burned one
+	// provider's credential before the chain fell through to another is
+	// booked on its own route and plan row, not on the serving one's — and
+	// a claw slice whose loop the runner already priced step by step is
+	// told apart from the slices it never saw.
+	FoldedSpend []SpendSlice
 	// SessionDegraded reports that the element that served did so only
 	// after its best-effort session (`session: inherit_if_available` /
 	// `persist`) failed to load and was dropped — the node completed
@@ -1060,11 +1144,14 @@ func (e *ClawExecutor) dispatchChain(
 		// the operator's `skip` policy into `wait`.
 		lastCat = delegate.FallbackUnclassified
 		// lastBackend is the backend of the most recently EXECUTED route,
-		// and lastModel its model spec: a failure is labelled with them,
-		// and so is a skip when no route spent. An empty BackendName would
-		// fall back to the node's REQUESTED backend at the event layer.
-		lastBackend string
-		lastModel   string
+		// lastModel its model spec and lastProvider its provider
+		// (servingProvider, read when it ran — a later build rewrites the
+		// shared task): a failure is labelled with them, and so is a skip
+		// when no route spent. An empty BackendName would fall back to the
+		// node's REQUESTED backend at the event layer.
+		lastBackend  string
+		lastModel    string
+		lastProvider string
 		// pendingMarker is the cross-harness marker of the fall-through
 		// that routed here — computed beside the note that emitted the
 		// event, consumed by this element's build, which attaches the
@@ -1075,18 +1162,20 @@ func (e *ClawExecutor) dispatchChain(
 		// spend the runner books — is labelled with it, never with a later
 		// route that spent nothing: the runner's cost accumulator keys its
 		// claw double-count exclusion on the backend, the credential slot
-		// on the route and the session fingerprint. (Known limit: a chain
-		// that burned on two routes books the whole on the last spender.)
+		// on the route and the session fingerprint. Each spending attempt's
+		// own slice rides the outcome itemised (FoldedSpend), so the label
+		// names where the figure ends, not where all of it ran.
 		spender spendLabel
 	)
-	noteSpend := func(backendName, model string, r delegate.Result) {
+	// itemised hands an outcome about to leave the slices of the spend it
+	// folds — every return that carries `spent` passes through it.
+	itemised := func(out chainOutcome) chainOutcome {
+		out.FoldedSpend = spent.slices
+		return out
+	}
+	noteSpend := func(backendName string, task *delegate.Task, r delegate.Result) {
 		if r.Tokens > 0 || r.CostUSD > 0 {
-			spender = spendLabel{
-				backend:     firstNonEmpty(r.BackendName, backendName),
-				model:       model,
-				effective:   r.EffectiveModel,
-				fingerprint: r.SessionFingerprint,
-			}
+			spender = attemptLabel(backendName, task, r)
 		}
 	}
 	effModel := func(el chainElement) string {
@@ -1111,20 +1200,21 @@ func (e *ClawExecutor) dispatchChain(
 		// routes' spend; the caller synthesizes the zero-value output.
 		if el.Skip {
 			res := spent.applyTo(delegate.Result{Output: map[string]any{}})
-			on := spendLabel{backend: lastBackend, model: lastModel}
+			on := spendLabel{backend: lastBackend, model: lastModel, provider: lastProvider}
 			if spender.backend != "" {
 				on = spender
 				res.BackendName, res.EffectiveModel, res.SessionFingerprint = on.backend, on.effective, on.fingerprint
 			}
-			return chainOutcome{
+			return itemised(chainOutcome{
 				Result: res,
 				// The route that spent — see spender and lastBackend.
 				BackendName: on.backend,
 				Route:       on.model,
+				Provider:    on.provider,
 				ServedBy:    stepLabel(el),
 				FellThrough: true,
 				Skipped:     true,
-			}, nil
+			}), nil
 		}
 
 		// No reset of pendingMarker is needed: its writers always pair
@@ -1220,7 +1310,7 @@ func (e *ClawExecutor) dispatchChain(
 				return anyElementAccepts(rest, delegate.ClassifyFallback(failure, isDelegateRetryable(failure)))
 			}
 		}
-		lastBackend, lastModel = backendName, task.Model
+		lastBackend, lastModel, lastProvider = backendName, task.Model, servingProvider(backendName, task)
 		sessionBeforeAttempt := e.snapshotTaskSession(ctx, task)
 		// Set when THIS dispatch carried a session forward, so the carry
 		// can be undone: only a session we introduced is ours to drop.
@@ -1297,8 +1387,8 @@ func (e *ClawExecutor) dispatchChain(
 			case delegate.FallbackUnclassified:
 				e.noteSessionDegrade(ctx, nodeID, backendName, task.SessionID, cat, err)
 				sessionDegraded = true
-				noteSpend(backendName, task.Model, result)
-				spent.add(result)
+				noteSpend(backendName, task, result)
+				spent.add(result, attemptLabel(backendName, task, result))
 				// Dropping task.SessionID is not, by itself, enough to
 				// make the retry fresh. The claw store's effective
 				// (runID, session_slot-or-nodeID) entry is
@@ -1326,7 +1416,7 @@ func (e *ClawExecutor) dispatchChain(
 			}
 		}
 		if err == nil {
-			return chainOutcome{
+			return itemised(chainOutcome{
 				Result:          spent.applyTo(result),
 				BackendName:     backendName,
 				Backend:         backend,
@@ -1336,10 +1426,10 @@ func (e *ClawExecutor) dispatchChain(
 				ServedBy:        stepLabel(el),
 				FellThrough:     i > 0,
 				SessionDegraded: sessionDegraded,
-			}, nil
+			}), nil
 		}
 		causes = append(causes, err)
-		noteSpend(backendName, task.Model, result)
+		noteSpend(backendName, task, result)
 
 		if ctx.Err() != nil {
 			// Cancellation is terminal for the node, but it does not
@@ -1350,7 +1440,7 @@ func (e *ClawExecutor) dispatchChain(
 			// donor's ledger — and the optional-session degrade made that
 			// reachable on a SINGLE-route node, where `spent` used to be
 			// provably empty at this point.
-			return chainOutcome{Result: spent.applyTo(result), BackendName: backendName, Route: task.Model}, err
+			return itemised(chainOutcome{Result: spent.applyTo(result), BackendName: backendName, Route: task.Model, Provider: servingProvider(backendName, task)}), err
 		}
 		cat := delegate.ClassifyFallback(err, isDelegateRetryable(err))
 		lastCat = cat
@@ -1404,7 +1494,7 @@ func (e *ClawExecutor) dispatchChain(
 		// final result would count it twice — and on a single-route
 		// node that is a plain doubling of what the delegate_error
 		// event reports.
-		spent.add(result)
+		spent.add(result, attemptLabel(backendName, task, result))
 		// Discard only the failed attempt, not the named durable slot. The
 		// claw session format contains provider-neutral message blocks; the
 		// rollback also strips any legacy provider-specific thinking blocks
@@ -1433,9 +1523,9 @@ func (e *ClawExecutor) dispatchChain(
 	// lending donor's ledger.
 	result = spent.applyTo(result)
 	if len(chain) > 1 {
-		return chainOutcome{Result: result, BackendName: lastBackend, Route: lastModel}, &ErrChainExhausted{Chain: chainLabel(chain), Errs: causes}
+		return itemised(chainOutcome{Result: result, BackendName: lastBackend, Route: lastModel, Provider: lastProvider}), &ErrChainExhausted{Chain: chainLabel(chain), Errs: causes}
 	}
-	return chainOutcome{Result: result, BackendName: lastBackend, Route: lastModel}, err
+	return itemised(chainOutcome{Result: result, BackendName: lastBackend, Route: lastModel, Provider: lastProvider}), err
 }
 
 // fallbackRouteEnds resolves the two ends of a route change for the event

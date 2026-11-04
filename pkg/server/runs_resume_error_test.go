@@ -25,8 +25,8 @@ type queueOutageTestPublisher struct {
 	err error
 }
 
-func (p *queueOutageTestPublisher) SubmitLaunch(context.Context, string, runview.LaunchSpec, *ir.Workflow, *runview.CompiledSource) (int, error) {
-	return 0, p.err
+func (p *queueOutageTestPublisher) SubmitLaunch(context.Context, string, runview.LaunchSpec, *ir.Workflow, *runview.CompiledSource) (runview.LaunchSubmission, error) {
+	return runview.LaunchSubmission{}, p.err
 }
 
 func (*queueOutageTestPublisher) CancelRun(context.Context, string) error { return nil }

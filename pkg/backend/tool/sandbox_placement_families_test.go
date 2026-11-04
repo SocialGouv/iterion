@@ -35,6 +35,10 @@ func TestTheFullRegistryWiresEveryFamilyTheHostHasTo(t *testing.T) {
 		// whose workspace never moves after registration (#2870).
 		"RegisterClawCommand": "wrapper over RegisterClawCommandWithProvider",
 		"RegisterClawSkill":   "wrapper over RegisterClawSkillWithProvider",
+		// The walk-only form, kept for hosts with no allowlist to pin
+		// (the sandboxed runner registers the pinned variant directly):
+		// RegisterClawAll calls the full form with the host's provider.
+		"RegisterClawSkillWithProvider": "wrapper over RegisterClawSkillWithSources, the pinned-allowlist variant RegisterClawAll calls (#1719)",
 
 		// Registers ONE tool the caller supplies. There is no fixed name for
 		// a placement table to classify, and the classification of whatever

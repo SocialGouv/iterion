@@ -1,6 +1,7 @@
 package server
 
 import (
+	"net/http"
 	"reflect"
 	"strings"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/pat"
 	"github.com/SocialGouv/iterion/pkg/platformcfg"
 	"github.com/SocialGouv/iterion/pkg/runview"
+	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/trigger"
 )
 
@@ -168,6 +170,13 @@ func routeSchemas() map[string]routeOp {
 		"GET /api/orgs/{id}":  {response: orgView{}},
 		"GET /api/teams/{id}": {response: teamSummaryView{}},
 
+		// The operator's legal pages (ADR-160) — public reads.
+		"GET /api/legal/{slug}": {
+			response:    legalDocumentView{},
+			description: "Public. One of the operator's legal documents (mentions-legales, confidentialite, cgu, accessibilite) as markdown, with the contact address and the accessibility declaration. 404 for a slug that names no document or one this deployment did not configure; /api/server/info lists the configured ones.",
+			errors:      map[int]string{404: "no such legal document, or not published on this deployment", 429: "Rate limit exceeded; Retry-After says when"},
+		},
+
 		// Platform LLM credentials (super-admin) — the DB-backed env fallback.
 		"GET /api/admin/llm/api-keys": {
 			response: struct {
@@ -237,6 +246,53 @@ func routeSchemas() map[string]routeOp {
 		// documented-but-unverifiable is the exact shape this family exists
 		// to end.
 		"GET /api/teams/{id}/bot-sources": {response: botSourceListView{}},
+
+		// Bot bindings (ADR-018, ADR-147) — the operator's per-bot policy
+		// record. A binding of kind `secret` (or kind ABSENT — the pre-kinds
+		// wire) makes a stored team-scoped secret resolvable under the name
+		// the workflow declares in `secrets:`; a binding of kind `context`
+		// pins a git source (context.git_url + context.ref — pin a tag or
+		// sha — + context.path, read credential by reference in
+		// context.secret_id) whose document materialises as a run attachment
+		// of every run of the bot under the name the workflow declares in
+		// `attachments:`. The record carries the launch-time readout
+		// (degraded_reason / degraded_at): a context that cannot be
+		// materialised is skipped loudly, never silently.
+		"GET /api/teams/{id}/bots/{bot_id}/bindings": {response: struct {
+			Bindings []secrets.BotSecretBinding `json:"bindings"`
+		}{}},
+		"POST /api/teams/{id}/bots/{bot_id}/bindings": {
+			request:        botBindingReq{},
+			response:       secrets.BotSecretBinding{},
+			responseStatus: http.StatusCreated,
+			description:    "Create a bot binding. One workflow name binds once per bot (secret or context alike). A context binding is refused 501 on a deployment that cannot materialise it.",
+			errors: map[int]string{
+				http.StatusBadRequest:     "the payload contradicts its kind (Validate), or secret_id / context.secret_id is not a team-scoped secret of this org",
+				http.StatusForbidden:      "admin or owner required",
+				http.StatusConflict:       "a binding for this workflow name already exists on this bot",
+				http.StatusNotImplemented: "context_binding_not_materialised — a context binding on a deployment with no pinned-source fetcher wired would be an operator-visible no-op",
+			},
+		},
+		"PATCH /api/teams/{id}/bots/{bot_id}/bindings/{binding_id}": {
+			request:         botBindingPatchReq{},
+			requestOptional: true, // every field is a partial update
+			response:        secrets.BotSecretBinding{},
+			description:     "Patch a binding's mutable payload (the name it resolves under, the secret or pinned source, the egress hosts). The merged record is re-validated against its kind. The kind itself is immutable — a kind in the request is ignored — and the degraded readout is the engine's: a PATCH neither sets nor clears it.",
+			errors: map[int]string{
+				http.StatusBadRequest: "the merged record contradicts its kind, or the referenced credential is not bindable",
+				http.StatusForbidden:  "admin or owner required",
+				http.StatusNotFound:   "no binding with this id on this bot",
+				http.StatusConflict:   "the new name is already bound on this bot",
+			},
+		},
+		"DELETE /api/teams/{id}/bots/{bot_id}/bindings/{binding_id}": {
+			responseStatus: http.StatusNoContent,
+			description:    "Delete a binding. 204 on success.",
+			errors: map[int]string{
+				http.StatusForbidden: "admin or owner required",
+				http.StatusNotFound:  "no binding with this id on this bot",
+			},
+		},
 
 		// The per-file writes of a bundle, and the if-match token they read.
 		// The PUT takes it in its body; the DELETE carries no body of its own

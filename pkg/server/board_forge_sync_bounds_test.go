@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -137,7 +138,7 @@ func seedForgejoSyncIntegration(t *testing.T, baseURL string, board native.Board
 		ID: "c-fj", TenantID: "t1", Provider: forge.ProviderForgejo, Kind: forge.KindPAT,
 		Status: forge.StatusActive, ForgeBaseURL: baseURL, Purpose: forge.PurposeRuntime, CreatedAt: time.Now(),
 	}
-	sealed, err := forge.SealPAT(s.sealer, conn.ID, "fj-token")
+	sealed, err := connection.SealForgePAT(s.sealer, conn.ID, "fj-token")
 	if err != nil {
 		t.Fatalf("seal: %v", err)
 	}

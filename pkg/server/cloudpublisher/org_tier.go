@@ -79,6 +79,7 @@ func (p *Publisher) fillFromOrg(
 	withheld *audienceWithholdings,
 	bundle *secrets.RunBundle,
 	apiKeyFPs map[secrets.Provider]string,
+	wants credSlotWants,
 	skips *skipTracker,
 	skippedAPIKeys skippedAPIKeys,
 	skippedForfaits skippedForfaits,
@@ -131,7 +132,7 @@ func (p *Publisher) fillFromOrg(
 			}
 			// The adaptive-routing whitelist: an unlisted slot is invisible
 			// to this tier.
-			if !policy.sealableSlot(slotOfKind(string(rec.Kind))) {
+			if !policy.sealableHeldSlot(slotOfKind(string(rec.Kind))) {
 				continue
 			}
 			payload, err := secrets.OpenOAuthPayload(p.sealer, rec.UserID, rec.Kind, rec.SealedPayload)
@@ -185,7 +186,7 @@ func (p *Publisher) fillFromOrg(
 			if len(missing) > 0 {
 				octx := store.WithTenant(ctx, orgScope)
 				resolved, err := secrets.Resolve(octx, p.apiKeys, orgScope, "", audienceBotID, missing, nil, p.sealer,
-					p.apiKeyUsable(octx, meter, runID, botID, skips), withheld.note)
+					policy.heldSlotUsable(p.apiKeyUsable(octx, meter, runID, botID, skips)), withheld.note)
 				if err != nil {
 					p.logger.Warn("cloudpublisher: org api-key resolve for org %s: %v", orgID, err)
 				} else {
@@ -203,7 +204,7 @@ func (p *Publisher) fillFromOrg(
 							continue
 						}
 						// The adaptive-routing whitelist.
-						if !policy.sealableSlot(slotOfProvider(prov)) {
+						if !policy.sealableHeldSlot(slotOfProvider(prov)) {
 							continue
 						}
 						// Decided again: a key filled earlier in this loop
@@ -215,7 +216,7 @@ func (p *Publisher) fillFromOrg(
 						}
 						pinnedOnly := fillAPIKeySlotAs(bundle, taken, prov, string(r.Plaintext), r.BaseURL, r.Fingerprint, outcome)
 						bundle.OrgSourced[string(prov)] = true
-						apiKeyFPs[prov] = r.Fingerprint
+						noteSealedAPIKey(apiKeyFPs, wants, prov, r.Fingerprint, r.MaxConcurrentRuns, r.Name)
 						usedIDs = append(usedIDs, r.KeyID)
 						if pinnedOnly {
 							p.logger.Info("cloudpublisher: org credential used run=%s org=%s slot=%s fp=%s (pinned route only — %s)", runID, orgID, prov, r.Fingerprint, routeOnlyWhy(familyTaken, policy))
@@ -250,6 +251,7 @@ func (p *Publisher) fillFromOrg(
 							skippedAPIKeys.remember(prov, skippedAPIKey{
 								plaintext: string(r.Plaintext), baseURL: r.BaseURL, keyID: r.KeyID,
 								fingerprint: r.Fingerprint, org: true,
+								maxConcurrentRuns: r.MaxConcurrentRuns, name: r.Name,
 							})
 						}
 					}

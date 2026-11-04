@@ -92,8 +92,8 @@ func (s *Server) handleForgePullRequest(w http.ResponseWriter, r *http.Request) 
 		httpError(w, http.StatusForbidden, "run token is scoped to repo %q, not %q", grant.Repo, repo)
 		return
 	}
-	conn, err := s.forgeConnections.Get(r.Context(), grant.ConnectionID)
-	if err != nil || conn.TenantID != grant.TeamID {
+	conn, err := s.forgeConnections.Get(r.Context(), grant.TeamID, grant.ConnectionID)
+	if err != nil {
 		httpError(w, http.StatusNotFound, "connection not found")
 		return
 	}

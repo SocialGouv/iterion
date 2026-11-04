@@ -300,7 +300,7 @@ func TestForgeIntegration_OAuthProjectBot_ConnectEnableDisable(t *testing.T) {
 	if string(raw) != pbMinted {
 		t.Errorf("pinned token = %q, want the minted token, never the grant", raw)
 	}
-	stored, _ := s.forgeConnections.Get(ctx, conn.ID)
+	stored, _ := s.forgeConnections.Get(ctx, conn.TenantID, conn.ID)
 	if stored.ManagedSecretID != "" {
 		t.Errorf("the connection grew a managed secret of its own: %q", stored.ManagedSecretID)
 	}

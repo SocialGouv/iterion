@@ -106,7 +106,7 @@ func (r *Runner) reapOrphanSandboxResources(ctx context.Context) {
 	if r.cfg.NATS == nil {
 		return // no lease authority — never reap without one
 	}
-	_, namespace, err := k8ssandbox.Detect()
+	kubectl, namespace, err := k8ssandbox.Detect()
 	if err != nil {
 		return // not an in-cluster runner — nothing to reap
 	}
@@ -114,7 +114,7 @@ func (r *Runner) reapOrphanSandboxResources(ctx context.Context) {
 	// across tenants, so drop the tenant filter (the KV lease check is
 	// tenant-agnostic already).
 	scanCtx := store.WithoutTenantFilter(ctx)
-	reaped, err := k8ssandbox.ReapOrphanResources(scanCtx, namespace, func(runID string) bool {
+	reaped, err := kubectl.ReapOrphanResources(scanCtx, namespace, func(runID string) bool {
 		return r.sandboxResourceReapable(scanCtx, runID)
 	})
 	if err != nil {

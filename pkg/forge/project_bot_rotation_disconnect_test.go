@@ -17,7 +17,7 @@ func TestRotationDisconnectRevokesUnrecordedToken(t *testing.T) {
 	}}
 	n, e := o.RotateDueProjectBots(ctx, 0)
 	t.Logf("rotation n=%d err=%v", n, e)
-	_, ce := o.Connections.Get(ctx, conn.ID)
+	_, ce := o.Connections.Get(ctx, conn.TenantID, conn.ID)
 	tomb, te := o.Integrations.GetProvision(ctx, ri.ID)
 	if te != nil {
 		t.Fatal(te)

@@ -74,6 +74,11 @@ type relayedLLMStep struct {
 	UsageUnreported  bool              `json:"usage_unreported,omitempty"`
 	Thinking         string            `json:"thinking,omitempty"`
 	Iteration        int               `json:"iteration"`
+	// Provider is the slot word the loop stamped (LLMStepInfo.Provider).
+	// An older container predating the field leaves it absent, which
+	// decodes to "" — the host falls back to its own derivation, the same
+	// skew tolerance as every capability an older sandbox image lacks.
+	Provider string `json:"provider,omitempty"`
 }
 
 // relayedToolCall is the wire form of ToolCallEntry.
@@ -302,6 +307,7 @@ func SandboxRelayHooks(write func(delegate.Envelope) error, report func(error)) 
 				UsageUnreported:  step.UsageUnreported,
 				Thinking:         relayClampText(step.Thinking),
 				Iteration:        step.Iteration,
+				Provider:         step.Provider,
 			})
 		},
 		OnToolStarted: func(_ string, info LLMToolStartedInfo) {
@@ -454,6 +460,7 @@ func ApplyRelayedEvent(h EventHooks, nodeID, eventType string, payload map[strin
 				UsageUnreported:  s.UsageUnreported,
 				Thinking:         s.Thinking,
 				Iteration:        s.Iteration,
+				Provider:         s.Provider,
 			})
 		}
 		return true, nil

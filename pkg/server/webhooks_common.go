@@ -457,7 +457,7 @@ func (s *Server) webhookForgeConnection(ctx context.Context, cfg webhooks.Config
 	if connID == "" || connID == cfg.ProvisionedBy {
 		return forge.Connection{}, false
 	}
-	conn, err := s.forgeConnections.Get(store.WithTenant(ctx, cfg.TenantID), connID)
+	conn, err := s.forgeConnections.Get(store.WithTenant(ctx, cfg.TenantID), cfg.TenantID, connID)
 	if err != nil {
 		if s.logger != nil {
 			s.logger.Debug("webhooks: forge connection %s for webhook %s: %v", connID, cfg.ID, err)

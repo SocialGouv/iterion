@@ -136,24 +136,31 @@ func TestSetWaitDelay_ReplacesTheCmdsBoundAndReportsWhatItApplied(t *testing.T) 
 }
 
 // The knob end to end, on a real process, in the shape every call site has:
-// a child that exits 0 at once while a descendant keeps writing to the pipes
-// it inherited. The site's own bound abandons the copy and loses the tail;
-// the operator's override keeps it. This is what #2469 is about — a bound
-// with no escape hatch silently truncating what a container last said.
+// a child that exits 0 at once while a descendant it left holds the pipe it
+// inherited and writes to it late. The site's own bound abandons the copy and
+// loses the tail; the operator's override keeps it. This is what #2469 is
+// about — a bound with no escape hatch silently truncating what a container
+// last said.
+//
+// The descendant writes only once the test lets it go ([leftoverHolder]), so
+// the default arm's verdict is the bound's alone, whatever the machine's load.
 //
 // Mutation seen red: make SetWaitDelay ignore the environment (return def) —
-// the override subtest loses the holder's last line exactly like the default
-// one.
+// the override arm's Wait answers the cut while the descendant still holds.
 func TestTheOverrideKeepsTheTailADescendantWritesLate(t *testing.T) {
-	// The holder outlives the child by this much. Comfortably over the
-	// site default below, so the default truly cuts; short enough that the
-	// override's subtest is seconds, not minutes.
-	const late = 900 * time.Millisecond
 	const siteDefault = 150 * time.Millisecond
-	// Written by the DESCENDANT after the child is gone: finding it proves
-	// the drain outlived the child, not that the child was slow.
+	// How long the override arm keeps the descendant from writing: well past
+	// the site default, so a resolver that dropped the override has cut the
+	// copy by then. It decides nothing in a correct run — under the
+	// operator's hour Wait cannot answer before the descendant lets go — and
+	// only sets how surely the mutation above is caught.
+	const late = 6 * siteDefault
+	// A ceiling, not an expectation: a wait still unanswered a hundred bounds
+	// in is a bound that never fired.
+	const ceiling = 100 * siteDefault
+	// Written by the DESCENDANT once the test lets it go, after the child is
+	// gone: finding it proves the drain outlived the child.
 	const tail = "the-last-line-of-the-drain"
-	script := fmt.Sprintf("( sleep %.1f; printf '%%s\\n' %q >&2 ) &\nexit 0", late.Seconds(), tail)
 
 	for _, tc := range []struct {
 		name     string
@@ -165,32 +172,44 @@ func TestTheOverrideKeepsTheTailADescendantWritesLate(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv(WaitDelayEnv, tc.override)
+			h := newLeftoverHolder(t)
+			cmd := exec.Command("sh", "-c", h.fork(fmt.Sprintf("printf '%%s\\n' %q >&2", tail))+"exit 0")
+			h.handTo(cmd)
 			var stderr bytes.Buffer
-			cmd := exec.Command("sh", "-c", script)
 			cmd.Stderr = &stderr
-			applied := SetWaitDelay(cmd, siteDefault)
-			start := time.Now()
-			err := cmd.Run()
-			elapsed := time.Since(start)
+			SetWaitDelay(cmd, siteDefault)
+			// The bound the messages below name is the one exec runs, read
+			// from the Cmd, and the operator's is tc.override: each failure
+			// line says which is which.
+			ran := cmd.WaitDelay
+			if err := cmd.Start(); err != nil {
+				t.Fatalf("start: %v", err)
+			}
 
-			switch {
-			case tc.wantTail:
-				if err != nil {
-					t.Fatalf("the crossing failed under a %s bound: %v", applied, err)
+			if !tc.wantTail {
+				if err := waitWithin(t, cmd, ceiling); !DrainCutShort(err) {
+					t.Fatalf("a %s bound on a drain the descendant holds did not cut it: err = %v", ran, err)
 				}
-				if elapsed < late {
-					t.Fatalf("Wait returned after %s, before the descendant's write at %s — the bound was not the one applied", elapsed, late)
+			} else {
+				done := make(chan error, 1)
+				go func() { done <- cmd.Wait() }()
+				select {
+				case err := <-done:
+					t.Fatalf("Wait answered %v while the descendant still held the pipe — the bound that ran was %s, not the operator's %s", err, ran, tc.override)
+				case <-time.After(late):
 				}
-			default:
-				if !DrainCutShort(err) {
-					t.Fatalf("a %s bound on a drain held for %s did not cut it: err = %v (%s)", applied, late, err, elapsed)
-				}
-				if elapsed >= late {
-					t.Fatalf("Wait returned after %s — it waited for the descendant instead of abandoning the drain at %s", elapsed, applied)
+				h.letGo(t)
+				select {
+				case err := <-done:
+					if err != nil {
+						t.Fatalf("the crossing failed under a %s bound: %v", ran, err)
+					}
+				case <-time.After(ceiling):
+					t.Fatalf("Wait did not return within %s of the descendant letting go of the pipe", ceiling)
 				}
 			}
 			if got := strings.Contains(stderr.String(), tail); got != tc.wantTail {
-				t.Errorf("tail %q present = %v, want %v (bound %s, stderr %q)", tail, got, tc.wantTail, applied, stderr.String())
+				t.Errorf("tail %q present = %v, want %v (bound that ran %s, stderr %q)", tail, got, tc.wantTail, ran, stderr.String())
 			}
 		})
 	}
@@ -200,24 +219,30 @@ func TestTheOverrideKeepsTheTailADescendantWritesLate(t *testing.T) {
 // exit status: os/exec reports ErrWaitDelay ONLY for a command that otherwise
 // succeeded, so a failing command holding its pipes comes back as the
 // ExitError and nothing swallows it. Asserted against the real producer, not
-// a hand-made sentinel.
+// a hand-made sentinel; a descendant holds each command's pipe until the test
+// lets it go ([leftoverHolder]), so the bound expires on both whatever the
+// machine's load, and only the exit status tells them apart.
 //
 // Mutation seen red: make DrainCutShort answer true for any non-nil error —
 // the failing child's exit 3 reads as an abandoned drain.
 func TestDrainCutShort_IsTheCutAloneAndNeverAFailure(t *testing.T) {
 	t.Setenv(WaitDelayEnv, "")
-	holder := "( sleep 0.9; printf 'x\\n' >&2 ) &\n"
-
-	var ok, bad bytes.Buffer
-	exited0 := exec.Command("sh", "-c", holder+"exit 0")
-	exited0.Stderr = &ok
-	SetWaitDelay(exited0, 150*time.Millisecond)
-	cut := exited0.Run()
-
-	exited3 := exec.Command("sh", "-c", holder+"exit 3")
-	exited3.Stderr = &bad
-	SetWaitDelay(exited3, 150*time.Millisecond)
-	failed := exited3.Run()
+	const bound = 150 * time.Millisecond
+	run := func(status int) error {
+		t.Helper()
+		h := newLeftoverHolder(t)
+		cmd := exec.Command("sh", "-c", h.fork()+fmt.Sprintf("exit %d", status))
+		h.handTo(cmd)
+		var stderr bytes.Buffer
+		cmd.Stderr = &stderr
+		SetWaitDelay(cmd, bound)
+		if err := cmd.Start(); err != nil {
+			t.Fatalf("start: %v", err)
+		}
+		return waitWithin(t, cmd, 100*bound)
+	}
+	cut := run(0)
+	failed := run(3)
 
 	if !DrainCutShort(cut) {
 		t.Errorf("a child that exited 0 with its pipes held: err = %v, want the drain-cut sentinel", cut)

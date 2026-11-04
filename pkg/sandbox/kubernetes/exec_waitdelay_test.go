@@ -17,7 +17,7 @@ import (
 
 // stalledKubectl replaces the shell instead of spawning descendants. A shell
 // trap cannot reap children after CommandContext kills the shell with SIGKILL.
-func stalledKubectl(t *testing.T, seconds int) string {
+func stalledKubectl(t *testing.T, seconds int) Kubectl {
 	t.Helper()
 	isolateExecEnvironment(t)
 	dir := t.TempDir()
@@ -26,7 +26,7 @@ func stalledKubectl(t *testing.T, seconds int) string {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	return fake
+	return Kubectl(fake)
 }
 
 // TestKubectlWaitDelayBoundsAnUnresponsiveProcess exercises both production
@@ -49,7 +49,7 @@ func TestKubectlWaitDelayBoundsAnUnresponsiveProcess(t *testing.T) {
 				}
 				cmd = r.Command(ctx, []string{"tar", "-czf", "-", "."}, sandbox.ExecOpts{})
 			} else {
-				cmd = kubectlCmdContext(ctx, "get", "nodes")
+				cmd = fake.cmdContext(ctx, "get", "nodes")
 			}
 			// Exercise WaitDelay's escalation when graceful cancellation cannot
 			// stop the process, without creating an unowned pipe-holding child.

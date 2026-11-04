@@ -11,23 +11,24 @@ import (
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
-// Credential-slot occupancy.
+// Model-idle marker.
 //
-// The per-key concurrency ceiling (secrets.ApiKey.MaxConcurrentRuns)
-// counts alive runs stamped with the key's fingerprint. The stamp is the
-// right protection while a delegate is spending the key, and pure waste
-// while the run executes tool-only work: an agent node that finished
-// cleanly and then sat in a sixty-minute verify gate held one of a key's
-// two slots the whole time, starving every launch pinned to that key. So
-// the runner marks the run idle (store.Run.LLMIdleSince) the moment its
+// The runner marks the run idle (store.Run.LLMIdleSince) the moment its
 // last model-calling node finishes, and un-marks it the moment one starts
-// again; the ceiling counts only un-marked runs.
+// again, so a run executing tool-only work — an agent node that finished
+// cleanly and then sat in a sixty-minute verify gate — reads as such on the
+// run views. The marker does NOT release the run's per-key concurrency slot
+// (secrets.ApiKey.MaxConcurrentRuns, store.SpendsCredential): a slot lent
+// out here would have no path back when the next model node starts —
+// nothing in this process can wait for the ledger at a node start — and a
+// cap that released it would admit one run past the cap on every wake.
 //
 // Explicit toggles, not a lease: a pod that dies mid-node leaves a run the
 // orphan sweeper flips to failed_resumable, and a parked run holds no slot
 // through the status filter already — so nothing needs a heartbeat. The
-// marker is conservative by default: a run counts from claim until it
-// PROVES idle, and every re-stamp (a resumed attempt) starts it over.
+// marker is conservative by default: a run reads as spending from claim
+// until it PROVES idle, and every re-stamp (a resumed attempt) starts it
+// over.
 
 // credSlotTracker turns node start/finish events into idle transitions.
 // Concurrent branches may start and finish model nodes at once, so it
@@ -72,8 +73,8 @@ func (t *credSlotTracker) observe(evt store.Event) {
 }
 
 // credSlotObserver builds the tracker for one attempt, or nil when the run
-// holds no sealed credentials (nothing is stamped, so nothing to release)
-// or the store cannot be written.
+// holds no sealed credentials (nothing is stamped, so nothing to mark) or
+// the store cannot be written.
 func (r *Runner) credSlotObserver(ctx context.Context, msg *queue.RunMessage, wf *ir.Workflow, logger *iterlog.Logger) *credSlotTracker {
 	if r.cfg.Store == nil || msg == nil || msg.SecretsRef == "" || wf == nil {
 		return nil
@@ -88,14 +89,15 @@ func (r *Runner) credSlotObserver(ctx context.Context, msg *queue.RunMessage, wf
 		set: func(idleSince *time.Time) {
 			// Detached from the engine's context: the finish of the last
 			// model node may coincide with the run's own end, and the
-			// marker is exactly what the NEXT launch's ceiling reads.
+			// marker is what the run's views read.
 			sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), usageCapStoreTimeout)
 			defer cancel()
 			sctx = store.WithIdentity(sctx, msg.TenantID, msg.OwnerID)
 			if err := r.cfg.Store.SetRunLLMIdle(sctx, msg.RunID, idleSince); err != nil && logger != nil {
-				// Best effort: a lost marker leaves the ceiling over-
-				// protective (today's behaviour), never under-protective.
-				logger.Warn("runner: run %s: credential-slot idle marker: %v", msg.RunID, err)
+				// Best effort: a lost marker leaves the run reading as
+				// spending on its views; the cap reads the status, not
+				// the marker.
+				logger.Warn("runner: run %s: model-idle marker: %v", msg.RunID, err)
 			}
 		},
 	}

@@ -87,13 +87,31 @@ write CAS is what actually blocks an over-budget write.
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
-| `GET` | `/api/memory/usage` | member | `{used_bytes, quota_bytes}` for one space |
-| `GET` | `/api/memory/docs` | member | List documents (optional `?dir=`) |
-| `GET` | `/api/memory/doc` | member | Read (`?path=`) |
+| `GET` | `/api/memory/usage` | authenticated (no role) | `{used_bytes, quota_bytes}` for one space |
+| `GET` | `/api/memory/docs` | authenticated (no role) | List documents (optional `?dir=`) |
+| `GET` | `/api/memory/doc` | authenticated (no role) | Read (`?path=`) |
 | `PUT` | `/api/memory/doc` | member (super-admin for `visibility=global`) | Write |
 | `DELETE` | `/api/memory/doc` | member (super-admin for global) | Delete |
-| `GET` | `/api/memory/export` | member | Tarball export of the space |
+| `GET` | `/api/memory/export` | authenticated (no role) | Tarball export of the space |
 | `POST` | `/api/memory/import` | member (super-admin for global; optional `?strategy=`) | Tarball import |
+
+A MUTATION takes the member rung of the caller's active team, at the mount
+every route of the family passes through (`memoryWriteAuth`, the memory
+instance of `mutatingRungAuth`): a viewer and a rank-0 `config_editor` read
+the team's spaces and are refused `403 member_role_required` on a write, a
+delete and an import. A document in a memory space is INSTRUCTION — the
+engine reads it back into every agent run that opens the space, under a
+machine principal the rung exempts — so the authorization is owed where the
+document is written, exactly as it is on a board's Ready column
+([pkg/server/memory_routes.go](../pkg/server/memory_routes.go)). Local
+single-tenant mode has no identity store, hence no role to read, and is
+untouched.
+
+Every visibility takes it, `visibility=user` included: that axis keys on the
+authenticated caller (`?user=` cannot move it), so a refused caller's
+document would be instruction for a run of their own — which the same rung
+gates at launch. The reads take no role on purpose: a viewer and a
+`config_editor` keep `usage`, `docs`, `doc` and the whole-space `export`.
 
 A mutation of `visibility=global` is checked ONCE, by
 `knowledge.AuthorizeSpaceWrite`, at the chokepoint every writer passes: the

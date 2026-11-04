@@ -44,8 +44,9 @@ const watchInputSchema = `{
 // mcp__iterion_watch__*), filtered by the granted capabilities. Subscribing
 // adds the issue to this run's WatchedIssueIDs set; the server-side watch
 // coordinator (MVP3b) then delivers a queued message to the run whenever the
-// issue changes state on the native board. Per-node access is gated downstream
-// by the workflow's checkNodeToolAccess, same as the board tools.
+// issue changes state on the native board. cfg.Capabilities is the surface
+// the REGISTRY carries; a node is held to its own watch grant downstream, per
+// tool, by the workflow's checkNodeToolAccess, same as the board tools.
 func RegisterClawWatchTools(reg *Registry, cfg *WatchConfig) error {
 	if cfg == nil || cfg.Store == nil || cfg.RunID == "" {
 		return nil

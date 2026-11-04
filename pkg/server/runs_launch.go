@@ -25,6 +25,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/routing"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/runview"
+	"github.com/SocialGouv/iterion/pkg/server/cloudpublisher"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -55,6 +56,14 @@ const runNotResumableErrorCode = "run_not_resumable"
 // travel: the resume needs accept_scratch_loss — force never gives it — and,
 // when also_needs_force is set, force too for a change it names.
 const scratchNotPortableErrorCode = "scratch_not_portable"
+
+// credentialAtCapacityErrorCode tells a client that the resume was refused
+// because a key the run sealed is full of other runs
+// (cloudpublisher.ErrCredentialAtCapacity): nothing was published, the run
+// was put back as it was, and the same request succeeds once a slot frees.
+// Every operator surface that resumes a run answers it
+// (writeCredentialAtCapacityError, and the WS answer's error code).
+const credentialAtCapacityErrorCode = "credential_at_capacity"
 
 // --- Request / response shapes ---
 
@@ -638,9 +647,10 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		id, _ := auth.FromContext(r.Context())
-		conn, err := s.forgeConnections.Get(r.Context(), req.ConnectionID)
-		if err != nil || conn.TenantID != id.TeamID {
-			// Cross-team ids 404 (non-enumeration), like every forge route.
+		conn, err := s.forgeConnections.Get(r.Context(), id.TeamID, req.ConnectionID)
+		if err != nil {
+			// Cross-team ids 404 (non-enumeration), like every forge route —
+			// since #2760 the tenant is the store's filter, not a check here.
 			s.httpErrorFor(w, r, http.StatusNotFound, "connection not found")
 			span.SetStatus(codes.Error, "connection not found")
 			return
@@ -925,13 +935,19 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	span.SetAttributes(attribute.String("iterion.run_id", res.RunID))
-	// A deferred launch (over the local concurrency cap) reports the queued
-	// status + position so the studio doesn't claim "running" for a
-	// pipeline still waiting for a slot. QueuePosition is 0 for the normal
-	// immediate-start path (and always 0 in cloud mode, which uses the
-	// NATS queue, not this local gate).
+	// The status the launch path persisted the run in wins when it reports
+	// one: the cloud publisher's queued, or the failed_resumable of a launch
+	// it PARKED before publishing (a sealed credential at its hard
+	// concurrency cap) — a CLI, a webhook or the studio must not be told the
+	// run runs while it waits for a slot. The local path reports none: its
+	// run starts in-process (running), or waits in the local pipeline-
+	// concurrency queue (queued + position, so the studio doesn't claim
+	// "running" for a pipeline still waiting for a slot).
 	status := store.RunStatusRunning
-	if res.QueuePosition > 0 {
+	switch {
+	case res.Status != "":
+		status = res.Status
+	case res.QueuePosition > 0:
 		status = store.RunStatusQueued
 	}
 	w.WriteHeader(http.StatusAccepted)
@@ -1191,6 +1207,9 @@ func (s *Server) writeResumeError(w http.ResponseWriter, r *http.Request, err er
 	if s.writeNoLLMCredentialError(w, r, "resume", err) {
 		return
 	}
+	if s.writeCredentialAtCapacityError(w, r, err) {
+		return
+	}
 	status, code := http.StatusBadRequest, ""
 	var rt *runtime.RuntimeError
 	switch {
@@ -1211,6 +1230,27 @@ func (s *Server) writeResumeError(w http.ResponseWriter, r *http.Request, err er
 	}
 	runtime.RemedyOf(err).Record(body)
 	s.writeJSONError(w, r, status, body)
+}
+
+// writeCredentialAtCapacityError answers a resume the cloud publisher
+// refused because a key the run sealed is full of other runs
+// (cloudpublisher.ErrCredentialAtCapacity): 429 with
+// credentialAtCapacityErrorCode — the resume was refused before publishing
+// and the run put back as it was, a parked run keeping its armed retry,
+// which the sweeper asks again; any other is the caller's to resume once a
+// slot frees. The answer the launch gate gives a concurrency cap, with the
+// same remedy (wait, or free a slot). Shared by every HTTP surface that
+// resumes a run — resume, answer-human, an async answer's auto-resume, a
+// host event — so none answers the refusal as a server failure.
+func (s *Server) writeCredentialAtCapacityError(w http.ResponseWriter, r *http.Request, err error) bool {
+	if !errors.Is(err, cloudpublisher.ErrCredentialAtCapacity) {
+		return false
+	}
+	s.writeJSONError(w, r, http.StatusTooManyRequests, map[string]any{
+		"error":      fmt.Sprintf("resume: %v", err),
+		"error_code": credentialAtCapacityErrorCode,
+	})
+	return true
 }
 
 // writeNoLLMCredentialError answers a launch or resume the cloud publisher

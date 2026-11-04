@@ -15,6 +15,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/auth/oidc"
 	"github.com/SocialGouv/iterion/pkg/brand"
+	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/deeplink"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	forgegithub "github.com/SocialGouv/iterion/pkg/forge/github"
@@ -160,7 +161,7 @@ func (s *Server) connectForgePAT(w http.ResponseWriter, r *http.Request, teamID,
 		return
 	}
 	connID := uuid.NewString()
-	sealed, err := forge.SealPAT(s.sealer, connID, token)
+	sealed, err := connection.SealForgePAT(s.sealer, connID, token)
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "seal token: %v", err)
 		return
@@ -361,8 +362,8 @@ func (s *Server) handleReauthorizeForgeConnection(w http.ResponseWriter, r *http
 // hooks hang off the first account's grant, so an identity swap would leave
 // the connection holding a credential that cannot administer them.
 func (s *Server) completeForgeReauthorize(w http.ResponseWriter, r *http.Request, pending forgePending, record forge.ForgeOAuthApp, tok forge.RefreshedToken, ident forge.Identity) {
-	conn, err := s.forgeConnections.Get(r.Context(), pending.ConnectionID)
-	if err != nil || conn.TenantID != pending.TenantID || conn.Kind != forge.KindOAuthApp {
+	conn, err := s.forgeConnections.Get(r.Context(), pending.TenantID, pending.ConnectionID)
+	if err != nil || conn.Kind != forge.KindOAuthApp {
 		httpError(w, http.StatusBadRequest, "the connection this re-authorisation was started for no longer exists — connect anew")
 		return
 	}
@@ -372,7 +373,7 @@ func (s *Server) completeForgeReauthorize(w http.ResponseWriter, r *http.Request
 			ident.Login, conn.AccountLogin)
 		return
 	}
-	sealed, err := forge.SealOAuthTokens(s.sealer, conn.ID, tok.AccessToken, tok.RefreshToken, tok.ExpiresAt)
+	sealed, err := connection.SealForgeOAuthTokens(s.sealer, conn.ID, tok.AccessToken, tok.RefreshToken, tok.ExpiresAt)
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "seal token: %v", err)
 		return
@@ -511,7 +512,7 @@ func (s *Server) handleForgeOAuthCallback(w http.ResponseWriter, r *http.Request
 		return
 	}
 	connID := uuid.NewString()
-	sealed, err := forge.SealOAuthTokens(s.sealer, connID, tok.AccessToken, tok.RefreshToken, tok.ExpiresAt)
+	sealed, err := connection.SealForgeOAuthTokens(s.sealer, connID, tok.AccessToken, tok.RefreshToken, tok.ExpiresAt)
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "seal token: %v", err)
 		return
@@ -701,7 +702,7 @@ func (s *Server) handleForgeGitHubAppCallback(w http.ResponseWriter, r *http.Req
 	connID := uuid.NewString()
 	// Seal the installation token like an OAuth access token (no refresh
 	// token — the refresh worker re-mints from the App private key).
-	sealed, err := forge.SealOAuthTokens(s.sealer, connID, tok, "", exp)
+	sealed, err := connection.SealForgeOAuthTokens(s.sealer, connID, tok, "", exp)
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "seal token: %v", err)
 		return

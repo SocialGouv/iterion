@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
 	"github.com/SocialGouv/iterion/pkg/webhooks/prforge"
@@ -40,7 +41,7 @@ func TestIterionBotIdentity_OneSetForBothGuards(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			s := newWebhookTestServer(t)
-			conns := forge.NewMemoryConnectionStore()
+			conns := connection.NewMemoryForgeStore()
 			tc.conn.ID = "c1"
 			tc.conn.TenantID = "t1"
 			tc.conn.Provider = forge.Provider(tc.provider)
@@ -59,6 +60,34 @@ func TestIterionBotIdentity_OneSetForBothGuards(t *testing.T) {
 	}
 }
 
+// The provisioning marker is just a string an operator (or a store row) can
+// write: a webhook config of one tenant naming ANOTHER tenant's connection
+// id must not resolve — before #2760 it did, because the read keyed on the
+// id alone. The tenant is the store's filter now; this pins the call site
+// passing the CONFIG's tenant, not a value that happens to match.
+func TestWebhookForgeConnection_NeverResolvesAcrossTenants(t *testing.T) {
+	s := newWebhookTestServer(t)
+	conns := connection.NewMemoryForgeStore()
+	if err := conns.Create(context.Background(), forge.Connection{
+		ID: "c1", TenantID: "t1", Provider: forge.ProviderGitHub, Kind: forge.KindOAuthApp,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	s.forgeConnections = conns
+
+	// Nominal: the webhook's own tenant resolves its connection.
+	own := webhooks.Config{ID: "w1", TenantID: "t1", Provider: webhooks.ProviderGitHub, ProvisionedBy: "forge:c1"}
+	if _, ok := s.webhookForgeConnection(context.Background(), own); !ok {
+		t.Fatal("the same-tenant connection must resolve")
+	}
+	// A config of tenant t2 pointing at t1's connection id: not found, and
+	// nothing about t1's credential is handed to t2's delivery path.
+	foreign := webhooks.Config{ID: "w2", TenantID: "t2", Provider: webhooks.ProviderGitHub, ProvisionedBy: "forge:c1"}
+	if conn, ok := s.webhookForgeConnection(context.Background(), foreign); ok {
+		t.Fatalf("a cross-tenant provisioning marker resolved %s's connection", conn.TenantID)
+	}
+}
+
 // A webhook whose forge token is a minted per-repository bot names that bot
 // (Config.BotLogin), and BOTH halves of the identity read it in place of the
 // connection's account: the person whose OAuth grant bootstrapped the
@@ -66,7 +95,7 @@ func TestIterionBotIdentity_OneSetForBothGuards(t *testing.T) {
 // recognised.
 func TestIterionBotIdentity_ProjectBotLoginReplacesTheConnectionAccount(t *testing.T) {
 	s := newWebhookTestServer(t)
-	conns := forge.NewMemoryConnectionStore()
+	conns := connection.NewMemoryForgeStore()
 	conn := forge.Connection{ID: "c1", TenantID: "t1", Provider: forge.ProviderGitLab, Kind: forge.KindOAuthApp,
 		AccountLogin: "alice", BotIdentity: forge.BotIdentityProjectToken}
 	if err := conns.Create(context.Background(), conn); err != nil {
@@ -98,7 +127,7 @@ func TestIterionBotIdentity_ProjectBotLoginReplacesTheConnectionAccount(t *testi
 // ordinary human gesture — it must never launch a bot run.
 func TestGitHubWebhook_HumanAccountConnectionNeverTreatedAsBot(t *testing.T) {
 	s := newWebhookTestServer(t)
-	conns := forge.NewMemoryConnectionStore()
+	conns := connection.NewMemoryForgeStore()
 	if err := conns.Create(context.Background(), forge.Connection{
 		ID: "c1", TenantID: "t1", Provider: "github", Kind: "oauth_app", AccountLogin: "alice-maintainer",
 	}); err != nil {

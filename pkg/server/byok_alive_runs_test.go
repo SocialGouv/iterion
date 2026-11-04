@@ -93,8 +93,8 @@ func TestListApiKeys_ReportsAliveRuns(t *testing.T) {
 	if !ok || facade.AliveRuns == nil {
 		t.Fatalf("facade key view = %+v, want alive_runs present", facade)
 	}
-	if *facade.AliveRuns != 2 || facade.MaxConcurrentRuns != 2 {
-		t.Fatalf("facade alive_runs = %d / %d, want 2 / 2 (spending + queued; the idle and parked runs hold no slot)", *facade.AliveRuns, facade.MaxConcurrentRuns)
+	if *facade.AliveRuns != 3 || facade.MaxConcurrentRuns != 2 {
+		t.Fatalf("facade alive_runs = %d / %d, want 3 / 2 (spending + queued + the model-idle run in its verify gate, which keeps its slot; only the parked run holds none)", *facade.AliveRuns, facade.MaxConcurrentRuns)
 	}
 	if legacy := byID["legacy"]; legacy.AliveRuns != nil {
 		t.Fatalf("a fingerprint-less row reported alive_runs=%d — there is nothing to count with", *legacy.AliveRuns)

@@ -349,6 +349,40 @@ func nodeUsesLLM(n Node) bool {
 	return false
 }
 
+// RendersPresetPrompt reports whether a run of the workflow builds at least
+// one model TASK — the system prompt a bundle preset's body is appended to
+// ("## Focus", delegate.Task.PresetFragment, applied by
+// pkg/backend/model's buildTask). It is the reader gate for a prompt-sink
+// text no node owns: with no task built, the text is rendered nowhere and
+// its references reach no sink.
+//
+// Narrower than UsesLLM on purpose, and exact rather than conservative: a
+// false answer here is silence on a dead text, a true one an ERROR at lint
+// (checkPresets), so each kind is counted by whether buildTask runs for it.
+// An agent and a judge build one; so does a tool node whose recovery
+// ladder hands the goal to an agent (the fourth rung synthesises one and
+// dispatches it as any agent). An `llm` router composes its own Task
+// without the fragment, a human node's `interaction: llm` and the
+// self-repair rung ask a client directly, a supervisor watches with a model
+// of its own, and a subbot's child engine selects no preset: none of them
+// reads the body.
+func (w *Workflow) RendersPresetPrompt() bool {
+	if w == nil {
+		return false
+	}
+	for _, n := range w.Nodes {
+		switch n.(type) {
+		case *AgentNode, *JudgeNode:
+			return true
+		case *ToolNode:
+			if ToolRecoveryAgentRung(n) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // interactionUsesLLM reports whether an interaction mode can answer with a
 // model rather than by parking for a human.
 func interactionUsesLLM(m InteractionMode) bool {

@@ -362,7 +362,7 @@ func staleHookID(t *testing.T, o *Orchestrator) {
 // delivery URL of the next provision.
 func pinWebhookBase(t *testing.T, o *Orchestrator, base string) {
 	t.Helper()
-	conn, err := o.Connections.Get(context.Background(), "conn-1")
+	conn, err := o.Connections.Get(context.Background(), "t1", "conn-1")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -36,8 +36,8 @@ type landingPublishStub struct {
 	err error
 }
 
-func (p *landingPublishStub) SubmitLaunch(context.Context, string, runview.LaunchSpec, *ir.Workflow, *runview.CompiledSource) (int, error) {
-	return 1, p.err
+func (p *landingPublishStub) SubmitLaunch(context.Context, string, runview.LaunchSpec, *ir.Workflow, *runview.CompiledSource) (runview.LaunchSubmission, error) {
+	return runview.LaunchSubmission{QueuePosition: 1}, p.err
 }
 func (p *landingPublishStub) CancelRun(context.Context, string) error { return nil }
 func (p *landingPublishStub) CancelRunWithReason(context.Context, string, store.RunEndReason) error {

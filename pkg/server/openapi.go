@@ -91,18 +91,24 @@ func (s *Server) buildOpenAPI() map[string]any {
 				if rs.description != "" {
 					op["description"] = rs.description
 				}
-				if rs.response != nil {
+				if rs.response != nil || rs.responseStatus != 0 {
 					status := rs.responseStatus
 					if status == 0 {
 						status = http.StatusOK
 					}
+					entry := map[string]any{
+						"description": http.StatusText(status),
+					}
+					// A nil response with a status is a bodyless success
+					// (204): the entry documents the status, and no content
+					// schema pretends a body exists.
+					if rs.response != nil {
+						entry["content"] = map[string]any{
+							"application/json": map[string]any{"schema": gen.schema(rs.response)},
+						}
+					}
 					op["responses"] = map[string]any{
-						strconv.Itoa(status): map[string]any{
-							"description": http.StatusText(status),
-							"content": map[string]any{
-								"application/json": map[string]any{"schema": gen.schema(rs.response)},
-							},
-						},
+						strconv.Itoa(status): entry,
 					}
 				}
 				if len(rs.errors) > 0 {

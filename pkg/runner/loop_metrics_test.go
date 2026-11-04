@@ -18,13 +18,13 @@ import (
 // source pin in loop_pool_test.go, which refuses an unlocked call at the
 // closure's site (rva r3 R2: a wrapper-only witness cannot see the site).
 func TestSupervisorUsageSink_IsRaceFreeAgainstTheEventStream(t *testing.T) {
-	m := newMetricsEmitter(nil, nil)
+	m := newMetricsEmitter(nil, nil, nil)
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
 		for i := 0; i < 200; i++ {
-			m.addRoute(delegate.BackendClaw, "anthropic/claude-opus-5-5", "supervisor:pacer", 0, 1, 1, 2)
+			m.addRoute(delegate.BackendClaw, "anthropic/claude-opus-5-5", "supervisor:pacer", 0, 1, 1, 0)
 		}
 	}()
 	go func() {
@@ -44,7 +44,7 @@ func TestSupervisorUsageSink_IsRaceFreeAgainstTheEventStream(t *testing.T) {
 // was assigned to a copy of specs[i] and never reached StartDeclared).
 func TestMeterSupervisorSpecs_TheSinkRidesTheSliceElement(t *testing.T) {
 	specs := []supervise.Spec{{Name: "pacer", Model: "openai_compatible/does-not-resolve"}}
-	m := newMetricsEmitter(nil, nil)
+	m := newMetricsEmitter(nil, nil, nil)
 	meterSupervisorSpecs(context.Background(), specs, m)
 	if specs[0].OnUsage == nil {
 		t.Fatal("meterSupervisorSpecs left OnUsage nil on the slice element — StartDeclared would receive a sink-less spec and every evaluation would spend off the ledger")
@@ -56,7 +56,11 @@ func TestMeterSupervisorSpecs_TheSinkRidesTheSliceElement(t *testing.T) {
 	if !ok {
 		t.Fatalf("the sink booked no supervisor:pacer route; ledger: %v", m.byRoute)
 	}
-	if got.inputTokens != 10 || got.outputTokens != 5 || got.aggregateTokens != 15 {
-		t.Errorf("the sink booked (%d, %d, %d); want (10, 5, 15)", got.inputTokens, got.outputTokens, got.aggregateTokens)
+	// The evaluation's observed split, the aggregate left at zero: the
+	// route's counters are disjoint (credusage.Spend fills one or the
+	// other), so the in+out sum filed beside the split would meter every
+	// token twice on the per-credential ledger.
+	if got.inputTokens != 10 || got.outputTokens != 5 || got.aggregateTokens != 0 {
+		t.Errorf("the sink booked (%d, %d, %d); want (10, 5, 0)", got.inputTokens, got.outputTokens, got.aggregateTokens)
 	}
 }

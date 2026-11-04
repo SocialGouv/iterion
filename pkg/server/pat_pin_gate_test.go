@@ -113,10 +113,21 @@ func (f pinGateFixture) teamGates(t *testing.T) map[string]func(auth.Identity, s
 			}
 			return ok
 		},
-		"canManageTeam":       func(id auth.Identity, team string) bool { return f.s.canManageTeam(f.ctx, id, team) },
-		"canEditConfigShares": func(id auth.Identity, team string) bool { return f.s.canEditConfigShares(f.ctx, id, team) },
-		"canEditBots":         func(id auth.Identity, team string) bool { return f.s.canEditBots(f.ctx, id, team) },
-		"orgAdminOfTeam":      func(id auth.Identity, team string) bool { return f.s.orgAdminOfTeam(f.ctx, id, team) },
+		"canManageTeam": func(id auth.Identity, team string) bool { return f.s.canManageTeam(f.ctx, id, team) },
+		"canManageTeamOrFail": func(id auth.Identity, team string) bool {
+			ok, err := f.s.canManageTeamOrFail(f.ctx, id, team)
+			if err != nil {
+				t.Fatalf("canManageTeamOrFail(%s): %v", team, err)
+			}
+			return ok
+		},
+		// The ladder's shared body, on both rungs its gates take: a caller
+		// can reach it directly, so it is measured as a gate of its own.
+		"teamRoleOrFail(viewer)": f.teamRoleGate(t, identity.RoleViewer),
+		"teamRoleOrFail(admin)":  f.teamRoleGate(t, identity.RoleAdmin),
+		"canEditConfigShares":    func(id auth.Identity, team string) bool { return f.s.canEditConfigShares(f.ctx, id, team) },
+		"canEditBots":            func(id auth.Identity, team string) bool { return f.s.canEditBots(f.ctx, id, team) },
+		"orgAdminOfTeam":         func(id auth.Identity, team string) bool { return f.s.orgAdminOfTeam(f.ctx, id, team) },
 		"orgAdminOfTeamOrFail": func(id auth.Identity, team string) bool {
 			ok, err := f.s.orgAdminOfTeamOrFail(f.ctx, id, team)
 			if err != nil {
@@ -136,6 +147,18 @@ func (f pinGateFixture) teamGates(t *testing.T) map[string]func(auth.Identity, s
 			}
 			return ok
 		},
+	}
+}
+
+// teamRoleGate measures teamRoleOrFail on one rung of the team ladder.
+func (f pinGateFixture) teamRoleGate(t *testing.T, rung identity.Role) func(auth.Identity, string) bool {
+	t.Helper()
+	return func(id auth.Identity, team string) bool {
+		ok, err := f.s.teamRoleOrFail(f.ctx, id, team, rung)
+		if err != nil {
+			t.Fatalf("teamRoleOrFail(%s, %s): %v", team, rung, err)
+		}
+		return ok
 	}
 }
 
@@ -235,9 +258,10 @@ func TestPATPin_SurvivesTheCredentialCarrier(t *testing.T) {
 
 // patPinGates enumerates every authorization gate of auth_authz.go — a method
 // of *Server taking exactly (context.Context, auth.Identity, string) where
-// the string is a teamID or an orgID — and names how it honours the
-// credential's pin: either it asks the predicate itself, or it delegates to a
-// gate in this same table.
+// the string is a teamID or an orgID, or that shape followed by the rung a
+// ladder gate measures (teamRoleOrFail's identity.Role) — and names how it
+// honours the credential's pin: either it asks the predicate itself, or it
+// delegates to a gate in this same table.
 //
 // The pin is a property of the CREDENTIAL, so a gate that never asks about it
 // is a gate a pinned token walks through, and the repo has paid four review
@@ -254,7 +278,9 @@ var patPinGates = map[string]string{
 	"canViewTeamOrFail":    "PinRefusesTeam",
 	"canEditConfigShares":  "PinRefusesTeam",
 	"canEditBots":          "canEditConfigShares",
-	"canManageTeam":        "PinRefusesTeam",
+	"canManageTeam":        "canManageTeamOrFail",
+	"canManageTeamOrFail":  "teamRoleOrFail",
+	"teamRoleOrFail":       "PinRefusesTeam",
 	"orgAdminOfTeam":       "orgAdminOfTeamOrFail",
 	"orgAdminOfTeamOrFail": "PinRefusesTeam",
 	"canViewOrg":           "PinRefusesOrg",
@@ -298,7 +324,8 @@ func TestEveryAuthzGateAnswersTheCredentialPin(t *testing.T) {
 
 // isAuthzGateSignature reports whether fn is a gate of the shape every
 // authz check in auth_authz.go takes: (context.Context, auth.Identity,
-// teamID|orgID string).
+// teamID|orgID string), optionally followed by the identity.Role rung a
+// ladder gate measures.
 func isAuthzGateSignature(fn *ast.FuncDecl) bool {
 	var params []*ast.Field
 	for _, p := range fn.Type.Params.List {
@@ -306,6 +333,9 @@ func isAuthzGateSignature(fn *ast.FuncDecl) bool {
 		for range max(len(p.Names), 1) {
 			params = append(params, p)
 		}
+	}
+	if len(params) == 4 && typeName(params[3].Type) == "identity.Role" {
+		params = params[:3]
 	}
 	if len(params) != 3 {
 		return false

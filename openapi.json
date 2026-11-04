@@ -1,6 +1,20 @@
 {
   "components": {
     "schemas": {
+      "Accessibility": {
+        "properties": {
+          "date": {
+            "type": "string"
+          },
+          "rate": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
       "AdmissionDecision": {
         "properties": {
           "checked_at": {
@@ -367,6 +381,66 @@
           }
         },
         "required": [
+          "updated_at"
+        ],
+        "type": "object"
+      },
+      "BotSecretBinding": {
+        "properties": {
+          "allowed_hosts": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "bot_id": {
+            "type": "string"
+          },
+          "context": {
+            "$ref": "#/components/schemas/ContextSource"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "created_by": {
+            "type": "string"
+          },
+          "degraded_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "degraded_reason": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "secret_id": {
+            "type": "string"
+          },
+          "secret_name_for_workflow": {
+            "type": "string"
+          },
+          "tenant_id": {
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "tenant_id",
+          "bot_id",
+          "secret_id",
+          "secret_name_for_workflow",
+          "created_by",
+          "created_at",
           "updated_at"
         ],
         "type": "object"
@@ -815,119 +889,6 @@
         ],
         "type": "object"
       },
-      "Connection": {
-        "properties": {
-          "access_token_expires_at": {
-            "format": "date-time",
-            "type": "string"
-          },
-          "account_id": {
-            "type": "string"
-          },
-          "account_kind": {
-            "type": "string"
-          },
-          "account_login": {
-            "type": "string"
-          },
-          "app_slug": {
-            "type": "string"
-          },
-          "avatar_applied_at": {
-            "format": "date-time",
-            "type": "string"
-          },
-          "avatar_error": {
-            "type": "string"
-          },
-          "bot_identity": {
-            "type": "string"
-          },
-          "created_at": {
-            "format": "date-time",
-            "type": "string"
-          },
-          "created_by": {
-            "type": "string"
-          },
-          "display_name": {
-            "type": "string"
-          },
-          "forge_base_url": {
-            "type": "string"
-          },
-          "granted_permissions": {
-            "additionalProperties": {
-              "type": "string"
-            },
-            "type": "object"
-          },
-          "id": {
-            "type": "string"
-          },
-          "installation_account": {
-            "type": "string"
-          },
-          "installation_id": {
-            "type": "integer"
-          },
-          "kind": {
-            "type": "string"
-          },
-          "last_refreshed_at": {
-            "format": "date-time",
-            "type": "string"
-          },
-          "namespace": {
-            "type": "string"
-          },
-          "oauth_app_id": {
-            "type": "string"
-          },
-          "provider": {
-            "type": "string"
-          },
-          "purpose": {
-            "type": "string"
-          },
-          "scopes": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
-          "security_read_enabled": {
-            "type": "boolean"
-          },
-          "status": {
-            "type": "string"
-          },
-          "status_reason": {
-            "type": "string"
-          },
-          "tenant_id": {
-            "type": "string"
-          },
-          "updated_at": {
-            "format": "date-time",
-            "type": "string"
-          },
-          "webhook_base_url": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "id",
-          "tenant_id",
-          "provider",
-          "kind",
-          "status",
-          "created_by",
-          "created_at",
-          "updated_at"
-        ],
-        "type": "object"
-      },
       "ContextRef": {
         "properties": {
           "id": {
@@ -949,6 +910,28 @@
         "required": [
           "id",
           "kind"
+        ],
+        "type": "object"
+      },
+      "ContextSource": {
+        "properties": {
+          "git_url": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "ref": {
+            "type": "string"
+          },
+          "secret_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "git_url",
+          "ref",
+          "path"
         ],
         "type": "object"
       },
@@ -1697,6 +1680,119 @@
         },
         "required": [
           "node_id"
+        ],
+        "type": "object"
+      },
+      "ForgeConnection": {
+        "properties": {
+          "access_token_expires_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "account_id": {
+            "type": "string"
+          },
+          "account_kind": {
+            "type": "string"
+          },
+          "account_login": {
+            "type": "string"
+          },
+          "app_slug": {
+            "type": "string"
+          },
+          "avatar_applied_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "avatar_error": {
+            "type": "string"
+          },
+          "bot_identity": {
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "created_by": {
+            "type": "string"
+          },
+          "display_name": {
+            "type": "string"
+          },
+          "forge_base_url": {
+            "type": "string"
+          },
+          "granted_permissions": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "id": {
+            "type": "string"
+          },
+          "installation_account": {
+            "type": "string"
+          },
+          "installation_id": {
+            "type": "integer"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "last_refreshed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "namespace": {
+            "type": "string"
+          },
+          "oauth_app_id": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "purpose": {
+            "type": "string"
+          },
+          "scopes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "security_read_enabled": {
+            "type": "boolean"
+          },
+          "status": {
+            "type": "string"
+          },
+          "status_reason": {
+            "type": "string"
+          },
+          "tenant_id": {
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "webhook_base_url": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "tenant_id",
+          "provider",
+          "kind",
+          "status",
+          "created_by",
+          "created_at",
+          "updated_at"
         ],
         "type": "object"
       },
@@ -4500,6 +4596,49 @@
         ],
         "type": "object"
       },
+      "botBindingPatchReq": {
+        "properties": {
+          "allowed_hosts": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "context": {
+            "$ref": "#/components/schemas/ContextSource"
+          },
+          "secret_id": {
+            "type": "string"
+          },
+          "secret_name_for_workflow": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "botBindingReq": {
+        "properties": {
+          "allowed_hosts": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "context": {
+            "$ref": "#/components/schemas/ContextSource"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "secret_id": {
+            "type": "string"
+          },
+          "secret_name_for_workflow": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
       "botRolesSettingsView": {
         "properties": {
           "effective": {
@@ -5142,7 +5281,7 @@
             "type": "string"
           },
           "connection": {
-            "$ref": "#/components/schemas/Connection"
+            "$ref": "#/components/schemas/ForgeConnection"
           }
         },
         "type": "object"
@@ -5186,7 +5325,7 @@
             "type": "string"
           },
           "connection": {
-            "$ref": "#/components/schemas/Connection"
+            "$ref": "#/components/schemas/ForgeConnection"
           },
           "install_url": {
             "type": "string"
@@ -5420,6 +5559,32 @@
           "integration_id",
           "bot_ids",
           "sync_issues_enabled"
+        ],
+        "type": "object"
+      },
+      "legalDocumentView": {
+        "properties": {
+          "accessibility": {
+            "$ref": "#/components/schemas/Accessibility"
+          },
+          "contact_email": {
+            "type": "string"
+          },
+          "markdown": {
+            "type": "string"
+          },
+          "slug": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "slug",
+          "title",
+          "markdown",
+          "accessibility"
         ],
         "type": "object"
       },
@@ -8925,6 +9090,44 @@
           "forge"
         ]
       }
+    },
+    "/api/legal/{slug}": {
+      "get": {
+        "description": "Public. One of the operator's legal documents (mentions-legales, confidentialite, cgu, accessibilite) as markdown, with the contact address and the accessibility declaration. 404 for a slug that names no document or one this deployment did not configure; /api/server/info lists the configured ones.",
+        "operationId": "getLegalBySlug",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/legalDocumentView"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "404": {
+            "description": "no such legal document, or not published on this deployment"
+          },
+          "429": {
+            "description": "Rate limit exceeded; Retry-After says when"
+          }
+        },
+        "summary": "GET /api/legal/{slug}",
+        "tags": [
+          "legal"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "slug",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
     },
     "/api/local/skills": {
       "get": {
@@ -13399,8 +13602,26 @@
       "get": {
         "operationId": "getTeamsByIdBotsByBotIdBindings",
         "responses": {
-          "default": {
-            "description": "Response"
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "bindings": {
+                      "items": {
+                        "$ref": "#/components/schemas/BotSecretBinding"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "bindings"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
           }
         },
         "summary": "GET /api/teams/{id}/bots/{bot_id}/bindings",
@@ -13427,10 +13648,40 @@
         }
       ],
       "post": {
+        "description": "Create a bot binding. One workflow name binds once per bot (secret or context alike). A context binding is refused 501 on a deployment that cannot materialise it.",
         "operationId": "postTeamsByIdBotsByBotIdBindings",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/botBindingReq"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
-          "default": {
-            "description": "Response"
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BotSecretBinding"
+                }
+              }
+            },
+            "description": "Created"
+          },
+          "400": {
+            "description": "the payload contradicts its kind (Validate), or secret_id / context.secret_id is not a team-scoped secret of this org"
+          },
+          "403": {
+            "description": "admin or owner required"
+          },
+          "409": {
+            "description": "a binding for this workflow name already exists on this bot"
+          },
+          "501": {
+            "description": "context_binding_not_materialised — a context binding on a deployment with no pinned-source fetcher wired would be an operator-visible no-op"
           }
         },
         "summary": "POST /api/teams/{id}/bots/{bot_id}/bindings",
@@ -13441,10 +13692,17 @@
     },
     "/api/teams/{id}/bots/{bot_id}/bindings/{binding_id}": {
       "delete": {
+        "description": "Delete a binding. 204 on success.",
         "operationId": "deleteTeamsByIdBotsByBotIdBindingsByBindingId",
         "responses": {
-          "default": {
-            "description": "Response"
+          "204": {
+            "description": "No Content"
+          },
+          "403": {
+            "description": "admin or owner required"
+          },
+          "404": {
+            "description": "no binding with this id on this bot"
           }
         },
         "summary": "DELETE /api/teams/{id}/bots/{bot_id}/bindings/{binding_id}",
@@ -13479,10 +13737,40 @@
         }
       ],
       "patch": {
+        "description": "Patch a binding's mutable payload (the name it resolves under, the secret or pinned source, the egress hosts). The merged record is re-validated against its kind. The kind itself is immutable — a kind in the request is ignored — and the degraded readout is the engine's: a PATCH neither sets nor clears it.",
         "operationId": "patchTeamsByIdBotsByBotIdBindingsByBindingId",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/botBindingPatchReq"
+              }
+            }
+          },
+          "required": false
+        },
         "responses": {
-          "default": {
-            "description": "Response"
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BotSecretBinding"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "description": "the merged record contradicts its kind, or the referenced credential is not bindable"
+          },
+          "403": {
+            "description": "admin or owner required"
+          },
+          "404": {
+            "description": "no binding with this id on this bot"
+          },
+          "409": {
+            "description": "the new name is already bound on this bot"
           }
         },
         "summary": "PATCH /api/teams/{id}/bots/{bot_id}/bindings/{binding_id}",
@@ -14017,7 +14305,7 @@
                   "properties": {
                     "connections": {
                       "items": {
-                        "$ref": "#/components/schemas/Connection"
+                        "$ref": "#/components/schemas/ForgeConnection"
                       },
                       "type": "array"
                     }

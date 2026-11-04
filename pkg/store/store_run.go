@@ -694,6 +694,7 @@ func (s *FilesystemRunStore) FlipToQueued(_ context.Context, id string, from Run
 	}}
 	transitionRunStatus(r, RunStatusQueued, "", RunOutcomeMeta{})
 	r.QueuedAt = &marker
+	r.CredAdmissionPending = true
 	if err := s.writeRun(r); err != nil {
 		return QueuedFlip{}, false, err
 	}
@@ -735,6 +736,7 @@ func (s *FilesystemRunStore) RevertQueuedFlip(_ context.Context, id string, flip
 	r.WorkflowSources = slices.Clone(prior.WorkflowSources)
 	r.WorkflowHash = prior.WorkflowHash
 	r.AwaitAnswersWaits = nil
+	r.CredAdmissionPending = false
 	r.UpdatedAt = time.Now().UTC()
 	if err := s.writeRun(r); err != nil {
 		return false, err
@@ -1358,23 +1360,15 @@ func (s *FilesystemRunStore) SetRunBudgetSnapshot(_ context.Context, runID strin
 	return s.writeRun(r)
 }
 
-// CountAliveRunsWithCredFingerprint counts queued/running, not-idle runs
-// stamped with fingerprint (see RunStore). Scan-and-filter like the other
-// fs-side reverse queries — local scale, no secondary index.
+// CountAliveRunsWithCredFingerprint counts queued/running runs stamped with
+// fingerprint, model-idle or not (see RunStore). Scan-and-filter like the
+// other fs-side reverse queries — local scale, no secondary index.
 func (s *FilesystemRunStore) CountAliveRunsWithCredFingerprint(ctx context.Context, fingerprint, excludeRunID string) (int, error) {
 	if fingerprint == "" {
 		return 0, nil
 	}
 	ids, err := s.filterRunsSorted(ctx, func(r *Run) bool {
-		if r.ID == excludeRunID || !r.Status.HoldsCredentialSlot() || r.LLMIdleSince != nil {
-			return false
-		}
-		for _, fp := range r.CredFingerprints {
-			if fp == fingerprint {
-				return true
-			}
-		}
-		return false
+		return r.ID != excludeRunID && r.SpendsCredential(fingerprint)
 	})
 	if err != nil {
 		return 0, err

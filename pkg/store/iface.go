@@ -122,16 +122,17 @@ type RunStore interface {
 	// a credential that is no longer the one it was refused.
 	//
 	// SetRunLLMIdle marks the run as executing no model-calling node
-	// (idleSince set) or as spending again (nil) — see Run.LLMIdleSince.
-	// SetRunCredStamp also clears the marker: a re-resolution is a fresh
-	// attempt, which counts until it proves idle.
+	// (idleSince set) or as spending again (nil) — see Run.LLMIdleSince: an
+	// observability marker, not a slot release. SetRunCredStamp also clears
+	// it: a re-resolution is a fresh attempt.
 	//
 	// CountAliveRunsWithCredFingerprint counts runs in the queued or
-	// running states stamped with fingerprint whose LLMIdleSince is nil,
-	// excluding excludeRunID (the run being resolved is already persisted
-	// and must not count itself toward its own ceiling). Deliberately NOT
-	// tenant-scoped: a platform key serves every tenant on one ceiling,
-	// and a tenant key's runs all live in one tenant anyway.
+	// running states stamped with fingerprint, model-idle or not
+	// (Run.SpendsCredential), excluding excludeRunID (the run being
+	// resolved is already persisted and must not count itself toward its
+	// own ceiling). Deliberately NOT tenant-scoped: a platform key serves
+	// every tenant on one ceiling, and a tenant key's runs all live in one
+	// tenant anyway.
 	SetRunCredStamp(ctx context.Context, runID string, stamp RunCredStamp) error
 	SetRunLLMIdle(ctx context.Context, runID string, idleSince *time.Time) error
 	CountAliveRunsWithCredFingerprint(ctx context.Context, fingerprint, excludeRunID string) (int, error)
@@ -498,7 +499,9 @@ type QueuedFlipper interface {
 	// FlipToQueued moves the run from `from` to queued, its attempt marker
 	// stamped at NextQueuedAt(at, the marker it replaces), and returns what
 	// the run was before, read in the same atomic operation. changed=false
-	// when the run is not `from`.
+	// when the run is not `from`. The same write sets
+	// Run.CredAdmissionPending: the resume's credential-slot admission is
+	// still to come.
 	FlipToQueued(ctx context.Context, id string, from RunStatus, at time.Time) (flip QueuedFlip, changed bool, err error)
 	// RevertQueuedFlip puts flip.Prior back — only while the run is still
 	// queued with flip.At as its marker: a run claimed, cancelled, or queued
@@ -507,7 +510,7 @@ type QueuedFlipper interface {
 	// must not read as superseded by a flip nothing published, and the run's
 	// episode and continuation are the prior state's, not a new outcome.
 	// runErr, when not empty, replaces the prior error: why the resume was
-	// refused.
+	// refused. The revert clears Run.CredAdmissionPending with the rest.
 	RevertQueuedFlip(ctx context.Context, id string, flip QueuedFlip, runErr string) (changed bool, err error)
 }
 

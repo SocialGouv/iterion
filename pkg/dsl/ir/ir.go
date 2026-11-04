@@ -1091,29 +1091,16 @@ func NodeArtifactRefsForEdges(w *Workflow, nodeID string, includeIncoming func(*
 		}
 		addArtifactRef(rc.Ref)
 	}
-	// These runtime-rendered fields deliberately sit outside collectAllRefs'
-	// compiler diagnostics today, but they consume the same artifact values
-	// and therefore belong in the producer's durable dependency contract.
+	// A human node's `review_url:` sits outside collectAllRefs' compiler
+	// diagnostics — C101 owns its unknown-output verdict — but it consumes
+	// the same artifact values and therefore belongs in the producer's
+	// durable dependency contract. An LLM node's `images:` needs no arm
+	// here: collectAllRefs walks it, so the loop above already carries its
+	// artifact dependencies.
 	addArtifactRefs := func(refs []*Ref) {
 		for _, ref := range refs {
 			addArtifactRef(ref)
 		}
-	}
-	addImageArtifactRefs := func(fields *LLMFields) {
-		if fields == nil {
-			return
-		}
-		for _, image := range fields.Images {
-			refs, err := ParseRefs(image)
-			if err == nil {
-				addArtifactRefs(refs)
-			}
-		}
-	}
-	if node, ok := w.Nodes[nodeID].(LLMNode); ok {
-		addImageArtifactRefs(node.GetLLMFields())
-	} else if node, ok := w.Nodes[nodeID].(*RouterNode); ok {
-		addImageArtifactRefs(&node.LLMFields)
 	}
 	switch node := w.Nodes[nodeID].(type) {
 	case *ToolNode:
@@ -1587,8 +1574,10 @@ type Preset struct {
 	// Description is a one-line summary surfaced in the studio Launch picker.
 	// File-based presets only.
 	Description string
-	// Prompt is the bias fragment appended to every LLM node's system prompt
-	// under a "## Focus" section at run time (see delegate.Task.PresetFragment).
+	// Prompt is the bias fragment appended to the system prompt of every
+	// model task the run builds, under a "## Focus" section at run time (see
+	// delegate.Task.PresetFragment; Workflow.RendersPresetPrompt says which
+	// node kinds build one).
 	// Supports `{{vars.X}}` template refs, resolved per node. File-based only.
 	Prompt string
 	// Skills lists bundle skill names this preset makes relevant (e.g.

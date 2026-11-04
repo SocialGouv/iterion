@@ -73,6 +73,13 @@ func (m *Multiplexer) Send(env Envelope) error {
 	return m.writer.Write(env)
 }
 
+// SetRedactor installs the run's pass on the envelope reader, so the raw
+// line a decode error quotes crosses it before the error's 256-byte cut
+// (iterion#2822). Call before Run; the read loop is single-goroutine.
+func (m *Multiplexer) SetRedactor(redact func(string) string) {
+	m.reader.SetRedactor(redact)
+}
+
 // Run drives the loop. Returns the terminal [IOResult] when a
 // [EnvelopeResult] is received, or [io.EOF] / a wire-format error
 // when the runner closed the channel without sending one. Honours

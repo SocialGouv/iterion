@@ -12,7 +12,11 @@
 //
 // Diagnostics use a dedicated C2xx code family, distinct from the DSL
 // compiler's C0xx/C1xx codes, so the two layers never collide and tooling
-// can group bundle-level findings by prefix.
+// can group bundle-level findings by prefix. The one exception is a check
+// that reports the compiler's OWN defect on a text the compiler never saw —
+// a bundle preset's prompt body, merged after compilation (checkPresets):
+// it borrows that defect's code, sentence and catalogue hint rather than
+// minting a second code an author would have to learn separately.
 package bundlelint
 
 import (
@@ -252,6 +256,20 @@ type Input struct {
 	// I/O-free: the caller scans the files (via skilllib.ScanFrontmatter) and
 	// passes the results in, mirroring how Frontmatter is supplied.
 	Skills []SkillDoc
+	// Presets carries the bundle's parsed presets/*.md for the prompt-body
+	// checks below. Empty skips them. bundlelint stays I/O-free: the caller
+	// loads the files (bundle.LoadPresets) and passes the result in, as it
+	// does for Skills.
+	Presets []PresetDoc
+	// Launched is the compiled program a run of the validated ENTRY
+	// executes — the workflow runtime.MergeBundlePresets folds Presets into
+	// at launch, whose `secrets:` the bodies are held to. nil reads as
+	// Workflow, the common case. The two differ for a sibling entry
+	// validated by path: the manifest-bound checks read main.bot's program
+	// (Workflow), while `iterion run bots/x/extend.bot --preset p` merges
+	// the bundle's presets into extend.bot's own, and a secret declared or
+	// granted in one and not the other would draw the wrong verdict.
+	Launched *ir.Workflow
 	// EngineBuild is the iterion build the bundle is being validated against,
 	// for the `requires.iterion` check (C250/C251). Empty skips it — the
 	// caller supplies appinfo.FullVersion(); bundlelint stays I/O-free and
@@ -288,6 +306,27 @@ type SkillDoc struct {
 	Body string
 }
 
+// PresetDoc is one of a bundle's presets/<name>.md: the page as a diagnostic
+// names it, the preset's id, and the markdown body the run appends to the
+// system prompt of every model task it builds. The body is read for its
+// template references alone — never for prose style, the contract
+// checkSkills keeps.
+type PresetDoc struct {
+	Path   string
+	Name   string
+	Prompt string
+}
+
+// launchedWorkflow is the program a launch of the validated entry merges
+// the bundle's presets into: Launched when the caller told it apart,
+// Workflow otherwise.
+func (in Input) launchedWorkflow() *ir.Workflow {
+	if in.Launched != nil {
+		return in.Launched
+	}
+	return in.Workflow
+}
+
 // CheckConsistency cross-checks a bot's manifest against its compiled
 // workflow. A nil Manifest skips all manifest-side checks; a nil Workflow
 // disables the checks that resolve names against the workflow (var-map,
@@ -307,6 +346,7 @@ func CheckConsistency(in Input) []Diag {
 	// against the workflow's own nodes, and a bundle known by its skills/
 	// and its main.bot alone is owed the same answer.
 	checkDurableMemoryPromises(&diags, in.Skills, in.Workflow)
+	checkPresets(&diags, in.Presets, in.launchedWorkflow())
 	if m != nil {
 		checkContractManifest(&diags, m, in.Workflow)
 		checkVarMaps(&diags, m, in.Workflow)
@@ -692,6 +732,60 @@ func checkSkills(diags *[]Diag, skills []SkillDoc) {
 				Field:    s.Path,
 				Message:  fmt.Sprintf("skill `description:` (%q) is too short to route on", desc),
 				Hint:     "describe what the skill does and the situation it applies to, so the router can choose it",
+			})
+		}
+	}
+}
+
+// checkPresets holds a bundle's presets/<name>.md prompt bodies to the
+// workflow's secret grants. The body is appended at run time to the system
+// prompt of every model task the run builds (delegate.Task.PresetFragment,
+// the "## Focus" section), rendered by the same resolver a prompt body goes
+// through — so a `{{secrets.X}}` there reaches the PROMPT sink, and no
+// compile check saw it: the file is merged into the workflow AFTER
+// compilation (runtime.MergeBundlePresets), which is why the question is
+// asked here.
+//
+// The verdict is the compiler's own (ir.PromptSecretRefIssues), under the
+// compiler's own code rather than a second code for one defect: an author
+// reading C323 on a preset reads the same sentence, and the same remedy, as
+// on a prompt body — and the hint comes from the compiler's catalogue, so
+// the two cannot drift. It is the one place this package reports outside its
+// C2xx family, and it reports no finding the compiler would not: the grant
+// is judged per READER, so a workflow that builds no model task — nothing
+// for the body to be appended to — draws no error on a body it never
+// renders (ir.Workflow.RendersPresetPrompt), as a prompt no node names
+// draws none from the compiler. w is the program the LAUNCH merges the
+// presets into (Input.Launched), not necessarily the manifest's main.
+//
+// A body the template parser cannot read warns (C004) instead of refusing:
+// the run's resolver leaves such a text as written, so prose that mentions
+// braces keeps working — the warning says that the references behind the
+// malformed one went unchecked.
+//
+// Manifest-free, like the skills checks above it: a bundle known by its
+// presets/ and its main.bot is owed the same answer.
+func checkPresets(diags *[]Diag, presets []PresetDoc, w *ir.Workflow) {
+	if w == nil || len(presets) == 0 {
+		return
+	}
+	// Iterate in Path order for deterministic output ahead of the final sort.
+	ordered := append([]PresetDoc(nil), presets...)
+	sort.SliceStable(ordered, func(i, j int) bool { return ordered[i].Path < ordered[j].Path })
+	for _, ps := range ordered {
+		for _, issue := range ir.PromptSecretRefIssues(w, ps.Prompt) {
+			severity := SeverityError
+			message := fmt.Sprintf("preset %q: the prompt body is appended to the system prompt of every model task the run builds (the `prompt` sink), where %s", ps.Name, issue.Reason)
+			if issue.Code == ir.DiagBadTemplateRef {
+				severity = SeverityWarning
+				message = fmt.Sprintf("preset %q: the prompt body holds a malformed template (%s), so the references behind it were not checked against the workflow's secret grants", ps.Name, issue.Reason)
+			}
+			*diags = append(*diags, Diag{
+				Code:     Code(issue.Code),
+				Severity: severity,
+				Field:    ps.Path,
+				Message:  message,
+				Hint:     ir.Catalog[issue.Code].Fix,
 			})
 		}
 	}

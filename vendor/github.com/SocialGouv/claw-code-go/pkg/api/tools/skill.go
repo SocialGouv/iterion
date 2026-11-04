@@ -43,6 +43,20 @@ func ExecuteSkillUserInvoked(ctx context.Context, input map[string]any, workDir 
 	return intl.ExecuteSkillUserInvoked(input, workDir)
 }
 
+// ExecuteSkillPinned loads a skill (LLM-invoked path) resolved through an
+// explicit name → path allowlist instead of the workspace walk — the
+// shape a host uses when the workspace is not trusted (iterion#1719). The
+// map is the whole servable set; a nil or empty map refuses every name.
+func ExecuteSkillPinned(ctx context.Context, input map[string]any, allowed map[string]string) (string, error) {
+	return intl.ExecuteSkillPinned(input, allowed)
+}
+
+// ResolveSkillPinned resolves a skill name against an explicit allowlist,
+// without walking any directory.
+func ResolveSkillPinned(name string, allowed map[string]string) (SkillResolution, error) {
+	return intl.ResolveSkillPinned(name, allowed)
+}
+
 // ResolveSkill turns a user-supplied skill identifier into a concrete path.
 func ResolveSkill(name, workDir string) (SkillResolution, error) {
 	return intl.ResolveSkill(name, workDir)

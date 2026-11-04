@@ -18,8 +18,8 @@ type operatorResumePublisher struct {
 	resumeCalls int
 }
 
-func (*operatorResumePublisher) SubmitLaunch(context.Context, string, LaunchSpec, *ir.Workflow, *CompiledSource) (int, error) {
-	return 1, nil
+func (*operatorResumePublisher) SubmitLaunch(context.Context, string, LaunchSpec, *ir.Workflow, *CompiledSource) (LaunchSubmission, error) {
+	return LaunchSubmission{QueuePosition: 1}, nil
 }
 
 func (*operatorResumePublisher) CancelRun(context.Context, string) error { return nil }

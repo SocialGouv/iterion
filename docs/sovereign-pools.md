@@ -252,8 +252,12 @@ Operator notes:
 - A pool deleted from the registry leaves its streams and consumers
   behind — reclamation is an operator action (no auto-teardown of a
   boundary's topology).
-- `providers_served` is recorded but consumed only by the credential
-  planning slice (P4).
+- `providers_served` is recorded and read by nothing: the credential walk
+  answers "is this route env-funded?" from the route's own provider, never
+  from the registry entry. A guard reports every reader of the field in the
+  module's own production Go, so one cannot land one without saying what it
+  does; a test fixture, a bson projection on the column or a studio client
+  reading the JSON field is outside its reach.
 - The pool DLQ API surface (list/peek/replay/discard per pool) is wired;
   the per-pool labeled depth gauge and the `admin dlq` CLI pool flag are
   follow-ups.

@@ -215,6 +215,9 @@ func TestKimiSandboxedRunKeepsTheContainersHome(t *testing.T) {
 
 func TestKimiNoopSandboxIsServedTheOverlay(t *testing.T) {
 	isolateUserHome(t)
+	// The noop driver is a host dispatch: the witness is about the overlay,
+	// not the image gap (#1643), so the host carries a kimi.
+	stageHostCLI(t, "kimi")
 	home := kimiAmbientHome(t)
 	run := &recordingRun{driver: "noop", script: `printf '%s\n' '{"role":"assistant","content":"done"}'`}
 	task := Task{NodeID: "n", UserPrompt: "hi", Sandbox: run, AmbientContext: ambient.Workspace, AmbientContextSource: "node", ExtraEnv: []string{"KIMI_CODE_HOME=" + home}}

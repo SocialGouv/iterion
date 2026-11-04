@@ -309,12 +309,13 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 	}
 
 	logger, logCloser := teeRunLog(logger, level, storeDir, runID)
+	// Re-emit the engineOpts entry: the handle changed either way — the
+	// tee's own logger, or the per-run fork the failure path returns — and
+	// this one is the run's (the slot BuildExecutor sets its matcher on).
+	// WithLogger overwrites on each call, so appending is sufficient.
+	engineOpts = append(engineOpts, runtime.WithLogger(logger))
 	if logCloser != nil {
 		defer logCloser.Close()
-		// Re-emit the engineOpts entry so the engine sees the tee'd
-		// logger; WithLogger overwrites on each call, so appending is
-		// sufficient.
-		engineOpts = append(engineOpts, runtime.WithLogger(logger))
 	}
 
 	// DSL-declared supervisors (`supervisor NAME:`): wire an in-process
@@ -405,9 +406,12 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 
 	// Fold the bundle's file-based presets (presets/<name>.md) into the
 	// workflow's preset set so `--preset <name>` resolves them and their var
-	// overrides flow through buildRunInputs. The engine re-applies this as a
-	// backstop and logs any malformed preset files.
-	runtime.MergeBundlePresets(wf, bundleHandle, nil)
+	// overrides flow through buildRunInputs. The run's logger carries what
+	// the merge finds — a malformed preset file, a prompt body whose
+	// `{{secrets.X}}` reaches a sink its secret withholds — on the command
+	// that is about to pay for the run, not only on the engine's backstop
+	// pass.
+	runtime.MergeBundlePresets(wf, bundleHandle, opts.Preset, logger)
 
 	inputs, err := buildRunInputs(wf, opts.Preset, opts.Vars, opts.AllowUnknownInputs)
 	if err != nil {
@@ -750,8 +754,13 @@ func subbotRunnerForCLI(parentPath, storeDir string, s store.RunStore, logger *i
 		// would hand it a credential its parent never passed.
 		childRunOpts := opts
 		childRunOpts.Vars = nil
+		// A subbot is a run of its own, with its own guard: BuildExecutor
+		// installs it on the handle it is given, so the child owes a fork —
+		// on the parent's handle the child's matcher would replace the
+		// parent's, which holds other values (iterion#2822).
+		childLogger := logger.WithOwnRedactor()
 		childExec, err := buildRunExecutor(childRunOpts, tiersUnknownToAChild, childWf, s,
-			lineage{runID: childRunID, parentRunID: req.ParentRunID}, storeDir, logger,
+			lineage{runID: childRunID, parentRunID: req.ParentRunID}, storeDir, childLogger,
 			// The child's engine below is rooted at the parent's effective
 			// workdir when the parent passed one, else at the process cwd —
 			// the same two cases its screen must probe.
@@ -787,7 +796,7 @@ func subbotRunnerForCLI(parentPath, storeDir string, s store.RunStore, logger *i
 		}, childWf, hash, runview.ExecutionContextPolicyFromEnv(), "")
 		childContext.LaunchSurface = "cli-subbot"
 		childOpts := []runtime.EngineOption{
-			runtime.WithLogger(logger),
+			runtime.WithLogger(childLogger),
 			runtime.WithWorkflowHash(hash),
 			runtime.WithBundle(childBundle),
 			runtime.WithExecutionContext(childContext),
@@ -814,7 +823,7 @@ func subbotRunnerForCLI(parentPath, storeDir string, s store.RunStore, logger *i
 			// resolve relative to the CHILD's dir). Without this, nested
 			// subbots died with "no SubbotRunner is wired" even though the
 			// depth guard below exists precisely to bound that recursion.
-			runtime.WithSubbotRunner(subbotRunnerForCLI(childPath, storeDir, s, logger, opts)),
+			runtime.WithSubbotRunner(subbotRunnerForCLI(childPath, storeDir, s, childLogger, opts)),
 			runtime.WithOnNodeFinished(func(_ context.Context, _, nodeID string, out map[string]any) {
 				capture.Record(nodeID, out)
 			}),

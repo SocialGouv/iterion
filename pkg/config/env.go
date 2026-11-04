@@ -208,6 +208,12 @@ func loadEnv(cfg *Config) error {
 	lookupString("ITERION_WEBPUSH_VAPID_PRIVATE_KEY", &cfg.WebPush.VAPIDPrivateKey)
 	lookupString("ITERION_WEBPUSH_SUBSCRIBER", &cfg.WebPush.Subscriber)
 
+	lookupString("ITERION_LEGAL_DOCUMENTS_DIR", &cfg.Legal.DocumentsDir)
+	lookupString("ITERION_LEGAL_CONTACT_EMAIL", &cfg.Legal.ContactEmail)
+	lookupString("ITERION_LEGAL_ACCESSIBILITY_STATUS", &cfg.Legal.AccessibilityStatus)
+	lookupString("ITERION_LEGAL_ACCESSIBILITY_DATE", &cfg.Legal.AccessibilityDate)
+	lookupString("ITERION_LEGAL_ACCESSIBILITY_RATE", &cfg.Legal.AccessibilityRate)
+
 	lookupString("ITERION_ALERTS_WEBHOOK_URL", &cfg.Alerts.Webhook.URL)
 	if err := lookupBool("ITERION_ALERTS_DESKTOP_ENABLED", &cfg.Alerts.Desktop.Enabled); err != nil {
 		return err

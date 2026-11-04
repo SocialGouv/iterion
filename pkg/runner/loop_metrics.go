@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"fmt"
+	"maps"
 	"strings"
 	"sync"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/backend/modelroute"
 	"github.com/SocialGouv/iterion/pkg/cloud/metrics"
+	"github.com/SocialGouv/iterion/pkg/credpool"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -78,6 +80,21 @@ type metricsEmitter struct {
 	// claw node can be pointed at any provider the registry knows).
 	byRoute map[routeKey]routeTotals
 
+	// credPlan is the publisher's stamped node-and-provider →
+	// credential-fingerprint plan (queue.RunMessage.CredPlan): the
+	// launch-frozen answer to "which sealed credential does this node's
+	// route spend". Nil on publications that carry no plan — the fine
+	// table below never fills, and the pool report keeps the coarse
+	// whole-attempt booking.
+	credPlan map[string]string
+	// byFingerprint is the fine table the pool report slices by (#2288):
+	// the same observations byRoute carries, grouped by the CREDENTIAL
+	// that served them instead of the (backend, model, source) route.
+	// Filled only from the plan — an observation the plan names nothing
+	// for joins no row, never the donor's by guess, and counts in missed
+	// below.
+	byFingerprint map[string]credpool.FingerprintSpend
+
 	// sawAuthFailure records that the provider rejected this run's
 	// credential at some point, even if the attempt did not END on that
 	// error. Recovery converts an auth failure into a human pause, so by
@@ -87,6 +104,26 @@ type metricsEmitter struct {
 	// donor's daily quota each time (measured on prod: 2 runs, credential
 	// dead, pledge still "active").
 	sawAuthFailure bool
+
+	// missed accumulates the observations a STAMPED plan named nothing for,
+	// on the routes a plan is supposed to answer. Env-funded spend is
+	// excluded — the openai_compatible gateway and a claude_code session
+	// riding the pod's ambient env are credentials the runner's environment
+	// holds, which no plan row ever names on purpose, so their empty joins
+	// are correct, not drift. Any miss VOIDS the fine table at the pool
+	// report (fineFingerprintSpend): the unplaced slice may have run on the
+	// lease's own credential (a claw subagent of a donor-funded node, a
+	// served model whose prefix names no provider), and a table without it
+	// would book the donor short — the coarse whole-attempt booking stands.
+	missed planMiss
+}
+
+// planMiss is the spend a stamped plan's keys answered nothing for, on the
+// routes a plan is supposed to answer (env-funded routes excluded).
+type planMiss struct {
+	costUSD      float64
+	tokens       int64
+	observations int64
 }
 
 // modelRate is the per-token cost (USD) for a given model, derived
@@ -126,7 +163,7 @@ func (t routeTotals) tokens() int64 {
 	return t.inputTokens + t.outputTokens + t.aggregateTokens
 }
 
-func newMetricsEmitter(inner model.EventEmitter, reg *metrics.Registry) *metricsEmitter {
+func newMetricsEmitter(inner model.EventEmitter, reg *metrics.Registry, credPlan map[string]string) *metricsEmitter {
 	return &metricsEmitter{
 		inner:          inner,
 		reg:            reg,
@@ -136,6 +173,8 @@ func newMetricsEmitter(inner model.EventEmitter, reg *metrics.Registry) *metrics
 		priceByModel:   make(map[string]modelRate),
 		byRoute:        make(map[routeKey]routeTotals),
 		declinedRoutes: make(map[routeKey]bool),
+		credPlan:       credPlan,
+		byFingerprint:  make(map[string]credpool.FingerprintSpend),
 	}
 }
 
@@ -218,16 +257,45 @@ func (m *metricsEmitter) noteDeclinedRoute(k routeKey) (first bool) {
 // addRoute is the locked entry the OnUsage sink calls from the
 // coordinator goroutine — a different one than the event stream's, so it
 // takes the mutex observe holds on the same maps and totals.
+//
+// The sink's observation joins the credential plan like an event's: the
+// source is the node half the walk recorded (a supervisor's
+// `supervisor:<name>` site), and an observation that joins no row is a
+// miss the report must count — a sink path that stayed outside the miss
+// accounting would send a table without its slice, booking the lease
+// short under real spend.
 func (m *metricsEmitter) addRoute(backend, modelName, source string, cost float64, in, out, aggregate int64) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.addRouteLocked(backend, modelName, source, cost, in, out, aggregate)
+	m.bookObservationLocked(source, routeKey{backend: backend, model: modelName, source: source}, "", cost, in, out, aggregate)
+}
+
+// bookObservationLocked folds one priced observation into every table that
+// reads it: its (backend, model, source) route bucket, and — on a run whose
+// publisher stamped a credential plan — the plan join (#2288): the
+// fingerprint the plan names for (nodeID, provider) takes the observation
+// into its fine row, and an observation the plan names nothing for counts
+// as a miss. provider is the observation's own word (the serving element's
+// provider the event carries), "" when it carries none — the join then
+// derives one from the route.
+//
+// The ONE entry every observation path takes — the OnUsage sink, the step
+// branch and every slice of a delegate event (observeDelegate) — so no path
+// can book the route table without the join: a path that skipped the fine
+// row would ship a table without its slice, and one that skipped the miss
+// would ship it unvoided, either way booking the lease short. Called with
+// m.mu held, alongside the run-total accumulation it mirrors.
+func (m *metricsEmitter) bookObservationLocked(nodeID string, route routeKey, provider string, cost float64, in, out, aggregate int64) {
+	m.addRouteLocked(route.backend, route.model, route.source, cost, in, out, aggregate)
+	fp := m.fingerprintFor(nodeID, route, provider)
+	m.addFingerprintLocked(fp, cost, in, out, aggregate)
+	m.notePlanMissLocked(fp, route, cost, in+out+aggregate)
 }
 
 // addRouteLocked folds one observation into its (backend, model) bucket.
-// Called with m.mu held, alongside the run-total accumulation it mirrors —
-// the two must never diverge, so they are updated in the same critical
-// section.
+// Called with m.mu held, through bookObservationLocked — the run totals,
+// the route table and the plan join must never diverge, so they are
+// updated in the same critical section.
 func (m *metricsEmitter) addRouteLocked(backend, modelName, source string, cost float64, in, out, aggregate int64) {
 	if m.byRoute == nil {
 		m.byRoute = make(map[routeKey]routeTotals)
@@ -252,6 +320,88 @@ func (m *metricsEmitter) RouteTotals() map[routeKey]routeTotals {
 		out[k] = v
 	}
 	return out
+}
+
+// fineSnapshot reads the fine table (#2288) — the run's consumption grouped
+// by the CREDENTIAL that served each observation, the fingerprints the
+// publisher's plan named, the space the pool lease's own stamp lives in —
+// together with the join-miss accounting, in ONE critical section: the
+// report's verdict on the misses (send the table, or void it) judges
+// exactly the rows it would send. Both are empty on a publication that
+// carried no plan.
+func (m *metricsEmitter) fineSnapshot() (map[string]credpool.FingerprintSpend, planMiss) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	rows := make(map[string]credpool.FingerprintSpend, len(m.byFingerprint))
+	maps.Copy(rows, m.byFingerprint)
+	return rows, m.missed
+}
+
+// fingerprintFor resolves the credential fingerprint one observation books:
+// the plan's entry for the node the event names, refined by the provider
+// the serving chain element resolved — the event's own `provider` word
+// when it stamps one, the claude_code label's slot and the model's prefix
+// when it does not. "" when the plan names nothing for it: the observation
+// joins no row of the fine table, never the donor's by guess, and counts
+// as a miss (notePlanMissLocked).
+func (m *metricsEmitter) fingerprintFor(nodeID string, route routeKey, provider string) string {
+	if len(m.credPlan) == 0 || nodeID == "" {
+		return ""
+	}
+	if provider == "" {
+		provider = planProviderFor(route)
+	}
+	if provider == "" {
+		return ""
+	}
+	return m.credPlan[nodeID+model.PlanKeySep+provider]
+}
+
+// addFingerprintLocked folds one observation into its credential bucket.
+// Called under m.mu, from bookObservationLocked beside addRouteLocked — the
+// two tables read the same observation, and a guard that dropped one would
+// drop it from both.
+func (m *metricsEmitter) addFingerprintLocked(fp string, cost float64, in, out, aggregate int64) {
+	if fp == "" {
+		return
+	}
+	t := m.byFingerprint[fp]
+	t.Fingerprint = fp
+	t.CostUSD += cost
+	t.InputTokens += in
+	t.OutputTokens += out
+	t.AggregateTokens += aggregate
+	m.byFingerprint[fp] = t
+}
+
+// planRouteFundedByEnv reports that a route's spend belongs to a credential
+// the runner's ENVIRONMENT holds rather than one the plan could name: the
+// openai_compatible gateway (EnvFunded — the walk records no bundle row for
+// it on purpose), and a claude_code session that rode the pod's ambient
+// anthropic env. Booking nobody for these is correct, never drift.
+func planRouteFundedByEnv(route routeKey) bool {
+	if modelroute.Parse(route.model).Gateway() {
+		return true
+	}
+	return route.backend == delegate.BackendClaudeCode && route.source == "anthropic-env"
+}
+
+// notePlanMissLocked folds one observation the plan named nothing for into
+// the join-miss accounting. Called under m.mu, from bookObservationLocked
+// beside addFingerprintLocked — the same observation feeds both, and a
+// guard that dropped one would drop it from both. A spendless observation (no cost, no tokens) counts
+// nothing: a free call that joins nothing is not money the lease loses.
+// An env-funded route places nobody by design and voids nothing.
+func (m *metricsEmitter) notePlanMissLocked(fp string, route routeKey, cost float64, tokens int64) {
+	if len(m.credPlan) == 0 || fp != "" || planRouteFundedByEnv(route) {
+		return
+	}
+	if cost == 0 && tokens == 0 {
+		return
+	}
+	m.missed.costUSD += cost
+	m.missed.tokens += tokens
+	m.missed.observations++
 }
 
 // The executor writes through this emitter, but the ENGINE writes straight
@@ -379,6 +529,13 @@ func (m *metricsEmitter) observe(evt store.Event) {
 		const backend = "claw"
 		inputT := toFloat(evt.Data["input_tokens"])
 		outputT := toFloat(evt.Data["output_tokens"])
+		// The slot word the loop stamped — the same `provider` the delegate
+		// events carry — read FIRST in the fingerprint join: a hint-steered
+		// claw route can spend a slot the model spec's own prefix does not
+		// name, and a join re-derived from the spec joins no row on exactly
+		// those routes. An event that carries no word (a container whose
+		// runner predates the stamp) falls back to the spec derivation.
+		provider, _ := evt.Data["provider"].(string)
 
 		// Single critical section: resolve the per-node model name,
 		// accumulate run-level token + cost totals, and compute the
@@ -406,7 +563,7 @@ func (m *metricsEmitter) observe(evt store.Event) {
 				}
 			}
 		}
-		m.addRouteLocked(backend, modelName, "", costDelta, int64(inputT), int64(outputT), 0)
+		m.bookObservationLocked(evt.NodeID, routeKey{backend: backend, model: modelName}, provider, costDelta, int64(inputT), int64(outputT), 0)
 		if unreported, _ := evt.Data["usage_unreported"].(bool); unreported {
 			k := routeKey{backend: backend, model: modelName}
 			t := m.byRoute[k]
@@ -473,134 +630,190 @@ func (m *metricsEmitter) observe(evt store.Event) {
 		// only the finished branch left every failed attempt unbilled in
 		// RunTotals, and the org's monthly bucket under-read what the
 		// credential actually spent. Same accounting as the finished
-		// branch below: one aggregate token count to the aggregate
-		// direction, cost from the delegate's own figure, the claw
-		// summarised guard so a loop whose llm_step_finished steps were
-		// already priced is not charged twice when its aggregate then
-		// errors. The two events are mutually exclusive per attempt
-		// (the executor fires one or the other), so no sum double-counts.
-		backend, _ := evt.Data["backend"].(string)
-		if backend == "" {
-			backend = "delegate"
-		}
-		tokensF := toFloat(evt.Data["tokens"])
-		effective, _ := evt.Data["effective_model"].(string)
-		served, _ := evt.Data["route_model"].(string)
-		var source string
-		if backend == delegate.BackendClaudeCode {
-			source, _ = evt.Data["fingerprint"].(string)
-		}
-
-		m.mu.Lock()
-		switch {
-		case served != "" && evt.NodeID != "":
-			m.modelByNode[evt.NodeID] = servedRoute(served, effective)
-		case effective != "" && evt.NodeID != "":
-			m.modelByNode[evt.NodeID] = routeModel(m.declaredByNode[evt.NodeID], effective)
-		}
-		modelName := m.modelByNode[evt.NodeID]
-		summarised := backend == "claw" && m.stepsSeen[evt.NodeID]
-		var costDelta float64
-		if !summarised {
-			costDelta = toFloat(evt.Data["cost_usd"])
-			if costDelta == 0 && backend == "claw" && tokensF > 0 && modelName != "" {
-				if rate := m.rateForLocked(modelName); rate.known {
-					costDelta = tokensF * rate.inputUSDPerToken
-				}
-			}
-			m.runAggregateTokens += int64(tokensF)
-			m.runCostUSD += costDelta
-			m.addRouteLocked(backend, modelName, source, costDelta, 0, 0, int64(tokensF))
-		}
-		m.mu.Unlock()
-		if summarised {
-			return
-		}
-		m.addTokens(backend, modelName, "aggregate", evt.Data["tokens"])
-		if costDelta > 0 && m.reg != nil {
-			m.reg.LLMCostUSDTotal.WithLabelValues(backend, normalizeModelLabel(modelName)).Add(costDelta)
-		}
+		// branch: the two events are mutually exclusive per attempt (the
+		// executor fires one or the other), so no sum double-counts.
+		m.observeDelegate(evt)
 	case store.EventDelegateFinished:
-		backend, _ := evt.Data["backend"].(string)
-		if backend == "" {
-			backend = "delegate"
-		}
-		tokensF := toFloat(evt.Data["tokens"])
-		effective, _ := evt.Data["effective_model"].(string)
-		served, _ := evt.Data["route_model"].(string)
-		// Only claude_code's labels name a credential slot the ledger reads
-		// (routeSlot); keying another backend's route on its label would only
-		// split one route in two.
-		var source string
-		if backend == delegate.BackendClaudeCode {
-			source, _ = evt.Data["fingerprint"].(string)
-		}
+		m.observeDelegate(evt)
+	}
+}
 
-		// Single critical section: resolve the per-node model name and
-		// accumulate the aggregated token count. Prometheus write
-		// happens after the unlock via addTokens (counter Add is atomic).
-		m.mu.Lock()
-		switch {
-		case served != "" && evt.NodeID != "":
-			m.modelByNode[evt.NodeID] = servedRoute(served, effective)
-		case effective != "" && evt.NodeID != "":
-			m.modelByNode[evt.NodeID] = routeModel(m.declaredByNode[evt.NodeID], effective)
-		}
-		modelName := m.modelByNode[evt.NodeID]
-		// claw dispatches through the same observability hook as the CLI
-		// delegates, so when its LLM loop has been observed step by step
-		// (llm_step_finished, counted and priced above) this delegation
-		// total is the SUM of those steps: counting it again would charge
-		// every claw run twice — an org's monthly cap tripping at half its
-		// budget, a lending donor drained at twice the rate they agreed to.
-		// The steps are the evidence, not the backend name: a claw loop in a
-		// sandbox container relays them across the IPC, and an in-container
-		// runner too old to relay them leaves this total as the only
-		// observation there is — which is then booked like any delegate's.
-		summarised := backend == "claw" && m.stepsSeen[evt.NodeID]
-		var costDelta float64
-		if !summarised {
-			// The delegate already priced this call (its own CLI figure, the
-			// token estimate a subscription session falls back to, or claw's
-			// in-container annotation) and carries the result on the event;
-			// accumulating it is what keeps a claude_code run from reporting
-			// $0 for the whole attempt — the number every consumer of
-			// RunTotals (org monthly cost cap, credential-pool quota) meters
-			// on. An absent key means the delegate's price sources did not
-			// know the model. claw's sources were consulted in the container,
-			// where no cache may exist yet, so the host prices the aggregate
-			// off its own — at the INPUT rate, a floor: one aggregate count
-			// cannot be split into input and output, and output is dearer. A
-			// model no source prices stays at zero: unknown, never free.
-			costDelta = toFloat(evt.Data["cost_usd"])
-			if costDelta == 0 && backend == "claw" && tokensF > 0 && modelName != "" {
-				if rate := m.rateForLocked(modelName); rate.known {
-					costDelta = tokensF * rate.inputUSDPerToken
-				}
-			}
-			m.runAggregateTokens += int64(tokensF)
-			m.runCostUSD += costDelta
-			// The delegate reports ONE token count and no split. It goes to
-			// the aggregate counter rather than to input: a sum stays exact
-			// either way, and only this way does a reader of the public
-			// per-credential endpoint see "not split" instead of a
-			// confident, wrong input figure (#992).
-			m.addRouteLocked(backend, modelName, source, costDelta, 0, 0, int64(tokensF))
-		}
-		m.mu.Unlock()
-		if summarised {
-			return
-		}
+// observeDelegate books one delegate event's figure (delegate_finished,
+// delegate_error) into the run totals, the route table, the plan join and
+// the Prometheus counters.
+//
+// The figure is split by route before anything is booked: the slices a
+// fallback chain folded in from the routes it abandoned (`folded_spend`)
+// each book on THEIR route and plan row, and the rest — the figure minus
+// those slices — on the route the event names. Booked whole on the event's
+// labels, a claude_code primary that burned a lent subscription before a
+// claw rung served on the team's own key would land on the team's row, or
+// vanish with the claw figure the summarised guard skips.
+func (m *metricsEmitter) observeDelegate(evt store.Event) {
+	backend, _ := evt.Data["backend"].(string)
+	if backend == "" {
+		backend = "delegate"
+	}
+	effective, _ := evt.Data["effective_model"].(string)
+	served, _ := evt.Data["route_model"].(string)
+	provider, _ := evt.Data["provider"].(string)
+	fingerprint, _ := evt.Data["fingerprint"].(string)
+	folded := foldedSpendOf(evt.Data["folded_spend"])
 
-		// Delegate events report a single aggregated token count. It gets
-		// its own direction label: summing every direction stays exact,
-		// and a dashboard reading `direction="input"` is no longer served
-		// output tokens under that name.
-		m.addTokens(backend, modelName, "aggregate", evt.Data["tokens"])
-		if costDelta > 0 && m.reg != nil {
-			m.reg.LLMCostUSDTotal.WithLabelValues(backend, normalizeModelLabel(modelName)).Add(costDelta)
+	// Single critical section: resolve the per-node model name and book
+	// every slice. Prometheus writes happen after the unlock (counter Add
+	// is atomic).
+	m.mu.Lock()
+	switch {
+	case served != "" && evt.NodeID != "":
+		m.modelByNode[evt.NodeID] = servedRoute(served, effective)
+	case effective != "" && evt.NodeID != "":
+		m.modelByNode[evt.NodeID] = routeModel(m.declaredByNode[evt.NodeID], effective)
+	}
+	// The event's own slice: what its figure holds beyond the folded ones.
+	// The executor sums the folded slices onto the last route's own figure,
+	// in this order, so the difference is that route's own spend — up to
+	// float rounding, and exactly zero when it spent nothing (a skip, a
+	// route refused before it spent).
+	own := delegateSlice{
+		backend:     backend,
+		model:       m.modelByNode[evt.NodeID],
+		provider:    provider,
+		fingerprint: fingerprint,
+		tokens:      toFloat(evt.Data["tokens"]),
+		cost:        toFloat(evt.Data["cost_usd"]),
+	}
+	slices := make([]delegateSlice, 0, len(folded)+1)
+	for _, s := range folded {
+		own.tokens -= s.tokens
+		own.cost -= s.cost
+		s.model = m.foldedModelLocked(evt.NodeID, s.route, s.effective)
+		slices = append(slices, s)
+	}
+	own.tokens, own.cost = max(own.tokens, 0), max(own.cost, 0)
+	slices = append(slices, own)
+	booked := make([]delegateSlice, 0, len(slices))
+	for _, s := range slices {
+		if b, ok := m.bookDelegateSliceLocked(evt.NodeID, s); ok {
+			booked = append(booked, b)
 		}
 	}
+	m.mu.Unlock()
+
+	// Delegate events report a single aggregated token count. It gets its
+	// own direction label: summing every direction stays exact, and a
+	// dashboard reading `direction="input"` is no longer served output
+	// tokens under that name.
+	for _, b := range booked {
+		m.addTokens(b.backend, b.model, "aggregate", b.tokens)
+		if b.cost > 0 && m.reg != nil {
+			m.reg.LLMCostUSDTotal.WithLabelValues(b.backend, normalizeModelLabel(b.model)).Add(b.cost)
+		}
+	}
+}
+
+// delegateSlice is one route's part of a delegate event's figure: a slice
+// the chain folded in from an abandoned route (`folded_spend`), or the rest,
+// under the event's own labels. route and effective are the slice's own
+// facts; model is the route key the meter books it under.
+type delegateSlice struct {
+	backend, route, effective, model, provider, fingerprint string
+	tokens, cost                                            float64
+}
+
+// foldedSpendOf reads a delegate event's `folded_spend` (the executor's
+// foldedSpendPayload). An entry that is not an object names no route: its
+// spend is not subtracted, so it stays in the event's own slice and books
+// on the event's labels, as an unsplit figure does.
+func foldedSpendOf(raw any) []delegateSlice {
+	entries, _ := raw.([]any)
+	out := make([]delegateSlice, 0, len(entries))
+	for _, e := range entries {
+		entry, ok := e.(map[string]any)
+		if !ok {
+			continue
+		}
+		s := delegateSlice{tokens: toFloat(entry["tokens"]), cost: toFloat(entry["cost_usd"])}
+		s.backend, _ = entry["backend"].(string)
+		if s.backend == "" {
+			s.backend = "delegate"
+		}
+		s.route, _ = entry["route_model"].(string)
+		s.effective, _ = entry["effective_model"].(string)
+		s.provider, _ = entry["provider"].(string)
+		s.fingerprint, _ = entry["fingerprint"].(string)
+		out = append(out, s)
+	}
+	return out
+}
+
+// foldedModelLocked names the route key a folded slice books under, from
+// its own route and reported model the way the event's own figure is keyed
+// (servedRoute, routeModel). Called under m.mu.
+func (m *metricsEmitter) foldedModelLocked(nodeID, route, effective string) string {
+	switch {
+	case route != "":
+		return servedRoute(route, effective)
+	case effective != "":
+		return routeModel(m.declaredByNode[nodeID], effective)
+	}
+	return m.declaredByNode[nodeID]
+}
+
+// bookDelegateSliceLocked books one slice of a delegate event into the run
+// totals and, through bookObservationLocked, the route table and the plan
+// join; it returns the slice as booked (its cost priced) for the
+// Prometheus counters, false when the slice books nothing. Called under
+// m.mu.
+//
+// The claw summarised guard: claw dispatches through the same observability
+// hook as the CLI delegates, so when this node's claw loop has been
+// observed step by step (llm_step_finished, counted and priced as it ran) a
+// claw slice is the SUM of those steps — counting it again would charge
+// every claw run twice: an org's monthly cap tripping at half its budget, a
+// lending donor drained at twice the rate they agreed to. The steps are the
+// evidence, not the backend name: a claw loop in a sandbox container relays
+// them across the IPC, and an in-container runner too old to relay them
+// leaves the slice as the only observation there is — booked like any
+// delegate's. The guard is the SLICE's backend's, never the event's: a
+// folded claude_code slice under a claw rung's event was never a step, and
+// a folded claw slice under a claude_code rung's event was.
+//
+// Only claude_code's labels name a credential slot the ledger reads
+// (routeSlot); keying another backend's route on its label would only split
+// one route in two.
+func (m *metricsEmitter) bookDelegateSliceLocked(nodeID string, s delegateSlice) (delegateSlice, bool) {
+	if s.backend == delegate.BackendClaw && m.stepsSeen[nodeID] {
+		return s, false
+	}
+	// The delegate already priced its call (its own CLI figure, the token
+	// estimate a subscription session falls back to, or claw's in-container
+	// annotation) and carries the result on the event; accumulating it is
+	// what keeps a claude_code run from reporting $0 for the whole attempt
+	// — the number every consumer of RunTotals (org monthly cost cap,
+	// credential-pool quota) meters on. An absent cost means the delegate's
+	// price sources did not know the model. claw's sources were consulted in
+	// the container, where no cache may exist yet, so the host prices the
+	// slice off its own — at the INPUT rate, a floor: one aggregate count
+	// cannot be split into input and output, and output is dearer. A model
+	// no source prices stays at zero: unknown, never free.
+	if s.cost == 0 && s.backend == delegate.BackendClaw && s.tokens > 0 && s.model != "" {
+		if rate := m.rateForLocked(s.model); rate.known {
+			s.cost = s.tokens * rate.inputUSDPerToken
+		}
+	}
+	var source string
+	if s.backend == delegate.BackendClaudeCode {
+		source = s.fingerprint
+	}
+	m.runAggregateTokens += int64(s.tokens)
+	m.runCostUSD += s.cost
+	// The delegate reports ONE token count and no split. It goes to the
+	// aggregate counter rather than to input: a sum stays exact either way,
+	// and only this way does a reader of the public per-credential endpoint
+	// see "not split" instead of a confident, wrong input figure (#992).
+	m.bookObservationLocked(nodeID, routeKey{backend: s.backend, model: s.model, source: source}, s.provider, s.cost, 0, 0, int64(s.tokens))
+	return s, true
 }
 
 // RunTotals snapshots the run's accumulated LLM consumption — what
@@ -735,7 +948,12 @@ func meterSupervisorSpecs(ctx context.Context, specs []supervise.Spec, usage *me
 			resolved = ""
 		}
 		specs[i].OnUsage = func(in, out int) {
-			usage.addRoute(delegate.BackendClaw, resolved, "supervisor:"+specs[i].Name, 0, int64(in), int64(out), int64(in)+int64(out))
+			// An evaluation reports an OBSERVED split: the two directions carry
+			// it and the aggregate stays zero. The three counters are disjoint
+			// on every table this observation feeds (credusage.Spend fills one
+			// or the other, credpool.Usage's true total is their sum), so the
+			// sum filed beside the split would count each token twice.
+			usage.addRoute(delegate.BackendClaw, resolved, "supervisor:"+specs[i].Name, 0, int64(in), int64(out), 0)
 		}
 	}
 }

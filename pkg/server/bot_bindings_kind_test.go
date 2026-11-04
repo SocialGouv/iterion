@@ -1,22 +1,24 @@
 package server
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/pluginsource"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 )
 
 const bindingsBase = "/api/teams/t1/bots/doki/bindings"
 
-// A context binding is stored and served, and nothing materialises it into a
-// run yet. The route says so instead of accepting one: a binding an operator
-// can create, see listed, and watch do nothing is the defect #1908 reports,
-// rebuilt by its own fix. The refusal goes away with the materialisation
-// slice, and this test with it.
+// A context binding is stored, served, and materialised into every launch of
+// its bot — on a deployment that HAS the materialiser's ingredients (the
+// binding store and the pinned-source fetcher). A server without them keeps
+// refusing the kind: a binding an operator can create, see listed, and watch
+// do nothing is the defect #1908 reports, rebuilt by its own fix.
 func TestBotBinding_CreatingTheContextKindIsRefusedUntilItIsMaterialised(t *testing.T) {
 	s := newBindingTestServer(t)
 	ctx := superAdminCtx()
@@ -25,7 +27,7 @@ func TestBotBinding_CreatingTheContextKindIsRefusedUntilItIsMaterialised(t *test
 	w := httptest.NewRecorder()
 	s.handleCreateBotBinding(w, bindReq(ctx, "POST", bindingsBase, body, "t1", "doki", ""))
 	if w.Code != http.StatusNotImplemented {
-		t.Fatalf("create of the context kind: code=%d body=%s, want 501", w.Code, w.Body.String())
+		t.Fatalf("create of the context kind without a fetcher: code=%d body=%s, want 501", w.Code, w.Body.String())
 	}
 	// A 5xx body is redacted down to its correlation ids and its stable
 	// error_code (httpx.WriteErrorJSON), so the code is what a client can act
@@ -39,6 +41,42 @@ func TestBotBinding_CreatingTheContextKindIsRefusedUntilItIsMaterialised(t *test
 	}
 	if len(list) != 0 {
 		t.Errorf("a refused create still stored a binding: %+v", list)
+	}
+}
+
+// The same create on a server that CAN materialise (the fetcher is wired)
+// is accepted: the refusal is a deployment's honest "I would do nothing
+// with this", never a property of the kind.
+func TestBotBinding_CreatingTheContextKindIsAcceptedWhenMaterialised(t *testing.T) {
+	s := newBindingTestServer(t)
+	s.pluginSourceFetcher = &pluginsource.Fetcher{}
+	ctx := superAdminCtx()
+
+	body := `{"kind":"context","secret_name_for_workflow":"handbook","context":{"git_url":"https://example.invalid/o/c.git","ref":"v1.0.0","path":"handbook.pdf"}}`
+	w := httptest.NewRecorder()
+	s.handleCreateBotBinding(w, bindReq(ctx, "POST", bindingsBase, body, "t1", "doki", ""))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create of the context kind with a fetcher: code=%d body=%s, want 201", w.Code, w.Body.String())
+	}
+	var created secrets.BotSecretBinding
+	if err := json.Unmarshal(w.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	if created.EffectiveKind() != secrets.BindingKindContext || created.Context == nil || created.Context.Path != "handbook.pdf" {
+		t.Errorf("the stored binding lost its payload: %+v", created)
+	}
+	// And it lists with its health readout (empty — never materialised yet,
+	// never failed either).
+	w = httptest.NewRecorder()
+	s.handleListBotBindings(w, bindReq(ctx, "GET", bindingsBase, "", "t1", "doki", ""))
+	var lr struct {
+		Bindings []secrets.BotSecretBinding `json:"bindings"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &lr); err != nil {
+		t.Fatal(err)
+	}
+	if len(lr.Bindings) != 1 || lr.Bindings[0].Degraded() {
+		t.Errorf("list = %+v, want the one healthy context binding", lr.Bindings)
 	}
 }
 
@@ -106,5 +144,43 @@ func TestBotBinding_APayloadThatContradictsItsKindIsRefused(t *testing.T) {
 				t.Errorf("refusal = %q, want it to name %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// A PATCH carrying a kind is a no-op for the kind: a binding's kind is
+// immutable (changing it is a delete + create, an auditable act, not an
+// edit), and the route must answer 200 with the kind UNMOVED rather than
+// apply it or refuse it. The spec's PATCH schema doesn't list kind at all
+// (botBindingPatchReq) — this test is the handler half of that contract.
+func TestBotBinding_APatchCarryingAKindIsIgnored(t *testing.T) {
+	s := newBindingTestServer(t)
+	ctx := superAdminCtx()
+	if err := s.genericSecrets.Create(ctx, secrets.GenericSecret{ID: "sec1", ScopeTeamID: "t1", Name: "org_gitlab", SealedSecret: []byte("x"), CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	w := httptest.NewRecorder()
+	s.handleCreateBotBinding(w, bindReq(ctx, "POST", bindingsBase, `{"secret_id":"sec1","secret_name_for_workflow":"GITLAB_TOKEN"}`, "t1", "doki", ""))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create: code=%d body=%s", w.Code, w.Body.String())
+	}
+	var created secrets.BotSecretBinding
+	if err := json.Unmarshal(w.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+
+	w = httptest.NewRecorder()
+	s.handleUpdateBotBinding(w, bindReq(ctx, "PATCH", bindingsBase+"/"+created.ID, `{"kind":"context","allowed_hosts":["gitlab.example.com"]}`, "t1", "doki", created.ID))
+	if w.Code != http.StatusOK {
+		t.Fatalf("patch with a kind: code=%d body=%s, want 200 — the kind is ignored, not refused", w.Code, w.Body.String())
+	}
+	got, err := s.botBindings.Get(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.EffectiveKind() != secrets.BindingKindSecret {
+		t.Errorf("the kind moved to %q under a PATCH — it is immutable", got.EffectiveKind())
+	}
+	if len(got.AllowedHosts) != 1 || got.AllowedHosts[0] != "gitlab.example.com" {
+		t.Errorf("the mutable field did not land: %+v", got.AllowedHosts)
 	}
 }

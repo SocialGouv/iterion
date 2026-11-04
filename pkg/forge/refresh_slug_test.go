@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 )
 
@@ -31,7 +32,7 @@ func (r slugRefresher) Refresh(ctx context.Context, conn Connection, tok string)
 // slug is repaired along with it when it was left as the bare "[bot]".
 func TestRefreshWorker_PersistsTheAppSlugTheRefresherResolved(t *testing.T) {
 	sealer, _ := secrets.NewAESGCMSealer(make([]byte, 32))
-	connStore := NewMemoryConnectionStore()
+	connStore := connection.NewMemoryForgeStore()
 	secStore := secrets.NewMemoryGenericSecretStore()
 	now := time.Unix(1700000000, 0).UTC()
 	c, _ := seedOAuthConn(t, sealer, connStore, secStore, now.Add(2*time.Minute))
@@ -51,7 +52,7 @@ func TestRefreshWorker_PersistsTheAppSlugTheRefresherResolved(t *testing.T) {
 	if n, err := w.RunOnce(ctx); err != nil || n != 1 {
 		t.Fatalf("RunOnce: n=%d err=%v", n, err)
 	}
-	got, err := connStore.Get(ctx, c.ID)
+	got, err := connStore.Get(ctx, c.TenantID, c.ID)
 	if err != nil {
 		t.Fatal(err)
 	}

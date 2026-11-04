@@ -13,6 +13,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/audit"
 	"github.com/SocialGouv/iterion/pkg/auth"
+	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/identity"
 	"github.com/SocialGouv/iterion/pkg/secrets"
@@ -94,7 +95,7 @@ func seedReauthWorld(t *testing.T) (*Server, *projectBotGitLab, forge.Connection
 	if w.Code != http.StatusOK {
 		t.Fatalf("enable: code=%d body=%s", w.Code, w.Body.String())
 	}
-	stored, err := s.forgeConnections.Get(context.Background(), conns[0].ID)
+	stored, err := s.forgeConnections.Get(context.Background(), conns[0].TenantID, conns[0].ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -156,7 +157,7 @@ func TestForgeReauthorize_RepairsTheConnectionInPlace(t *testing.T) {
 		t.Fatalf("AccessTokenExpiresAt = %v, want the fresh grant's expiry", got.AccessTokenExpiresAt)
 	}
 	// The fresh pair is sealed INTO the existing row…
-	tok, err := forge.AdminTokenFor(s.sealer, got)
+	tok, err := connection.ForgeAdminToken(s.sealer, got)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -211,7 +212,7 @@ func TestForgeReauthorize_RefusesADifferentIdentity(t *testing.T) {
 	if cb.Code != http.StatusUnprocessableEntity || !strings.Contains(cb.Body.String(), "@bob") {
 		t.Fatalf("callback: code=%d body=%s, want a 422 naming the mismatching account", cb.Code, cb.Body.String())
 	}
-	got, err := s.forgeConnections.Get(context.Background(), conn.ID)
+	got, err := s.forgeConnections.Get(context.Background(), conn.TenantID, conn.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -232,7 +233,7 @@ func TestForgeReauthorize_Guards(t *testing.T) {
 	s, _, conn := seedReauthWorld(t)
 
 	// A PAT connection takes its new token via PATCH, not the OAuth flow.
-	sealed, err := forge.SealPAT(s.sealer, "c-pat", "glpat-x")
+	sealed, err := connection.SealForgePAT(s.sealer, "c-pat", "glpat-x")
 	if err != nil {
 		t.Fatal(err)
 	}

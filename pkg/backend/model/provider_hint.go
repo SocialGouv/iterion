@@ -106,9 +106,9 @@ func glmKeyReachableUnderHint(ctx context.Context) bool {
 	if creds, ok := credentialsLookup(ctx); ok && creds(string(secrets.ProviderZAI)) != "" {
 		return true
 	}
-	return os.Getenv("ZAI_API_KEY") != "" ||
-		os.Getenv("ANTHROPIC_AUTH_TOKEN") != "" ||
-		os.Getenv("ANTHROPIC_BASE_URL") != ""
+	return envGetenv(ctx, "ZAI_API_KEY") != "" ||
+		envGetenv(ctx, "ANTHROPIC_AUTH_TOKEN") != "" ||
+		envGetenv(ctx, "ANTHROPIC_BASE_URL") != ""
 }
 
 // resolveAnthropicDirect builds an UNCACHED Anthropic-direct client for a
@@ -142,7 +142,7 @@ func (r *Registry) resolveAnthropicDirect(ctx context.Context, modelID string) (
 	if ambientRefused(ctx) {
 		return nil, &ErrProviderHintUnfunded{Provider: "anthropic", Model: modelID}
 	}
-	if k := os.Getenv("ANTHROPIC_API_KEY"); k != "" {
+	if k := envGetenv(ctx, "ANTHROPIC_API_KEY"); k != "" {
 		return p.NewClient(r.withClientIdentity(api.ProviderConfig{APIKey: k, Model: modelID}))
 	}
 	if tok := secrets.AnthropicForfaitAccessTokenFromDisk(); tok != "" {

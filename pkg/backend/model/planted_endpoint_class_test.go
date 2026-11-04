@@ -153,10 +153,12 @@ func TestEveryProviderKeyIsPresentedAtAHostTheTableKnows(t *testing.T) {
 }
 
 // hostShapedEnvNamesReadIn walks non-test Go files for env reads with a
-// literal name — os.Getenv / os.LookupEnv, and envtrust's own Inherited /
+// literal name — os.Getenv / os.LookupEnv, envtrust's own Inherited /
 // Planted, since a name already read through the provenance seam is still
-// part of the class — and keeps the ones whose last underscore-separated
-// segment names a host: a *_BASE_URL, an *_ENDPOINT, a *_HOST.
+// part of the class, and this package's env seam (envGetenv / envLookupEnv,
+// #2808 — the context rides at arg 0, the name at arg 1) — and keeps the
+// ones whose last underscore-separated segment names a host: a *_BASE_URL,
+// an *_ENDPOINT, a *_HOST.
 func hostShapedEnvNamesReadIn(t *testing.T, paths []string) []string {
 	t.Helper()
 	found := map[string]bool{}
@@ -174,21 +176,32 @@ func hostShapedEnvNamesReadIn(t *testing.T, paths []string) []string {
 			if !ok || len(call.Args) == 0 {
 				return true
 			}
-			sel, ok := call.Fun.(*ast.SelectorExpr)
-			if !ok {
-				return true
-			}
-			pkg, ok := sel.X.(*ast.Ident)
-			if !ok {
-				return true
-			}
-			switch {
-			case pkg.Name == "os" && (sel.Sel.Name == "Getenv" || sel.Sel.Name == "LookupEnv"):
-			case pkg.Name == "envtrust" && (sel.Sel.Name == "Inherited" || sel.Sel.Name == "Planted"):
+			nameArg := call.Args[0]
+			switch fun := call.Fun.(type) {
+			case *ast.SelectorExpr:
+				pkg, ok := fun.X.(*ast.Ident)
+				if !ok {
+					return true
+				}
+				switch {
+				case pkg.Name == "os" && (fun.Sel.Name == "Getenv" || fun.Sel.Name == "LookupEnv"):
+				case pkg.Name == "envtrust" && (fun.Sel.Name == "Inherited" || fun.Sel.Name == "Planted"):
+				default:
+					return true
+				}
+			case *ast.Ident:
+				// The env seam (#2808): the context rides at arg 0.
+				if fun.Name != "envGetenv" && fun.Name != "envLookupEnv" {
+					return true
+				}
+				if len(call.Args) < 2 {
+					return true
+				}
+				nameArg = call.Args[1]
 			default:
 				return true
 			}
-			lit, ok := call.Args[0].(*ast.BasicLit)
+			lit, ok := nameArg.(*ast.BasicLit)
 			if !ok || lit.Kind != token.STRING {
 				return true
 			}

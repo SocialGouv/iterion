@@ -275,8 +275,12 @@ func (r *Runner) subbotRunnerFor(msg *queue.RunMessage, parentDir, workDir strin
 
 		// The child's own run.log — the studio's per-node Logs tab reads the
 		// CHILD's persisted log, and the parent's logger would fold every
-		// line into the parent's. Same shape as the parent's writer.
-		childLogger := runLogger
+		// line into the parent's. Same shape as the parent's writer, and a
+		// FORK either way: a subbot is a run of its own, with its own guard,
+		// and buildExecutor sets that guard on the handle it is given — on
+		// the parent's handle it would replace the PARENT's matcher with a
+		// child's, which holds other values (iterion#2822).
+		childLogger := runLogger.WithOwnRedactor()
 		if ls := store.AsRunLogStore(r.cfg.Store); ls != nil {
 			idCtx := store.WithIdentity(context.Background(), msg.TenantID, msg.OwnerID)
 			seed, serr := ls.RunLogSize(idCtx, childRunID)
@@ -287,7 +291,7 @@ func (r *Runner) subbotRunnerFor(msg *queue.RunMessage, parentDir, workDir strin
 			defer func() { _ = w.Close() }()
 			r.registerLogWriter(childRunID, w)
 			defer r.unregisterLogWriter(childRunID)
-			childLogger = r.cfg.Logger.WithWriter(io.MultiWriter(r.cfg.Logger.Writer(), w))
+			childLogger = childLogger.WithWriter(io.MultiWriter(r.cfg.Logger.Writer(), w))
 		}
 
 		// childWorkDir was resolved before the compile, so the {{workspace}}

@@ -393,6 +393,10 @@ func (s *Service) launchDetached(parent context.Context, runID string, spec Laun
 	if err != nil {
 		return nil, err
 	}
+	// Operator-bound context documents (ADR-147): resolved HERE, before the
+	// hand-off — the spawned runner has no fetcher, so the composite promote
+	// below lands them in the store it shares with this process.
+	s.composeBoundContexts(parent, runID, &spec, wf)
 
 	// Persist the run doc before the runner subprocess boots (mirrors
 	// spawnRun's pre-create): a GET /api/runs/{id} issued right after the

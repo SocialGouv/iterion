@@ -182,6 +182,15 @@ func (s *Store) DeleteRun(ctx context.Context, id string) error {
 	if _, err := s.runSeq.DeleteMany(ctx, seqFilter); err != nil {
 		return fmt.Errorf("store/mongo: delete run_seq for run %s: %w", id, err)
 	}
+	// The credential-slot ledger (cred_slots.go) is keyed by FINGERPRINT and
+	// names the run inside its holders array, tenant-blind: a platform key's
+	// row lists every tenant's runs. Pulled by that key, so a deleted run frees
+	// its slot now rather than when a refusal's reconcile finds its document
+	// gone past the grace.
+	if _, err := s.credSlots.UpdateMany(ctx, bson.M{"holders.run_id": id},
+		bson.M{"$pull": bson.M{"holders": bson.M{"run_id": id}}, "$set": bson.M{"updated_at": time.Now().UTC()}}); err != nil {
+		return fmt.Errorf("store/mongo: release cred slots of run %s: %w", id, err)
+	}
 	children := []struct {
 		name string
 		coll *mongo.Collection
@@ -921,7 +930,8 @@ func (s *Store) SetRunCredStamp(ctx context.Context, id string, stamp store.RunC
 		"credential_tiers":  stamp.Tiers,
 		"updated_at":        time.Now().UTC(),
 	}
-	// A re-stamp is a fresh attempt: it counts until it proves idle.
+	// A re-stamp is a fresh attempt: the previous one's model-idle marker
+	// is cleared.
 	unset := bson.M{"llm_idle_since": ""}
 	if stamp.SkippedReopensAt != nil {
 		set["skipped_cred_reopens_at"] = stamp.SkippedReopensAt.UTC()
@@ -1120,13 +1130,27 @@ func (s *Store) SetRunBudgetSnapshot(ctx context.Context, id string, b *store.Ru
 	return nil
 }
 
-// CountAliveRunsWithCredFingerprint counts queued/running, not-idle runs
-// stamped with fingerprint (see store.RunStore). Deliberately NO tenant
-// filter — a platform key serves every tenant on one ceiling.
+// CountAliveRunsWithCredFingerprint counts queued/running runs stamped with
+// fingerprint, model-idle or not (see store.RunStore) — the query form of
+// store.Run.SpendsCredential. Deliberately NO tenant filter — a platform key
+// serves every tenant on one ceiling.
 func (s *Store) CountAliveRunsWithCredFingerprint(ctx context.Context, fingerprint, excludeRunID string) (int, error) {
 	if fingerprint == "" {
 		return 0, nil
 	}
+	n, err := s.runs.CountDocuments(ctx, spendsCredentialFilter(fingerprint, excludeRunID))
+	if err != nil {
+		return 0, fmt.Errorf("store/mongo: count runs by cred fingerprint: %w", err)
+	}
+	return int(n), nil
+}
+
+// spendsCredentialFilter selects the runs that spend the credential with this
+// fingerprint, excludeRunID aside: the query form of store.Run.SpendsCredential,
+// read by the alive-run count and, narrowed (credSlotAdoptableFilter), by the
+// slot ledger's adoption. No tenant filter — a platform key serves every
+// tenant on one cap.
+func spendsCredentialFilter(fingerprint, excludeRunID string) bson.M {
 	holding := make([]string, 0, 2)
 	for _, st := range store.AllRunStatuses {
 		if st.HoldsCredentialSlot() {
@@ -1136,18 +1160,11 @@ func (s *Store) CountAliveRunsWithCredFingerprint(ctx context.Context, fingerpri
 	filter := notDeleted(bson.M{
 		"cred_fingerprints": fingerprint,
 		"status":            bson.M{"$in": holding},
-		// {field: null} matches both an absent and an explicit null
-		// marker: legacy documents and documents the runner cleared.
-		"llm_idle_since": nil,
 	})
 	if excludeRunID != "" {
 		filter["_id"] = bson.M{"$ne": excludeRunID}
 	}
-	n, err := s.runs.CountDocuments(ctx, filter)
-	if err != nil {
-		return 0, fmt.Errorf("store/mongo: count runs by cred fingerprint: %w", err)
-	}
-	return int(n), nil
+	return filter
 }
 
 func (s *Store) PatchRunSteering(ctx context.Context, id string, loopOverrides map[string]int, budgetRaises *store.RunBudgetRaises) error {
@@ -1622,6 +1639,10 @@ func (s *Store) FlipToQueued(ctx context.Context, id string, from store.RunStatu
 	at = store.QueuedFlipAt(at)
 	set := statusTransitionSet(store.RunStatusQueued, "", store.RunOutcomeMeta{}, time.Now().UTC())
 	set["queued_at"] = queuedAtMarkerExpr(at)
+	// The resume's credential-slot admission is still to come
+	// (store.Run.AwaitsCredSlotAdmission). A boolean is a literal in a
+	// pipeline stage.
+	set["cred_admission_pending"] = true
 	filter := notDeleted(withTenantFilter(ctx, bson.M{"_id": id, "status": from}))
 	opts := options.FindOneAndUpdate().
 		SetReturnDocument(options.Before).
@@ -1656,7 +1677,7 @@ func (s *Store) RevertQueuedFlip(ctx context.Context, id string, flip store.Queu
 		runErr = prior.Error
 	}
 	set := bson.M{"status": prior.Status, "updated_at": time.Now().UTC()}
-	unset := bson.M{"await_answers_waits": ""}
+	unset := bson.M{"await_answers_waits": "", "cred_admission_pending": ""}
 	field := func(key string, val any, empty bool) {
 		if empty {
 			unset[key] = ""

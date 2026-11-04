@@ -5,19 +5,22 @@
 // It is the generalization `pkg/forge`'s connection model becomes (ADR-098):
 // the provider enum opens into a connector id, the auth scheme comes from the
 // package rather than a hardcoded list, and the forges become connectors #1-3.
-// This package is the NEW half of that expand-and-contract; `pkg/forge` still
-// owns the forge connections and keeps its ids, its `forge_conn:` sealing AAD
-// and its callback URLs until the contract phase moves them.
+// The contract half has landed (#2760): this package owns the forge connection
+// model — the record, the tenant-scoped store and the credential sealer in
+// forge_connection.go / forge_store.go / forge_credential.go — and pkg/forge
+// keeps only the behaviour built on it (connect flows, refresh worker,
+// orchestrator), reading the model through aliases.
 //
 // # Four properties held by construction, not by discipline
 //
 // Each one is a defect the existing code demonstrates, so each is designed
 // out rather than documented against.
 //
-//  1. EVERY read is tenant-scoped, in the SIGNATURE. `forge.ConnectionStore.Get`
-//     filters by `_id` alone, so any caller holding an id reaches any tenant's
-//     connection; the tenant here is a positional argument, so the hole cannot
-//     be reintroduced by forgetting a filter.
+//  1. EVERY read is tenant-scoped, in the SIGNATURE. The forge store this
+//     package contracted in (#2760) used to filter `Get` by `_id` alone, so
+//     any caller holding an id reached any tenant's connection; the tenant
+//     here is a positional argument, so the hole cannot be reintroduced by
+//     forgetting a filter.
 //  2. Capabilities are EXPLICIT. A connection is eligible for a use only if it
 //     says so, which is what keeps a connection that merely shares a host from
 //     being picked up by a resolver looking for something else.
@@ -299,7 +302,7 @@ func (c Connection) Validate() error {
 	if c.Status == "" {
 		return fmt.Errorf("connection %q: missing status", c.ID)
 	}
-	if !c.Status.Usable() && c.Status != StatusRevoked {
+	if !c.Status.Usable() && c.Status != StatusRevoked && c.Status != StatusNeedsReauth {
 		return fmt.Errorf("connection %q: unknown status %q", c.ID, c.Status)
 	}
 	if len(c.GrantedScopes) > 0 && !c.ScopesKnown {

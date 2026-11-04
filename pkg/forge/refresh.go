@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -42,7 +43,7 @@ type RefreshedToken struct {
 // a live token. Mirrors pkg/secrets/oauth_refresh.go's role for LLM
 // forfaits. PAT connections are never touched.
 type RefreshWorker struct {
-	Connections ConnectionStore
+	Connections connection.ForgeStore
 	Secrets     secrets.GenericSecretStore
 	Sealer      secrets.Sealer
 	// Refresher resolves a per-provider/kind refresher for a connection.
@@ -95,22 +96,24 @@ func (w *RefreshWorker) RunOnce(ctx context.Context) (int, error) {
 		return 0, fmt.Errorf("forge: list expiring connections: %w", err)
 	}
 	refreshed := 0
-	var firstErr error
+	// Every connection's failure, keyed by the connection it belongs to
+	// (sweepCauses): the caller classifies what it is given, and an elected
+	// sweep's verdict must not depend on the order this query listed the
+	// connections in.
+	var causes sweepCauses
 	for _, conn := range due {
 		// A sweep whose term ended starts no further renewal: what is left
 		// is the successor's, whose term opens with a pass.
 		if ctx.Err() != nil {
-			return refreshed, firstErr
+			return refreshed, causes.err()
 		}
 		if err := w.refreshOne(ctx, conn); err != nil {
-			if firstErr == nil {
-				firstErr = err
-			}
+			causes.add(conn.ID, err)
 			continue
 		}
 		refreshed++
 	}
-	return refreshed, firstErr
+	return refreshed, causes.err()
 }
 
 // refreshOne renews one connection. Ordering is load-bearing: the
@@ -153,13 +156,15 @@ func (w *RefreshWorker) refreshOne(ctx context.Context, conn Connection) error {
 	}
 	// RunOnce iterates connections across every tenant, so its ctx carries no
 	// tenant. The managed-secret store is tenant-scoped (Get/Update require the
-	// tenant on the ctx); without this the token mint succeeds and the
-	// connection updates (its store keys on _id only), but rewriteManagedSecret
-	// silently fails to persist the fresh token — leaving bot runs reading a
-	// stale, expired installation token (HTTP 401). Scope the ctx to THIS
-	// connection's tenant for all its store writes.
+	// tenant on the ctx, and the connection store takes it as an argument —
+	// every record this sweep handles supplies its own); without this the
+	// token mint succeeds and the connection updates, but
+	// rewriteManagedSecret silently fails to persist the fresh token —
+	// leaving bot runs reading a stale, expired installation token (HTTP
+	// 401). Scope the ctx to THIS connection's tenant for all its store
+	// writes.
 	ctx = store.WithTenant(ctx, conn.TenantID)
-	cur, err := openConnectionSecret(w.Sealer, conn.ID, conn.SealedPayload)
+	cur, err := connection.OpenForgeCredential(w.Sealer, conn.ID, conn.SealedPayload)
 	if err != nil {
 		return err
 	}
@@ -199,7 +204,7 @@ func (w *RefreshWorker) refreshOne(ctx context.Context, conn Connection) error {
 	if !out.ExpiresAt.IsZero() {
 		cur.ExpiresAt = out.ExpiresAt
 	}
-	sealed, err := sealConnectionSecret(w.Sealer, conn.ID, cur)
+	sealed, err := connection.SealForgeCredential(w.Sealer, conn.ID, cur)
 	if err != nil {
 		return err
 	}
@@ -369,7 +374,7 @@ func (w *RefreshWorker) refreshSecurityOnly(ctx context.Context, conn Connection
 	// flight (a few hundred ms, six times an hour). Blindly writing back the
 	// record we read at the top of the sweep would resurrect their choice —
 	// and we would have just re-uploaded the token they asked us to withdraw.
-	if fresh, ferr := w.Connections.Get(ctx, conn.ID); ferr == nil && !fresh.SecurityReadEnabled {
+	if fresh, ferr := w.Connections.Get(ctx, conn.TenantID, conn.ID); ferr == nil && !fresh.SecurityReadEnabled {
 		return w.withdrawSecurityReadEntry(ctx, fresh)
 	}
 	return w.Connections.Update(ctx, conn)
@@ -484,7 +489,7 @@ func RewriteManagedSecret(ctx context.Context, store secrets.GenericSecretStore,
 // work with nothing written. clearExpiry drops the recorded expiry as well
 // (the security-only lane's need, see refreshSecurityOnly).
 func (w *RefreshWorker) markRevoked(ctx context.Context, loaded Connection, clearExpiry bool) error {
-	written, err := w.Connections.RevokeIfPayload(ctx, loaded.ID, loaded.SealedPayload, w.now(), clearExpiry)
+	written, err := w.Connections.RevokeIfPayload(ctx, loaded.TenantID, loaded.ID, loaded.SealedPayload, w.now(), clearExpiry)
 	if err != nil {
 		return err
 	}
@@ -494,7 +499,7 @@ func (w *RefreshWorker) markRevoked(ctx context.Context, loaded Connection, clea
 	// A revoked credential can no longer refresh the org token either —
 	// withdraw it (same rationale as the degraded path), reading the opt-in
 	// as it is NOW: the sweep's copy may predate an opt-out.
-	fresh, err := w.Connections.Get(ctx, loaded.ID)
+	fresh, err := w.Connections.Get(ctx, loaded.TenantID, loaded.ID)
 	if err != nil {
 		return err
 	}

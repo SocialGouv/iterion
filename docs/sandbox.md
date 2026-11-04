@@ -1783,7 +1783,7 @@ your repo root and `sandbox: auto` will pick them up.
 
 A sandboxed node whose backend runs a CLI the container has no executable
 for used to die mid-run at `exec: <cli>: not found` — an explicit failure
-that named neither the cause nor the cure (#1643). Three places now say it,
+that named neither the cause nor the cure (#1643). Four places now say it,
 each with what it actually knows:
 
 - **At compile time, a warning (C321).** The backend's `image-presence`
@@ -1804,6 +1804,24 @@ each with what it actually knows:
   missing executable and both exits. This is the only place the per-image
   fact exists: `codex` is on the runner images' PATH and outside the stock
   sandbox's, so only the resolved image can decide.
+- **At dispatch on a host, a typed refusal.** An unsandboxed run (or the
+  noop driver) executes the CLI on the host itself, where no image is
+  involved — the one plane the run-start refusal cannot see. When the
+  backend's `image-presence` cell reads `unwired (no image)` AND its default
+  CLI does not resolve on the host's PATH, dispatch is refused before any
+  spawn with `delegate.ErrBackendCLIAbsent` (classified
+  `CAPABILITY_UNSUPPORTED`), naming the backend, the executable and the
+  remedies: install the CLI, pin its binary (`command:`, or the backend's
+  host env pin where one exists), or route to a backend the published
+  images serve. An explicit `command:` pin that resolves to nothing keeps
+  the legacy spawn error — that is a pin defect, not the image gap.
+
+**Why the three CLIs are not baked** (measured 2026-10, ARB-82): `kimi` and
+`grok` have no npm distribution to pin (the npm names `kimi-cli` and
+`grok-cli` are unrelated third-party packages), and `opencode` has two live
+distribution lines (`opencode-ai` 1.x and `@opencode/cli` 2.x) for +178 MB
+of image — so baking is a product decision, not a pin, and the typed
+refusals above are the safety deliverable until it is taken (#1643).
 
 **The predicate is the escape hatch.** It speaks only for the images
 iterion publishes, because only their contents are measured
@@ -1813,9 +1831,10 @@ even from those manifests, under your own namespace, with the CLI baked in —
 is yours: `sandbox: { image: … }`, `build:`, `--sandbox-default-image` and
 `ITERION_SANDBOX_DEFAULT_IMAGE` all pass. So do `sandbox: none`,
 `--sandbox none` and `ITERION_SANDBOX_OVERRIDE=none`, which run the node on
-the host. A backend the registry does not know — a custom registration — is
-never refused: a measured absence is a fact, the absence of a measurement is
-not.
+the host — where the dispatch-plane refusal above takes over if the CLI is
+absent there too. A backend the registry does not know — a custom
+registration — is never refused: a measured absence is a fact, the absence
+of a measurement is not.
 
 ### Claw backend in sandbox
 
@@ -3074,7 +3093,7 @@ and forwarding decorator, are:
 
 Two more execs **bypass `Run.Exec`**: Kubernetes `populateWorkspace`
 (`driver.go:1175`, pod tar extraction) and `exportOnce` (`driver.go:1476`, pod
-tar archive). Both call `kubectlCmdContext` directly and wait for the client;
+tar archive). Both call `Kubectl.cmdContext` directly and wait for the client;
 archive validation does not prove the remote process ended. Completion must
 preserve binary/streamed stdout rather than insert a line into an archive.
 

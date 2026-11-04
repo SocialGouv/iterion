@@ -7,6 +7,8 @@ import { InlineBanner } from "@/components/ui/InlineBanner";
 
 import {
   FeatureUnavailableError,
+  effectiveKind,
+  type BindingKind,
   type BotSecretBinding,
   createBinding,
   deleteBinding,
@@ -15,6 +17,7 @@ import {
 } from "@/api/botBindings";
 import { type GenericSecretView, listTeamSecrets } from "@/api/secrets";
 
+import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Dialog } from "@/components/ui/Dialog";
 import { EmptyState } from "@/components/ui/EmptyState";
@@ -121,10 +124,12 @@ export default function BindingsTab({ teamID, canManage }: Props) {
 
       <div className="flex flex-wrap items-end justify-between gap-2">
         <div>
-          <div className="font-medium">Bot secret bindings</div>
+          <div className="font-medium">Bot bindings</div>
           <p className="text-xs text-fg-subtle">
             Map a team secret to the name a bot's workflow declares in its <code>secrets:</code>{" "}
-            block, optionally narrowing the egress hosts.
+            block (optionally narrowing the egress hosts) — or pin a context document (a file in a
+            git repo) to a name its <code>attachments:</code> block declares, delivered to every
+            run of the bot.
           </p>
           <p className="text-caption text-fg-subtle mt-0.5">
             Values come from{" "}
@@ -163,8 +168,7 @@ export default function BindingsTab({ teamID, canManage }: Props) {
               size="sm"
               variant="primary"
               onClick={() => setCreating(true)}
-              disabled={noSecrets}
-              title={noSecrets ? "Add a team secret first" : undefined}
+              title={noSecrets ? "A secret binding needs a team secret first — a context binding does not" : undefined}
             >
               Add binding
             </Button>
@@ -172,10 +176,10 @@ export default function BindingsTab({ teamID, canManage }: Props) {
         </div>
       </div>
 
-      {noSecrets && (
+      {noSecrets && bindings.length === 0 && (
         <EmptyState
           title="No team secrets yet"
-          message="Bindings expose a team secret to a bot under a chosen workflow name. Add a secret first, then come back to bind it."
+          message="A secret binding exposes a team secret to a bot under a chosen workflow name — add a secret first for that kind. A context binding (a pinned document) needs none."
           action={
             canManage ? (
               <Button
@@ -190,8 +194,7 @@ export default function BindingsTab({ teamID, canManage }: Props) {
         />
       )}
 
-      {!noSecrets &&
-        (noBots ? (
+      {(noBots ? (
           <EmptyState
             title="No bots in your catalog yet"
             message="Bindings target bots discovered from your workspace or the marketplace. Once a bot exists on this server, pick it above to manage its bindings."
@@ -204,33 +207,64 @@ export default function BindingsTab({ teamID, canManage }: Props) {
         ) : !activeBot ? (
           <EmptyState message="Pick a bot to view its bindings." />
         ) : loading ? (
-          <TableSkeleton rows={4} cols={5} />
+          <TableSkeleton rows={4} cols={6} />
         ) : bindings.length === 0 ? (
           <EmptyState
             message={
               canManage
-                ? "No bindings for this bot. Add one to expose a team secret to the workflow."
+                ? "No bindings for this bot. Add one to expose a team secret or a pinned context document to the workflow."
                 : "No bindings for this bot. Ask an admin to add one."
             }
           />
         ) : (
-          <Table caption={`Secret bindings for ${activeBot}`}>
+          <Table caption={`Bindings for ${activeBot}`}>
             <THead>
               <Th>Workflow name</Th>
-              <Th>Secret</Th>
+              <Th>Kind</Th>
+              <Th>Source</Th>
               <Th>Allowed hosts</Th>
               <Th>Updated</Th>
               <Th align="right">Actions</Th>
             </THead>
             <TBody>
               {bindings.map((b) => {
+                const kind = effectiveKind(b);
                 const sec = secrets.find((s) => s.id === b.secret_id);
-                const secretMissing = !sec;
+                const secretMissing = kind === "secret" && !sec;
                 return (
                   <Tr key={b.id}>
-                    <Td className="font-mono">{b.secret_name_for_workflow}</Td>
+                    <Td className="font-mono">
+                      {b.secret_name_for_workflow}
+                      {b.degraded_reason && (
+                        <div className="mt-1">
+                          <Badge variant="warning" title={b.degraded_reason}>
+                            degraded
+                          </Badge>
+                          <div className="text-caption text-fg-subtle mt-0.5 max-w-md break-words">
+                            {b.degraded_reason}
+                          </div>
+                        </div>
+                      )}
+                    </Td>
                     <Td>
-                      {sec ? (
+                      <Badge variant={kind === "context" ? "info" : "neutral"}>{kind}</Badge>
+                    </Td>
+                    <Td>
+                      {kind === "context" ? (
+                        b.context ? (
+                          <div className="text-xs">
+                            <div className="font-mono break-all">
+                              {b.context.git_url} <span className="text-fg-muted">@</span>{" "}
+                              {b.context.ref}
+                            </div>
+                            <div className="text-caption text-fg-subtle font-mono break-all">
+                              {b.context.path}
+                            </div>
+                          </div>
+                        ) : (
+                          <span className="text-danger text-xs">No pinned source</span>
+                        )
+                      ) : sec ? (
                         <span>
                           {sec.name}{" "}
                           <span className="text-fg-muted">…{sec.last4 ?? "????"}</span>
@@ -356,14 +390,38 @@ function BindingDialog({
   onClose: () => void;
   onSaved: () => void;
 }) {
+  const [kind, setKind] = useState<BindingKind>(initial ? effectiveKind(initial) : "secret");
   const [secretID, setSecretID] = useState(initial?.secret_id ?? "");
   const [name, setName] = useState(initial?.secret_name_for_workflow ?? "");
   const [hosts, setHosts] = useState<string[]>(initial?.allowed_hosts ?? []);
+  const [gitURL, setGitURL] = useState(initial?.context?.git_url ?? "");
+  const [ref, setRef] = useState(initial?.context?.ref ?? "");
+  const [path, setPath] = useState(initial?.context?.path ?? "");
+  const [readCredID, setReadCredID] = useState(initial?.context?.secret_id ?? "");
   const { busy, error: err, run } = useAsyncAction();
 
   const submit = () =>
     run(async () => {
-      if (initial) {
+      if (kind === "context") {
+        const context = {
+          git_url: gitURL.trim(),
+          ref: ref.trim(),
+          path: path.trim(),
+          secret_id: readCredID || undefined,
+        };
+        if (initial) {
+          await updateBinding(teamID, botID, initial.id, {
+            secret_name_for_workflow: name,
+            context,
+          });
+        } else {
+          await createBinding(teamID, botID, {
+            kind: "context",
+            secret_name_for_workflow: name,
+            context,
+          });
+        }
+      } else if (initial) {
         await updateBinding(teamID, botID, initial.id, {
           secret_id: secretID,
           secret_name_for_workflow: name,
@@ -371,6 +429,7 @@ function BindingDialog({
         });
       } else {
         await createBinding(teamID, botID, {
+          kind: "secret",
           secret_id: secretID,
           secret_name_for_workflow: name,
           allowed_hosts: hosts.length ? hosts : undefined,
@@ -379,7 +438,11 @@ function BindingDialog({
       onSaved();
     });
 
-  const valid = secretID !== "" && name.trim() !== "";
+  const valid =
+    name.trim() !== "" &&
+    (kind === "secret"
+      ? secretID !== ""
+      : gitURL.trim() !== "" && ref.trim() !== "" && path.trim() !== "");
 
   return (
     <Dialog
@@ -405,7 +468,7 @@ function BindingDialog({
           {err}
         </InlineBanner>
       )}
-      {initial && !secrets.some((s) => s.id === initial.secret_id) && (
+      {initial && kind === "secret" && !secrets.some((s) => s.id === initial.secret_id) && (
         <InlineBanner tone="warning" layout="inline" className="mb-3">
           The secret behind this binding was deleted. Pick a replacement below (previous id:{" "}
           <span className="font-mono break-all">{initial.secret_id}</span>) or cancel and remove
@@ -414,36 +477,105 @@ function BindingDialog({
       )}
       <div className="space-y-3 text-sm">
         <label className="block">
-          <div className="text-xs text-fg-muted mb-1">Team secret</div>
-          <Select value={secretID} onChange={(e) => setSecretID(e.target.value)}>
-            <option value="">— pick a secret —</option>
-            {secrets.map((s) => (
-              <option key={s.id} value={s.id}>
-                {s.name} (…{s.last4 ?? "????"})
-              </option>
-            ))}
-          </Select>
+          <div className="text-xs text-fg-muted mb-1">Kind</div>
+          {initial ? (
+            // The kind is immutable: the update route never applies a kind
+            // change, so the edit form shows it rather than offering one.
+            <div>
+              <Badge variant={kind === "context" ? "info" : "neutral"}>{kind}</Badge>
+            </div>
+          ) : (
+            <Select value={kind} onChange={(e) => setKind(e.target.value as BindingKind)}>
+              <option value="secret">secret — a team credential exposed to the workflow</option>
+              <option value="context">context — a pinned document delivered to every run</option>
+            </Select>
+          )}
         </label>
+        {kind === "secret" ? (
+          <label className="block">
+            <div className="text-xs text-fg-muted mb-1">Team secret</div>
+            <Select value={secretID} onChange={(e) => setSecretID(e.target.value)}>
+              <option value="">— pick a secret —</option>
+              {secrets.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.name} (…{s.last4 ?? "????"})
+                </option>
+              ))}
+            </Select>
+          </label>
+        ) : (
+          <>
+            <label className="block">
+              <div className="text-xs text-fg-muted mb-1">Source repository</div>
+              <Input
+                value={gitURL}
+                onChange={(e) => setGitURL(e.target.value)}
+                placeholder="https://gitlab.example.com/org/bot-context.git"
+              />
+            </label>
+            <label className="block">
+              <div className="text-xs text-fg-muted mb-1">Ref (pin a tag or sha)</div>
+              <Input value={ref} onChange={(e) => setRef(e.target.value)} placeholder="v1.4.2" />
+              <div className="text-caption text-fg-subtle mt-1">
+                A moving branch makes the document change under the operator's feet.
+              </div>
+            </label>
+            <label className="block">
+              <div className="text-xs text-fg-muted mb-1">Path in the source</div>
+              <Input
+                value={path}
+                onChange={(e) => setPath(e.target.value)}
+                placeholder="handbook/pricing.pdf"
+              />
+            </label>
+            <label className="block">
+              <div className="text-xs text-fg-muted mb-1">Read credential (optional)</div>
+              <Select value={readCredID} onChange={(e) => setReadCredID(e.target.value)}>
+                <option value="">— public repository —</option>
+                {secrets.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.name} (…{s.last4 ?? "????"})
+                  </option>
+                ))}
+              </Select>
+              <div className="text-caption text-fg-subtle mt-1">
+                A team secret (PAT or deploy key) used only to READ the source; it is never
+                exposed to the workflow.
+              </div>
+            </label>
+          </>
+        )}
         <label className="block">
           <div className="text-xs text-fg-muted mb-1">Workflow name</div>
           <Input
             value={name}
             onChange={(e) => setName(e.target.value)}
-            placeholder="forge_token"
+            placeholder={kind === "secret" ? "forge_token" : "handbook"}
           />
           <div className="text-caption text-fg-subtle mt-1">
-            The name the bot's workflow declares in its <code>secrets:</code> block. Must match
-            exactly.
+            {kind === "secret" ? (
+              <>
+                The name the bot's workflow declares in its <code>secrets:</code> block. Must
+                match exactly.
+              </>
+            ) : (
+              <>
+                The name the bot's workflow declares in its <code>attachments:</code> block — the
+                document arrives as the run attachment of that name. Must match exactly.
+              </>
+            )}
           </div>
         </label>
-        <label className="block">
-          <div className="text-xs text-fg-muted mb-1">Allowed egress hosts (optional)</div>
-          <TagInput value={hosts} onChange={setHosts} placeholder="gitlab.example.com" />
-          <div className="text-caption text-fg-subtle mt-1">
-            If set, these hosts intersect (never broaden) the workflow's declared{" "}
-            <code>hosts:</code>. Leave empty to keep the workflow default.
-          </div>
-        </label>
+        {kind === "secret" && (
+          <label className="block">
+            <div className="text-xs text-fg-muted mb-1">Allowed egress hosts (optional)</div>
+            <TagInput value={hosts} onChange={setHosts} placeholder="gitlab.example.com" />
+            <div className="text-caption text-fg-subtle mt-1">
+              If set, these hosts intersect (never broaden) the workflow's declared{" "}
+              <code>hosts:</code>. Leave empty to keep the workflow default.
+            </div>
+          </label>
+        )}
       </div>
     </Dialog>
   );

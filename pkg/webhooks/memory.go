@@ -67,6 +67,30 @@ func (s *MemoryConfigStore) DisableProvision(_ context.Context, id, integrationI
 	return nil
 }
 
+// ClearCredentialPins judges the row the store holds under the same lock as
+// the write: the caller's listing copy names nothing here, so a pin edit or
+// a second record's sweep landing after that copy was taken survives
+// untouched. Both maps are scanned unconditionally — the contract removes
+// every entry naming the record, so the first map's drop never spares the
+// second its judgment.
+func (s *MemoryConfigStore) ClearCredentialPins(_ context.Context, id, recordID string) (bool, error) {
+	cleared := false
+	_, err := s.kit.Mutate(id, func(c *Config) bool {
+		droppedKeys := storekit.DropStringMapValues(&c.KeyOverrides, recordID)
+		droppedSecrets := storekit.DropStringMapValues(&c.SecretOverrides, recordID)
+		cleared = droppedKeys || droppedSecrets
+		if !cleared {
+			return false
+		}
+		c.Version++
+		return true
+	})
+	if err != nil {
+		return false, err
+	}
+	return cleared, nil
+}
+
 func (s *MemoryConfigStore) Delete(_ context.Context, id string) error {
 	return s.kit.Delete(id)
 }

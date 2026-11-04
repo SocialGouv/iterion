@@ -37,10 +37,10 @@ type stubPolicyFoldPublisher struct {
 	lastResume  *ResumeSpec
 }
 
-func (p *stubPolicyFoldPublisher) SubmitLaunch(_ context.Context, _ string, spec LaunchSpec, _ *ir.Workflow, _ *CompiledSource) (int, error) {
+func (p *stubPolicyFoldPublisher) SubmitLaunch(_ context.Context, _ string, spec LaunchSpec, _ *ir.Workflow, _ *CompiledSource) (LaunchSubmission, error) {
 	cp := spec
 	p.lastSpec = &cp
-	return 1, nil
+	return LaunchSubmission{QueuePosition: 1}, nil
 }
 func (p *stubPolicyFoldPublisher) CancelRun(context.Context, string) error { return nil }
 func (p *stubPolicyFoldPublisher) CancelRunWithReason(context.Context, string, store.RunEndReason) error {

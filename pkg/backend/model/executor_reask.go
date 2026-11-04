@@ -231,10 +231,19 @@ func reaskMarginalCost(first, reask delegate.Result, sameSession bool) float64 {
 // own pair fired once, around the first answer, before validation ran; the
 // re-ask is a further real turn — the model's work, tokens, cost — and a
 // timeline that showed only its llm steps left its end unaccounted.
+//
+// The re-ask runs on the element that served the first answer, so it names
+// that element's provider the way the first answer's event did
+// (servingProvider over the same backend and the task copy): the runner's
+// credential-plan join reads that word first (#2288), and a re-derivation
+// from the model spec names nothing for a bare id (codex's `gpt-*` under
+// `provider: openai`) and the prefix's provider over a hint-steered route
+// (pi's `anthropic/…` under `provider: openrouter`).
 func (e *ClawExecutor) emitReaskOutcome(nodeID, backendName, declaredModel string, reask schemaReask, first, result delegate.Result, err error, sameSession bool) {
 	di := delegateInfoFromResult(firstNonEmpty(result.BackendName, backendName), result)
 	di.DeclaredModel = declaredModel
 	di.RouteModel = reask.task.Model
+	di.Provider = servingProvider(backendName, &reask.task)
 	di.Attempt = 2
 	di.Reask = reask.mode
 	di.CostUSD = reaskMarginalCost(first, result, sameSession)

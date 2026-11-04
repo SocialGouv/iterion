@@ -23,11 +23,19 @@ type SecretGrantUnservableError struct {
 	Secrets []UnservableSecret
 }
 
-// UnservableSecret is one refused declaration.
+// UnservableSecret is one refused declaration. Two verdicts share the
+// shape, told apart by Withheld: the launch gate's, where every granted
+// sink was tried and none served — Paths pairs with those granted sinks,
+// one reason each; and a channel's, where the run spends ONE sink the
+// declaration does not grant — Withheld names that sink and Paths holds the
+// one channel that spends it.
 type UnservableSecret struct {
 	Secret string
 	Sinks  []string
 	Paths  []string
+	// Withheld is the sink a channel of this run spends and the declaration
+	// withholds; empty for the launch gate's verdict.
+	Withheld string
 }
 
 // Secret is the first refused declaration's name — the short reading of a
@@ -42,7 +50,13 @@ func (e *SecretGrantUnservableError) Secret() string {
 func (e *SecretGrantUnservableError) Error() string {
 	parts := make([]string, 0, len(e.Secrets))
 	for _, s := range e.Secrets {
-		parts = append(parts, fmt.Sprintf("secret %q grants sinks [%s], none of which this run can serve: %s", s.Secret, strings.Join(s.Sinks, ", "), strings.Join(s.Paths, "; ")))
+		granted := strings.Join(s.Sinks, ", ")
+		paths := strings.Join(s.Paths, "; ")
+		if s.Withheld != "" {
+			parts = append(parts, fmt.Sprintf("secret %q grants sinks [%s], which withhold the %q sink this run spends: %s", s.Secret, granted, s.Withheld, paths))
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("secret %q grants sinks [%s], none of which this run can serve: %s", s.Secret, granted, paths))
 	}
 	return strings.Join(parts, " / ")
 }

@@ -236,9 +236,10 @@ func (s *Store) ScheduleRunRetry(_ context.Context, _ string, at, wall time.Time
 }
 
 // DelayRunRetry mirrors mongo.Store.DelayRunRetry: an exact retry_after CAS,
-// no attempt, and scheduled_at preserved (or seeded from the CAS value) so a
-// repeatedly deferred circuit cannot postpone one run forever.
-func (s *Store) DelayRunRetry(_ context.Context, _ string, expectedAfter, delayedUntil time.Time) (bool, error) {
+// no attempt, scheduled_at preserved (or seeded from the CAS value) so a
+// repeatedly deferred circuit cannot postpone one run forever, and the wait
+// re-tagged by a non-empty reason or code.
+func (s *Store) DelayRunRetry(_ context.Context, _ string, expectedAfter, delayedUntil time.Time, reason, code string) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	st := s.run.RetryState
@@ -248,6 +249,12 @@ func (s *Store) DelayRunRetry(_ context.Context, _ string, expectedAfter, delaye
 	st.RetryAfter = bsonPtr(delayedUntil)
 	if st.ScheduledAt == nil {
 		st.ScheduledAt = bsonPtr(expectedAfter)
+	}
+	if reason != "" {
+		st.Reason = reason
+	}
+	if code != "" {
+		st.Code = code
 	}
 	st.ClaimedAt = nil
 	s.run.UpdatedAt = bsonTime(time.Now())

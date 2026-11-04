@@ -418,7 +418,25 @@ When `ITERION_SMTP_HOST` is set, the boot log shows
 `email_enabled` so the SPA hides the forgot-password link when it's
 off.
 
-### 1.10 PrometheusRule + PodMonitor
+### 1.10 Legal pages
+
+The legal notice, privacy policy, terms of use and accessibility statement
+are deployment configuration ([ADR-160](adr/160-legal-content-is-deployment-configuration.md));
+the chart's `config.legal.*` block fills every variable below
+([cloud-admin.md](cloud-admin.md#legal-pages-configlegal)).
+
+| Env var | Required | Effect |
+|---|---|---|
+| `ITERION_LEGAL_DOCUMENTS_DIR` | no | Directory of `<slug>.md` markdown files (`mentions-legales`, `confidentialite`, `cgu`, `accessibilite`), read once at startup; a stray or empty file refuses the start |
+| `ITERION_LEGAL_CONTACT_EMAIL` | no | The `mailto:` contact every legal page offers |
+| `ITERION_LEGAL_ACCESSIBILITY_STATUS` | no | `non_compliant` \| `partially_compliant` \| `compliant`; empty = not published |
+| `ITERION_LEGAL_ACCESSIBILITY_DATE` | no | Date the statement was established, `YYYY-MM-DD` |
+| `ITERION_LEGAL_ACCESSIBILITY_RATE` | no | Conformance rate in percent from a full audit; refused without a status |
+
+`/api/server/info` carries a `legal` block (configured documents, contact,
+status) the SPA reads to decide which links to show.
+
+### 1.11 PrometheusRule + PodMonitor
 
 The chart's `metrics.podMonitor.enabled=true` deploys a PodMonitor that
 scrapes both server and runner `/metrics`; `metrics.prometheusRule.enabled=true`
@@ -520,11 +538,68 @@ curl -X POST https://iterion.example.com/api/teams/$TEAM_ID/bots/review-pr/bindi
 
 UI path: **Integrations → Secrets** (`/integrations?tab=secrets`) → "Add
 team secret"; then **Integrations → Bot bindings** → pick review-pr →
-"Add binding" → pick the stored secret.
+"Add binding" → kind `secret` → pick the stored secret. The same dialog's
+`context` kind binds a pinned document instead (source repository, ref,
+path, optional read credential), and the bindings table shows each row's
+kind plus the engine's `degraded` flag when a launch could not
+materialise it.
 
 The full binding resolution chain (user > binding > team) and what
 `allowed_hosts` enforces is in
 [secrets-reference.md](secrets-reference.md).
+
+#### Binding a context document to a bot
+
+A binding of **kind `context`** ties REFERENCE MATERIAL — not a
+credential — to one bot: a file inside a git repository the operator
+controls, materialised as a run attachment of **every** run of that bot
+(schedules and webhook launches included), under a name the workflow
+declares in its `attachments:` block (ADR
+[147](adr/147-operator-bound-bot-context-is-a-pinned-source.md)).
+
+```bash
+curl -X POST https://iterion.example.com/api/teams/$TEAM_ID/bots/doki/bindings \
+  -d '{
+    "kind": "context",
+    "secret_name_for_workflow": "handbook",
+    "context": {
+      "git_url": "https://gitlab.example.com/org/doki-context.git",
+      "ref": "v1.4.2",
+      "path": "handbook/pricing.pdf",
+      "secret_id": "sec_…"
+    }
+  }'
+```
+
+- `secret_name_for_workflow` is the name the workflow declares in
+  `attachments:` — here `handbook`. A name the workflow does not declare
+  delivers a file no node can reach, so the binding is skipped (and
+  flagged) rather than stored unread.
+- **Pin a tag or sha in `ref`.** A moving branch makes the document
+  change under the operator's feet — the silent-drift failure the whole
+  pinned-source design exists to prevent
+  (`pkg/pluginsource`'s doctrine, reused).
+- `context.secret_id` is the READ credential (a stored team-scoped PAT
+  or deploy key), referenced by id, never inlined; omit it for a public
+  repository. A context binding exposes no secret to the workflow —
+  `secret_id` at the top level stays empty for this kind.
+- Precedence when several sources claim the same attachment name:
+  **author < operator < launch** — a bundle's `attachments/` default is
+  the author's suggestion, a context binding overrides it, and a
+  per-launch upload overrides both.
+- A binding that cannot be materialised (remote refuses the pin, path
+  missing from the checkout, document past the size bound) does NOT fail
+  the launch: the run proceeds without it, and the binding is flagged
+  `degraded_reason` on the list endpoint until a launch resolves it
+  again. The flag is the readout — a silently missing context is the
+  defect this feature exists to fix. Note the bound applies to the
+  delivered document (default 50 MiB), not to the fetch: the clone of
+  the source repository is depth-1 but otherwise unbounded, so point
+  bindings at small dedicated context repositories.
+
+On the wire the document travels as a run attachment (blob-store
+reference in cloud), so the runner pod reads it through the ordinary
+attachment contract — no queue-message change.
 
 ### 2.3 Watch usage
 

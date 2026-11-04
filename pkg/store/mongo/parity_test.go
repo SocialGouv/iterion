@@ -37,6 +37,11 @@ var nonPerRunCollections = map[string]bool{
 	// before the launch); the promotion discards the record and the reaper
 	// sweeps the rest after the TTL — a run has nothing of its own in it.
 	"staged_uploads": true,
+	// cred_slots is keyed by credential FINGERPRINT and names runs inside its
+	// holders array, tenant-blind: DeleteRun pulls the run from every row by
+	// that key with its own UpdateMany (runs.go), so the run_id sweep is not
+	// its path.
+	"cred_slots": true,
 }
 
 func TestDeleteRunCoversEveryPerRunCollection(t *testing.T) {

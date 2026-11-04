@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/cloudsched"
+	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -243,7 +244,7 @@ func TestBuildScheduledLaunchSpec(t *testing.T) {
 
 func TestSchedule_CreateResolvesRepoIntegration(t *testing.T) {
 	s := newScheduleTestServer(t)
-	s.forgeConnections = forge.NewMemoryConnectionStore()
+	s.forgeConnections = connection.NewMemoryForgeStore()
 	s.forgeIntegrations = forge.NewMemoryRepoIntegrationStore()
 	ctx := context.Background()
 	if err := s.forgeConnections.Create(ctx, forge.Connection{

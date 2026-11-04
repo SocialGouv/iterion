@@ -203,11 +203,11 @@ func (s *Server) replayGateDeferral(ctx context.Context, run *store.Run, token s
 	}
 
 	var gate gateOutcome
-	conn, err := s.forgeConnections.Get(store.WithoutTenantFilter(ctx), grant.ConnectionID)
+	conn, err := s.forgeConnections.Get(store.WithoutTenantFilter(ctx), grant.TeamID, grant.ConnectionID)
 	switch {
 	case err != nil:
 		gate = gateOutcome{errText: "connection " + grant.ConnectionID + " unreadable: " + err.Error(), transient: !errors.Is(err, forge.ErrConnectionNotFound)}
-	case conn.TenantID != grant.TeamID || !strings.EqualFold(strings.TrimSpace(d.Repo), strings.TrimSpace(grant.Repo)):
+	case !strings.EqualFold(strings.TrimSpace(d.Repo), strings.TrimSpace(grant.Repo)):
 		gate = gateOutcome{errText: "the deferral no longer matches its grant's tenant and repo"}
 	default:
 		gate = s.postGateStatus(ctx, conn, d.Repo, d.Number, &d.Gate, d.ReviewURL, d.Decision)

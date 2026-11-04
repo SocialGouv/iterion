@@ -212,13 +212,38 @@ They come back on three paths, and the distinction matters:
 | sweeper — the pod died without reporting | freed | **kept** (it ran) |
 
 `Report` closes the lease with a compare-and-set and charges the donor only
-if it wins, so a redelivered report cannot debit twice. A resumed run that
-**reported** *renews* its admission instead of taking a second one: it is
-the same run, and charging it again would let one flaky run that resumes a
-few times consume a contributor's whole day. Reporting is what earns the
-renewal — the runner's spend hand-off is deferred and fires on every
-outcome, `paused_waiting_human` included, so an ordinary pause/resume
-always qualifies.
+if it wins, so a redelivered report cannot debit twice. The report carries
+the attempt's spend **per credential** (#2288) on every pool-leased run, a
+whole-bundle grant as much as a door: the lease books only the slice that
+ran on its own fingerprint. On a door-served run, spend on the team's own
+credentials stays off the donor's ledger, and a rung the fallback never
+fired on books nothing. On a whole-bundle run the lent credential is
+usually the only one sealed, so its slice is the whole attempt — but the
+grant does not always seal alone: the pool tier only requires the default
+channels empty, so an org-tier key sealed for the routes that name a facade
+provider (`sealPinnedOnly`) can precede it, and the restore can put a
+refused key back for a wire family the grant does not cover. Spend on those
+stays off the donor's ledger, where the whole-attempt booking used to
+charge it. The per-credential table rides only when it places every call
+the attempt paid for: a walk the publisher cannot read (a template it
+cannot resolve, a provider outside its vocabulary) stamps no plan, and a
+call the runner cannot place on a planned credential at run time (a claw
+sub-agent's loop, a model the agent tool names, a route that drifted from
+its launch reading) voids the table at the report, in one warning naming
+the run. Either way the coarse whole-attempt booking stands: a table
+missing a slice would book the donor short of whatever of it ran on their
+credential. A fallback chain is no such call: the one event that ends it
+itemises what each abandoned route spent (`folded_spend`), and each slice
+books on its own route's credential — a primary that burned the donor's
+subscription before a rung served on the team's key charges the donor that
+slice alone. Spend on the deployment's own env-funded routes (its gateway, a
+pod's ambient Claude env) is placed on nobody by design and voids nothing.
+A resumed run that **reported** *renews* its admission instead of taking a
+second one: it is the same run, and charging it again would let one flaky
+run that resumes a few times consume a contributor's whole day. Reporting
+is what earns the renewal — the runner's spend hand-off is deferred and
+fires on every outcome, `paused_waiting_human` included, so an ordinary
+pause/resume always qualifies.
 
 **One lease document per attempt**, never reused. A run that resumes —
 onto the same donor or another — leaves every finished attempt's record

@@ -1311,6 +1311,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/legal/{slug}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+            };
+            cookie?: never;
+        };
+        /**
+         * GET /api/legal/{slug}
+         * @description Public. One of the operator's legal documents (mentions-legales, confidentialite, cgu, accessibilite) as markdown, with the contact address and the accessibility declaration. 404 for a slug that names no document or one this deployment did not configure; /api/server/info lists the configured ones.
+         */
+        get: operations["getLegalBySlug"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/local/skills": {
         parameters: {
             query?: never;
@@ -4157,7 +4179,10 @@ export interface paths {
         /** GET /api/teams/{id}/bots/{bot_id}/bindings */
         get: operations["getTeamsByIdBotsByBotIdBindings"];
         put?: never;
-        /** POST /api/teams/{id}/bots/{bot_id}/bindings */
+        /**
+         * POST /api/teams/{id}/bots/{bot_id}/bindings
+         * @description Create a bot binding. One workflow name binds once per bot (secret or context alike). A context binding is refused 501 on a deployment that cannot materialise it.
+         */
         post: operations["postTeamsByIdBotsByBotIdBindings"];
         delete?: never;
         options?: never;
@@ -4179,11 +4204,17 @@ export interface paths {
         get?: never;
         put?: never;
         post?: never;
-        /** DELETE /api/teams/{id}/bots/{bot_id}/bindings/{binding_id} */
+        /**
+         * DELETE /api/teams/{id}/bots/{bot_id}/bindings/{binding_id}
+         * @description Delete a binding. 204 on success.
+         */
         delete: operations["deleteTeamsByIdBotsByBotIdBindingsByBindingId"];
         options?: never;
         head?: never;
-        /** PATCH /api/teams/{id}/bots/{bot_id}/bindings/{binding_id} */
+        /**
+         * PATCH /api/teams/{id}/bots/{bot_id}/bindings/{binding_id}
+         * @description Patch a binding's mutable payload (the name it resolves under, the secret or pinned source, the egress hosts). The merged record is re-validated against its kind. The kind itself is immutable — a kind in the request is ignored — and the degraded readout is the engine's: a PATCH neither sets nor clears it.
+         */
         patch: operations["patchTeamsByIdBotsByBotIdBindingsByBindingId"];
         trace?: never;
     };
@@ -6351,6 +6382,11 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        Accessibility: {
+            date?: string;
+            rate?: string;
+            status?: string;
+        };
         AdmissionDecision: {
             /** Format: date-time */
             checked_at: string;
@@ -6458,6 +6494,24 @@ export interface components {
             /** Format: date-time */
             updated_at: string;
             updated_by?: string;
+        };
+        BotSecretBinding: {
+            allowed_hosts?: string[];
+            bot_id: string;
+            context?: components["schemas"]["ContextSource"];
+            /** Format: date-time */
+            created_at: string;
+            created_by: string;
+            /** Format: date-time */
+            degraded_at?: string;
+            degraded_reason?: string;
+            id: string;
+            kind?: string;
+            secret_id: string;
+            secret_name_for_workflow: string;
+            tenant_id: string;
+            /** Format: date-time */
+            updated_at: string;
         };
         BotVars: {
             /** Format: date-time */
@@ -6646,50 +6700,18 @@ export interface components {
             created_at: string;
             id: string;
         };
-        Connection: {
-            /** Format: date-time */
-            access_token_expires_at?: string;
-            account_id?: string;
-            account_kind?: string;
-            account_login?: string;
-            app_slug?: string;
-            /** Format: date-time */
-            avatar_applied_at?: string;
-            avatar_error?: string;
-            bot_identity?: string;
-            /** Format: date-time */
-            created_at: string;
-            created_by: string;
-            display_name?: string;
-            forge_base_url?: string;
-            granted_permissions?: {
-                [key: string]: string;
-            };
-            id: string;
-            installation_account?: string;
-            installation_id?: number;
-            kind: string;
-            /** Format: date-time */
-            last_refreshed_at?: string;
-            namespace?: string;
-            oauth_app_id?: string;
-            provider: string;
-            purpose?: string;
-            scopes?: string[];
-            security_read_enabled?: boolean;
-            status: string;
-            status_reason?: string;
-            tenant_id: string;
-            /** Format: date-time */
-            updated_at: string;
-            webhook_base_url?: string;
-        };
         ContextRef: {
             id: string;
             kind: string;
             namespace?: string;
             required?: boolean;
             revision?: string;
+        };
+        ContextSource: {
+            git_url: string;
+            path: string;
+            ref: string;
+            secret_id?: string;
         };
         CredentialPreview: {
             candidates: components["schemas"]["CredentialPreviewCandidate"][];
@@ -6901,6 +6923,44 @@ export interface components {
             node_id: string;
             served_by?: string;
             skipped?: boolean;
+        };
+        ForgeConnection: {
+            /** Format: date-time */
+            access_token_expires_at?: string;
+            account_id?: string;
+            account_kind?: string;
+            account_login?: string;
+            app_slug?: string;
+            /** Format: date-time */
+            avatar_applied_at?: string;
+            avatar_error?: string;
+            bot_identity?: string;
+            /** Format: date-time */
+            created_at: string;
+            created_by: string;
+            display_name?: string;
+            forge_base_url?: string;
+            granted_permissions?: {
+                [key: string]: string;
+            };
+            id: string;
+            installation_account?: string;
+            installation_id?: number;
+            kind: string;
+            /** Format: date-time */
+            last_refreshed_at?: string;
+            namespace?: string;
+            oauth_app_id?: string;
+            provider: string;
+            purpose?: string;
+            scopes?: string[];
+            security_read_enabled?: boolean;
+            status: string;
+            status_reason?: string;
+            tenant_id: string;
+            /** Format: date-time */
+            updated_at: string;
+            webhook_base_url?: string;
         };
         ForgeOAuthApp: {
             app_manage_url?: string;
@@ -7758,6 +7818,19 @@ export interface components {
             };
             sync_every_seconds?: number;
         };
+        botBindingPatchReq: {
+            allowed_hosts?: string[];
+            context?: components["schemas"]["ContextSource"];
+            secret_id?: string;
+            secret_name_for_workflow?: string;
+        };
+        botBindingReq: {
+            allowed_hosts?: string[];
+            context?: components["schemas"]["ContextSource"];
+            kind?: string;
+            secret_id?: string;
+            secret_name_for_workflow?: string;
+        };
         botRolesSettingsView: {
             effective: components["schemas"]["effectiveBotRoles"];
             origin: string;
@@ -7945,7 +8018,7 @@ export interface components {
         };
         forgeAvatarResp: {
             avatar_url?: string;
-            connection?: components["schemas"]["Connection"];
+            connection?: components["schemas"]["ForgeConnection"];
         };
         forgeConnectReq: {
             bot_identity?: string;
@@ -7959,7 +8032,7 @@ export interface components {
         };
         forgeConnectResp: {
             authorize_url?: string;
-            connection?: components["schemas"]["Connection"];
+            connection?: components["schemas"]["ForgeConnection"];
             install_url?: string;
         };
         forgeConnectionHealth: {
@@ -8028,6 +8101,13 @@ export interface components {
             repo_full_name: string;
             sync_issues_enabled: boolean;
             web_url?: string;
+        };
+        legalDocumentView: {
+            accessibility: components["schemas"]["Accessibility"];
+            contact_email?: string;
+            markdown: string;
+            slug: string;
+            title: string;
         };
         loginReq: {
             email: string;
@@ -10940,6 +11020,42 @@ export interface operations {
         responses: {
             /** @description Response */
             default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getLegalBySlug: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["legalDocumentView"];
+                };
+            };
+            /** @description no such legal document, or not published on this deployment */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Rate limit exceeded; Retry-After says when */
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -15007,12 +15123,16 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Response */
-            default: {
+            /** @description OK */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": {
+                        bindings: components["schemas"]["BotSecretBinding"][];
+                    };
+                };
             };
         };
     };
@@ -15026,10 +15146,44 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["botBindingReq"];
+            };
+        };
         responses: {
-            /** @description Response */
-            default: {
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BotSecretBinding"];
+                };
+            };
+            /** @description the payload contradicts its kind (Validate), or secret_id / context.secret_id is not a team-scoped secret of this org */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description admin or owner required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description a binding for this workflow name already exists on this bot */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description context_binding_not_materialised — a context binding on a deployment with no pinned-source fetcher wired would be an operator-visible no-op */
+            501: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -15050,8 +15204,22 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Response */
-            default: {
+            /** @description No Content */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description admin or owner required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description no binding with this id on this bot */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -15070,10 +15238,44 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["botBindingPatchReq"];
+            };
+        };
         responses: {
-            /** @description Response */
-            default: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BotSecretBinding"];
+                };
+            };
+            /** @description the merged record contradicts its kind, or the referenced credential is not bindable */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description admin or owner required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description no binding with this id on this bot */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description the new name is already bound on this bot */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -15525,7 +15727,7 @@ export interface operations {
                 };
                 content: {
                     "application/json": {
-                        connections: components["schemas"]["Connection"][];
+                        connections: components["schemas"]["ForgeConnection"][];
                     };
                 };
             };

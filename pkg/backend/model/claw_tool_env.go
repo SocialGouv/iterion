@@ -1,6 +1,6 @@
 package model
 
-import "os"
+import "context"
 
 // forwardableToolEnv builds the env claw's vendored TOOL packages read inside
 // the container for a sandboxed node — the sibling of forwardableProviderEnv
@@ -39,17 +39,17 @@ import "os"
 // launcher-side for ever (#2802, question 50, verdict A): a sandboxed node
 // has no display and computer_use — the tool that reads the pair — stays
 // PlacementRefused there, so the names cross nowhere.
-func forwardableToolEnv() map[string]string {
+func forwardableToolEnv(ctx context.Context) map[string]string {
 	env := map[string]string{}
 	// Spelled literally at each read: the package's env-read guard
 	// (claw_sandbox_env_class_test.go) classifies names it can SEE.
-	if v := os.Getenv("CLAW_BASH_TIMEOUT"); v != "" {
+	if v := envGetenv(ctx, "CLAW_BASH_TIMEOUT"); v != "" {
 		env["CLAW_BASH_TIMEOUT"] = v
 	}
-	if v := os.Getenv("CLAW_PROC_WAIT_DELAY"); v != "" {
+	if v := envGetenv(ctx, "CLAW_PROC_WAIT_DELAY"); v != "" {
 		env["CLAW_PROC_WAIT_DELAY"] = v
 	}
-	if v := os.Getenv("CLAW_CONFIG_HOME"); v != "" {
+	if v := envGetenv(ctx, "CLAW_CONFIG_HOME"); v != "" {
 		env["CLAW_CONFIG_HOME"] = v
 	}
 	return env

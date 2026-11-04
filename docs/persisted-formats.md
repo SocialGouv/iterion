@@ -378,7 +378,11 @@ revision plus a leased owner/epoch fence. It also carries the artifact-version
 frontier and action receipts with `prepared`, `issued`, `succeeded`,
 `rejected`, or `uncertain` state. `issued` is written before target mutation
 and charged exactly once; an unknown outcome is reconciled from the target
-event journal and is never blindly retried.
+event journal and is never blindly retried. A dispatch refused before
+anything was published because a credential the resumed run sealed is at
+its concurrency cap goes back to `prepared` with `wait_until` one slot probe
+out, its charge given back: the coordinator asks again then, up to the
+mission's TTL.
 
 Queue schema v17 adds `ResumeSpec.expected_status` and `receipt_id`. The
 publisher consumes the exact expected status in its resumable→queued CAS; the

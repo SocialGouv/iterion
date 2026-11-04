@@ -591,6 +591,10 @@ func RunValidateWithContext(ctx context.Context, path string, p *Printer, opts V
 		}
 	}
 
+	// presetErrs are the bundle's preset files the loader could not read:
+	// scanned once below for the lint, read again by the dry run, so one
+	// cause is one sentence.
+	var presetErrs []error
 	// Bundle consistency: cross-check the manifest against the compiled
 	// workflow (var maps, forge secret, capabilities, per-bot-memory name
 	// stability). Only runs for bundles; plain .bot files have no manifest.
@@ -629,6 +633,20 @@ func RunValidateWithContext(ctx context.Context, path string, p *Printer, opts V
 				Message:  fmErr.Error() + " — the checks that read it did not run",
 			})
 		}
+		// A preset the loader could not read is absent from the lint's
+		// input: said here, on every `validate`, so the verdict on the
+		// presets that loaded is never taken for a verdict on all of them.
+		// The dry run, when asked for, refuses to run over it as well, from
+		// this same scan.
+		var presetDocs []bundlelint.PresetDoc
+		presetDocs, presetErrs = scanBundlePresets(bundleHandle.PresetsDir)
+		for _, perr := range presetErrs {
+			result.Diagnostics = append(result.Diagnostics, ValidateDiagnostic{
+				Source:   "bundle",
+				Severity: "warning",
+				Message:  perr.Error() + " — the checks that read the preset's body did not run",
+			})
+		}
 		diags := bundlelint.CheckConsistency(bundlelint.Input{
 			// nil for a bundle known by its skills/ alone: the profile checks
 			// still run, the manifest-side ones are skipped.
@@ -638,6 +656,13 @@ func RunValidateWithContext(ctx context.Context, path string, p *Printer, opts V
 			Frontmatter: lintFrontmatter,
 			DirName:     bundleDir,
 			Skills:      scanBundleSkills(bundleHandle.SkillsDir),
+			// The presets' prompt bodies (C323 and the rest of the
+			// prompt-sink verdicts), read here because bundlelint stays
+			// I/O-free, and judged against the program a launch of THIS
+			// entry merges them into — the sibling's own when a sibling is
+			// validated, where the manifest-bound checks read main's.
+			Presets:  presetDocs,
+			Launched: cr.Workflow,
 			// The engine contract (C250/C251), held against THIS binary — the
 			// author's local half of the guard the push admission and the
 			// runner apply on a deployment.
@@ -696,16 +721,15 @@ func RunValidateWithContext(ctx context.Context, path string, p *Printer, opts V
 	if opts.wantsDryRun() && result.Valid && cr.Workflow != nil {
 		fixtures, err := loadDryRunFixtures(opts.Fixtures)
 		// A preset file the bundle carries and cannot read is the bot's
-		// defect, and this is the command that says so — `run` logs it at
-		// warn and goes on; the dry run does not run over it.
-		if err == nil && bundleHandle != nil {
-			if _, perrs := bundle.LoadPresets(bundleHandle.PresetsDir); len(perrs) > 0 {
-				err = fmt.Errorf("bundle presets: %s", joinErrors(perrs))
-			}
+		// defect, said above as a bundle warning with the file and the
+		// reason — `run` logs it at warn and goes on; the dry run does not
+		// run over it, and says so by count, never the cause a second time.
+		if err == nil && len(presetErrs) > 0 {
+			err = fmt.Errorf("bundle presets: %d preset file%s the loader could not read, each said as a bundle warning with its reason — the dry run did not run over them", len(presetErrs), pluralS(len(presetErrs)))
 		}
 		// The bundle's file presets (presets/<name>.md) join the in-source
 		// ones, so `--preset` resolves them as it does on `run`.
-		runtime.MergeBundlePresets(cr.Workflow, bundleHandle, nil)
+		runtime.MergeBundlePresets(cr.Workflow, bundleHandle, opts.Preset, nil)
 		inputs, ierr := dryRunInputs(cr.Workflow, opts)
 		if err == nil {
 			err = ierr
@@ -1147,6 +1171,34 @@ func scanBundleSkills(skillsDir string) []bundlelint.SkillDoc {
 	return docs
 }
 
+// scanBundlePresets reads a bundle's presets/*.md for the lint, through the
+// loader the RUN uses (bundle.LoadPresets) so the lint never drifts from
+// what a launch actually merges. An empty or missing dir yields no docs (the
+// checks then no-op). A file the loader could not read — frontmatter it
+// cannot parse, a name it refuses, a duplicate — is absent from the docs and
+// present in the errors, one per file, for the caller to say: the lint
+// judges the presets that load, and the caller owes the reader the ones it
+// did not judge.
+//
+// A doc's path is the PAGE, bundle-relative, so an operator opens the file
+// the diagnostic names; an error is the loader's own sentence, which names
+// the file by the path the loader opened.
+func scanBundlePresets(presetsDir string) ([]bundlelint.PresetDoc, []error) {
+	if presetsDir == "" {
+		return nil, nil
+	}
+	specs, errs := bundle.LoadPresets(presetsDir)
+	var docs []bundlelint.PresetDoc
+	for _, ps := range specs {
+		docs = append(docs, bundlelint.PresetDoc{
+			Path:   bundle.DirPresets + "/" + filepath.Base(ps.Path),
+			Name:   ps.Name,
+			Prompt: ps.Prompt,
+		})
+	}
+	return docs, errs
+}
+
 // wantsDryRun says the options ask for the dry run — by its switch, or by
 // anything only the dry run reads.
 func (o ValidateOptions) wantsDryRun() bool {
@@ -1227,15 +1279,6 @@ func dryRunInputs(wf *ir.Workflow, opts ValidateOptions) (map[string]any, error)
 
 // noEnvironment answers every reference with the empty string.
 func noEnvironment(string) string { return "" }
-
-// joinErrors lists errors on one line, for a result field.
-func joinErrors(errs []error) string {
-	parts := make([]string, 0, len(errs))
-	for _, e := range errs {
-		parts = append(parts, e.Error())
-	}
-	return strings.Join(parts, "; ")
-}
 
 // declaredVars lists the workflow's var names, sorted, for an error to
 // name — the shared helper's word.

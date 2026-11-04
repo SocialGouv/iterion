@@ -43,13 +43,17 @@ type DelegateInfo struct {
 	// called, OpenRouter's "anthropic/claude-sonnet-4.5" included. Empty
 	// when no element ran.
 	RouteModel string
-	// Provider is the provider of the route that SERVED — the serving chain
+	// Provider is the provider of the route RouteModel names — the chain
 	// element's resolved hint, or the spec prefix's pin on claw (zai for
-	// `anthropic/glm-*`). The selected route is provider AND model bound
-	// together (#2772): published here, on the delegate_finished event and
-	// on NodesServed, so the run's record names whose endpoint answered and
-	// never just the label it answered under. Empty when the route deferred
-	// to the wire's default precedence.
+	// `anthropic/glm-*`): the element that served, and on a skip, a failure
+	// or a schema re-ask the same element RouteModel names. The selected
+	// route is provider AND model bound together (#2772): published here,
+	// on the delegate_finished / delegate_error events and on NodesServed,
+	// so the run's record names whose endpoint answered (or was attempted)
+	// and never just the label it answered under — and the runner's
+	// credential-plan join reads it before any re-derivation from the model
+	// (#2288). Empty when the route deferred to the wire's default
+	// precedence.
 	Provider string
 	// ContextWindow is the effective model's context window in tokens.
 	// Zero when unknown.
@@ -115,6 +119,16 @@ type DelegateInfo struct {
 	// Consumers must not read it as "what served": recordServed is
 	// suppressed and the event carries skipped:true.
 	Skipped bool
+	// FoldedSpend itemises the part of Tokens and CostUSD a fallback chain
+	// folded in from the routes it abandoned after they spent (chainOutcome's
+	// field of the same name), one slice per abandoned attempt, each under
+	// the labels of the route that spent it. The rest of the figure is the
+	// spend of the route this event names. A consumer that books per route
+	// or per credential books each slice on its own route: the event's
+	// labels name only where the chain ended — a claude_code primary that
+	// burned a lent subscription before a claw rung served on another
+	// provider leaves both slices in one figure.
+	FoldedSpend []SpendSlice
 	// Fingerprint is the provider fingerprint of the session behind this
 	// delegation ("anthropic-oauth", "facade:<slot>:<base url>", …), as the
 	// backend reported it. It is the ROUTING DECISION, taken before the
@@ -124,6 +138,21 @@ type DelegateInfo struct {
 	// source of the model_served_via_facade event on the FINISHED path
 	// only, which is what keeps that event's name true.
 	Fingerprint string
+}
+
+// SpendSlice is one abandoned chain route's spend inside a delegate event's
+// folded figure (DelegateInfo.FoldedSpend), labelled like the event's own
+// figure is: the backend that spent it, the route's model spec and the model
+// the backend reported, the provider word it served under
+// (servingProvider), and the session's credential label.
+type SpendSlice struct {
+	BackendName    string
+	RouteModel     string
+	EffectiveModel string
+	Provider       string
+	Fingerprint    string
+	Tokens         int
+	CostUSD        float64
 }
 
 // delegateInfoFromResult fills the result-derived fields of a DelegateInfo —

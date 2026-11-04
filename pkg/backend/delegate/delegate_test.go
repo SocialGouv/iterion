@@ -370,7 +370,7 @@ func TestCodexTerminalFailure(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := codexTerminalFailure(tt.rm, tt.stderr)
+			err := codexTerminalFailure(tt.rm, tt.stderr, nil)
 			if (err != nil) != tt.wantError {
 				t.Fatalf("error = %v, wantError %v", err, tt.wantError)
 			}
@@ -391,7 +391,7 @@ func TestCodexFormattingStderrCapturePreservesTransientClassification(t *testing
 	capture.AppendLine("stream disconnected before completion")
 	empty := ""
 
-	err := codexTerminalFailure(&codexsdk.ResultMessage{Result: &empty}, capture.String())
+	err := codexTerminalFailure(&codexsdk.ResultMessage{Result: &empty}, capture.String(), nil)
 	var transient *ErrTransient
 	if !errors.As(err, &transient) {
 		t.Fatalf("codexTerminalFailure() error = %T %v, want *ErrTransient", err, err)

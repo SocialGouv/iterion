@@ -1176,7 +1176,7 @@ func (e *ClawExecutor) toolNodeScriptCommand(ctx context.Context, interpreter []
 	// container env (the same dir is bind-mounted there). The run-level
 	// env (the launch surface's layer plus the engine's PATH composition)
 	// is appended after the inherited env so on a duplicate key it wins.
-	cmd.Env = os.Environ()
+	cmd.Env = envEnviron(ctx)
 	if runLevelEnv := e.processExtraEnv(); e.artifactFilesDir != "" || len(runLevelEnv) > 0 {
 		cmd.Env = append(cmd.Env, runLevelEnv...)
 		if e.artifactFilesDir != "" {
@@ -1331,7 +1331,7 @@ func (e *ClawExecutor) treeNoiseEnvAppend(nodeEnv map[string]string) []string {
 	if value, set := nodeEnv[treenoise.TreeNoiseEnvVar]; set && value != "" {
 		return nil
 	}
-	if value, inherited := os.LookupEnv(treenoise.TreeNoiseEnvVar); inherited && value != "" {
+	if value, inherited := envLookupEnv(context.Background(), treenoise.TreeNoiseEnvVar); inherited && value != "" {
 		return nil
 	}
 	for _, entry := range e.runExtraEnv {
@@ -1414,7 +1414,7 @@ func (e *ClawExecutor) toolNodeCommand(ctx context.Context, resolved string, env
 	proc.TerminateGroupOnCancel(cmd)
 	cmd.Stdin = stdin
 	runLevelEnv := e.processExtraEnv()
-	cmd.Env = os.Environ()
+	cmd.Env = envEnviron(ctx)
 	// Run-level env (the launch surface's layer plus the engine's
 	// PATH composition) — appended after the inherited env so on a
 	// duplicate key it wins.
@@ -2011,7 +2011,7 @@ func lookupToolEnv(name string) (string, bool) {
 	if !ir.ProcessEnvReadable(name) {
 		return "", false
 	}
-	return os.LookupEnv(name)
+	return envLookupEnv(context.Background(), name)
 }
 
 // looksLikeEnvRef reports whether body matches the shell convention

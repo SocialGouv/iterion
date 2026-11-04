@@ -132,6 +132,14 @@ func GenerateTextDirect(ctx context.Context, client api.APIClient, opts Generati
 	messages := make([]api.Message, len(opts.Messages))
 	copy(messages, opts.Messages)
 
+	// A retry whose replay starts from the bare prompt, a resume whose
+	// checkpoint compaction summarised the invocation away, or a delegated
+	// child's fresh conversation leaves this generation bounded by a command
+	// its conversation never invoked — re-state the bound, or the next
+	// refusal names a command the model cannot place (#2905). No-op when
+	// the notice already rides the conversation.
+	messages = tool.EnsureNarrowingNotice(ctx, messages)
+
 	// Always-thinking models reject tool_choice:any. Keep the grounding
 	// contract in the executor: an announced, malformed or denied call is
 	// not an executed tool. Chain the observer rather than replacing it.
@@ -352,7 +360,7 @@ func stashPauseConversation(ctx context.Context, toolErr error, messages []api.M
 	if !errors.As(toolErr, &askErr) {
 		return
 	}
-	if convBytes, mErr := json.Marshal(maybeCompactPause(messages, opts.Model, opts.CompactThresholdRatio, opts.CompactPreserveRecent, askErr.PendingToolUseID)); mErr == nil {
+	if convBytes, mErr := json.Marshal(maybeCompactPause(ctx, messages, opts.Model, opts.CompactThresholdRatio, opts.CompactPreserveRecent, askErr.PendingToolUseID)); mErr == nil {
 		askErr.Conversation = convBytes
 	}
 	// The narrowing rides the pause (#1717, review MED-1): the resumed
@@ -379,7 +387,7 @@ func stashPauseConversation(ctx context.Context, toolErr error, messages []api.M
 // from a context-window rejection — deliberately does not fire them: a
 // Block there could only turn a recoverable overflow into a failed node.
 func compactBetweenIterations(ctx context.Context, messages []api.Message, opts GenerationOptions) []api.Message {
-	compacted, info, ok := maybeCompact(messages, opts.Model, opts.CompactThresholdRatio, opts.CompactPreserveRecent)
+	compacted, info, ok := maybeCompact(ctx, messages, opts.Model, opts.CompactThresholdRatio, opts.CompactPreserveRecent)
 	if !ok {
 		return messages
 	}
@@ -389,13 +397,18 @@ func compactBetweenIterations(ctx context.Context, messages []api.Message, opts 
 			return messages
 		}
 	}
+	// The turn a hook injects is text the loop composed for ITSELF, which
+	// the request chokepoint never sees: the summariser folds it in before
+	// any request carries it. It takes the model boundary's pass here, the
+	// one point every injector crosses (screenedInjector).
+	opts.OnBeforeCompact = screenedInjector(opts.OnBeforeCompact, opts.screenModelText())
 	// Compaction is about to fire: give OnBeforeCompact a chance to
 	// inject content (e.g. a session-memory user turn) so the summary
 	// preserves it. The injected slice feeds the summariser only; the
 	// live history keeps the originals.
 	if opts.OnBeforeCompact != nil {
 		if modified := opts.OnBeforeCompact(messages); modified != nil {
-			if reCompacted, reInfo, reOk := maybeCompact(modified, opts.Model, opts.CompactThresholdRatio, opts.CompactPreserveRecent); reOk {
+			if reCompacted, reInfo, reOk := maybeCompact(ctx, modified, opts.Model, opts.CompactThresholdRatio, opts.CompactPreserveRecent); reOk {
 				compacted, info = reCompacted, reInfo
 			}
 		}

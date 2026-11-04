@@ -253,3 +253,23 @@ func TestAnAdoptedChildIsJudgedAgainstTheParentsSandbox(t *testing.T) {
 		t.Fatalf("a child's agent grant on a claude_code node was refused in the shared sandbox: %v", err)
 	}
 }
+
+// The cause's text states the verdict it carries. Two gates share the
+// type: the launch gate, where every granted sink was tried and none
+// served, and a channel's gate, where the run spends ONE sink the
+// declaration withholds — on a run that serves every sink it grants. The
+// second must not borrow the first's sentence, which would be false there.
+func TestTheUnservableSecretErrorStatesTheVerdictItCarries(t *testing.T) {
+	launch := &SecretGrantUnservableError{Secrets: []UnservableSecret{{
+		Secret: "tok", Sinks: []string{secretsink.Egress}, Paths: []string{"egress: no inspecting proxy"},
+	}}}
+	if got := launch.Error(); got != `secret "tok" grants sinks [egress], none of which this run can serve: egress: no inspecting proxy` {
+		t.Errorf("launch verdict = %q", got)
+	}
+	withheld := &SecretGrantUnservableError{Secrets: []UnservableSecret{{
+		Secret: "forge_token", Sinks: []string{secretsink.Prompt, secretsink.Egress}, Withheld: secretsink.File, Paths: []string{"the clone keeps its credential in a file"},
+	}}}
+	if got := withheld.Error(); got != `secret "forge_token" grants sinks [prompt, egress], which withhold the "file" sink this run spends: the clone keeps its credential in a file` {
+		t.Errorf("withheld verdict = %q", got)
+	}
+}

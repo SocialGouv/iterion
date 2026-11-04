@@ -303,7 +303,7 @@ export default function RunHeader({ run, active, wsState, viewer, onResetLayout,
               content={
                 `Credential fingerprint${run.cred_fingerprints.length > 1 ? "s" : ""} this run can spend — the audit identity shown on the API-key and connection views.` +
                 (run.llm_idle_since
-                  ? " No model node is running: the run currently holds none of these keys' concurrency slots."
+                  ? " No model node is running right now; the run keeps its slot on these keys until it ends."
                   : "")
               }
             >

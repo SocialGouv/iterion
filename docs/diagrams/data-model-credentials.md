@@ -206,6 +206,10 @@ erDiagram
     int64 cost_usd_millis
     datetime month_start
   }
+  cred_slots {
+    string _id PK "credential fingerprint - one row per capped key"
+    object holders "{run_id, at}[] - the runs admitted under the key's hard cap"
+  }
   usage_windows {
     string _id PK "'<key>#<window>'"
     string key "'<backend>|<scope>' + '|fp:<fingerprint>' when the credential is known"
@@ -369,6 +373,7 @@ flowchart TD
 | `cred_leases` | `pkg/credpool` | `Lease` | `tenant_id`: team (audit + the cross-team takeover guard) | none unique; TTL `acquired_at` (90 d) | none (cloud-only) |
 | `cred_pool_usage` | `pkg/credpool` | `ledgerDoc` | none — `_id` is pledge + period | none unique; TTL `period_start` (400 d) | none (cloud-only) |
 | `credential_usage` | `pkg/credusage` | `usageDoc` | `tenant_id`: team \| empty (an `_id` segment) | none unique; TTL `month_start` (400 d) | none (cloud-only) |
+| `cred_slots` | `pkg/store` | `credSlotDoc` | none — `_id` is the credential fingerprint, one cap shared by every tenant a platform key serves | none unique; no TTL (the reconcile pulls a holder whose run document is gone) | memory-only twin `credslot_fs.go` (one process, one mutex) |
 | `usage_windows` | `pkg/usagecap` | `readingDoc` | none — scope inside `key`: `platform` \| `local` \| `tenant:<id>` \| `org:<id>` \| `account` | none unique; TTL `observed_at` (14 d) | `memory-only` |
 | `org_usage` | `pkg/orgusage` | `usageDoc` | none — `_id` subject is an ORG (a team for an org-less team, or an org the gate could not read) | none unique; TTL `month_start` (400 d) | none (cloud-only) |
 | `model_prefs` | `pkg/modelprefs` | `Pref` | `tenant_id`: team \| empty in local mode (an argument, not ctx) | `tenant+user+key` unique, `tenant+user+slot` unique partial | `file model-prefs.json` |

@@ -491,12 +491,9 @@ func (s *Server) reconcileGateForRunID(ctx context.Context, runID, via string) e
 	if !strings.EqualFold(strings.TrimSpace(repo), strings.TrimSpace(grant.Repo)) {
 		return abstain("its grant covers %s — refusing to post outside the grant's repo", grant.Repo)
 	}
-	conn, err := s.forgeConnections.Get(store.WithoutTenantFilter(ctx), grant.ConnectionID)
+	conn, err := s.forgeConnections.Get(store.WithoutTenantFilter(ctx), grant.TeamID, grant.ConnectionID)
 	if err != nil {
 		return abstain("its connection %s is unreadable: %v", grant.ConnectionID, err)
-	}
-	if conn.TenantID != grant.TeamID {
-		return abstain("its connection %s belongs to another tenant", grant.ConnectionID)
 	}
 	if connHost := hostOfURL(conn.BaseURL()); connHost == "" || !strings.EqualFold(connHost, host) {
 		return abstain("its connection points at %q, not %q", hostOfURL(conn.BaseURL()), host)

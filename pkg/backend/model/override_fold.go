@@ -105,6 +105,14 @@ type ProviderResolution struct {
 	// for a supervisor. A refusal built on this walk can say which node
 	// pinned what; sorted, deduplicated.
 	Pins map[string][]string
+	// Sites maps each site to the KNOWN providers its routes name, in the
+	// order the walk read them — the chain order the executor resolves, so
+	// a reader that must pick "the credential this site spends" walks the
+	// list the same way. Sorted pins answer "who named this provider";
+	// Sites answers "what does this site name", which is the direction the
+	// credential plan (#2288) reads. First occurrence wins, so a chain that
+	// names a provider twice holds it once.
+	Sites map[string][]string
 	// Forbidden maps a provider OUTSIDE the view's allowlist
 	// (RouteView.AllowedProviders, ADR-129 §5) to the sites that named it —
 	// the same site keys as Pins. A forbidden provider is excluded from
@@ -234,7 +242,7 @@ func EffectiveProviders(v RouteView, known map[string]bool) ProviderResolution {
 						b = ""
 					}
 					acc.backend = b
-					acc.site = n.NodeID() + "#agent_recovery"
+					acc.site = n.NodeID() + agentRecoverySiteSuffix
 					acc.resolveNode(syn, &syn.LLMFields, v.Overrides)
 				}
 				continue
@@ -267,7 +275,7 @@ func EffectiveProviders(v RouteView, known map[string]bool) ProviderResolution {
 		if inf, ok := n.(interface{ GetInteractionFields() *ir.InteractionFields }); ok {
 			if f := inf.GetInteractionFields(); f != nil && (f.Interaction == ir.InteractionLLM || f.Interaction == ir.InteractionLLMOrHuman) {
 				acc.backend = ""
-				acc.site = n.NodeID() + "#interaction"
+				acc.site = n.NodeID() + interactionSiteSuffix
 				acc.resolveDirect(v.field(f.InteractionModel), v.field(fields.Model))
 			}
 		}
@@ -380,6 +388,9 @@ type providerAccumulator struct {
 	// recorded under (fallbackSite).
 	site string
 	pins map[string][]string
+	// siteProviders is the read-order twin of pins: the known providers
+	// each site named, first occurrence first (ProviderResolution.Sites).
+	siteProviders map[string][]string
 	// vars and late are the walk's vars reading (RouteView.Vars/LateVars);
 	// field resolves a routing field against them, and a late name stays
 	// as written exactly as a raw `${…}` would.
@@ -456,6 +467,12 @@ func (a *providerAccumulator) result() ProviderResolution {
 			}
 		}
 		res.Pins[p] = deduped
+	}
+	for site, provs := range a.siteProviders {
+		if res.Sites == nil {
+			res.Sites = make(map[string][]string, len(a.siteProviders))
+		}
+		res.Sites[site] = append([]string(nil), provs...)
 	}
 	if len(a.allowed) > 0 {
 		res.Forbidden = sortedDedupSites(a.forbidden)
@@ -624,10 +641,13 @@ func (a *providerAccumulator) field(raw string) string {
 // z.ai key; pi's documented z.ai form is `model: "anthropic/glm-5.2"` +
 // `provider: "zai"`, the hint overriding the prefix); only a node with no
 // hint at all routes on the prefix of its effective model (override, then
-// DSL), the way claw's registry does. Anything the walk cannot resolve
-// widens. Every field arrives through the walk's vars reading first: a
-// `{{vars.x}}` whose value the run itself decided resolves like the
-// literal it will be at dispatch, a late name stays as written.
+// DSL). claw is the exception on the slot: its registry never lets the
+// hint name a different credential slot than the prefix's, so a decided
+// claw chain records the prefix's slot beside its hints
+// (prefixSlotForClaw). Anything the walk cannot resolve widens. Every
+// field arrives through the walk's vars reading first: a `{{vars.x}}`
+// whose value the run itself decided resolves like the literal it will be
+// at dispatch, a late name stays as written.
 func (a *providerAccumulator) resolveNode(node ir.Node, fields *ir.LLMFields, overrides ModelOverrides) {
 	a.beginRoute(true)
 	defer a.endRoute()
@@ -645,6 +665,7 @@ func (a *providerAccumulator) resolveNode(node ir.Node, fields *ir.LLMFields, ov
 	if strings.TrimSpace(ov.Provider) != "" {
 		a.noteWireDefault(prov, m)
 		if a.chainDecides(prov, m) {
+			a.prefixSlotForClaw(m)
 			return
 		}
 		// The override named no resolvable hint ("auto", or a ${VAR} this
@@ -658,9 +679,41 @@ func (a *providerAccumulator) resolveNode(node ir.Node, fields *ir.LLMFields, ov
 	}
 	a.noteWireDefault(chain, m)
 	if a.chainDecides(chain, m) {
+		a.prefixSlotForClaw(m)
 		return
 	}
 	a.prefixOrWiden(m)
+}
+
+// prefixSlotForClaw records, on a route whose `provider:` chain just
+// decided for backend CLAW, the providers the model's own prefix spends —
+// beside the hints the chain recorded. claw's hint decides the ROUTE the
+// element dispatch walks, never the SLOT the registry funds: the registry
+// reads it at exactly one switch (forcing Anthropic-direct for models
+// Anthropic serves) and the credential crossing forwards no hint-named
+// slot, so the spend follows the prefix — a GLM id on the anthropic wire
+// rides z.ai (prefixOrWiden's reading). Without this second reading the
+// walk names only the hint's slot, and the credential plan keys the
+// node's spend on a slot the route never funds: every observation joins
+// no row (the fine booking lost on every hint-steered claw route, each
+// miss voiding the report's table), or — before the event word was
+// claw-true — the hint's credential for a prefix spend.
+//
+// A spec naming no `provider/` prefix reads nothing here. The element
+// build hands such a stage the node's baseline model (or the portability
+// screen refuses a backend-changing stage whole), and the registry refuses
+// a bare claw spec at Execute outright — so the slot question is answered
+// by the node's own rows or by no spend at all, never by this reading;
+// widening it would nil the plans of runs whose other routes are perfectly
+// readable.
+func (a *providerAccumulator) prefixSlotForClaw(mdl string) {
+	if a.backend != delegate.BackendClaw {
+		return
+	}
+	if providerFromModelPrefix(mdl) == "" {
+		return
+	}
+	a.prefixOrWiden(mdl)
 }
 
 // resolveRoute is the fallback-route half, with the same precedence: the
@@ -675,6 +728,7 @@ func (a *providerAccumulator) resolveRoute(provider, mdl string) {
 	a.envDeferred("model", mdl)
 	a.noteWireDefault(provider, mdl)
 	if a.chainDecides(provider, mdl) {
+		a.prefixSlotForClaw(mdl)
 		return
 	}
 	a.prefixOrWiden(mdl)
@@ -855,6 +909,7 @@ func (a *providerAccumulator) hint(raw string) bool {
 		}
 		a.providers[h] = true
 		a.pin(h)
+		a.recordSiteProvider(h)
 		ff, seen := a.forfaitFirst[h]
 		a.forfaitFirst[h] = (!seen || ff) && delegate.ForfaitFirst(a.backend, h)
 		if a.route != nil {
@@ -882,6 +937,24 @@ func (a *providerAccumulator) pin(provider string) {
 		}
 	}
 	a.pins[provider] = append(a.pins[provider], a.site)
+}
+
+// recordSiteProvider appends the provider to its site's read-order list —
+// ProviderResolution.Sites, the direction the credential plan reads. First
+// occurrence wins: the chain order is what survives, not a repeat count.
+func (a *providerAccumulator) recordSiteProvider(provider string) {
+	if a.site == "" {
+		return
+	}
+	for _, p := range a.siteProviders[a.site] {
+		if p == provider {
+			return
+		}
+	}
+	if a.siteProviders == nil {
+		a.siteProviders = map[string][]string{}
+	}
+	a.siteProviders[a.site] = append(a.siteProviders[a.site], provider)
 }
 
 // chainHints splits a `provider:` field into its lower-cased hints the

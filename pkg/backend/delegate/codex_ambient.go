@@ -6,6 +6,8 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+
+	"github.com/SocialGouv/iterion/pkg/internal/proc"
 )
 
 // codexInstructionFiles are the operator-level instruction files codex reads
@@ -42,6 +44,18 @@ func codexConfig(task Task, webSearch string) map[string]string {
 // home. release must run once both passes are done.
 func codexSpawnEnv(ctx context.Context, task Task) (env map[string]string, release func() error, err error) {
 	env = codexCredEnvForCLI(ctx)
+	if task.WorkDir != "" {
+		// The SDK owns codex's exec.Cmd, so the gesture every host spawn of
+		// an agent CLI crosses (proc.SetWorkDir) travels through its
+		// environment option: the child's PWD names the workspace the SDK is
+		// also handed as cwd, not the engine's checkout. The SDK appends
+		// this map after os.Environ(), and os/exec keeps the last value of a
+		// duplicate key.
+		if env == nil {
+			env = map[string]string{}
+		}
+		env[proc.WorkDirEnvKey] = task.WorkDir
+	}
 	noop := func() error { return nil }
 	if task.AmbientContext.IncludesOperator() {
 		return env, noop, nil

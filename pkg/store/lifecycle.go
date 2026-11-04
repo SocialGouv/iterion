@@ -205,6 +205,12 @@ const (
 	// launch is re-done by its caller (a forge redelivery, a new click),
 	// never by resuming this row.
 	FailureLaunchFailed FailureCode = "LAUNCH_FAILED"
+	// FailureCredSlotWait: the launch or resume found a credential it sealed
+	// at its HARD concurrency cap (secrets.ApiKey.MaxConcurrentRuns, held on
+	// the atomic slot ledger of CredSlotStore) and parked instead of being
+	// refused. Resumable: the retry sweeper asks for a slot again on a short
+	// cadence (RetryReasonCredSlot), and the run proceeds when one frees.
+	FailureCredSlotWait FailureCode = "CRED_SLOT_WAIT"
 	// FailureSandboxSetupTimeout: a sandbox driver's bounded SETUP
 	// phase (workspace copy, git fixup, …) exceeded its per-phase
 	// budget. Distinct from FailureTimeout (a node's deadline — raising
@@ -306,6 +312,7 @@ var ReservedFailureCodes = []FailureCode{
 	FailureDLQParked,
 	FailureIRUnloadable,
 	FailureLaunchFailed,
+	FailureCredSlotWait,
 	FailureSandboxSetupTimeout,
 	FailureSandboxCapacity,
 	FailureBotRequiresNewerEngine,

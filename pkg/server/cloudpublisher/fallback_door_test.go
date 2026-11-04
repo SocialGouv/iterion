@@ -76,6 +76,9 @@ func newDoorFixture(t *testing.T, consenting bool, wfPrep func(*ir.Workflow)) *d
 		ID: keyID, TenantID: "donor-team", ScopeTeamID: "donor-team", ScopeUserID: "donor",
 		Provider: secrets.ProviderZAI, Name: "lent", SealedSecret: sealed,
 		Fingerprint: secrets.FingerprintSHA256("zai-donated-key"),
+		// Capped, so the door's grant is seen to carry the cap into the
+		// admission's wants (TestFallbackDoor_consentedDonorServesTheMissingRung).
+		MaxConcurrentRuns: 1,
 	}); err != nil {
 		t.Fatalf("seed donor key: %v", err)
 	}
@@ -175,6 +178,22 @@ func TestFallbackDoor_consentedDonorServesTheMissingRung(t *testing.T) {
 	}
 	if got := bundle.APIKeys[secrets.ProviderZAI]; got != "zai-donated-key" {
 		t.Fatalf("sealed zai key = %q, want the donor's", got)
+	}
+	// The lent key's cap rides the grant into the admission's wants: a door
+	// key stamped for the meter but never noted would be counted by
+	// alive_runs and admitted past its cap.
+	doorFP := secrets.FingerprintSHA256("zai-donated-key")
+	noted := false
+	for _, w := range creds.credSlots {
+		if w.fingerprint == doorFP {
+			noted = true
+			if w.max != 1 || w.provider != secrets.ProviderZAI || w.name != "lent" {
+				t.Fatalf("door key noted as %+v, want max=1 provider=zai name=lent — the donor record's own cap and label", w)
+			}
+		}
+	}
+	if !noted {
+		t.Fatalf("the door key %s is not among the admission's wants %+v — stamped for the meter, never admitted against its cap", doorFP, creds.credSlots)
 	}
 	if !bundle.PoolSourced["zai"] {
 		t.Fatal("the door grant is not PoolSourced — the meter would bill the wrong record")
@@ -407,15 +426,15 @@ func TestAcquireDoorGrant_guards(t *testing.T) {
 	_ = args
 
 	// A whole-bundle grant: the whole-bundle tier's case, never the door's.
-	if g, _ := f.pub.acquireDoorGrant(ctx, "r", poolOrg, poolTeam, "requester", "bot", model.RouteView{Workflow: wf}, policy, nil, &bundle, &credpool.Grant{}, false, false, map[secrets.Provider]string{}, sealable); g != nil {
+	if g, _ := f.pub.acquireDoorGrant(ctx, "r", poolOrg, poolTeam, "requester", "bot", model.RouteView{Workflow: wf}, policy, nil, &bundle, &credpool.Grant{}, false, false, map[secrets.Provider]string{}, credSlotWants{}, sealable); g != nil {
 		t.Fatal("the door fired behind a whole-bundle grant")
 	}
 	// An env-funded run acquires nothing at all (#2038).
-	if g, _ := f.pub.acquireDoorGrant(ctx, "r", poolOrg, poolTeam, "requester", "bot", model.RouteView{Workflow: wf}, policy, nil, &bundle, nil, true, false, map[secrets.Provider]string{}, sealable); g != nil {
+	if g, _ := f.pub.acquireDoorGrant(ctx, "r", poolOrg, poolTeam, "requester", "bot", model.RouteView{Workflow: wf}, policy, nil, &bundle, nil, true, false, map[secrets.Provider]string{}, credSlotWants{}, sealable); g != nil {
 		t.Fatal("the door fired on an env-funded run")
 	}
 	// An empty bundle belongs to the whole-bundle tier.
-	if g, _ := f.pub.acquireDoorGrant(ctx, "r", poolOrg, poolTeam, "requester", "bot", model.RouteView{Workflow: wf}, policy, nil, &secrets.RunBundle{}, nil, false, false, map[secrets.Provider]string{}, sealable); g != nil {
+	if g, _ := f.pub.acquireDoorGrant(ctx, "r", poolOrg, poolTeam, "requester", "bot", model.RouteView{Workflow: wf}, policy, nil, &secrets.RunBundle{}, nil, false, false, map[secrets.Provider]string{}, credSlotWants{}, sealable); g != nil {
 		t.Fatal("the door fired on an empty bundle")
 	}
 }

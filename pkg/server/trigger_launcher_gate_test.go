@@ -36,14 +36,14 @@ type spinePublisher struct {
 	spec     runview.LaunchSpec
 }
 
-func (p *spinePublisher) SubmitLaunch(ctx context.Context, _ string, spec runview.LaunchSpec, _ *ir.Workflow, _ *runview.CompiledSource) (int, error) {
+func (p *spinePublisher) SubmitLaunch(ctx context.Context, _ string, spec runview.LaunchSpec, _ *ir.Workflow, _ *runview.CompiledSource) (runview.LaunchSubmission, error) {
 	p.mu.Lock()
 	p.launches++
 	p.tenant, _ = store.TenantFromContext(ctx)
 	p.owner, _ = store.OwnerFromContext(ctx)
 	p.spec = spec
 	p.mu.Unlock()
-	return 0, p.err
+	return runview.LaunchSubmission{}, p.err
 }
 
 // lastSpec is the spec of the most recent launch. Read under the lock like

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/botsource"
+	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -46,7 +47,7 @@ func TestGatePausedNoticePostsOnThePR(t *testing.T) {
 			t.Fatal(err)
 		}
 		s.cfg.Store = rs
-		conns := forge.NewMemoryConnectionStore()
+		conns := connection.NewMemoryForgeStore()
 		if err := conns.Create(context.Background(), forge.Connection{
 			ID: "c1", TenantID: team, Provider: forge.ProviderGitHub,
 		}); err != nil {

@@ -20,8 +20,12 @@ line itself (a rung hidden behind a local variable or a closure refuses
 the generation rather than print a wrong rung):
 
 - `platform admin` — an authenticated platform super-admin (`requireSuperAdmin`).
-- `session + write rung` — an authenticated member with the family's write rung
-  (`boardWriteAuth` / `triggerWriteAuth`).
+- `session + write rung` — the family's write-rung MOUNT
+  (`boardWriteAuth` / `triggerWriteAuth` / `memoryWriteAuth`): an
+  authenticated identity, and at least the member role on a state-changing
+  method. A whole family carries the mount so every line of its registrar
+  reads the same, so this rung also marks that family's `GET` rows, where
+  it is inert — what a READ requires is the curated page's prose.
 - `session` — any authenticated identity; the finer per-resource authorization
   is the curated page's prose.
 - `open` — the operator-JWT gate lets the request through: public bootstrap
@@ -217,6 +221,12 @@ registered by `board_forge.go`, `local_secrets_routes.go`, `notifications_routes
 | `POST` | `/api/v1/forge/publish-review` | open | no |
 | `GET` | `/api/v1/forge/pull-request` | open | no |
 
+## `/api/legal` family
+
+| Method | Path | Auth | Spec |
+|---|---|---|---|
+| `GET` | `/api/legal/{slug}` | open | yes |
+
 ## `/api/limits` family
 
 | Method | Path | Auth | Spec |
@@ -290,13 +300,13 @@ registered by `board_forge.go`, `local_secrets_routes.go`, `notifications_routes
 
 | Method | Path | Auth | Spec |
 |---|---|---|---|
-| `DELETE` | `/api/memory/doc` | session | yes |
-| `GET` | `/api/memory/doc` | session | yes |
-| `PUT` | `/api/memory/doc` | session | yes |
-| `GET` | `/api/memory/docs` | session | yes |
-| `GET` | `/api/memory/export` | session | yes |
-| `POST` | `/api/memory/import` | session | yes |
-| `GET` | `/api/memory/usage` | session | yes |
+| `DELETE` | `/api/memory/doc` | session + write rung | yes |
+| `GET` | `/api/memory/doc` | session + write rung | yes |
+| `PUT` | `/api/memory/doc` | session + write rung | yes |
+| `GET` | `/api/memory/docs` | session + write rung | yes |
+| `GET` | `/api/memory/export` | session + write rung | yes |
+| `POST` | `/api/memory/import` | session + write rung | yes |
+| `GET` | `/api/memory/usage` | session + write rung | yes |
 
 ## `/api/model-capabilities` family
 

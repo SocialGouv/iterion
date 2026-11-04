@@ -30,11 +30,11 @@ type routingSpecCapture struct {
 	spec runview.LaunchSpec
 }
 
-func (c *routingSpecCapture) SubmitLaunch(_ context.Context, _ string, spec runview.LaunchSpec, _ *ir.Workflow, _ *runview.CompiledSource) (int, error) {
+func (c *routingSpecCapture) SubmitLaunch(_ context.Context, _ string, spec runview.LaunchSpec, _ *ir.Workflow, _ *runview.CompiledSource) (runview.LaunchSubmission, error) {
 	c.mu.Lock()
 	c.spec = spec
 	c.mu.Unlock()
-	return 0, nil
+	return runview.LaunchSubmission{}, nil
 }
 func (*routingSpecCapture) CancelRun(context.Context, string) error { return nil }
 func (*routingSpecCapture) CancelRunWithReason(context.Context, string, store.RunEndReason) error {

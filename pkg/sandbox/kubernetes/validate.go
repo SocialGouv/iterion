@@ -52,9 +52,10 @@ func ValidateSpec(spec sandbox.Spec) error {
 }
 
 // runKubectlProbe is the indirection unit tests overwrite to mock
-// kubectl invocations. Production uses the real ctx-aware exec wrapper.
-var runKubectlProbe = func(ctx context.Context, args ...string) ([]byte, error) {
-	return kubectlCmdContext(ctx, args...).CombinedOutput()
+// kubectl invocations. Production uses the real ctx-aware exec wrapper on
+// the binary the caller resolved — the probe never looks one up itself.
+var runKubectlProbe = func(ctx context.Context, kubectl Kubectl, args ...string) ([]byte, error) {
+	return kubectl.cmdContext(ctx, args...).CombinedOutput()
 }
 
 // PingContext probes whether a usable kubernetes context is selected and
@@ -69,34 +70,38 @@ var runKubectlProbe = func(ctx context.Context, args ...string) ([]byte, error) 
 //     kubeconfig — `kubectl config current-context` (is a context even
 //     selected?) then `kubectl cluster-info` (does the API answer?).
 //
-// Returns the resolved context label + namespace on success. The error
-// distinguishes "kubectl missing", "no context selected", and "API
+// Returns the kubectl it resolved and the context label + namespace on
+// success — the binary travels OUT so the doctor's later probes run the one
+// this ping accepted, instead of re-asking the PATH at each of them. The
+// error distinguishes "kubectl missing", "no context selected", and "API
 // unreachable" so the doctor can print a targeted remediation.
 //
 // envtrust.LookPath, not exec.LookPath, like [Detect]: the binary this
 // probe then shells out to is the driver's kubectl, an authority question
 // a PATH a project .env planted must not answer (#2876, the class #2809
 // closed site by site).
-func PingContext(ctx context.Context) (kctx, namespace string, err error) {
-	if _, lookErr := envtrust.LookPath(kubeBinaryName); lookErr != nil {
-		return "", "", fmt.Errorf("%s not found on PATH (install kubectl or build the runtime image with it)", kubeBinaryName)
+func PingContext(ctx context.Context) (kubectl Kubectl, kctx, namespace string, err error) {
+	binPath, lookErr := envtrust.LookPath(kubeBinaryName)
+	if lookErr != nil {
+		return "", "", "", fmt.Errorf("%s not found on PATH (install kubectl or build the runtime image with it)", kubeBinaryName)
 	}
+	kubectl = Kubectl(binPath)
 	// Prefer the in-cluster path: if the service-account mount is present
 	// the context is implicit and Detect resolves the namespace.
 	if _, ns, detErr := Detect(); detErr == nil {
-		if out, infoErr := runKubectlProbe(ctx, "cluster-info"); infoErr != nil {
-			return "", ns, fmt.Errorf("in-cluster API server unreachable: %v\noutput: %s", infoErr, strings.TrimSpace(string(out)))
+		if out, infoErr := runKubectlProbe(ctx, kubectl, "cluster-info"); infoErr != nil {
+			return kubectl, "", ns, fmt.Errorf("in-cluster API server unreachable: %v\noutput: %s", infoErr, strings.TrimSpace(string(out)))
 		}
-		return "in-cluster service account", ns, nil
+		return kubectl, "in-cluster service account", ns, nil
 	}
 	// Out-of-cluster: consult the kubeconfig.
-	ctxOut, ctxErr := runKubectlProbe(ctx, "config", "current-context")
+	ctxOut, ctxErr := runKubectlProbe(ctx, kubectl, "config", "current-context")
 	current := strings.TrimSpace(string(ctxOut))
 	if ctxErr != nil || current == "" {
-		return "", "", fmt.Errorf("no kubernetes context selected; choose one with `kubectl config use-context <name>`, or run the doctor on the in-cluster runner")
+		return kubectl, "", "", fmt.Errorf("no kubernetes context selected; choose one with `kubectl config use-context <name>`, or run the doctor on the in-cluster runner")
 	}
-	if out, infoErr := runKubectlProbe(ctx, "cluster-info"); infoErr != nil {
-		return current, "", fmt.Errorf("context %q selected but API server unreachable: %v\noutput: %s", current, infoErr, strings.TrimSpace(string(out)))
+	if out, infoErr := runKubectlProbe(ctx, kubectl, "cluster-info"); infoErr != nil {
+		return kubectl, current, "", fmt.Errorf("context %q selected but API server unreachable: %v\noutput: %s", current, infoErr, strings.TrimSpace(string(out)))
 	}
-	return current, "", nil
+	return kubectl, current, "", nil
 }

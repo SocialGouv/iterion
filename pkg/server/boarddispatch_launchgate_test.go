@@ -41,14 +41,14 @@ type countingPublisher struct {
 	onLaunch func(runID string)
 }
 
-func (p *countingPublisher) SubmitLaunch(_ context.Context, runID string, _ runview.LaunchSpec, _ *ir.Workflow, _ *runview.CompiledSource) (int, error) {
+func (p *countingPublisher) SubmitLaunch(_ context.Context, runID string, _ runview.LaunchSpec, _ *ir.Workflow, _ *runview.CompiledSource) (runview.LaunchSubmission, error) {
 	p.mu.Lock()
 	p.launches++
 	p.mu.Unlock()
 	if p.onLaunch != nil {
 		p.onLaunch(runID)
 	}
-	return 0, p.err
+	return runview.LaunchSubmission{}, p.err
 }
 func (p *countingPublisher) count() int {
 	p.mu.Lock()

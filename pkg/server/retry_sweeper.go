@@ -193,7 +193,7 @@ func (s *Server) resumeDueRetry(ctx context.Context, retryStore store.RunRetrySt
 		if circuitErr != nil {
 			s.warnf("retry sweeper: run %s: cannot read retry circuit (%v) — proceeding with the per-run retry", ref.ID, circuitErr)
 		} else if delayedUntil, shouldDelay := circuitRetryDelayAt(ref, run, circuit, decisionNow); shouldDelay {
-			delayed, delayErr := retryStore.DelayRunRetry(runCtx, ref.ID, ref.RetryAfter(), delayedUntil)
+			delayed, delayErr := retryStore.DelayRunRetry(runCtx, ref.ID, ref.RetryAfter(), delayedUntil, "", "")
 			if delayErr != nil {
 				adm.rollback(s.logger)
 				s.warnf("retry sweeper: run %s: cannot delay retry behind open circuit: %v", ref.ID, delayErr)
@@ -284,6 +284,14 @@ func (s *Server) resumeDueRetry(ctx context.Context, retryStore store.RunRetrySt
 		// slot is already refunded above.
 		if errors.Is(err, reviewtopology.ErrUnservableFamily) {
 			s.abandonRetry(runCtx, retryStore, ref, fmt.Sprintf("auto-retry abandoned: %v", err))
+			return
+		}
+		// A slot wait is not an attempt: the key the run sealed is full of
+		// OTHER runs, the resume refused before any publish, and the only
+		// thing that ends the wait is one of those runs ending. Asked again
+		// on the slot cadence, free of charge, until the run's max_wait.
+		if errors.Is(err, cloudpublisher.ErrCredentialAtCapacity) {
+			s.deferCredSlotRetry(runCtx, retryStore, ref, run, err)
 			return
 		}
 		s.reArmRetry(runCtx, retryStore, ref, err)
@@ -570,4 +578,59 @@ func (s *Server) infof(format string, args ...any) {
 	if s.logger != nil {
 		s.logger.Info(format, args...)
 	}
+}
+
+// deferCredSlotRetry moves a run parked on a credential's concurrency cap
+// (cloudpublisher.ErrCredentialAtCapacity) to its next ask, one slot probe
+// interval out, without spending an attempt: the attempt budget prices work
+// that reaches the provider, and a refused reservation reached nothing. The
+// wait is bounded by the run's own max_wait, measured from the park's PAID
+// arming (RunRetryState.ScheduledAt): max_wait bounds the whole park, so a
+// usage-window row whose resume found its key full keeps the wall's anchor
+// and the slot wait spends what is left of the same horizon — the rule the
+// circuit deferral already follows, and the one ScheduledAt exists for. Past
+// it the run is abandoned naming the bound and its anchor, so a key busy for
+// days does not hold a parked run forever. A row armed before the anchor
+// existed has none until its first deferral pins it to the retry_after the
+// scan read (DelayRunRetry), which is the anchor computed here for that
+// deferral, so the horizon never moves with the row.
+//
+// The deferral re-tags the row as a slot wait (RetryReasonCredSlot): a run
+// armed for a usage window whose resume found its key full waits for a slot
+// now, and a row still tagged usage_window would be read as the provider
+// wall it no longer waits on — by UsageParkWall's notices, by the audit
+// trail, and by the probe pass whenever the operator's floor is under the
+// slot cadence.
+//
+// The CAS is the armed instant the scan read: the claim left it in place and
+// the resume's rollback put the run back around it, so a row an operator
+// resumed or another pass settled in between is left to whoever moved it.
+func (s *Server) deferCredSlotRetry(ctx context.Context, retryStore store.RunRetryStore, ref mongostore.RetryDueRef, run *store.Run, cause error) {
+	now := time.Now().UTC()
+	pol := retryPolicyForSweeper(run)
+	anchor := ref.RetryAfter()
+	if ref.RetryState != nil && ref.RetryState.ScheduledAt != nil {
+		anchor = ref.RetryState.ScheduledAt.UTC()
+	}
+	if run != nil && run.RetryState != nil && run.RetryState.ScheduledAt != nil {
+		anchor = run.RetryState.ScheduledAt.UTC()
+	}
+	if !anchor.IsZero() && !now.Before(anchor.Add(pol.MaxWaitDuration())) {
+		s.abandonRetry(ctx, retryStore, ref, fmt.Sprintf("auto-retry abandoned: the run's max_wait (%s, measured from its park at %s) passed while it still waited for a credential slot — %v", pol.MaxWaitDuration(), anchor.Format(time.RFC3339), cause))
+		return
+	}
+	at := now.Add(cloudpublisher.CredSlotProbeInterval)
+	delayed, err := retryStore.DelayRunRetry(ctx, ref.ID, ref.RetryAfter(), at, store.RetryReasonCredSlot, string(store.FailureCredSlotWait))
+	if err != nil {
+		s.warnf("retry sweeper: run %s: cannot defer the credential-slot wait: %v", ref.ID, err)
+		return
+	}
+	if !delayed {
+		s.warnf("retry sweeper: run %s: the credential-slot wait was not deferred — the row moved since the scan listed it armed for %s (an operator resumed it, or another pass settled it)",
+			ref.ID, ref.RetryAfter().Format(time.RFC3339))
+		return
+	}
+	s.countRetry("slot_wait")
+	s.auditRetry(ref, "run.retry.slot_wait", map[string]any{"retry_after": at, "error": cause.Error()})
+	s.infof("retry sweeper: run %s still waits for a credential slot (%v) — asking again at %s", ref.ID, cause, at.Format(time.RFC3339))
 }

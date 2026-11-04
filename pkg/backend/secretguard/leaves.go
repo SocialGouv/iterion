@@ -55,6 +55,34 @@ func mapLeaves(v any, f func(string) string) (any, bool) {
 	}
 }
 
+// RedactJSON is RedactLeaves for a JSON document: decoded (numbers kept
+// exact), redacted leaf by leaf, re-encoded — for display text built from
+// raw JSON that a helper then CUTS (a header hint, a preview): a secret the
+// cut splits is one no matcher recognises. A document that does not decode
+// is returned as is, and a nil redactor keeps the document raw.
+func RedactJSON(raw []byte, redact func(string) string) []byte {
+	if redact == nil {
+		return raw
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	var v any
+	if err := dec.Decode(&v); err != nil || dec.More() {
+		return raw
+	}
+	out, changed := mapLeaves(v, redact)
+	if !changed {
+		return raw
+	}
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(out); err != nil {
+		return raw
+	}
+	return bytes.TrimRight(buf.Bytes(), "\n")
+}
+
 // MaterializeJSON is MaterializeLeaves for a JSON document: decoded (numbers
 // kept exact), materialised leaf by leaf, re-encoded. A document that does
 // not decode is returned as is — never materialised as text: the tool

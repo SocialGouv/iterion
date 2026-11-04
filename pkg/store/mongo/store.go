@@ -51,6 +51,7 @@ const (
 	colRunTags        = "run_tags"
 	colRetryCircuits  = "retry_circuits"
 	colStagedUploads  = "staged_uploads"
+	colCredSlots      = "cred_slots"
 )
 
 // Config bundles the connection settings for a MongoRunStore.
@@ -117,6 +118,7 @@ type Store struct {
 	runTags            *mongo.Collection
 	retryCircuits      *mongo.Collection
 	stagedUploads      *mongo.Collection
+	credSlots          *mongo.Collection
 	blob               blob.Client
 	logger             *iterlog.Logger
 	lockProv           LockProvider
@@ -137,6 +139,12 @@ type Store struct {
 	// twin of the filesystem store's hook). Guarded by logPositionMu.
 	// nil disables stamping. See runlogs.go.
 	activeDurationFn store.ActiveDurationFn
+
+	// beforeCredSlotEvict is a test seam for the window between the slot
+	// ledger's judgment of a holder as stale and the $pull that evicts it —
+	// the window another replica's re-admission of that holder lands in
+	// (cred_slots.go). Nil in production.
+	beforeCredSlotEvict func(runID string)
 }
 
 // Registry returns the BSON codec registry the store's Mongo client is
@@ -227,6 +235,7 @@ func New(ctx context.Context, cfg Config) (*Store, error) {
 		runTags:            db.Collection(colRunTags),
 		retryCircuits:      db.Collection(colRetryCircuits),
 		stagedUploads:      db.Collection(colStagedUploads),
+		credSlots:          db.Collection(colCredSlots),
 		blob:               cfg.Blob,
 		logger:             cfg.Logger,
 		lockProv:           cfg.LockProvider,

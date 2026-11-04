@@ -1726,16 +1726,37 @@ func (s *Service) SwitchTeam(ctx context.Context, presented Identity, teamID str
 	if orgID != "" {
 		patch.DefaultOrgID = &orgID
 	}
-	return SwitchResult{Identity: id, User: s.persistDefaults(ctx, u, patch, "team"), AccessToken: tok, AccessExpires: exp}, nil
+	return SwitchResult{Identity: id, User: s.patchBestEffort(ctx, u, patch, "the default team"), AccessToken: tok, AccessExpires: exp}, nil
 }
 
-// persistDefaults writes a switch's chosen defaults and returns the stored
-// row, or u unchanged when the write failed (logged — see SwitchTeam).
-func (s *Service) persistDefaults(ctx context.Context, u identity.User, patch identity.UserPatch, what string) identity.User {
+// patchBestEffort writes a patch neither the answer being built nor the next
+// login depends on — a switch's chosen defaults, the landing defaults and the
+// stamp of an account this very call provisioned — and returns the stored row,
+// or u unchanged when the write failed. It is the ONE place that tolerance
+// lives, so it cannot be silent: the cause is logged with the account and what
+// could not be written, since the row an operator reads afterwards no longer
+// says it.
+//
+// The failure it exists for is the one that used to answer 500 over a FULLY
+// provisioned account: the caller has already written the account, its space
+// and its grants, so refusing on a cosmetic write leaves rows standing that no
+// retry can reuse (the email is taken and no path frees it) while the password
+// or the SSO identity signs that very account in. A session whose active team
+// comes from the rows the caller just wrote is unaffected, and the next login
+// resolves the landing context again (pickActiveTeam).
+//
+// Its contract, and the reason the login stamp of a RETURNING user is not one
+// of its callers: the patch carries NO precondition. A patch with IfNotStatus
+// or IfPasswordHash is a write that commits to the status or the hash its
+// caller checked, and PatchUser answers a sentinel when the row moved under
+// it — a refusal an admin's deactivation earned, which a tolerant writer may
+// not turn into a log line. That write is stampLogin's, and it stays fatal on
+// those sentinels.
+func (s *Service) patchBestEffort(ctx context.Context, u identity.User, patch identity.UserPatch, what string) identity.User {
 	patched, err := s.store.PatchUser(ctx, u.ID, patch)
 	if err != nil {
 		if s.logger != nil {
-			s.logger.Warn("auth: persist default %s for user %s failed: %v", what, u.ID, err)
+			s.logger.Warn("auth: %s of user %s could not be written: %v (the account and its access stand; the next sign-in resolves them again)", what, u.ID, err)
 		}
 		return u
 	}
@@ -1801,7 +1822,7 @@ func (s *Service) SwitchOrg(ctx context.Context, presented Identity, orgID strin
 	if teamID != "" {
 		patch.DefaultTeamID = &teamID
 	}
-	return SwitchResult{Identity: id, User: s.persistDefaults(ctx, u, patch, "org"), AccessToken: tok, AccessExpires: exp}, nil
+	return SwitchResult{Identity: id, User: s.patchBestEffort(ctx, u, patch, "the default org"), AccessToken: tok, AccessExpires: exp}, nil
 }
 
 // pickActiveTeamInOrg selects a team for the user within one org: their
@@ -1897,11 +1918,12 @@ func (s *Service) registerOpen(ctx context.Context, email, password, name, userA
 	if err != nil {
 		return LoginResult{}, err
 	}
-	if u, err = s.store.PatchUser(ctx, u.ID, identity.UserPatch{
-		DefaultOrgID: &space.orgID, DefaultTeamID: &space.teamID,
-	}); err != nil {
-		return LoginResult{}, err
-	}
+	// The landing defaults, best-effort: the session below is built from the
+	// rows this call just wrote, so refusing here would answer 500 over an
+	// account that is complete and signs in — see patchBestEffort.
+	u = s.patchBestEffort(ctx, u, identity.UserPatch{
+		DefaultOrgID: &space.orgID, DefaultTeamID: &space.team.ID,
+	}, "the landing defaults of the new account")
 	lc, err := s.signLogin(s.loginContextFromRows(u, []identity.Membership{space.membership}, space.orgID, []identity.OrgMembership{space.orgMembership}), NewAccountRoot())
 	if err != nil {
 		return LoginResult{}, err
@@ -1981,9 +2003,11 @@ func (s *Service) registerWithInvitation(ctx context.Context, email, password, n
 	if grant.orgID != "" {
 		patch.DefaultOrgID = &grant.orgID
 	}
-	if u, err = s.store.PatchUser(ctx, u.ID, patch); err != nil {
-		return LoginResult{}, err
-	}
+	// Best-effort, and here the price of refusing is the harshest of the two
+	// registration paths: the invitation is already claimed, so an accept that
+	// answers an error over a complete account cannot be retried at all — the
+	// token is spent (claimInvitation) and the email is taken.
+	u = s.patchBestEffort(ctx, u, patch, "the landing defaults of the invited account")
 	var orgMems []identity.OrgMembership
 	if grant.write != nil {
 		orgMems = append(orgMems, *grant.write)
@@ -2427,10 +2451,11 @@ func (s *Service) CreateOrgFor(ctx context.Context, userID, name, slug string) (
 		if err != nil {
 			return identity.Org{}, err
 		}
-		// The org row is the first irreversible write, so everything after
-		// it is compensated: a failure in between used to leave a TEAM-LESS
-		// org holding the slug, and the retry — the only remedy, super-admin
-		// only — answered acme-corp-2.
+		// The org row is the first irreversible write, so it pushes its own
+		// undo and every write after it is compensated with it — all four of
+		// them: a failure in between used to leave a TEAM-LESS org holding
+		// the slug, and the retry — the only remedy, super-admin only —
+		// answered acme-corp-2.
 		undo := &provisionUndo{}
 		undo.push(fmt.Sprintf("the org %s (slug %s)", o.ID, o.Slug), func(c context.Context) error {
 			return s.store.DeleteOrg(c, o.ID)
@@ -2599,14 +2624,34 @@ func (s *Service) CreateInvitation(ctx context.Context, teamID, email string, ro
 // CreateUserAndPersonalTeam is used by the bootstrap path to provision
 // the very first super-admin. Idempotent: returns the existing user
 // if email is already taken.
+//
+// Every read it runs answers its own failure: only a store that ANSWERED can
+// say an email is free, a membership list is empty or a team is absent, and
+// provisioning a second account over a read that failed is exactly how the
+// bootstrap would collide with the row it could not see.
 func (s *Service) CreateUserAndPersonalTeam(ctx context.Context, email, name, password string, isSuperAdmin bool, status identity.UserStatus) (identity.User, identity.Team, error) {
 	email = identity.NormalizeEmail(email)
-	if existing, err := s.store.GetUserByEmail(ctx, email); err == nil {
+	existing, err := s.store.GetUserByEmail(ctx, email)
+	if err != nil && !errors.Is(err, identity.ErrNotFound) {
+		return identity.User{}, identity.Team{}, fmt.Errorf("auth: read the account of %s before provisioning it: %w", email, err)
+	}
+	if err == nil {
 		// Find their personal team if any, else return zero team.
-		ms, _ := s.store.ListMembershipsByUser(ctx, existing.ID)
+		ms, merr := s.store.ListMembershipsByUser(ctx, existing.ID)
+		if merr != nil {
+			return identity.User{}, identity.Team{}, fmt.Errorf("auth: list the teams of the existing account %s: %w", existing.ID, merr)
+		}
 		for _, mb := range ms {
 			t, terr := s.store.GetTeam(ctx, mb.TeamID)
-			if terr == nil && t.Personal {
+			if errors.Is(terr, identity.ErrNotFound) {
+				// The store ANSWERED: that membership's team is gone, so it
+				// is not the personal team being looked for.
+				continue
+			}
+			if terr != nil {
+				return identity.User{}, identity.Team{}, fmt.Errorf("auth: read the team %s of the existing account %s: %w", mb.TeamID, existing.ID, terr)
+			}
+			if t.Personal {
 				return existing, t, nil
 			}
 		}
@@ -2638,19 +2683,21 @@ func (s *Service) CreateUserAndPersonalTeam(ctx context.Context, email, name, pa
 	if err != nil {
 		return identity.User{}, identity.Team{}, err
 	}
-	if u, err = s.store.PatchUser(ctx, u.ID, identity.UserPatch{
-		DefaultOrgID: &space.orgID, DefaultTeamID: &space.teamID,
-	}); err != nil {
-		return identity.User{}, identity.Team{}, err
-	}
-	t, _ := s.store.GetTeam(ctx, space.teamID)
-	return u, t, nil
+	// The landing defaults, best-effort — see patchBestEffort. The team comes
+	// from the row the provisioning WROTE: reading it back here answered a
+	// ZERO team on a failed read, over a provisioning that had succeeded.
+	u = s.patchBestEffort(ctx, u, identity.UserPatch{
+		DefaultOrgID: &space.orgID, DefaultTeamID: &space.team.ID,
+	}, "the landing defaults of the bootstrapped account")
+	return u, space.team, nil
 }
 
 // personalSpace is what createPersonalTeam wrote: the personal org and team,
-// and the user's owner rows in both.
+// and the user's owner rows in both. The team is the ROW this call wrote, so
+// no caller reads it back after the provisioning.
 type personalSpace struct {
-	orgID, teamID string
+	orgID         string
+	team          identity.Team
 	orgMembership identity.OrgMembership
 	membership    identity.Membership
 }
@@ -2661,9 +2708,31 @@ type personalSpace struct {
 // UX: one org, one team, the user owns both. Slugs derive from the email
 // local-part with a numeric suffix on collision (org and team share the
 // base; the team slug is suffixed "-team" to keep the namespaces clean).
+//
+// It OWNS the compensation of its four writes, as CreateOrgFor owns its own:
+// whatever committed is removed when a later write fails, so a signup that
+// cannot finish leaves no personal org and no personal team holding the
+// slugs — the orphan a retry collided with, pushing the space of the account
+// that finally registers to <base>-2. Its three callers (registerOpen, the
+// SSO first login, the bootstrap) therefore have nothing to undo of the
+// space. What it does NOT undo is the ACCOUNT row its callers wrote before
+// it: the identity store has no account delete (#2655 R1), so the email
+// stays taken and the retry answers ErrEmailAlreadyTaken until it does.
 func (s *Service) createPersonalTeam(ctx context.Context, u identity.User) (personalSpace, error) {
-	now := s.now().UTC()
-	org, om, err := s.createPersonalOrg(ctx, u, now)
+	undo := &provisionUndo{}
+	space, err := s.createPersonalSpaceIn(ctx, u, s.now().UTC(), undo)
+	if err != nil {
+		return personalSpace{}, undo.compensate(ctx, err)
+	}
+	return space, nil
+}
+
+// createPersonalSpaceIn is createPersonalTeam's WRITE phase: it reads
+// nothing, pushes the undo of each write it commits onto undo, and leaves
+// compensating to its caller — one decision, at the call that owns the unit,
+// the shape createTeamIn already has.
+func (s *Service) createPersonalSpaceIn(ctx context.Context, u identity.User, now time.Time, undo *provisionUndo) (personalSpace, error) {
+	org, om, err := s.createPersonalOrg(ctx, u, now, undo)
 	if err != nil {
 		return personalSpace{}, err
 	}
@@ -2693,6 +2762,9 @@ func (s *Service) createPersonalTeam(ctx context.Context, u identity.User) (pers
 		if err != nil {
 			return personalSpace{}, err
 		}
+		undo.push(fmt.Sprintf("the personal team %s (slug %s)", t.ID, t.Slug), func(c context.Context) error {
+			return s.store.DeleteTeam(c, t.ID)
+		})
 		mb := identity.Membership{
 			UserID:   u.ID,
 			TeamID:   t.ID,
@@ -2702,15 +2774,19 @@ func (s *Service) createPersonalTeam(ctx context.Context, u identity.User) (pers
 		if err := s.store.UpsertMembership(ctx, mb); err != nil {
 			return personalSpace{}, err
 		}
-		return personalSpace{orgID: org.ID, teamID: t.ID, orgMembership: om, membership: mb}, nil
+		undo.push(fmt.Sprintf("the owner grant of %s on the personal team %s", u.ID, t.ID), func(c context.Context) error {
+			return s.store.DeleteMembership(c, u.ID, t.ID)
+		})
+		return personalSpace{orgID: org.ID, team: t, orgMembership: om, membership: mb}, nil
 	}
 	return personalSpace{}, errors.New("auth: could not allocate slug for personal team")
 }
 
 // createPersonalOrg provisions an Org with Personal=true and an owner
 // org-membership, and returns both. Slug derives from the email local-part
-// with a numeric suffix on collision.
-func (s *Service) createPersonalOrg(ctx context.Context, u identity.User, now time.Time) (identity.Org, identity.OrgMembership, error) {
+// with a numeric suffix on collision. Write phase too: each write it commits
+// pushes its undo, bounded to the org id THIS call minted.
+func (s *Service) createPersonalOrg(ctx context.Context, u identity.User, now time.Time, undo *provisionUndo) (identity.Org, identity.OrgMembership, error) {
 	base := identity.SlugifyTeamName(u.Email)
 	if base == "" {
 		base = "org"
@@ -2736,6 +2812,9 @@ func (s *Service) createPersonalOrg(ctx context.Context, u identity.User, now ti
 		if err != nil {
 			return identity.Org{}, identity.OrgMembership{}, err
 		}
+		undo.push(fmt.Sprintf("the personal org %s (slug %s)", o.ID, o.Slug), func(c context.Context) error {
+			return s.store.DeleteOrg(c, o.ID)
+		})
 		om := identity.OrgMembership{
 			UserID:   u.ID,
 			OrgID:    o.ID,
@@ -2745,6 +2824,9 @@ func (s *Service) createPersonalOrg(ctx context.Context, u identity.User, now ti
 		if err := s.store.UpsertOrgMembership(ctx, om); err != nil {
 			return identity.Org{}, identity.OrgMembership{}, err
 		}
+		undo.push(fmt.Sprintf("the owner membership of %s in the personal org %s", u.ID, o.ID), func(c context.Context) error {
+			return s.store.DeleteOrgMembership(c, u.ID, o.ID)
+		})
 		return o, om, nil
 	}
 	return identity.Org{}, identity.OrgMembership{}, errors.New("auth: could not allocate slug for personal org")

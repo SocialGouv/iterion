@@ -789,6 +789,12 @@ type Service struct {
 	// only signal left. Wired by the cloud server from the identity store.
 	currentPoolForTenant func(ctx context.Context, tenantID string) (string, error)
 
+	// botContexts, when non-nil, materialises the bot's operator-bound
+	// context documents into every launch this service drives (ADR-147).
+	// Nil on a service that cannot materialise — launches then behave as
+	// before the seam existed.
+	botContexts *BotContextResolver
+
 	// alertSettings, when non-nil, requests construction of an alert
 	// Manager that observes the run event stream (via the file-event
 	// tail) and fans stall / budget / failure alerts out to a webhook,
@@ -824,6 +830,13 @@ type Service struct {
 	// runlog.go and the /api/runs/{id}/log endpoint.
 	runLogsMu sync.RWMutex
 	runLogs   map[string]*RunLogBuffer
+	// runLoggers holds the per-run LOGGER prepareRunLog built beside the
+	// buffer: the fork carrying this run's secret matcher (BuildExecutor
+	// sets it there, iterion#2822). It is what the finalize helpers a
+	// control or lifecycle call reaches for log on — those run outside the
+	// run's goroutine and have no other handle to the run's matcher. Same
+	// lifecycle and lock as runLogs.
+	runLoggers map[string]*iterlog.Logger
 	// runEngines holds the live in-process Engine for each active run so
 	// the active-duration stamping callback (activeDurationForRun) can
 	// read the run's monotonic SharedBudget elapsed. Registered in
@@ -1218,6 +1231,7 @@ func NewService(storeDir string, opts ...ServiceOption) (*Service, error) {
 		recoveryDispatch:       recovery.Dispatch(recovery.DefaultRecipes()),
 		executionContextPolicy: ExecutionContextPolicyFromEnv(),
 		runLogs:                make(map[string]*RunLogBuffer),
+		runLoggers:             make(map[string]*iterlog.Logger),
 		runEngines:             make(map[string]*runtime.Engine),
 		runSteer:               make(map[string]chan *runtime.OverrideMsg),
 	}

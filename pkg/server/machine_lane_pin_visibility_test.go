@@ -41,28 +41,36 @@ func seedVendorKey(t *testing.T, keys secrets.ApiKeyStore, tenant, user, name st
 // is written, exactly like the gateway-provider pin next to it and like the
 // secret twin below — the operator's explicit choice is never replaced in
 // silence.
-func TestValidateKeyOverrides_RefusesAPinThisWebhookCanNeverSpend(t *testing.T) {
+//
+// Both machine lanes that write pins go through this ONE validator: the
+// webhook routes fire under webhookActor and the trigger subscription routes
+// launch under triggerSpineActor, so the same refusal and the same wording
+// must answer either actor — a lane-specific message here would lie to the
+// other lane's operator.
+func TestValidateKeyOverrides_RefusesAPinItsLaneCanNeverSpend(t *testing.T) {
 	keys := secrets.NewMemoryApiKeyStore()
 	personal := seedVendorKey(t, keys, "t1", "alice", "alice-personal", false)
 	org := seedVendorKey(t, keys, "t1", "", "org-default", true)
 	s := &Server{apiKeys: keys}
 	ctx := store.WithTenant(t.Context(), "t1")
-	actor := webhookActor("wh1")
 
-	err := s.validateKeyOverrides(ctx, "t1", actor, map[string]string{"anthropic": personal.ID})
-	if err == nil || !strings.Contains(err.Error(), "not spendable by this webhook") {
-		t.Fatalf("a pin on a user-scoped key = %v, want a refusal naming the unspendable pin", err)
-	}
-	if !strings.Contains(err.Error(), actor) {
-		t.Errorf("the refusal %q does not name the identity that cannot spend the key (%q) — an operator cannot act on it", err, actor)
+	for _, actor := range []string{webhookActor("wh1"), triggerSpineActor} {
+		err := s.validateKeyOverrides(ctx, "t1", actor, map[string]string{"anthropic": personal.ID})
+		if err == nil || !strings.Contains(err.Error(), "not spendable by this lane") {
+			t.Fatalf("actor %q: a pin on a user-scoped key = %v, want a refusal naming the unspendable pin", actor, err)
+		}
+		if !strings.Contains(err.Error(), actor) {
+			t.Errorf("actor %q: the refusal %q does not name the identity that cannot spend the key — an operator cannot act on it", actor, err)
+		}
+
+		// The guard is about VISIBILITY, not about pinning: the same team's
+		// org-scoped key still pins.
+		if err := s.validateKeyOverrides(ctx, "t1", actor, map[string]string{"anthropic": org.ID}); err != nil {
+			t.Fatalf("actor %q: an org-scoped pin refused: %v", actor, err)
+		}
 	}
 
-	// The guard is about VISIBILITY, not about pinning: the same team's
-	// org-scoped key still pins.
-	if err := s.validateKeyOverrides(ctx, "t1", actor, map[string]string{"anthropic": org.ID}); err != nil {
-		t.Fatalf("an org-scoped pin refused: %v", err)
-	}
-	// And it fails CLOSED on an actor it does not know: an empty identity
+	// It fails CLOSED on an actor it does not know: an empty identity
 	// matches no key's scope, so an unknown lane is judged like a machine
 	// one instead of skipping the question.
 	if err := s.validateKeyOverrides(ctx, "t1", "", map[string]string{"anthropic": personal.ID}); err == nil {

@@ -85,6 +85,9 @@ type fakeRetryStore struct {
 	cleared   []string
 	abandoned map[string]string
 	rearmed   map[string]time.Time
+	// delayedAs is the reason each DelayRunRetry re-tagged its row with —
+	// empty when the deferral kept the row's own.
+	delayedAs map[string]string
 	armBudget map[string]int // run id -> max attempts seen by ScheduleRunRetry
 	// armWall is the wall each arming carried, abandonExpected the CAS
 	// argument each settlement carried, abandonCASLoses makes every
@@ -117,6 +120,7 @@ func newFakeRetryStore() *fakeRetryStore {
 		loadRun:         map[string]*store.Run{},
 		abandoned:       map[string]string{},
 		rearmed:         map[string]time.Time{},
+		delayedAs:       map[string]string{},
 		armBudget:       map[string]int{},
 		armWall:         map[string]time.Time{},
 		abandonExpected: map[string]time.Time{},
@@ -191,10 +195,11 @@ func (f *fakeRetryStore) ScheduleRunRetry(_ context.Context, runID string, at, w
 	return true, 2, nil
 }
 
-func (f *fakeRetryStore) DelayRunRetry(_ context.Context, runID string, _, delayedUntil time.Time) (bool, error) {
+func (f *fakeRetryStore) DelayRunRetry(_ context.Context, runID string, _, delayedUntil time.Time, reason, _ string) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.rearmed[runID] = delayedUntil
+	f.delayedAs[runID] = reason
 	return true, nil
 }
 

@@ -21,6 +21,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dispatcher"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/errtrack"
+	"github.com/SocialGouv/iterion/pkg/legal"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/marketplace"
 	"github.com/SocialGouv/iterion/pkg/modelprefs"
@@ -57,6 +58,10 @@ type StudioOptions struct {
 	// Invoked from a goroutine; callers must be ready for it to fire
 	// concurrently with their own Run loop.
 	OnReady func(addr string)
+
+	// Legal is the operator's legal surface (ADR-160) the server
+	// publishes under /legal; the zero value publishes nothing.
+	Legal legal.Surface
 
 	// Mode, when set, advertises the deployment context in
 	// /api/server/info and tunes upload defaults ("desktop" raises
@@ -258,6 +263,7 @@ func RunStudio(ctx context.Context, opts StudioOptions, p *Printer) error {
 		StoreDir:               opts.StoreDir,
 		OpenBrowser:            !opts.NoBrowser,
 		Mode:                   opts.Mode,
+		Legal:                  opts.Legal,
 		MaxUploadSize:          opts.MaxUploadSize,
 		MaxTotalUploadSize:     opts.MaxTotalUploadSize,
 		MaxUploadsPerRun:       opts.MaxUploadsPerRun,

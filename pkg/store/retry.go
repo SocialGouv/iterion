@@ -39,7 +39,16 @@ type RunRetryStore interface {
 	// DelayRunRetry moves an already-armed retry without consuming another
 	// attempt. expectedAfter is a CAS guard against an operator or another
 	// sweeper changing the intent concurrently.
-	DelayRunRetry(ctx context.Context, runID string, expectedAfter, delayedUntil time.Time) (delayed bool, err error)
+	//
+	// reason and code, when non-empty, re-tag WHAT the row waits for
+	// (RunRetryState.Reason and Code) in the same write: a deferral that
+	// changes the wait's class — a usage-window row whose resume was refused
+	// on a credential's concurrency cap now waits for a slot, not for the
+	// provider — says so, or every reader keyed on the reason (the probe
+	// pass, UsageParkWall, the audit trail) keeps treating the row as the
+	// wait it no longer is. Empty keeps the row's own, like the zero wall
+	// of RearmProbedRunRetry.
+	DelayRunRetry(ctx context.Context, runID string, expectedAfter, delayedUntil time.Time, reason, code string) (delayed bool, err error)
 	// PullRunRetry pulls an armed retry FORWARD to probeAt (the sweeper's
 	// "now") so the runner's usage preflight — the only authoritative
 	// reading of the provider's window — gets to answer before the

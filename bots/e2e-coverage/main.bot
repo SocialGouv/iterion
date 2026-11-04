@@ -31,6 +31,8 @@
 ##                  re-runs it on the REAL exit code AND enforces the
 ##                  MATRIX CONTRACT: file present + marker + parseable
 ##                  table + allowed statuses + justified exceptions +
+##                  the live gate marker (covered-live Notes name
+##                  "gate: paid" or "gate: tool", #2794) +
 ##                  every covered-* row citing at least one test that
 ##                  RESOLVES in the tree (grep — an orphan claim is a
 ##                  red gate) AND that the suite's own output does not
@@ -721,8 +723,10 @@ schema verify_plan:
 ## real process exit code of re-running <scratch_dir>/verify.sh — NOT
 ## an LLM judgment. `matrix_ok` is the matrix-contract verdict: file
 ## present + marker + parseable table + allowed statuses + justified
-## exceptions + every covered-* row citing at least one test that
-## resolves in the tree (an ORPHAN CLAIM is matrix_ok=false) AND that
+## exceptions + the live gate marker (covered-live Notes name "gate:
+## paid" or "gate: tool", #2794) + every covered-* row citing at least
+## one test that resolves in the tree (an ORPHAN CLAIM is
+## matrix_ok=false) AND that
 ## the suite's own output does not report as skipped this pass (an
 ## UNEXECUTED CLAIM is matrix_ok=false too — #1598).
 ## `uncovered_rows` counts the `uncovered` rows left in the WHOLE
@@ -1256,8 +1260,10 @@ rx = re.compile('(_test[.]|_tests[.]|[.]test[.]|[.]spec[.]|(^|/)test/|(^|/)tests
 name_rx = re.compile('(test|spec|scenario|should|it_)', re.I)
 
 # 2) Matrix contract (the bot-specific anti-facade floor): file present +
-# marker + parseable table + allowed statuses + justified exceptions + every
-# covered-* row citing at least one test that RESOLVES in the tree. An
+# marker + parseable table + allowed statuses + justified exceptions + the
+# live gate marker (the Notes of a covered-live row name gate: paid or
+# gate: tool, #2794) + every covered-* row citing at least one test that
+# RESOLVES in the tree. An
 # orphan claim (cited test not found) is a red matrix — and so is an
 # UNEXECUTED one: resolution is existence, the claim is EXECUTION, so when
 # the suite ran this pass its own output is the witness, and a cited test
@@ -1490,6 +1496,25 @@ if mtext:
             if status in need_note and cell('notes') == '':
                 matrix_ok = False
                 problems.append(rid + ': status ' + status + ' requires a justification in Notes')
+            if status == 'covered-live' and cell('notes') != '':
+                # The free/paid split (#2794): a row whose live half needs
+                # a real external TOOL is not a row that needs MONEY, and a
+                # reader budgeting a stabilisation pass cannot tell them
+                # apart unless the Notes name the gate. Two markers, one
+                # per kind, OPENING the Notes (a marker buried mid-prose is
+                # not the gate declaration) and word-terminated (gate:
+                # toolbox is not gate: tool); a covered-live row without
+                # either is a red row.
+                notes_l = cell('notes').lower()
+                marked = False
+                for marker in ('gate: paid', 'gate: tool'):
+                    if notes_l.startswith(marker):
+                        tail = notes_l[len(marker):]
+                        if tail == '' or not (tail[0].isalnum() or tail[0] == '_'):
+                            marked = True
+                if not marked:
+                    matrix_ok = False
+                    problems.append(rid + ': covered-live must open its Notes with its gate -- gate: paid (the live half needs a real credential / model turn -- money) or gate: tool (tool-gated: a real external tool, no credential, no money) (#2794)')
             tcell = cell('tests')
             if status not in need_tests and tcell != '':
                 # A row that is not claiming coverage may still cite tests as

@@ -318,7 +318,7 @@ func (s *Server) handleApproveProvision(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 	if s.forgeConnections != nil {
-		if conn, err := s.forgeConnections.Get(ctx, a.ConnectionID); err != nil || conn.TenantID != a.TenantID {
+		if _, err := s.forgeConnections.Get(ctx, a.TenantID, a.ConnectionID); err != nil {
 			httpError(w, http.StatusConflict,
 				"the forge connection this request uses no longer exists — reject the request instead of approving it")
 			return

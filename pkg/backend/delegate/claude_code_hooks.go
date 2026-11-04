@@ -696,19 +696,10 @@ func (b *ClaudeCodeBackend) wireBoardMCP(task Task, opts []claudesdk.Option, ext
 			b.Logger.Warn("[%s#%d/claude-code] could not resolve iterion CLI binary path; board MCP server disabled", task.NodeID, task.Iteration)
 			return opts
 		}
-		env := map[string]string{
-			"ITERION_BOARD_CAPS": strings.Join(task.Capabilities, ","),
-		}
-		if task.StoreDir != "" {
-			env["ITERION_STORE_DIR"] = task.StoreDir
-		}
-		if task.SourceIssueID != "" {
-			env["ITERION_SOURCE_ISSUE_ID"] = task.SourceIssueID
-		}
 		opts = append(opts, claudesdk.WithMCPServer(boardMCPServerName, &claudesdk.MCPStdioServer{
 			Command: selfPath,
 			Args:    []string{boardMCPSubcommand},
-			Env:     env,
+			Env:     BoardServerEnv(task),
 		}))
 		if len(task.AllowedTools) > 0 {
 			*extras = append(*extras, BoardToolsFor(task.Capabilities)...)

@@ -520,6 +520,68 @@ func envMap(container any) map[string]map[string]any {
 	return out
 }
 
+// The iterion.cloud group had no render witness at all: this is net-new
+// coverage, not an extension of the datastore one next door. What it pins is
+// the pair of #2354 rules — the series each reads, the replica aggregation
+// (the gauges are per-pod readings of a per-pod image, so an un-aggregated
+// expr pages once per replica), and that the description carries BOTH cures
+// the operator has, since a page naming no remedy is a page that gets muted.
+func TestChartRenderCloudBotOverrideAlerts(t *testing.T) {
+	docs := manifests(t, mustRender(t, "-f", "values-prod.yaml", "--set", "metrics.prometheusRule.enabled=true"))
+	rules := ruleGroups(t, docs)["iterion.cloud"]
+	if len(rules) == 0 {
+		t.Fatal("no iterion.cloud group in the render")
+	}
+
+	shadow := rule(rules, "IterionBotOverrideShadowsNewer", map[string]string{"severity": "warning"})
+	if shadow == nil {
+		t.Fatal("no IterionBotOverrideShadowsNewer rule — the gauge would be scraped and read by nobody")
+	}
+	expr := fmt.Sprint(shadow["expr"])
+	if !strings.Contains(expr, "iterion_bot_override_shadows_newer") || !strings.Contains(expr, "> 0") {
+		t.Errorf("shadow rule expr = %q, want the gauge over 0", expr)
+	}
+	// Per-replica gauges: the server is multi-replica and the registry is
+	// shared with the runner, so an un-aggregated expr is one page per pod.
+	if !strings.Contains(expr, "max by (slug)") {
+		t.Errorf("shadow rule must aggregate per slug across replicas, got %q", expr)
+	}
+	desc := fmt.Sprint(dig(shadow, "annotations", "description"))
+	// The slug, the two version fields, and both cures the tree documents.
+	for _, want := range []string{
+		"{{ $labels.slug }}",
+		"bundle_version",
+		"shadowed_version",
+		"iterion remote admin bots push bots/",
+		"DELETE /api/admin/bots/",
+	} {
+		if !strings.Contains(desc, want) {
+			t.Errorf("shadow rule description missing %q:\n%s", want, desc)
+		}
+	}
+
+	unavailable := rule(rules, "IterionBotShadowCheckUnavailable", map[string]string{"severity": "warning"})
+	if unavailable == nil {
+		t.Fatal("no IterionBotShadowCheckUnavailable rule — a check that cannot run would read as a clean inventory")
+	}
+	uexpr := fmt.Sprint(unavailable["expr"])
+	if !strings.Contains(uexpr, "iterion_bot_shadow_check_unavailable") || !strings.Contains(uexpr, "== 1") {
+		t.Errorf("unavailable rule expr = %q", uexpr)
+	}
+	if !strings.Contains(uexpr, "max(") {
+		t.Errorf("unavailable rule must aggregate across replicas, got %q", uexpr)
+	}
+
+	// The INFO class is deliberately UNALERTED: a free-form or suffixed pin
+	// cannot be ordered, so a page on it is one nobody can clear. The gauge
+	// exists; no rule may read it.
+	for _, r := range rules {
+		if strings.Contains(fmt.Sprint(r["expr"]), "iterion_bot_override_unorderable_version") {
+			t.Errorf("a rule alerts on the unorderable class (%v) — it is informational only", r["alert"])
+		}
+	}
+}
+
 func TestChartRenderDatastoreAlerts(t *testing.T) {
 	base := []string{"-f", "values-prod.yaml", "-f", "testdata/values-datastores.yaml"}
 	rules := ruleGroups(t, manifests(t, mustRender(t, base...)))["iterion.datastores"]
@@ -1702,6 +1764,121 @@ func TestChartRenderImagePinning(t *testing.T) {
 					t.Fatalf("%s image %q is not digest-pinned under requireDigest", name, img)
 				}
 			}
+		}
+	})
+}
+
+// The operator's legal pages (ADR-160) are deployment configuration: the
+// texts ride a ConfigMap the chart renders from config.legal.documents and
+// mounts read-only on the server pod, the metadata rides the env. Nothing of
+// it renders until the operator configures something, a slug that names no
+// document is refused at render time, and an out-of-band ConfigMap is
+// mounted in place of the rendered one.
+func TestLegalPagesAreDeploymentConfiguration(t *testing.T) {
+	t.Run("nothing configured renders nothing", func(t *testing.T) {
+		docs := manifests(t, mustRender(t, "-f", "values-prod.yaml"))
+		if find(docs, "ConfigMap", "iterion-legal") != nil {
+			t.Error("an iterion-legal ConfigMap rendered with no document configured")
+		}
+		cm := must(t, docs, "ConfigMap", "iterion-config")
+		for _, key := range []string{"ITERION_LEGAL_DOCUMENTS_DIR", "ITERION_LEGAL_CONTACT_EMAIL", "ITERION_LEGAL_ACCESSIBILITY_STATUS"} {
+			if got := dig(cm, "data", key); got != nil {
+				t.Errorf("%s = %v rendered with nothing configured", key, got)
+			}
+		}
+		dep := must(t, docs, "Deployment", "iterion")
+		if got := dig(dep, "spec", "template", "spec", "volumes"); got != nil {
+			t.Errorf("volumes = %v, want none on the cloud server pod with no legal document", got)
+		}
+	})
+
+	t.Run("configured documents ride a mounted ConfigMap and the metadata rides the env", func(t *testing.T) {
+		values := filepath.Join(t.TempDir(), "legal.yaml")
+		body := "config:\n  legal:\n    contactEmail: contact@example.org\n    accessibilityStatus: non_compliant\n    accessibilityDate: \"2026-11-03\"\n    accessibilityRate: \"42.5\"\n    documents:\n      mentions-legales: |\n        # Éditeur\n\n        La Fabrique numérique.\n      accessibilite: |\n        # État de conformité\n\n        Non conforme.\n"
+		if err := os.WriteFile(values, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		docs := manifests(t, mustRender(t, "-f", "values-prod.yaml", "-f", values))
+		legal := must(t, docs, "ConfigMap", "iterion-legal")
+		data, _ := legal["data"].(map[string]any)
+		if len(data) != 2 {
+			t.Fatalf("legal ConfigMap keys = %v, want the two configured documents only", data)
+		}
+		if got, _ := data["mentions-legales.md"].(string); !strings.Contains(got, "La Fabrique numérique.") {
+			t.Errorf("mentions-legales.md = %q, want the configured markdown", got)
+		}
+		if _, ok := data["cgu.md"]; ok {
+			t.Error("cgu.md rendered although the document was left empty")
+		}
+		cm := must(t, docs, "ConfigMap", "iterion-config")
+		for key, want := range map[string]string{
+			"ITERION_LEGAL_DOCUMENTS_DIR":        "/etc/iterion/legal",
+			"ITERION_LEGAL_CONTACT_EMAIL":        "contact@example.org",
+			"ITERION_LEGAL_ACCESSIBILITY_STATUS": "non_compliant",
+			"ITERION_LEGAL_ACCESSIBILITY_DATE":   "2026-11-03",
+			"ITERION_LEGAL_ACCESSIBILITY_RATE":   "42.5",
+		} {
+			if got := dig(cm, "data", key); got != want {
+				t.Errorf("%s = %v, want %q", key, got, want)
+			}
+		}
+		dep := must(t, docs, "Deployment", "iterion")
+		if got := dig(dep, "spec", "template", "spec", "volumes", "0", "configMap", "name"); got != "iterion-legal" {
+			t.Errorf("legal volume ConfigMap = %v, want iterion-legal", got)
+		}
+		if got := dig(dep, "spec", "template", "spec", "containers", "0", "volumeMounts", "0", "mountPath"); got != "/etc/iterion/legal" {
+			t.Errorf("legal mountPath = %v, want /etc/iterion/legal", got)
+		}
+		if got := dig(dep, "spec", "template", "spec", "containers", "0", "volumeMounts", "0", "readOnly"); got != true {
+			t.Errorf("legal mount readOnly = %v, want true", got)
+		}
+		if got := dig(dep, "spec", "template", "metadata", "annotations", "checksum/legal"); got == nil {
+			t.Error("no checksum/legal annotation: a text change would not roll the pod")
+		}
+	})
+
+	t.Run("a slug that names no document is refused", func(t *testing.T) {
+		mustRefuse(t, "config.legal.documents.terms names no legal document", "-f", "values-prod.yaml", "--set", "config.legal.documents.terms=x")
+	})
+
+	t.Run("a document whose first line is indented renders verbatim", func(t *testing.T) {
+		values := filepath.Join(t.TempDir(), "legal.yaml")
+		body := "config:\n  legal:\n    documents:\n      cgu: |2\n            indented first line\n        # Article 1\n"
+		if err := os.WriteFile(values, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		docs := manifests(t, mustRender(t, "-f", "values-prod.yaml", "-f", values))
+		got := dig(must(t, docs, "ConfigMap", "iterion-legal"), "data", "cgu.md")
+		if got != "    indented first line\n# Article 1\n" {
+			t.Errorf("cgu.md = %q, want the text verbatim", got)
+		}
+	})
+
+	t.Run("inline documents beside an existing ConfigMap are refused", func(t *testing.T) {
+		mustRefuse(t, "config.legal.existingConfigMap (legal-sealed) and inline config.legal.documents (cgu) are both set", "-f", "values-prod.yaml", "--set", "config.legal.existingConfigMap=legal-sealed", "--set", "config.legal.documents.cgu=ignored")
+	})
+
+	t.Run("an existing ConfigMap is mounted in place of the rendered one", func(t *testing.T) {
+		docs := manifests(t, mustRender(t, "-f", "values-prod.yaml", "--set", "config.legal.existingConfigMap=legal-sealed"))
+		if find(docs, "ConfigMap", "iterion-legal") != nil {
+			t.Error("the chart rendered its own ConfigMap beside the existing one")
+		}
+		dep := must(t, docs, "Deployment", "iterion")
+		if got := dig(dep, "spec", "template", "spec", "volumes", "0", "configMap", "name"); got != "legal-sealed" {
+			t.Errorf("legal volume ConfigMap = %v, want legal-sealed", got)
+		}
+		cm := must(t, docs, "ConfigMap", "iterion-config")
+		if got := dig(cm, "data", "ITERION_LEGAL_DOCUMENTS_DIR"); got != "/etc/iterion/legal" {
+			t.Errorf("ITERION_LEGAL_DOCUMENTS_DIR = %v, want the mount path", got)
+		}
+	})
+
+	t.Run("the local StatefulSet mounts the documents beside its state", func(t *testing.T) {
+		docs := manifests(t, mustRender(t, "--set", "mode=local", "--set", "config.legal.documents.cgu=x"))
+		sts := must(t, docs, "StatefulSet", "iterion")
+		mounts, _ := dig(sts, "spec", "template", "spec", "containers", "0", "volumeMounts").([]any)
+		if len(mounts) != 2 {
+			t.Fatalf("local volumeMounts = %v, want the state PVC and the legal ConfigMap", mounts)
 		}
 	})
 }

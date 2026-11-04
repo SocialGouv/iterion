@@ -89,6 +89,16 @@ type BotSecretBinding struct {
 	CreatedBy string    `bson:"created_by" json:"created_by"`
 	CreatedAt time.Time `bson:"created_at" json:"created_at"`
 	UpdatedAt time.Time `bson:"updated_at" json:"updated_at"`
+
+	// DegradedReason is set when the last launch-time materialisation of
+	// this binding failed — the context kind's readout (ADR-147 D3): a
+	// binding whose pinned source cannot be resolved is SKIPPED by the
+	// launch that found it so, and this flag is what keeps that skip from
+	// being silent. It clears on the next materialisation that succeeds.
+	// Written only through MarkDegraded/ClearDegraded — Update never
+	// touches it (the pluginsource.PluginSource discipline, mirrored).
+	DegradedReason string     `bson:"degraded_reason,omitempty" json:"degraded_reason,omitempty"`
+	DegradedAt     *time.Time `bson:"degraded_at,omitempty" json:"degraded_at,omitempty"`
 }
 
 // BotSecretBindingStore persists bot-secret bindings.
@@ -99,6 +109,14 @@ type BotSecretBindingStore interface {
 	Delete(ctx context.Context, id string) error
 	ListByTenantBot(ctx context.Context, tenantID, botID string) ([]BotSecretBinding, error)
 	ListByTenant(ctx context.Context, tenantID string) ([]BotSecretBinding, error)
+	// MarkDegraded records that a launch could not materialise the binding,
+	// and why; ClearDegraded records a materialisation that succeeded.
+	// Keyed by the explicit tenant like ListByTenantBot: a launch resolves
+	// the team that owns the RUN, which is not always the caller's context
+	// tenant. Both return ErrBindingNotFound when (tenant, id) names
+	// nothing.
+	MarkDegraded(ctx context.Context, tenantID, id, reason string) error
+	ClearDegraded(ctx context.Context, tenantID, id string) error
 }
 
 var (
@@ -122,6 +140,12 @@ func (b BotSecretBinding) EffectiveKind() string {
 	}
 	return b.Kind
 }
+
+// Degraded reports whether the last launch-time materialisation of this
+// binding failed. The reason is in DegradedReason; a degraded binding still
+// lists — it is the operator's declaration, and the flag is the engine's
+// readout.
+func (b BotSecretBinding) Degraded() bool { return b.DegradedReason != "" }
 
 // DeclaredName is the workflow-declared name the binding resolves under,
 // whatever its kind.
@@ -438,11 +462,48 @@ func (m *MemoryBotSecretBindingStore) Update(ctx context.Context, b BotSecretBin
 	if !ok || !visibleToTenant(ctx, cur.TenantID) {
 		return ErrBindingNotFound
 	}
-	b.TenantID = stampTenant(ctx, cur.TenantID)
-	if err := m.refuseNameConflict(b); err != nil {
+	// The Mongo twin updates field-wise ($set): the mutable payload moves,
+	// the record's identity and provenance (tenant, bot, creator, created)
+	// stay the stored ones, and the health readout survives (only
+	// Mark/ClearDegraded write it). The conflict check runs on the MERGED
+	// record for the same reason the unique index sees the stored bot_id.
+	merged := cur
+	merged.TenantID = stampTenant(ctx, cur.TenantID)
+	merged.Kind = b.Kind
+	merged.SecretID = b.SecretID
+	merged.SecretNameForWorkflow = b.SecretNameForWorkflow
+	merged.Context = b.Context
+	merged.AllowedHosts = b.AllowedHosts
+	merged.UpdatedAt = b.UpdatedAt
+	if err := m.refuseNameConflict(merged); err != nil {
 		return err
 	}
-	m.bindings[b.ID] = b
+	m.bindings[b.ID] = merged
+	return nil
+}
+
+func (m *MemoryBotSecretBindingStore) MarkDegraded(_ context.Context, tenantID, id, reason string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	b, ok := m.bindings[id]
+	if !ok || b.TenantID != tenantID {
+		return ErrBindingNotFound
+	}
+	now := time.Now().UTC()
+	b.DegradedReason, b.DegradedAt = reason, &now
+	m.bindings[id] = b
+	return nil
+}
+
+func (m *MemoryBotSecretBindingStore) ClearDegraded(_ context.Context, tenantID, id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	b, ok := m.bindings[id]
+	if !ok || b.TenantID != tenantID {
+		return ErrBindingNotFound
+	}
+	b.DegradedReason, b.DegradedAt = "", nil
+	m.bindings[id] = b
 	return nil
 }
 
@@ -552,7 +613,65 @@ func (s *MongoBotSecretBindingStore) Update(ctx context.Context, b BotSecretBind
 		return ErrBindingTenantMissing
 	}
 	b.TenantID = tenantID
-	return mongoutil.ReplaceOneChecked(ctx, s.coll, bson.M{"_id": b.ID, "tenant_id": tenantID}, b, ErrBindingNameConflict, ErrBindingNotFound, "secrets: update bot binding")
+	// Field-wise $set, never a document replace: degraded_reason/degraded_at
+	// are the engine's readout written only through Mark/ClearDegraded, and
+	// a whole-document replace would let an operator's edit racing a
+	// launch's mark wipe it (the pluginsource Mongo twin's discipline).
+	res, err := s.coll.UpdateOne(ctx, bson.M{"_id": b.ID, "tenant_id": tenantID}, bson.M{"$set": bson.M{
+		"kind":                     b.Kind,
+		"secret_id":                b.SecretID,
+		"secret_name_for_workflow": b.SecretNameForWorkflow,
+		"context":                  b.Context,
+		"allowed_hosts":            b.AllowedHosts,
+		"updated_at":               b.UpdatedAt,
+	}})
+	if err != nil {
+		if mongoutil.IsDuplicateKey(err) {
+			return ErrBindingNameConflict
+		}
+		return fmt.Errorf("secrets: update bot binding: %w", err)
+	}
+	if res.MatchedCount == 0 {
+		return ErrBindingNotFound
+	}
+	return nil
+}
+
+// MarkDegraded stamps the binding's health readout. Filtered by the explicit
+// tenant, never the context one: a launch resolves the team that owns the
+// run, which is not always the caller's context tenant.
+func (s *MongoBotSecretBindingStore) MarkDegraded(ctx context.Context, tenantID, id, reason string) error {
+	if tenantID == "" {
+		return ErrBindingTenantMissing
+	}
+	res, err := s.coll.UpdateOne(ctx, bson.M{"_id": id, "tenant_id": tenantID}, bson.M{"$set": bson.M{
+		"degraded_reason": reason,
+		"degraded_at":     time.Now().UTC(),
+	}})
+	if err != nil {
+		return fmt.Errorf("secrets: mark bot binding degraded: %w", err)
+	}
+	if res.MatchedCount == 0 {
+		return ErrBindingNotFound
+	}
+	return nil
+}
+
+func (s *MongoBotSecretBindingStore) ClearDegraded(ctx context.Context, tenantID, id string) error {
+	if tenantID == "" {
+		return ErrBindingTenantMissing
+	}
+	res, err := s.coll.UpdateOne(ctx, bson.M{"_id": id, "tenant_id": tenantID}, bson.M{"$unset": bson.M{
+		"degraded_reason": "",
+		"degraded_at":     "",
+	}})
+	if err != nil {
+		return fmt.Errorf("secrets: clear bot binding degraded: %w", err)
+	}
+	if res.MatchedCount == 0 {
+		return ErrBindingNotFound
+	}
+	return nil
 }
 
 func (s *MongoBotSecretBindingStore) Delete(ctx context.Context, id string) error {

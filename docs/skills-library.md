@@ -145,6 +145,35 @@ same-named bundle or plugin skill wins, and a file you placed by hand in
 `.claude/skills/` (no `.iterion-managed` marker) shadows all three. Collisions
 are logged, never silent.
 
+### Untrusted workspaces (the pinned skill channel, #1719)
+
+On a run whose workspace the operator does not control (`store.RunTrust` other
+than default — a checkout under review), the walked skill roots
+(`.skills/`, `.claude/skills/`, `.agents/skills/`, `.claw/skills/`, at every
+ancestor) answer with text the **checkout** planted. The run then serves only
+the skills the mirror *owns*, re-carried into an engine-owned root
+(`<workDir>/.claude/iterion-run-skills`, removed and rewritten on every mirror
+pass — the engine is its only writer):
+
+- **claw**'s `skill` tool resolves through a pinned `name → path` allowlist
+  (claw-code-go's `ExecuteSkillPinned`): no root is walked, an unpinned name is
+  refused, and an untrusted run that owns no skill refuses them all. The pin
+  crosses the sandbox wire workspace-relative and the in-container runner joins
+  it against its own workspace.
+- **pi** already receives explicit `--skill` paths (the same owned list); the
+  channel changes nothing for it.
+- **claude_code** discovers skills by directory, not by pin: the channel root
+  rides `--add-dir` (the CLI's documented mechanism for skills outside the
+  working tree) on host runs. Two bounds are on record: the floor that keeps
+  the checkout's own `.claude/` out (the project setting source withheld) is
+  #1730's untrusted-lane work — without it the channel is additive, not a
+  boundary — and a *container* spawn gets no `--add-dir` (its workspace is not
+  the launcher's filesystem; the run-owned bind mount an out-of-workspace root
+  needs is the admission half's design), so a sandboxed claude_code node runs
+  without the bundle's skills.
+
+A trusted run's lookup is unchanged on every backend.
+
 ### Cloud runs (ADR-079)
 
 The library lives on the filesystem (`~/.iterion/skills`), which a **cloud

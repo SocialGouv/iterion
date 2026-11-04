@@ -81,25 +81,36 @@ type IOTask struct {
 	// run's own briefs. Empty from a launcher that predates it: the runner
 	// keeps its workspace-only scope. Never set from a Task field — the
 	// launcher writes it at the crossing (model.ClawBackend.runnerIOTask).
-	ScratchDir             string           `json:"scratch_dir,omitempty"`
-	ReasoningEffort        string           `json:"reasoning_effort,omitempty"`
-	Ultracode              bool             `json:"ultracode,omitempty"`
-	SecretsHygiene         bool             `json:"secrets_hygiene,omitempty"`
-	SecretFiles            []SecretFileHint `json:"secret_files,omitempty"`
-	CursorFragments        []string         `json:"cursor_fragments,omitempty"`
-	SkillHints             []SkillHint      `json:"skill_hints,omitempty"`
-	PresetFragment         string           `json:"preset_fragment,omitempty"`
-	CompactThresholdRatio  float64          `json:"compact_threshold_ratio,omitempty"`
-	CompactPreserveRecent  int              `json:"compact_preserve_recent,omitempty"`
-	SessionID              string           `json:"session_id,omitempty"`
-	SessionSlot            string           `json:"session_slot,omitempty"`
-	ForkSession            bool             `json:"fork_session,omitempty"`
-	SessionFingerprint     string           `json:"session_fingerprint,omitempty"`
-	ProviderHint           string           `json:"provider_hint,omitempty"`
-	InteractionEnabled     bool             `json:"interaction_enabled,omitempty"`
-	ResumeConversation     json.RawMessage  `json:"resume_conversation,omitempty"`
-	ResumePendingToolUseID string           `json:"resume_pending_tool_use_id,omitempty"`
-	ResumeAnswer           string           `json:"resume_answer,omitempty"`
+	ScratchDir string `json:"scratch_dir,omitempty"`
+	// SkillAllowlist is the run's pinned skill set as the RUNNER serves it
+	// (iterion#1719): name → path WORKSPACE-RELATIVE, so the value means the
+	// same thing on both sides of the sandbox wire (the host's absolute
+	// paths would not exist in the container). Never set from a Task field
+	// — the launcher re-roots Task.SkillAllowlist at the crossing
+	// (model.ClawBackend.runnerIOTask), the way ScratchDir is written
+	// there. SkillAllowlistArmed carries the pinned mode itself: an armed
+	// run with no owned skills crosses an empty map, which `omitempty`
+	// would drop, and the runner must refuse rather than walk.
+	SkillAllowlist         map[string]string `json:"skill_allowlist,omitempty"`
+	SkillAllowlistArmed    bool              `json:"skill_allowlist_armed,omitempty"`
+	ReasoningEffort        string            `json:"reasoning_effort,omitempty"`
+	Ultracode              bool              `json:"ultracode,omitempty"`
+	SecretsHygiene         bool              `json:"secrets_hygiene,omitempty"`
+	SecretFiles            []SecretFileHint  `json:"secret_files,omitempty"`
+	CursorFragments        []string          `json:"cursor_fragments,omitempty"`
+	SkillHints             []SkillHint       `json:"skill_hints,omitempty"`
+	PresetFragment         string            `json:"preset_fragment,omitempty"`
+	CompactThresholdRatio  float64           `json:"compact_threshold_ratio,omitempty"`
+	CompactPreserveRecent  int               `json:"compact_preserve_recent,omitempty"`
+	SessionID              string            `json:"session_id,omitempty"`
+	SessionSlot            string            `json:"session_slot,omitempty"`
+	ForkSession            bool              `json:"fork_session,omitempty"`
+	SessionFingerprint     string            `json:"session_fingerprint,omitempty"`
+	ProviderHint           string            `json:"provider_hint,omitempty"`
+	InteractionEnabled     bool              `json:"interaction_enabled,omitempty"`
+	ResumeConversation     json.RawMessage   `json:"resume_conversation,omitempty"`
+	ResumePendingToolUseID string            `json:"resume_pending_tool_use_id,omitempty"`
+	ResumeAnswer           string            `json:"resume_answer,omitempty"`
 	// ResumeCommandNarrowing is the checkpointed command narrowing (#1717)
 	// the resumed generation re-pins — it must cross beside the
 	// conversation: a resumed SANDBOXED node rebuilds its loop in the

@@ -33,16 +33,13 @@ func (s *Server) canViewTeam(ctx context.Context, id auth.Identity, teamID strin
 // read the store could not complete is the state this exists to keep out of
 // that one route's answers.
 func (s *Server) canViewTeamOrFail(ctx context.Context, id auth.Identity, teamID string) (bool, error) {
-	// Synthetic principals (webhook / config-share) never authorize an
-	// operator team action, even if a future bug set a role on one.
-	if id.IsSynthetic() {
+	// The token arm below reads no store, so it answers the credential
+	// first, with the refusals teamRoleOrFail opens with: a synthetic
+	// principal (webhook / config-share) never authorizes an operator team
+	// action, even if a future bug set a role on one, and a pin bounds the
+	// credential whatever role it claims.
+	if id.IsSynthetic() || id.PinRefusesTeam(teamID) {
 		return false, nil
-	}
-	if id.PinRefusesTeam(teamID) {
-		return false, nil
-	}
-	if id.IsSuperAdmin {
-		return true, nil
 	}
 	// AtLeast(RoleViewer) is equivalent to the old Valid() for the four ladder
 	// roles, but excludes the orthogonal config_editor capability (rank 0) — a
@@ -51,25 +48,7 @@ func (s *Server) canViewTeamOrFail(ctx context.Context, id auth.Identity, teamID
 	if id.TeamID == teamID && id.Role.AtLeast(identity.RoleViewer) {
 		return true, nil
 	}
-	var unread error
-	mb, err := s.authStore().GetMembership(ctx, id.UserID, teamID)
-	switch {
-	case err == nil:
-		if mb.Role.AtLeast(identity.RoleViewer) {
-			return true, nil
-		}
-	case !errors.Is(err, identity.ErrNotFound):
-		unread = fmt.Errorf("read the team grant of %s in %s: %w", id.UserID, teamID, err)
-	}
-	// An org admin/owner can view every team in their org.
-	allowed, oerr := s.orgAdminOfTeamOrFail(ctx, id, teamID)
-	if allowed {
-		return true, nil
-	}
-	if unread == nil {
-		unread = oerr
-	}
-	return false, unread
+	return s.teamRoleOrFail(ctx, id, teamID, identity.RoleViewer)
 }
 
 // canEditConfigShares reports whether the principal may read/write this team's
@@ -108,21 +87,66 @@ func (s *Server) canEditBots(ctx context.Context, id auth.Identity, teamID strin
 	return s.canEditConfigShares(ctx, id, teamID)
 }
 
+// canManageTeam is canManageTeamOrFail's fail-closed form: a read it could
+// not complete grants nothing, and the caller is told nothing about it — what
+// a gate wants, and what every caller takes but the two that must tell an
+// outage from a refusal: the pin heal and the trigger routes' credential gate.
 func (s *Server) canManageTeam(ctx context.Context, id auth.Identity, teamID string) bool {
-	if id.IsSynthetic() {
-		return false
-	}
-	if id.PinRefusesTeam(teamID) {
-		return false
+	allowed, _ := s.canManageTeamOrFail(ctx, id, teamID)
+	return allowed
+}
+
+// canManageTeamOrFail resolves whether id may administer teamID (admin/owner
+// of the team, admin/owner of its org, super-admin) and reports the read that
+// stopped a "no", the way canViewTeamOrFail does: only a refusal carries the
+// error, a "yes" never does. A caller that acts on the refusal itself takes
+// this form: the delete retry's pin heal, which would otherwise answer 404
+// over pins still standing because a Mongo blip read as "no right", and the
+// trigger routes' credential gate (authorizeTriggerCredentials), which would
+// otherwise tell an admin they are not one. It has no token arm: the right
+// is read from the grant row, never from the role a token claims.
+func (s *Server) canManageTeamOrFail(ctx context.Context, id auth.Identity, teamID string) (bool, error) {
+	return s.teamRoleOrFail(ctx, id, teamID, identity.RoleAdmin)
+}
+
+// teamRoleOrFail is the one body of the team ladder's (bool, error) gates:
+// whether id holds at least rung on teamID — as a super-admin, through a
+// grant row of that rank, or as an admin/owner of the team's org, who
+// reaches every team of it on every rung — and, on a "no", the read that
+// stopped it. Only a refusal carries an error, since a failed read beside an
+// arm that grants changes no verdict: the grant read's failure first, else
+// the org lineage's (orgAdminOfTeamOrFail). A grant the store says is NOT
+// THERE is a fact, not a failure, so beside it a failed org read is the
+// whole reason the gate could not say yes — a refusal resting on it is that
+// failure, never a "no". A gate on another rung delegates here rather than
+// copying the merge.
+//
+// A caller can reach it directly, so it answers the credential itself (the
+// pin census of pat_pin_gate_test.go holds it to that), whatever its callers
+// already asked.
+func (s *Server) teamRoleOrFail(ctx context.Context, id auth.Identity, teamID string, rung identity.Role) (bool, error) {
+	if id.IsSynthetic() || id.PinRefusesTeam(teamID) {
+		return false, nil
 	}
 	if id.IsSuperAdmin {
-		return true
+		return true, nil
 	}
-	if mb, err := s.authStore().GetMembership(ctx, id.UserID, teamID); err == nil && mb.Role.AtLeast(identity.RoleAdmin) {
-		return true
+	var unread error
+	role, _, err := s.readTeamGrantRole(ctx, id.UserID, teamID)
+	switch {
+	case err != nil:
+		unread = fmt.Errorf("read the team grant of %s in %s: %w", id.UserID, teamID, err)
+	case role.AtLeast(rung):
+		return true, nil
 	}
-	// An org admin/owner can manage every team in their org.
-	return s.orgAdminOfTeam(ctx, id, teamID)
+	allowed, oerr := s.orgAdminOfTeamOrFail(ctx, id, teamID)
+	if allowed {
+		return true, nil
+	}
+	if unread == nil {
+		unread = oerr
+	}
+	return false, unread
 }
 
 // orgAdminOfTeam reports whether the principal is an admin/owner of the

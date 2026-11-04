@@ -761,6 +761,9 @@ func (b *ClaudeCodeBackend) buildSpawnOptions(task Task) ([]claudesdk.Option, fu
 	amb := claudeAmbient(task)
 	reportLegacySources(b.Logger, amb)
 	opts = append(opts, amb.settingSourcesOption())
+	if dir, ok := skillChannelAddDir(task); ok {
+		opts = append(opts, claudesdk.WithAddDirs(dir))
+	}
 	// Setting sources are inherited (above); MCP servers are NOT. The node's
 	// resolved MCP set — .bot `mcp_server:`/`mcp:` blocks, the repo's
 	// .mcp.json via autoload_project, iterion's ask_user/board servers —
@@ -890,10 +893,8 @@ func (b *ClaudeCodeBackend) buildSpawnOptions(task Task) ([]claudesdk.Option, fu
 			}
 			sort.Strings(keys)
 			cmd := exec.CommandContext(ctx, path, args...)
-			if cwd != "" {
-				cmd.Dir = cwd
-			}
 			cmd.Env = hostSpawnEnv(env)
+			proc.SetWorkDir(cmd, cwd)
 			files.pinHost(cmd, flagSettings)
 			b.Logger.Info("claude-code: host exec %v (cwd=%s, stdin=%v, task_env_keys=%v)",
 				redactedArgvPreview(path, cmd.Args[1:]), cwd, openStdin, keys)
@@ -2313,7 +2314,6 @@ func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, task Task, session
 		opts = append(opts, claudesdk.WithCommandBuilder(func(ctx context.Context, path string, args []string, cwd string, env map[string]string, openStdin bool) *exec.Cmd {
 			env = withNodeSessionEnv(claudeModelDefaultEnv(env), token)
 			cmd := exec.CommandContext(ctx, path, args...)
-			cmd.Dir = cwd
 			// Seed os.Environ() before the per-task entries — matching the
 			// SDK's default host spawn (claudesdk/process.go) and Pass 1 — so
 			// the format pass inherits PATH/HOME and any ambient credential
@@ -2322,6 +2322,7 @@ func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, task Task, session
 			// inherited env (CLAUDE_CODE_EFFORT_LEVEL is always present, so the
 			// strip always fired). Per-task entries stay last so they still win.
 			cmd.Env = hostSpawnEnv(env)
+			proc.SetWorkDir(cmd, cwd)
 			files.pinHost(cmd, flagSettings)
 			captureCmd(cmd)
 			fe.started()
@@ -2434,4 +2435,30 @@ func promptWithTimeout(ctx context.Context, prompt string, killCmd func(), opts 
 		go func() { <-ch }()
 		return nil, fmt.Errorf("claude prompt cancelled: %w", ctx.Err())
 	}
+}
+
+// skillChannelAddDir decides whether this spawn carries the run's pinned
+// skill channel root as --add-dir (iterion#1719): the engine re-carried the
+// skills it OWNS into a root it alone writes, in the .claude/skills layout,
+// and --add-dir is the CLI's documented discovery for skills outside the
+// working tree. The floor that keeps the checkout's own .claude/skills out
+// (withholding the project setting source) is #1730's untrusted-lane work;
+// this restores the bot's OWN skills once it stands.
+//
+// Host runs (and the noop driver's host passthrough, which shares the
+// filesystem) get the absolute path. A container driver's workspace is not
+// this process's filesystem, and the run-owned bind mount that would carry
+// an out-of-workspace root is the admission half's design (#1730) — there
+// the channel is not armed and the node runs without the skills.
+func skillChannelAddDir(task Task) (string, bool) {
+	if task.SkillChannelRoot == "" {
+		return "", false
+	}
+	// Hostless() is the ONE reading of "this spawn shares the launcher's
+	// filesystem" (no sandbox, or the noop passthrough) — two hand-rolled
+	// spellings of it already disagreed once (delegate.go, Task.Hostless).
+	if task.Hostless() {
+		return task.SkillChannelRoot, true
+	}
+	return "", false
 }

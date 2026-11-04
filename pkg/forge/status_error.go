@@ -215,6 +215,41 @@ func forgeMessage(body []byte) string {
 // Upstream5xx reports a fault on the forge's side — never iterion's.
 func (e *StatusError) Upstream5xx() bool { return e.Code >= 500 }
 
+// LeaseUnreachable declares an upstream 5xx — EVERY status >= 500, the set
+// Upstream5xx answers for — a failure to REACH the forge, for pkg/lease's
+// classifier (lease.TransportFailure, which types no forge of its own). It is
+// the same class forge_gate_deferred and forge_upstream_status already read
+// as transient: a 502/503/504 is a gateway between this node and the forge
+// answering for it, so the call never arrived — and a peer on another node,
+// with another egress path, may well not share it.
+//
+// 500 and 501 belong to that set deliberately rather than by rounding: from
+// this node a forge's own fault and its edge's are one answer — a proxy in
+// front of the forge rewrites what it could not pass on, and iterion reads a
+// status, never which hop produced it. The two costs are not symmetric. A
+// per-node egress that answers 500 and is excluded here keeps its holder
+// renewing a net it cannot serve, for as long as the egress stays broken;
+// a forge-wide 500 that is included ends at most K passes per term before
+// the per-replica sick-terms circuit stops this replica handing over, which
+// leaves ONE replica working instead of the net bouncing through the fleet.
+//
+// That circuit bounds a FLEET-WIDE outage alone, and the bound is worth
+// stating exactly: it is cleared by the first pass that reaches any far side
+// (lease.Health.Observe clears it on a progressed pass and on a refused
+// one). So ONE item answering 5xx for ever, among items that are healthy,
+// hands its net over every K passes indefinitely — every pass in which
+// nothing else succeeds reads unreachable, and every pass that renews
+// something re-arms the circuit. That is the bounded direction taken
+// knowingly, the shape the typed DNS class already has; the other direction
+// is a holder renewing a net it cannot serve for as long as the fault lasts.
+//
+// Every status below 500 is an answer the forge's own application sent back,
+// which is proof this node reaches it: false, and the typed classes keep
+// deciding. Without this declaration a leased net whose sweep met only 502s
+// read VerdictRefused, the verdict that clears the run of unreachable passes
+// a handover counts (#2685).
+func (e *StatusError) LeaseUnreachable() bool { return e.Upstream5xx() }
+
 // ParseRetryAfter reads a Retry-After header value: delta-seconds, or an
 // HTTP-date, whichever the forge sent. Anything unparsable, negative or
 // already past yields 0 — "the forge said nothing" is the honest answer, and

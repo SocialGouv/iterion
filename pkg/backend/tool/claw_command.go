@@ -187,6 +187,12 @@ func commandNotices(name string, cmd clawcmds.WorkspaceCommand, args string) str
 	return b.String() + "\n"
 }
 
+// narrowingNoticeMarker is the stable substring of every narrowing notice
+// (#1717): EnsureNarrowingNotice keys its already-said check on it, so the
+// invocation's notice and the re-statement can never drift apart on what
+// "said" means.
+const narrowingNoticeMarker = "narrowed your tool surface to"
+
 // narrowingNotice tells the model its tool surface just changed: the command
 // it invoked declared `allowed-tools:` and the rest of this generation is
 // bounded by it (#1717). Without the sentence the model meets the narrowing
@@ -199,8 +205,56 @@ func narrowingNotice(scope *CommandScope) string {
 	if !ok {
 		return ""
 	}
-	return fmt.Sprintf("NOTE (iterion): /%s narrowed your tool surface to [%s] for the rest of this generation — it only shrinks from here.\n\n",
-		noticeValue(name), noticeValue(strings.Join(allowed, ", ")))
+	return fmt.Sprintf("NOTE (iterion): /%s %s [%s] for the rest of this generation — it only shrinks from here.\n\n",
+		noticeValue(name), narrowingNoticeMarker, noticeValue(strings.Join(allowed, ", ")))
+}
+
+// EnsureNarrowingNotice re-states an active narrowing in a conversation that
+// does not carry it (#2905): the invocation's answer says it, but a retry
+// whose replay starts from the bare prompt (a caller with no session store),
+// a resume whose checkpoint compaction summarised the turn away, or a
+// delegated child's fresh conversation all leave the generation bounded by a
+// command its conversation never invoked — the next refusal then names a
+// command the model cannot place. The re-statement joins the LAST turn when
+// it is a user turn (a resumed generation's tail is its answering
+// tool_result, so no role flip ever unpairs it); a tail that is not a user
+// turn gets the notice as a fresh user message, which keeps the alternation
+// valid. No-op when no scope binds or the notice already rides the
+// conversation — including nested one block deep in the invocation's
+// tool_result (the depth api.ToolResult.ToContentBlock nests text at today;
+// a deeper future shape would only lose the dedupe, re-stating once too
+// often — noise, never a widened or a dropped bound).
+func EnsureNarrowingNotice(ctx context.Context, messages []api.Message) []api.Message {
+	scope := CommandScopeFrom(ctx)
+	if scope == nil || !scope.Active() {
+		return messages
+	}
+	for _, m := range messages {
+		for _, c := range m.Content {
+			if c.Type == "text" && strings.Contains(c.Text, narrowingNoticeMarker) {
+				return messages
+			}
+			for _, inner := range c.Content {
+				if inner.Type == "text" && strings.Contains(inner.Text, narrowingNoticeMarker) {
+					return messages
+				}
+			}
+		}
+	}
+	name, allowed, ok := scope.NarrowedBy()
+	if !ok {
+		return messages
+	}
+	note := fmt.Sprintf("NOTE (iterion): /%s %s [%s] earlier in this node execution (a previous attempt, or a turn a compaction folded away) — the bound still holds.",
+		noticeValue(name), narrowingNoticeMarker, noticeValue(strings.Join(allowed, ", ")))
+	block := api.ContentBlock{Type: "text", Text: note}
+	out := make([]api.Message, len(messages))
+	copy(out, messages)
+	if last := len(out) - 1; last >= 0 && out[last].Role == "user" {
+		out[last].Content = append(append([]api.ContentBlock(nil), out[last].Content...), block)
+		return out
+	}
+	return append(out, api.Message{Role: "user", Content: []api.ContentBlock{block}})
 }
 
 // noticeValue bounds a value a notice interpolates from untrusted input, to

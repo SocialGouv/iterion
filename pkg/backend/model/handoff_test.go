@@ -23,7 +23,7 @@ import (
 
 func newTestRecorder(t *testing.T) *HandoffRecorder {
 	t.Helper()
-	return NewHandoffRecorder(t.TempDir())
+	return NewHandoffRecorder(t.TempDir(), nil)
 }
 
 func sealForTest(t *testing.T, rec *HandoffRecorder, nodeID string, data map[string]any) string {
@@ -287,7 +287,7 @@ func TestHandoffRecorderNoRootSealsNothing(t *testing.T) {
 func TestHandoffCleanup(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	rec := NewHandoffRecorder(root)
+	rec := NewHandoffRecorder(root, nil)
 	rec.Observe(store.EventAssistantText, "n", map[string]any{"text": "work"})
 	p := sealForTest(t, rec, "n", map[string]any{"cross_harness": "restart"})
 	if filepath.Dir(p) != filepath.Join(root, "routing-handoff") {
@@ -299,7 +299,7 @@ func TestHandoffCleanup(t *testing.T) {
 	}
 	// A recorder that never created the directory removes nothing — even
 	// when the directory exists (another's creation is not its to delete).
-	bystander := NewHandoffRecorder(root)
+	bystander := NewHandoffRecorder(root, nil)
 	bystander.Cleanup()
 	if _, err := os.Stat(p); err != nil {
 		t.Fatal("a recorder that created nothing removed the directory")
@@ -461,7 +461,7 @@ func TestHandoffPromptRender(t *testing.T) {
 func TestNewStoreEventHooks_capabilityDetectionSurvivesTheHandoffWrap(t *testing.T) {
 	t.Parallel()
 	fs := &turnRecordingEmitter{store: &capturingEmitter{}}
-	rec := NewHandoffRecorder(t.TempDir())
+	rec := NewHandoffRecorder(t.TempDir(), nil)
 	hooks := NewStoreEventHooks(context.Background(), fs, "run-cap", iterlog.New(iterlog.LevelError, nil), nil, rec)
 	if hooks.OnLLMTurnCapture == nil {
 		t.Fatal("OnLLMTurnCapture not registered — the turn capability was not detected")

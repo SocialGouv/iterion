@@ -298,12 +298,37 @@ bundle is a legitimate choice — a rollback is exactly this):
   If the catalog itself cannot be read, the response carries
   `shadow_check_unavailable: true` and the per-row shadow fields are absent —
   an inventory that looks clean because the check could not run would be
-  worse than one that admits it did not run.
+  worse than one that admits it did not run. That holds for a catalog that
+  goes unreadable *after* serving once, not only on a cold start: the walk is
+  TTL-cached and a failed refresh keeps serving the last map, which is a
+  reading no caller may publish as current.
 - The resolver logs one `Warn` naming the tenant, both versions and the two
   ways out — once per `(tenant, origin, slug, stored version)`, not per
   launch. The tenant is in the key on purpose: many teams can hold a row for
   the same slug, and a slug-only key would let the first one to launch
   silence all the others.
+- A poll publishes the same verdict as a metric, so neither of the two above
+  needs someone to show up — the inventory waits for a caller, the `Warn`
+  for a launch, and a bot nobody launches is exactly the one whose override
+  rots. Every five minutes — twelve readings inside the hour its alert waits,
+  and a pass costs a full read of every platform bundle plus a walk of the
+  catalog — `iterion_bot_override_shadows_newer{slug}` is 1 while a
+  **platform** override is older than what the deployment would otherwise
+  serve, and the `IterionBotOverrideShadowsNewer` alert names the slug and
+  both cures below. Every row is rewritten on each pass and the slugs that
+  disappeared are retired after those writes, so an override you drop loses
+  its series instead of paging on a row that no longer exists, while no scrape
+  ever reads an empty inventory for one that is still shadowing; and when a
+  leg of the check cannot be read, the per-slug values
+  HOLD behind `iterion_bot_shadow_check_unavailable == 1` rather than
+  publishing the clean zero of a check that did not run — including when no
+  configured bot root is on disk at all, which would otherwise read as
+  "nothing serves below any override". A pair that does not
+  order lands on `iterion_bot_override_unorderable_version{slug}`, which no
+  alert reads — and so does a pair where one side declares no version at all
+  (a bundle pushed without a manifest, a baked loose `.bot`): the override
+  outranks the tier below it just the same, so the question is unanswered,
+  never answered clean.
 
 Versions are compared as dotted numeric components, so `0.10.0` correctly
 beats `0.9.0`. `Manifest.version` is free-form, so a pair that does not
@@ -319,6 +344,26 @@ releases carry bots, and removes the trap for the next release.
 
 ## Known gaps (v1)
 
+- **The shadow poll covers the platform tier only, and only versions it can
+  order.** `botsource.Store` lists by tenant and nothing wider, so a sweep of
+  the team tier would be one query per team per pass: a team row shadowing a
+  newer platform override is still reported on its team listing and in the
+  resolver's `Warn`, but never on a gauge. And a pair it cannot order — a
+  deliberate suffixed pin, or either side declaring no version — only ever
+  reaches the informational `iterion_bot_override_unorderable_version`, which
+  no alert rule reads: a page on a version iterion cannot order is one nobody
+  can clear. Semver-precedence ordering, and a cross-tenant listing, are the
+  follow-ups.
+- **A deployment that bakes no catalog gets no verdict at all.** The question
+  the check answers is "what would serve without this row", read off the bot
+  roots THIS replica has: with none of them on disk the answer is unknown, so
+  `iterion_bot_shadow_check_unavailable` goes to 1 and no override can be
+  certified current (a dropped `ITERION_BOTS_PATH`, a custom image or an
+  overridden `command:` all land here, and the official image bakes
+  `/opt/iterion/bots`). A root that exists and holds no bundle is the opposite
+  fact — nothing serves below, so every row reads a published 0 — which is how
+  a deployment serving stored bundles only declares itself instead of paging
+  forever: point the bots path at a directory that exists.
 - **Binary files** cannot ride an override (the store carries JSON text);
   `push` refuses them explicitly. A bot with binary attachments keeps its
   baked form. Content-addressed blob storage is the follow-up.

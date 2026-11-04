@@ -11,6 +11,7 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
 	"github.com/SocialGouv/iterion/pkg/internal/mongoutil"
+	"github.com/SocialGouv/iterion/pkg/internal/storekit"
 )
 
 // SubscriptionsCollectionName is the Mongo collection backing the cloud-mode
@@ -51,8 +52,55 @@ func (s *MongoSubscriptionStore) Get(ctx context.Context, id string) (Subscripti
 	return mongoutil.FindOne[Subscription](ctx, s.coll, bson.M{"_id": id}, ErrSubscriptionNotFound, "trigger: get subscription")
 }
 
+// subscriptionHealthFields are the marks' fields (MarkLaunchError,
+// MarkRunOutcome): targeted writes that bump no version, so a full-document
+// Update re-stamps them from the stored row instead of writing its copy's
+// over them.
+var subscriptionHealthFields = []string{
+	"last_error", "last_error_at",
+	"last_run_id", "last_run_status", "last_run_error", "last_run_error_code", "last_run_at",
+}
+
+// Update replaces the row as a full document, committing only against the
+// version the caller's copy carries: a zero-match disambiguates — row gone
+// answers ErrSubscriptionNotFound, a row still there moved under the caller
+// and answers ErrSubscriptionConflict. The version-0 arm also matches a
+// document written before the field existed, so a deployed row's first
+// versioned write lands. The replace stamps the next version (the doc
+// carries it incremented), mirroring the memory twin's CAS. The health
+// stamps are not the copy's to write: the marks that set them bump no
+// version — a keepalive firing every tick must not conflict every operator
+// edit — so a copy read before a fire passes the CAS, and the replace keeps
+// the stored stamps (absent ones stay absent), as the webhooks twin keeps
+// last_used_at.
 func (s *MongoSubscriptionStore) Update(ctx context.Context, sub Subscription) error {
-	return mongoutil.ReplaceOneChecked(ctx, s.coll, bson.M{"_id": sub.ID}, sub, nil, ErrSubscriptionNotFound, "trigger: update subscription")
+	filter := storekit.VersionCAS(sub.ID, sub.Version)
+	sub.Version++
+	raw, err := bson.Marshal(sub)
+	if err != nil {
+		return fmt.Errorf("trigger: update subscription: %w", err)
+	}
+	var doc bson.M
+	if err := bson.Unmarshal(raw, &doc); err != nil {
+		return fmt.Errorf("trigger: update subscription: %w", err)
+	}
+	stored := bson.M{}
+	for _, field := range subscriptionHealthFields {
+		delete(doc, field)
+		stored[field] = "$" + field
+	}
+	pipeline := mongo.Pipeline{bson.D{{Key: "$replaceWith", Value: bson.M{"$mergeObjects": bson.A{stored, bson.M{"$literal": doc}}}}}}
+	res, err := s.coll.UpdateOne(ctx, filter, pipeline)
+	if err != nil {
+		return fmt.Errorf("trigger: update subscription: %w", err)
+	}
+	if res.MatchedCount == 0 {
+		if _, getErr := s.Get(ctx, sub.ID); getErr != nil {
+			return getErr
+		}
+		return ErrSubscriptionConflict
+	}
+	return nil
 }
 
 func (s *MongoSubscriptionStore) MarkLaunchError(ctx context.Context, id, lastError string, at time.Time) error {
@@ -129,6 +177,31 @@ func (s *MongoSubscriptionStore) MarkRunOutcome(ctx context.Context, id, runID, 
 
 func (s *MongoSubscriptionStore) Delete(ctx context.Context, id string) error {
 	return mongoutil.DeleteOneChecked(ctx, s.coll, bson.M{"_id": id}, ErrSubscriptionNotFound, "trigger: delete subscription")
+}
+
+// ClearCredentialPins removes every pin entry whose value names recordID —
+// the Mongo twin of the memory store's value-scoped drop, run by the clear
+// both pin-bearing stores share (storekit.MongoPinClear): judged against the
+// row as the store holds it at write time, one value-guarded $unset per
+// entry with a version bump, and a version-CAS rewrite for a name no path
+// can address. No update lane resurrects a swept pin — a full-document
+// editor holding a pre-sweep snapshot conflicts on the bumped version — and
+// the row born mid-delete is the write routes' landed-pin reconciliation's
+// to sweep.
+func (s *MongoSubscriptionStore) ClearCredentialPins(ctx context.Context, id, recordID string) (bool, error) {
+	return storekit.MongoPinClear[Subscription]{
+		Coll:    s.coll,
+		Get:     s.Get,
+		Version: func(sub Subscription) int64 { return sub.Version },
+		Fields:  subscriptionPinFields,
+		Op:      "trigger: clear subscription credential pins",
+	}.Clear(ctx, id, recordID)
+}
+
+// subscriptionPinFields are the subscription's two credential-pin maps.
+var subscriptionPinFields = []storekit.PinField[Subscription]{
+	{Path: "key_overrides", Of: func(sub Subscription) map[string]string { return sub.KeyOverrides }},
+	{Path: "secret_overrides", Of: func(sub Subscription) map[string]string { return sub.SecretOverrides }},
 }
 
 func (s *MongoSubscriptionStore) ListByTenant(ctx context.Context, tenantID string) ([]Subscription, error) {

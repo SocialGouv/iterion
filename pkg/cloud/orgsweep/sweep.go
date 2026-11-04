@@ -161,6 +161,7 @@ var notPurged = map[string]string{
 	// Deployment-wide records with no tenant dimension.
 	"leases":             "deployment-wide coordination leases keyed by resource name, expiry-reaped",
 	"usage_windows":      "per-credential provider readings keyed by the credential, not the tenant; the credential itself is purged",
+	"cred_slots":         "the hard per-key concurrency ledger, one row per credential fingerprint shared across tenants; a deleted org's runs leave its holders as the reconcile pulls a holder whose run document is gone",
 	"platform_settings":  "the deployment's own settings record",
 	"sent_notifications": "idempotency claims keyed by notification key, TTL-reaped, carry no tenant",
 	// Uploads a launch form staged and no run claimed yet: the staging sweep

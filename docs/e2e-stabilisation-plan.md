@@ -43,6 +43,7 @@ Repeated from #1424 verbatim so the plan cannot drift from its own definition:
 | studio-ui | 15 | 15 | 0 | 0 | 0 | 0 |
 | dispatcher | 14 | 14 | 0 | 0 | 0 | 0 |
 | tools-mcp | 14 | 13 | 0 | 0 | 1 | 0 |
+| reliability | 14 | 9 | 0 | 4 | 1 | 0 |
 | triggers | 13 | 13 | 0 | 0 | 0 | 0 |
 | persistence | 9 | 9 | 0 | 0 | 0 | 0 |
 | sandbox | 9 | 8 | 0 | 0 | 0 | 1 |
@@ -52,7 +53,7 @@ Repeated from #1424 verbatim so the plan cannot drift from its own definition:
 | forge | 7 | 7 | 0 | 0 | 0 | 0 |
 | integrations | 6 | 3 | 0 | 0 | 0 | 3 |
 | desktop | 1 | 0 | 0 | 0 | 1 | 0 |
-| Total | 410 | 393 | 7 | 0 | 4 | 6 |
+| Total | 424 | 402 | 7 | 4 | 5 | 6 |
 
 The surface axis is the matrix's **Family** column — the one the gate reads and
 the "front door per family" section documents. The `ID` prefix is a naming
@@ -62,6 +63,15 @@ the API or the CLI, and `cloud.run-login-return` is a studio test. So
 `security` is not a surface in this table even though it is a prefix in the
 matrix — and the one row whose family read `studio` now reads `studio-ui` (a
 label typo; the row itself did not change).
+
+`reliability` is the newest surface: the invariants of
+[#1006](https://github.com/SocialGouv/iterion/issues/1006), inventoried here
+rather than only in that design's own ledger. Its four `uncovered` rows are
+the criteria the tree does not back — the scenario matrix, the
+unchanged-fingerprint stop, the store-identity comparison and the pilot
+comparison — each owned by a slice named in
+[ADR-152](adr/152-the-reliability-invariants-have-owning-layers.md). They are
+also the matrix's ONLY `uncovered` rows.
 
 **This table is not typed, it is pinned.**
 `TestTheStabilisationPlanTableIsDerivedFromTheCommittedMatrix` (`bots/`) reads
@@ -177,14 +187,15 @@ re-measuring it.
 
 ### 4. Bots / catalogue — #2795 (epic #1399)
 
-- **Already free**: 23 / 25 rows (parse + compile + golden replays).
-- **Must become free, or be split honestly**: `bots.uncovered-catalog` — the
-  only `uncovered` row in 402 — covers six bots with nothing beyond
-  parse+compile: **modernize, wiki-gen, app-dev, supply-shield,
-  supply-shield-cve, smoke**. Each belongs in one of three states: a
-  deterministic seam exists (structural output), the value really is the LLM
-  work product (live, with a target), or it is a scaffold nobody ships
-  (`excluded`). The aggregate row should become one row per bot.
+- **Already free**: 28 / 30 rows (parse + compile + golden replays).
+- **Split, and each state taken**: `bots.uncovered-catalog` — the aggregate
+  that covered six bots with nothing beyond parse+compile — became one row per
+  bot, and each took one of the three states: **modernize, wiki-gen, app-dev,
+  supply-shield, supply-shield-cve** read `covered-deterministic` on a
+  structural seam, **smoke** (`bots.smoke-board-capabilities`) reads
+  `excluded` as a capability fixture nobody ships. No `bots` row is
+  `uncovered` any more; the matrix's only `uncovered` rows are the four
+  `reliability` ones measured above.
 - **Stays paid**: `bots.live-covered-catalog` — nine bots whose value IS the
   work product.
 - **Ledger**: one of sixteen bot targets has a verdict —

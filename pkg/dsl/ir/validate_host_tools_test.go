@@ -1,10 +1,13 @@
 package ir
 
 import (
+	"sort"
 	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/backend/toolcatalog"
+	"github.com/SocialGouv/iterion/pkg/boardcaps"
+	"github.com/SocialGouv/iterion/pkg/runops"
 )
 
 // C328 — a node naming an iterion host tool without the capability that
@@ -297,5 +300,66 @@ func TestC328_HostToolNamesMatchTheShorthandCatalog(t *testing.T) {
 		if !catalog[name] {
 			t.Errorf("C328 names %q as a host tool, but toolcatalog's shorthand set (pinned to the live registry) does not — a ghost name", name)
 		}
+	}
+}
+
+// The flattening HostToolCapability answers from cannot pick a side between
+// two families: a leaf two of them share makes a bare `tools:` entry
+// genuinely ambiguous, and map order would settle it silently. Each family's
+// leaves are its own.
+func TestTheHostToolFamiliesKeepDisjointLeafNames(t *testing.T) {
+	families := make([]string, 0, len(hostToolFamilies))
+	for family := range hostToolFamilies {
+		families = append(families, family)
+	}
+	sort.Strings(families)
+	owner := map[string]string{}
+	for _, family := range families {
+		for leaf := range hostToolFamilies[family] {
+			if other, taken := owner[leaf]; taken {
+				t.Errorf("leaf %q is served by both %q and %q: a bare tools: entry can no longer name one capability", leaf, other, family)
+			}
+			owner[leaf] = family
+		}
+	}
+	if len(owner) == 0 {
+		t.Fatal("no host tool family at all: the table under test is empty")
+	}
+}
+
+// The runtime knows the SERVER a registered tool came from, and the family
+// reading answers in that family only: another family's capability does not
+// open a leaf that happens to share a name, in any spelling of the server.
+func TestHostToolCapabilityInFamilyReadsTheServersOwnFamily(t *testing.T) {
+	for _, tc := range []struct {
+		server, name, want string
+		ok                 bool
+	}{
+		{"iterion_board", "mcp.iterion_board.get_issue", boardcaps.BoardRead, true},
+		{"iterion_board", "mcp__iterion_board__get_issue", boardcaps.BoardRead, true},
+		{"iterion_board", "get_issue", boardcaps.BoardRead, true},
+		{"Iterion.Board", "get_issue", boardcaps.BoardRead, true},
+		{"iterion__board", "get_issue", boardcaps.BoardRead, true},
+		{"iterion_watch", "mcp.iterion_watch.subscribe", CapWatchSubscribe, true},
+		{"iterion_runs", "mcp.iterion_runs.run_get", runops.CapRunsRead, true},
+		// The leaf collision the leaf-keyed reading cannot see.
+		{"iterion_memory", "mcp.iterion_memory.get_issue", "", false},
+		{"iterion_watch", "mcp.iterion_watch.get_issue", "", false},
+		{"iterion_board", "mcp.iterion_board.subscribe", "", false},
+		// Outside the namespace, and the bare prefix.
+		{"github", "mcp.github.get_issue", "", false},
+		{"iterion", "get_issue", "", false},
+		{"", "get_issue", "", false},
+	} {
+		got, ok := HostToolCapabilityInFamily(tc.server, tc.name)
+		if got != tc.want || ok != tc.ok {
+			t.Errorf("HostToolCapabilityInFamily(%q, %q) = %q, %v; want %q, %v", tc.server, tc.name, got, ok, tc.want, tc.ok)
+		}
+	}
+	// The premise the family reading exists for: the family-blind reading
+	// maps the colliding leaf, because a bare `tools:` entry carries no
+	// server.
+	if got, ok := HostToolCapability("mcp.iterion_memory.get_issue"); !ok || got != boardcaps.BoardRead {
+		t.Errorf("HostToolCapability(mcp.iterion_memory.get_issue) = %q, %v; the leaf reading is family-blind by contract", got, ok)
 	}
 }

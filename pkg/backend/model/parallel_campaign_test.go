@@ -31,9 +31,14 @@ import (
 // and a table line whose file no longer touches a global reddens as freed.
 // Read at b06f9b290 with this campaign applied: 215 deterministic test files
 // (a 216th is live-tagged), 75 serial by table and 2 by design, 138 parallel.
-// The dotenv-belt tour added claw_stream_belt_test.go and the watchdog
-// crossing witness (t.Setenv), 77 serial by table — the guards above
-// re-check the partition every run.
+// In absolute, read on 2026-11-02: 90 serial by table and 2 by design —
+// 75 at the campaign's creation, a drift of +18 lines added by
+// intermediate slices without moving this prose (the guards keep the
+// TABLE honest, not this sentence), and #2808's slices freeing
+// secretguard_ambient_test.go, session_ledger_test.go and
+// claw_vendored_tool_env_test.go (their reads ride the ctx-carried
+// environment): 93 -> 90. The guards above re-check the partition every
+// run.
 // That reading is prose on purpose — asserting the COUNT would redden every
 // commit that adds a test file to this contended package, while the two
 // directional guards already force each new file into a conscious answer.
@@ -50,7 +55,7 @@ import (
 //	 1 file 	SetCredentialsLookup, SetOAuthDirLookup, Setenv
 //	 1 file 	SetCredentialsLookup, SetOAuthDirLookup
 //	 1 file 	Setenv, Unsetenv
-//	 1 file 	via memTest() in memory_tools_test.go (it sets ITERION_HOME)
+//	 2 files	via memTest() in memory_tools_test.go (it sets ITERION_HOME)
 //
 // The day #2808 lands, lines leave this table and their tests gain
 // t.Parallel() in the same commit. The two SetDefault files would need
@@ -74,6 +79,7 @@ var serialFamily = map[string]string{
 	"claw_stream_belt_test.go":                 "Setenv",
 	"claw_stream_watchdog_crossing_test.go":    "Setenv",
 	"claw_drain_bound_override_test.go":        "Setenv",
+	"envsource_process_test.go":                "Setenv",
 	"claw_envfwd_empty_endpoint_test.go":       "Setenv",
 	"claw_envfwd_gateway_catalog_test.go":      "Setenv",
 	"claw_gateway_structured_output_test.go":   "Setenv",
@@ -86,7 +92,6 @@ var serialFamily = map[string]string{
 	"claw_sandbox_credential_gateway_test.go":  "Setenv",
 	"claw_sandbox_env_test.go":                 "Setenv",
 	"claw_vendored_provider_env_test.go":       "Setenv",
-	"claw_vendored_tool_env_test.go":           "Setenv",
 	"codex_client_version_test.go":             "Setenv",
 	"cursors_test.go":                          "Setenv, Unsetenv",
 	"executor_auto_memory_test.go":             "Setenv",
@@ -117,6 +122,7 @@ var serialFamily = map[string]string{
 	"human_route_test.go":                      "Setenv",
 	"memory_global_gate_test.go":               "via memTest() in memory_tools_test.go",
 	"memory_tools_test.go":                     "Setenv",
+	"model_boundary_injected_turn_test.go":     "via memTest() in memory_tools_test.go",
 	"model_override_test.go":                   "Setenv",
 	"model_route_identity_test.go":             "Setenv",
 	"modelspecs_merge_test.go":                 "SetDefault",
@@ -140,9 +146,7 @@ var serialFamily = map[string]string{
 	"route_view_dispatch_test.go":              "Setenv",
 	"route_view_test.go":                       "Setenv",
 	"routing_template_test.go":                 "Setenv",
-	"secretguard_ambient_test.go":              "Setenv",
 	"secretguard_minted_test.go":               "Setenv",
-	"session_ledger_test.go":                   "Setenv",
 	"settings_hooks_test.go":                   "Setenv",
 	"slash_commands_test.go":                   "Setenv",
 	"stream_error_wire_test.go":                "Setenv",

@@ -140,7 +140,7 @@ func AnthropicWireRoutes(v RouteView) []WireRoute {
 					mdl := v.field(firstNonEmpty(ov.Model, spec))
 					ovProv := v.field(ov.Provider)
 					if routeOnAnthropicWire(backend, ovProv, "", mdl) {
-						out = append(out, primaryWireRoute(n.NodeID()+"#agent_recovery", backend, ovProv, "", mdl))
+						out = append(out, primaryWireRoute(n.NodeID()+agentRecoverySiteSuffix, backend, ovProv, "", mdl))
 					}
 				}
 				continue

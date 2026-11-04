@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/runview"
+	"github.com/SocialGouv/iterion/pkg/server/cloudpublisher"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -67,6 +68,10 @@ func (s *Server) handleDeliverHostEvent(w http.ResponseWriter, r *http.Request) 
 			s.httpErrorFor(w, r, http.StatusConflict, "assistant is not at a chat boundary")
 		case errors.Is(err, errAssistantHostResumable):
 			s.httpErrorFor(w, r, http.StatusConflict, "%v", err)
+		case errors.Is(err, cloudpublisher.ErrCredentialAtCapacity):
+			// The event resumes the run: a key it sealed is full of other
+			// runs, answered as every resume surface answers it.
+			s.writeCredentialAtCapacityError(w, r, err)
 		default:
 			s.httpErrorFor(w, r, http.StatusInternalServerError, "deliver host event: %v", err)
 		}

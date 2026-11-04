@@ -193,15 +193,16 @@ func TestNodeLabelCoverageCountsLabelledNodes(t *testing.T) {
 		"  \"get nodes \"*) printf '%s' '{\"items\":[{\"metadata\":{\"labels\":{\"kubernetes.io/hostname\":\"a\",\"topology.kubernetes.io/zone\":\"z1\"}}},{\"metadata\":{\"labels\":{\"kubernetes.io/hostname\":\"b\"}}},{\"metadata\":{\"labels\":{\"kubernetes.io/hostname\":\"c\",\"topology.kubernetes.io/zone\":\"z2\"}}}]}'; exit 0 ;;\n" +
 		"esac\n" +
 		"exit 1\n"
-	if err := os.WriteFile(filepath.Join(dir, "kubectl"), []byte(script), 0o755); err != nil {
+	kubectl := Kubectl(filepath.Join(dir, "kubectl"))
+	if err := os.WriteFile(string(kubectl), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	labelled, total, err := NodeLabelCoverage(context.Background(), "topology.kubernetes.io/zone")
+	labelled, total, err := kubectl.NodeLabelCoverage(context.Background(), "topology.kubernetes.io/zone")
 	if err != nil || labelled != 2 || total != 3 {
 		t.Fatalf("coverage = %d/%d, %v; want 2/3", labelled, total, err)
 	}
-	labelled, total, err = NodeLabelCoverage(context.Background(), "example.com/rack")
+	labelled, total, err = kubectl.NodeLabelCoverage(context.Background(), "example.com/rack")
 	if err != nil || labelled != 0 || total != 3 {
 		t.Fatalf("coverage for an absent key = %d/%d, %v; want 0/3", labelled, total, err)
 	}
@@ -217,11 +218,12 @@ func TestNodeLabelCoverageReportsKubectlStderr(t *testing.T) {
 		"  \"get nodes \"*) echo 'Error from server (Forbidden): nodes is forbidden: User \"system:serviceaccount:ns:runner\" cannot list resource \"nodes\" in API group \"\" at the cluster scope' >&2; exit 1 ;;\n" +
 		"esac\n" +
 		"exit 1\n"
-	if err := os.WriteFile(filepath.Join(dir, "kubectl"), []byte(script), 0o755); err != nil {
+	kubectl := Kubectl(filepath.Join(dir, "kubectl"))
+	if err := os.WriteFile(string(kubectl), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	_, _, err := NodeLabelCoverage(context.Background(), "topology.kubernetes.io/zone")
+	_, _, err := kubectl.NodeLabelCoverage(context.Background(), "topology.kubernetes.io/zone")
 	if err == nil || !strings.Contains(err.Error(), "Forbidden") || !strings.Contains(err.Error(), "cannot list resource") {
 		t.Fatalf("the error must carry kubectl's stderr, got %v", err)
 	}
@@ -232,11 +234,11 @@ func TestNodeLabelCoverageReportsKubectlStderr(t *testing.T) {
 func TestNodeLabelCoverageTimeoutIsBounded(t *testing.T) {
 	// The fixture also ends on its own if production ignores cancellation;
 	// the synchronous call reaps it before reporting the failed assertion.
-	stalledKubectl(t, 6)
+	kubectl := stalledKubectl(t, 6)
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 	start := time.Now()
-	_, _, err := NodeLabelCoverage(ctx, "topology.kubernetes.io/zone")
+	_, _, err := kubectl.NodeLabelCoverage(ctx, "topology.kubernetes.io/zone")
 	if elapsed := time.Since(start); err == nil || ctx.Err() != context.DeadlineExceeded || elapsed > 4*time.Second {
 		t.Fatalf("node discovery must fail at its deadline within 4s, took %s (error %v, context %v)", elapsed, err, ctx.Err())
 	}
@@ -247,11 +249,12 @@ func TestNodeLabelCoverageTimeoutIsBounded(t *testing.T) {
 func TestNodeLabelCoverageWithoutStderrKeepsTheExitError(t *testing.T) {
 	isolateExecEnvironment(t)
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "kubectl"), []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+	kubectl := Kubectl(filepath.Join(dir, "kubectl"))
+	if err := os.WriteFile(string(kubectl), []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	_, _, err := NodeLabelCoverage(context.Background(), "topology.kubernetes.io/zone")
+	_, _, err := kubectl.NodeLabelCoverage(context.Background(), "topology.kubernetes.io/zone")
 	if err == nil || err.Error() != "kubectl get nodes: exit status 1" {
 		t.Fatalf("want the bare exit error, got %q", err)
 	}

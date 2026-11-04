@@ -1,12 +1,12 @@
 package model
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
 	"math/rand/v2"
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -91,7 +91,7 @@ func RetryPolicyFromEnv() RetryPolicy {
 // when unset, blank, non-numeric, or negative — the caller then keeps the
 // built-in default rather than treating a typo as "disable retries".
 func envRetryCount(key string) (int, bool) {
-	raw := strings.TrimSpace(os.Getenv(key))
+	raw := strings.TrimSpace(envGetenv(context.Background(), key))
 	if raw == "" {
 		return 0, false
 	}

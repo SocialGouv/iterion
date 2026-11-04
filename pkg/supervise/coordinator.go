@@ -834,7 +834,11 @@ func (c *Coordinator) inject(text, triggerFP string) error {
 		c.warn("supervise[%s]: enqueue to run %s failed: %v", c.spec.Name, c.runID, err)
 		return err
 	}
-	c.info("supervise[%s]: 📨 steered run %s (node=%q): %s", c.spec.Name, c.runID, scopeNode, truncate(text, 120))
+	// The steer is model-derived text on the RUN's logger, and this line
+	// CUTS it: the pass runs first, because a cut hands the run's matcher
+	// half a secret, which no matcher recognises (iterlog.WithRedactor's
+	// own trap). The record's own pass is then a no-op.
+	c.info("supervise[%s]: 📨 steered run %s (node=%q): %s", c.spec.Name, c.runID, scopeNode, truncate(c.logger.Redact(text), 120))
 	return nil
 }
 

@@ -488,9 +488,17 @@ func (b *PiRPCBackend) drainInbox(ctx context.Context, client *pisdk.Client, tas
 			return
 		}
 		if b.Logger != nil {
-			b.Logger.Info("[%s#%d/%s] steered: %s", task.NodeID, task.Iteration, BackendPi, truncate(msg, 200))
+			b.Logger.Info("[%s#%d/%s] steered: %s", task.NodeID, task.Iteration, BackendPi, b.steerLogLine(msg))
 		}
 	}
+}
+
+// steerLogLine renders the log line for a steer the run forwarded. The
+// run's pass crosses the text BEFORE the 200-byte cut: a cut that lands
+// inside a declared value leaves a head no matcher recognises, which is
+// the trap Logger.Redact exists for (iterion#2822).
+func (b *PiRPCBackend) steerLogLine(msg string) string {
+	return truncate(b.Logger.Redact(msg), 200)
 }
 
 // piRPCArgs builds the argv for RPC mode: the shared per-task flags, minus the
@@ -633,19 +641,12 @@ func piMCPServers(task Task, logger *iterlog.Logger) []piMCPServerSpec {
 				warn("[%s#%d/%s] board capabilities granted but the iterion CLI binary could not be resolved; board disabled for this node",
 					task.NodeID, task.Iteration, BackendPi)
 			} else {
-				env := map[string]string{"ITERION_BOARD_CAPS": strings.Join(task.Capabilities, ",")}
-				if task.StoreDir != "" {
-					env["ITERION_STORE_DIR"] = task.StoreDir
-				}
-				if task.SourceIssueID != "" {
-					env["ITERION_SOURCE_ISSUE_ID"] = task.SourceIssueID
-				}
 				out = append(out, piMCPServerSpec{
 					Name:      boardMCPServerName,
 					Transport: "stdio",
 					Command:   selfPath,
 					Args:      []string{boardMCPSubcommand},
-					Env:       env,
+					Env:       BoardServerEnv(task),
 				})
 			}
 		default:
@@ -755,8 +756,11 @@ func (b *PiRPCBackend) handleUIRequest(task Task, collector *piCollector, req pi
 	env, ok := piParseCtrl(req)
 	if !ok {
 		if b.Logger != nil {
+			// The prompt is third-party text quoted into the run's log, and
+			// the quote is cut: the pass runs first, or a value straddling
+			// the cut publishes its head (iterion#2822).
 			b.Logger.Warn("[%s#%d/%s] declining an unrecognised extension UI request (%s: %q)",
-				task.NodeID, task.Iteration, BackendPi, req.Method, truncate(req.Prompt(), 120))
+				task.NodeID, task.Iteration, BackendPi, req.Method, truncate(b.Logger.Redact(req.Prompt()), 120))
 		}
 		return nil
 	}
@@ -789,8 +793,10 @@ func (b *PiRPCBackend) handleUIRequest(task Task, collector *piCollector, req pi
 		}
 		collector.setPause(pause)
 		if b.Logger != nil {
+			// Same discipline as the steer line: the pass before the cut
+			// (iterion#2822).
 			b.Logger.Info("[%s#%d/%s] ask_user: %s", task.NodeID, task.Iteration, BackendPi,
-				truncate(pause.question, 200))
+				truncate(b.Logger.Redact(pause.question), 200))
 		}
 		return piCtrlAnswer(req.ID, map[string]any{"escalated": true})
 

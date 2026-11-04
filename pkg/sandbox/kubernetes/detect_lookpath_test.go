@@ -51,7 +51,7 @@ func TestDetectResolvesNoKubectlUnderAPlantedPATH(t *testing.T) {
 
 	// The doctor's PingContext answers the same question at its own
 	// lookup, one call before it would shell the same binary out.
-	if _, _, err := PingContext(context.Background()); err == nil || !strings.Contains(err.Error(), "not found on PATH") {
+	if _, _, _, err := PingContext(context.Background()); err == nil || !strings.Contains(err.Error(), "not found on PATH") {
 		t.Errorf("under a planted PATH PingContext err = %v, want the kubectl lookup refusal", err)
 	}
 }

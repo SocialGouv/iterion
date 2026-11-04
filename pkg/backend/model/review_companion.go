@@ -59,6 +59,7 @@ func (e *ClawExecutor) ExecuteReviewCompanion(ctx context.Context, node *ir.Huma
 
 	genOpts := GenerationOptions{
 		Model:          modelSpec,
+		Provider:       clawSpecProvider(modelSpec),
 		System:         systemText,
 		ExplicitSchema: jsonSchema,
 		Messages: []api.Message{

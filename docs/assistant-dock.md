@@ -385,7 +385,12 @@ Every activation, target mutation and result delivery has a deterministic
 receipt. The receipt is persisted before dispatch and then corroborated by the
 assistant's `human_answers_recorded`, or the target's `run_resumed` /
 `run_rewound` event. After a crash an issued action with no evidence becomes
-`uncertain` and is never sent again. Mission states are `active`,
+`uncertain` and is never sent again. A dispatch refused before publishing on
+a credential at its concurrency cap
+([byok.md](byok.md#concurrency-ceiling--what-counts)) is not a rejection:
+the receipt goes back to `prepared` with a `wait_until` one slot probe out,
+the action budget unspent, and the mission stays `active`, waiting for a
+credential slot, until its TTL. Mission states are `active`,
 `waiting_human`, `capability_blocked`, `completed`, `expired`, `stopped`, and
 `exhausted`. `completed`, `expired`, `stopped`, and `exhausted` are terminal;
 `capability_blocked` can recover when its declared capability becomes

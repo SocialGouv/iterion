@@ -1,6 +1,8 @@
 package server
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -37,6 +39,95 @@ func (s *Server) triggerWriteDenial(r *http.Request) *launchDenial {
 	return s.mutatingRungDenial(r, triggerWriteRungDetail)
 }
 
+// triggerPinRightDetail is what a refused credential decision is told.
+const triggerPinRightDetail = "changing a trigger subscription's credential pins, or what a pinned subscription launches, takes a team admin: key_overrides / secret_overrides choose which stored api key or secret the platform spends on every fire — the right a webhook's pins and the team's own keys and secrets take. A member may still pause, resume or delete a pinned subscription, and edit any unpinned one"
+
+// authorizeTriggerCredentials is the trigger routes' second rung: a write
+// that decides a subscription's credentials (decidesTriggerCredentials)
+// takes the team admin's right — canManageTeam, the right that writes a
+// webhook's pins and creates the team's keys and secrets. The member rung at
+// the mount admits automation work, and a pin is more than that: the spine
+// spends it under triggerSpineActor, a machine principal no rung reads, so
+// the right is owed where the pin is written, as the member rung is owed
+// where the subscription is. Without it a member could bind any org-scoped
+// secret of the team — a project bot's managed forge token included — to a
+// workflow secret slot of a bot of their choosing, or point an admin's pin
+// at one.
+//
+// Local mode (no identity store) has no roles to read — the arm
+// mutatingRungDenial opens with. A right the identity store could not judge
+// (an outage, not a refusal) answers 5xx with its cause, never a 403 telling
+// an admin they are not one. Reports whether the write may proceed, having
+// written the refusal when it may not.
+func (s *Server) authorizeTriggerCredentials(w http.ResponseWriter, r *http.Request, tenant string, before *trigger.Subscription, after trigger.Subscription) bool {
+	if s.authStore() == nil {
+		return true
+	}
+	decides, err := decidesTriggerCredentials(before, after)
+	if err != nil {
+		dispatcher.WriteErr(w, http.StatusInternalServerError, fmt.Errorf("compare the subscription with its stored row: %w", err))
+		return false
+	}
+	if !decides {
+		return true
+	}
+	id, _ := auth.FromContext(r.Context())
+	allowed, err := s.canManageTeamOrFail(r.Context(), id, tenant)
+	if allowed {
+		return true
+	}
+	if err != nil {
+		dispatcher.WriteErr(w, http.StatusInternalServerError, fmt.Errorf("judge the right to change the credential pins of a trigger subscription in %s: %w", tenant, err))
+		return false
+	}
+	dispatcher.WriteErr(w, http.StatusForbidden, errors.New(triggerPinRightDetail))
+	return false
+}
+
+// decidesTriggerCredentials reports whether storing after over before (nil
+// on a create) is a credential decision: the choice of which stored api key
+// or secret a standing launch spends, and on what. A create decides when it
+// pins anything. An edit decides when the row holds a pin before or after
+// it and the write changes anything but the enabled flag — the pins
+// themselves (an add, a replace, a clear) or what a pinned credential is
+// spent on: the bot, the repo, the vars, the match, the cadence. Pausing or
+// resuming a pinned subscription decides none of that, and a row that pins
+// nothing on either side has no credential to decide.
+func decidesTriggerCredentials(before *trigger.Subscription, after trigger.Subscription) (bool, error) {
+	if before == nil {
+		return holdsCredentialPin(after), nil
+	}
+	if !holdsCredentialPin(*before) && !holdsCredentialPin(after) {
+		return false, nil
+	}
+	same, err := sameTriggerLaunch(*before, after)
+	return !same, err
+}
+
+// holdsCredentialPin reports whether the row pins a key or a secret.
+func holdsCredentialPin(sub trigger.Subscription) bool {
+	return len(sub.KeyOverrides) > 0 || len(sub.SecretOverrides) > 0
+}
+
+// sameTriggerLaunch reports whether two versions of a row launch the same
+// thing: equal in every field but the enabled flag and the update stamp. It
+// compares the rows' JSON, the shape the routes read and write, so a nil map
+// or slice and an empty one compare equal — omitempty drops both, and the
+// studio's toggle round-trips the stored row through exactly that shape —
+// and a field added to trigger.Subscription is compared without a line here.
+func sameTriggerLaunch(a, b trigger.Subscription) (bool, error) {
+	b.Enabled, b.UpdatedAt = a.Enabled, a.UpdatedAt
+	ja, err := json.Marshal(a)
+	if err != nil {
+		return false, err
+	}
+	jb, err := json.Marshal(b)
+	if err != nil {
+		return false, err
+	}
+	return bytes.Equal(ja, jb), nil
+}
+
 // registerTriggerRoutes wires the event-driven trigger subscription CRUD under
 // /api/v1/triggers. Tenant scope follows the request: the JWT's active team
 // in cloud mode, the local single-host scope ("") otherwise — mirroring
@@ -45,7 +136,10 @@ func (s *Server) triggerWriteDenial(r *http.Request) *launchDenial {
 // the native/dispatcher route gating), plus the member rung on every
 // state-changing method. The reads carry it too, where it is inert — so every
 // line of this registrar reads the same, and a route added with requireAuth
-// alone stands out.
+// alone stands out. The create and update handlers add the team admin's rung
+// for a write that decides a subscription's credentials
+// (authorizeTriggerCredentials) — a pin is not automation work but a choice
+// of which stored credential the platform spends.
 //
 // Every route mounts on s.mux, the RECORDING mux: its routing table is what
 // /api/openapi.json publishes, and the class witness
@@ -326,8 +420,20 @@ type triggerSubscriptionReq struct {
 	Match      trigger.Matcher   `json:"match"`
 	Vars       map[string]string `json:"vars,omitempty"`
 	ArgsVar    string            `json:"args_var,omitempty"`
-	Cron       string            `json:"cron,omitempty"`
-	Enabled    *bool             `json:"enabled,omitempty"`
+	// Credential pins, the subscription's home for a key/secret id — the
+	// third place one lives (the BYOK key row and the webhook config are
+	// the other two). The spine launches under triggerSpineActor, so the
+	// write validates each pin against that actor: the same visibility
+	// question secrets.Resolve answers at fire time, asked here where a
+	// refusal is still an answer. On update a request that omits a pin
+	// keeps the stored one; an empty map is the explicit clear. The webhook
+	// routes share the two validators. Writing a pin — or changing what a
+	// pinned subscription launches — takes the team admin's right
+	// (authorizeTriggerCredentials), the right the webhook routes take.
+	KeyOverrides    map[string]string `json:"key_overrides,omitempty"`
+	SecretOverrides map[string]string `json:"secret_overrides,omitempty"`
+	Cron            string            `json:"cron,omitempty"`
+	Enabled         *bool             `json:"enabled,omitempty"`
 	// Overlap policy + guard for schedule-kind subscriptions
 	// (pkg/schedgate; validated on create/update).
 	Overlap       string `json:"overlap,omitempty"`
@@ -418,6 +524,33 @@ func (s *Server) handleCreateTrigger(w http.ResponseWriter, r *http.Request) {
 		dispatcher.WriteErr(w, http.StatusBadRequest, err)
 		return
 	}
+	tenant := s.triggerTenant(r)
+	now := time.Now().UTC()
+	sub := applyTriggerReq(trigger.Subscription{
+		ID:        uuid.NewString(),
+		TenantID:  tenant,
+		Origin:    "operator",
+		Enabled:   true,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}, req)
+	// Who may pin before what may be pinned: a create that pins anything is
+	// a team admin's credential decision.
+	if !s.authorizeTriggerCredentials(w, r, tenant, nil, sub) {
+		return
+	}
+	// The pins answer to the actor the spine will launch under, so a pin no
+	// machine lane can spend is refused here — the one place a refusal can
+	// still reach the operator (an unspendable pin is invisible to
+	// secrets.Resolve, which would seal the team's default in silence).
+	if err := s.validateKeyOverrides(teamTenantCtx(r.Context(), tenant), tenant, triggerSpineActor, req.KeyOverrides); err != nil {
+		dispatcher.WriteErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := s.validateSecretOverrides(teamTenantCtx(r.Context(), tenant), tenant, req.SecretOverrides); err != nil {
+		dispatcher.WriteErr(w, http.StatusBadRequest, err)
+		return
+	}
 	// The same refusal the schedule routes carry: a trigger guard is the
 	// same shell command, stored through a route a cloud server mounts. Its
 	// executor is not wired in cloud today, so this refuses a guard that
@@ -427,25 +560,46 @@ func (s *Server) handleCreateTrigger(w http.ResponseWriter, r *http.Request) {
 		dispatcher.WriteErr(w, http.StatusUnprocessableEntity, err)
 		return
 	}
-	now := time.Now().UTC()
-	sub := applyTriggerReq(trigger.Subscription{
-		ID:        uuid.NewString(),
-		TenantID:  s.triggerTenant(r),
-		Origin:    "operator",
-		Enabled:   true,
-		CreatedAt: now,
-		UpdatedAt: now,
-	}, req)
 	if err := s.cfg.TriggerStore.Create(r.Context(), sub); err != nil {
 		dispatcher.WriteErr(w, http.StatusInternalServerError, err)
 		return
 	}
-	dispatcher.WriteJSON(w, http.StatusCreated, sub)
+	// The pins just landed; close the born-mid-delete window before the
+	// answer — reconcileLandedPins sweeps a record revoked between this
+	// write's validation and its landing, the row the delete's sweep never
+	// listed (see credential_pin_sweep.go). The row is stored under a fresh
+	// id, so a failed re-check is a receipt on the 201 (pins_unreconciled,
+	// cause in the log), never a 5xx whose retry would mint a second cron
+	// subscription and whose opaque body could not even carry this id.
+	guardCtx, guardCancel := pinGuardCtx(r)
+	defer guardCancel()
+	pins := s.reconcileLandedPins(guardCtx, tenant, sub.KeyOverrides, sub.SecretOverrides)
+	if len(pins.Cleared) > 0 && s.logger != nil {
+		s.logger.Warn("triggers: subscription %s created with a pin naming a record deleted in flight; swept: %v", sub.ID, pins.Cleared)
+	}
+	if pins.Err != nil {
+		s.logUnreconciledPins("trigger subscription", sub.ID, pins)
+	}
+	// The answer must not resell the swept pins — the honesty the delete's
+	// 204 owes: answer with the row as the store now holds it.
+	pins.strip(sub.KeyOverrides)
+	pins.strip(sub.SecretOverrides)
+	dispatcher.WriteJSON(w, http.StatusCreated, triggerCreated{Subscription: sub, PinsUnreconciled: pins.Unreconciled})
+}
+
+// triggerCreated is the create answer: the stored row, flattened, and —
+// only when the route could not re-check a record its landed pins name
+// (see reconcileLandedPins) — the ids of those records, the receipt a
+// client acts on by re-reading them and clearing a pin naming a dead one.
+type triggerCreated struct {
+	trigger.Subscription
+	PinsUnreconciled []string `json:"pins_unreconciled,omitempty"`
 }
 
 func (s *Server) handleUpdateTrigger(w http.ResponseWriter, r *http.Request) {
+	tenant := s.triggerTenant(r)
 	cur, err := s.cfg.TriggerStore.Get(r.Context(), r.PathValue("id"))
-	if err == nil && cur.TenantID != s.triggerTenant(r) {
+	if err == nil && cur.TenantID != tenant {
 		err = trigger.ErrSubscriptionNotFound
 	}
 	if errors.Is(err, trigger.ErrSubscriptionNotFound) {
@@ -464,6 +618,30 @@ func (s *Server) handleUpdateTrigger(w http.ResponseWriter, r *http.Request) {
 		dispatcher.WriteErr(w, http.StatusBadRequest, err)
 		return
 	}
+	next := applyTriggerReq(cur, req)
+	// Who may pin before what may be pinned, judged on the row the edit
+	// would store against the row it read: changing a pin, or what a pinned
+	// subscription launches, is a team admin's credential decision; pausing
+	// or resuming one is not.
+	if !s.authorizeTriggerCredentials(w, r, tenant, &cur, next) {
+		return
+	}
+	// A pin the request names is judged against the launch actor before it
+	// lands; one it omits keeps the stored value (the fold above), so an
+	// edit that says nothing about the pins can neither wipe one nor needs
+	// to re-pass one.
+	if req.KeyOverrides != nil {
+		if err := s.validateKeyOverrides(teamTenantCtx(r.Context(), tenant), tenant, triggerSpineActor, req.KeyOverrides); err != nil {
+			dispatcher.WriteErr(w, http.StatusBadRequest, err)
+			return
+		}
+	}
+	if req.SecretOverrides != nil {
+		if err := s.validateSecretOverrides(teamTenantCtx(r.Context(), tenant), tenant, req.SecretOverrides); err != nil {
+			dispatcher.WriteErr(w, http.StatusBadRequest, err)
+			return
+		}
+	}
 	// A guard the request CHANGES, not one it merely carries: the studio
 	// builds its payload from the stored subscription, guard included, so
 	// every toggle of a trigger that already holds one would be refused.
@@ -473,13 +651,45 @@ func (s *Server) handleUpdateTrigger(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	cur = applyTriggerReq(cur, req)
-	cur.UpdatedAt = time.Now().UTC()
-	if err := s.cfg.TriggerStore.Update(r.Context(), cur); err != nil {
+	next.UpdatedAt = time.Now().UTC()
+	// Update commits against the version this request read. A write that
+	// landed in between — a pin sweep's clear most importantly: a swept pin
+	// written back from a pre-sweep read would stand forever, with no sweep
+	// ever coming behind the delete's 204 — conflicts, and the edit answers
+	// 409 so the client re-reads the swept row instead of reviving it.
+	if err := s.cfg.TriggerStore.Update(r.Context(), next); err != nil {
+		if errors.Is(err, trigger.ErrSubscriptionConflict) {
+			dispatcher.WriteErr(w, http.StatusConflict, err)
+			return
+		}
 		dispatcher.WriteErr(w, http.StatusInternalServerError, err)
 		return
 	}
-	dispatcher.WriteJSON(w, http.StatusOK, cur)
+	// Same closure as the create route: the landed pins are re-checked
+	// against their records — a pin that validated while its record lived
+	// but landed after the record's delete sweep listed would otherwise
+	// stand unreconciled (see credential_pin_sweep.go). The re-check reads
+	// every pin the stored row holds, the ones this request omitted (kept
+	// by the fold, never validated above) included. Unlike the create, a
+	// failed re-check answers 5xx here: the edit is stored and nothing
+	// one-time is lost, and the mend is the retry's own pass of this
+	// re-check, not a validation — the studio's editor and toggle send no
+	// pin map, so a retry from it validates nothing (reconcileLandedPins).
+	guardCtx, guardCancel := pinGuardCtx(r)
+	defer guardCancel()
+	pins := s.reconcileLandedPins(guardCtx, tenant, next.KeyOverrides, next.SecretOverrides)
+	if len(pins.Cleared) > 0 && s.logger != nil {
+		s.logger.Warn("triggers: subscription %s updated with a pin naming a record deleted in flight; swept: %v", next.ID, pins.Cleared)
+	}
+	if pins.Err != nil {
+		dispatcher.WriteErr(w, http.StatusInternalServerError, fmt.Errorf("subscription %s updated, but re-checking the records its pins name failed: %w — a pin may name a record deleted in flight and stand until it is cleared", next.ID, pins.Err))
+		return
+	}
+	// The answer must not resell the swept pins — the honesty the delete's
+	// 204 owes: answer with the row as the store now holds it.
+	pins.strip(next.KeyOverrides)
+	pins.strip(next.SecretOverrides)
+	dispatcher.WriteJSON(w, http.StatusOK, next)
 }
 
 func (s *Server) handleDeleteTrigger(w http.ResponseWriter, r *http.Request) {
@@ -517,6 +727,16 @@ func applyTriggerReq(base trigger.Subscription, req triggerSubscriptionReq) trig
 	base.Cron = req.Cron
 	base.Overlap = req.Overlap
 	base.MaxConcurrent = req.MaxConcurrent
+	// nil-means-untouched, like the guard pointers: the studio builds its
+	// trigger payload from the stored subscription, so a plain overwrite
+	// would drop a stored pin on every edit that says nothing about it.
+	// A present map replaces wholesale (an empty one is the clear).
+	if req.KeyOverrides != nil {
+		base.KeyOverrides = req.KeyOverrides
+	}
+	if req.SecretOverrides != nil {
+		base.SecretOverrides = req.SecretOverrides
+	}
 	base.Guard = req.guardOf(base.Guard)
 	if req.GuardTimeout != nil {
 		base.GuardTimeout = *req.GuardTimeout

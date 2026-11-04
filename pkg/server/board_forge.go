@@ -474,7 +474,7 @@ func forEachForgeIssuePage(ctx context.Context, ic forge.IssueClient, repo strin
 // as much as their start instants differ. That only ever widens the next
 // window, which is a re-read.
 func (s *Server) syncOneIntegration(ctx context.Context, teamID string, ri forge.RepoIntegration) (mirrored, created, updated int, err error) {
-	conn, err := s.forgeConnections.Get(ctx, ri.ConnectionID)
+	conn, err := s.forgeConnections.Get(ctx, ri.TenantID, ri.ConnectionID)
 	if err != nil {
 		return 0, 0, 0, fmt.Errorf("connection: %w", err)
 	}
@@ -1034,8 +1034,8 @@ func (s *Server) handleListIntegrationHooks(w http.ResponseWriter, r *http.Reque
 	if !ok {
 		return
 	}
-	conn, err := s.forgeConnections.Get(r.Context(), ri.ConnectionID)
-	if err != nil || conn.TenantID != teamID {
+	conn, err := s.forgeConnections.Get(r.Context(), teamID, ri.ConnectionID)
+	if err != nil {
 		httpError(w, http.StatusNotFound, "connection not found")
 		return
 	}
@@ -1157,8 +1157,8 @@ func (s *Server) cardFromPath(w http.ResponseWriter, r *http.Request, board nati
 // board lane's READS (pullClientForConn: listing and reading pull requests);
 // its writes go through connWriterFor.
 func (s *Server) connAdminFor(w http.ResponseWriter, ctx context.Context, teamID, connID string) (forge.Admin, forge.Connection, bool) {
-	conn, err := s.forgeConnections.Get(ctx, connID)
-	if err != nil || conn.TenantID != teamID {
+	conn, err := s.forgeConnections.Get(ctx, teamID, connID)
+	if err != nil {
 		httpError(w, http.StatusNotFound, "connection not found")
 		return nil, forge.Connection{}, false
 	}
@@ -1172,8 +1172,8 @@ func (s *Server) connAdminFor(w http.ResponseWriter, ctx context.Context, teamID
 }
 
 func (s *Server) connWriterFor(w http.ResponseWriter, ctx context.Context, teamID, connID, repo string) (forge.Admin, forge.Connection, bool) {
-	conn, err := s.forgeConnections.Get(ctx, connID)
-	if err != nil || conn.TenantID != teamID {
+	conn, err := s.forgeConnections.Get(ctx, teamID, connID)
+	if err != nil {
 		httpError(w, http.StatusNotFound, "connection not found")
 		return nil, forge.Connection{}, false
 	}

@@ -154,7 +154,7 @@ func (s *Server) applyBotAvatarMode(parent context.Context, conn forge.Connectio
 		rctx, cancel := context.WithTimeout(context.WithoutCancel(parent), avatarRecordTimeout)
 		defer cancel()
 		rctx = store.WithTenant(rctx, conn.TenantID)
-		fresh, err := s.forgeConnections.Get(rctx, conn.ID)
+		fresh, err := s.forgeConnections.Get(rctx, conn.TenantID, conn.ID)
 		if err != nil {
 			return conn, err
 		}

@@ -15,6 +15,7 @@ import (
 
 	"github.com/SocialGouv/iterion/internal/retryprobetest"
 	"github.com/SocialGouv/iterion/pkg/cloud/metrics"
+	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/orgusage"
 	"github.com/SocialGouv/iterion/pkg/server/cloudpublisher"
@@ -139,7 +140,7 @@ func newProbeNoticeServer(t *testing.T) (*Server, *stubCommenter, *store.Run) {
 		t.Fatal(err)
 	}
 	s.cfg.Store = rs
-	conns := forge.NewMemoryConnectionStore()
+	conns := connection.NewMemoryForgeStore()
 	if err := conns.Create(context.Background(), forge.Connection{
 		ID: "c1", TenantID: probeSequenceTenant, Provider: forge.ProviderGitHub,
 	}); err != nil {

@@ -108,7 +108,7 @@ One document per key, sealed at rest. [pkg/secrets/byok.go](../pkg/secrets/byok.
 | `last_used_at` | best-effort observability: bumped by id at resolution (`MarkUsed`, detached off the launch path) and by **fingerprint** at the START and END of every runner attempt (`MarkFingerprintUsed`). The start stamp lands once the run is ADMITTED, after the usage-cap pre-flight: a run parked on a ceiling never held the key and never dates it. Nothing moves it during a turn, so a long attempt shows its start until it ends. **Scope follows the key's tier**: a tenant's own key is bumped under the run's tenant only, so a different tenant that stored the byte-identical secret never reads its own key as "in use" (the studio shows this field as exactly that, before a rotate or delete); a platform-tier or pool-lent key (`RunBundle.PlatformSourced` / `PoolSourced`) is bumped across tenants, because its row lives under the platform sentinel or in the donor's tenant and it serves every tenant |
 | `alive_runs` (view only) | how many runs count against this key's ceiling right now — the same query the launch walk asks ([what counts](#concurrency-ceiling--what-counts)). Present whatever `max_concurrent_runs` is, so "is this key in use?" has an answer; absent (not zero) when there is nothing to count with (no fingerprint on a legacy row, no run store, a logged store error). The run side of the same audit is `cred_fingerprints` / `llm_idle_since` on `GET /api/runs/{id}` |
 | `refused_until` / `refused_reason` (view only) | set when the PROVIDER is currently turning this credential away — a dead token, a fair-usage refusal, a spent org ceiling, an exhausted window — folded from the shared usage ledger by `usagecap.RefusedUntil`, the same reading the launch walk acts on ([usage-caps.md](usage-caps.md)). Absent when nothing is refusing the key, and on a fingerprint-less row (which names a slot, not a credential). This is the only place a **pinned** refused key is visible: a webhook `key_overrides` pin bypasses the skip by design, so the walk leaves no skip log |
-| `max_concurrent_runs` | optional ceiling on how many alive runs may hold this key at once (`0` = uncapped) — the operator-side answer to providers whose fair-usage limits publish no numeric bound. What counts is defined in [Concurrency ceiling — what counts](#concurrency-ceiling--what-counts) |
+| `max_concurrent_runs` | optional **hard** cap on how many alive runs may hold this key at once (`0` = uncapped) — the operator-side answer to providers whose fair-usage limits publish no numeric bound. Enforced by an atomic per-key reservation at launch and at every resume; a full key **parks** a launch (`CRED_SLOT_WAIT`, asked again until a slot frees or its `max_wait` passes) instead of refusing it. What counts, and how the cap is enforced, is defined in [Concurrency ceiling — what counts](#concurrency-ceiling--what-counts) |
 | `bots` | optional **workload audience**: the bot ids whose runs may draw on this key. Empty admits every bot. See [Workload audience](#workload-audience--what-a-key-is-for) |
 | `expires_at` | optional |
 
@@ -124,12 +124,116 @@ events, artifacts, or returned by the API.
 
 ## Concurrency ceiling — what counts
 
-`max_concurrent_runs` is enforced at resolution
-(`cloudpublisher.apiKeyUsable`): a key at its ceiling is passed over like a
-refused one and the walk hands the next key of that provider over (or the
-next tier). The count is `CountAliveRunsWithCredFingerprint` on the run
-store — both twins, one conformance row — and a run counts against a key
-only when **all three** hold:
+`max_concurrent_runs` is enforced in two halves, and only the second one is
+the cap:
+
+- **The walk chooses.** At resolution (`cloudpublisher.apiKeyUsable`) a key
+  at its ceiling is passed over like a refused one and the walk hands the
+  next key of that provider over (or the next tier). The count is
+  `CountAliveRunsWithCredFingerprint` on the run store — both twins, one
+  conformance row. This half is advisory by construction: it reads the run
+  documents before this run is written (two publisher replicas admit on the
+  same reading), a `key_overrides` pin bypasses it, and the refused-key
+  restore undoes it on purpose.
+- **The admission enforces.** After the key is chosen and before anything
+  is persisted or published, the publisher reserves one slot per capped key
+  the run's stamp names on the **credential-slot ledger**
+  (`store.CredSlotStore`: Mongo collection `cred_slots`, one row per
+  fingerprint listing the runs that hold a slot; an in-memory twin on the
+  filesystem store). The reservation is one conditional write — add the run
+  while the row has room — so of N concurrent admissions on a key with K
+  free slots exactly K succeed, whatever replica each ran on. A pinned key,
+  a restored key and a resumed run all pass through it; a resumed run's own
+  slot is admitted again in place, without taking a second one, while the
+  row is within the cap — **lower `max_concurrent_runs`** below the runs
+  holding the key and none of them is re-admitted (a paused one's resume
+  waits like a newcomer's) until enough of the others stop spending; two of
+  them resuming at the same instant can each count the other, queued, and
+  both be put back once — the next ask evicts the one put back. A key
+  lent through the [credential pool](credential-pool.md) is admitted on the
+  same row by the borrower's launch — the grant carries the donor key's
+  cap, so one ledger governs the key whoever runs on it; the pledge's own
+  `max_concurrent_runs` is the donor's lending dial on top. A store error
+  refuses the launch, never admits it.
+
+A **full key parks the run instead of refusing it**: the row is written
+`failed_resumable` under `CRED_SLOT_WAIT` with a durable retry armed
+(`retry_state.reason = cred_slot`), and the retry sweeper asks for a slot
+again every `cloudpublisher.CredSlotProbeInterval` (2 min) — free of
+attempts, since no ask reaches the provider — until a slot frees or the
+run's `max_wait` passes, at which point the run is abandoned naming the
+bound and the instant it is measured from. A run armed for a usage window
+whose resume finds its key full is deferred the same way, and its row is
+re-tagged `cred_slot` in that write: it waits for a slot now, and nothing
+reads it as the provider wall it no longer waits on. `max_wait` bounds the
+**whole** park, measured from its paid arming (`retry_state.scheduled_at`):
+such a row keeps the wall's anchor and the slot wait spends what is left of
+the same horizon, the way a circuit deferral does. A webhook delivery has
+nobody to click again; a parked run keeps its inputs and its pull request's
+pending check. An operator's `resume` of a parked run while the key is
+still full answers 429 and leaves the run parked. The launch API answers
+such a park with `status: failed_resumable` (never `running` or `queued`);
+the run's `failure_code` says `CRED_SLOT_WAIT`.
+
+**A parked run keeps no place in line.** The ledger has no order: a slot
+frees when an admission's reconcile evicts a holder whose run stopped
+spending, and that same admission takes it — whoever asks first after a run
+ends. A parked run asks only every probe interval, so on a key under steady
+load a fresher launch can take the slot it waited for, every time, until its
+`max_wait` abandons it with the bound named. The levers are the operator's:
+raise `max_concurrent_runs`, or give the provider another key the walk can
+choose.
+
+**Every resume asks the ledger; only the sweeper parks.** A resume that
+finds a key full is refused before anything is published and the run is put
+back as it was — a parked run keeps its armed retry, a paused one stays
+paused — with `cloudpublisher.ErrCredentialAtCapacity` for its caller.
+Asking again is the caller's: the retry sweeper defers the parked run for
+free; the automations that keep a retry of their own wait on it — the run
+watch re-delivers its episode, the workspace hand-off backs off, and an
+assistant mission puts the refused activation, action resume or result
+delivery back to prepared and asks again one probe interval out
+(`wait_until` on the receipt), spending none of its action budget, up to its
+TTL; an operator is answered 429 with `error_code: credential_at_capacity` —
+on `resume`, `answer-human`, an async answer's auto-resume and a host event
+alike — and the WebSocket answer fails with that code.
+
+The ledger never becomes a second truth. A holder is free when its run
+stops counting under the two rules below, and a refusal re-reads the row's
+holders against their run documents before it is final
+(`store.CredSlotHolderStale`), evicting the ones that no longer spend the
+key and retrying the admission once. The eviction names the exact entry it
+judged, and every admission moves its holder's instant forward, so a run
+resumed on another replica between the judgment and the eviction keeps its
+slot. A holder whose run document does not exist yet keeps its slot for
+`store.CredSlotGrace` (a launch reserves before it persists); a deleted run
+is pulled from every row at once, on both stores. The other way round, a
+run whose document spends the key holds a slot whether or not the row names
+it: every admission first **adopts** those runs — alive before the ledger
+existed, launched while the key had no cap, or stripped of their entry by
+an undo another admission of the run outran — outside the cap, as the fact
+they are. **Setting `max_concurrent_runs` on a key in use** therefore counts
+the runs already on it at the first admission: a key with three runs alive
+and a new cap of two refuses (parks) every newcomer — pinned, restored or
+chosen — until two of the three end. No admission adopts a resume whose own
+admission has not decided: a resume claims its run (the flip to `queued`,
+which marks it `cred_admission_pending`) before it resolves and asks, and
+until its admission decides — the publisher then settles the mark — or its
+rollback clears it, the run is that admission's to decide. Two parked runs
+resumed together on a freed slot therefore queue one and put the other
+back, rather than each counting the other and both waiting on a key nobody
+holds. The mark is read on a queued run only: a run a runner claimed counts
+whatever it says. The one explicit release is the undo of a launch or a
+resume that **provably** never handed the run on — no row persisted, or a
+rollback that ended or reverted the row it wrote — and it names the entry
+its own admission wrote, like the eviction: a resume of the same run that
+re-admitted it before that undo ran keeps its slot. A publish can report
+an error after its message landed: the slot then stays, the rollback leaves
+a row a runner already claimed to that runner, and the reconcile frees the
+slot once the run stops spending. Because the reconcile reads the stamp, a
+resume that reserves a capped key is refused when its re-stamp fails: a run
+whose document does not name the key it holds would be evicted while it
+executes. A run counts against a key only when **both** hold:
 
 1. **It is alive** — `queued` or `running` (`RunStatus.HoldsCredentialSlot`).
    A parked or paused run spends nothing while it waits, and its resume
@@ -143,16 +247,23 @@ only when **all three** hold:
    holds no slot on the z.ai facade key it also carries. A run with an
    unpinned or unresolvable route keeps every fingerprint (it takes
    whatever the process holds — fail open toward protection).
-3. **It is not model-idle.** The runner sets `run.llm_idle_since` the moment
-   the run's last model-calling node finishes and clears it the moment one
-   starts (concurrent branches are counted, not flipped), so a
-   sixty-minute tool-only verify gate between two agent passes holds a slot
-   for nobody. A run counts from claim until it proves idle, and every
-   re-stamp starts it over. Explicit toggles, not a lease: a pod that dies
-   mid-node leaves a run the orphan sweeper parks, and rule 1 releases it.
+**Model-idle is not a release.** The runner sets `run.llm_idle_since` the
+moment the run's last model-calling node finishes and clears it the moment
+one starts (concurrent branches are counted, not flipped; every re-stamp
+clears it), so a run sitting in a sixty-minute tool-only verify gate between
+two agent passes reads as idle on its views — but it keeps its slot. A slot
+lent out there would have no path back: nothing in the runner can wait for
+the ledger when the next model node starts, so a cap that released it would
+admit one run past the cap on every wake, and a cap of one would ping-pong
+two runs through a park and a fresh pod at each hand-off. Under the hard
+cap the gate's slot stays taken, and a launch on that key parks until the
+run ends; raising `max_concurrent_runs` is the operator's lever. Explicit
+toggles, not a lease: a pod that dies mid-node leaves a run the orphan
+sweeper parks, and rule 1 releases it.
 
 Everything uncertain counts (over-protection), never the reverse: a count
-error leaves the ceiling unapplied for that resolution and is logged.
+error leaves the walk's skip unapplied for that resolution and is logged —
+the admission still decides, and it fails closed.
 
 ## Workload audience — what a key is FOR
 
@@ -167,10 +278,11 @@ funded yesterday. Same asymmetry, and same reason, as
 
 Three properties decide where it is enforced, and they are the whole design:
 
-1. **It is a gate, not a ceiling.** `max_concurrent_runs` rides
+1. **It is a gate, not a ceiling.** The walk's ceiling skip rides
    `apiKeyUsable`, whose refusals the refused-key restore deliberately undoes
-   — progress beats a soft cap. An audience must survive that path, so it is
-   checked inside `secrets.Resolve` itself.
+   — the cap itself is enforced after the walk, by the slot admission, which
+   parks. An audience must survive that path, so it is checked inside
+   `secrets.Resolve` itself.
 2. **A pin does not lift it.** `key_overrides` is honoured over the
    usable-predicate by design; the audience is read *before* that exemption,
    or "pin the key" would be the documented way around it.
@@ -436,6 +548,83 @@ mechanism; the wiring threads a webhook's pinned keys through to it:
    resolution walk itself applies). That arm is not UX: an unspendable pin
    produces no refusal anywhere downstream, so the write is the only place
    it can be said.
+
+The trigger subscription routes write the sibling home for keys:
+`key_overrides` on `POST /api/v1/triggers` / `PUT /api/v1/triggers/{id}`
+lands on `trigger.Subscription.KeyOverrides`, which the evaluator and
+scheduler lanes already thread into the launch plan. The write validates
+against `trigger-spine` — the synthetic actor the spine resolves under —
+through the same `validateKeyOverrides`, so every arm above answers the
+subscription lane identically. On update, a request that omits the field
+keeps the stored pin; an empty map is the explicit clear. Who may pin is the
+webhook lane's answer too: a team admin. The trigger routes' member rung
+admits automation work, and a pin is a credential decision — so a create
+that pins, and any edit but `enabled` of a subscription that holds a pin
+(the pins, or the bot, repo, vars, match or cadence the pinned credential is
+spent on), takes `canManageTeam`
+([REST surface](cloud-rest-api.md#triggers-event-driven-runs)).
+
+**A pin does not outlive its subject.** Deleting a pinned api key or stored
+secret sweeps every pin that names it — webhook configs and trigger
+subscriptions of the same tenant — at the delete route, instead of leaving
+a pin that resolves to nothing (the resolver drops an unresolvable pin id
+in silence and the walk seals the team's default, exactly the replacement
+the write-time guards refuse). The forge orchestrator's own deletions run
+the same sweep: the managed secrets it mints (a project bot's token, a
+connection's token) are team-scoped and pinnable by any webhook or
+subscription of the tenant, and the store the server hands it sweeps on
+delete — a deprovision or a disconnect clears those pins too, and a
+sweep it cannot finish fails the deprovision until a retry does.
+Revocation never waits on a config edit:
+the delete's audit line lists the `pins_cleared` surfaces, and a launch
+after the sweep falls back exactly as an explicit clear would. The sweep
+judges each row as the store holds it at write time — a pin edit or a
+second delete's sweep landing mid-sweep survives untouched, and a swept
+pin cannot resurrect: no writer can re-pin a deleted record (the
+write-time guards refuse it), and each real removal bumps the row's
+version — a full-document edit whose read predates the sweep conflicts
+(409 on the trigger PUT, the webhook config's CAS twin) and re-reads the
+swept row instead of writing the dead pin back. The version cannot reach
+a row BORN mid-delete — a write whose pin validated while the record
+still lived and lands after the sweep's listing, which therefore never
+sees it — and the write routes close that half themselves: every
+pin-landing write (both lanes' create and edit) re-checks the records its
+landed pins name, and one already revoked sweeps immediately under the
+same detached context as the delete's sweep. The two provision writes
+that land pins without validating them re-check what they name once
+their row is stored and clear a revoked one from it: a re-provision
+migrating a repo to a new hook identity carries the operator's pins from
+the old config onto a row the old config's version does not guard, and a
+failed provision's undo restores settings read before its own write at
+the version that write reached — a sweep that passed the row while the
+write did not name the record bumped nothing. The webhook routes carry that
+receipt in their audit line (`pins_cleared`); the trigger routes, which
+audit nothing today, log it. A re-check the store refuses splits by what a
+retry can mend: an edit answers 5xx — the edit is stored, nothing one-time
+is lost, and the retry lands on the same row and runs the re-check again
+over every pin the row holds, sweeping a record found revoked; re-validation
+is no part of that mend, since an edit validates only the pin maps its
+request names and the studio's trigger editor and toggle send none; a
+create answers 201 with the row and
+`pins_unreconciled`, the record ids it could not vouch for, the cause in
+the server log under the row id — the row is already stored under a fresh
+id, a retry of a 5xx would mint a second one, and a webhook's token exists
+only in that one answer. The sweep
+runs detached from the request: a
+client hanging up mid-sweep must not cancel the clear half-way. A sweep the
+store refuses answers 5xx — the client body stays opaque, the logged cause
+names both halves: the deletion that happened and the pins still standing
+— and the delete's RETRY finishes the sweep before its 404: revocation is
+the irreversible half, so "not found" is exactly the shape of an
+interrupted sweep, and the retry is the reconciliation path; a retry whose
+right to sweep the identity store cannot judge (an outage, not a refusal)
+answers 5xx too, never a 404 over pins that may still stand. One stored
+shape the sweep's targeted writes cannot address at all is a pin name
+holding `.` or `$`, or empty (possible on rows written before the name
+guard, when the validator checked the tenant alone): the
+Mongo clears rewrite that pin map's subdocument under a version CAS
+instead of `unset`-ing a path that would match nothing, so a legacy name
+cannot leave a dead pin standing behind a silent 204 either.
 
 **A pin is honoured or refused, never ignored.** Two shapes would be
 honoured by nobody: a provider the walk does not spend yet (the

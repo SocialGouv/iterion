@@ -155,8 +155,11 @@ contracts prerequisites rather than details, and each is a P1 deliverable:
   handler's own invariant says its grant model is safe *only* because its
   store is single-tenant
   ([mcp_board_handler.go:204](../../pkg/server/mcp_board_handler.go)), and
-  `ConnectionStore.Get` filters by `_id` alone
-  ([connection_store.go:141](../../pkg/forge/connection_store.go)). Copying
+  the forge connection store's `Get` filtered by `_id` alone until the
+  contract phase closed it
+  ([#2760](https://github.com/SocialGouv/iterion/issues/2760): the store is
+  [pkg/connection's ForgeStore](../../pkg/connection/forge_store.go), the
+  tenant in its filter). Copying
   the board grant would let any valid run token resolve any tenant's
   connection. A connector grant carries tenant, run/attempt, node, the
   authorized alias→connection mapping, the package digest, the permitted
@@ -1076,6 +1079,7 @@ treated the site the report named.
 | Effective package at runtime | **Shipped** (F2) — generated + overlay, one loader for validation and execution |
 | Fenced refresh claim / revision CAS | Not implemented (F8) |
 | A cloud (Mongo) `connection.Store` | Not implemented — connectors remain LOCAL-ONLY |
+| Forge connections under this contract | **Shipped** ([#2760](https://github.com/SocialGouv/iterion/issues/2760)) — the record, the tenant-scoped `ForgeStore` (memory + Mongo twins) and the credential sealer live in pkg/connection; ids, the `forge_conn:` AAD, the `forge_connections` collection and the OAuth callback URLs are preserved, so no data migration exists to run. The refresh worker and orchestrator stay in pkg/forge (moving them would import the forge clients back into pkg/connection — a cycle) and read the contract like every other caller |
 
 **The single most dangerous thing**, in the reviewer's framing and accepted
 here: nothing yet binds a run to the connections it may use. The tenant check

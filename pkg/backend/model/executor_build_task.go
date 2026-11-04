@@ -24,6 +24,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/tool"
 	"github.com/SocialGouv/iterion/pkg/backend/toolcatalog"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/google/uuid"
 )
 
@@ -149,6 +150,21 @@ func extractBackendFields(node ir.Node) (backendFields, error) {
 	}
 }
 
+// effectiveCapabilitiesOf is the ONE reading of the capability-inheritance
+// seam: a nil list inherits the workflow's; a DECLARED empty one
+// (`capabilities: []`, #1801) is an explicit no-grant and stays empty.
+//
+// buildTask, the EffectiveToolNames seam and the reserved-namespace grant
+// check (internalMCPToolGrant) all read it here, on the field
+// extractBackendFields produces, so no site can answer a different grant for
+// the same node.
+func effectiveCapabilitiesOf(declared, wfCapabilities []string) []string {
+	if declared == nil {
+		return wfCapabilities
+	}
+	return declared
+}
+
 // resolvePermissionPolicy builds the effective tool-permission policy for
 // a node — the ONE place a Policy is built from DSL and run inputs, which
 // is why every backend's gate (claude_code's PreToolUse hook, claw's
@@ -197,7 +213,30 @@ func (e *ClawExecutor) resolvePermissionPolicy(f backendFields) (*permission.Pol
 	// `worktree: auto`, and the gate rebuilt in a child process receives
 	// this value through PolicyConfig.
 	pol.SetPathRoot(e.WorkDir())
+	// The per-node secrets bound (#1710): every gated node is refused the
+	// run's well-known secret locations by construction — the mounted file
+	// secrets and the seeded CLI credential directories — so "the agent
+	// cannot read the secrets" is a guarantee of the gate, not a belt the
+	// author has to remember to buckle. A location a given run does not
+	// populate costs a deny rule that matches nothing. The shell stays
+	// unbound: it is the legitimate sink channel a secret is spent through.
+	if err := pol.DenyPathTrees(secretGateLocations()...); err != nil {
+		return nil, err
+	}
 	return pol, nil
+}
+
+// secretGateLocations are the well-known locations a run's secrets and
+// seeded credentials occupy inside a sandbox (pkg/secrets), armed as deny
+// trees on every gated node's policy. The runner already refuses a file
+// secret mounted outside SecretFilesMountDir, so the constant covers every
+// per-secret mount path too.
+func secretGateLocations() []string {
+	return []string{
+		secrets.SecretFilesMountDir,
+		secrets.ClaudeCodeSandboxConfigDir,
+		secrets.CodexSandboxConfigDir,
+	}
 }
 
 // GateCanAsk reports whether the permission gate this executor arms for node
@@ -453,6 +492,7 @@ func (e *ClawExecutor) dispatchWithObservability(
 			di.DeclaredModel = baseModel
 			di.RouteModel = out.Route
 			di.Provider = out.Provider
+			di.FoldedSpend = out.FoldedSpend
 			di.Error = err
 			sess.describeDivergence(&di)
 			e.hooks.OnDelegateError(nodeID, di)
@@ -465,6 +505,7 @@ func (e *ClawExecutor) dispatchWithObservability(
 		di.DeclaredModel = baseModel
 		di.RouteModel = out.Route
 		di.Provider = out.Provider
+		di.FoldedSpend = out.FoldedSpend
 		// A skip outcome finished nothing: keep BackendName (the spend's
 		// origin — the metrics claw-exclusion keys on it) but flag it so
 		// recordServed and the event do not claim a backend SERVED.
@@ -1336,12 +1377,7 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 		resolvedModel = picked
 	}
 
-	// A nil list inherits the workflow's; a DECLARED empty one
-	// (`capabilities: []`, #1801) is an explicit no-grant and stays empty.
-	effectiveCaps := f.capabilities
-	if effectiveCaps == nil {
-		effectiveCaps = e.wfCapabilities
-	}
+	effectiveCaps := effectiveCapabilitiesOf(f.capabilities, e.wfCapabilities)
 
 	// Resolve node-level image inputs (templated paths) so the codex backend can
 	// forward them as `-i` for image-to-image. Empty/whitespace results (an
@@ -1477,6 +1513,13 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 	task.CursorFragments = resolveCursorFragments(f.cursors, e.cursors)
 	task.SkillHints = e.resolveSkillHints(f.skills)
 	task.MirroredSkills = e.mirroredSkills
+	// The pinned skill mode is a RUN property the engine arms (untrusted
+	// workspace, #1719): every node of the run serves the same pinned set,
+	// and the sandbox crossing re-roots it for the runner.
+	if allowed, armed := e.SkillAllowlist(); armed {
+		task.SkillAllowlist = allowed
+	}
+	task.SkillChannelRoot = e.SkillChannelRoot()
 	task.SharedStateDir = e.sharedStateDir
 	e.applyPresetFragment(&task, input, td)
 
@@ -1847,9 +1890,11 @@ func (e *ClawExecutor) applyMemorySpec(task *delegate.Task, m *ir.Memory) {
 // applyPresetFragment wires the launch-time preset bias ("## Focus")
 // onto the task: the preset's prompt body {{vars}}-resolved against
 // this node's context, plus an optional relevant-skills hint line.
-// Applies run-wide to every LLM node, so a "sous-bot" focus (e.g.
-// Willy as improve-quality SRE) shapes the reviewer and fixer alike
-// without the author wiring it into each prompt.
+// buildTask is its one caller, so the bias reaches every model task the
+// run builds — the set ir.Workflow.RendersPresetPrompt counts, not every
+// LLM node — and a "sous-bot" focus (e.g. Willy as improve-quality SRE)
+// shapes the reviewer and fixer alike without the author wiring it into
+// each prompt.
 func (e *ClawExecutor) applyPresetFragment(task *delegate.Task, input map[string]any, td *TemplateData) {
 	if e.presetPrompt == "" && len(e.presetSkills) == 0 {
 		return

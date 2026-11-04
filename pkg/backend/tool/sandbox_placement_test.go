@@ -303,6 +303,10 @@ func assertEveryOptionalFamilyIsOn(t *testing.T, defaults ClawDefaults) {
 		"Crons":       "RegisterClawAll allocates one when nil",
 		"LSP":         "RegisterClawAll allocates one when nil",
 		"MCPProvider": "RegisterClawAll wires an empty Registry-backed provider when nil",
+		// Not a family switch: nil is the DEFAULT (the workspace walk a
+		// trusted run takes); a non-nil provider only narrows what the
+		// already-registered `skill` tool serves (#1719).
+		"SkillAllowlist": "nil disarms the pinned mode — the skill family registers either way",
 	}
 	for i := 0; i < ty.NumField(); i++ {
 		f, name := v.Field(i), ty.Field(i).Name

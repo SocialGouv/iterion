@@ -1351,7 +1351,7 @@ func (s *Server) scheduledForgeOverrides(ctx context.Context, sb cloudsched.Sche
 	if integ.TenantID != sb.TenantID {
 		return nil, fmt.Errorf("schedule %s: repo integration %s belongs to another tenant", sb.ID, sb.RepoIntegrationID)
 	}
-	conn, err := s.forgeConnections.Get(store.WithoutTenantFilter(ctx), integ.ConnectionID)
+	conn, err := s.forgeConnections.Get(store.WithoutTenantFilter(ctx), integ.TenantID, integ.ConnectionID)
 	if err != nil {
 		return nil, fmt.Errorf("schedule %s: resolve forge connection %s: %w", sb.ID, integ.ConnectionID, err)
 	}

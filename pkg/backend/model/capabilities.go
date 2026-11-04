@@ -1,7 +1,7 @@
 package model
 
 import (
-	"os"
+	"context"
 	"regexp"
 	"strconv"
 	"strings"
@@ -35,7 +35,12 @@ func capabilitiesForModel(provider, modelID string) ModelCapabilities {
 	// unknown is already the answer those readers print. The launch seams
 	// resolve loudly.
 	if provider == modelroute.OpenAICompatible {
-		return gatewayCapabilities(compatgw.ResolveCatalogQuiet(modelID, modelspecs.Default(), os.Getenv))
+		// The closure idiom (#2808): the seam's reader bound to a context,
+		// handed as a value — capabilitiesForModel has no ctx of its own (the
+		// public ResolveCapabilities surface takes none), so the process
+		// default answers here.
+		getenv := func(name string) string { return envGetenv(context.Background(), name) }
+		return gatewayCapabilities(compatgw.ResolveCatalogQuiet(modelID, modelspecs.Default(), getenv))
 	}
 	curated := curatedCapabilities(provider, modelID)
 	spec, ok := modelspecs.Default().Lookup(provider, modelID)

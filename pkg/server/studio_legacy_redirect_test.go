@@ -83,6 +83,11 @@ func TestLegacyStudioRedirectLeavesTheRootSurfacesAlone(t *testing.T) {
 		"/cli-auth?redirect_uri=http%3A%2F%2F127.0.0.1%2Fcb",
 		"/config/01a09ec6",
 		"/marketplace",
+		// The operator's legal pages (ADR-160): public, owed to a visitor
+		// with no session, and read by the sign-in page's own footer.
+		"/legal/mentions-legales",
+		"/legal/accessibilite",
+		"/api/legal/cgu",
 		"/api/runs/01a09ec6",
 		"/api/auth/oidc/github/callback",
 		// Already moved: redirecting again would loop.
@@ -175,7 +180,7 @@ func rawGET(t *testing.T, serverURL, target string) (int, string) {
 // A segment that also names a root surface would silently steal it. The list
 // is frozen and hand-written, so the overlap is checked rather than trusted.
 func TestFrozenLegacySegmentsDoNotOverlapTheRootSurfaces(t *testing.T) {
-	rootSurfaces := []string{"api", "assets", "auth", "brand", "cli-auth", "config", "healthz", "invitations", "login", "marketplace", "readyz", "x"}
+	rootSurfaces := []string{"api", "assets", "auth", "brand", "cli-auth", "config", "healthz", "invitations", "legal", "login", "marketplace", "readyz", "x"}
 	for _, seg := range legacyStudioSegments {
 		for _, root := range rootSurfaces {
 			if seg == root {
@@ -195,7 +200,7 @@ func TestIsLegacyStudioPath(t *testing.T) {
 		}
 	}
 	// "/runsomething" shares a prefix with "runs" but is a different segment.
-	for _, p := range []string{"/", "/login", "/config/x", "/marketplace", "/runsomething", "/studio/runs"} {
+	for _, p := range []string{"/", "/login", "/config/x", "/marketplace", "/legal/cgu", "/runsomething", "/studio/runs"} {
 		if isLegacyStudioPath(p) {
 			t.Errorf("isLegacyStudioPath(%q) = true, want false", p)
 		}

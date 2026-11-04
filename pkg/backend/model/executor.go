@@ -138,6 +138,19 @@ type ClawExecutor struct {
 	// workspace this run (SetMirroredSkills), as opposed to whatever the
 	// target repo ships at the same path.
 	mirroredSkills []string
+	// skillAllowlist is the pinned name → path set the `skill` tool serves
+	// when the run's workspace is untrusted (SetSkillAllowlist, #1719): a
+	// non-nil pointer — empty map included — arms the pinned mode, nil
+	// keeps the workspace walk. Atomic because the engine arms it at run
+	// start while a node may already be executing (same doctrine as
+	// SetWorkDir, #2897). Paths are ABSOLUTE host paths into the run's
+	// engine-owned skill channel root.
+	skillAllowlist atomic.Pointer[map[string]string]
+	// skillChannelRoot is the engine-owned directory that re-carries the
+	// run's owned skills in the .claude/skills layout for the backends that
+	// discover skills by directory (claude_code's --add-dir), set by
+	// SetSkillChannelRoot on an untrusted run; empty = no channel.
+	skillChannelRoot atomic.Value // string
 
 	// slashWarnedOnce keeps a workspace-command divergence notice to one
 	// line per command file per run, across nodes and parallel branches.
@@ -818,6 +831,16 @@ func (e *ClawExecutor) secretRedactor() func(string) string {
 	return e.secretGuard.Redact
 }
 
+// redactDisplay is secretRedactor applied nil-safe: the eager pass for
+// display text a helper then CUTS (a header hint, a result preview) —
+// a secret the cut splits is one no matcher recognises.
+func (e *ClawExecutor) redactDisplay(s string) string {
+	if red := e.secretRedactor(); red != nil {
+		return red(s)
+	}
+	return s
+}
+
 func (e *ClawExecutor) secretUnmaterializer() func(string) string {
 	if e.secretGuard == nil {
 		return nil
@@ -1058,25 +1081,25 @@ func NewClawExecutor(registry *Registry, wf *ir.Workflow, opts ...ClawExecutorOp
 		imageAttachs:       imageAttachmentNames(wf),
 		defaultBackend:     wf.DefaultBackend,
 		wfCompress:         wf.Compress,
-		compressEnvDefault: os.Getenv(rewrite.ModeEnv),
-		rewriteSandboxEnv:  os.Getenv(rewrite.SandboxEnv),
+		compressEnvDefault: envGetenv(context.Background(), rewrite.ModeEnv),
+		rewriteSandboxEnv:  envGetenv(context.Background(), rewrite.SandboxEnv),
 
 		wfAutoMemory:             wf.AutoMemory,
-		autoMemoryEnvDefault:     os.Getenv(automemory.ModeEnv),
+		autoMemoryEnvDefault:     envGetenv(context.Background(), automemory.ModeEnv),
 		wfAmbientContext:         wf.AmbientContext,
-		ambientContextEnvDefault: os.Getenv(ambient.PolicyEnv),
+		ambientContextEnvDefault: envGetenv(context.Background(), ambient.PolicyEnv),
 		wfPermission:             wf.Permission,
 		wfPermAllow:              wf.PermissionAllow,
 		wfPermAsk:                wf.PermissionAsk,
 		wfPermDeny:               wf.PermissionDeny,
-		permEnvDefault:           os.Getenv("ITERION_PERMISSION"),
+		permEnvDefault:           envGetenv(context.Background(), "ITERION_PERMISSION"),
 		wfCompaction:             wf.Compaction,
 		wfCapabilities:           wf.Capabilities,
 		wfSkills:                 wf.Skills,
 		wfMCP:                    wf.MCP,
 		botID:                    wf.Name,
 		routeCooldowns: routeCooldownLedger{
-			disabled: routeCooldownDisabled(os.Getenv(routeCooldownModeEnv)),
+			disabled: routeCooldownDisabled(envGetenv(context.Background(), routeCooldownModeEnv)),
 		},
 		sessions: newNodeSessionStore(),
 		vars:     seed,
@@ -1190,10 +1213,11 @@ func (e *ClawExecutor) SetVars(vars map[string]any) {
 
 // SetPresetFocus records the selected launch-time preset's prompt bias and
 // relevant-skill hints. The engine calls this at run start (and on resume)
-// for the `--preset <name>` selection; every LLM node then renders a
-// "## Focus" section in its system prompt (see executeBackend). The prompt
-// is stored raw and {{vars.X}}-resolved per node. Empty args clear the
-// focus. Must be called before Execute; not safe to call concurrently.
+// for the `--preset <name>` selection; every model task the run builds then
+// renders a "## Focus" section in its system prompt (applyPresetFragment,
+// from buildTask). The prompt is stored raw and {{vars.X}}-resolved per
+// node. Empty args clear the focus. Must be called before Execute; not safe
+// to call concurrently.
 func (e *ClawExecutor) SetPresetFocus(prompt string, skills []string) {
 	e.presetPrompt = prompt
 	e.presetSkills = skills
@@ -1220,6 +1244,45 @@ func (e *ClawExecutor) SetSkillHints(hints map[string]string) {
 // Execute; not safe to call concurrently.
 func (e *ClawExecutor) SetMirroredSkills(paths []string) {
 	e.mirroredSkills = paths
+}
+
+// SetSkillAllowlist arms the pinned skill mode (#1719): a non-nil map —
+// empty included — makes the `skill` tool serve exactly those name → path
+// entries and refuse everything else; nil disarms it and restores the
+// workspace walk. The engine arms it for a run whose workspace is
+// untrusted, once the mirror pass has decided which skills the run owns.
+// Safe to call before Execute and concurrently with in-flight Execute: the
+// field is atomic, read per tool call.
+func (e *ClawExecutor) SetSkillAllowlist(allowed map[string]string) {
+	if allowed == nil {
+		e.skillAllowlist.Store(nil)
+		return
+	}
+	e.skillAllowlist.Store(&allowed)
+}
+
+// SkillAllowlist is the provider shape the tool registry consults per
+// `skill` call: (set, armed).
+func (e *ClawExecutor) SkillAllowlist() (map[string]string, bool) {
+	if m := e.skillAllowlist.Load(); m != nil {
+		return *m, true
+	}
+	return nil, false
+}
+
+// SetSkillChannelRoot records the engine-owned directory the run's owned
+// skills were re-carried into (the .claude/skills layout) for the backends
+// that discover skills by directory. Empty clears it.
+func (e *ClawExecutor) SetSkillChannelRoot(dir string) {
+	e.skillChannelRoot.Store(dir)
+}
+
+// SkillChannelRoot reports the armed skill channel root, "" when none.
+func (e *ClawExecutor) SkillChannelRoot() string {
+	if v := e.skillChannelRoot.Load(); v != nil {
+		return v.(string)
+	}
+	return ""
 }
 
 // SetWorkDir updates the working directory for backend subprocesses
@@ -1338,10 +1401,15 @@ func (e *ClawExecutor) delegateHooksFor(nodeID string, backendName string, itera
 				// LogBlock (not Info) so a long/multi-line input folds under the
 				// truncated header as an expandable "▸" block — parity with
 				// claude_code. clawToolHint keeps the one-line header; BlockBody
-				// supplies the full body when it had to clip.
+				// supplies the full body when it had to clip. The run's pass
+				// crosses the input BEFORE those cuts (the hint keeps 57
+				// bytes): a secret the cut splits is one no matcher
+				// recognises (iterion#2822). The event keeps the raw input —
+				// the redacting emitter scrubs it.
+				shown := secretguard.RedactJSON(input, e.secretRedactor())
 				e.logger.LogBlock(iterlog.LevelInfo, "ℹ️ ",
-					fmt.Sprintf("[%s#%d/claw] 🔧 %s %s", nodeID, iteration, toolName, clawToolHint(input)),
-					tooldisplay.BlockBody(toolName, input))
+					fmt.Sprintf("[%s#%d/claw] 🔧 %s %s", nodeID, iteration, toolName, clawToolHint(shown)),
+					tooldisplay.BlockBody(toolName, shown))
 			}
 			if fn != nil {
 				fn(nodeID, LLMToolStartedInfo{
@@ -1361,12 +1429,16 @@ func (e *ClawExecutor) delegateHooksFor(nodeID string, backendName string, itera
 				// Log the tool RESULT as an expandable block (📤 success, ❌
 				// error): truncated preview in the header, full (bounded) output
 				// folded underneath — symmetric with the input above and
-				// identical to claude_code via tooldisplay.ResultDisplay.
+				// identical to claude_code via tooldisplay.ResultDisplay. The
+				// run's pass crosses the output BEFORE those cuts (a 100-byte
+				// header preview, a 4096-byte body): a secret the cut splits
+				// is one no matcher recognises (iterion#2822). The event keeps
+				// the raw output — the redacting emitter scrubs it.
 				glyph := "📤"
 				if isError {
 					glyph = "❌"
 				}
-				header, body := tooldisplay.ResultDisplay(output)
+				header, body := tooldisplay.ResultDisplay(e.redactDisplay(output))
 				if header == "" {
 					header = fmt.Sprintf("(%d bytes)", len(output))
 				}

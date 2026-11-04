@@ -183,6 +183,11 @@ func (s *Service) prepareRunLog(runID string) (*RunLogBuffer, *iterlog.Logger) {
 		s.logger.Warn("runview: open run.log for %s: %v — proceeding without disk persistence", runID, fileErr)
 	}
 
+	// A fork, so this run's secret matcher lands on a handle of its own:
+	// BuildExecutor sets it here (iterion#2822) and the service logger —
+	// shared by every run in this process — keeps its own reading.
+	perRunLogger := s.logger.WithWriter(io.MultiWriter(s.logger.Writer(), buf))
+
 	s.runLogsMu.Lock()
 	if old, ok := s.runLogs[runID]; ok {
 		// Defensive: a previous run goroutine for this ID didn't
@@ -192,10 +197,36 @@ func (s *Service) prepareRunLog(runID string) (*RunLogBuffer, *iterlog.Logger) {
 		old.Close()
 	}
 	s.runLogs[runID] = buf
+	s.runLoggers[runID] = perRunLogger
 	s.runLogsMu.Unlock()
 
-	perRunLogger := s.logger.WithWriter(io.MultiWriter(s.logger.Writer(), buf))
 	return buf, perRunLogger
+}
+
+// runLoggerFor returns the logger a helper must log this run's text on.
+// For a run this process holds it is the per-run fork prepareRunLog
+// built, carrying the run's secret matcher — which is what the exported
+// finalize helpers need: they log a git command's combined output on the
+// logger they are HANDED (runtime.RecoverFinalize,
+// runtime.CommitUncommittedAndFinalize), and coverage follows the handle,
+// not the helper.
+//
+// For a run held elsewhere — the reaper's sweep over finished runs, a
+// finalize after a restart — there is no matcher in this process to hand:
+// the guard belongs to the run's own launch. The answer is then a FORK of
+// the service logger, never the service logger itself, so the slot those
+// lines cross can never be one a live run installed into.
+func (s *Service) runLoggerFor(runID string) *iterlog.Logger {
+	if s == nil {
+		return nil
+	}
+	s.runLogsMu.RLock()
+	l := s.runLoggers[runID]
+	s.runLogsMu.RUnlock()
+	if l != nil {
+		return l
+	}
+	return s.logger.WithOwnRedactor()
 }
 
 // prepareRunLogNoFile is the detached-mode counterpart to
@@ -222,6 +253,7 @@ func (s *Service) dropRunLog(runID string) {
 	s.runLogsMu.Lock()
 	buf := s.runLogs[runID]
 	delete(s.runLogs, runID)
+	delete(s.runLoggers, runID)
 	s.runLogsMu.Unlock()
 	if buf != nil {
 		buf.Close()

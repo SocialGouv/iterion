@@ -356,6 +356,9 @@ func (s *Server) swapWorkDir(ctx context.Context, newDir string) error {
 		if localSecretsEnabled {
 			svcOpts = append(svcOpts, runview.WithLocalSecrets(newLocalSecrets, s.sealer))
 		}
+		if r := s.botContextResolver(); r != nil {
+			svcOpts = append(svcOpts, runview.WithBotContextResolver(r))
+		}
 		if s.usageCapSource != nil {
 			svcOpts = append(svcOpts, runview.WithUsageCapSource(s.usageCapSource))
 		}

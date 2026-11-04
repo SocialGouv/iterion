@@ -89,11 +89,8 @@ func (s *MongoConfigStore) Get(ctx context.Context, id string) (Config, error) {
 }
 
 func (s *MongoConfigStore) Update(ctx context.Context, c Config) error {
-	filter := bson.M{"_id": c.ID, "version": c.Version, "provision_frozen": bson.M{"$ne": true}}
-	if c.Version == 0 {
-		delete(filter, "version")
-		filter["$or"] = bson.A{bson.M{"version": 0}, bson.M{"version": bson.M{"$exists": false}}}
-	}
+	filter := storekit.VersionCAS(c.ID, c.Version)
+	filter["provision_frozen"] = bson.M{"$ne": true}
 	c.Version++
 	raw, err := bson.Marshal(c)
 	if err != nil {
@@ -136,6 +133,34 @@ func (s *MongoConfigStore) DisableProvision(ctx context.Context, id, integration
 		return ErrConflict
 	}
 	return nil
+}
+
+// ClearCredentialPins removes every pin entry whose value names recordID —
+// the Mongo twin of the memory store's value-scoped drop, run by the clear
+// both pin-bearing stores share (storekit.MongoPinClear): judged against the
+// row as the store holds it at write time, one value-guarded $unset per
+// entry with a version bump, and a version-CAS rewrite for a name no path
+// can address — possible on rows written before the routes' name guard
+// existed. A swept pin cannot resurrect through a writer that validates
+// after the delete — the write-time validators refuse a dead record's id; a
+// write that validated while the record lived can still land after the
+// sweep, the race the delete's 404-heal pass and the routes' landed-pin
+// reconciliation close — and an editor holding a pre-sweep snapshot
+// conflicts on the bumped version instead of writing the swept pin back.
+func (s *MongoConfigStore) ClearCredentialPins(ctx context.Context, id, recordID string) (bool, error) {
+	return storekit.MongoPinClear[Config]{
+		Coll:    s.kit.Coll(),
+		Get:     s.Get,
+		Version: func(c Config) int64 { return c.Version },
+		Fields:  configPinFields,
+		Op:      "webhooks: clear config credential pins",
+	}.Clear(ctx, id, recordID)
+}
+
+// configPinFields are the config's two credential-pin maps.
+var configPinFields = []storekit.PinField[Config]{
+	{Path: "key_overrides", Of: func(c Config) map[string]string { return c.KeyOverrides }},
+	{Path: "secret_overrides", Of: func(c Config) map[string]string { return c.SecretOverrides }},
 }
 
 func (s *MongoConfigStore) Delete(ctx context.Context, id string) error {

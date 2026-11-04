@@ -590,7 +590,23 @@ func mirrorBundleSkills(workDir string, b *bundle.Bundle, logger *iterlog.Logger
 // Var-only file presets behave exactly like an in-source preset; the extra
 // Prompt/Skills/DisplayName/Description dimensions are what the inline
 // block can't express (a launch-time "## Focus" bias + skill hints).
-func MergeBundlePresets(wf *ir.Workflow, b *bundle.Bundle, logger *iterlog.Logger) {
+//
+// The merge judges the prompt body the run is about to render: the SELECTED
+// preset's — the one applyPresetFocus pushes into every model task's system
+// prompt; the others are folded in and rendered by nothing — and the
+// compiler never saw it, so a `{{secrets.X}}` whose grants withhold the
+// prompt sink is said HERE, the one point every path that folds a bundle's
+// presets crosses (pkg/cli/run, pkg/cli/validate, the engine backstop, the
+// studio launch), so no launch surface has to remember the question. Said
+// ONCE per workflow: a re-merge that finds the preset already folded with
+// the same body — the engine's backstop after the command's own pass —
+// adds nothing a reader of the log has not read. The run goes on: the
+// verdict is the author's to fix, the reference renders as written, and
+// refusing a launch over a preset the operator picked would replace their
+// choice with silence. `iterion validate` says the finding on EVERY preset
+// as an error, with the file and the remedy (pkg/bundlelint checkPresets):
+// the authoring surface sweeps, the launch speaks about what it renders.
+func MergeBundlePresets(wf *ir.Workflow, b *bundle.Bundle, selected string, logger *iterlog.Logger) {
 	if wf == nil || b == nil || b.PresetsDir == "" {
 		return
 	}
@@ -607,7 +623,14 @@ func MergeBundlePresets(wf *ir.Workflow, b *bundle.Bundle, logger *iterlog.Logge
 		wf.Presets = make(map[string]ir.Preset, len(specs))
 	}
 	for _, ps := range specs {
+		prev, folded := wf.Presets[ps.Name]
 		wf.Presets[ps.Name] = presetSpecToIR(ps)
+		if logger == nil || ps.Name != selected || (folded && prev.Prompt == ps.Prompt) {
+			continue
+		}
+		for _, issue := range ir.PromptSecretRefIssues(wf, ps.Prompt) {
+			logger.Warn("runtime: bundle preset %s [%s]: %s", ps.Path, issue.Code, issue.Reason)
+		}
 	}
 }
 

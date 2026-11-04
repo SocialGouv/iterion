@@ -49,6 +49,12 @@ export interface WebhookConfig {
 export interface WebhookWithToken {
   config: WebhookConfig;
   token: string;
+  // On a create, the api keys / stored secrets its pins name that the server
+  // could not re-check once the row was stored; the webhook exists and the
+  // token has no second copy, so the answer stays a 201 and this receipt
+  // asks the operator to re-read those records and clear a pin naming a
+  // deleted one. Absent when every pin was vouched for.
+  pins_unreconciled?: string[];
 }
 
 export interface WebhookDelivery {

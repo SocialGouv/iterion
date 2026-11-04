@@ -45,7 +45,8 @@ falls back to the listed default.
 | `ITERION_PI_AGENT_DIR` | Pins `PI_CODING_AGENT_DIR` for `pi`. Gives a reproducible pi config (and the only print-mode lever to disable pi's own retry loop), but **hides the operator's `~/.pi/agent/auth.json`** — and with it the OAuth provider breadth that motivates the backend. | unset (pi's own dir) |
 | `ITERION_PI_OFFLINE` | `0` re-enables pi's model-catalogue refresh inside a sandbox. Off by default there because a network egress policy would stall startup on the refresh. | off under sandbox |
 | `ITERION_OPENCODE_BIN` | The opencode CLI on the **host**, for a host whose PATH the iterion process does not share. An **absolute path** or a **bare name** on PATH; a relative path with a separator is **refused with a typed error** (it would resolve against the workspace and run a binary out of the checkout). Detection and execution apply the same rule. Ignored inside a sandbox, where a host path means nothing. | PATH lookup |
-| `ITERION_OPENCODE_TRUST_PROJECT` | `1` trusts the **target repository's** `.opencode/` resources (and an `opencode.json` at any level up to the git root). opencode loads and executes what it finds there inside the agent process, so this turns prompt injection into code execution — only for a repo you control. Process-wide: on a shared server it lifts the refusal for every concurrent run. | refused |
+| `ITERION_OPENCODE_ARGV` | `1` pins the opencode **argv dialect to 1.x**: every generated flag first, `--variant <effort>` for the reasoning dial, the `run` subcommand last. The default is the 2.x dialect, whose parser refuses a flag placed before `run` (`Unrecognized flag: --format in command opencode`, measured on 2.2.5) and which carries the dial inside the model reference (`-m provider/model#variant`). Set it only on a host still running the 1.x line. | 2.x argv |
+| `ITERION_OPENCODE_TRUST_PROJECT` | `1` trusts the **target repository's** `.opencode/` resources (and an `opencode.json` at any level at or above the workspace, up to the operator's home — 2.2.5 climbs straight past a `.git`, so iterion's screen does not stop there either). opencode loads and executes what it finds there inside the agent process, so this turns prompt injection into code execution — only for a repo you control. Process-wide: on a shared server it lifts the refusal for every concurrent run. | refused |
 | `ITERION_PI_TRUST_PROJECT` | `1` trusts the **target repository's** `.pi/` extensions, skills and settings. pi executes project-local extensions as TypeScript inside the agent process, so this turns prompt injection into code execution — only for a repo you control. | refused |
 | `ITERION_PI_MCP_CONNECT_TIMEOUT_MS` | How long one MCP server gets to handshake and list its tools before the `pi` extension gives up on it. Servers connect in parallel during pi's session start — which iterion's own RPC handshake is waiting on, bounded by `ITERION_PI_STREAM_COLD_TIMEOUT` (90s) — so this bounds what an unreachable server can cost: its own tools, never the run. | `10000` |
 | `ITERION_PI_NO_CONTEXT_FILES` | `1` is the raw off switch for pi's context files (`AGENTS.md` / `CLAUDE.md`, one per directory up to `/` plus the agent dir's), whatever the node's `ambient_context:` says — a cost lever: measured at **26,933 vs 448 input tokens** on iterion's own tree (103 KB `CLAUDE.md`) for a one-word prompt. Without it, the ambient-context policy decides ([ADR-119](adr/119-ambient-context-policy.md)): every policy but `all` already turns pi's own loading off, and iterion supplies the files the policy allows. | unset (the policy decides) |
@@ -183,15 +184,28 @@ its reads (`internal/envtrust`): the gateway pair refuses by name, the
 routing names the host planted cross into a sandbox as explicit empties, and
 everything a run's authority question reads goes through the provenance
 seam. Which executable a launcher-started process runs is such a question:
-every PATH lookup that answers it goes through `envtrust.LookPath` — the
-agent-CLI discovery (`pkg/internal/clilocate`, claude/codex spawned with
-the operator's credentials), the sandbox runtimes' `Detect` and the
-doctor's probes (`HostHasDocker`, `PingContext`), the host devbox install,
-the dry-run's `dash` checker, the authoring validation's python3, the codex
-`--version` probe, the detached runner's `iterion` fallback — which resolves
-nothing under a planted PATH, loudly, as `exec.ErrNotFound` (#2809 closed
-the seam, #2876 the remaining sites; the desktop wrapper, Windows' taskkill
-and the seam itself are the justified exceptions). The studio lane marks
+every **explicit** PATH lookup that answers it goes through
+`envtrust.LookPath` — the agent-CLI discovery (`pkg/internal/clilocate`,
+claude/codex spawned with the operator's credentials), the sandbox
+runtimes' `Detect` and the doctor's probes (`HostHasDocker`,
+`PingContext`), the host devbox install, the dry-run's `dash` checker, the
+authoring validation's python3, the codex `--version` probe, the detached
+runner's `iterion` fallback — which resolves nothing under a planted PATH,
+loudly, as `exec.ErrNotFound` (#2809 closed the seam, #2876 the remaining
+sites; the desktop wrapper, Windows' taskkill and the seam itself are the
+justified exceptions, each on the record with its reason in
+`internal/envtrust` `lookpath_class_test.go`, whose sweep subtracts from
+the module's own non-test Go only the trees it names with their reason, so
+a new lookup outside the record arrives red wherever it lands). What the
+seam resolved is then CARRIED rather than asked again: the sandbox runtimes
+hand the absolute path their `Detect` accepted to every kubectl / docker
+spawn and the dry-run checker spawns the `dash` it resolved, so the binary
+a probe accepted is the binary that runs — held by a second sweep in that
+same file, where a lookup that drops its path arrives red unless it answers
+a yes/no and spawns nothing (`HostHasDocker`). What the seam does NOT answer
+is the **implicit** lookup — `exec.Command("docker")` resolves a bare name
+against the parent's PATH at call time and consults nothing — a wider class
+that needs a seam of its own and is tracked separately. The studio lane marks
 what it DOES plant in the run environment
 (`ITERION_DOTENV_PLANTED` travels in it) and never lets the file's opt-in
 cross into a run; the desktop's file is operator-owned, so its values keep

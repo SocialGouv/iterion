@@ -65,6 +65,10 @@ var operatorInfraPrefixes = []string{
 	// process, and the force-sweep list lifts the guard that keeps an org's
 	// Mongo rows while one of its runs could not be deleted.
 	"ITERION_ORG_PURGE_",
+	// The operator's legal pages: the documents directory, the contact address
+	// presented to every visitor and the accessibility status are the
+	// deployment's, never a bot's.
+	"ITERION_LEGAL_",
 	// Whether a leased net's term may end on the work failing: a knob over
 	// the election itself, which decides which REPLICA runs a net, not what
 	// a run does.
@@ -133,6 +137,10 @@ var operatorInfraNames = map[string]bool{
 	"ITERION_BIN":                  true,
 	"ITERION_PI_BIN":               true,
 	"ITERION_OPENCODE_BIN":         true,
+	// The opencode argv dialect (#2915): =1 makes the engine speak the 1.x
+	// argv to the host's CLI. It configures the process against the binary
+	// the operator installed, never a bot's run.
+	"ITERION_OPENCODE_ARGV": true,
 	// The two project-trust switches are ENFORCEMENT, not paths: each one
 	// lifts a refusal that stops an agent CLI executing code out of the
 	// repository under review.

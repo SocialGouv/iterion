@@ -133,6 +133,11 @@ func TestEveryRoutingShapedNameTheTreeReadsIsInTheClass(t *testing.T) {
 		"AWS_ENDPOINT_URL",                          // the global override
 		"AWS_ENDPOINT_URL_BEDROCK_RUNTIME",          // the per-service spelling
 		"OTEL_EXPORTER_OTLP_ENDPOINT",               // the vendored exporters
+		// The seam spelling's floor: ITERION_CLAW_SLASH_COMMANDS is read
+		// ONLY through pkg/backend/model's envGetenv, so a walk that stops
+		// matching the seam form stops finding it — the seam learning is
+		// load-bearing, and this line is what proves it.
+		"ITERION_CLAW_SLASH_COMMANDS",
 	} {
 		if !found[want] {
 			t.Fatalf("the walk no longer finds %s (found %d names): either the reader is gone, or the walk stopped matching the read forms the tree uses", want, len(found))
@@ -177,8 +182,9 @@ func routeLikeShape(name string) bool {
 // envNamesReadIn parses one Go file and returns the environment variable
 // names it reads with a LITERAL argument, through the read forms the tree
 // and its vendored dependencies use: os.Getenv / os.LookupEnv, envtrust's
-// own Inherited / Planted, and the plain-name lookup helpers (pkg/config's
-// lookup and lookupString, pkg/secrets' envOr, the desktop's readEnv).
+// own Inherited / Planted, the plain-name lookup helpers (pkg/config's
+// lookup and lookupString, pkg/secrets' envOr, the desktop's readEnv), and
+// pkg/backend/model's env seam (envGetenv / envLookupEnv, #2808).
 // Files whose bytes name no read form are skipped unparsed.
 func envNamesReadIn(t *testing.T, path string, parsed map[string]*ast.File, fset *token.FileSet, strConsts map[string]string) []string {
 	t.Helper()
@@ -201,8 +207,10 @@ func envNamesReadIn(t *testing.T, path string, parsed map[string]*ast.File, fset
 	ast.Inspect(f, func(n ast.Node) bool {
 		call, ok := n.(*ast.CallExpr)
 		if ok && len(call.Args) > 0 && envReadForm(call.Fun) {
-			if name := envNameArg(f.Name.Name, call.Args[0], strConsts); name != "" {
-				names = append(names, name)
+			if arg := envNameArgOf(call); arg != nil {
+				if name := envNameArg(f.Name.Name, arg, strConsts); name != "" {
+					names = append(names, name)
+				}
 			}
 		}
 		return true
@@ -238,7 +246,7 @@ func envNameArg(pkg string, arg ast.Expr, strConsts map[string]string) string {
 // bytesNameAReadForm is the cheap prefilter that keeps the walk off the
 // files that cannot contain a read.
 func bytesNameAReadForm(raw []byte) bool {
-	for _, form := range []string{"Getenv(", "LookupEnv(", ".Inherited(", ".Planted(", "lookupString(", "lookup(", "envOr(", "readEnv(", "envOperator("} {
+	for _, form := range []string{"Getenv(", "LookupEnv(", ".Inherited(", ".Planted(", "lookupString(", "lookup(", "envOr(", "readEnv(", "envOperator(", "envGetenv(", "envLookupEnv("} {
 		if strings.Contains(string(raw), form) {
 			return true
 		}
@@ -270,12 +278,29 @@ func envReadForm(fun ast.Expr) bool {
 		case "lookup", "lookupString", "envOr", "readEnv",
 			// pkg/server's belt helper: it reads through Inherited, so the
 			// literals at its call sites are the tree's reads of those names.
-			"envOperator":
+			"envOperator",
+			// pkg/backend/model's env seam (#2808): the context rides at
+			// arg 0 and the name at arg 1 — envNameArgOf hands the right one
+			// over.
+			"envGetenv", "envLookupEnv":
 			return true
 		}
 		return false
 	}
 	return false
+}
+
+// envNameArgOf is the argument of a read-form call that names the variable:
+// arg 0 for every form but the model package's env seam, whose first
+// argument is the context the environment rides on.
+func envNameArgOf(call *ast.CallExpr) ast.Expr {
+	if id, ok := call.Fun.(*ast.Ident); ok && (id.Name == "envGetenv" || id.Name == "envLookupEnv") {
+		if len(call.Args) < 2 {
+			return nil
+		}
+		return call.Args[1]
+	}
+	return call.Args[0]
 }
 
 // moduleRoot walks up to the directory holding go.mod.

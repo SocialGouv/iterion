@@ -90,6 +90,39 @@ func ExecuteSkillUserInvoked(input map[string]any, workDir string) (string, erro
 	return out, err
 }
 
+// ExecuteSkillPinned runs a skill on behalf of the model, resolved through
+// an explicit name → path allowlist INSTEAD of the workspace walk
+// (iterion#1719). A workspace a fork authored can plant text under any of
+// the walked roots (.skills/, .claude/skills/, .agents/skills/,
+// .claw/skills/, at every ancestor level) and have it served under the
+// bot's own skill name; a host that knows exactly which skills it wrote —
+// iterion hands the mirror's own list — pins name to file and nothing the
+// checkout planted is reachable. The map is the WHOLE set: no root is
+// walked, and no bundled skill resolves unless the host pinned its
+// embed:// URI. A nil or empty map refuses every name: a host that arms
+// the mode has answered "which skills", and the answer may be "none".
+// Use ExecuteSkill (the walk) for a workspace the operator owns.
+//
+// Honors disable-model-invocation: true, like ExecuteSkill.
+func ExecuteSkillPinned(input map[string]any, allowed map[string]string) (string, error) {
+	out, _, err := ExecuteSkillPinnedEx(input, allowed, false)
+	return out, err
+}
+
+// ExecuteSkillPinnedEx is ExecuteSkillEx over the pinned allowlist, for
+// callers that update derived state from the invocation.
+func ExecuteSkillPinnedEx(input map[string]any, allowed map[string]string, invokedByUser bool) (string, *SkillInvocation, error) {
+	skillName, ok := input["skill"].(string)
+	if !ok || skillName == "" {
+		return "", nil, fmt.Errorf("skill: 'skill' name is required")
+	}
+	res, err := ResolveSkillPinned(skillName, allowed)
+	if err != nil {
+		return "", nil, err
+	}
+	return executeSkillResolved(input, res, invokedByUser)
+}
+
 // ExecuteSkillEx runs a skill and returns both the JSON payload and the
 // parsed invocation. The invocation is non-nil on success so callers can
 // update derived state (e.g. active-skill restrictions) without re-reading
@@ -99,12 +132,19 @@ func ExecuteSkillEx(input map[string]any, workDir string, invokedByUser bool) (s
 	if !ok || skillName == "" {
 		return "", nil, fmt.Errorf("skill: 'skill' name is required")
 	}
-	args, _ := input["args"].(string)
 
 	res, err := ResolveSkill(skillName, workDir)
 	if err != nil {
 		return "", nil, err
 	}
+	return executeSkillResolved(input, res, invokedByUser)
+}
+
+// executeSkillResolved is the shared tail of the walked and the pinned
+// execution paths — read, parse, gate, render — so the two resolution
+// modes cannot drift apart in what a skill invocation means.
+func executeSkillResolved(input map[string]any, res SkillResolution, invokedByUser bool) (string, *SkillInvocation, error) {
+	args, _ := input["args"].(string)
 
 	content, err := readSkillContent(res.Path)
 	if err != nil {
@@ -142,6 +182,31 @@ func ExecuteSkillEx(input map[string]any, workDir string, invokedByUser bool) (s
 	}
 	out, _ := json.MarshalIndent(result, "", "  ")
 	return string(out), inv, nil
+}
+
+// ResolveSkillPinned resolves a skill name against an explicit allowlist —
+// the whole lookup when a host pins what a run may serve (see
+// ExecuteSkillPinned). The spellings tried are the walked resolver's own:
+// the name as sent, the "plugin/skill" form read as "plugin:skill", and a
+// bare name minus a ".md" suffix. A miss is a refusal of the mode, not a
+// lookup failure: the error says the skill is not in the allowed set.
+func ResolveSkillPinned(name string, allowed map[string]string) (SkillResolution, error) {
+	keys := []string{name}
+	if plugin, skill, namespaced := splitSkillName(name); namespaced {
+		keys = append(keys, plugin+":"+skill)
+	} else if bare := strings.TrimSuffix(name, ".md"); bare != name {
+		keys = append(keys, bare)
+	}
+	for _, key := range keys {
+		if path, ok := allowed[key]; ok && path != "" {
+			return SkillResolution{
+				CanonicalName: key,
+				Path:          path,
+				Source:        SkillSourceFilesystem,
+			}, nil
+		}
+	}
+	return SkillResolution{}, fmt.Errorf("skill: %q is not in this run's allowed skills", name)
 }
 
 // ResolveSkill turns a user-supplied skill identifier into a concrete path,

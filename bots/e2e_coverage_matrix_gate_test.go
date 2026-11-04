@@ -679,10 +679,58 @@ func TestE2ECoverageMatrixGate(t *testing.T) {
 		greenVerify(t, scratch)
 		writeFile(t, ws, "e2e/live_test.go", "//go:build live\npackage e2e\n\nfunc TestLiveModelQuality(t *testing.T) {}\n")
 		writeFile(t, ws, matrixRel, header+
-			"| backends.live | live model quality | backends | covered-live | TestLiveModelQuality (e2e/live_test.go) | essence of the feature is the live model |\n")
+			"| backends.live | live model quality | backends | covered-live | TestLiveModelQuality (e2e/live_test.go) | gate: paid — essence of the feature is the live model |\n")
 		res := run(t, ws, scratch)
 		if !res.MatrixOK {
-			t.Fatalf("a justified covered-live row with a resolving ref must pass: %+v", res)
+			t.Fatalf("a justified covered-live row with a resolving ref and its gate marker must pass: %+v", res)
+		}
+	})
+
+	// #2794 — the free/paid split: a covered-live row whose Notes name
+	// neither gate (a real credential/model = money, a real external
+	// tool = no money) cannot be told apart by a reader budgeting a
+	// stabilisation pass. The marker is enforced by the contract, not by
+	// convention; the mutation (dropping the marker) is this fixture.
+	t.Run("covered_live_without_a_gate_marker_is_red", func(t *testing.T) {
+		for _, tc := range []struct{ name, notes string }{
+			{"no marker at all", "essence of the feature is the live model"},
+			// The words alone are NOT the marker: prose can say "credential"
+			// of a tool-gated row ("needs no credential") and "paid" of
+			// anything ("paid target") — only the gate: spelling counts.
+			{"loose words are not the marker", "needs no credential; the paid target reads never"},
+			// The marker OPENS the Notes: buried mid-prose it is a mention,
+			// not the gate declaration (revi round 1).
+			{"a buried marker is not the declaration", "the live half needs the real model (gate: paid)"},
+			// Word-terminated: a longer word is not the marker.
+			{"a prefix collision is not the marker", "gate: toolbox of tricks; gate: tooling around"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				ws, scratch := gitWorkspace(t), t.TempDir()
+				greenVerify(t, scratch)
+				writeFile(t, ws, "e2e/live_test.go", "//go:build live\npackage e2e\n\nfunc TestLiveModelQuality(t *testing.T) {}\n")
+				writeFile(t, ws, matrixRel, header+
+					"| backends.live | live model quality | backends | covered-live | TestLiveModelQuality (e2e/live_test.go) | "+tc.notes+" |\n")
+				res := run(t, ws, scratch)
+				if res.MatrixOK || !strings.Contains(res.LogTail, "gate: paid") {
+					t.Fatalf("a covered-live row without its gate marker must be red and name the markers: %+v", res)
+				}
+			})
+		}
+		// Both markers pass, on their own row.
+		for _, tc := range []struct{ name, notes string }{
+			{"gate: tool", "gate: tool — a real CLI, no credential anywhere"},
+			{"gate: paid", "gate: paid — a real hosted call"},
+		} {
+			t.Run("marker_"+tc.name, func(t *testing.T) {
+				ws, scratch := gitWorkspace(t), t.TempDir()
+				greenVerify(t, scratch)
+				writeFile(t, ws, "e2e/live_test.go", "//go:build live\npackage e2e\n\nfunc TestLiveModelQuality(t *testing.T) {}\n")
+				writeFile(t, ws, matrixRel, header+
+					"| backends.live | live model quality | backends | covered-live | TestLiveModelQuality (e2e/live_test.go) | "+tc.notes+" |\n")
+				if res := run(t, ws, scratch); !res.MatrixOK {
+					t.Fatalf("a covered-live row carrying %s must pass: %+v", tc.name, res)
+				}
+			})
 		}
 	})
 

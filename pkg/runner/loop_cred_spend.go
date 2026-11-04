@@ -359,6 +359,34 @@ func slotOfSource(source string) (slot string, named bool) {
 	return "", false
 }
 
+// planProviderFor names the provider a route's observation joins the
+// publisher's plan on (#2288): the claude_code label's slot first — the
+// session's own word for what it spent — then codex's one provider, then
+// the model's own prefix, with the GLM rule the slot resolution itself
+// applies. "" names nothing the plan could key on.
+//
+// codex answers openai whatever its model reads: the CLI serves the run's
+// openai key or its codex forfait and nothing else, and takes a bare id
+// (`gpt-5`) that names no prefix — the same word the executor stamps for a
+// codex element (servingProvider).
+func planProviderFor(route routeKey) string {
+	if route.backend == delegate.BackendClaudeCode {
+		if slot, named := slotOfSource(route.source); named && slot != "" {
+			if p := model.OAuthProvider(slot); p != "" {
+				return p
+			}
+			return slot
+		}
+	}
+	if route.backend == delegate.BackendCodex {
+		return string(secrets.ProviderOpenAI)
+	}
+	if routesGLMToZAI(route.backend) && model.GLMOnAnthropicWire(route.model) {
+		return string(secrets.ProviderZAI)
+	}
+	return providerFromModel(route.model)
+}
+
 // routesGLMToZAI names the backends whose executors send a GLM id on the
 // anthropic wire to z.ai: claude_code and pi through the routing hint, claw
 // through its anthropic provider's z.ai endpoint.

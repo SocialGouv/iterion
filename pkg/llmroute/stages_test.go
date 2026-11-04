@@ -142,6 +142,25 @@ func TestSlotSealable(t *testing.T) {
 	}
 }
 
+// ADR-131 §5 promises a frozen PRE-UPGRADE pair order "replayed as stored
+// with one named warning". The gateway slot is what would make a stored
+// list pre-upgrade, and today it is outside BOTH the shipped default and
+// the vocabulary a tenant's own order may name: no run can freeze a list
+// the gateway upgrade widens, so the clause has no gateway leg to warn
+// about. The day PR-C' (#2005) widens the vocabulary this reds, and the
+// obligation lands with it at the owner site — the seal whitelist
+// (*Publisher).resolveAndSealCredentials builds from the run document's
+// frozen pair order.
+func TestGatewayPairStaysOutOfTheWhitelistUntilTheReplayWarningLands(t *testing.T) {
+	const gatewaySlot = "openai_compatible_key"
+	if SlotSealable(DefaultPairOrder, gatewaySlot) {
+		t.Errorf("SlotSealable(DefaultPairOrder, %q) = true: the shipped default names the gateway slot, so every run frozen before it replays a pre-upgrade list — ADR-131 §5 owes its one named warning (#2914), emitted where the whitelist is built from the run doc's frozen pair order (pkg/server/cloudpublisher/publisher.go, resolveAndSealCredentials)", gatewaySlot)
+	}
+	if validCredential(gatewaySlot) {
+		t.Errorf("validCredential(%q) = true: the policy vocabulary accepts the gateway slot, so a tenant can freeze an order naming it — ADR-131 §5 owes its one named warning (#2914) at the same site (pkg/server/cloudpublisher/publisher.go, resolveAndSealCredentials)", gatewaySlot)
+	}
+}
+
 // HeldPairs filters to pairs the sealed bundle serves; a sealNone slot
 // (no channel) is not held.
 func TestHeldPairs(t *testing.T) {

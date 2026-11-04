@@ -127,8 +127,15 @@ export function listTriggers(filter?: { repo?: string; bot?: string }): Promise<
   return guard404("triggers", () => request<ListResponse>(suffix)).then((r) => r.subscriptions ?? []);
 }
 
-export function createTrigger(input: SubscriptionInput): Promise<TriggerSubscription> {
-  return request<TriggerSubscription>("", { method: "POST", body: JSON.stringify(input) });
+// TriggerCreated is the create answer: the stored row plus, only when the
+// server could not re-check an api key / stored secret its pins name once
+// the row was stored, the ids of those records — the row exists under a
+// fresh id, so the answer stays a 201 and this receipt asks the operator to
+// re-read those records and clear a pin naming a deleted one.
+export type TriggerCreated = TriggerSubscription & { pins_unreconciled?: string[] };
+
+export function createTrigger(input: SubscriptionInput): Promise<TriggerCreated> {
+  return request<TriggerCreated>("", { method: "POST", body: JSON.stringify(input) });
 }
 
 export function updateTrigger(id: string, input: SubscriptionInput): Promise<TriggerSubscription> {

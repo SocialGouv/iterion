@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/forge"
 )
 
@@ -128,7 +129,7 @@ func TestForgeAdminFor_LocalFailureAnswers500Not502(t *testing.T) {
 	s, down := newDegradableAppServer(t)
 	t0 := time.Unix(1700000000, 0).UTC()
 	app := storeApp(t, s, "app-1", "t1", "SocialGouv", "111", "PEM-1", t0)
-	s.forgeConnections = forge.NewMemoryConnectionStore()
+	s.forgeConnections = connection.NewMemoryForgeStore()
 	conn := forge.Connection{
 		ID: "conn1", TenantID: "t1", Provider: forge.ProviderGitHub,
 		Kind: forge.KindGitHubApp, OAuthAppID: app.ID, InstallationID: 42,

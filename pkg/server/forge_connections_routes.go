@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
+	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	forgegithub "github.com/SocialGouv/iterion/pkg/forge/github"
 	"github.com/SocialGouv/iterion/pkg/secrets"
@@ -748,7 +749,7 @@ func (s *Server) patchForgeConnectionPAT(w http.ResponseWriter, r *http.Request,
 			ident.Login, conn.AccountLogin)
 		return
 	}
-	sealed, err := forge.SealPAT(s.sealer, conn.ID, token)
+	sealed, err := connection.SealForgePAT(s.sealer, conn.ID, token)
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "seal token: %v", err)
 		return
@@ -912,10 +913,11 @@ func (s *Server) securityReadOrgCollision(ctx context.Context, conn forge.Connec
 	return "", nil
 }
 
-// forgeConnForTenant fetches a connection and asserts tenant ownership.
+// forgeConnForTenant fetches a connection, tenant-scoped at the store (#2760):
+// a foreign id answers not-found at the read, not by a check remembered here.
 func (s *Server) forgeConnForTenant(w http.ResponseWriter, r *http.Request, teamID, connID string) (forge.Connection, bool) {
-	conn, err := s.forgeConnections.Get(r.Context(), connID)
-	if err != nil || conn.TenantID != teamID {
+	conn, err := s.forgeConnections.Get(r.Context(), teamID, connID)
+	if err != nil {
 		httpError(w, http.StatusNotFound, "connection not found")
 		return forge.Connection{}, false
 	}

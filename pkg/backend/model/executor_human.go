@@ -67,7 +67,8 @@ func (e *ClawExecutor) executeHumanLLMWithSpend(ctx context.Context, node *ir.Hu
 
 	// Build GenerationOptions.
 	genOpts := GenerationOptions{
-		Model: modelSpec,
+		Model:    modelSpec,
+		Provider: clawSpecProvider(modelSpec),
 	}
 
 	// Reasoning effort (dynamic override from input, then static node property).
@@ -158,6 +159,17 @@ func (e *ClawExecutor) executeHumanLLMWithSpend(ctx context.Context, node *ir.Hu
 	return output, spend, nil
 }
 
+// interactionIDSuffix turns a node's id into the id of the synthetic human
+// node its interaction generation runs under (ExecuteHumanLLMForInteraction):
+// the id every event of that generation carries. The credential plan (#2288)
+// reads it too — the interaction site's rows must key on the id the
+// runtime's observations join, never on the asking node's own.
+const interactionIDSuffix = "_interaction"
+
+// interactionNodeID names the runtime id of the synthetic node an
+// interaction generation for nodeID runs under.
+func interactionNodeID(nodeID string) string { return nodeID + interactionIDSuffix }
+
 // ExecuteHumanLLMForInteraction handles delegate interaction requests by
 // creating a synthetic HumanNode from the original node's InteractionFields
 // and calling executeHumanLLM. The questions from the ErrNeedsInteraction
@@ -205,7 +217,7 @@ func (e *ClawExecutor) ExecuteHumanLLMForInteraction(
 
 	// Build synthetic HumanNode.
 	node := &ir.HumanNode{
-		BaseNode: ir.BaseNode{ID: nodeID + "_interaction"},
+		BaseNode: ir.BaseNode{ID: interactionNodeID(nodeID)},
 		SchemaFields: ir.SchemaFields{
 			OutputSchema: schemaName,
 		},

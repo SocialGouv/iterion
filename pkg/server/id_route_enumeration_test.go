@@ -32,6 +32,7 @@ var idRouteExemptions = []struct{ prefix, reason string }{
 	{"/api/v1/pipeline-board/workspace-images/", "workspace-file serving from the server's own workdir (safePath containment + image extension allowlist): the {path} is a file path in the deployment's workdir tree, not a tenant-addressed resource"},
 	{"/api/v1/plugins/", "the deployment's plugin registry (builtins + the local plugin tree), mutations super-admin-gated: the {name} addresses a plugin of the shared tree, not a tenant resource"},
 	{"/brand/", "public static brand assets (stable URLs, ETag): the {file} is an asset name, not a tenant-addressed resource"},
+	{"/api/legal/", "the operator's legal pages (ADR-160): public reads of deployment configuration — the {slug} is one of the closed legal.Slugs, not a tenant-addressed resource"},
 }
 
 // idRouteReasons names the id-wildcard families that today resolve through

@@ -18,6 +18,24 @@ local / desktop / cloud, the upload protocol, and the security model.
 > sandbox mount), just bound at answer time instead of launch time. See
 > [human-in-the-loop.md](human-in-the-loop.md#handing-the-workflow-a-file).
 
+> **Attachments can also arrive without any upload.** A bundle's
+> `attachments/` directory gives the AUTHOR's defaults, and a bot
+> binding of kind `context` gives the OPERATOR's reference documents (a
+> pinned git source materialised into every run of the bot, schedules
+> included — ADR
+> [147](adr/147-operator-bound-bot-context-is-a-pinned-source.md), setup
+> in
+> [cloud-admin-guide.md](cloud-admin-guide.md#binding-a-context-document-to-a-bot)).
+> When several sources claim one name the precedence is **author <
+> operator < launch**: a context binding overrides a bundle default, a
+> per-launch upload overrides both. Two bounds to read correctly: the
+> size ceiling applies to the DELIVERED DOCUMENT, not to the fetch —
+> the clone is depth-1 but otherwise unbounded — and the contained read
+> of the pinned file refuses symlinks escaping the checkout but cannot
+> see a hardlink (the checkout only ever comes from `git fetch` +
+> `checkout`, which never links a worktree file to a host path; see
+> `readContextFile`'s comment for the full reasoning).
+
 ## DSL
 
 ```iter fragment

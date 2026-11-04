@@ -21,17 +21,18 @@ import (
 // that drops the trailer tests a predicate production never meets.
 const measuredRaceStderr = "tar: ./.git: file changed as we read it\n" + sandbox.KubectlRemoteExit1
 
-// exportShim puts a fake kubectl on PATH for ExportWorkspace. Each call archives
-// src the way the in-pod tar would and counts itself; the first failFor calls
+// exportShim plants a fake kubectl for ExportWorkspace and returns it BY
+// PATH, the way Detect hands the driver its binary. Each call archives src
+// the way the in-pod tar would and counts itself; the first failFor calls
 // then write stderr and exit 1.
-func exportShim(t *testing.T, src string, failFor int, stderr string) (calls func() int) {
+func exportShim(t *testing.T, src string, failFor int, stderr string) (kubectl Kubectl, calls func() int) {
 	t.Helper()
 	return exportShimSeq(t, []string{src}, failFor, stderr)
 }
 
 // exportShimSeq archives srcs[n-1] on call n (the last one from then on), so a
 // test can change what the pod holds between two attempts.
-func exportShimSeq(t *testing.T, srcs []string, failFor int, stderr string) (calls func() int) {
+func exportShimSeq(t *testing.T, srcs []string, failFor int, stderr string) (kubectl Kubectl, calls func() int) {
 	t.Helper()
 	isolateExecEnvironment(t)
 	if _, err := exec.LookPath("tar"); err != nil {
@@ -49,11 +50,14 @@ func exportShimSeq(t *testing.T, srcs []string, failFor int, stderr string) (cal
 		"tar -C \"$src\" -cf - .\n" +
 		"if [ \"$n\" -le " + strconv.Itoa(failFor) + " ]; then cat '" + errFile + "' >&2; exit 1; fi\n" +
 		"exit 0\n"
-	if err := os.WriteFile(filepath.Join(shimDir, kubeBinaryName), []byte(shim), 0o755); err != nil {
+	bin := filepath.Join(shimDir, kubeBinaryName)
+	if err := os.WriteFile(bin, []byte(shim), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	// PATH keeps the shim's directory: the shim's own `tar` and `cat` are
+	// resolved by sh, not by us.
 	t.Setenv("PATH", shimDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	return func() int {
+	return Kubectl(bin), func() int {
 		raw, err := os.ReadFile(counter)
 		if err != nil {
 			return 0
@@ -119,9 +123,9 @@ func podWork(t *testing.T) string {
 	return podTree(t, map[string]string{"note.txt": "pod work"})
 }
 
-func exportRun(ws string) *Run {
+func exportRun(ws string, kubectl Kubectl) *Run {
 	return &Run{
-		driver:    &Driver{logger: iterlog.Nop()},
+		driver:    &Driver{logger: iterlog.Nop(), kubectl: kubectl},
 		podName:   "pod",
 		namespace: "ns",
 		prepared:  &Prepared{workspace: "/workspace"},
@@ -142,8 +146,8 @@ func fastExportRetries(t *testing.T) {
 func TestExportWorkspace_RetriesATarThatRacedAWriter(t *testing.T) {
 	fastExportRetries(t)
 	ws := exportTarget(t)
-	calls := exportShim(t, podWork(t), 1, measuredRaceStderr)
-	if err := exportRun(ws).ExportWorkspace(context.Background()); err != nil {
+	kubectl, calls := exportShim(t, podWork(t), 1, measuredRaceStderr)
+	if err := exportRun(ws, kubectl).ExportWorkspace(context.Background()); err != nil {
 		t.Fatalf("an export whose only failure was a racing writer was dropped: %v", err)
 	}
 	if n := calls(); n != 2 {
@@ -161,8 +165,8 @@ func TestExportWorkspace_RefusesATreeThatKeepsChanging(t *testing.T) {
 	fastExportRetries(t)
 	t.Setenv("ITERION_SANDBOX_EXPORT_ATTEMPTS", "3")
 	ws := exportTarget(t)
-	calls := exportShim(t, podWork(t), 99, measuredRaceStderr)
-	err := exportRun(ws).ExportWorkspace(context.Background())
+	kubectl, calls := exportShim(t, podWork(t), 99, measuredRaceStderr)
+	err := exportRun(ws, kubectl).ExportWorkspace(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "kept changing") {
 		t.Fatalf("a workspace that never settled was accepted: %v", err)
 	}
@@ -178,8 +182,8 @@ func TestExportWorkspace_KeepsTheDefaultBoundOverAnUnusableKnob(t *testing.T) {
 	fastExportRetries(t)
 	t.Setenv("ITERION_SANDBOX_EXPORT_ATTEMPTS", "many")
 	ws := exportTarget(t)
-	calls := exportShim(t, podWork(t), 99, measuredRaceStderr)
-	if err := exportRun(ws).ExportWorkspace(context.Background()); err == nil {
+	kubectl, calls := exportShim(t, podWork(t), 99, measuredRaceStderr)
+	if err := exportRun(ws, kubectl).ExportWorkspace(context.Background()); err == nil {
 		t.Fatal("a workspace that never settled was accepted")
 	}
 	if n := calls(); n != defaultExportAttempts {
@@ -192,8 +196,8 @@ func TestExportWorkspace_KeepsTheDefaultBoundOverAnUnusableKnob(t *testing.T) {
 func TestExportWorkspace_NeverRetriesAKubectlFailure(t *testing.T) {
 	fastExportRetries(t)
 	ws := exportTarget(t)
-	calls := exportShim(t, podWork(t), 99, "error: unable to upgrade connection: container not found (\"workload\")")
-	err := exportRun(ws).ExportWorkspace(context.Background())
+	kubectl, calls := exportShim(t, podWork(t), 99, "error: unable to upgrade connection: container not found (\"workload\")")
+	err := exportRun(ws, kubectl).ExportWorkspace(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "unable to upgrade connection") {
 		t.Fatalf("a kubectl failure was not reported as such: %v", err)
 	}
@@ -219,8 +223,8 @@ func TestExportWorkspace_ClearsLooseRefsBeforeEveryAttempt(t *testing.T) {
 	const stale, packed = "1111111111111111111111111111111111111111", "2222222222222222222222222222222222222222"
 	raced := podTree(t, map[string]string{".git/refs/heads/feature": stale + "\n"})
 	settled := podTree(t, map[string]string{".git/packed-refs": packed + " refs/heads/feature\n"})
-	exportShimSeq(t, []string{raced, settled}, 1, measuredRaceStderr)
-	if err := exportRun(ws).ExportWorkspace(context.Background()); err != nil {
+	kubectl, _ := exportShimSeq(t, []string{raced, settled}, 1, measuredRaceStderr)
+	if err := exportRun(ws, kubectl).ExportWorkspace(context.Background()); err != nil {
 		t.Fatalf("export failed: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(ws, ".git/refs/heads/feature")); err == nil {
@@ -246,8 +250,8 @@ func TestExportWorkspace_DropsWhatOnlyTheRacedArchiveWrote(t *testing.T) {
 		"note.txt":        "pod work",
 	})
 	settled := podTree(t, map[string]string{"note.txt": "pod work"})
-	exportShimSeq(t, []string{raced, settled}, 1, measuredRaceStderr)
-	if err := exportRun(ws).ExportWorkspace(context.Background()); err != nil {
+	kubectl, _ := exportShimSeq(t, []string{raced, settled}, 1, measuredRaceStderr)
+	if err := exportRun(ws, kubectl).ExportWorkspace(context.Background()); err != nil {
 		t.Fatalf("export failed: %v", err)
 	}
 	for _, leftover := range []string{".git/index.lock", ".git/MERGE_HEAD"} {
@@ -316,7 +320,8 @@ func TestDropRacedGitLeftoversNeverRemovesAnExcludedMember(t *testing.T) {
 	if err := os.WriteFile(stray, []byte("3333333333333333333333333333333333333333\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := exportRun(ws).dropRacedGitLeftovers(hostGit, before, map[string]bool{".git/HEAD": true}); err != nil {
+	// Host-side only: nothing spawns, so the run needs no kubectl.
+	if err := exportRun(ws, "").dropRacedGitLeftovers(hostGit, before, map[string]bool{".git/HEAD": true}); err != nil {
 		t.Fatalf("dropRacedGitLeftovers: %v", err)
 	}
 	if _, err := os.Stat(hook); err != nil {
@@ -327,9 +332,9 @@ func TestDropRacedGitLeftoversNeverRemovesAnExcludedMember(t *testing.T) {
 	}
 }
 
-// exportShimRecording puts a fake kubectl on PATH that archives src once, and
-// returns what kubectl was called with.
-func exportShimRecording(t *testing.T, src string) (args func() string) {
+// exportShimRecording plants a fake kubectl that archives src once, and
+// returns it with what it was called with.
+func exportShimRecording(t *testing.T, src string) (kubectl Kubectl, args func() string) {
 	t.Helper()
 	isolateExecEnvironment(t)
 	if _, err := exec.LookPath("tar"); err != nil {
@@ -338,11 +343,12 @@ func exportShimRecording(t *testing.T, src string) (args func() string) {
 	shimDir := t.TempDir()
 	argsFile := filepath.Join(shimDir, "args")
 	shim := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '" + argsFile + "'\ntar -C '" + src + "' -cf - .\n"
-	if err := os.WriteFile(filepath.Join(shimDir, kubeBinaryName), []byte(shim), 0o755); err != nil {
+	bin := filepath.Join(shimDir, kubeBinaryName)
+	if err := os.WriteFile(bin, []byte(shim), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", shimDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	return func() string {
+	return Kubectl(bin), func() string {
 		raw, err := os.ReadFile(argsFile)
 		if err != nil {
 			t.Fatal(err)
@@ -356,8 +362,8 @@ func exportShimRecording(t *testing.T, src string) (args func() string) {
 // write in those words.
 func TestExportWorkspace_RunsThePodTarUntranslated(t *testing.T) {
 	ws := exportTarget(t)
-	args := exportShimRecording(t, podWork(t))
-	if err := exportRun(ws).ExportWorkspace(context.Background()); err != nil {
+	kubectl, args := exportShimRecording(t, podWork(t))
+	if err := exportRun(ws, kubectl).ExportWorkspace(context.Background()); err != nil {
 		t.Fatalf("ExportWorkspace: %v", err)
 	}
 	if got := args(); !strings.Contains(got, " -- env LC_ALL="+sandbox.TarLocale+" tar -C ") {

@@ -456,6 +456,13 @@ func Classify(err error) runtime.ErrorCode {
 	if errors.As(err, &unsupported) {
 		return runtime.ErrCodeCapabilityUnsupported
 	}
+	// Same code for the same class on the host plane: a CLI-agent backend no
+	// published image ships, whose executable is absent from this host's PATH
+	// (#1643). Deterministic — retrying cannot install a CLI.
+	var cliAbsent *delegate.ErrBackendCLIAbsent
+	if errors.As(err, &cliAbsent) {
+		return runtime.ErrCodeCapabilityUnsupported
+	}
 	var schemaUnusable *delegate.ErrSchemaUnusable
 	if errors.As(err, &schemaUnusable) {
 		return runtime.ErrCodeSchemaUnusable

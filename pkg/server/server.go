@@ -291,13 +291,30 @@ type Server struct {
 	// bakedCatalog caches slug → version for the on-disk catalog, so the
 	// override-staleness comparison can be recomputed on every launch without
 	// re-walking every bot root each time (bot_override_staleness.go).
-	bakedCatalog   *platformcfg.Resolver[bakedCatalog]
+	bakedCatalog *platformcfg.Resolver[bakedCatalog]
+	// bakedCatalogWalkFailed carries the outcome of the LAST catalog walk
+	// next to the map that walk produced. The resolver above serves
+	// last-known values through a failure — its availability posture, and
+	// the right one — so the map alone cannot tell a fresh reading from one
+	// served blind, and a shadow check that could not run must never read as
+	// a clean inventory (bot_override_staleness.go).
+	bakedCatalogWalkFailed atomic.Bool
+	// overrideShadow* is the shadow observer's own memory, written by its
+	// pass and nothing else: the slug set the last pass published (so the
+	// next one retires only what disappeared, with no window in which a
+	// shadowing slug carries no series at all) and whether the platform rows
+	// were unreadable on the previous pass (so a store outage costs one
+	// warning per outage, not one per minute).
+	overrideShadowMu        sync.Mutex
+	overrideShadowSlugs     map[string]struct{}
+	overrideShadowRowsBlind bool
+
 	configShares   configshare.Store
 	configShareSvc *configshare.Service
 	// configShareFC overrides forge-client resolution in tests (nil in prod →
 	// shareFileClient resolves the team forge_token + builds a GitHub client).
 	configShareFC    func(context.Context, *configshare.Share) (forge.FileClient, error)
-	forgeConnections forge.ConnectionStore
+	forgeConnections connection.ForgeStore
 	// connectionStore + connectorCatalog back /api/teams/:id/connections
 	// (pkg/connection). Nil in local mode — see Config.Connections.
 	connectionStore  connection.Store
@@ -1072,17 +1089,22 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 			Connections:          s.forgeConnections,
 			Integrations:         s.forgeIntegrations,
 			Webhooks:             s.webhookConfigs,
-			Secrets:              s.genericSecrets,
-			Sealer:               s.sealer,
-			Bindings:             s.botBindings,
-			Bots:                 s.forgeBotForge,
-			Invocations:          s.forgeBotInvocations,
-			Schedules:            cfg.ScheduledBots,
-			AdminFor:             s.forgeAdminFor,
-			AdminForToken:        s.forgeAdminForToken,
-			BotAvatar:            s.projectBotAvatar(),
-			GitHubAppMinter:      s.forgeAppMinter,
-			PublicURL:            cfg.PublicURL,
+			// The store hook of the delete sweep (#2644): the managed
+			// secrets the orchestrator deletes are pinnable by any
+			// webhook or subscription of the tenant, and a plain store
+			// delete would leave those pins dead in silence.
+			Secrets:         s.pinSweepingSecrets(),
+			ApiKeys:         s.apiKeys,
+			Sealer:          s.sealer,
+			Bindings:        s.botBindings,
+			Bots:            s.forgeBotForge,
+			Invocations:     s.forgeBotInvocations,
+			Schedules:       cfg.ScheduledBots,
+			AdminFor:        s.forgeAdminFor,
+			AdminForToken:   s.forgeAdminForToken,
+			BotAvatar:       s.projectBotAvatar(),
+			GitHubAppMinter: s.forgeAppMinter,
+			PublicURL:       cfg.PublicURL,
 		}
 	}
 	s.hub = NewHub(logger)
@@ -1159,6 +1181,12 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 		if opt, ok := s.boardMCPServiceOption(logger, cfg.Store); ok {
 			opts = append(opts, opt)
 		}
+		// Operator-bound context documents (ADR-147): materialised into
+		// every launch this service drives. Nil-guarded — a replica
+		// without the fetcher keeps the binding route's refusal instead.
+		if r := s.botContextResolver(); r != nil {
+			opts = append(opts, runview.WithBotContextResolver(r))
+		}
 		svc, svcErr := runview.NewService("", opts...)
 		if svcErr != nil {
 			// ADR-103 §5: a cloud replica without the run resolver is not
@@ -1201,6 +1229,9 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 		}
 		if s.cfg.Mode != "cloud" && s.localSecrets != nil && s.sealer != nil {
 			svcOpts = append(svcOpts, runview.WithLocalSecrets(s.localSecrets, s.sealer))
+		}
+		if r := s.botContextResolver(); r != nil {
+			svcOpts = append(svcOpts, runview.WithBotContextResolver(r))
 		}
 		if s.usageCapSource != nil {
 			svcOpts = append(svcOpts, runview.WithUsageCapSource(s.usageCapSource))

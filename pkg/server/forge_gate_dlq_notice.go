@@ -99,13 +99,9 @@ func (s *Server) gateNoticeTarget(ctx context.Context, run *store.Run, what stri
 		s.gateNoticeDebug(run, what, "its grant covers %s — refusing to comment outside the grant's repo", grant.Repo)
 		return gateNoticeTarget{}, false
 	}
-	conn, err := s.forgeConnections.Get(store.WithoutTenantFilter(ctx), grant.ConnectionID)
+	conn, err := s.forgeConnections.Get(store.WithoutTenantFilter(ctx), grant.TeamID, grant.ConnectionID)
 	if err != nil {
 		s.gateNoticeDebug(run, what, "its connection %s is unreadable: %v", grant.ConnectionID, err)
-		return gateNoticeTarget{}, false
-	}
-	if conn.TenantID != grant.TeamID {
-		s.gateNoticeDebug(run, what, "its connection %s belongs to another tenant", grant.ConnectionID)
 		return gateNoticeTarget{}, false
 	}
 	if connHost := hostOfURL(conn.BaseURL()); connHost == "" || !strings.EqualFold(connHost, host) {

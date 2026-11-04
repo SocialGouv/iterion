@@ -35,11 +35,11 @@ func (p *credentialPreviewPublisher) PreviewCredentials(_ context.Context, s run
 	p.previewWF = wf
 	return runview.CredentialPreview{Context: s.Context, Candidates: []runview.CredentialPreviewCandidate{}, Warnings: []string{}}, nil
 }
-func (p *credentialPreviewPublisher) SubmitLaunch(ctx context.Context, _ string, s runview.LaunchSpec, wf *ir.Workflow, _ *runview.CompiledSource) (int, error) {
+func (p *credentialPreviewPublisher) SubmitLaunch(ctx context.Context, _ string, s runview.LaunchSpec, wf *ir.Workflow, _ *runview.CompiledSource) (runview.LaunchSubmission, error) {
 	p.launched = s
 	p.launchedWF = wf
 	p.launchedOwner, _ = store.OwnerFromContext(ctx)
-	return 0, nil
+	return runview.LaunchSubmission{}, nil
 }
 
 func callCredentialPreview(s *Server, body string, id auth.Identity) *httptest.ResponseRecorder {

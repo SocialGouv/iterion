@@ -1232,6 +1232,13 @@ The `token` field is the **only** way to recover the plaintext — once
 the response is closed, only the unsalted SHA-256 hash remains. The studio shows
 it inside a "copy now, you won't see it again" affordance.
 
+An optional `pins_unreconciled` list beside them names the api keys or
+stored secrets that a `key_overrides` / `secret_overrides` pin names and
+that the route could not re-check once the row was stored
+([byok.md](byok.md#per-webhook-key-override)). The webhook exists and the
+token has no second copy, so the answer stays a 201: re-read those records
+and clear a pin naming a deleted one.
+
 ### `key_overrides` — pin a BYOK key per webhook
 
 `key_overrides` maps a provider name (`"anthropic"`, `"openai"`, …) to a
@@ -1251,7 +1258,7 @@ key's visibility against the identity that spends it: a key scoped to a USER
 is never visible to that actor, so a pin on one would be dropped at launch
 and the run would seal the team's default instead — invisibly, because the
 walk reports a key it *withholds*, never a pin it never saw. Such a pin is a
-400 at write (`not spendable by this webhook`), like the `openai_compatible`
+400 at write (`not spendable by this lane`), like the `openai_compatible`
 gateway pin above and like its `secret_overrides` twin, which
 requires an org-scoped secret. The team key list an admin picks from
 includes their own user-scoped keys (`GET /api/teams/{id}/api-keys`), so this

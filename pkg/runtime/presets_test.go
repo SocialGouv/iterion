@@ -84,7 +84,7 @@ func TestMergeBundlePresets(t *testing.T) {
 		// An in-source, var-only preset of the same name — must be overwritten.
 		"sre": {Name: "sre", Values: map[string]any{"focus": "STALE"}},
 	}}
-	MergeBundlePresets(wf, b, nil)
+	MergeBundlePresets(wf, b, "", nil)
 
 	p, ok := wf.Presets["sre"]
 	if !ok {
@@ -113,7 +113,7 @@ func TestMergeBundlePresets_WillyRealFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	wf := &ir.Workflow{}
-	MergeBundlePresets(wf, b, nil)
+	MergeBundlePresets(wf, b, "", nil)
 	for _, name := range []string{"improve-quality", "production-ready", "code-quality", "rgaa", "rgpd"} {
 		p, ok := wf.Presets[name]
 		if !ok {
@@ -138,10 +138,10 @@ func TestMergeBundlePresets_WillyRealFiles(t *testing.T) {
 
 func TestMergeBundlePresets_NilSafe(t *testing.T) {
 	// None of these should panic.
-	MergeBundlePresets(nil, nil, nil)
+	MergeBundlePresets(nil, nil, "", nil)
 	wf := &ir.Workflow{}
-	MergeBundlePresets(wf, nil, nil)
-	MergeBundlePresets(wf, &bundle.Bundle{}, nil) // no PresetsDir
+	MergeBundlePresets(wf, nil, "", nil)
+	MergeBundlePresets(wf, &bundle.Bundle{}, "", nil) // no PresetsDir
 	if len(wf.Presets) != 0 {
 		t.Fatalf("expected no presets, got %d", len(wf.Presets))
 	}

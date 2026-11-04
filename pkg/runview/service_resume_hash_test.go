@@ -72,8 +72,8 @@ func TestConsumeArtifactResumePreflightClearsLaunchCapture(t *testing.T) {
 	}
 }
 
-func (*resumeHashPublisher) SubmitLaunch(context.Context, string, LaunchSpec, *ir.Workflow, *CompiledSource) (int, error) {
-	return 1, nil
+func (*resumeHashPublisher) SubmitLaunch(context.Context, string, LaunchSpec, *ir.Workflow, *CompiledSource) (LaunchSubmission, error) {
+	return LaunchSubmission{QueuePosition: 1}, nil
 }
 
 func (*resumeHashPublisher) CancelRun(context.Context, string) error {

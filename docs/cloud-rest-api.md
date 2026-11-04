@@ -90,10 +90,12 @@ the launch gate's own rung
 ([pkg/server/launch_gate.go](../pkg/server/launch_gate.go), `gateLaunch`),
 which refuses a `viewer` and the orthogonal `config_editor` capability with
 `member_role_required` (403); the run-addressed mutations additionally pass
-the ADR-103 ladder. The same rung guards every state-changing board and
-trigger route at its mount (`boardWriteAuth`, `triggerWriteAuth`), because
-a card written ready or a subscription installed enabled is a launch the
-platform performs later.
+the ADR-103 ladder. The same rung guards every state-changing board,
+trigger and memory route at its mount (`boardWriteAuth`,
+`triggerWriteAuth`, `memoryWriteAuth`), because a card written ready or a
+subscription installed enabled is a launch the platform performs later, and
+a document written into a team space is instruction it reads back into every
+run that opens the space.
 Webhook delivery URLs (`POST /api/webhooks/<provider>/<id>`) use their
 own auth (token bearer or HMAC body signature) and are public to the
 JWT layer.
@@ -720,6 +722,18 @@ delete or generate one; `emit` additionally passes the launch gate, which
 enforces the rung a second time. The reads carry `requireAuth`; the
 subscription reads also scope by the request's tenant.
 
+**Credential pins take a team admin.** `key_overrides` / `secret_overrides`
+choose which stored api key or secret the platform spends on every fire —
+the decision a webhook's pins and the team's own keys and secrets already
+reserve to `canManageTeam` (team admin/owner, an admin of its org,
+super-admin). So a create that pins anything, and on a subscription that
+holds a pin any edit but `enabled` — the pins themselves (an add, a replace,
+a clear) or what the pinned credential is spent on (bot, repo, vars, match,
+cadence) — answers `403` to a member. A member still pauses, resumes and
+deletes a pinned subscription, and keeps every write on an unpinned one. An
+identity store that cannot judge the right answers `5xx`, never a `403`.
+Local mode, with no identity store, has no roles to read.
+
 **What a subscription reports.** The two reads are typed in the spec
 (`Subscription`, the list under `{"subscriptions": […]}`), so a generated
 client sees two different facts and not one: `last_error` / `last_error_at`
@@ -785,14 +799,37 @@ Spaces are addressed by query params (`?name=`, `?visibility=`, plus
 refused `403` before any `visibility` arm is evaluated — super-admins
 included.
 
+Every route of the family mounts through the write rung (`memoryWriteAuth`):
+a state-changing call needs the member role in the caller's ACTIVE team and
+is otherwise refused `403 member_role_required`, a read checks no role. A
+document in a memory space is read back into every agent run that opens the
+space, and the engine reads it under a machine principal the rung exempts —
+so writing one is authorized here, like a board card or a trigger
+subscription. A `config_editor` therefore reads the team's spaces and writes
+none (ADR-078).
+
+The rung applies on EVERY visibility, the caller's own `user` space included:
+that axis keys on the authenticated caller (never `?user=`), so the document
+a refused caller would write is instruction for a run of *theirs* — and
+launching such a run takes this same rung.
+
+The READS check no role, and that is the decision, not an omission: a
+`viewer` and a rank-0 `config_editor` keep all four — the whole space as one
+tarball, `GET /api/memory/export`, included. Raising a read to `member` would
+take a standing check the family does not have today (the rung is inert on a
+safe method by construction); until one exists, the `Auth` column below is
+what each METHOD requires, while the generated
+[annex](cloud-rest-api-generated.md) prints the shared MOUNT (`session +
+write rung`) for all seven rows.
+
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
-| `GET` | `/api/memory/usage` | member | `{used_bytes, quota_bytes}` for one space |
-| `GET` | `/api/memory/docs` | member | List documents in a space (optional `?dir=`) |
-| `GET` | `/api/memory/doc` | member | Read a document (`?path=`) |
+| `GET` | `/api/memory/usage` | authenticated (no role) | `{used_bytes, quota_bytes}` for one space |
+| `GET` | `/api/memory/docs` | authenticated (no role) | List documents in a space (optional `?dir=`) |
+| `GET` | `/api/memory/doc` | authenticated (no role) | Read a document (`?path=`) |
 | `PUT` | `/api/memory/doc` | member (super-admin for `visibility=global`) | Write |
 | `DELETE` | `/api/memory/doc` | member (super-admin for global) | Delete |
-| `GET` | `/api/memory/export` | member | Tarball export of the space |
+| `GET` | `/api/memory/export` | authenticated (no role) | Tarball export of the space |
 | `POST` | `/api/memory/import` | member (super-admin for global) | Import a tarball |
 
 Source: [pkg/server/memory_routes.go](../pkg/server/memory_routes.go).
@@ -928,7 +965,8 @@ audit row in [pkg/server/audit_helper.go](../pkg/server/audit_helper.go).
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
-| `GET` | `/api/server/info` | public | Mode, version, `auth_required`, `email_enabled`, per-feature enablement flags, upload limits |
+| `GET` | `/api/server/info` | public | Mode, version, `auth_required`, `email_enabled`, per-feature enablement flags, upload limits, the `legal` block (configured legal documents, contact, accessibility status — [ADR-160](adr/160-legal-content-is-deployment-configuration.md)) |
+| `GET` | `/api/legal/{slug}` | public, rate-limited per IP | One of the operator's legal documents (`mentions-legales`, `confidentialite`, `cgu`, `accessibilite`) as markdown with the contact and the accessibility declaration; `ETag` revalidation; 404 for a slug that names no document or one this deployment did not configure |
 | `GET` | `/healthz` | public | Liveness — HTTP listener up |
 | `GET` | `/readyz` | public | Readiness — every dependency the deployment wired (`Config.ReadinessChecks`), pinged concurrently under a per-check deadline (1s by default). A failing CRITICAL check is `503`; a non-critical one is reported `degraded` and still answers `200`. Draining or superseded is `503` without touching a dependency; no checks wired (local mode) is `200` |
 | `GET` | `/metrics` | public on the metrics port (ClusterIP-only by design) | Prometheus scrape |

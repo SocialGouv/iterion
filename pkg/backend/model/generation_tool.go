@@ -34,6 +34,14 @@ type GenerationOptions struct {
 	// holding slashes of its own ("meta-llama/…") would lose a segment.
 	Model string
 
+	// Provider names the slot the client was resolved from — the
+	// servingProvider word the delegate events carry (a `provider/` prefix's
+	// pin, a hint that names the slot). The step hooks copy it onto every
+	// llm_step_finished so a per-step observation joins the credential plan
+	// on the loop's own answer instead of re-deriving one from the spec.
+	// Empty when the loop builder stamped none.
+	Provider string
+
 	// System is the system prompt (plain string form).
 	System string
 
@@ -117,6 +125,16 @@ type GenerationOptions struct {
 	// conversation — claude_code's PostToolUse twin.
 	UnmaterializeSecrets func(string) string
 
+	// ScreenModelText, when non-nil, is the model boundary's pass
+	// (delegate.Task.ScreenModelText), applied by buildRequest to every
+	// system text the request carries. The prompts arrive already passed;
+	// the blocks the backend composed for ITSELF do not — the ambient
+	// instruction files it read under the task's work dir, the
+	// workspace-memory index and autoload — because no Task field holds
+	// them. nil is the identity: placeholders off, or the in-container
+	// runner, which carries no guard.
+	ScreenModelText func(string) string
+
 	// NamesSecret, when non-nil, reports whether a tool call's input carries
 	// the placeholder of a secret that resolves at some sink — the proxy's
 	// on the wire included — so a workspace reader's output is turned back
@@ -165,8 +183,19 @@ type GenerationOptions struct {
 	// OnBeforeCompact fires only when in-loop compaction is about to
 	// shrink the history. The callback may return a modified slice
 	// (e.g. with an injected session-memory user turn) that feeds the
-	// summariser; the live history keeps the originals. Returning nil
-	// is a no-op.
+	// summariser. Returning nil is a no-op. A turn the callback ADDS
+	// carries IsInjected (the vendored compactor keeps it out of the
+	// real-user-turn count). messages is a deep copy of the history, so
+	// the live history keeps the originals whatever the callback writes,
+	// in place or not, and whatever it returns. The loop passes every
+	// turn of the returned slice that is not one of the history's own,
+	// unchanged — the hook's additions, marked or not, a turn it rewrote
+	// in place, and an earlier compaction's continuation turn alike —
+	// through ScreenModelText before the summariser reads it
+	// (screenedInjector): each text, tool name and tool input, nested
+	// tool_result blocks included, so the text a hook composes for the
+	// model crosses the boundary like every other. The history the
+	// callback hands back as it was is handed to the summariser as it is.
 	OnBeforeCompact func(messages []api.Message) []api.Message
 
 	// OnCompact is called once after each in-loop compaction round
@@ -205,4 +234,14 @@ type GenerationOptions struct {
 	// the human approves (claw's half of cross-backend parity with
 	// claude_code's PreToolUse permission hook). Nil/disabled = no gate.
 	Permission *permission.Policy
+}
+
+// screenModelText returns the model-boundary pass these options carry, the
+// identity when they carry none. Stated once so every text the request
+// builder hands a model reads the same nil contract.
+func (o GenerationOptions) screenModelText() func(string) string {
+	if o.ScreenModelText == nil {
+		return func(s string) string { return s }
+	}
+	return o.ScreenModelText
 }

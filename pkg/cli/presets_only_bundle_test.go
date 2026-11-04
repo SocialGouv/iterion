@@ -89,7 +89,9 @@ func TestAPresetsOnlyDirectoryIsABundleOnRunAndValidate(t *testing.T) {
 }
 
 // Validation must read a preset file even when its workflow is named as a
-// loose-looking main.bot. A malformed preset must not disappear silently.
+// loose-looking main.bot. A malformed preset must not disappear silently:
+// the bundle warning names the file with its reason, and the dry run
+// refuses to run over it (the refusal counts it, the warning names it).
 func TestValidateNamesABrokenPresetBesideAnUnmanifestedMain(t *testing.T) {
 	inTempWorkspace(t)
 	writeFile(t, "bnd/main.bot", presetsOnlyWorkflow)
@@ -100,7 +102,13 @@ func TestValidateNamesABrokenPresetBesideAnUnmanifestedMain(t *testing.T) {
 	if decodeErr := json.Unmarshal(out.Bytes(), &res); decodeErr != nil {
 		t.Fatal(decodeErr)
 	}
-	if err == nil || !strings.Contains(res.ExecError, "broken.md") {
+	named := false
+	for _, d := range res.Diagnostics {
+		if d.Source == "bundle" && strings.Contains(d.Message, "broken.md") {
+			named = true
+		}
+	}
+	if err == nil || res.ExecError == "" || !named {
 		t.Fatalf("validation lost the broken file preset: err=%v result=%+v", err, res)
 	}
 }

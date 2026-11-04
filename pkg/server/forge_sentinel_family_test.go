@@ -14,6 +14,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	forgegithub "github.com/SocialGouv/iterion/pkg/forge/github"
 )
@@ -270,7 +271,7 @@ func TestForgeSentinelFamilies_CoverEveryDeclaredSentinel(t *testing.T) {
 // request whose avatar did land.
 func TestForgeConnectionAvatar_StoreFailureIsNotAForge404(t *testing.T) {
 	s := newForgeTestServer(t)
-	s.forgeConnections = &recordRefusingStore{ConnectionStore: s.forgeConnections, err: forge.ErrConnectionNotFound}
+	s.forgeConnections = &recordRefusingStore{ForgeStore: s.forgeConnections, err: forge.ErrConnectionNotFound}
 	gl := &mockGitLabAvatar{bot: true}
 	srv := gl.server()
 	defer srv.Close()
@@ -306,7 +307,7 @@ func TestForgeConnectionAvatar_StoreFailureIsNotAForge404(t *testing.T) {
 // records an outcome fails. Reads still work, so the handler resolves the
 // connection and reaches the record step.
 type recordRefusingStore struct {
-	forge.ConnectionStore
+	connection.ForgeStore
 	err error
 }
 

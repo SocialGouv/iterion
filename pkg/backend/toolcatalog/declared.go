@@ -39,7 +39,7 @@ func ToolsDeclared(tools []string) bool { return tools != nil }
 // The default answer for an unknown backend is therefore the SAFE one — a
 // backend is assumed not to receive the list until someone proves it does and
 // names it here. `opencode` (#1640) is the worked example: it drives
-// `opencode --format json run` with the prompt on stdin and reads no tool
+// `opencode run --format json` with the prompt on stdin and reads no tool
 // list at all, so `tools: [Bash, Read]` on such a node used to validate with
 // zero diagnostics.
 //

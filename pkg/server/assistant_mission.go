@@ -18,6 +18,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/runwatch"
+	"github.com/SocialGouv/iterion/pkg/server/cloudpublisher"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/trigger"
 )
@@ -270,6 +271,9 @@ func (c *assistantMissionCoordinator) attempt(ctx context.Context, id string) {
 		return
 	}
 	if m.Activation.State == assistantmission.ReceiptPrepared {
+		if missionSlotWaitHolds(m.Activation.WaitUntil, now) {
+			return
+		}
 		if _, _, boundaryErr := c.server.safeAssistantWatchPause(mctx, assistant); boundaryErr != nil {
 			m.State, m.Reason = assistantmission.StateActive, "waiting for assistant chat boundary"
 			update(m)
@@ -277,11 +281,18 @@ func (c *assistantMissionCoordinator) attempt(ctx context.Context, id string) {
 		}
 		attempted := time.Now().UTC()
 		m.Activation.State, m.Activation.AttemptedAt = assistantmission.ReceiptIssued, &attempted
+		m.Activation.WaitUntil, m.Activation.Error = nil, ""
 		if !update(m) {
 			return
 		}
 		event := map[string]any{"mission_id": m.ID, "target_run_id": m.TargetRunID, "watch_id": m.WatchID, "actions": m.Policy.Actions, "expires_at": m.Policy.ExpiresAt, "max_actions": m.Policy.MaxActions}
 		if err := c.server.deliverHostEventWithService(mctx, c.runs, assistant.ID, m.Activation.Kind, event, false, m.Activation.ID); err != nil {
+			if until, wait := missionSlotWait(err, time.Now().UTC()); wait {
+				m.Activation.State, m.Activation.Error, m.Activation.WaitUntil = assistantmission.ReceiptPrepared, err.Error(), until
+				m.State, m.Reason = assistantmission.StateActive, missionSlotWaitReason("activate the assistant", until)
+				update(m)
+				return
+			}
 			m.Activation.State, m.Activation.Error = assistantmission.ReceiptRejected, err.Error()
 			m.State, m.Reason = assistantmission.StateCapabilityBlocked, "mission activation was rejected"
 			update(m)
@@ -428,7 +439,11 @@ func (c *assistantMissionCoordinator) advanceAction(ctx context.Context, m *assi
 			update(*m)
 			return
 		}
+		if missionSlotWaitHolds(r.WaitUntil, time.Now().UTC()) {
+			return
+		}
 		r.State, r.UpdatedAt = assistantmission.ReceiptIssued, time.Now().UTC()
+		r.WaitUntil, r.Error = nil, ""
 		m.DispatchedActions++
 		if !update(*m) {
 			return
@@ -471,6 +486,16 @@ func (c *assistantMissionCoordinator) advanceAction(ctx context.Context, m *assi
 			releaseBot()
 		}
 		if err != nil {
+			// A resume refused on the target's full key dispatched nothing:
+			// the action goes back to prepared, its budget given back, and
+			// is asked again — the park a launch gets, on the mission's TTL.
+			if until, wait := missionSlotWait(err, time.Now().UTC()); wait && r.Action == assistantmission.ActionResume {
+				r.State, r.Error, r.UpdatedAt, r.WaitUntil = assistantmission.ReceiptPrepared, err.Error(), time.Now().UTC(), until
+				m.DispatchedActions--
+				m.State, m.Reason = assistantmission.StateActive, missionSlotWaitReason("resume the target", until)
+				update(*m)
+				return
+			}
 			r.State, r.Error, r.UpdatedAt = assistantmission.ReceiptRejected, err.Error(), time.Now().UTC()
 			update(*m)
 		}
@@ -513,6 +538,9 @@ func (c *assistantMissionCoordinator) advanceAction(ctx context.Context, m *assi
 		}
 		r = &m.Receipts[idx]
 		if r.ResultDelivery.State == assistantmission.ReceiptPrepared {
+			if missionSlotWaitHolds(r.ResultDelivery.WaitUntil, time.Now().UTC()) {
+				return
+			}
 			if _, _, err := c.server.safeAssistantWatchPause(ctx, assistant); err != nil {
 				m.State, m.Reason = assistantmission.StateActive, "waiting to deliver action result at assistant chat boundary"
 				update(*m)
@@ -520,12 +548,19 @@ func (c *assistantMissionCoordinator) advanceAction(ctx context.Context, m *assi
 			}
 			now := time.Now().UTC()
 			r.ResultDelivery.State, r.ResultDelivery.AttemptedAt = assistantmission.ReceiptIssued, &now
+			r.ResultDelivery.WaitUntil, r.ResultDelivery.Error = nil, ""
 			if !update(*m) {
 				return
 			}
 			r = &m.Receipts[idx]
 			event := map[string]any{"mission_id": m.ID, "target_run_id": m.TargetRunID, "action": r.Action, "action_receipt_id": r.ID, "state": r.State, "error": r.Error, "event_seq": r.EventSeq}
 			if err := c.server.deliverHostEventWithService(ctx, c.runs, assistant.ID, r.ResultDelivery.Kind, event, false, r.ResultDelivery.ID); err != nil {
+				if until, wait := missionSlotWait(err, time.Now().UTC()); wait {
+					r.ResultDelivery.State, r.ResultDelivery.Error, r.ResultDelivery.WaitUntil = assistantmission.ReceiptPrepared, err.Error(), until
+					m.State, m.Reason = assistantmission.StateActive, missionSlotWaitReason("deliver the action result", until)
+					update(*m)
+					return
+				}
 				r.ResultDelivery.State, r.ResultDelivery.Error = assistantmission.ReceiptRejected, err.Error()
 				m.State, m.Reason = assistantmission.StateCapabilityBlocked, "action result delivery was rejected"
 				update(*m)
@@ -541,6 +576,35 @@ func (c *assistantMissionCoordinator) advanceAction(ctx context.Context, m *assi
 			update(*m)
 		}
 	}
+}
+
+// missionSlotWait answers whether a dispatch was refused because a
+// credential the resumed run sealed is at its concurrency cap
+// (cloudpublisher.ErrCredentialAtCapacity), and if so when to ask again. The
+// refusal lands before anything is published and clears once a run on the
+// key ends, so the coordinator — the one caller left to ask — treats it as
+// a wait, never a rejection: the receipt goes back to prepared and is asked
+// again one slot probe out, the cadence the retry sweeper asks a parked run
+// on. The mission's TTL bounds the wait. Every other refusal keeps its
+// verdict.
+func missionSlotWait(err error, now time.Time) (*time.Time, bool) {
+	if !errors.Is(err, cloudpublisher.ErrCredentialAtCapacity) {
+		return nil, false
+	}
+	at := now.Add(cloudpublisher.CredSlotProbeInterval)
+	return &at, true
+}
+
+// missionSlotWaitHolds reports whether a prepared receipt's slot wait still
+// holds its dispatch back.
+func missionSlotWaitHolds(until *time.Time, now time.Time) bool {
+	return until != nil && now.Before(*until)
+}
+
+// missionSlotWaitReason is the mission's reason while one of its receipts
+// waits for a credential slot.
+func missionSlotWaitReason(what string, until *time.Time) string {
+	return fmt.Sprintf("waiting for a credential slot to %s — a key the run sealed is at its concurrency cap; asked again at %s", what, until.Format(time.RFC3339))
 }
 
 func unresolvedActionIndex(m assistantmission.Mission) int {

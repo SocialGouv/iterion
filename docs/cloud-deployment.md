@@ -53,10 +53,55 @@ install step hangs rather than reports. A `0` is not a way to remove the
 deadline — both templates render the key through a `with`, which skips a
 zero.
 
-One caveat on the smoke path: `task chart:kind` also caps its own wait with
-`helm --timeout 5m`, so a pull slower than that fails the smoke whatever this
-knob says. The deadline decides whether the Deployment is called **Failed**;
-the helm timeout decides how long the client is willing to watch.
+The install clients follow the same knob through the render: the wait
+follows the rendered server Deployment's `progressDeadlineSeconds`. `task
+chart:kind` and the `cloud-e2e` CI job build one argument list — release,
+chart, `-f`, `--set` — and hand it to both `scripts/chart-kind-wait.sh` and
+`helm install`; the helper runs `helm template` on that list, reads the server
+Deployment's `spec.progressDeadlineSeconds` from the render with yq
+(mikefarah/yq v4, in devbox as `yq-go`), and prints that deadline plus a
+120 s margin as the client `--timeout`, so the server's deadline — not a
+fixed client cap — decides whether a slow server rollout is called
+**Failed**. It is the one deadline the wait follows: `helm --wait` watches
+every workload of the release, so a Deployment whose own deadline outlives
+the server's — the runner's 30000 s, a lame-duck drain budget
+`values-dev.yaml` keeps — is cut by the client cap, not its deadline, if it
+is still Progressing when the wait ends, and a StatefulSet (NATS) has no
+deadline, only the cap. And the deadline bounds the whole server rollout for
+one pod only: Kubernetes measures it from the rollout's last sign of
+progress, not its start, and each pod that turns Ready is one — with several
+server pods (`server.replicas` above 1, or the HPA owning the count) the
+rollout can stay Progressing past the wait, so the helper prints the wait
+with a warning naming the count; `values-dev.yaml` runs one pod. Nothing
+reads the values file itself: the render already applies what stands between
+a file and the field
+(go-yaml's reading of the file, the `--set` overrides, the `with` that skips
+an unset or `0` knob, the StatefulSet of `mode=local`), and a reader of the
+file would have to reimplement all of it. That render is the install's own
+while the templates the server Deployment renders through read no cluster or
+release state — `.Capabilities`, `lookup`, `.Release.IsInstall` /
+`.Release.IsUpgrade` / `.Release.Revision`, which `helm template` renders
+off-cluster as an install at revision 1; none is read today, and
+`TestChartKindWaitRenderReadsNoClusterState` (`charts/iterion`) refuses one on
+that path, whatever its receiver (the chart hands its includes the root as
+`.root`). The helper refuses, naming the
+cause: a render helm refuses, a render with no Deployment labelled
+`app.kubernetes.io/component=server` (`mode=local`), several such Deployments
+(the first in render order would be a guess), a Deployment that renders no
+deadline (unset or `0` — the install would silently watch Kubernetes' default
+600 s), a value other than plain decimal digits with no leading zero, and
+one beyond the int32 the field holds. helm hands the API the render as a
+YAML 1.1 decoder reads it: a string or a fraction is refused there, an
+integral float (`6e2`, or the `1e+06` helm prints for a values number of a
+million or more — quote such a number) and a signed, hex, octal, binary or
+underscored spelling are read as the integers they denote, and a leading
+zero makes octal digits octal (`010` is 8) where a YAML 1.2 reader such as
+yq reads 10 — so the helper sizes the wait from plain digits alone. Its
+messages print the install as its release, its chart and its values files,
+never its other arguments — a `--set` can carry a credential, and CI logs keep
+stderr — and a URL among them without its userinfo, query or fragment. From
+the first flag it does not know (`--password`) on, it prints nothing: only
+helm knows whether that flag takes the next argument.
 
 ## Topology
 
@@ -398,6 +443,9 @@ populated at runtime:
 | `iterion_llm_tokens_total{backend,model,direction}` | runner | input/output/cache_read/cache_write |
 | `iterion_llm_cost_usd_total{backend,model}` | runner | Added per claw-priced call; unknown models leave the counter untouched |
 | `iterion_runner_heartbeat_errors_total` | runner | Each KV lease refresh failure |
+| `iterion_bot_override_shadows_newer{slug}` | server | 1 while a platform bot override shadows a newer baked bundle (polled every five minutes, platform tier) |
+| `iterion_bot_shadow_check_unavailable` | server | 1 when that check could not run — no readable bot root included; the per-slug gauges hold their last values |
+| `iterion_bot_override_unorderable_version{slug}` | server | 1 for an override whose version cannot be ordered against the bundle below it; informational, unalerted |
 
 Wire a Prometheus PodMonitor:
 
@@ -976,6 +1024,11 @@ devbox run -- task chart:kind
 ```
 
 Renders + lints the chart, checks `appVersion` matches `package.json`.
+The install watch follows the rendered server Deployment's
+`progressDeadlineSeconds` (`values-dev.yaml` sets 1800 s; plus a 120 s margin,
+so 1920 s): a slow first pull of its one server pod exhausts the server's
+deadline budget, never a fixed client cap; the runner's longer drain deadline
+is not followed.
 For a real install + workflow exec, see the `cloud-e2e` CI job in
 [.github/workflows/tests.yml](../.github/workflows/tests.yml).
 

@@ -378,6 +378,26 @@ type RunMessage struct {
 	// serialises as absent, so messages published today are byte-identical
 	// to yesterday's.
 	ContentBoundary *store.RunContentBoundary `json:"content_boundary,omitempty"`
+	// CredPlan is the launch-frozen node-and-provider → credential-
+	// fingerprint plan the PUBLISHER resolves (the walk that sealed the
+	// bundle, joined with the bundle's own fingerprint stamps) and stamps
+	// so the claiming runner can attribute each delegation's spend to the
+	// credential that served it — the producer half of the pool's fine
+	// door-lease booking (#2288, ADR-121 § Delivery 2). Keys are
+	// `<node>|<provider>` (the provider the serving chain element resolved,
+	// which is what the delegate events carry); values are the same
+	// fingerprint strings the runner reads from its own credentials, so
+	// the fine table it reports keys in the lease's space. The publisher
+	// stamps it only when the routing walk is narrow-safe and a pool lease
+	// serves the run — a walk it cannot read may spend anything, so no
+	// plan it could write is total. The runner holds the same line at run
+	// time: an observation the attempt paid for that joins none of the
+	// keys voids its table. Nil (an older publisher, or a walk that
+	// widened) keeps the runner's coarse whole-attempt booking: the
+	// conservative-on-ignore direction, which is why the field needs no
+	// RunMessage version bump (the same doctrine as FallbackModelClasses
+	// above).
+	CredPlan map[string]string `json:"cred_plan,omitempty"`
 	// ParentRunID is set on child runs spawned by a parent workflow
 	// (e.g. by `iterion __scan-shards`). Empty for root runs. When
 	// non-empty, the runner copies it into the persisted Run document

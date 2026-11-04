@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 
 	"github.com/SocialGouv/iterion/pkg/auth/oidc"
 	"github.com/SocialGouv/iterion/pkg/auth/orgsso"
@@ -82,4 +83,23 @@ func (s *Server) resolveConnector(ctx context.Context, slug string) (oidc.Connec
 		return nil, "", "", fmt.Errorf("%w: build the OIDC connector of provider %s: %w", oidc.ErrProviderUnavailable, id, err)
 	}
 	return conn, row.TenantID, row.ID, nil
+}
+
+// refuseConnector answers a JSON route whose resolveConnector failed, and is
+// the ONE place that classification lives for them: a resolution that FAILED
+// is not the fact that the provider is absent, so oidc.ErrProviderUnavailable
+// owes the identity contract — 5xx, generic body, the cause in the log —
+// while absent-or-not-OIDC keeps the word the route gives its client (status,
+// msg). A consumer that collapses the two tells a caller the SSO they are
+// configured for does not exist, and logs nothing for the operator.
+//
+// The browser callback does NOT use it: its answer is a banner redirect and
+// it splits a third case (ErrProviderDisabled) the API routes have no word
+// for — see handleOIDCCallback.
+func (s *Server) refuseConnector(w http.ResponseWriter, r *http.Request, name string, err error, status int, msg string) {
+	if errors.Is(err, oidc.ErrProviderUnavailable) {
+		s.identityFailure(w, r, fmt.Errorf("resolve the SSO provider %q: %w", name, err))
+		return
+	}
+	httpError(w, status, "%s", msg)
 }

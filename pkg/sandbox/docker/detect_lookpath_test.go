@@ -26,14 +26,20 @@ func TestDetectResolvesNoRuntimeUnderAPlantedPATH(t *testing.T) {
 	t.Setenv(envtrust.EnvPlantedNames, "")
 	t.Setenv("PATH", dir)
 
-	// The operator's own PATH resolves, as exec.LookPath always did.
-	if rt, err := Detect(); err != nil || rt != RuntimeDocker {
-		t.Fatalf("an unplanted PATH must resolve: Detect = %q, %v", rt, err)
+	// The operator's own PATH resolves, as exec.LookPath always did — and
+	// the ABSOLUTE path it resolved is what the CLI carries, because that
+	// is the binary every spawn below it runs.
+	cli, err := Detect()
+	if err != nil || cli.Runtime() != RuntimeDocker {
+		t.Fatalf("an unplanted PATH must resolve: Detect = %q, %v", cli, err)
+	}
+	if cli.path != fake {
+		t.Errorf("Detect kept %q, want the path it resolved (%q): a bare name hands the question back to the PATH", cli.path, fake)
 	}
 
 	// The repository's does not.
 	envtrust.MarkPlanted("PATH")
-	if rt, err := Detect(); err == nil {
-		t.Errorf("under a planted PATH Detect = %q, want a refusal — the repository does not choose the sandbox runtime", rt)
+	if planted, err := Detect(); err == nil {
+		t.Errorf("under a planted PATH Detect = %q, want a refusal — the repository does not choose the sandbox runtime", planted)
 	}
 }

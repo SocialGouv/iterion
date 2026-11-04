@@ -509,10 +509,32 @@ func RegisterClawSkill(reg *Registry, workDir string) error {
 // shape so the two surfaces cannot diverge again (#2870). A nil provider
 // behaves as the empty workspace: resolution falls to the process CWD.
 func RegisterClawSkillWithProvider(reg *Registry, workspace func() string) error {
+	return RegisterClawSkillWithSources(reg, workspace, nil)
+}
+
+// SkillAllowlistProvider answers the skills a run may serve: (nil, false)
+// is the legacy workspace walk; a non-nil map — empty included — is the
+// PINNED mode (iterion#1719), where resolution consults only the pinned
+// name → path entries and refuses everything else. The provider is
+// consulted on every call: the engine arms it after registration, when the
+// mirror pass has decided which skill files the run owns.
+type SkillAllowlistProvider func() (map[string]string, bool)
+
+// RegisterClawSkillWithSources is RegisterClawSkillWithProvider plus the
+// allowlist a host pins for an untrusted workspace: armed, the tool serves
+// exactly the pinned files (claw-code-go's ExecuteSkillPinned) and nothing
+// the checkout planted under a walked root is reachable; disarmed, the
+// lookup walks the workspace as it always has.
+func RegisterClawSkillWithSources(reg *Registry, workspace func() string, allowlist SkillAllowlistProvider) error {
 	if workspace == nil {
 		workspace = staticWorkspaceProvider("")
 	}
 	exec := func(ctx context.Context, input map[string]any) (string, error) {
+		if allowlist != nil {
+			if allowed, armed := allowlist(); armed {
+				return clawtools.ExecuteSkillPinned(ctx, input, allowed)
+			}
+		}
 		return clawtools.ExecuteSkill(ctx, input, workspace())
 	}
 	return RegisterClawTool(reg, clawtools.SkillTool(), exec)
@@ -871,6 +893,13 @@ type ClawDefaults struct {
 	// Config.RunIDFromCtx must all be set so per-run vaults can
 	// be persisted at <StoreDir>/runs/<runID>/pii_vault.json.
 	Privacy *privacy.Config
+
+	// SkillAllowlist, when non-nil, is consulted on every `skill` call
+	// (iterion#1719): armed, the tool serves exactly the pinned
+	// name → path entries and refuses everything else — the shape a run
+	// over an untrusted checkout takes, where the walked roots answer
+	// with text the repository planted. Nil keeps the workspace walk.
+	SkillAllowlist SkillAllowlistProvider
 }
 
 // RegisterClawAll registers the full curated set of claw tools
@@ -952,7 +981,7 @@ func RegisterClawAll(reg *Registry, defaults ClawDefaults) error {
 	if err := RegisterClawSubagents(reg, defaults.Subagent); err != nil {
 		return err
 	}
-	if err := RegisterClawSkillWithProvider(reg, workspace); err != nil {
+	if err := RegisterClawSkillWithSources(reg, workspace, defaults.SkillAllowlist); err != nil {
 		return err
 	}
 	if !defaults.DisableWorkspaceCommands {

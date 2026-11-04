@@ -42,6 +42,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/eventbus"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/identity"
+	"github.com/SocialGouv/iterion/pkg/legal"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/mail"
 	"github.com/SocialGouv/iterion/pkg/marketplace"
@@ -253,7 +254,12 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	// Local mode: keep the existing studio handlers; only difference
 	// from `iterion studio` is the cloud-friendly --bind default.
 	if cfg.Mode == iterconfig.ModeLocal {
+		legalSurface, err := loadLegalSurface(cfg, cfg.Log.NewLogger(cmd.ErrOrStderr()))
+		if err != nil {
+			return err
+		}
 		return cli.RunStudio(cmd.Context(), cli.StudioOptions{
+			Legal:     legalSurface,
 			Port:      serverOpts.port,
 			Bind:      serverOpts.bind,
 			Dir:       serverOpts.dir,
@@ -638,6 +644,11 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		logger.Info("board watchdog: un-leased claim horizon set to %s (%s)", horizon, boardmongo.UnleasedClaimHorizonEnv)
 	}
 
+	legalSurface, err := loadLegalSurface(cfg, logger)
+	if err != nil {
+		return err
+	}
+
 	srv := server.New(server.Config{
 		Port:        serverOpts.port,
 		Bind:        serverOpts.bind,
@@ -766,6 +777,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		RefreshTTL:                  cfg.Auth.RefreshTTL,
 		PublicURL:                   cfg.Auth.PublicURL,
 		CanonicalRedirect:           cfg.Auth.CanonicalRedirect,
+		Legal:                       legalSurface,
 		SignupMode:                  cfg.Auth.SignupMode,
 		CookieDomain:                cfg.Auth.CookieDomain,
 		CookieSecure:                cfg.Auth.CookieSecure,
@@ -825,7 +837,7 @@ type cloudStores struct {
 	botBindings      *secrets.MongoBotSecretBindingStore
 	webhooks         *webhooks.MongoStores
 	configShares     *configshare.MongoStore
-	forgeConn        *forge.MongoConnectionStore
+	forgeConn        *connection.MongoForgeStore
 	connections      *connection.MongoStore
 	forgeIntegration *forge.MongoRepoIntegrationStore
 	boardBinding     *forge.MongoBoardBindingStore
@@ -875,7 +887,7 @@ func buildCloudStores(ctx context.Context, st *mongostore.Store, logger *iterlog
 		botBindings:      secrets.NewMongoBotSecretBindingStore(st.DB()),
 		webhooks:         webhooks.NewMongoStores(st.DB()),
 		configShares:     configshare.NewMongoStore(st.DB()),
-		forgeConn:        forge.NewMongoConnectionStore(st.DB()),
+		forgeConn:        connection.NewMongoForgeStore(st.DB()),
 		connections:      connection.NewMongoStore(st.DB()),
 		forgeIntegration: forge.NewMongoRepoIntegrationStore(st.DB()),
 		boardBinding:     forge.NewMongoBoardBindingStore(st.DB()),
@@ -1366,4 +1378,29 @@ func rotatedOAuthKinds(cfg iterconfig.Config) []secrets.OAuthKind {
 		kinds = append(kinds, secrets.OAuthKindClaudeCode)
 	}
 	return kinds
+}
+
+// loadLegalSurface reads the operator's legal surface (ADR-160) ONCE, before
+// the server exists: a deployment that names a dir it cannot read, or a file
+// that names no document, refuses to start rather than publish half a
+// surface. A cloud deployment that publishes no document at all starts —
+// the texts are the operator's to write, never the code's to refuse — but
+// says so at WARN, because a public service owes its visitors a legal
+// notice, a privacy policy and an accessibility statement.
+func loadLegalSurface(cfg iterconfig.Config, logger *iterlog.Logger) (legal.Surface, error) {
+	docs, err := legal.Load(cfg.Legal.DocumentsDir)
+	if err != nil {
+		return legal.Surface{}, fmt.Errorf("server: ITERION_LEGAL_DOCUMENTS_DIR: %w", err)
+	}
+	switch {
+	case len(docs) > 0:
+		logger.Info("server: %d legal document(s) published from %s", len(docs), cfg.Legal.DocumentsDir)
+	case cfg.Mode == iterconfig.ModeCloud:
+		logger.Warn("server: no legal document published (ITERION_LEGAL_DOCUMENTS_DIR unset or empty) — a public deployment owes its visitors a legal notice, a privacy policy and an accessibility statement (config.legal.* in the chart, ADR-160)")
+	}
+	return legal.Surface{
+		Documents:     docs,
+		ContactEmail:  strings.TrimSpace(cfg.Legal.ContactEmail),
+		Accessibility: cfg.Legal.Accessibility(),
+	}, nil
 }

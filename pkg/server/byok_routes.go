@@ -748,6 +748,21 @@ func (s *Server) handleDeleteApiKeyIn(w http.ResponseWriter, r *http.Request, sc
 			// row the TENANT FILTER hid, e.g. a credential orphaned by its
 			// team's deletion, which the owner can then never revoke while
 			// the API claims it revoked (#1687).
+			//
+			// "Absent" is also the shape of a delete whose sweep half
+			// failed on an earlier attempt (revocation is the irreversible
+			// half and happened first): the retry must finish that sweep —
+			// retryCredentialPinSweep — before the 404 answers, never
+			// answer 404 over pins that may still stand.
+			scopeTenant := pinSweepTenant(ctx)
+			healed, healErr := s.retryCredentialPinSweep(r, scopeTenant, keyID)
+			if healErr != nil {
+				httpError(w, http.StatusInternalServerError, "api key %s is deleted, but clearing the pins that name it still fails: %v — a surviving pin still reads as live and seals the team default until it is cleared", keyID, healErr)
+				return
+			}
+			if len(healed) > 0 {
+				s.auditApiKey(r, scopeTenant, "deleted", keyID, map[string]any{"pins_cleared": healed})
+			}
 			httpError(w, http.StatusNotFound, "key not found")
 			return
 		}
@@ -762,7 +777,25 @@ func (s *Server) handleDeleteApiKeyIn(w http.ResponseWriter, r *http.Request, sc
 		httpError(w, http.StatusInternalServerError, "%s", err.Error())
 		return
 	}
-	s.auditApiKey(r, key.ScopeTeamID, "deleted", key.ID, map[string]any{"name": key.Name, "provider": string(key.Provider)})
+	// The chokepoint's half of the pin guards: a pin that passed its write
+	// validation outlives its key unless swept, and a stored pin naming a
+	// dead key seals the team's default in silence — the replacement the
+	// write-time validator exists to refuse. Revocation must not wait on a
+	// config edit, so the delete sweeps; the audit line carries the
+	// surfaces that lost a pin. The sweep outlives the request
+	// (pinGuardCtx).
+	sweepCtx, sweepCancel := pinGuardCtx(r)
+	defer sweepCancel()
+	swept, sweepErr := s.sweepCredentialPins(sweepCtx, pinSweepTenant(ctx), key.ID)
+	meta := map[string]any{"name": key.Name, "provider": string(key.Provider)}
+	if len(swept) > 0 {
+		meta["pins_cleared"] = swept
+	}
+	s.auditApiKey(r, key.ScopeTeamID, "deleted", key.ID, meta)
+	if sweepErr != nil {
+		httpError(w, http.StatusInternalServerError, "api key %s deleted, but clearing the pins that name it failed: %v — a surviving pin still reads as live and seals the team default until it is cleared", key.ID, sweepErr)
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 

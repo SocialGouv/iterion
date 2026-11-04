@@ -26,7 +26,9 @@ import (
 // nothing. 93 such rows accumulated in ~2h during the 2026-08-26 incident,
 // one per failed webhook launch (#537). The contract, on both store twins:
 // after a failed SubmitLaunch the row is either absent or terminal, and a
-// terminal row names the launch failure with a typed code.
+// terminal row names the launch failure with a typed code — unless a runner
+// already claimed the attempt (a publish can report an error after its
+// message landed): that row is the runner's, and stays as it wrote it.
 
 // unlistablePluginSources is a plugin-source store whose listing fails — the
 // shape of a contribution failure inside the launch path (a store outage, or
@@ -99,6 +101,29 @@ func runLaunchRollbackSuite(t *testing.T, st store.RunStore) {
 		}
 		if !strings.Contains(r.Error, "nats: no responders") {
 			t.Fatalf("run.Error = %q, want the publish failure named", r.Error)
+		}
+	})
+
+	t.Run("a publish that landed and was claimed leaves the claimed row alone", func(t *testing.T) {
+		p := launchRollbackPublisher(t, st)
+		p.pluginSources = nil
+		// The broker accepted the message and a runner claimed it — the
+		// engine's own queued→running CAS — before the ack was lost.
+		p.publishRun = func(ctx context.Context, m *queue.RunMessage) error {
+			if ok, err := st.UpdateRunStatusIf(ctx, m.RunID, store.RunStatusRunning, "", []store.RunStatus{store.RunStatusQueued}); err != nil || !ok {
+				t.Fatalf("claim %s: changed=%v err=%v", m.RunID, ok, err)
+			}
+			return errors.New("nats: timeout waiting for ack")
+		}
+		if _, err := p.SubmitLaunch(ctx, "run-claimed", spec, wf, &runview.CompiledSource{Hash: "hash"}); err == nil {
+			t.Fatal("SubmitLaunch succeeded with a publish that reported an error")
+		}
+		r, err := st.LoadRun(ctx, "run-claimed")
+		if err != nil {
+			t.Fatalf("LoadRun: %v", err)
+		}
+		if r.Status != store.RunStatusRunning || r.FailureCode != "" {
+			t.Fatalf("status=%s code=%q, want running with no failure code — a runner executes this attempt, and a row marked LAUNCH_FAILED under it reads as a run that never started", r.Status, r.FailureCode)
 		}
 	})
 

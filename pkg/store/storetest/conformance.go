@@ -98,6 +98,7 @@ func RunWithOpts(t *testing.T, factory Factory, opts Opts) {
 	t.Run("RunsForPR", func(t *testing.T) { testRunsForPR(t, factory(t)) })
 	t.Run("ScheduleReverseQuery", func(t *testing.T) { testScheduleReverseQuery(t, factory(t)) })
 	t.Run("CredFingerprintMeter", func(t *testing.T) { testCredFingerprintMeter(t, factory(t)) })
+	t.Run("CredSlotLedger", func(t *testing.T) { testCredSlotLedger(t, factory(t)) })
 	t.Run("SetRunBudgetOverrides", func(t *testing.T) { testSetRunBudgetOverrides(t, factory(t)) })
 	t.Run("SetRunnerVersion", func(t *testing.T) { testSetRunnerVersion(t, factory(t)) })
 	t.Run("SetRunBudgetSnapshot", func(t *testing.T) { testSetRunBudgetSnapshot(t, factory(t)) })
@@ -4043,9 +4044,11 @@ func testCredFingerprintMeter(t *testing.T, s store.RunStore) {
 		t.Fatalf("a resolution that sealed nothing must clear CredentialTiers, got %v (%v)", got.CredentialTiers, err)
 	}
 
-	// The model-idle marker: a running run executing no model-calling node
-	// holds its key's slot for nobody. Only fp_run1 (running) carries
-	// fp-zai at this point (fp_run2 was re-stamped to fp-anthropic).
+	// The model-idle marker is observability: a running run executing no
+	// model-calling node KEEPS its key's slot (nothing takes a lent slot
+	// back when its next model node starts — store.Run.SpendsCredential),
+	// so the count does not move with the marker. Only fp_run1 (running)
+	// carries fp-zai at this point (fp_run2 was re-stamped to fp-anthropic).
 	if n, err = s.CountAliveRunsWithCredFingerprint(ctx, "fp-zai", ""); err != nil || n != 1 {
 		t.Fatalf("alive(fp-zai) before idle = %d/%v, want 1", n, err)
 	}
@@ -4056,18 +4059,21 @@ func testCredFingerprintMeter(t *testing.T, s store.RunStore) {
 	if got, err = s.LoadRun(ctx, "fp_run1"); err != nil || got.LLMIdleSince == nil || !got.LLMIdleSince.Equal(idle) {
 		t.Fatalf("LLMIdleSince = %v (%v), want %v", got.LLMIdleSince, err, idle)
 	}
-	if n, err = s.CountAliveRunsWithCredFingerprint(ctx, "fp-zai", ""); err != nil || n != 0 {
-		t.Fatalf("alive(fp-zai) with fp_run1 idle = %d/%v, want 0 — an idle run must not hold a slot", n, err)
+	if n, err = s.CountAliveRunsWithCredFingerprint(ctx, "fp-zai", ""); err != nil || n != 1 {
+		t.Fatalf("alive(fp-zai) with fp_run1 idle = %d/%v, want 1 — an idle run keeps its slot; the marker is not a release", n, err)
 	}
-	// The next model node clears it: the run counts again.
+	// The next model node clears the marker; the count was never about it.
 	if err := s.SetRunLLMIdle(ctx, "fp_run1", nil); err != nil {
 		t.Fatalf("SetRunLLMIdle(nil): %v", err)
+	}
+	if got, err = s.LoadRun(ctx, "fp_run1"); err != nil || got.LLMIdleSince != nil {
+		t.Fatalf("SetRunLLMIdle(nil) must clear the marker, got %v (%v)", got.LLMIdleSince, err)
 	}
 	if n, err = s.CountAliveRunsWithCredFingerprint(ctx, "fp-zai", ""); err != nil || n != 1 {
 		t.Fatalf("alive(fp-zai) after the marker cleared = %d/%v, want 1", n, err)
 	}
-	// A re-stamp (a resumed attempt's re-resolution) starts over: an idle
-	// marker left by the previous attempt must not exempt the new one.
+	// A re-stamp (a resumed attempt's re-resolution) starts over: the idle
+	// marker left by the previous attempt is cleared.
 	if err := s.SetRunLLMIdle(ctx, "fp_run1", &idle); err != nil {
 		t.Fatalf("SetRunLLMIdle: %v", err)
 	}
@@ -4606,5 +4612,317 @@ func testAttachmentsMetaJSONFilename(t *testing.T, s store.RunStore) {
 	}
 	if list, err := s.ListAttachments(ctx, runID); err != nil || len(list) != 0 {
 		t.Fatalf("after DeleteRunAttachments: %+v, %v; want none", list, err)
+	}
+}
+
+// testCredSlotLedger exercises the credential-slot ledger behind the hard
+// per-key concurrency cap (store.CredSlotStore): the cap, the idempotent
+// re-admission of a holder, the release, the reconcile that evicts a
+// holder whose run stopped spending the credential — terminal, or
+// re-stamped onto another key; never merely model-idle — before a refusal
+// is final, the adoption of runs that spend the key unadmitted, and a cap
+// lowered below its holders. Both twins, one row: the publisher's
+// admission reads whichever store the deployment has.
+func testCredSlotLedger(t *testing.T, s store.RunStore) {
+	t.Helper()
+	ctx := testCtx()
+	ledger := store.AsCredSlotStore(s)
+	if ledger == nil {
+		t.Fatal("the store must host the credential-slot ledger (store.CredSlotStore)")
+	}
+
+	mk := func(id string, status store.RunStatus, fps ...string) {
+		if _, err := s.CreateRun(ctx, id, "demo", nil); err != nil {
+			t.Fatalf("CreateRun %s: %v", id, err)
+		}
+		r, err := s.LoadRun(ctx, id)
+		if err != nil {
+			t.Fatalf("LoadRun %s: %v", id, err)
+		}
+		r.Status = status
+		if err := s.SaveRun(ctx, r); err != nil {
+			t.Fatalf("SaveRun %s: %v", id, err)
+		}
+		if len(fps) > 0 {
+			if err := s.SetRunCredStamp(ctx, id, store.RunCredStamp{Fingerprints: fps}); err != nil {
+				t.Fatalf("SetRunCredStamp %s: %v", id, err)
+			}
+		}
+	}
+	flip := func(id string, status store.RunStatus) {
+		r, err := s.LoadRun(ctx, id)
+		if err != nil {
+			t.Fatalf("LoadRun %s: %v", id, err)
+		}
+		r.Status = status
+		if err := s.SaveRun(ctx, r); err != nil {
+			t.Fatalf("SaveRun %s: %v", id, err)
+		}
+	}
+	const fp = "fp-capped"
+	reserve := func(id string, max int) store.CredSlotAdmission {
+		adm, err := ledger.ReserveCredSlot(ctx, fp, id, max)
+		if err != nil {
+			t.Fatalf("ReserveCredSlot(%s, max=%d): %v", id, max, err)
+		}
+		return adm
+	}
+	// waiting is a run that asks for a slot and does not spend the key yet;
+	// admit is the admission as the publisher performs it — the run goes
+	// alive once granted, never before, and a refused run stays waiting
+	// (a parked launch, a resume put back). An alive run the row does not
+	// name is one the admission adopts, the rows below that.
+	const waiting = store.RunStatusPausedOperator
+	admit := func(id string, max int) store.CredSlotAdmission {
+		adm := reserve(id, max)
+		if adm.Granted {
+			flip(id, store.RunStatusRunning)
+		}
+		return adm
+	}
+
+	mk("slot_a", waiting, fp)
+	mk("slot_b", waiting, fp)
+	mk("slot_c", waiting, fp)
+	firstA := admit("slot_a", 2)
+	if !firstA.Granted || firstA.Held != 1 || firstA.At.IsZero() {
+		t.Fatalf("first admission: %+v, want granted with 1 holder and its entry's instant", firstA)
+	}
+	admB := admit("slot_b", 2)
+	if !admB.Granted || admB.Held != 2 {
+		t.Fatalf("second admission: %+v, want granted with 2 holders", admB)
+	}
+	if adm := admit("slot_c", 2); adm.Granted || adm.Held != 2 || !adm.At.IsZero() {
+		t.Fatalf("a third run was admitted on a cap of two: %+v", adm)
+	}
+	// A holder is admitted again without a second slot — a resume's
+	// re-resolution reserves what the run holds — on an entry of its own:
+	// a later instant than the admission before it.
+	againA := reserve("slot_a", 2)
+	if !againA.Granted || againA.Held != 2 || !againA.At.After(firstA.At) {
+		t.Fatalf("re-admitting a holder: %+v after %+v, want granted with the same 2 holders on a later instant", againA, firstA)
+	}
+	if err := ledger.ReleaseCredSlot(ctx, fp, "slot_a", time.Time{}); err == nil {
+		t.Fatal("ReleaseCredSlot with no admission instant must refuse")
+	}
+	// The undo of an admission whose launch did not land: the rollback
+	// ended the run, then gave the slot back.
+	flip("slot_b", store.RunStatusFailed)
+	if err := ledger.ReleaseCredSlot(ctx, fp, "slot_b", admB.At); err != nil {
+		t.Fatalf("ReleaseCredSlot: %v", err)
+	}
+	if adm := admit("slot_c", 2); !adm.Granted || adm.Held != 2 {
+		t.Fatalf("after a release: %+v, want granted with 2 holders", adm)
+	}
+	// A holder that went terminal is evicted on the next refusal.
+	flip("slot_a", store.RunStatusFinished)
+	mk("slot_d", waiting, fp)
+	if adm := admit("slot_d", 2); !adm.Granted || adm.Held != 2 {
+		t.Fatalf("a finished holder kept its slot: %+v", adm)
+	}
+	// A model-idle holder KEEPS its slot: nothing takes a lent slot back
+	// when its next model node starts, so the cap counts it
+	// (store.Run.SpendsCredential) and the marker stays observability.
+	idleAt := time.Now().UTC()
+	if err := s.SetRunLLMIdle(ctx, "slot_c", &idleAt); err != nil {
+		t.Fatalf("SetRunLLMIdle: %v", err)
+	}
+	mk("slot_e", waiting, fp)
+	if adm := admit("slot_e", 2); adm.Granted || adm.Held != 2 {
+		t.Fatalf("a model-idle holder lost its slot: %+v — its next model node would spend past the cap", adm)
+	}
+	// A holder re-stamped onto another credential no longer holds this one.
+	if err := s.SetRunCredStamp(ctx, "slot_d", store.RunCredStamp{Fingerprints: []string{"fp-other"}}); err != nil {
+		t.Fatalf("SetRunCredStamp: %v", err)
+	}
+	mk("slot_f", waiting, fp)
+	if adm := admit("slot_f", 2); !adm.Granted || adm.Held != 2 {
+		t.Fatalf("a re-stamped holder kept its slot: %+v", adm)
+	}
+	// Two spending holders, no slot free: the refusal is final.
+	mk("slot_g", waiting, fp)
+	if adm := admit("slot_g", 2); adm.Granted || adm.Held != 2 {
+		t.Fatalf("a run was admitted past two spending holders: %+v", adm)
+	}
+	// A release names the admission it undoes. Witnessed on a holder with
+	// no run document yet (a launch reserves before it persists): nothing
+	// adopts it back, so the undo of its first admission, landing after its
+	// second, must leave the second's entry — the next run still waits —
+	// and the undo of the second gives the slot back.
+	const undone = "fp-undone"
+	firstU, err := ledger.ReserveCredSlot(ctx, undone, "undo_a", 1)
+	if err != nil || !firstU.Granted {
+		t.Fatalf("first admission of undo_a: %+v %v", firstU, err)
+	}
+	secondU, err := ledger.ReserveCredSlot(ctx, undone, "undo_a", 1)
+	if err != nil || !secondU.Granted || !secondU.At.After(firstU.At) {
+		t.Fatalf("second admission of undo_a: %+v after %+v %v, want granted on a later instant", secondU, firstU, err)
+	}
+	if err := ledger.ReleaseCredSlot(ctx, undone, "undo_a", firstU.At); err != nil {
+		t.Fatalf("ReleaseCredSlot(undo_a, first admission): %v", err)
+	}
+	if adm, err := ledger.ReserveCredSlot(ctx, undone, "undo_b", 1); err != nil || adm.Granted || adm.Held != 1 {
+		t.Fatalf("the undo of an earlier admission took the entry a later one wrote: %+v %v", adm, err)
+	}
+	if err := ledger.ReleaseCredSlot(ctx, undone, "undo_a", secondU.At); err != nil {
+		t.Fatalf("ReleaseCredSlot(undo_a, second admission): %v", err)
+	}
+	if adm, err := ledger.ReserveCredSlot(ctx, undone, "undo_b", 1); err != nil || !adm.Granted || adm.Held != 1 {
+		t.Fatalf("the undo of the holder's last admission did not give the slot back: %+v %v", adm, err)
+	}
+	// A run its document says spends the key holds a slot whether or not
+	// the row names it: runs alive when the cap was set — or before the
+	// ledger existed — never asked for one, and the first admission adopts
+	// them, outside the cap, so a newcomer waits until enough of them end.
+	const adopted = "fp-adopted"
+	for _, id := range []string{"pre_a", "pre_b", "pre_c"} {
+		mk(id, store.RunStatusRunning, adopted)
+	}
+	mk("post_a", waiting, adopted)
+	if adm, err := ledger.ReserveCredSlot(ctx, adopted, "post_a", 2); err != nil || adm.Granted || adm.Held != 3 {
+		t.Fatalf("a newcomer was admitted on a cap of two while three runs the ledger never admitted spend the key: %+v %v, want refused with the 3 adopted", adm, err)
+	}
+	flip("pre_a", store.RunStatusFinished)
+	flip("pre_b", store.RunStatusFinished)
+	if adm, err := ledger.ReserveCredSlot(ctx, adopted, "post_a", 2); err != nil || !adm.Granted || adm.Held != 2 {
+		t.Fatalf("two of the adopted runs ended: %+v %v, want the newcomer admitted beside the one still spending", adm, err)
+	}
+	// The run an admission decides is never adopted by it: a resume flips
+	// and re-stamps its run before it asks, and its own admission — not an
+	// adoption past the cap — says whether it runs.
+	const resumed = "fp-resumed"
+	mk("res_other", store.RunStatusRunning, resumed)
+	mk("res_self", store.RunStatusQueued, resumed)
+	if adm, err := ledger.ReserveCredSlot(ctx, resumed, "res_self", 1); err != nil || adm.Granted || adm.Held != 1 {
+		t.Fatalf("a resume asking on a key one other run spends: %+v %v, want refused with that one holder — the asking run adopted itself", adm, err)
+	}
+	flip("res_other", store.RunStatusFinished)
+	if adm, err := ledger.ReserveCredSlot(ctx, resumed, "res_self", 1); err != nil || !adm.Granted || adm.Held != 1 {
+		t.Fatalf("the other run ended: %+v %v, want the resume admitted alone", adm, err)
+	}
+	// Nor is any other run in that window: two resumes on one key overlap —
+	// two replicas' sweepers, two operators — and each claims its run (the
+	// flip to queued) before it asks, so each document spends the key while
+	// the other's admission decides. Of the two, the first to ask takes the
+	// free slot and the second is refused on it; adopted, each would refuse
+	// the other on a key nobody holds.
+	flipper := store.AsQueuedFlipper(s)
+	if flipper == nil {
+		t.Fatal("the store must flip a resumed run to queued (store.QueuedFlipper)")
+	}
+	claim := func(id, fingerprint string) store.QueuedFlip {
+		mk(id, store.RunStatusFailedResumable, fingerprint)
+		fl, ok, err := flipper.FlipToQueued(ctx, id, store.RunStatusFailedResumable, time.Now())
+		if err != nil || !ok {
+			t.Fatalf("FlipToQueued %s: changed=%v %v", id, ok, err)
+		}
+		return fl
+	}
+	const overlap = "fp-overlap"
+	claim("ovl_a", overlap)
+	claim("ovl_b", overlap)
+	if adm, err := ledger.ReserveCredSlot(ctx, overlap, "ovl_a", 1); err != nil || !adm.Granted || adm.Held != 1 {
+		t.Fatalf("the first of two overlapping resumes asked on a free key: %+v %v, want admitted alone — it adopted the other resume, whose own admission had not decided", adm, err)
+	}
+	if adm, err := ledger.ReserveCredSlot(ctx, overlap, "ovl_b", 1); err != nil || adm.Granted || adm.Held != 1 {
+		t.Fatalf("the second of two overlapping resumes: %+v %v, want refused on the slot the first holds", adm, err)
+	}
+	// Refused, the second resume's flip is reverted, and the revert takes
+	// the pending admission with it: the run is put back as it was.
+	flC := claim("ovl_c", "fp-overlap-revert")
+	if reverted, err := flipper.RevertQueuedFlip(ctx, "ovl_c", flC, "refused"); err != nil || !reverted {
+		t.Fatalf("RevertQueuedFlip ovl_c: reverted=%v %v", reverted, err)
+	}
+	if r, err := s.LoadRun(ctx, "ovl_c"); err != nil || r.CredAdmissionPending {
+		t.Fatalf("a reverted flip left the pending admission on the run (load err=%v)", err)
+	}
+	// Once a resume's admission has decided, its run is a fact like any
+	// other: settled, a resumed run on a key the row does not name — capped
+	// after the resume asked — is adopted by that key's next admission. A
+	// settle that names an earlier flip than the run's leaves it awaiting.
+	if err := ledger.SettleCredSlotAdmission(ctx, "set_none", time.Time{}); err == nil {
+		t.Fatal("SettleCredSlotAdmission with no flip marker must refuse")
+	}
+	const settled = "fp-settled"
+	flSet := claim("set_a", settled)
+	flStale := claim("set_b", settled)
+	if err := ledger.SettleCredSlotAdmission(ctx, "set_a", flSet.At); err != nil {
+		t.Fatalf("SettleCredSlotAdmission set_a: %v", err)
+	}
+	if err := ledger.SettleCredSlotAdmission(ctx, "set_b", flStale.At.Add(-time.Millisecond)); err != nil {
+		t.Fatalf("SettleCredSlotAdmission set_b on an earlier marker: %v", err)
+	}
+	mk("set_new", waiting, settled)
+	if adm, err := ledger.ReserveCredSlot(ctx, settled, "set_new", 1); err != nil || adm.Granted || adm.Held != 1 {
+		t.Fatalf("a newcomer beside one settled resume and one still awaiting its admission: %+v %v, want refused with the settled one adopted, alone", adm, err)
+	}
+	// The pending admission is read on a queued run only: a resume whose
+	// settle never landed runs once a runner claims it, and a running run
+	// spends its keys as a fact whatever its marker says.
+	const claimed = "fp-claimed"
+	claim("clm_a", claimed)
+	flip("clm_a", store.RunStatusRunning)
+	mk("clm_new", waiting, claimed)
+	if adm, err := ledger.ReserveCredSlot(ctx, claimed, "clm_new", 1); err != nil || adm.Granted || adm.Held != 1 {
+		t.Fatalf("a newcomer beside a running resume whose settle never landed: %+v %v, want refused with the running one adopted", adm, err)
+	}
+	// A reservation with no run document yet keeps its slot: the launch
+	// persists the run after it reserves (store.CredSlotGrace).
+	const fresh = "fp-fresh"
+	if adm, err := ledger.ReserveCredSlot(ctx, fresh, "slot_ghost", 1); err != nil || !adm.Granted {
+		t.Fatalf("reserving before the run document exists: %+v %v", adm, err)
+	}
+	mk("slot_h", store.RunStatusRunning, fresh)
+	if adm, err := ledger.ReserveCredSlot(ctx, fresh, "slot_h", 1); err != nil || adm.Granted {
+		t.Fatalf("a holder reserved moments ago with no document yet was evicted: %+v %v", adm, err)
+	}
+	// A deleted run is pulled from every row at once — not when a refusal's
+	// reconcile finds its document gone past the grace.
+	const gone = "fp-deleted"
+	mk("slot_del", store.RunStatusRunning, gone)
+	if adm, err := ledger.ReserveCredSlot(ctx, gone, "slot_del", 1); err != nil || !adm.Granted {
+		t.Fatalf("reserving for the run about to be deleted: %+v %v", adm, err)
+	}
+	if err := s.DeleteRun(ctx, "slot_del"); err != nil {
+		t.Fatalf("DeleteRun slot_del: %v", err)
+	}
+	mk("slot_i", store.RunStatusRunning, gone)
+	if adm, err := ledger.ReserveCredSlot(ctx, gone, "slot_i", 1); err != nil || !adm.Granted || adm.Held != 1 {
+		t.Fatalf("a deleted run kept its slot inside the grace: %+v %v — DeleteRun must pull it from the ledger", adm, err)
+	}
+	// A cap lowered below its holders re-admits none of them while the row
+	// is over it: a holder's resume waits like a newcomer's until enough of
+	// the others stop spending, then is admitted in place — never a row that
+	// stays over the operator's new cap for as long as its runs pause and
+	// resume.
+	const lowered = "fp-lowered"
+	for _, id := range []string{"low_a", "low_b", "low_c"} {
+		mk(id, store.RunStatusRunning, lowered)
+		if adm, err := ledger.ReserveCredSlot(ctx, lowered, id, 3); err != nil || !adm.Granted {
+			t.Fatalf("admitting %s on a cap of three: %+v %v", id, adm, err)
+		}
+	}
+	if adm, err := ledger.ReserveCredSlot(ctx, lowered, "low_a", 1); err != nil || adm.Granted || adm.Held != 3 {
+		t.Fatalf("a holder was re-admitted with the row over its lowered cap: %+v %v, want refused with 3 holders", adm, err)
+	}
+	flip("low_b", store.RunStatusFinished)
+	if adm, err := ledger.ReserveCredSlot(ctx, lowered, "low_a", 1); err != nil || adm.Granted || adm.Held != 2 {
+		t.Fatalf("two holders still spend on a lowered cap of one: %+v %v, want refused with 2 holders", adm, err)
+	}
+	flip("low_c", store.RunStatusFinished)
+	if adm, err := ledger.ReserveCredSlot(ctx, lowered, "low_a", 1); err != nil || !adm.Granted || adm.Held != 1 {
+		t.Fatalf("the other holders ended: %+v %v, want the holder admitted in place, alone", adm, err)
+	}
+	mk("low_d", store.RunStatusRunning, lowered)
+	if adm, err := ledger.ReserveCredSlot(ctx, lowered, "low_d", 1); err != nil || adm.Granted || adm.Held != 1 {
+		t.Fatalf("a newcomer was admitted past the lowered cap: %+v %v", adm, err)
+	}
+	// Caller errors, never silent: an uncapped key reserves nothing, and a
+	// reservation must name a key.
+	if _, err := ledger.ReserveCredSlot(ctx, fp, "slot_a", 0); err == nil {
+		t.Fatal("ReserveCredSlot(max=0) must refuse: an uncapped key reserves nothing")
+	}
+	if _, err := ledger.ReserveCredSlot(ctx, "", "slot_a", 1); err == nil {
+		t.Fatal("ReserveCredSlot with no fingerprint must refuse")
 	}
 }

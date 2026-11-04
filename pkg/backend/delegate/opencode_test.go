@@ -2,18 +2,21 @@ package delegate
 
 import (
 	"context"
+	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
 )
 
-// TestOpenCodeBuildArgs pins the whole invocation: the `run` subcommand
-// closes argv, the prompt travels on stdin and NOT in argv, and the model /
-// effort dials are the CLI's own.
+// TestOpenCodeBuildArgs pins the whole invocation: the `run` subcommand OPENS
+// argv, the prompt travels on stdin and NOT in argv, and the model / effort
+// dials are the CLI's own, folded into one model reference.
 func TestOpenCodeBuildArgs(t *testing.T) {
 	b := &CLIAgentBackend{Protocol: opencodeProtocol}
 
@@ -28,18 +31,17 @@ func TestOpenCodeBuildArgs(t *testing.T) {
 		args, stdin := b.buildArgs(opencodeProtocol, task, promptArg, task.BuildSystemPrompt())
 
 		want := []string{
-			"--format", "json",
-			"-m", "anthropic/claude-sonnet-4-6",
-			"--variant", "high",
 			"run",
+			"--format", "json",
+			"-m", "anthropic/claude-sonnet-4-6#high",
 		}
 		if !reflect.DeepEqual(args, want) {
 			t.Fatalf("args = %v, want %v", args, want)
 		}
-		// The subcommand must be the LAST token: opencode reads everything
-		// after it as the positional message.
-		if args[len(args)-1] != "run" {
-			t.Fatalf("subcommand is not last: %v", args)
+		// The subcommand must be the FIRST token: opencode 2.x resolves it
+		// before it knows any flag, and refuses a flag it reads first.
+		if args[0] != "run" {
+			t.Fatalf("subcommand is not first: %v", args)
 		}
 		if stdin != promptArg {
 			t.Fatalf("stdin = %q, want the composed prompt %q", stdin, promptArg)
@@ -71,11 +73,61 @@ func TestOpenCodeBuildArgs(t *testing.T) {
 	t.Run("no dials when unset", func(t *testing.T) {
 		args, _ := b.buildArgs(opencodeProtocol, Task{UserPrompt: "x"}, "x", "")
 		for _, a := range args {
-			if a == "-m" || a == "--variant" {
+			if a == "-m" || a == "--variant" || strings.Contains(a, "#") {
 				t.Fatalf("unexpected dial with empty model/effort: %v", args)
 			}
 		}
 	})
+
+	t.Run("an effort with no model emits no model reference", func(t *testing.T) {
+		// `-m "#high"` is a hard refusal ("Invalid model reference: #high",
+		// measured on 2.2.5), so the dial is dropped — warned by name from
+		// OpenCodeBackend.Execute, never spelled into argv.
+		args, _ := b.buildArgs(opencodeProtocol, Task{UserPrompt: "x", ReasoningEffort: "high"}, "x", "")
+		for _, a := range args {
+			if a == "-m" || strings.Contains(a, "#") {
+				t.Fatalf("an effort with no model reached argv: %v", args)
+			}
+		}
+	})
+}
+
+// TestOpenCodeLegacyArgvDialect pins the ITERION_OPENCODE_ARGV=1 hatch: the
+// 1.x argv, byte for byte — every generated flag first, `--variant` for the
+// dial, `run` closing argv.
+func TestOpenCodeLegacyArgvDialect(t *testing.T) {
+	proto := opencodeLegacyProtocol()
+	b := &CLIAgentBackend{Protocol: proto}
+	task := Task{
+		UserPrompt:      "hello",
+		Model:           "anthropic/claude-sonnet-4-6",
+		ReasoningEffort: "ultracode",
+		SessionID:       "ses_1",
+		ForkSession:     true,
+	}
+	args, stdin := b.buildArgs(proto, task, "hello", "")
+	want := []string{
+		"--format", "json",
+		"-m", "anthropic/claude-sonnet-4-6",
+		"--variant", "high",
+		"--session", "ses_1", "--fork=true",
+		"run",
+	}
+	if !reflect.DeepEqual(args, want) {
+		t.Fatalf("legacy args = %v, want %v", args, want)
+	}
+	if args[len(args)-1] != "run" {
+		t.Fatalf("the 1.x subcommand is not last: %v", args)
+	}
+	if stdin != "hello" {
+		t.Fatalf("stdin = %q, want the prompt", stdin)
+	}
+	// The dialect decides POSITION and spelling only: every other field is
+	// the one the 2.x literal declares.
+	if proto.Name != opencodeProtocol.Name || proto.OutputFormat != opencodeProtocol.OutputFormat ||
+		!proto.PromptViaStdin || proto.HostBinaryEnv != opencodeProtocol.HostBinaryEnv {
+		t.Fatalf("the legacy dialect changed more than the argv shape: %+v", proto)
+	}
 }
 
 // TestOpenCodeProtocolLeavesSiblingsAlone guards the three protocols that
@@ -94,20 +146,49 @@ func TestOpenCodeProtocolLeavesSiblingsAlone(t *testing.T) {
 }
 
 func TestOpenCodeMapEffort(t *testing.T) {
-	cases := map[string][]string{
-		"":          nil,
-		"low":       {"--variant", "low"},
-		"high":      {"--variant", "high"},
-		"max":       {"--variant", "max"},
-		"xhigh":     {"--variant", "high"},
-		"ultracode": {"--variant", "high"},
-		"HIGH":      {"--variant", "high"},
+	// The 2.x dial is a bare variant name: it rides the model reference.
+	cases := map[string]string{
+		"":          "",
+		"low":       "low",
+		"high":      "high",
+		"max":       "max",
+		"xhigh":     "high",
+		"ultracode": "high",
+		"HIGH":      "high",
+		"  high  ":  "high",
 	}
 	for in, want := range cases {
-		if got := opencodeMapEffort(in); !reflect.DeepEqual(got, want) {
-			t.Errorf("opencodeMapEffort(%q) = %v, want %v", in, got, want)
+		if got := opencodeMapEffort(in); got != want {
+			t.Errorf("opencodeMapEffort(%q) = %q, want %q", in, got, want)
+		}
+		if got := opencodeModelRef(Task{Model: "scripted/m1", ReasoningEffort: in}); got != "scripted/m1"+variantSuffix(want) {
+			t.Errorf("opencodeModelRef(effort %q) = %q, want %q", in, got, "scripted/m1"+variantSuffix(want))
+		}
+		// The 1.x hatch spells the same level on its own flag.
+		var legacy []string
+		if want != "" {
+			legacy = []string{"--variant", want}
+		}
+		if got := opencodeLegacyMapEffort(in); !reflect.DeepEqual(got, legacy) {
+			t.Errorf("opencodeLegacyMapEffort(%q) = %v, want %v", in, got, legacy)
 		}
 	}
+	// A reference that already spells its variant is emitted as written: a
+	// second `#` is "Invalid model reference" on 2.2.5, and the operator's
+	// explicit spelling outranks the dial (Execute warns —
+	// TestOpenCodeAuthoredVariantOutranksTheDial).
+	for _, effort := range []string{"", "high", "ultracode"} {
+		if got := opencodeModelRef(Task{Model: "scripted/m1#low", ReasoningEffort: effort}); got != "scripted/m1#low" {
+			t.Errorf("opencodeModelRef(authored #low, effort %q) = %q, want the authored reference unchanged", effort, got)
+		}
+	}
+}
+
+func variantSuffix(variant string) string {
+	if variant == "" {
+		return ""
+	}
+	return "#" + variant
 }
 
 func TestOpenCodeMapModel(t *testing.T) {
@@ -198,6 +279,39 @@ func TestParseOpenCodeOutput(t *testing.T) {
 			t.Errorf("Err = %v, want UnknownError", got.Err)
 		}
 	})
+
+	// The 2.x envelope carries `type` + `message` and neither `data` nor
+	// `name`, so a reader of the 1.x keys alone reported no error at all.
+	// Every line below is a verbatim 2.2.5 measurement.
+	for _, tc := range []struct {
+		name, stream, want string
+	}{
+		{
+			name:   "a 2.x provider refusal carries its message",
+			stream: `{"type":"error","timestamp":1793656111152,"sessionID":"ses_e61c3c152ffeiYZhwYVaPh5OHc","error":{"type":"provider.no-route","message":"Model unavailable: scripted/m1"}}`,
+			want:   "Model unavailable: scripted/m1",
+		},
+		{
+			name:   "a 2.x argv refusal carries its sentence",
+			stream: `{"type":"error","timestamp":1,"sessionID":"","error":{"type":"unknown","message":"--fork requires --continue or --session"}}`,
+			want:   "--fork requires --continue or --session",
+		},
+		{
+			name:   "a 2.x error with no message falls back to its type",
+			stream: `{"type":"error","sessionID":"s","error":{"type":"provider.no-route"}}`,
+			want:   "provider.no-route",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := parseOpenCodeOutput(tc.stream)
+			if got.Err == nil {
+				t.Fatalf("Err = nil, want %q", tc.want)
+			}
+			if !strings.Contains(got.Err.Error(), tc.want) {
+				t.Errorf("Err = %v, want %q", got.Err, tc.want)
+			}
+		})
+	}
 
 	t.Run("unparseable stdout is handed back whole", func(t *testing.T) {
 		got := parseOpenCodeOutput("not json at all")
@@ -301,7 +415,7 @@ func TestOpenCodeRefusesUntrustedProject(t *testing.T) {
 		if err == nil {
 			t.Fatal("a workspace deeper than the cap was accepted without being screened")
 		}
-		for _, want := range []string{"cannot screen", "path components", "no repository root"} {
+		for _, want := range []string{"cannot screen", "path components", "filesystem root"} {
 			if !strings.Contains(err.Error(), want) {
 				t.Errorf("error %q does not mention %q — it must describe what was measured", err, want)
 			}
@@ -334,11 +448,15 @@ func TestOpenCodeRefusesUntrustedProject(t *testing.T) {
 		}
 	})
 
-	t.Run("the walk stops at the git worktree root", func(t *testing.T) {
+	// A git worktree root does NOT stop the walk: opencode 2.2.5 climbs
+	// straight past a `.git` and loads the ancestor's plugin (measured end
+	// to end by TestLive_Feat_OpenCodeProjectScreen, whose `plugin above the
+	// git root` row carries wantLoaded{2: true}). 1.1.19 stopped there, so
+	// the walk takes the UNION of the two lines' reaches — a stop predicate
+	// stronger than the CLI's is a hole. The operator lifts the extra
+	// refusal with ITERION_OPENCODE_TRUST_PROJECT=1.
+	t.Run("a resource ABOVE the git root is screened", func(t *testing.T) {
 		t.Setenv("HOME", t.TempDir())
-		// Above the repository is the OPERATOR's tree, which opencode does
-		// not read either (measured) — refusing on it would block every run
-		// on a host whose home holds a .opencode directory.
 		outer := t.TempDir()
 		if err := os.MkdirAll(filepath.Join(outer, ".opencode", "plugin"), 0o750); err != nil {
 			t.Fatal(err)
@@ -354,15 +472,18 @@ func TestOpenCodeRefusesUntrustedProject(t *testing.T) {
 		if err := os.MkdirAll(work, 0o750); err != nil {
 			t.Fatal(err)
 		}
-		if err := refuseUntrustedOpenCodeProject(work); err != nil {
-			t.Errorf("refused on a directory above the git root: %v", err)
+		err := refuseUntrustedOpenCodeProject(work)
+		if err == nil {
+			t.Fatal("a `.git` between the workspace and the plugin truncated the walk; opencode 2.x does not stop there")
+		}
+		if !strings.Contains(err.Error(), outer) {
+			t.Errorf("error %q does not name the level it refused (%q)", err, outer)
 		}
 	})
 
-	// The stop predicate must be no STRONGER than opencode's. A DANGLING
-	// `.git` symlink exists to Lstat and not to Stat: it stopped this walk
-	// while opencode climbed straight past it and loaded the parent's
-	// plugin — measured end to end against the real CLI.
+	// A clean `.git` is not the only shape that used to truncate the walk: a
+	// DANGLING `.git` symlink exists to Lstat and not to Stat, and a
+	// predicate built on either reintroduces the hole above.
 	t.Run("a DANGLING .git does not stop the walk", func(t *testing.T) {
 		repo := writeWorkspace(t, ".opencode/plugin/pwn.ts", ".git/HEAD")
 		work := filepath.Join(repo, "sub")
@@ -405,14 +526,14 @@ func TestOpenCodeRefusesUntrustedProject(t *testing.T) {
 	})
 
 	t.Run("a clean workspace runs", func(t *testing.T) {
-		ws := t.TempDir()
+		ws := hermeticWorkspace(t)
 		if err := refuseUntrustedOpenCodeProject(ws); err != nil {
 			t.Errorf("clean workspace refused: %v", err)
 		}
 	})
 
 	t.Run("an EMPTY .opencode directory is not a reason to refuse", func(t *testing.T) {
-		ws := t.TempDir()
+		ws := hermeticWorkspace(t)
 		if err := os.MkdirAll(filepath.Join(ws, ".opencode"), 0o750); err != nil {
 			t.Fatal(err)
 		}
@@ -452,6 +573,71 @@ func TestOpenCodeRefusesUntrustedProject(t *testing.T) {
 	})
 }
 
+// hermeticWorkspace is a fresh workspace whose screen reads nothing the test
+// does not own: the operator's HOME is pinned to the workspace's parent, the
+// one level where openCodeProjectLevels ends its walk without screening, so
+// an opencode.json another process left in the runner's TMPDIR cannot redden
+// a row. A `.git` at the workspace root would not do it — the production walk
+// climbs past one, and nothing here narrows that.
+// TestOpenCodeWitnessesReadNothingAboveTheirTempRoot holds every TestOpenCode*
+// witness to this pin.
+func hermeticWorkspace(t *testing.T) string {
+	t.Helper()
+	hermeticTempRoot(t)
+	return t.TempDir()
+}
+
+// hermeticTempRoot pins the operator's HOME to the parent every t.TempDir()
+// of this test shares, for a test whose workspace line is not its own to
+// move: the walk from any of its temp dirs ends there.
+func hermeticTempRoot(t *testing.T) {
+	t.Helper()
+	t.Setenv("HOME", filepath.Dir(t.TempDir()))
+}
+
+// TestOpenCodeWitnessesReadNothingAboveTheirTempRoot holds the opencode
+// family to its pin. Every TestOpenCode* test is re-run in a child of this
+// binary whose TMPDIR sits under a root carrying both resource shapes the
+// screen refuses. A witness whose workspace is a bare t.TempDir() climbs into
+// that root and meets the untyped untrusted-checkout refusal instead of the
+// outcome it asserts. A witness pinned by hermeticWorkspace or
+// hermeticTempRoot stops below the root.
+func TestOpenCodeWitnessesReadNothingAboveTheirTempRoot(t *testing.T) {
+	// The trust hatch would wave every workspace through, the planted root
+	// with it: parent and child both run with the screen armed.
+	t.Setenv(openCodeTrustProjectEnv, "")
+	root := t.TempDir()
+	for _, rel := range []string{"opencode.json", ".opencode/plugin/pwn.ts"} {
+		path := filepath.Join(root, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("{}\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tmp := filepath.Join(root, "tmp")
+	probe := filepath.Join(tmp, "probe")
+	if err := os.MkdirAll(probe, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	// The hazard is real: an unpinned walk from under the child's TMPDIR
+	// refuses on the planted root.
+	if err := refuseUntrustedOpenCodeProject(probe); err == nil || !strings.Contains(err.Error(), root) {
+		t.Fatalf("an unpinned walk from %s does not refuse on the planted root %s: %v", probe, root, err)
+	}
+
+	cmd := exec.Command(os.Args[0], "-test.run=^TestOpenCode", "-test.skip=^"+regexp.QuoteMeta(t.Name())+"$", "-test.count=1", "-test.v") // #nosec G204 — re-executes this test binary
+	cmd.Env = append(os.Environ(), "TMPDIR="+tmp)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("an opencode witness reads above its own temp root — pin it with hermeticWorkspace or hermeticTempRoot: %v\n%s", err, out)
+	}
+	if !strings.Contains(string(out), "--- PASS: TestOpenCode") {
+		t.Fatalf("the child ran no opencode witness:\n%s", out)
+	}
+}
+
 // writeWorkspace materialises a temp workspace holding the given
 // workspace-relative files.
 func writeWorkspace(t *testing.T, files ...string) string {
@@ -479,8 +665,14 @@ func TestOpenCodeResolveEnvPinsHostState(t *testing.T) {
 }
 
 // TestOpenCodeRefusesGatedNode: opencode declares no PermissionHook, so a
-// node carrying an armed gate is refused rather than run ungated.
+// node carrying an armed gate is refused rather than run ungated — with the
+// TYPED capability refusal, so recovery classifies it CAPABILITY_UNSUPPORTED
+// (deterministic, never retried) instead of an untyped spawn-class error.
 func TestOpenCodeRefusesGatedNode(t *testing.T) {
+	hermeticTempRoot(t)
+	// The witness is about the gate, not the image gap (#1643): the host
+	// carries an opencode, so the answer is the same on a CI runner.
+	stageHostCLI(t, "opencode")
 	policy, err := permission.NewPolicy(permission.ModeDeny, nil, nil, []string{"Bash"})
 	if err != nil {
 		t.Fatal(err)
@@ -488,6 +680,7 @@ func TestOpenCodeRefusesGatedNode(t *testing.T) {
 	ws := t.TempDir()
 	b := NewOpenCodeBackend(nil, "")
 	_, execErr := b.Execute(context.Background(), Task{
+		NodeID:     "n1",
 		WorkDir:    ws,
 		BaseDir:    ws,
 		UserPrompt: "hi",
@@ -496,8 +689,39 @@ func TestOpenCodeRefusesGatedNode(t *testing.T) {
 	if execErr == nil {
 		t.Fatal("a gated node ran on opencode; it cannot enforce the gate")
 	}
-	if !strings.Contains(execErr.Error(), BackendOpenCode) || !strings.Contains(execErr.Error(), "cannot enforce") {
-		t.Fatalf("refusal %q must name the backend and the reason", execErr)
+	var unsupported *ErrCapabilityUnsupported
+	if !errors.As(execErr, &unsupported) {
+		t.Fatalf("refusal %q (%T) must be the typed capability refusal", execErr, execErr)
+	}
+	if unsupported.Backend != BackendOpenCode || unsupported.NodeID != "n1" || unsupported.Capability != "permission-deny" {
+		t.Fatalf("refusal = %+v, want backend %q, node n1, capability permission-deny", unsupported, BackendOpenCode)
+	}
+	if unsupported.Remedy == "" || !strings.Contains(execErr.Error(), "permission: off") {
+		t.Fatalf("refusal %q must name the way out", execErr)
+	}
+	if !strings.Contains(unsupported.Remedy, "claude_code") {
+		t.Fatalf("remedy %q must name an enforcing backend read from the registry — an empty registry would pass the non-empty check", unsupported.Remedy)
+	}
+}
+
+// TestOpenCodeRefusesAskGatedNode: permission: ask on a hookless CLI hits the
+// same typed refusal, named permission-ask — an ask verdict cannot pause an
+// opencode run (headless auto-rejects, --auto auto-allows).
+func TestOpenCodeRefusesAskGatedNode(t *testing.T) {
+	stageHostCLI(t, "opencode")
+	policy, err := permission.NewPolicy(permission.ModeAsk, nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := NewOpenCodeBackend(nil, "")
+	ws := hermeticWorkspace(t)
+	_, execErr := b.Execute(context.Background(), Task{NodeID: "n1", WorkDir: ws, BaseDir: ws, UserPrompt: "hi", Permission: policy})
+	var unsupported *ErrCapabilityUnsupported
+	if !errors.As(execErr, &unsupported) {
+		t.Fatalf("refusal %v (%T) must be the typed capability refusal", execErr, execErr)
+	}
+	if unsupported.Capability != "permission-ask" {
+		t.Fatalf("capability = %q, want permission-ask", unsupported.Capability)
 	}
 }
 

@@ -364,6 +364,13 @@ func (s *Server) ListenAndServe() error {
 		s.warnf("retry sweeper NOT started: the store does not implement ListRunsDueForRetry — " +
 			"runs parked on a provider quota window will never resume on their own")
 	}
+	// Platform-override shadow observer: polls whether a stored platform
+	// override is holding back a newer baked bundle, and publishes it as a
+	// gauge an alert can read. The two reporters it sits on are passive —
+	// the admin inventory waits for a caller, the resolve-time warning for a
+	// launch — so a bot nobody launches rots unseen (#2354). Gauge-only, no
+	// durable state, hence no election and no cloud twin owed.
+	s.startOverrideShadowObserver()
 	// Merge-gate sweeper (cloud only): the reconciliation net under the
 	// reconciler's lossy outcome event. Same cadence as the retry sweeper next
 	// door, and needed for the same reason — a required check nobody answers

@@ -307,6 +307,20 @@ Which is why the preflight's agreement 7 sharpens its wording once
 `arm_automerge` is on: a required context that nothing produces stops being
 "this PR blocks" and becomes "this configuration cannot converge".
 
+And the launch var is only **half** the gesture. The other half is the
+repository's own **Allow auto-merge**: the bot arms a PR through
+`enablePullRequestAutoMerge`, which GitHub refuses outright while that setting
+is off, so an armed bot on a repository that forbids auto-merge merges nothing
+and reports nothing to read. A repository created without it has it off —
+GitHub's default — so this is a gesture, not a box already ticked:
+
+```
+gh api -X PATCH repos/<owner>/<repo> -F allow_auto_merge=true
+```
+
+That pair is agreement 9: the preflight reads the launch var and the repository
+setting together, because either one alone describes a loop that cannot merge.
+
 ---
 
 ## When the alignment touches a workflow file
@@ -384,25 +398,48 @@ asked of the whole class rather than of a list, by
 [bots/forge_delivery_class_test.go](../bots/forge_delivery_class_test.go):
 every bundle that declares the `forge_token` secret **and** can deliver —
 a program of its own calling `git push`, a bundle shipping
-`skills/forge-mr-create.md`, or a `delivery_probe` already — owes one of two
-answers, and a bundle that joins the class owing neither reddens the suite.
+`skills/forge-mr-create.md`, or a `delivery_probe` already — owes one of three
+answers, and a bundle that joins the class owing none reddens the suite.
 
 | answer | who | what it buys |
 |---|---|---|
 | **probe the delivery** — ask the preflight above before pushing | `dep-update-guard`, `branch-improve-loop` | an answered denial becomes a typed hold; nothing unanswered ever does |
 | **own the paths delivered** — `DELIVERY_OWNED_PATHS` in the pushing program, which both stages and refuses from that tuple | `feed-watch`, `prod-watch`, `vuln-watch` (their state dir) | a `.github/workflows/**` path cannot be in the diff, so there is nothing to ask |
+| **gate the delivery** — the same declaration in a deterministic node standing on the only in-edge of the agent that pushes, exiting to a typed `fail` | `docs-refresh`, `product-docs` (their doc writeable-set) | the paths are refused BY NAME before the agent runs, so a run that would carry one ends on `DELIVERY_PATHS_REFUSED` instead of at the forge |
 
 The declaration is a name in the program, never a comment: the staging and the
 refusal read the tuple and nothing else, so narrowing it narrows the delivery —
 and a tuple widened to the repository root or `.github` is refused by the same
 guard, since a pathspec that can hold a workflow file buys the exemption while
-delivering exactly the diff the probe exists to refuse.
+delivering exactly the diff the probe exists to refuse. A gate earns the
+exemption on two further counts, both read off the compiled graph: it must
+**dominate** the delivery — cut its verdict edges and the delivery is
+unreachable, which is what a loop condition like a writeable-set gate never
+was — and its own exit must be a declared `fail` carrying a code, because an
+untyped refusal reads as the engine's generic `FAIL_NODE`.
 
-The pushers that still owe an answer are the ones where an agent writes the
-whole tree and opens the pull request itself, so there is no pull request for
-the preflight to be asked about yet. Each is named with that reason in
-`unprovenForgePushers`, and the guard refuses a stale entry as firmly as a
-missing one: the day one of them answers, the list has to lose it (#2437).
+A gate is the strict **tail** of the loop condition it stands behind, and
+owes it the same rule in the same **window**: the writeable-set gate is the
+only remediation route there is, so a path the gate refuses and the loop
+certifies has no cure at all — the campaign is never asked to revert it, the
+loop converges, and the run dies typed after the whole budget is spent, with
+nothing to widen. Same rule, different window is the same defect: both nodes
+are handed the base the entry node recorded, never one re-derived from the
+campaign's own commit messages, and both read it in one frame (the committed
+series and the worktree, `--no-renames`, `core.quotePath=false`). The two
+are therefore asserted EQUAL on one tree, bot by bot — the window included
+(`bots/delivery_gate_test.go`, `TestTheLoopGateAndTheDeliveryGateAgree`) —
+and what a gate refuses by name stays as narrow as the credential's own
+refusal: `.github/workflows/**`, not `.github/`.
+
+The pushers that still owe an answer are the ones whose delivery no pathspec
+can bound: an agent writes code across the whole tree and opens the pull
+request itself, so there is no pull request for the preflight to be asked
+about yet, and no narrow owned set to declare. Each is named with that reason
+in `unprovenForgePushers`, pointed at epic
+[#1409](https://github.com/SocialGouv/iterion/issues/1409) — the preflight
+widened to a (repo, credential) pair — and the guard refuses a stale entry as
+firmly as a missing one: the day one of them answers, the list has to lose it.
 
 ---
 
@@ -412,7 +449,7 @@ missing one: the day one of them answers, the list has to lose it (#2437).
 scripts/auto-maintenance-check.sh <owner>/<repo> [--json]
 ```
 
-It reads; it never writes. Seven agreements:
+It reads; it never writes. Ten agreements:
 
 | # | agreement | broken means |
 |---|---|---|
@@ -423,8 +460,11 @@ It reads; it never writes. Seven agreements:
 | 5 | the delivery App is live, reaches this repository, can touch what Renovate may bump, and the workflow's secrets exist | the alignment cannot be delivered — a workflow-touching one is held by name (see below), the rest is refused at push |
 | 6 | the repository is inside the Renovate installation | no dependency PR is ever opened here |
 | 7 | every required context has actually been produced | the PR blocks forever — or, armed, cannot converge |
+| 8 | a conforming merge is told apart from a bypass merge | a push that skipped the gate is read as one that passed it |
+| 9 | the forge allows the auto-merge the integration is armed for | the armed bot merges nothing: GitHub refuses `enablePullRequestAutoMerge` while the repository setting is off |
+| 10 | the dependency lane itself has produced | the loop is silent, and a silent loop looks exactly like a repository with nothing to bump |
 
-Four things it does **not** do the obvious way, each because the obvious way
+Five things it does **not** do the obvious way, each because the obvious way
 was measured wrong:
 
 - **Only rulesets that gate the default branch count.** Dependency PRs target
@@ -441,15 +481,43 @@ was measured wrong:
   so there is nothing to be blind about.
 - **A suspended installation is a disagreement, not a permission question.** It
   holds every permission it ever held and uses none of them.
-- **Bypass actors are printed as inventory, not scored as an agreement.** They
-  are the admin escape hatch, kept on purpose, so neither outcome can redden —
-  and a line that cannot fail should not be counted among lines that can. What
-  the reader needs is the list, so that a merge by one of them is never
-  mistaken for a conforming merge.
+- **Who MAY bypass is inventory; who DID is agreement 8.** The list is the
+  admin escape hatch, kept on purpose, so its contents cannot redden and it
+  stays a note rather than a scored line. What could not stay is the sentence
+  printed in its place — "every merge went through the gate", whenever the list
+  came back empty — a claim about pushes nobody had read. The push history is
+  read instead, and what reddens there is a bypass no inventory entry can
+  explain by shape.
+- **Agreement 10 reads whether the lane RAN, how long ago, and its blind spot
+  is self-limiting.** Settings that all agree still bump nothing when the lane
+  itself is broken: a scheduled run failing on a secret it cannot mint, a
+  workflow GitHub disabled after 60 days of repository inactivity, or a lane
+  that simply stopped firing while its workflow stays `active` and its last
+  run stays green. So it reads the last run that reached a **verdict** — its
+  `.conclusion`, never `.status`, which only says the run finished — by a
+  stable key rather than by the page's order, and reddens when that verdict is
+  older than 60 days whatever its colour (`AUTO_MAINT_LANE_MAX_AGE_DAYS` moves
+  the bound; `AUTO_MAINT_NOW` pins the clock for a replay, and a pinned clock
+  is announced on the report's header line and carried in `--json` as `now`
+  and `now_pinned`, so a replay variable left in a job cannot green a dead
+  lane unseen). A `cancelled` or `skipped` run is neither a production nor a
+  failure: it is looked past and counted, together with the runs not finished
+  yet, and a sample made only of them (`AUTO_MAINT_RUN_SAMPLE` widens it) is
+  answered the way a silent workflow read is — by a pull request the installed
+  App opened within the bound, or by a blind spot. The lane is the workflow at
+  the recipe's path or one named exactly `Renovate` (`AUTO_MAINT_LANE_WORKFLOW`
+  names another); a config validator next to it is printed as inventory and
+  never judged as the lane, so a red validator cannot redden a producing lane
+  and a green one cannot hide a red lane. A lane that runs forge-side leaves no
+  workflow to read, and there a pull request the **installed** App opened
+  **within the bound** proves what a run would have proven; silence proves
+  nothing and blinds — and so does a hosted service that stopped org-wide,
+  whose last pull request has long fallen out of the window.
 
 **Exit codes.** `0` all agree · `1` at least one measured disagreement · `2` a
 **blind spot** — a tool missing, an API that did not answer, a truncated page,
-an unparseable payload, or a read this credential cannot make.
+a payload unparseable or of a shape the endpoint does not contract, or a read
+this credential cannot make.
 
 Blind outranks broken, deliberately. With a blind spot open the run cannot
 claim its list of disagreements is the whole list, and a comparison that fails
@@ -475,7 +543,27 @@ be told apart from a script that always fails.
 
 It guards the *inputs* as well as the predicates, which is the harder half: a
 ruleset scoped to a release branch, an `evaluate`-mode ruleset, a preset-only
-config, a config GitHub withheld for size, two installations of the same scope,
-a suspended App, `arm_automerge: "yes"`, the inline spelling of the manifest's
-allowlist, and a working directory holding files that look like glob matches
-for it. Every one of those was a full green before its fix.
+config, a config GitHub withheld for size, a symlink where the config should
+be, two installations of the same scope, a suspended App, `arm_automerge:
+"yes"`, a repository that forbids the auto-merge the integration arms, a
+workflow GitHub disabled for inactivity, a lane whose last completed run
+failed, a green verdict from 2021 on a workflow still `active`, a 2021 pull
+request as the only trace of a hosted service, a red config validator next to
+a green lane, a run the forge cancelled, a sample made only of skipped runs
+next to the App's own fresh pull request, GitHub's error object served with
+exit 0 as a list, as a ruleset and as a file, two completed runs the stable
+key cannot tell apart, the inline spelling of the manifest's allowlist, and a
+working directory holding files that look like glob matches for it. Every one
+of those was a wrong verdict before its fix — a full green for most; for the
+red validator, the cancelled run and the skipped sample, a red or a blind spot
+on a lane that was producing; and for the error object served as a file, an
+agreement that vanished from the report instead of reddening.
+
+**And the table above is witnessed too.** The agreement count a reader counts
+lives in this page while the agreements live in the script, which is the very
+shape of drift this preflight exists to catch — it drifted here, for a week,
+with agreement 8 described 300 lines above a table that stopped at seven. So
+`TestTheDocTableNamesEveryAgreementTheScriptCanEmit` derives both sides and
+compares them: every numbered label the script can emit has its row, every row
+names an agreement the script can emit, and the spelled number matches the
+rows.

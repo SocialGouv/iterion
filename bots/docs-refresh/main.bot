@@ -110,6 +110,13 @@ vars:
   ## vendored / runtime dirs are excluded unconditionally via
   ## `excluded_dirs`; the bot's own bundle is excluded when
   ## `bundle_self_path` is set.
+  ## PRECEDENCE: the two trees the delivery refuses BY NAME —
+  ## `.github/workflows/` (the forge credential refuses to push it) and
+  ## `.claude/` (a `.md` there is executable instruction, not
+  ## documentation) — are set aside from the footprint whatever these
+  ## globs or `excluded_dirs` say, and scan_hints says so in its note:
+  ## a glob that reached them would point the campaign at a path
+  ## scope_check reverts and delivery_gate refuses, pass after pass.
   ## UNIVERSAL DEFAULT: docs-refresh documents ANY repo, so the
   ## default footprint is the conventions common to most projects
   ## (root + nested READMEs, a docs/ tree, AGENTS.md, CLAUDE.md).
@@ -813,6 +820,30 @@ schema scope_check_output:
   out_of_scope: string[]
   log: string
 
+## delivery_gate is the DETERMINISTIC bound on what the PUSH may carry, read
+## once more on the only in-edge of finalize_mr. scope_check decides whether
+## the loop continues; this one decides whether the delivery happens at all.
+schema delivery_gate_output:
+  delivery_ok: bool
+  out_of_scope: string[]
+  log: string
+
+## record_run_base output — the run-start HEAD, read before the campaign's
+## first write. The ONE fact the delivery gate cannot re-derive afterwards: a
+## base read back from the campaign's own commit messages lets the audited
+## party choose the window it is audited on.
+schema run_base_output:
+  base_sha: string
+
+## run_base_input — that recorded base, mapped on the edge because a tool
+## command cannot read `{{outputs.*}}`. The loop condition (scope_check) and
+## the delivery bound (delivery_gate) both measure in THIS window: the one
+## remediation route there is asks for a revert only on what the tail would
+## refuse, and that holds only when the two read the same base. An empty one
+## refuses on both nodes; it is never replaced by a re-derived guess.
+schema run_base_input:
+  base_sha: string
+
 ## gate is the deterministic continuation decision. converged = scope
 ## clean AND the campaign reports the docs aligned — NOTHING ELSE
 ## (a docs-only bot can't break the build, so there is no build gate;
@@ -1213,7 +1244,21 @@ def excluded(p):
     if bundle_self and (p == bundle_self or p.startswith(bundle_self + os.sep)):
         return True
     return False
-files = sorted({f for g in globs for f in glob.glob(g, recursive=True) if os.path.isfile(f) and not excluded(f)})
+## The two trees the delivery refuses BY NAME (scope_check's REFUSED_TREES,
+## delivery_gate's DELIVERY_REFUSED_TREES) are never part of the footprint,
+## whatever doc_globs or excluded_dirs say: the default globs reach
+## '.github/workflows/README.md' through '**/README.md', and a footprint that
+## names such a path points the campaign at an edit the loop reverts and the
+## tail refuses, pass after pass. Set aside here and SAID in the note, so an
+## operator who pointed a glob there on purpose reads why it was not honoured
+## rather than finding it silently dropped.
+REFUSED_TREES = ('.github/workflows', '.claude')
+def refused(p):
+    rel = p.replace(os.sep, '/')
+    return any(rel == t or rel.startswith(t + '/') for t in REFUSED_TREES)
+matched = sorted({f for g in globs for f in glob.glob(g, recursive=True) if os.path.isfile(f) and not excluded(f)})
+set_aside = [f for f in matched if refused(f)]
+files = [f for f in matched if not refused(f)]
 no_docs = len(files) == 0
 dismissed = set()
 dismissed_path = os.environ.get('DISMISSED_PATH', '').strip()
@@ -1418,6 +1463,8 @@ elif checked_paths + checked_links == 0 and not areas:
     hints_note = 'no mechanical signal derivable from these docs (no repo-rooted paths or internal links cited) — the scan degrades silently; explore the repo directly'
 else:
     hints_note = str(missing_path_count) + ' missing path(s), ' + str(dead_link_count) + ' dead link(s)/anchor(s), ' + str(unmentioned_area_count) + ' unmentioned area(s) — from ' + str(checked_paths) + ' checkable path(s) + ' + str(checked_links) + ' internal link(s) across ' + str(len(files)) + ' doc(s); ' + str(ledger_excluded) + ' ledger-dismissed excluded' + (' [list truncated to ' + str(max_hints) + ']' if truncated else '')
+if set_aside:
+    hints_note += ' | WARNING: ' + str(len(set_aside)) + ' doc_globs match(es) SET ASIDE under a tree the delivery refuses by name (.github/workflows/, .claude/) — do not edit them, the loop reverts and the tail refuses them: ' + ', '.join(set_aside[:20]) + (' (+' + str(len(set_aside) - 20) + ' more)' if len(set_aside) > 20 else '')
 recent = []
 diff_since = os.environ.get('DIFF_SINCE', '').strip()
 mode = os.environ.get('MODE', 'full').strip().lower()
@@ -1466,85 +1513,199 @@ print(json.dumps({'doc_files': files, 'doc_count': len(files), 'hints': hints, '
 "`
   output: hints_output
 
-## scope_check — the DETERMINISTIC writeable-set gate. Diffs the RUN
-## BASE (oldest reflog entry of the fresh per-run worktree — exact
-## under worktree: auto) against the working tree and flags any changed
-## path that is not a doc (`.md` anywhere) — path-level containment.
-## Untracked files are held to the same rule. No LLM; the campaign
-## must revert whatever this flags.
-tool scope_check:
+## record_run_base — the RUN BASE, read ONCE at the entry, before any pass
+## has written anything. The delivery gate diffs against THIS: a base
+## re-derived from the campaign's own commit messages hands the audited party
+## the choice of its own audit window — one commit missing the
+## `Bot: docs-refresh` trailer (what `git revert` writes, and what the scope
+## gate's own remediation line asks the campaign for) becomes the base and
+## empties its own diff.
+##
+## It is the workspace's HEAD in both shapes the engine builds: the fresh
+## per-run worktree's tip under `worktree: auto`, and the PR head the runner
+## checked out on an amend — which is what the alignment is measured against
+## there, never the PR's base branch, so the contributor's own code is not
+## judged. Read here rather than off the run document because the run doc
+## carries a base only for an isolated workspace. No LLM, no shell beyond
+## git.
+tool record_run_base:
   command: `WS={{vars.workspace_dir}} python3 -I -c "
 import os, json, subprocess
+ws = os.environ.get('WS') or '.'
+p = subprocess.run(['git', '-C', ws, 'rev-parse', 'HEAD'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=60)
+base = (p.stdout or '').strip() if p.returncode == 0 else ''
+if not base:
+    ## An UNBORN HEAD is a SUPPORTED workspace, not a broken one: the engine
+    ## degrades worktree: auto to in-place for a freshly created forge repo
+    ## right after clone (pkg/runtime/worktree.go workspaceHasCommits — a
+    ## worktree needs a HEAD to anchor on), the campaign's first commit lands
+    ## on the unborn default branch and the push publishes it. The window is
+    ## then git's canonical EMPTY TREE: every path that first commit carries
+    ## is judged, which is the strict reading. Any other unreadable HEAD —
+    ## no repository at all — records NO base and the delivery gate refuses
+    ## rather than certifying against a guess.
+    q = subprocess.run(['git', '-C', ws, 'rev-parse', '--git-dir'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60)
+    base = '4b825dc642cb6eb9a060e54bf8d69288fbee4904' if q.returncode == 0 else ''
+print(json.dumps({'base_sha': base}))
+"`
+  output: run_base_output
+
+## scope_check — the DETERMINISTIC writeable-set gate. Diffs the RUN
+## BASE `record_run_base` recorded at the entry — the window `delivery_gate`
+## measures in, handed on the edge — against the working tree AND the
+## committed series, and flags any changed path that is not a doc (`.md`
+## anywhere, never a symlink, never under `.github/workflows/`, never a path
+## the run committed under `.claude/`): the same rule, the same window and
+## the same frame as the tail, so what the tail would refuse this pass can
+## still revert. Untracked files are held to the same rule. No LLM; the
+## campaign must revert whatever this flags.
+tool scope_check:
+  command: `WS={{vars.workspace_dir}} BASE_SHA={{input.base_sha}} python3 -I -c "
+import os, json, subprocess
 ws = os.environ.get('WS', '.')
+base = (os.environ.get('BASE_SHA') or '').strip()
+## The diff this gate reads is the repository's, never what git state the
+## judged agent plants in .git makes it look like: a replace ref on the base
+## (or a graft) would empty the diff it audits, and an inherited GIT_DIR or
+## work tree would redirect it to another repository. The scrub is the one
+## delivery_gate applies, so the loop and the tail read one tree.
+for k in ('GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_COMMON_DIR', 'GIT_OBJECT_DIRECTORY', 'GIT_ALTERNATE_OBJECT_DIRECTORIES', 'GIT_NAMESPACE'):
+    os.environ.pop(k, None)
+os.environ['GIT_NO_REPLACE_OBJECTS'] = '1'
+os.environ['GIT_GRAFT_FILE'] = os.devnull
 
 def git(args):
-    try:
-        p = subprocess.run(['git', '-C', ws] + args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=120)
-        return p.stdout or ''
-    except Exception:
-        return ''
+    ## core.quotePath=false, status.relativePaths=false and --no-relative on
+    ## the diffs: the frame delivery_gate reads in. git C-quotes a path
+    ## holding a byte >= 0x80, and a quoted 'données.md' ends in a quote
+    ## rather than in .md -- the loop would fail every pass on a page the
+    ## delivery carries. A git failure RAISES: this gate decides convergence,
+    ## and a tree it did not read is not one it certifies -- the except below
+    ## turns the failure into a closed answer, never into an empty diff.
+    p = subprocess.run(['git', '-C', ws, '-c', 'core.quotePath=false', '-c', 'status.relativePaths=false'] + args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=120)
+    if p.returncode != 0:
+        raise RuntimeError('git ' + ' '.join(args[:2]) + ' rc=' + str(p.returncode) + ': ' + ' '.join((p.stderr or '').split())[:300])
+    return p.stdout or ''
 
-# base = run-start HEAD: the newest reflog entry that is NOT one of this
-# run own docs-refresh commits. On a PR amend the runner clones at the base
-# branch then checks out the PR head, so the OLDEST reflog entry is that
-# base branch, not where alignment began -- diffing against it would flag
-# the PR own code as a scope violation. Walking newest-first to the first
-# foreign HEAD lands on the PR head (amend) or the worktree base
-# (worktree:auto): the true run-start in both.
-reflog = [l for l in git(['reflog', '--format=%H']).splitlines() if l.strip()]
-def is_own_commit(h):
-    body = git(['log', '-1', '--format=%B', h])
-    return any(l.strip() == 'Bot: docs-refresh' for l in body.splitlines())
-base = 'HEAD'
-for h in reflog:
-    if not is_own_commit(h):
-        base = h
-        break
-# The tree-noise list the engine provisions (ITERION_TREE_NOISE: the
-# .claude/ mirror, a drifted devbox.lock, tool-node script scratch) is not
-# the run's change on any branch (#1364, #1464): a verify_build that ran
-# devbox drifts the lock, and THIS pass's scope check must not fail on it.
-# The hard-coded .claude/ filter stays as the floor for an engine that does
-# not provision the variable yet.
-NOISE_PREFIX = ':(exclude,top)'
-noise = tuple(v[len(NOISE_PREFIX):] for v in os.environ.get('ITERION_TREE_NOISE', '').split() if v.startswith(NOISE_PREFIX))
-def is_noise(path):
-    for n in noise:
-        if n.endswith('*'):
-            if path.startswith(n[:-1]):
+## The base is RECORDED by record_run_base at the entry, before the campaign
+## writes anything, and it is the window delivery_gate measures in. A base
+## re-derived here -- the reflog walked to the newest commit without the
+## 'Bot: docs-refresh' trailer -- was a DIFFERENT window from the tail's
+## whenever a commit lacked the trailer: what git revert writes, what the
+## engine's wip bank writes before a resume, and the empty tree an unborn
+## HEAD records, which has no reflog to walk at all. A pass then certified
+## what the tail refused, after the whole budget, with no revert ever asked
+## for. An empty base is a closed answer, never a fallback to HEAD.
+if not base:
+    print(json.dumps({'scope_ok': False, 'out_of_scope': [], 'log': 'SCOPE GATE UNAVAILABLE: record_run_base recorded no run base (base_sha empty), so the writeable set cannot be computed. Refusing to certify it.'}))
+    raise SystemExit(0)
+try:
+    # What the run has COMMITTED, which is the fact the two skips below are
+    # keyed on -- the same key delivery_gate uses, so the loop flags exactly
+    # what the tail refuses and the campaign has a revert route for it.
+    # --no-renames on EVERY read, as the tail reads: with detection on git
+    # reports only a rename's destination, so a protected file moved onto a
+    # doc path would delete itself behind a green pass -- and an uncommitted
+    # move the worktree diff alone would read as its destination only.
+    committed = set(l.strip() for l in git(['diff', '--name-only', '--no-renames', '--no-relative', base + '..HEAD']).splitlines() if l.strip())
+    # The tree-noise list the engine provisions (ITERION_TREE_NOISE: the
+    # .claude/ mirror, a drifted devbox.lock, tool-node script scratch) is not
+    # the run's change on any branch while it stays UNCOMMITTED (#1364, #1464):
+    # a verify_build that ran devbox drifts the lock, and THIS pass's scope
+    # check must not fail on it. COMMITTED, it is the run's own work and the
+    # delivery carries it, so it is judged. The hard-coded .claude/ filter
+    # stays as the floor for an engine that does not provision the variable yet.
+    NOISE_PREFIX = ':(exclude,top)'
+    noise = tuple(v[len(NOISE_PREFIX):] for v in os.environ.get('ITERION_TREE_NOISE', '').split() if v.startswith(NOISE_PREFIX))
+    def is_noise(path):
+        for n in noise:
+            if n.endswith('*'):
+                if path.startswith(n[:-1]):
+                    return True
+            elif path == n or path.startswith(n + '/'):
                 return True
-        elif path == n or path.startswith(n + '/'):
-            return True
-    return False
-changed = set(l for l in git(['diff', base, '--name-only']).splitlines() if l.strip() and not l.strip().startswith('.claude/') and not is_noise(l.strip()))
-def line_path(line):
-    # A rename is judged on its destination; a quoted path is unquoted.
-    path = line[3:]
-    if ' -> ' in path:
-        path = path.split(' -> ', 1)[1]
-    path = path.strip()
-    if len(path) >= 2 and path[0] == chr(34) and path[-1] == chr(34):
-        path = path[1:-1]
-    return path
-def is_scaffold(line):
-    # iterion lays the bundle's skills (and plugin commands, agents,
-    # settings) under <workspace>/.claude/ at run start: written by the
-    # engine, never by a pass, never the run's work (#1364) -- the rule
-    # finalize applies to the wip bank (runOutputPaths).
-    return line_path(line).startswith('.claude/')
-for line in git(['status', '--porcelain']).splitlines():
-    if line[:2].strip() == '??' and not is_scaffold(line) and not is_noise(line_path(line)):
-        changed.add(line[3:].strip())
+        return False
+    def is_engine_artifact(path):
+        # The engine's mirror and the declared noise, skipped only while the run
+        # has NOT committed them: an uncommitted one the delivery cannot carry
+        # and no pass can revert, a committed one the delivery carries.
+        return path not in committed and (path.startswith('.claude/') or is_noise(path))
+    changed = set(l.strip() for l in git(['diff', '--no-renames', '--no-relative', base, '--name-only']).splitlines() if l.strip() and not is_engine_artifact(l.strip()))
+    # The push carries the COMMITTED series, so the series is read too: a path
+    # the run committed and then removed from the worktree shows in NEITHER the
+    # worktree diff nor the porcelain, and delivery_gate refuses it on the only
+    # in-edge of finalize_mr. A violation this pass cannot see is a converged run
+    # dying in the tail with no remediation route.
+    changed |= committed
+    # Mode 120000 is a symlink: writing THROUGH one escapes the repository,
+    # and a committed one publishes a host path under a doc's name. Read in
+    # BOTH windows, as the tail reads -- a link committed and then removed
+    # from the worktree stays mode 120000 in HEAD, which the push carries --
+    # and keyed on the DESTINATION mode: a pre-existing link the run removes
+    # (source mode 120000, destination 000000) is a cleanup, not a link.
+    symlinks = set()
+    for row in git(['diff', '--no-renames', '--raw', '--no-relative', base]).splitlines() + git(['diff', '--no-renames', '--raw', '--no-relative', base + '..HEAD']).splitlines():
+        if not row.startswith(':'):
+            continue
+        meta, _, path = row.partition(chr(9))
+        fields = meta.split()
+        if len(fields) >= 2 and fields[1] == '120000':
+            p = path.split(chr(9))[-1].strip()
+            if p:
+                symlinks.add(p)
+    def line_path(line):
+        # A rename is judged on its destination; a quoted path is unquoted.
+        path = line[3:]
+        if ' -> ' in path:
+            path = path.split(' -> ', 1)[1]
+        path = path.strip()
+        if len(path) >= 2 and path[0] == chr(34) and path[-1] == chr(34):
+            path = path[1:-1]
+        return path
+    def is_scaffold(line):
+        # iterion lays the bundle's skills (and plugin commands, agents,
+        # settings) under <workspace>/.claude/ at run start: written by the
+        # engine, never by a pass, never the run's work (#1364) -- the rule
+        # finalize applies to the wip bank (runOutputPaths).
+        return line_path(line).startswith('.claude/')
+    # -uall: without it git collapses an untracked directory into ONE entry that
+    # ends in '/' and never in '.md', so a brand-new doc area -- 'docs/guide/' --
+    # reds this gate on the very path the campaign must write, while
+    # delivery_gate (which reads -uall) owns the pages inside it. The loop would
+    # ask for a revert the tail does not want.
+    for line in git(['status', '--porcelain', '-uall']).splitlines():
+        if line[:2].strip() == '??' and not is_scaffold(line) and not is_noise(line_path(line)):
+            changed.add(line[3:].strip())
 
-def allowed(p):
-    return p.endswith('.md')
+    # The two trees delivery_gate refuses BY NAME, repeated here as the loop's
+    # own rule: a path the tail refuses and this pass certifies is a converged
+    # run dying in the tail with no remediation route. '.github/workflows/' is
+    # the one directory the forge credential refuses to push; '.claude/' is
+    # where a '.md' file is executable INSTRUCTION (CLAUDE.md,
+    # skills/**/SKILL.md, agents/*.md, commands/*.md are auto-loaded by every
+    # agent harness opening the branch) rather than documentation -- and only a
+    # path the run COMMITTED reaches this rule, the engine's mirror having been
+    # set aside above.
+    REFUSED_TREES = ('.github/workflows', '.claude')
+    def allowed(p):
+        if p in symlinks or os.path.islink(os.path.join(ws, p)):
+            return False
+        if any(p == t or p.startswith(t + '/') for t in REFUSED_TREES):
+            return False
+        return p.endswith('.md')
 
-out_of_scope = sorted(p for p in changed if not allowed(p))
-log = ''
-if out_of_scope:
-    log = 'SCOPE VIOLATION: this run changed files outside the doc writeable-set (.md only). Revert these before continuing (git revert the offending commits, or git checkout ' + base[:12] + ' -- <path>): ' + ', '.join(out_of_scope[:40])
-print(json.dumps({'scope_ok': not out_of_scope, 'out_of_scope': out_of_scope[:100], 'log': log}))
+    out_of_scope = sorted(p for p in changed if not allowed(p))
+    log = ''
+    if out_of_scope:
+        log = 'SCOPE VIOLATION: this run changed files outside the doc writeable-set (.md only, never a symlink, never under .github/workflows/, never a path committed under .claude/). Revert these before continuing AND COMMIT the revert -- the delivery carries the committed series (git revert the offending commits; git checkout ' + base[:12] + ' -- <path> then commit; git rm <path> then commit for a path the base never carried): ' + ', '.join(out_of_scope[:40])
+    print(json.dumps({'scope_ok': not out_of_scope, 'out_of_scope': out_of_scope[:100], 'log': log}))
+except Exception as exc:
+    ## Fail CLOSED, as the tail does: a gate that cannot compute the
+    ## writeable set says so and refuses to certify -- git absent, a base
+    ## that does not resolve, a timeout. The campaign gets the reason verbatim.
+    print(json.dumps({'scope_ok': False, 'out_of_scope': [], 'log': 'SCOPE GATE UNAVAILABLE: ' + ' '.join(str(exc).split())[:400] + ' -- refusing to certify the writeable set.'}))
 "`
+  input: run_base_input
   output: scope_check_output
 
 ## forge_auth_probe — DETERMINISTIC pre-flight for the push. finalize_mr is an
@@ -1574,6 +1735,195 @@ except Exception:
 print(json.dumps({'available': False, 'reason': 'no forge_token secret, no *_TOKEN env, no gh host auth'}))
 "`
   output: forge_auth_state
+
+## delivery_gate — the DETERMINISTIC bound on what the delivery may carry,
+## on the ONLY in-edge of finalize_mr so every route into the PR tail passes
+## through it. scope_check is a LOOP condition: it tells the campaign to
+## revert, and the loop-exhaustion exit (`gate -> mr_gate`) hands the banked
+## series to the tail whatever it said. A pass that never reverted its
+## out-of-scope write would therefore be PUSHED — a GitHub App installation
+## token refuses a `.github/workflows/**` path outright and the run dies on a
+## raw 403 whose stderr names no grant, and any other out-of-scope path is
+## pushed SUCCESSFULLY, which is a documentation bot opening a pull request
+## carrying Go code.
+##
+## Fails CLOSED, as scope_check does: a tree this node cannot diff is a
+## delivery it cannot certify, so `delivery_ok` is false with the reason and
+## the graph routes to the typed refusal. Nothing is reverted — deleting a
+## commit the campaign made is not this node's to do — and nothing is
+## pushed: the alignments stay on the run's branch, un-delivered, named path
+## by path.
+##
+## What this bounds is the GRAPH's delivery. finalize_mr is an agent holding
+## bash and the mounted forge_token: one that chooses to push from inside its
+## own node is bounded by nothing here — the same limit the delivery probe of
+## #2436 has, and the same actor as the one who could rewrite the toolchain
+## this node resolves (the scrub note below). No LLM, no shell beyond git.
+tool delivery_gate:
+  command: `WS={{vars.workspace_dir}} BASE_SHA={{input.base_sha}} python3 -I -c "
+import os, json, subprocess
+ws = os.environ.get('WS') or '.'
+## The diff this gate reads is the workspace's, never what GIT STATE the
+## judged agent can plant in .git makes it look like: the campaign holds bash
+## in this very tree, and a replace ref on the base (or a graft) would empty
+## the diff it audits. An inherited GIT_DIR or work tree cannot redirect it
+## either. What the scrub does NOT cover is the toolchain this node runs on:
+## git and python3 resolve through the run's PATH, and under repo_devbox the
+## workspace's own profile (<workspace>/.devbox/nix/profile/default/bin,
+## pkg/runtime/devbox_host.go) is PREPENDED to it, so an agent that rewrites
+## that profile runs this node on binaries it wrote. That actor already
+## holds bash and the mounted forge_token and can push by itself -- the same
+## limit as finalize_mr's below -- and the cure is the engine's (a gate node
+## resolving its toolchain from the engine's PATH, never the run's), not a
+## second binary lookup here.
+for k in ('GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_COMMON_DIR', 'GIT_OBJECT_DIRECTORY', 'GIT_ALTERNATE_OBJECT_DIRECTORIES', 'GIT_NAMESPACE'):
+    os.environ.pop(k, None)
+os.environ['GIT_NO_REPLACE_OBJECTS'] = '1'
+os.environ['GIT_GRAFT_FILE'] = os.devnull
+os.chdir(ws)
+
+def _git(args):
+    ## core.quotePath=false: git C-quotes any path holding a byte >= 0x80, a
+    ## quote or a backslash, and a quoted name never equals the path the
+    ## rules compare — a doc named 'données.md' would be refused for ever.
+    ## status.relativePaths=false (and --no-relative on the diffs) keeps
+    ## every name in the REPOSITORY's frame, which is the frame the rules
+    ## are written in. A git failure RAISES: this node certifies a delivery,
+    ## so an unread tree must refuse it, never pass as an empty answer.
+    p = subprocess.run(['git', '-c', 'core.quotePath=false', '-c', 'status.relativePaths=false'] + args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=120)
+    if p.returncode != 0:
+        raise RuntimeError('git ' + ' '.join(args[:2]) + ' rc=' + str(p.returncode) + ': ' + ' '.join((p.stderr or '').split())[:300])
+    return [l.rstrip(chr(10)) for l in (p.stdout or '').splitlines() if l.strip()]
+
+def _delivery_outside(base):
+    ## DELIVERY_OWNED_PATHS — the whole pathspec this bot's delivery may
+    ## carry, and the reason it owes no delivery-permission preflight. An
+    ## entry starting with '*' owns that suffix anywhere in the tree; any
+    ## other entry owns a path and its subtree. This is the doc writeable
+    ## set scope_check enforces pass after pass, read one last time where
+    ## the push is decided: narrowing the tuple narrows the delivery, and
+    ## deleting it refuses every path rather than relaxing the prose
+    ## (bots/forge_delivery_class_test.go).
+    DELIVERY_OWNED_PATHS = ('*.md',)
+    ## Refused whatever the suffix, because a suffix rule is not enough, and
+    ## the terms are the terms scope_check's own allowed() refuses, in the
+    ## window it reads (the recorded base) and the frame it reads in — a path
+    ## this gate refuses that the LOOP certifies is a converged run dying in
+    ## the tail with no remediation route.
+    ##
+    ## '.github/workflows/' is the one directory an App installation token
+    ## refuses to push, and '.github/workflows/README.md' ends in '.md'.
+    ## Narrow on purpose: the rest of '.github/' (a contributing guide, an
+    ## issue template) IS markdown an operator can legitimately point
+    ## doc_globs at, and the credential pushes it — refusing the whole tree
+    ## would make every such run end on DELIVERY_PATHS_REFUSED with no
+    ## override.
+    ##
+    ## '.claude/' is the one directory where a '.md' file is executable
+    ## INSTRUCTION rather than documentation: CLAUDE.md, skills/**/SKILL.md,
+    ## agents/*.md and commands/*.md are auto-loaded by every agent harness
+    ## that opens the branch, and settings.json runs hooks. A suffix rule
+    ## owns all but the last of them. The uncommitted-mirror skip below
+    ## runs FIRST, so the engine's own drift stays exempt and only what the
+    ## run COMMITTED under the mirror is refused here.
+    DELIVERY_REFUSED_TREES = ('.github/workflows', '.claude')
+    ## Two rules skip what the push CANNOT carry, and both are keyed on the
+    ## COMMITTED series rather than on the path (#1364, #1464). The engine
+    ## materialises the bundle's skills into <workspace>/.claude/ at run
+    ## start and on every resume, and the tree noise it DECLARES
+    ## (ITERION_TREE_NOISE: a drifted devbox.lock, tool-node scratch) is
+    ## rewritten under the campaign's feet, so refusing on either would
+    ## refuse a green campaign on a file no pass can revert. An uncommitted
+    ## one is not unreachable — the engine's finalize banks a TRACKED mirror
+    ## path whose bytes the campaign changed as the run's work
+    ## (pkg/runtime/commit_uncommitted.go trackedMirrorWork, #1571) — but it
+    ## reaches the run's own BANK, never the pull request: finalize_mr
+    ## pushes the SERIES, which is what the rule below judges.
+    ##
+    ## A path the run COMMITTED is judged WHATEVER its name: the delivery
+    ## carries the series, and the mirror is where the payload hides — a
+    ## committed .claude/settings.json is a hooks configuration that runs a
+    ## command on every machine opening the branch. Tracked-ness is not the
+    ## fact to key on either way (pkg/treenoise: IsNoise is deliberately
+    ## path-only, and a tracked file under the mirror needs one fact a path
+    ## cannot carry): the engine's mirror overwrites a TRACKED .claude/ path
+    ## in a repository that commits one, which is drift no pass can revert.
+    noise = tuple(v[len(':(exclude,top)'):] for v in os.environ.get('ITERION_TREE_NOISE', '').split() if v.startswith(':(exclude,top)'))
+    ## The delivery surface, read three ways: what the push carries today
+    ## (the committed series), what a commit inside finalize_mr would add
+    ## (the worktree against the base — 'git diff <base>' sees the index
+    ## too), and what 'git add' would pick up (-uall, so a brand-new
+    ## directory reports its files instead of collapsing into one name that
+    ## ends in no suffix at all). --no-renames: with detection on git reports
+    ## only a rename's destination, so moving a protected file onto an owned
+    ## path would delete it behind a green gate.
+    committed = set(_git(['diff', '--name-only', '--no-renames', '--no-relative', base + '..HEAD']))
+    changed = set(committed)
+    changed |= set(_git(['diff', '--name-only', '--no-renames', '--no-relative', base]))
+    ## Mode 120000 is a symlink: a doc path that is a link publishes a host
+    ## path under a doc's name, and the next edit of 'docs/x.md' writes
+    ## THROUGH it, outside the repository, with git seeing no change. The
+    ## modes are read in BOTH windows, because the push carries the
+    ## COMMITTED series: a link committed and then removed from the worktree
+    ## (or replaced by a regular file of the same name) leaves mode 120000 in
+    ## HEAD while the worktree diff shows no link at all — one 'rm' must not
+    ## disarm the term. Keyed on the DESTINATION mode: a pre-existing link the
+    ## run removes (source 120000, destination 000000) is a cleanup the
+    ## delivery may carry, not a link it would publish. An untracked link is
+    ## in no diff, so the worktree is asked too, below.
+    symlinks = set()
+    for row in _git(['diff', '--no-renames', '--raw', '--no-relative', base]) + _git(['diff', '--no-renames', '--raw', '--no-relative', base + '..HEAD']):
+        if not row.startswith(':'):
+            continue
+        meta, _, path = row.partition(chr(9))
+        fields = meta.split()
+        if len(fields) >= 2 and fields[1] == '120000':
+            p = path.split(chr(9))[-1].strip()
+            if p:
+                symlinks.add(p)
+    for line in _git(['status', '--porcelain', '-uall']):
+        if line[:2] == '??':
+            changed.add(line[3:].strip())
+    outside = []
+    for p in sorted(changed):
+        if p not in committed and (p == '.claude' or p.startswith('.claude/') or any(p == n or p.startswith(n + '/') or (n.endswith('*') and p.startswith(n[:-1])) for n in noise)):
+            continue
+        if p in symlinks or os.path.islink(p):
+            outside.append(p)
+        elif any(p == t or p.startswith(t + '/') for t in DELIVERY_REFUSED_TREES):
+            outside.append(p)
+        elif not any(p.endswith(r[1:]) if r.startswith('*') else (p == r or p.startswith(r + '/')) for r in DELIVERY_OWNED_PATHS):
+            outside.append(p)
+    return outside
+
+base = (os.environ.get('BASE_SHA') or '').strip()
+try:
+    ## The base is RECORDED by record_run_base at the entry, before the
+    ## campaign writes anything. Re-deriving it from commit messages would
+    ## hand the audited party the choice of its own audit window: one commit
+    ## missing the trailer becomes the base and empties its own diff.
+    if not base:
+        raise RuntimeError('record_run_base recorded no run base (base_sha empty), so the delivered paths cannot be computed')
+    ## The refusal's list is capped exactly as scope_check caps its own: the
+    ## COUNT is the honest figure and the names are a bounded sample, because
+    ## this log IS the typed failure's message and the run's stored error —
+    ## the untracked read is -uall, so a campaign that ran a package manager
+    ## with no .gitignore enumerates every file it unpacked.
+    outside = _delivery_outside(base)
+    if outside:
+        print(json.dumps({'delivery_ok': False, 'out_of_scope': outside[:100], 'log': 'DELIVERY PATHS REFUSED: the delivery would carry ' + str(len(outside)) + ' path(s) outside the doc writeable-set (.md anywhere, never a symlink, never under .github/workflows/, never a path the run committed under .claude/): ' + ', '.join(outside[:40]) + (' (+' + str(len(outside) - 40) + ' more)' if len(outside) > 40 else '')}))
+        raise SystemExit(0)
+    print(json.dumps({'delivery_ok': True, 'out_of_scope': [], 'log': ''}))
+except SystemExit:
+    raise
+except Exception as exc:
+    ## Fail CLOSED: a delivery whose paths cannot be computed is not one this
+    ## node certifies — no recorded base, git absent, a base that does not
+    ## resolve, a timeout. The reason travels verbatim to the typed refusal.
+    print(json.dumps({'delivery_ok': False, 'out_of_scope': [], 'log': 'DELIVERY GATE UNAVAILABLE: ' + ' '.join(str(exc).split())[:400] + ' -- refusing to certify the delivery.'}))
+"`
+  input: run_base_input
+  output: delivery_gate_output
 
 tool surface_pr_link:
   command: `URL={{input.url}} python3 -I -c "
@@ -1634,6 +1984,31 @@ compute mr_gate:
   expr:
     open_mr: "vars.open_mr || vars.pr_url"
 
+## The delivery refusal, typed on the RUN. Reached when delivery_gate found a
+## path this bot does not own — a pass that never reverted its out-of-scope
+## write and then spent the loop, or a tree the gate could not diff. The
+## message names EVERY offending path, because the operator's next act is to
+## read them: revert them on the run's branch and relaunch, or widen the
+## bot's scope deliberately.
+##
+## Nothing is reverted and nothing is DELIVERED: no pull request is opened
+## and nothing reaches a branch anybody reviews. The commits are not lost
+## either — they stay on the run's own branch in its workspace — and the
+## message says where, because an operator told "nothing was pushed" would
+## never look for them. The BANK is one deployment's addition and the
+## message qualifies it: `fail` is a bankable status, so the cloud runner of
+## a repo-targeted run force-pushes the series to `iterion/run-<run id>`
+## (pkg/runner/loop_gitws.go — pkg/runner serves queued runs; a local
+## `iterion run` has no such branch, and the bank has its own refusal
+## paths). Terminal, not
+## resumable: re-entering the same graph against the same tree would refuse
+## identically, and the cure is a decision, not another pass. `failure_code`
+## is what `iterion runs list`, the studio and the alert sinks read.
+fail delivery_paths_refused:
+  description: "the delivery would carry paths this bot does not own"
+  code: DELIVERY_PATHS_REFUSED
+  message: "{{outputs.delivery_gate.log}} — nothing was reverted, no pull request was opened and nothing was delivered; the alignment commits stay on the run's own branch, and a repo-targeted cloud run also banks them to its storage branch (iterion/run-<run id>)."
+
 ## ─── Workflow ───────────────────────────────────────────────────
 workflow docs_refresh:
   ## Run in an isolated git worktree at .iterion/worktrees/<run-id>/ —
@@ -1642,7 +2017,7 @@ workflow docs_refresh:
   ## and lands the series on a persistent branch on convergence.
   worktree: auto
 
-  entry: context_gate
+  entry: record_run_base
 
   budget:
     max_parallel_branches: 1
@@ -1669,7 +2044,12 @@ workflow docs_refresh:
     threshold: 0.9
     preserve_recent: 8
 
-  ## Entry: optional product context materialized ONCE before the loop
+  ## Entry: the RUN BASE first, before anything can write — the one fact the
+  ## delivery gate cannot re-derive once the campaign has committed, and the
+  ## loop never comes back here, so it is read exactly once.
+  record_run_base -> context_gate
+
+  ## Then the optional product context, materialized ONCE before the loop
   ## (the continuation loop back-edge re-enters scan_hints, never
   ## context_ingest); with no source configured the gate branches
   ## straight to scan_hints and the run is unchanged.
@@ -1700,8 +2080,12 @@ workflow docs_refresh:
   ## Deterministic TRUTH gate after every campaign pass: writeable-set
   ## containment (the bot only touches docs — a docs-only change cannot
   ## affect the repo's build, so there is no build/test gate), then the
-  ## continuation decision.
-  campaign -> scope_check
+  ## continuation decision. The window is the recorded base — the one the
+  ## delivery gate measures in, so a revert is asked for exactly what the
+  ## tail would refuse; record_run_base is the entry and always upstream.
+  campaign -> scope_check with {
+    base_sha: "{{outputs.record_run_base.base_sha}}"
+  }
 
   scope_check -> gate
 
@@ -1755,7 +2139,16 @@ workflow docs_refresh:
 
   mr_gate -> done when not open_mr
 
-  forge_auth_probe -> finalize_mr when available with {
+  ## The deterministic delivery bound, on the ONLY in-edge of finalize_mr:
+  ## every route into the PR tail — converged, converged_without_context, the
+  ## coverage route, the spent continuation loop, a back-edge the budget
+  ## declined — reaches the push through here, so the paths the delivery may
+  ## carry are judged once, where the push is decided.
+  forge_auth_probe -> delivery_gate when available with {
+    base_sha: "{{outputs.record_run_base.base_sha}}"
+  }
+
+  delivery_gate -> finalize_mr when delivery_ok with {
     workspace_dir: "{{vars.workspace_dir}}",
     pr_url: "{{vars.pr_url}}",
     source_branch: "{{vars.source_branch}}",
@@ -1767,6 +2160,12 @@ workflow docs_refresh:
     drift_remaining: "{{outputs.campaign.drift_remaining}}",
     audit_summary: "{{outputs.coverage_audit.report}}",
   }
+
+  ## Unconditional, so the refusal is the DEFAULT: an output carrying no
+  ## `delivery_ok` at all — a body that errored, a field renamed — refuses
+  ## too. The one route out of this node that is not a refusal is guarded on
+  ## the gate's own verdict.
+  delivery_gate -> delivery_paths_refused
 
   forge_auth_probe -> done when not available
 

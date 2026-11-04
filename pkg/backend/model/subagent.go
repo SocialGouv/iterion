@@ -232,7 +232,7 @@ func NewSubagentRunner(
 		var agent WorkspaceAgent
 		agentFound := false
 		if fromParentLoop && parent.WorkDir != "" {
-			a, found, err := LookupWorkspaceAgent(parent.WorkDir, spec.SubagentType, workspaceAgentMaxBytes())
+			a, found, err := LookupWorkspaceAgent(parent.WorkDir, spec.SubagentType, workspaceAgentMaxBytes(ctx))
 			if err != nil {
 				return "", err
 			}
@@ -314,8 +314,9 @@ func NewSubagentRunner(
 		}
 
 		opts := GenerationOptions{
-			Model:  modelSpec,
-			System: system,
+			Model:    modelSpec,
+			Provider: clawSpecProvider(modelSpec),
+			System:   system,
 			Messages: []api.Message{{
 				Role:    "user",
 				Content: []api.ContentBlock{{Type: "text", Text: spec.Prompt}},

@@ -25,15 +25,16 @@ const (
 	fakeDaemonContainerID = "deadbeefcafebabe0123456789abcdef0123456789abcdef0123456789abcdef"
 )
 
-// fakeDaemon writes the stand-in runtime script and hands back the Runtime
-// path plus the log file the script appends to. Behaviour knobs are files
+// fakeDaemon writes the stand-in runtime script and hands back the CLI
+// naming it — docker's identity, the script's absolute path — plus the log
+// file the script appends to. Behaviour knobs are files
 // the script reads (set them with t.Setenv):
 //
 //   - FAKE_DAEMON_CONFLICT=once|always — `run` fails first (once) or every
 //     (always) time with the daemon's container-name-conflict message.
 //   - FAKE_DAEMON_IMAGE_MISSING=1 — `image inspect` exits 1, so Prepare
 //     must pull.
-func fakeDaemon(t *testing.T) (Runtime, string) {
+func fakeDaemon(t *testing.T) (CLI, string) {
 	t.Helper()
 	if _, err := exec.LookPath("sh"); err != nil {
 		t.Skip("the stand-in daemon is a shell script")
@@ -73,7 +74,7 @@ func fakeDaemon(t *testing.T) (Runtime, string) {
 	// one more daemon round-trip that would blur the argv under test; the
 	// operator's opt-out is the documented way to keep it out.
 	t.Setenv("ITERION_SANDBOX_PERSIST_NIX", "0")
-	return Runtime(bin), log
+	return CLI{rt: RuntimeDocker, path: bin}, log
 }
 
 // invocations reads the stand-in's log back as one argv per invocation.
@@ -123,8 +124,8 @@ func argvOf(t *testing.T, log, cmd string) []string {
 }
 
 // fakeDriver binds a fresh discard-logged driver to the stand-in daemon.
-func fakeDriver(t *testing.T, rt Runtime) *Driver {
-	return &Driver{rt: rt, logger: discardLogger()}
+func fakeDriver(t *testing.T, cli CLI) *Driver {
+	return &Driver{cli: cli, logger: discardLogger()}
 }
 
 // lifecycleSpec is the spec whose translation into docker run argv the
@@ -145,8 +146,8 @@ func lifecycleSpec() sandbox.Spec {
 }
 
 func TestTheStandInDaemonSeesTheContainersLifecycleAndItsWorkspaceBindMount(t *testing.T) {
-	rt, log := fakeDaemon(t)
-	d := fakeDriver(t, rt)
+	cli, log := fakeDaemon(t)
+	d := fakeDriver(t, cli)
 	ctx := context.Background()
 
 	prepared, err := d.Prepare(ctx, lifecycleSpec())
@@ -251,8 +252,8 @@ func TestTheStandInDaemonSeesTheContainersLifecycleAndItsWorkspaceBindMount(t *t
 }
 
 func TestAStaleContainerNameConflictIsForceRemovedAndTheStartRetriedOnce(t *testing.T) {
-	rt, log := fakeDaemon(t)
-	d := fakeDriver(t, rt)
+	cli, log := fakeDaemon(t)
+	d := fakeDriver(t, cli)
 	ctx := context.Background()
 
 	t.Setenv("FAKE_DAEMON_CONFLICT", "once")
@@ -289,8 +290,8 @@ func TestAStaleContainerNameConflictIsForceRemovedAndTheStartRetriedOnce(t *test
 }
 
 func TestAThoroughlyConflictedNameFailsTheStartWithoutSilentRecovery(t *testing.T) {
-	rt, log := fakeDaemon(t)
-	d := fakeDriver(t, rt)
+	cli, log := fakeDaemon(t)
+	d := fakeDriver(t, cli)
 	ctx := context.Background()
 
 	t.Setenv("FAKE_DAEMON_CONFLICT", "always")
@@ -317,8 +318,8 @@ func TestAThoroughlyConflictedNameFailsTheStartWithoutSilentRecovery(t *testing.
 }
 
 func TestPrepareProbesTheImageAndPullsOnlyWhenTheDaemonLacksIt(t *testing.T) {
-	rt, log := fakeDaemon(t)
-	d := fakeDriver(t, rt)
+	cli, log := fakeDaemon(t)
+	d := fakeDriver(t, cli)
 	ctx := context.Background()
 
 	// The daemon answers `image inspect` present: no pull may happen.

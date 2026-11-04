@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/deeplink"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/forge"
@@ -61,7 +62,7 @@ func TestGateRelaunch(t *testing.T) {
 		s.cfg.Store = rs
 		s.cfg.PublicURL = "https://iterion.test"
 
-		conns := forge.NewMemoryConnectionStore()
+		conns := connection.NewMemoryForgeStore()
 		conn := forge.Connection{ID: "c1", TenantID: team, Provider: forge.ProviderGitHub}
 		if err := conns.Create(context.Background(), conn); err != nil {
 			t.Fatal(err)

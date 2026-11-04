@@ -38,21 +38,22 @@ func (o *Orchestrator) RotateDueProjectBots(ctx context.Context, lead time.Durat
 		return 0, fmt.Errorf("forge: list expiring project bots: %w", err)
 	}
 	rotated := 0
-	var firstErr error
+	// Every bot's failure, keyed by the integration it belongs to
+	// (sweepCauses): this sweep is elected too, and its caller's verdict
+	// must not depend on the order this query listed the rows in.
+	var causes sweepCauses
 	for _, ri := range due {
 		// The sweep crosses tenants; the stores it writes are tenant-scoped.
 		did, err := o.rotateProjectBot(store.WithTenant(ctx, ri.TenantID), ri)
 		if err != nil {
-			if firstErr == nil {
-				firstErr = err
-			}
+			causes.add(ri.ID, err)
 			continue
 		}
 		if did {
 			rotated++
 		}
 	}
-	return rotated, firstErr
+	return rotated, causes.err()
 }
 
 // rotateProjectBot renews one bot's credential, reporting whether it did.
@@ -77,7 +78,7 @@ func (o *Orchestrator) rotateProjectBot(ctx context.Context, ri RepoIntegration)
 	if ri.ProjectBot.ExpiresAt.Sub(now) > lifetime/2 {
 		return false, nil
 	}
-	conn, err := o.Connections.Get(ctx, ri.ConnectionID)
+	conn, err := o.Connections.Get(ctx, ri.TenantID, ri.ConnectionID)
 	if err != nil {
 		return false, o.recordProjectBotRotation(ctx, ri, conn, nil, fmt.Errorf("resolve connection %s: %w", ri.ConnectionID, err))
 	}

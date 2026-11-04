@@ -47,8 +47,8 @@ holds.
 
 For each LLM provider the run needs, iterion picks the first match:
 
-1. `key_overrides[provider]` — caller-pinned (the launch payload, or
-   the webhook's `KeyOverrides` field).
+1. `key_overrides[provider]` — caller-pinned (the launch payload, the
+   webhook's `KeyOverrides`, or a trigger subscription's).
 2. `(team, userID, provider, is_default=true)` — the user's flagged
    default.
 3. `(team, userID, provider)` — first match (creation order).
@@ -65,6 +65,8 @@ For each LLM provider the run needs, iterion picks the first match:
 Webhook `key_overrides` is validated up front so a misconfiguration
 fails at create time, not at the first inbound delivery (see
 [webhooks.md](webhooks.md#key_overrides--pin-a-byok-key-per-webhook)).
+The trigger subscription routes validate theirs the same way, against
+the `trigger-spine` actor the lanes fire under.
 
 REST surface: `/api/teams/{id}/api-keys` for team keys,
 `/api/me/api-keys` for user keys

@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
+	"github.com/SocialGouv/iterion/pkg/internal/storekit"
 	"github.com/SocialGouv/iterion/pkg/schedgate"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
@@ -146,9 +147,16 @@ func defaultSignMode(provider webhooks.Provider, req *string) (webhooks.Signatur
 	}
 }
 
+// webhookWithToken is the create and rotate answer: the row and the one
+// plaintext of its token. PinsUnreconciled names, on a create, the record
+// ids its landed pins name that the route could not re-check after the row
+// was stored (see reconcileLandedPins) — a receipt the client acts on by
+// re-reading those records and clearing a pin naming a dead one; absent
+// when every pin was vouched for.
 type webhookWithToken struct {
-	Config webhooks.Config `json:"config"`
-	Token  string          `json:"token"`
+	Config           webhooks.Config `json:"config"`
+	Token            string          `json:"token"`
+	PinsUnreconciled []string        `json:"pins_unreconciled,omitempty"`
 }
 
 // normalizeBotScope validates the bot-scope inputs: a wildcard scope
@@ -172,12 +180,34 @@ func normalizeBotScope(botIDs []string, wildcard bool) ([]string, bool, error) {
 	return botIDs, false, nil
 }
 
-// webhookForTenant fetches a config and asserts it belongs to teamID
-// (defence in depth on top of the role gate). Returns ok=false having
-// already written the response.
+// readWebhookForTenant is the foreignness clause itself, in ONE place: a
+// config addressed by a CALLER-supplied id serves a team only when it is
+// stamped with that team — the gate above only proves standing in the team
+// named in the path, so without this an admin of team A would read, patch,
+// delete and rotate team B's webhook by guessing its id.
+//
+// A foreign config is indistinguishable from an absent one, which is what
+// keeps ids from being enumerable across tenants: both answer
+// webhooks.ErrNotFound. A read that FAILED returns the store's own error, so
+// a caller that must tell a transient fault from a refusal can
+// (handleCredentialPreview answers that one 503).
+func (s *Server) readWebhookForTenant(ctx context.Context, teamID, webhookID string) (webhooks.Config, error) {
+	cfg, err := s.webhookConfigs.Get(ctx, webhookID)
+	if err != nil {
+		return webhooks.Config{}, err
+	}
+	if cfg.TenantID != teamID {
+		return webhooks.Config{}, webhooks.ErrNotFound
+	}
+	return cfg, nil
+}
+
+// webhookForTenant is the by-id CRUD's rendering of that clause: one 404 for
+// an absent id, a foreign config and an unreadable store alike. Returns
+// ok=false having already written the response.
 func (s *Server) webhookForTenant(w http.ResponseWriter, r *http.Request, teamID, webhookID string) (webhooks.Config, bool) {
-	cfg, err := s.webhookConfigs.Get(r.Context(), webhookID)
-	if err != nil || cfg.TenantID != teamID {
+	cfg, err := s.readWebhookForTenant(r.Context(), teamID, webhookID)
+	if err != nil {
 		httpError(w, http.StatusNotFound, "webhook not found")
 		return webhooks.Config{}, false
 	}
@@ -345,12 +375,34 @@ func (s *Server) handleCreateWebhook(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusInternalServerError, "%s", err.Error())
 		return
 	}
+	// The pins just landed; close the born-mid-delete window before the
+	// answer — reconcileLandedPins sweeps a record revoked between this
+	// write's validation and its landing, the row the delete's sweep
+	// never listed (see credential_pin_sweep.go). The row is stored and
+	// the token below is its only copy, so a failed re-check is a receipt
+	// on the 201 (pins_unreconciled, cause in the log), never a 5xx that
+	// would lose the token and send the retry minting a second webhook.
+	guardCtx, guardCancel := pinGuardCtx(r)
+	defer guardCancel()
+	pins := s.reconcileLandedPins(guardCtx, teamID, cfg.KeyOverrides, cfg.SecretOverrides)
+	meta := map[string]any{"name": cfg.Name, "provider": string(cfg.Provider), "wildcard_bots": cfg.WildcardBots}
+	if len(pins.Cleared) > 0 {
+		meta["pins_cleared"] = pins.Cleared
+	}
+	if pins.Err != nil {
+		meta["pins_unreconciled"] = pins.Unreconciled
+		s.logUnreconciledPins("webhook", cfg.ID, pins)
+	}
 	if wildcard && s.logger != nil {
 		s.logger.Warn("webhooks: org %s created a wildcard-bot webhook %s (by %s)", teamID, cfg.ID, id.UserID)
 	}
-	s.auditTenant(r, teamID, "webhook.created", "webhook", cfg.ID, map[string]any{"name": cfg.Name, "provider": string(cfg.Provider), "wildcard_bots": cfg.WildcardBots})
+	s.auditTenant(r, teamID, "webhook.created", "webhook", cfg.ID, meta)
+	// The answer must not resell the swept pins — the honesty the delete's
+	// 204 owes: answer with the row as the store now holds it.
+	pins.strip(cfg.KeyOverrides)
+	pins.strip(cfg.SecretOverrides)
 	w.WriteHeader(http.StatusCreated)
-	writeJSON(w, webhookWithToken{Config: cfg, Token: plaintext})
+	writeJSON(w, webhookWithToken{Config: cfg, Token: plaintext, PinsUnreconciled: pins.Unreconciled})
 }
 
 // sealWebhookHMAC is the thin wrapper around webhooks.SealHMACSecret —
@@ -380,20 +432,48 @@ func validateForgeBaseURL(raw string) (string, error) {
 	return "https://" + u.Host, nil
 }
 
-// validateKeyOverrides rejects a webhook key override that references a BYOK
-// key the webhook's tenant doesn't own, whose provider doesn't match, or that
-// the lane's own actor could never spend. The resolver is already
+// validateCredentialPinKeys rejects a pin name a Mongo path cannot address.
+// Both stores hold the pins as one subdocument and the sweep's $unset
+// addresses each entry as "<field>.<name>", so a name holding a dot reads
+// as a nested path — the $unset matches nothing, the clear reports nothing
+// removed, and the dead pin stands while the delete answers 204 — and a $
+// names an operator or an unstashable field. It runs inside the validators,
+// before their store-nil early return: addressability holds whether or not
+// the record store is wired, and both machine lanes' routes pass through
+// this one guard. New names are therefore always addressable; the stores'
+// clears keep a rewrite arm for names stored before this guard existed
+// (storekit.PinNameAddressable is the one definition of the shape).
+func validateCredentialPinKeys(field string, pins map[string]string) error {
+	for name := range pins {
+		if name == "" {
+			return fmt.Errorf("%s: a pin name is required", field)
+		}
+		if !storekit.PinNameAddressable(name) {
+			return fmt.Errorf("%s[%q]: a pin name must not hold '.' or '$' — the pin sweep addresses each entry as a Mongo path", field, name)
+		}
+	}
+	return nil
+}
+
+// validateKeyOverrides rejects a machine lane's key override that references
+// a BYOK key the caller's tenant doesn't own, whose provider doesn't match,
+// or that the lane's own actor could never spend. The resolver is already
 // tenant-scoped (a foreign key_id silently won't match in secrets.Resolve),
 // so the cross-org arm is a fail-fast UX guard, not the security boundary;
 // the spendability arm is the opposite — it is the ONLY place that arm can be
 // enforced, because an unspendable pin produces no refusal downstream at all.
+// Both machine lanes that carry pins share it: the webhook routes and the
+// trigger subscription routes.
 //
 // actor is the identity the launch will resolve credentials under
-// (webhookActor for this lane). It fails CLOSED: an empty actor matches no
-// key's scope, so an unknown lane is treated as a machine lane rather than
-// skipping the arm — a credential guard with an unused opt-out is a seam
-// for the next caller's false negative.
+// (webhookActor / triggerSpineActor for the machine lanes). It fails CLOSED:
+// an empty actor matches no key's scope, so an unknown lane is treated as a
+// machine lane rather than skipping the arm — a credential guard with an
+// unused opt-out is a seam for the next caller's false negative.
 func (s *Server) validateKeyOverrides(ctx context.Context, tenantID, actor string, overrides map[string]string) error {
+	if err := validateCredentialPinKeys("key_overrides", overrides); err != nil {
+		return err
+	}
 	if len(overrides) == 0 || s.apiKeys == nil {
 		return nil
 	}
@@ -427,7 +507,7 @@ func (s *Server) validateKeyOverrides(ctx context.Context, tenantID, actor strin
 		// operator's explicit choice is never replaced in silence. The
 		// secret twin below has always refused the same shape.
 		if !secrets.SpendableBy(k, tenantID, actor) {
-			return fmt.Errorf("key_overrides[%s]: api key %q is not spendable by this webhook — it launches as %q, which sees only this team's org-scoped keys, so the pin would be dropped at launch; pin an org-scoped key of this team or clear the pin", prov, keyID, actor)
+			return fmt.Errorf("key_overrides[%s]: api key %q is not spendable by this lane — it launches as %q, which sees only this team's org-scoped keys, so the pin would be dropped at launch; pin an org-scoped key of this team or clear the pin", prov, keyID, actor)
 		}
 	}
 	return nil
@@ -438,6 +518,9 @@ func (s *Server) validateKeyOverrides(ctx context.Context, tenantID, actor strin
 // key-override guard, the resolver is already tenant-scoped (a foreign id
 // silently won't bind), so this is a fail-fast UX check.
 func (s *Server) validateSecretOverrides(ctx context.Context, tenantID string, overrides map[string]string) error {
+	if err := validateCredentialPinKeys("secret_overrides", overrides); err != nil {
+		return err
+	}
 	if len(overrides) == 0 || s.genericSecrets == nil {
 		return nil
 	}
@@ -636,7 +719,35 @@ func (s *Server) handleUpdateWebhook(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusInternalServerError, "%s", err.Error())
 		return
 	}
-	s.auditTenant(r, teamID, "webhook.updated", "webhook", cfg.ID, map[string]any{"name": cfg.Name, "enabled": cfg.Enabled})
+	// Same closure as the create route: the landed pins are re-checked
+	// against their records — a pin that validated while its record lived
+	// but landed after the record's delete sweep listed would otherwise
+	// stand unreconciled (see credential_pin_sweep.go). The re-check reads
+	// every pin the stored row holds, the ones this patch left untouched
+	// (never validated above) included. Unlike the create, a failed
+	// re-check answers 5xx here: the edit is stored and nothing one-time is
+	// lost, and the mend is the retry's own pass of this re-check, not a
+	// validation — only a pin map the retry re-sends is validated again
+	// (reconcileLandedPins).
+	guardCtx, guardCancel := pinGuardCtx(r)
+	defer guardCancel()
+	pins := s.reconcileLandedPins(guardCtx, teamID, cfg.KeyOverrides, cfg.SecretOverrides)
+	meta := map[string]any{"name": cfg.Name, "enabled": cfg.Enabled}
+	if len(pins.Cleared) > 0 {
+		meta["pins_cleared"] = pins.Cleared
+	}
+	if pins.Err != nil {
+		meta["pins_unreconciled"] = pins.Unreconciled
+	}
+	s.auditTenant(r, teamID, "webhook.updated", "webhook", cfg.ID, meta)
+	if pins.Err != nil {
+		httpError(w, http.StatusInternalServerError, "webhook %s updated, but re-checking the records its pins name failed: %v — a pin may name a record deleted in flight and stand until it is cleared", cfg.ID, pins.Err)
+		return
+	}
+	// The answer must not resell the swept pins — the honesty the delete's
+	// 204 owes: answer with the row as the store now holds it.
+	pins.strip(cfg.KeyOverrides)
+	pins.strip(cfg.SecretOverrides)
 	writeJSON(w, cfg)
 }
 

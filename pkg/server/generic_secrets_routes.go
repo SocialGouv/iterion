@@ -206,7 +206,20 @@ func (s *Server) handleDeleteGenericSecret(w http.ResponseWriter, r *http.Reques
 		if errors.Is(err, secrets.ErrGenericSecretNotFound) {
 			// Not a 204, as on the api-key twin (handleDeleteApiKeyIn): a
 			// revoke that found nothing — a row gone, or one the tenant
-			// filter hid — is no success (#1687).
+			// filter hid — is no success (#1687). A row gone is also the
+			// shape of a delete whose sweep half failed on an earlier
+			// attempt: the retry must finish that sweep —
+			// retryCredentialPinSweep — before the 404 answers, never
+			// answer 404 over pins that may still stand.
+			tenantID := pinSweepTenant(ctx)
+			healed, healErr := s.retryCredentialPinSweep(r, tenantID, secretID)
+			if healErr != nil {
+				httpError(w, http.StatusInternalServerError, "secret %s is deleted, but clearing the pins that name it still fails: %v — a surviving pin keeps its workflow secret unfilled until it is cleared", secretID, healErr)
+				return
+			}
+			if len(healed) > 0 {
+				s.auditTenant(r, tenantID, "secret.deleted", "secret", secretID, map[string]any{"pins_cleared": healed})
+			}
 			httpError(w, http.StatusNotFound, "secret not found")
 			return
 		}
@@ -221,7 +234,22 @@ func (s *Server) handleDeleteGenericSecret(w http.ResponseWriter, r *http.Reques
 		httpError(w, http.StatusInternalServerError, "%s", err.Error())
 		return
 	}
-	s.auditTenant(r, rec.ScopeTeamID, "secret.deleted", "secret", rec.ID, map[string]any{"name": rec.Name})
+	// The chokepoint's half of the pin guards (see handleDeleteApiKeyIn):
+	// a secret_overrides pin naming this record would outlive it and leave
+	// the workflow secret unfilled in silence — on every fire, forever, on
+	// a cron subscription. The sweep outlives the request (pinGuardCtx).
+	sweepCtx, sweepCancel := pinGuardCtx(r)
+	defer sweepCancel()
+	swept, sweepErr := s.sweepCredentialPins(sweepCtx, pinSweepTenant(ctx), rec.ID)
+	meta := map[string]any{"name": rec.Name}
+	if len(swept) > 0 {
+		meta["pins_cleared"] = swept
+	}
+	s.auditTenant(r, rec.ScopeTeamID, "secret.deleted", "secret", rec.ID, meta)
+	if sweepErr != nil {
+		httpError(w, http.StatusInternalServerError, "secret %s deleted, but clearing the pins that name it failed: %v — a surviving pin keeps its workflow secret unfilled until it is cleared", rec.ID, sweepErr)
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 

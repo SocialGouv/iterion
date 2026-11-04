@@ -502,6 +502,11 @@ tasks:
     cmds:
       - go test -v -tags live -count=1 -run 'TestLive_Feat_WorkspaceCommands$' -timeout 15m ./e2e/...
 
+  test:live:feat:workspace-command-narrowing:
+    desc: 'Live e2e for the allowed-tools narrowing a workspace command applies on claw (real cost).'
+    cmds:
+      - go test -v -tags live -count=1 -run 'TestLive_Feat_WorkspaceCommandNarrowing$' -timeout 10m ./e2e/...
+
   test:live:feat:board-caps:
     desc: 'Live e2e for the agent board.* capabilities feature (real cost).'
     cmds:
@@ -725,21 +730,9 @@ tasks:
       - task: map:gen
 
   openapi:check:dry:
-    desc: Verify the committed OpenAPI spec + TS types are fresh WITHOUT mutating them (snapshot, regenerate, compare, restore)
+    desc: Verify the committed OpenAPI spec + TS types are fresh by generating privately and comparing with the index
     cmds:
-      - cp openapi.json /tmp/openapi.json.genbak
-      - cp studio/src/api/schema.ts /tmp/schema.ts.genbak
-      - task: openapi:gen
-      - cmd: |
-          if ! git diff --quiet -- openapi.json studio/src/api/schema.ts; then
-            echo "::error::OpenAPI spec / client drift — run 'task openapi:gen' and commit the result."
-            git --no-pager diff --stat -- openapi.json studio/src/api/schema.ts
-            cp /tmp/openapi.json.genbak openapi.json
-            cp /tmp/schema.ts.genbak studio/src/api/schema.ts
-            exit 1
-          fi
-      - cp /tmp/openapi.json.genbak openapi.json
-      - cp /tmp/schema.ts.genbak studio/src/api/schema.ts
+      - bash scripts/ci/check-openapi.sh
 
   gen:check:
     desc: Check maps, OpenAPI (non-mutating via openapi:check:dry), chart version, shared skills and dispatcher catalogue freshness
@@ -1024,10 +1017,7 @@ tasks:
   openapi:gen:
     desc: Regenerate the OpenAPI spec (openapi.json) + studio TS types (schema.ts) from code
     cmds:
-      # Offline spec from the in-code route table — the single source of truth.
-      - go run -mod=vendor ./cmd/iterion openapi -o openapi.json
-      # Typed client surface for the studio, derived from that spec.
-      - corepack pnpm -C studio exec openapi-typescript ../openapi.json -o src/api/schema.ts
+      - bash scripts/ci/generate-openapi.sh
 
   openapi:check:
     desc: Fail if the committed OpenAPI spec / TS types drift from the code
@@ -1547,7 +1537,18 @@ tasks:
     deps: [chart:dep-update]
     cmds:
       - kind create cluster --name iterion-chart-test --wait 60s || true
-      - helm upgrade --install iterion ./charts/iterion -f charts/iterion/values-dev.yaml --wait --timeout 5m
+      # One argument list feeds the wait helper and the install: the client
+      # wait derives from the deadline this install's own render gives the
+      # server Deployment (scripts/chart-kind-wait.sh runs `helm template`
+      # on the same arguments), so a fixed cap smaller than the deadline can
+      # no longer make helm give up while the server pod is still
+      # Progressing — the deadline decides Failed, the client watches at
+      # least that long — and the helper never reads a render the install
+      # does not apply.
+      - |
+        set -- iterion ./charts/iterion -f charts/iterion/values-dev.yaml
+        KIND_WAIT=$(sh scripts/chart-kind-wait.sh "$@") || exit 1
+        helm upgrade --install "$@" --wait --timeout "$KIND_WAIT"
       - helm test iterion
       - kind delete cluster --name iterion-chart-test
 

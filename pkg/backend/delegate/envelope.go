@@ -225,6 +225,11 @@ var ErrEnvelopeLineTooLong = errors.New("delegate: envelope line exceeds MaxEnve
 // IPC protocol is single-reader on each side.
 type EnvelopeReader struct {
 	scanner *bufio.Scanner
+	// redact, when set, runs over the raw line a decode error quotes,
+	// BEFORE the 256-byte cut: a cut that lands inside a declared value
+	// leaves a head no downstream pass recognises (iterion#2822). The
+	// multiplexer's consumer installs the run's pass before Run.
+	redact func(string) string
 }
 
 // NewEnvelopeReader wraps r with a [bufio.Scanner] sized for the
@@ -235,6 +240,22 @@ func NewEnvelopeReader(r io.Reader) *EnvelopeReader {
 	// the explicit Buffer call it caps lines at MaxScanTokenSize (64 KiB).
 	s.Buffer(make([]byte, 0, 64*1024), MaxEnvelopeLineBytes)
 	return &EnvelopeReader{scanner: s}
+}
+
+// SetRedactor installs the pass a decode error's quoted line crosses
+// before its cut. Call before the read loop; the reader is single-goroutine.
+func (er *EnvelopeReader) SetRedactor(redact func(string) string) {
+	er.redact = redact
+}
+
+// quotedLine returns the raw line with the pass applied, ready for the
+// error's cut. Nil-safe: a reader without a pass quotes the raw line.
+func (er *EnvelopeReader) quotedLine() string {
+	line := string(er.scanner.Bytes())
+	if er.redact != nil {
+		line = er.redact(line)
+	}
+	return line
 }
 
 // Read returns the next envelope on the channel. Returns [io.EOF]
@@ -253,7 +274,7 @@ func (er *EnvelopeReader) Read() (Envelope, error) {
 	}
 	var env Envelope
 	if err := json.Unmarshal(er.scanner.Bytes(), &env); err != nil {
-		return Envelope{}, fmt.Errorf("delegate: decode envelope: %w (line=%q)", err, truncate(string(er.scanner.Bytes()), 256))
+		return Envelope{}, fmt.Errorf("delegate: decode envelope: %w (line=%q)", err, truncate(er.quotedLine(), 256))
 	}
 	return env, nil
 }

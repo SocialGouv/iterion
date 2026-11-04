@@ -251,3 +251,38 @@ func TestAcquire_lentAPIKeyCarriesTheDonorsFingerprint(t *testing.T) {
 		t.Fatalf("grant fingerprint = %q, want the donor key's %q", grant.Fingerprint, k.Fingerprint)
 	}
 }
+
+// A lent key's own hard concurrency cap and label ride the grant: the
+// borrower's launch reserves a slot of the key on the same ledger row as
+// the donor's own launches, so the cap holds whoever runs on it. Red when
+// the api_key branch drops them (a capped key lent out is uncapped).
+func TestAcquire_aLentAPIKeyCarriesItsOwnConcurrencyCap(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	keyID := "key-carol-anthropic"
+	sealed, err := secrets.SealAPIKey(h.sealer, keyID, []byte("sk-real-carol"))
+	if err != nil {
+		t.Fatalf("seal key: %v", err)
+	}
+	if err := h.apiKeys.Create(ctx, secrets.ApiKey{
+		ID: keyID, TenantID: "team-1", ScopeTeamID: "team-1", ScopeUserID: "carol",
+		Provider: secrets.ProviderAnthropic, Name: "carol-capped", SealedSecret: sealed,
+		Fingerprint: secrets.FingerprintSHA256("sk-real-carol"), MaxConcurrentRuns: 3,
+	}); err != nil {
+		t.Fatalf("seed key: %v", err)
+	}
+	if err := h.pledges.Upsert(ctx, Pledge{
+		ID: PledgeID("carol", SourceAPIKey, "anthropic"), PoolID: "pool-1", UserID: "carol",
+		Credential: Credential{Source: SourceAPIKey, Ref: "anthropic", KeyID: keyID},
+		Enabled:    true, Health: HealthOK, Limits: Limits{MaxUSDPerDay: 5},
+	}); err != nil {
+		t.Fatalf("seed pledge: %v", err)
+	}
+	grant, err := h.broker.Acquire(ctx, h.wantKey("run-capped", "anthropic"))
+	if err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+	if grant.KeyMaxConcurrentRuns != 3 || grant.KeyName != "carol-capped" {
+		t.Fatalf("grant cap/name = %d/%q, want 3/%q — the donor record's own cap and label", grant.KeyMaxConcurrentRuns, grant.KeyName, "carol-capped")
+	}
+}

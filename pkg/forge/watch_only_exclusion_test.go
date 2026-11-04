@@ -47,7 +47,7 @@ func TestProvision_RefusesWatchOnlyBeforeWritingAnyBinding(t *testing.T) {
 		t.Fatalf("error = %q, want it to name the watch-only role", got)
 	}
 	// Nothing was written — no managed secret, no binding, no integration.
-	fresh, gerr := o.Connections.Get(context.Background(), conn.ID)
+	fresh, gerr := o.Connections.Get(context.Background(), conn.TenantID, conn.ID)
 	if gerr != nil {
 		t.Fatal(gerr)
 	}

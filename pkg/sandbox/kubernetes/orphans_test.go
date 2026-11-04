@@ -42,10 +42,10 @@ func TestParseManagedList_BadJSON(t *testing.T) {
 }
 
 func TestReapOrphanResources_RequiresArgs(t *testing.T) {
-	if _, err := ReapOrphanResources(nil, "", func(string) bool { return true }); err == nil {
+	if _, err := Kubectl(kubeBinaryName).ReapOrphanResources(nil, "", func(string) bool { return true }); err == nil {
 		t.Error("expected error on empty namespace")
 	}
-	if _, err := ReapOrphanResources(nil, "ns", nil); err == nil {
+	if _, err := Kubectl(kubeBinaryName).ReapOrphanResources(nil, "ns", nil); err == nil {
 		t.Error("expected error on nil predicate")
 	}
 }
