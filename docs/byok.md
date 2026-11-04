@@ -478,11 +478,14 @@ still lived and lands after the sweep's listing, which therefore never
 sees it — and the write routes close that half themselves: every
 pin-landing write (both lanes' create and edit) re-checks the records its
 landed pins name, and one already revoked sweeps immediately under the
-same detached context as the delete's sweep. The one writer that copies
-pins without validating them — a re-provision migrating a repo to a new
-hook identity carries the operator's pins from the old config onto a row
-the old config's version does not guard — re-checks what they name once
-its row is stored and clears a revoked one from it. The webhook routes carry that
+same detached context as the delete's sweep. The two provision writes
+that land pins without validating them re-check what they name once
+their row is stored and clear a revoked one from it: a re-provision
+migrating a repo to a new hook identity carries the operator's pins from
+the old config onto a row the old config's version does not guard, and a
+failed provision's undo restores settings read before its own write at
+the version that write reached — a sweep that passed the row while the
+write did not name the record bumped nothing. The webhook routes carry that
 receipt in their audit line (`pins_cleared`); the trigger routes, which
 audit nothing today, log it. A re-check the store refuses splits by what a
 retry can mend: an edit answers 5xx — the edit is stored, nothing one-time

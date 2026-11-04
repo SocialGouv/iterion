@@ -189,7 +189,8 @@ func assertRestored(t *testing.T, o *Orchestrator, candidate webhooks.Config, wh
 
 // The control: the re-check clears the dead pins, a later step fails, and
 // the undo restores — the version the re-check reports is the one its own
-// clear reached.
+// clear reached. The restore brings back the row's previous settings, not
+// the pins of its snapshot that name the deleted records.
 func TestProvisionMigration_UndoRestoresTheRowItsPinClearLeft(t *testing.T) {
 	o, candidate, rs := retriedMigration(t)
 	o.AdminFor = func(context.Context, Connection) (Admin, error) { return nil, errAdminDown }
@@ -200,6 +201,7 @@ func TestProvisionMigration_UndoRestoresTheRowItsPinClearLeft(t *testing.T) {
 		t.Fatalf("fixture ineffective: records killed=%v, a dead pin cleared=%v", rs.killed, rs.dropped)
 	}
 	assertRestored(t, o, candidate, "after the admin-client failure")
+	assertNoDeadPin(t, o, candidate.ID, rs.dead, "after the admin-client failure")
 }
 
 // The store refuses the clear of the second dead record — after the first

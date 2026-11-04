@@ -111,9 +111,10 @@ type Orchestrator struct {
 	// pins naming the record (#2644) — this package holds no trigger store
 	// and cannot run that sweep itself.
 	Secrets secrets.GenericSecretStore
-	// ApiKeys, when set, lets a migration carry re-check the BYOK key pins
-	// it copies onto a new hook identity (reconcileCarriedPins); nil leaves
-	// key pins unjudged, as the routes do with no key store wired.
+	// ApiKeys, when set, lets a provision re-check the BYOK key pins it
+	// lands with no version guard — a migration carry onto a new hook
+	// identity, the undo's restore (reconcileStoredPins); nil leaves key
+	// pins unjudged, as the routes do with no key store wired.
 	ApiKeys secrets.ApiKeyStore
 	Sealer  secrets.Sealer
 	// Bindings, when set, gets a bot-secret binding per enabled bot pinning
@@ -945,11 +946,11 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 	}
 	// The migration carry copied prev's pins into a row whose write was no
 	// CAS on prev: now that the row is stored, re-check the records they
-	// name (reconcileCarriedPins). Its clear bumps the row's version, so the
+	// name (reconcileStoredPins). Its clear bumps the row's version, so the
 	// undo checks the version the re-check reports, on success and failure
 	// alike.
 	if hasPrevCfg && prevCfg.ID != webhookID {
-		err := o.reconcileCarriedPins(ctx, &cfg)
+		err := o.reconcileStoredPins(ctx, &cfg)
 		written.wroteVersion = cfg.Version
 		if err != nil {
 			return ProvisionResult{}, o.undoConfigWrite(ctx, written, false, err)
@@ -1150,6 +1151,11 @@ func (o *Orchestrator) undoConfigWrite(ctx context.Context, w configWrite, calle
 
 // restoreConfig restores settings only while this attempt still owns the
 // config version. The immutable epoch token verifies either remote outcome.
+// The snapshot predates the attempt's write, and the version it lands at does
+// not: a credential record's sweep that passed the row in between found
+// nothing to clear there, so the restored pins are re-checked once stored
+// (reconcileStoredPins). A re-check that fails leaves the settings restored
+// and is reported beside the provision's own failure.
 func (o *Orchestrator) restoreConfig(ctx context.Context, w configWrite) error {
 	if !w.hasPrev {
 		return nil
@@ -1167,6 +1173,10 @@ func (o *Orchestrator) restoreConfig(ctx context.Context, w configWrite) error {
 			return nil
 		}
 		return &ConfigRestoreError{WebhookID: w.prev.ID, Err: err}
+	}
+	w.prev.Version++
+	if err := o.reconcileStoredPins(ctx, &w.prev); err != nil {
+		return fmt.Errorf("forge: webhook config %s is restored, but the records its pins name are not reconciled — re-run the same request: %w", w.prev.ID, err)
 	}
 	return nil
 }

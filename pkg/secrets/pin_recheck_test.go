@@ -12,7 +12,7 @@ import (
 
 // #2644. RecheckPinnedRecords is the one judgment the pin-landing writers
 // share once their row is stored (pkg/server reconcileLandedPins, pkg/forge
-// reconcileCarriedPins): does each record a pin names still live. These
+// reconcileStoredPins): does each record a pin names still live. These
 // witnesses read the verdicts against the real memory stores — the
 // not-found sentinel they answer is the one the Mongo stores answer — with a
 // wrapper only where a read must fail the way an outage does.

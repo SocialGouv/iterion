@@ -36,10 +36,10 @@ type PinRecheck struct {
 //
 // It is the one judgment every writer that lands a pin the delete's sweep
 // may never visit makes once its row is stored — the routes' landed-pin
-// reconciliation (pkg/server reconcileLandedPins) and the forge migration
-// carry (reconcileCarriedPins) — and each acts on the verdicts its own way:
-// a route sweeps a revoked record's pins tenant-wide, the carry clears them
-// from the one row it wrote.
+// reconciliation (pkg/server reconcileLandedPins) and the forge provision's
+// migration carry and undo restore (reconcileStoredPins) — and each acts on
+// the verdicts its own way: a route sweeps a revoked record's pins
+// tenant-wide, the provision clears them from the one row it wrote.
 func RecheckPinnedRecords(ctx context.Context, keys ApiKeyStore, gen GenericSecretStore, tenantID string, keyPins, secretPins map[string]string) []PinRecheck {
 	tctx := store.WithTenant(ctx, tenantID)
 	var out []PinRecheck
