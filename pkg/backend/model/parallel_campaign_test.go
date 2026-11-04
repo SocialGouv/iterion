@@ -114,6 +114,7 @@ var serialFamily = map[string]string{
 	"claw_sandbox_stamp_test.go":               "Setenv",
 	"claw_vendored_provider_env_test.go":       "Setenv",
 	"codex_client_version_test.go":             "Setenv",
+	"credparity_dispatch_test.go":              "SetCredentialsLookup, Setenv",
 	"cursors_test.go":                          "Setenv, Unsetenv",
 	"executor_auto_memory_test.go":             "Setenv",
 	"executor_cooldown_test.go":                "Setenv",
