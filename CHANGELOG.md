@@ -3,6 +3,42 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [5.8.0](https://github.com/SocialGouv/iterion/compare/v5.7.0...v5.8.0) (2026-11-04)
+
+### Features
+
+* **dsl,docs:** C331 warns where a script body names the minted grant ([3019b77](https://github.com/SocialGouv/iterion/commit/3019b7710ee95d31aa38c70bc4be37c7708805e9)), references [#2875](https://github.com/SocialGouv/iterion/issues/2875) [#2875](https://github.com/SocialGouv/iterion/issues/2875)
+
+    <details><summary>why</summary>
+
+    A `{{vars.forge_publish_token}}` in a tool node's `script:` body is refused by the RUN (#2875), and nothing said so before it: `iterion validate` was clean and the preview rendered a tidy placeholder (pkg/dryrun passes a nil guard), so the author learned it mid-node, after the spend upstream. C331 says it at authoring time, and WARNS rather than rejects — the compiler reads the NAME while the run asks its guard, so a launch holding no grant renders the var's empty value and runs.
+
+    </details>
+* **live:** ledger rows name what served; one chokepoint arms every run ([d33a22f](https://github.com/SocialGouv/iterion/commit/d33a22fd835cec7740080dfc92dcfffadc7199fc)), references [#1423](https://github.com/SocialGouv/iterion/issues/1423) [#1423](https://github.com/SocialGouv/iterion/issues/1423) [#1422](https://github.com/SocialGouv/iterion/issues/1422)
+
+    <details><summary>why</summary>
+
+    The code half of the live re-proof (#1423, option A of fleet question pinned one, nor a target nobody paid for from one this machine cannot run, and the harness had no way to re-target a fixture onto a route the operator can fund.
+
+    </details>
+
+### Bug Fixes
+
+* **bots:** Vetty holds a bump only for a HIGH/CRITICAL it introduces ([#3042](https://github.com/SocialGouv/iterion/issues/3042)) ([1794b10](https://github.com/SocialGouv/iterion/commit/1794b108f9d12014faf8c91707d24e281141baaf)), references [buildkit-operator#38](https://github.com/buildkit-operator/issues/38) [#3006](https://github.com/SocialGouv/iterion/issues/3006)
+
+    <details><summary>why</summary>
+
+    The audit sorted nothing and held on any unresolved HIGH/CRITICAL on the new version, while also calling "safe" a bump that introduces none, and broke the tie toward "suspicious". Bumps that strictly improve the pins were held: buildkit-operator#55 resolved eleven advisories and the Go 1.26.10 security release, introduced none, and was held for nodejs CVEs the old pin carries too. The same diff got opposite verdicts across runs.
+
+    </details>
+* **server:** key the auth rate limiter on the client, not the socket ([fc2f941](https://github.com/SocialGouv/iterion/commit/fc2f94147f017eea1a0e029b54571c5b70dedb52)), references [#2804](https://github.com/SocialGouv/iterion/issues/2804) [#3022](https://github.com/SocialGouv/iterion/issues/3022) [#2990](https://github.com/SocialGouv/iterion/issues/2990) [#3000](https://github.com/SocialGouv/iterion/issues/3000) [#3000](https://github.com/SocialGouv/iterion/issues/3000) [#2673](https://github.com/SocialGouv/iterion/issues/2673)
+
+    <details><summary>why</summary>
+
+    clientIP returned r.RemoteAddr with its ephemeral source port, so every fresh TCP connection of one client was a different client and bought a fresh rate-limit bucket: 60 requests over 60 fresh connections, zero 429 where a burst of 30 should have run out (#1668's r5a measurement, reproduced). TrustedProxyCIDRs — the field that decides whether a forwarded address may name the client — was declared and assigned nowhere.
+
+    </details>
+
 ## [5.7.0](https://github.com/SocialGouv/iterion/compare/v5.6.0...v5.7.0) (2026-11-04)
 
 ### Features
