@@ -78,6 +78,60 @@ docs/bot-runs/dep-update-guard.md). Same reasoning as
 {{- end -}}
 
 {{/*
+The digest guard behind `image.requireDigest` (opt-in, default false): the
+ONE place every image reference a pod runs passes through, so a production
+install can refuse a moving tag at render time instead of discovering it as
+a ReplicaSet running two builds. Takes a dict: `root` (the top context),
+`field` (the values path the operator fixes) and `ref` (the reference
+rendered). Returns the reference unchanged when the guard is off or the
+reference is `repo@sha256:<64 hex>`; a `fail` otherwise. The shape is
+anchored at both ends: a bare `@sha256:…` (no repository) is exactly the
+string kubelet alone rejects as InvalidImageName, so it must not pass the
+render either. Helm has no warning channel, so opt-in is the escape hatch:
+nothing changes for an install that leaves the flag false.
+*/}}
+{{- define "iterion.pinnedImage" -}}
+{{- if and .root.Values.image.requireDigest (not (regexMatch "^[^@\\s]+@sha256:[0-9a-f]{64}$" .ref)) -}}
+{{- fail (printf "image.requireDigest=true: %s resolves to %q, which is not a digest reference (repo@sha256:<64 hex chars>) — pin it by digest (docs/cloud-deployment.md § Pinning the image) or set image.requireDigest=false" .field .ref) -}}
+{{- end -}}
+{{- .ref -}}
+{{- end -}}
+
+{{/*
+The server image: the shared reference, under the digest guard.
+*/}}
+{{- define "iterion.serverImage" -}}
+{{- include "iterion.pinnedImage" (dict "root" . "field" "image (the server image)" "ref" (include "iterion.image" .)) -}}
+{{- end -}}
+
+{{/*
+The shared runner image: `runner.image` verbatim when set (a full
+reference, e.g. the devbox runner), the shared reference otherwise; under
+the digest guard either way, because `image.digest` pins the SHARED
+reference only and a runner given its own image keeps the hazard.
+*/}}
+{{- define "iterion.runnerImage" -}}
+{{- if .Values.runner.image -}}
+{{- include "iterion.pinnedImage" (dict "root" . "field" "runner.image" "ref" .Values.runner.image) -}}
+{{- else -}}
+{{- include "iterion.pinnedImage" (dict "root" . "field" "image (the runner image)" "ref" (include "iterion.image" .)) -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+A pool's runner image: the pool's own `image` verbatim when set, the shared
+reference otherwise; under the digest guard either way. Takes a dict:
+`root` (the top context) and `pool` (the runnerPools[] entry).
+*/}}
+{{- define "iterion.runnerPoolImage" -}}
+{{- if .pool.image -}}
+{{- include "iterion.pinnedImage" (dict "root" .root "field" (printf "runnerPools[%s].image" .pool.name) "ref" .pool.image) -}}
+{{- else -}}
+{{- include "iterion.pinnedImage" (dict "root" .root "field" (printf "image (the image of pool %s)" .pool.name) "ref" (include "iterion.image" .root)) -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
 ServiceAccount name. Use the override when set, otherwise derive
 from the release.
 */}}

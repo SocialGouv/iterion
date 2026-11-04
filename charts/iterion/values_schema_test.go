@@ -104,6 +104,9 @@ func TestValuesSchemaMatchesTemplates(t *testing.T) {
 	}
 	for _, invalid := range []map[string]any{
 		{"renamedRunner": map[string]any{}}, {"runnerPools": map[string]any{}}, {"server": "oops"}, {"mode": "cluod"},
+		// A quoted "false" is truthy to the templates: typed so the schema
+		// refuses it instead of the digest guard refusing the whole render.
+		{"image": map[string]any{"requireDigest": "false"}},
 	} {
 		if err := resolved.Validate(invalid); err == nil {
 			t.Errorf("silent invalid values accepted: %v", invalid)

@@ -13,10 +13,12 @@ name: 🏷️ Release Images (runner + sandbox)
 # `iterion:vX.Y.Z` before they build — resolving the cross-workflow dependency
 # without either workflow racing to publish the server tag.
 #
-# Entirely OFF the deploy critical path: prod's runner tracks `:edge` (a main
-# tag), and sandbox images are pulled at bot-run time. These `:vX.Y.Z` tags
-# exist for completeness + the released binary's `sandbox: auto` resolution
-# (appinfo.SandboxImageTag). See docs/ci-pipeline-topology.md.
+# This IS the release deploy path for the runner and the sandbox: prod pins
+# both by the digest of these `:vX.Y.Z` tags, resolved and committed in the
+# GitOps values (docs/cloud-deployment.md § Pinning the image) — `:edge` is a
+# dev install's tag. Nothing waits on it at run time: sandbox images are
+# pulled at bot-run time, and the released binary's `sandbox: auto` resolves
+# to these tags (appinfo.SandboxImageTag). See docs/ci-pipeline-topology.md.
 
 on:
   push:

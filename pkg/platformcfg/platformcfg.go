@@ -26,6 +26,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -110,6 +111,26 @@ func (s Sandbox) Validate() error {
 		return fmt.Errorf("platformcfg: default_image override must not be blank (clear it to fall back to the env default)")
 	}
 	return nil
+}
+
+// digestImageRef is the shape of an image reference pinned by content:
+// a repository, then `@sha256:` and 64 hex characters — the same shape the
+// chart's `image.requireDigest` guard admits, so the two surfaces agree on
+// what "pinned" means.
+var digestImageRef = regexp.MustCompile(`^[^@\s]+@sha256:[0-9a-f]{64}$`)
+
+// DigestWarning names the hazard of an override that is not a digest
+// reference: the setting bypasses the chart's render guard (it reaches the
+// publisher from the DB, no helm in the path), so a moving tag here re-routes
+// every `sandbox: auto` run of the platform on whatever the tag means at
+// pull time. The override is accepted either way — warn, never refuse an
+// operator's explicit choice. "" when unset or digest-pinned.
+func (s *Sandbox) DigestWarning() string {
+	ref := s.EffectiveImage()
+	if ref == "" || digestImageRef.MatchString(ref) {
+		return ""
+	}
+	return fmt.Sprintf("sandbox default_image %q is not a digest reference (repo@sha256:<64 hex>): every `sandbox: auto` run follows whatever the tag means at pull time, outside the chart's image.requireDigest guard — pin it by digest", ref)
 }
 
 // BotVars is the bot-variable override record: the `${ITERION_X:-default}`

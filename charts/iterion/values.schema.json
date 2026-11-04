@@ -37,7 +37,13 @@
       "type": "object"
     },
     "image": {
-      "type": "object"
+      "type": "object",
+      "properties": {
+        "requireDigest": {
+          "type": "boolean",
+          "description": "Opt-in render guard: every iterion pod image must be a repo@sha256 reference. Typed because the string \"false\" is truthy to the templates and would refuse the whole render."
+        }
+      }
     },
     "imagePullSecrets": {
       "type": "array"

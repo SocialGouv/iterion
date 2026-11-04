@@ -497,6 +497,7 @@ func (s *Server) handleAdminGetSandboxSettings(w http.ResponseWriter, r *http.Re
 		Stored:                rec,
 		EffectiveDefaultImage: s.effectiveSandboxImageSetting(r.Context()),
 		Origin:                origin,
+		Warning:               rec.DigestWarning(),
 	})
 }
 
@@ -540,6 +541,11 @@ func (s *Server) handleAdminPutSandboxSettings(w http.ResponseWriter, r *http.Re
 		return
 	}
 	s.sandboxCfg.Invalidate()
+	if warning := rec.DigestWarning(); warning != "" {
+		// Accepted, not refused: the setting is the operator's explicit
+		// choice, and the chart's render guard cannot see it.
+		s.logger.Warn("platform settings: %s", warning)
+	}
 	s.auditPlatform(r, "", "platform.settings.sandbox.updated", "platform_settings", platformcfg.FamilySandbox, map[string]any{
 		"default_image": strPtrOr(rec.DefaultImage, ""),
 	})
@@ -684,6 +690,10 @@ type sandboxSettingsView struct {
 	Stored                *platformcfg.Sandbox `json:"stored"`
 	EffectiveDefaultImage string               `json:"effective_default_image"`
 	Origin                string               `json:"origin"`
+	// Warning names a stored override that is not a digest reference: the
+	// setting sits outside the chart's image.requireDigest guard, so the
+	// hazard is said here, in the response the CLI prints, and never refused.
+	Warning string `json:"warning,omitempty"`
 }
 
 // botVarsSettingsView is GET /api/admin/settings/bot-vars.

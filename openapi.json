@@ -6167,6 +6167,9 @@
           },
           "stored": {
             "$ref": "#/components/schemas/Sandbox"
+          },
+          "warning": {
+            "type": "string"
           }
         },
         "required": [

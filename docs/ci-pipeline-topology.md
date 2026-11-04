@@ -8,21 +8,33 @@ image it redeploys.
 
 ## What deploys from what
 
-| Prod target | Image / tag it tracks | Built by | Signal = completion of |
+| Target | Image it tracks | Built by | Signal = completion of |
 |---|---|---|---|
-| server pods | `iterion:vX.Y.Z` (chart appVersion) | `image.yml` (tag → multi-arch + signed) | `image.yml` |
-| runner pods | `iterion-runner-devbox:edge` (rolling main tag) | `runner-image.yml` (main → amd64) | `runner-image.yml` |
+| server pods, **prod** | `iterion@sha256:…` — the digest of the signed `iterion:vX.Y.Z` | `image.yml` (tag → multi-arch + signed) | `image.yml` on the tag |
+| runner pods, **prod** | `iterion-runner-devbox@sha256:…` — the digest of `:vX.Y.Z` | `release-images.yml` (tag → multi-arch + signed) | `release-images.yml` |
+| server pods, a `:edge` dev install | `iterion:edge` (rolling main tag) | `image.yml` (main → amd64) | `image.yml` on main |
+| runner pods, a `:edge` dev install | `iterion-runner-devbox:edge` (rolling main tag) | `runner-image.yml` (main → amd64) | `runner-image.yml` |
 
-Sandbox images (`iterion-sandbox-*`) are pulled at bot-run time, not by any
-deploy — they are off every deploy path.
+Prod pins every image by digest in its GitOps values (server, runner and the
+`sandbox: auto` image alike), so a prod deploy is a digest bump committed
+there, never a tag that moves under a running ReplicaSet — see
+[pinning the image](cloud-deployment.md#pinning-the-image). The `:edge` rows
+are what an install tracking main redeploys from.
+
+Sandbox images (`iterion-sandbox-*`) are pulled at bot-run time, so no
+rollout waits on them: a `:edge` install takes them from `sandbox-images.yml`,
+while prod's `sandbox: auto` digest is bumped from `release-images.yml`
+alongside the runner's.
 
 > ⚠️ **Signal-contract change — a redeploy watcher must be reconfigured.**
 > Before this split, `image.yml` built the server AND the runner, so its
 > completion meant *both* were ready. Now `image.yml` completes when only the
 > **server** is ready; the runner `:edge` is published ~2-3 min later by
-> `runner-image.yml`. **A CD/agent that redeploys the runner must key on
+> `runner-image.yml`. **A CD/agent that redeploys a `:edge` runner must key on
 > `runner-image.yml` completion, not `image.yml`** — otherwise it redeploys a
-> one-cycle-stale runner. Server redeploy keys on `image.yml` as before.
+> one-cycle-stale runner. Server redeploy keys on `image.yml` as before. A
+> prod bump keys on the release tag's workflows instead (`image.yml` for the
+> server digest, `release-images.yml` for the runner and sandbox digests).
 >
 > Minor knock-on: `trivy.yml` image-scan runs on `image.yml` completion and
 > scans `iterion-sandbox-*:edge`, which the fresh refold republishes just
@@ -44,10 +56,11 @@ release-images.yml   runner + sandbox @ :vX.Y.Z   push tags v*  (await image.yml
 
 ### Why the splits
 
-- **Server is amd64-only on main** (`:edge`): OVH prod is amd64 (12/12 nodes),
-  `:edge` is ephemeral, so the deployable tag is never gated by the slower
-  arm64 leg. On a **tag** the server is multi-arch + signed in-line — arm64 IS
-  the release artifact, and releases are infrequent.
+- **Server is amd64-only on main** (`:edge`): OVH prod is amd64 (12/12 nodes)
+  and `:edge` is an ephemeral dev tag, so the main build is never gated by
+  the slower arm64 leg. On a **tag** the server is multi-arch + signed
+  in-line — arm64 IS the release artifact, releases are infrequent, and the
+  release digest is what prod pins.
 - **Runner has its own workflow** so the server signal never waits on it (it
   bakes the server binary via `COPY --from`, i.e. it can only run *after* the
   server image). It is `workflow_run`-triggered off `image.yml` on main.
