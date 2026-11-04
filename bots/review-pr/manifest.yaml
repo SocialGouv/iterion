@@ -1,7 +1,9 @@
 name: review-pr
 display_name: Revi
 icon: 🔎
-version: 0.9.17
+version: 0.9.18
+## 0.9.18 — GPT convergence uses its file tools and board capabilities
+## without inheriting the reviewed repository's MCP servers (#3017).
 ## 0.9.17 — the claude reviewer slots declare their tool surface
 ## (`bash`, `read_file`, `glob`, `grep`): on claw an empty list is no tools
 ## at all, so a pool deployment dispatched them with tool_count 0 and the

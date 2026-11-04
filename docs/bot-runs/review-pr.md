@@ -8,6 +8,64 @@ pr_url` it also posts an inline forge review and an optional deterministic
 commit-status gate. Never edits or commits. See
 [bots/review-pr/](../../bots/review-pr/).
 
+## 2026-11-04 — Codex fallback reaches the forge gate (run `01a1a567-5f2d`)
+
+- Status: **validated** on [PR #3007](https://github.com/SocialGouv/iterion/pull/3007).
+  Run `01a1a567-5f2d-7048-9f9a-a4b9605c5789` finished; its
+  [published review](https://github.com/SocialGouv/iterion/pull/3007#pullrequestreview-5764804351)
+  and GitHub's status API both confirm `revi/review=success` on
+  `30cd774cc9da061ba3b14ec2fd2a0cb4b8ac6cab`, with zero findings.
+- Versions: production iterion **v4.7.1 / `53799d4cb0d2`**, Codex CLI
+  **0.156.1**; platform `review-pr` override **0.9.17 → 0.9.18**, stored
+  revision **17 → 18**. The hotfix used the deployed seven-file bundle plus
+  only this node change and the manifest bump; newer unrelated catalog
+  changes from the checkout were not published with it.
+- Method: the operator supplied a fresh local Codex `auth.json` to platform
+  OAuth **rank 0**, refreshable, and put `codex+chatgpt_forfait` first in the
+  platform pair order. An expired, non-refreshable team Codex copy had masked
+  it and was removed. Platform bot vars `ITERION_VIBE_MODEL_GPT` and
+  `ITERION_VIBE_MODEL_GPT_GLANCE` were changed from `zai/glm-5.3` to
+  `openai/gpt-6-astra` and `openai/gpt-6-luna`. The Iterion integration pins
+  `review_mode=mono`, `mono_family=gpt`; its other launch vars were preserved.
+  The run reports `credential_tiers=[platform]`.
+- Result: `reviewer_gpt` used **claw / openai/gpt-6-astra**, inspected 17
+  changed files and ran targeted tests: **591,996 tokens / $6.077320** in
+  270 seconds. The repaired `converge_gpt` used **claw / openai/gpt-6-sol**:
+  **21,287 tokens / $0.046454**, 21 seconds, 11 tools. These are the engine's
+  token and dollar accounting, **not an OpenAI invoice**; the credential was
+  the ChatGPT forfait. Total recorded node cost: **$6.123774**.
+- Defect: the reviewer succeeded, then convergence failed before its model
+  call: `mcp.iterion_board.add_labels` was refused because `iterion_board`
+  was absent from the repository's active MCP set. Capability-granted board
+  tools and an ambient `.mcp.json` met a resolver that treated them alike.
+  **Fix:** convergence declares `mcp: inherit: false`; it consumes prior
+  outputs and keeps its file tools and board capabilities without needing
+  repository services. The reviewer still inherits repository MCP.
+- Proof: the shipped-bot regression reproduces the original resolver error
+  when inheritance is restored. With the fix, real `buildTask` assembly on
+  claw and claude_code preserves the board capabilities, excludes unrelated
+  MCP and ungranted board writes, and a granted `create_issue` executes.
+  This is a bot-level remedy; other workflows combining ambient MCP and
+  host board tools are not claimed fixed by it.
+- Recovery: publish the minimal bundle, then resume the existing run with
+  `--file /tmp/iterion-gpt-hotfix/bots/review-pr/main.bot --force`. The
+  `bots/review-pr` path component matters for a stored bot's identity on
+  this server. The checkpoint retained the completed reviewer output; only
+  convergence and publication reran, finishing at **07:31:40 UTC**.
+- Operational limits: credential pair order alone does not change Revi's
+  Claude-first automatic mono-family selection. DACCORD's exhausted shared
+  route was also pinned to mono GPT, preserving `gate_enabled=false`; its
+  GitLab credential was unavailable locally, so no fresh DACCORD run is
+  claimed here. Egapro's dedicated runner pool excludes shared credentials
+  even with `llm_fallback=platform`, while the credential preview lists
+  them. Sharing that fallback requires moving new runs to the shared pool;
+  changing the fallback field alone does not remove the pool boundary.
+- Migration: retain the database's OAuth, platform settings, integration
+  launch vars and bot override **and the key that decrypts sealed records**.
+  No cluster image was changed for this repair. Revalidate the effective
+  bundle and one real published review after migration; this pre-migration
+  proof does not certify a future deployment. Tracking: **#3017**.
+
 ## 2026-09-17 — profile 2: Revi reviews the migration that moved it to profile 2 (run 01a0ae61-aeb4)
 
 - Status: **validated** — a local mono review of this branch's own diff,
