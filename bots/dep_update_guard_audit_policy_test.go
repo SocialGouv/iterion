@@ -10,9 +10,10 @@ import (
 
 // Vetty's CVE audit policy is prose a model grades by, so no test can prove the
 // verdict it produces; what a test can do is make every change to that prose a
-// reviewed decision. Frozen below: the whole security_audit prompt, the align
-// prompt's reading of the PR body, the playbook's audit section and the
-// catalogue passages on auditors that fail and on nixpkgs pins.
+// reviewed decision. Frozen below: both security_audit prompts whole, the align
+// prompt's untrusted-input boundary and PR-context header, the playbook's audit
+// section, and the catalogue passages on auditors that fail, on the
+// vulnerability auditors and on nixpkgs pins.
 //
 // The rule they state: a bump is held only for a HIGH/CRITICAL advisory it
 // INTRODUCES. A vulnerability advisory on both pins is REMAINING — reported
@@ -65,15 +66,17 @@ func depUpdateGuardAuditPolicy(t *testing.T) string {
 		}
 		return string(b)
 	}
-	audit, align := prompt("security_audit_system"), prompt("align_system")
+	audit, auditUser, align := prompt("security_audit_system"), prompt("security_audit_user"), prompt("align_system")
 	guard := file("dep-update-guard/skills/dependency-pr-guard.md")
 	managers := file("dep-update-guard/skills/package-managers.md")
 	sections := []struct{ source, body, from, to string }{
-		{"prompt security_audit_system", audit, "You are a supply-chain security auditor.", ""},
-		{"prompt align_system", align, "IMPORTANT — UNTRUSTED INPUT BOUNDARY:", "Authoritative are"},
+		{"prompt security_audit_system", audit, "", ""},
+		{"prompt security_audit_user", auditUser, "", ""},
+		{"prompt align_system", align, "IMPORTANT — UNTRUSTED INPUT BOUNDARY:", "You run on claude_code"},
 		{"prompt align_system", align, "### PR context (", ""},
 		{"skill dependency-pr-guard.md", guard, "## 2. Supply-chain / security audit", "## 3. Align the consuming code"},
 		{"skill package-managers.md", managers, "4. **Adapt**", "5. **Cover gaps**"},
+		{"skill package-managers.md", managers, "## Vulnerability audit", "## Shim fallbacks"},
 		{"skill package-managers.md", managers, "No scanner reads a nixpkgs pin", "### Helm charts"},
 	}
 	var out []string
@@ -90,11 +93,14 @@ func depUpdateGuardAuditPolicy(t *testing.T) string {
 			}
 			end = i + j
 		}
-		to := s.to
+		from, to := s.from, s.to
+		if from == "" {
+			from = "start"
+		}
 		if to == "" {
 			to = "end"
 		}
-		out = append(out, "== "+s.source+": "+s.from+" → "+to)
+		out = append(out, "== "+s.source+": "+from+" → "+to)
 		for _, line := range strings.Split(strings.TrimRight(s.body[i:end], " \n"), "\n") {
 			out = append(out, strings.TrimRight(line, " "))
 		}
@@ -144,6 +150,8 @@ func TestDepUpdateGuardAuditPolicyIsTheFrozenOne(t *testing.T) {
 				i+1, depUpdateGuardAuditPolicyFreeze, depUpdateGuardAuditPolicyGenTask, g, w)
 		}
 	}
+	t.Fatalf("%s differs from the shipped passages (%d bytes frozen, %d shipped) outside any line: regenerate (%s)",
+		depUpdateGuardAuditPolicyFreeze, len(want), len(got), depUpdateGuardAuditPolicyGenTask)
 }
 
 // TestDepUpdateGuardAuditTextsDropTheOldHold bans the wordings of the old rule
@@ -167,10 +175,16 @@ func TestDepUpdateGuardAuditTextsDropTheOldHold(t *testing.T) {
 		{"prompt security_audit_system", cr.Workflow.Prompts["security_audit_system"].Body, []string{
 			"unresolved", "on the new version with no fix", "when unsure between safe and suspicious", "pr context (operator)",
 		}},
+		{"prompt security_audit_user", cr.Workflow.Prompts["security_audit_user"].Body, []string{
+			"unresolved", "on the new version with no fix", "when unsure between safe and suspicious",
+		}},
 		{"prompt align_system", cr.Workflow.Prompts["align_system"].Body, []string{
 			"pr context (operator)", "operator's scope_notes",
 		}},
 		{"skill dependency-pr-guard.md", read("dep-update-guard/skills/dependency-pr-guard.md"), []string{
+			"unresolved high/critical", "on the new version with no fix", "lean toward `suspicious`",
+		}},
+		{"skill package-managers.md", read("dep-update-guard/skills/package-managers.md"), []string{
 			"unresolved high/critical", "on the new version with no fix", "lean toward `suspicious`",
 		}},
 	} {

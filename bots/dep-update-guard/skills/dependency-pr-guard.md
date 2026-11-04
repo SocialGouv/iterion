@@ -38,9 +38,11 @@ Signals, in priority order:
    `govulncheck ./...`, `cargo audit --json`, …), and the OSV API as a
    fallback for one `(ecosystem, name, version)` — query it for `<old>`
    and for `<new>`, with the package's id in that ecosystem (the Go
-   toolchain is `stdlib`) and the bare resolved version (`1.24.3`, never
-   `go1.24.3` or `^1.2.3`); an empty answer, or the same set for both
-   pins, is not a sort:
+   toolchain is two ids, `stdlib` and `toolchain`) and the bare resolved
+   version (`1.24.3`, never `go1.24.3` or `^1.2.3`). OSV answers an
+   unknown id or an unparseable version without an error: confirm the id
+   is known (a query without a version returns its records) before
+   reading an empty answer as clean:
    `curl -sS -X POST https://api.osv.dev/v1/query -d
    '{"package":{"name":"<n>","ecosystem":"<eco>"},"version":"<new>"}'`.
 2. **Install-time hooks newly introduced by the bump** — diff the new
@@ -52,14 +54,17 @@ Signals, in priority order:
 3. **Compromised-maintainer / provenance** where the ecosystem exposes it
    (npm provenance, sigstore). Note if absent rather than asserting safe.
 4. **CVEs** (vulnerability advisories — a malware, typosquat or yanked
-   advisory, or any record whose details describe malicious code, is
-   signal 1 and `malicious` on the new version, whatever the old pin
-   carries): sort what you find into RESOLVED (old pin affected,
+   advisory, or any record stating the package or version itself ships
+   malicious code, is signal 1 and `malicious` on the new version,
+   whatever the old pin carries; a flaw through which an attacker
+   injects or runs malicious code is a vulnerability): sort what you find into RESOLVED (old pin affected,
    new version not), INTRODUCED (new version affected, old pin not) and
    REMAINING (both affected). A package the bump adds has no old pin: its
    advisories are INTRODUCED; one it removes has only RESOLVED ones. Sort
    from the advisory record (OSV, GHSA, NVD, by id) checked against BOTH
-   pins — scan the base branch's lockfile too, or query OSV for each pin;
+   pins — scan the old lockfile too (`git show "$(git merge-base <base>
+   HEAD)":<lockfile>` into a scratch directory, under its own name), or
+   query OSV for each pin;
    a scanner line that prints only a fixed version is not an unpublished
    range. Which pins an advisory affects comes from its record, never
    from release notes, a changelog or the PR body. With an unpublished
@@ -87,8 +92,10 @@ gitleaks, npm/pip audit, govulncheck, …). A scanner is missing only once
 you ran it with Bash and it failed — its binary is absent or cannot run:
 record `"<name>:not_available"` in `auditors_consulted` and quote the
 command and its error. A scanner that reports advisories has not failed,
-whatever its exit code: read its report. One whose output is an error (no
-lockfile, registry unreachable) read nothing: it is unavailable. One
+whatever its exit code, for the lockfiles its report covers: read its
+report; a lockfile it errored on was not read. One whose output is an
+error (no lockfile, registry unreachable) read nothing: it is
+unavailable. One
 missing scanner is a coverage note; `suspicious` only when no auditor
 could read the changed packages.
 

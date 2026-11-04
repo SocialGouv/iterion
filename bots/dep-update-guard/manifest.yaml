@@ -10,13 +10,17 @@ version: 2.11.3
 ## advisories, introduced none, and was held). The prompt and the playbook
 ## now agree; their contradiction let the verdict flip between runs on the
 ## same diff. What keeps the gate shut: a malware/typosquat advisory is never
-## sorted with the vulnerabilities (by its record's content, whatever its id) —
-## on the new version it is `malicious`, whatever the old pin carries; an
-## introduced advisory counts at the highest severity any record gives, and as
-## HIGH when none scores it (Go vulndb records carry no severity); the sets
-## come from the advisory record checked against BOTH pins, queried under the
-## ecosystem's own id with the bare version (OSV answers a wrong id with `{}`
-## and an unparseable version with the package's whole history), never from
+## sorted with the vulnerabilities (a record stating the package ships
+## malicious code, whatever its id; a flaw that lets an attacker run some is a
+## vulnerability) — on the new version it is `malicious`, whatever the old pin
+## carries; an introduced advisory counts at the highest severity any record
+## gives, and as HIGH when none scores it (Go vulndb records carry no
+## severity); the sets come from the advisory record checked against BOTH pins
+## (the old one read at the merge-base), queried under the ecosystem's own id
+## — the Go toolchain is two, `stdlib` and `toolchain`, which no scanner
+## reads — with the bare version (OSV answers a wrong id or an unparseable
+## version without an error, so an empty answer is clean only under a known
+## id), never from
 ## release notes or the PR body, which both prompts now name as untrusted DATA
 ## instead of "operator" context. A scanner counts as unavailable only after a
 ## Bash call that failed (binary absent or unrunnable, or an error report),
