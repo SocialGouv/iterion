@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/lease"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 )
@@ -35,7 +36,7 @@ func sweepUnreachable() error {
 // variable of these tests: the memory store answers from a map, so the order
 // a real query returns is neither stable nor the test's to assume.
 type orderedConnections struct {
-	ConnectionStore
+	connection.ForgeStore
 	due []Connection
 }
 
@@ -46,9 +47,9 @@ func (s orderedConnections) ExpiringBefore(context.Context, time.Time) ([]Connec
 // seedRefreshableConn creates one connection the refresh worker will take up:
 // active, refreshable, its payload sealed so refreshOne reaches the
 // refresher, and expiring inside the lead window.
-func seedRefreshableConn(t *testing.T, sealer secrets.Sealer, store ConnectionStore, id string, expiresAt time.Time) Connection {
+func seedRefreshableConn(t *testing.T, sealer secrets.Sealer, store connection.ForgeStore, id string, expiresAt time.Time) Connection {
 	t.Helper()
-	blob, err := sealConnectionSecret(sealer, id, connectionSecret{AccessToken: "old-" + id, RefreshToken: "refresh-" + id, ExpiresAt: expiresAt})
+	blob, err := connection.SealForgeOAuthTokens(sealer, id, "old-"+id, "refresh-"+id, expiresAt)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,7 +79,7 @@ func TestRefreshWorker_RunOnceHandsEveryCauseToItsCallerInAStableOrder(t *testin
 		t.Fatal(err)
 	}
 	now := time.Unix(1700000000, 0).UTC()
-	conns := NewMemoryConnectionStore()
+	conns := connection.NewMemoryForgeStore()
 	refused := seedRefreshableConn(t, sealer, conns, "conn-a-refused", now.Add(2*time.Minute))
 	unreachable := seedRefreshableConn(t, sealer, conns, "conn-b-unreachable", now.Add(2*time.Minute))
 	failures := map[string]error{
@@ -96,7 +97,7 @@ func TestRefreshWorker_RunOnceHandsEveryCauseToItsCallerInAStableOrder(t *testin
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			w := &RefreshWorker{
-				Connections: orderedConnections{ConnectionStore: conns, due: tc.due},
+				Connections: orderedConnections{ForgeStore: conns, due: tc.due},
 				Secrets:     secrets.NewMemoryGenericSecretStore(),
 				Sealer:      sealer,
 				Now:         func() time.Time { return now },
@@ -148,7 +149,7 @@ func TestRefreshWorker_AnUpstream5xxIsAReachFailureForTheHandover(t *testing.T) 
 		t.Fatal(err)
 	}
 	now := time.Unix(1700000000, 0).UTC()
-	conns := NewMemoryConnectionStore()
+	conns := connection.NewMemoryForgeStore()
 	gatewayed := seedRefreshableConn(t, sealer, conns, "conn-502", now.Add(2*time.Minute))
 	w := &RefreshWorker{
 		Connections:  conns,

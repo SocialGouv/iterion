@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/lease"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -500,7 +501,7 @@ func TestForgeRefreshPasses_anIdleSweepKeepsTheTerm(t *testing.T) {
 // store lists what is due, and the call comes back the way a store call
 // answers a cancelled request.
 type steppingDownConnections struct {
-	forge.ConnectionStore
+	connection.ForgeStore
 	cancel func()
 	calls  atomic.Int64
 }
@@ -522,7 +523,7 @@ func TestForgeCredentialSweep_aCancelledTermAccountsIntoNothing(t *testing.T) {
 	health.Observe(lease.VerdictUnreachable)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	conns := &steppingDownConnections{ConnectionStore: forge.NewMemoryConnectionStore(), cancel: cancel}
+	conns := &steppingDownConnections{ForgeStore: connection.NewMemoryForgeStore(), cancel: cancel}
 	s := &Server{
 		forgeConnections:  conns,
 		forgeOrchestrator: &forge.Orchestrator{Integrations: forge.NewMemoryRepoIntegrationStore()},
@@ -821,7 +822,7 @@ func gateAutofixReachFixture(t *testing.T, gc forgeGateClient, autofix bool) (*S
 		t.Fatal(err)
 	}
 	s.cfg.Store = rs
-	conns := forge.NewMemoryConnectionStore()
+	conns := connection.NewMemoryForgeStore()
 	if err := conns.Create(context.Background(), forge.Connection{ID: "c1", TenantID: team, Provider: forge.ProviderGitHub}); err != nil {
 		t.Fatal(err)
 	}
