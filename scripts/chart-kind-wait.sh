@@ -67,8 +67,10 @@
 # decimal (010 is 10); the API refuses a 0 or a negative. The wait is sized
 # from plain digits alone, never from a spelling its readers could split
 # on. Every message prints the install as its release, its chart and its
-# values files, never its other arguments: a --set can carry a credential,
-# and CI logs keep stderr.
+# values files, never its other arguments — a --set can carry a credential,
+# and CI logs keep stderr — a URL among them without its userinfo, its
+# query or its fragment, where a password, a token or a presigned signature
+# rides, and nothing from the first flag it does not know on.
 #
 # Usage: scripts/chart-kind-wait.sh <release> <chart> [helm args…]
 # The arguments are the install's own — release, chart, every -f/--values,
@@ -85,33 +87,49 @@ set -eu
 # shown is the install as the messages print it: the release and the chart,
 # the values files (-f/--values), and how many other arguments are left
 # out. A --set can carry a credential (a token, a DSN) and CI logs keep
-# stderr, so no other argument is printed; every URL userinfo is cut from
-# what is — helm splits a values argument on commas, so one argument, spaced
-# or glued to its -f, can carry several.
-redact_userinfo() {
-  printf '%s' "$1" | sed 's#://[^/]*@#://***@#g'
+# stderr, so no other argument is printed.
+#
+# The walk reads the list as helm's flag parser (pflag) does, as far as it
+# knows each flag: the values flags, and the flags the install sites pass
+# beside them (--namespace, --set and its variants), each of which takes
+# the next argument, whatever it starts with, unless its value is glued.
+# At the first other flag the walk stops and leaves out everything from
+# there: only helm knows whether that flag takes the argument after it, and
+# a credential flag's value can look like a values flag (--password
+# -fS3cret). A word no flag takes is a positional; the first two are the
+# release and the chart.
+#
+# redact prints an argument with every URL userinfo masked, and the query
+# and fragment of its first URL masked to the end of the argument. helm
+# splits a values argument on commas, so one argument, spaced or glued to
+# its -f, can carry several URLs: the files listed after a masked query are
+# masked with it.
+redact() {
+  printf '%s' "$1" | sed 's|://[^/]*@|://***@|g; s|\(://[^?#]*\)\([?#]\).*|\1\2***|'
 }
 shown=
 left_out=0
-position=0
-values_next=false
+positionals=0
+next= # what the argument before makes of this one: values, value or rest
 for arg in "$@"; do
-  position=$((position + 1))
-  if $values_next; then
-    shown="$shown $(redact_userinfo "$arg")"
-    values_next=false
-    continue
-  fi
+  case $next in
+    values) shown="$shown $(redact "$arg")"; next=; continue ;;
+    value) left_out=$((left_out + 1)); next=; continue ;;
+    rest) left_out=$((left_out + 1)); continue ;;
+  esac
   case $arg in
-    -f|--values) shown="$shown $arg"; values_next=true ;;
-    -f=*|--values=*) shown="$shown ${arg%%=*}=$(redact_userinfo "${arg#*=}")" ;;
-    -f?*) shown="$shown -f$(redact_userinfo "${arg#-f}")" ;;
-    -*) left_out=$((left_out + 1)) ;;
+    -f|--values) shown="$shown $arg"; next=values ;;
+    -f=*|--values=*) shown="$shown ${arg%%=*}=$(redact "${arg#*=}")" ;;
+    -f?*) shown="$shown -f$(redact "${arg#-f}")" ;;
+    -n|--namespace|--set|--set-string|--set-file|--set-json|--set-literal)
+      left_out=$((left_out + 1)); next=value ;;
+    -n?*|--namespace=*|--set=*|--set-string=*|--set-file=*|--set-json=*|--set-literal=*)
+      left_out=$((left_out + 1)) ;;
+    -?*) left_out=$((left_out + 1)); next=rest ;;
     *)
-      # The release and the chart lead the list (the usage above); a word
-      # after any other flag may be that flag's value.
-      if [ "$position" -le 2 ] && [ "$left_out" -eq 0 ]; then
-        shown="$shown $(redact_userinfo "$arg")"
+      positionals=$((positionals + 1))
+      if [ "$positionals" -le 2 ]; then
+        shown="$shown $(redact "$arg")"
       else
         left_out=$((left_out + 1))
       fi
@@ -127,17 +145,38 @@ for tool in helm yq; do
     exit 1
   }
 done
-# The expressions below are mikefarah/yq v4 syntax; the python wrapper of
-# the same name reads jq syntax and would fail on them for a reason it
-# cannot name, so the implementation is checked before the render is.
-yq_version=$(yq --version 2>&1 || true)
-case $yq_version in
-  *"mikefarah/yq"*"version v4."*) ;;
-  *)
-    echo "chart-kind-wait: yq at $(command -v yq) is not mikefarah/yq v4 (\`yq --version\` says: $yq_version) — the render is read with its expressions; put yq-go on PATH" >&2
-    exit 1
-    ;;
-esac
+# The server Deployment: the one the render labels component=server.
+server='.kind == "Deployment" and .metadata.labels["app.kubernetes.io/component"] == "server"'
+
+# The reads below are mikefarah/yq v4 expressions over a piped stream of
+# documents (eval-all). The python wrapper of the same name reads jq syntax,
+# and mikefarah's own v4 releases differ in the operators and input forms
+# they take and spell their version with or without a v, so neither the
+# name nor `yq --version` tells whether the reads work. The yq on PATH is
+# probed before the render is read: one expression over a known stream,
+# with every operator and the input form the reads use. A yq that does not
+# print the owed answer is refused, named with what it printed and what its
+# --version says.
+probe_stream='kind: Deployment
+metadata:
+  name: a
+  labels:
+    app.kubernetes.io/component: server
+spec:
+  progressDeadlineSeconds: 600
+---
+kind: ConfigMap
+metadata:
+  name: b
+  labels:
+    app.kubernetes.io/component: server'
+probe_owed='!!int Deployment/a, ConfigMap/b'
+probe=$(printf '%s\n' "$probe_stream" | yq ea "[.] | (map(select($server)) | .[0].spec.progressDeadlineSeconds | tag) + \" \" + (map(select(.metadata.labels[\"app.kubernetes.io/component\"] == \"server\")) | .[] |= (.kind + \"/\" + .metadata.name) | join(\", \"))" 2>&1) || true
+if [ "$probe" != "$probe_owed" ]; then
+  yq_version=$(yq --version 2>&1 || true)
+  echo "chart-kind-wait: yq at $(command -v yq) fails the probe of the mikefarah/yq v4 expressions the render is read with: it printed '$(printf '%s' "$probe" | tr '\n' ' ')' where '$probe_owed' is owed (\`yq --version\` says: $(printf '%s' "$yq_version" | tr '\n' ' ')) — put yq-go on PATH" >&2
+  exit 1
+fi
 
 # The render the install would apply. helm's own message stays on stderr:
 # it names the cause (a missing sub-chart, a value the schema refuses, a
@@ -160,7 +199,6 @@ read_render() {
 # The candidates: every Deployment the render labels component=server, by
 # name, one per line. Per-element string building goes through `|=`: yq's
 # `+` over a multi-element context cross-multiplies its operands.
-server='.kind == "Deployment" and .metadata.labels["app.kubernetes.io/component"] == "server"'
 candidates=$(read_render "[.] | map(select($server)) | .[].metadata.name") || exit 1
 # shellcheck disable=SC2086 # the names split on purpose: one word each
 set -- $candidates

@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/fs"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -219,8 +221,13 @@ func TestChartKindWaitDerivesAndRefuses(t *testing.T) {
 		// judge the helper's lines alone. helm splits a values argument on
 		// commas and reads it glued to its -f, so one argument can carry
 		// several userinfos: each values form below carries two, and the
-		// helper prints neither. This subtest's name holds no comma: the
-		// values files sit in a temp dir named after it.
+		// helper prints neither. A flag the walk does not know stops it:
+		// pflag hands such a flag the next argument whatever it starts with,
+		// so a password spelled like a values flag (-f…, --values=…, -f) is
+		// that flag's value, and a flag the walk knows takes its value the
+		// same way. Words no flag takes are the release and the chart,
+		// wherever they sit. This subtest's name holds no comma: the values
+		// files sit in a temp dir named after it.
 		const secret = "kind-wait-sentinel-credential"
 		local := valuesFile(t, "mode: local\n")
 		unset := valuesFile(t, "mode: cloud\n")
@@ -235,12 +242,17 @@ func TestChartKindWaitDerivesAndRefuses(t *testing.T) {
 			{"a render helm refuses", []string{"iterion", chart, "-f", local, "--set", "secrets.llm.anthropicApiKey=" + secret}, "iterion " + chart + " -f " + local + " [2 more arguments not shown]", "failed (helm's message above)", false},
 			{"no server Deployment", []string{"iterion", ".", "-f", local, "--namespace", "ns", "--set", "secrets.auth.mongoURI=mongodb://u:" + secret + "@db", "--set-string=secrets.auth.jwtSecret=" + secret}, "iterion . -f " + local + " [5 more arguments not shown]", "carries no Deployment", false},
 			{"no deadline", []string{"iterion", ".", "--values=" + unset, "--set", "secrets.auth.jwtSecret=" + secret}, "iterion . --values=" + unset + " [2 more arguments not shown]", "renders no spec.progressDeadlineSeconds", false},
-			{"a flag before the release", []string{"--set", "secrets.auth.jwtSecret=" + secret, "iterion", ".", "-f", unset}, "-f " + unset + " [4 more arguments not shown]", "renders no spec.progressDeadlineSeconds", false},
+			{"a flag before the release", []string{"--set", "secrets.auth.jwtSecret=" + secret, "iterion", ".", "-f", unset}, "iterion . -f " + unset + " [2 more arguments not shown]", "renders no spec.progressDeadlineSeconds", false},
+			{"a password glued like a values file", []string{"iterion", ".", "-f", unset, "--username", "bot", "--password", "-f" + secret}, "iterion . -f " + unset + " [4 more arguments not shown]", "renders no spec.progressDeadlineSeconds", false},
+			{"a password spelled --values=", []string{"iterion", ".", "-f", unset, "--password", "--values=" + secret}, "iterion . -f " + unset + " [2 more arguments not shown]", "renders no spec.progressDeadlineSeconds", false},
+			{"a password spelled -f", []string{"iterion", ".", "-f", unset, "--password", "-f", secret}, "iterion . -f " + unset + " [3 more arguments not shown]", "failed (helm's message above)", true},
+			{"a known flag's value spelled like a values file", []string{"iterion", ".", "--namespace", "-f" + secret, "-f", unset}, "iterion . -f " + unset + " [2 more arguments not shown]", "renders no spec.progressDeadlineSeconds", false},
 			{"a values URL's userinfo", []string{"iterion", ".", "-f", "file://kind-wait:" + secret + "@/nonexistent/values.yaml"}, "iterion . -f file://***@/nonexistent/values.yaml", "failed (helm's message above)", true},
 			{"every userinfo of a comma-split values list", []string{"iterion", ".", "-f", "file://kind-wait:" + secret + "-a@/nonexistent/a.yaml,file://kind-wait:" + secret + "-b@/nonexistent/b.yaml"}, "iterion . -f file://***@/nonexistent/a.yaml,file://***@/nonexistent/b.yaml", "failed (helm's message above)", true},
 			{"every userinfo of a values list glued to its -f", []string{"iterion", ".", "-ffile://kind-wait:" + secret + "-a@/nonexistent/a.yaml,file://kind-wait:" + secret + "-b@/nonexistent/b.yaml"}, "iterion . -ffile://***@/nonexistent/a.yaml,file://***@/nonexistent/b.yaml", "failed (helm's message above)", true},
 			{"every userinfo of a --values= list", []string{"iterion", ".", "--values=file://kind-wait:" + secret + "-a@/nonexistent/a.yaml,file://kind-wait:" + secret + "-b@/nonexistent/b.yaml"}, "iterion . --values=file://***@/nonexistent/a.yaml,file://***@/nonexistent/b.yaml", "failed (helm's message above)", true},
 			{"a chart URL's userinfo", []string{"iterion", "file://kind-wait:" + secret + "@/nonexistent/chart"}, "iterion file://***@/nonexistent/chart", "failed (helm's message above)", true},
+			{"a chart URL's query", []string{"iterion", "file:///nonexistent/chart?token=" + secret}, "iterion file:///nonexistent/chart?***", "failed (helm's message above)", true},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
 				stderr := mustRefuseWait(t, tc.args...)
@@ -254,6 +266,42 @@ func TestChartKindWaitDerivesAndRefuses(t *testing.T) {
 				}
 				if !strings.Contains(own, "`helm template "+tc.shown+"`") || !strings.Contains(own, tc.cause) {
 					t.Fatalf("the refusal must print the install as `helm template %s` and name its cause %q:\n%s", tc.shown, tc.cause, stderr)
+				}
+			})
+		}
+	})
+	t.Run("a values URL is printed without its query or fragment", func(t *testing.T) {
+		// A token (?token=, private_token=) or a presigned signature rides in
+		// a URL's query. helm fetches each file below from this server,
+		// renders, and prints nothing: the refusal is the helper's alone, so
+		// all of stderr is judged. The first URL's query and fragment are
+		// masked to the end of the argument, the files a comma lists after
+		// them included.
+		const secret = "kind-wait-sentinel-query"
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte("mode: cloud\n"))
+		}))
+		t.Cleanup(srv.Close)
+		u := srv.URL + "/unset.yaml"
+		host := strings.TrimPrefix(srv.URL, "http://")
+		for _, tc := range []struct {
+			name  string
+			args  []string
+			shown string // the install as the message must print it
+		}{
+			{"a token in the query", []string{"iterion", ".", "-f", u + "?token=" + secret}, "iterion . -f " + u + "?***"},
+			{"a query after a comma-split file", []string{"iterion", ".", "-f", u + "," + u + "?X-Amz-Signature=" + secret}, "iterion . -f " + u + "," + u + "?***"},
+			{"the files listed after a query", []string{"iterion", ".", "-f", u + "?token=" + secret + "-a," + u + "?token=" + secret + "-b"}, "iterion . -f " + u + "?***"},
+			{"a fragment glued to its -f", []string{"iterion", ".", "-f" + u + "#" + secret}, "iterion . -f" + u + "#***"},
+			{"a userinfo and a query given as --values=", []string{"iterion", ".", "--values=http://kind-wait:" + secret + "-a@" + host + "/unset.yaml?private_token=" + secret + "-b"}, "iterion . --values=http://***@" + host + "/unset.yaml?***"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				stderr := mustRefuseWait(t, tc.args...)
+				if strings.Contains(stderr, secret) {
+					t.Fatalf("the refusal prints a credential a values URL's query carries:\n%s", stderr)
+				}
+				if own := helperLines(stderr); !strings.Contains(own, "`helm template "+tc.shown+"`") || !strings.Contains(own, "renders no spec.progressDeadlineSeconds") {
+					t.Fatalf("the refusal must print the install as `helm template %s` and name the deadline the fetched values leave unset:\n%s", tc.shown, stderr)
 				}
 			})
 		}
@@ -1113,47 +1161,96 @@ func TestChartKindWaitToolchainPinsYq(t *testing.T) {
 	}
 }
 
-// TestChartKindWaitRefusesAnotherYq pins the helper's implementation guard:
-// its expressions are mikefarah/yq v4 syntax, and the python wrapper of the
-// same name reads jq syntax and would fail on them for a reason it cannot
-// name. A yq whose `yq --version` names no mikefarah v4 build is refused
-// before the render, and the refusal names the yq it found and what that yq
-// said. One case per condition of the guard: the wrapper, a mikefarah build
-// of another major, a v4 line that names no mikefarah build, and a yq whose
-// --version itself fails. The fake yq leads PATH; helm is the real one.
-func TestChartKindWaitRefusesAnotherYq(t *testing.T) {
+// runKindWaitWithYq runs the helper on values-dev.yaml with a fake yq
+// leading PATH — a shell script of the body given — and returns its stdout,
+// its stderr, the fake's path and the command error. helm is the real one.
+func runKindWaitWithYq(t *testing.T, body string) (string, string, string, error) {
+	t.Helper()
 	helmBinary(t)
+	bin := t.TempDir()
+	fake := filepath.Join(bin, "yq")
+	if err := os.WriteFile(fake, []byte("#!/bin/sh\n"+body+"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr strings.Builder
+	cmd := exec.Command("sh", kindWaitScript(t), "iterion", ".", "-f", "values-dev.yaml")
+	cmd.Env = append(os.Environ(), "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	err := cmd.Run()
+	return stdout.String(), stderr.String(), fake, err
+}
+
+// TestChartKindWaitRefusesAnotherYq pins the helper's yq probe: its reads
+// are mikefarah/yq v4 expressions over a piped stream, the python wrapper of
+// the same name reads jq syntax, and mikefarah's own releases differ in the
+// operators and input forms they take, so the yq on PATH is probed with
+// them before the render is read. A yq that does not print the owed answer
+// is refused, and the refusal names the yq it found, what the probe printed
+// (on one line) and what its --version says. One case per way to miss: the
+// wrapper, a yq that spells a current mikefarah v4 and fails the reads, one
+// that exits 0 with another answer, and one whose every call fails.
+func TestChartKindWaitRefusesAnotherYq(t *testing.T) {
+	const v4 = "echo 'yq (https://github.com/mikefarah/yq/) version v4.53.3'"
 	for _, tc := range []struct {
 		name string
-		body string // the fake yq's shell body
-		said string // what the refusal must quote from `yq --version`
+		body string   // the fake yq's shell body
+		said []string // what the refusal must quote
 	}{
-		{"the python wrapper", "echo 'yq 3.4.3'", "yq 3.4.3"},
-		{"a mikefarah build of another major", "echo 'yq (https://github.com/mikefarah/yq/) version v5.0.0'", "mikefarah/yq/) version v5.0.0"},
-		{"a v4 line naming no mikefarah build", "echo 'yq version v4.44.3'", "yq version v4.44.3"},
-		{"a yq whose --version fails", "echo 'yq: version unreadable' >&2; exit 3", "yq: version unreadable"},
+		{"the python wrapper", "echo 'yq 3.4.3'", []string{"printed 'yq 3.4.3'", "says: yq 3.4.3"}},
+		{"a current mikefarah v4 spelling that fails the reads", "case $1 in --version) " + v4 + " ;; *) echo 'Error: unknown command \"ea\" for \"yq\"' >&2; echo \"Run 'yq --help' for usage.\" >&2; exit 1 ;; esac", []string{`printed 'Error: unknown command "ea" for "yq" Run 'yq --help' for usage.'`, "says: yq (https://github.com/mikefarah/yq/) version v4.53.3"}},
+		{"another answer on a zero exit", "case $1 in --version) " + v4 + " ;; *) cat >/dev/null; echo null ;; esac", []string{"printed 'null'"}},
+		{"a yq whose every call fails", "echo 'yq: version unreadable' >&2; exit 3", []string{"printed 'yq: version unreadable'", "says: yq: version unreadable"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			bin := t.TempDir()
-			fake := filepath.Join(bin, "yq")
-			if err := os.WriteFile(fake, []byte("#!/bin/sh\n"+tc.body+"\n"), 0o755); err != nil {
-				t.Fatal(err)
+			stdout, stderr, fake, err := runKindWaitWithYq(t, tc.body)
+			if err == nil {
+				t.Fatalf("chart-kind-wait ran on a yq that fails its probe and printed %q — the probe owed a refusal", strings.TrimSpace(stdout))
 			}
-			var stdout, stderr strings.Builder
-			cmd := exec.Command("sh", kindWaitScript(t), "iterion", ".", "-f", "values-dev.yaml")
-			cmd.Env = append(os.Environ(), "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"))
-			cmd.Stdout, cmd.Stderr = &stdout, &stderr
-			if err := cmd.Run(); err == nil {
-				t.Fatalf("chart-kind-wait ran on a yq that says %q and printed %q — the guard owed a refusal", tc.said, strings.TrimSpace(stdout.String()))
-			}
-			if out := strings.TrimSpace(stdout.String()); out != "" {
+			if out := strings.TrimSpace(stdout); out != "" {
 				t.Fatalf("chart-kind-wait refused and still printed %q — a caller reading stdout alone would install with it", out)
 			}
-			own := helperLines(stderr.String())
-			for _, want := range []string{"yq at " + fake + " is not mikefarah/yq v4", tc.said, "put yq-go on PATH"} {
+			own := helperLines(stderr)
+			for _, want := range append([]string{"yq at " + fake + " fails the probe", "'!!int Deployment/a, ConfigMap/b' is owed", "put yq-go on PATH"}, tc.said...) {
 				if !strings.Contains(own, want) {
-					t.Fatalf("the refusal must name the yq it found, what its --version said and the package to put on PATH (%q missing):\n%s", want, stderr.String())
+					t.Fatalf("the refusal must name the yq it found, what the probe printed against what is owed, what its --version says and the package to put on PATH (%q missing):\n%s", want, stderr)
 				}
+			}
+		})
+	}
+}
+
+// TestChartKindWaitReadsWithAnyYqThatPassesItsProbe pins the other side of
+// the probe: `yq --version` decides nothing. mikefarah/yq releases before
+// v4.30.3 print their version without the v (`version 4.27.5`), and a
+// --version that fails is only quoted in a refusal: a yq that prints the
+// probe's owed answer reads the render, and values-dev's wait is printed.
+// The fake answers --version and hands every other call to the real yq.
+func TestChartKindWaitReadsWithAnyYqThatPassesItsProbe(t *testing.T) {
+	yqBinary(t)
+	realYq, err := exec.LookPath("yq")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(realYq, "'") {
+		t.Fatalf("the real yq's path %q holds a quote the fake's single-quoted exec cannot carry", realYq)
+	}
+	for _, tc := range []struct {
+		name    string
+		version string // the fake's --version body
+	}{
+		{"a mikefarah release that spells its version without the v", "echo 'yq (https://github.com/mikefarah/yq/) version 4.27.5'; exit 0"},
+		{"a --version that fails", "echo 'yq: version unreadable' >&2; exit 3"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stdout, stderr, _, err := runKindWaitWithYq(t, "if [ \"$1\" = --version ]; then "+tc.version+"; fi\nexec '"+realYq+"' \"$@\"")
+			if err != nil {
+				t.Fatalf("chart-kind-wait refused a yq that passes its probe: %v — %s", err, strings.TrimSpace(stderr))
+			}
+			if got, want := strings.TrimSpace(stdout), "1920s"; got != want {
+				t.Fatalf("chart-kind-wait = %q, want %q — values-dev's 1800 s deadline plus the margin, read by a yq that passes the probe", got, want)
+			}
+			if own := helperLines(stderr); own != "" {
+				t.Fatalf("chart-kind-wait reads values-dev with a yq that passes its probe and still writes:\n%s", own)
 			}
 		})
 	}

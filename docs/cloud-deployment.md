@@ -98,8 +98,10 @@ underscored spelling are read as the integers they denote, and a leading
 zero makes octal digits octal (`010` is 8) where a YAML 1.2 reader such as
 yq reads 10 — so the helper sizes the wait from plain digits alone. Its
 messages print the install as its release, its chart and its values files,
-never its other arguments: a `--set` can carry a credential, and CI logs keep
-stderr.
+never its other arguments — a `--set` can carry a credential, and CI logs keep
+stderr — and a URL among them without its userinfo, query or fragment. From
+the first flag it does not know (`--password`) on, it prints nothing: only
+helm knows whether that flag takes the next argument.
 
 ## Topology
 
