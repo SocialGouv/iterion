@@ -1033,16 +1033,19 @@ func TestChartCloudE2EInstallSharesItsArgumentsWithTheHelper(t *testing.T) {
 	}
 
 	// The floor sums the job's bounds: a budget for the preamble before the
-	// install — checkout, image build, kind up, image load, chart deps —
-	// measured at 4.0-4.7 m on recent success runs and capped by nothing of
-	// its own; the derived helm cap,
-	// rounded up to the whole minutes the field counts; and every step
-	// after the install, which a slow install that succeeds still runs —
-	// the readiness wait, the e2e run, the failure diagnostics — each of
-	// which must carry its own timeout-minutes, so a hang there ends on
-	// GitHub's step timeout and the sum bounds them all.
+	// install — checkout, Go setup, image build, kind up, image load, chart
+	// deps — capped by nothing of its own and sized on the runner the job
+	// uses, arc-runners, where it measured 5.9-20.3 m over 90 runs of 3-4 Nov
+	// 2026: 15 m for its steps (worst 14.8 m) and the 10 m Setup Go's cache
+	// restore stalls before its own segment timeout gives up (5 of those
+	// runs); the ubuntu-latest fallback (3.7-5.4 m) fits it too. Then the
+	// derived helm cap, rounded up to the whole minutes the field counts;
+	// and every step after the install, which a slow install that succeeds
+	// still runs — the readiness wait, the e2e run, the failure diagnostics
+	// — each of which must carry its own timeout-minutes, so a hang there
+	// ends on GitHub's step timeout and the sum bounds them all.
 	helmCapMinutes := (helmSeconds + 59) / 60
-	const preambleBudgetMinutes = 6
+	const preambleBudgetMinutes = 15 + 10
 	postInstallMinutes := 0
 	for _, st := range job.Steps[step+1:] {
 		if st.TimeoutMinutes <= 0 {

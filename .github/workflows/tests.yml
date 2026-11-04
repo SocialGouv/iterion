@@ -865,19 +865,23 @@ jobs:
     # Keep the same fork/bot isolation and operator escape hatch as every
     # other job using the scale set.
     runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || 'arc-runners' }}
-    # 60 m sits 3 m above the 57 m floor (6 + 32 + 19, witnessed in
-    # charts/iterion/kind_wait_test.go): a 6 m budget for the preamble
-    # (checkout, image build, kind up, image load, chart deps), measured at
-    # 4.0-4.7 m on success runs; the 32 m helm cap the install derives from
-    # the deadline its own render gives the server Deployment (values-dev's
-    # 1800 s, read by scripts/chart-kind-wait.sh); and the steps after the
-    # install, which a slow install that succeeds still runs, each capped by
-    # its own timeout-minutes (19 m together). The install and those steps
-    # end on a message — helm's timeout or a step's own. The preamble, the
-    # job's setup and its post steps carry no cap of their own: a slow run
+    # 79 m sits 3 m above the 76 m floor (25 + 32 + 19, witnessed in
+    # charts/iterion/kind_wait_test.go): a 25 m budget for the preamble
+    # (checkout, Go setup, image build, kind up, image load, chart deps),
+    # sized on arc-runners, where it measured 5.9-20.3 m over 90 runs of
+    # 3-4 Nov 2026 — 15 m for its steps (worst 14.8 m) and the 10 m Setup
+    # Go's cache restore stalls before its own segment timeout gives up (5 of
+    # those runs); the ubuntu-latest fallback measured 3.7-5.4 m (38 runs).
+    # Then the 32 m helm cap the install derives from the deadline its own
+    # render gives the server Deployment (values-dev's 1800 s, read by
+    # scripts/chart-kind-wait.sh); and the steps after the install, which a
+    # slow install that succeeds still runs, each capped by its own
+    # timeout-minutes (19 m together). The install and those steps end on a
+    # message — helm's timeout or a step's own. The preamble, the job's
+    # setup and its post steps carry no timeout-minutes of their own: a slow run
     # ends on a message rather than the runner kill's silence only while
     # they fit the budget and the 3 m above the floor.
-    timeout-minutes: 60
+    timeout-minutes: 79
     env:
       KIND_CLUSTER: iterion-e2e
       IMG: iterion-e2e:ci
