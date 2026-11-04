@@ -2,8 +2,11 @@ package forge
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"maps"
 
+	"github.com/SocialGouv/iterion/pkg/internal/storekit"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
 )
@@ -23,15 +26,27 @@ import (
 // row is stored: it re-reads every record the carried pins name, under the
 // tenant scope the pins validated against (secrets.RecheckPinnedRecords,
 // the judgment the routes' reconciliation shares), and clears a revoked one
-// from THIS row with the store's value-scoped clear — the sweep's own
-// primitive, version bump included — then refreshes the written copy so the
-// undo's version check and the rest of the provision see the row as the
-// store holds it. A record store that cannot answer is an error the
+// from THIS row. A record store that cannot answer is an error the
 // provision reports; the retry re-provisions and re-checks, the same mend
 // as a route edit's retry. A nil ApiKeys leaves key pins unjudged — the
 // tolerance the routes' validators and re-check apply to a store that is
 // not wired; the secret pins are re-checked through Secrets, which the
 // provision cannot run without (it mints the managed token there).
+//
+// On every return, error included, cfg.Version is the version the row
+// reached under this attempt's own writes — the one the undo restores at
+// (restoreConfig) — never one another writer reached. So the clear is ONE
+// version-CAS Update of the written copy minus the dead pins: the store
+// either takes it, the single bump it certifies as this attempt's, or
+// answers ErrConflict, the fact that another writer moved the row since.
+// The value-scoped clear cannot say which bumps were its own: how many it
+// makes depends on the store and on the entries it removes, and a writer
+// re-pointing a dead entry first leaves the count unchanged. On a conflict the row is no longer this
+// attempt's: the dead pins go through that value-scoped clear — the
+// sweep's own primitive, safe beside any writer — and cfg keeps the version
+// it wrote, which the store has left behind, so the undo leaves the row to
+// the writer that moved it. A failed Update leaves cfg as written too: the
+// undo re-reads the row and restores only if it still stands there.
 func (o *Orchestrator) reconcileCarriedPins(ctx context.Context, cfg *webhooks.Config) error {
 	var dead []string
 	for _, rec := range secrets.RecheckPinnedRecords(ctx, o.ApiKeys, o.Secrets, cfg.TenantID, cfg.KeyOverrides, cfg.SecretOverrides) {
@@ -45,16 +60,25 @@ func (o *Orchestrator) reconcileCarriedPins(ctx context.Context, cfg *webhooks.C
 	if len(dead) == 0 {
 		return nil
 	}
+	cleared := *cfg
+	cleared.KeyOverrides, cleared.SecretOverrides = maps.Clone(cfg.KeyOverrides), maps.Clone(cfg.SecretOverrides)
 	for _, id := range dead {
-		if _, err := o.Webhooks.ClearCredentialPins(ctx, cfg.ID, id); err != nil {
-			return fmt.Errorf("forge: clear the pins naming deleted record %s from webhook %s: %w", id, cfg.ID, err)
+		storekit.DropStringMapValues(&cleared.KeyOverrides, id)
+		storekit.DropStringMapValues(&cleared.SecretOverrides, id)
+	}
+	switch err := o.Webhooks.Update(ctx, cleared); {
+	case err == nil:
+		cleared.Version++
+		*cfg = cleared
+	case errors.Is(err, webhooks.ErrConflict):
+		for _, id := range dead {
+			if _, err := o.Webhooks.ClearCredentialPins(ctx, cfg.ID, id); err != nil {
+				return fmt.Errorf("forge: clear the pins naming deleted record %s from webhook %s, moved by another writer: %w", id, cfg.ID, err)
+			}
 		}
+	default:
+		return fmt.Errorf("forge: clear the pins naming deleted records %v from webhook %s: %w", dead, cfg.ID, err)
 	}
-	fresh, err := o.Webhooks.Get(ctx, cfg.ID)
-	if err != nil {
-		return fmt.Errorf("forge: re-read webhook %s after clearing its dead pins: %w", cfg.ID, err)
-	}
-	cfg.KeyOverrides, cfg.SecretOverrides, cfg.Version = fresh.KeyOverrides, fresh.SecretOverrides, fresh.Version
 	if o.LogWarn != nil {
 		o.LogWarn("forge: webhook %s carried pins naming records deleted mid-provision; cleared: %v", cfg.ID, dead)
 	}

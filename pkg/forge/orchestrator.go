@@ -945,13 +945,15 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 	}
 	// The migration carry copied prev's pins into a row whose write was no
 	// CAS on prev: now that the row is stored, re-check the records they
-	// name (reconcileCarriedPins). A clear bumps the row's version, and
-	// the undo must keep owning the version it checks.
+	// name (reconcileCarriedPins). Its clear bumps the row's version, so the
+	// undo checks the version the re-check reports, on success and failure
+	// alike.
 	if hasPrevCfg && prevCfg.ID != webhookID {
-		if err := o.reconcileCarriedPins(ctx, &cfg); err != nil {
+		err := o.reconcileCarriedPins(ctx, &cfg)
+		written.wroteVersion = cfg.Version
+		if err != nil {
 			return ProvisionResult{}, o.undoConfigWrite(ctx, written, false, err)
 		}
-		written.wroteVersion = cfg.Version
 	}
 
 	admin, err := o.AdminFor(ctx, conn)
