@@ -16,6 +16,24 @@ import (
 // Generation with retry
 // ---------------------------------------------------------------------------
 
+// adoptJSONObjectText keeps a parse-fallback text that IS a JSON object as
+// the structured answer: the parsed map becomes the output and the result
+// stops being a fallback. Any other text stays a parse fallback.
+func adoptJSONObjectText(result *delegate.Result) {
+	if !result.ParseFallback {
+		return
+	}
+	text, ok := result.Output["text"].(string)
+	if !ok {
+		return
+	}
+	var parsed map[string]any
+	if json.Unmarshal([]byte(text), &parsed) == nil && parsed != nil {
+		result.Output = parsed
+		result.ParseFallback = false
+	}
+}
+
 // extractJSON extracts a JSON object from text that may contain markdown
 // fences or surrounding commentary. Returns the raw JSON string.
 func extractJSON(text string) string {
@@ -270,19 +288,10 @@ func (e *ClawExecutor) executeLLMRouterUnified(ctx context.Context, node *ir.Rou
 	}
 	result := out.Result
 
-	// A text answer that IS a JSON object is the structured answer: keep
-	// the parsed map as the output. Anything else stays a parse fallback,
-	// which the schema re-ask below treats as one more ask before the
-	// router fails — routers must produce structured output.
-	if result.ParseFallback {
-		if textVal, ok := result.Output["text"].(string); ok {
-			var parsed map[string]any
-			if json.Unmarshal([]byte(textVal), &parsed) == nil {
-				result.Output = parsed
-				result.ParseFallback = false
-			}
-		}
-	}
+	// dispatchChain already kept a text answer that IS a JSON object as the
+	// structured answer (adoptJSONObjectText); anything else is still a
+	// parse fallback, which the schema re-ask below treats as one more ask
+	// before the router fails — routers must produce structured output.
 
 	// Everything below acts on the element that SERVED, which is the
 	// router's own backend unless the chain fell through — the reading

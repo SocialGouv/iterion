@@ -2,6 +2,8 @@ package delegate
 
 import (
 	"encoding/json"
+
+	"github.com/SocialGouv/claw-code-go/pkg/api"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/ambient"
@@ -206,6 +208,14 @@ type IOResult struct {
 	// conversation, or the resumed crossing restarts unbounded.
 	PendingCommandNarrowing *CommandNarrowingState `json:"pending_command_narrowing,omitempty"`
 	Error                   string                 `json:"error,omitempty"`
+	// ProviderError carries a typed provider refusal across the runner. Error
+	// remains the human-readable wrapper; it is never parsed for HTTP status.
+	ProviderError *api.APIError `json:"provider_error,omitempty"`
+	// ProviderErrorStream says ProviderError was raised mid-stream (an error
+	// event of the response stream, not the HTTP refusal of the request), so
+	// the launcher rebuilds the stream error the in-process path returns and
+	// both classify it alike.
+	ProviderErrorStream bool `json:"provider_error_stream,omitempty"`
 }
 
 // ToIOTask converts a [Task] to its wire form. The Sandbox handle and

@@ -1178,14 +1178,22 @@ the host extraction credential is not the node credential. A typed re-ask
 refusal retains its type when the extraction allowance is exhausted.
 
 **Runtime output schemas are advisory by default for outputs the executor does
-not validate** (tool, compute, human, subbot and wait). A mismatch emits
+not validate** (tool, human, subbot and wait). A mismatch emits
 `node_output_schema_mismatch` and a warning log naming the schema and missing
-or incorrect fields, without values; the node succeeds with its output.
+or incorrect fields, without values. Only nodes without prior mandatory
+validation succeed as before with their output. COMPUTE conformance remains
+mandatory (#792): integral floats become integers; fractional integers and
+wrong field types fail with `SCHEMA_VALIDATION`, including in advisory mode.
 LLM outputs retain executor validation and bounded correction.
-`WithOutputValidation(true)` selects strict rejection (`SCHEMA_VALIDATION`);
-`ITERION_STRICT_OUTPUT_VALIDATION=1` (or `true`) selects the same strict default
+`WithOutputValidation(true)` selects strict rejection (`SCHEMA_VALIDATION`,
+or deterministic `TOOL_FAILED_PERMANENT` for tools to prevent cloud redelivery
+from repeating side effects). `ITERION_STRICT_OUTPUT_VALIDATION=1` (also `true`,
+`yes`, `y`, `on`, `enabled`, case-insensitive) selects the same strict default
 for run, resume, subbot, studio, runner and dispatcher. An explicit engine option
-overrides the environment. Correction deadlines apply to corrective calls only;
+overrides the environment; unknown values warn with `OUTPUT_VALIDATION_INVALID`
+and retain advisory validation. Raising the correction budget on resume reopens
+an exhausted or unchanged episode without resetting spent attempts. Correction
+deadlines apply to corrective calls only;
 expiration of
 the run duration budget remains `BUDGET_EXCEEDED`. The durable ledger scrubs
 errors before persistence, distinguishes nested loop invocations and follows
@@ -1430,8 +1438,7 @@ never merged across sources, and an answer carries its provenance:
 1. `OPENAI_COMPATIBLE_MODELS` — the operator's JSON table,
    `{"<gateway id>": {"context_window": N, "max_output_tokens": N,
    "input_usd_per_mtok": F, "output_usd_per_mtok": F,
-   "reasoning": B, "tool_call": B, "temperature": B,
-   "reasoning_efforts": ["low", "high", "xhigh", "max"]}}`. Strict decoding
+   "reasoning": B, "tool_call": B, "temperature": B}}`. Strict decoding
    (unknown fields refused); prices arrive as a pair or not at all; a
    declared 0/0 means unpriced, not free. The three capability flags are
    each optional: a flag the table leaves out — or that no table answers —
@@ -1453,18 +1460,47 @@ never merged across sources, and an answer carries its provenance:
    `"source":"unknown"`, the estimator prices nothing, and compaction keeps
    the unknown-model floor.
 
-The optional `reasoning_efforts` list belongs to the resolved route and crosses
-the sandbox with its catalog record. An absent or empty list preserves existing
-behavior. A requested level outside the list maps to the nearest accepted level;
-ties choose the higher level (`medium` → `high` for the example above).
-Every adjustment emits `reasoning_effort_adjusted` plus a warning log with the
-requested level, applied level and reason. Add the list to each existing
-DeepSeek alias in the pools' operator table, retaining its window and prices.
+Accepted reasoning efforts use a separate, optional variable:
 
-A provider HTTP 400 invalid request is `PROVIDER_REQUEST_INVALID`: automatic
-resume does not re-execute it, and the remedy includes the provider's message.
-Context overflow retains compaction/retry; model availability refusals retain
-`MODEL_UNAVAILABLE`. HTTP 408/5xx and 429 keep their existing transient handling.
+```sh
+export OPENAI_COMPATIBLE_REASONING_EFFORTS='{"scaleway/deepseek-v4.1-flash":["low","high","xhigh","max"],"scaleway/glm-5.3":["low","high","max"]}'
+```
+
+Keys are the exact gateway wire IDs. Values are trimmed and lowercased; accepted
+names are `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`. Integers
+1–100 are accepted as JSON numbers or strings. An invalid entry is ignored with
+`REASONING_EFFORTS_INVALID`, leaving the other entries and the pricing table
+usable; malformed JSON ignores only the effort mapping. An absent or empty list
+preserves existing behavior. This variable is independent of the strictly
+decoded `OPENAI_COMPATIBLE_MODELS`: old runners ignore it, so **no deployment
+order is required**. Do not add `reasoning_efforts` to the pricing table.
+There is no models.dev/snapshot effort mapping.
+
+The mapping applies to delegation, the human/interaction LLM stand-in and the
+cut-turn effort reduction, using the invocation's environment. It crosses the
+sandbox separately from the catalog. Named levels select the nearest accepted
+named level (ties prefer higher: `medium` → `high` above); integers compare with
+integers. When only the other representation is listed, its first value wins
+without guessing a numeric equivalent for a name. Executor adjustments emit
+`reasoning_effort_adjusted` and a warning with requested/applied values.
+
+`PROVIDER_REQUEST_INVALID` requires a typed provider HTTP 400 whose **message**
+names an operator request parameter: `reasoning_effort must be …`, `max_tokens`
+or `max_completion_tokens is too large`, or `unsupported parameter` / `unsupported
+value` naming `reasoning_effort`, `temperature`, `top_p`, `top_k`, `max_tokens`,
+`max_completion_tokens`, `presence_penalty`, `frequency_penalty`, `seed`, `stop`,
+`logprobs`, `top_logprobs`, `n`, `stream` or `response_format`. Automatic resume
+parks these refusals; the remedy quotes that provider cause. An exhausted chain
+gets this verdict only when every cause does. Bare 400s, sampled tool arguments,
+images, moderation and vLLM's catch-all keep their previous treatment. The shared
+context markers remain `context_length_exceeded` and `context length`; other
+context wordings such as `prompt is too long` retain the parent's fresh-sample
+`EXECUTION_FAILED` retry. Tool stderr and model prose never establish this new
+terminal verdict. HTTP 408/5xx, 429 and model-access refusals keep their handling.
+
+Claw preserves typed provider errors through sandbox IPC; pi uses its structured
+provider diagnostics. Claude Code's current result protocol exposes no typed
+HTTP status, so its rendered 400 remains unclassified as a parameter refusal.
 
 > **Set these in the environment the deployment EXPORTS — a project `.env`
 > does not configure them.** iterion auto-loads the nearest `.env` walking up

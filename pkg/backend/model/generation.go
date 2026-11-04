@@ -785,7 +785,7 @@ func GenerateObjectDirect[T any](ctx context.Context, client api.APIClient, opts
 	reaskOpts := opts
 	if step.FinishReason == FinishLength {
 		skip := ""
-		lowered, _, canLower := effortAfterCut(opts)
+		lowered, _, canLower := effortAfterCut(ctx, opts)
 		switch {
 		case !spentOnReasoning(step):
 			skip = "the turn above was cut by the length of its own answer, which a lower reasoning effort cannot shorten"

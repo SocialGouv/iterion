@@ -79,8 +79,11 @@ workflow parent:
 					t.Errorf("default differs on CLI nested=%v: %v", nested, err)
 				}
 			} else {
-				if err == nil || run.FailureCode != store.FailureSchemaValidation {
-					t.Errorf("strict differs on CLI nested=%v: %v", nested, err)
+				// A tool's mismatch is deterministic: strict mode fails it as
+				// TOOL_FAILED_PERMANENT, so a cloud redelivery never replays
+				// the tool's side effects (docs/backends.md).
+				if err == nil || run.FailureCode != store.FailureToolFailedPermanent {
+					t.Errorf("strict differs on CLI nested=%v: code=%q err=%v", nested, run.FailureCode, err)
 				}
 				t.Setenv("ITERION_STRICT_OUTPUT_VALIDATION", "")
 				if err := cli.RunResumeWithFile(context.Background(), path, cli.ResumeOptions{RunID: "mode", StoreDir: storeDir, Executor: exec, MergeInto: "none"}, printer); err != nil {

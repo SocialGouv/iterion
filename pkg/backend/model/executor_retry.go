@@ -1428,7 +1428,8 @@ func (e *ClawExecutor) dispatchChain(
 				result, err = freshResult, freshErr
 			}
 		}
-		if err == nil && result.ParseFallback && result.ParseError != "" && len(schemas) > 0 && schemas[0] != nil {
+		if err == nil && result.ParseFallback && len(schemas) > 0 && schemas[0] != nil {
+			adoptJSONObjectText(&result)
 			before := result
 			result, err = e.validateAndRetry(ctx, backendFields{id: nodeID}, backendName, backend, task, result, schemas[0])
 			correctionCost += max(0, result.CostUSD-before.CostUSD)

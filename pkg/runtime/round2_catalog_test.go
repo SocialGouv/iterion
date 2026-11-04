@@ -6,6 +6,7 @@ import (
 	"errors"
 	"github.com/SocialGouv/iterion/internal/gittest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -92,6 +93,19 @@ func r2RunCatalogNode(t *testing.T, botPath, nodeID string, vars map[string]any,
 func TestR2CatalogToolNodesUnderDefaultValidation(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("TMPDIR", t.TempDir())
+	scannerCalls := r2ControlledCatalogPATH(t)
+	defer func() {
+		raw, err := os.ReadFile(scannerCalls)
+		if err != nil {
+			t.Errorf("controlled scanners never ran: %v", err)
+			return
+		}
+		for _, name := range []string{"gitleaks", "trivy", "semgrep"} {
+			if strings.Count(string(raw), name+"\n") != 2 {
+				t.Errorf("scanner %s not stubbed twice: %q", name, raw)
+			}
+		}
+	}()
 	root := "../.."
 	type tc struct {
 		name, bot, node string
@@ -166,7 +180,7 @@ func TestR2CatalogToolNodesUnderDefaultValidation(t *testing.T) {
 			if !off && (err != nil || status != "finished") {
 				t.Errorf("default rejected catalog output: %s: %v", c.name, err)
 			}
-			if off && code != string(ErrCodeSchemaValidation) {
+			if off && code != string(ErrCodeToolFailedPermanent) {
 				t.Errorf("strict accepted catalog output: %s: %v", c.name, err)
 			}
 			t.Logf("%s | %s: code=%s status=%s storedFailureCode=%s err=%.240v", c.name, mode, code, status, fcode, err)
@@ -180,11 +194,16 @@ func TestR2WarningOmitsValuesAndStrictEnvRejects(t *testing.T) {
 	for _, strict := range []string{"", "true"} {
 		t.Setenv(EnvOutputValidation, strict)
 		wf := computeGaugeWorkflow(t, ir.FieldTypeInt, "'private-output-sentinel'")
+		wf.Nodes["gate"] = &ir.ToolNode{BaseNode: ir.BaseNode{ID: "gate"}, SchemaFields: ir.SchemaFields{OutputSchema: "gauge"}}
+		exec := newStubExecutor()
+		exec.on("gate", func(map[string]any) (map[string]any, error) {
+			return map[string]any{"used_pct": "private-output-sentinel"}, nil
+		})
 		st := tmpStore(t)
-		err := New(wf, st, newStubExecutor()).Run(context.Background(), "warning", nil)
+		err := New(wf, st, exec).Run(context.Background(), "warning", nil)
 		if strict == "true" {
 			var typed *RuntimeError
-			if !errors.As(err, &typed) || typed.Code != ErrCodeSchemaValidation {
+			if !errors.As(err, &typed) || typed.Code != ErrCodeToolFailedPermanent {
 				t.Fatalf("strict env accepted: %v", err)
 			}
 			continue
@@ -210,4 +229,29 @@ func TestR2WarningOmitsValuesAndStrictEnvRejects(t *testing.T) {
 			t.Errorf("warnings=%d", warnings)
 		}
 	}
+}
+
+// Only pinned, explicitly selected utilities enter this test's PATH. Scanner
+// names are local stubs, so neither an installed scanner nor its DB can run.
+func r2ControlledCatalogPATH(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	for _, name := range []string{"bash", "sh", "git", "python3", "mkdir", "rm", "mktemp", "find", "awk", "sed", "grep", "wc", "head", "tail", "timeout", "basename", "dirname", "date", "cat", "touch", "sort", "tr", "cut", "xargs", "tee", "cp", "realpath", "readlink", "env", "uname", "sleep"} {
+		path, err := exec.LookPath(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(path, filepath.Join(dir, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	calls := filepath.Join(dir, "scanner-calls")
+	for _, name := range []string{"gitleaks", "trivy", "semgrep"} {
+		script := "#!/bin/sh\nprintf '%s\\n' '" + name + "' >> '" + calls + "'\nexit 127\n"
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", dir)
+	return calls
 }

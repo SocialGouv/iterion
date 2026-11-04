@@ -252,12 +252,10 @@ func TestClassify_ContextLengthFromMessage(t *testing.T) {
 }
 
 func TestClassify_GenericAPIError(t *testing.T) {
-	// 4xx (non-429, non-context-length) stays PROVIDER_REQUEST_INVALID — these
-	// are usually deterministic request issues (auth, validation) that
-	// won't fix themselves on retry.
+	// A bare 400 can be caused by sampled tool arguments; a fresh turn can heal.
 	apiErr := &api.APIError{StatusCode: 400, Message: "bad request"}
-	if got := Classify(apiErr); got != runtime.ErrCodeProviderRequestInvalid {
-		t.Errorf("expected PROVIDER_REQUEST_INVALID, got %v", got)
+	if got := Classify(apiErr); got != runtime.ErrCodeExecutionFailed {
+		t.Errorf("expected EXECUTION_FAILED, got %v", got)
 	}
 }
 
@@ -381,8 +379,8 @@ func TestClassify_ModelTheProviderWillNotServe(t *testing.T) {
 		// the model's OWN tool arguments, and those differ on the next
 		// sample — reading it as a model verdict would park a run that
 		// recovers on its own.
-		{"a bare 400 is an invalid request", &api.APIError{StatusCode: 400, Message: "bad request"},
-			runtime.ErrCodeProviderRequestInvalid},
+		{"a bare 400 can recover on a fresh sample", &api.APIError{StatusCode: 400, Message: "bad request"},
+			runtime.ErrCodeExecutionFailed},
 		// A version floor that is NOT about a model: any tool can announce
 		// one, and reading it as a model verdict would park a run over a
 		// devbox package.

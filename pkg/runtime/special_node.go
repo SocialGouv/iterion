@@ -210,10 +210,10 @@ func (e *Engine) computeOutput(ctx context.Context, rs *runState, nodeID string,
 		output[ce.Key] = v
 	}
 	// Normalize Go numeric/array representations for the declared schema.
-	// Incompatible outputs warn at the shared validation boundary by default;
-	// strict validation rejects them on every engine surface.
+	// COMPUTE conformance is mandatory (#792), independently of advisory
+	// validation for nodes whose outputs have no prior mandatory check.
 	if schema := e.workflow.Schemas[cn.OutputSchema]; schema != nil {
-		if err := model.ConformComputeOutput(output, schema); err != nil && e.validateOutputs {
+		if err := model.ConformComputeOutput(output, schema); err != nil {
 			return nil, &RuntimeError{
 				Code:    ErrCodeSchemaValidation,
 				Message: fmt.Sprintf("compute %q: output does not conform to schema %q: %v", nodeID, cn.OutputSchema, err),

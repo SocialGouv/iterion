@@ -46,8 +46,14 @@ func (e *Engine) validateNodeOutput(rs *runState, nodeID string, node ir.Node, o
 			e.logger.Warn("node_output_schema_mismatch: node %q schema %q fields %v", nodeID, schemaName, fields)
 			return e.emit(rs.ctx, rs.runID, store.EventNodeOutputSchemaMismatch, nodeID, map[string]any{"schema": schemaName, "fields": fields})
 		}
+		code := ErrCodeSchemaValidation
+		if _, tool := node.(*ir.ToolNode); tool {
+			// A deterministic mismatch must not replay a tool's side effects on
+			// cloud redelivery. LLM samples retain SCHEMA_VALIDATION semantics.
+			code = ErrCodeToolFailedPermanent
+		}
 		return &RuntimeError{
-			Code:    ErrCodeSchemaValidation,
+			Code:    code,
 			Message: fmt.Sprintf("node %q output does not match schema %q: %v", nodeID, schemaName, err),
 			NodeID:  nodeID,
 			Hint:    fmt.Sprintf("ensure node %q produces output conforming to schema %q", nodeID, schemaName),
@@ -110,12 +116,10 @@ func (e *Engine) correctAndValidateNodeOutput(ctx context.Context, rs *runState,
 		}
 	} else if episode.Budget < e.outputCorrectionBudget {
 		// A launch may raise the budget, but never lower an already consumed
-		// episode's bound. Re-open only a budget-exhausted episode: unchanged
-		// output is semantic convergence and an explicit raise must not turn it
-		// back into a loop.
-		previousBudget := episode.Budget
+		// episode's bound. An explicit raise also reopens an unchanged episode;
+		// a resume without a raise keeps the consumed allowance and stop.
 		episode.Budget = e.outputCorrectionBudget
-		if episode.Status == correctionStatusExhausted && episode.Attempts >= previousBudget && episode.Attempts < episode.Budget {
+		if (episode.Status == correctionStatusExhausted || episode.Status == correctionStatusUnchanged) && episode.Attempts < episode.Budget {
 			episode.Status = correctionStatusActive
 			episode.LastError = ""
 			episode.UpdatedAt = time.Now().UTC()

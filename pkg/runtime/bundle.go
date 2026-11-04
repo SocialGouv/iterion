@@ -1060,11 +1060,21 @@ func destPathFromMarkerName(kindDir, markerName, markerPath string) string {
 // or "yes" is not silently ignored. Anything else — empty, "0", "no",
 // arbitrary text — reads as opt-OUT.
 func envOptIn(raw string) bool {
+	enabled, _ := parseEnvBool(raw)
+	return enabled
+}
+
+// parseEnvBool is the shared operator-env convention, including whether the
+// value is known so a strictness knob can warn instead of silently disabling.
+func parseEnvBool(raw string) (bool, bool) {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "1", "true", "yes", "y", "on":
-		return true
+	case "1", "true", "t", "yes", "y", "on", "enabled":
+		return true, true
+	case "", "0", "false", "f", "no", "n", "off", "disabled":
+		return false, true
+	default:
+		return false, false
 	}
-	return false
 }
 
 // overwriteFile replaces dst's content with src's content via a durable

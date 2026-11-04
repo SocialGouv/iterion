@@ -349,5 +349,5 @@ func (d *LoopDeclined) Ceiling() bool { return CeilingReason(d.Reason) }
 // ProviderRequestRemedy keeps the provider's explanation available to an
 // operator changing the request, bounded before reaching persisted hints.
 func ProviderRequestRemedy(err error) string {
-	return "fix the provider request parameters before resuming; provider refused: " + iterlog.Truncate(err.Error(), 2048)
+	return "fix the provider request parameters before resuming; provider refused: " + iterlog.Truncate(providerParameterCause(err), 2048)
 }

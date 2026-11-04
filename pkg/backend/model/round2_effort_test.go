@@ -13,7 +13,8 @@ import (
 func TestR2RouteAcceptedReasoningEfforts(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("TMPDIR", t.TempDir())
-	t.Setenv(compatgw.CatalogModelsEnv, `{"deepseek":{"context_window":100000,"reasoning_efforts":["low","high","xhigh","max"]}}`)
+	t.Setenv(compatgw.CatalogModelsEnv, `{"deepseek":{"context_window":100000}}`)
+	t.Setenv("OPENAI_COMPATIBLE_REASONING_EFFORTS", `{"deepseek":["low","high","xhigh","max"]}`)
 	t.Setenv(compatgw.ResolvedEnvName, "")
 	t.Setenv("OPENAI_COMPATIBLE_BASE_URL", "http://127.0.0.1:8081/v1")
 	t.Setenv("ITERION_LLM_ENDPOINT_ALLOW_PRIVATE", "1")

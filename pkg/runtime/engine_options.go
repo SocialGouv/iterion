@@ -779,7 +779,12 @@ func WithContributionsUnresolved() EngineOption {
 const EnvOutputValidation = "ITERION_STRICT_OUTPUT_VALIDATION"
 
 func defaultOutputValidation() bool {
-	return strings.EqualFold(strings.TrimSpace(os.Getenv(EnvOutputValidation)), "true") || strings.TrimSpace(os.Getenv(EnvOutputValidation)) == "1"
+	raw := os.Getenv(EnvOutputValidation)
+	enabled, known := parseEnvBool(raw)
+	if !known {
+		iterlog.New(iterlog.LevelWarn, os.Stderr).Warn("OUTPUT_VALIDATION_INVALID: %s=%q is not a boolean; using advisory validation", EnvOutputValidation, raw)
+	}
+	return enabled
 }
 
 // WithOutputValidation selects strict rejection instead of advisory warnings.

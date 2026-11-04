@@ -77,7 +77,7 @@ func (e *Engine) executorCorrectionContext(ctx context.Context, rs *runState, no
 					episode = store.OutputCorrectionEpisode{EpisodeID: key, InvocationID: invocation, NodeID: nodeID, Budget: e.outputCorrectionBudget, Status: correctionStatusActive, InputFingerprint: correctionSemanticFingerprint(output), StartedAt: time.Now().UTC()}
 				} else if episode.Budget < e.outputCorrectionBudget {
 					episode.Budget = e.outputCorrectionBudget
-					if episode.Status == correctionStatusExhausted {
+					if episode.Status == correctionStatusExhausted || episode.Status == correctionStatusUnchanged {
 						episode.Status = correctionStatusActive
 					}
 				}

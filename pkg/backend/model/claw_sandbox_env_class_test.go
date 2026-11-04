@@ -97,6 +97,7 @@ var crossedByItsOwnBranch = map[string]string{
 	// reader consults does not cross, the RESOLUTION does.
 	"ITERION_CLAW_STREAM_COLD_TIMEOUT":       "crosses as the host's planted-as-unset answer (explicit empty included): the watchdog knob's reader consults the planted marks, which do not cross, so the raw bytes would let a project .env run the container's watchdog after the host refused it",
 	"ITERION_CLAW_STREAM_IDLE_TIMEOUT":       "same crossing as ITERION_CLAW_STREAM_COLD_TIMEOUT: the host's planted-as-unset answer, explicit empty included",
+	"OPENAI_COMPATIBLE_REASONING_EFFORTS":    "crosses on a gateway node as the host's planted-as-unset answer (envtrust.Inherited, explicit empty included), so the in-container route maps an effort by the operator's table, never by one the workspace .env or a devcontainer.json planted",
 	"ITERION_CLAW_WORKSPACE_AGENT_MAX_BYTES": "crosses always — the operator's value, or an explicit empty: an absent name lets the runner's workspace .env auto-load pick the ceiling its own agent files are read under, and a value the host read as planted never crosses (workspaceAgentMaxBytes denies it authority on both sides)",
 }
 
@@ -478,8 +479,9 @@ var crossingSpellings = map[string]string{
 // assertion keeps it two-sided with crossedByItsOwnBranch: an entry whose
 // name stops crossing by its own branch reds here.
 var consultsWhatCrosses = map[string]string{
-	"ITERION_CLAW_STREAM_COLD_TIMEOUT": "the watchdog knob crosses as the host's planted-as-unset answer, so the twin resolves what the host resolves",
-	"ITERION_CLAW_STREAM_IDLE_TIMEOUT": "the watchdog knob crosses as the host's planted-as-unset answer, so the twin resolves what the host resolves",
+	"OPENAI_COMPATIBLE_REASONING_EFFORTS": "the effort table crosses as the host's planted-as-unset answer, so the twin maps an effort by what the host maps it by",
+	"ITERION_CLAW_STREAM_COLD_TIMEOUT":    "the watchdog knob crosses as the host's planted-as-unset answer, so the twin resolves what the host resolves",
+	"ITERION_CLAW_STREAM_IDLE_TIMEOUT":    "the watchdog knob crosses as the host's planted-as-unset answer, so the twin resolves what the host resolves",
 }
 var envStateConsults = map[string]string{
 	"pkg/dsl/ir.lookupOverlay":      "the bot-var settings overlay (ir.SetEnvOverlay), installed by the cloud server and runner, never by the claw runner",

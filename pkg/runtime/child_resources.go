@@ -209,6 +209,9 @@ func (e *Engine) executeWithResources(ctx context.Context, rs *runState, node ir
 	defer cancel()
 	execute := func() (map[string]any, error) {
 		output, err := e.executor.Execute(ctx, node, input)
+		if _, tool := node.(*ir.ToolNode); tool && err != nil {
+			err = &model.ToolExecutionError{Cause: err}
+		}
 		return output, schemaExecutionError(node, err)
 	}
 	scope := e.resourceScope

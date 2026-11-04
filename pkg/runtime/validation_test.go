@@ -938,8 +938,8 @@ func TestComputeOutputConformsToDeclaredSchema(t *testing.T) {
 
 	t.Run("a fractional float under int fails the node, naming field, value and builtin", func(t *testing.T) {
 		wf := computeGaugeWorkflow(t, ir.FieldTypeInt, "10.58")
-		// Strict mode retains the explicit schema rejection remedy.
-		err := New(wf, tmpStore(t), newStubExecutor(), WithOutputValidation(true)).Run(context.Background(), "run-int-frac", nil)
+		// No WithOutputValidation: #792 holds on the default production path.
+		err := New(wf, tmpStore(t), newStubExecutor()).Run(context.Background(), "run-int-frac", nil)
 		if err == nil {
 			t.Fatal("run succeeded with 10.58 under an int label")
 		}
@@ -962,7 +962,7 @@ func TestComputeOutputConformsToDeclaredSchema(t *testing.T) {
 
 	t.Run("a string under int fails the same way", func(t *testing.T) {
 		wf := computeGaugeWorkflow(t, ir.FieldTypeInt, "'7'")
-		err := New(wf, tmpStore(t), newStubExecutor(), WithOutputValidation(true)).Run(context.Background(), "run-int-str", nil)
+		err := New(wf, tmpStore(t), newStubExecutor()).Run(context.Background(), "run-int-str", nil)
 		var rtErr *RuntimeError
 		if !errors.As(err, &rtErr) || rtErr.Code != ErrCodeSchemaValidation {
 			t.Fatalf("expected a %s error, got %v", ErrCodeSchemaValidation, err)

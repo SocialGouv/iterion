@@ -1,7 +1,6 @@
 package compatgw
 
 import (
-	"encoding/json"
 	"reflect"
 	"strings"
 	"testing"
@@ -299,17 +298,22 @@ func TestResolveCatalog_APlantedRecordIsRefused(t *testing.T) {
 	}
 }
 
-func TestR2ReasoningEffortsSurviveCatalogForwarding(t *testing.T) {
+func TestR3EffortsDoNotChangeTheStrictCatalog(t *testing.T) {
 	ResetCatalogCaches()
 	t.Cleanup(ResetCatalogCaches)
-	source := mapGet(map[string]string{CatalogModelsEnv: `{"deepseek":{"reasoning_efforts":["low","high","xhigh","max"]}}`})
-	resolved := ResolveCatalogQuiet("deepseek", nil, source)
-	record, err := json.Marshal(ForwardableRecord("deepseek", resolved))
-	if err != nil {
+	source := mapGet(map[string]string{CatalogModelsEnv: `{"deepseek":{"context_window":100000}}`, ReasoningEffortsEnv: `{"deepseek":[50],"broken":["hihg"]}`})
+	if err := CheckOperatorTable(source); err != nil {
 		t.Fatal(err)
 	}
-	crossed := ResolveCatalogQuiet("deepseek", nil, mapGet(map[string]string{ResolvedEnvName: string(record)}))
-	if !reflect.DeepEqual(crossed.Spec.ReasoningEfforts, []string{"low", "high", "xhigh", "max"}) {
-		t.Fatalf("matrix lost crossing sandbox: %+v", crossed)
+	if res := ResolveCatalogQuiet("deepseek", nil, source); res.Source != SourceOperator || res.Spec.ContextWindow != 100000 {
+		t.Fatalf("catalog changed: %+v", res)
+	}
+	warnings := 0
+	got := ReasoningEfforts("deepseek", source, func(string, ...any) { warnings++ })
+	if !reflect.DeepEqual(got, []string{"50"}) || warnings != 1 {
+		t.Fatalf("efforts=%v warnings=%d", got, warnings)
+	}
+	if _, err := parseOperatorTable(`{"deepseek":{"reasoning_efforts":["high"]}}`); err == nil {
+		t.Fatal("reasoning_efforts re-entered the strict table")
 	}
 }

@@ -50,15 +50,14 @@ type SnapshotHeader struct {
 // what turns a reader's warning into a refusal, and an embedding model
 // offline must refuse, not warn.
 type snapshotEntry struct {
-	Key              string   `json:"key"`
-	ContextWindow    int      `json:"context_window,omitempty"`
-	MaxOutputTokens  int      `json:"max_output_tokens,omitempty"`
-	InputUSDPerMTok  float64  `json:"input_usd_per_mtok,omitempty"`
-	OutputUSDPerMTok float64  `json:"output_usd_per_mtok,omitempty"`
-	Reasoning        *bool    `json:"reasoning,omitempty"`
-	ReasoningEfforts []string `json:"reasoning_efforts,omitempty"`
-	ToolCall         *bool    `json:"tool_call,omitempty"`
-	Temperature      *bool    `json:"temperature,omitempty"`
+	Key              string  `json:"key"`
+	ContextWindow    int     `json:"context_window,omitempty"`
+	MaxOutputTokens  int     `json:"max_output_tokens,omitempty"`
+	InputUSDPerMTok  float64 `json:"input_usd_per_mtok,omitempty"`
+	OutputUSDPerMTok float64 `json:"output_usd_per_mtok,omitempty"`
+	Reasoning        *bool   `json:"reasoning,omitempty"`
+	ToolCall         *bool   `json:"tool_call,omitempty"`
+	Temperature      *bool   `json:"temperature,omitempty"`
 }
 
 var (
@@ -135,14 +134,13 @@ func ReadSnapshot(raw []byte) (SnapshotHeader, map[string]Spec, error) {
 			return SnapshotHeader{}, nil, fmt.Errorf("model specs: snapshot entry: %w", err)
 		}
 		index[e.Key] = Spec{
-			ContextWindow:    e.ContextWindow,
-			MaxOutputTokens:  e.MaxOutputTokens,
-			InputCostPerM:    e.InputUSDPerMTok,
-			OutputCostPerM:   e.OutputUSDPerMTok,
-			Reasoning:        e.Reasoning,
-			ReasoningEfforts: e.ReasoningEfforts,
-			ToolCall:         e.ToolCall,
-			Temperature:      e.Temperature,
+			ContextWindow:   e.ContextWindow,
+			MaxOutputTokens: e.MaxOutputTokens,
+			InputCostPerM:   e.InputUSDPerMTok,
+			OutputCostPerM:  e.OutputUSDPerMTok,
+			Reasoning:       e.Reasoning,
+			ToolCall:        e.ToolCall,
+			Temperature:     e.Temperature,
 		}
 	}
 	return hdr, index, nil
@@ -223,7 +221,6 @@ func WriteSnapshot(body []byte, sourceDigest string, asOf time.Time) ([]byte, er
 			InputUSDPerMTok:  sp.InputCostPerM,
 			OutputUSDPerMTok: sp.OutputCostPerM,
 			Reasoning:        sp.Reasoning,
-			ReasoningEfforts: sp.ReasoningEfforts,
 			ToolCall:         sp.ToolCall,
 			Temperature:      sp.Temperature,
 		})

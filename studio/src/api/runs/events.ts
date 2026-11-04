@@ -408,6 +408,7 @@ export type PassthroughEventType =
   | "llm_prompt"
   | "llm_retry"
   | "node_verified_action"
+  | "node_output_schema_mismatch"
   | "llm_step_finished"
   | "llm_compacted"
   | "plan_written"

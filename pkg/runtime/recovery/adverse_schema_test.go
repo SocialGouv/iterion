@@ -280,7 +280,6 @@ func TestClawAndClaudeSchemaExhaustionHaveSameLifecycle(t *testing.T) {
 	t.Setenv("TMPDIR", t.TempDir())
 	t.Setenv("ANTHROPIC_API_KEY", "test-key")
 	t.Setenv("ANTHROPIC_BASE_URL", "")
-	var firstPhases string
 	for _, name := range []string{delegate.BackendClaw, delegate.BackendClaudeCode} {
 		t.Run(name, func(t *testing.T) {
 			reg := model.NewRegistry()
@@ -331,14 +330,33 @@ func TestClawAndClaudeSchemaExhaustionHaveSameLifecycle(t *testing.T) {
 			if len(phases) < 2 {
 				t.Fatalf("missing correction lifecycle: %v", phases)
 			}
-			if name == delegate.BackendClaw {
-				firstPhases = phases[len(phases)-1]
-				if len(extraction.calls) != 0 {
-					t.Errorf("diagnostic extraction calls=%d", len(extraction.calls))
+			// Claw's malformed tool block has no prose to extract. Claude Code
+			// supplies prose, so its additional extraction call shares the same
+			// allowance: one re-ask + one extraction, never two business retries.
+			want := "attempt,active,unchanged"
+			wantAttempts := 1
+			if name == delegate.BackendClaudeCode {
+				want = "attempt,active,attempt,exhausted,unchanged"
+				wantAttempts = 2
+				if len(prose.tasks) != 2 || len(mock.calls) != 2 {
+					t.Errorf("claude calls: business/reask=%d extraction=%d", len(prose.tasks), len(mock.calls))
 				}
-			} else if phases[len(phases)-1] != firstPhases {
-				t.Fatalf("lifecycle differs: claw=%s claude_code=%s", firstPhases, got)
+			} else if len(extraction.calls) != 0 {
+				t.Errorf("diagnostic extraction calls=%d", len(extraction.calls))
 			}
+			if got != want {
+				t.Fatalf("%s lifecycle=%s want=%s", name, got, want)
+			}
+			attempts := 0
+			for _, phase := range phases {
+				if phase == "attempt" {
+					attempts++
+				}
+			}
+			if attempts != wantAttempts {
+				t.Fatalf("%s attempts=%d want=%d", name, attempts, wantAttempts)
+			}
+
 			if name == delegate.BackendClaw && (len(mock.calls) != 4 || !strings.Contains(lastUser(mock.calls[2]), "malformed JSON")) {
 				t.Fatalf("parse feedback missing: calls=%d", len(mock.calls))
 			}

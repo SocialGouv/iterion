@@ -110,9 +110,9 @@ func TestMarkBudgetCut(t *testing.T) {
 func TestEffortAfterCut(t *testing.T) {
 	t.Parallel()
 	base := GenerationOptions{Model: "openai_compatible/scaleway/glm-test", ProviderOptions: map[string]any{"reasoning_effort": "high", "other": 1}}
-	lowered, to, ok := effortAfterCut(base)
+	lowered, to, ok := effortAfterCut(context.Background(), base)
 	if !ok || to != "low" || reasoningEffortOf(lowered) != "low" || lowered.ProviderOptions["other"] != 1 {
-		t.Fatalf("effortAfterCut(high) = %v / %q / %v, want low with the other options kept", lowered.ProviderOptions, to, ok)
+		t.Fatalf("effortAfterCut(context.Background(), high) = %v / %q / %v, want low with the other options kept", lowered.ProviderOptions, to, ok)
 	}
 	if reasoningEffortOf(base) != "high" {
 		t.Fatal("effortAfterCut wrote through the caller's ProviderOptions map")
@@ -122,8 +122,8 @@ func TestEffortAfterCut(t *testing.T) {
 		if effort != "" {
 			opts.ProviderOptions = map[string]any{"reasoning_effort": effort}
 		}
-		if _, _, ok := effortAfterCut(opts); ok {
-			t.Errorf("effortAfterCut(%q) lowered an effort that cannot go lower", effort)
+		if _, _, ok := effortAfterCut(context.Background(), opts); ok {
+			t.Errorf("effortAfterCut(context.Background(), %q) lowered an effort that cannot go lower", effort)
 		}
 	}
 }

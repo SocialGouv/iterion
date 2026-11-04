@@ -24,9 +24,23 @@ func ClassifyError(err error) ErrorCode {
 	if IsAmbiguousEffect(err) {
 		return ErrCodeAmbiguousEffect
 	}
+	// Before the RuntimeError code: a route of the chain may carry its own
+	// RuntimeError, and errors.As must not let that one route decide for
+	// the others.
+	if code, decided := classifyRefusedChain(err); decided {
+		return code
+	}
 	var rerr *RuntimeError
 	if errors.As(err, &rerr) {
 		return rerr.Code
+	}
+	// A tool node's failure, checked by TYPE before any provider reading:
+	// its stderr is data, and an HTTP-looking line in it ("status code 400",
+	// "error 401") says nothing about the model provider. Every execution
+	// boundary carries this type, `iterion resume` and child runs included.
+	var toolFailure *model.ToolExecutionError
+	if errors.As(err, &toolFailure) {
+		return ErrCodeExecutionFailed
 	}
 	// A credential the provider rejected. Checked by TYPE, before any
 	// message matching: the needles below only catch the wordings that
@@ -76,7 +90,7 @@ func ClassifyError(err error) ErrorCode {
 			return ErrCodeRateLimited
 		}
 		body := strings.ToLower(apiErr.Message + " " + apiErr.Body)
-		if strings.Contains(body, "context_length_exceeded") || strings.Contains(body, "context length") {
+		if matchesProviderContext(body) {
 			return ErrCodeContextLengthExceeded
 		}
 		// 5xx and 408 (Request Timeout) from the upstream API are
@@ -106,10 +120,30 @@ func ClassifyError(err error) ErrorCode {
 		if apiErr.StatusCode == 404 || matchesModelUnavailable(body, 0) {
 			return ErrCodeModelUnavailable
 		}
-		if apiErr.StatusCode == 400 {
+		// A 400 is terminal only when the provider's own message names a
+		// request parameter the operator set (the closed list of
+		// invalidProviderParameter). A bare 400 is NOT: one raised mid-turn
+		// can be the model's own tool arguments, an image a tool produced or
+		// a moderation verdict on generated text, and those differ on the
+		// next sample.
+		if apiErr.StatusCode == 400 && invalidProviderParameter(apiErr.Message) {
 			return ErrCodeProviderRequestInvalid
 		}
 		return ErrCodeExecutionFailed
+	}
+	// A stream error event is a separate type carrying the provider's status
+	// and message. Its 400 reads the same context markers and the same
+	// closed parameter list as the HTTP arm; anything else — vLLM's
+	// BadRequestError catch-all first — goes on to the reading below,
+	// whose verdict it always had.
+	var streamErr *model.APIError
+	if errors.As(err, &streamErr) && streamErr.StatusCode == 400 {
+		if matchesProviderContext(strings.ToLower(streamErr.Message)) {
+			return ErrCodeContextLengthExceeded
+		}
+		if invalidProviderParameter(streamErr.Message) {
+			return ErrCodeProviderRequestInvalid
+		}
 	}
 	// A node ended by the bound its own `timeout:` declared, read BY TYPE
 	// and before every needle below — the same discipline the credential
@@ -181,12 +215,6 @@ func ClassifyError(err error) ErrorCode {
 	}
 	if strings.Contains(msg, "error 403") || strings.Contains(msg, "error 401") {
 		return ErrCodeAuthFailed
-	}
-	if strings.Contains(msg, "api error 400") || strings.Contains(msg, "badrequesterror") || strings.Contains(msg, "status code 400") {
-		if strings.Contains(msg, "context_length_exceeded") || strings.Contains(msg, "context length") {
-			return ErrCodeContextLengthExceeded
-		}
-		return ErrCodeProviderRequestInvalid
 	}
 	for _, needle := range networkTransientNeedles {
 		if strings.Contains(msg, needle) {

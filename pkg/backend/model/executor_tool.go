@@ -39,7 +39,12 @@ import (
 // executeToolNode runs a tool node (direct command, no LLM).
 // The tool policy is checked before execution; denied tools produce an
 // explicit error with the tool_called hook fired (Error != nil).
-func (e *ClawExecutor) executeToolNode(ctx context.Context, node *ir.ToolNode, input map[string]any) (map[string]any, error) {
+func (e *ClawExecutor) executeToolNode(ctx context.Context, node *ir.ToolNode, input map[string]any) (output map[string]any, err error) {
+	defer func() {
+		if err != nil {
+			err = &ToolExecutionError{Cause: err}
+		}
+	}()
 	// A connector action's invariants are enforced HERE, before anything
 	// else can claim the node.
 	//
