@@ -59,3 +59,14 @@ func IsRetryableStatus(statusCode int) bool {
 	}
 	return statusCode >= 500 && statusCode <= 599
 }
+
+// RequestValidationError reports an invalid or unsupported local request before
+// any HTTP call. Unlike APIError it does not represent a provider response.
+type RequestValidationError struct {
+	Field  string
+	Reason string
+}
+
+func (e *RequestValidationError) Error() string        { return e.Field + ": " + e.Reason }
+func (e *RequestValidationError) InvalidField() string { return e.Field }
+func (e *RequestValidationError) IsRetryable() bool    { return false }

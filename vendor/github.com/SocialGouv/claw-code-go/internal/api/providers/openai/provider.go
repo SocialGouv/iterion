@@ -182,21 +182,22 @@ type Client struct {
 // of the reasoning-model gymnastics in MarshalJSON below — Foundry does not
 // need them, and Bedrock targets a different wire entirely.
 type oaiRequest struct {
-	Model            string                 `json:"model"`
-	Messages         []openaiwire.Message   `json:"messages"`
-	Tools            []openaiwire.Tool      `json:"tools,omitempty"`
-	ToolChoice       any                    `json:"tool_choice,omitempty"`
-	Stream           bool                   `json:"stream"`
-	StreamOptions    *openaiwire.StreamOpts `json:"stream_options,omitempty"`
-	MaxTokens        int                    `json:"-"` // written conditionally in MarshalJSON
-	Temperature      *float64               `json:"-"` // omitted for reasoning models
-	TopP             *float64               `json:"-"` // omitted for reasoning models
-	FrequencyPenalty *float64               `json:"-"` // omitted for reasoning models
-	PresencePenalty  *float64               `json:"-"` // omitted for reasoning models
-	Stop             []string               `json:"-"` // always safe
-	ReasoningEffort  string                 `json:"-"` // reasoning models only
-	isReasoningModel bool                   // controls conditional field inclusion
-	useMaxCompTokens bool                   // gpt-5* uses max_completion_tokens
+	Model            string                     `json:"model"`
+	Messages         []openaiwire.Message       `json:"messages"`
+	Tools            []openaiwire.Tool          `json:"tools,omitempty"`
+	ToolChoice       any                        `json:"tool_choice,omitempty"`
+	ResponseFormat   *openaiwire.ResponseFormat `json:"response_format,omitempty"`
+	Stream           bool                       `json:"stream"`
+	StreamOptions    *openaiwire.StreamOpts     `json:"stream_options,omitempty"`
+	MaxTokens        int                        `json:"-"` // written conditionally in MarshalJSON
+	Temperature      *float64                   `json:"-"` // omitted for reasoning models
+	TopP             *float64                   `json:"-"` // omitted for reasoning models
+	FrequencyPenalty *float64                   `json:"-"` // omitted for reasoning models
+	PresencePenalty  *float64                   `json:"-"` // omitted for reasoning models
+	Stop             []string                   `json:"-"` // always safe
+	ReasoningEffort  string                     `json:"-"` // reasoning models only
+	isReasoningModel bool                       // controls conditional field inclusion
+	useMaxCompTokens bool                       // gpt-5* uses max_completion_tokens
 }
 
 // MarshalJSON implements custom marshaling to conditionally include/exclude
@@ -240,7 +241,7 @@ func (r oaiRequest) MarshalJSON() ([]byte, error) {
 	}
 	w.ReasoningEffort = r.ReasoningEffort
 
-	return json.Marshal(w)
+	return openaiwire.MarshalJSON(w)
 }
 
 // ----- StreamResponse --------------------------------------------------------
@@ -268,7 +269,7 @@ func (c *Client) StreamResponse(ctx context.Context, req api.CreateMessageReques
 		return nil, fmt.Errorf("openai: build request: %w", err)
 	}
 
-	body, err := json.Marshal(oaiReq)
+	body, err := openaiwire.MarshalJSON(oaiReq)
 	if err != nil {
 		return nil, fmt.Errorf("openai: marshal request: %w", err)
 	}
@@ -310,6 +311,10 @@ func (c *Client) StreamResponse(ctx context.Context, req api.CreateMessageReques
 // ----- Request conversion ----------------------------------------------------
 
 func (c *Client) buildRequest(req api.CreateMessageRequest) (*oaiRequest, error) {
+	format, err := req.ResponseFormat.Normalized()
+	if err != nil {
+		return nil, err
+	}
 	model := c.requestModel(req)
 	// Capability checks read the bare model name; the wire carries it
 	// verbatim when the caller asked for it.
@@ -337,6 +342,7 @@ func (c *Client) buildRequest(req api.CreateMessageRequest) (*oaiRequest, error)
 		Model:            wireModel,
 		Messages:         openaiwire.ConvertMessages(req.System, req.Messages),
 		Tools:            tools,
+		ResponseFormat:   format,
 		Stream:           true,
 		MaxTokens:        maxTokens,
 		Temperature:      req.Temperature,

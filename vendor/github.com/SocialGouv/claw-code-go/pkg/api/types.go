@@ -36,6 +36,12 @@ type Property = api.Property
 // ToolChoice controls which tool the model must use.
 type ToolChoice = api.ToolChoice
 
+// ResponseFormat opts into native output on OpenAI-compatible routes.
+type ResponseFormat = api.ResponseFormat
+
+// ResponseFormatJSONSchema carries a raw schema and an explicit strict choice.
+type ResponseFormatJSONSchema = api.ResponseFormatJSONSchema
+
 // CreateMessageRequest is the request body for /v1/messages.
 type CreateMessageRequest = api.CreateMessageRequest
 
@@ -86,3 +92,6 @@ type APIError = api.APIError
 // (408, 409, 429, 5xx). Providers that build *APIError values populate the
 // Retryable field from this function.
 var IsRetryableStatus = api.IsRetryableStatus
+
+// RequestValidationError identifies a local invalid or unsupported request.
+type RequestValidationError = api.RequestValidationError

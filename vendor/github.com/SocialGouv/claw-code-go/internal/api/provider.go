@@ -163,6 +163,15 @@ func RefuseOpenAIOnlyOptions(provider string, cfg ProviderConfig) error {
 	return fmt.Errorf("%s provider: %s is honoured only by the OpenAI provider", provider, strings.Join(set, ", "))
 }
 
+// RefuseOpenAIOnlyRequestOptions extends RefuseOpenAIOnlyOptions to per-request
+// capabilities. Unsupported native output must never silently fall back to text.
+func RefuseOpenAIOnlyRequestOptions(provider string, req CreateMessageRequest) error {
+	if req.ResponseFormat != nil {
+		return &RequestValidationError{Field: "ResponseFormat", Reason: provider + " API has no native response_format field and claw does not translate ResponseFormat to its structured-output mechanism; use an OpenAI or Foundry transport"}
+	}
+	return nil
+}
+
 // APIClient is the interface all provider clients must implement.
 type APIClient interface {
 	StreamResponse(ctx context.Context, req CreateMessageRequest) (<-chan StreamEvent, error)
