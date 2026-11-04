@@ -2835,7 +2835,7 @@ func forwardableProviderEnv(ctx context.Context, model, providerHint string) (ma
 		if key == "" {
 			continue
 		}
-		if nodeProv != "" && provider != nodeProv {
+		if !runKeyRidesNode(provider, nodeProv) {
 			continue
 		}
 		if name := byokEnvVar[provider]; name != "" {
@@ -2903,7 +2903,7 @@ func forwardableProviderEnv(ctx context.Context, model, providerHint string) (ma
 	// clawPinnedProvider answers both: zai for a GLM spec, the spec's own
 	// provider otherwise.
 	if clawPinnedProvider(model) == secrets.ProviderAnthropic {
-		if err := applyForfaitAcrossSandbox(ctx, env, creds, model); err != nil {
+		if err := applyForfaitAcrossSandbox(ctx, env, creds, model, nodeProv); err != nil {
 			return nil, crossingRefusals{}, err
 		}
 	}
@@ -3043,8 +3043,9 @@ func RouteProviderHint(ctx context.Context, backend, hint, model string) string 
 }
 
 // applyForfaitAcrossSandbox is the body of the forfait crossing, split out so
-// the model gate above reads as one line.
-func applyForfaitAcrossSandbox(ctx context.Context, env map[string]string, creds secrets.Credentials, model string) error {
+// the model gate above reads as one line. nodeProv is the crossing's own
+// reading of the node's provider, the one its run keys were narrowed to.
+func applyForfaitAcrossSandbox(ctx context.Context, env map[string]string, creds secrets.Credentials, model string, nodeProv secrets.Provider) error {
 	// A resolved Claude Code forfait is mounted by
 	// runtime.addClaudeOAuthSecretFile and copied into a writable config dir by
 	// seedClaudeConfigDir — both per RUN, not per backend, so the dir is
@@ -3061,19 +3062,18 @@ func applyForfaitAcrossSandbox(ctx context.Context, env map[string]string, creds
 	// against the platform account, and does so invisibly, because the ambient
 	// key works.
 	//
-	// Two limits, both deliberate: a BYOK key claw's anthropic provider would
-	// spend — the Anthropic one, or z.ai's, which the env factory synthesises
-	// onto z.ai's base URL — is the tenant's own explicit instrument and keeps
-	// precedence (otherwise the same run would spend a different one depending
-	// on whether it happened to be sandboxed); and a redirected wire is a
-	// destination the operator chose, so a bearer carrying the whole Claude
-	// account does not travel there. clawAnthropicProviderSlots says which keys
-	// those are.
+	// Two limits, both deliberate: a BYOK key the crossing hands this node and
+	// claw's anthropic provider spends ahead of the forfait
+	// (heldAnthropicWireAPIKey) is the tenant's own explicit instrument and
+	// keeps precedence (otherwise the same run would spend a different one
+	// depending on whether it happened to be sandboxed); and a redirected wire
+	// is a destination the operator chose, so a bearer carrying the whole
+	// Claude account does not travel there.
 	// A key pinned for THIS node's own route is as held as a BYOK slot: the
 	// pinned-key block above injected it into the env, and applying the
-	// forfait here deleted it right back — the container spent the forfait
-	// while the in-process path spent the pin, and an expired forfait
-	// refused a node whose key was good. The route-less predicate below
+	// forfait here would blank it right back — the container spending the
+	// forfait while the in-process path spends the pin, and an expired forfait
+	// refusing a node whose key is good. The route-less predicate below
 	// stays pin-blind on purpose (#736): a pin for ANOTHER route must not
 	// keep the forfait out of an unpinned node.
 	for _, slot := range clawAnthropicProviderSlots {
@@ -3082,7 +3082,7 @@ func applyForfaitAcrossSandbox(ctx context.Context, env map[string]string, creds
 		}
 	}
 	if creds.OAuthDir(string(secrets.OAuthKindClaudeCode)) != "" &&
-		!heldAnthropicWireAPIKey(creds) &&
+		!heldAnthropicWireAPIKey(creds, nodeProv) &&
 		secrets.AnthropicForfaitWireOK(envGetenv(ctx, "ANTHROPIC_BASE_URL")) {
 		dir := creds.OAuthDir(string(secrets.OAuthKindClaudeCode))
 		// Validate BEFORE clearing. Once the shadows are gone the forfait is
@@ -3096,11 +3096,24 @@ func applyForfaitAcrossSandbox(ctx context.Context, env map[string]string, creds
 			return fmt.Errorf("claw backend: sandboxed anthropic node cannot use the run's forfait: %w", terr)
 		}
 		env["CLAUDE_CONFIG_DIR"] = secrets.ClaudeCodeSandboxConfigDir
+		// The shadows cross as the explicit empty, never absent: an absent
+		// name is one the container's own env (the sandbox spec's, a declared
+		// secret's) or the runner's workspace .env auto-load fills, and that
+		// value would outrank the forfait the in-process twin spends — the
+		// claude_code delegate's forfait env clears the same names
+		// (claudeForfaitEnv).
 		for _, shadow := range anthropicWireShadowEnv() {
-			delete(env, shadow)
+			env[shadow] = ""
 		}
 	}
 	return nil
+}
+
+// runKeyRidesNode reports whether the run's default key of provider crosses
+// for a node the crossing reads as nodeProv: a run-held key rides only the
+// nodes its provider serves, and "" — no provider to read — narrows nothing.
+func runKeyRidesNode(provider, nodeProv secrets.Provider) bool {
+	return nodeProv == "" || provider == nodeProv
 }
 
 // clawAnthropicProviderSlots are the BYOK slots whose key claw's `anthropic`
@@ -3125,10 +3138,15 @@ var clawAnthropicProviderSlots = []secrets.Provider{
 }
 
 // heldAnthropicWireAPIKey reports whether the run carries a BYOK key claw's
-// anthropic provider would spend (clawAnthropicProviderSlots).
-func heldAnthropicWireAPIKey(creds secrets.Credentials) bool {
+// anthropic provider would spend (clawAnthropicProviderSlots) that the
+// crossing hands a node it reads as nodeProv (runKeyRidesNode). A z.ai key
+// rides a GLM node alone: a claude node never receives it — and the env
+// factory refuses its synthesis for a claude id anyway — so it keeps no
+// forfait out of a claude node, whose in-process twin spends the forfait
+// past it.
+func heldAnthropicWireAPIKey(creds secrets.Credentials, nodeProv secrets.Provider) bool {
 	for _, slot := range clawAnthropicProviderSlots {
-		if creds.APIKeys[slot] != "" {
+		if creds.APIKeys[slot] != "" && runKeyRidesNode(slot, nodeProv) {
 			return true
 		}
 	}

@@ -154,7 +154,7 @@ func TestForwardableProviderEnv_ForfaitOnlyTenantDoesNotInheritPlatformKey(t *te
 		t.Errorf("CLAUDE_CONFIG_DIR = %q, want the seeded in-sandbox dir %q", got, secrets.ClaudeCodeSandboxConfigDir)
 	}
 	for _, shadow := range []string{"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ZAI_API_KEY"} {
-		if v, present := env[shadow]; present {
+		if v := env[shadow]; v != "" {
 			t.Errorf("%s=%q still forwarded — the platform credential would win over the run's forfait", shadow, v)
 		}
 	}
@@ -663,7 +663,7 @@ func TestForwardableProviderEnv_MoonshotKeyDoesNotKeepTheForfaitOut(t *testing.T
 	if got := env["CLAUDE_CONFIG_DIR"]; got != secrets.ClaudeCodeSandboxConfigDir {
 		t.Errorf("CLAUDE_CONFIG_DIR = %q, want the seeded in-sandbox dir %q — the tenant's Moonshot key kept its forfait out", got, secrets.ClaudeCodeSandboxConfigDir)
 	}
-	if v, present := env["ANTHROPIC_API_KEY"]; present {
+	if v := env["ANTHROPIC_API_KEY"]; v != "" {
 		t.Errorf("ANTHROPIC_API_KEY=%q forwarded — the platform key would serve the tenant's anthropic node", v)
 	}
 }
@@ -742,7 +742,7 @@ func TestHeldAnthropicWireAPIKey_IgnoresAPinnedKey(t *testing.T) {
 	creds := secrets.Credentials{
 		PinnedAPIKeys: map[secrets.Provider]string{secrets.ProviderZAI: "platform-zai"},
 	}
-	if heldAnthropicWireAPIKey(creds) {
+	if heldAnthropicWireAPIKey(creds, "") {
 		t.Error("heldAnthropicWireAPIKey counted a pinned key — the run's forfait would stay out of its own anthropic nodes")
 	}
 }

@@ -168,7 +168,7 @@ func TestClawAnthropicProviderSlots_MatchWhatTheFactorySpends(t *testing.T) {
 			}
 		})
 	}
-	if heldAnthropicWireAPIKey(secrets.Credentials{}) {
+	if heldAnthropicWireAPIKey(secrets.Credentials{}, "") {
 		t.Error("heldAnthropicWireAPIKey reported a key on empty credentials")
 	}
 }

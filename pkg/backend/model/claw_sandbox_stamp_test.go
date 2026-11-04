@@ -185,3 +185,102 @@ func TestAStampedNodeItsRunDoesNotFundIsRefusedBeforeTheRunner(t *testing.T) {
 		})
 	}
 }
+
+// A z.ai key is no key of a claude node: the crossing hands it to a GLM node
+// alone, and the env factory refuses its synthesis for a claude id. So a run
+// holding one beside its Claude forfait crosses that forfait to a sandboxed
+// `anthropic/claude-*` node — the instrument the in-process twin spends —
+// stamped or not: the stamped crossing does not refuse a node its run funds,
+// and neither crossing hands the container an anthropic-wire credential of the
+// pod in the forfait's stead.
+func TestAZAIKeyKeepsNoClaudeNodeFromItsRunsForfait(t *testing.T) {
+	stampBench(t)
+	// The forfait's own wire, and no refusal of it: the bench's gateway and
+	// switch would keep any forfait home whatever the run holds.
+	t.Setenv("ANTHROPIC_BASE_URL", "")
+	t.Setenv("ITERION_FORBID_SUBSCRIPTION_OAUTH", "")
+	t.Cleanup(SetCredentialsLookup(RunCredentialsLookup))
+	t.Cleanup(SetOAuthDirLookup(RunOAuthDirLookup))
+	const spec = "anthropic/claude-sonnet-4"
+	forfait := map[string]string{string(secrets.OAuthKindClaudeCode): forfaitDirForTest(t)}
+
+	for _, row := range []struct {
+		name    string
+		stamped bool
+	}{{"unstamped", false}, {"stamped", true}} {
+		t.Run(row.name, func(t *testing.T) {
+			ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{
+				AmbientRefused:       row.stamped,
+				APIKeys:              map[secrets.Provider]string{secrets.ProviderZAI: "zai-run"},
+				OAuthCredentialFiles: forfait,
+			})
+			// The bench: in process, the registry serves the node on the run's
+			// forfait — the run funds it.
+			client, err := NewRegistry().ResolveWithContext(ctx, spec)
+			if err != nil {
+				t.Fatalf("bench: the in-process twin refused the node: %v", err)
+			}
+			if tok := clientBearerForTest(client); tok != "sk-ant-oat-run" {
+				t.Fatalf("bench: the in-process twin carries bearer %q, want the run's forfait", tok)
+			}
+
+			env, _, err := forwardableProviderEnv(ctx, spec, "")
+			if err != nil {
+				t.Fatalf("the crossing refused a node its run's forfait funds: %v", err)
+			}
+			if got := env["CLAUDE_CONFIG_DIR"]; got != secrets.ClaudeCodeSandboxConfigDir {
+				t.Errorf("CLAUDE_CONFIG_DIR = %q, want the run's forfait %q — the z.ai key kept it home", got, secrets.ClaudeCodeSandboxConfigDir)
+			}
+			for _, name := range []string{"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ZAI_API_KEY"} {
+				if v := env[name]; v != "" {
+					t.Errorf("%s = %q crosses beside the forfait, which it outranks in the container", name, v)
+				}
+			}
+			if !row.stamped {
+				return
+			}
+			// Stamped, every credential of the pod crossed empty: the first
+			// channel the admission probe finds is the forfait's.
+			if channel, ok := ClawSandboxCredential(ctx, spec, delegate.SandboxHomeState{}); !ok || !strings.Contains(channel, "CLAUDE_CONFIG_DIR") {
+				t.Errorf("ClawSandboxCredential = %q ok=%v, want the run's forfait channel", channel, ok)
+			}
+		})
+	}
+}
+
+// The forfait arm keeps the crossing's explicit-empty promise: each name that
+// would outrank the run's forfait in the container crosses present and empty,
+// never absent — an absent name is one the container's own env (the sandbox
+// spec's, a declared secret's) or the runner's workspace .env fills, and that
+// value is spent before the forfait. Stamped, where the pod's credentials
+// already crossed empty, and unstamped, where the arm alone keeps them out.
+func TestTheForfaitCrossingLeavesNoShadowNameAbsent(t *testing.T) {
+	stampBench(t)
+	t.Setenv("ANTHROPIC_BASE_URL", "")
+	t.Setenv("ITERION_FORBID_SUBSCRIPTION_OAUTH", "")
+	forfait := map[string]string{string(secrets.OAuthKindClaudeCode): forfaitDirForTest(t)}
+
+	for _, row := range []struct {
+		name    string
+		stamped bool
+	}{{"unstamped", false}, {"stamped", true}} {
+		t.Run(row.name, func(t *testing.T) {
+			ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{
+				AmbientRefused:       row.stamped,
+				OAuthCredentialFiles: forfait,
+			})
+			env, _, err := forwardableProviderEnv(ctx, "anthropic/claude-sonnet-4", "")
+			if err != nil {
+				t.Fatalf("forwardableProviderEnv: %v", err)
+			}
+			if got := env["CLAUDE_CONFIG_DIR"]; got != secrets.ClaudeCodeSandboxConfigDir {
+				t.Fatalf("bench: CLAUDE_CONFIG_DIR = %q, want the run's forfait — the arm under test did not run", got)
+			}
+			for _, name := range []string{"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ZAI_API_KEY"} {
+				if v, present := env[name]; !present || v != "" {
+					t.Errorf("%s crossed as %q (present=%v), want the explicit empty — absent, a value the container carries under that name outranks the forfait", name, v, present)
+				}
+			}
+		})
+	}
+}

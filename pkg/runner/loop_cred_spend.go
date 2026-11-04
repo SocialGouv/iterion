@@ -235,17 +235,18 @@ const gatewayWire = "openai_compatible"
 // Within a wire the slot follows the backend's own precedence: claude_code's
 // is secrets.AnthropicWireSlotOrder, the list anthropicCredEnvForCLI is
 // itself written against; claw's anthropic provider spends the Anthropic
-// key, then — sandboxed — the z.ai key, then the forfait, never a Moonshot
-// key (model.clawAnthropicProviderSlots) — in process it skips the z.ai key,
-// which a route that carries no sandbox verdict cannot tell, so the
-// sandbox's order is booked; pi on `anthropic/…` or `openai/…` reads only
-// that provider's key, the run's default one then one pinned for the route
-// (piRouteEnv) — never a forfait nor a facade (its `openai-codex/…` provider,
-// which spends the ChatGPT forfait, is no iterion provider id and books on
-// nobody); on the openai wire, the API key then the codex forfait — for a
-// claw `openai/…` route, the forfait only while the runner lets it serve,
-// then a key pinned for the route. Reading it differently here would credit
-// a credential the backend did not use.
+// key, then the forfait, in process and sandboxed alike — never a Moonshot
+// key, and never the run's z.ai key on a claude id: a GLM id is z.ai's
+// (below), and any other id the registry resolves past the z.ai key, which
+// the crossing hands to a GLM node alone (model.heldAnthropicWireAPIKey); pi
+// on `anthropic/…` or `openai/…` reads only that provider's key, the run's
+// default one then one pinned for the route (piRouteEnv) — never a forfait
+// nor a facade (its `openai-codex/…` provider, which spends the ChatGPT
+// forfait, is no iterion provider id and books on nobody); on the openai
+// wire, the API key then the codex forfait — for a claw `openai/…` route,
+// the forfait only while the runner lets it serve, then a key pinned for the
+// route. Reading it differently here would credit a credential the backend
+// did not use.
 func credentialSlotForRoute(creds secrets.Credentials, backend, modelName string) string {
 	// A gateway-served route is env-funded: the deployment's
 	// OPENAI_COMPATIBLE_* pair, no credential slot — booking it on a held
@@ -281,7 +282,6 @@ func credentialSlotForRoute(creds secrets.Credentials, backend, modelName string
 			}
 			return firstHeldSlot(creds,
 				string(secrets.ProviderAnthropic),
-				string(secrets.ProviderZAI),
 				string(secrets.OAuthKindClaudeCode),
 			)
 		case delegate.BackendPi:

@@ -383,7 +383,9 @@ func (k runCredKeys) routeKey(ctx context.Context, route model.WireRoute) (key s
 		// names the source the session will stamp, exactly as it does for
 		// claude_code above, and the pre-flight reads the meter that label
 		// keys: the run's key, an inherited account by its fingerprint, the
-		// bare meter, or nothing iterion keeps.
+		// bare meter, or nothing iterion keeps. pi reads no ambient stamp: a
+		// stamped run's pi node spends what pi resolves, the pod's channels
+		// included, and this names that account.
 		if source, metered, anthropic := delegate.PiAnthropicRouteSource(ctx, route.Model, hint, k.sandboxed); anthropic {
 			if !metered {
 				return "", false

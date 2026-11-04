@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/claw-code-go/pkg/api"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
@@ -218,12 +219,13 @@ func TestTheNothingHeldDefaultReadsTheAmbientLedger(t *testing.T) {
 	}
 }
 
-// The veto, on a pod that CARRIES a credential: a STAMPED run answers every
-// fallback to the pod env with a typed refusal, so the pod's account decides
-// none of its meters. Two guards hold that, one scenario each. Its
-// nothing-held default — an unreadable route, an unlabelled reading — stays
-// on the no-credential meter, never the account's (the stamp read in
-// usageCapCredKeys). A claw walk into the pod env, a supervisor's or a
+// The veto, on a pod that CARRIES a credential: a STAMPED run's claude_code
+// and claw lanes answer every fallback to the pod env with a typed refusal, so
+// the pod's account decides none of their meters (pi reads no stamp: its
+// meter names the account pi spends). Two guards hold that, one scenario
+// each. Its nothing-held default — an unreadable route, an unlabelled
+// reading — stays on the no-credential meter, never the account's (the stamp
+// read in usageCapCredKeys). A claw walk into the pod env, a supervisor's or a
 // route's, is refused before any client exists — by the registry in process,
 // by the crossing for the container — and meters nothing (clawUnslottedKey).
 // The unstamped twin on the same pod reads the account on every row, so the
@@ -1168,5 +1170,90 @@ func TestAnUnlabelledReadingLandsOnThePreflightsDefault(t *testing.T) {
 	}
 	if got := usageCapCredKeys(legacy, msg).forSource(""); got != fpLess {
 		t.Errorf("a legacy forfait run's unlabelled reading = %q, want %q", got, fpLess)
+	}
+}
+
+// A claw `anthropic/claude-*` route spends the run's Claude forfait past a
+// z.ai key the run also holds: in process the registry resolves a claude id
+// past the z.ai key to the forfait, and the crossing hands the container the
+// forfait — the z.ai key rides a GLM node alone. So the pre-flight reads the
+// forfait's meter and the ledger books the forfait, stamped or not, in
+// process and sandboxed. Read on the z.ai key, a walled forfait starts the
+// run, and a wall on the z.ai key parks claude runs that never touch it.
+func TestAClawClaudeRouteMetersTheForfaitPastAZAIKey(t *testing.T) {
+	blankAnthropicWireEnv(t)
+	t.Setenv("ITERION_DEFAULT_SUPERVISOR_MODEL", "")
+	t.Setenv("ITERION_SUPERVISORS", "")
+	t.Cleanup(model.SetCredentialsLookup(model.RunCredentialsLookup))
+	t.Cleanup(model.SetOAuthDirLookup(model.RunOAuthDirLookup))
+	forfait := t.TempDir()
+	if err := os.WriteFile(filepath.Join(forfait, ".credentials.json"),
+		[]byte(`{"claudeAiOauth":{"accessToken":"sk-ant-oat-run","expiresAt":4102444800000}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	const spec = "anthropic/claude-sonnet-4"
+	route := model.WireRoute{NodeID: "impl", Backend: delegate.BackendClaw, Model: spec, Readable: true}
+	clawRun := chainWorkflow(agentRoute("impl", delegate.BackendClaw, "", spec))
+	resets := time.Now().UTC().Add(30 * time.Hour)
+
+	for _, row := range []struct {
+		name    string
+		stamped bool
+	}{{"unstamped", false}, {"stamped", true}} {
+		t.Run(row.name, func(t *testing.T) {
+			creds := secrets.Credentials{
+				AmbientRefused:       row.stamped,
+				APIKeys:              map[secrets.Provider]string{secrets.ProviderZAI: "zai-run"},
+				OAuthCredentialFiles: map[string]string{string(secrets.OAuthKindClaudeCode): forfait},
+				Fingerprints: map[string]string{
+					string(secrets.ProviderZAI):         "fp-zai",
+					string(secrets.OAuthKindClaudeCode): "fp-oauth",
+				},
+			}
+			ctx := secrets.WithCredentials(context.Background(), creds)
+			// The bench: in process the registry builds the client on the
+			// forfait, and stamped — every credential of the pod withheld —
+			// the crossing's first channel is the forfait's.
+			client, err := model.NewRegistry().ResolveWithContext(ctx, spec)
+			if err != nil {
+				t.Fatalf("bench: the registry refused the route: %v", err)
+			}
+			if cc, ok := client.(*api.Client); !ok || cc.OAuthToken != "sk-ant-oat-run" {
+				t.Fatalf("bench: the registry's client is %T, not one on the run's forfait", client)
+			}
+			if row.stamped {
+				if channel, ok := model.ClawSandboxCredential(ctx, spec, delegate.SandboxHomeState{}); !ok || !strings.Contains(channel, "CLAUDE_CONFIG_DIR") {
+					t.Fatalf("bench: the crossing's channel = %q ok=%v, want the run's forfait", channel, ok)
+				}
+			}
+			// The message preflightFor hands the pre-flight, so both read one scope.
+			keys := usageCapCredKeys(ctx, &queue.RunMessage{RunID: "run-routes"})
+			want := keys.keyForSlot(string(secrets.OAuthKindClaudeCode))
+			zaiKey := keys.keyForSlot(string(secrets.ProviderZAI))
+			if want == zaiKey {
+				t.Fatalf("inert bench: the forfait and the z.ai key share the meter %q", want)
+			}
+
+			for _, sandboxed := range []bool{false, true} {
+				keys.sandboxed = sandboxed
+				if key, metered := keys.routeKey(ctx, route); !metered || key != want {
+					t.Errorf("the claw route (sandboxed=%v) = %q metered=%v, want the forfait's meter %q — the z.ai key funds no claude id", sandboxed, key, metered, want)
+				}
+			}
+			if got := routeSlot(creds, routeKey{backend: delegate.BackendClaw, model: spec}); got != string(secrets.OAuthKindClaudeCode) {
+				t.Errorf("the ledger books the claw route on %q, want the forfait the call spends", got)
+			}
+
+			forfaitWall := usagecap.NewMemStore()
+			weekCapped(t, forfaitWall, want, resets)
+			if err := preflightFor(t, forfaitWall, ctx, clawRun); err == nil {
+				t.Error("the claw run started on the capped forfait it spends")
+			}
+			zaiWall := usagecap.NewMemStore()
+			weekCapped(t, zaiWall, zaiKey, resets)
+			if err := preflightFor(t, zaiWall, ctx, clawRun); err != nil {
+				t.Errorf("parked the claw run on the z.ai key's wall: %v — the route never spends it", err)
+			}
+		})
 	}
 }
