@@ -410,10 +410,13 @@ finding, not a formality.
        each one again on the restored side with the same admin action.
      - A purge takes the org's audit rows with it (`audit_events` rows
        whose `tenant_id` is the org), so an org scheduled AND purged after
-       the backup has no row left: diff the org ids of the dump against
-       the live `GET /api/admin/orgs` — an org of the dump that no longer
-       exists live was erased after the backup; schedule its deletion
-       again.
+       the backup has no row left: diff the org ids of the dump against a
+       complete enumeration of the live Mongo `orgs` collection — not
+       `GET /api/admin/orgs`, which answers at most 500 organisations. An
+       org of the dump missing live was erased after the backup: confirm
+       each missing id against the live database before scheduling its
+       deletion again; a failed or incomplete read is not evidence of an
+       erasure.
      - A replayed deletion blocks the org at once but purges it only once
        its grace has elapsed, 24 h or more after the replay: the end of the
        RTO is not the end of the erasure.
@@ -445,7 +448,14 @@ finding, not a formality.
 7. **Resume a paused run**, still under the egress of step 1 (the most
    stringent path: it exercises Mongo, blob, and the checkpoint together).
    Bring one runner up and resume a run chosen to have no external effect —
-   a drill tenant's, or one whose credentials step 6 has cut. Scheduled
+   a drill tenant's, or one whose credentials step 6 has cut. A run on the
+   Kubernetes sandbox also needs the cluster's own API server — the runner
+   deletes and creates its sandbox pod through it — and the sandbox pod's
+   connection back to the runner (the proxy the runner advertises on its
+   pod IP, `ITERION_POD_IP`): add the API server's in-cluster address
+   (the `kubernetes` service's endpoint, as an `ipBlock`) to
+   `networkPolicy.egress.extraAllow` for the drill, nothing outside the
+   cluster. Scheduled
    runs queued since step 5 reach that runner too: the egress of step 1 is
    what keeps them from acting outside.
 8. **Tear down** the restore namespace. Add the row to the
