@@ -57,7 +57,10 @@ type metricsEmitter struct {
 	modelByNode    map[string]string
 	declaredByNode map[string]string
 	stepsSeen      map[string]bool
-	priceByModel   map[string]modelRate
+	// outerSteps holds a node's stepsSeen while one of its schema re-asks
+	// runs (EventDelegateStarted with "reask").
+	outerSteps   map[string]bool
+	priceByModel map[string]modelRate
 
 	// declinedRoutes remembers the routes recordCredentialSpend could name
 	// no credential for, so that decline is warned once per route.
@@ -504,7 +507,18 @@ func (m *metricsEmitter) observe(evt store.Event) {
 		declared, _ := evt.Data["declared_model"].(string)
 		m.mu.Lock()
 		// A new attempt of the node: whether its steps are observed is
-		// decided afresh.
+		// decided afresh. A schema re-ask is a turn INSIDE the attempt —
+		// in a fallback chain it runs before the attempt's own delegate
+		// event — so the attempt's verdict is set aside and restored once
+		// the re-ask's delegate event is booked (observeDelegate).
+		if reask, _ := evt.Data["reask"].(string); reask != "" {
+			if m.outerSteps == nil {
+				m.outerSteps = map[string]bool{}
+			}
+			m.outerSteps[evt.NodeID] = m.stepsSeen[evt.NodeID]
+		} else {
+			delete(m.outerSteps, evt.NodeID)
+		}
 		delete(m.stepsSeen, evt.NodeID)
 		if declared != "" {
 			m.declaredByNode[evt.NodeID] = declared
@@ -696,6 +710,18 @@ func (m *metricsEmitter) observeDelegate(evt store.Event) {
 	for _, s := range slices {
 		if b, ok := m.bookDelegateSliceLocked(evt.NodeID, s); ok {
 			booked = append(booked, b)
+		}
+	}
+	// The re-ask's delegate event is booked: the enclosing attempt's
+	// steps verdict comes back for that attempt's own delegate event.
+	if reask, _ := evt.Data["reask"].(string); reask != "" {
+		if outer, ok := m.outerSteps[evt.NodeID]; ok {
+			if outer {
+				m.stepsSeen[evt.NodeID] = true
+			} else {
+				delete(m.stepsSeen, evt.NodeID)
+			}
+			delete(m.outerSteps, evt.NodeID)
 		}
 	}
 	m.mu.Unlock()
