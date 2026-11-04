@@ -6673,44 +6673,6 @@ export interface components {
             created_at: string;
             id: string;
         };
-        Connection: {
-            /** Format: date-time */
-            access_token_expires_at?: string;
-            account_id?: string;
-            account_kind?: string;
-            account_login?: string;
-            app_slug?: string;
-            /** Format: date-time */
-            avatar_applied_at?: string;
-            avatar_error?: string;
-            bot_identity?: string;
-            /** Format: date-time */
-            created_at: string;
-            created_by: string;
-            display_name?: string;
-            forge_base_url?: string;
-            granted_permissions?: {
-                [key: string]: string;
-            };
-            id: string;
-            installation_account?: string;
-            installation_id?: number;
-            kind: string;
-            /** Format: date-time */
-            last_refreshed_at?: string;
-            namespace?: string;
-            oauth_app_id?: string;
-            provider: string;
-            purpose?: string;
-            scopes?: string[];
-            security_read_enabled?: boolean;
-            status: string;
-            status_reason?: string;
-            tenant_id: string;
-            /** Format: date-time */
-            updated_at: string;
-            webhook_base_url?: string;
-        };
         ContextRef: {
             id: string;
             kind: string;
@@ -6934,6 +6896,44 @@ export interface components {
             node_id: string;
             served_by?: string;
             skipped?: boolean;
+        };
+        ForgeConnection: {
+            /** Format: date-time */
+            access_token_expires_at?: string;
+            account_id?: string;
+            account_kind?: string;
+            account_login?: string;
+            app_slug?: string;
+            /** Format: date-time */
+            avatar_applied_at?: string;
+            avatar_error?: string;
+            bot_identity?: string;
+            /** Format: date-time */
+            created_at: string;
+            created_by: string;
+            display_name?: string;
+            forge_base_url?: string;
+            granted_permissions?: {
+                [key: string]: string;
+            };
+            id: string;
+            installation_account?: string;
+            installation_id?: number;
+            kind: string;
+            /** Format: date-time */
+            last_refreshed_at?: string;
+            namespace?: string;
+            oauth_app_id?: string;
+            provider: string;
+            purpose?: string;
+            scopes?: string[];
+            security_read_enabled?: boolean;
+            status: string;
+            status_reason?: string;
+            tenant_id: string;
+            /** Format: date-time */
+            updated_at: string;
+            webhook_base_url?: string;
         };
         ForgeOAuthApp: {
             app_manage_url?: string;
@@ -7991,7 +7991,7 @@ export interface components {
         };
         forgeAvatarResp: {
             avatar_url?: string;
-            connection?: components["schemas"]["Connection"];
+            connection?: components["schemas"]["ForgeConnection"];
         };
         forgeConnectReq: {
             bot_identity?: string;
@@ -8005,7 +8005,7 @@ export interface components {
         };
         forgeConnectResp: {
             authorize_url?: string;
-            connection?: components["schemas"]["Connection"];
+            connection?: components["schemas"]["ForgeConnection"];
             install_url?: string;
         };
         forgeConnectionHealth: {
@@ -15657,7 +15657,7 @@ export interface operations {
                 };
                 content: {
                     "application/json": {
-                        connections: components["schemas"]["Connection"][];
+                        connections: components["schemas"]["ForgeConnection"][];
                     };
                 };
             };

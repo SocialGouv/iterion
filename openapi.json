@@ -875,119 +875,6 @@
         ],
         "type": "object"
       },
-      "Connection": {
-        "properties": {
-          "access_token_expires_at": {
-            "format": "date-time",
-            "type": "string"
-          },
-          "account_id": {
-            "type": "string"
-          },
-          "account_kind": {
-            "type": "string"
-          },
-          "account_login": {
-            "type": "string"
-          },
-          "app_slug": {
-            "type": "string"
-          },
-          "avatar_applied_at": {
-            "format": "date-time",
-            "type": "string"
-          },
-          "avatar_error": {
-            "type": "string"
-          },
-          "bot_identity": {
-            "type": "string"
-          },
-          "created_at": {
-            "format": "date-time",
-            "type": "string"
-          },
-          "created_by": {
-            "type": "string"
-          },
-          "display_name": {
-            "type": "string"
-          },
-          "forge_base_url": {
-            "type": "string"
-          },
-          "granted_permissions": {
-            "additionalProperties": {
-              "type": "string"
-            },
-            "type": "object"
-          },
-          "id": {
-            "type": "string"
-          },
-          "installation_account": {
-            "type": "string"
-          },
-          "installation_id": {
-            "type": "integer"
-          },
-          "kind": {
-            "type": "string"
-          },
-          "last_refreshed_at": {
-            "format": "date-time",
-            "type": "string"
-          },
-          "namespace": {
-            "type": "string"
-          },
-          "oauth_app_id": {
-            "type": "string"
-          },
-          "provider": {
-            "type": "string"
-          },
-          "purpose": {
-            "type": "string"
-          },
-          "scopes": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
-          "security_read_enabled": {
-            "type": "boolean"
-          },
-          "status": {
-            "type": "string"
-          },
-          "status_reason": {
-            "type": "string"
-          },
-          "tenant_id": {
-            "type": "string"
-          },
-          "updated_at": {
-            "format": "date-time",
-            "type": "string"
-          },
-          "webhook_base_url": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "id",
-          "tenant_id",
-          "provider",
-          "kind",
-          "status",
-          "created_by",
-          "created_at",
-          "updated_at"
-        ],
-        "type": "object"
-      },
       "ContextRef": {
         "properties": {
           "id": {
@@ -1779,6 +1666,119 @@
         },
         "required": [
           "node_id"
+        ],
+        "type": "object"
+      },
+      "ForgeConnection": {
+        "properties": {
+          "access_token_expires_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "account_id": {
+            "type": "string"
+          },
+          "account_kind": {
+            "type": "string"
+          },
+          "account_login": {
+            "type": "string"
+          },
+          "app_slug": {
+            "type": "string"
+          },
+          "avatar_applied_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "avatar_error": {
+            "type": "string"
+          },
+          "bot_identity": {
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "created_by": {
+            "type": "string"
+          },
+          "display_name": {
+            "type": "string"
+          },
+          "forge_base_url": {
+            "type": "string"
+          },
+          "granted_permissions": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "id": {
+            "type": "string"
+          },
+          "installation_account": {
+            "type": "string"
+          },
+          "installation_id": {
+            "type": "integer"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "last_refreshed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "namespace": {
+            "type": "string"
+          },
+          "oauth_app_id": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "purpose": {
+            "type": "string"
+          },
+          "scopes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "security_read_enabled": {
+            "type": "boolean"
+          },
+          "status": {
+            "type": "string"
+          },
+          "status_reason": {
+            "type": "string"
+          },
+          "tenant_id": {
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "webhook_base_url": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "tenant_id",
+          "provider",
+          "kind",
+          "status",
+          "created_by",
+          "created_at",
+          "updated_at"
         ],
         "type": "object"
       },
@@ -5267,7 +5267,7 @@
             "type": "string"
           },
           "connection": {
-            "$ref": "#/components/schemas/Connection"
+            "$ref": "#/components/schemas/ForgeConnection"
           }
         },
         "type": "object"
@@ -5311,7 +5311,7 @@
             "type": "string"
           },
           "connection": {
-            "$ref": "#/components/schemas/Connection"
+            "$ref": "#/components/schemas/ForgeConnection"
           },
           "install_url": {
             "type": "string"
@@ -14227,7 +14227,7 @@
                   "properties": {
                     "connections": {
                       "items": {
-                        "$ref": "#/components/schemas/Connection"
+                        "$ref": "#/components/schemas/ForgeConnection"
                       },
                       "type": "array"
                     }
