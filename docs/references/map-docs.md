@@ -378,7 +378,7 @@ One row per page under `docs/`, ADRs included. An ADR's **status** is the column
 | [`docs/models.md`](../models.md) | 🧠 The model registry, and choosing which model runs | Two questions this answers, both of which used to have no answer at all: | — |
 | [`docs/native-tracker.md`](../native-tracker.md) | Native kanban tracker | Iterion ships with a first-class issue tracker — no Linear, no GitHub | — |
 | [`docs/notifications.md`](../notifications.md) | User notifications (web push) | Iterion cloud can notify a user **through the browser** when one of their | — |
-| [`docs/oauth-forfait.md`](../oauth-forfait.md) | OAuth forfait (Claude subscription) for cloud runs | Iterion can drive bot runs on a **Claude subscription** (the OAuth | — |
+| [`docs/oauth-forfait.md`](../oauth-forfait.md) | OAuth forfait (consumer subscription) for cloud runs | Iterion can drive bot runs on a **consumer subscription** — a Claude | — |
 | [`docs/observability.md`](../observability.md) | Observability — logs, error tracking and tracing | iterion's observability layers answer different questions: | — |
 | [`docs/observability/README.md`](../observability/README.md) | Iterion observability stack | A self-contained docker-compose stack that gives you Grafana dashboards | — |
 | [`docs/outbound-callbacks.md`](../outbound-callbacks.md) | Outbound run-completion callbacks | A **run-completion callback** lets an external integration trigger an | — |

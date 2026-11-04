@@ -76,11 +76,14 @@ secrets:
   storage:
     create: false
     existingSecret: iterion-storage
-  # Claude Code OAuth forfait token — secret managed by hand in k8s
-  # (kubectl), mounted optional on the runner so claude_code runs on the
-  # subscription. Absent secret = no-op (optional: true).
+  # Production runs on API keys (iterion-llm or the platform tier in the
+  # DB); a Claude Code OAuth forfait is an individual consumer licence, for
+  # development and testing only (docs/oauth-forfait.md). Flip to true per
+  # environment to mount a hand-managed iterion-forfait Secret (optional:
+  # true) on the runner. The iterion-llm Secret is mounted regardless, so
+  # keep CLAUDE_CODE_OAUTH_TOKEN out of it too.
   forfait:
-    enabled: true
+    enabled: false
     existingSecret: iterion-forfait
 
 # The nats sub-chart and the dev stores (devStack.*) stay off — bring your

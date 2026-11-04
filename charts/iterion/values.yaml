@@ -514,10 +514,12 @@ config:
         clientId: ""
         displayName: "SSO"
         scopes: "openid,email,profile"
-    # OAuth-forfait (Phase D) — public client ids the server uses
-    # to refresh user-supplied Claude Code / Codex subscription
-    # tokens. Empty disables refresh of that kind (the user must
-    # re-paste credentials.json on expiry).
+    # OAuth-forfait (Phase D) — public client ids the server uses to run
+    # the browser connect flow (Anthropic) and to refresh user-supplied
+    # Claude Code / Codex subscription tokens. Both are optional
+    # overrides: an empty Anthropic id defaults to the public Claude Code
+    # client, an empty Codex id defaults to the id carried by the uploaded
+    # auth.json. Neither disables forfaits (docs/oauth-forfait.md).
     oauthForfait:
       anthropicClientId: ""
       codexClientId: ""
@@ -567,7 +569,10 @@ secrets:
   # execute on the subscription instead of a metered API key. When enabled it
   # is mounted as an OPTIONAL envFrom on the runner (optional: true — a missing
   # secret never blocks startup). Enable per-environment; the secret's contents
-  # are set by hand (kubectl), not by values.
+  # are set by hand (kubectl), not by values. A forfait is an individual
+  # consumer licence, for development and testing: production automation runs
+  # on API keys (docs/oauth-forfait.md). This flag is one channel among
+  # several — docs/cloud-admin.md §7 lists the others.
   forfait:
     enabled: false
     existingSecret: ""

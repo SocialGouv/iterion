@@ -382,11 +382,16 @@ type Config struct {
 	// `claude login` or pasting a credentials.json file.
 	OAuthPending secrets.OAuthPendingStore
 
-	// AnthropicOAuthClientID is the OAuth client id used to refresh
-	// Claude Code subscription tokens. Empty disables refresh of
-	// the claude_code kind (the user must re-upload on expiry).
+	// AnthropicOAuthClientID is the OAuth client id used to run the
+	// browser connect flow and to refresh Claude Code subscription
+	// tokens. Empty refuses the connect route and skips the refresh of
+	// the claude_code kind; the config layer defaults it to the public
+	// Claude Code client, so it is empty only by explicit override.
 	AnthropicOAuthClientID string
-	// CodexOAuthClientID is the equivalent for Codex.
+	// CodexOAuthClientID is the operator override for Codex refreshes;
+	// empty, the refresh derives the id from the uploaded credential.
+	// The periodic sweep starts when either id is set, so with both
+	// empty no kind is swept (oauthRefreshWorker).
 	CodexOAuthClientID string
 
 	// Store overrides the default filesystem store with a caller-
