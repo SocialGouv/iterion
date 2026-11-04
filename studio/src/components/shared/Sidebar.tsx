@@ -12,6 +12,7 @@ import { SIDEBAR_W_COLLAPSED, SIDEBAR_W_EXPANDED } from "./sidebarWidth";
 import { BrandMark } from "@/components/ui/BrandMark";
 import { BrandWordmark } from "@/components/ui/BrandWordmark";
 import { useUIStore } from "@/store/ui";
+import { LegalSidebarLinks } from "@/views/Legal/LegalSidebarLinks";
 
 function openSettings() {
   window.dispatchEvent(new CustomEvent("iterion:open-settings"));
@@ -116,6 +117,9 @@ export default function Sidebar() {
           <MixerHorizontalIcon className="w-4 h-4 shrink-0" />
           {!collapsed && <span>Sitemap</span>}
         </a>
+        {/* The operator's legal pages, reachable from every signed-in page
+            (RGAA 12; ADR-160) — nothing when none is configured. */}
+        <LegalSidebarLinks collapsed={collapsed} />
         {collapsed ? (
           <button
             type="button"

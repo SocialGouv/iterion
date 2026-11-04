@@ -8,10 +8,12 @@ package config
 
 import (
 	"fmt"
+	"net/mail"
 	"net/url"
 	"strings"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/legal"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 )
 
@@ -60,6 +62,46 @@ type Config struct {
 	Auth    AuthConfig    `yaml:"auth"`
 	Alerts  AlertsConfig  `yaml:"alerts"`
 	WebPush WebPushConfig `yaml:"webpush"`
+	Legal   LegalConfig   `yaml:"legal"`
+}
+
+// LegalConfig is the operator's legal surface — the published legal notice,
+// privacy policy, terms of use and accessibility statement, the contact
+// address and the accessibility status. It is deployment configuration like
+// Auth.PublicURL and the SMTP sender (ADR-160): the same bundle serves every
+// deployment, so an operator's identity never lives in the code, and a legal
+// text changes through a reviewed commit, so it never lives in the database.
+// Everything is optional; a document that is not configured has no page and
+// no link.
+type LegalConfig struct {
+	// DocumentsDir holds the documents as markdown files named by slug:
+	// mentions-legales.md, confidentialite.md, cgu.md, accessibilite.md
+	// (pkg/legal.Slugs). The chart mounts a ConfigMap there. Read once at
+	// startup: a change reaches the server only through a rollout (the
+	// chart's checksum/legal annotation does it for the documents it
+	// renders; an existingConfigMap needs its own).
+	DocumentsDir string `yaml:"documents_dir"`
+	// ContactEmail is the address the pages offer for legal, privacy and
+	// accessibility feedback (a mailto: link).
+	ContactEmail string `yaml:"contact_email"`
+	// AccessibilityStatus is the published conformance status:
+	// non_compliant | partially_compliant | compliant. Empty = not published.
+	AccessibilityStatus string `yaml:"accessibility_status"`
+	// AccessibilityDate is the date the statement was established
+	// (YYYY-MM-DD); optional.
+	AccessibilityDate string `yaml:"accessibility_date"`
+	// AccessibilityRate is the conformance rate in percent a full audit
+	// produced; optional, and meaningless without a status.
+	AccessibilityRate string `yaml:"accessibility_rate"`
+}
+
+// Accessibility is the declaration in pkg/legal's terms.
+func (l LegalConfig) Accessibility() legal.Accessibility {
+	return legal.Accessibility{
+		Status: legal.Status(strings.ToLower(strings.TrimSpace(l.AccessibilityStatus))),
+		Date:   strings.TrimSpace(l.AccessibilityDate),
+		Rate:   strings.TrimSpace(l.AccessibilityRate),
+	}
 }
 
 // WebPushConfig holds the VAPID identity for browser push notifications
@@ -708,6 +750,24 @@ func (c *Config) Validate() error {
 		// half of the operator's value.
 		if (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" || u.User != nil {
 			return fmt.Errorf("ITERION_PUBLIC_URL %q carries a path, query, fragment or userinfo, which ITERION_CANONICAL_REDIRECT cannot honour: the redirect targets the origin alone, so navigations would land on the right host at the wrong path. Use the bare origin, or turn the redirect off", c.Auth.PublicURL)
+		}
+	}
+
+	// The legal surface is honoured in every mode, so its validation lives
+	// outside the cloud block too.
+	if err := c.Legal.Accessibility().Validate(); err != nil {
+		return fmt.Errorf("ITERION_LEGAL_ACCESSIBILITY_*: %w", err)
+	}
+	if email := strings.TrimSpace(c.Legal.ContactEmail); email != "" {
+		// A bare address only: the value is published verbatim as a mailto:
+		// link, so "Iterion <contact@…>" (a display-name form ParseAddress
+		// accepts) would print its angle brackets in the link.
+		addr, err := mail.ParseAddress(email)
+		if err != nil {
+			return fmt.Errorf("ITERION_LEGAL_CONTACT_EMAIL %q invalid (want a bare email address, e.g. contact@example.org): %w", email, err)
+		}
+		if addr.Address != email {
+			return fmt.Errorf("ITERION_LEGAL_CONTACT_EMAIL %q invalid (want a bare email address, e.g. %s, without a display name)", email, addr.Address)
 		}
 	}
 

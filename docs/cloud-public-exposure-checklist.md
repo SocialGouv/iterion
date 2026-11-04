@@ -90,7 +90,9 @@ How to verify: `kubectl get scaledobject -n <ns> -o yaml | grep consumer` shows 
 ## 10. Documentation + runbooks
 
 - [ ] **On-call runbook** linked from your alert manager. Minimum contents: how to scale the runner pool manually, how to release a stale lock, how to rotate the JWT signing key, how to disable a misbehaving tenant.
-- [ ] **Privacy / data residency** policy documented. What data does iterion store about a run? Where? For how long? How can a tenant request deletion?
+- [ ] **Privacy / data residency** policy documented. What data does iterion store about a run? Where? For how long? How can a tenant request deletion? Published as the privacy policy below.
+- [ ] **Legal pages published** (`config.legal.*`, [cloud-admin.md](cloud-admin.md#legal-pages-configlegal)): legal notice (publisher, publication director, hosting provider), privacy policy (controller, purposes, legal bases, recipients and processors incl. AI providers and transfers outside the EU, retention, rights, DPO, no trackers), terms of use, and a `mailto:` contact (`ITERION_LEGAL_CONTACT_EMAIL`) that a named person reads. Texts reviewed by the privacy / legal reviewer below — templates in [docs/legal-templates/](legal-templates/README.md).
+- [ ] **Accessibility statement published** (`accessibilite` document + `ITERION_LEGAL_ACCESSIBILITY_STATUS`): `non_compliant` until a full RGAA audit of the studio exists, then `partially_compliant` with the rate and the date; feedback contact and recourse (Défenseur des droits) in the text.
 - [ ] **Incident response** plan with named owner, paging escalation, and post-mortem template.
 - [ ] **Public status page** (or equivalent) committed to. If `/readyz` 503s, downstream users need a way to know without paging the on-call manually.
 

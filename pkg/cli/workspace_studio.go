@@ -177,6 +177,7 @@ func newWorkspaceProjectServer(opts StudioOptions, project projects.Project, log
 		ExamplesDir:             examplesDir,
 		WorkDir:                 project.Dir,
 		StoreDir:                project.StoreDir,
+		Legal:                   opts.Legal,
 		RunEnv:                  runEnv,
 		Mode:                    opts.Mode,
 		DisableAuth:             true,

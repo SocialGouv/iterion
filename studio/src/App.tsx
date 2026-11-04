@@ -58,12 +58,14 @@ const ForgotPassword = lazy(() => import("@/views/auth/ForgotPassword"));
 const ResetPassword = lazy(() => import("@/views/auth/ResetPassword"));
 const AcceptInvitation = lazy(() => import("@/views/auth/AcceptInvitation"));
 const Login = lazy(() => import("@/views/Login"));
+const LegalPage = lazy(() => import("@/views/Legal"));
 
 import { AssistantProvider } from "@/components/ChatDock/AssistantProvider";
 import ChatDock, {
   AssistantDockCrashed,
 } from "@/components/ChatDock/ChatDock";
 import { ErrorBoundary } from "@/components/shared/ErrorBoundary";
+import { LegalLinks } from "@/views/Legal/LegalLinks";
 import FeatureUnavailable from "@/components/shared/FeatureUnavailable";
 import GlobalCommandPalette from "@/components/shared/GlobalCommandPalette";
 import ToastContainer from "@/components/shared/Toast";
@@ -142,9 +144,11 @@ function StudioSignIn() {
 // operator, because their addresses are already fixed somewhere this app does
 // not control: printed in mail (/auth/reset, /invitations/accept), minted by
 // the CLI (/cli-auth), handed out as a share link whose token rides in the
-// fragment (/config/<id>), or linked to from the product home (/login).
-// Moving any of them under the studio base breaks a link nobody can reissue.
-const ROOT_SIDE_DOORS = ["/login", "/auth", "/invitations", "/cli-auth", "/config"];
+// fragment (/config/<id>), linked to from the product home (/login), or
+// owed to every visitor at one public address (/legal/<slug>, the operator's
+// legal pages — ADR-160). Moving any of them under the studio base breaks a
+// link nobody can reissue.
+const ROOT_SIDE_DOORS = ["/login", "/auth", "/invitations", "/cli-auth", "/config", "/legal"];
 
 function isRootSideDoor(location: string): boolean {
   return ROOT_SIDE_DOORS.some((p) => location === p || location.startsWith(p + "/"));
@@ -204,12 +208,41 @@ function ConfigShareDoor() {
 // own slim top bar.
 function PublicMarketplace() {
   return (
-    <div className="min-h-screen bg-surface-0 text-fg-default">
+    <div className="min-h-screen flex flex-col bg-surface-0 text-fg-default">
       <PublicTopBar />
       <ErrorBoundary area="Marketplace view">
         <MarketplaceView />
       </ErrorBoundary>
+      {/* The public catalogue is a page a visitor with no account reads, so
+          it carries the legal links the product home carries. */}
+      <footer className="mt-auto border-t border-border-subtle px-4 py-4">
+        <LegalLinks />
+      </footer>
     </div>
+  );
+}
+
+// LegalDoor is the operator's legal page at its one address, whatever the
+// session: public, shell-less, and reachable while the identity is unknown.
+// The fall-through renders the page with no slug — its own "Document non
+// disponible" answer with a way out — because a bare <Route> that misses
+// renders nothing: /legal/ and /legal/a/b would be a blank page.
+function LegalDoor({ signedIn = false }: { signedIn?: boolean }) {
+  return (
+    <Suspense fallback={<BootLoading />}>
+      <Switch>
+        <Route path="/legal/:slug">
+          <ErrorBoundary area="Legal page">
+            <LegalPage signedIn={signedIn} />
+          </ErrorBoundary>
+        </Route>
+        <Route>
+          <ErrorBoundary area="Legal page">
+            <LegalPage signedIn={signedIn} />
+          </ErrorBoundary>
+        </Route>
+      </Switch>
+    </Suspense>
   );
 }
 
@@ -225,6 +258,9 @@ function identityIndependentDoor(location: string, serverInfo: ServerInfo | null
   }
   if (location.startsWith("/config/")) {
     return <ConfigShareDoor />;
+  }
+  if (location.startsWith("/legal/")) {
+    return <LegalDoor />;
   }
   if (serverInfo?.marketplace_enabled && (location === "/marketplace" || location === `${STUDIO_BASE}/marketplace`)) {
     return <PublicMarketplace />;
@@ -336,6 +372,13 @@ function AuthGate() {
               <PublicMarketplace />
             </Route>
           )}
+          {/* The operator's legal pages (ADR-160): public, owed to a visitor
+              with no session — the sign-in card itself links them. */}
+          <Route path="/legal/:slug">
+            <ErrorBoundary area="Legal page">
+              <LegalPage />
+            </ErrorBoundary>
+          </Route>
           {/* The SAME public catalogue at the address a signed-in operator's
               address bar shows — they are carried to /studio/marketplace, and
               that is the URL they copy to a colleague. It must sit ABOVE the
@@ -365,6 +408,11 @@ function AuthGate() {
   // An existing session may reach a saved /login?next= link too.
   if (location === "/login") {
     return <Suspense fallback={<BootLoading />}><Login /></Suspense>;
+  }
+  // A signed-in operator reads the legal pages at the same root address an
+  // anonymous visitor does — shell-less, never carried under /studio.
+  if (location.startsWith("/legal/")) {
+    return <LegalDoor signedIn />;
   }
   // Authenticated paths that don't belong in the AppShell go here (the
   // invitation accept needs the AuthContext but not the full shell). Kept

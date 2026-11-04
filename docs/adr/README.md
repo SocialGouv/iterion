@@ -4,6 +4,7 @@
 - [138 — Forge provisioning identities](138-forge-provisioning-immutable-identities.md): immutable webhook epochs, optimistic activation, write redirects and the hybrid reconciler boundary.
 - [156 — Bearer token hashing doctrine](156-bearer-token-hashing-doctrine.md): a stored bearer token is its unsalted SHA-256 digest (CSPRNG ≥ 128 bits); HMAC under a derived key is for derivations, never for a human-chosen input.
 - [155 — Reserved capacity is a durable allocation](155-reserved-capacity-is-a-durable-allocation.md): one ledger behind the window, dollar, slot and pool axes, an acquire that is a single compensated write, a settle, a sweep that carries correctness — and reservable execution capacity.
+- [160 — Legal content is deployment configuration](160-legal-content-is-deployment-configuration.md): the legal notice, privacy policy, terms and accessibility statement ride the chart's `config.legal.*`, never the bundle nor the database.
 
 One decision per file, named `NNN-kebab-title.md`, where `NNN` is the next
 free number. The number is the record's **identifier**: it is cited from code

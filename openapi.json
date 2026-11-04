@@ -1,6 +1,20 @@
 {
   "components": {
     "schemas": {
+      "Accessibility": {
+        "properties": {
+          "date": {
+            "type": "string"
+          },
+          "rate": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
       "AdmissionDecision": {
         "properties": {
           "checked_at": {
@@ -5548,6 +5562,32 @@
         ],
         "type": "object"
       },
+      "legalDocumentView": {
+        "properties": {
+          "accessibility": {
+            "$ref": "#/components/schemas/Accessibility"
+          },
+          "contact_email": {
+            "type": "string"
+          },
+          "markdown": {
+            "type": "string"
+          },
+          "slug": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "slug",
+          "title",
+          "markdown",
+          "accessibility"
+        ],
+        "type": "object"
+      },
       "loginReq": {
         "properties": {
           "email": {
@@ -9050,6 +9090,44 @@
           "forge"
         ]
       }
+    },
+    "/api/legal/{slug}": {
+      "get": {
+        "description": "Public. One of the operator's legal documents (mentions-legales, confidentialite, cgu, accessibilite) as markdown, with the contact address and the accessibility declaration. 404 for a slug that names no document or one this deployment did not configure; /api/server/info lists the configured ones.",
+        "operationId": "getLegalBySlug",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/legalDocumentView"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "404": {
+            "description": "no such legal document, or not published on this deployment"
+          },
+          "429": {
+            "description": "Rate limit exceeded; Retry-After says when"
+          }
+        },
+        "summary": "GET /api/legal/{slug}",
+        "tags": [
+          "legal"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "slug",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
     },
     "/api/local/skills": {
       "get": {

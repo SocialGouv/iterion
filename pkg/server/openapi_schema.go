@@ -170,6 +170,13 @@ func routeSchemas() map[string]routeOp {
 		"GET /api/orgs/{id}":  {response: orgView{}},
 		"GET /api/teams/{id}": {response: teamSummaryView{}},
 
+		// The operator's legal pages (ADR-160) — public reads.
+		"GET /api/legal/{slug}": {
+			response:    legalDocumentView{},
+			description: "Public. One of the operator's legal documents (mentions-legales, confidentialite, cgu, accessibilite) as markdown, with the contact address and the accessibility declaration. 404 for a slug that names no document or one this deployment did not configure; /api/server/info lists the configured ones.",
+			errors:      map[int]string{404: "no such legal document, or not published on this deployment", 429: "Rate limit exceeded; Retry-After says when"},
+		},
+
 		// Platform LLM credentials (super-admin) — the DB-backed env fallback.
 		"GET /api/admin/llm/api-keys": {
 			response: struct {

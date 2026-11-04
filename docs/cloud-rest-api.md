@@ -953,7 +953,8 @@ audit row in [pkg/server/audit_helper.go](../pkg/server/audit_helper.go).
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
-| `GET` | `/api/server/info` | public | Mode, version, `auth_required`, `email_enabled`, per-feature enablement flags, upload limits |
+| `GET` | `/api/server/info` | public | Mode, version, `auth_required`, `email_enabled`, per-feature enablement flags, upload limits, the `legal` block (configured legal documents, contact, accessibility status — [ADR-160](adr/160-legal-content-is-deployment-configuration.md)) |
+| `GET` | `/api/legal/{slug}` | public, rate-limited per IP | One of the operator's legal documents (`mentions-legales`, `confidentialite`, `cgu`, `accessibilite`) as markdown with the contact and the accessibility declaration; `ETag` revalidation; 404 for a slug that names no document or one this deployment did not configure |
 | `GET` | `/healthz` | public | Liveness — HTTP listener up |
 | `GET` | `/readyz` | public | Readiness — every dependency the deployment wired (`Config.ReadinessChecks`), pinged concurrently under a per-check deadline (1s by default). A failing CRITICAL check is `503`; a non-critical one is reported `degraded` and still answers `200`. Draining or superseded is `503` without touching a dependency; no checks wired (local mode) is `200` |
 | `GET` | `/metrics` | public on the metrics port (ClusterIP-only by design) | Prometheus scrape |

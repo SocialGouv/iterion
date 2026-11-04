@@ -28,6 +28,7 @@ Nobody can reissue them, so they do not move:
 | `/cli-auth` | `iterion remote login` opens it |
 | `/config/<id>#<token>` | a config-share link; the token rides in the fragment |
 | `/marketplace` | public, browsable without an account. A visitor who already has a session is carried on to `/studio/marketplace` — the same catalogue, inside the studio shell. Both addresses answer; neither 404s |
+| `/legal/<slug>` | public, the operator's legal documents — `mentions-legales`, `confidentialite`, `cgu`, `accessibilite` — linked from the product home, the sign-in card and every studio page; served at the root to a visitor with or without a session, content from deployment configuration ([ADR-160](adr/160-legal-content-is-deployment-configuration.md)); a document the deployment did not configure is a 404 and no link |
 | `/api/…` | **every integration**: inbound forge webhooks, OAuth and OIDC callbacks, the REST API, the MCP server, the remote CLI |
 | `/brand/…`, `/healthz`, `/readyz` | public assets and probes |
 

@@ -482,6 +482,70 @@ surface down. ingress-nginx satisfies this by default (it preserves the client
 `nginx.ingress.kubernetes.io/upstream-vhost`, or an equivalent rewrite, does
 not. Verify on the deployment, not on the class of proxy.
 
+### Legal pages (`config.legal.*`)
+
+A public deployment owes its visitors a legal notice, a privacy policy,
+terms of use and an accessibility statement. Their content is
+**deployment configuration**, never part of the image or the database
+([ADR-160](adr/160-legal-content-is-deployment-configuration.md)): the same
+bundle serves every operator, so the publisher, the DPO and the hosting
+provider are yours to declare, through the same GitOps commit as
+`config.auth.publicUrl` or `config.smtp.from`.
+
+```yaml
+config:
+  legal:
+    contactEmail: contact@example.org          # mailto: on every page
+    accessibilityStatus: non_compliant         # non_compliant | partially_compliant | compliant
+    accessibilityDate: "2026-11-03"            # optional, YYYY-MM-DD
+    accessibilityRate: ""                      # percent from a full audit; must match the status
+    documents:                                 # markdown, keyed by slug
+      mentions-legales: |
+        # Éditeur
+        …
+      confidentialite: |
+        …
+      accessibilite: |
+        …
+      cgu: ""                                  # empty = not published, no link
+```
+
+The chart renders the non-empty documents into a `<release>-legal`
+ConfigMap mounted read-only at `/etc/iterion/legal` and sets
+`ITERION_LEGAL_DOCUMENTS_DIR`; a text change rolls the server pod
+(`checksum/legal`). `config.legal.existingConfigMap` mounts a ConfigMap you
+manage elsewhere instead (keys `<slug>.md`; setting inline `documents` beside
+it is refused at render). The chart cannot see that ConfigMap's content, so
+a change to it reaches the server only through a rollout you trigger — a
+checksum of your own in `server.podAnnotations`, or `kubectl rollout
+restart`; until then a pod that restarts serves the new text beside pods
+that serve the old. The server reads the directory once at startup and
+refuses to start on a file that names no document (`mentions_legales.md`)
+or an empty one, rather than publish half a surface; a cloud server that
+publishes no document at all starts with a WARN in its log.
+
+The contact is a bare address (`contact@example.org`, not
+`Iterion <contact@example.org>`): it is published as a `mailto:` link. The
+accessibility rate must match the status as the RGAA statement model reads
+it — `compliant` = 100, `partially_compliant` = 50 to under 100 (and then
+required), `non_compliant` = under 50 or no full audit; the server refuses
+a contradiction at startup.
+
+What the deployment serves: `GET /api/legal/{slug}` (public, rate-limited
+per IP in its own bucket)
+for `mentions-legales`, `confidentialite`, `cgu`, `accessibilite`; the
+studio page `/legal/<slug>` (`lang="fr"`, markdown rendered, raw HTML
+escaped); links to the **configured** documents only — product home footer
+with the « Accessibilité : <état> » mention, sign-in card, sidebar (or the
+foot of the `config_editor` and restricted shells), public catalogue, plan
+du site — and a `mailto:` contact. A document you did not
+configure is a 404 and no link, never an empty page.
+
+Templates to fill with your DPO (the fields of the official models, and
+the recourse to the Défenseur des droits for the accessibility statement):
+[docs/legal-templates/](legal-templates/README.md). Publish the statement
+as `non_compliant` until a full RGAA audit gives a rate.
+
 ## 5. SSO providers
 
 | Provider | Required values | Notes |

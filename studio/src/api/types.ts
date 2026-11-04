@@ -273,6 +273,43 @@ export interface UploadLimits {
   allowed_mime: string[];
 }
 
+// The three states of the French accessibility statement model (décret
+// 2019-768); the empty string means "not published".
+export type LegalAccessibilityStatus =
+  | "non_compliant"
+  | "partially_compliant"
+  | "compliant";
+
+export interface LegalAccessibility {
+  status?: LegalAccessibilityStatus | "";
+  // YYYY-MM-DD, the date the statement was established.
+  date?: string;
+  // Conformance rate in percent, as the operator wrote it ("42" or "42.5").
+  rate?: string;
+}
+
+// One configured legal document: its address segment under /legal/ and
+// its link text (French, set by the server).
+export interface LegalDocumentRef {
+  slug: string;
+  title: string;
+}
+
+// The `legal` block of /api/server/info.
+export interface LegalInfo {
+  contact_email?: string;
+  accessibility: LegalAccessibility;
+  documents: LegalDocumentRef[];
+}
+
+// GET /api/legal/{slug}: the document as markdown, with the metadata the
+// page renders beside it.
+export interface LegalDocument extends LegalDocumentRef {
+  markdown: string;
+  contact_email?: string;
+  accessibility: LegalAccessibility;
+}
+
 export interface ServerInfo {
   mode: string;
   version: string;
@@ -361,6 +398,11 @@ export interface ServerInfo {
   // the "Install GitHub App" mode when true — otherwise it dead-ends on a 400.
   // OAuth / PAT connect modes don't depend on it.
   forge_github_app_configured?: boolean;
+  // legal is the operator's published legal surface (ADR-160): the
+  // configured documents (slug + title — the SPA links those and only
+  // those), the contact address and the accessibility declaration. Absent
+  // on a server that predates the surface; treated as "nothing published".
+  legal?: LegalInfo;
   // session_board_enabled is true when the LLM Session-board curation layer
   // is on for this server (ITERION_SESSION_BOARD). The Tasks tab only
   // fetches the curated widget spec when true; otherwise it shows the

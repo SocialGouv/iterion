@@ -3,6 +3,7 @@ import {
   NAV_REGISTRY_CLOUD,
   NAV_REGISTRY_LOCAL,
 } from "@/components/shared/NavLinks";
+import { LegalSitemapGroup } from "@/views/Legal/LegalSidebarLinks";
 
 // The plan-du-site page (RGAA 12.1): a second navigation system generated
 // from the SAME link registry the sidebar renders — plus the admin console
@@ -53,6 +54,9 @@ export default function Sitemap() {
           ))}
         </section>
       ))}
+      {/* The legal pages are configured per deployment, so their group is
+          read from the server rather than the static registry. */}
+      <LegalSitemapGroup />
     </div>
   );
 }

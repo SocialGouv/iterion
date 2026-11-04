@@ -5,6 +5,7 @@ import { BrandWordmark } from "@/components/ui/BrandWordmark";
 import { BrandMark } from "@/components/ui/BrandMark";
 import { ThemeToggle } from "@/components/ui/ThemeToggle";
 import BootLoading from "@/components/shared/BootLoading";
+import { STUDIO_BASE } from "@/lib/scope";
 import { useServerInfoStore } from "@/store/serverInfo";
 import { SignInCard } from "./Login";
 
@@ -19,8 +20,10 @@ const CloudHome = lazy(() => import("./CloudHome"));
 // PublicTopBar is the slim header shown above the public Marketplace view
 // when an anonymous visitor browses it (that route lives outside the
 // authenticated AppShell). Brand links home (the landing); a theme toggle +
-// Sign-in button sit on the right.
-export function PublicTopBar() {
+// Sign-in button sit on the right — "Open studio" instead for a signed-in
+// operator reading a public page (the legal pages), who has nothing to sign
+// in to.
+export function PublicTopBar({ signedIn = false }: { signedIn?: boolean }) {
   const [, navigate] = useLocation();
   return (
     <div className="sticky top-0 z-10 flex items-center justify-between border-b border-border-subtle bg-surface-0/90 px-4 py-3 backdrop-blur sm:px-6">
@@ -35,8 +38,8 @@ export function PublicTopBar() {
       </button>
       <div className="flex items-center gap-2 sm:gap-3">
         <ThemeToggle />
-        <Button variant="primary" size="sm" onClick={() => navigate("/login")}>
-          Sign in
+        <Button variant="primary" size="sm" onClick={() => navigate(signedIn ? STUDIO_BASE : "/login")}>
+          {signedIn ? "Open studio" : "Sign in"}
         </Button>
       </div>
     </div>

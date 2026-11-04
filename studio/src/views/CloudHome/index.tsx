@@ -9,6 +9,7 @@ import StackCompatibility from "./StackCompatibility";
 import PlatformFeatures from "./PlatformFeatures";
 import MissionExamples from "./MissionExamples";
 import OnePrompt from "./OnePrompt";
+import { LegalLinkItems } from "@/views/Legal/LegalLinks";
 import "./cloud-home.css";
 
 const GITHUB = "https://github.com/SocialGouv/iterion";
@@ -108,7 +109,7 @@ export default function CloudHome({ marketplaceEnabled = false, signedIn = false
           <OpenSource />
         </div>
       </main>
-      <footer className="ch-footer ch-container"><div><Brand /><p>Complex work. Beautifully orchestrated.</p></div><nav aria-label="Footer navigation"><a href={DOCS} target="_blank" rel="noreferrer">Docs <ArrowUpRight size={12} /></a><a href={GITHUB} target="_blank" rel="noreferrer">GitHub <ArrowUpRight size={12} /></a>{marketplaceEnabled && <Link href="/marketplace">Marketplace <ArrowRight size={12} /></Link>}<span>Open source · MIT license</span></nav></footer>
+      <footer className="ch-footer ch-container"><div><Brand /><p>Complex work. Beautifully orchestrated.</p></div><nav aria-label="Footer navigation"><a href={DOCS} target="_blank" rel="noreferrer">Docs <ArrowUpRight size={12} /></a><a href={GITHUB} target="_blank" rel="noreferrer">GitHub <ArrowUpRight size={12} /></a>{marketplaceEnabled && <Link href="/marketplace">Marketplace <ArrowRight size={12} /></Link>}<LegalLinkItems className="" /><span>Open source · MIT license</span></nav></footer>
     </div>
   );
 }

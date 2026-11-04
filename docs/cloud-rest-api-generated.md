@@ -221,6 +221,12 @@ registered by `board_forge.go`, `local_secrets_routes.go`, `notifications_routes
 | `POST` | `/api/v1/forge/publish-review` | open | no |
 | `GET` | `/api/v1/forge/pull-request` | open | no |
 
+## `/api/legal` family
+
+| Method | Path | Auth | Spec |
+|---|---|---|---|
+| `GET` | `/api/legal/{slug}` | open | yes |
+
 ## `/api/limits` family
 
 | Method | Path | Auth | Spec |
