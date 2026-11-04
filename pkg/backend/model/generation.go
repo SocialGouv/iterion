@@ -594,6 +594,14 @@ func GenerateObjectDirect[T any](ctx context.Context, client api.APIClient, opts
 		}()
 	}
 
+	// claw repairs a received schema on its way to the wire; an output
+	// schema the node declared is refused here instead, before a repair
+	// could drop the shape the node promised.
+	if msg := explicitSchemaShapeError(opts.ExplicitSchema); msg != "" {
+		return nil, fmt.Errorf("parse ExplicitSchema: %w", &delegate.ErrSchemaUnusable{
+			Schema: schemaName, Detail: msg,
+		})
+	}
 	var inputSchema api.InputSchema
 	if err := json.Unmarshal(opts.ExplicitSchema, &inputSchema); err != nil {
 		// Typed AND worded: this call is made in-process by the executor
