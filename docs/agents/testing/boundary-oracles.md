@@ -83,3 +83,19 @@ historical timings were 3.42 s in [41233597165](https://github.com/SocialGouv/it
 and 24.14 s in [41236299236](https://github.com/SocialGouv/iterion/actions/runs/41236299236),
 with a local ratio around 1.9. These are separate observations, not proof that
 every timing-based test is stable or that the CI slowdown's cause is known.
+
+
+## React title publication
+
+[PR #3067's merge group](https://github.com/SocialGouv/iterion/actions/runs/41923523178/job/126901843479)
+rendered the configured legal heading while the tab still had its loading
+title. The heading commit does not establish that the passive effect publishing
+`document.title` has run. All three ready-title assertions in `Legal.test.tsx`
+now wait for that exact title with Testing Library's existing budget; restoring
+the previous title after unmount remains a synchronous assertion.
+
+A private deferred-publication fixture makes the old assertions fail and the
+new ones pass. It is a synthetic ordering test, not a reconstruction of React's
+CI schedule. Omitting publication, keeping the wrong title, omitting only the
+second document's title, or omitting cleanup each still fails the corresponding
+assertion. No production code, timeout or expected title changes.

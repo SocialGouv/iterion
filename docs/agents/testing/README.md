@@ -7,4 +7,4 @@
 | [engine-contracts.md](engine-contracts.md) | A bot delegates to an external CLI (ultra11y for rgaa-audit): pinning it, testing its contract on the real binary, bumping the pin, a `known_upstream_defect_…` subtest going red. |
 | [process-fixtures.md](process-fixtures.md) | Capturing stdout/stderr, selecting a sweep root, copying an authoring corpus, or isolating an installed binary: evidence and mutation witnesses. |
 | [background-oracles.md](background-oracles.md) | Proving an immediate background-session end independently of CLI startup, and distinguishing it from budget assertions. |
-| [boundary-oracles.md](boundary-oracles.md) | Proving Mongo backfill/watch, lease handover and parser lookup work without judging scheduler speed. |
+| [boundary-oracles.md](boundary-oracles.md) | Proving Mongo backfill/watch, lease handover, parser lookup work and React title publication without judging scheduler speed. |
