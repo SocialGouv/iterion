@@ -21,27 +21,6 @@ func AsTeamAliveRunsReader(s RunStore) TeamAliveRunsReader {
 	return capability[TeamAliveRunsReader](s)
 }
 
-// TeamCutoverInactiveStatuses returns the known states that cannot execute
-// until another admission. Unknown states never prove that a team is drained.
-func TeamCutoverInactiveStatuses() []RunStatus {
-	return []RunStatus{RunStatusPausedWaitingHuman, RunStatusPausedOperator,
-		RunStatusFailedResumable, RunStatusFailed, RunStatusFinished, RunStatusCancelled}
-}
-
-// TeamCutoverStatusAlive validates lifecycle metadata before a cutover read
-// treats it as evidence. Local runs may legitimately have no tenant.
-func TeamCutoverStatusAlive(status RunStatus) (bool, error) {
-	if status == RunStatusQueued || status == RunStatusRunning {
-		return true, nil
-	}
-	for _, inactive := range TeamCutoverInactiveStatuses() {
-		if status == inactive {
-			return false, nil
-		}
-	}
-	return false, fmt.Errorf("unknown run lifecycle status %q", status)
-}
-
 func (s *FilesystemRunStore) ListAliveRunsForTeam(ctx context.Context, teamID string) ([]string, error) {
 	if teamID == "" {
 		return nil, fmt.Errorf("store: alive team runs: empty team")
