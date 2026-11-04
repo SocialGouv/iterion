@@ -451,9 +451,16 @@ func (s *Store) SaveRun(ctx context.Context, r *store.Run) error {
 		bson.M{"$eq": bson.A{bson.M{"$ifNull": bson.A{"$queued_at", nil}}, r.QueuedAt}},
 		bson.M{"$eq": bson.A{bson.M{"$type": "$pre_engine_refusal"}, "object"}},
 	}}
+	// Preserve the Run's omitempty contract when no owned refusal supplies
+	// the message. Writing an empty string would resurrect a deliberately
+	// removed error field during a metadata save.
+	var docError any = "$$REMOVE"
+	if r.Error != "" {
+		docError = bson.M{"$literal": r.Error}
+	}
 	computed := bson.M{
 		"pre_engine_refusal": bson.M{"$cond": bson.A{keepRefusal, "$pre_engine_refusal", "$$REMOVE"}},
-		"error":              bson.M{"$cond": bson.A{keepRefusal, "$pre_engine_refusal.message", bson.M{"$literal": r.Error}}},
+		"error":              bson.M{"$cond": bson.A{keepRefusal, "$pre_engine_refusal.message", docError}},
 		"outcome_seq":        bson.M{"$cond": bson.A{statusChanged, bson.M{"$add": bson.A{seqBase, terminalInc}}, seqBase}},
 		"continuation_state": bson.M{"$cond": bson.A{statusChanged, "$$REMOVE", bson.M{"$ifNull": bson.A{"$continuation_state", "$$REMOVE"}}}},
 		"failure_code":       bson.M{"$cond": bson.A{statusChanged, docCode, bson.M{"$ifNull": bson.A{"$failure_code", "$$REMOVE"}}}},
