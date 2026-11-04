@@ -212,11 +212,12 @@ func (s *Server) updateDLQGauges(ctx context.Context) {
 	if !ok {
 		return
 	}
-	s.cfg.Metrics.DLQDepth.Set(float64(depth))
-	s.cfg.Metrics.DLQDepthByPool.Reset()
+	values := make(map[string]float64, len(byPool))
 	for pool, n := range byPool {
-		s.cfg.Metrics.DLQDepthByPool.WithLabelValues(pool).Set(float64(n))
+		values[pool] = float64(n)
 	}
+	s.cfg.Metrics.DLQDepth.Set(float64(depth))
+	s.cfg.Metrics.DLQDepthByPool.Replace(values)
 }
 
 // runQueueSweeper loops until ctx is cancelled. Started by
