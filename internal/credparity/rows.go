@@ -1,6 +1,8 @@
 package credparity
 
 import (
+	"slices"
+
 	"github.com/SocialGouv/iterion/pkg/secrets"
 )
 
@@ -57,7 +59,9 @@ func pending(reader Reader, unit string, today Spend, why string) Pending {
 	return Pending{Reader: reader, Unit: unit, Today: today, Why: why}
 }
 
-func with(r *Row, p ...Pending) { r.Pending = append(r.Pending, p...) }
+// with appends to the row's own Pending: rows copied from one base share its
+// backing array, so the append never writes into spare capacity a twin sees.
+func with(r *Row, p ...Pending) { r.Pending = append(slices.Clip(r.Pending), p...) }
 
 // hintBlindLedger pins the ledger on a hinted claw node past a redirected
 // wire: the route it books carries no hint, so it reads the hint-less walk,
