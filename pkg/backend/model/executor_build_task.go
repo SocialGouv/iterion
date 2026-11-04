@@ -492,6 +492,7 @@ func (e *ClawExecutor) dispatchWithObservability(
 			di.DeclaredModel = baseModel
 			di.RouteModel = out.Route
 			di.Provider = out.Provider
+			di.SpendCrossesProviders = out.SpendCrossesProviders
 			di.Error = err
 			sess.describeDivergence(&di)
 			e.hooks.OnDelegateError(nodeID, di)
@@ -504,6 +505,7 @@ func (e *ClawExecutor) dispatchWithObservability(
 		di.DeclaredModel = baseModel
 		di.RouteModel = out.Route
 		di.Provider = out.Provider
+		di.SpendCrossesProviders = out.SpendCrossesProviders
 		// A skip outcome finished nothing: keep BackendName (the spend's
 		// origin — the metrics claw-exclusion keys on it) but flag it so
 		// recordServed and the event do not claim a backend SERVED.

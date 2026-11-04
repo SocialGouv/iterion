@@ -119,6 +119,13 @@ type DelegateInfo struct {
 	// Consumers must not read it as "what served": recordServed is
 	// suppressed and the event carries skipped:true.
 	Skipped bool
+	// SpendCrossesProviders marks Tokens and CostUSD as a fallback chain's
+	// fold of spend made under more than one plan join — a primary that
+	// burned on one provider before another served (chainOutcome's field of
+	// the same name). Provider then names where the figure is booked, not
+	// where all of it ran: the runner's credential plan places none of it,
+	// counting a miss that voids the fine table.
+	SpendCrossesProviders bool
 	// Fingerprint is the provider fingerprint of the session behind this
 	// delegation ("anthropic-oauth", "facade:<slot>:<base url>", …), as the
 	// backend reported it. It is the ROUTING DECISION, taken before the

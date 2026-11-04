@@ -1148,6 +1148,12 @@ func putDelegateModelFields(data map[string]any, info DelegateInfo) {
 	if info.Provider != "" {
 		data["provider"] = info.Provider
 	}
+	// The provider word above names where the figure is booked; this key
+	// says the figure also folds another provider's spend, which no single
+	// credential-plan row can place (#2288).
+	if info.SpendCrossesProviders {
+		data["spend_crosses_providers"] = true
+	}
 	if info.ContextWindow > 0 {
 		data["context_window"] = info.ContextWindow
 	}

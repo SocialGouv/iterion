@@ -458,6 +458,13 @@ func providerLabel(p string) string {
 // value differs from the prefix describes a spend claw never makes. The
 // hint answers only for a spec that names no prefix (which claw refuses at
 // Execute, so the word is inert there).
+//
+// codex answers openai, hint or none: the CLI reads no hint and serves one
+// provider — the run's openai key, else its codex forfait
+// (delegate.codexCredEnvForCLI) — so a hint-less codex route still names
+// the provider its spend books on, and a hint naming another describes a
+// spend codex never makes.
+//
 // The word leaves FOLDED on every backend (lower-case, trimmed): the
 // credential plan's keys and every join compare the folded form — the
 // walk's hint() and the chain parse fold the same way — so a route whose
@@ -468,14 +475,15 @@ func providerLabel(p string) string {
 // there is a fact of the credential the process held, which the session
 // fingerprint reports on the backends that have one.
 func servingProvider(backendName string, task *delegate.Task) string {
-	hint := strings.ToLower(strings.TrimSpace(task.ProviderHint))
-	if backendName == delegate.BackendClaw {
+	switch backendName {
+	case delegate.BackendClaw:
 		if p := clawPinnedProvider(task.Model); p.Valid() {
 			return string(p)
 		}
-		return hint
+	case delegate.BackendCodex:
+		return string(secrets.ProviderOpenAI)
 	}
-	return hint
+	return strings.ToLower(strings.TrimSpace(task.ProviderHint))
 }
 
 // clawSpecProvider is the provider word for a HINT-LESS claw generation —
@@ -714,6 +722,9 @@ type chainSpend struct {
 	// unreported counts the failed routes' calls whose usage the provider
 	// did not report: their tokens and cost above are a lower bound.
 	unreported int
+	// joins holds, per folded element that spent, the plan join its spend
+	// books under (planJoin) — what crosses compares the outcome's label to.
+	joins []string
 }
 
 // spendLabel names the element a skip's folded spend is booked on — its
@@ -723,11 +734,59 @@ type spendLabel struct {
 	backend, model, provider, effective, fingerprint string
 }
 
-func (s *chainSpend) add(r delegate.Result) {
+// add folds one abandoned element's result, join naming the plan row its
+// spend books under (elementJoin).
+func (s *chainSpend) add(r delegate.Result, join string) {
 	s.tokens += r.Tokens
 	s.duration += r.Duration
 	s.costUSD += r.CostUSD
 	s.unreported += r.UnreportedCalls
+	if r.Tokens > 0 || r.CostUSD > 0 {
+		s.joins = append(s.joins, join)
+	}
+}
+
+// crosses reports that the accumulation folds spend some element made under
+// another plan join than label's — the join the delegate event carrying the
+// folded figure is booked under. The runner's credential plan (#2288) keys
+// one fingerprint per (node, provider), so one figure cannot be split
+// across two rows after the fold: booked whole on label's row, the other
+// element's slice lands on a credential that never served it — a lending
+// donor booked short of a slice that ran on their credential, or charged
+// for one that did not.
+func (s chainSpend) crosses(label string) bool {
+	for _, j := range s.joins {
+		if j != label {
+			return true
+		}
+	}
+	return false
+}
+
+// planJoin names the plan row the runner's credential-plan join books a
+// spend under: the provider word the delegate event stamps, or — when the
+// route names none — the facts the runner derives one from (the backend,
+// the route's model spec, the session's source label). Two equal joins book
+// on one row; two different ones may name two credentials, so a figure
+// folding both cannot be placed.
+func planJoin(provider, backendName, model, fingerprint string) string {
+	if provider != "" {
+		return provider
+	}
+	return "\x00" + backendName + "\x00" + model + "\x00" + fingerprint
+}
+
+// elementJoin is planJoin for one executed chain element: the word it
+// serves under (servingProvider), and the facts its own result reports.
+func elementJoin(backendName string, task *delegate.Task, r delegate.Result) string {
+	return planJoin(servingProvider(backendName, task), firstNonEmpty(r.BackendName, backendName), task.Model, r.SessionFingerprint)
+}
+
+// outcomeJoin is planJoin for the label a chain outcome's delegate event
+// carries: the provider, backend, route and session label the runner reads
+// off that event (dispatchWithObservability).
+func outcomeJoin(out chainOutcome) string {
+	return planJoin(out.Provider, firstNonEmpty(out.Result.BackendName, out.BackendName), out.Route, out.Result.SessionFingerprint)
 }
 
 // applyTo folds the accumulated spend into the winning result.
@@ -1030,6 +1089,14 @@ type chainOutcome struct {
 	// hold. Only a served outcome stamps it on the node's output
 	// (stampServingRoute).
 	Provider string
+	// SpendCrossesProviders reports that Result folds spend an element made
+	// under another plan join than the one Provider, BackendName, Route and
+	// the result's session label name (chainSpend.crosses): a primary that
+	// burned on one provider before the chain fell through to another. The
+	// event that books the folded figure then cannot place it on one
+	// credential, and the runner's credential plan counts it as a miss —
+	// the fine table is voided, the coarse whole-attempt booking stands.
+	SpendCrossesProviders bool
 	// SessionDegraded reports that the element that served did so only
 	// after its best-effort session (`session: inherit_if_available` /
 	// `persist`) failed to load and was dropped — the node completed
@@ -1111,10 +1178,18 @@ func (e *ClawExecutor) dispatchChain(
 		// spend the runner books — is labelled with it, never with a later
 		// route that spent nothing: the runner's cost accumulator keys its
 		// claw double-count exclusion on the backend, the credential slot
-		// on the route and the session fingerprint. (Known limit: a chain
-		// that burned on two routes books the whole on the last spender.)
+		// on the route and the session fingerprint. A chain that burned on
+		// two routes books the whole on the last spender; when their plan
+		// joins differ the outcome says so (SpendCrossesProviders).
 		spender spendLabel
 	)
+	// labelled stamps, on an outcome about to leave, whether the spend it
+	// folds crosses the plan join its own label names — every return that
+	// carries `spent` passes through it.
+	labelled := func(out chainOutcome) chainOutcome {
+		out.SpendCrossesProviders = spent.crosses(outcomeJoin(out))
+		return out
+	}
 	noteSpend := func(backendName string, task *delegate.Task, r delegate.Result) {
 		if r.Tokens > 0 || r.CostUSD > 0 {
 			spender = spendLabel{
@@ -1153,7 +1228,7 @@ func (e *ClawExecutor) dispatchChain(
 				on = spender
 				res.BackendName, res.EffectiveModel, res.SessionFingerprint = on.backend, on.effective, on.fingerprint
 			}
-			return chainOutcome{
+			return labelled(chainOutcome{
 				Result: res,
 				// The route that spent — see spender and lastBackend.
 				BackendName: on.backend,
@@ -1162,7 +1237,7 @@ func (e *ClawExecutor) dispatchChain(
 				ServedBy:    stepLabel(el),
 				FellThrough: true,
 				Skipped:     true,
-			}, nil
+			}), nil
 		}
 
 		// No reset of pendingMarker is needed: its writers always pair
@@ -1336,7 +1411,7 @@ func (e *ClawExecutor) dispatchChain(
 				e.noteSessionDegrade(ctx, nodeID, backendName, task.SessionID, cat, err)
 				sessionDegraded = true
 				noteSpend(backendName, task, result)
-				spent.add(result)
+				spent.add(result, elementJoin(backendName, task, result))
 				// Dropping task.SessionID is not, by itself, enough to
 				// make the retry fresh. The claw store's effective
 				// (runID, session_slot-or-nodeID) entry is
@@ -1364,7 +1439,7 @@ func (e *ClawExecutor) dispatchChain(
 			}
 		}
 		if err == nil {
-			return chainOutcome{
+			return labelled(chainOutcome{
 				Result:          spent.applyTo(result),
 				BackendName:     backendName,
 				Backend:         backend,
@@ -1374,7 +1449,7 @@ func (e *ClawExecutor) dispatchChain(
 				ServedBy:        stepLabel(el),
 				FellThrough:     i > 0,
 				SessionDegraded: sessionDegraded,
-			}, nil
+			}), nil
 		}
 		causes = append(causes, err)
 		noteSpend(backendName, task, result)
@@ -1388,7 +1463,7 @@ func (e *ClawExecutor) dispatchChain(
 			// donor's ledger — and the optional-session degrade made that
 			// reachable on a SINGLE-route node, where `spent` used to be
 			// provably empty at this point.
-			return chainOutcome{Result: spent.applyTo(result), BackendName: backendName, Route: task.Model, Provider: servingProvider(backendName, task)}, err
+			return labelled(chainOutcome{Result: spent.applyTo(result), BackendName: backendName, Route: task.Model, Provider: servingProvider(backendName, task)}), err
 		}
 		cat := delegate.ClassifyFallback(err, isDelegateRetryable(err))
 		lastCat = cat
@@ -1442,7 +1517,7 @@ func (e *ClawExecutor) dispatchChain(
 		// final result would count it twice — and on a single-route
 		// node that is a plain doubling of what the delegate_error
 		// event reports.
-		spent.add(result)
+		spent.add(result, elementJoin(backendName, task, result))
 		// Discard only the failed attempt, not the named durable slot. The
 		// claw session format contains provider-neutral message blocks; the
 		// rollback also strips any legacy provider-specific thinking blocks
@@ -1471,9 +1546,9 @@ func (e *ClawExecutor) dispatchChain(
 	// lending donor's ledger.
 	result = spent.applyTo(result)
 	if len(chain) > 1 {
-		return chainOutcome{Result: result, BackendName: lastBackend, Route: lastModel, Provider: lastProvider}, &ErrChainExhausted{Chain: chainLabel(chain), Errs: causes}
+		return labelled(chainOutcome{Result: result, BackendName: lastBackend, Route: lastModel, Provider: lastProvider}), &ErrChainExhausted{Chain: chainLabel(chain), Errs: causes}
 	}
-	return chainOutcome{Result: result, BackendName: lastBackend, Route: lastModel, Provider: lastProvider}, err
+	return labelled(chainOutcome{Result: result, BackendName: lastBackend, Route: lastModel, Provider: lastProvider}), err
 }
 
 // fallbackRouteEnds resolves the two ends of a route change for the event

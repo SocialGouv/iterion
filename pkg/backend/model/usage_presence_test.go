@@ -153,11 +153,11 @@ func TestSpendFolds_CarryUnreportedCalls(t *testing.T) {
 		t.Errorf("foldSpend = %v, want 3 unreported calls", got.Output)
 	}
 	var spent chainSpend
-	spent.add(unreported(1, 0))
+	spent.add(unreported(1, 0), "")
 	if got := spent.applyTo(delegate.Result{}); cost.UnreportedCalls(got.Output) != 1 {
 		t.Errorf("chainSpend dropped a marker-only route: %+v", got)
 	}
-	spent.add(unreported(2, 30))
+	spent.add(unreported(2, 30), "")
 	if got := spent.applyTo(unreported(1, 5)); cost.UnreportedCalls(got.Output) != 4 {
 		t.Errorf("chainSpend = %v, want 4 unreported calls", got.Output)
 	}

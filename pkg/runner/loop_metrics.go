@@ -113,7 +113,8 @@ type metricsEmitter struct {
 	// are correct, not drift. Any miss VOIDS the fine table at the pool
 	// report (fineFingerprintSpend): the unplaced slice may have run on the
 	// lease's own credential (a claw subagent of a donor-funded node, a
-	// served model whose prefix names no provider), and a table without it
+	// served model whose prefix names no provider, a fallback chain's figure
+	// folding two providers' spend), and a table without it
 	// would book the donor short — the coarse whole-attempt booking stands.
 	missed planMiss
 }
@@ -267,7 +268,7 @@ func (m *metricsEmitter) noteDeclinedRoute(k routeKey) (first bool) {
 func (m *metricsEmitter) addRoute(backend, modelName, source string, cost float64, in, out, aggregate int64) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.bookObservationLocked(source, routeKey{backend: backend, model: modelName, source: source}, "", cost, in, out, aggregate)
+	m.bookObservationLocked(source, routeKey{backend: backend, model: modelName, source: source}, "", false, cost, in, out, aggregate)
 }
 
 // bookObservationLocked folds one priced observation into every table that
@@ -279,17 +280,30 @@ func (m *metricsEmitter) addRoute(backend, modelName, source string, cost float6
 // provider the event carries), "" when it carries none — the join then
 // derives one from the route.
 //
+// crossesProviders marks a delegate figure that folds a fallback chain's
+// spend made under more than one provider (the event's
+// `spend_crosses_providers`): the plan keys one credential per (node,
+// provider), so no row can take the figure whole — booked on the word the
+// event carries, the other provider's slice would land on a credential
+// that never served it, a lending donor booked short of a slice that ran on
+// theirs. Such an observation joins no row and counts as a miss whatever
+// its route, the env-funded exclusion included: the route names only where
+// the chain ended, not where the folded slice ran.
+//
 // The ONE entry every observation path takes — the OnUsage sink and the
 // step, delegate_error and delegate_finished branches — so no path can book
 // the route table without the join: a path that skipped the fine row would
 // ship a table without its slice, and one that skipped the miss would ship
 // it unvoided, either way booking the lease short. Called with m.mu held,
 // alongside the run-total accumulation it mirrors.
-func (m *metricsEmitter) bookObservationLocked(nodeID string, route routeKey, provider string, cost float64, in, out, aggregate int64) {
+func (m *metricsEmitter) bookObservationLocked(nodeID string, route routeKey, provider string, crossesProviders bool, cost float64, in, out, aggregate int64) {
 	m.addRouteLocked(route.backend, route.model, route.source, cost, in, out, aggregate)
-	fp := m.fingerprintFor(nodeID, route, provider)
+	var fp string
+	if !crossesProviders {
+		fp = m.fingerprintFor(nodeID, route, provider)
+	}
 	m.addFingerprintLocked(fp, cost, in, out, aggregate)
-	m.notePlanMissLocked(fp, route, cost, in+out+aggregate)
+	m.notePlanMissLocked(fp, route, crossesProviders, cost, in+out+aggregate)
 }
 
 // addRouteLocked folds one observation into its (backend, model) bucket.
@@ -391,8 +405,11 @@ func planRouteFundedByEnv(route routeKey) bool {
 // beside addFingerprintLocked — the same observation feeds both, and a
 // guard that dropped one would drop it from both. A spendless observation (no cost, no tokens) counts
 // nothing: a free call that joins nothing is not money the lease loses.
-func (m *metricsEmitter) notePlanMissLocked(fp string, route routeKey, cost float64, tokens int64) {
-	if len(m.credPlan) == 0 || fp != "" || planRouteFundedByEnv(route) {
+// An env-funded route places nobody by design and voids nothing — unless
+// the figure folds a chain's spend across providers (crossesProviders),
+// whose route names only where the chain ended.
+func (m *metricsEmitter) notePlanMissLocked(fp string, route routeKey, crossesProviders bool, cost float64, tokens int64) {
+	if len(m.credPlan) == 0 || fp != "" || (!crossesProviders && planRouteFundedByEnv(route)) {
 		return
 	}
 	if cost == 0 && tokens == 0 {
@@ -562,7 +579,7 @@ func (m *metricsEmitter) observe(evt store.Event) {
 				}
 			}
 		}
-		m.bookObservationLocked(evt.NodeID, routeKey{backend: backend, model: modelName}, provider, costDelta, int64(inputT), int64(outputT), 0)
+		m.bookObservationLocked(evt.NodeID, routeKey{backend: backend, model: modelName}, provider, false, costDelta, int64(inputT), int64(outputT), 0)
 		if unreported, _ := evt.Data["usage_unreported"].(bool); unreported {
 			k := routeKey{backend: backend, model: modelName}
 			t := m.byRoute[k]
@@ -643,6 +660,7 @@ func (m *metricsEmitter) observe(evt store.Event) {
 		effective, _ := evt.Data["effective_model"].(string)
 		served, _ := evt.Data["route_model"].(string)
 		provider, _ := evt.Data["provider"].(string)
+		crosses, _ := evt.Data["spend_crosses_providers"].(bool)
 		var source string
 		if backend == delegate.BackendClaudeCode {
 			source, _ = evt.Data["fingerprint"].(string)
@@ -667,7 +685,7 @@ func (m *metricsEmitter) observe(evt store.Event) {
 			}
 			m.runAggregateTokens += int64(tokensF)
 			m.runCostUSD += costDelta
-			m.bookObservationLocked(evt.NodeID, routeKey{backend: backend, model: modelName, source: source}, provider, costDelta, 0, 0, int64(tokensF))
+			m.bookObservationLocked(evt.NodeID, routeKey{backend: backend, model: modelName, source: source}, provider, crosses, costDelta, 0, 0, int64(tokensF))
 		}
 		m.mu.Unlock()
 		if summarised {
@@ -686,6 +704,12 @@ func (m *metricsEmitter) observe(evt store.Event) {
 		effective, _ := evt.Data["effective_model"].(string)
 		served, _ := evt.Data["route_model"].(string)
 		provider, _ := evt.Data["provider"].(string)
+		// A fallback chain's figure folding more than one provider's spend:
+		// booked on the route like any other, placed on no plan row
+		// (bookObservationLocked). A summarised claw aggregate books nothing
+		// here at all — its steps already placed each claw loop's slice
+		// under the word that loop stamped.
+		crosses, _ := evt.Data["spend_crosses_providers"].(bool)
 		// Only claude_code's labels name a credential slot the ledger reads
 		// (routeSlot); keying another backend's route on its label would only
 		// split one route in two.
@@ -743,7 +767,7 @@ func (m *metricsEmitter) observe(evt store.Event) {
 			// either way, and only this way does a reader of the public
 			// per-credential endpoint see "not split" instead of a
 			// confident, wrong input figure (#992).
-			m.bookObservationLocked(evt.NodeID, routeKey{backend: backend, model: modelName, source: source}, provider, costDelta, 0, 0, int64(tokensF))
+			m.bookObservationLocked(evt.NodeID, routeKey{backend: backend, model: modelName, source: source}, provider, crosses, costDelta, 0, 0, int64(tokensF))
 		}
 		m.mu.Unlock()
 		if summarised {

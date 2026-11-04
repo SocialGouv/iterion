@@ -214,16 +214,18 @@ func (r *Runner) recordPoolSpend(msg *queue.RunMessage, usage *metricsEmitter, e
 	// table either (fineFingerprintSpend). A runtime node the walk cannot
 	// see (a claw subagent loop's `subagent:*` id, a model the agent tool
 	// named), a served model whose prefix names no provider, a spec that
-	// drifted from its launch reading — each slice may have run on the
-	// lease's own credential, and a table without it would book the donor
-	// short, letting spend past their MaxUSDPerDay ride the unplaced calls.
+	// drifted from its launch reading, a fallback chain whose folded figure
+	// spans two providers (one delegate event, no single row to place it
+	// on) — each slice may have run on the lease's own credential, and a
+	// table without it would book the donor short, letting spend past their
+	// MaxUSDPerDay ride the unplaced calls.
 	// One line at the report names the fall-back, so a run that keeps
 	// losing its fine booking is visible; a plan-less publication, or a
 	// plan every observation joined (env-funded routes are placed on nobody
 	// by design, never a miss), needs no line.
 	byFingerprint, miss := fineFingerprintSpend(usage)
 	if miss.observations > 0 {
-		r.cfg.Logger.Warn("runner: credential-pool report for run %s carries a stamped plan whose keys answered none of %d observation(s) totalling %.6f USD / %d tokens (a runtime node the walk cannot see — a subagent loop, a runtime model arg — or a route that drifted from its launch reading) — no fine table rides, the lease books the whole attempt", msg.RunID, miss.observations, miss.costUSD, miss.tokens)
+		r.cfg.Logger.Warn("runner: credential-pool report for run %s carries a stamped plan whose keys answered none of %d observation(s) totalling %.6f USD / %d tokens (a runtime node the walk cannot see — a subagent loop, a runtime model arg — a route that drifted from its launch reading, or a fallback chain whose folded spend spans two providers) — no fine table rides, the lease books the whole attempt", msg.RunID, miss.observations, miss.costUSD, miss.tokens)
 	}
 	if err := r.cfg.CredPool.ReportAttempt(bg, msg.RunID, publishedAt, credpool.Outcome{
 		CostUSD:         costUSD,
