@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -577,6 +579,8 @@ func TestOpenCodeRefusesUntrustedProject(t *testing.T) {
 // an opencode.json another process left in the runner's TMPDIR cannot redden
 // a row. A `.git` at the workspace root would not do it — the production walk
 // climbs past one, and nothing here narrows that.
+// TestOpenCodeWitnessesReadNothingAboveTheirTempRoot holds every TestOpenCode*
+// witness to this pin.
 func hermeticWorkspace(t *testing.T) string {
 	t.Helper()
 	hermeticTempRoot(t)
@@ -589,6 +593,49 @@ func hermeticWorkspace(t *testing.T) string {
 func hermeticTempRoot(t *testing.T) {
 	t.Helper()
 	t.Setenv("HOME", filepath.Dir(t.TempDir()))
+}
+
+// TestOpenCodeWitnessesReadNothingAboveTheirTempRoot holds the opencode
+// family to its pin. Every TestOpenCode* test is re-run in a child of this
+// binary whose TMPDIR sits under a root carrying both resource shapes the
+// screen refuses. A witness whose workspace is a bare t.TempDir() climbs into
+// that root and meets the untyped untrusted-checkout refusal instead of the
+// outcome it asserts. A witness pinned by hermeticWorkspace or
+// hermeticTempRoot stops below the root.
+func TestOpenCodeWitnessesReadNothingAboveTheirTempRoot(t *testing.T) {
+	// The trust hatch would wave every workspace through, the planted root
+	// with it: parent and child both run with the screen armed.
+	t.Setenv(openCodeTrustProjectEnv, "")
+	root := t.TempDir()
+	for _, rel := range []string{"opencode.json", ".opencode/plugin/pwn.ts"} {
+		path := filepath.Join(root, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("{}\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tmp := filepath.Join(root, "tmp")
+	probe := filepath.Join(tmp, "probe")
+	if err := os.MkdirAll(probe, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	// The hazard is real: an unpinned walk from under the child's TMPDIR
+	// refuses on the planted root.
+	if err := refuseUntrustedOpenCodeProject(probe); err == nil || !strings.Contains(err.Error(), root) {
+		t.Fatalf("an unpinned walk from %s does not refuse on the planted root %s: %v", probe, root, err)
+	}
+
+	cmd := exec.Command(os.Args[0], "-test.run=^TestOpenCode", "-test.skip=^"+regexp.QuoteMeta(t.Name())+"$", "-test.count=1", "-test.v") // #nosec G204 — re-executes this test binary
+	cmd.Env = append(os.Environ(), "TMPDIR="+tmp)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("an opencode witness reads above its own temp root — pin it with hermeticWorkspace or hermeticTempRoot: %v\n%s", err, out)
+	}
+	if !strings.Contains(string(out), "--- PASS: TestOpenCode") {
+		t.Fatalf("the child ran no opencode witness:\n%s", out)
+	}
 }
 
 // writeWorkspace materialises a temp workspace holding the given
@@ -667,7 +714,7 @@ func TestOpenCodeRefusesAskGatedNode(t *testing.T) {
 		t.Fatal(err)
 	}
 	b := NewOpenCodeBackend(nil, "")
-	ws := t.TempDir()
+	ws := hermeticWorkspace(t)
 	_, execErr := b.Execute(context.Background(), Task{NodeID: "n1", WorkDir: ws, BaseDir: ws, UserPrompt: "hi", Permission: policy})
 	var unsupported *ErrCapabilityUnsupported
 	if !errors.As(execErr, &unsupported) {
