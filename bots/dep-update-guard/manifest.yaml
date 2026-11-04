@@ -10,16 +10,21 @@ version: 2.11.3
 ## advisories, introduced none, and was held). The prompt and the playbook
 ## now agree; their contradiction let the verdict flip between runs on the
 ## same diff. What keeps the gate shut: a malware/typosquat advisory is never
-## sorted with the vulnerabilities — on the new version it is `malicious`,
-## whatever the old pin carries; an introduced advisory no record scores
-## counts as HIGH (Go vulndb records carry no severity); the sets come from
-## the advisory record checked against BOTH pins, never from release notes or
-## the PR body, which both prompts now name as the dependency bot's untrusted
-## text instead of "operator" context. A scanner counts as unavailable only
-## after a Bash call that failed (binary absent or unrunnable), quoted in the
-## summary — buildkit-operator#38 was held on "no shell" by an auditor that
-## never called Bash; a findings exit is a result, one missing scanner a
-## coverage note, and nixpkgs pins get an upstream audit path.
+## sorted with the vulnerabilities (by its record's content, whatever its id) —
+## on the new version it is `malicious`, whatever the old pin carries; an
+## introduced advisory counts at the highest severity any record gives, and as
+## HIGH when none scores it (Go vulndb records carry no severity); the sets
+## come from the advisory record checked against BOTH pins, queried under the
+## ecosystem's own id with the bare version (OSV answers a wrong id with `{}`
+## and an unparseable version with the package's whole history), never from
+## release notes or the PR body, which both prompts now name as untrusted DATA
+## instead of "operator" context. A scanner counts as unavailable only after a
+## Bash call that failed (binary absent or unrunnable, or an error report),
+## quoted in the summary — buildkit-operator#38 was held on "no shell" by an
+## auditor that never called Bash; a findings report is a result whatever the
+## exit code, one missing scanner a coverage note, and nixpkgs pins get an
+## upstream audit path. The whole security_audit prompt and the playbook
+## passages are frozen in bots/testdata (`task bots:audit-policy:gen`).
 ## 2.11.2 — commit_probe resolves the agent's report through Git: only the
 ## current local head, strictly descended from the audited revision, is a
 ## new commit. Publication and arming use that full id. A stale run cannot

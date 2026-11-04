@@ -37,7 +37,10 @@ Signals, in priority order:
    the native auditor (`npm audit --json`, `pip-audit -f json`,
    `govulncheck ./...`, `cargo audit --json`, …), and the OSV API as a
    fallback for one `(ecosystem, name, version)` — query it for `<old>`
-   and for `<new>`:
+   and for `<new>`, with the package's id in that ecosystem (the Go
+   toolchain is `stdlib`) and the bare resolved version (`1.24.3`, never
+   `go1.24.3` or `^1.2.3`); an empty answer, or the same set for both
+   pins, is not a sort:
    `curl -sS -X POST https://api.osv.dev/v1/query -d
    '{"package":{"name":"<n>","ecosystem":"<eco>"},"version":"<new>"}'`.
 2. **Install-time hooks newly introduced by the bump** — diff the new
@@ -49,8 +52,9 @@ Signals, in priority order:
 3. **Compromised-maintainer / provenance** where the ecosystem exposes it
    (npm provenance, sigstore). Note if absent rather than asserting safe.
 4. **CVEs** (vulnerability advisories — a malware, typosquat or yanked
-   advisory is signal 1 and `malicious` on the new version, whatever the
-   old pin carries): sort what you find into RESOLVED (old pin affected,
+   advisory, or any record whose details describe malicious code, is
+   signal 1 and `malicious` on the new version, whatever the old pin
+   carries): sort what you find into RESOLVED (old pin affected,
    new version not), INTRODUCED (new version affected, old pin not) and
    REMAINING (both affected). A package the bump adds has no old pin: its
    advisories are INTRODUCED; one it removes has only RESOLVED ones. Sort
@@ -65,9 +69,10 @@ Signals, in priority order:
    block it for unrelated tree advisories, nor for a REMAINING one:
    holding keeps the old pin, which carries it too. Report a remaining
    advisory with the release that fixes it and whether the bump's own
-   source already ships that release. An INTRODUCED advisory that no
-   record scores counts as HIGH (a Go vulndb `GO-` record carries no
-   severity; NVD may not have scored the CVE yet).
+   source already ships that release. An INTRODUCED advisory counts at
+   the highest severity any of its records gives (GHSA, NVD, the CNA),
+   and as HIGH when no record scores it (a Go vulndb `GO-` record carries
+   no severity; NVD may not have scored the CVE yet).
 
 Verdict mapping:
 - `malicious` → a credible malware/compromise signal on the new version.
@@ -81,10 +86,11 @@ The scanners ship in the `iterion-sandbox-sec` image (osv-scanner, trivy,
 gitleaks, npm/pip audit, govulncheck, …). A scanner is missing only once
 you ran it with Bash and it failed — its binary is absent or cannot run:
 record `"<name>:not_available"` in `auditors_consulted` and quote the
-command and its error. A scanner that exits non-zero because it found
-advisories (osv-scanner 1, govulncheck 3, `npm audit` 1) has not failed:
-read its report. One missing scanner is a coverage note; `suspicious`
-only when no auditor could read the changed packages.
+command and its error. A scanner that reports advisories has not failed,
+whatever its exit code: read its report. One whose output is an error (no
+lockfile, registry unreachable) read nothing: it is unavailable. One
+missing scanner is a coverage note; `suspicious` only when no auditor
+could read the changed packages.
 
 ## 3. Align the consuming code (only when the audit is `safe`)
 

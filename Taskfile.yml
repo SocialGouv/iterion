@@ -798,6 +798,13 @@ tasks:
     cmds:
       - go test -count=1 -run TestRecordTheUntrustedInputBoundaryClass ./bots/
 
+  bots:audit-policy:gen:
+    desc: Regenerate the committed text of Vetty's CVE audit policy — the prompt and playbook passages its security_audit grades by. Its diff is the review; the guard is `go test -run TestDepUpdateGuardAuditPolicyIsTheFrozenOne ./bots/`
+    env:
+      ITERION_VETTY_AUDIT_POLICY_OUT: "{{.ROOT_DIR}}/bots/testdata/dep_update_guard_audit_policy.txt"
+    cmds:
+      - go test -count=1 -run TestRecordTheDepUpdateGuardAuditPolicy ./bots/
+
   fmt:check:
     desc: Fail if a shipped bot or example drifted out of its canonical form, or if .fmt-refused is stale
     cmds:
