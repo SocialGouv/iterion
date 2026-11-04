@@ -346,6 +346,13 @@ node's route from three events, in order: `delegate_started.declared_model`
   another model (an `ANTHROPIC_MODEL` override), never re-routed by the
   reported id's spelling — OpenRouter reports `anthropic/claude-sonnet-4.5`
   for the model it served.
+- A fallback chain books the routes it abandoned after they spent on the one
+  `delegate_finished` / `delegate_error` that ends it, and itemises them in
+  `folded_spend` (each slice's `backend`, `route_model`, `provider`,
+  `fingerprint`, `tokens`, `cost_usd`): the meter keys each slice on its own
+  route and the rest of the figure on the event's. A claw slice whose loop
+  the meter already priced step by step is not counted again, whichever
+  route ended the chain.
 - Without either fact (an older runner, a backend reporting a bare id), the
   route is rebuilt from the declaration: a report equal to the declared
   model's wire id keeps the declared route; a report whose prefix is a

@@ -229,11 +229,14 @@ the attempt paid for: a walk the publisher cannot read (a template it
 cannot resolve, a provider outside its vocabulary) stamps no plan, and a
 call the runner cannot place on a planned credential at run time (a claw
 sub-agent's loop, a model the agent tool names, a route that drifted from
-its launch reading, a fallback chain whose routes spent on two providers —
-its one event folds both slices) voids the table at the report, in one
-warning naming the run. Either way the coarse whole-attempt booking stands: a table
+its launch reading) voids the table at the report, in one warning naming
+the run. Either way the coarse whole-attempt booking stands: a table
 missing a slice would book the donor short of whatever of it ran on their
-credential. Spend on the deployment's own env-funded routes (its gateway, a
+credential. A fallback chain is no such call: the one event that ends it
+itemises what each abandoned route spent (`folded_spend`), and each slice
+books on its own route's credential — a primary that burned the donor's
+subscription before a rung served on the team's key charges the donor that
+slice alone. Spend on the deployment's own env-funded routes (its gateway, a
 pod's ambient Claude env) is placed on nobody by design and voids nothing.
 A resumed run that **reported** *renews* its admission instead of taking a
 second one: it is the same run, and charging it again would let one flaky
