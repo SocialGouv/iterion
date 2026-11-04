@@ -3,7 +3,10 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { RunSummary } from "@/api/runs";
-import { expectNoViolationsStrict } from "@/__tests__/a11y/axeHelpers";
+import {
+  expectNoViolationsStrict,
+  expectUniqueAccessibleNames,
+} from "@/__tests__/a11y/axeHelpers";
 import { onAssistantAttachRequest } from "@/lib/chatDock/attachToAssistant";
 import type { TypedReference } from "@/lib/chatDock/routeReference";
 
@@ -110,20 +113,22 @@ describe("runs list naming", () => {
   });
 
   it("leaves no two ROW-SPECIFIC controls sharing an accessible name", () => {
-    mountRows();
-    // Scoped to the controls that act on one row. The bot avatar is
-    // deliberately out: every row's avatar runs the same filter, and two
-    // controls with one name doing one thing is not a defect.
-    const rowSpecific = [
-      ...screen.getAllByRole("button", { name: /^Open / }),
-      ...screen.getAllByRole("button", { name: /^Resume / }),
-      ...screen.getAllByRole("checkbox"),
-      ...screen.getAllByRole("button", { name: /^Attach .+ to the assistant$/ }),
-    ];
-    expect(rowSpecific.length).toBe(8);
-    const names = rowSpecific.map((el) => el.getAttribute("aria-label"));
-    expect(names.every((n) => n && n.length > 0)).toBe(true);
-    expect(new Set(names).size).toBe(names.length);
+    const { container } = mountRows();
+    // `matching` carries the COUNT claim — the controls that act on one row.
+    // The bot avatar repeats on purpose (every row's avatar runs the same
+    // filter), so it is declared repeatable rather than scoped out: a name
+    // nobody declared repeatable collides whatever the count is about.
+    expectUniqueAccessibleNames(container, "Runs · list rows", {
+      roles: [
+        {
+          role: "button",
+          matching: [/^Open /, /^Resume /, /^Attach .+ to the assistant$/],
+          repeatable: [/^Filter by /],
+        },
+        "checkbox",
+      ],
+      count: 8,
+    });
   });
 });
 

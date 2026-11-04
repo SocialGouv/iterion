@@ -193,10 +193,27 @@ function SecretsTable({
               {s.allowed_hosts && s.allowed_hosts.length > 0 ? s.allowed_hosts.join(", ") : "—"}
             </Td>
             <Td align="right" className="space-x-1 whitespace-nowrap">
-              <Button size="sm" variant="ghost" onClick={() => onRotate(s)}>
+              {/* Every row's actions read "Rotate" / "Delete", so the
+                  accessible name carries the row the control acts on —
+                  name AND scope, the pair this table's key is built from
+                  (one name can exist both globally and per project). The
+                  visible word stays first, so the name contains the label
+                  (SC 2.5.3); the visible text is untouched. */}
+              <Button
+                size="sm"
+                variant="ghost"
+                aria-label={`Rotate ${s.name} (${s.scope})`}
+                onClick={() => onRotate(s)}
+              >
                 Rotate
               </Button>
-              <Button size="sm" variant="ghost" className="text-danger" onClick={() => onDelete(s)}>
+              <Button
+                size="sm"
+                variant="ghost"
+                className="text-danger"
+                aria-label={`Delete ${s.name} (${s.scope})`}
+                onClick={() => onDelete(s)}
+              >
                 Delete
               </Button>
             </Td>

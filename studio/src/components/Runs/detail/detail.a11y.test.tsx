@@ -2,7 +2,10 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { expectNoViolationsStrict } from "@/__tests__/a11y/axeHelpers";
+import {
+  expectNoViolationsStrict,
+  expectUniqueAccessibleNames,
+} from "@/__tests__/a11y/axeHelpers";
 
 import { ToolCallList, ToolPayloadBlock } from "./ToolCalls";
 
@@ -83,23 +86,21 @@ describe("tool calls naming", () => {
   });
 
   it("leaves no two controls sharing an accessible name", () => {
-    mountTools();
-    // Every name is matched by the REAL accessible-name algorithm (the
-    // `name` option of getAllByRole), one button each, and the surface holds
-    // no other button — so a collision cannot hide behind a name this test
-    // computed itself.
-    const expected = [
-      "copy raw input of Bash seq 1",
-      "copy output of Bash seq 1",
-      "show raw event of Bash seq 1",
-      "copy raw input of Bash seq 2",
-      "copy the error of Bash seq 2",
-      "show raw event of Bash seq 2",
-    ];
-    for (const name of expected) {
-      expect(screen.getAllByRole("button", { name })).toHaveLength(1);
-    }
-    expect(screen.getAllByRole("button")).toHaveLength(expected.length);
+    const { container } = mountTools();
+    // The enumerated form: exactly these names, each read once, and no other
+    // button on the surface — so a collision cannot hide behind a name this
+    // test computed itself.
+    expectUniqueAccessibleNames(container, "Runs · tool calls", {
+      roles: ["button"],
+      expected: [
+        "copy raw input of Bash seq 1",
+        "copy output of Bash seq 1",
+        "show raw event of Bash seq 1",
+        "copy raw input of Bash seq 2",
+        "copy the error of Bash seq 2",
+        "show raw event of Bash seq 2",
+      ],
+    });
   });
 });
 

@@ -35,7 +35,10 @@ vi.mock("@/components/shared/ShortcutsHelp", () => ({
   default: ({ open }: { open: boolean }) => (open ? <div /> : null),
 }));
 
-import { expectNoViolationsStrict } from "@/__tests__/a11y/axeHelpers";
+import {
+  expectNoViolationsStrict,
+  expectUniqueAccessibleNames,
+} from "@/__tests__/a11y/axeHelpers";
 import { createEmptyDocument } from "@/lib/defaults";
 import { DocumentStoreProvider, getOrCreateDocumentStore } from "@/store/document";
 
@@ -79,29 +82,14 @@ describe("toolbar naming", () => {
   });
 
   it("leaves no two controls sharing an accessible name", () => {
-    mountToolbar();
-    const buttons = screen.getAllByRole("button");
-    expect(buttons.length).toBeGreaterThan(6);
-    // The toolbar is too wide to enumerate, so the candidate name is READ
-    // from the markup and then handed to the real accessible-name algorithm
-    // (getAllByRole's `name` option): a candidate the algorithm does not
-    // answer to is a reading error and throws here, and more than one answer
-    // is the collision this guards against. A name this test computed itself
-    // would prove nothing.
-    for (const button of buttons) {
-      // Normalised the way the accessible-name algorithm normalises, or a
-      // name split across nodes ("<Icon /> Launch run") would be read as
-      // " Launch run" and fail as "not found" instead of as a collision.
-      const candidate = (button.getAttribute("aria-label") ?? button.textContent ?? "")
-        .replace(/\s+/g, " ")
-        .trim();
-      if (!candidate) {
-        throw new Error(
-          `a toolbar button has no name to read: ${button.outerHTML.slice(0, 120)}`,
-        );
-      }
-      expect(screen.getAllByRole("button", { name: candidate })).toHaveLength(1);
-    }
+    const { container } = mountToolbar();
+    // Too wide to enumerate: the floor is the non-vacuity claim, and the
+    // helper reads each name off the markup before handing it back to the
+    // real accessible-name algorithm.
+    expectUniqueAccessibleNames(container, "Toolbar", {
+      roles: ["button", "combobox"],
+      atLeast: 7,
+    });
   });
 });
 
