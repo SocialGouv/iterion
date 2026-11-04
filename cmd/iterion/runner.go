@@ -307,6 +307,7 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 	// topology (plan v2.1 D4').
 	var preparedConsumer *natsq.Consumer
 	if cfg.Runner.Pool != "" {
+		platformcfg.CheckPoolGatewayAtBoot(rootCtx, platformcfg.NewMongoRunnerPools(st.DB()), cfg.Runner.Pool, os.Getenv("OPENAI_COMPATIBLE_BASE_URL"), logger.Warn)
 		preparedConsumer, err = natsConn.AttachPoolConsumer(rootCtx, cfg.Runner.Pool)
 		if err != nil {
 			return fmt.Errorf("runner: attach pool consumer: %w", err)

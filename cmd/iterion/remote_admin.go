@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/cli"
@@ -163,24 +164,37 @@ var remoteAdminUsersCmd = &cobra.Command{
 	}),
 }
 
+var remoteAdminDLQPool string
+
 var remoteAdminDLQCmd = &cobra.Command{
 	Use:   "dlq [show|replay|delete <seq>]",
 	Short: "Queue dead-letter entries: list (default) or act on one",
 	Args:  cobra.MaximumNArgs(2),
 	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
+		query := ""
+		if cmd.Flags().Changed("pool") {
+			if remoteAdminDLQPool == "" {
+				return fmt.Errorf("--pool requires a pool name")
+			}
+			query = "?pool=" + url.QueryEscape(remoteAdminDLQPool)
+		}
 		if len(args) == 0 {
-			return cli.RemoteGetPrint(cmd.Context(), c, p, "/api/admin/dlq")
+			return cli.RemoteGetPrint(cmd.Context(), c, p, "/api/admin/dlq"+query)
 		}
 		if len(args) != 2 {
 			return fmt.Errorf("usage: admin dlq [show|replay|delete <seq>]")
 		}
+		seq, err := strconv.ParseUint(args[1], 10, 64)
+		if err != nil || seq == 0 {
+			return fmt.Errorf("DLQ sequence must be a positive uint64")
+		}
 		switch args[0] {
 		case "show":
-			return cli.RemoteGetPrint(cmd.Context(), c, p, "/api/admin/dlq/"+args[1])
+			return cli.RemoteGetPrint(cmd.Context(), c, p, "/api/admin/dlq/"+args[1]+query)
 		case "replay":
-			return cli.RemoteSendPrint(cmd.Context(), c, p, "POST", "/api/admin/dlq/"+args[1]+"/replay", nil)
+			return cli.RemoteSendPrint(cmd.Context(), c, p, "POST", "/api/admin/dlq/"+args[1]+"/replay"+query, nil)
 		case "delete":
-			return cli.RemoteSendPrint(cmd.Context(), c, p, "DELETE", "/api/admin/dlq/"+args[1], nil)
+			return cli.RemoteSendPrint(cmd.Context(), c, p, "DELETE", "/api/admin/dlq/"+args[1]+query, nil)
 		default:
 			return fmt.Errorf("unknown dlq action %q (want show|replay|delete)", args[0])
 		}
@@ -1017,6 +1031,8 @@ func init() {
 	remoteAdminPlatformCredsCmd.Flags().StringVar(&remotePlatformCredRefused, "routing-refused-pinned-key", "", "forfait|park — what a launch does with a shared key refused/capped whose family another credential holds (default forfait; park = the pre-policy restore)")
 	remoteAdminPlatformCredsCmd.Flags().StringVar(&remotePlatformCredStrict, "routing-strict", "", "true|false — treat backend pins as requirements (false only lifts it where no level set true) (\"\" unsets)")
 	remoteAdminPlatformCredsCmd.Flags().BoolVar(&remotePlatformCredRoutingClear, "routing-clear", false, "Remove the stored routing block (back to the env dials)")
+
+	remoteAdminDLQCmd.Flags().StringVar(&remoteAdminDLQPool, "pool", "", "Dedicated runner pool (omitted selects shared DLQ)")
 
 	remoteAdminCmd.AddCommand(remoteAdminOrgsCmd, remoteAdminUsersCmd, remoteAdminDLQCmd, remoteAdminLLMCmd, remoteAdminCapsCmd, remoteAdminUsageReadingsCmd, remoteAdminBotsCmd, remoteAdminRolesCmd, remoteAdminSandboxCmd, remoteAdminVarsCmd, remoteAdminPlatformCredsCmd)
 
