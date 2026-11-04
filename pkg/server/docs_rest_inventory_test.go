@@ -247,6 +247,7 @@ func TestTheAdminRungCannotBeMislabeled(t *testing.T) {
 	}
 	adminPrefixRows := 0
 	pluginWriteRows := 0
+	memoryRows := 0
 	for _, r := range rows {
 		if strings.HasPrefix(r.Pattern, "/api/admin/") {
 			adminPrefixRows++
@@ -263,12 +264,25 @@ func TestTheAdminRungCannotBeMislabeled(t *testing.T) {
 				t.Errorf("annex row %s reads rung %q — a non-GET /api/v1/plugins route is platform admin (the chokepointResponses rule)", routeInfoString(r.RouteInfo), r.Rung)
 			}
 		}
+		// The write-rung families whose WHOLE prefix takes the rung at its
+		// mount, reads included (memoryWriteAuth, memory_routes.go): a row
+		// of theirs printed `session` is the published page claiming less
+		// than the code enforces.
+		if strings.HasPrefix(r.Pattern, "/api/memory/") {
+			memoryRows++
+			if r.Rung != "session + write rung" {
+				t.Errorf("annex row %s reads rung %q — every /api/memory/ route mounts through memoryWriteAuth (session + write rung)", routeInfoString(r.RouteInfo), r.Rung)
+			}
+		}
 	}
 	if adminPrefixRows < 50 {
 		t.Fatalf("only %d /api/admin/ row(s) in the annex, floor 50 — the prefix leg of this witness is judging nothing", adminPrefixRows)
 	}
 	if pluginWriteRows < 5 {
 		t.Fatalf("only %d non-GET /api/v1/plugins row(s) in the annex, floor 5 — the plugin leg of this witness is judging nothing", pluginWriteRows)
+	}
+	if memoryRows < 7 {
+		t.Fatalf("only %d /api/memory/ row(s) in the annex, floor 7 — the memory leg of this witness is judging nothing", memoryRows)
 	}
 	for _, reg := range platformAdminRegistrations(t) {
 		if rung, ok := byRoute[reg]; !ok || rung != "platform admin" {
@@ -346,6 +360,7 @@ func TestRegistrationRungClassifiesTheOuterGate(t *testing.T) {
 		{"s.requireSuperAdmin", "GET", "/api/admin/bots", "platform admin"},
 		{"s.boardWriteAuth", "POST", "/api/v1/boards/cards", "session + write rung"},
 		{"s.triggerWriteAuth", "GET", "/api/v1/triggers", "session + write rung"},
+		{"s.memoryWriteAuth", "PUT", "/api/memory/doc", "session + write rung"},
 		{"s.requireAuth", "GET", "/api/runs", "session"},
 		{"s.limitRoute", "POST", "/api/auth/login", "open"}, // the rate limiters are auth-neutral; the public-path rule decides
 		{"s.webhookAuth", "POST", "/api/webhooks/github/{id}", "open"},
