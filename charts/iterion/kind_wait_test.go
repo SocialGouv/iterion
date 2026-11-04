@@ -313,12 +313,14 @@ func TestChartKindWaitDerivesAndRefuses(t *testing.T) {
 		}
 	})
 	t.Run("the forms a line reader could not pair with their key render their deadline", func(t *testing.T) {
-		// A %YAML 1.1 directive and the explicit document start, the server
-		// block as a flow mapping that outlives its opening line, a literal
-		// block scalar entry holding a brace, a quoted key holding a colon:
-		// go-yaml reads them all, helm renders 1800, and the render is what
-		// the helper reads — no form of the file is its business.
-		values := valuesFile(t, "%YAML 1.1\n---\nmode: cloud\nserver: {\n  replicas: 1,\n  progressDeadlineSeconds: 1800 }\nrunner:\n  args:\n    - |\n      {not: a flow}\n    - \"x:y\"\n  \"quoted:key\": 1\n")
+		// The explicit document start, the server block as a flow mapping
+		// that outlives its opening line, a literal block scalar entry
+		// holding a brace, a quoted key holding a colon: helm renders 1800,
+		// and the render is what the helper reads — no form of the file is
+		// its business. A %YAML directive is not among these forms: helm 4
+		// refuses a %YAML 1.1 document that helm 3 reads, so that case would
+		// measure the helm on PATH rather than the helper.
+		values := valuesFile(t, "---\nmode: cloud\nserver: {\n  replicas: 1,\n  progressDeadlineSeconds: 1800 }\nrunner:\n  args:\n    - |\n      {not: a flow}\n    - \"x:y\"\n  \"quoted:key\": 1\n")
 		if got, want := mustWait(t, "iterion", ".", "-f", values), "1920s"; got != want {
 			t.Fatalf("chart-kind-wait = %q, want %q — helm renders this file with 1800, and the wait follows the render", got, want)
 		}
