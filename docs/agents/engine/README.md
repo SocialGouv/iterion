@@ -17,7 +17,7 @@ invariants. The product view is [docs/architecture.md](../../architecture.md).
 | [dsl-backend-execution.md](dsl-backend-execution.md) | The DSL pipeline, backends, runtime, store, server, forge. |
 | [dsl-and-runtime.md](dsl-and-runtime.md) | The compiled graph, explicit target capabilities and how a workflow executes. |
 | [dsl-quick-reference.md](dsl-quick-reference.md) | The exact syntax of the cross-cutting fields, one line each. |
-| [dsl-errors-resume.md](dsl-errors-resume.md) | A run fails, resumes or rewinds; a checkpoint looks torn; a run is refused before it starts, or a reliability invariant is in question. |
+| [dsl-errors-resume.md](dsl-errors-resume.md) | A run fails, resumes or rewinds; a checkpoint looks torn; a pre-engine refusal must preserve a queued resume, or a reliability invariant is in question. |
 | [worktree-finalization.md](worktree-finalization.md) | A run's workspace finalization misbehaves; touching `finalizeWorktree`. |
 | [automation-surfaces.md](automation-surfaces.md) | Something launched a run and you need to know what. |
 | [bot-catalog-regeneration.md](bot-catalog-regeneration.md) | A run wrote, or did not write, a bot catalogue copy — and who hears about a refresh that failed. |

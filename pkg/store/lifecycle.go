@@ -417,6 +417,24 @@ func (s RunStatus) CanOperatorResume() bool {
 // interaction answered first (`--answers-file`, the studio form).
 func (s RunStatus) RequiresResumeAnswers() bool { return s == RunStatusPausedWaitingHuman }
 
+// IsPreEngineFailureVerdict names the two failure statuses a final delivery refusal may write.
+func (s RunStatus) IsPreEngineFailureVerdict() bool {
+	return s == RunStatusFailed || s == RunStatusFailedResumable
+}
+
+// PreEngineRefusalFromStatuses is the common eligibility set of both stores.
+// Usage retains its historical queued/running scope; final resume refusals
+// leave queued to the existing release owner.
+func PreEngineRefusalFromStatuses(q PreEngineRefusalRequest) []RunStatus {
+	if q.Disposition == PreEngineUsagePark {
+		return []RunStatus{RunStatusRunning, RunStatusQueued}
+	}
+	if q.LeaveQueued {
+		return []RunStatus{RunStatusRunning, RunStatusFailedResumable}
+	}
+	return RunnerVerdictFromStatuses()
+}
+
 // RunnerVerdictFromStatuses is the CAS set of the runner's own writes on a
 // run it claimed — the DLQ park and the unloadable-IR verdict: a claimed
 // or queued attempt, and the engine's own failed_resumable write, which on

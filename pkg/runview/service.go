@@ -623,6 +623,8 @@ type RunSummary struct {
 	UpdatedAt  time.Time       `json:"updated_at"`
 	FinishedAt *time.Time      `json:"finished_at,omitempty"`
 	Error      string          `json:"error,omitempty"`
+	// PreEngineRefusal explains a refused delivery without inventing a failed status.
+	PreEngineRefusal *store.PreEngineRefusal `json:"pre_engine_refusal,omitempty"`
 	// FailureCode is Error's machine-readable classification (ADR-095);
 	// empty = unknown/legacy.
 	FailureCode store.FailureCode `json:"failure_code,omitempty"`

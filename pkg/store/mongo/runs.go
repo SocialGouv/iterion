@@ -221,7 +221,7 @@ func (s *Store) DeleteRun(ctx context.Context, id string) error {
 		"$unset": bson.M{"checkpoint": "", "inputs": "", "launch_env": "", "model_overrides": "",
 			"budget": "", "loop_overrides": "", "budget_raises": "", "attachments": "",
 			// A tombstone watches nothing.
-			"watched_issue_ids": ""}}
+			"watched_issue_ids": "", "pre_engine_refusal": ""}}
 	if _, err := s.runs.UpdateOne(ctx, withTenantFilter(ctx, bson.M{"_id": id}), versionRunUpdate(tomb)); err != nil {
 		return fmt.Errorf("store/mongo: tombstone run %s: %w", id, err)
 	}
@@ -402,6 +402,8 @@ func (s *Store) SaveRun(ctx context.Context, r *store.Run) error {
 	delete(doc, "outcome_seq")
 	delete(doc, "continuation_state")
 	delete(doc, "failure_code")
+	delete(doc, "pre_engine_refusal")
+	delete(doc, "error")
 	delete(doc, "routing_policy")
 	// Removed from the literal half so the computed clause above decides
 	// them; left in, the $literal document would overwrite what it preserves.
@@ -427,7 +429,24 @@ func (s *Store) SaveRun(ctx context.Context, r *store.Run) error {
 	if r.FailureCode != "" {
 		docCode = bson.M{"$literal": string(r.FailureCode)}
 	}
+	// The recorder owns its diagnostic across metadata saves of the same
+	// publication and status. The incoming field has no authority, including
+	// on upsert creation or a fresh-version copy carrying stale metadata.
+	keepRefusal := bson.M{"$and": bson.A{
+		bson.M{"$eq": bson.A{"$status", string(r.Status)}},
+		bson.M{"$eq": bson.A{bson.M{"$ifNull": bson.A{"$queued_at", nil}}, r.QueuedAt}},
+		bson.M{"$eq": bson.A{bson.M{"$type": "$pre_engine_refusal"}, "object"}},
+	}}
+	// Preserve the Run's omitempty contract when no owned refusal supplies
+	// the message. Writing an empty string would resurrect a deliberately
+	// removed error field during a metadata save.
+	var docError any = "$$REMOVE"
+	if r.Error != "" {
+		docError = bson.M{"$literal": r.Error}
+	}
 	computed := bson.M{
+		"pre_engine_refusal": bson.M{"$cond": bson.A{keepRefusal, "$pre_engine_refusal", "$$REMOVE"}},
+		"error":              bson.M{"$cond": bson.A{keepRefusal, "$pre_engine_refusal.message", docError}},
 		"outcome_seq":        bson.M{"$cond": bson.A{statusChanged, bson.M{"$add": bson.A{seqBase, terminalInc}}, seqBase}},
 		"continuation_state": bson.M{"$cond": bson.A{statusChanged, "$$REMOVE", bson.M{"$ifNull": bson.A{"$continuation_state", "$$REMOVE"}}}},
 		"failure_code":       bson.M{"$cond": bson.A{statusChanged, docCode, bson.M{"$ifNull": bson.A{"$failure_code", "$$REMOVE"}}}},
@@ -1254,6 +1273,18 @@ func statusTransitionSet(status store.RunStatus, runErr string, meta store.RunOu
 		"updated_at": now,
 		"version":    bson.M{"$add": bson.A{bson.M{"$ifNull": bson.A{"$version", 0}}, 1}},
 	}
+	if status.IsQueued() || status == store.RunStatusRunning || status.IsFinalSuccess() || status.IsFinalFailure() {
+		set["pre_engine_refusal"] = "$$REMOVE"
+	} else {
+		clearRefusal := bson.A{statusChanged}
+		if runErr != "" {
+			clearRefusal = append(clearRefusal, bson.M{"$ne": bson.A{"$pre_engine_refusal.message", bson.M{"$literal": runErr}}})
+		}
+		if meta.Code != "" {
+			clearRefusal = append(clearRefusal, bson.M{"$ne": bson.A{"$pre_engine_refusal.code", bson.M{"$literal": string(meta.Code)}}})
+		}
+		set["pre_engine_refusal"] = bson.M{"$cond": bson.A{bson.M{"$or": clearRefusal}, "$$REMOVE", bson.M{"$ifNull": bson.A{"$pre_engine_refusal", "$$REMOVE"}}}}
+	}
 	if status == store.RunStatusRunning {
 		set["await_answers_waits"] = bson.M{"$cond": bson.A{statusChanged, "$$REMOVE", bson.M{"$ifNull": bson.A{"$await_answers_waits", "$$REMOVE"}}}}
 	} else {
@@ -1688,6 +1719,7 @@ func (s *Store) RevertQueuedFlip(ctx context.Context, id string, flip store.Queu
 	field("queued_at", prior.QueuedAt, prior.QueuedAt == nil)
 	field("error", runErr, runErr == "")
 	field("failure_code", prior.FailureCode, prior.FailureCode == "")
+	field("pre_engine_refusal", nil, true)
 	field("end_reason", prior.EndReason, prior.EndReason == "")
 	field("outcome_seq", prior.OutcomeSeq, prior.OutcomeSeq == 0)
 	field("continuation_state", prior.ContinuationState, prior.ContinuationState == "")
@@ -1793,7 +1825,7 @@ func (s *Store) PauseRun(ctx context.Context, id string, cp *store.Checkpoint) e
 		// platform continuation statement — same discipline as
 		// statusTransitionSet, which this checkpoint-coupled write
 		// bypasses.
-		"$unset": bson.M{"finished_at": "", "failure_code": "", "continuation_state": "", "await_answers_waits": ""},
+		"$unset": bson.M{"finished_at": "", "failure_code": "", "continuation_state": "", "await_answers_waits": "", "pre_engine_refusal": ""},
 	}
 	return mongoutil.UpdateOneChecked(ctx, s.runs, notDeleted(withTenantFilter(ctx, bson.M{"_id": id})), update,
 		fmt.Errorf("store/mongo: run %s not found", id), fmt.Sprintf("store/mongo: pause %s", id))
