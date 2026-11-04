@@ -189,7 +189,7 @@ func ModelUnavailableRecipe() Recipe {
 	return RecipeFunc(func(_ context.Context, _ *runtime.RuntimeError, _ int) Action {
 		return Action{
 			Kind:   ActionFailTerminal,
-			Reason: "the provider does not serve this model to this client (unknown id, no access, or a client release it gates on) — change the model or the image, then resume",
+			Reason: "the model is not available for this credential or client (unknown id, no model access, or a required client release) — choose an accessible model, grant model access, or update the client, then resume",
 		}
 	})
 }
@@ -449,6 +449,10 @@ func Classify(err error) runtime.ErrorCode {
 	if errors.As(err, &authFailed) {
 		return runtime.ErrCodeAuthFailed
 	}
+	var unavailable *delegate.ErrModelUnavailable
+	if errors.As(err, &unavailable) {
+		return runtime.ErrCodeModelUnavailable
+	}
 	// The node's own declaration is what the backend refused. Checked by
 	// TYPE first, like the credential above: the needle below only
 	// catches today's wording.
@@ -462,6 +466,10 @@ func Classify(err error) runtime.ErrorCode {
 	var cliAbsent *delegate.ErrBackendCLIAbsent
 	if errors.As(err, &cliAbsent) {
 		return runtime.ErrCodeCapabilityUnsupported
+	}
+	var outputSchema *model.OutputSchemaError
+	if errors.As(err, &outputSchema) {
+		return runtime.ErrCodeSchemaValidation
 	}
 	var schemaUnusable *delegate.ErrSchemaUnusable
 	if errors.As(err, &schemaUnusable) {
@@ -479,7 +487,7 @@ func Classify(err error) runtime.ErrorCode {
 		if apiErr.StatusCode == 429 {
 			return runtime.ErrCodeRateLimited
 		}
-		body := strings.ToLower(apiErr.Message)
+		body := strings.ToLower(apiErr.Message + " " + apiErr.Body)
 		if strings.Contains(body, "context_length_exceeded") || strings.Contains(body, "context length") {
 			return runtime.ErrCodeContextLengthExceeded
 		}
@@ -494,9 +502,12 @@ func Classify(err error) runtime.ErrorCode {
 		if apiErr.StatusCode == 408 || (apiErr.StatusCode >= 500 && apiErr.StatusCode <= 599) {
 			return runtime.ErrCodeNetworkTransient
 		}
-		// 401/403: credential rejected (expired/invalid token, missing
-		// scope). Non-transient — pause for human re-auth rather than
-		// retrying. See AuthFailedRecipe.
+		// A 403 can deny one model while the credential remains valid for
+		// others. Explicit credential failures take precedence; a bare
+		// 401/403 keeps the authentication remedy.
+		if delegate.ModelAccessDenied(apiErr.StatusCode, body) && !matchesAuthFailed(body) {
+			return runtime.ErrCodeModelUnavailable
+		}
 		if apiErr.StatusCode == 401 || apiErr.StatusCode == 403 {
 			return runtime.ErrCodeAuthFailed
 		}
@@ -505,7 +516,7 @@ func Classify(err error) runtime.ErrorCode {
 		// model gated on a minimum client release. A bare 400 is NOT
 		// included: one raised mid-turn can be the model's own tool
 		// arguments, and those differ on the next sample.
-		if apiErr.StatusCode == 404 || matchesModelUnavailable(body) {
+		if apiErr.StatusCode == 404 || matchesModelUnavailable(body, 0) {
 			return runtime.ErrCodeModelUnavailable
 		}
 		return runtime.ErrCodeExecutionFailed
@@ -558,10 +569,8 @@ func Classify(err error) runtime.ErrorCode {
 	// authentication token is expired. Please try signing in again").
 	// Match those before the network needles so they pause-for-reauth
 	// instead of falling to the 1-shot ExecutionFailed retry.
-	for _, needle := range authFailedNeedles {
-		if strings.Contains(msg, needle) {
-			return runtime.ErrCodeAuthFailed
-		}
+	if matchesAuthFailed(msg) {
+		return runtime.ErrCodeAuthFailed
 	}
 	// The out-of-process host (the claw runner) flattens the typed error
 	// above into text before it reaches here, so the wording is read too
@@ -569,11 +578,19 @@ func Classify(err error) runtime.ErrorCode {
 	if strings.Contains(msg, "parse explicitschema") {
 		return runtime.ErrCodeSchemaUnusable
 	}
-	// Checked through the SAME list the typed branch reads, and after
-	// the credential needles: a rejection that names both a credential
-	// and a model is a credential to re-authenticate first.
-	if matchesModelUnavailable(msg) {
+	// Explicit invalid credentials take precedence over a model denial,
+	// but a 403 alone does not prove that the credential is invalid.
+	status := 0
+	if strings.Contains(msg, "error 403") {
+		status = 403
+	} else if strings.Contains(msg, "error 401") {
+		status = 401
+	}
+	if matchesModelUnavailable(msg, status) {
 		return runtime.ErrCodeModelUnavailable
+	}
+	if strings.Contains(msg, "error 403") || strings.Contains(msg, "error 401") {
+		return runtime.ErrCodeAuthFailed
 	}
 	for _, needle := range networkTransientNeedles {
 		if strings.Contains(msg, needle) {
@@ -601,13 +618,15 @@ var modelUnavailableNeedles = []string{
 // because an out-of-process backend (the claw runner) stringifies its
 // typed error before it reaches here — the same reason the credential
 // needles exist twice over.
-func matchesModelUnavailable(msg string) bool {
+func matchesModelUnavailable(msg string, status int) bool {
 	for _, needle := range modelUnavailableNeedles {
 		if strings.Contains(msg, needle) {
 			return true
 		}
 	}
-	return false
+	// Without a forbidden status, "not available" can describe temporary
+	// maintenance. Only a 403 makes that wording a model access denial.
+	return delegate.ModelAccessDenied(status, msg)
 }
 
 // authFailedNeedles enumerates lowercase substrings that indicate the
@@ -616,13 +635,23 @@ func matchesModelUnavailable(msg string) bool {
 var authFailedNeedles = []string{
 	"authentication token is expired", // OpenAI/ChatGPT-forfait expired OAuth access token
 	"please try signing in",           // OpenAI/codex re-auth prompt
-	"error 401",                       // "API error 401:" verbatim from claw/openai
-	"error 403",                       // forbidden (missing scope / disabled key)
 	"invalid api key",                 // OpenAI/Anthropic bad key
 	"incorrect api key",               // OpenAI verbatim
 	"invalid_api_key",                 // OpenAI error code field
 	"authentication_error",            // Anthropic error type field
 	"oauth token has expired",         // Anthropic OAuth (claude_code) expiry
+}
+
+func matchesAuthFailed(msg string) bool {
+	if delegate.ExplicitCredentialFailure(msg) {
+		return true
+	}
+	for _, needle := range authFailedNeedles {
+		if strings.Contains(msg, needle) {
+			return true
+		}
+	}
+	return false
 }
 
 // networkTransientNeedles enumerates the lowercase substrings that

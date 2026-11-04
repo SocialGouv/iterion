@@ -11,14 +11,8 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 )
 
-// Schema re-ask — the one more turn the executor spends when an LLM node's
-// answer fails its output schema on a shape a second ask can fix (a missing
-// required field, or text where JSON was expected). The re-ask CONTINUES the
-// model's work rather than repeating it: the validation error is the model's
-// next input, in the conversation it just finished. Which continuation a
-// backend offers is what these modes name; `delegate_retry.reask` and the
-// re-ask's own delegate events carry the one taken. One re-ask, never more:
-// a second identical answer is the model's verdict, and the node fails on it.
+// Schema re-asks continue the completed work with validation feedback. The
+// runtime's durable output-correction allowance bounds every additional call.
 const (
 	// ReaskContinueConversation is claw's: the conversation the node just
 	// completed (kept in the executor's session store) is replayed and the
@@ -112,18 +106,23 @@ func (e *ClawExecutor) planSchemaReask(ctx context.Context, backendName string, 
 		why = fmt.Sprintf("backend %q does not resume a session", backendName)
 	}
 
-	// Restart: the turn again, the feedback appended to the prompt (and,
-	// for a multimodal task, as an extra text block). The slice header is
-	// copied so the original task's backing array stays untouched. On a
-	// claw node resumed from a pause the resume form replays the pause and
-	// discards the prompt, feedback included — the floor the continuation
-	// modes exist to lift, reached only when no conversation was captured.
+	// Restart with feedback when no completed conversation can be read.
+	// A pending pause is already answered: replaying it would discard the
+	// new prompt and silently lose the validation error.
 	restart := *task
+	restart.ResumeConversation = nil
+	restart.ResumePendingToolUseID = ""
+	restart.ResumeAnswer = ""
+	priorInteraction := ""
+	if task.ResumeAnswer != "" {
+		priorInteraction = "\n\n[PRIOR INTERACTION]\nOperator answer: " + task.ResumeAnswer
+		restart.UserPrompt += priorInteraction
+	}
 	restart.UserPrompt = appendSchemaRetryFeedback(restart.UserPrompt, feedback)
 	if len(restart.UserContent) > 0 {
 		restart.UserContent = append(
 			append([]delegate.ContentBlock(nil), restart.UserContent...),
-			delegate.ContentBlock{Type: "text", Text: feedback},
+			delegate.ContentBlock{Type: "text", Text: priorInteraction + "\n\n" + feedback},
 		)
 	}
 	return schemaReask{task: restart, mode: ReaskRestart, why: why}
@@ -159,10 +158,17 @@ func (e *ClawExecutor) planSchemaReask(ctx context.Context, backendName string, 
 // not a conversation a provider accepts.
 func (e *ClawExecutor) completedClawConversation(ctx context.Context, task *delegate.Task, result delegate.Result) json.RawMessage {
 	runID, sessions := runtimeContextFrom(ctx)
-	if runID == "" || sessions == nil {
-		return nil
+	var messages []api.Message
+	if runID != "" && sessions != nil {
+		messages = sessions.load(runID, taskSessionKey(*task))
 	}
-	messages := sessions.load(runID, taskSessionKey(*task))
+	if len(messages) == 0 && len(task.ResumeConversation) > 0 && task.ResumePendingToolUseID != "" {
+		if err := json.Unmarshal(task.ResumeConversation, &messages); err != nil {
+			e.logger.Warn("[%s] schema re-ask: decode answered pause: %v", task.NodeID, err)
+			return nil
+		}
+		messages = append(messages, api.Message{Role: "user", Content: []api.ContentBlock{api.ToolResult{ToolUseID: task.ResumePendingToolUseID, Content: task.ResumeAnswer}.ToContentBlock()}})
+	}
 	if len(messages) == 0 {
 		return nil
 	}
@@ -227,7 +233,7 @@ func reaskMarginalCost(first, reask delegate.Result, sameSession bool) float64 {
 }
 
 // emitReaskOutcome fires the re-ask's own delegate_finished / delegate_error,
-// marked attempt 2 with its mode, priced at what it added. The delegation's
+// marked with its attempt and mode, priced at what it added. The delegation's
 // own pair fired once, around the first answer, before validation ran; the
 // re-ask is a further real turn — the model's work, tokens, cost — and a
 // timeline that showed only its llm steps left its end unaccounted.
@@ -239,14 +245,14 @@ func reaskMarginalCost(first, reask delegate.Result, sameSession bool) float64 {
 // from the model spec names nothing for a bare id (codex's `gpt-*` under
 // `provider: openai`) and the prefix's provider over a hint-steered route
 // (pi's `anthropic/…` under `provider: openrouter`).
-func (e *ClawExecutor) emitReaskOutcome(nodeID, backendName, declaredModel string, reask schemaReask, first, result delegate.Result, err error, sameSession bool) {
+func (e *ClawExecutor) emitReaskOutcome(nodeID, backendName, declaredModel string, reask schemaReask, result delegate.Result, err error, marginalCost float64, attempt int) {
 	di := delegateInfoFromResult(firstNonEmpty(result.BackendName, backendName), result)
 	di.DeclaredModel = declaredModel
 	di.RouteModel = reask.task.Model
 	di.Provider = servingProvider(backendName, &reask.task)
-	di.Attempt = 2
+	di.Attempt = attempt
 	di.Reask = reask.mode
-	di.CostUSD = reaskMarginalCost(first, result, sameSession)
+	di.CostUSD = marginalCost
 	if err != nil {
 		di.Error = err
 		if e.hooks.OnDelegateError != nil {

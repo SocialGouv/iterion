@@ -266,7 +266,12 @@ func (e *Engine) runSubbotNode(ctx context.Context, rs *runState, nodeID string,
 		vars["_lease_"+res] = id
 	}
 
-	output, err := e.subbotRunner(ctx, SubbotRequest{
+	key := e.subbotReattachKey(nodeID, rs.loopCounters, branchID)
+	childCtx, err := e.subbotCorrectionContext(ctx, rs, nodeID, key)
+	if err != nil {
+		return nil, err
+	}
+	output, err := e.subbotRunner(childCtx, SubbotRequest{
 		OnChildAttached: func(childRunID string) error {
 			return e.emitBranch(ctx, rs.runID, branchID, store.EventSubbotAttached, nodeID, map[string]any{"child_run_id": childRunID})
 		},
@@ -274,7 +279,7 @@ func (e *Engine) runSubbotNode(ctx context.Context, rs *runState, nodeID string,
 		Vars:        vars,
 		ParentRunID: rs.runID,
 		NodeID:      nodeID,
-		ReattachKey: e.subbotReattachKey(nodeID, rs.loopCounters, branchID),
+		ReattachKey: key,
 		WorkDir:     e.workDir,
 		// The author's assertion that the child writes no shared workspace:
 		// the runner hands it to the child engine, which then keeps its own
@@ -291,7 +296,7 @@ func (e *Engine) runSubbotNode(ctx context.Context, rs *runState, nodeID string,
 	})
 	if err != nil {
 		return nil, &RuntimeError{
-			Code:    ErrCodeExecutionFailed,
+			Code:    nodeFailureCode(err),
 			Message: fmt.Sprintf("subbot %q (source %q): %v", nodeID, sn.Source, err),
 			NodeID:  nodeID,
 			Cause:   err,

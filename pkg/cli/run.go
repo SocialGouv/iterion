@@ -249,6 +249,7 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 	defer telemetry.shutdown()
 
 	engineOpts := []runtime.EngineOption{
+		runtime.WithOutputValidation(true),
 		runtime.WithLogger(logger),
 		runtime.WithRecoveryDispatch(recovery.Dispatch(recovery.DefaultRecipes())),
 	}
@@ -936,6 +937,7 @@ func buildEngine(
 	extraSkills, extraSkillsOrigin := ResolveExtraSkills(opts.Skills)
 	return runtime.New(wf, s, executor,
 		append(base,
+			runtime.WithOutputValidation(true),
 			runtime.WithWorkflowHash(wfHash),
 			runtime.WithFilePath(iterFile),
 			runtime.WithRunName(runName),

@@ -534,11 +534,11 @@ func TestClawBackend_AReaskTransientIsNotReplayed(t *testing.T) {
 		}}
 		reg := NewRegistry()
 		reg.Register("test", func(string) (api.APIClient, error) { return client, nil })
-		_, err := NewClawBackend(reg, EventHooks{}, policy).Execute(context.Background(), delegate.Task{
+		result, err := NewClawBackend(reg, EventHooks{}, policy).Execute(context.Background(), delegate.Task{
 			NodeID: "judge", Model: "test/test-model", UserPrompt: "Judge.", OutputSchema: schemaJSON,
 		})
-		if err == nil {
-			t.Fatal("a model that never answers the schema succeeded")
+		if err != nil || !result.ParseFallback {
+			t.Fatalf("structured failure must reach schema correction: result=%+v err=%v", result, err)
 		}
 		if n := client.count(); n != 2 {
 			t.Errorf("%d provider calls, want the forced turn and its re-ask only", n)

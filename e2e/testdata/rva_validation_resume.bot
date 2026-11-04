@@ -1,0 +1,18 @@
+schema note:
+  value: string
+
+agent first:
+  model: "claude-opus-4-7"
+  output: note
+
+agent second:
+  model: "claude-opus-4-7"
+  output: note
+
+workflow rva_validation_resume:
+  worktree: none
+  sandbox: none
+  entry: first
+
+  first -> second
+  second -> done

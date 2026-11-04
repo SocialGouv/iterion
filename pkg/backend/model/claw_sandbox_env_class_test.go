@@ -119,6 +119,7 @@ type hostSideRead struct {
 }
 
 var hostSideEnvReads = map[string]hostSideRead{
+	"ITERION_OUTPUT_CORRECTION_BUDGET":     {"the host executor owns validation and reserves correction turns; the runner executes only the reserved task", []string{"DefaultOutputCorrectionBudget"}},
 	"ITERION_CLAW_COMPACT_THRESHOLD_RATIO": {whyTaskField, []string{"resolveCompaction"}},
 	"ITERION_CLAW_COMPACT_PRESERVE_RECENT": {whyTaskField, []string{"resolveCompaction"}},
 	"ITERION_COMPRESS":                     {whyTaskField, []string{"NewClawExecutor"}},

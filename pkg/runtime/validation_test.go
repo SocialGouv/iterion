@@ -723,7 +723,7 @@ func TestSchemaValidation_CorrectionCarriesUsageMetadata(t *testing.T) {
 	t.Fatal("my_agent node_finished event not found")
 }
 
-func TestSchemaValidation_DisabledByDefault(t *testing.T) {
+func TestSchemaValidation_ExplicitlyDisabled(t *testing.T) {
 	wf := validationWorkflow()
 
 	exec := newStubExecutor()
@@ -735,7 +735,7 @@ func TestSchemaValidation_DisabledByDefault(t *testing.T) {
 		}, nil
 	})
 
-	eng := New(wf, tmpStore(t), exec) // no WithOutputValidation
+	eng := New(wf, tmpStore(t), exec, WithOutputValidation(false))
 	err := eng.Run(context.Background(), "run-val-disabled", nil)
 	if err != nil {
 		t.Fatalf("expected success with validation disabled, got: %v", err)

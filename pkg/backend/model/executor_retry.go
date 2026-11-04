@@ -1152,6 +1152,9 @@ func (e *ClawExecutor) dispatchChain(
 		lastBackend  string
 		lastModel    string
 		lastProvider string
+		// lastTask is the task the most recently executed route ran — a
+		// copy, since a later build rewrites the shared task.
+		lastTask *delegate.Task
 		// pendingMarker is the cross-harness marker of the fall-through
 		// that routed here — computed beside the note that emitted the
 		// event, consumed by this element's build, which attaches the
@@ -1311,6 +1314,8 @@ func (e *ClawExecutor) dispatchChain(
 			}
 		}
 		lastBackend, lastModel, lastProvider = backendName, task.Model, servingProvider(backendName, task)
+		origin := *task
+		lastTask = &origin
 		sessionBeforeAttempt := e.snapshotTaskSession(ctx, task)
 		// Set when THIS dispatch carried a session forward, so the carry
 		// can be undone: only a session we introduced is ours to drop.
@@ -1440,7 +1445,7 @@ func (e *ClawExecutor) dispatchChain(
 			// donor's ledger — and the optional-session degrade made that
 			// reachable on a SINGLE-route node, where `spent` used to be
 			// provably empty at this point.
-			return itemised(chainOutcome{Result: spent.applyTo(result), BackendName: backendName, Route: task.Model, Provider: servingProvider(backendName, task)}), err
+			return itemised(chainOutcome{Result: spent.applyTo(result), BackendName: backendName, Route: task.Model, Provider: servingProvider(backendName, task), Task: lastTask}), err
 		}
 		cat := delegate.ClassifyFallback(err, isDelegateRetryable(err))
 		lastCat = cat
@@ -1523,9 +1528,9 @@ func (e *ClawExecutor) dispatchChain(
 	// lending donor's ledger.
 	result = spent.applyTo(result)
 	if len(chain) > 1 {
-		return itemised(chainOutcome{Result: result, BackendName: lastBackend, Route: lastModel, Provider: lastProvider}), &ErrChainExhausted{Chain: chainLabel(chain), Errs: causes}
+		return itemised(chainOutcome{Result: result, BackendName: lastBackend, Route: lastModel, Provider: lastProvider, Task: lastTask}), &ErrChainExhausted{Chain: chainLabel(chain), Errs: causes}
 	}
-	return itemised(chainOutcome{Result: result, BackendName: lastBackend, Route: lastModel, Provider: lastProvider}), err
+	return itemised(chainOutcome{Result: result, BackendName: lastBackend, Route: lastModel, Provider: lastProvider, Task: lastTask}), err
 }
 
 // fallbackRouteEnds resolves the two ends of a route change for the event

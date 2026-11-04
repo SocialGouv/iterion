@@ -11,10 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"os"
 	"sort"
-	"strconv"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -39,20 +36,9 @@ const tracerName = "github.com/SocialGouv/iterion/pkg/runtime"
 
 // EnvOutputCorrectionBudget is the process-wide default for bounded schema
 // correction. Launch surfaces can still override it with the engine option.
-const EnvOutputCorrectionBudget = "ITERION_OUTPUT_CORRECTION_BUDGET"
+const EnvOutputCorrectionBudget = model.EnvOutputCorrectionBudget
 
-func defaultOutputCorrectionBudget() int {
-	const fallback = 2
-	raw := strings.TrimSpace(os.Getenv(EnvOutputCorrectionBudget))
-	if raw == "" {
-		return fallback
-	}
-	n, err := strconv.Atoi(raw)
-	if err != nil || n < 0 {
-		return fallback
-	}
-	return n
-}
+func defaultOutputCorrectionBudget() int { return model.DefaultOutputCorrectionBudget() }
 
 // ErrRunPaused is returned by Run or Resume when execution is suspended
 // at a human node. This is not a failure — the run can be resumed via
@@ -458,7 +444,7 @@ func New(wf *ir.Workflow, s store.RunStore, exec NodeExecutor, opts ...EngineOpt
 	// executors while preserving legacy fail-fast behaviour for executors that
 	// do not implement OutputCorrector. WithOutputCorrectionBudget(0) disables
 	// it explicitly.
-	e := &Engine{workflow: wf, store: s, executor: exec, outputCorrectionBudget: defaultOutputCorrectionBudget(), parallelSaveWindow: defaultParallelSaveWindow()}
+	e := &Engine{workflow: wf, store: s, executor: exec, validateOutputs: true, outputCorrectionBudget: defaultOutputCorrectionBudget(), parallelSaveWindow: defaultParallelSaveWindow()}
 	for _, opt := range opts {
 		opt(e)
 	}
@@ -484,12 +470,7 @@ func NewFromRecipe(r *recipe.RecipeSpec, wf *ir.Workflow, s store.RunStore, exec
 	if err != nil {
 		return nil, fmt.Errorf("runtime: apply recipe %q: %w", r.Name, err)
 	}
-	e := &Engine{workflow: applied, store: s, executor: exec, outputCorrectionBudget: defaultOutputCorrectionBudget(), parallelSaveWindow: defaultParallelSaveWindow()}
-	for _, opt := range opts {
-		opt(e)
-	}
-	e.installLogRedactor()
-	return e, nil
+	return New(applied, s, exec, opts...), nil
 }
 
 // runState holds the mutable runtime state passed through the execution loop.
@@ -713,6 +694,12 @@ type runState struct {
 	// so the recovery dispatcher can apply per-class retry budgets and
 	// reset them after a successful execution. Keys are created lazily.
 	nodeAttempts map[string]map[ErrorCode]int
+
+	// retrySessionCosts holds cost readings already booked during an in-place
+	// recovery sequence. Tokens always count calls; only an explicitly
+	// session-total cost with the same backend and session can overlap.
+	// Success clears the sequence after its final booking.
+	retrySessionCosts map[string]map[retrySessionCostKey]float64
 
 	// attachments holds the resolved per-attachment view exposed to
 	// templates as {{attachments.X[.path|.url|.mime|.size|.sha256]}}.

@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -120,10 +121,8 @@ func TestFailedNodeSpendIsRecorded(t *testing.T) {
 	}
 }
 
-// And the WIRING, which is the half a helper test cannot show: a node that
-// fails terminally books its spend, while one the engine retries IN PLACE
-// does not — the retry continues a session whose usage is cumulative, so
-// counting both would bill the same tokens twice.
+// A failure and its recovery both spend per-call tokens. Only a cost
+// explicitly reported as the same session's total overlaps across attempts.
 func TestFailedNodeSpendReachesTheRunOnlyOnce(t *testing.T) {
 	build := func() *ir.Workflow {
 		return &ir.Workflow{
@@ -168,86 +167,87 @@ func TestFailedNodeSpendReachesTheRunOnlyOnce(t *testing.T) {
 		}
 	})
 
-	// The other half, and the one a booking call added at the retry exit would
-	// break silently: an attempt the engine retries IN PLACE is NOT booked,
-	// because the retry continues the same session and reports that session's
-	// running total. Booking the abandoned attempt as well bills its tokens a
-	// second time. Driven through the production ClawExecutor and a real
-	// delegate.Backend, so the numbers under test are the ones a session-
-	// cumulative backend actually reports — a runtime stub would only be
-	// re-stating the assumption.
-	t.Run("an in-place retry books the session once, not once per attempt", func(t *testing.T) {
-		backend := &sessionCumulativeBackend{}
-		reg := delegate.NewRegistry()
-		reg.Register("cumulative_stub", backend)
-		wf := build()
-		wf.Nodes["agent"] = &ir.AgentNode{
-			BaseNode:  ir.BaseNode{ID: "agent"},
-			LLMFields: ir.LLMFields{Backend: "cumulative_stub", Model: "anthropic/claude-opus-5"},
-		}
-		exec := model.NewClawExecutor(model.NewRegistry(), wf,
-			model.WithBackendRegistry(reg),
-			// The engine's recovery dispatcher drives the retry; the
-			// executor's own ladder would hide it inside one Execute.
-			model.WithRetryPolicy(model.RetryPolicy{MaxAttempts: 1}),
-		)
-		// Retry the first failure, then let the second attempt stand.
-		dispatch := RecoveryDispatch(func(_ context.Context, _ error, prior func(ErrorCode) int) (RecoveryAction, ErrorCode) {
-			if prior(ErrCodeRateLimited) > 0 {
-				return RecoveryAction{Kind: RecoveryFailTerminal}, ErrCodeRateLimited
+	for _, tc := range []struct {
+		name          string
+		secondSession string
+		perCallCost   bool
+		failSecond    bool
+		wantCost      float64
+	}{
+		{"same session succeeds", "session-1", false, false, 1.60},
+		{"same session fails", "session-1", false, true, 1.60},
+		{"new session sums", "session-2", false, false, 2.60},
+		{"per-call cost sums", "session-1", true, false, 2.60},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			backend := &sessionCumulativeBackend{secondSession: tc.secondSession, perCallCost: tc.perCallCost, failSecond: tc.failSecond}
+			reg := delegate.NewRegistry()
+			reg.Register("cumulative_stub", backend)
+			wf := build()
+			wf.Nodes["agent"] = &ir.AgentNode{
+				BaseNode:  ir.BaseNode{ID: "agent"},
+				LLMFields: ir.LLMFields{Backend: "cumulative_stub", Model: "anthropic/claude-opus-5"},
 			}
-			return RecoveryAction{Kind: RecoveryRetrySameNode}, ErrCodeRateLimited
-		})
+			exec := model.NewClawExecutor(model.NewRegistry(), wf,
+				model.WithBackendRegistry(reg),
+				// The engine's recovery dispatcher drives the retry; the
+				// executor's own ladder would hide it inside one Execute.
+				model.WithRetryPolicy(model.RetryPolicy{MaxAttempts: 1}),
+			)
+			// Retry the first failure, then let the second attempt stand.
+			dispatch := RecoveryDispatch(func(_ context.Context, _ error, prior func(ErrorCode) int) (RecoveryAction, ErrorCode) {
+				if prior(ErrCodeRateLimited) > 0 {
+					return RecoveryAction{Kind: RecoveryFailTerminal}, ErrCodeRateLimited
+				}
+				return RecoveryAction{Kind: RecoveryRetrySameNode}, ErrCodeRateLimited
+			})
 
-		st := &checkpointCapturingStore{RunStore: tmpStore(t)}
-		eng := New(wf, st, exec, WithRecoveryDispatch(dispatch))
-		if err := eng.Run(context.Background(), "run-spend-retry", nil); err != nil {
-			t.Fatalf("the retry was supposed to carry the run through: %v", err)
-		}
-		if backend.calls != 2 {
-			t.Fatalf("expected a failed attempt and its retry, got %d delegation(s)", backend.calls)
-		}
-		cp := st.lastCheckpoint()
-		if cp == nil {
-			t.Fatal("no checkpoint to read the budget from")
-		}
-		// 8_000 is the SESSION's total as the successful retry reports it.
-		// 13_000 (5_000 + 8_000) is what booking the abandoned attempt too
-		// would produce — the same tokens billed twice.
-		if cp.BudgetTokensUsed != 8_000 {
-			t.Fatalf("the retried session was not booked exactly once: %d tokens (5_000 + 8_000 = double-billed)", cp.BudgetTokensUsed)
-		}
-		if cp.BudgetCostUSD != 1.60 {
-			t.Fatalf("the retried session's cost was not booked exactly once: %v", cp.BudgetCostUSD)
-		}
-	})
+			st := &checkpointCapturingStore{RunStore: tmpStore(t)}
+			eng := New(wf, st, exec, WithRecoveryDispatch(dispatch))
+			if err := eng.Run(context.Background(), "run-spend-retry", nil); (err != nil) != tc.failSecond {
+				t.Fatalf("final failure=%v: %v", tc.failSecond, err)
+			}
+			if backend.calls != 2 {
+				t.Fatalf("expected a failed attempt and its retry, got %d delegation(s)", backend.calls)
+			}
+			cp := st.lastCheckpoint()
+			if cp == nil {
+				t.Fatal("no checkpoint to read the budget from")
+			}
+			if cp.BudgetTokensUsed != 8_000 {
+				t.Fatalf("calls booked %d tokens, want 8_000 (5_000 + 3_000)", cp.BudgetTokensUsed)
+			}
+			if cp.BudgetCostUSD != tc.wantCost {
+				t.Fatalf("calls booked %v USD, want %v", cp.BudgetCostUSD, tc.wantCost)
+			}
+		})
+	}
 }
 
-// sessionCumulativeBackend is the shape the engine's no-book-on-retry rule
-// rests on: the first delegation dies after burning 5_000 tokens, and the
-// retry — continuing the SAME session — reports the session's running total
-// (8_000), not the 3_000 it added. claude_code accounts this way by design
-// (`annotateCost` takes the max across result messages rather than the sum).
+// sessionCumulativeBackend reports call tokens and optionally session-total
+// costs, matching the independent counter scopes in delegate.Result.
 type sessionCumulativeBackend struct {
-	calls int
+	calls         int
+	secondSession string
+	perCallCost   bool
+	failSecond    bool
 }
 
 func (b *sessionCumulativeBackend) Execute(_ context.Context, _ delegate.Task) (delegate.Result, error) {
 	b.calls++
-	if b.calls == 1 {
-		return delegate.Result{
-			CostUSD:     1.00,
-			Output:      map[string]any{"_tokens": 5_000, "_cost_usd": 1.00},
-			Tokens:      5_000,
-			BackendName: "cumulative_stub",
-		}, errors.New("stream closed mid-session")
+	result := delegate.Result{
+		CostUSD: 1.00, Tokens: 5_000, BackendName: "cumulative_stub",
+		CostIsSessionTotal: !b.perCallCost, SessionID: "session-1",
 	}
-	return delegate.Result{
-		CostUSD:     1.60,
-		Output:      map[string]any{"ok": true, "_tokens": 8_000, "_cost_usd": 1.60},
-		Tokens:      8_000,
-		BackendName: "cumulative_stub",
-	}, nil
+	if b.calls == 1 {
+		return result, errors.New("stream closed mid-session")
+	}
+	result.CostUSD, result.Tokens, result.SessionID = 1.60, 3_000, b.secondSession
+	if b.failSecond {
+		return result, errors.New("stream closed again")
+	}
+	result.Output = map[string]any{"ok": true}
+	return result, nil
 }
 
 // Booking is ACCOUNTING, never a verdict. A failing node whose spend also
@@ -432,7 +432,7 @@ func (b *meteredInvalidBackend) Execute(_ context.Context, _ delegate.Task) (del
 	b.calls++
 	return delegate.Result{
 		CostUSD:     3.30,
-		Output:      map[string]any{"verdict": "not-a-bool", "_tokens": 22_000, "_cost_usd": 3.30},
+		Output:      map[string]any{"verdict": fmt.Sprintf("not-a-bool-%d", b.calls), "_tokens": 22_000, "_cost_usd": 3.30},
 		Tokens:      22_000,
 		BackendName: "metered_stub",
 	}, nil
@@ -486,8 +486,8 @@ func TestPostDispatchValidationFailureStillBooksItsSpend(t *testing.T) {
 	if err := eng.Run(context.Background(), "run-metered-invalid", nil); err == nil {
 		t.Fatal("the run was supposed to fail on the schema")
 	}
-	if backend.calls != 1 {
-		t.Fatalf("a type mismatch is not retry-eligible; expected one delegation, got %d", backend.calls)
+	if backend.calls != 3 {
+		t.Fatalf("the correction allowance permits two re-asks; expected three delegations, got %d", backend.calls)
 	}
 
 	r, err := st.LoadRun(context.Background(), "run-metered-invalid")
@@ -497,10 +497,10 @@ func TestPostDispatchValidationFailureStillBooksItsSpend(t *testing.T) {
 	if r.Checkpoint == nil {
 		t.Fatal("no checkpoint to read the budget from")
 	}
-	if r.Checkpoint.BudgetTokensUsed != 22_000 {
+	if r.Checkpoint.BudgetTokensUsed != 66_000 {
 		t.Fatalf("the served session's tokens never reached the run: %d", r.Checkpoint.BudgetTokensUsed)
 	}
-	if r.Checkpoint.BudgetCostUSD != 3.30 {
+	if got := r.Checkpoint.BudgetCostUSD; got < 9.899999 || got > 9.900001 {
 		t.Fatalf("the served session's cost never reached the run: %v", r.Checkpoint.BudgetCostUSD)
 	}
 }
@@ -530,8 +530,8 @@ func (b *meteredUnparseableBackend) Execute(_ context.Context, _ delegate.Task) 
 // the sub-test below drives the other one — unparseable prose after the text
 // wrapper — through the same assertion.
 //
-// A router's schema failure is re-asked once like an agent's, so the bill the
-// run must book is TWO served generations; the prose case also pays the
+// A router's schema failure gets two corrections like an agent's, so the bill
+// includes THREE served generations; the prose case spends its last attempt on
 // last-resort extraction, a direct claw structured call (its forced turn and
 // its one unforced re-ask) — scripted here on a provider of its own, so the
 // test never reaches the host's credentials.
@@ -570,7 +570,7 @@ func TestPostDispatchRouterValidationFailureStillBooksItsSpend(t *testing.T) {
 		// extraction's own two turns of 250 on the prose case.
 		tokens int
 	}{
-		{"schema invalid", &meteredInvalidBackend{}, 44_000},
+		{"schema invalid", &meteredInvalidBackend{}, 66_000},
 		{"unparseable after the text wrapper", &meteredUnparseableBackend{}, 44_500},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

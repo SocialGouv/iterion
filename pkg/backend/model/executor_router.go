@@ -320,6 +320,7 @@ func (e *ClawExecutor) executeLLMRouterUnified(ctx context.Context, node *ir.Rou
 	stampDelegateOutputMeta(result.Output, result, servingBackendName)
 	stampServingRoute(result.Output, out)
 
+	stampForkOrigin(result.Output, servingTask)
 	return result.Output, nil
 }
 

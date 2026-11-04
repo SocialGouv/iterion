@@ -25,7 +25,7 @@ func TestRunBudgetNamespaceDrivesACompute(t *testing.T) {
 		File:          filepath.Join("testdata", "run_budget_namespace_mini.bot"),
 		StoreDir:      storeDir,
 		RunID:         runID,
-		Executor:      newScenarioExecutor(),
+		Executor:      newBudgetScenarioExecutor(),
 		NoInteractive: true,
 		MergeInto:     "none",
 	}, &cli.Printer{W: io.Discard, Format: cli.OutputJSON})

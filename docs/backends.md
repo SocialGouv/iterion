@@ -1131,32 +1131,44 @@ attempt to the route's last-good, provider-neutral message snapshot. This keeps
 a named durable chat slot intact without carrying partial output into the next
 route.
 
-### A schema-invalid answer gets one more turn (the schema re-ask)
+### A schema-invalid answer gets bounded correction turns (the schema re-ask)
 
-An LLM node's answer that fails its `output:` schema on a shape one more ask
-can fix — a required field missing, or text where JSON was expected — is not
-the node's verdict yet: the executor **re-asks the model once**, with the
-validation error as its next input, in the context the answer was produced
-in. A type or enum mismatch is the model's answer in a stable shape and fails
-the node without a re-ask; so does a second answer that is still invalid
-(`structured output invalid after retry`).
+An LLM node's answer that fails its `output:` schema is corrected by the
+executor with the validation error as the model's next input. Missing fields,
+parse fallbacks, type mismatches, enum violations and forbidden nulls all use
+this same bounded loop. The runtime supplies the per-node correction budget
+(default **2**, overridden by `ITERION_OUTPUT_CORRECTION_BUDGET` or
+`WithOutputCorrectionBudget`; **0** disables correction), persists attempts
+before calling the model, and emits `node_recovery` events with
+`strategy: schema_output_correction`. Exhaustion surfaces `SCHEMA_VALIDATION`;
+generic recovery does not repeat the business prompt without feedback. An
+unchanged invalid answer stops the loop early. Malformed budget values emit
+`OUTPUT_CORRECTION_BUDGET_INVALID` before using the default. Validation
+feedback is truncated at 2048 bytes with a UTF-8-safe boundary and a truncation marker.
 
 How the re-ask continues the model's work depends on what the backend can
 continue. The mode rides the `delegate_retry` event (`reask`) and the
 re-ask's own `delegate_started` / `delegate_finished` / `delegate_error`,
-marked `attempt: 2`:
+marked with their attempt number (the first re-ask is `attempt: 2`):
 
 | Backend | `reask` | What the model is sent |
 |---|---|---|
 | `claw`, in-process or sandboxed | `continue_conversation` | The conversation it just completed — its own answer as the last assistant turn — then the validation error as a user turn: one schema-forced call, tools off, run in-process (nothing in it touches the workspace) |
 | `claude_code`, `codex`, `pi` | `resume_session` | The session the answer ran in, resumed by id (never forked, never best-effort), with the validation error as the new prompt; the backend's own structured-output pass runs on top |
-| `kimi`, `grok`; a session backend that reported no session id; a claw node with no captured conversation | `restart` | The whole turn again, the validation error appended to the prompt — the floor, kept rather than refused: it is still a chance the node would not otherwise get. One exception, reachable only when the capture itself failed (an in-container runner without the capture sink): a claw node resumed from a pause replays the pause behind the restart and the appended error is dropped with the prompt — the turn runs again without the feedback |
+| `kimi`, `grok`; a session backend that reported no session id; a claw node with no captured conversation | `restart` | The whole turn again, the validation error appended to the prompt — the floor, kept rather than refused: it is still a chance the node would not otherwise get. An answered pause contributes its operator answer without replaying its control fields |
 
-**Budget: one re-ask.** A re-ask that comes back as unstructured text still
-gets the last-resort extraction (a direct claw call over that text, below); a
-re-ask that comes back invalid, or fails, fails the node — with the re-ask's
-own error wrapped beside the validation error, so a usage window hit during
-the re-ask is still the typed refusal the run-level retry keys on.
+**One allowance for every correction.** The last-resort claw extraction of
+unstructured text consumes an attempt from the same budget. An unavailable
+extraction route consumes none. A failed re-ask tries extraction before
+returning its own typed transport, authentication or quota failure. An
+extraction failure is logged and stays inside the schema correction loop;
+the host extraction credential is not the node credential. Runtime validation
+is enabled by default in every engine: run, resume, subbot, studio, runner and
+dispatcher. It covers executors and node kinds that do not validate their own
+output. Correction deadlines apply to corrective calls only; expiration of
+the run duration budget remains `BUDGET_EXCEEDED`. The durable ledger scrubs
+errors before persistence, distinguishes nested loop invocations and follows
+a replacement child under the same parent subbot attachment.
 
 **Cost: a real turn, billed as one.** The re-ask's tokens and cost fold onto
 the node's `_tokens` / `_cost_usd` under the rule an in-place retry follows

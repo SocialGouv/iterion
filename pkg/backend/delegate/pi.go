@@ -861,6 +861,9 @@ func piClassifyFailure(m pisdk.Message) error {
 	case status == 408, status == 409, status >= 500:
 		return &ErrTransient{Provider: BackendPi, Reason: fmt.Sprintf("upstream %d", status), Detail: msg}
 	case status == 401, status == 403:
+		if ModelAccessDenied(status, msg) {
+			return &ErrModelUnavailable{Provider: BackendPi, Model: m.Model, Detail: msg}
+		}
 		// Deterministic: the credential was rejected. Retrying burns
 		// attempts against a failure that cannot resolve itself. Typed so
 		// callers can ACT on it — the credential pool holds a donor whose

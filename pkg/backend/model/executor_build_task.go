@@ -24,6 +24,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/tool"
 	"github.com/SocialGouv/iterion/pkg/backend/toolcatalog"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/google/uuid"
 )
@@ -296,6 +297,9 @@ func stampDelegateOutputMeta(output map[string]any, result delegate.Result, back
 	if result.CostUSD > 0 {
 		output["_cost_usd"] = result.CostUSD
 	}
+	if result.CostIsSessionTotal {
+		output["_cost_is_session_total"] = true
+	}
 	cost.SetUnreportedCalls(output, result.UnreportedCalls)
 	if result.ParseFallback {
 		output["_parse_fallback"] = true
@@ -355,6 +359,7 @@ func meteredFailureOutput(out chainOutcome, backendName string) map[string]any {
 	// failure path must too, or a delegate that filled Result.Tokens
 	// without touching the map reports a spend of zero.
 	stampDelegateOutputMeta(output, out.Result, firstNonEmpty(out.BackendName, backendName))
+	stampForkOrigin(output, out.Task)
 	return output
 }
 
@@ -971,42 +976,10 @@ func (e *ClawExecutor) executeBackend(ctx context.Context, node ir.Node, input m
 		}
 	}
 
+	stampForkOrigin(result.Output, servingTask)
 	return result.Output, nil
 }
 
-// validateAndRetry validates result.Output against the node's schema. On
-// success, the input result is returned unchanged. On a validation
-// failure that one more ask can plausibly fix (parse-fallback OR missing-
-// required-field), the model is RE-ASKED once, through retryDelegateLoop
-// so the re-ask inherits the standard transient-backoff budget, and the
-// re-ask's answer is re-validated. The re-ask continues the model's work
-// rather than repeating it (planSchemaReask): on claw the completed
-// conversation is replayed with the validation error as its next user turn
-// (one schema-forced call, tools off); on a backend that resumes by session
-// id the first answer's session is resumed with the validation error as the
-// new prompt; where neither is possible the turn restarts with the error
-// appended to the prompt. The re-ask is a real turn and is observed as one:
-// OnDelegateRetry announces it (with its mode), its own OnDelegateStarted /
-// OnDelegateFinished / OnDelegateError fire marked attempt 2, and token /
-// duration / cost are folded across every generation the node paid for —
-// the first attempt, the re-ask, and the claw recovery below when it ran —
-// so per-node accounting reflects the full cost paid; stampDelegateOutputMeta
-// is re-applied after the re-ask so observability keys remain consistent.
-// Any other validation failure (type mismatch, enum violation) fails the
-// node without a re-ask; a re-ask that still fails surfaces the validation
-// error WITH the re-ask's own error wrapped beside it; the caller propagates.
-//
-// Why retry on missing-field errors: a real-world failure mode (Seki's
-// voter judges on gpt-5.5/forfait — see docs/bot-runs/sec-audit-source.md)
-// is the backend returning *valid* JSON that simply omits required fields
-// when the model is overwhelmed or the response is truncated. Without
-// a retry, one transient empty response hard-fails the whole run on the
-// first voter, even though the downstream aggregator (majority_verdict
-// behind `await: best_effort`) is already designed to tolerate a missing
-// voter. One retry on a missing-field error is the bounded-and-cheap
-// counterpart to the existing parse-fallback retry. Type / enum errors
-// stay non-retryable: those are the model returning the *wrong shape*,
-// which a second call from the same model is unlikely to flip.
 // textOf extracts the plain text a parse-fallback result wraps (the wrapped
 // {"text": …} shape); empty when the output carries no text field.
 func textOf(output map[string]any) string {
@@ -1014,6 +987,13 @@ func textOf(output map[string]any) string {
 		return text
 	}
 	return ""
+}
+
+func validateStructuredResult(result delegate.Result, schema *ir.Schema) error {
+	if result.ParseFallback {
+		return fmt.Errorf("structured response could not be parsed: %s", textOf(result.Output))
+	}
+	return ValidateOutput(result.Output, schema)
 }
 
 func (e *ClawExecutor) validateAndRetry(
@@ -1025,124 +1005,89 @@ func (e *ClawExecutor) validateAndRetry(
 	result delegate.Result,
 	schema *ir.Schema,
 ) (delegate.Result, error) {
-	err := ValidateOutput(result.Output, schema)
-	if err == nil {
-		return result, nil
-	}
-	// A backend whose stream died on a provider error hands the error text
-	// to the parser as if it were the answer: « API Error: … » wrapped as
-	// plain text (ParseFallback), then validated as missing fields. Name
-	// THAT — the schema was never the problem; the fix is the provider
-	// route. Seen twice mislabeled in the field before this branch
-	// (#2465's publish judge, run 01a144f5, chased as a schema bug).
-	if text := textOf(result.Output); strings.Contains(text, "API Error:") {
-		line := strings.SplitN(strings.TrimSpace(text), "\n", 2)[0]
-		return result, fmt.Errorf("model: %s: the backend produced no structured output — its result is the provider's own error: %s", f.subject(), line)
-	}
-	// Retry-eligible: parse-fallback (LLM returned non-JSON the executor
-	// wrapped in a text field) OR missing-required-field (LLM returned
-	// truncated/empty JSON). Non-eligible (type mismatch, enum violation)
-	// are returned by the model in a stable shape; a second call is
-	// unlikely to change them.
-	retryEligible := result.ParseFallback || isMissingFieldError(err)
-	if !retryEligible {
-		return result, fmt.Errorf("model: %s: structured output invalid: %w", f.subject(), err)
-	}
-	// The re-ask: the validation error as the model's next input, in the
-	// conversation or session the first answer ran in wherever the backend
-	// can continue one. The ORIGINAL task is preserved untouched — its
-	// token/duration accounting has already been accumulated above and
-	// must not be disturbed.
-	reask := e.planSchemaReask(ctx, backendName, task, result, formatSchemaRetryFeedback(err))
-	e.logger.Warn("[%s#%d/%s] structured output validation failed, re-asking the model (%s): %v", f.id, task.Iteration, backendName, reask.label(), err)
-	// Fire OnDelegateRetry so observers (Prometheus exporter, event sink)
-	// see the re-ask coming — the outer retryDelegateLoop only knows about
-	// transient errors, not schema-shape failures.
-	if e.hooks.OnDelegateRetry != nil {
-		di := delegateInfoFromResult(backendName, result)
-		di.DeclaredModel = task.Model
-		di.Error = err
-		di.Attempt = 1
-		di.Reask = reask.mode
-		e.hooks.OnDelegateRetry(f.id, di)
-	}
-	retryTask := reask.task
-	if e.hooks.OnDelegateStarted != nil {
-		e.hooks.OnDelegateStarted(f.id, DelegateInfo{BackendName: backendName, DeclaredModel: task.Model, Attempt: 2, Reask: reask.mode})
-	}
-	// Route the re-ask through retryDelegateLoop so it inherits the same
-	// transient-error backoff every other delegate call gets — a direct
-	// backend.Execute here skipped the retry budget and gave up on the
-	// first transient SDK hiccup.
-	retryResult, retryErr := e.retryDelegateLoopReask(ctx, f.id, backendName, sharesSession(&retryTask), reask.mode, func() (delegate.Result, error) {
-		return e.executeDelegate(ctx, backend, retryTask)
-	})
-	// Whether the two attempts share one session decides how their figures
-	// fold (a session TOTAL folds at the max, per-call figures sum) — read
-	// off the results where both name their session, off the task otherwise.
-	sameSession := foldSameSession(result, retryResult, sharesSession(&retryTask))
-	e.emitReaskOutcome(f.id, backendName, task.Model, reask, result, retryResult, retryErr, sameSession)
-	if retryErr != nil || retryResult.ParseFallback {
-		// The same backend still couldn't emit schema-valid JSON. The steady
-		// state here is claude_code under the Anthropic OAuth *forfait*, which
-		// cannot produce native structured output at all (proven: even a
-		// trivial 2-field schema fails, while free-form prompts succeed). The
-		// forfait is usable ONLY by claude_code, so we can't just switch the
-		// node to claw. Instead, keep the agent's reasoning (done under the
-		// forfait) and extract the schema from its free-form text via claw with
-		// whatever provider the host has (openai/anthropic, key or forfait) — so
-		// a structured-output node works on EVERY backend×credential combo, not
-		// only api-key Anthropic. Fires only on the already-failing path, so it
-		// can only turn a hard failure into a success.
-		recovered, recoverySpend, ok := e.extractStructuredViaClaw(ctx, f.id, task, retryResult, result, schema, backendName)
-		if ok {
-			// The recovery ANSWERED — and it is a THIRD billed generation on
-			// top of two the node already owes. Folded in this order because
-			// the two rules differ and composing them the other way round
-			// breaks the first: the delegation and its retry fold by the
-			// session rule (a MAX when both report one cumulative total),
-			// and the recovery — a different provider, its own session —
-			// SUMS onto whatever that yields.
-			return foldSpend(recoverySpend, foldSpend(result, recovered, sameSession), false), nil
+	policy := outputCorrectionPolicy(ctx)
+	var costs correctionCosts
+	costs.add(result, task, backendName)
+	// The extraction fallback reads the same allowance, including when the
+	// executor is used directly without a runtime.
+	ctx = WithOutputCorrectionPolicy(ctx, policy)
+	for attempt := 1; ; attempt++ {
+		validationErr := validateStructuredResult(result, schema)
+		if validationErr == nil {
+			return result, nil
 		}
-		// The retry was a second generation and it was billed, whether it
-		// errored or came back parse-fallback again. Returning the first
-		// attempt alone reports half the bill to the caller that books it
-		// — the same accumulation the success path does at the bottom of
-		// this function, on the exit where the money is already spent and
-		// nothing downstream can recover it.
-		//
-		// FOLDED, not summed: `retryTask` is a copy of the task and keeps
-		// its SessionID, so on a node with `session: inherit/persist` both
-		// attempts report the SAME session — and claude_code's figure is a
-		// session TOTAL that already contains the first attempt's. Summing
-		// there bills those tokens twice on the very backend this exit
-		// exists for (the OAuth forfait that cannot emit structured output
-		// at all), and an over-count kills runs that still had budget. Same
-		// rule, same arguments as the success path below.
-		//
-		// `recoverySpend` is the recovery's own claw call, which was billed
-		// even though it gave up (a stream cut mid-answer, JSON the model
-		// malformed) — zero when it never reached a provider. Same two rules,
-		// same order as the recovered exit above.
-		return foldSpend(recoverySpend, foldSpend(result, retryResult, sameSession), false),
-			schemaReaskFailure(f.subject(), err, reask, retryErr)
+		if text := textOf(result.Output); strings.Contains(text, "API Error:") {
+			line := strings.SplitN(strings.TrimSpace(text), "\n", 2)[0]
+			return result, fmt.Errorf("model: %s: the backend produced no structured output — its result is the provider's own error: %s", f.subject(), line)
+		}
+		callCtx, cancelCall, err := policy.begin(ctx, result.Output, validationErr)
+		if err != nil {
+			return result, err
+		}
+		reask := e.planSchemaReask(ctx, backendName, task, result, formatSchemaRetryFeedback(validationErr))
+		e.logger.Warn("[%s#%d/%s] structured output validation failed, re-asking the model (%s): %v", f.id, task.Iteration, backendName, reask.label(), validationErr)
+		if e.hooks.OnDelegateRetry != nil {
+			di := delegateInfoFromResult(backendName, result)
+			di.DeclaredModel, di.Error, di.Attempt, di.Reask = task.Model, validationErr, attempt, reask.mode
+			e.hooks.OnDelegateRetry(f.id, di)
+		}
+		if e.hooks.OnDelegateStarted != nil {
+			e.hooks.OnDelegateStarted(f.id, DelegateInfo{BackendName: backendName, DeclaredModel: task.Model, Attempt: attempt + 1, Reask: reask.mode})
+		}
+		retryTask := reask.task
+		retryResult, retryErr := e.retryDelegateLoopReask(callCtx, f.id, backendName, sharesSession(&retryTask), reask.mode, func() (delegate.Result, error) {
+			return e.executeDelegate(callCtx, backend, retryTask)
+		})
+		marginalCost := costs.add(retryResult, &retryTask, backendName)
+		e.emitReaskOutcome(f.id, backendName, task.Model, reask, retryResult, retryErr, marginalCost, attempt+1)
+		if retryResult.SessionID == "" && !retryTask.ForkSession {
+			retryResult.SessionID = retryTask.SessionID
+		}
+
+		previous := result
+		result = costs.apply(foldSpend(result, retryResult, false))
+		stampDelegateOutputMeta(result.Output, result, backendName)
+		outcome := retryErr
+		if outcome == nil {
+			outcome = validateStructuredResult(result, schema)
+		}
+		unchanged := retryErr == nil && !result.ParseFallback && outcome != nil && outcome.Error() == validationErr.Error() && answeredText(previous) == answeredText(result)
+		if unchanged {
+			outcome = &OutputSchemaError{Cause: outcome, Unchanged: true}
+		}
+		afterErr := policy.After(callCtx, result.Output, outcome)
+		cancelCall()
+		if afterErr != nil {
+			return result, afterErr
+		}
+		if unchanged {
+			return result, outcome
+		}
+		if outcome == nil {
+			return result, nil
+		}
+		if retryErr != nil || result.ParseFallback {
+			recovered, spent, ok, recoveryErr := e.extractStructuredViaClaw(ctx, f.id, task, result, previous, schema, backendName)
+			costs.add(spent, task, backendName)
+			if recoveryErr != nil {
+				return foldSpend(spent, result, false), recoveryErr
+			}
+			if ok {
+				return foldSpend(spent, recovered, false), nil
+			}
+			result = foldSpend(spent, result, false)
+		}
+		if retryErr != nil {
+			return result, schemaReaskFailure(f.subject(), validationErr, reask, retryErr)
+		}
+		if result.ParseFallback && outcome != nil && outcome.Error() == validationErr.Error() && answeredText(previous) == answeredText(result) {
+			stopped := &OutputSchemaError{Cause: outcome, Unchanged: true}
+			if err := policy.After(ctx, result.Output, stopped); err != nil {
+				return result, err
+			}
+			return result, stopped
+		}
 	}
-	// Accumulate the first attempt from here so per-node accounting
-	// reflects the full cost paid (dropping it understated the run's real
-	// usage and broke budget enforcement at the margins). This is a retry
-	// IN PLACE, so it folds exactly like one — through foldSpend, rather
-	// than the hand-rolled `+=` that stood here: that one summed the
-	// struct fields only, and what enforcement reads is the OUTPUT MAP
-	// (runtime.extractUsage), so the first attempt's tokens never reached
-	// max_tokens and its cost was dropped outright.
-	retryResult = foldSpend(result, retryResult, sameSession)
-	// Re-attach metadata and re-validate.
-	stampDelegateOutputMeta(retryResult.Output, retryResult, backendName)
-	if retryValErr := ValidateOutput(retryResult.Output, schema); retryValErr != nil {
-		return retryResult, fmt.Errorf("model: %s: structured output invalid after retry: %w", f.subject(), retryValErr)
-	}
-	return retryResult, nil
 }
 
 // allowlistedDetectorPick vets the HOST's model pick against the run's
@@ -1196,16 +1141,16 @@ func (e *ClawExecutor) extractStructuredViaClaw(
 	secondary delegate.Result,
 	schema *ir.Schema,
 	sourceBackend string,
-) (out delegate.Result, spent delegate.Result, ok bool) {
+) (out delegate.Result, spent delegate.Result, ok bool, correctionErr error) {
 	if len(task.OutputSchema) == 0 {
-		return delegate.Result{}, delegate.Result{}, false
+		return delegate.Result{}, delegate.Result{}, false, nil
 	}
 	text := fallbackText(primary.Output)
 	if strings.TrimSpace(text) == "" {
 		text = fallbackText(secondary.Output)
 	}
 	if strings.TrimSpace(text) == "" {
-		return delegate.Result{}, delegate.Result{}, false
+		return delegate.Result{}, delegate.Result{}, false, nil
 	}
 	// A gateway-served node's recovery would be a VENDOR call the
 	// deployment never asked for: the detector picks a vendor default,
@@ -1213,24 +1158,24 @@ func (e *ClawExecutor) extractStructuredViaClaw(
 	// leak #2028 exists to close. Skip, named.
 	if modelroute.Parse(task.Model).Gateway() {
 		e.logger.Warn("[%s] structured-output recovery skipped: the node is served by the OpenAI-compatible gateway, and the recovery would spend a vendor default", nodeID)
-		return delegate.Result{}, delegate.Result{}, false
+		return delegate.Result{}, delegate.Result{}, false, nil
 	}
 	modelSpec := e.detectorSuggestedModel()
 	if modelSpec == "" {
 		e.logger.Warn("[%s] structured-output recovery skipped: no claw provider detected", nodeID)
-		return delegate.Result{}, delegate.Result{}, false
+		return delegate.Result{}, delegate.Result{}, false, nil
 	}
 	modelSpec, err := e.allowlistedDetectorPick(nodeID, modelSpec)
 	if err != nil {
 		// The node has already failed — the original error surfaces; the
 		// recovery just does not add a spend the list forbids.
 		e.logger.Warn("[%s] structured-output recovery skipped: %v", nodeID, err)
-		return delegate.Result{}, delegate.Result{}, false
+		return delegate.Result{}, delegate.Result{}, false, nil
 	}
 	client, err := e.registry.ResolveWithContext(ctx, modelSpec)
 	if err != nil {
 		e.logger.Warn("[%s] structured-output recovery: resolve %q: %v", nodeID, modelSpec, err)
-		return delegate.Result{}, delegate.Result{}, false
+		return delegate.Result{}, delegate.Result{}, false, nil
 	}
 	genOpts := GenerationOptions{
 		Model: modelSpec,
@@ -1245,17 +1190,26 @@ func (e *ClawExecutor) extractStructuredViaClaw(
 	// The recovery is a claw call on the model this function picked, not on
 	// the node's own — pricing its usage is the task's only role here.
 	recoveryTask := delegate.Task{Model: modelSpec}
-	obj, err := GenerateObjectDirect[map[string]any](ctx, client, e.generationForModel(genOpts))
+	policy := outputCorrectionPolicy(ctx)
+	callCtx, cancelCall, err := policy.begin(ctx, primary.Output, validateStructuredResult(primary, schema))
+	if err != nil {
+		return delegate.Result{}, delegate.Result{}, false, err
+	}
+	defer cancelCall()
+	obj, err := GenerateObjectDirect[map[string]any](callCtx, client, e.generationForModel(genOpts))
 	if err != nil {
 		e.logger.Warn("[%s] structured-output recovery via claw (%s) failed: %v", nodeID, modelSpec, err)
-		return delegate.Result{}, meteredFailure(recoveryTask, objectUsage(obj)), false
+		spent := meteredFailure(recoveryTask, objectUsage(obj))
+		persistErr := policy.After(callCtx, foldSpend(spent, primary, false).Output, err)
+		return delegate.Result{}, spent, false, persistErr
 	}
 	out = primary
 	out.Output = obj.Object
 	out.ParseFallback = false
 	if verr := ValidateOutput(out.Output, schema); verr != nil {
 		e.logger.Warn("[%s] structured-output recovery via claw (%s) still invalid: %v", nodeID, modelSpec, verr)
-		return delegate.Result{}, meteredFailure(recoveryTask, obj.TotalUsage), false
+		spent := meteredFailure(recoveryTask, obj.TotalUsage)
+		return delegate.Result{}, spent, false, policy.After(callCtx, foldSpend(spent, primary, false).Output, verr)
 	}
 	if out.Output == nil {
 		out.Output = map[string]any{}
@@ -1266,7 +1220,8 @@ func (e *ClawExecutor) extractStructuredViaClaw(
 	stampDelegateOutputMeta(out.Output, out, sourceBackend)
 	e.logger.Info("[%s] structured output recovered via claw (%s) — %s produced free-form text but no schema JSON (forfait structured-output gap)",
 		nodeID, modelSpec, sourceBackend)
-	return out, meteredFailure(recoveryTask, obj.TotalUsage), true
+	spent = meteredFailure(recoveryTask, obj.TotalUsage)
+	return out, spent, true, policy.After(callCtx, foldSpend(spent, out, false).Output, nil)
 }
 
 // fallbackText returns the free-form text a parse-fallback output wraps
@@ -1292,7 +1247,7 @@ const schemaRetryFeedbackMarker = "[OUTPUT SCHEMA VALIDATION FAILED]"
 func formatSchemaRetryFeedback(err error) string {
 	return fmt.Sprintf(
 		"%s\n%s\nReturn a corrected response that matches the required output schema exactly. Output only the JSON object.",
-		schemaRetryFeedbackMarker, err,
+		schemaRetryFeedbackMarker, iterlog.Truncate(err.Error(), 2048),
 	)
 }
 
@@ -2290,5 +2245,16 @@ func (e *ClawExecutor) reportMCPDegrades(nodeID string, reports []mcpDegradeRepo
 		if e.hooks.OnMCPServerDegraded != nil {
 			e.hooks.OnMCPServerDegraded(nodeID, r.info)
 		}
+	}
+}
+
+// stampForkOrigin projects the executed task's parent, never a model value.
+func stampForkOrigin(output map[string]any, task *delegate.Task) {
+	if output == nil {
+		return
+	}
+	delete(output, "_session_forked_from")
+	if task != nil && task.ForkSession && task.SessionID != "" {
+		output["_session_forked_from"] = task.SessionID
 	}
 }

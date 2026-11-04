@@ -142,7 +142,7 @@ func (e *Engine) execLLMRouter(ctx context.Context, rs *runState, routerNodeID s
 	execCtx := e.execContext(ctx, rs, routerNodeID)
 	execCtx = model.WithLoopIteration(execCtx, iter)
 	execStart := time.Now()
-	output, err := e.executeWithResources(execCtx, node, routerInput)
+	output, err := e.executeWithResources(execCtx, rs, node, routerInput)
 	stampNodeDuration(output, execStart)
 	if err != nil {
 		// A router that FAILED still spent, and this exit is terminal for

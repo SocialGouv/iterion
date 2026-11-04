@@ -2573,7 +2573,7 @@ func (e *Engine) execAutoOrPauseHuman(ctx context.Context, rs *runState, nodeID 
 	execCtx := e.execContext(ctx, rs, nodeID)
 	execCtx = model.WithLoopIteration(execCtx, iter)
 	execStart := time.Now()
-	output, err := e.executeWithResources(execCtx, node, nodeInput)
+	output, err := e.executeWithResources(execCtx, rs, node, nodeInput)
 	stampNodeDuration(output, execStart)
 	if err != nil {
 		// The llm half of llm_or_human is an OPTIMIZATION — it auto-answers
@@ -2595,7 +2595,7 @@ func (e *Engine) execAutoOrPauseHuman(ctx context.Context, rs *runState, nodeID 
 		// already on disk without this pass.
 		e.recordFailedNodeSpend(rs, nodeID, output)
 		if ctx.Err() != nil {
-			return false, e.failRunWithCheckpoint(rs, nodeID, fmt.Sprintf("human node %q auto_or_pause execution failed: %v", nodeID, err))
+			return false, e.failRunErrWithCheckpoint(rs, nodeID, wrapNodeFailure(nodeID, fmt.Sprintf("human node %q auto_or_pause execution failed: %v", nodeID, err), err))
 		}
 		e.logger.Warn("human node %q: llm half failed (%v) — falling back to a human pause", nodeID, err)
 		_ = e.emit(rs.ctx, rs.runID, store.EventNodeRecovery, nodeID, map[string]any{
@@ -3285,7 +3285,7 @@ func (e *Engine) reInvokeBackend(ctx context.Context, rs *runState, nodeID strin
 	execCtx := e.ctxWithIteration(ctx, nodeID, rs.loopCounters)
 	execCtx = e.execContext(execCtx, rs, nodeID)
 	execStart := time.Now()
-	output, err := e.executeWithResources(execCtx, node, nodeInput)
+	output, err := e.executeWithResources(execCtx, rs, node, nodeInput)
 	stampNodeDuration(output, execStart)
 	if err != nil {
 		// Check for another interaction request (recursive). depth+1
@@ -3306,8 +3306,8 @@ func (e *Engine) reInvokeBackend(ctx context.Context, rs *runState, nodeID strin
 		// sessions, not one. Booked before failRunWithCheckpoint, which
 		// writes the checkpoint a resume reads its budget carry from.
 		e.recordFailedNodeSpend(rs, nodeID, output)
-		return e.failRunWithCheckpoint(rs, nodeID,
-			fmt.Sprintf("node %q re-invocation failed: %v", nodeID, err))
+		return e.failRunErrWithCheckpoint(rs, nodeID, wrapNodeFailure(nodeID,
+			fmt.Sprintf("node %q re-invocation failed: %v", nodeID, err), err))
 	}
 
 	// Validate/correct before committing session state, so a discarded invalid

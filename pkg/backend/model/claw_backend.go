@@ -225,6 +225,10 @@ func NewClawBackend(registry *Registry, hk EventHooks, retry RetryPolicy, opts .
 
 // Execute implements delegate.Backend.
 //
+// Tokens and CostUSD cover requests made by this invocation, including its
+// internal retries. Replaying session messages does not include earlier
+// invocations' usage, so CostIsSessionTotal remains false.
+//
 // When the run is sandboxed (task.Sandbox != nil), the call is
 // forwarded to the iterion-claw-runner sub-process inside the
 // container — see [executeViaSandboxRunner]. This keeps the LLM's
@@ -989,6 +993,13 @@ func (b *ClawBackend) generateStructured(ctx context.Context, client api.APIClie
 			return r, nil
 		}
 		logReaskCallFailure(b.logger, task.NodeID, err)
+		var structured *StructuredOutputError
+		if errors.As(err, &structured) {
+			fallback := meteredFailure(task, objectUsage(result))
+			fallback.ParseFallback = true
+			fallback.Output["text"] = structured.Error()
+			return fallback, nil
+		}
 		return meteredFailure(task, objectUsage(result)), fmt.Errorf("claw backend: structured generation: %w", err)
 	}
 	captureSessionMessages(ctx, taskSessionKey(task), &TextResult{Messages: result.Messages})

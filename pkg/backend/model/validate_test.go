@@ -1,12 +1,43 @@
 package model
 
 import (
+	"encoding/json"
 	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 )
+
+func TestValidateOutput_JSONNull(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		typ     ir.FieldType
+		input   string
+		wantErr string
+	}{
+		{"json accepts null", ir.FieldTypeJSON, `{"payload":null}`, ""},
+		{"string rejects null", ir.FieldTypeString, `{"payload":null}`, `field "payload" is null`},
+		{"json remains required", ir.FieldTypeJSON, `{}`, `missing required field "payload"`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var output map[string]any
+			if err := json.Unmarshal([]byte(tc.input), &output); err != nil {
+				t.Fatal(err)
+			}
+			schema := &ir.Schema{Fields: []*ir.SchemaField{{Name: "payload", Type: tc.typ}}}
+			err := ValidateOutput(output, schema)
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("valid JSON null rejected: %v", err)
+				}
+			} else if err == nil || err.Error() != tc.wantErr {
+				t.Fatalf("ValidateOutput = %v, want %q", err, tc.wantErr)
+			}
+		})
+	}
+}
 
 // TestValidateOutput_StringArrayEnumEnforced guards the data-integrity
 // fix that pushed the string[] [enum: ...] check into ValidateOutput.

@@ -91,8 +91,7 @@ type DelegateInfo struct {
 	Error                     error         // non-nil for OnDelegateError
 	// Attempt is the 1-based retry number on OnDelegateRetry. A schema
 	// re-ask also carries it on its own OnDelegateStarted /
-	// OnDelegateFinished / OnDelegateError (always 2: the first answer
-	// was attempt 1), beside Reask — so a reader can tell the re-ask's
+	// OnDelegateFinished / OnDelegateError (the first answer was attempt 1), beside Reask — so a reader can tell the re-ask's
 	// events from the delegation's, which fire once per node dispatch.
 	Attempt int
 	Delay   time.Duration // backoff delay (for OnDelegateRetry)

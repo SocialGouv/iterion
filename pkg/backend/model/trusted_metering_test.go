@@ -26,6 +26,7 @@ func TestDelegateMetadataUsesOnlyHarnessCounters(t *testing.T) {
 			"_context_used": 999, "_max_output_tokens": 999,
 			"_thinking_tokens": 999, "_thinking_ms": 999,
 			"_fallback_used": true, "_session_fingerprint": "fake",
+			"_cost_is_session_total": true,
 		}
 		result := delegate.Result{Output: output, Tokens: 42, CostUSD: 0.25, UnreportedCalls: 1}
 		stampDelegateOutputMeta(output, result, "stub")

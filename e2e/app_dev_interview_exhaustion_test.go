@@ -50,7 +50,7 @@ func appDevInterviewDrive(t *testing.T, budgetUSD float64, turnUSD float64, opts
 			"_cost_usd":     turnUSD,
 		}, nil
 	})
-	return runtime.New(wf, s, exec, opts...), exec, dir
+	return engineWithScenarioSchema(wf, s, exec, opts...), exec, dir
 }
 
 // The cap the guard reads is the one in force — the var plus any

@@ -63,6 +63,13 @@ import (
 // surface, which takes no ctx — a breaking signature change for two test
 // files, refused here and recorded on #2789.
 var serialFamily = map[string]string{
+	"adverse_schema_test.go":            "Setenv",
+	"correction_budget_warning_test.go": "Setenv",
+	"reask_answered_pause_test.go":      "Setenv",
+	"reask_extraction_failure_test.go":  "Setenv",
+	"schema_feedback_size_test.go":      "Setenv",
+	"schema_mutation_witness_test.go":   "Setenv",
+
 	"anthropic_forfait_ctx_test.go":            "SetCredentialsLookup, SetOAuthDirLookup, Setenv",
 	"async_backend_test.go":                    "Setenv",
 	"braced_env_reads_pin_test.go":             "Setenv",

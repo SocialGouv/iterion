@@ -774,9 +774,8 @@ func WithContributionsUnresolved() EngineOption {
 	return func(e *Engine) { e.contributionsUnresolved = true }
 }
 
-// WithOutputValidation enables post-execution validation of node outputs
-// against their declared output schemas. When enabled, a node whose output
-// does not conform to its schema will cause the run to fail immediately.
+// WithOutputValidation configures runtime schema validation, enabled by default.
+// Invalid outputs fail after any bounded correction supplied by the executor.
 func WithOutputValidation(enabled bool) EngineOption {
 	return func(e *Engine) { e.validateOutputs = enabled }
 }

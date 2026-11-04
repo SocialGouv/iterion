@@ -27,7 +27,7 @@ import (
 // output schema. Returns nil if validation is disabled, the node has no
 // output schema, or the output is valid.
 func (e *Engine) validateNodeOutput(nodeID string, node ir.Node, output map[string]any) error {
-	if !e.validateOutputs {
+	if !e.validateOutputs || e.executorValidatesOutput(node) {
 		return nil
 	}
 	schemaName := ir.NodeOutputSchema(node)
@@ -81,7 +81,7 @@ func (e *Engine) correctAndValidateNodeOutput(ctx context.Context, rs *runState,
 	ledgerKey, invocationID := e.correctionInvocationIdentity(rs, nodeID)
 	inputFingerprint := correctionSemanticFingerprint(output)
 	violationFingerprint := correctionFingerprint(validationErr.Error())
-	episode, found, loadErr := e.loadCorrectionEpisode(ctx, rs.runID, ledgerKey)
+	episode, found, loadErr := e.loadInvocationCorrectionEpisode(ctx, rs, nodeID, ledgerKey, invocationID)
 	if loadErr != nil {
 		// A transient read failure must not look like an empty ledger and
 		// reset an already-consumed correction budget.
@@ -300,15 +300,15 @@ func (e *Engine) outputCorrectionSpendError(rs *runState, nodeID string, output 
 	if rs == nil || rs.budget == nil {
 		return nil
 	}
-	tokens, costUSD := extractUsage(output)
+	spend := unbookedNodeSpend(rs, nodeID, output)
 	status := rs.budget.Status()
 	type axis struct {
 		name        string
 		used, limit float64
 	}
 	for _, candidate := range []axis{
-		{name: "tokens", used: float64(status.Tokens + tokens), limit: float64(status.MaxTokens)},
-		{name: "cost_usd", used: status.CostUSD + costUSD, limit: status.MaxCostUSD},
+		{name: "tokens", used: float64(status.Tokens + spend.tokens), limit: float64(status.MaxTokens)},
+		{name: "cost_usd", used: status.CostUSD + spend.costUSD, limit: status.MaxCostUSD},
 	} {
 		if candidate.limit <= 0 || candidate.used/candidate.limit < budgetHardThreshold {
 			continue
@@ -409,10 +409,17 @@ func correctionSemanticFingerprint(output map[string]any) string {
 // stable hash so distinct executions cannot reset or share one another's
 // budget.
 func (e *Engine) correctionInvocationIdentity(rs *runState, nodeID string) (ledgerKey, invocationID string) {
+	return e.correctionIdentity(rs, nodeID, false)
+}
+
+func (e *Engine) correctionIdentity(rs *runState, nodeID string, legacy bool) (ledgerKey, invocationID string) {
 	iterationPath := ""
 	scope := ""
 	if rs != nil {
 		iterationPath = e.currentCorrectionIterationPath(nodeID, runStateIterationCounters(rs))
+		if legacy {
+			iterationPath = e.legacyCorrectionIterationPath(nodeID, runStateIterationCounters(rs))
+		}
 		scope = rs.correctionScope
 		// A fan-out branch can terminate at a node outside the enclosing
 		// loop's compiled body. Its branch ID repeats on the next fan-out
@@ -433,12 +440,26 @@ func (e *Engine) correctionInvocationIdentity(rs *runState, nodeID string) (ledg
 	return "inv_" + correctionFingerprint(invocationID), invocationID
 }
 
-// currentCorrectionIterationPath extends the historical loop path with every
-// foreach whose body contains nodeID. Foreach counters live under a namespaced
-// key in runState, so a loop and a foreach may safely share the same DSL name.
-// Keeping the loop portion byte-for-byte identical preserves existing durable
-// ledger identities for workflows that do not use foreach.
-func (e *Engine) currentCorrectionIterationPath(nodeID string, iterationCounters map[string]int) string {
+// currentCorrectionIterationPath includes the complete counter vector for a
+// repeated node, including outer loops whose compiled body omits that node.
+// Nodes outside bounded iterations retain their bare identity.
+func (e *Engine) currentCorrectionIterationPath(nodeID string, counters map[string]int) string {
+	if e.legacyCorrectionIterationPath(nodeID, counters) == "" {
+		return ""
+	}
+	parts := make([]string, 0, len(e.workflow.Loops)+len(e.workflow.Foreaches))
+	for name := range e.workflow.Loops {
+		parts = append(parts, fmt.Sprintf("%s=%d", name, counters[name]))
+	}
+	for name := range e.workflow.Foreaches {
+		key := foreachCounterKey(name)
+		parts = append(parts, fmt.Sprintf("%s=%d", key, counters[key]))
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, ";")
+}
+
+func (e *Engine) legacyCorrectionIterationPath(nodeID string, iterationCounters map[string]int) string {
 	parts := make([]string, 0, 2)
 	if loopPath := e.currentLoopIterationPath(nodeID, iterationCounters); loopPath != "" {
 		parts = append(parts, loopPath)
@@ -601,6 +622,7 @@ func (e *Engine) persistCorrectionEpisode(ctx context.Context, runID, ledgerKey 
 	if correctionStore == nil {
 		return fmt.Errorf("store does not implement granular output-correction persistence")
 	}
+	episode.LastError = e.recordedFailureText(episode.LastError)
 	return correctionStore.SetRunOutputCorrection(ctx, runID, ledgerKey, episode)
 }
 
@@ -746,4 +768,42 @@ func (e *Engine) sanitizeOutputForEvent(node ir.Node, output map[string]any) map
 		}
 	}
 	return out
+}
+
+// loadInvocationCorrectionEpisode claims a legacy key for one new invocation.
+// The owner marker lands first: an interrupted migration can finish for that
+// owner, but a later outer iteration cannot reuse the same consumed allowance.
+func (e *Engine) loadInvocationCorrectionEpisode(ctx context.Context, rs *runState, nodeID, key, invocation string) (store.OutputCorrectionEpisode, bool, error) {
+	ep, found, err := e.loadCorrectionEpisode(ctx, rs.runID, key)
+	if err != nil || found {
+		return ep, found, err
+	}
+	legacyKey, _ := e.correctionIdentity(rs, nodeID, true)
+	if legacyKey == key {
+		return ep, false, nil
+	}
+	ep, found, err = e.loadCorrectionEpisode(ctx, rs.runID, legacyKey)
+	if err != nil || !found {
+		return ep, found, err
+	}
+	owner := "invocation_key_migrated:" + key
+	if ep.RetiredReason != "" && ep.RetiredReason != owner {
+		return store.OutputCorrectionEpisode{}, false, nil
+	}
+	if ep.RetiredReason == "" {
+		now := time.Now().UTC()
+		ep.RetiredAt = &now
+		ep.RetiredReason = owner
+		if err := e.persistCorrectionEpisode(ctx, rs.runID, legacyKey, ep); err != nil {
+			return ep, false, err
+		}
+	}
+	ep.EpisodeID = key
+	ep.InvocationID = invocation
+	ep.RetiredAt = nil
+	ep.RetiredReason = ""
+	if err := e.persistCorrectionEpisode(ctx, rs.runID, key, ep); err != nil {
+		return ep, false, err
+	}
+	return ep, true, nil
 }

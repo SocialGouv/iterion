@@ -890,7 +890,7 @@ func (e *Engine) executeNodeForBranch(ctx context.Context, rs *runState, runID, 
 	execCtx = model.WithRunnerHomeScope(execCtx, model.RunnerHomeScopeForBranch(runID, branchID))
 	execCtx = model.WithLoopIteration(execCtx, iter)
 	execStart := time.Now()
-	output, err := e.executeWithResources(execCtx, node, nodeInput)
+	output, err := e.executeWithResources(execCtx, rs, node, nodeInput)
 	stampNodeDuration(output, execStart)
 	if err != nil {
 		// The branch classifies a cut from what IT knows, as the trunk does

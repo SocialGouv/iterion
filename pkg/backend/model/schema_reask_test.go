@@ -536,9 +536,9 @@ func TestSchemaReask_SurfacesTheReaskFailureBesideTheValidationError(t *testing.
 	}
 }
 
-// A second identical answer is the model's verdict: the node fails on it,
-// naming the field still missing, after exactly one re-ask.
-func TestSchemaReask_AsksOnceThenFails(t *testing.T) {
+// Exhaustion reports the latest validation failure after the configured
+// allowance, without buying a fresh business turn.
+func TestSchemaReask_ExhaustsDefaultAllowance(t *testing.T) {
 	t.Parallel()
 	backend := &capturingBackend{results: []delegate.Result{
 		{Output: map[string]any{"verdict": true}, SessionID: "sess-1", BackendName: delegate.BackendClaudeCode},
@@ -551,11 +551,12 @@ func TestSchemaReask_AsksOnceThenFails(t *testing.T) {
 		WithRetryPolicy(RetryPolicy{MaxAttempts: 1, BackoffBase: time.Millisecond}),
 	)
 	_, err := exec.executeBackend(context.Background(), verdictJudge(delegate.BackendClaudeCode), map[string]any{})
-	if err == nil || !strings.Contains(err.Error(), "structured output invalid after retry") || !strings.Contains(err.Error(), `"reason"`) {
-		t.Fatalf("want the typed failure naming the missing field after one re-ask, got %v", err)
+	var schemaErr *OutputSchemaError
+	if !errors.As(err, &schemaErr) || !strings.Contains(err.Error(), `"reason"`) {
+		t.Fatalf("want the typed failure naming the missing field after the correction allowance, got %v", err)
 	}
-	if len(backend.tasks) != 2 {
-		t.Fatalf("the re-ask budget is one: got %d delegations", len(backend.tasks))
+	if len(backend.tasks) != 3 {
+		t.Fatalf("the default re-ask budget is two: got %d delegations", len(backend.tasks))
 	}
 }
 
@@ -725,4 +726,85 @@ func TestSchemaReask_namesTheServingProviderOnItsOwnEvents(t *testing.T) {
 			t.Fatalf("the re-ask's delegate_error = %+v, want one naming the serving provider %q", f, want)
 		}
 	})
+}
+
+// Every schema violation is actionable feedback, not a reason to repeat the
+// business prompt through generic execution recovery.
+func TestSchemaReask_AllViolationsCarryFeedback(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct{ name, invalid, detail string }{
+		{"enum", `{"verdict":"wrong","reason":"because"}`, "not in enum"},
+		{"type", `{"verdict":42,"reason":"because"}`, "expected string"},
+		{"null", `{"verdict":null,"reason":"because"}`, "is null"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			wf := verdictWorkflow()
+			wf.Schemas["verdict_schema"].Fields[0] = &ir.SchemaField{Name: "verdict", Type: ir.FieldTypeString, EnumValues: []string{"pass"}}
+			mock := newMockClient(toolUseEvents("bad", "structured_output", tc.invalid, 50, 20), toolUseEvents("fixed", "structured_output", `{"verdict":"pass","reason":"because"}`, 30, 10))
+			reg := NewRegistry()
+			reg.Register("test", func(string) (api.APIClient, error) { return mock, nil })
+			exec := newTestClawExecutor(reg, wf)
+			out, err := exec.Execute(WithRunID(context.Background(), "schema-feedback"), verdictJudge(""), map[string]any{})
+			if err != nil {
+				t.Fatalf("schema violation should be corrected: %v", err)
+			}
+			calls := mock.getCalls()
+			if len(calls) != 2 || out["verdict"] != "pass" {
+				t.Fatalf("calls=%d output=%v", len(calls), out)
+			}
+			feedback := lastUserText(t, calls[1].Messages)
+			if !strings.Contains(feedback, tc.detail) || strings.Contains(feedback, reaskPrompt) {
+				t.Fatalf("validation feedback missing or business prompt repeated: %q", feedback)
+			}
+		})
+	}
+}
+
+func TestSchemaReaskCostsAcrossSessionChanges(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name              string
+		ids, fingerprints []string
+		backend           string
+		fork              bool
+		want              float64
+	}{
+		{"two sessions", []string{"s1", "s2", "s2"}, []string{"", "", ""}, delegate.BackendClaudeCode, false, 4},
+		{"return to first session", []string{"s1", "s2", "s1"}, []string{"", "", ""}, delegate.BackendClaudeCode, false, 5},
+		{"changed fingerprint", []string{"s", "s", "s"}, []string{"a", "b", "b"}, delegate.BackendClaudeCode, false, 4},
+		{"omitted fingerprint", []string{"s", "s", "s"}, []string{"a", "", "a"}, delegate.BackendClaudeCode, false, 3},
+		{"unreported fork child", []string{"", "", ""}, []string{"a", "a", "a"}, "test_backend", true, 6},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			backend := &capturingBackend{}
+			for i, id := range tc.ids {
+				out := map[string]any{"verdict": i%2 == 0}
+				if i == 2 {
+					out["reason"] = "fixed"
+				}
+				backend.results = append(backend.results, delegate.Result{Output: out, SessionID: id, SessionFingerprint: tc.fingerprints[i], CostUSD: float64(i + 1), CostIsSessionTotal: true, Tokens: 10, BackendName: tc.backend})
+			}
+			reg := delegate.NewRegistry()
+			reg.Register(tc.backend, backend)
+			observed := 0.0
+			exec := NewClawExecutor(NewRegistry(), verdictWorkflow(), WithBackendRegistry(reg), WithRetryPolicy(RetryPolicy{MaxAttempts: 1}), WithEventHooks(EventHooks{OnDelegateFinished: func(_ string, info DelegateInfo) { observed += info.CostUSD }}))
+			node := verdictJudge(tc.backend)
+			input := map[string]any{}
+			if tc.fork {
+				node.Session = ir.SessionFork
+				input[delegate.SessionIDKey] = "parent"
+				input[delegate.SessionFingerprintKey] = "a"
+			}
+			out, err := exec.executeBackend(context.Background(), node, input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if out["_cost_usd"] != tc.want || observed != tc.want || out["_tokens"] != 30 {
+				t.Fatalf("spend=%v, events=%v want cost=%v, tokens=30", out, observed, tc.want)
+			}
+			if tc.want != 3 && out["_cost_is_session_total"] == true {
+				t.Fatalf("mixed-session spend advertised as one total: %v", out)
+			}
+		})
+	}
 }

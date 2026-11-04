@@ -1018,7 +1018,7 @@ func TestCopilot_ChatLoop_SessionAndBriefSurvive(t *testing.T) {
 	})
 
 	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
+	eng := engineWithScenarioSchema(wf, s, exec)
 
 	err := eng.Run(context.Background(), "e2e-copi-chat", nil)
 	if !errors.Is(err, runtime.ErrRunPaused) {
@@ -1115,7 +1115,7 @@ func TestCopilot_ColdTurn_BriefSurvivesLostSession(t *testing.T) {
 	})
 
 	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
+	eng := engineWithScenarioSchema(wf, s, exec)
 
 	if err := eng.Run(context.Background(), "e2e-copi-cold", nil); !errors.Is(err, runtime.ErrRunPaused) {
 		t.Fatalf("expected ErrRunPaused at chat, got: %v", err)
@@ -1204,7 +1204,7 @@ func TestCopilot_ReflectionPlanIsJudgedBeforeTerraExecutes(t *testing.T) {
 
 	wf.Vars["initial_message"].Default = "Répare le run sans le recommencer."
 	s := tmpStore(t)
-	err := runtime.New(wf, s, exec).Run(context.Background(), "e2e-copi-reflection", nil)
+	err := engineWithScenarioSchema(wf, s, exec).Run(context.Background(), "e2e-copi-reflection", nil)
 	if !errors.Is(err, runtime.ErrRunPaused) {
 		t.Fatalf("expected reflected turn to park at chat, got %v", err)
 	}
@@ -1280,7 +1280,7 @@ func TestCopilot_AuthoringContextDoesNotEnterReflection(t *testing.T) {
 	})
 
 	wf.Vars["initial_message"].Default = "Continue la correction."
-	err := runtime.New(wf, tmpStore(t), exec).Run(context.Background(), "e2e-copi-authoring-context", nil)
+	err := engineWithScenarioSchema(wf, tmpStore(t), exec).Run(context.Background(), "e2e-copi-authoring-context", nil)
 	if !errors.Is(err, runtime.ErrRunPaused) {
 		t.Fatalf("expected direct chat pause, got %v", err)
 	}
@@ -1343,7 +1343,7 @@ func TestCopilot_ReviewedPlanSurvivesAuthoringContextPause(t *testing.T) {
 
 	wf.Vars["initial_message"].Default = "Continue la correction."
 	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
+	eng := engineWithScenarioSchema(wf, s, exec)
 	if err := eng.Run(context.Background(), "e2e-copi-plan-context-resume", nil); !errors.Is(err, runtime.ErrRunPaused) {
 		t.Fatalf("expected authoring-context pause, got %v", err)
 	}
@@ -1409,7 +1409,7 @@ func TestCopilot_ExpiredAuthoringRelayRequestsContext(t *testing.T) {
 
 	wf.Vars["initial_message"].Default = "Répare le run."
 	s := tmpStore(t)
-	if err := runtime.New(wf, s, exec).Run(context.Background(), "e2e-copi-expired-authoring-relay", nil); !errors.Is(err, runtime.ErrRunPaused) {
+	if err := engineWithScenarioSchema(wf, s, exec).Run(context.Background(), "e2e-copi-expired-authoring-relay", nil); !errors.Is(err, runtime.ErrRunPaused) {
 		t.Fatalf("expected direct authoring-context pause, got %v", err)
 	}
 	if reflectCalls != 1 || execution == nil {
@@ -1467,7 +1467,7 @@ func TestCopilot_JudgeAdviceReachesTerraWithoutRedebate(t *testing.T) {
 	})
 
 	wf.Vars["initial_message"].Default = "Répare le run."
-	err := runtime.New(wf, tmpStore(t), exec).Run(context.Background(), "e2e-copi-bounded-advice", nil)
+	err := engineWithScenarioSchema(wf, tmpStore(t), exec).Run(context.Background(), "e2e-copi-bounded-advice", nil)
 	if !errors.Is(err, runtime.ErrRunPaused) {
 		t.Fatalf("expected bounded plan to reach chat, got %v", err)
 	}
@@ -1530,7 +1530,7 @@ func TestCopilot_ActivePlanSurvivesReceiptAndActionlessCheck(t *testing.T) {
 
 	wf.Vars["initial_message"].Default = "Répare ce run sans le recommencer."
 	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
+	eng := engineWithScenarioSchema(wf, s, exec)
 	if err := eng.Run(context.Background(), "e2e-copi-plan-receipt", nil); !errors.Is(err, runtime.ErrRunPaused) {
 		t.Fatalf("expected the intermediate proposal to pause, got %v", err)
 	}
@@ -1600,7 +1600,7 @@ func TestCopilot_ActivePlanSurvivesDraftValidation(t *testing.T) {
 
 	wf.Vars["initial_message"].Default = "Corrige ce bot puis reprends le run."
 	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
+	eng := engineWithScenarioSchema(wf, s, exec)
 	if err := eng.Run(context.Background(), "e2e-copi-plan-draft", nil); !errors.Is(err, runtime.ErrRunPaused) {
 		t.Fatalf("expected validated draft to pause, got %v", err)
 	}
@@ -1674,7 +1674,7 @@ func TestCopilot_RepeatedClarificationIsSuppressed(t *testing.T) {
 
 	wf.Vars["initial_message"].Default = "Repair the run and keep going."
 	s := tmpStore(t)
-	err := runtime.New(wf, s, exec).Run(context.Background(), "e2e-copi-repeated-clarification", nil)
+	err := engineWithScenarioSchema(wf, s, exec).Run(context.Background(), "e2e-copi-repeated-clarification", nil)
 	if !errors.Is(err, runtime.ErrRunPaused) {
 		t.Fatalf("expected the bounded explanation to pause at chat, got %v", err)
 	}
@@ -1733,7 +1733,7 @@ func TestCopilot_FreshQuestionDoesNotTriggerExecutionRetry(t *testing.T) {
 
 	wf.Vars["initial_message"].Default = "Répare et surveille ce run."
 	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
+	eng := engineWithScenarioSchema(wf, s, exec)
 	if err := eng.Run(context.Background(), "e2e-copi-fresh-question", nil); !errors.Is(err, runtime.ErrRunPaused) {
 		t.Fatalf("expected initial action card to pause, got %v", err)
 	}
@@ -1956,7 +1956,7 @@ func TestCopilot_DraftValidation_ReachesChat(t *testing.T) {
 
 			s := tmpStore(t)
 			runID := "e2e-copi-draft-" + tc.name
-			eng := runtime.New(wf, s, exec)
+			eng := engineWithScenarioSchema(wf, s, exec)
 			err := eng.Run(context.Background(), runID, nil)
 			if !errors.Is(err, runtime.ErrRunPaused) {
 				t.Fatalf("expected ErrRunPaused at chat, got: %v", err)
@@ -2330,7 +2330,7 @@ func TestCopilot_ActionFailedHostEvent_WakesTheGateWithoutBecomingOperatorSpeech
 	})
 
 	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
+	eng := engineWithScenarioSchema(wf, s, exec)
 
 	if err := eng.Run(context.Background(), "e2e-copi-host-event", nil); !errors.Is(err, runtime.ErrRunPaused) {
 		t.Fatalf("expected ErrRunPaused at chat, got: %v", err)
