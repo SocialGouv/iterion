@@ -64,8 +64,10 @@ const (
 type ReadBackDeclineWhy string
 
 const (
-	// DeclinedUnsafeName: the member's name cannot be made safe — absolute,
-	// climbing out of the tree, or reaching through a link that leaves it.
+	// DeclinedUnsafeName: the member cannot be written where its name
+	// spells — absolute, climbing out of the tree, longer than the host can
+	// name, or crossing a link or a file the archive itself laid on its
+	// path: the drain writes through no link.
 	DeclinedUnsafeName ReadBackDeclineWhy = "unsafe_name"
 	// DeclinedLinkLeavesTree: a symlink whose target resolves outside the
 	// tree — read from the directory the link lands in, the way the kernel
@@ -89,9 +91,10 @@ const (
 	// where the archive carries a file or a link — not the drain's to take.
 	DeclinedPreDrainTree ReadBackDeclineWhy = "pre_drain_tree"
 	// DeclinedPreDrainFile: a file or a link the host dir held before the
-	// drain stands where the archive carries a dir or a link, or above a
-	// member's path — not the drain's to remove: a member that carries none
-	// of the set's bytes never takes what it did not land.
+	// drain stands where the archive carries a dir or another link, or on a
+	// member's path — not the drain's to remove or write through: a member
+	// that carries none of the set's bytes never takes what it did not land,
+	// and no member reaches past it.
 	DeclinedPreDrainFile ReadBackDeclineWhy = "pre_drain_file"
 )
 

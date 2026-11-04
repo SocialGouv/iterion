@@ -200,10 +200,10 @@ func TestTheExportWritesNothingOutsideTheWorkspace(t *testing.T) {
 }
 
 // A link is judged where the kernel resolves it — the export's on the
-// drain's predicate (symlinkLanding): from the directory it lands in, never
-// the one its name spells, and with a ".." past a name read as climbing
-// from wherever that name leads. Both links below spell a target inside the
-// workspace and resolve outside it.
+// drain's predicate (linkResolution, read through symlinkLanding): from the
+// directory it lands in, never the one its name spells, and with a ".."
+// past a name read as climbing from wherever that name leads. Both links
+// below spell a target inside the workspace and resolve outside it.
 func TestTheExportJudgesALinkWhereItLands(t *testing.T) {
 	host, run := hostileHost(t)
 	members := []tar.Header{

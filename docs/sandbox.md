@@ -332,11 +332,14 @@ so. One raced attempt alone — the whole budget at
 `ITERION_SANDBOX_EXPORT_ATTEMPTS=1`, or the only one before the drain's
 deadline — leaves its own archive and no union: `unsettled`,
 `stale: false`. A member the host declines on
-principle (an unsafe name, a link that leaves the tree, a link the
-kernel refuses to create, a hardlink to no file the archive landed, a
-kind it does not write back, a pre-drain tree where the archive carries a
-file or a link, a pre-drain file or link where it carries a dir or a
-link — only a member carrying bytes overwrites what the host held) is
+principle (a name it cannot write where it spells, a link that leaves
+the tree, a link the kernel refuses to create, a hardlink to no file the
+archive landed, a kind it does not write back, a pre-drain tree where the
+archive carries a file or a link, a pre-drain file or link where it
+carries a dir or another link, or on its path — the drain writes every
+member beneath the host dir through no link, so a link can decline a
+member, never redirect it, and only a member carrying bytes overwrites
+what the host held) is
 skipped, and the members after it still land — one collision never costs
 the rest of the set — but never in silence: the drain's verdict is `declined` (or the
 failure's own reason, when one followed), and the event lists each

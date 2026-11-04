@@ -170,27 +170,40 @@ func (r *Run) writeExportFile(abs string, hdr *tar.Header, src io.Reader) error 
 }
 
 // symlinkLanding is where a link member written at abs would resolve, and
-// whether that is inside root. A link pointing out of the tree is the
-// member that turns a later write into a write anywhere; the export and
-// the drain both refuse it on this one predicate.
+// whether that is inside root: the export's reading of linkResolution.
 //
 // The answer is the kernel's, never the text's. A relative target resolves
 // from the directory the link lands in — abs's parent chain read through
 // every link in it (safepath.Landing) — so a name that reaches its
 // directory through an earlier member's `l -> .` puts the link where its
-// ".." climb from, not where the name spells. And the target's own ".."
-// must all come before its first name (linkTargetClimbsFirst): the kernel
-// follows a name — a link the tree holds, or one a later member lays there
-// — before the ".." after it climbs, so that ".." answers for a directory
-// no reading of the text knows.
+// ".." climb from, not where the name spells.
 func symlinkLanding(root, abs, target string) (resolved string, inside bool) {
 	at, err := safepath.Landing(root, abs)
-	if err != nil || !linkTargetClimbsFirst(target) {
+	if err != nil {
+		return "", false
+	}
+	return linkResolution(root, filepath.Dir(filepath.Join(root, filepath.FromSlash(at))), target)
+}
+
+// linkResolution is where a link standing in the real directory linkDir
+// and pointing at target resolves, and whether that is inside root. A link
+// pointing out of the tree is the member that turns a later write into a
+// write anywhere; the export and the drain both refuse it on this one
+// predicate — the drain handing it the directory its member's name spells,
+// which is where the member lands, since it writes through no link.
+//
+// The target's own ".." must all come before its first name
+// (linkTargetClimbsFirst): the kernel follows a name — a link the tree
+// holds, or one a later member lays there — before the ".." after it
+// climbs, so that ".." answers for a directory no reading of the text
+// knows.
+func linkResolution(root, linkDir, target string) (resolved string, inside bool) {
+	if !linkTargetClimbsFirst(target) {
 		return "", false
 	}
 	resolved = target
 	if !filepath.IsAbs(resolved) {
-		resolved = filepath.Join(filepath.Dir(filepath.Join(root, filepath.FromSlash(at))), target)
+		resolved = filepath.Join(linkDir, target)
 	}
 	resolved = filepath.Clean(resolved)
 	return resolved, resolved == root || strings.HasPrefix(resolved, root+string(os.PathSeparator))
