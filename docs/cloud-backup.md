@@ -36,7 +36,7 @@ each one:
 | Objective | Value | Held by |
 |---|---|---|
 | **RPO** (maximum data loss) | **24 hours** | The single daily cadence below: everything written since the last pair of copies is lost, nothing older. The bucket half is the chart's `backup.*`; the Mongo half is the operator's CronJob ([below](#mongo-backup)), and the RPO holds only once that CronJob has a green run against the off-cluster destination and a drill has restored its dump. |
-| **RTO** (maximum time to serve again) | **8 hours** | The [restore drill](#restore-drill) on a fresh namespace — objects first, then the base — measured end to end; the [drill log](#drill-log) is the witness. |
+| **RTO** (maximum time to serve again) | **8 hours** | The [restore drill](#restore-drill) on a fresh namespace — objects first, then the base — measured end to end; the [drill log](#drill-log) is the witness. It assumes the live side still answers step 6's replay; with the live side lost too, step 6 fails closed and the RTO covers the data plane only. |
 | Drill cadence | quarterly | The [drill log](#drill-log): an objective nobody measured is a wish. |
 
 **One cadence: 02:30 UTC, daily.** The Mongo dump and the `daily` blob tier
@@ -344,7 +344,21 @@ finding, not a formality.
 5. **Bring up an iterion server pod against the restored data plane**
    with `disableAuth=false`, the runners still at 0 and the egress of step
    1, no route from outside the namespace (reach it with `kubectl
-   port-forward` or `kubectl exec`), and verify:
+   port-forward` or `kubectl exec`). **Before the pod starts**, put back
+   the organisations whose deletion was canceled after the backup: the
+   org-purge sweeper runs a catch-up at boot and would hard-purge, data
+   and blobs, an org the dump holds as `pending_deletion` with a
+   `purge_after` already past, before step 6 could replay the
+   cancellation. Read the cancellations on the live side
+   (`GET /api/admin/audit?action=org.deletion_canceled&from=<backup timestamp>`,
+   or its Mongo) and set each org back in the restored Mongo — what the
+   restore route does (`auth.Service.RestoreOrg`):
+   ```sh
+   mongosh "${RESTORE_MONGO_URI}" --eval \
+     'db.orgs.updateOne({_id: "<org id>", status: "pending_deletion"}, {$set: {status: "active"}, $unset: {purge_after: ""}})'
+   ```
+   When the live side cannot answer, see the last item of step 6 first.
+   Then verify:
    - `/readyz` returns 200.
    - `kubectl exec` into the server pod and `curl -sf
      localhost:4891/api/runs?limit=1` returns a known historical run.
@@ -387,7 +401,8 @@ finding, not a formality.
      live or restored.
      - An org the dump holds as `pending_deletion` with a `purge_after`
        already past needs nothing: the restored server's sweeper purges
-       it at boot.
+       it at boot — unless its deletion was canceled live after the
+       backup, which step 5 put back before the boot.
      - The deletions scheduled after the backup are the
        `org.deletion_scheduled` rows of the platform log
        (`GET /api/admin/audit?action=org.deletion_scheduled&from=<backup timestamp>`,
@@ -405,6 +420,28 @@ finding, not a formality.
    - **Account anonymisation** is not an admin action at this version:
      there is nothing to replay. An erasure the platform performed and
      this step cannot replay is an anomaly for the [drill log](#drill-log).
+   - **When the live side is lost too** — cluster and Mongo gone, the case
+     the off-cluster copy exists for — the audit rows written after the
+     backup are lost with it, and nothing names what to replay. The
+     restore then fails closed, before any route opens:
+     - every bearer credential the restore brings back is cut: revoke all
+       sessions, personal access tokens, webhook and config-share tokens,
+       and force a password reset for every account; tenants rotate their
+       BYOK and LLM keys at the provider, since a key revoked there after
+       the backup is unknowable here;
+     - no organisation is purged on the dump's word: before step 5, push
+       the `purge_after` of every `pending_deletion` org of the dump past
+       the boot (`db.orgs.updateMany({status: "pending_deletion"},
+       {$set: {purge_after: new Date(Date.now() + 7*24*3600*1000)}})`), then confirm each pending
+       deletion with its tenant and replay it or restore the org;
+     - the window between the backup and the loss (up to the
+       [RPO](#recovery-objectives)) is entered in the DPO's register: the
+       deletions and erasures asked in it are asked again of their
+       requesters, from the register's own records.
+     The RTO then covers the data plane (steps 1 to 5 and 7); the
+     confirmations with tenants and the DPO's re-requests run after it.
+     The structural fix, an off-cluster export of the replay set with each
+     backup, is not in place at this version.
 7. **Resume a paused run**, still under the egress of step 1 (the most
    stringent path: it exercises Mongo, blob, and the checkpoint together).
    Bring one runner up and resume a run chosen to have no external effect —
