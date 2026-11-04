@@ -36,9 +36,9 @@ func (d *Driver) ImageConfigEnv(ctx context.Context, prepared sandbox.PreparedSp
 	if image == "" {
 		return nil, fmt.Errorf("docker driver: image env: the prepared spec names no image")
 	}
-	out, err := runtimeCmdContext(ctx, p.runtime, "image", "inspect", "--format", "{{json .Config.Env}}", image).Output()
+	out, err := p.cli.cmdContext(ctx, "image", "inspect", "--format", "{{json .Config.Env}}", image).Output()
 	if err != nil {
-		return nil, fmt.Errorf("docker driver: image env: %s image inspect %s: %w", p.runtime, image, err)
+		return nil, fmt.Errorf("docker driver: image env: %s image inspect %s: %w", p.cli, image, err)
 	}
 	// A config with no ENV at all inspects as the JSON literal `null`,
 	// which decodes into a nil slice — an image that sets none, not a
@@ -70,9 +70,9 @@ func (d *Driver) StartedContainerEnv(ctx context.Context, run sandbox.Run) ([]st
 	if r.containerID == "" {
 		return nil, fmt.Errorf("docker driver: started container env: the run carries no container id")
 	}
-	out, err := runtimeCmdContext(ctx, d.rt, "container", "inspect", "--format", "{{json .Config.Env}}", r.containerID).Output()
+	out, err := d.cli.cmdContext(ctx, "container", "inspect", "--format", "{{json .Config.Env}}", r.containerID).Output()
 	if err != nil {
-		return nil, fmt.Errorf("docker driver: started container env: %s container inspect %s: %w", d.rt, r.containerID, err)
+		return nil, fmt.Errorf("docker driver: started container env: %s container inspect %s: %w", d.cli, r.containerID, err)
 	}
 	var env []string
 	if err := json.Unmarshal(out, &env); err != nil {

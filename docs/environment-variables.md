@@ -183,15 +183,28 @@ its reads (`internal/envtrust`): the gateway pair refuses by name, the
 routing names the host planted cross into a sandbox as explicit empties, and
 everything a run's authority question reads goes through the provenance
 seam. Which executable a launcher-started process runs is such a question:
-every PATH lookup that answers it goes through `envtrust.LookPath` — the
-agent-CLI discovery (`pkg/internal/clilocate`, claude/codex spawned with
-the operator's credentials), the sandbox runtimes' `Detect` and the
-doctor's probes (`HostHasDocker`, `PingContext`), the host devbox install,
-the dry-run's `dash` checker, the authoring validation's python3, the codex
-`--version` probe, the detached runner's `iterion` fallback — which resolves
-nothing under a planted PATH, loudly, as `exec.ErrNotFound` (#2809 closed
-the seam, #2876 the remaining sites; the desktop wrapper, Windows' taskkill
-and the seam itself are the justified exceptions). The studio lane marks
+every **explicit** PATH lookup that answers it goes through
+`envtrust.LookPath` — the agent-CLI discovery (`pkg/internal/clilocate`,
+claude/codex spawned with the operator's credentials), the sandbox
+runtimes' `Detect` and the doctor's probes (`HostHasDocker`,
+`PingContext`), the host devbox install, the dry-run's `dash` checker, the
+authoring validation's python3, the codex `--version` probe, the detached
+runner's `iterion` fallback — which resolves nothing under a planted PATH,
+loudly, as `exec.ErrNotFound` (#2809 closed the seam, #2876 the remaining
+sites; the desktop wrapper, Windows' taskkill and the seam itself are the
+justified exceptions, each on the record with its reason in
+`internal/envtrust` `lookpath_class_test.go`, whose sweep subtracts from
+the module's own non-test Go only the trees it names with their reason, so
+a new lookup outside the record arrives red wherever it lands). What the
+seam resolved is then CARRIED rather than asked again: the sandbox runtimes
+hand the absolute path their `Detect` accepted to every kubectl / docker
+spawn and the dry-run checker spawns the `dash` it resolved, so the binary
+a probe accepted is the binary that runs — held by a second sweep in that
+same file, where a lookup that drops its path arrives red unless it answers
+a yes/no and spawns nothing (`HostHasDocker`). What the seam does NOT answer
+is the **implicit** lookup — `exec.Command("docker")` resolves a bare name
+against the parent's PATH at call time and consults nothing — a wider class
+that needs a seam of its own and is tracked separately. The studio lane marks
 what it DOES plant in the run environment
 (`ITERION_DOTENV_PLANTED` travels in it) and never lets the file's opt-in
 cross into a run; the desktop's file is operator-owned, so its values keep

@@ -41,34 +41,75 @@ const (
 	RuntimePodman Runtime = "podman"
 )
 
+// CLI is a container runtime this host has: WHICH CLI it is — the identity
+// the driver reports and every message names — and the ABSOLUTE path
+// [Detect] resolved for it through envtrust.
+//
+// The two travel as one value because the probe's answer and the spawn's
+// target must be the same binary. Detect used to return the enum alone, so
+// every spawn passed the runtime's bare NAME to exec.CommandContext, which
+// re-asks the live PATH at Command() time — the question Detect had just
+// answered, and the one a project `.env` can answer instead where the seam
+// is not consulted. Every spawn in this package now hangs off this value,
+// so a new one cannot be written without a binary to run it with.
+type CLI struct {
+	rt   Runtime
+	path string
+}
+
+// Runtime reports which container CLI this is, for the callers that branch
+// on docker-vs-podman behaviour.
+func (c CLI) Runtime() Runtime { return c.rt }
+
+// String is the runtime's name — "docker" or "podman" — which is what every
+// message about it says and what [Driver.Name] reports. Never the resolved
+// path: that is an implementation detail of where this host keeps it.
+func (c CLI) String() string { return string(c.rt) }
+
 // Detect probes the host for an available container runtime, preferring
 // docker over podman (matching the convention of most local dev tools).
-// Returns ("", error) when neither binary is on PATH.
+// Returns the zero CLI and an error when neither binary is on PATH.
 //
 // envtrust.LookPath, not exec.LookPath: which runtime binary the sandbox
 // spawns is an authority question, and a PATH a project .env planted must
 // not answer it — the refusal surfaces as the plain "not found" below
-// (#2876, the class #2809 closed site by site).
-func Detect() (Runtime, error) {
-	if _, err := envtrust.LookPath(string(RuntimeDocker)); err == nil {
-		return RuntimeDocker, nil
+// (#2876, the class #2809 closed site by site). The resolved path is kept,
+// not discarded: the binary this probe accepted is the one every spawn
+// below runs.
+func Detect() (CLI, error) {
+	for _, rt := range []Runtime{RuntimeDocker, RuntimePodman} {
+		if path, err := envtrust.LookPath(string(rt)); err == nil {
+			return CLI{rt: rt, path: path}, nil
+		}
 	}
-	if _, err := envtrust.LookPath(string(RuntimePodman)); err == nil {
-		return RuntimePodman, nil
-	}
-	return "", fmt.Errorf("docker: neither 'docker' nor 'podman' found on PATH")
+	return CLI{}, fmt.Errorf("docker: neither 'docker' nor 'podman' found on PATH")
 }
 
-// runtimeCmdContext wraps exec.CommandContext(<runtime>, args...) with
-// the env scrubbing iterion uses on git invocations: LC_ALL=C / LANG=C
-// so stderr substrings ("No such image", "container not found") are
-// stable across user locales.
+// command is the one place this CLI becomes a process: it names the binary
+// [Detect] resolved and nothing else. What each caller layers on top — the
+// locale scrub, the detached process group — stays the caller's own.
 //
-// Detached process group on Unix so a SIGTERM to the iterion studio
-// PGID (e.g. watchexec rebuild) doesn't propagate and kill the
-// container management commands mid-flight.
-func runtimeCmdContext(ctx context.Context, rt Runtime, args ...string) *exec.Cmd {
-	cmd := exec.CommandContext(ctx, string(rt), args...)
+// A CLI nobody resolved is a programming error, not a bare-name spawn:
+// [Detect] is the only constructor, and a spawn that silently fell back to
+// the runtime's name would consult exactly the PATH this type exists to
+// stop consulting. It is refused on the Cmd itself, so the caller reports
+// it where it ran.
+func (c CLI) command(ctx context.Context, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, c.path, args...)
+	if c.path == "" {
+		cmd.Err = fmt.Errorf("docker: no path resolved for runtime %q — build the invocation from Detect, never from the runtime's bare name", string(c.rt))
+	}
+	return cmd
+}
+
+// cmdContext is the management-command shape: the env scrubbing iterion
+// uses on git invocations (LC_ALL=C / LANG=C, so stderr substrings like
+// "No such image" and "container not found" are stable across user
+// locales), and a detached process group on Unix so a SIGTERM to the
+// iterion studio PGID (e.g. a watchexec rebuild) does not propagate and
+// kill a container management command mid-flight.
+func (c CLI) cmdContext(ctx context.Context, args ...string) *exec.Cmd {
+	cmd := c.command(ctx, args...)
 	cmd.Env = append(cmd.Environ(), "LC_ALL=C", "LANG=C")
 	proc.DetachProcessGroup(cmd)
 	return cmd
@@ -81,8 +122,8 @@ func runtimeCmdContext(ctx context.Context, rt Runtime, args ...string) *exec.Cm
 // `image inspect` exits 0 when present, non-zero otherwise; we don't
 // parse the JSON, only the exit code, so missing image tags read as
 // "not present" without ambiguity.
-func imageExists(ctx context.Context, rt Runtime, ref string) bool {
-	cmd := runtimeCmdContext(ctx, rt, "image", "inspect", ref)
+func (c CLI) imageExists(ctx context.Context, ref string) bool {
+	cmd := c.cmdContext(ctx, "image", "inspect", ref)
 	// Discard output — we only care about exit status.
 	cmd.Stdout = nil
 	cmd.Stderr = nil
@@ -116,12 +157,12 @@ func pullTimeout() time.Duration {
 // strand the run; a deadline overshoot is reported as a distinct
 // "timeout" so the operator can lengthen ITERION_SANDBOX_PULL_TIMEOUT
 // without chasing a generic exec failure.
-func pullImage(ctx context.Context, rt Runtime, ref string) error {
+func (c CLI) pullImage(ctx context.Context, ref string) error {
 	timeout := pullTimeout()
 	pullCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	var stderr bytes.Buffer
-	cmd := runtimeCmdContext(pullCtx, rt, "pull", ref)
+	cmd := c.cmdContext(pullCtx, "pull", ref)
 	cmd.Stderr = &stderr
 	cmd.Stdout = &stderr // Docker writes pull progress to stdout; capture both.
 	err := cmd.Run()

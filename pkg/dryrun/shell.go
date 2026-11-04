@@ -42,20 +42,27 @@ type Bash struct {
 
 // Check implements ShellChecker.
 func (b Bash) Check(interpreter, text string) error {
-	var name string
+	// name is the interpreter this check reports; bin is what runs. They
+	// differ for dash, whose binary the seam resolves and this call then
+	// SPAWNS — asking the PATH again would hand the answer back to it.
+	// bash is still spawned by name: a bare-name spawn is the implicit
+	// lookup class, which has a seam of its own and is tracked separately
+	// (docs/environment-variables.md).
+	var name, bin string
 	switch strings.ToLower(strings.TrimSpace(interpreter)) {
 	case "bash":
-		name = "bash"
+		name, bin = "bash", "bash"
 	case "sh", "":
 		// envtrust.LookPath, not exec.LookPath: the dash found here then
 		// parses an untrusted bot's script text, and which binary that is
 		// is an authority question a PATH a project .env planted must not
 		// answer — the refusal reads as "no dash", the text goes unchecked
 		// and said so (#2876, the class #2809 closed site by site).
-		if _, err := envtrust.LookPath("dash"); err != nil {
+		resolved, err := envtrust.LookPath("dash")
+		if err != nil {
 			return fmt.Errorf("%w: sh text is held to dash, which is not on this PATH (the sh here may be bash, which accepts what dash refuses)", ErrNoChecker)
 		}
-		name = "dash"
+		name, bin = "dash", resolved
 	default:
 		return ErrNoChecker
 	}
@@ -65,7 +72,7 @@ func (b Bash) Check(interpreter, text string) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, name, "-n")
+	cmd := exec.CommandContext(ctx, bin, "-n")
 	cmd.Stdin = strings.NewReader(text)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr

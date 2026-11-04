@@ -28,8 +28,9 @@ const containerIDWitnessID = "9cafebd8561b38c93614c35680cf8293e59d2ca4e41ce1828e
 // chattyRuntime installs a container-runtime shim that answers `run` with
 // one warning on stderr and the ID on stdout, and records every invocation's
 // argv so the test can read which container the later commands addressed.
-// Returns the runtime name and the path of the argv log.
-func chattyRuntime(t *testing.T) (Runtime, string) {
+// Returns the CLI naming the shim — its runtime identity and absolute path —
+// and the path of the argv log.
+func chattyRuntime(t *testing.T) (CLI, string) {
 	t.Helper()
 	if _, err := exec.LookPath("sh"); err != nil {
 		t.Skip("sh not on PATH")
@@ -49,23 +50,24 @@ func chattyRuntime(t *testing.T) (Runtime, string) {
 		"  ;;\n" +
 		"esac\n" +
 		"exit 0\n"
-	if err := os.WriteFile(filepath.Join(dir, string(rt)), []byte(script), 0o755); err != nil {
+	cli := CLI{rt: rt, path: filepath.Join(dir, string(rt))}
+	if err := os.WriteFile(cli.path, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	return rt, log
+	return cli, log
 }
 
 func TestStart_ReadsTheContainerIDFromStdoutWhileTheRuntimeWarns(t *testing.T) {
-	rt, argvLog := chattyRuntime(t)
+	cli, argvLog := chattyRuntime(t)
 	spec := sandbox.Spec{
 		Mode:            sandbox.ModeInline,
 		Image:           "iterion-container-id-witness:never-pulled",
 		WorkspaceFolder: LegacyDefaultWorkspace,
 	}
-	d := &Driver{rt: rt, logger: iterlog.Nop()}
+	d := &Driver{cli: cli, logger: iterlog.Nop()}
 	prepared := preparedWithoutPrepare(t, spec)
-	prepared.runtime = rt
+	prepared.cli = cli
 
 	run, err := d.Start(context.Background(), prepared, sandbox.RunInfo{
 		RunID:         "container-id-witness",

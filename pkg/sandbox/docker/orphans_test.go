@@ -31,7 +31,7 @@ func TestParseManagedPsOutputEmpty(t *testing.T) {
 }
 
 func TestReapOrphanContainersRequiresPredicate(t *testing.T) {
-	_, err := ReapOrphanContainers(t.Context(), RuntimeDocker, nil)
+	_, err := CLI{rt: RuntimeDocker, path: "docker"}.ReapOrphanContainers(t.Context(), nil)
 	if err == nil {
 		t.Fatal("expected error when isTerminal predicate is nil")
 	}

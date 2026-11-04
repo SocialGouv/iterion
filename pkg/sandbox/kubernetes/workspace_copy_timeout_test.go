@@ -95,9 +95,12 @@ func TestRunWithPhaseTimeout_RealWorkspaceCopyStallIsClassified(t *testing.T) {
 		t.Skip("sh not on PATH")
 	}
 	shimDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(shimDir, kubeBinaryName), []byte("#!/bin/sh\nexec sleep 30\n"), 0o755); err != nil {
+	shim := Kubectl(filepath.Join(shimDir, kubeBinaryName))
+	if err := os.WriteFile(string(shim), []byte("#!/bin/sh\nexec sleep 30\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	// PATH keeps the shim's directory: the shim's own `sleep` is resolved by
+	// sh, and the host leg of the copy pipe resolves `tar` there too.
 	t.Setenv("PATH", shimDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	src := t.TempDir()
@@ -111,7 +114,7 @@ func TestRunWithPhaseTimeout_RealWorkspaceCopyStallIsClassified(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(src, "README.md"), payload, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	r := &Run{driver: &Driver{logger: iterlog.Nop()}, podName: "sandbox-x", namespace: "ns"}
+	r := &Run{driver: &Driver{logger: iterlog.Nop(), kubectl: shim}, podName: "sandbox-x", namespace: "ns"}
 
 	start := time.Now()
 	err := sandbox.RunWithPhaseTimeout(context.Background(), iterlog.Nop(), "workspace copy", workspaceCopyTimeoutEnv, 300*time.Millisecond, func(ctx context.Context) error {
@@ -147,7 +150,8 @@ func TestRunWithPhaseTimeout_RealWorkspaceCopyCutKeepsTheHostTailsOwnCause(t *te
 		t.Skip("sh not on PATH")
 	}
 	shimDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(shimDir, kubeBinaryName), []byte("#!/bin/sh\nexec sleep 30\n"), 0o755); err != nil {
+	shim := Kubectl(filepath.Join(shimDir, kubeBinaryName))
+	if err := os.WriteFile(string(shim), []byte("#!/bin/sh\nexec sleep 30\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(shimDir, "tar"), []byte("#!/bin/sh\necho 'tar: file changed as we read it' >&2\nexec sleep 30\n"), 0o755); err != nil {
@@ -159,7 +163,7 @@ func TestRunWithPhaseTimeout_RealWorkspaceCopyCutKeepsTheHostTailsOwnCause(t *te
 	if err := os.WriteFile(filepath.Join(src, "README.md"), []byte("payload\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	r := &Run{driver: &Driver{logger: iterlog.Nop()}, podName: "sandbox-x", namespace: "ns"}
+	r := &Run{driver: &Driver{logger: iterlog.Nop(), kubectl: shim}, podName: "sandbox-x", namespace: "ns"}
 
 	err := sandbox.RunWithPhaseTimeout(context.Background(), iterlog.Nop(), "workspace copy", workspaceCopyTimeoutEnv, 300*time.Millisecond, func(ctx context.Context) error {
 		return r.populateWorkspace(ctx, src, "/workspace")
@@ -195,7 +199,7 @@ func TestRunPostCreate_StallIsBoundedAndTyped(t *testing.T) {
 	t.Setenv(sandbox.PostCreateTimeoutEnv, "300ms")
 
 	r := &Run{
-		driver:    &Driver{logger: iterlog.Nop(), kubectl: shim},
+		driver:    &Driver{logger: iterlog.Nop(), kubectl: Kubectl(shim)},
 		podName:   "sandbox-x",
 		namespace: "ns",
 		prepared:  &Prepared{},

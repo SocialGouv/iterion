@@ -35,14 +35,14 @@ func (s *Service) reconcileSandboxContainers() {
 	if !s.store.Capabilities().CrossProcessLock {
 		return
 	}
-	rt, err := dockersandbox.Detect()
+	cli, err := dockersandbox.Detect()
 	if err != nil {
 		return
 	}
 	// Boot-time admin scan: peek at runs across tenants to decide
 	// whether their docker leftovers should be reaped.
 	ctx := store.WithoutTenantFilter(context.Background())
-	reaped, err := dockersandbox.ReapOrphanContainers(ctx, rt, func(runID string) bool {
+	reaped, err := cli.ReapOrphanContainers(ctx, func(runID string) bool {
 		return s.sandboxContainerReapable(ctx, runID)
 	})
 	if err != nil {
@@ -72,7 +72,7 @@ func (s *Service) reconcileSandboxK8sResources(parent context.Context) {
 	if !s.store.Capabilities().CrossProcessLock {
 		return
 	}
-	_, namespace, err := k8ssandbox.Detect()
+	kubectl, namespace, err := k8ssandbox.Detect()
 	if err != nil {
 		return // not an in-cluster runner — nothing to reconcile
 	}
@@ -81,7 +81,7 @@ func (s *Service) reconcileSandboxK8sResources(parent context.Context) {
 	// reapability predicate as the docker reaper (liveness-first). parent
 	// is the shutdown's cancellation handle on the periodic path.
 	ctx := store.WithoutTenantFilter(parent)
-	reaped, err := k8ssandbox.ReapOrphanResources(ctx, namespace, func(runID string) bool {
+	reaped, err := kubectl.ReapOrphanResources(ctx, namespace, func(runID string) bool {
 		return s.sandboxContainerReapable(ctx, runID)
 	})
 	if err != nil {

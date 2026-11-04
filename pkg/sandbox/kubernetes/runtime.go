@@ -62,6 +62,18 @@ const kubeBinaryName = "kubectl"
 // mount exists, and a test that consults it measures the machine.
 var inClusterNamespacePath = "/var/run/secrets/kubernetes.io/serviceaccount/namespace"
 
+// Kubectl is the kubectl binary this package shells out to: the ABSOLUTE
+// path [Detect] (or [PingContext]) resolved through envtrust, carried to
+// every spawn so the binary the probe accepted is the binary that runs.
+//
+// It is a type rather than a parameter because the bare name was the
+// default: `exec.CommandContext(ctx, "kubectl", …)` re-asks the live PATH
+// at Command() time — the question Detect already answered, and the one a
+// project `.env` can answer instead where the seam is not consulted. Every
+// kubectl invocation in this package hangs off this receiver, so a new one
+// cannot be written without a binary to run it with.
+type Kubectl string
+
 // Detect reports whether this process can act as the kubernetes
 // driver: kubectl on PATH and the in-cluster service-account token
 // present + readable. Returns the resolved namespace too — used by
@@ -75,7 +87,7 @@ var inClusterNamespacePath = "/var/run/secrets/kubernetes.io/serviceaccount/name
 // out to is an authority question, and a PATH a project .env planted
 // must not answer it — the refusal surfaces as the "not found" below
 // (#2876, the class #2809 closed site by site).
-func Detect() (kubectl string, namespace string, err error) {
+func Detect() (kubectl Kubectl, namespace string, err error) {
 	binPath, lookupErr := envtrust.LookPath(kubeBinaryName)
 	if lookupErr != nil {
 		return "", "", fmt.Errorf("%s not found on PATH (did you build the runtime image with kubectl?)", kubeBinaryName)
@@ -95,7 +107,7 @@ func Detect() (kubectl string, namespace string, err error) {
 	if ns == "" {
 		return "", "", fmt.Errorf("empty namespace at %s", inClusterNamespacePath)
 	}
-	return binPath, ns, nil
+	return Kubectl(binPath), ns, nil
 }
 
 // kubectlDrainBound is the default bound both kubectl command builders put
@@ -103,21 +115,38 @@ func Detect() (kubectl string, namespace string, err error) {
 // kubectl itself is gone. Overridable through [proc.WaitDelayEnv].
 const kubectlDrainBound = 2 * time.Second
 
-// kubectlCmdContext wraps exec.CommandContext(kubectl, args...) with
-// LC_ALL=C so callers can branch on stderr substrings ("NotFound",
-// "AlreadyExists") stably across user locales. Mirrors the gitCmd /
-// runtimeCmdContext helpers. Used for long-running ops (apply, delete,
-// exec) that should respect run cancellation.
-func kubectlCmdContext(ctx context.Context, args ...string) *exec.Cmd {
-	cmd := exec.CommandContext(ctx, kubeBinaryName, args...)
-	cmd.Env = append(cmd.Environ(), "LC_ALL=C", "LANG=C")
+// command builds an exec.Cmd running THIS kubectl, with the process
+// discipline every kubectl spawn in this package shares.
+//
+// Detached process group on Unix so a SIGTERM to the iterion studio PGID
+// (e.g. a watchexec rebuild) does not propagate. A cancelled context then
+// kills kubectl, not the children it spawned: a credential plugin still
+// holding the stdout/stderr pipes would keep Wait blocked for as long as it
+// lives. WaitDelay bounds that orphan-pipe wait so a timeout is a timeout,
+// and proc.WaitDelayEnv is the operator's override of it.
+//
+// A zero Kubectl is a programming error, not a bare-name spawn: the only
+// constructors are Detect and PingContext, both of which resolve through
+// envtrust, and a spawn that silently fell back to "kubectl" would consult
+// exactly the PATH this type exists to stop consulting. It is refused on
+// the Cmd itself, so the caller reports it where it ran.
+func (k Kubectl) command(ctx context.Context, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, string(k), args...)
+	if k == "" {
+		cmd.Err = fmt.Errorf("kubernetes: no kubectl path resolved — build the invocation from Detect or PingContext, never from the bare %q", kubeBinaryName)
+	}
 	proc.DetachProcessGroup(cmd)
-	// A cancelled context kills kubectl, not the children it spawned (the
-	// process group is detached): a credential plugin still holding the
-	// stdout/stderr pipes would keep Wait blocked for as long as it lives.
-	// WaitDelay bounds that orphan-pipe wait so a timeout is a timeout, and
-	// proc.WaitDelayEnv is the operator's override of it.
 	proc.SetWaitDelay(cmd, kubectlDrainBound)
+	return cmd
+}
+
+// cmdContext adds LC_ALL=C so callers can branch on stderr substrings
+// ("NotFound", "AlreadyExists") stably across user locales. Mirrors the
+// gitCmd / runtimeCmdContext helpers. Used for long-running ops (apply,
+// delete, exec) that should respect run cancellation.
+func (k Kubectl) cmdContext(ctx context.Context, args ...string) *exec.Cmd {
+	cmd := k.command(ctx, args...)
+	cmd.Env = append(cmd.Environ(), "LC_ALL=C", "LANG=C")
 	return cmd
 }
 
@@ -141,10 +170,10 @@ func kubectlCmdContext(ctx context.Context, args ...string) *exec.Cmd {
 //
 // phase names WHICH apply stalled ("apply pod", "apply networkpolicy",
 // …) — every per-run resource shares one budget but not one diagnosis.
-func applyManifest(ctx context.Context, logger *iterlog.Logger, namespace, phase string, manifest []byte) error {
+func (k Kubectl) applyManifest(ctx context.Context, logger *iterlog.Logger, namespace, phase string, manifest []byte) error {
 	timeout := resolveApplyTimeout()
 	return sandbox.RunWithPhaseTimeout(ctx, logger, phase, applyTimeoutEnv, timeout, func(ctx context.Context) error {
-		cmd := kubectlCmdContext(ctx, "--namespace", namespace, "apply", "-f", "-")
+		cmd := k.cmdContext(ctx, "--namespace", namespace, "apply", "-f", "-")
 		cmd.Stdin = bytes.NewReader(manifest)
 		out, err := cmd.CombinedOutput()
 		if err != nil {
@@ -166,13 +195,13 @@ func applyManifest(ctx context.Context, logger *iterlog.Logger, namespace, phase
 // with nothing to show for it. Plain context deadline, NOT
 // sandbox.ErrPhaseTimeout: a cleanup is not a setup phase and must not be
 // classified as one. Like the apply, it passes no `--request-timeout`.
-func deleteResource(ctx context.Context, namespace, kind, name string, extraArgs ...string) error {
+func (k Kubectl) deleteResource(ctx context.Context, namespace, kind, name string, extraArgs ...string) error {
 	timeout := resolveApplyTimeout()
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	args := []string{"--namespace", namespace,
 		"delete", kind, name, "--ignore-not-found=true", "--wait=false"}
-	cmd := kubectlCmdContext(ctx, append(args, extraArgs...)...)
+	cmd := k.cmdContext(ctx, append(args, extraArgs...)...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		// Even with --ignore-not-found, delete returns non-zero on
@@ -186,8 +215,8 @@ func deleteResource(ctx context.Context, namespace, kind, name string, extraArgs
 // Ready condition or timeout. We use kubectl's built-in --timeout
 // (the alternative — a manual polling loop — would re-implement the
 // same logic without saving a process spawn).
-func waitForPodRunning(ctx context.Context, namespace, podName string, timeoutSecs int) error {
-	cmd := kubectlCmdContext(ctx, "--namespace", namespace,
+func (k Kubectl) waitForPodRunning(ctx context.Context, namespace, podName string, timeoutSecs int) error {
+	cmd := k.cmdContext(ctx, "--namespace", namespace,
 		"wait", "--for=condition=Ready", fmt.Sprintf("pod/%s", podName),
 		fmt.Sprintf("--timeout=%ds", timeoutSecs))
 	out, err := cmd.CombinedOutput()
@@ -204,7 +233,7 @@ func waitForPodRunning(ctx context.Context, namespace, podName string, timeoutSe
 		// Read BEFORE the caller's Cleanup, which deletes the pod.
 		return podStartFailure(
 			fmt.Errorf("kubectl wait pod/%s: %w\noutput: %s", podName, err, string(out)),
-			probePodStart(ctx, namespace, podName))
+			k.probePodStart(ctx, namespace, podName))
 	}
 	return nil
 }
@@ -216,8 +245,8 @@ func waitForPodRunning(ctx context.Context, namespace, podName string, timeoutSe
 // cluster-scoped permission the chart's namespaced runner Role does not
 // grant on purpose, so the error must carry kubectl's reason (Forbidden)
 // for the doctor to say why it could not answer.
-func NodeLabelCoverage(ctx context.Context, key string) (labelled, total int, err error) {
-	cmd := kubectlCmdContext(ctx, "get", "nodes", "-o", "json")
+func (k Kubectl) NodeLabelCoverage(ctx context.Context, key string) (labelled, total int, err error) {
+	cmd := k.cmdContext(ctx, "get", "nodes", "-o", "json")
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()

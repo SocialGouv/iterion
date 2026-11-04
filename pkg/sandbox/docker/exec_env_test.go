@@ -23,12 +23,12 @@ const execEnvProbeName = "ITERION_EXEC_PROBE"
 // is a claim and not an artefact of the flag order.
 func execEnvRun(logger *iterlog.Logger) *Run {
 	return &Run{
-		driver:      &Driver{rt: RuntimeDocker, logger: logger},
+		driver:      &Driver{cli: CLI{rt: RuntimeDocker}, logger: logger},
 		containerID: "deadbeefcafe",
 		prepared: &Prepared{
 			workspace: "/workspace",
 			spec:      sandbox.Spec{User: "1000:1000"},
-			runtime:   RuntimeDocker,
+			cli:       CLI{rt: RuntimeDocker},
 		},
 		inContainerWorkspace: "/workspace",
 	}

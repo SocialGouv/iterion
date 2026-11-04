@@ -18,7 +18,6 @@ import (
 	"time"
 
 	gitlib "github.com/SocialGouv/iterion/pkg/git"
-	"github.com/SocialGouv/iterion/pkg/internal/proc"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 )
@@ -456,7 +455,7 @@ func Constructor() (sandbox.Driver, error) { return New() }
 // State is intentionally minimal: kubectl path, namespace, logger.
 // Per-run state lives on the [Run] handle returned by [Driver.Start].
 type Driver struct {
-	kubectl   string
+	kubectl   Kubectl
 	namespace string
 	logger    *iterlog.Logger
 
@@ -624,7 +623,7 @@ func (d *Driver) Start(ctx context.Context, prepared sandbox.PreparedSpec, info 
 		if err != nil {
 			return nil, fmt.Errorf("kubernetes: build file secrets secret: %w", err)
 		}
-		if err := applyManifest(ctx, d.logger, d.namespace, "apply file-secrets secret", secretManifest); err != nil {
+		if err := d.kubectl.applyManifest(ctx, d.logger, d.namespace, "apply file-secrets secret", secretManifest); err != nil {
 			return nil, fmt.Errorf("kubernetes: apply file secrets secret: %w", err)
 		}
 	}
@@ -638,13 +637,13 @@ func (d *Driver) Start(ctx context.Context, prepared sandbox.PreparedSpec, info 
 		caSecret, err := BuildCASecret(d.namespace, caSecretName, info.RunID, info.FriendlyName, info.ProxyCACert, owner)
 		if err != nil {
 			if secretFilesSecretName != "" {
-				_ = deleteResource(ctx, d.namespace, "secret", secretFilesSecretName)
+				_ = d.kubectl.deleteResource(ctx, d.namespace, "secret", secretFilesSecretName)
 			}
 			return nil, fmt.Errorf("kubernetes: build CA secret: %w", err)
 		}
-		if err := applyManifest(ctx, d.logger, d.namespace, "apply CA secret", caSecret); err != nil {
+		if err := d.kubectl.applyManifest(ctx, d.logger, d.namespace, "apply CA secret", caSecret); err != nil {
 			if secretFilesSecretName != "" {
-				_ = deleteResource(ctx, d.namespace, "secret", secretFilesSecretName)
+				_ = d.kubectl.deleteResource(ctx, d.namespace, "secret", secretFilesSecretName)
 			}
 			return nil, fmt.Errorf("kubernetes: apply CA secret: %w", err)
 		}
@@ -670,10 +669,10 @@ func (d *Driver) Start(ctx context.Context, prepared sandbox.PreparedSpec, info 
 	})
 	if err != nil {
 		if caSecretName != "" {
-			_ = deleteResource(ctx, d.namespace, "secret", caSecretName)
+			_ = d.kubectl.deleteResource(ctx, d.namespace, "secret", caSecretName)
 		}
 		if secretFilesSecretName != "" {
-			_ = deleteResource(ctx, d.namespace, "secret", secretFilesSecretName)
+			_ = d.kubectl.deleteResource(ctx, d.namespace, "secret", secretFilesSecretName)
 		}
 		return nil, fmt.Errorf("kubernetes: build manifest: %w", err)
 	}
@@ -686,14 +685,14 @@ func (d *Driver) Start(ctx context.Context, prepared sandbox.PreparedSpec, info 
 	// Goes through deleteResource so it inherits that helper's bound: it is
 	// one apiserver call in the middle of the setup sequence, and an
 	// unbounded one hangs the run before the first bounded phase.
-	_ = deleteResource(ctx, d.namespace, "pod", podName, "--grace-period=0", "--force")
+	_ = d.kubectl.deleteResource(ctx, d.namespace, "pod", podName, "--grace-period=0", "--force")
 
-	if err := applyManifest(ctx, d.logger, d.namespace, "apply pod", manifest); err != nil {
+	if err := d.kubectl.applyManifest(ctx, d.logger, d.namespace, "apply pod", manifest); err != nil {
 		if caSecretName != "" {
-			_ = deleteResource(ctx, d.namespace, "secret", caSecretName)
+			_ = d.kubectl.deleteResource(ctx, d.namespace, "secret", caSecretName)
 		}
 		if secretFilesSecretName != "" {
-			_ = deleteResource(ctx, d.namespace, "secret", secretFilesSecretName)
+			_ = d.kubectl.deleteResource(ctx, d.namespace, "secret", secretFilesSecretName)
 		}
 		return nil, fmt.Errorf("kubernetes: apply pod: %w", err)
 	}
@@ -743,7 +742,7 @@ func (d *Driver) Start(ctx context.Context, prepared sandbox.PreparedSpec, info 
 			_ = r.Cleanup(ctx)
 			return nil, fmt.Errorf("kubernetes: build netpolicy: %w", err)
 		}
-		if err := applyManifest(ctx, d.logger, d.namespace, "apply networkpolicy", netpolicy); err != nil {
+		if err := d.kubectl.applyManifest(ctx, d.logger, d.namespace, "apply networkpolicy", netpolicy); err != nil {
 			_ = r.Cleanup(ctx)
 			return nil, fmt.Errorf("kubernetes: apply netpolicy: %w", err)
 		}
@@ -757,7 +756,7 @@ func (d *Driver) Start(ctx context.Context, prepared sandbox.PreparedSpec, info 
 		return nil, fmt.Errorf("kubernetes: pod ready timeout is unset (%s) — the driver was not built by New()", d.sched.readyTimeout)
 	}
 	readySecs := int((d.sched.readyTimeout + time.Second - 1) / time.Second) // rounded up: never shorter than configured
-	if err := waitForPodRunning(ctx, d.namespace, podName, readySecs); err != nil {
+	if err := d.kubectl.waitForPodRunning(ctx, d.namespace, podName, readySecs); err != nil {
 		_ = r.Cleanup(ctx)
 		return nil, fmt.Errorf("kubernetes: wait for pod ready: %w", err)
 	}
@@ -884,7 +883,7 @@ func (r *Run) RefreshSecretFile(ctx context.Context, name string, value []byte) 
 	if err != nil {
 		return err
 	}
-	if err := applyManifest(ctx, r.driver.logger, r.namespace, "refresh file-secret", manifest); err != nil {
+	if err := r.driver.kubectl.applyManifest(ctx, r.driver.logger, r.namespace, "refresh file-secret", manifest); err != nil {
 		return fmt.Errorf("kubernetes: refresh file secret %s: apply: %w", name, err)
 	}
 	return nil
@@ -1066,19 +1065,13 @@ func resolveStreamPayload(cmd []string, wrapped string, customWorkDir bool, opts
 // same value — kubectl drops an unannounced stdin silently — which is
 // why [Run.Command] decides both from one expression.
 func (r *Run) cmdContext(ctx context.Context, args []string, streamPayload string, opts sandbox.ExecOpts) *exec.Cmd {
-	c := exec.CommandContext(ctx, r.driver.kubectl, args...)
+	c := r.driver.kubectl.command(ctx, args...)
 	switch {
 	case opts.Stdin != nil:
 		c.Stdin = opts.Stdin
 	case streamPayload != "":
 		c.Stdin = strings.NewReader(streamPayload)
 	}
-	proc.DetachProcessGroup(c)
-	// A cancelled context kills kubectl, not a child it spawned (the process
-	// group is detached): a credential plugin still holding the pipes would
-	// keep Wait blocked past the caller's deadline (kubectlCmdContext).
-	// proc.WaitDelayEnv is the operator's override of this default.
-	proc.SetWaitDelay(c, kubectlDrainBound)
 	return c
 }
 
@@ -1110,23 +1103,23 @@ func (r *Run) Cleanup(_ context.Context) error {
 
 	deleteCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	if err := deleteResource(deleteCtx, r.namespace, "pod", r.podName); err != nil {
+	if err := r.driver.kubectl.deleteResource(deleteCtx, r.namespace, "pod", r.podName); err != nil {
 		// Surface to the logger at debug level — most failures are
 		// "AlreadyDeleted" or transient API hiccups.
 		r.driver.logger.Debug("sandbox: kubernetes cleanup of %s/%s reported: %v", r.namespace, r.podName, err)
 	}
 	if r.networkPolicyApplied {
-		if err := deleteResource(deleteCtx, r.namespace, "networkpolicy", r.podName); err != nil {
+		if err := r.driver.kubectl.deleteResource(deleteCtx, r.namespace, "networkpolicy", r.podName); err != nil {
 			r.driver.logger.Debug("sandbox: kubernetes netpolicy cleanup of %s/%s reported: %v", r.namespace, r.podName, err)
 		}
 	}
 	if r.caSecretName != "" {
-		if err := deleteResource(deleteCtx, r.namespace, "secret", r.caSecretName); err != nil {
+		if err := r.driver.kubectl.deleteResource(deleteCtx, r.namespace, "secret", r.caSecretName); err != nil {
 			r.driver.logger.Debug("sandbox: kubernetes CA secret cleanup of %s/%s reported: %v", r.namespace, r.caSecretName, err)
 		}
 	}
 	if r.secretFilesSecretName != "" {
-		if err := deleteResource(deleteCtx, r.namespace, "secret", r.secretFilesSecretName); err != nil {
+		if err := r.driver.kubectl.deleteResource(deleteCtx, r.namespace, "secret", r.secretFilesSecretName); err != nil {
 			r.driver.logger.Debug("sandbox: kubernetes file secrets cleanup of %s/%s reported: %v", r.namespace, r.secretFilesSecretName, err)
 		}
 	}
@@ -1195,7 +1188,7 @@ func (r *Run) seedDir(ctx context.Context, seed sandbox.SeedDir) error {
 	if !seed.ReadOnly {
 		return nil
 	}
-	chmod := kubectlCmdContext(ctx, "--namespace", r.namespace,
+	chmod := r.driver.kubectl.cmdContext(ctx, "--namespace", r.namespace,
 		"exec", r.podName, "--", "find", seed.ContainerPath, "-type", "f", "-exec", "chmod", "a-w", "{}", "+")
 	if out, err := chmod.CombinedOutput(); err != nil {
 		r.driver.logger.Warn("sandbox: the files copied under %s stay writable — chmod in pod %s: %v\n%s", seed.ContainerPath, r.podName, err, strings.TrimSpace(string(out)))
@@ -1232,7 +1225,7 @@ func (r *Run) streamDirIntoPod(ctx context.Context, src, podDst string) error {
 	}
 	hostTar := exec.CommandContext(ctx, "tar", tarArgs...)
 	// --no-overwrite-dir stays as defence in depth for any pre-existing subdir.
-	podTar := kubectlCmdContext(ctx, "--namespace", r.namespace,
+	podTar := r.driver.kubectl.cmdContext(ctx, "--namespace", r.namespace,
 		"exec", "-i", r.podName, "--", "tar", "-C", podDst, "--no-overwrite-dir", "-xf", "-")
 
 	pipe, err := hostTar.StdoutPipe()
@@ -1552,7 +1545,7 @@ func (r *Run) exportOnce(ctx context.Context, hostDst string) (retryable bool, e
 		"env", "LC_ALL=" + sandbox.TarLocale, "tar", "-C", r.prepared.workspace}
 	kubectlArgs = append(kubectlArgs, tarExcludeArgs()...)
 	kubectlArgs = append(kubectlArgs, "-cf", "-", ".")
-	podTar := kubectlCmdContext(ctx, kubectlArgs...)
+	podTar := r.driver.kubectl.cmdContext(ctx, kubectlArgs...)
 
 	pipe, err := podTar.StdoutPipe()
 	if err != nil {

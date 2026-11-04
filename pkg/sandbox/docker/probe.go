@@ -17,8 +17,8 @@ import (
 // spurious "daemon unreachable". The caller's extraEnv (e.g.
 // DOCKER_CLI_EXPERIMENTAL=enabled for `docker manifest inspect`) is
 // layered on top.
-var runDockerProbe = func(ctx context.Context, rt Runtime, extraEnv []string, args ...string) ([]byte, error) {
-	cmd := runtimeCmdContext(ctx, rt, args...)
+var runDockerProbe = func(ctx context.Context, cli CLI, extraEnv []string, args ...string) ([]byte, error) {
+	cmd := cli.cmdContext(ctx, args...)
 	cmd.Env = append(cmd.Env, extraEnv...)
 	return cmd.CombinedOutput()
 }
@@ -33,17 +33,17 @@ var runDockerProbe = func(ctx context.Context, rt Runtime, extraEnv []string, ar
 // daemon at unix:///var/run/docker.sock". Returns the server version
 // string on success.
 func PingDaemon(ctx context.Context) (serverVersion string, err error) {
-	rt, err := Detect()
+	cli, err := Detect()
 	if err != nil {
 		return "", err
 	}
-	out, runErr := runDockerProbe(ctx, rt, nil, "version", "--format", "{{.Server.Version}}")
+	out, runErr := runDockerProbe(ctx, cli, nil, "version", "--format", "{{.Server.Version}}")
 	trimmed := strings.TrimSpace(string(out))
 	if runErr != nil {
-		return "", fmt.Errorf("%s daemon unreachable: %v\noutput: %s", rt, runErr, trimmed)
+		return "", fmt.Errorf("%s daemon unreachable: %v\noutput: %s", cli, runErr, trimmed)
 	}
 	if trimmed == "" {
-		return "", fmt.Errorf("%s daemon returned an empty server version (is the daemon running?)", rt)
+		return "", fmt.Errorf("%s daemon returned an empty server version (is the daemon running?)", cli)
 	}
 	return trimmed, nil
 }
@@ -86,14 +86,14 @@ func (e *ImageResolveError) Error() string {
 // non-transient *[ImageResolveError]; auth/network errors are returned
 // transient so the doctor warns rather than fails.
 func ResolveImageRef(ctx context.Context, ref string) error {
-	rt, err := Detect()
+	cli, err := Detect()
 	if err != nil {
 		return err
 	}
-	if imageExists(ctx, rt, ref) {
+	if cli.imageExists(ctx, ref) {
 		return nil
 	}
-	out, runErr := runDockerProbe(ctx, rt, []string{"DOCKER_CLI_EXPERIMENTAL=enabled"}, "manifest", "inspect", ref)
+	out, runErr := runDockerProbe(ctx, cli, []string{"DOCKER_CLI_EXPERIMENTAL=enabled"}, "manifest", "inspect", ref)
 	return classifyImageResolve(ref, out, runErr)
 }
 

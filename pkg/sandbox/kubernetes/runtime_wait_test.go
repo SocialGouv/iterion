@@ -8,10 +8,12 @@ import (
 	"testing"
 )
 
-// kubectlShim puts a fake `kubectl` first on PATH whose `wait` times out and
-// whose `get pod … -o json` answers with the given pod document (empty =
+// kubectlShim plants a fake `kubectl` whose `wait` times out and whose
+// `get pod … -o json` answers with the given pod document (empty =
 // unreadable), so the wait error path can be exercised without a cluster.
-func kubectlShim(t *testing.T, podJSON string) {
+// Returned BY PATH, the way Detect hands the driver its binary; PATH still
+// carries the shim's directory because the shim's own `cat` needs it.
+func kubectlShim(t *testing.T, podJSON string) Kubectl {
 	t.Helper()
 	isolateExecEnvironment(t)
 	dir := t.TempDir()
@@ -25,7 +27,8 @@ func kubectlShim(t *testing.T, podJSON string) {
 		"  *\" get pod \"*) cat \"$ITERION_TEST_POD_JSON\"; exit " + exit + " ;;\n" +
 		"esac\n" +
 		"exit 2\n"
-	if err := os.WriteFile(filepath.Join(dir, "kubectl"), []byte(script), 0o755); err != nil {
+	bin := filepath.Join(dir, "kubectl")
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	podFile := filepath.Join(dir, "pod.json")
@@ -34,14 +37,15 @@ func kubectlShim(t *testing.T, podJSON string) {
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("ITERION_TEST_POD_JSON", podFile)
+	return Kubectl(bin)
 }
 
 // A pod that never becomes Ready must say why: a request no node can hold
 // reads differently from a slow image pull, and the fix differs.
 func TestWaitForPodRunningNamesTheSchedulingReason(t *testing.T) {
-	kubectlShim(t, `{"status":{"phase":"Pending","conditions":[{"type":"PodScheduled","status":"False",`+
+	kubectl := kubectlShim(t, `{"status":{"phase":"Pending","conditions":[{"type":"PodScheduled","status":"False",`+
 		`"reason":"Unschedulable","message":"0/3 nodes are available: 3 Insufficient memory."}]}}`)
-	err := waitForPodRunning(context.Background(), "ns", "iterion-run-x", 1)
+	err := kubectl.waitForPodRunning(context.Background(), "ns", "iterion-run-x", 1)
 	if err == nil {
 		t.Fatal("expected the wait to fail")
 	}
@@ -57,8 +61,8 @@ func TestWaitForPodRunningNamesTheSchedulingReason(t *testing.T) {
 // A scheduled pod that never became Ready has a status but no reason and no
 // message; the decoration must not end in a dangling separator.
 func TestWaitForPodRunningScheduledPodReportsTheStatusOnly(t *testing.T) {
-	kubectlShim(t, `{"status":{"phase":"Running","conditions":[{"type":"PodScheduled","status":"True"}]}}`)
-	err := waitForPodRunning(context.Background(), "ns", "iterion-run-x", 1)
+	kubectl := kubectlShim(t, `{"status":{"phase":"Running","conditions":[{"type":"PodScheduled","status":"True"}]}}`)
+	err := kubectl.waitForPodRunning(context.Background(), "ns", "iterion-run-x", 1)
 	if err == nil {
 		t.Fatal("expected the wait to fail")
 	}
@@ -69,8 +73,8 @@ func TestWaitForPodRunningScheduledPodReportsTheStatusOnly(t *testing.T) {
 }
 
 func TestWaitForPodRunningWithoutConditionKeepsTheWaitError(t *testing.T) {
-	kubectlShim(t, "")
-	err := waitForPodRunning(context.Background(), "ns", "iterion-run-x", 1)
+	kubectl := kubectlShim(t, "")
+	err := kubectl.waitForPodRunning(context.Background(), "ns", "iterion-run-x", 1)
 	if err == nil || strings.Contains(err.Error(), "scheduling:") {
 		t.Fatalf("an unreadable condition must not decorate the error, got %v", err)
 	}

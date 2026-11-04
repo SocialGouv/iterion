@@ -337,7 +337,7 @@ func runK8sStrictChecks(ctx context.Context, report *SandboxStrictReport, spec *
 
 	pingCtx, cancel := context.WithTimeout(ctx, doctorProbeTimeout())
 	defer cancel()
-	kctx, ns, err := kubernetes.PingContext(pingCtx)
+	kubectl, kctx, ns, err := kubernetes.PingContext(pingCtx)
 	if err != nil {
 		status, remediation := CheckWarn, "k8s context is only needed where the cloud runner executes; this host is not a runner"
 		if driverName == "kubernetes" {
@@ -360,23 +360,24 @@ func runK8sStrictChecks(ctx context.Context, report *SandboxStrictReport, spec *
 	// and a key no node carries leaves every run Pending. Only a reachable
 	// cluster can answer, hence after the ping.
 	if kd, ok := driver.(*kubernetes.Driver); ok {
-		runSpreadCoverageStrictCheck(ctx, report, kd.SpreadTopologyKey())
+		runSpreadCoverageStrictCheck(ctx, report, kubectl, kd.SpreadTopologyKey())
 	}
 }
 
 // runSpreadCoverageStrictCheck compares the nodes carrying the spread key to
-// the cluster's nodes. kubernetes.io/hostname needs no check: every node
+// the cluster's nodes. kubectl is the binary the ping above resolved, so the
+// node listing runs the one the probe accepted. kubernetes.io/hostname needs no check: every node
 // carries it by construction. Listing nodes is cluster-scoped and the
 // chart's runner Role is namespace-scoped on purpose, so in-cluster the
 // check cannot answer: it warns with kubectl's reason and hands the
 // operator the command to run from a context that can.
-func runSpreadCoverageStrictCheck(ctx context.Context, report *SandboxStrictReport, key string) {
+func runSpreadCoverageStrictCheck(ctx context.Context, report *SandboxStrictReport, kubectl kubernetes.Kubectl, key string) {
 	if key == "" || key == "kubernetes.io/hostname" {
 		return
 	}
 	probeCtx, cancel := context.WithTimeout(ctx, doctorProbeTimeout())
 	defer cancel()
-	labelled, total, err := kubernetes.NodeLabelCoverage(probeCtx, key)
+	labelled, total, err := kubectl.NodeLabelCoverage(probeCtx, key)
 	switch {
 	case err != nil:
 		// The cause is asserted only when the cluster (or the probe) said it:

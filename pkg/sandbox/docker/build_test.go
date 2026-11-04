@@ -27,8 +27,8 @@ func TestBuildImageRef_DeterministicAndDockerSafe(t *testing.T) {
 }
 
 func TestBuild_NoOpWhenSpecHasNoBuild(t *testing.T) {
-	d := &Driver{rt: "docker"}
-	prepared := &Prepared{spec: sandbox.Spec{Image: "alpine:3.20"}, workspace: "/workspace", runtime: "docker"}
+	d := &Driver{cli: CLI{rt: "docker"}}
+	prepared := &Prepared{spec: sandbox.Spec{Image: "alpine:3.20"}, workspace: "/workspace", cli: CLI{rt: "docker"}}
 	got, err := d.Build(context.Background(), prepared,
 		sandbox.RunInfo{RunID: "run_x", WorkspacePath: "/tmp"})
 	if err != nil {
@@ -40,12 +40,12 @@ func TestBuild_NoOpWhenSpecHasNoBuild(t *testing.T) {
 }
 
 func TestBuild_RequiresWorkspacePath(t *testing.T) {
-	d := &Driver{rt: "docker"}
+	d := &Driver{cli: CLI{rt: "docker"}}
 	_, err := d.Build(context.Background(),
 		&Prepared{
 			spec:      sandbox.Spec{Build: &sandbox.Build{Dockerfile: "Dockerfile"}},
 			workspace: "/workspace",
-			runtime:   "docker",
+			cli:       CLI{rt: "docker"},
 		},
 		sandbox.RunInfo{RunID: "run_x"}) // WorkspacePath empty
 	if err == nil {
@@ -59,13 +59,13 @@ func TestBuild_RequiresWorkspacePath(t *testing.T) {
 func TestBuild_ArgvShape(t *testing.T) {
 	var captured []string
 	old := runBuildx
-	runBuildx = func(_ context.Context, _ Runtime, args []string, _ io.Writer) error {
+	runBuildx = func(_ context.Context, _ CLI, args []string, _ io.Writer) error {
 		captured = args
 		return nil
 	}
 	t.Cleanup(func() { runBuildx = old })
 
-	d := &Driver{rt: "docker"}
+	d := &Driver{cli: CLI{rt: "docker"}}
 	prepared := &Prepared{
 		spec: sandbox.Spec{
 			Build: &sandbox.Build{
@@ -76,7 +76,7 @@ func TestBuild_ArgvShape(t *testing.T) {
 			User: "1000:1000",
 		},
 		workspace: "/workspace",
-		runtime:   "docker",
+		cli:       CLI{rt: "docker"},
 	}
 	out, err := d.Build(context.Background(), prepared,
 		sandbox.RunInfo{RunID: "run_xyz", WorkspacePath: "/repo"})
@@ -112,18 +112,18 @@ func TestBuild_ArgvShape(t *testing.T) {
 
 func TestBuild_SurfacesStderrTail(t *testing.T) {
 	old := runBuildx
-	runBuildx = func(_ context.Context, _ Runtime, _ []string, stderr io.Writer) error {
+	runBuildx = func(_ context.Context, _ CLI, _ []string, stderr io.Writer) error {
 		_, _ = stderr.Write([]byte("ERROR: failed to solve: dockerfile parse error: unknown instruction WHAT"))
 		return errors.New("exit status 1")
 	}
 	t.Cleanup(func() { runBuildx = old })
 
-	d := &Driver{rt: "docker"}
+	d := &Driver{cli: CLI{rt: "docker"}}
 	_, err := d.Build(context.Background(),
 		&Prepared{
 			spec:      sandbox.Spec{Build: &sandbox.Build{Dockerfile: "Dockerfile"}, User: "1000:1000"},
 			workspace: "/workspace",
-			runtime:   "docker",
+			cli:       CLI{rt: "docker"},
 		},
 		sandbox.RunInfo{RunID: "run_q", WorkspacePath: "/tmp"})
 	if err == nil {
