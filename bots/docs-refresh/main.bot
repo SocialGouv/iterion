@@ -2084,7 +2084,7 @@ workflow docs_refresh:
   ## delivery gate measures in, so a revert is asked for exactly what the
   ## tail would refuse; record_run_base is the entry and always upstream.
   campaign -> scope_check with {
-    base_sha: "{{outputs.record_run_base.base_sha}}",
+    base_sha: "{{outputs.record_run_base.base_sha}}"
   }
 
   scope_check -> gate
@@ -2145,7 +2145,7 @@ workflow docs_refresh:
   ## declined — reaches the push through here, so the paths the delivery may
   ## carry are judged once, where the push is decided.
   forge_auth_probe -> delivery_gate when available with {
-    base_sha: "{{outputs.record_run_base.base_sha}}",
+    base_sha: "{{outputs.record_run_base.base_sha}}"
   }
 
   delivery_gate -> finalize_mr when delivery_ok with {
