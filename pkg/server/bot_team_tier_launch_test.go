@@ -174,7 +174,7 @@ func TestTeamForkServesTheInboundWebhook(t *testing.T) {
 	pub := &tierPublisher{}
 	s, _ := newTeamForkServer(t, pub)
 
-	if _, err := s.launchWebhookBot(boundedCtx(t), webhooks.Config{ID: "wh-1", TenantID: "t1"},
+	if _, err := s.launchWebhookBot(boundedCtx(t), webhookLaunch(nil, ""), webhooks.Config{ID: "wh-1", TenantID: "t1"},
 		"probe", map[string]string{}, "", "", "acme/repo", nil, nil, store.RunTrustDefault, "", ""); err != nil {
 		t.Fatalf("launchWebhookBot = %v, want nil", err)
 	}

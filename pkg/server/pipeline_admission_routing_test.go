@@ -51,7 +51,7 @@ func TestPipelineAdmission_ResolvesRoutingPolicy(t *testing.T) {
 	s, pub, board, iss := newTicketLaneFixture(t)
 	seedTeamRoutingCell(t, s, "t1")
 
-	if _, err := s.launchTicketNow(boundedCtx(t), "t1", s.runs, board, iss); err != nil {
+	if _, err := s.launchTicketNow(boundedCtx(t), "t1", systemLaunch(pipelineAdmissionActor), s.runs, board, iss); err != nil {
 		t.Fatalf("launchTicketNow = %v, want nil", err)
 	}
 	spec := pub.only(t)
@@ -69,7 +69,7 @@ func TestPipelineAdmission_RefusesWhenTheTenantPolicyIsUnreadable(t *testing.T) 
 		return failingRoutePolicyStore{err: errors.New("mongo wedged")}
 	}
 
-	_, err := s.launchTicketNow(boundedCtx(t), "t1", s.runs, board, iss)
+	_, err := s.launchTicketNow(boundedCtx(t), "t1", systemLaunch(pipelineAdmissionActor), s.runs, board, iss)
 	if err == nil {
 		t.Fatal("launchTicketNow = nil, want a refusal — an unreadable tenant routing record must never launch under a policy nobody could read")
 	}
@@ -188,7 +188,7 @@ func TestPipelineAdmission_CarriesTheIntegrationsRoutingCell(t *testing.T) {
 		t.Fatalf("narrow integration wh1: %v", err)
 	}
 
-	if _, err := s.launchTicketNow(boundedCtx(t), "t1", s.runs, board, cards[0]); err != nil {
+	if _, err := s.launchTicketNow(boundedCtx(t), "t1", systemLaunch(pipelineAdmissionActor), s.runs, board, cards[0]); err != nil {
 		t.Fatalf("launchTicketNow = %v, want nil", err)
 	}
 	spec := pub.only(t)
@@ -221,7 +221,7 @@ func TestPipelineAdmission_CarriesTheIntegrationsRoutingCell(t *testing.T) {
 	if err != nil {
 		t.Fatalf("board.Create: %v", err)
 	}
-	_, err = s.launchTicketNow(boundedCtx(t), "t1", s.runs, board, bad)
+	_, err = s.launchTicketNow(boundedCtx(t), "t1", systemLaunch(pipelineAdmissionActor), s.runs, board, bad)
 	if err == nil {
 		t.Fatal("launchTicketNow accepted a card carrying a malformed override blob")
 	}
@@ -253,7 +253,7 @@ func TestPipelineAdmission_RefusesACardWhoseIntegrationItCannotRead(t *testing.T
 	if err != nil {
 		t.Fatalf("board.Create: %v", err)
 	}
-	_, err = s.launchTicketNow(boundedCtx(t), "t1", s.runs, board, card)
+	_, err = s.launchTicketNow(boundedCtx(t), "t1", systemLaunch(pipelineAdmissionActor), s.runs, board, card)
 	if !errors.Is(err, errTicketRoutingUnresolved) {
 		t.Fatalf("launchTicketNow = %v, want errTicketRoutingUnresolved — a routing contract this lane cannot resolve refuses the launch", err)
 	}

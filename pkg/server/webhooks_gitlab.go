@@ -1315,7 +1315,7 @@ func (s *Server) launchScheduledBot(ctx context.Context, sb cloudsched.Scheduled
 	if deny != nil {
 		return deny.err()
 	}
-	if _, err = s.runs.Launch(ctx, spec); err != nil {
+	if _, err = s.launchRun(ctx, systemLaunch(scheduledLaunchActor), spec); err != nil {
 		// The slot follows the error's own fact (#1725): a launch proven
 		// not to have started hands the metered unit back; a publish that
 		// landed keeps it — the run it describes exists or may be claimed.
@@ -1419,15 +1419,16 @@ func buildScheduledLaunchSpec(sb cloudsched.ScheduledBot, path, source string, r
 // test doubles — and because a test double that stands in for the launcher is
 // not the thing that builds a LaunchSpec, so widening it would prove nothing
 // it does not already prove.
-func (s *Server) webhookLauncherFor(cfg webhooks.Config, t forgeLaunchTarget, deliveryID string) func(context.Context, string, map[string]string, string, string, string, map[string]string, map[string]string) (string, error) {
+func (s *Server) webhookLauncherFor(cfg webhooks.Config, t forgeLaunchTarget, deliveryID string, from launchOrigin) func(context.Context, string, map[string]string, string, string, string, map[string]string, map[string]string) (string, error) {
 	return func(ctx context.Context, botID string, vars map[string]string, repoURL, repoRef, projectPath string, keyOverrides, secretOverrides map[string]string) (string, error) {
-		return s.launchWebhookBot(ctx, cfg, botID, vars, repoURL, repoRef, projectPath, keyOverrides, secretOverrides, t.Trust, t.ExpectedSHA, deliveryID)
+		return s.launchWebhookBot(ctx, from, cfg, botID, vars, repoURL, repoRef, projectPath, keyOverrides, secretOverrides, t.Trust, t.ExpectedSHA, deliveryID)
 	}
 }
 
 // launchWebhookBot resolves the bot's source and submits it through the run
-// service (which, in cloud mode, routes to the publisher).
-func (s *Server) launchWebhookBot(ctx context.Context, cfg webhooks.Config, botID string, vars map[string]string, repoURL, repoRef, projectPath string, keyOverrides, secretOverrides map[string]string, trust store.RunTrust, expectedSHA, deliveryID string) (string, error) {
+// service (which, in cloud mode, routes to the publisher). from is the
+// delivery the launch answers, as its audit line records it.
+func (s *Server) launchWebhookBot(ctx context.Context, from launchOrigin, cfg webhooks.Config, botID string, vars map[string]string, repoURL, repoRef, projectPath string, keyOverrides, secretOverrides map[string]string, trust store.RunTrust, expectedSHA, deliveryID string) (string, error) {
 	if s.runs == nil {
 		return "", errors.New("run service unavailable")
 	}
@@ -1489,7 +1490,7 @@ func (s *Server) launchWebhookBot(ctx context.Context, cfg webhooks.Config, botI
 		}
 	}
 	lb.Stamp(&spec)
-	res, err := s.runs.Launch(ctx, spec)
+	res, err := s.launchRun(ctx, from, spec)
 	if err != nil {
 		return "", err
 	}

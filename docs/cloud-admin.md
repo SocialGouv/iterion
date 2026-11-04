@@ -736,10 +736,16 @@ attempted address only as a peppered digest, a refresh writes nothing — are
 in the [admin guide §1.5](cloud-admin-guide.md#15-audit-log) and
 [ADR-157](adr/157-authentication-events-join-the-audit-log.md).
 
-Beside it, OAuth-forfait usage is logged at `INFO` on the publisher side:
-Every run that seals credentials gets ONE `INFO` line on the publisher side
-naming each funded slot with its tier and fingerprint — never plaintext
-(`logGrantedCredentials` in `pkg/server/cloudpublisher/publisher.go`):
+Every run launch writes one `run.launched` row on the run's team — the
+user, webhook principal or daemon that launched it, the run id, the bot,
+the trigger (delivery or schedule id when one caused it), IP and
+user-agent when a request served it; a fork writes `run.forked` naming
+its parent ([ADR-158](adr/158-run-launches-join-the-audit-log.md)).
+
+Beside it, every run that seals credentials gets ONE `INFO` line on the
+publisher side naming each funded slot with its tier and fingerprint —
+never plaintext (`logGrantedCredentials` in
+`pkg/server/cloudpublisher/publisher.go`):
 
 ```
 cloudpublisher: credentials GRANTED for run=<id> — <tier>(oauth:<claude_code|codex> fp=<fp>), <tier>(api_key:<provider> fp=<fp>), …

@@ -270,6 +270,14 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 		s.composeBoundContexts(parent, runID, &spec, wf)
 		sub, err := s.publisher.SubmitLaunch(parent, runID, spec, wf, cs)
 		if err != nil {
+			// A publish that may have landed leaves a run behind under the id
+			// minted here, which no caller holds: the error names it, so the
+			// audit line, the delivery row and an operator can say which run
+			// the runner may be executing.
+			var persisted *RunPersistedError
+			if RunMayHaveStarted(err) && !errors.As(err, &persisted) {
+				return nil, &RunPersistedError{RunID: runID, Err: err}
+			}
 			return nil, err
 		}
 		// Synthesise a closed Done channel — the cloud handler is

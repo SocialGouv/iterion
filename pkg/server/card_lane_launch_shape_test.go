@@ -77,7 +77,7 @@ func TestCardLaneRefusesAnUndecidedRoutingField(t *testing.T) {
 	seedShapeBot(t, s2, templatedUndecidedBot)
 	s2.cfg.CloudBoardFor = func(string) native.BoardStore { return board }
 	seedIntegrationConfig(t, s2, webhooks.Config{ID: "wh1", TenantID: "t1", Provider: webhooks.ProviderGitHub})
-	if _, err := s2.launchTicketNow(boundedCtx(t), "t1", s2.runs, board, cards[0]); err == nil {
+	if _, err := s2.launchTicketNow(boundedCtx(t), "t1", systemLaunch(pipelineAdmissionActor), s2.runs, board, cards[0]); err == nil {
 		t.Fatal("the ticket lane launched a routing field its vars cannot decide")
 	}
 }
@@ -114,7 +114,7 @@ func TestDirectLaneKeepsLaunchingTheUndecidedBot(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := store.WithIdentity(auth.WithIdentity(t.Context(), auth.Identity{UserID: "webhook:hook", TeamID: "t1", Kind: auth.KindWebhook}), "t1", "webhook:hook")
-	if _, err := s.launchWebhookBot(ctx, cfg, "probe", map[string]string{"lane_backend": "claw"}, "", "", "", nil, nil, store.RunTrustDefault, "", ""); err != nil {
+	if _, err := s.launchWebhookBot(ctx, webhookLaunch(nil, ""), cfg, "probe", map[string]string{"lane_backend": "claw"}, "", "", "", nil, nil, store.RunTrustDefault, "", ""); err != nil {
 		t.Fatalf("the direct lane refused what its shape launches: %v", err)
 	}
 }

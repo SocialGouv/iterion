@@ -156,7 +156,7 @@ func TestALaunchThatNeverStartsRevokesTheGrantItMinted(t *testing.T) {
 		env := newPipelineTierEnv(t)
 		wireForgePublishForT1(t, env.srv)
 		card := plantCard(t, env, "")
-		if _, err := env.srv.launchTicketNow(context.Background(), "t1", env.srv.runs, claimDrift{env.board}, &card); err == nil {
+		if _, err := env.srv.launchTicketNow(context.Background(), "t1", systemLaunch(pipelineAdmissionActor), env.srv.runs, claimDrift{env.board}, &card); err == nil {
 			t.Fatal("a launch whose claim failed reported success")
 		}
 		if n := grantCount(t, env.srv); n != 0 {
@@ -245,7 +245,7 @@ func TestALaunchThatNeverStartsRevokesNothingItDidNotMint(t *testing.T) {
 			t.Fatal(err)
 		}
 		card := plantCard(t, env, "")
-		if _, err := env.srv.launchTicketNow(context.Background(), "t1", env.srv.runs, claimDrift{env.board}, &card); err == nil {
+		if _, err := env.srv.launchTicketNow(context.Background(), "t1", systemLaunch(pipelineAdmissionActor), env.srv.runs, claimDrift{env.board}, &card); err == nil {
 			t.Fatal("a launch whose claim failed reported success")
 		}
 		if _, live := env.srv.forgePublishTokens.lookup(pinned); !live {
@@ -288,7 +288,7 @@ func TestPipelineLaunchNow_RefusesAClaimTakenDuringTheComposition(t *testing.T) 
 	wireForgePublishForT1(t, env.srv)
 	card := plantCard(t, env, "")
 	board := &lateClaimBoard{BoardStore: env.board, id: card.ID}
-	_, err := env.srv.launchTicketNow(context.Background(), "t1", env.srv.runs, board, &card)
+	_, err := env.srv.launchTicketNow(context.Background(), "t1", systemLaunch(pipelineAdmissionActor), env.srv.runs, board, &card)
 	if err == nil {
 		t.Fatal("a card claimed while this launch was composing was launched anyway")
 	}

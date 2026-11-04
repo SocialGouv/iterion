@@ -260,6 +260,7 @@ func (s *Server) handleForkRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.shareForkGrant(r.Context(), result.NewRunID)
+	s.auditRunForked(r, result.NewRunID, id)
 	w.WriteHeader(http.StatusCreated)
 	s.writeJSONFor(w, r, result)
 }

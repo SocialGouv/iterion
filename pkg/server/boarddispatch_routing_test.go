@@ -384,7 +384,7 @@ func TestLaunchLanes_PinOnlyTheIntegrationsOperatorNames(t *testing.T) {
 	s2, _ := newTeamForkServer(t, pub2)
 	s2.cfg.CloudBoardFor = func(string) native.BoardStore { return board }
 	seedIntegrationConfig(t, s2, integration)
-	if _, err := s2.launchTicketNow(boundedCtx(t), "t1", s2.runs, board, cards[0]); err != nil {
+	if _, err := s2.launchTicketNow(boundedCtx(t), "t1", systemLaunch(pipelineAdmissionActor), s2.runs, board, cards[0]); err != nil {
 		t.Fatalf("launchTicketNow = %v, want nil", err)
 	}
 	ticket := pub2.only(t)
@@ -420,7 +420,7 @@ func TestLaunchLanes_ResolveNoIntegrationLevelForACardThatNamesNone(t *testing.T
 	if err != nil {
 		t.Fatalf("board.Create: %v", err)
 	}
-	if _, err := s.launchTicketNow(boundedCtx(t), "", s.runs, board, bare); err != nil {
+	if _, err := s.launchTicketNow(boundedCtx(t), "", systemLaunch(pipelineAdmissionActor), s.runs, board, bare); err != nil {
 		t.Fatalf("launchTicketNow (teamless) = %v, want nil — a local board must launch with no tenant level to read", err)
 	}
 	spec := pub.only(t)
@@ -441,7 +441,7 @@ func TestLaunchLanes_ResolveNoIntegrationLevelForACardThatNamesNone(t *testing.T
 	if err != nil {
 		t.Fatalf("board.Create: %v", err)
 	}
-	if _, err := s.launchTicketNow(boundedCtx(t), "", s.runs, board, named); !errors.Is(err, errTicketRoutingUnresolved) {
+	if _, err := s.launchTicketNow(boundedCtx(t), "", systemLaunch(pipelineAdmissionActor), s.runs, board, named); !errors.Is(err, errTicketRoutingUnresolved) {
 		t.Fatalf("launchTicketNow (teamless, named) = %v, want errTicketRoutingUnresolved — a local card naming an integration resolves nothing and must refuse", err)
 	}
 }
@@ -529,7 +529,7 @@ func TestLaunchLanes_HandTheRunTheIntegrationsVarLayers(t *testing.T) {
 	seedIntegrationConfig(t, s2, integration)
 	var warned2 bytes.Buffer
 	s2.logger = iterlog.New(iterlog.LevelWarn, &warned2)
-	if _, err := s2.launchTicketNow(boundedCtx(t), "t1", s2.runs, board, cards[0]); err != nil {
+	if _, err := s2.launchTicketNow(boundedCtx(t), "t1", systemLaunch(pipelineAdmissionActor), s2.runs, board, cards[0]); err != nil {
 		t.Fatalf("launchTicketNow = %v, want nil", err)
 	}
 	want := map[string]string{

@@ -69,7 +69,7 @@ func TestTriggerSpineKeepsTheSlotOnlyWhenARunMayHaveStarted(t *testing.T) {
 	newLauncher := func(publishErr error) *serviceLauncher {
 		s.runs = freshRuns(t, &landingPublishStub{err: publishErr})
 		return &serviceLauncher{
-			runs:   s.runs,
+			launch: s.launchTriggered,
 			logger: s.logger,
 			gate:   s.gateLaunch,
 			resolveBot: func(context.Context, string, string) (*launchBot, error) {

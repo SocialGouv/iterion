@@ -325,6 +325,7 @@ while the ticket waits (#2635).
 | `DELETE` | `/api/teams/{id}/invitations/{invite_id}` | team admin | Revoke |
 | `GET` | `/api/orgs/{id}/usage` | org member | Org-member mirror of the admin usage view (see below) |
 | `GET` | `/api/teams/{id}/audit` | team admin | Tenant audit log (control-plane mutations keyed on the team) |
+| `GET` | `/api/teams/{id}/audit` | team admin | Tenant audit log (control-plane mutations and the team's run launches, `run.launched`) |
 
 ## Organisations — self-serve (org members, teams, SSO)
 
@@ -355,6 +356,7 @@ emails/IPs — and `PUT …/members/{user_id}` takes the platform super-admin fl
 | `GET` | `/api/orgs/{id}/teams` | org member | List the org's teams |
 | `POST` | `/api/orgs/{id}/teams` | org admin | Create a team in the org |
 | `GET` | `/api/orgs/{id}/audit` | org admin | Org audit log — org mutations and the members' accepted sign-ins (`auth.login.succeeded`) |
+| `GET` | `/api/orgs/{id}/audit` | org admin | Org audit log (org-scoped mutations) |
 | `GET` | `/api/orgs/{id}/sso/providers` | org member | List SSO providers |
 | `POST` | `/api/orgs/{id}/sso/providers` | org admin | Add an SSO provider (OIDC) |
 | `PATCH` | `/api/orgs/{id}/sso/providers/{provider_id}` | org admin | Update a provider |
@@ -937,6 +939,7 @@ Source: [pkg/server/runs.go](../pkg/server/runs.go).
 | `PATCH` | `/api/admin/users/{id}` | super-admin | Status / super-admin flag |
 | `POST` | `/api/admin/users/{id}/reset-password` | super-admin | Force a user's password reset; disabled accounts return 422 and must be explicitly re-enabled first; a personal access token answers `403` for its own account |
 | `GET` | `/api/admin/audit` | super-admin | Platform audit log — super-admin actions and every refused sign-in (`auth.login.failed`, attempted address as a peppered digest) (filters: `action`, `actor`, `from`, `to`, `offset`, `limit`) |
+| `GET` | `/api/admin/audit` | super-admin | Platform audit log (platform-scoped actions; filters: `action`, `actor`, `from`, `to`, `offset`, `limit`) |
 | `GET` | `/api/admin/runs` | super-admin | Cross-org runs view (#2148): every org's runs in one list — the filters combine (`?org_id=`, `?team_id=`, `?status=`, `?since=`), pagination is server-side across orgs (`?limit=` 1..500, default 50; pass the answered `next_cursor` back as `?cursor=` — a malformed token is a 400), and each row names its team and org and carries the run's sovereign runner-pool stamp. Read-only: opening ONE run rides the ADR-103 choke point; every super-admin cross-team grant — this list included — is audited at platform scope through one named predicate |
 | `GET` | `/api/admin/dlq` | super-admin | List parked messages |
 | `GET` | `/api/admin/dlq/{seq}` | super-admin | Peek payload |

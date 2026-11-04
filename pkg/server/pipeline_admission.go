@@ -432,7 +432,7 @@ func (s *Server) launchReadyTicket(runs *runview.Service, board native.BoardStor
 	// The loop is local-only (pipelineAdmissionEnabled refuses cloud), so
 	// the board it drives carries no tenant: the bot resolves
 	// platform-over-baked with an empty team, and there is none to invent.
-	if _, err := s.launchTicketNow(context.Background(), "", runs, board, iss); err != nil {
+	if _, err := s.launchTicketNow(context.Background(), "", systemLaunch(pipelineAdmissionActor), runs, board, iss); err != nil {
 		// launchTicketNow already logged the specifics; the loop is
 		// best-effort and simply retries on the next tick.
 		return
@@ -666,7 +666,7 @@ func (s *Server) refuseLiveClaim(id string, cur *native.Issue, board native.Boar
 	return fmt.Errorf("ticket %s is claimed by %q under a live lease — its launcher is already on it; wait for the lease to lapse (or for the watchdog to reclaim it)", id, cur.Claim)
 }
 
-func (s *Server) launchTicketNow(ctx context.Context, teamID string, runs *runview.Service, board native.BoardStore, iss *native.Issue) (string, error) {
+func (s *Server) launchTicketNow(ctx context.Context, teamID string, from launchOrigin, runs *runview.Service, board native.BoardStore, iss *native.Issue) (string, error) {
 	// A ticket held under a LIVE claim already has a launcher — the
 	// dispatcher wins with the CLAIM, and its move out of Ready is
 	// offloaded, so the state alone cannot say the ticket is free. This is
@@ -912,7 +912,7 @@ func (s *Server) launchTicketNow(ctx context.Context, teamID string, runs *runvi
 	// fund — the very tier this lane never consulted before (Background
 	// carries no owner).
 	launchCtx := store.WithIdentity(context.WithoutCancel(ctx), teamID, pipelineBoardLaunchActor)
-	res, err := runs.Launch(launchCtx, spec)
+	res, err := s.launchRunWith(launchCtx, runs, from, spec)
 	if err != nil {
 		if !runview.RunMayHaveStarted(err) {
 			s.revokeUnlaunchedGrant(minted)

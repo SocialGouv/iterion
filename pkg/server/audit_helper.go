@@ -125,16 +125,24 @@ func (s *Server) auditTenantAs(a auditActor, tenantID, action, target, targetID 
 // serves (auth.FromContext): the actor of every control-plane mutation.
 func (s *Server) auditWrite(r *http.Request, scope audit.Scope, tenantID, action, target, targetID string, meta map[string]any) {
 	id, _ := auth.FromContext(r.Context())
-	kind := "user"
+	s.auditWriteActor(r, scope, tenantID, id.UserID, auditActorKind(id, id.UserID), action, target, targetID, meta)
+}
+
+// auditActorKind classifies the actor of an audit line from the principal
+// the write runs under and the actor id it records: a super-admin, the
+// synthetic webhook principal (by kind, or by the "webhook:" owner prefix a
+// lane with no auth identity still carries), a daemon of this process
+// (KindInternal, or no principal at all), else a user.
+func auditActorKind(id auth.Identity, actorID string) string {
 	switch {
 	case id.IsSuperAdmin:
-		kind = "super_admin"
-	case strings.HasPrefix(id.UserID, "webhook:"):
-		kind = "webhook"
-	case id.UserID == "":
-		kind = "system"
+		return "super_admin"
+	case id.Kind == auth.KindWebhook || strings.HasPrefix(actorID, "webhook:"):
+		return "webhook"
+	case id.Kind == auth.KindInternal || id.UserID == "":
+		return "system"
 	}
-	s.auditWriteActor(r, scope, tenantID, id.UserID, kind, action, target, targetID, meta)
+	return "user"
 }
 
 // ---- REST ----

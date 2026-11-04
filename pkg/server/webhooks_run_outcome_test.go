@@ -168,7 +168,7 @@ func TestWebhookLaunchStampsTheDeliveryProvenance(t *testing.T) {
 	ctx := store.WithIdentity(auth.WithIdentity(t.Context(), auth.Identity{
 		UserID: "webhook:hook", TeamID: "t1", Kind: auth.KindWebhook,
 	}), "t1", "webhook:hook")
-	if _, err := s.launchWebhookBot(ctx, cfg, "probe", map[string]string{}, "", "", "acme/repo",
+	if _, err := s.launchWebhookBot(ctx, webhookLaunch(nil, ""), cfg, "probe", map[string]string{}, "", "", "acme/repo",
 		nil, nil, store.RunTrustDefault, "", "d-42"); err != nil {
 		t.Fatalf("launchWebhookBot = %v, want nil", err)
 	}
@@ -199,7 +199,7 @@ func TestWebhookLaunchWithoutADeliveryLeavesSourceNil(t *testing.T) {
 	ctx := store.WithIdentity(auth.WithIdentity(t.Context(), auth.Identity{
 		UserID: "webhook:hook", TeamID: "t1", Kind: auth.KindWebhook,
 	}), "t1", "webhook:hook")
-	if _, err := s.launchWebhookBot(ctx, cfg, "probe", map[string]string{}, "", "", "acme/repo",
+	if _, err := s.launchWebhookBot(ctx, webhookLaunch(nil, ""), cfg, "probe", map[string]string{}, "", "", "acme/repo",
 		nil, nil, store.RunTrustDefault, "", ""); err != nil {
 		t.Fatalf("launchWebhookBot = %v, want nil", err)
 	}
