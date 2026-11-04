@@ -283,8 +283,13 @@ func steerWSCode(err error) string {
 	}
 }
 
-// writeSteerError maps the service-layer contract onto HTTP.
+// writeSteerError maps the service-layer contract onto HTTP. Answering a
+// human gate resumes the run, so the resume's own refusals are answered as
+// writeResumeError answers them.
 func (s *Server) writeSteerError(w http.ResponseWriter, r *http.Request, err error) {
+	if s.writeCredentialAtCapacityError(w, r, err) {
+		return
+	}
 	var (
 		unknownLoop *runtime.UnknownLoopError
 		terminal    *runview.RunTerminalError

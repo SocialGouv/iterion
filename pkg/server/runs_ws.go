@@ -18,6 +18,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/runview/runstream"
+	"github.com/SocialGouv/iterion/pkg/server/cloudpublisher"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -958,6 +959,13 @@ func (c *runConn) handleAnswer(env runWSEnvelope) {
 		// generic failure the client can only display.
 		if errors.Is(err, runview.ErrRunNotResumable) {
 			c.sendError(runNotResumableErrorCode, err.Error(), env.AckID)
+			return
+		}
+		// A key the run sealed is full of other runs: the run was put back
+		// as it was, and the same answer succeeds once a slot frees — the
+		// code writeCredentialAtCapacityError answers over HTTP.
+		if errors.Is(err, cloudpublisher.ErrCredentialAtCapacity) {
+			c.sendError(credentialAtCapacityErrorCode, runtime.OperatorMessage(err), env.AckID)
 			return
 		}
 		c.sendError("resume_failed", runtime.OperatorMessage(err), env.AckID)

@@ -57,6 +57,14 @@ const runNotResumableErrorCode = "run_not_resumable"
 // when also_needs_force is set, force too for a change it names.
 const scratchNotPortableErrorCode = "scratch_not_portable"
 
+// credentialAtCapacityErrorCode tells a client that the resume was refused
+// because a key the run sealed is full of other runs
+// (cloudpublisher.ErrCredentialAtCapacity): nothing was published, the run
+// was put back as it was, and the same request succeeds once a slot frees.
+// Every operator surface that resumes a run answers it
+// (writeCredentialAtCapacityError, and the WS answer's error code).
+const credentialAtCapacityErrorCode = "credential_at_capacity"
+
 // --- Request / response shapes ---
 
 type launchRunRequest struct {
@@ -1199,6 +1207,9 @@ func (s *Server) writeResumeError(w http.ResponseWriter, r *http.Request, err er
 	if s.writeNoLLMCredentialError(w, r, "resume", err) {
 		return
 	}
+	if s.writeCredentialAtCapacityError(w, r, err) {
+		return
+	}
 	status, code := http.StatusBadRequest, ""
 	var rt *runtime.RuntimeError
 	switch {
@@ -1212,14 +1223,6 @@ func (s *Server) writeResumeError(w http.ResponseWriter, r *http.Request, err er
 		code = artifactContractIncompatibleErrorCode
 	case errors.Is(err, runview.ErrRunNotResumable):
 		status, code = http.StatusConflict, runNotResumableErrorCode
-	case errors.Is(err, cloudpublisher.ErrCredentialAtCapacity):
-		// The key the run sealed is full of other runs: the resume was
-		// refused before publishing and the run put back as it was — a
-		// parked run keeps its armed retry, which the sweeper asks again;
-		// any other is the caller's to resume once a slot frees. The answer
-		// the launch gate gives a concurrency cap, with the same remedy
-		// (wait, or free a slot).
-		status = http.StatusTooManyRequests
 	}
 	body := map[string]any{"error": fmt.Sprintf("resume: %v", err)}
 	if code != "" {
@@ -1227,6 +1230,27 @@ func (s *Server) writeResumeError(w http.ResponseWriter, r *http.Request, err er
 	}
 	runtime.RemedyOf(err).Record(body)
 	s.writeJSONError(w, r, status, body)
+}
+
+// writeCredentialAtCapacityError answers a resume the cloud publisher
+// refused because a key the run sealed is full of other runs
+// (cloudpublisher.ErrCredentialAtCapacity): 429 with
+// credentialAtCapacityErrorCode — the resume was refused before publishing
+// and the run put back as it was, a parked run keeping its armed retry,
+// which the sweeper asks again; any other is the caller's to resume once a
+// slot frees. The answer the launch gate gives a concurrency cap, with the
+// same remedy (wait, or free a slot). Shared by every HTTP surface that
+// resumes a run — resume, answer-human, an async answer's auto-resume, a
+// host event — so none answers the refusal as a server failure.
+func (s *Server) writeCredentialAtCapacityError(w http.ResponseWriter, r *http.Request, err error) bool {
+	if !errors.Is(err, cloudpublisher.ErrCredentialAtCapacity) {
+		return false
+	}
+	s.writeJSONError(w, r, http.StatusTooManyRequests, map[string]any{
+		"error":      fmt.Sprintf("resume: %v", err),
+		"error_code": credentialAtCapacityErrorCode,
+	})
+	return true
 }
 
 // writeNoLLMCredentialError answers a launch or resume the cloud publisher
