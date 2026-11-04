@@ -75,7 +75,7 @@ func TestTeamAliveRunsMongoProjectionAndIndex(t *testing.T) {
 	if err := bson.Unmarshal(command.Lookup("projection").Document(), &projection); err != nil {
 		t.Fatal(err)
 	}
-	if len(projection) != 2 || projection["_id"] != int32(1) || projection["status"] != int32(1) {
+	if len(projection) != 3 || projection["tenant_id"] != int32(1) || projection["_id"] != int32(1) || projection["status"] != int32(1) {
 		t.Fatalf("query loads payload: %v", projection)
 	}
 	// Explain the actual emitted filter and projection, with no hint: an
