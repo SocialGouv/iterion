@@ -290,10 +290,10 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 	// z.ai key, never the subscription, so neither the refusal nor the notice
 	// concerns it — beside a Claude forfait it would refuse a node that was
 	// never going to touch the forfait.
-	if providerName, _, perr := ParseModelSpec(task.Model); perr == nil && providerName == "anthropic" && !GLMOnAnthropicWire(task.Model) {
-		if err := secrets.GuardSubscriptionOAuth(ctx, secrets.ProviderAnthropic, secrets.OAuthKindClaudeCode); err != nil {
-			return delegate.Result{}, fmt.Errorf("claw backend: %w", err)
-		}
+	if err := clawSubscriptionGuard(ctx, task.Model); err != nil {
+		return delegate.Result{}, fmt.Errorf("claw backend: %w", err)
+	}
+	if clawSpendsAnthropicSubscription(task.Model) {
 		if b.logger != nil && secrets.SubscriptionOAuthOnly(ctx, secrets.ProviderAnthropic, secrets.OAuthKindClaudeCode) {
 			b.logger.Warn("[%s#%d/claw] %s", task.NodeID, task.Iteration,
 				secrets.SubscriptionOAuthNotice(secrets.ProviderAnthropic))
@@ -3040,6 +3040,26 @@ func RouteProviderHint(ctx context.Context, backend, hint, model string) string 
 		return string(secrets.ProviderZAI)
 	}
 	return hint
+}
+
+// clawSpendsAnthropicSubscription reports whether spec is one the run's Claude
+// subscription can fund: an `anthropic/…` id that is not a GLM id — a GLM id on
+// this provider is z.ai's (GLMOnAnthropicWire) and spends the z.ai key, never
+// the subscription.
+func clawSpendsAnthropicSubscription(spec string) bool {
+	providerName, _, err := ParseModelSpec(spec)
+	return err == nil && providerName == "anthropic" && !GLMOnAnthropicWire(spec)
+}
+
+// clawSubscriptionGuard is Execute's subscription switch, before the sandbox
+// dispatch and the in-process arm alike: under ITERION_FORBID_SUBSCRIPTION_OAUTH
+// a node whose run funds its Anthropic id with the Claude forfait alone is
+// refused (secrets.GuardSubscriptionOAuth), whatever the pod's env carries.
+func clawSubscriptionGuard(ctx context.Context, spec string) error {
+	if !clawSpendsAnthropicSubscription(spec) {
+		return nil
+	}
+	return secrets.GuardSubscriptionOAuth(ctx, secrets.ProviderAnthropic, secrets.OAuthKindClaudeCode)
 }
 
 // applyForfaitAcrossSandbox is the body of the forfait crossing, split out so
