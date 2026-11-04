@@ -18,7 +18,7 @@ The bundles under `bots/`, then the skills they carry.
 | `branch-improve-loop` | 🌿 Billy | Branch-scoped REVIEW-AND-IMPROVE campaign — one capable agent, its natural flow, minimal framing. | 1.9.9 |
 | `campaign` | 🧭 Campy | Supervises a WHOLE modernisation programme, lot after lot, by running the modernize bot as a subbot in a bounded loop — and holding the… | 0.1.3 |
 | `copilot` | 💬 Copi | Conversational iterion assistant. | 0.2.14 |
-| `dep-update-guard` | 💂 Vetty | Reactive security + alignment guard for automated dependency-update PRs (Dependabot / Renovate). | 2.11.2 |
+| `dep-update-guard` | 💂 Vetty | Reactive security + alignment guard for automated dependency-update PRs (Dependabot / Renovate). | 2.11.3 |
 | `devbox-setup` | 🧰 Devy | Bootstraps a reproducible dev environment for a repository. | 0.1.4 |
 | `docs-refresh` | 📚 Doki | Documentation alignment bot — one capable agent + a mission + truth gates only. | 3.8.0 |
 | `e2e-coverage` | 🕸️ Endy | Autonomous end-to-end coverage completion — one capable agent, its natural flow, minimal framing. | 0.5.4 |
@@ -39,7 +39,7 @@ The bundles under `bots/`, then the skills they carry.
 | `rgaa-audit` | ♿ Acci | RGAA 4.1.2 / WCAG 2.2 AA accessibility audit (read-only) on the ultra11y engine. | 3.1.1 |
 | `sec-audit-deps` | 📦 Depsy | Universal supply-chain malware auditor. | 0.1.5 |
 | `sec-audit-source` | 🛡️ Seki | Universal source-code security auditor. | 0.1.11 |
-| `secured-renovacy` | ⬆️ Renovacy | Multi-stack agentic dependency upgrade pipeline. | 0.3.5 |
+| `secured-renovacy` | ⬆️ Renovacy | Multi-stack agentic dependency upgrade pipeline. | 0.3.6 |
 | `supply-shield` | ⛓️ Shieldy | Global supply-chain MALWARE shield. | 0.1.6 |
 | `supply-shield-cve` | 🚨 Vulny | Global supply-chain CVE shield. | 0.1.6 |
 | `test-coverage` | 🧪 Testy | Autonomous test-coverage augmentation — one capable agent, its natural flow, minimal framing. | 2.4.4 |

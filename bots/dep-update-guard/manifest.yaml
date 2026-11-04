@@ -1,7 +1,34 @@
 name: dep-update-guard
 display_name: Vetty
 icon: 💂
-version: 2.11.2
+version: 2.11.3
+## 2.11.3 — the audit holds a bump only for a HIGH/CRITICAL it INTRODUCES.
+## An advisory on both the old pin and the new version is REMAINING: the
+## audit reports it with the release that fixes it and whether the bump's
+## own source ships that release, and never holds on it — a hold keeps the
+## old pin, which carries it too (buildkit-operator#55 resolved eleven
+## advisories, introduced none, and was held). The prompt and the playbook
+## now agree; their contradiction let the verdict flip between runs on the
+## same diff. What keeps the gate shut: a malware/typosquat advisory is never
+## sorted with the vulnerabilities (a record stating the package ships
+## malicious code, whatever its id; a flaw that lets an attacker run some is a
+## vulnerability) — on the new version it is `malicious`, whatever the old pin
+## carries; an introduced advisory counts at the highest severity any record
+## gives, and as HIGH when none scores it (Go vulndb records carry no
+## severity); the sets come from the advisory record checked against BOTH pins
+## (the old one read at the merge-base), queried under the ecosystem's own id
+## — the Go toolchain is two, `stdlib` and `toolchain`, which no scanner
+## reads — with the bare version (OSV answers a wrong id or an unparseable
+## version without an error, so an empty answer is clean only under a known
+## id), never from
+## release notes or the PR body, which both prompts now name as untrusted DATA
+## instead of "operator" context. A scanner counts as unavailable only after a
+## Bash call that failed (binary absent or unrunnable, or an error report),
+## quoted in the summary — buildkit-operator#38 was held on "no shell" by an
+## auditor that never called Bash; a findings report is a result whatever the
+## exit code, one missing scanner a coverage note, and nixpkgs pins get an
+## upstream audit path. The whole security_audit prompt and the playbook
+## passages are frozen in bots/testdata (`task bots:audit-policy:gen`).
 ## 2.11.2 — commit_probe resolves the agent's report through Git: only the
 ## current local head, strictly descended from the audited revision, is a
 ## new commit. Publication and arming use that full id. A stale run cannot
