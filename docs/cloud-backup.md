@@ -23,14 +23,25 @@ destroy the archives accordingly.
 
 **Critical invariant:** the bucket copy starts after the Mongo dump
 ends. A dump taken with `--oplog` restores the base as it stood when the
-dump ended, so every object it references existed then: a copy that
-started later holds it, or, if it was deleted in between, the `sync` tier
-has moved it under `current-deleted/<timestamp>/`. Two jobs on the same
-cron do not give that: a copy that finishes before the dump misses the
-objects the dump's last writes point to, and both jobs still go green. The
-[cadence](#recovery-objectives) below orders them, and step 2 of the
-[restore drill](#restore-drill) pairs a dump with a copy by their
+dump ended, so every object it references existed then. Two jobs on the
+same cron do not even give that: a copy that finishes before the dump
+misses the objects the dump's last writes point to, and both jobs still go
+green. The [cadence](#recovery-objectives) below orders them, and step 2
+of the [restore drill](#restore-drill) pairs a dump with a copy by their
 timestamps.
+
+The order is necessary, not sufficient. A copy started after the dump
+holds what still exists then, and the `sync` tier moves under
+`current-deleted/<timestamp>/` what it deletes or overwrites — the version
+the PREVIOUS copy held, not one written since. So an object written after
+the previous copy and deleted or rewritten before this one is in neither
+place: the restored row that references it reads a missing object (a
+deleted artifact, upload or IR answers `404`) or a newer version than its
+checkpoint (a backend session or a scratch file rewritten in that window).
+That residue lives between the previous copy and the dump; the cadence
+below bounds it to half a day. A consistent cut needs either the source
+bucket's object versioning, restored at the dump's end, or the writers
+quiesced across the pair: neither is in place at this version.
 
 ---
 
@@ -41,30 +52,34 @@ each one:
 
 | Objective | Value | Held by |
 |---|---|---|
-| **RPO** (maximum data loss) | **24 hours** | The daily order below: everything written since the dump of the last pair is lost, nothing older. The bucket half is the chart's `backup.*`; the Mongo half is the operator's CronJob ([below](#mongo-backup)), and the RPO holds only once that CronJob has a green run against the off-cluster destination and a drill has restored its dump. |
+| **RPO** (maximum data loss) | **24 hours** | Two pairs a day, below: everything written since the dump of the last pair is lost, nothing older — about 14 hours at worst (12 h between pairs, the hour between a dump and its copy, the copy's own run), within the objective; the residue named above — objects rewritten or deleted between two copies — is not covered. The bucket half is the chart's `backup.*`; the Mongo half is the operator's CronJob ([below](#mongo-backup)), and the RPO holds only once that CronJob has a green run against the off-cluster destination and a drill has restored its dump. |
 | **RTO** (maximum time to serve again) | **8 hours** | The [restore drill](#restore-drill) on a fresh namespace — objects first, then the base — measured end to end; the [drill log](#drill-log) is the witness. It assumes the live side still answers step 6's replay; with the live side lost too, step 6 fails closed and the RTO covers the data plane only. |
 | Drill cadence | quarterly | The [drill log](#drill-log): an objective nobody measured is a wish. |
 
-**One order, daily: the Mongo dump at 01:30 UTC, the bucket copy at
-02:30.** 02:30 is the chart's `backup.tiers[daily].schedule` default; the
-Mongo CronJob below runs an hour earlier and names its archive with the
-dump's start AND end, so a pair is checked, not assumed. A dump still
-running at 02:30 does not pair with that day's copy, only with the next
-one, and for that day the RPO doubles: watch the dump's duration
+**Two pairs a day: the Mongo dump at 01:30 and 13:30 UTC, the bucket copy
+at 02:30 and 14:30.** Set the `daily` tier to it,
+`backup.tiers[daily].schedule: "30 2,14 * * *"` (the chart's default runs
+once, at 02:30, which pairs only once a day and leaves the worst case past
+24 hours); the Mongo CronJob below runs an hour earlier and names its
+archive with the dump's start AND end, so a pair is checked, not assumed.
+A dump still running at its copy's start does not pair with that copy,
+only with the next one, twelve hours later, and for that half-day the
+worst case passes 24 hours: watch the dump's duration
 (`kube_job_status_completion_time` − `kube_job_status_start_time` of its
-Jobs) and move the dump earlier before it nears the hour. A CronJob
+Jobs) and move the dumps earlier before it nears the hour. A CronJob
 schedule is read in the time zone of the cluster's controller manager (the
 chart renders no `timeZone`, and the recipe below sets none): on a cluster
 whose controller is not on UTC both run at those hours in that zone and the
 order holds — check it on the target cluster and write the zone down with
 the deployment's values. The `weekly` (Sunday 03:00) and `monthly` (1st,
-04:00) tiers are snapshots that start after the day's dump and do not move
-the RPO. `IterionArtifactBackupStale` fires
-about 37 hours after the `daily` tier's last success (36 h `maxAgeHours` +
-the rule's 1 h `for:`), and `IterionArtifactBackupFailed` on a failed run:
-a missed day is seen before the RPO is doubled. The chart renders no rule
-for the Mongo CronJob: give it the same pair, on the same kube-state-metrics
-series (`kube_cronjob_status_last_successful_time` and
+04:00) tiers are snapshots that start after the night's dump and do not
+move the RPO. `IterionArtifactBackupStale` fires one `for:` hour after the
+`daily` tier's `maxAgeHours` without a success: lower it to 18 with two
+pairs a day (the chart's 36 is sized for one), so a missed pair is seen
+before the RPO is spent; `IterionArtifactBackupFailed` fires on a failed
+run. The chart renders no rule for the Mongo CronJob: give it the same
+pair, on the same kube-state-metrics series
+(`kube_cronjob_status_last_successful_time` and
 `kube_cronjob_status_last_schedule_time` of its name).
 
 What the objectives do not cover: anything JetStream holds (see
@@ -99,7 +114,7 @@ metadata:
   name: iterion-mongo-backup
   namespace: iterion
 spec:
-  schedule: "30 1 * * *"         # daily 01:30 — ends before the bucket copy's 02:30
+  schedule: "30 1,13 * * *"      # 01:30 and 13:30 — each ends before its bucket copy (02:30, 14:30)
   successfulJobsHistoryLimit: 3
   failedJobsHistoryLimit: 5
   concurrencyPolicy: Forbid       # never two dumps at once
@@ -291,7 +306,7 @@ Recommended baseline (tune to your compliance posture):
 
 | Tier | Frequency | Retention | Storage |
 |---|---|---|---|
-| Hot | Daily dump + blob `sync` (`current/`, deletions kept under `current-deleted/`) | 7 days | Offsite, another region |
+| Hot | Twice-daily dump + blob `sync` (`current/`, deletions kept under `current-deleted/`) | 7 days | Offsite, another region |
 | Warm | Weekly blob `snapshot` (`weekly/<timestamp>/`) | 35 days | Another region |
 | Cold | Monthly blob `snapshot` (`monthly/<timestamp>/`) | 13 months (400 days) | Glacier / Archive tier |
 
@@ -364,8 +379,10 @@ finding, not a formality.
    for the tier's `keepDays`): they hold what the live side deleted or
    overwrote after the backup, which the restored rows still reference
    (step 6 deletes again what was deleted). Copy them newest first, so the
-   version the dump saw, moved by the first copy after its end, is the one
-   that stays. An older directory holds what was deleted before the
+   oldest version a copy kept after the dump is the one that stays — the
+   dump's own when it was written before the copy preceding the dump; one
+   written in between is the residue (the invariant above)
+   no copy holds. An older directory holds what was deleted before the
    backup: leave it out.
 3. **Restore Mongo from `--archive`** — the dump of step 2's pair, as the
    [CronJob](#native--mongodump-cronjob) wrote it under `mongo/`:
@@ -523,7 +540,7 @@ paused run resumed), and the RTO is held only while every row stays under
 8 hours. An empty table is the honest state — it means the objectives
 above are published, not yet proven — and the next audit reads it as such.
 
-| Date | Target | Backup restored (Mongo dump + blob copy, timestamps) | Duration | Anomalies |
+| Date | Target | Backup restored (Mongo dump + blob copy, timestamps; the copy before it, which opens the residue's window) | Duration | Anomalies |
 |---|---|---|---|---|
 
 No drill has run against this chart's copy yet.
