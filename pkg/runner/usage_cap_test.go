@@ -39,6 +39,21 @@ func (s *capStatusStore) UpdateRunOutcome(_ context.Context, _ string, status st
 	return true, nil
 }
 
+// The fake observes the same typed port as the real FS/Mongo conformance.
+func (s *capStatusStore) RecordPreEngineRefusal(ctx context.Context, id string, q store.PreEngineRefusalRequest) (store.PreEngineRefusalResult, error) {
+	if err := q.Validate(); err != nil {
+		return store.PreEngineRefusalResult{}, err
+	}
+	changed, err := s.UpdateRunOutcome(ctx, id, q.TargetStatus(), q.Message, q.Outcome(), store.PreEngineRefusalFromStatuses(q))
+	return store.PreEngineRefusalResult{Changed: changed, Status: q.TargetStatus()}, err
+}
+func (s *capStatusStore) AppendEvent(ctx context.Context, id string, event store.Event) (*store.Event, error) {
+	if s.RunStore != nil {
+		return s.RunStore.AppendEvent(ctx, id, event)
+	}
+	return &event, nil
+}
+
 type failingCapStore struct{ usagecap.Store }
 
 func (failingCapStore) Latest(context.Context, string) ([]usagecap.Reading, error) {

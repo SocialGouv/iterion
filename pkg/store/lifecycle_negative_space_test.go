@@ -297,8 +297,7 @@ var negativeSpaceAllowlist = map[string]allowEntry{
 	"pkg/cli/remote_runs.go :: Cancelled+Failed+FailedResumable+Finished":  {[]string{"followRemoteRun"}, "--follow stop set over the WIRE statuses (strings): IsTerminal's set; the paused non-exit is the known bug #3 follow-up card"},
 
 	// -- pkg/runner.
-	"pkg/runner/loop.go :: Failed+Finished":     {[]string{"bankableStatus"}, "forge-banking outcomes (finalStatus strings; budget_exceeded rides along outside the run-status vocabulary)"},
-	"pkg/runner/usage_cap.go :: Queued+Running": {[]string{"usageCapPreflight"}, "usage-cap park CAS: only a claimed-or-queued attempt may be parked"},
+	"pkg/runner/loop.go :: Failed+Finished": {[]string{"bankableStatus"}, "forge-banking outcomes (finalStatus strings; budget_exceeded rides along outside the run-status vocabulary)"},
 
 	// -- pkg/queue: the admission rule (runner and DLQ replay).
 	"pkg/queue/admission.go :: Failed+Finished+PausedWaitingHuman": {[]string{"Admit"}, "settled drop set: shapes a delivery can never legitimately target (the admission rule the runner's pre-lock pass, its under-lock re-read and the DLQ replay share)"},

@@ -10,6 +10,41 @@ Read it when a run fails, resumes or rewinds, or a checkpoint looks torn ([docs/
 - **Sentinel errors**: `ErrRunPaused` (resumable), `ErrRunCancelled` (resumable with checkpoint), `ErrBudgetExceeded`
 - **Resumable failures**: Most runtime failures produce `failed_resumable` status with a checkpoint. See `docs/resume.md` for the exhaustive matrix.
 
+### Refusals before the engine
+
+`pkg/runner/pre_engine_refusal.go` records the runner's refusals before
+`Engine.Run`/`ResumeWithHostInputs`: workflow/IR loading, budget overrides,
+credentials, repository pin/workspace, MCP, executor, bundle, engine requirement,
+usage admission and launch inputs. It returns the original error; delivery
+classification, retry scheduling and refused-resume release keep their owners.
+The AST inventory follows each launch/resume branch; executable pipeline
+cases in `pkg/runner` cover these sites; engine success, pause and failure do not enter this recorder.
+
+The optional `store.PreEngineRefusalRecorder` has filesystem and Mongo twins.
+One atomic write checks both eligible status and publication time, including
+an already-running run: an older delivery cannot overwrite a newer attempt.
+An unmarked legacy delivery writes only an unmarked run. Generic queued retries
+keep their checkpoint, answered interaction, inputs and outcome unchanged;
+`Run.PreEngineRefusal` and `Run.Error` explain why the delivery is pending.
+Usage parking still creates the failed-resumable state its retry scheduler
+requires. IR and engine-version refusals retain their typed final verdicts,
+except when the existing queued-resume releaser owns the transition.
+
+The diagnostic belongs to the store: `SaveRun` preserves it for the same
+status/publication, ignores caller-authored copies and clears it on a changed
+attempt. A changed message or failure code clears the old cause even on the
+same status; rearming the same cause preserves it. Claim, new publication,
+pause, cancellation and completion clear it. Snapshots clone the diagnostic.
+The filesystem store rejects a mismatched persisted run ID or tenant; historical
+local runs without a tenant keep their existing local-store semantics.
+
+Only a successful write emits an event: `run_pre_engine_refused` for a still
+queued delivery, `run_failed` for a written failure. Document and event writes
+are not transactional. Missing capability, stale attempt, malformed publication,
+store failure or event failure is logged; none replaces the original error or
+falls back to an unfenced status write. Recording uses a bounded context that
+survives cancellation of the execution context.
+
 ### Store & Persistence
 
 ```
