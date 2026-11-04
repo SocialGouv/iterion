@@ -24,16 +24,17 @@ func (s *Store) ListAliveRunsForTeam(ctx context.Context, teamID string) ([]stri
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	// Exclude only scalar, recognized inactive states. A query $nin also
-	// excludes malformed arrays containing an inactive value; such metadata
-	// must remain visible here and fail strict decoding instead.
+	// Exclude only known inactive states with scalar status and tenant identity.
+	// Equality also matches tenant arrays, and $nin can hide malformed status
+	// arrays; matching malformed metadata must remain visible for strict decode.
 	filter := bson.M{"$expr": bson.M{"$not": bson.A{bson.M{"$and": bson.A{
 		bson.M{"$eq": bson.A{bson.M{"$type": "$status"}, "string"}},
+		bson.M{"$eq": bson.A{bson.M{"$type": "$tenant_id"}, "string"}},
 		bson.M{"$in": bson.A{"$status", store.TeamCutoverInactiveStatuses()}},
 	}}}}}
 	ctx = store.WithTenant(ctx, teamID)
 	cur, err := s.runs.Find(ctx, notDeleted(withTenantFilter(ctx, filter)),
-		options.Find().SetProjection(bson.M{"_id": 1, "status": 1}))
+		options.Find().SetProjection(bson.M{"_id": 1, "status": 1, "tenant_id": 1}))
 	if err != nil {
 		return nil, fmt.Errorf("store/mongo: list alive team runs: %w", err)
 	}
@@ -42,6 +43,7 @@ func (s *Store) ListAliveRunsForTeam(ctx context.Context, teamID string) ([]stri
 	for cur.Next(ctx) {
 		var row struct {
 			ID     string          `bson:"_id"`
+			Tenant string          `bson:"tenant_id"`
 			Status store.RunStatus `bson:"status"`
 		}
 		if err := cur.Decode(&row); err != nil {
@@ -49,6 +51,9 @@ func (s *Store) ListAliveRunsForTeam(ctx context.Context, teamID string) ([]stri
 		}
 		if row.ID == "" {
 			return nil, fmt.Errorf("store/mongo: alive run has no identity")
+		}
+		if row.Tenant != teamID {
+			return nil, fmt.Errorf("store/mongo: run tenant identity differs from target team")
 		}
 		alive, err := store.TeamCutoverStatusAlive(row.Status)
 		if err != nil {

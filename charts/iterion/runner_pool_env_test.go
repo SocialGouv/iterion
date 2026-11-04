@@ -36,7 +36,11 @@ func TestChartRenderRunnerPoolCarriesNoPlatformKeyMaterial(t *testing.T) {
 				if pool == "alpha" {
 					gatewayKey = "custom-gateway-key"
 				}
-				assertPoolKeyMaterialAbsent(t, docs, spec, keyMaterial, map[string]map[string]bool{
+				template, ok := dig(must(t, docs, "Deployment", "iterion-runner-pool-"+pool), "spec", "template").(map[string]any)
+				if !ok {
+					t.Fatal("missing PodTemplate")
+				}
+				assertPoolKeyMaterialAbsent(t, docs, template, keyMaterial, map[string]map[string]bool{
 					auth:                                {"ITERION_JWT_SECRET": true, "ITERION_MONGO_URI": true},
 					"iterion-pool-" + pool + "-gateway": {gatewayKey: true},
 				})
@@ -159,6 +163,7 @@ func assertPoolKeyMaterialAbsent(t *testing.T, docs []map[string]any, pod map[st
 			}
 		case map[string]any:
 			for k, child := range v {
+				inspect(path+".<key>", k)
 				inspect(path+"."+k, child)
 			}
 		case []any:
@@ -194,6 +199,7 @@ func assertPoolKeyMaterialAbsent(t *testing.T, docs []map[string]any, pod map[st
 				continue
 			}
 			for k, value := range data {
+				inspect(path+"."+field+".<key>", k)
 				if strings.HasPrefix(k, "ITERION_SECRETS_KEY") {
 					t.Fatalf("platform key %s imported at %s", k, path)
 				}
