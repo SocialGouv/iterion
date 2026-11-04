@@ -58,7 +58,8 @@ type metricsEmitter struct {
 	declaredByNode map[string]string
 	stepsSeen      map[string]bool
 	// outerSteps holds a node's stepsSeen while one of its schema re-asks
-	// runs (EventDelegateStarted with "reask").
+	// run inside the fallback chain runs (EventDelegateStarted with
+	// "reask_in_chain").
 	outerSteps   map[string]bool
 	priceByModel map[string]modelRate
 
