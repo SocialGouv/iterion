@@ -334,9 +334,10 @@ deadline — leaves its own archive and no union: `unsettled`,
 `stale: false`. A member the host declines on
 principle (an unsafe name, a link that leaves the tree, a hardlink to no
 file the archive landed, a kind it does not write back, a pre-drain
-tree where the archive carries a file or a link) is skipped, and the
-members after it still land — one collision never costs the rest of the
-set — but never in silence: the drain's verdict is `declined` (or the
+tree where the archive carries a file or a link, a pre-drain file or
+link where it carries a dir — the drain removes only what it landed) is
+skipped, and the members after it still land — one collision never costs
+the rest of the set — but never in silence: the drain's verdict is `declined` (or the
 failure's own reason, when one followed), and the event lists each
 member under `declined` as `{dir, name, why}` with a
 `sandbox.ReadBackDeclineWhy` token, the first 100 in path order and the

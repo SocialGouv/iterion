@@ -199,6 +199,41 @@ func TestTheExportWritesNothingOutsideTheWorkspace(t *testing.T) {
 	}
 }
 
+// A link is judged where the kernel resolves it — the export's on the
+// drain's predicate (symlinkLanding): from the directory it lands in, never
+// the one its name spells, and with a ".." past a name read as climbing
+// from wherever that name leads. Both links below spell a target inside the
+// workspace and resolve outside it.
+func TestTheExportJudgesALinkWhereItLands(t *testing.T) {
+	host, run := hostileHost(t)
+	members := []tar.Header{
+		// l names the workspace root: l/l/l/x is written at x, where the
+		// target's three ".." climb out.
+		{Name: "./l", Typeflag: tar.TypeSymlink, Linkname: "."},
+		{Name: "./l/l/l/x", Typeflag: tar.TypeSymlink, Linkname: "../../../outside"},
+		// sub/up leads to the root: up/../outside resolves above it.
+		{Name: "./sub", Typeflag: tar.TypeDir, Mode: 0o755},
+		{Name: "./sub/up", Typeflag: tar.TypeSymlink, Linkname: ".."},
+		{Name: "./sub/y", Typeflag: tar.TypeSymlink, Linkname: "up/../outside"},
+		{Name: "./work.txt", Typeflag: tar.TypeReg},
+	}
+	extracted, err := run.extractExport(bytes.NewReader(hostileArchive(t, members, map[string]string{"./work.txt": "the run's own work"})), host)
+	if err != nil {
+		t.Fatalf("extract: %v", err)
+	}
+	if target, linkErr := os.Readlink(filepath.Join(host, "x")); !os.IsNotExist(linkErr) {
+		t.Errorf("x -> %q (%v) stands in the workspace, want nothing — the self-link chain planted a link out of it", target, linkErr)
+	}
+	if target, linkErr := os.Readlink(filepath.Join(host, "sub", "y")); !os.IsNotExist(linkErr) {
+		t.Errorf("sub/y -> %q (%v) stands, want nothing — its .. climbs from the root sub/up leads to", target, linkErr)
+	}
+	for _, rel := range []string{"l", "sub/up", "work.txt"} {
+		if !extracted[rel] {
+			t.Errorf("extracted = %v, want %s — a link that stays inside, and the run's own work, still land", extracted, rel)
+		}
+	}
+}
+
 // What the run DID write comes back whole: contents, mode and modification
 // time, which is what git reads to decide a file is unchanged.
 func TestTheExportRestoresWhatTheRunWrote(t *testing.T) {

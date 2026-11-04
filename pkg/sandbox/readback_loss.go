@@ -68,7 +68,10 @@ const (
 	// climbing out of the tree, or reaching through a link that leaves it.
 	DeclinedUnsafeName ReadBackDeclineWhy = "unsafe_name"
 	// DeclinedLinkLeavesTree: a symlink whose target resolves outside the
-	// tree — the member that turns a later write into a write anywhere.
+	// tree — read from the directory the link lands in, the way the kernel
+	// reads it — or may come to: a ".." past a name in the target climbs
+	// from wherever that name leads. The member that turns a later write
+	// into a write anywhere.
 	DeclinedLinkLeavesTree ReadBackDeclineWhy = "link_leaves_tree"
 	// DeclinedHardlinkTarget: a hardlink whose target is no regular file the
 	// same archive landed — absent, unsafe, declined itself, or another
@@ -81,6 +84,11 @@ const (
 	// DeclinedPreDrainTree: a tree the host dir held before the drain stands
 	// where the archive carries a file or a link — not the drain's to take.
 	DeclinedPreDrainTree ReadBackDeclineWhy = "pre_drain_tree"
+	// DeclinedPreDrainFile: a file or a link the host dir held before the
+	// drain stands where the archive carries a dir, or above a member's
+	// path — not the drain's to remove: the drain removes only what it
+	// landed.
+	DeclinedPreDrainFile ReadBackDeclineWhy = "pre_drain_file"
 )
 
 // ReadBackDeclinedMember is one member of a pod's archive the host

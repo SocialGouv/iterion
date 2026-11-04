@@ -173,13 +173,47 @@ func (r *Run) writeExportFile(abs string, hdr *tar.Header, src io.Reader) error 
 // whether that is inside root. A link pointing out of the tree is the
 // member that turns a later write into a write anywhere; the export and
 // the drain both refuse it on this one predicate.
+//
+// The answer is the kernel's, never the text's. A relative target resolves
+// from the directory the link lands in — abs's parent chain read through
+// every link in it (safepath.Landing) — so a name that reaches its
+// directory through an earlier member's `l -> .` puts the link where its
+// ".." climb from, not where the name spells. And the target's own ".."
+// must all come before its first name (linkTargetClimbsFirst): the kernel
+// follows a name — a link the tree holds, or one a later member lays there
+// — before the ".." after it climbs, so that ".." answers for a directory
+// no reading of the text knows.
 func symlinkLanding(root, abs, target string) (resolved string, inside bool) {
+	at, err := safepath.Landing(root, abs)
+	if err != nil || !linkTargetClimbsFirst(target) {
+		return "", false
+	}
 	resolved = target
 	if !filepath.IsAbs(resolved) {
-		resolved = filepath.Join(filepath.Dir(abs), target)
+		resolved = filepath.Join(filepath.Dir(filepath.Join(root, filepath.FromSlash(at))), target)
 	}
 	resolved = filepath.Clean(resolved)
 	return resolved, resolved == root || strings.HasPrefix(resolved, root+string(os.PathSeparator))
+}
+
+// linkTargetClimbsFirst reports whether every ".." of a link's target comes
+// before its first name. Those climb from the link's own directory, a real
+// one, and land where the text says; a ".." after a name climbs from
+// wherever the kernel found that name to lead.
+func linkTargetClimbsFirst(target string) bool {
+	named := false
+	for _, part := range strings.Split(filepath.ToSlash(target), "/") {
+		switch part {
+		case "", ".":
+		case "..":
+			if named {
+				return false
+			}
+		default:
+			named = true
+		}
+	}
+	return true
 }
 
 // writeExportSymlink recreates a symlink the run's work left in the

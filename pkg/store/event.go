@@ -606,7 +606,10 @@ const (
 	//     (sandbox.ReadBackDeclineWhy): "unsafe_name", "link_leaves_tree",
 	//     "hardlink_target" (a hardlink to no file the archive landed — one
 	//     to a landed file lands as a copy), "kind" (a device, a fifo),
-	//     "pre_drain_tree"; the first 100 in dir and name order
+	//     "pre_drain_tree" (a tree the host held where the archive carries
+	//     a file or a link), "pre_drain_file" (a file or link the host held
+	//     where the archive carries a dir, or above the member's path); the
+	//     first 100 in dir and name order
 	//     (sandbox.ReadBackDeclinedListed — the drain keeps no more). Present
 	//     only when the host declined any, whatever the reason
 	//   - declined_count: how many members the host declined in all — the
