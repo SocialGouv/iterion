@@ -125,8 +125,8 @@ func TestLaunchAudit_HTTPLaunchIsAttributedToTheUser(t *testing.T) {
 	if e.Target != "run" || e.TargetID != out.RunID || out.RunID == "" {
 		t.Errorf("target = %s/%q, want run/%q — the line is keyed by the run it describes", e.Target, e.TargetID, out.RunID)
 	}
-	if e.IP != "203.0.113.7:4242" || e.UserAgent != "iterion-cli/test" {
-		t.Errorf("ip=%q user_agent=%q: an HTTP launch records the request it served (203.0.113.7:4242, iterion-cli/test)", e.IP, e.UserAgent)
+	if e.IP != "203.0.113.7" || e.UserAgent != "iterion-cli/test" {
+		t.Errorf("ip=%q user_agent=%q: an HTTP launch records the request it served (203.0.113.7, iterion-cli/test)", e.IP, e.UserAgent)
 	}
 	if e.Meta["bot"] != "probe" || e.Meta["trigger"] != launchTriggerAPI {
 		t.Errorf("meta = %v, want bot=probe trigger=api — a CLI client with no provenance of its own is an API launch", e.Meta)
@@ -176,8 +176,8 @@ func TestLaunchAudit_PipelineLaunchNowIsAttributedToTheOperator(t *testing.T) {
 	if e.TenantID != "t1" || e.TargetID != runID || runID == "" {
 		t.Errorf("tenant=%q target_id=%q, want t1/%q", e.TenantID, e.TargetID, runID)
 	}
-	if e.IP != "203.0.113.8:4242" || e.UserAgent != "Mozilla/5.0 (studio)" {
-		t.Errorf("ip=%q user_agent=%q, want the operator's request (203.0.113.8:4242, Mozilla/5.0 (studio))", e.IP, e.UserAgent)
+	if e.IP != "203.0.113.8" || e.UserAgent != "Mozilla/5.0 (studio)" {
+		t.Errorf("ip=%q user_agent=%q, want the operator's request (203.0.113.8, Mozilla/5.0 (studio))", e.IP, e.UserAgent)
 	}
 	if e.Meta["trigger"] != launchTriggerStudio || e.Meta["bot"] != "probe" {
 		t.Errorf("meta = %v, want trigger=studio bot=probe — a browser request with no provenance of its own is a studio launch", e.Meta)
@@ -233,7 +233,7 @@ func TestLaunchAudit_AForkIsAttributedToTheOperator(t *testing.T) {
 	if e.Target != "run" || e.TargetID != out.NewRunID || out.NewRunID == "" {
 		t.Errorf("target = %s/%q, want run/%q — the child run is the line's subject", e.Target, e.TargetID, out.NewRunID)
 	}
-	if e.Meta["parent_run_id"] != parentID || e.IP != "203.0.113.5:4242" {
+	if e.Meta["parent_run_id"] != parentID || e.IP != "203.0.113.5" {
 		t.Errorf("meta=%v ip=%q, want parent_run_id=%s and the operator's address", e.Meta, e.IP, parentID)
 	}
 }
@@ -270,8 +270,8 @@ func TestLaunchAudit_WebhookLaunchIsAttributedToTheDelivery(t *testing.T) {
 	if e.TargetID != runID || runID == "" {
 		t.Errorf("target_id = %q, want the launched run %q", e.TargetID, runID)
 	}
-	if e.IP != "203.0.113.9:4242" || e.UserAgent != "probe-forge/1.0" {
-		t.Errorf("ip=%q user_agent=%q, want the delivery's source address 203.0.113.9:4242 and probe-forge/1.0", e.IP, e.UserAgent)
+	if e.IP != "203.0.113.9" || e.UserAgent != "probe-forge/1.0" {
+		t.Errorf("ip=%q user_agent=%q, want the delivery's source address 203.0.113.9 and probe-forge/1.0", e.IP, e.UserAgent)
 	}
 	deliveryID, _ := e.Meta["delivery_id"].(string)
 	if deliveryID == "" || e.Meta["trigger"] != store.RunSourceKindWebhook {
