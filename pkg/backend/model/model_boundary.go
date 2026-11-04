@@ -2,6 +2,9 @@ package model
 
 import (
 	"context"
+	"fmt"
+	"maps"
+	"reflect"
 	"slices"
 
 	"github.com/SocialGouv/claw-code-go/pkg/api"
@@ -69,33 +72,34 @@ func (e *ClawExecutor) generationForModel(opts GenerationOptions) GenerationOpti
 	return opts
 }
 
-// screenedInjector wraps a compaction hook so every text and tool name it
-// hands the summariser that the history did not already carry crosses the
-// model boundary first. A hook's turn is text the loop composed for itself — the
-// workspace-memory index and autoload re-read at compaction — which no
-// field pass reached and the request chokepoint never sees: compaction
-// folds the turn into the summary before any request carries it, so a
-// value it quoted would reach the model through the summary's excerpts.
+// screenedInjector wraps a compaction hook so every text, tool name and
+// tool input it hands the summariser that the history did not already
+// carry crosses the model boundary first. A hook's turn is text the loop
+// composed for itself — the workspace-memory index and autoload re-read
+// at compaction — which no field pass reached and the request chokepoint
+// never sees: compaction folds the turn into the summary before any
+// request carries it, so a value it quoted would reach the model through
+// the summary's excerpts.
 //
-// The wrap keys on what the history held BEFORE the hook ran, not on the
-// IsInjected marker the hook is asked to set: it snapshots every input
-// turn's texts (each block's, and each nested tool_result block's, which
-// the summariser reads too) and its marker, then hands a returned turn
-// back as it is only when its Content is the very slice an input message
-// carries (same first block, same length) AND its texts still match that
-// turn's snapshot. Every other turn takes the pass — a turn the hook
-// added, marked or not, an input turn whose blocks the hook grew, and an
-// input turn the hook rewrote in place, whose slice is the history's own
-// while its text no longer is. The continuation turn an earlier compaction
+// The hook works on its own deep copy of the history (cloneMessages), so
+// nothing it writes — a text, a tool input, a nested tool_result, in place
+// or through the slice's backing array — reaches the live history, nor the
+// preserved turns of the compaction computed before the hook ran, which
+// the loop keeps when the hook returns nil or a slice that does not
+// re-compact. The wrap then hands a returned turn back as it is only when
+// its Content is the very slice the copy gave that turn (same first block,
+// same length) AND that Content still equals the history turn's, field for
+// field. Every other turn takes the pass — a turn the hook added, marked
+// or not, an input turn whose blocks the hook grew, and an input turn the
+// hook rewrote in place, whose slice is the copy's own while its content
+// no longer is the history's. The continuation turn an earlier compaction
 // left at the head of the history carries IsInjected: it takes the pass
 // too, whether the marker sits on the returned turn or on the input's, so
 // a history head that was never screened does not reach the summariser in
 // clear (the pass is idempotent on a placeholder, so a turn that already
-// crossed costs a scan). The result is a fresh slice whose screened turns
-// are copies: a hook that returns the input's backing array leaves the
-// caller's history untouched. A hook's nil stays nil (the loop's "no
-// injection" branch), and a nil hook stays nil, so the loop's "no hook"
-// branch is unchanged.
+// crossed costs a scan). A hook's nil stays nil (the loop's "no injection"
+// branch), and a nil hook stays nil, so the loop's "no hook" branch is
+// unchanged.
 func screenedInjector(inject func([]api.Message) []api.Message, screen func(string) string) func([]api.Message) []api.Message {
 	if inject == nil {
 		return nil
@@ -104,40 +108,28 @@ func screenedInjector(inject func([]api.Message) []api.Message, screen func(stri
 		first *api.ContentBlock
 		n     int
 	}
-	type snapshot struct {
-		texts    []string
-		injected bool
-	}
 	return func(messages []api.Message) []api.Message {
-		own := make(map[contentSlice]snapshot, len(messages))
-		for i := range messages {
-			if len(messages[i].Content) == 0 {
-				continue
-			}
-			key := contentSlice{&messages[i].Content[0], len(messages[i].Content)}
-			prior, seen := own[key]
-			own[key] = snapshot{
-				texts:    appendBlockTexts(nil, messages[i].Content),
-				injected: messages[i].IsInjected || (seen && prior.injected),
+		view := cloneMessages(messages)
+		own := make(map[contentSlice]int, len(view))
+		for i := range view {
+			if len(view[i].Content) > 0 {
+				own[contentSlice{&view[i].Content[0], len(view[i].Content)}] = i
 			}
 		}
-		modified := inject(messages)
+		modified := inject(view)
 		if modified == nil {
 			return nil
 		}
 		handed := make([]api.Message, len(modified))
 		copy(handed, modified)
-		var current []string
 		for i := range handed {
 			if len(handed[i].Content) == 0 {
 				continue
 			}
-			prior, fromHistory := own[contentSlice{&handed[i].Content[0], len(handed[i].Content)}]
-			if fromHistory && !prior.injected && !handed[i].IsInjected {
-				current = appendBlockTexts(current[:0], handed[i].Content)
-				if slices.Equal(current, prior.texts) {
-					continue
-				}
+			j, fromHistory := own[contentSlice{&handed[i].Content[0], len(handed[i].Content)}]
+			if fromHistory && !messages[j].IsInjected && !handed[i].IsInjected &&
+				reflect.DeepEqual(handed[i].Content, messages[j].Content) {
+				continue
 			}
 			handed[i].Content = screenedBlocks(handed[i].Content, screen)
 		}
@@ -145,26 +137,94 @@ func screenedInjector(inject func([]api.Message) []api.Message, screen func(stri
 	}
 }
 
-// appendBlockTexts appends the text of every block and of every block
-// nested under it (a tool_result's content) to dst, depth first.
-// appendBlockTexts collects what the summariser transcript reads from a
-// block list: each text, each nested text, and each tool_use Name (the
-// transcript renders it as "[Tool call: <name>]"). The snapshot and the
-// compare both read through it, so a Name rewritten in place is a changed
-// turn exactly like a rewritten text.
-func appendBlockTexts(dst []string, blocks []api.ContentBlock) []string {
-	for i := range blocks {
-		dst = append(dst, blocks[i].Text)
-		if blocks[i].Name != "" {
-			dst = append(dst, blocks[i].Name)
-		}
-		dst = appendBlockTexts(dst, blocks[i].Content)
+// cloneMessages returns a copy of messages that shares nothing a hook can
+// write with them: each turn's Content, every nested tool_result block
+// list, every tool input (cloneInputValue), the image source and the
+// cache marker are fresh. A nil list stays nil, so an untouched copy is
+// reflect.DeepEqual to its original.
+func cloneMessages(messages []api.Message) []api.Message {
+	if messages == nil {
+		return nil
 	}
-	return dst
+	out := make([]api.Message, len(messages))
+	copy(out, messages)
+	for i := range out {
+		out[i].Content = cloneBlocks(out[i].Content)
+	}
+	return out
 }
 
-// screenedBlocks returns a copy of blocks whose every text and tool name,
-// nested ones included, took the pass; blocks itself is left as it was.
+// cloneBlocks is cloneMessages for one block list, nested lists included.
+func cloneBlocks(blocks []api.ContentBlock) []api.ContentBlock {
+	if blocks == nil {
+		return nil
+	}
+	out := make([]api.ContentBlock, len(blocks))
+	copy(out, blocks)
+	for i := range out {
+		if out[i].Input != nil {
+			out[i].Input, _ = cloneInputValue(out[i].Input).(map[string]any)
+		}
+		out[i].Content = cloneBlocks(out[i].Content)
+		if out[i].Source != nil {
+			source := *out[i].Source
+			out[i].Source = &source
+		}
+		if out[i].CacheControl != nil {
+			marker := *out[i].CacheControl
+			out[i].CacheControl = &marker
+		}
+	}
+	return out
+}
+
+// cloneInputValue deep-copies a tool input value: the shapes a decoded
+// JSON input holds (objects, arrays, scalars) and the typed lists and maps
+// a hook may build. A leaf of any other type is shared — a scalar is
+// immutable, and the live history's inputs are decoded JSON.
+func cloneInputValue(v any) any {
+	switch t := v.(type) {
+	case map[string]any:
+		if t == nil {
+			return t
+		}
+		out := make(map[string]any, len(t))
+		for k, vv := range t {
+			out[k] = cloneInputValue(vv)
+		}
+		return out
+	case []any:
+		if t == nil {
+			return t
+		}
+		out := make([]any, len(t))
+		for i, vv := range t {
+			out[i] = cloneInputValue(vv)
+		}
+		return out
+	case []map[string]any:
+		if t == nil {
+			return t
+		}
+		out := make([]map[string]any, len(t))
+		for i, vv := range t {
+			out[i], _ = cloneInputValue(vv).(map[string]any)
+		}
+		return out
+	case []string:
+		return slices.Clone(t)
+	case map[string]string:
+		return maps.Clone(t)
+	default:
+		return v
+	}
+}
+
+// screenedBlocks returns a copy of blocks whose every text, tool name and
+// tool input, nested blocks included, took the pass; blocks itself is left
+// as it was. These are what the summariser renders from a block: a text, a
+// "tool_use <name>(<input>)" line, a "tool_result <name>: <inner text>"
+// line.
 func screenedBlocks(blocks []api.ContentBlock, screen func(string) string) []api.ContentBlock {
 	out := make([]api.ContentBlock, len(blocks))
 	copy(out, blocks)
@@ -173,11 +233,52 @@ func screenedBlocks(blocks []api.ContentBlock, screen func(string) string) []api
 		if out[i].Name != "" {
 			out[i].Name = screen(out[i].Name)
 		}
+		if out[i].Input != nil {
+			out[i].Input, _ = screenedInputValue(out[i].Input, screen).(map[string]any)
+		}
 		if len(out[i].Content) > 0 {
 			out[i].Content = screenedBlocks(out[i].Content, screen)
 		}
 	}
 	return out
+}
+
+// screenedInputValue returns a copy of a tool input value whose every
+// string took the pass, map keys included: the summariser renders the
+// input whole with fmt's %v, keys and all. A leaf of another type is
+// rendered as the summariser renders it and, when that rendering carries
+// a value the pass replaces, handed on as its screened rendering — the
+// summary then reads the same text, screened. Keys are visited in order,
+// so two keys the pass maps to one string keep a deterministic value.
+func screenedInputValue(v any, screen func(string) string) any {
+	switch t := v.(type) {
+	case string:
+		return screen(t)
+	case map[string]any:
+		if t == nil {
+			return t
+		}
+		out := make(map[string]any, len(t))
+		for _, k := range slices.Sorted(maps.Keys(t)) {
+			out[screen(k)] = screenedInputValue(t[k], screen)
+		}
+		return out
+	case []any:
+		if t == nil {
+			return t
+		}
+		out := make([]any, len(t))
+		for i, vv := range t {
+			out[i] = screenedInputValue(vv, screen)
+		}
+		return out
+	default:
+		rendered := fmt.Sprintf("%v", v)
+		if screened := screen(rendered); screened != rendered {
+			return screened
+		}
+		return v
+	}
 }
 
 // taskForModel returns task with every model-read text passed through the

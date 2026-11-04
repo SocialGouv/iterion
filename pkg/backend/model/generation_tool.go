@@ -175,20 +175,19 @@ type GenerationOptions struct {
 	// OnBeforeCompact fires only when in-loop compaction is about to
 	// shrink the history. The callback may return a modified slice
 	// (e.g. with an injected session-memory user turn) that feeds the
-	// summariser; the live history keeps the originals. Returning nil
-	// is a no-op. A turn the callback ADDS carries IsInjected (the
-	// vendored compactor keeps it out of the real-user-turn count), and
-	// the loop passes every turn of the returned slice that is not one of
-	// messages' own — the hook's additions, marked or not, and an earlier
-	// compaction's continuation turn alike — through ScreenModelText
-	// before the summariser reads them (screenedInjector), so the text a
-	// hook composes for the model crosses the boundary like every other;
-	// "one of messages' own" is judged against a snapshot taken before the
-	// call, so a turn the callback rewrote in place takes the pass too.
-	// The history the callback hands back as it was is handed to the
-	// summariser as it is, and the screened turns land in a fresh slice,
-	// so the screen never writes the live history, even when the callback
-	// returns messages itself.
+	// summariser. Returning nil is a no-op. A turn the callback ADDS
+	// carries IsInjected (the vendored compactor keeps it out of the
+	// real-user-turn count). messages is a deep copy of the history, so
+	// the live history keeps the originals whatever the callback writes,
+	// in place or not, and whatever it returns. The loop passes every
+	// turn of the returned slice that is not one of the history's own,
+	// unchanged — the hook's additions, marked or not, a turn it rewrote
+	// in place, and an earlier compaction's continuation turn alike —
+	// through ScreenModelText before the summariser reads it
+	// (screenedInjector): each text, tool name and tool input, nested
+	// tool_result blocks included, so the text a hook composes for the
+	// model crosses the boundary like every other. The history the
+	// callback hands back as it was is handed to the summariser as it is.
 	OnBeforeCompact func(messages []api.Message) []api.Message
 
 	// OnCompact is called once after each in-loop compaction round
