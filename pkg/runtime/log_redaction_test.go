@@ -183,7 +183,7 @@ func TestBothEngineConstructorsRedactTheirLogger(t *testing.T) {
 	}
 }
 
-// The chokepoint is only one while every constructor goes through it. A third
+// The chokepoint is only one while every constructor goes through it. A second
 // &Engine{} literal that applied its options and returned would hand the
 // engine a logger with no pass, silently — the defect iterion#2822 names.
 func TestEngineSweep_EveryEngineLiteralInstallsTheLogRedactor(t *testing.T) {
@@ -213,8 +213,8 @@ func TestEngineSweep_EveryEngineLiteralInstallsTheLogRedactor(t *testing.T) {
 	if literals != installs {
 		t.Errorf("engine.go holds %d Engine literals and %d installLogRedactor calls — a constructor that skips the install writes raw third-party text to run.log", literals, installs)
 	}
-	if literals != 2 {
-		t.Errorf("engine.go holds %d Engine literals, want the 2 constructors (New, NewFromRecipe) — update this sweep with the third", literals)
+	if literals != 1 {
+		t.Errorf("engine.go holds %d Engine literals, want the 1 constructor (New; NewFromRecipe delegates to it) — update this sweep with the second", literals)
 	}
 }
 
