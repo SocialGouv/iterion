@@ -731,8 +731,10 @@ type Service struct {
 	// built map.
 	mergeTemps   map[string]string
 	mergeTempsMu sync.Mutex
-	// repositoryWrites is the host's hold on a repository the merge family
-	// writes (WithRepositoryWrites); nil holds nothing.
+	// repositoryWrites is the host's hold on a repository the service's merge
+	// methods write — merge, conflict staging by hand and by the agent,
+	// finalize, abort (WithRepositoryWrites); nil holds nothing. The engine's
+	// own merges do not go through it.
 	repositoryWrites func(ctx context.Context, repoRoot string) (release func(), err error)
 	// workspaceTracker versions the files a run produces, so a rewind can
 	// undo a node's real work — the output map is only a summary for a
@@ -999,12 +1001,14 @@ func WithWorkDir(dir string) ServiceOption {
 	}
 }
 
-// WithRepositoryWrites installs the host's hold on a repository the merge
-// family writes: the squash merge, a resolution's staging, the commit that
-// finalizes a resolved conflict and the abort each write repoRoot's index
-// and working tree under the hold hold returns, so the host's other writers
-// of that checkout wait for them instead of failing on git's index.lock or
-// reading a half-merged tree. A model call or a push runs outside it.
+// WithRepositoryWrites installs the host's hold on a repository the
+// service's merge methods write: the squash merge, a resolution's staging
+// (by hand and by the agent), the commit that finalizes a resolved conflict
+// and the abort each write repoRoot's index and working tree under the hold
+// hold returns, so the host's other writers of that checkout wait for them
+// instead of failing on git's index.lock or reading a half-merged tree. A
+// model call or a push runs outside it. The engine's own merges — the
+// review gate's, a run end's auto-merge — do not take it.
 func WithRepositoryWrites(hold func(ctx context.Context, repoRoot string) (release func(), err error)) ServiceOption {
 	return func(s *Service) {
 		s.repositoryWrites = hold

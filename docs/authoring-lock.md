@@ -19,14 +19,28 @@ manifest, a unit's siblings, a bundle to validate. Those reads ran outside
 any lock, and a publication moves the live file aside before it moves its
 successor in — so a loser of a write race read a half-written tree and
 answered a request error (404, 400, 422), or acted on another bot (a rename
-in between). Every server handler that writes the bot tree, or copies a
-bot's files into what it writes (the trigger route's subscription), therefore
-takes the bot tree write lock (`holdBotTreeWrites`,
-`pkg/server/bot_tree_lock.go`) BEFORE it resolves anything, and holds it
-through its write; the per-file locks come after it. The key is a directory —
-the project's root — not a bot: no per-bot key exists before the resolution
-a rename re-points. A project switch holds the root it leaves until the new
-one is in place.
+in between).
+
+The bot tree write lock (`holdBotTreeWrites`, `pkg/server/bot_tree_lock.go`)
+orders these writers of one server process, and no other — each named by a
+`botTreeWriter*` constant there:
+
+- sixteen handlers that write the bot tree, or copy a bot's files into what
+  they write: the assistant's commit, git commit and git publication, the
+  editor save, the run file save, the bot metadata edit, the workspace
+  toggle, the trigger from an invocation (its subscription), bot create,
+  import, install and upload, the marketplace install and uninstall, the
+  dependency update and the dependency localization;
+- the server's run merge routes: the merge, the conflict resolution — by
+  hand and by the agent — the finalize and the abort;
+- the project switch, which holds the root it leaves until the new one is
+  in place.
+
+A handler takes the lock BEFORE it resolves anything and holds it through
+its write; the run merge routes take it around their git writes, after the
+repository's lock. The per-file locks come after it. The key is a
+directory — the project's root — not a bot: no per-bot key exists before the
+resolution a rename re-points.
 
 The boundary: whatever reads or writes the bot files of a working tree —
 resolution, validation, the write, and the hooks git runs there — runs under
@@ -39,35 +53,69 @@ authoring git commit holds it from its resolution through its hooks and its
 publication (reference-transaction hooks, the index, post-commit) and lets
 it go around `commit-tree -S` alone: the signature reads the tree object it
 built and may wait on a pinentry. A publication pins its commit under the
-lock, reaches the remote with it let go, runs the pre-push hook under it again
-— with git's own arguments and stdin, through `git hook run` — and pushes
-`--no-verify`. The dependency actions keep the tree from their install to
-their publication, signature included: the tree is provisional in between. A
+lock and reaches the remote with it let go. On Git 2.40 or newer it runs the
+pre-push hook under the lock again — with git's own arguments and stdin,
+through `git hook run --to-stdin` — and pushes `--no-verify`. An older git
+has no such command: with no pre-push hook at the effective hooks path
+(`core.hooksPath` honoured) it pushes plainly, as before; with one, it holds
+the lock through its own push, the network included, so git runs the hook
+under it. The dependency actions keep the tree from their install to their
+publication, signature included: the tree is provisional in between. A
 request body is read before any lock.
 
 The repository's lock (`holdRepositoryIndex`), keyed by the common git
 directory and always taken before the tree's, orders the server's writers of
-the index: the authoring git commit, the dependency actions and the run merge
-family — merge, conflict staging, finalize, abort — which writes the
-operator's files and so holds the tree too (a model call or a push runs
-outside both). Git refuses a second writer of the index (`index.lock`); here
-the second waits.
+the index: the authoring git commit, the dependency actions and the server's
+run merge routes, which write the operator's files and so hold the tree too
+(a model call or a push runs outside both). Git refuses a second writer of
+the index (`index.lock`); here the second waits. The agent resolution reads
+the conflict before its model call and stages the answer under both locks,
+on the conflict read again there: a file resolved or edited meanwhile, an
+abort, or a run no longer conflicted answers 409, nothing staged.
 
 Writers queue in arrival order and wait as long as their request: one that
 ends first answers 503 `bot_tree_busy`, nothing written. Reads take nothing.
 Both locks are the process's, shared by every server it runs — `iterion
 studio --workspace` serves one per project — and two directories exclude
 each other when one contains the other, so nested project roots are ordered
-too. Across processes the per-file locks remain the order. Left outside: the
-reference-transaction hook git runs when a push updates the remote-tracking
-ref.
+too.
 
-What the lock leaves open is the readers' side: a read that crosses a
-publication's window — a run launch, a card's bot check, a run start's
-catalogue refresh, another process — sees the bot missing. Most answer that
-read and nothing persists; the run start's refresh writes it into its
-catalogue until the next refresh. A process lock cannot reach those readers;
-a publication that swaps the file in one rename would.
+## What the locks leave open
+
+Each of these writes or reads the bot tree, or the operator's checkout,
+outside both locks, unordered against the writers above:
+
+- The engine's own merges into the operator's checkout — the review-gate merge
+  (`performGateMerge`) and the run-end auto-merge (`finalizeWorktree` →
+  `trySquashMerge`): beside an authoring git commit the merge fails at once
+  (`index.lock`, uncommitted changes) and is marked failed, its branch kept,
+  or the git commit answers 400 on `index.lock`.
+- The rewind of a run that executed in place (`handleRewindRun`,
+  `pkg/server/runs_control.go`): it rewrites and deletes files of the
+  operator's checkout, bots included, so beside an assistant commit it can
+  leave a published `main.bot` whose manifest it deleted, both answering
+  success.
+- Bot discovery paths outside the project root (`iterion studio --workspace`,
+  a project's registered bots paths): the lock is keyed by the root, so two
+  projects sharing a bots directory outside their roots are not ordered, and a
+  write in one reads the other's half-published bot — a 404 for a bot that is
+  there.
+- The pipeline card create and the run launch resolve a bot with no lock:
+  across a publication's window they read it missing and answer a request
+  error; nothing persists.
+- The run-start catalogue refresh (`RegenerateCatalogForBundle`) reads
+  discovery with no tree lock: across a publication's window it writes a
+  catalogue without that bot's row, missing until the next refresh.
+- Writers in another process — the CLI, a detached run, another server — take
+  neither lock: only the per-file locks order them, and their resolutions can
+  read a tree mid-write.
+
+Two narrower windows stay with the publication: the reference-transaction
+hook git runs when a push updates the remote-tracking ref runs outside the
+lock, and on a git older than 2.40 a pre-push hook installed between the
+publication's look at the hooks path and its push runs inside that push,
+outside the lock — run, never skipped. A publication that swaps a bot file
+in one rename would close the readers' windows above without a lock.
 
 ## The lock a refresh holds
 

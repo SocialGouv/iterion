@@ -1083,7 +1083,7 @@ func TestEveryBotTreeWriterTakesTheWriteLock(t *testing.T) {
 				t.Fatalf("%s %s while the test held the bot tree's lock: %d %s", tc.writer, outcome, rec.Code, rec.Body.String())
 			}
 			// The body is read before the lock is taken: a client that
-			// stalls its body never holds every writer of the tree.
+			// stalls its body never holds the tree's other writers.
 			if !bodyless[tc.writer] && read != body.size {
 				t.Fatalf("%s queued on the bot tree's lock having read %d of its %d body bytes: its client's pace holds the lock", tc.writer, read, body.size)
 			}

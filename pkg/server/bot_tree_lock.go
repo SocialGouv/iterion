@@ -17,20 +17,24 @@ import (
 // so two projects in one repository, or with one root inside the other, are
 // ordered like two writers of one project.
 //
-// The bot tree's lock (writeLocks.trees) orders everything that reads or
-// writes the bot files of a working tree to decide or make a write:
-// resolution, validation, the write, and the hooks git runs in that tree. A
-// handler takes it on its project's root (holdBotTreeWrites) BEFORE it
-// resolves anything and holds it through resolve, validate and write: the
-// bot a write acts on, the bundle its manifest perimeter grants, the
-// siblings its check reads and the catalog entry it answers are all read in
-// a tree no other server writer is in the middle of. Without it a resolution
-// read the tree mid-write — a publication moves the live file aside before
-// it moves its successor in, a rename moves a name to another directory —
-// and the write that followed answered a request error for the loser of a
-// race, or acted on another bot. Under it, the loser waits and decides on
-// the tree the winner left: the conflict (409) its stale snapshot is, or the
-// success its independent change is.
+// The bot tree's lock (writeLocks.trees) orders the writers named by the
+// botTreeWriter* constants below, and no other: the sixteen authoring and
+// bot-tree handlers, the server's run merge routes (merge, conflict
+// resolution by hand and by the agent, finalize, abort) and the project
+// switch. For them it covers what reads or writes the bot files of a working
+// tree to decide or make a write: resolution, validation, the write, and the
+// hooks git runs in that tree. A handler takes it on its project's root
+// (holdBotTreeWrites) BEFORE it resolves anything and holds it through
+// resolve, validate and write: the bot a write acts on, the bundle its
+// manifest perimeter grants, the siblings its check reads and the catalog
+// entry it answers are all read in a tree none of those writers is in the
+// middle of; the run merge routes take it around their git writes. Without
+// it a resolution read the tree mid-write — a publication moves the live
+// file aside before it moves its successor in, a rename moves a name to
+// another directory — and the write that followed answered a request error
+// for the loser of a race, or acted on another bot. Under it, the loser
+// waits and decides on the tree the winner left: the conflict (409) its
+// stale snapshot is, or the success its independent change is.
 //
 // The key is a directory, not a bundle: a name maps to a directory only
 // through the catalog, which a rename re-points, so no per-bot key exists
@@ -46,10 +50,18 @@ import (
 //
 // The repository's lock (writeLocks.repositories) orders the server's writers
 // of a repository's index — the authoring git commit, the two dependency
-// actions and the run merge family — through their commit, keyed by the
-// repository's common git directory. Git refuses a second writer of the
+// actions and the server's run merge routes — through their commit, keyed by
+// the repository's common git directory. Git refuses a second writer of the
 // index outright (index.lock); in the process, the second waits instead. It
 // is taken before the tree's lock, never while holding it.
+//
+// Neither lock orders these, each a window docs/authoring-lock.md names with
+// its consequence: the engine's own merges into the operator's checkout (the
+// review-gate merge, performGateMerge; the run-end auto-merge,
+// finalizeWorktree → trySquashMerge), the rewind of a run that executed in
+// place, bot discovery paths outside the project root (a workspace
+// project's bots paths), the pipeline card create and the run launch, the
+// run-start catalogue refresh, and every writer in another process.
 //
 // Both locks are the process's: the per-file authoring locks
 // (acquireAuthoringLocalLocks) keep ordering each file's writers across
@@ -365,9 +377,11 @@ func (s *Server) holdWorkDirRepository(ctx context.Context, writer string, index
 	}
 }
 
-// holdRunMergeRepository is the hold the run merge family writes repoRoot
-// under (runview.WithRepositoryWrites): the repository's index, then its
-// whole working tree — a merge writes the operator's files, bots included.
+// holdRunMergeRepository is the hold the server's run merge routes write
+// repoRoot under (runview.WithRepositoryWrites): the repository's index, then
+// its whole working tree — a merge writes the operator's files, bots
+// included. The engine's own merges (the review gate's, a run end's
+// auto-merge) do not take it.
 func (s *Server) holdRunMergeRepository(ctx context.Context, repoRoot string) (func(), error) {
 	repo, err := identifyGitRepository(ctx, repoRoot)
 	if err != nil {

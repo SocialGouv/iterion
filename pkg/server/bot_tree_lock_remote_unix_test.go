@@ -363,10 +363,10 @@ func TestServersOfOneRepositoryShareItsWriteLocks(t *testing.T) {
 	requireTreeAnswer(t, "inner project's git commit", innerRec, http.StatusOK, "")
 }
 
-// The run merge family writes the operator's index and working tree: a
-// squash merge started while an authoring git commit holds them waits on
-// the repository's lock, and lands once the commit is done, instead of
-// failing on git's index.lock or on the commit's half-staged tree.
+// The server's run merge routes write the operator's index and working
+// tree: a squash merge started while an authoring git commit holds them
+// waits on the repository's lock, and lands once the commit is done, instead
+// of failing on git's index.lock or on the commit's half-staged tree.
 func TestRunMergeWaitsForTheRepositoryItWrites(t *testing.T) {
 	fixture, editor := authoringFixture(t)
 	root := fixture.cfg.WorkDir
