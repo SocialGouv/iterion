@@ -510,14 +510,16 @@ func (m *metricsEmitter) observe(evt store.Event) {
 		// decided afresh. A schema re-ask is a turn INSIDE the attempt —
 		// in a fallback chain it runs before the attempt's own delegate
 		// event — so the attempt's verdict is set aside and restored once
-		// the re-ask's delegate event is booked (observeDelegate).
+		// the re-ask's delegate event is booked (observeDelegate). Only
+		// that event clears it: a sibling replica of the node starting in
+		// between (fan_out_each) must not drop the verdict of the attempt
+		// still correcting. The verdict is per node, so replicas still
+		// share it (#3064).
 		if reask, _ := evt.Data["reask"].(string); reask != "" {
 			if m.outerSteps == nil {
 				m.outerSteps = map[string]bool{}
 			}
 			m.outerSteps[evt.NodeID] = m.stepsSeen[evt.NodeID]
-		} else {
-			delete(m.outerSteps, evt.NodeID)
 		}
 		delete(m.stepsSeen, evt.NodeID)
 		if declared != "" {
