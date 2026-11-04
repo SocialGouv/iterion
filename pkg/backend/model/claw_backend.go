@@ -997,7 +997,14 @@ func (b *ClawBackend) generateStructured(ctx context.Context, client api.APIClie
 		if errors.As(err, &structured) {
 			fallback := meteredFailure(task, objectUsage(result))
 			fallback.ParseFallback = true
-			fallback.Output["text"] = structured.Error()
+			fallback.ParseError = structured.Error()
+			if fallback.Output == nil {
+				fallback.Output = map[string]any{}
+			}
+			if result != nil {
+				fallback.Output["text"] = result.Text
+				captureSessionMessages(ctx, taskSessionKey(task), &TextResult{Messages: result.Messages})
+			}
 			return fallback, nil
 		}
 		return meteredFailure(task, objectUsage(result)), fmt.Errorf("claw backend: structured generation: %w", err)

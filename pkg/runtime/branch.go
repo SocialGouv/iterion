@@ -269,7 +269,7 @@ func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, 
 				output = deepCopyAnyMap(branchCP.ResumeAnswers)
 				branchCP.ResumeAnswers = nil
 				branchCP.ResumeAnswered = false
-				if err := e.validateNodeOutput(currentNodeID, node, output); err != nil {
+				if err := e.validateNodeOutput(branchRS, currentNodeID, node, output); err != nil {
 					// The interaction was already recorded as answered before the
 					// branch restarted. Re-pause with a checkpoint that omits the bad
 					// answer so the operator can correct it instead of wedging every

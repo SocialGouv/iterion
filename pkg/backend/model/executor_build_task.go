@@ -472,6 +472,7 @@ func (e *ClawExecutor) dispatchWithObservability(
 	baseModel string,
 	build elementBuilder,
 	sess *nodeBuildSession,
+	schemas ...*ir.Schema,
 ) (chainOutcome, error) {
 	if len(chain) == 0 {
 		// The allowlist dropped every element: there is no route to serve
@@ -489,11 +490,13 @@ func (e *ClawExecutor) dispatchWithObservability(
 			DeclaredModel: baseModel,
 		})
 	}
-	out, err := e.dispatchChain(ctx, nodeID, chain, baseModel, build)
+	out, err := e.dispatchChain(ctx, nodeID, chain, baseModel, build, schemas...)
 	if err != nil {
 		if e.hooks.OnDelegateError != nil {
 			bn := firstNonEmpty(out.Result.BackendName, out.BackendName, backendName)
 			di := delegateInfoFromResult(bn, out.Result)
+			di.CostUSD = max(0, di.CostUSD-out.CorrectionCost)
+			di.Tokens = max(0, di.Tokens-out.CorrectionTokens)
 			di.DeclaredModel = baseModel
 			di.RouteModel = out.Route
 			di.Provider = out.Provider
@@ -507,6 +510,8 @@ func (e *ClawExecutor) dispatchWithObservability(
 	if e.hooks.OnDelegateFinished != nil {
 		bn := firstNonEmpty(out.Result.BackendName, out.BackendName, backendName)
 		di := delegateInfoFromResult(bn, out.Result)
+		di.CostUSD = max(0, di.CostUSD-out.CorrectionCost)
+		di.Tokens = max(0, di.Tokens-out.CorrectionTokens)
 		di.DeclaredModel = baseModel
 		di.RouteModel = out.Route
 		di.Provider = out.Provider
@@ -811,7 +816,7 @@ func (e *ClawExecutor) executeBackend(ctx context.Context, node ir.Node, input m
 			}
 			return &built, nil
 		})
-	out, err := e.dispatchWithObservability(ctx, f.id, backendName, "model: node", chain, task.Model, build, sess)
+	out, err := e.dispatchWithObservability(ctx, f.id, backendName, "model: node", chain, task.Model, build, sess, e.schemas[f.outputSchema])
 	if err != nil {
 		// A failed delegation still SPENT, and everything below this line
 		// went to trouble to keep the figure: claude_code's `typedFailure`
@@ -991,7 +996,11 @@ func textOf(output map[string]any) string {
 
 func validateStructuredResult(result delegate.Result, schema *ir.Schema) error {
 	if result.ParseFallback {
-		return fmt.Errorf("structured response could not be parsed: %s", textOf(result.Output))
+		detail := result.ParseError
+		if detail == "" {
+			detail = textOf(result.Output)
+		}
+		return fmt.Errorf("structured response could not be parsed: %s", iterlog.Truncate(detail, 2048))
 	}
 	return ValidateOutput(result.Output, schema)
 }
@@ -1070,6 +1079,10 @@ func (e *ClawExecutor) validateAndRetry(
 			recovered, spent, ok, recoveryErr := e.extractStructuredViaClaw(ctx, f.id, task, result, previous, schema, backendName)
 			costs.add(spent, task, backendName)
 			if recoveryErr != nil {
+				var exhausted *OutputSchemaError
+				if retryErr != nil && errors.As(recoveryErr, &exhausted) {
+					return foldSpend(spent, result, false), schemaReaskFailure(f.subject(), validationErr, reask, retryErr)
+				}
 				return foldSpend(spent, result, false), recoveryErr
 			}
 			if ok {
@@ -1247,7 +1260,7 @@ const schemaRetryFeedbackMarker = "[OUTPUT SCHEMA VALIDATION FAILED]"
 func formatSchemaRetryFeedback(err error) string {
 	return fmt.Sprintf(
 		"%s\n%s\nReturn a corrected response that matches the required output schema exactly. Output only the JSON object.",
-		schemaRetryFeedbackMarker, iterlog.Truncate(err.Error(), 2048),
+		schemaRetryFeedbackMarker, err.Error(),
 	)
 }
 

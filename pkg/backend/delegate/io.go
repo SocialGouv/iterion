@@ -195,6 +195,7 @@ type IOResult struct {
 	BackendName         string          `json:"backend_name,omitempty"`
 	RawOutputLen        int             `json:"raw_output_len,omitempty"`
 	ParseFallback       bool            `json:"parse_fallback,omitempty"`
+	ParseError          string          `json:"parse_error,omitempty"`
 	FormattingPassUsed  bool            `json:"formatting_pass_used,omitempty"`
 	SessionID           string          `json:"session_id,omitempty"`
 	SessionFingerprint  string          `json:"session_fingerprint,omitempty"`
@@ -369,6 +370,7 @@ func ToIOResult(r Result) IOResult {
 		BackendName:             r.BackendName,
 		RawOutputLen:            r.RawOutputLen,
 		ParseFallback:           r.ParseFallback,
+		ParseError:              r.ParseError,
 		FormattingPassUsed:      r.FormattingPassUsed,
 		SessionID:               r.SessionID,
 		SessionFingerprint:      r.SessionFingerprint,
@@ -401,6 +403,7 @@ func FromIOResult(r IOResult) Result {
 		BackendName:             r.BackendName,
 		RawOutputLen:            r.RawOutputLen,
 		ParseFallback:           r.ParseFallback,
+		ParseError:              r.ParseError,
 		FormattingPassUsed:      r.FormattingPassUsed,
 		SessionID:               r.SessionID,
 		SessionFingerprint:      r.SessionFingerprint,

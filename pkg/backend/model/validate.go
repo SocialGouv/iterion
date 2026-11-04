@@ -7,11 +7,12 @@ import (
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
 
 // ValidateOutput checks that output contains all required fields from the
 // schema with compatible types. It does NOT attempt to repair or coerce
-// invalid values — the node must fail explicitly on schema mismatch.
+// invalid values. The caller chooses advisory or strict handling.
 func ValidateOutput(output map[string]any, schema *ir.Schema) error {
 	var errs []string
 
@@ -120,7 +121,7 @@ func checkFieldType(f *ir.SchemaField, val any) error {
 			return fmt.Errorf("field %q: expected string, got %T", f.Name, val)
 		}
 		if len(f.EnumValues) > 0 && !slices.Contains(f.EnumValues, s) {
-			return fmt.Errorf("field %q: value %q not in enum %v", f.Name, s, f.EnumValues)
+			return fmt.Errorf("field %q: value %q not in enum %v", f.Name, iterlog.Truncate(s, 2048), f.EnumValues)
 		}
 
 	case ir.FieldTypeBool:
@@ -184,7 +185,7 @@ func checkFieldType(f *ir.SchemaField, val any) error {
 			// but never enforced server-side, so a stray value would
 			// flow downstream unchecked).
 			if len(f.EnumValues) > 0 && !slices.Contains(f.EnumValues, s) {
-				return fmt.Errorf("field %q[%d]: value %q not in enum %v", f.Name, i, s, f.EnumValues)
+				return fmt.Errorf("field %q[%d]: value %q not in enum %v", f.Name, i, iterlog.Truncate(s, 2048), f.EnumValues)
 			}
 		}
 	}
@@ -256,4 +257,17 @@ func numberOf(val any) (float64, bool) {
 		return float64(n), true
 	}
 	return 0, false
+}
+
+// OutputSchemaMismatchFields identifies missing or incompatible fields without
+// returning their values. Observational warnings use only this safe projection.
+func OutputSchemaMismatchFields(output map[string]any, schema *ir.Schema) []string {
+	var fields []string
+	for _, field := range schema.Fields {
+		value, present := output[field.Name]
+		if !present || checkFieldType(field, value) != nil {
+			fields = append(fields, field.Name)
+		}
+	}
+	return fields
 }

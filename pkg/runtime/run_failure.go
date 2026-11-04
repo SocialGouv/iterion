@@ -439,13 +439,7 @@ func (e *Engine) wrapContextErr(ctxErr error) error {
 }
 
 // nodeFailureCode preserves a node's classified failure at execution boundaries.
-func nodeFailureCode(err error) ErrorCode {
-	var rt *RuntimeError
-	if errors.As(err, &rt) && rt.Code != "" {
-		return rt.Code
-	}
-	return ErrCodeExecutionFailed
-}
+func nodeFailureCode(err error) ErrorCode { return ClassifyError(err) }
 
 func wrapNodeFailure(nodeID, message string, err error) *RuntimeError {
 	return &RuntimeError{Code: nodeFailureCode(err), NodeID: nodeID, Message: message, Cause: err}

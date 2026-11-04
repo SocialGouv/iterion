@@ -18,3 +18,10 @@ credential audience chain (`OrderedAPIKeyCandidates`, `pkg/secrets/byok.go`)
 and the model-override fold (`model.ModelOverrides`). The env tables
 (`OPENAI_COMPATIBLE_MODELS`, `OPENAI_COMPATIBLE_CATALOG_PROVIDER`) are
 runner-side fallbacks, not the seat of truth.
+
+
+The operator catalog can declare `reasoning_efforts` per route. Unsupported
+requests choose the nearest accepted level with a `reasoning_effort_adjusted`
+event and log; invalid provider requests park as `PROVIDER_REQUEST_INVALID`.
+The [catalog and correction contracts](../../backends.md#the-openai-compatible-gateway-openai_compatible)
+describe the declaration and the runtime's advisory/strict output boundary.

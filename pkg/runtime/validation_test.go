@@ -679,8 +679,8 @@ func TestCorrectionInvocationIdentityIncludesForeachBodyNodes(t *testing.T) {
 	if firstKey == secondKey {
 		t.Fatalf("foreach body invocation keys are not distinct: first=%q second=%q", firstKey, secondKey)
 	}
-	if outsideKey != "done" {
-		t.Fatalf("outside node ledger key = %q, want historical root key", outsideKey)
+	if outsideKey == "done" {
+		t.Fatalf("outside node ledger key = %q, want the workflow counter vector", outsideKey)
 	}
 }
 
@@ -938,9 +938,8 @@ func TestComputeOutputConformsToDeclaredSchema(t *testing.T) {
 
 	t.Run("a fractional float under int fails the node, naming field, value and builtin", func(t *testing.T) {
 		wf := computeGaugeWorkflow(t, ir.FieldTypeInt, "10.58")
-		// No WithOutputValidation: the rule must hold on the path a real
-		// run takes.
-		err := New(wf, tmpStore(t), newStubExecutor()).Run(context.Background(), "run-int-frac", nil)
+		// Strict mode retains the explicit schema rejection remedy.
+		err := New(wf, tmpStore(t), newStubExecutor(), WithOutputValidation(true)).Run(context.Background(), "run-int-frac", nil)
 		if err == nil {
 			t.Fatal("run succeeded with 10.58 under an int label")
 		}
@@ -963,7 +962,7 @@ func TestComputeOutputConformsToDeclaredSchema(t *testing.T) {
 
 	t.Run("a string under int fails the same way", func(t *testing.T) {
 		wf := computeGaugeWorkflow(t, ir.FieldTypeInt, "'7'")
-		err := New(wf, tmpStore(t), newStubExecutor()).Run(context.Background(), "run-int-str", nil)
+		err := New(wf, tmpStore(t), newStubExecutor(), WithOutputValidation(true)).Run(context.Background(), "run-int-str", nil)
 		var rtErr *RuntimeError
 		if !errors.As(err, &rtErr) || rtErr.Code != ErrCodeSchemaValidation {
 			t.Fatalf("expected a %s error, got %v", ErrCodeSchemaValidation, err)

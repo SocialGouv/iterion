@@ -1023,6 +1023,11 @@ route that also names a backend/model/provider/metered, an unknown
 `action:`, and a skip that is not the LAST route (everything after a
 terminal is unreachable).
 
+A claw structured parse failure first uses the bounded schema correction loop.
+If correction stops without an answer, it reaches the remaining `fallbacks:`
+as an unclassified failure, so another executable route can supply the answer.
+The invocation's correction allowance remains shared across routes.
+
 `when:` gates any route on an expression over `vars` — evaluated at
 dispatch, so an ordinary `--var` picks the active route set per run
 (that is how ONE `plan_review` node expresses both `wait` and `skip`
@@ -1136,15 +1141,22 @@ route.
 An LLM node's answer that fails its `output:` schema is corrected by the
 executor with the validation error as the model's next input. Missing fields,
 parse fallbacks, type mismatches, enum violations and forbidden nulls all use
-this same bounded loop. The runtime supplies the per-node correction budget
+this same bounded loop. The runtime supplies the correction budget per node
+invocation (each loop/foreach counter vector identifies an invocation)
 (default **2**, overridden by `ITERION_OUTPUT_CORRECTION_BUDGET` or
 `WithOutputCorrectionBudget`; **0** disables correction), persists attempts
 before calling the model, and emits `node_recovery` events with
 `strategy: schema_output_correction`. Exhaustion surfaces `SCHEMA_VALIDATION`;
-generic recovery does not repeat the business prompt without feedback. An
-unchanged invalid answer stops the loop early. Malformed budget values emit
-`OUTPUT_CORRECTION_BUDGET_INVALID` before using the default. Validation
-feedback is truncated at 2048 bytes with a UTF-8-safe boundary and a truncation marker.
+in-process generic recovery does not repeat the business prompt without
+feedback. Cloud redelivery can still re-execute a failed node within its
+delivery limit; the invocation's persisted correction allowance does not reset.
+An unchanged invalid answer stops the loop early. Malformed budget values emit
+`OUTPUT_CORRECTION_BUDGET_INVALID` before using the default. Each offending
+enum value is capped at 2048 bytes before quoting; escaping can enlarge its
+rendered quotation. Each parse diagnostic is capped at 2048 bytes. These caps
+use a UTF-8-safe boundary and a truncation marker; other field violations
+remain in the feedback. Parse diagnostics travel separately from model answer
+text, including across the sandbox boundary; extraction reads only answer text.
 
 How the re-ask continues the model's work depends on what the backend can
 continue. The mode rides the `delegate_retry` event (`reask`) and the
@@ -1162,10 +1174,19 @@ unstructured text consumes an attempt from the same budget. An unavailable
 extraction route consumes none. A failed re-ask tries extraction before
 returning its own typed transport, authentication or quota failure. An
 extraction failure is logged and stays inside the schema correction loop;
-the host extraction credential is not the node credential. Runtime validation
-is enabled by default in every engine: run, resume, subbot, studio, runner and
-dispatcher. It covers executors and node kinds that do not validate their own
-output. Correction deadlines apply to corrective calls only; expiration of
+the host extraction credential is not the node credential. A typed re-ask
+refusal retains its type when the extraction allowance is exhausted.
+
+**Runtime output schemas are advisory by default for outputs the executor does
+not validate** (tool, compute, human, subbot and wait). A mismatch emits
+`node_output_schema_mismatch` and a warning log naming the schema and missing
+or incorrect fields, without values; the node succeeds with its output.
+LLM outputs retain executor validation and bounded correction.
+`WithOutputValidation(true)` selects strict rejection (`SCHEMA_VALIDATION`);
+`ITERION_STRICT_OUTPUT_VALIDATION=1` (or `true`) selects the same strict default
+for run, resume, subbot, studio, runner and dispatcher. An explicit engine option
+overrides the environment. Correction deadlines apply to corrective calls only;
+expiration of
 the run duration budget remains `BUDGET_EXCEEDED`. The durable ledger scrubs
 errors before persistence, distinguishes nested loop invocations and follows
 a replacement child under the same parent subbot attachment.
@@ -1409,7 +1430,8 @@ never merged across sources, and an answer carries its provenance:
 1. `OPENAI_COMPATIBLE_MODELS` — the operator's JSON table,
    `{"<gateway id>": {"context_window": N, "max_output_tokens": N,
    "input_usd_per_mtok": F, "output_usd_per_mtok": F,
-   "reasoning": B, "tool_call": B, "temperature": B}}`. Strict decoding
+   "reasoning": B, "tool_call": B, "temperature": B,
+   "reasoning_efforts": ["low", "high", "xhigh", "max"]}}`. Strict decoding
    (unknown fields refused); prices arrive as a pair or not at all; a
    declared 0/0 means unpriced, not free. The three capability flags are
    each optional: a flag the table leaves out — or that no table answers —
@@ -1430,6 +1452,19 @@ never merged across sources, and an answer carries its provenance:
 3. Otherwise unknown, said out loud: the node's `_gateway_spec` records
    `"source":"unknown"`, the estimator prices nothing, and compaction keeps
    the unknown-model floor.
+
+The optional `reasoning_efforts` list belongs to the resolved route and crosses
+the sandbox with its catalog record. An absent or empty list preserves existing
+behavior. A requested level outside the list maps to the nearest accepted level;
+ties choose the higher level (`medium` → `high` for the example above).
+Every adjustment emits `reasoning_effort_adjusted` plus a warning log with the
+requested level, applied level and reason. Add the list to each existing
+DeepSeek alias in the pools' operator table, retaining its window and prices.
+
+A provider HTTP 400 invalid request is `PROVIDER_REQUEST_INVALID`: automatic
+resume does not re-execute it, and the remedy includes the provider's message.
+Context overflow retains compaction/retry; model availability refusals retain
+`MODEL_UNAVAILABLE`. HTTP 408/5xx and 429 keep their existing transient handling.
 
 > **Set these in the environment the deployment EXPORTS — a project `.env`
 > does not configure them.** iterion auto-loads the nearest `.env` walking up

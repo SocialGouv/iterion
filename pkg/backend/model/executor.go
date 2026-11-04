@@ -1615,6 +1615,7 @@ func (e *ClawExecutor) delegateHooksFor(nodeID string, backendName string, itera
 
 // Execute implements runtime.NodeExecutor.
 func (e *ClawExecutor) Execute(ctx context.Context, node ir.Node, input map[string]any) (map[string]any, error) {
+	ctx = WithOutputCorrectionPolicy(ctx, outputCorrectionPolicy(ctx))
 	// Host runs (no sandbox) materialise `as: file` workflow secrets to a
 	// tempdir on the first call so {{secrets.X.path}} resolves to a real
 	// host file for tool nodes AND for agent/judge prompts. Cheap

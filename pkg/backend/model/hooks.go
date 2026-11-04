@@ -1750,8 +1750,11 @@ func NewStoreEventHooks(ctx context.Context, emitter EventEmitter, runID string,
 		OnDelegateError:      h.onDelegateError,
 		OnDelegateRetry:      h.onDelegateRetry,
 		OnProviderFallback:   h.onProviderFallback,
-		OnSessionDegraded:    h.onSessionDegraded,
-		OnMCPServerDegraded:  h.onMCPServerDegraded,
+		OnReasoningEffortAdjusted: func(nodeID string, info ReasoningEffortAdjustment) {
+			h.emit(nodeID, store.EventReasoningEffortAdjusted, map[string]any{"model": info.Model, "requested": info.Requested, "applied": info.Applied, "reason": info.Reason})
+		},
+		OnSessionDegraded:   h.onSessionDegraded,
+		OnMCPServerDegraded: h.onMCPServerDegraded,
 		// OnToolNodeResult handles direct tool nodes with full I/O content.
 		OnToolNodeResult: h.onToolNodeResult,
 		// …and OnToolNodeDeliverables hands over the files that output

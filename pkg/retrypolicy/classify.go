@@ -160,8 +160,9 @@ var classification = map[store.FailureCode]Disposition{
 	// the serving backend read as a single string — five attempts, four
 	// pods, one verdict. SchemaValidation stays re-executable: there, a
 	// request WAS served and the next sample may conform.
-	store.FailureSchemaUnusable:        DispositionDeterministic,
-	store.FailureCapabilityUnsupported: DispositionDeterministic,
+	store.FailureSchemaUnusable:         DispositionDeterministic,
+	store.FailureProviderRequestInvalid: DispositionDeterministic,
+	store.FailureCapabilityUnsupported:  DispositionDeterministic,
 	// The workflow requested an EXPLICIT sandbox mode (`sandbox: { mode:
 	// inline, image/build: … }`) and the host has no driver that can
 	// honour it. Every redelivery reaches the same absent runtime — a

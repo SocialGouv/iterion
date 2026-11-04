@@ -71,7 +71,7 @@ func TestReportForRunComputesRollbackSafety(t *testing.T) {
 	// own terminated-episode guard; the empty and unknown rows pin the
 	// fail-closed rule, so a status added later cannot read as green here
 	// just because nobody came back to update this list.
-	for _, status := range []string{"active", "exhausted", "unchanged", "", "some-future-state"} {
+	for _, status := range []string{"active", "", "some-future-state"} {
 		run := &store.Run{
 			ExecutionContext:  &store.ExecutionContext{Policy: store.ContextPolicyReport},
 			OutputCorrections: map[string]store.OutputCorrectionEpisode{"node": {Status: status}},
@@ -385,6 +385,14 @@ func TestModeFromEnvIsTheFloorWithNoLevel(t *testing.T) {
 		t.Setenv(EnvContextPolicyAlias, tc.alias)
 		if got, want := ModeFromEnv(), FloorFromEnv().Resolve(ModeUnset); got != want {
 			t.Fatalf("mode=%q alias=%q: ModeFromEnv = %q, tiered resolution = %q", tc.mode, tc.alias, got, want)
+		}
+	}
+}
+
+func TestR2TerminalCorrectionsAreRollbackSafe(t *testing.T) {
+	for _, status := range []string{"exhausted", "unchanged"} {
+		if report := ReportForRun(&store.Run{OutputCorrections: map[string]store.OutputCorrectionEpisode{"n": {Status: status}}}); !report.RollbackSafe {
+			t.Errorf("terminal episode %s blocks rollback", status)
 		}
 	}
 }

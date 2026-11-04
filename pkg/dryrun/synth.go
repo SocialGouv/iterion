@@ -18,7 +18,7 @@ import (
 // Value is the schema-shaped value of one field: an enum's first value (its
 // last when bias is false), bias for a bool, 1, 1.0, "x", one element for a
 // list — one enum value when the list is of an enum — an empty object for
-// json, "" for a file. A shape, never data.
+// json, "dry-run-file" for a file. A shape, never data.
 //
 // A `json`-typed field has no defined shape — it may carry a scalar, an
 // object or an array — and the dry run does not guess one: the field takes
@@ -52,7 +52,7 @@ func Value(ft ir.FieldType, enum []string, bias bool, iterated bool) any {
 	case ir.FieldTypeStringArray:
 		return []any{"x"}
 	case ir.FieldTypeFile:
-		return ""
+		return "dry-run-file"
 	default:
 		return "x"
 	}

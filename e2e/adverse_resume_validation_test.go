@@ -12,9 +12,10 @@ import (
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
-func TestRVA_ResumeSkipsTheValidationRunEnforces(t *testing.T) {
+func TestRVA_RunAndResumeEnforceStrictValidation(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("TMPDIR", t.TempDir())
+	t.Setenv(runtime.EnvOutputValidation, "true")
 	bot := filepath.Join("testdata", "rva_validation_resume.bot")
 	p := &cli.Printer{W: io.Discard, Format: cli.OutputJSON}
 
@@ -24,7 +25,9 @@ func TestRVA_ResumeSkipsTheValidationRunEnforces(t *testing.T) {
 	ctrl.on("second", func(map[string]any) (map[string]any, error) { return map[string]any{"other": 1}, nil })
 	err := cli.RunRun(context.Background(), cli.RunOptions{File: bot, StoreDir: t.TempDir(), RunID: "rva-ctrl", Executor: ctrl, NoInteractive: true, MergeInto: "none"}, p)
 	var re *runtime.RuntimeError
-	t.Logf("run with invalid second: err=%v (SCHEMA_VALIDATION=%v)", err, errors.As(err, &re) && re.Code == runtime.ErrCodeSchemaValidation)
+	if !errors.As(err, &re) || re.Code != runtime.ErrCodeSchemaValidation {
+		t.Fatalf("strict run accepted invalid second: %v", err)
+	}
 
 	// Same run shape, but `second` first fails resumably, then is resumed
 	// with the same invalid output.
@@ -43,7 +46,7 @@ func TestRVA_ResumeSkipsTheValidationRunEnforces(t *testing.T) {
 	err = cli.RunResumeWithFile(context.Background(), bot, cli.ResumeOptions{RunID: "rva-resume", StoreDir: storeDir, Executor: second}, p)
 	run = loadRun(t, storeDir, "rva-resume")
 	t.Logf("resume with invalid second: err=%v status=%s", err, run.Status)
-	if err == nil && run.Status == store.RunStatusFinished {
-		t.Errorf("`iterion resume` finished a run whose node output violates its schema — `iterion run` refuses the same output")
+	if !errors.As(err, &re) || re.Code != runtime.ErrCodeSchemaValidation || run.Status != store.RunStatusFailedResumable {
+		t.Errorf("strict resume accepted invalid second: err=%v status=%s", err, run.Status)
 	}
 }

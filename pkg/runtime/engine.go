@@ -199,8 +199,8 @@ type Engine struct {
 	modelOverrides         []store.RunModelOverride  // launch-time per-node/-group model/backend pins, persisted display-only on the run so the studio Overview shows what it launched with; set via WithModelOverrides
 	routingPolicy          *store.RoutingPolicy      // launch-frozen outcome contract, persisted on the run doc (same replay-from-doc doctrine as the model pins); set via WithRoutingPolicy
 	budgetAsk              *ir.BudgetOverrides       // the operator's launch-time budget ask, persisted verbatim on the run doc as the resume path's replay source (same doctrine as the model pins); set via WithBudgetAsk
-	validateOutputs        bool                      // when true, validate node outputs against declared schemas
-	outputCorrectionBudget int                       // bounded invalid-output correction calls per node episode
+	validateOutputs        bool                      // when true, reject runtime schema mismatches instead of warning
+	outputCorrectionBudget int                       // bounded invalid-output correction calls per node invocation
 	// parallelSaveWindow coalesces routine fan-out boundary checkpoints into
 	// one durable write per window (#561); zero keeps the legacy synchronous
 	// one-write-per-boundary behaviour. Immediate writes — branch completion,
@@ -444,7 +444,7 @@ func New(wf *ir.Workflow, s store.RunStore, exec NodeExecutor, opts ...EngineOpt
 	// executors while preserving legacy fail-fast behaviour for executors that
 	// do not implement OutputCorrector. WithOutputCorrectionBudget(0) disables
 	// it explicitly.
-	e := &Engine{workflow: wf, store: s, executor: exec, validateOutputs: true, outputCorrectionBudget: defaultOutputCorrectionBudget(), parallelSaveWindow: defaultParallelSaveWindow()}
+	e := &Engine{workflow: wf, store: s, executor: exec, validateOutputs: defaultOutputValidation(), outputCorrectionBudget: defaultOutputCorrectionBudget(), parallelSaveWindow: defaultParallelSaveWindow()}
 	for _, opt := range opts {
 		opt(e)
 	}

@@ -185,13 +185,14 @@ func parseOperatorTable(raw string) (map[string]modelspecs.Spec, error) {
 		return map[string]modelspecs.Spec{}, nil
 	}
 	var entries map[string]struct {
-		ContextWindow    int     `json:"context_window"`
-		MaxOutputTokens  int     `json:"max_output_tokens"`
-		InputUSDPerMTok  float64 `json:"input_usd_per_mtok"`
-		OutputUSDPerMTok float64 `json:"output_usd_per_mtok"`
-		Reasoning        *bool   `json:"reasoning"`
-		ToolCall         *bool   `json:"tool_call"`
-		Temperature      *bool   `json:"temperature"`
+		ContextWindow    int      `json:"context_window"`
+		MaxOutputTokens  int      `json:"max_output_tokens"`
+		InputUSDPerMTok  float64  `json:"input_usd_per_mtok"`
+		OutputUSDPerMTok float64  `json:"output_usd_per_mtok"`
+		Reasoning        *bool    `json:"reasoning"`
+		ReasoningEfforts []string `json:"reasoning_efforts,omitempty"`
+		ToolCall         *bool    `json:"tool_call"`
+		Temperature      *bool    `json:"temperature"`
 	}
 	dec := json.NewDecoder(strings.NewReader(raw))
 	dec.DisallowUnknownFields()
@@ -207,13 +208,14 @@ func parseOperatorTable(raw string) (map[string]modelspecs.Spec, error) {
 			return nil, fmt.Errorf("openai_compatible: %s[%q]: a price is negative", CatalogModelsEnv, id)
 		}
 		table[strings.ToLower(strings.TrimSpace(id))] = modelspecs.Spec{
-			ContextWindow:   e.ContextWindow,
-			MaxOutputTokens: e.MaxOutputTokens,
-			InputCostPerM:   e.InputUSDPerMTok,
-			OutputCostPerM:  e.OutputUSDPerMTok,
-			Reasoning:       e.Reasoning,
-			ToolCall:        e.ToolCall,
-			Temperature:     e.Temperature,
+			ContextWindow:    e.ContextWindow,
+			MaxOutputTokens:  e.MaxOutputTokens,
+			InputCostPerM:    e.InputUSDPerMTok,
+			OutputCostPerM:   e.OutputUSDPerMTok,
+			Reasoning:        e.Reasoning,
+			ReasoningEfforts: e.ReasoningEfforts,
+			ToolCall:         e.ToolCall,
+			Temperature:      e.Temperature,
 		}
 	}
 	return table, nil
@@ -328,13 +330,14 @@ func resolveCatalog(modelID string, live *modelspecs.Registry, get func(string) 
 	if rec, ok := resolvedEnvRecord(get); ok && rec.Model == strings.ToLower(strings.TrimSpace(modelID)) {
 		return Resolved{
 			Spec: modelspecs.Spec{
-				ContextWindow:   rec.ContextWindow,
-				MaxOutputTokens: rec.MaxOutputTokens,
-				InputCostPerM:   rec.InputUSDPerMTok,
-				OutputCostPerM:  rec.OutputUSDPerMTok,
-				Reasoning:       rec.Reasoning,
-				ToolCall:        rec.ToolCall,
-				Temperature:     rec.Temperature,
+				ContextWindow:    rec.ContextWindow,
+				MaxOutputTokens:  rec.MaxOutputTokens,
+				InputCostPerM:    rec.InputUSDPerMTok,
+				OutputCostPerM:   rec.OutputUSDPerMTok,
+				Reasoning:        rec.Reasoning,
+				ReasoningEfforts: rec.ReasoningEfforts,
+				ToolCall:         rec.ToolCall,
+				Temperature:      rec.Temperature,
 			},
 			Source: rec.Source,
 		}
@@ -411,15 +414,16 @@ var unknownWarns sync.Map
 // stated is absent from the record and reads unknown, a stated false
 // crosses as false.
 type ResolvedEnvRecord struct {
-	Model            string  `json:"model"`
-	Source           string  `json:"source"`
-	ContextWindow    int     `json:"context_window,omitempty"`
-	MaxOutputTokens  int     `json:"max_output_tokens,omitempty"`
-	InputUSDPerMTok  float64 `json:"input_usd_per_mtok,omitempty"`
-	OutputUSDPerMTok float64 `json:"output_usd_per_mtok,omitempty"`
-	Reasoning        *bool   `json:"reasoning,omitempty"`
-	ToolCall         *bool   `json:"tool_call,omitempty"`
-	Temperature      *bool   `json:"temperature,omitempty"`
+	Model            string   `json:"model"`
+	Source           string   `json:"source"`
+	ContextWindow    int      `json:"context_window,omitempty"`
+	MaxOutputTokens  int      `json:"max_output_tokens,omitempty"`
+	InputUSDPerMTok  float64  `json:"input_usd_per_mtok,omitempty"`
+	OutputUSDPerMTok float64  `json:"output_usd_per_mtok,omitempty"`
+	Reasoning        *bool    `json:"reasoning,omitempty"`
+	ReasoningEfforts []string `json:"reasoning_efforts,omitempty"`
+	ToolCall         *bool    `json:"tool_call,omitempty"`
+	Temperature      *bool    `json:"temperature,omitempty"`
 }
 
 // ForwardableRecord is the record the host forwards for one resolved
@@ -433,6 +437,7 @@ func ForwardableRecord(modelID string, r Resolved) ResolvedEnvRecord {
 		InputUSDPerMTok:  r.Spec.InputCostPerM,
 		OutputUSDPerMTok: r.Spec.OutputCostPerM,
 		Reasoning:        r.Spec.Reasoning,
+		ReasoningEfforts: r.Spec.ReasoningEfforts,
 		ToolCall:         r.Spec.ToolCall,
 		Temperature:      r.Spec.Temperature,
 	}

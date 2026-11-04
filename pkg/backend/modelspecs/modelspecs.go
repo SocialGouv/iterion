@@ -35,6 +35,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -68,13 +69,14 @@ const (
 // "no published cap figure", not "uncapped". consensusSpec zeroes any field the
 // publishers disagree on, so zero is a routine answer rather than an edge case.
 type Spec struct {
-	ContextWindow   int     `json:"context_window,omitempty"`
-	MaxOutputTokens int     `json:"max_output_tokens,omitempty"`
-	InputCostPerM   float64 `json:"input_cost_per_m,omitempty"`
-	OutputCostPerM  float64 `json:"output_cost_per_m,omitempty"`
-	Reasoning       *bool   `json:"reasoning,omitempty"`
-	ToolCall        *bool   `json:"tool_call,omitempty"`
-	Temperature     *bool   `json:"temperature,omitempty"`
+	ContextWindow    int      `json:"context_window,omitempty"`
+	MaxOutputTokens  int      `json:"max_output_tokens,omitempty"`
+	InputCostPerM    float64  `json:"input_cost_per_m,omitempty"`
+	OutputCostPerM   float64  `json:"output_cost_per_m,omitempty"`
+	Reasoning        *bool    `json:"reasoning,omitempty"`
+	ReasoningEfforts []string `json:"reasoning_efforts,omitempty"`
+	ToolCall         *bool    `json:"tool_call,omitempty"`
+	Temperature      *bool    `json:"temperature,omitempty"`
 }
 
 // cacheFile is the on-disk cache layout. FetchedAt drives TTL freshness so the
@@ -102,9 +104,10 @@ type mdModel struct {
 		Input  float64 `json:"input"`
 		Output float64 `json:"output"`
 	} `json:"cost"`
-	Reasoning   *bool `json:"reasoning"`
-	ToolCall    *bool `json:"tool_call"`
-	Temperature *bool `json:"temperature"`
+	Reasoning        *bool    `json:"reasoning"`
+	ReasoningEfforts []string `json:"reasoning_efforts,omitempty"`
+	ToolCall         *bool    `json:"tool_call"`
+	Temperature      *bool    `json:"temperature"`
 }
 
 // ---------------------------------------------------------------------------
@@ -639,6 +642,9 @@ func consensusSpec(specs []Spec) Spec {
 			out.OutputCostPerM = 0
 		}
 		out.Reasoning = agreedFlag(out.Reasoning, s.Reasoning)
+		if !slices.Equal(out.ReasoningEfforts, s.ReasoningEfforts) {
+			out.ReasoningEfforts = nil
+		}
 		out.ToolCall = agreedFlag(out.ToolCall, s.ToolCall)
 		out.Temperature = agreedFlag(out.Temperature, s.Temperature)
 	}
@@ -703,13 +709,14 @@ func ParseModelsDev(body []byte) (map[string]Spec, error) {
 			}
 			origin[key] = upstream
 			full[key] = Spec{
-				ContextWindow:   m.Limit.Context,
-				MaxOutputTokens: m.Limit.Output,
-				InputCostPerM:   m.Cost.Input,
-				OutputCostPerM:  m.Cost.Output,
-				Reasoning:       m.Reasoning,
-				ToolCall:        m.ToolCall,
-				Temperature:     m.Temperature,
+				ContextWindow:    m.Limit.Context,
+				MaxOutputTokens:  m.Limit.Output,
+				InputCostPerM:    m.Cost.Input,
+				OutputCostPerM:   m.Cost.Output,
+				Reasoning:        m.Reasoning,
+				ReasoningEfforts: m.ReasoningEfforts,
+				ToolCall:         m.ToolCall,
+				Temperature:      m.Temperature,
 			}
 		}
 	}

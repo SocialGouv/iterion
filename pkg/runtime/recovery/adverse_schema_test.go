@@ -263,7 +263,11 @@ func TestExecutorSchemaFailureUsesProductionRecovery(t *testing.T) {
 	dreg.Register(delegate.BackendClaw, model.NewClawBackend(reg, model.EventHooks{}, model.RetryPolicy{MaxAttempts: 1}))
 	wf := rvaWorkflow(delegate.BackendClaw)
 	exec := model.NewClawExecutor(reg, wf, model.WithBackendRegistry(dreg))
-	_, err := exec.Execute(context.Background(), wf.Nodes["judge"], nil)
+	st, storeErr := store.New(t.TempDir())
+	if storeErr != nil {
+		t.Fatal(storeErr)
+	}
+	err := runtime.New(wf, st, exec, runtime.WithRecoveryDispatch(Dispatch(DefaultRecipes()))).Run(context.Background(), "default-dispatch", nil)
 	action, code := Dispatch(DefaultRecipes())(context.Background(), err, func(runtime.ErrorCode) int { return 0 })
 	if code != runtime.ErrCodeSchemaValidation || action.Kind != runtime.RecoveryFailTerminal {
 		t.Fatalf("real executor schema failure repeats business task: code=%s action=%v err=%v", code, action.Kind, err)
@@ -271,6 +275,7 @@ func TestExecutorSchemaFailureUsesProductionRecovery(t *testing.T) {
 }
 
 func TestClawAndClaudeSchemaExhaustionHaveSameLifecycle(t *testing.T) {
+	t.Setenv(model.EnvOutputCorrectionBudget, "")
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("TMPDIR", t.TempDir())
 	t.Setenv("ANTHROPIC_API_KEY", "test-key")
@@ -279,9 +284,15 @@ func TestClawAndClaudeSchemaExhaustionHaveSameLifecycle(t *testing.T) {
 	for _, name := range []string{delegate.BackendClaw, delegate.BackendClaudeCode} {
 		t.Run(name, func(t *testing.T) {
 			reg := model.NewRegistry()
-			mock := &rvaScriptClient{scripts: [][]api.StreamEvent{rvaToolUse("a", `{"verdict":tru`), rvaToolUse("b", `{"verdict":tru`), rvaToolUse("c", `{"verdict":fals`), rvaToolUse("d", `{"verdict":fals`)}}
+			mock := &rvaScriptClient{scripts: [][]api.StreamEvent{rvaToolUse("a", `{"verdict":tru`), rvaToolUse("b", `{"verdict":tru`), rvaToolUse("c", `{"verdict":tru`), rvaToolUse("d", `{"verdict":tru`)}}
 			reg.Register("test", func(string) (api.APIClient, error) { return mock, nil })
-			reg.Register("anthropic", func(string) (api.APIClient, error) { return mock, nil })
+			extraction := &rvaScriptClient{scripts: [][]api.StreamEvent{rvaToolUse("ex", `{"verdict":true,"reason":"fabricated from diagnostics"}`)}}
+			reg.Register("anthropic", func(string) (api.APIClient, error) {
+				if name == delegate.BackendClaw {
+					return extraction, nil
+				}
+				return mock, nil
+			})
 			backends := delegate.NewRegistry()
 			prose := &rvaProseBackend{}
 			if name == delegate.BackendClaw {
@@ -300,7 +311,7 @@ func TestClawAndClaudeSchemaExhaustionHaveSameLifecycle(t *testing.T) {
 					retries++
 				}
 			}}))
-			eng := runtime.New(wf, st, exec, runtime.WithOutputCorrectionBudget(1), runtime.WithRecoveryDispatch(Dispatch(DefaultRecipes())))
+			eng := runtime.New(wf, st, exec, runtime.WithRecoveryDispatch(Dispatch(DefaultRecipes())))
 			runErr := eng.Run(context.Background(), "schema-exhaustion", nil)
 			var typed *model.OutputSchemaError
 			if !errors.As(runErr, &typed) || Classify(runErr) != runtime.ErrCodeSchemaValidation || retries != 1 {
@@ -317,13 +328,16 @@ func TestClawAndClaudeSchemaExhaustionHaveSameLifecycle(t *testing.T) {
 				}
 			}
 			got := strings.Join(phases, ",")
-			if name == delegate.BackendClaw {
-				firstPhases = got
-			} else if got != firstPhases {
-				t.Fatalf("lifecycle differs: claw=%s claude_code=%s", firstPhases, got)
-			}
 			if len(phases) < 2 {
 				t.Fatalf("missing correction lifecycle: %v", phases)
+			}
+			if name == delegate.BackendClaw {
+				firstPhases = phases[len(phases)-1]
+				if len(extraction.calls) != 0 {
+					t.Errorf("diagnostic extraction calls=%d", len(extraction.calls))
+				}
+			} else if phases[len(phases)-1] != firstPhases {
+				t.Fatalf("lifecycle differs: claw=%s claude_code=%s", firstPhases, got)
 			}
 			if name == delegate.BackendClaw && (len(mock.calls) != 4 || !strings.Contains(lastUser(mock.calls[2]), "malformed JSON")) {
 				t.Fatalf("parse feedback missing: calls=%d", len(mock.calls))

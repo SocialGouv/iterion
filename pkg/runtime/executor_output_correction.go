@@ -127,8 +127,7 @@ func (e *Engine) executorCorrectionContext(ctx context.Context, rs *runState, no
 }
 
 func schemaExecutionError(node ir.Node, err error) error {
-	var schemaErr *model.OutputSchemaError
-	if errors.As(err, &schemaErr) {
+	if ClassifyError(err) == ErrCodeSchemaValidation {
 		return &RuntimeError{Code: ErrCodeSchemaValidation, NodeID: node.NodeID(), Message: err.Error(), Cause: err}
 	}
 	return err

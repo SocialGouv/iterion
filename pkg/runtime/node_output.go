@@ -24,10 +24,10 @@ import (
 // ---------------------------------------------------------------------------
 
 // validateNodeOutput checks that the node's output conforms to its declared
-// output schema. Returns nil if validation is disabled, the node has no
-// output schema, or the output is valid.
-func (e *Engine) validateNodeOutput(nodeID string, node ir.Node, output map[string]any) error {
-	if !e.validateOutputs || e.executorValidatesOutput(node) {
+// output schema. Executor validation remains authoritative. Other mismatches
+// warn by default and fail in strict mode.
+func (e *Engine) validateNodeOutput(rs *runState, nodeID string, node ir.Node, output map[string]any) error {
+	if e.executorValidatesOutput(node) {
 		return nil
 	}
 	schemaName := ir.NodeOutputSchema(node)
@@ -41,6 +41,11 @@ func (e *Engine) validateNodeOutput(nodeID string, node ir.Node, output map[stri
 	// ValidateOutput only checks declared schema fields — extra keys
 	// (including _-prefixed metadata) are silently ignored.
 	if err := model.ValidateOutput(output, schema); err != nil {
+		if !e.validateOutputs {
+			fields := model.OutputSchemaMismatchFields(output, schema)
+			e.logger.Warn("node_output_schema_mismatch: node %q schema %q fields %v", nodeID, schemaName, fields)
+			return e.emit(rs.ctx, rs.runID, store.EventNodeOutputSchemaMismatch, nodeID, map[string]any{"schema": schemaName, "fields": fields})
+		}
 		return &RuntimeError{
 			Code:    ErrCodeSchemaValidation,
 			Message: fmt.Sprintf("node %q output does not match schema %q: %v", nodeID, schemaName, err),
@@ -66,7 +71,7 @@ const (
 // a process restart therefore resumes the same budget instead of starting a
 // fresh watcher-triggered loop.
 func (e *Engine) correctAndValidateNodeOutput(ctx context.Context, rs *runState, nodeID string, node ir.Node, output map[string]any) (map[string]any, error) {
-	validationErr := e.validateNodeOutput(nodeID, node, output)
+	validationErr := e.validateNodeOutput(rs, nodeID, node, output)
 	if validationErr == nil {
 		return output, nil
 	}
@@ -230,7 +235,7 @@ func (e *Engine) correctAndValidateNodeOutput(ctx context.Context, rs *runState,
 		}
 		candidate = preserveCorrectionMetadata(current, candidate, correctionUsage)
 
-		candidateErr := e.validateNodeOutput(nodeID, node, candidate)
+		candidateErr := e.validateNodeOutput(rs, nodeID, node, candidate)
 		candidateFP := correctionSemanticFingerprint(candidate)
 		candidateViolationFP := ""
 		if candidateErr != nil {
@@ -442,9 +447,9 @@ func (e *Engine) correctionIdentity(rs *runState, nodeID string, legacy bool) (l
 
 // currentCorrectionIterationPath includes the complete counter vector for a
 // repeated node, including outer loops whose compiled body omits that node.
-// Nodes outside bounded iterations retain their bare identity.
+// Only workflows without loops or foreach retain bare node identities.
 func (e *Engine) currentCorrectionIterationPath(nodeID string, counters map[string]int) string {
-	if e.legacyCorrectionIterationPath(nodeID, counters) == "" {
+	if e == nil || e.workflow == nil || (len(e.workflow.Loops) == 0 && len(e.workflow.Foreaches) == 0) {
 		return ""
 	}
 	parts := make([]string, 0, len(e.workflow.Loops)+len(e.workflow.Foreaches))

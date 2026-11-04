@@ -50,8 +50,10 @@ func runFixture(t *testing.T, storeDir, runID string, budget ir.BudgetOverrides)
 	}, &cli.Printer{W: io.Discard, Format: cli.OutputJSON})
 }
 
-func TestRunValidatesCustomExecutorSchema(t *testing.T) {
-	t.Parallel()
+func TestStrictRunValidatesCustomExecutorSchema(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("TMPDIR", t.TempDir())
+	t.Setenv(runtime.EnvOutputValidation, "true")
 	err := cli.RunRun(context.Background(), cli.RunOptions{
 		File:     filepath.Join("testdata", "budget_override_mini.bot"),
 		StoreDir: t.TempDir(), RunID: "invalid-custom-executor",

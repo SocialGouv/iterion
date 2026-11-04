@@ -69,6 +69,13 @@ var serialFamily = map[string]string{
 	"reask_extraction_failure_test.go":  "Setenv",
 	"schema_feedback_size_test.go":      "Setenv",
 	"schema_mutation_witness_test.go":   "Setenv",
+	"round2_chain_test.go":              "Setenv",
+	"round2_effort_test.go":             "Setenv",
+	"round2_extract_test.go":            "Setenv",
+	"round2_feedback_test.go":           "Setenv",
+	"round2_probe_test.go":              "Setenv",
+	"round2_router_test.go":             "Setenv",
+	"round2_typed_test.go":              "Setenv",
 
 	"anthropic_forfait_ctx_test.go":            "SetCredentialsLookup, SetOAuthDirLookup, Setenv",
 	"async_backend_test.go":                    "Setenv",

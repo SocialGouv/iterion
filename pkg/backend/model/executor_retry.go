@@ -13,6 +13,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/cost"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/modelroute"
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/llmroute"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 )
@@ -1036,10 +1037,13 @@ func (e *ClawExecutor) newElementBuilder(
 // backendName; a chain that can cross backends makes that variable a
 // lie the moment it falls through.
 type chainOutcome struct {
-	Result      delegate.Result
-	BackendName string           // backend that served
-	Backend     delegate.Backend // its handle, for the schema retry
-	Task        *delegate.Task   // the task it ran, for the schema retry
+	// Corrections emit their own usage events inside the chain.
+	CorrectionCost   float64
+	CorrectionTokens int
+	Result           delegate.Result
+	BackendName      string           // backend that served
+	Backend          delegate.Backend // its handle, for the schema retry
+	Task             *delegate.Task   // the task it ran, for the schema retry
 	// ServedBy names the element that served, and FellThrough reports
 	// whether it was anything but the node's first choice. They exist so
 	// a bot's DETERMINISTIC gate can fail closed on a degraded input —
@@ -1116,7 +1120,11 @@ func (e *ClawExecutor) dispatchChain(
 	chain []chainElement,
 	baseModel string,
 	build elementBuilder,
-) (chainOutcome, error) {
+	schemas ...*ir.Schema,
+) (out chainOutcome, dispatchErr error) {
+	var correctionCost float64
+	var correctionTokens int
+	defer func() { out.CorrectionCost = correctionCost; out.CorrectionTokens = correctionTokens }()
 	if len(chain) == 0 {
 		// Refused here too, at the choke point every dispatch path crosses:
 		// the allowlist may have dropped every element, or the caller built
@@ -1419,6 +1427,12 @@ func (e *ClawExecutor) dispatchChain(
 				}
 				result, err = freshResult, freshErr
 			}
+		}
+		if err == nil && result.ParseFallback && result.ParseError != "" && len(schemas) > 0 && schemas[0] != nil {
+			before := result
+			result, err = e.validateAndRetry(ctx, backendFields{id: nodeID}, backendName, backend, task, result, schemas[0])
+			correctionCost += max(0, result.CostUSD-before.CostUSD)
+			correctionTokens += max(0, result.Tokens-before.Tokens)
 		}
 		if err == nil {
 			return itemised(chainOutcome{

@@ -258,7 +258,7 @@ func (e *ClawExecutor) executeLLMRouterUnified(ctx context.Context, node *ir.Rou
 
 	chain := collapseHintOnlyChain(e.resolveProviderChain(node), backendName)
 	out, err := e.dispatchWithObservability(ctx, node.ID, backendName, "model: llm router", chain, expanded,
-		e.newElementBuilder(node.ID, backendName, backend, assemble), sess)
+		e.newElementBuilder(node.ID, backendName, backend, assemble), sess, schema)
 	if err != nil {
 		// The other seam that spends: an LLM router is a model call, and a
 		// router that burned a fallback chain's worth of routes before
@@ -302,10 +302,8 @@ func (e *ClawExecutor) executeLLMRouterUnified(ctx context.Context, node *ir.Rou
 		servingTask = built
 	}
 
-	// Strict validation against the router schema — with the same single
-	// re-ask an agent's schema failure gets: a run lost to a missing field
-	// the model could have supplied in one more turn is the same loss on a
-	// router as on an agent.
+	// Router outputs use the same validation and bounded correction loop
+	// as agent outputs.
 	validated, err := e.validateAndRetry(ctx, backendFields{id: node.ID, kind: "llm router"}, servingBackendName, servingBackend, servingTask, result, schema)
 	if err != nil {
 		// The generation SUCCEEDED and was paid for — only its shape is

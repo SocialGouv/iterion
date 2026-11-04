@@ -250,9 +250,12 @@ var operatorInfraNames = map[string]bool{
 	// Bounds on work that spends: node re-executions (no DSL field sets
 	// them), schema-correction re-asks, a session spinning without progress
 	// or failing its tools in a streak (0 disables the last three).
-	"ITERION_NODE_MAX_RETRIES":                true,
-	"ITERION_NODE_MAX_TRANSIENT_RETRIES":      true,
-	"ITERION_OUTPUT_CORRECTION_BUDGET":        true,
+	"ITERION_NODE_MAX_RETRIES":           true,
+	"ITERION_NODE_MAX_TRANSIENT_RETRIES": true,
+	"ITERION_OUTPUT_CORRECTION_BUDGET":   true,
+	// The operator's strict output contract is process policy; a bot var
+	// cannot turn a rejection into an advisory warning.
+	"ITERION_STRICT_OUTPUT_VALIDATION":        true,
 	"ITERION_CLAUDE_CODE_NO_PROGRESS_TIMEOUT": true,
 	"ITERION_PI_NO_PROGRESS_TIMEOUT":          true,
 	"ITERION_CLAUDE_CODE_MAX_TOOL_ERRORS":     true,

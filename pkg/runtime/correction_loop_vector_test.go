@@ -83,6 +83,7 @@ func TestCorrectionLegacyKeyIsClaimedOnlyOnce(t *testing.T) {
 	if _, found, err := eng.loadInvocationCorrectionEpisode(ctx, rs, "my_agent", key, id); err != nil || found {
 		t.Fatalf("legacy key reused: found=%v err=%v", found, err)
 	}
+	eng.workflow.Loops = nil
 	if key, _ := eng.correctionInvocationIdentity(rs, "done"); key != "done" {
 		t.Fatalf("non-loop key=%s", key)
 	}

@@ -170,9 +170,16 @@ func (e *scenarioExecutor) Execute(_ context.Context, node ir.Node, input map[st
 	if output == nil {
 		output = map[string]any{}
 	}
-	// The scenario specifies routing values; omitted required fields receive
-	// neutral schema values. Explicit invalid values remain invalid.
-	if schema != nil {
+	// Only simulated LLM outputs get neutral required fields. Tool and
+	// special-node outputs stay as authored so catalog mismatches are visible.
+	llm := false
+	switch n := node.(type) {
+	case *ir.AgentNode, *ir.JudgeNode:
+		llm = true
+	case *ir.RouterNode:
+		llm = n.RouterMode == ir.RouterLLM
+	}
+	if schema != nil && llm {
 		for _, field := range schema.Fields {
 			if _, present := output[field.Name]; !present {
 				switch field.Type {

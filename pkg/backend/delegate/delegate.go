@@ -1979,6 +1979,10 @@ type Result struct {
 	// but JSON parsing fell back to wrapping plain text as {"text": "..."}.
 	ParseFallback bool
 
+	// ParseError describes a failed structured parse. It is diagnostic
+	// metadata, never model-authored answer text.
+	ParseError string
+
 	// FormattingPassUsed is true when a two-pass execution was performed:
 	// Pass 1 with tools (no output format), Pass 2 with WithOutputFormat
 	// (no tools) to guarantee structured output conforming to the schema.

@@ -635,8 +635,9 @@ func GenerateObjectDirect[T any](ctx context.Context, client api.APIClient, opts
 	// request return beside their error — the same contract
 	// GenerateTextDirect's result() has, and for the same reason: the
 	// provider billed every turn made, and this is the only place that
-	// figure exists. Consult `err` first; Object is the zero value and only
-	// TotalUsage is meaningful.
+	// figure exists. Consult `err` first; Object is the zero value.
+	// Text and Messages retain the model text and request conversation for
+	// a schema correction, without replaying malformed synthetic tool calls.
 	//
 	// The exits it serves are the expensive ones — a stream that died
 	// mid-answer, a truncated tool_use, JSON the model malformed, a re-ask
@@ -647,7 +648,11 @@ func GenerateObjectDirect[T any](ctx context.Context, client api.APIClient, opts
 	var steps []StepResult
 	partial := func() *ObjectResult[T] {
 		var zero T
-		return &ObjectResult[T]{Object: zero, TotalUsage: totalUsage}
+		out := &ObjectResult[T]{Object: zero, TotalUsage: totalUsage, Messages: append([]api.Message(nil), messages...)}
+		if len(steps) > 0 {
+			out.Text = steps[len(steps)-1].Text
+		}
+		return out
 	}
 
 	// turn makes one structured request. A turn is anchored like a text

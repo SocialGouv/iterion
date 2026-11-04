@@ -268,13 +268,22 @@ type MCPServerDegradedInfo struct {
 	Err   error // why the tools were dropped
 }
 
+// ReasoningEffortAdjustment records a route's explicit effort substitution.
+type ReasoningEffortAdjustment struct {
+	Model     string
+	Requested string
+	Applied   string
+	Reason    string
+}
+
 // EventHooks allows the executor to emit observability events back to the caller.
 type EventHooks struct {
-	OnLLMRequest    func(nodeID string, info LLMRequestInfo)
-	OnLLMPrompt     func(nodeID string, systemPrompt string, userMessage string)
-	OnLLMResponse   func(nodeID string, info LLMResponseInfo)
-	OnLLMRetry      func(nodeID string, info RetryInfo)
-	OnLLMStepFinish func(nodeID string, step LLMStepInfo)
+	OnReasoningEffortAdjusted func(nodeID string, info ReasoningEffortAdjustment)
+	OnLLMRequest              func(nodeID string, info LLMRequestInfo)
+	OnLLMPrompt               func(nodeID string, systemPrompt string, userMessage string)
+	OnLLMResponse             func(nodeID string, info LLMResponseInfo)
+	OnLLMRetry                func(nodeID string, info RetryInfo)
+	OnLLMStepFinish           func(nodeID string, step LLMStepInfo)
 	// OnAssistantText fires with each chunk of assistant narration —
 	// mid-turn prose the conversation views render as the agent
 	// "talking" while it works. claude_code fires it per streamed
@@ -470,13 +479,14 @@ func ChainHooks(a, b EventHooks) EventHooks {
 		OnToolNodeResult:     chainCb6(a.OnToolNodeResult, b.OnToolNodeResult),
 		OnToolNodeDeliverables: chainCb2Err(
 			a.OnToolNodeDeliverables, b.OnToolNodeDeliverables),
-		OnDelegateStarted:   chainCb2(a.OnDelegateStarted, b.OnDelegateStarted),
-		OnDelegateFinished:  chainCb2(a.OnDelegateFinished, b.OnDelegateFinished),
-		OnDelegateError:     chainCb2(a.OnDelegateError, b.OnDelegateError),
-		OnDelegateRetry:     chainCb2(a.OnDelegateRetry, b.OnDelegateRetry),
-		OnProviderFallback:  chainCb2(a.OnProviderFallback, b.OnProviderFallback),
-		OnSessionDegraded:   chainCb2(a.OnSessionDegraded, b.OnSessionDegraded),
-		OnMCPServerDegraded: chainCb2(a.OnMCPServerDegraded, b.OnMCPServerDegraded),
-		OnNodeFinished:      chainCb2(a.OnNodeFinished, b.OnNodeFinished),
+		OnDelegateStarted:         chainCb2(a.OnDelegateStarted, b.OnDelegateStarted),
+		OnDelegateFinished:        chainCb2(a.OnDelegateFinished, b.OnDelegateFinished),
+		OnDelegateError:           chainCb2(a.OnDelegateError, b.OnDelegateError),
+		OnDelegateRetry:           chainCb2(a.OnDelegateRetry, b.OnDelegateRetry),
+		OnProviderFallback:        chainCb2(a.OnProviderFallback, b.OnProviderFallback),
+		OnReasoningEffortAdjusted: chainCb2(a.OnReasoningEffortAdjusted, b.OnReasoningEffortAdjusted),
+		OnSessionDegraded:         chainCb2(a.OnSessionDegraded, b.OnSessionDegraded),
+		OnMCPServerDegraded:       chainCb2(a.OnMCPServerDegraded, b.OnMCPServerDegraded),
+		OnNodeFinished:            chainCb2(a.OnNodeFinished, b.OnNodeFinished),
 	}
 }

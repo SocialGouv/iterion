@@ -1,6 +1,8 @@
 package compatgw
 
 import (
+	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -294,5 +296,20 @@ func TestResolveCatalog_APlantedRecordIsRefused(t *testing.T) {
 	// not the price it is billed at.
 	if res.Spec.ContextWindow != 0 || res.Spec.MaxOutputTokens != 0 || res.Priced() {
 		t.Fatalf("a planted record resolved %+v, want nothing: the repository under review chose the window, the max output and the price of the node reviewing it", res)
+	}
+}
+
+func TestR2ReasoningEffortsSurviveCatalogForwarding(t *testing.T) {
+	ResetCatalogCaches()
+	t.Cleanup(ResetCatalogCaches)
+	source := mapGet(map[string]string{CatalogModelsEnv: `{"deepseek":{"reasoning_efforts":["low","high","xhigh","max"]}}`})
+	resolved := ResolveCatalogQuiet("deepseek", nil, source)
+	record, err := json.Marshal(ForwardableRecord("deepseek", resolved))
+	if err != nil {
+		t.Fatal(err)
+	}
+	crossed := ResolveCatalogQuiet("deepseek", nil, mapGet(map[string]string{ResolvedEnvName: string(record)}))
+	if !reflect.DeepEqual(crossed.Spec.ReasoningEfforts, []string{"low", "high", "xhigh", "max"}) {
+		t.Fatalf("matrix lost crossing sandbox: %+v", crossed)
 	}
 }
