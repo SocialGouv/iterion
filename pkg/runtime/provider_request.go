@@ -46,14 +46,25 @@ func invalidProviderParameter(message string) bool {
 	return false
 }
 
+// routeLocalCodes are the verdicts that condemn ONE route rather than the
+// node: an operator-parameter refusal (the closed list) and an answer that
+// stayed off its schema after its corrections. Another route of the chain
+// can still serve either way.
+var routeLocalCodes = map[ErrorCode]bool{
+	ErrCodeProviderRequestInvalid: true,
+	ErrCodeSchemaValidation:       true,
+}
+
 // classifyRefusedChain decides an exhausted fallback chain that holds at
-// least one operator-parameter refusal. Only a chain whose EVERY route was
-// refused that way is PROVIDER_REQUEST_INVALID: a rescue route that failed
-// otherwise can still serve, so the refused routes are set aside and the
-// others decide, read like any other chain. It declines (decided=false) a
-// chain no route of which was refused — the reading of ClassifyError stays
-// the one it always had — and a chain a RuntimeError encloses, whose code is
-// the engine's own verdict on the whole chain.
+// least one route-local verdict (routeLocalCodes). Only a chain whose EVERY
+// route ended that way keeps one of those codes — SCHEMA_VALIDATION when any
+// route's answer stayed off its schema, else PROVIDER_REQUEST_INVALID, in
+// whatever order the routes ran. Otherwise the routes that failed for
+// another reason decide, read like any other chain: a rescue route's
+// transient outage stays transient. It declines (decided=false) a chain with
+// no route-local verdict — the reading of ClassifyError stays the one it
+// always had — and a chain a RuntimeError encloses, whose code is the
+// engine's own verdict on the whole chain.
 func classifyRefusedChain(err error) (code ErrorCode, decided bool) {
 	var chain *model.ErrChainExhausted
 	if !errors.As(err, &chain) || len(chain.Errs) == 0 {
@@ -67,13 +78,22 @@ func classifyRefusedChain(err error) (code ErrorCode, decided bool) {
 		}
 	}
 	var others []error
+	schema := false
 	for _, cause := range chain.Errs {
-		if ClassifyError(cause) != ErrCodeProviderRequestInvalid {
+		c := ClassifyError(cause)
+		if !routeLocalCodes[c] {
 			others = append(others, cause)
+			continue
+		}
+		if c == ErrCodeSchemaValidation {
+			schema = true
 		}
 	}
 	switch len(others) {
 	case 0:
+		if schema {
+			return ErrCodeSchemaValidation, true
+		}
 		return ErrCodeProviderRequestInvalid, true
 	case len(chain.Errs):
 		return "", false

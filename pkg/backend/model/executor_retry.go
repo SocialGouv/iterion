@@ -772,6 +772,17 @@ func (s *chainSpend) add(r delegate.Result, on spendLabel) {
 	}
 }
 
+// discountLastSlice removes from the slice just added the correction spend
+// its own re-ask events already carried; the totals keep it.
+func (s *chainSpend) discountLastSlice(cost float64, tokens int) {
+	if (cost == 0 && tokens == 0) || len(s.slices) == 0 {
+		return
+	}
+	last := &s.slices[len(s.slices)-1]
+	last.CostUSD = max(0, last.CostUSD-cost)
+	last.Tokens = max(0, last.Tokens-tokens)
+}
+
 // applyTo folds the accumulated spend into the winning result.
 //
 // Both Result.Tokens and Output["_tokens"] are updated: the runtime's
@@ -1419,6 +1430,8 @@ func (e *ClawExecutor) dispatchChain(
 				fresh.SessionID = ""
 				fresh.ForkSession = false
 				fresh.SessionFingerprint = ""
+				ranFresh := fresh
+				lastTask = &ranFresh
 				freshResult, freshErr := e.retryDelegateLoopChain(ctx, nodeID, backendName, sharesSession(&fresh), accepts, func() (delegate.Result, error) {
 					return e.executeDelegate(ctx, backend, fresh)
 				}, "")
@@ -1428,12 +1441,16 @@ func (e *ClawExecutor) dispatchChain(
 				result, err = freshResult, freshErr
 			}
 		}
+		var elemCorrCost float64
+		var elemCorrTokens int
 		if err == nil && result.ParseFallback && len(schemas) > 0 && schemas[0] != nil {
 			adoptJSONObjectText(&result)
 			before := result
 			result, err = e.validateAndRetry(ctx, backendFields{id: nodeID}, backendName, backend, task, result, schemas[0])
-			correctionCost += max(0, result.CostUSD-before.CostUSD)
-			correctionTokens += max(0, result.Tokens-before.Tokens)
+			elemCorrCost = max(0, result.CostUSD-before.CostUSD)
+			elemCorrTokens = max(0, result.Tokens-before.Tokens)
+			correctionCost += elemCorrCost
+			correctionTokens += elemCorrTokens
 		}
 		if err == nil {
 			return itemised(chainOutcome{
@@ -1515,6 +1532,7 @@ func (e *ClawExecutor) dispatchChain(
 		// node that is a plain doubling of what the delegate_error
 		// event reports.
 		spent.add(result, attemptLabel(backendName, task, result))
+		spent.discountLastSlice(elemCorrCost, elemCorrTokens)
 		// Discard only the failed attempt, not the named durable slot. The
 		// claw session format contains provider-neutral message blocks; the
 		// rollback also strips any legacy provider-specific thinking blocks
