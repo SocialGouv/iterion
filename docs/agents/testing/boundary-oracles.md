@@ -56,3 +56,30 @@ with test cleanup: the bubble exposed three previously leaked hub goroutines.
 Keep cleanup inside the bubble, so it also verifies termination. Tests of
 individual health verdicts and term cancellation do not schedule campaigns and
 retain their existing synchronous witnesses.
+
+## Parser lookup
+
+PR #3050's race shard also failed `TestBrokenListsParseInLinearTime`: ten times
+the input took 30.4 times as long, above its ratio threshold of 25. The parser
+tree was byte-identical to main. Sequential minima do not establish that both
+measurements experienced the same load; this observation alone does not prove
+the open-block lookup rescanned its input.
+
+`TestOpenBlocksReadEachTokenOnce` already counts actual token reads on both the
+broken-list and nested/spliced shapes. Retain it and its semantic cross-checks;
+remove the redundant time ratio. Forcing the real `openBlocks` implementation
+to reset on every call makes that witness reject 199,950,002 reads for 80,001
+tokens and 14,507,500 for 31,001. ASTs and diagnostics stay identical on three
+comparison inputs: the mutation changes work, not the expected parse result.
+
+`TestOpenBlockResetPreservesOperationAccounting` calibrates that counter across
+a reset, with and without skipped spans. Reading an unchanged prefix does no
+extra work; resetting and rereading counts the work again. Clearing the counter
+on reset fails this calibration, including when combined with the rescan.
+The claim concerns this lookup, not the complexity of every parser operation.
+
+The separate `TestBrokenListSplicesStayLinear` ratio remains unchanged. Its
+historical timings were 3.42 s in [41233597165](https://github.com/SocialGouv/iterion/actions/runs/41233597165)
+and 24.14 s in [41236299236](https://github.com/SocialGouv/iterion/actions/runs/41236299236),
+with a local ratio around 1.9. These are separate observations, not proof that
+every timing-based test is stable or that the CI slowdown's cause is known.
