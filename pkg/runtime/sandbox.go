@@ -1374,7 +1374,9 @@ func proxyAddressesForDriver(d sandbox.Driver) (bind, advertise string, err erro
 // "no rule when unset" (`"${EXTRA_EGRESS:-}"`) and is dropped, the one
 // greppable opt-out.
 //
-// Default when spec.Network is nil: open (no proxy, full egress). Bots
+// Default when spec.Network is nil: open (no host filtering, full
+// egress; the proxy starts only when Layer 2 or a gateway credential
+// needs it, see startNetworkProxy). Bots
 // routinely shell out to package managers, build tooling, and
 // integration endpoints that no static allowlist can predict — landing
 // on a deny-by-default posture made every fresh workflow author fight

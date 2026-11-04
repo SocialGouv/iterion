@@ -535,6 +535,17 @@ can be referenced from `secrets:`.
 
 ## Layer 2 — TLS-inspection egress (default on for sandboxed runs)
 
+Layer 2 guards secrets; it is not an egress allowlist. A sandboxed run's
+egress stays **open** unless its workflow declares an `allowlist` or
+`denylist` `sandbox.network` mode ([network policy](sandbox.md#network-policy)),
+or the run is a repo-defined sandbox (auto + a found `devcontainer.json`),
+where the `iterion-default` allowlist applies. The proxy Layer 2 forces
+under `network: open` admits every public destination the workflow's own
+`!host` exclusions do not refuse; its dialer refuses loopback and
+link-local addresses, except the `host.docker.internal` alias, which it
+dials to its own host's loopback (any port, unless the policy refuses the
+alias).
+
 For secrets the agent uses in its *own* TLS calls (e.g. claude_code's
 Bash `curl`/`git push`), the sandbox egress proxy
 ([`pkg/sandbox/netproxy`](../pkg/sandbox/netproxy)) can terminate TLS and
@@ -654,8 +665,9 @@ For **OAuth-forfait** auth (Anthropic Claude Code OAuth, OpenAI
 ChatGPT/Codex — the recommended credential model), egress substitution is
 impractical: the CLI performs stateful token refresh, and the Consumer
 Terms scope the forfait to Claude Code only (no API key to splice). Those
-credentials are protected by **the network allowlist + Layer 0 redaction
-+ the backstop clause**, not by Layer 2 substitution. Layer 2's
+credentials are protected by **the network allowlist where the workflow
+declares one (egress is open by default) + Layer 0 redaction + the
+backstop clause**, not by Layer 2 substitution. Layer 2's
 substitution/DLP value is for **declared workflow secrets** (a
 `GITHUB_TOKEN`, a deploy key) and API-key mode.
 

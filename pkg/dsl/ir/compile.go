@@ -429,7 +429,7 @@ func (c *compiler) compileSandboxBlock(blk *ast.SandboxBlock, scope, name string
 		}
 		if blk.Network.Mode == "" {
 			c.warnfAtProperty(DiagNetworkModeMissing, scope, name, "sandbox",
-				"%s %q declares sandbox.network without a mode: as written the block is inert — at the policy layer it resolves to open (the proxy does not start); on a repo-defined sandbox (mode auto with a found devcontainer.json) the runtime instead completes it to the allowlist its content is shaped like. Write mode: allowlist (or open / denylist) to say which you mean",
+				"%s %q declares sandbox.network without a mode: as written the block is inert — at the policy layer it resolves to open (the proxy filters no host); on a repo-defined sandbox (mode auto with a found devcontainer.json) the runtime instead completes it to the allowlist its content is shaped like. Write mode: allowlist (or open / denylist) to say which you mean",
 				scope, name)
 		}
 		spec.Network = &SandboxNetwork{

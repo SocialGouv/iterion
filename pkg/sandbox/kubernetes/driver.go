@@ -711,9 +711,10 @@ func (d *Driver) Start(ctx context.Context, prepared sandbox.PreparedSpec, info 
 
 	// V2-5: synthesise a per-run NetworkPolicy when the proxy is
 	// active. The policy locks the sibling pod's egress to the runner
-	// pod (proxy) + kube-dns. Skipped silently when the proxy isn't
-	// in play (network mode=open) or the runner can't introspect its
-	// own IP. Enforcement requires a NetworkPolicy-aware CNI (Calico,
+	// pod (proxy) + kube-dns. Skipped when the proxy isn't in play (an
+	// open policy with no Layer 2 rewriter and no gateway credential);
+	// a proxied run whose runner can't introspect its own IP is refused
+	// below. Enforcement requires a NetworkPolicy-aware CNI (Calico,
 	// Cilium, ...) — see docs/sandbox.md § cloud.
 	if info.ProxyEndpoint != "" {
 		runnerIP := os.Getenv(PodIPEnvVar)
