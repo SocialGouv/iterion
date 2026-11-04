@@ -78,19 +78,20 @@ const (
 
 // dirMarkers are the sibling entries that mark a directory as a bundle
 // rather than somewhere a loose main.bot happens to sit. A manifest marks
-// only when it is iterion's (manifestIsIterions): `manifest.yaml` and
+// only when it is iterion's (manifestVerdict): `manifest.yaml` and
 // `manifest.yml` are common filenames of other tools, and a bundle that
 // carries a marker but does not open is refused on every surface — so a
 // foreign manifest beside a loose main.bot must mark nothing, while an
 // iterion manifest that does not decode must still mark its bundle, so the
 // open fails loudly instead of the run starting without its prompts and
-// skills. Both spellings count, as the loader reads both: a marker the
+// skills. A skills/ or presets/ directory also marks the bundle, without a
+// manifest. Both manifest spellings count, as the loader reads both: a marker the
 // loader reads but the promotion ignored gave the file and the directory
 // forms of the same bundle two verdicts. A manifest that decodes as
 // iterion's but carries only generic keys (a foreign `name`+`version`
 // file) marks too — as it did before any of this, and harmlessly: the
 // loader accepts it and there is nothing beside it to merge.
-var dirMarkers = []string{DirSkills, ManifestFile, ManifestFileAlt}
+var dirMarkers = []string{DirSkills, DirPresets, ManifestFile, ManifestFileAlt}
 
 // genericManifestKeys are the Manifest's top-level keys every tool's
 // manifest may carry too: their presence says nothing about whose file it
@@ -156,13 +157,6 @@ var iterionOnlyKeyRe = func() *regexp.Regexp {
 // is not ours — judging the half a bound left readable would be judging
 // another document.
 const maxManifestProbe = 1 << 20
-
-// manifestIsIterions reports whether path is a manifest file that is
-// iterion's; the reason it is not, when it is not, is manifestVerdict's.
-func manifestIsIterions(path string) bool {
-	ok, _ := manifestVerdict(path)
-	return ok
-}
 
 // manifestVerdict reads whether path is an iterion manifest off its
 // SHAPE, never its values (whether it then opens is the loader's verdict,
@@ -237,31 +231,38 @@ func manifestVerdict(path string) (ok bool, reason string) {
 // DirClaim answers whether dir is a bundle directory by the ONE definition
 // this package owns (the markers above): claimed = it carries an iterion
 // manifest — either spelling, by the SHAPE verdict, never by existence
-// alone — or a skills/ directory; openable = main.bot sits beside the
+// alone — or a skills/ or presets/ directory; openable = main.bot sits beside the
 // claim. Discovery's walk and the localize path judge directories through
 // this verdict (ADR-140), so a directory cannot be a bundle on one surface
 // and a descent on another. reason, when the directory is not claimed but
 // carries a manifest, names why that manifest is not ours.
 func DirClaim(dir string) (claimed, openable bool, reason string) {
-	if _, err := os.Stat(filepath.Join(dir, DirSkills)); err == nil {
-		claimed = true
-	} else {
-		for _, marker := range []string{ManifestFile, ManifestFileAlt} {
-			ok, why := manifestVerdict(filepath.Join(dir, marker))
-			if ok {
-				claimed = true
-				break
-			}
-			if why != "" && reason == "" {
-				reason = marker + " " + why
-			}
-		}
-	}
+	claimed, reason = directoryClaim(dir)
 	if !claimed {
 		return false, false, reason
 	}
 	_, err := os.Stat(filepath.Join(dir, MainBotFile))
 	return true, err == nil, reason
+}
+
+// directoryClaim is shared by discovery and file promotion, including a
+// studio draft whose main.bot has not been written yet.
+func directoryClaim(dir string) (claimed bool, reason string) {
+	for _, marker := range dirMarkers {
+		p := filepath.Join(dir, marker)
+		if marker == DirSkills || marker == DirPresets {
+			if st, err := os.Stat(p); err == nil && st.IsDir() {
+				return true, reason
+			}
+			continue
+		}
+		if ok, why := manifestVerdict(p); ok {
+			return true, reason
+		} else if why != "" && reason == "" {
+			reason = marker + " " + why
+		}
+	}
+	return false, reason
 }
 
 // ForeignManifestBeside reports a file named like a manifest beside a
@@ -310,17 +311,8 @@ func DirForMainBot(path string) string {
 		return ""
 	}
 	parent := filepath.Dir(abs)
-	for _, marker := range dirMarkers {
-		p := filepath.Join(parent, marker)
-		if marker == DirSkills {
-			if st, err := os.Stat(p); err == nil && st.IsDir() {
-				return parent
-			}
-			continue
-		}
-		if manifestIsIterions(p) {
-			return parent
-		}
+	if claimed, _ := directoryClaim(parent); claimed {
+		return parent
 	}
 	return ""
 }

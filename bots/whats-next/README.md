@@ -21,6 +21,11 @@ seed (compute) → nexie (agent) → gate (compute) ── is_close ──▶ do
   bundled skills via the native Skill tool, `interaction: human` so it
   can `ask_user` mid-turn (with clickable options). Each turn returns
   `{reply, close, quick_replies, dispatched_ids, assistant_actions}`.
+- Roadmap audits can use the native Agent/Task tools in parallel. The audit
+  instructions require read-only work and the gate denies direct writing
+  tools. This is not an OS read-only sandbox: Claude Code can create and
+  remove temporary Git worktrees for `Agent(isolation="worktree")` even
+  under that gate. The operator accepts this CLI bookkeeping for the fan-out.
 - **chat** — a one-field human node: Nexie's `reply` renders as the
   chat bubble, the answer is the operator's next message. The pause is
   budget-free and can last days — this is the standby home base.

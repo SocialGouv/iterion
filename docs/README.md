@@ -51,7 +51,7 @@ For the architectural trade-off against prompt-only orchestration, read [why-not
 |---|---|
 | [recipes.md](recipes.md) | In-source presets and external recipe overlays. |
 | [attachments.md](attachments.md) | File and image inputs. |
-| [bundles.md](bundles.md) | Deterministic `.botz` packaging with skills and resources. |
+| [bundles.md](bundles.md) | Bundle discovery, presets and deterministic `.botz` packaging with skills and resources. |
 | [import.md](import.md) | Lossy, non-executing import of Claude Code workflow JavaScript into draft `.bot` files. |
 | [backends.md](backends.md) | Backend/model matrix, harness behavior, and provider support. |
 | [models.md](models.md) | The model registry (`GET /api/models`, `iterion models`), the picker's capability guard, and the operator's persisted model choice. |
