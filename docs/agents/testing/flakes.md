@@ -1,22 +1,16 @@
 # Machine-dependent tests — annotate, measure, re-check
 
-A machine-dependent failure stays visible. Record the test, machine class,
-evidence (log or SHA), disposition and next re-check date. Keep the assertion:
-neither deleting nor silently skipping a test turns an unknown result green.
-A missing prerequisite gives a named, fast refusal and an explicit
-unverified result in the gate report. A rerun records its elapsed time and
-environment alongside the first failure, not instead of it.
-
-Fix the class: inventory every caller, isolate the resource at a shared helper,
-and prove that restoring the defect reddens the witness on its own assertion.
-Process fixtures own their scratch directories, HOME, configuration and child
-lifetimes. Network access is not a remedy for an unexplained hang; see
-[the hermetic gate decision](../../adr/137-local-gate-hermetic-by-default.md).
+Record each machine-dependent failure: test, machine, evidence, disposition
+and re-check date. Keep assertions; a missing prerequisite means unverified,
+not green. Record rerun timing beside the first failure. Fix the class and
+prove a reverted fix fails. Fixtures own scratch directories, HOME, config
+and children; see [hermetic gates](../../adr/137-local-gate-hermetic-by-default.md).
 
 ## Register
 
 | Test / check | Machine class | Evidence (log / SHA) | Disposition | Re-check |
 |---|---|---|---|---|
+| `openapi:check:dry` | Concurrent worktrees | [#3037](https://github.com/SocialGouv/iterion/issues/3037): a passing check restored another tree’s global `/tmp` backups | Generate privately and compare with the index; never write or restore checkout files. Pipe-ordered worktrees and original symlink/hardlink witnesses preserve bytes and inode identity during generation and on failure/cancellation. Full gates still run singly. | 2026-11-11, and on generator changes |
 | Background-session no-wait witnesses | Loaded ARC runner; fake CLI startup counted in the session duration | [#3008](https://github.com/SocialGouv/iterion/issues/3008): correct result at 1.509 s against 1.5 s; a startup-only delay reproduces it at 1.661 s | Twelve no-wait ceilings become explicit-clock close/idle decisions while retaining the real CLI scenarios. [Inventory and proof boundary](background-oracles.md); the fourteen duration-budget assertions remain separate. | 2026-11-10, and on background lifecycle decisions |
 | `TestEngineRun_IsolatedSubbotSiblingsOverlap` | Concurrent isolated children registering worktrees in one repository | [#2670](https://github.com/SocialGouv/iterion/issues/2670); an empty `commondir` in a pending registration reproduces Git's exact refusal | Runtime setup, reconstruction and cleanup serialize their Git registry commands in-process, keyed by the physical common directory. A virtual-time witness holds an incomplete registration, checks main/linked/symlink spellings and an independent repository, then releases it; removing the gate or making it global fails it. The three-child overlap witness is unchanged. | 2026-11-04, and on runtime worktree lifecycle changes |
 | `TestRunSpreadCoverageStrictCheck/a_Forbidden_plus_an_expired_deadline_still_names_the_Role` | Loaded ARC test-unit runner; shell startup races a 200 ms probe | [#2571](https://github.com/SocialGouv/iterion/issues/2571#issuecomment-6260520538), [PR run](https://github.com/SocialGouv/iterion/actions/runs/39146366377) | `spreadCoverageFailureCause` decides from the explicit cluster and probe errors; the witness stages both, other rows keep real kubectl shims (Forbidden, timeout, node coverage). Reversing the precedence or dropping the probe error at the caller fails it. Budget and Loki cases already repaired by `20e4aeb4c`, `5ee792110`; ARC tracked in #2564. | 2026-11-04, and on doctor diagnostic changes |

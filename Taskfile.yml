@@ -730,21 +730,9 @@ tasks:
       - task: map:gen
 
   openapi:check:dry:
-    desc: Verify the committed OpenAPI spec + TS types are fresh WITHOUT mutating them (snapshot, regenerate, compare, restore)
+    desc: Verify the committed OpenAPI spec + TS types are fresh by generating privately and comparing with the index
     cmds:
-      - cp openapi.json /tmp/openapi.json.genbak
-      - cp studio/src/api/schema.ts /tmp/schema.ts.genbak
-      - task: openapi:gen
-      - cmd: |
-          if ! git diff --quiet -- openapi.json studio/src/api/schema.ts; then
-            echo "::error::OpenAPI spec / client drift — run 'task openapi:gen' and commit the result."
-            git --no-pager diff --stat -- openapi.json studio/src/api/schema.ts
-            cp /tmp/openapi.json.genbak openapi.json
-            cp /tmp/schema.ts.genbak studio/src/api/schema.ts
-            exit 1
-          fi
-      - cp /tmp/openapi.json.genbak openapi.json
-      - cp /tmp/schema.ts.genbak studio/src/api/schema.ts
+      - bash scripts/ci/check-openapi.sh
 
   gen:check:
     desc: Check maps, OpenAPI (non-mutating via openapi:check:dry), chart version, shared skills and dispatcher catalogue freshness
@@ -1022,10 +1010,7 @@ tasks:
   openapi:gen:
     desc: Regenerate the OpenAPI spec (openapi.json) + studio TS types (schema.ts) from code
     cmds:
-      # Offline spec from the in-code route table — the single source of truth.
-      - go run -mod=vendor ./cmd/iterion openapi -o openapi.json
-      # Typed client surface for the studio, derived from that spec.
-      - corepack pnpm -C studio exec openapi-typescript ../openapi.json -o src/api/schema.ts
+      - bash scripts/ci/generate-openapi.sh
 
   openapi:check:
     desc: Fail if the committed OpenAPI spec / TS types drift from the code
