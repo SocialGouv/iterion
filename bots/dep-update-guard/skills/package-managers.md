@@ -33,7 +33,9 @@ local conventions before running a command.
 4. **Adapt**: if the command fails, surface the stderr verbatim and
    STOP. Don't retry with a "looks similar" command — the most-
    correct CLI failing is a meaningful signal the operator needs
-   to see.
+   to see. An auditor that exits non-zero because it found
+   advisories (osv-scanner 1, govulncheck 3, `npm audit` 1) has not
+   failed: its report is the result.
 5. **Cover gaps**: if you encounter an ecosystem not listed here,
    apply the same general procedure (detect → probe → run → verify)
    from official docs, and note it in your output so the operator
@@ -115,6 +117,13 @@ that the lock's `resolved` URL and the version in `devbox.json` agree; a
 lock pointing at a commit unrelated to the stated version is the signal
 worth escalating. `devbox install --dry-run` (or `devbox info <pkg>`)
 confirms the pin resolves at all.
+
+No scanner reads a nixpkgs pin, and OSV has no Nixpkgs ecosystem. Audit
+the vulnerabilities of each changed package by its upstream name and
+version, old and new: OSV in the upstream's own ecosystem where one
+exists (Go for `go`, npm for a JS tool), the project's security
+announcements, NVD. That is the auditor for these pins, not a missing
+scanner.
 
 ### Helm charts
 
