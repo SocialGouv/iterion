@@ -1550,6 +1550,9 @@ type Run struct {
 	// rollback message. See lifecycle.go (ADR-095) for the vocabulary
 	// and the open-world contract.
 	FailureCode FailureCode `json:"failure_code,omitempty" bson:"failure_code,omitempty"`
+
+	// PreEngineRefusal belongs to the recorder, never to full-document savers.
+	PreEngineRefusal *PreEngineRefusal `json:"pre_engine_refusal,omitempty" bson:"pre_engine_refusal,omitempty"`
 	// EndReason is the typed WHY the run ended — the protocol half of
 	// Error, whose prose it derives (RunEndReason.Message). It carries on
 	// the same statuses as FailureCode and is cleared by the same

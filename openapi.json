@@ -2987,6 +2987,41 @@
         },
         "type": "object"
       },
+      "PreEngineRefusal": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "hint": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "phase": {
+            "type": "string"
+          },
+          "published_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "queued_at": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "phase",
+          "code",
+          "message",
+          "observed_at"
+        ],
+        "type": "object"
+      },
       "ProjectSyncConflict": {
         "properties": {
           "at": {
@@ -3365,6 +3400,9 @@
           "permission_mode": {
             "type": "string"
           },
+          "pre_engine_refusal": {
+            "$ref": "#/components/schemas/PreEngineRefusal"
+          },
           "project_path": {
             "type": "string"
           },
@@ -3715,6 +3753,9 @@
           },
           "parent_run_id": {
             "type": "string"
+          },
+          "pre_engine_refusal": {
+            "$ref": "#/components/schemas/PreEngineRefusal"
           },
           "project_path": {
             "type": "string"
