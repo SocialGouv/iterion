@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -217,23 +218,107 @@ func TestTheNothingHeldDefaultReadsTheAmbientLedger(t *testing.T) {
 	}
 }
 
-// The veto and the bare pod: a STAMPED run answers every ambient fallback
-// with a typed refusal — its nothing-held default spends nothing of the pod's
-// and stays on the no-credential meter — and a pod with no ambient credential
-// has no account to read, so its meter stays bare too.
-func TestTheNothingHeldDefaultKeepsTheBareMeterWithoutAnAmbientSpend(t *testing.T) {
+// The veto, on a pod that CARRIES a credential: a STAMPED run answers every
+// fallback to the pod env with a typed refusal, so the pod's account decides
+// none of its meters. Two guards hold that, one scenario each. Its
+// nothing-held default — an unreadable route, an unlabelled reading — stays
+// on the no-credential meter, never the account's (the stamp read in
+// usageCapCredKeys). A claw walk into the pod env, a supervisor's or a
+// route's, in process or in the container, is refused before any client
+// exists and meters nothing (clawUnslottedKey). The unstamped twin on the same
+// pod reads the account on every row, so the stamp alone decides each one.
+func TestAStampedRunReadsNothingOfThePodsAccount(t *testing.T) {
 	blankAnthropicWireEnv(t)
-	bare := usagecap.Key(delegate.BackendClaudeCode, usagecap.ScopePlatform, "")
+	t.Setenv("ITERION_DEFAULT_SUPERVISOR_MODEL", "")
+	t.Setenv("ITERION_SUPERVISORS", "")
+	t.Setenv("ANTHROPIC_API_KEY", "sk-pod")
+	t.Cleanup(model.SetCredentialsLookup(model.RunCredentialsLookup))
+	ambient := platformKey(secrets.FingerprintSHA256("sk-pod"))
+	bare := platformKey("")
 	msg := &queue.RunMessage{TenantID: "team-b"}
+	clawRoute := model.WireRoute{NodeID: "impl", Backend: delegate.BackendClaw, Model: "claude-sonnet-4", Readable: true}
+	unreadable := model.WireRoute{NodeID: "cc", Backend: delegate.BackendClaudeCode, Readable: false}
+	const supSpec = "anthropic/claude-sonnet-4"
 
-	stamped := usageCapCredKeys(secrets.WithCredentials(context.Background(), secrets.Credentials{AmbientRefused: true}), msg)
-	key, metered := stamped.supervisorKey(context.Background(), "anthropic/claude-sonnet-4", "")
-	if !metered || key != bare {
-		t.Errorf("a stamped run's supervisor = %q metered=%v, want the bare %q — the run refuses the pod env, so its default spends nothing of it", key, metered, bare)
+	unstampedCtx := secrets.WithCredentials(context.Background(), secrets.Credentials{})
+	twin := usageCapCredKeys(unstampedCtx, msg)
+	if got := twin.defaultKey(); got != ambient {
+		t.Fatalf("inert bench: the unstamped default on this pod = %q, want the account's meter %q", got, ambient)
+	}
+	if key, metered := twin.supervisorKey(unstampedCtx, supSpec, ""); !metered || key != ambient {
+		t.Fatalf("inert bench: the unstamped supervisor = %q metered=%v, want the account's meter %q", key, metered, ambient)
+	}
+	for _, sandboxed := range []bool{false, true} {
+		twin.sandboxed = sandboxed
+		if key, metered := twin.routeKey(unstampedCtx, clawRoute); !metered || key != ambient {
+			t.Fatalf("inert bench: the unstamped claw route (sandboxed=%v) = %q metered=%v, want the account's meter %q", sandboxed, key, metered, ambient)
+		}
 	}
 
-	keys := usageCapCredKeys(secrets.WithCredentials(context.Background(), secrets.Credentials{}), msg)
-	if got := keys.defaultKey(); got != bare {
+	ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{AmbientRefused: true})
+	stamped := usageCapCredKeys(ctx, msg)
+
+	// The nothing-held default: the bare meter, on both sides of the ledger.
+	if got := stamped.defaultKey(); got != bare {
+		t.Errorf("a stamped run's default = %q, want the bare %q — the run refuses the pod env, its default spends nothing of that account", got, bare)
+	}
+	if got := usageCapKey(ctx, msg); got != bare {
+		t.Errorf("a stamped run's pre-flight default = %q, want the bare %q", got, bare)
+	}
+	if key, metered := stamped.routeKey(ctx, unreadable); !metered || key != bare {
+		t.Errorf("a stamped run's unreadable route = %q metered=%v, want the bare %q", key, metered, bare)
+	}
+	if got := stamped.forSource(""); got != bare {
+		t.Errorf("a stamped run's unlabelled reading = %q, want the bare %q", got, bare)
+	}
+
+	// The claw walk: the registry answers the typed refusal before any client
+	// exists, so the meter names nothing.
+	var refusal *model.ErrAmbientCredentialRefused
+	if _, err := model.NewRegistry().ResolveWithContext(ctx, supSpec); !errors.As(err, &refusal) {
+		t.Fatalf("bench: the registry on a stamped run = %v, want the typed ambient refusal", err)
+	}
+	if key, metered := stamped.supervisorKey(ctx, supSpec, ""); metered {
+		t.Errorf("a stamped run's supervisor = %q metered — its walk into the pod env is refused, no account spends", key)
+	}
+	for _, sandboxed := range []bool{false, true} {
+		stamped.sandboxed = sandboxed
+		if key, metered := stamped.routeKey(ctx, clawRoute); metered {
+			t.Errorf("a stamped run's claw route (sandboxed=%v) = %q metered — its walk into the pod env is refused, no account spends", sandboxed, key)
+		}
+	}
+
+	// End to end, through the pre-flight the runner calls. A wall on the
+	// account alone parks the unstamped default and not the stamped one; a
+	// wall on the account and on the bare meter parks no stamped claw run.
+	resets := time.Now().UTC().Add(30 * time.Hour)
+	unreadableRun := chainWorkflow(agentRoute("cc", delegate.BackendClaudeCode, "", "{{vars.model}}"))
+	clawRun := chainWorkflow(agentRoute("impl", delegate.BackendClaw, "", "claude-sonnet-4"))
+	accountWall := usagecap.NewMemStore()
+	weekCapped(t, accountWall, ambient, resets)
+	if err := preflightFor(t, accountWall, unstampedCtx, unreadableRun); err == nil {
+		t.Fatal("bench: an unstamped unreadable route started on the capped account its default spends")
+	}
+	if err := preflightFor(t, accountWall, ctx, unreadableRun); err != nil {
+		t.Errorf("parked a stamped run's unreadable route on the pod account's wall: %v — its default spends nothing of that account", err)
+	}
+	bothWalls := usagecap.NewMemStore()
+	weekCapped(t, bothWalls, ambient, resets)
+	weekCapped(t, bothWalls, bare, resets)
+	if err := preflightFor(t, bothWalls, unstampedCtx, clawRun); err == nil {
+		t.Fatal("bench: an unstamped claw route started on the capped account it spends")
+	}
+	if err := preflightFor(t, bothWalls, ctx, clawRun); err != nil {
+		t.Errorf("parked a stamped claw run: %v — its walk into the pod env is refused, no wall stands in its way", err)
+	}
+}
+
+// A pod with no ambient credential has no account to read: the nothing-held
+// default stays on the bare meter.
+func TestTheNothingHeldDefaultOfABarePodIsTheBareMeter(t *testing.T) {
+	blankAnthropicWireEnv(t)
+	keys := usageCapCredKeys(secrets.WithCredentials(context.Background(), secrets.Credentials{}), &queue.RunMessage{TenantID: "team-b"})
+	if got, bare := keys.defaultKey(), platformKey(""); got != bare {
 		t.Errorf("a pod with no ambient credential = %q, want the bare %q — no inherited account names the spend", got, bare)
 	}
 }

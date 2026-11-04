@@ -84,7 +84,8 @@ type runCredKeys struct {
 	ambientFP string
 	// ambientRefused is the stamp (secrets.Credentials.AmbientRefused): every
 	// fallback of the run to the pod env answers a typed refusal, so its
-	// nothing-held spend stays on the no-credential meter.
+	// nothing-held default stays on the no-credential meter and a claw walk
+	// into the pod env meters nothing (clawUnslottedKey).
 	ambientRefused bool
 	// defaultHeld: the run holds a default credential on the anthropic wire —
 	// a key of the run's own, a forfait dir — fingerprinted or not. A legacy
@@ -447,12 +448,13 @@ func (k runCredKeys) routeKey(ctx context.Context, route model.WireRoute) (key s
 // An account keys the platform meter of its fingerprint, the one every lane's
 // label lands on wherever that lane sends the same set. A request carrying
 // none of the env's credentials — this host's Claude Code login read from
-// disk, or none at all — keys the scope's no-credential meter, and so does a
-// stamped run, whose fallbacks to the pod env answer a typed refusal. Not
-// metered where no wall this cap keeps stands in the call's way: a walk claw
-// refuses before any client exists (no client, no account — the typed refusal
-// is the answer and the route's own fallbacks fire), z.ai's synthesis, a GLM
-// id no destination of the env serves.
+// disk, or none at all — keys the scope's no-credential meter. Not metered
+// where no wall this cap keeps stands in the call's way: a walk claw refuses
+// before any client exists (no client, no account — the typed refusal is the
+// answer and the route's own fallbacks fire), which is every walk of a
+// stamped run past its own key (secrets.Credentials.AmbientRefused: the pod
+// env answers ErrAmbientCredentialRefused), z.ai's synthesis, a GLM id no
+// destination of the env serves.
 func (k runCredKeys) clawUnslottedKey(creds secrets.Credentials, spec, hint string, sandboxed bool) (string, bool) {
 	if !sandboxed {
 		if slot := heldForRoute(creds, string(secrets.ProviderAnthropic)); slot != "" {
@@ -462,11 +464,14 @@ func (k runCredKeys) clawUnslottedKey(creds secrets.Credentials, spec, hint stri
 			return k.keyForSlot(slot), true
 		}
 	}
+	if k.ambientRefused {
+		return "", false
+	}
 	fp, metered := model.AmbientEnvMeter(spec, hint, sandboxed)
 	if !metered {
 		return "", false
 	}
-	if fp == "" || k.ambientRefused {
+	if fp == "" {
 		return k.keyForSlot(""), true
 	}
 	return usagecap.Key(delegate.BackendClaudeCode, usagecap.ScopePlatform, fp), true
