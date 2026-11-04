@@ -9,6 +9,7 @@ import (
 	"github.com/SocialGouv/claw-code-go/pkg/api"
 	anthropicprovider "github.com/SocialGouv/claw-code-go/pkg/api/providers/anthropic"
 
+	"github.com/SocialGouv/iterion/pkg/backend/credroute"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/secrets"
@@ -90,6 +91,12 @@ type ErrAmbientCredentialRefused struct {
 	Spec     string
 }
 
+// Is reports the leaf's stamp sentinel (credroute.ErrAmbientRefused): the
+// resolver's readers ask one sentinel whatever arm refused.
+func (e *ErrAmbientCredentialRefused) Is(target error) bool {
+	return target == credroute.ErrAmbientRefused
+}
+
 func (e *ErrAmbientCredentialRefused) Error() string {
 	return fmt.Sprintf("model: provider %q (spec %q) is not funded by the pod environment: "+
 		"the run's own credentials are the only funds for its LLM routes, so the environment fallback is refused — "+
@@ -124,37 +131,41 @@ func glmKeyReachableUnderHint(ctx context.Context) bool {
 // Precedence mirrors ResolveWithContext minus the facades: the run's own
 // key, then the resolved Claude forfait, then the ambient ANTHROPIC_API_KEY,
 // then the desktop forfait on disk — and a typed refusal when none answers.
-func (r *Registry) resolveAnthropicDirect(ctx context.Context, modelID string) (api.APIClient, error) {
+func (r *Registry) resolveAnthropicDirect(ctx context.Context, modelID string) (api.APIClient, credroute.Spend, error) {
 	p := anthropicprovider.New()
+	runCreds, _ := secrets.CredentialsFromContext(ctx)
 	if creds, ok := credentialsLookup(ctx); ok {
 		if k := creds(string(secrets.ProviderAnthropic)); k != "" {
-			return p.NewClient(r.withClientIdentity(api.ProviderConfig{APIKey: k, Model: modelID}))
+			client, err := p.NewClient(r.withClientIdentity(api.ProviderConfig{APIKey: k, Model: modelID}))
+			return client, credroute.KeySpend(runCreds, secrets.ProviderAnthropic), err
 		}
 	}
 	// The forfait on the DIRECT wire: the empty base URL stands in for the
 	// ANTHROPIC_BASE_URL the hint skips, so AnthropicForfaitWireOK cannot
 	// refuse a forfait because of a z.ai value the hint already overruled.
 	if client, ok, err := r.anthropicFromCtxForfaitOnWire(ctx, modelID, ""); ok {
-		return client, err
+		return client, credroute.ForfaitSpend(runCreds, secrets.OAuthKindClaudeCode), err
 	}
 	// Under the ambient stamp the pod environment is not the run's money:
 	// the env key and the host-disk forfait are skipped, and the hint's
 	// single contradiction (unfunded) is the answer.
 	if ambientRefused(ctx) {
-		return nil, &ErrProviderHintUnfunded{Provider: "anthropic", Model: modelID}
+		return nil, credroute.Spend{}, &ErrProviderHintUnfunded{Provider: "anthropic", Model: modelID}
 	}
 	w, err := anthropicDirectEnvCredentials(ctx, modelID)
 	if err != nil {
-		return nil, err
+		return nil, credroute.Spend{}, err
 	}
 	if w.oauth != "" {
 		claudeForfaitWarnOnce.Do(func() {
 			iterlog.NewFromEnv(os.Stderr).Warn("claw: %s",
 				secrets.SubscriptionOAuthNotice(secrets.ProviderAnthropic))
 		})
-		return p.NewClient(r.withClientIdentity(api.ProviderConfig{Model: modelID, OAuthToken: w.oauth}))
+		client, err := p.NewClient(r.withClientIdentity(api.ProviderConfig{Model: modelID, OAuthToken: w.oauth}))
+		return client, w.spend(), err
 	}
-	return p.NewClient(r.withClientIdentity(api.ProviderConfig{APIKey: w.apiKey, Model: modelID}))
+	client, err := p.NewClient(r.withClientIdentity(api.ProviderConfig{APIKey: w.apiKey, Model: modelID}))
+	return client, w.spend(), err
 }
 
 // anthropicDirectEnvCredentials is the environment half of the direct path
@@ -168,10 +179,10 @@ func anthropicDirectEnvCredentials(ctx context.Context, modelID string) (anthrop
 	if k := envGetenv(ctx, "ANTHROPIC_API_KEY"); k != "" {
 		return anthropicEnvWalk{apiKey: k}, nil
 	}
-	if tok := secrets.AnthropicForfaitAccessTokenFromDisk(); tok != "" {
+	if tok := anthropicDiskForfaitToken(ctx); tok != "" {
 		// Same guard as the env factory: the opt-out is enforced at the
 		// point the subscription token becomes the client's credential.
-		if secrets.ForbidSubscriptionOAuth() {
+		if forbidSubscriptionOAuth(ctx) {
 			return anthropicEnvWalk{}, fmt.Errorf("claw: %w", secrets.ErrSubscriptionOAuthForbidden)
 		}
 		return anthropicEnvWalk{oauth: tok, diskForfait: true}, nil

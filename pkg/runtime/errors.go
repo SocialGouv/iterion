@@ -62,6 +62,14 @@ const (
 	// container starts; the undecidable cases warn instead
 	// (sandbox_no_credential_warning).
 	ErrCodeSandboxCredentialUnreachable = store.FailureSandboxCredentialUnreachable
+	// Raised by the same admission for a run stamped to its own credentials
+	// (ADR-131 §7) whose node only the pod's environment would fund
+	// (ADR-161 decision 7).
+	ErrCodeCredentialAmbientRefused = store.FailureCredentialAmbientRefused
+	// Raised by the same admission for a node whose only funding is a
+	// subscription ITERION_FORBID_SUBSCRIPTION_OAUTH refuses (ADR-161
+	// decision 7).
+	ErrCodeCredentialSubscriptionForbidden = store.FailureCredentialSubscriptionForbidden
 	// Raised at sandbox start when the run carries attachments and the
 	// selected driver can neither bind-mount nor copy their directory in
 	// (sandbox_attachments.go). The operator attached the files on purpose;

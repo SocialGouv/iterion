@@ -26,6 +26,7 @@ import (
 	"github.com/SocialGouv/iterion/internal/envtrust"
 	"github.com/SocialGouv/iterion/pkg/backend/compatgw"
 	"github.com/SocialGouv/iterion/pkg/backend/cost"
+	"github.com/SocialGouv/iterion/pkg/backend/credroute"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/modelroute"
 	"github.com/SocialGouv/iterion/pkg/backend/modelspecs"
@@ -272,6 +273,11 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 	// as every other capability an older sandbox image lacks.
 	ctx = WithProviderHint(ctx, task.ProviderHint)
 
+	// The attempt's posture (ADR-161): the pod environment captured once,
+	// pinned on ctx, so the credential resolution below and every other
+	// environment read of this attempt answer from one capture.
+	ctx = credroute.WithPosture(ctx, credroute.Capture(ctx))
+
 	// claw is an in-process Anthropic SDK consumer rather than the vendor's
 	// own CLI, which was once read as putting a Claude Pro/Max OAuth
 	// subscription out of policy here. Anthropic's API settled it: the token
@@ -280,19 +286,17 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 	// operator is spending a different pot than they may expect — and only
 	// refuses when ITERION_FORBID_SUBSCRIPTION_OAUTH=1. See ADR-085.
 	//
-	// It runs BEFORE the sandbox dispatch, and must: sandboxing is on by
-	// default, the in-container runner rebuilds its own registry from the
-	// forwarded env, and it is built with no logger — so a guard placed after
-	// the dispatch would neither refuse nor warn on the default path, silently
-	// spending the balance the operator just closed.
+	// The refusal is the claw arm's (resolveClawCall), launcher side in both
+	// placements, and must be: sandboxing is on by default, the in-container
+	// runner rebuilds its own registry from the forwarded env, and it is
+	// built with no logger — so a guard placed in the container would neither
+	// refuse nor warn on the default path, silently spending the balance the
+	// operator just closed. The notice is here, where the logger is.
 	//
 	// A GLM id on this provider is z.ai's (GLMOnAnthropicWire): it spends the
 	// z.ai key, never the subscription, so neither the refusal nor the notice
 	// concerns it — beside a Claude forfait it would refuse a node that was
 	// never going to touch the forfait.
-	if err := clawSubscriptionGuard(ctx, task.Model); err != nil {
-		return delegate.Result{}, fmt.Errorf("claw backend: %w", err)
-	}
 	if clawSpendsAnthropicSubscription(task.Model) {
 		if b.logger != nil && secrets.SubscriptionOAuthOnly(ctx, secrets.ProviderAnthropic, secrets.OAuthKindClaudeCode) {
 			b.logger.Warn("[%s#%d/claw] %s", task.NodeID, task.Iteration,
@@ -407,14 +411,19 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 	commandScope.Restore(task.ResumeCommandNarrowing)
 	ctx = tool.WithCommandScope(ctx, commandScope)
 
-	// Resolve API client. Phase C: in cloud mode the runner stamps
-	// per-tenant BYOK credentials into ctx, ResolveWithContext then
-	// builds a fresh APIClient with the override key (no cache hit
-	// across tenants). Local mode keeps the env-fallback path.
-	client, err := b.registry.ResolveWithContext(ctx, task.Model)
-	if err != nil {
+	// Resolve API client: the claw arm's resolution of this leg (ADR-161),
+	// the client it built from the walk it took. In cloud mode the runner
+	// stamps per-tenant BYOK credentials into ctx and the walk builds a fresh
+	// client with the override key (no cache hit across tenants); local mode
+	// keeps the env-fallback path. A walk that reaches no credential still
+	// hands back the client it built: the provider's refusal is the call's
+	// answer, as before.
+	resolution, err := resolveClawCall(ctx, b.registry, clawCall(task, credroute.Sandbox{}))
+	var refusal *credroute.Refusal
+	if err != nil && !(errors.As(err, &refusal) && refusal.Reason == credroute.ReasonNoCredential && resolution.client != nil) {
 		return delegate.Result{}, fmt.Errorf("claw backend: %w", err)
 	}
+	client := resolution.client
 
 	// The spec must name a provider; the prefix itself comes off in
 	// buildRequest (wireModelID), exactly once — stripping it here too cut a
@@ -1656,10 +1665,18 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 	// finds nothing and bails with "API key required for OpenAI-
 	// compatible provider". Pass through only the keys we know
 	// providers consume: anything else stays on the host.
-	runnerEnv, refused, err := forwardableProviderEnv(ctx, task.Model, task.ProviderHint)
-	if err != nil {
+	//
+	// The env is the claw arm's crossing for this leg (resolveClawCall,
+	// ADR-161): the switch guard, the crossing and the container's walk over
+	// what crossed, decided once on the launcher side. A leg the container
+	// would resolve on no credential still crosses, as before: the provider's
+	// refusal is the call's answer.
+	resolution, err := resolveClawCall(ctx, b.registry, clawCall(task, credroute.Sandbox{Contained: true}))
+	var refusal *credroute.Refusal
+	if err != nil && !(errors.As(err, &refusal) && refusal.Reason == credroute.ReasonNoCredential && resolution.env != nil) {
 		return delegate.Result{}, err
 	}
+	runnerEnv, refused := resolution.env, resolution.facts
 	// Said out loud, by name: the custom-header channel has documented uses
 	// (client identity on a self-hosted gateway), so a silent drop reads as
 	// the header never having been written. The credential's VALUE is never
@@ -2521,12 +2538,13 @@ func refuseUnproxiedGatewayCrossing(ctx context.Context, task delegate.Task) err
 // invisible whenever the ambient key happens to work, which is the worst
 // possible shape for a billing boundary.
 //
-// crossingRefusals is what the crossing would not carry. The facts travel
-// with the env rather than being re-derived by the caller from a second read
-// of the host environment, and the caller says them out loud: both channels
-// have documented uses, so a silent drop reads as the value never having
-// been written.
-type crossingRefusals struct {
+// crossingFacts is what the crossing would not carry, and what each
+// credential it carries is. The facts travel with the env rather than being
+// re-derived by the caller from a second read of the host environment: the
+// caller says the refusals out loud — both channels have documented uses, so
+// a silent drop reads as the value never having been written — and the claw
+// arm names the spend the container's walk lands on from funds.
+type crossingFacts struct {
 	// headers names, for each header-block variable, the variable and the
 	// credential header line it dropped (never a value — that value IS the
 	// credential).
@@ -2536,6 +2554,18 @@ type crossingRefusals struct {
 	// which): the value that crosses in their place is the explicit empty.
 	// The name is all the warning needs — the VALUE is the repository's.
 	planted []string
+	// funds names, for each credential-bearing name the crossing sets, the
+	// channel its value comes from — written where the crossing writes the
+	// value, never matched from it afterwards.
+	funds map[string]credroute.Spend
+}
+
+// fund records that name crosses carrying spend's credential.
+func (f *crossingFacts) fund(name string, spend credroute.Spend) {
+	if f.funds == nil {
+		f.funds = map[string]credroute.Spend{}
+	}
+	f.funds[name] = spend
 }
 
 // Under the ambient stamp (secrets.Credentials.AmbientRefused) the crossing
@@ -2548,9 +2578,9 @@ type crossingRefusals struct {
 // a node no credential of the run funds is refused here,
 // ErrAmbientCredentialRefused, before any runner starts (stampedCrossingFunds)
 // — not sent on to resolve on nothing in the container.
-func forwardableProviderEnv(ctx context.Context, model, providerHint string) (map[string]string, crossingRefusals, error) {
+func forwardableProviderEnv(ctx context.Context, model, providerHint string) (map[string]string, crossingFacts, error) {
 	env := map[string]string{}
-	var refused crossingRefusals
+	var refused crossingFacts
 	creds, ok := secrets.CredentialsFromContext(ctx)
 	if !ok {
 		creds = secrets.Credentials{}
@@ -2627,6 +2657,9 @@ func forwardableProviderEnv(ctx context.Context, model, providerHint string) (ma
 		// the runner's workspace .env auto-load would fill.
 		if v != "" || planted || withheld {
 			env[name] = v
+		}
+		if v != "" && envtrust.CredentialShapedName(name) {
+			refused.fund(name, credroute.Spend{Channel: credroute.ChannelPodEnv})
 		}
 	}
 	// Routing names the host leaves unset cross as EXPLICIT empties, not
@@ -2710,13 +2743,16 @@ func forwardableProviderEnv(ctx context.Context, model, providerHint string) (ma
 				env[compatgw.APIKeyEnv] = key
 				env[compatgw.BaseURLEnv] = baseURL
 				pairServed = true
+				spend := credroute.KeySpend(creds, secrets.ProviderOpenAICompatible)
+				spend.Channel, spend.BaseURL = credroute.ChannelGatewayPair, baseURL
+				refused.fund(compatgw.APIKeyEnv, spend)
 			}
 		}
 		if !pairServed && stamped {
 			// The operator's env gateway is the pod's money: a stamped run
 			// with no pair of its own is refused, as checkGatewaySource
 			// refuses it at the dispatch seam.
-			return nil, crossingRefusals{}, &ErrAmbientCredentialRefused{Provider: string(secrets.ProviderOpenAICompatible), Spec: model}
+			return nil, crossingFacts{}, &ErrAmbientCredentialRefused{Provider: string(secrets.ProviderOpenAICompatible), Spec: model}
 		}
 		if !pairServed {
 			// The read is envtrust.Inherited, not os.Getenv: a gateway route a
@@ -2726,11 +2762,11 @@ func forwardableProviderEnv(ctx context.Context, model, providerHint string) (ma
 			// as UNSET here: ErrNotConfigured fails the node loudly, by name.
 			cfg, err := compatgw.FromEnv(envtrust.Inherited)
 			if err != nil {
-				return nil, crossingRefusals{}, err
+				return nil, crossingFacts{}, err
 			}
 			allowPrivate := secrets.LLMEndpointAllowPrivate()
 			if err := cfg.Validate(!allowPrivate); err != nil {
-				return nil, crossingRefusals{}, err
+				return nil, crossingFacts{}, err
 			}
 			env[compatgw.BaseURLEnv] = cfg.BaseURL
 			// Crosses always, never absent: FromEnv above refuses a gateway with
@@ -2739,6 +2775,7 @@ func forwardableProviderEnv(ctx context.Context, model, providerHint string) (ma
 			// and absent is the one state the workspace `.env` of the repository
 			// under review gets to fill.
 			env[compatgw.APIKeyEnv] = cfg.APIKey
+			refused.fund(compatgw.APIKeyEnv, credroute.Spend{Channel: credroute.ChannelPodEnv, BaseURL: cfg.BaseURL})
 		}
 		// The operator's inherited lift crosses for EVERY gateway arm, the
 		// run's own pair included: checkGatewaySource, the host client and
@@ -2840,6 +2877,7 @@ func forwardableProviderEnv(ctx context.Context, model, providerHint string) (ma
 		}
 		if name := byokEnvVar[provider]; name != "" {
 			env[name] = key
+			refused.fund(name, credroute.KeySpend(creds, provider))
 		}
 	}
 	// A PINNED key (secrets.RunBundle.PinnedAPIKeys) crosses only for the
@@ -2861,6 +2899,7 @@ func forwardableProviderEnv(ctx context.Context, model, providerHint string) (ma
 		if k := creds.PinnedAPIKey(prov); k != "" {
 			if name := byokEnvVar[prov]; name != "" {
 				env[name] = k
+				refused.fund(name, credroute.KeySpend(creds, prov))
 			}
 		}
 	}
@@ -2873,6 +2912,7 @@ func forwardableProviderEnv(ctx context.Context, model, providerHint string) (ma
 	// THIS RUN.
 	if creds.OAuthDir(string(secrets.OAuthKindCodex)) != "" {
 		env["CODEX_HOME"] = secrets.CodexSandboxConfigDir
+		refused.fund("CODEX_HOME", credroute.ForfaitSpend(creds, secrets.OAuthKindCodex))
 		// Forced ONLY when the run resolved no OpenAI key of its own. A
 		// tenant can hold both a BYOK key and a connected forfait, and the
 		// host resolver spends the KEY in that case — forcing here would
@@ -2903,13 +2943,13 @@ func forwardableProviderEnv(ctx context.Context, model, providerHint string) (ma
 	// clawPinnedProvider answers both: zai for a GLM spec, the spec's own
 	// provider otherwise.
 	if clawPinnedProvider(model) == secrets.ProviderAnthropic {
-		if err := applyForfaitAcrossSandbox(ctx, env, creds, model, providerHint, nodeProv); err != nil {
-			return nil, crossingRefusals{}, err
+		if err := applyForfaitAcrossSandbox(ctx, env, &refused, creds, model, providerHint, nodeProv); err != nil {
+			return nil, crossingFacts{}, err
 		}
 	}
 	if stamped && !stampedCrossingFunds(env, nodeProv) {
 		provider, _, _ := ParseModelSpec(model)
-		return nil, crossingRefusals{}, &ErrAmbientCredentialRefused{Provider: provider, Spec: model}
+		return nil, crossingFacts{}, &ErrAmbientCredentialRefused{Provider: provider, Spec: model}
 	}
 	return env, refused, nil
 }
@@ -3042,6 +3082,18 @@ func RouteProviderHint(ctx context.Context, backend, hint, model string) string 
 	return hint
 }
 
+// clawCall is the resolver's question for the leg task dispatches: claw,
+// the task's model under its provider hint, placed as sandbox says.
+func clawCall(task delegate.Task, sandbox credroute.Sandbox) credroute.Call {
+	return credroute.Call{
+		Backend: delegate.BackendClaw,
+		Spec:    task.Model,
+		Leg:     credroute.Leg{Provider: strings.ToLower(strings.TrimSpace(task.ProviderHint))},
+		Role:    credroute.RoleNode,
+		Sandbox: sandbox,
+	}
+}
+
 // clawSpendsAnthropicSubscription reports whether spec is one the run's Claude
 // subscription can fund: an `anthropic/…` id that is not a GLM id — a GLM id on
 // this provider is z.ai's (GLMOnAnthropicWire) and spends the z.ai key, never
@@ -3055,18 +3107,23 @@ func clawSpendsAnthropicSubscription(spec string) bool {
 // dispatch and the in-process arm alike: under ITERION_FORBID_SUBSCRIPTION_OAUTH
 // a node whose run funds its Anthropic id with the Claude forfait alone is
 // refused (secrets.GuardSubscriptionOAuth), whatever the pod's env carries.
+//
+// The switch is read in its posture form (secrets.GuardSubscriptionOAuthIn
+// over the env seam): the claw arm judges it on the environment the attempt
+// captured.
 func clawSubscriptionGuard(ctx context.Context, spec string) error {
 	if !clawSpendsAnthropicSubscription(spec) {
 		return nil
 	}
-	return secrets.GuardSubscriptionOAuth(ctx, secrets.ProviderAnthropic, secrets.OAuthKindClaudeCode)
+	return secrets.GuardSubscriptionOAuthIn(ctx, func(name string) string { return envGetenv(ctx, name) },
+		secrets.ProviderAnthropic, secrets.OAuthKindClaudeCode)
 }
 
 // applyForfaitAcrossSandbox is the body of the forfait crossing, split out so
 // the model gate above reads as one line. hint is the node's provider hint,
 // which the container re-stamps; nodeProv is the crossing's own reading of
 // the node's provider, the one its run keys were narrowed to.
-func applyForfaitAcrossSandbox(ctx context.Context, env map[string]string, creds secrets.Credentials, model, hint string, nodeProv secrets.Provider) error {
+func applyForfaitAcrossSandbox(ctx context.Context, env map[string]string, facts *crossingFacts, creds secrets.Credentials, model, hint string, nodeProv secrets.Provider) error {
 	// A resolved Claude Code forfait is mounted by
 	// runtime.addClaudeOAuthSecretFile and copied into a writable config dir by
 	// seedClaudeConfigDir — both per RUN, not per backend, so the dir is
@@ -3118,6 +3175,9 @@ func applyForfaitAcrossSandbox(ctx context.Context, env map[string]string, creds
 			return fmt.Errorf("claw backend: sandboxed anthropic node cannot use the run's forfait: %w", terr)
 		}
 		env["CLAUDE_CONFIG_DIR"] = secrets.ClaudeCodeSandboxConfigDir
+		forfait := credroute.ForfaitSpend(creds, secrets.OAuthKindClaudeCode)
+		forfait.BaseURL = runCredentialBaseURL(ctx, model, hint)
+		facts.fund("CLAUDE_CONFIG_DIR", forfait)
 		// The shadows cross as the explicit empty, never absent: an absent
 		// name is one the container's own env (the sandbox spec's, a declared
 		// secret's) or the runner's workspace .env auto-load fills, and that
@@ -3126,6 +3186,7 @@ func applyForfaitAcrossSandbox(ctx context.Context, env map[string]string, creds
 		// (claudeForfaitEnv).
 		for _, shadow := range anthropicWireShadowEnv() {
 			env[shadow] = ""
+			delete(facts.funds, shadow)
 		}
 	}
 	return nil
@@ -3144,7 +3205,7 @@ func applyForfaitAcrossSandbox(ctx context.Context, env map[string]string, creds
 func clawForfaitReached(ctx context.Context, creds secrets.Credentials, spec, hint string) bool {
 	return creds.OAuthDir(string(secrets.OAuthKindClaudeCode)) != "" &&
 		secrets.AnthropicForfaitWireOK(runCredentialBaseURL(ctx, spec, hint)) &&
-		!(secrets.ForbidSubscriptionOAuth() && ambientAnthropicCredential(ctx))
+		!(forbidSubscriptionOAuth(ctx) && ambientAnthropicCredential(ctx))
 }
 
 // ClawForfaitServes reports whether claw spends the run's Claude forfait on an

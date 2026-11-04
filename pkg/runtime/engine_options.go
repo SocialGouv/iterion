@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/backend/credroute"
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -55,6 +56,10 @@ type SharedSandbox struct {
 	// the container and dies with it. The parent's teardown banks it
 	// (ADR-106); a child resumed on its own starts a sandbox without it.
 	ScratchContainerLocal bool
+	// CredentialHome is what the sandbox binds of the operator's home, as
+	// the parent's credential admission read it: an adopted child's own
+	// admission judges its nodes on the same mount (ADR-161 decision 4).
+	CredentialHome credroute.SandboxHomeState
 }
 
 // WithSharedSandbox makes the engine execute every node in the given

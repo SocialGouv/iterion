@@ -5,20 +5,15 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/SocialGouv/iterion/pkg/backend/credroute"
 )
 
-// SandboxHomeState carries what the run's sandbox will actually bind of the
-// operator's home, as the runtime resolved it: Mounted is false when
-// host_state resolves to none, when the selected driver cannot bind host
-// paths (kubernetes), or when the home itself is withheld (a project .env
-// planted HOME — resolveHostHomeDir). HomeDir is the host home the binds
-// serve, empty when nothing of it crosses. The probes below take it as an
-// input rather than re-deriving it so the admission and the sandbox start
-// read the SAME resolution (#1768).
-type SandboxHomeState struct {
-	Mounted bool
-	HomeDir string
-}
+// SandboxHomeState is what the run's sandbox will actually bind of the
+// operator's home (credroute.SandboxHomeState, where ADR-161's resolver keeps
+// it). The probes below take it as an input rather than re-deriving it so the
+// admission and the sandbox start read the SAME resolution (#1768).
+type SandboxHomeState = credroute.SandboxHomeState
 
 // claudeSandboxCredentialEnvKeys are the env entries of a claude_code spawn
 // that authenticate it by themselves: a key, a bearer, the OAuth token, or

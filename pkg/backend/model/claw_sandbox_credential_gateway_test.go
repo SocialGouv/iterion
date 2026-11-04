@@ -2,11 +2,10 @@ package model
 
 import (
 	"context"
-	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/backend/compatgw"
-	"github.com/SocialGouv/iterion/pkg/backend/delegate"
+	"github.com/SocialGouv/iterion/pkg/backend/credroute"
 )
 
 // gatewayEnvClearer clears every env entry the claw predicate reads, so a
@@ -24,7 +23,7 @@ func gatewayEnvClearer(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 }
 
-// TestClawSandboxCredentialTheGatewayRouteIsAChannel is the #1768 witness
+// TestTheClawArmReadsTheGatewayRouteAsAChannel is the #1768 witness
 // for a gateway-served node: the dispatch forwards the gateway route to the
 // container, and the predicate must answer YES on it — reading it as "no
 // credential channel" refused runs the node's own dispatch would have served
@@ -36,7 +35,7 @@ func gatewayEnvClearer(t *testing.T) {
 // OTHER sides: a bare URL with no key reads as no channel, and with no
 // gateway env at all the node still reads as no channel — the channel is
 // the forwarded ROUTE, never the bare model spec.
-func TestClawSandboxCredentialTheGatewayRouteIsAChannel(t *testing.T) {
+func TestTheClawArmReadsTheGatewayRouteAsAChannel(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
 		gatewayURL string
@@ -57,13 +56,12 @@ func TestClawSandboxCredentialTheGatewayRouteIsAChannel(t *testing.T) {
 				t.Setenv(compatgw.APIKeyEnv, tc.gatewayKey)
 			}
 			const model = "openai_compatible/operator-gateway-model"
-			channel, ok := ClawSandboxCredential(context.Background(), model, "", delegate.SandboxHomeState{})
-			if ok != tc.want {
-				t.Fatalf("ClawSandboxCredential(gateway) = (%q, %v), want ok=%v", channel, ok, tc.want)
+			spend, err := sandboxedClawSpend(context.Background(), model, "", credroute.SandboxHomeState{})
+			if ok := err == nil; ok != tc.want {
+				t.Fatalf("the claw arm (gateway) = (%+v, %v), want funded=%v", spend, err, tc.want)
 			}
-			if ok && !strings.Contains(channel, compatgw.BaseURLEnv) &&
-				!strings.Contains(channel, compatgw.APIKeyEnv) {
-				t.Fatalf("the gateway channel names neither the route nor its key: %q", channel)
+			if err == nil && (spend.Channel != credroute.ChannelPodEnv || spend.BaseURL != tc.gatewayURL) {
+				t.Fatalf("the gateway spend = %+v, want the pod's gateway at %s", spend, tc.gatewayURL)
 			}
 		})
 	}

@@ -458,7 +458,7 @@ func (k runCredKeys) routeKey(ctx context.Context, route model.WireRoute) (key s
 // registry answers ErrAmbientCredentialRefused in process, and the crossing
 // does for the container — it carries none of the pod's credentials and
 // refuses a node nothing of the run funds before any runner starts
-// (model.ClawSandboxCredential reads that crossing) — z.ai's synthesis, a GLM
+// (the claw arm, credroute.Resolve, reads that crossing) — z.ai's synthesis, a GLM
 // id no destination of the env serves.
 func (k runCredKeys) clawUnslottedKey(creds secrets.Credentials, spec, hint string, sandboxed bool) (string, bool) {
 	if !sandboxed {

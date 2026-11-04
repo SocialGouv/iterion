@@ -33,6 +33,7 @@ import (
 
 	"github.com/SocialGouv/iterion/internal/envtrust"
 	"github.com/SocialGouv/iterion/pkg/backend/compatgw"
+	"github.com/SocialGouv/iterion/pkg/backend/credroute"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/modelroute"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -759,7 +760,7 @@ func anthropicEnvCredentials(ctx context.Context, modelID string) (anthropicEnvW
 	// An already-expired token is skipped rather than baked in.
 	diskForfait := false
 	if apiKey == "" && authToken == "" && secrets.AnthropicForfaitWireOK(baseURL) {
-		authToken = secrets.AnthropicForfaitAccessTokenFromDisk()
+		authToken = anthropicDiskForfaitToken(ctx)
 		diskForfait = authToken != ""
 	}
 	w := anthropicEnvWalk{apiKey: apiKey, baseURL: baseURL, zai: synthesised}
@@ -774,12 +775,116 @@ func anthropicEnvCredentials(ctx context.Context, modelID string) (anthropicEnvW
 		// ctx-credentials check: locally the token arrives through the
 		// environment, so there are no per-run credentials to inspect and
 		// secrets.GuardSubscriptionOAuth would see nothing to refuse.
-		if secrets.ForbidSubscriptionOAuth() {
+		if forbidSubscriptionOAuth(ctx) {
 			return anthropicEnvWalk{}, fmt.Errorf("claw: %w", secrets.ErrSubscriptionOAuthForbidden)
 		}
 		w.oauth, w.diskForfait = authToken, diskForfait
 	}
 	return w, nil
+}
+
+// spend names the walk's credential in the resolver's vocabulary: this
+// host's Claude Code login where the bearer was read from disk, the pod's
+// env for a key, a bearer or the ZAI_API_KEY synthesis; the zero Spend where
+// the client carries no credential.
+func (w anthropicEnvWalk) spend() credroute.Spend {
+	switch {
+	case w.oauth != "" && w.diskForfait:
+		return credroute.Spend{Channel: credroute.ChannelHostLogin, BaseURL: w.baseURL}
+	case w.oauth != "" || w.apiKey != "":
+		return credroute.Spend{Channel: credroute.ChannelPodEnv, BaseURL: w.baseURL}
+	}
+	return credroute.Spend{}
+}
+
+// envName names the variable of the environment the walk's credential came
+// from — ZAI_API_KEY for the synthesis, the bearer's or the key's own name,
+// CLAUDE_CONFIG_DIR for a login read off the config dir — or "" for none.
+func (w anthropicEnvWalk) envName() string {
+	switch {
+	case w.zai:
+		return "ZAI_API_KEY"
+	case w.oauth != "" && w.diskForfait:
+		return "CLAUDE_CONFIG_DIR"
+	case w.oauth != "":
+		return "ANTHROPIC_AUTH_TOKEN"
+	case w.apiKey != "":
+		return "ANTHROPIC_API_KEY"
+	}
+	return ""
+}
+
+// containerDiskKey carries, for a walk read on behalf of a sandboxed call,
+// what the container's own disk holds where the walk reads a login: the
+// run's Claude forfait the crossing seeds at the config dir it points the
+// runner at, or nothing. The host's disk is never the container's.
+type containerDiskKey struct{}
+
+// containerDisk is the container's disk as the crossing provisions it.
+type containerDisk struct {
+	// claudeForfaitToken is the access token of the forfait seeded at the
+	// crossed CLAUDE_CONFIG_DIR, "" when the crossing seeds none.
+	claudeForfaitToken string
+}
+
+// anthropicDiskForfaitToken is the Claude Code login the walk reads off disk:
+// this host's (secrets.AnthropicForfaitAccessTokenFromDisk), or — for a walk
+// read on behalf of the container — the one the crossing seeded there.
+func anthropicDiskForfaitToken(ctx context.Context) string {
+	if d, ok := ctx.Value(containerDiskKey{}).(containerDisk); ok {
+		return d.claudeForfaitToken
+	}
+	return secrets.AnthropicForfaitAccessTokenFromDisk()
+}
+
+// forbidSubscriptionOAuth is the subscription switch read through the env
+// seam: the posture the attempt captured (ADR-161), the process absent one.
+func forbidSubscriptionOAuth(ctx context.Context) bool {
+	return secrets.ForbidSubscriptionOAuthIn(func(name string) string { return envGetenv(ctx, name) })
+}
+
+// envFactorySpend names what the shared resolver's env factory for provider
+// spends on modelID, read with that factory's own walk over the environment
+// ctx carries: the pod's env, or a login on this host's disk. The zero Spend
+// where the client it builds carries no credential.
+func envFactorySpend(ctx context.Context, provider, modelID string) credroute.Spend {
+	switch provider {
+	case "anthropic":
+		w, err := anthropicEnvCredentials(ctx, modelID)
+		if err != nil {
+			return credroute.Spend{}
+		}
+		return w.spend()
+	case "openai":
+		base := envGetenv(ctx, "OPENAI_BASE_URL")
+		apiKey := envGetenv(ctx, "OPENAI_API_KEY")
+		if openAIOAuthAllowed(ctx) && (apiKey == "" || envGetenv(ctx, "ITERION_OPENAI_USE_OAUTH") == "1") {
+			if view, err := secrets.LoadCodexCredentialsFromDisk(); err == nil && view.IsChatGPTMode() {
+				return credroute.Spend{Channel: credroute.ChannelHostLogin, BaseURL: base}
+			}
+		}
+		if apiKey != "" {
+			return credroute.Spend{Channel: credroute.ChannelPodEnv, BaseURL: base}
+		}
+		return credroute.Spend{}
+	case modelroute.OpenAICompatible:
+		cfg, err := compatgw.FromEnv(func(name string) string { return envGetenv(ctx, name) })
+		if err != nil {
+			return credroute.Spend{}
+		}
+		return credroute.Spend{Channel: credroute.ChannelPodEnv, BaseURL: cfg.BaseURL}
+	case "xai":
+		if envGetenv(ctx, "XAI_API_KEY") == "" {
+			return credroute.Spend{}
+		}
+	case "foundry":
+		// azidentity's DefaultAzureCredential serves a keyless client from
+		// the pod's own identity chain.
+	}
+	// The remaining factories read the pod's own credential chain — a key
+	// (moonshot refuses without one), the cloud SDK's chain (bedrock,
+	// vertex, foundry), a provider registered in its place.
+	return credroute.Spend{Channel: credroute.ChannelPodEnv}
 }
 
 // AmbientEnvMeter is the usage-cap meter's reading of a claw call on the
@@ -872,9 +977,20 @@ func GLMUnservedAt(spec, baseURL string) bool {
 // this falls through to Resolve(spec) which uses the env-var fallback
 // + per-process cache.
 func (r *Registry) ResolveWithContext(ctx context.Context, spec string) (api.APIClient, error) {
+	client, _, err := r.resolveSpend(ctx, spec)
+	return client, err
+}
+
+// resolveSpend is ResolveWithContext naming what the client it builds spends
+// (credroute.Spend): each branch of the walk states its channel as it builds,
+// so the claw arm's answer is the walk's own, never reconstructed from the
+// client afterwards. A client built with no credential at all — the env
+// factory on an empty environment — comes back with the zero Spend: the arm
+// reads that as no credential.
+func (r *Registry) resolveSpend(ctx context.Context, spec string) (api.APIClient, credroute.Spend, error) {
 	providerName, modelID, err := ParseModelSpec(spec)
 	if err != nil {
-		return nil, err
+		return nil, credroute.Spend{}, err
 	}
 	// `provider: "anthropic"` forces Anthropic-direct: the z.ai synthesis
 	// both factories below would apply from ZAI_API_KEY is skipped, so the
@@ -898,15 +1014,16 @@ func (r *Registry) ResolveWithContext(ctx context.Context, spec string) (api.API
 			return r.resolveAnthropicDirect(ctx, modelID)
 		}
 		if !glmKeyReachableUnderHint(ctx) {
-			return nil, &ErrGLMHintUnfunded{Model: modelID}
+			return nil, credroute.Spend{}, &ErrGLMHintUnfunded{Model: modelID}
 		}
 	}
 	creds, hasCreds := credentialsLookup(ctx)
+	runCreds, _ := secrets.CredentialsFromContext(ctx)
 	if !hasCreds {
 		if ambientRefused(ctx) {
-			return nil, &ErrAmbientCredentialRefused{Provider: providerName, Spec: spec}
+			return nil, credroute.Spend{}, &ErrAmbientCredentialRefused{Provider: providerName, Spec: spec}
 		}
-		return r.Resolve(spec)
+		return r.resolveFromEnv(ctx, spec)
 	}
 	// A run holding a tenant gateway credential serves `openai_compatible/…`
 	// from ITS gateway, sealed as a pair: the key and the base URL leave
@@ -922,12 +1039,15 @@ func (r *Registry) ResolveWithContext(ctx context.Context, spec string) (api.API
 		if runCreds, ok := secrets.CredentialsFromContext(ctx); ok {
 			key, baseURL, err := runCreds.GatewayCredentialForRoute(secrets.ProviderOpenAICompatible)
 			if err != nil {
-				return nil, fmt.Errorf("model: provider %q (spec %q): %w", providerName, spec, err)
+				return nil, credroute.Spend{}, fmt.Errorf("model: provider %q (spec %q): %w", providerName, spec, err)
 			}
 			if key != "" {
 				// Same construction as the env factory, the credential as
 				// the only difference.
-				return compatgw.NewClient(compatgw.Config{BaseURL: baseURL, APIKey: key}, modelID, !secrets.LLMEndpointAllowPrivate())
+				spend := credroute.KeySpend(runCreds, secrets.ProviderOpenAICompatible)
+				spend.Channel, spend.BaseURL = credroute.ChannelGatewayPair, baseURL
+				client, err := compatgw.NewClient(compatgw.Config{BaseURL: baseURL, APIKey: key}, modelID, !secrets.LLMEndpointAllowPrivate())
+				return client, spend, err
 			}
 		}
 	}
@@ -939,18 +1059,21 @@ func (r *Registry) ResolveWithContext(ctx context.Context, spec string) (api.API
 	if providerName == "anthropic" && modelServedByZAI(modelID) {
 		if zai := creds(string(secrets.ProviderZAI)); zai != "" {
 			operatorBase := envGetenv(ctx, "ANTHROPIC_BASE_URL")
-			if runCreds, ok := secrets.CredentialsFromContext(ctx); ok && runCreds.AmbientRefused {
+			if runCreds.AmbientRefused {
 				// The pod's routing env is outside a stamped run's trust
 				// domain: the run's z.ai key authenticates to z.ai's own
 				// endpoint. Latent until a producer stamps — the funding
 				// gate above refuses this shape first.
 				operatorBase = ""
 			}
-			return anthropicprovider.New().NewClient(r.withClientIdentity(api.ProviderConfig{
+			spend := credroute.KeySpend(runCreds, secrets.ProviderZAI)
+			spend.BaseURL = glmBaseURL(operatorBase)
+			client, err := anthropicprovider.New().NewClient(r.withClientIdentity(api.ProviderConfig{
 				APIKey:  zai,
 				Model:   modelID,
-				BaseURL: glmBaseURL(operatorBase),
+				BaseURL: spend.BaseURL,
 			}))
+			return client, spend, err
 		}
 	}
 	// openai: the run's ChatGPT forfait, spent on its plan, comes before a key
@@ -958,10 +1081,9 @@ func (r *Registry) ResolveWithContext(ctx context.Context, spec string) (api.API
 	// still comes first. anthropic keeps the key before the forfait: a Claude
 	// forfait on claw is billed as extra usage.
 	if providerName == "openai" {
-		if c, ok := secrets.CredentialsFromContext(ctx); ok &&
-			c.APIKey(secrets.ProviderOpenAI) == "" && c.PinnedAPIKey(secrets.ProviderOpenAI) != "" {
+		if runCreds.APIKey(secrets.ProviderOpenAI) == "" && runCreds.PinnedAPIKey(secrets.ProviderOpenAI) != "" {
 			if client, ok, err := r.openAIFromCtxForfait(ctx, modelID); ok {
-				return client, err
+				return client, credroute.ForfaitSpend(runCreds, secrets.OAuthKindCodex), err
 			}
 		}
 	}
@@ -974,7 +1096,7 @@ func (r *Registry) ResolveWithContext(ctx context.Context, spec string) (api.API
 		// documented "factory learns to consume creds.OAuthDir(codex)" gap.
 		if providerName == "openai" {
 			if client, ok, err := r.openAIFromCtxForfait(ctx, modelID); ok {
-				return client, err
+				return client, credroute.ForfaitSpend(runCreds, secrets.OAuthKindCodex), err
 			}
 		}
 		// Same for anthropic and the Claude Code forfait. Without this the
@@ -984,16 +1106,18 @@ func (r *Registry) ResolveWithContext(ctx context.Context, spec string) (api.API
 		// "x-api-key header is required" (issue #687: Revi's pacer).
 		if providerName == "anthropic" {
 			if client, ok, err := r.anthropicFromCtxForfait(ctx, modelID); ok {
-				return client, err
+				spend := credroute.ForfaitSpend(runCreds, secrets.OAuthKindClaudeCode)
+				spend.BaseURL = envGetenv(ctx, "ANTHROPIC_BASE_URL")
+				return client, spend, err
 			}
 		}
 		// No tenant-scoped credential for this provider — fall back to the
 		// shared resolver (env vars + cache), unless the run refuses the
 		// environment: its routes are funded by the sealed credentials only.
 		if ambientRefused(ctx) {
-			return nil, &ErrAmbientCredentialRefused{Provider: providerName, Spec: spec}
+			return nil, credroute.Spend{}, &ErrAmbientCredentialRefused{Provider: providerName, Spec: spec}
 		}
-		return r.Resolve(spec)
+		return r.resolveFromEnv(ctx, spec)
 	}
 	r.mu.Lock()
 	factory, hasFactory := r.providersWithKey[providerName]
@@ -1001,11 +1125,31 @@ func (r *Registry) ResolveWithContext(ctx context.Context, spec string) (api.API
 	if !hasFactory {
 		// Provider doesn't expose a BYOK factory; fall back.
 		if ambientRefused(ctx) {
-			return nil, &ErrAmbientCredentialRefused{Provider: providerName, Spec: spec}
+			return nil, credroute.Spend{}, &ErrAmbientCredentialRefused{Provider: providerName, Spec: spec}
 		}
-		return r.Resolve(spec)
+		return r.resolveFromEnv(ctx, spec)
 	}
-	return factory(modelID, overrideKey)
+	spend := credroute.KeySpend(runCreds, secrets.Provider(providerName))
+	switch providerName {
+	case "anthropic":
+		spend.BaseURL = envGetenv(ctx, "ANTHROPIC_BASE_URL")
+	case "openai":
+		spend.BaseURL = envGetenv(ctx, "OPENAI_BASE_URL")
+	}
+	client, err := factory(modelID, overrideKey)
+	return client, spend, err
+}
+
+// resolveFromEnv is the shared resolver's answer (Resolve: the env factory,
+// cached per process) with the spend that factory's own walk names over the
+// environment ctx carries (envFactorySpend).
+func (r *Registry) resolveFromEnv(ctx context.Context, spec string) (api.APIClient, credroute.Spend, error) {
+	client, err := r.Resolve(spec)
+	if err != nil {
+		return nil, credroute.Spend{}, err
+	}
+	providerName, modelID, _ := ParseModelSpec(spec)
+	return client, envFactorySpend(ctx, providerName, modelID), nil
 }
 
 // credentialsLookup returns a closure that maps a provider name to
@@ -1211,7 +1355,7 @@ func (r *Registry) anthropicFromCtxForfaitOnWire(ctx context.Context, modelID, b
 	if terr != nil || token == "" {
 		return nil, false, nil
 	}
-	if secrets.ForbidSubscriptionOAuth() {
+	if forbidSubscriptionOAuth(ctx) {
 		// The flag means "this credential does not count", which is the reading
 		// pkg/supervise's ctxFundsProvider already takes — not "the run dies".
 		// A pod carrying an ambient key (the `anthropic-env` shape named in

@@ -2,8 +2,8 @@ package model
 
 import (
 	"context"
-	"os"
-	"sort"
+
+	"github.com/SocialGouv/iterion/pkg/backend/credroute"
 )
 
 // The env seam (#2808): every environment read of this package goes
@@ -48,62 +48,37 @@ import (
 // whatever the host (or a sibling test's leak) holds, which is exactly
 // the interference the seam exists to close. Treat the map as read-only
 // once carried.
+//
+// The carried environment lives in pkg/backend/credroute (ADR-161): it is
+// the posture a call's credential is resolved against, captured once per
+// attempt (credroute.Capture), so the arm and this package's every other
+// read answer from one environment.
 type carriedEnv map[string]string
 
-// carriedEnvKey keys the carried environment; unexported, so the only way
-// in is withCarriedEnv.
-type carriedEnvKey struct{}
-
 // withCarriedEnv carries env on the context. Callers today: the seam's
-// tests; the run-envelope wiring that makes a run read its own envelope
-// is the next slices' work (#2808). A nil env is a no-op (the process
-// stays the source); an empty non-nil map is a deliberately empty
-// environment.
+// tests; a run's own envelope arrives through credroute.WithPosture at the
+// head of an attempt. A nil env is a no-op (the process stays the source);
+// an empty non-nil map is a deliberately empty environment.
 func withCarriedEnv(ctx context.Context, env carriedEnv) context.Context {
 	if env == nil {
 		return ctx
 	}
-	return context.WithValue(ctx, carriedEnvKey{}, env)
-}
-
-// carriedEnvFromContext returns the carried environment, or nil for the
-// process default.
-func carriedEnvFromContext(ctx context.Context) carriedEnv {
-	if env, ok := ctx.Value(carriedEnvKey{}).(carriedEnv); ok && env != nil {
-		return env
-	}
-	return nil
+	return credroute.WithEnv(ctx, env)
 }
 
 // envGetenv reads name from the carried environment, else the process.
 func envGetenv(ctx context.Context, name string) string {
-	if env := carriedEnvFromContext(ctx); env != nil {
-		return env[name]
-	}
-	return os.Getenv(name)
+	return credroute.Getenv(ctx, name)
 }
 
 // envLookupEnv is envGetenv with the planted-vs-unset distinction.
 func envLookupEnv(ctx context.Context, name string) (string, bool) {
-	if env := carriedEnvFromContext(ctx); env != nil {
-		v, ok := env[name]
-		return v, ok
-	}
-	return os.LookupEnv(name)
+	return credroute.LookupEnv(ctx, name)
 }
 
 // envEnviron enumerates the carried environment in os.Environ's shape —
 // sorted, so a consumer's output is deterministic across runs (map
 // iteration order is not) — else the process's.
 func envEnviron(ctx context.Context) []string {
-	env := carriedEnvFromContext(ctx)
-	if env == nil {
-		return os.Environ()
-	}
-	out := make([]string, 0, len(env))
-	for name, val := range env {
-		out = append(out, name+"="+val)
-	}
-	sort.Strings(out)
-	return out
+	return credroute.Environ(ctx)
 }

@@ -428,19 +428,7 @@ func lookupPath(m map[string]any, path []string) any {
 // empty baseline compares equal to another unresolved empty one, which
 // is the right answer.
 func (e *ClawExecutor) baselineModel(node ir.Node) string {
-	if ov := e.modelOverrides.ForNode(node.NodeID(), node.NodeKind()); ov.Model != "" {
-		return ov.Model
-	}
-	var m string
-	switch n := node.(type) {
-	case *ir.AgentNode:
-		m = n.Model
-	case *ir.JudgeNode:
-		m = n.Model
-	case *ir.RouterNode:
-		m = n.Model
-	}
-	return e.resolveRoutingField(m)
+	return e.chainReading().baselineModel(node)
 }
 
 // resolveRoutingVars resolves a routing field's `{{vars.*}}` spans against
@@ -636,26 +624,7 @@ func (e *ClawExecutor) resolveProvider(node ir.Node) (string, error) {
 // same parse a launch-time override goes through, so both spellings of
 // one pin reach dispatch identically.
 func (e *ClawExecutor) resolveProviderChain(node ir.Node) []chainElement {
-	// A launch-time provider override (a routing-policy cell or the
-	// launch's own rows) carries the same vocabulary as the node's own
-	// field — a validated cell may name a multi-step chain or a
-	// `provider:model` step — so it is read through the ONE parse below.
-	// Returning the raw string as a single element handed dispatch a
-	// provider name no credential family matches, while the write gate
-	// and the credential preview certified each step of the chain.
-	if ov := e.modelOverrides.ForNode(node.NodeID(), node.NodeKind()); ov.Provider != "" {
-		return e.dropForbidden(node, parseProviderChain(e.resolveRoutingField(ov.Provider)))
-	}
-	var raw string
-	switch n := node.(type) {
-	case *ir.AgentNode:
-		raw = n.Provider
-	case *ir.JudgeNode:
-		raw = n.Provider
-	case *ir.RouterNode:
-		raw = n.Provider
-	}
-	return e.dropForbidden(node, parseProviderChain(e.resolveRoutingField(raw)))
+	return e.chainReading().providerChain(node)
 }
 
 // dropForbidden drops every chain element whose resolved provider is
@@ -673,31 +642,7 @@ func (e *ClawExecutor) resolveProviderChain(node ir.Node) []chainElement {
 // rather than silently re-filling it with a defer-to-process element,
 // which would spend a forbidden provider in silence.
 func (e *ClawExecutor) dropForbidden(node ir.Node, chain []chainElement) []chainElement {
-	if e.allowedProviders == nil {
-		return chain
-	}
-	base := e.baselineModel(node)
-	out := make([]chainElement, 0, len(chain))
-	dropped := false
-	for _, el := range chain {
-		p := strings.ToLower(strings.TrimSpace(el.Provider))
-		if p == "" {
-			m := el.Model
-			if m == "" {
-				m = base
-			}
-			p = providerOfModelSpec(m)
-		}
-		if p != "" && !e.allowedProviders[p] {
-			dropped = true
-			continue
-		}
-		out = append(out, el)
-	}
-	if !dropped {
-		return chain
-	}
-	return out
+	return e.chainReading().dropForbidden(node, chain)
 }
 
 // parseProviderChain splits a resolved provider field into the ordered

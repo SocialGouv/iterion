@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/internal/credparity"
+	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/secrets"
@@ -16,11 +17,17 @@ import (
 // (internal/credparity) through the start site its run passes and judges the
 // launch's verdict against the row: the production resolveAndStartSandbox for
 // a run of its own — `sandbox: none` on the host, an `auto` sandbox on the
-// canary driver whose Prepare refuses otherwise — and startSandbox's adopt
+// canary driver whose Prepare refuses otherwise — under the routes its
+// dispatch reads (the run's provider allowlist), and startSandbox's adopt
 // branch for a subbot child under a sandboxed parent. A run ADR-161 judges
 // (the fork lane, every stamped run) is refused, with the code decision 7
 // assigns, exactly where no leg funds its node; every other start proceeds.
+//
+// The run credentials lookups are the runner's (cmd/iterion installs them at
+// boot): the claw arm's in-process walk reads the run's keys through them.
 func TestCredParity_Admission(t *testing.T) {
+	t.Cleanup(model.SetCredentialsLookup(model.RunCredentialsLookup))
+	t.Cleanup(model.SetOAuthDirLookup(model.RunOAuthDirLookup))
 	for _, row := range credparity.Rows() {
 		t.Run(row.Label(), func(t *testing.T) {
 			clearCredentialEnv(t)
@@ -61,7 +68,7 @@ func TestCredParity_Admission(t *testing.T) {
 				if row.Trust == credparity.Fork {
 					trust = store.RunTrustFork
 				}
-				err = credentialAdmissionRunCtx(t, ctx, wf, trust, nil)
+				err = credentialAdmissionStart(t, ctx, wf, trust, model.RouteView{AllowedProviders: row.Run.Allowlist})
 			}
 
 			got := "launches"

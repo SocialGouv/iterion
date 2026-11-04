@@ -73,29 +73,6 @@ func hintBlindLedger() Pending {
 		"t50 r1 fix, deferred 1: the ledger's route carries no claw hint and books the hinted forfait spend on nobody")
 }
 
-func pins(r *Row, reader Reader) bool {
-	_, p := r.Expect(reader)
-	return p != nil
-}
-
-// todayAdmissionCode pins main's admission, which knows one code
-// (SANDBOX_CREDENTIAL_UNREACHABLE): a refusal the ADR types otherwise.
-func todayAdmissionCode(r *Row) {
-	if !pins(r, Admission) && r.Judged() && r.Sandboxed && r.Want.Refused() && AdmissionCode(r.Want.Refusal) != CodeUnreachable {
-		with(r, pending(Admission, "U1", Refuses(NoCredential),
-			"main's admission refuses with SANDBOX_CREDENTIAL_UNREACHABLE alone; ADR-161 decision 7 types the stamp and the switch"))
-	}
-}
-
-// todayHostStampUnjudged pins main's start sites: a stamped run on the host
-// passes no admission (resolveAndStartSandbox returns before it).
-func todayHostStampUnjudged(r *Row) {
-	if !pins(r, Admission) && !r.Sandboxed && r.Run.Stamped && r.Want.Refused() {
-		with(r, pending(Admission, "U1", Launches,
-			"t53 r2 #3: an unsandboxed stamped start returns before admitSandboxCredentials"))
-	}
-}
-
 // Rows is the parity table.
 func Rows() []Row {
 	var rows []Row
@@ -143,7 +120,8 @@ func Rows() []Row {
 
 	// SEEN RED (t50 r2 #1): ClawBackend.Execute's switch guard refuses the
 	// node before either arm, the pod's key untouched; the meter keys the
-	// pod's account, and the probe, which never meets the guard, admits.
+	// pod's account, and the probe, which never met the guard, admitted — U1
+	// moved the guard into the claw arm the admission asks.
 	for _, r := range stampings(Row{
 		Name:    "the subscription switch beside the pod's key",
 		Origin:  "t50 r2 #1 (open MEDIUM); bench 6e2389644 TestTheForbidSwitchCrossesWhatTheInProcessTwinSpends",
@@ -155,16 +133,12 @@ func Rows() []Row {
 		with(r, pending(Meter, "U2", Spent(0, PodEnv, "", PodAnthropic),
 			"t50 r2 #1: routeKey keys the pod's account for a node GuardSubscriptionOAuth refuses"))
 	}, nil) {
-		add(sides(r, nil, func(r *Row) {
-			if !r.Run.Stamped {
-				with(r, pending(Admission, "U1", Launches,
-					"t50 r2 #1: the probe composes the crossing, which never meets Execute's guard, and admits"))
-			}
-		})...)
+		add(sides(r, nil, nil)...)
 	}
 
-	// SEEN RED (t50 r2 #2): the probe splits the hint on its first comma, raw;
-	// dispatch expands and parses the chain, and crosses the run's forfait.
+	// SEEN RED (t50 r2 #2): the probe split the hint on its first comma, raw;
+	// dispatch expands and parses the chain, and crosses the run's forfait —
+	// U1's admission reads model.Legs, the dispatch's own chain.
 	for _, spelling := range []struct{ name, provider string }{
 		{"the element form", "anthropic:" + claudeSpec},
 		{"a stray leading comma", " ,anthropic"},
@@ -183,9 +157,7 @@ func Rows() []Row {
 			Sandboxed: true,
 			Trust:     Fork,
 			Want:      Spent(0, RunForfait, string(secrets.OAuthKindClaudeCode), ForfaitToken),
-			Pending: []Pending{pending(Admission, "U1", Refuses(NoCredential),
-				"t50 r2 #2: ClawSandboxCredential reads the field's raw first comma token, not the parsed chain"),
-				hintBlindLedger()},
+			Pending:   []Pending{hintBlindLedger()},
 		})
 	}
 
@@ -225,7 +197,9 @@ func Rows() []Row {
 	}, nil, nil)...)
 
 	// SEEN RED (t53 r2 #2): a stamped first leg refused, dispatch falls through
-	// to the run's z.ai key; the pre-flight reads the first leg only.
+	// to the run's z.ai key; the pre-flight reads the first leg only, and the
+	// probe composed the first leg's crossing alone — U1's admission resolves
+	// every leg.
 	add(sides(Row{
 		Name:    "a fall-through leg past a stamped first leg",
 		Origin:  "t53 r2 #2 (ADR-161 review: a fall-through leg unmetered)",
@@ -235,13 +209,11 @@ func Rows() []Row {
 		Want:    Spent(1, RunKey, string(secrets.ProviderZAI), RunZAI),
 		Pending: []Pending{pending(Meter, "U2", Refuses(AmbientStamp),
 			"t53 r2 #2: AnthropicWireRoutes keys the first chain element, refused, while dispatch spends leg 2")},
-	}, nil, func(r *Row) {
-		with(r, pending(Admission, "U1", Refuses(NoCredential),
-			"the probe composes the first leg's crossing only, refused under the stamp, while leg 2 is funded"))
-	})...)
+	}, nil, nil)...)
 
 	// SEEN RED (t53 r2 #4): the allowlist drops the leg the pod funds; the
-	// probe, blind to it, admits on that leg.
+	// probe, blind to it, admitted on that leg — U1's admission walks the
+	// legs model.Legs keeps.
 	add(Row{
 		Name:      "an allowlist-dropped first leg (sandboxed)",
 		Origin:    "t53 r2 #4 (ADR-161 review: an allowlist-dropped leg admitted)",
@@ -251,11 +223,10 @@ func Rows() []Row {
 		Sandboxed: true,
 		Trust:     Fork,
 		Want:      Refuses(HintUnfunded),
-		Pending: []Pending{pending(Admission, "U1", Launches,
-			"t53 r2 #4: the probe reads the raw first leg the allowlist drops, and finds the pod's z.ai key crossing")},
 	})
 
-	// SEEN RED (t53 r2 #3): a stamped run on the host passes no admission.
+	// SEEN RED (t53 r2 #3): a stamped run on the host passed no admission —
+	// U1's one site judges it before the host exit.
 	add(Row{
 		Name:    "a stamped node its run does not fund (host)",
 		Origin:  "t53 r2 #3 (ADR-161 review: an unsandboxed stamped start unjudged)",
@@ -267,7 +238,7 @@ func Rows() []Row {
 	})
 
 	// SEEN RED (t53 r3 #2): a subbot child adopting its parent's sandbox
-	// passes no admission.
+	// passed no admission — U1 judges it in startSandbox's adopt branch.
 	add(Row{
 		Name:      "a stamped child its run does not fund (adopted)",
 		Origin:    "t53 r3 #2 (ADR-161 review: an adopted child unjudged)",
@@ -278,8 +249,6 @@ func Rows() []Row {
 		Trust:     Trusted,
 		Adopted:   true,
 		Want:      Refuses(AmbientStamp),
-		Pending: []Pending{pending(Admission, "U1", Launches,
-			"t53 r3 #2: startSandbox's adopt branch returns before resolveAndStartSandbox and its admission")},
 	})
 
 	// The stamp refuses the pod's money and keeps the run's own.
@@ -303,17 +272,16 @@ func Rows() []Row {
 	}, nil, nil)...)
 
 	// Port row (#2808's seam): the env factory and the meter read one walk —
-	// under the switch the pod's bearer is refused, and nothing is metered.
+	// under the switch the pod's bearer is refused, and nothing is metered;
+	// the probe read the crossed bearer as a channel, the arm walks it as the
+	// container does.
 	add(sides(Row{
 		Name:    "the subscription switch beside an ambient bearer",
 		Origin:  "port of a2f5b9dfa onto #2808's env seam (anthropicEnvCredentials)",
 		Posture: map[string]string{"ITERION_FORBID_SUBSCRIPTION_OAUTH": "1", "ANTHROPIC_AUTH_TOKEN": PodBearer, "ANTHROPIC_BASE_URL": gatewayURL},
 		Node:    claw(""),
 		Want:    Refuses(SubscriptionSwitch),
-	}, nil, func(r *Row) {
-		with(r, pending(Admission, "U1", Launches,
-			"the probe reads the crossed ANTHROPIC_AUTH_TOKEN as a channel; the container's factory refuses it under the switch"))
-	})...)
+	}, nil, nil)...)
 
 	// Port row (#2244): the engine's client sends no ambient header line, so
 	// a header-bearing pod spends its key.
@@ -338,8 +306,6 @@ func Rows() []Row {
 		if rows[i].Role == "" {
 			rows[i].Role = NodeRole
 		}
-		todayAdmissionCode(&rows[i])
-		todayHostStampUnjudged(&rows[i])
 	}
 	return rows
 }

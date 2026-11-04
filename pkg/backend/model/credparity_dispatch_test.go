@@ -12,6 +12,7 @@ import (
 
 	"github.com/SocialGouv/iterion/internal/credheader"
 	"github.com/SocialGouv/iterion/internal/credparity"
+	"github.com/SocialGouv/iterion/pkg/backend/credroute"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/secrets"
@@ -19,18 +20,25 @@ import (
 
 // TestCredParity_Dispatch drives every row of ADR-161's parity table
 // (internal/credparity) through the claw dispatch and judges the credential it
-// spends against the row: the chain the executor walks (its own expansion,
-// parse and allowlist), and per leg, Execute's subscription switch, then — on
-// the host — the client the registry builds, or — in the sandbox — the env the
-// crossing hands the container and the client the container's own registry
-// builds from it, the forfait seeded where the runtime seeds it. The first leg
-// that resolves spends; with none, the last leg's refusal is the node's.
+// spends against the row: the chain the executor walks (model.Legs, the
+// executor's own resolveProviderChain), and per leg the claw arm — the
+// registered one every reader asks (credroute.Resolve) and the dispatch's own
+// resolution over its registry (resolveClawCall), which must agree — then the
+// credential the dispatch actually sends: on the host the client the
+// resolution built, in the sandbox the client the container's own registry
+// builds from the env the resolution crossed, the forfait seeded where the
+// runtime seeds it. The arm's Spend names that credential's channel and slot,
+// or its refusal is the one the dispatch meets. The first leg that resolves
+// spends; with none, the last leg's refusal is the node's.
 //
 // Serial: the registry's env factories read the process environment, so each
 // row's pod is the process's for the row's duration.
 func TestCredParity_Dispatch(t *testing.T) {
 	t.Cleanup(SetCredentialsLookup(RunCredentialsLookup))
 	t.Cleanup(SetOAuthDirLookup(RunOAuthDirLookup))
+	if !slices.Contains(credroute.Registered(), delegate.BackendClaw) {
+		t.Fatalf("no claw arm is registered with the resolver (registered: %v)", credroute.Registered())
+	}
 	for _, row := range credparity.Rows() {
 		t.Run(row.Label(), func(t *testing.T) {
 			if row.Node.Backend != delegate.BackendClaw {
@@ -39,19 +47,23 @@ func TestCredParity_Dispatch(t *testing.T) {
 			forfaitDir := applyParityRow(t, row)
 			ctx := secrets.WithCredentials(context.Background(), row.Run.Credentials(forfaitDir))
 
+			node := parityNode(row.Node)
 			e := &ClawExecutor{allowedProviders: AllowedProviderSet(row.Run.Allowlist)}
-			chain := e.resolveProviderChain(parityNode(row.Node))
-			legs := make([]credparity.Leg, 0, len(chain))
-			for _, el := range chain {
-				legs = append(legs, credparity.Leg{Provider: el.Provider, Model: el.Model})
+			legs := Legs(RouteView{AllowedProviders: row.Run.Allowlist}, node)
+			if executor := legsOf(e.resolveProviderChain(node)); !slices.Equal(executor, legs) {
+				t.Fatalf("the executor walks %+v, model.Legs reads %+v — one chain, one reading", executor, legs)
 			}
-			if !slices.Equal(legs, row.Node.Legs) {
-				t.Fatalf("the executor walks %+v, the row states %+v — the row's legs are the dispatch's", legs, row.Node.Legs)
+			want := make([]credroute.Leg, 0, len(row.Node.Legs))
+			for _, l := range row.Node.Legs {
+				want = append(want, credroute.Leg{Provider: l.Provider, Model: l.Model})
+			}
+			if !slices.Equal(legs, want) {
+				t.Fatalf("model.Legs reads %+v, the row states %+v — the row's legs are the dispatch's", legs, row.Node.Legs)
 			}
 
 			got := credparity.Refuses(credparity.OutsideAllowlist)
-			for i := range chain {
-				got = dispatchParityLeg(t, ctx, row, i, forfaitDir)
+			for i := range legs {
+				got = dispatchParityLeg(t, ctx, row, i, legs[i], forfaitDir)
 				if !got.Refused() {
 					break
 				}
@@ -94,54 +106,70 @@ func parityNode(n credparity.Node) ir.Node {
 	}
 }
 
-// dispatchParityLeg is one element's dispatch: Execute's switch guard, then
-// the in-process resolution or the crossing and the container's.
-func dispatchParityLeg(t *testing.T, ctx context.Context, row credparity.Row, leg int, forfaitDir string) credparity.Spend {
+// dispatchParityLeg is one element's dispatch: the claw arm's resolution of
+// the leg, then the credential the dispatch sends on it — the client the
+// resolution built in process, or the client the container's own registry
+// builds from the env the resolution crossed. The arm's answer must name that
+// credential, or the refusal the dispatch meets.
+func dispatchParityLeg(t *testing.T, ctx context.Context, row credparity.Row, i int, leg credroute.Leg, forfaitDir string) credparity.Spend {
 	t.Helper()
-	spec, hint := row.Node.Spec(leg), row.Node.Hint(leg)
-	if err := clawSubscriptionGuard(ctx, spec); err != nil {
-		return parityRefusal(t, err)
+	spec, hint := row.Node.Spec(i), row.Node.Hint(i)
+	call := credroute.Call{
+		Backend: delegate.BackendClaw, Spec: spec, Leg: leg, Role: credroute.RoleNode,
+		Sandbox: credroute.Sandbox{Contained: row.Sandboxed},
 	}
-	if !row.Sandboxed {
-		client, err := NewRegistry().ResolveWithContext(WithProviderHint(ctx, hint), spec)
-		if err != nil {
-			return parityRefusal(t, err)
-		}
-		return paritySpend(t, row, leg, client)
+	armSpend, armErr := credroute.Resolve(ctx, call)
+	res, err := resolveClawCall(ctx, NewRegistry(), call)
+	if armSpend != res.spend || (armErr == nil) != (err == nil) {
+		t.Fatalf("leg %d: the registered arm answers %+v, %v; the dispatch's resolution %+v, %v — one arm, one answer", i, armSpend, armErr, res.spend, err)
 	}
-	env, _, err := forwardableProviderEnv(ctx, spec, hint)
-	if err != nil {
-		return parityRefusal(t, err)
-	}
+	var refusal *credroute.Refusal
+	crossesRefused := errors.As(err, &refusal) && refusal.Reason == credroute.ReasonNoCredential
 	var got credparity.Spend
-	t.Run(fmt.Sprintf("container leg %d", leg), func(t *testing.T) {
-		// The container's process env is the crossed env and nothing else of
-		// the pod's; the runtime seeds the run's forfait where the crossing
-		// points CLAUDE_CONFIG_DIR.
-		for _, name := range credparity.PostureNames {
-			t.Setenv(name, "")
-		}
-		for _, name := range providerCredentialEnvVars {
-			t.Setenv(name, "")
-		}
-		for name, v := range env {
-			t.Setenv(name, v)
-		}
-		configDir := t.TempDir()
-		if env["CLAUDE_CONFIG_DIR"] == secrets.ClaudeCodeSandboxConfigDir {
-			if forfaitDir == "" {
-				t.Fatal("the crossing seeds a forfait the run does not hold")
+	switch {
+	case err != nil && !(crossesRefused && (res.client != nil || res.env != nil)):
+		got = parityRefusal(t, err)
+	case !row.Sandboxed:
+		got = paritySpend(t, row, i, res.client)
+	default:
+		t.Run(fmt.Sprintf("container leg %d", i), func(t *testing.T) {
+			// The container's process env is the crossed env and nothing else
+			// of the pod's; the runtime seeds the run's forfait where the
+			// crossing points CLAUDE_CONFIG_DIR.
+			for _, name := range credparity.PostureNames {
+				t.Setenv(name, "")
 			}
-			configDir = forfaitDir
+			for _, name := range providerCredentialEnvVars {
+				t.Setenv(name, "")
+			}
+			for name, v := range res.env {
+				t.Setenv(name, v)
+			}
+			configDir := t.TempDir()
+			if res.env["CLAUDE_CONFIG_DIR"] == secrets.ClaudeCodeSandboxConfigDir {
+				if forfaitDir == "" {
+					t.Fatal("the crossing seeds a forfait the run does not hold")
+				}
+				configDir = forfaitDir
+			}
+			t.Setenv("CLAUDE_CONFIG_DIR", configDir)
+			client, cerr := NewSandboxRunnerRegistry().ResolveWithContext(WithProviderHint(context.Background(), hint), spec)
+			if cerr != nil {
+				got = parityRefusal(t, cerr)
+				return
+			}
+			got = paritySpend(t, row, i, client)
+		})
+	}
+	// The arm names what the dispatch sends: its channel and slot, or the
+	// reason it is refused.
+	if got.Refused() {
+		if armErr == nil || parityRefusal(t, armErr) != got {
+			t.Errorf("leg %d: the dispatch is refused (%s), the arm answers %+v, %v", i, got.Refusal, armSpend, armErr)
 		}
-		t.Setenv("CLAUDE_CONFIG_DIR", configDir)
-		client, err := NewSandboxRunnerRegistry().ResolveWithContext(WithProviderHint(context.Background(), hint), spec)
-		if err != nil {
-			got = parityRefusal(t, err)
-			return
-		}
-		got = paritySpend(t, row, leg, client)
-	})
+	} else if armErr != nil || string(armSpend.Channel) != string(got.Channel) || armSpend.Slot != got.Slot {
+		t.Errorf("leg %d: the dispatch spends the %s (slot %q), the arm answers %+v, %v", i, got.Channel, got.Slot, armSpend, armErr)
+	}
 	return got
 }
 
@@ -185,9 +213,13 @@ func paritySpend(t *testing.T, row credparity.Row, leg int, client api.APIClient
 	return credparity.Spend{}
 }
 
-// parityRefusal names a dispatch refusal by the error its site returns.
+// parityRefusal names a dispatch refusal by the error its site returns: the
+// resolver's typed reason, else the site's own error.
 func parityRefusal(t *testing.T, err error) credparity.Spend {
 	t.Helper()
+	if r := (*credroute.Refusal)(nil); errors.As(err, &r) {
+		return credparity.Refuses(credparity.Reason(r.Reason))
+	}
 	var ambient *ErrAmbientCredentialRefused
 	var unfunded *ErrProviderHintUnfunded
 	var unavailable *delegate.ErrModelUnavailable

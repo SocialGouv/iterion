@@ -90,17 +90,18 @@ func TestHostCodexForfaitReadsTheSwitchThroughTheCarriedEnv(t *testing.T) {
 
 // resolveAnthropicDirect's ambient-key read, with the subscription forfait
 // forbidden so every fallback errors: the carried key is the only way out
-// without an error, on every machine. Mutant — the site reading the
-// process: one side or the other reddens whether or not the process holds
-// ANTHROPIC_API_KEY.
+// without an error, on every machine. The switch reads through the seam too
+// (forbidSubscriptionOAuth), so the carried env carries it. Mutant — the
+// site reading the process: one side or the other reddens whether or not
+// the process holds ANTHROPIC_API_KEY.
 func TestResolveAnthropicDirectReadsTheKeyThroughTheCarriedEnv(t *testing.T) {
 	t.Setenv("ITERION_FORBID_SUBSCRIPTION_OAUTH", "1")
 	r := NewRegistry()
-	client, err := r.resolveAnthropicDirect(withCarriedEnv(context.Background(), carriedEnv{"ANTHROPIC_API_KEY": "sk-ant-carried"}), "claude-haiku-4-5")
+	client, _, err := r.resolveAnthropicDirect(withCarriedEnv(context.Background(), carriedEnv{"ANTHROPIC_API_KEY": "sk-ant-carried", "ITERION_FORBID_SUBSCRIPTION_OAUTH": "1"}), "claude-haiku-4-5")
 	if err != nil || client == nil {
 		t.Errorf("carried ANTHROPIC_API_KEY: client %v, err %v — the key was not read through the seam", client, err)
 	}
-	if client, err := r.resolveAnthropicDirect(withCarriedEnv(context.Background(), carriedEnv{"OPENAI_API_KEY": "sk-other"}), "claude-haiku-4-5"); err == nil || client != nil {
+	if client, _, err := r.resolveAnthropicDirect(withCarriedEnv(context.Background(), carriedEnv{"OPENAI_API_KEY": "sk-other", "ITERION_FORBID_SUBSCRIPTION_OAUTH": "1"}), "claude-haiku-4-5"); err == nil || client != nil {
 		t.Errorf("a carried env without the key: client %v, err nil — the process leaked", client)
 	}
 }

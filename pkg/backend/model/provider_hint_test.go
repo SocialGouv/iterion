@@ -331,7 +331,7 @@ func TestResolveAnthropicDirect_AmbientRefusedSkipsThePodEnvironment(t *testing.
 	t.Setenv("ANTHROPIC_AUTH_TOKEN", "oat-ambient")
 	ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{AmbientRefused: true})
 	r := NewRegistry()
-	client, err := r.resolveAnthropicDirect(ctx, "claude-sonnet-4-6")
+	client, _, err := r.resolveAnthropicDirect(ctx, "claude-sonnet-4-6")
 	if err == nil {
 		t.Fatalf("an ambient-refused run resolved an env-funded client %+v", client)
 	}

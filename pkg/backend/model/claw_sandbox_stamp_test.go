@@ -11,9 +11,19 @@ import (
 	"github.com/SocialGouv/claw-code-go/pkg/api"
 
 	"github.com/SocialGouv/iterion/pkg/backend/compatgw"
+	"github.com/SocialGouv/iterion/pkg/backend/credroute"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 )
+
+// sandboxedClawSpend is the resolver's answer for a sandboxed claw leg on
+// spec under hint — the admission's question, and the dispatch's crossing.
+func sandboxedClawSpend(ctx context.Context, spec, hint string, home credroute.SandboxHomeState) (credroute.Spend, error) {
+	return credroute.Resolve(ctx, credroute.Call{
+		Backend: delegate.BackendClaw, Spec: spec, Leg: credroute.Leg{Provider: hint},
+		Role: credroute.RoleNode, Sandbox: credroute.Sandbox{Contained: true, Home: home},
+	})
+}
 
 // podCredentialEnvVars are the credentials of the pod a sandboxed claw node's
 // container could authenticate with, written out by hand rather than derived
@@ -182,8 +192,10 @@ func TestAStampedNodeItsRunDoesNotFundIsRefusedBeforeTheRunner(t *testing.T) {
 			if env != nil {
 				t.Errorf("the refused crossing still returned an env of %d names", len(env))
 			}
-			if channel, ok := ClawSandboxCredential(ctx, tc.spec, "", delegate.SandboxHomeState{}); ok {
-				t.Errorf("ClawSandboxCredential admitted the refused node via %s", channel)
+			spend, err := sandboxedClawSpend(ctx, tc.spec, "", credroute.SandboxHomeState{})
+			var r *credroute.Refusal
+			if !errors.As(err, &r) || r.Reason != credroute.ReasonAmbientStamp {
+				t.Errorf("the claw arm answered %+v, %v for the refused node, want its ambient-stamp refusal", spend, err)
 			}
 		})
 	}
@@ -242,10 +254,10 @@ func TestAZAIKeyKeepsNoClaudeNodeFromItsRunsForfait(t *testing.T) {
 			if !row.stamped {
 				return
 			}
-			// Stamped, every credential of the pod crossed empty: the first
-			// channel the admission probe finds is the forfait's.
-			if channel, ok := ClawSandboxCredential(ctx, spec, "", delegate.SandboxHomeState{}); !ok || !strings.Contains(channel, "CLAUDE_CONFIG_DIR") {
-				t.Errorf("ClawSandboxCredential = %q ok=%v, want the run's forfait channel", channel, ok)
+			// Stamped, every credential of the pod crossed empty: the claw arm
+			// lands the container's walk on the run's forfait.
+			if spend, err := sandboxedClawSpend(ctx, spec, "", credroute.SandboxHomeState{}); err != nil || spend.Channel != credroute.ChannelRunForfait || spend.Slot != string(secrets.OAuthKindClaudeCode) {
+				t.Errorf("the claw arm = %+v, %v, want the run's forfait", spend, err)
 			}
 		})
 	}
@@ -339,11 +351,11 @@ func TestAHintedClaudeNodeCrossesItsRunsForfaitPastARedirectedWire(t *testing.T)
 						t.Errorf("%s crossed as %q (present=%v), want the explicit empty beside the forfait", name, v, present)
 					}
 				}
-				// Stamped, every credential of the pod crossed empty: the first
-				// channel the admission probe finds is the forfait's.
+				// Stamped, every credential of the pod crossed empty: the claw
+				// arm lands the hinted leg's container walk on the run's forfait.
 				if stamped {
-					if channel, ok := ClawSandboxCredential(ctx, spec, hint+",zai", delegate.SandboxHomeState{}); !ok || !strings.Contains(channel, "CLAUDE_CONFIG_DIR") {
-						t.Errorf("ClawSandboxCredential(hint chain %q) = %q ok=%v, want the run's forfait channel its first leg crosses", hint+",zai", channel, ok)
+					if spend, err := sandboxedClawSpend(ctx, spec, hint, credroute.SandboxHomeState{}); err != nil || spend.Channel != credroute.ChannelRunForfait {
+						t.Errorf("the claw arm on the %q leg = %+v, %v, want the run's forfait", hint, spend, err)
 					}
 				}
 

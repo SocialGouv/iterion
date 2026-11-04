@@ -80,6 +80,7 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `pkg/backend/backendcaps` | owns the declarative inventory of built-in backends. | — |
 | `pkg/backend/compatgw` | serves `openai_compatible/<gateway model id>` from the deployment's environment: OPENAI_COMPATIBLE_BASE_URL names an OpenAI-compatible gateway… | — |
 | `pkg/backend/cost` | holds the per-model token-pricing table used to annotate generation outputs with `_tokens` / `_model` / `_cost_usd`. | — |
+| `pkg/backend/credroute` | ADR-161's one resolver: which credential a call spends. | — |
 | `pkg/backend/delegate` | provides the Backend interface and types for executing agent/judge nodes via pluggable backends (CLI agents like claude-code/codex, or API-based… | `AsyncQuestionBackend`, `Backend`, `SessionLedger` |
 | `pkg/backend/delegate/claudesdk` | provides a Go SDK for the Claude Code CLI. | `ContentBlock`, `MCPServerConfig`, `Message` |
 | `pkg/backend/delegate/piext` | embeds the iterion pi extension and materialises it for a run. | — |

@@ -148,6 +148,18 @@ const (
 	// warning (sandbox_no_credential_warning).
 	FailureSandboxCredentialUnreachable FailureCode = "SANDBOX_CREDENTIAL_UNREACHABLE"
 
+	// FailureCredentialAmbientRefused: a run stamped to its own credentials
+	// (ADR-131 §7) was refused before it started because a node of it has
+	// no leg its own credentials fund — only the pod's environment would,
+	// which the stamp refuses (ADR-161 decision 7).
+	FailureCredentialAmbientRefused FailureCode = "CREDENTIAL_AMBIENT_REFUSED"
+
+	// FailureCredentialSubscriptionForbidden: a judged run was refused before
+	// it started because a node of it is funded by a subscription alone and
+	// ITERION_FORBID_SUBSCRIPTION_OAUTH refuses spending one outside the
+	// vendor's own CLI (ADR-161 decision 7).
+	FailureCredentialSubscriptionForbidden FailureCode = "CREDENTIAL_SUBSCRIPTION_FORBIDDEN"
+
 	// FailureAttachmentsUndeliverable: the run carries attachments and the
 	// selected sandbox driver can neither bind-mount their directory into
 	// the container nor copy it in, so no node could have opened them.
@@ -307,6 +319,8 @@ var ReservedFailureCodes = []FailureCode{
 	FailureCapabilityUnsupported,
 	FailureSandboxDriverUnavailable,
 	FailureSandboxCredentialUnreachable,
+	FailureCredentialAmbientRefused,
+	FailureCredentialSubscriptionForbidden,
 	FailureAttachmentsUndeliverable,
 	FailureAttachmentPathUnavailable,
 	FailureAttachmentsUnfetchable,

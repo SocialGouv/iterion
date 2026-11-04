@@ -2,9 +2,9 @@ package runview
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
+	"github.com/SocialGouv/iterion/pkg/backend/credroute"
 	"github.com/SocialGouv/iterion/pkg/backend/modelroute"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -15,8 +15,9 @@ import (
 // run stamped to a sovereign runner pool through a vendor-default model.
 // Detect with errors.Is. The remedy is the operator's: pin the surface to
 // the pool's openai_compatible gateway spec, or provide that gateway
-// credential to the process making the call.
-var ErrPoolContentRefused = errors.New("sovereign pool: refusing to send this run's content through a server-side LLM")
+// credential to the process making the call. The sentinel lives in
+// pkg/backend/credroute, the leaf every credential arm reaches (ADR-161).
+var ErrPoolContentRefused = credroute.ErrPoolContentRefused
 
 // poolContentRefusal reports the refusal for an auxiliary server-side LLM
 // call whose content derives from a run stamped to pool. A nil return means

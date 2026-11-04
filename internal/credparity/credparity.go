@@ -77,8 +77,8 @@ const (
 	ArmPending         Reason = "arm-pending"
 )
 
-// The admission codes ADR-161 decision 7 assigns. Only the first exists on
-// main; the other two are the ones U1's single admission site emits.
+// The admission codes ADR-161 decision 7 assigns, the ones the launch's one
+// admission site emits.
 const (
 	CodeUnreachable           = "SANDBOX_CREDENTIAL_UNREACHABLE"
 	CodeAmbientRefused        = "CREDENTIAL_AMBIENT_REFUSED"

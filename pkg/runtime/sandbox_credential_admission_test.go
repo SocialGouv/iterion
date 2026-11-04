@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
@@ -47,9 +48,22 @@ func credentialAdmissionRun(t *testing.T, wf *ir.Workflow, trust store.RunTrust,
 // caller's — one carrying the run's credentials.
 func credentialAdmissionRunCtx(t *testing.T, ctx context.Context, wf *ir.Workflow, trust store.RunTrust, events *[]store.Event) error {
 	t.Helper()
+	return credentialAdmissionRunRoutes(t, ctx, wf, trust, model.RouteView{}, events)
+}
+
+// credentialAdmissionStart is credentialAdmissionRunCtx under the routes the
+// run's dispatch reads (its overrides, vars and provider allowlist).
+func credentialAdmissionStart(t *testing.T, ctx context.Context, wf *ir.Workflow, trust store.RunTrust, routes model.RouteView) error {
+	t.Helper()
+	return credentialAdmissionRunRoutes(t, ctx, wf, trust, routes, nil)
+}
+
+func credentialAdmissionRunRoutes(t *testing.T, ctx context.Context, wf *ir.Workflow, trust store.RunTrust, routes model.RouteView, events *[]store.Event) error {
+	t.Helper()
 	t.Setenv("ITERION_MODE", "local") // pin the factory to docker,podman,noop
 	d := &specCapturingDriver{hostBinds: true}
 	_, err := resolveAndStartSandbox(ctx, SandboxParams{
+		Routes:        routes,
 		Workflow:      wf,
 		RunID:         "run-credential-admission",
 		Trust:         trust,

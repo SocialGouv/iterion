@@ -85,10 +85,21 @@ runner that still mounts the login — a credential declared `as: file`
 reaches the container's filesystem, not the backend CLI's auth, so it does
 not lift this refusal); a
 node whose backend the predicate cannot read is a
-`sandbox_no_credential_warning`, never a refusal on a guess. Trusted runs
-are never judged, and handing the operator's own OAuth token to a fork's
-container is refused by design — the token is the operator's identity, not
-a scoped run credential (#1768).
+`sandbox_no_credential_warning`, never a refusal on a guess. A trusted run
+is judged only when it is stamped to its own credentials (ADR-131 §7), and
+handing the operator's own OAuth token to a fork's container is refused by
+design — the token is the operator's identity, not a scoped run credential
+(#1768).
+
+The answer is the credential resolver's ([ADR-161](adr/161-one-resolver-decides-the-credential-a-call-spends.md)),
+the one the dispatch spends on: every leg of every node's chain, at the one
+site every start passes — before a `none` or degraded `auto` run starts on
+the host too — and in a subbot child's adopt branch, on its own nodes. A
+stamped node only the pod's environment would fund refuses with
+`CREDENTIAL_AMBIENT_REFUSED`; one funded by a subscription alone that
+`ITERION_FORBID_SUBSCRIPTION_OAUTH` refuses, with
+`CREDENTIAL_SUBSCRIPTION_FORBIDDEN`. A refused `fallbacks:` route or
+supervisor spec is warned.
 
 ## Quick start
 

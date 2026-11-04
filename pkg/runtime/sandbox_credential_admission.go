@@ -2,136 +2,390 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
 
+	"github.com/SocialGouv/iterion/pkg/backend/credroute"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
+	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
-// sandbox_credential_admission.go is the fork-lane credential admission of
-// #1768: an untrusted run executes only inside a per-run sandbox (the
-// PR2b floor, admission.go), and a sandboxed node whose backend has NO
-// credential channel is certain to die mid-run on the backend's opaque
-// "not logged in" — hours in, after the review's expensive half. The
-// launch refuses instead, typed, naming the backend and the ways out.
+// sandbox_credential_admission.go is the launch's credential admission
+// (#1768, ADR-161 decision 4): a run the launch judges — an untrusted
+// (fork-lane) run, and every run stamped to its own credentials (ADR-131 §7)
+// — is refused before it starts when a node of it has no leg any credential
+// funds. The alternative is the run dying mid-run on the backend's opaque
+// "not logged in", or on the stamp's refusal, hours in, after the review's
+// expensive half. The launch refuses instead, typed, naming every such node
+// and the ways out.
 //
-// The answer is a PER-BACKEND predicate read from what the real spawn
-// delivers — including what the backend forwards at EXEC time (the
-// launcher env forwarded by name, the forfait copied at dispatch), which
-// a spec-level check cannot see; that exec-time invisibility is why the
-// spec-level signal is a warning and this refusal lives here, where the
-// sandbox, the driver and the host_state resolution are known and nothing
-// has started yet.
+// The answer is the resolver's (credroute.Resolve), the one the dispatch
+// spends on: every leg of every node's chain (model.Legs — the chain the
+// dispatch walks), placed where the run's nodes call their models, with what
+// the sandbox binds of the operator's home. A backend whose arm has not
+// landed (ErrNoArm) keeps today's per-backend probe in a fork-lane sandbox;
+// the cases nothing can read are a WARNING (sandbox_no_credential_warning),
+// never a refusal on a guess — an unknown backend, a `fallbacks:` route the
+// resolver refuses, a supervisor's own spec.
 //
-// Deliberately under-refusing, like admitSandboxImageBackends:
-//   - trusted runs are never judged (the fork lane is the scope; a trusted
-//     operator run keeps its "Not logged in" as before);
-//   - a node whose backend the predicate cannot read (an unknown name, an
-//     undecided route, a {{vars.…}} the dispatch resolves) is a WARNING
-//     (sandbox_no_credential_warning), never a refusal on a guess;
-//   - the host_state channel counts while it is mounted: nothing on main
-//     floors host_state for an untrusted run yet, so a local file-based
-//     login still reaches a docker sandbox — the day a floor withdraws it
-//     (the lane's design), this refusal is what tells the operator WHY the
-//     run cannot launch, instead of the run dying in the container.
+// It runs at ONE site every start passes, once its sandbox is known:
+// resolveAndStartSandbox after the mode, the driver and the host-state mount
+// are resolved and before the host exits (`none`, a degraded `auto`) and any
+// pull, mount or start — and startSandbox's adopt branch for a subbot child
+// under a sandboxed parent, on the child's own nodes.
+//
+// The host_state channel counts while it is mounted: nothing on main floors
+// host_state for an untrusted run yet, so a local file-based login still
+// reaches a docker sandbox — the day a floor withdraws it, this refusal is
+// what tells the operator WHY the run cannot launch.
 
 // sandboxCredentialHome resolves what this sandbox will actually bind of
 // the operator's home: the resolved host_state, the driver's bind
 // capability, and the planted-home refusal — the same inputs
 // applyHostStateMounts will apply below, so the probe and the mount plan
 // cannot disagree.
-func sandboxCredentialHome(p SandboxParams, caps sandbox.Capabilities) delegate.SandboxHomeState {
+func sandboxCredentialHome(p SandboxParams, caps sandbox.Capabilities) credroute.SandboxHomeState {
 	resolved, _ := pickHostState(workflowHostState(p.Workflow), p.HostStateOverride, p.HostStateDefault)
 	if !sandbox.HostState(resolved).Active() || !caps.SupportsHostBindMounts {
-		return delegate.SandboxHomeState{}
+		return credroute.SandboxHomeState{}
 	}
 	homeDir, planted := resolveHostHomeDir()
 	if planted || homeDir == "" {
-		return delegate.SandboxHomeState{}
+		return credroute.SandboxHomeState{}
 	}
-	return delegate.SandboxHomeState{Mounted: true, HomeDir: homeDir}
+	return credroute.SandboxHomeState{Mounted: true, HomeDir: homeDir}
 }
 
-// admitSandboxCredentials refuses an untrusted run whose sandboxed agent
-// nodes include one whose backend provably has no credential channel.
-// Called after the driver is selected and before any pull, mount or
-// start. Nil (admitted) for a trusted run, a run with no decidable gap,
-// and a simulation (whose sandbox is not the run's).
-func admitSandboxCredentials(ctx context.Context, p SandboxParams, caps sandbox.Capabilities, emitEvent func(store.EventType, map[string]any) error, logger *iterlog.Logger) error {
-	if p.Trust.Trusted() || p.Simulation || p.Workflow == nil {
+// credentialRouteViewer is the executor that reports the view its dispatch
+// reads a workflow's chains under (model.ClawExecutor.CredentialRouteView).
+type credentialRouteViewer interface {
+	CredentialRouteView(wf *ir.Workflow) model.RouteView
+}
+
+// credentialRouteView is the view the engine's executor dispatches the
+// workflow's chains under; an executor that reports none applies no
+// overrides, vars or allowlist of its own, and the IR alone is its reading.
+func (e *Engine) credentialRouteView() model.RouteView {
+	if v, ok := e.executor.(credentialRouteViewer); ok {
+		return v.CredentialRouteView(e.workflow)
+	}
+	return model.RouteView{Workflow: e.workflow}
+}
+
+// admitAdoptedCredentials is the admission of a subbot child adopting its
+// parent's live sandbox: its own nodes, sandboxed, under its own trust.
+func (e *Engine) admitAdoptedCredentials(ctx context.Context, runID string, emitEvent func(store.EventType, map[string]any) error) error {
+	if e.simulation != (Simulation{}) || e.workflow == nil {
 		return nil
 	}
-	home := sandboxCredentialHome(p, caps)
-	type gap struct {
-		node    string
-		backend string
+	return credentialAdmission{
+		wf: e.workflow, routes: e.credentialRouteView(),
+		placement: credroute.Sandbox{Contained: true, Home: e.sharedSandbox.CredentialHome},
+		trust:     e.trust, resolver: e.backendResolver(), runID: runID,
+		adopted: true,
+	}.admit(ctx, emitEvent, e.logger)
+}
+
+// credentialAdmission is one run's admission inputs.
+type credentialAdmission struct {
+	wf *ir.Workflow
+	// routes is the view the dispatch reads the run's chains under.
+	routes model.RouteView
+	// placement is where the run's nodes call their models.
+	placement credroute.Sandbox
+	trust     store.RunTrust
+	resolver  effectiveBackendResolver
+	runID     string
+	// adopted: a subbot child judged in its parent's sandbox. No start of
+	// its own ever ran a per-backend probe, so a backend without an arm
+	// keeps that path — unjudged — and is warned.
+	adopted bool
+}
+
+// nodeVerdict is a node's admission: the spend its first funded leg lands
+// on, or — none funded — the refusal its chain ends on.
+type nodeVerdict struct {
+	node    string
+	backend string
+	spend   credroute.Spend
+	// refusal is the last leg's refusal: the one the dispatch meets when its
+	// chain runs out. Nil for an admitted node.
+	refusal *credroute.Refusal
+}
+
+// admitSandboxCredentials is the resolved start's admission, its nodes
+// placed where the start resolved them: the run's own sandbox, with the home
+// mount it binds, or the host.
+func admitSandboxCredentials(ctx context.Context, p SandboxParams, placement credroute.Sandbox, emitEvent func(store.EventType, map[string]any) error, logger *iterlog.Logger) error {
+	if p.Simulation || p.Workflow == nil {
+		return nil
 	}
-	var refused []gap
-	var undecidable []gap
-	for _, n := range p.Workflow.Nodes {
+	routes := p.Routes
+	routes.Workflow = p.Workflow
+	return credentialAdmission{
+		wf: p.Workflow, routes: routes, placement: placement,
+		trust: p.Trust, resolver: p.EffectiveBackend, runID: p.RunID,
+	}.admit(ctx, emitEvent, logger)
+}
+
+// admit refuses the run when a node has no funded leg, warning on what it
+// cannot read. Nil for a run the launch does not judge: a trusted run its
+// credentials do not stamp keeps its refusals for the dispatch.
+func (a credentialAdmission) admit(ctx context.Context, emitEvent func(store.EventType, map[string]any) error, logger *iterlog.Logger) error {
+	creds, _ := secrets.CredentialsFromContext(ctx)
+	stamped := creds.AmbientRefused
+	fork := !a.trust.Trusted()
+	if !fork && !stamped {
+		return nil
+	}
+	var refused []nodeVerdict
+	var undecidable, warned []string
+	ids := make([]string, 0, len(a.wf.Nodes))
+	for id := range a.wf.Nodes {
+		ids = append(ids, id)
+	}
+	// Workflow.Nodes is a map: sorted, so the same run's refusal words its
+	// list identically on every start.
+	slices.Sort(ids)
+	for _, id := range ids {
+		n := a.wf.Nodes[id]
 		nn, ok := n.(ir.LLMNode)
 		if !ok {
 			continue
 		}
-		backend := dispatchedBackendName(n, p.Workflow, p.EffectiveBackend)
-		fields := nn.GetLLMFields()
-		var channel string
-		var decidable bool
-		switch backend {
-		case delegate.BackendClaudeCode:
-			channel, decidable = delegate.ClaudeCodeSandboxCredential(ctx, fields.Provider, home)
-		case delegate.BackendClaw:
-			channel, decidable = model.ClawSandboxCredential(ctx, fields.Model, fields.Provider, home)
-		case delegate.BackendPi:
-			channel, decidable = delegate.PiSandboxCredential(ctx, fields.Model)
-		default:
-			// "", an undecided name, a backend without a predicate: the
-			// warning's territory — never a refusal on a guess.
-			undecidable = append(undecidable, gap{node: n.NodeID(), backend: backend})
-			continue
+		backend := dispatchedBackendName(n, a.wf, a.resolver)
+		verdict, err := a.judgeNode(ctx, n, backend)
+		switch {
+		case errors.Is(err, credroute.ErrNoArm):
+			// No arm decides this backend yet: a fork-lane sandbox keeps
+			// today's per-backend probe; anything else is the warning's
+			// territory — never a refusal on a guess.
+			if !fork || !a.placement.Contained || a.adopted {
+				undecidable = append(undecidable, fmt.Sprintf("%s (%s)", id, backend))
+				break
+			}
+			if decided, ok := a.probeWithoutArm(ctx, backend, nn.GetLLMFields()); !decided {
+				undecidable = append(undecidable, fmt.Sprintf("%s (%s)", id, backend))
+			} else if !ok {
+				refused = append(refused, nodeVerdict{node: id, backend: backend, refusal: &credroute.Refusal{
+					Backend: backend, Reason: credroute.ReasonNoCredential,
+				}})
+			}
+		case verdict.refusal != nil:
+			refused = append(refused, verdict)
+		case logger != nil:
+			logger.Info("runtime: node %s (%s): its credential is the %s%s", id, backend, verdict.spend.Channel, slotSuffix(verdict.spend))
 		}
-		if !decidable {
-			refused = append(refused, gap{node: n.NodeID(), backend: backend})
-		} else if logger != nil {
-			logger.Info("runtime: fork-lane node %s (%s): credential reaches the sandbox via %s", n.NodeID(), backend, channel)
-		}
+		warned = append(warned, a.judgeFallbacks(ctx, n, backend)...)
 	}
+	warned = append(warned, a.judgeSupervisors(ctx)...)
 	if len(undecidable) > 0 {
-		slices.SortFunc(undecidable, func(a, b gap) int { return strings.Compare(a.node, b.node) })
-		names := make([]string, 0, len(undecidable))
-		for _, u := range undecidable {
-			names = append(names, fmt.Sprintf("%s (%s)", u.node, u.backend))
-		}
-		reason := fmt.Sprintf("untrusted run: no per-backend credential reading for %s — the launch cannot tell whether a credential will reach those sandboxed nodes", strings.Join(names, ", "))
-		if logger != nil {
-			logger.Warn("runtime: %s (run %s)", reason, p.RunID)
-		}
-		if emitEvent != nil {
-			_ = emitEvent(store.EventSandboxNoCredentialWarning, map[string]any{"reason": reason, "nodes": names})
-		}
+		reason := fmt.Sprintf("no credential reading for %s — the launch cannot tell whether a credential will reach those nodes", strings.Join(undecidable, ", "))
+		warnCredential(emitEvent, logger, a.runID, reason, undecidable)
+	}
+	if len(warned) > 0 {
+		reason := fmt.Sprintf("no credential funds %s — they cannot serve this run", strings.Join(warned, ", "))
+		warnCredential(emitEvent, logger, a.runID, reason, warned)
 	}
 	if len(refused) == 0 {
 		return nil
 	}
-	// Workflow.Nodes is a map: sorted, so the same run's refusal words its
-	// list identically on every start.
-	slices.SortFunc(refused, func(a, b gap) int { return strings.Compare(a.node, b.node) })
+	return a.refusal(refused, fork)
+}
+
+// judgeNode resolves every leg of n's chain (model.Legs) on backend until one
+// is funded. ErrNoArm reports a backend no arm decides.
+func (a credentialAdmission) judgeNode(ctx context.Context, n ir.Node, backend string) (nodeVerdict, error) {
+	legs := model.Legs(a.routes, n)
+	if len(legs) == 0 {
+		// The allowlist dropped every route: the dispatch refuses the same
+		// way (ErrProviderOutsideAllowlist).
+		return nodeVerdict{node: n.NodeID(), backend: backend, refusal: &credroute.Refusal{
+			Backend: backend, Reason: credroute.ReasonOutsideAllowlist, Cause: model.ErrProviderOutsideAllowlist,
+		}}, nil
+	}
+	base := model.Baseline(a.routes, n)
+	verdict := nodeVerdict{node: n.NodeID(), backend: backend}
+	for _, leg := range legs {
+		spec := leg.Model
+		if spec == "" {
+			spec = base
+		}
+		spend, err := credroute.Resolve(ctx, credroute.Call{
+			Backend: backend, Spec: spec, Leg: leg, Role: credroute.RoleNode, Sandbox: a.placement,
+		})
+		if errors.Is(err, credroute.ErrNoArm) {
+			return nodeVerdict{}, err
+		}
+		if err == nil {
+			verdict.refusal = nil
+			verdict.spend = spend
+			return verdict, nil
+		}
+		verdict.refusal = asRefusal(backend, spec, leg, err)
+	}
+	return verdict, nil
+}
+
+// judgeFallbacks resolves n's active `fallbacks:` routes, naming each one no
+// credential funds: warned, never refused — the node's own chain decides.
+func (a credentialAdmission) judgeFallbacks(ctx context.Context, n ir.Node, backend string) []string {
+	nn, ok := n.(ir.LLMNode)
+	if !ok {
+		return nil
+	}
+	var out []string
+	base := model.Baseline(a.routes, n)
+	for _, fb := range nn.GetFallbacks() {
+		if fb.Action == ir.FallbackActionSkip || !model.FallbackWhenActive(a.routes.DecidedVars(), n.NodeID(), fb, nil) {
+			continue
+		}
+		field := func(raw string) string { return model.ResolveRoutingFieldWith(a.routes.Vars, a.routes.LateVars, raw) }
+		fbBackend := strings.ToLower(field(fb.Backend))
+		if fbBackend == "" {
+			fbBackend = backend
+		}
+		spec := field(fb.Model)
+		if spec == "" {
+			spec = base
+		}
+		leg := credroute.Leg{Provider: strings.ToLower(field(fb.Provider))}
+		if leg.Provider == "auto" {
+			leg.Provider = ""
+		}
+		_, err := credroute.Resolve(ctx, credroute.Call{Backend: fbBackend, Spec: spec, Leg: leg, Role: credroute.RoleNode, Sandbox: a.placement})
+		if err == nil || errors.Is(err, credroute.ErrNoArm) {
+			continue
+		}
+		out = append(out, fmt.Sprintf("%s fallback %q (%s: %s)", n.NodeID(), fb.Name, fbBackend, asRefusal(fbBackend, spec, leg, err).Reason))
+	}
+	return out
+}
+
+// judgeSupervisors resolves each declared supervisor's own spec, on the host
+// where the engine evaluates it, naming each one no credential funds. A
+// supervisor without a model of its own takes the spawn's default, which the
+// spawn decides.
+func (a credentialAdmission) judgeSupervisors(ctx context.Context) []string {
+	var out []string
+	for _, sup := range a.wf.Supervisors {
+		if sup == nil || strings.TrimSpace(sup.Model) == "" {
+			continue
+		}
+		spec := model.ResolveRoutingFieldWith(a.routes.Vars, a.routes.LateVars, sup.Model)
+		_, err := credroute.Resolve(ctx, credroute.Call{Backend: delegate.BackendClaw, Spec: spec, Role: credroute.RoleSupervisor})
+		if err == nil || errors.Is(err, credroute.ErrNoArm) {
+			continue
+		}
+		out = append(out, fmt.Sprintf("supervisor %q (%s: %s)", sup.Name, spec, asRefusal(delegate.BackendClaw, spec, credroute.Leg{}, err).Reason))
+	}
+	return out
+}
+
+// probeWithoutArm is today's per-backend reading of a sandboxed fork-lane
+// node whose backend no arm decides yet (ADR-161 decision 9, interim):
+// decided is false where no probe reads the backend.
+func (a credentialAdmission) probeWithoutArm(ctx context.Context, backend string, fields *ir.LLMFields) (decided, ok bool) {
+	switch backend {
+	case delegate.BackendClaudeCode:
+		_, ok = delegate.ClaudeCodeSandboxCredential(ctx, fields.Provider, a.placement.Home)
+		return true, ok
+	case delegate.BackendPi:
+		_, ok = delegate.PiSandboxCredential(ctx, fields.Model)
+		return true, ok
+	}
+	return false, false
+}
+
+// asRefusal is err as the resolver's refusal; an arm's error that is none is
+// a leg nothing funds, its cause kept.
+func asRefusal(backend, spec string, leg credroute.Leg, err error) *credroute.Refusal {
+	var r *credroute.Refusal
+	if errors.As(err, &r) {
+		return r
+	}
+	return &credroute.Refusal{Backend: backend, Spec: spec, Leg: leg, Reason: credroute.ReasonNoCredential, Cause: err}
+}
+
+func slotSuffix(s credroute.Spend) string {
+	if s.Slot == "" {
+		return ""
+	}
+	return " (" + s.Slot + ")"
+}
+
+// warnCredential says what the admission could not read, or what it read as
+// unable to serve, on the run's stream and its log.
+func warnCredential(emitEvent func(store.EventType, map[string]any) error, logger *iterlog.Logger, runID, reason string, names []string) {
+	if logger != nil {
+		logger.Warn("runtime: %s (run %s)", reason, runID)
+	}
+	if emitEvent != nil {
+		_ = emitEvent(store.EventSandboxNoCredentialWarning, map[string]any{"reason": reason, "nodes": names})
+	}
+}
+
+// admissionCode is the code a node refused for reason carries (ADR-161
+// decision 7).
+func admissionCode(reason credroute.Reason) ErrorCode {
+	switch reason {
+	case credroute.ReasonAmbientStamp, credroute.ReasonArmPending:
+		return ErrCodeCredentialAmbientRefused
+	case credroute.ReasonSubscriptionSwitch:
+		return ErrCodeCredentialSubscriptionForbidden
+	}
+	return ErrCodeSandboxCredentialUnreachable
+}
+
+// refusal is the launch's typed refusal naming every refused node, sorted.
+// Its code is the first node's (decision 7's code for its reason): one run,
+// one code, and the message names each node with its own reason.
+func (a credentialAdmission) refusal(refused []nodeVerdict, fork bool) error {
 	parts := make([]string, 0, len(refused))
 	for _, r := range refused {
-		parts = append(parts, fmt.Sprintf("%s (%s)", r.node, r.backend))
+		parts = append(parts, fmt.Sprintf("%s (%s: %s)", r.node, r.backend, r.refusal.Reason))
 	}
+	first := refused[0]
+	code := admissionCode(first.refusal.Reason)
+	who := "run stamped to its own credentials"
+	if fork {
+		who = "untrusted (fork-lane) run"
+	}
+	where := "before its nodes start"
+	if a.placement.Contained {
+		where = "before its sandbox starts"
+	}
+	switch code {
+	case ErrCodeCredentialAmbientRefused:
+		return &RuntimeError{
+			Code:    code,
+			NodeID:  first.node,
+			Cause:   first.refusal,
+			Message: fmt.Sprintf("%s refused %s: only the pod's environment would fund node(s) %s, and the run's credentials are its only funds (ADR-131 §7)", who, where, strings.Join(parts, ", ")),
+			Hint:    "attach a credential for each named route to the run (a BYOK key, a pinned key, a connected forfait, a gateway pair), or route the node to a model the run's own credentials serve — the stamp refuses the pod's keys and logins by design.",
+		}
+	case ErrCodeCredentialSubscriptionForbidden:
+		return &RuntimeError{
+			Code:    code,
+			NodeID:  first.node,
+			Cause:   first.refusal,
+			Message: fmt.Sprintf("%s refused %s: ITERION_FORBID_SUBSCRIPTION_OAUTH refuses the subscription node(s) %s would spend, and no other credential funds them", who, where, strings.Join(parts, ", ")),
+			Hint:    "give the run a metered API key for each named route, route the node to claude_code (the vendor's own CLI spends the subscription within policy), or lift ITERION_FORBID_SUBSCRIPTION_OAUTH on this deployment.",
+		}
+	}
+	message := fmt.Sprintf("%s refused %s: no credential can reach node(s) %s — no run credential, nothing the launcher forwards at exec, and no file-based login the host_state mount still carries",
+		who, where, strings.Join(parts, ", "))
 	return &RuntimeError{
-		Code:   ErrCodeSandboxCredentialUnreachable,
-		NodeID: refused[0].node,
-		Message: fmt.Sprintf(
-			"untrusted (fork-lane) run refused before its sandbox starts: no credential can reach sandboxed node(s) %s — no run credential, nothing the launcher forwards at exec, and no file-based login the host_state mount still carries",
-			strings.Join(parts, ", ")),
-		Hint: "hand the run a credential that crosses the container boundary: export the API key the backend forwards (e.g. ANTHROPIC_API_KEY / OPENAI_API_KEY — forwarded by name at exec), or — on a runner whose host_state still mounts the operator's login — keep host_state: auto. A credential declared `as: file` reaches the container's filesystem, not the backend CLI's auth, so it does not lift this refusal. The operator's own OAuth token is never handed to a fork's container by iterion itself.",
+		Code:    ErrCodeSandboxCredentialUnreachable,
+		NodeID:  first.node,
+		Message: message,
+		Hint:    "hand the run a credential that crosses the container boundary: export the API key the backend forwards (e.g. ANTHROPIC_API_KEY / OPENAI_API_KEY — forwarded by name at exec), or — on a runner whose host_state still mounts the operator's login — keep host_state: auto. A credential declared `as: file` reaches the container's filesystem, not the backend CLI's auth, so it does not lift this refusal. The operator's own OAuth token is never handed to a fork's container by iterion itself.",
 	}
 }

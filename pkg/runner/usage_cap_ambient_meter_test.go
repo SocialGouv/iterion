@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/claw-code-go/pkg/api"
+	"github.com/SocialGouv/iterion/pkg/backend/credroute"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
@@ -19,6 +20,15 @@ import (
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/usagecap"
 )
+
+// sandboxedClawSpend is the claw arm's answer for a sandboxed leg on spec:
+// what the crossing hands the container and the container's walk lands on.
+func sandboxedClawSpend(ctx context.Context, spec string) (credroute.Spend, error) {
+	return credroute.Resolve(ctx, credroute.Call{
+		Backend: delegate.BackendClaw, Spec: spec, Role: credroute.RoleNode,
+		Sandbox: credroute.Sandbox{Contained: true},
+	})
+}
 
 // ambientSourceFP renders the routing label the delegate stamps on a session
 // that inherited an ambient credential. Spelled here rather than imported
@@ -257,8 +267,8 @@ func TestAStampedRunReadsNothingOfThePodsAccount(t *testing.T) {
 			t.Fatalf("inert bench: the unstamped claw route (sandboxed=%v) = %q metered=%v, want the account's meter %q", sandboxed, key, metered, ambient)
 		}
 	}
-	if _, ok := model.ClawSandboxCredential(unstampedCtx, clawRoute.Model, "", delegate.SandboxHomeState{}); !ok {
-		t.Fatal("inert bench: the unstamped crossing hands the container no credential on a pod that carries one")
+	if _, err := sandboxedClawSpend(unstampedCtx, clawRoute.Model); err != nil {
+		t.Fatalf("inert bench: the unstamped crossing hands the container no credential on a pod that carries one: %v", err)
 	}
 
 	ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{AmbientRefused: true})
@@ -286,8 +296,8 @@ func TestAStampedRunReadsNothingOfThePodsAccount(t *testing.T) {
 	if _, err := model.NewRegistry().ResolveWithContext(ctx, supSpec); !errors.As(err, &refusal) {
 		t.Fatalf("bench: the registry on a stamped run = %v, want the typed ambient refusal", err)
 	}
-	if channel, ok := model.ClawSandboxCredential(ctx, clawRoute.Model, "", delegate.SandboxHomeState{}); ok {
-		t.Fatalf("bench: the crossing hands a stamped run's container %s — the pod's account would fund the claw route", channel)
+	if spend, err := sandboxedClawSpend(ctx, clawRoute.Model); err == nil {
+		t.Fatalf("bench: the crossing hands a stamped run's container the %s — the pod's account would fund the claw route", spend.Channel)
 	}
 	if key, metered := stamped.supervisorKey(ctx, supSpec, ""); metered {
 		t.Errorf("a stamped run's supervisor = %q metered — its walk into the pod env is refused, no account spends", key)
@@ -1232,8 +1242,8 @@ func TestAClawClaudeRouteMetersTheForfaitPastAZAIKey(t *testing.T) {
 				t.Fatalf("bench: the registry's client is %T, not one on the run's forfait", client)
 			}
 			if row.stamped {
-				if channel, ok := model.ClawSandboxCredential(ctx, spec, "", delegate.SandboxHomeState{}); !ok || !strings.Contains(channel, "CLAUDE_CONFIG_DIR") {
-					t.Fatalf("bench: the crossing's channel = %q ok=%v, want the run's forfait", channel, ok)
+				if spend, err := sandboxedClawSpend(ctx, spec); err != nil || spend.Channel != credroute.ChannelRunForfait {
+					t.Fatalf("bench: the crossing's spend = %+v, %v, want the run's forfait", spend, err)
 				}
 			}
 			// The message preflightFor hands the pre-flight, so both read one scope.
