@@ -177,35 +177,39 @@ func TestTheOverrideKeepsTheTailADescendantWritesLate(t *testing.T) {
 			h.handTo(cmd)
 			var stderr bytes.Buffer
 			cmd.Stderr = &stderr
-			applied := SetWaitDelay(cmd, siteDefault)
+			SetWaitDelay(cmd, siteDefault)
+			// The bound the messages below name is the one exec runs, read
+			// from the Cmd, and the operator's is tc.override: each failure
+			// line says which is which.
+			ran := cmd.WaitDelay
 			if err := cmd.Start(); err != nil {
 				t.Fatalf("start: %v", err)
 			}
 
 			if !tc.wantTail {
 				if err := waitWithin(t, cmd, ceiling); !DrainCutShort(err) {
-					t.Fatalf("a %s bound on a drain the descendant holds did not cut it: err = %v", applied, err)
+					t.Fatalf("a %s bound on a drain the descendant holds did not cut it: err = %v", ran, err)
 				}
 			} else {
 				done := make(chan error, 1)
 				go func() { done <- cmd.Wait() }()
 				select {
 				case err := <-done:
-					t.Fatalf("Wait answered %v while the descendant still held the pipe — the bound that ran was not the operator's %s", err, applied)
+					t.Fatalf("Wait answered %v while the descendant still held the pipe — the bound that ran was %s, not the operator's %s", err, ran, tc.override)
 				case <-time.After(late):
 				}
 				h.letGo(t)
 				select {
 				case err := <-done:
 					if err != nil {
-						t.Fatalf("the crossing failed under a %s bound: %v", applied, err)
+						t.Fatalf("the crossing failed under a %s bound: %v", ran, err)
 					}
 				case <-time.After(ceiling):
 					t.Fatalf("Wait did not return within %s of the descendant letting go of the pipe", ceiling)
 				}
 			}
 			if got := strings.Contains(stderr.String(), tail); got != tc.wantTail {
-				t.Errorf("tail %q present = %v, want %v (bound %s, stderr %q)", tail, got, tc.wantTail, applied, stderr.String())
+				t.Errorf("tail %q present = %v, want %v (bound that ran %s, stderr %q)", tail, got, tc.wantTail, ran, stderr.String())
 			}
 		})
 	}

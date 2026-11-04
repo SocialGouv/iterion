@@ -139,7 +139,7 @@ func TestTheDrainBoundReachesACopiedOutputAndNotAPipeItsCallerOwns(t *testing.T)
 		// goroutine of the bubble is parked and its clock — not the
 		// machine's — carries Wait past the bound.
 		synctest.Test(t, func(t *testing.T) {
-			release := make(chan struct{})
+			stdin, release := newHeldStdin(t)
 			cmd := exec.Command("sh", "-c", printAnswer)
 			out, err := cmd.StdoutPipe()
 			if err != nil {
@@ -148,7 +148,7 @@ func TestTheDrainBoundReachesACopiedOutputAndNotAPipeItsCallerOwns(t *testing.T)
 			if _, err := cmd.StderrPipe(); err != nil {
 				t.Fatalf("stderr pipe: %v", err)
 			}
-			cmd.Stdin = heldStdin{release: release}
+			cmd.Stdin = stdin
 			if applied := SetWaitDelay(cmd, bound); applied != bound {
 				t.Fatalf("SetWaitDelay applied %s, want this test's %s", applied, bound)
 			}
@@ -182,7 +182,7 @@ func TestTheDrainBoundReachesACopiedOutputAndNotAPipeItsCallerOwns(t *testing.T)
 				t.Fatalf("Wait answered %v past the bound while the reader it copies still held: the bound is reported as a hard one", err)
 			default:
 			}
-			close(release)
+			release()
 			if err := <-done; !DrainCutShort(err) {
 				t.Fatalf("Wait = %v, want the drain bound cutting short the stdin copy exec started", err)
 			}
@@ -198,6 +198,38 @@ type heldStdin struct{ release <-chan struct{} }
 func (s heldStdin) Read([]byte) (int, error) {
 	<-s.release
 	return 0, io.EOF
+}
+
+// newHeldStdin returns a held reader and its release, which is also
+// registered on t: an arm that fails before letting go still frees the copier
+// parked in the reader, so a synctest bubble ends on the arm's own failure
+// line instead of a deadlock panic that aborts the rest of the package.
+// Release is idempotent.
+func newHeldStdin(t *testing.T) (heldStdin, func()) {
+	t.Helper()
+	ch := make(chan struct{})
+	var once sync.Once
+	release := func() { once.Do(func() { close(ch) }) }
+	t.Cleanup(release)
+	return heldStdin{release: ch}, release
+}
+
+// The copied-stdin arm's failure lines depend on this: a test that ends
+// without letting its reader go has released it all the same, by the time
+// its cleanups have run.
+//
+// Mutation seen red: drop the t.Cleanup in newHeldStdin — the reader of a
+// test that never let go still holds.
+func TestAHeldStdinIsReleasedWhenItsTestEnds(t *testing.T) {
+	var held heldStdin
+	t.Run("a test that never lets go", func(t *testing.T) {
+		held, _ = newHeldStdin(t)
+	})
+	select {
+	case <-held.release:
+	default:
+		t.Fatal("the held reader still holds after its test ended: a copier parked in it outlives the test, and a synctest bubble around it panics")
+	}
 }
 
 // leftoverHolder is the process a child leaves behind holding the pipes it
