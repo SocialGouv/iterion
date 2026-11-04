@@ -35,7 +35,8 @@ import (
 // real closed port from inside a bubble: virtual time stands still while the
 // dial runs, so the dial reaches natsgo on any host, and the witness accepts
 // both verdicts natsgo can give it — the refusal, or the timeout of a socket
-// deadline the runtime keeps on the real clock.
+// deadline the runtime keeps on the real clock, which comes no sooner than
+// the whole attempt of real time.
 //
 // No test in this file calls t.Parallel: the wiring witness replaces the
 // package's dial policy for its duration, and nothing in pkg/queue/nats
@@ -456,24 +457,41 @@ func badCredentialsError(t *testing.T) error {
 // dial past its socket deadline — a timer the runtime keeps on the real
 // clock — with its dialer's timeout (a *net.OpError). Either one is
 // natsgo's verdict on a dial it made, and the loop produces neither on its
-// own: a Connect whose attempt never reaches the library reports the
-// loop's bound alone.
+// own: a Connect whose attempt never reaches the library — a zero attempt
+// bound, a dialer that skips natsgo — reports the loop's bound alone.
+//
+// The timeout carries one more fact. Its socket deadline is the attempt
+// bound measured from a virtual clock that has not moved, armed on the real
+// clock, and a deadline never fires early: natsgo times a dial out only
+// after at least the whole attempt of real time, however loaded the host.
+// That floor is read outside the bubble, where the clock is real, and load
+// can only lengthen what it reads. An attempt cut short — a nanosecond, an
+// unscaled count — fails it whenever natsgo's verdict is the timeout; a
+// refusal comes back before any deadline, so it says nothing about the
+// attempt's length.
 //
 // The pause outlasts the budget, so the wait is one attempt and ends at the
 // budget, both exact in virtual time: the count and the duration pin the
-// pause and the budget Connect hands the loop, and the verdict pins the
-// attempt and the dialer. A Connect that hands the loop a zero pause never
-// blocks between attempts, so virtual time never reaches the budget: this
-// test then ends at go test's timeout, with waitForBroker in the dump.
+// pause and the budget Connect hands the loop. A Connect that hands the
+// loop a zero pause never blocks between attempts, so virtual time never
+// reaches the budget: this test then ends at go test's timeout, with
+// waitForBroker in the dump.
+//
+// What the witness does not pin: the address dialled — the kernel refuses
+// a default port the way it refuses this one, and natsgo's refusal names
+// neither — nor a dialer that hands back natsgo's sentinel without dialling.
 func TestConnectWaitsForABrokerThatIsNotUpYet(t *testing.T) {
 	restore := defaultDialPolicy
 	defaultDialPolicy = dialPolicy{attempt: restore.attempt, pause: 2 * restore.budget, budget: restore.budget}
 	t.Cleanup(func() { defaultDialPolicy = restore })
 
 	url := "nats://" + closedBrokerPort(t)
+	var err error
+	realStart := time.Now()
 	synctest.Test(t, func(t *testing.T) {
 		start := time.Now()
-		conn, err := Connect(context.Background(), Config{URL: url})
+		var conn *Conn
+		conn, err = Connect(context.Background(), Config{URL: url})
 		elapsed := time.Since(start)
 		if conn != nil {
 			t.Fatalf("conn = %p, want none against a closed port", conn)
@@ -484,14 +502,24 @@ func TestConnectWaitsForABrokerThatIsNotUpYet(t *testing.T) {
 		if !strings.Contains(err.Error(), "queue/nats: connect: no broker after 1 attempt(s)") {
 			t.Fatalf("err = %v, want the bounded wait's wording after the one attempt the pause leaves room for — a one-shot dial reports the library error alone", err)
 		}
-		var dialErr *net.OpError
-		if !errors.Is(err, natsgo.ErrNoServers) && !(errors.As(err, &dialErr) && dialErr.Timeout()) {
-			t.Fatalf("err = %v, want natsgo's verdict on the dial in the chain — its refusal or its dialer's timeout: the attempt never reached the library", err)
-		}
 		if elapsed != defaultDialPolicy.budget {
 			t.Fatalf("Connect gave up after %v, want exactly the %v budget (err = %v)", elapsed, defaultDialPolicy.budget, err)
 		}
 	})
+	realElapsed := time.Since(realStart)
+	if t.Failed() {
+		return
+	}
+
+	var dialErr *net.OpError
+	refused := errors.Is(err, natsgo.ErrNoServers)
+	timedOut := errors.As(err, &dialErr) && dialErr.Timeout()
+	if !refused && !timedOut {
+		t.Fatalf("err = %v, want natsgo's verdict on the dial in the chain — its refusal or its dialer's timeout: the attempt never reached the library", err)
+	}
+	if timedOut && realElapsed < defaultDialPolicy.attempt {
+		t.Fatalf("natsgo timed the dial out after %v of real time, before the %v attempt: the bound Connect hands natsgo is shorter than its policy's (err = %v)", realElapsed, defaultDialPolicy.attempt, err)
+	}
 }
 
 // The real dialer is usable outside the loop: with no deadline on the
