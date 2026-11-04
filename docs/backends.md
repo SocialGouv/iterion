@@ -406,11 +406,13 @@ The citations, per cell that is not self-evident from the table:
   operator's own that ships it), and C321 says it at compile time — see
   [sandbox.md](sandbox.md#backend-compatibility). Session resume/fork is
   proven by `TestCLILiveOpenCodeSessionResume` (`task test:clilive`): the
-  real opencode 1.19.0 CLI, driven through iterion's own `Execute`, against
-  a scripted model on `127.0.0.1` — the resumed turn's request carries the
-  earlier turn, a fork answers under a new id with the whole history, and an
-  unknown id fails with `Session not found`. No credential and no model
-  spend: what is proven is the CLI's rehydration, not a model's use of it.
+  real opencode **2.2.5** CLI, driven through iterion's own `Execute` in the
+  2.x argv, against a scripted model on `127.0.0.1` — the resumed turn's
+  request carries the earlier turn, and a fork answers under a new id with
+  the whole history. An unknown id is version-dependent and the test asserts
+  the version it probes ([the opencode section](#opencode)). No credential
+  and no model spend: what is proven is the CLI's rehydration, not a model's
+  use of it.
   `session: persist` stays unwired: opencode keeps its sessions in one
   SQLite database, with no per-session file for the packer, so
   `SessionResumeCapability` does not list it and a persist node logs
