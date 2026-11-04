@@ -374,16 +374,23 @@ finding, not a formality.
    rclone copy "dst:${DST_BUCKET}/weekly/<timestamp>" "restore:${RESTORE_BUCKET}"   # or a dated snapshot
    rclone check --one-way --size-only "dst:${DST_BUCKET}/current" "restore:${RESTORE_BUCKET}"
    ```
-   Then copy back, the same way, every `current-deleted/<timestamp>/`
-   directory whose `<timestamp>` is after the dump's `<end>` (they live
-   for the tier's `keepDays`): they hold what the live side deleted or
-   overwrote after the backup, which the restored rows still reference
-   (step 6 deletes again what was deleted). Copy them newest first, so the
-   oldest version a copy kept after the dump is the one that stays — the
-   dump's own when it was written before the copy preceding the dump; one
-   written in between is the residue (the invariant above)
-   no copy holds. An older directory holds what was deleted before the
-   backup: leave it out.
+   Then bring back, from every `current-deleted/<timestamp>/` directory
+   whose `<timestamp>` is after the dump's `<end>` (they live for the
+   tier's `keepDays`), only the objects the restore bucket does not hold:
+   what the live side deleted after the backup, which the restored rows
+   still reference (step 6 deletes again what was deleted). Oldest
+   directory first, so of two versions of a deleted object the one closest
+   to the dump stays:
+   ```sh
+   rclone copy --ignore-existing "dst:${DST_BUCKET}/current-deleted/<timestamp>" "restore:${RESTORE_BUCKET}"
+   ```
+   Never overwrite: a directory's `<timestamp>` is the copy that moved an
+   object there, not the moment the object changed — a copy archives the
+   version the previous copy held, which can predate the dump and would
+   replace the right one. An object overwritten after the backup so comes
+   back in the copy's newer version, part of the residue (the invariant
+   above). An older directory holds what was deleted before the backup:
+   leave it out.
 3. **Restore Mongo from `--archive`** — the dump of step 2's pair, as the
    [CronJob](#native--mongodump-cronjob) wrote it under `mongo/`:
    ```sh
