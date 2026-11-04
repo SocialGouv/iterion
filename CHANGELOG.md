@@ -3,6 +3,140 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [5.9.0](https://github.com/SocialGouv/iterion/compare/v5.8.0...v5.9.0) (2026-11-04)
+
+### Features
+
+* **audit:** every run launch joins the audit log (ADR-158) ([#2998](https://github.com/SocialGouv/iterion/issues/2998)) ([370e862](https://github.com/SocialGouv/iterion/commit/370e8629f956bfb8a0bec2d8644f24451b6209c6))
+
+    <details><summary>why</summary>
+
+    A run launch writes `run.launched` (and a fork `run.forked`) whatever started it — Studio, CLI and API, webhooks, schedules, the board dispatcher, pipeline admission — through one wrapper around the launcher, with the actor (the user, the webhook delivery, or the system), the workflow, the run's source kind and its delivery or schedule id, and the client IP when an HTTP request exists. A test enumerates the launch call sites and refuses one that bypasses the wrapper. ADR-158 records the choice…
+
+    </details>
+* **cloud:** a pod's run files are served by storage the driver keeps and drained at teardown ([0526cd2](https://github.com/SocialGouv/iterion/commit/0526cd2219d0265a094e522f09ae8219eba2fb89)), references [#2668](https://github.com/SocialGouv/iterion/issues/2668) [#2668](https://github.com/SocialGouv/iterion/issues/2668) [#2668](https://github.com/SocialGouv/iterion/issues/2668) [#2668](https://github.com/SocialGouv/iterion/issues/2668) [#2690](https://github.com/SocialGouv/iterion/issues/2690) [#3024](https://github.com/SocialGouv/iterion/issues/3024)
+
+    <details><summary>why</summary>
+
+    The artifact-files panel was structurally empty on a cloud run: the run-files directory only ever reached the container as a host bind, a driver with no host filesystem dropped it, the variable naming it went with it, and whatever the pod produced died with the pod — the 1h45 run whose deliverables nobody could collect (#2668). ADR-143 wrote the contract; this lands its seam:
+
+    </details>
+
+### Bug Fixes
+
+* **cloud:** give every drain key site a witness and decline what the member causes ([99939e5](https://github.com/SocialGouv/iterion/commit/99939e5df904c775a363b7ef1ac5db3ea33dd1fd)), references [#2668](https://github.com/SocialGouv/iterion/issues/2668) [#2690](https://github.com/SocialGouv/iterion/issues/2690)
+
+    <details><summary>why</summary>
+
+    Round 5 of the #2668 review loop. Each finding was first replayed as a probe on dba1f53bd; all four reproduced, none was refuted. The #2690 surface is untouched.
+
+    </details>
+* **cloud:** give the drain's directory guards one witness each and one key per entry ([2535490](https://github.com/SocialGouv/iterion/commit/2535490d084d4109626877fbd3e8721ad856367e)), references [#3024](https://github.com/SocialGouv/iterion/issues/3024) [#2668](https://github.com/SocialGouv/iterion/issues/2668)
+
+    <details><summary>why</summary>
+
+    The descriptor-held drain left guards that covered each other or had no witness, and its one-key promise held only where the filesystem names each entry once. This round closes that class: every guard of the directory mechanism is now seen red on its own, and a name reaches an entry only under exactly the spelling the directory lists.
+
+    </details>
+* **cloud:** judge and record every drain member where its write lands ([7b71298](https://github.com/SocialGouv/iterion/commit/7b71298f0600a36a4a0fdcdad42c708680649982)), references [#2668](https://github.com/SocialGouv/iterion/issues/2668) [#2690](https://github.com/SocialGouv/iterion/issues/2690) [#3024](https://github.com/SocialGouv/iterion/issues/3024) [#2668](https://github.com/SocialGouv/iterion/issues/2668)
+
+    <details><summary>why</summary>
+
+    Round 4 of the #2668 review loop found one class in the cloud drain: it judged and recorded members by their LEXICAL path while every write lands at the RESOLVED one. Each finding was checked against the code and reproduced by a witness red on the unfixed tree; none was refuted. The #2690 surface is untouched.
+
+    </details>
+* **cloud:** land every drain member where its name spells, through no link ([f346b00](https://github.com/SocialGouv/iterion/commit/f346b00844342d459ac66c1db02533ebce19ecd6)), references [#3024](https://github.com/SocialGouv/iterion/issues/3024) [#2668](https://github.com/SocialGouv/iterion/issues/2668)
+
+    <details><summary>why</summary>
+
+    The drain kept producing new shapes of one class: it landed archive members into a host dir that may already hold entries (pre-drain files, dirs, links, a raced attempt's leftovers) and judged or recorded each member by a path other than the one its write reached. This replaces the mechanism instead of patching a seventh site.
+
+    </details>
+* **cloud:** the drain cures a type flip and its failure warns of a partial panel ([e6d228a](https://github.com/SocialGouv/iterion/commit/e6d228a7a8c884df390b90b9237b97afd252eab6)), references [#2668](https://github.com/SocialGouv/iterion/issues/2668) [#2690](https://github.com/SocialGouv/iterion/issues/2690) [#2668](https://github.com/SocialGouv/iterion/issues/2668) [#3024](https://github.com/SocialGouv/iterion/issues/3024)
+
+    <details><summary>why</summary>
+
+    Round 3 of the run-artifacts-download review (#2668): the two findings on the run-files seam, both confirmed and fixed.
+
+    </details>
+* **cloud:** the drain judges the host dir where it stands, stops an archiver it no longer reads, and calls one raced attempt no union ([16dd820](https://github.com/SocialGouv/iterion/commit/16dd8202205ea425d7d8a858746cde9de55f0d91)), references [#2668](https://github.com/SocialGouv/iterion/issues/2668) [#2668](https://github.com/SocialGouv/iterion/issues/2668) [#3024](https://github.com/SocialGouv/iterion/issues/3024)
+
+    <details><summary>why</summary>
+
+    Round 3 of the #2668 review loop: three findings on the drain, and the branch history's residue.
+
+    </details>
+* **cloud:** the drain lands whole members only, types its loss, and its teardown wiring has a witness ([15d6beb](https://github.com/SocialGouv/iterion/commit/15d6bebeec683b2d8ee1dfb5895872d1ee54523f)), closes [#2668](https://github.com/SocialGouv/iterion/issues/2668), references [#2668](https://github.com/SocialGouv/iterion/issues/2668) [#3024](https://github.com/SocialGouv/iterion/issues/3024)
+
+    <details><summary>why</summary>
+
+    Round-1 fixes of the run-artifacts-bug review (#2668), six findings: four fixed at their class, one restored, one refuted with its proof.
+
+    </details>
+* **cloud:** the drain meters what the host holds, a declined member costs a counter, and only a draining driver gets the storage ([86edea3](https://github.com/SocialGouv/iterion/commit/86edea32f1e4e12e123d419b66781ebe8b876853)), closes [#2668](https://github.com/SocialGouv/iterion/issues/2668) [#2690](https://github.com/SocialGouv/iterion/issues/2690), references [#2668](https://github.com/SocialGouv/iterion/issues/2668) [#3024](https://github.com/SocialGouv/iterion/issues/3024)
+
+    <details><summary>why</summary>
+
+    Round-2 fixes of the run-artifacts-bug review (#2668), after 3176d4c0a. Four findings: each was checked against the code and found real (none refuted), then fixed at its class. The #2690 surface is untouched.
+
+    </details>
+* **cloud:** the drain sweep judges containment by Rel ([a46e9b0](https://github.com/SocialGouv/iterion/commit/a46e9b0ef7b94c90a5650c330d870cae3007a86a)), references [#2668](https://github.com/SocialGouv/iterion/issues/2668) [#2668](https://github.com/SocialGouv/iterion/issues/2668) [#3024](https://github.com/SocialGouv/iterion/issues/3024)
+
+    <details><summary>why</summary>
+
+    Round 4 of the run-artifacts-download review (#2668): one finding confirmed and fixed, one refuted.
+
+    </details>
+* **cloud:** the drain sweep takes a raced attempt's emptied dirs too ([f1a8e5a](https://github.com/SocialGouv/iterion/commit/f1a8e5afa7c5baf6de3e4e23893f125fa2aa1f50)), references [#2668](https://github.com/SocialGouv/iterion/issues/2668) [#3024](https://github.com/SocialGouv/iterion/issues/3024)
+
+    <details><summary>why</summary>
+
+    The sweep walked only regular files and symlinks, but a raced attempt's extract builds directories as readily as it writes files — the archive's dir members and the parents its file writes need. The file sweep emptied them and left the shells standing in the run file store's dir: a directory the settled archive never carried, listed where the panel lists the drained set.
+
+    </details>
+* **cloud:** the drain's declined members reach the run, and the run-files storage sits at its path ([95eaa73](https://github.com/SocialGouv/iterion/commit/95eaa73435abff9bb56918ea7816936fb443ad9d)), closes [#2668](https://github.com/SocialGouv/iterion/issues/2668) [#2690](https://github.com/SocialGouv/iterion/issues/2690), references [kubernetes#60342](https://github.com/kubernetes/issues/60342) [kubernetes#121294](https://github.com/kubernetes/issues/121294) [#2668](https://github.com/SocialGouv/iterion/issues/2668) [#3024](https://github.com/SocialGouv/iterion/issues/3024)
+
+    <details><summary>why</summary>
+
+    Round-1 fixes of the run-artifacts-bug review (#2668): five findings, each confirmed and fixed at its class. The #2690 surface is untouched.
+
+    </details>
+* **cloud:** the manifest comments state the bind-driver entry and the cap admits equality's witness ([0122db7](https://github.com/SocialGouv/iterion/commit/0122db73ac9858111df98582f700c3c547339a89)), references [#2668](https://github.com/SocialGouv/iterion/issues/2668) [#2690](https://github.com/SocialGouv/iterion/issues/2690) [#2668](https://github.com/SocialGouv/iterion/issues/2668) [#3024](https://github.com/SocialGouv/iterion/issues/3024)
+
+    <details><summary>why</summary>
+
+    Round 5 of the run-artifacts-download review (#2668), the run-files seam's share: one stale invariant corrected at both sites that stated it, one finding refuted with a boundary witness.
+
+    </details>
+* **cloud:** the read-back cap is the drain's meter with its escape hatches, and one declined member costs no other ([e791819](https://github.com/SocialGouv/iterion/commit/e791819c793209428b95889c0a24177c7cb428cd)), closes [#2668](https://github.com/SocialGouv/iterion/issues/2668), references [#2690](https://github.com/SocialGouv/iterion/issues/2690) [#2668](https://github.com/SocialGouv/iterion/issues/2668) [#3024](https://github.com/SocialGouv/iterion/issues/3024)
+
+    <details><summary>why</summary>
+
+    Round-2 fixes of the run-artifacts-bug review (#2668), stabilized from the edits a fixer killed mid-round (usage credits) left uncommitted — the round's findings were never journaled, so each hunk was judged on its own: every one completes a defect of the bug half (the cap, the drain under a type flip, the drain-failed event's vocabulary) and none touches the #2690 surface. All were kept; the cap's was finished where it fell short.
+
+    </details>
+* **cloud:** the run-files drain drops what only a raced attempt landed ([eb7d973](https://github.com/SocialGouv/iterion/commit/eb7d9739388ce449354aced837ecd229cec14d3a)), references [#2668](https://github.com/SocialGouv/iterion/issues/2668) [#2690](https://github.com/SocialGouv/iterion/issues/2690) [#2668](https://github.com/SocialGouv/iterion/issues/2668) [#3024](https://github.com/SocialGouv/iterion/issues/3024)
+
+    <details><summary>why</summary>
+
+    The reviewer's round-2 findings on the run-files seam (#2668), each one tried for refutation and confirmed — three corrected here:
+
+    </details>
+* **cloud:** the run-files seam answers the review round's six findings ([692e98c](https://github.com/SocialGouv/iterion/commit/692e98cdd9c3c02bffa16bbba1a35cfd7b14bfb4)), references [#2668](https://github.com/SocialGouv/iterion/issues/2668) [#2690](https://github.com/SocialGouv/iterion/issues/2690) [#2668](https://github.com/SocialGouv/iterion/issues/2668) [#3024](https://github.com/SocialGouv/iterion/issues/3024)
+
+    <details><summary>why</summary>
+
+    The reviewer's round-1 findings on the #2668 run-files seam, each one tried for refutation and confirmed — none refuted, six corrected here, every fix at the class that shares the defect:
+
+    </details>
+* **sandbox:** the drain's flip removal reads the pre-drain dirs too ([9890ed8](https://github.com/SocialGouv/iterion/commit/9890ed82c823a19bb2b097c19f42799386b9d3ab)), references [#2668](https://github.com/SocialGouv/iterion/issues/2668) [#3024](https://github.com/SocialGouv/iterion/issues/3024)
+
+    <details><summary>why</summary>
+
+    dropRacedDrainDir judged a flip's tree only on the files-and-links half of the before snapshot: a dirs-only tree the host already had — an empty pre-drain dir at a path the settled archive carries as a file — matched nothing, and RemoveAll took it, against the file's own contract (a dir the host already had is as untouchable as a file it already had) and the sweep's beforeDirs guard. The walk now judges dirs against the same pre-drain dirs half the sweep judges, the refusal names the tree's own…
+
+    </details>
+
 ## [5.8.0](https://github.com/SocialGouv/iterion/compare/v5.7.0...v5.8.0) (2026-11-04)
 
 ### Features
