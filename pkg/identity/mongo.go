@@ -173,6 +173,9 @@ func decodeBulkCursor[T any](ctx context.Context, cur *mongo.Cursor, idOf func(T
 // ----- Users -----
 
 func (s *MongoStore) CreateUser(ctx context.Context, u User) (User, error) {
+	if IsErasedEmail(u.Email) {
+		return User{}, ErrReservedEmail
+	}
 	u.Email = NormalizeEmail(u.Email)
 	if _, err := s.users.InsertOne(ctx, u); err != nil {
 		if mongoutil.IsDuplicateKey(err) {
@@ -206,6 +209,9 @@ func (s *MongoStore) UpdateUser(ctx context.Context, u User) error {
 // filter arm, so a deactivation and a password reset landing together cannot
 // undo each other.
 func (s *MongoStore) PatchUser(ctx context.Context, id string, p UserPatch) (User, error) {
+	if err := p.validate(); err != nil {
+		return User{}, err
+	}
 	filter := userPatchFilter(id, p)
 	if p.Empty() {
 		// Nothing to write — but the precondition still has to be answered:
@@ -229,21 +235,87 @@ func (s *MongoStore) PatchUser(ctx context.Context, id string, p UserPatch) (Use
 	return out, nil
 }
 
-// userPatchFilter is PatchUser's query: the row by _id, plus — when the patch
-// names a precondition — a `$nin` arm on status, which is what makes the
-// refusal atomic with the write rather than a check the write races.
+// MarkUserErased sets the erased status in one update filtered on the
+// status not being erased already, so a repeated call writes nothing and
+// answers the row as it stands — see Store.MarkUserErased.
+func (s *MongoStore) MarkUserErased(ctx context.Context, id string) (User, error) {
+	var out User
+	err := s.users.FindOneAndUpdate(ctx,
+		bson.M{"_id": id, "status": bson.M{"$ne": string(UserStatusErased)}},
+		bson.M{"$set": bson.M{"status": string(UserStatusErased), "updated_at": time.Now().UTC()}},
+		options.FindOneAndUpdate().SetReturnDocument(options.After)).Decode(&out)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		// Gone, or erased already: the row by _id alone tells the two apart.
+		return mongoutil.FindOne[User](ctx, s.users, bson.M{"_id": id}, ErrNotFound, "identity: mark user erased")
+	}
+	if err != nil {
+		return User{}, fmt.Errorf("identity: mark user %s erased: %w", id, err)
+	}
+	return out, nil
+}
+
+// EraseUser anonymizes the row in one update, filtered on the row not
+// carrying its marker already, so a second erasure writes nothing and
+// answers the row as it stands — see Store.EraseUser.
+func (s *MongoStore) EraseUser(ctx context.Context, id string) (User, error) {
+	var out User
+	err := s.users.FindOneAndUpdate(ctx,
+		bson.M{"_id": id, "email": bson.M{"$ne": ErasedEmail(id)}},
+		eraseUserUpdate(id, time.Now().UTC()),
+		options.FindOneAndUpdate().SetReturnDocument(options.After)).Decode(&out)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		// Gone, or anonymized already: the row by _id alone tells the two apart.
+		return mongoutil.FindOne[User](ctx, s.users, bson.M{"_id": id}, ErrNotFound, "identity: erase user")
+	}
+	if mongoutil.IsDuplicateKey(err) {
+		return User{}, ErrEmailAlreadyTaken
+	}
+	if err != nil {
+		return User{}, fmt.Errorf("identity: erase user %s: %w", id, err)
+	}
+	return out, nil
+}
+
+// eraseUserUpdate is EraseUser's update document: the marker, the status
+// and the stamp set; every field that names or lets in the person unset.
+// Pure, like userPatchSet, so a test can apply it through the real bson
+// codec and compare the row against the memory twin's (erasedUser).
+func eraseUserUpdate(id string, at time.Time) bson.M {
+	return bson.M{
+		"$set": bson.M{
+			"email":      ErasedEmail(id),
+			"status":     string(UserStatusErased),
+			"updated_at": at,
+		},
+		"$unset": bson.M{
+			"name":            "",
+			"password_hash":   "",
+			"is_super_admin":  "",
+			"last_login_at":   "",
+			"failed_logins":   "",
+			"locked_until":    "",
+			"default_team_id": "",
+			"default_org_id":  "",
+			"github_orgs":     "",
+		},
+	}
+}
+
+// userPatchFilter is PatchUser's query: the row by _id, plus a `$nin` arm on
+// status naming every status the patch refuses (UserPatch.refusedStatuses:
+// the patch's own preconditions and, always, the erased status), which is
+// what makes the refusal atomic with the write rather than a check the write
+// races.
 //
 // Pure, so a test can read what PatchUser ASKS of Mongo without a server;
 // whether Mongo honours it is the mongo-conformance job's half.
 func userPatchFilter(id string, p UserPatch) bson.M {
-	filter := bson.M{"_id": id}
-	if len(p.IfNotStatus) > 0 {
-		blocked := make([]string, 0, len(p.IfNotStatus))
-		for _, st := range p.IfNotStatus {
-			blocked = append(blocked, string(st))
-		}
-		filter["status"] = bson.M{"$nin": blocked}
+	refused := p.refusedStatuses()
+	blocked := make([]string, 0, len(refused))
+	for _, st := range refused {
+		blocked = append(blocked, string(st))
 	}
+	filter := bson.M{"_id": id, "status": bson.M{"$nin": blocked}}
 	if p.IfPasswordHash != nil {
 		filter["password_hash"] = *p.IfPasswordHash
 	}
@@ -305,9 +377,6 @@ func userPatchSet(p UserPatch, at time.Time) bson.M {
 // path only. A store error from that read propagates: it is never flattened
 // into either verdict.
 func (s *MongoStore) userPatchMiss(ctx context.Context, id string, p UserPatch) error {
-	if !p.hasPrecondition() {
-		return ErrNotFound
-	}
 	u, err := s.GetUser(ctx, id)
 	if err != nil {
 		return err
@@ -673,6 +742,35 @@ func (s *MongoStore) UpdateInvitation(ctx context.Context, inv Invitation) error
 
 func (s *MongoStore) DeleteInvitation(ctx context.Context, id string) error {
 	return mongoutil.DeleteOneChecked(ctx, s.invitations, bson.M{"_id": id}, ErrNotFound, "identity: delete invitation")
+}
+
+// DeleteInvitationsByEmail matches the address the way Invitation.AddressedTo
+// does — case-insensitively, surrounding whitespace ignored — since neither
+// store normalizes the address an invitation carries.
+func (s *MongoStore) DeleteInvitationsByEmail(ctx context.Context, email string) (int64, error) {
+	addr := NormalizeEmail(email)
+	if addr == "" {
+		return 0, errors.New("identity: delete invitations by email: no address")
+	}
+	res, err := s.invitations.DeleteMany(ctx, bson.M{"email": bson.M{
+		"$regex":   `^\s*` + regexp.QuoteMeta(addr) + `\s*$`,
+		"$options": "i",
+	}})
+	if err != nil {
+		return 0, fmt.Errorf("identity: delete the invitations addressed to %s: %w", addr, err)
+	}
+	return res.DeletedCount, nil
+}
+
+func (s *MongoStore) DeleteInvitationsByInviter(ctx context.Context, userID string) (int64, error) {
+	if userID == "" {
+		return 0, errors.New("identity: delete invitations by inviter: no user id")
+	}
+	res, err := s.invitations.DeleteMany(ctx, bson.M{"invited_by": userID})
+	if err != nil {
+		return 0, fmt.Errorf("identity: delete the invitations user %s created: %w", userID, err)
+	}
+	return res.DeletedCount, nil
 }
 
 func (s *MongoStore) ListInvitationsByTeam(ctx context.Context, teamID string) ([]Invitation, error) {

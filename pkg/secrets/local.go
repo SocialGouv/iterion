@@ -304,6 +304,14 @@ func (s *FileGenericSecretStore) ListByUser(ctx context.Context, teamID, userID 
 	return s.ListByTeam(ctx, teamID, userID)
 }
 
+// DeleteByScopeUser removes nothing: a local secret is never user-scoped.
+func (s *FileGenericSecretStore) DeleteByScopeUser(_ context.Context, userID string) (int64, error) {
+	if userID == "" {
+		return 0, errScopeUserRequired
+	}
+	return 0, nil
+}
+
 func (s *FileGenericSecretStore) MarkUsed(_ context.Context, id string, at time.Time) error {
 	return s.mutate(func() error {
 		rec, ok := s.secrets[id]
@@ -455,6 +463,15 @@ func (l *LayeredGenericSecretStore) ListByTeam(ctx context.Context, teamID, user
 
 func (l *LayeredGenericSecretStore) ListByUser(ctx context.Context, teamID, userID string) ([]GenericSecret, error) {
 	return l.ListByTeam(ctx, teamID, userID)
+}
+
+// DeleteByScopeUser removes nothing: neither layer holds a user-scoped
+// secret.
+func (l *LayeredGenericSecretStore) DeleteByScopeUser(_ context.Context, userID string) (int64, error) {
+	if userID == "" {
+		return 0, errScopeUserRequired
+	}
+	return 0, nil
 }
 
 // ScopedSecret pairs a secret with the layer it resolved from ("global" |

@@ -95,8 +95,8 @@ func (s *Server) handlePutOrgMember(w http.ResponseWriter, r *http.Request) {
 		httpError(w, mapAuthErrorStatus(err), "%s", err.Error())
 		return
 	}
-	if u.Status == identity.UserStatusDisabled {
-		httpError(w, http.StatusUnprocessableEntity, "user %s is disabled — re-enable the account before granting it an org", u.Email)
+	if refusal := grantRefusal(u, "an org"); refusal != "" {
+		httpError(w, http.StatusUnprocessableEntity, "%s", refusal)
 		return
 	}
 	if err := s.authStore().UpsertOrgMembership(r.Context(), identity.OrgMembership{
@@ -475,8 +475,8 @@ func (s *Server) handlePutTeamMember(w http.ResponseWriter, r *http.Request) {
 		httpError(w, mapAuthErrorStatus(err), "%s", err.Error())
 		return
 	}
-	if u.Status == identity.UserStatusDisabled {
-		httpError(w, http.StatusUnprocessableEntity, "user %s is disabled — re-enable the account before granting it a team", u.Email)
+	if refusal := grantRefusal(u, "a team"); refusal != "" {
+		httpError(w, http.StatusUnprocessableEntity, "%s", refusal)
 		return
 	}
 	if !s.requireOrgMembershipForGrant(w, r, t.OrgID, memberID) {

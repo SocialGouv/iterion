@@ -131,3 +131,46 @@ export function resetAdminUserPassword(
     ),
   );
 }
+
+// ---- Erasure by anonymization (POST /api/admin/users/{id}/erase) ----
+
+export interface AdminEraseUserResponse {
+  user: UserView;
+  // The account was erased before this call, which swept what an
+  // interrupted erasure may have left and changed nothing else.
+  already_erased: boolean;
+  sessions_deleted: number;
+  personal_access_tokens_revoked: number;
+  sso_links_removed: number;
+  memberships_removed: number;
+  org_memberships_removed: number;
+  invitations_removed: number;
+  push_subscriptions_removed: number;
+  // The person's own subscription credentials (forfaits), pool pledges,
+  // user-scoped API keys and secrets deleted.
+  oauth_credentials_removed: number;
+  pool_pledges_removed: number;
+  api_keys_removed: number;
+  secrets_removed: number;
+  // Run notes whose author (the address) now names the account's id.
+  run_notes_reattributed: number;
+  // Config-share edits of the account stripped of IP and user agent.
+  config_share_deliveries_scrubbed: number;
+  audit_events_scrubbed: number;
+  personal_orgs_marked_for_purge?: string[];
+}
+
+// Erases an account by anonymization: the row keeps its id as a pseudonym
+// under a marker address; name, password, SSO links, memberships,
+// invitations, sessions, tokens, push subscriptions and the person's own
+// credentials go, run notes name the id, and the audit rows naming the
+// account lose its address (and its IP and user agent where it acted). The
+// server refuses the caller's own account (422 self_erasure) and the last
+// owner of a shared org (409 last_org_owner). Super-admin only; idempotent.
+export function eraseAdminUser(userID: string): Promise<AdminEraseUserResponse> {
+  return guard404("admin-users", () =>
+    request<AdminEraseUserResponse>(`/admin/users/${encodeURIComponent(userID)}/erase`, {
+      method: "POST",
+    }),
+  );
+}

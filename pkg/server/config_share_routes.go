@@ -150,7 +150,7 @@ func (s *Server) recordShareDelivery(r *http.Request, sh *configshare.Share, sta
 		if id.Kind == auth.KindShare {
 			actor = id.UserID
 		} else if id.UserID != "" {
-			actor = "user:" + id.UserID
+			actor = configshare.ActorUser(id.UserID)
 		}
 	}
 	d := &configshare.Delivery{

@@ -137,6 +137,7 @@ func TestPlatformAdmin_ARevokedSessionsAccessTokenExercisesNoPlatformAuthority(t
 		{http.MethodGet, "/api/admin/users", ""},
 		{http.MethodPost, "/api/admin/users/" + admin.User.ID + "/reset-password", ""},
 		{http.MethodPatch, "/api/admin/users/" + f.user.User.ID, `{"is_super_admin":true}`},
+		{http.MethodPost, "/api/admin/users/" + f.user.User.ID + "/erase", ""},
 	} {
 		if code, _, body := f.call(t, c.method, c.path, admin.AccessToken, c.body); code != http.StatusUnauthorized {
 			t.Fatalf("%s %s with a revoked session's super-admin token: %d %s, want 401", c.method, c.path, code, body)
@@ -149,8 +150,8 @@ func TestPlatformAdmin_ARevokedSessionsAccessTokenExercisesNoPlatformAuthority(t
 	if after.PasswordHash != before.PasswordHash || after.Status != before.Status {
 		t.Fatal("a revoked session's super-admin token replaced its own account's password")
 	}
-	if u, err := f.s.authStore().GetUser(ctx, f.user.User.ID); err != nil || u.IsSuperAdmin {
-		t.Fatalf("a revoked session's super-admin token granted super-admin (%v)", err)
+	if u, err := f.s.authStore().GetUser(ctx, f.user.User.ID); err != nil || u.IsSuperAdmin || u.Status != identity.UserStatusActive {
+		t.Fatalf("a revoked session's super-admin token granted super-admin or erased an account (%+v, %v)", u, err)
 	}
 
 	live, err := f.svc.Login(ctx, "admin@example.com", fixturePassword, "ua", "ip")

@@ -221,6 +221,14 @@ type SessionStore interface {
 	// `before`; it returns the number of sessions deleted. Revocation
 	// records are kept.
 	DeleteExpired(ctx context.Context, before time.Time) (int64, error)
+	// DeleteAccountSessions DELETES every session row of userID — live,
+	// revoked, claimed or not — and answers how many. A session row carries
+	// the IP and user agent of a sign-in, so an account's erasure removes
+	// the rows where a revocation would only mark them. The account's
+	// revocation records stay: they carry no such thing, and the record a
+	// caller lands before the delete keeps refusing an access token minted
+	// before it.
+	DeleteAccountSessions(ctx context.Context, userID string) (int64, error)
 	// Now reads the store's clock — the clock RotateSession stamps a
 	// rotation with — so the reuse window is measured on one clock, whichever
 	// replica rotated the session and whichever answers its presentation.
@@ -643,6 +651,18 @@ func (m *MemorySessionStore) SessionRevoked(_ context.Context, s Session) (bool,
 	return m.generations[s.UserID] > s.Generation, nil
 }
 
+func (m *MemorySessionStore) DeleteAccountSessions(_ context.Context, userID string) (int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var n int64
+	for id := range m.byUserID[userID] {
+		m.removeLocked(m.byID[id])
+		n++
+	}
+	delete(m.byUserID, userID)
+	return n, nil
+}
+
 func (m *MemorySessionStore) DeleteExpired(_ context.Context, before time.Time) (int64, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -993,6 +1013,14 @@ func (s *MongoSessionStore) Now(ctx context.Context) (time.Time, error) {
 		return time.Time{}, fmt.Errorf("auth: the session store's clock answered %d row(s)", len(rows))
 	}
 	return rows[0].Now.UTC(), nil
+}
+
+func (s *MongoSessionStore) DeleteAccountSessions(ctx context.Context, userID string) (int64, error) {
+	res, err := s.coll.DeleteMany(ctx, bson.M{"user_id": userID})
+	if err != nil {
+		return 0, fmt.Errorf("auth: delete the sessions of user %s: %w", userID, err)
+	}
+	return res.DeletedCount, nil
 }
 
 func (s *MongoSessionStore) DeleteExpired(ctx context.Context, before time.Time) (int64, error) {

@@ -61,7 +61,13 @@ func (s *Server) auditSystem(tenantID, actorID, action, target, targetID string,
 // what the row is about. IP and user-agent still come from the request.
 // Scope and tenant are the caller's: a refused sign-in names no tenant.
 func (s *Server) auditWriteActor(r *http.Request, scope audit.Scope, tenantID, actorID, actorKind, action, target, targetID string, meta map[string]any) {
-	s.auditInsert(audit.Event{
+	s.auditInsert(s.auditActorEvent(r, scope, tenantID, actorID, actorKind, action, target, targetID, meta))
+}
+
+// auditActorEvent is the row auditWriteActor records, built and not yet
+// inserted.
+func (s *Server) auditActorEvent(r *http.Request, scope audit.Scope, tenantID, actorID, actorKind, action, target, targetID string, meta map[string]any) audit.Event {
+	return audit.Event{
 		Scope:     scope,
 		TenantID:  tenantID,
 		ActorID:   actorID,
@@ -72,21 +78,24 @@ func (s *Server) auditWriteActor(r *http.Request, scope audit.Scope, tenantID, a
 		Meta:      meta,
 		IP:        s.clientIP(r),
 		UserAgent: r.UserAgent(),
-	})
+	}
 }
 
 // auditInsert is the one write every audit row goes through: it stamps the
 // id and the time, then inserts detached and best-effort — an audit-store
 // blip must not fail or slow what the row records. No-op without a store
-// (local mode).
+// (local mode). The insert's deadline is set when it is queued, not when
+// its goroutine starts: a line reaches the store within s.auditInsertBound()
+// of being queued, or never — the bound an erasure's second scrub waits out.
 func (s *Server) auditInsert(e audit.Event) {
 	if s.auditStore == nil {
 		return
 	}
 	e.ID = uuid.NewString()
 	e.CreatedAt = time.Now().UTC()
+	deadline := e.CreatedAt.Add(s.auditInsertBound())
 	s.goSafe("audit-insert", func() {
-		bg, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		bg, cancel := context.WithDeadline(context.Background(), deadline)
 		defer cancel()
 		if err := s.auditStore.Insert(bg, e); err != nil && s.logger != nil {
 			s.logger.Warn("audit: insert %s: %v", e.Action, err)
@@ -124,8 +133,14 @@ func (s *Server) auditTenantAs(a auditActor, tenantID, action, target, targetID 
 // auditWrite records a row attributed to the identity of the request it
 // serves (auth.FromContext): the actor of every control-plane mutation.
 func (s *Server) auditWrite(r *http.Request, scope audit.Scope, tenantID, action, target, targetID string, meta map[string]any) {
+	s.auditInsert(s.auditRequestEvent(r, scope, tenantID, action, target, targetID, meta))
+}
+
+// auditRequestEvent is the row auditWrite records, built and not yet
+// inserted: attributed to the identity of the request it serves.
+func (s *Server) auditRequestEvent(r *http.Request, scope audit.Scope, tenantID, action, target, targetID string, meta map[string]any) audit.Event {
 	id, _ := auth.FromContext(r.Context())
-	s.auditWriteActor(r, scope, tenantID, id.UserID, auditActorKind(id, id.UserID), action, target, targetID, meta)
+	return s.auditActorEvent(r, scope, tenantID, id.UserID, auditActorKind(id, id.UserID), action, target, targetID, meta)
 }
 
 // auditActorKind classifies the actor of an audit line from the principal

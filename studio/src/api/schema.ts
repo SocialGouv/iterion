@@ -714,6 +714,28 @@ export interface paths {
         patch: operations["patchAdminUsersById"];
         trace?: never;
     };
+    "/api/admin/users/{id}/erase": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * POST /api/admin/users/{id}/erase
+         * @description Erase an account by anonymization (GDPR art. 17): the row keeps its id under an erased-<id>@erased.invalid marker with status `erased`; name, password, GitHub orgs, SSO links, memberships, pending invitations, sessions, personal access tokens and push subscriptions go; the audit rows naming the account lose their IP, user agent and address (the invitation rows addressed to it lose the address); the account's personal org is scheduled for the nightly purge. Idempotent: a second call answers 200 with already_erased. Refused on the caller's own account (422 self_erasure) and when the account is the last owner of a shared org (409 last_org_owner).
+         */
+        post: operations["postAdminUsersByIdErase"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/admin/users/{id}/reset-password": {
         parameters: {
             query?: never;
@@ -7715,6 +7737,25 @@ export interface components {
             mode?: string;
             workspace_id?: string;
         };
+        adminEraseUserResponse: {
+            already_erased: boolean;
+            api_keys_removed: number;
+            audit_events_scrubbed: number;
+            config_share_deliveries_scrubbed: number;
+            invitations_removed: number;
+            memberships_removed: number;
+            oauth_credentials_removed: number;
+            org_memberships_removed: number;
+            personal_access_tokens_revoked: number;
+            personal_orgs_marked_for_purge?: string[];
+            pool_pledges_removed: number;
+            push_subscriptions_removed: number;
+            run_notes_reattributed: number;
+            secrets_removed: number;
+            sessions_deleted: number;
+            sso_links_removed: number;
+            user: components["schemas"]["UserView"];
+        };
         adminForgeOAuthAppReq: {
             client_id: string;
             client_secret: string;
@@ -10295,6 +10336,70 @@ export interface operations {
             };
             /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    postAdminUsersByIdErase: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["adminEraseUserResponse"];
+                };
+            };
+            /** @description The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No such user */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The account is the last owner of an organization: transfer its ownership or delete the organization first */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The caller's own account */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description A step of the erasure failed: the message names it; repeat the request */
+            500: {
                 headers: {
                     [name: string]: unknown;
                 };

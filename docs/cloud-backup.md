@@ -498,9 +498,17 @@ finding, not a formality.
      - A replayed deletion blocks the org at once but purges it only once
        its grace has elapsed, 24 h or more after the replay: the end of the
        RTO is not the end of the erasure.
-   - **Account anonymisation** is not an admin action at this version:
-     there is nothing to replay. An erasure the platform performed and
-     this step cannot replay is an anomaly for the [drill log](#drill-log).
+   - **Account erasures** (`user.erased`, [ADR-159](adr/159-identity-data-lifecycle-erasure-by-anonymization.md))
+     are replayed per account: for the `target_id` of each line, and for
+     each request of the DPO's register answered since the restored point,
+     `POST /api/admin/users/{id}/erase` (or `iterion remote admin users
+     erase <id> --yes`). The route is idempotent — an account erased
+     before the dump answers `already_erased: true` — and a `500` is
+     repeated until it answers `200`; a line whose meta says
+     `incomplete: true` is an erasure that stopped half-way, replayed like
+     the others. In a drill, replay at least one line and check the
+     account reads `erased`; an erasure the register names and no line
+     carries is an anomaly for the [drill log](#drill-log).
    - **When the live side is lost too** — cluster and Mongo gone, the case
      the off-cluster copy exists for — the audit rows written after the
      backup are lost with it, and nothing names what to replay. The

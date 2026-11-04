@@ -95,8 +95,11 @@ var remoteAdminOrgsCmd = &cobra.Command{
 // with it, or the one whose id equals it.
 var remoteAdminUserQuery string
 
+// remoteAdminEraseYes confirms `admin users erase`: the act cannot be undone.
+var remoteAdminEraseYes bool
+
 var remoteAdminUsersCmd = &cobra.Command{
-	Use:   "users [get <user-id>|update <user-id>|reset-password <user-id>]",
+	Use:   "users [get <user-id>|update <user-id>|reset-password <user-id>|erase <user-id>]",
 	Short: "List platform users (--q to search), or act on one",
 	Long: "`get` returns one account's FILE: status, last sign-in, whether a\n" +
 		"password sign-in is possible at all, its SSO links, and the orgs and\n" +
@@ -109,7 +112,15 @@ var remoteAdminUsersCmd = &cobra.Command{
 		"no outbound email; hand the password over out-of-band. The instance\n" +
 		"refuses it (403) on YOUR OWN account when the CLI presents a personal\n" +
 		"access token — which is what a login stores: change your own password\n" +
-		"from the studio (Account → Profile → Change password).",
+		"from the studio (Account → Profile → Change password).\n\n" +
+		"`erase` erases an account by anonymization (GDPR art. 17): the row keeps\n" +
+		"its id as a pseudonym under an erased-<id>@erased.invalid marker; name,\n" +
+		"password, SSO links, memberships, invitations, sessions, personal access\n" +
+		"tokens and push subscriptions go, and the audit rows naming the account\n" +
+		"lose their IP, user agent and address. It cannot be undone and cannot be\n" +
+		"run on your own account; the last owner of a shared organization is\n" +
+		"refused (409) until ownership is transferred. It asks for --yes: an id\n" +
+		"pasted wrong would erase another person. Running it twice is safe.",
 	Args: cobra.MaximumNArgs(2),
 	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
 		if len(args) == 0 {
@@ -120,12 +131,15 @@ var remoteAdminUsersCmd = &cobra.Command{
 			return cli.RemoteGetPrint(cmd.Context(), c, p, path)
 		}
 		if len(args) != 2 {
-			return fmt.Errorf("usage: admin users [get <user-id>|update <user-id> --data @f|reset-password <user-id>]")
+			return fmt.Errorf("usage: admin users [get <user-id>|update <user-id> --data @f|reset-password <user-id>|erase <user-id>]")
 		}
 		// --q is read only by the list form above; accepting it silently on an
 		// action would answer a question the operator did not ask.
 		if strings.TrimSpace(remoteAdminUserQuery) != "" {
 			return fmt.Errorf("--q applies to the list form only (`admin users --q <prefix>`), not to %q", args[0])
+		}
+		if remoteAdminEraseYes && args[0] != "erase" {
+			return fmt.Errorf("--yes confirms `admin users erase` only, not %q", args[0])
 		}
 		// PathEscape: an id reaching a URL path unescaped lets `../` retarget
 		// the request through ServeMux's 307 redirect — the CLI would report
@@ -138,8 +152,13 @@ var remoteAdminUsersCmd = &cobra.Command{
 			return cli.RemoteSendData(cmd.Context(), c, p, "PATCH", base, remoteAdminData, "patch JSON")
 		case "reset-password":
 			return cli.RemoteSendPrint(cmd.Context(), c, p, "POST", base+"/reset-password", nil)
+		case "erase":
+			if !remoteAdminEraseYes {
+				return fmt.Errorf("refusing to erase account %s without --yes", args[1])
+			}
+			return cli.RemoteSendPrint(cmd.Context(), c, p, "POST", base+"/erase", nil)
 		default:
-			return fmt.Errorf("unknown users action %q (get|update|reset-password)", args[0])
+			return fmt.Errorf("unknown users action %q (get|update|reset-password|erase)", args[0])
 		}
 	}),
 }
@@ -954,6 +973,7 @@ func init() {
 	remoteAdminOrgsCmd.Flags().StringVar(&remoteAdminData, "data", "", "Request body JSON (literal or @file)")
 	remoteAdminUsersCmd.Flags().StringVar(&remoteAdminData, "data", "", "Request body JSON (literal or @file)")
 	remoteAdminUsersCmd.Flags().StringVar(&remoteAdminUserQuery, "q", "", "Match an email prefix, or an exact user id")
+	remoteAdminUsersCmd.Flags().BoolVar(&remoteAdminEraseYes, "yes", false, "Confirm erase, which cannot be undone")
 
 	for _, c := range []*cobra.Command{remoteAdminLLMKeysCmd, remoteAdminLLMOAuthCmd} {
 		c.Flags().StringVar(&remoteLLMFromEnv, "from-env", "", "Read the secret value from this environment variable")

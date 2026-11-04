@@ -258,6 +258,10 @@ type Server struct {
 	credPoolLeases  credpool.LeaseStore
 	credPoolLedger  credpool.Ledger
 	auditStore      audit.Store
+	// auditInsertTimeout bounds one background audit insert from the moment
+	// it is queued (defaultAuditInsertTimeout when 0; tests shorten it). An
+	// erasure scrubs again once that bound has passed (waitOutAuditInserts).
+	auditInsertTimeout time.Duration
 	// avatarApplyTimeout overrides defaultAvatarApplyTimeout when > 0 (tests).
 	avatarApplyTimeout time.Duration
 	// usageCapSettings + usageCapSource are the platform runtime-settings

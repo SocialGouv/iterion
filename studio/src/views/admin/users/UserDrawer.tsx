@@ -16,6 +16,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "wouter";
 
 import {
+  eraseAdminUser,
   getAdminUser,
   type AdminUserDetail,
   type AdminUserOrgView,
@@ -68,15 +69,23 @@ export default function UserDrawer({
       ? errorMessage(detailQuery.error)
       : null);
 
-  // Every mutation refreshes the account file. It does NOT invalidate the
-  // users list: this drawer only writes memberships, and that list renders
-  // email, name, status and super-admin — none of which a membership can
-  // change. The mutations that DO change status live on the page itself
-  // and invalidate there.
+  // Every mutation refreshes the account file. A membership write does NOT
+  // invalidate the users list, which renders email, name, status and
+  // super-admin — none of which a membership can change; the erasure, which
+  // changes all of them, invalidates the list itself (ErasureSection).
   const run = (fn: () => Promise<unknown>) =>
     action.run(async () => {
       await fn();
       await queryClient.invalidateQueries({ queryKey: ["admin-user", userID] });
+    });
+
+  // The erasure, first or repeated: the server answers an erased account
+  // already_erased, and completes what an interrupted erasure left.
+  const eraseNow = () =>
+    run(async () => {
+      await eraseAdminUser(userID);
+      // The list renders the status this write changes.
+      await queryClient.invalidateQueries({ queryKey: ["admin-users"] });
     });
 
   return (
@@ -105,14 +114,115 @@ export default function UserDrawer({
         <PanelLoading label="Loading account…" />
       ) : detail == null ? (
         <EmptyState message="This account could not be loaded." />
+      ) : detail.user.status === "erased" ? (
+        // An erased account is a pseudonym: no roster, no grant, no write —
+        // only the erasure itself can be repeated, to complete an interrupted one.
+        <>
+          <IdentitySection detail={detail} />
+          <ErasedNotice detail={detail} />
+          <ErasureRetry busy={busy} onErase={eraseNow} />
+        </>
       ) : (
         <>
           <IdentitySection detail={detail} />
           <OrgsSection detail={detail} busy={busy} run={run} confirm={confirm} />
           <TeamsSection detail={detail} busy={busy} run={run} confirm={confirm} />
+          <ErasureSection detail={detail} busy={busy} confirm={confirm} onErase={eraseNow} />
         </>
       )}
     </Dialog>
+  );
+}
+
+// ---- Erasure (GDPR art. 17) ----
+
+// The one irreversible act of this console, so it sits last and asks
+// twice: the button names what it does, the confirmation names what goes
+// and what stays. The server keeps the id as a pseudonym — every run,
+// audit row and secret that named the account still does — and refuses the
+// last owner of a shared organization until ownership is transferred.
+function ErasureSection({
+  detail,
+  busy,
+  confirm,
+  onErase,
+}: {
+  detail: AdminUserDetail;
+  busy: boolean;
+  confirm: Confirmer;
+  onErase: () => Promise<unknown>;
+}) {
+  const erase = async () => {
+    const ok = await confirm({
+      title: "Effacer ce compte ?",
+      message: `Le compte ${detail.user.email} sera anonymisé de façon irréversible : adresse e-mail, nom, mot de passe, identités SSO, appartenances aux organisations et aux équipes, invitations en attente, sessions, jetons d'accès personnels, abonnements aux notifications, forfaits et clés personnels sont supprimés ; les lignes du journal d'audit qui le concernent perdent e-mail, et adresse IP et navigateur quand c'est lui qui a agi. Son identifiant est conservé comme pseudonyme sur les runs, les notes et le journal d'audit. Son organisation personnelle est programmée pour la purge nocturne, après un délai de grâce de 24 h. Si le compte est le dernier propriétaire d'une organisation partagée, l'effacement est refusé tant que la propriété n'est pas transférée.`,
+      confirmLabel: "Effacer le compte",
+      confirmVariant: "danger",
+    });
+    if (!ok) return;
+    await onErase();
+  };
+
+  return (
+    <section className="space-y-2 mt-5 pt-4 border-t border-border-default">
+      <h3 className="font-medium">Effacement du compte</h3>
+      <p className="text-caption text-fg-subtle">
+        Droit à l'effacement (RGPD, art. 17) : anonymisation irréversible, à la demande de la
+        personne ou du DPO. Désactiver le compte suffit pour lui retirer l'accès sans effacer ses
+        données.
+      </p>
+      <Button size="sm" variant="danger" disabled={busy} onClick={() => void erase()}>
+        Effacer le compte (anonymisation)
+      </Button>
+    </section>
+  );
+}
+
+// erasedAddressSuffix is the domain of the address an anonymized account
+// carries (erased-<id>@erased.invalid): an erased account still under its
+// own address is one whose erasure stopped before the anonymization.
+const erasedAddressSuffix = "@erased.invalid";
+
+// ErasedNotice replaces the roster of an erased account: there is nothing to
+// grant, and the warning IdentitySection would otherwise raise ("belongs to
+// nothing — it can sign in") is false of it. The erased status blocks sign-ins
+// from the first step of the erasure, so it says whether the anonymization ran.
+function ErasedNotice({ detail }: { detail: AdminUserDetail }) {
+  if (!detail.user.email.endsWith(erasedAddressSuffix)) {
+    return (
+      <InlineBanner tone="warning" layout="inline" title="Effacement incomplet">
+        L'effacement de ce compte a été interrompu avant l'anonymisation : il ne peut plus se
+        connecter, mais son adresse e-mail et une partie de ses données personnelles subsistent.
+        Relancez l'effacement pour le terminer.
+      </InlineBanner>
+    );
+  }
+  return (
+    <InlineBanner tone="info" layout="inline" title="Compte effacé (anonymisé)">
+      Ce compte a été effacé
+      {detail.user.updated_at ? ` le ${formatDateTime(detail.user.updated_at)}` : ""}. Il ne
+      peut plus se connecter ni être modifié ; son identifiant reste un pseudonyme sur les runs et
+      le journal d'audit.
+    </InlineBanner>
+  );
+}
+
+// ErasureRetry repeats the erasure of an erased account. Every step of it is
+// idempotent, so a repeat completes an interrupted erasure — before the
+// anonymization, or in the clean-up after it, which the account row does not
+// show — and changes nothing on a complete one.
+function ErasureRetry({ busy, onErase }: { busy: boolean; onErase: () => Promise<unknown> }) {
+  return (
+    <section className="space-y-2 mt-5 pt-4 border-t border-border-default">
+      <h3 className="font-medium">Effacement du compte</h3>
+      <p className="text-caption text-fg-subtle">
+        Relancer l'effacement termine un effacement interrompu ; sur un compte déjà effacé, il ne
+        change rien.
+      </p>
+      <Button size="sm" variant="secondary" disabled={busy} onClick={() => void onErase()}>
+        Relancer l'effacement
+      </Button>
+    </section>
   );
 }
 
@@ -124,7 +234,8 @@ function IdentitySection({ detail }: { detail: AdminUserDetail }) {
   // password AND no SSO link means no way in at all — a different problem
   // from "locked out", which a reset would fix.
   const noWayIn = !hasPassword && links.length === 0;
-  const unplaced = detail.orgs.length === 0 && detail.teams.length === 0;
+  const erased = user.status === "erased";
+  const unplaced = !erased && detail.orgs.length === 0 && detail.teams.length === 0;
 
   return (
     // h3: the Dialog's own title is this surface's h2, so its sections are
@@ -150,7 +261,9 @@ function IdentitySection({ detail }: { detail: AdminUserDetail }) {
                 ? "success"
                 : user.status === "disabled"
                   ? "danger"
-                  : "warning"
+                  : user.status === "erased"
+                    ? "neutral"
+                    : "warning"
             }
           >
             {user.status}
@@ -188,7 +301,9 @@ function IdentitySection({ detail }: { detail: AdminUserDetail }) {
         {links.length === 0 ? (
           <p className="text-caption text-fg-subtle">
             No SSO identity linked.
-            {hasPassword ? "" : " With no password either, this account has no way to sign in."}
+            {hasPassword || erased
+              ? ""
+              : " With no password either, this account has no way to sign in."}
           </p>
         ) : (
           <ul className="text-sm space-y-1">

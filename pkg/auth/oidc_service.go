@@ -813,10 +813,10 @@ func (s *Service) canAutoLink(ctx context.Context, row orgsso.OrgSSOProvider, ta
 // reset (or its administrator) for one that signs in through SSO only. Nil
 // for an active account.
 func ssoRefusal(u identity.User) error {
-	switch u.Status {
-	case identity.UserStatusDisabled:
-		return ErrAccountDisabled
-	case identity.UserStatusPendingPasswordChange:
+	if refusal := accountRefusal(u); refusal != nil {
+		return refusal
+	}
+	if u.Status == identity.UserStatusPendingPasswordChange {
 		return ErrPasswordChangeRequired
 	}
 	return nil

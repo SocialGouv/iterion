@@ -163,6 +163,11 @@ func routeSchemas() map[string]routeOp {
 		},
 		"GET /api/admin/users/{id}":   {response: adminUserDetailView{}},
 		"PATCH /api/admin/users/{id}": {request: adminUpdateUserReq{}, response: UserView{}},
+		"POST /api/admin/users/{id}/erase": {
+			response:    adminEraseUserResponse{},
+			description: "Erase an account by anonymization (GDPR art. 17): the row keeps its id under an erased-<id>@erased.invalid marker with status `erased`; name, password, GitHub orgs, SSO links, memberships, pending invitations, sessions, personal access tokens and push subscriptions go; the audit rows naming the account lose their IP, user agent and address (the invitation rows addressed to it lose the address); the account's personal org is scheduled for the nightly purge. Idempotent: a second call answers 200 with already_erased. Refused on the caller's own account (422 self_erasure) and when the account is the last owner of a shared org (409 last_org_owner).",
+			errors:      map[int]string{401: "Authentication required", 403: "Super-admin required", 404: "No such user", 409: "The account is the last owner of an organization: transfer its ownership or delete the organization first", 422: "The caller's own account", 500: "A step of the erasure failed: the message names it; repeat the request"},
+		},
 
 		// One org / one team, for anyone who may view them. The pair is
 		// what lets a console resolve a tenant by id instead of by the

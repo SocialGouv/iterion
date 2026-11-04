@@ -77,12 +77,7 @@ the doctrine across them. Decision records:
   dispatcher, pipeline admission), actor user | webhook | system; a test
   refuses a `Launch` outside the wrapper. To be written with that change.
 
-## Erasure — to be completed by gap 3
+## Erasure
 
-- The account-erasure change scrubs `{meta.subject_hash, ip, user_agent}` of
-  the rows whose actor or target is the erased account AND of the refusals
-  by address, which carry no account id: matched on `SubjectDigest(email)`
-  recomputed under every key still in the signing key set (a retired key's
-  digest is unlinkable). One method of `audit.Store` (Memory and Mongo in
-  lock-step); it also deletes the account's `sessions` rows (revocation
-  alone keeps them). Section owned by that change.
+What an account erasure removes from the rows above, and what stays a
+pseudonym: [account-erasure.md](account-erasure.md).

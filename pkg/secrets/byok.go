@@ -438,6 +438,12 @@ type ApiKeyStore interface {
 	// ListByUser returns the requesting user's user-scoped keys
 	// inside a given team.
 	ListByUser(ctx context.Context, teamID, userID string) ([]ApiKey, error)
+	// DeleteByScopeUser removes every key scoped to userID (ScopeUserID),
+	// in every team and tenant whatever the context, and answers how many
+	// it removed — an account's erasure ends the person's own credentials.
+	// Team-wide keys are never touched: an empty userID, which would name
+	// them, is refused.
+	DeleteByScopeUser(ctx context.Context, userID string) (int64, error)
 	// MarkUsed updates last_used_at without altering anything else.
 	MarkUsed(ctx context.Context, id string, at time.Time) error
 	// MarkFingerprintUsed bumps last_used_at on every key whose stable
@@ -464,6 +470,10 @@ type ApiKeyStore interface {
 var (
 	ErrApiKeyNotFound = errors.New("secrets: api key not found")
 )
+
+// errScopeUserRequired refuses a DeleteByScopeUser naming no user: the
+// empty scope is every team-wide credential's.
+var errScopeUserRequired = errors.New("secrets: delete by scope user: user id required")
 
 // Resolution describes a single resolved key the publisher needs to
 // inject for one provider on a given run.
@@ -1028,6 +1038,22 @@ func (m *MemoryApiKeyStore) Delete(ctx context.Context, id string) error {
 	return nil
 }
 
+func (m *MemoryApiKeyStore) DeleteByScopeUser(_ context.Context, userID string) (int64, error) {
+	if userID == "" {
+		return 0, errScopeUserRequired
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var n int64
+	for id, k := range m.keys {
+		if k.ScopeUserID == userID {
+			delete(m.keys, id)
+			n++
+		}
+	}
+	return n, nil
+}
+
 func (m *MemoryApiKeyStore) ListByTeam(_ context.Context, teamID, userID string) ([]ApiKey, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -1267,6 +1293,19 @@ func (s *MongoApiKeyStore) Delete(ctx context.Context, id string) error {
 		return err
 	}
 	return mongoutil.DeleteOneChecked(ctx, s.coll, filter, ErrApiKeyNotFound, "secrets: delete api key")
+}
+
+// DeleteByScopeUser filters on scope_user alone: the erasure crosses every
+// tenant the person held a key in.
+func (s *MongoApiKeyStore) DeleteByScopeUser(ctx context.Context, userID string) (int64, error) {
+	if userID == "" {
+		return 0, errScopeUserRequired
+	}
+	res, err := s.coll.DeleteMany(ctx, bson.M{"scope_user": userID})
+	if err != nil {
+		return 0, fmt.Errorf("secrets: delete the api keys of user %s: %w", userID, err)
+	}
+	return res.DeletedCount, nil
 }
 
 func (s *MongoApiKeyStore) ListByTeam(ctx context.Context, teamID, userID string) ([]ApiKey, error) {

@@ -51,6 +51,9 @@ func orgMemberKey(userID, orgID string) string { return userID + "|" + orgID }
 func oidcKey(provider, sub string) string      { return provider + "|" + sub }
 
 func (m *MemoryStore) CreateUser(_ context.Context, u User) (User, error) {
+	if IsErasedEmail(u.Email) {
+		return User{}, ErrReservedEmail
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	email := NormalizeEmail(u.Email)
@@ -111,11 +114,14 @@ func (m *MemoryStore) UpdateUser(_ context.Context, u User) error {
 
 // PatchUser mirrors the Mongo $set and its filter: only the named fields
 // move, and the precondition is read under the same write lock the race
-// would want, so a deactivation committed between a caller's read and its
-// write refuses the write instead of being reverted by it.
+// would want, so a deactivation or an erasure committed between a caller's
+// read and its write refuses the write instead of being reverted by it.
 func (m *MemoryStore) PatchUser(_ context.Context, id string, p UserPatch) (User, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if err := p.validate(); err != nil {
+		return User{}, err
+	}
 	cur, ok := m.users[id]
 	if !ok {
 		return User{}, ErrNotFound
@@ -166,6 +172,58 @@ func (m *MemoryStore) PatchUser(_ context.Context, id string, p UserPatch) (User
 	cur.UpdatedAt = time.Now().UTC()
 	m.users[id] = cur
 	return cur, nil
+}
+
+// MarkUserErased sets the erased status and keeps every other field — see
+// Store.MarkUserErased.
+func (m *MemoryStore) MarkUserErased(_ context.Context, id string) (User, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cur, ok := m.users[id]
+	if !ok {
+		return User{}, ErrNotFound
+	}
+	if cur.Status == UserStatusErased {
+		return cur, nil
+	}
+	cur.Status = UserStatusErased
+	cur.UpdatedAt = time.Now().UTC()
+	m.users[id] = cur
+	return cur, nil
+}
+
+// EraseUser anonymizes the row under its marker — see Store.EraseUser; the
+// Mongo twin spells the same fields as one update (eraseUserUpdate).
+func (m *MemoryStore) EraseUser(_ context.Context, id string) (User, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cur, ok := m.users[id]
+	if !ok {
+		return User{}, ErrNotFound
+	}
+	marker := ErasedEmail(id)
+	if cur.Email == marker {
+		return cur, nil
+	}
+	if holder, taken := m.emails[marker]; taken && holder != id {
+		return User{}, ErrEmailAlreadyTaken
+	}
+	delete(m.emails, cur.Email)
+	m.users[id] = erasedUser(cur, marker, time.Now().UTC())
+	m.emails[marker] = id
+	return m.users[id], nil
+}
+
+// erasedUser is the row u becomes once erased: what EraseUser keeps and
+// clears, as one function both twins' tests compare against.
+func erasedUser(u User, marker string, at time.Time) User {
+	return User{
+		ID:        u.ID,
+		Email:     marker,
+		Status:    UserStatusErased,
+		CreatedAt: u.CreatedAt,
+		UpdatedAt: at,
+	}
 }
 
 // getByIDs collects the entries of m matching ids into a fresh map.
@@ -762,6 +820,47 @@ func (m *MemoryStore) DeleteInvitation(_ context.Context, id string) error {
 		delete(m.invHash, inv.TokenHash)
 	}
 	return nil
+}
+
+func (m *MemoryStore) DeleteInvitationsByEmail(_ context.Context, email string) (int64, error) {
+	addr := NormalizeEmail(email)
+	if addr == "" {
+		return 0, errors.New("identity: delete invitations by email: no address")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var n int64
+	for id, inv := range m.invitations {
+		if !inv.AddressedTo(addr) {
+			continue
+		}
+		delete(m.invitations, id)
+		if inv.TokenHash != "" {
+			delete(m.invHash, inv.TokenHash)
+		}
+		n++
+	}
+	return n, nil
+}
+
+func (m *MemoryStore) DeleteInvitationsByInviter(_ context.Context, userID string) (int64, error) {
+	if userID == "" {
+		return 0, errors.New("identity: delete invitations by inviter: no user id")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var n int64
+	for id, inv := range m.invitations {
+		if inv.InvitedBy != userID {
+			continue
+		}
+		delete(m.invitations, id)
+		if inv.TokenHash != "" {
+			delete(m.invHash, inv.TokenHash)
+		}
+		n++
+	}
+	return n, nil
 }
 
 func (m *MemoryStore) ListInvitationsByTeam(_ context.Context, teamID string) ([]Invitation, error) {

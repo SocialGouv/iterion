@@ -18,6 +18,7 @@ package identity
 
 import (
 	"errors"
+	"slices"
 	"strings"
 	"time"
 )
@@ -138,7 +139,52 @@ const (
 	// password on next login. Used by bootstrap admin and admin-
 	// initiated resets.
 	UserStatusPendingPasswordChange UserStatus = "pending_password_change"
+	// UserStatusErased marks an account erased by anonymization (GDPR
+	// art. 17): its row keeps the id — the pseudonym every owner_id,
+	// actor_id and created_by still names — under an ErasedEmail marker,
+	// with no name, no password, no SSO link, no session and no
+	// membership. No sign-in of any kind opens on it and no console write
+	// revives it: the status is terminal, written by Store.MarkUserErased
+	// (which keeps the address while the erasure runs) and Store.EraseUser
+	// (which replaces it with the marker) only.
+	UserStatusErased UserStatus = "erased"
 )
+
+// SignInRefused reports whether no session may be opened or continued on
+// an account of this status — a disabled one, and an erased one. Every
+// gate that used to ask "is it disabled?" asks this instead, so the
+// erased status is refused at every site the disabled one is.
+func (s UserStatus) SignInRefused() bool {
+	return s == UserStatusDisabled || s == UserStatusErased
+}
+
+// SignInRefusingStatuses lists the statuses SignInRefused reports, as the
+// IfNotStatus precondition a credential or login write names: the write
+// refuses an account a deactivation or an erasure reached first. A fresh
+// slice each call, so a caller may append to it.
+func SignInRefusingStatuses() []UserStatus {
+	return []UserStatus{UserStatusDisabled, UserStatusErased}
+}
+
+// ErasedEmailDomain is the domain of the marker an erased account's email
+// is replaced with. `.invalid` is reserved by RFC 2606 and resolves
+// nowhere, so the marker can never be a deliverable address, and both
+// stores refuse to create an account under it (ErrReservedEmail), so the
+// marker can never collide with a row a person registered.
+const ErasedEmailDomain = "erased.invalid"
+
+// ErasedEmail is the marker that replaces the email of the erased account
+// id: unique per account, since the id is, so the unique index on `email`
+// admits every erasure.
+func ErasedEmail(id string) string {
+	return NormalizeEmail("erased-" + id + "@" + ErasedEmailDomain)
+}
+
+// IsErasedEmail reports whether email is an erasure marker (any address
+// under ErasedEmailDomain).
+func IsErasedEmail(email string) bool {
+	return strings.HasSuffix(NormalizeEmail(email), "@"+ErasedEmailDomain)
+}
 
 // User is a person account.
 type User struct {
@@ -585,6 +631,14 @@ var (
 	// ErrUserPasswordChanged is UserPatch.IfPasswordHash refusing the write:
 	// the row's password hash is no longer the one the caller verified.
 	ErrUserPasswordChanged = errors.New("identity: user password changed under this write")
+	// ErrReservedEmail is a store refusing to create an account under
+	// ErasedEmailDomain: the domain is the erasure markers', and a row
+	// registered there would block the erasure whose marker it takes.
+	ErrReservedEmail = errors.New("identity: email domain reserved for erased accounts")
+	// ErrErasedStatusReserved is a UserPatch naming UserStatusErased: the
+	// status is written by Store.EraseUser alone, with the anonymization it
+	// stands for, never as a bare status flip.
+	ErrErasedStatusReserved = errors.New("identity: the erased status is written by an erasure only")
 )
 
 // NormalizeEmail lower-cases and trims whitespace from an email.
@@ -684,22 +738,34 @@ func (p UserPatch) Empty() bool {
 		p.LastLoginAt == nil && p.Lockout == nil
 }
 
-// statusRefused reports whether status is one the patch declared it would not
-// write over — the memory store's reading of the precondition. Mongo spells
-// the same thing as a `$nin` arm of the update filter; the patch conformance
-// suite runs against both so the two cannot drift.
-func (p UserPatch) statusRefused(status UserStatus) bool {
-	for _, blocked := range p.IfNotStatus {
-		if status == blocked {
-			return true
-		}
+// refusedStatuses lists every status the patch does not write over: the ones
+// it names (IfNotStatus) and, always, UserStatusErased — an erased row is a
+// pseudonym no patch reaches, whichever writer sends it, so a re-enable, a
+// bootstrap reconcile or a sign-in racing an erasure cannot revive it.
+func (p UserPatch) refusedStatuses() []UserStatus {
+	out := slices.Clone(p.IfNotStatus)
+	if !slices.Contains(out, UserStatusErased) {
+		out = append(out, UserStatusErased)
 	}
-	return false
+	return out
 }
 
-// hasPrecondition reports whether the patch names a precondition.
-func (p UserPatch) hasPrecondition() bool {
-	return len(p.IfNotStatus) > 0 || p.IfPasswordHash != nil
+// statusRefused reports whether status is one the patch does not write
+// over — the memory store's reading of the precondition. Mongo spells the
+// same thing as a `$nin` arm of the update filter; the patch conformance
+// suite runs against both so the two cannot drift.
+func (p UserPatch) statusRefused(status UserStatus) bool {
+	return slices.Contains(p.refusedStatuses(), status)
+}
+
+// validate refuses a patch no store may write whatever the row: one that
+// sets UserStatusErased, which Store.EraseUser alone writes, together with
+// the anonymization it stands for.
+func (p UserPatch) validate() error {
+	if p.Status != nil && *p.Status == UserStatusErased {
+		return ErrErasedStatusReserved
+	}
+	return nil
 }
 
 // precondition is the refusal the patch's preconditions give the row u: nil

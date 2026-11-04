@@ -394,7 +394,9 @@ func mapAuthErrorStatus(err error) int {
 	case errors.Is(err, auth.ErrSignupClosed),
 		errors.Is(err, auth.ErrInvitationMismatch),
 		errors.Is(err, auth.ErrPasswordWeak),
-		errors.Is(err, identity.ErrInvalidRole):
+		errors.Is(err, identity.ErrInvalidRole),
+		errors.Is(err, identity.ErrReservedEmail),
+		errors.Is(err, identity.ErrErasedStatusReserved):
 		return http.StatusBadRequest
 	case errors.Is(err, auth.ErrLinkRequiresConsent),
 		errors.Is(err, auth.ErrLinkAlreadyOwned):
@@ -414,7 +416,8 @@ func mapAuthErrorStatus(err error) int {
 		errors.Is(err, identity.ErrOrgSlugAlreadyTaken),
 		errors.Is(err, identity.ErrRunnerPoolHeld),
 		errors.Is(err, identity.ErrUserStatusChanged),
-		errors.Is(err, identity.ErrInvitationUsed):
+		errors.Is(err, identity.ErrInvitationUsed),
+		errors.Is(err, auth.ErrLastOrgOwner):
 		return http.StatusConflict
 	case errors.Is(err, identity.ErrInvitationExpired):
 		return http.StatusGone
@@ -428,6 +431,8 @@ func mapAuthErrorStatus(err error) int {
 		// deployment uses GitHub team-gating); a credential that may never
 		// mint what the route mints (a personal access token at a switch).
 		return http.StatusForbidden
+	case errors.Is(err, auth.ErrGrantRefused):
+		return http.StatusUnprocessableEntity
 	}
 	return http.StatusInternalServerError
 }

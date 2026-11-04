@@ -4240,6 +4240,83 @@
         },
         "type": "object"
       },
+      "adminEraseUserResponse": {
+        "properties": {
+          "already_erased": {
+            "type": "boolean"
+          },
+          "api_keys_removed": {
+            "type": "integer"
+          },
+          "audit_events_scrubbed": {
+            "type": "integer"
+          },
+          "config_share_deliveries_scrubbed": {
+            "type": "integer"
+          },
+          "invitations_removed": {
+            "type": "integer"
+          },
+          "memberships_removed": {
+            "type": "integer"
+          },
+          "oauth_credentials_removed": {
+            "type": "integer"
+          },
+          "org_memberships_removed": {
+            "type": "integer"
+          },
+          "personal_access_tokens_revoked": {
+            "type": "integer"
+          },
+          "personal_orgs_marked_for_purge": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "pool_pledges_removed": {
+            "type": "integer"
+          },
+          "push_subscriptions_removed": {
+            "type": "integer"
+          },
+          "run_notes_reattributed": {
+            "type": "integer"
+          },
+          "secrets_removed": {
+            "type": "integer"
+          },
+          "sessions_deleted": {
+            "type": "integer"
+          },
+          "sso_links_removed": {
+            "type": "integer"
+          },
+          "user": {
+            "$ref": "#/components/schemas/UserView"
+          }
+        },
+        "required": [
+          "user",
+          "already_erased",
+          "sessions_deleted",
+          "personal_access_tokens_revoked",
+          "sso_links_removed",
+          "memberships_removed",
+          "org_memberships_removed",
+          "invitations_removed",
+          "push_subscriptions_removed",
+          "oauth_credentials_removed",
+          "pool_pledges_removed",
+          "api_keys_removed",
+          "secrets_removed",
+          "run_notes_reattributed",
+          "config_share_deliveries_scrubbed",
+          "audit_events_scrubbed"
+        ],
+        "type": "object"
+      },
       "adminForgeOAuthAppReq": {
         "properties": {
           "client_id": {
@@ -8373,6 +8450,56 @@
           }
         },
         "summary": "PATCH /api/admin/users/{id}",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/api/admin/users/{id}/erase": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "description": "Erase an account by anonymization (GDPR art. 17): the row keeps its id under an erased-\u003cid\u003e@erased.invalid marker with status `erased`; name, password, GitHub orgs, SSO links, memberships, pending invitations, sessions, personal access tokens and push subscriptions go; the audit rows naming the account lose their IP, user agent and address (the invitation rows addressed to it lose the address); the account's personal org is scheduled for the nightly purge. Idempotent: a second call answers 200 with already_erased. Refused on the caller's own account (422 self_erasure) and when the account is the last owner of a shared org (409 last_org_owner).",
+        "operationId": "postAdminUsersByIdErase",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/adminEraseUserResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "401": {
+            "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
+          },
+          "403": {
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
+          },
+          "404": {
+            "description": "No such user"
+          },
+          "409": {
+            "description": "The account is the last owner of an organization: transfer its ownership or delete the organization first"
+          },
+          "422": {
+            "description": "The caller's own account"
+          },
+          "500": {
+            "description": "A step of the erasure failed: the message names it; repeat the request"
+          }
+        },
+        "summary": "POST /api/admin/users/{id}/erase",
         "tags": [
           "admin"
         ]
