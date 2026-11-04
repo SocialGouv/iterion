@@ -328,6 +328,11 @@ func (s *Server) handleMarketplaceInstall(w http.ResponseWriter, r *http.Request
 		// path sends it so re-installing a drifted version succeeds instead
 		// of erroring "already exists".
 		force := strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("force")), "true")
+		release, ok := s.lockBotTree(w, r, botTreeWriterMarketplace)
+		if !ok {
+			return
+		}
+		defer release()
 		res, err := botinstall.Install(r.Context(), botinstall.Options{
 			Source:  entry.RepoURL,
 			Ref:     entry.Ref,
@@ -430,6 +435,11 @@ func (s *Server) handleMarketplaceUninstall(w http.ResponseWriter, r *http.Reque
 		s.httpErrorFor(w, r, http.StatusBadRequest, "marketplace: no workspace configured to uninstall from")
 		return
 	}
+	release, ok := s.lockBotTree(w, r, botTreeWriterMarketplaceRemove)
+	if !ok {
+		return
+	}
+	defer release()
 	// The bundle installs under its manifest name (entry.Name), not the
 	// registry slug — Remove deletes <workdir>/.botz/<name>.
 	removed, err := botinstall.Remove(r.Context(), botinstall.Options{

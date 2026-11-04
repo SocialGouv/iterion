@@ -469,10 +469,14 @@ func TestSaveFileCreateOnlyAnswersConflictWhenAListedControlEntryVanished(t *tes
 // The interleaving the merge queue hit, pinned: two create-only saves of
 // one file, the loser holding the control listing it took while the winner
 // publishes its candidate out of that directory. The loser answers 409 for
-// the file the winner created, never 404.
+// the file the winner created, never 404. The winner is another process's
+// server on the same workspace: one server's bot tree write lock orders its
+// own two saves, and across processes the per-file locks and their audit
+// are what answer.
 func TestSaveFileCreateOnlyLoserAnswersConflictWhenTheWinnerPublishesUnderItsListing(t *testing.T) {
 	workdir := t.TempDir()
 	s := &Server{cfg: Config{WorkDir: workdir}}
+	other := &Server{cfg: Config{WorkDir: workdir}}
 	candidateStaged := make(chan struct{}) // the winner wrote its candidate and is about to publish
 	listingTaken := make(chan struct{})    // the loser holds a listing that names that candidate
 	winnerAnswered := make(chan struct{})  // the winner published and released its lock
@@ -503,7 +507,7 @@ func TestSaveFileCreateOnlyLoserAnswersConflictWhenTheWinnerPublishesUnderItsLis
 
 	winner := make(chan int, 1)
 	go func() {
-		winner <- saveWorkflowRequest(t, s, "one-winner.bot", "winner", true).Code
+		winner <- saveWorkflowRequest(t, other, "one-winner.bot", "winner", true).Code
 		close(winnerAnswered)
 	}()
 	// Whatever happens next, the winner is released and joined before this
@@ -1046,10 +1050,13 @@ func TestSaveFileRefusesAnExclusionThatNoLongerExcludes(t *testing.T) {
 // record) and leaves a candidate to the transaction that staged it: a save
 // whose listing names a neighbour's candidate goes through. An audit
 // widened to that kind would refuse every save made while another save of
-// the same directory is mid-flight.
+// the same directory is mid-flight. The parked save is another process's
+// server on the same workspace: one server's bot tree write lock orders its
+// own two saves, and across processes the audit is what answers.
 func TestSaveFileAcceptsTheCandidateANeighbourSaveStaged(t *testing.T) {
 	workdir := t.TempDir()
 	s := &Server{cfg: Config{WorkDir: workdir}}
+	other := &Server{cfg: Config{WorkDir: workdir}}
 	control := filepath.Join(workdir, ".iterion", "authoring")
 	candidateStaged := make(chan struct{})   // the parked save staged its candidate and is about to publish
 	neighbourAnswered := make(chan struct{}) // the other save answered; the parked one may publish
@@ -1099,7 +1106,7 @@ func TestSaveFileAcceptsTheCandidateANeighbourSaveStaged(t *testing.T) {
 
 	parked := make(chan int, 1)
 	go func() {
-		parked <- saveWorkflowRequest(t, s, "one-winner.bot", "winner", true).Code
+		parked <- saveWorkflowRequest(t, other, "one-winner.bot", "winner", true).Code
 		close(parkedAnswered)
 	}()
 	// Whatever happens next, the parked save is released and joined before

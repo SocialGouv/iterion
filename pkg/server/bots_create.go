@@ -49,6 +49,16 @@ func (s *Server) handleBotCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The name is decided, the bundle scaffolded and its entry looked up
+	// under the bot tree's write lock: a manifest another writer has moved
+	// aside would free its bot's name — a duplicate that takes the routing
+	// from the bot that is there — or lend its main.bot's.
+	release, ok := s.lockBotTree(w, r, botTreeWriterBotCreate)
+	if !ok {
+		return
+	}
+	defer release()
+
 	// Collision check against BOTH the discovery registry (a bot of that
 	// name may live in any configured path) and the target directory.
 	if err := botregistry.EnsureNameFree(s.botListOptions(), spec.Slug); err != nil {

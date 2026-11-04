@@ -100,8 +100,11 @@ func (s *Server) handleAssistantDependencyBotsUpdate(w http.ResponseWriter, r *h
 		return
 	}
 
-	s.assistantDependencyMu.Lock()
-	defer s.assistantDependencyMu.Unlock()
+	release, ok := s.lockBotTree(w, r, botTreeWriterDependencyUpdate)
+	if !ok {
+		return
+	}
+	defer release()
 	result, err := assistantDependencyBotsUpdateInPaths(r.Context(), workDir, req, discoveryPaths)
 	if err != nil {
 		s.authoringError(w, r, err)
@@ -128,13 +131,19 @@ func (s *Server) handleAssistantDependencyBotsLocalize(w http.ResponseWriter, r 
 		s.authoringError(w, r, err)
 		return
 	}
+	// The consumer bundle is resolved under the lock its write holds: a
+	// bundle resolved before it may be another one by the time of the
+	// write.
+	release, ok := s.lockBotTree(w, r, botTreeWriterDependencyLocalize)
+	if !ok {
+		return
+	}
+	defer release()
 	target, err := s.resolveAuthoringTarget(r, req.EditorPath)
 	if err != nil {
 		s.authoringError(w, r, err)
 		return
 	}
-	s.assistantDependencyMu.Lock()
-	defer s.assistantDependencyMu.Unlock()
 	result, err := assistantDependencyBotsLocalize(r.Context(), target, req)
 	if err != nil {
 		s.authoringError(w, r, err)

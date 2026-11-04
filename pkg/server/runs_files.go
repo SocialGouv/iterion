@@ -751,6 +751,14 @@ func (s *Server) handleSaveRunFileContent(w http.ResponseWriter, r *http.Request
 		s.httpErrorFor(w, r, http.StatusNotFound, "run not found: %v", err)
 		return
 	}
+	// A run that executed in place has the operator's workspace for its
+	// worktree, bots included: the file is resolved and written under the
+	// bot tree's write lock, as every other writer of those files.
+	release, locked := s.lockBotTree(w, r, botTreeWriterRunFileSave)
+	if !locked {
+		return
+	}
+	defer release()
 	abs, ok := s.resolveRunWorktreePath(w, r, run, req.Path)
 	if !ok {
 		return

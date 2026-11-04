@@ -237,6 +237,16 @@ func (s *Server) handleBotsPut(w http.ResponseWriter, r *http.Request) {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "bots: missing name")
 		return
 	}
+	// The bundle the name maps to is resolved under the lock the edit holds
+	// through its write and the entry it answers: a manifest another writer
+	// has moved aside, or a rename that re-points the name, is never what
+	// the lookup sees — the edit patches the bot it was asked for, or
+	// answers that no such bot is there.
+	release, locked := s.lockBotTree(w, r, botTreeWriterBotMetadata)
+	if !locked {
+		return
+	}
+	defer release()
 	if s.refuseStoredBotEdit(w, r, name) {
 		return
 	}
@@ -367,6 +377,14 @@ func (s *Server) handleBotOverlay(w http.ResponseWriter, r *http.Request) {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "invalid request: %v", err)
 		return
 	}
+	// The toggle and the entry it answers are decided under the bot tree's
+	// write lock: the entry is the one the toggle applies to, never what a
+	// manifest moved aside by another writer lets the catalog list.
+	release, locked := s.lockBotTree(w, r, botTreeWriterBotOverlay)
+	if !locked {
+		return
+	}
+	defer release()
 	// The workspace overlay is never consulted for a STORED entry (team or
 	// platform): botregistry reads it off the filesystem catalog, and a
 	// stored bundle is materialised without it. A toggle there would 200
@@ -508,6 +526,11 @@ func (s *Server) handleBotInstall(w http.ResponseWriter, r *http.Request) {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "bots: url is required")
 		return
 	}
+	release, ok := s.lockBotTree(w, r, botTreeWriterBotInstall)
+	if !ok {
+		return
+	}
+	defer release()
 	res, err := botinstall.Install(r.Context(), botinstall.Options{
 		Source:  req.URL,
 		Ref:     req.Ref,
@@ -565,6 +588,11 @@ func (s *Server) handleBotUpload(w http.ResponseWriter, r *http.Request) {
 	defer file.Close()
 	force := strings.EqualFold(strings.TrimSpace(r.FormValue("force")), "true")
 	name := strings.TrimSpace(r.FormValue("name"))
+	release, ok := s.lockBotTree(w, r, botTreeWriterBotUpload)
+	if !ok {
+		return
+	}
+	defer release()
 	// Bundle extraction enforces its own traversal/size/entry guards; the
 	// LimitReader is defence-in-depth so a lying Content-Length can't make
 	// the extractor read past the cap.

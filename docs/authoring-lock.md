@@ -10,6 +10,25 @@ side of it, moved out of
 that page keeps its byte budget; the package's own contract is in
 [extensions-and-bot-sources.md](agents/engine/extensions-and-bot-sources.md).
 
+## The server's writers take the bot tree first
+
+A per-file lock orders the writers of ONE file, from the moment the writer
+knows which file it writes. The server's writers decide that file by
+resolving: a bot name through the catalog, an editor path up to its nearest
+manifest, a unit's siblings, a bundle to validate. Those reads ran outside
+any lock, and a publication moves the live file aside before it moves its
+successor in — so a loser of a write race read a half-written tree and
+answered a request error (404, 400, 422), or acted on another bot (a rename
+in between). Every server handler that writes the bot tree, or resolves a
+bot and then writes, therefore takes the server's bot tree write lock
+(`holdBotTreeWrites`, `pkg/server/bot_tree_lock.go`) BEFORE it resolves
+anything, and holds it through its write; the per-file locks come after it.
+The key is the whole tree: no per-bot key exists before the resolution a
+rename re-points. Writers queue in arrival order; reads take nothing; a
+request that ends while it waits answers 503 `bot_tree_busy`, nothing
+written. The lock is the process's — across processes the per-file locks
+remain the order.
+
 ## The lock a refresh holds
 
 A generated catalogue (`<owner>/skills/iterion-bot-catalog.md`) is a stored

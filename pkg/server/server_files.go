@@ -855,6 +855,15 @@ func (s *Server) handleSaveFile(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, "filename must end in .bot")
 		return
 	}
+	// The path, the unit's files, its revision and the siblings its check
+	// reads are resolved under the lock the save holds through its write:
+	// another writer's publication is never half-seen, and a sibling the
+	// check passed is still that sibling when the fragment is written.
+	release, ok := s.lockBotTree(w, r, botTreeWriterEditorSave)
+	if !ok {
+		return
+	}
+	defer release()
 	absPath, err := s.safePath(req.Path)
 	if err != nil {
 		httpError(w, http.StatusBadRequest, "invalid path: %v", err)

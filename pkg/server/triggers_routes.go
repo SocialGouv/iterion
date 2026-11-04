@@ -199,6 +199,14 @@ func (s *Server) handleTriggerFromInvocation(w http.ResponseWriter, r *http.Requ
 	// comes from the same tier, or the binding describes a bundle that will
 	// not run (and a bot the team authored is not enable-able at all).
 	tenant := s.triggerTenant(r)
+	// The manifest the subscription is derived from is resolved under the
+	// bot tree's write lock, held through the subscription's write: never a
+	// catalog read between another writer's two moves of that manifest.
+	release, locked := s.lockBotTree(w, r, botTreeWriterTriggerInvocation)
+	if !locked {
+		return
+	}
+	defer release()
 	entry, ok, err := s.effectiveFindByNameForTeam(r.Context(), tenant, name)
 	if err != nil {
 		dispatcher.WriteErr(w, http.StatusInternalServerError, err)

@@ -287,6 +287,13 @@ func (s *Server) handleAuthoringGitCommit(w http.ResponseWriter, r *http.Request
 		s.httpErrorFor(w, r, http.StatusBadRequest, "%v", err)
 		return
 	}
+	// The perimeter and the attested bytes are read under the lock the
+	// commit holds: never between another writer's two moves.
+	release, ok := s.lockBotTreeForEditor(w, r, botTreeWriterAuthoringGitCommit, req.EditorPath)
+	if !ok {
+		return
+	}
+	defer release()
 	target, err := s.resolveAuthoringTarget(r, req.EditorPath)
 	if err != nil {
 		s.authoringError(w, r, err)
@@ -314,6 +321,13 @@ func (s *Server) handleAuthoringGitPublish(w http.ResponseWriter, r *http.Reques
 		s.httpErrorFor(w, r, http.StatusBadRequest, "%v", err)
 		return
 	}
+	// The perimeter the publication checks and the HEAD it pushes are read
+	// under the lock the authoring commits hold, through the push.
+	release, ok := s.lockBotTreeForEditor(w, r, botTreeWriterAuthoringGitPush, req.EditorPath)
+	if !ok {
+		return
+	}
+	defer release()
 	target, err := s.resolveAuthoringTarget(r, req.EditorPath)
 	if err != nil {
 		s.authoringError(w, r, err)
@@ -381,6 +395,18 @@ func (s *Server) handleAuthoringChange(w http.ResponseWriter, r *http.Request, c
 	if err := validateAuthoringChangesShape(req.Changes, currentAuthoringLimits()); err != nil {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "%v", err)
 		return
+	}
+	// A commit resolves its bundle, reads the files it replaces and
+	// validates the bundle under the bot tree's write lock, held through its
+	// write: another writer's publication is never half-seen, and a loser
+	// decides on what the winner wrote. A preview writes nothing and takes
+	// nothing.
+	if commit {
+		release, ok := s.lockBotTreeForEditor(w, r, botTreeWriterAuthoringCommit, req.EditorPath)
+		if !ok {
+			return
+		}
+		defer release()
 	}
 	target, err := s.resolveAuthoringTarget(r, req.EditorPath)
 	if err != nil {

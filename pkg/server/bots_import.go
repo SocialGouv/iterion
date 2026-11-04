@@ -98,6 +98,11 @@ func (s *Server) handleBotImport(w http.ResponseWriter, r *http.Request) {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "bots: server has no workdir to write the draft in")
 		return
 	}
+	release, ok := s.lockBotTree(w, r, botTreeWriterBotImport)
+	if !ok {
+		return
+	}
+	defer release()
 	rel := filepath.Join("bots", res.WorkflowName+".bot")
 	abs := filepath.Join(s.cfg.WorkDir, rel)
 	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {

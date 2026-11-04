@@ -19,15 +19,18 @@ import (
 // queues behind the clone.
 //
 // The test pins the handler at the point where the real work would start —
-// it holds assistantDependencyMu, so the handler blocks on that Lock — and
-// then asserts stateMu is writable after the short snapshot has completed.
+// it holds the bot tree's write lock, so the handler waits on it — and then
+// asserts stateMu is writable after the short snapshot has completed.
 // Under the `defer s.stateMu.RUnlock()` form the writer stays blocked.
 func TestAssistantDependencyUpdateDoesNotHoldStateMuAcrossTheFetch(t *testing.T) {
 	s := New(Config{DisableAuth: true, SkipProjectRegistration: true, WorkDir: t.TempDir()}, iterlog.Nop())
 
 	// Hold the action lock so the handler parks immediately after the
 	// validation that used to sit under the read lock.
-	s.assistantDependencyMu.Lock()
+	release, err := s.holdBotTreeWrites(t.Context(), "the test")
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	// Reading the request body happens after the brief configuration snapshot.
 	// Signal there instead of racing TryLock against that legitimate RLock.
@@ -37,7 +40,7 @@ func TestAssistantDependencyUpdateDoesNotHoldStateMuAcrossTheFetch(t *testing.T)
 	finished := make(chan struct{})
 	go func() { s.handleAssistantDependencyBotsUpdate(rec, req); close(finished) }()
 	defer func() {
-		s.assistantDependencyMu.Unlock()
+		release()
 		select {
 		case <-finished:
 		case <-time.After(5 * time.Second):
