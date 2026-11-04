@@ -57,7 +57,7 @@ func TestClawSandboxCredentialTheGatewayRouteIsAChannel(t *testing.T) {
 				t.Setenv(compatgw.APIKeyEnv, tc.gatewayKey)
 			}
 			const model = "openai_compatible/operator-gateway-model"
-			channel, ok := ClawSandboxCredential(context.Background(), model, delegate.SandboxHomeState{})
+			channel, ok := ClawSandboxCredential(context.Background(), model, "", delegate.SandboxHomeState{})
 			if ok != tc.want {
 				t.Fatalf("ClawSandboxCredential(gateway) = (%q, %v), want ok=%v", channel, ok, tc.want)
 			}

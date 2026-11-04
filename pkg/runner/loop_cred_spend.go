@@ -235,10 +235,13 @@ const gatewayWire = "openai_compatible"
 // Within a wire the slot follows the backend's own precedence: claude_code's
 // is secrets.AnthropicWireSlotOrder, the list anthropicCredEnvForCLI is
 // itself written against; claw's anthropic provider spends the Anthropic
-// key, then the forfait, in process and sandboxed alike — never a Moonshot
-// key, and never the run's z.ai key on a claude id: a GLM id is z.ai's
-// (below), and any other id the registry resolves past the z.ai key, which
-// the crossing hands to a GLM node alone (model.heldAnthropicWireAPIKey); pi
+// key, then the forfait where its walk under hint spends it
+// (model.ClawForfaitServes: not behind a destination other than the real
+// Anthropic wire, not under the subscription switch), in process and
+// sandboxed alike — past both the pod's env, no slot of the run's — never a
+// Moonshot key, and never the run's z.ai key on a claude id: a GLM id is
+// z.ai's (below), and any other id the registry resolves past the z.ai key,
+// which the crossing hands to a GLM node alone; pi
 // on `anthropic/…` or `openai/…` reads only that provider's key, the run's
 // default one then one pinned for the route (piRouteEnv) — never a forfait
 // nor a facade (its `openai-codex/…` provider, which spends the ChatGPT
@@ -247,7 +250,10 @@ const gatewayWire = "openai_compatible"
 // the forfait only while the runner lets it serve, then a key pinned for the
 // route. Reading it differently here would credit a credential the backend
 // did not use.
-func credentialSlotForRoute(creds secrets.Credentials, backend, modelName string) string {
+//
+// hint is the route's provider hint where its caller carries one (the
+// pre-flight); "" reads the hint-less walk.
+func credentialSlotForRoute(creds secrets.Credentials, backend, modelName, hint string) string {
 	// A gateway-served route is env-funded: the deployment's
 	// OPENAI_COMPATIBLE_* pair, no credential slot — booking it on a held
 	// key would charge a credential that never served it.
@@ -280,10 +286,13 @@ func credentialSlotForRoute(creds secrets.Credentials, backend, modelName string
 					return slot
 				}
 			}
-			return firstHeldSlot(creds,
-				string(secrets.ProviderAnthropic),
-				string(secrets.OAuthKindClaudeCode),
-			)
+			if slot := firstHeldSlot(creds, string(secrets.ProviderAnthropic)); slot != "" {
+				return slot
+			}
+			if model.ClawForfaitServes(creds, modelName, hint) {
+				return string(secrets.OAuthKindClaudeCode)
+			}
+			return ""
 		case delegate.BackendPi:
 			if providerFromModel(modelName) == anthropicWire {
 				return heldForRoute(creds, string(secrets.ProviderAnthropic))
@@ -328,14 +337,19 @@ func credentialSlotForRoute(creds secrets.Credentials, backend, modelName string
 // `fingerprint`) carries what its provider hint decided — a node pinned
 // `provider: zai` spends the z.ai key whatever holds the wire's default. Every
 // other route, and a session whose label names no slot, is read from its
-// (backend, model) pair.
+// (backend, model) pair, under the hint-less walk: the route carries no hint.
+// For claw that walk is the one every hint agrees with past the run's keys —
+// the forfait the hint-less walk spends, a hinted one spends too
+// (model.RunCredentialBaseURL only ever swaps the env's destination for the
+// direct wire) — so the ledger books the forfait only where the call spent
+// it, and charges nobody where the hint alone would decide.
 func routeSlot(creds secrets.Credentials, route routeKey) string {
 	if route.backend == delegate.BackendClaudeCode {
 		if slot, named := slotOfSource(route.source); named {
 			return slot
 		}
 	}
-	return credentialSlotForRoute(creds, route.backend, route.model)
+	return credentialSlotForRoute(creds, route.backend, route.model, "")
 }
 
 // slotOfSource maps a claude_code session's source label onto the slot it

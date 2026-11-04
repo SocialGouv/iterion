@@ -200,15 +200,15 @@ func TestCredentialSlotForRoute_FollowsTheWireSlotOrder(t *testing.T) {
 			secrets.ProviderAnthropic: "sk-ant",
 		},
 	}
-	if got := credentialSlotForRoute(creds, delegate.BackendClaudeCode, ""); got != string(secrets.ProviderMoonshot) {
+	if got := credentialSlotForRoute(creds, delegate.BackendClaudeCode, "", ""); got != string(secrets.ProviderMoonshot) {
 		t.Errorf("credentialSlotForRoute = %q, want moonshot (earlier than anthropic in secrets.AnthropicWireSlotOrder)", got)
 	}
 	// A `moonshot/` model spec pins the provider outright: the slot IS the
 	// one the spec names, held or not.
-	if got := credentialSlotForRoute(creds, "claw", "moonshot/kimi-k2"); got != string(secrets.ProviderMoonshot) {
+	if got := credentialSlotForRoute(creds, "claw", "moonshot/kimi-k2", ""); got != string(secrets.ProviderMoonshot) {
 		t.Errorf("credentialSlotForRoute(moonshot/kimi-k2) = %q, want moonshot", got)
 	}
-	if got := credentialSlotForRoute(secrets.Credentials{}, "claw", "moonshot/kimi-k2"); got != "" {
+	if got := credentialSlotForRoute(secrets.Credentials{}, "claw", "moonshot/kimi-k2", ""); got != "" {
 		t.Errorf("credentialSlotForRoute with no moonshot key = %q, want \"\" — charge nobody rather than a default", got)
 	}
 }
@@ -350,22 +350,22 @@ func TestCredentialSlotForRoute_GLMIsBookedOnTheZAIKey(t *testing.T) {
 		{"claw", "anthropic/glm-5.3"},
 		{delegate.BackendPi, "glm-5.3"},
 	} {
-		if got := credentialSlotForRoute(beside, r.backend, r.model); got != string(secrets.ProviderZAI) {
+		if got := credentialSlotForRoute(beside, r.backend, r.model, ""); got != string(secrets.ProviderZAI) {
 			t.Errorf("credentialSlotForRoute(%s, %s) = %q, want zai — a metered key's spend was booked elsewhere", r.backend, r.model, got)
 		}
 	}
 	// The forfait's own route is still the forfait's.
-	if got := credentialSlotForRoute(beside, delegate.BackendClaudeCode, "claude-opus-5-5"); got != string(secrets.OAuthKindClaudeCode) {
+	if got := credentialSlotForRoute(beside, delegate.BackendClaudeCode, "claude-opus-5-5", ""); got != string(secrets.OAuthKindClaudeCode) {
 		t.Errorf("credentialSlotForRoute(claude-opus-5-5) = %q, want the forfait", got)
 	}
 	// No z.ai key at all: charge nobody, never the forfait.
 	forfaitOnly := secrets.Credentials{OAuthCredentialFiles: map[string]string{delegate.BackendClaudeCode: "/forfait"}}
-	if got := credentialSlotForRoute(forfaitOnly, delegate.BackendClaudeCode, "glm-5.3"); got != "" {
+	if got := credentialSlotForRoute(forfaitOnly, delegate.BackendClaudeCode, "glm-5.3", ""); got != "" {
 		t.Errorf("credentialSlotForRoute(glm-5.3) with no z.ai key = %q, want \"\"", got)
 	}
 	// A GLM another provider serves is that provider's.
 	router := secrets.Credentials{APIKeys: map[secrets.Provider]string{secrets.ProviderOpenRouter: "or-key", secrets.ProviderZAI: "zai-key"}}
-	if got := credentialSlotForRoute(router, "claw", "openrouter/z-ai/glm-4.6"); got != string(secrets.ProviderOpenRouter) {
+	if got := credentialSlotForRoute(router, "claw", "openrouter/z-ai/glm-4.6", ""); got != string(secrets.ProviderOpenRouter) {
 		t.Errorf("credentialSlotForRoute(openrouter/z-ai/glm-4.6) = %q, want openrouter", got)
 	}
 }
@@ -378,7 +378,7 @@ func TestCredentialSlotForRoute_APrefixPinIsBookedOnItsPinnedKey(t *testing.T) {
 		APIKeys:       map[secrets.Provider]string{secrets.ProviderAnthropic: "sk-tenant"},
 		PinnedAPIKeys: map[secrets.Provider]string{secrets.ProviderMoonshot: "moonshot-platform"},
 	}
-	if got := credentialSlotForRoute(creds, "claw", "moonshot/kimi-k2"); got != string(secrets.ProviderMoonshot) {
+	if got := credentialSlotForRoute(creds, "claw", "moonshot/kimi-k2", ""); got != string(secrets.ProviderMoonshot) {
 		t.Errorf("credentialSlotForRoute(moonshot/kimi-k2) = %q, want moonshot — the pinned key it spent", got)
 	}
 }
@@ -391,12 +391,12 @@ func TestCredentialSlotForRoute_AClawAnthropicSpecIsBookedOnItsKey(t *testing.T)
 		APIKeys:       map[secrets.Provider]string{secrets.ProviderZAI: "zai-tenant"},
 		PinnedAPIKeys: map[secrets.Provider]string{secrets.ProviderAnthropic: "anthropic-platform"},
 	}
-	if got := credentialSlotForRoute(creds, "claw", "anthropic/claude-opus-5-5"); got != string(secrets.ProviderAnthropic) {
+	if got := credentialSlotForRoute(creds, "claw", "anthropic/claude-opus-5-5", ""); got != string(secrets.ProviderAnthropic) {
 		t.Errorf("credentialSlotForRoute(claw, anthropic/claude-opus-5-5) = %q, want anthropic — the key it spent", got)
 	}
 	// claude_code carries its pin as a hint the route key does not hold: the
 	// wire's default precedence answers there.
-	if got := credentialSlotForRoute(creds, delegate.BackendClaudeCode, "claude-opus-5-5"); got != string(secrets.ProviderZAI) {
+	if got := credentialSlotForRoute(creds, delegate.BackendClaudeCode, "claude-opus-5-5", ""); got != string(secrets.ProviderZAI) {
 		t.Errorf("credentialSlotForRoute(claude_code, claude-opus-5-5) = %q, want the default precedence (zai)", got)
 	}
 }
@@ -419,7 +419,7 @@ func TestCredentialSlotForRoute_AClawOpenAISpecFollowsClawsOrder(t *testing.T) {
 		{"the pinned key when nothing else", secrets.Credentials{PinnedAPIKeys: pinned}, "claw", string(secrets.ProviderOpenAI)},
 		{"codex never spends a pinned key", secrets.Credentials{PinnedAPIKeys: pinned}, delegate.BackendCodex, ""},
 	} {
-		if got := credentialSlotForRoute(tc.creds, tc.backend, "openai/gpt-6"); got != tc.want {
+		if got := credentialSlotForRoute(tc.creds, tc.backend, "openai/gpt-6", ""); got != tc.want {
 			t.Errorf("%s: credentialSlotForRoute(%s, openai/gpt-6) = %q, want %q", tc.name, tc.backend, got, tc.want)
 		}
 	}
@@ -467,7 +467,7 @@ func TestCredentialSlotForRoute_AClawOpenAIRouteIsBookedWhereClawSpent(t *testin
 								spent = string(secrets.ProviderOpenAI)
 							}
 						}
-						if got := credentialSlotForRoute(creds, delegate.BackendClaw, "openai/gpt-6"); got != spent {
+						if got := credentialSlotForRoute(creds, delegate.BackendClaw, "openai/gpt-6", ""); got != spent {
 							t.Errorf("booked on %q, claw spent %q", got, spent)
 						}
 					})
@@ -555,7 +555,7 @@ func TestCredentialSlotForRoute_EachBackendIsBookedInItsOwnOrder(t *testing.T) {
 			secrets.Credentials{APIKeys: map[secrets.Provider]string{secrets.ProviderMoonshot: "moonshot-tenant"}, OAuthCredentialFiles: forfaits},
 			delegate.BackendClaw, "anthropic/claude-opus-5-5", string(secrets.OAuthKindClaudeCode)},
 	} {
-		if got := credentialSlotForRoute(tc.creds, tc.backend, tc.model); got != tc.want {
+		if got := credentialSlotForRoute(tc.creds, tc.backend, tc.model, ""); got != tc.want {
 			t.Errorf("%s: credentialSlotForRoute(%s, %s) = %q, want %q", tc.name, tc.backend, tc.model, got, tc.want)
 		}
 	}

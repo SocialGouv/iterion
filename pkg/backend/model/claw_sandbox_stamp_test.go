@@ -3,9 +3,12 @@ package model
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/SocialGouv/claw-code-go/pkg/api"
 
 	"github.com/SocialGouv/iterion/pkg/backend/compatgw"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
@@ -179,7 +182,7 @@ func TestAStampedNodeItsRunDoesNotFundIsRefusedBeforeTheRunner(t *testing.T) {
 			if env != nil {
 				t.Errorf("the refused crossing still returned an env of %d names", len(env))
 			}
-			if channel, ok := ClawSandboxCredential(ctx, tc.spec, delegate.SandboxHomeState{}); ok {
+			if channel, ok := ClawSandboxCredential(ctx, tc.spec, "", delegate.SandboxHomeState{}); ok {
 				t.Errorf("ClawSandboxCredential admitted the refused node via %s", channel)
 			}
 		})
@@ -241,7 +244,7 @@ func TestAZAIKeyKeepsNoClaudeNodeFromItsRunsForfait(t *testing.T) {
 			}
 			// Stamped, every credential of the pod crossed empty: the first
 			// channel the admission probe finds is the forfait's.
-			if channel, ok := ClawSandboxCredential(ctx, spec, delegate.SandboxHomeState{}); !ok || !strings.Contains(channel, "CLAUDE_CONFIG_DIR") {
+			if channel, ok := ClawSandboxCredential(ctx, spec, "", delegate.SandboxHomeState{}); !ok || !strings.Contains(channel, "CLAUDE_CONFIG_DIR") {
 				t.Errorf("ClawSandboxCredential = %q ok=%v, want the run's forfait channel", channel, ok)
 			}
 		})
@@ -283,4 +286,152 @@ func TestTheForfaitCrossingLeavesNoShadowNameAbsent(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A `provider: "anthropic"` claude node goes to Anthropic direct whatever the
+// pod's ANTHROPIC_BASE_URL says — the hint's whole point on a pod redirected
+// to z.ai or a gateway (#1718) — so its run's Claude forfait is judged on the
+// direct wire, by the crossing as by the in-process twin, and the container,
+// which re-stamps the hint, spends it there. Stamped, the crossing does not
+// refuse a node its run funds; unstamped, it hands the container no
+// credential of the pod in the forfait's stead. The admission probe reads the
+// same hint the dispatch does.
+func TestAHintedClaudeNodeCrossesItsRunsForfaitPastARedirectedWire(t *testing.T) {
+	stampBench(t)
+	t.Setenv("ITERION_FORBID_SUBSCRIPTION_OAUTH", "")
+	t.Cleanup(SetCredentialsLookup(RunCredentialsLookup))
+	t.Cleanup(SetOAuthDirLookup(RunOAuthDirLookup))
+	const spec, hint = "anthropic/claude-sonnet-4", "anthropic"
+	forfaitDir := forfaitDirForTest(t)
+	forfait := map[string]string{string(secrets.OAuthKindClaudeCode): forfaitDir}
+
+	for _, wire := range []string{"https://api.z.ai/api/anthropic", "https://gateway.example/anthropic"} {
+		for _, stamped := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s stamped=%v", wire, stamped), func(t *testing.T) {
+				t.Setenv("ANTHROPIC_BASE_URL", wire)
+				ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{
+					AmbientRefused:       stamped,
+					OAuthCredentialFiles: forfait,
+				})
+				// The bench: in process the hinted node is served on the run's
+				// forfait, and the hint alone decides — the hint-less crossing
+				// on the same wire leaves the forfait home.
+				client, err := NewRegistry().ResolveWithContext(WithProviderHint(ctx, hint), spec)
+				if err != nil {
+					t.Fatalf("bench: the in-process twin refused the hinted node: %v", err)
+				}
+				if tok := clientBearerForTest(client); tok != "sk-ant-oat-run" {
+					t.Fatalf("bench: the in-process twin carries bearer %q, want the run's forfait", tok)
+				}
+				if hintless, _, _ := forwardableProviderEnv(ctx, spec, ""); hintless["CLAUDE_CONFIG_DIR"] != "" {
+					t.Fatalf("inert bench: the hint-less crossing on %s carries the forfait too — the hint would decide nothing", wire)
+				}
+
+				env, _, err := forwardableProviderEnv(ctx, spec, hint)
+				if err != nil {
+					t.Fatalf("the crossing refused a node its run's forfait funds: %v", err)
+				}
+				if got := env["CLAUDE_CONFIG_DIR"]; got != secrets.ClaudeCodeSandboxConfigDir {
+					t.Errorf("CLAUDE_CONFIG_DIR = %q, want the run's forfait %q — judged on the wire the hint skips", got, secrets.ClaudeCodeSandboxConfigDir)
+				}
+				for _, name := range []string{"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ZAI_API_KEY"} {
+					if v, present := env[name]; !present || v != "" {
+						t.Errorf("%s crossed as %q (present=%v), want the explicit empty beside the forfait", name, v, present)
+					}
+				}
+				// Stamped, every credential of the pod crossed empty: the first
+				// channel the admission probe finds is the forfait's.
+				if stamped {
+					if channel, ok := ClawSandboxCredential(ctx, spec, hint+",zai", delegate.SandboxHomeState{}); !ok || !strings.Contains(channel, "CLAUDE_CONFIG_DIR") {
+						t.Errorf("ClawSandboxCredential(hint chain %q) = %q ok=%v, want the run's forfait channel its first leg crosses", hint+",zai", channel, ok)
+					}
+				}
+
+				// The container's own resolution over the crossed env: no run
+				// credentials on its context, the hint re-stamped, the forfait
+				// at the dir the runtime seeds.
+				for name, v := range env {
+					t.Setenv(name, v)
+				}
+				t.Setenv("CLAUDE_CONFIG_DIR", forfaitDir)
+				inContainer, err := NewRegistry().ResolveWithContext(WithProviderHint(context.Background(), hint), spec)
+				if err != nil {
+					t.Fatalf("the container refused the hinted node over the crossed env: %v", err)
+				}
+				if tok := clientBearerForTest(inContainer); tok != "sk-ant-oat-run" {
+					t.Errorf("the container carries bearer %q, want the run's forfait its in-process twin spends", tok)
+				}
+			})
+		}
+	}
+}
+
+// Under ITERION_FORBID_SUBSCRIPTION_OAUTH the in-process twin passes the run's
+// forfait by for an ambient Anthropic credential of the pod, and refuses it
+// only where it is the walk's sole candidate. The crossing reads the same
+// walk: beside the pod's key it hands the container that key unstamped (the
+// account the in-process twin spends) and refuses stamped (the in-process
+// twin's answer too); with no ambient credential it crosses the forfait, so
+// the container answers the switch's refusal by name.
+func TestTheForbidSwitchCrossesWhatTheInProcessTwinSpends(t *testing.T) {
+	pod := stampBench(t)
+	t.Setenv("ANTHROPIC_BASE_URL", "")
+	t.Setenv("ITERION_FORBID_SUBSCRIPTION_OAUTH", "1")
+	t.Cleanup(SetCredentialsLookup(RunCredentialsLookup))
+	t.Cleanup(SetOAuthDirLookup(RunOAuthDirLookup))
+	const spec = "anthropic/claude-sonnet-4"
+	forfait := map[string]string{string(secrets.OAuthKindClaudeCode): forfaitDirForTest(t)}
+	forfaitCtx := func(stamped bool) context.Context {
+		return secrets.WithCredentials(context.Background(), secrets.Credentials{
+			AmbientRefused:       stamped,
+			OAuthCredentialFiles: forfait,
+		})
+	}
+
+	t.Run("beside the pod's key, unstamped", func(t *testing.T) {
+		ctx := forfaitCtx(false)
+		client, err := NewRegistry().ResolveWithContext(ctx, spec)
+		if cc, ok := client.(*api.Client); err != nil || !ok || cc.APIKey != pod("ANTHROPIC_API_KEY") {
+			t.Fatalf("bench: the in-process twin = %T err=%v, want a client on the pod's key", client, err)
+		}
+		env, _, err := forwardableProviderEnv(ctx, spec, "")
+		if err != nil {
+			t.Fatalf("forwardableProviderEnv: %v", err)
+		}
+		if got := env["CLAUDE_CONFIG_DIR"]; got != "" {
+			t.Errorf("CLAUDE_CONFIG_DIR = %q crosses under the switch beside the pod's key — the container refuses a node its in-process twin serves", got)
+		}
+		if got := env["ANTHROPIC_API_KEY"]; got != pod("ANTHROPIC_API_KEY") {
+			t.Errorf("ANTHROPIC_API_KEY = %q, want the pod's key the in-process twin spends", got)
+		}
+	})
+	t.Run("beside the pod's key, stamped", func(t *testing.T) {
+		ctx := forfaitCtx(true)
+		var refusal *ErrAmbientCredentialRefused
+		if _, err := NewRegistry().ResolveWithContext(ctx, spec); !errors.As(err, &refusal) {
+			t.Fatalf("bench: the in-process twin answered %v, want the typed ambient refusal", err)
+		}
+		if _, _, err := forwardableProviderEnv(ctx, spec, ""); !errors.As(err, &refusal) {
+			t.Errorf("the crossing answered %v, want the in-process twin's typed ambient refusal — not a forfait the switch refuses in the container", err)
+		}
+	})
+	t.Run("the forfait the sole candidate", func(t *testing.T) {
+		for _, name := range podCredentialEnvVars {
+			t.Setenv(name, "")
+		}
+		ctx := forfaitCtx(false)
+		if _, err := NewRegistry().ResolveWithContext(ctx, spec); !errors.Is(err, secrets.ErrSubscriptionOAuthForbidden) {
+			t.Fatalf("bench: the in-process twin answered %v, want the switch's refusal", err)
+		}
+		env, _, err := forwardableProviderEnv(ctx, spec, "")
+		if err != nil {
+			t.Fatalf("forwardableProviderEnv: %v", err)
+		}
+		if got := env["CLAUDE_CONFIG_DIR"]; got != secrets.ClaudeCodeSandboxConfigDir {
+			t.Errorf("CLAUDE_CONFIG_DIR = %q, want the run's forfait — the container's refusal of it is the in-process twin's answer", got)
+		}
+		if got := env["ITERION_FORBID_SUBSCRIPTION_OAUTH"]; got != "1" {
+			t.Errorf("ITERION_FORBID_SUBSCRIPTION_OAUTH = %q in the container, want the operator's refusal", got)
+		}
+	})
 }

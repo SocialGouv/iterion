@@ -102,7 +102,7 @@ func TestMetricsEmitter_ADelegationIsChargedToTheRouteThatServed(t *testing.T) {
 	creds := secrets.Credentials{APIKeys: map[secrets.Provider]string{
 		secrets.ProviderAnthropic: "sk-ant", secrets.ProviderOpenRouter: "sk-or",
 	}}
-	if got := credentialSlotForRoute(creds, delegate.BackendPi, key.model); got != string(secrets.ProviderOpenRouter) {
+	if got := credentialSlotForRoute(creds, delegate.BackendPi, key.model, ""); got != string(secrets.ProviderOpenRouter) {
 		t.Errorf("charged to slot %q, want openrouter", got)
 	}
 }

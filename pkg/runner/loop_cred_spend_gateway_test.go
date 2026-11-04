@@ -41,7 +41,7 @@ func TestGatewayRoute_IsEnvFundedNoWireNoSlot(t *testing.T) {
 		if got := wireForRoute(backend, "openai_compatible/m"); got != gatewayWire {
 			t.Errorf("wireForRoute(%q, openai_compatible/m) = %q, want %q — a gateway route runs on its own wire", backend, got, gatewayWire)
 		}
-		if got := credentialSlotForRoute(creds, backend, "openai_compatible/m"); got != "" {
+		if got := credentialSlotForRoute(creds, backend, "openai_compatible/m", ""); got != "" {
 			t.Errorf("credentialSlotForRoute(%q, openai_compatible/m) = %q, want \"\" — the deployment's gateway books on nobody", backend, got)
 		}
 	}
@@ -49,7 +49,7 @@ func TestGatewayRoute_IsEnvFundedNoWireNoSlot(t *testing.T) {
 	if got := wireForRoute(delegate.BackendClaw, "anthropic/claude-x"); got != anthropicWire {
 		t.Errorf("wireForRoute(claw, anthropic/claude-x) = %q, want %q — the gateway guard must narrow, not blank every read", got, anthropicWire)
 	}
-	if got := credentialSlotForRoute(creds, delegate.BackendClaw, "anthropic/claude-x"); got != string(secrets.ProviderAnthropic) {
+	if got := credentialSlotForRoute(creds, delegate.BackendClaw, "anthropic/claude-x", ""); got != string(secrets.ProviderAnthropic) {
 		t.Errorf("credentialSlotForRoute(claw, anthropic/claude-x) = %q, want anthropic", got)
 	}
 }

@@ -257,7 +257,7 @@ func TestAStampedRunReadsNothingOfThePodsAccount(t *testing.T) {
 			t.Fatalf("inert bench: the unstamped claw route (sandboxed=%v) = %q metered=%v, want the account's meter %q", sandboxed, key, metered, ambient)
 		}
 	}
-	if _, ok := model.ClawSandboxCredential(unstampedCtx, clawRoute.Model, delegate.SandboxHomeState{}); !ok {
+	if _, ok := model.ClawSandboxCredential(unstampedCtx, clawRoute.Model, "", delegate.SandboxHomeState{}); !ok {
 		t.Fatal("inert bench: the unstamped crossing hands the container no credential on a pod that carries one")
 	}
 
@@ -286,7 +286,7 @@ func TestAStampedRunReadsNothingOfThePodsAccount(t *testing.T) {
 	if _, err := model.NewRegistry().ResolveWithContext(ctx, supSpec); !errors.As(err, &refusal) {
 		t.Fatalf("bench: the registry on a stamped run = %v, want the typed ambient refusal", err)
 	}
-	if channel, ok := model.ClawSandboxCredential(ctx, clawRoute.Model, delegate.SandboxHomeState{}); ok {
+	if channel, ok := model.ClawSandboxCredential(ctx, clawRoute.Model, "", delegate.SandboxHomeState{}); ok {
 		t.Fatalf("bench: the crossing hands a stamped run's container %s — the pod's account would fund the claw route", channel)
 	}
 	if key, metered := stamped.supervisorKey(ctx, supSpec, ""); metered {
@@ -1222,7 +1222,7 @@ func TestAClawClaudeRouteMetersTheForfaitPastAZAIKey(t *testing.T) {
 				t.Fatalf("bench: the registry's client is %T, not one on the run's forfait", client)
 			}
 			if row.stamped {
-				if channel, ok := model.ClawSandboxCredential(ctx, spec, delegate.SandboxHomeState{}); !ok || !strings.Contains(channel, "CLAUDE_CONFIG_DIR") {
+				if channel, ok := model.ClawSandboxCredential(ctx, spec, "", delegate.SandboxHomeState{}); !ok || !strings.Contains(channel, "CLAUDE_CONFIG_DIR") {
 					t.Fatalf("bench: the crossing's channel = %q ok=%v, want the run's forfait", channel, ok)
 				}
 			}
@@ -1253,6 +1253,104 @@ func TestAClawClaudeRouteMetersTheForfaitPastAZAIKey(t *testing.T) {
 			weekCapped(t, zaiWall, zaiKey, resets)
 			if err := preflightFor(t, zaiWall, ctx, clawRun); err != nil {
 				t.Errorf("parked the claw run on the z.ai key's wall: %v — the route never spends it", err)
+			}
+		})
+	}
+}
+
+// A claw `anthropic/claude-*` route holding no Anthropic key spends the run's
+// Claude forfait only where claw's walk under the route's hint spends it
+// (model.ClawForfaitServes): behind a destination other than the real
+// Anthropic wire, or under ITERION_FORBID_SUBSCRIPTION_OAUTH beside the pod's
+// key, it spends the pod's account — in process and, the crossing reading the
+// same walk, in the container. So the route's pre-flight reads that account's
+// meter, as the supervisor meter does for the same spec, and the ledger books
+// no slot of the run; a `provider: "anthropic"` hint sends the forfait direct
+// past a redirected wire, and both meters read the forfait's.
+func TestAClawClaudeRouteMetersWhatClawsWalkSpendsOffTheForfaitsWire(t *testing.T) {
+	blankAnthropicWireEnv(t)
+	t.Setenv("ITERION_DEFAULT_SUPERVISOR_MODEL", "")
+	t.Setenv("ITERION_SUPERVISORS", "")
+	t.Cleanup(model.SetCredentialsLookup(model.RunCredentialsLookup))
+	t.Cleanup(model.SetOAuthDirLookup(model.RunOAuthDirLookup))
+	forfait := t.TempDir()
+	if err := os.WriteFile(filepath.Join(forfait, ".credentials.json"),
+		[]byte(`{"claudeAiOauth":{"accessToken":"sk-ant-oat-run","expiresAt":4102444800000}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	const spec = "anthropic/claude-sonnet-4"
+	creds := secrets.Credentials{
+		APIKeys:              map[secrets.Provider]string{secrets.ProviderZAI: "zai-run"},
+		OAuthCredentialFiles: map[string]string{string(secrets.OAuthKindClaudeCode): forfait},
+		Fingerprints: map[string]string{
+			string(secrets.ProviderZAI):         "fp-zai",
+			string(secrets.OAuthKindClaudeCode): "fp-oauth",
+		},
+	}
+	ctx := secrets.WithCredentials(context.Background(), creds)
+	podAccount := platformKey(secrets.FingerprintSHA256("sk-pod"))
+	resets := time.Now().UTC().Add(30 * time.Hour)
+
+	for _, row := range []struct {
+		name, baseURL, forbid, hint string
+		forfaitServes               bool
+	}{
+		{name: "a gateway wire", baseURL: "https://llm-gw.example.com"},
+		{name: "the subscription switch beside the pod's key", forbid: "1"},
+		{name: "hinted anthropic past a gateway wire", baseURL: "https://llm-gw.example.com", hint: "anthropic", forfaitServes: true},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Setenv("ANTHROPIC_BASE_URL", row.baseURL)
+			t.Setenv("ITERION_FORBID_SUBSCRIPTION_OAUTH", row.forbid)
+			t.Setenv("ANTHROPIC_API_KEY", "sk-pod")
+			// The bench: the account the in-process client carries.
+			client, err := model.NewRegistry().ResolveWithContext(model.WithProviderHint(ctx, row.hint), spec)
+			cc, ok := client.(*api.Client)
+			if err != nil || !ok {
+				t.Fatalf("bench: the registry answered %T err=%v", client, err)
+			}
+			keys := usageCapCredKeys(ctx, &queue.RunMessage{RunID: "run-routes"})
+			forfaitKey := keys.keyForSlot(string(secrets.OAuthKindClaudeCode))
+			want, other := podAccount, forfaitKey
+			if row.forfaitServes {
+				want, other = forfaitKey, podAccount
+				if cc.OAuthToken != "sk-ant-oat-run" {
+					t.Fatalf("bench: the registry's client carries none of the run's forfait")
+				}
+			} else if cc.APIKey != "sk-pod" || cc.OAuthToken != "" {
+				t.Fatalf("bench: the registry's client is not on the pod's key")
+			}
+			if want == other {
+				t.Fatalf("inert bench: the forfait and the pod's account share the meter %q", want)
+			}
+
+			route := model.WireRoute{NodeID: "impl", Backend: delegate.BackendClaw, Model: spec, Hint: row.hint, Readable: true}
+			for _, sandboxed := range []bool{false, true} {
+				keys.sandboxed = sandboxed
+				if key, metered := keys.routeKey(ctx, route); !metered || key != want {
+					t.Errorf("the claw route (sandboxed=%v) = %q metered=%v, want %q — the account claw's walk spends", sandboxed, key, metered, want)
+				}
+			}
+			keys.sandboxed = false
+			if key, metered := keys.supervisorKey(ctx, spec, row.hint); !metered || key != want {
+				t.Errorf("the supervisor meter of the same spec = %q metered=%v, want %q", key, metered, want)
+			}
+			if !row.forfaitServes {
+				if got := routeSlot(creds, routeKey{backend: delegate.BackendClaw, model: spec}); got != "" {
+					t.Errorf("the ledger books the claw route on %q, want no slot — the pod's account spent it", got)
+				}
+			}
+
+			clawRun := chainWorkflow(agentRoute("impl", delegate.BackendClaw, row.hint, spec))
+			wall := usagecap.NewMemStore()
+			weekCapped(t, wall, want, resets)
+			if err := preflightFor(t, wall, ctx, clawRun); err == nil {
+				t.Error("the claw run started on the capped account it spends")
+			}
+			otherWall := usagecap.NewMemStore()
+			weekCapped(t, otherWall, other, resets)
+			if err := preflightFor(t, otherWall, ctx, clawRun); err != nil {
+				t.Errorf("parked the claw run on a wall its route never meets: %v", err)
 			}
 		})
 	}

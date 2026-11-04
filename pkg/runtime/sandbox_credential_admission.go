@@ -87,7 +87,7 @@ func admitSandboxCredentials(ctx context.Context, p SandboxParams, caps sandbox.
 		case delegate.BackendClaudeCode:
 			channel, decidable = delegate.ClaudeCodeSandboxCredential(ctx, fields.Provider, home)
 		case delegate.BackendClaw:
-			channel, decidable = model.ClawSandboxCredential(ctx, fields.Model, home)
+			channel, decidable = model.ClawSandboxCredential(ctx, fields.Model, fields.Provider, home)
 		case delegate.BackendPi:
 			channel, decidable = delegate.PiSandboxCredential(ctx, fields.Model)
 		default:

@@ -401,7 +401,7 @@ func (k runCredKeys) routeKey(ctx context.Context, route model.WireRoute) (key s
 		}
 		slot = heldForRoute(creds, h)
 	} else {
-		slot = credentialSlotForRoute(creds, route.Backend, route.Model)
+		slot = credentialSlotForRoute(creds, route.Backend, route.Model, hint)
 	}
 	if slot != "" && secrets.WireFamily(slot) != secrets.WireFamilyAnthropic {
 		return "", false
@@ -1028,10 +1028,11 @@ func supervisorRouteID(name string, i int) string {
 // Registry.ResolveWithContext's order under the hint its evaluator resolves
 // with (the watched nodes' provider family, supervise.Spec.ProviderHint):
 // `anthropic/…` (no GLM id) the Anthropic key held for the route, else the
-// Claude forfait while claw takes it — not under
-// ITERION_FORBID_SUBSCRIPTION_OAUTH, not behind a non-Anthropic destination
-// (model.RunCredentialBaseURL: the env's ANTHROPIC_BASE_URL, the direct wire
-// under the `provider: "anthropic"` hint) — else the pod env, read off claw's
+// Claude forfait while claw takes it (model.ClawForfaitServes — not under
+// ITERION_FORBID_SUBSCRIPTION_OAUTH, not behind a non-Anthropic destination:
+// the env's ANTHROPIC_BASE_URL, the direct wire under the `provider:
+// "anthropic"` hint; the walk a claw node's route is read with too, so the
+// two meters name one account for one spec) — else the pod env, read off claw's
 // own walk (clawUnslottedKey): the account its client carries, the
 // no-credential meter where it carries none of the env's, nothing where claw
 // refuses the walk. A GLM id there the run's held z.ai key, else the run's
@@ -1067,8 +1068,7 @@ func (k runCredKeys) supervisorKey(ctx context.Context, spec, hint string) (key 
 			return k.keyForSlot(slot), true
 		}
 		slot = heldForRoute(creds, string(secrets.ProviderAnthropic))
-		if slot == "" && creds.OAuthDir(string(secrets.OAuthKindClaudeCode)) != "" &&
-			!secrets.ForbidSubscriptionOAuth() && secrets.AnthropicForfaitWireOK(model.RunCredentialBaseURL(spec, hint)) {
+		if slot == "" && model.ClawForfaitServes(creds, spec, hint) {
 			slot = string(secrets.OAuthKindClaudeCode)
 		}
 		if slot == "" {

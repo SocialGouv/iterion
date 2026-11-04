@@ -190,8 +190,15 @@ func anthropicDirectEnvCredentials(ctx context.Context, modelID string) (anthrop
 // anthropicFromCtxForfait). A GLM id is exempt from the hint branch and reads
 // the env's.
 func RunCredentialBaseURL(spec, hint string) string {
+	return runCredentialBaseURL(context.Background(), spec, hint)
+}
+
+// runCredentialBaseURL is RunCredentialBaseURL over the environment ctx
+// carries (the #2808 seam): the crossing judges the forfait on the env it
+// forwards from.
+func runCredentialBaseURL(ctx context.Context, spec, hint string) string {
 	if HonoursProviderHintValue(delegate.BackendClaw, hint) && !GLMOnAnthropicWire(spec) {
 		return ""
 	}
-	return envGetenv(context.Background(), "ANTHROPIC_BASE_URL")
+	return envGetenv(ctx, "ANTHROPIC_BASE_URL")
 }

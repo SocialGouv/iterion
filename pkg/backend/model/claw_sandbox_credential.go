@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/backend/compatgw"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
@@ -57,8 +58,14 @@ var clawSandboxCredentialEnvKeys = []string{
 // stamped run's node that no credential of the run funds: the crossing
 // carries none of the pod's and refuses the dispatch
 // (ErrAmbientCredentialRefused).
-func ClawSandboxCredential(ctx context.Context, model string, home delegate.SandboxHomeState) (channel string, ok bool) {
-	env, _, err := forwardableProviderEnv(ctx, model, "")
+//
+// providerHint is the node's `provider:` field: the crossing reads it (the
+// run's forfait goes to Anthropic direct under `provider: "anthropic"`), so
+// the probe composes the env the first dispatch does — a chain's first leg,
+// the element claw dispatches first.
+func ClawSandboxCredential(ctx context.Context, model, providerHint string, home delegate.SandboxHomeState) (channel string, ok bool) {
+	hint := strings.TrimSpace(strings.Split(providerHint, ",")[0])
+	env, _, err := forwardableProviderEnv(ctx, model, hint)
 	if err == nil {
 		for _, key := range clawSandboxCredentialEnvKeys {
 			if env[key] != "" {

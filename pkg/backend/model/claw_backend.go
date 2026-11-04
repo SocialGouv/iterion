@@ -2903,7 +2903,7 @@ func forwardableProviderEnv(ctx context.Context, model, providerHint string) (ma
 	// clawPinnedProvider answers both: zai for a GLM spec, the spec's own
 	// provider otherwise.
 	if clawPinnedProvider(model) == secrets.ProviderAnthropic {
-		if err := applyForfaitAcrossSandbox(ctx, env, creds, model, nodeProv); err != nil {
+		if err := applyForfaitAcrossSandbox(ctx, env, creds, model, providerHint, nodeProv); err != nil {
 			return nil, crossingRefusals{}, err
 		}
 	}
@@ -3043,9 +3043,10 @@ func RouteProviderHint(ctx context.Context, backend, hint, model string) string 
 }
 
 // applyForfaitAcrossSandbox is the body of the forfait crossing, split out so
-// the model gate above reads as one line. nodeProv is the crossing's own
-// reading of the node's provider, the one its run keys were narrowed to.
-func applyForfaitAcrossSandbox(ctx context.Context, env map[string]string, creds secrets.Credentials, model string, nodeProv secrets.Provider) error {
+// the model gate above reads as one line. hint is the node's provider hint,
+// which the container re-stamps; nodeProv is the crossing's own reading of
+// the node's provider, the one its run keys were narrowed to.
+func applyForfaitAcrossSandbox(ctx context.Context, env map[string]string, creds secrets.Credentials, model, hint string, nodeProv secrets.Provider) error {
 	// A resolved Claude Code forfait is mounted by
 	// runtime.addClaudeOAuthSecretFile and copied into a writable config dir by
 	// seedClaudeConfigDir — both per RUN, not per backend, so the dir is
@@ -3066,9 +3067,12 @@ func applyForfaitAcrossSandbox(ctx context.Context, env map[string]string, creds
 	// claw's anthropic provider spends ahead of the forfait
 	// (heldAnthropicWireAPIKey) is the tenant's own explicit instrument and
 	// keeps precedence (otherwise the same run would spend a different one
-	// depending on whether it happened to be sandboxed); and a redirected wire
-	// is a destination the operator chose, so a bearer carrying the whole
-	// Claude account does not travel there.
+	// depending on whether it happened to be sandboxed); and past it the
+	// forfait crosses where claw's walk reaches it (clawForfaitReached, the
+	// in-process walk's reading): a redirected wire the hint does not skip is
+	// a destination the operator chose, so a bearer carrying the whole Claude
+	// account does not travel there, and under the subscription switch an
+	// ambient credential of the pod serves in its stead.
 	// A key pinned for THIS node's own route is as held as a BYOK slot: the
 	// pinned-key block above injected it into the env, and applying the
 	// forfait here would blank it right back — the container spending the
@@ -3081,9 +3085,7 @@ func applyForfaitAcrossSandbox(ctx context.Context, env map[string]string, creds
 			return nil
 		}
 	}
-	if creds.OAuthDir(string(secrets.OAuthKindClaudeCode)) != "" &&
-		!heldAnthropicWireAPIKey(creds, nodeProv) &&
-		secrets.AnthropicForfaitWireOK(envGetenv(ctx, "ANTHROPIC_BASE_URL")) {
+	if !heldAnthropicWireAPIKey(creds, nodeProv) && clawForfaitReached(ctx, creds, model, hint) {
 		dir := creds.OAuthDir(string(secrets.OAuthKindClaudeCode))
 		// Validate BEFORE clearing. Once the shadows are gone the forfait is
 		// the node's ONLY credential in the container, and the in-container
@@ -3107,6 +3109,35 @@ func applyForfaitAcrossSandbox(ctx context.Context, env map[string]string, creds
 		}
 	}
 	return nil
+}
+
+// clawForfaitReached reports whether claw's anthropic walk for spec under
+// hint, past any Anthropic key of the run's, stops at the run's Claude
+// forfait — the walk anthropicFromCtxForfaitOnWire takes in process and the
+// crossing hands the container: a forfait held, judged on the destination claw
+// sends the run's credentials to (RunCredentialBaseURL: the direct wire under
+// the `provider: "anthropic"` hint, the env's ANTHROPIC_BASE_URL otherwise),
+// and not passed by under ITERION_FORBID_SUBSCRIPTION_OAUTH for an ambient
+// credential of the pod that serves in its stead. With none, the forfait is
+// the walk's sole candidate, and the switch's refusal of it is the walk's
+// answer.
+func clawForfaitReached(ctx context.Context, creds secrets.Credentials, spec, hint string) bool {
+	return creds.OAuthDir(string(secrets.OAuthKindClaudeCode)) != "" &&
+		secrets.AnthropicForfaitWireOK(runCredentialBaseURL(ctx, spec, hint)) &&
+		!(secrets.ForbidSubscriptionOAuth() && ambientAnthropicCredential(ctx))
+}
+
+// ClawForfaitServes reports whether claw spends the run's Claude forfait on an
+// anthropic-wire spec under hint where the run holds no Anthropic key for it:
+// its walk reaches the forfait (clawForfaitReached) and no subscription switch
+// refuses it there. In process and sandboxed alike — the crossing reads the
+// same walk — so the usage meters book the forfait where, and only where, the
+// call spends it.
+//
+// The meters call it with no run envelope in scope: the seam's process
+// default (#2808), the environment the registry's factories read too.
+func ClawForfaitServes(creds secrets.Credentials, spec, hint string) bool {
+	return clawForfaitReached(context.Background(), creds, spec, hint) && !secrets.ForbidSubscriptionOAuth()
 }
 
 // runKeyRidesNode reports whether the run's default key of provider crosses

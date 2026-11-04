@@ -84,7 +84,7 @@ func TestRouteModel_ExecutorToMeterChargesTheRouteThatServed(t *testing.T) {
 				t.Fatalf("reask=%v %s: nothing metered", reask, tc.model)
 			}
 			for k, v := range totals {
-				if slot := credentialSlotForRoute(openRouterCreds, k.backend, k.model); slot != string(secrets.ProviderOpenRouter) || k.model != tc.key {
+				if slot := credentialSlotForRoute(openRouterCreds, k.backend, k.model, ""); slot != string(secrets.ProviderOpenRouter) || k.model != tc.key {
 					t.Errorf("reask=%v %s: %d tokens on %+v charged to %q, want route %q on openrouter", reask, tc.model, v.tokens(), k, slot, tc.key)
 				}
 			}
@@ -131,7 +131,7 @@ func TestRouteModel_ASkipBooksTheRouteThatBurned(t *testing.T) {
 	var booked int64
 	for k, v := range usage.RouteTotals() {
 		booked += v.tokens()
-		if slot := credentialSlotForRoute(openRouterCreds, k.backend, k.model); slot != string(secrets.ProviderOpenRouter) {
+		if slot := credentialSlotForRoute(openRouterCreds, k.backend, k.model, ""); slot != string(secrets.ProviderOpenRouter) {
 			t.Errorf("%d tokens on %+v charged to %q, want openrouter", v.tokens(), k, slot)
 		}
 	}

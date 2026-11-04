@@ -11,6 +11,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
+	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -39,9 +40,16 @@ func clearCredentialEnv(t *testing.T) {
 // refusal fired, before anything started.
 func credentialAdmissionRun(t *testing.T, wf *ir.Workflow, trust store.RunTrust, events *[]store.Event) error {
 	t.Helper()
+	return credentialAdmissionRunCtx(t, context.Background(), wf, trust, events)
+}
+
+// credentialAdmissionRunCtx is credentialAdmissionRun on a context of the
+// caller's — one carrying the run's credentials.
+func credentialAdmissionRunCtx(t *testing.T, ctx context.Context, wf *ir.Workflow, trust store.RunTrust, events *[]store.Event) error {
+	t.Helper()
 	t.Setenv("ITERION_MODE", "local") // pin the factory to docker,podman,noop
 	d := &specCapturingDriver{hostBinds: true}
-	_, err := resolveAndStartSandbox(context.Background(), SandboxParams{
+	_, err := resolveAndStartSandbox(ctx, SandboxParams{
 		Workflow:      wf,
 		RunID:         "run-credential-admission",
 		Trust:         trust,
@@ -263,6 +271,40 @@ func TestForkRunOnClawWithoutCredentialChannelIsRefused(t *testing.T) {
 	var rerr *RuntimeError
 	if !errors.As(err, &rerr) || rerr.Code != ErrCodeSandboxCredentialUnreachable {
 		t.Fatalf("claw fork run = %v, want the typed credential refusal", err)
+	}
+}
+
+// TestForkRunOnClawReadsTheNodesProviderHint: a `provider: "anthropic"` claw
+// node goes to Anthropic direct whatever the pod's ANTHROPIC_BASE_URL says,
+// so its run's Claude forfait crosses the sandbox past a z.ai-redirected
+// wire — the probe composes that crossing under the node's hint, as the
+// dispatch does, and admits. The hint-less twin of the same node leaves the
+// forfait home and has no channel.
+func TestForkRunOnClawReadsTheNodesProviderHint(t *testing.T) {
+	clearCredentialEnv(t)
+	t.Setenv("ANTHROPIC_BASE_URL", "https://api.z.ai/api/anthropic")
+	t.Setenv("ITERION_FORBID_SUBSCRIPTION_OAUTH", "")
+	forfait := t.TempDir()
+	if err := os.WriteFile(filepath.Join(forfait, ".credentials.json"),
+		[]byte(`{"claudeAiOauth":{"accessToken":"sk-ant-oat-run","expiresAt":4102444800000}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{
+		OAuthCredentialFiles: map[string]string{string(secrets.OAuthKindClaudeCode): forfait},
+	})
+	clawNode := func(provider string) *ir.Workflow {
+		wf := credentialWorkflow("review", "claw", "none")
+		node := wf.Nodes["review"].(*ir.AgentNode)
+		node.Model = "anthropic/claude-sonnet-4"
+		node.Provider = provider
+		return wf
+	}
+	var rerr *RuntimeError
+	if err := credentialAdmissionRunCtx(t, ctx, clawNode(""), store.RunTrustFork, nil); !errors.As(err, &rerr) || rerr.Code != ErrCodeSandboxCredentialUnreachable {
+		t.Fatalf("bench: the hint-less claw node = %v, want the typed credential refusal — the forfait stays off a redirected wire", err)
+	}
+	if err := credentialAdmissionRunCtx(t, ctx, clawNode("anthropic"), store.RunTrustFork, nil); !errors.Is(err, errCanaryStop) {
+		t.Fatalf("the hinted claw node = %v, want admission (canary) — its run's forfait crosses to Anthropic direct", err)
 	}
 }
 
