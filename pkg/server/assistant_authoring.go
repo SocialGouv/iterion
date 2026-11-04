@@ -1320,7 +1320,7 @@ func prepareAuthoringGitPublish(r *http.Request, target *authoringTarget, req au
 
 // push publishes the pinned commit and answers it. The remote is reached
 // with the bot tree let go; a pre-push hook runs under tree, held again —
-// how depends on the git (pushRunsHookUnderTree).
+// how depends on the git (pushRunningPrePushUnderTree).
 func (p authoringGitPublication) push(ctx context.Context, tree *treeHold) (string, error) {
 	remoteBefore, err := runAuthoringGit(ctx, p.root, "ls-remote", "origin", p.dest)
 	if err != nil {
