@@ -147,6 +147,12 @@ agent converge_gpt:
   ## ride the capability append on top, under the `mcp__iterion_board__`
   ## names the prompt calls.
   tools: [read_file, write_file, glob]
+  ## Convergence consumes the reviewers' outputs, not repository services.
+  ## Inheriting a repo's MCP set also makes claw reject the host board
+  ## tools below as inactive. Keep the capability-granted board surface
+  ## and file tools without starting unrelated repository MCP servers.
+  mcp:
+    inherit: false
   ## Same three as the claude twin, and reached here only because the
   ## `tools:` list above is non-empty: the board MCP append is gated on an
   ## already-restricted surface (model.assembleEffectiveTools), so on claw
