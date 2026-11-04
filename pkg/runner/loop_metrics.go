@@ -507,15 +507,17 @@ func (m *metricsEmitter) observe(evt store.Event) {
 		declared, _ := evt.Data["declared_model"].(string)
 		m.mu.Lock()
 		// A new attempt of the node: whether its steps are observed is
-		// decided afresh. A schema re-ask is a turn INSIDE the attempt —
-		// in a fallback chain it runs before the attempt's own delegate
-		// event — so the attempt's verdict is set aside and restored once
-		// the re-ask's delegate event is booked (observeDelegate). Only
+		// decided afresh. A schema re-ask run inside the fallback chain
+		// ("reask_in_chain") is a turn INSIDE the attempt, before the
+		// attempt's own delegate event, so the attempt's verdict is set
+		// aside and restored once the re-ask's delegate event is booked
+		// (observeDelegate); a re-ask after the chain comes once the
+		// attempt's event is booked and starts afresh like any. Only
 		// that event clears it: a sibling replica of the node starting in
 		// between (fan_out_each) must not drop the verdict of the attempt
 		// still correcting. The verdict is per node, so replicas still
 		// share it (#3064).
-		if reask, _ := evt.Data["reask"].(string); reask != "" {
+		if inChain, _ := evt.Data["reask_in_chain"].(bool); inChain {
 			if m.outerSteps == nil {
 				m.outerSteps = map[string]bool{}
 			}

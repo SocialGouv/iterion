@@ -34,6 +34,7 @@ import (
 type backendFields struct {
 	id               string
 	kind             string // what the id names in an error subject: "" = "node", "llm router" for the router path
+	inChain          bool   // the correction runs inside the chain, before the attempt's own delegate event
 	model            string
 	backend          string
 	provider         string
@@ -1041,7 +1042,7 @@ func (e *ClawExecutor) validateAndRetry(
 			e.hooks.OnDelegateRetry(f.id, di)
 		}
 		if e.hooks.OnDelegateStarted != nil {
-			e.hooks.OnDelegateStarted(f.id, DelegateInfo{BackendName: backendName, DeclaredModel: task.Model, Attempt: attempt + 1, Reask: reask.mode})
+			e.hooks.OnDelegateStarted(f.id, DelegateInfo{BackendName: backendName, DeclaredModel: task.Model, Attempt: attempt + 1, Reask: reask.mode, ReaskInChain: f.inChain})
 		}
 		retryTask := reask.task
 		retryResult, retryErr := e.retryDelegateLoopReask(callCtx, f.id, backendName, sharesSession(&retryTask), reask.mode, func() (delegate.Result, error) {

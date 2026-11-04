@@ -1132,6 +1132,9 @@ func (h *storeHooks) onToolCall(nodeID string, info LLMToolCallInfo) {
 func putDelegateModelFields(data map[string]any, info DelegateInfo) {
 	if info.Reask != "" {
 		data["reask"] = info.Reask
+		if info.ReaskInChain {
+			data["reask_in_chain"] = true
+		}
 		if info.Attempt > 0 {
 			data["attempt"] = info.Attempt
 		}

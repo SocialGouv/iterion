@@ -102,6 +102,9 @@ type DelegateInfo struct {
 	// itself pays (told apart from the announcement by their backoff delay
 	// and error); empty on every other delegation.
 	Reask string
+	// ReaskInChain marks a re-ask run inside the fallback chain, before the
+	// attempt's own delegate event.
+	ReaskInChain bool
 	// CostUSD is the delegation's LLM spend, read from the typed Result
 	// counters — the CLI's own figure when it
 	// reports one, else the token estimate. Zero means the price table did
