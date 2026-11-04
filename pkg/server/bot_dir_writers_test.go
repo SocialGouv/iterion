@@ -287,7 +287,7 @@ func TestARunFileSaveNeverReadsAStoredFilePastTheEditorsLimit(t *testing.T) {
 // never both a success and a lost file — and a New bot refused that way
 // leaves nothing of itself: no manifest beside the Save As's main.bot, no
 // bot to list or route, no staging directory. The Save As is another
-// process's server on the same workspace: one server's bot tree write lock
+// process's server on the same workspace: one process's bot tree write lock
 // orders its own two writers, and across processes the scaffold's own guard
 // is what answers.
 func TestTheNewBotScaffoldNeverReplacesTheMainASaveAsCreated(t *testing.T) {
@@ -302,7 +302,7 @@ func TestTheNewBotScaffoldNeverReplacesTheMainASaveAsCreated(t *testing.T) {
 		}
 		s := newOrgTestServer(t)
 		s.cfg.WorkDir = work
-		other := &Server{cfg: Config{WorkDir: work}}
+		other := &Server{cfg: Config{WorkDir: work}, writeLocks: &writeLocks{}}
 		_, opened := openPath(t, s, "src/seed.bot")
 		if !opened.Bindable {
 			t.Fatalf("seed does not open bindable")

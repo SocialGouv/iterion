@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -108,6 +109,21 @@ func newTreeChoreography(t *testing.T) *treeChoreography {
 // gitWaitKey is the key first and waitChan know a wait on the repository's
 // lock by: a writer's name on its own is its wait on the bot tree's.
 func gitWaitKey(writer string) string { return authoringGitWaitEvent + "/" + writer }
+
+// holdWorkDirIndex is the lock of the index of the repository s's project
+// root is in, as a hold a probe or a test takes.
+func holdWorkDirIndex(s *Server) func(context.Context, string) (func(), error) {
+	return func(ctx context.Context, writer string) (func(), error) {
+		repo, err := identifyGitRepository(ctx, s.currentWorkDir())
+		if err != nil {
+			return nil, err
+		}
+		if repo.commonDir == "" {
+			return nil, fmt.Errorf("%s is in no repository", s.currentWorkDir())
+		}
+		return s.holdRepositoryIndex(ctx, repo, writer)
+	}
+}
 
 // waitChan is writer's wait signal, closed at the first wait on the tree's
 // lock of a writer of that name — on the repository's, for a gitWaitKey.
@@ -1116,7 +1132,7 @@ func TestEveryBotTreeWriterTakesTheWriteLock(t *testing.T) {
 		} {
 			t.Run(tc.writer, func(t *testing.T) {
 				s, handler, r, written := tc.setup(t)
-				release, err := s.holdAuthoringGitWrites(t.Context(), "the test")
+				release, err := holdWorkDirIndex(s)(t.Context(), "the test")
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -1200,4 +1216,206 @@ func countRequestBody(t *testing.T, r *http.Request) *countedBody {
 	body := &countedBody{r: bytes.NewReader(payload), size: int64(len(payload))}
 	r.Body = body
 	return body
+}
+
+// A directory lock excludes a writer from its own directory, from one that
+// contains it and from one inside it — whichever of the two comes first —
+// leaves a sibling free even when its name extends the holder's, and hands
+// the lock over in arrival order: a writer no holder excludes still waits
+// behind an earlier waiter it overlaps.
+func TestDirLocksExcludeOverlappingDirectoriesInArrivalOrder(t *testing.T) {
+	root := t.TempDir()
+	outer, inner, other, sibling := root, filepath.Join(root, "inner"), filepath.Join(root, "other"), root+"-sibling"
+	for _, tc := range []struct{ name, holder, waiter, late string }{
+		// late overlaps the waiter and the holder.
+		{"the outer directory first", outer, inner, inner},
+		// late overlaps the waiter alone: arrival order keeps it behind.
+		{"the inner directory first", inner, outer, other},
+		{"one directory", inner, inner, inner},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var mu sync.Mutex
+			queued := map[string]chan struct{}{}
+			signal := func(writer string) chan struct{} {
+				mu.Lock()
+				defer mu.Unlock()
+				ch, ok := queued[writer]
+				if !ok {
+					ch = make(chan struct{})
+					queued[writer] = ch
+				}
+				return ch
+			}
+			botTreeWriteHook = func(_, writer string) { close(signal(writer)) }
+			t.Cleanup(func() { botTreeWriteHook = nil })
+			var l dirLocks
+			// start has writer take dir aside; first reports whether it
+			// queued or took the lock first.
+			start := func(dir, writer string) (chan *dirTurn, chan struct{}) {
+				waited := signal(writer)
+				granted := make(chan *dirTurn, 1)
+				go func() {
+					turn, err := l.acquire(t.Context(), dir, botTreeWaitEvent, writer)
+					if err == nil {
+						granted <- turn
+					}
+				}()
+				return granted, waited
+			}
+			first := func(granted chan *dirTurn, waited chan struct{}) (*dirTurn, bool) {
+				select {
+				case turn := <-granted:
+					return turn, false
+				case <-waited:
+					return nil, true
+				}
+			}
+			holder, _ := first(start(tc.holder, "holder"))
+			if holder == nil {
+				t.Fatalf("the first writer of %s queued on a free lock", tc.holder)
+			}
+			waiterGranted, waiterQueued := start(tc.waiter, "waiter")
+			if _, queuedNow := first(waiterGranted, waiterQueued); !queuedNow {
+				t.Fatalf("a writer of %s took the lock while %s was held", tc.waiter, tc.holder)
+			}
+			lateGranted, lateQueued := start(tc.late, "late")
+			if _, queuedNow := first(lateGranted, lateQueued); !queuedNow {
+				t.Fatalf("a writer of %s went ahead of the earlier waiter on %s", tc.late, tc.waiter)
+			}
+			free, queuedNow := first(start(sibling, "sibling"))
+			if queuedNow {
+				t.Fatalf("a writer of %s queued behind %s", sibling, tc.holder)
+			}
+			l.release(free)
+			l.release(holder)
+			waiter := <-waiterGranted
+			select {
+			case <-lateGranted:
+				t.Fatalf("a writer of %s took the lock with the waiter on %s holding it", tc.late, tc.waiter)
+			default:
+			}
+			l.release(waiter)
+			l.release(<-lateGranted)
+			l.mu.Lock()
+			defer l.mu.Unlock()
+			if len(l.held) != 0 || len(l.waiting) != 0 {
+				t.Fatalf("the lock still holds %d and queues %d", len(l.held), len(l.waiting))
+			}
+		})
+	}
+}
+
+// probe reports what a writer named name finds on a lock now: it takes it at
+// once (treeAnswered, released at once), or it queues behind a holder
+// (treeQueued). key is the name the choreography knows the wait by.
+func (c *treeChoreography) probe(name, key string, hold func(context.Context, string) (func(), error)) treeOutcome {
+	c.t.Helper()
+	ctx, cancel := context.WithCancel(c.t.Context())
+	defer cancel()
+	c.mu.Lock()
+	waited := c.waitChan(key)
+	c.mu.Unlock()
+	took := make(chan error, 1)
+	go func() {
+		release, err := hold(ctx, name)
+		if err == nil {
+			release()
+		}
+		took <- err
+	}()
+	select {
+	case err := <-took:
+		if err != nil {
+			c.t.Fatalf("%s: %v", name, err)
+		}
+		return treeAnswered
+	case <-waited:
+		cancel()
+		<-took
+		return treeQueued
+	}
+}
+
+// probeOutcome says what a probe found, whichever lock it probed.
+func probeOutcome(o treeOutcome) string {
+	if o == treeQueued {
+		return "queued behind its holder"
+	}
+	return "took the lock at once"
+}
+
+func (c *treeChoreography) probeTree(s *Server, name string) treeOutcome {
+	return c.probe(name, name, s.holdBotTreeWrites)
+}
+
+func (c *treeChoreography) probeGit(s *Server, name string) treeOutcome {
+	return c.probe(name, gitWaitKey(name), holdWorkDirIndex(s))
+}
+
+// queued is the signal of writer's first wait on the bot tree's lock.
+func (c *treeChoreography) queued(writer string) <-chan struct{} {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.waitChan(writer)
+}
+
+// A project switch holds the bot tree's lock on the root it leaves: a writer
+// holding it resolved in that root and keeps writing there until it lets go,
+// so the switch waits for it. A writer that read the old root and queued
+// behind the switch takes the root it now writes once the switch is done,
+// never the one it read before it waited.
+func TestAProjectSwitchOrdersTheWritersOfTheRootItLeaves(t *testing.T) {
+	t.Setenv("ITERION_HOME", t.TempDir())
+	left, entered := t.TempDir(), t.TempDir()
+	s := New(Config{DisableAuth: true, WorkDir: left}, iterlog.New(iterlog.LevelError, nil))
+	s.bgJoinBudget = 30 * time.Second
+	shutdownOnCleanup(t, s)
+	c := newTreeChoreography(t)
+	release, err := s.holdBotTreeWrites(t.Context(), "the test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+
+	switched := make(chan error, 1)
+	go func() { switched <- s.swapWorkDir(t.Context(), entered) }()
+	select {
+	case <-c.queued(botTreeWriterProjectSwitch):
+	case err := <-switched:
+		t.Fatalf("the project switch went through (%v) while a writer held the root it leaves", err)
+	}
+	type held struct {
+		release func()
+		err     error
+	}
+	writer := make(chan held, 1)
+	go func() {
+		r, err := s.holdBotTreeWrites(t.Context(), "a writer")
+		writer <- held{r, err}
+	}()
+	select {
+	case <-c.queued("a writer"):
+	case w := <-writer:
+		t.Fatalf("a writer took the bot tree's lock (%v) with the test and the switch ahead of it", w.err)
+	}
+	release()
+	if err := <-switched; err != nil {
+		t.Fatal(err)
+	}
+	w := <-writer
+	if w.err != nil {
+		t.Fatal(w.err)
+	}
+	defer w.release()
+	enteredOutcome := c.probeTree(s, "a writer of the root the switch entered")
+	leftOutcome := c.probe("a writer of the root the switch left", "a writer of the root the switch left", func(ctx context.Context, name string) (func(), error) {
+		hold := &treeHold{locks: &s.locks().trees, dir: lockDir(left), writer: name}
+		if err := hold.take(ctx); err != nil {
+			return nil, err
+		}
+		return hold.leave, nil
+	})
+	if enteredOutcome != treeQueued || leftOutcome != treeAnswered {
+		t.Fatalf("with the writer that waited across the switch holding its lock, a writer of the root the switch entered %s and one of the root it left %s", probeOutcome(enteredOutcome), probeOutcome(leftOutcome))
+	}
 }

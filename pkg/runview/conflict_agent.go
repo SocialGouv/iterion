@@ -160,29 +160,36 @@ func (s *Service) resolveAllConflictsWithAgent(ctx context.Context, runID, model
 	for i, f := range det.Files {
 		conflictPaths[i] = f.Path
 	}
-	staged := 0
-	for _, f := range res.Object.Files {
-		if !slices.Contains(conflictPaths, f.Path) {
-			continue
+	// The model call above runs outside the host's hold on the repository;
+	// the staging and the refreshed snapshot run under it.
+	var next runtime.ConflictDetail
+	if err := s.underRepository(ctx, repoRoot, func() error {
+		staged := 0
+		for _, f := range res.Object.Files {
+			if !slices.Contains(conflictPaths, f.Path) {
+				continue
+			}
+			if runtime.HasConflictMarkers(f.Content) {
+				// Agent missed a marker — refuse rather than stage a
+				// file that still won't compile.
+				return fmt.Errorf("agent left conflict markers in %q; resolve manually", f.Path)
+			}
+			if err := runtime.StageResolvedFile(repoRoot, f.Path, f.Content); err != nil {
+				return fmt.Errorf("stage %s: %w", f.Path, err)
+			}
+			staged++
 		}
-		if runtime.HasConflictMarkers(f.Content) {
-			// Agent missed a marker — refuse rather than stage a
-			// file that still won't compile.
-			return nil, fmt.Errorf("agent left conflict markers in %q; resolve manually", f.Path)
+		if staged == 0 {
+			return fmt.Errorf("agent returned no usable resolutions (responded with %d files, none matched the conflict set)", len(res.Object.Files))
 		}
-		if err := runtime.StageResolvedFile(repoRoot, f.Path, f.Content); err != nil {
-			return nil, fmt.Errorf("stage %s: %w", f.Path, err)
+		// Refresh + return.
+		var err error
+		if next, err = runtime.ParseConflicts(repoRoot); err != nil {
+			return fmt.Errorf("re-parse conflicts: %w", err)
 		}
-		staged++
-	}
-	if staged == 0 {
-		return nil, fmt.Errorf("agent returned no usable resolutions (responded with %d files, none matched the conflict set)", len(res.Object.Files))
-	}
-
-	// Refresh + return.
-	next, err := runtime.ParseConflicts(repoRoot)
-	if err != nil {
-		return nil, fmt.Errorf("re-parse conflicts: %w", err)
+		return nil
+	}); err != nil {
+		return nil, err
 	}
 	return &MergeConflictsResponse{
 		Files:            next.Files,

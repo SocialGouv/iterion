@@ -65,6 +65,9 @@ func (s *Server) handleMergeRun(w http.ResponseWriter, r *http.Request) {
 		CommitMessage: req.CommitMessage,
 	})
 	if err != nil {
+		if s.writeBotTreeWait(w, r, err) {
+			return
+		}
 		// The service's error messages are descriptive enough to surface
 		// directly; the studio renders them as a toast. 409 conveys
 		// "preconditions not met / guard rejected" — the storage branch
@@ -329,6 +332,9 @@ func (s *Server) handleResolveMergeConflict(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	if err := s.runs.ResolveMergeConflictFile(r.Context(), id, req.Path, req.Content); err != nil {
+		if s.writeBotTreeWait(w, r, err) {
+			return
+		}
 		s.httpErrorFor(w, r, http.StatusConflict, "resolve: %v", err)
 		return
 	}
@@ -387,7 +393,7 @@ func (s *Server) handleResolveConflictWithAgent(w http.ResponseWriter, r *http.R
 	_ = readJSON(r, &req) // body is optional
 	res, err := s.runs.ResolveAllConflictsWithAgent(r.Context(), id, req.Model)
 	if err != nil {
-		if s.writeContentBoundaryRefusedError(w, r, "agent resolve", err) {
+		if s.writeContentBoundaryRefusedError(w, r, "agent resolve", err) || s.writeBotTreeWait(w, r, err) {
 			return
 		}
 		s.httpErrorFor(w, r, http.StatusInternalServerError, "agent resolve: %v", err)
@@ -422,6 +428,9 @@ func (s *Server) handleFinalizeMergeConflict(w http.ResponseWriter, r *http.Requ
 	_ = readJSON(r, &req)
 	res, err := s.runs.FinalizeMergeAfterConflict(r.Context(), id, req.Message)
 	if err != nil {
+		if s.writeBotTreeWait(w, r, err) {
+			return
+		}
 		s.httpErrorFor(w, r, http.StatusConflict, "finalize: %v", err)
 		return
 	}
@@ -451,6 +460,9 @@ func (s *Server) handleAbortMergeConflict(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if err := s.runs.AbortMergeConflict(r.Context(), id); err != nil {
+		if s.writeBotTreeWait(w, r, err) {
+			return
+		}
 		s.httpErrorFor(w, r, http.StatusConflict, "abort: %v", err)
 		return
 	}

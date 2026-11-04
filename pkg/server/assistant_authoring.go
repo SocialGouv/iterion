@@ -287,17 +287,13 @@ func (s *Server) handleAuthoringGitCommit(w http.ResponseWriter, r *http.Request
 		s.httpErrorFor(w, r, http.StatusBadRequest, "%v", err)
 		return
 	}
-	// The repository's lock is held through the commit: the index is the
-	// commit's until it publishes. The perimeter, the attested bytes and the
-	// staging read the tree under its lock, released once the files are
-	// staged: the hooks, the signature and the publication read nothing of
-	// the tree, and no other writer of it waits on them.
-	releaseGit, ok := s.lockAuthoringGitForEditor(w, r, botTreeWriterAuthoringGitCommit, req.EditorPath)
-	if !ok {
-		return
-	}
-	defer releaseGit()
-	release, ok := s.lockBotTreeForEditor(w, r, botTreeWriterAuthoringGitCommit, req.EditorPath)
+	// The repository's index lock is held through the commit: the index is
+	// the commit's until it publishes. The bot tree's lock, on the
+	// repository's whole working tree, covers everything that reads or
+	// writes that tree — the perimeter, the attested bytes, the staging, the
+	// hooks and the publication — and is let go only around the signature,
+	// which reads the tree object the commit built and may wait on a person.
+	tree, release, ok := s.lockRepositoryForEditor(w, r, botTreeWriterAuthoringGitCommit, req.EditorPath, true)
 	if !ok {
 		return
 	}
@@ -307,7 +303,7 @@ func (s *Server) handleAuthoringGitCommit(w http.ResponseWriter, r *http.Request
 		s.authoringError(w, r, err)
 		return
 	}
-	commit, files, err := authoringGitCommit(r, target, req, release)
+	commit, files, err := authoringGitCommit(r, target, req, tree)
 	if err != nil {
 		s.authoringError(w, r, err)
 		return
@@ -330,10 +326,11 @@ func (s *Server) handleAuthoringGitPublish(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	// The perimeter the publication checks and the HEAD it pins are read
-	// under the bot tree's lock; the remote is reached once it is released,
-	// with the commit pinned there — a commit landing meanwhile moves HEAD,
-	// never what this publication pushes.
-	release, ok := s.lockBotTreeForEditor(w, r, botTreeWriterAuthoringGitPush, req.EditorPath)
+	// under the bot tree's lock on the repository's working tree; the remote
+	// is reached with it let go, the commit pinned — a commit landing
+	// meanwhile moves HEAD, never what this publication pushes — and the
+	// pre-push hook, which reads the tree, runs under it again.
+	tree, release, ok := s.lockRepositoryForEditor(w, r, botTreeWriterAuthoringGitPush, req.EditorPath, false)
 	if !ok {
 		return
 	}
@@ -348,8 +345,8 @@ func (s *Server) handleAuthoringGitPublish(w http.ResponseWriter, r *http.Reques
 		s.authoringError(w, r, err)
 		return
 	}
-	release()
-	commit, err := publication.push(r.Context())
+	tree.leave()
+	commit, err := publication.push(r.Context(), tree)
 	if err != nil {
 		s.authoringError(w, r, err)
 		return
@@ -1230,11 +1227,10 @@ func (s *Server) rollbackAuthoring(transactions []*authoringLocalTransaction) []
 // than a shell: the model cannot inject options, choose a repository, or run
 // a second command. A dirty worktree is normal; a non-selected staged path is
 // not, because it could otherwise ride into this commit.
-// authoringGitCommit commits the declared files the request attests, as the
-// host reads them. staged runs once they are staged into the commit's own
-// index, before the repository's hooks: what the commit holds is decided
-// there, and nothing after it reads the tree.
-func authoringGitCommit(r *http.Request, target *authoringTarget, req authoringGitCommitRequest, staged func()) (string, []string, error) {
+//
+// tree is the caller's hold of the bot tree's lock, which the commit lets go
+// around its signature alone (commitAttestedAuthoring).
+func authoringGitCommit(r *http.Request, target *authoringTarget, req authoringGitCommitRequest, tree *treeHold) (string, []string, error) {
 	if target.files != nil {
 		return "", nil, errors.New("git commits are unavailable for cloud bot sources without a connected repository")
 	}
@@ -1276,7 +1272,7 @@ func authoringGitCommit(r *http.Request, target *authoringTarget, req authoringG
 		expectedHashes[path] = requested.ExpectedSHA256
 	}
 
-	head, err := commitAttestedAuthoringFilesStaged(r.Context(), gitRoot, paths, expectedHashes, strings.TrimSpace(req.Message), staged)
+	head, err := commitAttestedAuthoring(r.Context(), gitRoot, paths, expectedHashes, strings.TrimSpace(req.Message), nil, tree)
 	return head, paths, err
 }
 
@@ -1322,8 +1318,9 @@ func prepareAuthoringGitPublish(r *http.Request, target *authoringTarget, req au
 	return authoringGitPublication{root: root, head: head, dest: "refs/heads/" + req.Branch}, nil
 }
 
-// push publishes the pinned commit and answers it.
-func (p authoringGitPublication) push(ctx context.Context) (string, error) {
+// push publishes the pinned commit and answers it. The remote is reached
+// with the bot tree let go; the pre-push hook runs under tree, held again.
+func (p authoringGitPublication) push(ctx context.Context, tree *treeHold) (string, error) {
 	remoteBefore, err := runAuthoringGit(ctx, p.root, "ls-remote", "origin", p.dest)
 	if err != nil {
 		return "", err
@@ -1331,9 +1328,12 @@ func (p authoringGitPublication) push(ctx context.Context) (string, error) {
 	if strings.TrimSpace(remoteBefore) != "" {
 		return "", authoringConflictError{"remote branch already exists; publication never overwrites it"}
 	}
+	if err := p.prePush(ctx, tree); err != nil {
+		return "", err
+	}
 	// A branch created between ls-remote and push is safe: non-force push
-	// rejects it rather than overwriting it.
-	if _, err := runAuthoringGit(ctx, p.root, "push", "--porcelain", "origin", p.head+":"+p.dest); err != nil {
+	// rejects it rather than overwriting it. The hook ran above.
+	if _, err := runAuthoringGit(ctx, p.root, "push", "--no-verify", "--porcelain", "origin", p.head+":"+p.dest); err != nil {
 		return "", err
 	}
 	remoteAfter, err := runAuthoringGit(ctx, p.root, "ls-remote", "origin", p.dest)
@@ -1345,6 +1345,43 @@ func (p authoringGitPublication) push(ctx context.Context) (string, error) {
 		return p.head, fmt.Errorf("published %s but remote branch verification diverged; no rollback was attempted", p.head)
 	}
 	return p.head, nil
+}
+
+// prePush runs the repository's pre-push hook under the bot tree's lock, as
+// git's own push would run it: the remote's name and each push URL as its
+// arguments, on its stdin the one update this publication makes — the
+// pinned commit, spelled as the refspec spells it, onto a branch the remote
+// does not have. A hook reads the worktree (a linter, a test run), so it
+// cannot run inside the push, which reaches the network: the push runs with
+// --no-verify once the hook has passed. A hook that reaches the network
+// itself (git-lfs uploads its objects from it) does so under the lock.
+func (p authoringGitPublication) prePush(ctx context.Context, tree *treeHold) error {
+	urlsOut, err := runAuthoringGit(ctx, p.root, "remote", "get-url", "--push", "--all", "origin")
+	if err != nil {
+		return err
+	}
+	input, err := os.CreateTemp("", "iterion-pre-push-")
+	if err != nil {
+		return fmt.Errorf("stage the pre-push hook's input: %w", err)
+	}
+	defer func() { _ = os.Remove(input.Name()) }()
+	_, err = fmt.Fprintf(input, "%s %s %s %s\n", p.head, p.head, p.dest, strings.Repeat("0", len(p.head)))
+	if closeErr := input.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return fmt.Errorf("stage the pre-push hook's input: %w", err)
+	}
+	if err := tree.take(ctx); err != nil {
+		return err
+	}
+	defer tree.leave()
+	for _, url := range strings.Split(strings.TrimRight(urlsOut, "\n"), "\n") {
+		if _, err := runAuthoringGit(ctx, p.root, "hook", "run", "--ignore-missing", "--to-stdin="+input.Name(), "pre-push", "--", "origin", url); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func runAuthoringGit(ctx context.Context, workDir string, args ...string) (string, error) {

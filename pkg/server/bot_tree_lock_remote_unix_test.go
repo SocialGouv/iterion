@@ -3,7 +3,6 @@
 package server
 
 import (
-	"context"
 	"fmt"
 	"net/http"
 	"os"
@@ -15,7 +14,9 @@ import (
 	"github.com/SocialGouv/iterion/pkg/botinstall"
 	"github.com/SocialGouv/iterion/pkg/botlock"
 	"github.com/SocialGouv/iterion/pkg/bundle"
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/marketplace"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // programGate holds a program git runs — an upload-pack, a fake ssh, a hook —
@@ -99,53 +100,6 @@ func writeProgram(t *testing.T, path, body string) string {
 	return path
 }
 
-// probe reports what a writer named name finds on a lock now: it takes it at
-// once (treeAnswered, released at once), or it queues behind a holder
-// (treeQueued). key is the name the choreography knows the wait by.
-func (c *treeChoreography) probe(name, key string, hold func(context.Context, string) (func(), error)) treeOutcome {
-	c.t.Helper()
-	ctx, cancel := context.WithCancel(c.t.Context())
-	defer cancel()
-	c.mu.Lock()
-	waited := c.waitChan(key)
-	c.mu.Unlock()
-	took := make(chan error, 1)
-	go func() {
-		release, err := hold(ctx, name)
-		if err == nil {
-			release()
-		}
-		took <- err
-	}()
-	select {
-	case err := <-took:
-		if err != nil {
-			c.t.Fatalf("%s: %v", name, err)
-		}
-		return treeAnswered
-	case <-waited:
-		cancel()
-		<-took
-		return treeQueued
-	}
-}
-
-// probeOutcome says what a probe found, whichever lock it probed.
-func probeOutcome(o treeOutcome) string {
-	if o == treeQueued {
-		return "queued behind its holder"
-	}
-	return "took the lock at once"
-}
-
-func (c *treeChoreography) probeTree(s *Server, name string) treeOutcome {
-	return c.probe(name, name, s.holdBotTreeWrites)
-}
-
-func (c *treeChoreography) probeGit(s *Server, name string) treeOutcome {
-	return c.probe(name, gitWaitKey(name), s.holdAuthoringGitWrites)
-}
-
 // fakeSSHRemote serves scp-like URLs "fakehost:<dir>" from the directories
 // under base through a fake ssh that runs git's server side locally, its
 // first connection held at gate.
@@ -211,19 +165,27 @@ func TestAuthoringGitPublicationReachesItsRemoteOutsideTheTreeLock(t *testing.T)
 	}
 }
 
-// An authoring git commit stages the attested files under the bot tree's
-// lock and lets it go: the repository's hooks, the signature and the
-// publication read nothing of the tree, and a hook (a linter, a pinentry
-// behind the signature) can take as long as it likes. A writer of the tree
-// goes through meanwhile; a second writer of the repository's index waits
-// on the repository's lock — never failing on git's index.lock — and lands
-// once the first is done.
-func TestAuthoringGitCommitRunsItsHooksUnderTheRepositoryLockAlone(t *testing.T) {
+// gitHookPath is where root's repository looks for its hook name.
+func gitHookPath(t *testing.T, root, name string) string {
+	t.Helper()
+	return strings.TrimSpace(gitTestRead(t, root, "rev-parse", "--path-format=absolute", "--git-path", "hooks/"+name))
+}
+
+// An authoring git commit holds the bot tree's lock through its hooks: a
+// hook sees the real worktree — a validator, a linter, a formatter that
+// rewrites what it reads — so a writer of the tree that comes in while it
+// runs waits, and the hook never reads a file another writer has moved
+// aside to publish its successor (the git commit answering 400 for a race
+// it lost). A second writer of the repository's index waits on the
+// repository's lock — never failing on git's index.lock — and lands once
+// the first is done.
+func TestAuthoringGitCommitRunsItsHooksUnderTheTreeLock(t *testing.T) {
 	s, editor := authoringFixture(t)
 	root := s.cfg.WorkDir
 	initAuthoringGit(t, root)
+	main := filepath.Join(root, filepath.FromSlash(editor))
 	gate := newProgramGate(t)
-	writeProgram(t, strings.TrimSpace(gitTestRead(t, root, "rev-parse", "--path-format=absolute", "--git-path", "hooks/pre-commit")), gate.prelude()+"exit 0\n")
+	writeProgram(t, gitHookPath(t, root, "pre-commit"), gate.prelude()+"test -f "+shellWord(main)+" || { echo 'pre-commit: project-bot/main.bot is missing from the worktree' >&2; exit 1; }\n")
 	work := filepath.Join(root, "project-bot", "subbots", "work.bot")
 	writeFiles(t, root, map[string]string{"project-bot/subbots/work.bot": "workflow work:\n  entry: hooked\n"})
 	helper := filepath.Join(root, "scripts", "helper.py")
@@ -238,27 +200,223 @@ func TestAuthoringGitCommitRunsItsHooksUnderTheRepositoryLockAlone(t *testing.T)
 	}))
 	gate.reached(t, first, "the git commit")
 
-	main := filepath.Join(root, filepath.FromSlash(editor))
+	// An assistant commit of the file the hook reads, held where it has
+	// moved the live file aside.
+	publish := c.hold("publish", absentNow(main))
 	local := c.start(treeCommit(s), treeJSON(t, http.MethodPost, "/commit", treeReplace(editor, "main.bot", treeSnapshot(t, main), "workflow main:", "workflow edited:")))
-	if outcome := c.first(local, botTreeWriterAuthoringCommit); outcome != treeAnswered {
-		gate.let(t)
-		t.Fatalf("an assistant commit %s while a git commit ran its hooks", outcome)
-	}
-	requireTreeAnswer(t, "assistant commit", c.answer(local, "the assistant commit"), http.StatusOK, "")
+	localOutcome := c.first(local, botTreeWriterAuthoringCommit, publish)
 	second := c.start(s.handleAuthoringGitCommit, treeJSON(t, http.MethodPost, "/git-commit", authoringGitCommitRequest{
 		EditorPath: editor,
 		Files:      []authoringGitCommitFile{{Scope: "workspace", Path: "scripts/helper.py", ExpectedSHA256: treeSnapshot(t, helper)}},
 		Message:    "chore(test): the queued commit",
 	}))
-	outcome := c.first(second, gitWaitKey(botTreeWriterAuthoringGitCommit))
+	secondOutcome := c.first(second, gitWaitKey(botTreeWriterAuthoringGitCommit))
 	gate.let(t)
-	requireTreeAnswer(t, "first git commit", c.answer(first, "the first git commit"), http.StatusOK, "")
-	requireTreeAnswer(t, "second git commit", c.answer(second, "the second git commit"), http.StatusOK, "")
-	if outcome != treeQueued {
-		t.Fatalf("a second git commit %s while the first held the repository's index", outcome)
+	firstRec := c.answer(first, "the first git commit")
+	publish.let()
+	localRec := c.answer(local, "the assistant commit")
+	secondRec := c.answer(second, "the second git commit")
+	if localOutcome != treeQueued {
+		t.Fatalf("an assistant commit %s while a git commit ran its hooks; the git commit answered %d %s", localOutcome, firstRec.Code, firstRec.Body.String())
 	}
+	if secondOutcome != treeQueued {
+		t.Fatalf("a second git commit %s while the first held the repository's index: %d %s", secondOutcome, secondRec.Code, secondRec.Body.String())
+	}
+	requireTreeAnswer(t, "first git commit", firstRec, http.StatusOK, "")
+	requireTreeAnswer(t, "assistant commit", localRec, http.StatusOK, "")
+	requireTreeAnswer(t, "second git commit", secondRec, http.StatusOK, "")
 	if got, want := strings.TrimSpace(gitTestRead(t, root, "log", "--format=%s", head+"..HEAD")), "chore(test): the queued commit\nchore(test): the hooked commit"; got != want {
 		t.Fatalf("commits after %s: %q; want %q", head, got, want)
+	}
+}
+
+// An authoring git commit lets the bot tree go around its signature alone:
+// commit-tree -S reads the tree object the commit built, never the
+// worktree, and a pinentry may wait on a person as long as it likes — a
+// writer of the tree goes through meanwhile. What follows runs in the
+// worktree again — the reference-transaction hooks of the publication, the
+// index, the post-commit hook — so the commit takes the tree back first.
+func TestAuthoringGitCommitSignsOutsideTheTreeLock(t *testing.T) {
+	s, editor := authoringFixture(t)
+	root := s.cfg.WorkDir
+	initAuthoringGit(t, root)
+	sign := newProgramGate(t)
+	gpg := writeProgram(t, filepath.Join(t.TempDir(), "gpg"), sign.prelude()+"cat >/dev/null\nprintf '\\n[GNUPG:] SIG_CREATED D 1 8 00 0 FAKE\\n' >&2\nprintf -- '-----BEGIN PGP SIGNATURE-----\\n\\nZmFrZQ==\\n-----END PGP SIGNATURE-----\\n'\n")
+	gitTestRead(t, root, "config", "gpg.program", gpg)
+	gitTestRead(t, root, "config", "commit.gpgsign", "true")
+	post := newProgramGate(t)
+	writeProgram(t, gitHookPath(t, root, "post-commit"), post.prelude()+"exit 0\n")
+	work := filepath.Join(root, "project-bot", "subbots", "work.bot")
+	writeFiles(t, root, map[string]string{"project-bot/subbots/work.bot": "workflow work:\n  entry: signed\n"})
+
+	c := newTreeChoreography(t)
+	commit := c.start(s.handleAuthoringGitCommit, treeJSON(t, http.MethodPost, "/git-commit", authoringGitCommitRequest{
+		EditorPath: editor,
+		Files:      []authoringGitCommitFile{{Scope: "bundle", Path: "subbots/work.bot", ExpectedSHA256: treeSnapshot(t, work)}},
+		Message:    "chore(test): the signed commit",
+	}))
+	sign.reached(t, commit, "the git commit's signature")
+	signing := c.probeTree(s, "a writer of the tree during the signature")
+	sign.let(t)
+	post.reached(t, commit, "the git commit's post-commit hook")
+	hooked := c.probeTree(s, "a writer of the tree during the post-commit hook")
+	post.let(t)
+	requireTreeAnswer(t, "git commit", c.answer(commit, "the git commit"), http.StatusOK, "")
+	if signing != treeAnswered {
+		t.Fatalf("a writer of the tree %s while the git commit was signing", probeOutcome(signing))
+	}
+	if hooked != treeQueued {
+		t.Fatalf("a writer of the tree %s while the git commit ran its post-commit hook", probeOutcome(hooked))
+	}
+	if body := gitTestRead(t, root, "cat-file", "commit", "HEAD"); !strings.Contains(body, "gpgsig -----BEGIN PGP SIGNATURE-----") {
+		t.Fatalf("HEAD carries no signature:\n%s", body)
+	}
+}
+
+// A publication's pre-push hook reads the worktree, so it runs under the bot
+// tree's lock, taken again once the remote said the branch is free, and the
+// push runs with --no-verify once it passed: a writer of the tree that comes
+// in while the hook runs waits. The hook gets what git's own push gives it:
+// the remote's name and URL as its arguments, the update on its stdin.
+func TestAuthoringGitPublicationRunsItsPrePushHookUnderTheTreeLock(t *testing.T) {
+	s, editor := authoringFixture(t)
+	root := s.cfg.WorkDir
+	initAuthoringGit(t, root)
+	origin := filepath.Join(t.TempDir(), "origin.git")
+	gitTestRead(t, root, "clone", "-q", "--bare", root, origin)
+	gitTestRead(t, root, "remote", "add", "origin", origin)
+	gate := newProgramGate(t)
+	record := filepath.Join(t.TempDir(), "pre-push")
+	writeProgram(t, gitHookPath(t, root, "pre-push"), gate.prelude()+`{ printf '%s\n' "$*"; cat; } >> `+shellWord(record)+"\n")
+	pinned := strings.TrimSpace(gitTestRead(t, root, "rev-parse", "HEAD"))
+
+	c := newTreeChoreography(t)
+	publication := c.start(s.handleAuthoringGitPublish, treeJSON(t, http.MethodPost, "/git-push", authoringGitPublishRequest{EditorPath: editor, Commit: pinned, Branch: "copi/published"}))
+	gate.reached(t, publication, "the publication's pre-push hook")
+	outcome := c.probeTree(s, "a writer of the tree")
+	gate.let(t)
+	requireTreeAnswer(t, "publication", c.answer(publication, "the publication"), http.StatusOK, "")
+	if outcome != treeQueued {
+		t.Fatalf("a writer of the tree %s while the publication ran its pre-push hook", probeOutcome(outcome))
+	}
+	if pushed := strings.TrimSpace(gitTestRead(t, origin, "rev-parse", "refs/heads/copi/published")); pushed != pinned {
+		t.Fatalf("the publication pushed %s; it pinned %s", pushed, pinned)
+	}
+	ran, err := os.ReadFile(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gitTestRead(t, root, "push", "-q", "origin", pinned+":refs/heads/copi/by-git")
+	both, err := os.ReadFile(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byGit := strings.TrimPrefix(string(both), string(ran))
+	if want := strings.ReplaceAll(byGit, "refs/heads/copi/by-git", "refs/heads/copi/published"); string(ran) != want {
+		t.Fatalf("the publication ran its pre-push hook as\n%s\ngit's own push runs it once, as\n%s", ran, want)
+	}
+}
+
+// Every Server of the process takes its write locks from one registry: two
+// projects of `iterion studio --workspace` in one repository — here one root
+// inside the other — are ordered as two writers of one project are. A git
+// commit of the inner project waits on the repository's lock while the
+// outer one holds its index, instead of failing on git's index.lock, and a
+// writer of the inner project's tree waits while the outer one's hooks run
+// over the whole working tree.
+func TestServersOfOneRepositoryShareItsWriteLocks(t *testing.T) {
+	outer, editor := authoringFixture(t)
+	root := outer.cfg.WorkDir
+	initAuthoringGit(t, root)
+	inner := &Server{cfg: Config{WorkDir: filepath.Join(root, "project-bot")}}
+	gate := newProgramGate(t)
+	writeProgram(t, gitHookPath(t, root, "pre-commit"), gate.prelude()+"exit 0\n")
+	helper := filepath.Join(root, "scripts", "helper.py")
+	writeFiles(t, root, map[string]string{"scripts/helper.py": "def answer():\n    return 42\n"})
+	work := filepath.Join(root, "project-bot", "subbots", "work.bot")
+	writeFiles(t, root, map[string]string{"project-bot/subbots/work.bot": "workflow work:\n  entry: inner\n"})
+
+	c := newTreeChoreography(t)
+	outerCommit := c.start(outer.handleAuthoringGitCommit, treeJSON(t, http.MethodPost, "/git-commit", authoringGitCommitRequest{
+		EditorPath: editor,
+		Files:      []authoringGitCommitFile{{Scope: "workspace", Path: "scripts/helper.py", ExpectedSHA256: treeSnapshot(t, helper)}},
+		Message:    "chore(test): the outer project's commit",
+	}))
+	gate.reached(t, outerCommit, "the outer project's git commit")
+	innerTree := c.probeTree(inner, "a writer of the inner project's tree")
+	innerCommit := c.start(inner.handleAuthoringGitCommit, treeJSON(t, http.MethodPost, "/git-commit", authoringGitCommitRequest{
+		EditorPath: "main.bot",
+		Files:      []authoringGitCommitFile{{Scope: "bundle", Path: "subbots/work.bot", ExpectedSHA256: treeSnapshot(t, work)}},
+		Message:    "chore(test): the inner project's commit",
+	}))
+	innerOutcome := c.first(innerCommit, gitWaitKey(botTreeWriterAuthoringGitCommit))
+	gate.let(t)
+	outerRec := c.answer(outerCommit, "the outer project's git commit")
+	innerRec := c.answer(innerCommit, "the inner project's git commit")
+	if innerOutcome != treeQueued {
+		t.Fatalf("the inner project's git commit %s while the outer one held the repository's index: %d %s", innerOutcome, innerRec.Code, innerRec.Body.String())
+	}
+	if innerTree != treeQueued {
+		t.Fatalf("a writer of the inner project's tree %s while the outer project's git commit ran its hooks", probeOutcome(innerTree))
+	}
+	requireTreeAnswer(t, "outer project's git commit", outerRec, http.StatusOK, "")
+	requireTreeAnswer(t, "inner project's git commit", innerRec, http.StatusOK, "")
+}
+
+// The run merge family writes the operator's index and working tree: a
+// squash merge started while an authoring git commit holds them waits on
+// the repository's lock, and lands once the commit is done, instead of
+// failing on git's index.lock or on the commit's half-staged tree.
+func TestRunMergeWaitsForTheRepositoryItWrites(t *testing.T) {
+	fixture, editor := authoringFixture(t)
+	root := fixture.cfg.WorkDir
+	writeFiles(t, root, map[string]string{".gitignore": ".iterion/\n"})
+	initAuthoringGit(t, root)
+	base := strings.TrimSpace(gitTestRead(t, root, "rev-parse", "HEAD"))
+	branch := strings.TrimSpace(gitTestRead(t, root, "rev-parse", "--abbrev-ref", "HEAD"))
+	gitTestRead(t, root, "checkout", "-qb", "iterion/run/held")
+	writeFiles(t, root, map[string]string{"run.txt": "the run's work\n"})
+	gitTestRead(t, root, "add", "--", "run.txt")
+	gitTestRead(t, root, "commit", "-qm", "the run's work")
+	final := strings.TrimSpace(gitTestRead(t, root, "rev-parse", "HEAD"))
+	gitTestRead(t, root, "checkout", "-q", branch)
+
+	s := New(Config{DisableAuth: true, SkipProjectRegistration: true, WorkDir: root, StoreDir: filepath.Join(t.TempDir(), "store")}, iterlog.Nop())
+	stopRunviewOnCleanup(t, s.runs)
+	run, err := s.runs.RunStore().CreateRun(t.Context(), "held-merge", "wf", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run.Worktree, run.RepoRoot, run.WorkDir = true, root, root
+	run.BaseCommit, run.FinalCommit, run.FinalBranch = base, final, "iterion/run/held"
+	run.Status, run.MergeStrategy = store.RunStatusFinished, store.MergeStrategySquash
+	if err := s.runs.RunStore().SaveRun(t.Context(), run); err != nil {
+		t.Fatal(err)
+	}
+	gate := newProgramGate(t)
+	writeProgram(t, gitHookPath(t, root, "pre-commit"), gate.prelude()+"exit 0\n")
+	work := filepath.Join(root, "project-bot", "subbots", "work.bot")
+	writeFiles(t, root, map[string]string{"project-bot/subbots/work.bot": "workflow work:\n  entry: before the merge\n"})
+
+	c := newTreeChoreography(t)
+	commit := c.start(s.handleAuthoringGitCommit, treeJSON(t, http.MethodPost, "/git-commit", authoringGitCommitRequest{
+		EditorPath: editor,
+		Files:      []authoringGitCommitFile{{Scope: "bundle", Path: "subbots/work.bot", ExpectedSHA256: treeSnapshot(t, work)}},
+		Message:    "chore(test): the commit the merge waits for",
+	}))
+	gate.reached(t, commit, "the git commit")
+	merge := c.start(s.handleMergeRun, treeJSON(t, http.MethodPost, "/api/runs/held-merge/merge", mergeRunRequest{}, "id", run.ID))
+	outcome := c.first(merge, gitWaitKey(botTreeWriterRunMerge))
+	gate.let(t)
+	commitRec := c.answer(commit, "the git commit")
+	mergeRec := c.answer(merge, "the merge")
+	if outcome != treeQueued {
+		t.Fatalf("a run merge %s while a git commit held the repository: %d %s", outcome, mergeRec.Code, mergeRec.Body.String())
+	}
+	requireTreeAnswer(t, "git commit", commitRec, http.StatusOK, "")
+	requireTreeAnswer(t, "merge", mergeRec, http.StatusOK, "")
+	if got, want := strings.TrimSpace(gitTestRead(t, root, "show", "HEAD:run.txt")), "the run's work"; got != want {
+		t.Fatalf("the merged HEAD carries run.txt = %q; want %q", got, want)
 	}
 }
 

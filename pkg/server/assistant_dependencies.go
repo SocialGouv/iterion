@@ -100,12 +100,20 @@ func (s *Server) handleAssistantDependencyBotsUpdate(w http.ResponseWriter, r *h
 		return
 	}
 
+	// The update writes the repository of the workdir it was admitted for:
+	// its whole working tree and its index are what it locks.
+	repo, err := identifyGitRepository(r.Context(), workDir)
+	if err != nil {
+		s.authoringError(w, r, err)
+		return
+	}
 	result, err := assistantDependencyBotsUpdateHolding(r.Context(), workDir, req, discoveryPaths, assistantDependencyHolds{
 		tree: func(ctx context.Context) (func(), error) {
-			return s.holdBotTreeWrites(ctx, botTreeWriterDependencyUpdate)
+			_, release, err := s.holdRepository(ctx, repo, botTreeWriterDependencyUpdate, false)
+			return release, err
 		},
 		git: func(ctx context.Context) (func(), error) {
-			return s.holdAuthoringGitWrites(ctx, botTreeWriterDependencyUpdate)
+			return s.holdRepositoryIndex(ctx, repo, botTreeWriterDependencyUpdate)
 		},
 	})
 	if err != nil {
@@ -137,13 +145,8 @@ func (s *Server) handleAssistantDependencyBotsLocalize(w http.ResponseWriter, r 
 	// bundle resolved before it may be another one by the time of the
 	// write. The localization reaches no network, and from its copy to its
 	// lock's sync the tree is provisional: both locks are held throughout,
-	// the repository's first.
-	releaseGit, ok := s.lockAuthoringGit(w, r, botTreeWriterDependencyLocalize)
-	if !ok {
-		return
-	}
-	defer releaseGit()
-	release, ok := s.lockBotTree(w, r, botTreeWriterDependencyLocalize)
+	// the repository's index first, then its whole working tree.
+	_, release, ok := s.lockRepositoryForEditor(w, r, botTreeWriterDependencyLocalize, req.EditorPath, true)
 	if !ok {
 		return
 	}

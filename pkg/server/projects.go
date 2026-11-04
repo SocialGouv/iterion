@@ -311,6 +311,14 @@ func (s *Server) swapWorkDir(ctx context.Context, newDir string) error {
 	if !info.IsDir() {
 		return fmt.Errorf("not a directory: %s", abs)
 	}
+	// The switch holds the bot tree's lock on the root it leaves until the
+	// new root is in place: a writer holding it resolved and writes in that
+	// root, and keeps it until it lets go (holdBotTreeWrites).
+	releaseTree, err := s.holdBotTreeWrites(ctx, botTreeWriterProjectSwitch)
+	if err != nil {
+		return err
+	}
+	defer releaseTree()
 
 	// Build the new run-console service first; if construction fails
 	// we abort before touching any live state.
@@ -362,6 +370,7 @@ func (s *Server) swapWorkDir(ctx context.Context, newDir string) error {
 		if s.usageCapSource != nil {
 			svcOpts = append(svcOpts, runview.WithUsageCapSource(s.usageCapSource))
 		}
+		svcOpts = append(svcOpts, runview.WithRepositoryWrites(s.holdRunMergeRepository))
 		svc, svcErr := runview.NewService(storeDir, svcOpts...)
 		if svcErr != nil {
 			return fmt.Errorf("runview service: %w", svcErr)
@@ -428,6 +437,7 @@ func (s *Server) swapWorkDir(ctx context.Context, newDir string) error {
 		watchCoordinator.setRuntime(s.runs, s.assistantWatches, s.effectivePathsFor(abs))
 	}
 	s.stateMu.Unlock()
+	releaseTree()
 	watchCoordinator.nudge()
 	var prevMissionDone <-chan struct{}
 	if newAssistantMissions != nil {

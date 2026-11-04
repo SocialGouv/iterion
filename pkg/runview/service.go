@@ -731,6 +731,9 @@ type Service struct {
 	// built map.
 	mergeTemps   map[string]string
 	mergeTempsMu sync.Mutex
+	// repositoryWrites is the host's hold on a repository the merge family
+	// writes (WithRepositoryWrites); nil holds nothing.
+	repositoryWrites func(ctx context.Context, repoRoot string) (release func(), err error)
 	// workspaceTracker versions the files a run produces, so a rewind can
 	// undo a node's real work — the output map is only a summary for a
 	// bot whose product is documentation or code. Filesystem-backed, so
@@ -994,6 +997,32 @@ func WithWorkDir(dir string) ServiceOption {
 	return func(s *Service) {
 		s.workDir = dir
 	}
+}
+
+// WithRepositoryWrites installs the host's hold on a repository the merge
+// family writes: the squash merge, a resolution's staging, the commit that
+// finalizes a resolved conflict and the abort each write repoRoot's index
+// and working tree under the hold hold returns, so the host's other writers
+// of that checkout wait for them instead of failing on git's index.lock or
+// reading a half-merged tree. A model call or a push runs outside it.
+func WithRepositoryWrites(hold func(ctx context.Context, repoRoot string) (release func(), err error)) ServiceOption {
+	return func(s *Service) {
+		s.repositoryWrites = hold
+	}
+}
+
+// underRepository runs write, a write of repoRoot's index and working tree,
+// under the host's hold (WithRepositoryWrites).
+func (s *Service) underRepository(ctx context.Context, repoRoot string, write func() error) error {
+	if s.repositoryWrites == nil {
+		return write()
+	}
+	release, err := s.repositoryWrites(ctx, repoRoot)
+	if err != nil {
+		return err
+	}
+	defer release()
+	return write()
 }
 
 // WithRunEnv installs the environment snapshot used by every executor this

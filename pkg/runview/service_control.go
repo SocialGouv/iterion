@@ -505,14 +505,21 @@ func (s *Service) PerformMergeCtx(ctx context.Context, runID string, req MergeRe
 			resolveMergeTargetForPersistence(req.MergeInto, repoRoot), r.FinalCommit, runtime.RunDisplayName(r))
 	}
 
-	res, mergeErr := runtime.PerformDeferredMerge(runtime.DeferredMergeRequest{
-		RepoRoot:      repoRoot,
-		Target:        req.MergeInto,
-		BranchToMerge: r.FinalBranch,
-		FinalSHA:      r.FinalCommit,
-		Strategy:      string(strategy),
-		Message:       message,
-	}, s.logger)
+	var res runtime.DeferredMergeResult
+	var mergeErr error
+	if holdErr := s.underRepository(ctx, repoRoot, func() error {
+		res, mergeErr = runtime.PerformDeferredMerge(runtime.DeferredMergeRequest{
+			RepoRoot:      repoRoot,
+			Target:        req.MergeInto,
+			BranchToMerge: r.FinalBranch,
+			FinalSHA:      r.FinalCommit,
+			Strategy:      string(strategy),
+			Message:       message,
+		}, s.logger)
+		return nil
+	}); holdErr != nil {
+		return nil, holdErr
+	}
 	if mergeErr != nil {
 		// Content conflicts produce a typed error and leave the
 		// worktree in the conflicted state. Persist
@@ -821,14 +828,16 @@ func (s *Service) ResolveMergeConflictFile(ctx context.Context, runID, path, con
 	if repoRoot == "" {
 		return fmt.Errorf("run %q has no resolvable repo root", runID)
 	}
-	paths, err := runtime.UnmergedPaths(repoRoot)
-	if err != nil {
-		return fmt.Errorf("list unmerged: %w", err)
-	}
-	if !slices.Contains(paths, path) {
-		return fmt.Errorf("path %q is not in the conflict set", path)
-	}
-	return runtime.StageResolvedFile(repoRoot, path, content)
+	return s.underRepository(ctx, repoRoot, func() error {
+		paths, err := runtime.UnmergedPaths(repoRoot)
+		if err != nil {
+			return fmt.Errorf("list unmerged: %w", err)
+		}
+		if !slices.Contains(paths, path) {
+			return fmt.Errorf("path %q is not in the conflict set", path)
+		}
+		return runtime.StageResolvedFile(repoRoot, path, content)
+	})
 }
 
 // storedLandingVerdict reads the verdict the run's verifier recorded — the
@@ -864,28 +873,30 @@ func (s *Service) FinalizeMergeAfterConflict(ctx context.Context, runID, message
 	if err := requireConflict(r, runID); err != nil {
 		return nil, err
 	}
-	remaining, err := runtime.UnmergedPaths(repoRoot)
-	if err != nil {
-		return nil, fmt.Errorf("list unmerged: %w", err)
-	}
-	if len(remaining) > 0 {
-		return nil, fmt.Errorf("still unresolved: %v", remaining)
-	}
-	message := messageOverride
-	if message == "" {
-		message = r.PendingMergeMessage
-	}
-	if message == "" {
-		conflictTarget := r.PendingMergeInto
-		if conflictTarget == "" {
-			conflictTarget = resolveMergeTargetForPersistence("current", repoRoot)
+	var sha string
+	if err := s.underRepository(ctx, repoRoot, func() error {
+		remaining, err := runtime.UnmergedPaths(repoRoot)
+		if err != nil {
+			return fmt.Errorf("list unmerged: %w", err)
 		}
-		message = runtime.BuildSquashMessageForMerge(repoRoot, r.BaseCommit, conflictTarget, r.FinalCommit, runtime.RunDisplayName(r))
-	}
-
-	sha, commitErr := runtime.FinalizeConflictMerge(repoRoot, message, storedLandingVerdict(r))
-	if commitErr != nil {
-		return nil, commitErr
+		if len(remaining) > 0 {
+			return fmt.Errorf("still unresolved: %v", remaining)
+		}
+		message := messageOverride
+		if message == "" {
+			message = r.PendingMergeMessage
+		}
+		if message == "" {
+			conflictTarget := r.PendingMergeInto
+			if conflictTarget == "" {
+				conflictTarget = resolveMergeTargetForPersistence("current", repoRoot)
+			}
+			message = runtime.BuildSquashMessageForMerge(repoRoot, r.BaseCommit, conflictTarget, r.FinalCommit, runtime.RunDisplayName(r))
+		}
+		sha, err = runtime.FinalizeConflictMerge(repoRoot, message, storedLandingVerdict(r))
+		return err
+	}); err != nil {
+		return nil, err
 	}
 	target := r.PendingMergeInto
 	if target == "" {
@@ -921,7 +932,7 @@ func (s *Service) AbortMergeConflict(ctx context.Context, runID string) error {
 	if err := requireConflict(r, runID); err != nil {
 		return err
 	}
-	if err := runtime.AbortConflictMerge(repoRoot); err != nil {
+	if err := s.underRepository(ctx, repoRoot, func() error { return runtime.AbortConflictMerge(repoRoot) }); err != nil {
 		return err
 	}
 	r.MergeStatus = store.MergeStatusFailed

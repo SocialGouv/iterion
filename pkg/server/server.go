@@ -115,9 +115,10 @@ type Server struct {
 	// raced the write, read nil, and skipped the very wait the drain
 	// depends on — caught by -race).
 	boardDispDone chan struct{}
-	// botTreeWrites orders every write of the bot tree, and
-	// authoringGitWrites every write of the repository's index
-	// (bot_tree_lock.go says what each covers). Neither is held across the
+	// writeLocks is the registry of the bot tree's and the repository's
+	// write locks (bot_tree_lock.go says what each covers): nil is the
+	// process's, which every Server of the process shares; a test names
+	// another to model a second process. Neither lock is held across the
 	// network: a dependency update fetches between its snapshot and its
 	// commit, under neither. The workdir such an action writes to is
 	// SNAPSHOTTED under stateMu before the work starts, not held across it —
@@ -126,8 +127,7 @@ type Server struct {
 	// queues behind it. The snapshot keeps the guarantee that mattered: the
 	// request is served against the project it was admitted for, even if a
 	// switch lands mid-clone.
-	botTreeWrites      orderedLock
-	authoringGitWrites orderedLock
+	writeLocks *writeLocks
 	// currentProjectID is the id of the registry entry matching
 	// cfg.WorkDir. Surfaced by /api/server/info (polled by the SPA);
 	// caching it here avoids a disk read on every poll.
@@ -1220,6 +1220,7 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 		if r := s.botContextResolver(); r != nil {
 			opts = append(opts, runview.WithBotContextResolver(r))
 		}
+		opts = append(opts, runview.WithRepositoryWrites(s.holdRunMergeRepository))
 		svc, svcErr := runview.NewService("", opts...)
 		if svcErr != nil {
 			// ADR-103 §5: a cloud replica without the run resolver is not
@@ -1269,6 +1270,7 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 		if s.usageCapSource != nil {
 			svcOpts = append(svcOpts, runview.WithUsageCapSource(s.usageCapSource))
 		}
+		svcOpts = append(svcOpts, runview.WithRepositoryWrites(s.holdRunMergeRepository))
 		svc, svcErr := runview.NewService(storeDir, svcOpts...)
 		if svcErr != nil {
 			logger.Warn("run console disabled: %v", svcErr)

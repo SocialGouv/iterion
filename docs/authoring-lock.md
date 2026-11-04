@@ -21,28 +21,46 @@ successor in — so a loser of a write race read a half-written tree and
 answered a request error (404, 400, 422), or acted on another bot (a rename
 in between). Every server handler that writes the bot tree, or copies a
 bot's files into what it writes (the trigger route's subscription), therefore
-takes the server's bot tree write lock (`holdBotTreeWrites`,
+takes the bot tree write lock (`holdBotTreeWrites`,
 `pkg/server/bot_tree_lock.go`) BEFORE it resolves anything, and holds it
-through its write; the per-file locks come after it. The key is the whole
-tree: no per-bot key exists before the resolution a rename re-points.
+through its write; the per-file locks come after it. The key is a directory —
+the project's root — not a bot: no per-bot key exists before the resolution
+a rename re-points. A project switch holds the root it leaves until the new
+one is in place.
 
-What a holder does under it is local work. The network runs outside: an
-install clones before it takes the lock, a publication pins its commit under
-the lock and pushes once it is released, a dependency update fetches a
-remote source between a snapshot taken under the lock and a commit that
-verifies that snapshot under it again (409 when a writer changed it). An
-authoring git commit lets the tree go once its files are staged; its hooks,
-signature and publication run under the repository's lock alone
-(`holdAuthoringGitWrites`), which orders the server's writers of the
-repository's index and is always taken first. The dependency actions keep the
-tree from their install to their publication — the tree is provisional in
-between — so their commit's hooks and signature are the one external work
-under it. A request body is read before either lock.
+The boundary: whatever reads or writes the bot files of a working tree —
+resolution, validation, the write, and the hooks git runs there — runs under
+the lock; only git objects and the network run outside it. An install clones
+before it takes the lock; a dependency update fetches a remote source between
+a snapshot taken under the lock and a commit that verifies it under the lock
+again (409 when a writer changed it). A git writer takes the lock on the
+repository's whole working tree, since a hook reads any file of it. An
+authoring git commit holds it from its resolution through its hooks and its
+publication (reference-transaction hooks, the index, post-commit) and lets
+it go around `commit-tree -S` alone: the signature reads the tree object it
+built and may wait on a pinentry. A publication pins its commit under the
+lock, reaches the remote with it let go, runs the pre-push hook under it again
+— with git's own arguments and stdin, through `git hook run` — and pushes
+`--no-verify`. The dependency actions keep the tree from their install to
+their publication, signature included: the tree is provisional in between. A
+request body is read before any lock.
+
+The repository's lock (`holdRepositoryIndex`), keyed by the common git
+directory and always taken before the tree's, orders the server's writers of
+the index: the authoring git commit, the dependency actions and the run merge
+family — merge, conflict staging, finalize, abort — which writes the
+operator's files and so holds the tree too (a model call or a push runs
+outside both). Git refuses a second writer of the index (`index.lock`); here
+the second waits.
 
 Writers queue in arrival order and wait as long as their request: one that
 ends first answers 503 `bot_tree_busy`, nothing written. Reads take nothing.
-Both locks are the process's — across processes the per-file locks remain
-the order.
+Both locks are the process's, shared by every server it runs — `iterion
+studio --workspace` serves one per project — and two directories exclude
+each other when one contains the other, so nested project roots are ordered
+too. Across processes the per-file locks remain the order. Left outside: the
+reference-transaction hook git runs when a push updates the remote-tracking
+ref.
 
 What the lock leaves open is the readers' side: a read that crosses a
 publication's window — a run launch, a card's bot check, a run start's

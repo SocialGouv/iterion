@@ -81,27 +81,24 @@ func (g authoringGitIndex) tree(ctx context.Context, parent string, paths []stri
 }
 
 func commitAttestedAuthoringFiles(ctx context.Context, root string, paths []string, hashes map[string]string, message string) (published string, err error) {
-	return commitAttestedAuthoringFilesStaged(ctx, root, paths, hashes, message, nil)
-}
-
-// commitAttestedAuthoringFilesStaged is commitAttestedAuthoringFiles calling
-// staged, when set, once the attested files are staged into the commit's own
-// index and verified there: from that point the commit reads nothing of the
-// worktree, so a caller holding the tree for its staging lets it go before
-// the hooks, the signature and the publication.
-func commitAttestedAuthoringFilesStaged(ctx context.Context, root string, paths []string, hashes map[string]string, message string, staged func()) (published string, err error) {
-	return commitAttestedAuthoring(ctx, root, paths, hashes, message, nil, staged)
+	return commitAttestedAuthoring(ctx, root, paths, hashes, message, nil, nil)
 }
 
 // commitAttestedAuthoringFilesWithDependency commits a dependency
 // transaction's lock: it installs the candidate into the worktree before the
 // hooks and restores it on failure, so the tree is the transaction's through
-// the publication and nothing is let go at the staging.
+// the publication and its caller holds it throughout, the signature included.
 func commitAttestedAuthoringFilesWithDependency(ctx context.Context, root string, paths []string, hashes map[string]string, message string, dependency *assistantDependencyTransaction) (published string, err error) {
 	return commitAttestedAuthoring(ctx, root, paths, hashes, message, dependency, nil)
 }
 
-func commitAttestedAuthoring(ctx context.Context, root string, paths []string, hashes map[string]string, message string, dependency *assistantDependencyTransaction, onStaged func()) (published string, err error) {
+// commitAttestedAuthoring commits the attested files. tree is the caller's
+// hold of the bot tree's lock on root's working tree, or nil when the caller
+// holds it throughout: everything that reads or writes the worktree — the
+// staging, the hooks, the publication and its index — runs under it, and a
+// signing commit lets it go around commit-tree -S alone, which reads the
+// tree object built here and may wait on a person (a pinentry).
+func commitAttestedAuthoring(ctx context.Context, root string, paths []string, hashes map[string]string, message string, dependency *assistantDependencyTransaction, tree *treeHold) (published string, err error) {
 	version, err := runAuthoringGit(ctx, root, "version")
 	if err != nil {
 		return "", err
@@ -221,9 +218,6 @@ func commitAttestedAuthoring(ctx context.Context, root string, paths []string, h
 	if err != nil {
 		return "", err
 	}
-	if onStaged != nil {
-		onStaged()
-	}
 	// Update only selected entries in a COPY of the editor's index. Preserve
 	// unrelated entry flags and cached metadata, not merely their blob bytes.
 	prepared := authoringGitIndex{root: root, index: filepath.Join(dir, "final-index")}
@@ -276,9 +270,15 @@ func commitAttestedAuthoring(ctx context.Context, root string, paths []string, h
 	args := []string{"commit-tree", verifiedTree, "-p", parent, "-F", "-"}
 	if sign == "true" {
 		args = append(args, "-S")
+		tree.leave()
 	}
 	commit, err := g.run(ctx, string(msg), args...)
 	if err != nil {
+		return "", err
+	}
+	// The publication runs git's reference-transaction hooks, installs the
+	// index and runs post-commit: the worktree's again.
+	if err := tree.take(ctx); err != nil {
 		return "", err
 	}
 	commit = strings.TrimSpace(commit)
