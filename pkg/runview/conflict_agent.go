@@ -16,7 +16,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"slices"
 	"strings"
 
 	"github.com/SocialGouv/claw-code-go/pkg/api"
@@ -156,46 +155,99 @@ func (s *Service) resolveAllConflictsWithAgent(ctx context.Context, runID, model
 	// conflict set (skip them silently) but require at least one
 	// staged file — otherwise the operator clicked the button and
 	// nothing happened, which is worse than a clear error.
-	conflictPaths := make([]string, len(det.Files))
-	for i, f := range det.Files {
-		conflictPaths[i] = f.Path
+	shown := make(map[string]runtime.ConflictFile, len(det.Files))
+	for _, f := range det.Files {
+		shown[f.Path] = f
 	}
-	// The model call above runs outside the host's hold on the repository;
-	// the staging and the refreshed snapshot run under it.
+	// The model call above runs outside the host's hold on the repository,
+	// on a conflict read before it; the staging runs under the hold, on the
+	// conflict read again there (stageAgentResolutions).
+	var current *store.Run
 	var next runtime.ConflictDetail
 	if err := s.underRepository(ctx, repoRoot, func() error {
-		staged := 0
-		for _, f := range res.Object.Files {
-			if !slices.Contains(conflictPaths, f.Path) {
-				continue
-			}
-			if runtime.HasConflictMarkers(f.Content) {
-				// Agent missed a marker — refuse rather than stage a
-				// file that still won't compile.
-				return fmt.Errorf("agent left conflict markers in %q; resolve manually", f.Path)
-			}
-			if err := runtime.StageResolvedFile(repoRoot, f.Path, f.Content); err != nil {
-				return fmt.Errorf("stage %s: %w", f.Path, err)
-			}
-			staged++
-		}
-		if staged == 0 {
-			return fmt.Errorf("agent returned no usable resolutions (responded with %d files, none matched the conflict set)", len(res.Object.Files))
-		}
-		// Refresh + return.
 		var err error
-		if next, err = runtime.ParseConflicts(repoRoot); err != nil {
-			return fmt.Errorf("re-parse conflicts: %w", err)
-		}
-		return nil
+		current, next, err = s.stageAgentResolutions(ctx, runID, repoRoot, shown, res.Object.Files)
+		return err
 	}); err != nil {
 		return nil, err
 	}
 	return &MergeConflictsResponse{
 		Files:            next.Files,
-		PendingMessage:   r.PendingMergeMessage,
-		PendingMergeInto: r.PendingMergeInto,
+		PendingMessage:   current.PendingMergeMessage,
+		PendingMergeInto: current.PendingMergeInto,
 	}, nil
+}
+
+// ErrConflictSetChanged is an agent resolution answering a conflict that is
+// no longer the repository's: while the model answered, a file it resolves
+// was resolved or edited, the merge was aborted or finalized, or the run's
+// record left the conflicted state. Nothing of the answer is written — a
+// resolution made meanwhile is never overwritten — and the handler answers
+// 409; a retry asks the model about the conflict as it is now.
+var ErrConflictSetChanged = errors.New("runview: the merge conflict changed while the agent answered")
+
+// stageAgentResolutions writes the model's answer, under the host's hold on
+// repoRoot. shown is the conflict the model was given, read before the
+// hold; the run's status and the conflict are read again here, and the
+// answer is staged only when the run is still conflicted and every file it
+// resolves is still unmerged with the bytes the model saw. Otherwise nothing
+// is staged and the outcome is ErrConflictSetChanged. Every file is checked
+// before the first is written, so a refusal stages nothing. It returns the
+// run as read here and the conflict left once the answer is staged.
+func (s *Service) stageAgentResolutions(ctx context.Context, runID, repoRoot string, shown map[string]runtime.ConflictFile, answer []resolverFile) (*store.Run, runtime.ConflictDetail, error) {
+	current, err := s.store.LoadRun(ctx, runID)
+	if err != nil {
+		return nil, runtime.ConflictDetail{}, err
+	}
+	if current.MergeStatus != store.MergeStatusConflicted {
+		return nil, runtime.ConflictDetail{}, fmt.Errorf("%w: run %q is no longer conflicted (merge_status=%q); nothing staged", ErrConflictSetChanged, runID, current.MergeStatus)
+	}
+	live, err := runtime.ParseConflicts(repoRoot)
+	if err != nil {
+		return nil, runtime.ConflictDetail{}, fmt.Errorf("re-read conflicts: %w", err)
+	}
+	unmerged := make(map[string]runtime.ConflictFile, len(live.Files))
+	for _, f := range live.Files {
+		unmerged[f.Path] = f
+	}
+	var staging []resolverFile
+	var moved []string
+	for _, f := range answer {
+		saw, ok := shown[f.Path]
+		if !ok {
+			continue
+		}
+		if runtime.HasConflictMarkers(f.Content) {
+			// Agent missed a marker — refuse rather than stage a
+			// file that still won't compile.
+			return nil, runtime.ConflictDetail{}, fmt.Errorf("agent left conflict markers in %q; resolve manually", f.Path)
+		}
+		now, still := unmerged[f.Path]
+		switch {
+		case !still:
+			moved = append(moved, fmt.Sprintf("%s is no longer conflicted", f.Path))
+		case now.Content != saw.Content || now.ReadErr != saw.ReadErr:
+			moved = append(moved, fmt.Sprintf("%s changed since the agent read it", f.Path))
+		default:
+			staging = append(staging, f)
+		}
+	}
+	if len(moved) > 0 {
+		return nil, runtime.ConflictDetail{}, fmt.Errorf("%w: %s; nothing staged — ask the agent again", ErrConflictSetChanged, strings.Join(moved, ", "))
+	}
+	if len(staging) == 0 {
+		return nil, runtime.ConflictDetail{}, fmt.Errorf("agent returned no usable resolutions (responded with %d files, none matched the conflict set)", len(answer))
+	}
+	for _, f := range staging {
+		if err := runtime.StageResolvedFile(repoRoot, f.Path, f.Content); err != nil {
+			return nil, runtime.ConflictDetail{}, fmt.Errorf("stage %s: %w", f.Path, err)
+		}
+	}
+	next, err := runtime.ParseConflicts(repoRoot)
+	if err != nil {
+		return nil, runtime.ConflictDetail{}, fmt.Errorf("re-parse conflicts: %w", err)
+	}
+	return current, next, nil
 }
 
 func init() {

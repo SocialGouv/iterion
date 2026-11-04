@@ -376,7 +376,10 @@ func (s *Server) writeContentBoundaryRefusedError(w http.ResponseWriter, r *http
 // handleResolveConflictWithAgent runs the LLM resolver against every
 // conflicted file and returns the refreshed snapshot. 500 when no
 // LLM credential is reachable — the studio surfaces the error
-// verbatim so the operator knows to sign in.
+// verbatim so the operator knows to sign in. 409 when the conflict
+// changed while the model answered (runview.ErrConflictSetChanged): a
+// manual resolution, an edit or an abort made meanwhile stands, and
+// nothing of the answer was staged.
 func (s *Server) handleResolveConflictWithAgent(w http.ResponseWriter, r *http.Request) {
 	if !s.requireSafeOrigin(w, r) {
 		return
@@ -394,6 +397,10 @@ func (s *Server) handleResolveConflictWithAgent(w http.ResponseWriter, r *http.R
 	res, err := s.runs.ResolveAllConflictsWithAgent(r.Context(), id, req.Model)
 	if err != nil {
 		if s.writeContentBoundaryRefusedError(w, r, "agent resolve", err) || s.writeBotTreeWait(w, r, err) {
+			return
+		}
+		if errors.Is(err, runview.ErrConflictSetChanged) {
+			s.httpErrorFor(w, r, http.StatusConflict, "agent resolve: %v", err)
 			return
 		}
 		s.httpErrorFor(w, r, http.StatusInternalServerError, "agent resolve: %v", err)
