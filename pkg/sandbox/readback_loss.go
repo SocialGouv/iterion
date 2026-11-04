@@ -73,6 +73,10 @@ const (
 	// from wherever that name leads. The member that turns a later write
 	// into a write anywhere.
 	DeclinedLinkLeavesTree ReadBackDeclineWhy = "link_leaves_tree"
+	// DeclinedUnwritableLink: a symlink the kernel refuses to create for its
+	// own text — an empty target, or one longer than a path may be. Nothing
+	// that stood at its path is removed for it.
+	DeclinedUnwritableLink ReadBackDeclineWhy = "unwritable_link"
 	// DeclinedHardlinkTarget: a hardlink whose target is no regular file the
 	// same archive landed — absent, unsafe, declined itself, or another
 	// kind. A hardlink to a file the archive did land lands as a copy.
@@ -85,9 +89,9 @@ const (
 	// where the archive carries a file or a link — not the drain's to take.
 	DeclinedPreDrainTree ReadBackDeclineWhy = "pre_drain_tree"
 	// DeclinedPreDrainFile: a file or a link the host dir held before the
-	// drain stands where the archive carries a dir, or above a member's
-	// path — not the drain's to remove: the drain removes only what it
-	// landed.
+	// drain stands where the archive carries a dir or a link, or above a
+	// member's path — not the drain's to remove: a member that carries none
+	// of the set's bytes never takes what it did not land.
 	DeclinedPreDrainFile ReadBackDeclineWhy = "pre_drain_file"
 )
 

@@ -444,3 +444,24 @@ func TestExportWorkspace_StopsThePodArchiverOnceTheExtractFails(t *testing.T) {
 		t.Errorf("the pod's archiver streamed its whole archive after the extract failed — the export read %d bytes it would never land", body)
 	}
 }
+
+// TestExportWorkspace_ReadsTheArchiverToItsEnd: the extract stops at the
+// end-of-archive marker, and an archiver whose padding past it nobody reads
+// blocks and never exits — the export would wait on it until its deadline,
+// and never read the exit that says the archive raced a writer. The first
+// attempt's exit says it raced; only an exit read past the tail retries it.
+func TestExportWorkspace_ReadsTheArchiverToItsEnd(t *testing.T) {
+	fastExportRetries(t)
+	ws := exportTarget(t)
+	kubectl, calls := archiveShimSeq(t, [][]byte{archiveWithTail(t, "./note.txt", "pod work")}, 1, measuredRaceStderr)
+
+	if err := exportRun(ws, kubectl).ExportWorkspace(context.Background()); err != nil {
+		t.Fatalf("ExportWorkspace = %v, want the raced archive retried to success", err)
+	}
+	if n := calls(); n != 2 {
+		t.Errorf("the export archived the pod %d times, want the raced attempt then the settled one — the race warning in the first exit went unread", n)
+	}
+	if got, err := os.ReadFile(filepath.Join(ws, "note.txt")); err != nil || string(got) != "pod work" {
+		t.Errorf("note.txt = %q (%v), want the member landed", got, err)
+	}
+}

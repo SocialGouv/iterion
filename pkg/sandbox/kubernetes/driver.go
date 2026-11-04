@@ -1574,6 +1574,10 @@ func (r *Run) exportOnce(ctx context.Context, hostDst string) (retryable bool, e
 		stopPodArchiver(stopArchiver, podTar)
 		return false, nil, fmt.Errorf("extract the export into %s: %w", hostDst, xerr)
 	}
+	if err := readArchiveTail(pipe); err != nil {
+		stopPodArchiver(stopArchiver, podTar)
+		return false, nil, fmt.Errorf("read the pod's archive past its end: %w", err)
+	}
 	if err := podTar.Wait(); err != nil {
 		stderr := strings.TrimSpace(podErr.String())
 		return onlyTarRaceWarnings(err, stderr), nil, fmt.Errorf("in-pod tar %s: %w\n%s", r.prepared.workspace, err, stderr)
@@ -1594,6 +1598,22 @@ func (r *Run) exportOnce(ctx context.Context, hostDst string) (retryable bool, e
 func stopPodArchiver(stop context.CancelFunc, archiver *exec.Cmd) {
 	stop()
 	_ = archiver.Wait()
+}
+
+// readArchiveTail reads what the pod's archiver still sends once an
+// extract met the archive's end-of-archive marker, so its exit can be
+// waited for: tar pads its last record past the marker, and an archiver
+// whose output nobody reads blocks on that write and never exits — Wait
+// would never return, and the race warning its exit carries would never
+// be read. Whether that write fits the pipe is the kernel's call, not the
+// archive's: a pipe holds what its buffer holds, smaller on a host short of
+// pipe pages. The tail is read to its end and thrown away; its length is
+// the archiver's, bounded like the whole stream by the context the
+// archiver was started under. The workspace export and the run-files drain
+// both read it before they wait.
+func readArchiveTail(archive io.Reader) error {
+	_, err := io.Copy(io.Discard, archive)
+	return err
 }
 
 // fixupWorkspaceGitScript re-anchors the copied clone's git plumbing on

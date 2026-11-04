@@ -7,10 +7,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/SocialGouv/iterion/internal/safepath"
@@ -427,6 +430,12 @@ func (r *Run) drainOnce(ctx context.Context, dir sandbox.ReadBackDir, root strin
 		stopPodArchiver(stopArchiver, podTar)
 		return false, x, fmt.Errorf("kubernetes: drain %s into %s: %w", dir.ContainerPath, dir.HostDir, xerr)
 	}
+	// The set landed: what the archiver still sends is tar's padding, read
+	// so that its exit — the race warning it carries — can be waited for.
+	if err := readArchiveTail(pipe); err != nil {
+		stopPodArchiver(stopArchiver, podTar)
+		return false, x, lost(sandbox.ReadBackArchiver, fmt.Errorf("kubernetes: drain %s: read the pod's archive past its end: %w", dir.ContainerPath, err))
+	}
 	if err := podTar.Wait(); err != nil {
 		return onlyTarRaceWarnings(err, podErr.String()), x, lost(sandbox.ReadBackArchiver, fmt.Errorf("kubernetes: drain %s: in-pod tar: %w\n%s", dir.ContainerPath, err, strings.TrimSpace(podErr.String())))
 	}
@@ -455,20 +464,32 @@ func (r *Run) drainOnce(ctx context.Context, dir sandbox.ReadBackDir, root strin
 // the workspace export there are no name exclusions — a run file is the
 // run's product whatever it is named — and every member the host declines
 // (sandbox.ReadBackDeclineWhy: a name that cannot be made safe, a link
-// that leaves the tree, a hardlink to no file this archive landed, a kind
-// it does not write back, a pre-drain tree where the archive carries a file
-// or a link, a pre-drain file or link where it carries a dir) is skipped,
-// warned, and recorded for the run's event, and the members after it still
-// land. Only the host's own failure to write — and the cap — end the
-// extract.
+// that leaves the tree, a link the kernel refuses to create, a hardlink to
+// no file this archive landed, a kind it does not write back, a pre-drain
+// tree where the archive carries a file or a link, a pre-drain file or link
+// where it carries a dir or a link) is skipped, warned, and recorded for
+// the run's event, and the members after it still land. Only the host's own
+// failure to write — and the cap — end the extract.
 func (r *Run) extractDrain(stream io.Reader, root string, before, beforeDirs map[string]bool, s *drainState) (drainExtract, error) {
 	x := drainExtract{landed: map[string]bool{}}
-	// The regular files this attempt landed that still stand as such, by
-	// landing: the only targets a hardlink member may be landed from.
+	// The regular files this attempt landed, by landing: the only targets a
+	// hardlink member may be landed from. The registry only grows; whether
+	// the file still stands there is the hardlink branch's Lstat to prove —
+	// a later member may have replaced it, a raced tree's removal taken it.
 	files := map[string]bool{}
 	decline := func(name string, why sandbox.ReadBackDeclineWhy, format string, args ...any) {
 		x.declined.Add(sandbox.ReadBackDeclinedMember{Name: name, Why: why})
 		r.warnMember(s, format, args...)
+	}
+	// heldBefore reports whether a file or a link the host dir held before
+	// the drain stands where a member lands (at, its landing key): the
+	// occupant a member carrying none of the set's bytes — a dir, a link —
+	// never removes, as the sweep never removes it. Only a member that
+	// carries bytes overwrites what the host held: the overlay a resumed
+	// drain lands (readBackDirEntries).
+	heldBefore := func(at, key string) bool {
+		info, err := os.Lstat(at)
+		return err == nil && !info.IsDir() && before[key]
 	}
 	// landing is where a write to abs lands: key, HostDir-relative and
 	// slash-separated, and at, the path there, its parent chain real. The
@@ -525,7 +546,7 @@ func (r *Run) extractDrain(stream io.Reader, root string, before, beforeDirs map
 		if clean == "" || clean == "." {
 			continue
 		}
-		abs, err := safepath.Join(root, clean)
+		abs, err := drainJoin(root, clean)
 		if err != nil {
 			// A file or a link the host held before the drain, standing where
 			// the member's path needs a directory, is the dir branch's
@@ -549,15 +570,15 @@ func (r *Run) extractDrain(stream io.Reader, root string, before, beforeDirs map
 			// A file or link where the archive carries a dir is replaced when
 			// the drain landed it — a raced attempt's, the mirror of the file
 			// branch's own replace. One the host held before the drain is
-			// not the drain's to remove, as the sweep never removes it: a dir
-			// member carries none of the set's bytes, and taking the host's
-			// file for it would trade content for a name. The member is
-			// declined, and the members under it with it (preDrainFileAbove).
+			// not the drain's to remove (heldBefore): a dir member carries
+			// none of the set's bytes, and taking the host's file for it
+			// would trade content for a name. The member is declined, and
+			// the members under it with it (preDrainFileAbove).
+			if heldBefore(at, key) {
+				decline(clean, sandbox.DeclinedPreDrainFile, "sandbox: drain skipped the dir %s: %s predates the drain — the file or link there is not the drain's to remove", clean, key)
+				continue
+			}
 			if info, err := os.Lstat(at); err == nil && !info.IsDir() {
-				if before[key] {
-					decline(clean, sandbox.DeclinedPreDrainFile, "sandbox: drain skipped the dir %s: %s predates the drain — the file or link there is not the drain's to remove", clean, key)
-					continue
-				}
 				if err := os.Remove(at); err != nil {
 					return x, lost(sandbox.ReadBackRefused, fmt.Errorf("replace %s: %w", at, err))
 				}
@@ -566,12 +587,6 @@ func (r *Run) extractDrain(stream io.Reader, root string, before, beforeDirs map
 			if err := os.MkdirAll(at, 0o755); err != nil {
 				return x, lost(sandbox.ReadBackRefused, fmt.Errorf("create %s: %w", at, err))
 			}
-			// A dir member is a member the extract wrote: the sweep keeps
-			// it — an empty dir the settled archive carries is content,
-			// not a raced leftover, and the sweep cannot tell the two
-			// apart except through this record.
-			x.landed[key] = true
-			delete(files, key)
 		case tar.TypeReg:
 			// A directory where the archive carries a file is what a raced
 			// attempt's extract leaves behind; the file branch cannot write
@@ -596,7 +611,6 @@ func (r *Run) extractDrain(stream io.Reader, root string, before, beforeDirs map
 				return x, err
 			}
 			s.land(key, n)
-			x.landed[key] = true
 			files[key] = true
 		case tar.TypeLink:
 			// A file with several names is archived once: tar carries every
@@ -649,53 +663,106 @@ func (r *Run) extractDrain(stream io.Reader, root string, before, beforeDirs map
 				return x, err
 			}
 			s.land(key, n)
-			x.landed[key] = true
 			files[key] = true
 		case tar.TypeSymlink:
 			// A link carries no bytes of the set — only the files it points
 			// into do, when their own member lands — so neither a landed
-			// link nor a refused one moves the meter: a refused link (its
-			// target leaves the tree, read from where the link lands) is a
+			// link nor a refused one moves the meter: a refused link is a
 			// member dropped with its reason, and a landed one adds nothing
-			// to count. The refusal is judged first: a member that lands
-			// nothing removes nothing. symlinkLanding reads where the link
-			// lands itself, for the export as for the drain: it is handed
-			// the member's own path.
+			// to count. Every refusal is judged before anything is removed:
+			// a member that lands nothing removes nothing. symlinkLanding
+			// reads where the link lands itself, for the export as for the
+			// drain: it is handed the member's own path.
 			if _, inside := symlinkLanding(root, abs, hdr.Linkname); !inside {
 				decline(clean, sandbox.DeclinedLinkLeavesTree, "sandbox: drain skipped the link %s -> %s: from %s, where it lands, its target leaves the run-files tree or can come to", clean, hdr.Linkname, key)
 				continue
 			}
-			// A directory where the archive carries a link is the same
-			// raced occupant the file branch cures — the link cannot be
-			// written over it — judged on the same before snapshot, and
-			// skipped on the same witness.
-			kept, err := r.dropRacedDrainDir(root, before, beforeDirs, at, key, s)
+			if heldBefore(at, key) {
+				decline(clean, sandbox.DeclinedPreDrainFile, "sandbox: drain skipped the link %s -> %s: %s predates the drain — the file or link there is not the drain's to remove", clean, hdr.Linkname, key)
+				continue
+			}
+			// The link is created beside its path first: one the kernel
+			// refuses for its own text is declined while every occupant
+			// still stands.
+			staged, err := stageDrainLink(at, hdr.Linkname)
+			if errors.Is(err, errLinkRefused) {
+				decline(clean, sandbox.DeclinedUnwritableLink, "sandbox: drain skipped the link %s -> %q: %v", clean, hdr.Linkname, err)
+				continue
+			}
 			if err != nil {
 				return x, err
 			}
+			// A directory where the archive carries a link is the same
+			// raced occupant the file branch cures — the link cannot be
+			// renamed over it — judged on the same before snapshot, and
+			// skipped on the same witness.
+			kept, err := r.dropRacedDrainDir(root, before, beforeDirs, at, key, s)
+			if err != nil {
+				_ = os.Remove(staged)
+				return x, err
+			}
 			if kept != "" {
+				if err := os.Remove(staged); err != nil {
+					return x, lost(sandbox.ReadBackRefused, fmt.Errorf("drop the staged link %s: %w", staged, err))
+				}
 				decline(clean, sandbox.DeclinedPreDrainTree, "sandbox: drain skipped the link %s -> %s: %s predates the drain — the tree there is not the drain's to replace", clean, hdr.Linkname, kept)
 				continue
 			}
-			// The link replaces whatever file stands at its path: that
-			// file's bytes leave the set with it.
-			wrote, err := r.writeExportSymlink(root, at, hdr)
-			if err != nil {
-				return x, lost(sandbox.ReadBackRefused, err)
+			// The link replaces the file or link the drain landed at its
+			// path: a file's bytes leave the set with it.
+			if err := os.Rename(staged, at); err != nil {
+				_ = os.Remove(staged)
+				return x, lost(sandbox.ReadBackRefused, fmt.Errorf("land the link %s -> %s: %w", at, hdr.Linkname, err))
 			}
-			if wrote {
-				s.forget(key)
-				x.landed[key] = true
-				delete(files, key)
-			}
+			s.forget(key)
 		default:
 			// A device, a fifo: each is a way to point a later write
 			// somewhere it was never meant to reach, and none is a file a
 			// tool produces as its product.
 			decline(clean, sandbox.DeclinedKind, "sandbox: drain skipped %s: the pod's archive carries it as type %q, which the host does not write back", abs, string(hdr.Typeflag))
+			continue
 		}
+		// Every branch that reaches here landed the member at key — every
+		// refusal above continues past this line. The record the sweep
+		// keeps is the one place it is written: a dir is in it too, since
+		// an empty dir the settled archive carries is content, not a raced
+		// leftover, and the sweep cannot tell the two apart except through
+		// this record.
+		x.landed[key] = true
 	}
 	return x, nil
+}
+
+// errLinkRefused marks a link member the kernel refuses to create for its
+// own text — an empty target, or one longer than a path may be: the
+// member's fault, never the host's, so the drain declines it
+// (sandbox.DeclinedUnwritableLink) and lands the rest.
+var errLinkRefused = errors.New("the kernel refuses to create this link")
+
+// stageDrainLink creates the link member landing at at, pointing at
+// target, under a staged name beside it, and returns that name: the
+// caller renames it over at once the place is judged, so a link the kernel
+// refuses removes nothing — what stood at at still stands. A refusal for
+// the member's own text is errLinkRefused: an empty target is read off the
+// text (symlink(2) answers ENOENT, the errno a missing parent shares), and
+// ENAMETOOLONG names a target — or a path beside a member's own — longer
+// than the host holds. Any other failure is the host's, typed refused.
+func stageDrainLink(at, target string) (string, error) {
+	if target == "" {
+		return "", fmt.Errorf("%w: its target is empty", errLinkRefused)
+	}
+	parent := filepath.Dir(at)
+	if err := os.MkdirAll(parent, 0o755); err != nil {
+		return "", lost(sandbox.ReadBackRefused, fmt.Errorf("create %s: %w", parent, err))
+	}
+	staged := filepath.Join(parent, ".drain-link-"+strconv.FormatUint(rand.Uint64(), 36))
+	if err := os.Symlink(target, staged); err != nil {
+		if errors.Is(err, syscall.ENAMETOOLONG) {
+			return "", fmt.Errorf("%w: %w", errLinkRefused, err)
+		}
+		return "", lost(sandbox.ReadBackRefused, fmt.Errorf("stage the link %s -> %s: %w", at, target, err))
+	}
+	return staged, nil
 }
 
 // copyDrainFile lands a hardlink member at abs as a copy of src, the
@@ -735,14 +802,16 @@ func (r *Run) copyDrainFile(abs, member, src string, srcInfo os.FileInfo, capByt
 // as a file that looks entire. The rename replaces a file or a link the
 // path holds — the host writes the file the member names, never through a
 // link the archive left there first — and a dir there was judged before
-// (dropRacedDrainDir). On every failure the staged bytes are removed, so
-// the bytes returned are the meter's, never a file's.
+// (dropRacedDrainDir). The staged name owes nothing to the member's: a name
+// the host's filesystem holds is a name the drain can land, however close
+// to the limit. On every failure the staged bytes are removed, so the bytes
+// returned are the meter's, never a file's.
 func (r *Run) writeDrainFile(abs, member string, capBytes, budget int64, mode os.FileMode, src io.Reader) (int64, error) {
 	parent := filepath.Dir(abs)
 	if err := os.MkdirAll(parent, 0o755); err != nil {
 		return 0, lost(sandbox.ReadBackRefused, fmt.Errorf("create %s: %w", parent, err))
 	}
-	staged, err := os.CreateTemp(parent, "."+filepath.Base(abs)+".drain-*")
+	staged, err := os.CreateTemp(parent, ".drain-*")
 	if err != nil {
 		return 0, lost(sandbox.ReadBackRefused, fmt.Errorf("stage %s: %w", abs, err))
 	}
@@ -785,7 +854,7 @@ func (r *Run) writeDrainFile(abs, member string, capBytes, budget int64, mode os
 
 // dropRacedDrainDir removes a directory standing where the settled archive
 // carries a regular file or a link — the one occupant neither
-// writeDrainFile's landing nor writeExportSymlink's replace takes, and what
+// writeDrainFile's rename nor the link branch's takes, and what
 // a raced attempt's extract leaves behind on a type flip. The removal is
 // proven, never blind: neither half of the before snapshot may hold an
 // entry under the tree — no file or link, and no directory either, a dir
@@ -861,29 +930,72 @@ func (r *Run) dropRacedDrainDir(hostDir string, before, beforeDirs map[string]bo
 	return "", nil
 }
 
+// drainJoin is the path the member named clean is written at under root —
+// clean, slash-separated, past safepath.GuardName — or why it cannot be:
+// safepath.Join's guards, the lexical one and every link of the chain
+// inside root, for the member's PARENT chain. Its own leaf is never
+// resolved: every write the drain makes replaces the entry standing there
+// — a rename, a removal, a dir made only where none stands — and none
+// follows it, so a link at the member's own path, a dangling one included,
+// is an occupant each branch judges where the member lands, never a path
+// the name reaches through. The leaf is still Lstat'd: a path no host
+// directory can hold — a name too long, a parent that is a file — is
+// refused here.
+func drainJoin(root, clean string) (string, error) {
+	parentRel, base := ".", clean
+	if i := strings.LastIndex(clean, "/"); i >= 0 {
+		parentRel, base = clean[:i], clean[i+1:]
+	}
+	parent, err := safepath.Join(root, parentRel)
+	if err != nil {
+		return "", err
+	}
+	abs := filepath.Join(parent, base)
+	if _, err := os.Lstat(abs); err != nil && !os.IsNotExist(err) {
+		return "", fmt.Errorf("stat %s: %w", abs, err)
+	}
+	return abs, nil
+}
+
 // preDrainFileAbove is the file or link the host dir held before the drain
 // that stands where the path of the member named clean needs a directory —
 // HostDir-relative, where it stands (safepath.Landing) — or "" when none
 // does. The dir branch never removes such an entry, so every member under
 // it is declined for it: the reason is the host's entry, not the member's
-// name. A link that leads to a directory is no such entry — the kernel
-// follows it.
+// name. A link that leads to a directory inside the tree is no such entry —
+// the kernel follows it; one that leads to a file or to nothing (dangling,
+// a loop) is; one that leaves the tree is the name's own refusal, whoever
+// laid it.
 func preDrainFileAbove(root, clean string, before map[string]bool) string {
 	parts := strings.Split(clean, "/")
 	for i := 1; i < len(parts); i++ {
-		abs, err := safepath.Join(root, strings.Join(parts[:i], "/"))
+		abs, err := drainJoin(root, strings.Join(parts[:i], "/"))
 		if err != nil {
 			return ""
 		}
-		info, err := os.Stat(abs)
+		key, err := safepath.Landing(root, abs)
+		if err != nil {
+			return ""
+		}
+		at := filepath.Join(root, filepath.FromSlash(key))
+		info, err := os.Lstat(at)
 		if err != nil {
 			return ""
 		}
 		if info.IsDir() {
 			continue
 		}
-		key, err := safepath.Landing(root, abs)
-		if err != nil || !before[key] {
+		if info.Mode()&os.ModeSymlink != 0 {
+			if resolved, err := filepath.EvalSymlinks(at); err == nil {
+				if resolved != root && !strings.HasPrefix(resolved, root+string(os.PathSeparator)) {
+					return ""
+				}
+				if target, err := os.Stat(resolved); err == nil && target.IsDir() {
+					continue
+				}
+			}
+		}
+		if !before[key] {
 			return ""
 		}
 		return key
@@ -899,11 +1011,11 @@ func preDrainFileAbove(root, clean string, before map[string]bool) string {
 // sweeps what it cannot prove it wrote and never takes a tree it cannot,
 // so this walk is the host dir's state BEFORE any archive landed; an entry
 // it already holds is never a sweep candidate, whoever wrote it, and never
-// removed for a dir member either — a dir carries none of the set's bytes
-// (the extract declines it). A file or link member the archive carries is
-// another matter: the pod's view of a path it names wins over the file or
-// link standing there, pre-drain included — the file branch's overwrite,
-// the link branch's replace.
+// removed for a dir or a link member either — neither carries any of the
+// set's bytes (the extract declines it). A member that carries bytes — a
+// file, a hardlink's copy — is another matter: the pod's view of a path it
+// names wins over the file or link standing there, pre-drain included —
+// the file branch's overwrite.
 //
 // dir is the drain's root (drainRoot): the walk never follows a link, so
 // handed one it would list the link alone and nothing behind it.
