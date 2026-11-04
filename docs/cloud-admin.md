@@ -790,7 +790,7 @@ the line the publisher writes by
 The data plane's durable state lives in Mongo (runs, events,
 identity, sealed secrets) + the blob bucket (artifact bodies). The
 backup + restore drill — including the
-"Mongo and blob snapshot must overlap in time" invariant — lives in
+"the bucket copy starts after the Mongo dump ends" invariant — lives in
 [docs/cloud-backup.md](cloud-backup.md). The published objectives are
 RPO 24 h / RTO 8 h, and the drill log in that page is their witness
 ([§ Recovery objectives](cloud-backup.md#recovery-objectives),

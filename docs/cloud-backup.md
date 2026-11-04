@@ -21,10 +21,16 @@ SHA-256, and the session is minted at redemption
 hold stay unreadable without `ITERION_SECRETS_KEY`. Store, restrict and
 destroy the archives accordingly.
 
-**Critical invariant:** the Mongo backup and the blob backup must
-overlap in time. A Mongo restore that references blob keys deleted
-between snapshots produces dangling artifact pointers. Schedule them
-in lock-step (same `cron`, same monitoring alert).
+**Critical invariant:** the bucket copy starts after the Mongo dump
+ends. A dump taken with `--oplog` restores the base as it stood when the
+dump ended, so every object it references existed then: a copy that
+started later holds it, or, if it was deleted in between, the `sync` tier
+has moved it under `current-deleted/<timestamp>/`. Two jobs on the same
+cron do not give that: a copy that finishes before the dump misses the
+objects the dump's last writes point to, and both jobs still go green. The
+[cadence](#recovery-objectives) below orders them, and step 2 of the
+[restore drill](#restore-drill) pairs a dump with a copy by their
+timestamps.
 
 ---
 
@@ -35,20 +41,25 @@ each one:
 
 | Objective | Value | Held by |
 |---|---|---|
-| **RPO** (maximum data loss) | **24 hours** | The single daily cadence below: everything written since the last pair of copies is lost, nothing older. The bucket half is the chart's `backup.*`; the Mongo half is the operator's CronJob ([below](#mongo-backup)), and the RPO holds only once that CronJob has a green run against the off-cluster destination and a drill has restored its dump. |
+| **RPO** (maximum data loss) | **24 hours** | The daily order below: everything written since the dump of the last pair is lost, nothing older. The bucket half is the chart's `backup.*`; the Mongo half is the operator's CronJob ([below](#mongo-backup)), and the RPO holds only once that CronJob has a green run against the off-cluster destination and a drill has restored its dump. |
 | **RTO** (maximum time to serve again) | **8 hours** | The [restore drill](#restore-drill) on a fresh namespace — objects first, then the base — measured end to end; the [drill log](#drill-log) is the witness. It assumes the live side still answers step 6's replay; with the live side lost too, step 6 fails closed and the RTO covers the data plane only. |
 | Drill cadence | quarterly | The [drill log](#drill-log): an objective nobody measured is a wish. |
 
-**One cadence: 02:30 UTC, daily.** The Mongo dump and the `daily` blob tier
-run on the same cron, which is the lock-step the invariant above asks for.
-02:30 is the chart's `backup.tiers[daily].schedule` default; the Mongo
-CronJob below is written on it. A CronJob schedule is read in the time zone
-of the cluster's controller manager (the chart renders no `timeZone`, and
-the recipe below sets none): on a cluster whose controller is not on UTC
-the two still run together, at 02:30 in that zone — check it on the target
-cluster and write the zone down with the deployment's values. The `weekly`
-(Sunday 03:00) and `monthly` (1st, 04:00) tiers are snapshots layered over
-the daily pair and do not move the RPO. `IterionArtifactBackupStale` fires
+**One order, daily: the Mongo dump at 01:30 UTC, the bucket copy at
+02:30.** 02:30 is the chart's `backup.tiers[daily].schedule` default; the
+Mongo CronJob below runs an hour earlier and names its archive with the
+dump's start AND end, so a pair is checked, not assumed. A dump still
+running at 02:30 does not pair with that day's copy, only with the next
+one, and for that day the RPO doubles: watch the dump's duration
+(`kube_job_status_completion_time` − `kube_job_status_start_time` of its
+Jobs) and move the dump earlier before it nears the hour. A CronJob
+schedule is read in the time zone of the cluster's controller manager (the
+chart renders no `timeZone`, and the recipe below sets none): on a cluster
+whose controller is not on UTC both run at those hours in that zone and the
+order holds — check it on the target cluster and write the zone down with
+the deployment's values. The `weekly` (Sunday 03:00) and `monthly` (1st,
+04:00) tiers are snapshots that start after the day's dump and do not move
+the RPO. `IterionArtifactBackupStale` fires
 about 37 hours after the `daily` tier's last success (36 h `maxAgeHours` +
 the rule's 1 h `for:`), and `IterionArtifactBackupFailed` on a failed run:
 a missed day is seen before the RPO is doubled. The chart renders no rule
@@ -88,7 +99,7 @@ metadata:
   name: iterion-mongo-backup
   namespace: iterion
 spec:
-  schedule: "30 2 * * *"         # daily 02:30 — the blob daily tier's cron, lock-step
+  schedule: "30 1 * * *"         # daily 01:30 — ends before the bucket copy's 02:30
   successfulJobsHistoryLimit: 3
   failedJobsHistoryLimit: 5
   concurrencyPolicy: Forbid       # never two dumps at once
@@ -114,13 +125,17 @@ spec:
                 - -c
                 - |
                   set -e
-                  TS=$(date -u +%Y%m%dT%H%M%SZ)
+                  START=$(date -u +%Y%m%dT%H%M%SZ)
                   # Dump to the scratch volume first, then upload: a pipe
                   # in sh would hide a failed mongodump behind rclone's exit.
                   mongodump --uri "${MONGO_URI}" --gzip --oplog \
                     --archive="/backup/dump.gz"
+                  # --oplog restores the base as of the dump's end: the
+                  # name carries it, and a restore pairs the dump only
+                  # with a bucket copy that started later.
+                  END=$(date -u +%Y%m%dT%H%M%SZ)
                   /tools/rclone copyto "/backup/dump.gz" \
-                    "dst:${DST_BUCKET}/mongo/iterion-${TS}.gz"
+                    "dst:${DST_BUCKET}/mongo/iterion-${START}-${END}.gz"
               env:
                 - name: MONGO_URI
                   valueFrom:
@@ -190,8 +205,9 @@ spec:
 ```
 
 Schedule via [Velero](https://velero.io/) or a controller that issues
-VolumeSnapshots on a cron. The same overlap-with-blob-snapshot
-constraint applies.
+VolumeSnapshots on a cron. The same order applies: a snapshot's point in
+time is its creation, and it pairs only with a bucket copy that started
+after it.
 
 ---
 
@@ -279,8 +295,9 @@ Recommended baseline (tune to your compliance posture):
 | Warm | Weekly blob `snapshot` (`weekly/<timestamp>/`) | 35 days | Another region |
 | Cold | Monthly blob `snapshot` (`monthly/<timestamp>/`) | 13 months (400 days) | Glacier / Archive tier |
 
-The three blob tiers are the chart's `backup.tiers` defaults; a Mongo dump
-on the same cadence (above) keeps the two in lock-step.
+The three blob tiers are the chart's `backup.tiers` defaults; each one
+starts after the day's Mongo dump has ended ([above](#recovery-objectives)),
+so each pairs with it.
 
 Mongo dump size grows with `events` collection — the config's
 `mongo.events_ttl_days` (env `ITERION_MONGO_EVENTS_TTL_DAYS`, default 90)
@@ -320,8 +337,20 @@ finding, not a formality.
      a restored runner creating one would reach the outside with restored
      credentials.
 2. **Restore the blob bucket first** — Mongo references blob keys, so
-   the keys must exist before any run doc consults them. From the chart's
-   off-cluster copy, run rclone the other way round, into the RESTORE
+   the keys must exist before any run doc consults them. **Pick the pair
+   before copying anything**: the newest dump
+   (`mongo/iterion-<start>-<end>.gz`) whose `<end>` precedes the start of
+   a copy that went green. A green copy's last log line is
+   `backup <tier>: <mode> ok <ts>`, `<ts>` being its start (a dated
+   snapshot's directory carries the same `<ts>`). A dump with no green copy
+   started after its end is not restored: take an older one. With the
+   cluster lost, its Job logs go with it, and at this version the
+   off-cluster bucket holds no witness of which copy went green: pair the
+   dump with the newest copy that started after its end (a `weekly/<ts>/`
+   or `monthly/<ts>/` directory, or the daily mirror when a
+   `current-deleted/<ts>/` directory newer than the dump's end shows a copy
+   ran), and enter the pair as unproven in the [drill log](#drill-log).
+   From the chosen copy, run rclone the other way round, into the RESTORE
    bucket, never the live one (the two remotes as the CronJob defines them,
    `RCLONE_CONFIG_DST_*`, plus a `restore` remote for the target):
    ```sh
@@ -330,13 +359,18 @@ finding, not a formality.
    rclone copy "dst:${DST_BUCKET}/weekly/<timestamp>" "restore:${RESTORE_BUCKET}"   # or a dated snapshot
    rclone check --one-way --size-only "dst:${DST_BUCKET}/current" "restore:${RESTORE_BUCKET}"
    ```
-   An object deleted from the live bucket lives under
-   `current-deleted/<timestamp>/` for the tier's `keepDays`; copy it back
-   the same way.
-3. **Restore Mongo from `--archive`** — the dump the
-   [CronJob](#native--mongodump-cronjob) wrote under `mongo/`:
+   Then copy back, the same way, every `current-deleted/<timestamp>/`
+   directory whose `<timestamp>` is after the dump's `<end>` (they live
+   for the tier's `keepDays`): they hold what the live side deleted or
+   overwrote after the backup, which the restored rows still reference
+   (step 6 deletes again what was deleted). Copy them newest first, so the
+   version the dump saw, moved by the first copy after its end, is the one
+   that stays. An older directory holds what was deleted before the
+   backup: leave it out.
+3. **Restore Mongo from `--archive`** — the dump of step 2's pair, as the
+   [CronJob](#native--mongodump-cronjob) wrote it under `mongo/`:
    ```sh
-   rclone cat "dst:${DST_BUCKET}/mongo/iterion-${TS}.gz" \
+   rclone cat "dst:${DST_BUCKET}/mongo/iterion-${START}-${END}.gz" \
      | mongorestore --uri "${RESTORE_MONGO_URI}" \
        --gzip \
        --archive \
@@ -355,7 +389,7 @@ finding, not a formality.
    and blobs, an org the dump holds as `pending_deletion` with a
    `purge_after` already past, before step 6 could replay the
    cancellation. Read the cancellations on the live side
-   (`GET /api/admin/audit?action=org.deletion_canceled&from=<backup timestamp>`,
+   (`GET /api/admin/audit?action=org.deletion_canceled&from=<dump start>`,
    or its Mongo) and set each org back in the restored Mongo — what the
    restore route does (`auth.Service.RestoreOrg`):
    ```sh
@@ -378,21 +412,32 @@ finding, not a formality.
    dump.
    - **The set is defined by a rule, not a list.** Read every live
      `audit_events` row, both scopes (`platform` and `tenant`, which also
-     holds the org-scoped rows), with `created_at` after the backup
-     timestamp, and keep the actions matching `*.deleted`, `*.removed`,
-     `*.revoked`, `*.rotated`, `*.role_changed`, `*.status_changed`,
+     holds the org-scoped rows), with `created_at` after the dump's
+     `<start>` (a margin: what the dump already holds replays as a no-op),
+     and keep the actions matching `*.deleted`, `*.removed`, `*.revoked`,
+     `*.rotated`, `*.role_changed`, `*.status_changed`, `*.updated`,
      `*.deletion_scheduled`, `*.deletion_canceled`,
-     `user.password_changed`, `user.password_reset`, `byok.updated`,
-     `secret.updated`, `*.llm_key.updated`.
+     `user.password_changed`, `user.password_reset`.
      [cloud-admin-guide.md §1.5](cloud-admin-guide.md#15-audit-log) lists
      the stable tokens; the `auditTenant`/`auditOrg`/`auditPlatform`/
      `auditSystem` call sites are authoritative. Among them, a
      `schedule.deleted` brings back a schedule that launches a bot again,
-     and a `run.deleted` brings back a run and its content.
+     a `run.deleted` brings back a run and its content, and a `*.updated`
+     can undo a restriction: `user.updated` carries an account's status
+     (disabled) and its super-admin flag (demoted), `schedule.updated` a
+     disabled schedule, `platform.settings.sandbox.updated` a tightened
+     egress.
    - **Removals, demotions and suspensions are redone** through the
      restored API: delete again what was deleted, remove the member,
      revoke the token or the sessions, set the role or the status the live
      side holds.
+   - **Updates are reconciled with the live object**: read it on the live
+     side and write its current value on the restored side — for
+     `user.updated`, the account's status and super-admin flag
+     (`PATCH /api/admin/users/{id}`); for the others, the setting, policy
+     or flag the row names. A `*.updated` on a credential's value
+     (`byok.updated`, `secret.updated`, `*.llm_key.updated`) is a rotation,
+     below.
    - **Rotations cannot be replayed**: the new value exists only live. On
      the restored side, revoke or delete the stale credential (personal
      access token, webhook token, config-share token, secret, BYOK or LLM
@@ -401,16 +446,17 @@ finding, not a formality.
    - **Organisation erasures.** An admin schedules an organisation's
      deletion (`purge_after` = now + `orgDeletionGrace`, 24 h, in
      `pkg/server/admin_orgs_routes.go`), and the org-purge sweeper
-     (`pkg/cloud/orgsweep`, nightly plus a catch-up at boot) hard-purges its
-     Mongo data once that has passed; the purge does not touch the bucket,
-     live or restored.
+     (`pkg/cloud/orgsweep`, nightly plus a catch-up at boot) hard-purges it
+     once that has passed: every run with its objects in the bucket first,
+     then its Mongo data — in the bucket the server points at, live or
+     restored.
      - An org the dump holds as `pending_deletion` with a `purge_after`
        already past needs nothing: the restored server's sweeper purges
        it at boot — unless its deletion was canceled live after the
        backup, which step 5 put back before the boot.
      - The deletions scheduled after the backup are the
        `org.deletion_scheduled` rows of the platform log
-       (`GET /api/admin/audit?action=org.deletion_scheduled&from=<backup timestamp>`,
+       (`GET /api/admin/audit?action=org.deletion_scheduled&from=<dump start>`,
        and `org.deletion_canceled` for the ones to cancel again); schedule
        each one again on the restored side with the same admin action.
      - A purge takes the org's audit rows with it (`audit_events` rows
