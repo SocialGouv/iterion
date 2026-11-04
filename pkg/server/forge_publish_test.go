@@ -36,6 +36,7 @@ func (f *fakeReviewClient) CreatePullReview(_ context.Context, repo string, numb
 func newForgePublishTestServer(t *testing.T) (*Server, *fakeReviewClient) {
 	t.Helper()
 	s := New(Config{}, iterlog.New(iterlog.LevelError, nil))
+	t.Cleanup(s.hub.Stop)
 	s.forgeConnections = connection.NewMemoryForgeStore()
 	s.forgePublishTokens = NewForgePublishTokenRegistry()
 	s.gateSettles = newMemoryGateSettleStore(nil) // wired with the grants, as New does
