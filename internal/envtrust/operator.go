@@ -137,6 +137,10 @@ var operatorInfraNames = map[string]bool{
 	"ITERION_BIN":                  true,
 	"ITERION_PI_BIN":               true,
 	"ITERION_OPENCODE_BIN":         true,
+	// The opencode argv dialect (#2915): =1 makes the engine speak the 1.x
+	// argv to the host's CLI. It configures the process against the binary
+	// the operator installed, never a bot's run.
+	"ITERION_OPENCODE_ARGV": true,
 	// The two project-trust switches are ENFORCEMENT, not paths: each one
 	// lifts a refusal that stops an agent CLI executing code out of the
 	// repository under review.
