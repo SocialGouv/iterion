@@ -85,10 +85,11 @@ set -eu
 # shown is the install as the messages print it: the release and the chart,
 # the values files (-f/--values), and how many other arguments are left
 # out. A --set can carry a credential (a token, a DSN) and CI logs keep
-# stderr, so no other argument is printed; the userinfo of a URL is cut from
-# what is.
+# stderr, so no other argument is printed; every URL userinfo is cut from
+# what is — helm splits a values argument on commas, so one argument, spaced
+# or glued to its -f, can carry several.
 redact_userinfo() {
-  printf '%s' "$1" | sed 's#://[^/]*@#://***@#'
+  printf '%s' "$1" | sed 's#://[^/]*@#://***@#g'
 }
 shown=
 left_out=0
