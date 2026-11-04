@@ -205,6 +205,9 @@ type vertexRequest struct {
 }
 
 func (c *Client) buildRequest(req api.CreateMessageRequest) ([]byte, error) {
+	if err := api.RefuseOpenAIOnlyRequestOptions("vertex", req); err != nil {
+		return nil, err
+	}
 	maxTokens := req.MaxTokens
 	if maxTokens == 0 {
 		maxTokens = c.MaxTokens

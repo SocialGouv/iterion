@@ -1996,6 +1996,22 @@ func (loop *ConversationLoop) InitPlugins(registry *plugin.PluginRegistry) {
 		}
 		if schema.Type == "" {
 			schema.Type = "object"
+			if len(schema.Raw) > 0 {
+				// Raw wins over the typed read view. Apply the plugin default
+				// there too, preserving every other schema keyword.
+				var raw map[string]json.RawMessage
+				if err := json.Unmarshal(schema.Raw, &raw); err != nil {
+					fmt.Fprintf(os.Stderr, "[plugins] warning: tool %q input schema must be an object: %v\n", pt.Definition.Name, err)
+					continue
+				}
+				raw["type"] = json.RawMessage(`"object"`)
+				updated, err := json.Marshal(raw)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "[plugins] warning: tool %q input schema: %v\n", pt.Definition.Name, err)
+					continue
+				}
+				schema.Raw = updated
+			}
 		}
 		loop.Tools = append(loop.Tools, api.Tool{
 			Name:        pt.Definition.Name,

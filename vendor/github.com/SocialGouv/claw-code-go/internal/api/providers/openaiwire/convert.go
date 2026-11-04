@@ -1,6 +1,7 @@
 package openaiwire
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -104,7 +105,7 @@ func ConvertMessages(system string, messages []api.Message) []Message {
 // the model to emit tool_use calls for an undeclared name, which derails
 // the conversation when the runtime can't dispatch them.
 //
-// We normalise the schema before marshalling because OpenAI's function
+// We normalise Go-built schemas before marshalling because OpenAI's function
 // validator rejects null for fields it expects as arrays/objects:
 //   - omit `required` when nil or empty (a nil []string would marshal
 //     as JSON null and OpenAI errors with "None is not of type 'array'")
@@ -132,8 +133,9 @@ func ConvertTools(provider string, tools []api.Tool) ([]Tool, error) {
 	return result, nil
 }
 
-// NormalizedParameters marshals an InputSchema into an OpenAI-function
-// `parameters` object, normalising the three shapes OpenAI's validator (both
+// NormalizedParameters repairs received roots without rebuilding their schema.
+// Conforming received schemas pass through verbatim. It normalises the shapes
+// OpenAI's validator (both
 // /chat/completions and /responses) rejects as `null`:
 //   - `required` is OMITTED when nil/empty — a nil []string marshals to JSON
 //     null and OpenAI errors "None is not of type 'array'". This is the shape
@@ -147,6 +149,13 @@ func ConvertTools(provider string, tools []api.Tool) ([]Tool, error) {
 // Both the chat and responses tool converters route through this so the
 // normalisation can never drift between the two OpenAI transports.
 func NormalizedParameters(schema api.InputSchema) (json.RawMessage, error) {
+	if len(schema.Raw) > 0 {
+		raw, err := schema.MarshalJSON()
+		if err != nil {
+			return nil, err
+		}
+		return normalizeReceivedRoot(raw)
+	}
 	schemaType := schema.Type
 	if schemaType == "" {
 		schemaType = "object"
@@ -162,7 +171,13 @@ func NormalizedParameters(schema api.InputSchema) (json.RawMessage, error) {
 	if len(schema.Required) > 0 {
 		out["required"] = schema.Required
 	}
-	params, err := json.Marshal(out)
+	// Properties may reference these definitions, including recursively.
+	// Keeping only the properties would leave dangling references on both
+	// OpenAI transports even though InputSchema preserved the full graph.
+	if len(schema.Defs) > 0 {
+		out["$defs"] = schema.Defs
+	}
+	params, err := MarshalJSON(out)
 	if err != nil {
 		return nil, err
 	}
@@ -188,4 +203,30 @@ func ConvertToolChoice(tc *api.ToolChoice) any {
 		return "none"
 	}
 	return nil
+}
+
+// normalizeReceivedRoot supplies the OpenAI tool-root defaults AFTER shared
+// schema normalization. Null/empty keyword repairs belong to that one helper.
+func normalizeReceivedRoot(raw json.RawMessage) (json.RawMessage, error) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || trimmed[0] != '{' {
+		return nil, &api.RequestValidationError{Field: "InputSchema", Reason: "root must be a JSON object"}
+	}
+	var root map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &root); err != nil {
+		return nil, err
+	}
+	changed := false
+	if _, ok := root["type"]; !ok {
+		root["type"] = json.RawMessage(`"object"`)
+		changed = true
+	}
+	if _, ok := root["properties"]; !ok {
+		root["properties"] = json.RawMessage(`{}`)
+		changed = true
+	}
+	if !changed {
+		return raw, nil
+	}
+	return MarshalJSON(root)
 }

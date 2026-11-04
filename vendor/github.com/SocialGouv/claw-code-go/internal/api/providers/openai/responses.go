@@ -49,6 +49,7 @@ type oaiResponsesRequest struct {
 	Input           []oaiResponsesMessage `json:"input"`
 	Tools           []oaiResponsesTool    `json:"tools,omitempty"`
 	ToolChoice      any                   `json:"tool_choice,omitempty"`
+	Text            *oaiTextConfig        `json:"text,omitempty"`
 	Reasoning       *oaiReasoningConfig   `json:"reasoning,omitempty"`
 	Stream          bool                  `json:"stream"`
 	MaxOutputTokens *int                  `json:"max_output_tokens,omitempty"`
@@ -60,6 +61,17 @@ type oaiResponsesRequest struct {
 	// either, and prior callers didn't set it — keeping it omitted there
 	// preserves the previous behaviour.
 	Store *bool `json:"store,omitempty"`
+}
+
+// Responses nests the format under text and flattens the json_schema envelope.
+// Embedding the descriptor preserves its raw schema and explicit strict flag.
+type oaiTextConfig struct {
+	Format oaiTextFormat `json:"format"`
+}
+
+type oaiTextFormat struct {
+	Type string `json:"type"`
+	*api.ResponseFormatJSONSchema
 }
 
 type oaiReasoningConfig struct {
@@ -261,7 +273,7 @@ func (c *Client) streamResponses(ctx context.Context, req api.CreateMessageReque
 		return nil, fmt.Errorf("openai: build responses request: %w", err)
 	}
 
-	body, err := json.Marshal(respReq)
+	body, err := openaiwire.MarshalJSON(respReq)
 	if err != nil {
 		return nil, fmt.Errorf("openai: marshal responses request: %w", err)
 	}
@@ -303,6 +315,10 @@ func (c *Client) streamResponses(ctx context.Context, req api.CreateMessageReque
 // ----- Request conversion ---------------------------------------------------
 
 func (c *Client) buildResponsesRequest(req api.CreateMessageRequest) (*oaiResponsesRequest, error) {
+	format, err := req.ResponseFormat.Normalized()
+	if err != nil {
+		return nil, err
+	}
 	model := c.requestModel(req)
 	wireModel := stripRoutingPrefix(model)
 	if c.ModelVerbatim {
@@ -355,6 +371,13 @@ func (c *Client) buildResponsesRequest(req api.CreateMessageRequest) (*oaiRespon
 
 	if req.ToolChoice != nil {
 		r.ToolChoice = convertToolChoiceToResponses(req.ToolChoice)
+	}
+	if format != nil {
+		textFormat := oaiTextFormat{Type: format.Type}
+		if format.Type == "json_schema" {
+			textFormat.ResponseFormatJSONSchema = format.JSONSchema
+		}
+		r.Text = &oaiTextConfig{Format: textFormat}
 	}
 
 	return r, nil

@@ -19,8 +19,13 @@ import (
 	"encoding/json"
 	"strings"
 
+	"github.com/SocialGouv/claw-code-go/internal/api"
 	"github.com/SocialGouv/claw-code-go/internal/api/httputil"
 )
+
+// ResponseFormat shares the caller's native output contract without rebuilding
+// its raw schema on each Chat Completions provider.
+type ResponseFormat = api.ResponseFormat
 
 // StreamOpts is the OpenAI `stream_options` object. Currently only
 // IncludeUsage is wired up because that's all both providers care about.

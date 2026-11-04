@@ -3,7 +3,6 @@ package api
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
 )
 
 // CacheControlMarker is the Anthropic prompt caching marker.
@@ -168,11 +167,54 @@ type Tool struct {
 	CacheControl *CacheControlMarker `json:"cache_control,omitempty"`
 }
 
-// InputSchema is the JSON schema for tool inputs.
+// InputSchema is the JSON schema for tool inputs. Decoded schemas keep Raw
+// as the source of truth so keywords unknown to the typed view survive.
+// To change a decoded schema, edit Raw or decode a replacement; clearing Raw
+// explicitly opts back into serialization of the typed fields.
 type InputSchema struct {
 	Type       string              `json:"type"`
 	Properties map[string]Property `json:"properties"`
 	Required   []string            `json:"required,omitempty"`
+	// Defs carries the root definitions referenced by named properties.
+	// References remain JSON pointers on the wire, including recursive ones;
+	// the carrier does not resolve or expand the schema graph.
+	Defs       map[string]Property `json:"$defs,omitempty"`
+	Raw        json.RawMessage     `json:"-"`
+	cleanedRaw string
+}
+
+// UnmarshalJSON owns the normalized raw schema and its typed read view.
+func (s *InputSchema) UnmarshalJSON(data []byte) error {
+	if bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
+		return nil
+	}
+	v, raw, err := normalizedSchemaJSON(data)
+	if err != nil {
+		return err
+	}
+	view := propertyView(v)
+	var defs map[string]Property
+	if m, ok := v.(map[string]any); ok {
+		defs = propertyMapView(m["$defs"])
+	}
+	*s = InputSchema{Type: view.Type, Properties: view.Properties, Required: view.Required, Defs: defs, Raw: bytes.Clone(raw), cleanedRaw: string(raw)}
+	return nil
+}
+
+// MarshalJSON preserves received schemas; Go literals keep their typed shape.
+func (s InputSchema) MarshalJSON() ([]byte, error) {
+	if len(s.Raw) > 0 {
+		if string(s.Raw) == s.cleanedRaw {
+			return s.Raw, nil
+		}
+		return cleanSchemaJSON(s.Raw)
+	}
+	type plain InputSchema
+	raw, err := json.Marshal(plain(s))
+	if err != nil {
+		return nil, err
+	}
+	return cleanSchemaJSON(raw)
 }
 
 // Property is a single JSON schema property definition.
@@ -191,7 +233,11 @@ type InputSchema struct {
 // under any of the given schemas`. Anthropic's validator accepted the
 // malformed shape, which is why this only surfaced on OpenAI calls.
 type Property struct {
-	Type string `json:"type,omitempty"`
+	// Ref preserves a reference wherever a property can appear: directly,
+	// in array items, or in a root definition. Nil means absent; a present
+	// empty URI refers to the current resource and must remain present.
+	Ref  *string `json:"$ref,omitempty"`
+	Type string  `json:"type,omitempty"`
 	// Types keeps a JSON Schema `type` given as an array of alternatives
 	// (`["array","null"]`, or the six-kind union a schema generator emits for
 	// an untyped field). Type then holds the first non-null alternative so
@@ -203,31 +249,35 @@ type Property struct {
 	Enum        []any               `json:"enum,omitempty"`
 	Properties  map[string]Property `json:"properties,omitempty"`
 	Required    []string            `json:"required,omitempty"`
+	// Raw takes precedence over the typed read view, as on InputSchema.
+	// Only the public decode root retains Raw; child accessors are typed views.
+	Raw        json.RawMessage `json:"-"`
+	cleanedRaw string
 }
 
-// UnmarshalJSON accepts `type` as a string or as an array of strings. Both
-// are valid JSON Schema; a generator that spells "any value" as the union of
-// every kind must not be refused with an unmarshal error at request time.
+// UnmarshalJSON normalizes one decoded tree; descendants are typed read views.
 func (p *Property) UnmarshalJSON(data []byte) error {
-	type plain Property
-	var aux struct {
-		plain
-		Type json.RawMessage `json:"type,omitempty"`
+	if bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
+		return nil
 	}
-	if err := json.Unmarshal(data, &aux); err != nil {
-		return err
-	}
-	typ, types, err := parseSchemaType(aux.Type)
+	v, raw, err := normalizedSchemaJSON(data)
 	if err != nil {
 		return err
 	}
-	*p = Property(aux.plain)
-	p.Type, p.Types = typ, types
+	*p = propertyView(v)
+	p.Raw = bytes.Clone(raw)
+	p.cleanedRaw = string(raw)
 	return nil
 }
 
-// MarshalJSON writes the array form back when the property carried one.
+// MarshalJSON preserves decoded properties, including unknown keywords.
 func (p Property) MarshalJSON() ([]byte, error) {
+	if len(p.Raw) > 0 {
+		if string(p.Raw) == p.cleanedRaw {
+			return p.Raw, nil
+		}
+		return cleanSchemaJSON(p.Raw)
+	}
 	type plain Property
 	if len(p.Types) == 0 {
 		return json.Marshal(plain(p))
@@ -238,43 +288,29 @@ func (p Property) MarshalJSON() ([]byte, error) {
 	}{plain(p), p.Types})
 }
 
-// parseSchemaType reads a JSON Schema `type` value: absent/null → empty; a
-// string → itself; an array of strings → the first non-null kind as the
-// scalar view plus the full list. Anything else is a schema error.
-func parseSchemaType(raw json.RawMessage) (string, []string, error) {
-	trimmed := bytes.TrimSpace(raw)
-	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
-		return "", nil, nil
-	}
-	switch trimmed[0] {
-	case '"':
-		var s string
-		if err := json.Unmarshal(trimmed, &s); err != nil {
-			return "", nil, err
-		}
-		return s, nil, nil
-	case '[':
-		var list []string
-		if err := json.Unmarshal(trimmed, &list); err != nil {
-			return "", nil, fmt.Errorf("json schema: type array must hold strings: %w", err)
-		}
-		first := ""
-		for _, t := range list {
-			if t != "null" {
-				first = t
-				break
-			}
-		}
-		return first, list, nil
-	}
-	return "", nil, fmt.Errorf("json schema: type must be a string or an array of strings, got %s", trimmed)
-}
-
 // ToolChoice controls which tool the model must use.
 // Type can be "auto", "any", or "tool". When Type is "tool", Name must be set.
 type ToolChoice struct {
 	Type string `json:"type"`
 	Name string `json:"name,omitempty"`
+}
+
+// ResponseFormat opts into native structured output on OpenAI-compatible
+// routes. Type is "text", "json_schema" or the legacy "json_object". Callers choose
+// a format supported by their endpoint; no format is enabled by default.
+type ResponseFormat struct {
+	Type       string                    `json:"type"`
+	JSONSchema *ResponseFormatJSONSchema `json:"json_schema,omitempty"`
+}
+
+// ResponseFormatJSONSchema keeps the output schema raw so arbitrary JSON
+// Schema keywords and numeric precision survive transport. Strict is always
+// emitted, including false, so the caller's choice is explicit.
+type ResponseFormatJSONSchema struct {
+	Name        string          `json:"name"`
+	Description string          `json:"description,omitempty"`
+	Strict      bool            `json:"strict"`
+	Schema      json.RawMessage `json:"schema"`
 }
 
 // CreateMessageRequest is the request body for /v1/messages.
@@ -298,6 +334,9 @@ type CreateMessageRequest struct {
 	PresencePenalty  *float64       `json:"presence_penalty,omitempty"`
 	Stop             []string       `json:"stop,omitempty"`
 	ReasoningEffort  string         `json:"reasoning_effort,omitempty"`
+	// ResponseFormat is opt-in on OpenAI/Foundry chat and maps to text.format
+	// on OpenAI Responses. Anthropic-wire providers reject a non-nil value.
+	ResponseFormat *ResponseFormat `json:"response_format,omitempty"`
 
 	// Thinking opts into extended thinking. nil means "use the model's
 	// default" (adaptive for Opus 4.8/4.7/4.6 and Sonnet 4.6, none

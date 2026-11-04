@@ -297,6 +297,9 @@ func decodeAnthropicJSON(data []byte) (*api.StreamEvent, error) {
 //   - "stream" is omitted (streaming is implicit for the Stream API).
 //   - "anthropic_version" is required.
 func MarshalRequest(req api.CreateMessageRequest) ([]byte, error) {
+	if err := api.RefuseOpenAIOnlyRequestOptions("bedrock", req); err != nil {
+		return nil, err
+	}
 	type wire struct {
 		AnthropicVersion string          `json:"anthropic_version"`
 		MaxTokens        int             `json:"max_tokens"`

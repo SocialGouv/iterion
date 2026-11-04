@@ -518,6 +518,9 @@ func thinkingDisplayLevel() string {
 }
 
 func marshalAnthropicRequest(req CreateMessageRequest) ([]byte, error) {
+	if err := RefuseOpenAIOnlyRequestOptions("anthropic-compatible wire", req); err != nil {
+		return nil, err
+	}
 	wireMessages := stripInternalFields(req.Messages)
 
 	// System: array form when SystemBlocks carry cache markers, else the
