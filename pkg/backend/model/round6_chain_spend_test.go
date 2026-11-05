@@ -57,3 +57,38 @@ func TestR6_ForkDegradeFailureIsNotStampedAsAFork(t *testing.T) {
 		t.Errorf("the fresh session's failure is stamped as a fork of %v", out["_session_forked_from"])
 	}
 }
+
+// A parse-fallback JSON text that still violates the schema is adopted with
+// the attempt's typed counters restamped: the correction policy budgets from
+// the output it is handed, so a stripped `_cost_usd` would let it authorize
+// another paid call on a spent budget.
+func TestR12_AdoptedJSONTextKeepsItsSpendForTheCorrectionPolicy(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("TMPDIR", t.TempDir())
+	backend := &stubBackend{results: []delegate.Result{{
+		Output:        map[string]any{"text": `{"verdict":"not-a-bool"}`},
+		ParseFallback: true,
+		Tokens:        120,
+		CostUSD:       1.5,
+		BackendName:   delegate.BackendClaudeCode,
+	}}}
+	reg := delegate.NewRegistry()
+	reg.Register(delegate.BackendClaudeCode, backend)
+	exec := NewClawExecutor(NewRegistry(), verdictWorkflow(), WithBackendRegistry(reg),
+		WithRetryPolicy(RetryPolicy{MaxAttempts: 1, BackoffBase: time.Millisecond}))
+	var seen []any
+	ctx := WithOutputCorrectionPolicy(context.Background(), OutputCorrectionPolicy{
+		Before: func(_ context.Context, output map[string]any, _ error) error {
+			seen = append(seen, output["_cost_usd"])
+			return &OutputSchemaError{Cause: errors.New("budget spent")}
+		},
+		After: func(context.Context, map[string]any, error) error { return nil },
+	})
+	_, _ = exec.executeBackend(ctx, verdictJudge(delegate.BackendClaudeCode), map[string]any{})
+	if len(seen) == 0 {
+		t.Fatal("scenario broken: the correction policy was never consulted")
+	}
+	if cost, _ := seen[0].(float64); cost != 1.5 {
+		t.Fatalf("the correction policy saw _cost_usd = %v, want the attempt's 1.5", seen[0])
+	}
+}

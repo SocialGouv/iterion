@@ -1445,6 +1445,10 @@ func (e *ClawExecutor) dispatchChain(
 		var elemCorrTokens int
 		if err == nil && result.ParseFallback && len(schemas) > 0 && schemas[0] != nil {
 			adoptJSONObjectText(&result)
+			// The adopted map is the model's: restamp the typed counters on it
+			// (`_tokens`, `_cost_usd`…) before the correction policy reads the
+			// spend it budgets from that output.
+			stampDelegateOutputMeta(result.Output, result, backendName)
 			before := result
 			result, err = e.validateAndRetry(ctx, backendFields{id: nodeID, inChain: true}, backendName, backend, task, result, schemas[0])
 			elemCorrCost = max(0, result.CostUSD-before.CostUSD)
