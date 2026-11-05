@@ -3,6 +3,374 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [5.11.0](https://github.com/SocialGouv/iterion/compare/v5.10.3...v5.11.0) (2026-11-05)
+
+### Features
+
+* **connection:** the durable connector tiers — team and platform packages over the baked floor ([9d58a14](https://github.com/SocialGouv/iterion/commit/9d58a14e0d9bb70bb8ddb304ae7155141c7a6c51)), references [#2757](https://github.com/SocialGouv/iterion/issues/2757) [#2757](https://github.com/SocialGouv/iterion/issues/2757)
+
+    <details><summary>why</summary>
+
+    The three-tier distribution of #2757 (ADR-098 decision 5), on the seams the earlier units built: the io/fs loaders (S1), the serving tier carried in the answer (2757.1), the install-time git source (2757.5).
+
+    </details>
+* **credroute:** one resolver decides claw's credential, admission asks it at one site ([#2022](https://github.com/SocialGouv/iterion/issues/2022)) ([342920a](https://github.com/SocialGouv/iterion/commit/342920a35447e32c16c4c1b03e260f07491b4803)), references [#2808](https://github.com/SocialGouv/iterion/issues/2808)
+
+    <details><summary>why</summary>
+
+    ADR-161 U1, claw. The leaf pkg/backend/credroute holds the resolver: Resolve, the arm registry, Call, Leg, Spend, Refusal with its reasons and unwraps, ErrNoArm (not a refusal), ErrAmbientRefused, ErrPoolContentRefused (moved from runview, which re-exports it), SandboxHomeState (delegate aliases it), KeySpend/ForfaitSpend, and the posture: Capture(ctx), the whole environment with each name's envtrust provenance, captured once and pinned on the attempt. The #2808 carried environment moved there;…
+
+    </details>
+* **credroute:** the meter, the supervisors and the ledger read the resolver; own-config arms and the pi/codex guard ([#2022](https://github.com/SocialGouv/iterion/issues/2022)) ([d914921](https://github.com/SocialGouv/iterion/commit/d914921513cdb5ede195aa4f94834d54e4ee85bb)), references [#1](https://github.com/SocialGouv/iterion/issues/1) [#3069](https://github.com/SocialGouv/iterion/issues/3069)
+
+    <details><summary>why</summary>
+
+    ADR-161 U2, on top of U0-U1. Every pin of the parity table is flipped: no row is pending, and the whole table is green on every reader (dispatch in pkg/backend/model and pkg/backend/delegate, admission, meter, ledger, plan).
+
+    </details>
+* **engine,bots:** the board facade's mutating verbs, and rgaa-audit files and verifies with no model ([#2834](https://github.com/SocialGouv/iterion/issues/2834), [#2388](https://github.com/SocialGouv/iterion/issues/2388)) ([2518469](https://github.com/SocialGouv/iterion/commit/25184696262b1f9b67663b58feee83f0b3d53f2c))
+
+    <details><summary>why</summary>
+
+    Part two of #2834, stacked on the read-only seam:
+
+    </details>
+* **engine,dsl:** board.* behind the action seam — a native action transport, and capabilities: on tool nodes ([#2834](https://github.com/SocialGouv/iterion/issues/2834)) ([69c57c6](https://github.com/SocialGouv/iterion/commit/69c57c64a60290a490be4aed47b8d70ab01ab670)), references [#2465](https://github.com/SocialGouv/iterion/issues/2465) [#1643](https://github.com/SocialGouv/iterion/issues/1643) [#3069](https://github.com/SocialGouv/iterion/issues/3069)
+
+    <details><summary>why</summary>
+
+    The action: recipe was HTTP end to end while the board's operations run in process behind boardops.Call; a deterministic board read had no path (#2388's premise). This is ARB-105 = A decoupee, part one (read-only):
+
+    </details>
+* **runtime:** narrow claw's scratch read root to the run's own subtree ([7060db5](https://github.com/SocialGouv/iterion/commit/7060db5da63e00560d7ff7636a4f4a589c98f572)), closes [#1719](https://github.com/SocialGouv/iterion/issues/1719), references [#2650](https://github.com/SocialGouv/iterion/issues/2650) [#2022](https://github.com/SocialGouv/iterion/issues/2022) [#2869](https://github.com/SocialGouv/iterion/issues/2869)
+
+    <details><summary>why</summary>
+
+    The read root the engine attached for #2650 was the PROJECT scratch dir, shared between every run of a repository: a claw agent of run A could read what run B left there, scanner output included. The narrowing, per the decided doctrine (the read scope follows the paths the workflow actually uses):
+
+    </details>
+
+### Bug Fixes
+
+* **botreplay,rgaa-audit:** the board filing has no model, so it has no replay scenario ([670566b](https://github.com/SocialGouv/iterion/commit/670566b31091cbb28a7ad7e14960032c9a5c0052)), references [#2388](https://github.com/SocialGouv/iterion/issues/2388) [#2834](https://github.com/SocialGouv/iterion/issues/2834) [#2388](https://github.com/SocialGouv/iterion/issues/2388)
+
+    <details><summary>why</summary>
+
+    The chain's second lot (#2388) replaced rgaa-audit's `publish` board judge with native board actions — publish_list, publish_diff, publish_create, publish_verify_read, publish_verify — but the replay catalogue kept the judge's hand-authored seed, so pkg/botreplay went red on both of its whole-catalogue witnesses: TestGoldens (rgaa-audit/publish_plan: node "publish" not found) and TestScenarioInputsCarryOnlyKeysTheNodeHolds. The scenario and its golden go; the comment counts the pipeline's two…
+
+    </details>
+* **claw,usagecap:** a stamped run's crossing carries nothing of the pod, its own-key meter is pinned ([#2022](https://github.com/SocialGouv/iterion/issues/2022)) ([82140a2](https://github.com/SocialGouv/iterion/commit/82140a23d234d18d1fe9b9b7457f57fbb8b02faa))
+
+    <details><summary>why</summary>
+
+    MEDIUM (confirmed): the usage-cap meter says a stamped run's claw walk into the pod env meters nothing, in process and in the container. In the container that was false. forwardableProviderEnv copied the pod's ANTHROPIC_API_KEY (and every other provider key) into a stamped run's container whatever the stamp said; only the GLM base URL read it. The in-container runner never sees the stamp, so it built a client on the pod's account. I reproduced the review's probe before fixing: the stamped env…
+
+    </details>
+* **claw,usagecap:** a z.ai key keeps no claude node from its run's forfait, the meter books the forfait ([#2022](https://github.com/SocialGouv/iterion/issues/2022)) ([7d81130](https://github.com/SocialGouv/iterion/commit/7d811306d77189b221434c18b15911d4b104ccde)), references [#2808](https://github.com/SocialGouv/iterion/issues/2808)
+
+    <details><summary>why</summary>
+
+    MEDIUM, a regression of the previous round: the stamped crossing refused a node its run funds. applyForfaitAcrossSandbox crossed the run's Claude forfait only when heldAnthropicWireAPIKey was false, and that check counted a z.ai key. A z.ai key never crosses to an anthropic/claude-* node (the crossing narrows run keys to the node's provider), and the env factory refuses its synthesis for a claude id. So a run holding a z.ai key and a forfait crossed nothing for such a node. Stamped,…
+
+    </details>
+* **claw,usagecap:** the forfait crossing and both meters read claw's walk under the node's hint ([#2022](https://github.com/SocialGouv/iterion/issues/2022)) ([db7c4a9](https://github.com/SocialGouv/iterion/commit/db7c4a9490585f6ef1f77e3e54d6b65ac66ac7c4)), references [#2808](https://github.com/SocialGouv/iterion/issues/2808)
+
+    <details><summary>why</summary>
+
+    MEDIUM, the crossing was hint-blind. applyForfaitAcrossSandbox judged the run's Claude forfait against the raw ANTHROPIC_BASE_URL and ignored the `provider: "anthropic"` hint, which sends the forfait to Anthropic direct in process (resolveAnthropicDirect, RunCredentialBaseURL) and in the container, which re-stamps the hint from its IOTask. On a pod redirected to z.ai or a gateway, a stamped crossing refused a node its run funds, and an unstamped one crossed the pod's ANTHROPIC_API_KEY where the…
+
+    </details>
+* **claw:** anchor .npmrc on the canonical workspace too ([c21fd52](https://github.com/SocialGouv/iterion/commit/c21fd5270a553c1238ebd73914aee1c857bf4df4)), references [#2868](https://github.com/SocialGouv/iterion/issues/2868) [#2869](https://github.com/SocialGouv/iterion/issues/2869)
+
+    <details><summary>why</summary>
+
+    The credential gate refuses .npmrc at a project position — directly under the workspace or a read root — and judges both the raw spelling and the symlink-RESOLVED target. It anchored on the workspace as the scope holds it, so under a workspace reached through a symlink (a symlinked projects dir in $PWD, an ITERION_HOME that is a link, macOS /tmp) neither check matched: read_file(".npmrc") has no parent, and the resolved parent is the canonical dir. The project-root npm token read, and grep over…
+
+    </details>
+* **claw:** the read tools' credential exclusion follows the paths credentials are actually read from ([decabab](https://github.com/SocialGouv/iterion/commit/decabab9ade63262edfad2276ef67c8e21f23300)), references [#2868](https://github.com/SocialGouv/iterion/issues/2868) [#2868](https://github.com/SocialGouv/iterion/issues/2868)
+
+    <details><summary>why</summary>
+
+    sensitiveWorkspacePath was a fixed name/fragment table: the five carriers measured readable on the scratch read root (#2868 — kubeconfig, .npmrc, auth.json, credentials, secrets.json) escaped it outside the fragments already covered, and the one fix a frozen table offers — refusing those names anywhere — would refuse a kubeconfig template or a fixtures/ credentials tree with them. The decided doctrine instead tracks the locations a credential is ACTUALLY read from; claw-code-go d470fd1 (an…
+
+    </details>
+* **claw:** the run scratch subtree attaches beneath the project scratch ([f66daf3](https://github.com/SocialGouv/iterion/commit/f66daf3342aadd557acb3a113fb75fd122902aa1)), references [#2022](https://github.com/SocialGouv/iterion/issues/2022) [#2868](https://github.com/SocialGouv/iterion/issues/2868) [#2869](https://github.com/SocialGouv/iterion/issues/2869)
+
+    <details><summary>why</summary>
+
+    The narrowed read root runs/<owner> sits INSIDE the shared scratch, which other runs write (sandboxed ones through their bind). Attached as a plain root, it was canonicalized through symlinks — at attachment and again on every resolve — so a link planted at runs/<id> (before the push, or swapped in while a run waits for resume) became the read ROOT itself, and claw's read_file/grep/glob read whatever it pointed at. On main the root was the scratch dir, whose own components no run replaces.
+
+    </details>
+* **connection:** a catalog that cannot list says so, through every tier ([64bc6ed](https://github.com/SocialGouv/iterion/commit/64bc6edadf712cdd6f8582686a2c5cd27d265ad0)), references [#2757](https://github.com/SocialGouv/iterion/issues/2757) [#2757](https://github.com/SocialGouv/iterion/issues/2757)
+
+    <details><summary>why</summary>
+
+    Review round 3 on the #2757 tiers. StoreCatalog.Connectors dropped the store's ListByTenant error and answered nil, so a transient Mongo error made a tenant's team and platform tools vanish from tools/list with nothing in the answer or the log; the FSCatalog's readdir followed the same pattern. The Catalog interface had no way to carry the failure.
+
+    </details>
+* **connection:** the durable tiers' round-1 corrections — fallback, shared floor, publish-gate pins ([383fa4d](https://github.com/SocialGouv/iterion/commit/383fa4d1ee816a39d680b6c726f591a9e21dcbfa)), references [#2757](https://github.com/SocialGouv/iterion/issues/2757)
+
+    <details><summary>why</summary>
+
+    Review round 1 on the #2757 tiers, each fix red-proven by its mutant.
+
+    </details>
+* **connection:** the package store twins stamp a publish through one rule ([3774da6](https://github.com/SocialGouv/iterion/commit/3774da62c0658e15da9c9113a7dfaf2e105a0e2b)), references [#2757](https://github.com/SocialGouv/iterion/issues/2757) [#2757](https://github.com/SocialGouv/iterion/issues/2757)
+
+    <details><summary>why</summary>
+
+    Review round 3 on the #2757 tiers. After a republish the memory twin kept the new caller's CreatedBy when it was non-empty, the Mongo twin always the previous row's: alice then bob read "bob" in memory and "alice" in Mongo, while the collection table says the memory twin is held to the Mongo twin's answers. The conformance fixture always published as "test", so nothing could see it.
+
+    </details>
+* **connector:** a package whose tools cannot be served fails its publish or leaves the facade, never takes it down ([63e57db](https://github.com/SocialGouv/iterion/commit/63e57db7edd33b3551920f972a9d46dec953ee99)), references [#2757](https://github.com/SocialGouv/iterion/issues/2757) [#2757](https://github.com/SocialGouv/iterion/issues/2757)
+
+    <details><summary>why</summary>
+
+    Review round 3 on the #2757 tiers. The publish gate ran only the package loader, so a package whose operation ids map to one MCP tool name (probe.issue_x.get and probe.issue.x_get both give probe_issue_x_get) was accepted, and facade.New then refused the whole set: every tools/list and tools/call of that tenant answered "facade unavailable", the baked connectors included — of EVERY tenant for a platform publication.
+
+    </details>
+* **credroute,claw:** the arm names the credential the container's factory reads, every in-process claw call carries its Spend ([#2022](https://github.com/SocialGouv/iterion/issues/2022)) ([292e568](https://github.com/SocialGouv/iterion/commit/292e568a416319a64bc0bac543422b0af507485e))
+
+    <details><summary>why</summary>
+
+    The container arm (U0-U2 review). For a sandboxed claw node off the anthropic and openai wires and the gateway, containerSpend named the first non-empty forwarded credential: the pod's OPENAI_API_KEY, which every crossing forwards, where a moonshot or xai node's container factory reads MOONSHOT_API_KEY or XAI_API_KEY — the run's own key, a pool-lent one included. The meter, the ledger and the fine table read the pod's money for it. Each provider of registerDefaults now spends what its env…
+
+    </details>
+* **credroute,model,runner:** the structured-output recovery's event carries the Spend its call spent ([#2022](https://github.com/SocialGouv/iterion/issues/2022)) ([0596528](https://github.com/SocialGouv/iterion/commit/059652859acbec98eb4697bea643b8e3a6541bf4)), references [#3069](https://github.com/SocialGouv/iterion/issues/3069) [#3069](https://github.com/SocialGouv/iterion/issues/3069)
+
+    <details><summary>why</summary>
+
+    Composition check of the rebase onto d2590efca. #3069 gave the last-resort structured-output recovery (extractStructuredViaClaw) its own delegate_finished / delegate_error (`reask: "extract"`) so the meter sees its spend, and had the meter book it on nobody (`host-extraction`: no fine row, no miss). The call itself already resolves through the claw arm (resolveBeside, ADR-161 U0-U2), but the bill handed to that event was built without the arm's Spend: the event carried no credential keys, the…
+
+    </details>
+* **credroute,runtime:** the admission judges the vars the run binds and the detector's pick ([#2022](https://github.com/SocialGouv/iterion/issues/2022)) ([2c11839](https://github.com/SocialGouv/iterion/commit/2c11839ab9f6612b8b9d3e09463e383cdc8624e8))
+
+    <details><summary>why</summary>
+
+    The admission read the executor's vars as they stand when the sandbox starts: its declared defaults. A run's launch values — a subbot child's `with:` bindings — reach the executor later (pushExecutorVars in runInitState), so an adopted child bound to a model its run does not fund was admitted and refused mid-run, and a funded binding over an unfunded default was refused. credentialRouteView(inputs) overlays the executor's vars with resolveVars over the start's inputs — the map the run pushes —…
+
+    </details>
+* **credroute:** one enumeration of the model-calling sites, the runner names its own calls ([#2022](https://github.com/SocialGouv/iterion/issues/2022)) ([327496c](https://github.com/SocialGouv/iterion/commit/327496cad09a5676ba579ef56716a8549f74b650))
+
+    <details><summary>why</summary>
+
+    The second review round found four readers that did not consume the resolver: the sandbox relay stamped the node's crossing on a container subagent's steps, the admission judged only ir.LLMNode, the meter re-derived an empty-spec claw leg through legacyRouteKey, and containerSpend did not predict the container factory's refusals. They are one class: each reader enumerated its own model-calling sites, or asked a question the dispatch never asks. Fixed at the class:
+
+    </details>
+* **credroute:** the readers judge the router's model, the half its node survives and the identity chain the runner names ([#2022](https://github.com/SocialGouv/iterion/issues/2022)) ([2530732](https://github.com/SocialGouv/iterion/commit/2530732eb11a8ddbffdc88e76d32dce10e49c170))
+
+    <details><summary>why</summary>
+
+    The third review round found four readers judging a call the dispatch never makes. Fixed inside the call-site enumeration and the crossing's one naming rule:
+
+    </details>
+* **dsl,bots:** review round — C220's tool-node arm gets its witness, and publish_diff refuses a duplicated plan title ([#2834](https://github.com/SocialGouv/iterion/issues/2834)) ([82518d6](https://github.com/SocialGouv/iterion/commit/82518d67fba64562f20a68597dde1a6d54e05087))
+
+    <details><summary>why</summary>
+
+    Re-armed onto c5a138f35, then onto 7b300cab7, by the debt-leap orchestrator lane, without conflict.
+
+    </details>
+* **dsl,docs:** name the board-seam diagnostics by their codes on main ([dcbf896](https://github.com/SocialGouv/iterion/commit/dcbf89683164510f9c6a10e43345f0ac1be69f96)), references [#2834](https://github.com/SocialGouv/iterion/issues/2834) [#2388](https://github.com/SocialGouv/iterion/issues/2388)
+
+    <details><summary>why</summary>
+
+    The chain's four codes moved twice: T46 took C329/C330 (subbot landing), then main's C331 (a minted var in a script body) landed under the re-arm. The constants and catalogue rows moved with each commit; the prose did not — comments, test names and failure messages, ADR-151, docs/dsl.md, the agents-tree page and the tool `capabilities` property description still named codes from both earlier numberings, so a C329 in this tree pointed at the subbot landing error and a C331 at the minted-var…
+
+    </details>
+* **dsl:** review round 2 — the facade's capability table is held in both directions, and C334 names the override case ([#2834](https://github.com/SocialGouv/iterion/issues/2834)) ([1a786af](https://github.com/SocialGouv/iterion/commit/1a786af95a9197e54bda9b555fe9152d3c2fb0e1))
+
+    <details><summary>why</summary>
+
+    Re-armed onto c5a138f35, then onto 7b300cab7, by the debt-leap orchestrator lane. Conflicts at the first re-arm: the catalogue row this commit rewrites is the missing-grant one, C334 on main (main's C331 shifted the board-seam codes by one); the row takes this commit's text under its new number, and the corpus golden is re-derived.
+
+    </details>
+* **engine,docs,rgaa-audit:** review round 5 — a native board action keeps a secret's placeholder ([181e717](https://github.com/SocialGouv/iterion/commit/181e7171704715f9f5baa6391ad72b9bcf58ad5e)), references [#2834](https://github.com/SocialGouv/iterion/issues/2834) [#2388](https://github.com/SocialGouv/iterion/issues/2388)
+
+    <details><summary>why</summary>
+
+    A native action rendered its `params:` through the HTTP path's renderActionParams, so it inherited the `params` sink's materialisation: a `{{secrets.X}}`, or a placeholder carried in on data (an upstream output quoting the command it ran), reached the board card as the REAL value — stored, shown in the studio, returned to every board.read holder, and carried downstream in the node's `{data}` output. Every other path into iterion's board keeps the placeholder (keepsPlaceholders for the…
+
+    </details>
+* **engine,dsl,cli:** review round 4 — an undecided board write is never retried, and a tool node's grant has one reader ([4b3b1c2](https://github.com/SocialGouv/iterion/commit/4b3b1c22c8fd4358a47569c3e89bab9116671ce5)), references [#2834](https://github.com/SocialGouv/iterion/issues/2834) [#2388](https://github.com/SocialGouv/iterion/issues/2388)
+
+    <details><summary>why</summary>
+
+    A fresh adversarial round on the re-armed chain found the facade's "a returned error means no effect" claim false for both real stores, the tool node's `capabilities:` honoured by one recipe only, and three surfaces still reading every `board.*` action as a catalogue action.
+
+    </details>
+* **engine,dsl:** board action seam, review round 1 — the runner refuses a nil board resolution, C332 covers HTTP actions, and the missing grant is named at compile time ([#2834](https://github.com/SocialGouv/iterion/issues/2834)) ([e3fd66f](https://github.com/SocialGouv/iterion/commit/e3fd66f7d0d609bf7bc1846ec5bdfac9e8090546))
+
+    <details><summary>why</summary>
+
+    Adversarial review r1 (2 medium, 4 low):
+
+    </details>
+* **memory:** the scratch sweep ages each run subtree on its own ([beda6d3](https://github.com/SocialGouv/iterion/commit/beda6d3c6bd5878034ad8c4d836018d82a11e7fb)), references [#2868](https://github.com/SocialGouv/iterion/issues/2868) [#2869](https://github.com/SocialGouv/iterion/issues/2869)
+
+    <details><summary>why</summary>
+
+    Every run family's ${RUN_SCRATCH_DIR} lives under ONE top-level scratch entry, runs/, and the age sweep (the end-of-run sweep and `iterion clean`) judged top-level entries by their newest mtime. Any live run of the repository kept runs/ fresh, so a finished run's subtree was never reclaimed — the unbounded growth the sweep exists to stop.
+
+    </details>
+* **permission:** a `..` spelling no longer widens a narrow allow ([c2088d4](https://github.com/SocialGouv/iterion/commit/c2088d439cecbba22e17545a540af6a0da2763c9)), references [#2918](https://github.com/SocialGouv/iterion/issues/2918)
+
+    <details><summary>why</summary>
+
+    The opening verdicts (allow, operator grant, the literal allow that supersedes a bare ask) read the string the model sent, so its text met a pattern its file is outside: allow Read(/run/iterion/secrets/**) opened Read("/run/iterion/secrets/../../../etc/passwd").
+
+    </details>
+* **permission:** open a call only where the rule opens every path it names ([9ee09ac](https://github.com/SocialGouv/iterion/commit/9ee09accb095b2fab5a45e0b4648442879f7aec1)), references [#2918](https://github.com/SocialGouv/iterion/issues/2918)
+
+    <details><summary>why</summary>
+
+    The opening verdicts read one path key per call (primaryPath: file_path, then path, then notebook_path), but claw's read_file and write_file act on `path` and claude_code's NotebookEdit on `notebook_path`. A decoy key inside a narrow allow opened the path the tool honours: under allow Read(/work/docs/**), read_file{file_path: /work/docs/x.md, path: /work/docs/../../etc/passwd} was allowed and claw read /etc/passwd — #2918's widening one key over, no `..` even needed (path: /work/private/key…
+
+    </details>
+* **permission:** read a fetched URL the way its fetcher does ([ce1e41b](https://github.com/SocialGouv/iterion/commit/ce1e41b0f943ba6bfb86805287c5642b855d8cd1)), references [#2918](https://github.com/SocialGouv/iterion/issues/2918)
+
+    <details><summary>why</summary>
+
+    The gate read a WebFetch URL through net/url, which is neither backend's reading. claude_code's WebFetch runs in Node, whose URL parser is the WHATWG one, and claw's Go fetcher dials the same host under spellings net/url keeps apart. Under deny WebFetch(https://e.example/admin/**), `https:e.example/docs/../admin/users` and `https://e.example\docs\..\admin\users` were allowed (Node reads both as https://e.example/admin/users); under deny WebFetch(domain:secret.example), `https:secret.example/x`,…
+
+    </details>
+* **review-pr:** restore findings the merge step silently dropped ([#3093](https://github.com/SocialGouv/iterion/issues/3093)) ([b361cbe](https://github.com/SocialGouv/iterion/commit/b361cbeff63dd06dd7fc851ff5b2e002cd4afad1)), closes [#3091](https://github.com/SocialGouv/iterion/issues/3091)
+
+    <details><summary>why</summary>
+
+    Converge on deepseek-v4.1-flash returned a readable but emptied findings array while the reviewer had three, and the PR was told nothing was found. The merge floor in publish_review puts back every reviewer finding at or above tier_expand's severity_threshold that no merged finding covers, most severe first, up to max_findings, and names the restoration in the summary and the gate note.
+
+    </details>
+* **rgaa-audit:** unexpected_refusal reads publish_diff, the failing node its edge now routes from ([a4fc193](https://github.com/SocialGouv/iterion/commit/a4fc193cfae583ae3f00aeb462ed232397e544cb)), references [#2388](https://github.com/SocialGouv/iterion/issues/2388)
+
+    <details><summary>why</summary>
+
+    The duplicate-title refusal (BOARD_PLAN_DUPLICATE_TITLES) gave publish_diff an edge into unexpected_refusal, and the catalog guard (TestCatalogFailMessagesReadTheNodeThatFailed) holds the fail node's message to name the node that failed: it now carries publish_diff's fail_code and reason like every other upstream.
+
+    </details>
+* **runtime:** key the run scratch subtree on run ids the store accepts ([4044122](https://github.com/SocialGouv/iterion/commit/4044122a068c0c31d1f27629c02294ae2b9c5320)), references [#2868](https://github.com/SocialGouv/iterion/issues/2868) [#2869](https://github.com/SocialGouv/iterion/issues/2869)
+
+    <details><summary>why</summary>
+
+    resolveRunScratchOwner walks the parent chain to the family root, and every id it adopts becomes the path component of ${RUN_SCRATCH_DIR} and of the claw read root attached on it. The parent id arrives verbatim from a launch request (POST /api/runs parent_run_id) or from the record it was stored in, so parent_run_id="../../.." made the subtree <home>/projects — every other repository's scratch became readable, and more segments reached "/".
+
+    </details>
+* **server:** every tenant-known connector site resolves through the team's tiers ([f6aa039](https://github.com/SocialGouv/iterion/commit/f6aa0397283a1caa34626c3ea04f2b7066066d6b)), references [#2757](https://github.com/SocialGouv/iterion/issues/2757) [#2757](https://github.com/SocialGouv/iterion/issues/2757)
+
+    <details><summary>why</summary>
+
+    Review round 3 on the #2757 tiers. The team tier was honoured at one of the three cloud sites that know the tenant: the facade composed it per grant, while the connection CRUD (handleCreateConnection) and the connector webhook lane (handleConnectorDelivery) read the tenant-blind static catalog. A connector a team published for itself was listed by the facade and refused a connection (400), and a team override of forgejo had its deliveries judged against the baked package.
+
+    </details>
+* **usagecap,claw,pi:** the claw lane meters the credential claw sends, pi the store it can see ([#2022](https://github.com/SocialGouv/iterion/issues/2022)) ([7eaa42d](https://github.com/SocialGouv/iterion/commit/7eaa42d8c8ecc853d4de397e189925b8db922610)), references [#2808](https://github.com/SocialGouv/iterion/issues/2808) [#2244](https://github.com/SocialGouv/iterion/issues/2244) [#3069](https://github.com/SocialGouv/iterion/issues/3069)
+
+    <details><summary>why</summary>
+
+    Round-2 review (cred-converge), five findings, all confirmed on the source (the registry's two anthropic walks, claw's client and identity code in vendor/claw-code-go, the sandbox crossing and the host_state bind set); none refutable.
+
+    </details>
+* **usagecap,claw,secrets:** the run's key funds a GLM id, a header line replaces the channel it names ([#2022](https://github.com/SocialGouv/iterion/issues/2022)) ([64a6a15](https://github.com/SocialGouv/iterion/commit/64a6a154b2fede8a26ec338fab143f93f125ccac)), references [#1768](https://github.com/SocialGouv/iterion/issues/1768) [#2808](https://github.com/SocialGouv/iterion/issues/2808)
+
+    <details><summary>why</summary>
+
+    Round-3 review (cred-converge), six findings, each probed on the source first (ResolveWithContext's GLM and keyed arms, the sandbox crossing's node pin, claw's client and identity code in vendor/claw-code-go, the recording guard). One clause is refuted; the rest confirmed and fixed at the class.
+
+    </details>
+* **usagecap,claw:** the claw meter reads no ambient header line, the engine's client sends none ([#2022](https://github.com/SocialGouv/iterion/issues/2022)) ([8bfd22a](https://github.com/SocialGouv/iterion/commit/8bfd22ae7704c8f9d33cfd71fad2aca50e0a8e26)), references [#2244](https://github.com/SocialGouv/iterion/issues/2244)
+
+    <details><summary>why</summary>
+
+    ADR-161 U0 port of the bench onto main. The bench's claw meter (model.AmbientEnvMeter) overlaid the pod's ANTHROPIC_CUSTOM_HEADERS block on the walk's credentials in process: claw's client identity applied the block last there. Main's #2244 (7b4cded2a) made the engine's in-process clients refuse the ambient block (withClientIdentity sets NoAmbientHeaders), and the sandbox crossing already strips its credential lines, so a claw request carries the walk's key or bearer alone on both sides. The…
+
+    </details>
+* **usagecap,delegate:** the meter judges the gateway-funded GLM id, the probe the credential that authenticates ([#2022](https://github.com/SocialGouv/iterion/issues/2022)) ([0677c49](https://github.com/SocialGouv/iterion/commit/0677c492e594eacab69d6bd2fb699d95173c9e25))
+
+    <details><summary>why</summary>
+
+    Round-6 review, both findings confirmed on the registry's and the CLI's own readers, neither refutable:
+
+    </details>
+* **usagecap,pi:** the pi lane meters the credential pi resolves ([#2022](https://github.com/SocialGouv/iterion/issues/2022)) ([4da24b5](https://github.com/SocialGouv/iterion/commit/4da24b57699a690d4cc32f43dc84a4ca8415e348)), references [#2808](https://github.com/SocialGouv/iterion/issues/2808) [#3069](https://github.com/SocialGouv/iterion/issues/3069)
+
+    <details><summary>why</summary>
+
+    Round-1 review (cred-converge), three findings, all confirmed on pi's own source (the shipped @earendil-works/pi-ai 0.84.3 and the .repos/pi clone) and on the registry's env factory; none refutable.
+
+    </details>
+* **usagecap,pi:** the pi lane names one meter on both of its sides ([#2022](https://github.com/SocialGouv/iterion/issues/2022)) ([62ce348](https://github.com/SocialGouv/iterion/commit/62ce3481f5b4e95d24ce5541f248ab7125906bab))
+
+    <details><summary>why</summary>
+
+    Round-7 review, one finding, two claims — the first confirmed on the tip's own pinned rows, the second refuted on the meter's own contract:
+
+    </details>
+* **usagecap:** a stamped run's claw walk meters nothing, the stamp witness carries a pod key ([#2022](https://github.com/SocialGouv/iterion/issues/2022)) ([d8273f0](https://github.com/SocialGouv/iterion/commit/d8273f04739270c394ed0827499211fd1c29c7a6))
+
+    <details><summary>why</summary>
+
+    LOW: clawUnslottedKey keyed a stamped run's walk into the pod env on the scope's no-credential meter (keyForSlot("")), metered. Its own doc says a walk claw refuses before any client exists is not metered, and a stamped run's walk past its own key is exactly that: ResolveWithContext answers ErrAmbientCredentialRefused (resolveAnthropicDirect under the hint), no client, no account. The stamp now returns "not metered" right after the run's own-key arm, before the pod-env read, for the supervisor…
+
+    </details>
+* **usagecap:** opencode's own config keys the run's unslotted meter, as decision 5 states ([#2022](https://github.com/SocialGouv/iterion/issues/2022)) ([ba49fd5](https://github.com/SocialGouv/iterion/commit/ba49fd5d99a139fd4e39c8c3fe333d590400a55a))
+
+    <details><summary>why</summary>
+
+    ADR-161 decision 5 keys the own-config arms "as today": kimi and grok unmetered, opencode on the pod's unslotted key. spendKey read every own-config Spend as not metered, so an opencode route on the anthropic wire lost the meter main keyed it on (keyForSlot("")). spendKey now takes the route's backend and keys opencode's own config there; kimi and grok stay unmetered.
+
+    </details>
+* **usagecap:** the ambient header credential crosses the sandbox boundary ([#2022](https://github.com/SocialGouv/iterion/issues/2022)) ([498e08c](https://github.com/SocialGouv/iterion/commit/498e08cd2869e31219a3f633b27497f3d2891c60)), closes [#1768](https://github.com/SocialGouv/iterion/issues/1768), references [#3](https://github.com/SocialGouv/iterion/issues/3) [#80](https://github.com/SocialGouv/iterion/issues/80) [#79](https://github.com/SocialGouv/iterion/issues/79)
+
+    <details><summary>why</summary>
+
+    Round-3 review, three findings, disposition:
+
+    </details>
+* **usagecap:** the ambient label reads as one route across the fingerprint stamp ([#2022](https://github.com/SocialGouv/iterion/issues/2022)) ([4e92ce7](https://github.com/SocialGouv/iterion/commit/4e92ce72dbef7ebe80ae3b3a0d7669e62b4a1142))
+
+    <details><summary>why</summary>
+
+    Round-1 review, three findings, disposition:
+
+    </details>
+* **usagecap:** the ambient meter keys the whole live credential set ([#2022](https://github.com/SocialGouv/iterion/issues/2022)) ([f2953a4](https://github.com/SocialGouv/iterion/commit/f2953a4d0f60b3460ce32da91aa53ba694198b7a))
+
+    <details><summary>why</summary>
+
+    Round-2 review, four findings, disposition:
+
+    </details>
+* **usagecap:** the nothing-held default reads the ambient ledger ([#2022](https://github.com/SocialGouv/iterion/issues/2022)) ([94baccf](https://github.com/SocialGouv/iterion/commit/94baccfa69d05d5e27701c9e0e761d84f9f33fa3))
+
+    <details><summary>why</summary>
+
+    The pre-flight's nothing-held arms keyed the bare no-credential meter while this tip moved the ambient account's readings to the fingerprinted platform key: a claw supervisor reports no readings of its own, so the account's refusals are the only evidence it produces and they now land on a meter the supervisor walk, the unreadable-route default and the run default never read. On the ambient-forfait deployment, supervisor nodes and unreadable routes launched into a walled pod account with a…
+
+    </details>
+* **usagecap:** the nothing-held meter judges only the ambient-funded shapes ([#2022](https://github.com/SocialGouv/iterion/issues/2022)) ([31f23bf](https://github.com/SocialGouv/iterion/commit/31f23bfe62c4e748cd833956edb1918bb367491a))
+
+    <details><summary>why</summary>
+
+    Round-5 review, both findings confirmed on the probe, neither refutable: the blanket `slot == ""` arms metered shapes the pod's ambient ANTHROPIC account does not fund, so their pre-flight parked runs on a wall another vendor's account raised. The tip's own premise — the registry walks an unfunded zai/moonshot/gateway spec "into the ambient env the same way" — is factually wrong about the registry: no zai factory exists (the spec is refused outright), moonshot reads the pod's MOONSHOT_API_KEY…
+
+    </details>
+* **usagecap:** the pod's ambient key is one account, and a node's own key is not it ([#2022](https://github.com/SocialGouv/iterion/issues/2022)) ([3eb687c](https://github.com/SocialGouv/iterion/commit/3eb687c59b11f99f10157c4c6d05a94102b0c570))
+
+    <details><summary>why</summary>
+
+    An "anthropic-env" reading came from a claude_code session that ran on no credential of the run — the pod's ambient key, or a node's own ExtraEnv key — and was keyed on the run's scope with no fingerprint: one ledger per borrower for what is one account, and one shared meter for two keys that are two accounts.
+
+    </details>
+
+### Performance Improvements
+
+* **connection:** the store tiers reuse a parse while the bytes hold and list ids only ([51834cb](https://github.com/SocialGouv/iterion/commit/51834cb036d995811aa0efeb2f938aa6e52bfa2c)), references [#2757](https://github.com/SocialGouv/iterion/issues/2757) [#2757](https://github.com/SocialGouv/iterion/issues/2757)
+
+    <details><summary>why</summary>
+
+    Review round 3 on the #2757 tiers. Every cloud facade call re-parsed every team and platform package it listed (measured 85-148 ms per resolution of a platform-tier copy of the shipped forgejo package, ~0.5 s for a GitHub-sized one), twice per tools/call (the facade build, then ResolveAgent), and listed each tier with ListByTenant, which reads every package's files to learn their ids. The StoreCatalog comment called this "one document read per resolution".
+
+    </details>
+
 ## [5.10.3](https://github.com/SocialGouv/iterion/compare/v5.10.2...v5.10.3) (2026-11-05)
 
 ### Bug Fixes
