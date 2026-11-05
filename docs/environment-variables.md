@@ -144,7 +144,8 @@ process therefore does **not** walk up for a `.env`:
 | Variable | Effect | Default |
 |---|---|---|
 | `ITERION_ENGINE_CHILD` | Written by the engine on every child it spawns against a workspace, and inherited by everything those children spawn in turn. An `iterion` that arrives with it set skips the `.env` auto-load. Engine-owned: a stored bot var cannot spell the name, and a value a `.env` planted only ever COSTS a process the convenience. | unset (a human's CLI call) |
-| `ITERION_DOTENV_FORCE` | The escape hatch: `1` or `true` makes engine children honour the workspace `.env` again. Read as INHERITED only — a `.env` cannot vote itself back in — so it goes in the environment you launch from. | unset (skip) |
+| `ITERION_DOTENV_FORCE` | The escape hatch: `1` or `true` makes engine children honour the workspace `.env` again. Read as INHERITED only — a `.env` cannot vote itself back in — so it goes in the environment you launch from. It never reopens the `.env` of a process carrying `ITERION_RUN_TRUST`. | unset (skip) |
+| `ITERION_RUN_TRUST` | Written by the engine, for an untrusted run only (a fork run's workspace, ADR-162), on every process a node of it starts — a tool node's command or script, a delegate's CLI, the in-container claw runner — and inherited below. An `iterion` that carries it never loads the working directory's `.env` (`ITERION_DOTENV_FORCE` included), and an `iterion run` it starts adopts it: that run is untrusted too. Cooperative: it holds for processes that pass their environment on, not against an agent writing its own command line. Engine-owned; carrying it can only lower a run's trust. | unset (trusted) |
 
 The hidden `__`-prefixed subcommands (`__claw-runner`, `__scan-shards`, the
 `__mcp-*` stdio helpers, `__permission-hook`, `__claude-hook-drain`) skip it on
