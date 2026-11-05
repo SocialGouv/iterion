@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"testing"
 
 	"github.com/SocialGouv/iterion/internal/credparity"
+	"github.com/SocialGouv/iterion/internal/detecttest"
 	"github.com/SocialGouv/iterion/pkg/backend/credroute"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
@@ -38,11 +40,21 @@ import (
 //
 // The recovery's event is booked alone, on a fresh meter: it is the
 // observation under judgement, the node's own answers are not.
+//
+// The bench owns every process that can reach its stub. The recovery's pick
+// runs host detection, which asks the claude CLI on PATH for its login
+// (`claude auth status --json`): that CLI is one the test stages
+// (detecttest.StageClaudeCodeHost), never the machine's, which inherits the
+// stub's ANTHROPIC_BASE_URL and knocks on it (`HEAD /api/hello`). The proxy
+// variables are unset (unsetProxyEnv): under a proxy, that knock never reaches
+// the stub, and the bench's verdict would follow the environment running it.
+// The stub records every request: each must be the recovery's call.
 func TestCredParity_StructuredRecovery(t *testing.T) {
 	for _, row := range credparity.RecoveryRows() {
 		t.Run(row.Label(), func(t *testing.T) {
+			detecttest.StageClaudeCodeHost(t)
+			unsetProxyEnv(t)
 			forfaitDir := applyParityPosture(t, row)
-			t.Setenv("HOME", t.TempDir())
 			t.Setenv("TMPDIR", t.TempDir())
 			t.Setenv("ITERION_OUTPUT_CORRECTION_BUDGET", "2")
 			wire := newRecoveryWire(t)
@@ -64,10 +76,15 @@ func TestCredParity_StructuredRecovery(t *testing.T) {
 				}
 			}
 			sent := wire.snapshot()
+			for _, req := range sent {
+				if req.call() != recoveryCall {
+					t.Errorf("the stub received %s, a request the recovery never sends (it sends %s)", req.call(), recoveryCall)
+				}
+			}
 
 			if row.Want.Refused() {
 				if len(sent) != 0 || len(extraction) != 0 {
-					t.Fatalf("a refused recovery sent %d request(s) and left %d event(s)", len(sent), len(extraction))
+					t.Fatalf("a refused recovery sent %d request(s) %v and left %d event(s)", len(sent), sent, len(extraction))
 				}
 				spec, err := model.DetectedClawSpecUnder(row.Run.Allowlist)(row.Node.ID)
 				if err != nil || spec == "" {
@@ -83,7 +100,7 @@ func TestCredParity_StructuredRecovery(t *testing.T) {
 			}
 
 			if len(sent) != 1 || len(extraction) != 1 {
-				t.Fatalf("inert bench: the recovery sent %d request(s) and left %d event(s), want one of each (node error: %v)", len(sent), len(extraction), runErr)
+				t.Fatalf("inert bench: the recovery sent %d request(s) %v and left %d event(s), want one of each (node error: %v)", len(sent), sent, len(extraction), runErr)
 			}
 			evt := extraction[0]
 			spec, _ := evt.Data["route_model"].(string)
@@ -95,7 +112,7 @@ func TestCredParity_StructuredRecovery(t *testing.T) {
 			if !present || keys.Channel != arm.Channel || keys.Slot != arm.Slot || keys.Fingerprint != arm.Fingerprint {
 				t.Errorf("the recovery's %s carries the credential keys %+v (present %v), want the claw arm's Spend %+v", evt.Type, keys, present, arm)
 			}
-			credparity.Check(t, row, credparity.Dispatch, recoveryWireSpend(t, row, sent[0]), func(s credparity.Spend) credparity.Spend { return s })
+			credparity.Check(t, row, credparity.Dispatch, recoveryWireSpend(t, row, sent[0].cred), func(s credparity.Spend) credparity.Spend { return s })
 
 			var plan map[string]string
 			if row.Run.Plan {
@@ -214,11 +231,26 @@ func (s *recoverySink) snapshot() []store.Event {
 	return append([]store.Event(nil), s.evts...)
 }
 
+// recoveryCall is the one request the recovery sends: claw's Anthropic
+// Messages call.
+const recoveryCall = http.MethodPost + " /v1/messages"
+
+// recoveryRequest is one request the stub received: its method, its path and
+// the credential it carried.
+type recoveryRequest struct {
+	method, path, cred string
+}
+
+func (r recoveryRequest) call() string { return r.method + " " + r.path }
+
+// String names the request without its credential.
+func (r recoveryRequest) String() string { return r.call() }
+
 // recoveryWire is a stub Anthropic endpoint answering the recovery's
-// structured-output call, recording the credential each request carried.
+// structured-output call, recording every request it receives.
 type recoveryWire struct {
 	mu   sync.Mutex
-	sent []string
+	sent []recoveryRequest
 }
 
 func newRecoveryWire(t *testing.T) *recoveryWire {
@@ -230,7 +262,7 @@ func newRecoveryWire(t *testing.T) *recoveryWire {
 			cred = strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 		}
 		w.mu.Lock()
-		w.sent = append(w.sent, cred)
+		w.sent = append(w.sent, recoveryRequest{method: r.Method, path: r.URL.Path, cred: cred})
 		w.mu.Unlock()
 		const message = `{"id":"msg_recovery","type":"message","role":"assistant","model":"claude","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":200,"output_tokens":1}}`
 		rw.Header().Set("content-type", "text/event-stream")
@@ -250,10 +282,32 @@ func newRecoveryWire(t *testing.T) *recoveryWire {
 	return w
 }
 
-func (w *recoveryWire) snapshot() []string {
+func (w *recoveryWire) snapshot() []recoveryRequest {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	return append([]string(nil), w.sent...)
+	return append([]recoveryRequest(nil), w.sent...)
+}
+
+// proxyEnvNames are the proxy variables an HTTP client or a CLI reads, in
+// both spellings.
+var proxyEnvNames = []string{
+	"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "GRPC_PROXY",
+	"http_proxy", "https_proxy", "all_proxy", "no_proxy", "grpc_proxy",
+}
+
+// unsetProxyEnv unsets every proxy variable for the test and its children: a
+// process the bench starts reaches the stub directly, whatever proxy the
+// environment running the test names. claw's own client never proxies a
+// loopback address (net/http's ProxyFromEnvironment), so the recovery's call
+// reaches the stub either way.
+func unsetProxyEnv(t *testing.T) {
+	t.Helper()
+	for _, name := range proxyEnvNames {
+		t.Setenv(name, "")
+		if err := os.Unsetenv(name); err != nil {
+			t.Fatalf("unset %s: %v", name, err)
+		}
+	}
 }
 
 // recoveryWireSpend names the credential a request carried by the channel of
