@@ -359,16 +359,16 @@ Matching semantics (`pkg/backend/permission`):
 - **WebFetch** patterns match `domain:<host>`, `<host>`, or the full URL,
   the host read the way a WHATWG fetcher reads it — claude_code's WebFetch
   parses with Node, and claw's Go fetcher dials that same host whenever it
-  parses the URL: `https:e.com/x`, `https://E.com:443/x` and
-  `https://e.com\x` all fetch `e.com`, `http://0xa9fea9fe/` fetches
+  parses the URL: `https:example.com/x`, `https://Example.com:443/x` and
+  `https://example.com\x` all fetch `example.com`, `http://0xa9fea9fe/` fetches
   `169.254.169.254`, and a `deny:` naming an IPv4 address also meets its
   IPv4-mapped IPv6 spelling (`http://[::ffff:a9fe:a9fe]/`), which both
   fetchers dial as that address. A URL's path is a path: one whose decoded
   path climbs (`/docs/../admin`, `/docs/%2e%2e/admin`, `/docs/..\admin`) is
   read by no full-URL pattern, since a fetcher resolves the climb before the
   server sees it; its host still stands for it. A `deny:` also meets the
-  URL with its path decoded and resolved (`https://e.com/./%61dmin/x` is
-  `https://e.com/admin/x`), upgraded from http to https as claude_code
+  URL with its path decoded and resolved (`https://example.com/./%61dmin/x` is
+  `https://example.com/admin/x`), upgraded from http to https as claude_code
   fetches it, and its host without port or root-zone dot. A URL the gate
   cannot read that way — another scheme, a host or port no fetcher accepts
   — opens no pattern and meets every scoped `deny:` and `ask:` on WebFetch.
