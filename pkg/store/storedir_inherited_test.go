@@ -34,7 +34,7 @@ func TestTheInheritedHomeFailsClosedWhenNothingOperatorsNamesIt(t *testing.T) {
 			// Every tier planted by a project `.env`, nothing inherited.
 			planted := t.TempDir()
 			t.Setenv("ITERION_HOME", filepath.Join(planted, "home"))
-			t.Setenv("HOME", filepath.Join(planted, "user"))
+			t.Setenv(homeEnvName(), filepath.Join(planted, "user"))
 			t.Setenv("TMPDIR", filepath.Join(planted, "tmp"))
 			envtrust.MarkPlanted("ITERION_HOME", "HOME", "TMPDIR", "USERPROFILE")
 			mode.resolve(t)
@@ -99,12 +99,12 @@ func TestTheTwoHomeResolutionsAgreeWhenNothingWasPlanted(t *testing.T) {
 			// inherited, which names the operator's real data.
 			operatorsOwn bool
 		}{
-			{name: "ITERION_HOME set", env: map[string]string{"ITERION_HOME": filepath.Join(base, "explicit"), "HOME": user}},
-			{name: "only HOME set", env: map[string]string{"ITERION_HOME": "", "HOME": user}},
-			{name: "trailing separator", env: map[string]string{"ITERION_HOME": filepath.Join(base, "slash") + string(filepath.Separator), "HOME": user}},
-			{name: "relative ITERION_HOME", env: map[string]string{"ITERION_HOME": "rel-home", "HOME": user}},
-			{name: "relative HOME", env: map[string]string{"ITERION_HOME": "", "HOME": "rel-user"}},
-			{name: "the operator's inherited ITERION_HOME", env: map[string]string{"ITERION_HOME": "/operator/real/iterion-home", "HOME": user}, operatorsOwn: true},
+			{name: "ITERION_HOME set", env: map[string]string{"ITERION_HOME": filepath.Join(base, "explicit"), homeEnvName(): user}},
+			{name: "only HOME set", env: map[string]string{"ITERION_HOME": "", homeEnvName(): user}},
+			{name: "trailing separator", env: map[string]string{"ITERION_HOME": filepath.Join(base, "slash") + string(filepath.Separator), homeEnvName(): user}},
+			{name: "relative ITERION_HOME", env: map[string]string{"ITERION_HOME": "rel-home", homeEnvName(): user}},
+			{name: "relative HOME", env: map[string]string{"ITERION_HOME": "", homeEnvName(): "rel-user"}},
+			{name: "the operator's inherited ITERION_HOME", env: map[string]string{"ITERION_HOME": "/operator/real/iterion-home", homeEnvName(): user}, operatorsOwn: true},
 		} {
 			t.Run(mode.name+"/"+tc.name, func(t *testing.T) {
 				envtrust.ResetForTest()
@@ -142,7 +142,7 @@ func TestTheTwoHomeResolutionsAgreeWhenOnlyTMPDIRWasPlanted(t *testing.T) {
 
 			base := t.TempDir()
 			t.Setenv("ITERION_HOME", "")
-			t.Setenv("HOME", filepath.Join(base, "user"))
+			t.Setenv(homeEnvName(), filepath.Join(base, "user"))
 			t.Setenv("TMPDIR", filepath.Join(base, "planted-tmp"))
 			envtrust.MarkPlanted("TMPDIR")
 			mode.resolve(t)
