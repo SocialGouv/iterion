@@ -3,7 +3,9 @@ package model
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"math"
 	"math/rand/v2"
 	"strconv"
@@ -334,8 +336,9 @@ func (e *ClawExecutor) scrubTypedActionError(err *exec.Error) {
 }
 
 // scrubActionError does the same for an UNTYPED failure — a local refusal, a
-// coercion that printed the value it refused, a walk that could not read its
-// collection, a native transport's store error.
+// walk that could not read its collection, a native transport's store
+// error — and for a refused argument (*ActionParamError), whose quoted text
+// is redacted in place.
 //
 // The text is redacted through redactedThrough, which keeps errors.Is /
 // errors.As answering for the error below without unwrapping to its raw
@@ -347,6 +350,15 @@ func (e *ClawExecutor) scrubTypedActionError(err *exec.Error) {
 func (e *ClawExecutor) scrubActionError(err error) error {
 	if err == nil || e.secretGuard == nil {
 		return err
+	}
+	// A refused argument's Text is the one field that can carry a
+	// materialised secret. It is redacted in place, for two readers the
+	// message pass below cannot serve: a caller errors.As hands the FIELD,
+	// and the message itself, which quotes the text cut to refusedTextQuote
+	// runes — a secret the cut halves is no longer one that pass recognises.
+	var refused *ActionParamError
+	if errors.As(err, &refused) {
+		refused.Text = e.secretGuard.Redact(refused.Text)
 	}
 	return redactedThrough(e.secretGuard.Redact, err)
 }
@@ -484,9 +496,11 @@ func (e *ClawExecutor) renderActionParams(ctx context.Context, node *ir.ToolNode
 			out[p.Key] = rendered
 			continue
 		}
+		// The refusal is an *ActionParamError naming the key, returned as is
+		// so a caller reaches the type with errors.As.
 		v, err := coerceParam(decl, rendered, whole && !secret)
 		if err != nil {
-			return nil, fmt.Errorf("param %q: %w", p.Key, err)
+			return nil, err
 		}
 		out[p.Key] = v
 	}
@@ -508,7 +522,8 @@ func isWholeValueRef(value string, refs []*ir.Ref) bool {
 // A whole-value reference arrives as a JSON literal — a string quoted, a
 // number bare, an object as JSON text — so parsing it back is what lets a
 // `.bot` write `index: "{{outputs.pick.issue}}"` and have an integer reach an
-// integer field. Interpolated text arrives as text.
+// integer field. Interpolated text arrives as text. Either way the value then
+// goes through narrowParam, the one conversion to the declared type.
 func coerceParam(decl spec.Param, rendered string, typed bool) (any, error) {
 	// AUTHORED TEXT is not JSON, and reading it as JSON altered it.
 	//
@@ -527,7 +542,7 @@ func coerceParam(decl spec.Param, rendered string, typed bool) (any, error) {
 		if decl.Type == "" || decl.Type == "string" {
 			return rendered, nil
 		}
-		return coerceDecoded(decl, rendered)
+		return narrowParam(decl, rendered)
 	}
 
 	trimmed := strings.TrimSpace(rendered)
@@ -538,85 +553,122 @@ func coerceParam(decl spec.Param, rendered string, typed bool) (any, error) {
 	if trimmed == "null" {
 		return nil, nil
 	}
-	if rendered == "" {
-		return "", nil
-	}
 	// UseNumber keeps an integer EXACT. Decoding into `any` gives float64,
 	// whose 53-bit mantissa silently rewrites a large id:
 	// 9007199254740993 came back as 9007199254740992, which addresses a
 	// different resource and looks perfectly plausible in a log.
-	dec := json.NewDecoder(strings.NewReader(trimmed))
-	dec.UseNumber()
-	var decoded any
-	if err := dec.Decode(&decoded); err == nil && !dec.More() {
-		return coerceDecoded(decl, decoded)
+	if decoded, ok := decodeJSONValue(trimmed); ok {
+		return narrowParam(decl, decoded)
 	}
 	// Bare text the renderer left alone (an author who wrote a literal).
-	return coerceDecoded(decl, trimmed)
+	return narrowParam(decl, trimmed)
 }
 
-// coerceDecoded converts a decoded value to the type the OPERATION declares,
-// and REFUSES what cannot be converted.
+// decodeJSONValue reads text as exactly ONE JSON value, numbers kept exact
+// (json.Number). Nothing may follow the value: `[1]]` and `[1] 2` are not
+// read as `[1]`.
+func decodeJSONValue(text string) (any, bool) {
+	dec := json.NewDecoder(strings.NewReader(text))
+	dec.UseNumber()
+	var decoded any
+	if err := dec.Decode(&decoded); err != nil {
+		return nil, false
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		return nil, false
+	}
+	return decoded, true
+}
+
+// narrowParam converts a value to the type the OPERATION declares for its
+// parameter, and REFUSES what cannot be converted.
 //
-// Refusing matters as much as converting. This used to fall through and send
-// the value unchanged whenever the type did not match a case — so `1.5` reached
-// a parameter declared `integer`, `123` reached one declared `boolean`, and an
-// array reached a scalar. The vendor then answered 400 (at best) or coerced it
-// silently in a way the workflow never sees, on a path whose whole promise is
-// that the request is what was declared.
-func coerceDecoded(decl spec.Param, v any) (any, error) {
-	switch decl.Type {
+// It is the ONE conversion, for every declared type and whatever produced the
+// value: a whole-value reference's decoded value (`{{vars.labels}}`,
+// `{{outputs.pick.number}}`), an embedded reference's rendered text, a
+// literal. Text is read by the DECLARATION, the same way for every type — a
+// scalar by its spelling (`"42"` is an integer, `"true"` a boolean), a
+// structure as the JSON it spells (`'["a","b"]'` an array, `'{"k":1}'` an
+// object) — and a value that is typed already passes when it is of the
+// declared type. An array's ELEMENTS are narrowed to its declared `items`
+// type the same way.
+//
+// Refusing matters as much as converting. A value sent unchanged when it
+// matches no case — `1.5` to an `integer`, a string to an `object`, anything
+// to a type this build has no conversion to — is answered 400 at best, or
+// coerced by the vendor in a way the workflow never sees, on a path whose
+// whole promise is that the request is what was declared. A refusal is an
+// *ActionParamError.
+//
+// Only an operation that declares NO type (`type:` absent) takes the value as
+// it is: there is no declaration to narrow to.
+func narrowParam(decl spec.Param, v any) (any, error) {
+	return narrowValue(decl.Key, -1, decl.Type, decl.Items, v)
+}
+
+// narrowValue is narrowParam for one value: the argument itself (item -1) or
+// the element at index item of an array argument.
+func narrowValue(key string, item int, declared, items string, v any) (any, error) {
+	refuse := func() error {
+		pe := &ActionParamError{Key: key, Item: item, Declared: declared, Got: describeJSONValue(v)}
+		if s, isText := v.(string); isText {
+			pe.Text = s
+		}
+		return pe
+	}
+	switch declared {
+	case "":
+		return v, nil
 	case "integer":
 		switch t := v.(type) {
 		case json.Number:
 			// Kept as json.Number so an id beyond float64's 53-bit mantissa
 			// survives to the wire exactly as written.
 			if _, err := t.Int64(); err != nil {
-				return nil, fmt.Errorf("%s is not an integer, and the operation declares one", t.String())
+				return nil, refuse()
 			}
 			return t, nil
 		case int, int64:
 			return t, nil
 		case float64:
 			if t != float64(int64(t)) {
-				return nil, fmt.Errorf("%v is not an integer, and the operation declares one", t)
+				return nil, refuse()
 			}
 			return int64(t), nil
 		case string:
 			n, err := strconv.ParseInt(strings.TrimSpace(t), 10, 64)
 			if err != nil {
-				return nil, fmt.Errorf("%q is not an integer, and the operation declares one", t)
+				return nil, refuse()
 			}
 			return n, nil
 		}
-		return nil, typeMismatch(decl, v)
 	case "number":
 		switch t := v.(type) {
 		case json.Number:
 			if _, err := t.Float64(); err != nil {
-				return nil, fmt.Errorf("%s is not a number, and the operation declares one", t.String())
+				return nil, refuse()
 			}
 			return t, nil
 		case float64, int, int64:
 			return t, nil
 		case string:
-			if n, err := strconv.ParseFloat(strings.TrimSpace(t), 64); err == nil {
-				return n, nil
+			n, err := strconv.ParseFloat(strings.TrimSpace(t), 64)
+			if err != nil {
+				return nil, refuse()
 			}
-			return nil, fmt.Errorf("%q is not a number, and the operation declares %s", t, decl.Type)
+			return n, nil
 		}
-		return nil, typeMismatch(decl, v)
 	case "boolean":
 		switch t := v.(type) {
 		case bool:
 			return t, nil
 		case string:
-			if b, err := strconv.ParseBool(strings.TrimSpace(t)); err == nil {
-				return b, nil
+			b, err := strconv.ParseBool(strings.TrimSpace(t))
+			if err != nil {
+				return nil, refuse()
 			}
-			return nil, fmt.Errorf("%q is not a boolean, and the operation declares one", t)
+			return b, nil
 		}
-		return nil, typeMismatch(decl, v)
 	case "string":
 		switch t := v.(type) {
 		case string:
@@ -629,21 +681,110 @@ func coerceDecoded(decl spec.Param, v any) (any, error) {
 			return strconv.FormatFloat(t, 'f', -1, 64), nil
 		}
 		// A structure where a string is wanted is not a rendering question.
-		return nil, typeMismatch(decl, v)
 	case "array":
-		if _, ok := v.([]any); ok {
-			return v, nil
+		list, isList := v.([]any)
+		if s, isText := v.(string); isText {
+			decoded, ok := decodeJSONValue(strings.TrimSpace(s))
+			list, isList = decoded.([]any)
+			if !ok || !isList {
+				return nil, refuse()
+			}
 		}
-		return nil, typeMismatch(decl, v)
+		if !isList {
+			return nil, refuse()
+		}
+		if items == "" {
+			return list, nil
+		}
+		out := make([]any, len(list))
+		for i, el := range list {
+			n, err := narrowValue(key, i, items, "", el)
+			if err != nil {
+				return nil, err
+			}
+			out[i] = n
+		}
+		return out, nil
+	case "object":
+		obj, isObj := v.(map[string]any)
+		if s, isText := v.(string); isText {
+			decoded, ok := decodeJSONValue(strings.TrimSpace(s))
+			obj, isObj = decoded.(map[string]any)
+			if !ok || !isObj {
+				return nil, refuse()
+			}
+		}
+		if !isObj {
+			return nil, refuse()
+		}
+		return obj, nil
+	default:
+		// A type with no case here is refused, not passed through: sending
+		// the value unchanged is what a declaration exists to prevent.
+		return nil, &ActionParamError{Key: key, Item: item, Declared: declared, Got: describeJSONValue(v), Unsupported: true}
 	}
-	return v, nil
+	return nil, refuse()
 }
 
-// typeMismatch says what was given and what was wanted, in the vocabulary the
-// author used — the declared type is what they can act on.
-func typeMismatch(decl spec.Param, v any) error {
-	return fmt.Errorf("%s is not a %s, and the operation declares %s for %q",
-		describeJSONValue(v), decl.Type, decl.Type, decl.Key)
+// ActionParamError is an action argument the type its operation declares
+// refuses. It is raised locally, before any request is built: the vendor is
+// never reached with a value the declaration does not describe.
+type ActionParamError struct {
+	// Key is the operation's public key for the argument.
+	Key string
+	// Item is the index of the refused ELEMENT of an array argument, -1 when
+	// the argument itself was refused.
+	Item int
+	// Declared is the type the value was narrowed to: the parameter's
+	// `type`, or its `items` for an element.
+	Declared string
+	// Got names the value's shape — a string, a number, an array — never
+	// its content.
+	Got string
+	// Text is the text that does not read as Declared, when the value was
+	// text. It may carry a materialised secret: scrubActionError redacts it
+	// in place.
+	Text string
+	// Unsupported marks a declared type this build has no conversion to.
+	Unsupported bool
+}
+
+func (e *ActionParamError) Error() string {
+	where := fmt.Sprintf("param %q", e.Key)
+	if e.Item >= 0 {
+		where = fmt.Sprintf("param %q item %d", e.Key, e.Item)
+	}
+	switch {
+	case e.Unsupported:
+		return fmt.Sprintf("%s: the operation declares type %q, which this build has no conversion to (%s given)", where, e.Declared, e.Got)
+	case e.Got == describeJSONValue(""):
+		// The value was text: the text is what the author can act on.
+		return fmt.Sprintf("%s: %s does not read as %s, the type the operation declares", where, quoteBounded(e.Text), typeNoun(e.Declared))
+	}
+	return fmt.Sprintf("%s: %s is not %s, the type the operation declares", where, e.Got, typeNoun(e.Declared))
+}
+
+// refusedTextQuote bounds the text a refusal quotes. The message reaches the
+// run's events and logs, and the refused text may be a whole document; the
+// field keeps it in full.
+const refusedTextQuote = 120
+
+// quoteBounded quotes s, cut to refusedTextQuote runes.
+func quoteBounded(s string) string {
+	r := []rune(s)
+	if len(r) <= refusedTextQuote {
+		return strconv.Quote(s)
+	}
+	return strconv.Quote(string(r[:refusedTextQuote])) + "…"
+}
+
+// typeNoun names a declared type with its article, in the author's vocabulary.
+func typeNoun(declared string) string {
+	switch declared {
+	case "integer", "array", "object":
+		return "an " + declared
+	}
+	return "a " + declared
 }
 
 // describeJSONValue names a value's SHAPE rather than printing it, because

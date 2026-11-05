@@ -229,7 +229,9 @@ func buildResumeExecutor(
 		return nil, err
 	}
 	if r != nil && len(r.Inputs) > 0 {
-		exec.SetVars(r.Inputs)
+		// The stored inputs are the launch's TEXT, undeclared names
+		// included: SetLaunchVars reads them as the launch seed does.
+		exec.SetLaunchVars(r.Inputs)
 	}
 	return exec, nil
 }

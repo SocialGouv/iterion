@@ -72,6 +72,10 @@ type ClawExecutor struct {
 	cursors         map[string]*ir.CursorDef
 	imageAttachs    map[string]bool // names of image-typed attachments declared in the workflow
 	vars            map[string]any
+	// varTypes are the declared types of the workflow's vars, the ones a
+	// launch value is read at before the engine's own reading arrives
+	// (SetLaunchVars). A name absent here is no var of the workflow.
+	varTypes map[string]ir.VarType
 	// wfShapes are the workflow's declarations that do not depend on which
 	// node renders — the `vars:` block and every node's `output:` schema —
 	// kept for their TYPES: a `json` value and a `string[]` one reach a tool
@@ -1073,24 +1077,23 @@ func NewClawExecutor(registry *Registry, wf *ir.Workflow, opts ...ClawExecutorOp
 	// corruption observed in whole_improve_loop where scope_notes
 	// (default "") leaked the placeholder into every reviewer call.
 	var seed map[string]any
+	var varTypes map[string]ir.VarType
 	if len(wf.Vars) > 0 {
 		seed = make(map[string]any, len(wf.Vars))
+		varTypes = make(map[string]ir.VarType, len(wf.Vars))
 		for name, vr := range wf.Vars {
+			if vr == nil {
+				continue
+			}
+			varTypes[name] = vr.Type
 			if !vr.HasDefault {
 				continue
 			}
 			// The same reading the engine gives an override, so a var a host
 			// never overrides does not start the run as the compiler's raw
 			// text while the same var supplied on the command line starts it
-			// as a list (#1285). The engine's own lookup (${PROJECT_DIR},
-			// ${BUNDLE_DIR}) is not reachable from here; SetVars overwrites
-			// this seed with the engine's reading before Execute.
-			resolved, err := ir.ResolveVarText(vr.Default, vr.Type, nil)
-			if err != nil {
-				seed[name] = vr.Default
-				continue
-			}
-			seed[name] = resolved
+			// as a list (#1285).
+			seed[name] = seedVarReading(vr.Default, vr.Type)
 		}
 	}
 	e := &ClawExecutor{
@@ -1125,6 +1128,7 @@ func NewClawExecutor(registry *Registry, wf *ir.Workflow, opts ...ClawExecutorOp
 		},
 		sessions: newNodeSessionStore(),
 		vars:     seed,
+		varTypes: varTypes,
 		detector: detect.NewCachedDetector(5 * time.Minute),
 	}
 	for _, opt := range opts {
@@ -1224,6 +1228,14 @@ func (e *ClawExecutor) ensureHostSecretFiles() error {
 // vars map. Keys present in vars override the matching default seeded
 // from wf.Vars at construction time; keys absent from vars retain
 // their default. Must be called before Execute.
+//
+// The values are READ ones — the engine's resolveVars output, already
+// expanded and narrowed to each var's declared type — and are stored as
+// given. A host holding a launch's TEXT (`--var` values, an HTTP payload, a
+// resumed run's stored inputs) seeds it through SetLaunchVars instead:
+// reading a read value again is not neutral (a `json` var's string
+// document would be decoded a second time, a `$` in an expanded string
+// expanded again).
 func (e *ClawExecutor) SetVars(vars map[string]any) {
 	if e.vars == nil {
 		e.vars = make(map[string]any, len(vars))
@@ -1231,6 +1243,51 @@ func (e *ClawExecutor) SetVars(vars map[string]any) {
 	for k, v := range vars {
 		e.vars[k] = v
 	}
+}
+
+// SetLaunchVars seeds the executor with a launch's RAW values, read the way
+// the engine reads the same text: each value of a declared var through
+// ir.ResolveVarText at the var's declared type, so `--var labels=a,b` on a
+// `string[]` var is the list ["a","b"] here as it is in the run, and a `json`
+// var's text is its document. A name that is no var of the workflow is
+// dropped — resolveVars' rule (ir.DeclaredVarsOnly), held here so every seam
+// that seeds launch text inherits it.
+//
+// This is the seed a reader sees BEFORE the engine pushes its own reading
+// (runtime pushExecutorVars): the engine's pre-run admissions resolve routing
+// fields through the executor ahead of that push, and a host that runs a node
+// without an engine sees nothing else. Text seeded as text is a `string[]`
+// var read as a string — a whole-value `{{vars.labels}}` reaching an `array`
+// action param as text, and refused (#2991) — and a dotted
+// `{{vars.cfg.backend}}` into a `json` var drilling into a string.
+//
+// The engine's expansion (${PROJECT_DIR}, ${BUNDLE_DIR}) is not reachable
+// from here; its push replaces this seed with the engine's reading before
+// any node runs. Must be called before Execute.
+func (e *ClawExecutor) SetLaunchVars(vars map[string]any) {
+	for name, raw := range vars {
+		vt, declared := e.varTypes[name]
+		if !declared {
+			continue
+		}
+		if e.vars == nil {
+			e.vars = make(map[string]any, len(vars))
+		}
+		e.vars[name] = seedVarReading(raw, vt)
+	}
+}
+
+// seedVarReading is the executor's reading of a var's text ahead of the
+// engine: ir.ResolveVarText with the process environment. A text whose
+// reading fails is kept as written, which is what resolveVars keeps for the
+// same text — the engine re-reads it, names the failure in its warning and
+// pushes that value over this one.
+func seedVarReading(raw any, vt ir.VarType) any {
+	resolved, err := ir.ResolveVarText(raw, vt, nil)
+	if err != nil {
+		return raw
+	}
+	return resolved
 }
 
 // SetPresetFocus records the selected launch-time preset's prompt bias and

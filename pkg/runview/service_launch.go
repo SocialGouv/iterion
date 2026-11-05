@@ -1016,7 +1016,9 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 	}
 	executor.SetRunExtraEnv(s.runEnv)
 	if len(r.Inputs) > 0 {
-		executor.SetVars(r.Inputs)
+		// The stored inputs are the launch's TEXT, undeclared names
+		// included: SetLaunchVars reads them as the launch seed does.
+		executor.SetLaunchVars(r.Inputs)
 	}
 
 	// Preserve an existing name; back-fill one for legacy runs that

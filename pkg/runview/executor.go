@@ -960,7 +960,13 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 		// declared vars only — took no opinion on: the screen refused
 		// nothing and dispatch took the crossing. The dispatch view
 		// (model.RouteViewForDispatch) reads the same filter.
-		executor.SetVars(ir.DeclaredVarsOnly(spec.Workflow, spec.Vars))
+		//
+		// The values are launch TEXT, so they are seeded through the
+		// executor's reading of a var's text (SetLaunchVars), not stored
+		// as text: the engine's pre-run admissions and an engine-less
+		// caller read this seed, and a raw one hands a `string[]` var to
+		// an `array` action param as a string (#2991).
+		executor.SetLaunchVars(ir.DeclaredVarsOnly(spec.Workflow, spec.Vars))
 	}
 
 	return executor, nil
