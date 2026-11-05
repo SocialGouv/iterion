@@ -173,3 +173,123 @@ func TestHasExplicitDenySeesTheParentSearch(t *testing.T) {
 		t.Error("HasExplicitDeny = true for a search outside the denied tree")
 	}
 }
+
+// TestAPathlessSearchReadsTheAgentsDirectory is the omitted-root half of
+// #3086, in the review's probe shape: a search that spells no `path` is
+// not rootless — the backend runs it from the agent's directory, so a deny
+// on a tree under that directory must bind the DEFAULT spelling of a
+// search, the one agents emit most. Before, the pathless call carried no
+// root spelling at all: the containment had nothing to read, and the
+// inside-the-tree matching missed a search run from the tree itself.
+func TestAPathlessSearchReadsTheAgentsDirectory(t *testing.T) {
+	newPolicy := func(root string) *Policy {
+		p := mustPolicy(t, ModeDeny, []string{"Grep", "Glob", "LS"}, nil, nil)
+		if root != "" {
+			p.SetPathRoot(root)
+		}
+		if err := p.DenyPathTrees("/work/secrets"); err != nil {
+			t.Fatalf("DenyPathTrees: %v", err)
+		}
+		return p
+	}
+	for _, tc := range []struct {
+		name  string
+		root  string
+		tool  string
+		input map[string]any
+		want  Decision
+	}{
+		{"a pathless grep from the tree's parent", "/work", "Grep", map[string]any{"pattern": "api_key"}, Deny},
+		{"a pathless glob from the tree's parent", "/work", "Glob", map[string]any{"pattern": "*"}, Deny},
+		{"a pathless listing of the tree's parent", "/work", "LS", map[string]any{}, Deny},
+		{"a pathless grep from inside the tree", "/work/secrets", "Grep", map[string]any{"pattern": "api_key"}, Deny},
+		{"a pathless grep from a deeper room of the tree", "/work/secrets/tls", "Grep", map[string]any{"pattern": "api_key"}, Deny},
+		{"a pathless grep from a sibling stays allowed", "/work/public", "Grep", map[string]any{"pattern": "api_key"}, Allow},
+		{"a pathless glob from a sibling stays allowed", "/work/public", "Glob", map[string]any{"pattern": "*"}, Allow},
+		// No captured root, nothing to anchor on: the gate invents no
+		// directory, and the call reads as it always did.
+		{"no captured root, no implied one", "", "Grep", map[string]any{"pattern": "api_key"}, Allow},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := newPolicy(tc.root)
+			if got, rule := p.Evaluate(tc.tool, tc.input); got != tc.want {
+				t.Errorf("Evaluate(%s, %v) with root %q = %v (rule %q), want %v", tc.tool, tc.input, tc.root, got, rule, tc.want)
+			}
+		})
+	}
+
+	// The author's own tree rule reads the omission too: a relative tree
+	// anchors on the agent's directory, and a pathless search of that
+	// directory walks it.
+	rel := mustPolicy(t, ModeDeny, []string{"Grep"}, nil, []string{"Grep(secrets/**)"})
+	rel.SetPathRoot("/work")
+	if got, rule := rel.Evaluate("Grep", map[string]any{"pattern": "api_key"}); got != Deny {
+		t.Errorf("a pathless search over a relative tree deny = %v (rule %q), want Deny", got, rule)
+	}
+
+	// The omission feeds every closing verdict: a scoped ask naming the
+	// agent's directory re-gates the pathless search before the bare allow.
+	ask := mustPolicy(t, ModeAsk, []string{"Grep"}, []string{"Grep(/work/**)"}, nil)
+	ask.SetPathRoot("/work")
+	if got, rule := ask.Evaluate("Grep", map[string]any{"pattern": "api_key"}); got != Ask {
+		t.Errorf("a scoped ask did not re-gate the pathless search = %v (rule %q), want Ask", got, rule)
+	}
+}
+
+// TestAnMCPSearchToolIsBoundByAPathDeny is the MCP half of #3086: an MCP
+// tool keeps its FQN as its canonical name, so the search-family tables
+// never named it — a deny on a tree met nothing the call carried, and even
+// a search rooted INSIDE the tree passed. The filesystem-shaped servers
+// carry their root in `path`, and the closing side reads it now: the plain
+// inside-the-tree matching and the containment both bind, while the
+// opening side stays the k=v reading (an allow must name what it opens).
+func TestAnMCPSearchToolIsBoundByAPathDeny(t *testing.T) {
+	p := mustPolicy(t, ModeDeny,
+		[]string{"mcp__fs__search_files", "mcp__fs__list_directory"},
+		nil,
+		[]string{"mcp__fs__search_files(/run/iterion/secrets/**)", "mcp__fs__list_directory(/run/iterion/secrets/**)"},
+	)
+	for _, tc := range []struct {
+		name  string
+		tool  string
+		input map[string]any
+		want  Decision
+	}{
+		{"rooted inside the tree", "mcp__fs__search_files", map[string]any{"path": "/run/iterion/secrets", "pattern": "."}, Deny},
+		{"rooted above the tree", "mcp__fs__search_files", map[string]any{"path": "/run/iterion", "pattern": "."}, Deny},
+		{"rooted at the filesystem root", "mcp__fs__search_files", map[string]any{"path": "/", "pattern": "."}, Deny},
+		{"a listing of the tree's parent", "mcp__fs__list_directory", map[string]any{"path": "/run/iterion"}, Deny},
+		{"a search elsewhere stays allowed", "mcp__fs__search_files", map[string]any{"path": "/work/pkg", "pattern": "."}, Allow},
+		{"a sibling of the tree stays allowed", "mcp__fs__search_files", map[string]any{"path": "/run/iterion/other", "pattern": "."}, Allow},
+		// No `path` key, nothing to read: a call the gate cannot place
+		// keeps the k=v reading alone.
+		{"a call with no path key", "mcp__fs__search_files", map[string]any{"pattern": "."}, Allow},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got, rule := p.Evaluate(tc.tool, tc.input); got != tc.want {
+				t.Errorf("Evaluate(%s, %v) = %v (rule %q), want %v", tc.tool, tc.input, got, rule, tc.want)
+			}
+		})
+	}
+
+	// The per-server glob is the recipe for a tree an attached MCP server
+	// must never read: one rule covers every verb the server ships.
+	g := mustPolicy(t, ModeDeny, []string{"mcp__fs__search_files"}, nil, []string{"mcp__fs__*(/run/iterion/secrets/**)"})
+	if got, rule := g.Evaluate("mcp__fs__search_files", map[string]any{"path": "/run/iterion", "pattern": "."}); got != Deny {
+		t.Errorf("a server-wide tree deny did not bind the parent-rooted search = %v (rule %q), want Deny", got, rule)
+	}
+
+	// The single-underscore spelling a backend may send canonicalises to
+	// itself, and a rule written in that spelling binds it the same way.
+	c := mustPolicy(t, ModeDeny, []string{"mcp_fs__search_files"}, nil, []string{"mcp_fs__search_files(/run/iterion/secrets/**)"})
+	if got, rule := c.Evaluate("mcp_fs__search_files", map[string]any{"path": "/run/iterion", "pattern": "."}); got != Deny {
+		t.Errorf("the single-underscore FQN escaped its own tree deny = %v (rule %q), want Deny", got, rule)
+	}
+
+	// An omitted root reads the agent's directory for an MCP tool too.
+	o := mustPolicy(t, ModeDeny, []string{"mcp__fs__search_files"}, nil, []string{"mcp__fs__search_files(/work/secrets/**)"})
+	o.SetPathRoot("/work")
+	if got, rule := o.Evaluate("mcp__fs__search_files", map[string]any{"pattern": "api_key"}); got != Deny {
+		t.Errorf("a pathless MCP search over the tree's parent = %v (rule %q), want Deny", got, rule)
+	}
+}
