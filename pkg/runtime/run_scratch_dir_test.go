@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -100,4 +101,62 @@ func TestRunScratchOwnerFollowsTheFamilyRoot(t *testing.T) {
 	if got, want := orphan.runScratchDirVarValue(), filepath.Join(orphan.projectScratchDirVarValue(), "runs", "run-elsewhere"); got != want {
 		t.Errorf("orphan child run scratch = %q, want the parent's id %q", got, want)
 	}
+}
+
+// TestRunScratchOwnerRefusesATraversalShapedParent is the containment half
+// of the owner walk (#2869): every id the walk adopts is a path component
+// of ${RUN_SCRATCH_DIR} and of the claw read root attached on it, and a
+// parent id arrives verbatim from a launch request. A '..'-shaped one must
+// end the walk, not become the component — otherwise
+// <project scratch>/runs/../../.. is the iterion home's projects dir and
+// the run reads every other repository's scratch. Driven through
+// Engine.Run, the path a POST /api/runs parent_run_id takes, and through a
+// RECORDED parent whose own parent id is traversal-shaped (the resume walk
+// reads r.ParentRunID from the record the same way).
+func TestRunScratchOwnerRefusesATraversalShapedParent(t *testing.T) {
+	t.Setenv("ITERION_HOME", t.TempDir())
+	ctx := context.Background()
+
+	wf := &ir.Workflow{
+		Name:  "scratch-owner-traversal",
+		Entry: "start",
+		Nodes: map[string]ir.Node{
+			"start": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "start"}, Command: "true"},
+			"done":  &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+			"fail":  &ir.FailNode{BaseNode: ir.BaseNode{ID: "fail"}},
+		},
+		Edges: []*ir.Edge{{From: "start", To: "done"}},
+	}
+
+	s := tmpStore(t)
+	repo, _ := initBareishRepo(t)
+	launch := func(runID, parentID string) (*Engine, string) {
+		t.Helper()
+		spy := &scratchPushSpy{}
+		eng := New(wf, s, spy, WithWorkDir(repo), WithLogger(log.New(log.LevelError, os.Stderr)), WithParentRunID(parentID))
+		if err := eng.Run(ctx, runID, nil); err != nil {
+			t.Fatalf("engine.Run(%s): %v", runID, err)
+		}
+		pushedRun, _ := spy.lastScratch(t)
+		return eng, pushedRun
+	}
+	underProjectScratch := func(eng *Engine, pushed, wantOwner string) {
+		t.Helper()
+		shared := eng.projectScratchDirVarValue()
+		if want := filepath.Join(shared, "runs", wantOwner); pushed != want {
+			t.Fatalf("pushed run read root = %q, want %q — the subtree left the project scratch %q", pushed, want, shared)
+		}
+	}
+
+	for i, parent := range []string{"../../..", "..", "a/../../b"} {
+		runID := fmt.Sprintf("run-traversal-%d", i)
+		eng, pushed := launch(runID, parent)
+		underProjectScratch(eng, pushed, runID)
+	}
+
+	// A recorded parent whose own recorded parent id is traversal-shaped:
+	// the walk adopts the recorded parent and stops there.
+	launch("run-recorded-parent", "..")
+	eng, pushed := launch("run-recorded-child", "run-recorded-parent")
+	underProjectScratch(eng, pushed, "run-recorded-parent")
 }

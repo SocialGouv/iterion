@@ -1269,7 +1269,7 @@ func (e *Engine) runScratchDirVarValue() string {
 	if e.runScratchOwner == "" {
 		return base
 	}
-	return filepath.Join(base, "runs", e.runScratchOwner)
+	return filepath.Join(base, memory.RunScratchDirName, e.runScratchOwner)
 }
 
 // resolveRunScratchOwner settles the run-family root the per-run scratch
@@ -1281,10 +1281,32 @@ func (e *Engine) runScratchDirVarValue() string {
 // different stores — and the walk then keeps the last id it reached.
 // Called once per execution, before the first var resolution expands
 // ${RUN_SCRATCH_DIR}.
+//
+// Every id the walk adopts becomes the path component of the subtree —
+// and of the read root claw attaches on it — so each one must be a name
+// the store itself would accept (store.SanitizePathComponent). A parent
+// id arrives verbatim from a launch request (POST /api/runs
+// parent_run_id) or from the record it was stored in; a '..'-shaped one
+// would move the subtree out of the project scratch, into another
+// repository's or above the iterion home. Such an id names no run, so it
+// ends the walk at the last valid id, with a warning; an invalid run id
+// of its own (one the store never creates) settles no owner at all.
 func (e *Engine) resolveRunScratchOwner(ctx context.Context, runID, parentID string) string {
+	if err := store.SanitizePathComponent("run ID", runID); err != nil {
+		if e.logger != nil {
+			e.logger.Warn("runtime: the run scratch subtree keys on no owner: %v", err)
+		}
+		return ""
+	}
 	owner := runID
 	seen := map[string]bool{runID: true}
 	for id, hops := parentID, 0; id != "" && !seen[id] && hops < maxScratchLineageWalk; hops++ {
+		if err := store.SanitizePathComponent("parent run ID", id); err != nil {
+			if e.logger != nil {
+				e.logger.Warn("runtime: run %s: the scratch lineage walk stops at %q: %v", runID, owner, err)
+			}
+			break
+		}
 		seen[id] = true
 		owner = id
 		r, err := e.store.LoadRun(ctx, id)
