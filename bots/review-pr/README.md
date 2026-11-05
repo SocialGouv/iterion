@@ -403,7 +403,9 @@ apart: that is where a deduplicated pair keeps its one anchor. The cover only
 ever compares against converge's own output and the other reviewer's
 restorations — two findings the same reviewer wrote separately are not twins,
 and both are restored. Items that are not findings count nowhere: not under
-the cap, not in the header, not in the gate total. This was observed on
+the cap, not in the header, not in the gate total; neither does a finding the
+anomaly strip reclassifies, so a drifted file cannot eat the restoration
+budget. This was observed on
 `deepseek-v4.1-flash` (SocialGouv/iterion#3091): three medium findings went
 in, `[]` came out, and the PR was told nothing was found. The summary
 (« Fusion incomplète ») and the gate note both name the restoration, counted

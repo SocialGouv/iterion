@@ -806,13 +806,22 @@ if not findings_parse_failed and not recovered_from_reviewers:
     # twin, it is a second finding that review wrote (R2-1). Converge never
     # absorbed it, so the id/slack cover must not fire between them.
     merged_only = list(findings)
+    # The cap bounds what is PUBLISHED as a PR finding: an anomaly-bound
+    # finding is reclassified by the strip below, so it must not consume
+    # the restoration budget (Revi Rb997dc: a drifted finding ate the last
+    # slot and an eligible one was dropped).
+    def budget():
+        return sum(1 for m in findings if isinstance(m, dict) and anchor_path(m.get('file')) not in anomaly_paths)
     for env_name, f in candidates:
-        if cap > 0 and sum(1 for m in findings if isinstance(m, dict)) >= cap:
+        if cap > 0 and budget() >= cap:
             break
         if covered_by(f, merged_only + [r for src, r in restored if src != env_name]):
             continue
-        # A byte-exact repeat inside one reviewer's own array is one finding.
-        if any(src == env_name and finding_id(r) == finding_id(f) and finding_span(r) == finding_span(f) for src, r in restored):
+        # A byte-exact repeat inside one reviewer's own array is one
+        # finding; anything less than full equality is a second report
+        # (Revi Rb17e04: same anchor and title, different detail, must
+        # not be collapsed).
+        if any(src == env_name and r == f for src, r in restored):
             continue
         findings.append(f)
         restored.append((env_name, f))

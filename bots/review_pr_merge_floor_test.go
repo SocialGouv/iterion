@@ -254,6 +254,38 @@ func TestReviewPRMergeFloorRestoresDroppedFindings(t *testing.T) {
 			wantTitles:   []string{"Lost update"},
 			wantRestored: 1, wantBlocking: 1, wantNoteHas: "blocking of 1 finding(s)",
 		},
+		{
+			// Revi Rb997dc (high): a finding on an anomaly path is
+			// reclassified, never published as a PR finding, so it must not
+			// consume the restoration cap -- otherwise it eats the slot and
+			// an eligible finding on a clean file is dropped.
+			name:   "an anomaly-path finding does not consume the restoration cap",
+			merged: "[]",
+			claude: enc(f("a.go", 5, "critical", "SQL injection in query builder"),
+				f("b.go", 9, "high", "Unchecked error from Close")),
+			gpt:       "[]",
+			threshold: "medium", cap: "1",
+			extra:      map[string]string{"input.workspace_anomaly": "?? a.go"},
+			wantTitles: []string{"Unchecked error from Close"},
+			// only the b.go finding is published as a PR finding; the a.go
+			// one is reclassified, so the restoration count names one.
+			wantRestored: 1, wantBlocking: 1,
+		},
+		{
+			// Revi Rb17e04 (medium): two findings from one reviewer at the
+			// same anchor with the same title but different details are two
+			// reports, not a repeat -- only a byte-exact repeat collapses.
+			name:   "same anchor and title but different detail restores both",
+			merged: "[]",
+			claude: enc(map[string]any{"file": "a.go", "line": 10, "severity": "high",
+				"title": "Unchecked error from Close", "detail": "rows.Close() is not checked on the read path"},
+				map[string]any{"file": "a.go", "line": 10, "severity": "high",
+					"title": "Unchecked error from Close", "detail": "stmt.Close() is not checked on the write path"}),
+			gpt:       "[]",
+			threshold: "medium", cap: "15",
+			wantTitles:   []string{"Unchecked error from Close", "Unchecked error from Close"},
+			wantRestored: 2, wantBlocking: 2,
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var got struct {
