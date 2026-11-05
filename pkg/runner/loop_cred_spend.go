@@ -70,48 +70,20 @@ func (r *Runner) recordCredentialSpend(ctx context.Context, msg *queue.RunMessag
 	repoID := r.repoForSpend(bg, msg)
 	for route, totals := range routes {
 		// An env-funded route drops BEFORE the declined warnings: the
-		// deployment's gateway books on nobody by design — the route meter
+		// deployment's gateway, the pod's env, a host login or a backend's
+		// own config books on nobody by design — the route meter
 		// (loop_metrics/loop_spend) and the org bucket already carry its
-		// spend, and "no credential iterion can name" would be a lie about
-		// a route iterion names exactly. Once per route, same as the
-		// declines, so an operator sees the shape and only once.
-		if modelroute.Parse(route.model).Gateway() {
-			// A STAMPED run's gateway route books on the run's own held
-			// credential: the stamp declares the deployment's env gateway
-			// outside the run's trust domain, so the spend is the tenant
-			// key's, metered and fingerprinted like any vendor route.
-			// Unstamped, the decline below keeps the env gateway's
-			// books-on-nobody semantics.
-			if creds.AmbientRefused {
-				if slot := heldForRoute(creds, string(secrets.ProviderOpenAICompatible)); slot != "" {
-					spend := credusage.Spend{
-						Key: credusage.Key{
-							Fingerprint: creds.Fingerprint(slot),
-							Provider:    slot,
-							Tier:        credentialTier(creds, slot),
-							TenantID:    msg.TenantID,
-							RepoID:      repoID,
-						},
-						Nature:          credentialNature(slot),
-						Backend:         route.backend,
-						CostUSD:         totals.costUSD,
-						InputTokens:     totals.inputTokens,
-						OutputTokens:    totals.outputTokens,
-						AggregateTokens: totals.aggregateTokens,
-					}
-					if err := r.cfg.CredUsage.AddSpend(bg, at, spend); err != nil && r.cfg.Logger != nil {
-						r.cfg.Logger.Warn("runner: credential spend record for %s (run %s): %v", creds.Fingerprint(slot), msg.RunID, err)
-					}
-					continue
-				}
-			}
+		// spend, and "no credential iterion can name" would be a lie about a
+		// route iterion names exactly. Once per route, same as the declines,
+		// so an operator sees the shape and only once.
+		slot, envFunded := ledgerSlot(creds, route)
+		if envFunded {
 			if r.cfg.Logger != nil && usage.noteDeclinedRoute(route) {
-				r.cfg.Logger.Info("runner: run %s spent %d tokens on %s/%s — env-funded (the deployment's gateway), not metered per credential",
-					msg.RunID, totals.tokens(), route.backend, route.model)
+				r.cfg.Logger.Info("runner: run %s spent %d tokens on %s/%s — env-funded (%s), not metered per credential",
+					msg.RunID, totals.tokens(), route.backend, route.model, envFundedChannel(route))
 			}
 			continue
 		}
-		slot := routeSlot(creds, route)
 		if slot == "" {
 			// Declined for good: the attempt is over and nothing will name
 			// this route's credential later, so the decline is a warning —
@@ -332,17 +304,49 @@ func credentialSlotForRoute(creds secrets.Credentials, backend, modelName, hint 
 	}
 }
 
-// routeSlot names the credential slot one route spent. A claude_code session
-// names it itself: the source label it stamped (delegate_finished's
-// `fingerprint`) carries what its provider hint decided — a node pinned
-// `provider: zai` spends the z.ai key whatever holds the wire's default. Every
-// other route, and a session whose label names no slot, is read from its
-// (backend, model) pair, under the hint-less walk: the route carries no hint.
-// For claw that walk is the one every hint agrees with past the run's keys —
-// the forfait the hint-less walk spends, a hinted one spends too
-// (model.RunCredentialBaseURL only ever swaps the env's destination for the
-// direct wire) — so the ledger books the forfait only where the call spent
-// it, and charges nobody where the hint alone would decide.
+// ledgerSlot names the run slot one route's spend books on, and whether that
+// spend is the environment's — a credential the runner's environment holds
+// (or a backend's own config), which books on nobody by design.
+//
+// A route whose events carried the credential keys (ADR-161 decision 8) books
+// on their slot, never re-derived: the process that built the call named it,
+// and a spend on no slot of the run's is the environment's. A route without
+// them keeps the derivation: a gateway-served route is the deployment's
+// OPENAI_COMPATIBLE_* pair — except on a STAMPED run, whose held gateway
+// credential is the only one its gateway routes can spend (the stamp declares
+// the deployment's env gateway outside the run's trust domain) — and every
+// other route is read by routeSlot.
+func ledgerSlot(creds secrets.Credentials, route routeKey) (slot string, envFunded bool) {
+	if route.credential.Channel != "" {
+		return route.credential.Slot, !route.credential.RunSlot()
+	}
+	if modelroute.Parse(route.model).Gateway() {
+		if creds.AmbientRefused {
+			if slot := heldForRoute(creds, string(secrets.ProviderOpenAICompatible)); slot != "" {
+				return slot, false
+			}
+		}
+		return "", true
+	}
+	return routeSlot(creds, route), false
+}
+
+// envFundedChannel names what funded an env-funded route, for its decline.
+func envFundedChannel(route routeKey) string {
+	if route.credential.Channel != "" {
+		return string(route.credential.Channel)
+	}
+	return "the deployment's gateway"
+}
+
+// routeSlot names the credential slot one route spent, for a route whose
+// events carried no credential keys (ledgerSlot reads those first). A
+// claude_code session names it itself: the source label it stamped
+// (delegate_finished's `fingerprint`) carries what its provider hint decided
+// — a node pinned `provider: zai` spends the z.ai key whatever holds the
+// wire's default. Every other route, and a session whose label names no
+// slot, is read from its (backend, model) pair, under the hint-less walk:
+// the route carries no hint.
 func routeSlot(creds secrets.Credentials, route routeKey) string {
 	if route.backend == delegate.BackendClaudeCode {
 		if slot, named := slotOfSource(route.source); named {

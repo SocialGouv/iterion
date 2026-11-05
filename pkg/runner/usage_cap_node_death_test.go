@@ -33,7 +33,7 @@ func assertNodeDeathPark(t *testing.T, caps usagecap.Store, wf *ir.Workflow, var
 	t.Helper()
 	s := &nodeDeathStore{cancelAwareStore: cancelAwareStore{run: &store.Run{ID: "node-death", Status: store.RunStatusQueued}}}
 	r := capRunner(capTestPolicy(), caps, s)
-	ctx := forfaitBesidePinnedKeys()
+	ctx := forfaitBesidePinnedKeys(t)
 	err := r.usageCapPreflight(ctx, wf, &queue.RunMessage{RunID: s.run.ID, Vars: vars}, iterlog.Nop())
 	if (err != nil) != wantPark {
 		t.Errorf("pre-flight error = %v, want park=%v", err, wantPark)

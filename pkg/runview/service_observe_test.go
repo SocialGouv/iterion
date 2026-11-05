@@ -2,42 +2,63 @@ package runview
 
 import (
 	"bytes"
+	"context"
 	"strings"
 	"testing"
 
+	"github.com/SocialGouv/iterion/pkg/backend/model"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/supervise"
 )
 
-// The ambient twin: on a run whose credentials carry the AmbientRefused
-// stamp, only gateway-model supervisors survive the spawn walk — a
-// vendor-family supervisor resolves through the pod environment, which the
-// stamp refuses, and would spin refusal-per-evaluation for a run that must
-// not spend it. An unstamped run keeps every spec.
-func TestAmbientSurvivingSpecs_KeepsGatewayDropsVendorWhenRefused(t *testing.T) {
-	specs := []supervise.Spec{
-		{Name: "gw", Model: "openai_compatible/glm-5.3"},
-		{Name: "vendor", Model: "anthropic/claude-opus-4-8"},
-		{Name: "unpinned", Model: ""},
+// The spawn keeps the supervisors the resolver funds (ADR-161 decision 4): on
+// a run whose credentials carry the stamp (ADR-131 §7), a supervisor on a key
+// the run sealed is kept — the stamp refuses the pod's environment, never the
+// run's own money — and one only the pod's environment would fund is dropped
+// and named with the stamp's refusal. An unstamped run keeps the pod-funded
+// supervisor.
+//
+// The run credentials lookups are the runner's (cmd/iterion installs them at
+// boot): the claw arm reads the run's keys through them.
+func TestFundedSupervisorSpecs_AStampedRunsOwnKeyServesItsSupervisor(t *testing.T) {
+	t.Cleanup(model.SetCredentialsLookup(model.RunCredentialsLookup))
+	t.Cleanup(model.SetOAuthDirLookup(model.RunOAuthDirLookup))
+	for _, name := range []string{
+		"ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "ANTHROPIC_CUSTOM_HEADERS", "CLAUDE_CODE_OAUTH_TOKEN",
+		"ZAI_API_KEY", "ITERION_FORBID_SUBSCRIPTION_OAUTH", "ITERION_DEFAULT_SUPERVISOR_MODEL",
+	} {
+		t.Setenv(name, "")
+	}
+	t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
+	t.Setenv("ANTHROPIC_API_KEY", "sk-pod")
+	specs := func() []supervise.Spec {
+		return []supervise.Spec{{Name: "vendor", Model: "anthropic/claude-opus-4-8"}}
+	}
+
+	stamped := func(keys map[secrets.Provider]string) context.Context {
+		return secrets.WithCredentials(context.Background(), secrets.Credentials{AmbientRefused: true, APIKeys: keys})
 	}
 	logs := &bytes.Buffer{}
 	logger := iterlog.New(iterlog.LevelInfo, logs)
 
-	kept := AmbientSurvivingSpecs(specs, false, logger)
-	if len(kept) != 3 {
-		t.Fatalf("an unstamped run keeps every spec: %+v", kept)
+	kept := FundedSupervisorSpecs(stamped(map[secrets.Provider]string{secrets.ProviderAnthropic: "sk-run"}), specs(), nil, "", logger)
+	if len(kept) != 1 {
+		t.Fatalf("a stamped run's supervisor on the run's own key was dropped: %+v (%s)", kept, logs)
 	}
 
-	kept = AmbientSurvivingSpecs(specs, true, logger)
-	if len(kept) != 1 || kept[0].Name != "gw" {
-		t.Fatalf("a refused run kept %+v, want only the gateway-model supervisor", kept)
+	logs.Reset()
+	kept = FundedSupervisorSpecs(stamped(map[secrets.Provider]string{secrets.ProviderZAI: "zai-run"}), specs(), nil, "", logger)
+	if len(kept) != 0 {
+		t.Fatalf("a stamped run kept a supervisor only the pod's environment funds: %+v", kept)
 	}
-	for _, want := range []string{"vendor", "unpinned"} {
+	for _, want := range []string{`"vendor"`, "ambient-stamp"} {
 		if !strings.Contains(logs.String(), want) {
-			t.Errorf("the dropped supervisor %q is not named in the log", want)
+			t.Errorf("the drop does not name %s: %s", want, logs)
 		}
 	}
-	if !strings.Contains(logs.String(), "pod environment") {
-		t.Error("the drop reason does not name the refused environment")
+
+	if kept := FundedSupervisorSpecs(context.Background(), specs(), nil, "", logger); len(kept) != 1 {
+		t.Fatalf("an unstamped run dropped a supervisor the pod's key funds: %+v", kept)
 	}
 }

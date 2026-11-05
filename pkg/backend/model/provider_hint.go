@@ -173,7 +173,7 @@ func (r *Registry) resolveAnthropicDirect(ctx context.Context, modelID string) (
 // ANTHROPIC_API_KEY, then this host's Claude Code login on disk, both sent to
 // api.anthropic.com — the variables the hint skips (ANTHROPIC_BASE_URL,
 // ANTHROPIC_AUTH_TOKEN, the ZAI_API_KEY synthesis) are never read — else the
-// hint's typed refusal. The path and the usage-cap meter (AmbientEnvMeter)
+// hint's typed refusal. The path and the claw arm's spend (the walk's spend)
 // share this one walk.
 func anthropicDirectEnvCredentials(ctx context.Context, modelID string) (anthropicEnvWalk, error) {
 	if k := envGetenv(ctx, "ANTHROPIC_API_KEY"); k != "" {
@@ -190,7 +190,7 @@ func anthropicDirectEnvCredentials(ctx context.Context, modelID string) (anthrop
 	return anthropicEnvWalk{}, &ErrProviderHintUnfunded{Provider: "anthropic", Model: modelID}
 }
 
-// RunCredentialBaseURL is the destination claw sends the run's own Anthropic
+// runCredentialBaseURL is the destination claw sends the run's own Anthropic
 // credentials to — its key and its Claude forfait alike — when it resolves
 // spec under hint, and so what the forfait is judged against
 // (secrets.AnthropicForfaitWireOK): "" — the direct wire — for an id Anthropic
@@ -199,14 +199,8 @@ func anthropicDirectEnvCredentials(ctx context.Context, modelID string) (anthrop
 // URL, the forfait through anthropicFromCtxForfaitOnWire), the env's
 // ANTHROPIC_BASE_URL on every other path (the keyed factory,
 // anthropicFromCtxForfait). A GLM id is exempt from the hint branch and reads
-// the env's.
-func RunCredentialBaseURL(spec, hint string) string {
-	return runCredentialBaseURL(context.Background(), spec, hint)
-}
-
-// runCredentialBaseURL is RunCredentialBaseURL over the environment ctx
-// carries (the #2808 seam): the crossing judges the forfait on the env it
-// forwards from.
+// the env's. It reads the environment ctx carries (the #2808 seam): the
+// crossing judges the forfait on the env it forwards from.
 func runCredentialBaseURL(ctx context.Context, spec, hint string) string {
 	if HonoursProviderHintValue(delegate.BackendClaw, hint) && !GLMOnAnthropicWire(spec) {
 		return ""

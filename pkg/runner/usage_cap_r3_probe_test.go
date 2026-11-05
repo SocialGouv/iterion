@@ -33,7 +33,7 @@ func TestR3Probe_LateVarPinNeverParksOnTheReadingEnv(t *testing.T) {
 	t.Setenv("ITERION_FORBID_SUBSCRIPTION_OAUTH", "")
 	hard := usagecap.NewMemStore()
 	weekCapped(t, hard, platformKey("fp-forfait"), time.Now().UTC().Add(30*time.Hour))
-	ctx := forfaitBesidePinnedZAI()
+	ctx := forfaitBesidePinnedZAI(t)
 
 	wf := chainWorkflow(agentRoute("impl", delegate.BackendCodex, "", "openai/gpt-6"))
 	wf.Vars = map[string]*ir.Var{"m": varString("m", "${ITERION_R3_PROBE_MODEL:-openai/gpt-6}")}

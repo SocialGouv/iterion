@@ -74,9 +74,13 @@ func resolveClawCall(ctx context.Context, reg *Registry, call credroute.Call) (c
 	// ITERION_FORBID_SUBSCRIPTION_OAUTH a node whose run funds its Anthropic
 	// id with the Claude forfait alone is refused, whatever the pod's env
 	// carries — the in-container runner never sees the run's credentials, so
-	// the guard runs here, launcher side.
-	if err := clawSubscriptionGuard(ctx, spec); err != nil {
-		return clawResolution{}, clawRefusal(call, err)
+	// the guard runs here, launcher side. It is the node dispatch's guard: a
+	// supervisor's evaluator resolves through the registry's walk alone,
+	// which judges the switch on what it reaches.
+	if call.Role == credroute.RoleNode || call.Role == "" {
+		if err := clawSubscriptionGuard(ctx, spec); err != nil {
+			return clawResolution{}, clawRefusal(call, err)
+		}
 	}
 	if !call.Sandbox.Contained {
 		client, spend, err := reg.resolveSpend(WithProviderHint(ctx, hint), spec)
@@ -182,7 +186,13 @@ func containerSpend(ctx context.Context, env map[string]string, facts crossingFa
 		if err != nil {
 			return credroute.Spend{}, err
 		}
-		return crossed(w.envName(), w.baseURL)
+		spend, err := crossed(w.envName(), w.baseURL)
+		if err == nil && spend.Channel == credroute.ChannelPodEnv {
+			// The pod's account as the container's client carries it: the
+			// walk read the crossed values, the pod's own.
+			spend.Fingerprint = w.spend().Fingerprint
+		}
+		return spend, err
 	case err == nil && provider == "openai":
 		apiKey := env["OPENAI_API_KEY"]
 		if openAIOAuthAllowed(inside) && (apiKey == "" || env["ITERION_OPENAI_USE_OAUTH"] == "1") {

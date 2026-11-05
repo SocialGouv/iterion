@@ -17,6 +17,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/backend/ambient"
 	"github.com/SocialGouv/iterion/pkg/backend/backendcaps"
+	"github.com/SocialGouv/iterion/pkg/backend/credroute"
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
 	"github.com/SocialGouv/iterion/pkg/backend/toolcatalog"
 	"github.com/SocialGouv/iterion/pkg/plugin"
@@ -1996,6 +1997,13 @@ type Result struct {
 	// downstream forks can detect a cross-provider switch and fall back
 	// to a fresh session instead of failing on signed thinking blocks.
 	SessionFingerprint string
+
+	// Credential is what this call spent, as the process that built it
+	// resolved it (credroute.Spend, ADR-161 decision 8): the usage events
+	// carry it as their credential keys, and the spend ledger and the fine
+	// table book on it. Zero for a backend whose arm has not landed — its
+	// events carry no keys, and the readers keep their derivation.
+	Credential credroute.Spend
 
 	// TerminatedBackgroundTasks labels the background work (claude_code:
 	// async subagents, background commands) this call's processes — the

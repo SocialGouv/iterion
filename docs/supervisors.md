@@ -195,11 +195,18 @@ The skip is loud (a `supervisors: N declared supervisor(s) disabled by
 for cost control, or to isolate a supervisor suspected of steering a
 run astray.
 
-Two refusals sit past that ladder, each logged as a warning only: an
-unreadable frozen pool stamp keeps the whole surface off, and on a
+Three refusals sit past that ladder, each logged as a warning only: an
+unreadable frozen pool stamp keeps the whole surface off, on a
 pool-stamped run every supervisor whose effective model — the DSL pin,
 else `ITERION_DEFAULT_SUPERVISOR_MODEL` — is not gateway-routed is
-dropped. The session-board coordinator is gated by the same pair.
+dropped, and a supervisor no credential funds — the credential resolver
+refuses its model, the one its evaluator resolves
+([ADR-161](adr/161-one-resolver-decides-the-credential-a-call-spends.md)) —
+is dropped by name rather than refused at every evaluation. On a run
+stamped to its own credentials a supervisor on a key the run sealed is
+kept: the stamp refuses the pod's environment only. The session-board
+coordinator is gated by the first two. The usage-cap pre-flight meters
+the same list.
 
 ## The perseverance-coach pattern
 

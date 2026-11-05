@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/internal/credparity"
@@ -52,6 +53,7 @@ func TestCredParity_Admission(t *testing.T) {
 			}
 
 			var err error
+			var events []store.Event
 			if row.Adopted {
 				err = adoptedParityStart(t, ctx, node)
 			} else {
@@ -64,30 +66,59 @@ func TestCredParity_Admission(t *testing.T) {
 					Sandbox: &ir.SandboxSpec{Mode: string(mode), HostState: "none"},
 					Nodes:   map[string]ir.Node{row.Node.ID: node},
 				}
+				if row.Role == credparity.SupervisorRole {
+					// The supervisor alone: its evaluation is the row's call.
+					wf.Nodes = map[string]ir.Node{}
+					wf.Supervisors = []*ir.Supervisor{{Name: parityRowSupervisor, Model: row.Node.Model}}
+				}
 				trust := store.RunTrustDefault
 				if row.Trust == credparity.Fork {
 					trust = store.RunTrustFork
 				}
-				err = credentialAdmissionStart(t, ctx, wf, trust, model.RouteView{AllowedProviders: row.Run.Allowlist})
+				err = credentialAdmissionRunRoutes(t, ctx, wf, trust, model.RouteView{AllowedProviders: row.Run.Allowlist}, &events)
 			}
 
 			got := "launches"
 			var rerr *RuntimeError
 			switch {
 			case err == nil, errors.Is(err, errCanaryStop):
+				if row.Role == credparity.SupervisorRole && warnsOn(events, parityRowSupervisor) {
+					got = "launches, warned"
+				}
 			case errors.As(err, &rerr):
 				got = "refused " + string(rerr.Code)
 			default:
 				t.Fatalf("the start failed past any verdict: %v", err)
 			}
 			credparity.Check(t, row, credparity.Admission, got, func(s credparity.Spend) string {
-				if row.Judged() && s.Refused() {
-					return "refused " + credparity.AdmissionCode(s.Refusal)
+				switch {
+				case !row.Judged() || !s.Refused():
+					return "launches"
+				case row.Role == credparity.SupervisorRole:
+					// A supervisor the resolver refuses is warned, never
+					// the launch's refusal (ADR-161 decision 4).
+					return "launches, warned"
 				}
-				return "launches"
+				return "refused " + credparity.AdmissionCode(s.Refusal)
 			})
 		})
 	}
+}
+
+// parityRowSupervisor names a supervisor row's declared supervisor.
+const parityRowSupervisor = "parity_supervisor"
+
+// warnsOn reports whether a sandbox_no_credential_warning names name.
+func warnsOn(events []store.Event, name string) bool {
+	for _, e := range events {
+		if e.Type != store.EventSandboxNoCredentialWarning {
+			continue
+		}
+		if reason, _ := e.Data["reason"].(string); strings.Contains(reason, name) {
+			return true
+		}
+	}
+	return false
 }
 
 // adoptedParityStart starts a subbot child holding node in its parent's live

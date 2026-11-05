@@ -13,6 +13,7 @@ import (
 	"github.com/SocialGouv/claw-code-go/pkg/api"
 
 	"github.com/SocialGouv/iterion/internal/credheader"
+	"github.com/SocialGouv/iterion/pkg/backend/credroute"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 )
@@ -31,6 +32,15 @@ func blankAmbientEnv(t *testing.T) {
 		t.Setenv(k, "")
 	}
 	t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
+}
+
+// armAccount is the claw arm's answer for spec under hint, in process, with no
+// run credential: the Spend a reader of the call — the usage-cap meter among
+// them — reads verbatim (ADR-161 decision 3).
+func armAccount(spec, hint string) (credroute.Spend, error) {
+	return clawArm(context.Background(), credroute.Call{
+		Backend: delegate.BackendClaw, Spec: spec, Leg: credroute.Leg{Provider: hint}, Role: credroute.RoleNode,
+	})
 }
 
 // resolveUnderHint resolves spec the way a claw node or a supervisor does:
@@ -114,18 +124,19 @@ func liveFromWire(t *testing.T, sent map[string]string) map[string]string {
 	return live
 }
 
-// The meter names the account claw's client actually sends, read off the
-// wire: claw reads no CLAUDE_CODE_OAUTH_TOKEN, sends a key alone where a
-// bearer sits beside it, and sends no line of the ambient custom-header block
-// — the engine's client refuses it (withClientIdentity, NoAmbientHeaders),
-// where the claude CLI applies it (an Authorization line replaces the bearer,
-// an x-api-key line the key, an empty one erases what it replaces). The
-// claude CLI's reading of the same pod (delegate.AmbientCredentialFingerprint)
-// names another account on the claudeDiffers rows, which is what keyed claw's
-// walls on a forfait it never spent — and the SAME account on every other
-// row: where both lanes send one set they key one meter, or claw's routes
-// never meet the walls the claude_code sessions record.
-func TestAmbientEnvMeter_NamesTheCredentialClawSends(t *testing.T) {
+// The arm's pod-env Spend names the account claw's client actually sends, read
+// off the wire: claw reads no CLAUDE_CODE_OAUTH_TOKEN, sends a key alone where
+// a bearer sits beside it, and sends no line of the ambient custom-header
+// block — the engine's client refuses it (withClientIdentity,
+// NoAmbientHeaders), where the claude CLI applies it (an Authorization line
+// replaces the bearer, an x-api-key line the key, an empty one erases what it
+// replaces). The claude CLI's reading of the same pod
+// (delegate.AmbientCredentialFingerprint) names another account on the
+// claudeDiffers rows, which is what keyed claw's walls on a forfait it never
+// spent — and the SAME account on every other row: where both lanes send one
+// set they key one meter, or claw's routes never meet the walls the
+// claude_code sessions record.
+func TestTheClawArmNamesTheAccountClawSends(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		env  map[string]string
@@ -143,7 +154,6 @@ func TestAmbientEnvMeter_NamesTheCredentialClawSends(t *testing.T) {
 		{"an x-api-key line beside a bearer", map[string]string{"ANTHROPIC_AUTH_TOKEN": "tok-pod", "ANTHROPIC_CUSTOM_HEADERS": "x-api-key: hdr-key"}, "anthropic/claude-sonnet-4", true},
 		{"an empty Authorization line over a bearer", map[string]string{"ANTHROPIC_AUTH_TOKEN": "tok-pod", "ANTHROPIC_CUSTOM_HEADERS": "Authorization:"}, "anthropic/claude-sonnet-4", true},
 		{"a GLM id on a keyed gateway", map[string]string{"ANTHROPIC_API_KEY": "sk-pod", "CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat-forfait"}, "anthropic/glm-5.3", true},
-		{"the forfait token alone", map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat-forfait"}, "anthropic/claude-sonnet-4", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			blankAmbientEnv(t)
@@ -152,12 +162,12 @@ func TestAmbientEnvMeter_NamesTheCredentialClawSends(t *testing.T) {
 			}
 			live := liveFromWire(t, wireCredentials(t, tc.spec))
 			want := delegate.AmbientCredentialSetFingerprint(live)
-			fp, metered := AmbientEnvMeter(tc.spec, "")
-			if !metered {
-				t.Fatalf("AmbientEnvMeter(%s) metered nothing — the client sent %d credential(s)", tc.spec, len(live))
+			spend, err := armAccount(tc.spec, "")
+			if err != nil || spend.Channel != credroute.ChannelPodEnv {
+				t.Fatalf("the arm answers %+v, %v for %s — the client sent %d credential(s) of the pod", spend, err, tc.spec, len(live))
 			}
-			if fp != want {
-				t.Errorf("AmbientEnvMeter(%s) = %q, want %q — the account the request carried", tc.spec, fp, want)
+			if spend.Fingerprint != want {
+				t.Errorf("the arm's pod-env Spend names %q, want %q — the account the request carried", spend.Fingerprint, want)
 			}
 			claude := delegate.AmbientCredentialFingerprint()
 			if tc.claudeDiffers && claude == want {
@@ -177,9 +187,10 @@ func TestAmbientEnvMeter_NamesTheCredentialClawSends(t *testing.T) {
 		blankAmbientEnv(t)
 		t.Setenv("ANTHROPIC_API_KEY", "sk-pod")
 		t.Setenv("ANTHROPIC_CUSTOM_HEADERS", "Authorization: Bearer hdr-pod")
-		fp, metered := AmbientEnvMeter("anthropic/claude-sonnet-4", "")
-		if want := delegate.AmbientCredentialSetFingerprint(map[string]string{"ANTHROPIC_API_KEY": "sk-pod"}); !metered || fp != want {
-			t.Errorf("AmbientEnvMeter = %q metered=%v, want the key's own account %q", fp, metered, want)
+		spend, err := armAccount("anthropic/claude-sonnet-4", "")
+		fp := spend.Fingerprint
+		if want := delegate.AmbientCredentialSetFingerprint(map[string]string{"ANTHROPIC_API_KEY": "sk-pod"}); err != nil || fp != want {
+			t.Errorf("the arm = %+v, %v, want the key's own account %q", spend, err, want)
 		}
 		if fp == delegate.AmbientCredentialFingerprint() {
 			t.Error("inert bench: the claude CLI's reading of this pod names the same account")
@@ -187,19 +198,22 @@ func TestAmbientEnvMeter_NamesTheCredentialClawSends(t *testing.T) {
 	})
 }
 
-// Where no env credential rides the request, claw's reading says so — the
-// no-credential meter's spend — rather than the account the claude CLI would
-// spend on the same pod: the forfait token alone, this host's login on disk,
-// nothing at all.
-func TestAmbientEnvMeter_NoEnvCredentialIsTheBareSpend(t *testing.T) {
+// Where no env credential rides the request, the arm says so: the forfait
+// token alone (claw reads no CLAUDE_CODE_OAUTH_TOKEN) is a call carrying no
+// credential — the no-credential refusal the meter reads as not metered
+// (ADR-161 decision 7) — and this host's login on disk is the host-login
+// channel, which no variable of the pod names: never the account the claude
+// CLI would spend on the same pod.
+func TestTheClawArmNamesNoAccountWhereNoEnvCredentialRides(t *testing.T) {
 	t.Run("the forfait token alone", func(t *testing.T) {
 		blankAmbientEnv(t)
 		t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat-forfait")
 		if delegate.AmbientCredentialFingerprint() == "" {
 			t.Fatal("inert bench: the claude CLI's reading names no account on this pod")
 		}
-		if fp, metered := AmbientEnvMeter("anthropic/claude-sonnet-4", ""); !metered || fp != "" {
-			t.Errorf("AmbientEnvMeter = %q metered=%v, want the bare spend — claw reads no CLAUDE_CODE_OAUTH_TOKEN", fp, metered)
+		var refusal *credroute.Refusal
+		if spend, err := armAccount("anthropic/claude-sonnet-4", ""); !errors.As(err, &refusal) || refusal.Reason != credroute.ReasonNoCredential {
+			t.Errorf("the arm = %+v, %v, want the no-credential refusal — claw reads no CLAUDE_CODE_OAUTH_TOKEN", spend, err)
 		}
 		client, err := resolveUnderHint("anthropic/claude-sonnet-4", "")
 		if cc, ok := client.(*api.Client); err != nil || !ok || cc.APIKey != "" || cc.OAuthToken != "" {
@@ -209,8 +223,8 @@ func TestAmbientEnvMeter_NoEnvCredentialIsTheBareSpend(t *testing.T) {
 	t.Run("this host's login", func(t *testing.T) {
 		blankAmbientEnv(t)
 		t.Setenv("CLAUDE_CONFIG_DIR", writeClaudeCodeCreds(t))
-		if fp, metered := AmbientEnvMeter("anthropic/claude-sonnet-4", ""); !metered || fp != "" {
-			t.Errorf("AmbientEnvMeter = %q metered=%v, want the bare spend — no variable names a disk login", fp, metered)
+		if spend, err := armAccount("anthropic/claude-sonnet-4", ""); err != nil || spend.Channel != credroute.ChannelHostLogin || spend.Fingerprint != "" {
+			t.Errorf("the arm = %+v, %v, want the host-login channel naming no account — no variable names a disk login", spend, err)
 		}
 		client, err := resolveUnderHint("anthropic/claude-sonnet-4", "")
 		if err != nil || clientBearerForTest(client) != "sk-ant-oat-test" {
@@ -219,10 +233,11 @@ func TestAmbientEnvMeter_NoEnvCredentialIsTheBareSpend(t *testing.T) {
 	})
 }
 
-// Where claw's walk refuses before any client exists, nothing spends: the
-// meter reads no wall, and the typed refusal is the call's answer. Every row
-// is judged against the real resolution, never a second description of it.
-func TestAmbientEnvMeter_NothingSpendsWhereTheWalkRefuses(t *testing.T) {
+// Where claw's walk refuses before any client exists, nothing spends: the arm
+// answers the refusal, which the meter reads as not metered, and the typed
+// refusal is the call's answer. Every row is judged against the real
+// resolution, never a second description of it.
+func TestTheClawArmRefusesWhereTheWalkRefuses(t *testing.T) {
 	const gateway = "https://llm-gw.example.test/anthropic"
 	var (
 		forbidden   = func(err error) bool { return errors.Is(err, secrets.ErrSubscriptionOAuthForbidden) }
@@ -283,8 +298,8 @@ func TestAmbientEnvMeter_NothingSpendsWhereTheWalkRefuses(t *testing.T) {
 			if _, err := resolveUnderHint(spec, tc.hint); !tc.refusal(err) {
 				t.Fatalf("bench: the resolution answered err=%v, not the refusal the row pins", err)
 			}
-			if fp, metered := AmbientEnvMeter(tc.spec, tc.hint); metered {
-				t.Errorf("AmbientEnvMeter(%s, hint %q) = %q metered — the walk refuses, no account spends", tc.spec, tc.hint, fp)
+			if spend, err := armAccount(spec, tc.hint); !tc.refusal(err) {
+				t.Errorf("the arm for %s under hint %q = %+v, %v — the walk refuses, no account spends", spec, tc.hint, spend, err)
 			}
 		})
 	}
@@ -298,34 +313,33 @@ func TestAmbientEnvMeter_NothingSpendsWhereTheWalkRefuses(t *testing.T) {
 		if _, err := resolveUnderHint("anthropic/claude-sonnet-4", ""); err != nil {
 			t.Fatalf("bench: the factory refused (err=%v)", err)
 		}
-		if fp, metered := AmbientEnvMeter("anthropic/claude-sonnet-4", ""); !metered || fp != secrets.FingerprintSHA256("sk-pod") {
-			t.Errorf("AmbientEnvMeter = %q metered=%v, want the key's account", fp, metered)
+		if spend, err := armAccount("anthropic/claude-sonnet-4", ""); err != nil || spend.Fingerprint != secrets.FingerprintSHA256("sk-pod") {
+			t.Errorf("the arm = %+v, %v, want the key's account", spend, err)
 		}
 	})
 }
 
 // The `provider: "anthropic"` hint takes claw down the direct path: the
 // ambient key, else this host's login, both to api.anthropic.com — the
-// bearer, the base URL and the z.ai synthesis unread. The meter follows it:
-// on a gateway pod carrying a bearer, a hinted call spends the key, or the
-// host's login (the no-credential meter's spend), never the bearer's account
-// the unhinted env path spends.
-func TestAmbientEnvMeter_TheDirectHintReadsTheDirectPath(t *testing.T) {
+// bearer, the base URL and the z.ai synthesis unread. The arm follows it: on
+// a gateway pod carrying a bearer, a hinted call spends the key, or the
+// host's login, never the bearer's account the unhinted env path spends.
+func TestTheClawArmReadsTheDirectPathUnderTheHint(t *testing.T) {
 	const spec = "anthropic/claude-sonnet-4"
 	blankAmbientEnv(t)
 	t.Setenv("ANTHROPIC_BASE_URL", "https://llm-gw.example.test/anthropic")
 	t.Setenv("ANTHROPIC_AUTH_TOKEN", "tok-gw")
 	t.Setenv("CLAUDE_CONFIG_DIR", writeClaudeCodeCreds(t))
-	if fp, metered := AmbientEnvMeter(spec, ""); !metered || fp != secrets.FingerprintSHA256("tok-gw") {
-		t.Fatalf("bench: the unhinted env path = %q metered=%v, want the gateway bearer's account", fp, metered)
+	if spend, err := armAccount(spec, ""); err != nil || spend.Fingerprint != secrets.FingerprintSHA256("tok-gw") {
+		t.Fatalf("bench: the unhinted env path = %+v, %v, want the gateway bearer's account", spend, err)
 	}
 
 	client, err := resolveUnderHint(spec, "anthropic")
 	if err != nil || clientBearerForTest(client) != "sk-ant-oat-test" {
 		t.Fatalf("bench: the direct path did not spend the host's login (err=%v)", err)
 	}
-	if fp, metered := AmbientEnvMeter(spec, "anthropic"); !metered || fp != "" {
-		t.Errorf("AmbientEnvMeter under the hint = %q metered=%v, want the bare spend of the host's login — the hint never sends the bearer", fp, metered)
+	if spend, err := armAccount(spec, "anthropic"); err != nil || spend.Channel != credroute.ChannelHostLogin {
+		t.Errorf("the arm under the hint = %+v, %v, want the host's login — the hint never sends the bearer", spend, err)
 	}
 
 	t.Setenv("ANTHROPIC_API_KEY", "sk-pod")
@@ -333,35 +347,44 @@ func TestAmbientEnvMeter_TheDirectHintReadsTheDirectPath(t *testing.T) {
 	if cc, ok := client.(*api.Client); err != nil || !ok || cc.APIKey != "sk-pod" || cc.OAuthToken != "" {
 		t.Fatalf("bench: the direct path built %T (err=%v), not a key-only client", client, err)
 	}
-	if fp, metered := AmbientEnvMeter(spec, "anthropic"); !metered || fp != secrets.FingerprintSHA256("sk-pod") {
-		t.Errorf("AmbientEnvMeter under the hint = %q metered=%v, want the key's account", fp, metered)
+	if spend, err := armAccount(spec, "anthropic"); err != nil || spend.Channel != credroute.ChannelPodEnv || spend.Fingerprint != secrets.FingerprintSHA256("sk-pod") {
+		t.Errorf("the arm under the hint = %+v, %v, want the key's account", spend, err)
 	}
 }
 
-// A GLM id is served by z.ai, never by api.anthropic.com. With nothing held
-// the meter reads no wall where the env walk sends the id somewhere no
-// account of this cap can stand in its way: z.ai's own account through the
-// synthesis, api.anthropic.com — an empty base URL or that host named
-// outright — or a request carrying no credential at all.
-func TestAmbientEnvMeter_AGLMIDBoundWhereNoMeteredAccountServesIt(t *testing.T) {
+// A GLM id is served by z.ai, never by api.anthropic.com. With nothing held,
+// the arm names where the env walk sends the id and what it carries, so the
+// meter reads no wall where no account of its cap can stand in the call's
+// way: z.ai's own account through the synthesis (no ambient label names it),
+// api.anthropic.com — an empty base URL or that host named outright, which
+// model.GLMUnservedAt reads off the Spend's destination — or a request
+// carrying no credential at all.
+func TestTheClawArmNamesWhereAGLMIDIsBound(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
 		env      map[string]string
 		wantBase string
+		// unserved: the destination serves no GLM id (GLMUnservedAt).
+		unserved bool
+		// account: the Spend names the pod's account.
+		account bool
+		// none: the request carries no credential — the no-credential refusal.
+		none bool
 	}{
-		{"the z.ai synthesis", map[string]string{"ZAI_API_KEY": "zai-pod", "ANTHROPIC_API_KEY": "sk-pod"}, secrets.ZAIDefaultBaseURL},
+		{"the z.ai synthesis", map[string]string{"ZAI_API_KEY": "zai-pod", "ANTHROPIC_API_KEY": "sk-pod"}, secrets.ZAIDefaultBaseURL, false, false, false},
 		// The provider's own default, which the client resolves an empty base
 		// URL to.
-		{"api.anthropic.com by default", map[string]string{"ANTHROPIC_API_KEY": "sk-pod"}, "https://api.anthropic.com"},
-		{"api.anthropic.com named outright", map[string]string{"ANTHROPIC_API_KEY": "sk-pod", "ANTHROPIC_BASE_URL": "https://api.anthropic.com"}, "https://api.anthropic.com"},
-		{"a bearer dropped on z.ai's own host", map[string]string{"ANTHROPIC_AUTH_TOKEN": "zai-byok", "ANTHROPIC_BASE_URL": "https://api.z.ai/api/anthropic"}, "https://api.z.ai/api/anthropic"},
+		{"api.anthropic.com by default", map[string]string{"ANTHROPIC_API_KEY": "sk-pod"}, "https://api.anthropic.com", true, true, false},
+		{"api.anthropic.com named outright", map[string]string{"ANTHROPIC_API_KEY": "sk-pod", "ANTHROPIC_BASE_URL": "https://api.anthropic.com"}, "https://api.anthropic.com", true, true, false},
+		{"a bearer dropped on z.ai's own host", map[string]string{"ANTHROPIC_AUTH_TOKEN": "zai-byok", "ANTHROPIC_BASE_URL": "https://api.z.ai/api/anthropic"}, "https://api.z.ai/api/anthropic", false, false, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			blankAmbientEnv(t)
 			for k, v := range tc.env {
 				t.Setenv(k, v)
 			}
-			client, err := resolveUnderHint("anthropic/glm-5.3", "")
+			const spec = "anthropic/glm-5.3"
+			client, err := resolveUnderHint(spec, "")
 			cc, ok := client.(*api.Client)
 			if err != nil || !ok {
 				t.Fatalf("bench: the factory built %T (err=%v)", client, err)
@@ -369,8 +392,22 @@ func TestAmbientEnvMeter_AGLMIDBoundWhereNoMeteredAccountServesIt(t *testing.T) 
 			if cc.BaseURL != tc.wantBase {
 				t.Fatalf("bench: the client calls %q, not the destination the row pins", cc.BaseURL)
 			}
-			if fp, metered := AmbientEnvMeter("anthropic/glm-5.3", ""); metered {
-				t.Errorf("AmbientEnvMeter(anthropic/glm-5.3) = %q metered — no account of this cap serves the id there", fp)
+			spend, err := armAccount(spec, "")
+			if tc.none {
+				var refusal *credroute.Refusal
+				if !errors.As(err, &refusal) || refusal.Reason != credroute.ReasonNoCredential {
+					t.Errorf("the arm = %+v, %v, want the no-credential refusal — the request carries nothing", spend, err)
+				}
+				return
+			}
+			if err != nil || spend.Channel != credroute.ChannelPodEnv {
+				t.Fatalf("the arm = %+v, %v, want the pod's env", spend, err)
+			}
+			if got := spend.Fingerprint != ""; got != tc.account {
+				t.Errorf("the arm's Spend names an account = %v (%q), want %v", got, spend.Fingerprint, tc.account)
+			}
+			if got := GLMUnservedAt(spec, spend.BaseURL); got != tc.unserved {
+				t.Errorf("GLMUnservedAt at the Spend's destination %q = %v, want %v", spend.BaseURL, got, tc.unserved)
 			}
 		})
 	}

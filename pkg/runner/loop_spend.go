@@ -225,6 +225,9 @@ func (r *Runner) recordPoolSpend(msg *queue.RunMessage, usage *metricsEmitter, e
 	// plan every observation joined (env-funded routes are placed on nobody
 	// by design, never a miss), needs no line.
 	byFingerprint, miss := fineFingerprintSpend(usage)
+	if disagreed := usage.planDisagreements(); disagreed > 0 {
+		r.cfg.Logger.Warn("runner: credential-pool report for run %s: %d observation(s) spent a credential other than the one the stamped plan predicted for their node — each books on the fingerprint its own credential keys name (ADR-161 decision 8), the plan being a prediction", msg.RunID, disagreed)
+	}
 	if miss.observations > 0 {
 		r.cfg.Logger.Warn("runner: credential-pool report for run %s carries a stamped plan whose keys answered none of %d observation(s) totalling %.6f USD / %d tokens (a runtime node the walk cannot see — a subagent loop, a runtime model arg — or a route that drifted from its launch reading) — no fine table rides, the lease books the whole attempt", msg.RunID, miss.observations, miss.costUSD, miss.tokens)
 	}

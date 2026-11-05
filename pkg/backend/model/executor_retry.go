@@ -11,6 +11,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/backendcaps"
 
 	"github.com/SocialGouv/iterion/pkg/backend/cost"
+	"github.com/SocialGouv/iterion/pkg/backend/credroute"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/modelroute"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
@@ -736,6 +737,8 @@ type chainSpend struct {
 // credential-plan join reads before any re-derivation from the model.
 type spendLabel struct {
 	backend, model, provider, effective, fingerprint string
+	// credential is what the attempt spent, as its backend resolved it.
+	credential credroute.Spend
 }
 
 // attemptLabel labels one executed element's attempt: the backend its
@@ -749,6 +752,7 @@ func attemptLabel(backendName string, task *delegate.Task, r delegate.Result) sp
 		provider:    servingProvider(backendName, task),
 		effective:   r.EffectiveModel,
 		fingerprint: r.SessionFingerprint,
+		credential:  r.Credential,
 	}
 }
 
@@ -766,6 +770,7 @@ func (s *chainSpend) add(r delegate.Result, on spendLabel) {
 			EffectiveModel: on.effective,
 			Provider:       on.provider,
 			Fingerprint:    on.fingerprint,
+			Credential:     on.credential,
 			Tokens:         r.Tokens,
 			CostUSD:        r.CostUSD,
 		})

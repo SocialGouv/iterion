@@ -180,6 +180,11 @@ func (a credentialAdmission) admit(ctx context.Context, emitEvent func(store.Eve
 			}
 		case verdict.refusal != nil:
 			refused = append(refused, verdict)
+		case verdict.spend.Channel == credroute.ChannelOwnConfig:
+			// The backend reads its own configuration, never a run
+			// credential (ADR-161 decision 5): admitted, and warned as a
+			// node the launch cannot read.
+			undecidable = append(undecidable, fmt.Sprintf("%s (%s)", id, backend))
 		case logger != nil:
 			logger.Info("runtime: node %s (%s): its credential is the %s%s", id, backend, verdict.spend.Channel, slotSuffix(verdict.spend))
 		}
@@ -362,16 +367,24 @@ func (a credentialAdmission) refusal(refused []nodeVerdict, fork bool) error {
 	if a.placement.Contained {
 		where = "before its sandbox starts"
 	}
-	switch code {
-	case ErrCodeCredentialAmbientRefused:
+	switch {
+	case code == ErrCodeCredentialAmbientRefused && first.refusal.Reason == credroute.ReasonArmPending:
+		return &RuntimeError{
+			Code:    code,
+			NodeID:  first.node,
+			Cause:   first.refusal,
+			Message: fmt.Sprintf("%s refused %s: node(s) %s run on a backend whose credential arm has not landed (ADR-161 U4) — its dispatch would read the pod's credentials past the run's seal, and the run's credentials are its only funds (ADR-131 §7)", who, where, strings.Join(parts, ", ")),
+			Hint:    "route each named node to claw or claude_code on a model the run's own credentials serve (a BYOK key, a pinned key, a connected forfait, a gateway pair) — pi and codex legs are refused on a run stamped to its own credentials until their arms land; an unstamped run keeps them.",
+		}
+	case code == ErrCodeCredentialAmbientRefused:
 		return &RuntimeError{
 			Code:    code,
 			NodeID:  first.node,
 			Cause:   first.refusal,
 			Message: fmt.Sprintf("%s refused %s: only the pod's environment would fund node(s) %s, and the run's credentials are its only funds (ADR-131 §7)", who, where, strings.Join(parts, ", ")),
-			Hint:    "attach a credential for each named route to the run (a BYOK key, a pinned key, a connected forfait, a gateway pair), or route the node to a model the run's own credentials serve — the stamp refuses the pod's keys and logins by design.",
+			Hint:    "attach a credential for each named route to the run (a BYOK key, a pinned key, a connected forfait, a gateway pair), or route the node to a model the run's own credentials serve — the stamp refuses the pod's keys and logins by design. A backend that reads its own configuration (kimi, grok, opencode) never spends a run credential: route its node to claw or claude_code.",
 		}
-	case ErrCodeCredentialSubscriptionForbidden:
+	case code == ErrCodeCredentialSubscriptionForbidden:
 		return &RuntimeError{
 			Code:    code,
 			NodeID:  first.node,

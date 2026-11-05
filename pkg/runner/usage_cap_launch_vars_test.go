@@ -120,7 +120,7 @@ func preflightWithVars(t *testing.T, caps usagecap.Store, ctx context.Context, w
 func TestUsageCapPreflight_LaunchVarsDecideWhichBranchesTheRunCanReach(t *testing.T) {
 	blankAnthropicWireEnv(t)
 	caps := softCappedForfait(t)
-	ctx := forfaitBesidePinnedKeys()
+	ctx := forfaitBesidePinnedKeys(t)
 
 	if err := preflightWithVars(t, caps, ctx, monoTopology(monoFamilyVar("claude")), map[string]any{"mono_family": "gpt"}); err != nil {
 		t.Errorf("parked a mono-gpt run on the capped forfait: %v — its claude branch is behind a predicate the launch made false", err)
@@ -148,7 +148,7 @@ func TestUsageCapPreflight_LaunchVarsDecideWhichBranchesTheRunCanReach(t *testin
 func TestUsageCapPreflight_AnUndecidablePredicateKeepsTheBranch(t *testing.T) {
 	blankAnthropicWireEnv(t)
 	caps := softCappedForfait(t)
-	ctx := forfaitBesidePinnedKeys()
+	ctx := forfaitBesidePinnedKeys(t)
 	vars := map[string]any{"mono_family": "gpt"}
 
 	// outputs.<node> beside the var: the run decides it after `topology` ran.
@@ -175,7 +175,7 @@ func TestUsageCapPreflight_AnUndecidablePredicateKeepsTheBranch(t *testing.T) {
 func TestUsageCapPreflight_AFanOutBranchStaysReachableWhateverItsPredicate(t *testing.T) {
 	blankAnthropicWireEnv(t)
 	caps := softCappedForfait(t)
-	ctx := forfaitBesidePinnedKeys()
+	ctx := forfaitBesidePinnedKeys(t)
 	vars := map[string]any{"mono_family": "gpt", "review_mode": "dual"}
 
 	dual := &ir.Workflow{
@@ -218,7 +218,7 @@ func TestUsageCapPreflight_AHardCapTheLaunchVarsMakeUnavoidableParks(t *testing.
 	caps := usagecap.NewMemStore()
 	resets := time.Now().UTC().Add(30 * time.Hour).Truncate(time.Second)
 	weekCapped(t, caps, platformKey("fp-forfait"), resets)
-	ctx := forfaitBesidePinnedKeys()
+	ctx := forfaitBesidePinnedKeys(t)
 
 	// The claude branch is the fallback, and the gpt branch is excluded: no
 	// path avoids the capped route.
@@ -240,7 +240,7 @@ func TestUsageCapPreflight_AHardCapTheLaunchVarsMakeUnavoidableParks(t *testing.
 func TestUsageCapPreflight_ALoopIterationDoesNotExcludeItsExit(t *testing.T) {
 	blankAnthropicWireEnv(t)
 	caps := softCappedForfait(t)
-	ctx := forfaitBesidePinnedKeys()
+	ctx := forfaitBesidePinnedKeys(t)
 
 	// The judge iterates while its `when` holds, leaves for `done` on its own
 	// verdict, and otherwise falls through to the capped wrap-up.
@@ -277,7 +277,7 @@ func TestUsageCapPreflight_ALoopIterationDoesNotExcludeItsExit(t *testing.T) {
 func TestUsageCapPreflight_AForeachIterationDoesNotExcludeItsExit(t *testing.T) {
 	blankAnthropicWireEnv(t)
 	caps := softCappedForfait(t)
-	ctx := forfaitBesidePinnedKeys()
+	ctx := forfaitBesidePinnedKeys(t)
 
 	// `work` scans the items the judge hands back, and leaves for the capped
 	// wrap-up once the collection is spent. `escape` is the branch the
@@ -325,7 +325,7 @@ func TestUsageCapPreflight_AForeachIterationDoesNotExcludeItsExit(t *testing.T) 
 func TestUsageCapPreflight_ARoundRobinTargetIsNotPreEmptedByAGuard(t *testing.T) {
 	blankAnthropicWireEnv(t)
 	caps := softCappedForfait(t)
-	ctx := forfaitBesidePinnedKeys()
+	ctx := forfaitBesidePinnedKeys(t)
 
 	cycle := &ir.Workflow{
 		Name: "spread", Entry: "pick", Vars: monoFamilyVar("claude"),
@@ -390,7 +390,7 @@ func TestUsageCapPreflight_ARedeliveredLaunchPrunesOnTheVarsItCarries(t *testing
 		t.Fatalf("queue.Admit on a usage-cap park = %+v, want AsResume — the premise of this test", adm)
 	}
 	launch.Resume = &queue.ResumeSpec{}
-	if err := r.usageCapPreflight(forfaitBesidePinnedKeys(), monoTopology(monoFamilyVar("claude")), launch, iterlog.Nop()); err != nil {
+	if err := r.usageCapPreflight(forfaitBesidePinnedKeys(t), monoTopology(monoFamilyVar("claude")), launch, iterlog.Nop()); err != nil {
 		t.Errorf("a redelivered mono-gpt launch parked: %v — the vars it still carries exclude the claude reviewers", err)
 	}
 }
@@ -404,7 +404,7 @@ func TestUsageCapPreflight_ARedeliveredLaunchPrunesOnTheVarsItCarries(t *testing
 func TestUsageCapPreflight_AResumeFoldsTheRunsStoredInputs(t *testing.T) {
 	blankAnthropicWireEnv(t)
 	caps := softCappedForfait(t)
-	ctx := forfaitBesidePinnedKeys()
+	ctx := forfaitBesidePinnedKeys(t)
 	resume := func() *queue.RunMessage {
 		return &queue.RunMessage{RunID: "run-vars", Resume: &queue.ResumeSpec{}}
 	}
@@ -505,7 +505,7 @@ func TestUsageCapPreflight_AResumeParksForTheSameInstantAsItsLaunch(t *testing.T
 			t.Fatal(err)
 		}
 	}
-	ctx := forfaitBesidePinnedKeys()
+	ctx := forfaitBesidePinnedKeys(t)
 	// Precondition — the two walks must disagree at all: a run whose
 	// selecting var nothing answers gets NO filter, and the whole-graph
 	// answer is the 30h one. Two routes collapsed onto one credential would
@@ -878,7 +878,7 @@ func TestUsageCapPreflight_AVacuousPruneDoesNotPark(t *testing.T) {
 	caps := usagecap.NewMemStore()
 	resets := time.Now().UTC().Add(30 * time.Hour).Truncate(time.Second)
 	weekCapped(t, caps, platformKey("fp-forfait"), resets)
-	ctx := forfaitBesidePinnedKeys()
+	ctx := forfaitBesidePinnedKeys(t)
 
 	// `warmup` puts a model call on every path, so the cap applies at all.
 	// `route`'s three branches are all guarded by the same var: under
@@ -1069,7 +1069,7 @@ func twoClaudeWorkflow() *ir.Workflow {
 func TestUsageCapPreflight_TheParkReasonCountsOnlyTheRoutesOnTheRunsPaths(t *testing.T) {
 	blankAnthropicWireEnv(t)
 	caps := softCappedForfait(t)
-	ctx := forfaitBesidePinnedKeys()
+	ctx := forfaitBesidePinnedKeys(t)
 
 	wf := twoClaudeWorkflow()
 	open := wf.LaunchVarEdgeFilter(map[string]any{"mono_family": "gpt"})

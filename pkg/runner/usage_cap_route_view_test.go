@@ -21,7 +21,7 @@ func TestUsageCapPreflight_TemplatedBackendOffWire(t *testing.T) {
 	blankAnthropicWireEnv(t)
 	hard := usagecap.NewMemStore()
 	weekCapped(t, hard, platformKey("fp-forfait"), time.Now().UTC().Add(30*time.Hour))
-	ctx := forfaitBesidePinnedKeys()
+	ctx := forfaitBesidePinnedKeys(t)
 
 	templated := func(def string) *ir.Workflow {
 		wf := chainWorkflow(agentRoute("impl", "{{vars.b}}", "openai", "openai/gpt-6"))

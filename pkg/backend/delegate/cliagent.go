@@ -359,6 +359,13 @@ func (b *CLIAgentBackend) Execute(ctx context.Context, task Task) (Result, error
 		backendName = "cli_agent"
 	}
 
+	// The resolver's answer for this leg (ADR-161) before anything else of
+	// the dispatch: under the run's stamp an own-config CLI, and pi until its
+	// arm lands, is refused here, before any binary, overlay or spawn.
+	if err := dispatchRefusal(ctx, backendName, task); err != nil {
+		return Result{BackendName: backendName, ExitCode: -1}, err
+	}
+
 	// Binary resolution and the image-gap refusal come FIRST: a refusal must
 	// precede the side effects below (the ambient overlay and the permission
 	// shadow home both write to disk), and a node whose CLI is absent cannot

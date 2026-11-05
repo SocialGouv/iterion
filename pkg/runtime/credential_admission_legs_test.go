@@ -160,3 +160,62 @@ func TestAnAdoptedChildIsJudgedOnItsParentsHomeMount(t *testing.T) {
 		})
 	}
 }
+
+// The interim guard's refusal at the launch (ADR-161 decision 9): a stamped
+// run's pi node is refused CREDENTIAL_AMBIENT_REFUSED with the guard's own
+// remedy — the arm-pending reason named, the node routed to claw or
+// claude_code, never "attach a credential", which pi would not spend — and
+// its cause unwraps to the stamp's sentinel. An own-config node on the same
+// run refuses with the stamp's remedy, which names its backend family. An
+// unstamped run's own-config node is admitted with the warning naming it.
+func TestTheGuardAndTheOwnConfigArmsRefuseAtTheLaunchWithTheirRemedies(t *testing.T) {
+	clearCredentialEnv(t)
+	t.Setenv("ANTHROPIC_API_KEY", "sk-pod-admission")
+	stamped := secrets.WithCredentials(context.Background(), secrets.Credentials{AmbientRefused: true})
+	node := func(backend, spec string) *ir.Workflow {
+		return &ir.Workflow{
+			Name:    "guard",
+			Sandbox: &ir.SandboxSpec{Mode: string(sandbox.ModeNone), HostState: "none"},
+			Nodes: map[string]ir.Node{"impl": &ir.AgentNode{
+				BaseNode: ir.BaseNode{ID: "impl"}, LLMFields: ir.LLMFields{Backend: backend, Model: spec},
+			}},
+		}
+	}
+
+	err := credentialAdmissionStart(t, stamped, node("pi", "anthropic/claude-sonnet-4"), store.RunTrustDefault, model.RouteView{})
+	var rerr *RuntimeError
+	if !errors.As(err, &rerr) || rerr.Code != ErrCodeCredentialAmbientRefused {
+		t.Fatalf("a stamped pi node = %v, want CREDENTIAL_AMBIENT_REFUSED", err)
+	}
+	if !errors.Is(err, credroute.ErrAmbientRefused) {
+		t.Errorf("the guard's refusal does not unwrap to credroute.ErrAmbientRefused: %v", err)
+	}
+	for _, want := range []string{"impl (pi: arm-pending)", "ADR-161 U4"} {
+		if !strings.Contains(rerr.Message, want) {
+			t.Errorf("the refusal %q does not name %q", rerr.Message, want)
+		}
+	}
+	if !strings.Contains(rerr.Hint, "claw or claude_code") || strings.Contains(rerr.Hint, "attach a credential") {
+		t.Errorf("the guard's remedy %q is not its own — route the node, never attach a credential pi would not spend", rerr.Hint)
+	}
+
+	err = credentialAdmissionStart(t, stamped, node("kimi", "kimi-k2"), store.RunTrustDefault, model.RouteView{})
+	if !errors.As(err, &rerr) || rerr.Code != ErrCodeCredentialAmbientRefused || !strings.Contains(rerr.Message, "impl (kimi: ambient-stamp)") {
+		t.Fatalf("a stamped kimi node = %v, want CREDENTIAL_AMBIENT_REFUSED naming it ambient-stamp", err)
+	}
+	if !strings.Contains(rerr.Hint, "kimi, grok, opencode") {
+		t.Errorf("the stamp's remedy %q does not tell an own-config backend from a missing credential", rerr.Hint)
+	}
+
+	var events []store.Event
+	if err := credentialAdmissionRunRoutes(t, secrets.WithCredentials(context.Background(), secrets.Credentials{}), func() *ir.Workflow {
+		wf := node("kimi", "kimi-k2")
+		wf.Sandbox.Mode = string(sandbox.ModeAuto)
+		return wf
+	}(), store.RunTrustFork, model.RouteView{}, &events); err != nil && !errors.Is(err, errCanaryStop) {
+		t.Fatalf("an unstamped fork-lane kimi node = %v, want it admitted", err)
+	}
+	if !warnsOn(events, "impl (kimi)") {
+		t.Errorf("an unstamped own-config node was admitted unwarned: %+v", events)
+	}
+}

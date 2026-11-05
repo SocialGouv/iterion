@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/internal/gittest"
+	"github.com/SocialGouv/iterion/pkg/backend/credroute"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/sessionboard"
@@ -70,28 +71,38 @@ func TestPoolContentRefusalTable(t *testing.T) {
 	}
 }
 
-// poolSurvivingSpecs: on a pool-stamped run, vendor-pinned and auto
-// (unpinned) supervisors are refused; a gateway-pinned supervisor keeps
-// running; with no stamp every spec survives.
-func TestPoolSurvivingSpecs(t *testing.T) {
+// supervisorContentRefusal: on a pool-stamped run, vendor-pinned and auto
+// (unpinned) supervisors are refused — typed, content-boundary, unwrapping to
+// ErrPoolContentRefused; a gateway-pinned supervisor, in either spelling,
+// keeps running; with no stamp every spec passes the boundary.
+func TestSupervisorContentRefusal(t *testing.T) {
 	// The filter consults host env exactly like eval time; a host that
-	// exports either var must not flip these verdicts.
-	t.Setenv("ITERION_DEFAULT_SUPERVISOR_MODEL", "")
+	// exports the var must not flip these verdicts.
 	t.Setenv("ITERION_GLM", "")
-	logger := iterlog.Nop()
 	all := []supervise.Spec{
 		{Name: "vendor-pinned", Model: "anthropic/claude-opus-4-8"},
 		{Name: "gateway-pinned", Model: "openai_compatible/glm-5.2"},
 		{Name: "env-form gateway", Model: "${ITERION_GLM:-openai_compatible/glm-5.2}"},
 		{Name: "auto", Model: ""},
 	}
-	kept := PoolSurvivingSpecs(all, nil, "", logger)
-	if len(kept) != 4 {
-		t.Fatalf("no stamp: %d specs kept, want 4", len(kept))
+	for _, spec := range all {
+		if r := supervisorContentRefusal(spec, nil, "", ""); r != nil {
+			t.Errorf("no stamp: %q refused (%v)", spec.Name, r)
+		}
 	}
-	kept = PoolSurvivingSpecs(all, nil, "honorabilite", logger)
-	if len(kept) != 2 || kept[0].Name != "gateway-pinned" || kept[1].Name != "env-form gateway" {
-		t.Fatalf("pool run: %v kept, want both gateway forms", kept)
+	refused := map[string]bool{}
+	for _, spec := range all {
+		r := supervisorContentRefusal(spec, nil, "honorabilite", "")
+		if r == nil {
+			continue
+		}
+		refused[spec.Name] = true
+		if r.Reason != credroute.ReasonContentBoundary || !errors.Is(r, ErrPoolContentRefused) {
+			t.Errorf("%q: refusal %+v is not the content-boundary refusal unwrapping to ErrPoolContentRefused", spec.Name, r)
+		}
+	}
+	if len(refused) != 2 || !refused["vendor-pinned"] || !refused["auto"] {
+		t.Fatalf("pool run: refused %v, want the vendor-pinned and the auto spec", refused)
 	}
 }
 
@@ -235,7 +246,7 @@ func TestPoolGuardCallSitesArePinned(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, pin := range []string{
-		"specs = PoolSurvivingSpecs(specs, boundary, pool, logger)",
+		"specs = FundedSupervisorSpecs(ctx, specs, boundary, pool, logger)",
 		"contentRefusal(boundary, pool, sessionboard.ModelFromEnv())",
 	} {
 		if !strings.Contains(string(observe), pin) {
@@ -246,7 +257,7 @@ func TestPoolGuardCallSitesArePinned(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(loop), "runview.PoolSurvivingSpecs(supervise.SpecsFromWorkflow(wf, engine.ResolveVars(spawnVars), runLogger), msg.ContentBoundary, msg.RunnerPool, runLogger)") {
+	if !strings.Contains(string(loop), "runview.FundedSupervisorSpecs(ctx, supervise.SpecsFromWorkflow(wf, engine.ResolveVars(spawnVars), runLogger), msg.ContentBoundary, msg.RunnerPool, runLogger)") {
 		t.Fatal("the runner pod no longer filters declared supervisors by the frozen pool stamp (D12)")
 	}
 }
@@ -261,6 +272,13 @@ func TestStartDeclaredSupervisorsRefusePoolRunContent(t *testing.T) {
 	// feed the filter: a host exporting either must not flip the verdicts.
 	t.Setenv("ITERION_SUPERVISORS", "")
 	t.Setenv("ITERION_DEFAULT_SUPERVISOR_MODEL", "")
+	// Every spec funded on this host: past the boundary the spawn keeps the
+	// specs a credential funds (FundedSupervisorSpecs), and this test is
+	// about the boundary.
+	t.Setenv("ANTHROPIC_API_KEY", "sk-host")
+	t.Setenv("ANTHROPIC_BASE_URL", "")
+	t.Setenv("OPENAI_COMPATIBLE_BASE_URL", "https://gateway.example.test/v1")
+	t.Setenv("OPENAI_COMPATIBLE_API_KEY", "gw-key")
 	logger := iterlog.Nop()
 	st, svc, ctx := newGuardTestService(t)
 	runID := "run-sup-site"

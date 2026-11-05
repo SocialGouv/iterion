@@ -45,6 +45,11 @@ type CodexBackend struct {
 
 // Execute runs the codex CLI with the given task using the Codex Agent SDK.
 func (b *CodexBackend) Execute(ctx context.Context, task Task) (Result, error) {
+	// The resolver's answer for this leg (ADR-161) before anything else of
+	// the dispatch: until codex's arm lands, a stamped leg is refused here.
+	if err := dispatchRefusal(ctx, BackendCodex, task); err != nil {
+		return Result{ExitCode: -1, BackendName: BackendCodex}, err
+	}
 	task.Model = codexTaskModel(task.Model)
 	if task.Permission.Enabled() {
 		return Result{ExitCode: -1, BackendName: BackendCodex}, fmt.Errorf(

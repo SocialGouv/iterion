@@ -1,8 +1,10 @@
 package model
 
 import (
+	"slices"
 	"testing"
 
+	"github.com/SocialGouv/iterion/pkg/backend/credroute"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 )
 
@@ -137,11 +139,12 @@ func TestAnthropicWireReachable_Overrides(t *testing.T) {
 	}
 }
 
-// AnthropicWireRoutes reads each route's FIRST chain element, the way the
-// executor builds it — what the run spends before any rescue — and says when
-// it cannot read it: the pre-flight then judges the route on the run's default
-// credential.
-func TestAnthropicWireRoutesReadsThePrimaryElement(t *testing.T) {
+// AnthropicWireRoutes reads each route's chain the way the executor walks it
+// (Legs: expansion, the `provider:model` element form, "auto" deferring, an
+// override collapsing the chain) beside the model a leg that pins none sends —
+// what the run spends before any rescue — and says when it cannot read the
+// route: the pre-flight then judges it on the run's default credential.
+func TestAnthropicWireRoutesReadsTheDispatchChain(t *testing.T) {
 	t.Setenv("PRIMARY_PROVIDER", "")
 	node := func(id, backend, provider, model string) ir.Node {
 		return &ir.AgentNode{BaseNode: ir.BaseNode{ID: id}, LLMFields: ir.LLMFields{Backend: backend, Provider: provider, Model: model}}
@@ -157,18 +160,18 @@ func TestAnthropicWireRoutesReadsThePrimaryElement(t *testing.T) {
 	}}
 	got := AnthropicWireRoutes(RouteView{Workflow: wf, Overrides: ModelOverrides{}})
 	want := []WireRoute{
-		{NodeID: "a-dispatch", Backend: "", Hint: "", Model: "claude-opus-5-5", Readable: false},
-		{NodeID: "b-var", Backend: "claude_code", Hint: "{{vars.p}}", Model: "claude-opus-5-5", Readable: false},
-		{NodeID: "c-env", Backend: "claude_code", Hint: "moonshot", Model: "kimi-k2", Readable: true},
-		{NodeID: "d-auto", Backend: "claude_code", Hint: "", Model: "claude-opus-5-5", Readable: true},
-		{NodeID: "e-chain", Backend: "claude_code", Hint: "zai", Model: "glm-5.3", Readable: true},
-		{NodeID: "f-model", Backend: "claw", Hint: "", Model: "{{vars.m}}", Readable: false},
+		{NodeID: "a-dispatch", Backend: "", Legs: []credroute.Leg{{}}, Model: "claude-opus-5-5", Readable: false},
+		{NodeID: "b-var", Backend: "claude_code", Legs: []credroute.Leg{{Provider: "{{vars.p}}"}}, Model: "claude-opus-5-5", Readable: false},
+		{NodeID: "c-env", Backend: "claude_code", Legs: []credroute.Leg{{Provider: "moonshot"}}, Model: "kimi-k2", Readable: true},
+		{NodeID: "d-auto", Backend: "claude_code", Legs: []credroute.Leg{{}, {Provider: "zai"}}, Model: "claude-opus-5-5", Readable: true},
+		{NodeID: "e-chain", Backend: "claude_code", Legs: []credroute.Leg{{Provider: "zai", Model: "glm-5.3"}, {Provider: "anthropic"}}, Model: "claude-opus-5-5", Readable: true},
+		{NodeID: "f-model", Backend: "claw", Legs: []credroute.Leg{{}}, Model: "{{vars.m}}", Readable: false},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("routes = %+v, want %+v", got, want)
 	}
 	for i := range want {
-		if got[i] != want[i] {
+		if !sameWireRoute(got[i], want[i]) {
 			t.Errorf("route %d = %+v, want %+v", i, got[i], want[i])
 		}
 	}
@@ -177,12 +180,18 @@ func TestAnthropicWireRoutesReadsThePrimaryElement(t *testing.T) {
 	var ov ModelOverrides
 	ov.SetProvider("e-chain", "anthropic")
 	for _, r := range AnthropicWireRoutes(RouteView{Workflow: wf, Overrides: ov}) {
-		if r.NodeID == "e-chain" && (r.Hint != "anthropic" || r.Model != "claude-opus-5-5") {
-			t.Errorf("overridden route = %+v, want the override's hint over the node's model", r)
+		if r.NodeID == "e-chain" && !sameWireRoute(r, WireRoute{NodeID: "e-chain", Backend: "claude_code", Legs: []credroute.Leg{{Provider: "anthropic"}}, Model: "claude-opus-5-5", Readable: true}) {
+			t.Errorf("overridden route = %+v, want the override's one leg over the node's model", r)
 		}
 	}
 
 	if got := AnthropicWireRoutes(RouteView{Workflow: nil, Overrides: ModelOverrides{}}); len(got) != 1 || got[0].Readable {
 		t.Errorf("nil workflow routes = %+v, want one unreadable route", got)
 	}
+}
+
+// sameWireRoute compares two routes field by field, their legs in order.
+func sameWireRoute(a, b WireRoute) bool {
+	return a.NodeID == b.NodeID && a.Backend == b.Backend && a.Model == b.Model &&
+		a.Readable == b.Readable && slices.Equal(a.Legs, b.Legs)
 }

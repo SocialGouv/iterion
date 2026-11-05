@@ -3,6 +3,7 @@ package model
 import (
 	"strings"
 
+	"github.com/SocialGouv/iterion/pkg/backend/credroute"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 )
@@ -28,14 +29,17 @@ func humanLLMModelOf(n ir.Node) (string, bool) {
 // provider from. A prefix the walk cannot read — empty, or a `{{vars.*}}`
 // span the view left written — keeps the route unreadable: the
 // conservative reading, the guard stays armed.
+//
+// The route is one leg, its hint the prefix the registry routes on.
 func directWireRoute(id, mdl string) WireRoute {
 	r := WireRoute{NodeID: id, Model: strings.TrimSpace(ir.ExpandEnvWithDefault(mdl))}
-	r.Hint = providerFromModelPrefix(r.Model)
+	hint := providerFromModelPrefix(r.Model)
 	if GLMOnAnthropicWire(r.Model) {
 		// A GLM id on the anthropic wire spends z.ai's key (prefixOrWiden
 		// reads it the same way).
-		r.Hint = string(secrets.ProviderZAI)
+		hint = string(secrets.ProviderZAI)
 	}
-	r.Readable = r.Hint != ""
+	r.Legs = []credroute.Leg{{Provider: hint}}
+	r.Readable = hint != ""
 	return r
 }

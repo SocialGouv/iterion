@@ -2,6 +2,7 @@ package credroute
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -161,4 +162,47 @@ func registerForTest(t *testing.T, backend string, arm Arm) {
 		defer armsMu.Unlock()
 		delete(arms, backend)
 	})
+}
+
+// A Spend rides a usage event under its three keys and reads back whole —
+// from the live map and from the JSON the store persists — and the zero Spend
+// writes no key: the absence is a reader's cue to keep its derivation.
+func TestASpendRidesItsEventAndReadsBack(t *testing.T) {
+	spend := Spend{Channel: ChannelRunKey, Slot: "anthropic", Fingerprint: "fp-run", BaseURL: "https://gw.example"}
+	data := map[string]any{"input_tokens": 3}
+	PutEventKeys(data, spend)
+	got, ok := SpendFromEvent(data)
+	if !ok || got.Channel != spend.Channel || got.Slot != spend.Slot || got.Fingerprint != spend.Fingerprint {
+		t.Fatalf("SpendFromEvent = %+v, %v; want %+v's channel, slot and fingerprint", got, ok, spend)
+	}
+	raw, err := json.Marshal(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if again, ok := SpendFromEvent(decoded); !ok || again != got {
+		t.Errorf("the persisted event reads %+v, %v; want %+v", again, ok, got)
+	}
+
+	pod := Spend{Channel: ChannelPodEnv, Fingerprint: "acct"}
+	data = map[string]any{}
+	PutEventKeys(data, pod)
+	if _, present := data[EventKeySlot]; present {
+		t.Error("a spend on no run slot wrote a slot key")
+	}
+	if got, _ := SpendFromEvent(data); got.RunSlot() {
+		t.Errorf("a pod-env spend reads back as a run slot: %+v", got)
+	}
+
+	empty := map[string]any{}
+	PutEventKeys(empty, Spend{})
+	if len(empty) != 0 {
+		t.Errorf("the zero Spend wrote %v", empty)
+	}
+	if _, ok := SpendFromEvent(empty); ok {
+		t.Error("an event with no keys reads as carrying a Spend")
+	}
 }

@@ -3075,15 +3075,13 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 				spawnVars = run.Inputs
 			}
 		}
-		// The ambient stamp's twin of the pool filter: on a run whose
-		// credentials refuse the pod environment, only gateway-model
-		// supervisors spawn — a vendor-family supervisor would spin
-		// refusal-per-evaluation for a run that must not spend it.
-		ambientRefusedRun := false
-		if creds, ok := secrets.CredentialsFromContext(ctx); ok {
-			ambientRefusedRun = creds.AmbientRefused
-		}
-		specs := runview.AmbientSurvivingSpecs(runview.PoolSurvivingSpecs(supervise.SpecsFromWorkflow(wf, engine.ResolveVars(spawnVars), runLogger), msg.ContentBoundary, msg.RunnerPool, runLogger), ambientRefusedRun, runLogger)
+		// The supervisors the resolver funds (ADR-161 decision 4): the
+		// content boundary's refusal, then the claw arm on each evaluator's
+		// model under the run's credentials — a stamped run's own sealed key
+		// serves its supervisor, the pod's money does not, and a spec no
+		// credential funds is dropped by name rather than refused at every
+		// evaluation. The pre-flight meters this same list.
+		specs := runview.FundedSupervisorSpecs(ctx, supervise.SpecsFromWorkflow(wf, engine.ResolveVars(spawnVars), runLogger), msg.ContentBoundary, msg.RunnerPool, runLogger)
 		// F12: a supervisor's evaluations are the run's money — each one
 		// books its tokens on its own route (source supervisor:<name>), the
 		// same route totals recordCredentialSpend meters per credential at

@@ -1,6 +1,7 @@
 package model
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 
 	"github.com/SocialGouv/claw-code-go/pkg/api"
 
+	"github.com/SocialGouv/iterion/pkg/backend/credroute"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -413,6 +415,39 @@ func relayEnvelope(eventType string, payload any) (delegate.Envelope, error) {
 	return delegate.Envelope{}, fmt.Errorf(
 		"payload is %d bytes with every field already cut, over the %d-byte IPC line cap: refused rather than written, which would fail the channel",
 		relayLineSize(env), delegate.MaxEnvelopeLineBytes)
+}
+
+// crossingSpendKey carries, from the sandboxed dispatch to the multiplexer
+// handler it builds, the claw arm's Spend for the crossing.
+type crossingSpendKey struct{}
+
+// withCrossingSpend carries spend — the arm's resolution of the crossing the
+// container's loop spends through — on ctx.
+func withCrossingSpend(ctx context.Context, spend credroute.Spend) context.Context {
+	return context.WithValue(ctx, crossingSpendKey{}, spend)
+}
+
+// crossingSpendFrom is the Spend withCrossingSpend carried, zero for none.
+func crossingSpendFrom(ctx context.Context) credroute.Spend {
+	s, _ := ctx.Value(crossingSpendKey{}).(credroute.Spend)
+	return s
+}
+
+// withStepCredential returns h with its step hook stamping spend on every
+// step it re-fires: the claw arm's resolution of the crossing the container's
+// loop spends through (ADR-161 decision 8). The container never holds the
+// run's slots — the launcher composed what it spends — so the launcher writes
+// the step's credential keys, and a relayed step carries none of its own.
+func withStepCredential(h EventHooks, spend credroute.Spend) EventHooks {
+	if h.OnLLMStepFinish == nil || spend.Channel == "" {
+		return h
+	}
+	fn := h.OnLLMStepFinish
+	h.OnLLMStepFinish = func(nodeID string, step LLMStepInfo) {
+		step.Credential = spend
+		fn(nodeID, step)
+	}
+	return h
 }
 
 // ApplyRelayedEvent re-fires one relayed event through h, for nodeID (the

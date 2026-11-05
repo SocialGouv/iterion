@@ -142,9 +142,16 @@ func NewOpenCodeBackend(logger *iterlog.Logger, command string) *OpenCodeBackend
 	}
 }
 
-// Execute refuses a workspace whose own `.opencode/` would run as code, then
-// delegates to the shared CLI-agent path in the argv dialect the host speaks.
+// Execute asks the resolver for the leg, refuses a workspace whose own
+// `.opencode/` would run as code, then delegates to the shared CLI-agent path
+// in the argv dialect the host speaks.
 func (b *OpenCodeBackend) Execute(ctx context.Context, task Task) (Result, error) {
+	// The resolver's answer for this leg (ADR-161) before the workspace
+	// screen: under the run's stamp opencode, which reads its own
+	// configuration, is refused whatever the workspace holds.
+	if err := dispatchRefusal(ctx, BackendOpenCode, task); err != nil {
+		return Result{BackendName: BackendOpenCode, ExitCode: -1}, err
+	}
 	if err := refuseUntrustedOpenCodeProject(task.WorkDir); err != nil {
 		return Result{BackendName: BackendOpenCode, ExitCode: -1}, err
 	}

@@ -82,7 +82,6 @@ var serialFamily = map[string]string{
 	"round3_tools_chain_test.go":        "Setenv",
 	"round6_chain_spend_test.go":        "Setenv",
 
-	"ambient_env_meter_test.go":                "Setenv",
 	"anthropic_forfait_ctx_test.go":            "SetCredentialsLookup, SetOAuthDirLookup, Setenv",
 	"async_backend_test.go":                    "Setenv",
 	"braced_env_reads_pin_test.go":             "Setenv",
@@ -90,6 +89,8 @@ var serialFamily = map[string]string{
 	"capabilities_public_test.go":              "SetDefault",
 	"claw_ambient_credential_header_test.go":   "Setenv",
 	"claw_ambient_test.go":                     "Setenv",
+	"claw_arm_account_test.go":                 "Setenv",
+	"claw_credential_keys_test.go":             "Setenv",
 	"claw_automem_note_test.go":                "Setenv",
 	"claw_automem_secret_test.go":              "Setenv",
 	"claw_backend_test.go":                     "Setenv",

@@ -193,8 +193,9 @@ func piAmbientLabel(value string) string {
 // that one key alone. A run with an anthropic key of its own (default or
 // pinned) spends THAT key: the slot label. A pod with nothing inherited names
 // no credential: the bare label. A z.ai refusal keeps its facade label. A
-// stamped run's pi node still spends the pod's key — pi does not refuse the
-// pod env — so its refusal names that account: the label follows the spend.
+// stamped run's pi node spends nothing: until pi's arm lands, the interim
+// guard refuses its leg before pi starts (ADR-161 decision 9), so no reading
+// indicts any account.
 func TestPiExecute_TheAmbientAccountNamesItselfInTheRefusal(t *testing.T) {
 	blankPiAnthropicEnv(t)
 	t.Setenv("ANTHROPIC_API_KEY", "sk-pod")
@@ -222,8 +223,8 @@ func TestPiExecute_TheAmbientAccountNamesItselfInTheRefusal(t *testing.T) {
 	if got := piRecordedRefusalSource(t, ctx, "claude-opus-5-5", "anthropic", pinnedKey); got != PiUsageSourceDirect {
 		t.Errorf("a pinned anthropic key: Source = %q, want %q — piRouteEnv binds the pin", got, PiUsageSourceDirect)
 	}
-	if got := piRecordedRefusalSource(t, ctx, "claude-opus-5-5", "anthropic", stamped); got != ambientLabel {
-		t.Errorf("a stamped run: Source = %q, want the pod account's label %q — pi spends the pod's key on it", got, ambientLabel)
+	if got := piRecordedRefusals(t, ctx, "claude-opus-5-5", "anthropic", stamped); len(got) != 0 {
+		t.Errorf("a stamped run recorded %+v — the guard refuses the leg before pi spends the pod's key", got)
 	}
 
 	// The facade providers keep their slug's label even beside a live pod key.

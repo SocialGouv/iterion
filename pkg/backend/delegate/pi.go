@@ -153,6 +153,13 @@ type PiBackend struct {
 // recordAuthRefusal): both transports produce the typed error here, so
 // this is the one place that sees every one of them.
 func (b *PiBackend) Execute(ctx context.Context, task Task) (Result, error) {
+	// The resolver's answer for this leg (ADR-161) before anything of either
+	// transport runs: until pi's arm lands, a stamped leg is refused here —
+	// its credential walk reads the pod's stores and channels past the run's
+	// seal.
+	if err := dispatchRefusal(ctx, BackendPi, task); err != nil {
+		return Result{BackendName: BackendPi, ExitCode: -1}, err
+	}
 	// The credential a refusal indicts is named once, from the env this call
 	// hands pi, before the spawn reads that env (piRefusalSource).
 	source := piRefusalSource(ctx, task)

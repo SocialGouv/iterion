@@ -238,6 +238,14 @@ books on its own route's credential — a primary that burned the donor's
 subscription before a rung served on the team's key charges the donor that
 slice alone. Spend on the deployment's own env-funded routes (its gateway, a
 pod's ambient Claude env) is placed on nobody by design and voids nothing.
+A claw call's events carry what it spent — `credential_channel`,
+`credential_slot`, `credential_fingerprint`, written where the call was
+built ([ADR-161](adr/161-one-resolver-decides-the-credential-a-call-spends.md)
+decision 8) — and its slice books on that fingerprint, never on the plan's
+prediction for its provider word: a call that spent another credential than
+the plan predicted (a gateway wire keeping a lent forfait home) books on its
+own, and the report names it in one warning. The spend ledger books those
+calls on the slot they name.
 A resumed run that **reported** *renews* its admission instead of taking a
 second one: it is the same run, and charging it again would let one flaky
 run that resumes a few times consume a contributor's whole day. Reporting

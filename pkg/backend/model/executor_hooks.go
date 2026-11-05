@@ -4,6 +4,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/backend/credroute"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 )
 
@@ -140,6 +141,11 @@ type DelegateInfo struct {
 	// source of the model_served_via_facade event on the FINISHED path
 	// only, which is what keeps that event's name true.
 	Fingerprint string
+	// Credential is what the route the figure ends on spent, as the process
+	// that built its call resolved it (delegate.Result.Credential, ADR-161
+	// decision 8): the event's credential keys. Zero for a backend whose arm
+	// has not landed.
+	Credential credroute.Spend
 }
 
 // SpendSlice is one abandoned chain route's spend inside a delegate event's
@@ -153,8 +159,11 @@ type SpendSlice struct {
 	EffectiveModel string
 	Provider       string
 	Fingerprint    string
-	Tokens         int
-	CostUSD        float64
+	// Credential is what the abandoned route spent (its result's
+	// delegate.Result.Credential): the slice's credential keys.
+	Credential credroute.Spend
+	Tokens     int
+	CostUSD    float64
 }
 
 // delegateInfoFromResult fills the result-derived fields of a DelegateInfo —
@@ -178,6 +187,7 @@ func delegateInfoFromResult(backendName string, result delegate.Result) Delegate
 		MaxOutputTokens:    result.MaxOutputTokens,
 		PeakInputTokens:    result.PeakInputTokens,
 		Fingerprint:        result.SessionFingerprint,
+		Credential:         result.Credential,
 	}
 }
 

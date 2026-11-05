@@ -33,7 +33,7 @@ func TestR2Probe_SupervisorTemplatedModelOnAResume(t *testing.T) {
 	resets := time.Now().UTC().Add(30 * time.Hour).Truncate(time.Second)
 	hard := usagecap.NewMemStore()
 	weekCapped(t, hard, platformKey("fp-forfait"), resets)
-	ctx := forfaitBesidePinnedZAI()
+	ctx := forfaitBesidePinnedZAI(t)
 
 	wf := chainWorkflow(agentRoute("impl", delegate.BackendCodex, "", "openai/gpt-6"))
 	wf.Vars = map[string]*ir.Var{"m": varString("m", "openai/gpt-6")}
@@ -64,7 +64,7 @@ func TestR2Probe_SupervisorTemplatedOverDefaultFreshLaunch(t *testing.T) {
 	t.Setenv("ITERION_FORBID_SUBSCRIPTION_OAUTH", "")
 	hard := usagecap.NewMemStore()
 	weekCapped(t, hard, platformKey("fp-forfait"), time.Now().UTC().Add(30*time.Hour))
-	ctx := forfaitBesidePinnedZAI()
+	ctx := forfaitBesidePinnedZAI(t)
 
 	wf := chainWorkflow(agentRoute("impl", delegate.BackendCodex, "", "openai/gpt-6"))
 	wf.Vars = map[string]*ir.Var{"m": varString("m", "anthropic/claude-opus-5-5")}
@@ -88,7 +88,7 @@ func TestR2Probe_SupervisorWalkUnreadableInputsAndOffWireLaunch(t *testing.T) {
 	t.Setenv("ITERION_FORBID_SUBSCRIPTION_OAUTH", "")
 	hard := usagecap.NewMemStore()
 	weekCapped(t, hard, platformKey("fp-forfait"), time.Now().UTC().Add(30*time.Hour))
-	ctx := forfaitBesidePinnedZAI()
+	ctx := forfaitBesidePinnedZAI(t)
 
 	wf := chainWorkflow(agentRoute("impl", delegate.BackendCodex, "", "openai/gpt-6"))
 	wf.Vars = map[string]*ir.Var{"m": varString("m", "openai/gpt-6")}

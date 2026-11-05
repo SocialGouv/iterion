@@ -97,7 +97,11 @@ type Spend struct {
 	// kind; "" for none of the run's.
 	Slot string
 	// Fingerprint is the slot's audit fingerprint (Credentials.Fingerprint),
-	// the value the credential plan predicts; "" when the slot has none.
+	// the value the credential plan predicts; "" when the slot has none. A
+	// spend of the pod's environment names no slot: its Fingerprint is the
+	// account the request carries, in the digest every lane's ambient label
+	// keys on (the usage meter's key), "" where no such label names the
+	// account — the z.ai synthesis is z.ai's.
 	Fingerprint string
 	// BaseURL is the destination the credential is sent to; "" is the
 	// provider's published endpoint.

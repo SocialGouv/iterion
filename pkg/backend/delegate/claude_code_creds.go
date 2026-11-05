@@ -945,8 +945,8 @@ func overlayCustomHeaderCredentials(live map[string]string, headers string) map[
 // It is the one digest of the ambient family's fingerprinted label, read by
 // every lane that names an inherited account: a claude_code session over the
 // set its spawn inherits (ambientSourceFingerprint), pi over the one channel
-// it sends (piAnthropicSpend), and claw's env factory over the credentials its
-// client carries (model.AmbientEnvMeter). Each lane reads its OWN channels;
+// it sends (piAnthropicSpend), and claw's arm over the credentials its client
+// carries (the pod-env Spend's Fingerprint). Each lane reads its OWN channels;
 // where two send the same set they key one meter, and a set one of them does
 // not send is another account.
 func AmbientCredentialSetFingerprint(live map[string]string) string {
@@ -1569,8 +1569,8 @@ func AmbientSourceFingerprint(source string) (string, bool) {
 // fp'd ambient label AmbientSourceFingerprint parses), so the ledger the
 // pre-flight reads is the one the coming session writes. It is the claude_code
 // CLI's reading of the pod env: pi and claw read other channel sets, in their
-// own orders, and name their spend themselves (PiAnthropicRouteSource,
-// model.AmbientEnvMeter).
+// own orders, and name their spend themselves (PiAnthropicRouteSource, the
+// claw arm's Spend).
 func AmbientCredentialFingerprint() string {
 	return ambientSourceFingerprint(nil, false)
 }

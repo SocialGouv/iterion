@@ -101,6 +101,17 @@ stamped node only the pod's environment would fund refuses with
 `CREDENTIAL_SUBSCRIPTION_FORBIDDEN`. A refused `fallbacks:` route or
 supervisor spec is warned.
 
+The stamp binds every backend (ADR-161 decision 5). `kimi`, `grok` and
+`opencode` read their own configuration, never a run credential: a stamped
+node made of them refuses with `CREDENTIAL_AMBIENT_REFUSED` (route it to
+`claw` or `claude_code`), a `fallbacks:` rung on one is warned and never
+serves, and an unstamped one is admitted with the
+`sandbox_no_credential_warning`. Until their credential arms land, a
+stamped `pi` or `codex` leg is refused too — same code, its own remedy
+(route the node to `claw` or `claude_code` on the run's own credentials):
+their dispatch reads the pod's stores and keys past the run's seal. Each
+of these refusals also stands at the dispatch, before the CLI starts.
+
 ## Quick start
 
 The shortest path to a sandboxed run:

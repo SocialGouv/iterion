@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/cost"
+	"github.com/SocialGouv/iterion/pkg/backend/credroute"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/mcp"
 	"github.com/SocialGouv/iterion/pkg/backend/modelroute"
@@ -457,6 +458,10 @@ func (h *storeHooks) onLLMStepFinish(nodeID string, step LLMStepInfo) {
 	if step.Provider != "" {
 		data["provider"] = step.Provider
 	}
+	// What the step's client spent, as the process that built it resolved
+	// it (ADR-161 decision 8): the ledger books the step on its slot, the
+	// fine table on its fingerprint. Omitted where no arm resolved it.
+	credroute.PutEventKeys(data, step.Credential)
 	if step.CacheReadTokens > 0 {
 		data["cache_read_tokens"] = step.CacheReadTokens
 	}
@@ -1151,6 +1156,9 @@ func putDelegateModelFields(data map[string]any, info DelegateInfo) {
 	if info.Provider != "" {
 		data["provider"] = info.Provider
 	}
+	// What the route the figure ends on spent, as the process that built
+	// its call resolved it (ADR-161 decision 8).
+	credroute.PutEventKeys(data, info.Credential)
 	// The labels above name the route the figure ends on; this key itemises
 	// the part of it a fallback chain folded in from the routes it
 	// abandoned, so a per-route or per-credential consumer books each slice
@@ -1172,7 +1180,8 @@ func putDelegateModelFields(data map[string]any, info DelegateInfo) {
 // foldedSpendPayload is the event form of a delegate's folded slices, in
 // their fold order: each slice under the keys the event names its own
 // figure with (`backend`, `route_model`, `effective_model`, `provider`,
-// `fingerprint`, `tokens`, `cost_usd`), empties and a zero cost omitted —
+// `fingerprint`, the credential keys, `tokens`, `cost_usd`), empties and a
+// zero cost omitted —
 // an absent `cost_usd` is an unpriced slice, never a free one. JSON-shaped
 // ([]any of map[string]any) so the persisted event and the live one read
 // alike.
@@ -1190,6 +1199,7 @@ func foldedSpendPayload(slices []SpendSlice) []any {
 				entry[key] = v
 			}
 		}
+		credroute.PutEventKeys(entry, s.Credential)
 		if s.CostUSD > 0 {
 			entry["cost_usd"] = s.CostUSD
 		}

@@ -10,12 +10,13 @@
 // Each harness asserts its reader's answer equals the row's Want, so the
 // readers agree with each other through the row.
 //
-// A row a reader still disagrees with on main carries a Pending entry naming
-// the reader, the ADR-161 unit whose landing makes it agree, and the answer it
+// A row a reader still disagrees with carries a Pending entry naming the
+// reader, the ADR-161 unit whose landing makes it agree, and the answer it
 // gives today. The harness asserts that answer — the divergence stays pinned,
 // never a red test — and asserts it differs from Want, so the unit that fixes
 // the reader turns the row red until it deletes the entry: a row cannot keep
-// a stale Pending.
+// a stale Pending. U0–U2 land as one tip, which closes every entry they
+// pinned: no row is pending.
 package credparity
 
 import (
@@ -139,7 +140,10 @@ const (
 type Role string
 
 const (
-	NodeRole       Role = "node"
+	NodeRole Role = "node"
+	// SupervisorRole is a declared supervisor's evaluation, in process on
+	// the host whatever the run's sandbox: the row's Node carries its model
+	// and its hint (the first leg's provider).
 	SupervisorRole Role = "supervisor"
 	AuxiliaryRole  Role = "auxiliary"
 )
@@ -153,6 +157,7 @@ const (
 	PodAnthropic = "sk-pod"
 	PodBearer    = "tok-pod"
 	PodZAI       = "zai-pod"
+	PodOpenAI    = "sk-openai-pod"
 	HeaderBearer = "Bearer hdr-pod"
 )
 
@@ -282,6 +287,26 @@ func (n Node) Spec(i int) string {
 func (n Node) Hint(i int) string {
 	if i >= 0 && i < len(n.Legs) {
 		return n.Legs[i].Provider
+	}
+	return ""
+}
+
+// The packages whose harness drives a backend's dispatch: claw's in
+// pkg/backend/model (the arm and the dispatch live there), every delegate
+// backend's in pkg/backend/delegate.
+const (
+	ModelHarness    = "pkg/backend/model"
+	DelegateHarness = "pkg/backend/delegate"
+)
+
+// DispatchHarness names the package whose harness drives backend's dispatch,
+// "" for a backend no harness drives.
+func DispatchHarness(backend string) string {
+	switch backend {
+	case "claw":
+		return ModelHarness
+	case "pi", "codex", "kimi", "grok", "opencode":
+		return DelegateHarness
 	}
 	return ""
 }

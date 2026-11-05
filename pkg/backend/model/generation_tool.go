@@ -7,6 +7,7 @@ import (
 	"github.com/SocialGouv/claw-code-go/pkg/api"
 	"github.com/SocialGouv/claw-code-go/pkg/api/hooks"
 
+	"github.com/SocialGouv/iterion/pkg/backend/credroute"
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
 )
 
@@ -41,6 +42,13 @@ type GenerationOptions struct {
 	// on the loop's own answer instead of re-deriving one from the spec.
 	// Empty when the loop builder stamped none.
 	Provider string
+
+	// Credential is what the client was resolved to spend — the claw arm's
+	// Spend for the leg (ADR-161 decision 8). The step hooks copy it onto
+	// every llm_step_finished as its credential keys, so the spend ledger
+	// and the fine table book the step where the call spent. Zero where the
+	// loop builder resolved none: the step carries no keys.
+	Credential credroute.Spend
 
 	// System is the system prompt (plain string form).
 	System string

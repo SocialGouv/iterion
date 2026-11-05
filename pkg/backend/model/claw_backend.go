@@ -437,6 +437,7 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 	opts := GenerationOptions{
 		Model:                 task.Model,
 		Provider:              servingProvider(delegate.BackendClaw, &task),
+		Credential:            resolution.spend,
 		MaxTokens:             task.MaxTokens,
 		CompactThresholdRatio: task.CompactThresholdRatio,
 		CompactPreserveRecent: task.CompactPreserveRecent,
@@ -778,6 +779,9 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 			res.ContextWindow = gwResolved.Spec.ContextWindow
 		}
 	}
+	// What this call spent, as the arm resolved it here, where the client
+	// was built (ADR-161 decision 8): the delegate events' credential keys.
+	res.Credential = resolution.spend
 	return res, genErr
 }
 
@@ -1946,7 +1950,7 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 	// (see [sessionSeed]).
 	seed := b.sessionSeedForCrossing(ctx, task)
 
-	handler, stranded := b.multiplexerHandler(ctx, task, seed)
+	handler, stranded := b.multiplexerHandler(withCrossingSpend(ctx, resolution.spend), task, seed)
 	mux := delegate.NewMultiplexer(stdoutR, stdinPipe, handler)
 	// The raw line a decode error quotes crosses the run's pass before its
 	// 256-byte cut, or a value straddling the cut publishes its head into
@@ -2063,6 +2067,10 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 		return delegate.Result{}, fmt.Errorf("claw backend: runner exited with error: %w (stderr: %s)", waitErr, runnerStderr())
 	}
 	res := delegate.FromIOResult(ioRes)
+	// What the container's call spent: the arm's resolution of this crossing,
+	// decided here (ADR-161 decision 8) — the container never holds the run's
+	// slots, the launcher composed what it spends through.
+	res.Credential = resolution.spend
 	// The relay carries model JSON and harness counters separately. Apply
 	// the same reserved-namespace boundary on success and runner failure.
 	// A gateway route's provenance is re-resolved HERE, host-side (the
@@ -3196,7 +3204,7 @@ func applyForfaitAcrossSandbox(ctx context.Context, env map[string]string, facts
 // hint, past any Anthropic key of the run's, stops at the run's Claude
 // forfait — the walk anthropicFromCtxForfaitOnWire takes in process and the
 // crossing hands the container: a forfait held, judged on the destination claw
-// sends the run's credentials to (RunCredentialBaseURL: the direct wire under
+// sends the run's credentials to (runCredentialBaseURL: the direct wire under
 // the `provider: "anthropic"` hint, the env's ANTHROPIC_BASE_URL otherwise),
 // and not passed by under ITERION_FORBID_SUBSCRIPTION_OAUTH for an ambient
 // credential of the pod that serves in its stead. With none, the forfait is
@@ -3212,10 +3220,11 @@ func clawForfaitReached(ctx context.Context, creds secrets.Credentials, spec, hi
 // anthropic-wire spec under hint where the run holds no Anthropic key for it:
 // its walk reaches the forfait (clawForfaitReached) and no subscription switch
 // refuses it there. In process and sandboxed alike — the crossing reads the
-// same walk — so the usage meters book the forfait where, and only where, the
-// call spends it.
+// same walk — so the spend ledger's derivation, for a route whose events
+// carry no credential keys, books the forfait where, and only where, the call
+// spends it.
 //
-// The meters call it with no run envelope in scope: the seam's process
+// The ledger calls it with no run envelope in scope: the seam's process
 // default (#2808), the environment the registry's factories read too.
 func ClawForfaitServes(creds secrets.Credentials, spec, hint string) bool {
 	return clawForfaitReached(context.Background(), creds, spec, hint) && !secrets.ForbidSubscriptionOAuth()
@@ -3477,6 +3486,9 @@ func canonicalMCPToolName(name string) string {
 // stamp a pause result the crossing produced while stranded, so the fact
 // travels with the pause (see [executeViaSandboxRunner]).
 func (b *ClawBackend) multiplexerHandler(ctx context.Context, task delegate.Task, seed sessionSeed) (delegate.MultiplexerHandler, *atomic.Bool) {
+	// What the container's loop spends through: the arm's resolution of this
+	// crossing, stamped on every step it relays (withStepCredential).
+	spend := crossingSpendFrom(ctx)
 	// Index ToolDefs by name once so OnToolCall is O(1) instead of
 	// scanning the slice on each runner-initiated tool_call.
 	toolByName := make(map[string]delegate.ToolDef, len(task.ToolDefs))
@@ -3606,7 +3618,7 @@ func (b *ClawBackend) multiplexerHandler(ctx context.Context, task delegate.Task
 			// anchors — re-fired through THIS process's hooks so a
 			// sandboxed claw node is persisted, priced, metered and
 			// forkable like an in-process one — see sandbox_relay.go.
-			handled, err := ApplyRelayedEvent(b.hooks, task.NodeID, eventType, payload)
+			handled, err := ApplyRelayedEvent(withStepCredential(b.hooks, spend), task.NodeID, eventType, payload)
 			if b.logger == nil {
 				return
 			}

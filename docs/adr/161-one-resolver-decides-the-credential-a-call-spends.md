@@ -1,6 +1,6 @@
 # ADR-161 — One resolver decides which credential a call spends; dispatch, admission, meter and plan read its answer verbatim
 
-- **Status**: Accepted — the operator decided it on 2026-11-04: the structure (debt-leap #107, option A), then #108 (decision 5), #109 (6), #110 (8), #111 (the ordering in 9), #112 (ADR-155's amendment). Design only: nothing below is built.
+- **Status**: Accepted — the operator decided it on 2026-11-04: the structure (debt-leap #107, option A), then #108 (decision 5), #109 (6), #110 (8), #111 (the ordering in 9), #112 (ADR-155's amendment). U0–U2 built (#2022): the leaf and its arm registry, the claw arm, the one admission site, the meter and the supervisor filters on the resolver, the credential keys on claw's usage events, the own-config arms and the interim guard. U3–U6 to come.
 - **Date**: 2026-11-04
 - **Deciders**: jo (#107–#112), Claude (analysis, design)
 - **Extends**: [ADR-131](131-tenant-gateway-credential.md) §7 (the stamp's typed refusal is decided once, by the resolver)

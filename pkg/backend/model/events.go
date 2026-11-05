@@ -5,6 +5,8 @@ import (
 	"time"
 
 	"github.com/SocialGouv/claw-code-go/pkg/api"
+
+	"github.com/SocialGouv/iterion/pkg/backend/credroute"
 )
 
 // ---------------------------------------------------------------------------
@@ -72,6 +74,10 @@ type LLMStepInfo struct {
 	// re-deriving one from the model spec. Empty when the loop builder
 	// stamped none (an older runner binary, a relay predating the field).
 	Provider string
+	// Credential is what the loop's client spends (GenerationOptions.
+	// Credential), written onto the step event as its credential keys.
+	// Zero where the loop builder resolved none.
+	Credential credroute.Spend
 }
 
 // ToolCallEntry describes a single tool call within a step.
@@ -402,11 +408,12 @@ func applyHooks(nodeID string, iteration int, h EventHooks, opts *GenerationOpti
 	}
 	if h.OnLLMStepFinish != nil {
 		fn := h.OnLLMStepFinish
-		provider := opts.Provider
+		provider, credential := opts.Provider, opts.Credential
 		opts.OnStepFinish = func(step StepResult) {
 			li := toLLMStepInfo(step)
 			li.Iteration = iteration
 			li.Provider = provider
+			li.Credential = credential
 			fn(nodeID, li)
 		}
 	}

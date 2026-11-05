@@ -3,6 +3,7 @@ package model
 import (
 	"testing"
 
+	"github.com/SocialGouv/iterion/pkg/backend/credroute"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 )
 
@@ -157,16 +158,16 @@ func TestAnthropicWireRoutesReadsRecoveryRungs(t *testing.T) {
 	}}
 	got := AnthropicWireRoutes(RouteView{Workflow: wf, Overrides: ModelOverrides{}})
 	want := []WireRoute{
-		{NodeID: "rep-agent4#agent_recovery", Backend: "", Hint: "", Model: "openai/gpt-5.4-mini", Readable: false},
-		{NodeID: "rep-def#self_repair", Backend: "", Hint: "anthropic", Model: "anthropic/claude-opus-5-5", Readable: true},
-		{NodeID: "rep-on#self_repair", Backend: "", Hint: "anthropic", Model: "anthropic/claude-opus-5-5", Readable: true},
-		{NodeID: "rep-var#self_repair", Backend: "", Hint: "", Model: "{{vars.m}}", Readable: false},
+		{NodeID: "rep-agent4#agent_recovery", Backend: "", Legs: []credroute.Leg{{}}, Model: "openai/gpt-5.4-mini", Readable: false},
+		{NodeID: "rep-def#self_repair", Backend: "", Legs: []credroute.Leg{{Provider: "anthropic"}}, Model: "anthropic/claude-opus-5-5", Readable: true},
+		{NodeID: "rep-on#self_repair", Backend: "", Legs: []credroute.Leg{{Provider: "anthropic"}}, Model: "anthropic/claude-opus-5-5", Readable: true},
+		{NodeID: "rep-var#self_repair", Backend: "", Legs: []credroute.Leg{{}}, Model: "{{vars.m}}", Readable: false},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("routes = %+v, want %+v", got, want)
 	}
 	for i := range want {
-		if got[i] != want[i] {
+		if !sameWireRoute(got[i], want[i]) {
 			t.Errorf("route %d = %+v, want %+v", i, got[i], want[i])
 		}
 	}

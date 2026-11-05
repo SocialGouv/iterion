@@ -5,7 +5,8 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/SocialGouv/iterion/pkg/backend/modelroute"
+	"github.com/SocialGouv/iterion/pkg/backend/credroute"
+	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/sessionboard"
@@ -141,7 +142,7 @@ func (s *Service) startDeclaredSupervisors(ctx context.Context, runID string, wf
 		logger.Warn("supervisors: content boundary unreadable for run %s — refusing to start (%v)", runID, err)
 		return func() {}
 	}
-	specs = PoolSurvivingSpecs(specs, boundary, pool, logger)
+	specs = FundedSupervisorSpecs(ctx, specs, boundary, pool, logger)
 	return startDeclaredImpl(ctx, s, s, runID, specs, logger)
 }
 
@@ -149,35 +150,48 @@ func (s *Service) startDeclaredSupervisors(ctx context.Context, runID string, wf
 // (the test swaps it to capture the specs that survive the guard).
 var startDeclaredImpl = supervise.StartDeclared
 
-// PoolSurvivingSpecs filters declared supervisors against a run's frozen
-// pool stamp: on a pool-stamped run, a supervisor whose effective model is
-// not gateway-routed is refused (D12) — evaluating the run's content
-// through a vendor default would spend a provider the pool team never
-// funded. A supervisor with no DSL pin falls back to
-// ITERION_DEFAULT_SUPERVISOR_MODEL at eval time, so the filter consults the
-// same fallback: a gateway env pin keeps unpinned supervisors alive; a
-// vendor env pin or no env at all refuses them. A nil pool keeps every
-// spec.
-func PoolSurvivingSpecs(specs []supervise.Spec, boundary *store.RunContentBoundary, pool string, logger *iterlog.Logger) []supervise.Spec {
+// FundedSupervisorSpecs keeps the declared supervisors whose evaluations the
+// resolver funds (ADR-161 decision 4) — the list a spawn starts and the
+// usage-cap pre-flight meters, one call for both — and drops the rest, each
+// named on logger with its reason:
+//
+//   - the content boundary first (supervisorContentRefusal, D12): a team
+//     gateway boundary refuses every spec, a pool stamp every spec whose
+//     effective model is not gateway-routed;
+//   - then the claw arm, in process, on the model the evaluator resolves at
+//     its first evaluation (supervise.ResolveModel: the pin, the env default,
+//     the watched nodes' family, the detector) under its provider hint. A
+//     spec the arm refuses — the stamp's refusal of the pod's money, the
+//     subscription switch, an unfunded hint, no credential at all — would
+//     refuse every evaluation, so it is dropped where that is decided. A
+//     stamped run's own sealed key serves its supervisor: the stamp refuses
+//     the environment only (ADR-131 §7).
+//
+// A spec whose model resolves nowhere is kept: its evaluator refuses every
+// evaluation with its own error (supervise.ErrNoSupervisorModel).
+func FundedSupervisorSpecs(ctx context.Context, specs []supervise.Spec, boundary *store.RunContentBoundary, pool string, logger *iterlog.Logger) []supervise.Spec {
 	if boundary != nil && boundary.Kind == store.ContentBoundaryTeamGateway {
 		logger.Warn("supervisors: the run's content boundary is the team gateway %q — every supervisor spec is refused, no escape", boundary.GatewayHost)
 		return nil
 	}
-	if pool == "" {
-		return specs
-	}
 	envDefault := ir.LookupEnv("ITERION_DEFAULT_SUPERVISOR_MODEL")
-	kept := specs[:0]
+	kept := make([]supervise.Spec, 0, len(specs))
 	for _, spec := range specs {
-		// The pin may be an env form ("${VAR:-openai_compatible/x}") —
-		// expand it exactly like eval time does, else a supervisor whose
-		// effective model is the gateway would be refused here.
-		model := strings.TrimSpace(ir.ExpandEnvWithDefault(spec.Model))
-		if model == "" {
-			model = envDefault
+		if r := supervisorContentRefusal(spec, boundary, pool, envDefault); r != nil {
+			logger.Warn("supervisor %q: %v", spec.Name, r)
+			continue
 		}
-		if err := contentRefusal(boundary, pool, model); err != nil {
-			logger.Warn("supervisor %q: %v", spec.Name, err)
+		resolved, err := supervise.ResolveModel(ctx, spec.Model, spec.ProviderHint)
+		if err != nil {
+			kept = append(kept, spec)
+			continue
+		}
+		_, err = credroute.Resolve(ctx, credroute.Call{
+			Backend: delegate.BackendClaw, Spec: resolved,
+			Leg: credroute.Leg{Provider: spec.ProviderHint}, Role: credroute.RoleSupervisor,
+		})
+		if err != nil && !errors.Is(err, credroute.ErrNoArm) {
+			logger.Warn("supervisor %q: dropped — no credential funds its model %q, so every evaluation would be refused: %v", spec.Name, resolved, err)
 			continue
 		}
 		kept = append(kept, spec)
@@ -185,33 +199,24 @@ func PoolSurvivingSpecs(specs []supervise.Spec, boundary *store.RunContentBounda
 	return kept
 }
 
-// AmbientSurvivingSpecs is the ambient twin of PoolSurvivingSpecs: on a run
-// whose credentials carry the AmbientRefused stamp (ADR-131), only
-// supervisors whose effective model is a gateway spec (openai_compatible/…)
-// survive — a vendor-family supervisor resolves through the pod environment,
-// which the stamp refuses, and would spin refusal-per-evaluation for a run
-// that must not spend it. Every other run keeps every spec. Dropped specs
-// are named, so a dropped monitor is a decision, not a silence.
-func AmbientSurvivingSpecs(specs []supervise.Spec, ambientRefused bool, logger *iterlog.Logger) []supervise.Spec {
-	if !ambientRefused {
-		return specs
+// supervisorContentRefusal is the content-boundary refusal of a declared
+// supervisor (D12): evaluating the run's content through a vendor default
+// would spend a provider the run's frozen stamps never funded. A team gateway
+// boundary refuses every spec; a pool stamp refuses one whose effective model
+// — the pin, an env form expanded exactly like eval time does, else
+// envDefault (ITERION_DEFAULT_SUPERVISOR_MODEL, the evaluator's own fallback)
+// — is not gateway-routed. Nil where the spec may proceed. It unwraps to
+// ErrPoolContentRefused.
+func supervisorContentRefusal(spec supervise.Spec, boundary *store.RunContentBoundary, pool, envDefault string) *credroute.Refusal {
+	model := strings.TrimSpace(ir.ExpandEnvWithDefault(spec.Model))
+	if model == "" {
+		model = envDefault
 	}
-	envDefault := ir.LookupEnv("ITERION_DEFAULT_SUPERVISOR_MODEL")
-	kept := specs[:0]
-	for _, spec := range specs {
-		model := strings.TrimSpace(ir.ExpandEnvWithDefault(spec.Model))
-		if model == "" {
-			model = envDefault
-		}
-		if !modelroute.Parse(model).Gateway() {
-			if logger != nil {
-				logger.Warn("supervisor %q: dropped on an ambient-refused run — its model %q resolves through the pod environment, which the run's credentials refuse; pin %q to an openai_compatible model to supervise here", spec.Name, model, spec.Name)
-			}
-			continue
-		}
-		kept = append(kept, spec)
+	err := contentRefusal(boundary, pool, model)
+	if err == nil {
+		return nil
 	}
-	return kept
+	return &credroute.Refusal{Backend: delegate.BackendClaw, Spec: model, Reason: credroute.ReasonContentBoundary, Cause: err}
 }
 
 // Publish persists an updated Session-board spec for runID. It satisfies

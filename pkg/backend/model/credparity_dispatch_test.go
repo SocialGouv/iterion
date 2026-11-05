@@ -39,11 +39,13 @@ func TestCredParity_Dispatch(t *testing.T) {
 	if !slices.Contains(credroute.Registered(), delegate.BackendClaw) {
 		t.Fatalf("no claw arm is registered with the resolver (registered: %v)", credroute.Registered())
 	}
+	judged := 0
 	for _, row := range credparity.Rows() {
+		if credparity.DispatchHarness(row.Node.Backend) != credparity.ModelHarness {
+			continue // its dispatch is driven where its backend lives
+		}
+		judged++
 		t.Run(row.Label(), func(t *testing.T) {
-			if row.Node.Backend != delegate.BackendClaw {
-				t.Fatalf("no dispatch harness for backend %q: its arm's unit brings one", row.Node.Backend)
-			}
 			forfaitDir := applyParityRow(t, row)
 			ctx := secrets.WithCredentials(context.Background(), row.Run.Credentials(forfaitDir))
 
@@ -70,6 +72,9 @@ func TestCredParity_Dispatch(t *testing.T) {
 			}
 			credparity.Check(t, row, credparity.Dispatch, got, func(s credparity.Spend) credparity.Spend { return s })
 		})
+	}
+	if judged == 0 {
+		t.Fatal("inert harness: no row of the table is a claw row")
 	}
 }
 
@@ -118,6 +123,11 @@ func dispatchParityLeg(t *testing.T, ctx context.Context, row credparity.Row, i 
 		Backend: delegate.BackendClaw, Spec: spec, Leg: leg, Role: credroute.RoleNode,
 		Sandbox: credroute.Sandbox{Contained: row.Sandboxed},
 	}
+	if row.Role == credparity.SupervisorRole {
+		// A supervisor's evaluator resolves its model in process, on the
+		// host, whatever the run's sandbox.
+		call.Role, call.Sandbox = credroute.RoleSupervisor, credroute.Sandbox{}
+	}
 	armSpend, armErr := credroute.Resolve(ctx, call)
 	res, err := resolveClawCall(ctx, NewRegistry(), call)
 	if armSpend != res.spend || (armErr == nil) != (err == nil) {
@@ -129,7 +139,7 @@ func dispatchParityLeg(t *testing.T, ctx context.Context, row credparity.Row, i 
 	switch {
 	case err != nil && !(crossesRefused && (res.client != nil || res.env != nil)):
 		got = parityRefusal(t, err)
-	case !row.Sandboxed:
+	case !call.Sandbox.Contained:
 		got = paritySpend(t, row, i, res.client)
 	default:
 		t.Run(fmt.Sprintf("container leg %d", i), func(t *testing.T) {

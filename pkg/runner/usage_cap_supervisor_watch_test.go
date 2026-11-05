@@ -49,7 +49,7 @@ func TestUsageCapPreflight_ASupervisorWatchingOnlyExcludedNodesIsNotARoute(t *te
 	t.Setenv("ITERION_DEFAULT_SUPERVISOR_MODEL", "")
 	t.Setenv("ITERION_SUPERVISORS", "")
 	t.Setenv("ITERION_FORBID_SUBSCRIPTION_OAUTH", "")
-	ctx := forfaitBesidePinnedKeys()
+	ctx := forfaitBesidePinnedKeys(t)
 	// A soft five-hour cap: it stops nothing in flight, so a capped route the
 	// run MAY take parks it.
 	soft := cappedWire(t, usagecap.WindowFiveHour, 0.95, time.Now().UTC().Add(2*time.Hour))
@@ -105,7 +105,7 @@ func TestUsageCapPreflight_ASupervisorWatchingOnlyExcludedNodesIsNotARoute(t *te
 
 // The other half of "the walk lists what the run will spawn": on a run stamped
 // to a sovereign runner pool, the spawn drops every supervisor whose effective
-// model is not the pool's gateway (runview.PoolSurvivingSpecs, D12) — so
+// model is not the pool's gateway (runview.FundedSupervisorSpecs, D12) — so
 // metering one parks the run for spend no execution can make, exactly as a
 // supervisor watching only excluded nodes would.
 //
@@ -117,7 +117,7 @@ func TestUsageCapPreflight_APooledRunIsNotParkedForASupervisorTheSpawnRefuses(t 
 	t.Setenv("ITERION_DEFAULT_SUPERVISOR_MODEL", "")
 	t.Setenv("ITERION_SUPERVISORS", "")
 	t.Setenv("ITERION_FORBID_SUBSCRIPTION_OAUTH", "")
-	ctx := forfaitBesidePinnedKeys()
+	ctx := forfaitBesidePinnedKeys(t)
 	soft := cappedWire(t, usagecap.WindowFiveHour, 0.95, time.Now().UTC().Add(2*time.Hour))
 
 	wholeRunOnTheWire := func() *ir.Workflow {
@@ -134,7 +134,7 @@ func TestUsageCapPreflight_APooledRunIsNotParkedForASupervisorTheSpawnRefuses(t 
 	}
 
 	if err := preflight(t, wholeRunOnTheWire(), "sovereign-eu"); err != nil {
-		t.Errorf("parked a pool-stamped run for a vendor-pinned supervisor its own spawn refuses to start: %v — PoolSurvivingSpecs drops it before supervise.StartDeclared", err)
+		t.Errorf("parked a pool-stamped run for a vendor-pinned supervisor its own spawn refuses to start: %v — FundedSupervisorSpecs drops it before supervise.StartDeclared", err)
 	}
 
 	t.Run("the same supervisor off a pool stays a route", func(t *testing.T) {
@@ -160,6 +160,10 @@ func TestUsageCapPreflight_APooledRunIsNotParkedForASupervisorTheSpawnRefuses(t 
 	})
 
 	t.Run("a pooled run keeps a gateway-pinned supervisor judged", func(t *testing.T) {
+		// The deployment's gateway pair funds the pin: the spawn keeps a spec
+		// a credential funds.
+		t.Setenv("OPENAI_COMPATIBLE_BASE_URL", "https://pool-gw.example.test/v1")
+		t.Setenv("OPENAI_COMPATIBLE_API_KEY", "pool-gw-key")
 		wf := offWireMonoTopology()
 		wf.Supervisors = []*ir.Supervisor{{Name: "pacer", Model: "openai_compatible/pool-gw"}}
 		sups := preflightSupervisors(ctx, wf, &queue.RunMessage{
@@ -181,7 +185,7 @@ func TestUsageCapPreflight_ThePoolFilterNamesTheSupervisorItDrops(t *testing.T) 
 	blankAnthropicWireEnv(t)
 	t.Setenv("ITERION_DEFAULT_SUPERVISOR_MODEL", "")
 	t.Setenv("ITERION_SUPERVISORS", "")
-	ctx := forfaitBesidePinnedKeys()
+	ctx := forfaitBesidePinnedKeys(t)
 	wf := offWireMonoTopology()
 	wf.Supervisors = []*ir.Supervisor{{Name: "pacer", Model: "anthropic/claude-opus-5-5"}}
 	vars := map[string]any{"mono_family": "gpt"}
@@ -194,7 +198,7 @@ func TestUsageCapPreflight_ThePoolFilterNamesTheSupervisorItDrops(t *testing.T) 
 		t.Fatalf("the walk of a pooled run with a vendor-pinned supervisor is %v, want none — its own spawn refuses it (D12)", sups)
 	}
 	if !strings.Contains(logged.String(), `supervisor "pacer"`) {
-		t.Errorf("the pre-flight stopped metering `pacer` and logged %q — the drop widens the walk, so it owes the refusal line its own filter writes (runview.PoolSurvivingSpecs)", logged.String())
+		t.Errorf("the pre-flight stopped metering `pacer` and logged %q — the drop widens the walk, so it owes the refusal line its own filter writes (runview.FundedSupervisorSpecs)", logged.String())
 	}
 
 	// The other half of the same call. A monitor the spec walk cannot parse
@@ -219,7 +223,7 @@ func TestUsageCapPreflight_ThePoolFilterNamesTheSupervisorItDrops(t *testing.T) 
 //
 // Those lines come from code the spawn shares, which names its own subject
 // and not the run — a supervisor the pool filter or the spec walk drops
-// (runview.PoolSurvivingSpecs, supervise.SpecsFromWorkflow), a credential
+// (runview.FundedSupervisorSpecs, supervise.SpecsFromWorkflow), a credential
 // whose reading failed (cappedRoutes). At admission no run-scoped sink exists
 // yet: the pre-flight runs before the clone and the container, and loop.go
 // registers the run log writer only after it, so these lines never reach the
@@ -236,7 +240,7 @@ func TestUsageCapPreflight_EveryAdmissionLineNamesTheRun(t *testing.T) {
 	t.Setenv("ITERION_DEFAULT_SUPERVISOR_MODEL", "")
 	t.Setenv("ITERION_SUPERVISORS", "")
 	t.Setenv("ITERION_FORBID_SUBSCRIPTION_OAUTH", "")
-	ctx := forfaitBesidePinnedKeys()
+	ctx := forfaitBesidePinnedKeys(t)
 	soft := cappedWire(t, usagecap.WindowFiveHour, 0.95, time.Now().UTC().Add(2*time.Hour))
 	wf := offWireMonoTopology()
 	wf.Supervisors = []*ir.Supervisor{{Name: "pacer", Model: "anthropic/claude-opus-5-5"}}

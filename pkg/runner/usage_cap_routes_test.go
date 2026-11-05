@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/internal/credparity"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -44,13 +45,13 @@ func blankAnthropicWireEnv(t *testing.T) {
 // forfaitBesidePinnedKeys is the bundle the platform tier seals under the
 // facade policy's `auto` default: its Claude forfait on the anthropic wire, and
 // the z.ai and Anthropic keys only for the routes that name them.
-func forfaitBesidePinnedKeys() context.Context {
+func forfaitBesidePinnedKeys(t testing.TB) context.Context {
 	return secrets.WithCredentials(context.Background(), secrets.Credentials{
 		PinnedAPIKeys: map[secrets.Provider]string{
 			secrets.ProviderZAI:       "zai-pinned",
 			secrets.ProviderAnthropic: "ant-pinned",
 		},
-		OAuthCredentialFiles: map[string]string{string(secrets.OAuthKindClaudeCode): "/forfait"},
+		OAuthCredentialFiles: map[string]string{string(secrets.OAuthKindClaudeCode): sealedForfaitDir(t)},
 		PlatformSourced: map[string]bool{
 			string(secrets.OAuthKindClaudeCode): true,
 			string(secrets.ProviderZAI):         true,
@@ -62,6 +63,19 @@ func forfaitBesidePinnedKeys() context.Context {
 			string(secrets.ProviderAnthropic):   "fp-ant",
 		},
 	})
+}
+
+// sealedForfaitDir is a Claude Code forfait as a runner pod holds one — the
+// dir Credentials.OAuthDir names, its credentials file in it: claw's walk
+// reads the token there, so a forfait the meter may book is one the
+// dispatch can spend.
+func sealedForfaitDir(t testing.TB) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := credparity.WriteForfait(dir); err != nil {
+		t.Fatal(err)
+	}
+	return dir
 }
 
 func platformKey(fp string) string {
@@ -144,16 +158,16 @@ func TestUsageCapPreflight_AClosedForfaitDoesNotParkRoutesOnAPinnedKey(t *testin
 	weekCapped(t, caps, platformKey("fp-forfait"), time.Now().UTC().Add(30*time.Hour))
 
 	glm := chainWorkflow(agentRoute("review", delegate.BackendClaudeCode, "", "glm-5.3"))
-	if err := preflightFor(t, caps, forfaitBesidePinnedKeys(), glm); err != nil {
+	if err := preflightFor(t, caps, forfaitBesidePinnedKeys(t), glm); err != nil {
 		t.Errorf("GLM-only run parked on the forfait's cap: %v — its route spends the z.ai key", err)
 	}
 	pinnedClaw := chainWorkflow(agentRoute("review", delegate.BackendClaw, "", "anthropic/claude-opus-5-5"))
-	if err := preflightFor(t, caps, forfaitBesidePinnedKeys(), pinnedClaw); err != nil {
+	if err := preflightFor(t, caps, forfaitBesidePinnedKeys(t), pinnedClaw); err != nil {
 		t.Errorf("claw anthropic run parked on the forfait's cap: %v — its route spends the Anthropic key pinned for it", err)
 	}
 	// The route that does spend the forfait still parks.
 	opus := chainWorkflow(agentRoute("review", delegate.BackendClaudeCode, "", "claude-opus-5-5"))
-	if err := preflightFor(t, caps, forfaitBesidePinnedKeys(), opus); err == nil {
+	if err := preflightFor(t, caps, forfaitBesidePinnedKeys(t), opus); err == nil {
 		t.Error("a claude_code run on the capped forfait started")
 	}
 }
@@ -167,7 +181,7 @@ func TestUsageCapPreflight_AWalledPinnedKeyParksTheRoutesThatSpendIt(t *testing.
 	weekCapped(t, caps, platformKey("fp-zai"), resets)
 
 	glm := chainWorkflow(agentRoute("review", delegate.BackendClaudeCode, "", "glm-5.3"))
-	if at := parkedUntil(t, preflightFor(t, caps, forfaitBesidePinnedKeys(), glm)); !at.Equal(resets) {
+	if at := parkedUntil(t, preflightFor(t, caps, forfaitBesidePinnedKeys(t), glm)); !at.Equal(resets) {
 		t.Errorf("parked until %v, want the z.ai window's reopening %v", at, resets)
 	}
 }
@@ -182,10 +196,10 @@ func TestUsageCapPreflight_ParksOnlyWhenEveryPathCrossesACappedRoute(t *testing.
 	opus := func() ir.Node { return agentRoute("opus", delegate.BackendClaudeCode, "", "claude-opus-5-5") }
 	glm := func() ir.Node { return agentRoute("glm", delegate.BackendClaudeCode, "", "glm-5.3") }
 
-	if err := preflightFor(t, caps, forfaitBesidePinnedKeys(), chainWorkflow(opus(), glm())); err == nil {
+	if err := preflightFor(t, caps, forfaitBesidePinnedKeys(t), chainWorkflow(opus(), glm())); err == nil {
 		t.Error("started a run whose every path crosses the capped forfait")
 	}
-	if err := preflightFor(t, caps, forfaitBesidePinnedKeys(), branchWorkflow(opus(), glm())); err != nil {
+	if err := preflightFor(t, caps, forfaitBesidePinnedKeys(t), branchWorkflow(opus(), glm())); err != nil {
 		t.Errorf("parked a run with a path around the capped forfait: %v", err)
 	}
 }
@@ -203,10 +217,10 @@ func TestUsageCapPreflight_ParksUntilAPathReopens(t *testing.T) {
 	opus := func() ir.Node { return agentRoute("opus", delegate.BackendClaudeCode, "", "claude-opus-5-5") }
 	glm := func() ir.Node { return agentRoute("glm", delegate.BackendClaudeCode, "", "glm-5.3") }
 
-	if at := parkedUntil(t, preflightFor(t, caps, forfaitBesidePinnedKeys(), branchWorkflow(opus(), glm()))); !at.Equal(soon) {
+	if at := parkedUntil(t, preflightFor(t, caps, forfaitBesidePinnedKeys(t), branchWorkflow(opus(), glm()))); !at.Equal(soon) {
 		t.Errorf("branches: parked until %v, want the first reopening %v", at, soon)
 	}
-	if at := parkedUntil(t, preflightFor(t, caps, forfaitBesidePinnedKeys(), chainWorkflow(opus(), glm()))); !at.Equal(late) {
+	if at := parkedUntil(t, preflightFor(t, caps, forfaitBesidePinnedKeys(t), chainWorkflow(opus(), glm()))); !at.Equal(late) {
 		t.Errorf("sequence: parked until %v, want the last reopening %v", at, late)
 	}
 }
@@ -220,12 +234,12 @@ func TestUsageCapPreflight_UnreadableAndRefusedRoutes(t *testing.T) {
 	weekCapped(t, caps, platformKey("fp-forfait"), time.Now().UTC().Add(30*time.Hour))
 
 	templated := chainWorkflow(agentRoute("review", "{{vars.backend}}", "", "glm-5.3"))
-	if err := preflightFor(t, caps, forfaitBesidePinnedKeys(), templated); err == nil {
+	if err := preflightFor(t, caps, forfaitBesidePinnedKeys(t), templated); err == nil {
 		t.Error("a route resolved at dispatch escaped the capped default credential")
 	}
 	// No Moonshot key anywhere: the delegate refuses the node by name.
 	refused := chainWorkflow(agentRoute("review", delegate.BackendClaudeCode, "moonshot", "kimi-k2"))
-	if err := preflightFor(t, caps, forfaitBesidePinnedKeys(), refused); err != nil {
+	if err := preflightFor(t, caps, forfaitBesidePinnedKeys(t), refused); err != nil {
 		t.Errorf("parked a route the delegate refuses before spawning: %v — no reset funds it", err)
 	}
 }
@@ -240,10 +254,10 @@ func TestUsageCapPreflight_FailsOpenPerCredential(t *testing.T) {
 	opus := agentRoute("opus", delegate.BackendClaudeCode, "", "claude-opus-5-5")
 	glm := agentRoute("glm", delegate.BackendClaudeCode, "", "glm-5.3")
 
-	if err := preflightFor(t, caps, forfaitBesidePinnedKeys(), chainWorkflow(opus)); err != nil {
+	if err := preflightFor(t, caps, forfaitBesidePinnedKeys(t), chainWorkflow(opus)); err != nil {
 		t.Errorf("parked on a credential the store could not read: %v", err)
 	}
-	if err := preflightFor(t, caps, forfaitBesidePinnedKeys(), chainWorkflow(opus, glm)); err == nil {
+	if err := preflightFor(t, caps, forfaitBesidePinnedKeys(t), chainWorkflow(opus, glm)); err == nil {
 		t.Error("an unreadable credential beside a walled one waved the run through")
 	}
 }
@@ -302,7 +316,7 @@ func TestUsageCapPreflight_FanOutAndSoftCapsPark(t *testing.T) {
 
 	hard := usagecap.NewMemStore()
 	weekCapped(t, hard, platformKey("fp-forfait"), time.Now().UTC().Add(30*time.Hour))
-	if err := preflightFor(t, hard, forfaitBesidePinnedKeys(), fanOutWorkflow(opus(), glm())); err == nil {
+	if err := preflightFor(t, hard, forfaitBesidePinnedKeys(t), fanOutWorkflow(opus(), glm())); err == nil {
 		t.Error("a fan-out with a capped branch started — every execution runs that branch")
 	}
 
@@ -313,20 +327,20 @@ func TestUsageCapPreflight_FanOutAndSoftCapsPark(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := preflightFor(t, soft, forfaitBesidePinnedKeys(), branchWorkflow(opus(), glm())); err == nil {
+	if err := preflightFor(t, soft, forfaitBesidePinnedKeys(t), branchWorkflow(opus(), glm())); err == nil {
 		t.Error("a run that may reach a soft-capped route started — a soft cap would let it spend that route uninterrupted")
 	}
-	if err := preflightFor(t, soft, forfaitBesidePinnedKeys(), chainWorkflow(glm())); err != nil {
+	if err := preflightFor(t, soft, forfaitBesidePinnedKeys(t), chainWorkflow(glm())); err != nil {
 		t.Errorf("a run that cannot reach the soft-capped route parked: %v", err)
 	}
 }
 
 // forfaitBesidePinnedZAI is forfaitBesidePinnedKeys without the Anthropic key:
 // a claw `anthropic/…` route then spends the forfait.
-func forfaitBesidePinnedZAI() context.Context {
+func forfaitBesidePinnedZAI(t testing.TB) context.Context {
 	return secrets.WithCredentials(context.Background(), secrets.Credentials{
 		PinnedAPIKeys:        map[secrets.Provider]string{secrets.ProviderZAI: "zai-pinned"},
-		OAuthCredentialFiles: map[string]string{string(secrets.OAuthKindClaudeCode): "/forfait"},
+		OAuthCredentialFiles: map[string]string{string(secrets.OAuthKindClaudeCode): sealedForfaitDir(t)},
 		PlatformSourced: map[string]bool{
 			string(secrets.OAuthKindClaudeCode): true,
 			string(secrets.ProviderZAI):         true,
@@ -349,14 +363,14 @@ func TestUsageCapPreflight_AHardCapNoGuardObservesParksWhenReachable(t *testing.
 	weekCapped(t, caps, platformKey("fp-forfait"), time.Now().UTC().Add(30*time.Hour))
 	glm := func() ir.Node { return agentRoute("glm", delegate.BackendClaudeCode, "", "glm-5.3") }
 
-	if err := preflightFor(t, caps, forfaitBesidePinnedZAI(), branchWorkflow(agentRoute("opus", delegate.BackendClaudeCode, "", "claude-opus-5-5"), glm())); err != nil {
+	if err := preflightFor(t, caps, forfaitBesidePinnedZAI(t), branchWorkflow(agentRoute("opus", delegate.BackendClaudeCode, "", "claude-opus-5-5"), glm())); err != nil {
 		t.Errorf("parked a run whose claude_code route on the capped forfait a path avoids: %v", err)
 	}
 	for _, capped := range []*ir.AgentNode{
 		agentRoute("opus", delegate.BackendClaw, "", "anthropic/claude-opus-5-5"),
 		agentRoute("opus", "{{vars.backend}}", "", "claude-opus-5-5"),
 	} {
-		if err := preflightFor(t, caps, forfaitBesidePinnedZAI(), branchWorkflow(capped, glm())); err == nil {
+		if err := preflightFor(t, caps, forfaitBesidePinnedZAI(t), branchWorkflow(capped, glm())); err == nil {
 			t.Errorf("started a run that may reach a hard-capped route on backend %q — nothing stops that call in flight", capped.Backend)
 		}
 	}
@@ -371,12 +385,12 @@ func TestUsageCapPreflight_APiRouteIsJudgedOnTheKeyItSpends(t *testing.T) {
 
 	forfait := usagecap.NewMemStore()
 	weekCapped(t, forfait, platformKey("fp-forfait"), time.Now().UTC().Add(30*time.Hour))
-	if err := preflightFor(t, forfait, forfaitBesidePinnedKeys(), chainWorkflow(pi())); err != nil {
+	if err := preflightFor(t, forfait, forfaitBesidePinnedKeys(t), chainWorkflow(pi())); err != nil {
 		t.Errorf("parked a pi route on the capped forfait it never spends: %v", err)
 	}
 	key := usagecap.NewMemStore()
 	weekCapped(t, key, platformKey("fp-ant"), time.Now().UTC().Add(30*time.Hour))
-	if err := preflightFor(t, key, forfaitBesidePinnedKeys(), chainWorkflow(pi())); err == nil {
+	if err := preflightFor(t, key, forfaitBesidePinnedKeys(t), chainWorkflow(pi())); err == nil {
 		t.Error("started a pi route on the capped Anthropic key it spends")
 	}
 }
@@ -395,13 +409,13 @@ func TestUsageCapPreflight_OwnConfigBackendsAreNotJudgedOnTheRunsCredentials(t *
 	walled := usagecap.NewMemStore()
 	weekCapped(t, walled, platformKey("fp-forfait"), time.Now().UTC().Add(30*time.Hour))
 	weekCapped(t, walled, platformKey(""), time.Now().UTC().Add(30*time.Hour))
-	if err := preflightFor(t, walled, forfaitBesidePinnedKeys(), kimi); err != nil {
+	if err := preflightFor(t, walled, forfaitBesidePinnedKeys(t), kimi); err != nil {
 		t.Errorf("parked a kimi route on a ledger it never spends: %v", err)
 	}
 
 	forfait := usagecap.NewMemStore()
 	weekCapped(t, forfait, platformKey("fp-forfait"), time.Now().UTC().Add(30*time.Hour))
-	if err := preflightFor(t, forfait, forfaitBesidePinnedKeys(), opencode); err != nil {
+	if err := preflightFor(t, forfait, forfaitBesidePinnedKeys(t), opencode); err != nil {
 		t.Errorf("parked an opencode route on the run's forfait it never spends: %v", err)
 	}
 	// The pod carries the ambient credential, its account's meter is capped,
@@ -410,17 +424,17 @@ func TestUsageCapPreflight_OwnConfigBackendsAreNotJudgedOnTheRunsCredentials(t *
 	t.Setenv("ANTHROPIC_API_KEY", "sk-pod")
 	ambient := usagecap.NewMemStore()
 	weekCapped(t, ambient, platformKey(secrets.FingerprintSHA256("sk-pod")), time.Now().UTC().Add(30*time.Hour))
-	if err := preflightFor(t, ambient, forfaitBesidePinnedKeys(), opencode); err != nil {
+	if err := preflightFor(t, ambient, forfaitBesidePinnedKeys(t), opencode); err != nil {
 		t.Errorf("parked an opencode route on the pod's ambient account: %v — opencode's spend is its own config's answer, booked on nobody", err)
 	}
 }
 
 // zaiDefaultBesideForfait is a run holding a z.ai key as its DEFAULT credential
 // beside a Claude forfait: hint-less claude_code nodes spend the z.ai key.
-func zaiDefaultBesideForfait() context.Context {
+func zaiDefaultBesideForfait(t testing.TB) context.Context {
 	return secrets.WithCredentials(context.Background(), secrets.Credentials{
 		APIKeys:              map[secrets.Provider]string{secrets.ProviderZAI: "zai-default"},
-		OAuthCredentialFiles: map[string]string{string(secrets.OAuthKindClaudeCode): "/forfait"},
+		OAuthCredentialFiles: map[string]string{string(secrets.OAuthKindClaudeCode): sealedForfaitDir(t)},
 		PlatformSourced: map[string]bool{
 			string(secrets.OAuthKindClaudeCode): true,
 			string(secrets.ProviderZAI):         true,
@@ -460,34 +474,34 @@ func TestUsageCapPreflight_ACappedSupervisorParksTheRun(t *testing.T) {
 	glm := func() ir.Node { return agentRoute("glm", delegate.BackendClaudeCode, "zai", "glm-5.3") }
 	opus := func() ir.Node { return agentRoute("opus", delegate.BackendClaudeCode, "", "claude-opus-5-5") }
 
-	if err := preflightWithSupervisors(t, caps, forfaitBesidePinnedZAI(), chainWorkflow(glm()), ""); err != nil {
+	if err := preflightWithSupervisors(t, caps, forfaitBesidePinnedZAI(t), chainWorkflow(glm()), ""); err != nil {
 		t.Fatalf("bench: the nodes alone parked on the forfait they never spend: %v", err)
 	}
-	if at := parkedUntil(t, preflightWithSupervisors(t, caps, forfaitBesidePinnedZAI(), supervised(glm(), "anthropic/claude-opus-5-5"), "")); !at.Equal(resets) {
+	if at := parkedUntil(t, preflightWithSupervisors(t, caps, forfaitBesidePinnedZAI(t), supervised(glm(), "anthropic/claude-opus-5-5"), "")); !at.Equal(resets) {
 		t.Errorf("a supervisor pinned to anthropic: parked until %v, want the forfait's reopening %v", at, resets)
 	}
 	// Unpinned, it follows the provider its watched nodes run on: zai here.
-	if err := preflightWithSupervisors(t, caps, forfaitBesidePinnedZAI(), supervised(glm(), ""), ""); err != nil {
+	if err := preflightWithSupervisors(t, caps, forfaitBesidePinnedZAI(t), supervised(glm(), ""), ""); err != nil {
 		t.Errorf("parked a run whose unpinned supervisor follows its nodes onto the z.ai key: %v", err)
 	}
 	// Unpinned beside hint-less claude_code nodes, it resolves an Anthropic
 	// model the forfait funds, while the nodes spend the run's z.ai default.
-	if err := preflightWithSupervisors(t, caps, zaiDefaultBesideForfait(), chainWorkflow(opus()), ""); err != nil {
+	if err := preflightWithSupervisors(t, caps, zaiDefaultBesideForfait(t), chainWorkflow(opus()), ""); err != nil {
 		t.Fatalf("bench: hint-less nodes parked on a forfait they never spend: %v", err)
 	}
-	if err := preflightWithSupervisors(t, caps, zaiDefaultBesideForfait(), supervised(opus(), ""), ""); err == nil {
+	if err := preflightWithSupervisors(t, caps, zaiDefaultBesideForfait(t), supervised(opus(), ""), ""); err == nil {
 		t.Error("started a run whose unpinned supervisor resolves onto the capped forfait")
 	}
-	if err := preflightWithSupervisors(t, caps, forfaitBesidePinnedZAI(), supervised(glm(), "openai/gpt-6"), ""); err != nil {
+	if err := preflightWithSupervisors(t, caps, forfaitBesidePinnedZAI(t), supervised(glm(), "openai/gpt-6"), ""); err != nil {
 		t.Errorf("parked a run whose supervisor is off the anthropic wire: %v", err)
 	}
 	// No node on the wire at all: the supervisor alone is judged.
 	offWire := supervised(agentRoute("impl", delegate.BackendCodex, "", "openai/gpt-6"), "anthropic/claude-opus-5-5")
-	if err := preflightWithSupervisors(t, caps, forfaitBesidePinnedZAI(), offWire, ""); err == nil {
+	if err := preflightWithSupervisors(t, caps, forfaitBesidePinnedZAI(t), offWire, ""); err == nil {
 		t.Error("started a run whose only anthropic-wire spender, its supervisor, is on the capped forfait")
 	}
 	// Supervisors the run will not spawn spend nothing.
-	if err := preflightWithSupervisors(t, caps, forfaitBesidePinnedZAI(), supervised(glm(), "anthropic/claude-opus-5-5"), "off"); err != nil {
+	if err := preflightWithSupervisors(t, caps, forfaitBesidePinnedZAI(t), supervised(glm(), "anthropic/claude-opus-5-5"), "off"); err != nil {
 		t.Errorf("parked a run whose supervisors are off: %v", err)
 	}
 	// Under ITERION_FORBID_SUBSCRIPTION_OAUTH the in-process factory declines
@@ -496,7 +510,7 @@ func TestUsageCapPreflight_ACappedSupervisorParksTheRun(t *testing.T) {
 	// last, and under the switch refuses it.
 	t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
 	t.Setenv("ITERION_FORBID_SUBSCRIPTION_OAUTH", "1")
-	if err := preflightWithSupervisors(t, caps, forfaitBesidePinnedZAI(), supervised(glm(), "anthropic/claude-opus-5-5"), ""); err != nil {
+	if err := preflightWithSupervisors(t, caps, forfaitBesidePinnedZAI(t), supervised(glm(), "anthropic/claude-opus-5-5"), ""); err != nil {
 		t.Errorf("parked a supervisor on the forfait the factory declines: %v", err)
 	}
 }

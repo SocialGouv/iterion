@@ -1,8 +1,6 @@
 package credparity
 
 import (
-	"slices"
-
 	"github.com/SocialGouv/iterion/pkg/secrets"
 )
 
@@ -20,6 +18,12 @@ func claw(provider string, legs ...Leg) Node {
 		legs = []Leg{{}}
 	}
 	return Node{ID: "impl", Backend: "claw", Model: claudeSpec, Provider: provider, Legs: legs}
+}
+
+// onBackend is a node on backend sending model, its chain one leg that
+// defers to the backend's own precedence.
+func onBackend(backend, model string) Node {
+	return Node{ID: "impl", Backend: backend, Model: model, Legs: []Leg{{}}}
 }
 
 // sides gives the row its two placements: on the host (a trusted run with
@@ -55,24 +59,6 @@ func stampings(r Row, unstamped, stamped func(*Row)) []Row {
 	return []Row{u, s}
 }
 
-func pending(reader Reader, unit string, today Spend, why string) Pending {
-	return Pending{Reader: reader, Unit: unit, Today: today, Why: why}
-}
-
-// with appends to the row's own Pending: rows copied from one base share its
-// backing array, so the append never writes into spare capacity a twin sees.
-func with(r *Row, p ...Pending) { r.Pending = append(slices.Clip(r.Pending), p...) }
-
-// hintBlindLedger pins the ledger on a hinted claw node past a redirected
-// wire: the route it books carries no hint, so it reads the hint-less walk,
-// which keeps the forfait home, while the call spent it on the direct wire
-// (deferred by the bench's t50 r1 fix; ADR-161 decision 8 has claw's events
-// carry the Spend's slot).
-func hintBlindLedger() Pending {
-	return pending(Ledger, "U2", Nobody,
-		"t50 r1 fix, deferred 1: the ledger's route carries no claw hint and books the hinted forfait spend on nobody")
-}
-
 // Rows is the parity table.
 func Rows() []Row {
 	var rows []Row
@@ -105,7 +91,10 @@ func Rows() []Row {
 	}
 
 	// `provider: "anthropic"` goes to Anthropic direct past a z.ai wire: the
-	// run's forfait is judged there, and spends.
+	// run's forfait is judged there, and spends. The ledger booked the spend
+	// on nobody — its route carried no hint, and the hint-less walk keeps the
+	// forfait home (the bench's t50 r1 fix, deferred) — until U2's claw
+	// events carried the arm's slot.
 	for _, r := range stampings(Row{
 		Name:    "a hinted Claude node past a z.ai wire",
 		Origin:  "bench 6e2389644 TestAHintedClaudeNodeCrossesItsRunsForfaitPastARedirectedWire (t50 r1 #1)",
@@ -113,15 +102,15 @@ func Rows() []Row {
 		Run:     Run{Forfait: true},
 		Node:    claw("anthropic", Leg{Provider: "anthropic"}),
 		Want:    Spent(0, RunForfait, string(secrets.OAuthKindClaudeCode), ForfaitToken),
-		Pending: []Pending{hintBlindLedger()},
 	}, nil, nil) {
 		add(sides(r, nil, nil)...)
 	}
 
 	// SEEN RED (t50 r2 #1): ClawBackend.Execute's switch guard refuses the
-	// node before either arm, the pod's key untouched; the meter keys the
+	// node before either arm, the pod's key untouched; the meter keyed the
 	// pod's account, and the probe, which never met the guard, admitted — U1
-	// moved the guard into the claw arm the admission asks.
+	// moved the guard into the claw arm the admission asks, U2 the meter
+	// onto the arm's answer.
 	for _, r := range stampings(Row{
 		Name:    "the subscription switch beside the pod's key",
 		Origin:  "t50 r2 #1 (open MEDIUM); bench 6e2389644 TestTheForbidSwitchCrossesWhatTheInProcessTwinSpends",
@@ -129,10 +118,7 @@ func Rows() []Row {
 		Run:     Run{Keys: map[secrets.Provider]string{secrets.ProviderZAI: RunZAI}, Forfait: true},
 		Node:    claw(""),
 		Want:    Refuses(SubscriptionSwitch),
-	}, func(r *Row) {
-		with(r, pending(Meter, "U2", Spent(0, PodEnv, "", PodAnthropic),
-			"t50 r2 #1: routeKey keys the pod's account for a node GuardSubscriptionOAuth refuses"))
-	}, nil) {
+	}, nil, nil) {
 		add(sides(r, nil, nil)...)
 	}
 
@@ -157,12 +143,13 @@ func Rows() []Row {
 			Sandboxed: true,
 			Trust:     Fork,
 			Want:      Spent(0, RunForfait, string(secrets.OAuthKindClaudeCode), ForfaitToken),
-			Pending:   []Pending{hintBlindLedger()},
 		})
 	}
 
 	// SEEN RED (the plan row, ADR-161 context): a pool-lent forfait the wire
-	// keeps home — the call spends the pod's key, the plan books the donor.
+	// keeps home — the call spends the pod's key, the fine table booked the
+	// donor, joining the step's provider word to the publisher's pod-blind
+	// plan row; U2 books it on the call's own credential keys.
 	add(sides(Row{
 		Name:    "a pool-lent forfait beside a gateway wire",
 		Origin:  "ADR-161 context (plan ≠ dispatch, t53 r1 #1); #2288 258bc2fbf",
@@ -170,8 +157,6 @@ func Rows() []Row {
 		Run:     Run{Forfait: true, Plan: true},
 		Node:    claw(""),
 		Want:    Spent(0, PodEnv, "", PodAnthropic),
-		Pending: []Pending{pending(Plan, "U2", Spent(0, RunForfait, string(secrets.OAuthKindClaudeCode), ForfaitToken),
-			"plan ≠ dispatch: the fine table joins the step's provider word to the publisher's pod-blind plan row")},
 	}, nil, nil)...)
 
 	// The plan books the forfait it predicted where the call spends it.
@@ -184,22 +169,21 @@ func Rows() []Row {
 	}, nil, nil)...)
 
 	// Nothing of the run's nor the pod's: the call carries no credential and
-	// dies on the provider's refusal; the meter keys the scope's
-	// no-credential meter where ADR-161 decision 7 reads a refusal as not
-	// metered.
+	// dies on the provider's refusal. The meter keyed the scope's
+	// no-credential meter (AmbientEnvMeter's bare spend); ADR-161 decision 7
+	// reads a refusal as not metered, and U2's meter reads the arm.
 	add(sides(Row{
 		Name:   "nothing of the run's nor the pod's",
 		Origin: "#1768 TestForkRunOnClawWithoutCredentialChannelIsRefused; bench 09ddb1695 TestAmbientEnvMeter_NoEnvCredentialIsTheBareSpend",
 		Node:   claw(""),
 		Want:   Refuses(NoCredential),
-		Pending: []Pending{pending(Meter, "U2", Spend{Channel: HostLogin},
-			"AmbientEnvMeter answers metered with no fingerprint for a credential-less client: the bare meter, for a call no account pays")},
 	}, nil, nil)...)
 
 	// SEEN RED (t53 r2 #2): a stamped first leg refused, dispatch falls through
-	// to the run's z.ai key; the pre-flight reads the first leg only, and the
-	// probe composed the first leg's crossing alone — U1's admission resolves
-	// every leg.
+	// to the run's z.ai key; the pre-flight read the first chain element only
+	// (AnthropicWireRoutes) and the probe composed the first leg's crossing
+	// alone — U1's admission resolves every leg, U2's meter keys the first
+	// leg the arm funds.
 	add(sides(Row{
 		Name:    "a fall-through leg past a stamped first leg",
 		Origin:  "t53 r2 #2 (ADR-161 review: a fall-through leg unmetered)",
@@ -207,8 +191,6 @@ func Rows() []Row {
 		Run:     Run{Keys: map[secrets.Provider]string{secrets.ProviderZAI: RunZAI}, Stamped: true},
 		Node:    claw("anthropic,zai:"+glmSpec, Leg{Provider: "anthropic"}, Leg{Provider: "zai", Model: glmSpec}),
 		Want:    Spent(1, RunKey, string(secrets.ProviderZAI), RunZAI),
-		Pending: []Pending{pending(Meter, "U2", Refuses(AmbientStamp),
-			"t53 r2 #2: AnthropicWireRoutes keys the first chain element, refused, while dispatch spends leg 2")},
 	}, nil, nil)...)
 
 	// SEEN RED (t53 r2 #4): the allowlist drops the leg the pod funds; the
@@ -301,6 +283,79 @@ func Rows() []Row {
 		Node:    claw(""),
 		Want:    Spent(0, PodEnv, "", PodAnthropic),
 	}, nil, nil)...)
+
+	// THE BEHAVIOUR CHANGE (ADR-161 decision 4): a stamped run's sealed key
+	// serves its supervisor — ADR-131 §7 refuses the pod's environment only.
+	// The prefix rule (AmbientSurvivingSpecs) dropped every non-gateway
+	// supervisor of a stamped run; U2's filter keeps the specs the arm funds.
+	for _, r := range stampings(Row{
+		Name:    "a supervisor on the run's own key beside the pod's",
+		Origin:  "ADR-161 decision 4 (AmbientSurvivingSpecs' prefix rule goes)",
+		Posture: map[string]string{"ANTHROPIC_API_KEY": PodAnthropic},
+		Run:     Run{Keys: map[secrets.Provider]string{secrets.ProviderAnthropic: RunAnthropic}},
+		Node:    claw(""),
+		Role:    SupervisorRole,
+		Trust:   Trusted,
+		Want:    Spent(0, RunKey, string(secrets.ProviderAnthropic), RunAnthropic),
+	}, nil, nil) {
+		add(r)
+	}
+	// The stamp still refuses the pod's money to a supervisor: dropped at
+	// spawn, warned at the launch, not metered.
+	add(Row{
+		Name:    "a stamped run's supervisor its run does not fund",
+		Origin:  "ADR-161 decision 4 (the spawn keeps the specs Resolve funds, warning on the rest)",
+		Posture: map[string]string{"ANTHROPIC_API_KEY": PodAnthropic},
+		Run:     Run{Keys: map[secrets.Provider]string{secrets.ProviderZAI: RunZAI}, Stamped: true},
+		Node:    claw(""),
+		Role:    SupervisorRole,
+		Trust:   Trusted,
+		Want:    Refuses(AmbientStamp),
+	})
+
+	// kimi, grok and opencode read their own configuration, never a run
+	// credential (ADR-161 decision 5): their arm only refuses, under the
+	// stamp; otherwise it answers own config — admitted with a warning, and
+	// keyed as before (not metered).
+	for _, own := range []struct{ article, backend, model string }{
+		{"a", "kimi", "kimi-k2"},
+		{"a", "grok", "grok-4"},
+		{"an", "opencode", claudeSpec},
+	} {
+		for _, r := range stampings(Row{
+			Name:    own.article + " " + own.backend + " node reading its own config",
+			Origin:  "ADR-161 decision 5 (#108: the stamp binds every backend; own-config arms registered in U2)",
+			Posture: map[string]string{"ANTHROPIC_API_KEY": PodAnthropic, "MOONSHOT_API_KEY": "moonshot-pod", "XAI_API_KEY": "xai-pod"},
+			Run:     Run{Keys: map[secrets.Provider]string{secrets.ProviderAnthropic: RunAnthropic}},
+			Node:    onBackend(own.backend, own.model),
+			Trust:   Trusted,
+			Want:    Spent(0, OwnConfig, "", ""),
+		}, nil, func(r *Row) { r.Want = Refuses(AmbientStamp) }) {
+			add(r)
+		}
+	}
+
+	// The interim guard (ADR-161 decision 9, #111): until their arms land
+	// (U4), a stamped pi or codex leg is refused — at the launch and at the
+	// dispatch — where unguarded it spends the pod's environment.
+	add(Row{
+		Name:    "a stamped pi node beside the pod's key",
+		Origin:  "ADR-161 decision 9 (the guard's witness: a stamped pi row)",
+		Posture: map[string]string{"ANTHROPIC_API_KEY": PodAnthropic},
+		Run:     Run{Keys: map[secrets.Provider]string{secrets.ProviderZAI: RunZAI}, Stamped: true},
+		Node:    onBackend("pi", claudeSpec),
+		Trust:   Trusted,
+		Want:    Refuses(ArmPending),
+	})
+	add(Row{
+		Name:    "a stamped codex node beside the pod's key",
+		Origin:  "ADR-161 decision 9 (the guard's witness: a stamped codex row)",
+		Posture: map[string]string{"OPENAI_API_KEY": PodOpenAI},
+		Run:     Run{Keys: map[secrets.Provider]string{secrets.ProviderZAI: RunZAI}, Stamped: true},
+		Node:    onBackend("codex", "openai/gpt-5.4"),
+		Trust:   Trusted,
+		Want:    Refuses(ArmPending),
+	})
 
 	for i := range rows {
 		if rows[i].Role == "" {

@@ -143,7 +143,7 @@ func (r *Registry) registerDefaults() {
 		// So the warning below is about COST, not viability: the operator is
 		// spending a different pot than the plan they may think they are using.
 		// ITERION_FORBID_SUBSCRIPTION_OAUTH=1 refuses this path outright, in the
-		// walk (AmbientEnvMeter reads the same refusal).
+		// walk (the claw arm reads the same refusal).
 		if w.oauth != "" {
 			cfg.OAuthToken = w.oauth
 			claudeForfaitWarnOnce.Do(func() {
@@ -642,8 +642,8 @@ func glmBaseURL(operatorBase string) string {
 // the credential the client is built from — its x-api-key, or the bearer it
 // sends as the OAuth token in the key's place — the destination, and which
 // arm of the walk supplied them. The factory builds its client from it and
-// the usage-cap meter (AmbientEnvMeter) reads the same walk, so the meter
-// cannot grow a second description of the order.
+// the claw arm names its spend (spend) from the same walk, so the readers of
+// that spend cannot grow a second description of the order.
 type anthropicEnvWalk struct {
 	// apiKey is the client's x-api-key; "" sends none.
 	apiKey string
@@ -787,12 +787,25 @@ func anthropicEnvCredentials(ctx context.Context, modelID string) (anthropicEnvW
 // host's Claude Code login where the bearer was read from disk, the pod's
 // env for a key, a bearer or the ZAI_API_KEY synthesis; the zero Spend where
 // the client carries no credential.
+//
+// A pod-env spend carries the account the request spends as its
+// Fingerprint: the digest every lane's ambient label keys on
+// (delegate.AmbientCredentialSetFingerprint) over the credentials claw's
+// client carries (liveCredentials) — claw's channels, not the claude CLI's:
+// claw reads no CLAUDE_CODE_OAUTH_TOKEN, sends a key alone where a bearer
+// sits beside it, and no line of the ANTHROPIC_CUSTOM_HEADERS block rides.
+// The synthesis carries none: its request spends z.ai's account, which no
+// ambient label names.
 func (w anthropicEnvWalk) spend() credroute.Spend {
 	switch {
 	case w.oauth != "" && w.diskForfait:
 		return credroute.Spend{Channel: credroute.ChannelHostLogin, BaseURL: w.baseURL}
 	case w.oauth != "" || w.apiKey != "":
-		return credroute.Spend{Channel: credroute.ChannelPodEnv, BaseURL: w.baseURL}
+		s := credroute.Spend{Channel: credroute.ChannelPodEnv, BaseURL: w.baseURL}
+		if !w.zai {
+			s.Fingerprint = delegate.AmbientCredentialSetFingerprint(w.liveCredentials())
+		}
+		return s
 	}
 	return credroute.Spend{}
 }
@@ -887,79 +900,14 @@ func envFactorySpend(ctx context.Context, provider, modelID string) credroute.Sp
 	return credroute.Spend{Channel: credroute.ChannelPodEnv}
 }
 
-// AmbientEnvMeter is the usage-cap meter's reading of a claw call on the
-// anthropic wire (spec bare or `anthropic/…`) that nothing of the run's
-// funds — a claw node's route, a supervisor's spec — read off the walk claw's
-// own resolution takes from the process env: the `provider: "anthropic"`
-// direct path for an id Anthropic serves under that hint
-// (anthropicDirectEnvCredentials), the env factory otherwise
-// (anthropicEnvCredentials).
-//
-// fingerprint names the account the request spends, in the digest every
-// lane's ambient label keys on (delegate.AmbientCredentialSetFingerprint),
-// over the credentials claw's client carries: its x-api-key or the bearer it
-// sends in the key's place (anthropicEnvWalk.liveCredentials). Those are
-// claw's channels, not the claude CLI's (delegate.AmbientCredentialFingerprint):
-// claw reads no CLAUDE_CODE_OAUTH_TOKEN, where a key and a bearer both sit in
-// the env it sends the key alone, and no credential line of the
-// ANTHROPIC_CUSTOM_HEADERS block rides — in process the engine's client
-// refuses the ambient block (withClientIdentity sets NoAmbientHeaders), in the
-// container the block crosses without its credential lines
-// (forwardableProviderEnv). In process and sandboxed, the same set.
-//
-// metered=false where no wall this cap keeps stands in the call's way:
-//   - the walk refuses before any client exists — the ZAI_API_KEY synthesis's
-//     typed refusal of an id z.ai does not serve, a subscription bearer under
-//     ITERION_FORBID_SUBSCRIPTION_OAUTH, the direct path with nothing to
-//     spend: no account spends, and the typed refusal is the call's answer;
-//   - the synthesis serves the call from z.ai's account, never a meter this
-//     cap keeps;
-//   - a GLM id bound for the real Anthropic wire (GLMUnservedAt), which
-//     serves no GLM id;
-//   - a GLM id whose request carries no credential at all, the bearer dropped
-//     on z.ai's own hostnames.
-//
-// metered=true with fingerprint "" where the client carries none of the env's
-// credentials: this host's Claude Code login read from disk, or — an id
-// Anthropic serves — no credential at all. No inherited variable names that
-// spend; it is the no-credential meter's.
-func AmbientEnvMeter(spec, hint string) (fingerprint string, metered bool) {
-	id := strings.TrimSpace(spec)
-	if prefix, rest, cut := strings.Cut(id, "/"); cut && strings.EqualFold(strings.TrimSpace(prefix), string(secrets.ProviderAnthropic)) {
-		id = rest
-	}
-	glm := modelServedByZAI(id)
-	// The hint branch of ResolveWithContext, read with its own predicate: a
-	// GLM id is exempt from it, and where its funding check refuses one
-	// (ErrGLMHintUnfunded: no ZAI_API_KEY, no ANTHROPIC_AUTH_TOKEN, no base
-	// URL) the env walk sends it to api.anthropic.com — not metered either way.
-	walk := anthropicEnvCredentials
-	if !glm && HonoursProviderHintValue(delegate.BackendClaw, hint) {
-		walk = anthropicDirectEnvCredentials
-	}
-	w, err := walk(context.Background(), id)
-	if err != nil || w.zai {
-		return "", false
-	}
-	if GLMUnservedAt(id, w.baseURL) {
-		return "", false
-	}
-	live := w.liveCredentials()
-	if glm && len(live) == 0 {
-		return "", false
-	}
-	return delegate.AmbientCredentialSetFingerprint(live), true
-}
-
 // GLMUnservedAt reports that spec is a GLM id on the anthropic wire bound for
 // baseURL where that is the real Anthropic API — no base URL, or
 // api.anthropic.com named outright (secrets.AnthropicForfaitWireOK, the one
 // reading of that wire) — which serves no GLM id: the provider refuses the id
 // before any account wall, whatever credential rides. The usage-cap meter
-// reads every claw arm of such a spec with it — the pod env's walk
-// (AmbientEnvMeter) and the run's own Anthropic key, sent to the destination
-// RunCredentialBaseURL names — so neither parks a run on a wall the call
-// never meets.
+// reads every claw spend of such a spec with it, at the destination the
+// spend names (credroute.Spend.BaseURL), so it parks no run on a wall the
+// call never meets.
 func GLMUnservedAt(spec, baseURL string) bool {
 	return GLMOnAnthropicWire(spec) && secrets.AnthropicForfaitWireOK(baseURL)
 }

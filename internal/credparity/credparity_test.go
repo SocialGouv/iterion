@@ -34,70 +34,89 @@ func TestEveryRowIsWellFormed(t *testing.T) {
 	}
 }
 
-// A Pending entry names the unit of this lane still to land (U2: U1 has
-// landed and closed its rows, and no red row lands with U0–U2), one reader at
-// most once, and an answer that differs from Want — an entry restating Want
-// would pin no divergence and never flip.
-func TestEveryPendingEntryPinsADivergenceTheLaneCloses(t *testing.T) {
+// Every row's dispatch is driven by one harness: a row on a backend no
+// harness drives would be judged by the readers above the dispatch alone.
+func TestEveryRowHasADispatchHarness(t *testing.T) {
 	for _, r := range Rows() {
-		readers := map[Reader]bool{}
+		if DispatchHarness(r.Node.Backend) == "" {
+			t.Errorf("row %q: no dispatch harness drives backend %q", r.Name, r.Node.Backend)
+		}
+		if r.Role == SupervisorRole && r.Node.Backend != "claw" {
+			t.Errorf("row %q: a supervisor evaluates on claw, in process — not %q", r.Name, r.Node.Backend)
+		}
+	}
+}
+
+// U0–U2 land as one tip (ADR-161 decision 9): every divergence they pinned is
+// closed, so no row carries a Pending entry — every reader is judged against
+// the row's Want. A later unit that pins a reader again relaxes this test.
+func TestNoRowIsPending(t *testing.T) {
+	for _, r := range Rows() {
 		for _, p := range r.Pending {
-			if p.Unit != "U2" {
-				t.Errorf("row %q: %s pending on %q — U1 has landed and U0–U2 land as one tip, so only U2 greens a row", r.Name, p.Reader, p.Unit)
-			}
-			if readers[p.Reader] {
-				t.Errorf("row %q: %s pinned twice", r.Name, p.Reader)
-			}
-			readers[p.Reader] = true
-			if !slices.Contains(Readers, p.Reader) {
-				t.Errorf("row %q: unknown reader %q", r.Name, p.Reader)
-			}
-			if p.Today == r.Want {
-				t.Errorf("row %q: %s's pinned answer is Want itself", r.Name, p.Reader)
-			}
-			if p.Why == "" {
-				t.Errorf("row %q: %s's divergence is unexplained", r.Name, p.Reader)
-			}
+			t.Errorf("row %q: %s pending on %q (%s) — U0–U2 land as one tip, and no red row lands with them", r.Name, p.Reader, p.Unit, p.Why)
 		}
 	}
 }
 
 // The rows ADR-161 (decision 9, U0) says are seen red on main are in the
-// table: each one U2 greens still pins its reader on U2, and each one U1
-// greened pins its reader no more — the harness judges it against Want.
-func TestTheSeenRedRowsArePinned(t *testing.T) {
+// table and judge their reader against Want: U1 greened the admission's, U2
+// the meter's, the ledger's and the plan's.
+func TestTheSeenRedRowsAreJudged(t *testing.T) {
 	for _, want := range []struct {
 		origin string
 		reader Reader
-		unit   string // "" — greened by U1, judged against Want
 	}{
-		{"t50 r2 #1", Meter, "U2"},
-		{"t50 r2 #1", Admission, ""},
-		{"t50 r2 #2", Admission, ""},
-		{"plan ≠ dispatch", Plan, "U2"},
-		{"t53 r2 #2", Meter, "U2"},
-		{"t53 r2 #2", Admission, ""},
-		{"t53 r2 #4", Admission, ""},
-		{"t53 r2 #3", Admission, ""},
-		{"t53 r3 #2", Admission, ""},
+		{"t50 r2 #1", Meter},
+		{"t50 r2 #1", Admission},
+		{"t50 r2 #2", Admission},
+		{"plan ≠ dispatch", Plan},
+		{"t53 r2 #2", Meter},
+		{"t53 r2 #2", Admission},
+		{"t53 r2 #4", Admission},
+		{"t53 r2 #3", Admission},
+		{"t53 r3 #2", Admission},
 	} {
 		found := false
 		for _, r := range Rows() {
 			if !strings.Contains(r.Origin, want.origin) {
 				continue
 			}
-			_, p := r.Expect(want.reader)
-			switch {
-			case want.unit == "" && p != nil:
-				t.Errorf("row %q from %q still pins %s on %s — U1 greened it", r.Name, want.origin, want.reader, p.Unit)
-			case want.unit == "" && (want.reader != Admission || r.Judged()):
-				found = true
-			case p != nil && p.Unit == want.unit:
+			if _, p := r.Expect(want.reader); p != nil {
+				t.Errorf("row %q from %q still pins %s on %s", r.Name, want.origin, want.reader, p.Unit)
+				continue
+			}
+			if want.reader != Admission || r.Judged() {
 				found = true
 			}
 		}
 		if !found {
-			t.Errorf("no row from %q judges %s (unit %q)", want.origin, want.reader, want.unit)
+			t.Errorf("no row from %q judges %s against its Want", want.origin, want.reader)
+		}
+	}
+}
+
+// The rows U2 brings: a supervisor on the run's own key under the stamp (the
+// one behaviour change), each own-config backend stamped and not, and the
+// guard's two witnesses — a stamped pi and a stamped codex row refused
+// arm-pending.
+func TestTheUnitTwoRowsAreInTheTable(t *testing.T) {
+	has := func(pred func(Row) bool) bool { return slices.ContainsFunc(Rows(), pred) }
+	if !has(func(r Row) bool {
+		return r.Role == SupervisorRole && r.Run.Stamped && !r.Want.Refused() && r.Want.Channel == RunKey
+	}) {
+		t.Error("no row has a stamped run's own key serve its supervisor")
+	}
+	for _, backend := range []string{"kimi", "grok", "opencode"} {
+		if !has(func(r Row) bool { return r.Node.Backend == backend && r.Run.Stamped && r.Want.Refusal == AmbientStamp }) {
+			t.Errorf("no row refuses a stamped %s node ambient-stamp", backend)
+		}
+		if !has(func(r Row) bool { return r.Node.Backend == backend && !r.Run.Stamped && r.Want.Channel == OwnConfig }) {
+			t.Errorf("no row has an unstamped %s node read its own config", backend)
+		}
+	}
+	for _, backend := range []string{"pi", "codex"} {
+		if !has(func(r Row) bool { return r.Node.Backend == backend && r.Run.Stamped && r.Want.Refusal == ArmPending }) {
+			t.Errorf("no row refuses a stamped %s node arm-pending (the guard's witness)", backend)
 		}
 	}
 }

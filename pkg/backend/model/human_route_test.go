@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/SocialGouv/iterion/pkg/backend/credroute"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 )
@@ -85,15 +86,15 @@ func TestAnthropicWireRoutesReadsAHumanNodesDirectRoute(t *testing.T) {
 	}}
 	got := AnthropicWireRoutes(RouteView{Workflow: wf, Overrides: ModelOverrides{}})
 	want := []WireRoute{
-		{NodeID: "h-anthropic", Backend: "", Hint: "anthropic", Model: "anthropic/claude-opus-5-5", Readable: true},
-		{NodeID: "h-bare", Backend: "", Hint: "", Model: "", Readable: false},
-		{NodeID: "h-var", Backend: "", Hint: "", Model: "{{vars.m}}", Readable: false},
+		{NodeID: "h-anthropic", Backend: "", Legs: []credroute.Leg{{Provider: "anthropic"}}, Model: "anthropic/claude-opus-5-5", Readable: true},
+		{NodeID: "h-bare", Backend: "", Legs: []credroute.Leg{{}}, Model: "", Readable: false},
+		{NodeID: "h-var", Backend: "", Legs: []credroute.Leg{{}}, Model: "{{vars.m}}", Readable: false},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("routes = %+v, want %+v", got, want)
 	}
 	for i := range want {
-		if got[i] != want[i] {
+		if !sameWireRoute(got[i], want[i]) {
 			t.Errorf("route %d = %+v, want %+v", i, got[i], want[i])
 		}
 	}

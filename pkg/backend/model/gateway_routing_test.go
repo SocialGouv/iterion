@@ -17,6 +17,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/modelspecs"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 
+	"github.com/SocialGouv/iterion/pkg/backend/credroute"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/modelroute"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
@@ -480,16 +481,16 @@ func TestEffectiveProviders_GatewayRouteIsEnvFundedNotUnknown(t *testing.T) {
 	}
 }
 
-// TestRouteOnAnthropicWire_GatewayModelAnswersFalse pins what
+// TestLegsOnAnthropicWire_GatewayModelAnswersFalse pins what
 // wire_reach.go already does: a gateway route is not an anthropic-wire
 // route, so the weekly-cap pre-flight does not park a run that cannot spend
 // the capped subscription. Mutation that must redden it: teach the
 // anthropic-wire guard the gateway prefix (or make the model prefix fall
 // through as unresolved on claw) → the answer flips to true.
-func TestRouteOnAnthropicWire_GatewayModelAnswersFalse(t *testing.T) {
+func TestLegsOnAnthropicWire_GatewayModelAnswersFalse(t *testing.T) {
 	for _, model := range []string{"openai_compatible/m", "openai_compatible/team-a/m"} {
-		if routeOnAnthropicWire(delegate.BackendClaw, "", "", model) {
-			t.Errorf("routeOnAnthropicWire(claw, %q) = true — a gateway route answered reachable on the anthropic wire", model)
+		if legsOnAnthropicWire(delegate.BackendClaw, []credroute.Leg{{}}, model) {
+			t.Errorf("legsOnAnthropicWire(claw, %q) = true — a gateway route answered reachable on the anthropic wire", model)
 		}
 	}
 }

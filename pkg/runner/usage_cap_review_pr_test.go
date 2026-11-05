@@ -105,7 +105,7 @@ func TestUsageCapPreflight_MonoGPTOnTheReviewPrBot(t *testing.T) {
 	blankReviewPrDials(t)
 	wf := compileCatalogBot(t, "review-pr")
 	mono := map[string]any{"mono_family": "gpt", "review_mode": "mono", "review_tier": "guard"}
-	ctx := forfaitBesidePinnedKeys()
+	ctx := forfaitBesidePinnedKeys(t)
 	resets := time.Now().UTC().Add(30 * time.Hour)
 	hard := cappedWire(t, usagecap.WindowSevenDay, 0.92, resets) // the test policy reads the week HARD
 	soft := cappedWire(t, usagecap.WindowFiveHour, 0.95, resets) // and the five-hour window SOFT
