@@ -50,3 +50,37 @@ func TestDeclaredEmptyCapabilitiesSurviveTheJSONTransport(t *testing.T) {
 		t.Errorf("declared empty workflow Capabilities = %#v", got)
 	}
 }
+
+// A tool node declares `capabilities:` too (#78=A, ADR-151), with the same
+// nilness rule: the canvas round-trip must keep its declared empty list
+// declared, or an open → save widens the node to the workflow's grant.
+func TestDeclaredEmptyToolCapabilitiesSurviveTheJSONTransport(t *testing.T) {
+	original := &ast.File{
+		Tools: []*ast.ToolNodeDecl{
+			{Name: "holds_none", Action: "board.issue.list", Capabilities: []string{}},
+			{Name: "inherits", Action: "board.issue.list"},
+			{Name: "reads", Action: "board.issue.list", Capabilities: []string{"board.read"}},
+		},
+		Workflows: []*ast.WorkflowDecl{{Name: "w", Entry: "holds_none"}},
+	}
+	data, err := ast.MarshalFile(original)
+	if err != nil {
+		t.Fatalf("Marshal failed: %v", err)
+	}
+	if n := strings.Count(string(data), `"capabilities": []`); n != 1 {
+		t.Fatalf("the one declared empty tool list must be emitted (the absent one must not), found %d in %s", n, data)
+	}
+	restored, err := ast.UnmarshalFile(data)
+	if err != nil {
+		t.Fatalf("Unmarshal failed: %v", err)
+	}
+	if got := restored.Tools[0].Capabilities; got == nil || len(got) != 0 {
+		t.Errorf("declared empty tool Capabilities = %#v", got)
+	}
+	if got := restored.Tools[1].Capabilities; got != nil {
+		t.Errorf("absent tool Capabilities = %#v, want nil", got)
+	}
+	if got := strings.Join(restored.Tools[2].Capabilities, ","); got != "board.read" {
+		t.Errorf("declared tool Capabilities = %q", got)
+	}
+}
