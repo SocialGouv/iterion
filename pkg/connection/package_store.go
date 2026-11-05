@@ -153,6 +153,13 @@ func checkPackagePath(path string) error {
 			return fmt.Errorf("path %q is not a plain relative name", path)
 		}
 	}
+	// A backslash is a separator on some filesystems and an ordinary
+	// character on this one: "a\..\b" would pass the segment check above
+	// while reading as an escape on Windows, so the file map refuses the
+	// byte outright — the fs.FS form is slash-separated by definition.
+	if strings.ContainsAny(path, `\`) {
+		return fmt.Errorf("path %q is not a plain relative name (a backslash is a separator elsewhere)", path)
+	}
 	return nil
 }
 

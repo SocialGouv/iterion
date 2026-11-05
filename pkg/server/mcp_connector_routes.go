@@ -115,7 +115,11 @@ func (h *connectorMCPHandler) theFacade() (*facade.Facade, error) {
 // here is the project tier serving packages the workspace no longer has.
 func (h *connectorMCPHandler) catalogFor(grant boardMCPGrant) (connection.Catalog, error) {
 	if h.deps.CatalogForTenant != nil && grant.TenantID != "" {
-		return h.deps.CatalogForTenant(grant.TenantID), nil
+		// A nil answer is the documented "no store wired" shape — fall back to
+		// the static catalog rather than handing nil to the facade.
+		if cat := h.deps.CatalogForTenant(grant.TenantID); cat != nil {
+			return cat, nil
+		}
 	}
 	if h.deps.CatalogForRun == nil {
 		return h.deps.Catalog, nil

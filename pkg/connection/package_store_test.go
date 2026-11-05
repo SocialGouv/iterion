@@ -153,40 +153,74 @@ func TestPackageStore_PublishGetRetractAcrossTwins(t *testing.T) {
 	})
 }
 
-// The publish gate: what must NOT reach a tier.
+// The publish gate: what must NOT reach a tier — held against BOTH twins,
+// because the gate is the two implementations' one shared function and a
+// twin that skipped it would serve what the other refused.
 func TestPackageStore_PublishRefusesWhatCannotServe(t *testing.T) {
-	st := connection.NewMemoryPackageStore()
-	ctx := context.Background()
-
-	for _, tc := range []struct {
-		name    string
-		mutate  func(*connection.StoredPackage)
-		wantMsg string
+	for _, twin := range []struct {
+		name string
+		st   func(t *testing.T) connection.PackageStore
 	}{
-		{"no files", func(p *connection.StoredPackage) { p.Files = nil }, "no files"},
-		{"a path that escapes", func(p *connection.StoredPackage) {
-			p.Files["../evil.yaml"] = "id: evil"
-		}, "plain relative name"},
-		{"the id the content declares differs", func(p *connection.StoredPackage) {
-			p.ConnectorID = "other"
-		}, "declares id"},
-		{"a malformed document", func(p *connection.StoredPackage) {
-			p.Files["connector.yaml"] = "schema_version: 1\nid: probe\nversion: 1.0.0\nauth: ["
-		}, "does not load"},
+		{"memory", func(t *testing.T) connection.PackageStore { return connection.NewMemoryPackageStore() }},
+		{"mongo", func(t *testing.T) connection.PackageStore { return newTestMongoPackageStore(t) }},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
-			pkg := connection.StoredPackage{TenantID: "team-a", ConnectorID: "probe", Files: publishedFiles(t, "probe")}
-			tc.mutate(&pkg)
-			err := st.Publish(ctx, pkg)
-			if err == nil {
-				t.Fatalf("want a refusal mentioning %q", tc.wantMsg)
-			}
-			if !strings.Contains(err.Error(), tc.wantMsg) {
-				t.Errorf("refusal = %v, want it to mention %q", err, tc.wantMsg)
-			}
-			// And the refusal left nothing serving.
-			if _, gerr := st.Get(ctx, "team-a", "probe"); gerr == nil {
-				t.Fatal("a refused publish must leave no row serving")
+		t.Run(twin.name, func(t *testing.T) {
+			st := twin.st(t)
+			ctx := context.Background()
+
+			for _, tc := range []struct {
+				name    string
+				mutate  func(*connection.StoredPackage)
+				wantMsg string
+			}{
+				{"no files", func(p *connection.StoredPackage) { p.Files = nil }, "no files"},
+				{"a path that escapes", func(p *connection.StoredPackage) {
+					p.Files["../evil.yaml"] = "id: evil"
+				}, "plain relative name"},
+				{"a path with a backslash", func(p *connection.StoredPackage) {
+					p.Files[`ops\..\evil.yaml`] = "id: evil"
+				}, "backslash"},
+				{"the id the content declares differs", func(p *connection.StoredPackage) {
+					p.ConnectorID = "other"
+				}, "declares id"},
+				{"a malformed document", func(p *connection.StoredPackage) {
+					p.Files["connector.yaml"] = "schema_version: 1\nid: probe\nversion: 1.0.0\nauth: ["
+				}, "does not load"},
+				// The hash is recorded AT PUBLISH, never trusted from the
+				// caller: a supplied one must not survive.
+				{"a caller-supplied content hash", func(p *connection.StoredPackage) {
+					p.ContentHash = "deadbeef"
+				}, ""},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					pkg := connection.StoredPackage{TenantID: "team-a", ConnectorID: "probe", Files: publishedFiles(t, "probe")}
+					tc.mutate(&pkg)
+					err := st.Publish(ctx, pkg)
+					if tc.wantMsg == "" {
+						if err != nil {
+							t.Fatalf("the publish itself is valid: %v", err)
+						}
+						got, gerr := st.Get(ctx, "team-a", "probe")
+						if gerr != nil {
+							t.Fatal(gerr)
+						}
+						if got.ContentHash == "" || got.ContentHash == "deadbeef" {
+							t.Fatalf("the stored hash must be the computed one, got %q", got.ContentHash)
+						}
+						_ = st.Retract(ctx, "team-a", "probe")
+						return
+					}
+					if err == nil {
+						t.Fatalf("want a refusal mentioning %q", tc.wantMsg)
+					}
+					if !strings.Contains(err.Error(), tc.wantMsg) {
+						t.Errorf("refusal = %v, want it to mention %q", err, tc.wantMsg)
+					}
+					// And the refusal left nothing serving.
+					if _, gerr := st.Get(ctx, "team-a", "probe"); gerr == nil {
+						t.Fatal("a refused publish must leave no row serving")
+					}
+				})
 			}
 		})
 	}
@@ -242,6 +276,11 @@ func TestCloudTiers_ABrokenTeamRowStopsTheSearch(t *testing.T) {
 	_, _, err := cat.Package("probe")
 	if err == nil || !strings.Contains(err.Error(), "does not load") {
 		t.Fatalf("err = %v — the team's broken row must stop the search, not fall through to the platform's", err)
+	}
+	// The refusal names the ROW (tenant + id): the repair is a retract or a
+	// republish of exactly it.
+	if !strings.Contains(err.Error(), "team-a") {
+		t.Errorf("err = %v, want it to name the tenant whose row is broken", err)
 	}
 }
 

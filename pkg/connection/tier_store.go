@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"testing/fstest"
 
 	"github.com/SocialGouv/iterion/pkg/connector/overlay"
@@ -80,14 +81,18 @@ func (c *StoreCatalog) Package(connectorID string) (*spec.Package, Tier, error) 
 	}
 	pkg, err := overlay.LoadPackageFS(fsys, ".")
 	if err != nil {
-		return nil, Tier{}, fmt.Errorf("connector %q in the %s tier does not load: %w", connectorID, c.kind, err)
+		// Name the ROW, not only the tier: the operator repairing it deletes
+		// or republishes a (tenant, connector) record, and "the team tier"
+		// alone does not say which.
+		return nil, Tier{}, fmt.Errorf("connector %q in the %s tier (tenant %s) does not load: %w", connectorID, c.kind, c.tenant, err)
 	}
 	return pkg, c.tier(), nil
 }
 
-// Connectors lists the ids this tier can serve — the rows that ARE the tier.
-// A row that no longer loads does not advertise (the rule a tier that cannot
-// serve holds): it is skipped here and refused by name at Package.
+// Connectors lists the tier's rows WITHOUT loading them — loading per id
+// here would pay a package build for a listing. The "must not advertise what
+// it cannot serve" rule is held at Package (a row that no longer loads is
+// refused by name there, stopping the search), not pre-computed here.
 func (c *StoreCatalog) Connectors() []string {
 	rows, err := c.store.ListByTenant(context.Background(), c.tenant)
 	if err != nil {
@@ -100,6 +105,14 @@ func (c *StoreCatalog) Connectors() []string {
 	return out
 }
 
+// sharedFloor is the ONE baked catalog per process. The floor's packages are
+// compiled into the binary and cannot change at runtime, so rebuilding it per
+// resolution re-parsed ~790 KiB of YAML per facade call for nothing — and
+// defeated the FSCatalog's own load cache, which is per instance. The
+// store-backed tiers above it are rebuilt per call ON PURPOSE (a republish
+// must serve on the next resolution); the floor is the immutable part.
+var sharedFloor = sync.OnceValue(func() *FSCatalog { return BakedCatalog() })
+
 // CloudCatalogs composes the tiers a CLOUD resolution walks, most specific
 // first: the team's own packages, then the platform's, then the baked floor
 // compiled into the binary. The local tiers (project, home) are NOT here —
@@ -109,6 +122,6 @@ func CloudCatalogs(store PackageStore, tenantID string) []Catalog {
 	return []Catalog{
 		TeamCatalog(store, tenantID),
 		PlatformCatalog(store),
-		BakedCatalog(),
+		sharedFloor(),
 	}
 }

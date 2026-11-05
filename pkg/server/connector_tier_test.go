@@ -27,3 +27,28 @@ func TestCatalogForTenant_ComposesTheThreeTiers(t *testing.T) {
 		t.Fatalf("baked through the composition: tier=%v err=%v", tier.Kind, err)
 	}
 }
+
+// The M1 witness of review round 1: a CatalogForTenant answering nil — the
+// documented "no store wired" shape — must fall back to the static catalog,
+// not hand nil to the facade (the probe panicked in facadeFor).
+func TestCatalogFor_ANilTenantCatalogFallsBackToTheStaticOne(t *testing.T) {
+	static := connection.NewMemoryCatalog()
+	h := &connectorMCPHandler{deps: ConnectorMCPDeps{
+		Catalog: static,
+		CatalogForTenant: func(string) connection.Catalog {
+			return nil
+		},
+	}}
+	grant := boardMCPGrant{TenantID: "t1"}
+	cat, err := h.catalogFor(grant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cat != static {
+		t.Fatal("a nil tenant catalog must fall back to the static one")
+	}
+	// And the facade path holds it — the probe's panic was one call further.
+	if _, _, err := h.facadeFor(grant); err != nil {
+		t.Fatalf("facadeFor on the fallback: %v", err)
+	}
+}
