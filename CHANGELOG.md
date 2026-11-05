@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [5.10.0](https://github.com/SocialGouv/iterion/compare/v5.9.1...v5.10.0) (2026-11-05)
+
+### Features
+
+* **identity:** erase an account by anonymization (ADR-159) ([#2999](https://github.com/SocialGouv/iterion/issues/2999)) ([5c4652f](https://github.com/SocialGouv/iterion/commit/5c4652fda69caaefab94519d8d8b0265a0ddf894))
+
+    <details><summary>why</summary>
+
+    POST /api/admin/users/{id}/erase (super-admin): the row keeps its id as a pseudonym under erased-<id>@erased.invalid with status erased; name, password, SSO links, memberships, invitations (addressed to it and created by it), sessions, personal access tokens, push subscriptions, subscription credentials and pool pledges, personal keys and secrets go; run notes name its id; config-share edits and the audit rows naming it lose IP, user agent and address (scrubbed twice across the background…
+
+    </details>
+
 ## [5.9.1](https://github.com/SocialGouv/iterion/compare/v5.9.0...v5.9.1) (2026-11-05)
 
 ### Bug Fixes
