@@ -356,13 +356,20 @@ Matching semantics (`pkg/backend/permission`):
   (`../../etc/*`) leaves it, so only a bare `Glob` or an unbounded scope
   opens it, an `allow once` binds its pattern and asks again, and a
   `deny:` meets where the climb lands — the pattern joined onto the root.
-- **WebFetch** patterns match `domain:<host>`, `<host>`, or the full URL.
-  A URL's path is a path: one whose decoded path climbs
+- **WebFetch** patterns match `domain:<host>`, `<host>`, or the full URL,
+  the host read the way a WHATWG fetcher reads it — claude_code's WebFetch
+  parses with Node, and claw's Go fetcher dials that same host whenever it
+  parses the URL: `https:e.com/x`, `https://E.com:443/x` and
+  `https://e.com\x` all fetch `e.com`, `http://0xa9fea9fe/` fetches
+  `169.254.169.254`. A URL's path is a path: one whose decoded path climbs
   (`/docs/../admin`, `/docs/%2e%2e/admin`, `/docs/..\admin`) is read by no
   full-URL pattern, since a fetcher resolves the climb before the server
   sees it; its host still stands for it. A `deny:` also meets the URL with
-  its path decoded and resolved — `https://e.com/./%61dmin/x` is
-  `https://e.com/admin/x`.
+  its path decoded and resolved (`https://e.com/./%61dmin/x` is
+  `https://e.com/admin/x`), upgraded from http to https as claude_code
+  fetches it, and its host without port or root-zone dot. A URL the gate
+  cannot read that way — another scheme, a host or port no fetcher accepts
+  — opens no pattern and meets every scoped `deny:` and `ask:` on WebFetch.
 - **Any other tool** (MCP, custom) is scoped by its sorted `k=v`
   arguments; a value carrying a `..` segment keeps the call from every
   pattern but an unbounded one, the gate not knowing which value is a path.

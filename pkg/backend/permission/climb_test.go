@@ -252,6 +252,24 @@ func TestADenyMeetsWhereAClimbingGlobLands(t *testing.T) {
 	}
 }
 
+// TestTheClosingSideReadsAClimbingGlobPatternAsSent: summarize offers a
+// climbing glob no candidate, and the place it lands carries no `..`, so its
+// pattern meets a deny or an ask only as the closing side reads it as sent —
+// which keeps a rule written against the climb itself biting.
+func TestTheClosingSideReadsAClimbingGlobPatternAsSent(t *testing.T) {
+	call := map[string]any{"pattern": "../../etc/*", "path": "/work/a"}
+	for _, climb := range []string{"Glob(**/../**)", "Glob(../**)"} {
+		deny := mustPolicy(t, ModeDeny, []string{"Glob"}, nil, []string{climb})
+		if got, rule := deny.Evaluate("Glob", call); got != Deny || rule != climb {
+			t.Errorf("deny %s: Evaluate(Glob, %v) = %v (rule %q), want Deny by it", climb, call, got, rule)
+		}
+		ask := mustPolicy(t, ModeDeny, []string{"Glob"}, []string{climb}, nil)
+		if got, rule := ask.Evaluate("Glob", call); got != Ask || rule != climb {
+			t.Errorf("ask %s: Evaluate(Glob, %v) = %v (rule %q), want Ask by it", climb, call, got, rule)
+		}
+	}
+}
+
 // TestAnApprovedClimbingGlobGrantsNothingWider: a glob that climbs has no
 // directory an approval could bind, so the once-grant quotes its pattern —
 // never the root it leaves (which would vouch for the climb) and never an
@@ -355,9 +373,11 @@ func TestAFetchedURLThatClimbsIsReadByNoPattern(t *testing.T) {
 }
 
 // TestADenyMeetsWhereAFetchedURLLands: the closing side reads the URL a
-// fetcher reaches — its path decoded, dot segments and repeated separators
-// resolved — beside the URL as sent, so a deny on a tree is not walked past
-// by a spelling of a URL inside it.
+// fetcher reaches — read as a WHATWG fetcher reads it (readFetchURL), its
+// path decoded, dot segments and repeated separators resolved, an http URL
+// also upgraded to https as claude_code's WebFetch upgrades it — beside the
+// URL as sent, so a deny on a tree is not walked past by a spelling of a URL
+// inside it.
 func TestADenyMeetsWhereAFetchedURLLands(t *testing.T) {
 	p := mustPolicy(t, ModeDeny, []string{"WebFetch"}, nil, []string{"WebFetch(https://e.example/admin/**)"})
 	for _, u := range []string{
@@ -368,6 +388,16 @@ func TestADenyMeetsWhereAFetchedURLLands(t *testing.T) {
 		"https://e.example/%61dmin/users",
 		`https://e.example/docs/..\admin\users`,
 		"https://e.example/docs/../admin/x/..", // lands on the tree itself, /admin/
+		"https:e.example/docs/../admin/users",
+		"https:/e.example/admin/users",
+		"https:///e.example/admin/users",
+		`https://e.example\docs\..\admin\users`,
+		"https://e.example/docs/.\t./admin/users",
+		" https://e.example/admin/users",
+		"HTTPS://E.example/admin/users",
+		"https://e.example:443/admin/users",
+		"https://e.example./admin/users",
+		"http://e.example/admin/users",
 	} {
 		if got, rule := p.Evaluate("WebFetch", map[string]any{"url": u}); got != Deny {
 			t.Errorf("WebFetch(%q) under deny https://e.example/admin/** = %v (rule %q), want Deny", u, got, rule)

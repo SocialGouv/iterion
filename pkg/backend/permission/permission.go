@@ -27,7 +27,6 @@ import (
 	"cmp"
 	"fmt"
 	"net/url"
-	"path"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -605,7 +604,22 @@ func (p *Policy) candidateSets(toolName string, input map[string]any) (canon str
 		empty := []string{""}
 		return canon, both(empty), both(empty)
 	}
-	return canon, open, both(shut)
+	closed = both(shut)
+	closed.unread = unreadCall(canon, input)
+	return canon, open, closed
+}
+
+// unreadCall reports whether a call carries a value the gate cannot read the
+// way its tool will — a WebFetch URL readFetchURL refuses. Such a call is
+// read by no opening rule but a bare, unbounded or exact one (summarize offers
+// its patterns nothing), and every scoped closing rule meets it.
+func unreadCall(canon string, input map[string]any) bool {
+	if canon != "webfetch" {
+		return false
+	}
+	raw := str(input, "url")
+	_, ok := readFetchURL(raw)
+	return raw != "" && !ok
 }
 
 // candidates is the set one call offers a rule list, read per rule.
@@ -627,6 +641,21 @@ func (p *Policy) candidateSets(toolName string, input map[string]any) (canon str
 type candidates struct {
 	pattern []string
 	exact   []string
+	// unread marks a CLOSING set whose call carries a value the gate cannot
+	// read the way its tool will (unreadCall): no spelling of it can be
+	// trusted to stand for where the call lands, so every scoped rule meets
+	// it and a scoped deny or ask still bites. An opening set never carries
+	// it — there it would open the call to every scoped allow.
+	unread bool
+}
+
+// meets reports whether a rule matches this candidate set, through the half
+// its scope reads — THE matching step of every rule list.
+func (c candidates) meets(r rule) bool {
+	if c.unread && r.argRe != nil {
+		return true
+	}
+	return r.matchesSummary(c.of(r))
 }
 
 // both is the candidate set that reads the same list for every rule shape.
@@ -882,13 +911,13 @@ func argScopeIsUnbounded(trimmedArg string) bool {
 // command payload, not a second candidate, which is why summarize returns
 // a shell command as a single candidate instead of a joined string a
 // matcher would have to remember not to split. Each rule reads the half of
-// the set its scope may read (candidates.of).
+// the set its scope may read (candidates.meets).
 func matchAny(rs []rule, rawName, canon string, cands candidates) (rule, bool) {
 	for _, r := range rs {
 		if !r.matchesTool(rawName, canon) {
 			continue
 		}
-		if r.matchesSummary(cands.of(r)) {
+		if cands.meets(r) {
 			return r, true
 		}
 	}
@@ -902,7 +931,7 @@ func matchScoped(rs []rule, rawName, canon string, cands candidates, literalOnly
 		if r.argRe == nil || (literalOnly && (!r.literalArg || r.toolRe != nil)) {
 			continue
 		}
-		if r.matchesTool(rawName, canon) && r.matchesSummary(cands.of(r)) {
+		if r.matchesTool(rawName, canon) && cands.meets(r) {
 			return r, true
 		}
 	}
@@ -1060,21 +1089,23 @@ func summarize(canon string, input map[string]any, root string) candidates {
 	}
 }
 
-// fetchCandidates renders a fetched URL's candidates: its host, as
-// `domain:<host>` and bare, and the URL itself.
+// fetchCandidates renders a fetched URL's opening candidates: its host, as
+// `domain:<host>` and bare, and the URL itself — all of it read through
+// readFetchURL, the place the fetch reaches, never through the URL's text
+// alone: `https:e.com/x` is a fetch of e.com.
 //
 // A URL's path is a path too. A fetcher resolves its dot segments before it
 // asks the server (RFC 3986 §5.2.4; a WHATWG parser also reads `%2e%2e` as
 // `..` and, for http(s), `\` as `/`), so `https://e.com/docs/%2e%2e/admin`
 // holds the text of `WebFetch(https://e.com/docs/**)` and reaches /admin —
 // the class pathCandidates closes for files. A URL whose decoded path climbs,
-// and one the gate cannot parse and so cannot read, is offered to exact rules
-// only; its host still stands for it, a dot segment moving no host.
+// and one the gate cannot read, is offered to exact rules only; the host of a
+// URL the gate reads still stands for it, a dot segment moving no host.
 func fetchCandidates(raw string) candidates {
 	var out candidates
-	parsed, err := url.Parse(raw)
-	if err == nil && parsed.Host != "" {
-		for _, host := range []string{"domain:" + parsed.Host, parsed.Host} {
+	f, readable := readFetchURL(raw)
+	if readable {
+		for _, host := range []string{"domain:" + f.host(), f.host()} {
 			out.exact = append(out.exact, host)
 			out.pattern = append(out.pattern, host)
 		}
@@ -1083,47 +1114,42 @@ func fetchCandidates(raw string) candidates {
 		return out
 	}
 	out.exact = append(out.exact, raw)
-	if err == nil && !urlPathClimbs(parsed) {
+	if readable && !f.climbs() {
 		out.pattern = append(out.pattern, raw)
 	}
 	return out
 }
 
-// urlPathClimbs reports whether a parsed URL's path carries a `..` segment
-// once decoded — url.Parse decodes the path, so `%2e%2e` (and `%2f`) are
-// read the way a server reads them — with `\` read as the separator a WHATWG
-// parser makes of it. An opaque URL (`https:e.com/../x`) is read the same
-// way: such a parser takes its host from it.
-func urlPathClimbs(u *url.URL) bool {
-	return pathClimbs(strings.ReplaceAll(u.Path, `\`, "/")) ||
-		pathClimbs(strings.ReplaceAll(u.Opaque, `\`, "/"))
-}
-
-// normalizedFetchURL renders the location a fetched URL reaches once its
-// path is decoded and its dot segments and repeated separators resolved —
-// the spelling a closing rule names (`deny: ["WebFetch(https://e.com/admin/**)"]`)
-// that `https://e.com/./%61dmin/x` reaches without carrying. "" when the gate
-// cannot read the URL or it is already in that form. The lexical cleanup is
-// one reading among the fetchers' and servers'; the closing side reads it
-// BESIDE the URL as sent, so a reading that differs costs a refusal at most.
-func normalizedFetchURL(raw string) string {
-	u, err := url.Parse(raw)
-	if err != nil || u.Host == "" || u.Opaque != "" || u.Path == "" {
-		return ""
+// fetchLandings renders what a CLOSING rule meets for a fetched URL beside
+// summarize's candidates: the host as net/url spells it (claw's fetcher
+// parses with it), the hostname without its port and without the root-zone
+// dot a resolver ignores (`domain:e.com` bounds `https://e.com.:8443/x`), and
+// the resolved URL (fetchURL.resolved) — also as claude_code's WebFetch
+// reaches an http URL, upgraded to https. Nothing when the gate cannot read
+// the URL: the closing set is then unread, which every scoped rule meets.
+func fetchLandings(raw string) []string {
+	var out []string
+	if u, err := url.Parse(raw); err == nil && u.Host != "" {
+		out = append(out, "domain:"+u.Host, u.Host)
 	}
-	p := strings.ReplaceAll(u.Path, `\`, "/")
-	clean := path.Clean("/" + p)
-	last := p[strings.LastIndex(p, "/")+1:]
-	if clean != "/" && (strings.HasSuffix(p, "/") || last == "." || last == "..") {
-		clean += "/"
+	f, ok := readFetchURL(raw)
+	if !ok {
+		return out
 	}
-	n := *u
-	n.Path, n.RawPath = clean, ""
-	n.Fragment, n.RawFragment = "", ""
-	if s := n.String(); s != raw {
-		return s
+	readings := []fetchURL{f}
+	if up, ok := f.upgraded(); ok {
+		readings = append(readings, up)
 	}
-	return ""
+	if name := strings.TrimSuffix(f.hostname, "."); name != f.hostname {
+		for _, r := range slices.Clone(readings) {
+			r.hostname = name
+			readings = append(readings, r)
+		}
+	}
+	for _, r := range readings {
+		out = append(out, "domain:"+r.hostname, r.hostname, "domain:"+r.host(), r.host(), r.resolved())
+	}
+	return out
 }
 
 // globPatternClimbs reports whether a call is a Glob whose pattern carries
@@ -1150,7 +1176,9 @@ func globPatternClimbs(canon, pattern string) bool {
 func denyCandidates(canon string, input map[string]any, root string, opening []string) []string {
 	cands := slices.Clone(opening)
 	if canon == "webfetch" {
-		cands = appendUnique(cands, normalizedFetchURL(str(input, "url")))
+		for _, c := range fetchLandings(str(input, "url")) {
+			cands = appendUnique(cands, c)
+		}
 	}
 	if searchesByPattern(canon) {
 		// summarize withholds a climbing glob pattern from the opening
