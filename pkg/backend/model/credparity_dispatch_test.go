@@ -187,7 +187,7 @@ func dispatchParityLeg(t *testing.T, ctx context.Context, row credparity.Row, si
 	crossesRefused := errors.As(err, &refusal) && refusal.Reason == credroute.ReasonNoCredential
 	var got credparity.Spend
 	switch {
-	case err != nil && !(crossesRefused && (res.client != nil || res.env != nil)):
+	case err != nil && (!crossesRefused || (res.client == nil && res.env == nil)):
 		got = parityRefusal(t, err)
 	case !call.Sandbox.Contained:
 		got = paritySpend(t, row, i, res.client)

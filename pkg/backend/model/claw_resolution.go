@@ -116,7 +116,7 @@ func inProcessClaw(ctx context.Context, reg *Registry, call credroute.Call) (api
 	call.Sandbox = credroute.Sandbox{}
 	res, err := resolveClawCall(ctx, reg, call)
 	var refusal *credroute.Refusal
-	if err != nil && !(errors.As(err, &refusal) && refusal.Reason == credroute.ReasonNoCredential && res.client != nil) {
+	if err != nil && (!errors.As(err, &refusal) || refusal.Reason != credroute.ReasonNoCredential || res.client == nil) {
 		return nil, credroute.Spend{}, err
 	}
 	return res.client, res.spend, nil

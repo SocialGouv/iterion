@@ -417,7 +417,7 @@ func (k runCredKeys) spendKey(backend, spec string, s credroute.Spend, superviso
 	switch {
 	case s.RunSlot():
 		if secrets.WireFamily(s.Slot) != secrets.WireFamilyAnthropic &&
-			!(supervisor && s.Slot == string(secrets.ProviderOpenAICompatible)) {
+			(!supervisor || s.Slot != string(secrets.ProviderOpenAICompatible)) {
 			return "", false
 		}
 		return usagecap.Key(delegate.BackendClaudeCode, k.scopeFor(s.Slot), s.Fingerprint), true

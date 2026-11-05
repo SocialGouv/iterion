@@ -1634,7 +1634,7 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 	// the provider's refusal is the call's answer.
 	resolution, err := resolveClawCall(ctx, b.registry, clawCall(task, credroute.Sandbox{Contained: true}))
 	var refusal *credroute.Refusal
-	if err != nil && !(errors.As(err, &refusal) && refusal.Reason == credroute.ReasonNoCredential && resolution.env != nil) {
+	if err != nil && (!errors.As(err, &refusal) || refusal.Reason != credroute.ReasonNoCredential || resolution.env == nil) {
 		return delegate.Result{}, err
 	}
 
@@ -3217,7 +3217,7 @@ func applyForfaitAcrossSandbox(ctx context.Context, env map[string]string, facts
 func clawForfaitReached(ctx context.Context, creds secrets.Credentials, spec, hint string) bool {
 	return creds.OAuthDir(string(secrets.OAuthKindClaudeCode)) != "" &&
 		secrets.AnthropicForfaitWireOK(runCredentialBaseURL(ctx, spec, hint)) &&
-		!(forbidSubscriptionOAuth(ctx) && ambientAnthropicCredential(ctx))
+		(!forbidSubscriptionOAuth(ctx) || !ambientAnthropicCredential(ctx))
 }
 
 // ClawForfaitServes reports whether claw spends the run's Claude forfait on an
