@@ -75,7 +75,8 @@ nothing (#1801's nilness rule holds on tool nodes too — parser, AST, IR,
 unparser and the JSON transport all carry it). The same compile-time checks
 (C080/C081) judge the entries.
 
-The grant is consumed at one place: the native transport hands the node's
+The grant is read at one place — the executor's `nodeCapabilities`, the
+same reading for every node kind — and the native transport hands that
 effective list to `boardops.CallWithEnv`, whose per-tool `caps.Has` check
 is the gate every board transport already shares. The seam adds **no**
 second filter — a transport that re-gated beside boardops would be the
@@ -89,11 +90,15 @@ second regime #78=A refuses. Consequences, both deliberate:
   "check-only by default, write by explicit opt-in" rule: nothing is
   granted by default beyond what the workflow already declares, and no
   mutating verb answers to a read grant.
-- A `capabilities:` list with no reader — a `command:`/`script:` recipe, or
-  an HTTP action whose authorization is the connection's credential — warns
-  ([C332](../references/diagnostics.md)) — an inert grant reads as
-  configured, which is how a node ends up looking authorized for something
-  nothing enforces.
+- The list is the tool node's grant for every recipe that consults one: a
+  registry recipe naming an iterion host tool (`command:
+  mcp.iterion_board.create_issue`) is held to it exactly like an agent's
+  `tools:`, and C328 judges it against the same list. A `capabilities:`
+  list with no reader — a `command:`/`script:` recipe, an HTTP action whose
+  authorization is the connection's credential, or a registry recipe naming
+  another tool — warns ([C332](../references/diagnostics.md)) — an inert
+  grant reads as configured, which is how a node ends up looking authorized
+  for something nothing enforces.
 - The compiler also names the MISSING grant: a native board action whose
   capability is declared neither on the node nor on the workflow warns at
   compile time ([C334](../references/diagnostics.md), the C328 posture —
@@ -148,18 +153,31 @@ invisible holes being the other way to be wrong. The read half of
 mutating tools the facade does not serve (close, comment, assign, the
 absolute set_labels, …) stay exempted, each naming its capability.
 
-The mutating verbs carry one structural guarantee, stated because the
-engine's generic recovery retries a failed node once: every facade operation
-validates all of its arguments before its one store mutation, and nothing
-fallible follows it — **a returned error means no effect**, so a retried
-call files exactly one card. The facade adds no idempotency machinery on top;
-the matrix test pins the property against a store that fails each mutation.
+The mutating verbs say what a failure means for their effect, because the
+engine's generic recovery re-runs a failed node: every facade operation
+validates all of its arguments before its one store mutation, so a refusal
+raised there has no effect and keeps its ordinary recovery. The store
+mutation itself is NOT atomic with its error — the fs store writes the card
+then appends its event, the Mongo store inserts the card then allocates and
+inserts the event, and a failure after the commit still answers an error —
+so **a failed store write is undecided**: `boardops` types it
+`UndecidedWriteError`, which implements `runtime.AmbiguousEffect`
+structurally, and the recovery dispatcher fails the node terminally instead
+of filing the card a second time (the guarantee `exec.Error` gives an HTTP
+mutation). The classification sits on the store every operation runs
+against, so the stdio and HTTP board transports carry it too, and a store
+method an operation starts calling must be classified read or write before
+it compiles. The facade adds no idempotency machinery on top; the matrix
+test pins both halves against a store that fails before and after it
+writes.
 
 Admission (`runview.admitConnectorActions`) learned the seam's shape: a
 native action with no registered transport is a **wiring** refusal (the
 surface did not hand the store over — no package install fixes it), and a
 native action whose verb the facade does not expose is refused with the
-exposed set listed. Both verdicts were computable before the first node
+exposed set listed — and warned at compile time
+([C336](../references/diagnostics.md)), since the verb set is the binary's
+own. Both verdicts were computable before the first node
 ran, so both are due at admission; `ITERION_CONNECTOR_ADMISSION=off` keeps
 its old meaning as the way out.
 

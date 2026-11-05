@@ -26,13 +26,15 @@ import (
 // stays the default: a node granted nothing reads nothing.
 //
 // EFFECT HONESTY of the mutating verbs, stated because the engine's generic
-// recovery retries a failed node once: every operation below validates ALL
-// of its arguments before its one store mutation, and nothing fallible
-// follows the mutation (the marshalling of an in-memory card cannot
-// realistically fail) — so a RETURNED ERROR means NO EFFECT, and a retried
-// call files exactly one card. The facade adds no idempotency machinery on
-// top: the property is structural, and the matrix test pins it against a
-// failing store.
+// recovery re-runs a failed node: every operation validates ALL of its
+// arguments before its one store mutation, so a refusal raised there has no
+// effect and keeps its ordinary recovery. The store mutation itself is not
+// atomic with its error — both stores commit the card, then write the
+// event, and a failure after the commit still returns an error — so a
+// failed store write comes back typed UndecidedWriteError (write_outcome.go),
+// which the engine's recovery reads as an ambiguous effect and never
+// retries. The facade adds no idempotency machinery on top; the matrix test
+// pins both halves against a store that fails before and after it writes.
 //
 // The two-way matrix test holds the facade to the registry: every exposed
 // action maps to a native tool, and every native tool is exposed or exempted
@@ -193,8 +195,8 @@ type ActionTransport struct {
 // NewActionTransport builds the transport over the instance's board store —
 // the fs store a local run opens, the tenant's Mongo board a cloud runner
 // resolves (#2465: always the instance's native store, never a forge's).
-// env carries the planner provenance (SpawnParentID) a create stamps; the
-// read verbs this lot exposes never read it.
+// env carries the planner provenance (SpawnParentID) board.issue.create
+// stamps on the card it files; the read verbs never read it.
 func NewActionTransport(store native.BoardStore, env CallEnv) *ActionTransport {
 	return &ActionTransport{store: store, env: env}
 }

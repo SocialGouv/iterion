@@ -14,7 +14,7 @@ import (
 )
 
 // localConnectorsForRun builds the connector resolver a CLI run uses, or
-// (nil, nil, nil) when the workflow declares no connector action.
+// (nil, nil, nil) when the workflow declares no action the catalog serves.
 //
 // The CLI's own half is the two things that differ from every other surface:
 // its workspace is the cwd (a `.bot` is run from the project it acts on), and
@@ -25,9 +25,11 @@ import (
 // Gated on the WORKFLOW rather than built always, exactly like
 // localSecretsForRun and for the same reason: opening the local sealer touches
 // the OS keychain, and a run with no `action:` node must not prompt for an
-// unlock it has no use for.
+// unlock it has no use for. A native action (board.*) is no such node: its
+// transport is registered by the executor's build, with no catalog and no
+// credential, so a workflow whose only actions are native opens no sealer.
 func localConnectorsForRun(wf *ir.Workflow, storeDir string, logger *iterlog.Logger) (model.ConnectorResolver, *http.Client, error) {
-	if !runview.WorkflowHasAction(wf) {
+	if !runview.WorkflowHasCatalogAction(wf) {
 		return nil, nil, nil
 	}
 	var warn func(string, ...any)

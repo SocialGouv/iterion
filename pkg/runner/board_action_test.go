@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -86,4 +87,76 @@ func TestExecutorSpecWiresTheTenantBoardForANativeAction(t *testing.T) {
 	if !found {
 		t.Fatal("no board transport in ExecutorSpec.ActionTransports — the tenant's Mongo board never reaches the run")
 	}
+}
+
+// The cloud runner's native transport carries the run's owning ticket like
+// every board transport (ADR-151): a card filed through board.issue.create on
+// iterion.cloud is linked to the card that launched the run, exactly as the
+// same `.bot` run locally links it. The ticket is read from the RUN RECORD
+// (Source.IssueID) through the spec's run loader — the message carries none.
+func TestExecutorSpecStampsTheOwningTicketOnTheNativeBoardTransport(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	board, err := native.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("native.NewStore: %v", err)
+	}
+	defer board.Close()
+	owning, err := board.Create(native.Issue{Title: "the card that launched the run"})
+	if err != nil {
+		t.Fatalf("Create owning card: %v", err)
+	}
+	run, err := st.CreateRun(ctx, "run-board-src", "wf", nil)
+	if err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	run.Source = &store.RunSource{Kind: store.RunSourceKindDispatcher, IssueID: owning.ID}
+	if err := st.SaveRun(ctx, run); err != nil {
+		t.Fatalf("SaveRun: %v", err)
+	}
+	r := &Runner{cfg: Config{
+		Store:    st,
+		Logger:   iterlog.Nop(),
+		BoardFor: func(string) native.BoardStore { return board },
+	}}
+	msg := &queue.RunMessage{RunID: "run-board-src", WorkflowName: "wf", TenantID: "team-1"}
+
+	spec, _, err := r.executorSpec(ctx, msg, boardActionWorkflow(), "", iterlog.Nop(), nil, nil)
+	if err != nil {
+		t.Fatalf("executorSpec: %v", err)
+	}
+	var tr model.ActionTransport
+	for _, candidate := range spec.ActionTransports {
+		if candidate != nil && candidate.Connector() == "board" {
+			tr = candidate
+		}
+	}
+	if tr == nil {
+		t.Fatal("no board transport wired")
+	}
+	op, ok := tr.Package().Operation("board.issue.create")
+	if !ok {
+		t.Fatal("the facade exposes no board.issue.create")
+	}
+	if _, err := tr.Call(ctx, op, map[string]any{"title": "filed by the run"}, []string{"board.create"}); err != nil {
+		t.Fatalf("Call board.issue.create: %v", err)
+	}
+	issues, err := board.List(native.ListFilter{})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	for _, iss := range issues {
+		if iss.Title != "filed by the run" {
+			continue
+		}
+		if iss.ParentID != owning.ID {
+			t.Fatalf("the filed card's parent_id = %q, want the run's owning ticket %q — the cloud transport stamped no provenance", iss.ParentID, owning.ID)
+		}
+		return
+	}
+	t.Fatal("the filed card is not on the board")
 }

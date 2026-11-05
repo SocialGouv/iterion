@@ -507,7 +507,7 @@ var Kinds = append([]Kind{
 			prop("permission", Ident, "Parsed for symmetry but NOT enforced on a tool node (C112 warns): the command runs directly, the gate is an agent's"),
 			pNeeds,
 			prop("parallel_safe", Bool, "Declares the node safe to run beside a mutating branch"),
-			prop("capabilities", ToolList, "Host capabilities granted to the node, exactly as on an agent/judge (ADR-151, C080/C081): `capabilities: []` grants NOTHING (overrides the workflow's), no line inherits it. Read by the action: recipe's native transport only — a board.* action gates on it; on a command:/script: node or an HTTP action the list is inert (C332)"),
+			prop("capabilities", ToolList, "Host capabilities granted to the node, exactly as on an agent/judge (ADR-151, C080/C081): `capabilities: []` grants NOTHING (overrides the workflow's), no line inherits it. Read by the action: recipe's native transport (a board.* action gates on it) and by a registry recipe naming an iterion host tool (`mcp.iterion_board.*`, held to it like an agent's tools:, C328); on a command:/script: node, an HTTP action or any other registry tool the list is inert (C332)"),
 			prop("goal", String, "Verified action: what the command is for, in one line"),
 			prop("postcondition", String, "Verified action: command whose exit code is the truth oracle at every rung"),
 			checked("policy", "Verified action: required (default), recover or best_effort (C103–C106)", "required", "recover", "best_effort"),

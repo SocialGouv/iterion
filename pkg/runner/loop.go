@@ -3617,7 +3617,13 @@ func (r *Runner) executorSpec(ctx context.Context, msg *queue.RunMessage, wf *ir
 			return zero, nil, fmt.Errorf("runner: workflow declares a native board action (board.*) but the board resolver answered nil for tenant %q — the grant names a board this process does not serve; refusing rather than reading a pod-local board that is not the instance's",
 				msg.TenantID)
 		}
-		spec.ActionTransports = append(spec.ActionTransports, runview.NativeBoardTransport(board, ""))
+		// The owning ticket rides this transport as it rides every board
+		// transport BuildExecutor wires (planner provenance on a create):
+		// resolved once here through the spec's run loader and carried on
+		// the spec, so BuildExecutor's own reading answers the same id
+		// without a second record load.
+		spec.SourceIssueID = runview.SourceIssueIDOf(spec)
+		spec.ActionTransports = append(spec.ActionTransports, runview.NativeBoardTransport(board, spec.SourceIssueID))
 	}
 	// The sandboxed host-MCP transport (C082, #2632): mint a per-node token
 	// scoped to the node's capabilities and pinned to the run's tenant — the

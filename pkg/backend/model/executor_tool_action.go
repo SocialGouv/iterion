@@ -3,7 +3,6 @@ package model
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"math"
 	"math/rand/v2"
@@ -336,21 +335,20 @@ func (e *ClawExecutor) scrubTypedActionError(err *exec.Error) {
 
 // scrubActionError does the same for an UNTYPED failure — a local refusal, a
 // coercion that printed the value it refused, a walk that could not read its
-// collection.
+// collection, a native transport's store error.
 //
-// Flattened only when the redaction actually changed something. An error that
-// carries no secret comes back exactly as it went in, so `errors.Is` still
-// recognises a context cancellation and `errors.As` still finds whatever the
-// layer below typed; the trade is made only where the alternative is leaking.
+// The text is redacted through redactedThrough, which keeps errors.Is /
+// errors.As answering for the error below without unwrapping to its raw
+// text: a native transport's failure carries its FACTS by type — an
+// undecided write (runtime.AmbiguousEffect), a refused grant
+// (runtime.CapabilityDenial) — and a flattened string would hand the
+// recovery dispatcher a retryable failure in place of a write that may have
+// landed. An error that carries no secret comes back exactly as it went in.
 func (e *ClawExecutor) scrubActionError(err error) error {
 	if err == nil || e.secretGuard == nil {
 		return err
 	}
-	msg := err.Error()
-	if red := e.secretGuard.Redact(msg); red != msg {
-		return errors.New(red)
-	}
-	return err
+	return redactedThrough(e.secretGuard.Redact, err)
 }
 
 // actionOutput shapes a successful call into the node's output map.

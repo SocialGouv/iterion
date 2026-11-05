@@ -2,7 +2,9 @@
 // __mcp-board MCP server and the /api/v1/mcp/board HTTP handler share.
 // Each operation takes a native.BoardStore (the filesystem *native.Store or a
 // cloud Mongo-backed store), a granted capability set, and a JSON args blob,
-// and returns either the JSON-encoded result or an error.
+// and returns either the JSON-encoded result or an error. A store write's
+// error comes back typed UndecidedWriteError: the write may have committed
+// (write_outcome.go).
 //
 // The stdio and HTTP transports are thin wrappers around these operations:
 // they handle JSON-RPC framing or HTTP request decoding, then call into
@@ -304,7 +306,7 @@ var toolByName = func() map[string]*Tool {
 
 // dispatchByName maps a tool name to its handler. Populated once at init
 // so Call can dispatch in O(1).
-var dispatchByName = map[string]func(native.BoardStore, json.RawMessage) (json.RawMessage, error){
+var dispatchByName = map[string]func(boardOps, json.RawMessage) (json.RawMessage, error){
 	"comment_issue": doComment,
 	// create_issue is dispatched via doCreate in CallWithEnv (needs CallEnv).
 	"transition_issue": doTransition,
@@ -356,17 +358,20 @@ func CallWithEnv(store native.BoardStore, caps Capabilities, name string, rawArg
 	if !caps.Has(t.Capability) {
 		return nil, &CapabilityDeniedError{Tool: name, Capability: t.Capability}
 	}
+	// Every operation runs against the classified store: a write's failure
+	// leaves typed undecided, whichever transport called (write_outcome.go).
+	ops := undecidedWrites{store: store}
 	if name == "create_issue" {
-		return doCreate(store, rawArgs, env)
+		return doCreate(ops, rawArgs, env)
 	}
-	return dispatchByName[name](store, rawArgs)
+	return dispatchByName[name](ops, rawArgs)
 }
 
 // ---------------------------------------------------------------------------
 // Operation implementations
 // ---------------------------------------------------------------------------
 
-func doCreate(store native.BoardStore, raw json.RawMessage, env CallEnv) (json.RawMessage, error) {
+func doCreate(store boardOps, raw json.RawMessage, env CallEnv) (json.RawMessage, error) {
 	var args struct {
 		Title    string            `json:"title"`
 		Body     string            `json:"body"`
@@ -440,7 +445,7 @@ func doCreate(store native.BoardStore, raw json.RawMessage, env CallEnv) (json.R
 	return marshalIssue(iss)
 }
 
-func doComment(store native.BoardStore, raw json.RawMessage) (json.RawMessage, error) {
+func doComment(store boardOps, raw json.RawMessage) (json.RawMessage, error) {
 	var args struct {
 		ID     string `json:"id"`
 		Body   string `json:"body"`
@@ -467,7 +472,7 @@ func doComment(store native.BoardStore, raw json.RawMessage) (json.RawMessage, e
 	return marshalIssue(iss)
 }
 
-func doTransition(store native.BoardStore, raw json.RawMessage) (json.RawMessage, error) {
+func doTransition(store boardOps, raw json.RawMessage) (json.RawMessage, error) {
 	var args struct {
 		ID string `json:"id"`
 		To string `json:"to"`
@@ -489,7 +494,7 @@ func doTransition(store native.BoardStore, raw json.RawMessage) (json.RawMessage
 	return marshalIssue(iss)
 }
 
-func doAssign(store native.BoardStore, raw json.RawMessage) (json.RawMessage, error) {
+func doAssign(store boardOps, raw json.RawMessage) (json.RawMessage, error) {
 	var args struct {
 		ID       string `json:"id"`
 		Assignee string `json:"assignee"`
@@ -515,7 +520,7 @@ func doAssign(store native.BoardStore, raw json.RawMessage) (json.RawMessage, er
 // workflow selector. Mirrors doAssign but targets the Bot field so a
 // triage agent can express "run bot X" without conflating it with the
 // human/ownership assignee.
-func doSetBot(store native.BoardStore, raw json.RawMessage) (json.RawMessage, error) {
+func doSetBot(store boardOps, raw json.RawMessage) (json.RawMessage, error) {
 	var args struct {
 		ID  string `json:"id"`
 		Bot string `json:"bot"`
@@ -537,7 +542,7 @@ func doSetBot(store native.BoardStore, raw json.RawMessage) (json.RawMessage, er
 	return marshalIssue(iss)
 }
 
-func doSetLabels(store native.BoardStore, raw json.RawMessage) (json.RawMessage, error) {
+func doSetLabels(store boardOps, raw json.RawMessage) (json.RawMessage, error) {
 	var args struct {
 		ID     string   `json:"id"`
 		Labels []string `json:"labels"`
@@ -566,15 +571,15 @@ func doSetLabels(store native.BoardStore, raw json.RawMessage) (json.RawMessage,
 // goes to the store's atomic AdjustLabels and is applied to the card as
 // it is — never composed from a read the agent took earlier, which is how
 // set_labels re-armed a consumed one-shot (issue #666).
-func doAddLabels(store native.BoardStore, raw json.RawMessage) (json.RawMessage, error) {
+func doAddLabels(store boardOps, raw json.RawMessage) (json.RawMessage, error) {
 	return adjustLabels(store, raw, true)
 }
 
-func doRemoveLabels(store native.BoardStore, raw json.RawMessage) (json.RawMessage, error) {
+func doRemoveLabels(store boardOps, raw json.RawMessage) (json.RawMessage, error) {
 	return adjustLabels(store, raw, false)
 }
 
-func adjustLabels(store native.BoardStore, raw json.RawMessage, add bool) (json.RawMessage, error) {
+func adjustLabels(store boardOps, raw json.RawMessage, add bool) (json.RawMessage, error) {
 	var args struct {
 		ID     string   `json:"id"`
 		Labels []string `json:"labels"`
@@ -605,7 +610,7 @@ func adjustLabels(store native.BoardStore, raw json.RawMessage, add bool) (json.
 	return marshalIssue(iss)
 }
 
-func doClose(store native.BoardStore, raw json.RawMessage) (json.RawMessage, error) {
+func doClose(store boardOps, raw json.RawMessage) (json.RawMessage, error) {
 	var args struct {
 		ID string `json:"id"`
 		To string `json:"to"`
@@ -691,7 +696,7 @@ func doClose(store native.BoardStore, raw json.RawMessage) (json.RawMessage, err
 	return marshalIssue(iss)
 }
 
-func doList(store native.BoardStore, raw json.RawMessage) (json.RawMessage, error) {
+func doList(store boardOps, raw json.RawMessage) (json.RawMessage, error) {
 	var args struct {
 		State    string `json:"state"`
 		Label    string `json:"label"`
@@ -716,7 +721,7 @@ func doList(store native.BoardStore, raw json.RawMessage) (json.RawMessage, erro
 	return marshalIssues(issues)
 }
 
-func doListLabels(store native.BoardStore, _ json.RawMessage) (json.RawMessage, error) {
+func doListLabels(store boardOps, _ json.RawMessage) (json.RawMessage, error) {
 	labels, err := store.AggregateLabels()
 	if err != nil {
 		return nil, err
@@ -724,7 +729,7 @@ func doListLabels(store native.BoardStore, _ json.RawMessage) (json.RawMessage, 
 	return json.Marshal(labels)
 }
 
-func doGet(store native.BoardStore, raw json.RawMessage) (json.RawMessage, error) {
+func doGet(store boardOps, raw json.RawMessage) (json.RawMessage, error) {
 	var args struct {
 		ID string `json:"id"`
 	}

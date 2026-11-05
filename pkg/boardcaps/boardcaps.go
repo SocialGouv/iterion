@@ -25,13 +25,6 @@ const (
 	BoardComment = "board.comment"
 )
 
-// ToolCapability maps every bare tool name of the board MCP family
-// (`mcp.iterion_board.*`) to the capability gating it — the compile-time
-// half of the runtime's refusal: the DSL compiler (C328) warns when a node
-// names one of these without holding the capability, and naming the tool is
-// what the board's own `capabilities:` documentation cannot do for the
-// author. boardops.allTools must carry exactly these names and pins — the
-// conformance test in that package holds the two tables to each other.
 // ConnectorID is the connector id the board's NATIVE action transport owns
 // (docs/adr/151, iterion#2834): the first segment of every `board.*` action
 // id a tool node writes, e.g. `board.issue.list`. It lives in this leaf for
@@ -57,10 +50,11 @@ var NativeConnectorIDs = map[string]bool{
 // ActionCapability maps every action id the native board facade exposes to
 // the capability gating it — the compile-time half of the facade's grant:
 // the DSL compiler (C334) warns when a native board action's capability is
-// declared nowhere (neither the node nor the workflow), and the runtime
-// refusal it predicts is boardops' own caps.Has. boardops' matrix test holds
-// this table to the facade's bindings and to the native registry, in both
-// directions.
+// declared nowhere (neither the node nor the workflow) and C336 when an
+// action names a verb absent from it, and the runtime refusals they predict
+// are boardops' own caps.Has and the executor's admission. boardops' matrix
+// test holds this table to the facade's bindings and to the native registry,
+// in both directions.
 var ActionCapability = map[string]string{
 	"board.issue.get":        BoardRead,
 	"board.issue.list":       BoardRead,
@@ -69,6 +63,13 @@ var ActionCapability = map[string]string{
 	"board.issue.transition": BoardMove,
 }
 
+// ToolCapability maps every bare tool name of the board MCP family
+// (`mcp.iterion_board.*`) to the capability gating it — the compile-time
+// half of the runtime's refusal: the DSL compiler (C328) warns when a node
+// names one of these without holding the capability, and naming the tool is
+// what the board's own `capabilities:` documentation cannot do for the
+// author. boardops.allTools must carry exactly these names and pins — the
+// conformance test in that package holds the two tables to each other.
 var ToolCapability = map[string]string{
 	"add_labels":       BoardLabel,
 	"assign_issue":     BoardAssign,

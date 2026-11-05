@@ -359,3 +359,60 @@ func TestValidateConnectorsSaysACatalogRootItCannotRead(t *testing.T) {
 		t.Errorf("connectors = %+v, want an empty report: asked, and there was nothing to resolve", plain.Connectors)
 	}
 }
+
+// A native action (board.*, ADR-151) is served by the engine's registered
+// transport, never by the catalogue: `--connectors` counts it apart rather
+// than reporting it unserved — the fix such a finding implies, installing a
+// `board` package, is one spec.Validate refuses as a reserved id. The HTTP
+// action beside it is still judged.
+func TestValidateConnectorsCountsNativeActionsApart(t *testing.T) {
+	aCatalogWithTwoTiers(t)
+	path := writeFixture(t, t.TempDir(), "native.bot", `dsl: 2
+
+schema action_out:
+  ok: bool
+
+tool plan:
+  action: board.issue.list
+  capabilities: [board.read]
+
+tool served:
+  action: probe.issue.get
+  connection: main
+  output: action_out
+
+workflow native_and_http:
+
+  entry: plan
+
+  plan -> served
+
+  served -> done
+`)
+	_, result := validateAsJSON(t, path, cli.ValidateOptions{Connectors: true})
+	if !result.Valid {
+		t.Fatalf("the fixture must compile: %+v", result.Diagnostics)
+	}
+	report := result.Connectors
+	if report == nil {
+		t.Fatal("--connectors produced no report")
+	}
+	if len(report.Findings) != 0 {
+		t.Fatalf("findings = %+v, want none: the native action is not the catalogue's and the HTTP one is served", report.Findings)
+	}
+	if report.Nodes != 1 || report.Native != 1 {
+		t.Fatalf("nodes = %d, native = %d, want 1 catalogue node and 1 native node", report.Nodes, report.Native)
+	}
+
+	p, buf := newTestPrinter(cli.OutputHuman)
+	if err := cli.RunValidateWith(path, p, cli.ValidateOptions{Connectors: true}); err != nil {
+		t.Fatalf("validate (human): %v", err)
+	}
+	out := buf.String()
+	if strings.Contains(out, "not served by the installed catalogue") {
+		t.Fatalf("the native action is reported unserved:\n%s", out)
+	}
+	if !strings.Contains(out, "1 native action node(s)") {
+		t.Fatalf("the human output does not count the native action:\n%s", out)
+	}
+}

@@ -225,34 +225,55 @@ func TestActionTransportCall(t *testing.T) {
 	})
 }
 
-// failStore wraps a real store and fails each mutating method on demand —
-// the witness of the facade's effect honesty: a RETURNED ERROR means NO
-// EFFECT, which is what makes the engine's one generic retry of a failed
-// native action safe against a duplicated card.
+// failStore wraps a real store and fails each mutating method on demand,
+// on either side of the write: BEFORE delegating (the write never landed)
+// or AFTER it (the write committed and the store still answered an error —
+// what both real stores do when the event that follows the commit fails).
 type failStore struct {
 	native.BoardStore
-	failCreate, failSetState, failAdjust bool
+	// fail names the method that fails ("Create", "SetState",
+	// "AdjustLabels"); afterWrite places the failure after the delegated
+	// write.
+	fail       string
+	afterWrite bool
 }
 
+var errInjectedStore = errors.New("boardmongo: emit event: connection reset by peer")
+
 func (f *failStore) Create(in native.Issue) (*native.Issue, error) {
-	if f.failCreate {
-		return nil, errors.New("injected store failure")
+	if f.fail != "Create" {
+		return f.BoardStore.Create(in)
 	}
-	return f.BoardStore.Create(in)
+	if f.afterWrite {
+		if _, err := f.BoardStore.Create(in); err != nil {
+			return nil, err
+		}
+	}
+	return nil, errInjectedStore
 }
 
 func (f *failStore) SetState(id, newState string) (*native.Issue, error) {
-	if f.failSetState {
-		return nil, errors.New("injected store failure")
+	if f.fail != "SetState" {
+		return f.BoardStore.SetState(id, newState)
 	}
-	return f.BoardStore.SetState(id, newState)
+	if f.afterWrite {
+		if _, err := f.BoardStore.SetState(id, newState); err != nil {
+			return nil, err
+		}
+	}
+	return nil, errInjectedStore
 }
 
 func (f *failStore) AdjustLabels(id string, add, remove []string) (*native.Issue, bool, error) {
-	if f.failAdjust {
-		return nil, false, errors.New("injected store failure")
+	if f.fail != "AdjustLabels" {
+		return f.BoardStore.AdjustLabels(id, add, remove)
 	}
-	return f.BoardStore.AdjustLabels(id, add, remove)
+	if f.afterWrite {
+		if _, _, err := f.BoardStore.AdjustLabels(id, add, remove); err != nil {
+			return nil, false, err
+		}
+	}
+	return nil, false, errInjectedStore
 }
 
 // boardSnapshot is the board's content reduced to what a mutating verb can
@@ -270,58 +291,115 @@ func boardSnapshot(t *testing.T, store native.BoardStore) string {
 	return b.String()
 }
 
-func TestAFailedMutatingVerbHasNoEffect(t *testing.T) {
+// undecidedEffect reads the failure the way runtime.IsAmbiguousEffect does —
+// by the interface, through the chain — without importing the runtime
+// (iterion#2857).
+func undecidedEffect(err error) bool {
+	var amb interface{ AmbiguousEffect() bool }
+	return errors.As(err, &amb) && amb.AmbiguousEffect()
+}
+
+// A failed store write does not say whether the write landed — both stores
+// commit the card, then write the event, and fail after the commit — so the
+// facade reports it UNDECIDED on either side of the write, and the engine's
+// recovery never re-runs a node whose card may already be filed. The
+// after-write rows are the case that matters: the card is there and the
+// call still failed.
+func TestAFailedStoreWriteIsReportedUndecided(t *testing.T) {
 	pkg := FacadePackage()
 	caps := []string{CapBoardRead, CapBoardCreate, CapBoardLabel, CapBoardMove}
 
-	t.Run("create", func(t *testing.T) {
-		base := newStore(t)
-		transport := NewActionTransport(&failStore{BoardStore: base, failCreate: true}, CallEnv{})
-		op, _ := pkg.Operation("board.issue.create")
-		_, err := transport.Call(context.Background(), op, map[string]any{"title": "never filed"}, caps)
-		if err == nil {
-			t.Fatal("want the store's failure")
+	for _, tc := range []struct {
+		verb, method string
+		seed         bool // a card the verb acts on
+		params       func(id string) map[string]any
+	}{
+		{"board.issue.create", "Create", false, func(string) map[string]any { return map[string]any{"title": "filed once"} }},
+		{"board.issue.transition", "SetState", true, func(id string) map[string]any { return map[string]any{"id": id, "to": "done"} }},
+		{"board.issue.label", "AdjustLabels", true, func(id string) map[string]any { return map[string]any{"id": id, "labels": []any{"triaged"}} }},
+	} {
+		for _, afterWrite := range []bool{false, true} {
+			name := tc.verb + "/fails-before-the-write"
+			if afterWrite {
+				name = tc.verb + "/fails-after-the-write"
+			}
+			t.Run(name, func(t *testing.T) {
+				base := newStore(t)
+				id := ""
+				if tc.seed {
+					iss, err := base.Create(native.Issue{Title: "acted on"})
+					if err != nil {
+						t.Fatalf("Create: %v", err)
+					}
+					id = iss.ID
+				}
+				before := boardSnapshot(t, base)
+				transport := NewActionTransport(&failStore{BoardStore: base, fail: tc.method, afterWrite: afterWrite}, CallEnv{})
+				op, _ := pkg.Operation(tc.verb)
+				_, err := transport.Call(context.Background(), op, tc.params(id), caps)
+				if err == nil {
+					t.Fatal("want the store's failure")
+				}
+				if !undecidedEffect(err) {
+					t.Fatalf("%s: a failed store write is not reported undecided (err %T: %v) — the engine would re-run a node whose write may have landed", tc.verb, err, err)
+				}
+				var typed *UndecidedWriteError
+				if !errors.As(err, &typed) || typed.Op != tc.method {
+					t.Fatalf("undecided error names store method %q, want %q", typedOp(typed), tc.method)
+				}
+				if !errors.Is(err, errInjectedStore) {
+					t.Fatalf("the store's own error is not reachable through the undecided one: %v", err)
+				}
+				if err.Error() != errInjectedStore.Error() {
+					t.Fatalf("Error() = %q, want the store's text unchanged (the agent transports relay it)", err.Error())
+				}
+				changed := boardSnapshot(t, base) != before
+				if changed != afterWrite {
+					t.Fatalf("board changed = %v, want %v — the fake store did not fail where the row says", changed, afterWrite)
+				}
+			})
 		}
-		if got := boardSnapshot(t, base); got != "" {
-			t.Fatalf("a failed create left an effect: %s", got)
-		}
-	})
+	}
+}
 
-	t.Run("transition", func(t *testing.T) {
-		base := newStore(t)
-		iss, err := base.Create(native.Issue{Title: "stays put"})
-		if err != nil {
-			t.Fatalf("Create: %v", err)
-		}
-		before := boardSnapshot(t, base)
-		transport := NewActionTransport(&failStore{BoardStore: base, failSetState: true}, CallEnv{})
-		op, _ := pkg.Operation("board.issue.transition")
-		_, err = transport.Call(context.Background(), op, map[string]any{"id": iss.ID, "to": "done"}, caps)
-		if err == nil {
-			t.Fatal("want the store's failure")
-		}
-		if got := boardSnapshot(t, base); got != before {
-			t.Fatalf("a failed transition moved the card: %s → %s", before, got)
-		}
-	})
+func typedOp(e *UndecidedWriteError) string {
+	if e == nil {
+		return "<none>"
+	}
+	return e.Op
+}
 
-	t.Run("label", func(t *testing.T) {
-		base := newStore(t)
-		iss, err := base.Create(native.Issue{Title: "stays unlabeled"})
-		if err != nil {
-			t.Fatalf("Create: %v", err)
-		}
-		before := boardSnapshot(t, base)
-		transport := NewActionTransport(&failStore{BoardStore: base, failAdjust: true}, CallEnv{})
-		op, _ := pkg.Operation("board.issue.label")
-		_, err = transport.Call(context.Background(), op, map[string]any{"id": iss.ID, "labels": []any{"never"}}, caps)
-		if err == nil {
-			t.Fatal("want the store's failure")
-		}
-		if got := boardSnapshot(t, base); got != before {
-			t.Fatalf("a failed label adjusted the card: %s → %s", before, got)
-		}
-	})
+// The other half of the line: a refusal raised BEFORE any store write is
+// decided — nothing was written — so it is NOT typed undecided, and keeps
+// its ordinary recovery. Each row is one refusal site, isolated.
+func TestARefusalBeforeTheWriteIsDecided(t *testing.T) {
+	pkg := FacadePackage()
+	for _, tc := range []struct {
+		name   string
+		verb   string
+		params map[string]any
+		caps   []string
+	}{
+		{"an argument the operation refuses", "board.issue.create", map[string]any{"title": "  "}, []string{CapBoardCreate}},
+		{"a capability the grant lacks", "board.issue.create", map[string]any{"title": "never"}, []string{CapBoardRead}},
+		{"an id Resolve cannot find", "board.issue.transition", map[string]any{"id": "native:absent", "to": "done"}, []string{CapBoardMove}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			base := newStore(t)
+			before := boardSnapshot(t, base)
+			op, _ := pkg.Operation(tc.verb)
+			_, err := NewActionTransport(base, CallEnv{}).Call(context.Background(), op, tc.params, tc.caps)
+			if err == nil {
+				t.Fatal("want the refusal")
+			}
+			if undecidedEffect(err) {
+				t.Fatalf("a refusal before any write is reported undecided (%v) — it would park a run that may retry", err)
+			}
+			if got := boardSnapshot(t, base); got != before {
+				t.Fatalf("a refused call left an effect: %s → %s", before, got)
+			}
+		})
+	}
 }
 
 // And the happy path of each mutating verb through the facade: the capability

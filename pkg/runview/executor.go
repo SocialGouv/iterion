@@ -740,7 +740,7 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 	if usageGuard != nil {
 		opts = append(opts, model.WithUsageGuard(usageGuard))
 	}
-	if sid := resolveSourceIssueID(spec); sid != "" {
+	if sid := SourceIssueIDOf(spec); sid != "" {
 		opts = append(opts, model.WithSourceIssueID(sid))
 	}
 	if spec.BoardRegister != nil {
@@ -827,7 +827,7 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 				Capabilities: boardops.AllCapabilities(),
 				// The owning ticket travels with the tools so board.create
 				// auto-stamps parent_id / spawned_from on spawned children.
-				SourceIssueID: resolveSourceIssueID(spec),
+				SourceIssueID: SourceIssueIDOf(spec),
 			}
 			if err := tool.RegisterClawBoardTools(toolReg, boardCfg); err != nil {
 				spec.Logger.Warn("runview: RegisterClawBoardTools: %v", err)
@@ -839,7 +839,7 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 			// already wired above and wins: the fs default yields to it.
 			if boardDefaultApplies {
 				opts = append(opts, model.WithActionTransports(
-					NativeBoardTransport(ns, resolveSourceIssueID(spec))))
+					NativeBoardTransport(ns, SourceIssueIDOf(spec))))
 			}
 		}
 	}
@@ -1543,6 +1543,18 @@ type RunLoader interface {
 	LoadRun(ctx context.Context, id string) (*store.Run, error)
 }
 
+// runLoaderOf is the ONE reading of where a spec's run records come from:
+// Runs when the caller set it (a Store that wraps the run store — the cloud
+// runner's metrics emitter — cannot load records), else Store when it can.
+// Nil when neither reads runs.
+func runLoaderOf(spec ExecutorSpec) RunLoader {
+	if spec.Runs != nil {
+		return spec.Runs
+	}
+	loader, _ := spec.Store.(RunLoader)
+	return loader
+}
+
 // maxLineageWalk bounds a walk up a run's ParentRunID chain (sub-bot
 // children, scan shards, forks); the visited set breaks cycles, this bound
 // breaks a corrupt chain.
@@ -1561,10 +1573,7 @@ func recordedMintedSecrets(ctx context.Context, spec ExecutorSpec) map[string][]
 	if spec.RunID == "" && spec.ParentRunID == "" {
 		return nil
 	}
-	loader := spec.Runs
-	if loader == nil {
-		loader, _ = spec.Store.(RunLoader)
-	}
+	loader := runLoaderOf(spec)
 	if loader == nil {
 		if spec.Store != nil && spec.Logger != nil {
 			spec.Logger.Warn("secret guard: the store of run %s (%T) cannot load run records and ExecutorSpec.Runs is unset — the minted credentials of this run's records and its ancestors' are not redacted from this execution's sinks", spec.RunID, spec.Store)
@@ -1618,21 +1627,25 @@ func recordedMintedSecrets(ctx context.Context, spec ExecutorSpec) map[string][]
 	return out
 }
 
-// resolveSourceIssueID returns the ticket that owns this run: explicit
-// ExecutorSpec.SourceIssueID first, else LoadRun(Source.IssueID) when the
-// store can load the record. Empty for ad-hoc launches.
-func resolveSourceIssueID(spec ExecutorSpec) string {
+// SourceIssueIDOf returns the ticket that owns this run: explicit
+// ExecutorSpec.SourceIssueID first, else the run record's Source.IssueID,
+// read through the spec's run loader (runLoaderOf: Runs, else Store) — the
+// cloud runner's Store wraps the run store and loads no records, so a
+// reading of Store alone answers "" there and every board transport of a
+// cloud run would stamp no planner provenance. Empty for ad-hoc launches.
+//
+// Exported for the one surface that builds a board transport itself (the
+// cloud runner's native transport over the tenant's board): the transport
+// carries the same owning ticket as the ones BuildExecutor wires.
+func SourceIssueIDOf(spec ExecutorSpec) string {
 	if id := strings.TrimSpace(spec.SourceIssueID); id != "" {
 		return id
 	}
 	if spec.RunID == "" {
 		return ""
 	}
-	type runLoader interface {
-		LoadRun(ctx context.Context, id string) (*store.Run, error)
-	}
-	loader, ok := spec.Store.(runLoader)
-	if !ok {
+	loader := runLoaderOf(spec)
+	if loader == nil {
 		return ""
 	}
 	ctx := spec.Ctx

@@ -363,3 +363,99 @@ func diagText(diags []Diagnostic, code DiagCode) string {
 	}
 	return ""
 }
+
+// A registry recipe naming an iterion host tool is the list's second reader
+// (the runtime holds its dispatch to the node's grant, model.nodeCapabilities),
+// so the compiler judges it against the SAME list: C328 on the declared list
+// that does not hold the tool's capability — a declared `capabilities: []`
+// included, which overrides a granting workflow (#1801) — and no C332, since
+// the list has a reader. One scenario per arm.
+func TestARegistryHostToolIsJudgedAgainstTheToolNodesOwnList(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		nodeCaps string // the node's capabilities: line, "" for none
+		wfCaps   string
+		wantC328 bool
+	}{
+		{"declared empty under a granting workflow", "  capabilities: []\n", "[board.read, board.create]", true},
+		{"declared without the tool's capability", "  capabilities: [board.read]\n", "[board.create]", true},
+		{"declared with it under a workflow granting nothing", "  capabilities: [board.create]\n", "[]", false},
+		{"no line inherits the granting workflow", "", "[board.create]", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, diags := compileSource(t, `
+tool file:
+  command: "mcp.iterion_board.create_issue"
+`+tc.nodeCaps+`
+workflow main:
+  capabilities: `+tc.wfCaps+`
+  entry: file
+  file -> done
+`)
+			if errs := errorsOnly(diags); len(errs) > 0 {
+				t.Fatalf("unexpected errors: %s", strings.Join(codesOf(errs), "\n"))
+			}
+			if got := hasCode(diags, DiagHostToolWithoutCapability); got != tc.wantC328 {
+				t.Fatalf("C328 = %v, want %v: %s", got, tc.wantC328, strings.Join(codesOf(diags), "\n"))
+			}
+			if hasCode(diags, DiagToolCapabilitiesInert) {
+				t.Fatalf("C332 on a registry recipe naming a host tool — its list has a reader: %s", strings.Join(codesOf(diags), "\n"))
+			}
+		})
+	}
+}
+
+// And the registry recipe that names ANY other tool reads no grant: its
+// declared list is inert, C332's case.
+func TestCapabilitiesOnARegistryRecipeNamingAnotherToolWarnInert(t *testing.T) {
+	_, diags := compileSource(t, `
+tool reads:
+  command: "read_file"
+  capabilities: [board.read]
+
+workflow main:
+  entry: reads
+  reads -> done
+`)
+	if !hasCode(diags, DiagToolCapabilitiesInert) {
+		t.Fatalf("capabilities: on a registry recipe naming no host tool: got %s, want C332", strings.Join(codesOf(diags), "\n"))
+	}
+}
+
+// C336: the native verb set is the binary's own (boardcaps.ActionCapability,
+// held to the facade by its matrix test), so a verb the facade does not
+// expose is known at compile time — admission refuses it on every launch.
+// The exposed verbs stay silent, and the message lists them.
+func TestANativeVerbTheFacadeDoesNotExposeWarns(t *testing.T) {
+	_, diags := compileSource(t, `
+tool closeit:
+  action: board.issue.close
+  capabilities: [board.close]
+
+workflow main:
+  entry: closeit
+  closeit -> done
+`)
+	if errs := errorsOnly(diags); len(errs) > 0 {
+		t.Fatalf("unexpected errors: %s", strings.Join(codesOf(errs), "\n"))
+	}
+	var msg string
+	for _, d := range diags {
+		if d.Code == DiagNativeVerbNotExposed {
+			msg = d.Message
+		}
+	}
+	if msg == "" {
+		t.Fatalf("board.issue.close: got %s, want C336", strings.Join(codesOf(diags), "\n"))
+	}
+	for _, verb := range []string{"board.issue.list", "board.issue.create", "board.issue.transition"} {
+		if !strings.Contains(msg, verb) {
+			t.Fatalf("C336 does not list the exposed verb %s: %s", verb, msg)
+		}
+	}
+
+	_, diags = compileSource(t, boardActionBot)
+	if hasCode(diags, DiagNativeVerbNotExposed) {
+		t.Fatalf("an exposed verb drew C336: %s", strings.Join(codesOf(diags), "\n"))
+	}
+}

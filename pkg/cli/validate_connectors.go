@@ -29,10 +29,18 @@ import (
 // ConnectorsReport is what `--connectors` adds to a validate: what the
 // installed catalogue answers for every `action:` node of the program.
 type ConnectorsReport struct {
-	// Nodes is how many `action:` nodes were resolved — zero for a program
-	// that declares none, which is why the report is present and empty
-	// rather than absent: "asked, and there was nothing to resolve".
+	// Nodes is how many `action:` nodes were resolved against the catalogue —
+	// zero for a program that declares none, which is why the report is
+	// present and empty rather than absent: "asked, and there was nothing to
+	// resolve".
 	Nodes int `json:"nodes"`
+	// Native is how many `action:` nodes name a NATIVE connector (board.*,
+	// ADR-151): the engine's registered transport serves them, never the
+	// catalogue, so they are counted apart rather than resolved — a catalogue
+	// that does not serve `board` is the expected install, and the package
+	// it would imply is one spec.Validate refuses as a reserved id. Whether
+	// the native facade exposes the verb is the compiler's to say (C336).
+	Native int `json:"native,omitempty"`
 	// NoCatalog says, ONCE, that this install has no connector catalog at
 	// all, and names the roots it would have read. Empty when a tier was
 	// built.
@@ -82,8 +90,9 @@ type ConnectorFinding struct {
 // not that error: it is the report's NoCatalog sentence, because "nothing is
 // installed here" is an answer.
 func resolveConnectorActions(wf *ir.Workflow) (*ConnectorsReport, error) {
-	nodes := runview.ActionNodes(wf)
-	report := &ConnectorsReport{Nodes: len(nodes)}
+	all := runview.ActionNodes(wf)
+	nodes := runview.CatalogActionNodes(wf)
+	report := &ConnectorsReport{Nodes: len(nodes), Native: len(all) - len(nodes)}
 	if len(nodes) == 0 {
 		// Nothing to resolve, so nothing is READ: a program with no `action:`
 		// node has no use for the catalogue, which is the rule the run's own
@@ -133,6 +142,9 @@ func resolveConnectorActions(wf *ir.Workflow) (*ConnectorsReport, error) {
 func renderConnectors(p *Printer, report *ConnectorsReport) {
 	p.Blank()
 	switch {
+	case report.Nodes == 0 && report.Native > 0:
+		p.Line(fmt.Sprintf("  connectors: no `action:` node the catalogue serves — %d native action node(s) (board.*) run on the engine's own transport", report.Native))
+		return
 	case report.Nodes == 0:
 		p.Line("  connectors: no `action:` node in this program")
 	case report.NoCatalog != "":
@@ -144,5 +156,8 @@ func renderConnectors(p *Printer, report *ConnectorsReport) {
 		for _, f := range report.Findings {
 			p.Line("    " + f.NodeID + " (" + f.Action + "): " + f.Reason)
 		}
+	}
+	if report.Native > 0 {
+		p.Line(fmt.Sprintf("  connectors: %d native action node(s) (board.*) run on the engine's own transport, not the catalogue", report.Native))
 	}
 }

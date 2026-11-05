@@ -159,8 +159,10 @@ func extractBackendFields(node ir.Node) (backendFields, error) {
 // buildTask, the EffectiveToolNames seam and the reserved-namespace grant
 // check (internalMCPToolGrant) all read it here, on the field
 // extractBackendFields produces, so no site can answer a different grant for
-// the same node. A tool node's native action reads it too, on the node's own
-// list (#78=A, ADR-151): one grant rule for every node kind.
+// the same node. A tool node reads it too, on the node's own list, through
+// nodeCapabilities — its registry recipe's host tools, its native action and
+// its rung-4 recovery agent (#78=A, ADR-151): one grant rule for every node
+// kind.
 func effectiveCapabilitiesOf(declared, wfCapabilities []string) []string {
 	if declared == nil {
 		return wfCapabilities

@@ -2,6 +2,7 @@ package ir
 
 import (
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/boardcaps"
@@ -101,20 +102,24 @@ func (c *compiler) validateCapabilities(w *Workflow) {
 		// MCP transport the sandbox may not have, while a tool node's board
 		// action runs IN the engine — the transport question is exactly what
 		// the native seam removes (#2632's second half). What it gets
-		// instead is C332: on a command:/script: node no consumer reads the
-		// list, and an inert grant reads as configured.
+		// instead is C332: where no consumer reads the list, an inert grant
+		// reads as configured.
 		if tn, ok := n.(*ToolNode); ok {
 			for _, cap := range tn.Capabilities {
 				c.validateOneCapability(cap, tn.ID, "tool")
 			}
-			// The grant has exactly ONE reader: the action recipe's NATIVE
-			// transport. A shell recipe has none — and neither does an HTTP
-			// action, whose authorization is the connection's credential:
-			// the warning's own sentence is the condition.
+			// The grant has two readers, both the runtime's
+			// model.nodeCapabilities: the action recipe's NATIVE transport,
+			// and a registry recipe naming one of iterion's host tools (its
+			// dispatch is held to the grant like an agent's tools:). A shell
+			// recipe has none — and neither does an HTTP action, whose
+			// authorization is the connection's credential, nor a registry
+			// recipe naming any other tool: the warning's own sentence is
+			// the condition.
 			nativeAction := tn.Action != "" && NativeConnectorIDs[actionConnectorOf(tn.Action)]
-			if len(tn.Capabilities) > 0 && !nativeAction {
+			if len(tn.Capabilities) > 0 && !nativeAction && !toolRecipeNamesHostTool(tn) {
 				c.warnfAt(DiagToolCapabilitiesInert, tn.ID, "",
-					"tool %q declares `capabilities:` but %s — only the action: recipe's native transport reads the grant (ADR-151), so this list opens nothing",
+					"tool %q declares `capabilities:` but %s — only a native action (board.*) or a registry recipe naming an iterion host tool reads the grant (ADR-151), so this list opens nothing",
 					tn.ID, toolGrantReaderAbsent(tn))
 			}
 			// A native board action whose grant is declared NOWHERE is
@@ -123,7 +128,18 @@ func (c *compiler) validateCapabilities(w *Workflow) {
 			// with the remedy, never a refusal — a hand-built catalog of one
 			// node is none of this check's business).
 			if nativeAction {
-				if want, known := boardcaps.ActionCapability[tn.Action]; known {
+				want, known := boardcaps.ActionCapability[tn.Action]
+				if !known {
+					// The native verb set is the binary's own, so the
+					// compiler knows what admission will refuse on every
+					// launch. A warning, not a refusal: admission keeps its
+					// escape hatch for a node on a branch the launch never
+					// takes, and the compile must not take it away.
+					c.warnfAt(DiagNativeVerbNotExposed, tn.ID, "",
+						"tool %q: `action: %s` names a verb the native %q facade does not expose (it serves: %s) — every launch is refused at admission. A board act the facade does not serve goes through an agent or judge node's board tools",
+						tn.ID, tn.Action, actionConnectorOf(tn.Action), strings.Join(exposedNativeVerbs(actionConnectorOf(tn.Action)), ", "))
+				}
+				if known {
 					nodeDeclared := tn.Capabilities != nil
 					eff := tn.Capabilities
 					if !nodeDeclared {
@@ -194,17 +210,46 @@ func isBoardCapability(cap string) bool {
 	return cap == "board" || (len(cap) > len("board.") && cap[:len("board.")] == "board.")
 }
 
+// exposedNativeVerbs lists, sorted, the action ids the native facade of
+// connector serves — boardcaps.ActionCapability, which the facade's matrix
+// test holds to the facade's own bindings.
+func exposedNativeVerbs(connector string) []string {
+	var out []string
+	for action := range boardcaps.ActionCapability {
+		if actionConnectorOf(action) == connector {
+			out = append(out, action)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
 // actionConnectorOf splits the connector id off an action id.
 func actionConnectorOf(action string) string {
 	connector, _, _ := strings.Cut(action, ".")
 	return connector
 }
 
+// toolRecipeNamesHostTool reports whether a tool node's registry recipe
+// names one of iterion's host tools (board, watch, runs), in any accepted
+// spelling: the runtime holds that dispatch to the node's grant, so the
+// list has a reader.
+func toolRecipeNamesHostTool(tn *ToolNode) bool {
+	if ToolRecipeKindOf(tn) != ToolRecipeRegistry {
+		return false
+	}
+	_, ok := HostToolCapability(strings.TrimSpace(tn.Command))
+	return ok
+}
+
 // toolGrantReaderAbsent words WHY a tool node's grant has no reader, for
 // C332: the recipe decides, not the list.
 func toolGrantReaderAbsent(tn *ToolNode) string {
-	if tn.Action != "" {
+	switch {
+	case tn.Action != "":
 		return "its action: is served over HTTP, whose authorization is the connection's credential"
+	case ToolRecipeKindOf(tn) == ToolRecipeRegistry:
+		return "its registry recipe names no iterion host tool"
 	}
 	return "its recipe is command:/script:"
 }

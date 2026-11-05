@@ -410,7 +410,8 @@ type ToolNode struct {
 	// Capabilities are the host capabilities granted to the node (ADR-151,
 	// #78=A) — declared exactly like on an agent/judge: nil = inherit the
 	// workflow's, a declared `capabilities: []` = no grant (#1801). The
-	// `action:` recipe's native transport reads them; a command:/script:
+	// `action:` recipe's native transport and a registry recipe naming an
+	// iterion host tool read them (model.nodeCapabilities); a command:/script:
 	// node has no consumer for them (C332 warns).
 	Capabilities []string
 

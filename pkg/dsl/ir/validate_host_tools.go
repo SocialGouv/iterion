@@ -27,11 +27,13 @@ import (
 // from a list — so it stays C135's here too rather than drawing a second
 // warning whose remedy (declare the capability) would leave the entry dead.
 //
-// The effective grant of an agent/judge is its own `capabilities:` when the
-// list is declared (a declared `capabilities: []` holds NOTHING — the trap
-// the rest of #1801 closed), else the workflow's. A tool node — and its
-// rung-4 recovery agent, whose synthetic node carries no list of its own —
-// holds the workflow's, so the remedy names the workflow's list.
+// The effective grant of a node is its own `capabilities:` when the list is
+// declared (a declared `capabilities: []` holds NOTHING — the trap the rest
+// of #1801 closed), else the workflow's. A tool node declares one too
+// (#78=A, ADR-151), and its registry recipe is held to it exactly like an
+// agent's tools: — the runtime reads the same list (model.nodeCapabilities).
+// The rung-4 recovery agent's synthetic node carries no list of its own and
+// holds the workflow's, so that remedy names the workflow's list.
 func (c *compiler) validateHostToolCapabilities(w *Workflow) {
 	wfCaps := capSet(w.Capabilities)
 	for _, n := range w.Nodes {
@@ -46,7 +48,11 @@ func (c *compiler) validateHostToolCapabilities(w *Workflow) {
 			// registered MCP tool, so workflow-level MCP wiring makes it as
 			// ambiguous as an agent's bare entry.
 			if ToolRecipeKindOf(node) == ToolRecipeRegistry && !mcpWiringDecidesBareNames(w, node) {
-				c.warnHostToolCap(node.ID, "tool", strings.TrimSpace(node.Command), "", wfCaps, "the workflow's", nil)
+				owner := "the workflow's"
+				if node.Capabilities != nil {
+					owner = "its"
+				}
+				c.warnHostToolCap(node.ID, "tool", strings.TrimSpace(node.Command), "", effectiveCaps(node.Capabilities, wfCaps), owner, nil)
 			}
 			// The rung-4 recovery agent's agent_tools: is the third list the
 			// runtime gates: the synthetic node carries no capabilities of its

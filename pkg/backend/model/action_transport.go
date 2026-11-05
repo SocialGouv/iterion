@@ -157,7 +157,7 @@ func (e *ClawExecutor) executeToolNodeNativeAction(ctx context.Context, node *ir
 
 	start := time.Now()
 	e.emitToolNodeStarted(node.ID, actionToolName(node), len(params))
-	data, callErr := transport.Call(callCtx, op, params, effectiveCapabilitiesOf(node.Capabilities, e.wfCapabilities))
+	data, callErr := transport.Call(callCtx, op, params, e.nodeCapabilities(node))
 	if callErr != nil {
 		callErr = e.scrubActionError(callErr)
 		_ = e.emitToolNodeFinish(node.ID, actionToolName(node), node.Action, "", "", time.Since(start), callErr)

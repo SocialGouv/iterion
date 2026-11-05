@@ -95,12 +95,18 @@ func (e *ClawExecutor) internalMCPToolGrant(node ir.Node, server, qualified stri
 		node.NodeID(), qualified, capability)
 }
 
-// nodeCapabilities is the grant a node is held to, read through the same seam
-// buildTask reads: extractBackendFields' `capabilities`, then
-// effectiveCapabilitiesOf for the nil-vs-declared-empty rule. A node kind
-// that carries no list of its own (a tool node) is held to the workflow's,
-// which is the list C328's remedy tells its author to edit.
+// nodeCapabilities is the grant a node is held to, for every node kind:
+// its own declared `capabilities:` list through effectiveCapabilitiesOf (nil
+// inherits the workflow's, a declared `capabilities: []` grants nothing,
+// #1801). An LLM node's list is extractBackendFields' — the field buildTask
+// reads; a tool node declares its own (#78=A, ADR-151), read here for its
+// registry recipe's host tools and by its native action transport alike, so
+// no recipe of a tool node answers a different grant than another. A node
+// kind that carries no list of its own is held to the workflow's.
 func (e *ClawExecutor) nodeCapabilities(node ir.Node) []string {
+	if tn, ok := node.(*ir.ToolNode); ok {
+		return effectiveCapabilitiesOf(tn.Capabilities, e.wfCapabilities)
+	}
 	f, err := extractBackendFields(node)
 	if err != nil {
 		return e.wfCapabilities

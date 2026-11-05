@@ -19,10 +19,9 @@ var _ model.ActionTransport = (*boardops.ActionTransport)(nil)
 // NativeBoardTransport builds the board's native action transport over the
 // instance's own store (#2465: the fs store a local surface opens, the
 // tenant's Mongo board a cloud runner resolves through Config.BoardFor —
-// never a forge's). sourceIssueID is the run's owning ticket, stamped as
-// parent_id on a create the way every other board transport stamps it; the
-// read-only facade of this lot never reads it, but the transport is built
-// once for the facade's whole lifetime.
+// never a forge's). sourceIssueID is the run's owning ticket
+// (SourceIssueIDOf), stamped as parent_id / spawned_from on a
+// board.issue.create the way every other board transport stamps it.
 //
 // The helper exists so the surfaces build the transport through ONE
 // function: "a capability wired on one launch surface and silently inert on
@@ -53,7 +52,7 @@ func actionTransportsOwn(transports []model.ActionTransport, connector string) b
 // board action must not mint one.
 func WorkflowHasNativeBoardAction(wf *ir.Workflow) bool {
 	for _, n := range ActionNodes(wf) {
-		if ir.NativeConnectorIDs[n.Connector] {
+		if n.Native() {
 			return true
 		}
 	}
