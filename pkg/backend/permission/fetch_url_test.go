@@ -131,6 +131,46 @@ func TestADomainDenyMeetsTheHostAFetcherReaches(t *testing.T) {
 	}
 }
 
+// TestADenyOnAnIPv4AddressMeetsItsMappedIPv6Spelling: `[::ffff:a.b.c.d]` is
+// an IPv6 host to a WHATWG reader and the IPv4 address a.b.c.d to the socket
+// both backends' fetchers open, so every deny shape naming the IPv4 address —
+// `domain:`, bare host, full URL, and the https URL claude_code upgrades an
+// http one to — meets each spelling of the mapped address, on every backend's
+// tool name and on a gate rebuilt from PolicyConfig.
+func TestADenyOnAnIPv4AddressMeetsItsMappedIPv6Spelling(t *testing.T) {
+	mapped := []string{
+		"http://[::ffff:169.254.169.254]/latest/meta-data/",
+		"http://[::ffff:a9fe:a9fe]/latest/meta-data/",
+		"http://[0:0:0:0:0:ffff:169.254.169.254]/latest/meta-data/",
+		"http://[::FFFF:A9FE:A9FE]:80/latest/meta-data/",
+	}
+	for _, deny := range []string{
+		"WebFetch(domain:169.254.169.254)",
+		"WebFetch(169.254.169.254)",
+		"WebFetch(http://169.254.169.254/**)",
+		"WebFetch(https://169.254.169.254/**)",
+	} {
+		engine := mustPolicy(t, ModeDeny, []string{"WebFetch"}, nil, []string{deny})
+		child, err := NewPolicyFromConfig(engine.Config())
+		if err != nil {
+			t.Fatalf("NewPolicyFromConfig: %v", err)
+		}
+		for _, tool := range []string{"WebFetch", "web_fetch", "FetchURL"} {
+			for _, u := range mapped {
+				for side, p := range map[string]*Policy{"engine": engine, "rebuilt": child} {
+					if got, rule := p.Evaluate(tool, map[string]any{"url": u}); got != Deny {
+						t.Errorf("%s gate, deny %s: Evaluate(%s, %q) = %v (rule %q), want Deny", side, deny, tool, u, got, rule)
+					}
+				}
+			}
+		}
+		// An IPv6 address that maps no IPv4 one is another host.
+		if got, rule := engine.Evaluate("WebFetch", map[string]any{"url": "http://[2001:db8::a9fe:a9fe]/"}); got != Allow {
+			t.Errorf("deny %s: an unmapped IPv6 host = %v (rule %q), want Allow", deny, got, rule)
+		}
+	}
+}
+
 // TestAnAllowReadsTheHostAFetcherReaches: the opening side reads the same
 // host, never the URL's text: a `domain:` allow opens a spelling of its own
 // host, and opens nothing a spelling of it hides another host behind.

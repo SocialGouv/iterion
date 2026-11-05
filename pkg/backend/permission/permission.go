@@ -647,6 +647,11 @@ type candidates struct {
 	// it and a scoped deny or ask still bites. An opening set never carries
 	// it — there it would open the call to every scoped allow.
 	unread bool
+	// others holds, on an OPENING set, the sets of every other path the call
+	// carries (openingPaths): each is another file, and a rule opens the
+	// call only when it meets every one of them as well. A closing set never
+	// carries it — there each path is one more spelling a deny may meet.
+	others []candidates
 }
 
 // meets reports whether a rule matches this candidate set, through the half
@@ -655,7 +660,15 @@ func (c candidates) meets(r rule) bool {
 	if c.unread && r.argRe != nil {
 		return true
 	}
-	return r.matchesSummary(c.of(r))
+	if !r.matchesSummary(c.of(r)) {
+		return false
+	}
+	for _, other := range c.others {
+		if !other.meets(r) {
+			return false
+		}
+	}
+	return true
 }
 
 // both is the candidate set that reads the same list for every rule shape.
@@ -1009,9 +1022,10 @@ func globToRegexp(glob string) (*regexp.Regexp, error) {
 // offered for something the call genuinely does: another SPELLING of the
 // same path (pathCandidates), or another DIMENSION of the same call
 // (WebFetch's host beside its URL, a search's root beside its pattern).
-// A second path the call merely carries is NOT one of them — an allow for
-// the harmless one would authorise the other; denyCandidates is where
-// every path a call names is read, because deny wins.
+// A second path the call carries is NOT one of them: it is another file,
+// which the same rule must open too (openingPaths, candidates.others) — an
+// allow for the harmless one would otherwise authorise whichever the tool
+// honours; denyCandidates reads every path a call names, because deny wins.
 //
 // canon is the already-canonicalised tool name. The per-tool argument keys
 // mirror tooldisplay's header-detail extraction; keep the two in sync
@@ -1030,10 +1044,8 @@ func summarize(canon string, input map[string]any, root string) candidates {
 		// the command payload, and splitting it would let an exact allow
 		// for the first line approve arbitrary trailing shell text.
 		return both([]string{str(input, "command")})
-	case "read", "write", "edit", "notebookedit":
-		return pathDimension(canon, primaryPath(canon, input), root)
-	case "ls":
-		return pathDimension(canon, primaryPath(canon, input), root)
+	case "read", "write", "edit", "notebookedit", "ls":
+		return openingPaths(canon, input, root)
 	case "glob", "grep", "workspace_grep":
 		// Two dimensions: WHAT is searched for and WHERE. Without the
 		// second, a rule naming a directory is compared to the search
@@ -1050,14 +1062,13 @@ func summarize(canon string, input map[string]any, root string) candidates {
 			// it (denyCandidates).
 			return candidates{}
 		}
-		dim := pathDimension(canon, primaryPath(canon, input), root)
+		dim := openingPaths(canon, input, root)
 		if pattern == "" {
 			return dim
 		}
-		return candidates{
-			pattern: append([]string{pattern}, dim.pattern...),
-			exact:   append([]string{pattern}, dim.exact...),
-		}
+		dim.pattern = append([]string{pattern}, dim.pattern...)
+		dim.exact = append([]string{pattern}, dim.exact...)
+		return dim
 	case "webfetch":
 		return fetchCandidates(str(input, "url"))
 	case "websearch":
@@ -1125,8 +1136,10 @@ func fetchCandidates(raw string) candidates {
 // parses with it), the hostname without its port and without the root-zone
 // dot a resolver ignores (`domain:e.com` bounds `https://e.com.:8443/x`), and
 // the resolved URL (fetchURL.resolved) — also as claude_code's WebFetch
-// reaches an http URL, upgraded to https. Nothing when the gate cannot read
-// the URL: the closing set is then unread, which every scoped rule meets.
+// reaches an http URL, upgraded to https, and as both fetchers reach an
+// IPv4-mapped IPv6 host, at its IPv4 address (fetchURL.unmapped). Nothing
+// when the gate cannot read the URL: the closing set is then unread, which
+// every scoped rule meets.
 func fetchLandings(raw string) []string {
 	var out []string
 	if u, err := url.Parse(raw); err == nil && u.Host != "" {
@@ -1137,8 +1150,13 @@ func fetchLandings(raw string) []string {
 		return out
 	}
 	readings := []fetchURL{f}
-	if up, ok := f.upgraded(); ok {
-		readings = append(readings, up)
+	if v4, ok := f.unmapped(); ok {
+		readings = append(readings, v4)
+	}
+	for _, r := range slices.Clone(readings) {
+		if up, ok := r.upgraded(); ok {
+			readings = append(readings, up)
+		}
 	}
 	if name := strings.TrimSuffix(f.hostname, "."); name != f.hostname {
 		for _, r := range slices.Clone(readings) {
@@ -1166,9 +1184,10 @@ func globPatternClimbs(canon, pattern string) bool {
 // `{"file_path": "/work/ok", "path": "/run/iterion/secrets/x"}` — and which
 // one the tool honours depends on the backend: claw's read_file reads
 // `path`, claude_code's Read reads `file_path`. Reading all of them keeps
-// "a deny wins in every mode" true whichever key the tool picks, while an
-// allow stays on the single path summarize chose, or naming an allowed path
-// beside a forbidden one would authorise the forbidden one.
+// "a deny wins in every mode" true whichever key the tool picks; an allow
+// opens such a call only when it opens every one of its paths
+// (openingPaths), or naming an allowed path beside a forbidden one would
+// authorise the forbidden one.
 //
 // The path spellings are also offered FOLDED (foldedPathDimension): a deny
 // is a closing verdict, so the fold can only cost a refusal, never a leak
@@ -1265,9 +1284,10 @@ func foldPathSpelling(s string) string {
 }
 
 // pathInputKeys names every input key that holds a filesystem path for a
-// tool family, primaryPath the one summarize reads — the first present,
-// in the order the gate has always read them. A deny is matched against
-// all of them, so the two must not drift: one table, read twice.
+// tool family, primaryPath the first present, in the order the gate has
+// always read them. A deny meets any of them and an allow must open all of
+// them (openingPaths), so the two sides must not drift: one table, read
+// twice.
 //
 // A new path-carrying tool joins THREE tables together, no enumeration
 // derives them: this one (which input keys hold the paths), summarize
@@ -1290,6 +1310,30 @@ func primaryPath(canon string, input map[string]any) string {
 		}
 	}
 	return ""
+}
+
+// openingPaths renders the opening candidates of every path a call carries:
+// the spellings of primaryPath, and each other path key holding a different
+// path as a set of its own the same rule must meet (candidates.others). The
+// key the gate reads first is not the key every tool honours — claw's
+// read_file and write_file act on `path`, claude_code's Read on `file_path`
+// — so a rule that opened one path of a call would open whichever the tool
+// picks: `{"file_path": "/work/docs/x.md", "path": "/etc/passwd"}` is no
+// read under `Read(/work/docs/**)`. The first exact candidate stays the
+// primary path as sent, the one an approval quotes (grantArg).
+func openingPaths(canon string, input map[string]any, root string) candidates {
+	primary := primaryPath(canon, input)
+	out := pathDimension(canon, primary, root)
+	seen := []string{primary}
+	for _, key := range pathInputKeys(canon) {
+		v := str(input, key)
+		if v == "" || slices.Contains(seen, v) {
+			continue
+		}
+		seen = append(seen, v)
+		out.others = append(out.others, pathDimension(canon, v, root))
+	}
+	return out
 }
 
 // pathDimension renders the candidates one filesystem path contributes

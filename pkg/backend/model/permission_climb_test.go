@@ -17,7 +17,8 @@ import (
 // policy the REAL task build arms for a node (resolvePermissionPolicy, its
 // path root and its secret trees included) judging a read_file call in the
 // claw tool loop. A spelling whose text sits under the node's narrow allow
-// and whose file does not must never reach the tool; claude_code's half is
+// and whose file does not must never reach the tool, nor a decoy `file_path`
+// inside the allow beside the `path` read_file acts on; claude_code's half is
 // TestTheClaudeCodeHookRefusesAClimbOutOfANarrowAllow (pkg/backend/delegate),
 // which feeds the same calls to the PreToolUse hook a spawn registers.
 func TestTheClawToolLoopRefusesAClimbOutOfANarrowAllow(t *testing.T) {
@@ -31,16 +32,20 @@ func TestTheClawToolLoopRefusesAClimbOutOfANarrowAllow(t *testing.T) {
 	}
 	task := buildNodeTask(t, nodeRulesExecutor(t, wf, WithWorkDir(work)), nodeRulesAgent(nil))
 
+	docs := filepath.Join(work, "docs")
 	for _, tc := range []struct {
-		name string
-		path string
-		runs bool
+		name  string
+		input map[string]any
+		runs  bool
 	}{
-		{"absolute climb", filepath.Join(work, "docs") + "/../../../etc/passwd", false},
-		{"relative climb", "docs/../../../etc/passwd", false},
-		{"trailing climb", filepath.Join(work, "docs") + "/..", false},
-		{"inside the allowed tree", filepath.Join(work, "docs", "x.md"), true},
-		{"relative, inside the allowed tree", "docs/x.md", true},
+		{"absolute climb", map[string]any{"path": docs + "/../../../etc/passwd"}, false},
+		{"relative climb", map[string]any{"path": "docs/../../../etc/passwd"}, false},
+		{"trailing climb", map[string]any{"path": docs + "/.."}, false},
+		{"a decoy file_path beside the climb", map[string]any{"file_path": filepath.Join(docs, "x.md"), "path": docs + "/../private/key"}, false},
+		{"a decoy file_path beside another tree", map[string]any{"file_path": filepath.Join(docs, "x.md"), "path": filepath.Join(work, "private", "key")}, false},
+		{"inside the allowed tree", map[string]any{"path": filepath.Join(docs, "x.md")}, true},
+		{"relative, inside the allowed tree", map[string]any{"path": "docs/x.md"}, true},
+		{"both keys inside the allowed tree", map[string]any{"file_path": filepath.Join(docs, "x.md"), "path": "docs/y.md"}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var mu sync.Mutex
@@ -56,7 +61,7 @@ func TestTheClawToolLoopRefusesAClimbOutOfANarrowAllow(t *testing.T) {
 					},
 				},
 			}
-			in, err := json.Marshal(map[string]any{"path": tc.path})
+			in, err := json.Marshal(tc.input)
 			if err != nil {
 				t.Fatalf("marshal: %v", err)
 			}
@@ -70,7 +75,7 @@ func TestTheClawToolLoopRefusesAClimbOutOfANarrowAllow(t *testing.T) {
 			executed := len(ran) > 0
 			mu.Unlock()
 			if executed != tc.runs {
-				t.Fatalf("read_file(%q) executed = %v, want %v", tc.path, executed, tc.runs)
+				t.Fatalf("read_file(%v) executed = %v, want %v", tc.input, executed, tc.runs)
 			}
 			if tc.runs {
 				return

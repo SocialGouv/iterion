@@ -361,11 +361,13 @@ Matching semantics (`pkg/backend/permission`):
   parses with Node, and claw's Go fetcher dials that same host whenever it
   parses the URL: `https:e.com/x`, `https://E.com:443/x` and
   `https://e.com\x` all fetch `e.com`, `http://0xa9fea9fe/` fetches
-  `169.254.169.254`. A URL's path is a path: one whose decoded path climbs
-  (`/docs/../admin`, `/docs/%2e%2e/admin`, `/docs/..\admin`) is read by no
-  full-URL pattern, since a fetcher resolves the climb before the server
-  sees it; its host still stands for it. A `deny:` also meets the URL with
-  its path decoded and resolved (`https://e.com/./%61dmin/x` is
+  `169.254.169.254`, and a `deny:` naming an IPv4 address also meets its
+  IPv4-mapped IPv6 spelling (`http://[::ffff:a9fe:a9fe]/`), which both
+  fetchers dial as that address. A URL's path is a path: one whose decoded
+  path climbs (`/docs/../admin`, `/docs/%2e%2e/admin`, `/docs/..\admin`) is
+  read by no full-URL pattern, since a fetcher resolves the climb before the
+  server sees it; its host still stands for it. A `deny:` also meets the
+  URL with its path decoded and resolved (`https://e.com/./%61dmin/x` is
   `https://e.com/admin/x`), upgraded from http to https as claude_code
   fetches it, and its host without port or root-zone dot. A URL the gate
   cannot read that way — another scheme, a host or port no fetcher accepts
@@ -379,9 +381,11 @@ Matching semantics (`pkg/backend/permission`):
 - A rule matches if it matches ANY candidate, and a **deny** is matched
   against one wider set: every path key the call carries, not only the one
   the tool is expected to honour (claw's `read_file` reads `path`,
-  claude_code's `Read` reads `file_path`). An `allow` stays on the single
-  path, or naming an allowed file beside a forbidden one would authorise the
-  forbidden one.
+  claude_code's `Read` reads `file_path`). An `allow` or a grant opens such
+  a call only when it opens EVERY path the call carries, each read as its
+  own spellings: `{"file_path": "/work/docs/x.md", "path": "/etc/passwd"}`
+  is no read under `Read(/work/docs/**)`, or an allowed file named beside a
+  forbidden one would open whichever the tool honours.
 - A **deny** (and an `ask:`, which outranks an allow) also matches the
   path's FOLDED spellings — slash-spelled and case-folded, the fold the
   read-scope guard applies (iterion#2868): a file system that folds case

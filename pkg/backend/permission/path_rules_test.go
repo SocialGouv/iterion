@@ -194,12 +194,74 @@ func TestADenyReadsEveryPathTheCallNames(t *testing.T) {
 	if got, _ := p.Evaluate("Read", map[string]any{"file_path": "/run/iterion/secrets/token", "path": "/work/ok.txt"}); got != Deny {
 		t.Error("the same hole in the other order")
 	}
-	// An ALLOW stays on the single path summarize chose: granting the
-	// allowed name beside a forbidden one must not authorise the forbidden
-	// one, so the call falls through to the mode default instead.
+	// An allowed name beside a forbidden one must not authorise the
+	// forbidden one: the call falls through to the mode default.
 	allowOnly := mustPolicy(t, ModeDeny, []string{"Read(/work/**)"}, nil, nil)
 	if got, _ := allowOnly.Evaluate("Read", map[string]any{"file_path": "/run/iterion/secrets/token", "path": "/work/ok.txt"}); got != Deny {
 		t.Error("an allow matched a path the call carried beside the one it reads")
+	}
+}
+
+// TestAnOpeningRuleOpensEveryPathTheCallNames is the opening twin of
+// TestADenyReadsEveryPathTheCallNames: the key the gate reads first is not
+// the key every tool honours — claw's read_file and write_file act on `path`,
+// claude_code's Read on `file_path` — so an allow, an operator grant and the
+// literal allow that supersedes a bare ask open a call only when the same
+// rule opens EVERY path it carries. A decoy `file_path` inside the allowed
+// tree must not open the `path` claw then reads (#2918's widening, one key
+// over).
+func TestAnOpeningRuleOpensEveryPathTheCallNames(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		allow string
+		tool  string
+		input map[string]any
+	}{
+		{"claw's read_file, a climb in the key it reads", "Read(/work/docs/**)", "read_file",
+			map[string]any{"file_path": "/work/docs/x.md", "path": "/work/docs/../../etc/passwd"}},
+		{"claw's write_file, a climb in the key it writes", "Write(/work/docs/**)", "write_file",
+			map[string]any{"file_path": "/work/docs/x.md", "path": "/work/docs/../.github/workflows/x.yml", "content": "x"}},
+		{"no climb at all, another tree", "Read(/work/docs/**)", "read_file",
+			map[string]any{"file_path": "/work/docs/x.md", "path": "/work/private/key"}},
+		{"a relative decoy", "Read(docs/**)", "read_file",
+			map[string]any{"file_path": "docs/x.md", "path": "private/key"}},
+		{"the notebook key", "NotebookEdit(/work/docs/**)", "NotebookEdit",
+			map[string]any{"file_path": "/work/docs/x.ipynb", "notebook_path": "/work/private/x.ipynb"}},
+		{"an exact rule names one path, not two", "Read(/work/docs/x.md)", "read_file",
+			map[string]any{"file_path": "/work/docs/x.md", "path": "/work/private/key"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			allow := mustPolicy(t, ModeDeny, []string{tc.allow}, nil, nil)
+			allow.SetPathRoot("/work")
+			if got, rule := allow.Evaluate(tc.tool, tc.input); got != Deny {
+				t.Errorf("allow %s: Evaluate(%s, %v) = %v (rule %q), want Deny", tc.allow, tc.tool, tc.input, got, rule)
+			}
+			grant := mustPolicy(t, ModeAsk, nil, nil, nil)
+			grant.SetPathRoot("/work")
+			grant.AddGrantRule(tc.allow)
+			if got, rule := grant.Evaluate(tc.tool, tc.input); got != Ask {
+				t.Errorf("grant %s: Evaluate(%s, %v) = %v (rule %q), want Ask", tc.allow, tc.tool, tc.input, got, rule)
+			}
+		})
+	}
+	// The literal allow that supersedes a bare ask reads the same set.
+	literal := mustPolicy(t, ModeDeny, []string{"Read(/work/docs/x.md)"}, []string{"Read"}, nil)
+	if got, rule := literal.Evaluate("read_file", map[string]any{"file_path": "/work/docs/x.md", "path": "/work/private/key"}); got != Ask {
+		t.Errorf("a literal allow superseding the bare ask opened a decoy call = %v (rule %q), want Ask", got, rule)
+	}
+
+	// Paths that all sit inside the rule still open, whichever spelling each
+	// key carries — the rule is met per path, not per string.
+	p := mustPolicy(t, ModeDeny, []string{"Read(/work/docs/**)", "Read(/work/docs/x.md)"}, nil, nil)
+	p.SetPathRoot("/work")
+	for _, input := range []map[string]any{
+		{"file_path": "/work/docs/x.md", "path": "/work/docs/y.md"},
+		{"file_path": "/work/docs/x.md", "path": "docs/x.md"},
+		{"file_path": "/work/docs/x.md", "path": "/work/docs/./x.md", "notebook_path": "/work/docs/sub/../x.md"},
+	} {
+		if got, rule := p.Evaluate("read_file", input); got != Allow {
+			t.Errorf("Evaluate(read_file, %v) = %v (rule %q), want Allow", input, got, rule)
+		}
 	}
 }
 

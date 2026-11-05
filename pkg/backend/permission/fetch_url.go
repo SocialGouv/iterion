@@ -144,6 +144,24 @@ func (f fetchURL) upgraded() (fetchURL, bool) {
 	return f, true
 }
 
+// unmapped is the fetch an IPv4-mapped IPv6 host reaches: the WHATWG reading
+// keeps `[::ffff:169.254.169.254]` an IPv6 host (`[::ffff:a9fe:a9fe]`), and
+// both backends' fetchers — Node's and Go's — dial the IPv4 address it maps,
+// 169.254.169.254. Only the mapped prefix (::ffff:0:0/96) is read that way:
+// it is the one a socket connects to over IPv4 whatever the network.
+func (f fetchURL) unmapped() (fetchURL, bool) {
+	inner, ok := strings.CutPrefix(f.hostname, "[")
+	if !ok {
+		return fetchURL{}, false
+	}
+	a, err := netip.ParseAddr(strings.TrimSuffix(inner, "]"))
+	if err != nil || !a.Is4In6() {
+		return fetchURL{}, false
+	}
+	f.hostname = a.Unmap().String()
+	return f, true
+}
+
 // validURLScheme reports a WHATWG scheme: an ASCII letter, then letters,
 // digits, `+`, `-` and `.`.
 func validURLScheme(s string) bool {

@@ -13,22 +13,27 @@ import (
 // the verdict it writes is what the CLI obeys. A spelling whose text sits under
 // the node's narrow allow and whose file does not is refused; the allowed tree
 // still reads. claw's half is TestTheClawToolLoopRefusesAClimbOutOfANarrowAllow
-// (pkg/backend/model), which feeds the same calls to the claw tool loop.
+// (pkg/backend/model), which feeds the same calls to the claw tool loop. A
+// call carrying a second path key is refused here too, though claude_code's
+// Read honours `file_path`: claw's read_file honours `path`, and the gate
+// opens a call only where the rule opens every path it names.
 func TestTheClaudeCodeHookRefusesAClimbOutOfANarrowAllow(t *testing.T) {
 	t.Setenv("ITERION_CLAUDE_CODE_DISALLOW_ORCHESTRATION_TOOLS", "")
 	for _, tc := range []struct {
-		name string
-		path string
-		deny bool
+		name  string
+		input map[string]any
+		deny  bool
 	}{
-		{"absolute climb", "/work/docs/../../etc/passwd", true},
-		{"relative climb", "docs/../../etc/passwd", true},
-		{"trailing climb", "/work/docs/..", true},
-		{"inside the allowed tree", "/work/docs/x.md", false},
-		{"relative, inside the allowed tree", "docs/x.md", false},
+		{"absolute climb", map[string]any{"file_path": "/work/docs/../../etc/passwd"}, true},
+		{"relative climb", map[string]any{"file_path": "docs/../../etc/passwd"}, true},
+		{"trailing climb", map[string]any{"file_path": "/work/docs/.."}, true},
+		{"a second path key beside the allowed one", map[string]any{"file_path": "/work/docs/x.md", "path": "/work/docs/../private/key"}, true},
+		{"inside the allowed tree", map[string]any{"file_path": "/work/docs/x.md"}, false},
+		{"relative, inside the allowed tree", map[string]any{"file_path": "docs/x.md"}, false},
+		{"both keys inside the allowed tree", map[string]any{"file_path": "/work/docs/x.md", "path": "docs/y.md"}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			input, err := json.Marshal(map[string]any{"file_path": tc.path})
+			input, err := json.Marshal(tc.input)
 			if err != nil {
 				t.Fatalf("marshal: %v", err)
 			}
@@ -53,13 +58,13 @@ func TestTheClaudeCodeHookRefusesAClimbOutOfANarrowAllow(t *testing.T) {
 			}
 			v := readHookVerdict(t, stdin[1])
 			if !v.found || v.subtype != "success" {
-				t.Fatalf("the hook answered no verdict for Read(%q) (found=%v subtype=%q): %v", tc.path, v.found, v.subtype, stdin[1])
+				t.Fatalf("the hook answered no verdict for Read(%v) (found=%v subtype=%q): %v", tc.input, v.found, v.subtype, stdin[1])
 			}
 			if tc.deny && v.decision != "deny" {
-				t.Errorf("Read(%q) under allow Read(/work/docs/**) and Read(docs/**) = %q, want deny (reason %q)", tc.path, v.decision, v.reason)
+				t.Errorf("Read(%v) under allow Read(/work/docs/**) and Read(docs/**) = %q, want deny (reason %q)", tc.input, v.decision, v.reason)
 			}
 			if !tc.deny && v.hasOutput {
-				t.Errorf("Read(%q) inside the allowed tree was answered %q (reason %q), want no decision — the CLI then runs it", tc.path, v.decision, v.reason)
+				t.Errorf("Read(%v) inside the allowed tree was answered %q (reason %q), want no decision — the CLI then runs it", tc.input, v.decision, v.reason)
 			}
 		})
 	}
