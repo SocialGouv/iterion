@@ -6,6 +6,7 @@ import { getAllNodeNames } from "@/lib/defaults";
 import { AWAIT_HELP, AWAIT_OPTIONS } from "@/lib/dslOptions";
 import { NODE_COLORS } from "@/lib/constants";
 import { TextField, CommittedTextField, SelectField, SelectFieldWithCreate, TagListField, NodeFormHeader } from "./FormField";
+import { dslNameError } from "@/lib/dslName";
 
 interface Props {
   decl: ToolNodeDecl;
@@ -30,7 +31,7 @@ export default function ToolForm({ decl }: Props) {
         onCommit={(v) => setSelectedNode(v)}
         validate={(v) => {
           if (!v.trim()) return "Name cannot be empty";
-          if (/\s/.test(v)) return "Name cannot contain spaces";
+          if (dslNameError(v)) return dslNameError(v);
           const names = getAllNodeNames(document!);
           names.delete(decl.name);
           if (names.has(v)) return "Name already exists";
@@ -68,6 +69,7 @@ export default function ToolForm({ decl }: Props) {
         label="Publish"
         value={decl.publish ?? ""}
         onChange={(v) => updateTool(decl.name, { publish: v || undefined })}
+        error={dslNameError(decl.publish ?? "") ?? undefined}
         placeholder="Artifact name"
         help="Optional. Publish this node's output as a persistent artifact, accessible downstream via {{artifacts.name}}."
       />
