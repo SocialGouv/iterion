@@ -391,8 +391,8 @@ func TestTheInstallRecordSitsBesideThePackageNotInsideIt(t *testing.T) {
 		t.Errorf("stat the install record beside the packages = %v, want it at <root>/.pins/probe.json", err)
 	}
 
-	if got := connection.NewFSCatalog(root).Connectors(); len(got) != 1 || got[0] != "probe" {
-		t.Errorf("the catalog lists %v, want exactly [probe] — the record's directory is not a connector", got)
+	if got, err := connection.NewFSCatalog(root).Connectors(); err != nil || len(got) != 1 || got[0] != "probe" {
+		t.Errorf("the catalog lists %v (err=%v), want exactly [probe] — the record's directory is not a connector", got, err)
 	}
 
 	// The record certifies the bytes a run loads: the hash is the installed

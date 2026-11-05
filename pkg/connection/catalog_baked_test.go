@@ -49,8 +49,8 @@ func TestTheBakedFloorServesTheShippedPackageWithNoHomeAndNoWorkspace(t *testing
 
 	// And it ADVERTISES what it holds, which is what a near-miss diagnostic
 	// and the studio read.
-	if got := connection.BakedCatalog().Connectors(); len(got) != 1 || got[0] != "forgejo" {
-		t.Errorf("Connectors() = %v, want the shipped package", got)
+	if got, err := connection.BakedCatalog().Connectors(); err != nil || len(got) != 1 || got[0] != "forgejo" {
+		t.Errorf("Connectors() = %v (err=%v), want the shipped package", got, err)
 	}
 }
 

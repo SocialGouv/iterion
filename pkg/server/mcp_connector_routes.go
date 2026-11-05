@@ -80,13 +80,14 @@ type connectorMCPHandler struct {
 	deps     ConnectorMCPDeps
 	registry BoardMCPTokenStore
 
-	// Built once for the process-wide Catalog (the cloud shape); a wired
-	// CatalogForRun builds per call instead, because WHICH packages exist is
-	// the run's own fact there — its workspace tier and its trust — and a
-	// catalog pinned at startup serves one run's packages to every other.
-	facadeOnce sync.Once
-	facade     *facade.Facade
-	facadeErr  error
+	// Built once for the process-wide Catalog; a wired CatalogForRun or
+	// CatalogForTenant builds per call instead, because WHICH packages exist
+	// is the run's (or the tenant's) own fact there, and a catalog pinned at
+	// startup serves one run's packages to every other. Only a SUCCESS is
+	// kept: a listing that failed once is retried on the next call rather
+	// than answering "facade unavailable" until a restart.
+	facadeMu sync.Mutex
+	facade   *facade.Facade
 }
 
 // theFacade loads every connector the catalog serves into ONE facade. A
@@ -94,10 +95,17 @@ type connectorMCPHandler struct {
 // rather than taking the whole facade down — the same defect already refuses
 // the node path at its own resolution, so nobody is told a quieter lie here.
 func (h *connectorMCPHandler) theFacade() (*facade.Facade, error) {
-	h.facadeOnce.Do(func() {
-		h.facade, h.facadeErr = facadeOverCatalog(h.deps.Catalog, h.deps.Logger)
-	})
-	return h.facade, h.facadeErr
+	h.facadeMu.Lock()
+	defer h.facadeMu.Unlock()
+	if h.facade != nil {
+		return h.facade, nil
+	}
+	f, err := facadeOverCatalog(h.deps.Catalog, h.deps.Logger)
+	if err != nil {
+		return nil, err
+	}
+	h.facade = f
+	return f, nil
 }
 
 // catalogFor answers the catalog THIS call resolves through: the process-wide
@@ -163,8 +171,14 @@ func (h *connectorMCPHandler) facadeFor(grant boardMCPGrant) (*facade.Facade, co
 // are sorted, so which of two colliders keeps its tools does not depend on
 // anything but their names.
 func facadeOverCatalog(cat connection.Catalog, logger *iterlog.Logger) (*facade.Facade, error) {
+	// A catalog that cannot LIST fails the facade: serving what the other
+	// tiers list would drop the failing tier's tools with no sign why.
+	ids, err := cat.Connectors()
+	if err != nil {
+		return nil, err
+	}
 	var pkgs []*spec.Package
-	for _, id := range cat.Connectors() {
+	for _, id := range ids {
 		pkg, _, err := cat.Package(id)
 		if err != nil {
 			if logger != nil {

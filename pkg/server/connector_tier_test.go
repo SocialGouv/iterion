@@ -3,12 +3,14 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -337,5 +339,47 @@ func TestTheFacadeLeavesOutACollidingPackageNotTheFacade(t *testing.T) {
 		if out := logs.String(); !strings.Contains(out, `"a_b"`) || !strings.Contains(out, "cannot join") {
 			t.Fatalf("the exclusion must be logged naming the package: %q", out)
 		}
+	}
+}
+
+// flakyListCatalog fails its first listing and serves afterwards. Called
+// from the server's handler goroutines, so the count takes a lock.
+type flakyListCatalog struct {
+	connection.Catalog
+	mu    sync.Mutex
+	calls int
+}
+
+func (c *flakyListCatalog) Connectors() ([]string, error) {
+	c.mu.Lock()
+	c.calls++
+	first := c.calls == 1
+	c.mu.Unlock()
+	if first {
+		return nil, errors.New("list blip")
+	}
+	return c.Catalog.Connectors()
+}
+
+// A catalog that cannot list fails the facade by name rather than serving
+// what the other tiers list; and the shared facade keeps only a SUCCESS, so
+// the next call after a failed listing is served instead of answering
+// "facade unavailable" until a restart.
+func TestTheFacadeSaysWhenItsCatalogCannotList(t *testing.T) {
+	flaky := &flakyListCatalog{Catalog: connection.NewMemoryCatalog(facadePkg("https://probe.example"))}
+	h := &connectorMCPHandler{deps: ConnectorMCPDeps{Catalog: flaky}}
+	if _, err := h.theFacade(); err == nil || !strings.Contains(err.Error(), "list blip") {
+		t.Fatalf("first build: err = %v, want the listing's error", err)
+	}
+	f, err := h.theFacade()
+	if err != nil {
+		t.Fatalf("the next build after a failed listing: %v — a failure must not be kept", err)
+	}
+	var names []string
+	for _, tool := range f.Tools() {
+		names = append(names, tool.Name)
+	}
+	if !strings.Contains(strings.Join(names, ","), "probe_issue_list") {
+		t.Fatalf("the rebuilt facade lacks the catalog's tools: %v", names)
 	}
 }

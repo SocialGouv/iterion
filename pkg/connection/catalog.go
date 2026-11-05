@@ -99,9 +99,13 @@ type Catalog interface {
 	// for concurrent use, and must name themselves: a zero Tier with a nil
 	// error is a defect, and layeredCatalog refuses it by name.
 	Package(connectorID string) (*spec.Package, Tier, error)
-	// Connectors lists the ids this catalog can serve, sorted. Used by the
-	// studio and by a diagnostic that suggests a near miss.
-	Connectors() []string
+	// Connectors lists the ids this catalog can serve, sorted, or the error
+	// that kept it from listing them. A tier that cannot list says so rather
+	// than answering empty: an empty answer reads as "this tier holds
+	// nothing", and the facade built over it would lose the tier's tools with
+	// no sign why. Used by the facade, the studio and a diagnostic that
+	// suggests a near miss.
+	Connectors() ([]string, error)
 }
 
 // FSCatalog serves packages from a filesystem of them, a connector id per
@@ -252,11 +256,16 @@ func (c *FSCatalog) Package(connectorID string) (*spec.Package, Tier, error) {
 	return pkg, c.tier(), nil
 }
 
-// Connectors lists the directories that look like packages.
-func (c *FSCatalog) Connectors() []string {
+// Connectors lists the directories that look like packages. An absent root
+// holds none — absence, as LocalCatalogs reads it; any other read failure is
+// the listing's error.
+func (c *FSCatalog) Connectors() ([]string, error) {
 	entries, err := fs.ReadDir(c.fsys, ".")
 	if err != nil {
-		return nil
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("connector catalog %s cannot be listed: %w", c.where(), err)
 	}
 	var out []string
 	for _, e := range entries {
@@ -271,7 +280,7 @@ func (c *FSCatalog) Connectors() []string {
 		out = append(out, e.Name())
 	}
 	sort.Strings(out)
-	return out
+	return out, nil
 }
 
 // suggest names the closest connector the catalog does hold, when there is an
@@ -286,7 +295,10 @@ func (c *FSCatalog) suggest(want string) string {
 	if c.quiet {
 		return ""
 	}
-	have := c.Connectors()
+	have, err := c.Connectors()
+	if err != nil {
+		return " (its listing failed: " + err.Error() + ")"
+	}
 	if len(have) == 0 {
 		return ""
 	}
@@ -359,7 +371,7 @@ func (c *MemoryCatalog) Package(connectorID string) (*spec.Package, Tier, error)
 	return p, c.tier(), nil
 }
 
-func (c *MemoryCatalog) Connectors() []string {
+func (c *MemoryCatalog) Connectors() ([]string, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	out := make([]string, 0, len(c.pkg))
@@ -367,5 +379,5 @@ func (c *MemoryCatalog) Connectors() []string {
 		out = append(out, id)
 	}
 	sort.Strings(out)
-	return out
+	return out, nil
 }

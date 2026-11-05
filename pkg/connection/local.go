@@ -105,20 +105,32 @@ func (c *layeredCatalog) Package(connectorID string) (*spec.Package, Tier, error
 	return nil, Tier{}, fmt.Errorf("%s", strings.Join(reasons, "; "))
 }
 
-// Connectors is the union of every tier's, deduplicated and sorted.
-func (c *layeredCatalog) Connectors() []string {
+// Connectors is the union of every tier's, deduplicated and sorted. A tier
+// that cannot list fails the union, every failing tier's reason joined in
+// tier order: a partial union would drop that tier's ids with no sign, and
+// the facade would serve the lower tiers' packages in their place.
+func (c *layeredCatalog) Connectors() ([]string, error) {
 	seen := map[string]bool{}
 	var out []string
+	var errs []error
 	for _, t := range c.tiers {
-		for _, id := range t.Connectors() {
+		ids, err := t.Connectors()
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		for _, id := range ids {
 			if !seen[id] {
 				seen[id] = true
 				out = append(out, id)
 			}
 		}
 	}
+	if len(errs) > 0 {
+		return nil, errors.Join(errs...)
+	}
 	sort.Strings(out)
-	return out
+	return out, nil
 }
 
 // ProjectCatalogEnv opts this process into resolving connector packages from
@@ -286,7 +298,7 @@ func (c disabledCatalog) Package(connectorID string) (*spec.Package, Tier, error
 }
 
 // Connectors lists nothing: a tier that cannot serve must not advertise.
-func (c disabledCatalog) Connectors() []string { return nil }
+func (c disabledCatalog) Connectors() ([]string, error) { return nil, nil }
 
 // LocalResolver builds the resolver a local run uses: the layered package
 // catalog, the file-backed connection store, and the local sealer.

@@ -598,7 +598,11 @@ func TestAWorkspaceTierClosedByTrustAdvertisesNothing(t *testing.T) {
 		if err != nil {
 			t.Fatalf("tiers: %v", err)
 		}
-		return connection.NewLayeredCatalog(tiers...).Connectors()
+		ids, err := connection.NewLayeredCatalog(tiers...).Connectors()
+		if err != nil {
+			t.Fatalf("list: %v", err)
+		}
+		return ids
 	}
 
 	got := listed(t, connection.TrustOfRun(store.RunTrustFork))

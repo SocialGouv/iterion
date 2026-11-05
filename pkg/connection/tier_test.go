@@ -91,7 +91,7 @@ func (c unnamedTier) Package(string) (*spec.Package, connection.Tier, error) {
 	return c.pkg, c.tier, nil
 }
 
-func (c unnamedTier) Connectors() []string { return []string{"probe"} }
+func (c unnamedTier) Connectors() ([]string, error) { return []string{"probe"}, nil }
 
 // TestATierThatServesWithoutNamingItselfIsRefused.
 //

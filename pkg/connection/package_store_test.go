@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -378,4 +379,59 @@ func (s *brokenPackageStore) Get(ctx context.Context, tenantID, connectorID stri
 			Files: map[string]string{"connector.yaml": "schema_version: 1\nid: " + connectorID + "\nversion: ["}}, nil
 	}
 	return s.PackageStore.Get(ctx, tenantID, connectorID)
+}
+
+// listFailingStore is a store whose listing fails — a network blip, a
+// timeout — while its reads still answer.
+type listFailingStore struct {
+	connection.PackageStore
+}
+
+var errListBlip = errors.New("list blip")
+
+func (listFailingStore) ListByTenant(context.Context, string) ([]connection.StoredPackage, error) {
+	return nil, errListBlip
+}
+
+// A tier that cannot LIST says so, through the composition: the facade built
+// over a silently empty team tier would serve the floor's tools alone with no
+// sign the team's were lost.
+func TestCloudTiers_AListingFailureIsTheListingsError(t *testing.T) {
+	store := connection.NewMemoryPackageStore()
+	publish(t, store, "team-a", "probe")
+	failing := listFailingStore{PackageStore: store}
+
+	ids, err := connection.TeamCatalog(failing, "team-a").Connectors()
+	if !errors.Is(err, errListBlip) || ids != nil {
+		t.Fatalf("team tier listing = %v, %v — want the store's error, not an empty listing", ids, err)
+	}
+	if !strings.Contains(err.Error(), "team tier (tenant team-a)") {
+		t.Errorf("err = %v, want it to name the tier and tenant", err)
+	}
+	ids, err = connection.NewLayeredCatalog(connection.CloudCatalogs(failing, "team-a")...).Connectors()
+	if !errors.Is(err, errListBlip) || ids != nil {
+		t.Fatalf("the composition's listing = %v, %v — a failing tier must fail the union, not drop out of it", ids, err)
+	}
+	// The healthy store lists through the same composition.
+	ids, err = connection.NewLayeredCatalog(connection.CloudCatalogs(store, "team-a")...).Connectors()
+	if err != nil || strings.Join(ids, ",") != "forgejo,probe" {
+		t.Fatalf("healthy listing = %v, %v", ids, err)
+	}
+}
+
+// An FS tier: an absent root holds nothing; a root that cannot be read as a
+// directory is the listing's error.
+func TestFSCatalog_AnUnreadableRootIsTheListingsError(t *testing.T) {
+	dir := t.TempDir()
+	if ids, err := connection.NewFSCatalog(filepath.Join(dir, "absent")).Connectors(); err != nil || len(ids) != 0 {
+		t.Fatalf("absent root = %v, %v — want an empty listing", ids, err)
+	}
+	file := filepath.Join(dir, "not-a-dir")
+	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ids, err := connection.NewFSCatalog(file).Connectors()
+	if err == nil || ids != nil || !strings.Contains(err.Error(), "cannot be listed") {
+		t.Fatalf("a root that is a file = %v, %v — want the read failure", ids, err)
+	}
 }

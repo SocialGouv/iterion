@@ -34,13 +34,13 @@ func TestTheStudioConnectorFloorHoldsNoWorkspaceTier(t *testing.T) {
 
 	floor, builder := cli.LocalConnectorPlane(cwd, home)
 
-	got := floor.Connectors()
+	got := listConnectors(t, floor)
 	for _, id := range got {
 		if id == "shadow" {
 			t.Errorf("the fallback catalog serves %v — the launch directory's workspace tier leaked into it", got)
 		}
 	}
-	if !reflect.DeepEqual(got, connection.BakedCatalog().Connectors()) {
+	if !reflect.DeepEqual(got, listConnectors(t, connection.BakedCatalog())) {
 		t.Errorf("the floor = %v, want exactly the baked packages' set", got)
 	}
 
@@ -51,9 +51,9 @@ func TestTheStudioConnectorFloorHoldsNoWorkspaceTier(t *testing.T) {
 	if err != nil {
 		t.Fatalf("builder: %v", err)
 	}
-	for _, id := range perRun.Connectors() {
+	for _, id := range listConnectors(t, perRun) {
 		if id == "shadow" {
-			t.Errorf("an unknown-trust run was served the workspace tier: %v", perRun.Connectors())
+			t.Errorf("an unknown-trust run was served the workspace tier: %v", listConnectors(t, perRun))
 		}
 	}
 }
@@ -78,22 +78,22 @@ func TestTheStudioBuilderServesTheRunsOwnWorkspace(t *testing.T) {
 		t.Fatalf("builder: %v", err)
 	}
 	has := false
-	for _, id := range owned.Connectors() {
+	for _, id := range listConnectors(t, owned) {
 		if id == "shadow" {
 			has = true
 		}
 	}
 	if !has {
-		t.Errorf("a trusted run over its own checkout got %v — its workspace tier is missing", owned.Connectors())
+		t.Errorf("a trusted run over its own checkout got %v — its workspace tier is missing", listConnectors(t, owned))
 	}
 
 	fork, err := builder(workspace, connection.TrustOfRun(store.RunTrustFork))
 	if err != nil {
 		t.Fatalf("builder: %v", err)
 	}
-	for _, id := range fork.Connectors() {
+	for _, id := range listConnectors(t, fork) {
 		if id == "shadow" {
-			t.Errorf("a fork run was served the workspace tier: %v", fork.Connectors())
+			t.Errorf("a fork run was served the workspace tier: %v", listConnectors(t, fork))
 		}
 	}
 }
@@ -123,4 +123,14 @@ func writePackageAs(t *testing.T, root, id, method, path string, effect spec.Eff
 	}); err != nil {
 		t.Fatalf("write package: %v", err)
 	}
+}
+
+// listConnectors is a catalog's listing, failing the test on a listing error.
+func listConnectors(t *testing.T, cat connection.Catalog) []string {
+	t.Helper()
+	ids, err := cat.Connectors()
+	if err != nil {
+		t.Fatalf("list connectors: %v", err)
+	}
+	return ids
 }

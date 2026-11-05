@@ -92,17 +92,18 @@ func (c *StoreCatalog) Package(connectorID string) (*spec.Package, Tier, error) 
 // Connectors lists the tier's rows WITHOUT loading them — loading per id
 // here would pay a package build for a listing. The "must not advertise what
 // it cannot serve" rule is held at Package (a row that no longer loads is
-// refused by name there, stopping the search), not pre-computed here.
-func (c *StoreCatalog) Connectors() []string {
+// refused by name there, stopping the search), not pre-computed here. A
+// store that cannot list is the listing's error, naming the tier and tenant.
+func (c *StoreCatalog) Connectors() ([]string, error) {
 	rows, err := c.store.ListByTenant(context.Background(), c.tenant)
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("the %s tier (tenant %s) cannot list its connectors: %w", c.kind, c.tenant, err)
 	}
 	out := make([]string, 0, len(rows))
 	for _, p := range rows {
 		out = append(out, p.ConnectorID)
 	}
-	return out
+	return out, nil
 }
 
 // sharedFloor is the ONE baked catalog per process. The floor's packages are
