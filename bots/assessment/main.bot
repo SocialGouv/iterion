@@ -1451,6 +1451,19 @@ tool survey_write:
     def as_list(value, what):
         if value is None:
             return []
+        if isinstance(value, str):
+            # A model that double-encodes its structured answer hands the list
+            # back as a JSON string. One named unwrap, then the same shape is
+            # required — a string that is not a JSON list still refuses.
+            try:
+                unwrapped = json.loads(value)
+            except ValueError:
+                refuse("SURVEY_UNREADABLE", "the survey returned %s as a string that is not JSON; a list was required"
+                       % what)
+            if not isinstance(unwrapped, list):
+                refuse("SURVEY_UNREADABLE", "the survey returned %s as a JSON %s; a list was required"
+                       % (what, type(unwrapped).__name__))
+            value = unwrapped
         if not isinstance(value, list):
             refuse("SURVEY_UNREADABLE", "the survey returned %s as a %s; a list was required"
                    % (what, type(value).__name__))
