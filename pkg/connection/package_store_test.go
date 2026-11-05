@@ -165,6 +165,40 @@ func TestPackageStore_PublishGetRetractAcrossTwins(t *testing.T) {
 	})
 }
 
+// A republish keeps the creation's when and by whom — the first publish's —
+// in both twins: one rule (stampPublish), or a twin answers differently.
+func TestPackageStore_ARepublishKeepsTheCreation(t *testing.T) {
+	run := func(t *testing.T, st connection.PackageStore) {
+		ctx := context.Background()
+		for _, tc := range []struct{ first, second, want string }{
+			{"alice", "bob", "alice"},
+			// An unknown creator stays unknown: the republisher did not
+			// create the row.
+			{"", "bob", ""},
+		} {
+			for _, by := range []string{tc.first, tc.second} {
+				if err := st.Publish(ctx, connection.StoredPackage{
+					TenantID: "team-a", ConnectorID: "probe", Files: publishedFiles(t, "probe"), CreatedBy: by,
+				}); err != nil {
+					t.Fatalf("publish as %q: %v", by, err)
+				}
+			}
+			got, err := st.Get(ctx, "team-a", "probe")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.CreatedBy != tc.want {
+				t.Errorf("created_by after %q then %q = %q, want %q", tc.first, tc.second, got.CreatedBy, tc.want)
+			}
+			if err := st.Retract(ctx, "team-a", "probe"); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	t.Run("memory", func(t *testing.T) { run(t, connection.NewMemoryPackageStore()) })
+	t.Run("mongo", func(t *testing.T) { run(t, newTestMongoPackageStore(t)) })
+}
+
 // The publish gate: what must NOT reach a tier — held against BOTH twins,
 // because the gate is the two implementations' one shared function and a
 // twin that skipped it would serve what the other refused.

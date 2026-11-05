@@ -76,9 +76,26 @@ type StoredPackage struct {
 	// trusted from the caller.
 	ContentHash string `bson:"content_hash" json:"content_hash"`
 
+	// CreatedBy and CreatedAt are the FIRST publish's: a republish replaces
+	// the content and UpdatedAt and keeps both (stampPublish, shared by the
+	// twins).
 	CreatedBy string    `bson:"created_by,omitempty" json:"created_by,omitempty"`
 	CreatedAt time.Time `bson:"created_at" json:"created_at"`
 	UpdatedAt time.Time `bson:"updated_at" json:"updated_at"`
+}
+
+// stampPublish sets what a publish records rather than trusts, the same way
+// in both twins: the content hash computed over the files, UpdatedAt now, and
+// the creation's when and by whom carried from prev — the row being replaced,
+// nil on a first publish (which records the caller's CreatedBy and now).
+func stampPublish(pkg *StoredPackage, prev *StoredPackage, now time.Time) {
+	pkg.ContentHash = hashFiles(pkg.Files)
+	pkg.UpdatedAt = now
+	if prev == nil {
+		pkg.CreatedAt = now
+		return
+	}
+	pkg.CreatedAt, pkg.CreatedBy = prev.CreatedAt, prev.CreatedBy
 }
 
 // hashFiles computes the content hash every write records.
@@ -220,16 +237,10 @@ func (s *MemoryPackageStore) Publish(_ context.Context, pkg StoredPackage) error
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	key := packageKey(pkg.TenantID, pkg.ConnectorID)
-	prev, ok := s.rows[key]
-	pkg.ContentHash = hashFiles(pkg.Files)
-	pkg.UpdatedAt = s.clock()
-	if ok {
-		pkg.CreatedAt = prev.CreatedAt
-		if pkg.CreatedBy == "" {
-			pkg.CreatedBy = prev.CreatedBy
-		}
+	if prev, ok := s.rows[key]; ok {
+		stampPublish(&pkg, &prev, s.clock())
 	} else {
-		pkg.CreatedAt = pkg.UpdatedAt
+		stampPublish(&pkg, nil, s.clock())
 	}
 	s.rows[key] = pkg
 	return nil

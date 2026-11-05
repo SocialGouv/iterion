@@ -64,16 +64,13 @@ func (s *MongoPackageStore) Publish(ctx context.Context, pkg StoredPackage) erro
 	if err := validateStoredPackage(pkg); err != nil {
 		return err
 	}
-	now := s.clock()
-	pkg.ContentHash = hashFiles(pkg.Files)
-	pkg.UpdatedAt = now
 	key := packageKey(pkg.TenantID, pkg.ConnectorID)
 	prev, err := s.Get(ctx, pkg.TenantID, pkg.ConnectorID)
 	switch {
 	case err == nil:
-		pkg.CreatedAt, pkg.CreatedBy = prev.CreatedAt, prev.CreatedBy
+		stampPublish(&pkg, &prev, s.clock())
 	case errors.Is(err, ErrPackageNotFound):
-		pkg.CreatedAt = now
+		stampPublish(&pkg, nil, s.clock())
 	default:
 		return fmt.Errorf("connection: read package before publish: %w", err)
 	}
