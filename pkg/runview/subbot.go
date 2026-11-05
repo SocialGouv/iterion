@@ -168,8 +168,8 @@ func (s *Service) subbotRunnerFor(parentPath string, runLogger *iterlog.Logger) 
 		// bundle's directory, since the project tier belongs to the checkout
 		// the operator is acting on.
 		//
-		// Its TRUST is the parent's (subbotConnectorTrust).
-		childConnectors, childConnectorClient, cerr := s.localConnectors(childWf, "", subbotConnectorTrust(parentRun))
+		// Its TRUST is the parent's (ConnectorTrustOfRun).
+		childConnectors, childConnectorClient, cerr := s.localConnectors(childWf, "", ConnectorTrustOfRun(parentRun))
 		if cerr != nil {
 			releaseChild()
 			return nil, cerr
@@ -397,26 +397,26 @@ func SubbotParentTrust(ctx context.Context, st store.RunStore, parentRunID strin
 	return parent.Trust, nil
 }
 
-// subbotConnectorTrust is a child's connector trust, read off the PARENT's run
-// document — the same place pkg/runner's subbot reads it for
-// runtime.WithTrust.
+// ConnectorTrustOfRun is the connector trust read off a run document: a
+// sub-bot child's PARENT (the same place pkg/runner's subbot reads it for
+// runtime.WithTrust), or the run an `iterion resume` replays.
 //
 // A child is a run of its own, but its code came out of the parent's
-// workspace, so inheriting is the only honest answer. A parent that does not
-// load leaves it UNSTATED rather than assumed: store.RunTrust's zero value is
-// the TRUSTED one, so "no document" and "the operator's own checkout" are the
-// same bytes, and only the resolver's ActionTrust can tell them apart. The
-// child still runs and still reads; a mutating `action:` node is refused
-// naming why.
+// workspace, so inheriting is the only honest answer; a resumed fork run is
+// still a fork run. A document that does not load leaves it UNSTATED rather
+// than assumed: store.RunTrust's zero value is the TRUSTED one, so "no
+// document" and "the operator's own checkout" are the same bytes, and only the
+// resolver's ActionTrust can tell them apart. The run still runs and still
+// reads; a mutating `action:` node is refused naming why.
 //
-// A named function rather than three lines at the call site: this is the one
+// A named function rather than three lines at each call site: this is the one
 // trust decision in the tree that is a RULE rather than a field read, and a
 // rule with no name has no test.
-func subbotConnectorTrust(parentRun *store.Run) connection.ActionTrust {
-	if parentRun == nil {
+func ConnectorTrustOfRun(run *store.Run) connection.ActionTrust {
+	if run == nil {
 		return connection.TrustUnknown()
 	}
-	return connection.TrustOfRun(parentRun.Trust)
+	return connection.TrustOfRun(run.Trust)
 }
 
 // RecordSubbotChild persists childRunID under req.ReattachKey on the parent

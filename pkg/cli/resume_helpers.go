@@ -168,7 +168,10 @@ func buildResumeExecutor(
 	if err != nil {
 		return nil, err
 	}
-	connectors, connectorClient, err := localConnectorsForRun(wf, storeDir, logger)
+	// The connectors resolve for the trust the run RECORDED, the one
+	// resumeOpenWorkflow compiled it for: a resumed fork run is still a fork
+	// run.
+	connectors, connectorClient, err := localConnectorsForRun(wf, storeDir, logger, runview.ConnectorTrustOfRun(r))
 	if err != nil {
 		return nil, err
 	}

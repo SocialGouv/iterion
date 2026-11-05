@@ -6,8 +6,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/secrets"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // A native action (board.*, ADR-151) is executed by the transport the
@@ -35,7 +37,7 @@ func TestANativeOnlyRunOpensNoSealer(t *testing.T) {
 		"plan": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "plan"}, Action: "board.issue.list", Capabilities: []string{"board.read"}},
 		"file": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "file"}, Action: "board.issue.create", Capabilities: []string{"board.create"}},
 	}}
-	resolver, client, err := localConnectorsForRun(nativeOnly, t.TempDir(), nil)
+	resolver, client, err := localConnectorsForRun(nativeOnly, t.TempDir(), nil, connection.TrustOfRun(store.RunTrustDefault))
 	if err != nil {
 		t.Fatalf("a native-only workflow opened the local sealer: %v", err)
 	}
@@ -47,7 +49,7 @@ func TestANativeOnlyRunOpensNoSealer(t *testing.T) {
 		"plan":    nativeOnly.Nodes["plan"],
 		"comment": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "comment"}, Action: "forgejo.issue.comment", Connection: "main"},
 	}}
-	if _, _, err := localConnectorsForRun(withHTTP, t.TempDir(), nil); err == nil || !strings.Contains(err.Error(), keyfile) {
+	if _, _, err := localConnectorsForRun(withHTTP, t.TempDir(), nil, connection.TrustOfRun(store.RunTrustDefault)); err == nil || !strings.Contains(err.Error(), keyfile) {
 		t.Fatalf("an HTTP action must open the sealer (and meet the probe keyfile): err = %v", err)
 	}
 }

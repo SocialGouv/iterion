@@ -321,8 +321,8 @@ func TestASubbotInheritsItsParentsTrust(t *testing.T) {
 		{"a child whose parent does not load states nothing", nil, connection.TrustUnknown()},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := subbotConnectorTrust(tc.parent); got != tc.want {
-				t.Fatalf("subbotConnectorTrust(%+v) = %#v, want %#v", tc.parent, got, tc.want)
+			if got := ConnectorTrustOfRun(tc.parent); got != tc.want {
+				t.Fatalf("ConnectorTrustOfRun(%+v) = %#v, want %#v", tc.parent, got, tc.want)
 			}
 		})
 	}

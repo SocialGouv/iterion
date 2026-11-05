@@ -403,9 +403,10 @@ func (r *EngineRunner) Dispatch(ctx context.Context, spec DispatchSpec) error {
 	// this surface rather than a field read from a document — and the fork
 	// review lane is a SERVER subscription whose launches go through the
 	// publisher to a runner, never through here (pkg/dispatcher imports no
-	// webhook code). Stated out loud, so the day a lane dispatches an
-	// outsider's tree locally this is the line that has to read its trust.
-	connectors, connectorClient, cerr := runview.LocalConnectors(runWf, spec.WorkspacePath, spec.StoreDir, r.sealer, connection.TrustOfRun(store.RunTrustDefault))
+	// webhook code). Stated out loud through dispatchTrust, the value the
+	// run's compile reads too, so the day a lane dispatches an outsider's
+	// tree locally that constant is what has to become the run's trust.
+	connectors, connectorClient, cerr := runview.LocalConnectors(runWf, spec.WorkspacePath, spec.StoreDir, r.sealer, connection.TrustOfRun(dispatchTrust))
 	if cerr != nil {
 		return fmt.Errorf("engine runner: connector catalog: %w", cerr)
 	}

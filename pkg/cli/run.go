@@ -19,6 +19,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/backend/recipe"
 	"github.com/SocialGouv/iterion/pkg/bundle"
+	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/dsl/workflowfile"
 	"github.com/SocialGouv/iterion/pkg/git"
@@ -364,7 +365,9 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 	if superviseHub != nil {
 		hookObservers = []func(store.Event){superviseHub.Publish}
 	}
-	executor, err := buildRunExecutor(opts, tiersMatchTheEngine, wf, s, lineage{runID: runID}, storeDir, logger,
+	// The connectors resolve for the trust the engine and the compile were
+	// given above: launchTrust, the one value for the whole run.
+	executor, err := buildRunExecutor(opts, tiersMatchTheEngine, wf, s, lineage{runID: runID, trust: connection.TrustOfRun(launchTrust)}, storeDir, logger,
 		// This run's engine is built below with no WithWorkDir: it fills its
 		// own workDir with the process cwd and roots the run at that
 		// directory's repository, which is what the screen's probe then
@@ -578,12 +581,19 @@ const (
 	tiersUnknownToAChild sandboxTiersClaim = false
 )
 
-// lineage names the run an executor is built for: its own id, and the parent
+// lineage names the run an executor is built for: its own id, the parent
 // whose record holds the minted credentials this run may have been handed
-// under another name. A root run leaves parentRunID empty.
+// under another name, and the run's trust as its connector resolution
+// receives it. A root run leaves parentRunID empty.
+//
+// trust is a connection.ActionTrust rather than a store.RunTrust because the
+// latter's zero value is the TRUSTED one: a lineage built without it states
+// nothing, and its resolver refuses every mutating action instead of reading
+// as the tenant's own code.
 type lineage struct {
 	runID       string
 	parentRunID string
+	trust       connection.ActionTrust
 }
 
 func buildRunExecutor(
@@ -681,7 +691,7 @@ func buildRunExecutor(
 	}
 	execSpec.LocalSecrets = localStore
 	execSpec.LocalSealer = localSealer
-	connectors, connectorClient, err := localConnectorsForRun(wf, storeDir, logger)
+	connectors, connectorClient, err := localConnectorsForRun(wf, storeDir, logger, ln.trust)
 	if err != nil {
 		return nil, err
 	}
@@ -779,8 +789,11 @@ func subbotRunnerForCLI(parentPath, storeDir string, s store.RunStore, logger *i
 		// on the parent's handle the child's matcher would replace the
 		// parent's, which holds other values (iterion#2822).
 		childLogger := logger.WithOwnRedactor()
+		// The child's connectors resolve for the parent's trust, the value
+		// its compile read above: its code came out of the parent's
+		// workspace.
 		childExec, err := buildRunExecutor(childRunOpts, tiersUnknownToAChild, childWf, s,
-			lineage{runID: childRunID, parentRunID: req.ParentRunID}, storeDir, childLogger,
+			lineage{runID: childRunID, parentRunID: req.ParentRunID, trust: connection.TrustOfRun(trust)}, storeDir, childLogger,
 			// The child's engine below is rooted at the parent's effective
 			// workdir when the parent passed one, else at the process cwd —
 			// the same two cases its screen must probe.

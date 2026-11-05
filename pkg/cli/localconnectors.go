@@ -28,7 +28,16 @@ import (
 // unlock it has no use for. A native action (board.*) is no such node: its
 // transport is registered by the executor's build, with no catalog and no
 // credential, so a workflow whose only actions are native opens no sealer.
-func localConnectorsForRun(wf *ir.Workflow, storeDir string, logger *iterlog.Logger) (model.ConnectorResolver, *http.Client, error) {
+//
+// The TRUST is the run's, stated by the caller that holds it: the launch
+// trust of a root `iterion run` (cliLaunchTrust, lowered by a carried
+// ITERION_RUN_TRUST), a sub-bot child's parent document, a resumed run's own
+// document. A CLI run is not the operator's by virtue of the surface — a node
+// process of an untrusted run re-enters the CLI in the outsider's checkout —
+// so the resolver refuses a mutating action and skips the workspace tier on
+// exactly the runs the compile and the engine already treat as untrusted
+// (#1802).
+func localConnectorsForRun(wf *ir.Workflow, storeDir string, logger *iterlog.Logger, trust connection.ActionTrust) (model.ConnectorResolver, *http.Client, error) {
 	if !runview.WorkflowHasCatalogAction(wf) {
 		return nil, nil, nil
 	}
@@ -41,11 +50,5 @@ func localConnectorsForRun(wf *ir.Workflow, storeDir string, logger *iterlog.Log
 		return nil, nil, err
 	}
 	wd, _ := os.Getwd()
-	// A CLI run's workspace is the operator's own checkout, which is
-	// store.RunTrustDefault by definition — `iterion run` has no trust flag
-	// and nothing here reads a fork's head. Stated explicitly all the same:
-	// the resolver refuses a mutating action until somebody says, so the one
-	// surface whose answer is a property of the surface says it out loud
-	// rather than relying on a zero value (#1802).
-	return runview.LocalConnectors(wf, wd, storeDir, sealer, connection.TrustOfRun(store.RunTrustDefault))
+	return runview.LocalConnectors(wf, wd, storeDir, sealer, trust)
 }
