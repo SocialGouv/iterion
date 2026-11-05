@@ -763,7 +763,7 @@ jobs:
             ./pkg/secrets/... ./pkg/orgusage/... ./pkg/credusage/... ./pkg/credpool/... \
             ./pkg/botsource/... \
             ./pkg/runview/runstream/... ./pkg/cloud/orgsweep/... \
-            ./pkg/usagecap/... ./pkg/dispatcher/boardmongo/... ./pkg/identity/... \
+            ./pkg/usagecap/... ./pkg/dispatcher/boardmongo/... ./pkg/identity/... ./pkg/usernotify/... ./pkg/configshare/... \
             ./pkg/pluginsource/... ./pkg/assistantmission/... ./pkg/runwatch/... ./pkg/webhooks/... ./pkg/server/cloudpublisher/... \
             ./pkg/forge/... ./pkg/trigger/... ./pkg/lease/... ./pkg/platformcfg/... ./pkg/server/...
           # Exercise the public cloud coordinator against the durable outbox,

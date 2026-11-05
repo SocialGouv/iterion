@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Route, Router } from "wouter";
 import { memoryLocation } from "wouter/memory-location";
@@ -9,12 +9,17 @@ import type { AdminUserDetail } from "@/api/admin";
 import { setupMatchMedia, expectNoViolationsStrict } from "@/__tests__/a11y/axeHelpers";
 
 const getAdminUser = vi.fn<(id: string) => Promise<AdminUserDetail>>();
+const eraseAdminUser = vi.fn<(id: string) => Promise<unknown>>();
 const listOrgs = vi.fn(async () => [] as unknown[]);
 const listAdminOrgTeams = vi.fn(async () => [] as unknown[]);
 
 vi.mock("@/api/admin", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/api/admin")>();
-  return { ...actual, getAdminUser: (id: string) => getAdminUser(id) };
+  return {
+    ...actual,
+    getAdminUser: (id: string) => getAdminUser(id),
+    eraseAdminUser: (id: string) => eraseAdminUser(id),
+  };
 });
 vi.mock("@/api/orgs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/api/orgs")>();
@@ -74,6 +79,7 @@ setupMatchMedia();
 
 beforeEach(() => {
   getAdminUser.mockReset();
+  eraseAdminUser.mockReset().mockResolvedValue({});
   listOrgs.mockReset().mockResolvedValue([]);
   listAdminOrgTeams.mockReset().mockResolvedValue([]);
 });
@@ -346,5 +352,111 @@ describe("a11y / UserDrawer", () => {
     await waitFor(() =>
       expect(screen.queryByRole("status", { name: "Loading account…" })).toBeNull(),
     );
+  });
+});
+
+describe("UserDrawer — erasure", () => {
+  // The one irreversible act of the console: it asks before it acts, and
+  // the request goes out only once the operator confirmed.
+  it("asks before erasing, and erases the account it names once confirmed", async () => {
+    getAdminUser.mockResolvedValue(detail());
+    mountDrawer();
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Effacer le compte (anonymisation)" }),
+    );
+    expect(await screen.findByText("Effacer ce compte ?")).toBeTruthy();
+    expect(eraseAdminUser).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Effacer le compte" }));
+    await waitFor(() => expect(eraseAdminUser).toHaveBeenCalledWith("u1"));
+  });
+
+  it("does not erase when the confirmation is declined", async () => {
+    getAdminUser.mockResolvedValue(detail());
+    mountDrawer();
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Effacer le compte (anonymisation)" }),
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByText("Effacer ce compte ?")).toBeNull());
+    expect(eraseAdminUser).not.toHaveBeenCalled();
+  });
+
+  // An erased account is a pseudonym: the drawer says so, offers no grant
+  // (the server refuses every write, 409 user_erased) and never raises the
+  // "belongs to nothing — it can sign in" warning, which is false of it.
+  it("renders an erased account as a pseudonym with no roster and no erasure", async () => {
+    getAdminUser.mockResolvedValue(
+      detail({
+        user: {
+          id: "u1",
+          email: "erased-u1@erased.invalid",
+          status: "erased",
+          is_super_admin: false,
+          created_at: "2026-09-17T09:00:00Z",
+          updated_at: "2026-11-03T10:00:00Z",
+        },
+        has_password: false,
+      }),
+    );
+    mountDrawer();
+
+    expect(await screen.findByText("Compte effacé (anonymisé)")).toBeTruthy();
+    expect(screen.queryByText("Effacement incomplet")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Effacer le compte (anonymisation)" })).toBeNull();
+    expect(screen.queryByText(/belongs to nothing/i)).toBeNull();
+    expect(screen.queryByRole("button", { name: "Add to org" })).toBeNull();
+    expect(screen.queryByText(/no way to sign in/i)).toBeNull();
+  });
+
+  // The erased status blocks sign-ins from the erasure's first step, so an
+  // erasure interrupted before the anonymization leaves an erased account
+  // still under its own address: the drawer says the erasure is incomplete
+  // and offers to repeat it, which completes it.
+  it("reads an erased account still under its own address as an incomplete erasure, and repeats it", async () => {
+    getAdminUser.mockResolvedValue(
+      detail({
+        user: {
+          id: "u1",
+          email: "alice@example.org",
+          status: "erased",
+          is_super_admin: false,
+          created_at: "2026-09-17T09:00:00Z",
+          updated_at: "2026-11-03T10:00:00Z",
+        },
+        has_password: true,
+      }),
+    );
+    mountDrawer();
+
+    expect(await screen.findByText("Effacement incomplet")).toBeTruthy();
+    expect(screen.queryByText("Compte effacé (anonymisé)")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Relancer l'effacement" }));
+    await waitFor(() => expect(eraseAdminUser).toHaveBeenCalledWith("u1"));
+  });
+
+  // A complete erasure can still be repeated: the clean-up after the
+  // anonymization does not show on the account row, and a repeat is a no-op
+  // once everything is gone.
+  it("keeps the repeat on a complete erasure", async () => {
+    getAdminUser.mockResolvedValue(
+      detail({
+        user: {
+          id: "u1",
+          email: "erased-u1@erased.invalid",
+          status: "erased",
+          is_super_admin: false,
+          created_at: "2026-09-17T09:00:00Z",
+          updated_at: "2026-11-03T10:00:00Z",
+        },
+        has_password: false,
+      }),
+    );
+    mountDrawer();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Relancer l'effacement" }));
+    await waitFor(() => expect(eraseAdminUser).toHaveBeenCalledWith("u1"));
   });
 });

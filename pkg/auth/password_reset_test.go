@@ -142,6 +142,17 @@ func TestPasswordResetAntiEnumeration(t *testing.T) {
 	if _, ok := mailer.last(); ok {
 		t.Fatal("email sent for disabled account")
 	}
+	// Erased account: same silence — its marker resolves to the row, and
+	// no reset may be minted on it.
+	if _, err := svc.EraseUser(ctx, "u1", EraseOptions{}); err != nil {
+		t.Fatalf("EraseUser: %v", err)
+	}
+	if err := svc.RequestPasswordReset(ctx, identity.ErasedEmail("u1")); err != nil {
+		t.Fatalf("erased account must return nil, got %v", err)
+	}
+	if _, ok := mailer.last(); ok {
+		t.Fatal("email sent for an erased account")
+	}
 }
 
 func TestPasswordResetExpiry(t *testing.T) {

@@ -43,6 +43,9 @@ var sentinelStatus = map[string]struct {
 }{
 	"auth.ErrInvalidCredentials":     {auth.ErrInvalidCredentials, http.StatusUnauthorized},
 	"auth.ErrAccountDisabled":        {auth.ErrAccountDisabled, http.StatusUnauthorized},
+	"auth.ErrAccountErased":          {auth.ErrAccountErased, http.StatusUnauthorized},
+	"auth.ErrLastOrgOwner":           {auth.ErrLastOrgOwner, http.StatusConflict},
+	"auth.ErrGrantRefused":           {auth.ErrGrantRefused, http.StatusUnprocessableEntity},
 	"auth.ErrSessionNotFound":        {auth.ErrSessionNotFound, http.StatusUnauthorized},
 	"auth.ErrSessionRevoked":         {auth.ErrSessionRevoked, http.StatusUnauthorized},
 	"auth.ErrSessionExpired":         {auth.ErrSessionExpired, http.StatusUnauthorized},
@@ -70,15 +73,17 @@ var sentinelStatus = map[string]struct {
 	"auth.ErrSessionExists":       {auth.ErrSessionExists, http.StatusInternalServerError},
 	"auth.ErrInvalidPasswordHash": {auth.ErrInvalidPasswordHash, http.StatusInternalServerError},
 
-	"identity.ErrNotFound":            {identity.ErrNotFound, http.StatusNotFound},
-	"identity.ErrInvalidRole":         {identity.ErrInvalidRole, http.StatusBadRequest},
-	"identity.ErrEmailAlreadyTaken":   {identity.ErrEmailAlreadyTaken, http.StatusConflict},
-	"identity.ErrSlugAlreadyTaken":    {identity.ErrSlugAlreadyTaken, http.StatusConflict},
-	"identity.ErrOrgSlugAlreadyTaken": {identity.ErrOrgSlugAlreadyTaken, http.StatusConflict},
-	"identity.ErrRunnerPoolHeld":      {identity.ErrRunnerPoolHeld, http.StatusConflict},
-	"identity.ErrUserStatusChanged":   {identity.ErrUserStatusChanged, http.StatusConflict},
-	"identity.ErrInvitationUsed":      {identity.ErrInvitationUsed, http.StatusConflict},
-	"identity.ErrInvitationExpired":   {identity.ErrInvitationExpired, http.StatusGone},
+	"identity.ErrNotFound":             {identity.ErrNotFound, http.StatusNotFound},
+	"identity.ErrInvalidRole":          {identity.ErrInvalidRole, http.StatusBadRequest},
+	"identity.ErrEmailAlreadyTaken":    {identity.ErrEmailAlreadyTaken, http.StatusConflict},
+	"identity.ErrReservedEmail":        {identity.ErrReservedEmail, http.StatusBadRequest},
+	"identity.ErrErasedStatusReserved": {identity.ErrErasedStatusReserved, http.StatusBadRequest},
+	"identity.ErrSlugAlreadyTaken":     {identity.ErrSlugAlreadyTaken, http.StatusConflict},
+	"identity.ErrOrgSlugAlreadyTaken":  {identity.ErrOrgSlugAlreadyTaken, http.StatusConflict},
+	"identity.ErrRunnerPoolHeld":       {identity.ErrRunnerPoolHeld, http.StatusConflict},
+	"identity.ErrUserStatusChanged":    {identity.ErrUserStatusChanged, http.StatusConflict},
+	"identity.ErrInvitationUsed":       {identity.ErrInvitationUsed, http.StatusConflict},
+	"identity.ErrInvitationExpired":    {identity.ErrInvitationExpired, http.StatusGone},
 }
 
 // sentinelAnsweredElsewhere lists the sentinels of the scanned packages that

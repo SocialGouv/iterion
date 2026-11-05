@@ -14,7 +14,11 @@ const BASE = apiBase().replace(/\/$/, "");
 // sits below `viewer` in the access ladder (a viewer reads the whole studio;
 // a config_editor reaches only the config editor).
 export type Role = "owner" | "admin" | "member" | "viewer" | "config_editor";
-export type UserStatus = "active" | "disabled" | "pending_password_change";
+// `erased` is terminal: the account was erased by anonymization (GDPR
+// art. 17) and keeps only its id as a pseudonym under an
+// erased-<id>@erased.invalid marker. Nothing signs it in and no console
+// write reaches it again.
+export type UserStatus = "active" | "disabled" | "pending_password_change" | "erased";
 
 export interface UserView {
   id: string;

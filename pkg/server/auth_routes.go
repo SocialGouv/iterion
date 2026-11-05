@@ -125,6 +125,9 @@ func (s *Server) registerAuthRoutes() {
 	s.mux.Handle("GET /api/admin/users/{id}", s.requireSuperAdmin(http.HandlerFunc(s.handleAdminGetUser)))
 	s.mux.Handle("PATCH /api/admin/users/{id}", s.requireSuperAdmin(http.HandlerFunc(s.handleAdminUpdateUser)))
 	s.mux.Handle("POST /api/admin/users/{id}/reset-password", s.requireSuperAdmin(http.HandlerFunc(s.handleAdminResetUserPassword)))
+	// Erasure by anonymization (GDPR art. 17): the one writer of the
+	// `erased` status.
+	s.mux.Handle("POST /api/admin/users/{id}/erase", s.requireSuperAdmin(http.HandlerFunc(s.handleAdminEraseUser)))
 	s.registerAdminOrgRoutes()
 	s.registerAdminTeamRoutes()
 }

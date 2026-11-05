@@ -182,8 +182,8 @@ func (s *Service) RequestPasswordReset(ctx context.Context, email string) error 
 		}
 		return nil
 	}
-	if u.Status == identity.UserStatusDisabled {
-		s.logf("auth: reset requested for disabled account %s", u.ID)
+	if u.Status.SignInRefused() {
+		s.logf("auth: reset requested for %s account %s", u.Status, u.ID)
 		return nil
 	}
 	tok, _, err := GenerateRandomToken(32)
@@ -253,8 +253,13 @@ func (s *Service) ConfirmPasswordReset(ctx context.Context, token, newPassword, 
 	if errors.Is(err, identity.ErrNotFound) {
 		return LoginResult{}, refused(ErrInvalidCredentials, ReasonUnknownAccount)
 	}
-	if err == nil && u.Status == identity.UserStatusDisabled {
-		return LoginResult{}, refused(ErrInvalidCredentials, ReasonDisabled)
+	if err == nil {
+		switch {
+		case u.Status == identity.UserStatusErased:
+			return LoginResult{}, refused(ErrInvalidCredentials, ReasonErased)
+		case u.Status.SignInRefused():
+			return LoginResult{}, refused(ErrInvalidCredentials, ReasonDisabled)
+		}
 	}
 	if err != nil {
 		return LoginResult{}, fmt.Errorf("auth: read the account of reset %s: %w", rec.ID, err)
@@ -297,7 +302,7 @@ func (s *Service) ConfirmPasswordReset(ctx context.Context, token, newPassword, 
 		Status:       &active,
 		Lockout:      &identity.UserLockout{},
 		LastLoginAt:  &now,
-		IfNotStatus:  []identity.UserStatus{identity.UserStatusDisabled},
+		IfNotStatus:  identity.SignInRefusingStatuses(),
 	})
 	if errors.Is(err, identity.ErrUserStatusChanged) {
 		return LoginResult{}, refused(ErrInvalidCredentials, ReasonDisabled)
@@ -396,11 +401,8 @@ func (s *Service) ChangePassword(ctx context.Context, userID, currentPassword, n
 		PasswordHash: &hash,
 		// The proof verified: the brute-force counter it fed clears, the
 		// way a verified login clears it.
-		Lockout: &identity.UserLockout{},
-		IfNotStatus: []identity.UserStatus{
-			identity.UserStatusDisabled,
-			identity.UserStatusPendingPasswordChange,
-		},
+		Lockout:        &identity.UserLockout{},
+		IfNotStatus:    append(identity.SignInRefusingStatuses(), identity.UserStatusPendingPasswordChange),
 		IfPasswordHash: &verified,
 	})
 	if errors.Is(err, identity.ErrUserPasswordChanged) {
@@ -440,7 +442,7 @@ func (s *Service) ResetPasswordByAdmin(ctx context.Context, userID, hash string)
 	u, err := s.store.PatchUser(ctx, userID, identity.UserPatch{
 		PasswordHash: &hash,
 		Status:       &pending,
-		IfNotStatus:  []identity.UserStatus{identity.UserStatusDisabled},
+		IfNotStatus:  identity.SignInRefusingStatuses(),
 	})
 	if errors.Is(err, identity.ErrUserStatusChanged) {
 		return identity.User{}, err

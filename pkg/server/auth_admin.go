@@ -62,6 +62,13 @@ func (s *Server) handleAdminUpdateUser(w http.ResponseWriter, r *http.Request) {
 		httpError(w, mapAuthErrorStatus(err), "%s", err.Error())
 		return
 	}
+	// An erased account is a pseudonym: no status, flag or name is written
+	// to it again, and no status written here reaches `erased` — that
+	// status is the erasure's alone (POST /api/admin/users/{id}/erase).
+	if u.Status == identity.UserStatusErased {
+		s.httpErrorCode(w, r, http.StatusConflict, "user_erased", "user %s is erased — an erased account admits no change", u.ID)
+		return
+	}
 	var req adminUpdateUserReq
 	if !decodeJSON(w, r, &req) {
 		return
@@ -154,6 +161,10 @@ func (s *Server) handleAdminResetUserPassword(w http.ResponseWriter, r *http.Req
 			s.derivationError(w, r, err)
 			return
 		}
+	}
+	if u.Status == identity.UserStatusErased {
+		s.httpErrorCode(w, r, http.StatusUnprocessableEntity, "user_erased", "user %s is erased — an erased account has no password to reset", u.ID)
+		return
 	}
 	if u.Status == identity.UserStatusDisabled {
 		httpError(w, http.StatusUnprocessableEntity, "user %s is disabled — re-enable the account before resetting its password", u.Email)

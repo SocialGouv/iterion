@@ -217,7 +217,7 @@ call sites for the full list):
 > · `team.created` · `team.updated` · `team.status_changed`
 > · `team.caps_updated` · `team.deleted` · `member.added`
 > · `user.password_changed`
-> · `user.password_reset` · `user.sessions_revoked` · `member.removed`
+> · `user.password_reset` · `user.sessions_revoked` · `user.erased` · `member.removed`
 > · `member.role_changed` · `invitation.created` · `invitation.accepted`
 > · `invitation.deleted` · `byok.created` · `byok.updated` · `byok.deleted`
 > · `secret.created` · `secret.updated` · `secret.deleted`
@@ -356,7 +356,7 @@ with `ITERION_BOOTSTRAP_ADMIN_PASSWORD` is the exception: the next
 restart's reconciliation (§1.1) sets it active and super-admin again — the
 sessions, tokens and identities the disable ended stay ended — so remove
 the `ITERION_BOOTSTRAP_ADMIN_*` declaration before disabling that account
-for good.
+for good. Disabling keeps the person's data; erasing them is §1.11.
 
 ### 1.7 DLQ triage
 
@@ -480,6 +480,59 @@ Ingress. See [quotas-and-limits.md](quotas-and-limits.md) for the
 exhaustive metric list and
 [charts/iterion/README.md](../charts/iterion/README.md) for the chart
 values.
+
+### 1.11 Erase an account (right to erasure, GDPR art. 17)
+
+An erasure request reaches the DPO or you; verify the requester's identity
+out of band, then erase the account — from the studio (Admin → Users →
+the account's file → "Effacer le compte (anonymisation)"), the CLI
+(`iterion remote admin users erase <user-id> --yes`) or the API:
+
+```bash
+curl -X POST https://iterion.example.com/api/admin/users/$USER_ID/erase
+```
+
+The account is **anonymized, not deleted**
+([ADR-159](adr/159-identity-data-lifecycle-erasure-by-anonymization.md)):
+its row keeps its id as a pseudonym — every run, audit row, note and secret
+that named the account still does — under the marker
+`erased-<id>@erased.invalid` and the terminal status `erased`. Everything
+that names or lets in the person goes: name, password, GitHub orgs, SSO
+identities, org and team memberships, pending invitations addressed to it,
+push subscriptions, its own LLM subscription credentials (forfaits) and
+credential-pool pledges, its personal API keys and secrets; its sessions
+are **deleted** (they carry the IP and user agent of each sign-in), its
+personal access tokens revoked; the run notes it wrote name its id instead
+of its address; the config-share edits it made lose their IP and user
+agent; the audit rows it acted in lose their `ip`, `user_agent`,
+`meta.email` and `meta.subject_hash`, and the rows naming it otherwise —
+an administrator's act on it, an invitation addressed to it — lose the
+`meta` keys and keep their actor's IP. Its personal organization is
+scheduled for the nightly purge, after the 24-hour grace of any
+organization deletion. The act is one platform audit line, `user.erased`,
+under your identity, carrying the counts of what was removed — keep the
+request's reference in the ticket that tracked it. The account carries
+the `erased` status from the request's first write, so nothing signs it in
+while the erasure runs, nor after a failure that interrupts it; an access
+token already minted keeps its access until its own expiry (at most the
+access TTL, 15 minutes by default), as after a disable.
+
+Refusals: your own account (`422 self_erasure` — another super-admin
+erases it); the last owner of a shared organization (`409
+last_org_owner`, naming it — transfer the ownership or delete the
+organization first). An erased account admits no further console write
+(`409 user_erased`) and owns no new organization (`422`). The route is
+idempotent: a second call answers `200` with `already_erased: true`, and a
+`500` is answered by repeating the request — its `user.erased` line, written
+anyway, carries `incomplete: true`.
+
+Backups taken before an erasure hold what it erased until they age out
+([cloud-backup.md](cloud-backup.md)); a dump is never edited. A
+restoration brings the audit log back to the restored point too, so the
+erasures to replay are read on the LIVE deployment — the `user.erased`
+lines since the dump, beside the DPO's request register — and replayed
+one request per account before any route reaches the restored server
+([restore drill](cloud-backup.md#restore-drill), step 6).
 
 ---
 

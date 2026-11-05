@@ -40,6 +40,25 @@ type Store interface {
 	// lists everyone; see UserFilter for what a non-empty Query selects.
 	ListUsers(ctx context.Context, f UserFilter) ([]User, error)
 	UserCount(ctx context.Context) (int64, error)
+	// MarkUserErased sets the row's status to erased and nothing else — the
+	// address stays — and returns the row as it stands after. It is the
+	// first write of an account erasure (auth.Service.EraseUser): from it
+	// on, no sign-in of any kind opens on the account and no patch reaches
+	// it, while the erasure still has the address to match the invitations
+	// and audit rows on. A row already erased is answered unchanged; a
+	// missing row is ErrNotFound.
+	MarkUserErased(ctx context.Context, id string) (User, error)
+	// EraseUser anonymizes the user row in ONE write and returns it as it
+	// stands after: status erased, email replaced with ErasedEmail(id),
+	// name, password hash, GitHub orgs, default team and org, lockout and
+	// last sign-in cleared, the super-admin flag withdrawn; the id, the
+	// creation instant and the updated_at stamp stay. It is the identity
+	// half of an account erasure (auth.Service.EraseUser runs the rest:
+	// links, memberships, invitations, sessions). A row already carrying
+	// its marker is answered unchanged, whether MarkUserErased ran before
+	// or not; a missing row is ErrNotFound. The status is terminal:
+	// MarkUserErased and EraseUser are its only writers.
+	EraseUser(ctx context.Context, id string) (User, error)
 
 	// Orgs
 	CreateOrg(ctx context.Context, o Org) (Org, error)
@@ -112,6 +131,16 @@ type Store interface {
 	UpdateInvitation(ctx context.Context, inv Invitation) error
 	DeleteInvitation(ctx context.Context, id string) error
 	ListInvitationsByTeam(ctx context.Context, teamID string) ([]Invitation, error)
+	// DeleteInvitationsByEmail removes every invitation addressed to email
+	// (Invitation.AddressedTo), in every team, and answers how many it
+	// removed. An account's erasure calls it with the address the row
+	// carried, before the row loses it.
+	DeleteInvitationsByEmail(ctx context.Context, email string) (int64, error)
+	// DeleteInvitationsByInviter removes every invitation userID created
+	// (Invitation.InvitedBy), in every team, and answers how many it
+	// removed: an erased account's pending invitations would still seat
+	// their invitees, since accepting one reads nothing of its creator.
+	DeleteInvitationsByInviter(ctx context.Context, userID string) (int64, error)
 
 	// OIDC links
 	UpsertOIDCLink(ctx context.Context, link OIDCLink) error

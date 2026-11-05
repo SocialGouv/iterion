@@ -252,7 +252,9 @@ the one the account was created or first signed in with through SSO stays;
 a password change and the resets keep both. An administrator's disable
 (`PATCH /api/admin/users/{id}`) ends the sessions, revokes the personal
 access tokens and removes those SSO identities once the status landed, and
-answers `500` with the account disabled when that revocation fails. The
+answers `500` with the account disabled when that revocation fails. An
+administrator's erasure (`POST /api/admin/users/{id}/erase`) goes further:
+it deletes the session rows and anonymizes the account for good. The
 refresh cookie's `Expires` is the session's expiry rounded up to the hour.
 
 The team and org switches (`POST /api/auth/me/team/{team_id}`, `POST
@@ -938,6 +940,7 @@ Source: [pkg/server/runs.go](../pkg/server/runs.go).
 | `GET` | `/api/admin/users/{id}` | super-admin | One account's file: status, last sign-in, whether a password sign-in is possible at all, its SSO links, and the orgs/teams it was **granted** — not what it could reach. See [administering accounts](ticket-context.md#an-account-signs-in-and-sees-nothing) |
 | `PATCH` | `/api/admin/users/{id}` | super-admin | Status / super-admin flag |
 | `POST` | `/api/admin/users/{id}/reset-password` | super-admin | Force a user's password reset; disabled accounts return 422 and must be explicitly re-enabled first; a personal access token answers `403` for its own account |
+| `POST` | `/api/admin/users/{id}/erase` | super-admin | Erase the account by anonymization (GDPR art. 17, [ADR-159](adr/159-identity-data-lifecycle-erasure-by-anonymization.md)): the row keeps its id as a pseudonym under `erased-<id>@erased.invalid` with status `erased`; name, password, SSO links, memberships, pending invitations, sessions (deleted), personal access tokens (revoked), push subscriptions, the person's own subscription credentials and pool pledges, personal API keys and secrets go; run notes it wrote name its id; its config-share edits lose IP and user agent; the audit rows it acted in lose IP, user agent and address, the rows naming it otherwise the address; the personal org is scheduled for purge. Idempotent (`already_erased`); the `user.erased` audit line is written for an interrupted erasure too, with `incomplete: true`. `422 self_erasure` on the caller's own account, `409 last_org_owner` for the last owner of a shared org; an erased account then answers `409 user_erased` to `PATCH` and `422` to `reset-password` |
 | `GET` | `/api/admin/audit` | super-admin | Platform audit log — super-admin actions and every refused sign-in (`auth.login.failed`, attempted address as a peppered digest) (filters: `action`, `actor`, `from`, `to`, `offset`, `limit`) |
 | `GET` | `/api/admin/audit` | super-admin | Platform audit log (platform-scoped actions; filters: `action`, `actor`, `from`, `to`, `offset`, `limit`) |
 | `GET` | `/api/admin/runs` | super-admin | Cross-org runs view (#2148): every org's runs in one list — the filters combine (`?org_id=`, `?team_id=`, `?status=`, `?since=`), pagination is server-side across orgs (`?limit=` 1..500, default 50; pass the answered `next_cursor` back as `?cursor=` — a malformed token is a 400), and each row names its team and org and carries the run's sovereign runner-pool stamp. Read-only: opening ONE run rides the ADR-103 choke point; every super-admin cross-team grant — this list included — is audited at platform scope through one named predicate |

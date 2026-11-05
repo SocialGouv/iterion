@@ -22,8 +22,13 @@ import (
 // Sentinel errors raised by Service. Handlers map them to HTTP
 // statuses (Unauthorized, Forbidden, NotFound, Conflict).
 var (
-	ErrInvalidCredentials     = errors.New("auth: invalid credentials")
-	ErrAccountDisabled        = errors.New("auth: account disabled")
+	ErrInvalidCredentials = errors.New("auth: invalid credentials")
+	ErrAccountDisabled    = errors.New("auth: account disabled")
+	// ErrAccountErased is ErrAccountDisabled for an account erased by
+	// anonymization (identity.UserStatusErased): refused wherever a
+	// disabled one is — errors.Is(err, ErrAccountDisabled) holds — and
+	// named apart, since no re-enable brings it back.
+	ErrAccountErased          = fmt.Errorf("%w: the account is erased", ErrAccountDisabled)
 	ErrPasswordChangeRequired = errors.New("auth: password change required")
 	ErrPasswordWeak           = errors.New("auth: password too weak")
 	ErrSignupClosed           = errors.New("auth: signup is invite-only")
@@ -300,7 +305,7 @@ func NewService(cfg Config) (*Service, error) {
 		}
 	}
 	return &Service{
-		store:                    cfg.Store,
+		store:                    grantGuard{Store: cfg.Store},
 		sessions:                 cfg.Sessions,
 		signer:                   cfg.Signer,
 		signupMode:               cfg.SignupMode,
@@ -406,8 +411,8 @@ func (s *Service) Login(ctx context.Context, email, password, userAgent, ip stri
 	if err != nil {
 		return LoginResult{}, err
 	}
-	if u.Status == identity.UserStatusDisabled {
-		return LoginResult{}, ErrAccountDisabled
+	if refusal := accountRefusal(u); refusal != nil {
+		return LoginResult{}, refusal
 	}
 	if u.LockedUntil != nil && s.now().Before(*u.LockedUntil) {
 		// Spend the same argon2id cycles a real attempt would, so a
@@ -472,11 +477,8 @@ func (s *Service) Login(ctx context.Context, email, password, userAgent, ip stri
 	// was verified against.
 	verified := u.PasswordHash
 	u, err = s.stampLogin(ctx, u, s.now().UTC(), identity.UserPatch{
-		Lockout: &identity.UserLockout{},
-		IfNotStatus: []identity.UserStatus{
-			identity.UserStatusDisabled,
-			identity.UserStatusPendingPasswordChange,
-		},
+		Lockout:        &identity.UserLockout{},
+		IfNotStatus:    append(identity.SignInRefusingStatuses(), identity.UserStatusPendingPasswordChange),
 		IfPasswordHash: &verified,
 	})
 	if err != nil {
@@ -512,7 +514,9 @@ func (s *Service) Login(ctx context.Context, email, password, userAgent, ip stri
 // cosmetic stamp failing fails the login.
 func (s *Service) stampLogin(ctx context.Context, u identity.User, at time.Time, owned identity.UserPatch) (identity.User, error) {
 	owned.LastLoginAt = &at
-	owned.IfNotStatus = alsoRefusing(owned.IfNotStatus, identity.UserStatusDisabled)
+	for _, refused := range identity.SignInRefusingStatuses() {
+		owned.IfNotStatus = alsoRefusing(owned.IfNotStatus, refused)
+	}
 	patched, err := s.store.PatchUser(ctx, u.ID, owned)
 	if errors.Is(err, identity.ErrUserStatusChanged) {
 		return identity.User{}, ErrAccountDisabled
@@ -625,14 +629,11 @@ func (s *Service) ChangePasswordPending(ctx context.Context, email, currentPassw
 	// temporary password. The refusal stays opaque, like the wrong-status
 	// branch above, and leaves the credential that landed under it in place.
 	u, err = s.store.PatchUser(ctx, u.ID, identity.UserPatch{
-		PasswordHash: &hash,
-		Status:       &active,
-		Lockout:      &identity.UserLockout{},
-		LastLoginAt:  &now,
-		IfNotStatus: []identity.UserStatus{
-			identity.UserStatusDisabled,
-			identity.UserStatusActive,
-		},
+		PasswordHash:   &hash,
+		Status:         &active,
+		Lockout:        &identity.UserLockout{},
+		LastLoginAt:    &now,
+		IfNotStatus:    append(identity.SignInRefusingStatuses(), identity.UserStatusActive),
 		IfPasswordHash: &verified,
 	})
 	if errors.Is(err, identity.ErrUserPasswordChanged) {
@@ -1441,11 +1442,26 @@ var errPasswordChangePending = fmt.Errorf("%w: the account must change its passw
 // session may continue on — disabled, or pending a password change — and nil
 // for an active one.
 func sessionRefusal(u identity.User) error {
-	switch u.Status {
-	case identity.UserStatusDisabled:
-		return ErrAccountDisabled
-	case identity.UserStatusPendingPasswordChange:
+	if refusal := accountRefusal(u); refusal != nil {
+		return refusal
+	}
+	if u.Status == identity.UserStatusPendingPasswordChange {
 		return errPasswordChangePending
+	}
+	return nil
+}
+
+// accountRefusal is the answer every sign-in, refresh, switch and derivation
+// gives an account no session may open or continue on: ErrAccountErased for
+// an erased one, ErrAccountDisabled for a disabled one, nil otherwise. The
+// one reading of identity.UserStatus.SignInRefused in this package, so the
+// two statuses are refused at every site together.
+func accountRefusal(u identity.User) error {
+	switch {
+	case u.Status == identity.UserStatusErased:
+		return ErrAccountErased
+	case u.Status.SignInRefused():
+		return ErrAccountDisabled
 	}
 	return nil
 }
@@ -2262,7 +2278,9 @@ func (s *Service) Store() identity.Store { return s.store }
 // cannot get otherwise: wrapping the store to open a read-modify-write
 // window deterministically (a concurrent mutation landing between a
 // handler's read and its write). Production wiring passes the store at
-// construction and never calls this.
+// construction and never calls this. st is used as given: a test that wraps
+// Store() keeps the grant guard under its wrapper, one that passes a bare
+// store runs without it.
 func (s *Service) SetStoreForTest(st identity.Store) { s.store = st }
 
 // provisionUndoTimeout bounds a compensation whose request context may
@@ -2419,6 +2437,12 @@ func (s *Service) CreateOrgFor(ctx context.Context, userID, name, slug string) (
 	u, err := s.store.GetUser(ctx, userID)
 	if err != nil {
 		return identity.Org{}, err
+	}
+	// The one gate every org creation crosses — the super-admin console
+	// naming an owner by address, and self-service — so an account that
+	// cannot act never becomes the owner of an org nobody can then run.
+	if u.Status.SignInRefused() {
+		return identity.Org{}, fmt.Errorf("%w: user %s is %s — it cannot own a new organization", ErrGrantRefused, u.ID, u.Status)
 	}
 	base := slug
 	if base == "" {
@@ -2615,10 +2639,39 @@ func (s *Service) CreateInvitation(ctx context.Context, teamID, email string, ro
 		CreatedAt: now,
 		ExpiresAt: now.Add(InvitationTTL),
 	}
+	// An invitation addressed to an account under erasure would outlive the
+	// erasure's sweep by address: refused before the write, and taken back
+	// when the erasure marked the account while it was being written.
+	if err := s.refuseAddressUnderErasure(ctx, inv.Email); err != nil {
+		return "", identity.Invitation{}, err
+	}
 	if err := s.store.CreateInvitation(ctx, inv); err != nil {
 		return "", identity.Invitation{}, err
 	}
+	if err := s.refuseAddressUnderErasure(ctx, inv.Email); err != nil {
+		if derr := s.store.DeleteInvitation(ctx, inv.ID); derr != nil {
+			err = errors.Join(err, fmt.Errorf("auth: take back invitation %s: %w", inv.ID, derr))
+		}
+		return "", identity.Invitation{}, err
+	}
 	return tok, inv, nil
+}
+
+// refuseAddressUnderErasure answers ErrGrantRefused when email belongs to an
+// erased account — one whose erasure has not yet anonymized the row, since
+// an anonymized row no longer carries the address.
+func (s *Service) refuseAddressUnderErasure(ctx context.Context, email string) error {
+	u, err := s.store.GetUserByEmail(ctx, email)
+	if errors.Is(err, identity.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("auth: read the account at the invited address: %w", err)
+	}
+	if u.Status == identity.UserStatusErased {
+		return fmt.Errorf("%w: the account at this address is being erased", ErrGrantRefused)
+	}
+	return nil
 }
 
 // CreateUserAndPersonalTeam is used by the bootstrap path to provision

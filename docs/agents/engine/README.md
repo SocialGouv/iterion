@@ -9,7 +9,8 @@ invariants. The product view is [docs/architecture.md](../../architecture.md).
 | Leaf | Read it when |
 |---|---|
 | [tenancy-credentials-spend.md](tenancy-credentials-spend.md) | Orgs, teams, keys, caps, platform settings. |
-| [identity-data-lifecycle.md](identity-data-lifecycle.md) | Sign-in and launch audit rows, what they carry, retention, erasure. |
+| [identity-data-lifecycle.md](identity-data-lifecycle.md) | Sign-in and launch audit rows, what they carry, retention, what an erasure scrubs from them. |
+| [account-erasure.md](account-erasure.md) | What an account erasure removes, what stays a pseudonym, which store seam each half lives in. |
 | [http-failures.md](http-failures.md) | Generic HTTP failures, correlation, partial identity reads and quota propagation. |
 | [workspace-and-review-scope.md](workspace-and-review-scope.md) | Workspace capture/restore, review scope, sandbox wiring. |
 | [events-leases-and-schedules.md](events-leases-and-schedules.md) | The trigger spine, elections, queues, schedules, retries. |

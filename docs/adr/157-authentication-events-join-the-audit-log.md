@@ -164,3 +164,13 @@ retention. If refused, a per-action `expires_at` is the prepared change
   recomputing `SubjectDigest(email)` under every key still in the signing
   key set. A digest under a retired key is unlinkable to the address
   without that key, which is what erasure asks.
+
+## Addendum (2026-11-04)
+
+The scrub is [ADR-159](159-identity-data-lifecycle-erasure-by-anonymization.md)'s
+`audit.Store.ScrubActor`. One precision on "actor or target": the IP and
+user agent go from the rows the account acted in, from an attempt with no
+actor on the account and from every refusal its digests find; on a row
+whose actor is ANOTHER person — an administrator acting on the account —
+they are that actor's and stay, as the trace of the act, while the
+`subject_hash` and `email` of the row go.

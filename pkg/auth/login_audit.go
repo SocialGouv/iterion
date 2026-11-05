@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"sort"
 
 	"github.com/SocialGouv/iterion/pkg/identity"
 )
@@ -43,6 +44,9 @@ const (
 	// ReasonDisabled: the account is disabled. The same token the server
 	// records for a bare ErrAccountDisabled, so one reason names one fact.
 	ReasonDisabled RefusalReason = "disabled"
+	// ReasonErased: the account has been erased by anonymization and no
+	// session may ever open on it again.
+	ReasonErased RefusalReason = "erased"
 )
 
 // refusalErr wraps a sentinel with the reason the audit log records. Error() is
@@ -92,11 +96,36 @@ const auditSubjectDigestHex = 16
 // which the audit trail tolerates. ok is false when the active key is not
 // in the key set.
 func (s *Service) SubjectDigest(subject string) (digest string, ok bool) {
-	key, ok := s.signer.derivedKey(s.signer.ActiveKID(), auditSubjectLabel)
-	if !ok {
+	kid := s.signer.ActiveKID()
+	if _, ok := s.signer.keys[kid]; !ok {
 		return "", false
 	}
+	return s.subjectDigestUnder(kid, subject), true
+}
+
+// SubjectDigests answers subject's SubjectDigest under every key of the
+// signing key set, sorted by key id: what an account's erasure looks the
+// refusals by address up with (ADR-157). Each digest is the one a sign-in
+// presenting subject recorded while that key was active; a key retired from
+// the set takes the link from its digests to the address with it.
+func (s *Service) SubjectDigests(subject string) []string {
+	kids := make([]string, 0, len(s.signer.keys))
+	for kid := range s.signer.keys {
+		kids = append(kids, kid)
+	}
+	sort.Strings(kids)
+	out := make([]string, 0, len(kids))
+	for _, kid := range kids {
+		out = append(out, s.subjectDigestUnder(kid, subject))
+	}
+	return out
+}
+
+// subjectDigestUnder is SubjectDigest under the key kid, which the caller
+// read from the key set.
+func (s *Service) subjectDigestUnder(kid, subject string) string {
+	key, _ := s.signer.derivedKey(kid, auditSubjectLabel)
 	mac := hmac.New(sha256.New, key)
 	mac.Write([]byte(identity.NormalizeEmail(subject)))
-	return hex.EncodeToString(mac.Sum(nil))[:auditSubjectDigestHex], true
+	return hex.EncodeToString(mac.Sum(nil))[:auditSubjectDigestHex]
 }

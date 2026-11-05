@@ -52,6 +52,12 @@ type GenericSecretStore interface {
 	Delete(ctx context.Context, id string) error
 	ListByTeam(ctx context.Context, teamID, requestingUserID string) ([]GenericSecret, error)
 	ListByUser(ctx context.Context, teamID, userID string) ([]GenericSecret, error)
+	// DeleteByScopeUser removes every secret scoped to userID
+	// (ScopeUserID), in every team and tenant whatever the context, and
+	// answers how many it removed — an account's erasure ends the person's
+	// own secrets. Team-wide secrets are never touched: an empty userID,
+	// which would name them, is refused.
+	DeleteByScopeUser(ctx context.Context, userID string) (int64, error)
 	MarkUsed(ctx context.Context, id string, at time.Time) error
 }
 
@@ -333,6 +339,22 @@ func (m *MemoryGenericSecretStore) Delete(ctx context.Context, id string) error 
 	return nil
 }
 
+func (m *MemoryGenericSecretStore) DeleteByScopeUser(_ context.Context, userID string) (int64, error) {
+	if userID == "" {
+		return 0, errScopeUserRequired
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var n int64
+	for id, sec := range m.secrets {
+		if sec.ScopeUserID == userID {
+			delete(m.secrets, id)
+			n++
+		}
+	}
+	return n, nil
+}
+
 func (m *MemoryGenericSecretStore) ListByTeam(_ context.Context, teamID, userID string) ([]GenericSecret, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -519,6 +541,19 @@ func (s *MongoGenericSecretStore) ListByTeam(ctx context.Context, teamID, userID
 		return nil, fmt.Errorf("secrets: decode generic secrets: %w", err)
 	}
 	return out, nil
+}
+
+// DeleteByScopeUser filters on scope_user alone: the erasure crosses every
+// tenant the person held a secret in.
+func (s *MongoGenericSecretStore) DeleteByScopeUser(ctx context.Context, userID string) (int64, error) {
+	if userID == "" {
+		return 0, errScopeUserRequired
+	}
+	res, err := s.coll.DeleteMany(ctx, bson.M{"scope_user": userID})
+	if err != nil {
+		return 0, fmt.Errorf("secrets: delete the generic secrets of user %s: %w", userID, err)
+	}
+	return res.DeletedCount, nil
 }
 
 func (s *MongoGenericSecretStore) ListByUser(ctx context.Context, teamID, userID string) ([]GenericSecret, error) {

@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -43,6 +44,19 @@ type RunNoteStore interface {
 	// chronological (ascending Seq) order. A run with no notes yields
 	// (nil, nil).
 	ListRunNotes(ctx context.Context, runID string) ([]RunNote, error)
+	// ReattributeRunNotes rewrites the Author of every note, in every run
+	// and tenant whatever the context, whose author is fromAuthor (case
+	// and surrounding blanks ignored) to toAuthor, and answers how many it
+	// rewrote. An account's erasure calls it with the address a note
+	// defaults its author to and the account's id, so the note keeps a
+	// pseudonym and loses the address. An empty fromAuthor is refused.
+	ReattributeRunNotes(ctx context.Context, fromAuthor, toAuthor string) (int64, error)
+}
+
+// NoteAuthorMatches reports whether a note's author is from, read the way
+// ReattributeRunNotes reads it: case and surrounding blanks ignored.
+func NoteAuthorMatches(author, from string) bool {
+	return strings.EqualFold(strings.TrimSpace(author), strings.TrimSpace(from))
 }
 
 // AsRunNoteStore returns s as RunNoteStore when the backend persists run
@@ -127,6 +141,62 @@ func (s *FilesystemRunStore) ListRunNotes(_ context.Context, runID string) ([]Ru
 		out = append(out, note)
 	}
 	return out, nil
+}
+
+// ReattributeRunNotes implements RunNoteStore over every runs/<id>/notes
+// directory, rewriting each matching note file atomically under s.mu. A
+// note file it cannot read is left as is and named in the error, so the
+// erasure that calls it is answered as incomplete rather than reported done.
+func (s *FilesystemRunStore) ReattributeRunNotes(_ context.Context, fromAuthor, toAuthor string) (int64, error) {
+	if strings.TrimSpace(fromAuthor) == "" {
+		return 0, fmt.Errorf("store: reattribute run notes: no author to match")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	runs, err := os.ReadDir(filepath.Join(s.root, "runs"))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("store: reattribute run notes: read runs dir: %w", err)
+	}
+	var n int64
+	var errs []error
+	for _, run := range runs {
+		if !run.IsDir() {
+			continue
+		}
+		dir := filepath.Join(s.root, "runs", run.Name(), "notes")
+		seqs, err := noteSeqs(dir)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		for _, seq := range seqs {
+			note, err := readNoteFile(dir, seq)
+			if err != nil {
+				errs = append(errs, fmt.Errorf("run %s note %d: %w", run.Name(), seq, err))
+				continue
+			}
+			if !NoteAuthorMatches(note.Author, fromAuthor) {
+				continue
+			}
+			note.Author = toAuthor
+			data, err := json.MarshalIndent(note, "", "  ")
+			if err != nil {
+				return n, fmt.Errorf("store: marshal run note: %w", err)
+			}
+			if err := writeFileAtomic(filepath.Join(dir, fmt.Sprintf("%04d.json", seq)), data, filePerm); err != nil {
+				errs = append(errs, fmt.Errorf("run %s note %d: %w", run.Name(), seq, err))
+				continue
+			}
+			n++
+		}
+	}
+	if len(errs) > 0 {
+		return n, fmt.Errorf("store: reattribute run notes: %w", errors.Join(errs...))
+	}
+	return n, nil
 }
 
 // noteSeqs returns the sorted sequence numbers of the <NNNN>.json note

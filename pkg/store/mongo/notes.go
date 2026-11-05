@@ -3,6 +3,8 @@ package mongo
 import (
 	"context"
 	"fmt"
+	"regexp"
+	"strings"
 	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -119,6 +121,24 @@ func (s *Store) lastRunNote(ctx context.Context, runID string) (store.RunNote, b
 		return store.RunNote{}, false, fmt.Errorf("store/mongo: load last run note %s: %w", runID, err)
 	}
 	return doc.toNote(), true, nil
+}
+
+// ReattributeRunNotes implements store.RunNoteStore in one UpdateMany with
+// no tenant filter — an erasure crosses every tenant the person wrote in —
+// matching the author the way store.NoteAuthorMatches does: an anchored,
+// case-insensitive pattern tolerating surrounding blanks.
+func (s *Store) ReattributeRunNotes(ctx context.Context, fromAuthor, toAuthor string) (int64, error) {
+	from := strings.TrimSpace(fromAuthor)
+	if from == "" {
+		return 0, fmt.Errorf("store/mongo: reattribute run notes: no author to match")
+	}
+	res, err := s.runNotes.UpdateMany(ctx,
+		bson.M{"author": bson.M{"$regex": `^\s*` + regexp.QuoteMeta(from) + `\s*$`, "$options": "i"}},
+		bson.M{"$set": bson.M{"author": toAuthor}})
+	if err != nil {
+		return 0, fmt.Errorf("store/mongo: reattribute run notes: %w", err)
+	}
+	return res.ModifiedCount, nil
 }
 
 // ListRunNotes implements store.RunNoteStore: every persisted note for

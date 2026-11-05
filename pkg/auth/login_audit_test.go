@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 	"time"
 
@@ -161,4 +162,47 @@ type claimedResets struct {
 
 func (claimedResets) Consume(context.Context, string, time.Time) (bool, error) {
 	return false, nil
+}
+
+// TestSubjectDigestsCoverEveryKeyOfTheSet: after a rotation, the digests an
+// erasure looks refusals up with are the address's digest under every key
+// still in the set — the one recorded while the old key was active, and the
+// one the new active key records — and nothing under a key the set dropped.
+func TestSubjectDigestsCoverEveryKeyOfTheSet(t *testing.T) {
+	k0 := JWTKey{ID: "k0", Secret: []byte("k0-secret-k0-secret-k0-secret-k0")}
+	k1 := JWTKey{ID: "k1", Secret: []byte("k1-secret-k1-secret-k1-secret-k1")}
+	k2 := JWTKey{ID: "k2", Secret: []byte("k2-secret-k2-secret-k2-secret-k2")}
+	service := func(keys []JWTKey, active string) *Service {
+		t.Helper()
+		signer, err := NewJWTSignerMulti(keys, active, time.Minute, nil)
+		if err != nil {
+			t.Fatalf("signer: %v", err)
+		}
+		svc, err := NewService(Config{
+			Store:      identity.NewMemoryStore(),
+			Sessions:   NewMemorySessionStore(),
+			Signer:     signer,
+			SignupMode: SignupOpen,
+			RefreshTTL: time.Hour,
+		})
+		if err != nil {
+			t.Fatalf("NewService: %v", err)
+		}
+		return svc
+	}
+	const addr = "Erased@Example.org"
+	before, ok := service([]JWTKey{k0}, "k0").SubjectDigest(addr)
+	if !ok {
+		t.Fatal("SubjectDigest under k0: not ok")
+	}
+	dropped, _ := service([]JWTKey{k2}, "k2").SubjectDigest(addr)
+	rotated := service([]JWTKey{k0, k1}, "k1")
+	now, _ := rotated.SubjectDigest(addr)
+	got := rotated.SubjectDigests(" erased@example.org ")
+	if len(got) != 2 || !slices.Contains(got, before) || !slices.Contains(got, now) {
+		t.Fatalf("SubjectDigests = %v, want the k0 digest %q and the k1 digest %q", got, before, now)
+	}
+	if before == now || slices.Contains(got, dropped) {
+		t.Fatalf("SubjectDigests = %v: a digest under a key outside the set (%q), or two keys alike", got, dropped)
+	}
 }

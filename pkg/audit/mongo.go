@@ -2,7 +2,10 @@ package audit
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"regexp"
+	"strings"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
@@ -46,6 +49,64 @@ func (s *MongoStore) ListByTenant(ctx context.Context, tenantID string, p Page) 
 
 func (s *MongoStore) ListPlatform(ctx context.Context, p Page) ([]Event, error) {
 	return s.list(ctx, bson.M{"scope": ScopePlatform}, p)
+}
+
+// ScrubActor unsets the identifying fields in two UpdateMany calls, each
+// filtered on the rows that still carry one of the fields it unsets, so the
+// count it answers is of rows changed — the memory twin's reading. The
+// first takes the rows the account acted in; the second the rows it is the
+// target of, or addressed by, that another actor wrote.
+func (s *MongoStore) ScrubActor(ctx context.Context, userID, email string, digests []string) (int64, error) {
+	if userID == "" {
+		return 0, errors.New("audit: scrub actor: no user id")
+	}
+	carriesMeta := bson.A{}
+	unsetMeta := bson.M{}
+	for _, k := range ScrubbedMetaKeys {
+		carriesMeta = append(carriesMeta, bson.M{"meta." + k: bson.M{"$exists": true}})
+		unsetMeta["meta."+k] = ""
+	}
+	carriesAll := append(bson.A{
+		bson.M{"ip": bson.M{"$exists": true}},
+		bson.M{"user_agent": bson.M{"$exists": true}},
+	}, carriesMeta...)
+	unsetAll := bson.M{"ip": "", "user_agent": ""}
+	for k := range unsetMeta {
+		unsetAll[k] = ""
+	}
+	// The person's own rows: as actor, as the target of an attempt with no
+	// actor (actor_id is omitted when empty), as a refusal by address.
+	own := bson.A{
+		bson.M{"actor_id": userID},
+		bson.M{"actor_id": bson.M{"$in": bson.A{"", nil}}, "target_id": userID},
+	}
+	if len(digests) > 0 {
+		own = append(own, bson.M{"meta.subject_hash": bson.M{"$in": digests}})
+	}
+	res, err := s.kit.Coll().UpdateMany(ctx,
+		bson.M{"$and": bson.A{bson.M{"$or": own}, bson.M{"$or": carriesAll}}},
+		bson.M{"$unset": unsetAll})
+	if err != nil {
+		return 0, fmt.Errorf("audit: scrub the events of user %s: %w", userID, err)
+	}
+	n := res.ModifiedCount
+	names := bson.A{bson.M{"target_id": userID}}
+	if addr := strings.ToLower(strings.TrimSpace(email)); addr != "" {
+		names = append(names, bson.M{"meta.email": bson.M{
+			"$regex":   `^\s*` + regexp.QuoteMeta(addr) + `\s*$`,
+			"$options": "i",
+		}})
+	}
+	res, err = s.kit.Coll().UpdateMany(ctx,
+		bson.M{"actor_id": bson.M{"$ne": userID}, "$and": bson.A{
+			bson.M{"$or": names},
+			bson.M{"$or": carriesMeta},
+		}},
+		bson.M{"$unset": unsetMeta})
+	if err != nil {
+		return n, fmt.Errorf("audit: scrub the events naming user %s: %w", userID, err)
+	}
+	return n + res.ModifiedCount, nil
 }
 
 func (s *MongoStore) list(ctx context.Context, filter bson.M, p Page) ([]Event, error) {

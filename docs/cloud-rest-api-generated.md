@@ -103,6 +103,7 @@ registered by `board_forge.go`, `local_secrets_routes.go`, `notifications_routes
 | `GET` | `/api/admin/users` | platform admin | yes |
 | `GET` | `/api/admin/users/{id}` | platform admin | yes |
 | `PATCH` | `/api/admin/users/{id}` | platform admin | yes |
+| `POST` | `/api/admin/users/{id}/erase` | platform admin | yes |
 | `POST` | `/api/admin/users/{id}/reset-password` | platform admin | yes |
 
 ## `/api/api` family
