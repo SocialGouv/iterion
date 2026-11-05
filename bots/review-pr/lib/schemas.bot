@@ -218,6 +218,12 @@ schema publish_input:
   ## that case. Injected from tier_expand's output on the pr_gate ->
   ## publish_review edge, exactly like reviewed_sha is from diff_precheck.
   effective_review_mode: string
+  ## The merge step's own threshold and cap, injected from tier_expand on the
+  ## same edge: publish's MERGE FLOOR restores a reviewer finding the merged
+  ## set dropped only when converge's contract could not have dropped it —
+  ## at or above this threshold, while the cap still has room.
+  severity_threshold: string
+  max_findings: int
   findings: json
   questions: string
   ticket_conformance: string

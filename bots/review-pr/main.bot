@@ -705,6 +705,11 @@ workflow review_pr:
     pr_url: "{{outputs.pr_gate.pr_url}}",
     reviewed_sha: "{{outputs.diff_precheck.reviewed_sha}}",
     effective_review_mode: "{{outputs.tier_expand.effective_review_mode}}",
+    ## The merge step's threshold and cap, for publish's merge floor: a
+    ## readable merged set can still have dropped findings it had no
+    ## contract to drop, and only these two say which ones.
+    severity_threshold: "{{outputs.tier_expand.severity_threshold}}",
+    max_findings: "{{outputs.tier_expand.max_findings}}",
     findings: "{{outputs.pr_gate.findings}}",
     questions: "{{outputs.pr_gate.questions}}",
     ticket_conformance: "{{outputs.pr_gate.ticket_conformance}}",

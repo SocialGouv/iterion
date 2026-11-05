@@ -118,6 +118,9 @@ func TestReviewPRPublishPinsTheGateToTheReviewedRevision(t *testing.T) {
 		"{{input.claude_findings}}":       "'[]'",
 		"{{input.gpt_findings}}":          "'[]'",
 		"{{input.effective_review_mode}}": "'mono'",
+		// The merge floor's bounds, as tier_expand resolves them for guard.
+		"{{input.severity_threshold}}": "'medium'",
+		"{{input.max_findings}}":       "'15'",
 		// A NON-NEGATIVE count is the only shape that means the scope was
 		// answered; anything else fails the gate closed before the pin.
 		"{{input.scope_files}}": "'3'",

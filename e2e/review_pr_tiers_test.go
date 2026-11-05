@@ -2,6 +2,10 @@ package e2e
 
 import (
 	"context"
+	"fmt"
+	"maps"
+	"strings"
+	"sync"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -183,5 +187,70 @@ func TestReviewPRTier_ExplicitReviewModeWinsOverGlance(t *testing.T) {
 	})
 	if !exec.wasCalled("reviewer_claude") || !exec.wasCalled("reviewer_gpt") {
 		t.Error("an explicit --var review_mode=dual must still force the fan-out under glance")
+	}
+}
+
+// The merge floor in publish_review restores a finding converge dropped only
+// when converge's own contract could not have dropped it, so it must read the
+// threshold and the cap converge was handed — tier_expand's RESOLVED values,
+// carried on the pr_gate -> publish_review edge. A tool node's command
+// substitutes input/vars only, so an edge that stops mapping them leaves the
+// floor reading an unrendered ref (it then restores at every severity,
+// uncapped): this drives the real bot through the engine and reads what the
+// publish node was actually handed, for a tier preset and an explicit pin.
+func TestReviewPRTier_PublishReceivesTheMergeBounds(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name       string
+		inputs     map[string]any
+		wantThresh string
+		wantCap    int
+	}{
+		{"glance preset", map[string]any{"review_tier": "glance"}, "high", 5},
+		{"explicit pins win over the tier", map[string]any{"severity_threshold": "low", "max_findings": 7}, "low", 7},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			wf := compileFixtureStubSafe(t, "review-pr/main.bot")
+			exec := newScenarioExecutor()
+			wireReviewPRStubs(exec)
+			var mu sync.Mutex
+			var got map[string]any
+			exec.on("publish_review", func(in map[string]any) (map[string]any, error) {
+				mu.Lock()
+				got = maps.Clone(in)
+				mu.Unlock()
+				return map[string]any{
+					"published": true, "forge": "github", "review_url": "https://forge/review/1",
+					"comments_posted": 0, "suggestions_posted": 0, "body_missing": false,
+					"skipped_reason": "", "summary": "ok", "gate_requested": false,
+					"gate_posted": false, "gate_skipped_reason": "",
+				}, nil
+			})
+			exec.on("publish_health", func(_ map[string]any) (map[string]any, error) {
+				return map[string]any{"degraded": false, "banner": "ok"}, nil
+			})
+			inputs := map[string]any{"mono_family": "claude", "pr_url": "https://github.com/acme/widgets/pull/7"}
+			maps.Copy(inputs, tc.inputs)
+			s := tmpStore(t)
+			runID := "e2e-merge-bounds-" + strings.ReplaceAll(tc.name, " ", "-")
+			if err := newEngine(t, wf, s, exec).Run(context.Background(), runID, inputs); err != nil {
+				t.Fatalf("run error: %v", err)
+			}
+			if r, _ := s.LoadRun(context.Background(), runID); r.Status != store.RunStatusFinished {
+				t.Fatalf("status = %s, want finished", r.Status)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if got == nil {
+				t.Fatal("publish_review never ran — the run did not take the has_pr branch, and this test proves nothing")
+			}
+			if th := fmt.Sprint(got["severity_threshold"]); th != tc.wantThresh {
+				t.Errorf("publish_review got severity_threshold %q, want %q (tier_expand's resolved value)", th, tc.wantThresh)
+			}
+			if mf := fmt.Sprint(got["max_findings"]); mf != fmt.Sprint(tc.wantCap) {
+				t.Errorf("publish_review got max_findings %q, want %d (tier_expand's resolved value)", mf, tc.wantCap)
+			}
+		})
 	}
 }
