@@ -147,7 +147,9 @@ func (s *Server) handleConnectorDelivery(ctx context.Context, w http.ResponseWri
 
 	// 3. The event is declared by the PACKAGE, not by an engine switch: a
 	// connector's second event costs a triggers.yaml line, not a code change.
-	pkg, tier, err := s.connectorCatalog.Package(conn.Connector)
+	// The package is the TENANT's resolution — a team override of the
+	// connector declares the events its deliveries are believed for.
+	pkg, tier, err := s.connectorCatalogFor(cfg.TenantID).Package(conn.Connector)
 	if err != nil {
 		filter(fmt.Sprintf("the %s cannot serve the bound connector %q: %v", tier, conn.Connector, err))
 		return

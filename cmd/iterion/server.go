@@ -766,10 +766,9 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		Connections:      stores.connections,
 		// The cloud catalog (#2757): the platform tier over the baked floor.
 		// The TEAM tier is per-tenant, so it composes where a tenant is known
-		// — ConnectorPackageStore below, which the facade's per-grant path
-		// reads. The CRUD's static view is the tenant-blind half of the same
-		// composition (a connection's package check at creation does not read
-		// the team's own tier: the grant precedes the package).
+		// — ConnectorPackageStore below, which every tenant-known site reads
+		// (the facade per grant, the connection CRUD, the connector webhook
+		// lane). This static view serves only what names no tenant.
 		ConnectorCatalog:            connection.NewLayeredCatalog(connection.PlatformCatalog(stores.connectorPkgs), connection.BakedCatalog()),
 		ConnectorPackageStore:       stores.connectorPkgs,
 		ForgeIntegrations:           stores.forgeIntegration,

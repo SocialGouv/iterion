@@ -215,8 +215,10 @@ func (s *Server) handleCreateConnection(w http.ResponseWriter, r *http.Request) 
 	}
 
 	// The package is resolved FIRST, so an unknown connector or scheme is
-	// refused before a credential is sealed anywhere.
-	pkg, tier, err := s.connectorCatalog.Package(connectorID)
+	// refused before a credential is sealed anywhere — through the TEAM's
+	// composition, the one its facade serves: a connector the team published
+	// for itself must be one it can connect.
+	pkg, tier, err := s.connectorCatalogFor(teamID).Package(connectorID)
 	if err != nil {
 		httpError(w, http.StatusBadRequest, "%s", err.Error())
 		return
