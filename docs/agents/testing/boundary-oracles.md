@@ -99,3 +99,26 @@ new ones pass. It is a synthetic ordering test, not a reconstruction of React's
 CI schedule. Omitting publication, keeping the wrong title, omitting only the
 second document's title, or omitting cleanup each still fails the corresponding
 assertion. No production code, timeout or expected title changes.
+
+## Delegate pricing isolation
+
+[PR #3067's unit job](https://github.com/SocialGouv/iterion/actions/runs/41931266477/job/126928459573)
+passed the OpenCode dialect assertions, then failed a child test's TempDir
+cleanup with `directory not empty`. Its zero-cost fake reaches the cost
+estimator, whose claw registry can refresh asynchronously and recreate a cache
+under the test's mutable HOME. The modelspecs aggregator has a separate refresh
+path. A controlled local transport demonstrates writes after cache removal;
+it does not reproduce the exact CI cleanup interleaving.
+
+Delegate TestMain now uses `pricingtest.Isolate`, as model and runner already
+do. A fresh cache with a different price must leave the static estimate intact.
+The shared helper uses an empty `NewSeeded` registry: its former fixed
+`iterion-modelspecs-test-absent.json` path could actually exist. The helper's
+test first reads a valid planted cache through an explicit registry, then
+requires isolation to ignore it while preserving explicit seeded overrides.
+
+Removing isolation exposes the planted claw price and detached write;
+disabling claw alone still permits the aggregator's local fetch. Restoring
+the helper's old disk-backed constructor fails its planted-cache assertion.
+Provider-supplied costs and explicitly seeded model specs remain available.
+No cleanup retry, timeout increase or production pricing policy changes.
