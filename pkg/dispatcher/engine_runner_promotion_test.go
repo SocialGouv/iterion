@@ -10,6 +10,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/runview"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // TestEngineRunnerPromotesBareMainBot: the dispatcher's engine path given
@@ -36,7 +37,7 @@ func TestEngineRunnerPromotesBareMainBot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenDir: %v", err)
 	}
-	_, want, err := runview.CompileBundleWorkflow(b.IterPath, b, "")
+	_, want, err := runview.CompileBundleWorkflow(b.IterPath, b, "", store.RunTrustDefault)
 	if err != nil {
 		t.Fatalf("CompileBundleWorkflow: %v", err)
 	}

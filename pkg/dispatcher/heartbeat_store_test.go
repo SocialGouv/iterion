@@ -12,6 +12,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/store/storetest"
 )
 
 // Compile-time guard: *heartbeatStore MUST satisfy model.TurnWriter so
@@ -84,6 +85,7 @@ func TestHeartbeatStoreForwardsCreateChildRun(t *testing.T) {
 		t.Fatalf("store.New: %v", err)
 	}
 	hb := newHeartbeatStore(fs, func(string) {})
+	storetest.SeedParentRun(t, fs, "parent")
 	pc := store.AsParentedRunCreator(hb)
 	if pc == nil {
 		t.Fatal("*heartbeatStore hides CreateChildRun; a dispatched subbot child is created with no ParentRunID")

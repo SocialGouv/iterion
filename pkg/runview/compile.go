@@ -17,6 +17,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 	"github.com/SocialGouv/iterion/pkg/dsl/unit"
 	"github.com/SocialGouv/iterion/pkg/dsl/workflowfile"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // ErrInlineImport is the refusal of an inline source that imports: text
@@ -129,6 +130,13 @@ func hashCapturedResourceDir(h hash.Hash, files map[string]string, dir, tag stri
 	}
 }
 
+// AnalysisTrust is the trust a compile that executes nothing names — a
+// validation, a diagram, a graph build, a preflight that only reads the
+// program: its MCP catalog is resolved and never booted, so the trusted
+// default describes it. A compile whose result runs names the run's own
+// trust instead (compileUnit).
+const AnalysisTrust = store.RunTrustDefault
+
 // CompileWorkflow parses and compiles a workflow source file at path. It returns
 // the compiled workflow or an error with the first parse / compile
 // diagnostic encountered.
@@ -137,8 +145,8 @@ func hashCapturedResourceDir(h hash.Hash, files map[string]string, dir, tag stri
 // expands plugin `{{workspace}}` placeholders against the workspace the
 // caller names — the run's, on a surface that executes the result; "" for
 // an analysis that executes nothing (#1800).
-func CompileWorkflow(path, workspace string) (*ir.Workflow, error) {
-	wf, _, err := compileWith(path, "", false, nil, workspace)
+func CompileWorkflow(path, workspace string, trust store.RunTrust) (*ir.Workflow, error) {
+	wf, _, err := compileWith(path, "", false, nil, workspace, trust)
 	return wf, err
 }
 
@@ -150,8 +158,8 @@ func CompileWorkflow(path, workspace string) (*ir.Workflow, error) {
 // diagram). workspace is the directory the run roots at — what plugin
 // `{{workspace}}` placeholders expand against, never assumed from path
 // (#1800).
-func CompileWorkflowWithHash(path, workspace string) (*ir.Workflow, string, error) {
-	return compileWith(path, "", true, nil, workspace)
+func CompileWorkflowWithHash(path, workspace string, trust store.RunTrust) (*ir.Workflow, string, error) {
+	return compileWith(path, "", true, nil, workspace, trust)
 }
 
 // CompileBundleWorkflow is CompileWorkflowWithHash specialised for bundle
@@ -159,8 +167,8 @@ func CompileWorkflowWithHash(path, workspace string) (*ir.Workflow, string, erro
 // compilation, so node-level prompt references resolve against bundle
 // resources during static validation. The workspace is the run's, for the
 // plugin `{{workspace}}` placeholders (#1800).
-func CompileBundleWorkflow(path string, b *bundle.Bundle, workspace string) (*ir.Workflow, string, error) {
-	return compileWith(path, "", true, b, workspace)
+func CompileBundleWorkflow(path string, b *bundle.Bundle, workspace string, trust store.RunTrust) (*ir.Workflow, string, error) {
+	return compileWith(path, "", true, b, workspace, trust)
 }
 
 // CompileSubbotWorkflow compiles a resolved child with its bundle context.
@@ -168,7 +176,7 @@ func CompileBundleWorkflow(path string, b *bundle.Bundle, workspace string) (*ir
 // they live anywhere inside a directory bundle, including workflows/ exports.
 // workspace is the directory the CHILD's engine roots at — the parent's
 // effective workdir, never assumed from the child .bot's directory (#1800).
-func CompileSubbotWorkflow(path string, resolvedBundle *bundle.Bundle, workspace string) (*ir.Workflow, string, *bundle.Bundle, error) {
+func CompileSubbotWorkflow(path string, resolvedBundle *bundle.Bundle, workspace string, trust store.RunTrust) (*ir.Workflow, string, *bundle.Bundle, error) {
 	b := resolvedBundle
 	if b == nil {
 		var err error
@@ -178,10 +186,10 @@ func CompileSubbotWorkflow(path string, resolvedBundle *bundle.Bundle, workspace
 		}
 	}
 	if b != nil {
-		wf, hash, err := CompileBundleWorkflow(path, b, workspace)
+		wf, hash, err := CompileBundleWorkflow(path, b, workspace, trust)
 		return wf, hash, b, err
 	}
-	wf, hash, err := CompileWorkflowWithHash(path, workspace)
+	wf, hash, err := CompileWorkflowWithHash(path, workspace, trust)
 	return wf, hash, nil, err
 }
 
@@ -191,8 +199,8 @@ func CompileSubbotWorkflow(path string, resolvedBundle *bundle.Bundle, workspace
 // resolution; when empty, MCP resolution falls back to the current
 // working directory. workspace is the run's, for the plugin
 // `{{workspace}}` placeholders (#1800).
-func CompileWorkflowFromSource(path, source, workspace string) (*ir.Workflow, string, error) {
-	return compileWith(path, source, true, nil, workspace)
+func CompileWorkflowFromSource(path, source, workspace string, trust store.RunTrust) (*ir.Workflow, string, error) {
+	return compileWith(path, source, true, nil, workspace, trust)
 }
 
 // compileForLaunch picks the right compile path for a Launch / Resume:
@@ -226,12 +234,12 @@ func CompileWorkflowFromSource(path, source, workspace string) (*ir.Workflow, st
 // `{{workspace}}` placeholders expand against; the launch surface passes
 // the workdir its engine will be rooted at, and a check that executes
 // nothing passes "" (#1800).
-func compileForLaunch(path, source, bundleDir, bundleEntry, workspace string) (*ir.Workflow, *CompiledSource, *bundle.Bundle, error) {
-	wf, cs, b, u, err := compileForLaunchUncut(path, source, bundleDir, bundleEntry, workspace)
+func compileForLaunch(path, source, bundleDir, bundleEntry, workspace string, trust store.RunTrust) (*ir.Workflow, *CompiledSource, *bundle.Bundle, error) {
+	wf, cs, b, u, err := compileForLaunchUncut(path, source, bundleDir, bundleEntry, workspace, trust)
 	return wf, cs, b, relLaunchError(path, bundleDir, u, err)
 }
 
-func compileForLaunchUncut(path, source, bundleDir, bundleEntry, workspace string) (*ir.Workflow, *CompiledSource, *bundle.Bundle, *unit.Unit, error) {
+func compileForLaunchUncut(path, source, bundleDir, bundleEntry, workspace string, trust store.RunTrust) (*ir.Workflow, *CompiledSource, *bundle.Bundle, *unit.Unit, error) {
 	if bundleDir != "" {
 		// The entry the launch named is the bundle's main: main.bot unless
 		// the launch named a promoted sibling entry or a loose catalogue
@@ -241,18 +249,18 @@ func compileForLaunchUncut(path, source, bundleDir, bundleEntry, workspace strin
 		if err != nil {
 			return nil, nil, nil, nil, fmt.Errorf("open stored bot bundle: %w", err)
 		}
-		wf, cs, u, err := compileUnit(path, source, true, b, workspace)
+		wf, cs, u, err := compileUnit(path, source, true, b, workspace, trust)
 		return wf, cs, b, u, err
 	}
 	if source != "" {
-		wf, cs, u, err := compileUnit(path, source, true, nil, workspace)
+		wf, cs, u, err := compileUnit(path, source, true, nil, workspace, trust)
 		return wf, cs, nil, u, err
 	}
 	b, err := bundleForPath(path)
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}
-	wf, cs, u, err := compileUnit(path, "", true, b, workspace)
+	wf, cs, u, err := compileUnit(path, "", true, b, workspace, trust)
 	return wf, cs, b, u, err
 }
 
@@ -427,8 +435,8 @@ func EntrypointBundleError(subject, dir string, err error) error {
 	return fmt.Errorf("%s the entrypoint of bundle %q, which does not open: %w (a main.bot beside an iterion manifest or a skills/ is that bundle: fix the manifest, or give main.bot a directory of its own if this is not its bundle)", subject, filepath.Base(dir), err)
 }
 
-func compileWith(path, inline string, withHash bool, b *bundle.Bundle, workspace string) (*ir.Workflow, string, error) {
-	wf, cs, _, err := compileUnit(path, inline, withHash, b, workspace)
+func compileWith(path, inline string, withHash bool, b *bundle.Bundle, workspace string, trust store.RunTrust) (*ir.Workflow, string, error) {
+	wf, cs, _, err := compileUnit(path, inline, withHash, b, workspace, trust)
 	if err != nil {
 		return nil, "", err
 	}
@@ -450,7 +458,15 @@ func compileWith(path, inline string, withHash bool, b *bundle.Bundle, workspace
 // errors keep the absolute names the operator typed. workspace is the
 // run's, for the plugin `{{workspace}}` placeholders; "" on a surface
 // that executes nothing (#1800).
-func compileUnit(path, inline string, withHash bool, b *bundle.Bundle, workspace string) (*ir.Workflow, *CompiledSource, *unit.Unit, error) {
+//
+// trust is who wrote the workspace of the run this compile serves
+// (store.RunTrust): the MCP catalog is resolved at compile time, for that
+// trust, and the resolution records it (ir.Workflow.MCPPrepared). Every
+// compile entry takes it as a required parameter, so every caller answers:
+// a launch passes the trust it launches with, a resume the run's recorded
+// trust, a sub-bot child its parent's, and a surface that executes nothing
+// the trusted default beside the reason. Nothing defaults it here.
+func compileUnit(path, inline string, withHash bool, b *bundle.Bundle, workspace string, trust store.RunTrust) (*ir.Workflow, *CompiledSource, *unit.Unit, error) {
 	if workflowfile.IsAuthorDocument(path) {
 		// The floor under every compile entry: a draft never becomes a
 		// program here, whatever door named it — and it is refused by
@@ -461,7 +477,7 @@ func compileUnit(path, inline string, withHash bool, b *bundle.Bundle, workspace
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	wf, cs, err := compileLoadedUnit(u, path, parserPath, withHash, b, workspace)
+	wf, cs, err := compileLoadedUnit(u, path, parserPath, withHash, b, workspace, trust)
 	return wf, cs, u, err
 }
 
@@ -573,8 +589,8 @@ func LoadLaunchUnit(path, source, bundleDir string) (*unit.Unit, *bundle.Bundle,
 // document's AST read as the .bot at path — so that what refuses the .bot
 // refuses the document read as it. workspace is the run's, for the plugin
 // `{{workspace}}` placeholders; "" on an analysis that runs nothing (#1800).
-func CompileLoadedUnit(u *unit.Unit, path, name string, b *bundle.Bundle, workspace string) (*ir.Workflow, error) {
-	wf, _, err := compileLoadedUnit(u, path, name, false, b, workspace)
+func CompileLoadedUnit(u *unit.Unit, path, name string, b *bundle.Bundle, workspace string, trust store.RunTrust) (*ir.Workflow, error) {
+	wf, _, err := compileLoadedUnit(u, path, name, false, b, workspace, trust)
 	return wf, err
 }
 
@@ -583,11 +599,11 @@ func CompileLoadedUnit(u *unit.Unit, path, name string, b *bundle.Bundle, worksp
 // names — the CLI's compile path runs through here and the operator typed
 // those names; the launch path's boundary cut is relLaunchError's, applied
 // by compileForLaunch (#1970).
-func compileLoadedUnit(u *unit.Unit, path, name string, withHash bool, b *bundle.Bundle, workspace string) (*ir.Workflow, *CompiledSource, error) {
-	return compileLoadedUnitMode(u, path, name, withHash, b, true, workspace)
+func compileLoadedUnit(u *unit.Unit, path, name string, withHash bool, b *bundle.Bundle, workspace string, trust store.RunTrust) (*ir.Workflow, *CompiledSource, error) {
+	return compileLoadedUnitMode(u, path, name, withHash, b, true, workspace, trust)
 }
 
-func compileLoadedUnitMode(u *unit.Unit, path, name string, withHash bool, b *bundle.Bundle, prepareExecution bool, workspace string) (*ir.Workflow, *CompiledSource, error) {
+func compileLoadedUnitMode(u *unit.Unit, path, name string, withHash bool, b *bundle.Bundle, prepareExecution bool, workspace string, trust store.RunTrust) (*ir.Workflow, *CompiledSource, error) {
 	for _, d := range u.Diagnostics {
 		if d.Severity == parser.SeverityError {
 			return nil, nil, fmt.Errorf("parse error: %s", d.Error())
@@ -642,7 +658,7 @@ func compileLoadedUnitMode(u *unit.Unit, path, name string, withHash bool, b *bu
 		mcpDir = filepath.Dir(path)
 	}
 	if prepareExecution {
-		if err := mcp.PrepareWorkflow(cr.Workflow, mcpDir, workspace); err != nil {
+		if err := mcp.PrepareWorkflow(cr.Workflow, mcpDir, workspace, trust); err != nil {
 			return nil, nil, err
 		}
 	}
@@ -678,15 +694,15 @@ func BundleNameForPath(filePath string) string {
 // workspace is the directory the run roots at — what plugin `{{workspace}}`
 // placeholders expand against; the launching surface passes the workdir its
 // engine roots at, an analysis passes "" (#1800).
-func CompileWorkflowPath(path, workspace string) (*ir.Workflow, string, *bundle.Bundle, error) {
+func CompileWorkflowPath(path, workspace string, trust store.RunTrust) (*ir.Workflow, string, *bundle.Bundle, error) {
 	b, err := bundleForPath(path)
 	if err != nil {
 		return nil, "", nil, err
 	}
 	if b != nil {
-		wf, hash, err := CompileBundleWorkflow(path, b, workspace)
+		wf, hash, err := CompileBundleWorkflow(path, b, workspace, trust)
 		return wf, hash, b, err
 	}
-	wf, hash, err := CompileWorkflowWithHash(path, workspace)
+	wf, hash, err := CompileWorkflowWithHash(path, workspace, trust)
 	return wf, hash, nil, err
 }

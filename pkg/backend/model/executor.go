@@ -9,6 +9,7 @@ import (
 	"math"
 	"net/http"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -31,6 +32,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/knowledge"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
+	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/usagecap"
 )
 
@@ -100,6 +102,12 @@ type ClawExecutor struct {
 	// root, never a torn or empty one. Access goes through
 	// RepoRoot/SetRepoRoot only.
 	repoRoot atomic.Pointer[string]
+	// workspaceTrust is who wrote the code in the run's workspace, pushed by
+	// the engine beside workDir (SetWorkspaceTrust) and stamped on every task
+	// that names the workspace (stampWorkspace). Nil is the trusted zero
+	// value. Atomic for the reason workDir is: it is read live per task.
+	// Access goes through WorkspaceTrust/SetWorkspaceTrust only.
+	workspaceTrust atomic.Pointer[store.RunTrust]
 	// readScope is the claw read tools' scope, shared with the registry
 	// the host built (runview hands the same instance to both). The
 	// engine's SetScratchDirs push attaches the run's scratch read roots
@@ -1325,6 +1333,43 @@ func (e *ClawExecutor) WorkDir() string {
 		return *dir
 	}
 	return ""
+}
+
+// SetWorkspaceTrust records who wrote the code in the run's workspace. The
+// engine pushes it at the seam it pushes the workspace through (SetWorkDir),
+// at run start and on every resume, before any node.
+func (e *ClawExecutor) SetWorkspaceTrust(trust store.RunTrust) {
+	e.workspaceTrust.Store(&trust)
+}
+
+// WorkspaceTrust reports the trust SetWorkspaceTrust last pushed, or the
+// trusted zero value when the engine never pushed one.
+func (e *ClawExecutor) WorkspaceTrust() store.RunTrust {
+	if t := e.workspaceTrust.Load(); t != nil {
+		return *t
+	}
+	return store.RunTrustDefault
+}
+
+// stampWorkspace writes onto a task the facts that describe the run's
+// workspace: where it is, and who wrote it. Every task that names the
+// workspace takes it from here — the agent task, the router's, the session
+// packer's — so a task assembler added later cannot set the directory and
+// leave the trusted zero value beside it.
+//
+// A task of an untrusted run also carries the trust in its process
+// environment (RunTrustEnv), appended after the assembler's own entries so
+// every process the delegate starts inherits it; a trusted task's environment
+// is left as the assembler built it.
+func (e *ClawExecutor) stampWorkspace(t *delegate.Task) {
+	if t == nil {
+		return
+	}
+	t.WorkDir = e.WorkDir()
+	t.WorkspaceTrust = e.WorkspaceTrust()
+	if entry, ok := RunTrustEnvEntry(t.WorkspaceTrust); ok {
+		t.ExtraEnv = append(slices.Clip(t.ExtraEnv), entry)
+	}
 }
 
 // SetRepoRoot updates the source-of-truth repository root. The engine

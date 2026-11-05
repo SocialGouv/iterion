@@ -136,11 +136,11 @@ func compileDelegatedWorker(filePath, source, bundleDir, bundleEntry string) (*i
 		if bundleEntry != "" {
 			main = bundleEntry
 		}
-		wf, _, err = runview.CompileBundleWorkflow(filepath.Join(bundleDir, main), b, "")
+		wf, _, err = runview.CompileBundleWorkflow(filepath.Join(bundleDir, main), b, "", runview.AnalysisTrust)
 	} else if source != "" {
-		wf, _, err = runview.CompileWorkflowFromSource(filePath, source, "")
+		wf, _, err = runview.CompileWorkflowFromSource(filePath, source, "", runview.AnalysisTrust)
 	} else {
-		wf, _, err = runview.CompileWorkflowWithHash(filePath, "")
+		wf, _, err = runview.CompileWorkflowWithHash(filePath, "", runview.AnalysisTrust)
 	}
 	if err != nil {
 		return nil, err

@@ -186,6 +186,10 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]any) (
 	if err != nil {
 		return err
 	}
+	// The run's trust is settled here, once, before anything reads it: the
+	// document a pickup or a sub-bot child was built from may carry what no
+	// engine option said (adoptRunTrust).
+	e.adoptRunTrust(run)
 
 	// The operator isolation floor (#1959): a non-operator bot source's
 	// `sandbox: none` is neutralized HERE — once, before admission and
@@ -783,6 +787,7 @@ func (e *Engine) runPersistWorkspace(ctx context.Context, runID string, run *sto
 	if s, ok := e.executor.(workDirSetter); ok {
 		s.SetWorkDir(e.workDir)
 	}
+	e.pushWorkspaceTrust()
 	// Push repoRoot (when known) so memory specs with `project_root: true`
 	// resolve against the operator's main checkout instead of the per-run
 	// workspace. Same minimal-interface pattern as SetWorkDir.

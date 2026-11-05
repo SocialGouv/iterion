@@ -6,6 +6,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/store/storetest"
 )
 
 // recordingParentStore reports every run-creation call, so a test can pin
@@ -40,6 +41,7 @@ func (r *recordingParentStore) CreateChildRun(ctx context.Context, id, wf, paren
 // orphan reconciler judges. Every subbot child is created through this path.
 func TestRunResolveDocCreatesAChildWithItsParentAtomically(t *testing.T) {
 	base := tmpStore(t)
+	storetest.SeedParentRun(t, base, "parent-run-1")
 	rec := &recordingParentStore{RunStore: base}
 	wf := &ir.Workflow{Name: "child_wf"}
 

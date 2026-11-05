@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // EnvelopeType discriminates the payload carried over the multiplexed
@@ -82,6 +83,17 @@ const (
 	// twin refuses the reverse: a gateway task that arrives WITHOUT the
 	// marker names the host/runner version skew.
 	EnvelopeGatewayV1 EnvelopeType = "gateway_v1"
+
+	// EnvelopeWorkspaceTrust: launcher → runner, pre-task, and ONLY for a
+	// task whose workspace its tenant did not write. Data is
+	// {"workspace_trust": <store.RunTrust>}, the value the task itself
+	// carries (IOTask.WorkspaceTrust). It exists for its position, like
+	// permission_policy: a runner binary that predates the field would
+	// rebuild the task as trusted, and the unknown pre-task envelope makes it
+	// refuse the run instead. A trusted task sends none, so a mixed-version
+	// fleet sees no other change; when announcement and task disagree, the
+	// runner refuses before any model call.
+	EnvelopeWorkspaceTrust EnvelopeType = "workspace_trust"
 
 	// EnvelopeEvent: runner → launcher. Observability passthrough —
 	// the runner forwards events that should be appended to the run's
@@ -441,4 +453,19 @@ func NewPermissionPolicyEnvelope(cfg permission.PolicyConfig) (Envelope, error) 
 		return Envelope{}, fmt.Errorf("marshal permission policy: %w", err)
 	}
 	return Envelope{Type: EnvelopePermissionPolicy, Data: data}, nil
+}
+
+// WorkspaceTrustData is the payload of an EnvelopeWorkspaceTrust.
+type WorkspaceTrustData struct {
+	WorkspaceTrust store.RunTrust `json:"workspace_trust"`
+}
+
+// NewWorkspaceTrustEnvelope announces an untrusted task's workspace trust
+// ahead of the task. See EnvelopeWorkspaceTrust for why it is sent at all.
+func NewWorkspaceTrustEnvelope(trust store.RunTrust) (Envelope, error) {
+	data, err := json.Marshal(WorkspaceTrustData{WorkspaceTrust: trust})
+	if err != nil {
+		return Envelope{}, fmt.Errorf("marshal workspace trust: %w", err)
+	}
+	return Envelope{Type: EnvelopeWorkspaceTrust, Data: data}, nil
 }

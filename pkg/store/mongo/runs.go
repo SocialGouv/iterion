@@ -52,7 +52,19 @@ var _ store.ParentedRunCreator = (*Store)(nil)
 // CreateRun) with ParentRunID stamped in the same insert, so the cloud
 // launch path persists the parent link without a follow-up SaveRun.
 // Implements store.ParentedRunCreator.
+//
+// The filesystem twin's rule, in the same change: the parent is read and the
+// child inherits its workspace provenance (store.ChildTrustFromParent); a
+// parent this store cannot read is refused, typed
+// (store.ErrChildParentUnreadable). The read is tenant-scoped like every read
+// here, so a parent in another tenant is not found and the child is refused by
+// the same rule — which is why a caller hands this method the launch's
+// tenant rather than this method bypassing its own filter.
 func (s *Store) CreateChildRun(ctx context.Context, id, workflowName, parentRunID string, inputs map[string]any) (*store.Run, error) {
+	parent, err := s.LoadRun(ctx, parentRunID)
+	if err != nil {
+		return nil, fmt.Errorf("%w: child run %s names parent %q: %w", store.ErrChildParentUnreadable, id, parentRunID, err)
+	}
 	now := time.Now().UTC()
 	r := &store.Run{
 		FormatVersion:  store.RunFormatVersion,
@@ -69,6 +81,7 @@ func (s *Store) CreateChildRun(ctx context.Context, id, workflowName, parentRunI
 		LaunchEnv:      store.CaptureLaunchEnv(),
 		IterionVersion: appinfo.FullVersion(),
 	}
+	store.ChildTrustFromParent(r, parent)
 	stampTenant(ctx, r)
 	if _, err := s.runs.InsertOne(ctx, r); err != nil {
 		if mongo.IsDuplicateKeyError(err) {

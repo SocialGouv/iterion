@@ -12,6 +12,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/backend/tool"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/store"
 	gomcp "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -63,7 +64,7 @@ func TestPrepareWorkflowProjectAutoloadAndOverrides(t *testing.T) {
 		},
 	}
 
-	if err := PrepareWorkflow(wf, projectDir, projectDir); err != nil {
+	if err := PrepareWorkflow(wf, projectDir, projectDir, store.RunTrustDefault); err != nil {
 		t.Fatalf("PrepareWorkflow: %v", err)
 	}
 
@@ -94,7 +95,7 @@ func TestPrepareWorkflowPreservesExplicitServerAuth(t *testing.T) {
 		},
 	}
 
-	if err := PrepareWorkflow(wf, t.TempDir(), t.TempDir()); err != nil {
+	if err := PrepareWorkflow(wf, t.TempDir(), t.TempDir(), store.RunTrustDefault); err != nil {
 		t.Fatalf("PrepareWorkflow: %v", err)
 	}
 
@@ -171,7 +172,7 @@ func TestPrepareWorkflowAutoloadDisabledByEnv(t *testing.T) {
 		},
 	}
 
-	if err := PrepareWorkflow(wf, projectDir, projectDir); err != nil {
+	if err := PrepareWorkflow(wf, projectDir, projectDir, store.RunTrustDefault); err != nil {
 		t.Fatalf("PrepareWorkflow: %v", err)
 	}
 

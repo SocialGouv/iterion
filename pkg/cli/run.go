@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/SocialGouv/iterion/internal/envtrust"
 	"github.com/SocialGouv/iterion/pkg/backend/ambient"
 	"github.com/SocialGouv/iterion/pkg/backend/automemory"
 	"github.com/SocialGouv/iterion/pkg/backend/detect"
@@ -180,6 +181,16 @@ type RunOptions struct {
 	SkipMCPHealth bool
 }
 
+// cliLaunchTrust is the workspace trust a new `iterion run` launches with:
+// the trusted default, lowered by the run trust this process was started
+// under (envtrust.EnvRunTrust). Every process a node of an untrusted run
+// starts carries that trust, so an `iterion run` a script or an agent calls in
+// the outsider's checkout runs as what it is — compiled for it, its engine
+// admitted on it — rather than as the tenant's own. It can only lower.
+func cliLaunchTrust() store.RunTrust {
+	return store.RunTrustDefault.Lowest(store.RunTrust(envtrust.CarriedRunTrust()))
+}
+
 // skipMCPHealthFromEnv reports whether ITERION_SKIP_MCP_HEALTH is truthy, so
 // the toggle also applies without the CLI flag — e.g. to launcher scripts
 // that export it, and to any entry point that reuses RunRun.
@@ -248,9 +259,14 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 	}
 	defer telemetry.shutdown()
 
+	// A run started from inside an untrusted run's workspace is itself
+	// untrusted (cliLaunchTrust); an operator's own `iterion run` carries
+	// nothing and stays trusted. One value for the engine and the compile.
+	launchTrust := cliLaunchTrust()
 	engineOpts := []runtime.EngineOption{
 		runtime.WithLogger(logger),
 		runtime.WithRecoveryDispatch(recovery.Dispatch(recovery.DefaultRecipes())),
+		runtime.WithTrust(launchTrust, ""),
 	}
 	if telemetry.prometheus != nil {
 		engineOpts = append(engineOpts, runtime.WithEventObserver(telemetry.prometheus.EventObserver()))
@@ -265,7 +281,7 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 	// executor snapshots Prompts/Schemas/ToolPolicy/Budget/Compaction
 	// at construction time, so feeding it the raw workflow would make
 	// the recipe's overrides invisible to the model/tool layer.
-	wf, wfHash, iterFile, workflowName, bundleHandle, bundleCleanup, err := resolveWorkflow(opts)
+	wf, wfHash, iterFile, workflowName, bundleHandle, bundleCleanup, err := resolveWorkflow(opts, launchTrust)
 	// Install cleanup BEFORE the error check: resolveWorkflow returns a live
 	// cleanup (the .botz temp-dir remover) even on a bundle compile error, so
 	// returning on err without deferring it leaks the extracted bundle dir.
@@ -719,7 +735,11 @@ func subbotRunnerForCLI(parentPath, storeDir string, s store.RunStore, logger *i
 			}
 			childWorkspace = wd
 		}
-		childWf, hash, childBundle, err := runview.CompileSubbotWorkflow(childPath, resolvedSource.Bundle, childWorkspace)
+		trust, err := runview.SubbotParentTrust(ctx, s, req.ParentRunID)
+		if err != nil {
+			return nil, fmt.Errorf("subbot %s: %w", req.Source, err)
+		}
+		childWf, hash, childBundle, err := runview.CompileSubbotWorkflow(childPath, resolvedSource.Bundle, childWorkspace, trust)
 		if err != nil {
 			return nil, fmt.Errorf("compile child %q: %w", req.Source, err)
 		}
@@ -971,7 +991,10 @@ func buildEngine(
 // caller wires it into the engine via runtime.WithBundle and is also
 // responsible for the cleanup function (no-op for cache-hit paths but
 // reserved for future per-run extraction modes).
-func resolveWorkflow(opts RunOptions) (wf *ir.Workflow, hash, filePath, displayName string, b *bundle.Bundle, cleanup func() error, err error) {
+//
+// trust is the run's launch trust (cliLaunchTrust), the one its MCP catalog
+// is resolved for.
+func resolveWorkflow(opts RunOptions, trust store.RunTrust) (wf *ir.Workflow, hash, filePath, displayName string, b *bundle.Bundle, cleanup func() error, err error) {
 	cleanup = func() error { return nil }
 	// `iterion run` builds its engine with NO runtime.WithWorkDir: the
 	// engine fills its own workDir with the process cwd and roots the run
@@ -999,7 +1022,7 @@ func resolveWorkflow(opts RunOptions) (wf *ir.Workflow, hash, filePath, displayN
 		}
 		// A recipe's `--file` may be a bare <bundle>/main.bot: promoted to
 		// its bundle, handle included, so its skills/ reach the run.
-		raw, h, promoted, compileErr := runview.CompileWorkflowPath(filePath, workspace)
+		raw, h, promoted, compileErr := runview.CompileWorkflowPath(filePath, workspace, trust)
 		if compileErr != nil {
 			return nil, "", "", "", nil, cleanup, compileErr
 		}
@@ -1027,7 +1050,7 @@ func resolveWorkflow(opts RunOptions) (wf *ir.Workflow, hash, filePath, displayN
 		if openErr != nil {
 			return nil, "", "", "", nil, cleanup, fmt.Errorf("bundle dir %s: %w", opts.BundleDir, openErr)
 		}
-		raw, h, compileErr := runview.CompileBundleWorkflow(resolved, opened, workspace)
+		raw, h, compileErr := runview.CompileBundleWorkflow(resolved, opened, workspace, trust)
 		if compileErr != nil {
 			return nil, "", "", "", opened, cleanup, compileErr
 		}
@@ -1043,7 +1066,7 @@ func resolveWorkflow(opts RunOptions) (wf *ir.Workflow, hash, filePath, displayN
 	}
 	if opened != nil {
 		cleanup = c
-		raw, h, compileErr := runview.CompileBundleWorkflow(iterPath, opened, workspace)
+		raw, h, compileErr := runview.CompileBundleWorkflow(iterPath, opened, workspace, trust)
 		if compileErr != nil {
 			return nil, "", "", "", opened, cleanup, compileErr
 		}
@@ -1057,7 +1080,7 @@ func resolveWorkflow(opts RunOptions) (wf *ir.Workflow, hash, filePath, displayN
 	// promoted to that bundle by openBundleOrFile (the skills/ mirrored
 	// into .claude/skills/, the prompts/*.md merged) — the same promotion
 	// every other surface gets; what reaches this line is a loose file.
-	raw, h, compileErr := runview.CompileWorkflowWithHash(resolved, workspace)
+	raw, h, compileErr := runview.CompileWorkflowWithHash(resolved, workspace, trust)
 	if compileErr != nil {
 		return nil, "", "", "", nil, cleanup, compileErr
 	}

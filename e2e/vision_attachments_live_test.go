@@ -113,7 +113,7 @@ func TestLive_VisionAttachments(t *testing.T) {
 	)
 	defer executor.Close()
 
-	if err := mcp.PrepareWorkflow(wf, workspaceDir, workspaceDir); err != nil {
+	if err := mcp.PrepareWorkflow(wf, workspaceDir, workspaceDir, store.RunTrustDefault); err != nil {
 		t.Fatalf("mcp.PrepareWorkflow: %v", err)
 	}
 

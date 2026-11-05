@@ -2651,8 +2651,9 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 	// silently inert in cloud runs). The clone IS the project, so workDir is
 	// both the project dir (.mcp.json) and the run workspace ({{workspace}})
 	// — stated, never derived (#1800). Fail loudly on a malformed catalog
-	// rather than run a bot missing the tools it declared.
-	if err := mcp.PrepareWorkflow(wf, workDir, workDir, r.cfg.Logger); err != nil {
+	// rather than run a bot missing the tools it declared. Resolved for the
+	// run's own trust, the one its engine is launched with.
+	if err := mcp.PrepareWorkflow(wf, workDir, workDir, msg.Trust, r.cfg.Logger); err != nil {
 		return fmt.Errorf("runner: resolve MCP servers for %s: %w", msg.RunID, err)
 	}
 

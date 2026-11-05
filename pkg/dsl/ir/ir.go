@@ -94,6 +94,18 @@ type Workflow struct {
 	// resolution, not by the compiler itself.
 	ActiveMCPServers   []string
 	ResolvedMCPServers map[string]*MCPServer
+	// MCPPrepared records the resolution that filled the two fields above
+	// (mcp.PrepareWorkflow). Nil when no resolution ran: the catalog then
+	// holds only what its builder put there by hand.
+	MCPPrepared *MCPPreparation
+}
+
+// MCPPreparation is what one MCP resolution decided.
+type MCPPreparation struct {
+	// Trust is the workspace trust the catalog was resolved for — the string
+	// form of store.RunTrust (this package does not import store), "" for
+	// the trusted default.
+	Trust string
 }
 
 // ---------------------------------------------------------------------------

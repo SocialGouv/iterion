@@ -568,7 +568,7 @@ func addBotWorkflows(g *Graph, root, bot, dir string) error {
 		}
 		abs := filepath.Join(dir, e.Name())
 		// The graph indexes, it runs nothing: no workspace.
-		wf, _, _, err := runview.CompileWorkflowPath(abs, "")
+		wf, _, _, err := runview.CompileWorkflowPath(abs, "", runview.AnalysisTrust)
 		if err != nil {
 			// A bundle the compiler refuses is reported: a graph that
 			// silently omits a workflow is a graph whose "no path

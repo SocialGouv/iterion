@@ -57,9 +57,13 @@ func resumeOpenWorkflow(r *store.Run, iterFile string) (*ir.Workflow, string, st
 	// The resumed engine roots the run at the workspace the run RECORDED;
 	// the plugin `{{workspace}}` placeholders expand against that same
 	// directory, never against the recompiled file's (#1800).
+	// The catalog is resolved for the run's RECORDED trust too: a resumed
+	// fork run is still a fork run.
 	workspace := ""
+	trust := store.RunTrustDefault
 	if r != nil {
 		workspace = r.WorkDir
+		trust = r.Trust
 	}
 	if r != nil && r.BundlePath != "" {
 		bundleHandle, bundleCleanup, openErr := openResumeBundle(r.BundlePath)
@@ -72,7 +76,7 @@ func resumeOpenWorkflow(r *store.Run, iterFile string) (*ir.Workflow, string, st
 			if resolveErr != nil {
 				return nil, "", iterFile, bundleHandle, cleanup, resolveErr
 			}
-			wf, hash, compileErr := runview.CompileBundleWorkflow(bundleWorkflowPath, bundleHandle, workspace)
+			wf, hash, compileErr := runview.CompileBundleWorkflow(bundleWorkflowPath, bundleHandle, workspace, trust)
 			if compileErr != nil {
 				return nil, "", bundleWorkflowPath, bundleHandle, cleanup, compileErr
 			}
@@ -82,7 +86,7 @@ func resumeOpenWorkflow(r *store.Run, iterFile string) (*ir.Workflow, string, st
 	// A bare <bundle>/main.bot named by --file is promoted to its bundle the
 	// way every other surface promotes it, so the hash compared against the
 	// run's is the bundle's, and the engine gets the handle for its skills.
-	wf, hash, promoted, compileErr := runview.CompileWorkflowPath(iterFile, workspace)
+	wf, hash, promoted, compileErr := runview.CompileWorkflowPath(iterFile, workspace, trust)
 	if compileErr != nil {
 		return nil, "", iterFile, nil, cleanup, compileErr
 	}

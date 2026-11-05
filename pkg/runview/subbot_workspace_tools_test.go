@@ -8,6 +8,7 @@ import (
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/runtime"
+	"github.com/SocialGouv/iterion/pkg/store/storetest"
 )
 
 func TestStudioSubbotWritesIntoTheLentWorkspace(t *testing.T) {
@@ -32,6 +33,7 @@ workflow child:
 	}
 	defer stopService(t, svc)
 
+	storetest.SeedParentRun(t, svc.store, "studio-parent")
 	run := svc.subbotRunnerFor(filepath.Join(botDir, "parent.bot"), iterlog.Nop())
 	_, err = run(context.Background(), runtime.SubbotRequest{
 		Source: "child.bot", Vars: map[string]any{"path": "child.txt", "content": "studio child\n"},

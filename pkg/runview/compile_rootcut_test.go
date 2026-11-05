@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/unit"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // brokenUnit writes a bot in two files — main.bot importing lib/nodes.bot —
@@ -60,7 +61,7 @@ func TestRelLaunchErrorNamesTheRefusedRootCut(t *testing.T) {
 // layout is not the client's to read).
 func TestCompileForLaunchNamesABrokenFragmentWithoutTheHostRoot(t *testing.T) {
 	dir := brokenUnit(t, "prompt p:\n  hi\n\nagent \n  model\n")
-	_, _, _, err := compileForLaunch(filepath.Join(dir, "main.bot"), "", "", "", "")
+	_, _, _, err := compileForLaunch(filepath.Join(dir, "main.bot"), "", "", "", "", store.RunTrustDefault)
 	if err == nil {
 		t.Fatal("the fixture no longer arms the case: the broken fragment compiled")
 	}
@@ -81,7 +82,7 @@ func TestCompileForLaunchNamesAMissingIncludeWithoutTheHostRoot(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "main.bot"), []byte(main), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	_, _, _, err := compileForLaunch(filepath.Join(dir, "main.bot"), "", "", "", "")
+	_, _, _, err := compileForLaunch(filepath.Join(dir, "main.bot"), "", "", "", "", store.RunTrustDefault)
 	if err == nil {
 		t.Fatal("the fixture no longer arms the case: the missing include compiled")
 	}
@@ -110,7 +111,7 @@ func TestCompileForLaunchNamesAStoredBundleThatDoesNotOpenWithoutTheHostRoot(t *
 	// The launch's file path: the materialized inline source, nowhere
 	// near the snapshot.
 	materialized := filepath.Join(t.TempDir(), "92b6803b1f32-main.bot")
-	_, _, _, err := compileForLaunch(materialized, "workflow x:\n  entry: done\n", dir, "", "")
+	_, _, _, err := compileForLaunch(materialized, "workflow x:\n  entry: done\n", dir, "", "", store.RunTrustDefault)
 	if err == nil {
 		t.Fatal("the fixture no longer arms the case: the corrupt snapshot opened")
 	}

@@ -179,6 +179,7 @@ var serialFamily = map[string]string{
 	"testparallel_test.go":                     "Setenv",
 	"tool_attachment_deliverable_link_test.go": "Setenv",
 	"tool_error_redaction_test.go":             "Setenv",
+	"trust_carrier_test.go":                    "Setenv",
 	"usage_presence_test.go":                   "Setenv",
 	"wire_reach_test.go":                       "Setenv",
 	"workflow_auto_test.go":                    "Setenv",

@@ -154,7 +154,7 @@ func NewEngineRunner(workflowPath string, logger *iterlog.Logger, opts ...Engine
 		if openErr != nil {
 			return nil, fmt.Errorf("engine runner: open bundle %s: %w", workflowPath, openErr)
 		}
-		wf, h, compileErr := runview.CompileBundleWorkflow(opened.IterPath, opened, "")
+		wf, h, compileErr := runview.CompileBundleWorkflow(opened.IterPath, opened, "", runview.AnalysisTrust)
 		if compileErr != nil {
 			_ = cleanup()
 			return nil, fmt.Errorf("engine runner: compile bundle %s: %w", workflowPath, compileErr)
@@ -170,7 +170,7 @@ func NewEngineRunner(workflowPath string, logger *iterlog.Logger, opts ...Engine
 		if openErr != nil {
 			return nil, fmt.Errorf("engine runner: open bundle dir %s: %w", workflowPath, openErr)
 		}
-		wf, h, compileErr := runview.CompileBundleWorkflow(opened.IterPath, opened, "")
+		wf, h, compileErr := runview.CompileBundleWorkflow(opened.IterPath, opened, "", runview.AnalysisTrust)
 		if compileErr != nil {
 			return nil, fmt.Errorf("engine runner: compile bundle dir %s: %w", workflowPath, compileErr)
 		}
@@ -183,7 +183,7 @@ func NewEngineRunner(workflowPath string, logger *iterlog.Logger, opts ...Engine
 		// A bare <bundle>/main.bot is promoted to its bundle: the hash and
 		// the prompts the other surfaces use, AND the handle, so the
 		// bundle's skills/ reach the run as they do from `iterion run`.
-		wf, h, promoted, compileErr := runview.CompileWorkflowPath(workflowPath, "")
+		wf, h, promoted, compileErr := runview.CompileWorkflowPath(workflowPath, "", runview.AnalysisTrust)
 		if compileErr != nil {
 			return nil, fmt.Errorf("engine runner: compile %s: %w", workflowPath, compileErr)
 		}
@@ -243,14 +243,21 @@ func (r *EngineRunner) Close() error {
 // workspace: the compiled IR is shared across concurrent dispatches, so the
 // plugin `{{workspace}}` placeholders resolve per run here, on the run's own
 // workflow, never by mutating the shared one (#1800). The bundle handle is
-// reused — only the AST is rebuilt.
+// reused — only the AST is rebuilt — and the catalog is resolved for
+// dispatchTrust.
 func (r *EngineRunner) compileForDispatch(workspace string) (*ir.Workflow, string, error) {
 	if r.bundle != nil {
-		return runview.CompileBundleWorkflow(r.workflowPath, r.bundle, workspace)
+		return runview.CompileBundleWorkflow(r.workflowPath, r.bundle, workspace, dispatchTrust)
 	}
-	wf, hash, _, err := runview.CompileWorkflowPath(r.workflowPath, workspace)
+	wf, hash, _, err := runview.CompileWorkflowPath(r.workflowPath, workspace, dispatchTrust)
 	return wf, hash, err
 }
+
+// dispatchTrust is the workspace trust a dispatched run executes under: the
+// trusted default. The dispatcher runs its own board's cards on the
+// operator's checkouts and worktrees, which is also what its connector
+// catalog is resolved for (Dispatch).
+const dispatchTrust = store.RunTrustDefault
 
 // Dispatch implements Runner. Opens the store, builds an executor for
 // this RunID, registers an event observer that bridges every event to

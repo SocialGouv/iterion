@@ -104,6 +104,11 @@ func (e *Engine) ResumeWithHostInputs(ctx context.Context, runID string, answers
 	if err != nil {
 		return fmt.Errorf("runtime: load run for resume: %w", err)
 	}
+	// Settled once, before admission and anything that reads it, as Run()
+	// does: `iterion resume` and every resume surface rebuild this engine
+	// from the document, and a resumed fork run is still a fork run
+	// (adoptRunTrust). Every resume flavour below enters through here.
+	e.adoptRunTrust(r)
 	// A delivery whose run was queued again since it was published is not
 	// this engine's to resume: refused before anything of the resume —
 	// admission, recorded answers, a replay's flip — touches the run.
@@ -2522,6 +2527,10 @@ func (e *Engine) restoreRunEnv(ctx context.Context, r *store.Run) {
 	if s, ok := e.executor.(workDirSetter); ok {
 		s.SetWorkDir(e.workDir)
 	}
+	// Who wrote the workspace rides with the workspace: every resume path
+	// restores the directory through here, after ResumeWithHostInputs
+	// adopted the document's trust.
+	e.pushWorkspaceTrust()
 	if s, ok := e.executor.(repoRootSetter); ok {
 		s.SetRepoRoot(r.RepoRoot)
 	}

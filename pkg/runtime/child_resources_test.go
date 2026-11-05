@@ -13,6 +13,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/store/storetest"
 )
 
 func resourceBundle(t *testing.T, body string) *bundle.Bundle {
@@ -240,6 +241,7 @@ func TestChildResourcesDisjointWorkspacesRemainConcurrent(t *testing.T) {
 		done := make(chan error, 2)
 		for _, name := range []string{"one", "two"} {
 			work, b, st := t.TempDir(), resourceBundle(t, name), tmpStore(t)
+			storetest.SeedParentRun(t, st, "parent")
 			go func() {
 				ex := newStubExecutor()
 				ex.on("before", func(map[string]any) (map[string]any, error) {

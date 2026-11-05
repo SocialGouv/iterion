@@ -221,6 +221,7 @@ const (
 	whyHookEnv      = "the event a settings hook's command is told about, set in its env"
 	whyToolEnv      = "set in a tool node command's env"
 	whyEngineChild  = "set by the engine on every child it spawns against the workspace — a tool node's command, a delegate task's env, the runner crossing — so a re-entered iterion does not auto-load the repository's `.env` (#2844)"
+	whyRunTrust     = "set by the engine, for an untrusted run only, on every child it spawns against the workspace — a tool node's command, a delegate task's env, the runner crossing — so a re-entered iterion adopts the run's trust and never loads the outsider's `.env` (ADR-162); the readers are cmd/iterion's main and pkg/cli's iterion run"
 )
 
 var envWrites = map[string]string{
@@ -245,6 +246,7 @@ var envWrites = map[string]string{
 	"ITERION_ARTIFACT_FILES_DIR":     whyToolEnv,
 	"ITERION_ENGINE_BIN":             whyToolEnv,
 	"ITERION_ENGINE_CHILD":           whyEngineChild,
+	"ITERION_RUN_TRUST":              whyRunTrust,
 }
 
 const runnerHomePrefixForTest = "/tmp/iterion-scratch/claw-runner-home-"

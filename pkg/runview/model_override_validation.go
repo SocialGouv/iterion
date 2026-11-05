@@ -55,7 +55,7 @@ func ScreenPolicyOverrides(path, source, bundleDir, bundleEntry string, pol *sto
 	}
 	// A save-time screen that executes nothing: no run, no workspace — the
 	// plugin `{{workspace}}` placeholders stay unresolved (#1800).
-	wf, _, _, err := compileForLaunch(path, source, bundleDir, bundleEntry, "")
+	wf, _, _, err := compileForLaunch(path, source, bundleDir, bundleEntry, "", AnalysisTrust)
 	if err != nil {
 		return nil, err
 	}

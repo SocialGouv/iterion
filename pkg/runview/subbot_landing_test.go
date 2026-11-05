@@ -6,12 +6,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/internal/gittest"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/runtime"
+	"github.com/SocialGouv/iterion/pkg/store/storetest"
 )
 
 // The subbot node's landing intent must reach the child run doc: the doc
@@ -47,6 +49,7 @@ workflow child:
 	}
 	defer stopService(t, svc)
 
+	storetest.SeedParentRun(t, svc.store, "landing-parent")
 	run := svc.subbotRunnerFor(filepath.Join(botDir, "parent.bot"), iterlog.Nop())
 	if _, err := run(context.Background(), runtime.SubbotRequest{
 		Source:        "child.bot",
@@ -62,12 +65,14 @@ workflow child:
 		t.Fatalf("subbot run: %v", err)
 	}
 
-	// The child doc is the artifact: exactly one run exists in this store,
+	// The child doc is the artifact: exactly one child run exists in this store,
 	// and it must carry the intent verbatim.
 	docs, err := filepath.Glob(filepath.Join(storeDir, "runs", "*", "run.json"))
 	if err != nil {
 		t.Fatalf("glob run docs: %v", err)
 	}
+	// The parent the child is created under is the one other run here.
+	docs = slices.DeleteFunc(docs, func(p string) bool { return filepath.Base(filepath.Dir(p)) == "landing-parent" })
 	if len(docs) != 1 {
 		t.Fatalf("want exactly one child run doc, got %v", docs)
 	}
@@ -121,6 +126,7 @@ workflow child:
 	}
 	defer stopService(t, svc)
 
+	storetest.SeedParentRun(t, svc.store, "landing-parent")
 	run := svc.subbotRunnerFor(filepath.Join(botDir, "parent.bot"), iterlog.Nop())
 	_, err = run(context.Background(), runtime.SubbotRequest{
 		Source:        "child.bot",
@@ -143,6 +149,8 @@ workflow child:
 	if err != nil {
 		t.Fatalf("glob run docs: %v", err)
 	}
+	// The parent the child is created under is the one other run here.
+	docs = slices.DeleteFunc(docs, func(p string) bool { return filepath.Base(filepath.Dir(p)) == "landing-parent" })
 	if len(docs) != 0 {
 		t.Fatalf("the refused launch left %d child run doc(s) behind (%v) — the dead intent is on the record", len(docs), docs)
 	}

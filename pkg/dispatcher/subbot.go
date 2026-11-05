@@ -79,7 +79,11 @@ func subbotRunnerForDispatch(parentPath, storeDir, workDir string, s store.RunSt
 		// The child's {{workspace}} is the tree its engine roots at — the
 		// effective childWorkDir resolved above, never the child .bot's
 		// directory (#1800).
-		childWf, hash, childBundle, err := runview.CompileSubbotWorkflow(childPath, resolvedSource.Bundle, childWorkDir)
+		trust, err := runview.SubbotParentTrust(ctx, s, req.ParentRunID)
+		if err != nil {
+			return nil, fmt.Errorf("subbot %s: %w", req.Source, err)
+		}
+		childWf, hash, childBundle, err := runview.CompileSubbotWorkflow(childPath, resolvedSource.Bundle, childWorkDir, trust)
 		if err != nil {
 			return nil, fmt.Errorf("compile child %q: %w", req.Source, err)
 		}

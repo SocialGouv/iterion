@@ -137,7 +137,7 @@ func TestResume_AppliesBudgetOverridesInProcess(t *testing.T) {
 	}
 
 	const runID = "run-inproc-resume-budget"
-	_, workflowHash, err := CompileWorkflowWithHash(botPath, "")
+	_, workflowHash, err := CompileWorkflowWithHash(botPath, "", store.RunTrustDefault)
 	if err != nil {
 		t.Fatalf("CompileWorkflowWithHash: %v", err)
 	}

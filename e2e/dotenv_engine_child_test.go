@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"testing"
 )
 
@@ -216,5 +217,38 @@ func TestTheOperatorCanForceAReenteredIterionToLoadTheDotEnv(t *testing.T) {
 		"run", "dispatch.bot", "--store-dir", filepath.Join(t.TempDir(), "store"))
 	if _, witness := childReadingOf(t, out); witness != plantedWitness {
 		t.Fatalf("%s = %q, want %q — the skip is a bound with no override", witnessVarName, witness, plantedWitness)
+	}
+}
+
+// The run trust beats the hatch, at binary level (ADR-162): a process that
+// carries an untrusted run's trust (ITERION_RUN_TRUST) runs in that run's
+// workspace, and the operator's ITERION_DOTENV_FORCE — granted for their own
+// workspaces — does not reopen its `.env`. The observable precedes any run, so
+// no admission stands in the way: the workspace `.env` names an operator-grade
+// variable, and the loader, when it reads the file, refuses that line by
+// naming the file it came from. The same binary, the same directory, an
+// engine child with the hatch open; the control is the hatch working without
+// the carrier.
+func TestTheRunTrustBeatsTheForceHatchAtBinaryLevel(t *testing.T) {
+	t.Parallel()
+	if testing.Short() {
+		t.Skip("skipping binary-spawning e2e in short mode")
+	}
+	ws := t.TempDir()
+	refuseAncestorDotEnv(t, ws)
+	dotEnv := filepath.Join(ws, ".env")
+	if err := os.WriteFile(dotEnv, []byte("ITERION_SCHEDULES_FILE="+filepath.Join(t.TempDir(), "schedules.yaml")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	loaded := func(t *testing.T, extra ...string) bool {
+		t.Helper()
+		out := runIterion(t, ws, append([]string{"ITERION_ENGINE_CHILD=1", "ITERION_DOTENV_FORCE=1"}, extra...), "schedule", "list")
+		return strings.Contains(out, dotEnv)
+	}
+	if !loaded(t) {
+		t.Fatal("the forced engine child did not read the workspace .env — the hatch is broken, so the row below proves nothing")
+	}
+	if loaded(t, "ITERION_RUN_TRUST=fork") {
+		t.Error("a process carrying ITERION_RUN_TRUST=fork read the workspace .env through ITERION_DOTENV_FORCE — the outsider's file configures the run it adopts the trust for")
 	}
 }

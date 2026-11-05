@@ -25,6 +25,7 @@ import (
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/store/storetest"
 )
 
 // askingWorkflow: measure writes the scratch, ask — an agent that pauses
@@ -1630,6 +1631,7 @@ func adoptedChild(t *testing.T, ctx context.Context, st store.RunStore, id, hash
 	x.on("read", func(map[string]any) (map[string]any, error) {
 		return nil, &RuntimeError{Code: ErrCodeAuthFailed, NodeID: "read", Message: "401 invalid token"}
 	})
+	storetest.SeedParentRun(t, st, "run-parent")
 	e := New(scratchChildWorkflow(), st, x, WithWorkDir(t.TempDir()), WithSandboxOverride("none"), WithParentRunID("run-parent"),
 		WithSharedSandbox(&SharedSandbox{Run: parent, WorkspaceFolder: t.TempDir(), ScratchContainerLocal: true}),
 		WithRecoveryDispatch(parkOnAuth))

@@ -225,6 +225,44 @@ const (
 // only safe answer to "I do not know who wrote this code".
 func (t RunTrust) Trusted() bool { return t == RunTrustDefault }
 
+// Lowest is the less trusted of two provenances: the untrusted one when either
+// is (t first), the trusted default only when both are. A run that learns its
+// provenance from two sources — its own launch and the run it was launched
+// from — holds the lower.
+func (t RunTrust) Lowest(other RunTrust) RunTrust {
+	if !t.Trusted() {
+		return t
+	}
+	return other
+}
+
+// ErrChildParentUnreadable refuses a run launched from another whose document
+// cannot be read: CreateChildRun's parent, a launch's parent_run_id.
+//
+// Typed because it is a refusal with a policy behind it, not an I/O accident.
+// A child executes in what its parent produced — the parent's workspace, a
+// shard of its files — so its provenance is the parent's; an unreadable parent
+// is an UNKNOWN provenance, and unknown never resolves to trusted. The wrapped
+// error says which case it was: a parent that does not exist, one in another
+// tenant (the read is tenant-scoped), a store failure.
+var ErrChildParentUnreadable = errors.New("store: the parent run cannot be read, so the child cannot inherit its workspace provenance")
+
+// ChildTrustFromParent gives a child run the workspace provenance of the run
+// that spawned it: its Trust, and the commit its admission pinned.
+//
+// A sub-bot executes in its parent's workspace — every local runner hands the
+// child the parent's WorkDir — so a child born with an empty Trust under an
+// untrusted parent would run the parent's checkout with every floor off. The
+// stores stamp it at creation (CreateChildRun) because the store is the one
+// place every launcher of a child crosses.
+func ChildTrustFromParent(child, parent *Run) {
+	if child == nil || parent == nil {
+		return
+	}
+	child.Trust = parent.Trust
+	child.RepoSHAExpected = parent.RepoSHAExpected
+}
+
 // IsFork names the one untrusted class this binary knows, for the sites that
 // must WORD a refusal or pick a lane rather than withhold a capability.
 // Never use it to gate a capability — Trusted() is that predicate.

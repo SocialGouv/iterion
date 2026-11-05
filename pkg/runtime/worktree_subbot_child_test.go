@@ -16,6 +16,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/store/storetest"
 )
 
 // autoWorktreeWorkflow is a one-tool-node workflow declaring the IR default
@@ -41,6 +42,7 @@ func autoWorktreeWorkflow(name string) *ir.Workflow {
 // chase instead of leaving them where the parent judges its result.
 func TestEngineRun_SubbotChildWorksInTheParentsTree(t *testing.T) {
 	s := tmpStore(t)
+	storetest.SeedParentRun(t, s, "run-parent")
 	repo, _ := initBareishRepo(t)
 
 	eng := New(autoWorktreeWorkflow("child-in-parent-tree"), s, newStubExecutor(),
@@ -333,6 +335,7 @@ func TestRunsInParentWorkspace_TheFactsItReads(t *testing.T) {
 // parent linkage alone is not the question; the subbot node is.
 func TestEngineRun_NonSubbotChildKeepsItsOwnWorktree(t *testing.T) {
 	s := tmpStore(t)
+	storetest.SeedParentRun(t, s, "run-parent")
 	repo, _ := initBareishRepo(t)
 
 	eng := New(autoWorktreeWorkflow("shard-child"), s, newStubExecutor(),
@@ -369,6 +372,7 @@ func TestEngineRun_NonSubbotChildKeepsItsOwnWorktree(t *testing.T) {
 // assertion and serialize the fan-out it authorizes.
 func TestEngineRun_AnIsolatedSubbotChildKeepsItsOwnWorktree(t *testing.T) {
 	s := tmpStore(t)
+	storetest.SeedParentRun(t, s, "run-parent")
 	repo, originalTip := initBareishRepo(t)
 
 	eng := New(autoWorktreeWorkflow("isolated-child"), s, newStubExecutor(),
@@ -743,6 +747,7 @@ func TestIsolatedChildsCommitIsReplayableOnlyWhereAutoGivesItATree(t *testing.T)
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			s := tc.store(t)
+			storetest.SeedParentRun(t, s, "run-parent")
 			lent, tip0 := initBareishRepo(t)
 
 			var attempt int32

@@ -63,12 +63,21 @@ var _ ParentedRunCreator = (*FilesystemRunStore)(nil)
 // ParentRunID in the same exclusive-create write as the run document.
 // It exists so spawnRun's precreate never leaves a running child doc
 // behind a failed second SaveRun (see store.ParentedRunCreator).
-func (s *FilesystemRunStore) CreateChildRun(_ context.Context, id, workflowName, parentRunID string, inputs map[string]any) (*Run, error) {
+//
+// The parent is READ, never assumed: the child inherits its workspace
+// provenance (ChildTrustFromParent), and a parent this store cannot read is
+// refused, typed (ErrChildParentUnreadable) — an unknown provenance must not
+// resolve to the trusted zero value.
+func (s *FilesystemRunStore) CreateChildRun(ctx context.Context, id, workflowName, parentRunID string, inputs map[string]any) (*Run, error) {
 	if err := sanitizePathComponent("run ID", id); err != nil {
 		return nil, err
 	}
 	if err := s.guardNotDeleted(id); err != nil {
 		return nil, err
+	}
+	parent, err := s.LoadRun(ctx, parentRunID)
+	if err != nil {
+		return nil, fmt.Errorf("%w: child run %s names parent %q: %w", ErrChildParentUnreadable, id, parentRunID, err)
 	}
 	now := time.Now().UTC()
 	r := &Run{
@@ -83,6 +92,7 @@ func (s *FilesystemRunStore) CreateChildRun(_ context.Context, id, workflowName,
 		LaunchEnv:      CaptureLaunchEnv(),
 		IterionVersion: appinfo.FullVersion(),
 	}
+	ChildTrustFromParent(r, parent)
 	if err := s.writeRunNew(r); err != nil {
 		return nil, err
 	}

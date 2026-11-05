@@ -9,6 +9,7 @@ import (
 	"github.com/SocialGouv/claw-code-go/pkg/api"
 	"io"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
@@ -16,6 +17,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/modelroute"
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/spf13/cobra"
 )
 
@@ -75,6 +77,7 @@ func runClawRunner(ctx context.Context, stdin io.Reader, stdout, stderr io.Write
 		replaySnapshots [][]byte
 		policyCfg       *permission.PolicyConfig
 		sawGateway      bool
+		announcedTrust  *store.RunTrust
 	)
 	for {
 		env, err := dispatcher.readNextEnvelope()
@@ -99,6 +102,18 @@ func runClawRunner(ctx context.Context, stdin io.Reader, stdout, stderr io.Write
 			// factory. Values never ride this envelope — the forwarded
 			// env carries them.
 			sawGateway = true
+			continue
+		}
+		if env.Type == delegate.EnvelopeWorkspaceTrust {
+			// The launcher says this workspace was written by someone the
+			// tenant is not. Recorded so the task can be checked against it
+			// below: the two must agree, or one side is a binary that does not
+			// know what the other means.
+			var payload delegate.WorkspaceTrustData
+			if uerr := json.Unmarshal(env.Data, &payload); uerr != nil {
+				return emitFatal(dispatcher, stderr, fmt.Errorf("decode workspace_trust envelope: %w", uerr))
+			}
+			announcedTrust = &payload.WorkspaceTrust
 			continue
 		}
 		if env.Type == delegate.EnvelopePermissionPolicy {
@@ -132,6 +147,25 @@ func runClawRunner(ctx context.Context, stdin io.Reader, stdout, stderr io.Write
 	task := delegate.FromIOTask(ioTask)
 	// Sandbox is intentionally nil — we ARE the sandbox now.
 	task.Sandbox = nil
+	// The two carriers of the workspace's provenance must agree, and the
+	// verdict on a disagreement is a refusal BEFORE any model call — the
+	// permission gate's rule, for the same reason: a floor the launcher
+	// believes it applied must never silently not exist.
+	if err := checkAnnouncedWorkspaceTrust(announcedTrust, task.WorkspaceTrust); err != nil {
+		return emitFatal(dispatcher, stderr, err)
+	}
+	// Every process this runner starts — the agent's bash, an `iterion run`
+	// it launches — inherits this environment: an untrusted task's trust
+	// rides it, as it does on every host-side process the engine starts
+	// (envtrust.EnvRunTrust). The launcher already put it in the runner's
+	// exec environment; set here from the task as well, so the carrier does
+	// not depend on how this process was started.
+	if entry, ok := model.RunTrustEnvEntry(task.WorkspaceTrust); ok {
+		k, v, _ := strings.Cut(entry, "=")
+		if err := os.Setenv(k, v); err != nil {
+			return emitFatal(dispatcher, stderr, fmt.Errorf("carry the workspace trust to the processes this runner starts: %w", err))
+		}
+	}
 	// Rebuild the permission gate the launcher shipped pre-task, through
 	// the same parser it was authored against. From here the ordinary
 	// unsandboxed Execute path applies it (opts.Permission), so builtins
@@ -454,4 +488,18 @@ func clawRunnerResult(result delegate.Result, err error) delegate.IOResult {
 		}
 	}
 	return ioRes
+}
+
+// checkAnnouncedWorkspaceTrust compares the launcher's pre-task announcement
+// (delegate.EnvelopeWorkspaceTrust) with the trust the task carries. A
+// disagreement can only come from a binary that does not know what the other
+// side means — a task that lost the field on the way, or an announcement the
+// task does not match — and the runner refuses it before any model call. No
+// announcement leaves the task's own value to speak: an untrusted task is
+// still read as untrusted.
+func checkAnnouncedWorkspaceTrust(announced *store.RunTrust, carried store.RunTrust) error {
+	if announced != nil && *announced != carried {
+		return fmt.Errorf("workspace trust mismatch: the launcher announced %q before the task and the task carries %q — refusing before any model call", *announced, carried)
+	}
+	return nil
 }

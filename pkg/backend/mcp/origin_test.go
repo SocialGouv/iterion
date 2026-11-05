@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // The start policy reads one field, so every path that builds a catalog entry
@@ -29,7 +30,7 @@ func TestOriginTravelsFromEverySource(t *testing.T) {
 			"shadowed": {Name: "shadowed", Transport: ir.MCPTransportStdio, Command: "/bin/echo"},
 		},
 	}
-	if err := PrepareWorkflow(wf, dir, dir); err != nil {
+	if err := PrepareWorkflow(wf, dir, dir, store.RunTrustDefault); err != nil {
 		t.Fatalf("PrepareWorkflow: %v", err)
 	}
 

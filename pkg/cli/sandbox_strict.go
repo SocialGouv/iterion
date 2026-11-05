@@ -583,12 +583,12 @@ func loadWorkflowForDoctor(path string) (*ir.Workflow, error) {
 	}
 	if b != nil {
 		// The screen inspects, it runs nothing: no workspace.
-		wf, _, cErr := runview.CompileBundleWorkflow(iterPath, b, "")
+		wf, _, cErr := runview.CompileBundleWorkflow(iterPath, b, "", runview.AnalysisTrust)
 		return wf, cErr
 	}
 	// openBundleOrFile promoted nothing, so this is a loose file; the
 	// shared helper keeps the two compiles one. The screen inspects, it
 	// runs nothing: no workspace.
-	wf, _, _, cErr := runview.CompileWorkflowPath(path, "")
+	wf, _, _, cErr := runview.CompileWorkflowPath(path, "", runview.AnalysisTrust)
 	return wf, cErr
 }

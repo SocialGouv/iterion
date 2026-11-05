@@ -9,6 +9,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/ambient"
 	"github.com/SocialGouv/iterion/pkg/backend/credroute"
 	"github.com/SocialGouv/iterion/pkg/plugin"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // IOTask is the on-the-wire form of a [Task] used by the claw
@@ -73,8 +74,16 @@ type IOTask struct {
 	ToolMaxSteps          int              `json:"tool_max_steps,omitempty"`
 	MaxTokens             int              `json:"max_tokens,omitempty"`
 	WorkDir               string           `json:"work_dir,omitempty"`
-	BaseDir               string           `json:"base_dir,omitempty"`
-	RepoRoot              string           `json:"repo_root,omitempty"`
+	// WorkspaceTrust travels WITH WorkDir, because the two answer one
+	// question about the same directory: a runner that rebuilt the task with
+	// the trusted zero value would read an outsider's checkout as the
+	// tenant's own exactly when the run is sandboxed. A launcher that predates
+	// the field sends nothing, which reads as trusted — and for an untrusted
+	// task the launcher also announces the trust before the task
+	// (EnvelopeWorkspaceTrust), which a runner that predates the field refuses.
+	WorkspaceTrust store.RunTrust `json:"workspace_trust,omitempty"`
+	BaseDir        string         `json:"base_dir,omitempty"`
+	RepoRoot       string         `json:"repo_root,omitempty"`
 	// ScratchDir is the run's scratch read root as the RUNNER sees it —
 	// the fixed container path on a sandbox crossing, where the host path
 	// would not exist. The runner's read tools (read_file, glob, grep)
@@ -298,6 +307,7 @@ func ToIOTask(t Task) IOTask {
 		ToolMaxSteps:           t.ToolMaxSteps,
 		MaxTokens:              t.MaxTokens,
 		WorkDir:                t.WorkDir,
+		WorkspaceTrust:         t.WorkspaceTrust,
 		BaseDir:                t.BaseDir,
 		RepoRoot:               t.RepoRoot,
 		ScratchReadRoots:       t.ScratchReadRoots,
@@ -365,6 +375,7 @@ func FromIOTask(t IOTask) Task {
 		ToolMaxSteps:           t.ToolMaxSteps,
 		MaxTokens:              t.MaxTokens,
 		WorkDir:                t.WorkDir,
+		WorkspaceTrust:         t.WorkspaceTrust,
 		BaseDir:                t.BaseDir,
 		RepoRoot:               t.RepoRoot,
 		ScratchReadRoots:       t.ScratchReadRoots,

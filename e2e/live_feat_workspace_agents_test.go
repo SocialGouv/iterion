@@ -119,7 +119,7 @@ func TestLive_Feat_ClawWorkspaceAgents(t *testing.T) {
 	}
 	runID := uniqueRunID("live-feat-claw-workspace-agents")
 
-	if err := mcp.PrepareWorkflow(wf, workspaceDir, workspaceDir); err != nil {
+	if err := mcp.PrepareWorkflow(wf, workspaceDir, workspaceDir, store.RunTrustDefault); err != nil {
 		t.Fatalf("mcp.PrepareWorkflow: %v", err)
 	}
 

@@ -259,6 +259,15 @@ func shouldLoadWorkspaceDotEnv() bool {
 	if isWorkspaceStudioInvocation() {
 		return false
 	}
+	// A process started by a node of a run whose workspace its tenant did not
+	// write (envtrust.EnvRunTrust) is in that workspace: its `.env` is the
+	// outsider's, and the names it would fill in configure the run this
+	// process adopts the trust for — the model endpoint first, with the run's
+	// key in the header. The operator's force hatch was granted for their own
+	// workspaces and does not reopen this one.
+	if envtrust.CarriedRunTrust() != "" {
+		return false
+	}
 	if envtrust.SpawnedByEngine() || isInternalSubcommandInvocation() {
 		return envtrust.DotEnvForced()
 	}

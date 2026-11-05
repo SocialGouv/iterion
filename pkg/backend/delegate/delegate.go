@@ -579,6 +579,16 @@ type Task struct {
 	// WorkDir is the working directory for the CLI subprocess.
 	WorkDir string
 
+	// WorkspaceTrust says who wrote the code in WorkDir — the run's
+	// store.RunTrust, resolved once per run by the engine and stamped here by
+	// the executor beside WorkDir (model's stampWorkspace), never re-derived
+	// from the workspace. It crosses the sandbox wire with WorkDir (IOTask),
+	// and an untrusted task's processes carry it in their environment
+	// (envtrust.EnvRunTrust). The zero value is trusted: a floor reads it
+	// with Trusted(), so a value this binary does not recognise loses as an
+	// untrusted one does.
+	WorkspaceTrust store.RunTrust
+
 	// HomeScope is the engine-owned identity of the runner's HOME: run-scoped
 	// on the trunk, branch-scoped inside fan-out. It deliberately stays
 	// independent from the session identity, which fan-out branches do not

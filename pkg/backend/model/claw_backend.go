@@ -1719,6 +1719,14 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 	// EnvEngineChild). Set here rather than forwarded: the engine spawning the
 	// runner is the fact it records.
 	runnerEnv[envtrust.EnvEngineChild] = "1"
+	// An untrusted task's trust rides the runner's environment too, so the
+	// runner's own main() never loads the workspace `.env` (the force hatch
+	// included) and every process it starts inherits the carrier. A trusted
+	// task's runner sees no such entry.
+	if entry, ok := RunTrustEnvEntry(task.WorkspaceTrust); ok {
+		k, v, _ := strings.Cut(entry, "=")
+		runnerEnv[k] = v
+	}
 	// A policy-isolated sandbox only lets egress through the run's network
 	// proxy — and the gateway client (openai_compatible/*) NEVER trusts an
 	// ambient HTTPS_PROXY by design: it dials direct unless the engine
@@ -1995,6 +2003,24 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 			_ = cmd.Process.Kill()
 			_ = wait()
 			return delegate.Result{}, fmt.Errorf("claw backend: send gateway_v1: %w", err)
+		}
+	}
+
+	// An untrusted task's trust, announced before the task: a runner binary
+	// that predates IOTask.WorkspaceTrust would rebuild the task as trusted,
+	// and the unknown pre-task envelope makes it refuse instead
+	// (delegate.EnvelopeWorkspaceTrust). A trusted task sends nothing.
+	if !task.WorkspaceTrust.Trusted() {
+		trustEnv, err := delegate.NewWorkspaceTrustEnvelope(task.WorkspaceTrust)
+		if err != nil {
+			_ = cmd.Process.Kill()
+			_ = wait()
+			return delegate.Result{}, fmt.Errorf("claw backend: build workspace_trust envelope: %w", err)
+		}
+		if err := mux.Send(trustEnv); err != nil {
+			_ = cmd.Process.Kill()
+			_ = wait()
+			return delegate.Result{}, fmt.Errorf("claw backend: send workspace_trust: %w", err)
 		}
 	}
 

@@ -26,6 +26,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/secretsink"
 	"github.com/SocialGouv/iterion/pkg/internal/proc"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
+	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/treenoise"
 )
 
@@ -1140,12 +1141,30 @@ func (e *ClawExecutor) engineBinaryEnvEntry() (string, bool) {
 // inheritance — that it is the engine's child and not a human's CLI call, so
 // it does not auto-load the `.env` of the workspace it runs in (#2844,
 // internal/envtrust EnvEngineChild).
+//
+// An untrusted run's command also carries its trust (RunTrustEnvEntry), so an
+// iterion a script re-enters adopts it and leaves the workspace `.env` alone.
 func (e *ClawExecutor) engineChildEnvEntries() []string {
 	entries := []string{envtrust.EngineChildEnvEntry()}
 	if entry, ok := e.engineBinaryEnvEntry(); ok {
 		entries = append(entries, entry)
 	}
+	if entry, ok := RunTrustEnvEntry(e.WorkspaceTrust()); ok {
+		entries = append(entries, entry)
+	}
 	return entries
+}
+
+// RunTrustEnvEntry is the KEY=value entry (envtrust.EnvRunTrust) that carries
+// an untrusted run's workspace trust to a process the engine starts, in the
+// shape exec.Cmd.Env and the sandbox ExecOpts both take. ok is false for a
+// trusted run: the trusted value is never written, so a trusted run's
+// processes see exactly the environment they did before the carrier existed.
+func RunTrustEnvEntry(trust store.RunTrust) (entry string, ok bool) {
+	if trust.Trusted() {
+		return "", false
+	}
+	return envtrust.EnvRunTrust + "=" + string(trust), true
 }
 
 // withEngineChildEnv applies those entries to a per-command env map (the

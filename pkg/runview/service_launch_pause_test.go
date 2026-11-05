@@ -9,6 +9,7 @@ import (
 	"github.com/SocialGouv/iterion/internal/gittest"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/store/storetest"
 )
 
 // A human entry node pauses the engine immediately — no LLM, no tools —
@@ -98,6 +99,7 @@ func TestLaunch_PersistsParentRunIDBeforeReturn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
+	storetest.SeedParentRun(t, svc.store, "run-local-parent")
 	res, err := svc.Launch(context.Background(), LaunchSpec{
 		RunID:       "run-local-child",
 		FilePath:    botPath,

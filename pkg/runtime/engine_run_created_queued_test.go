@@ -7,6 +7,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/store/storetest"
 )
 
 // queuedCreatingStore mimics the cloud store's CreateRun/CreateChildRun,
@@ -50,6 +51,7 @@ func TestRunDirectCreateQueuedBecomesRunning(t *testing.T) {
 		t.Fatal(err)
 	}
 	st := &queuedCreatingStore{FilesystemRunStore: fs}
+	storetest.SeedParentRun(t, fs, "parent-1")
 	src := `schema out:
   ok: bool
 

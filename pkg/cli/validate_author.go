@@ -425,7 +425,7 @@ func compileAuthorDocument(path string) (*ir.Workflow, *authorDocument, error) {
 	// MCP stage reads its configuration beside it, and names it as
 	// `diagram x.bot` does. The document analysis runs nothing: no
 	// workspace, no {{workspace}} resolution.
-	wf, err := runview.CompileLoadedUnit(u, doc.botNamed, doc.parsePath, b, "")
+	wf, err := runview.CompileLoadedUnit(u, doc.botNamed, doc.parsePath, b, "", runview.AnalysisTrust)
 	if err != nil {
 		return nil, nil, err
 	}

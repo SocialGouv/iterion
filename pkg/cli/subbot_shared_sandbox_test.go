@@ -13,6 +13,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/store/storetest"
 )
 
 // cliParentSandboxFake stands in for the parent's live sandbox: commands run
@@ -84,6 +85,7 @@ workflow child:
 	logger := iterlog.New(iterlog.LevelError, os.Stderr)
 	fake := &cliParentSandboxFake{}
 
+	storetest.SeedParentRun(t, s, "parent-run")
 	runner := subbotRunnerForCLI(filepath.Join(dir, "parent.bot"), storeDir, s, logger, RunOptions{NoInteractive: true})
 	out, err := runner(context.Background(), runtime.SubbotRequest{
 		Source:        "child.bot",

@@ -218,8 +218,10 @@ func (r *Runner) subbotRunnerFor(msg *queue.RunMessage, parentDir, workDir strin
 			childWorkDir = workDir
 		}
 		// The child compiles the way every path does: a bundle's main.bot
-		// promoted to its bundle, prompts/*.md in scope, the bundle's hash.
-		childWf, hash, childBundle, err := runview.CompileWorkflowPath(childPath, childWorkDir)
+		// promoted to its bundle, prompts/*.md in scope, the bundle's hash —
+		// for the parent's trust, which the child inherits on the wire
+		// (child := *msg below) and the child engine is launched with.
+		childWf, hash, childBundle, err := runview.CompileWorkflowPath(childPath, childWorkDir, msg.Trust)
 		if err != nil {
 			return nil, fmt.Errorf("compile child %q: %w", req.Source, err)
 		}

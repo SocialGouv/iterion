@@ -53,8 +53,8 @@ func diagnosticCodes(cr *CompileResult) []string {
 // whole IR. A field is named by its IR name, which is the camel case of the
 // DSL key it is read from for all but a handful: the permission lists are
 // `PermissionAllow`/`Ask`/`Deny` for `allow:`/`ask:`/`deny:`, and
-// `ActiveMCPServers` and `ResolvedMCPServers` are filled after project
-// config resolution, from no key at all. Nodes are walked by sorted
+// `ActiveMCPServers`, `ResolvedMCPServers` and `MCPPrepared` are filled
+// after project config resolution, from no key at all. Nodes are walked by sorted
 // id, so the difference named is the same on every run — never the one a
 // map's iteration happened on. It is "" where the two are one workflow, and
 // where either side compiled none: there is then no workflow to differ by,

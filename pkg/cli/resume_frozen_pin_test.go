@@ -53,7 +53,7 @@ func seedFrozenPinCLIRun(t *testing.T, family string) (bot, storeDir, runID stri
 	if err := os.WriteFile(bot, []byte(monoFamilyCLIBot), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	_, hash, err := runview.CompileWorkflowWithHash(bot, "")
+	_, hash, err := runview.CompileWorkflowWithHash(bot, "", store.RunTrustDefault)
 	if err != nil {
 		t.Fatal(err)
 	}

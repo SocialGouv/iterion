@@ -12,6 +12,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/queue"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/store/storetest"
 )
 
 const workspaceWriteChild = `tool create:
@@ -86,6 +87,7 @@ func TestRunnerSubbotWritesIntoTheLentWorkspace(t *testing.T) {
 	writeSubbotFixture(t, botDir, "child.bot", workspaceWriteChild)
 	msg := &queue.RunMessage{RunID: "run-parent-workspace", TenantID: "t1", OwnerID: "u1", BotID: "parent"}
 
+	storetest.SeedParentRun(t, r.cfg.Store, msg.RunID)
 	run := r.subbotRunnerFor(msg, botDir, workspace, iterlog.Nop())
 	_, err := run(context.Background(), runtime.SubbotRequest{
 		Source: "child.bot", Vars: map[string]any{"path": "child.txt", "content": "runner child\n"},

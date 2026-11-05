@@ -81,7 +81,7 @@ func frozenPinService(t *testing.T, opts ...ServiceOption) (*Service, string, st
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	_, hash, err := CompileWorkflowWithHash(botPath, "")
+	_, hash, err := CompileWorkflowWithHash(botPath, "", store.RunTrustDefault)
 	if err != nil {
 		t.Fatalf("CompileWorkflowWithHash: %v", err)
 	}

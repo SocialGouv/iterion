@@ -230,7 +230,7 @@ func (s *Service) nodeKind(run *store.Run, nodeID string) string {
 	if path == "" {
 		return ""
 	}
-	wf, err := CompileWorkflow(path, run.WorkDir)
+	wf, err := CompileWorkflow(path, run.WorkDir, run.Trust)
 	if err != nil {
 		return ""
 	}

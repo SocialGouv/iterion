@@ -115,6 +115,8 @@ func RunWithOpts(t *testing.T, factory Factory, opts Opts) {
 	t.Run("AttachmentsDottedName", func(t *testing.T) { testAttachmentsDottedName(t, factory(t)) })
 	t.Run("AttachmentsMetaJSONFilename", func(t *testing.T) { testAttachmentsMetaJSONFilename(t, factory(t)) })
 	t.Run("ParentedRunCreator", func(t *testing.T) { testParentedRunCreator(t, factory(t)) })
+	t.Run("ChildRunInheritsTrust", func(t *testing.T) { testChildRunInheritsTrust(t, factory(t)) })
+	t.Run("ChildOfAnUnreadableParentIsRefused", func(t *testing.T) { testChildOfAnUnreadableParentIsRefused(t, factory(t)) })
 	t.Run("RunListingProjection", func(t *testing.T) { testRunListingProjection(t, factory(t)) })
 	t.Run("RecordedSourceSetter", func(t *testing.T) { testSetRunRecordedSource(t, factory(t)) })
 }
@@ -1118,6 +1120,120 @@ func testParentedRunCreator(t *testing.T, s store.RunStore) {
 	// No-clobber: reusing an id must fail, never reset the existing doc.
 	if _, err := pc.CreateChildRun(ctx, childID, "demo", parentID, nil); err == nil {
 		t.Errorf("CreateChildRun(duplicate id): expected error, got nil")
+	}
+}
+
+// SeedParentRun creates the parent document a child run needs, or returns
+// the one already there.
+//
+// CreateChildRun READS the parent to inherit its workspace provenance and
+// refuses when it cannot (store.ErrChildParentUnreadable), so a fixture that
+// names a parent id without creating one describes a state the product does
+// not produce. Exported so every package's fixtures take the one shape, and a
+// backend that changes what a parent must carry changes it here.
+func SeedParentRun(t *testing.T, s store.RunStore, parentRunID string) *store.Run {
+	t.Helper()
+	if parentRunID == "" {
+		return nil
+	}
+	ctx := testCtx()
+	if existing, err := s.LoadRun(ctx, parentRunID); err == nil {
+		return existing
+	}
+	parent, err := s.CreateRun(ctx, parentRunID, "seeded-parent", nil)
+	if err != nil {
+		t.Fatalf("storetest.SeedParentRun(%s): %v", parentRunID, err)
+	}
+	return parent
+}
+
+// testChildRunInheritsTrust pins the child stamp: a child run executes in its
+// parent's workspace, so CreateChildRun gives it the parent's provenance —
+// Trust and the pinned commit — in the create write itself. The readback is
+// the assertion that matters: the child ENGINE adopts the document, and a
+// backend that dropped the field on insert would hand it the trusted zero
+// value.
+func testChildRunInheritsTrust(t *testing.T, s store.RunStore) {
+	t.Helper()
+	pc := store.AsParentedRunCreator(s)
+	if pc == nil {
+		t.Skip("backend does not implement ParentedRunCreator")
+	}
+	ctx := testCtx()
+	const pin = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+	seed := func(id string, trust store.RunTrust) {
+		t.Helper()
+		if _, err := s.CreateRun(ctx, id, "parent", nil); err != nil {
+			t.Fatalf("CreateRun(%s): %v", id, err)
+		}
+		r, err := s.LoadRun(ctx, id)
+		if err != nil {
+			t.Fatalf("LoadRun(%s): %v", id, err)
+		}
+		r.Trust = trust
+		if !trust.Trusted() {
+			r.RepoSHAExpected = pin
+		}
+		if err := s.SaveRun(ctx, r); err != nil {
+			t.Fatalf("SaveRun(%s): %v", id, err)
+		}
+	}
+
+	// The control: a child of an ordinary parent stays ordinary, so the arm
+	// below is about inheritance and not about a store that marks every child.
+	seed("child_trust_parent_ok", store.RunTrustDefault)
+	if _, err := pc.CreateChildRun(ctx, "child_trust_ok", "child", "child_trust_parent_ok", nil); err != nil {
+		t.Fatalf("CreateChildRun (trusted parent): %v", err)
+	}
+	ok, err := s.LoadRun(ctx, "child_trust_ok")
+	if err != nil {
+		t.Fatalf("LoadRun(child_trust_ok): %v", err)
+	}
+	if !ok.Trust.Trusted() || ok.RepoSHAExpected != "" {
+		t.Fatalf("a child of a trusted parent persisted Trust=%q RepoSHAExpected=%q; want the trusted zero value and no pin", ok.Trust, ok.RepoSHAExpected)
+	}
+
+	seed("child_trust_parent_fork", store.RunTrustFork)
+	if _, err := pc.CreateChildRun(ctx, "child_trust_fork", "child", "child_trust_parent_fork", nil); err != nil {
+		t.Fatalf("CreateChildRun (fork parent): %v", err)
+	}
+	fork, err := s.LoadRun(ctx, "child_trust_fork")
+	if err != nil {
+		t.Fatalf("LoadRun(child_trust_fork): %v", err)
+	}
+	if fork.Trust != store.RunTrustFork {
+		t.Errorf("persisted child Trust = %q, want %q — a sub-bot of a fork run would execute the fork's checkout as the tenant's own", fork.Trust, store.RunTrustFork)
+	}
+	if fork.RepoSHAExpected != pin {
+		t.Errorf("persisted child RepoSHAExpected = %q, want %q — the admitted commit still names what may run", fork.RepoSHAExpected, pin)
+	}
+}
+
+// testChildOfAnUnreadableParentIsRefused pins the refusal, in every backend: a
+// child naming a parent this store cannot read is not created, typed
+// (store.ErrChildParentUnreadable), with the read's own error still in the
+// chain. The orphan here would have been a TRUSTED child — nothing marks it —
+// and it is refused all the same: an unknown provenance is not the trusted
+// zero value, whatever the child would otherwise have been.
+func testChildOfAnUnreadableParentIsRefused(t *testing.T, s store.RunStore) {
+	t.Helper()
+	pc := store.AsParentedRunCreator(s)
+	if pc == nil {
+		t.Skip("backend does not implement ParentedRunCreator")
+	}
+	ctx := testCtx()
+	_, err := pc.CreateChildRun(ctx, "child_of_nobody", "child", "no_such_parent", nil)
+	if err == nil {
+		t.Fatal("a child naming a parent this store cannot read was created")
+	}
+	if !errors.Is(err, store.ErrChildParentUnreadable) {
+		t.Errorf("refusal is not typed: %v (want %v)", err, store.ErrChildParentUnreadable)
+	}
+	if !errors.Is(err, store.ErrRunNotFound) {
+		t.Errorf("refusal dropped the read's own error: %v (want %v in the chain)", err, store.ErrRunNotFound)
+	}
+	if _, lerr := s.LoadRun(ctx, "child_of_nobody"); !errors.Is(lerr, store.ErrRunNotFound) {
+		t.Errorf("LoadRun(refused child) = %v, want %v — the refusal must write nothing", lerr, store.ErrRunNotFound)
 	}
 }
 

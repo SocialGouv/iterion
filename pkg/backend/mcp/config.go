@@ -13,6 +13,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 const (
@@ -133,11 +134,16 @@ func FromIRAuth(auth *ir.MCPAuth) *AuthConfig {
 // never the compiled file's directory, or a plugin server (codeindex,
 // repo-falcon) indexes the bundle instead of the code.
 //
+// trust is who wrote the workspace of the run the catalog is resolved for
+// (store.RunTrust), named by every caller; the resolution records it on the
+// workflow (ir.Workflow.MCPPrepared), so the catalog an executor boots says
+// which workspace it was resolved for.
+//
 // The optional logger carries the one failure this function otherwise
 // swallows: a plugin registry that cannot load takes EVERY plugin MCP server
 // off every node of the run, and that must not look like "no plugins are
 // enabled". Callers that have a run-scoped logger should pass it.
-func PrepareWorkflow(wf *ir.Workflow, projectDir, workspace string, logger ...*iterlog.Logger) error {
+func PrepareWorkflow(wf *ir.Workflow, projectDir, workspace string, trust store.RunTrust, logger ...*iterlog.Logger) error {
 	if wf == nil {
 		return nil
 	}
@@ -212,6 +218,7 @@ func PrepareWorkflow(wf *ir.Workflow, projectDir, workspace string, logger ...*i
 		}
 	}
 
+	wf.MCPPrepared = &ir.MCPPreparation{Trust: string(trust)}
 	return nil
 }
 

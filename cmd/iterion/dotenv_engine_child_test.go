@@ -32,6 +32,9 @@ func dotEnvWorkspace(t *testing.T) string {
 	envtrust.ResetForTest()
 	t.Cleanup(envtrust.ResetForTest)
 	t.Setenv(envtrust.EnvPlantedNames, "")
+	// No run trust inherited from the shell that runs the suite: a carried
+	// one would skip the loader for every case, the controls included.
+	t.Setenv(envtrust.EnvRunTrust, "")
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, ".env"),
 		[]byte(routingVar+"=https://repo.example/v1\n"+
@@ -121,6 +124,38 @@ func TestAPlantedForceFlagDoesNotReopenTheWorkspaceDotEnv(t *testing.T) {
 	}
 }
 
+// The run trust beats the hatch (ADR-162): a process carrying an untrusted
+// run's trust (envtrust.EnvRunTrust) runs in that run's workspace, so the
+// `.env` there is the outsider's — and the operator's force flag, granted for
+// their own workspaces, does not reopen it. Driven through main()'s chain on
+// an engine child, a `__` helper and a bare CLI call, each with the hatch
+// open; the hatch's own witness above proves the fixture loads without the
+// carrier.
+func TestTheRunTrustBeatsTheDotEnvForceHatch(t *testing.T) {
+	for _, row := range []struct {
+		name  string
+		child bool
+		argv  []string
+	}{
+		{"an engine child", true, []string{"iterion", "run", "probe.bot"}},
+		{"a hidden helper", false, []string{"iterion", "__claw-runner"}},
+		{"a bare CLI call", false, []string{"iterion", "run", "probe.bot"}},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			dotEnvWorkspace(t)
+			t.Setenv(envtrust.EnvEngineChild, "")
+			if row.child {
+				t.Setenv(envtrust.EnvEngineChild, "1")
+			}
+			t.Setenv(envtrust.EnvDotEnvForce, "1")
+			t.Setenv(envtrust.EnvRunTrust, "fork")
+			if got := loadAsMainWould(t, row.argv...); got != "" {
+				t.Fatalf("%s = %q, want unset — a process of an untrusted run read the outsider's .env through the operator's hatch", loadProbeVar, got)
+			}
+		})
+	}
+}
+
 // The hidden `__`-prefixed subcommands are re-entrant by construction: the
 // engine, or an agent CLI the engine configured, spawns them with cwd = the
 // workspace. Two of them re-execute on every tool call of a session, where
@@ -160,6 +195,7 @@ func TestShouldLoadWorkspaceDotEnv(t *testing.T) {
 		args  []string
 		child bool
 		force bool
+		trust string
 		want  bool
 	}{
 		{name: "a bare invocation", args: []string{"iterion"}, want: true},
@@ -174,6 +210,9 @@ func TestShouldLoadWorkspaceDotEnv(t *testing.T) {
 		{name: "a hidden subcommand, forced", args: []string{"iterion", "__claw-runner"}, force: true, want: true},
 		{name: "an engine child", args: []string{"iterion", "run", "x.bot"}, child: true, want: false},
 		{name: "an engine child, forced", args: []string{"iterion", "run", "x.bot"}, child: true, force: true, want: true},
+		{name: "an untrusted run's engine child, forced", args: []string{"iterion", "run", "x.bot"}, child: true, force: true, trust: "fork", want: false},
+		{name: "an untrusted run's hidden subcommand, forced", args: []string{"iterion", "__claw-runner"}, force: true, trust: "fork", want: false},
+		{name: "a process carrying an unknown trust", args: []string{"iterion", "run", "x.bot"}, trust: "vendored", want: false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -191,6 +230,7 @@ func TestShouldLoadWorkspaceDotEnv(t *testing.T) {
 			if tc.force {
 				t.Setenv(envtrust.EnvDotEnvForce, "true")
 			}
+			t.Setenv(envtrust.EnvRunTrust, tc.trust)
 			if got := shouldLoadWorkspaceDotEnv(); got != tc.want {
 				t.Errorf("args=%v child=%v force=%v: got %v, want %v", tc.args, tc.child, tc.force, got, tc.want)
 			}

@@ -574,7 +574,7 @@ func RunValidateWithContext(ctx context.Context, path string, p *Printer, opts V
 				Message:  fmt.Sprintf("cannot resolve the run workspace from the process cwd: %v — plugin {{workspace}} placeholders are reported unresolved", wdErr),
 			})
 		}
-		if err := mcp.PrepareWorkflow(cr.Workflow, filepath.Dir(path), workspace); err != nil {
+		if err := mcp.PrepareWorkflow(cr.Workflow, filepath.Dir(path), workspace, runview.AnalysisTrust); err != nil {
 			result.CompileDiagnostics = append(result.CompileDiagnostics, err.Error())
 			result.Diagnostics = append(result.Diagnostics, ValidateDiagnostic{
 				Source:   "compile",

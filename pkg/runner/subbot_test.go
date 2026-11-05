@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -19,6 +20,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/store/storetest"
 	"github.com/SocialGouv/iterion/pkg/subbotsource"
 )
 
@@ -193,6 +195,7 @@ func TestSubbotRunnerRunsChildOnPod(t *testing.T) {
 	writeSubbotFixture(t, parentDir, "child.bot", subbotTestChild)
 	msg := &queue.RunMessage{RunID: "run-parent", TenantID: "t1", OwnerID: "u1", BotID: "parent"}
 
+	storetest.SeedParentRun(t, r.cfg.Store, msg.RunID)
 	run := r.subbotRunnerFor(msg, parentDir, dir, iterlog.Nop())
 	out, err := run(context.Background(), runtime.SubbotRequest{
 		Source:      "child.bot",
@@ -227,6 +230,7 @@ func TestSubbotRunnerProjectsAContractedChildsOutput(t *testing.T) {
 	writeSubbotFixture(t, parentDir, "child.bot", subbotTestContractChild)
 	msg := &queue.RunMessage{RunID: "run-parent", TenantID: "t1", OwnerID: "u1", BotID: "parent"}
 
+	storetest.SeedParentRun(t, r.cfg.Store, msg.RunID)
 	run := r.subbotRunnerFor(msg, parentDir, dir, iterlog.Nop())
 	out, err := run(context.Background(), runtime.SubbotRequest{
 		Source: "child.bot", Vars: map[string]any{"ticket": "T-9"},
@@ -260,7 +264,7 @@ func TestPodEngineRunsSubbotNodes(t *testing.T) {
 	dir := t.TempDir()
 	parentPath := writeSubbotFixture(t, dir, "main.bot", subbotTestParent)
 	writeSubbotFixture(t, dir, "child.bot", subbotTestChild)
-	wf, hash, err := runview.CompileWorkflowWithHash(parentPath, "")
+	wf, hash, err := runview.CompileWorkflowWithHash(parentPath, "", store.RunTrustDefault)
 	if err != nil {
 		t.Fatalf("compile parent: %v", err)
 	}
@@ -342,6 +346,7 @@ func testSubbotRunnerParksOnHumanGate(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	storetest.SeedParentRun(t, r.cfg.Store, msg.RunID)
 	run := r.subbotRunnerFor(msg, parentDir, dir, iterlog.Nop())
 	done := make(chan error, 1)
 	go func() {
@@ -424,6 +429,7 @@ func TestSubbotRunnerAppliesCloudBudgetCeiling(t *testing.T) {
 		writeSubbotFixture(t, parentDir, "main.bot", subbotTestParent)
 		writeSubbotFixture(t, parentDir, "child.bot", subbotTestTwoNodeChild)
 		msg := &queue.RunMessage{RunID: "run-parent", TenantID: "t1", OwnerID: "u1", BotID: "parent"}
+		storetest.SeedParentRun(t, r.cfg.Store, msg.RunID)
 		run := r.subbotRunnerFor(msg, parentDir, dir, iterlog.Nop())
 		out, err := run(context.Background(), runtime.SubbotRequest{
 			Source: "child.bot", ParentRunID: msg.RunID, NodeID: "run_ticket", ReattachKey: "run_ticket",
@@ -521,6 +527,7 @@ func TestSubbotRunnerRunsTheChildInTheParentSandbox(t *testing.T) {
 	msg := &queue.RunMessage{RunID: "run-parent", TenantID: "t1", OwnerID: "u1", BotID: "parent"}
 	fake := &parentSandboxFake{}
 
+	storetest.SeedParentRun(t, r.cfg.Store, msg.RunID)
 	run := r.subbotRunnerFor(msg, parentDir, dir, iterlog.Nop())
 	out, err := run(context.Background(), runtime.SubbotRequest{
 		Source: "child.bot", Vars: map[string]any{"ticket": "T-3"},
@@ -728,6 +735,7 @@ func TestSubbotRunnerTheChildDocumentCarriesThePool(t *testing.T) {
 	writeSubbotFixture(t, parentDir, "child.bot", subbotTestChild)
 	msg := &queue.RunMessage{RunID: "run-parent", TenantID: "t1", OwnerID: "u1", BotID: "parent", RunnerPool: "honorabilite"}
 
+	storetest.SeedParentRun(t, r.cfg.Store, msg.RunID)
 	run := r.subbotRunnerFor(msg, parentDir, dir, iterlog.Nop())
 	if _, err := run(context.Background(), runtime.SubbotRequest{
 		Source:      "child.bot",
@@ -738,11 +746,11 @@ func TestSubbotRunnerTheChildDocumentCarriesThePool(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("subbot runner: %v", err)
 	}
-	// The child run id is minted inside the closure; the only run in this
-	// fresh store is the child (the parent message is never persisted).
+	// The child run id is minted inside the closure; the only other run in
+	// this fresh store is the parent the child was created under.
 	var raw []byte
 	werr := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() || d.Name() != "run.json" {
+		if err != nil || d.IsDir() || d.Name() != "run.json" || filepath.Base(filepath.Dir(path)) == msg.RunID {
 			return err
 		}
 		raw, err = os.ReadFile(path)
@@ -789,6 +797,7 @@ func TestSubbotChildInheritsTheBotSourceTier(t *testing.T) {
 		BotSourceTier: store.BotSourceTierTeam,
 	}
 
+	storetest.SeedParentRun(t, r.cfg.Store, msg.RunID)
 	run := r.subbotRunnerFor(msg, parentDir, dir, iterlog.Nop())
 	if _, err := run(context.Background(), runtime.SubbotRequest{
 		Source: "child.bot", Vars: map[string]any{"ticket": "T-9"},
@@ -839,6 +848,7 @@ workflow child:
 `)
 	msg := &queue.RunMessage{RunID: "run-parent", TenantID: "t1", OwnerID: "u1", BotID: "parent"}
 
+	storetest.SeedParentRun(t, r.cfg.Store, msg.RunID)
 	run := r.subbotRunnerFor(msg, parentDir, dir, iterlog.Nop())
 	_, err := run(context.Background(), runtime.SubbotRequest{
 		Source:        "child.bot",
@@ -861,6 +871,9 @@ workflow child:
 	if lerr != nil {
 		t.Fatal(lerr)
 	}
+	// The parent the child would have been created under is the one run
+	// this store may hold.
+	ids = slices.DeleteFunc(ids, func(id string) bool { return id == msg.RunID })
 	if len(ids) != 0 {
 		t.Fatalf("the refused launch left %d child run doc(s) behind (%v) — the dead intent is on the record", len(ids), ids)
 	}

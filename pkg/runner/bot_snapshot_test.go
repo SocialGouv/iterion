@@ -12,6 +12,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/queue"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/store/storetest"
 )
 
 func TestSnapshotRunnerIgnoresDivergentCatalog(t *testing.T) {
@@ -40,6 +41,7 @@ func TestSnapshotRunnerIgnoresDivergentCatalog(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer cleanup()
+	storetest.SeedParentRun(t, r.cfg.Store, msg.RunID)
 	run := r.subbotRunnerFor(msg, b.Dir, t.TempDir(), iterlog.Nop(), filepath.Dir(b.Dir))
 	out, err := run(context.Background(), runtime.SubbotRequest{Source: "../child/main.bot", Vars: map[string]any{"ticket": "snapshot"}, ParentRunID: msg.RunID, NodeID: "child", ReattachKey: "child"})
 	if err != nil {

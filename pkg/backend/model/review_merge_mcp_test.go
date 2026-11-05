@@ -18,6 +18,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/unit"
 	"github.com/SocialGouv/iterion/pkg/dsl/unit/unittest"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // The production GPT reviewer completed, then its merger failed resolving
@@ -36,7 +37,7 @@ func TestReviewPrGPTMergeWithRepositoryMCP(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(project, ".mcp.json"), []byte(`{"mcpServers":{"repo_probe":{"command":"/not-started"}}}`), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := mcp.PrepareWorkflow(wf, project, project); err != nil {
+	if err := mcp.PrepareWorkflow(wf, project, project, store.RunTrustDefault); err != nil {
 		t.Fatal(err)
 	}
 	if !slices.Contains(ir.NodeActiveMCPServers(wf.Nodes["reviewer_gpt"]), "repo_probe") {

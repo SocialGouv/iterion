@@ -6,6 +6,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/store/storetest"
 )
 
 // A sub-bot child inherits its parent's queue message wholesale (the runner
@@ -17,6 +18,8 @@ import (
 func TestRunResolveDocStampsTrustOntoTheChildDocument(t *testing.T) {
 	newEngine := func(opts ...EngineOption) (*Engine, store.RunStore) {
 		st := tmpStore(t)
+		storetest.SeedParentRun(t, st, "parent-run-1")
+		storetest.SeedParentRun(t, st, "parent-run-2")
 		return New(&ir.Workflow{Name: "child_wf"}, st, nil, opts...), st
 	}
 

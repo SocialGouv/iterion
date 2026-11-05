@@ -193,7 +193,7 @@ func TestLive_ClawToolCoverage(t *testing.T) {
 
 	runID := "live-claw-tool-coverage"
 
-	if err := mcp.PrepareWorkflow(wf, workspaceDir, workspaceDir); err != nil {
+	if err := mcp.PrepareWorkflow(wf, workspaceDir, workspaceDir, store.RunTrustDefault); err != nil {
 		t.Fatalf("mcp.PrepareWorkflow: %v", err)
 	}
 

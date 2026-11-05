@@ -1419,7 +1419,6 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 		HasTools:              len(f.tools) > 0,
 		ToolMaxSteps:          f.toolMaxSteps,
 		MaxTokens:             f.maxTokens,
-		WorkDir:               e.WorkDir(),
 		HomeScope:             RunnerHomeScopeFromContext(ctx),
 		ExtraEnv:              e.taskExtraEnv(),
 		ReasoningEffort:       wireEffort(effort),
@@ -1449,6 +1448,9 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 		Hooks:      e.delegateHooksFor(f.id, backendName, LoopIterationFromContext(ctx)),
 		InboxDrain: e.bindInboxDrain(ctx),
 	}
+	// The workspace and who wrote it, from the one stamp every task that
+	// names the workspace takes (stampWorkspace).
+	e.stampWorkspace(&task)
 	// interaction: async (ADR-081) — bind the non-blocking question
 	// closures. Both backends key their ask_user_async / await_answers
 	// tool registration on PostAsyncQuestion being non-nil.

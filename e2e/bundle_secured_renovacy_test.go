@@ -7,6 +7,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/runview"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // expectedSecuredRenovacyNodes lists the node IDs the secured-renovacy
@@ -90,7 +91,7 @@ func TestBundle_SecuredRenovacy_PackOpenCompile(t *testing.T) {
 		t.Errorf("manifest.name = %q, want %q", b.Manifest.Name, "secured-renovacy")
 	}
 
-	wf, wfHash, err := runview.CompileBundleWorkflow(b.IterPath, b, "")
+	wf, wfHash, err := runview.CompileBundleWorkflow(b.IterPath, b, "", store.RunTrustDefault)
 	if err != nil {
 		t.Fatalf("CompileBundleWorkflow: %v", err)
 	}
@@ -121,7 +122,7 @@ func TestBundle_SecuredRenovacy_OpenDirMatchesPack(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenDir: %v", err)
 	}
-	wfDir, _, err := runview.CompileBundleWorkflow(bDir.IterPath, bDir, "")
+	wfDir, _, err := runview.CompileBundleWorkflow(bDir.IterPath, bDir, "", store.RunTrustDefault)
 	if err != nil {
 		t.Fatalf("CompileBundleWorkflow (dir): %v", err)
 	}
@@ -135,7 +136,7 @@ func TestBundle_SecuredRenovacy_OpenDirMatchesPack(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 	defer cleanup()
-	wfArchive, _, err := runview.CompileBundleWorkflow(bArchive.IterPath, bArchive, "")
+	wfArchive, _, err := runview.CompileBundleWorkflow(bArchive.IterPath, bArchive, "", store.RunTrustDefault)
 	if err != nil {
 		t.Fatalf("CompileBundleWorkflow (archive): %v", err)
 	}

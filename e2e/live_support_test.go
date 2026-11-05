@@ -122,7 +122,7 @@ func runBotLive(t *testing.T, spec liveSpec) liveResult {
 	}
 	runID := uniqueRunID(spec.runIDBase)
 
-	if err := mcp.PrepareWorkflow(wf, spec.workspaceDir, spec.workspaceDir); err != nil {
+	if err := mcp.PrepareWorkflow(wf, spec.workspaceDir, spec.workspaceDir, store.RunTrustDefault); err != nil {
 		t.Fatalf("mcp.PrepareWorkflow: %v", err)
 	}
 
@@ -295,7 +295,7 @@ func compileLiveWorkflow(t *testing.T, spec liveSpec) (*ir.Workflow, *bundle.Bun
 		if err != nil {
 			t.Fatalf("bundle.OpenDir %q: %v", bDir, err)
 		}
-		wf, _, err := runview.CompileBundleWorkflow(b.IterPath, b, "")
+		wf, _, err := runview.CompileBundleWorkflow(b.IterPath, b, "", store.RunTrustDefault)
 		if err != nil {
 			t.Fatalf("CompileBundleWorkflow %q: %v", bDir, err)
 		}

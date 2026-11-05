@@ -9,6 +9,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/runview"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // TestResolveWorkflow_BundleDirCompilesAMaterialisedCopyWithItsBundle: the
@@ -37,13 +38,13 @@ func TestResolveWorkflow_BundleDirCompilesAMaterialisedCopyWithItsBundle(t *test
 	if err := os.WriteFile(copyPath, src, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, _, _, _, cleanup, err := resolveWorkflow(RunOptions{File: copyPath}); err == nil {
+	if _, _, _, _, _, cleanup, err := resolveWorkflow(RunOptions{File: copyPath}, store.RunTrustDefault); err == nil {
 		_ = cleanup()
 		t.Fatal("the materialised copy compiled alone; the fixture no longer arms the case")
 	} else if !strings.Contains(err.Error(), "C003") {
 		t.Fatalf("the copy alone failed for another reason: %v", err)
 	}
-	wf, hash, filePath, _, opened, cleanup, err := resolveWorkflow(RunOptions{File: copyPath, BundleDir: dir})
+	wf, hash, filePath, _, opened, cleanup, err := resolveWorkflow(RunOptions{File: copyPath, BundleDir: dir}, store.RunTrustDefault)
 	if err != nil {
 		t.Fatalf("resolveWorkflow with --bundle-dir: %v", err)
 	}
@@ -55,7 +56,7 @@ func TestResolveWorkflow_BundleDirCompilesAMaterialisedCopyWithItsBundle(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, want, err := runview.CompileBundleWorkflow(copyPath, b, "")
+	_, want, err := runview.CompileBundleWorkflow(copyPath, b, "", store.RunTrustDefault)
 	if err != nil {
 		t.Fatal(err)
 	}

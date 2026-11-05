@@ -141,7 +141,7 @@ func newMissionSlotFixture(t *testing.T) *missionSlotFixture {
 
 	seed := func(id, workflow, path, source string, status store.RunStatus, node, botID string) {
 		t.Helper()
-		_, hash, err := runview.CompileWorkflowWithHash(path, "")
+		_, hash, err := runview.CompileWorkflowWithHash(path, "", store.RunTrustDefault)
 		if err != nil {
 			t.Fatalf("compile %s: %v", path, err)
 		}

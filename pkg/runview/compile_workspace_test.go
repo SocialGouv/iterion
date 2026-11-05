@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // TestCompileWorkflowPathResolvesPluginWorkspaceAgainstTheRunWorkspace pins
@@ -41,7 +43,7 @@ workflow main:
 		t.Fatalf("write bot: %v", err)
 	}
 
-	wf, _, _, err := CompileWorkflowPath(bot, workspace)
+	wf, _, _, err := CompileWorkflowPath(bot, workspace, store.RunTrustDefault)
 	if err != nil {
 		t.Fatalf("CompileWorkflowPath: %v", err)
 	}

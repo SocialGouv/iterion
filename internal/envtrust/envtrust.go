@@ -36,7 +36,9 @@
 // engine handed it, and reading the repository's `.env` on top would let the
 // tree under review fill in the names nobody set on purpose. EnvEngineChild
 // is the invocation-class marker the engine writes on such a child, and
-// EnvDotEnvForce the operator's way back in.
+// EnvDotEnvForce the operator's way back in — except under EnvRunTrust, which
+// a child of a run whose workspace its tenant did not write carries, and
+// which no hatch reopens.
 package envtrust
 
 import (
@@ -271,6 +273,26 @@ const EnvEngineChild = "ITERION_ENGINE_CHILD"
 // voted itself back in would be the hole with an extra step, and a stored bot
 // var cannot spell the name at all (pkg/platformcfg botVarsInfraExact).
 const EnvDotEnvForce = "ITERION_DOTENV_FORCE"
+
+// EnvRunTrust carries an untrusted run's workspace trust (the string form of
+// store.RunTrust) to every process a node of that run starts: a tool node's
+// command or script, a delegate's CLI and what it spawns, the in-container
+// claw runner. It is written only for an untrusted run — the trusted value is
+// the empty string, which is never written — so any non-empty value means "a
+// workspace its tenant did not write".
+//
+// Cooperative, like EnvEngineChild: it holds for the processes that pass
+// their environment on (iterion's helpers, a bot's scripts), not against an
+// agent writing its own command line, which can unset it. Carrying it can
+// only LOWER trust: an `iterion run` started with it adopts it for its
+// compile and its engine, and main never loads the working directory's `.env`
+// under it — EnvDotEnvForce included, since the operator's hatch was granted
+// for the operator's own workspaces, not for one an outsider wrote.
+const EnvRunTrust = "ITERION_RUN_TRUST"
+
+// CarriedRunTrust is the run trust this process was started under (the raw
+// EnvRunTrust value), "" when it carries none.
+func CarriedRunTrust() string { return os.Getenv(EnvRunTrust) }
 
 // EngineChildEnvEntry is the KEY=value entry an engine hands every child it
 // spawns against a workspace, in the shape exec.Cmd.Env and the sandbox

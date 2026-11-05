@@ -13,6 +13,7 @@ import (
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/store/storetest"
 )
 
 // TestSubbotRunnerForCLI_NestedSubbot is the regression for nested subbots on
@@ -63,6 +64,7 @@ workflow child:
 	}
 	logger := iterlog.New(iterlog.LevelError, os.Stderr)
 
+	storetest.SeedParentRun(t, s, "parent-run")
 	runner := subbotRunnerForCLI(filepath.Join(dir, "parent.bot"), storeDir, s, logger, RunOptions{NoInteractive: true})
 	out, err := runner(context.Background(), runtime.SubbotRequest{
 		Source:      "child.bot",
@@ -109,6 +111,7 @@ workflow selfref:
 	}
 	logger := iterlog.New(iterlog.LevelError, os.Stderr)
 
+	storetest.SeedParentRun(t, s, "parent-run")
 	runner := subbotRunnerForCLI(filepath.Join(dir, "parent.bot"), storeDir, s, logger, RunOptions{NoInteractive: true})
 	_, err = runner(context.Background(), runtime.SubbotRequest{
 		Source:      "self.bot",
@@ -171,6 +174,7 @@ workflow child:
 	if err != nil {
 		t.Fatalf("store.New: %v", err)
 	}
+	storetest.SeedParentRun(t, s, "parent-run")
 	runner := subbotRunnerForCLI(filepath.Join(dir, "parent.bot"), storeDir, s, iterlog.New(iterlog.LevelError, os.Stderr), RunOptions{NoInteractive: true})
 	out, err := runner(context.Background(), runtime.SubbotRequest{
 		Source:      "child.bot",

@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // TestPrepareWorkflowTakesTheProjectAndTheWorkspaceApart pins the two-input
@@ -19,7 +20,7 @@ func TestPrepareWorkflowTakesTheProjectAndTheWorkspaceApart(t *testing.T) {
 	workspace := t.TempDir()
 	wf := &ir.Workflow{}
 
-	if err := PrepareWorkflow(wf, projectDir, workspace); err != nil {
+	if err := PrepareWorkflow(wf, projectDir, workspace, store.RunTrustDefault); err != nil {
 		t.Fatalf("PrepareWorkflow: %v", err)
 	}
 

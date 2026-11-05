@@ -32,7 +32,7 @@ func seedCapRefusalRun(t *testing.T, srv *Server, runID string, status store.Run
 	if err := os.WriteFile(logicalPath, []byte(source), 0o644); err != nil {
 		t.Fatalf("write workflow: %v", err)
 	}
-	_, workflowHash, err := runview.CompileWorkflowFromSource(logicalPath, source, "")
+	_, workflowHash, err := runview.CompileWorkflowFromSource(logicalPath, source, "", store.RunTrustDefault)
 	if err != nil {
 		t.Fatalf("compile workflow: %v", err)
 	}

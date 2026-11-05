@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/runview"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // TestPromotedMainBotHashesLikeItsBundleOnEverySurface: the workflow hash
@@ -43,7 +44,7 @@ func TestPromotedMainBotHashesLikeItsBundleOnEverySurface(t *testing.T) {
 			return "", err
 		}
 		defer func() { _ = cleanup() }()
-		_, h, err := runview.CompileBundleWorkflow(opened.IterPath, opened, "")
+		_, h, err := runview.CompileBundleWorkflow(opened.IterPath, opened, "", store.RunTrustDefault)
 		return h, err
 	})
 	// The launch compile itself (Service.Launch → compileForLaunch) is held
@@ -57,7 +58,7 @@ func TestPromotedMainBotHashesLikeItsBundleOnEverySurface(t *testing.T) {
 		if b == nil {
 			t.Fatal("runview did not promote the bare main.bot to its bundle")
 		}
-		_, h, err := runview.CompileBundleWorkflow(b.IterPath, b, "")
+		_, h, err := runview.CompileBundleWorkflow(b.IterPath, b, "", store.RunTrustDefault)
 		return h, err
 	})
 	resume := hashOf("resume on the recorded bundle path", func() (string, error) {
@@ -66,13 +67,13 @@ func TestPromotedMainBotHashesLikeItsBundleOnEverySurface(t *testing.T) {
 			return "", err
 		}
 		defer func() { _ = cleanup() }()
-		_, h, err := runview.CompileBundleWorkflow(opened.IterPath, opened, "")
+		_, h, err := runview.CompileBundleWorkflow(opened.IterPath, opened, "", store.RunTrustDefault)
 		return h, err
 	})
 	// The shared helper every path-driven surface compiles through (the
 	// dispatcher's engine path, rewind, the export).
 	pathHelper := hashOf("runview.CompileWorkflowPath on the bare main.bot", func() (string, error) {
-		_, h, _, err := runview.CompileWorkflowPath(mainBot, "")
+		_, h, _, err := runview.CompileWorkflowPath(mainBot, "", store.RunTrustDefault)
 		return h, err
 	})
 	if cli != promoted || cli != resume || cli != pathHelper {
@@ -89,7 +90,7 @@ func TestPromotedMainBotHashesLikeItsBundleOnEverySurface(t *testing.T) {
 			return "", err
 		}
 		defer func() { _ = cleanup() }()
-		_, h, err := runview.CompileBundleWorkflow(opened.IterPath, opened, "")
+		_, h, err := runview.CompileBundleWorkflow(opened.IterPath, opened, "", store.RunTrustDefault)
 		return h, err
 	}); edited == cli {
 		t.Errorf("the hash did not move with prompts/mission.md; a bundle edit would resume silently")

@@ -48,12 +48,13 @@ func (e *ClawExecutor) SessionResumeCapability(node ir.Node) (string, bool) {
 }
 
 func (e *ClawExecutor) packerTask() delegate.Task {
-	return delegate.Task{
-		WorkDir:        e.WorkDir(),
+	t := delegate.Task{
 		StoreDir:       e.storeDir,
 		SharedStateDir: e.sharedStateDir,
 		Sandbox:        e.sandbox,
 	}
+	e.stampWorkspace(&t)
+	return t
 }
 
 func (e *ClawExecutor) PackSession(ctx context.Context, backend, sessionID string) ([]byte, error) {

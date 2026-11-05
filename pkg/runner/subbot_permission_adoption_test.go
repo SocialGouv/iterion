@@ -14,6 +14,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/store/storetest"
 )
 
 // copyOnlySandbox is a copy-based parent sandbox that executes nothing.
@@ -66,7 +67,7 @@ func TestSubbotRunner_aGateThatCanAskKeepsTheChildOutOfACopyBasedParent(t *testi
 			childPath := writeSubbotFixture(t, parentDir, "child.bot", agentChildBot(tc.declared))
 			msg := &queue.RunMessage{RunID: "run-parent", TenantID: "t1", OwnerID: "u1", BotID: "parent", Permission: tc.runLevel}
 
-			childWf, _, _, err := runview.CompileWorkflowPath(childPath, "")
+			childWf, _, _, err := runview.CompileWorkflowPath(childPath, "", store.RunTrustDefault)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -79,6 +80,7 @@ func TestSubbotRunner_aGateThatCanAskKeepsTheChildOutOfACopyBasedParent(t *testi
 
 			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 			defer cancel()
+			storetest.SeedParentRun(t, r.cfg.Store, msg.RunID)
 			run := r.subbotRunnerFor(msg, parentDir, dir, iterlog.Nop())
 			_, _ = run(ctx, runtime.SubbotRequest{
 				Source: "child.bot", ParentRunID: msg.RunID, NodeID: "run_ticket", ReattachKey: "run_ticket",
