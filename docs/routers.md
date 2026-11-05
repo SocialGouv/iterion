@@ -248,7 +248,7 @@ When using `model`, the engine resolves the model identifier through this chain:
 1. A launch-time model override (`--model router=…`, the router's id or a glob, a bare `--model`)
 2. The `model` field value — a `{{vars.<name>}}` reference resolves first (vars only; any other template warns C148 and is read as text), then `${VAR}` / `${VAR:-default}` expansion
 3. The `ITERION_DEFAULT_SUPERVISOR_MODEL` environment variable
-4. Built-in default: `anthropic/claude-sonnet-5`
+4. Built-in default: `anthropic/claude-opus-5-5`
 
 The credential admission and the usage-cap pre-flight judge the model this
 chain names, the one the router's dispatch sends.
