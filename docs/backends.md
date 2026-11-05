@@ -134,8 +134,9 @@ wherever a root reaches them (`KUBECONFIG`, `NPM_CONFIG_USERCONFIG`,
 `CODEX_HOME`, `AWS_SHARED_CREDENTIALS_FILE`, `DOCKER_CONFIG`,
 `GH_CONFIG_DIR`, `CLAUDE_CONFIG_DIR`, `HOME` — in a sandboxed runner that
 is the runner's own env, whose HOME lives under the scratch root),
-`.npmrc` refuses at a project position (the root of the workspace or of a
-declared read root), and the intrinsic carriers (the `.env` family,
+`.npmrc` refuses at a project position (the root of the workspace — in
+its spelling and its symlink-resolved one — or of a declared read root),
+and the intrinsic carriers (the `.env` family,
 `.netrc`, `.git-credentials`, `cli-auth.json`, private keys, the clone's
 `.git/iterion-credentials`, the iterion home's `secrets.json`) refuse
 wherever they appear. The consequence an author feels: a fixture or

@@ -360,11 +360,22 @@ type credentialReadGate struct {
 // and their siblings; in a sandboxed runner that IS the runner's own
 // environment, whose HOME lives under the scratch read root) and anchors
 // the root-relative carriers on the scope's current roots.
+//
+// The workspace anchors in BOTH spellings: as the scope holds it, which
+// is how a raw absolute path arrives, and canonical, which is how the
+// resolved target the gate also judges arrives. A workspace reached
+// through a symlink (a symlinked projects dir in $PWD, an ITERION_HOME
+// that is a link, macOS /tmp) otherwise anchors .npmrc on a spelling no
+// resolved path ever carries, and the project-root .npmrc reads. The
+// extra roots are canonical already (AddExtraRoot, AddExtraRootBeneath).
 func newCredentialReadGate(scope *ReadScope) credentialReadGate {
 	workspace, extra := scope.snapshot()
-	roots := make([]string, 0, len(extra)+1)
+	roots := make([]string, 0, len(extra)+2)
 	if strings.TrimSpace(workspace) != "" {
 		roots = append(roots, workspace)
+		if canon, err := canonicalReadRoot(workspace); err == nil && canon != workspace {
+			roots = append(roots, canon)
+		}
 	}
 	roots = append(roots, extraRootPaths(extra)...)
 	return credentialReadGate{guard: clawtools.NewCredentialReadGuard(os.Getenv), roots: roots}
