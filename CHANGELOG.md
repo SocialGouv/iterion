@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [5.10.1](https://github.com/SocialGouv/iterion/compare/v5.10.0...v5.10.1) (2026-11-05)
+
+### Bug Fixes
+
+* **model,runtime:** make structured outputs hold on gateway models like deepseek ([#3069](https://github.com/SocialGouv/iterion/issues/3069)) ([c8d8fde](https://github.com/SocialGouv/iterion/commit/c8d8fdedf0ef3834b31150b5ed2ef4c9ca2a030b)), closes [#792](https://github.com/SocialGouv/iterion/issues/792), references [#3055](https://github.com/SocialGouv/iterion/issues/3055) [#3064](https://github.com/SocialGouv/iterion/issues/3064)
+
+    <details><summary>why</summary>
+
+    The deepseek-v4.1-flash probe (PLIAGE gateway, claw + openai_compatible) found the harness supported but not integrated. This closes G1, G2, G3 and G7 and the adversarial review of those fixes.
+
+    </details>
+
 ## [5.10.0](https://github.com/SocialGouv/iterion/compare/v5.9.1...v5.10.0) (2026-11-05)
 
 ### Features
