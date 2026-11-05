@@ -106,6 +106,37 @@ func resolveClawCall(ctx context.Context, reg *Registry, call credroute.Call) (c
 	return res, nil
 }
 
+// inProcessClaw is the claw arm's answer for a call this process makes on the
+// host: the client the arm's walk built and the Spend that call's usage
+// events carry (ADR-161 decisions 3 and 8), never a second walk. A walk that
+// reaches no credential still hands back the client it built — the
+// provider's refusal is the call's answer, as it is for every in-process
+// call — with the zero Spend; any other refusal is the call's error.
+func inProcessClaw(ctx context.Context, reg *Registry, call credroute.Call) (api.APIClient, credroute.Spend, error) {
+	call.Sandbox = credroute.Sandbox{}
+	res, err := resolveClawCall(ctx, reg, call)
+	var refusal *credroute.Refusal
+	if err != nil && !(errors.As(err, &refusal) && refusal.Reason == credroute.ReasonNoCredential && res.client != nil) {
+		return nil, credroute.Spend{}, err
+	}
+	return res.client, res.spend, nil
+}
+
+// resolveBeside is the claw arm's resolution of spec for a call a node's
+// execution makes beside its dispatch — a subagent the node spawns, a human
+// node's LLM half, the review companion, a recovery rung: in process, under
+// the hint ctx carries (the dispatching node's, which Execute stamps), the
+// walk ResolveWithContext takes, and the Spend the call's events carry. Its
+// role is auxiliary: Execute's subscription switch guard judges the node's
+// own dispatch, and the walk judges the switch on what it reaches.
+func (r *Registry) resolveBeside(ctx context.Context, spec string) (api.APIClient, credroute.Spend, error) {
+	return inProcessClaw(ctx, r, credroute.Call{
+		Backend: delegate.BackendClaw, Spec: spec,
+		Leg:  credroute.Leg{Provider: providerHintFromContext(ctx)},
+		Role: credroute.RoleAuxiliary,
+	})
+}
+
 // clawRefusal types err, a refusal of the walk or the crossing, as the
 // resolver's Refusal, unwrapping to err: every errors.As a site matches today
 // keeps matching.
@@ -146,8 +177,11 @@ func clawRefusal(call credroute.Call, err error) *credroute.Refusal {
 // claw's anthropic wire is walked as the container walks it (the direct path
 // under the hint, the env factory otherwise), and so is the openai wire's
 // ChatGPT forfait and key order; a gateway route spends what crossed under
-// compatgw's names. Any other spec reads the first credential the crossing
-// hands the container: its factory reads the pod's own credential chain.
+// compatgw's names. Every other provider spends what its own env factory
+// reads (clawEnvFactories): the key under that factory's name, or the pod's
+// identity chain where the factory serves without one. A spec the container's
+// registry cannot resolve — unreadable, or a provider it registers no factory
+// for — is refused, as the container refuses it.
 func containerSpend(ctx context.Context, env map[string]string, facts crossingFacts, spec, hint string, home credroute.SandboxHomeState) (credroute.Spend, error) {
 	creds, _ := secrets.CredentialsFromContext(ctx)
 	inside := credroute.WithEnv(context.Background(), env)
@@ -171,8 +205,11 @@ func containerSpend(ctx context.Context, env map[string]string, facts crossingFa
 	}
 
 	provider, modelID, err := ParseModelSpec(spec)
-	switch {
-	case err == nil && provider == "anthropic":
+	if err != nil {
+		return credroute.Spend{}, err
+	}
+	switch provider {
+	case "anthropic":
 		direct := HonoursProviderHintValue(delegate.BackendClaw, hint)
 		var w anthropicEnvWalk
 		switch {
@@ -193,7 +230,7 @@ func containerSpend(ctx context.Context, env map[string]string, facts crossingFa
 			spend.Fingerprint = w.spend().Fingerprint
 		}
 		return spend, err
-	case err == nil && provider == "openai":
+	case "openai":
 		apiKey := env["OPENAI_API_KEY"]
 		if openAIOAuthAllowed(inside) && (apiKey == "" || env["ITERION_OPENAI_USE_OAUTH"] == "1") {
 			if env["CODEX_HOME"] == secrets.CodexSandboxConfigDir {
@@ -204,18 +241,56 @@ func containerSpend(ctx context.Context, env map[string]string, facts crossingFa
 			}
 		}
 		return crossed("OPENAI_API_KEY", env["OPENAI_BASE_URL"])
-	case err == nil && provider == modelroute.OpenAICompatible:
+	case modelroute.OpenAICompatible:
 		return crossed(compatgw.APIKeyEnv, env[compatgw.BaseURLEnv])
 	}
-	for _, key := range clawSandboxCredentialEnvKeys {
-		if env[key] != "" {
-			return crossed(key, "")
-		}
+	factory, ok := clawEnvFactories[provider]
+	if !ok {
+		return credroute.Spend{}, fmt.Errorf("model: unknown provider %q (spec: %q): the in-container registry builds no client for it", provider, spec)
 	}
-	if spend, ok := hostCodexForfaitSpend(ctx, spec, home); ok {
-		return spend, nil
+	if factory.key != "" && env[factory.key] != "" {
+		return crossed(factory.key, env[factory.baseURL])
+	}
+	if factory.identityChain {
+		// The factory's SDK serves a keyless client from the pod's own
+		// identity chain (instance metadata, workload identity, ADC).
+		return credroute.Spend{Channel: credroute.ChannelPodEnv, BaseURL: env[factory.baseURL]}, nil
 	}
 	return credroute.Spend{}, &errNoClawCredential{Spec: spec}
+}
+
+// clawEnvFactory is what one env factory of claw's registry (registerDefaults)
+// reads its credential from, for the providers containerSpend does not walk
+// branch by branch.
+type clawEnvFactory struct {
+	// key is the variable the factory reads the account key from; "" for a
+	// factory that reads none.
+	key string
+	// baseURL is the variable naming the destination that key is sent to;
+	// "" for a factory whose destination no variable redirects.
+	baseURL string
+	// identityChain: with no key, the factory's SDK serves from the pod's
+	// own identity chain rather than building a credential-less client.
+	identityChain bool
+}
+
+// clawEnvFactories names, per provider of registerDefaults other than
+// anthropic, openai and the gateway (containerSpend's own branches), the
+// credential its env factory reads in the container. The crossing writes a
+// run's key for the node under that same name (byokEnvVar) beside whatever
+// the pod forwards under the others, so the name the factory reads decides
+// which of them the call spends. TestEveryDefaultProviderNamesItsContainerCredential
+// pins every registered factory to an entry here.
+var clawEnvFactories = map[string]clawEnvFactory{
+	"xai":      {key: "XAI_API_KEY", baseURL: "XAI_BASE_URL"},
+	"moonshot": {key: "MOONSHOT_API_KEY", baseURL: "MOONSHOT_BASE_URL"},
+	// azidentity's DefaultAzureCredential serves without the key.
+	"foundry": {key: "AZURE_OPENAI_API_KEY", baseURL: "AZURE_OPENAI_ENDPOINT", identityChain: true},
+	// The AWS SDK's chain: the key pair when it crossed, the pod's role
+	// otherwise.
+	"bedrock": {key: "AWS_ACCESS_KEY_ID", identityChain: true},
+	// Google's ADC: no variable of the crossing carries it.
+	"vertex": {identityChain: true},
 }
 
 // hostCodexForfaitSpend names the host's ChatGPT login when it reaches a
@@ -240,7 +315,8 @@ func hostCodexForfaitSpend(ctx context.Context, spec string, home credroute.Sand
 // channels (CODEX_HOME / CLAUDE_CONFIG_DIR point at a forfait the runtime
 // seeded into the container). Endpoint and routing names
 // (providerRoutingEnvVars) never authenticate by themselves and are not
-// here.
+// here. stampedCrossingFunds asks whether any of them is set; which one a
+// call spends is containerSpend's walk, never the list's order.
 var clawSandboxCredentialEnvKeys = []string{
 	"OPENAI_API_KEY",
 	"AZURE_OPENAI_API_KEY",

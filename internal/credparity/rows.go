@@ -253,6 +253,31 @@ func Rows() []Row {
 		Want:    Spent(0, RunKey, string(secrets.ProviderAnthropic), RunAnthropic),
 	}, nil, nil)...)
 
+	// SEEN RED (#2022, U0–U2's review): a claw node off the anthropic and
+	// openai wires spends the run's own key for its provider, on the host and
+	// in the sandbox alike, past the pod's OpenAI key the crossing forwards to
+	// every node. The arm named the container's credential as the first
+	// forwarded key set — the pod's — where the container's factory reads
+	// its provider's own name: the meter, the ledger and the fine table read
+	// the pod's money for the run's lent key.
+	for _, own := range []struct {
+		provider secrets.Provider
+		spec     string
+		key      string
+	}{
+		{secrets.ProviderMoonshot, "moonshot/kimi-k2", RunMoonshot},
+		{secrets.ProviderXAI, "xai/grok-4", RunXAI},
+	} {
+		add(sides(Row{
+			Name:    "a run's own " + string(own.provider) + " key beside the pod's OpenAI key",
+			Origin:  "#2022 U0–U2 review (a sandboxed claw node on moonshot or xai spent the arm's first forwarded key)",
+			Posture: map[string]string{"OPENAI_API_KEY": PodOpenAI},
+			Run:     Run{Keys: map[secrets.Provider]string{own.provider: own.key}, Plan: true},
+			Node:    Node{ID: "impl", Backend: "claw", Model: own.spec, Legs: []Leg{{}}},
+			Want:    Spent(0, RunKey, string(own.provider), own.key),
+		}, nil, nil)...)
+	}
+
 	// Port row (#2808's seam): the env factory and the meter read one walk —
 	// under the switch the pod's bearer is refused, and nothing is metered;
 	// the probe read the crossed bearer as a channel, the arm walks it as the

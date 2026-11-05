@@ -49,10 +49,11 @@ func (e *ClawExecutor) ExecuteReviewCompanion(ctx context.Context, node *ir.Huma
 	}
 
 	modelSpec := e.resolveRoutingField(node.Model)
-	// ResolveWithContext, never Resolve: under the ambient stamp the env
-	// fallback is the typed refusal, and a gateway companion spec resolves
-	// from the run's sealed pair, uncached.
-	client, err := e.registry.ResolveWithContext(ctx, modelSpec)
+	// The claw arm's resolution over the run's credentials, never Resolve:
+	// under the ambient stamp the env fallback is the typed refusal, and a
+	// gateway companion spec resolves from the run's sealed pair, uncached.
+	// Its Spend rides the step events.
+	client, credential, err := e.registry.resolveBeside(ctx, modelSpec)
 	if err != nil {
 		return nil, fmt.Errorf("model: review node %q: %w", node.ID, err)
 	}
@@ -60,6 +61,7 @@ func (e *ClawExecutor) ExecuteReviewCompanion(ctx context.Context, node *ir.Huma
 	genOpts := GenerationOptions{
 		Model:          modelSpec,
 		Provider:       clawSpecProvider(modelSpec),
+		Credential:     credential,
 		System:         systemText,
 		ExplicitSchema: jsonSchema,
 		Messages: []api.Message{

@@ -278,18 +278,19 @@ func TestCheckGatewaySource_KeyWithoutURLIsTheTypedRefusal(t *testing.T) {
 	}
 }
 
-// The run-side LLM client resolvers answer to the run's credentials: under
-// the stamp a vendor spec is the typed refusal, which only
-// ResolveWithContext answers. A site that drops back to bare Resolve serves
-// the pod's env key to a stamped run.
-func TestRunSideClientResolversUseTheContextVariant(t *testing.T) {
-	for _, f := range []string{"executor_human.go", "executor_build_task.go", "subagent.go"} {
+// The run-side LLM client resolvers answer to the run's credentials through
+// the claw arm (resolveBeside, over ResolveWithContext's walk): under the
+// stamp a vendor spec is the typed refusal, which only the run's credentials
+// answer, and the call's events carry the Spend the arm names. A site that
+// drops back to bare Resolve serves the pod's env key to a stamped run.
+func TestRunSideClientResolversUseTheClawArm(t *testing.T) {
+	for _, f := range []string{"executor_human.go", "executor_build_task.go", "subagent.go", "review_companion.go", "executor_verified_action.go"} {
 		body, err := os.ReadFile(f)
 		if err != nil {
 			t.Fatalf("%s: %v", f, err)
 		}
-		if !strings.Contains(string(body), "ResolveWithContext(ctx, modelSpec)") {
-			t.Fatalf("%s resolves its client without the run's credentials (bare Resolve)", f)
+		if !strings.Contains(string(body), "resolveBeside(ctx, modelSpec)") {
+			t.Fatalf("%s resolves its client outside the claw arm — without the run's credentials, or without the Spend its events carry", f)
 		}
 		if strings.Contains(string(body), "registry.Resolve(modelSpec)") || strings.Contains(string(body), "modelReg.Resolve(modelSpec)") {
 			t.Fatalf("%s still calls bare Resolve beside the context variant", f)

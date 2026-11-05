@@ -1109,6 +1109,16 @@ func (e *ClawExecutor) validateAndRetry(
 	}
 }
 
+// DetectedClawSpec is the model a claw node that names none sends: the
+// detector's suggestion over the providers this host holds, vetted against
+// the run's provider allowlist (allowlistedDetectorPick) — "" when the
+// detector suggests none. The dispatch builds such a node's task on it, and
+// the launch's credential admission judges the same spec (ADR-161
+// decision 2: a pod-detected pick is an input).
+func (e *ClawExecutor) DetectedClawSpec(nodeID string) (string, error) {
+	return e.allowlistedDetectorPick(nodeID, e.detectorSuggestedModel())
+}
+
 // allowlistedDetectorPick vets the HOST's model pick against the run's
 // provider allowlist (ADR-129 §5): the detector reads the pod, a source no
 // chain element carried — the same vendor-call class the gateway skip in
@@ -1191,13 +1201,14 @@ func (e *ClawExecutor) extractStructuredViaClaw(
 		e.logger.Warn("[%s] structured-output recovery skipped: %v", nodeID, err)
 		return delegate.Result{}, delegate.Result{}, false, nil
 	}
-	client, err := e.registry.ResolveWithContext(ctx, modelSpec)
+	client, credential, err := e.registry.resolveBeside(ctx, modelSpec)
 	if err != nil {
 		e.logger.Warn("[%s] structured-output recovery: resolve %q: %v", nodeID, modelSpec, err)
 		return delegate.Result{}, delegate.Result{}, false, nil
 	}
 	genOpts := GenerationOptions{
-		Model: modelSpec,
+		Model:      modelSpec,
+		Credential: credential,
 		System: "You convert an assistant's finished answer into the required structured JSON. " +
 			"Use ONLY information present in the answer — never invent, add, or drop data. Populate every required field.",
 		Messages: []api.Message{{Role: "user", Content: []api.ContentBlock{{
@@ -1344,7 +1355,7 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 		resolvedModel = ov.Model
 	}
 	if resolvedModel == "" && backendName == delegate.BackendClaw {
-		picked, err := e.allowlistedDetectorPick(f.id, e.detectorSuggestedModel())
+		picked, err := e.DetectedClawSpec(f.id)
 		if err != nil {
 			return delegate.Task{}, err
 		}

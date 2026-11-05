@@ -60,15 +60,16 @@ func (e *ClawExecutor) executeHumanLLMWithSpend(ctx context.Context, node *ir.Hu
 	// `${VAR:-default}` (recipes use the latter for model fallbacks like
 	// "openai/${ITERION_RENOVACY_MODEL_GPT:-gpt-5.5}").
 	modelSpec := e.resolveRoutingField(node.Model)
-	client, err := e.registry.ResolveWithContext(ctx, modelSpec)
+	client, credential, err := e.registry.resolveBeside(ctx, modelSpec)
 	if err != nil {
 		return nil, nil, fmt.Errorf("model: human node %q: %w", node.ID, err)
 	}
 
-	// Build GenerationOptions.
+	// Build GenerationOptions: the arm's Spend rides the step events.
 	genOpts := GenerationOptions{
-		Model:    modelSpec,
-		Provider: clawSpecProvider(modelSpec),
+		Model:      modelSpec,
+		Provider:   clawSpecProvider(modelSpec),
+		Credential: credential,
 	}
 
 	// Reasoning effort (dynamic override from input, then static node property).

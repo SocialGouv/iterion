@@ -184,23 +184,30 @@ func dispatchParityLeg(t *testing.T, ctx context.Context, row credparity.Row, i 
 }
 
 // paritySpend names the credential a built client sends by the channel that
-// holds its value: the bearer it sends as its OAuth token, else its x-api-key
-// — replaced by the Authorization line of the process's custom-header block
-// where the client applies that block (claw's own identity pass, which the
-// engine's clients refuse: NoAmbientHeaders).
+// holds its value: the bearer it sends as its OAuth token, else its key —
+// on the anthropic wire replaced by the Authorization line of the process's
+// custom-header block where the client applies that block (claw's own
+// identity pass, which the engine's clients refuse: NoAmbientHeaders). A
+// client of claw's openai provider (the xai route's) is read by its fields'
+// names: its type lives in claw's internal package.
 func paritySpend(t *testing.T, row credparity.Row, leg int, client api.APIClient) credparity.Spend {
 	t.Helper()
-	cc, ok := client.(*api.Client)
-	if !ok {
-		t.Fatalf("leg %d built a %T: the harness reads an anthropic-wire client", leg, client)
-	}
-	cred := cc.OAuthToken
-	if cred == "" {
-		cred = cc.APIKey
-	}
-	if !cc.NoAmbientHeaders {
-		if line, ok := credheader.LineValue(os.Getenv("ANTHROPIC_CUSTOM_HEADERS"), credheader.NameAuthorization); ok {
-			cred = line
+	var cred string
+	if cc, ok := client.(*api.Client); ok {
+		cred = cc.OAuthToken
+		if cred == "" {
+			cred = cc.APIKey
+		}
+		if !cc.NoAmbientHeaders {
+			if line, ok := credheader.LineValue(os.Getenv("ANTHROPIC_CUSTOM_HEADERS"), credheader.NameAuthorization); ok {
+				cred = line
+			}
+		}
+	} else {
+		key, token := openAIClientAuth(t, client)
+		cred = token
+		if cred == "" {
+			cred = key
 		}
 	}
 	switch {

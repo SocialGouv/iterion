@@ -457,7 +457,8 @@ func assertRunnerHomeShape(t *testing.T, home, hostHome, workDir string) {
 var crossingSpellings = map[string]string{
 	"var providerCredentialEnvVars":      "the forwarding list itself",
 	"var providerRoutingEnvVars":         "the routing subset, which forwardableProviderEnv forwards as explicit empties when the host leaves them unset",
-	"var clawSandboxCredentialEnvKeys":   "the claw arm's key list for a spec its container walk does not read precisely: containerSpend reads the composed dispatch env through it (env[key] over the range), naming the first entry that carries a value",
+	"var clawSandboxCredentialEnvKeys":   "the crossing's credential channels, which stampedCrossingFunds reads a stamped run's composed dispatch env over (env[key] over the range) — a map read the scan cannot see, nothing is forwarded",
+	"var clawEnvFactories":               "the credential each env factory of the in-container registry reads, which containerSpend reads the composed dispatch env under (env[factory.key]) — a map read the scan cannot see, nothing is forwarded",
 	"containerSpend":                     "reads the composed dispatch env the container's walk lands on — the credential names its walk takes, the forfait dirs the crossing points at, the gateway pair — and the channel the crossing recorded for each (crossingFacts.funds): map reads the scan cannot see, nothing is forwarded",
 	"var clawStreamTimeoutEnvVars":       "the watchdog knobs, which forwardableProviderEnv crosses as the host's planted-as-unset answer, explicit empty included",
 	"forwardableProviderEnv":             "sets the crossing: a refusal, the run's own credentials, the host's resolved values — and never a value envtrust.Planted reads as a workspace .env's: the forwarding loop crosses the explicit empty instead (named in crossingFacts.planted), and the gateway branch reads envtrust.Inherited (consultsHandoffs), so a planted gateway route fails the node loudly, by name",

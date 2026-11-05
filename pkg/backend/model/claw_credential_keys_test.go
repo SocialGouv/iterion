@@ -3,6 +3,7 @@ package model
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"sync"
 	"testing"
 
@@ -10,6 +11,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/backend/credroute"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
+	"github.com/SocialGouv/iterion/pkg/backend/tool"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/secrets"
@@ -163,5 +165,88 @@ func TestDelegateEventsAndFoldedSlicesCarryTheirCredentials(t *testing.T) {
 	entry, _ := folded[0].(map[string]any)
 	if got, ok := credroute.SpendFromEvent(entry); !ok || got.Slot != abandoned.Slot || got.Fingerprint != abandoned.Fingerprint {
 		t.Errorf("the folded slice carries %+v (present %v), want the abandoned attempt's %+v", got, ok, abandoned)
+	}
+}
+
+// Every in-process claw call beside a node's own dispatch — a subagent the
+// node spawns, a human node's LLM half, the review companion — resolves
+// through the claw arm (resolveBeside) and stamps its Spend on its step
+// events, so the ledger and the fine table book the credential the call
+// spent, never a derivation. Here the pod's key, its account named. Mutant —
+// a site's GenerationOptions without the arm's Spend: its steps carry no
+// credential keys.
+func TestACallBesideTheDispatchCarriesTheArmsSpend(t *testing.T) {
+	want := credroute.Spend{Channel: credroute.ChannelPodEnv, Fingerprint: secrets.FingerprintSHA256("sk-pod")}
+	verdict := map[string]*ir.Schema{"verdict": {Name: "verdict", Fields: []*ir.SchemaField{{Name: "decision", Type: ir.FieldTypeString}}}}
+	for _, tc := range []struct {
+		name string
+		// node is the step events' node id.
+		node string
+		run  func(t *testing.T, reg *Registry, hooks EventHooks)
+	}{
+		{"a subagent the node spawns", "subagent:", func(t *testing.T, reg *Registry, hooks EventHooks) {
+			input := `{"description":"summarise","prompt":"Summarise Go interfaces","subagent_type":"general-purpose","model":"anthropic/claude-haiku-4-5"}`
+			// One mock serves both conversations, its scripts consumed in
+			// call order.
+			mock := newMockClient(
+				toolUseEvents("tu_1", "agent", input, 100, 30),
+				textEvents("the child's own answer", 200, 60),
+				textEvents("the node's answer", 10, 5),
+			)
+			reg.Register("anthropic", func(string) (api.APIClient, error) { return mock, nil })
+			runner := NewSubagentRunner(reg, tool.NewRegistry(), hooks, nil, "")
+			if _, err := NewClawBackend(reg, EventHooks{}, RetryPolicy{MaxAttempts: 1}).Execute(context.Background(), delegate.Task{
+				NodeID: "delegator", Model: "anthropic/claude-sonnet-4-6", UserPrompt: "Delegate the summary.",
+				HasTools: true, ToolDefs: []delegate.ToolDef{agentToolDefFor(t, runner)}, ToolMaxSteps: 5,
+			}); err != nil {
+				t.Fatalf("scenario broken: %v", err)
+			}
+		}},
+		{"a human node's LLM half", "gate", func(t *testing.T, reg *Registry, hooks EventHooks) {
+			reg.Register("anthropic", func(string) (api.APIClient, error) {
+				return newMockClient(textEvents(`{"decision":"approve"}`, 40, 8)), nil
+			})
+			node := &ir.HumanNode{
+				BaseNode:          ir.BaseNode{ID: "gate"},
+				InteractionFields: ir.InteractionFields{Interaction: ir.InteractionLLMOrHuman},
+				Model:             "anthropic/claude-sonnet-4-6",
+			}
+			node.OutputSchema = "verdict"
+			wf := &ir.Workflow{Name: "gate", Nodes: map[string]ir.Node{"gate": node}, Schemas: verdict, Prompts: map[string]*ir.Prompt{}}
+			e := NewClawExecutor(reg, wf, WithEventHooks(hooks))
+			_, _ = e.executeHumanLLM(context.Background(), node, map[string]any{"ctx": "the change"}, nil)
+		}},
+		{"the review companion", "rev", func(t *testing.T, reg *Registry, hooks EventHooks) {
+			reg.Register("anthropic", func(string) (api.APIClient, error) {
+				return newMockClient(textEvents(`{"decision":"approve","needs_human_input":false,"message":"done"}`, 40, 8)), nil
+			})
+			node := &ir.HumanNode{Model: "anthropic/claude-haiku-4-5"}
+			node.ID = "rev"
+			node.OutputSchema = "verdict"
+			wf := &ir.Workflow{Name: "rev", Nodes: map[string]ir.Node{"rev": node}, Schemas: verdict, Prompts: map[string]*ir.Prompt{}}
+			e := NewClawExecutor(reg, wf, WithEventHooks(hooks))
+			_, _ = e.ExecuteReviewCompanion(context.Background(), node, "system", "user")
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			blankAmbientEnv(t)
+			t.Setenv("ANTHROPIC_API_KEY", "sk-pod")
+			em := &lockedEmitter{}
+			tc.run(t, NewRegistry(), NewStoreEventHooks(context.Background(), em, "run-beside", iterlog.Nop(), nil, nil))
+			steps := 0
+			for _, e := range em.snapshot() {
+				if e.Type != store.EventLLMStepFinished || !strings.HasPrefix(e.NodeID, tc.node) {
+					continue
+				}
+				steps++
+				got, ok := credroute.SpendFromEvent(e.Data)
+				if !ok || got.Channel != want.Channel || got.Slot != "" || got.Fingerprint != want.Fingerprint {
+					t.Errorf("%s's step carries the credential keys %+v (present %v), want the arm's Spend %+v", e.NodeID, got, ok, want)
+				}
+			}
+			if steps == 0 {
+				t.Fatalf("inert bench: no step event of %q to judge (%d events)", tc.node, len(em.snapshot()))
+			}
+		})
 	}
 }

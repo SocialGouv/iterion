@@ -418,12 +418,10 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 	// keeps the env-fallback path. A walk that reaches no credential still
 	// hands back the client it built: the provider's refusal is the call's
 	// answer, as before.
-	resolution, err := resolveClawCall(ctx, b.registry, clawCall(task, credroute.Sandbox{}))
-	var refusal *credroute.Refusal
-	if err != nil && !(errors.As(err, &refusal) && refusal.Reason == credroute.ReasonNoCredential && resolution.client != nil) {
+	client, spend, err := inProcessClaw(ctx, b.registry, clawCall(task, credroute.Sandbox{}))
+	if err != nil {
 		return delegate.Result{}, fmt.Errorf("claw backend: %w", err)
 	}
-	client := resolution.client
 
 	// The spec must name a provider; the prefix itself comes off in
 	// buildRequest (wireModelID), exactly once — stripping it here too cut a
@@ -437,7 +435,7 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 	opts := GenerationOptions{
 		Model:                 task.Model,
 		Provider:              servingProvider(delegate.BackendClaw, &task),
-		Credential:            resolution.spend,
+		Credential:            spend,
 		MaxTokens:             task.MaxTokens,
 		CompactThresholdRatio: task.CompactThresholdRatio,
 		CompactPreserveRecent: task.CompactPreserveRecent,
@@ -781,7 +779,7 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 	}
 	// What this call spent, as the arm resolved it here, where the client
 	// was built (ADR-161 decision 8): the delegate events' credential keys.
-	res.Credential = resolution.spend
+	res.Credential = spend
 	return res, genErr
 }
 

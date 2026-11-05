@@ -261,7 +261,9 @@ func NewSubagentRunner(
 			return "", fmt.Errorf("subagent: no model specified, no host default and no parent node model")
 		}
 
-		client, err := modelReg.ResolveWithContext(ctx, modelSpec)
+		// The claw arm's resolution (ADR-161 decision 3: a subagent's spec
+		// resolves by the same arm), its Spend on the child's step events.
+		client, credential, err := modelReg.resolveBeside(ctx, modelSpec)
 		if err != nil {
 			return "", fmt.Errorf("subagent: resolve model %q: %w", modelSpec, err)
 		}
@@ -314,9 +316,10 @@ func NewSubagentRunner(
 		}
 
 		opts := GenerationOptions{
-			Model:    modelSpec,
-			Provider: clawSpecProvider(modelSpec),
-			System:   system,
+			Model:      modelSpec,
+			Provider:   clawSpecProvider(modelSpec),
+			Credential: credential,
+			System:     system,
 			Messages: []api.Message{{
 				Role:    "user",
 				Content: []api.ContentBlock{{Type: "text", Text: spec.Prompt}},

@@ -301,12 +301,12 @@ func (e *ClawExecutor) selfRepair(ctx context.Context, node *ir.ToolNode, stdout
 	if modelSpec == defaultVerifiedActionModel && anthropicFunding(ctx) == "" {
 		return "", recipeResult{}, fmt.Errorf("the recovery model is the default (%s) and no anthropic credential serves it — set recovery.model or ITERION_VERIFIED_ACTION_MODEL", defaultVerifiedActionModel)
 	}
-	// ResolveWithContext, never plain Resolve: the guard above reads the
-	// ctx's funding, so the resolution must spend from the same well — on a
-	// runner pod (ctx creds, empty env) plain Resolve builds a
-	// credential-less client and the 401 loop this guard exists to kill
-	// comes back through the side door.
-	client, err := e.registry.ResolveWithContext(ctx, modelSpec)
+	// The claw arm's resolution over the run's credentials, never plain
+	// Resolve: the guard above reads the ctx's funding, so the resolution
+	// must spend from the same well — on a runner pod (ctx creds, empty env)
+	// plain Resolve builds a credential-less client and the 401 loop this
+	// guard exists to kill comes back through the side door.
+	client, credential, err := e.registry.resolveBeside(ctx, modelSpec)
 	if err != nil {
 		return "", recipeResult{}, fmt.Errorf("resolve recovery model %q: %w", modelSpec, err)
 	}
@@ -335,6 +335,7 @@ Return only the corrected command (one shell invocation, may use && / pipes). Do
 
 	genOpts := GenerationOptions{
 		Model:          modelSpec,
+		Credential:     credential,
 		System:         "You are a precise build/release engineer. You correct a single failing shell command so it achieves the stated goal, accounting for the error output. You return strictly structured output.",
 		Messages:       []api.Message{{Role: "user", Content: []api.ContentBlock{{Type: "text", Text: userMsg}}}},
 		ExplicitSchema: json.RawMessage(selfRepairSchema),
