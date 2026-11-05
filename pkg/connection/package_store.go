@@ -207,6 +207,11 @@ type PackageStore interface {
 	Retract(ctx context.Context, tenantID, connectorID string) error
 	// ListByTenant returns a tenant's packages, sorted by connector id.
 	ListByTenant(ctx context.Context, tenantID string) ([]StoredPackage, error)
+	// ListConnectorIDs returns the connector ids of a tenant's packages,
+	// sorted, WITHOUT their files: what a tier's listing needs, at the cost
+	// of the ids rather than of every package's content (up to
+	// MaxPackageBytes each).
+	ListConnectorIDs(ctx context.Context, tenantID string) ([]string, error)
 }
 
 // ---- in-memory twin (tests / local) ----
@@ -277,5 +282,18 @@ func (s *MemoryPackageStore) ListByTenant(_ context.Context, tenantID string) ([
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ConnectorID < out[j].ConnectorID })
+	return out, nil
+}
+
+func (s *MemoryPackageStore) ListConnectorIDs(_ context.Context, tenantID string) ([]string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var out []string
+	for _, p := range s.rows {
+		if p.TenantID == tenantID {
+			out = append(out, p.ConnectorID)
+		}
+	}
+	sort.Strings(out)
 	return out, nil
 }

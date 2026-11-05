@@ -1,7 +1,12 @@
 package connection
 
 import (
+	"context"
+	"io/fs"
+	"strings"
 	"testing"
+
+	"github.com/SocialGouv/iterion/connectors"
 )
 
 // The baked floor is ONE instance per process (#2757 round-1 review): the
@@ -60,6 +65,38 @@ func BenchmarkBakedFloorResolution(b *testing.B) {
 		cat := NewLayeredCatalog(CloudCatalogs(store, "t1")...)
 		if _, _, err := cat.Package("forgejo"); err != nil {
 			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkStoreTierResolution measures one resolution served by a
+// store-backed tier over a fresh composition — the shipped Forgejo package
+// published to the platform tier: a document read and a hash over its files,
+// the parse reused while the bytes hold.
+func BenchmarkStoreTierResolution(b *testing.B) {
+	files := map[string]string{}
+	err := fs.WalkDir(connectors.FS(), "forgejo", func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		body, err := fs.ReadFile(connectors.FS(), p)
+		if err != nil {
+			return err
+		}
+		files[strings.TrimPrefix(p, "forgejo/")] = string(body)
+		return nil
+	})
+	if err != nil {
+		b.Fatal(err)
+	}
+	store := NewMemoryPackageStore()
+	if err := store.Publish(context.Background(), StoredPackage{TenantID: PlatformTenantID, ConnectorID: "forgejo", Files: files}); err != nil {
+		b.Fatal(err)
+	}
+	for b.Loop() {
+		cat := NewLayeredCatalog(CloudCatalogs(store, "t1")...)
+		if _, tier, err := cat.Package("forgejo"); err != nil || tier.Kind != TierPlatform {
+			b.Fatalf("tier=%v err=%v", tier.Kind, err)
 		}
 	}
 }

@@ -148,6 +148,18 @@ func TestPackageStore_PublishGetRetractAcrossTwins(t *testing.T) {
 		if err != nil || len(rows) != 1 {
 			t.Fatalf("list after republish: %v rows=%d", err, len(rows))
 		}
+		// The id-only listing answers the same rows, tenant-scoped, sorted.
+		publish(t, st, "team-a", "other")
+		ids, err := st.ListConnectorIDs(ctx, "team-a")
+		if err != nil || strings.Join(ids, ",") != "other,probe" {
+			t.Fatalf("ids = %v, %v — want other,probe", ids, err)
+		}
+		if ids, err := st.ListConnectorIDs(ctx, "team-b"); err != nil || len(ids) != 0 {
+			t.Fatalf("team-b ids = %v, %v — want none", ids, err)
+		}
+		if err := st.Retract(ctx, "team-a", "other"); err != nil {
+			t.Fatal(err)
+		}
 
 		if err := st.Retract(ctx, "team-a", "probe"); err != nil {
 			t.Fatalf("retract: %v", err)
@@ -393,6 +405,10 @@ func (listFailingStore) ListByTenant(context.Context, string) ([]connection.Stor
 	return nil, errListBlip
 }
 
+func (listFailingStore) ListConnectorIDs(context.Context, string) ([]string, error) {
+	return nil, errListBlip
+}
+
 // A tier that cannot LIST says so, through the composition: the facade built
 // over a silently empty team tier would serve the floor's tools alone with no
 // sign the team's were lost.
@@ -433,5 +449,103 @@ func TestFSCatalog_AnUnreadableRootIsTheListingsError(t *testing.T) {
 	ids, err := connection.NewFSCatalog(file).Connectors()
 	if err == nil || ids != nil || !strings.Contains(err.Error(), "cannot be listed") {
 		t.Fatalf("a root that is a file = %v, %v — want the read failure", ids, err)
+	}
+}
+
+// editedRowStore answers one row's Get with replacement files under the
+// row's RECORDED ContentHash — the state a hand edit or a migration leaves:
+// bytes changed, provenance not.
+type editedRowStore struct {
+	connection.PackageStore
+	files map[string]string
+}
+
+func (s editedRowStore) Get(ctx context.Context, tenantID, connectorID string) (connection.StoredPackage, error) {
+	p, err := s.PackageStore.Get(ctx, tenantID, connectorID)
+	if err != nil {
+		return p, err
+	}
+	p.Files = s.files
+	return p, nil
+}
+
+// The store tier reads through and does not re-parse: the loaded package is
+// reused while the row's bytes hash the same, a republish is served on the
+// next resolution, and a row whose bytes changed under its recorded hash is
+// re-read from those bytes — re-loaded, or refused when it no longer loads.
+func TestStoreTier_ReusesTheParseWhileTheBytesHold(t *testing.T) {
+	const tenant = "parse-cache-team"
+	store := connection.NewMemoryPackageStore()
+	version := func(v string) map[string]string {
+		pkg := publishedPackage("probe")
+		pkg.Connector.Version = v
+		return packageFiles(t, pkg)
+	}
+	resolve := func(st connection.PackageStore) (*spec.Package, error) {
+		// A FRESH tier per resolution, as every facade call builds one.
+		pkg, _, err := connection.TeamCatalog(st, tenant).Package("probe")
+		return pkg, err
+	}
+	if err := store.Publish(context.Background(), connection.StoredPackage{TenantID: tenant, ConnectorID: "probe", Files: version("1.0.0")}); err != nil {
+		t.Fatal(err)
+	}
+	first, err := resolve(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	again, err := resolve(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again != first {
+		t.Fatal("unchanged bytes were parsed again — the parse must be reused")
+	}
+
+	if err := store.Publish(context.Background(), connection.StoredPackage{TenantID: tenant, ConnectorID: "probe", Files: version("2.0.0")}); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := resolve(store); err != nil || got.Connector.Version != "2.0.0" {
+		t.Fatalf("after a republish: %s — want 2.0.0 on the next resolution", servedVersion(got, err))
+	}
+
+	edited := editedRowStore{PackageStore: store, files: version("3.0.0")}
+	if got, err := resolve(edited); err != nil || got.Connector.Version != "3.0.0" {
+		t.Fatalf("a row edited under its recorded hash: %s — want the bytes it holds (3.0.0)", servedVersion(got, err))
+	}
+	broken := editedRowStore{PackageStore: store, files: map[string]string{"connector.yaml": "schema_version: 1\nid: probe\nversion: ["}}
+	if _, err := resolve(broken); err == nil || !strings.Contains(err.Error(), "does not load") {
+		t.Fatalf("a row broken under its recorded hash: err = %v — it must be refused, not served from an earlier parse", err)
+	}
+}
+
+// servedVersion is what a resolution answered, for a failure message.
+func servedVersion(pkg *spec.Package, err error) string {
+	if err != nil {
+		return "error " + err.Error()
+	}
+	return "version " + pkg.Connector.Version
+}
+
+// filesUnreadableStore fails the test if a listing reads whole packages.
+type filesUnreadableStore struct {
+	connection.PackageStore
+	t *testing.T
+}
+
+func (s filesUnreadableStore) ListByTenant(context.Context, string) ([]connection.StoredPackage, error) {
+	s.t.Error("a tier listing read every package's files (ListByTenant) — it needs the ids only")
+	return nil, errors.New("not for a listing")
+}
+
+// A tier's listing reads ids, not packages: a listing is on every facade
+// call, and a full read pays every package's content (up to
+// MaxPackageBytes each) to learn its name.
+func TestStoreTier_ListingReadsIDsNotFiles(t *testing.T) {
+	store := connection.NewMemoryPackageStore()
+	publish(t, store, "team-a", "probe")
+	publish(t, store, "team-a", "other")
+	ids, err := connection.TeamCatalog(filesUnreadableStore{PackageStore: store, t: t}, "team-a").Connectors()
+	if err != nil || strings.Join(ids, ",") != "other,probe" {
+		t.Fatalf("listing = %v, %v", ids, err)
 	}
 }

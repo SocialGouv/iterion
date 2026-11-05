@@ -110,3 +110,24 @@ func (s *MongoPackageStore) ListByTenant(ctx context.Context, tenantID string) (
 	}
 	return out, nil
 }
+
+func (s *MongoPackageStore) ListConnectorIDs(ctx context.Context, tenantID string) ([]string, error) {
+	cur, err := s.coll.Find(ctx, bson.M{"tenant_id": tenantID}, options.Find().
+		SetProjection(bson.M{"connector_id": 1}).
+		SetSort(bson.M{"connector_id": 1}))
+	if err != nil {
+		return nil, fmt.Errorf("connection: list package ids: %w", err)
+	}
+	defer func() { _ = cur.Close(ctx) }()
+	var rows []struct {
+		ConnectorID string `bson:"connector_id"`
+	}
+	if err := cur.All(ctx, &rows); err != nil {
+		return nil, fmt.Errorf("connection: decode package ids: %w", err)
+	}
+	out := make([]string, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, r.ConnectorID)
+	}
+	return out, nil
+}
