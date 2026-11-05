@@ -352,10 +352,18 @@ Matching semantics (`pkg/backend/permission`):
   under a `path:` prefix: `Grep(path:/run/iterion/secrets/**)` names the
   dimension explicitly, and a `dir/**` rule covers the call rooted AT `dir`
   because such a call reads what is under it. **LS**'s `path` reads the
-  same way. A Glob pattern is a path under its root: one that climbs
-  (`../../etc/*`) leaves it, so only a bare `Glob` or an unbounded scope
-  opens it, an `allow once` binds its pattern and asks again, and a
-  `deny:` meets where the climb lands — the pattern joined onto the root.
+  same way. A `dir/**` **deny** also binds a search rooted ABOVE `dir` —
+  at its parent or any ancestor — because that search walks the denied
+  tree whole while none of the call's spellings is under `dir` (#3086):
+  the containment is judged with the deny rules, at their rank, so no
+  `allow:` or grant reopens it and a refusal costs the agent one search
+  it can re-aim at a sibling. A Glob pattern is a path under its root: one
+  that climbs (`../../etc/*`) leaves it, so only a bare `Glob` or an
+  unbounded scope opens it, an `allow once` binds its pattern and asks
+  again, and a `deny:` meets where the climb lands — the pattern joined
+  onto the root. An ABSOLUTE Glob pattern is carried as written, so one
+  that reaches into a denied tree from an unrelated root meets the tree's
+  rule on the pattern dimension.
 - **WebFetch** patterns match `domain:<host>`, `<host>`, or the full URL,
   the host read the way a WHATWG fetcher reads it — claude_code's WebFetch
   parses with Node, and claw's Go fetcher dials that same host whenever it
@@ -415,6 +423,21 @@ climb — `Read(../shared/**)` — opens nothing any more: a relative spelling
 that climbs above the agent's directory is read by no pattern. Write the
 tree absolute; the absolute form of the call still meets it.
 
+**Behaviour break (#3086).** A search or listing rooted at the PARENT (or
+any ancestor) of a denied tree is now refused, where it used to walk the
+denied tree with the gate's blessing: with allow `[Grep, Glob]` beside
+`deny: ["Grep(/run/iterion/secrets/**)"]`, a `Grep` from `/run/iterion` or
+`/` — and a `Glob{pattern: "secrets/*", path: "/run/iterion"}` — is a Deny,
+quoting the tree rule. The containment only ever CLOSES: it reads the same
+deny rules, judges at their rank, and binds nothing outside a tree a rule
+names. The refusal is the verdict on both backends — the gate has no
+backend-enforced exclusion to narrow a live search with (claude_code's
+built-in Grep takes no extra ripgrep flags from the hook path), and claw's
+own read tools are already narrower than the gate: `workspace_grep`/`glob`
+resolve every path into the workspace plus its declared read roots
+(`resolveReadPath`) and refuse anything outside, so the containment is what
+keeps a read root declared over a denied tree's parent from reopening it.
+
 **The run's secret locations are denied by construction (#1710).** Every
 gated node's policy is armed by the engine with deny trees over the
 well-known secret locations — the mounted file secrets
@@ -422,7 +445,9 @@ well-known secret locations — the mounted file secrets
 (`/tmp/iterion-claude-config`, `/tmp/iterion-codex-config`) — for the whole
 read AND write families, the listing and both search tools. "The agent
 cannot read the secrets" is a guarantee of the gate, not a `deny:` rule
-every author has to remember, and the write half keeps an agent from
+every author has to remember: a search or listing rooted at or above one of
+these trees (`/run/iterion`, `/tmp`, `/`) is refused as surely as one rooted
+inside it (#3086), and the write half keeps an agent from
 replacing the credential a seeded CLI spends. These rules are engine-owned:
 no `allow:` or operator grant reopens them (deny wins in every mode), and
 they travel with the serialised policy to a child-process gate. The shell

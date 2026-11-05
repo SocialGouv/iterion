@@ -457,6 +457,12 @@ func (p *Policy) Evaluate(toolName string, input map[string]any) (Decision, stri
 	if r, ok := matchAny(p.engineDeny, toolName, canon, closed); ok {
 		return Deny, r.raw
 	}
+	// A `dir/**` deny never meets the text of a search rooted ABOVE dir,
+	// yet that search walks the tree whole: containment is the deny's
+	// other half, judged at the same rank (#3086).
+	if r, ok := p.searchTreeDeny(toolName, canon, input); ok {
+		return Deny, r.raw
+	}
 	if r, ok := matchAny(p.grants, toolName, canon, open); ok {
 		return Allow, r.raw
 	}
@@ -575,7 +581,52 @@ func (p *Policy) matchingDeny(toolName string, input map[string]any) (rule, bool
 	if r, ok := matchAny(p.deny, toolName, canon, closed); ok {
 		return r, true
 	}
-	return matchAny(p.engineDeny, toolName, canon, closed)
+	if r, ok := matchAny(p.engineDeny, toolName, canon, closed); ok {
+		return r, true
+	}
+	return p.searchTreeDeny(toolName, canon, input)
+}
+
+// searchTreeDeny reports whether the call is a search or listing whose root
+// CONTAINS a tree a deny rule names (#3086). A `dir/**` scope is matched
+// against the spellings the call carries, and none of a search rooted at
+// dir's PARENT — or any ancestor — is under dir: the call walks the denied
+// tree whole without its text ever meeting the rule. The containment reads
+// the same normalisation as the rest of the closing side — every spelling of
+// the root (cleaned, anchored on the agent's directory, symlink-resolved)
+// against every spelling of the rule's directory, folded forms included —
+// and judges with the deny lists it extends, so it wins in every mode and no
+// allow or grant reopens it. Only a tree-reading tool (the search families
+// and the listing) can read a directory through a container above it; a
+// Read on the parent names one file the rule already covers. Refusing is the
+// whole answer: the gate has no backend-enforced exclusion to narrow a
+// search with, on either backend.
+func (p *Policy) searchTreeDeny(rawName, canon string, input map[string]any) (rule, bool) {
+	if !readsADirectoryTree(canon) {
+		return rule{}, false
+	}
+	roots := closingPaths(canon, input)
+	if len(roots) == 0 {
+		return rule{}, false
+	}
+	for _, rs := range [][]rule{p.deny, p.engineDeny} {
+		for _, r := range rs {
+			if r.treeRoot == "" || !r.matchesTool(rawName, canon) {
+				continue
+			}
+			for _, tree := range pathCandidates(r.treeRoot, p.pathRoot).exact {
+				foldedTree := foldPathSpelling(tree)
+				for _, root := range roots {
+					for _, spelling := range pathCandidates(root, p.pathRoot).exact {
+						if pathTreeContains(spelling, tree) || pathTreeContains(foldPathSpelling(spelling), foldedTree) {
+							return r, true
+						}
+					}
+				}
+			}
+		}
+	}
+	return rule{}, false
 }
 
 // candidateSets renders the two candidate sets a call is judged against:
@@ -732,6 +783,14 @@ type rule struct {
 	// re-read a rule's spelling to learn how wide it is; which spellings are
 	// that wide is argScopeIsUnbounded's.
 	anyArg bool
+	// treeRoot is the directory the scope names when it is exactly a tree
+	// (`<dir>/**`, the search tools' `path:<dir>/**` unwrapped) — the one
+	// scope shape a search or listing rooted ABOVE the directory walks
+	// through without its text ever matching the scope's pattern (#3086).
+	// Empty for every other scope: a wildcard in the directory part, a
+	// deeper pattern or a prefix rule names no single tree, so a
+	// containment question has nothing to read from it.
+	treeRoot string
 }
 
 // parseRule parses `Tool` or `Tool(content)` into a rule.
@@ -758,6 +817,7 @@ func parseRule(raw string) (rule, error) {
 		trimmedArg := strings.TrimSpace(argContent)
 		r.literalArg = !strings.HasSuffix(trimmedArg, ":*") && !strings.Contains(trimmedArg, "*")
 		r.anyArg = argScopeIsUnbounded(trimmedArg)
+		r.treeRoot = treeScopeRoot(trimmedArg)
 	}
 	toolPart = strings.TrimSpace(toolPart)
 	if toolPart == "" {
@@ -913,6 +973,36 @@ func argScopeIsUnbounded(trimmedArg string) bool {
 		return true
 	}
 	return trimmedArg != "" && strings.Trim(trimmedArg, "*") == ""
+}
+
+// treeScopeRoot reads the directory a tree scope names: `<dir>/**`, with the
+// search tools' explicit dimension prefix unwrapped (`path:<dir>/**`). Every
+// other scope shape — a wildcard in the directory part, a pattern that does
+// not span the tree, a `:*` prefix — names no single directory, so the
+// containment question searchTreeDeny asks has no answer to read from it.
+func treeScopeRoot(arg string) string {
+	dir, found := strings.CutSuffix(arg, "/**")
+	if !found {
+		return ""
+	}
+	dir = strings.TrimPrefix(dir, "path:")
+	if dir == "" || strings.Contains(dir, "*") {
+		return ""
+	}
+	return dir
+}
+
+// pathTreeContains reports whether ancestor names a directory whose tree
+// holds descendant: descendant IS the directory, or names a path under it.
+// Both spellings are read from pathCandidates' output, so they are already
+// cleaned; the filesystem root is the one directory spelled with nothing
+// before its separator.
+func pathTreeContains(ancestor, descendant string) bool {
+	ancestor = strings.TrimSuffix(ancestor, "/")
+	if ancestor == "" {
+		return filepath.IsAbs(descendant)
+	}
+	return descendant == ancestor || strings.HasPrefix(descendant, ancestor+"/")
 }
 
 // matchAny returns the first rule in rs that matches the tool (by its raw
