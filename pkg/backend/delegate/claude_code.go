@@ -1330,7 +1330,7 @@ func (b *ClaudeCodeBackend) renderedFailure(ctx context.Context, rm *claudesdk.R
 		detail := strings.TrimSpace(*rm.Result)
 		b.Logger.Error("[%s#%d/claude-code %s] model %q unavailable to the CLI — failing fast: %.160s",
 			task.NodeID, task.Iteration, pass, task.Model, detail)
-		return fmt.Errorf("claude-code: model %q is unavailable or unauthorized (check the node's backend/model — a claude_code node cannot run a non-Anthropic model): %s", task.Model, detail)
+		return &ErrModelUnavailable{Provider: BackendClaudeCode, Model: task.Model, Detail: detail}
 	}
 
 	// Overload/5xx guard. The claude CLI sometimes completes the stream

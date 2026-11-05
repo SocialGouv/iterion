@@ -89,7 +89,7 @@ func TestANodeNamingAnAttachmentPathRunsWithAFileOrNotAtAll(t *testing.T) {
 		stub.on("scan", func(map[string]any) (map[string]any, error) { called = true; return map[string]any{}, nil })
 		e := &Engine{executor: stub}
 		ctx := model.WithTemplateData(context.Background(), held(map[string]string{"spec": "", "logo": "/x/logo.png"}))
-		_, err := e.executeWithResources(ctx, tool, map[string]any{})
+		_, err := e.executeWithResources(ctx, nil, tool, map[string]any{})
 		var rt *RuntimeError
 		if !errors.As(err, &rt) || rt.Code != ErrCodeAttachmentPathUnavailable {
 			t.Fatalf("err = %v, want the typed refusal", err)
@@ -98,7 +98,7 @@ func TestANodeNamingAnAttachmentPathRunsWithAFileOrNotAtAll(t *testing.T) {
 			t.Fatal("the executor ran a node whose attachment has no path")
 		}
 		ctx = model.WithTemplateData(context.Background(), held(map[string]string{"spec": "/s", "logo": "/l"}))
-		if _, err := e.executeWithResources(ctx, tool, map[string]any{}); err != nil || !called {
+		if _, err := e.executeWithResources(ctx, nil, tool, map[string]any{}); err != nil || !called {
 			t.Fatalf("an admitted node did not run: err=%v called=%v", err, called)
 		}
 	})

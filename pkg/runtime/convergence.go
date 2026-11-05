@@ -76,12 +76,18 @@ func (e *Engine) processConvergence(rs *runState, convergenceNodeID string, resu
 				// re-provisioning a sandbox to re-hit the same spent budget.
 				// It is also what tells the operator to raise the cap and
 				// resume rather than hunt a branch bug.
+				hint := RemedyOf(firstBudgetErr).Hint
+				if hint == "" {
+					hint = "raise the exceeded budget dimension (--max-cost-usd / --max-tokens / --max-duration / --max-iterations) and resume; a parallel branch never receives the budget exit grace"
+				}
 				return "", &RuntimeError{
 					Code:    ErrCodeBudgetExceeded,
 					Message: fmt.Sprintf("convergence at %s (wait_all): %d of %d branch(es) refused on a spent budget: %v", convergenceNodeID, budgetFailures, len(failedBranches), firstBudgetErr),
 					NodeID:  convergenceNodeID,
-					Hint:    "raise the exceeded budget dimension (--max-cost-usd / --max-tokens / --max-duration / --max-iterations) and resume; a parallel branch never receives the budget exit grace",
-					Cause:   ErrBudgetExceeded,
+					Hint:    hint,
+					// The sentinel, not firstBudgetErr: Message already quotes
+					// the branch's error, and Error() appends the cause.
+					Cause: ErrBudgetExceeded,
 				}
 			}
 			msg := fmt.Sprintf("convergence at %s (wait_all): %d branch(es) failed: %v",

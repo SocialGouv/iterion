@@ -29,6 +29,7 @@ import (
 // that does not. The task is a value: the executor's own copy — what the
 // session ledger, the events and the logs read — is untouched.
 func (e *ClawExecutor) executeDelegate(ctx context.Context, backend delegate.Backend, task delegate.Task) (delegate.Result, error) {
+	task.ReasoningEffort = e.routeReasoningEffort(ctx, task.NodeID, task.Model, task.ReasoningEffort)
 	return backend.Execute(ctx, e.taskForModel(task))
 }
 

@@ -4,14 +4,68 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/SocialGouv/claw-code-go/pkg/api"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
+	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 )
+
+func TestModelAccessDeniedDoesNotRequestReauthentication(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		want runtime.ErrorCode
+	}{
+		{"typed model denial", &api.APIError{StatusCode: 403, Message: "model not available for this credential"}, runtime.ErrCodeModelUnavailable},
+		{"flattened model denial", errors.New("claw backend: openai: API error 403: model not available for this credential"), runtime.ErrCodeModelUnavailable},
+		{"bare forbidden", &api.APIError{StatusCode: 403, Message: "forbidden"}, runtime.ErrCodeAuthFailed},
+		{"invalid credential", &api.APIError{StatusCode: 403, Message: "invalid api key; model not available"}, runtime.ErrCodeAuthFailed},
+		{"flattened invalid credential", errors.New("API error 403: invalid api key; model not available"), runtime.ErrCodeAuthFailed},
+		{"unauthorized model", &api.APIError{StatusCode: 401, Message: "model not available"}, runtime.ErrCodeAuthFailed},
+		{"flattened unauthorized model", errors.New("API error 401: model not available"), runtime.ErrCodeAuthFailed},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			action, code := Dispatch(DefaultRecipes())(t.Context(), tc.err, func(runtime.ErrorCode) int { return 0 })
+			if code != tc.want {
+				t.Errorf("model access classification = %s, want %s", code, tc.want)
+			}
+			if tc.want == runtime.ErrCodeModelUnavailable {
+				if !strings.Contains(action.Reason, "not available for this credential") || strings.Contains(action.Reason, "re-authenticate") {
+					t.Errorf("model access remedy must explain credential access without re-authentication: %q", action.Reason)
+				}
+				if action.Kind != runtime.RecoveryFailTerminal {
+					t.Errorf("model denial action = %v, want no automatic retry", action.Kind)
+				}
+			} else if !strings.Contains(action.Reason, "re-authenticate") || action.Kind != runtime.RecoveryPauseForHuman {
+				t.Errorf("invalid credentials need the auth remedy: %+v", action)
+			}
+		})
+	}
+}
+
+func TestModelUnavailableWordingOnTransientFailureStillRetries(t *testing.T) {
+	err := &api.APIError{Provider: "openai", StatusCode: 503, Message: "model not available due to maintenance"}
+	for _, tc := range []struct {
+		name string
+		err  error
+		want runtime.ErrorCode
+	}{
+		{"typed", err, runtime.ErrCodeNetworkTransient},
+		{"flattened", errors.New(err.Error()), runtime.ErrCodeExecutionFailed},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			action, code := Dispatch(DefaultRecipes())(t.Context(), tc.err, func(runtime.ErrorCode) int { return 0 })
+			if code != tc.want || action.Kind != runtime.RecoveryRetrySameNode {
+				t.Fatalf("transient model failure = %s / %v, want %s / retry", code, action.Kind, tc.want)
+			}
+		})
+	}
+}
 
 func TestRateLimitRecipe_RetriesThenPauses(t *testing.T) {
 	r := RateLimitRecipe(2)
@@ -198,9 +252,7 @@ func TestClassify_ContextLengthFromMessage(t *testing.T) {
 }
 
 func TestClassify_GenericAPIError(t *testing.T) {
-	// 4xx (non-429, non-context-length) stays EXECUTION_FAILED — these
-	// are usually deterministic request issues (auth, validation) that
-	// won't fix themselves on retry.
+	// A bare 400 can be caused by sampled tool arguments; a fresh turn can heal.
 	apiErr := &api.APIError{StatusCode: 400, Message: "bad request"}
 	if got := Classify(apiErr); got != runtime.ErrCodeExecutionFailed {
 		t.Errorf("expected EXECUTION_FAILED, got %v", got)
@@ -327,7 +379,7 @@ func TestClassify_ModelTheProviderWillNotServe(t *testing.T) {
 		// the model's OWN tool arguments, and those differ on the next
 		// sample — reading it as a model verdict would park a run that
 		// recovers on its own.
-		{"a bare 400 is not a model verdict", &api.APIError{StatusCode: 400, Message: "bad request"},
+		{"a bare 400 can recover on a fresh sample", &api.APIError{StatusCode: 400, Message: "bad request"},
 			runtime.ErrCodeExecutionFailed},
 		// A version floor that is NOT about a model: any tool can announce
 		// one, and reading it as a model verdict would park a run over a
@@ -463,5 +515,13 @@ func TestDefaultRecipes_HasAllClasses(t *testing.T) {
 		if _, ok := r[code]; !ok {
 			t.Errorf("DefaultRecipes missing %q", code)
 		}
+	}
+}
+
+func TestSchemaCorrectionExhaustionNeverRepeatsBusinessPrompt(t *testing.T) {
+	err := fmt.Errorf("node failed: %w", &model.OutputSchemaError{Cause: errors.New(`field "verdict": value "bad" not in enum [pass]`)})
+	action, code := Dispatch(DefaultRecipes())(t.Context(), err, func(runtime.ErrorCode) int { return 0 })
+	if code != runtime.ErrCodeSchemaValidation || action.Kind != runtime.RecoveryFailTerminal {
+		t.Fatalf("code=%s action=%+v", code, action)
 	}
 }

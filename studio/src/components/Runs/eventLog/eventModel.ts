@@ -13,6 +13,7 @@ export const EVENT_BADGE: Record<string, string> = {
   run_cancelled: "bg-surface-2 text-fg-muted",
   node_started: "bg-info-soft text-info-fg",
   node_finished: "bg-success-soft text-success-fg",
+  node_output_schema_mismatch: "bg-warning-soft text-warning-fg",
   artifact_written: "bg-accent-soft text-fg-default",
   human_input_requested: "bg-warning-soft text-warning-fg",
   budget_warning: "bg-warning-soft text-warning-fg",
@@ -122,6 +123,8 @@ export function previewData(data: Record<string, unknown> | undefined): string {
     // A schema re-ask: how the model's work was continued, and the
     // attempt its own delegate events belong to.
     "reask",
+    "schema",
+    "fields",
     "attempt",
     "loop",
     "iteration",

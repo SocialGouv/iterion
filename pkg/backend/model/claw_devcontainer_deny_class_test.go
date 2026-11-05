@@ -33,8 +33,9 @@ import (
 // (the repo-authored image env), so the entry lands on top of that rewrite
 // rather than conflicting with it.
 var denyClassOwed = map[string]string{
-	"OPENAI_COMPATIBLE_MODELS":           "#2844: crossed as an explicit empty for every gateway node, still owed for the container's other processes",
-	"OPENAI_COMPATIBLE_CATALOG_PROVIDER": "#2844: crossed as an explicit empty for every gateway node, still owed for the container's other processes",
+	"OPENAI_COMPATIBLE_MODELS":            "#2844: crossed as an explicit empty for every gateway node, still owed for the container's other processes",
+	"OPENAI_COMPATIBLE_CATALOG_PROVIDER":  "#2844: crossed as an explicit empty for every gateway node, still owed for the container's other processes",
+	"OPENAI_COMPATIBLE_REASONING_EFFORTS": "#2844: crossed explicitly (the host's answer, empty included) for every gateway node, still owed for the container's other processes",
 }
 
 func TestDevcontainerDenyClassCoversEveryNameTheRunnerIsHanded(t *testing.T) {

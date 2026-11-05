@@ -1471,12 +1471,9 @@ func missingFieldStream() <-chan api.StreamEvent {
 
 func TestStructuredOutputMissingField(t *testing.T) {
 	reg := NewRegistry()
-	// Provide TWO streams: the first attempt returns missing-required-field
-	// JSON, the engine retries once (validateAndRetry now treats missing
-	// fields as retry-eligible), the retry also returns missing-field JSON,
-	// the executor surfaces "structured output invalid after retry".
+	// Initial answer and both corrections remain schema-invalid.
 	mock := &execMockClient{streams: []<-chan api.StreamEvent{
-		missingFieldStream(), missingFieldStream(),
+		missingFieldStream(), missingFieldStream(), missingFieldStream(),
 	}}
 	reg.Register("test", func(modelID string) (api.APIClient, error) {
 		return mock, nil
@@ -1512,9 +1509,9 @@ func TestStructuredOutputMissingField(t *testing.T) {
 	if !strings.Contains(err.Error(), "missing required field") {
 		t.Errorf("expected missing-field error, got: %v", err)
 	}
-	// Two calls = first attempt + one retry — confirms the engine retried.
+	// An unchanged invalid answer ends correction even when allowance remains.
 	if mock.calls != 2 {
-		t.Errorf("expected 2 calls (1 attempt + 1 retry), got %d", mock.calls)
+		t.Errorf("unchanged output: expected 2 calls, got %d", mock.calls)
 	}
 	t.Logf("got expected error: %v", err)
 }
@@ -1593,6 +1590,7 @@ func TestStructuredOutputMissingFieldRecoversOnRetry(t *testing.T) {
 }
 
 func TestStructuredOutputWrongType(t *testing.T) {
+	t.Setenv(EnvOutputCorrectionBudget, "0")
 	reg := NewRegistry()
 	ch := make(chan api.StreamEvent, 10)
 	go func() {
@@ -1654,6 +1652,7 @@ func TestStructuredOutputWrongType(t *testing.T) {
 }
 
 func TestStructuredOutputInvalidEnum(t *testing.T) {
+	t.Setenv(EnvOutputCorrectionBudget, "0")
 	reg := NewRegistry()
 	ch := make(chan api.StreamEvent, 10)
 	go func() {

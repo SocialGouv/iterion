@@ -375,14 +375,16 @@ const (
 	EventRunRewound EventType = "run_rewound"
 	// Review-&-merge gate events (interaction: review). The gate runs a
 	// companion↔human dialogue and squash-merges during the pause.
-	EventReviewTurn     EventType = "review_turn"    // data: {interaction_id, role, turn}
-	EventReviewVerdict  EventType = "review_verdict" // data: {decision, confidence, blockers}
-	EventReviewMerged   EventType = "review_merged"  // data: {final_commit, merged_into, strategy}
-	EventJoinReady      EventType = "join_ready"
-	EventNodeFinished   EventType = "node_finished"
-	EventEdgeSelected   EventType = "edge_selected"
-	EventBudgetWarning  EventType = "budget_warning"
-	EventBudgetExceeded EventType = "budget_exceeded"
+	EventReviewTurn               EventType = "review_turn"    // data: {interaction_id, role, turn}
+	EventReviewVerdict            EventType = "review_verdict" // data: {decision, confidence, blockers}
+	EventReviewMerged             EventType = "review_merged"  // data: {final_commit, merged_into, strategy}
+	EventJoinReady                EventType = "join_ready"
+	EventNodeFinished             EventType = "node_finished"
+	EventNodeOutputSchemaMismatch EventType = "node_output_schema_mismatch"
+	EventReasoningEffortAdjusted  EventType = "reasoning_effort_adjusted"
+	EventEdgeSelected             EventType = "edge_selected"
+	EventBudgetWarning            EventType = "budget_warning"
+	EventBudgetExceeded           EventType = "budget_exceeded"
 	// EventUsageProgress is an OBSERVATIONAL mid-node usage sample —
 	// data: {tokens, used?, model} where tokens is the node's cumulative
 	// billed-token estimate so far and used its estimated USD cost

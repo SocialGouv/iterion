@@ -225,6 +225,10 @@ func NewClawBackend(registry *Registry, hk EventHooks, retry RetryPolicy, opts .
 
 // Execute implements delegate.Backend.
 //
+// Tokens and CostUSD cover requests made by this invocation, including its
+// internal retries. Replaying session messages does not include earlier
+// invocations' usage, so CostIsSessionTotal remains false.
+//
 // When the run is sandboxed (task.Sandbox != nil), the call is
 // forwarded to the iterion-claw-runner sub-process inside the
 // container — see [executeViaSandboxRunner]. This keeps the LLM's
@@ -989,6 +993,20 @@ func (b *ClawBackend) generateStructured(ctx context.Context, client api.APIClie
 			return r, nil
 		}
 		logReaskCallFailure(b.logger, task.NodeID, err)
+		var structured *StructuredOutputError
+		if errors.As(err, &structured) {
+			fallback := meteredFailure(task, objectUsage(result))
+			fallback.ParseFallback = true
+			fallback.ParseError = structured.Error()
+			if fallback.Output == nil {
+				fallback.Output = map[string]any{}
+			}
+			if result != nil {
+				fallback.Output["text"] = result.Text
+				captureSessionMessages(ctx, taskSessionKey(task), &TextResult{Messages: result.Messages})
+			}
+			return fallback, nil
+		}
 		return meteredFailure(task, objectUsage(result)), fmt.Errorf("claw backend: structured generation: %w", err)
 	}
 	captureSessionMessages(ctx, taskSessionKey(task), &TextResult{Messages: result.Messages})
@@ -1269,7 +1287,7 @@ func (b *ClawBackend) generateTextWithToolsAndSchema(ctx context.Context, client
 	// budget is the same request, cut the same way (#2651: both out=8192,
 	// text empty). It runs at a lowered effort instead, said out loud.
 	if cutWithoutAnswer(final) {
-		if lowered, to, ok := effortAfterCut(recoveryOpts); ok {
+		if lowered, to, ok := effortAfterCut(ctx, recoveryOpts); ok {
 			b.logger.Warn("[%s] the tool loop's final turn was cut at max_tokens=%d before any answer; the recovery pass runs at reasoning_effort %s instead of %s",
 				task.NodeID, stepMaxTokens(final, opts), to, reasoningEffortOf(opts))
 			recoveryOpts = lowered
@@ -1317,7 +1335,7 @@ func (b *ClawBackend) generateTextWithToolsAndSchema(ctx context.Context, client
 	// One billed call against a full restart of the review. A recovery the
 	// cut remedy already lowered cannot go lower, and effortAfterCut refuses
 	// it, so the retry fires at most once.
-	if lowered, to, ok := effortAfterCut(recoveryOpts); ok {
+	if lowered, to, ok := effortAfterCut(ctx, recoveryOpts); ok {
 		if b.logger != nil {
 			b.logger.Warn("[%s] the recovery pass failed (%v); it runs once more at reasoning_effort %s instead of %s",
 				task.NodeID, recErr, to, reasoningEffortOf(recoveryOpts))
@@ -2040,6 +2058,20 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 	}
 	stampDelegateOutputMeta(res.Output, res, delegate.BackendClaw)
 	if ioRes.Error != "" {
+		if ioRes.ProviderError != nil {
+			provider := *ioRes.ProviderError
+			provider.Message = redactedFarSide(task, provider.Message)
+			provider.Body = redactedFarSide(task, provider.Body)
+			provider.Provider = redactedFarSide(task, provider.Provider)
+			var cause error = &provider
+			if ioRes.ProviderErrorStream {
+				cause = &APIError{StatusCode: provider.StatusCode, Message: provider.Message, IsRetryable: provider.Retryable}
+			}
+			if waitErr != nil {
+				return res, fmt.Errorf("claw backend: runner: %w (exit: %w)", cause, waitErr)
+			}
+			return res, fmt.Errorf("claw backend: runner: %w", cause)
+		}
 		// Preserve waitErr for errors.Is / errors.As consumers when
 		// the runner emitted a structured error AND exited non-zero
 		// (the normal error path). Without %w on waitErr, downstream
@@ -2726,6 +2758,7 @@ func forwardableProviderEnv(ctx context.Context, model, providerHint string) (ma
 		// devcontainer.json, which becomes the env the container is
 		// STARTED with — because ExecOpts.Env outranks that environment.
 		env[compatgw.CatalogModelsEnv] = ""
+		env[compatgw.ReasoningEffortsEnv] = envtrust.Inherited(compatgw.ReasoningEffortsEnv)
 		env[compatgw.CatalogProviderEnv] = ""
 		env[compatgw.ResolvedEnvName] = ""
 		if resolved := compatgw.ResolveCatalog(modelroute.Parse(model).Wire, modelspecs.Default(), envtrust.Inherited); resolved.Known() {

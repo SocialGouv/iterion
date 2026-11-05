@@ -91,8 +91,7 @@ type DelegateInfo struct {
 	Error                     error         // non-nil for OnDelegateError
 	// Attempt is the 1-based retry number on OnDelegateRetry. A schema
 	// re-ask also carries it on its own OnDelegateStarted /
-	// OnDelegateFinished / OnDelegateError (always 2: the first answer
-	// was attempt 1), beside Reask — so a reader can tell the re-ask's
+	// OnDelegateFinished / OnDelegateError (the first answer was attempt 1), beside Reask — so a reader can tell the re-ask's
 	// events from the delegation's, which fire once per node dispatch.
 	Attempt int
 	Delay   time.Duration // backoff delay (for OnDelegateRetry)
@@ -103,6 +102,9 @@ type DelegateInfo struct {
 	// itself pays (told apart from the announcement by their backoff delay
 	// and error); empty on every other delegation.
 	Reask string
+	// ReaskInChain marks a re-ask run inside the fallback chain, before the
+	// attempt's own delegate event.
+	ReaskInChain bool
 	// CostUSD is the delegation's LLM spend, read from the typed Result
 	// counters — the CLI's own figure when it
 	// reports one, else the token estimate. Zero means the price table did
@@ -269,13 +271,22 @@ type MCPServerDegradedInfo struct {
 	Err   error // why the tools were dropped
 }
 
+// ReasoningEffortAdjustment records a route's explicit effort substitution.
+type ReasoningEffortAdjustment struct {
+	Model     string
+	Requested string
+	Applied   string
+	Reason    string
+}
+
 // EventHooks allows the executor to emit observability events back to the caller.
 type EventHooks struct {
-	OnLLMRequest    func(nodeID string, info LLMRequestInfo)
-	OnLLMPrompt     func(nodeID string, systemPrompt string, userMessage string)
-	OnLLMResponse   func(nodeID string, info LLMResponseInfo)
-	OnLLMRetry      func(nodeID string, info RetryInfo)
-	OnLLMStepFinish func(nodeID string, step LLMStepInfo)
+	OnReasoningEffortAdjusted func(nodeID string, info ReasoningEffortAdjustment)
+	OnLLMRequest              func(nodeID string, info LLMRequestInfo)
+	OnLLMPrompt               func(nodeID string, systemPrompt string, userMessage string)
+	OnLLMResponse             func(nodeID string, info LLMResponseInfo)
+	OnLLMRetry                func(nodeID string, info RetryInfo)
+	OnLLMStepFinish           func(nodeID string, step LLMStepInfo)
 	// OnAssistantText fires with each chunk of assistant narration —
 	// mid-turn prose the conversation views render as the agent
 	// "talking" while it works. claude_code fires it per streamed
@@ -471,13 +482,14 @@ func ChainHooks(a, b EventHooks) EventHooks {
 		OnToolNodeResult:     chainCb6(a.OnToolNodeResult, b.OnToolNodeResult),
 		OnToolNodeDeliverables: chainCb2Err(
 			a.OnToolNodeDeliverables, b.OnToolNodeDeliverables),
-		OnDelegateStarted:   chainCb2(a.OnDelegateStarted, b.OnDelegateStarted),
-		OnDelegateFinished:  chainCb2(a.OnDelegateFinished, b.OnDelegateFinished),
-		OnDelegateError:     chainCb2(a.OnDelegateError, b.OnDelegateError),
-		OnDelegateRetry:     chainCb2(a.OnDelegateRetry, b.OnDelegateRetry),
-		OnProviderFallback:  chainCb2(a.OnProviderFallback, b.OnProviderFallback),
-		OnSessionDegraded:   chainCb2(a.OnSessionDegraded, b.OnSessionDegraded),
-		OnMCPServerDegraded: chainCb2(a.OnMCPServerDegraded, b.OnMCPServerDegraded),
-		OnNodeFinished:      chainCb2(a.OnNodeFinished, b.OnNodeFinished),
+		OnDelegateStarted:         chainCb2(a.OnDelegateStarted, b.OnDelegateStarted),
+		OnDelegateFinished:        chainCb2(a.OnDelegateFinished, b.OnDelegateFinished),
+		OnDelegateError:           chainCb2(a.OnDelegateError, b.OnDelegateError),
+		OnDelegateRetry:           chainCb2(a.OnDelegateRetry, b.OnDelegateRetry),
+		OnProviderFallback:        chainCb2(a.OnProviderFallback, b.OnProviderFallback),
+		OnReasoningEffortAdjusted: chainCb2(a.OnReasoningEffortAdjusted, b.OnReasoningEffortAdjusted),
+		OnSessionDegraded:         chainCb2(a.OnSessionDegraded, b.OnSessionDegraded),
+		OnMCPServerDegraded:       chainCb2(a.OnMCPServerDegraded, b.OnMCPServerDegraded),
+		OnNodeFinished:            chainCb2(a.OnNodeFinished, b.OnNodeFinished),
 	}
 }

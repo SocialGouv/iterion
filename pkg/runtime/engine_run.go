@@ -623,6 +623,9 @@ func (e *Engine) runResolveDoc(ctx context.Context, runID string, inputs map[str
 			return nil, fmt.Errorf("runtime: save run metadata: %w", err)
 		}
 	}
+	if err := e.seedSubbotCorrections(ctx, run); err != nil {
+		return nil, fmt.Errorf("seed child correction ledger: %w", err)
+	}
 	return run, nil
 }
 

@@ -21,7 +21,9 @@ import (
 func TestMain(m *testing.M) {
 	capParallelism()
 	restore := pricingtest.Isolate()
+	restoreProviders := isolateProviders()
 	code := m.Run()
+	restoreProviders()
 	restore()
 	os.Exit(code)
 }

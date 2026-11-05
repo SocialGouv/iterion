@@ -66,7 +66,7 @@ func (e *Engine) execSpecialNode(
 
 	rs.outputs[nodeID] = output
 
-	if err := e.validateNodeOutput(nodeID, node, output); err != nil {
+	if err := e.validateNodeOutput(rs, nodeID, node, output); err != nil {
 		return "", err
 	}
 	if postValidate != nil {
@@ -108,7 +108,7 @@ func (e *Engine) executeSpecialNodeForBranch(ctx context.Context, rs *runState, 
 	store := func(out map[string]any, validate bool) (map[string]any, bool, bool) {
 		result.outputs[nodeID] = out
 		if validate {
-			if err := e.validateNodeOutput(nodeID, node, out); err != nil {
+			if err := e.validateNodeOutput(rs, nodeID, node, out); err != nil {
 				result.err = fmt.Errorf("node %q in branch %s: %w", nodeID, branchID, err)
 				return nil, true, true
 			}
@@ -209,14 +209,9 @@ func (e *Engine) computeOutput(ctx context.Context, rs *runState, nodeID string,
 		}
 		output[ce.Key] = v
 	}
-	// The output is typed by the declared schema HERE, on the body the
-	// trunk and the fan-out branch share — not behind WithOutputValidation,
-	// which no product entry point enables. An expression's value is
-	// Go-shaped (an integer division yields an int64, a float one a
-	// float64), so the representation is normalised to the declared type
-	// and a value that cannot be — a fractional float under `int`, a
-	// string under `bool` — fails the node instead of travelling on under
-	// the wrong label.
+	// Normalize Go numeric/array representations for the declared schema.
+	// COMPUTE conformance is mandatory (#792), independently of advisory
+	// validation for nodes whose outputs have no prior mandatory check.
 	if schema := e.workflow.Schemas[cn.OutputSchema]; schema != nil {
 		if err := model.ConformComputeOutput(output, schema); err != nil {
 			return nil, &RuntimeError{
@@ -266,7 +261,12 @@ func (e *Engine) runSubbotNode(ctx context.Context, rs *runState, nodeID string,
 		vars["_lease_"+res] = id
 	}
 
-	output, err := e.subbotRunner(ctx, SubbotRequest{
+	key := e.subbotReattachKey(nodeID, rs.loopCounters, branchID)
+	childCtx, err := e.subbotCorrectionContext(ctx, rs, nodeID, key)
+	if err != nil {
+		return nil, err
+	}
+	output, err := e.subbotRunner(childCtx, SubbotRequest{
 		OnChildAttached: func(childRunID string) error {
 			return e.emitBranch(ctx, rs.runID, branchID, store.EventSubbotAttached, nodeID, map[string]any{"child_run_id": childRunID})
 		},
@@ -274,7 +274,7 @@ func (e *Engine) runSubbotNode(ctx context.Context, rs *runState, nodeID string,
 		Vars:        vars,
 		ParentRunID: rs.runID,
 		NodeID:      nodeID,
-		ReattachKey: e.subbotReattachKey(nodeID, rs.loopCounters, branchID),
+		ReattachKey: key,
 		WorkDir:     e.workDir,
 		// The author's assertion that the child writes no shared workspace:
 		// the runner hands it to the child engine, which then keeps its own
@@ -290,8 +290,13 @@ func (e *Engine) runSubbotNode(ctx context.Context, rs *runState, nodeID string,
 		ParentSandbox: e.activeShare,
 	})
 	if err != nil {
+		hint := ""
+		if nodeFailureCode(err) == ErrCodeBudgetExceeded {
+			hint = fmt.Sprintf("increase the CHILD bot %q budget, then resume; raising the parent budget does not change the child cap", sn.Source)
+		}
 		return nil, &RuntimeError{
-			Code:    ErrCodeExecutionFailed,
+			Hint:    hint,
+			Code:    nodeFailureCode(err),
 			Message: fmt.Sprintf("subbot %q (source %q): %v", nodeID, sn.Source, err),
 			NodeID:  nodeID,
 			Cause:   err,

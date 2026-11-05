@@ -679,8 +679,8 @@ func TestCorrectionInvocationIdentityIncludesForeachBodyNodes(t *testing.T) {
 	if firstKey == secondKey {
 		t.Fatalf("foreach body invocation keys are not distinct: first=%q second=%q", firstKey, secondKey)
 	}
-	if outsideKey != "done" {
-		t.Fatalf("outside node ledger key = %q, want historical root key", outsideKey)
+	if outsideKey == "done" {
+		t.Fatalf("outside node ledger key = %q, want the workflow counter vector", outsideKey)
 	}
 }
 
@@ -723,7 +723,7 @@ func TestSchemaValidation_CorrectionCarriesUsageMetadata(t *testing.T) {
 	t.Fatal("my_agent node_finished event not found")
 }
 
-func TestSchemaValidation_DisabledByDefault(t *testing.T) {
+func TestSchemaValidation_ExplicitlyDisabled(t *testing.T) {
 	wf := validationWorkflow()
 
 	exec := newStubExecutor()
@@ -735,7 +735,7 @@ func TestSchemaValidation_DisabledByDefault(t *testing.T) {
 		}, nil
 	})
 
-	eng := New(wf, tmpStore(t), exec) // no WithOutputValidation
+	eng := New(wf, tmpStore(t), exec, WithOutputValidation(false))
 	err := eng.Run(context.Background(), "run-val-disabled", nil)
 	if err != nil {
 		t.Fatalf("expected success with validation disabled, got: %v", err)
@@ -938,8 +938,7 @@ func TestComputeOutputConformsToDeclaredSchema(t *testing.T) {
 
 	t.Run("a fractional float under int fails the node, naming field, value and builtin", func(t *testing.T) {
 		wf := computeGaugeWorkflow(t, ir.FieldTypeInt, "10.58")
-		// No WithOutputValidation: the rule must hold on the path a real
-		// run takes.
+		// No WithOutputValidation: #792 holds on the default production path.
 		err := New(wf, tmpStore(t), newStubExecutor()).Run(context.Background(), "run-int-frac", nil)
 		if err == nil {
 			t.Fatal("run succeeded with 10.58 under an int label")

@@ -13,6 +13,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/cost"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/modelroute"
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/llmroute"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 )
@@ -771,6 +772,17 @@ func (s *chainSpend) add(r delegate.Result, on spendLabel) {
 	}
 }
 
+// discountLastSlice removes from the slice just added the correction spend
+// its own re-ask events already carried; the totals keep it.
+func (s *chainSpend) discountLastSlice(cost float64, tokens int) {
+	if (cost == 0 && tokens == 0) || len(s.slices) == 0 {
+		return
+	}
+	last := &s.slices[len(s.slices)-1]
+	last.CostUSD = max(0, last.CostUSD-cost)
+	last.Tokens = max(0, last.Tokens-tokens)
+}
+
 // applyTo folds the accumulated spend into the winning result.
 //
 // Both Result.Tokens and Output["_tokens"] are updated: the runtime's
@@ -1036,10 +1048,13 @@ func (e *ClawExecutor) newElementBuilder(
 // backendName; a chain that can cross backends makes that variable a
 // lie the moment it falls through.
 type chainOutcome struct {
-	Result      delegate.Result
-	BackendName string           // backend that served
-	Backend     delegate.Backend // its handle, for the schema retry
-	Task        *delegate.Task   // the task it ran, for the schema retry
+	// Corrections emit their own usage events inside the chain.
+	CorrectionCost   float64
+	CorrectionTokens int
+	Result           delegate.Result
+	BackendName      string           // backend that served
+	Backend          delegate.Backend // its handle, for the schema retry
+	Task             *delegate.Task   // the task it ran, for the schema retry
 	// ServedBy names the element that served, and FellThrough reports
 	// whether it was anything but the node's first choice. They exist so
 	// a bot's DETERMINISTIC gate can fail closed on a degraded input —
@@ -1116,7 +1131,11 @@ func (e *ClawExecutor) dispatchChain(
 	chain []chainElement,
 	baseModel string,
 	build elementBuilder,
-) (chainOutcome, error) {
+	schemas ...*ir.Schema,
+) (out chainOutcome, dispatchErr error) {
+	var correctionCost float64
+	var correctionTokens int
+	defer func() { out.CorrectionCost = correctionCost; out.CorrectionTokens = correctionTokens }()
 	if len(chain) == 0 {
 		// Refused here too, at the choke point every dispatch path crosses:
 		// the allowlist may have dropped every element, or the caller built
@@ -1152,6 +1171,9 @@ func (e *ClawExecutor) dispatchChain(
 		lastBackend  string
 		lastModel    string
 		lastProvider string
+		// lastTask is the task the most recently executed route ran — a
+		// copy, since a later build rewrites the shared task.
+		lastTask *delegate.Task
 		// pendingMarker is the cross-harness marker of the fall-through
 		// that routed here — computed beside the note that emitted the
 		// event, consumed by this element's build, which attaches the
@@ -1311,6 +1333,8 @@ func (e *ClawExecutor) dispatchChain(
 			}
 		}
 		lastBackend, lastModel, lastProvider = backendName, task.Model, servingProvider(backendName, task)
+		origin := *task
+		lastTask = &origin
 		sessionBeforeAttempt := e.snapshotTaskSession(ctx, task)
 		// Set when THIS dispatch carried a session forward, so the carry
 		// can be undone: only a session we introduced is ours to drop.
@@ -1406,6 +1430,8 @@ func (e *ClawExecutor) dispatchChain(
 				fresh.SessionID = ""
 				fresh.ForkSession = false
 				fresh.SessionFingerprint = ""
+				ranFresh := fresh
+				lastTask = &ranFresh
 				freshResult, freshErr := e.retryDelegateLoopChain(ctx, nodeID, backendName, sharesSession(&fresh), accepts, func() (delegate.Result, error) {
 					return e.executeDelegate(ctx, backend, fresh)
 				}, "")
@@ -1414,6 +1440,21 @@ func (e *ClawExecutor) dispatchChain(
 				}
 				result, err = freshResult, freshErr
 			}
+		}
+		var elemCorrCost float64
+		var elemCorrTokens int
+		if err == nil && result.ParseFallback && len(schemas) > 0 && schemas[0] != nil {
+			adoptJSONObjectText(&result)
+			// The adopted map is the model's: restamp the typed counters on it
+			// (`_tokens`, `_cost_usd`…) before the correction policy reads the
+			// spend it budgets from that output.
+			stampDelegateOutputMeta(result.Output, result, backendName)
+			before := result
+			result, err = e.validateAndRetry(ctx, backendFields{id: nodeID, inChain: true}, backendName, backend, task, result, schemas[0])
+			elemCorrCost = max(0, result.CostUSD-before.CostUSD)
+			elemCorrTokens = max(0, result.Tokens-before.Tokens)
+			correctionCost += elemCorrCost
+			correctionTokens += elemCorrTokens
 		}
 		if err == nil {
 			return itemised(chainOutcome{
@@ -1440,7 +1481,7 @@ func (e *ClawExecutor) dispatchChain(
 			// donor's ledger — and the optional-session degrade made that
 			// reachable on a SINGLE-route node, where `spent` used to be
 			// provably empty at this point.
-			return itemised(chainOutcome{Result: spent.applyTo(result), BackendName: backendName, Route: task.Model, Provider: servingProvider(backendName, task)}), err
+			return itemised(chainOutcome{Result: spent.applyTo(result), BackendName: backendName, Route: task.Model, Provider: servingProvider(backendName, task), Task: lastTask}), err
 		}
 		cat := delegate.ClassifyFallback(err, isDelegateRetryable(err))
 		lastCat = cat
@@ -1495,6 +1536,7 @@ func (e *ClawExecutor) dispatchChain(
 		// node that is a plain doubling of what the delegate_error
 		// event reports.
 		spent.add(result, attemptLabel(backendName, task, result))
+		spent.discountLastSlice(elemCorrCost, elemCorrTokens)
 		// Discard only the failed attempt, not the named durable slot. The
 		// claw session format contains provider-neutral message blocks; the
 		// rollback also strips any legacy provider-specific thinking blocks
@@ -1523,9 +1565,9 @@ func (e *ClawExecutor) dispatchChain(
 	// lending donor's ledger.
 	result = spent.applyTo(result)
 	if len(chain) > 1 {
-		return itemised(chainOutcome{Result: result, BackendName: lastBackend, Route: lastModel, Provider: lastProvider}), &ErrChainExhausted{Chain: chainLabel(chain), Errs: causes}
+		return itemised(chainOutcome{Result: result, BackendName: lastBackend, Route: lastModel, Provider: lastProvider, Task: lastTask}), &ErrChainExhausted{Chain: chainLabel(chain), Errs: causes}
 	}
-	return itemised(chainOutcome{Result: result, BackendName: lastBackend, Route: lastModel, Provider: lastProvider}), err
+	return itemised(chainOutcome{Result: result, BackendName: lastBackend, Route: lastModel, Provider: lastProvider, Task: lastTask}), err
 }
 
 // fallbackRouteEnds resolves the two ends of a route change for the event

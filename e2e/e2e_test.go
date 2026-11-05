@@ -14,6 +14,7 @@ import (
 	"errors"
 	"github.com/SocialGouv/iterion/pkg/dsl/unit"
 	"github.com/SocialGouv/iterion/pkg/dsl/unit/unittest"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -112,6 +113,7 @@ func tmpStore(t *testing.T) store.RunStore {
 type scenarioExecutor struct {
 	mu       sync.Mutex
 	handlers map[string]func(map[string]any) (map[string]any, error)
+	schemas  map[string]*ir.Schema
 	calls    []string // ordered log of executed node IDs
 }
 
@@ -122,16 +124,19 @@ func newScenarioExecutor() *scenarioExecutor {
 }
 
 func (e *scenarioExecutor) on(nodeID string, fn func(map[string]any) (map[string]any, error)) {
-	// The scenario executor bypasses the real model-output validator. Keep old
-	// Copi scenarios focused on their routing subject by supplying the neutral,
-	// complete scope classification that a conforming backend must emit. Tests
-	// for missing/type/enum failures call model.ValidateOutput directly.
+	// Copi scenarios supply the neutral scope classification unless their
+	// handler chooses one explicitly. Runtime validation checks the result.
 	if nodeID == "copi" {
 		original := fn
 		fn = func(input map[string]any) (map[string]any, error) {
 			output, err := original(input)
 			if output == nil || err != nil {
 				return output, err
+			}
+			for _, key := range []string{"_session_id", "_session_fingerprint"} {
+				if _, ok := output[key]; !ok {
+					output[key] = ""
+				}
 			}
 			if _, ok := output["emitted_scope_exclusions"]; !ok {
 				output["emitted_scope_exclusions"] = []any{}
@@ -151,13 +156,64 @@ func (e *scenarioExecutor) on(nodeID string, fn func(map[string]any) (map[string
 func (e *scenarioExecutor) Execute(_ context.Context, node ir.Node, input map[string]any) (map[string]any, error) {
 	e.mu.Lock()
 	e.calls = append(e.calls, node.NodeID())
+	schema := e.schemas[ir.NodeOutputSchema(node)]
 	e.mu.Unlock()
-
+	output := map[string]any{"_tokens": 10, "_cost_usd": 0.001}
 	if fn, ok := e.handlers[node.NodeID()]; ok {
-		return fn(input)
+		var err error
+		output, err = fn(input)
+		if err != nil {
+			return output, err
+		}
 	}
-	// Default: return empty output with a _tokens marker for metrics.
-	return map[string]any{"_tokens": 10, "_cost_usd": 0.001}, nil
+	output = maps.Clone(output)
+	if output == nil {
+		output = map[string]any{}
+	}
+	// Only simulated LLM outputs get neutral required fields. Tool and
+	// special-node outputs stay as authored so catalog mismatches are visible.
+	llm := false
+	switch n := node.(type) {
+	case *ir.AgentNode, *ir.JudgeNode:
+		llm = true
+	case *ir.RouterNode:
+		llm = n.RouterMode == ir.RouterLLM
+	}
+	if schema != nil && llm {
+		for _, field := range schema.Fields {
+			if _, present := output[field.Name]; !present {
+				switch field.Type {
+				case ir.FieldTypeString:
+					output[field.Name] = ""
+					if len(field.EnumValues) > 0 {
+						output[field.Name] = field.EnumValues[0]
+					}
+				case ir.FieldTypeBool:
+					output[field.Name] = false
+				case ir.FieldTypeInt:
+					output[field.Name] = 0
+				case ir.FieldTypeFloat:
+					output[field.Name] = float64(0)
+				case ir.FieldTypeStringArray:
+					output[field.Name] = []any{}
+				case ir.FieldTypeJSON:
+					output[field.Name] = nil
+				case ir.FieldTypeFile:
+					output[field.Name] = map[string]any{"path": "scenario-file"}
+				}
+			}
+			if field.Type == ir.FieldTypeStringArray {
+				if values, ok := output[field.Name].([]string); ok {
+					wire := make([]any, len(values))
+					for i, value := range values {
+						wire[i] = value
+					}
+					output[field.Name] = wire
+				}
+			}
+		}
+	}
+	return output, nil
 }
 
 // Persist-session seams make the E2E executor behave like a backend whose

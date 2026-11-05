@@ -1,6 +1,9 @@
 package modelspecs
 
-import "testing"
+import (
+	"reflect"
+	"testing"
+)
 
 func boolPtr(b bool) *bool { return &b }
 
@@ -32,7 +35,7 @@ func TestBareIndexIsDeterministicAcrossBuilds(t *testing.T) {
 			first = got
 			continue
 		}
-		if got != first {
+		if !reflect.DeepEqual(got, first) {
 			t.Fatalf("bare index is not deterministic: build %d gave %+v, build 0 gave %+v", i, got, first)
 		}
 	}

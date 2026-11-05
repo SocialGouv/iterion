@@ -29,9 +29,9 @@ import (
 // attempt by WRITING a checkpoint book it first: a checkpoint is built from
 // the budget as it stands when it is built, so booking afterwards (the
 // caller's own `recoveryErr != nil` arm cannot run any sooner) hands a
-// resume a carry with this pass missing from it. The retry branches do not
-// book — the node runs again in a session whose usage is cumulative, and
-// the caller books at its own terminal exits.
+// resume a carry with this pass missing from it. The caller books a retry
+// after this dispatcher returns; session-total costs are deduplicated against
+// readings already booked within that recovery sequence.
 func (e *Engine) handleNodeFailure(ctx context.Context, rs *runState, nodeID string, execErr error, failedOutput map[string]any) (bool, ErrorCode, error) {
 	if e.recoveryDispatch == nil {
 		return false, "", nil

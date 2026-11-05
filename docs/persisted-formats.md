@@ -144,7 +144,11 @@ cost is a session total, the difference). A transport retry the re-ask
 itself pays is a further `delegate_retry` carrying the same `reask` and a
 backoff `delay_ms`. The delegation's own
 `delegate_started` / `delegate_finished` pair fires once, around the first
-answer, and never carries `reask`.
+answer, and never carries `reask`. A re-ask run inside the fallback chain —
+before the delegation's own `delegate_finished` / `delegate_error` — marks
+its `delegate_started` `reask_in_chain: true`. The last-resort extraction's
+own call closes with a `delegate_finished` / `delegate_error` marked
+`reask: "extract"`, on `backend: claw` and the detected model.
 
 `fingerprint` on each entry is the backend's provider-routing label for that
 session — `anthropic-oauth`, `anthropic-direct`, `anthropic-env`, or

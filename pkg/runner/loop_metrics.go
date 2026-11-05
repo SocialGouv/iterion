@@ -57,7 +57,11 @@ type metricsEmitter struct {
 	modelByNode    map[string]string
 	declaredByNode map[string]string
 	stepsSeen      map[string]bool
-	priceByModel   map[string]modelRate
+	// outerSteps holds a node's stepsSeen while one of its schema re-asks
+	// run inside the fallback chain runs (EventDelegateStarted with
+	// "reask_in_chain").
+	outerSteps   map[string]bool
+	priceByModel map[string]modelRate
 
 	// declinedRoutes remembers the routes recordCredentialSpend could name
 	// no credential for, so that decline is warned once per route.
@@ -287,7 +291,10 @@ func (m *metricsEmitter) addRoute(backend, modelName, source string, cost float6
 // m.mu held, alongside the run-total accumulation it mirrors.
 func (m *metricsEmitter) bookObservationLocked(nodeID string, route routeKey, provider string, cost float64, in, out, aggregate int64) {
 	m.addRouteLocked(route.backend, route.model, route.source, cost, in, out, aggregate)
-	fp := m.fingerprintFor(nodeID, route, provider)
+	fp := ""
+	if route.source != hostExtractionSource {
+		fp = m.fingerprintFor(nodeID, route, provider)
+	}
 	m.addFingerprintLocked(fp, cost, in, out, aggregate)
 	m.notePlanMissLocked(fp, route, cost, in+out+aggregate)
 }
@@ -374,13 +381,19 @@ func (m *metricsEmitter) addFingerprintLocked(fp string, cost float64, in, out, 
 	m.byFingerprint[fp] = t
 }
 
+// hostExtractionSource labels the structured-output recovery's own call
+// (reask "extract"): a claw call on the model and credential HOST detection
+// picked, never the node's credential, so the credential plan names nobody
+// for it — no fine row, no miss.
+const hostExtractionSource = "host-extraction"
+
 // planRouteFundedByEnv reports that a route's spend belongs to a credential
 // the runner's ENVIRONMENT holds rather than one the plan could name: the
 // openai_compatible gateway (EnvFunded — the walk records no bundle row for
-// it on purpose), and a claude_code session that rode the pod's ambient
-// anthropic env. Booking nobody for these is correct, never drift.
+// it on purpose), a claude_code session that rode the pod's ambient
+// anthropic env, and the host-detected structured-output recovery. Booking nobody for these is correct, never drift.
 func planRouteFundedByEnv(route routeKey) bool {
-	if modelroute.Parse(route.model).Gateway() {
+	if modelroute.Parse(route.model).Gateway() || route.source == hostExtractionSource {
 		return true
 	}
 	return route.backend == delegate.BackendClaudeCode && route.source == "anthropic-env"
@@ -504,7 +517,22 @@ func (m *metricsEmitter) observe(evt store.Event) {
 		declared, _ := evt.Data["declared_model"].(string)
 		m.mu.Lock()
 		// A new attempt of the node: whether its steps are observed is
-		// decided afresh.
+		// decided afresh. A schema re-ask run inside the fallback chain
+		// ("reask_in_chain") is a turn INSIDE the attempt, before the
+		// attempt's own delegate event, so the attempt's verdict is set
+		// aside and restored once the re-ask's delegate event is booked
+		// (observeDelegate); a re-ask after the chain comes once the
+		// attempt's event is booked and starts afresh like any. Only
+		// that event clears it: a sibling replica of the node starting in
+		// between (fan_out_each) must not drop the verdict of the attempt
+		// still correcting. The verdict is per node, so replicas still
+		// share it (#3064).
+		if inChain, _ := evt.Data["reask_in_chain"].(bool); inChain {
+			if m.outerSteps == nil {
+				m.outerSteps = map[string]bool{}
+			}
+			m.outerSteps[evt.NodeID] = m.stepsSeen[evt.NodeID]
+		}
 		delete(m.stepsSeen, evt.NodeID)
 		if declared != "" {
 			m.declaredByNode[evt.NodeID] = declared
@@ -675,6 +703,7 @@ func (m *metricsEmitter) observeDelegate(evt store.Event) {
 	// in this order, so the difference is that route's own spend — up to
 	// float rounding, and exactly zero when it spent nothing (a skip, a
 	// route refused before it spent).
+	reaskMode, _ := evt.Data["reask"].(string)
 	own := delegateSlice{
 		backend:     backend,
 		model:       m.modelByNode[evt.NodeID],
@@ -682,6 +711,7 @@ func (m *metricsEmitter) observeDelegate(evt store.Event) {
 		fingerprint: fingerprint,
 		tokens:      toFloat(evt.Data["tokens"]),
 		cost:        toFloat(evt.Data["cost_usd"]),
+		unstepped:   reaskMode == model.ReaskExtract,
 	}
 	slices := make([]delegateSlice, 0, len(folded)+1)
 	for _, s := range folded {
@@ -696,6 +726,18 @@ func (m *metricsEmitter) observeDelegate(evt store.Event) {
 	for _, s := range slices {
 		if b, ok := m.bookDelegateSliceLocked(evt.NodeID, s); ok {
 			booked = append(booked, b)
+		}
+	}
+	// The re-ask's delegate event is booked: the enclosing attempt's
+	// steps verdict comes back for that attempt's own delegate event.
+	if reask, _ := evt.Data["reask"].(string); reask != "" {
+		if outer, ok := m.outerSteps[evt.NodeID]; ok {
+			if outer {
+				m.stepsSeen[evt.NodeID] = true
+			} else {
+				delete(m.stepsSeen, evt.NodeID)
+			}
+			delete(m.outerSteps, evt.NodeID)
 		}
 	}
 	m.mu.Unlock()
@@ -719,6 +761,10 @@ func (m *metricsEmitter) observeDelegate(evt store.Event) {
 type delegateSlice struct {
 	backend, route, effective, model, provider, fingerprint string
 	tokens, cost                                            float64
+	// unstepped says the slice's figure was never emitted as steps — the
+	// structured-output recovery's direct claw call (reask "extract") —
+	// so the claw steps guard does not apply to it.
+	unstepped bool
 }
 
 // foldedSpendOf reads a delegate event's `folded_spend` (the executor's
@@ -783,7 +829,7 @@ func (m *metricsEmitter) foldedModelLocked(nodeID, route, effective string) stri
 // (routeSlot); keying another backend's route on its label would only split
 // one route in two.
 func (m *metricsEmitter) bookDelegateSliceLocked(nodeID string, s delegateSlice) (delegateSlice, bool) {
-	if s.backend == delegate.BackendClaw && m.stepsSeen[nodeID] {
+	if s.backend == delegate.BackendClaw && !s.unstepped && m.stepsSeen[nodeID] {
 		return s, false
 	}
 	// The delegate already priced its call (its own CLI figure, the token
@@ -805,6 +851,9 @@ func (m *metricsEmitter) bookDelegateSliceLocked(nodeID string, s delegateSlice)
 	var source string
 	if s.backend == delegate.BackendClaudeCode {
 		source = s.fingerprint
+	}
+	if s.unstepped {
+		source = hostExtractionSource
 	}
 	m.runAggregateTokens += int64(s.tokens)
 	m.runCostUSD += s.cost

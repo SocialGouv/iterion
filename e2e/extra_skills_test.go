@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/SocialGouv/iterion/internal/testfs"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -43,7 +44,7 @@ func TestExtraSkillSurvivesAResume(t *testing.T) {
 	const runID = "e2e-extra-skills"
 	mirrored := filepath.Join(ws, ".claude", "skills", "house-standard", "SKILL.md")
 
-	eng := runtime.New(wf, st, exec,
+	eng := engineWithScenarioSchema(wf, st, exec,
 		runtime.WithLogger(iterlog.Nop()),
 		runtime.WithWorkDir(ws),
 		runtime.WithExtraSkills([]string{"house-standard"}, "flag"),
@@ -71,11 +72,9 @@ func TestExtraSkillSurvivesAResume(t *testing.T) {
 	// mirror is gone. Only re-application can put it back — if resume
 	// dropped the list, this file never returns and the agent silently
 	// answers the rest of the conversation without the skill.
-	if err := os.RemoveAll(filepath.Join(ws, ".claude")); err != nil {
-		t.Fatalf("clear the mirror: %v", err)
-	}
+	testfs.RemoveAll(t, ws, filepath.Join(ws, ".claude"))
 
-	resumed := runtime.New(wf, st, exec,
+	resumed := engineWithScenarioSchema(wf, st, exec,
 		runtime.WithLogger(iterlog.Nop()),
 		runtime.WithWorkDir(ws),
 		// Exactly what pkg/cli/resume.go and runview's resume path pass.
@@ -103,7 +102,7 @@ func TestExtraSkillIsRecordedOnTheRun(t *testing.T) {
 		t.Fatalf("store: %v", err)
 	}
 	const runID = "e2e-extra-skills-event"
-	eng := runtime.New(wf, st, newScenarioExecutor(),
+	eng := engineWithScenarioSchema(wf, st, newScenarioExecutor(),
 		runtime.WithLogger(iterlog.Nop()),
 		runtime.WithWorkDir(ws),
 		runtime.WithExtraSkills([]string{"house-standard"}, "env"),
@@ -141,7 +140,7 @@ func TestNoEventWithoutExtraSkills(t *testing.T) {
 		t.Fatalf("store: %v", err)
 	}
 	const runID = "e2e-extra-skills-none"
-	eng := runtime.New(wf, st, newScenarioExecutor(),
+	eng := engineWithScenarioSchema(wf, st, newScenarioExecutor(),
 		runtime.WithLogger(iterlog.Nop()),
 		runtime.WithWorkDir(t.TempDir()),
 	)

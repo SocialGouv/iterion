@@ -1,6 +1,7 @@
 package cli_test
 
 import (
+	"github.com/SocialGouv/iterion/internal/detecttest"
 	"os"
 	"testing"
 
@@ -21,7 +22,14 @@ import (
 // resolve their stores from the iterion home, which hometest keeps off the
 // operator's.
 func TestMain(m *testing.M) {
-	os.Exit(hometest.Isolate(func() int {
+	restoreProviders := detecttest.IsolateProviders()
+	code := hometest.Isolate(func() int {
 		return proctest.NoProcessLeaks(func() int { return gittest.NoWorktreeLeaks(m) })
-	}))
+	})
+	restoreProviders()
+	os.Exit(code)
 }
+
+// The provider isolation TestMain installs, witnessed: a fixture whose answer
+// falls to the last-resort extraction must not reach a host provider.
+func TestThisPackageDetectsNoProvider(t *testing.T) { detecttest.RequireNoProvider(t) }

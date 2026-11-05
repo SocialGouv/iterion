@@ -16,6 +16,37 @@ import (
 // Generation with retry
 // ---------------------------------------------------------------------------
 
+// adoptJSONObjectText keeps a parse-fallback text that IS a JSON object as
+// the structured answer: the parsed map becomes the output and the result
+// stops being a fallback. Any other text stays a parse fallback.
+//
+// Every key of that map is model-written, so the `_`-prefixed ones are
+// dropped: they name what the executor and the backend stamp on a result,
+// and `_needs_interaction` / `_interaction_questions` raise a pause, a
+// permission prompt included. This covers the text this adoption reads; a
+// JSON text the backend's own parse already took as the answer (claw's
+// shaped-object harvest, claude_code's structuredObject) keeps those keys
+// (#3055).
+func adoptJSONObjectText(result *delegate.Result) {
+	if !result.ParseFallback {
+		return
+	}
+	text, ok := result.Output["text"].(string)
+	if !ok {
+		return
+	}
+	var parsed map[string]any
+	if json.Unmarshal([]byte(text), &parsed) == nil && parsed != nil {
+		for key := range parsed {
+			if strings.HasPrefix(key, "_") {
+				delete(parsed, key)
+			}
+		}
+		result.Output = parsed
+		result.ParseFallback = false
+	}
+}
+
 // extractJSON extracts a JSON object from text that may contain markdown
 // fences or surrounding commentary. Returns the raw JSON string.
 func extractJSON(text string) string {
@@ -258,7 +289,7 @@ func (e *ClawExecutor) executeLLMRouterUnified(ctx context.Context, node *ir.Rou
 
 	chain := collapseHintOnlyChain(e.resolveProviderChain(node), backendName)
 	out, err := e.dispatchWithObservability(ctx, node.ID, backendName, "model: llm router", chain, expanded,
-		e.newElementBuilder(node.ID, backendName, backend, assemble), sess)
+		e.newElementBuilder(node.ID, backendName, backend, assemble), sess, schema)
 	if err != nil {
 		// The other seam that spends: an LLM router is a model call, and a
 		// router that burned a fallback chain's worth of routes before
@@ -270,19 +301,10 @@ func (e *ClawExecutor) executeLLMRouterUnified(ctx context.Context, node *ir.Rou
 	}
 	result := out.Result
 
-	// A text answer that IS a JSON object is the structured answer: keep
-	// the parsed map as the output. Anything else stays a parse fallback,
-	// which the schema re-ask below treats as one more ask before the
-	// router fails — routers must produce structured output.
-	if result.ParseFallback {
-		if textVal, ok := result.Output["text"].(string); ok {
-			var parsed map[string]any
-			if json.Unmarshal([]byte(textVal), &parsed) == nil {
-				result.Output = parsed
-				result.ParseFallback = false
-			}
-		}
-	}
+	// dispatchChain already kept a text answer that IS a JSON object as the
+	// structured answer (adoptJSONObjectText); anything else is still a
+	// parse fallback, which the schema re-ask below treats as one more ask
+	// before the router fails — routers must produce structured output.
 
 	// Everything below acts on the element that SERVED, which is the
 	// router's own backend unless the chain fell through — the reading
@@ -302,10 +324,8 @@ func (e *ClawExecutor) executeLLMRouterUnified(ctx context.Context, node *ir.Rou
 		servingTask = built
 	}
 
-	// Strict validation against the router schema — with the same single
-	// re-ask an agent's schema failure gets: a run lost to a missing field
-	// the model could have supplied in one more turn is the same loss on a
-	// router as on an agent.
+	// Router outputs use the same validation and bounded correction loop
+	// as agent outputs.
 	validated, err := e.validateAndRetry(ctx, backendFields{id: node.ID, kind: "llm router"}, servingBackendName, servingBackend, servingTask, result, schema)
 	if err != nil {
 		// The generation SUCCEEDED and was paid for — only its shape is
@@ -320,6 +340,7 @@ func (e *ClawExecutor) executeLLMRouterUnified(ctx context.Context, node *ir.Rou
 	stampDelegateOutputMeta(result.Output, result, servingBackendName)
 	stampServingRoute(result.Output, out)
 
+	stampForkOrigin(result.Output, servingTask)
 	return result.Output, nil
 }
 

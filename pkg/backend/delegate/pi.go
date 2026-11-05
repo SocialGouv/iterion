@@ -2,8 +2,10 @@ package delegate
 
 import (
 	"context"
+
 	"errors"
 	"fmt"
+	"github.com/SocialGouv/claw-code-go/pkg/api"
 	"os"
 	"path/filepath"
 	"strings"
@@ -861,6 +863,9 @@ func piClassifyFailure(m pisdk.Message) error {
 	case status == 408, status == 409, status >= 500:
 		return &ErrTransient{Provider: BackendPi, Reason: fmt.Sprintf("upstream %d", status), Detail: msg}
 	case status == 401, status == 403:
+		if ModelAccessDenied(status, msg) {
+			return &ErrModelUnavailable{Provider: BackendPi, Model: m.Model, Detail: msg}
+		}
 		// Deterministic: the credential was rejected. Retrying burns
 		// attempts against a failure that cannot resolve itself. Typed so
 		// callers can ACT on it — the credential pool holds a donor whose
@@ -872,6 +877,15 @@ func piClassifyFailure(m pisdk.Message) error {
 		// Deliberately NOT ErrAuthFailed — that would tell a lending donor
 		// to "reconnect", which does not refill an account.
 		return fmt.Errorf("pi: payment required (%d): %s", status, msg)
+	case status == 400:
+		// Only provider diagnostics supply the message of the typed refusal.
+		// An assistant's rendered text is not evidence of an HTTP error.
+		for _, d := range m.Diagnostics {
+			if d.Error != nil && d.Error.Message != "" && (pisdk.Message{Diagnostics: []pisdk.Diagnostic{d}}).HTTPStatus() == status {
+				return &api.APIError{Provider: BackendPi, StatusCode: status, Message: d.Error.Message}
+			}
+		}
+		return fmt.Errorf("pi: upstream %d: %s", status, msg)
 	case status >= 400:
 		return fmt.Errorf("pi: upstream %d: %s", status, msg)
 	}

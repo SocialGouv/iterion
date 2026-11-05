@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/SocialGouv/claw-code-go/pkg/api"
 	"io"
 	"os"
 	"time"
@@ -238,10 +240,7 @@ func runClawRunner(ctx context.Context, stdin io.Reader, stdout, stderr io.Write
 		result.Duration = duration
 	}
 
-	ioRes := delegate.ToIOResult(result)
-	if err != nil {
-		ioRes.Error = err.Error()
-	}
+	ioRes := clawRunnerResult(result, err)
 	resultEnv, marshalErr := delegate.NewResultEnvelope(ioRes)
 	if marshalErr != nil {
 		return emitFatal(dispatcher, stderr, marshalErr)
@@ -416,4 +415,24 @@ func emitFatal(dispatcher *proxyDispatcher, stderr io.Writer, err error) error {
 	}
 	fmt.Fprintf(stderr, "iterion-claw-runner: %v\n", err)
 	return err
+}
+
+// clawRunnerResult preserves the provider cause beside the diagnostic string.
+// Older launchers still read Error; newer ones never infer a refusal from it.
+func clawRunnerResult(result delegate.Result, err error) delegate.IOResult {
+	ioRes := delegate.ToIOResult(result)
+	if err != nil {
+		ioRes.Error = err.Error()
+		var provider *api.APIError
+		if errors.As(err, &provider) {
+			ioRes.ProviderError = provider
+		} else {
+			var stream *model.APIError
+			if errors.As(err, &stream) && stream.StatusCode == 400 {
+				ioRes.ProviderError = &api.APIError{StatusCode: stream.StatusCode, Message: stream.Message, Retryable: stream.IsRetryable}
+				ioRes.ProviderErrorStream = true
+			}
+		}
+	}
+	return ioRes
 }

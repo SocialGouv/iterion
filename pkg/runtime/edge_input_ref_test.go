@@ -510,7 +510,7 @@ func TestEdgeInputRef_MidGraphRouterDoesNotFallBack(t *testing.T) {
 	})
 	exec.on("show", func(in map[string]any) (map[string]any, error) {
 		got = in["topic"]
-		return map[string]any{"topic": in["topic"]}, nil
+		return map[string]any{"topic": "observed"}, nil
 	})
 
 	s := tmpStore(t)

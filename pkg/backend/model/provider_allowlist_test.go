@@ -425,7 +425,7 @@ func TestProviders_DetectorRecoverySkipsAnOutsidePick(t *testing.T) {
 	e.logger = iterlog.New(iterlog.LevelDebug, &buf)
 	task := &delegate.Task{NodeID: "draft", OutputSchema: []byte(`{"type":"object","properties":{"ok":{"type":"boolean"}}}`)}
 	primary := delegate.Result{Output: map[string]any{"text": "hello"}}
-	_, _, ok := e.extractStructuredViaClaw(context.Background(), "draft", task, primary, delegate.Result{}, nil, "claude_code")
+	_, _, ok, _ := e.extractStructuredViaClaw(context.Background(), "draft", task, primary, delegate.Result{}, nil, "claude_code")
 	if ok {
 		t.Fatal("recovery = ok, want the skip — the detected spend is outside the list")
 	}
@@ -471,7 +471,7 @@ func TestProviders_RecoverySkipNamesTheNoDetectorCase(t *testing.T) {
 	e.logger = iterlog.New(iterlog.LevelDebug, &buf)
 	task := &delegate.Task{NodeID: "draft", OutputSchema: []byte(`{"type":"object","properties":{"ok":{"type":"boolean"}}}`)}
 	primary := delegate.Result{Output: map[string]any{"text": "hello"}}
-	_, _, ok := e.extractStructuredViaClaw(context.Background(), "draft", task, primary, delegate.Result{}, nil, "claude_code")
+	_, _, ok, _ := e.extractStructuredViaClaw(context.Background(), "draft", task, primary, delegate.Result{}, nil, "claude_code")
 	if ok {
 		t.Fatal("recovery = ok, want the skip — nothing was detected to recover with")
 	}

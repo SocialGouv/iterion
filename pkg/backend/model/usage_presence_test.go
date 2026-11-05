@@ -277,7 +277,7 @@ func TestClawBackend_EveryExitCarriesItsUnreportedCalls(t *testing.T) {
 		{"structured answer the model malformed, and its re-ask too", false, []script{
 			withoutUsageReport(toolUseEvents("tu_1", "structured_output", `{"answer":`, 100, 20)),
 			withoutUsageReport(toolUseEvents("tu_2", "structured_output", `{"answer":`, 100, 20)),
-		}, true, 2},
+		}, false, 2},
 		{"tool loop answering in JSON", true, []script{
 			withoutUsageReport(textEvents(`{"answer":"blue"}`, 100, 20)),
 		}, false, 1},
@@ -320,6 +320,9 @@ func TestClawBackend_EveryExitCarriesItsUnreportedCalls(t *testing.T) {
 			res, err := NewClawBackend(reg, EventHooks{}, RetryPolicy{MaxAttempts: 1, MaxAttemptsTransient: 1}).Execute(context.Background(), task)
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("err = %v, want an error: %v", err, tc.wantErr)
+			}
+			if tc.name == "structured answer the model malformed, and its re-ask too" && !res.ParseFallback {
+				t.Fatal("malformed structured output bypasses schema correction")
 			}
 			if n := len(client.getCalls()); n != len(tc.scripts) {
 				t.Fatalf("%d provider call(s), want %d: the case did not take the exit it names", n, len(tc.scripts))

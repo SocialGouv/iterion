@@ -196,21 +196,33 @@ func (e *Engine) resourcesReady() {
 
 // Every model/tool execution path shares this reader boundary; a subbot itself
 // never holds a reader while waiting for its child to acquire the writer.
-func (e *Engine) executeWithResources(ctx context.Context, node ir.Node, input map[string]any) (map[string]any, error) {
+func (e *Engine) executeWithResources(ctx context.Context, rs *runState, node ir.Node, input map[string]any) (map[string]any, error) {
 	// A node naming an attachment's path runs with a file or not at all —
 	// admitted here, the boundary every executor.Execute call crosses.
 	if err := admitAttachmentPaths(node, e.workflow, model.TemplateDataFromContext(ctx), e.executor); err != nil {
 		return nil, err
 	}
+	ctx, cancel, err := e.executorCorrectionContext(ctx, rs, node)
+	if err != nil {
+		return nil, err
+	}
+	defer cancel()
+	execute := func() (map[string]any, error) {
+		output, err := e.executor.Execute(ctx, node, input)
+		if _, tool := node.(*ir.ToolNode); tool && err != nil {
+			err = &model.ToolExecutionError{Cause: err}
+		}
+		return output, schemaExecutionError(node, err)
+	}
 	scope := e.resourceScope
 	if scope == nil {
-		return e.executor.Execute(ctx, node, input)
+		return execute()
 	}
 	if err := scope.gate.sem.Acquire(ctx, 1); err != nil {
 		return nil, err
 	}
 	defer scope.gate.sem.Release(1)
-	return e.executor.Execute(ctx, node, input)
+	return execute()
 }
 
 // childResourcePaths are the entries under a workspace's `.claude/` that a

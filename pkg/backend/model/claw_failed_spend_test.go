@@ -118,8 +118,8 @@ func TestClawBackendKeepsWhatAnAbandonedGenerationBurned(t *testing.T) {
 		res, err := backend.Execute(context.Background(), delegate.Task{
 			NodeID: "judge", Model: "test/test-model", UserPrompt: "Judge.", OutputSchema: schemaJSON,
 		})
-		if err == nil {
-			t.Fatal("precondition: text instead of the synthetic tool_use must fail")
+		if err != nil || !res.ParseFallback {
+			t.Fatalf("structured failure must enter correction as a metered parse fallback: result=%+v err=%v", res, err)
 		}
 		if res.Tokens != 190 || res.Output["_tokens"] != 190 {
 			t.Errorf("the billed structured turns were reported as free: Tokens=%d Output=%v, want 190", res.Tokens, res.Output)

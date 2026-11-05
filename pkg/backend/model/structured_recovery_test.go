@@ -110,9 +110,9 @@ func TestMarkBudgetCut(t *testing.T) {
 func TestEffortAfterCut(t *testing.T) {
 	t.Parallel()
 	base := GenerationOptions{Model: "openai_compatible/scaleway/glm-test", ProviderOptions: map[string]any{"reasoning_effort": "high", "other": 1}}
-	lowered, to, ok := effortAfterCut(base)
+	lowered, to, ok := effortAfterCut(context.Background(), base)
 	if !ok || to != "low" || reasoningEffortOf(lowered) != "low" || lowered.ProviderOptions["other"] != 1 {
-		t.Fatalf("effortAfterCut(high) = %v / %q / %v, want low with the other options kept", lowered.ProviderOptions, to, ok)
+		t.Fatalf("effortAfterCut(context.Background(), high) = %v / %q / %v, want low with the other options kept", lowered.ProviderOptions, to, ok)
 	}
 	if reasoningEffortOf(base) != "high" {
 		t.Fatal("effortAfterCut wrote through the caller's ProviderOptions map")
@@ -122,8 +122,8 @@ func TestEffortAfterCut(t *testing.T) {
 		if effort != "" {
 			opts.ProviderOptions = map[string]any{"reasoning_effort": effort}
 		}
-		if _, _, ok := effortAfterCut(opts); ok {
-			t.Errorf("effortAfterCut(%q) lowered an effort that cannot go lower", effort)
+		if _, _, ok := effortAfterCut(context.Background(), opts); ok {
+			t.Errorf("effortAfterCut(context.Background(), %q) lowered an effort that cannot go lower", effort)
 		}
 	}
 }
@@ -534,11 +534,11 @@ func TestClawBackend_AReaskTransientIsNotReplayed(t *testing.T) {
 		}}
 		reg := NewRegistry()
 		reg.Register("test", func(string) (api.APIClient, error) { return client, nil })
-		_, err := NewClawBackend(reg, EventHooks{}, policy).Execute(context.Background(), delegate.Task{
+		result, err := NewClawBackend(reg, EventHooks{}, policy).Execute(context.Background(), delegate.Task{
 			NodeID: "judge", Model: "test/test-model", UserPrompt: "Judge.", OutputSchema: schemaJSON,
 		})
-		if err == nil {
-			t.Fatal("a model that never answers the schema succeeded")
+		if err != nil || !result.ParseFallback {
+			t.Fatalf("structured failure must reach schema correction: result=%+v err=%v", result, err)
 		}
 		if n := client.count(); n != 2 {
 			t.Errorf("%d provider calls, want the forced turn and its re-ask only", n)

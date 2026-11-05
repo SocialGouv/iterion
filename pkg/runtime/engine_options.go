@@ -774,16 +774,28 @@ func WithContributionsUnresolved() EngineOption {
 	return func(e *Engine) { e.contributionsUnresolved = true }
 }
 
-// WithOutputValidation enables post-execution validation of node outputs
-// against their declared output schemas. When enabled, a node whose output
-// does not conform to its schema will cause the run to fail immediately.
+// EnvOutputValidation selects strict runtime output validation on every surface.
+// The default warns and preserves outputs from nodes not validated by their executor.
+const EnvOutputValidation = "ITERION_STRICT_OUTPUT_VALIDATION"
+
+func defaultOutputValidation() bool {
+	raw := os.Getenv(EnvOutputValidation)
+	enabled, known := parseEnvBool(raw)
+	if !known {
+		iterlog.New(iterlog.LevelWarn, os.Stderr).Warn("OUTPUT_VALIDATION_INVALID: %s=%q is not a boolean; using advisory validation", EnvOutputValidation, raw)
+	}
+	return enabled
+}
+
+// WithOutputValidation selects strict rejection instead of advisory warnings.
+// Executor-validated LLM outputs retain their validation and correction loop.
 func WithOutputValidation(enabled bool) EngineOption {
 	return func(e *Engine) { e.validateOutputs = enabled }
 }
 
 // WithOutputCorrectionBudget bounds the number of optional correction calls
 // made after a schema-invalid node output. A zero budget disables correction;
-// negative values are treated as zero. The budget is per node episode and is
+// negative values are treated as zero. The budget is per node invocation and is
 // persisted on the run so a resume cannot reset the bound.
 func WithOutputCorrectionBudget(budget int) EngineOption {
 	return func(e *Engine) {

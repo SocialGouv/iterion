@@ -46,10 +46,13 @@ const e2eParallelEnv = "ITERION_E2E_PARALLEL"
 // directory it owns doubles as processScratch.
 func TestMain(m *testing.M) {
 	capParallelism()
-	os.Exit(hometest.Isolate(func() int {
+	restoreProviders := isolateProviders()
+	code := hometest.Isolate(func() int {
 		processScratch = os.Getenv("ITERION_HOME")
 		return proctest.NoProcessLeaks(func() int { return gittest.NoWorktreeLeaks(m) })
-	}))
+	})
+	restoreProviders()
+	os.Exit(code)
 }
 
 // capParallelism lowers `-parallel` to e2eParallelCap when the operator left

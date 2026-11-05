@@ -111,6 +111,10 @@ const (
 	// fixing the schema (or the backend that cannot read it), then
 	// resuming.
 	FailureSchemaUnusable FailureCode = "SCHEMA_UNUSABLE"
+
+	// FailureProviderRequestInvalid is a provider HTTP 400 after recoverable
+	// context overflow and model availability refusals have been classified.
+	FailureProviderRequestInvalid FailureCode = "PROVIDER_REQUEST_INVALID"
 	// The selected backend cannot serve a declared node capability. A
 	// configuration change is needed before the same run can make progress.
 	// Raised before the first node, too, when the run's RESOLVED sandbox
@@ -299,6 +303,7 @@ var ReservedFailureCodes = []FailureCode{
 	FailureAuthFailed,
 	FailureModelUnavailable,
 	FailureSchemaUnusable,
+	FailureProviderRequestInvalid,
 	FailureCapabilityUnsupported,
 	FailureSandboxDriverUnavailable,
 	FailureSandboxCredentialUnreachable,

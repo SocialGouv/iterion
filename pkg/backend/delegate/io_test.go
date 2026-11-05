@@ -268,3 +268,19 @@ func TestIOTaskCarriesCapabilitiesAndBoardWiring(t *testing.T) {
 		t.Errorf("SessionFingerprint = %q", got.SessionFingerprint)
 	}
 }
+
+func TestR2ParseDiagnosticCrossesSandboxApartFromAnswer(t *testing.T) {
+	original := Result{ParseFallback: true, ParseError: "malformed tool block", Output: map[string]any{"text": ""}}
+	wire, err := json.Marshal(ToIOResult(original))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var received IOResult
+	if err = json.Unmarshal(wire, &received); err != nil {
+		t.Fatal(err)
+	}
+	got := FromIOResult(received)
+	if got.ParseError != original.ParseError || !got.ParseFallback || got.Output["text"] != "" {
+		t.Fatalf("parse diagnostic lost or became answer: %+v", got)
+	}
+}

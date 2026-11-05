@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/model"
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -23,30 +24,31 @@ import (
 type ErrorCode = store.FailureCode
 
 const (
-	ErrCodeNodeNotFound          = store.FailureNodeNotFound
-	ErrCodeNoOutgoingEdge        = store.FailureNoOutgoingEdge
-	ErrCodeLoopExhausted         = store.FailureLoopExhausted
-	ErrCodeBudgetExceeded        = store.FailureBudgetExceeded
-	ErrCodeExecutionFailed       = store.FailureExecutionFailed
-	ErrCodeWorkspaceSafety       = store.FailureWorkspaceSafety
-	ErrCodeResourceRestore       = store.FailureResourceRestore
-	ErrCodeTimeout               = store.FailureTimeout
-	ErrCodeCancelled             = store.FailureCancelled
-	ErrCodeJoinFailed            = store.FailureJoinFailed
-	ErrCodeResumeInvalid         = store.FailureResumeInvalid
-	ErrCodeScratchNotPortable    = store.FailureScratchNotPortable
-	ErrCodeSchemaValidation      = store.FailureSchemaValidation
-	ErrCodeExpressionFailed      = store.FailureExpressionFailed
-	ErrCodeRateLimited           = store.FailureRateLimited
-	ErrCodeUsageLimitBlocked     = store.FailureUsageLimitBlocked
-	ErrCodeContextLengthExceeded = store.FailureContextLengthExceeded
-	ErrCodeToolFailedTransient   = store.FailureToolFailedTransient
-	ErrCodeToolFailedPermanent   = store.FailureToolFailedPermanent
-	ErrCodeNetworkTransient      = store.FailureNetworkTransient
-	ErrCodeAuthFailed            = store.FailureAuthFailed
-	ErrCodeModelUnavailable      = store.FailureModelUnavailable
-	ErrCodeSchemaUnusable        = store.FailureSchemaUnusable
-	ErrCodeCapabilityUnsupported = store.FailureCapabilityUnsupported
+	ErrCodeNodeNotFound           = store.FailureNodeNotFound
+	ErrCodeNoOutgoingEdge         = store.FailureNoOutgoingEdge
+	ErrCodeLoopExhausted          = store.FailureLoopExhausted
+	ErrCodeBudgetExceeded         = store.FailureBudgetExceeded
+	ErrCodeExecutionFailed        = store.FailureExecutionFailed
+	ErrCodeWorkspaceSafety        = store.FailureWorkspaceSafety
+	ErrCodeResourceRestore        = store.FailureResourceRestore
+	ErrCodeTimeout                = store.FailureTimeout
+	ErrCodeCancelled              = store.FailureCancelled
+	ErrCodeJoinFailed             = store.FailureJoinFailed
+	ErrCodeResumeInvalid          = store.FailureResumeInvalid
+	ErrCodeScratchNotPortable     = store.FailureScratchNotPortable
+	ErrCodeSchemaValidation       = store.FailureSchemaValidation
+	ErrCodeExpressionFailed       = store.FailureExpressionFailed
+	ErrCodeRateLimited            = store.FailureRateLimited
+	ErrCodeUsageLimitBlocked      = store.FailureUsageLimitBlocked
+	ErrCodeContextLengthExceeded  = store.FailureContextLengthExceeded
+	ErrCodeToolFailedTransient    = store.FailureToolFailedTransient
+	ErrCodeToolFailedPermanent    = store.FailureToolFailedPermanent
+	ErrCodeNetworkTransient       = store.FailureNetworkTransient
+	ErrCodeAuthFailed             = store.FailureAuthFailed
+	ErrCodeModelUnavailable       = store.FailureModelUnavailable
+	ErrCodeSchemaUnusable         = store.FailureSchemaUnusable
+	ErrCodeProviderRequestInvalid = store.FailureProviderRequestInvalid
+	ErrCodeCapabilityUnsupported  = store.FailureCapabilityUnsupported
 	// Raised when the workflow requested an EXPLICIT sandbox mode
 	// (`sandbox: { mode: inline, image/build: … }`) but no
 	// container-runtime driver on this host can honour it. Distinct
@@ -199,6 +201,9 @@ func RemedyOf(err error) Remedy {
 		return Remedy{}
 	}
 	if rt.Hint == "" {
+		if rt.Code == ErrCodeProviderRequestInvalid {
+			return Remedy{Hint: ProviderRequestRemedy(err)}
+		}
 		return CodeRemedy(rt.Code)
 	}
 	return Remedy{Hint: rt.Hint, AlsoNeedsForce: rt.AlsoNeedsForce}
@@ -340,3 +345,9 @@ func CeilingReason(reason string) bool {
 
 // Ceiling says the decline was the run's circumstances' (CeilingReason).
 func (d *LoopDeclined) Ceiling() bool { return CeilingReason(d.Reason) }
+
+// ProviderRequestRemedy keeps the provider's explanation available to an
+// operator changing the request, bounded before reaching persisted hints.
+func ProviderRequestRemedy(err error) string {
+	return "fix the provider request parameters before resuming; provider refused: " + iterlog.Truncate(providerParameterCause(err), 2048)
+}

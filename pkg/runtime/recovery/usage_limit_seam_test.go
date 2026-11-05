@@ -132,11 +132,8 @@ func TestUsageWindowFailure_PreservesCodeAndCause(t *testing.T) {
 	}
 }
 
-// TestUsageWindowFailure_NoDispatcherKeepsExecutionFailed pins the other
-// half of the contract: a host that wires no dispatcher (as the cloud runner
-// did) classifies nothing, and the failure must stay EXECUTION_FAILED rather
-// than acquire a code out of thin air.
-func TestUsageWindowFailure_NoDispatcherKeepsExecutionFailed(t *testing.T) {
+// Typed refusals keep their code on hosts without a recovery dispatcher.
+func TestUsageWindowFailure_NoDispatcherKeepsTypedCode(t *testing.T) {
 	exec := &usageWindowExecutor{
 		target:  "synthesize",
 		failErr: weeklyLimitErr(time.Date(2026, 7, 28, 21, 0, 0, 0, time.UTC)),
@@ -153,9 +150,10 @@ func TestUsageWindowFailure_NoDispatcherKeepsExecutionFailed(t *testing.T) {
 	if !errors.As(err, &rtErr) {
 		t.Fatalf("expected a *runtime.RuntimeError, got %T: %v", err, err)
 	}
-	if rtErr.Code != runtime.ErrCodeExecutionFailed {
-		t.Errorf("code = %s, want %s", rtErr.Code, runtime.ErrCodeExecutionFailed)
+	if rtErr.Code != runtime.ErrCodeUsageLimitBlocked {
+		t.Errorf("code = %s, want %s", rtErr.Code, runtime.ErrCodeUsageLimitBlocked)
 	}
+	assertRunFailedCode(t, s, "run-no-dispatch", string(runtime.ErrCodeUsageLimitBlocked))
 }
 
 // assertRunFailedCode asserts the run_failed event carries the given code.

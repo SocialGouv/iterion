@@ -1,6 +1,7 @@
 package compatgw
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
@@ -294,5 +295,25 @@ func TestResolveCatalog_APlantedRecordIsRefused(t *testing.T) {
 	// not the price it is billed at.
 	if res.Spec.ContextWindow != 0 || res.Spec.MaxOutputTokens != 0 || res.Priced() {
 		t.Fatalf("a planted record resolved %+v, want nothing: the repository under review chose the window, the max output and the price of the node reviewing it", res)
+	}
+}
+
+func TestR3EffortsDoNotChangeTheStrictCatalog(t *testing.T) {
+	ResetCatalogCaches()
+	t.Cleanup(ResetCatalogCaches)
+	source := mapGet(map[string]string{CatalogModelsEnv: `{"deepseek":{"context_window":100000}}`, ReasoningEffortsEnv: `{"deepseek":[50],"broken":["hihg"]}`})
+	if err := CheckOperatorTable(source); err != nil {
+		t.Fatal(err)
+	}
+	if res := ResolveCatalogQuiet("deepseek", nil, source); res.Source != SourceOperator || res.Spec.ContextWindow != 100000 {
+		t.Fatalf("catalog changed: %+v", res)
+	}
+	warnings := 0
+	got := ReasoningEfforts("deepseek", source, func(string, ...any) { warnings++ })
+	if !reflect.DeepEqual(got, []string{"50"}) || warnings != 1 {
+		t.Fatalf("efforts=%v warnings=%d", got, warnings)
+	}
+	if _, err := parseOperatorTable(`{"deepseek":{"reasoning_efforts":["high"]}}`); err == nil {
+		t.Fatal("reasoning_efforts re-entered the strict table")
 	}
 }

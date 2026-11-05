@@ -109,7 +109,7 @@ runtime, and is explicit about the rest:
 | Not statically guaranteed | Enforced instead by |
 |---------------------------|---------------------|
 | Termination *logic* of an `unbounded` loop | Fuel + liveness monitor (runtime), C097/C098 (compile heuristics) |
-| Actual LLM / tool output shape | Schemas are **advisory**, not contracts — the runtime passes outputs verbatim |
+| Actual LLM / tool output shape | LLM outputs use executor validation and bounded correction; other node outputs warn by default (`node_output_schema_mismatch`), with strict rejection via `ITERION_STRICT_OUTPUT_VALIDATION=1` / `WithOutputValidation(true)` |
 | Cost / duration / capacity | `SharedBudget` at runtime (`max_cost_usd`/`max_tokens`/`max_duration`); cloud `ClampToCeiling` |
 | Liveness of external systems (MCP, webhooks, images) | Runtime connect/spawn attempt |
 | `${ENV}` resolution in `model:`/`command:`/… | Runtime expansion (compile-time skips `$`-bearing values) |

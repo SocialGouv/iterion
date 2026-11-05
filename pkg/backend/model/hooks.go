@@ -1132,6 +1132,9 @@ func (h *storeHooks) onToolCall(nodeID string, info LLMToolCallInfo) {
 func putDelegateModelFields(data map[string]any, info DelegateInfo) {
 	if info.Reask != "" {
 		data["reask"] = info.Reask
+		if info.ReaskInChain {
+			data["reask_in_chain"] = true
+		}
 		if info.Attempt > 0 {
 			data["attempt"] = info.Attempt
 		}
@@ -1350,6 +1353,13 @@ func (h *storeHooks) onDelegateFinished(nodeID string, info DelegateInfo) {
 		data["command_frontmatter_ignored"] = info.CommandFrontmatterIgnored
 	}
 	h.emit(nodeID, store.EventDelegateFinished, data)
+	if info.Reask == ReaskExtract {
+		// The structured-output recovery's own call is booked, never
+		// served: the node is still the attempt's backend and model, so
+		// it neither drifts nor rewrites the served record.
+		h.logger.Logf(iterlog.LevelInfo, "🧩", "Structured output recovered [%s]: %s (%d tokens)", nodeID, delegateRouteLabel(info), info.Tokens)
+		return
+	}
 	if info.Skipped {
 		// Nothing served: no served-model record, no drift claim. The
 		// spend stays on the event above for the runner's accumulators.
@@ -1405,6 +1415,12 @@ func (h *storeHooks) onDelegateError(nodeID string, info DelegateInfo) {
 		data["stderr"] = iterlog.Truncate(info.Stderr, maxFieldSize)
 	}
 	h.emit(nodeID, store.EventDelegateError, data)
+	if info.Reask == ReaskExtract {
+		// A recovery that yielded nothing leaves the node to its own error:
+		// booked, never served, and not a failed delegation of the node.
+		h.logger.Logf(iterlog.LevelWarn, "🧩", "Structured output not recovered [%s]: %s (%d tokens)", nodeID, delegateRouteLabel(info), info.Tokens)
+		return
+	}
 	h.emitModelDrift(nodeID, info)
 	// No emitFacadeRouting here: that event asserts the node WAS served,
 	// and this delegation failed. See its doc comment — the attempted
@@ -1750,8 +1766,11 @@ func NewStoreEventHooks(ctx context.Context, emitter EventEmitter, runID string,
 		OnDelegateError:      h.onDelegateError,
 		OnDelegateRetry:      h.onDelegateRetry,
 		OnProviderFallback:   h.onProviderFallback,
-		OnSessionDegraded:    h.onSessionDegraded,
-		OnMCPServerDegraded:  h.onMCPServerDegraded,
+		OnReasoningEffortAdjusted: func(nodeID string, info ReasoningEffortAdjustment) {
+			h.emit(nodeID, store.EventReasoningEffortAdjusted, map[string]any{"model": info.Model, "requested": info.Requested, "applied": info.Applied, "reason": info.Reason})
+		},
+		OnSessionDegraded:   h.onSessionDegraded,
+		OnMCPServerDegraded: h.onMCPServerDegraded,
 		// OnToolNodeResult handles direct tool nodes with full I/O content.
 		OnToolNodeResult: h.onToolNodeResult,
 		// …and OnToolNodeDeliverables hands over the files that output
