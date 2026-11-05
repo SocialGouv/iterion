@@ -70,11 +70,22 @@ func (s *Server) findHandoff(ctx context.Context, cfg webhooks.Config, kind bund
 // consumer may restrict that producer by id with `from`; the engine applies the
 // binding generically and never falls back to another producer on a miss. An
 // operator-pinned var always wins; a miss is silent by design.
-func (s *Server) stampHandoffs(ctx context.Context, cfg webhooks.Config, botID string, vars map[string]string, q handoffQuery) {
+//
+// trust is the launched run's (store.RunTrust), a required parameter so no
+// lane can seed a run without saying who wrote its workspace. A hand-off is a
+// crossing and runs both ways; this is the INBOUND direction: a run whose
+// workspace its tenant did not write is seeded with nothing — `review-pr`
+// consumes the PR's `review_ledger`, the tenant's own internal review prose,
+// which would be readable by whoever authored the tree the run reads. The
+// outbound direction is realWebhookHandoff's.
+func (s *Server) stampHandoffs(ctx context.Context, cfg webhooks.Config, botID string, vars map[string]string, q handoffQuery, trust store.RunTrust) {
 	// Every hand-off is PR-scoped, so a lane without one has nothing to resolve —
 	// checked before the catalog is read, or every push event and every bot that
 	// consumes nothing would pay a full bundle scan to learn it has no work.
 	if vars == nil || strings.TrimSpace(q.PRURL) == "" {
+		return
+	}
+	if !trust.Trusted() {
 		return
 	}
 	for _, want := range s.handoffConsumersFor(ctx, cfg.TenantID, botID) {
@@ -169,6 +180,16 @@ func (s *Server) realWebhookHandoff(ctx context.Context, cfg webhooks.Config, ki
 		producers := base
 		if cfg.TenantID != "" && run.BotSourceTenant == cfg.TenantID {
 			producers = team
+		}
+		// The OUTBOUND direction, and the dangerous one: a run on a workspace
+		// its tenant did not write produces artifacts that are a function of
+		// outsider-authored text, and the consumer may be a fixer holding the
+		// publish grant (`branch-improve-loop` reads a `review` as
+		// `prior_review` and pushes commits). Skipped by the producing run's
+		// trust, not by bot id: the rule is about who wrote the code the
+		// artifact describes.
+		if !run.Trust.Trusted() {
+			continue
 		}
 		spec, produces := producers[run.BotID]
 		if !produces {

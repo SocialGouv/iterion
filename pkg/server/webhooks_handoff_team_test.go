@@ -78,7 +78,7 @@ func TestWebhookMetadataReadsTheTeamsFork(t *testing.T) {
 			gotFrom = q.From
 			return ""
 		}
-		s.stampHandoffs(ctx, webhooks.Config{TenantID: "t1"}, "reviewer-bot", map[string]string{}, handoffQuery{PRURL: "https://forge.example/acme/widgets/pull/1"})
+		s.stampHandoffs(ctx, webhooks.Config{TenantID: "t1"}, "reviewer-bot", map[string]string{}, handoffQuery{PRURL: "https://forge.example/acme/widgets/pull/1"}, store.RunTrustDefault)
 		if gotFrom != "upstream-reviewer" {
 			t.Errorf("lookup producer = %q, want the fork's binding", gotFrom)
 		}
@@ -97,7 +97,7 @@ func TestWebhookMetadataReadsTheTeamsFork(t *testing.T) {
 			t.Fatalf("Create error = %v, want the malformed producer binding refused before launch", err)
 		}
 		vars := map[string]string{}
-		s.stampHandoffs(ctx, webhooks.Config{TenantID: "t1"}, "custom-consumer", vars, handoffQuery{PRURL: "https://forge.example/acme/widgets/pull/1"})
+		s.stampHandoffs(ctx, webhooks.Config{TenantID: "t1"}, "custom-consumer", vars, handoffQuery{PRURL: "https://forge.example/acme/widgets/pull/1"}, store.RunTrustDefault)
 		if len(vars) != 0 {
 			t.Errorf("the refused custom bot still received a hand-off: %v", vars)
 		}

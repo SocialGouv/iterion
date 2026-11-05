@@ -1392,7 +1392,7 @@ func (s *Server) prepareWebhookTarget(
 		s.stampHandoffs(ctx, cfg, botID, vars, handoffQuery{
 			PRURL:   vars["pr_url"],
 			HeadSHA: vars["head_sha"],
-		})
+		}, t.Trust)
 		// Deterministic forge review publishing: a review-shaped delivery
 		// carries a pr_url var — mint a per-run publish grant scoped to the
 		// webhook's tenant so the bot's deterministic publish node posts

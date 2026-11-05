@@ -163,7 +163,7 @@ func (s *Server) dispatchInvocation(
 		s.stampHandoffs(ctx, cfg, route.BotID, vars, handoffQuery{
 			PRURL:   vars["pr_url"],
 			HeadSHA: vars["head_sha"],
-		})
+		}, prov.Trust)
 	}
 	if route.Mode == string(bundle.ExecutionBoard) && s.cfg.CloudBoardFor != nil {
 		if s.cfg.CloudBoardCoordinator != nil {
