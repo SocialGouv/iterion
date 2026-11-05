@@ -133,6 +133,11 @@ trap 'rm -rf "$WORKDIR"' EXIT
   for stem in libgcrypt.so libgpg-error.so libssl.so libcrypto.so; do
     find squashfs-root -name "${stem}*" -delete
   done
+  # The extracted tree carries 0700 directories, and appimagetool refuses
+  # an AppDir that users other than the packager cannot read ("found N
+  # ERROR(S) in the AppDir, nothing was changed"). Every desktop release
+  # since v4.7.0 died here, which skipped the publish job for all platforms.
+  chmod -R a+rX squashfs-root
 )
 
 # Repack via appimagetool (downloaded if missing) since linuxdeploy is a
