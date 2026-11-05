@@ -162,10 +162,10 @@ func (r *Registry) resolveAnthropicDirect(ctx context.Context, modelID string) (
 				secrets.SubscriptionOAuthNotice(secrets.ProviderAnthropic))
 		})
 		client, err := p.NewClient(r.withClientIdentity(api.ProviderConfig{Model: modelID, OAuthToken: w.oauth}))
-		return client, w.spend(), err
+		return client, r.envSpend(w.envName(), w.spend()), err
 	}
 	client, err := p.NewClient(r.withClientIdentity(api.ProviderConfig{APIKey: w.apiKey, Model: modelID}))
-	return client, w.spend(), err
+	return client, r.envSpend(w.envName(), w.spend()), err
 }
 
 // anthropicDirectEnvCredentials is the environment half of the direct path

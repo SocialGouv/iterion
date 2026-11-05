@@ -6,6 +6,7 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/SocialGouv/iterion/internal/envtrust"
 	"github.com/SocialGouv/iterion/pkg/backend/credroute"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/modelroute"
@@ -105,7 +106,7 @@ func TestClawsStampRefusalIsTheLeafsAmbientRefusal(t *testing.T) {
 // container refuses.
 func TestEveryDefaultProviderNamesItsContainerCredential(t *testing.T) {
 	walked := map[string]bool{"anthropic": true, "openai": true, modelroute.OpenAICompatible: true}
-	registered := NewSandboxRunnerRegistry().providers
+	registered := NewSandboxRunnerRegistry(nil).providers
 	for name := range registered {
 		if _, ok := clawEnvFactories[name]; walked[name] == ok {
 			t.Errorf("provider %q: walked by its own branch %v, in clawEnvFactories %v — exactly one reads its container credential", name, walked[name], ok)
@@ -146,5 +147,88 @@ func TestTheContainerArmRefusesASpecItsRegistryCannotResolve(t *testing.T) {
 				t.Errorf("%s (contained=%v) = %v, want the no-credential refusal the registry's own error is", spec, contained, err)
 			}
 		}
+	}
+}
+
+// The container arm refuses what the container's own factory refuses of the
+// env that crossed, by the factory's own predicate — moonshot's facade
+// refusal of a non-kimi id (clawEnvFactory.refuse), the gateway factory's
+// refusal of a pair no client is built for (gatewayEnvConfig) — and admits
+// what it serves: the verdict never depends on the placement. Each case runs
+// the in-container registry over the crossed env, as the runner does, beside
+// the arm's prediction. Mutant — containerSpend skipping the factory's
+// refusal (or reading the gateway pair without gatewayEnvConfig): the arm
+// admits a call the container's factory refuses.
+func TestTheContainerArmRefusesWhatTheContainersFactoryRefuses(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		spec   string
+		env    map[string]string
+		refuse bool
+	}{
+		{"a kimi id on the run's moonshot key", "moonshot/kimi-k2", map[string]string{"MOONSHOT_API_KEY": "moonshot-run"}, false},
+		{"a non-kimi id on the run's moonshot key", "moonshot/claude-sonnet-4", map[string]string{"MOONSHOT_API_KEY": "moonshot-run"}, true},
+		{"a non-kimi id at the operator's own moonshot endpoint", "moonshot/claude-sonnet-4", map[string]string{"MOONSHOT_API_KEY": "moonshot-run", "MOONSHOT_BASE_URL": "https://kimi-proxy.example.com/anthropic"}, false},
+		{"a gateway pair", "openai_compatible/m", map[string]string{"OPENAI_COMPATIBLE_API_KEY": "gw-pod", "OPENAI_COMPATIBLE_BASE_URL": "https://llm-gw.example.com/v1"}, false},
+		{"a gateway key with no endpoint", "openai_compatible/m", map[string]string{"OPENAI_COMPATIBLE_API_KEY": "gw-pod", "OPENAI_COMPATIBLE_BASE_URL": ""}, true},
+		{"a gateway key at an endpoint no client is built for", "openai_compatible/m", map[string]string{"OPENAI_COMPATIBLE_API_KEY": "gw-pod", "OPENAI_COMPATIBLE_BASE_URL": "ftp://llm-gw.example.com"}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, name := range providerCredentialEnvVars {
+				t.Setenv(name, "")
+			}
+			facts := crossingFacts{}
+			for name, v := range tc.env {
+				t.Setenv(name, v)
+				if v != "" && envtrust.CredentialShapedName(name) {
+					facts.fund(name, credroute.Spend{Channel: credroute.ChannelPodEnv})
+				}
+			}
+			_, factoryErr := NewSandboxRunnerRegistry(nil).Resolve(tc.spec)
+			if (factoryErr != nil) != tc.refuse {
+				t.Fatalf("inert bench: the container's factory answers %v, the case says refused=%v", factoryErr, tc.refuse)
+			}
+			_, err := containerSpend(context.Background(), tc.env, facts, tc.spec, "", credroute.SandboxHomeState{})
+			if (err != nil) != tc.refuse {
+				t.Errorf("the arm's prediction answers %v where the container's factory answers %v — one verdict whatever the placement", err, factoryErr)
+			}
+		})
+	}
+}
+
+// The container's own walk names a factory provider's credential by the
+// variable clawEnvFactories says that factory reads — the name the launcher's
+// prediction reads the crossing's record under — and its destination by the
+// table's base-URL variable: one table, two readers, never two spellings
+// drifting apart. With no key, a factory serving from the pod's identity
+// chain still spends the pod's env, and any other spends nothing.
+func TestEnvFactoryCredentialNamesTheTablesVariable(t *testing.T) {
+	for provider, f := range clawEnvFactories {
+		t.Run(provider, func(t *testing.T) {
+			for _, name := range providerCredentialEnvVars {
+				t.Setenv(name, "")
+			}
+			if f.baseURL != "" {
+				t.Setenv(f.baseURL, "https://"+provider+".example.com")
+			}
+			name, spend := envFactoryCredential(context.Background(), provider, "m")
+			switch {
+			case f.identityChain && (name != "" || spend.Channel != credroute.ChannelPodEnv):
+				t.Errorf("keyless: named %q %+v, want the pod's identity chain under no variable", name, spend)
+			case !f.identityChain && (name != "" || spend != credroute.Spend{}):
+				t.Errorf("keyless: named %q %+v, want nothing spent", name, spend)
+			}
+			if f.key == "" {
+				return
+			}
+			t.Setenv(f.key, "key-"+provider)
+			name, spend = envFactoryCredential(context.Background(), provider, "m")
+			if name != f.key || spend.Channel != credroute.ChannelPodEnv {
+				t.Errorf("keyed: named %q %+v, want %s on the pod's env", name, spend, f.key)
+			}
+			if f.baseURL != "" && spend.BaseURL != "https://"+provider+".example.com" {
+				t.Errorf("keyed: destination %q, want the value of %s", spend.BaseURL, f.baseURL)
+			}
+		})
 	}
 }

@@ -177,32 +177,39 @@ func clawRefusal(call credroute.Call, err error) *credroute.Refusal {
 // claw's anthropic wire is walked as the container walks it (the direct path
 // under the hint, the env factory otherwise), and so is the openai wire's
 // ChatGPT forfait and key order; a gateway route spends what crossed under
-// compatgw's names. Every other provider spends what its own env factory
+// compatgw's names, refused where the gateway factory refuses the pair
+// (gatewayEnvConfig). Every other provider spends what its own env factory
 // reads (clawEnvFactories): the key under that factory's name, or the pod's
-// identity chain where the factory serves without one. A spec the container's
-// registry cannot resolve — unreadable, or a provider it registers no factory
-// for — is refused, as the container refuses it.
+// identity chain where the factory serves without one — refused where the
+// factory refuses what it is handed (clawEnvFactory.refuse, the predicate
+// the factory calls: moonshot's facade refuses a non-kimi id here as in
+// process). A spec the container's registry cannot resolve — unreadable, or
+// a provider it registers no factory for — is refused, as the container
+// refuses it.
 func containerSpend(ctx context.Context, env map[string]string, facts crossingFacts, spec, hint string, home credroute.SandboxHomeState) (credroute.Spend, error) {
 	creds, _ := secrets.CredentialsFromContext(ctx)
+	lookup := func(name string) string { return env[name] }
 	inside := credroute.WithEnv(context.Background(), env)
 	seeded := ""
 	if env["CLAUDE_CONFIG_DIR"] == secrets.ClaudeCodeSandboxConfigDir {
 		seeded = secrets.AnthropicForfaitAccessToken(creds.OAuthDir(string(secrets.OAuthKindClaudeCode)))
 	}
 	inside = context.WithValue(inside, containerDiskKey{}, containerDisk{claudeForfaitToken: seeded})
-	crossed := func(name, baseURL string) (credroute.Spend, error) {
+	// crossed is the Spend of the credential the container's walk takes from
+	// the variable name, sent where the walk sends it: the crossing's record
+	// of name (crossingRecord.spendOf, the rule the container's own walk
+	// names its calls by).
+	crossed := func(name string, walk credroute.Spend) (credroute.Spend, error) {
 		if name == "" || env[name] == "" {
 			return credroute.Spend{}, &errNoClawCredential{Spec: spec}
 		}
-		spend, ok := facts.funds[name]
+		spend, ok := crossingRecord(facts.funds).spendOf(name, walk)
 		if !ok {
 			return credroute.Spend{}, fmt.Errorf("model: the crossing set %s without naming where its credential comes from", name)
 		}
-		if baseURL != "" {
-			spend.BaseURL = baseURL
-		}
 		return spend, nil
 	}
+	at := func(baseURL string) credroute.Spend { return credroute.Spend{BaseURL: baseURL} }
 
 	provider, modelID, err := ParseModelSpec(spec)
 	if err != nil {
@@ -223,40 +230,49 @@ func containerSpend(ctx context.Context, env map[string]string, facts crossingFa
 		if err != nil {
 			return credroute.Spend{}, err
 		}
-		spend, err := crossed(w.envName(), w.baseURL)
-		if err == nil && spend.Channel == credroute.ChannelPodEnv {
-			// The pod's account as the container's client carries it: the
-			// walk read the crossed values, the pod's own.
-			spend.Fingerprint = w.spend().Fingerprint
-		}
-		return spend, err
+		// The pod's account as the container's client carries it: the walk
+		// read the crossed values, the pod's own.
+		return crossed(w.envName(), w.spend())
 	case "openai":
 		apiKey := env["OPENAI_API_KEY"]
 		if openAIOAuthAllowed(inside) && (apiKey == "" || env["ITERION_OPENAI_USE_OAUTH"] == "1") {
 			if env["CODEX_HOME"] == secrets.CodexSandboxConfigDir {
-				return crossed("CODEX_HOME", "")
+				return crossed("CODEX_HOME", credroute.Spend{})
 			}
 			if spend, ok := hostCodexForfaitSpend(ctx, spec, home); ok {
 				return spend, nil
 			}
 		}
-		return crossed("OPENAI_API_KEY", env["OPENAI_BASE_URL"])
+		return crossed("OPENAI_API_KEY", at(env["OPENAI_BASE_URL"]))
 	case modelroute.OpenAICompatible:
-		return crossed(compatgw.APIKeyEnv, env[compatgw.BaseURLEnv])
+		// The gateway env factory's own refusal of the pair that crossed.
+		cfg, err := gatewayEnvConfig(compatgw.FromEnv(lookup))
+		if err != nil {
+			return credroute.Spend{}, err
+		}
+		return crossed(compatgw.APIKeyEnv, at(cfg.BaseURL))
 	}
 	factory, ok := clawEnvFactories[provider]
 	if !ok {
 		return credroute.Spend{}, fmt.Errorf("model: unknown provider %q (spec: %q): the in-container registry builds no client for it", provider, spec)
 	}
-	if factory.key != "" && env[factory.key] != "" {
-		return crossed(factory.key, env[factory.baseURL])
+	keyed := factory.key != "" && env[factory.key] != ""
+	if !keyed && !factory.identityChain {
+		return credroute.Spend{}, &errNoClawCredential{Spec: spec}
 	}
-	if factory.identityChain {
-		// The factory's SDK serves a keyless client from the pod's own
-		// identity chain (instance metadata, workload identity, ADC).
-		return credroute.Spend{Channel: credroute.ChannelPodEnv, BaseURL: env[factory.baseURL]}, nil
+	// The factory's own refusal of what it is handed, the predicate it
+	// calls itself: the verdict cannot depend on where the call is placed.
+	if factory.refuse != nil {
+		if err := factory.refuse(modelID, env[factory.baseURL]); err != nil {
+			return credroute.Spend{}, err
+		}
 	}
-	return credroute.Spend{}, &errNoClawCredential{Spec: spec}
+	if keyed {
+		return crossed(factory.key, at(env[factory.baseURL]))
+	}
+	// The factory's SDK serves a keyless client from the pod's own identity
+	// chain (instance metadata, workload identity, ADC).
+	return credroute.Spend{Channel: credroute.ChannelPodEnv, BaseURL: env[factory.baseURL]}, nil
 }
 
 // clawEnvFactory is what one env factory of claw's registry (registerDefaults)
@@ -272,6 +288,13 @@ type clawEnvFactory struct {
 	// identityChain: with no key, the factory's SDK serves from the pod's
 	// own identity chain rather than building a credential-less client.
 	identityChain bool
+	// refuse is the factory's own refusal of modelID sent to the raw value of
+	// its baseURL variable, the predicate registerDefaults' factory calls
+	// itself — nil for a factory iterion's code refuses nothing in. A cloud
+	// SDK's own configuration checks (the endpoint, the project, the AWS
+	// chain) are claw's internal providers' and read the process env: no
+	// reader can ask them ahead of the call.
+	refuse func(modelID, baseURL string) error
 }
 
 // clawEnvFactories names, per provider of registerDefaults other than
@@ -283,7 +306,7 @@ type clawEnvFactory struct {
 // pins every registered factory to an entry here.
 var clawEnvFactories = map[string]clawEnvFactory{
 	"xai":      {key: "XAI_API_KEY", baseURL: "XAI_BASE_URL"},
-	"moonshot": {key: "MOONSHOT_API_KEY", baseURL: "MOONSHOT_BASE_URL"},
+	"moonshot": {key: "MOONSHOT_API_KEY", baseURL: "MOONSHOT_BASE_URL", refuse: moonshotModelRefusal},
 	// azidentity's DefaultAzureCredential serves without the key.
 	"foundry": {key: "AZURE_OPENAI_API_KEY", baseURL: "AZURE_OPENAI_ENDPOINT", identityChain: true},
 	// The AWS SDK's chain: the key pair when it crossed, the pod's role

@@ -85,6 +85,7 @@ var serialFamily = map[string]string{
 	"anthropic_forfait_ctx_test.go":            "SetCredentialsLookup, SetOAuthDirLookup, Setenv",
 	"async_backend_test.go":                    "Setenv",
 	"braced_env_reads_pin_test.go":             "Setenv",
+	"call_sites_test.go":                       "Setenv",
 	"capabilities_flags_test.go":               "Setenv",
 	"capabilities_public_test.go":              "SetDefault",
 	"claw_ambient_credential_header_test.go":   "Setenv",

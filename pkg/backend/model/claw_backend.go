@@ -1625,6 +1625,19 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 		return delegate.Result{}, fmt.Errorf("claw backend: executeViaSandboxRunner called without a sandbox handle")
 	}
 
+	// The env the runner reads is the claw arm's crossing for this leg
+	// (resolveClawCall, ADR-161): the switch guard, the crossing and the
+	// container's walk over what crossed, decided once on the launcher side,
+	// before the task envelope — which carries the crossing's record of that
+	// env (IOTask.CredentialFunds) for the runner to name its calls by. A leg
+	// the container would resolve on no credential still crosses, as before:
+	// the provider's refusal is the call's answer.
+	resolution, err := resolveClawCall(ctx, b.registry, clawCall(task, credroute.Sandbox{Contained: true}))
+	var refusal *credroute.Refusal
+	if err != nil && !(errors.As(err, &refusal) && refusal.Reason == credroute.ReasonNoCredential && resolution.env != nil) {
+		return delegate.Result{}, err
+	}
+
 	// The task envelope is built and SIZED before anything is spawned. It is
 	// the one launcher→runner envelope whose payload no producer bounds: a
 	// resumed crossing carries its whole pre-pause conversation
@@ -1634,7 +1647,7 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 	// cap the channel's writer refuses it either way; refused HERE the node
 	// fails with the size named and no runner was started, where the same
 	// refusal after the spawn has to kill a process that is already reading.
-	taskEnv, err := delegate.NewTaskEnvelope(b.runnerIOTask(task))
+	taskEnv, err := delegate.NewTaskEnvelope(b.runnerIOTask(task, resolution.facts.funds))
 	if err != nil {
 		return delegate.Result{}, fmt.Errorf("claw backend: build task envelope: %w", err)
 	}
@@ -1666,18 +1679,8 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 	// os.Getenv("OPENAI_API_KEY") etc. — without forwarding, it
 	// finds nothing and bails with "API key required for OpenAI-
 	// compatible provider". Pass through only the keys we know
-	// providers consume: anything else stays on the host.
-	//
-	// The env is the claw arm's crossing for this leg (resolveClawCall,
-	// ADR-161): the switch guard, the crossing and the container's walk over
-	// what crossed, decided once on the launcher side. A leg the container
-	// would resolve on no credential still crosses, as before: the provider's
-	// refusal is the call's answer.
-	resolution, err := resolveClawCall(ctx, b.registry, clawCall(task, credroute.Sandbox{Contained: true}))
-	var refusal *credroute.Refusal
-	if err != nil && !(errors.As(err, &refusal) && refusal.Reason == credroute.ReasonNoCredential && resolution.env != nil) {
-		return delegate.Result{}, err
-	}
+	// providers consume: anything else stays on the host. The crossing
+	// (resolution, above) composed what passes.
 	runnerEnv, refused := resolution.env, resolution.facts
 	// Said out loud, by name: the custom-header channel has documented uses
 	// (client identity on a self-hosted gateway), so a silent drop reads as
@@ -1948,7 +1951,7 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 	// (see [sessionSeed]).
 	seed := b.sessionSeedForCrossing(ctx, task)
 
-	handler, stranded := b.multiplexerHandler(withCrossingSpend(ctx, resolution.spend), task, seed)
+	handler, stranded := b.multiplexerHandler(ctx, task, seed)
 	mux := delegate.NewMultiplexer(stdoutR, stdinPipe, handler)
 	// The raw line a decode error quotes crosses the run's pass before its
 	// 256-byte cut, or a value straddling the cut publishes its head into
@@ -2064,11 +2067,11 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 	if waitErr != nil && ioRes.Error == "" {
 		return delegate.Result{}, fmt.Errorf("claw backend: runner exited with error: %w (stderr: %s)", waitErr, runnerStderr())
 	}
+	// What the container's call spent rides the result as the runner's own
+	// walk named it through the crossing's record (ADR-161 decision 8: the
+	// keys are written by the process that built the call): relayed
+	// verbatim, never stamped here.
 	res := delegate.FromIOResult(ioRes)
-	// What the container's call spent: the arm's resolution of this crossing,
-	// decided here (ADR-161 decision 8) — the container never holds the run's
-	// slots, the launcher composed what it spends through.
-	res.Credential = resolution.spend
 	// The relay carries model JSON and harness counters separately. Apply
 	// the same reserved-namespace boundary on success and runner failure.
 	// A gateway route's provenance is re-resolved HERE, host-side (the
@@ -2211,8 +2214,11 @@ func (b *ClawBackend) sessionSeedForCrossing(ctx context.Context, task delegate.
 // own field, so the dial is read by the host that built it and never by the
 // runner dispatching a nested crossing. An old runner ignores every
 // unknown field — it reads its own WorkDir and keeps its defaults.
-func (b *ClawBackend) runnerIOTask(task delegate.Task) delegate.IOTask {
+func (b *ClawBackend) runnerIOTask(task delegate.Task, funds map[string]credroute.Spend) delegate.IOTask {
 	ioTask := delegate.ToIOTask(task)
+	// The crossing's record of the env it composed: the runner names what
+	// each of its calls spends through it (NewSandboxRunnerRegistry).
+	ioTask.CredentialFunds = funds
 	ioTask.SettingsHooks = settingsHooksForWire(task.WorkDir, task.NodeID, task.Iteration, b.logger)
 	ioTask.Retry = b.retry.wire()
 	// The runner's read tools take the container's scratch as a second read
@@ -3484,9 +3490,6 @@ func canonicalMCPToolName(name string) string {
 // stamp a pause result the crossing produced while stranded, so the fact
 // travels with the pause (see [executeViaSandboxRunner]).
 func (b *ClawBackend) multiplexerHandler(ctx context.Context, task delegate.Task, seed sessionSeed) (delegate.MultiplexerHandler, *atomic.Bool) {
-	// What the container's loop spends through: the arm's resolution of this
-	// crossing, stamped on every step it relays (withStepCredential).
-	spend := crossingSpendFrom(ctx)
 	// Index ToolDefs by name once so OnToolCall is O(1) instead of
 	// scanning the slice on each runner-initiated tool_call.
 	toolByName := make(map[string]delegate.ToolDef, len(task.ToolDefs))
@@ -3616,7 +3619,9 @@ func (b *ClawBackend) multiplexerHandler(ctx context.Context, task delegate.Task
 			// anchors — re-fired through THIS process's hooks so a
 			// sandboxed claw node is persisted, priced, metered and
 			// forkable like an in-process one — see sandbox_relay.go.
-			handled, err := ApplyRelayedEvent(withStepCredential(b.hooks, spend), task.NodeID, eventType, payload)
+			// A step's credential keys are the container's own (each call's,
+			// the node's or a subagent's): relayed as they came.
+			handled, err := ApplyRelayedEvent(b.hooks, task.NodeID, eventType, payload)
 			if b.logger == nil {
 				return
 			}

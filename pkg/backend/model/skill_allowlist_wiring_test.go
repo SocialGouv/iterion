@@ -28,7 +28,7 @@ func TestArmedSkillAllowlistReachesTheTaskAndTheWire(t *testing.T) {
 	}
 
 	backend := NewClawBackend(NewRegistry(), EventHooks{}, RetryPolicy{})
-	ioTask := backend.runnerIOTask(task)
+	ioTask := backend.runnerIOTask(task, nil)
 	if !ioTask.SkillAllowlistArmed {
 		t.Fatal("the crossing dropped the armed bit")
 	}
@@ -44,7 +44,7 @@ func TestArmedSkillAllowlistReachesTheTaskAndTheWire(t *testing.T) {
 	if task2.SkillAllowlist != nil || task2.SkillChannelRoot != "" {
 		t.Errorf("an unarmed executor stamped %v / %q, want neither", task2.SkillAllowlist, task2.SkillChannelRoot)
 	}
-	ioTask2 := backend.runnerIOTask(task2)
+	ioTask2 := backend.runnerIOTask(task2, nil)
 	if ioTask2.SkillAllowlistArmed || ioTask2.SkillAllowlist != nil {
 		t.Errorf("the wire = (armed %v, %v), want disarmed", ioTask2.SkillAllowlistArmed, ioTask2.SkillAllowlist)
 	}
@@ -61,7 +61,7 @@ func TestRunnerIOTaskKeepsAnUnrelativizableSkillPinAbsolute(t *testing.T) {
 	task := buildNodeTask(t, e, nodeRulesAgent(nil))
 
 	backend := NewClawBackend(NewRegistry(), EventHooks{}, RetryPolicy{})
-	ioTask := backend.runnerIOTask(task)
+	ioTask := backend.runnerIOTask(task, nil)
 	// filepath.Rel never invents a container path: the entry crosses as sent.
 	if got := ioTask.SkillAllowlist["odd"]; got != "/elsewhere/skill/SKILL.md" {
 		t.Errorf("the unrelativizable pin = %q, want it absolute", got)
@@ -77,7 +77,7 @@ func TestRunnerIOTaskKeepsAnUnrelativizableSkillPinAbsolute(t *testing.T) {
 	}
 	e2 := nodeRulesExecutor(t, &ir.Workflow{}, WithWorkDir(work))
 	e2.SetSkillAllowlist(map[string]string{"edge": work + "/..foo/skill.md"})
-	ioTask2 := backend.runnerIOTask(buildNodeTask(t, e2, nodeRulesAgent(nil)))
+	ioTask2 := backend.runnerIOTask(buildNodeTask(t, e2, nodeRulesAgent(nil)), nil)
 	if got := ioTask2.SkillAllowlist["edge"]; got != "..foo/skill.md" {
 		t.Errorf("a ..foo sibling = %q, want it relativized — it is inside the workspace", got)
 	}

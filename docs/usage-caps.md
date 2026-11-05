@@ -450,15 +450,21 @@ it is only this guard that ignores it.
 is judged on the credential IT spends, not on the run's default — a run can
 hold a Claude forfait on the wire beside a z.ai key a shared tier sealed for
 its GLM routes, and a closed forfait says nothing about those routes. The
-route is read the way the executor will run it
-([`model.AnthropicWireRoutes`](../pkg/backend/model/wire_reach.go): the node's
-backend under the launch's overrides, the FIRST element of its provider
-chain), and its credential is asked of the delegate itself: a claude_code
+routes are the run's primary call sites
+([`model.CallSites`](../pkg/backend/model/call_sites.go), the enumeration the
+launch's credential admission judges too: agent and judge nodes, an `llm`
+router, a human node's LLM half, a Verified Action's rungs), each read the
+way the executor will run it
+([`model.AnthropicWireRoutes`](../pkg/backend/model/wire_reach.go): the
+backend under the launch's overrides, the chain its dispatch walks), and its
+credential is asked of the call's own resolver: a claw route of the
+credential resolver (ADR-161), on the first leg it funds — a claw node naming
+no model on the detector's pick, as its dispatch builds it; a claude_code
 route through `delegate.AnthropicRouteSource` — the composition the session
 will run, under the hint `model.RouteProviderHint` hands it (a GLM id goes to
-z.ai) — so the pre-flight reads the ledger the session will write; claw and
-pi routes as the spend ledger books them; kimi and grok routes not at all
-(their own config pays), an opencode route on the pod's ambient meter. A route the walk cannot read (a
+z.ai) — so the pre-flight reads the ledger the session will write; a pi route
+on pi's own credential order; kimi and grok routes not at all (their own
+config pays), an opencode route on the pod's ambient meter. A route the walk cannot read (a
 `{{vars.…}}` backend, hint or model) keeps the run's default credential; a
 route the delegate refuses before spawning (a facade hint with no key) spends
 nothing and is not the cap's to park; a store read that fails is headroom for

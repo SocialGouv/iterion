@@ -49,10 +49,8 @@ func TestCredParity_MeterLedgerAndPlan(t *testing.T) {
 			creds := row.Run.Credentials(forfaitDir)
 			ctx := secrets.WithCredentials(context.Background(), creds)
 			msg := &queue.RunMessage{RunID: "run-parity", TenantID: "team-a", LLMProviders: row.Run.Allowlist}
-			node := &ir.AgentNode{
-				BaseNode:  ir.BaseNode{ID: row.Node.ID},
-				LLMFields: ir.LLMFields{Backend: row.Node.Backend, Model: row.Node.Model, Provider: row.Node.Provider},
-			}
+			// The row's call site, of its kind (model.CallSites' vocabulary).
+			node := row.Node.IR()
 			wf := &ir.Workflow{Name: "parity", Nodes: map[string]ir.Node{row.Node.ID: node}}
 
 			keys := usageCapCredKeys(ctx, msg)
@@ -87,7 +85,7 @@ func TestCredParity_MeterLedgerAndPlan(t *testing.T) {
 				// whose observation carries no credential keys: the ledger
 				// reads its route.
 				if !want.Refused() {
-					route := routeKey{backend: delegate.BackendClaw, model: row.Node.Spec(want.Leg), source: supervisorRouteID(parityRowSupervisor, 0)}
+					route := routeKey{backend: delegate.BackendClaw, model: row.Node.Spec(want.Leg), source: model.SupervisorSiteID(parityRowSupervisor, 0)}
 					slot, _ := ledgerSlot(creds, route)
 					credparity.Check(t, row, credparity.Ledger, slot, func(s credparity.Spend) string { return s.Slot })
 				}
@@ -97,7 +95,7 @@ func TestCredParity_MeterLedgerAndPlan(t *testing.T) {
 			got := "not metered"
 			view := model.RouteView{Workflow: wf, AllowedProviders: row.Run.Allowlist}
 			for _, route := range model.AnthropicWireRoutes(view) {
-				if route.NodeID != row.Node.ID {
+				if route.NodeID != row.Node.SiteID() {
 					continue
 				}
 				if key, metered := keys.routeKey(ctx, route); metered {
@@ -117,7 +115,7 @@ func TestCredParity_MeterLedgerAndPlan(t *testing.T) {
 				}
 			}
 			em := newMetricsEmitter(nil, nil, plan)
-			route := parityObservation(t, ctx, row, em)
+			route := parityObservation(t, ctx, row, view, em)
 			slot, _ := ledgerSlot(creds, route)
 			credparity.Check(t, row, credparity.Ledger, slot, func(s credparity.Spend) string { return s.Slot })
 
@@ -175,29 +173,43 @@ func supervisorParityMeter(t *testing.T, ctx context.Context, row credparity.Row
 }
 
 // parityObservation feeds em the usage events the row's call leaves and
-// returns the route the emitter books them under. A claw node's dispatch
-// writes the arm's Spend for the leg it spends onto its step events (ADR-161
-// decision 8): the step carries the credential keys the arm answers here. A
-// backend whose events carry no keys leaves a delegate event naming its
-// route alone.
-func parityObservation(t *testing.T, ctx context.Context, row credparity.Row, em *metricsEmitter) routeKey {
+// returns the route the emitter books them under. A claw call writes the
+// arm's Spend for the leg it spends onto its step events (ADR-161 decision
+// 8), asked where the row's call site makes it (model.CallSite.Call: the
+// run's sandbox for a dispatch, the host for a direct generation): the step
+// carries the credential keys the arm answers there. A backend whose events
+// carry no keys leaves a delegate event naming its route alone.
+func parityObservation(t *testing.T, ctx context.Context, row credparity.Row, view model.RouteView, em *metricsEmitter) routeKey {
 	t.Helper()
 	leg := row.Want.Leg
 	spec := row.Node.Spec(leg)
-	em.observe(store.Event{Type: store.EventDelegateStarted, NodeID: row.Node.ID, Data: map[string]any{"declared_model": spec}})
 	if row.Node.Backend == delegate.BackendClaw {
-		spend, err := credroute.Resolve(ctx, credroute.Call{
-			Backend: delegate.BackendClaw, Spec: spec,
-			Leg:  credroute.Leg{Provider: row.Node.Hint(leg), Model: row.Node.Legs[leg].Model},
-			Role: credroute.RoleNode, Sandbox: credroute.Sandbox{Contained: row.Sandboxed},
-		})
+		var site *model.CallSite
+		for _, s := range model.CallSites(view, nil) {
+			if s.ID == row.Node.SiteID() {
+				site = &s
+			}
+		}
+		if site == nil {
+			t.Fatalf("model.CallSites names no site %q for the row's node", row.Node.SiteID())
+		}
+		// A claw node naming no model sends the detector's pick.
+		base, err := site.Base(model.DetectedClawSpecUnder(row.Run.Allowlist))
+		if err != nil {
+			t.Fatalf("the detector's pick is refused for the leg the row spends: %v", err)
+		}
+		spec = site.LegSpec(leg, base)
+		data := map[string]any{"declared_model": spec}
+		em.observe(store.Event{Type: store.EventDelegateStarted, NodeID: row.Node.ID, Data: data})
+		spend, err := credroute.Resolve(ctx, site.Call(leg, spec, credroute.Sandbox{Contained: row.Sandboxed}))
 		if err != nil {
 			t.Fatalf("the claw arm refuses leg %d, the leg the row spends: %v", leg, err)
 		}
-		data := map[string]any{"input_tokens": 1000, "output_tokens": 100}
-		credroute.PutEventKeys(data, spend)
-		em.observe(store.Event{Type: store.EventLLMStepFinished, NodeID: row.Node.ID, Data: data})
+		step := map[string]any{"input_tokens": 1000, "output_tokens": 100}
+		credroute.PutEventKeys(step, spend)
+		em.observe(store.Event{Type: store.EventLLMStepFinished, NodeID: row.Node.ID, Data: step})
 	} else {
+		em.observe(store.Event{Type: store.EventDelegateStarted, NodeID: row.Node.ID, Data: map[string]any{"declared_model": spec}})
 		em.observe(store.Event{Type: store.EventDelegateFinished, NodeID: row.Node.ID, Data: map[string]any{
 			"backend": row.Node.Backend, "tokens": 1100, "cost_usd": 0.01, "route_model": spec,
 		}})

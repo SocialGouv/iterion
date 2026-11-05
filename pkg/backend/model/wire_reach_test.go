@@ -193,5 +193,5 @@ func TestAnthropicWireRoutesReadsTheDispatchChain(t *testing.T) {
 // sameWireRoute compares two routes field by field, their legs in order.
 func sameWireRoute(a, b WireRoute) bool {
 	return a.NodeID == b.NodeID && a.Backend == b.Backend && a.Model == b.Model &&
-		a.Readable == b.Readable && slices.Equal(a.Legs, b.Legs)
+		a.Readable == b.Readable && slices.Equal(a.Legs, b.Legs) && a.Role == b.Role && a.Host == b.Host
 }

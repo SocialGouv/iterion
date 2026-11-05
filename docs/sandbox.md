@@ -92,14 +92,18 @@ design — the token is the operator's identity, not a scoped run credential
 (#1768).
 
 The answer is the credential resolver's ([ADR-161](adr/161-one-resolver-decides-the-credential-a-call-spends.md)),
-the one the dispatch spends on: every leg of every node's chain, at the one
-site every start passes — before a `none` or degraded `auto` run starts on
-the host too — and in a subbot child's adopt branch, on its own nodes. A
+the one the dispatch spends on: every leg of every model-calling site of the
+run — agent and judge nodes, an `llm` router, a human node's LLM half, a
+Verified Action's recovery rungs, each asked where its call is made (a
+direct generation in process, on the host) — at the one site every start
+passes, before a `none` or degraded `auto` run starts on the host too, and
+in a subbot child's adopt branch, on its own nodes. The sites are one
+enumeration (`model.CallSites`), the one the usage-cap pre-flight keys. A
 stamped node only the pod's environment would fund refuses with
 `CREDENTIAL_AMBIENT_REFUSED`; one funded by a subscription alone that
 `ITERION_FORBID_SUBSCRIPTION_OAUTH` refuses, with
-`CREDENTIAL_SUBSCRIPTION_FORBIDDEN`. A refused `fallbacks:` route or
-supervisor spec is warned.
+`CREDENTIAL_SUBSCRIPTION_FORBIDDEN`. A refused `fallbacks:` route,
+interaction generation, review companion or supervisor spec is warned.
 
 The stamp binds every backend (ADR-161 decision 5). `kimi`, `grok` and
 `opencode` read their own configuration, never a run credential: a stamped

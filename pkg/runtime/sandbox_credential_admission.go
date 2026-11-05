@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"maps"
-	"slices"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/backend/credroute"
@@ -28,8 +27,9 @@ import (
 // and the ways out.
 //
 // The answer is the resolver's (credroute.Resolve), the one the dispatch
-// spends on: every leg of every node's chain (model.Legs — the chain the
-// dispatch walks), placed where the run's nodes call their models, with what
+// spends on: every leg of every call site of the run (model.CallSites — the
+// one enumeration the usage-cap pre-flight keys too; model.Legs, the chain
+// each dispatch walks), placed where each site calls its model, with what
 // the sandbox binds of the operator's home. A backend whose arm has not
 // landed (ErrNoArm) keeps today's per-backend probe in a fork-lane sandbox;
 // the cases nothing can read are a WARNING (sandbox_no_credential_warning),
@@ -150,14 +150,18 @@ type credentialAdmission struct {
 	adopted bool
 }
 
-// nodeVerdict is a node's admission: the spend its first funded leg lands
-// on, or — none funded — the refusal its chain ends on.
+// nodeVerdict is a call site's admission: the spend its first funded leg
+// lands on, or — none funded — the refusal its chain ends on.
 type nodeVerdict struct {
-	node    string
+	// node names the site (model.CallSite.ID): the node's id for its own
+	// dispatch, `<tool>#self_repair` for a recovery rung.
+	node string
+	// nodeID is the workflow node the site belongs to.
+	nodeID  string
 	backend string
 	spend   credroute.Spend
 	// refusal is the last leg's refusal: the one the dispatch meets when its
-	// chain runs out. Nil for an admitted node.
+	// chain runs out. Nil for an admitted site.
 	refusal *credroute.Refusal
 }
 
@@ -176,9 +180,20 @@ func admitSandboxCredentials(ctx context.Context, p SandboxParams, placement cre
 	}.admit(ctx, emitEvent, logger)
 }
 
-// admit refuses the run when a node has no funded leg, warning on what it
-// cannot read. Nil for a run the launch does not judge: a trusted run its
-// credentials do not stamp keeps its refusals for the dispatch.
+// admit refuses the run when a call site has no funded leg, warning on what
+// it cannot read and on the rescues nothing funds. Nil for a run the launch
+// does not judge: a trusted run its credentials do not stamp keeps its
+// refusals for the dispatch.
+//
+// The sites are model.CallSites — the one enumeration of the run's
+// model-calling sites the usage-cap pre-flight keys too: every agent and
+// judge node, an LLM router, a human node's LLM half, a Verified Action's
+// recovery rungs, each node's `fallbacks:` routes and interaction
+// generation, a review gate's companion and the declared supervisors. A site
+// the node makes when it runs is refused unfunded; a rescue (a `fallbacks:`
+// route, an interaction generation, the review companion, a supervisor) is
+// warned — the site it rescues decides. A subbot's child is judged at its own
+// start (the adopt branch, or its own resolved start).
 func (a credentialAdmission) admit(ctx context.Context, emitEvent func(store.EventType, map[string]any) error, logger *iterlog.Logger) error {
 	creds, _ := secrets.CredentialsFromContext(ctx)
 	stamped := creds.AmbientRefused
@@ -188,35 +203,37 @@ func (a credentialAdmission) admit(ctx context.Context, emitEvent func(store.Eve
 	}
 	var refused []nodeVerdict
 	var undecidable, warned []string
-	ids := make([]string, 0, len(a.wf.Nodes))
-	for id := range a.wf.Nodes {
-		ids = append(ids, id)
-	}
-	// Workflow.Nodes is a map: sorted, so the same run's refusal words its
-	// list identically on every start.
-	slices.Sort(ids)
-	for _, id := range ids {
-		n := a.wf.Nodes[id]
-		nn, ok := n.(ir.LLMNode)
-		if !ok {
+	backendOf := func(n ir.Node) string { return dispatchedBackendName(n, a.wf, a.resolver) }
+	// Sorted by site id (CallSites), so the same run's refusal words its list
+	// identically on every start, and its code is the first refused site's.
+	for _, site := range model.CallSites(a.routes, backendOf) {
+		switch {
+		case site.Kind == model.SiteUnread:
+			if _, child := site.Node.(*ir.SubbotNode); !child {
+				undecidable = append(undecidable, fmt.Sprintf("%s (no reading of its model calls)", site.ID))
+			}
+			continue
+		case site.Rescue:
+			if w := a.judgeRescue(ctx, site); w != "" {
+				warned = append(warned, w)
+			}
 			continue
 		}
-		backend := dispatchedBackendName(n, a.wf, a.resolver)
-		verdict, err := a.judgeNode(ctx, n, backend)
+		verdict, err := a.judgeSite(ctx, site)
 		switch {
 		case errors.Is(err, credroute.ErrNoArm):
 			// No arm decides this backend yet: a fork-lane sandbox keeps
 			// today's per-backend probe; anything else is the warning's
 			// territory — never a refusal on a guess.
 			if !fork || !a.placement.Contained || a.adopted {
-				undecidable = append(undecidable, fmt.Sprintf("%s (%s)", id, backend))
+				undecidable = append(undecidable, fmt.Sprintf("%s (%s)", site.ID, site.Backend))
 				break
 			}
-			if decided, ok := a.probeWithoutArm(ctx, backend, nn.GetLLMFields()); !decided {
-				undecidable = append(undecidable, fmt.Sprintf("%s (%s)", id, backend))
+			if decided, ok := a.probeWithoutArm(ctx, site.Backend, siteFields(site.Node)); !decided {
+				undecidable = append(undecidable, fmt.Sprintf("%s (%s)", site.ID, site.Backend))
 			} else if !ok {
-				refused = append(refused, nodeVerdict{node: id, backend: backend, refusal: &credroute.Refusal{
-					Backend: backend, Reason: credroute.ReasonNoCredential,
+				refused = append(refused, nodeVerdict{node: site.ID, nodeID: site.NodeID, backend: site.Backend, refusal: &credroute.Refusal{
+					Backend: site.Backend, Reason: credroute.ReasonNoCredential,
 				}})
 			}
 		case verdict.refusal != nil:
@@ -224,14 +241,12 @@ func (a credentialAdmission) admit(ctx context.Context, emitEvent func(store.Eve
 		case verdict.spend.Channel == credroute.ChannelOwnConfig:
 			// The backend reads its own configuration, never a run
 			// credential (ADR-161 decision 5): admitted, and warned as a
-			// node the launch cannot read.
-			undecidable = append(undecidable, fmt.Sprintf("%s (%s)", id, backend))
+			// site the launch cannot read.
+			undecidable = append(undecidable, fmt.Sprintf("%s (%s)", site.ID, site.Backend))
 		case logger != nil:
-			logger.Info("runtime: node %s (%s): its credential is the %s%s", id, backend, verdict.spend.Channel, slotSuffix(verdict.spend))
+			logger.Info("runtime: node %s (%s): its credential is the %s%s", site.ID, site.Backend, verdict.spend.Channel, slotSuffix(verdict.spend))
 		}
-		warned = append(warned, a.judgeFallbacks(ctx, n, backend)...)
 	}
-	warned = append(warned, a.judgeSupervisors(ctx)...)
 	if len(undecidable) > 0 {
 		reason := fmt.Sprintf("no credential reading for %s — the launch cannot tell whether a credential will reach those nodes", strings.Join(undecidable, ", "))
 		warnCredential(emitEvent, logger, a.runID, reason, undecidable)
@@ -246,34 +261,41 @@ func (a credentialAdmission) admit(ctx context.Context, emitEvent func(store.Eve
 	return a.refusal(refused, fork)
 }
 
-// judgeNode resolves every leg of n's chain (model.Legs) on backend until one
-// is funded. ErrNoArm reports a backend no arm decides.
-func (a credentialAdmission) judgeNode(ctx context.Context, n ir.Node, backend string) (nodeVerdict, error) {
-	legs := model.Legs(a.routes, n)
-	if len(legs) == 0 {
+// siteFields is the LLM fields the per-backend probe reads of a dispatched
+// node; nil for a site with none.
+func siteFields(n ir.Node) *ir.LLMFields {
+	switch node := n.(type) {
+	case *ir.AgentNode:
+		return &node.LLMFields
+	case *ir.JudgeNode:
+		return &node.LLMFields
+	case *ir.RouterNode:
+		return &node.LLMFields
+	}
+	return nil
+}
+
+// judgeSite resolves every leg of site's chain until one is funded, each
+// where the site calls its model (model.CallSite.Call). ErrNoArm reports a
+// backend no arm decides.
+func (a credentialAdmission) judgeSite(ctx context.Context, site model.CallSite) (nodeVerdict, error) {
+	verdict := nodeVerdict{node: site.ID, nodeID: site.NodeID, backend: site.Backend}
+	if len(site.Legs) == 0 {
 		// The allowlist dropped every route: the dispatch refuses the same
 		// way (ErrProviderOutsideAllowlist).
-		return nodeVerdict{node: n.NodeID(), backend: backend, refusal: &credroute.Refusal{
-			Backend: backend, Reason: credroute.ReasonOutsideAllowlist, Cause: model.ErrProviderOutsideAllowlist,
-		}}, nil
+		verdict.refusal = &credroute.Refusal{Backend: site.Backend, Reason: credroute.ReasonOutsideAllowlist, Cause: model.ErrProviderOutsideAllowlist}
+		return verdict, nil
 	}
-	base, err := a.baseline(n, backend)
+	base, err := site.Base(a.detected)
 	if err != nil {
 		// The dispatch refuses the node before its first leg: the
 		// detector's pick is outside the run's allowlist.
-		return nodeVerdict{node: n.NodeID(), backend: backend, refusal: &credroute.Refusal{
-			Backend: backend, Reason: credroute.ReasonOutsideAllowlist, Cause: err,
-		}}, nil
+		verdict.refusal = &credroute.Refusal{Backend: site.Backend, Reason: credroute.ReasonOutsideAllowlist, Cause: err}
+		return verdict, nil
 	}
-	verdict := nodeVerdict{node: n.NodeID(), backend: backend}
-	for _, leg := range legs {
-		spec := leg.Model
-		if spec == "" {
-			spec = base
-		}
-		spend, err := credroute.Resolve(ctx, credroute.Call{
-			Backend: backend, Spec: spec, Leg: leg, Role: credroute.RoleNode, Sandbox: a.placement,
-		})
+	for i, leg := range site.Legs {
+		spec := site.LegSpec(i, base)
+		spend, err := credroute.Resolve(ctx, site.Call(i, spec, a.placement))
 		if errors.Is(err, credroute.ErrNoArm) {
 			return nodeVerdict{}, err
 		}
@@ -282,86 +304,52 @@ func (a credentialAdmission) judgeNode(ctx context.Context, n ir.Node, backend s
 			verdict.spend = spend
 			return verdict, nil
 		}
-		verdict.refusal = asRefusal(backend, spec, leg, err)
+		verdict.refusal = asRefusal(site.Backend, spec, leg, err)
 	}
 	return verdict, nil
 }
 
-// baseline is the model a leg of n that pins none of its own sends on
-// backend, as the dispatch builds it: the launch override, else the node's
-// `model:` — and, for a claw node naming none, the detector's pick
-// (DetectedClawSpec), whose allowlist refusal is the node's.
-func (a credentialAdmission) baseline(n ir.Node, backend string) (string, error) {
-	base := model.Baseline(a.routes, n)
-	if base != "" || backend != delegate.BackendClaw || a.detected == nil {
-		return base, nil
+// judgeRescue resolves a rescue site — a `fallbacks:` route, an interaction
+// generation, the review companion, a pinned supervisor — and names it when
+// no credential funds it: warned, never refused, the site it rescues decides.
+// A supervisor naming no model takes the spawn's default, which the spawn
+// decides; a site whose base the dispatch refuses (the detector's pick
+// outside the allowlist) dispatches nothing to warn on.
+func (a credentialAdmission) judgeRescue(ctx context.Context, site model.CallSite) string {
+	if site.Kind == model.SiteSupervisor && site.Model == "" {
+		return ""
 	}
-	return a.detected(n.NodeID())
-}
-
-// judgeFallbacks resolves n's active `fallbacks:` routes, naming each one no
-// credential funds: warned, never refused — the node's own chain decides.
-func (a credentialAdmission) judgeFallbacks(ctx context.Context, n ir.Node, backend string) []string {
-	nn, ok := n.(ir.LLMNode)
-	if !ok {
-		return nil
-	}
-	var out []string
-	base, err := a.baseline(n, backend)
+	base, err := site.Base(a.detected)
 	if err != nil {
-		// The node's own verdict names the refusal; no fallback dispatches.
-		return nil
+		return ""
 	}
-	for _, fb := range nn.GetFallbacks() {
-		if fb.Action == ir.FallbackActionSkip || !model.FallbackWhenActive(a.routes.DecidedVars(), n.NodeID(), fb, nil) {
-			continue
-		}
-		field := func(raw string) string { return model.ResolveRoutingFieldWith(a.routes.Vars, a.routes.LateVars, raw) }
-		fbBackend := strings.ToLower(field(fb.Backend))
-		if fbBackend == "" {
-			fbBackend = backend
-		}
-		spec := field(fb.Model)
-		if spec == "" {
-			spec = base
-		}
-		leg := credroute.Leg{Provider: strings.ToLower(field(fb.Provider))}
-		if leg.Provider == "auto" {
-			leg.Provider = ""
-		}
-		_, err := credroute.Resolve(ctx, credroute.Call{Backend: fbBackend, Spec: spec, Leg: leg, Role: credroute.RoleNode, Sandbox: a.placement})
-		if err == nil || errors.Is(err, credroute.ErrNoArm) {
-			continue
-		}
-		out = append(out, fmt.Sprintf("%s fallback %q (%s: %s)", n.NodeID(), fb.Name, fbBackend, asRefusal(fbBackend, spec, leg, err).Reason))
+	spec := site.LegSpec(0, base)
+	var leg credroute.Leg
+	if len(site.Legs) > 0 {
+		leg = site.Legs[0]
 	}
-	return out
-}
-
-// judgeSupervisors resolves each declared supervisor's own spec, on the host
-// where the engine evaluates it, naming each one no credential funds. A
-// supervisor without a model of its own takes the spawn's default, which the
-// spawn decides.
-func (a credentialAdmission) judgeSupervisors(ctx context.Context) []string {
-	var out []string
-	for _, sup := range a.wf.Supervisors {
-		if sup == nil || strings.TrimSpace(sup.Model) == "" {
-			continue
-		}
-		spec := model.ResolveRoutingFieldWith(a.routes.Vars, a.routes.LateVars, sup.Model)
-		_, err := credroute.Resolve(ctx, credroute.Call{Backend: delegate.BackendClaw, Spec: spec, Role: credroute.RoleSupervisor})
-		if err == nil || errors.Is(err, credroute.ErrNoArm) {
-			continue
-		}
-		out = append(out, fmt.Sprintf("supervisor %q (%s: %s)", sup.Name, spec, asRefusal(delegate.BackendClaw, spec, credroute.Leg{}, err).Reason))
+	_, err = credroute.Resolve(ctx, site.Call(0, spec, a.placement))
+	if err == nil || errors.Is(err, credroute.ErrNoArm) {
+		return ""
 	}
-	return out
+	reason := asRefusal(site.Backend, spec, leg, err).Reason
+	switch site.Kind {
+	case model.SiteSupervisor:
+		return fmt.Sprintf("supervisor %q (%s: %s)", site.Name, spec, reason)
+	case model.SiteFallback:
+		return fmt.Sprintf("%s fallback %q (%s: %s)", site.NodeID, site.Name, site.Backend, reason)
+	}
+	return fmt.Sprintf("%s (%s: %s)", site.ID, site.Backend, reason)
 }
 
 // probeWithoutArm is today's per-backend reading of a sandboxed fork-lane
 // node whose backend no arm decides yet (ADR-161 decision 9, interim):
-// decided is false where no probe reads the backend.
+// decided is false where no probe reads the backend, or the site exposes no
+// fields to probe.
 func (a credentialAdmission) probeWithoutArm(ctx context.Context, backend string, fields *ir.LLMFields) (decided, ok bool) {
+	if fields == nil {
+		return false, false
+	}
 	switch backend {
 	case delegate.BackendClaudeCode:
 		_, ok = delegate.ClaudeCodeSandboxCredential(ctx, fields.Provider, a.placement.Home)
@@ -423,6 +411,10 @@ func (a credentialAdmission) refusal(refused []nodeVerdict, fork bool) error {
 	}
 	first := refused[0]
 	code := admissionCode(first.refusal.Reason)
+	nodeID := first.nodeID
+	if nodeID == "" {
+		nodeID = first.node
+	}
 	who := "run stamped to its own credentials"
 	if fork {
 		who = "untrusted (fork-lane) run"
@@ -435,7 +427,7 @@ func (a credentialAdmission) refusal(refused []nodeVerdict, fork bool) error {
 	case code == ErrCodeCredentialAmbientRefused && first.refusal.Reason == credroute.ReasonArmPending:
 		return &RuntimeError{
 			Code:    code,
-			NodeID:  first.node,
+			NodeID:  nodeID,
 			Cause:   first.refusal,
 			Message: fmt.Sprintf("%s refused %s: node(s) %s run on a backend whose credential arm has not landed (ADR-161 U4) — its dispatch would read the pod's credentials past the run's seal, and the run's credentials are its only funds (ADR-131 §7)", who, where, strings.Join(parts, ", ")),
 			Hint:    "route each named node to claw or claude_code on a model the run's own credentials serve (a BYOK key, a pinned key, a connected forfait, a gateway pair) — pi and codex legs are refused on a run stamped to its own credentials until their arms land; an unstamped run keeps them.",
@@ -443,7 +435,7 @@ func (a credentialAdmission) refusal(refused []nodeVerdict, fork bool) error {
 	case code == ErrCodeCredentialAmbientRefused:
 		return &RuntimeError{
 			Code:    code,
-			NodeID:  first.node,
+			NodeID:  nodeID,
 			Cause:   first.refusal,
 			Message: fmt.Sprintf("%s refused %s: only the pod's environment would fund node(s) %s, and the run's credentials are its only funds (ADR-131 §7)", who, where, strings.Join(parts, ", ")),
 			Hint:    "attach a credential for each named route to the run (a BYOK key, a pinned key, a connected forfait, a gateway pair), or route the node to a model the run's own credentials serve — the stamp refuses the pod's keys and logins by design. A backend that reads its own configuration (kimi, grok, opencode) never spends a run credential: route its node to claw or claude_code.",
@@ -451,7 +443,7 @@ func (a credentialAdmission) refusal(refused []nodeVerdict, fork bool) error {
 	case code == ErrCodeCredentialSubscriptionForbidden:
 		return &RuntimeError{
 			Code:    code,
-			NodeID:  first.node,
+			NodeID:  nodeID,
 			Cause:   first.refusal,
 			Message: fmt.Sprintf("%s refused %s: ITERION_FORBID_SUBSCRIPTION_OAUTH refuses the subscription node(s) %s would spend, and no other credential funds them", who, where, strings.Join(parts, ", ")),
 			Hint:    "give the run a metered API key for each named route, route the node to claude_code (the vendor's own CLI spends the subscription within policy), or lift ITERION_FORBID_SUBSCRIPTION_OAUTH on this deployment.",
@@ -461,7 +453,7 @@ func (a credentialAdmission) refusal(refused []nodeVerdict, fork bool) error {
 		who, where, strings.Join(parts, ", "))
 	return &RuntimeError{
 		Code:    ErrCodeSandboxCredentialUnreachable,
-		NodeID:  first.node,
+		NodeID:  nodeID,
 		Cause:   first.refusal,
 		Message: message,
 		Hint:    "hand the run a credential that crosses the container boundary: export the API key the backend forwards (e.g. ANTHROPIC_API_KEY / OPENAI_API_KEY — forwarded by name at exec), or — on a runner whose host_state still mounts the operator's login — keep host_state: auto. A credential declared `as: file` reaches the container's filesystem, not the backend CLI's auth, so it does not lift this refusal. The operator's own OAuth token is never handed to a fork's container by iterion itself.",

@@ -14,6 +14,7 @@ import (
 	"github.com/SocialGouv/iterion/internal/credparity"
 	"github.com/SocialGouv/iterion/pkg/backend/credroute"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
+	"github.com/SocialGouv/iterion/pkg/backend/detect"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 )
@@ -49,9 +50,11 @@ func TestCredParity_Dispatch(t *testing.T) {
 			forfaitDir := applyParityRow(t, row)
 			ctx := secrets.WithCredentials(context.Background(), row.Run.Credentials(forfaitDir))
 
-			node := parityNode(row.Node)
-			e := &ClawExecutor{allowedProviders: AllowedProviderSet(row.Run.Allowlist)}
-			legs := Legs(RouteView{AllowedProviders: row.Run.Allowlist}, node)
+			node := row.Node.IR()
+			e := &ClawExecutor{allowedProviders: AllowedProviderSet(row.Run.Allowlist), detector: detect.NewCachedDetector(0)}
+			view := RouteView{Workflow: &ir.Workflow{Name: "parity", Nodes: map[string]ir.Node{node.NodeID(): node}}, AllowedProviders: row.Run.Allowlist}
+			site := paritySite(t, view, row)
+			legs := Legs(view, node)
 			if executor := legsOf(e.resolveProviderChain(node)); !slices.Equal(executor, legs) {
 				t.Fatalf("the executor walks %+v, model.Legs reads %+v — one chain, one reading", executor, legs)
 			}
@@ -65,7 +68,11 @@ func TestCredParity_Dispatch(t *testing.T) {
 
 			got := credparity.Refuses(credparity.OutsideAllowlist)
 			for i := range legs {
-				got = dispatchParityLeg(t, ctx, row, i, legs[i], forfaitDir)
+				if site.Host {
+					got = dispatchParityDirect(t, ctx, row, site)
+				} else {
+					got = dispatchParityLeg(t, ctx, row, site, e, i, legs[i], forfaitDir)
+				}
 				if !got.Refused() {
 					break
 				}
@@ -104,11 +111,37 @@ func applyParityRow(t *testing.T, row credparity.Row) string {
 	return dir
 }
 
-func parityNode(n credparity.Node) ir.Node {
-	return &ir.AgentNode{
-		BaseNode:  ir.BaseNode{ID: n.ID},
-		LLMFields: ir.LLMFields{Backend: n.Backend, Model: n.Model, Provider: n.Provider},
+// paritySite is the row's call site as the one enumeration of the run's
+// model-calling sites names it (CallSites) — the site the admission judges
+// and the pre-flight keys.
+func paritySite(t *testing.T, v RouteView, row credparity.Row) CallSite {
+	t.Helper()
+	for _, s := range CallSites(v, nil) {
+		if s.ID == row.Node.SiteID() {
+			return s
+		}
 	}
+	t.Fatalf("CallSites names no site %q for the row's node", row.Node.SiteID())
+	return CallSite{}
+}
+
+// dispatchParityDirect is a direct generation's dispatch (a human node's LLM
+// half, a Verified Action's rung 3): the claw arm's in-process resolution the
+// generation builds its client from (resolveBeside, under the hint-free ctx
+// those generations run on), which must be the answer the enumeration's call
+// gets from the registered arm, then the credential the client sends.
+func dispatchParityDirect(t *testing.T, ctx context.Context, row credparity.Row, site CallSite) credparity.Spend {
+	t.Helper()
+	spec := site.Model
+	client, spend, err := NewRegistry().resolveBeside(ctx, spec)
+	armSpend, armErr := credroute.Resolve(ctx, site.Call(0, spec, credroute.Sandbox{Contained: row.Sandboxed}))
+	if armSpend != spend || (armErr == nil) != (err == nil) {
+		t.Fatalf("the enumeration's call answers %+v, %v; the generation's own resolution %+v, %v — one arm, one answer", armSpend, armErr, spend, err)
+	}
+	if err != nil {
+		return parityRefusal(t, err)
+	}
+	return paritySpend(t, row, 0, client)
 }
 
 // dispatchParityLeg is one element's dispatch: the claw arm's resolution of
@@ -116,9 +149,22 @@ func parityNode(n credparity.Node) ir.Node {
 // resolution built in process, or the client the container's own registry
 // builds from the env the resolution crossed. The arm's answer must name that
 // credential, or the refusal the dispatch meets.
-func dispatchParityLeg(t *testing.T, ctx context.Context, row credparity.Row, i int, leg credroute.Leg, forfaitDir string) credparity.Spend {
+func dispatchParityLeg(t *testing.T, ctx context.Context, row credparity.Row, site CallSite, e *ClawExecutor, i int, leg credroute.Leg, forfaitDir string) credparity.Spend {
 	t.Helper()
-	spec, hint := row.Node.Spec(i), row.Node.Hint(i)
+	spec := row.Node.Spec(i)
+	if spec == "" {
+		// A claw node naming no model: the dispatch builds its task on the
+		// detector's pick (buildTask), and the enumeration's base is the
+		// same pick.
+		picked, err := e.DetectedClawSpec(row.Node.ID)
+		if err != nil {
+			return parityRefusal(t, err)
+		}
+		if base, berr := site.Base(e.DetectedClawSpec); berr != nil || base != picked {
+			t.Fatalf("the enumeration's base is %q, %v; the dispatch's pick %q", base, berr, picked)
+		}
+		spec = picked
+	}
 	call := credroute.Call{
 		Backend: delegate.BackendClaw, Spec: spec, Leg: leg, Role: credroute.RoleNode,
 		Sandbox: credroute.Sandbox{Contained: row.Sandboxed},
@@ -127,6 +173,8 @@ func dispatchParityLeg(t *testing.T, ctx context.Context, row credparity.Row, i 
 		// A supervisor's evaluator resolves its model in process, on the
 		// host, whatever the run's sandbox.
 		call.Role, call.Sandbox = credroute.RoleSupervisor, credroute.Sandbox{}
+	} else if enumerated := site.Call(i, spec, credroute.Sandbox{Contained: row.Sandboxed}); enumerated != call {
+		t.Fatalf("leg %d: the enumeration asks %+v, the dispatch %+v — the admission and the pre-flight would judge a call the dispatch never makes", i, enumerated, call)
 	}
 	armSpend, armErr := credroute.Resolve(ctx, call)
 	res, err := resolveClawCall(ctx, NewRegistry(), call)
@@ -163,10 +211,23 @@ func dispatchParityLeg(t *testing.T, ctx context.Context, row credparity.Row, i 
 				configDir = forfaitDir
 			}
 			t.Setenv("CLAUDE_CONFIG_DIR", configDir)
-			client, cerr := NewSandboxRunnerRegistry().ResolveWithContext(WithProviderHint(context.Background(), hint), spec)
+			// The runner's own call (ClawBackend.Execute in the container: the
+			// arm in process over the runner's registry, built on the
+			// crossing's record): the client it sends with, and the Spend it
+			// names itself — the keys its events and its result carry, which
+			// the launcher relays verbatim. In process and sandboxed agree:
+			// that Spend is the arm's answer for the contained call, the one
+			// the admission, the meter and the ledger read.
+			container := NewSandboxRunnerRegistry(res.facts.funds)
+			client, own, cerr := inProcessClaw(context.Background(), container, credroute.Call{
+				Backend: delegate.BackendClaw, Spec: spec, Leg: leg, Role: call.Role,
+			})
 			if cerr != nil {
 				got = parityRefusal(t, cerr)
 				return
+			}
+			if own != armSpend {
+				t.Errorf("leg %d: the container names its call %+v, the arm %+v — the keys the runner writes are not what the readers read", i, own, armSpend)
 			}
 			got = paritySpend(t, row, i, client)
 		})

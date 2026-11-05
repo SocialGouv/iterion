@@ -16,11 +16,12 @@ import (
 
 // TestCredParity_Admission drives every row of ADR-161's parity table
 // (internal/credparity) through the start site its run passes and judges the
-// launch's verdict against the row: the production resolveAndStartSandbox for
-// a run of its own — `sandbox: none` on the host, an `auto` sandbox on the
-// canary driver whose Prepare refuses otherwise — under the routes its
-// dispatch reads (the run's provider allowlist), and startSandbox's adopt
-// branch for a subbot child under a sandboxed parent. A run ADR-161 judges
+// launch's verdict against the row — the row's call site of its kind, which
+// the admission reads through model.CallSites: the production
+// resolveAndStartSandbox for a run of its own — `sandbox: none` on the host,
+// an `auto` sandbox on the canary driver whose Prepare refuses otherwise —
+// under the routes its dispatch reads (the run's provider allowlist), and
+// startSandbox's adopt branch for a subbot child under a sandboxed parent. A run ADR-161 judges
 // (the fork lane, every stamped run) is refused, with the code decision 7
 // assigns, exactly where no leg funds its node; every other start proceeds.
 //
@@ -47,10 +48,9 @@ func TestCredParity_Admission(t *testing.T) {
 				}
 			}
 			ctx := secrets.WithCredentials(context.Background(), row.Run.Credentials(forfaitDir))
-			node := &ir.AgentNode{
-				BaseNode:  ir.BaseNode{ID: row.Node.ID},
-				LLMFields: ir.LLMFields{Backend: row.Node.Backend, Model: row.Node.Model, Provider: row.Node.Provider},
-			}
+			// The row's call site, of its kind: an agent node, an LLM router,
+			// a human node's LLM half, a Verified Action's rung.
+			node := row.Node.IR()
 
 			var err error
 			var events []store.Event
@@ -75,7 +75,10 @@ func TestCredParity_Admission(t *testing.T) {
 				if row.Trust == credparity.Fork {
 					trust = store.RunTrustFork
 				}
-				err = credentialAdmissionRunRoutes(t, ctx, wf, trust, model.RouteView{AllowedProviders: row.Run.Allowlist}, &events)
+				// The dispatch's own pick for a claw node naming no model:
+				// the executor's detector, under the run's allowlist.
+				detected := model.NewClawExecutor(model.NewRegistry(), wf, model.WithAllowedProviders(row.Run.Allowlist)).DetectedClawSpec
+				err = credentialAdmissionDetecting(t, ctx, wf, trust, model.RouteView{AllowedProviders: row.Run.Allowlist}, detected, &events)
 			}
 
 			got := "launches"

@@ -90,24 +90,26 @@ const (
 	ChannelOwnConfig Channel = "own config"
 )
 
-// Spend is what a call spends.
+// Spend is what a call spends. It names a credential, never carries one: it
+// crosses the sandbox channel as JSON (the crossing's record, the container's
+// result).
 type Spend struct {
-	Channel Channel
+	Channel Channel `json:"channel,omitempty"`
 	// Slot is the run slot the spend books on — a provider name or an OAuth
 	// kind; "" for none of the run's.
-	Slot string
+	Slot string `json:"slot,omitempty"`
 	// Fingerprint is the slot's audit fingerprint (Credentials.Fingerprint),
 	// the value the credential plan predicts; "" when the slot has none. A
 	// spend of the pod's environment names no slot: its Fingerprint is the
 	// account the request carries, in the digest every lane's ambient label
 	// keys on (the usage meter's key), "" where no such label names the
 	// account — the z.ai synthesis is z.ai's.
-	Fingerprint string
+	Fingerprint string `json:"fingerprint,omitempty"`
 	// BaseURL is the destination the credential is sent to; "" is the
 	// provider's published endpoint.
-	BaseURL string
+	BaseURL string `json:"base_url,omitempty"`
 	// Source is claude_code's session label; "" for the other arms.
-	Source string
+	Source string `json:"source,omitempty"`
 }
 
 // Reason is why a leg spends nothing (ADR-161 decision 7).

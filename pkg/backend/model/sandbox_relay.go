@@ -1,7 +1,6 @@
 package model
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -81,6 +80,11 @@ type relayedLLMStep struct {
 	// decodes to "" — the host falls back to its own derivation, the same
 	// skew tolerance as every capability an older sandbox image lacks.
 	Provider string `json:"provider,omitempty"`
+	// Credential is what the step's client spent, as the container's own
+	// walk named it through the crossing's record (LLMStepInfo.Credential) —
+	// the node's call or a subagent's, each its own. The launcher relays it
+	// verbatim. Absent from an older container: the step carries no keys.
+	Credential *credroute.Spend `json:"credential,omitempty"`
 }
 
 // relayedToolCall is the wire form of ToolCallEntry.
@@ -295,7 +299,13 @@ func SandboxRelayHooks(write func(delegate.Envelope) error, report func(error)) 
 			send(string(store.EventLLMRequest), relayedLLMRequest(info))
 		},
 		OnLLMStepFinish: func(_ string, step LLMStepInfo) {
+			var credential *credroute.Spend
+			if step.Credential != (credroute.Spend{}) {
+				c := step.Credential
+				credential = &c
+			}
 			send(string(store.EventLLMStepFinished), relayedLLMStep{
+				Credential:       credential,
 				Number:           step.Number,
 				Text:             relayClampText(step.Text),
 				ToolCalls:        relayClampToolCalls(step.ToolCalls),
@@ -417,39 +427,6 @@ func relayEnvelope(eventType string, payload any) (delegate.Envelope, error) {
 		relayLineSize(env), delegate.MaxEnvelopeLineBytes)
 }
 
-// crossingSpendKey carries, from the sandboxed dispatch to the multiplexer
-// handler it builds, the claw arm's Spend for the crossing.
-type crossingSpendKey struct{}
-
-// withCrossingSpend carries spend — the arm's resolution of the crossing the
-// container's loop spends through — on ctx.
-func withCrossingSpend(ctx context.Context, spend credroute.Spend) context.Context {
-	return context.WithValue(ctx, crossingSpendKey{}, spend)
-}
-
-// crossingSpendFrom is the Spend withCrossingSpend carried, zero for none.
-func crossingSpendFrom(ctx context.Context) credroute.Spend {
-	s, _ := ctx.Value(crossingSpendKey{}).(credroute.Spend)
-	return s
-}
-
-// withStepCredential returns h with its step hook stamping spend on every
-// step it re-fires: the claw arm's resolution of the crossing the container's
-// loop spends through (ADR-161 decision 8). The container never holds the
-// run's slots — the launcher composed what it spends — so the launcher writes
-// the step's credential keys, and a relayed step carries none of its own.
-func withStepCredential(h EventHooks, spend credroute.Spend) EventHooks {
-	if h.OnLLMStepFinish == nil || spend.Channel == "" {
-		return h
-	}
-	fn := h.OnLLMStepFinish
-	h.OnLLMStepFinish = func(nodeID string, step LLMStepInfo) {
-		step.Credential = spend
-		fn(nodeID, step)
-	}
-	return h
-}
-
 // ApplyRelayedEvent re-fires one relayed event through h, for nodeID (the
 // host's own node id, never the wire's). handled is false for an event type
 // this host does not relay — a newer runner may forward more, and the
@@ -481,7 +458,12 @@ func ApplyRelayedEvent(h EventHooks, nodeID, eventType string, payload map[strin
 					calls[i] = ToolCallEntry(tc)
 				}
 			}
+			var credential credroute.Spend
+			if s.Credential != nil {
+				credential = *s.Credential
+			}
 			h.OnLLMStepFinish(nodeID, LLMStepInfo{
+				Credential:       credential,
 				Number:           s.Number,
 				Text:             s.Text,
 				ToolCalls:        calls,

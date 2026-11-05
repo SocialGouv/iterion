@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/ambient"
+	"github.com/SocialGouv/iterion/pkg/backend/credroute"
 	"github.com/SocialGouv/iterion/pkg/plugin"
 )
 
@@ -152,6 +153,16 @@ type IOTask struct {
 	// that stops and reports it. False from a launcher that predates it: the
 	// runner then ends a session of its own.
 	LauncherEndsNodeSession bool `json:"launcher_ends_node_session,omitempty"`
+	// CredentialFunds is the crossing's record of the env it composed: each
+	// credential variable it wrote, and the Spend whose credential that
+	// variable carries — a run's key, its forfait, the pod's own — never a
+	// value. The runner names every call it makes (the node's, a
+	// subagent's) through it, and its events and its result carry what each
+	// spent (ADR-161 decision 8: the keys are written by the process that
+	// built the call). Never set from a Task field — the launcher writes it
+	// at the crossing (model.ClawBackend.runnerIOTask). Nil from a launcher
+	// that predates it: the runner's calls name no credential.
+	CredentialFunds map[string]credroute.Spend `json:"credential_funds,omitempty"`
 }
 
 // IORetryPolicy is model.RetryPolicy on the wire (this package cannot
@@ -207,7 +218,12 @@ type IOResult struct {
 	// the bound the in-container generation held crosses back with the
 	// conversation, or the resumed crossing restarts unbounded.
 	PendingCommandNarrowing *CommandNarrowingState `json:"pending_command_narrowing,omitempty"`
-	Error                   string                 `json:"error,omitempty"`
+	// Credential is what the runner's call spent, as the runner's own walk
+	// named it through the crossing's record (Result.Credential): the
+	// launcher relays it verbatim. Nil from a runner that predates it, or a
+	// call that named none.
+	Credential *credroute.Spend `json:"credential,omitempty"`
+	Error      string           `json:"error,omitempty"`
 	// ProviderError carries a typed provider refusal across the runner. Error
 	// remains the human-readable wrapper; it is never parsed for HTTP status.
 	ProviderError *api.APIError `json:"provider_error,omitempty"`
@@ -361,7 +377,13 @@ func FromIOTask(t IOTask) Task {
 
 // ToIOResult converts a [Result] to its wire form.
 func ToIOResult(r Result) IOResult {
+	var credential *credroute.Spend
+	if r.Credential != (credroute.Spend{}) {
+		c := r.Credential
+		credential = &c
+	}
 	return IOResult{
+		Credential:         credential,
 		Output:             r.Output,
 		Tokens:             r.Tokens,
 		CostUSD:            r.CostUSD,
@@ -394,7 +416,12 @@ func ToIOResult(r Result) IOResult {
 // field is dropped — the launcher surfaces it via a separate error
 // return value, not by populating the Result.
 func FromIOResult(r IOResult) Result {
+	var credential credroute.Spend
+	if r.Credential != nil {
+		credential = *r.Credential
+	}
 	return Result{
+		Credential:         credential,
 		Output:             r.Output,
 		Tokens:             r.Tokens,
 		CostUSD:            r.CostUSD,

@@ -119,7 +119,7 @@ func TestEngineResolvedWireCarriesNoAmbientSecretLine(t *testing.T) {
 func TestSandboxRunnerRegistryKeepsTheForwardedChannel(t *testing.T) {
 	t.Setenv("ANTHROPIC_CUSTOM_HEADERS", "x-tenant: acme")
 
-	r := NewSandboxRunnerRegistry()
+	r := NewSandboxRunnerRegistry(nil)
 	cfg := r.withClientIdentity(api.ProviderConfig{Model: "m"})
 	if cfg.NoAmbientHeaders {
 		t.Fatal("the sandbox runner registry refused the ambient env — the crossing's forwarded block is the channel, not a leak")

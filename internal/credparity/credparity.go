@@ -25,6 +25,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 )
 
@@ -275,9 +276,54 @@ type Node struct {
 	Model    string
 	Provider string
 	Legs     []Leg
+	// Kind is the model-calling site the row's call is (model.CallSites'
+	// vocabulary); "" is an agent node's own dispatch.
+	Kind SiteKind
 }
 
-// Spec is the model leg i sends.
+// SiteKind is the shape of a row's call site, by model.SiteKind's names.
+type SiteKind string
+
+const (
+	// LLMRouter is a router in `llm` mode, dispatched like an agent node.
+	LLMRouter SiteKind = "llm_router"
+	// HumanLLM is a human node's `interaction: llm` generation: a direct
+	// claw generation, in process.
+	HumanLLM SiteKind = "human_llm"
+	// SelfRepair is a Verified Action's rung 3: a direct claw generation on
+	// the recovery model, in process.
+	SelfRepair SiteKind = "self_repair"
+)
+
+// IR is the workflow node the row's call belongs to, of the row's kind.
+func (n Node) IR() ir.Node {
+	fields := ir.LLMFields{Backend: n.Backend, Model: n.Model, Provider: n.Provider}
+	switch n.Kind {
+	case LLMRouter:
+		return &ir.RouterNode{BaseNode: ir.BaseNode{ID: n.ID}, LLMFields: fields, RouterMode: ir.RouterLLM}
+	case HumanLLM:
+		return &ir.HumanNode{BaseNode: ir.BaseNode{ID: n.ID}, InteractionFields: ir.InteractionFields{Interaction: ir.InteractionLLM}, Model: n.Model}
+	case SelfRepair:
+		return &ir.ToolNode{
+			BaseNode: ir.BaseNode{ID: n.ID}, Command: "make build", Goal: "the build succeeds", Postcondition: "test -f build.ok",
+			Policy: ir.PolicyRecover, Recovery: &ir.RecoverySpec{MaxRepairAttempts: 1, Model: n.Model},
+		}
+	}
+	return &ir.AgentNode{BaseNode: ir.BaseNode{ID: n.ID}, LLMFields: fields}
+}
+
+// SiteID is the id model.CallSites gives the row's call site.
+func (n Node) SiteID() string {
+	if n.Kind == SelfRepair {
+		return n.ID + "#self_repair"
+	}
+	return n.ID
+}
+
+// Spec is the model leg i sends. Empty for a claw node naming none: its
+// dispatch sends the detector's pick, which each harness reads through the
+// dispatch's own pick (model.ClawExecutor.DetectedClawSpec, or
+// model.DetectedClawSpecUnder where no executor runs).
 func (n Node) Spec(i int) string {
 	if i >= 0 && i < len(n.Legs) && n.Legs[i].Model != "" {
 		return n.Legs[i].Model

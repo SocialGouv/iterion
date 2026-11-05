@@ -60,15 +60,24 @@ func credentialAdmissionStart(t *testing.T, ctx context.Context, wf *ir.Workflow
 
 func credentialAdmissionRunRoutes(t *testing.T, ctx context.Context, wf *ir.Workflow, trust store.RunTrust, routes model.RouteView, events *[]store.Event) error {
 	t.Helper()
+	return credentialAdmissionDetecting(t, ctx, wf, trust, routes, nil, events)
+}
+
+// credentialAdmissionDetecting is credentialAdmissionRunRoutes with the
+// dispatch's pick for a claw node naming no model (SandboxParams.
+// DetectedClawSpec); nil picks none.
+func credentialAdmissionDetecting(t *testing.T, ctx context.Context, wf *ir.Workflow, trust store.RunTrust, routes model.RouteView, detected func(nodeID string) (string, error), events *[]store.Event) error {
+	t.Helper()
 	t.Setenv("ITERION_MODE", "local") // pin the factory to docker,podman,noop
 	d := &specCapturingDriver{hostBinds: true}
 	_, err := resolveAndStartSandbox(ctx, SandboxParams{
-		Routes:        routes,
-		Workflow:      wf,
-		RunID:         "run-credential-admission",
-		Trust:         trust,
-		WorkspacePath: t.TempDir(),
-		RepoRoot:      t.TempDir(),
+		DetectedClawSpec: detected,
+		Routes:           routes,
+		Workflow:         wf,
+		RunID:            "run-credential-admission",
+		Trust:            trust,
+		WorkspacePath:    t.TempDir(),
+		RepoRoot:         t.TempDir(),
 		// A non-stock image keeps #1643's image admission out of the way:
 		// this test judges the CREDENTIAL refusal, not the CLI-presence one.
 		DefaultImage: "registry.example.test/operator-sandbox:latest",

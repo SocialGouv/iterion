@@ -120,3 +120,19 @@ func TestTheUnitTwoRowsAreInTheTable(t *testing.T) {
 		}
 	}
 }
+
+// The structural round's rows (#2022, U0–U2's second review): an LLM router, a
+// human node's LLM half and a Verified Action's self-repair rung — the sites
+// the admission skipped — each refused under the stamp where only the pod
+// funds it, on both placements.
+func TestTheSiteKindRowsAreInTheTable(t *testing.T) {
+	for _, kind := range []SiteKind{LLMRouter, HumanLLM, SelfRepair} {
+		for _, sandboxed := range []bool{false, true} {
+			if !slices.ContainsFunc(Rows(), func(r Row) bool {
+				return r.Node.Kind == kind && r.Sandboxed == sandboxed && r.Run.Stamped && r.Want.Refusal == AmbientStamp
+			}) {
+				t.Errorf("no row refuses a stamped %s site ambient-stamp (sandboxed %v)", kind, sandboxed)
+			}
+		}
+	}
+}

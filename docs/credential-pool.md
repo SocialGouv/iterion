@@ -241,7 +241,10 @@ pod's ambient Claude env) is placed on nobody by design and voids nothing.
 A claw call's events carry what it spent — `credential_channel`,
 `credential_slot`, `credential_fingerprint`, written where the call was
 built ([ADR-161](adr/161-one-resolver-decides-the-credential-a-call-spends.md)
-decision 8) — and its slice books on that fingerprint, never on the plan's
+decision 8): for a sandboxed node, by the runner in the container, which
+names each of its calls — the node's and every subagent's — through the
+crossing's record of the env it composed, and the launcher relays them as
+they came. Its slice books on that fingerprint, never on the plan's
 prediction for its provider word: a call that spent another credential than
 the plan predicted (a gateway wire keeping a lent forfait home) books on its
 own, and the report names it in one warning. The spend ledger books those

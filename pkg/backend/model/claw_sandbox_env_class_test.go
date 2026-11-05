@@ -472,6 +472,7 @@ var crossingSpellings = map[string]string{
 	"stampedCrossingFunds":               "reads a stamped run's composed dispatch env over clawSandboxCredentialEnvKeys, asking whether a channel of the run is set — a map read the scan cannot see; the answer decides the typed refusal, nothing is forwarded",
 	"stampWithheldEnvName":               "names the subscription refusal a stamped run's crossing keeps forwarding while it blanks the pod's credentials — a comparison, no read",
 	"(anthropicEnvWalk).envName":         "names the env variable a built walk's credential came from, as the key containerSpend reads the crossing's funds under — no read: the walk's values were read where the walk reads them",
+	"envFactoryCredential":               "names, beside its reads, the env variable the env factory's walk took its credential from, as the key a sandbox runner reads the crossing's record under (Registry.envSpend) — CODEX_HOME included, which it names and never reads: the login's own reader is secrets.LoadCodexCredentialsFromDisk",
 }
 
 // envStateConsults answer for a name from state other than the process env,

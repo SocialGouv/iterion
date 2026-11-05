@@ -109,34 +109,41 @@ func TestApplyHooks_carriesTheCredentialOntoEveryStep(t *testing.T) {
 	}
 }
 
-// A sandboxed call's steps are relayed by the container, which never holds
-// the run's slots: the launcher writes their keys from the arm's resolution
-// of the crossing (withStepCredential, the multiplexer handler's relay), and
-// the container's envelope carries none of its own.
-func TestARelayedStepCarriesTheLaunchersSpend(t *testing.T) {
-	spend := credroute.Spend{Channel: credroute.ChannelRunForfait, Slot: "claude_code", Fingerprint: "fp-forfait"}
+// A sandboxed call's steps are relayed by the container, whose own walk
+// names what each step's client spent (ADR-161 decision 8: the keys are
+// written by the process that built the call): the envelope carries the
+// step's Spend, and the launcher re-fires it verbatim — stamping nothing, so
+// a step the container named no credential for carries no keys. Mutants —
+// the relay dropping the field: the host's step carries no keys; the
+// launcher stamping its own resolution over it: the host's step carries the
+// crossing's Spend, not the step's.
+func TestARelayedStepCarriesTheContainersOwnSpend(t *testing.T) {
+	own := credroute.Spend{Channel: credroute.ChannelPodEnv, Fingerprint: "fp-pod-openai"}
 
-	var sent delegate.Envelope
-	container := SandboxRelayHooks(func(env delegate.Envelope) error { sent = env; return nil }, nil)
-	container.OnLLMStepFinish("container-node", LLMStepInfo{Number: 1, InputTokens: 3, Credential: credroute.Spend{Channel: credroute.ChannelPodEnv}})
-	var wire delegate.EventData
-	if err := json.Unmarshal(sent.Data, &wire); err != nil {
-		t.Fatalf("decode EventData: %v", err)
-	}
-	if _, ok := credroute.SpendFromEvent(wire.Payload); ok {
-		t.Fatalf("the container's envelope carries credential keys %v — the container names no slot of the run's", wire.Payload)
-	}
+	var sent []delegate.Envelope
+	container := SandboxRelayHooks(func(env delegate.Envelope) error { sent = append(sent, env); return nil }, nil)
+	container.OnLLMStepFinish("container-node", LLMStepInfo{Number: 1, InputTokens: 3, Provider: "openai", Credential: own})
+	container.OnLLMStepFinish("container-node", LLMStepInfo{Number: 2, InputTokens: 3})
 
 	host := &lockedEmitter{}
 	b := NewClawBackend(NewRegistry(), NewStoreEventHooks(context.Background(), host, "run-relay", iterlog.Nop(), nil, nil), RetryPolicy{})
-	handler, _ := b.multiplexerHandler(withCrossingSpend(context.Background(), spend), delegate.Task{NodeID: "impl", Iteration: 1}, sessionSeed{})
-	handler.OnEvent(wire.Type, wire.Payload)
-	events := host.snapshot()
-	if len(events) != 1 {
-		t.Fatalf("re-fired events = %d, want 1", len(events))
+	handler, _ := b.multiplexerHandler(context.Background(), delegate.Task{NodeID: "impl", Iteration: 1}, sessionSeed{})
+	for _, env := range sent {
+		var wire delegate.EventData
+		if err := json.Unmarshal(env.Data, &wire); err != nil {
+			t.Fatalf("decode EventData: %v", err)
+		}
+		handler.OnEvent(wire.Type, wire.Payload)
 	}
-	if got, ok := credroute.SpendFromEvent(events[0].Data); !ok || got.Channel != spend.Channel || got.Slot != spend.Slot || got.Fingerprint != spend.Fingerprint {
-		t.Errorf("the relayed step carries %+v (present %v), want the launcher's Spend %+v", got, ok, spend)
+	events := host.snapshot()
+	if len(events) != 2 {
+		t.Fatalf("re-fired events = %d, want 2", len(events))
+	}
+	if got, ok := credroute.SpendFromEvent(events[0].Data); !ok || got.Channel != own.Channel || got.Slot != own.Slot || got.Fingerprint != own.Fingerprint {
+		t.Errorf("the relayed step carries %+v (present %v), want the container's own %+v", got, ok, own)
+	}
+	if got, ok := credroute.SpendFromEvent(events[1].Data); ok {
+		t.Errorf("a step the container named no credential for carries %+v — the launcher stamps nothing", got)
 	}
 }
 
@@ -246,6 +253,120 @@ func TestACallBesideTheDispatchCarriesTheArmsSpend(t *testing.T) {
 			}
 			if steps == 0 {
 				t.Fatalf("inert bench: no step event of %q to judge (%d events)", tc.node, len(em.snapshot()))
+			}
+		})
+	}
+}
+
+// A sandboxed node's subagent resolves by the same arm and stamps its own
+// Spend, in the container where it runs (ADR-161 decisions 3 and 8): the
+// node spends the run's own Anthropic key, its subagent the pod's OpenAI key
+// the crossing forwards to every node. The runner names each call through
+// the crossing's record, the relay carries each step's own keys, and the
+// launcher re-fires them as they came — the node's on the run's slot, the
+// subagent's on the pod's env, never the node's crossing on both. The same
+// node in process stamps the same two Spends: in process and sandboxed
+// agree. Mutants — the launcher stamping the crossing's Spend on every relayed
+// step: the subagent's openai step books on the run's anthropic slot; the
+// runner's registry ignoring the record: the node's own step names the pod's
+// env.
+func TestASubagentStampsItsOwnSpendInTheContainerAndInProcess(t *testing.T) {
+	runKey := credroute.Spend{Channel: credroute.ChannelRunKey, Slot: string(secrets.ProviderAnthropic), Fingerprint: "fp-run"}
+	podOpenAI := credroute.Spend{Channel: credroute.ChannelPodEnv}
+	input := `{"description":"summarise","prompt":"Summarise Go interfaces","subagent_type":"general-purpose","model":"openai/gpt-5.5"}`
+	// Each placement runs the node — delegating to its subagent — and returns
+	// the step events the host persists.
+	type placement struct {
+		name string
+		run  func(t *testing.T) []store.Event
+	}
+	dispatch := func(t *testing.T, reg *Registry, hooks EventHooks, ctx context.Context) {
+		t.Helper()
+		// One scripted client per provider, whichever factory — the env's
+		// or the keyed one a run's own key builds through — serves it.
+		node := newMockClient(toolUseEvents("tu_1", "agent", input, 100, 30), textEvents("the node's answer", 10, 5))
+		child := newMockClient(textEvents("the child's own answer", 200, 60))
+		reg.Register("anthropic", func(string) (api.APIClient, error) { return node, nil })
+		reg.Register("openai", func(string) (api.APIClient, error) { return child, nil })
+		reg.mu.Lock()
+		reg.providersWithKey["anthropic"] = func(string, string) (api.APIClient, error) { return node, nil }
+		reg.providersWithKey["openai"] = func(string, string) (api.APIClient, error) { return child, nil }
+		reg.mu.Unlock()
+		runner := NewSubagentRunner(reg, tool.NewRegistry(), hooks, nil, "")
+		if _, err := NewClawBackend(reg, hooks, RetryPolicy{MaxAttempts: 1}).Execute(ctx, delegate.Task{
+			NodeID: "impl", Model: "anthropic/claude-sonnet-4-6", UserPrompt: "Delegate the summary.",
+			HasTools: true, ToolDefs: []delegate.ToolDef{agentToolDefFor(t, runner)}, ToolMaxSteps: 5,
+		}); err != nil {
+			t.Fatalf("scenario broken: %v", err)
+		}
+	}
+	for _, p := range []placement{
+		{"in the container, relayed", func(t *testing.T) []store.Event {
+			// The container's env is what the crossing composed, and its
+			// record says what each variable carries.
+			t.Setenv("ANTHROPIC_API_KEY", "sk-run")
+			t.Setenv("OPENAI_API_KEY", "sk-openai-pod")
+			record := map[string]credroute.Spend{"ANTHROPIC_API_KEY": runKey, "OPENAI_API_KEY": podOpenAI}
+			var mu sync.Mutex
+			var sent []delegate.Envelope
+			relay := SandboxRelayHooks(func(env delegate.Envelope) error {
+				mu.Lock()
+				defer mu.Unlock()
+				sent = append(sent, env)
+				return nil
+			}, nil)
+			dispatch(t, NewSandboxRunnerRegistry(record), relay, context.Background())
+
+			host := &lockedEmitter{}
+			launcher := NewClawBackend(NewRegistry(), NewStoreEventHooks(context.Background(), host, "run-sub", iterlog.Nop(), nil, nil), RetryPolicy{})
+			handler, _ := launcher.multiplexerHandler(context.Background(), delegate.Task{NodeID: "impl", Iteration: 1}, sessionSeed{})
+			mu.Lock()
+			defer mu.Unlock()
+			for _, env := range sent {
+				var wire delegate.EventData
+				if err := json.Unmarshal(env.Data, &wire); err != nil {
+					t.Fatalf("decode EventData: %v", err)
+				}
+				handler.OnEvent(wire.Type, wire.Payload)
+			}
+			return host.snapshot()
+		}},
+		{"in process", func(t *testing.T) []store.Event {
+			t.Setenv("ANTHROPIC_API_KEY", "")
+			t.Setenv("OPENAI_API_KEY", "sk-openai-pod")
+			t.Cleanup(SetCredentialsLookup(RunCredentialsLookup))
+			ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{
+				APIKeys:      map[secrets.Provider]string{secrets.ProviderAnthropic: "sk-run"},
+				Fingerprints: map[string]string{string(secrets.ProviderAnthropic): "fp-run"},
+			})
+			host := &lockedEmitter{}
+			dispatch(t, NewRegistry(), NewStoreEventHooks(context.Background(), host, "run-sub", iterlog.Nop(), nil, nil), ctx)
+			return host.snapshot()
+		}},
+	} {
+		t.Run(p.name, func(t *testing.T) {
+			blankAmbientEnv(t)
+			for _, name := range providerCredentialEnvVars {
+				t.Setenv(name, "")
+			}
+			t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
+			t.Setenv("CODEX_HOME", t.TempDir())
+			want := map[string]credroute.Spend{"anthropic": runKey, "openai": podOpenAI}
+			seen := map[string]int{}
+			for _, e := range p.run(t) {
+				if e.Type != store.EventLLMStepFinished {
+					continue
+				}
+				provider, _ := e.Data["provider"].(string)
+				seen[provider]++
+				got, _ := credroute.SpendFromEvent(e.Data)
+				w := want[provider]
+				if got.Channel != w.Channel || got.Slot != w.Slot || got.Fingerprint != w.Fingerprint {
+					t.Errorf("a %s step carries the credential keys %+v, want its own call's %+v", provider, got, w)
+				}
+			}
+			if seen["anthropic"] == 0 || seen["openai"] == 0 {
+				t.Fatalf("inert bench: steps by provider %v — want the node's and its subagent's", seen)
 			}
 		})
 	}

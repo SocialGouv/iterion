@@ -69,10 +69,12 @@ func TestTheAdmissionNamesEveryRefusedNodeSorted(t *testing.T) {
 	}
 }
 
-// A `fallbacks:` route no credential funds, and a supervisor whose own spec
-// none funds, are warned at launch — the node's own chain decides the
-// admission, so the run is not refused for them. Mutant — the admission
-// skipping the fallback (or the supervisor) reading: no warning names it.
+// The rescue sites no credential funds are warned at launch — a `fallbacks:`
+// route, a supervisor's own spec, an agent's interaction generation, a review
+// gate's companion (its failure pauses for the human) — never the launch's
+// refusal: the site they rescue decides. Each is a site of the one
+// enumeration (model.CallSites), asked where its call is made. Mutant — the
+// admission skipping a rescue kind's reading: no warning names it.
 func TestTheAdmissionWarnsOnARefusedFallbackAndSupervisor(t *testing.T) {
 	clearCredentialEnv(t)
 	t.Setenv("ITERION_FORBID_SUBSCRIPTION_OAUTH", "")
@@ -83,10 +85,12 @@ func TestTheAdmissionWarnsOnARefusedFallbackAndSupervisor(t *testing.T) {
 	})
 	node := clawAgent("impl", "anthropic/claude-sonnet-4", "")
 	node.Fallbacks = []ir.Fallback{{Name: "rescue", Model: "openai/gpt-5.5"}}
+	node.InteractionFields = ir.InteractionFields{Interaction: ir.InteractionLLM, InteractionModel: "openai/gpt-5.5"}
+	gate := &ir.HumanNode{BaseNode: ir.BaseNode{ID: "gate"}, InteractionFields: ir.InteractionFields{Interaction: ir.InteractionReview}, Model: "openai/gpt-5.5"}
 	wf := &ir.Workflow{
 		Name:        "warned",
 		Sandbox:     &ir.SandboxSpec{Mode: string(sandbox.ModeNone)},
-		Nodes:       map[string]ir.Node{"impl": node},
+		Nodes:       map[string]ir.Node{"impl": node, "gate": gate},
 		Supervisors: []*ir.Supervisor{{Name: "watch", Model: "openai/gpt-5.5"}},
 	}
 	var events []store.Event
@@ -108,6 +112,12 @@ func TestTheAdmissionWarnsOnARefusedFallbackAndSupervisor(t *testing.T) {
 	}
 	if !strings.Contains(joined, `supervisor "watch" (openai/gpt-5.5: ambient-stamp)`) {
 		t.Errorf("no warning names the refused supervisor: %q", joined)
+	}
+	if !strings.Contains(joined, `impl#interaction (claw: ambient-stamp)`) {
+		t.Errorf("no warning names the refused interaction generation: %q", joined)
+	}
+	if !strings.Contains(joined, `gate#review_companion (claw: ambient-stamp)`) {
+		t.Errorf("no warning names the refused review companion: %q", joined)
 	}
 }
 

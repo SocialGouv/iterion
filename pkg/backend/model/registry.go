@@ -75,6 +75,10 @@ type Registry struct {
 	// identity read stays the reader of what forwardableProviderEnv vetted.
 	// Only a sandbox runner's registry sets it (NewSandboxRunnerRegistry).
 	forwardedEnv bool
+	// crossing is what the launcher recorded of each credential variable it
+	// wrote into that env (crossingFacts.funds): a sandbox runner's walk
+	// names what its calls spend through it (envSpend).
+	crossing crossingRecord
 }
 
 // NewRegistry creates a model registry pre-loaded with built-in providers.
@@ -94,10 +98,67 @@ func NewRegistry() *Registry {
 // forwardableProviderEnv. Claw's own identity resolution is the designed
 // reader of that channel, so the ambient read stays open here, and closed on
 // every registry the ENGINE builds for itself (NewRegistry).
-func NewSandboxRunnerRegistry() *Registry {
+//
+// funds is the crossing's record of that env (delegate.IOTask.CredentialFunds:
+// each credential variable the launcher wrote, and what it carries — a run's
+// key, its forfait, the pod's own): the walk of every call the runner makes —
+// the node's, a subagent's — names its Spend through it (ADR-161 decision 8:
+// the keys are written by the process that built the call). Nil from a
+// launcher that predates it: the runner's calls name no credential.
+func NewSandboxRunnerRegistry(funds map[string]credroute.Spend) *Registry {
 	r := NewRegistry()
 	r.forwardedEnv = true
+	r.crossing = funds
 	return r
+}
+
+// crossingRecord is what the launcher's crossing recorded of each credential
+// variable it wrote (crossingFacts.funds): the variable's name and the Spend
+// whose credential it carries — never a value.
+type crossingRecord map[string]credroute.Spend
+
+// spendOf names what a walk over the crossed env spends, having taken its
+// credential from the variable name: the record's Spend for name, sent where
+// the walk sends it (walk.BaseURL) and — for the pod's own credential — on
+// the account the walk read off the value (walk.Fingerprint). The launcher's
+// prediction of the container (containerSpend) and the container's own walk
+// (Registry.envSpend) name a spend through this one rule. ok is false for a
+// name the record does not hold.
+func (rec crossingRecord) spendOf(name string, walk credroute.Spend) (credroute.Spend, bool) {
+	spend, ok := rec[name]
+	if name == "" || !ok {
+		return credroute.Spend{}, false
+	}
+	if walk.BaseURL != "" {
+		spend.BaseURL = walk.BaseURL
+	}
+	if spend.Channel == credroute.ChannelPodEnv {
+		spend.Fingerprint = walk.Fingerprint
+	}
+	return spend, true
+}
+
+// envSpend is what a credential the walk took from the environment under
+// name spends, as this process can name it. In its own environment, the
+// walk's naming: the pod's env, a login on its disk. In a sandbox runner,
+// the crossing's record of name (crossingRecord.spendOf): the launcher
+// composed that env and alone knows where each credential in it came from.
+// A login the container's walk read off its own disk that no recorded
+// variable carries keeps the walk's naming; any other credential the record
+// does not name is one no road of the crossing put there, and names nothing —
+// the zero Spend, a call whose events carry no credential keys, which the
+// readers book as their miss — never a guess.
+func (r *Registry) envSpend(name string, walk credroute.Spend) credroute.Spend {
+	if !r.forwardedEnv || walk.Channel == "" {
+		return walk
+	}
+	if spend, ok := r.crossing.spendOf(name, walk); ok {
+		return spend
+	}
+	if walk.Channel == credroute.ChannelHostLogin {
+		return walk
+	}
+	return credroute.Spend{}
 }
 
 // registerDefaults registers the built-in provider factories. Each maps a
@@ -294,22 +355,8 @@ func (r *Registry) registerDefaults() {
 			// shape, and the reason the anthropic ctx factory refuses too.
 			return nil, fmt.Errorf("no Moonshot credential: set MOONSHOT_API_KEY, or attach a BYOK key under provider %q", secrets.ProviderMoonshot)
 		}
-		// Moonshot's Anthropic-compatible endpoint answers any id with the
-		// Kimi model it aliases it to: a non-kimi id would be served under
-		// the requested label — the substitution class of #2772, refused
-		// with the same typed carrier the claude_code delegate raises. An
-		// explicit MOONSHOT_BASE_URL is the operator's own destination and
-		// stays their claim — Moonshot's own published endpoints are not
-		// (the .ai default AND the .cn gateway: one wire, two hosts): the
-		// delegate refuses a substituted id on exactly that env, so the
-		// claim is judged with the one predicate both backends share, over
-		// the vendor's whole published ensemble.
-		if !delegate.FacadeServesModelID(string(secrets.ProviderMoonshot), modelID) && !delegate.OperatorEndpointClaim(moonshotBaseURL(), string(secrets.ProviderMoonshot)) {
-			return nil, &delegate.ErrModelUnavailable{
-				Provider: string(secrets.ProviderMoonshot),
-				Model:    modelID,
-				Detail:   "the moonshot facade does not serve it — it would answer with a Kimi model under the requested label; route the node to a kimi-* id",
-			}
+		if err := moonshotModelRefusal(modelID, envGetenv(ctx, "MOONSHOT_BASE_URL")); err != nil {
+			return nil, err
 		}
 		return moonshotprovider.New().NewClient(r.withClientIdentity(api.ProviderConfig{
 			APIKey:  key,
@@ -321,12 +368,8 @@ func (r *Registry) registerDefaults() {
 		// Same substitution refusal as the env factory above, the vendor's
 		// own base URL included: a tenant's BYOK key buys the same facade,
 		// never a second verdict on it.
-		if !delegate.FacadeServesModelID(string(secrets.ProviderMoonshot), modelID) && !delegate.OperatorEndpointClaim(moonshotBaseURL(), string(secrets.ProviderMoonshot)) {
-			return nil, &delegate.ErrModelUnavailable{
-				Provider: string(secrets.ProviderMoonshot),
-				Model:    modelID,
-				Detail:   "the moonshot facade does not serve it — it would answer with a Kimi model under the requested label; route the node to a kimi-* id",
-			}
+		if err := moonshotModelRefusal(modelID, envGetenv(ctx, "MOONSHOT_BASE_URL")); err != nil {
+			return nil, err
 		}
 		return moonshotprovider.New().NewClient(r.withClientIdentity(api.ProviderConfig{
 			APIKey:  apiKey,
@@ -345,12 +388,50 @@ func (r *Registry) registerDefaults() {
 		// Process-scoped like every factory here: the seam's process
 		// default, handed as a value (the closure idiom, #2808).
 		getenv := func(name string) string { return envGetenv(ctx, name) }
-		cfg, err := compatgw.FromEnv(getenv)
+		cfg, err := gatewayEnvConfig(compatgw.FromEnv(getenv))
 		if err != nil {
 			return nil, err
 		}
 		return compatgw.NewClient(cfg, modelID, !secrets.LLMEndpointAllowPrivate())
 	}
+}
+
+// moonshotModelRefusal is the moonshot factories' refusal of modelID sent to
+// baseURL, the raw MOONSHOT_BASE_URL — this process's for the factories, the
+// container's for the crossing's prediction (containerSpend): one predicate
+// for both. Moonshot's Anthropic-compatible endpoint answers any id with the
+// Kimi model it aliases it to: a non-kimi id would be served under the
+// requested label — the substitution class of #2772, refused with the same
+// typed carrier the claude_code delegate raises. An explicit
+// MOONSHOT_BASE_URL is the operator's own destination and stays their claim
+// — Moonshot's own published endpoints are not (the .ai default AND the .cn
+// gateway: one wire, two hosts): the delegate refuses a substituted id on
+// exactly that env, so the claim is judged with the one predicate both
+// backends share, over the vendor's whole published ensemble.
+func moonshotModelRefusal(modelID, baseURL string) error {
+	if delegate.FacadeServesModelID(string(secrets.ProviderMoonshot), modelID) || delegate.OperatorEndpointClaim(moonshotDestination(baseURL), string(secrets.ProviderMoonshot)) {
+		return nil
+	}
+	return &delegate.ErrModelUnavailable{
+		Provider: string(secrets.ProviderMoonshot),
+		Model:    modelID,
+		Detail:   "the moonshot facade does not serve it — it would answer with a Kimi model under the requested label; route the node to a kimi-* id",
+	}
+}
+
+// gatewayEnvConfig is the gateway env factory's verdict on the pair
+// compatgw.FromEnv read (cfg, err): its refusal — unconfigured, half planted,
+// a key missing, or an endpoint no client is built for (Config.ValidateSyntax,
+// the check compatgw.NewClient makes) — else the pair. The factory and the
+// crossing's prediction (containerSpend) read the one function.
+func gatewayEnvConfig(cfg compatgw.Config, err error) (compatgw.Config, error) {
+	if err != nil {
+		return compatgw.Config{}, err
+	}
+	if err := cfg.ValidateSyntax(); err != nil {
+		return compatgw.Config{}, err
+	}
+	return cfg, nil
 }
 
 // moonshotBaseURL resolves the Anthropic-compatible host for Moonshot: an
@@ -363,7 +444,13 @@ func (r *Registry) registerDefaults() {
 // send a Moonshot key to another vendor's gateway. Same reasoning, and the
 // same variable, as delegate.moonshotEnv.
 func moonshotBaseURL() string {
-	if base := strings.TrimSpace(envGetenv(context.Background(), "MOONSHOT_BASE_URL")); base != "" {
+	return moonshotDestination(envGetenv(context.Background(), "MOONSHOT_BASE_URL"))
+}
+
+// moonshotDestination is the host a raw MOONSHOT_BASE_URL sends Moonshot's
+// key to: the value, else the published endpoint.
+func moonshotDestination(raw string) string {
+	if base := strings.TrimSpace(raw); base != "" {
 		return base
 	}
 	return secrets.MoonshotDefaultBaseURL
@@ -856,48 +943,74 @@ func forbidSubscriptionOAuth(ctx context.Context) bool {
 	return secrets.ForbidSubscriptionOAuthIn(func(name string) string { return envGetenv(ctx, name) })
 }
 
-// envFactorySpend names what the shared resolver's env factory for provider
-// spends on modelID, read with that factory's own walk over the environment
-// ctx carries: the pod's env, or a login on this host's disk. The zero Spend
-// where the client it builds carries no credential.
-func envFactorySpend(ctx context.Context, provider, modelID string) credroute.Spend {
+// envFactoryCredential names what the shared resolver's env factory for
+// provider spends on modelID, read with that factory's own walk over the
+// environment ctx carries — the pod's env, or a login on this host's disk —
+// and the variable it took the credential from: the name a sandbox runner
+// reads the crossing's record under (envSpend), the one clawEnvFactories
+// names for the factories containerSpend predicts from that table
+// (TestEnvFactoryCredentialNamesTheTablesVariable keeps the two in step).
+// "" for a login no variable of the crossing carries, and for the pod's
+// identity chain. The zero Spend where the client it builds carries no
+// credential.
+func envFactoryCredential(ctx context.Context, provider, modelID string) (name string, spend credroute.Spend) {
 	switch provider {
 	case "anthropic":
 		w, err := anthropicEnvCredentials(ctx, modelID)
 		if err != nil {
-			return credroute.Spend{}
+			return "", credroute.Spend{}
 		}
-		return w.spend()
+		return w.envName(), w.spend()
 	case "openai":
 		base := envGetenv(ctx, "OPENAI_BASE_URL")
 		apiKey := envGetenv(ctx, "OPENAI_API_KEY")
 		if openAIOAuthAllowed(ctx) && (apiKey == "" || envGetenv(ctx, "ITERION_OPENAI_USE_OAUTH") == "1") {
 			if view, err := secrets.LoadCodexCredentialsFromDisk(); err == nil && view.IsChatGPTMode() {
-				return credroute.Spend{Channel: credroute.ChannelHostLogin, BaseURL: base}
+				// The login sits at CODEX_HOME: the crossing records it there
+				// when it seeds the run's own forfait, and the container's
+				// walk reads it there; a login the crossing did not record (a
+				// host copy, a mounted ~/.codex) stays this disk's.
+				return "CODEX_HOME", credroute.Spend{Channel: credroute.ChannelHostLogin, BaseURL: base}
 			}
 		}
 		if apiKey != "" {
-			return credroute.Spend{Channel: credroute.ChannelPodEnv, BaseURL: base}
+			return "OPENAI_API_KEY", credroute.Spend{Channel: credroute.ChannelPodEnv, BaseURL: base}
 		}
-		return credroute.Spend{}
+		return "", credroute.Spend{}
 	case modelroute.OpenAICompatible:
-		cfg, err := compatgw.FromEnv(func(name string) string { return envGetenv(ctx, name) })
+		cfg, err := gatewayEnvConfig(compatgw.FromEnv(func(name string) string { return envGetenv(ctx, name) }))
 		if err != nil {
-			return credroute.Spend{}
+			return "", credroute.Spend{}
 		}
-		return credroute.Spend{Channel: credroute.ChannelPodEnv, BaseURL: cfg.BaseURL}
+		return compatgw.APIKeyEnv, credroute.Spend{Channel: credroute.ChannelPodEnv, BaseURL: cfg.BaseURL}
 	case "xai":
 		if envGetenv(ctx, "XAI_API_KEY") == "" {
-			return credroute.Spend{}
+			return "", credroute.Spend{}
 		}
+		return "XAI_API_KEY", credroute.Spend{Channel: credroute.ChannelPodEnv, BaseURL: envGetenv(ctx, "XAI_BASE_URL")}
+	case "moonshot":
+		if envGetenv(ctx, "MOONSHOT_API_KEY") == "" {
+			return "", credroute.Spend{}
+		}
+		return "MOONSHOT_API_KEY", credroute.Spend{Channel: credroute.ChannelPodEnv, BaseURL: envGetenv(ctx, "MOONSHOT_BASE_URL")}
 	case "foundry":
 		// azidentity's DefaultAzureCredential serves a keyless client from
 		// the pod's own identity chain.
+		base := envGetenv(ctx, "AZURE_OPENAI_ENDPOINT")
+		if envGetenv(ctx, "AZURE_OPENAI_API_KEY") != "" {
+			return "AZURE_OPENAI_API_KEY", credroute.Spend{Channel: credroute.ChannelPodEnv, BaseURL: base}
+		}
+		return "", credroute.Spend{Channel: credroute.ChannelPodEnv, BaseURL: base}
+	case "bedrock":
+		// The AWS SDK's chain: the key pair, else the pod's role.
+		if envGetenv(ctx, "AWS_ACCESS_KEY_ID") != "" {
+			return "AWS_ACCESS_KEY_ID", credroute.Spend{Channel: credroute.ChannelPodEnv}
+		}
 	}
-	// The remaining factories read the pod's own credential chain — a key
-	// (moonshot refuses without one), the cloud SDK's chain (bedrock,
-	// vertex, foundry), a provider registered in its place.
-	return credroute.Spend{Channel: credroute.ChannelPodEnv}
+	// The remaining factories read the pod's own credential chain — the
+	// cloud SDK's (bedrock without a key pair, vertex), a provider
+	// registered in its place.
+	return "", credroute.Spend{Channel: credroute.ChannelPodEnv}
 }
 
 // GLMUnservedAt reports that spec is a GLM id on the anthropic wire bound for
@@ -1090,14 +1203,15 @@ func (r *Registry) resolveSpend(ctx context.Context, spec string) (api.APIClient
 
 // resolveFromEnv is the shared resolver's answer (Resolve: the env factory,
 // cached per process) with the spend that factory's own walk names over the
-// environment ctx carries (envFactorySpend).
+// environment ctx carries (envFactoryCredential), as this process can name it
+// (envSpend).
 func (r *Registry) resolveFromEnv(ctx context.Context, spec string) (api.APIClient, credroute.Spend, error) {
 	client, err := r.Resolve(spec)
 	if err != nil {
 		return nil, credroute.Spend{}, err
 	}
 	providerName, modelID, _ := ParseModelSpec(spec)
-	return client, envFactorySpend(ctx, providerName, modelID), nil
+	return client, r.envSpend(envFactoryCredential(ctx, providerName, modelID)), nil
 }
 
 // credentialsLookup returns a closure that maps a provider name to

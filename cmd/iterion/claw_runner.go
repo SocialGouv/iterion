@@ -168,7 +168,11 @@ func runClawRunner(ctx context.Context, stdin io.Reader, stdout, stderr io.Write
 	// set is assembled (tool.SandboxPlacementOf puts `agent` in the
 	// container: a sandboxed node's subagent must reach the container's
 	// tools, never the launcher's). Both are used once more below.
-	registry := model.NewSandboxRunnerRegistry()
+	// The registry names what each call it builds spends — the node's, a
+	// subagent's — through the crossing's record of the env the launcher
+	// composed (ADR-161 decision 8: the keys are written by the process
+	// that built the call; the launcher relays them).
+	registry := model.NewSandboxRunnerRegistry(ioTask.CredentialFunds)
 	relayHooks := relayEventHooks(dispatcher, stderr)
 	toolDefs, toolErr := makeHybridToolDefs(ioTask.ToolDefs, dispatcher, workspace, ioTask.ScratchDir, registry, relayHooks, ioTask.SlashCommandMaxBytes, ioTask.SkillAllowlist, ioTask.SkillAllowlistArmed)
 	if toolErr != nil {

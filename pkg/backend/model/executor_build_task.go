@@ -1112,9 +1112,10 @@ func (e *ClawExecutor) validateAndRetry(
 // DetectedClawSpec is the model a claw node that names none sends: the
 // detector's suggestion over the providers this host holds, vetted against
 // the run's provider allowlist (allowlistedDetectorPick) — "" when the
-// detector suggests none. The dispatch builds such a node's task on it, and
-// the launch's credential admission judges the same spec (ADR-161
-// decision 2: a pod-detected pick is an input).
+// detector suggests none. The dispatch builds such a node's task on it, the
+// launch's credential admission judges the same spec (ADR-161 decision 2: a
+// pod-detected pick is an input), and the usage-cap pre-flight keys it
+// (DetectedClawSpecUnder, the same pick for a reader with no executor).
 func (e *ClawExecutor) DetectedClawSpec(nodeID string) (string, error) {
 	return e.allowlistedDetectorPick(nodeID, e.detectorSuggestedModel())
 }
@@ -1127,19 +1128,26 @@ func (e *ClawExecutor) DetectedClawSpec(nodeID string) (string, error) {
 // cannot check, or that names a provider outside it, returns the typed
 // refusal and the caller skips or fails with the truth.
 func (e *ClawExecutor) allowlistedDetectorPick(nodeID, spec string) (string, error) {
-	if e.allowedProviders == nil || spec == "" {
+	return allowlistedPick(e.allowedProviders, nodeID, spec)
+}
+
+// allowlistedPick is allowlistedDetectorPick over allowed, the run's provider
+// allowlist (nil: none): the one predicate the dispatch and every reader of
+// its pick apply (DetectedClawSpecUnder).
+func allowlistedPick(allowed map[string]bool, nodeID, spec string) (string, error) {
+	if allowed == nil || spec == "" {
 		return spec, nil
 	}
 	prov := providerOfModelSpec(spec)
-	if e.allowedProviders[prov] {
+	if allowed[prov] {
 		return spec, nil
 	}
 	if prov == "" {
 		return "", fmt.Errorf("node %q: the detected model %q names no provider — unchecked under this run's provider allowlist (%s): %w",
-			nodeID, spec, ProviderAllowlistNames(e.allowedProviders), ErrRouteUnreadableUnderAllowlist)
+			nodeID, spec, ProviderAllowlistNames(allowed), ErrRouteUnreadableUnderAllowlist)
 	}
 	return "", fmt.Errorf("node %q: the detected model %q spends provider %q, outside this run's provider allowlist (%s): %w",
-		nodeID, spec, prov, ProviderAllowlistNames(e.allowedProviders), ErrProviderOutsideAllowlist)
+		nodeID, spec, prov, ProviderAllowlistNames(allowed), ErrProviderOutsideAllowlist)
 }
 
 // extractStructuredViaClaw is the last-resort structured-output recovery. When

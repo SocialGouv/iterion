@@ -71,11 +71,13 @@ func TestEffectiveProviders_HumanNodeModelIsARoute(t *testing.T) {
 	}
 }
 
-// The wire guard reads the same route: a human half on an anthropic-wire
-// prefix is a readable route on the wire, one off it is no route, and a
-// prefix the walk cannot read keeps the guard armed. Mutant: the human arm
-// dropped → every LLM-mode human node yields an unreadable route and the
-// off-wire node appears.
+// The wire guard reads the same route, as the call it is (CallSites): the
+// claw arm's direct generation, in process, an auxiliary of the node's
+// execution with no hint — a human half on an anthropic-wire prefix is a
+// readable route on the wire, one off it is no route, and a prefix the walk
+// cannot read keeps the guard armed. Mutant: the human arm dropped → every
+// LLM-mode human node yields an unreadable route and the off-wire node
+// appears.
 func TestAnthropicWireRoutesReadsAHumanNodesDirectRoute(t *testing.T) {
 	wf := &ir.Workflow{Nodes: map[string]ir.Node{
 		"h-anthropic": humanWith("h-anthropic", ir.InteractionLLM, "anthropic/claude-opus-5-5"),
@@ -86,9 +88,9 @@ func TestAnthropicWireRoutesReadsAHumanNodesDirectRoute(t *testing.T) {
 	}}
 	got := AnthropicWireRoutes(RouteView{Workflow: wf, Overrides: ModelOverrides{}})
 	want := []WireRoute{
-		{NodeID: "h-anthropic", Backend: "", Legs: []credroute.Leg{{Provider: "anthropic"}}, Model: "anthropic/claude-opus-5-5", Readable: true},
-		{NodeID: "h-bare", Backend: "", Legs: []credroute.Leg{{}}, Model: "", Readable: false},
-		{NodeID: "h-var", Backend: "", Legs: []credroute.Leg{{}}, Model: "{{vars.m}}", Readable: false},
+		{NodeID: "h-anthropic", Backend: "claw", Legs: []credroute.Leg{{}}, Model: "anthropic/claude-opus-5-5", Readable: true, Role: credroute.RoleAuxiliary, Host: true},
+		{NodeID: "h-bare", Backend: "claw", Legs: []credroute.Leg{{}}, Model: "", Readable: false, Role: credroute.RoleAuxiliary, Host: true},
+		{NodeID: "h-var", Backend: "claw", Legs: []credroute.Leg{{}}, Model: "{{vars.m}}", Readable: false, Role: credroute.RoleAuxiliary, Host: true},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("routes = %+v, want %+v", got, want)

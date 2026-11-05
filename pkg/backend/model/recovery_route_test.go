@@ -136,9 +136,11 @@ func TestEffectiveProviders_RecoveryAgentRungReadsTheSyntheticNodesOverrideCell(
 	}
 }
 
-// The wire guard reads the same rungs (#2783): a recovery model on an
-// anthropic-wire prefix is a readable route on the wire, one off it is no
-// route, and a spec the walk cannot read keeps the guard armed. Mutant: the
+// The wire guard reads the same rungs (#2783), each as the call it is
+// (CallSites): rung 3 the claw arm's direct generation in process, rung 4 the
+// synthetic agent's dispatch. A recovery model on an anthropic-wire prefix is
+// a readable route on the wire, one off it is no route, and a spec the walk
+// cannot read keeps the guard armed. Mutant: the
 // recovery arm dropped from AnthropicWireRoutes → the on-wire rung
 // disappears and the off-wire one reappears as unreadable (rung 4's old
 // fieldless reading).
@@ -159,9 +161,9 @@ func TestAnthropicWireRoutesReadsRecoveryRungs(t *testing.T) {
 	got := AnthropicWireRoutes(RouteView{Workflow: wf, Overrides: ModelOverrides{}})
 	want := []WireRoute{
 		{NodeID: "rep-agent4#agent_recovery", Backend: "", Legs: []credroute.Leg{{}}, Model: "openai/gpt-5.4-mini", Readable: false},
-		{NodeID: "rep-def#self_repair", Backend: "", Legs: []credroute.Leg{{Provider: "anthropic"}}, Model: "anthropic/claude-opus-5-5", Readable: true},
-		{NodeID: "rep-on#self_repair", Backend: "", Legs: []credroute.Leg{{Provider: "anthropic"}}, Model: "anthropic/claude-opus-5-5", Readable: true},
-		{NodeID: "rep-var#self_repair", Backend: "", Legs: []credroute.Leg{{}}, Model: "{{vars.m}}", Readable: false},
+		{NodeID: "rep-def#self_repair", Backend: "claw", Legs: []credroute.Leg{{}}, Model: "anthropic/claude-opus-5-5", Readable: true, Role: credroute.RoleAuxiliary, Host: true},
+		{NodeID: "rep-on#self_repair", Backend: "claw", Legs: []credroute.Leg{{}}, Model: "anthropic/claude-opus-5-5", Readable: true, Role: credroute.RoleAuxiliary, Host: true},
+		{NodeID: "rep-var#self_repair", Backend: "claw", Legs: []credroute.Leg{{}}, Model: "{{vars.m}}", Readable: false, Role: credroute.RoleAuxiliary, Host: true},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("routes = %+v, want %+v", got, want)

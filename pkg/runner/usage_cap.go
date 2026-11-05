@@ -101,6 +101,10 @@ type runCredKeys struct {
 	// it), and a pi node reads the container's agent dir. The recording side
 	// never reads it: it keys the labels sessions stamp.
 	sandboxed bool
+	// detected is the dispatch's pick for a claw dispatch naming no model
+	// (model.DetectedClawSpecUnder, the run's allowlist applied): the spec
+	// such a leg is asked about, exactly as the admission asks it.
+	detected func(nodeID string) (string, error)
 }
 
 // scopeFor returns the meter scope a reading on this slot belongs to: the
@@ -150,7 +154,7 @@ func (k runCredKeys) bySlot(slot string) string {
 // subscription is the org's, and merging it with the deployment's would
 // make one org's exhausted window park every other tenant's runs.
 func usageCapCredKeys(ctx context.Context, msg *queue.RunMessage) runCredKeys {
-	k := runCredKeys{scope: usagecap.ScopePlatform}
+	k := runCredKeys{scope: usagecap.ScopePlatform, detected: model.DetectedClawSpecUnder(msg.LLMProviders)}
 	creds, ok := secrets.CredentialsFromContext(ctx)
 	// The pod's ambient credential exists whether or not the run carries a
 	// bundle, and a stamped run refuses it: its nothing-held default stays on
@@ -338,29 +342,32 @@ func (k runCredKeys) keyForSlot(slot string) string {
 // whether the operator's cap meters that route at all (ADR-161 decision 4):
 // the key of the first leg of the route's chain the resolver funds — the one
 // the dispatch spends first, a refused leg being one it walks past — read off
-// that leg's Spend (spendKey). A route no leg of which is funded spends
-// nothing and is not metered; whether a capped leg's fall-through escapes
-// the park is ladderEscapes' question. A route the walk cannot read keeps
-// the run's default credential — defaultKey, the ledger the coming session
-// writes.
+// that leg's Spend (spendKey), each leg asked where the route's call is made
+// (model.WireRoute.Call: the run's sandbox for a dispatch, the host for a
+// direct generation). A route no leg of which is funded spends nothing and
+// is not metered; whether a capped leg's fall-through escapes the park is
+// ladderEscapes' question. A route the walk cannot read keeps the run's
+// default credential — defaultKey, the ledger the coming session writes.
 //
-// A backend whose arm has not landed (credroute.ErrNoArm) keeps its own
-// reading for that leg (legacyRouteKey, ADR-161 decision 9), and so does a
-// leg naming no model at all: its dispatch picks one (claw: the detector's
-// suggestion), so no arm can be asked about it here.
+// A leg pinning no model sends the route's model, and a claw dispatch naming
+// none the detector's pick (model.WireRoute.Base over k.detected), asked of
+// the arm exactly as the admission asks it: a pick the run's allowlist
+// refuses fails the node before its first leg, which spends nothing. A
+// backend whose arm has not landed (credroute.ErrNoArm) keeps its own reading
+// for that leg (legacyRouteKey, ADR-161 decision 9) — never a claw leg, whose
+// arm is registered.
 func (k runCredKeys) routeKey(ctx context.Context, route model.WireRoute) (key string, metered bool) {
 	if !route.Readable {
 		return k.defaultKey(), true
 	}
+	base, err := route.Base(k.detected)
+	if err != nil {
+		return "", false
+	}
+	placement := credroute.Sandbox{Contained: k.sandboxed}
 	for i, leg := range route.Legs {
-		spec := route.Spec(i)
-		if strings.TrimSpace(spec) == "" {
-			return k.legacyRouteKey(ctx, route.Backend, leg.Provider, spec)
-		}
-		spend, err := credroute.Resolve(ctx, credroute.Call{
-			Backend: route.Backend, Spec: spec, Leg: leg, Role: credroute.RoleNode,
-			Sandbox: credroute.Sandbox{Contained: k.sandboxed},
-		})
+		spec := route.LegSpec(i, base)
+		spend, err := credroute.Resolve(ctx, route.Call(i, spec, placement))
 		switch {
 		case errors.Is(err, credroute.ErrNoArm):
 			return k.legacyRouteKey(ctx, route.Backend, leg.Provider, spec)
@@ -663,7 +670,7 @@ func (r *Runner) usageCapPreflight(ctx context.Context, wf *ir.Workflow, msg *qu
 	// justify refusing the run before it starts; the view's RunFallbacks
 	// stay zero for the same rule, and the walk reads no fallback chain.
 	// Every uncertainty answers "reachable". A supervisor the run will
-	// spawn is a route too — one every execution takes (supervisorRouteID).
+	// spawn is a route too — one every execution takes (model.SupervisorSiteID).
 	launchVars, haveLaunch := r.launchReading(ctx, msg, logger)
 	view := model.RouteView{Workflow: wf, Overrides: modelOverridesFromMsg(msg.ModelOverrides), AllowedProviders: msg.LLMProviders}
 	if haveLaunch {
@@ -763,7 +770,7 @@ func (r *Runner) usageCapPreflight(ctx context.Context, wf *ir.Workflow, msg *qu
 
 // cappedRoutes reads, once per meter key, the cap's verdict on the credential
 // each primary route and each supervisor spends, and returns the capped ones by
-// node id (supervisorRouteID for a supervisor). It fails OPEN per credential: a
+// node id (model.SupervisorSiteID for a supervisor). It fails OPEN per credential: a
 // key the store cannot read is headroom, like the whole pre-flight is when the
 // store is down. sandboxed is the run's sandbox (runCredKeys.sandboxed): where
 // a node's backend resolves its credential decides what it spends.
@@ -913,8 +920,11 @@ type supervisorRoute struct{ id, spec, hint string }
 // and spends nothing, and so does one no node of this run's topology is
 // watched by (supervisorArms, reading `open`).
 //
-// The list is the one the spawn walks (runview.FundedSupervisorSpecs, the
-// same call loop.go makes before supervise.StartDeclared): a supervisor the
+// The supervisors are the run's supervisor call sites (model.CallSites, the
+// one enumeration the node routes and the launch's admission read too), each
+// kept only where the spawn keeps it: the list is the one the spawn walks
+// (runview.FundedSupervisorSpecs, the same call loop.go makes before
+// supervise.StartDeclared), joined by the supervisor's name. A supervisor the
 // content boundary refuses (D12), or whose model no credential funds — the
 // claw arm's answer, the stamp's refusal of the pod's money included — is
 // dropped at spawn, so metering it would park the run for spend no execution
@@ -954,8 +964,19 @@ func preflightSupervisors(ctx context.Context, wf *ir.Workflow, msg *queue.RunMe
 	if enabled, _ := supervise.DeclaredEnabled(msg.Supervisors); !enabled {
 		return nil
 	}
+	funded := map[string]supervise.Spec{}
+	for _, spec := range runview.FundedSupervisorSpecs(ctx, supervise.SpecsFromWorkflow(wf, vars, logger), msg.ContentBoundary, msg.RunnerPool, logger) {
+		funded[spec.Name] = spec
+	}
 	var out []supervisorRoute
-	for i, spec := range runview.FundedSupervisorSpecs(ctx, supervise.SpecsFromWorkflow(wf, vars, logger), msg.ContentBoundary, msg.RunnerPool, logger) {
+	for _, site := range model.CallSites(model.RouteView{Workflow: wf, Vars: vars}, nil) {
+		if site.Kind != model.SiteSupervisor {
+			continue
+		}
+		spec, kept := funded[site.Name]
+		if !kept {
+			continue
+		}
 		if !supervisorArms(wf, open, spec.Watches) {
 			continue
 		}
@@ -973,7 +994,7 @@ func preflightSupervisors(ctx context.Context, wf *ir.Workflow, msg *queue.RunMe
 		if err != nil {
 			continue
 		}
-		out = append(out, supervisorRoute{id: supervisorRouteID(spec.Name, i), spec: resolved, hint: spec.ProviderHint})
+		out = append(out, supervisorRoute{id: site.ID, spec: resolved, hint: spec.ProviderHint})
 	}
 	return out
 }
@@ -1009,16 +1030,8 @@ func supervisorArms(wf *ir.Workflow, open ir.EdgeFilter, watches []string) bool 
 }
 
 // supervisorRouteIDPrefix marks a capped route that is a supervisor, not a
-// node: it is on every execution of the run. A node id is a DSL identifier,
-// which never holds the colon.
+// node (model.SupervisorSiteID): it is on every execution of the run.
 const supervisorRouteIDPrefix = "supervisor:"
-
-func supervisorRouteID(name string, i int) string {
-	if name != "" {
-		return supervisorRouteIDPrefix + name
-	}
-	return fmt.Sprintf("%s#%d", supervisorRouteIDPrefix, i)
-}
 
 // supervisorKey is the meter key a supervisor's resolved model spec spends,
 // and whether the cap meters it at all: the claw arm's Spend for the spec, in

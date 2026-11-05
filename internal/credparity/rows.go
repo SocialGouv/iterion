@@ -278,6 +278,77 @@ func Rows() []Row {
 		}, nil, nil)...)
 	}
 
+	// SEEN RED (#2022, U0–U2's second review): each reader enumerated its own
+	// model-calling sites — the admission judged the agent and judge nodes
+	// alone, the meter walked the node kinds its own way. One enumeration
+	// (model.CallSites) now serves both. An LLM router dispatches like an
+	// agent node; a human node's LLM half and a Verified Action's rung 3 are
+	// direct claw generations, in process on the host whatever the run's
+	// sandbox. A stamped run only the pod would fund there is refused at the
+	// launch — before, it started and met the stamp's refusal at the call.
+	for _, site := range []struct {
+		kind  SiteKind
+		label string
+	}{
+		{LLMRouter, "an LLM router"},
+		{HumanLLM, "a human node's LLM half"},
+		{SelfRepair, "a Verified Action's self-repair rung"},
+	} {
+		node := Node{ID: "impl", Backend: "claw", Model: claudeSpec, Legs: []Leg{{}}, Kind: site.kind}
+		for _, r := range stampings(Row{
+			Name:    site.label + " the pod's key funds",
+			Origin:  "t53 credroute r2 #2 (the admission judged only ir.LLMNode; one enumeration of the sites)",
+			Posture: map[string]string{"ANTHROPIC_API_KEY": PodAnthropic},
+			Run:     Run{Keys: map[secrets.Provider]string{secrets.ProviderZAI: RunZAI}},
+			Node:    node,
+			Want:    Spent(0, PodEnv, "", PodAnthropic),
+		}, nil, func(r *Row) { r.Want = Refuses(AmbientStamp) }) {
+			add(sides(r, nil, nil)...)
+		}
+		add(sides(Row{
+			Name:    site.label + " on a stamped run's own key",
+			Origin:  "t53 credroute r2 #2 (one enumeration of the sites: the meter keys what the admission admits)",
+			Posture: map[string]string{"ANTHROPIC_API_KEY": PodAnthropic},
+			Run:     Run{Keys: map[secrets.Provider]string{secrets.ProviderAnthropic: RunAnthropic}, Stamped: true},
+			Node:    node,
+			Want:    Spent(0, RunKey, string(secrets.ProviderAnthropic), RunAnthropic),
+		}, nil, nil)...)
+	}
+
+	// SEEN RED (#2022, U0–U2's second review): a claw node naming no model
+	// sends the detector's pick — the dispatch builds its task on it and the
+	// admission judges it; the pre-flight re-derived the empty leg through its
+	// legacy slot reading and metered nothing, so a walled pod account did
+	// not park the run. Every reader now asks the arm about the pick.
+	for _, r := range stampings(Row{
+		Name:    "a claw node naming no model, the pod's key detected",
+		Origin:  "t53 credroute r2 #3 (the meter re-derived an empty-spec claw leg through legacyRouteKey)",
+		Posture: map[string]string{"ANTHROPIC_API_KEY": PodAnthropic},
+		Run:     Run{Keys: map[secrets.Provider]string{secrets.ProviderZAI: RunZAI}},
+		Node:    Node{ID: "impl", Backend: "claw", Legs: []Leg{{}}},
+		Want:    Spent(0, PodEnv, "", PodAnthropic),
+	}, nil, func(r *Row) { r.Want = Refuses(AmbientStamp) }) {
+		add(sides(r, nil, nil)...)
+	}
+
+	// SEEN RED (#2022, U0–U2's second review): moonshot's factory refuses a
+	// non-kimi id (the facade would serve its Kimi model under the label), in
+	// process and in the container alike. The arm's prediction of the
+	// container named only the key the factory reads, so the sandboxed node
+	// was admitted on the run's key and refused at dispatch: the verdict
+	// depended on the placement. The prediction now calls the factory's own
+	// refusal (moonshotModelRefusal).
+	for _, r := range stampings(Row{
+		Name:    "a run's own moonshot key on a non-kimi id",
+		Origin:  "t53 credroute r2 #4 (containerSpend did not predict the container factory's refusals)",
+		Posture: map[string]string{"OPENAI_API_KEY": PodOpenAI},
+		Run:     Run{Keys: map[secrets.Provider]string{secrets.ProviderMoonshot: RunMoonshot}},
+		Node:    Node{ID: "impl", Backend: "claw", Model: "moonshot/claude-sonnet-4", Legs: []Leg{{}}},
+		Want:    Refuses(NoCredential),
+	}, nil, nil) {
+		add(sides(r, nil, nil)...)
+	}
+
 	// Port row (#2808's seam): the env factory and the meter read one walk —
 	// under the switch the pod's bearer is refused, and nothing is metered;
 	// the probe read the crossed bearer as a channel, the arm walks it as the
