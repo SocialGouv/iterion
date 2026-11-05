@@ -17,6 +17,8 @@ The launch gate in [`pkg/server/launch_gate.go`](../../pkg/server/launch_gate.go
 
 Store errors fail open. If fetching the team or active-run count fails, launch proceeds. If the org-usage `AllowRun` call fails, launch also proceeds, and the server logs that the launch is unmetered with a fail-open warning.
 
+> **Amended 2026-11-05 ([ADR-162](162-the-fork-review-lane-is-a-gesture-on-floors-that-land-first.md), decision 5; design, lands with its U6).** An untrusted (fork-lane) launch fails closed on every arm that would admit it unmetered — an unreadable team or org, no counter, a metering error — whichever surface enters the gate, because its per-author bound is the perimeter against an outside party, not operator policy. A trusted launch keeps failing open.
+
 Actual policy denials still fail closed: suspended/read-only orgs, exceeded concurrency, rate-limit buckets, and returned quota denials produce explicit launch denial responses. The fail-open path is for storage/metering errors, not for known policy violations.
 
 ## Trade-offs
