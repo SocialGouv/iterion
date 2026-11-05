@@ -5,7 +5,7 @@
 package detecttest
 
 import (
-	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -91,11 +91,14 @@ var providerVars = []string{
 // IsolateProviders switches host provider detection off for the whole test
 // binary: every provider variable unset, and the credential homes the
 // detector reads (CLAUDE_CONFIG_DIR, CODEX_HOME, XDG_DATA_HOME) pointed at
-// one empty scratch directory. Without it, a fixture whose structured answer
-// falls to the last-resort extraction (extractStructuredViaClaw) reaches
-// whatever provider the machine running the test holds — a scripted test
-// that passes or fails, and spends, by host. Call it from TestMain, around
-// m.Run; a test that stages a provider sets its own with t.Setenv.
+// one empty, read-only scratch directory — read-only so the claude CLI the
+// detector probes (`claude auth status`) cannot leave its own files in it.
+// Without it, a fixture whose structured answer falls to the last-resort
+// extraction (extractStructuredViaClaw) reaches whatever provider the machine
+// running the test holds — a scripted test that passes or fails, and spends,
+// by host. Call it from TestMain, around m.Run, in a file the `live` build
+// excludes: the live layer runs on the operator's credentials by design. A
+// test that stages a provider sets its own with t.Setenv.
 func IsolateProviders() (restore func()) {
 	saved := map[string]*string{}
 	keep := func(name string) {
@@ -115,6 +118,9 @@ func IsolateProviders() (restore func()) {
 	if err != nil {
 		panic(err)
 	}
+	if err := os.Chmod(scratch, 0o555); err != nil {
+		panic(err)
+	}
 	for _, name := range []string{"CLAUDE_CONFIG_DIR", "CODEX_HOME", "XDG_DATA_HOME"} {
 		keep(name)
 		if err := os.Setenv(name, scratch); err != nil {
@@ -129,17 +135,23 @@ func IsolateProviders() (restore func()) {
 				_ = os.Setenv(name, *v)
 			}
 		}
-		_ = os.Remove(scratch)
+		rmErr := os.Chmod(scratch, 0o700)
+		if rmErr == nil {
+			rmErr = os.Remove(scratch)
+		}
+		if rmErr != nil {
+			fmt.Fprintf(os.Stderr, "detecttest: the provider scratch dir %s stays behind: %v\n", scratch, rmErr)
+		}
 	}
 }
 
-// RequireNoProvider fails the test unless host detection hands claw no
-// model to spend — the pick extractStructuredViaClaw recovers with: the
-// witness that the package's TestMain installed IsolateProviders.
+// RequireNoProvider fails the test unless the provider variables hand claw
+// no model to spend — the pick extractStructuredViaClaw recovers with: the
+// witness that the package's TestMain installed IsolateProviders. It reads
+// detect.Providers, which probes no backend CLI.
 func RequireNoProvider(t testing.TB) {
 	t.Helper()
-	rep := detect.Detect(context.Background())
-	if pick := detect.SuggestedModel(detect.BackendClaw, rep.Providers); pick != "" {
+	if pick := detect.SuggestedModel(detect.BackendClaw, detect.Providers()); pick != "" {
 		t.Fatalf("detecttest: this test binary still detects a provider claw would spend (%q) — its TestMain must call IsolateProviders", pick)
 	}
 }

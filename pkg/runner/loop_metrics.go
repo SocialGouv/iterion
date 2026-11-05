@@ -291,7 +291,10 @@ func (m *metricsEmitter) addRoute(backend, modelName, source string, cost float6
 // m.mu held, alongside the run-total accumulation it mirrors.
 func (m *metricsEmitter) bookObservationLocked(nodeID string, route routeKey, provider string, cost float64, in, out, aggregate int64) {
 	m.addRouteLocked(route.backend, route.model, route.source, cost, in, out, aggregate)
-	fp := m.fingerprintFor(nodeID, route, provider)
+	fp := ""
+	if route.source != hostExtractionSource {
+		fp = m.fingerprintFor(nodeID, route, provider)
+	}
 	m.addFingerprintLocked(fp, cost, in, out, aggregate)
 	m.notePlanMissLocked(fp, route, cost, in+out+aggregate)
 }
@@ -378,13 +381,19 @@ func (m *metricsEmitter) addFingerprintLocked(fp string, cost float64, in, out, 
 	m.byFingerprint[fp] = t
 }
 
+// hostExtractionSource labels the structured-output recovery's own call
+// (reask "extract"): a claw call on the model and credential HOST detection
+// picked, never the node's credential, so the credential plan names nobody
+// for it — no fine row, no miss.
+const hostExtractionSource = "host-extraction"
+
 // planRouteFundedByEnv reports that a route's spend belongs to a credential
 // the runner's ENVIRONMENT holds rather than one the plan could name: the
 // openai_compatible gateway (EnvFunded — the walk records no bundle row for
-// it on purpose), and a claude_code session that rode the pod's ambient
-// anthropic env. Booking nobody for these is correct, never drift.
+// it on purpose), a claude_code session that rode the pod's ambient
+// anthropic env, and the host-detected structured-output recovery. Booking nobody for these is correct, never drift.
 func planRouteFundedByEnv(route routeKey) bool {
-	if modelroute.Parse(route.model).Gateway() {
+	if modelroute.Parse(route.model).Gateway() || route.source == hostExtractionSource {
 		return true
 	}
 	return route.backend == delegate.BackendClaudeCode && route.source == "anthropic-env"
@@ -842,6 +851,9 @@ func (m *metricsEmitter) bookDelegateSliceLocked(nodeID string, s delegateSlice)
 	var source string
 	if s.backend == delegate.BackendClaudeCode {
 		source = s.fingerprint
+	}
+	if s.unstepped {
+		source = hostExtractionSource
 	}
 	m.runAggregateTokens += int64(s.tokens)
 	m.runCostUSD += s.cost
