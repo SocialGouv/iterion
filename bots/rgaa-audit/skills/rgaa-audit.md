@@ -20,7 +20,7 @@ description: |
 | **you**, one batch of criteria | rule on the criteria the engine left « à évaluer », from the evidence it harvested and the source you open | the engine's fold refuses an unjustified verdict, an uncited conformity, an ungroundable non-conformity or an unknown word, BY NAME; the bot also refuses a citation outside the evidence you were shown, and drops a recommendation that stands on no anchor of it |
 | **the second reader** | puts every stated non-conformity and every landed conformity on trial | an incomplete trial is never applied; the engine's own findings are never pruned on a reader's say-so |
 | **the operator** (optional gate) | approves, or declares criteria undecidable | recorded with their identity in the engine's `--allow-undecided` contract |
-| **the board judge** | transcribes the issue plan, verbatim, de-duplicated by title | a deterministic node holds the judge's own report to the plan (every planned title created or found, nothing failed) — a self-report, not a board read |
+| **the board filing** (no model) | deterministic tool nodes file the issue plan verbatim through the native board connector (`board.issue.create`), skipping every planned title already among the bot's own `source:rgaa-audit` cards | a board READ after the filing (`board.issue.list`) holds every planned title present — the board itself, not a report of it |
 
 Nothing in this bundle restates a criterion. When you need the text of a
 test, read the brief the engine wrote for that criterion.
