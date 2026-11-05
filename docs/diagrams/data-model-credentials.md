@@ -312,7 +312,7 @@ erDiagram
 ```mermaid
 erDiagram
   connector_packages {
-    string _id PK "tenant_id + "/" + connector_id — the (tenant, connector) pair IS the key"
+    string _id PK "tenant_id/connector_id — the (tenant, connector) pair IS the key"
     string tenant_id FK "team id, or the platform: sentinel for the platform tier"
     string connector_id "the id the package answers to, checked equal to the content's own at publish"
     map files "package-relative path to content — connector.yaml, overlay.yaml, ops/*, triggers.yaml"
