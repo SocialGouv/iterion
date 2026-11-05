@@ -80,7 +80,7 @@ func sweepStoreScratch(stores []string, opts CleanOptions, now func() time.Time,
 				r.ScratchBytes += e.Size
 				continue
 			}
-			if err := os.RemoveAll(e.Path); err != nil {
+			if err := memory.RemoveScratchEntry(root, e); err != nil {
 				r.ScratchErrors = append(r.ScratchErrors, err.Error())
 				continue
 			}

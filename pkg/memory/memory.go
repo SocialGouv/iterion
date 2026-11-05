@@ -30,6 +30,12 @@ func WorkspaceScratchDir(workDir string) string {
 	return workspaceSubdir(workDir, "scratch")
 }
 
+// RunScratchDirName is the scratch entry that holds every run family's
+// OWN subtree: ${RUN_SCRATCH_DIR} is <scratch root>/runs/<family root>
+// (#2869). The engine creates the subtree under it, and the age sweep
+// judges each runs/<id> as its own entry rather than runs/ as one.
+const RunScratchDirName = "runs"
+
 // WorkspaceScratchDirInherited is WorkspaceScratchDir resolved on the
 // iterion home the OPERATOR chose (store.InheritedIterionDataDir) instead of
 // the live one. It is the form the DELETION side resolves: a project `.env`

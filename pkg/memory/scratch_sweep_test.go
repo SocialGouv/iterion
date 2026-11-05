@@ -3,6 +3,7 @@ package memory
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -217,5 +218,80 @@ func TestSweepScratchRefusesASymlinkedRoot(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(target, "old")); err != nil {
 		t.Fatalf("the entry behind the symlinked root was touched: %v", err)
+	}
+}
+
+// The runs/ entry holds every run family's own subtree (${RUN_SCRATCH_DIR},
+// #2869): judged whole, any live run keeps it fresh and a finished run's
+// subtree is never reclaimed. Each runs/<id> is aged on its own — the stale
+// one goes, the fresh one and runs/ itself stay.
+func TestSweepScratchAgesEachRunSubtreeOnItsOwn(t *testing.T) {
+	now := time.Now()
+	root := mkScratch(t, map[string]time.Duration{
+		filepath.Join(RunScratchDirName, "run-old"):   30 * 24 * time.Hour,
+		filepath.Join(RunScratchDirName, "run-fresh"): 0,
+		"legacy-bot": 30 * 24 * time.Hour,
+	}, now)
+
+	swept, _, err := SweepScratch(root, DefaultScratchRetention, now, false)
+	if err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	got := names(swept)
+	if len(got) != 2 || !slices.Contains(got, filepath.Join(RunScratchDirName, "run-old")) || !slices.Contains(got, "legacy-bot") {
+		t.Fatalf("swept %v, want the stale run subtree and the stale legacy entry", got)
+	}
+	if _, err := os.Stat(filepath.Join(root, RunScratchDirName, "run-old")); !os.IsNotExist(err) {
+		t.Errorf("the stale run subtree survived the sweep (%v) — runs/ was judged as one entry", err)
+	}
+	for _, keep := range []string{filepath.Join(RunScratchDirName, "run-fresh"), RunScratchDirName} {
+		if _, err := os.Stat(filepath.Join(root, keep)); err != nil {
+			t.Errorf("%s was deleted: %v", keep, err)
+		}
+	}
+}
+
+// A runs/ planted as a symlink (a sandboxed run writes the scratch through
+// its bind) is not descended: listing the children of wherever the link
+// points would offer them to the sweep. It is listed as one entry, the
+// link itself — which the sweep then removes as a link.
+func TestScanScratchDoesNotDescendASymlinkedRunsDir(t *testing.T) {
+	now := time.Now()
+	root := t.TempDir()
+	outside := mkScratch(t, map[string]time.Duration{"victim": 30 * 24 * time.Hour}, now)
+	if err := os.Symlink(outside, filepath.Join(root, RunScratchDirName)); err != nil {
+		t.Fatal(err)
+	}
+
+	entries, err := ScanScratch(root, DefaultScratchRetention, now)
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if got := names(entries); len(got) != 1 || got[0] != RunScratchDirName {
+		t.Fatalf("scan listed %v, want the symlinked runs/ as one entry — not the children of %s", got, outside)
+	}
+	if _, _, err := SweepScratch(root, DefaultScratchRetention, now, false); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(outside, "victim")); err != nil {
+		t.Fatalf("the sweep deleted %s through a symlinked runs/: %v", filepath.Join(outside, "victim"), err)
+	}
+}
+
+// RemoveScratchEntry resolves the entry under the scratch root: a runs/
+// swapped for a link after the scan cannot carry the deletion outside.
+func TestRemoveScratchEntryStaysUnderTheRoot(t *testing.T) {
+	now := time.Now()
+	root := t.TempDir()
+	outside := mkScratch(t, map[string]time.Duration{"run-x": 30 * 24 * time.Hour}, now)
+	if err := os.Symlink(outside, filepath.Join(root, RunScratchDirName)); err != nil {
+		t.Fatal(err)
+	}
+	entry := ScratchEntry{Name: filepath.Join(RunScratchDirName, "run-x"), Path: filepath.Join(root, RunScratchDirName, "run-x")}
+	if err := RemoveScratchEntry(root, entry); err == nil {
+		t.Error("RemoveScratchEntry through a runs/ link escaping the root succeeded, want an error")
+	}
+	if _, err := os.Stat(filepath.Join(outside, "run-x")); err != nil {
+		t.Fatalf("the removal followed runs/ out of the root and deleted %s: %v", filepath.Join(outside, "run-x"), err)
 	}
 }

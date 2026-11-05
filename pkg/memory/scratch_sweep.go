@@ -18,8 +18,12 @@ const DefaultScratchRetention = 168 * time.Hour
 const EnvScratchRetention = "ITERION_SCRATCH_RETENTION"
 
 // ScratchEntry is one top-level directory under a workspace's scratch
-// root, with the age that decides its fate.
+// root — or one run family's subtree under its runs/ entry — with the age
+// that decides its fate.
 type ScratchEntry struct {
+	// Name is the entry's path RELATIVE to the scratch root: a top-level
+	// name, or runs/<id> for a run family's subtree. Removal resolves it
+	// under the root (RemoveScratchEntry), never through Path.
 	Name string
 	Path string
 	// Newest is the most recent mtime anywhere in the entry's subtree.
@@ -46,6 +50,13 @@ type ScratchEntry struct {
 // Dot-prefixed entries are left alone, mirroring `iterion clean`'s rule
 // for the worktree root: they hold state shared across runs rather than
 // one run's working files.
+//
+// The runs/ entry (RunScratchDirName) is not one entry: it holds every run
+// family's own subtree (${RUN_SCRATCH_DIR}, #2869), so judged whole its
+// newest mtime is the newest of ANY run and a stale subtree would never
+// be reclaimed while the repository keeps running bots. Each runs/<id> is
+// listed and aged as its own entry instead. A runs/ that is a symlink is
+// not descended — it is aged as an ordinary entry, the link itself.
 func ScanScratch(root string, retention time.Duration, now time.Time) ([]ScratchEntry, error) {
 	if root == "" {
 		return nil, nil
@@ -64,26 +75,63 @@ func ScanScratch(root string, retention time.Duration, now time.Time) ([]Scratch
 		return nil, fmt.Errorf("scratch: read %s: %w", root, err)
 	}
 	var out []ScratchEntry
-	for _, it := range items {
-		if it.Name() == "" || it.Name()[0] == '.' {
-			continue
-		}
-		p := filepath.Join(root, it.Name())
+	add := func(name string) {
+		p := filepath.Join(root, name)
 		newest, size, err := treeStat(p)
 		if err != nil {
 			// An unreadable entry is reported, never swept: deleting what
 			// we could not inspect is how a sweep loses real work.
-			continue
+			return
 		}
 		out = append(out, ScratchEntry{
-			Name:   it.Name(),
+			Name:   name,
 			Path:   p,
 			Newest: newest,
 			Size:   size,
 			Stale:  retention > 0 && now.Sub(newest) >= retention,
 		})
 	}
+	for _, it := range items {
+		if it.Name() == "" || it.Name()[0] == '.' {
+			continue
+		}
+		// The DirEntry type is the entry's own (readdir does not follow),
+		// so a runs/ planted as a symlink falls through to the plain arm.
+		if it.Name() == RunScratchDirName && it.IsDir() {
+			runs, err := os.ReadDir(filepath.Join(root, it.Name()))
+			if err != nil {
+				// Unreadable, so never swept — the plain arm's rule.
+				continue
+			}
+			for _, run := range runs {
+				if run.Name() == "" || run.Name()[0] == '.' {
+					continue
+				}
+				add(filepath.Join(RunScratchDirName, run.Name()))
+			}
+			continue
+		}
+		add(it.Name())
+	}
 	return out, nil
+}
+
+// RemoveScratchEntry deletes one entry ScanScratch listed, resolved under
+// root through an os.Root: a runs/<id> entry crosses runs/, a directory
+// sandboxed runs can write through the scratch bind, and a runs/ swapped
+// for a link between the scan and the removal must not carry the
+// deletion out of the scratch root. A path that escapes the root fails
+// instead.
+func RemoveScratchEntry(root string, e ScratchEntry) error {
+	r, err := os.OpenRoot(root)
+	if err != nil {
+		return fmt.Errorf("scratch: open %s: %w", root, err)
+	}
+	defer func() { _ = r.Close() }()
+	if err := r.RemoveAll(e.Name); err != nil {
+		return fmt.Errorf("scratch: remove %s: %w", e.Path, err)
+	}
+	return nil
 }
 
 // ScanNamedPaths ages the paths it is GIVEN, one entry per path, rather than
@@ -181,8 +229,8 @@ func SweepScratch(root string, retention time.Duration, now time.Time, dryRun bo
 			continue
 		}
 		if !dryRun {
-			if err := os.RemoveAll(e.Path); err != nil {
-				return swept, freed, fmt.Errorf("scratch: remove %s: %w", e.Path, err)
+			if err := RemoveScratchEntry(root, e); err != nil {
+				return swept, freed, err
 			}
 		}
 		swept = append(swept, e)
