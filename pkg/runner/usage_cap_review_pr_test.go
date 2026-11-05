@@ -100,9 +100,15 @@ func decidedVarsForLaunch(wf *ir.Workflow, vars map[string]any) map[string]any {
 // active), and `pacer_gpt` resolves off the Anthropic wire. Nothing the run
 // can reach spends the capped subscription, so it starts under either cap
 // mode with no deployment profile.
+//
+// A GPT review runs where a GPT credential funds it: the pod's OpenAI key
+// here, staged because the package's TestMain isolates the host's providers
+// and the spawn keeps a supervisor only where a credential funds it
+// (runview.FundedSupervisorSpecs).
 func TestUsageCapPreflight_MonoGPTOnTheReviewPrBot(t *testing.T) {
 	blankAnthropicWireEnv(t)
 	blankReviewPrDials(t)
+	t.Setenv("OPENAI_API_KEY", "sk-openai-pod")
 	wf := compileCatalogBot(t, "review-pr")
 	mono := map[string]any{"mono_family": "gpt", "review_mode": "mono", "review_tier": "guard"}
 	ctx := forfaitBesidePinnedKeys(t)
