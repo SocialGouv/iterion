@@ -323,10 +323,13 @@ func relaySessionMirrorGap(d *proxyDispatcher, stderr io.Writer, reason string, 
 //
 // workspace is the runner's cwd (docker exec lands at the bind-mount target).
 //
-// scratchDir is the container's ${PROJECT_SCRATCH_DIR} the launcher crossed
-// on the task envelope: the read tools accept it as a second, read-only
-// root (#2650) so a sandboxed node can read the run's own briefs; empty
-// keeps the workspace-only scope.
+// scratchRoots are the container's scratch read roots the launcher crossed
+// on the task envelope (delegate.IOTask.ScratchReadRoots, or ScratchDir
+// alone from a launcher that predates the list): the read tools accept
+// each as a read-only root beside the workspace (#2650) so a sandboxed
+// node can read the run's own briefs — the run family's subtree first,
+// the shared project scratch behind it only while the workflow still
+// references it (#2869). Empty keeps the workspace-only scope.
 //
 // bashExtraEnv is nil here on purpose: a sandboxed task carries no env
 // additions (delegate.Task.ExtraEnv is host-only, and IOTask has no such
