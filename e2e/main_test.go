@@ -1,6 +1,7 @@
 package e2e
 
 import (
+	"github.com/SocialGouv/iterion/internal/detecttest"
 	"os"
 	"testing"
 
@@ -46,13 +47,20 @@ const e2eParallelEnv = "ITERION_E2E_PARALLEL"
 // directory it owns doubles as processScratch.
 func TestMain(m *testing.M) {
 	capParallelism()
-	os.Exit(hometest.Isolate(func() int {
+	restoreProviders := detecttest.IsolateProviders()
+	code := hometest.Isolate(func() int {
 		processScratch = os.Getenv("ITERION_HOME")
 		return proctest.NoProcessLeaks(func() int { return gittest.NoWorktreeLeaks(m) })
-	}))
+	})
+	restoreProviders()
+	os.Exit(code)
 }
 
 // capParallelism lowers `-parallel` to e2eParallelCap when the operator left
 // it at its default. Called from TestMain, so it lands before m.Run builds
 // the test context that reads the flag.
 func capParallelism() { testparallel.Cap(e2eParallelEnv, e2eParallelCap) }
+
+// The provider isolation TestMain installs, witnessed: a fixture whose answer
+// falls to the last-resort extraction must not reach a host provider.
+func TestThisPackageDetectsNoProvider(t *testing.T) { detecttest.RequireNoProvider(t) }

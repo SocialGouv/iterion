@@ -33,6 +33,11 @@ const (
 	// the node would not otherwise get, and it is what every re-ask was
 	// before the two continuation modes existed.
 	ReaskRestart = "restart"
+	// ReaskExtract marks the last-resort structured-output recovery
+	// (extractStructuredViaClaw): not a turn of the node's model, but one
+	// direct claw call on the model host detection picked, which converts
+	// the node's text into the schema.
+	ReaskExtract = "extract"
 )
 
 // schemaReask is a planned re-ask: the task to execute and the mode it runs
@@ -230,6 +235,34 @@ func reaskMarginalCost(first, reask delegate.Result, sameSession bool) float64 {
 		}
 	}
 	return usd
+}
+
+// emitExtractionOutcome books the structured-output recovery's own call: a
+// direct claw generation that no delegate or step event carries otherwise,
+// so without it the run's meter never sees that spend while the node's
+// figure includes it. The event is named after the call itself — claw, the
+// detected model and its provider — and marked `reask: "extract"`; it fires
+// on every outcome that spent (a recovery that failed after the model
+// answered was billed like one that succeeded).
+func (e *ClawExecutor) emitExtractionOutcome(nodeID, declaredModel string, spent delegate.Result, err error) {
+	if spent.Tokens == 0 && spent.CostUSD == 0 && spent.UnreportedCalls == 0 {
+		return
+	}
+	di := delegateInfoFromResult(delegate.BackendClaw, spent)
+	di.DeclaredModel = declaredModel
+	di.RouteModel = spent.EffectiveModel
+	di.Provider = providerOfModelSpec(spent.EffectiveModel)
+	di.Reask = ReaskExtract
+	if err != nil {
+		di.Error = err
+		if e.hooks.OnDelegateError != nil {
+			e.hooks.OnDelegateError(nodeID, di)
+		}
+		return
+	}
+	if e.hooks.OnDelegateFinished != nil {
+		e.hooks.OnDelegateFinished(nodeID, di)
+	}
 }
 
 // emitReaskOutcome fires the re-ask's own delegate_finished / delegate_error,

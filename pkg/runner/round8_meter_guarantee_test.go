@@ -3,9 +3,11 @@ package runner
 import (
 	"context"
 	"errors"
+	"github.com/SocialGouv/claw-code-go/pkg/api"
 	"math"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -268,6 +270,127 @@ func TestR8_S10_CodexPiCorrectedAbandoned(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// r8Extractor is the claw provider the structured-output extraction reaches:
+// one forced tool block answering the schema, 200 in / 30 out.
+type r8Extractor struct {
+	mu    sync.Mutex
+	calls []api.CreateMessageRequest
+}
+
+func (c *r8Extractor) StreamResponse(_ context.Context, req api.CreateMessageRequest) (<-chan api.StreamEvent, error) {
+	c.mu.Lock()
+	c.calls = append(c.calls, req)
+	c.mu.Unlock()
+	evs := []api.StreamEvent{
+		{Type: api.EventMessageStart, InputTokens: 200},
+		{Type: api.EventContentBlockStart, Index: 0, ContentBlock: api.ContentBlockInfo{Type: "tool_use", Index: 0, ID: "x1", Name: "structured_output"}},
+		{Type: api.EventContentBlockDelta, Index: 0, Delta: api.Delta{Type: "input_json_delta", PartialJSON: `{"verdict":true,"reason":"extracted"}`}},
+		{Type: api.EventContentBlockStop, Index: 0},
+		{Type: api.EventMessageDelta, StopReason: "tool_use", Usage: api.UsageDelta{Reported: true, OutputTokens: 30}},
+		{Type: api.EventMessageStop},
+	}
+	ch := make(chan api.StreamEvent, len(evs))
+	for _, e := range evs {
+		ch <- e
+	}
+	close(ch)
+	return ch, nil
+}
+
+// X1 — the structured-output recovery's own claw call reaches the run's
+// meter: claude_code answers prose twice (first answer and its in-chain
+// correction), the claw extraction recovers the answer; the meter books what
+// the node paid, the extraction included, on the extraction's own route.
+func TestR8_X1_ExtractionSpendReachesTheMeter(t *testing.T) {
+	r8ExtractionCase(t, []r8Call{
+		{prose: "I approve: verdict true, reason fine.", tokens: 100, cost: 1},
+		{prose: "Really, I approve it.", tokens: 100, cost: 1},
+	})
+}
+
+// X2 — the same recovery after the chain: the first answer is valid JSON
+// missing a field (corrected after the chain's delegate event), the
+// correction answers prose, and the claw extraction recovers it.
+func TestR8_X2_PostChainExtractionSpendReachesTheMeter(t *testing.T) {
+	r8ExtractionCase(t, []r8Call{
+		{missing: true, tokens: 100, cost: 1},
+		{prose: "Really, I approve it.", tokens: 100, cost: 1},
+	})
+}
+
+// X3 — the extraction after a claw route whose steps the meter booked: a
+// claw primary runs one observed step then fails, the claude_code rescue
+// answers prose twice and the claw extraction recovers it. The extraction's
+// call emitted no step, so the claw steps verdict must not swallow it.
+func TestR8_X3_ExtractionAfterSteppedClawRoute(t *testing.T) {
+	r8Env(t)
+	t.Setenv("ANTHROPIC_BASE_URL", "")
+	t.Setenv("ANTHROPIC_API_KEY", "test-key")
+	t.Setenv("ITERION_OUTPUT_CORRECTION_BUDGET", "2")
+	usage := newMetricsEmitter(discardEmitter{}, metrics.New(), nil)
+	sh := &r8Shared{}
+	p := &r8Backend{name: delegate.BackendClaw, calls: []r8Call{{step: true, err: errors.New("r8: refused"), tokens: 1100, cost: 1}}}
+	r := &r8Backend{name: delegate.BackendClaudeCode, calls: []r8Call{
+		{prose: "I approve: verdict true, reason fine.", tokens: 100, cost: 1},
+		{prose: "Really, I approve it.", tokens: 100, cost: 1},
+	}}
+	ex := &r8Extractor{}
+	reg := model.NewRegistry()
+	reg.Register("anthropic", func(string) (api.APIClient, error) { return ex, nil })
+	node := r8Node(delegate.BackendClaw, "openai/gpt-5",
+		ir.Fallback{Name: "door", Backend: delegate.BackendClaudeCode, Model: "anthropic/claude-opus-5", On: []string{"any"}})
+	e := r8Executor(node, &r8Gate{tag: "-", shared: sh, inner: usage}, reg, p, r)
+	out, err := e.Execute(model.WithRunID(context.Background(), "run"), node, map[string]any{})
+	if err != nil || len(ex.calls) != 1 || out["verdict"] != true {
+		t.Fatalf("scenario broken: want one extraction recovering the rescue's answer, got %d extraction call(s), err=%v, output %v", len(ex.calls), err, out)
+	}
+	cost, agg := r8Report(t, sh, usage)
+	extraction := 0.0
+	for k, v := range usage.RouteTotals() {
+		if k.backend == delegate.BackendClaw && strings.HasPrefix(k.model, "anthropic/") {
+			extraction += v.costUSD
+		}
+	}
+	if extraction <= 0 {
+		t.Errorf("the extraction's call is missing from the meter ($%.6f / agg %d): the claw steps verdict swallowed it", cost, agg)
+	}
+}
+
+func r8ExtractionCase(t *testing.T, calls []r8Call) {
+	r8Env(t)
+	t.Setenv("ANTHROPIC_BASE_URL", "")
+	t.Setenv("ANTHROPIC_API_KEY", "test-key")
+	t.Setenv("ITERION_OUTPUT_CORRECTION_BUDGET", "2")
+	usage := newMetricsEmitter(discardEmitter{}, metrics.New(), nil)
+	sh := &r8Shared{}
+	p := &r8Backend{name: delegate.BackendClaudeCode, calls: calls}
+	ex := &r8Extractor{}
+	reg := model.NewRegistry()
+	reg.Register("anthropic", func(string) (api.APIClient, error) { return ex, nil })
+	node := r8Node(delegate.BackendClaudeCode, "anthropic/claude-opus-5")
+	e := r8Executor(node, &r8Gate{tag: "-", shared: sh, inner: usage}, reg, p)
+	out, err := e.Execute(model.WithRunID(context.Background(), "run"), node, map[string]any{})
+	if err != nil || len(ex.calls) != 1 || out["verdict"] != true {
+		t.Fatalf("scenario broken: want one extraction recovering the answer, got %d extraction call(s), err=%v, output %v", len(ex.calls), err, out)
+	}
+	cost, agg := r8Report(t, sh, usage)
+	outCost, _ := out["_cost_usd"].(float64)
+	outTok, _ := out["_tokens"].(int)
+	if math.Abs(cost-outCost) > 1e-9 || agg != int64(outTok) {
+		t.Errorf("the meter books $%.6f / agg %d; the node paid $%.6f / %d tokens, the extraction's call included", cost, agg, outCost, outTok)
+	}
+	routes := usage.RouteTotals()
+	var extraction float64
+	for k, v := range routes {
+		if k.backend == delegate.BackendClaw {
+			extraction += v.costUSD
+		}
+	}
+	if extraction <= 0 {
+		t.Errorf("no claw route carries the extraction's spend: %+v", routes)
 	}
 }
 

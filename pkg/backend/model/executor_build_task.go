@@ -1079,6 +1079,11 @@ func (e *ClawExecutor) validateAndRetry(
 		if retryErr != nil || result.ParseFallback {
 			recovered, spent, ok, recoveryErr := e.extractStructuredViaClaw(ctx, f.id, task, result, previous, schema, backendName)
 			costs.add(spent, task, backendName)
+			extractionErr := recoveryErr
+			if extractionErr == nil && !ok {
+				extractionErr = errors.New("structured-output recovery did not yield a schema-valid answer")
+			}
+			e.emitExtractionOutcome(f.id, task.Model, spent, extractionErr)
 			if recoveryErr != nil {
 				var exhausted *OutputSchemaError
 				if retryErr != nil && errors.As(recoveryErr, &exhausted) {

@@ -398,7 +398,9 @@ func TestTheBuiltinRtkKeepsNoStoreOfACompressedCommand(t *testing.T) {
 	} {
 		home := t.TempDir()
 		t.Setenv("HOME", home)
-		for _, k := range []string{"XDG_DATA_HOME", "RTK_DB_PATH", "RTK_RECALL"} {
+		// CLAUDE_CONFIG_DIR too: pointed at a directory without rtk's Claude
+		// Code hook, rtk stamps a `.hook_warn_last` file in its data dir.
+		for _, k := range []string{"XDG_DATA_HOME", "RTK_DB_PATH", "RTK_RECALL", "CLAUDE_CONFIG_DIR"} {
 			t.Setenv(k, "") // restored at the end
 			if err := os.Unsetenv(k); err != nil {
 				t.Fatal(err)

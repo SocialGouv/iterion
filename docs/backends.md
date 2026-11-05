@@ -1175,7 +1175,10 @@ extraction route consumes none. A failed re-ask tries extraction before
 returning its own typed transport, authentication or quota failure. An
 extraction failure is logged and stays inside the schema correction loop;
 the host extraction credential is not the node credential. A typed re-ask
-refusal retains its type when the extraction allowance is exhausted.
+refusal retains its type when the extraction allowance is exhausted. The
+extraction's own call is booked by its own `delegate_finished` /
+`delegate_error`, marked `reask: "extract"` and named after claw, the
+detected model and its provider, so the run's meter counts it on that route.
 
 **Runtime output schemas are advisory by default for outputs the executor does
 not validate** (tool, human, subbot and wait). A mismatch emits

@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"github.com/SocialGouv/iterion/internal/detecttest"
 	"os"
 	"testing"
 
@@ -16,10 +17,16 @@ import (
 // fetched.
 func TestMain(m *testing.M) {
 	restore := pricingtest.Isolate()
+	restoreProviders := detecttest.IsolateProviders()
 	code := proctest.NoProcessLeaks(m.Run)
+	restoreProviders()
 	restore()
 	os.Exit(code)
 }
+
+// The provider isolation TestMain installs, witnessed: a fixture whose answer
+// falls to the last-resort extraction must not reach a host provider.
+func TestThisPackageDetectsNoProvider(t *testing.T) { detecttest.RequireNoProvider(t) }
 
 // The isolation TestMain installs, witnessed: a live price on the host must not
 // reach this package's estimates.

@@ -5,11 +5,13 @@
 package detecttest
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/SocialGouv/iterion/internal/envtrust"
+	"github.com/SocialGouv/iterion/pkg/backend/detect"
 )
 
 // familyVars are the variables a review family is read from
@@ -72,5 +74,72 @@ func StageClaudeCodeHost(t testing.TB, keys ...string) {
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	if got, err := envtrust.LookPath("claude"); err != nil || got != cli {
 		t.Fatalf("detecttest: claude resolves to %q (%v), want the staged %s — the witness would judge this machine's CLI, not the stage", got, err, cli)
+	}
+}
+
+// providerVars are every variable pkg/backend/detect reads a provider
+// credential, endpoint or credential home from. IsolateProviders clears or
+// redirects all of them.
+var providerVars = []string{
+	"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL",
+	"OPENAI_API_KEY", "OPENAI_BASE_URL", "ITERION_OPENAI_USE_OAUTH",
+	"ZAI_API_KEY", "MOONSHOT_API_KEY", "XAI_API_KEY",
+	"AZURE_OPENAI_API_KEY", "AZURE_OPENAI_ENDPOINT",
+	"AWS_REGION", "AWS_DEFAULT_REGION", "GOOGLE_CLOUD_PROJECT",
+}
+
+// IsolateProviders switches host provider detection off for the whole test
+// binary: every provider variable unset, and the credential homes the
+// detector reads (CLAUDE_CONFIG_DIR, CODEX_HOME, XDG_DATA_HOME) pointed at
+// one empty scratch directory. Without it, a fixture whose structured answer
+// falls to the last-resort extraction (extractStructuredViaClaw) reaches
+// whatever provider the machine running the test holds — a scripted test
+// that passes or fails, and spends, by host. Call it from TestMain, around
+// m.Run; a test that stages a provider sets its own with t.Setenv.
+func IsolateProviders() (restore func()) {
+	saved := map[string]*string{}
+	keep := func(name string) {
+		if v, ok := os.LookupEnv(name); ok {
+			saved[name] = &v
+		} else {
+			saved[name] = nil
+		}
+	}
+	for _, name := range providerVars {
+		keep(name)
+		if err := os.Unsetenv(name); err != nil {
+			panic(err)
+		}
+	}
+	scratch, err := os.MkdirTemp("", "detecttest-no-provider-")
+	if err != nil {
+		panic(err)
+	}
+	for _, name := range []string{"CLAUDE_CONFIG_DIR", "CODEX_HOME", "XDG_DATA_HOME"} {
+		keep(name)
+		if err := os.Setenv(name, scratch); err != nil {
+			panic(err)
+		}
+	}
+	return func() {
+		for name, v := range saved {
+			if v == nil {
+				_ = os.Unsetenv(name)
+			} else {
+				_ = os.Setenv(name, *v)
+			}
+		}
+		_ = os.Remove(scratch)
+	}
+}
+
+// RequireNoProvider fails the test unless host detection hands claw no
+// model to spend — the pick extractStructuredViaClaw recovers with: the
+// witness that the package's TestMain installed IsolateProviders.
+func RequireNoProvider(t testing.TB) {
+	t.Helper()
+	rep := detect.Detect(context.Background())
+	if pick := detect.SuggestedModel(detect.BackendClaw, rep.Providers); pick != "" {
+		t.Fatalf("detecttest: this test binary still detects a provider claw would spend (%q) — its TestMain must call IsolateProviders", pick)
 	}
 }

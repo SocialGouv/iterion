@@ -694,6 +694,7 @@ func (m *metricsEmitter) observeDelegate(evt store.Event) {
 	// in this order, so the difference is that route's own spend — up to
 	// float rounding, and exactly zero when it spent nothing (a skip, a
 	// route refused before it spent).
+	reaskMode, _ := evt.Data["reask"].(string)
 	own := delegateSlice{
 		backend:     backend,
 		model:       m.modelByNode[evt.NodeID],
@@ -701,6 +702,7 @@ func (m *metricsEmitter) observeDelegate(evt store.Event) {
 		fingerprint: fingerprint,
 		tokens:      toFloat(evt.Data["tokens"]),
 		cost:        toFloat(evt.Data["cost_usd"]),
+		unstepped:   reaskMode == model.ReaskExtract,
 	}
 	slices := make([]delegateSlice, 0, len(folded)+1)
 	for _, s := range folded {
@@ -750,6 +752,10 @@ func (m *metricsEmitter) observeDelegate(evt store.Event) {
 type delegateSlice struct {
 	backend, route, effective, model, provider, fingerprint string
 	tokens, cost                                            float64
+	// unstepped says the slice's figure was never emitted as steps — the
+	// structured-output recovery's direct claw call (reask "extract") —
+	// so the claw steps guard does not apply to it.
+	unstepped bool
 }
 
 // foldedSpendOf reads a delegate event's `folded_spend` (the executor's
@@ -814,7 +820,7 @@ func (m *metricsEmitter) foldedModelLocked(nodeID, route, effective string) stri
 // (routeSlot); keying another backend's route on its label would only split
 // one route in two.
 func (m *metricsEmitter) bookDelegateSliceLocked(nodeID string, s delegateSlice) (delegateSlice, bool) {
-	if s.backend == delegate.BackendClaw && m.stepsSeen[nodeID] {
+	if s.backend == delegate.BackendClaw && !s.unstepped && m.stepsSeen[nodeID] {
 		return s, false
 	}
 	// The delegate already priced its call (its own CLI figure, the token
