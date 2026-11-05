@@ -6,22 +6,31 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
-	"strings"
 
-	"golang.org/x/sys/windows"
+	"github.com/gofrs/flock"
 )
 
-type pidLock struct {
-	path string
+// fileLock is an exclusive LockFileEx lock on an open handle — the Windows
+// counterpart of lock_unix.go's flock: Windows releases it when the handle
+// closes or the process dies, and two handles conflict even within one
+// process, as two flock descriptions do.
+//
+// It replaces a pid-in-a-file lock (O_CREATE|O_EXCL, reclaimed when the pid
+// it named was dead), which broke under contention inside one process: a
+// contender reading the file between its creation and its pid write took it
+// for corrupt and deleted it, so both held the lock; and Unlock's remove
+// fails while a contender has the file open for reading, leaving a lock
+// that names a live pid (ours) and that nothing reclaims until restart.
+type fileLock struct {
+	fl *flock.Flock
 }
 
-func (l *pidLock) Unlock() error {
-	return os.Remove(l.path)
+func (l *fileLock) Unlock() error {
+	return l.fl.Unlock()
 }
 
-// lockRun acquires an exclusive lockfile at <runDir>/.lock using O_CREATE|O_EXCL.
-// If a stale lockfile exists (PID no longer running), it is removed and retried.
+// lockRun acquires an exclusive lock on <runDir>/.lock.
+// The OS releases it if the process crashes.
 func lockRun(runDir, label string) (RunLock, error) {
 	if err := os.MkdirAll(runDir, dirPerm); err != nil {
 		return nil, fmt.Errorf("store: mkdir for lock: %w", err)
@@ -36,72 +45,13 @@ func lockFile(path, label string) (RunLock, error) {
 	if err := os.MkdirAll(filepath.Dir(path), dirPerm); err != nil {
 		return nil, fmt.Errorf("store: mkdir for lock: %w", err)
 	}
-	pid := os.Getpid()
-	if err := tryCreateLockfile(path, pid); err == nil {
-		return &pidLock{path: path}, nil
-	}
-	if removeStaleLock(path) {
-		if err := tryCreateLockfile(path, pid); err == nil {
-			return &pidLock{path: path}, nil
-		}
-	}
-	return nil, fmt.Errorf("store: %s is locked by another process", label)
-}
-
-func tryCreateLockfile(path string, pid int) error {
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, filePerm)
+	fl := flock.New(path, flock.SetPermissions(filePerm))
+	ok, err := fl.TryLock()
 	if err != nil {
-		return err
+		return nil, fmt.Errorf("store: open lock file for %s: %w", label, err)
 	}
-	defer f.Close()
-	_, err = fmt.Fprintf(f, "%d", pid)
-	return err
-}
-
-// removeStaleLock removes the lockfile when the PID it names is no
-// longer running or the content is corrupt. The previous incarnation
-// only removed corrupt lockfiles because Go's os.FindProcess always
-// "succeeds" on Windows; we now ask Windows directly via
-// OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION) — the call returns
-// ERROR_INVALID_PARAMETER for an unknown PID, which is the signal we
-// use to declare the lockfile stale and reclaim it.
-func removeStaleLock(path string) bool {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return false
+	if !ok {
+		return nil, fmt.Errorf("store: %s is locked by another process", label)
 	}
-	pidStr := strings.TrimSpace(string(data))
-	pid, err := strconv.Atoi(pidStr)
-	if err != nil {
-		// Corrupt lockfile (non-numeric content) — safe to remove.
-		os.Remove(path)
-		return true
-	}
-	if pid <= 0 {
-		os.Remove(path)
-		return true
-	}
-	if !pidAliveWindows(uint32(pid)) {
-		os.Remove(path)
-		return true
-	}
-	return false
-}
-
-// pidAliveWindows reports whether a process with the given PID exists.
-// Uses OpenProcess with PROCESS_QUERY_LIMITED_INFORMATION (the minimum
-// access right that lets a non-admin process probe an arbitrary PID
-// for liveness). A successful open means the PID is live; an
-// ERROR_INVALID_PARAMETER means it never existed or has fully exited
-// and been reaped from the kernel's process table.
-func pidAliveWindows(pid uint32) bool {
-	handle, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
-	if err != nil {
-		// Conservative: anything other than the explicit "no such PID"
-		// signal is treated as "still alive" so we never reclaim a
-		// lockfile by accident on access-denied or transient errors.
-		return err != windows.ERROR_INVALID_PARAMETER
-	}
-	windows.CloseHandle(handle)
-	return true
+	return &fileLock{fl: fl}, nil
 }
