@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 
@@ -70,23 +71,60 @@ type credentialRouteViewer interface {
 }
 
 // credentialRouteView is the view the engine's executor dispatches the
-// workflow's chains under; an executor that reports none applies no
-// overrides, vars or allowlist of its own, and the IR alone is its reading.
-func (e *Engine) credentialRouteView() model.RouteView {
-	if v, ok := e.executor.(credentialRouteViewer); ok {
-		return v.CredentialRouteView(e.workflow)
+// workflow's chains under, for a run launched with inputs: the executor's own
+// overrides, vars and allowlist, and over its vars the ones the run pushes
+// it before its first node (pushExecutorVars: resolveVars over the same
+// inputs — the declared defaults, the launch's values, a subbot child's
+// `with:` bindings). Read before the sandbox starts, it is the reading the
+// dispatch's legs take once the run is under way. An executor that reports
+// no view applies no overrides or allowlist of its own.
+func (e *Engine) credentialRouteView(inputs map[string]any) model.RouteView {
+	v := model.RouteView{Workflow: e.workflow}
+	if viewer, ok := e.executor.(credentialRouteViewer); ok {
+		v = viewer.CredentialRouteView(e.workflow)
 	}
-	return model.RouteView{Workflow: e.workflow}
+	vars := maps.Clone(v.Vars)
+	if vars == nil {
+		vars = map[string]any{}
+	}
+	// Quiet: runInitState resolves the same vars and says what it coerced.
+	maps.Copy(vars, e.resolveVarsLogging(inputs, iterlog.Nop()))
+	v.Vars = vars
+	return v
+}
+
+// clawSpecDetector is the executor whose claw dispatch sends the detector's
+// suggestion for a node that names no model (model.ClawExecutor).
+type clawSpecDetector interface {
+	DetectedClawSpec(nodeID string) (string, error)
+}
+
+// The claw executor answers both readings the admission takes of its
+// dispatch.
+var (
+	_ credentialRouteViewer = (*model.ClawExecutor)(nil)
+	_ clawSpecDetector      = (*model.ClawExecutor)(nil)
+)
+
+// detectedClawSpec is the executor's pick for a claw node naming no model,
+// nil for an executor that picks none.
+func (e *Engine) detectedClawSpec() func(nodeID string) (string, error) {
+	if d, ok := e.executor.(clawSpecDetector); ok {
+		return d.DetectedClawSpec
+	}
+	return nil
 }
 
 // admitAdoptedCredentials is the admission of a subbot child adopting its
-// parent's live sandbox: its own nodes, sandboxed, under its own trust.
-func (e *Engine) admitAdoptedCredentials(ctx context.Context, runID string, emitEvent func(store.EventType, map[string]any) error) error {
+// parent's live sandbox: its own nodes, sandboxed, under its own trust, their
+// legs read under the vars its launch inputs — the `with:` its parent binds —
+// give them.
+func (e *Engine) admitAdoptedCredentials(ctx context.Context, runID string, inputs map[string]any, emitEvent func(store.EventType, map[string]any) error) error {
 	if e.simulation != (Simulation{}) || e.workflow == nil {
 		return nil
 	}
 	return credentialAdmission{
-		wf: e.workflow, routes: e.credentialRouteView(),
+		wf: e.workflow, routes: e.credentialRouteView(inputs), detected: e.detectedClawSpec(),
 		placement: credroute.Sandbox{Contained: true, Home: e.sharedSandbox.CredentialHome},
 		trust:     e.trust, resolver: e.backendResolver(), runID: runID,
 		adopted: true,
@@ -98,6 +136,9 @@ type credentialAdmission struct {
 	wf *ir.Workflow
 	// routes is the view the dispatch reads the run's chains under.
 	routes model.RouteView
+	// detected is the dispatch's pick for a claw node naming no model; nil
+	// leaves such a node's spec empty.
+	detected func(nodeID string) (string, error)
 	// placement is where the run's nodes call their models.
 	placement credroute.Sandbox
 	trust     store.RunTrust
@@ -130,7 +171,7 @@ func admitSandboxCredentials(ctx context.Context, p SandboxParams, placement cre
 	routes := p.Routes
 	routes.Workflow = p.Workflow
 	return credentialAdmission{
-		wf: p.Workflow, routes: routes, placement: placement,
+		wf: p.Workflow, routes: routes, detected: p.DetectedClawSpec, placement: placement,
 		trust: p.Trust, resolver: p.EffectiveBackend, runID: p.RunID,
 	}.admit(ctx, emitEvent, logger)
 }
@@ -216,7 +257,14 @@ func (a credentialAdmission) judgeNode(ctx context.Context, n ir.Node, backend s
 			Backend: backend, Reason: credroute.ReasonOutsideAllowlist, Cause: model.ErrProviderOutsideAllowlist,
 		}}, nil
 	}
-	base := model.Baseline(a.routes, n)
+	base, err := a.baseline(n, backend)
+	if err != nil {
+		// The dispatch refuses the node before its first leg: the
+		// detector's pick is outside the run's allowlist.
+		return nodeVerdict{node: n.NodeID(), backend: backend, refusal: &credroute.Refusal{
+			Backend: backend, Reason: credroute.ReasonOutsideAllowlist, Cause: err,
+		}}, nil
+	}
 	verdict := nodeVerdict{node: n.NodeID(), backend: backend}
 	for _, leg := range legs {
 		spec := leg.Model
@@ -239,6 +287,18 @@ func (a credentialAdmission) judgeNode(ctx context.Context, n ir.Node, backend s
 	return verdict, nil
 }
 
+// baseline is the model a leg of n that pins none of its own sends on
+// backend, as the dispatch builds it: the launch override, else the node's
+// `model:` — and, for a claw node naming none, the detector's pick
+// (DetectedClawSpec), whose allowlist refusal is the node's.
+func (a credentialAdmission) baseline(n ir.Node, backend string) (string, error) {
+	base := model.Baseline(a.routes, n)
+	if base != "" || backend != delegate.BackendClaw || a.detected == nil {
+		return base, nil
+	}
+	return a.detected(n.NodeID())
+}
+
 // judgeFallbacks resolves n's active `fallbacks:` routes, naming each one no
 // credential funds: warned, never refused — the node's own chain decides.
 func (a credentialAdmission) judgeFallbacks(ctx context.Context, n ir.Node, backend string) []string {
@@ -247,7 +307,11 @@ func (a credentialAdmission) judgeFallbacks(ctx context.Context, n ir.Node, back
 		return nil
 	}
 	var out []string
-	base := model.Baseline(a.routes, n)
+	base, err := a.baseline(n, backend)
+	if err != nil {
+		// The node's own verdict names the refusal; no fallback dispatches.
+		return nil
+	}
 	for _, fb := range nn.GetFallbacks() {
 		if fb.Action == ir.FallbackActionSkip || !model.FallbackWhenActive(a.routes.DecidedVars(), n.NodeID(), fb, nil) {
 			continue
@@ -398,6 +462,7 @@ func (a credentialAdmission) refusal(refused []nodeVerdict, fork bool) error {
 	return &RuntimeError{
 		Code:    ErrCodeSandboxCredentialUnreachable,
 		NodeID:  first.node,
+		Cause:   first.refusal,
 		Message: message,
 		Hint:    "hand the run a credential that crosses the container boundary: export the API key the backend forwards (e.g. ANTHROPIC_API_KEY / OPENAI_API_KEY — forwarded by name at exec), or — on a runner whose host_state still mounts the operator's login — keep host_state: auto. A credential declared `as: file` reaches the container's filesystem, not the backend CLI's auth, so it does not lift this refusal. The operator's own OAuth token is never handed to a fork's container by iterion itself.",
 	}

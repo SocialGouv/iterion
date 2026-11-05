@@ -18,6 +18,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/tool"
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/memory"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -1043,7 +1044,14 @@ func (e *Engine) ResolveVars(inputs map[string]any) map[string]any {
 }
 
 func (e *Engine) resolveVars(inputs map[string]any) map[string]any {
+	return e.resolveVarsLogging(inputs, e.logger)
+}
 
+// resolveVarsLogging is resolveVars saying what it coerced or remapped on
+// logger: a reader that resolves the run's vars ahead of the run itself (the
+// launch's credential admission) passes a quiet one, the run's own
+// resolution says it once.
+func (e *Engine) resolveVarsLogging(inputs map[string]any, logger *iterlog.Logger) map[string]any {
 	vars := make(map[string]any)
 	expandFn := e.varExpandFn()
 	read := func(origin, name string, raw any, vt ir.VarType) any {
@@ -1061,7 +1069,7 @@ func (e *Engine) resolveVars(inputs map[string]any) map[string]any {
 		if s, isText := raw.(string); isText {
 			raw = ir.ExpandWithDefault(s, expandFn)
 		}
-		e.logger.Warn("runtime: var %q (%s): coerce to %s failed: %v (using raw value)", name, origin, vt, err)
+		logger.Warn("runtime: var %q (%s): coerce to %s failed: %v (using raw value)", name, origin, vt, err)
 		return raw
 	}
 	for name, v := range e.workflow.Vars {
@@ -1094,8 +1102,8 @@ func (e *Engine) resolveVars(inputs map[string]any) map[string]any {
 					continue
 				}
 				vars[k] = remapped
-				if e.logger != nil {
-					e.logger.Warn("runtime: var %q was set to the repo root %q; remapped to the worktree/sandbox workspace %q to avoid a phantom working-tree view. Prefer omitting it so it defaults to ${PROJECT_DIR}.", k, e.repoRoot, projectDir)
+				if logger != nil {
+					logger.Warn("runtime: var %q was set to the repo root %q; remapped to the worktree/sandbox workspace %q to avoid a phantom working-tree view. Prefer omitting it so it defaults to ${PROJECT_DIR}.", k, e.repoRoot, projectDir)
 				}
 			}
 		}

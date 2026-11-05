@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -217,5 +218,139 @@ func TestTheGuardAndTheOwnConfigArmsRefuseAtTheLaunchWithTheirRemedies(t *testin
 	}
 	if !warnsOn(events, "impl (kimi)") {
 		t.Errorf("an unstamped own-config node was admitted unwarned: %+v", events)
+	}
+}
+
+// varsBoundChild is a workflow whose one claw node sends `{{vars.model}}`,
+// the var defaulting to def: an adopted child declares no sandbox of its own
+// (it runs in its parent's), a run of its own declares `sandbox: none`.
+func varsBoundChild(def string, adopted bool) *ir.Workflow {
+	wf := &ir.Workflow{
+		Name:  "child",
+		Vars:  map[string]*ir.Var{"model": {Name: "model", Type: ir.VarString, HasDefault: true, Default: def}},
+		Nodes: map[string]ir.Node{"impl": clawAgent("impl", "{{vars.model}}", "")},
+	}
+	if !adopted {
+		wf.Sandbox = &ir.SandboxSpec{Mode: string(sandbox.ModeNone)}
+	}
+	return wf
+}
+
+// The admission judges a node's legs under the vars the run pushes its
+// executor before the first node — its declared defaults overlaid with its
+// launch inputs, a subbot child's `with:` bindings — not the executor's vars
+// as they stand when the sandbox starts (its defaults alone). Each start
+// site is driven through startSandbox with a real claw executor: a child
+// adopting its parent's sandbox, and a run of its own on the host. A
+// stamped run holding only an Anthropic key: a binding to an OpenAI model
+// over a Claude default is refused, and a binding to the Claude model over
+// an OpenAI default is admitted. Mutant — the admission reading the
+// executor's view without the inputs: both verdicts invert.
+func TestTheAdmissionJudgesTheVarsTheRunBindsItsNodes(t *testing.T) {
+	clearCredentialEnv(t)
+	t.Setenv("ITERION_FORBID_SUBSCRIPTION_OAUTH", "")
+	t.Cleanup(model.SetCredentialsLookup(model.RunCredentialsLookup))
+	ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{
+		AmbientRefused: true,
+		APIKeys:        map[secrets.Provider]string{secrets.ProviderAnthropic: "sk-run"},
+	})
+	const funded, unfunded = "anthropic/claude-sonnet-4", "openai/gpt-5.5"
+	for _, site := range []struct {
+		name    string
+		adopted bool
+	}{{"an adopted child", true}, {"a run of its own on the host", false}} {
+		for _, tc := range []struct {
+			name, def, bound string
+			admit            bool
+		}{
+			{"an unfunded binding over a funded default", funded, unfunded, false},
+			{"a funded binding over an unfunded default", unfunded, funded, true},
+		} {
+			t.Run(site.name+"/"+tc.name, func(t *testing.T) {
+				st := tmpStore(t)
+				workDir := t.TempDir()
+				wf := varsBoundChild(tc.def, site.adopted)
+				opts := []EngineOption{WithWorkDir(workDir)}
+				if site.adopted {
+					opts = append(opts, WithParentRunID("run-parent"),
+						WithSharedSandbox(&SharedSandbox{Run: &sharedFakeRun{}, WorkspaceFolder: t.TempDir(), SharedStateDir: "/shared"}))
+				}
+				e := New(wf, st, model.NewClawExecutor(model.NewRegistry(), wf), opts...)
+				if site.adopted {
+					e.resourceScope = &runResourceScope{path: workDir, borrowed: true, owned: map[string]string{}}
+				}
+				if _, err := st.CreateRun(ctx, "run-child", "child", nil); err != nil {
+					t.Fatal(err)
+				}
+				cleanup, err := e.startSandbox(ctx, "run-child", workDir, "", map[string]any{"model": tc.bound})
+				cleanup()
+				var rerr *RuntimeError
+				switch {
+				case tc.admit && err != nil:
+					t.Fatalf("the node bound to %s = %v, want it admitted", tc.bound, err)
+				case !tc.admit && (!errors.As(err, &rerr) || rerr.Code != ErrCodeCredentialAmbientRefused):
+					t.Fatalf("the node bound to %s = %v, want %s — the admission judged the default %s", tc.bound, err, ErrCodeCredentialAmbientRefused, tc.def)
+				}
+			})
+		}
+	}
+}
+
+// detectingExecutor is a claw executor stand-in whose dispatch picks spec
+// for a claw node naming no model (model.ClawExecutor.DetectedClawSpec).
+type detectingExecutor struct {
+	*stubExecutor
+	spec string
+	err  error
+}
+
+func (d *detectingExecutor) DetectedClawSpec(string) (string, error) { return d.spec, d.err }
+
+// A claw node naming no model sends the detector's pick (ADR-161 decision 2),
+// and the admission judges that spec, as the dispatch spends it: a stamped
+// run on the host whose own key funds the pick is admitted, a pick outside
+// the run's allowlist refuses the node outside-allowlist, and an executor
+// that picks nothing leaves the node's spec empty — refused, as the dispatch
+// refuses it. Mutant — the admission resolving the empty spec: the funded
+// pick is refused no-credential.
+func TestTheAdmissionJudgesTheDetectorsPickForAModellessClawNode(t *testing.T) {
+	clearCredentialEnv(t)
+	t.Setenv("ITERION_FORBID_SUBSCRIPTION_OAUTH", "")
+	t.Cleanup(model.SetCredentialsLookup(model.RunCredentialsLookup))
+	ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{
+		AmbientRefused: true,
+		APIKeys:        map[secrets.Provider]string{secrets.ProviderAnthropic: "sk-run"},
+	})
+	outside := fmt.Errorf("node %q: the detected model spends a provider outside the allowlist: %w", "impl", model.ErrProviderOutsideAllowlist)
+	for _, tc := range []struct {
+		name   string
+		exec   NodeExecutor
+		reason credroute.Reason
+	}{
+		{"a pick the run's key funds", &detectingExecutor{stubExecutor: newStubExecutor(), spec: "anthropic/claude-sonnet-4"}, ""},
+		{"a pick outside the allowlist", &detectingExecutor{stubExecutor: newStubExecutor(), err: outside}, credroute.ReasonOutsideAllowlist},
+		{"no pick", newStubExecutor(), credroute.ReasonNoCredential},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st := tmpStore(t)
+			wf := &ir.Workflow{
+				Name:    "modelless",
+				Sandbox: &ir.SandboxSpec{Mode: string(sandbox.ModeNone)},
+				Nodes:   map[string]ir.Node{"impl": clawAgent("impl", "", "")},
+			}
+			e := New(wf, st, tc.exec, WithWorkDir(t.TempDir()))
+			if _, err := st.CreateRun(ctx, "run-modelless", "modelless", nil); err != nil {
+				t.Fatal(err)
+			}
+			cleanup, err := e.startSandbox(ctx, "run-modelless", t.TempDir(), "", nil)
+			cleanup()
+			var refusal *credroute.Refusal
+			switch {
+			case tc.reason == "" && err != nil:
+				t.Fatalf("the node whose pick the run's key funds = %v, want it admitted", err)
+			case tc.reason != "" && (!errors.As(err, &refusal) || refusal.Reason != tc.reason):
+				t.Fatalf("the node = %v, want the %s refusal", err, tc.reason)
+			}
+		})
 	}
 }

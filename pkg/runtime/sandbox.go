@@ -352,9 +352,16 @@ type SandboxParams struct {
 	// Routes is the view the dispatch reads the run's chains under — its
 	// launch overrides, vars and provider allowlist — for the credential
 	// admission, which judges the same legs (model.Legs). The engine fills
-	// it from its executor (credentialRouteViewer); the zero view reads the
-	// IR alone, the reading of an executor that applies none of its own.
+	// it from its executor (credentialRouteViewer) and the vars the run
+	// pushes it before its first node; the zero view reads the IR alone, the
+	// reading of an executor that applies none of its own.
 	Routes model.RouteView
+
+	// DetectedClawSpec is the model the dispatch sends for a claw node that
+	// names none (model.ClawExecutor.DetectedClawSpec), which the credential
+	// admission judges in its place. Nil — an executor that picks none — and
+	// such a node's spec stays empty.
+	DetectedClawSpec func(nodeID string) (string, error)
 }
 
 // workflowMaxDurationSeconds returns the workflow budget's max_duration
@@ -2573,7 +2580,7 @@ func (e *Engine) startSandbox(ctx context.Context, runID string, repoRoot string
 			// vars its `with:` bound then, and it is judged here, before any
 			// of its nodes spends. The parent's sandbox is its placement,
 			// the home mount that sandbox carries included.
-			if err := e.admitAdoptedCredentials(ctx, runID, emitForSandbox); err != nil {
+			if err := e.admitAdoptedCredentials(ctx, runID, inputs, emitForSandbox); err != nil {
 				return noopCleanup, err
 			}
 			return e.adoptSharedSandbox(ctx, runID, emitForSandbox)
@@ -2659,7 +2666,8 @@ func (e *Engine) startSandbox(ctx context.Context, runID string, repoRoot string
 		BoardMCPHandler:          e.boardMCPHandler,
 		BoardMCPConnectors:       e.boardMCPConnectors,
 		EffectiveBackend:         e.backendResolver(),
-		Routes:                   e.credentialRouteView(),
+		Routes:                   e.credentialRouteView(inputs),
+		DetectedClawSpec:         e.detectedClawSpec(),
 	})
 	if sbErr != nil {
 		localAttachmentsCleanup()
