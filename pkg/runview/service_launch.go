@@ -642,7 +642,7 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 		precreateInputs,
 		launchExtras{workDir: workDir, dailyCap: spec.DailyCap, source: spec.SourceRef, routingPolicy: spec.RoutingPolicy, routePolicy: spec.LLMRoutePolicy, onOutcome: spec.OnOutcome, observers: spec.ExtraObservers, loopBudgetGuard: spec.LoopBudgetGuard, supervisors: spec.Supervisors, budgetAsk: spec.Budget, executionContext: ctxContract, permission: spec.Permission, worktreeBaseCommit: spec.WorktreeBaseCommit, botOrigin: spec.BotOrigin, delegation: spec.Delegation, budgetOverrides: rawBudget, compiled: cs, botSourceTier: spec.BotSourceTier},
 		s.store,
-		func(ctx context.Context, eng *runtime.Engine) error {
+		func(ctx, _ context.Context, eng *runtime.Engine) error {
 			return eng.Run(ctx, runID, inputs)
 		})
 }
@@ -1070,10 +1070,12 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 			sandboxHostStateOverride: r.SandboxHostState,
 		},
 		nil,
-		func(ctx context.Context, eng *runtime.Engine) error {
+		func(ctx, sctx context.Context, eng *runtime.Engine) error {
 			// Re-validate under the lock acquired by spawnRun (TOCTOU
-			// guard against a concurrent resume / state change).
-			r2, err := s.store.LoadRun(context.Background(), spec.RunID)
+			// guard against a concurrent resume / state change), under the
+			// resume's identity: on the Mongo store a tenantless read here
+			// panics, and nothing recovers in the run goroutine.
+			r2, err := s.store.LoadRun(sctx, spec.RunID)
 			if err != nil {
 				return err
 			}
@@ -1319,9 +1321,12 @@ func validateResumable(r *store.Run, answers map[string]any, automatic ...bool) 
 
 // spawnRun owns the lock + register + goroutine + defer-cleanup
 // scaffolding shared by Launch and Resume. body is invoked inside the
-// goroutine with the registered ctx and the constructed engine; its
-// return value is fed into logRunOutcome. spawnRun returns once the
-// run handle is registered (so Cancel works from that moment).
+// goroutine with the registered ctx, the store context and the constructed
+// engine; its return value is fed into logRunOutcome. ctx is the run's,
+// cancellable, for the engine; sctx is the one every store call the body
+// makes takes — the launch's identity without its cancellation, the context
+// spawnRun's own store calls take. spawnRun returns once the run handle is
+// registered (so Cancel works from that moment).
 func (s *Service) spawnRun(
 	parent context.Context,
 	runID string,
@@ -1341,7 +1346,7 @@ func (s *Service) spawnRun(
 	precreateInputs map[string]any,
 	ex launchExtras,
 	emitStore store.RunStore,
-	body func(ctx context.Context, eng *runtime.Engine) error,
+	body func(ctx, sctx context.Context, eng *runtime.Engine) error,
 ) (*LaunchResult, error) {
 	// emitStore is the store the engine writes events through. It is the
 	// raw s.store — ADR-046 ExtraObservers ride the WithEventObserver /
@@ -1629,7 +1634,7 @@ func (s *Service) spawnRun(
 		stopBoard := s.startSessionBoard(ctx, runID, runName, supervise.WorkflowNamesGateway(wf), runLogger)
 		defer stopBoard()
 
-		bodyErr := body(ctx, eng)
+		bodyErr := body(ctx, sctx, eng)
 		// The engine has written its terminal/paused status to the store, so
 		// the run now READS resumable while this handle is still held through
 		// the teardown below (a completion webhook, a supervisor drain). Say

@@ -239,6 +239,19 @@ func (p *tenantProbeStore) PatchRunBudgetOverrides(ctx context.Context, id strin
 	return store.AsRunBudgetOverridesPatcher(p.RunStore).PatchRunBudgetOverrides(ctx, id, o)
 }
 
+func (p *tenantProbeStore) LoadRun(ctx context.Context, id string) (*store.Run, error) {
+	p.note("LoadRun", ctx)
+	return p.RunStore.LoadRun(ctx, id)
+}
+
+// reset forgets every call noted so far, so a row judges only the calls of
+// the gesture it drives.
+func (p *tenantProbeStore) reset() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.seen = nil
+}
+
 func (p *tenantProbeStore) calls(method string) []bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -291,6 +304,65 @@ func TestSpawnRun_StoreCallsCarryTheLaunchIdentity(t *testing.T) {
 			if !carried {
 				t.Errorf("%s call %d received a context with NO tenant: on the Mongo store a tenant-scoped call there panics", method, i)
 			}
+		}
+	}
+}
+
+// TestResume_StoreCallsCarryTheResumeIdentity: an in-process resume's run
+// goroutine re-reads the run under spawnRun's lock (the TOCTOU re-check)
+// before the engine claims it. That read outlives the request like every other
+// store call of the goroutine, and keeps the request's identity as they do: on
+// the Mongo store a tenantless read panics, and nothing recovers in the run
+// goroutine. The Mongo twin of this row runs in pkg/store/mongo
+// (TestServiceResume_InProcessOnTheMongoStore).
+func TestResume_StoreCallsCarryTheResumeIdentity(t *testing.T) {
+	dir := t.TempDir()
+	botPath := filepath.Join(dir, "pause_demo.bot")
+	if err := os.WriteFile(botPath, []byte(pausingBot), 0o644); err != nil {
+		t.Fatalf("write bot: %v", err)
+	}
+	svc, err := NewService(dir, WithLogger(iterlog.Nop()), WithWorkDir(gittest.SourceRepo(t)))
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	probe := &tenantProbeStore{RunStore: svc.store}
+	svc.store = probe
+
+	ctx := store.WithIdentity(context.Background(), "tenant-42", "owner-7")
+	res, err := svc.Launch(ctx, LaunchSpec{RunID: "run-tenant-resume", FilePath: botPath})
+	if err != nil {
+		t.Fatalf("Launch: %v", err)
+	}
+	select {
+	case <-res.Done:
+	case <-runWaitContext(t).Done():
+		t.Fatal("run goroutine did not exit (expected an immediate human pause)")
+	}
+	probe.reset()
+
+	rres, err := svc.Resume(ctx, ResumeSpec{RunID: res.RunID, FilePath: botPath, Answers: map[string]any{"approve": true}})
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	select {
+	case <-rres.Done:
+	case <-runWaitContext(t).Done():
+		t.Fatal("the resume's run goroutine did not exit")
+	}
+	got := probe.calls("LoadRun")
+	r, err := probe.RunStore.LoadRun(ctx, res.RunID)
+	if err != nil {
+		t.Fatalf("LoadRun after the resume: %v", err)
+	}
+	if r.Status != store.RunStatusFinished {
+		t.Fatalf("the resumed run ended %s (%s), want finished — the probe below judges a resume that did not run", r.Status, r.Error)
+	}
+	if len(got) == 0 {
+		t.Fatal("the resume never called LoadRun — the probe proves nothing")
+	}
+	for i, carried := range got {
+		if !carried {
+			t.Errorf("LoadRun call %d of the resume received a context with NO tenant: on the Mongo store a tenant-scoped call there panics", i)
 		}
 	}
 }

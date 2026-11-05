@@ -1,6 +1,7 @@
 package mongo
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -37,6 +38,61 @@ workflow parent:
   delegate -> done
 `
 
+const serviceGateBot = `schema gate_out:
+  approve: bool
+
+prompt gate_prompt:
+  Approve?
+
+human gate:
+  instructions: gate_prompt
+  output: gate_out
+  interaction: human
+
+workflow gate:
+  worktree: none
+  entry: gate
+  gate -> done when approve
+  gate -> fail when not approve
+`
+
+// serviceOnTheMongoStore is a run service executing in process over a fresh
+// Mongo database — no cloud publisher, so a launch and a resume run their
+// engine here — with bots written into its directory. Skips without
+// ITERION_TEST_MONGO_URI, like the conformance suite. The returned context
+// bounds the test.
+func serviceOnTheMongoStore(t *testing.T, dbPrefix string, bots map[string]string) (*Store, *runview.Service, string, context.Context) {
+	t.Helper()
+	uri := os.Getenv("ITERION_TEST_MONGO_URI")
+	if uri == "" {
+		t.Skip("ITERION_TEST_MONGO_URI not set; skipping the Mongo run service rows")
+	}
+	t.Setenv("ITERION_SANDBOX_DEFAULT", "none")
+	ctx, cancel := mongotest.Ctx(t)
+	t.Cleanup(cancel)
+	s, err := New(ctx, Config{URI: uri, Database: dbPrefix + bsonNonce(t), Blob: newInMemoryBlob()})
+	if err != nil {
+		t.Fatalf("mongo New: %v", err)
+	}
+	t.Cleanup(func() {
+		drop, dropCancel := mongotest.TeardownCtx()
+		defer dropCancel()
+		_ = s.db.Drop(drop)
+		_ = s.Close(drop)
+	})
+	dir := t.TempDir()
+	for name, body := range bots {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	svc, err := runview.NewService(dir, runview.WithStore(s), runview.WithLogger(iterlog.Nop()), runview.WithWorkDir(gittest.SourceRepo(t)))
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	return s, svc, dir, ctx
+}
+
 // TestServiceLaunch_ChildRunsOnTheMongoStore drives the run service's
 // in-process launch over the cloud store, the two ways a child run is born
 // there: a launch that names its parent (parent_run_id — spawnRun's own
@@ -48,33 +104,7 @@ workflow parent:
 // crashes the launch here rather than reading another tenant's parent.
 // Gated on ITERION_TEST_MONGO_URI like the conformance suite.
 func TestServiceLaunch_ChildRunsOnTheMongoStore(t *testing.T) {
-	uri := os.Getenv("ITERION_TEST_MONGO_URI")
-	if uri == "" {
-		t.Skip("ITERION_TEST_MONGO_URI not set; skipping the Mongo service launch rows")
-	}
-	t.Setenv("ITERION_SANDBOX_DEFAULT", "none")
-	ctx, cancel := mongotest.Ctx(t)
-	defer cancel()
-	s, err := New(ctx, Config{URI: uri, Database: "iterion_service_child_" + bsonNonce(t), Blob: newInMemoryBlob()})
-	if err != nil {
-		t.Fatalf("mongo New: %v", err)
-	}
-	t.Cleanup(func() {
-		drop, dropCancel := mongotest.TeardownCtx()
-		defer dropCancel()
-		_ = s.db.Drop(drop)
-		_ = s.Close(drop)
-	})
-	dir := t.TempDir()
-	for name, body := range map[string]string{"child.bot": serviceChildBot, "parent.bot": serviceSubbotParentBot} {
-		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	svc, err := runview.NewService(dir, runview.WithStore(s), runview.WithLogger(iterlog.Nop()), runview.WithWorkDir(gittest.SourceRepo(t)))
-	if err != nil {
-		t.Fatalf("NewService: %v", err)
-	}
+	s, svc, dir, ctx := serviceOnTheMongoStore(t, "iterion_service_child_", map[string]string{"child.bot": serviceChildBot, "parent.bot": serviceSubbotParentBot})
 	launchCtx := store.WithIdentity(ctx, "tenant-svc", "owner-svc")
 	finished := func(t *testing.T, res *runview.LaunchResult) {
 		t.Helper()
@@ -150,4 +180,42 @@ func TestServiceLaunch_ChildRunsOnTheMongoStore(t *testing.T) {
 			t.Fatal("the refused launch created its run")
 		}
 	})
+}
+
+// TestServiceResume_InProcessOnTheMongoStore drives an in-process resume over
+// the cloud store: a run parked on a human gate, answered. The resume's run
+// goroutine re-reads the run under its lock before the engine claims it — a
+// tenant-scoped read, which the store's filter refuses to answer without a
+// tenant by panicking, and nothing recovers in the run goroutine: a read made
+// there under context.Background() kills the process, not the resume.
+func TestServiceResume_InProcessOnTheMongoStore(t *testing.T) {
+	s, svc, dir, ctx := serviceOnTheMongoStore(t, "iterion_service_resume_", map[string]string{"gate.bot": serviceGateBot})
+	launchCtx := store.WithIdentity(ctx, "tenant-svc", "owner-svc")
+	botPath := filepath.Join(dir, "gate.bot")
+	ended := func(t *testing.T, res *runview.LaunchResult, want store.RunStatus) {
+		t.Helper()
+		select {
+		case <-res.Done:
+		case <-ctx.Done():
+			t.Fatalf("run %s did not end: %v", res.RunID, ctx.Err())
+		}
+		r, err := s.LoadRun(launchCtx, res.RunID)
+		if err != nil {
+			t.Fatalf("LoadRun(%s): %v", res.RunID, err)
+		}
+		if r.Status != want {
+			t.Fatalf("run %s is %s (%s), want %s", r.ID, r.Status, r.Error, want)
+		}
+	}
+
+	res, err := svc.Launch(launchCtx, runview.LaunchSpec{RunID: "run-svc-gate", FilePath: botPath})
+	if err != nil {
+		t.Fatalf("Launch: %v", err)
+	}
+	ended(t, res, store.RunStatusPausedWaitingHuman)
+	rres, err := svc.Resume(launchCtx, runview.ResumeSpec{RunID: res.RunID, FilePath: botPath, Answers: map[string]any{"approve": true}})
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	ended(t, rres, store.RunStatusFinished)
 }
