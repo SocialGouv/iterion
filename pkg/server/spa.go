@@ -37,23 +37,6 @@ func IsBuildAssetPath(p string) bool {
 		strings.HasPrefix(clean, BuildAssetPrefix)
 }
 
-// IsBuildAssetDir reports whether clean names a DIRECTORY under the build-asset
-// prefix. http.FileServer answers such a path with a directory index — an HTML
-// listing of every chunk and sourcemap the build emitted — so the invariant
-// "under /assets/ you get a file or a 404" would be false exactly where it is
-// easiest to reach.
-//
-// It is a shared helper rather than a guard copied into each handler: the two
-// surfaces that delegate to http.FileServer sit two lines apart in different
-// files, and the first round of this change guarded one and not the other.
-func IsBuildAssetDir(sub fs.FS, clean string) bool {
-	if !IsBuildAssetPath(clean) {
-		return false
-	}
-	info, err := fs.Stat(sub, strings.TrimPrefix(path.Clean(clean), "/"))
-	return err == nil && info.IsDir()
-}
-
 // NotFoundBuildAsset answers a request for a build artifact this build does not
 // carry. Exported because every surface that serves the SPA needs the identical
 // answer, including the desktop asset proxy in its own package.
@@ -71,12 +54,14 @@ func NotFoundBuildAsset(w http.ResponseWriter, r *http.Request) {
 // their real file, unknown paths fall back to index.html so client-side
 // routes like /runs/abc render the shell instead of a hard 404. The fallback
 // is gated on GET/HEAD, a non-/api/ prefix and a non-/assets/ prefix, so
-// neither JSON endpoints nor build artifacts masquerade as HTML.
+// neither JSON endpoints nor build artifacts masquerade as HTML. Every file
+// goes out through staticFileServer, which owns the cache policy of the tree
+// (static_cache.go); the shell is no-cache, served here.
 // publicURL, when non-empty, is the deployment's externally-reachable origin.
 // It exists for ONE reason: rewriting the relative og:image in index.html into
 // the absolute URL OpenGraph specifies (see absolutiseSocialImages).
 func SPAHandler(sub fs.FS, publicURL string) http.Handler {
-	fileServer := http.FileServer(http.FS(sub))
+	files := newStaticFileServer(sub)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		clean := path.Clean(r.URL.Path)
 		// Any /api/* request reaching this catch-all is a genuinely unrouted
@@ -90,7 +75,7 @@ func SPAHandler(sub fs.FS, publicURL string) http.Handler {
 			return
 		}
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
-			fileServer.ServeHTTP(w, r)
+			files.ServeHTTP(w, r)
 			return
 		}
 		if clean == "/" || clean == "." {
@@ -100,21 +85,19 @@ func SPAHandler(sub fs.FS, publicURL string) http.Handler {
 			serveIndex(w, r, sub, publicURL)
 			return
 		}
-		if IsBuildAssetDir(sub, clean) {
-			NotFoundBuildAsset(w, r)
+		// Under the build-asset prefix the answer is the artifact or a 404,
+		// never the shell: the file server owns that invariant.
+		if IsBuildAssetPath(clean) {
+			files.ServeHTTP(w, r)
 			return
 		}
 		rel := strings.TrimPrefix(clean, "/")
 		if f, err := sub.Open(rel); err == nil {
 			_ = f.Close()
-			fileServer.ServeHTTP(w, r)
+			files.ServeHTTP(w, r)
 			return
 		} else if !errors.Is(err, fs.ErrNotExist) {
-			fileServer.ServeHTTP(w, r)
-			return
-		}
-		if IsBuildAssetPath(clean) {
-			NotFoundBuildAsset(w, r)
+			files.ServeHTTP(w, r)
 			return
 		}
 		serveIndex(w, r, sub, publicURL)

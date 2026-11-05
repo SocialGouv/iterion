@@ -56,6 +56,9 @@ type WorkspaceHost struct {
 	handoffCancel  context.CancelFunc
 	handoffWG      sync.WaitGroup
 	static         fs.FS
+	// files serves the bytes of static with the tree's cache policy
+	// (static_cache.go); one per host, so each unhashed static is hashed once.
+	files http.Handler
 }
 
 type WorkspaceRuntimeStatus struct {
@@ -95,6 +98,7 @@ func NewWorkspaceHost(registry *projects.Config, factory WorkspaceRuntimeFactory
 		handoffTickets: make(map[string]string),
 		handoffWake:    make(chan struct{}, 1),
 		static:         staticSub,
+		files:          newStaticFileServer(staticSub),
 	}
 	h.loadWorkspaceHandoffs()
 	for _, project := range registry.RecentProjects {
@@ -378,18 +382,16 @@ func workspaceSafeOrigin(r *http.Request) bool {
 func (h *WorkspaceHost) serveWorkspaceAsset(w http.ResponseWriter, r *http.Request) {
 	clean := path.Clean(r.URL.Path)
 	if clean != "/" && clean != "." {
-		if IsBuildAssetDir(h.static, clean) {
-			NotFoundBuildAsset(w, r)
+		// Under the build-asset prefix the answer is the artifact or a 404,
+		// never the shell: the file server owns that invariant.
+		if IsBuildAssetPath(clean) {
+			h.files.ServeHTTP(w, r)
 			return
 		}
 		rel := strings.TrimPrefix(clean, "/")
 		if f, err := h.static.Open(rel); err == nil {
 			_ = f.Close()
-			http.FileServer(http.FS(h.static)).ServeHTTP(w, r)
-			return
-		}
-		if IsBuildAssetPath(clean) {
-			NotFoundBuildAsset(w, r)
+			h.files.ServeHTTP(w, r)
 			return
 		}
 	}
