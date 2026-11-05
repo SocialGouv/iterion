@@ -378,6 +378,7 @@ flowchart TD
 |---|---|---|---|---|---|
 | `api_keys` | `pkg/secrets` | `ApiKey` | `tenant_id`: team \| `orgtier:<org>` \| `platform:` | none unique; no TTL | none (cloud-only) |
 | `connections` | `pkg/connection` | `mongoDoc` (`Connection` + derived `alias_norm`) | `tenant_id`: team | `tenant_connector_alias` unique on `(tenant_id, connector, alias_norm)`; no TTL | `file connections.json` — the memory twin checks aliases under a lock the Mongo twin replaces with the unique index |
+| `connector_packages` | `pkg/connection` | `packageDoc` (`StoredPackage` + `_id`) | `tenant_id`: team \| `platform:` | none unique — `_id` is `<tenant_id>/<connector_id>`, unique by construction (`tenant` indexes `tenant_id` alone); no TTL | `memory-only` — `MemoryPackageStore`, held to the Mongo twin's answers by the conformance suite |
 | `oauth_credentials` | `pkg/secrets` | `OAuthRecord` | none — `user_id` namespace: user \| `org:<team>` \| `orgtier:<org>` \| `platform:` | `user_id+kind+rank` unique; no TTL | none (cloud-only) |
 | `oauth_pending` | `pkg/secrets` | `OAuthPending` | none — `owner_key` namespace | `owner_key+kind` unique; TTL `expires_at` (10 min) | none (cloud-only) |
 | `generic_secrets` | `pkg/secrets` | `GenericSecret` | `tenant_id`: team (empty in the file store, which pins `scope_team: local`) | none unique; no TTL | `file secrets.json` — the file and memory twins keep no order among duplicate names |
