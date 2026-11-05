@@ -3,6 +3,46 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [5.9.1](https://github.com/SocialGouv/iterion/compare/v5.9.0...v5.9.1) (2026-11-05)
+
+### Bug Fixes
+
+* **runview:** stage the agent's resolution only on the conflict it was shown ([1da039c](https://github.com/SocialGouv/iterion/commit/1da039cbba7ab8ef40b86dfd60f40423db7d35b7)), references [#480](https://github.com/SocialGouv/iterion/issues/480)
+
+    <details><summary>why</summary>
+
+    The agent conflict resolver read the run's merge status and the conflict set before its model call, outside the repository hold, and staged the model's answer under the hold for every path of that old set. A manual resolution made during the model call was overwritten, and an abort made during it left the answer staged on the operator's branch, outside any merge; both requests answered success.
+
+    </details>
+* **server:** hold the bot tree through git's hooks, one lock registry per process ([f958a3a](https://github.com/SocialGouv/iterion/commit/f958a3ab2ea614879397337648af09b78f2c136f)), references [#106](https://github.com/SocialGouv/iterion/issues/106) [#480](https://github.com/SocialGouv/iterion/issues/480)
+
+    <details><summary>why</summary>
+
+    The authoring git commit let the bot tree's lock go once its files were staged, so its pre-commit, prepare-commit-msg and commit-msg hooks read (and could write) the worktree unordered with the server's writers: a hook that read a bot another writer had moved aside made the commit answer 400, the race #106 forbids. The rule now applied everywhere: whatever reads or writes the worktree's bot files - resolution, validation, the write and git's hooks - runs under the tree's lock; only git objects…
+
+    </details>
+* **server:** hold the bot tree's lock for local work only ([1f4f175](https://github.com/SocialGouv/iterion/commit/1f4f175b967d366889cf0bfaff4af1a26e6a048d)), references [#106](https://github.com/SocialGouv/iterion/issues/106) [#480](https://github.com/SocialGouv/iterion/issues/480)
+
+    <details><summary>why</summary>
+
+    The lock taken before every write of the bot tree was held across work that never touches the tree: a publication's ls-remote/push/ls-remote, an install's clone, a dependency update's fetch, an authoring git commit's hooks and signature (pinentry included). Every editor save, assistant commit, metadata edit and toggle of any bot waited behind a remote, and a waiter whose client gave up answered 503 — the type's own "a wait, never a refusal" was false. Two handlers also took the lock before…
+
+    </details>
+* **server:** publish on any git, its pre-push hook under the tree lock ([d76aef6](https://github.com/SocialGouv/iterion/commit/d76aef6e1a8211fbad9e86addab29e60d0170aeb)), references [#480](https://github.com/SocialGouv/iterion/issues/480)
+
+    <details><summary>why</summary>
+
+    The publication ran `git hook run --ignore-missing --to-stdin=<file> pre-push` on every push, hook or no hook, with no version check. `git hook` needs Git 2.36 and `--to-stdin` 2.40, so a publication that main performed as a plain `git push` answered 400 on 2.34 or 2.39.
+
+    </details>
+* **server:** take one bot tree write lock before resolving, through the write ([7e9edcc](https://github.com/SocialGouv/iterion/commit/7e9edcc627695b7d20887a5732f2c3eef724d0c7)), references [#106](https://github.com/SocialGouv/iterion/issues/106) [#480](https://github.com/SocialGouv/iterion/issues/480)
+
+    <details><summary>why</summary>
+
+    The loser of a write race on the authoring surface answered a request error (400 unavailable, 404 not found, 400 bot_compile_failed, 422 "fix them on disk") or acted on another bot: a write handler resolved its bot, its bundle, its siblings or its catalog entry outside any lock, and a publication moves the live file aside before it moves its successor in, a rename re-points a name. Four rounds of point fixes (a settle step that scanned the writers' locks) each met a new variant; the last round…
+
+    </details>
+
 ## [5.9.0](https://github.com/SocialGouv/iterion/compare/v5.8.0...v5.9.0) (2026-11-04)
 
 ### Features
