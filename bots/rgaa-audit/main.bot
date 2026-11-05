@@ -2093,13 +2093,6 @@ tool deliver:
   output: deliver_output
   publish: a11y_findings
 
-## The judge's report of the board write is held to the plan, BOTH ways:
-## created ∪ existing must cover every planned title, nothing may have
-## failed, and nothing may be reported that the plan does not contain. It
-## is still the judge's own report, not a board read — a tool node has no
-## board action (#2388), so the contract over that report is the whole
-## guarantee: a claim outside the plan is coverage nobody asked for, and
-## counting it let a report cover the plan with foreign rows.
 ## ─── Board publication (deterministic, #2388) ─────────────────────────
 ## The plan is filed and verified with NO model in the loop: the native
 ## board action transport (ADR-151) executes each call in the engine against

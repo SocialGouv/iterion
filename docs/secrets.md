@@ -232,9 +232,11 @@ form in every hook/log:
 
 - **claw** `tool` nodes (shell + script) materialise the author's own body
   through the `command` sink's materialisers (`MaterializeAuthoredShellEnv`,
-  `MaterializeShell`), an action's `params:` through the `params` sink, and
-  the in-process tool loop (`executeToolsDirect`) calls `Guard.Materialize`
-  — the `agent` sink — on the model's tool input before exec.
+  `MaterializeShell`), an HTTP action's `params:` through the `params` sink
+  (a native `board.*` action keeps the placeholder: the store files the
+  card and shows it, as with the board MCP tools below), and the in-process
+  tool loop (`executeToolsDirect`) calls `Guard.Materialize` — the `agent`
+  sink — on the model's tool input before exec.
 - **claude_code** uses a `PreToolUse` hook returning `UpdatedInput` with
   the materialised tool input (the SDK-supported substitution path). The
   placeholders are swapped in the input's decoded strings, never in its JSON
@@ -482,7 +484,7 @@ the boundary is the pair `(secret, sink)`, not the secret alone.
 | `prompt` | a prompt body renders the reference as the placeholder: the model HOLDS the placeholder from then on | compile time, on the reference (C323) |
 | `agent` | the placeholder a model emits in its own tool input is materialised (claude_code's `PreToolUse` hook, claw's in-process tool loop, a self-repair command a model proposed) | run time, by the guard (`Materialize`) |
 | `command` | a tool node's authored `command:`, `postcondition:` or `script:` is materialised before exec | compile time, on the reference (C323); run time, by the guard |
-| `params` | a tool action's `params:` value is materialised before the vendor call | compile time, on the reference (C323); run time, by the guard |
+| `params` | a tool action's `params:` value is materialised before the vendor call; a native action (`board.*`) makes none and keeps the placeholder | compile time, on the reference (C323); run time, by the guard |
 | `file` | the secret is written as a file the run mounts (`as: file`) | compile time, on the declaration (C322) |
 | `egress` | the placeholder is substituted on the wire toward `hosts:` by the sandbox's inspecting proxy (Layer 2) | run time, by the egress rewriter |
 

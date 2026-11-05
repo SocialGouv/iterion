@@ -8,10 +8,12 @@ package model_test
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/backend/model"
+	"github.com/SocialGouv/iterion/pkg/backend/secretguard"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native/boardops"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
@@ -98,6 +100,9 @@ func TestNativeBoardActionWithoutTheGrantIsDenied(t *testing.T) {
 			if action.Kind == runtime.RecoveryRetrySameNode {
 				t.Errorf("the engine scheduled a RETRY of a refused grant (delay %s) — the next attempt meets the same capabilities", action.Delay)
 			}
+			if !strings.Contains(action.Reason, "declare the capability") {
+				t.Errorf("recovery reason = %q, want CAPABILITY_DENIED's own remedy — the unregistered-code fall-through names the gap, not the cure", action.Reason)
+			}
 			if code != runtime.ErrCodeCapabilityDenied {
 				t.Errorf("dispatched code = %q, want %q", code, runtime.ErrCodeCapabilityDenied)
 			}
@@ -179,5 +184,54 @@ func TestADuplicateTransportRegistrationKeepsTheFirst(t *testing.T) {
 	items, _ := out["data"].([]any)
 	if len(items) != 0 {
 		t.Fatalf("got %d issues — the SECOND registration served, arrival order deciding an ambiguity", len(items))
+	}
+}
+
+// A native board action keeps a secret's PLACEHOLDER. The board is iterion's
+// own store: it persists the card and shows it to every board.read holder,
+// so the `params` sink — materialised for a vendor call — has no call to
+// serve. An agent filing the same body through the board MCP tools files the
+// placeholder (keepsPlaceholders); moving the write to a native action must
+// not change that. Both arrivals are driven: the author's own
+// `{{secrets.X}}`, and a placeholder that rides in on data. The oracle reads
+// the BOARD, then the node's output.
+func TestANativeBoardWriteKeepsTheSecretPlaceholder(t *testing.T) {
+	t.Parallel()
+	const value = "ghp_synthetic_board_secret_2834"
+	store := newBoardStore(t)
+	guard := secretguard.New([]secretguard.Secret{{Name: "GH_TOKEN", Value: value}}, secretguard.DefaultConfig())
+	ph := secretguard.PlaceholderForName("GH_TOKEN")
+	e := model.NewClawExecutor(model.NewRegistry(), &ir.Workflow{},
+		model.WithSecretGuard(guard),
+		model.WithActionTransports(boardops.NewActionTransport(store, boardops.CallEnv{})))
+
+	node := boardActionNode("board.issue.create", []string{"board.create"})
+	node.Params = []ir.ActionParam{
+		{Key: "title", Value: "probe {{secrets.GH_TOKEN}}", Refs: []*ir.Ref{{Kind: ir.RefSecrets, Path: []string{"GH_TOKEN"}, Raw: "{{secrets.GH_TOKEN}}"}}},
+		{Key: "body", Value: "{{input.body}}", Refs: []*ir.Ref{{Kind: ir.RefInput, Path: []string{"body"}, Raw: "{{input.body}}"}}},
+	}
+	out, err := e.Execute(context.Background(), node, map[string]any{"body": "ran: curl -H 'Authorization: Bearer " + ph + "' https://api.github.com"})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	issues, err := store.List(native.ListFilter{})
+	if err != nil || len(issues) != 1 {
+		t.Fatalf("List: %d issue(s), err %v — want the one card filed", len(issues), err)
+	}
+	for field, text := range map[string]string{"title": issues[0].Title, "body": issues[0].Body} {
+		if strings.Contains(text, value) {
+			t.Errorf("the card's %s on the board carries the secret's VALUE: %q", field, text)
+		}
+		if !strings.Contains(text, ph) {
+			t.Errorf("the card's %s lost the placeholder: %q", field, text)
+		}
+	}
+	rendered, err := json.Marshal(out)
+	if err != nil {
+		t.Fatalf("marshal output: %v", err)
+	}
+	if strings.Contains(string(rendered), value) {
+		t.Errorf("the node's output carries the secret's value downstream: %s", rendered)
 	}
 }

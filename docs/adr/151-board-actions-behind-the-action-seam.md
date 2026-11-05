@@ -59,7 +59,11 @@ action deliberately does **not** inherit is the retry ladder: its guards
 (`Retryable`, idempotency keys, ambiguous effects) are HTTP-answer
 semantics, and re-issuing a store refusal in a sleep loop is invented
 behaviour. `retry:` is inert on a native action; [C335](../references/diagnostics.md)
-says so at compile time.
+says so at compile time. Nor does it inherit the `params` sink's
+materialisation: that sink serves a vendor call, and the board is
+iterion's own store, which files the card and shows it to every reader —
+a native action's arguments keep a secret's placeholder, the form an
+agent's board MCP call files ([secrets](../secrets.md#sinks--where-a-declared-secret-may-be-materialised)).
 One engine-level classification IS added: a refused grant is
 `CAPABILITY_DENIED`, typed by interface (`runtime.CapabilityDenial`, the
 `AmbiguousEffect` discipline — the engine never learns what the transport

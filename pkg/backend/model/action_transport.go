@@ -55,6 +55,12 @@ type ActionTransport interface {
 	// transport shares, and a seam that re-gated beside it would be a
 	// second authorization regime, which #78=A refuses.
 	//
+	// The arguments keep a secret's PLACEHOLDER, never its value: a native
+	// transport serves one of iterion's own stores, which persists what it
+	// receives and shows it to every reader — the form an agent's board MCP
+	// call files. The `params` sink materialises for a vendor call, and a
+	// native action makes none (docs/secrets.md).
+	//
 	// The signature is deliberately free of any type from THIS package:
 	// spec.Operation, a map and a slice are all an implementation beside
 	// its store needs, so structural satisfaction stays possible.
@@ -116,7 +122,9 @@ func cutActionConnector(action string) (string, bool) {
 // What is deliberately SHARED with the HTTP path: the policy gate, the
 // operation-usability check, the parameter rendering/coercion, the timeout
 // and the started/finish hooks, so a `.bot` cannot tell which transport
-// served it by anything but the answer. The OUTPUT differs on purpose: the
+// served it by anything but the answer — and by a secret's form: the
+// arguments keep its placeholder, since the store they reach keeps and
+// shows them (ActionTransport.Call). The OUTPUT differs on purpose: the
 // HTTP shape carries `{status, pending}` (and `{items, complete}` when the
 // operation paginates) because a wire answer needs them; a native call has
 // no status to report and the facade does not paginate, so the node renders
@@ -139,7 +147,7 @@ func (e *ClawExecutor) executeToolNodeNativeAction(ctx context.Context, node *ir
 		return nil, err
 	}
 
-	params, err := e.renderActionParams(ctx, node, op, input)
+	params, err := e.renderActionParams(ctx, node, op, input, secretsAsPlaceholders)
 	if err != nil {
 		return nil, fmt.Errorf("model: tool node %q: %w", node.ID, e.scrubActionError(err))
 	}

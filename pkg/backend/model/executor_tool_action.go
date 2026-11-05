@@ -78,7 +78,7 @@ func (e *ClawExecutor) executeToolNodeAction(ctx context.Context, node *ir.ToolN
 		return nil, err
 	}
 
-	params, err := e.renderActionParams(ctx, node, op, input)
+	params, err := e.renderActionParams(ctx, node, op, input, secretsMaterialized)
 	if err != nil {
 		// Scrubbed: a coercion refusal PRINTS the value it refused, so a
 		// secret materialised into a parameter the operation declares
@@ -392,16 +392,32 @@ func (e *ClawExecutor) actionOutput(node *ir.ToolNode, op spec.Operation, res ex
 	return out
 }
 
+// actionSecrets is what a rendered action parameter carries in a secret's
+// place.
+type actionSecrets bool
+
+const (
+	// secretsMaterialized is the HTTP call's: the vendor needs the value, and
+	// the `params` sink delivers it immediately before the request.
+	secretsMaterialized actionSecrets = true
+	// secretsAsPlaceholders is a native transport's: iterion's own store
+	// persists what it receives and shows it to every reader, so it receives
+	// the placeholder — the form an agent's board MCP call files
+	// (keepsPlaceholders).
+	secretsAsPlaceholders actionSecrets = false
+)
+
 // renderActionParams resolves each declared param's template refs against the
 // run's namespaces, then coerces the result to the type the OPERATION
-// declares.
+// declares. secrets says whether a placeholder is materialised (the vendor
+// call) or kept (a native transport).
 //
 // The coercion is not cosmetic. Templates render to strings, and a JSON body
 // carrying `{"index": "42"}` where the vendor's schema says integer is a
 // request many APIs reject and some silently mis-handle. The operation is the
 // only place that knows which is which, so the conversion happens here rather
 // than in the DSL, where every value is text.
-func (e *ClawExecutor) renderActionParams(ctx context.Context, node *ir.ToolNode, op spec.Operation, input map[string]any) (map[string]any, error) {
+func (e *ClawExecutor) renderActionParams(ctx context.Context, node *ir.ToolNode, op spec.Operation, input map[string]any, secrets actionSecrets) (map[string]any, error) {
 	declared := make(map[string]spec.Param, len(op.Params))
 	for _, p := range op.Params {
 		declared[p.Key] = p
@@ -450,13 +466,17 @@ func (e *ClawExecutor) renderActionParams(ctx context.Context, node *ir.ToolNode
 		}
 		// A `{{secrets.NAME}}` ref renders to a PLACEHOLDER, not a value —
 		// the whole point, since a secret must not sit in a command line or
-		// in a log. Every other recipe materialises it before use; this one
-		// did not, so the literal text `__ITERION_SECRET_NAME__` travelled to
-		// the vendor as the argument. The raw form is right here: nothing on
-		// this path reaches a shell, so the shell-escaping variants would
-		// corrupt the value. The `params` sink: an authored value, named so a
-		// secret kept off the vendor call by its declaration stays off it.
-		rendered = e.secretGuard.MaterializeFor(secretsink.Params, rendered)
+		// in a log. A vendor call materialises it before use, or the literal
+		// text `__ITERION_SECRET_NAME__` travels to the vendor as the
+		// argument. The raw form is right here: nothing on this path reaches
+		// a shell, so the shell-escaping variants would corrupt the value.
+		// The `params` sink: an authored value, named so a secret kept off
+		// the vendor call by its declaration stays off it. A native
+		// transport keeps the placeholder: its store persists and shows
+		// what it receives.
+		if secrets == secretsMaterialized {
+			rendered = e.secretGuard.MaterializeFor(secretsink.Params, rendered)
+		}
 		decl, known := declared[p.Key]
 		if !known {
 			// exec refuses this too, and its message lists what the operation
