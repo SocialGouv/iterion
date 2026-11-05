@@ -45,7 +45,9 @@ import (
 // and the only place a spawn's gate can be observed at all. With $HOOK_PROBE
 // set it additionally plays the CLI's half of one PreToolUse callback on the
 // structured-output spawn and records the verdict it gets back: a registration
-// nobody answers is not a gate. $HOOK_PROBE_SECRET does the same for the
+// nobody answers is not a gate. The probe calls `Bash rm -rf /nope` unless
+// $HOOK_PROBE_CALL holds the `"tool_name":…,"tool_input":{…}` members of
+// another call. $HOOK_PROBE_SECRET does the same for the
 // secret hooks: a PreToolUse whose input carries a placeholder (the answer
 // must carry the materialised value), then a PostToolUse whose tool_response
 // quotes the value (the answer must carry the placeholder back). Both probes
@@ -71,8 +73,10 @@ case "$*" in *--input-format*)
 	done ;;
 esac
 if [ -n "$HOOK_PROBE" ]; then
+	probe_call='"tool_name":"Bash","tool_input":{"command":"rm -rf /nope"}'
+	if [ -n "$HOOK_PROBE_CALL" ]; then probe_call=$HOOK_PROBE_CALL; fi
 	case "$*" in *--resume*)
-		printf '%s\n' '{"type":"control_request","request_id":"probe1","request":{"subtype":"hook_callback","callback_id":"hook_PreToolUse_0","input":{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"rm -rf /nope"}}}}'
+		printf '%s\n' '{"type":"control_request","request_id":"probe1","request":{"subtype":"hook_callback","callback_id":"hook_PreToolUse_0","input":{"hook_event_name":"PreToolUse",'"$probe_call"'}}}'
 		read -r verdict
 		if [ -n "$STDIN_DIR" ] && [ -n "$verdict" ]; then printf '%s\n' "$verdict" >> "$STDIN_DIR/$spawn"; fi ;;
 	esac

@@ -3,6 +3,7 @@ package permission
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 )
 
@@ -303,30 +304,51 @@ func TestAnApprovedSearchDoesNotWalkToAnotherDirectory(t *testing.T) {
 	}
 }
 
+// TestPathCandidatesOffersOnlySpellingsOfTheSamePath pins the one
+// normalisation every path the gate matches passes through, both halves of
+// it: `exact` is every spelling of the path, `pattern` the ones a wildcard or
+// prefix rule may read — no spelling that still carries a `..` segment.
 func TestPathCandidatesOffersOnlySpellingsOfTheSamePath(t *testing.T) {
 	for _, tc := range []struct {
-		name string
-		raw  string
-		root string
-		want []string
+		name    string
+		raw     string
+		root    string
+		exact   []string
+		pattern []string
 	}{
-		{"nothing for an empty path", "", "/work", nil},
-		{"an absolute path cleans", "/run//iterion/./secrets/x", "/work", []string{"/run//iterion/./secrets/x", "/run/iterion/secrets/x"}},
-		{"a clean absolute path is its own candidate", "/run/iterion/secrets/x", "/work", []string{"/run/iterion/secrets/x"}},
-		{"a relative path gains the root", "secrets/x", "/work", []string{"secrets/x", "/work/secrets/x"}},
-		{"a dotted relative path cleans then roots", "./secrets/x", "/work", []string{"./secrets/x", "secrets/x", "/work/secrets/x"}},
-		{"no root, no absolute spelling", "secrets/x", "", []string{"secrets/x"}},
-		{"a relative root is not joined", "secrets/x", "rel/root", []string{"secrets/x"}},
+		{"nothing for an empty path", "", "/work", nil, nil},
+		{"an absolute path cleans", "/run//iterion/./secrets/x", "/work",
+			[]string{"/run//iterion/./secrets/x", "/run/iterion/secrets/x"},
+			[]string{"/run//iterion/./secrets/x", "/run/iterion/secrets/x"}},
+		{"a clean absolute path is its own candidate", "/run/iterion/secrets/x", "/work",
+			[]string{"/run/iterion/secrets/x"}, []string{"/run/iterion/secrets/x"}},
+		{"a relative path gains the root", "secrets/x", "/work",
+			[]string{"secrets/x", "/work/secrets/x"}, []string{"secrets/x", "/work/secrets/x"}},
+		{"a dotted relative path cleans then roots", "./secrets/x", "/work",
+			[]string{"./secrets/x", "secrets/x", "/work/secrets/x"}, []string{"./secrets/x", "secrets/x", "/work/secrets/x"}},
+		{"no root, no absolute spelling", "secrets/x", "", []string{"secrets/x"}, []string{"secrets/x"}},
+		{"a relative root is not joined", "secrets/x", "rel/root", []string{"secrets/x"}, []string{"secrets/x"}},
+		// #2918: the string as sent climbs out of the tree its text names.
+		// The targets sit under a directory no host has, so no symlink
+		// resolution (macOS's /etc → /private/etc) adds a spelling.
+		{"an absolute climb keeps only its cleanup for a pattern", "/run/iterion/secrets/../../../k9a-absent/passwd", "/work",
+			[]string{"/run/iterion/secrets/../../../k9a-absent/passwd", "/k9a-absent/passwd"}, []string{"/k9a-absent/passwd"}},
+		{"a relative climb that lands inside keeps its cleanup", "docs/../pkg/x", "/work",
+			[]string{"docs/../pkg/x", "pkg/x", "/work/pkg/x"}, []string{"pkg/x", "/work/pkg/x"}},
+		{"a relative climb above the root keeps only its anchored form", "docs/../../k9a-absent/passwd", "/work",
+			[]string{"docs/../../k9a-absent/passwd", "../k9a-absent/passwd", "/k9a-absent/passwd"}, []string{"/k9a-absent/passwd"}},
+		{"no root anchors a relative climb", "../k9a-absent/passwd", "", []string{"../k9a-absent/passwd"}, nil},
+		{"a trailing climb", "/work/docs/..", "/work", []string{"/work/docs/..", "/work"}, []string{"/work"}},
+		{"a name holding dots is no climb", "/work/..cache/x", "/work", []string{"/work/..cache/x"}, []string{"/work/..cache/x"}},
+		{"the gate decodes nothing", "/work/docs/%2e%2e/x", "/work", []string{"/work/docs/%2e%2e/x"}, []string{"/work/docs/%2e%2e/x"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := pathCandidates(tc.raw, tc.root)
-			if len(got) != len(tc.want) {
-				t.Fatalf("pathCandidates(%q, %q) = %v, want %v", tc.raw, tc.root, got, tc.want)
+			if !slices.Equal(got.exact, tc.exact) {
+				t.Errorf("pathCandidates(%q, %q).exact = %v, want %v", tc.raw, tc.root, got.exact, tc.exact)
 			}
-			for i := range got {
-				if got[i] != tc.want[i] {
-					t.Fatalf("pathCandidates(%q, %q) = %v, want %v", tc.raw, tc.root, got, tc.want)
-				}
+			if !slices.Equal(got.pattern, tc.pattern) {
+				t.Errorf("pathCandidates(%q, %q).pattern = %v, want %v", tc.raw, tc.root, got.pattern, tc.pattern)
 			}
 		})
 	}

@@ -127,15 +127,27 @@ func grantArg(toolName string, input map[string]any) string {
 	// exfiltration path. Inside the root the operator saw, the pattern may
 	// vary — that is the scope they granted.
 	if searchesByPattern(canon) {
+		if pattern := str(input, "pattern"); globPatternClimbs(canon, pattern) {
+			// A glob whose pattern climbs out of its root has no directory
+			// to bind: summarize offers it to no opening rule but a bare or
+			// unbounded one. The approval quotes the pattern, so the prompt
+			// shows the climb, and the literal rule it yields matches no
+			// call — the retry asks again. Binding the root would vouch for
+			// a search that leaves it; an empty argument here would make
+			// the once-grant a bare, whole-tool one.
+			return pattern
+		}
 		if root := primaryPath(canon, input); root != "" {
 			return "path:" + root
 		}
 	}
 	// No path root: an approval quotes the argument the MODEL wrote, which
-	// is summarize's first candidate — the normalised spellings exist for
-	// matching, and a rule carrying one would read as a path the agent
-	// never named.
-	cands := summarize(canon, input, "")
+	// is summarize's first exact candidate — the normalised spellings exist
+	// for matching, and a rule carrying one would read as a path the agent
+	// never named. An exact rule reads every spelling of the call, the
+	// climbing one as sent included (candidates), so the once-grant matches
+	// its own retry and nothing else.
+	cands := summarize(canon, input, "").exact
 	if len(cands) == 0 {
 		return ""
 	}
