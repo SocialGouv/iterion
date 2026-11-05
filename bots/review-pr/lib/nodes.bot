@@ -515,7 +515,7 @@ print(json.dumps({'is_empty': len(files) == 0, 'changed_files': len(files), 'rev
 ## published is true ONLY on a 2xx from the endpoint, whose counts are
 ## forge-re-fetched (anti-façade), never self-estimated.
 tool publish_review:
-  command: `AI_REVIEWER_CLAUDE_EFFORT=${ITERION_VIBE_EFFORT_CLAUDE:-high} AI_REVIEWER_GPT_EFFORT=${ITERION_VIBE_EFFORT_GPT:-high} AI_REVIEWER_CLAUDE_GLANCE_EFFORT=${ITERION_VIBE_EFFORT_CLAUDE_GLANCE:-medium} AI_REVIEWER_GPT_GLANCE_EFFORT=${ITERION_VIBE_EFFORT_GPT_GLANCE:-medium} AI_CONVERGE_EFFORT=${ITERION_VIBE_EFFORT_EMIT:-medium} AI_RUN_ID={{run.id}} AI_RUN_TOKENS={{input.ai_run_tokens}} AI_REVIEWER_CLAUDE_MODEL={{input.ai_reviewer_claude_model}} AI_REVIEWER_CLAUDE_BACKEND={{input.ai_reviewer_claude_backend}} AI_REVIEWER_CLAUDE_TOKENS={{input.ai_reviewer_claude_tokens}} AI_REVIEWER_CLAUDE_FALLBACK={{input.ai_reviewer_claude_fallback}} AI_REVIEWER_CLAUDE_WIRE={{input.ai_reviewer_claude_wire}} AI_REVIEWER_GPT_MODEL={{input.ai_reviewer_gpt_model}} AI_REVIEWER_GPT_BACKEND={{input.ai_reviewer_gpt_backend}} AI_REVIEWER_GPT_TOKENS={{input.ai_reviewer_gpt_tokens}} AI_REVIEWER_GPT_WIRE={{input.ai_reviewer_gpt_wire}} AI_REVIEWER_CLAUDE_GLANCE_MODEL={{input.ai_reviewer_claude_glance_model}} AI_REVIEWER_CLAUDE_GLANCE_BACKEND={{input.ai_reviewer_claude_glance_backend}} AI_REVIEWER_CLAUDE_GLANCE_TOKENS={{input.ai_reviewer_claude_glance_tokens}} AI_REVIEWER_CLAUDE_GLANCE_FALLBACK={{input.ai_reviewer_claude_glance_fallback}} AI_REVIEWER_CLAUDE_GLANCE_WIRE={{input.ai_reviewer_claude_glance_wire}} AI_REVIEWER_GPT_GLANCE_MODEL={{input.ai_reviewer_gpt_glance_model}} AI_REVIEWER_GPT_GLANCE_BACKEND={{input.ai_reviewer_gpt_glance_backend}} AI_REVIEWER_GPT_GLANCE_TOKENS={{input.ai_reviewer_gpt_glance_tokens}} AI_REVIEWER_GPT_GLANCE_WIRE={{input.ai_reviewer_gpt_glance_wire}} AI_CONVERGE_MODEL={{input.ai_converge_model}} AI_CONVERGE_BACKEND={{input.ai_converge_backend}} AI_CONVERGE_TOKENS={{input.ai_converge_tokens}} AI_CONVERGE_FALLBACK={{input.ai_converge_fallback}} AI_CONVERGE_WIRE={{input.ai_converge_wire}} REVIEW_SCOPE={{input.review_scope}} CLAUDE_SUMMARY={{input.claude_summary}} GPT_SUMMARY={{input.gpt_summary}} WS={{vars.workspace_dir}} REVIEWED_SHA={{input.reviewed_sha}} PUB_URL={{vars.forge_publish_url}} PUB_TOKEN={{vars.forge_publish_token}} MODE={{vars.pr_review_mode}} REVIEW_MODE={{input.effective_review_mode}} PR_URL={{input.pr_url}} FINDINGS={{input.findings}} QUESTIONS={{input.questions}} TICKET_CONFORMANCE={{input.ticket_conformance}} CLAUDE_FINDINGS={{input.claude_findings}} GPT_FINDINGS={{input.gpt_findings}} GATE_ENABLED={{vars.gate_enabled}} GATE_SEVERITY={{vars.gate_severity}} GATE_CONTEXT={{vars.gate_context}} FIXER_HINT={{vars.fixer_hint}} SCOPE_FILES={{input.scope_files}} WORKSPACE_ANOMALY={{input.workspace_anomaly}} python3 -I -c "
+  command: `AI_REVIEWER_CLAUDE_EFFORT=${ITERION_VIBE_EFFORT_CLAUDE:-high} AI_REVIEWER_GPT_EFFORT=${ITERION_VIBE_EFFORT_GPT:-high} AI_REVIEWER_CLAUDE_GLANCE_EFFORT=${ITERION_VIBE_EFFORT_CLAUDE_GLANCE:-medium} AI_REVIEWER_GPT_GLANCE_EFFORT=${ITERION_VIBE_EFFORT_GPT_GLANCE:-medium} AI_CONVERGE_EFFORT=${ITERION_VIBE_EFFORT_EMIT:-medium} AI_RUN_ID={{run.id}} AI_RUN_TOKENS={{input.ai_run_tokens}} AI_REVIEWER_CLAUDE_MODEL={{input.ai_reviewer_claude_model}} AI_REVIEWER_CLAUDE_BACKEND={{input.ai_reviewer_claude_backend}} AI_REVIEWER_CLAUDE_TOKENS={{input.ai_reviewer_claude_tokens}} AI_REVIEWER_CLAUDE_FALLBACK={{input.ai_reviewer_claude_fallback}} AI_REVIEWER_CLAUDE_WIRE={{input.ai_reviewer_claude_wire}} AI_REVIEWER_GPT_MODEL={{input.ai_reviewer_gpt_model}} AI_REVIEWER_GPT_BACKEND={{input.ai_reviewer_gpt_backend}} AI_REVIEWER_GPT_TOKENS={{input.ai_reviewer_gpt_tokens}} AI_REVIEWER_GPT_WIRE={{input.ai_reviewer_gpt_wire}} AI_REVIEWER_CLAUDE_GLANCE_MODEL={{input.ai_reviewer_claude_glance_model}} AI_REVIEWER_CLAUDE_GLANCE_BACKEND={{input.ai_reviewer_claude_glance_backend}} AI_REVIEWER_CLAUDE_GLANCE_TOKENS={{input.ai_reviewer_claude_glance_tokens}} AI_REVIEWER_CLAUDE_GLANCE_FALLBACK={{input.ai_reviewer_claude_glance_fallback}} AI_REVIEWER_CLAUDE_GLANCE_WIRE={{input.ai_reviewer_claude_glance_wire}} AI_REVIEWER_GPT_GLANCE_MODEL={{input.ai_reviewer_gpt_glance_model}} AI_REVIEWER_GPT_GLANCE_BACKEND={{input.ai_reviewer_gpt_glance_backend}} AI_REVIEWER_GPT_GLANCE_TOKENS={{input.ai_reviewer_gpt_glance_tokens}} AI_REVIEWER_GPT_GLANCE_WIRE={{input.ai_reviewer_gpt_glance_wire}} AI_CONVERGE_MODEL={{input.ai_converge_model}} AI_CONVERGE_BACKEND={{input.ai_converge_backend}} AI_CONVERGE_TOKENS={{input.ai_converge_tokens}} AI_CONVERGE_FALLBACK={{input.ai_converge_fallback}} AI_CONVERGE_WIRE={{input.ai_converge_wire}} REVIEW_SCOPE={{input.review_scope}} CLAUDE_SUMMARY={{input.claude_summary}} GPT_SUMMARY={{input.gpt_summary}} WS={{vars.workspace_dir}} REVIEWED_SHA={{input.reviewed_sha}} PUB_URL={{vars.forge_publish_url}} PUB_TOKEN={{vars.forge_publish_token}} MODE={{vars.pr_review_mode}} REVIEW_MODE={{input.effective_review_mode}} PR_URL={{input.pr_url}} SEVERITY_THRESHOLD={{input.severity_threshold}} MAX_FINDINGS={{input.max_findings}} FINDINGS={{input.findings}} QUESTIONS={{input.questions}} TICKET_CONFORMANCE={{input.ticket_conformance}} CLAUDE_FINDINGS={{input.claude_findings}} GPT_FINDINGS={{input.gpt_findings}} GATE_ENABLED={{vars.gate_enabled}} GATE_SEVERITY={{vars.gate_severity}} GATE_CONTEXT={{vars.gate_context}} FIXER_HINT={{vars.fixer_hint}} SCOPE_FILES={{input.scope_files}} WORKSPACE_ANOMALY={{input.workspace_anomaly}} python3 -I -c "
 import os, json, subprocess, urllib.request, urllib.error, hashlib, re
 
 # Stable handle for one finding, shared with iterion's prior-review digest
@@ -528,7 +528,11 @@ import os, json, subprocess, urllib.request, urllib.error, hashlib, re
 def finding_id(f):
     t = ' '.join(str(f.get('title') or '').split()).lower()[:80]
     key = str(f.get('file') or '').strip() + chr(10) + t
-    return 'R' + hashlib.sha256(key.encode()).hexdigest()[:6]
+    # surrogatepass: a reviewer title can carry a lone surrogate through the
+    # shell verbatim, and a crash here kills the whole publish (R2-2). The
+    # encoding is byte-identical for every valid string, so the Go-pinned id
+    # does not change.
+    return 'R' + hashlib.sha256(key.encode('utf-8', 'surrogatepass')).hexdigest()[:6]
 
 def emit(published, forge='unknown', review_url='', posted=0, sugg=0, skipped='', summary='', gate_requested=False, gate_posted=False, gate_skipped_reason='', body_missing=False):
     # The gate travels STRUCTURED, not only folded into the summary string. A
@@ -721,6 +725,107 @@ def anchor_path(raw):
     if a[:2] in ('a/', 'b/') and not in_workspace(a) and (a[2:] in anomaly_paths or in_workspace(a[2:])):
         return a[2:]
     return a
+# MERGE FLOOR: converge can also return a READABLE array that silently
+# dropped findings -- observed on deepseek-v4.1-flash: three medium findings
+# in, an empty array out, no error anywhere, and a PR told nothing was found.
+# Its contract is dedupe, threshold and cap, and none of the three removes a
+# finding at or above the threshold while the cap has room. So every reviewer
+# finding at or above SEVERITY_THRESHOLD that no merged finding covers is
+# restored, most severe first, until MAX_FINDINGS. Covered means a merged
+# finding at least as severe, with the same stable id (file and title) or the
+# same file -- compared as anchor_path renders it for the comment -- and line
+# ranges at most FLOOR_SLACK lines apart: a deduplicated pair keeps ONE
+# anchor, on or next to the twin it absorbed, at the higher severity. It runs
+# here, before the anomaly strip, so a restored finding is routed like any
+# other. An unreadable threshold or cap must not disarm the
+# floor: it then restores at every severity, without a cap -- a posted
+# finding can be dismissed, a dropped one cannot even be seen. An off-enum
+# severity ranks as the most severe, as at the gate below.
+sev_rank = {'critical': 0, 'high': 1, 'medium': 2, 'low': 3}
+FLOOR_SLACK = 3
+
+def finding_rank(f):
+    rank = sev_rank.get(str(f.get('severity') or '').strip().lower())
+    return 0 if rank is None else rank
+
+def finding_file(f):
+    return anchor_path(f.get('file'))
+
+def finding_span(f):
+    try:
+        start = int(f.get('line'))
+    except (TypeError, ValueError, OverflowError):
+        return None
+    try:
+        end = int(f.get('line_end') or start)
+    except (TypeError, ValueError, OverflowError):
+        end = start
+    return (start, max(start, end))
+
+def covered_by(f, merged):
+    fid = finding_id(f)
+    path = finding_file(f)
+    span = finding_span(f)
+    for m in merged:
+        # A dedupe keeps the HIGHER severity, so a merged finding less severe
+        # than f cannot be the twin that absorbed it.
+        if not isinstance(m, dict) or finding_rank(m) > finding_rank(f):
+            continue
+        if finding_id(m) == fid:
+            return True
+        if not path or span is None or finding_file(m) != path:
+            continue
+        other = finding_span(m)
+        if other is not None and span[0] <= other[1] + FLOOR_SLACK and other[0] <= span[1] + FLOOR_SLACK:
+            return True
+    return False
+
+restored_from_reviewers = 0
+restored = []
+if not findings_parse_failed and not recovered_from_reviewers:
+    # Prose items are not findings (converge sometimes answers with one); the
+    # header, the gate total and the cap below all count list entries, so the
+    # list is cleaned once, here (R2-3).
+    findings = [f for f in findings if isinstance(f, dict)]
+    threshold_rank = sev_rank.get(str(os.environ.get('SEVERITY_THRESHOLD', '')).strip().lower(), sev_rank['low'])
+    try:
+        cap = int(str(os.environ.get('MAX_FINDINGS', '')).strip())
+    except ValueError:
+        cap = 0
+    candidates = []
+    for env_name in ('CLAUDE_FINDINGS', 'GPT_FINDINGS'):
+        try:
+            arr = json.loads(os.environ.get(env_name) or '[]')
+        except ValueError:
+            arr = []
+        if isinstance(arr, list):
+            candidates.extend((env_name, f) for f in arr if isinstance(f, dict) and finding_rank(f) <= threshold_rank)
+    candidates.sort(key=lambda c: finding_rank(c[1]))
+    # Only converge's own output and the OTHER family's restorations can
+    # cover a candidate: a sibling restored from the same reviewer is no
+    # twin, it is a second finding that review wrote (R2-1). Converge never
+    # absorbed it, so the id/slack cover must not fire between them.
+    merged_only = list(findings)
+    # The cap bounds what is PUBLISHED as a PR finding: an anomaly-bound
+    # finding is reclassified by the strip below, so it must not consume
+    # the restoration budget (Revi Rb997dc: a drifted finding ate the last
+    # slot and an eligible one was dropped).
+    def budget():
+        return sum(1 for m in findings if isinstance(m, dict) and anchor_path(m.get('file')) not in anomaly_paths)
+    for env_name, f in candidates:
+        if cap > 0 and budget() >= cap:
+            break
+        if covered_by(f, merged_only + [r for src, r in restored if src != env_name]):
+            continue
+        # A byte-exact repeat inside one reviewer's own array is one
+        # finding; anything less than full equality is a second report
+        # (Revi Rb17e04: same anchor and title, different detail, must
+        # not be collapsed).
+        if any(src == env_name and r == f for src, r in restored):
+            continue
+        findings.append(f)
+        restored.append((env_name, f))
+        restored_from_reviewers += 1
 anomaly_findings = []
 if anomaly_paths:
     kept = []
@@ -730,6 +835,10 @@ if anomaly_paths:
         else:
             kept.append(f)
     findings = kept
+    # The strip reclassifies restored findings too: the count must follow
+    # what is actually published, or the summary and the gate note overstate
+    # the restoration (R2-3).
+    restored_from_reviewers = sum(1 for src, r in restored if any(f is r for f in findings))
 # The two FREE-TEXT channels carry the same phantom as a finding (#1674): a
 # question, or a ticket verdict, that NAMES a drifted entry is about
 # workspace state, and published as the pull request's it makes the author
@@ -827,7 +936,6 @@ if not url or not tok:
     emit(False, gate_requested=gate_enabled, gate_skipped_reason='no forge publish endpoint bound to this run', skipped='no forge publish endpoint bound to this run: launch through an iterion server with a team forge connection covering the PR repo, so it injects forge_publish_url/forge_publish_token', summary='publish skipped: run holds no server-side forge publish grant (and never uses workspace tokens to post).')
 
 nl = chr(10)
-sev_rank = {'critical': 0, 'high': 1, 'medium': 2, 'low': 3}
 counts = {}
 comments = []
 finding_ids = []
@@ -847,11 +955,11 @@ for f in findings:
         body = body + nl + nl + 'Suggested fix: ' + sketch
     try:
         line = int(f.get('line') or 0)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         line = 0
     try:
         line_end = int(f.get('line_end') or 0)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         line_end = 0
     repl = str(f.get('replacement') or '')
     # The forge anchors an inline comment on a REPO-RELATIVE path, so the
@@ -888,6 +996,8 @@ if recovered_from_reviewers:
     summary.extend(['', chr(9888) + ' Revue dégradée : findings récupérés des reviewers ; seuil, limite et accord entre modèles non appliqués.'])
 elif findings_parse_failed:
     summary.extend(['', chr(9888) + ' Findings illisibles, aucun repli disponible : gate bloquée. Relancer la revue.'])
+if restored_from_reviewers:
+    summary.extend(['', chr(9888) + ' Fusion incomplète : ' + str(restored_from_reviewers) + (' finding omis' if restored_from_reviewers == 1 else ' findings omis') + ' par l’étape de fusion, restauré' + ('' if restored_from_reviewers == 1 else 's') + ' depuis les reviewers.'])
 if stale_anchors:
     summary.extend(['', chr(9888) + ' Le HEAD a changé depuis la revue (' + stale_anchors + '). Findings conservés ci-dessous sans ancrage ; relancer la revue sur la tête actuelle.'])
 # Explicit gaps stay visible. Unverifiable context stays available alongside
@@ -1178,6 +1288,21 @@ if gate_enabled:
         if converge_fallback:
             served.append('the merge step ran on its fallback route (' + (ai_value('AI_CONVERGE_MODEL') or 'unnamed model') + ')')
         payload['gate']['note'] = str(blocking) + ' blocking of ' + str(len(findings)) + ' finding(s); ' + ' and '.join(served) + ' because the primary credential could not serve'
+    if restored_from_reviewers:
+        # The merged set was readable but short: the status says the count
+        # came back through the floor, so the merge step is not credited
+        # with a verdict it dropped. The clause follows the count it
+        # qualifies, ahead of any longer clause already there: the forge
+        # cuts a status description at 140 characters.
+        extra = str(restored_from_reviewers) + (' finding' if restored_from_reviewers == 1 else ' findings') + ' the merge step dropped, restored from the reviewers'
+        base = str(blocking) + ' blocking of ' + str(len(findings)) + ' finding(s)'
+        note = payload['gate'].get('note') or ''
+        if not note:
+            payload['gate']['note'] = base + '; ' + extra
+        elif note.startswith(base):
+            payload['gate']['note'] = base + '; ' + extra + note[len(base):]
+        else:
+            payload['gate']['note'] = note + '; ' + extra
     if anomaly_findings:
         # The strip must not read as approval by omission: the gate note
         # says how many findings were reclassified as workspace state, so a

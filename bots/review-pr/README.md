@@ -388,6 +388,33 @@ would approve by omission, whereas a fallback-served review read the same diff
 and emitted the same schema. Blocking it would turn the rescue into a merge
 block on exactly the runs it exists to keep reviewing.
 
+The merge step is an LLM call, and `publish_review` does not take its word
+for what it dropped. When the merged `findings` is unreadable, publish falls
+back to the reviewers' own arrays (the degraded recovery). When it is readable
+but **short**, the **merge floor** restores it: the merge's contract is
+dedupe, threshold and cap, and none of the three removes a finding at or above
+`severity_threshold` while `max_findings` has room. So every reviewer finding
+at or above the threshold that no merged finding covers is put back, most
+severe first, up to the cap. "Covers" means a merged finding at least as
+severe as the dropped one, since a dedupe keeps the higher severity. It must
+also share the finding id (file and title), or sit on the same file, compared
+the way the inline comment anchors it, with line ranges at most 3 lines
+apart: that is where a deduplicated pair keeps its one anchor. The cover only
+ever compares against converge's own output and the other reviewer's
+restorations — two findings the same reviewer wrote separately are not twins,
+and both are restored. Items that are not findings count nowhere: not under
+the cap, not in the header, not in the gate total; neither does a finding the
+anomaly strip reclassifies, so a drifted file cannot eat the restoration
+budget. This was observed on
+`deepseek-v4.1-flash` (SocialGouv/iterion#3091): three medium findings went
+in, `[]` came out, and the PR was told nothing was found. The summary
+(« Fusion incomplète ») and the gate note both name the restoration, counted
+after the workspace-anomaly strip so a reclassified finding is not claimed.
+The threshold and cap reach the tool node on the `pr_gate -> publish_review`
+edge, taken from `tier_expand`'s resolved values. If they cannot be read, the
+floor restores at every severity and without a cap: a posted finding can be
+dismissed, but a dropped one is never seen.
+
 The GPT nodes — both reviewer tiers and the `converge_gpt` merge twin — have
 no fallback route of their own: their backend, model and provider are dials
 (`ITERION_VIBE_BACKEND_GPT*`, `ITERION_VIBE_MODEL_GPT*`,
