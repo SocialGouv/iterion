@@ -26,9 +26,11 @@ func TestFacadeMultiDayWallIsAWindowWithItsReopenInstant(t *testing.T) {
 	if window == "" {
 		t.Error("window is unnamed: both reading sites are gated on the name, so the wall stays invisible to the resolution walk")
 	}
-	want := time.Date(2026, 9, 24, 18, 14, 59, 0, time.UTC)
+	// The facade writes the instant in Beijing time (UTC+8): 18:14:59 there
+	// is 10:14:59Z.
+	want := time.Date(2026, 9, 24, 10, 14, 59, 0, time.UTC)
 	if !resetAt.Equal(want) {
-		t.Errorf("resetAt = %v, want %v — the refusal carries its own reopen instant", resetAt, want)
+		t.Errorf("resetAt = %v, want %v — the refusal carries its own reopen instant, in UTC+8", resetAt, want)
 	}
 
 	if got := ClassifyFallback(&ErrRateLimited{Kind: kind}, true); got != FallbackUsageWindow {

@@ -1595,9 +1595,9 @@ func classifyRateLimit(text string, now time.Time) (kind string, window usagecap
 	// Only the weekly noun maps today; "session"/bare-5h shapes keep ""
 	// until they get a window constant of their own.
 	if strings.Contains(lower, "weekly") {
-		return RateLimitKindUsageWindow, usagecap.WindowSevenDay, parseResetHint(lower, now)
+		return RateLimitKindUsageWindow, usagecap.WindowSevenDay, parseResetHint(text, now)
 	}
-	return RateLimitKindUsageWindow, "", parseResetHint(lower, now)
+	return RateLimitKindUsageWindow, "", parseResetHint(text, now)
 }
 
 // isAccountRefusalText reports whether already-lowercased text carries an
@@ -1667,10 +1667,92 @@ func UsageWindowInFlattenedError(text string) bool {
 }
 
 // resetAbsRe matches an explicit absolute instant: "reset at
-// 2026-05-13 07:38:08" (the ZAI facade shape). Tried FIRST because the
-// looser clock pattern below would otherwise chew the "20" out of "2026"
-// and report hour 20 of today.
-var resetAbsRe = regexp.MustCompile(`reset[s]?(?: at)?\s+(\d{4})-(\d{2})-(\d{2})[ t](\d{1,2}):(\d{2})(?::(\d{2}))?`)
+// 2026-05-13 07:38:08" (the ZAI facade shape), with the zone designator an
+// RFC 3339 rendering carries ("resets at 2026-10-01T00:00:00Z") captured
+// when present. Tried FIRST because the looser clock pattern below would
+// otherwise chew the "20" out of "2026" and report hour 20 of today.
+var resetAbsRe = regexp.MustCompile(`reset[s]?(?: at)?\s+(\d{4})-(\d{2})-(\d{2})[ t](\d{1,2}):(\d{2})(?::(\d{2}))?(z|[+-]\d{2}:?\d{2})?`)
+
+// resetZoneRe captures the zone a notice names for its reset clock: the
+// first parenthesised zone after the reset word, with no other parenthesis
+// in between — "resets 9pm (Europe/Paris)", "resets Jul 28, 9pm (UTC)".
+// Matched on the RAW text: a zone database name is case-sensitive.
+var resetZoneRe = regexp.MustCompile(`(?i)\breset[s]?\b[^()]*\(([a-z]+(?:/[a-z0-9_+\-]+)+|utc|gmt)\)`)
+
+// zaiResetMarker is the sentence both z.ai facade refusals print before
+// their zone-less instant: "[1308][Usage limit reached for 5 hour. Your
+// limit will reset at 2026-11-04 03:36:15]" and "[1310][Weekly/Monthly
+// Limit Exhausted. Your limit will reset at 2026-11-08 01:20:00]".
+const zaiResetMarker = "your limit will reset at"
+
+// zaiResetZone is the zone the z.ai facade writes those instants in:
+// Beijing time, UTC+8 all year. The text names no zone, but the request id
+// closing the same refusal carries the same clock: the 5-hour refusal above
+// ends "[20261104031826…]" and was received at 2026-11-03 19:18:26Z, so its
+// window reopened eighteen minutes later. Read as UTC, a 5-hour window would
+// have reopened eight hours after the refusal.
+var zaiResetZone = time.FixedZone("UTC+8", 8*60*60)
+
+// namedResetZone answers the zone a notice names for its reset clock.
+// named=false when it names none; ok=false when it names one this build
+// cannot load. That case is no hint at all rather than an instant hours off.
+func namedResetZone(text string) (loc *time.Location, named bool, ok bool) {
+	m := resetZoneRe.FindStringSubmatch(text)
+	if m == nil {
+		return nil, false, true
+	}
+	if strings.EqualFold(m[1], "utc") || strings.EqualFold(m[1], "gmt") {
+		return time.UTC, true, true
+	}
+	loc, err := time.LoadLocation(m[1])
+	if err != nil {
+		return nil, true, false
+	}
+	return loc, true, true
+}
+
+// absoluteResetZone answers the zone of an absolute reset instant, from the
+// most explicit evidence down: the designator written onto the instant,
+// then a zone the notice names, then the z.ai facade's own zone for its
+// zone-less sentence, then UTC.
+func absoluteResetZone(designator, text, lower string) (*time.Location, bool) {
+	switch {
+	case designator == "z":
+		return time.UTC, true
+	case designator != "":
+		sign := 1
+		if designator[0] == '-' {
+			sign = -1
+		}
+		digits := strings.ReplaceAll(designator[1:], ":", "")
+		hh, _ := strconv.Atoi(digits[:2])
+		mm, _ := strconv.Atoi(digits[2:])
+		if hh > 23 || mm > 59 {
+			return nil, false
+		}
+		return time.FixedZone(designator, sign*(hh*3600+mm*60)), true
+	}
+	if loc, named, ok := namedResetZone(text); named || !ok {
+		return loc, ok
+	}
+	if strings.Contains(lower, zaiResetMarker) {
+		return zaiResetZone, true
+	}
+	return time.UTC, true
+}
+
+// clockResetZone answers the zone of a month-name or bare-clock reset: the
+// zone the notice names, UTC when it names none.
+func clockResetZone(text string) (*time.Location, bool) {
+	loc, named, ok := namedResetZone(text)
+	if !ok {
+		return nil, false
+	}
+	if !named {
+		return time.UTC, true
+	}
+	return loc, true
+}
 
 // resetDateRe matches the DATED shape a weekly cap prints: "resets Jul 28,
 // 9pm (UTC)", "resets december 30, 11pm". The month name is what makes this
@@ -1717,7 +1799,7 @@ const renderedInstantTolerance = time.Minute
 // has the flattened error text (rather than the typed *ErrRateLimited) can
 // still recover the instant instead of re-implementing the patterns.
 func ParseResetHint(text string, now time.Time) (time.Time, bool) {
-	at := parseResetHint(strings.ToLower(text), now)
+	at := parseResetHint(text, now)
 	return at, !at.IsZero()
 }
 
@@ -1746,26 +1828,29 @@ func ParseResetHint(text string, now time.Time) (time.Time, bool) {
 // mid-window refusal of a real dated wall reads T - now as what REMAINS of
 // the window, strictly less than the duration it also states.
 func ParseResetHintDated(text string, now time.Time) (at time.Time, dated bool, ok bool) {
-	at, dated = parseResetHintDated(strings.ToLower(text), now)
+	at, dated = parseResetHintDated(text, now)
 	return at, dated, !at.IsZero()
 }
 
 // parseResetHint extracts the next reset instant from a usage-window
-// notice, interpreting bare clock times as the NEXT occurrence (UTC —
-// the forfait notices print UTC). Zero when nothing parses.
-func parseResetHint(lower string, now time.Time) time.Time {
-	at, _ := parseResetHintDated(lower, now)
+// notice, interpreting bare clock times as the NEXT occurrence, in the zone
+// the notice names (UTC when it names none). The answer is in UTC. Zero when
+// nothing parses.
+func parseResetHint(text string, now time.Time) time.Time {
+	at, _ := parseResetHintDated(text, now)
 	return at
 }
 
 // parseResetHintDated is parseResetHint with the provenance of the match:
 // dated=false when the returned instant is a function of the moment of
-// reading. Zero with ok irrelevant when nothing parses.
-func parseResetHintDated(lower string, now time.Time) (time.Time, bool) {
+// reading. Zero with ok irrelevant when nothing parses. It takes the RAW
+// text: the patterns read its lowercase form, the zone name its own case.
+func parseResetHintDated(text string, now time.Time) (time.Time, bool) {
+	lower := strings.ToLower(text)
 	nowUTC := now.UTC()
-	// An absolute instant is unambiguous: take it verbatim, with no
-	// plausibility window. A value already in the past is a legitimate
-	// answer (the window has reopened) and the caller floors it.
+	// An absolute instant is unambiguous once its zone is known: take it
+	// verbatim, with no plausibility window. A value already in the past is
+	// a legitimate answer (the window has reopened) and the caller floors it.
 	if m := resetAbsRe.FindStringSubmatch(lower); m != nil {
 		year, _ := strconv.Atoi(m[1])
 		month, _ := strconv.Atoi(m[2])
@@ -1776,8 +1861,9 @@ func parseResetHintDated(lower string, now time.Time) (time.Time, bool) {
 		if m[6] != "" {
 			second, _ = strconv.Atoi(m[6])
 		}
-		if month >= 1 && month <= 12 && day >= 1 && day <= 31 && hour <= 23 && minute <= 59 && second <= 59 {
-			at := time.Date(year, time.Month(month), day, hour, minute, second, 0, time.UTC)
+		loc, zoned := absoluteResetZone(m[7], text, lower)
+		if zoned && month >= 1 && month <= 12 && day >= 1 && day <= 31 && hour <= 23 && minute <= 59 && second <= 59 {
+			at := time.Date(year, time.Month(month), day, hour, minute, second, 0, loc).UTC()
 			return at, !renderedByDuration(at, lower, nowUTC)
 		}
 		return time.Time{}, true
@@ -1786,8 +1872,9 @@ func parseResetHintDated(lower string, now time.Time) (time.Time, bool) {
 		if month, ok := monthNames[m[1][:3]]; ok {
 			day, _ := strconv.Atoi(m[2])
 			hour, minute, ok := clockTo24h(m[3], m[4], m[5])
-			if ok && day >= 1 && day <= 31 {
-				return inferResetYear(month, day, hour, minute, nowUTC), true
+			loc, zoned := clockResetZone(text)
+			if ok && zoned && day >= 1 && day <= 31 {
+				return inferResetYear(month, day, hour, minute, nowUTC, loc), true
 			}
 			return time.Time{}, true
 		}
@@ -1796,14 +1883,16 @@ func parseResetHintDated(lower string, now time.Time) (time.Time, bool) {
 	}
 	if m := resetClockRe.FindStringSubmatch(lower); m != nil {
 		hour, minute, ok := clockTo24h(m[1], m[2], m[3])
-		if !ok {
+		loc, zoned := clockResetZone(text)
+		if !ok || !zoned {
 			return time.Time{}, true
 		}
-		at := time.Date(nowUTC.Year(), nowUTC.Month(), nowUTC.Day(), hour, minute, 0, 0, time.UTC)
+		local := nowUTC.In(loc)
+		at := time.Date(local.Year(), local.Month(), local.Day(), hour, minute, 0, 0, loc)
 		if !at.After(nowUTC) {
-			at = at.Add(24 * time.Hour)
+			at = time.Date(local.Year(), local.Month(), local.Day()+1, hour, minute, 0, 0, loc)
 		}
-		return at, true
+		return at.UTC(), true
 	}
 	if m := resetWindowRe.FindStringSubmatch(lower); m != nil {
 		hours, _ := strconv.Atoi(m[1])
@@ -1863,12 +1952,13 @@ func clockTo24h(rawHour, rawMinute, meridiem string) (hour, minute int, ok bool)
 // picking the candidate year that lands closest to now (so a late-December
 // notice naming January rolls forward, and an early-January notice naming
 // December rolls back). Returns zero when even the closest candidate falls
-// outside resetDateTrustWindow.
-func inferResetYear(month time.Month, day, hour, minute int, nowUTC time.Time) time.Time {
+// outside resetDateTrustWindow. The clock is read in loc; the answer is in
+// UTC.
+func inferResetYear(month time.Month, day, hour, minute int, nowUTC time.Time, loc *time.Location) time.Time {
 	var best time.Time
 	bestDelta := time.Duration(math.MaxInt64)
 	for _, year := range []int{nowUTC.Year() - 1, nowUTC.Year(), nowUTC.Year() + 1} {
-		at := time.Date(year, month, day, hour, minute, 0, 0, time.UTC)
+		at := time.Date(year, month, day, hour, minute, 0, 0, loc)
 		// Reject a normalized date (e.g. Feb 31 → Mar 3).
 		if at.Month() != month || at.Day() != day {
 			continue
@@ -1884,7 +1974,7 @@ func inferResetYear(month time.Month, day, hour, minute int, nowUTC time.Time) t
 	if bestDelta > resetDateTrustWindow {
 		return time.Time{}
 	}
-	return best
+	return best.UTC()
 }
 
 // toolUseDetail extracts a short single-line summary from tool input for
