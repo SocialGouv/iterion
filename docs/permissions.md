@@ -357,7 +357,10 @@ Matching semantics (`pkg/backend/permission`):
   tree whole while none of the call's spellings is under `dir` (#3086):
   the containment is judged with the deny rules, at their rank, so no
   `allow:` or grant reopens it and a refusal costs the agent one search
-  it can re-aim at a sibling. A Glob pattern is a path under its root: one
+  it can re-aim at a sibling. A scoped **ask** naming a tree re-gates the
+  same parent-rooted search — Ask, not Deny: the pause the operator wrote,
+  judged at the scoped ask's rank, so a grant already given still reopens
+  it. A Glob pattern is a path under its root: one
   that climbs (`../../etc/*`) leaves it, so only a bare `Glob` or an
   unbounded scope opens it, an `allow once` binds its pattern and asks
   again, and a `deny:` meets where the climb lands — the pattern joined
@@ -369,9 +372,12 @@ Matching semantics (`pkg/backend/permission`):
   under the agent's directory binds the default, pathless spelling of a
   search, while an allow keeps naming the tree it opens. An MCP server's
   tool (`mcp__<server>__<verb>`, or the single-underscore spelling) holds
-  no row of any name table, so its `path` key is read as a search root by
-  the closing side alone: a `deny:` naming a tree binds an MCP search or
-  listing rooted inside or above it — `deny: ["mcp__fs__*(/run/iterion/secrets/**)"]`
+  no row of any name table, so the filesystem-shaped key vocabulary is
+  read by the closing side alone — `path`, a move's `source` and
+  `destination`, and every element of a multi-read's `paths` list: a
+  `deny:` naming a tree binds an MCP search or listing rooted inside or
+  above it, and the verbs that carry no `path` —
+  `deny: ["mcp__fs__*(/run/iterion/secrets/**)"]`
   bounds a filesystem server whole — while the opening side keeps the k=v
   reading below, the gate knowing no MCP tool's argument semantics well
   enough to open by path.
@@ -446,7 +452,10 @@ spells no `path` reads the agent's own directory as its root on the closing
 side, and is refused whenever that directory contains a denied tree. The
 containment only ever CLOSES: it reads the same
 deny rules, judges at their rank, and binds nothing outside a tree a rule
-names. The refusal is the verdict on both backends — the gate has no
+names. A scoped `ask:` naming a tree gains the same reach: a search rooted
+above the asked tree pauses for the operator (Ask, at the scoped ask's
+rank) instead of walking the tree on a bare allow. The refusal is the
+verdict on both backends — the gate has no
 backend-enforced exclusion to narrow a live search with (claude_code's
 built-in Grep takes no extra ripgrep flags from the hook path), and claw's
 own read tools are already narrower than the gate: `workspace_grep`/`glob`
@@ -470,7 +479,9 @@ replacing the credential a seeded CLI spends. The armed families are the
 NATIVE ones (Read/Write/Edit/NotebookEdit, LS, Grep, Glob,
 `workspace_grep`); an MCP server the run attaches is the author's to bound —
 `deny: ["mcp__fs__*(/run/iterion/secrets/**)"]` covers a filesystem server
-whole — because a non-filesystem server's `path` is no host path (a repo-virtual
+whole, the closing side reading the filesystem-shaped keys (`path`, a move's
+`source`/`destination`, a multi-read's `paths` list) and not the singular
+`path` alone — because a non-filesystem server's `path` is no host path (a repo-virtual
 one would trip the containment on every call), so the engine arms no MCP
 glob of its own. These rules are engine-owned:
 no `allow:` or operator grant reopens them (deny wins in every mode), and

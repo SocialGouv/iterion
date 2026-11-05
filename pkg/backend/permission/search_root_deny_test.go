@@ -137,6 +137,8 @@ func TestAnAbsoluteGlobPatternIntoADeniedTree(t *testing.T) {
 // (claude_code's hook, the claw runner in a sandbox) rebuild the policy from
 // PolicyConfig, and the containment verdict is derived from the rules
 // themselves — the rebuilt gate refuses the same parent-rooted searches.
+// The rows are the three the issue reproduces, plus the no-over-refusal
+// row, run against BOTH gates.
 func TestTheSearchContainmentDenyTravelsWithThePolicy(t *testing.T) {
 	engine := mustPolicy(t, ModeDeny, []string{"Grep", "Glob"}, nil, nil)
 	engine.SetPathRoot("/work")
@@ -147,12 +149,22 @@ func TestTheSearchContainmentDenyTravelsWithThePolicy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewPolicyFromConfig: %v", err)
 	}
+	rows := []struct {
+		name  string
+		tool  string
+		input map[string]any
+		want  Decision
+	}{
+		{"grep from the tree's parent", "Grep", map[string]any{"pattern": ".", "path": "/run/iterion"}, Deny},
+		{"grep from the filesystem root", "Grep", map[string]any{"pattern": ".", "path": "/"}, Deny},
+		{"glob into the tree from its parent", "Glob", map[string]any{"pattern": "secrets/*", "path": "/run/iterion"}, Deny},
+		{"a search elsewhere stays allowed", "Grep", map[string]any{"pattern": ".", "path": "/work/pkg"}, Allow},
+	}
 	for side, p := range map[string]*Policy{"engine": engine, "rebuilt": child} {
-		if got, rule := p.Evaluate("Grep", map[string]any{"pattern": ".", "path": "/run/iterion"}); got != Deny {
-			t.Errorf("%s gate: a search rooted above the tree = %v (rule %q), want Deny", side, got, rule)
-		}
-		if got, _ := p.Evaluate("Grep", map[string]any{"pattern": ".", "path": "/work/pkg"}); got != Allow {
-			t.Errorf("%s gate: a search outside the tree = %v, want Allow", side, got)
+		for _, tc := range rows {
+			if got, rule := p.Evaluate(tc.tool, tc.input); got != tc.want {
+				t.Errorf("%s gate: %s = %v (rule %q), want %v", side, tc.name, got, rule, tc.want)
+			}
 		}
 	}
 }
@@ -291,5 +303,80 @@ func TestAnMCPSearchToolIsBoundByAPathDeny(t *testing.T) {
 	o.SetPathRoot("/work")
 	if got, rule := o.Evaluate("mcp__fs__search_files", map[string]any{"pattern": "api_key"}); got != Deny {
 		t.Errorf("a pathless MCP search over the tree's parent = %v (rule %q), want Deny", got, rule)
+	}
+}
+
+// TestAnAskedTreeReGatesTheParentSearch is the ask half of #3086: a scoped
+// ask naming a tree is deliberately stronger than every allow, but it met
+// only the spellings of a search rooted INSIDE the tree — rooting the same
+// search at the tree's parent walked the tree whole without the pause the
+// operator wrote. The containment's ask half pauses it, at the scoped ask's
+// rank.
+func TestAnAskedTreeReGatesTheParentSearch(t *testing.T) {
+	p := mustPolicy(t, ModeAsk, []string{"Grep", "Glob"}, []string{"Grep(/run/iterion/secrets/**)"}, nil)
+	for _, tc := range []struct {
+		name  string
+		tool  string
+		input map[string]any
+		want  Decision
+	}{
+		{"grep from the tree's parent asks", "Grep", map[string]any{"pattern": ".", "path": "/run/iterion"}, Ask},
+		{"grep from the filesystem root asks", "Grep", map[string]any{"pattern": ".", "path": "/"}, Ask},
+		{"grep rooted inside the tree asks", "Grep", map[string]any{"pattern": ".", "path": "/run/iterion/secrets"}, Ask},
+		// No over-asking: an unrelated tree, and a sibling of the asked
+		// one, keep the allow the author wrote.
+		{"a search elsewhere stays allowed", "Grep", map[string]any{"pattern": ".", "path": "/work/pkg"}, Allow},
+		{"a sibling of the asked tree stays allowed", "Grep", map[string]any{"pattern": ".", "path": "/run/iterion/other"}, Allow},
+		// The ask names Grep's tree only: a Glob over the same parent is
+		// no call the operator re-gated.
+		{"a glob over the parent keeps its allow", "Glob", map[string]any{"pattern": "*", "path": "/run/iterion"}, Allow},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got, rule := p.Evaluate(tc.tool, tc.input); got != tc.want {
+				t.Errorf("Evaluate(%s, %v) = %v (rule %q), want %v", tc.tool, tc.input, got, rule, tc.want)
+			}
+		})
+	}
+
+	// The omitted root is the agent's directory on the closing side: a
+	// pathless search from the asked tree's parent pauses too.
+	o := mustPolicy(t, ModeAsk, []string{"Grep"}, []string{"Grep(/work/secrets/**)"}, nil)
+	o.SetPathRoot("/work")
+	if got, rule := o.Evaluate("Grep", map[string]any{"pattern": "api_key"}); got != Ask {
+		t.Errorf("a pathless search over the asked tree's parent = %v (rule %q), want Ask", got, rule)
+	}
+}
+
+// TestAServerWideTreeDenyBindsEveryPathKey: the documented recipe for an
+// attached filesystem server — one `mcp__<server>__*(tree/**)` deny covering
+// it whole — must bind the verbs that carry their targets under keys other
+// than `path`. A move's two endpoints and a multi-read's list walked the
+// denied tree with the gate reading only the k=v text, whose leading
+// `destination=`/`paths=` the anchored tree regex never meets.
+func TestAServerWideTreeDenyBindsEveryPathKey(t *testing.T) {
+	p := mustPolicy(t, ModeDeny,
+		[]string{"mcp__fs__move_file", "mcp__fs__read_multiple_files"},
+		nil,
+		[]string{"mcp__fs__*(/run/iterion/secrets/**)"},
+	)
+	for _, tc := range []struct {
+		name  string
+		tool  string
+		input map[string]any
+		want  Decision
+	}{
+		{"a move out of the tree", "mcp__fs__move_file", map[string]any{"source": "/run/iterion/secrets/key.pem", "destination": "/work/key.pem"}, Deny},
+		{"a move into the tree", "mcp__fs__move_file", map[string]any{"source": "/work/key.pem", "destination": "/run/iterion/secrets/key.pem"}, Deny},
+		{"a move of the tree's parent", "mcp__fs__move_file", map[string]any{"source": "/run/iterion", "destination": "/work/iterion"}, Deny},
+		{"a multi-read with one file in the tree", "mcp__fs__read_multiple_files", map[string]any{"paths": []any{"/work/ok.md", "/run/iterion/secrets/a"}}, Deny},
+		{"a multi-read as a caller-built string slice", "mcp__fs__read_multiple_files", map[string]any{"paths": []string{"/run/iterion/secrets/a"}}, Deny},
+		{"a multi-read outside the tree", "mcp__fs__read_multiple_files", map[string]any{"paths": []any{"/work/ok.md", "/work/other.md"}}, Allow},
+		{"a move between outside paths", "mcp__fs__move_file", map[string]any{"source": "/work/a", "destination": "/work/b"}, Allow},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got, rule := p.Evaluate(tc.tool, tc.input); got != tc.want {
+				t.Errorf("Evaluate(%s, %v) = %v (rule %q), want %v", tc.tool, tc.input, got, rule, tc.want)
+			}
+		})
 	}
 }

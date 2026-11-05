@@ -417,7 +417,8 @@ func (p *Policy) isExempt(toolName string) bool {
 //
 //  1. a matching deny rule → Deny (wins in every mode);
 //  2. a matching trusted grant → Allow;
-//  3. a matching scoped ask rule → Ask;
+//  3. a matching scoped ask rule → Ask — a search rooted above a tree one
+//     names included (the ask half of the #3086 containment);
 //  4. a matching bare exact-tool ask rule → Ask, except a matching literal
 //     scoped allow for that same tool → Allow;
 //  5. another matching ask rule → Ask;
@@ -469,6 +470,14 @@ func (p *Policy) Evaluate(toolName string, input map[string]any) (Decision, stri
 	// A scoped ask is deliberately stronger than every allow. This lets an
 	// operator re-gate a single otherwise auto-allowed command.
 	if r, ok := matchScoped(p.ask, toolName, canon, closed, false); ok {
+		return Ask, r.raw
+	}
+	// The containment has an ask half too: an ask naming a tree re-gates the
+	// searches that walk it, and a search rooted ABOVE the tree walks it
+	// without its text ever meeting the rule's scope — the same gap #3086
+	// closed on the deny side. Judged here, at the scoped ask's rank: stronger
+	// than every allow, weaker than a grant the operator already gave.
+	if r, ok := p.searchTreeAsk(toolName, canon, input); ok {
 		return Ask, r.raw
 	}
 	// A bare exact-tool ask is a generic fallback, so an authored literal
@@ -588,22 +597,38 @@ func (p *Policy) matchingDeny(toolName string, input map[string]any) (rule, bool
 }
 
 // searchTreeDeny reports whether the call is a search or listing whose root
-// CONTAINS a tree a deny rule names (#3086). A `dir/**` scope is matched
-// against the spellings the call carries, and none of a search rooted at
-// dir's PARENT — or any ancestor — is under dir: the call walks the denied
-// tree whole without its text ever meeting the rule. The containment reads
-// the same normalisation as the rest of the closing side — every spelling of
-// the root (cleaned, anchored on the agent's directory, symlink-resolved)
-// against every spelling of the rule's directory, folded forms included —
-// and judges with the deny lists it extends, so it wins in every mode and no
-// allow or grant reopens it. Only a tree-reading tool (the search families,
-// the listing, an MCP tool carrying `path`) can read a directory through a
+// CONTAINS a tree a deny rule names (#3086). Judged with the deny lists it
+// extends, the containment wins in every mode and no allow or grant reopens
+// it. Refusing is the whole answer on the deny side: the gate has no
+// backend-enforced exclusion to narrow a search with, on either backend.
+func (p *Policy) searchTreeDeny(rawName, canon string, input map[string]any) (rule, bool) {
+	return p.searchTreeContainment(rawName, canon, input, p.deny, p.engineDeny)
+}
+
+// searchTreeAsk is the ask half of the same containment (#3086): a scoped
+// ask naming a tree re-gates the searches that walk it, and a search rooted
+// ABOVE the tree walks it as surely as one rooted inside, its text never
+// meeting the rule's scope. The verdict is Ask, not Deny — the operator
+// wrote a pause, not a refusal — and it judges at the scoped ask's rank, so
+// a grant the operator already gave still reopens it.
+func (p *Policy) searchTreeAsk(rawName, canon string, input map[string]any) (rule, bool) {
+	return p.searchTreeContainment(rawName, canon, input, p.ask)
+}
+
+// searchTreeContainment reports whether the call is a search or listing
+// whose root CONTAINS a tree one of the given rule lists names (#3086). A
+// `dir/**` scope is matched against the spellings the call carries, and none
+// of a search rooted at dir's PARENT — or any ancestor — is under dir: the
+// call walks the tree whole without its text ever meeting the rule. The
+// containment reads the same normalisation as the rest of the closing side —
+// every spelling of the root (cleaned, anchored on the agent's directory,
+// symlink-resolved) against every spelling of the rule's directory, folded
+// forms included. Only a tree-reading tool (the search families, the
+// listing, an MCP tool carrying a path key) can read a directory through a
 // container above it; a Read on the parent names one file the rule already
 // covers. A root spelled by omission is read too — the search defaults to
-// the agent's directory, so closingPaths answers it with pathRoot. Refusing
-// is the whole answer: the gate has no backend-enforced exclusion to narrow
-// a search with, on either backend.
-func (p *Policy) searchTreeDeny(rawName, canon string, input map[string]any) (rule, bool) {
+// the agent's directory, so closingPaths answers it with pathRoot.
+func (p *Policy) searchTreeContainment(rawName, canon string, input map[string]any, lists ...[]rule) (rule, bool) {
 	if !readsADirectoryTree(canon) {
 		return rule{}, false
 	}
@@ -611,7 +636,7 @@ func (p *Policy) searchTreeDeny(rawName, canon string, input map[string]any) (ru
 	if len(roots) == 0 {
 		return rule{}, false
 	}
-	for _, rs := range [][]rule{p.deny, p.engineDeny} {
+	for _, rs := range lists {
 		for _, r := range rs {
 			if r.treeRoot == "" || !r.matchesTool(rawName, canon) {
 				continue
@@ -1299,11 +1324,16 @@ func denyCandidates(canon string, input map[string]any, root string, opening []s
 	// The path summarize read is already expanded; expanding a repeated
 	// value again would pay its filesystem walk twice for the same
 	// spellings. A climbing glob had none read there, so its root is
-	// expanded below with the rest.
+	// expanded below with the rest. An MCP call's paths were never expanded
+	// on the opening side — summarize reads them as opaque k=v text — so
+	// the primary one is expanded below with the rest too, its plain
+	// spellings a closing rule's to read, not only their folded twins.
 	var expanded []string
 	if !globPatternClimbs(canon, str(input, "pattern")) {
 		read := primaryPath(canon, input)
-		expanded = append(expanded, read)
+		if slices.Contains(opening, read) {
+			expanded = append(expanded, read)
+		}
 		for _, c := range foldedPathDimension(canon, read, root) {
 			cands = appendUnique(cands, c)
 		}
@@ -1342,6 +1372,14 @@ func closingPaths(canon string, input map[string]any, root string) []string {
 	paths := []string{}
 	for _, key := range pathInputKeys(canon) {
 		paths = appendUnique(paths, str(input, key))
+	}
+	if isMCPToolName(canon) {
+		// The filesystem-shaped servers take a list of targets under
+		// `paths` (read_multiple_files): every element is one more path a
+		// closing verdict reads, beside the single-string keys.
+		for _, v := range strSlice(input, "paths") {
+			paths = appendUnique(paths, v)
+		}
 	}
 	if len(paths) == 0 && readsADirectoryTree(canon) {
 		paths = appendUnique(paths, root)
@@ -1396,11 +1434,14 @@ func foldPathSpelling(s string) string {
 // engine-armed tree deny covers). The MCP FQNs are the one exception the
 // catalogue forces: an MCP tool keeps its FQN as its canonical name
 // (CanonicalToolName), so no table row can name it — and none is needed.
-// The filesystem-shaped servers carry their root in `path`, read here on
-// the CLOSING side alone: a deny naming the tree meets the path the call
-// reads, while summarize's generic k=v fallback stays the opening reading
-// (an allow must name what it opens, and the gate knows no MCP tool's
-// argument semantics well enough to open by path).
+// The filesystem-shaped servers carry their targets under a small,
+// conventional key vocabulary — `path`, and the two endpoints of a move
+// (`source`, `destination`) — read here on the CLOSING side alone: a deny
+// naming the tree meets every path the call reads or writes, while
+// summarize's generic k=v fallback stays the opening reading (an allow
+// must name what it opens, and the gate knows no MCP tool's argument
+// semantics well enough to open by path). The list-valued `paths` key is
+// read beside these in closingPaths.
 func pathInputKeys(canon string) []string {
 	switch canon {
 	case "read", "write", "edit", "notebookedit":
@@ -1409,7 +1450,7 @@ func pathInputKeys(canon string) []string {
 		return []string{"path"}
 	}
 	if isMCPToolName(canon) {
-		return []string{"path"}
+		return []string{"path", "source", "destination"}
 	}
 	return nil
 }
@@ -1626,6 +1667,26 @@ func str(m map[string]any, key string) string {
 		}
 	}
 	return ""
+}
+
+// strSlice reads a list-valued input key: the []any a JSON decoder
+// produces, or a []string a caller built directly. Non-string elements are
+// skipped — the gate reads the paths it can read, and a value it cannot
+// read simply names no path here.
+func strSlice(m map[string]any, key string) []string {
+	switch v := m[key].(type) {
+	case []string:
+		return v
+	case []any:
+		out := make([]string, 0, len(v))
+		for _, e := range v {
+			if s, ok := e.(string); ok {
+				out = append(out, s)
+			}
+		}
+		return out
+	}
+	return nil
 }
 
 // IsInfrastructureTool reports whether a tool is iterion's own
