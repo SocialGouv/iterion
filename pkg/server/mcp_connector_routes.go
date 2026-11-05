@@ -154,6 +154,14 @@ func (h *connectorMCPHandler) facadeFor(grant boardMCPGrant) (*facade.Facade, co
 }
 
 // facadeOverCatalog loads every connector a catalog serves into one facade.
+//
+// A package that cannot JOIN — one of its tools collides with a tool another
+// package already holds — is left out whole with the same loud log as one
+// that cannot load: the catalog composes packages different authors ship
+// (the floor, the platform's, the team's own), and one author's collision
+// must not take every other package's tools down with it. The catalog's ids
+// are sorted, so which of two colliders keeps its tools does not depend on
+// anything but their names.
 func facadeOverCatalog(cat connection.Catalog, logger *iterlog.Logger) (*facade.Facade, error) {
 	var pkgs []*spec.Package
 	for _, id := range cat.Connectors() {
@@ -166,7 +174,13 @@ func facadeOverCatalog(cat connection.Catalog, logger *iterlog.Logger) (*facade.
 		}
 		pkgs = append(pkgs, pkg)
 	}
-	return facade.New(pkgs...)
+	f, refused := facade.Join(pkgs...)
+	if logger != nil {
+		for _, r := range refused {
+			logger.Error("connector MCP: the catalog serves %q but it cannot join the facade; excluded from it: %v", r.Connector, r.Err)
+		}
+	}
+	return f, nil
 }
 
 // trustOfGrant reads the run's trust the way every consumer of a grant must:

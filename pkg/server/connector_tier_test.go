@@ -15,6 +15,7 @@ import (
 	"github.com/SocialGouv/iterion/connectors"
 	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/connector/spec"
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -289,5 +290,52 @@ func TestTheWiredFacadeServesTheTeamsOwnPackage(t *testing.T) {
 	}
 	if auth := <-hits; auth != "token the-token" {
 		t.Fatalf("the vendor saw Authorization=%q, want the server-placed credential", auth)
+	}
+}
+
+// collidingConnector is a one-operation package whose curated tool is
+// `a_b_c_get` whichever connector builds it (`a.b_c.get`, `a_b.c.get`).
+func collidingConnector(connector, opID string) *spec.Package {
+	return &spec.Package{
+		Connector: spec.Connector{ID: connector, Version: "1.0.0"},
+		Ops: []spec.OpsFile{{Operations: []spec.Operation{{
+			ID: opID, Summary: "the colliding read", Effect: spec.EffectRead, MCP: true,
+		}}}},
+	}
+}
+
+// A package whose tool collides with another's is left out of the facade
+// with a loud log; every other package keeps serving. Which collider keeps
+// the tool is the sorted-id order's, whatever order the catalog was filled
+// in — both orders witnessed.
+func TestTheFacadeLeavesOutACollidingPackageNotTheFacade(t *testing.T) {
+	a := collidingConnector("a", "a.b_c.get")
+	ab := collidingConnector("a_b", "a_b.c.get")
+	for _, order := range [][]*spec.Package{
+		{a, ab, facadePkg("https://probe.example")},
+		{facadePkg("https://probe.example"), ab, a},
+	} {
+		logs := &lockedBuffer{}
+		f, err := facadeOverCatalog(connection.NewMemoryCatalog(order...), iterlog.New(iterlog.LevelError, logs))
+		if err != nil {
+			t.Fatalf("a cross-package collision took the facade down: %v", err)
+		}
+		var names []string
+		for _, tool := range f.Tools() {
+			names = append(names, tool.Name)
+		}
+		joined := strings.Join(names, ",")
+		if !strings.Contains(joined, "probe_issue_list") || !strings.Contains(joined, "a_b_c_get") {
+			t.Fatalf("every package that joins must keep serving: %v", names)
+		}
+		if hits, _ := f.SearchOperations("a_b.c.get", 5); len(hits) != 0 {
+			t.Fatalf("the left-out package a_b is still reachable by id: %+v", hits)
+		}
+		if hits, _ := f.SearchOperations("a.b_c.get", 5); len(hits) != 1 {
+			t.Fatalf("a (the first id in sort order) must keep its operation: %+v", hits)
+		}
+		if out := logs.String(); !strings.Contains(out, `"a_b"`) || !strings.Contains(out, "cannot join") {
+			t.Fatalf("the exclusion must be logged naming the package: %q", out)
+		}
 	}
 }

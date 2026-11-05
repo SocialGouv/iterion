@@ -12,6 +12,7 @@ import (
 	"testing/fstest"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/connector/facade"
 	"github.com/SocialGouv/iterion/pkg/connector/overlay"
 )
 
@@ -134,6 +135,15 @@ func validateStoredPackage(p StoredPackage) error {
 	}
 	if pkg.Connector.ID != p.ConnectorID {
 		return fmt.Errorf("connection: stored as %q but the package declares id %q — the row would answer to a name its content does not", p.ConnectorID, pkg.Connector.ID)
+	}
+	// The package must also build its OWN facade: two of its operations
+	// mapping to one MCP tool name (`probe.issue_x.get` and
+	// `probe.issue.x_get`), or one mapping to a reserved tool, load cleanly
+	// and could never be served to an agent. A collision with ANOTHER
+	// package depends on the composition a resolution walks, which is not
+	// known here; the facade leaves such a package out when it is built.
+	if _, err := facade.New(pkg); err != nil {
+		return fmt.Errorf("connection: package %q cannot be served as MCP tools: %w", p.ConnectorID, err)
 	}
 	return nil
 }

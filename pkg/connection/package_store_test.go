@@ -48,7 +48,13 @@ func newTestMongoPackageStore(t *testing.T) *connection.MongoPackageStore {
 // connector id so a test can publish the same package under two names.
 func publishedFiles(t *testing.T, id string) map[string]string {
 	t.Helper()
-	pkg := &spec.Package{
+	return packageFiles(t, publishedPackage(id))
+}
+
+// publishedPackage is the valid package publishedFiles writes, for a test
+// that edits it before writing.
+func publishedPackage(id string) *spec.Package {
+	return &spec.Package{
 		Connector: spec.Connector{
 			SchemaVersion: spec.SchemaVersion, ID: id, Version: "1.0.0",
 			DisplayName: "Probe", Description: "the test connector",
@@ -71,6 +77,12 @@ func publishedFiles(t *testing.T, id string) map[string]string {
 			}},
 		}},
 	}
+}
+
+// packageFiles writes pkg through the format's own writer and reads it back
+// as the file map a store row holds.
+func packageFiles(t *testing.T, pkg *spec.Package) map[string]string {
+	t.Helper()
 	dir := t.TempDir()
 	if err := spec.Write(dir, pkg); err != nil {
 		t.Fatalf("spec.Write: %v", err)
@@ -221,6 +233,41 @@ func TestPackageStore_PublishRefusesWhatCannotServe(t *testing.T) {
 						t.Fatal("a refused publish must leave no row serving")
 					}
 				})
+			}
+		})
+	}
+}
+
+// The publish gate builds the package's OWN facade: two operations mapping
+// to one MCP tool name load cleanly and can never be served to an agent, so
+// the write refuses them — held against both twins, like every refusal.
+func TestPackageStore_PublishRefusesToolsItsFacadeCannotServe(t *testing.T) {
+	pkg := publishedPackage("probe")
+	base := pkg.Ops[0].Operations[0]
+	for _, c := range []struct{ id, resource, verb string }{
+		{"probe.issue_x.get", "issue_x", "get"},
+		{"probe.issue.x_get", "issue", "x_get"},
+	} {
+		op := base
+		op.ID, op.Resource, op.Verb, op.MCP = c.id, c.resource, c.verb, true
+		pkg.Ops[0].Operations = append(pkg.Ops[0].Operations, op)
+	}
+	files := packageFiles(t, pkg)
+	for _, twin := range []struct {
+		name string
+		st   func(t *testing.T) connection.PackageStore
+	}{
+		{"memory", func(t *testing.T) connection.PackageStore { return connection.NewMemoryPackageStore() }},
+		{"mongo", func(t *testing.T) connection.PackageStore { return newTestMongoPackageStore(t) }},
+	} {
+		t.Run(twin.name, func(t *testing.T) {
+			st := twin.st(t)
+			err := st.Publish(context.Background(), connection.StoredPackage{TenantID: "team-a", ConnectorID: "probe", Files: files})
+			if err == nil || !strings.Contains(err.Error(), "probe_issue_x_get") {
+				t.Fatalf("err = %v, want the publish refused naming the colliding tool", err)
+			}
+			if _, gerr := st.Get(context.Background(), "team-a", "probe"); gerr == nil {
+				t.Fatal("a refused publish must leave no row serving")
 			}
 		})
 	}

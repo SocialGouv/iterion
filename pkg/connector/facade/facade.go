@@ -85,38 +85,95 @@ type Facade struct {
 // reserved pair, would list a tool that calls the wrong operation. Two
 // packages answering to one connector id are refused for the same reason.
 func New(pkgs ...*spec.Package) (*Facade, error) {
-	f := &Facade{
+	f := newFacade()
+	for _, pkg := range pkgs {
+		if err := f.join(pkg); err != nil {
+			return nil, err
+		}
+	}
+	return f, nil
+}
+
+// Refusal names a package Join left out, and why.
+type Refusal struct {
+	Connector string
+	Err       error
+}
+
+// Join builds the facade over every package of pkgs that can join it, in the
+// order given, and reports each one that cannot — the refusals New would
+// answer with, per package instead of for the whole set.
+//
+// A catalog's facade is built from packages different authors ship (the
+// baked floor, a platform publication, a team's own), and a tool name one of
+// them maps to can collide with another's — `a.b_c.get` and `a_b.c.get` both
+// map to `a_b_c_get`. New would refuse the whole set, and every tool of every
+// package with it; Join keeps the packages that join and leaves out the one
+// that does not, whole. The ORDER decides which of two colliders joins first
+// and keeps its tools, so a caller passes a stable one (a catalog's sorted
+// ids). A refused package is left out atomically: none of its tools or
+// operations are served, so call_operation cannot reach half of it.
+func Join(pkgs ...*spec.Package) (*Facade, []Refusal) {
+	f := newFacade()
+	var refused []Refusal
+	for _, pkg := range pkgs {
+		if err := f.join(pkg); err != nil {
+			id := ""
+			if pkg != nil {
+				id = pkg.Connector.ID
+			}
+			refused = append(refused, Refusal{Connector: id, Err: err})
+		}
+	}
+	return f, refused
+}
+
+func newFacade() *Facade {
+	return &Facade{
 		pkgs:    map[string]*spec.Package{},
 		curated: map[string]spec.Operation{},
 		byID:    map[string]spec.Operation{},
 	}
-	for _, pkg := range pkgs {
-		if pkg == nil {
-			return nil, fmt.Errorf("facade: a nil package")
-		}
-		id := pkg.Connector.ID
-		if _, dup := f.pkgs[id]; dup {
-			return nil, fmt.Errorf("facade: connector %q was handed in twice", id)
-		}
-		f.pkgs[id] = pkg
-		f.connectors = append(f.connectors, id)
-		for _, op := range pkg.Operations() {
-			f.byID[op.ID] = op
-			if !op.MCP {
-				continue
-			}
-			name := ToolName(op.ID)
-			if name == SearchTool || name == CallTool {
-				return nil, fmt.Errorf("facade: operation %q maps to the reserved tool %q", op.ID, name)
-			}
-			if prev, clash := f.curated[name]; clash {
-				return nil, fmt.Errorf("facade: operations %q and %q both map to tool %q — rename one in the overlay", prev.ID, op.ID, name)
-			}
-			f.curated[name] = op
-		}
+}
+
+// join adds pkg to f, or refuses it leaving f exactly as it was: every check
+// runs over the whole package BEFORE anything of it is recorded.
+func (f *Facade) join(pkg *spec.Package) error {
+	if pkg == nil {
+		return fmt.Errorf("facade: a nil package")
 	}
+	id := pkg.Connector.ID
+	if _, dup := f.pkgs[id]; dup {
+		return fmt.Errorf("facade: connector %q was handed in twice", id)
+	}
+	ops := pkg.Operations()
+	curated := map[string]spec.Operation{}
+	for _, op := range ops {
+		if !op.MCP {
+			continue
+		}
+		name := ToolName(op.ID)
+		if name == SearchTool || name == CallTool {
+			return fmt.Errorf("facade: operation %q maps to the reserved tool %q", op.ID, name)
+		}
+		if prev, clash := curated[name]; clash {
+			return fmt.Errorf("facade: operations %q and %q both map to tool %q — rename one in the overlay", prev.ID, op.ID, name)
+		}
+		if prev, clash := f.curated[name]; clash {
+			return fmt.Errorf("facade: operations %q and %q both map to tool %q — rename one in the overlay", prev.ID, op.ID, name)
+		}
+		curated[name] = op
+	}
+	f.pkgs[id] = pkg
+	f.connectors = append(f.connectors, id)
 	sort.Strings(f.connectors)
-	return f, nil
+	for _, op := range ops {
+		f.byID[op.ID] = op
+	}
+	for name, op := range curated {
+		f.curated[name] = op
+	}
+	return nil
 }
 
 // ToolName maps an operation id to its MCP tool name. MCP names match

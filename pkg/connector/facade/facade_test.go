@@ -245,3 +245,69 @@ func TestFacadeRefusesACollidingPackage(t *testing.T) {
 		t.Fatal("a tool-name collision must refuse the facade, not serve a wrong tool")
 	}
 }
+
+// collidingPkg is a one-operation connector whose curated tool is `a_b_c_get`
+// whichever of the two ids builds it: `a.b_c.get` (connector a) and
+// `a_b.c.get` (connector a_b) — two valid ids, one MCP name.
+func collidingPkg(connector, opID string) *spec.Package {
+	return &spec.Package{
+		Connector: spec.Connector{ID: connector, Version: "1.0.0"},
+		Ops: []spec.OpsFile{{Operations: []spec.Operation{{
+			ID: opID, Summary: "the colliding read", Effect: spec.EffectRead, MCP: true,
+		}}}},
+	}
+}
+
+// Join leaves out the package that cannot join, WHOLE, and keeps every
+// other — in both orders, the first collider keeping its tool: a set New
+// refuses entirely is a facade minus one package here.
+func TestJoinLeavesOutTheCollidingPackageWhole(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		first      *spec.Package
+		second     *spec.Package
+		keptOp     string
+		refusedOp  string
+		refusedPkg string
+	}{
+		{"a first", collidingPkg("a", "a.b_c.get"), collidingPkg("a_b", "a_b.c.get"), "a.b_c.get", "a_b.c.get", "a_b"},
+		{"a_b first", collidingPkg("a_b", "a_b.c.get"), collidingPkg("a", "a.b_c.get"), "a_b.c.get", "a.b_c.get", "a"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := facade.New(tc.first, fixturePkg(), tc.second); err == nil {
+				t.Fatal("New must still refuse the colliding set as a whole")
+			}
+			f, refused := facade.Join(tc.first, fixturePkg(), tc.second)
+			if len(refused) != 1 || refused[0].Connector != tc.refusedPkg || !strings.Contains(refused[0].Err.Error(), "a_b_c_get") {
+				t.Fatalf("refused = %+v, want exactly %q, naming the tool", refused, tc.refusedPkg)
+			}
+			var names []string
+			for _, tool := range f.Tools() {
+				names = append(names, tool.Name)
+			}
+			joined := strings.Join(names, ",")
+			if !strings.Contains(joined, "a_b_c_get") || !strings.Contains(joined, "probe_issue_list") {
+				t.Fatalf("the joining packages' tools must all be served: %v", names)
+			}
+			// The kept tool calls the FIRST collider's operation.
+			var called string
+			execFn := func(_ context.Context, op, _ string, _ map[string]any) (any, error) {
+				called = op
+				return "ok", nil
+			}
+			if _, err := f.Call(context.Background(), "a_b_c_get", json.RawMessage(`{"connection":"main"}`), execFn); err != nil || called != tc.keptOp {
+				t.Fatalf("a_b_c_get called %q (err=%v), want %q", called, err, tc.keptOp)
+			}
+			// Atomic: nothing of the refused package is reachable, not even
+			// by id through the long tail.
+			called = ""
+			if _, err := f.Call(context.Background(), facade.CallTool,
+				json.RawMessage(`{"operation":"`+tc.refusedOp+`","connection":"main"}`), execFn); err == nil || called != "" {
+				t.Fatalf("call_operation reached the refused package's %q (err=%v, called=%q)", tc.refusedOp, err, called)
+			}
+			if hits, _ := f.SearchOperations(tc.refusedOp, 5); len(hits) != 0 {
+				t.Fatalf("search finds the refused package's operations: %+v", hits)
+			}
+		})
+	}
+}
