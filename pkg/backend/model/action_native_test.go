@@ -119,6 +119,26 @@ func TestNativeBoardActionInheritsTheWorkflowGrant(t *testing.T) {
 	}
 }
 
+// And its other half (#1801): a DECLARED `capabilities: []` replaces the
+// workflow's list instead of inheriting it, so a granting workflow does not
+// open the board to a node that declared no grant. The tool node reads the
+// one inheritance rule every LLM node reads (effectiveCapabilitiesOf).
+func TestNativeBoardActionADeclaredEmptyListOverridesAGrantingWorkflow(t *testing.T) {
+	t.Parallel()
+	store := newBoardStore(t)
+	wf := &ir.Workflow{Capabilities: []string{"board.read"}}
+	e := model.NewClawExecutor(model.NewRegistry(), wf,
+		model.WithActionTransports(boardops.NewActionTransport(store, boardops.CallEnv{})))
+
+	_, err := e.Execute(context.Background(), boardActionNode("board.issue.list", []string{}), nil)
+	if err == nil || !strings.Contains(err.Error(), "capability denied") {
+		t.Fatalf("Execute: err = %v, want the capability denial — a declared `capabilities: []` grants nothing, whatever the workflow holds", err)
+	}
+	if got := recovery.Classify(err); got != runtime.ErrCodeCapabilityDenied {
+		t.Errorf("recovery.Classify = %q, want %q", got, runtime.ErrCodeCapabilityDenied)
+	}
+}
+
 // A verb the facade does not expose yet fails by name at the node too —
 // admission is the early refusal, not the only one: this path is what an IR
 // built off the admission path meets.

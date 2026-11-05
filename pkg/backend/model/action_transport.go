@@ -157,7 +157,7 @@ func (e *ClawExecutor) executeToolNodeNativeAction(ctx context.Context, node *ir
 
 	start := time.Now()
 	e.emitToolNodeStarted(node.ID, actionToolName(node), len(params))
-	data, callErr := transport.Call(callCtx, op, params, e.effectiveToolCapabilities(node))
+	data, callErr := transport.Call(callCtx, op, params, effectiveCapabilitiesOf(node.Capabilities, e.wfCapabilities))
 	if callErr != nil {
 		callErr = e.scrubActionError(callErr)
 		_ = e.emitToolNodeFinish(node.ID, actionToolName(node), node.Action, "", "", time.Since(start), callErr)
@@ -171,15 +171,4 @@ func (e *ClawExecutor) executeToolNodeNativeAction(ctx context.Context, node *ir
 	rendered, _ := json.Marshal(out)
 	_ = e.emitToolNodeFinish(node.ID, actionToolName(node), node.Action, string(rendered), "", time.Since(start), nil)
 	return out, nil
-}
-
-// effectiveToolCapabilities resolves the capability grant a tool node's
-// action runs under: the node's own list when declared (a declared
-// `capabilities: []` grants NOTHING, #1801), else the workflow's — the one
-// rule #78=A extends from LLM nodes to tool nodes.
-func (e *ClawExecutor) effectiveToolCapabilities(node *ir.ToolNode) []string {
-	if node.Capabilities != nil {
-		return node.Capabilities
-	}
-	return e.wfCapabilities
 }
