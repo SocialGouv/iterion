@@ -2,7 +2,6 @@ package parser
 
 import (
 	"fmt"
-	"math"
 	"math/rand/v2"
 	"os"
 	"slices"
@@ -229,58 +228,6 @@ func TestResyncReadsTheStackTheLoopsHold(t *testing.T) {
 	}
 }
 
-// The ticket's measure: a 2.3 MB source of 40 000 agents each leaving a
-// list open took 66 s of CPU on the replay, quadratic in the open lists.
-// On the kept stack the reading is linear, and the claim is judged as a
-// CURVE, never as a duration: an absolute bound cannot tell a quadratic
-// parse on a quiet machine from a linear parse on a loaded one — the 20 s
-// bound read 20.48 s on a loaded race shard (2026-10-29, race-shard (1),
-// #2858) with the lookup perfectly linear, the same shape #2856 judged.
-// Ten lists and ten times ten: parse N and N/10 broken lists in this
-// process, fastest of three runs a size, and hold the ratio far below the
-// quadratic figure — linear reads ~10x, the rescanning lookup ~50x on
-// this shape — for a loaded runner slows both sizes alike, so neither
-// figure moves with the weather. The threshold sits between the two, an
-// honest margin from each. The race detector multiplies the constant, not
-// the exponent: a tenth of the lists under it, the same claim.
-func TestBrokenListsParseInLinearTime(t *testing.T) {
-	withoutOpenBlocksCheck(t, func() {
-		large := 40_000
-		if raceEnabled {
-			large = 10_000
-		}
-		parse := func(lists int) time.Duration {
-			t.Helper()
-			src := brokenListsSource(lists)
-			start := time.Now()
-			res := parseLenient("lists.bot", src)
-			took := time.Since(start)
-			if res.ErrorCount < lists {
-				t.Fatalf("%d errors for %d broken lists: the shape never reached the resync", res.ErrorCount, lists)
-			}
-			return took
-		}
-		fastestOf3 := func(lists int) time.Duration {
-			t.Helper()
-			best := time.Duration(math.MaxInt64)
-			for i := 0; i < 3; i++ {
-				if took := parse(lists); took < best {
-					best = took
-				}
-			}
-			return best
-		}
-		tenth, full := fastestOf3(large/10), fastestOf3(large)
-		if tenth <= 0 {
-			t.Fatalf("the %d-list parse measured %s: no baseline to compare against", large/10, tenth)
-		}
-		if ratio := float64(full) / float64(tenth); ratio > 25 {
-			t.Fatalf("tenfolding the broken lists cost %.1fx (%s then %s): the open-block lookup is rescanning the stream (linear ~10, the rescan ~50)", ratio, tenth, full)
-		}
-		t.Logf("%d broken lists: fastest of 3 runs %s against %s at a tenth, ratio %.1fx (linear ~10)", large, full, tenth, float64(full)/float64(tenth))
-	})
-}
-
 // The ticket's second quadratic (#2880, the other half of #2768's comment):
 // the rescue's splice hands each open loop its closing DEDENTs — inserted
 // into the flat token slice, every splice recopied the stream's tail, and a
@@ -413,4 +360,39 @@ func TestOpenBlocksStartOverBehindASplice(t *testing.T) {
 			t.Fatalf("after a splice behind the stack: kept stack %v %q, replay %v %q", cols, hosts, wantCols, wantHosts)
 		}
 	})
+}
+
+// Calibrate the operation oracle independently of parse shape: resetting
+// must retain work already done, and replaying the same prefix must count
+// that work again, including when skipped remainder spans are retained.
+func TestOpenBlockResetPreservesOperationAccounting(t *testing.T) {
+	tokens := lexSource("accounting.bot", brokenListsSource(3), sourceBudget()).tokens
+	for _, skip := range []bool{false, true} {
+		var s openBlockStack
+		if skip {
+			s.skipped = []indexSpan{{from: 1, to: 3}}
+		}
+		s.reset()
+		prefix := len(tokens) / 2
+		reads := prefix
+		if skip {
+			reads -= 2
+		}
+		s.readThrough(tokens[:prefix])
+		if s.replayed != reads {
+			t.Fatalf("READ_ACCOUNTING_WRONG got=%d want=%d", s.replayed, reads)
+		}
+		s.readThrough(tokens[:prefix])
+		if s.replayed != reads {
+			t.Fatal("UNCHANGED_CURSOR_REPLAYED", s.replayed)
+		}
+		s.reset()
+		if s.replayed != reads {
+			t.Fatalf("RESET_LOST_WORK got=%d want=%d", s.replayed, reads)
+		}
+		s.readThrough(tokens[:prefix])
+		if s.replayed != 2*reads {
+			t.Fatalf("RESCAN_NOT_ACCOUNTED got=%d want=%d", s.replayed, 2*reads)
+		}
+	}
 }

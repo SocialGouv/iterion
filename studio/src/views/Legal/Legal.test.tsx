@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import { Route, Router } from "wouter";
 import { memoryLocation } from "wouter/memory-location";
 
@@ -195,7 +195,8 @@ describe("the legal page", () => {
     expect(screen.getByRole("table")).toBeTruthy();
     expect(screen.getByRole("heading", { level: 2, name: "Éditeur" })).toBeTruthy();
     expect(article.querySelector("strong")?.textContent).toBe("Fabrique");
-    expect(document.title).toBe("Mentions légales — iterion");
+    // The heading commit can precede the passive effect that titles the tab.
+    await waitFor(() => expect(document.title).toBe("Mentions légales — iterion"));
     // The metadata beside the text.
     expect(screen.getByText(/déclaration établie le 3 novembre 2026/)).toBeTruthy();
     expect(screen.getByRole("link", { name: "contact@example.org" }).getAttribute("href")).toBe(
@@ -234,7 +235,7 @@ describe("the legal page", () => {
     expect(screen.getByRole("status").textContent).toContain("Chargement");
     await act(async () => releaseSecond(legalDoc("accessibilite", "Déclaration d'accessibilité", "État : non conforme.")));
     expect(await screen.findByRole("heading", { level: 1, name: "Déclaration d'accessibilité" })).toBeTruthy();
-    expect(document.title).toBe("Déclaration d'accessibilité — iterion");
+    await waitFor(() => expect(document.title).toBe("Déclaration d'accessibilité — iterion"));
   });
 
   // Scoped to the page's own landmarks: the shared PublicTopBar above them
@@ -273,7 +274,7 @@ describe("the legal page", () => {
     getLegalDocument.mockResolvedValue(legalDoc("mentions-legales", "Mentions légales", "Texte."));
     const { unmount } = mountAt("/legal/mentions-legales");
     await screen.findByRole("article");
-    expect(document.title).toBe("Mentions légales — iterion");
+    await waitFor(() => expect(document.title).toBe("Mentions légales — iterion"));
     unmount();
     expect(document.title).toBe("Sign in — iterion");
   });

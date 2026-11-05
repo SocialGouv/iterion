@@ -5,8 +5,15 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"reflect"
+	"sync"
 	"testing"
 	"time"
+
+	"go.mongodb.org/mongo-driver/v2/bson"
+	"go.mongodb.org/mongo-driver/v2/event"
+	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
 	"github.com/SocialGouv/iterion/pkg/internal/mongotest"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -107,59 +114,208 @@ func TestMongoSource_EventsBackfillThenTail(t *testing.T) {
 	}
 }
 
-// TestMongoSource_EventsNoBoundaryGap is the regression test for the
-// replay→watch blind window: events inserted concurrently with
-// Subscribe (racing the backfill/tail boundary) must all be delivered.
-// The pre-fix ordering (replay THEN watch) lost any insert landing
-// between the two phases.
+// TestMongoSource_EventsNoBoundaryGap forces both sides of the backfill/watch
+// boundary through the driver's real command monitor. A live marker ends each
+// assertion; the timeout is a wedge guard, never evidence of a lost event.
 func TestMongoSource_EventsNoBoundaryGap(t *testing.T) {
-	st, src, ctx := newMongoFixture(t)
+	t.Run("insert_after_backfill_reply", func(t *testing.T) { checkMongoBoundary(t, false) })
+	t.Run("insert_between_watch_and_backfill", func(t *testing.T) { checkMongoBoundary(t, true) })
+}
+
+// No production hook: the source client observes the actual server replies.
+// The store's writer client is distinct, so writes in callbacks cannot recurse.
+func checkMongoBoundary(t *testing.T, overlap bool) {
+	st, _, fixtureCtx := newMongoFixture(t)
+	ctx, cancel := context.WithTimeout(fixtureCtx, 30*time.Second)
+	defer cancel()
 	const runID = "m-gap"
 	if _, err := st.CreateRun(ctx, runID, "wf", nil); err != nil {
-		t.Fatalf("CreateRun: %v", err)
+		t.Fatal(err)
 	}
 	appendMongoEvent(t, ctx, st, runID, "seed")
 
-	// Hammer inserts while subscribing so some land in the historical
-	// window and some race the boundary.
-	const total = 40
-	insertDone := make(chan error, 1)
-	go func() {
-		for i := 1; i < total; i++ {
-			if _, err := st.AppendEvent(ctx, runID, store.Event{Type: store.EventNodeStarted, NodeID: "racer"}); err != nil {
-				insertDone <- err
+	var mu sync.Mutex
+	kinds := map[int64]string{}
+	var order []string
+	var watchID int64
+	var watchBeforeFind bool
+	var findSeen, markerWritten bool
+	var firstErr error
+	fail := func(err error) {
+		mu.Lock()
+		if firstErr == nil {
+			firstErr = err
+		}
+		mu.Unlock()
+		cancel()
+	}
+	record := func(s string) { mu.Lock(); order = append(order, s); mu.Unlock() }
+	appendEvent := func(node string) {
+		e, err := st.AppendEvent(ctx, runID, store.Event{Type: store.EventNodeStarted, NodeID: node})
+		if err != nil {
+			fail(fmt.Errorf("inject %s: %w", node, err))
+			return
+		}
+		record(fmt.Sprintf("persist:%s:%d", node, e.Seq))
+	}
+	monitor := &event.CommandMonitor{
+		Started: func(_ context.Context, e *event.CommandStartedEvent) {
+			if e.DatabaseName != st.DB().Name() {
 				return
 			}
-		}
-		insertDone <- nil
-	}()
-
+			kind := ""
+			switch e.CommandName {
+			case "aggregate":
+				if name, ok := e.Command.Lookup("aggregate").StringValueOK(); ok && name == st.EventsCollection().Name() {
+					arr, err := e.Command.Lookup("pipeline").Array().Values()
+					if err == nil && len(arr) > 0 && arr[0].Document().Lookup("$changeStream").Type != 0 {
+						kind = "watch"
+					}
+				}
+			case "find":
+				if name, ok := e.Command.Lookup("find").StringValueOK(); ok && name == st.EventsCollection().Name() {
+					kind = "backfill"
+				}
+			case "getMore":
+				id, ok := e.Command.Lookup("getMore").Int64OK()
+				mu.Lock()
+				inject := ok && watchID != 0 && id == watchID && !markerWritten
+				if inject {
+					markerWritten = true
+				}
+				mu.Unlock()
+				if inject {
+					appendEvent("marker")
+				}
+			}
+			if kind != "" {
+				mu.Lock()
+				kinds[e.RequestID] = kind
+				order = append(order, kind+":started")
+				mu.Unlock()
+			}
+		},
+		Succeeded: func(_ context.Context, e *event.CommandSucceededEvent) {
+			mu.Lock()
+			kind := kinds[e.RequestID]
+			delete(kinds, e.RequestID)
+			if kind != "" {
+				order = append(order, kind+":succeeded")
+			}
+			mu.Unlock()
+			if kind == "watch" {
+				id, ok := e.Reply.Lookup("cursor", "id").Int64OK()
+				if !ok || id == 0 {
+					fail(fmt.Errorf("watch cursor not live: %s", e.Reply))
+					return
+				}
+				mu.Lock()
+				watchID = id
+				mu.Unlock()
+				if overlap {
+					appendEvent("overlap")
+				}
+			}
+			if kind == "backfill" {
+				mu.Lock()
+				duplicate := findSeen
+				findSeen = true
+				watchBeforeFind = watchID != 0
+				mu.Unlock()
+				if duplicate {
+					fail(fmt.Errorf("unexpected reconnect/backfill; witness must exercise one attempt"))
+					return
+				}
+				id, ok := e.Reply.Lookup("cursor", "id").Int64OK()
+				batch, err := e.Reply.Lookup("cursor", "firstBatch").Array().Values()
+				wantBatch := 1
+				if overlap {
+					wantBatch = 2
+				}
+				if !ok || id != 0 || err != nil || len(batch) != wantBatch {
+					fail(fmt.Errorf("backfill reply is not the expected closed snapshot: %s", e.Reply))
+					return
+				}
+				var seed store.Event
+				if err := bson.Unmarshal(batch[0].Document(), &seed); err != nil || seed.NodeID != "seed" || seed.Seq != 0 {
+					fail(fmt.Errorf("backfill seed = %+v, error %v", seed, err))
+					return
+				}
+				if overlap {
+					var e store.Event
+					if err := bson.Unmarshal(batch[1].Document(), &e); err != nil || e.NodeID != "overlap" || e.Seq != 1 {
+						fail(fmt.Errorf("overlap was not backfilled: %+v, error %v", e, err))
+						return
+					}
+				} else {
+					// This Find has already drained. Only the previously
+					// established Watch can deliver the injected event.
+					appendEvent("gap")
+				}
+			}
+		},
+	}
+	sourceClient, err := mongo.Connect(options.Client().ApplyURI(os.Getenv("ITERION_TEST_MONGO_URI")).SetMonitor(monitor))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		closeCtx, closeCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer closeCancel()
+		_ = sourceClient.Disconnect(closeCtx)
+	})
+	db := sourceClient.Database(st.DB().Name())
+	src := NewMongo(db.Collection(st.EventsCollection().Name()), nil, db.Collection(st.RunsCollection().Name()), quietLogger())
 	sub, err := src.SubscribeEvents(ctx, runID, 0)
 	if err != nil {
-		t.Fatalf("SubscribeEvents: %v", err)
+		t.Fatal(err)
 	}
 	defer sub.Close()
-
-	seen := map[int64]bool{}
-	deadline := time.After(30 * time.Second)
-	for len(seen) < total {
+	var got []int64
+	for {
 		select {
-		case batch, ok := <-sub.Events():
+		case events, ok := <-sub.Events():
 			if !ok {
-				t.Fatalf("stream closed; delivered %d/%d", len(seen), total)
+				mu.Lock()
+				detail := firstErr
+				mu.Unlock()
+				t.Fatalf("source closed before marker: got=%v monitor=%v", got, detail)
 			}
-			for _, ev := range batch {
-				if seen[ev.Seq] {
-					t.Fatalf("seq %d delivered twice", ev.Seq)
+			for _, e := range events {
+				got = append(got, e.Seq)
+				if e.NodeID == "marker" {
+					goto delivered
 				}
-				seen[ev.Seq] = true
 			}
-		case <-deadline:
-			t.Fatalf("boundary gap: delivered %d/%d events", len(seen), total)
+		case err := <-sub.Errors():
+			t.Fatalf("unexpected reconnect/error: %v", err)
+		case <-ctx.Done():
+			mu.Lock()
+			detail := firstErr
+			steps := append([]string(nil), order...)
+			mu.Unlock()
+			t.Fatalf("wedge before marker: %v got=%v monitor=%v order=%v", ctx.Err(), got, detail, steps)
 		}
 	}
-	if err := <-insertDone; err != nil {
-		t.Fatalf("concurrent insert: %v", err)
+delivered:
+	count, err := st.EventsCollection().CountDocuments(ctx, bson.M{"run_id": runID, "tenant_id": "_test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	before := watchBeforeFind
+	steps := append([]string(nil), order...)
+	detail := firstErr
+	mu.Unlock()
+	t.Logf("persisted=%d delivered=%v watchBeforeFind=%v commands=%v monitor=%v", count, got, before, steps, detail)
+	if count != 3 || detail != nil {
+		t.Fatalf("fixture not proven: count=%d monitor=%v", count, detail)
+	}
+	if !reflect.DeepEqual(got, []int64{0, 1, 2}) {
+		t.Errorf("boundary delivery despite all 3 persisted: delivered=%v, want [0 1 2]", got)
+	}
+	if !before {
+		t.Error("Watch not established before backfill Find completed")
 	}
 }
 

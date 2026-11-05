@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"syscall"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/connection"
@@ -623,6 +624,10 @@ func TestAssistantWatchSweep_aCancelledTermAccountsIntoNothing(t *testing.T) {
 // reach the store its passes list, and a peer ends up sweeping. Before the
 // handover, that peer never ran a single pass however long the outage lasted.
 func TestBoardIssueSync_aSickHolderHandsOverToAReplicaThatCanReachTheForge(t *testing.T) {
+	synctest.Test(t, testBoardIssueSyncSickHolderHandsOver)
+}
+
+func testBoardIssueSyncSickHolderHandsOver(t *testing.T) {
 	shared := lease.NewMemoryStore()
 	// Who is elected first is the store's to decide, so the sick replica is
 	// whichever one serves the first term — and every field of this observer
@@ -712,6 +717,10 @@ func (e *electionObservingIntegrationStore) ListSyncEnabled(ctx context.Context)
 // "progressed" every minute while every gating pull request it owed a check
 // waited on an answer that never came.
 func TestGateSweep_aSickHolderHandsOverToAPeerThatReachesTheForge(t *testing.T) {
+	synctest.Test(t, testGateSweepSickHolderHandsOver)
+}
+
+func testGateSweepSickHolderHandsOver(t *testing.T) {
 	shared := lease.NewMemoryStore()
 	// Who is elected first is the lease store's to decide, so the sick
 	// replica is whichever one serves the first term. Every field here is

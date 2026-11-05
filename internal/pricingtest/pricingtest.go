@@ -19,17 +19,14 @@ import (
 )
 
 // Isolate switches both live tiers off for the whole process — claw's
-// registry by its own switch, the aggregator by an empty registry that never
-// fetches — and returns the function restoring the aggregator. Call it from
-// TestMain, around m.Run.
+// registry by its own switch, the aggregator by an empty registry with no
+// disk or network tier — and returns the function restoring the aggregator.
+// Call it from TestMain, around m.Run.
 func Isolate() (restore func()) {
 	if err := os.Setenv("CLAW_DISABLE_LIVE_REGISTRY", "1"); err != nil {
 		panic(err)
 	}
-	return modelspecs.SetDefault(modelspecs.New(modelspecs.Options{
-		CachePath:   filepath.Join(os.TempDir(), "iterion-modelspecs-test-absent.json"),
-		NoAutoFetch: true,
-	}))
+	return modelspecs.SetDefault(modelspecs.NewSeeded(nil))
 }
 
 // RequireIsolated fails the test unless this process prices from the static

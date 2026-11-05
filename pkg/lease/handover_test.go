@@ -126,6 +126,10 @@ func servePasses(h *Health, every time.Duration, pass func() PassVerdict) func(c
 // replicas never run. The probe measured 60 failed passes and 0 healthy
 // passes over 20 TTLs; the property is that a healthy replica gets a pass.
 func TestRun_aLeaderWhoseEveryPassIsUnreachableHandsOverToAHealthyPeer(t *testing.T) {
+	synctest.Test(t, testRunUnreachableHolderHandsOver)
+}
+
+func testRunUnreachableHolderHandsOver(t *testing.T) {
 	const tick = 50 * time.Millisecond
 	const leaseTTL = 3 * tick
 	st := NewMemoryStore()
@@ -225,6 +229,10 @@ func testRunAnIdleHolderKeepsItsLease(t *testing.T) {
 // refusal instead of repairing it — and the answer coming back is proof this
 // replica reaches the far side, so it also clears the run of failures.
 func TestRun_aLeaderTheFarSideRefusesKeepsItsLease(t *testing.T) {
+	synctest.Test(t, testRunRefusedHolderKeepsItsLease)
+}
+
+func testRunRefusedHolderKeepsItsLease(t *testing.T) {
 	const tick = 50 * time.Millisecond
 	const leaseTTL = 3 * tick
 	st := NewMemoryStore()
@@ -263,6 +271,10 @@ func TestRun_aLeaderTheFarSideRefusesKeepsItsLease(t *testing.T) {
 // up. The assertion is a LOWER bound — a loaded scheduler can only make the
 // gap longer.
 func TestRun_theHandoverBacksTheSickReplicaOffBeforeItCampaignsAgain(t *testing.T) {
+	synctest.Test(t, testRunSickHolderWaitsBeforeCampaigningAgain)
+}
+
+func testRunSickHolderWaitsBeforeCampaigningAgain(t *testing.T) {
 	const tick = 20 * time.Millisecond
 	const backoff = 400 * time.Millisecond
 	st := NewMemoryStore()

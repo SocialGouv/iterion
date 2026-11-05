@@ -5,9 +5,11 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/internal/hometest"
+	"github.com/SocialGouv/iterion/internal/pricingtest"
 )
 
-// The model-specs cache and the per-user state these backends resolve land in the iterion home; hometest keeps it off the operator's and removes it at exit.
+// hometest isolates per-user state. pricingtest prevents live price lookups
+// from reading host caches or starting refreshes that outlive a test's HOME.
 //
 // The package is also hermetic to the host's anthropic-wire FACADE keys: an
 // ambient ZAI_API_KEY/MOONSHOT_API_KEY reroutes a stand-in spawn onto the
@@ -17,5 +19,8 @@ import (
 func TestMain(m *testing.M) {
 	os.Unsetenv("ZAI_API_KEY")
 	os.Unsetenv("MOONSHOT_API_KEY")
-	os.Exit(hometest.Isolate(m.Run))
+	restore := pricingtest.Isolate()
+	code := hometest.Isolate(m.Run)
+	restore()
+	os.Exit(code)
 }
