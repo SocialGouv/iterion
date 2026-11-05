@@ -367,7 +367,7 @@ func (k runCredKeys) routeKey(ctx context.Context, route model.WireRoute) (key s
 		case err != nil:
 			continue
 		}
-		return k.spendKey(spec, spend, false)
+		return k.spendKey(route.Backend, spec, spend, false)
 	}
 	return "", false
 }
@@ -390,10 +390,20 @@ func (k runCredKeys) routeKey(ctx context.Context, route model.WireRoute) (key s
 //     serves.
 //
 // A GLM id bound for the real Anthropic API (model.GLMUnservedAt, at the
-// destination the Spend names) meets the provider's refusal before any wall,
-// and a backend's own config is no account this cap keeps: neither is
-// metered.
-func (k runCredKeys) spendKey(spec string, s credroute.Spend, supervisor bool) (string, bool) {
+// destination the Spend names) meets the provider's refusal before any wall:
+// it is not metered.
+//
+// A backend's own configuration is keyed as it was before the resolver
+// (ADR-161 decision 5): kimi and grok spend a vendor config whose walls this
+// cap keeps no account of, unmetered; opencode spends the pod's money through
+// its own config, on the run's unslotted meter (keyForSlot("")).
+func (k runCredKeys) spendKey(backend, spec string, s credroute.Spend, supervisor bool) (string, bool) {
+	if s.Channel == credroute.ChannelOwnConfig {
+		if backend == delegate.BackendOpenCode {
+			return k.keyForSlot(""), true
+		}
+		return "", false
+	}
 	if model.GLMUnservedAt(spec, s.BaseURL) {
 		return "", false
 	}
@@ -1027,7 +1037,7 @@ func (k runCredKeys) supervisorKey(ctx context.Context, spec, hint string) (key 
 	if err != nil {
 		return "", false
 	}
-	return k.spendKey(spec, spend, true)
+	return k.spendKey(delegate.BackendClaw, spec, spend, true)
 }
 
 // launchReading resolves the launch values the pre-flight's walks read —

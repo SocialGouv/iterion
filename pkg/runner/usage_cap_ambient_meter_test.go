@@ -394,8 +394,10 @@ func TestTheNothingHeldDefaultOfABarePodIsTheBareMeter(t *testing.T) {
 // funds. A claw route on the anthropic wire and a hint-less supervisor
 // `anthropic/…` spec walk the registry's order into the pod's ambient env —
 // its meter is where their walls land. Everything else with nothing held
-// funds an account whose walls never land there — opencode its own config, a
-// gateway spec the deployment's OPENAI_COMPATIBLE pair, a zai/moonshot spec
+// funds an account whose walls never land there — opencode its own config
+// (keyed on the run's unslotted meter, as before the resolver: ADR-161
+// decision 5), a gateway spec the deployment's OPENAI_COMPATIBLE pair, a
+// zai/moonshot spec
 // that provider's own env (zai: refused outright, the registry has no factory
 // for it), a GLM id headed to api.anthropic.com on this pod (no base URL: the
 // provider refuses the id before any account wall), a claw openai id the
@@ -441,9 +443,6 @@ func TestTheNothingHeldMeterJudgesOnlyTheShapesTheAmbientAccountFunds(t *testing
 		{"gateway supervisor", func() (string, bool) { return keys.supervisorKey(ctx, "openai_compatible/glm-5.3", "") }, "supervisorKey(openai_compatible/glm-5.3)", "the registry reads the deployment's gateway pair"},
 		{"GLM supervisor", func() (string, bool) { return keys.supervisorKey(ctx, "anthropic/glm-5.3", "") }, "supervisorKey(anthropic/glm-5.3)", "no base URL: api.anthropic.com refuses the id before any account wall"},
 		{"openai supervisor", func() (string, bool) { return keys.supervisorKey(ctx, "openai/gpt-6", "") }, "supervisorKey(openai/gpt-6)", "the registry reads OPENAI_API_KEY"},
-		{"opencode route", func() (string, bool) {
-			return keys.routeKey(ctx, model.WireRoute{NodeID: "n2", Backend: delegate.BackendOpenCode, Legs: []credroute.Leg{{}}, Model: "anthropic/claude-opus-5-5", Readable: true})
-		}, "routeKey(opencode)", "opencode resolves its own config"},
 		{"claw GLM route", func() (string, bool) {
 			return keys.routeKey(ctx, model.WireRoute{NodeID: "n3", Backend: delegate.BackendClaw, Legs: []credroute.Leg{{}}, Model: "anthropic/glm-5.3", Readable: true})
 		}, "routeKey(claw glm)", "no base URL: api.anthropic.com refuses the id before any account wall"},
@@ -460,6 +459,13 @@ func TestTheNothingHeldMeterJudgesOnlyTheShapesTheAmbientAccountFunds(t *testing
 		if key, metered := tc.key(); metered {
 			t.Errorf("%s = %q metered=%v, want not metered — %s, an account whose walls never land on the ambient meter", tc.call, key, metered, tc.funds)
 		}
+	}
+	// opencode resolves its own config: never the ambient account's meter,
+	// and keyed where it was before the resolver (ADR-161 decision 5) — the
+	// run's unslotted meter.
+	opencode := model.WireRoute{NodeID: "n2", Backend: delegate.BackendOpenCode, Legs: []credroute.Leg{{}}, Model: "anthropic/claude-opus-5-5", Readable: true}
+	if key, metered := keys.routeKey(ctx, opencode); !metered || key != keys.keyForSlot("") {
+		t.Errorf("routeKey(opencode) = %q metered=%v, want the run's unslotted meter %q — keyed as before the resolver, never on the ambient account", key, metered, keys.keyForSlot(""))
 	}
 }
 
@@ -896,7 +902,11 @@ func TestAClawWalkTheFactoryRefusesIsNotMetered(t *testing.T) {
 	if err := preflightFor(t, walled, ctx, chainWorkflow(agentRoute("impl", delegate.BackendClaw, "", "anthropic/claude-sonnet-4"))); err != nil {
 		t.Errorf("parked a claw route the factory refuses: %v", err)
 	}
-	wf := chainWorkflow(agentRoute("impl", delegate.BackendOpenCode, "", "anthropic/claude-opus-5-5"))
+	// The node beside the supervisor is one the pre-flight never meters (a
+	// kimi node: its own config), routed `anthropic` so the supervisor
+	// carries the anthropic family as its hint: the supervisor's walk alone
+	// is judged.
+	wf := chainWorkflow(agentRoute("impl", delegate.BackendKimi, "anthropic", "kimi-k2"))
 	wf.Supervisors = []*ir.Supervisor{{Name: "pacer", Model: "anthropic/claude-sonnet-4"}}
 	if err := preflightWithSupervisors(t, walled, ctx, wf, ""); err != nil {
 		t.Errorf("parked a run on its supervisor's refused walk: %v", err)

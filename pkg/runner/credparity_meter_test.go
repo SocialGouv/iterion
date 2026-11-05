@@ -59,7 +59,19 @@ func TestCredParity_MeterLedgerAndPlan(t *testing.T) {
 			keys.sandboxed = row.Sandboxed
 			meterOf := func(s credparity.Spend) string {
 				switch {
-				case s.Refused(), s.Channel == credparity.OwnConfig:
+				case s.Refused():
+					return "not metered"
+				case s.Channel == credparity.OwnConfig:
+					// Keyed as before the resolver (ADR-161 decision 5):
+					// opencode on the run's unslotted meter, kimi and grok
+					// not metered.
+					if row.Node.Backend == delegate.BackendOpenCode {
+						return keys.keyForSlot("")
+					}
+					return "not metered"
+				case s.Slot != "" && secrets.WireFamily(s.Slot) != secrets.WireFamilyAnthropic:
+					// The cap meters the anthropic wire, the wire its
+					// readings come from.
 					return "not metered"
 				case s.Slot != "":
 					return keys.keyForSlot(s.Slot)
