@@ -111,6 +111,20 @@ func (a *App) OpenConnection(id string) (*Project, error) {
 // project and registers it. Reuses the existing daemon lifecycle so a project
 // already open in another pane shares the one daemon.
 func (a *App) openLocalConn(p *Project) error {
+	// Daemons opted out (ITERION_DESKTOP_ATTACH_DAEMON=0): the one embedded
+	// server is the only local backend. The project it serves opens on it —
+	// registered afresh, since a switch or the first-run wizard restarts it on
+	// a new port without touching the registry. Any other project would need
+	// a daemon, so say so instead of starting one.
+	if !attachDaemonEnabled() {
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		if a.embeddedURL == "" || p.ID != a.embeddedProjectID {
+			return fmt.Errorf("ITERION_DESKTOP_ATTACH_DAEMON is off, so Studio serves only the project it was started on; switch to %q to open it, or turn the setting back on", p.Name)
+		}
+		a.registerConnLocked(&activeConn{id: p.ID, kind: ProjectKindLocal, serverURL: a.embeddedURL})
+		return nil
+	}
 	// Already open — reuse the live entry (e.g. the startup-registered current
 	// connection, which may point at the in-process embedded server rather than
 	// a daemon). Re-deriving here would spawn a redundant daemon and shadow it.
