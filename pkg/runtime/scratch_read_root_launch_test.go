@@ -22,6 +22,7 @@ import (
 // because they carry the SAME ${PROJECT_SCRATCH_DIR} the bot is told to
 // write under — the two values must name one directory.
 type scratchPushSpy struct {
+	scratchBases  []string
 	scratchRuns   []string
 	scratchShared []string
 	vars          []map[string]any
@@ -34,9 +35,17 @@ func (x *scratchPushSpy) Execute(_ context.Context, _ ir.Node, _ map[string]any)
 }
 func (x *scratchPushSpy) SetWorkDir(d string)  { x.workDirs = append(x.workDirs, d) }
 func (x *scratchPushSpy) SetRepoRoot(r string) { x.repoRoots = append(x.repoRoots, r) }
-func (x *scratchPushSpy) SetScratchDirs(run, shared string) {
+
+// SetScratchDirs records the push; shared is recorded as the root it
+// attaches — base when the workflow still references it, "" otherwise.
+func (x *scratchPushSpy) SetScratchDirs(base, run string, shared bool) {
+	x.scratchBases = append(x.scratchBases, base)
 	x.scratchRuns = append(x.scratchRuns, run)
-	x.scratchShared = append(x.scratchShared, shared)
+	if shared {
+		x.scratchShared = append(x.scratchShared, base)
+	} else {
+		x.scratchShared = append(x.scratchShared, "")
+	}
 }
 func (x *scratchPushSpy) SetVars(v map[string]any) {
 	copied := make(map[string]any, len(v))

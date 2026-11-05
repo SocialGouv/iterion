@@ -81,7 +81,7 @@ func executeWorkspaceGlobWithLimits(ctx context.Context, input map[string]any, s
 	// any extra read root — where a relative spelling would send read_file
 	// to the workspace's homonym instead of the file glob matched.
 	workspace, extra := scope.snapshot()
-	root := containingRoot(searchPath, workspace, extra)
+	root := containingRoot(searchPath, workspace, extra).path
 	if root == "" {
 		root = searchPath
 	}

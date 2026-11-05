@@ -12,6 +12,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/SocialGouv/iterion/internal/safepath"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/backend/tool"
@@ -323,13 +324,17 @@ func relaySessionMirrorGap(d *proxyDispatcher, stderr io.Writer, reason string, 
 //
 // workspace is the runner's cwd (docker exec lands at the bind-mount target).
 //
-// scratchRoots are the container's scratch read roots the launcher crossed
-// on the task envelope (delegate.IOTask.ScratchReadRoots, or ScratchDir
-// alone from a launcher that predates the list): the read tools accept
-// each as a read-only root beside the workspace (#2650) so a sandboxed
-// node can read the run's own briefs — the run family's subtree first,
-// the shared project scratch behind it only while the workflow still
-// references it (#2869). Empty keeps the workspace-only scope.
+// scratch is the container's scratch read scope the launcher crossed on
+// the task envelope (delegate.IOTask.ScratchReadRoots and ScratchAnchor,
+// or ScratchDir alone from a launcher that predates the list): the read
+// tools accept each root as a read-only root beside the workspace (#2650)
+// so a sandboxed node can read the run's own briefs — the run family's
+// subtree first, the shared project scratch behind it only while the
+// workflow still references it (#2869). A root beneath the anchor
+// attaches nested (tool.ReadScope.AddExtraRootBeneath): other runs write
+// the shared scratch, and a link planted at runs/<id> must contain
+// nothing rather than become the root. Empty keeps the workspace-only
+// scope.
 //
 // bashExtraEnv is nil here on purpose: a sandboxed task carries no env
 // additions (delegate.Task.ExtraEnv is host-only, and IOTask has no such
@@ -344,16 +349,16 @@ func relaySessionMirrorGap(d *proxyDispatcher, stderr io.Writer, reason string, 
 // exactly those entries — joined against THIS container's workspace — and
 // refuses everything else, so a checkout under review cannot plant a skill
 // under a walked root (iterion#1719). Disarmed, the workspace walk stands.
-func registerSandboxLocalTools(reg *tool.Registry, workspace string, scratchRoots []string, subagent tool.SubagentRunner, commandMaxBytes int, skillAllowlist map[string]string, skillArmed bool) error {
+func registerSandboxLocalTools(reg *tool.Registry, workspace string, scratch sandboxScratchScope, subagent tool.SubagentRunner, commandMaxBytes int, skillAllowlist map[string]string, skillArmed bool) error {
 	readScope := tool.NewReadScope(workspace)
-	for _, root := range scratchRoots {
-		// A container-local root (kubernetes banks the scratch instead of
-		// binding it) does not exist until something creates it — and the
-		// scope skips a root that does not resolve, so the run's own
-		// subtree would refuse its first read. Best-effort: a mkdir
-		// failure degrades to that skip, never a registration failure.
-		_ = os.MkdirAll(root, 0o700)
-		readScope.AddExtraRoot(root)
+	for _, root := range scratch.roots {
+		if scratch.anchor == "" {
+			readScope.AddExtraRoot(root)
+			continue
+		}
+		if err := readScope.AddExtraRootBeneath(scratch.anchor, root); err != nil {
+			return fmt.Errorf("scratch read root: %w", err)
+		}
 	}
 	if err := tool.RegisterClawBuiltinsWithScope(reg, readScope, nil); err != nil {
 		return err
@@ -422,23 +427,60 @@ func makeHybridToolDefs(
 	defs []delegate.IOToolDef,
 	d *proxyDispatcher,
 	workspace string,
-	scratchRoots []string,
+	scratch sandboxScratchScope,
 	modelReg *model.Registry,
 	hooks model.EventHooks,
 	commandMaxBytes int,
 	skillAllowlist map[string]string,
 	skillArmed bool,
 ) ([]delegate.ToolDef, error) {
-	return buildHybridToolDefs(defs, d, workspace, sandboxLocalToolRegistrar(scratchRoots, modelReg, hooks, commandMaxBytes, skillAllowlist, skillArmed))
+	return buildHybridToolDefs(defs, d, workspace, sandboxLocalToolRegistrar(scratch, modelReg, hooks, commandMaxBytes, skillAllowlist, skillArmed))
+}
+
+// sandboxScratchScope is the scratch read scope a task crossed: the roots
+// in narrowing order and the project scratch they lie beneath ("" from a
+// launcher that predates the anchor — every root then attaches plain).
+type sandboxScratchScope struct {
+	anchor string
+	roots  []string
+}
+
+// ensureSandboxScratchRoots creates the scope's roots in the container: the
+// anchor as a directory, and every root beneath it as a chain of REAL
+// directories (safepath.EnsureRealBindSourceDir), checked before and after
+// the creation — other runs write the shared scratch, and a MkdirAll
+// through a link they planted at runs/ would create the subtree wherever
+// the link points. A root from a launcher that named no anchor is left as
+// it is. The returned error names every root not created; the caller
+// reports it and carries on — reads under a missing root refuse, a write
+// creates it.
+func ensureSandboxScratchRoots(scratch sandboxScratchScope) error {
+	if scratch.anchor == "" {
+		return nil
+	}
+	if err := os.MkdirAll(scratch.anchor, 0o700); err != nil {
+		return fmt.Errorf("create the scratch anchor %s: %w", scratch.anchor, err)
+	}
+	var errs []error
+	for _, root := range scratch.roots {
+		if filepath.Clean(root) == filepath.Clean(scratch.anchor) {
+			continue
+		}
+		if err := safepath.EnsureRealBindSourceDir(scratch.anchor, root, 0o700); err != nil {
+			errs = append(errs, fmt.Errorf("create the scratch read root %s: %w", root, err))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // sandboxLocalToolRegistrar closes the in-container registration over what a
 // child conversation needs: the model registry that resolves this container's
 // API clients, and the hooks that relay the child's turns to the launcher so
 // a sandboxed delegation is metered and auditable like an unsandboxed one.
-// scratchRoots are the container's scratch read roots for the local read
-// tools (#2650) — the run family's subtree first, then the shared project
-// scratch while the workflow still references it (#2869).
+// scratch is the container's scratch read scope for the local read tools
+// (#2650) — the run family's subtree first, then the shared project
+// scratch while the workflow still references it, both anchored on the
+// project scratch (#2869).
 // commandMaxBytes is the launcher's own answer for the `command` tool's
 // ceiling, carried by the task (delegate.IOTask.SlashCommandMaxBytes).
 //
@@ -448,9 +490,9 @@ func makeHybridToolDefs(
 // one does (model.ParentLoop, which the in-container Execute fills from the
 // forwarded task). Lifecycle hooks are nil, as they are for this runner's own
 // loop — the launcher owns that layer.
-func sandboxLocalToolRegistrar(scratchRoots []string, modelReg *model.Registry, hooks model.EventHooks, commandMaxBytes int, skillAllowlist map[string]string, skillArmed bool) func(*tool.Registry, string) error {
+func sandboxLocalToolRegistrar(scratch sandboxScratchScope, modelReg *model.Registry, hooks model.EventHooks, commandMaxBytes int, skillAllowlist map[string]string, skillArmed bool) func(*tool.Registry, string) error {
 	return func(reg *tool.Registry, workspace string) error {
-		return registerSandboxLocalTools(reg, workspace, scratchRoots,
+		return registerSandboxLocalTools(reg, workspace, scratch,
 			model.NewSubagentRunner(modelReg, reg, hooks, nil, ""), commandMaxBytes, skillAllowlist, skillArmed)
 	}
 }

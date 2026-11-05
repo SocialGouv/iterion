@@ -56,7 +56,7 @@ func TestRegisterSandboxLocalTools_ScratchDirIsAReadRoot(t *testing.T) {
 
 	// The scope the proxy builds carries the scratch: the brief reads.
 	reg := tool.NewRegistry()
-	if err := registerSandboxLocalTools(reg, workspace, []string{scratch}, nil, 0, nil, false); err != nil {
+	if err := registerSandboxLocalTools(reg, workspace, sandboxScratchScope{roots: []string{scratch}}, nil, 0, nil, false); err != nil {
 		t.Fatalf("registerSandboxLocalTools: %v", err)
 	}
 	brief := filepath.Join(scratch, "briefs", "lot-01.md")
@@ -81,7 +81,7 @@ func TestRegisterSandboxLocalTools_ScratchDirIsAReadRoot(t *testing.T) {
 	// pre-#2650 envelope, or the AddExtraRoot call removed), the same brief
 	// is outside every root and the read refuses.
 	bare := tool.NewRegistry()
-	if err := registerSandboxLocalTools(bare, workspace, nil, nil, 0, nil, false); err != nil {
+	if err := registerSandboxLocalTools(bare, workspace, sandboxScratchScope{}, nil, 0, nil, false); err != nil {
 		t.Fatalf("registerSandboxLocalTools without scratch: %v", err)
 	}
 	if _, err := readFile(t, bare, brief); err == nil || !strings.Contains(err.Error(), "outside workspace") {
@@ -111,7 +111,7 @@ func TestRegisterSandboxLocalTools_NarrowedRootsBothRead(t *testing.T) {
 	}
 
 	reg := tool.NewRegistry()
-	if err := registerSandboxLocalTools(reg, workspace, []string{runSubtree, shared}, nil, 0, nil, false); err != nil {
+	if err := registerSandboxLocalTools(reg, workspace, sandboxScratchScope{anchor: shared, roots: []string{runSubtree, shared}}, nil, 0, nil, false); err != nil {
 		t.Fatalf("registerSandboxLocalTools: %v", err)
 	}
 	readFile := func(path string) (string, error) {
@@ -131,7 +131,7 @@ func TestRegisterSandboxLocalTools_NarrowedRootsBothRead(t *testing.T) {
 	// The narrowed list alone (no shared root): the run subtree reads, the
 	// shared cache refuses.
 	narrow := tool.NewRegistry()
-	if err := registerSandboxLocalTools(narrow, workspace, []string{runSubtree}, nil, 0, nil, false); err != nil {
+	if err := registerSandboxLocalTools(narrow, workspace, sandboxScratchScope{anchor: shared, roots: []string{runSubtree}}, nil, 0, nil, false); err != nil {
 		t.Fatalf("registerSandboxLocalTools narrowed: %v", err)
 	}
 	if _, err := func() (string, error) {
@@ -140,5 +140,70 @@ func TestRegisterSandboxLocalTools_NarrowedRootsBothRead(t *testing.T) {
 		return td.Execute(context.Background(), raw)
 	}(); err == nil || !strings.Contains(err.Error(), "outside workspace") {
 		t.Fatalf("with the narrowed list alone, the shared cache must refuse, got %v", err)
+	}
+}
+
+// The in-container scope attaches the run subtree BENEATH the anchor the
+// launcher crossed (IOTask.ScratchAnchor, #2869): the shared scratch is
+// written by other runs, so a link planted at runs/<id> must contain
+// nothing rather than become a read root on wherever it points.
+func TestRegisterSandboxLocalTools_PlantedRunSubtreeLinkContainsNothing(t *testing.T) {
+	workspace := t.TempDir()
+	shared := t.TempDir()
+	outside := t.TempDir()
+	hostFile := filepath.Join(outside, "host-file.txt")
+	if err := os.WriteFile(hostFile, []byte("HOST ONLY\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runSubtree := filepath.Join(shared, "runs", "run-planted")
+	if err := os.MkdirAll(filepath.Dir(runSubtree), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, runSubtree); err != nil {
+		t.Fatal(err)
+	}
+
+	reg := tool.NewRegistry()
+	if err := registerSandboxLocalTools(reg, workspace, sandboxScratchScope{anchor: shared, roots: []string{runSubtree}}, nil, 0, nil, false); err != nil {
+		t.Fatalf("registerSandboxLocalTools: %v", err)
+	}
+	td, err := reg.Resolve("read_file")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{hostFile, filepath.Join(runSubtree, "host-file.txt")} {
+		raw, _ := json.Marshal(map[string]any{"path": path})
+		if out, err := td.Execute(context.Background(), raw); err == nil {
+			t.Errorf("read_file(%q) = %q through a link planted at the run subtree, want a refusal", path, out)
+		}
+	}
+}
+
+// ensureSandboxScratchRoots creates the run subtree as a chain of REAL
+// directories under the anchor: with runs/ planted as a link out of the
+// scratch, a MkdirAll would create the subtree — and the run would write
+// its state — wherever the link points. It refuses with an error instead,
+// and creates a real subtree when nothing is planted.
+func TestEnsureSandboxScratchRootsRefusesALinkBelowTheAnchor(t *testing.T) {
+	shared := t.TempDir()
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(shared, "runs")); err != nil {
+		t.Fatal(err)
+	}
+	planted := sandboxScratchScope{anchor: shared, roots: []string{filepath.Join(shared, "runs", "run-1"), shared}}
+	if err := ensureSandboxScratchRoots(planted); err == nil {
+		t.Error("ensureSandboxScratchRoots through a planted runs/ link succeeded, want an error")
+	}
+	if _, err := os.Lstat(filepath.Join(outside, "run-1")); !os.IsNotExist(err) {
+		t.Fatalf("the run subtree was created through the planted link at %s (%v)", filepath.Join(outside, "run-1"), err)
+	}
+
+	clean := t.TempDir()
+	fresh := sandboxScratchScope{anchor: clean, roots: []string{filepath.Join(clean, "runs", "run-1")}}
+	if err := ensureSandboxScratchRoots(fresh); err != nil {
+		t.Fatalf("ensureSandboxScratchRoots on a clean scratch: %v", err)
+	}
+	if info, err := os.Lstat(filepath.Join(clean, "runs", "run-1")); err != nil || !info.IsDir() {
+		t.Fatalf("the run subtree was not created as a real directory: %v", err)
 	}
 }

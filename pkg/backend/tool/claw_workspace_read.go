@@ -366,7 +366,7 @@ func newCredentialReadGate(scope *ReadScope) credentialReadGate {
 	if strings.TrimSpace(workspace) != "" {
 		roots = append(roots, workspace)
 	}
-	roots = append(roots, extra...)
+	roots = append(roots, extraRootPaths(extra)...)
 	return credentialReadGate{guard: clawtools.NewCredentialReadGuard(os.Getenv), roots: roots}
 }
 

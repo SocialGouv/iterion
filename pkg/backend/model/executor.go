@@ -106,13 +106,14 @@ type ClawExecutor struct {
 	// to it (#2650, narrowed by #2869); nil leaves reads workspace-only.
 	readScope *tool.ReadScope
 	// scratchRoots records the engine's SetScratchDirs push (#2869): the
-	// run family's subtree and — while the workflow still references it —
-	// the shared project scratch. The sandbox crossing narrows the
-	// in-container runner's read roots to these (runnerIOTask reads them
-	// off the task buildTask stamps). ONE atomic pointer for the pair:
-	// buildTask reads it live on every node, so a mid-run push must land
-	// whole or not at all — the data-race class #2897 closed on workDir.
-	scratchRoots   atomic.Pointer[scratchRootPair]
+	// project scratch the run subtree lies beneath, the run family's
+	// subtree, and whether the project scratch itself is a root. The
+	// sandbox crossing narrows the in-container runner's read roots to
+	// these (runnerIOTask reads them off the task buildTask stamps). ONE
+	// atomic pointer for the push: buildTask reads it live on every node,
+	// so a mid-run push must land whole or not at all — the data-race
+	// class #2897 closed on workDir.
+	scratchRoots   atomic.Pointer[scratchPush]
 	defaultBackend string // workflow-level default backend (empty = use "claw")
 	// modelOverrides are launch-time per-node/-group backend+model+provider
 	// overrides (studio Launch dropdowns, CLI --model/--backend). They sit at
@@ -1355,14 +1356,18 @@ func (e *ClawExecutor) RepoRoot() string {
 // SetScratchDirs records the run's scratch READ ROOTS and attaches them
 // to the claw read tools' scope (#2650, narrowed by #2869):
 //
+//   - base is the project-wide ${PROJECT_SCRATCH_DIR}, the anchor the run
+//     subtree lies beneath;
 //   - run is the run family's own subtree (${RUN_SCRATCH_DIR} —
-//     <project scratch>/runs/<family root>), always attached: a sub-bot
-//     child and its parent share one subtree, so the fan-in the shared
-//     scratch carried survives the narrowing;
-//   - shared is the project-wide ${PROJECT_SCRATCH_DIR}, attached only
-//     while the workflow still references it — the engine passes "" when
-//     no resolved var names it, and the run then reads no other run's
-//     leftovers.
+//     <project scratch>/runs/<family root>), always attached, and attached
+//     BENEATH base (tool.ReadScope.AddExtraRootBeneath): sandboxed runs
+//     write the shared scratch through their bind, so a link planted at
+//     runs/<id> must contain nothing rather than become the root. A
+//     sub-bot child and its parent share one subtree, so the fan-in the
+//     shared scratch carried survives the narrowing;
+//   - shared reports that base itself is a root: true while the workflow
+//     still references ${PROJECT_SCRATCH_DIR}, false when no resolved var
+//     names it — the run then reads no other run's leftovers.
 //
 // The engine calls it from its single run-level push, once the repo root
 // and the sandbox decision pinned the values down — the scratch dir is
@@ -1371,40 +1376,48 @@ func (e *ClawExecutor) RepoRoot() string {
 // crossing: runnerIOTask narrows the in-container runner's read roots to
 // what was pushed here. Empty values are skipped; no read scope wired
 // (WithClawReadScope) skips the attachment but still records, so the
-// crossing narrows even without a host-side scope.
+// crossing narrows even without a host-side scope. A run that is not
+// beneath base is refused unattached, with a warning.
 // Only the READ tools take the roots; the write tools' contract is
 // untouched. Safe before Execute and concurrently with an in-flight
 // Execute (#2897): the pair rides one atomic pointer and the scope is
 // RWMutex-guarded, so a push lands whole or not at all — never a torn
 // view mid-update.
-func (e *ClawExecutor) SetScratchDirs(run, shared string) {
-	e.scratchRoots.Store(&scratchRootPair{run: run, shared: shared})
+func (e *ClawExecutor) SetScratchDirs(base, run string, shared bool) {
+	e.scratchRoots.Store(&scratchPush{base: base, run: run, shared: shared})
 	if e.readScope == nil {
 		return
 	}
-	e.readScope.AddExtraRoot(run)
-	e.readScope.AddExtraRoot(shared)
+	if err := e.readScope.AddExtraRootBeneath(base, run); err != nil && e.logger != nil {
+		e.logger.Warn("claw: the run scratch read root is not attached: %v", err)
+	}
+	if shared {
+		e.readScope.AddExtraRoot(base)
+	}
 }
 
-// scratchRootPair is the atomic payload of one SetScratchDirs push.
-type scratchRootPair struct{ run, shared string }
+// scratchPush is the atomic payload of one SetScratchDirs push.
+type scratchPush struct {
+	base, run string
+	shared    bool
+}
 
-// scratchReadRoots reports the pushed scratch roots in narrowing order —
-// the run's subtree first, then the shared project scratch when the
-// workflow still references it. nil when no push happened yet.
-func (e *ClawExecutor) scratchReadRoots() []string {
-	pair := e.scratchRoots.Load()
-	if pair == nil {
-		return nil
+// scratchScope reports the pushed scratch scope from ONE load of the push:
+// the anchor the roots lie beneath, and the roots in narrowing order — the
+// run's subtree first, then the shared project scratch when the workflow
+// still references it. Zero values when no push happened yet.
+func (e *ClawExecutor) scratchScope() (anchor string, roots []string) {
+	push := e.scratchRoots.Load()
+	if push == nil {
+		return "", nil
 	}
-	var roots []string
-	if pair.run != "" {
-		roots = append(roots, pair.run)
+	if push.run != "" {
+		roots = append(roots, push.run)
 	}
-	if pair.shared != "" {
-		roots = append(roots, pair.shared)
+	if push.shared && push.base != "" && push.base != push.run {
+		roots = append(roots, push.base)
 	}
-	return roots
+	return push.base, roots
 }
 
 // clawToolHint extracts a short human-readable hint from a tool's

@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/SocialGouv/iterion/internal/safepath"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
@@ -2565,12 +2566,9 @@ func (e *Engine) pushExecutorVars(ctx context.Context, runID string, vars map[st
 			// subtree keyed on nothing.
 			e.runScratchOwner = e.resolveRunScratchOwner(ctx, runID, e.parentRunID)
 		}
-		shared := e.projectScratchDirVarValue()
-		if !varsReferencePath(vars, shared, e.runScratchDirVarValue()) {
-			shared = ""
-		}
+		base, run := e.projectScratchDirVarValue(), e.runScratchDirVarValue()
 		e.ensureRunScratchDir()
-		s.SetScratchDirs(e.runScratchDirVarValue(), shared)
+		s.SetScratchDirs(base, run, varsReferencePath(vars, base, run))
 	}
 }
 
@@ -2629,8 +2627,17 @@ func varsReferencePath(vars map[string]any, dir, except string) bool {
 // like "outside the read roots". Host-side covers the bind-backed
 // sandbox too (the container path is backed by this directory); a
 // container-local scratch (kubernetes) is created by the in-container
-// runner at registration. Best-effort: a mkdir failure degrades to the
-// pre-narrowing behaviour, never a run failure.
+// runner (ensureSandboxScratchRoots).
+//
+// The subtree is created as a chain of REAL directories under the iterion
+// home (safepath.EnsureRealBindSourceDir, the check applyScratchMount runs
+// on the scratch itself), checked before and after the creation:
+// sandboxed runs write the scratch through their bind, and a MkdirAll
+// through a link one of them planted at runs/ would create the subtree —
+// and write the run's state — wherever the link points. A refusal or a
+// mkdir failure is a warning, never a run failure: the read root is
+// attached beneath the scratch either way and contains nothing behind a
+// link, and the bot's own first write creates a missing subtree.
 func (e *Engine) ensureRunScratchDir() {
 	if e.runScratchOwner == "" {
 		return
@@ -2642,8 +2649,12 @@ func (e *Engine) ensureRunScratchDir() {
 	if base == "" {
 		return
 	}
-	dir := filepath.Join(memory.WorkspaceScratchDir(base), "runs", e.runScratchOwner)
-	if err := os.MkdirAll(dir, 0o700); err != nil && e.logger != nil {
+	scratch := memory.WorkspaceScratchDir(base)
+	if scratch == "" {
+		return
+	}
+	dir := filepath.Join(scratch, memory.RunScratchDirName, e.runScratchOwner)
+	if err := safepath.EnsureRealBindSourceDir(store.GlobalIterionDataDir(), dir, 0o700); err != nil && e.logger != nil {
 		e.logger.Warn("runtime: create the run scratch subtree %s: %v — the narrowed read root attaches when the first write creates it", dir, err)
 	}
 }

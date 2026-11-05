@@ -36,7 +36,7 @@ func TestRegisterSandboxLocalTools_PinnedSkillMode(t *testing.T) {
 	}
 
 	reg := tool.NewRegistry()
-	if err := registerSandboxLocalTools(reg, workspace, nil,
+	if err := registerSandboxLocalTools(reg, workspace, sandboxScratchScope{},
 		model.NewSubagentRunner(model.NewRegistry(), tool.NewRegistry(), model.EventHooks{}, nil, ""), 0,
 		map[string]string{"review": pinnedRel}, true); err != nil {
 		t.Fatalf("registerSandboxLocalTools: %v", err)
@@ -56,7 +56,7 @@ func TestRegisterSandboxLocalTools_PinnedSkillMode(t *testing.T) {
 
 	// Armed with nothing, every name refuses — no silent fall back to the walk.
 	reg2 := tool.NewRegistry()
-	if err := registerSandboxLocalTools(reg2, workspace, nil, nil, 0, nil, true); err != nil {
+	if err := registerSandboxLocalTools(reg2, workspace, sandboxScratchScope{}, nil, 0, nil, true); err != nil {
 		t.Fatalf("registerSandboxLocalTools (empty pin): %v", err)
 	}
 	td2, _ := reg2.Resolve("skill")

@@ -147,14 +147,17 @@ type workDirSetter interface{ SetWorkDir(string) }
 type repoRootSetter interface{ SetRepoRoot(string) }
 
 // scratchDirSetter receives the run's scratch READ ROOTS so the claw read
-// tools accept them (#2650, narrowed by #2869): the run family's own
-// subtree (${RUN_SCRATCH_DIR}) always, and the shared project scratch
-// (${PROJECT_SCRATCH_DIR}) only while the workflow still references it —
-// an empty shared means the narrowed scope stands alone. Pushed from
+// tools accept them (#2650, narrowed by #2869): base is the shared project
+// scratch (${PROJECT_SCRATCH_DIR}), run the run family's own subtree
+// beneath it (${RUN_SCRATCH_DIR}), always a root, and shared reports
+// whether base itself is a root too — only while the workflow still
+// references it; false means the narrowed scope stands alone. Pushed from
 // pushExecutorVars only, which every path reaches after e.repoRoot is
 // settled AND after the sandbox decision — the values are keyed on the
 // repo root and differ between host and container.
-type scratchDirSetter interface{ SetScratchDirs(run, shared string) }
+type scratchDirSetter interface {
+	SetScratchDirs(base, run string, shared bool)
+}
 
 type varsSetter interface{ SetVars(map[string]any) }
 

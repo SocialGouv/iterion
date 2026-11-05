@@ -623,6 +623,13 @@ type Task struct {
 	// the crossing keeps its legacy project-scratch root.
 	ScratchReadRoots []string
 
+	// ScratchAnchor is the project scratch the ScratchReadRoots lie
+	// beneath, as the RUNNER sees it (#2869). The runner attaches a root
+	// below it without following any link between the two — the shared
+	// scratch is written by other runs, so a link planted at runs/<id>
+	// must not become a root. Empty when no push happened.
+	ScratchAnchor string
+
 	// ReasoningEffort is the reasoning effort level sent on the wire.
 	// Valid values: "none", "low", "medium", "high", "xhigh", "max". The DSL also
 	// accepts "ultracode", but the runtime remaps that to "xhigh" before

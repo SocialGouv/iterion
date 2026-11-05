@@ -9,6 +9,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/memory"
 )
 
 // varsReferencePath is the narrowing's detection (#2869): the shared
@@ -159,4 +160,46 @@ func TestRunScratchOwnerRefusesATraversalShapedParent(t *testing.T) {
 	launch("run-recorded-parent", "..")
 	eng, pushed := launch("run-recorded-child", "run-recorded-parent")
 	underProjectScratch(eng, pushed, "run-recorded-parent")
+}
+
+// TestEnsureRunScratchDirNeverCreatesThroughAPlantedLink is the host half
+// of the subtree's creation (#2869): sandboxed runs write the project
+// scratch through their bind, so runs/ can be a link one of them planted.
+// The engine's push must not MkdirAll through it — that would create the
+// next run's subtree, and let it write its state, wherever the link
+// points. The run itself still starts.
+func TestEnsureRunScratchDirNeverCreatesThroughAPlantedLink(t *testing.T) {
+	t.Setenv("ITERION_HOME", t.TempDir())
+	ctx := context.Background()
+
+	wf := &ir.Workflow{
+		Name:  "scratch-planted-runs",
+		Entry: "start",
+		Nodes: map[string]ir.Node{
+			"start": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "start"}, Command: "true"},
+			"done":  &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+			"fail":  &ir.FailNode{BaseNode: ir.BaseNode{ID: "fail"}},
+		},
+		Edges:    []*ir.Edge{{From: "start", To: "done"}},
+		Worktree: "none",
+	}
+	s := tmpStore(t)
+	repo, _ := initBareishRepo(t)
+	scratch := memory.WorkspaceScratchDir(repo)
+	if err := os.MkdirAll(scratch, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(scratch, memory.RunScratchDirName)); err != nil {
+		t.Fatal(err)
+	}
+
+	const runID = "run-planted-runs"
+	eng := New(wf, s, &scratchPushSpy{}, WithWorkDir(repo), WithLogger(log.New(log.LevelError, os.Stderr)))
+	if err := eng.Run(ctx, runID, nil); err != nil {
+		t.Fatalf("engine.Run: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(outside, runID)); !os.IsNotExist(err) {
+		t.Fatalf("the run subtree was created through the planted runs/ link at %s (%v)", filepath.Join(outside, runID), err)
+	}
 }

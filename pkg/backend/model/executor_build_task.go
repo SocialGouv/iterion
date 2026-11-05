@@ -1393,6 +1393,7 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 			resolvedImages = append(resolvedImages, p)
 		}
 	}
+	scratchAnchor, scratchRoots := e.scratchScope()
 
 	task := delegate.Task{
 		NodeID:                f.id,
@@ -1437,10 +1438,12 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 		Sandbox:               e.sandbox,
 		// The sandbox crossing's read roots (#2869): the run family's
 		// scratch subtree first, the shared project scratch behind it while
-		// the workflow still references it. The launcher-side claw backend
-		// narrows the in-container runner's scope to this list; unsandboxed
-		// executions never read it (their scope is the registry's).
-		ScratchReadRoots: e.scratchReadRoots(),
+		// the workflow still references it, and the project scratch they
+		// lie beneath. The launcher-side claw backend narrows the
+		// in-container runner's scope to this list; unsandboxed executions
+		// never read it (their scope is the registry's).
+		ScratchReadRoots: scratchRoots,
+		ScratchAnchor:    scratchAnchor,
 		// ProviderHint is set per-attempt by dispatchWithProviderFallback
 		// as it walks the node's provider chain.
 		Hooks:      e.delegateHooksFor(f.id, backendName, LoopIterationFromContext(ctx)),

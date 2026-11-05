@@ -176,13 +176,20 @@ func runClawRunner(ctx context.Context, stdin io.Reader, stdout, stderr io.Write
 	relayHooks := relayEventHooks(dispatcher, stderr)
 	// The scratch read roots (#2650, narrowed by #2869): the ordered list
 	// when the launcher pushes one (run family's subtree first, the shared
-	// project scratch behind it while still referenced); ScratchDir alone
-	// for a launcher that predates the list.
-	scratchRoots := ioTask.ScratchReadRoots
-	if len(scratchRoots) == 0 && ioTask.ScratchDir != "" {
-		scratchRoots = []string{ioTask.ScratchDir}
+	// project scratch behind it while still referenced) with the project
+	// scratch they lie beneath; ScratchDir alone for a launcher that
+	// predates the list. The run subtree is created here, once per task —
+	// a container-local scratch (kubernetes banks it instead of binding
+	// it) has none until something makes it, and the scope skips a root
+	// that does not resolve.
+	scratch := sandboxScratchScope{anchor: ioTask.ScratchAnchor, roots: ioTask.ScratchReadRoots}
+	if len(scratch.roots) == 0 && ioTask.ScratchDir != "" {
+		scratch.roots = []string{ioTask.ScratchDir}
 	}
-	toolDefs, toolErr := makeHybridToolDefs(ioTask.ToolDefs, dispatcher, workspace, scratchRoots, registry, relayHooks, ioTask.SlashCommandMaxBytes, ioTask.SkillAllowlist, ioTask.SkillAllowlistArmed)
+	if err := ensureSandboxScratchRoots(scratch); err != nil {
+		fmt.Fprintf(stderr, "iterion-claw-runner: %v — the root attaches once a write creates it\n", err)
+	}
+	toolDefs, toolErr := makeHybridToolDefs(ioTask.ToolDefs, dispatcher, workspace, scratch, registry, relayHooks, ioTask.SlashCommandMaxBytes, ioTask.SkillAllowlist, ioTask.SkillAllowlistArmed)
 	if toolErr != nil {
 		return emitFatal(dispatcher, stderr, fmt.Errorf("build the in-container tool set: %w", toolErr))
 	}

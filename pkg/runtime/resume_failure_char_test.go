@@ -557,10 +557,10 @@ func (x *charEnvSpyExecutor) SetWorkDir(d string)      { x.workDirs = append(x.w
 func (x *charEnvSpyExecutor) SetRepoRoot(r string)     { x.repoRoots = append(x.repoRoots, r) }
 func (x *charEnvSpyExecutor) SetVars(_ map[string]any) { x.varsCalls++ }
 
-// SetScratchDirs records the pair as "run\x00shared" so the assertion
-// reads both halves of the narrowed push (#2869).
-func (x *charEnvSpyExecutor) SetScratchDirs(run, shared string) {
-	x.scratchDirs = append(x.scratchDirs, run+"\x00"+shared)
+// SetScratchDirs records the push as "base\x00run\x00shared" so the
+// assertion reads every part of the narrowed push (#2869).
+func (x *charEnvSpyExecutor) SetScratchDirs(base, run string, shared bool) {
+	x.scratchDirs = append(x.scratchDirs, fmt.Sprintf("%s\x00%s\x00%t", base, run, shared))
 }
 
 // TestResumeFromFailure_ExecutorEnvRestored pins restoreRunEnv +
@@ -621,7 +621,8 @@ func TestResumeFromFailure_ExecutorEnvRestored(t *testing.T) {
 	// scratch the teardown preserved. Narrowed (#2869): the run family's
 	// own subtree first; this workflow declares no var referencing
 	// ${PROJECT_SCRATCH_DIR}, so the shared root does not ride along.
-	wantScratch := filepath.Join(memory.WorkspaceScratchDir(repoRoot), "runs", runID) + "\x00"
+	base := memory.WorkspaceScratchDir(repoRoot)
+	wantScratch := base + "\x00" + filepath.Join(base, "runs", runID) + "\x00false"
 	if len(spy.scratchDirs) == 0 || spy.scratchDirs[len(spy.scratchDirs)-1] != wantScratch {
 		t.Errorf("SetScratchDirs calls = %v, want last == run subtree %q with no shared root", spy.scratchDirs, wantScratch)
 	}

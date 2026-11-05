@@ -2199,6 +2199,24 @@ func (b *ClawBackend) sessionSeedForCrossing(ctx context.Context, task delegate.
 	return sessionSeed{replay: replay}
 }
 
+// legacyScratchDir is IOTask.ScratchDir for a pushed scratch scope: the
+// one root a runner that predates ScratchReadRoots registers. The shared
+// project scratch when the push carries it — the run subtree lies beneath
+// it, so the old runner reads exactly the union the new one reads, and
+// the briefs every bot still keeps under ${PROJECT_SCRATCH_DIR} stay
+// readable; the run subtree when it rides alone. A task whose push never
+// happened (a direct backend use no engine drove) keeps the legacy fixed
+// container path.
+func legacyScratchDir(anchor string, roots []string) string {
+	if len(roots) == 0 {
+		return sandboxScratchContainerDir
+	}
+	if anchor != "" && slices.Contains(roots, anchor) {
+		return anchor
+	}
+	return roots[0]
+}
+
 // runnerIOTask is the task envelope's payload for the in-container runner.
 // The workspace's .claude/settings.json hooks ride along: the launcher reads
 // them on the host and the runner registers the document instead of
@@ -2225,18 +2243,12 @@ func (b *ClawBackend) runnerIOTask(task delegate.Task, funds map[string]credrout
 	// (#2650): the bot's briefs live under ${PROJECT_SCRATCH_DIR}, outside
 	// the workspace bind, and claude_code's Read reaches them — without the
 	// root a sandboxed claw node reads none of them. The narrowing (#2869):
-	// the engine's SetScratchDirs push rode the task (Task.ScratchReadRoots,
-	// container paths — the push happens after the sandbox decision), so the
-	// runner's roots are the run family's subtree FIRST, with the shared
-	// project scratch behind it only while the workflow still references
-	// it. ScratchDir carries the first root for a runner that predates the
-	// list; the legacy constant stays for a task whose push never happened
-	// (a direct backend use no engine drove).
-	if len(ioTask.ScratchReadRoots) > 0 {
-		ioTask.ScratchDir = ioTask.ScratchReadRoots[0]
-	} else {
-		ioTask.ScratchDir = sandboxScratchContainerDir
-	}
+	// the engine's SetScratchDirs push rode the task (Task.ScratchReadRoots
+	// and Task.ScratchAnchor, container paths — the push happens after the
+	// sandbox decision), so the runner's roots are the run family's subtree
+	// FIRST, with the shared project scratch behind it only while the
+	// workflow still references it.
+	ioTask.ScratchDir = legacyScratchDir(ioTask.ScratchAnchor, ioTask.ScratchReadRoots)
 	// The pinned skill set crosses workspace-RELATIVE: the host's absolute
 	// paths would not exist in the container, and the runner joins each
 	// entry against its own workspace (cmd/iterion registerSandboxLocalTools).

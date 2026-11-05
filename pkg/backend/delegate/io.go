@@ -82,22 +82,29 @@ type IOTask struct {
 	// their run state there by design, and claude_code's unbounded Read
 	// reaches it, so without it a sandboxed claw node cannot read the
 	// run's own briefs. Empty from a launcher that predates it: the runner
-	// keeps its workspace-only scope. Since the narrowing (#2869) it
-	// carries the FIRST of ScratchReadRoots — the run family's own
-	// subtree — when the launcher pushes one; the full ordered list is
-	// ScratchReadRoots. Written by the launcher at the crossing
-	// (model.ClawBackend.runnerIOTask) from the engine's SetScratchDirs
-	// push, which Task.ScratchReadRoots carried.
+	// keeps its workspace-only scope. Since the narrowing (#2869) it is
+	// the root a runner that predates ScratchReadRoots registers alone:
+	// the shared project scratch when the push carries it (the run
+	// subtree lies beneath it, so the old runner reads exactly the union
+	// the new one does), else the run subtree. Written by the launcher at
+	// the crossing (model.ClawBackend.runnerIOTask) from the engine's
+	// SetScratchDirs push, which Task.ScratchReadRoots carried.
 	ScratchDir string `json:"scratch_dir,omitempty"`
 	// ScratchReadRoots is the ordered narrowing list (#2869): the run
 	// family's scratch subtree first, then the shared project scratch
 	// while the workflow still references it. A runner that reads it
 	// registers every entry; one that predates it registers ScratchDir
-	// alone (the narrowed subtree — an old runner never widens, it loses
-	// the shared root a still-referencing workflow wanted, the safe
-	// direction). Empty from a launcher that predates the narrowing:
+	// alone. Empty from a launcher that predates the narrowing:
 	// ScratchDir alone then holds the legacy project scratch.
 	ScratchReadRoots []string `json:"scratch_read_roots,omitempty"`
+	// ScratchAnchor is the project scratch the ScratchReadRoots lie
+	// beneath (#2869): the runner attaches each root below it as a nested
+	// read root (tool.ReadScope.AddExtraRootBeneath), never following a
+	// link between the two — other runs write the shared scratch, so a
+	// link planted at runs/<id> must contain nothing rather than become
+	// the root. Empty from a launcher that predates it: every root then
+	// attaches plain.
+	ScratchAnchor string `json:"scratch_anchor,omitempty"`
 	// SkillAllowlist is the run's pinned skill set as the RUNNER serves it
 	// (iterion#1719): name → path WORKSPACE-RELATIVE, so the value means the
 	// same thing on both sides of the sandbox wire (the host's absolute
@@ -294,6 +301,7 @@ func ToIOTask(t Task) IOTask {
 		BaseDir:                t.BaseDir,
 		RepoRoot:               t.RepoRoot,
 		ScratchReadRoots:       t.ScratchReadRoots,
+		ScratchAnchor:          t.ScratchAnchor,
 		ReasoningEffort:        t.ReasoningEffort,
 		Ultracode:              t.Ultracode,
 		SecretsHygiene:         t.SecretsHygiene,
@@ -360,6 +368,7 @@ func FromIOTask(t IOTask) Task {
 		BaseDir:                t.BaseDir,
 		RepoRoot:               t.RepoRoot,
 		ScratchReadRoots:       t.ScratchReadRoots,
+		ScratchAnchor:          t.ScratchAnchor,
 		ReasoningEffort:        t.ReasoningEffort,
 		Ultracode:              t.Ultracode,
 		SecretsHygiene:         t.SecretsHygiene,

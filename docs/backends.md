@@ -100,10 +100,28 @@ and an inline `${PROJECT_SCRATCH_DIR}` in a tool body already draws C315).
 The reach never grew: another repository encodes another key, another
 operator resolves another iterion home, and a driver with no host
 filesystem (kubernetes — a pod rejects `type=bind`) gets a
-container-local scratch that the teardown banks per run (ADR-106); the
-narrowed list crosses the sandbox envelope as `IOTask.ScratchReadRoots`
-(`ScratchDir` carries its first entry for a runner that predates the
-list).
+container-local scratch that the teardown banks per run (ADR-106). The
+family root is a path component, so every id the parent walk adopts must
+be one the store accepts (`store.SanitizePathComponent`): a
+`parent_run_id` shaped like `../..` ends the walk at the last valid id
+instead of moving the subtree out of the project scratch. The subtree is
+attached BENEATH the project scratch, never through it: sandboxed runs
+write the shared scratch through their bind, so `runs/<id>` can be a link
+one of them planted, and a root that followed it would become the link's
+target. Only the project scratch is canonicalized; the path from it to
+the subtree stays lexical, a target counts as inside only when its
+resolved path lies under that lexical root, and it is opened by a
+no-follow walk from the project scratch — a link anywhere below contains
+nothing. The engine and the in-container runner create the subtree as a
+chain of real directories (`safepath.EnsureRealBindSourceDir`), so a
+planted `runs/` link never receives it. The narrowed list crosses the
+sandbox envelope as `IOTask.ScratchReadRoots` with the project scratch as
+`IOTask.ScratchAnchor`; `ScratchDir`, the one root a runner that predates
+the list registers, is the shared scratch when the push carries it (the
+subtree lies beneath it, so the old runner reads the same union) and the
+subtree when it rides alone. The age sweep (`ITERION_SCRATCH_RETENTION`,
+`iterion clean`) judges each `runs/<id>` as its own entry: judged as one,
+`runs/` stays fresh while any run of the repository works.
 
 Under every read root the credential exclusion applies alike, and since
 #2868 its list is not a frozen name table: it follows the paths a

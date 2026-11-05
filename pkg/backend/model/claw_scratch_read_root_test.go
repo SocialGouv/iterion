@@ -68,9 +68,9 @@ func TestSetScratchDirsWidensTheRegisteredReadTools(t *testing.T) {
 
 	// The narrowed push: the run's subtree alone, no shared root. The
 	// run's own brief reads; the other run's leftover refuses (#2869).
-	exec.SetScratchDirs(runSubtree, "")
+	exec.SetScratchDirs(scratch, runSubtree, false)
 	if err := call(brief); err != nil {
-		t.Fatalf("after SetScratchDirs(run, \"\"), read_file(%q) refused: %v", brief, err)
+		t.Fatalf("after SetScratchDirs(base, run, false), read_file(%q) refused: %v", brief, err)
 	}
 	if err := call(other); err == nil || !strings.Contains(err.Error(), "outside workspace") {
 		t.Fatalf("with the narrowed push, read_file(%q) — another run's leftover — must refuse, got %v", other, err)
@@ -83,16 +83,59 @@ func TestSetScratchDirsWidensTheRegisteredReadTools(t *testing.T) {
 	// The workflow still referencing ${PROJECT_SCRATCH_DIR}: the shared
 	// root rides along, and the leftover reads again — today's posture
 	// kept for an unmigrated bot.
-	exec.SetScratchDirs(runSubtree, scratch)
+	exec.SetScratchDirs(scratch, runSubtree, true)
 	if err := call(other); err != nil {
-		t.Fatalf("after SetScratchDirs(run, shared), read_file(%q) refused: %v", other, err)
+		t.Fatalf("after SetScratchDirs(base, run, true), read_file(%q) refused: %v", other, err)
 	}
 	wantShared := mustCanonicalRoot(t, scratch)
 	if got := scope.ExtraRoots(); len(got) != 2 || got[0] != wantRun || got[1] != wantShared {
 		t.Fatalf("ExtraRoots = %v, want the canonical [%q %q]", got, wantRun, wantShared)
 	}
-	if roots := exec.scratchReadRoots(); len(roots) != 2 || roots[0] != runSubtree || roots[1] != scratch {
-		t.Fatalf("scratchReadRoots = %v, want the pushed pair [%q %q]", roots, runSubtree, scratch)
+	if anchor, roots := exec.scratchScope(); anchor != scratch || len(roots) != 2 || roots[0] != runSubtree || roots[1] != scratch {
+		t.Fatalf("scratchScope = %q %v, want the pushed anchor %q and roots [%q %q]", anchor, roots, scratch, runSubtree, scratch)
+	}
+}
+
+// The push attaches the run subtree BENEATH the project scratch: other
+// runs write the shared scratch (sandboxed ones through their bind), so a
+// link planted at runs/<id> before the push must contain nothing — not
+// become a read root on the link's target.
+func TestSetScratchDirsDoesNotAdoptALinkPlantedAtTheRunSubtree(t *testing.T) {
+	t.Parallel()
+	workspace := t.TempDir()
+	scratch := t.TempDir()
+	outside := t.TempDir()
+	hostFile := filepath.Join(outside, "host-file.txt")
+	if err := os.WriteFile(hostFile, []byte("HOST ONLY\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runSubtree := filepath.Join(scratch, "runs", "run-planted")
+	if err := os.MkdirAll(filepath.Dir(runSubtree), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, runSubtree); err != nil {
+		t.Fatal(err)
+	}
+
+	scope := tool.NewReadScope(workspace)
+	toolReg := tool.NewRegistry()
+	if err := tool.RegisterClawBuiltinsWithScope(toolReg, scope, nil); err != nil {
+		t.Fatal(err)
+	}
+	exec := NewClawExecutor(NewRegistry(), &ir.Workflow{}, WithToolRegistry(toolReg), WithClawReadScope(scope))
+	exec.SetScratchDirs(scratch, runSubtree, false)
+
+	for _, root := range scope.ExtraRoots() {
+		if root == mustCanonicalRoot(t, outside) {
+			t.Fatalf("ExtraRoots = %v: the link planted at the run subtree became a read root", scope.ExtraRoots())
+		}
+	}
+	read, err := toolReg.Resolve("read_file")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out, err := read.Execute(context.Background(), []byte(`{"path": "`+hostFile+`"}`)); err == nil {
+		t.Fatalf("read_file(%q) = %q through a link planted at the run subtree, want a refusal", hostFile, out)
 	}
 }
 
@@ -101,8 +144,9 @@ func TestSetScratchDirsWidensTheRegisteredReadTools(t *testing.T) {
 func TestSetScratchDirsWithoutScopeStillRecords(t *testing.T) {
 	t.Parallel()
 	exec := NewClawExecutor(NewRegistry(), &ir.Workflow{})
-	exec.SetScratchDirs(t.TempDir(), "") // must not panic
-	if roots := exec.scratchReadRoots(); len(roots) != 1 {
-		t.Fatalf("scratchReadRoots = %v, want the recorded run subtree", roots)
+	base := t.TempDir()
+	exec.SetScratchDirs(base, filepath.Join(base, "runs", "r"), false) // must not panic
+	if anchor, roots := exec.scratchScope(); anchor != base || len(roots) != 1 {
+		t.Fatalf("scratchScope = %q %v, want the recorded anchor and run subtree", anchor, roots)
 	}
 }
