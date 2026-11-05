@@ -190,10 +190,12 @@ func admitSandboxCredentials(ctx context.Context, p SandboxParams, placement cre
 // judge node, an LLM router, a human node's LLM half, a Verified Action's
 // recovery rungs, each node's `fallbacks:` routes and interaction
 // generation, a review gate's companion and the declared supervisors. A site
-// the node makes when it runs is refused unfunded; a rescue (a `fallbacks:`
+// whose failure fails its node is refused unfunded; a rescue (a `fallbacks:`
 // route, an interaction generation, the review companion, a supervisor) is
-// warned — the site it rescues decides. A subbot's child is judged at its own
-// start (the adopt branch, or its own resolved start).
+// warned — the site it rescues decides —, and so is a site the node survives
+// (an `llm_or_human` LLM half, which falls back to the human pause). A
+// subbot's child is judged at its own start (the adopt branch, or its own
+// resolved start).
 func (a credentialAdmission) admit(ctx context.Context, emitEvent func(store.EventType, map[string]any) error, logger *iterlog.Logger) error {
 	creds, _ := secrets.CredentialsFromContext(ctx)
 	stamped := creds.AmbientRefused
@@ -213,7 +215,7 @@ func (a credentialAdmission) admit(ctx context.Context, emitEvent func(store.Eve
 				undecidable = append(undecidable, fmt.Sprintf("%s (no reading of its model calls)", site.ID))
 			}
 			continue
-		case site.Rescue:
+		case site.Rescue, site.Degrades:
 			if w := a.judgeRescue(ctx, site); w != "" {
 				warned = append(warned, w)
 			}
@@ -310,8 +312,9 @@ func (a credentialAdmission) judgeSite(ctx context.Context, site model.CallSite)
 }
 
 // judgeRescue resolves a rescue site — a `fallbacks:` route, an interaction
-// generation, the review companion, a pinned supervisor — and names it when
-// no credential funds it: warned, never refused, the site it rescues decides.
+// generation, the review companion, a pinned supervisor — or a site the node
+// survives (an `llm_or_human` LLM half), and names it when no credential
+// funds it: warned, never refused, since its failure fails no node.
 // A supervisor naming no model takes the spawn's default, which the spawn
 // decides; a site whose base the dispatch refuses (the detector's pick
 // outside the allowlist) dispatches nothing to warn on.

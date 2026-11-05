@@ -281,7 +281,9 @@ type Node struct {
 	Kind SiteKind
 }
 
-// SiteKind is the shape of a row's call site, by model.SiteKind's names.
+// SiteKind is the shape of a row's call site, by model.SiteKind's names —
+// HumanLLMOrHuman is model's human_llm site under `llm_or_human`
+// (model.CallSite.Degrades).
 type SiteKind string
 
 const (
@@ -290,6 +292,10 @@ const (
 	// HumanLLM is a human node's `interaction: llm` generation: a direct
 	// claw generation, in process.
 	HumanLLM SiteKind = "human_llm"
+	// HumanLLMOrHuman is a human node's `interaction: llm_or_human` LLM
+	// half: the same generation, whose failure the node survives — it
+	// falls back to the human pause.
+	HumanLLMOrHuman SiteKind = "human_llm_or_human"
 	// SelfRepair is a Verified Action's rung 3: a direct claw generation on
 	// the recovery model, in process.
 	SelfRepair SiteKind = "self_repair"
@@ -303,6 +309,8 @@ func (n Node) IR() ir.Node {
 		return &ir.RouterNode{BaseNode: ir.BaseNode{ID: n.ID}, LLMFields: fields, RouterMode: ir.RouterLLM}
 	case HumanLLM:
 		return &ir.HumanNode{BaseNode: ir.BaseNode{ID: n.ID}, InteractionFields: ir.InteractionFields{Interaction: ir.InteractionLLM}, Model: n.Model}
+	case HumanLLMOrHuman:
+		return &ir.HumanNode{BaseNode: ir.BaseNode{ID: n.ID}, InteractionFields: ir.InteractionFields{Interaction: ir.InteractionLLMOrHuman}, Model: n.Model}
 	case SelfRepair:
 		return &ir.ToolNode{
 			BaseNode: ir.BaseNode{ID: n.ID}, Command: "make build", Goal: "the build succeeds", Postcondition: "test -f build.ok",
@@ -320,10 +328,15 @@ func (n Node) SiteID() string {
 	return n.ID
 }
 
-// Spec is the model leg i sends. Empty for a claw node naming none: its
-// dispatch sends the detector's pick, which each harness reads through the
-// dispatch's own pick (model.ClawExecutor.DetectedClawSpec, or
-// model.DetectedClawSpecUnder where no executor runs).
+// Degrades reports a call the node survives the failure of: the launch
+// warns on it unfunded, never refuses.
+func (n Node) Degrades() bool { return n.Kind == HumanLLMOrHuman }
+
+// Spec is the model leg i sends. Empty for a claw node naming none: an agent
+// node's dispatch sends the detector's pick, an llm router's its default,
+// which each harness reads through the dispatch's own reading
+// (model.ClawExecutor.DetectedClawSpec, or model.DetectedClawSpecUnder where
+// no executor runs; the router's model through its call site).
 func (n Node) Spec(i int) string {
 	if i >= 0 && i < len(n.Legs) && n.Legs[i].Model != "" {
 		return n.Legs[i].Model
@@ -419,6 +432,9 @@ var PostureNames = []string{
 	"OPENROUTER_API_KEY", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN",
 	"OPENAI_COMPATIBLE_BASE_URL", "OPENAI_COMPATIBLE_API_KEY", "ITERION_LLM_ENDPOINT_ALLOW_PRIVATE",
 	"ITERION_PI_AGENT_DIR", "PI_CODING_AGENT_DIR", "CLAW_USER_AGENT", "ITERION_LLM_USER_AGENT",
+	// The llm router's default model, which its dispatch sends where the
+	// router names none.
+	"ITERION_DEFAULT_SUPERVISOR_MODEL",
 }
 
 // Label is a stable subtest name for the row.

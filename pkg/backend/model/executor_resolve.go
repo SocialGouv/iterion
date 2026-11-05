@@ -420,7 +420,8 @@ func lookupPath(m map[string]any, path []string) any {
 
 // baselineModel is the model an element that pins none of its own runs:
 // the launch override if the operator set one, else the node's `model:`
-// with env refs expanded.
+// with env refs expanded — an llm router's default where it names neither
+// (chainReading.routerModel, the model its dispatch sends).
 //
 // It deliberately stops short of claw's detector-suggested default
 // (buildTask applies that when the model is still empty at dispatch):

@@ -286,12 +286,18 @@ func Rows() []Row {
 	// direct claw generations, in process on the host whatever the run's
 	// sandbox. A stamped run only the pod would fund there is refused at the
 	// launch — before, it started and met the stamp's refusal at the call.
+	//
+	// SEEN RED (#2022, U0–U2's third review): an `llm_or_human` half the
+	// node survives — its failure, no credential included, falls back to the
+	// human pause — refused the whole launch. The launch now warns on it, as
+	// on the review companion; the pre-flight still keys it.
 	for _, site := range []struct {
 		kind  SiteKind
 		label string
 	}{
 		{LLMRouter, "an LLM router"},
 		{HumanLLM, "a human node's LLM half"},
+		{HumanLLMOrHuman, "a human node's llm_or_human half"},
 		{SelfRepair, "a Verified Action's self-repair rung"},
 	} {
 		node := Node{ID: "impl", Backend: "claw", Model: claudeSpec, Legs: []Leg{{}}, Kind: site.kind}
@@ -330,6 +336,47 @@ func Rows() []Row {
 	}, nil, func(r *Row) { r.Want = Refuses(AmbientStamp) }) {
 		add(sides(r, nil, nil)...)
 	}
+
+	// SEEN RED (#2022, U0–U2's third review): an LLM router naming no model
+	// sends its default (ITERION_DEFAULT_SUPERVISOR_MODEL, else the package's
+	// Anthropic id), never the detector's pick an agent node sends. The
+	// readers judged the pick — here the pod's OpenAI key —: a run's own
+	// capped Anthropic key went unmetered, a stamped run that key funds was
+	// refused at the launch, and a fork-lane run the pod's OpenAI key alone
+	// funds was admitted, to meet the router's up-front refusal mid-run.
+	// Every reader now reads the router's model as its dispatch does
+	// (chainReading.routerModel).
+	unnamedRouter := Node{ID: "impl", Backend: "claw", Legs: []Leg{{}}, Kind: LLMRouter}
+	for _, r := range stampings(Row{
+		Name:    "an LLM router naming no model, the run's own Anthropic key beside the pod's OpenAI key",
+		Origin:  "t53 credroute r3 #1 (an unnamed router judged on the detector's pick)",
+		Posture: map[string]string{"OPENAI_API_KEY": PodOpenAI},
+		Run:     Run{Keys: map[secrets.Provider]string{secrets.ProviderAnthropic: RunAnthropic}},
+		Node:    unnamedRouter,
+		Want:    Spent(0, RunKey, string(secrets.ProviderAnthropic), RunAnthropic),
+	}, nil, nil) {
+		add(sides(r, nil, nil)...)
+	}
+	add(sides(Row{
+		Name:    "an LLM router naming no model, the pod's OpenAI key alone",
+		Origin:  "t53 credroute r3 #1 (the fork lane admitted the pick, the dispatch refused the default)",
+		Posture: map[string]string{"OPENAI_API_KEY": PodOpenAI},
+		Node:    unnamedRouter,
+		Want:    Refuses(NoCredential),
+	}, nil, nil)...)
+	// The allowlist's drop reads the same model: a default outside the run's
+	// allowlist empties the router's chain, which its dispatch refuses —
+	// read as the leg's model it kept the leg, and sent the default there.
+	outsideRouter := unnamedRouter
+	outsideRouter.Legs = nil
+	add(sides(Row{
+		Name:    "an LLM router naming no model, its default outside the run's allowlist",
+		Origin:  "t53 credroute r3 #1 (the allowlist's drop read the router's model without its default)",
+		Posture: map[string]string{"OPENAI_API_KEY": PodOpenAI},
+		Run:     Run{Keys: map[secrets.Provider]string{secrets.ProviderAnthropic: RunAnthropic}, Allowlist: []string{"openai"}},
+		Node:    outsideRouter,
+		Want:    Refuses(OutsideAllowlist),
+	}, nil, nil)...)
 
 	// SEEN RED (#2022, U0–U2's second review): moonshot's factory refuses a
 	// non-kimi id (the facade would serve its Kimi model under the label), in

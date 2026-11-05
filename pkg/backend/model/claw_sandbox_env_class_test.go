@@ -133,7 +133,7 @@ var hostSideEnvReads = map[string]hostSideRead{
 	"ITERION_NODE_MAX_RETRIES":             {whyBudget, []string{"RetryPolicyFromEnv"}},
 	"ITERION_NODE_MAX_TRANSIENT_RETRIES":   {whyBudget, []string{"RetryPolicyFromEnv"}},
 	"ITERION_DEFAULT_BACKEND":              {whyExecutor, []string{"(*ClawExecutor).resolveBackendName"}},
-	"ITERION_DEFAULT_SUPERVISOR_MODEL":     {whyExecutor, []string{"(*ClawExecutor).executeLLMRouterUnified"}},
+	"ITERION_DEFAULT_SUPERVISOR_MODEL":     {whyExecutor, []string{"routerModelFallback"}},
 	"ITERION_VERIFIED_ACTION_MODEL":        {whyExecutor, []string{"recoveryModelFallback"}},
 	"ITERION_ROUTE_COOLDOWN":               {whyExecutor, []string{"NewClawExecutor"}},
 	"ITERION_SECRETS_REDACT":               {whySinkGuard, []string{"secretGuardConfigFromEnv"}},

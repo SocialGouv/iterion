@@ -20,11 +20,13 @@ const (
 	// over the chain its `provider:` field names (Legs).
 	SiteNode SiteKind = "node"
 	// SiteLLMRouter is a router in `llm` mode: dispatched like an agent
-	// node, on its backend, over its chain (ClawExecutor.executeLLMRouter).
+	// node, on its backend, over its chain, on the model its dispatch sends
+	// (ClawExecutor.executeLLMRouterUnified, chainReading.routerModel).
 	SiteLLMRouter SiteKind = "llm_router"
 	// SiteHumanLLM is a human node's `interaction: llm|llm_or_human`
 	// generation: a DIRECT claw generation on its model, in this process
-	// (executeHumanLLMWithSpend).
+	// (executeHumanLLMWithSpend) — under llm_or_human, one the node survives
+	// (Degrades).
 	SiteHumanLLM SiteKind = "human_llm"
 	// SiteSelfRepair is a Verified Action's rung 3: a DIRECT claw generation
 	// on the recovery model, in this process (selfRepair).
@@ -76,10 +78,11 @@ type CallSite struct {
 	// (empty where the allowlist dropped every leg), one leg for a fallback
 	// route, one hint-free leg for a direct generation and a supervisor.
 	Legs []credroute.Leg
-	// Model is the spec a leg that pins none sends: Baseline for a dispatch,
-	// the route's or the node's for a fallback, the generation's own model.
-	// Empty where the node names none — a claw dispatch then sends the
-	// detector's pick (Base).
+	// Model is the spec a leg that pins none sends: Baseline for a dispatch
+	// (an llm router's default included), the route's or the node's for a
+	// fallback, the generation's own model. Empty where an agent or judge
+	// node names none — a claw dispatch then sends the detector's pick
+	// (Base).
 	Model string
 	// Role is who calls: the node's own dispatch, an auxiliary generation of
 	// its execution, a supervisor.
@@ -93,6 +96,13 @@ type CallSite struct {
 	// on a rescue no credential funds and the pre-flight keys none but the
 	// supervisor; every other site is a call the node makes when it runs.
 	Rescue bool
+	// Degrades: a call the node makes whenever it runs, whose failure the
+	// node survives — an `interaction: llm_or_human` LLM half falls back to
+	// the human pause, whatever failed it (no credential included). The
+	// launch warns on one no credential funds, as on a rescue, since its
+	// dispatch never fails the node; the pre-flight keys it, as every call
+	// the node makes when it runs.
+	Degrades bool
 	// Name is the supervisor's or the fallback route's own name.
 	Name string
 }
@@ -223,7 +233,9 @@ func nodeCallSites(v RouteView, n ir.Node, backendOf func(ir.Node) string) []Cal
 		case node.Interaction == ir.InteractionReview:
 			return []CallSite{directSite(id+reviewCompanionSiteSuffix, id, SiteReviewCompanion, v.field(node.Model), true)}
 		case interactsWithModel(node.Interaction):
-			return []CallSite{directSite(id, id, SiteHumanLLM, v.field(node.Model), false)}
+			site := directSite(id, id, SiteHumanLLM, v.field(node.Model), false)
+			site.Degrades = node.Interaction == ir.InteractionLLMOrHuman
+			return []CallSite{site}
 		}
 		return nil
 	case *ir.ToolNode:

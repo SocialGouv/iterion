@@ -1,11 +1,15 @@
 package model
 
 import (
+	"context"
 	"slices"
+	"sync"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/backend/credroute"
+	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/secrets"
 )
 
 // callSiteKinds is every ir node kind with the nodes that stand for it — each
@@ -158,5 +162,104 @@ func TestASiteNamingNoModelIsAskedTheDetectorsPick(t *testing.T) {
 	t.Setenv("CODEX_HOME", t.TempDir())
 	if _, err := sites[0].Base(refusal); err == nil {
 		t.Fatal("a pick outside the run's allowlist must refuse the site, as the dispatch refuses the node")
+	}
+}
+
+// routerTaskCapture is a backend that records the model of every task an llm
+// router's dispatch hands it, and answers a route.
+type routerTaskCapture struct {
+	mu     sync.Mutex
+	models []string
+}
+
+func (b *routerTaskCapture) Execute(_ context.Context, task delegate.Task) (delegate.Result, error) {
+	b.mu.Lock()
+	b.models = append(b.models, task.Model)
+	b.mu.Unlock()
+	return delegate.Result{Output: map[string]any{"selected_route": "alpha", "reasoning": "routed"}}, nil
+}
+
+func (b *routerTaskCapture) sent() []string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return slices.Clone(b.models)
+}
+
+// An llm router's site — the call the launch's admission judges and the
+// usage-cap pre-flight keys — names the model the router's dispatch sends: a
+// launch override (the `router` selector, a bare `*`) over its own `model:`,
+// and where it names none ITERION_DEFAULT_SUPERVISOR_MODEL or the package
+// default, never the detector's pick an agent node sends. Each case runs the
+// router's real dispatch (executeLLMRouterUnified) on a backend that records
+// the task's model, beside the site CallSites lists under the view the
+// executor hands the admission (CredentialRouteView), its base read through
+// the executor's own pick. Mutants — the dispatch reading its `model:` past
+// the override: the two overridden cases; the router's baseline leaving an
+// unnamed router to the detector: the two unnamed cases.
+func TestAnLLMRoutersSiteNamesTheModelItsDispatchSends(t *testing.T) {
+	for _, name := range providerCredentialEnvVars {
+		t.Setenv(name, "")
+	}
+	// The pod holds an OpenAI key alone, so the detector picks an OpenAI
+	// id; the run's own Anthropic key passes the package default's up-front
+	// funding check.
+	t.Setenv("OPENAI_API_KEY", "sk-openai-pod")
+	ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{APIKeys: map[secrets.Provider]string{secrets.ProviderAnthropic: "sk-run"}})
+	t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
+	t.Setenv("CODEX_HOME", t.TempDir())
+	t.Setenv("ITERION_FORBID_SUBSCRIPTION_OAUTH", "")
+	for _, tc := range []struct {
+		name       string
+		model      string
+		selector   string
+		envDefault string
+		want       string
+	}{
+		{"its own model", "anthropic/claude-sonnet-4", "", "", "anthropic/claude-sonnet-4"},
+		{"the router selector's override over its model", "anthropic/claude-sonnet-4", "router", "", "openai/gpt-5.5"},
+		{"a bare override over its model", "anthropic/claude-sonnet-4", "*", "", "openai/gpt-5.5"},
+		{"no model, the env default", "", "", "moonshot/kimi-k2", "moonshot/kimi-k2"},
+		{"no model, the package default", "", "", "", defaultRouterModel},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("ITERION_DEFAULT_SUPERVISOR_MODEL", tc.envDefault)
+			capture := &routerTaskCapture{}
+			backends := delegate.NewRegistry()
+			backends.Register(delegate.BackendClaw, capture)
+			router := &ir.RouterNode{BaseNode: ir.BaseNode{ID: "rt"}, RouterMode: ir.RouterLLM, LLMFields: ir.LLMFields{Backend: "claw", Model: tc.model}}
+			wf := &ir.Workflow{Name: "routed", Nodes: map[string]ir.Node{"rt": router}, Prompts: map[string]*ir.Prompt{}, Schemas: map[string]*ir.Schema{}}
+			var overrides ModelOverrides
+			if tc.selector != "" {
+				overrides.SetModel(tc.selector, "openai/gpt-5.5")
+			}
+			exec := NewClawExecutor(NewRegistry(), wf, WithBackendRegistry(backends), WithModelOverrides(overrides))
+			if _, err := exec.executeLLMRouterUnified(ctx, router, map[string]any{"_route_candidates": []string{"alpha", "beta"}}); err != nil {
+				t.Fatalf("the router's dispatch failed: %v", err)
+			}
+			sent := capture.sent()
+			if len(sent) != 1 {
+				t.Fatalf("inert bench: the dispatch handed the backend %d tasks, want one", len(sent))
+			}
+			if sent[0] != tc.want {
+				t.Errorf("the router's dispatch sends %q, want %q", sent[0], tc.want)
+			}
+			var site *CallSite
+			for _, s := range CallSites(exec.CredentialRouteView(wf), nil) {
+				if s.ID == "rt" {
+					site = &s
+				}
+			}
+			if site == nil || site.Kind != SiteLLMRouter {
+				t.Fatalf("CallSites lists no llm router site for rt: %+v", site)
+			}
+			pick, _ := exec.DetectedClawSpec("rt")
+			if tc.model == "" && pick == sent[0] {
+				t.Fatalf("inert bench: the detector picks %q, the router's own default — the case cannot tell them apart", pick)
+			}
+			base, err := site.Base(exec.DetectedClawSpec)
+			if err != nil || site.LegSpec(0, base) != sent[0] {
+				t.Errorf("the router's site names %q (%v); its dispatch sends %q — the readers judge a call it never makes", site.LegSpec(0, base), err, sent[0])
+			}
+		})
 	}
 }

@@ -72,9 +72,12 @@ func TestTheAdmissionNamesEveryRefusedNodeSorted(t *testing.T) {
 // The rescue sites no credential funds are warned at launch — a `fallbacks:`
 // route, a supervisor's own spec, an agent's interaction generation, a review
 // gate's companion (its failure pauses for the human) — never the launch's
-// refusal: the site they rescue decides. Each is a site of the one
-// enumeration (model.CallSites), asked where its call is made. Mutant — the
-// admission skipping a rescue kind's reading: no warning names it.
+// refusal: the site they rescue decides. So is a site its node survives, an
+// `llm_or_human` LLM half, which falls back to the human pause whatever
+// failed it. Each is a site of the one enumeration (model.CallSites), asked
+// where its call is made. Mutants — the admission skipping a rescue kind's
+// reading: no warning names it; the admission judging the llm_or_human half
+// as a site its node fails on: the launch is refused.
 func TestTheAdmissionWarnsOnARefusedFallbackAndSupervisor(t *testing.T) {
 	clearCredentialEnv(t)
 	t.Setenv("ITERION_FORBID_SUBSCRIPTION_OAUTH", "")
@@ -87,10 +90,11 @@ func TestTheAdmissionWarnsOnARefusedFallbackAndSupervisor(t *testing.T) {
 	node.Fallbacks = []ir.Fallback{{Name: "rescue", Model: "openai/gpt-5.5"}}
 	node.InteractionFields = ir.InteractionFields{Interaction: ir.InteractionLLM, InteractionModel: "openai/gpt-5.5"}
 	gate := &ir.HumanNode{BaseNode: ir.BaseNode{ID: "gate"}, InteractionFields: ir.InteractionFields{Interaction: ir.InteractionReview}, Model: "openai/gpt-5.5"}
+	ask := &ir.HumanNode{BaseNode: ir.BaseNode{ID: "ask"}, InteractionFields: ir.InteractionFields{Interaction: ir.InteractionLLMOrHuman}, Model: "openai/gpt-5.5"}
 	wf := &ir.Workflow{
 		Name:        "warned",
 		Sandbox:     &ir.SandboxSpec{Mode: string(sandbox.ModeNone)},
-		Nodes:       map[string]ir.Node{"impl": node, "gate": gate},
+		Nodes:       map[string]ir.Node{"impl": node, "gate": gate, "ask": ask},
 		Supervisors: []*ir.Supervisor{{Name: "watch", Model: "openai/gpt-5.5"}},
 	}
 	var events []store.Event
@@ -118,6 +122,9 @@ func TestTheAdmissionWarnsOnARefusedFallbackAndSupervisor(t *testing.T) {
 	}
 	if !strings.Contains(joined, `gate#review_companion (claw: ambient-stamp)`) {
 		t.Errorf("no warning names the refused review companion: %q", joined)
+	}
+	if !strings.Contains(joined, `ask (claw: ambient-stamp)`) {
+		t.Errorf("no warning names the refused llm_or_human half: %q", joined)
 	}
 }
 

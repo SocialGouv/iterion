@@ -103,7 +103,8 @@ stamped node only the pod's environment would fund refuses with
 `CREDENTIAL_AMBIENT_REFUSED`; one funded by a subscription alone that
 `ITERION_FORBID_SUBSCRIPTION_OAUTH` refuses, with
 `CREDENTIAL_SUBSCRIPTION_FORBIDDEN`. A refused `fallbacks:` route,
-interaction generation, review companion or supervisor spec is warned.
+interaction generation, review companion or supervisor spec is warned, and so
+is an `llm_or_human` node's LLM half, which falls back to the human pause.
 
 The stamp binds every backend (ADR-161 decision 5). `kimi`, `grok` and
 `opencode` read their own configuration, never a run credential: a stamped

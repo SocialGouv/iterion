@@ -196,18 +196,22 @@ func containerSpend(ctx context.Context, env map[string]string, facts crossingFa
 	}
 	inside = context.WithValue(inside, containerDiskKey{}, containerDisk{claudeForfaitToken: seeded})
 	// crossed is the Spend of the credential the container's walk takes from
-	// the variable name, sent where the walk sends it: the crossing's record
-	// of name (crossingRecord.spendOf, the rule the container's own walk
-	// names its calls by).
+	// the variable name ("" for none: the pod's identity chain where the walk
+	// names the pod's env), sent where the walk sends it: the crossing's
+	// record of name (crossingRecord.spendOf, the rule the container's own
+	// walk names its calls by).
 	crossed := func(name string, walk credroute.Spend) (credroute.Spend, error) {
-		if name == "" || env[name] == "" {
+		if name != "" && env[name] == "" {
 			return credroute.Spend{}, &errNoClawCredential{Spec: spec}
 		}
 		spend, ok := crossingRecord(facts.funds).spendOf(name, walk)
-		if !ok {
-			return credroute.Spend{}, fmt.Errorf("model: the crossing set %s without naming where its credential comes from", name)
+		switch {
+		case ok:
+			return spend, nil
+		case name == "":
+			return credroute.Spend{}, &errNoClawCredential{Spec: spec}
 		}
-		return spend, nil
+		return credroute.Spend{}, fmt.Errorf("model: the crossing set %s without naming where its credential comes from", name)
 	}
 	at := func(baseURL string) credroute.Spend { return credroute.Spend{BaseURL: baseURL} }
 
@@ -271,8 +275,9 @@ func containerSpend(ctx context.Context, env map[string]string, facts crossingFa
 		return crossed(factory.key, at(env[factory.baseURL]))
 	}
 	// The factory's SDK serves a keyless client from the pod's own identity
-	// chain (instance metadata, workload identity, ADC).
-	return credroute.Spend{Channel: credroute.ChannelPodEnv, BaseURL: env[factory.baseURL]}, nil
+	// chain (instance metadata, workload identity, ADC), which no variable
+	// carries.
+	return crossed("", credroute.Spend{Channel: credroute.ChannelPodEnv, BaseURL: env[factory.baseURL]})
 }
 
 // clawEnvFactory is what one env factory of claw's registry (registerDefaults)

@@ -6,6 +6,8 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/SocialGouv/claw-code-go/pkg/api"
+
 	"github.com/SocialGouv/iterion/internal/envtrust"
 	"github.com/SocialGouv/iterion/pkg/backend/credroute"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
@@ -230,5 +232,68 @@ func TestEnvFactoryCredentialNamesTheTablesVariable(t *testing.T) {
 				t.Errorf("keyed: destination %q, want the value of %s", spend.BaseURL, f.baseURL)
 			}
 		})
+	}
+}
+
+// A call a factory serves from the pod's own identity chain — bedrock with no
+// AWS key pair, foundry with no AZURE_OPENAI_API_KEY, vertex on ADC: no
+// variable carries the credential — spends the pod's env on either
+// placement, and every process that names it names one Spend: the
+// in-process call, the arm's prediction of the container, and the
+// container's own call over the env the crossing composed and its record —
+// the keys the runner writes on its steps and its result, which the ledger
+// books on nobody, as in process. The factory's client is a stand-in (each
+// SDK's NewClient reads its own configuration, which the naming never
+// consults); the naming is the runner's real path (inProcessClaw over the
+// sandbox runner's registry: resolveFromEnv, envSpend). Every identity-chain
+// entry of clawEnvFactories is driven, so a provider joining them is too.
+// Mutant — the crossing's rule (crossingRecord.spendOf) naming nothing for a
+// walk that took no variable: the container's own call names the zero Spend.
+func TestAnIdentityChainCallNamesThePodsEnvOnEitherPlacement(t *testing.T) {
+	driven := 0
+	for provider, f := range clawEnvFactories {
+		if !f.identityChain {
+			continue
+		}
+		driven++
+		t.Run(provider, func(t *testing.T) {
+			for _, name := range providerCredentialEnvVars {
+				t.Setenv(name, "")
+			}
+			t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
+			want := credroute.Spend{Channel: credroute.ChannelPodEnv}
+			if f.baseURL != "" {
+				want.BaseURL = "https://" + provider + ".example.com"
+				t.Setenv(f.baseURL, want.BaseURL)
+			}
+			spec := provider + "/m"
+			standIn := func(reg *Registry) *Registry {
+				reg.Register(provider, func(string) (api.APIClient, error) { return &execMockClient{}, nil })
+				return reg
+			}
+			_, inProcess, err := inProcessClaw(context.Background(), standIn(NewRegistry()), clawLeg(spec, false))
+			if err != nil || inProcess != want {
+				t.Fatalf("in process: %+v, %v; want %+v", inProcess, err, want)
+			}
+			res, err := resolveClawCall(context.Background(), NewRegistry(), clawLeg(spec, true))
+			if err != nil || res.spend != want {
+				t.Fatalf("the arm's prediction of the container: %+v, %v; want %+v", res.spend, err, want)
+			}
+			// The container's process env is the crossed env and nothing
+			// else of the pod's.
+			for _, name := range providerCredentialEnvVars {
+				t.Setenv(name, "")
+			}
+			for name, v := range res.env {
+				t.Setenv(name, v)
+			}
+			_, own, err := inProcessClaw(context.Background(), standIn(NewSandboxRunnerRegistry(res.facts.funds)), clawLeg(spec, false))
+			if err != nil || own != res.spend {
+				t.Errorf("the container names its own call %+v, %v; the arm predicts %+v — the keys the runner writes are not what the readers read", own, err, res.spend)
+			}
+		})
+	}
+	if driven == 0 {
+		t.Fatal("inert bench: clawEnvFactories names no identity-chain provider")
 	}
 }

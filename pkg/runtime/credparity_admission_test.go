@@ -85,7 +85,9 @@ func TestCredParity_Admission(t *testing.T) {
 			var rerr *RuntimeError
 			switch {
 			case err == nil, errors.Is(err, errCanaryStop):
-				if row.Role == credparity.SupervisorRole && warnsOn(events, parityRowSupervisor) {
+				switch {
+				case row.Role == credparity.SupervisorRole && warnsOn(events, parityRowSupervisor),
+					row.Node.Degrades() && warnsOn(events, row.Node.SiteID()):
 					got = "launches, warned"
 				}
 			case errors.As(err, &rerr):
@@ -97,9 +99,10 @@ func TestCredParity_Admission(t *testing.T) {
 				switch {
 				case !row.Judged() || !s.Refused():
 					return "launches"
-				case row.Role == credparity.SupervisorRole:
+				case row.Role == credparity.SupervisorRole, row.Node.Degrades():
 					// A supervisor the resolver refuses is warned, never
-					// the launch's refusal (ADR-161 decision 4).
+					// the launch's refusal (ADR-161 decision 4); so is a
+					// call its node survives the failure of.
 					return "launches, warned"
 				}
 				return "refused " + credparity.AdmissionCode(s.Refusal)

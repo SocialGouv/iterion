@@ -153,17 +153,19 @@ func dispatchParityLeg(t *testing.T, ctx context.Context, row credparity.Row, si
 	t.Helper()
 	spec := row.Node.Spec(i)
 	if spec == "" {
-		// A claw node naming no model: the dispatch builds its task on the
-		// detector's pick (buildTask), and the enumeration's base is the
-		// same pick.
-		picked, err := e.DetectedClawSpec(row.Node.ID)
+		// A claw dispatch naming no model: an agent node builds its task on
+		// the detector's pick (buildTask), an llm router sends its default
+		// (executeLLMRouterUnified's routerModel).
+		picked, err := parityDispatchedBase(e, site.Node)
 		if err != nil {
 			return parityRefusal(t, err)
 		}
-		if base, berr := site.Base(e.DetectedClawSpec); berr != nil || base != picked {
-			t.Fatalf("the enumeration's base is %q, %v; the dispatch's pick %q", base, berr, picked)
-		}
 		spec = picked
+	}
+	// The enumeration names the spec the dispatch sends: the admission and
+	// the pre-flight judge the call the dispatch makes.
+	if base, berr := site.Base(e.DetectedClawSpec); berr != nil || site.LegSpec(i, base) != spec {
+		t.Fatalf("leg %d: the enumeration's spec is %q (base %q, %v); the dispatch sends %q", i, site.LegSpec(i, base), base, berr, spec)
 	}
 	call := credroute.Call{
 		Backend: delegate.BackendClaw, Spec: spec, Leg: leg, Role: credroute.RoleNode,
@@ -242,6 +244,18 @@ func dispatchParityLeg(t *testing.T, ctx context.Context, row credparity.Row, si
 		t.Errorf("leg %d: the dispatch spends the %s (slot %q), the arm answers %+v, %v", i, got.Channel, got.Slot, armSpend, armErr)
 	}
 	return got
+}
+
+// parityDispatchedBase is the spec a claw dispatch of node naming no model
+// sends, read by the dispatch's own reading: an llm router's model
+// (chainReading.routerModel, which executeLLMRouterUnified sends), any other
+// node's detector pick (DetectedClawSpec, which buildTask sends).
+func parityDispatchedBase(e *ClawExecutor, node ir.Node) (string, error) {
+	if r, ok := node.(*ir.RouterNode); ok {
+		spec, _ := e.chainReading().routerModel(r)
+		return spec, nil
+	}
+	return e.DetectedClawSpec(node.NodeID())
 }
 
 // paritySpend names the credential a built client sends by the channel that

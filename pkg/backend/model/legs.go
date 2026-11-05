@@ -40,7 +40,8 @@ func (c chainReading) field(raw string) string {
 
 // baselineModel is the model an element that pins none of its own runs: the
 // launch override if the operator set one, else the node's `model:` with its
-// references resolved.
+// references resolved — for an llm router, the model its dispatch sends
+// (routerModel), its default included.
 func (c chainReading) baselineModel(node ir.Node) string {
 	if ov := c.overrides.ForNode(node.NodeID(), node.NodeKind()); ov.Model != "" {
 		return ov.Model
@@ -52,9 +53,38 @@ func (c chainReading) baselineModel(node ir.Node) string {
 	case *ir.JudgeNode:
 		m = n.Model
 	case *ir.RouterNode:
-		m = n.Model
+		m, _ = c.routerModel(n)
+		return m
 	}
 	return c.field(m)
+}
+
+// routerModel is the spec an llm router's dispatch sends
+// (executeLLMRouterUnified), the one every reader of its call judges: the
+// launch override, else its `model:` with its references resolved, else the
+// router's default arm (routerModelFallback). packaged reports the package
+// default, which the dispatch refuses up front where no anthropic credential
+// serves it.
+func (c chainReading) routerModel(node *ir.RouterNode) (spec string, packaged bool) {
+	if ov := c.overrides.ForNode(node.NodeID(), node.NodeKind()); ov.Model != "" {
+		return ov.Model, false
+	}
+	if m := c.field(node.Model); m != "" {
+		return m, false
+	}
+	return routerModelFallback()
+}
+
+// routerModelFallback is an llm router's default arm, shared by its dispatch
+// and the launch-time readers through routerModel:
+// ITERION_DEFAULT_SUPERVISOR_MODEL, else defaultRouterModel (packaged). Each
+// process reads its own env: the admission and the usage-cap pre-flight run
+// in the process that dispatches the router.
+func routerModelFallback() (spec string, packaged bool) {
+	if m := ir.LookupEnv("ITERION_DEFAULT_SUPERVISOR_MODEL"); m != "" {
+		return m, false
+	}
+	return defaultRouterModel, true
 }
 
 // providerChain resolves the per-node `provider:` field into the ordered
@@ -126,8 +156,9 @@ func Legs(v RouteView, node ir.Node) []credroute.Leg {
 }
 
 // Baseline is the model a leg that pins none of its own sends under v: the
-// launch override, else the node's `model:` with its references resolved.
-// Empty where the node names none — claw's dispatch then picks the
+// launch override, else the node's `model:` with its references resolved —
+// an llm router's default where it names neither (routerModel). Empty where
+// an agent or judge node names none — claw's dispatch then picks the
 // detector's suggestion.
 func Baseline(v RouteView, node ir.Node) string {
 	return v.chainReading().baselineModel(node)

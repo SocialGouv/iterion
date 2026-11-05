@@ -8,7 +8,9 @@ import (
 
 // The table is well-formed: every row is named once, says where it comes
 // from, walks a chain its Want can index, and sits where a run of its trust
-// can — a fork-lane run is always sandboxed (the PR2b floor).
+// can — a fork-lane run is always sandboxed (the PR2b floor). A chain the
+// run's allowlist emptied walks no leg, and its one answer is the allowlist's
+// refusal, which the dispatch meets.
 func TestEveryRowIsWellFormed(t *testing.T) {
 	seen := map[string]bool{}
 	for _, r := range Rows() {
@@ -19,8 +21,8 @@ func TestEveryRowIsWellFormed(t *testing.T) {
 			t.Errorf("row %q appears twice", r.Name)
 		}
 		seen[r.Name] = true
-		if len(r.Node.Legs) == 0 {
-			t.Errorf("row %q: the node walks no leg", r.Name)
+		if len(r.Node.Legs) == 0 && (len(r.Run.Allowlist) == 0 || r.Want.Refusal != OutsideAllowlist) {
+			t.Errorf("row %q: the node walks no leg, and no allowlist refusal stands for its emptied chain", r.Name)
 		}
 		if !r.Want.Refused() && (r.Want.Leg < 0 || r.Want.Leg >= len(r.Node.Legs)) {
 			t.Errorf("row %q: Want spends leg %d of a %d-leg chain", r.Name, r.Want.Leg, len(r.Node.Legs))

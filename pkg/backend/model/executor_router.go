@@ -207,23 +207,17 @@ func (e *ClawExecutor) executeLLMRouterUnified(ctx context.Context, node *ir.Rou
 		return nil, fmt.Errorf("model: llm router %q: schema: %w", node.ID, err)
 	}
 
-	// Resolve model for the router (with fallback chain): a routing field,
-	// `{{vars.…}}` then `${VAR:-default}` (the default applies when VAR is
-	// unset, instead of the stdlib's silent collapse to "").
-	expanded := e.resolveRoutingField(node.Model)
-	if expanded == "" {
-		expanded = ir.LookupEnv("ITERION_DEFAULT_SUPERVISOR_MODEL")
-	}
-	if expanded == "" {
-		expanded = defaultRouterModel
-		// A DEFAULT the wire cannot serve is refused up front: a router
-		// dispatching on an unfunded default is a 401 loop with the knob
-		// invisible. Named, terminal, now. Claw-scoped: a claude_code-serving
-		// router funds itself on the CLI's own login (FORBID's documented
-		// escape is exactly that backend).
-		if backendName == delegate.BackendClaw && anthropicFunding(ctx) == "" {
-			return nil, fmt.Errorf("model: llm router %q: no model is set and the default (%s) has no anthropic credential to serve it — set the router's model, or fund the anthropic wire", node.ID, defaultRouterModel)
-		}
+	// The router's model, read the way every reader of its call reads it
+	// (chainReading.routerModel): the launch override, its `model:` as a
+	// routing field, ITERION_DEFAULT_SUPERVISOR_MODEL, the package default.
+	expanded, packaged := e.chainReading().routerModel(node)
+	// A DEFAULT the wire cannot serve is refused up front: a router
+	// dispatching on an unfunded default is a 401 loop with the knob
+	// invisible. Named, terminal, now. Claw-scoped: a claude_code-serving
+	// router funds itself on the CLI's own login (FORBID's documented
+	// escape is exactly that backend).
+	if packaged && backendName == delegate.BackendClaw && anthropicFunding(ctx) == "" {
+		return nil, fmt.Errorf("model: llm router %q: no model is set and the default (%s) has no anthropic credential to serve it — set the router's model, or fund the anthropic wire", node.ID, defaultRouterModel)
 	}
 
 	// Assembled per backend rather than once: SystemPromptMode is a pure

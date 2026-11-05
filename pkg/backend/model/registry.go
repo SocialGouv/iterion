@@ -120,13 +120,20 @@ type crossingRecord map[string]credroute.Spend
 // spendOf names what a walk over the crossed env spends, having taken its
 // credential from the variable name: the record's Spend for name, sent where
 // the walk sends it (walk.BaseURL) and — for the pod's own credential — on
-// the account the walk read off the value (walk.Fingerprint). The launcher's
-// prediction of the container (containerSpend) and the container's own walk
-// (Registry.envSpend) name a spend through this one rule. ok is false for a
-// name the record does not hold.
+// the account the walk read off the value (walk.Fingerprint). A walk that
+// takes its credential from no variable and names the pod's env is a cloud
+// SDK serving from the pod's own identity chain (instance metadata, workload
+// identity, ADC — envFactoryCredential's keyless answer): no record names
+// it, and it spends as the walk names it. The launcher's prediction of the
+// container (containerSpend) and the container's own walk (Registry.envSpend)
+// name a spend through this one rule. ok is false for a name the record does
+// not hold, and for a walk that took no credential.
 func (rec crossingRecord) spendOf(name string, walk credroute.Spend) (credroute.Spend, bool) {
+	if name == "" {
+		return walk, walk.Channel == credroute.ChannelPodEnv
+	}
 	spend, ok := rec[name]
-	if name == "" || !ok {
+	if !ok {
 		return credroute.Spend{}, false
 	}
 	if walk.BaseURL != "" {
@@ -142,12 +149,13 @@ func (rec crossingRecord) spendOf(name string, walk credroute.Spend) (credroute.
 // name spends, as this process can name it. In its own environment, the
 // walk's naming: the pod's env, a login on its disk. In a sandbox runner,
 // the crossing's record of name (crossingRecord.spendOf): the launcher
-// composed that env and alone knows where each credential in it came from.
-// A login the container's walk read off its own disk that no recorded
-// variable carries keeps the walk's naming; any other credential the record
-// does not name is one no road of the crossing put there, and names nothing —
-// the zero Spend, a call whose events carry no credential keys, which the
-// readers book as their miss — never a guess.
+// composed that env and alone knows where each credential in it came from —
+// the pod's identity chain, which no variable carries, named as the walk
+// names it. A login the container's walk read off its own disk that no
+// recorded variable carries keeps the walk's naming; any other credential the
+// record does not name is one no road of the crossing put there, and names
+// nothing — the zero Spend, a call whose events carry no credential keys,
+// which the readers book as their miss — never a guess.
 func (r *Registry) envSpend(name string, walk credroute.Spend) credroute.Spend {
 	if !r.forwardedEnv || walk.Channel == "" {
 		return walk
