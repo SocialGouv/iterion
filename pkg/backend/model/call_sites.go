@@ -171,7 +171,9 @@ func siteCall(backend string, legs []credroute.Leg, role credroute.Role, host bo
 // which the node's site already carries. Structured-output recovery
 // (extractStructuredViaClaw) is no site: it fires on an answer that already
 // failed its schema, on the detector's pick, and is skipped — never the
-// node's error — where nothing funds it.
+// node's error — where nothing funds it. Its readers are the dispatch, the
+// ledger and the plan, through the Spend its own event carries
+// (credparity.RecoveryRows).
 //
 // Sorted by ID, so a reader that names its sites names them in one order on
 // every start.

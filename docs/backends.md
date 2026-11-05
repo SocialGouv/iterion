@@ -1192,6 +1192,13 @@ refusal retains its type when the extraction allowance is exhausted. The
 extraction's own call is booked by its own `delegate_finished` /
 `delegate_error`, marked `reask: "extract"` and named after claw, the
 detected model and its provider, so the run's meter counts it on that route.
+The event carries the credential keys of the claw arm's Spend for the call
+(ADR-161 decision 8): the spend ledger books it on the run slot it spent
+and the credential plan's fine table on that slot's fingerprint — a donor's
+lent key included — never on the node's plan row by prediction; the pod's
+money books on nobody and is no plan miss. Under the stamp, an extraction the
+pod alone would fund is refused by the arm: nothing is sent, nothing booked
+(`credparity.RecoveryRows`).
 
 **Runtime output schemas are advisory by default for outputs the executor does
 not validate** (tool, human, subbot and wait). A mismatch emits

@@ -8,7 +8,9 @@
 // is unexported where it lives): pkg/backend/model drives the dispatch,
 // pkg/runtime the admission, pkg/runner the meter, the ledger and the plan.
 // Each harness asserts its reader's answer equals the row's Want, so the
-// readers agree with each other through the row.
+// readers agree with each other through the row. RecoveryRows holds the call
+// no site names — the structured-output recovery — read by the dispatch, the
+// ledger and the plan, which pkg/runner drives through the real executor.
 //
 // A row a reader still disagrees with carries a Pending entry naming the
 // reader, the ADR-161 unit whose landing makes it agree, and the answer it
@@ -162,6 +164,7 @@ const (
 	HeaderBearer = "Bearer hdr-pod"
 	RunMoonshot  = "moonshot-run"
 	RunXAI       = "xai-run"
+	RunOpenAI    = "sk-openai-run"
 )
 
 // Run is the run's sealed credentials and stamps.

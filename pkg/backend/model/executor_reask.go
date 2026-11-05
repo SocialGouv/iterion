@@ -241,9 +241,10 @@ func reaskMarginalCost(first, reask delegate.Result, sameSession bool) float64 {
 // direct claw generation that no delegate or step event carries otherwise,
 // so without it the run's meter never sees that spend while the node's
 // figure includes it. The event is named after the call itself — claw, the
-// detected model and its provider — and marked `reask: "extract"`; it fires
-// on every outcome that spent (a recovery that failed after the model
-// answered was billed like one that succeeded).
+// detected model and its provider, and the credential keys of the claw arm's
+// Spend its client was built from (spent.Credential) — and marked
+// `reask: "extract"`; it fires on every outcome that spent (a recovery that
+// failed after the model answered was billed like one that succeeded).
 func (e *ClawExecutor) emitExtractionOutcome(nodeID, declaredModel string, spent delegate.Result, err error) {
 	if spent.Tokens == 0 && spent.CostUSD == 0 && spent.UnreportedCalls == 0 {
 		return

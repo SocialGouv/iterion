@@ -1226,8 +1226,17 @@ func (e *ClawExecutor) extractStructuredViaClaw(
 		ExplicitSchema: task.OutputSchema,
 	}
 	// The recovery is a claw call on the model this function picked, not on
-	// the node's own — pricing its usage is the task's only role here.
+	// the node's own — pricing its usage is the task's only role here. Its
+	// bill names what the call spent, the arm's Spend its client was built
+	// from: the recovery's own delegate event carries it as its credential
+	// keys (ADR-161 decision 8), and the ledger and the fine table book it
+	// there, never on the node's row by prediction.
 	recoveryTask := delegate.Task{Model: modelSpec}
+	bill := func(u Usage) delegate.Result {
+		r := meteredFailure(recoveryTask, u)
+		r.Credential = credential
+		return r
+	}
 	policy := outputCorrectionPolicy(ctx)
 	callCtx, cancelCall, err := policy.begin(ctx, primary.Output, validateStructuredResult(primary, schema))
 	if err != nil {
@@ -1237,7 +1246,7 @@ func (e *ClawExecutor) extractStructuredViaClaw(
 	obj, err := GenerateObjectDirect[map[string]any](callCtx, client, e.generationForModel(genOpts))
 	if err != nil {
 		e.logger.Warn("[%s] structured-output recovery via claw (%s) failed: %v", nodeID, modelSpec, err)
-		spent := meteredFailure(recoveryTask, objectUsage(obj))
+		spent := bill(objectUsage(obj))
 		persistErr := policy.After(callCtx, foldSpend(spent, primary, false).Output, err)
 		return delegate.Result{}, spent, false, persistErr
 	}
@@ -1246,7 +1255,7 @@ func (e *ClawExecutor) extractStructuredViaClaw(
 	out.ParseFallback = false
 	if verr := ValidateOutput(out.Output, schema); verr != nil {
 		e.logger.Warn("[%s] structured-output recovery via claw (%s) still invalid: %v", nodeID, modelSpec, verr)
-		spent := meteredFailure(recoveryTask, obj.TotalUsage)
+		spent := bill(obj.TotalUsage)
 		return delegate.Result{}, spent, false, policy.After(callCtx, foldSpend(spent, primary, false).Output, verr)
 	}
 	if out.Output == nil {
@@ -1258,7 +1267,7 @@ func (e *ClawExecutor) extractStructuredViaClaw(
 	stampDelegateOutputMeta(out.Output, out, sourceBackend)
 	e.logger.Info("[%s] structured output recovered via claw (%s) — %s produced free-form text but no schema JSON (forfait structured-output gap)",
 		nodeID, modelSpec, sourceBackend)
-	spent = meteredFailure(recoveryTask, obj.TotalUsage)
+	spent = bill(obj.TotalUsage)
 	return out, spent, true, policy.After(callCtx, foldSpend(spent, out, false).Output, nil)
 }
 

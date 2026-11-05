@@ -312,10 +312,7 @@ func (m *metricsEmitter) addRoute(backend, modelName, source string, cost float6
 // m.mu held, alongside the run-total accumulation it mirrors.
 func (m *metricsEmitter) bookObservationLocked(nodeID string, route routeKey, provider string, cost float64, in, out, aggregate int64) {
 	m.addRouteLocked(route, cost, in, out, aggregate)
-	fp := ""
-	if route.source != hostExtractionSource {
-		fp = m.fingerprintFor(nodeID, route, provider)
-	}
+	fp := m.fingerprintFor(nodeID, route, provider)
 	m.addFingerprintLocked(fp, cost, in, out, aggregate)
 	m.notePlanMissLocked(fp, route, cost, in+out+aggregate)
 }
@@ -393,10 +390,18 @@ func (m *metricsEmitter) planDisagreements() int64 {
 // word when it stamps one, the claude_code label's slot and the model's
 // prefix when it does not. "" when the plan names nothing for it: the
 // observation joins no row of the fine table, never the donor's by guess,
-// and counts as a miss (notePlanMissLocked). Called under m.mu.
+// and counts as a miss (notePlanMissLocked).
+//
+// The structured-output recovery's own call (hostExtractionSource) is in no
+// plan: the publisher predicts the node's routes, never the detector's pick.
+// Its own keys alone decide — the run slot it spent, or nobody — and it is
+// never a disagreement. Called under m.mu.
 func (m *metricsEmitter) fingerprintFor(nodeID string, route routeKey, provider string) string {
 	if len(m.credPlan) == 0 || nodeID == "" {
 		return ""
+	}
+	if route.source == hostExtractionSource {
+		return ownFingerprint(route.credential)
 	}
 	if provider == "" {
 		provider = planProviderFor(route)
@@ -408,14 +413,21 @@ func (m *metricsEmitter) fingerprintFor(nodeID string, route routeKey, provider 
 	if route.credential.Channel == "" {
 		return predicted
 	}
-	own := ""
-	if route.credential.RunSlot() {
-		own = route.credential.Fingerprint
-	}
+	own := ownFingerprint(route.credential)
 	if predicted != "" && predicted != own {
 		m.disagreed++
 	}
 	return own
+}
+
+// ownFingerprint is the fine-table fingerprint a call's own credential keys
+// book on: the run slot's it spent, "" — nobody — where it spent no slot of
+// the run's.
+func ownFingerprint(spent credroute.Spend) string {
+	if !spent.RunSlot() {
+		return ""
+	}
+	return spent.Fingerprint
 }
 
 // addFingerprintLocked folds one observation into its credential bucket.
@@ -436,26 +448,27 @@ func (m *metricsEmitter) addFingerprintLocked(fp string, cost float64, in, out, 
 }
 
 // hostExtractionSource labels the structured-output recovery's own call
-// (reask "extract"): a claw call on the model and credential HOST detection
-// picked, never the node's credential, so the credential plan names nobody
-// for it — no fine row, no miss.
+// (reask "extract"): a claw call on the model HOST detection picked, which
+// the credential plan never predicts for the node. Its event's credential
+// keys — the claw arm's Spend for the call — book it: the run slot it spent
+// (a donor's lent key included), or nobody for the pod's money. An event
+// without them books nobody and is no miss.
 const hostExtractionSource = "host-extraction"
 
 // planRouteFundedByEnv reports that a route's spend belongs to a credential
-// the runner's ENVIRONMENT holds rather than one the plan could name: the
-// openai_compatible gateway (EnvFunded — the walk records no bundle row for
-// it on purpose), a claude_code session that rode the pod's ambient
-// anthropic env, and the host-detected structured-output recovery. Booking nobody for these is correct, never drift.
+// the runner's ENVIRONMENT holds rather than one the plan could name: a call
+// whose own credential keys name no slot of the run's, and — for an event
+// without them — the openai_compatible gateway (EnvFunded — the walk records
+// no bundle row for it on purpose), a claude_code session that rode the
+// pod's ambient anthropic env, and the structured-output recovery's call.
+// Booking nobody for these is correct, never drift.
 func planRouteFundedByEnv(route routeKey) bool {
-	if route.source == hostExtractionSource {
-		return true
-	}
 	if route.credential.Channel != "" {
 		// The call's own record: a spend on no slot of the run's is the
 		// environment's (or a backend's own config), placed on nobody.
 		return !route.credential.RunSlot()
 	}
-	if modelroute.Parse(route.model).Gateway() {
+	if modelroute.Parse(route.model).Gateway() || route.source == hostExtractionSource {
 		return true
 	}
 	return route.backend == delegate.BackendClaudeCode && route.source == "anthropic-env"

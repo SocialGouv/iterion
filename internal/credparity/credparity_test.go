@@ -13,7 +13,7 @@ import (
 // refusal, which the dispatch meets.
 func TestEveryRowIsWellFormed(t *testing.T) {
 	seen := map[string]bool{}
-	for _, r := range Rows() {
+	for _, r := range append(Rows(), RecoveryRows()...) {
 		if r.Name == "" || r.Origin == "" {
 			t.Errorf("row %q: a row names itself and its origin", r.Name)
 		}
@@ -135,6 +135,28 @@ func TestTheSiteKindRowsAreInTheTable(t *testing.T) {
 			}) {
 				t.Errorf("no row refuses a stamped %s site ambient-stamp (sandboxed %v)", kind, sandboxed)
 			}
+		}
+	}
+}
+
+// The recovery table (RecoveryRows) holds the shapes its readers can disagree
+// on: a recovery a run slot funds on a planned run (the ledger books the slot,
+// the fine table its fingerprint), one the pod funds beside a plan (nobody,
+// no miss), and one the stamp refuses (nothing sent, nothing booked).
+func TestTheRecoveryRowsAreInTheTable(t *testing.T) {
+	has := func(pred func(Row) bool) bool { return slices.ContainsFunc(RecoveryRows(), pred) }
+	if !has(func(r Row) bool { return r.Run.Plan && r.Want.Slot != "" }) {
+		t.Error("no recovery row spends a run slot on a planned run")
+	}
+	if !has(func(r Row) bool { return r.Run.Plan && !r.Want.Refused() && r.Want.Slot == "" }) {
+		t.Error("no recovery row spends the pod's money beside a plan")
+	}
+	if !has(func(r Row) bool { return r.Run.Stamped && r.Want.Refusal == AmbientStamp }) {
+		t.Error("no recovery row is refused under the stamp")
+	}
+	for _, r := range RecoveryRows() {
+		if r.Role != AuxiliaryRole || r.Sandboxed {
+			t.Errorf("row %q: the recovery is an auxiliary call in process on the host (role %q, sandboxed %v)", r.Name, r.Role, r.Sandboxed)
 		}
 	}
 }
