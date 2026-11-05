@@ -65,8 +65,14 @@ func windowDurationErr() error {
 // delegate.ParseResetHintDated answers the question from the pair of facts.
 func facadeWindowDetail(at time.Time) string {
 	return fmt.Sprintf("Usage limit reached for 5 hour. Your limit will reset at %s",
-		at.UTC().Format("2006-01-02 15:04:05"))
+		at.In(facadeClock).Format("2006-01-02 15:04:05"))
 }
+
+// facadeClock is the clock the z.ai facade writes its reset instants on:
+// Beijing time, UTC+8, with no zone in the text (the production captures and
+// their request ids are in pkg/backend/delegate/reset_zone_test.go). A
+// fixture that renders the facade's sentence renders it on that clock.
+var facadeClock = time.FixedZone("UTC+8", 8*60*60)
 
 // facadeWindowErr carries the captured shape as TEXT only, its instant
 // rendered at the moment the refusal is read — the facade that recomputes
@@ -119,7 +125,7 @@ func weeklyWallCaptureErr(now time.Time) error {
 	return &runtime.RuntimeError{
 		Code: runtime.ErrCodeUsageLimitBlocked,
 		Message: `node "synthesize" execution failed: rate_limited (claude_code): [1310][Weekly/Monthly Limit Exhausted. Your limit will reset at ` +
-			now.Add(48*time.Hour).UTC().Format("2006-01-02 15:04:05") + `][20260922194425aaaa]`,
+			now.Add(48*time.Hour).In(facadeClock).Format("2006-01-02 15:04:05") + `][20260922194425aaaa]`,
 	}
 }
 

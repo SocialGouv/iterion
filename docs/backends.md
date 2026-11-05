@@ -957,6 +957,19 @@ A `usage_window` failure **skips** the in-node retry budget when a route
 remains: retrying inside a shut window cannot succeed, and the whole
 chain runs under one per-node `timeout:`.
 
+A refusal's reset instant is read in the zone the refusal gives, most explicit
+first:
+
+1. a designator written on the instant (`2026-10-01T00:00:00Z`, `+02:00`);
+2. a zone named in parentheses after the reset word (`resets 9pm (Europe/Paris)`);
+3. for the z.ai facade's zone-less sentence (`Your limit will reset at
+   2026-11-08 01:20:00`), Beijing time (UTC+8), the clock its request ids
+   carry;
+4. UTC for anything else.
+
+A named zone the binary cannot load yields no instant, and the run falls back
+to the bounded blind wait rather than to an instant hours off.
+
 When a `usage_window` failure carries a provider reset instant, the executor
 also puts the effective `(backend, credential hint, model)` route on a reactive
 cooldown until that instant. The ledger is ready to do the same for a typed
