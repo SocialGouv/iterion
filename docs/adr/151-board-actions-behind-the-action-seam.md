@@ -58,7 +58,7 @@ same tool-policy gate, `timeout:` and started/finish hooks. What a native
 action deliberately does **not** inherit is the retry ladder: its guards
 (`Retryable`, idempotency keys, ambiguous effects) are HTTP-answer
 semantics, and re-issuing a store refusal in a sleep loop is invented
-behaviour. `retry:` is inert on a native action; [C334](../references/diagnostics.md)
+behaviour. `retry:` is inert on a native action; [C335](../references/diagnostics.md)
 says so at compile time.
 One engine-level classification IS added: a refused grant is
 `CAPABILITY_DENIED`, typed by interface (`runtime.CapabilityDenial`, the
@@ -91,12 +91,12 @@ second regime #78=A refuses. Consequences, both deliberate:
   mutating verb answers to a read grant.
 - A `capabilities:` list with no reader — a `command:`/`script:` recipe, or
   an HTTP action whose authorization is the connection's credential — warns
-  ([C329](../references/diagnostics.md)) — an inert grant reads as
+  ([C332](../references/diagnostics.md)) — an inert grant reads as
   configured, which is how a node ends up looking authorized for something
   nothing enforces.
 - The compiler also names the MISSING grant: a native board action whose
   capability is declared neither on the node nor on the workflow warns at
-  compile time ([C333](../references/diagnostics.md), the C328 posture —
+  compile time ([C334](../references/diagnostics.md), the C328 posture —
   a warning with the remedy) what the runtime would refuse as
   `CAPABILITY_DENIED`. The compile-time half reads
   `boardcaps.ActionCapability`, held to the facade's bindings and the native
@@ -108,7 +108,7 @@ The compiler knows the native ids through `ir.NativeConnectorIDs` — the
 registry's compile-time half, fed from the same vocabulary leaf
 (`boardcaps.ConnectorID`) so reading it links no dispatcher into a binary
 that compiles a `.bot` (#2857). For those ids, and only those, C261 does
-not fire; a `connection:` line written anyway warns ([C332](../references/diagnostics.md))
+not fire; a `connection:` line written anyway warns ([C333](../references/diagnostics.md))
 because the alias authenticates nothing. Every HTTP connector keeps the
 requirement — a connector call with no credential is not a call iterion
 can make. The id reservation runs the other way too: `spec.Validate`

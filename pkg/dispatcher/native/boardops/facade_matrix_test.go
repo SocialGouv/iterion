@@ -113,7 +113,7 @@ func TestFacadeEveryNativeToolIsExposedOrExemptedWithReason(t *testing.T) {
 // The facade's verbs gate on the SAME capability the tool names — the one
 // authorization surface #78=A decided: an action transport adds no second
 // regime beside the MCP ones. The compile-time half of that gate reads
-// boardcaps.ActionCapability (C333), so this test holds ALL THREE tables to
+// boardcaps.ActionCapability (C334), so this test holds ALL THREE tables to
 // each other: binding, capability vocabulary, native registry.
 func TestFacadeExposedVerbsKeepTheToolsCapability(t *testing.T) {
 	for actionID, toolName := range actionBindings {
@@ -126,20 +126,20 @@ func TestFacadeExposedVerbsKeepTheToolsCapability(t *testing.T) {
 		}
 		cap, ok := boardcaps.ActionCapability[actionID]
 		if !ok {
-			t.Errorf("action %q has no entry in boardcaps.ActionCapability — the compiler cannot warn when its grant is missing (C333)", actionID)
+			t.Errorf("action %q has no entry in boardcaps.ActionCapability — the compiler cannot warn when its grant is missing (C334)", actionID)
 			continue
 		}
 		if cap != tool.Capability {
-			t.Errorf("action %q: boardcaps.ActionCapability pins %q but the native tool gates on %q — C333 would name the wrong grant", actionID, cap, tool.Capability)
+			t.Errorf("action %q: boardcaps.ActionCapability pins %q but the native tool gates on %q — C334 would name the wrong grant", actionID, cap, tool.Capability)
 		}
 	}
 	// And the loop BACK: a table entry naming no exposed action is a stale
-	// one — left behind by a verb the facade dropped — and C331 would then
+	// one — left behind by a verb the facade dropped — and C334 would then
 	// name a grant for an action nothing serves. The same discipline as the
 	// exemptions above: one table is one truth in BOTH directions.
 	for actionID := range boardcaps.ActionCapability {
 		if _, exposed := actionBindings[actionID]; !exposed {
-			t.Errorf("boardcaps.ActionCapability names %q, which the facade does not expose — a stale entry survives in silence and C331 warns for a verb that does not exist", actionID)
+			t.Errorf("boardcaps.ActionCapability names %q, which the facade does not expose — a stale entry survives in silence and C334 warns for a verb that does not exist", actionID)
 		}
 	}
 }

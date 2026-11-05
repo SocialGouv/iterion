@@ -411,7 +411,7 @@ type ToolNode struct {
 	// #78=A) — declared exactly like on an agent/judge: nil = inherit the
 	// workflow's, a declared `capabilities: []` = no grant (#1801). The
 	// `action:` recipe's native transport reads them; a command:/script:
-	// node has no consumer for them (C329 warns).
+	// node has no consumer for them (C332 warns).
 	Capabilities []string
 
 	// Verified Action quad (ADR-044). All optional; a node with an empty

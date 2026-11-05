@@ -91,7 +91,7 @@ workflow main:
 	}
 }
 
-// C330: a connection written on a native action authenticates nothing —
+// C333: a connection written on a native action authenticates nothing —
 // warned, not refused.
 func TestConnectionOnANativeActionWarns(t *testing.T) {
 	_, diags := compileSource(t, `
@@ -108,11 +108,11 @@ workflow main:
 		t.Fatalf("unexpected errors: %s", strings.Join(codesOf(errs), "\n"))
 	}
 	if !hasCode(diags, DiagActionConnectionOnNative) {
-		t.Fatalf("connection: on a native action: got %s, want C330", strings.Join(codesOf(diags), "\n"))
+		t.Fatalf("connection: on a native action: got %s, want C333", strings.Join(codesOf(diags), "\n"))
 	}
 }
 
-// C329: on a command:/script: node the list has no consumer — an inert
+// C332: on a command:/script: node the list has no consumer — an inert
 // grant reads as configured.
 func TestCapabilitiesOnAShellToolWarnInert(t *testing.T) {
 	_, diags := compileSource(t, `
@@ -128,7 +128,7 @@ workflow main:
 		t.Fatalf("unexpected errors: %s", strings.Join(codesOf(errs), "\n"))
 	}
 	if !hasCode(diags, DiagToolCapabilitiesInert) {
-		t.Fatalf("capabilities: on a command: node: got %s, want C329", strings.Join(codesOf(diags), "\n"))
+		t.Fatalf("capabilities: on a command: node: got %s, want C332", strings.Join(codesOf(diags), "\n"))
 	}
 }
 
@@ -149,7 +149,7 @@ workflow main:
 	}
 }
 
-// C329's own sentence is the rule: the grant is read ONLY by the action
+// C332's own sentence is the rule: the grant is read ONLY by the action
 // recipe's NATIVE transport. An HTTP action (a connection: authenticates it)
 // never reads node capabilities either, so capabilities: there is the same
 // inert grant reading as configured — the warning must cover it.
@@ -170,11 +170,11 @@ workflow main:
 		t.Fatalf("unexpected errors: %s", strings.Join(codesOf(errs), "\n"))
 	}
 	if !hasCode(diags, DiagToolCapabilitiesInert) {
-		t.Fatalf("capabilities: on an HTTP action: got %s, want C329 — the grant is inert there", strings.Join(codesOf(diags), "\n"))
+		t.Fatalf("capabilities: on an HTTP action: got %s, want C332 — the grant is inert there", strings.Join(codesOf(diags), "\n"))
 	}
 }
 
-// C331: a native board action whose grant is declared NOWHERE — not on the
+// C334: a native board action whose grant is declared NOWHERE — not on the
 // node, not on the workflow — is refused CAPABILITY_DENIED at run time; the
 // compiler can say it earlier and name the capability (the C328 posture:
 // warn, with the remedy).
@@ -191,7 +191,7 @@ workflow main:
 		t.Fatalf("unexpected errors: %s", strings.Join(codesOf(errs), "\n"))
 	}
 	if !hasCode(diags, DiagNativeActionWithoutGrant) {
-		t.Fatalf("board.issue.list with no board.read anywhere: got %s, want C331", strings.Join(codesOf(diags), "\n"))
+		t.Fatalf("board.issue.list with no board.read anywhere: got %s, want C334", strings.Join(codesOf(diags), "\n"))
 	}
 }
 
@@ -238,13 +238,13 @@ workflow main:
 				return
 			}
 			if has {
-				t.Errorf("the grant is in reach: got %s, want no C331", strings.Join(codesOf(diags), "\n"))
+				t.Errorf("the grant is in reach: got %s, want no C334", strings.Join(codesOf(diags), "\n"))
 			}
 		})
 	}
 }
 
-// C332: retry: is the HTTP ladder's — Retry-After, idempotency keys,
+// C335: retry: is the HTTP ladder's — Retry-After, idempotency keys,
 // ambiguous effects. On a native action it is inert (a store refusal is not
 // re-issued in a sleep loop), and an inert property reads as configured.
 func TestRetryOnANativeActionWarns(t *testing.T) {
@@ -262,7 +262,7 @@ workflow main:
 		t.Fatalf("unexpected errors: %s", strings.Join(codesOf(errs), "\n"))
 	}
 	if !hasCode(diags, DiagActionRetryOnNative) {
-		t.Fatalf("retry: on a native action: got %s, want C332", strings.Join(codesOf(diags), "\n"))
+		t.Fatalf("retry: on a native action: got %s, want C335", strings.Join(codesOf(diags), "\n"))
 	}
 	// timeout: IS honoured on a native action — no warning for it.
 	_, diags2 := compileSource(t, `
@@ -280,12 +280,12 @@ workflow main:
 	}
 }
 
-// C331's message must name the case the author is actually in (review r2):
+// C334's message must name the case the author is actually in (review r2):
 // "declared neither on the node nor on the workflow" is FALSE when the
 // workflow grants and the node's declared list overrode it — and the remedy
 // there is to drop the override, not to add a grant the workflow already
 // holds.
-func TestC331MessageDistinguishesAbsentFromOverridden(t *testing.T) {
+func TestC334MessageDistinguishesAbsentFromOverridden(t *testing.T) {
 	t.Run("granted nowhere", func(t *testing.T) {
 		_, diags := compileSource(t, `
 tool plan:
@@ -297,7 +297,7 @@ workflow main:
 `)
 		msg := diagText(diags, DiagNativeActionWithoutGrant)
 		if msg == "" {
-			t.Fatal("want C331")
+			t.Fatal("want C334")
 		}
 		if !strings.Contains(msg, "neither on the node nor on the workflow") {
 			t.Errorf("the nowhere case must say so: %s", msg)
@@ -316,7 +316,7 @@ workflow main:
 `)
 		msg := diagText(diags, DiagNativeActionWithoutGrant)
 		if msg == "" {
-			t.Fatal("want C331 — a declared no-grant over a granting workflow IS the denied case")
+			t.Fatal("want C334 — a declared no-grant over a granting workflow IS the denied case")
 		}
 		if strings.Contains(msg, "neither on the node nor on the workflow") {
 			t.Errorf("the workflow DOES declare it — the message lies: %s", msg)
@@ -344,7 +344,7 @@ workflow main:
 `)
 		msg := diagText(diags, DiagNativeActionWithoutGrant)
 		if msg == "" {
-			t.Fatal("want C331")
+			t.Fatal("want C334")
 		}
 		for _, want := range []string{"does not grant either", "to the node's list"} {
 			if !strings.Contains(msg, want) {

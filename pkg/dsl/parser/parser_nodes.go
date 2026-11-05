@@ -546,7 +546,7 @@ func (p *parser) parseToolNodeProp(td *ast.ToolNodeDecl, propTok Token) {
 		// (ADR-151, #78=A): one authorization surface, never a second regime.
 		// The grant is read by the `action:` recipe's native transport (a
 		// board.* action gates on it exactly like the board MCP tools do);
-		// on a command:/script: node nothing consumes it and C329 says so.
+		// on a command:/script: node nothing consumes it and C332 says so.
 		p.expect(TokenColon)
 		td.Capabilities = p.parseDeclaredCapabilityList()
 	case TokenIdent:

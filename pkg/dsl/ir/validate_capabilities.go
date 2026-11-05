@@ -101,7 +101,7 @@ func (c *compiler) validateCapabilities(w *Workflow) {
 		// MCP transport the sandbox may not have, while a tool node's board
 		// action runs IN the engine — the transport question is exactly what
 		// the native seam removes (#2632's second half). What it gets
-		// instead is C329: on a command:/script: node no consumer reads the
+		// instead is C332: on a command:/script: node no consumer reads the
 		// list, and an inert grant reads as configured.
 		if tn, ok := n.(*ToolNode); ok {
 			for _, cap := range tn.Capabilities {
@@ -201,7 +201,7 @@ func actionConnectorOf(action string) string {
 }
 
 // toolGrantReaderAbsent words WHY a tool node's grant has no reader, for
-// C329: the recipe decides, not the list.
+// C332: the recipe decides, not the list.
 func toolGrantReaderAbsent(tn *ToolNode) string {
 	if tn.Action != "" {
 		return "its action: is served over HTTP, whose authorization is the connection's credential"

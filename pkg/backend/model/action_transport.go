@@ -125,7 +125,7 @@ func cutActionConnector(action string) (string, bool) {
 // semantics; a native call's failure is a local refusal or a store error,
 // and re-issuing it in a sleep loop would invent the behaviour ADR-098's
 // rounds six times refused to invent. `retry:` is therefore inert on a
-// native action — C334 says so at compile time, and the ADR says why.
+// native action — C335 says so at compile time, and the ADR says why.
 func (e *ClawExecutor) executeToolNodeNativeAction(ctx context.Context, node *ir.ToolNode, transport ActionTransport, input map[string]any) (map[string]any, error) {
 	pkg := transport.Package()
 	if pkg == nil {

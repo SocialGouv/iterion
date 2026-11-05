@@ -56,7 +56,7 @@ var NativeConnectorIDs = map[string]bool{
 
 // ActionCapability maps every action id the native board facade exposes to
 // the capability gating it — the compile-time half of the facade's grant:
-// the DSL compiler (C331) warns when a native board action's capability is
+// the DSL compiler (C334) warns when a native board action's capability is
 // declared nowhere (neither the node nor the workflow), and the runtime
 // refusal it predicts is boardops' own caps.Has. boardops' matrix test holds
 // this table to the facade's bindings and to the native registry, in both
