@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/backend/secretguard"
 	"github.com/SocialGouv/iterion/pkg/connector/exec"
 	"github.com/SocialGouv/iterion/pkg/connector/spec"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
@@ -82,9 +83,9 @@ func (e *ClawExecutor) executeToolNodeAction(ctx context.Context, node *ir.ToolN
 
 	params, err := e.renderActionParams(ctx, node, op, input, secretsMaterialized)
 	if err != nil {
-		// Scrubbed: a coercion refusal PRINTS the value it refused, so a
-		// secret materialised into a parameter the operation declares
-		// `integer` left in the message that said it was not one.
+		// Scrubbed: a refusal PRINTS the text it refused, and data can carry
+		// a secret's raw value into an argument whose declared type refuses
+		// it.
 		return nil, fmt.Errorf("model: tool node %q: %w", node.ID, e.scrubActionError(err))
 	}
 
@@ -351,11 +352,13 @@ func (e *ClawExecutor) scrubActionError(err error) error {
 	if err == nil || e.secretGuard == nil {
 		return err
 	}
-	// A refused argument's Text is the one field that can carry a
-	// materialised secret. It is redacted in place, for two readers the
-	// message pass below cannot serve: a caller errors.As hands the FIELD,
-	// and the message itself, which quotes the text cut to refusedTextQuote
-	// runes — a secret the cut halves is no longer one that pass recognises.
+	// A refused argument's Text is the one field that can carry a secret:
+	// an authored `{{secrets.X}}` is narrowed as its placeholder, but DATA
+	// (an input, an upstream output) can carry a secret's raw value. It is
+	// redacted in place, for two readers the message pass below cannot
+	// serve: a caller errors.As hands the FIELD, and the message itself,
+	// which quotes the text cut to refusedTextQuote runes — a secret the cut
+	// halves is no longer one that pass recognises.
 	var refused *ActionParamError
 	if errors.As(err, &refused) {
 		refused.Text = e.secretGuard.Redact(refused.Text)
@@ -429,6 +432,14 @@ const (
 // request many APIs reject and some silently mis-handle. The operation is the
 // only place that knows which is which, so the conversion happens here rather
 // than in the DSL, where every value is text.
+//
+// Both transports narrow the SAME value: the rendering, placeholders and
+// all. The HTTP call swaps a secret in afterwards, in the strings the
+// narrowed argument carries (narrowValue's leaf), never into text that is
+// then read as JSON — there the secret's own bytes are syntax: a `"` or a
+// `\` fails to decode, a literal `\n` arrives as a newline, a
+// `","admin":"yes` writes a key of its own and a `1,2` spells two elements
+// (secretguard.MaterializeLeaves states the same rule for a tool input).
 func (e *ClawExecutor) renderActionParams(ctx context.Context, node *ir.ToolNode, op spec.Operation, input map[string]any, secrets actionSecrets) (map[string]any, error) {
 	declared := make(map[string]spec.Param, len(op.Params))
 	for _, p := range op.Params {
@@ -436,6 +447,19 @@ func (e *ClawExecutor) renderActionParams(ctx context.Context, node *ir.ToolNode
 	}
 	td := TemplateDataFromContext(ctx)
 	runID := RunIDFromContext(ctx)
+	// A `{{secrets.NAME}}` ref renders to a PLACEHOLDER, not a value — the
+	// whole point, since a secret must not sit in a command line or in a
+	// log. A vendor call materialises it, or the literal text
+	// `__ITERION_SECRET_NAME__` travels to the vendor as the argument. The
+	// raw form is right here: nothing on this path reaches a shell, so the
+	// shell-escaping variants would corrupt the value. The `params` sink: an
+	// authored value, named so a secret kept off the vendor call by its
+	// declaration stays off it. A native transport keeps the placeholder:
+	// its store persists and shows what it receives.
+	leaf := keepPlaceholder
+	if secrets == secretsMaterialized {
+		leaf = func(s string) string { return e.secretGuard.MaterializeFor(secretsink.Params, s) }
+	}
 
 	out := make(map[string]any, len(node.Params))
 	for _, p := range node.Params {
@@ -453,21 +477,8 @@ func (e *ClawExecutor) renderActionParams(ctx context.Context, node *ir.ToolNode
 		// the vendor, because the surrounding text makes the result un-decodable
 		// so nothing downstream could undo it.
 		// A whole-value SECRET is rendered RAW, like interpolated text, and not
-		// as a JSON literal.
-		//
-		// The typed path wraps a whole-value ref in JSON — a string comes back
-		// quoted — and Materialize then splices the real secret INSIDE those
-		// quotes, after the encoder has run. The coercion below then reads the
-		// result as JSON, so the secret's own bytes are read as syntax: a
-		// credential containing `"` or `\` fails to decode and reaches the
-		// vendor WITH its surrounding quotes, and one containing a literal
-		// `\n` two-character sequence arrives as a newline. Either way the
-		// call 401s on a perfectly valid credential — the exact symptom
-		// materialising was added to remove.
-		//
-		// Raw is also the honest shape: a credential is a string, never a
-		// number or an object, so there is nothing for the typed path to
-		// decide.
+		// as a JSON literal: a credential is a string, never a number or an
+		// object, so there is nothing for the typed path to decide.
 		whole := isWholeValueRef(p.Value, p.Refs)
 		secret := whole && p.Refs[0] != nil && p.Refs[0].Kind == ir.RefSecrets
 		rendered := ""
@@ -476,29 +487,16 @@ func (e *ClawExecutor) renderActionParams(ctx context.Context, node *ir.ToolNode
 		} else {
 			rendered = resolveTemplateWith(p.Value, p.Refs, input, e.vars, td, runID, e.secretGuard, nil, false, rawTemplateValue, true, nil)
 		}
-		// A `{{secrets.NAME}}` ref renders to a PLACEHOLDER, not a value —
-		// the whole point, since a secret must not sit in a command line or
-		// in a log. A vendor call materialises it before use, or the literal
-		// text `__ITERION_SECRET_NAME__` travels to the vendor as the
-		// argument. The raw form is right here: nothing on this path reaches
-		// a shell, so the shell-escaping variants would corrupt the value.
-		// The `params` sink: an authored value, named so a secret kept off
-		// the vendor call by its declaration stays off it. A native
-		// transport keeps the placeholder: its store persists and shows
-		// what it receives.
-		if secrets == secretsMaterialized {
-			rendered = e.secretGuard.MaterializeFor(secretsink.Params, rendered)
-		}
 		decl, known := declared[p.Key]
 		if !known {
 			// exec refuses this too, and its message lists what the operation
 			// accepts; letting it through keeps ONE definition of that error.
-			out[p.Key] = rendered
+			out[p.Key] = leaf(rendered)
 			continue
 		}
 		// The refusal is an *ActionParamError naming the key, returned as is
 		// so a caller reaches the type with errors.As.
-		v, err := coerceParam(decl, rendered, whole && !secret)
+		v, err := coerceParam(decl, rendered, whole && !secret, leaf)
 		if err != nil {
 			return nil, err
 		}
@@ -523,8 +521,9 @@ func isWholeValueRef(value string, refs []*ir.Ref) bool {
 // number bare, an object as JSON text — so parsing it back is what lets a
 // `.bot` write `index: "{{outputs.pick.issue}}"` and have an integer reach an
 // integer field. Interpolated text arrives as text. Either way the value then
-// goes through narrowParam, the one conversion to the declared type.
-func coerceParam(decl spec.Param, rendered string, typed bool) (any, error) {
+// goes through narrowParam, the one conversion to the declared type, and leaf
+// reaches each string the result carries (narrowValue).
+func coerceParam(decl spec.Param, rendered string, typed bool, leaf func(string) string) (any, error) {
 	// AUTHORED TEXT is not JSON, and reading it as JSON altered it.
 	//
 	// The renderer already knows which of the two this is — a whole-value
@@ -540,9 +539,9 @@ func coerceParam(decl spec.Param, rendered string, typed bool) (any, error) {
 	// guessing from the text's shape.
 	if !typed {
 		if decl.Type == "" || decl.Type == "string" {
-			return rendered, nil
+			return leaf(rendered), nil
 		}
-		return narrowParam(decl, rendered)
+		return narrowParam(decl, rendered, leaf)
 	}
 
 	trimmed := strings.TrimSpace(rendered)
@@ -558,10 +557,10 @@ func coerceParam(decl spec.Param, rendered string, typed bool) (any, error) {
 	// 9007199254740993 came back as 9007199254740992, which addresses a
 	// different resource and looks perfectly plausible in a log.
 	if decoded, ok := decodeJSONValue(trimmed); ok {
-		return narrowParam(decl, decoded)
+		return narrowParam(decl, decoded, leaf)
 	}
 	// Bare text the renderer left alone (an author who wrote a literal).
-	return narrowParam(decl, trimmed)
+	return narrowParam(decl, trimmed, leaf)
 }
 
 // decodeJSONValue reads text as exactly ONE JSON value, numbers kept exact
@@ -602,13 +601,27 @@ func decodeJSONValue(text string) (any, bool) {
 //
 // Only an operation that declares NO type (`type:` absent) takes the value as
 // it is: there is no declaration to narrow to.
-func narrowParam(decl spec.Param, v any) (any, error) {
-	return narrowValue(decl.Key, -1, decl.Type, decl.Items, v)
+//
+// v holds a secret as its PLACEHOLDER, and leaf is what reaches each string
+// the narrowed value carries: materialised for an HTTP call, kept as written
+// (keepPlaceholder) for a native transport. So JSON is read from the
+// placeholder form, never from a secret's bytes, and the two transports
+// narrow the same value. A scalar declaration is the one reading of a leaf's
+// RESULT: it parses the spelling, where no syntax surrounds the secret, so
+// `{{secrets.N}}` holding `12345` reaches an integer field over HTTP — and is
+// refused by a native transport, which never holds the value.
+func narrowParam(decl spec.Param, v any, leaf func(string) string) (any, error) {
+	return narrowValue(decl.Key, -1, decl.Type, decl.Items, v, leaf)
 }
 
+// keepPlaceholder is a native transport's leaf: the narrowed argument keeps
+// every placeholder as written.
+func keepPlaceholder(s string) string { return s }
+
 // narrowValue is narrowParam for one value: the argument itself (item -1) or
-// the element at index item of an array argument.
-func narrowValue(key string, item int, declared, items string, v any) (any, error) {
+// the element at index item of an array argument. A refusal's Text is the
+// text before leaf: an authored secret is quoted as its placeholder.
+func narrowValue(key string, item int, declared, items string, v any, leaf func(string) string) (any, error) {
 	refuse := func() error {
 		pe := &ActionParamError{Key: key, Item: item, Declared: declared, Got: describeJSONValue(v)}
 		if s, isText := v.(string); isText {
@@ -618,7 +631,8 @@ func narrowValue(key string, item int, declared, items string, v any) (any, erro
 	}
 	switch declared {
 	case "":
-		return v, nil
+		out, _ := secretguard.MaterializeLeaves(v, leaf)
+		return out, nil
 	case "integer":
 		switch t := v.(type) {
 		case json.Number:
@@ -636,7 +650,7 @@ func narrowValue(key string, item int, declared, items string, v any) (any, erro
 			}
 			return int64(t), nil
 		case string:
-			n, err := strconv.ParseInt(strings.TrimSpace(t), 10, 64)
+			n, err := strconv.ParseInt(strings.TrimSpace(leaf(t)), 10, 64)
 			if err != nil {
 				return nil, refuse()
 			}
@@ -652,7 +666,7 @@ func narrowValue(key string, item int, declared, items string, v any) (any, erro
 		case float64, int, int64:
 			return t, nil
 		case string:
-			n, err := strconv.ParseFloat(strings.TrimSpace(t), 64)
+			n, err := strconv.ParseFloat(strings.TrimSpace(leaf(t)), 64)
 			if err != nil {
 				return nil, refuse()
 			}
@@ -663,7 +677,7 @@ func narrowValue(key string, item int, declared, items string, v any) (any, erro
 		case bool:
 			return t, nil
 		case string:
-			b, err := strconv.ParseBool(strings.TrimSpace(t))
+			b, err := strconv.ParseBool(strings.TrimSpace(leaf(t)))
 			if err != nil {
 				return nil, refuse()
 			}
@@ -672,7 +686,7 @@ func narrowValue(key string, item int, declared, items string, v any) (any, erro
 	case "string":
 		switch t := v.(type) {
 		case string:
-			return t, nil
+			return leaf(t), nil
 		case json.Number:
 			return t.String(), nil
 		case bool:
@@ -694,11 +708,12 @@ func narrowValue(key string, item int, declared, items string, v any) (any, erro
 			return nil, refuse()
 		}
 		if items == "" {
-			return list, nil
+			out, _ := secretguard.MaterializeLeaves(list, leaf)
+			return out, nil
 		}
 		out := make([]any, len(list))
 		for i, el := range list {
-			n, err := narrowValue(key, i, items, "", el)
+			n, err := narrowValue(key, i, items, "", el, leaf)
 			if err != nil {
 				return nil, err
 			}
@@ -717,7 +732,9 @@ func narrowValue(key string, item int, declared, items string, v any) (any, erro
 		if !isObj {
 			return nil, refuse()
 		}
-		return obj, nil
+		// Values only: a map key is never materialised (MaterializeLeaves).
+		out, _ := secretguard.MaterializeLeaves(obj, leaf)
+		return out, nil
 	default:
 		// A type with no case here is refused, not passed through: sending
 		// the value unchanged is what a declaration exists to prevent.
@@ -742,8 +759,8 @@ type ActionParamError struct {
 	// its content.
 	Got string
 	// Text is the text that does not read as Declared, when the value was
-	// text. It may carry a materialised secret: scrubActionError redacts it
-	// in place.
+	// text. An authored secret is in it as its placeholder; a secret DATA
+	// carried raw may be too, and scrubActionError redacts it in place.
 	Text string
 	// Unsupported marks a declared type this build has no conversion to.
 	Unsupported bool

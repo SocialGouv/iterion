@@ -2,6 +2,7 @@ package model_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -22,19 +23,31 @@ import (
 // same way is the twin. Each value below reaches the filed card as it
 // reaches the vendor's JSON body, or both refuse it, typed and at the same
 // element, before the store or the vendor is reached. The secrets mode is
-// the one difference: a secret keeps its placeholder on the native path and
-// is materialised on the HTTP one, and a refusal's Text holds the
-// placeholder on both.
+// the one difference: both narrow the placeholder form, then a secret keeps
+// its placeholder on the native path and is swapped into the narrowed
+// strings on the HTTP one — so a secret with bytes JSON reads (a quote, a
+// literal backslash-n, a comma) narrows alike on both, and a refusal's Text
+// holds the placeholder on both.
 //
 // Mutations seen red (each restored): narrowing skipped for the native mode
 // in renderActionParams (the store received every list as text and refused
 // it, untyped); the secret materialised whatever the mode (the card carried
-// the secret's value); the in-place redaction of ActionParamError.Text
-// removed from scrubActionError (the HTTP refusal's Text held the value).
+// the secret's value); the secret materialised before narrowing on the HTTP
+// path (the quoted secret's element was refused over HTTP and filed on the
+// board, `[{{secrets.SPLIT}}]` reached the vendor as two labels and was
+// refused by the board).
 func TestANativeActionNarrowsEachArgumentAsAnHTTPCallDoes(t *testing.T) {
 	t.Parallel()
-	const secretValue = "ghp_synthetic_label_secret_2991"
+	const (
+		secretValue = "ghp_synthetic_label_secret_2991"
+		quoted      = `pa"ss\n-not-real-0001`
+		split       = `11,22`
+	)
 	ph := secretguard.PlaceholderForName("GH_TOKEN")
+	quotedJSON, err := json.Marshal([]string{quoted})
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, tc := range []struct {
 		name     string
 		value    string
@@ -50,6 +63,8 @@ func TestANativeActionNarrowsEachArgumentAsAnHTTPCallDoes(t *testing.T) {
 		{name: "a string holding a JSON list", value: "{{input.labels}}", input: map[string]any{"labels": `["a11y"]`}, native: []string{"a11y"}, vendor: `["a11y"]`},
 		{name: "number elements narrow to the declared string items", value: "{{input.labels}}", input: map[string]any{"labels": []any{1, 2}}, native: []string{"1", "2"}, vendor: `["1","2"]`},
 		{name: "a secret element", value: `["{{secrets.GH_TOKEN}}"]`, native: []string{ph}, vendor: `["` + secretValue + `"]`},
+		{name: "a secret element keeps the bytes JSON reads", value: `["{{secrets.QUOTED}}"]`, native: []string{secretguard.PlaceholderForName("QUOTED")}, vendor: string(quotedJSON)},
+		{name: "a secret spells no list syntax", value: `[{{secrets.SPLIT}}]`, item: -1, declared: "array", text: "[" + secretguard.PlaceholderForName("SPLIT") + "]"},
 		{name: "a comma list is refused", value: "a11y,rgaa", item: -1, declared: "array", text: "a11y,rgaa"},
 		{name: "an object element is refused", value: `["a",{"k":1}]`, item: 1, declared: "string"},
 		{name: "a whole-value secret is refused as text", value: "{{secrets.GH_TOKEN}}", item: -1, declared: "array", text: ph},
@@ -61,7 +76,11 @@ func TestANativeActionNarrowsEachArgumentAsAnHTTPCallDoes(t *testing.T) {
 				t.Fatalf("ParseRefs(%q): %v", tc.value, err)
 			}
 			wf := &ir.Workflow{Vars: map[string]*ir.Var{"labels": {Name: "labels", Type: ir.VarStringArray}}}
-			guard := secretguard.New([]secretguard.Secret{{Name: "GH_TOKEN", Value: secretValue}}, secretguard.DefaultConfig())
+			guard := secretguard.New([]secretguard.Secret{
+				{Name: "GH_TOKEN", Value: secretValue},
+				{Name: "QUOTED", Value: quoted},
+				{Name: "SPLIT", Value: split},
+			}, secretguard.DefaultConfig())
 			launch := map[string]any{"labels": "a11y, rgaa"}
 
 			// The native transport: the instance's board, the card the oracle.

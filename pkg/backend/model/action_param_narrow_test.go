@@ -182,63 +182,187 @@ func TestAValueTheDeclarationCannotDescribeIsATypedRefusal(t *testing.T) {
 	}
 }
 
-// A secret materialised into an argument whose declared type refuses it is
-// quoted by the refusal — and leaves redacted, with the refusal still typed:
-// the message pass keeps errors.As answering, and the refusal's Text, the
-// field errors.As hands a caller, is redacted in place.
+// A secret in an argument whose declared type refuses it is quoted by the
+// refusal as its placeholder, with the refusal still typed. An authored
+// `{{secrets.X}}` is narrowed as its placeholder, so the refused text never
+// held the value; a secret DATA carries raw (an input, an upstream output)
+// is in the refused text, and the refusal's Text — the field errors.As hands
+// a caller — is redacted in place, the message pass keeping errors.As
+// answering.
 //
-// Mutation seen red (restored): the in-place redaction of ActionParamError.Text
-// removed — the message read clean, the field errors.As returned carried the
-// secret.
+// Mutations seen red (each restored): the in-place redaction of
+// ActionParamError.Text removed (the data case's field carried the secret);
+// the secret materialised before narrowing with the in-place redaction
+// removed (the authored case's field carried it).
 func TestARefusedSecretArgumentIsRedactedAndStaysTyped(t *testing.T) {
 	t.Parallel()
 	const secretValue = "gh-pat-not-a-real-token-41d7"
-	guard := secretguard.New([]secretguard.Secret{{Name: "MY_SECRET", Value: secretValue}}, secretguard.DefaultConfig())
-	rec, run := narrowingNode(t, "integer", "", "{{secrets.MY_SECRET}}", model.WithSecretGuard(guard))
-	err := run(nil)
-	if err == nil {
-		t.Fatal("a secret that is not an integer must be refused by an integer argument")
-	}
-	if strings.Contains(err.Error(), secretValue) {
-		t.Errorf("the refusal carried the secret verbatim: %v", err)
-	}
-	if !strings.Contains(err.Error(), "__ITERION_SECRET_MY_SECRET__") {
-		t.Errorf("the redaction must name the secret it replaced: %v", err)
-	}
-	var refused *model.ActionParamError
-	if !errors.As(err, &refused) {
-		t.Fatalf("the redaction must keep the refusal typed, got %T: %v", err, err)
-	}
-	if refused.Text != "__ITERION_SECRET_MY_SECRET__" {
-		t.Errorf("the refusal's Text = %q, want the secret's placeholder — a caller reading the field reads what the message hides", refused.Text)
-	}
-	if _, calls := rec.last(t); calls != 0 {
-		t.Errorf("the vendor was called %d time(s)", calls)
+	for _, tc := range []struct {
+		name  string
+		value string
+		input map[string]any
+	}{
+		{name: "an authored secret", value: "{{secrets.MY_SECRET}}"},
+		{name: "a secret data carries raw", value: "{{input.n}}", input: map[string]any{"n": secretValue}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			guard := secretguard.New([]secretguard.Secret{{Name: "MY_SECRET", Value: secretValue}}, secretguard.DefaultConfig())
+			rec, run := narrowingNode(t, "integer", "", tc.value, model.WithSecretGuard(guard))
+			err := run(tc.input)
+			if err == nil {
+				t.Fatal("a secret that is not an integer must be refused by an integer argument")
+			}
+			if strings.Contains(err.Error(), secretValue) {
+				t.Errorf("the refusal carried the secret verbatim: %v", err)
+			}
+			if !strings.Contains(err.Error(), "__ITERION_SECRET_MY_SECRET__") {
+				t.Errorf("the refusal must name the secret by its placeholder: %v", err)
+			}
+			var refused *model.ActionParamError
+			if !errors.As(err, &refused) {
+				t.Fatalf("the redaction must keep the refusal typed, got %T: %v", err, err)
+			}
+			if refused.Text != "__ITERION_SECRET_MY_SECRET__" {
+				t.Errorf("the refusal's Text = %q, want the secret's placeholder — a caller reading the field reads what the message hides", refused.Text)
+			}
+			if _, calls := rec.last(t); calls != 0 {
+				t.Errorf("the vendor was called %d time(s)", calls)
+			}
+		})
 	}
 }
 
 // A refusal quotes its text cut to a bound, and a secret the cut halves is no
-// longer one the message's redaction recognises: the quoted text is redacted
-// BEFORE it is cut, so no part of the secret reaches the message.
+// longer one the message's redaction recognises: a secret data carries raw is
+// redacted in the text BEFORE the text is cut, and an authored one is quoted
+// as its placeholder, so no part of either value reaches the message.
 //
-// Mutation seen red (restored): the in-place redaction of ActionParamError.Text
-// removed — the message quoted the secret's first ten bytes.
+// Mutations seen red (each restored): the in-place redaction of
+// ActionParamError.Text removed (the data case quoted the secret's first ten
+// bytes); the secret materialised before narrowing with the in-place
+// redaction removed (the authored case quoted them).
 func TestARefusalCutAcrossASecretQuotesNoPartOfIt(t *testing.T) {
 	t.Parallel()
 	const secretValue = "gh-pat-not-a-real-token-41d7"
-	guard := secretguard.New([]secretguard.Secret{{Name: "MY_SECRET", Value: secretValue}}, secretguard.DefaultConfig())
 	// 110 runes ahead of the secret: the 120-rune quote ends ten bytes into it.
-	_, run := narrowingNode(t, "integer", "", strings.Repeat("x", 110)+"{{secrets.MY_SECRET}}", model.WithSecretGuard(guard))
-	err := run(nil)
-	var refused *model.ActionParamError
-	if !errors.As(err, &refused) {
-		t.Fatalf("want a typed refusal, got %T: %v", err, err)
+	pad := strings.Repeat("x", 110)
+	for _, tc := range []struct {
+		name  string
+		value string
+		input map[string]any
+	}{
+		{name: "an authored secret", value: pad + "{{secrets.MY_SECRET}}"},
+		{name: "a secret data carries raw", value: "{{input.n}}", input: map[string]any{"n": pad + secretValue}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			guard := secretguard.New([]secretguard.Secret{{Name: "MY_SECRET", Value: secretValue}}, secretguard.DefaultConfig())
+			_, run := narrowingNode(t, "integer", "", tc.value, model.WithSecretGuard(guard))
+			err := run(tc.input)
+			var refused *model.ActionParamError
+			if !errors.As(err, &refused) {
+				t.Fatalf("want a typed refusal, got %T: %v", err, err)
+			}
+			if !strings.Contains(err.Error(), "…") {
+				t.Fatalf("the quote must be cut for this case to probe the cut: %v", err)
+			}
+			if strings.Contains(err.Error(), secretValue[:10]) {
+				t.Errorf("the message quotes part of the secret: %v", err)
+			}
+		})
 	}
-	if !strings.Contains(err.Error(), "…") {
-		t.Fatalf("the quote must be cut for this case to probe the cut: %v", err)
+}
+
+// A secret is swapped into an action argument AFTER the argument is read, in
+// the strings the narrowed value carries — never into text that is then read
+// as JSON, where its own bytes are syntax. Each secret carries bytes JSON
+// reads: a literal backslash-n that decoding turns into a newline, a quote
+// that fails the document, a `","admin":"yes` that writes a key of its own,
+// an `11,22` that spells two elements, a whole JSON document. The vendor
+// receives each secret byte for byte where the author put it, and nothing it
+// spells; a scalar declaration still reads a secret's value as its spelling.
+//
+// Mutations seen red (each restored): the secret materialised before
+// narrowing — the backslash-n element reached the vendor as a newline, the
+// quoted one was refused as a list, a data placeholder in a string and in a
+// document reached it wrapped in their JSON quotes, the object gained an
+// `admin` key, `[{{secrets.SPLIT}}]` reached it as two elements and
+// `{{secrets.DOC}}` as an object; leaf skipped in a scalar's parse, in the
+// `string` case, in an untyped list, an object and an untyped declaration,
+// and for interpolated text — each case reached the vendor as its
+// placeholder or was refused as one.
+func TestASecretIsSwappedIntoAnArgumentAfterItIsRead(t *testing.T) {
+	t.Parallel()
+	const (
+		escape = `pa\nss-not-real-0003`
+		quoted = `pa"ss\n-not-real-0001`
+		inject = `x","admin":"yes`
+		split  = `11,22`
+		number = `42424`
+		doc    = `{"admin":"yes"}`
+	)
+	jsonOf := func(v any) string {
+		b, err := json.Marshal(v)
+		if err != nil {
+			t.Fatalf("marshal %v: %v", v, err)
+		}
+		return string(b)
 	}
-	if strings.Contains(err.Error(), secretValue[:10]) {
-		t.Errorf("the message quotes part of the secret: %v", err)
+	ph := secretguard.PlaceholderForName
+	for _, tc := range []struct {
+		name            string
+		declared, items string
+		value           string
+		input           map[string]any
+		want            string // the vendor's JSON body; "" when the argument is refused
+		text            string // the refusal's Text
+	}{
+		{name: "a string element keeps a backslash-n", declared: "array", items: "string", value: `["{{secrets.ESCAPE}}"]`, want: jsonOf([]string{escape})},
+		{name: "a string element keeps a quote", declared: "array", items: "string", value: `["{{secrets.QUOTED}}"]`, want: jsonOf([]string{quoted})},
+		{name: "an element of an untyped list", declared: "array", value: `["{{secrets.QUOTED}}"]`, want: jsonOf([]string{quoted})},
+		{name: "an object value writes no key of its own", declared: "object", value: `{"name":"{{secrets.INJECT}}"}`, want: jsonOf(map[string]string{"name": inject})},
+		{name: "a placeholder data carries into a string", declared: "string", value: "{{input.doc}}", input: map[string]any{"doc": "pre " + ph("QUOTED") + " post"}, want: jsonOf("pre " + quoted + " post")},
+		{name: "a placeholder data carries into an untyped document", declared: "", value: "{{input.doc}}", input: map[string]any{"doc": map[string]any{"k": ph("QUOTED")}}, want: jsonOf(map[string]string{"k": quoted})},
+		{name: "a whole-value secret reaches a string as it is", declared: "string", value: "{{secrets.QUOTED}}", want: jsonOf(quoted)},
+		{name: "a secret reaches an integer as its spelling", declared: "integer", value: "{{secrets.NUMBER}}", want: `42424`},
+		{name: "a secret element reaches integer items as its spelling", declared: "array", items: "integer", value: `["{{secrets.NUMBER}}"]`, want: `[42424]`},
+		{name: "a secret spells no list syntax", declared: "array", items: "string", value: `[{{secrets.SPLIT}}]`, text: "[" + ph("SPLIT") + "]"},
+		{name: "a secret spells no object", declared: "object", value: "{{secrets.DOC}}", text: ph("DOC")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			guard := secretguard.New([]secretguard.Secret{
+				{Name: "ESCAPE", Value: escape},
+				{Name: "QUOTED", Value: quoted},
+				{Name: "INJECT", Value: inject},
+				{Name: "SPLIT", Value: split},
+				{Name: "NUMBER", Value: number},
+				{Name: "DOC", Value: doc},
+			}, secretguard.DefaultConfig())
+			rec, run := narrowingNode(t, tc.declared, tc.items, tc.value, model.WithSecretGuard(guard))
+			err := run(tc.input)
+			got, calls := rec.last(t)
+			if tc.want != "" {
+				if err != nil {
+					t.Fatalf("execute: %v", err)
+				}
+				if got != tc.want {
+					t.Errorf("the vendor received %s, want %s", got, tc.want)
+				}
+				return
+			}
+			var refused *model.ActionParamError
+			if !errors.As(err, &refused) {
+				t.Fatalf("want a typed *model.ActionParamError, got %T: %v (the vendor received %s)", err, err, got)
+			}
+			if refused.Text != tc.text {
+				t.Errorf("the refusal's Text = %q, want %q", refused.Text, tc.text)
+			}
+			if calls != 0 {
+				t.Errorf("the vendor was called %d time(s) with a refused argument", calls)
+			}
+		})
 	}
 }
 
