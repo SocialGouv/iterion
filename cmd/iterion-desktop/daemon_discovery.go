@@ -4,12 +4,12 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 )
 
@@ -55,15 +55,16 @@ func daemonInfoPath(projectDir string) string {
 // writeDaemonInfo atomically updates the per-project daemon.json. Called
 // by the daemon on startup; the partner removeDaemonInfo runs on signal
 // shutdown so a freshly-killed daemon doesn't leave a stale pointer.
-// Failures are silent — the daemon serves regardless, the only impact
-// is the GUI can't find it via the registry (it would have to scan).
-func writeDaemonInfo(projectDir, url string) {
+// The registry is the only way the GUI finds a daemon: one it cannot find
+// still holds the project's lock, so every open of the project spawns a
+// daemon that dies on that lock. The caller treats an error as fatal.
+func writeDaemonInfo(projectDir, url string) error {
 	target := daemonInfoPath(projectDir)
 	if target == "" {
-		return
+		return fmt.Errorf("daemon registry: no data directory resolved for %s", projectDir)
 	}
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-		return
+		return fmt.Errorf("daemon registry: %w", err)
 	}
 	info := daemonInfo{
 		URL:        url,
@@ -73,13 +74,25 @@ func writeDaemonInfo(projectDir, url string) {
 	}
 	payload, err := json.MarshalIndent(info, "", "  ")
 	if err != nil {
-		return
+		return fmt.Errorf("daemon registry: %w", err)
 	}
 	tmp := target + ".tmp"
 	if err := os.WriteFile(tmp, payload, 0o600); err != nil {
-		return
+		return fmt.Errorf("daemon registry: %w", err)
 	}
-	_ = os.Rename(tmp, target)
+	// The GUI polls this file while it waits for the daemon, and on
+	// Windows a rename over a file another process holds open (a reader,
+	// an antivirus scan) fails for as long as it is held: retry for up to
+	// 2s before calling it fatal.
+	var renameErr error
+	for attempt := 0; attempt < 40; attempt++ {
+		if renameErr = os.Rename(tmp, target); renameErr == nil {
+			return nil
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	_ = os.Remove(tmp)
+	return fmt.Errorf("daemon registry: %w", renameErr)
 }
 
 // removeDaemonInfo clears the per-project daemon.json on shutdown.
@@ -151,19 +164,15 @@ func listLiveDaemons() []daemonInfo {
 	return out
 }
 
-// daemonAlive combines a pid-liveness probe (signal 0) with a TCP dial
-// against the daemon's port. Both must succeed: pid alone allows a
-// crashed daemon to look alive, port alone could let us attach to a
-// totally unrelated process that grabbed the same port after a crash.
+// daemonAlive combines a pid-liveness probe (processAlive, per platform)
+// with a TCP dial against the daemon's port. Both must succeed: pid alone
+// allows a crashed daemon to look alive, port alone could let us attach
+// to a totally unrelated process that grabbed the same port after a crash.
 func daemonAlive(pid int, url string) bool {
 	if pid <= 0 || url == "" {
 		return false
 	}
-	proc, err := os.FindProcess(pid)
-	if err != nil {
-		return false
-	}
-	if err := proc.Signal(syscall.Signal(0)); err != nil {
+	if !processAlive(pid) {
 		return false
 	}
 	hostPort := strings.TrimRight(
