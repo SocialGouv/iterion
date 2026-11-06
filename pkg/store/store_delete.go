@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -81,10 +82,23 @@ func (s *FilesystemRunStore) deleteRunContent(id string) error {
 			continue
 		}
 		if err := os.RemoveAll(filepath.Join(dir, e.Name())); err != nil {
+			// A lock file someone still holds cannot be removed on Windows
+			// (LockFileEx keeps its handle open). It is empty and the
+			// tombstone already stops every writer, so it stays beside the
+			// marker until PruneDeletionMarkers takes the directory.
+			if isLockFileName(e.Name()) && !e.IsDir() {
+				continue
+			}
 			return fmt.Errorf("store: delete run %s content %s: %w", id, e.Name(), err)
 		}
 	}
 	return nil
+}
+
+// isLockFileName reports the run directory's lock files: .lock (LockRun)
+// and .<name>.lock (the write and answer locks).
+func isLockFileName(name string) bool {
+	return name == ".lock" || (strings.HasPrefix(name, ".") && strings.HasSuffix(name, ".lock"))
 }
 
 // PruneDeletionMarkers removes tombstone directories whose marker is
