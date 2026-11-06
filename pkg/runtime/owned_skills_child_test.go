@@ -15,6 +15,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // A parent and a child whose bundles ship DIFFERENT engine-owned copies: a
@@ -389,11 +390,11 @@ func TestWriteThroughReportsAnUnreadablePartOfTheOwnedCopy(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.Chmod(nested, 0o755) })
-	if _, err := writeThroughMirroredSkills(context.Background(), work, pod, nil); err == nil || !strings.Contains(err.Error(), "walk") {
+	if _, err := writeThroughMirroredSkills(context.Background(), work, store.RunTrustDefault, pod, nil); err == nil || !strings.Contains(err.Error(), "walk") {
 		t.Fatalf("an unreadable part of the owned copy went unreported: %v", err)
 	}
 
-	if _, err := writeThroughMirroredSkills(context.Background(), t.TempDir(), pod, nil); err != nil {
+	if _, err := writeThroughMirroredSkills(context.Background(), t.TempDir(), store.RunTrustDefault, pod, nil); err != nil {
 		t.Fatalf("a run whose bundle ships no skills was refused: %v", err)
 	}
 }

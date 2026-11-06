@@ -13,6 +13,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/store/storetest"
 )
 
@@ -347,6 +348,105 @@ func TestBeginRunResourcesRefusesAClaudeSymlink(t *testing.T) {
 	assertLinkTargetUntouched(t, target)
 }
 
+// The snapshot's own read side: a `.claude/skills` entry that resolves OUT of
+// the workspace would copy the operator's files into the backup — kept on
+// disk, its path in the run record, on a failed restore. On a checkout the
+// operator did not write the entry is refused typed BEFORE any byte moves;
+// the trusted lane keeps the operator's own arrangement (the link is copied
+// as a link, nothing followed).
+func TestSnapshotChildResources_RefusesAnEscapingEntry(t *testing.T) {
+	outside := t.TempDir()
+	writeFile(t, filepath.Join(outside, "operator-file.md"), "operator content not for the backup\n")
+
+	build := func(t *testing.T) string {
+		ws := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(ws, ".claude"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(outside, filepath.Join(ws, ".claude", "skills")); err != nil {
+			t.Fatal(err)
+		}
+		return ws
+	}
+
+	ws := build(t)
+	_, backup, err := snapshotChildResources(ws, store.RunTrustFork)
+	if !errors.Is(err, ErrSkillsDestEscapesWorkspace) {
+		t.Fatalf("snapshot with an escaping entry = %v, want the typed %v refusal", err, ErrSkillsDestEscapesWorkspace)
+	}
+	if backup != "" {
+		if raw, rerr := os.ReadFile(filepath.Join(backup, "skills", "operator-file.md")); rerr == nil {
+			t.Fatalf("the operator's file landed in the backup %s: %q", backup, raw)
+		}
+	}
+
+	// Control arm: the SAME fixture on the trusted lane snapshots — the
+	// refusal above is the trust floor, not a broken arrangement.
+	_, trustedBackup, err := snapshotChildResources(build(t), store.RunTrustDefault)
+	if err != nil {
+		t.Fatalf("control: the trusted snapshot failed: %v", err)
+	}
+	if raw, rerr := os.ReadFile(trustedBackup + string(filepath.Separator) + "skills"); rerr != nil {
+		if _, lerr := os.Lstat(filepath.Join(trustedBackup, "skills")); lerr != nil {
+			t.Fatalf("control: the backup holds no skills entry: %v", lerr)
+		}
+	} else if string(raw) != "operator content not for the backup\n" {
+		_ = raw // a real directory copied through — still the operator's own bytes
+	}
+}
+
+// The prune recurses and removes bottom-up: descending into a symlinked
+// DIRECTORY removes the link target's empty subdirectories — the operator's
+// own tree, under a skill name the public bundle catalog hands the attacker.
+// The guard is Lstat-based (a real directory, never a link) on BOTH lanes:
+// the rooted handle would refuse the escape at Remove, but the trusted
+// passthrough follows it — the guard is its half of the pair.
+func TestRemoveEmptyResourceDirs_NeverDescendsALink(t *testing.T) {
+	outside := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(outside, "inner"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(outside, "witness.md"), "not the run's to touch\n")
+
+	ws := t.TempDir()
+	link := filepath.Join(ws, ".claude", "skills", "stem")
+	if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, link); err != nil {
+		t.Fatal(err)
+	}
+	// The trusted handle is the lane where nothing but this guard stands
+	// between the recursion and the operator's tree.
+	wr, err := openWorkspaceRoot(ws, store.RunTrustDefault)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer wr.Close()
+	removeEmptyResourceDirs(wr, link)
+
+	if _, err := os.Stat(filepath.Join(outside, "inner")); err != nil {
+		t.Errorf("the recursion descended the link and removed the operator's empty directory: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(outside, "witness.md")); err != nil {
+		t.Errorf("the operator's file is gone: %v", err)
+	}
+	if _, err := os.Lstat(link); err != nil {
+		t.Errorf("the link itself should have been left alone: %v", err)
+	}
+
+	// Control arm: a REAL empty directory is pruned — without it the intact
+	// tree above could mean the prune never ran.
+	real := filepath.Join(ws, ".claude", "skills", "realstem", "inner")
+	if err := os.MkdirAll(real, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	removeEmptyResourceDirs(wr, filepath.Join(ws, ".claude", "skills", "realstem"))
+	if _, err := os.Stat(filepath.Join(ws, ".claude", "skills", "realstem")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("control: the real empty directory was not pruned (err=%v) — the prune proves nothing", err)
+	}
+}
+
 // Defense in depth behind that refusal: the link swapped in mid-run, after
 // the snapshot was taken. The restore must fail loudly — never RemoveAll
 // through the link — and leave the backup for recovery.
@@ -356,7 +456,7 @@ func TestSnapshotChildResourcesRestoreRefusesAMidRunSymlinkSwap(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeFile(t, filepath.Join(ws, ".claude", "skills", "parent.md"), parentClaudeBody)
-	restore, backup, err := snapshotChildResources(ws)
+	restore, backup, err := snapshotChildResources(ws, store.RunTrustDefault)
 	if err != nil {
 		t.Fatalf("snapshot: %v", err)
 	}

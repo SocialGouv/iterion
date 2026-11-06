@@ -15,6 +15,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/store"
 	"golang.org/x/sync/semaphore"
 )
 
@@ -150,7 +151,7 @@ func (e *Engine) beginRunResources(ctx context.Context, runID string, childInPla
 		// the outer gate, held exclusively until restoration has finished.
 		scope.gate = &resourceGate{sem: semaphore.NewWeighted(resourceWriterWeight)}
 		scope.setupRelease = func() {}
-		restore, backup, err = snapshotChildResources(dir)
+		restore, backup, err = snapshotChildResources(dir, e.trust)
 		if err == nil {
 			remoteRestore, remoteErr := e.snapshotSharedChildResources(ctx, "iterion-child-resources-"+rand.Text())
 			if remoteErr != nil {
@@ -249,15 +250,29 @@ var childResourcePaths = []string{"skills", "commands", "agents", ownedSkillsDir
 // Copy only the directories the resource mirrors own. Other workspace edits,
 // including code produced by the child, are deliberately outside this scope.
 // Backups survive a failed restore, and the returned error names their path.
-func snapshotChildResources(workDir string) (func() error, string, error) {
+func snapshotChildResources(workDir string, trust store.RunTrust) (func() error, string, error) {
+	// The restore's writes go through the workspace handle; the SNAPSHOT's
+	// reads cross the same boundary — reading through a `.claude` entry the
+	// checkout re-pointed copies the OPERATOR's files into the backup, which
+	// a failed restore then keeps on disk with its path in the run record.
+	wr, err := openWorkspaceRoot(workDir, trust)
+	if err != nil {
+		return nil, "", err
+	}
 	backup, err := os.MkdirTemp("", "iterion-child-resources-")
 	if err != nil {
+		wr.Close()
 		return nil, "", err
 	}
 	root := filepath.Join(workDir, ".claude")
 	existed := map[string]bool{}
 	for _, name := range childResourcePaths {
 		src := filepath.Join(root, name)
+		if lerr := wr.RefuseEscapingLink(src); lerr != nil {
+			_ = os.RemoveAll(backup)
+			wr.Close()
+			return nil, "", fmt.Errorf("child resources at %s: %w", src, lerr)
+		}
 		_, err := os.Lstat(src)
 		if errors.Is(err, os.ErrNotExist) {
 			continue
@@ -267,31 +282,81 @@ func snapshotChildResources(workDir string) (func() error, string, error) {
 		}
 		if err != nil {
 			_ = os.RemoveAll(backup)
+			wr.Close()
 			return nil, "", err
 		}
 		existed[name] = true
 	}
 	return func() error {
+		defer wr.Close()
 		// Defense in depth behind beginRunResources' refusal: a `.claude`
 		// symlink swapped in mid-run would route the RemoveAll below into
 		// the link's target. Fail loudly and keep the backup — the parent's
-		// resources are recoverable there, the target's files are not.
+		// resources are recoverable there, the target's files are not. The
+		// rooted handle refuses the same swap on the untrusted lane; this
+		// guard is the trusted lane's half of the pair.
 		if linkErr := refuseAClaudeSymlink(workDir); linkErr != nil {
 			return fmt.Errorf("restore child resources (backup %s): %w", backup, linkErr)
 		}
 		for _, name := range childResourcePaths {
 			dst := filepath.Join(root, name)
-			if err := os.RemoveAll(dst); err != nil {
+			if err := wr.RemoveAll(dst); err != nil {
 				return fmt.Errorf("restore child resources (backup %s): %w", backup, err)
 			}
 			if existed[name] {
-				if err := copyResourceEntry(filepath.Join(backup, name), dst); err != nil {
+				if err := restoreResourceEntry(wr, filepath.Join(backup, name), dst); err != nil {
 					return fmt.Errorf("restore child resources (backup %s): %w", backup, err)
 				}
 			}
 		}
 		return os.RemoveAll(backup)
 	}, backup, nil
+}
+
+// restoreResourceEntry copies a backup entry (outside the workspace) back
+// IN, every workspace-side operation through the handle. The escaping-link
+// refusal the snapshot applied to what it saved is re-applied by the
+// handle's own checks here, against a backup that is the engine's own.
+func restoreResourceEntry(wr *workspaceRoot, src, dst string) error {
+	info, err := os.Lstat(src)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		target, rerr := os.Readlink(src)
+		if rerr != nil {
+			return rerr
+		}
+		// The parent first: a child that removed `.claude` wholesale left
+		// nothing for the link to land in.
+		if err := wr.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+			return err
+		}
+		return wr.Symlink(target, dst)
+	}
+	if info.IsDir() {
+		if err := wr.MkdirAll(dst, 0o755); err != nil {
+			return err
+		}
+		// MkdirAll applies the umask and does not chmod an existing
+		// directory, so the mode is restored explicitly — a 0700 resource
+		// directory must not come back 0755.
+		defer func() { _ = wr.Chmod(dst, info.Mode().Perm()) }()
+		entries, rerr := os.ReadDir(src)
+		if rerr != nil {
+			return rerr
+		}
+		for _, entry := range entries {
+			if err := restoreResourceEntry(wr, filepath.Join(src, entry.Name()), filepath.Join(dst, entry.Name())); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	if err := wr.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+	return wr.CopyFrom(src, dst)
 }
 
 func copyResourceEntry(src, dst string) error {
@@ -370,6 +435,17 @@ func (e *Engine) hideParentSkillCollisions(parent *runResourceScope) error {
 	if e.bundle == nil || e.bundle.SkillsDir == "" {
 		return nil
 	}
+	// Through the handle like every other write derived from the workspace:
+	// the prune below RECURSES and removes bottom-up, and os.ReadDir opens
+	// its argument — which follows a final symlink. A skill name the public
+	// bundle catalog already gives the attacker, committed as a link to the
+	// operator's home, would turn this into a recursive delete of their own
+	// tree with every error discarded and the run reporting success.
+	wr, werr := openWorkspaceRoot(parent.path, e.trust)
+	if werr != nil {
+		return werr
+	}
+	defer wr.Close()
 	entries, err := os.ReadDir(e.bundle.SkillsDir)
 	if err != nil {
 		return err
@@ -386,28 +462,34 @@ func (e *Engine) hideParentSkillCollisions(parent *runResourceScope) error {
 				continue
 			}
 			if actual, err := hashFile(path); err == nil && actual == hash {
-				if err := os.Remove(path); err != nil {
+				if err := wr.Remove(path); err != nil {
 					return err
 				}
 			}
 		}
 		// Remove only empty directories; user-added files still shadow the child.
-		removeEmptyResourceDirs(dir)
+		removeEmptyResourceDirs(wr, dir)
 	}
 	return nil
 }
 
-func removeEmptyResourceDirs(dir string) {
-	entries, err := os.ReadDir(dir)
+func removeEmptyResourceDirs(wr *workspaceRoot, dir string) {
+	// A real directory, never a link: Lstat, not Stat — a link to a
+	// directory answers true to IsDir(), and descending into one is how the
+	// recursion leaves the workspace.
+	if !wr.IsRealDir(dir) {
+		return
+	}
+	entries, err := wr.ReadDir(dir)
 	if err != nil {
 		return
 	}
 	for _, entry := range entries {
 		if entry.IsDir() {
-			removeEmptyResourceDirs(filepath.Join(dir, entry.Name()))
+			removeEmptyResourceDirs(wr, filepath.Join(dir, entry.Name()))
 		}
 	}
-	_ = os.Remove(dir)
+	_ = wr.Remove(dir)
 }
 
 // A paused child's later resume has no live parent context. Its parent's

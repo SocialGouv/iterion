@@ -71,6 +71,60 @@ func writeClaudeFile(t *testing.T, root, rel, body string) string {
 	return p
 }
 
+// recordingRefresher captures what the write-through pushes, byte for byte.
+type writeThroughRecorder struct{ pushed map[string]string }
+
+func (r *writeThroughRecorder) RefreshWorkspaceFile(_ context.Context, relPath string, value []byte) error {
+	if r.pushed == nil {
+		r.pushed = map[string]string{}
+	}
+	r.pushed[relPath] = string(value)
+	return nil
+}
+
+// TestWriteThroughMirroredSkills_ASymlinkedFileNeverCrosses: every read the
+// write-through performs lands in the container the agent runs in, under a
+// name the CHECKOUT chose. A committed `.claude/skills/evil.md` symlink
+// pointing at a host file must never cross — on either lane (a trusted
+// operator's own links point at their own machine, but the pushed bytes are
+// answered to a reader that asked for a skill, not for the host file). The
+// in-workspace link loses nothing: its bytes are already in the copy.
+func TestWriteThroughMirroredSkills_ASymlinkedFileNeverCrosses(t *testing.T) {
+	for _, trust := range []store.RunTrust{store.RunTrustDefault, store.RunTrustFork} {
+		name := "untrusted"
+		if trust.Trusted() {
+			name = "trusted"
+		}
+		t.Run(name, func(t *testing.T) {
+			host := t.TempDir()
+			writeClaudeFile(t, host, ".claude/skills/real.md", "the real skill")
+			secret := filepath.Join(t.TempDir(), "operator-secret")
+			if err := os.WriteFile(secret, []byte("HOST SECRET BYTES"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(secret, filepath.Join(host, ".claude", "skills", "evil.md")); err != nil {
+				t.Fatal(err)
+			}
+			rec := &writeThroughRecorder{}
+			n, werr := writeThroughMirroredSkills(context.Background(), host, trust, rec, nil)
+			if werr != nil {
+				t.Fatalf("write-through: %v", werr)
+			}
+			if n != 1 || len(rec.pushed) != 1 {
+				t.Fatalf("pushed %v, want exactly the one real file", rec.pushed)
+			}
+			if rec.pushed[".claude/skills/real.md"] != "the real skill" {
+				t.Errorf("the real skill did not cross intact: %v", rec.pushed)
+			}
+			for rel, body := range rec.pushed {
+				if body == "HOST SECRET BYTES" {
+					t.Errorf("the host file crossed the boundary as %q", rel)
+				}
+			}
+		})
+	}
+}
+
 // TestTheCopyAChildReadsMatchesTheHostAfterAdoption.
 //
 // adoptSharedSandbox runs TWO steps: clearBorrowedSandboxResources wipes the
@@ -107,7 +161,7 @@ func TestTheCopyAChildReadsMatchesTheHostAfterAdoption(t *testing.T) {
 	if err := e.clearBorrowedSandboxResources(context.Background()); err != nil {
 		t.Fatalf("clear: %v", err)
 	}
-	n, werr := writeThroughMirroredSkills(context.Background(), host, run, nil)
+	n, werr := writeThroughMirroredSkills(context.Background(), host, store.RunTrustDefault, run, nil)
 	if werr != nil {
 		t.Fatalf("write-through: %v", werr)
 	}
