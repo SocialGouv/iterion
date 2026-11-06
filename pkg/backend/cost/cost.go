@@ -144,40 +144,58 @@ var modelPriceTable = map[string]modelPricing{
 // resolves to "claude-sonnet-4-6" — intentional, since pricing is the
 // same across regions for the providers we track.
 // gatewayPricer prices one gateway id (the wire id after
-// openai_compatible/): the per-mtok pair, and whether the catalog KNOWS the
-// id. Nil until the compatgw package's init wires the catalog in — cost
-// stays a leaf, and an unpriced gateway is 0-that-is-not-a-measured-zero.
-var gatewayPricer func(modelID string) (inputUSDPerMTok, outputUSDPerMTok float64, known bool)
+// openai_compatible/): the per-mtok triple — input, output, and cache-read
+// input — and whether the catalog KNOWS the id. A zero cache-read rate
+// means the catalog carries no cache price: cached tokens then price at the
+// input rate, which is the arithmetic that predates the cache split, so an
+// entry without a cache rate changes no number. Nil until the compatgw
+// package's init wires the catalog in — cost stays a leaf, and an unpriced
+// gateway is 0-that-is-not-a-measured-zero.
+var gatewayPricer func(modelID string) (inputUSDPerMTok, outputUSDPerMTok, cacheReadUSDPerMTok float64, known bool)
 
 // gatewayPricerQuiet prices the same id for a READ — a listing, a pricing
 // audit, a cost preview. Same sources and same verdict; the difference is
 // that an id in no table is not news there (the operator may still be
 // typing it), so the quiet form says nothing and leaves the catalog's
 // per-id warning budget to the launch.
-var gatewayPricerQuiet func(modelID string) (inputUSDPerMTok, outputUSDPerMTok float64, known bool)
+var gatewayPricerQuiet func(modelID string) (inputUSDPerMTok, outputUSDPerMTok, cacheReadUSDPerMTok float64, known bool)
 
 // SetGatewayPricer wires the gateway catalog into the estimator. Called by
 // the compatgw package's init — the catalog's owner — never by a caller.
 // BOTH forms in one call: a read path left with a nil quiet pricer would
 // price every gateway id at zero without saying so.
-func SetGatewayPricer(loud, quiet func(modelID string) (inputUSDPerMTok, outputUSDPerMTok float64, known bool)) {
+func SetGatewayPricer(loud, quiet func(modelID string) (inputUSDPerMTok, outputUSDPerMTok, cacheReadUSDPerMTok float64, known bool)) {
 	gatewayPricer, gatewayPricerQuiet = loud, quiet
 }
 
 // EstimateUSD is the LAUNCH and usage-reading estimate: a gateway id in no
 // table earns the catalog's warning here, where it is about to cost a run.
+// It is the pre-cache-share signature: every cached token prices at the
+// input rate, the arithmetic this function always had.
 func EstimateUSD(model string, inputTokens, outputTokens int) float64 {
-	return estimateUSD(model, inputTokens, outputTokens, gatewayPricer)
+	return EstimateUSDWithCache(model, inputTokens, outputTokens, 0)
 }
 
 // EstimateUSDQuiet is EstimateUSD for a READ — the same estimate, with a
 // gateway id resolved quietly. What a preview or a listing prices is a
 // model nobody launched yet.
 func EstimateUSDQuiet(model string, inputTokens, outputTokens int) float64 {
-	return estimateUSD(model, inputTokens, outputTokens, gatewayPricerQuiet)
+	return estimateUSDWithCache(model, inputTokens, outputTokens, 0, gatewayPricerQuiet)
 }
 
-func estimateUSD(model string, inputTokens, outputTokens int, gatewayPricer func(string) (float64, float64, bool)) float64 {
+// EstimateUSDWithCache is EstimateUSD for a caller that measured how much
+// of the prompt the provider served from its cache. Cached input prices at
+// the catalog's cache-read rate when one is published (Scaleway bills
+// deepseek-v4.1-flash cached input at a fifth of the uncached rate), and at
+// the input rate when none is — which is the figure EstimateUSD returns,
+// so a model without a cache rate is unchanged. The cached share clamps to
+// the input total: an account reporting more cache than prompt is corrupt,
+// not a credit.
+func EstimateUSDWithCache(model string, inputTokens, outputTokens, cacheReadTokens int) float64 {
+	return estimateUSDWithCache(model, inputTokens, outputTokens, cacheReadTokens, gatewayPricer)
+}
+
+func estimateUSDWithCache(model string, inputTokens, outputTokens, cacheReadTokens int, gatewayPricer func(string) (float64, float64, float64, bool)) float64 {
 	// FIRST: the gateway branch — a gateway id is whatever the gateway
 	// serves, and must never false-match a vendor table below, not even
 	// claw's live cache. Unknown or unpriced is 0 the budget reads as
@@ -186,16 +204,27 @@ func estimateUSD(model string, inputTokens, outputTokens int, gatewayPricer func
 		if gatewayPricer == nil {
 			return 0
 		}
-		inPerM, outPerM, known := gatewayPricer(route.Wire)
+		inPerM, outPerM, cachePerM, known := gatewayPricer(route.Wire)
 		if !known {
 			return 0
 		}
-		return (float64(inputTokens)*inPerM + float64(outputTokens)*outPerM) / 1_000_000.0
+		if cachePerM <= 0 {
+			// No cache price published: cached input costs what uncached
+			// input costs here — the pre-split arithmetic, kept exact so
+			// an unpriced model reports the number it always did.
+			cachePerM = inPerM
+		}
+		cached := min(max(cacheReadTokens, 0), inputTokens)
+		uncached := inputTokens - cached
+		return (float64(uncached)*inPerM + float64(cached)*cachePerM + float64(outputTokens)*outPerM) / 1_000_000.0
 	}
 	// First: ask claw's live registry cache. When it has a hit, it
 	// reflects the OpenRouter pricing as published — which means new
 	// models picked up since the last static-table update get correct
-	// estimates without anyone editing this file.
+	// estimates without anyone editing this file. None of the non-gateway
+	// sources publishes a cache-read rate today, so the cache share is not
+	// subtracted here: the full input prices at the input rate, exactly as
+	// before the cache split.
 	if pricing, ok := clawapi.LookupModelPricing(model); ok {
 		return (float64(inputTokens)*pricing.InputUSDPerMillion + float64(outputTokens)*pricing.OutputUSDPerMillion) / 1_000_000.0
 	}
@@ -276,13 +305,21 @@ func specRate(provider, bareModel string) (inputPerM, outputPerM float64, ok boo
 // unknown to the price table, so observers can distinguish "no cost
 // data" from "$0". A nil output map is a no-op (returns 0).
 func Annotate(output map[string]any, model string, inputTokens, outputTokens int) (totalTokens int) {
+	return AnnotateWithCache(output, model, inputTokens, outputTokens, 0)
+}
+
+// AnnotateWithCache is Annotate for a caller that measured the provider's
+// cache read: the `_cost_usd` it stamps is EstimateUSDWithCache's, so the
+// map a failed node's spend is booked from carries the same figure the
+// Result does — the two disagreeing would make one of them lie.
+func AnnotateWithCache(output map[string]any, model string, inputTokens, outputTokens, cacheReadTokens int) (totalTokens int) {
 	totalTokens = inputTokens + outputTokens
 	if output == nil {
 		return totalTokens
 	}
 	output["_tokens"] = totalTokens
 	output["_model"] = model
-	if cost := EstimateUSD(model, inputTokens, outputTokens); cost > 0 {
+	if cost := EstimateUSDWithCache(model, inputTokens, outputTokens, cacheReadTokens); cost > 0 {
 		output["_cost_usd"] = cost
 	}
 	return totalTokens

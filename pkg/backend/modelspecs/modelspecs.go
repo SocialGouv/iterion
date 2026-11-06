@@ -68,13 +68,14 @@ const (
 // "no published cap figure", not "uncapped". consensusSpec zeroes any field the
 // publishers disagree on, so zero is a routine answer rather than an edge case.
 type Spec struct {
-	ContextWindow   int     `json:"context_window,omitempty"`
-	MaxOutputTokens int     `json:"max_output_tokens,omitempty"`
-	InputCostPerM   float64 `json:"input_cost_per_m,omitempty"`
-	OutputCostPerM  float64 `json:"output_cost_per_m,omitempty"`
-	Reasoning       *bool   `json:"reasoning,omitempty"`
-	ToolCall        *bool   `json:"tool_call,omitempty"`
-	Temperature     *bool   `json:"temperature,omitempty"`
+	ContextWindow     int     `json:"context_window,omitempty"`
+	MaxOutputTokens   int     `json:"max_output_tokens,omitempty"`
+	InputCostPerM     float64 `json:"input_cost_per_m,omitempty"`
+	OutputCostPerM    float64 `json:"output_cost_per_m,omitempty"`
+	CacheReadCostPerM float64 `json:"cache_read_cost_per_m,omitempty"`
+	Reasoning         *bool   `json:"reasoning,omitempty"`
+	ToolCall          *bool   `json:"tool_call,omitempty"`
+	Temperature       *bool   `json:"temperature,omitempty"`
 }
 
 // cacheFile is the on-disk cache layout. FetchedAt drives TTL freshness so the

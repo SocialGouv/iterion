@@ -110,7 +110,7 @@ func TestStaticPricer_APlantedTableDoesNotPrice(t *testing.T) {
 	t.Setenv(CatalogProviderEnv, "")
 	t.Setenv(ResolvedEnvName, "")
 	plantEnv(t, CatalogModelsEnv)
-	if in, out, known := StaticPricer("gw/m"); known {
+	if in, out, _, known := StaticPricer("gw/m"); known {
 		t.Fatalf("a planted %s priced the node at in=%v out=%v", CatalogModelsEnv, in, out)
 	}
 }

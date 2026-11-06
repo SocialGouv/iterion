@@ -185,13 +185,14 @@ func parseOperatorTable(raw string) (map[string]modelspecs.Spec, error) {
 		return map[string]modelspecs.Spec{}, nil
 	}
 	var entries map[string]struct {
-		ContextWindow    int     `json:"context_window"`
-		MaxOutputTokens  int     `json:"max_output_tokens"`
-		InputUSDPerMTok  float64 `json:"input_usd_per_mtok"`
-		OutputUSDPerMTok float64 `json:"output_usd_per_mtok"`
-		Reasoning        *bool   `json:"reasoning"`
-		ToolCall         *bool   `json:"tool_call"`
-		Temperature      *bool   `json:"temperature"`
+		ContextWindow       int     `json:"context_window"`
+		MaxOutputTokens     int     `json:"max_output_tokens"`
+		InputUSDPerMTok     float64 `json:"input_usd_per_mtok"`
+		OutputUSDPerMTok    float64 `json:"output_usd_per_mtok"`
+		CacheReadUSDPerMTok float64 `json:"cache_read_usd_per_mtok"`
+		Reasoning           *bool   `json:"reasoning"`
+		ToolCall            *bool   `json:"tool_call"`
+		Temperature         *bool   `json:"temperature"`
 	}
 	dec := json.NewDecoder(strings.NewReader(raw))
 	dec.DisallowUnknownFields()
@@ -207,13 +208,14 @@ func parseOperatorTable(raw string) (map[string]modelspecs.Spec, error) {
 			return nil, fmt.Errorf("openai_compatible: %s[%q]: a price is negative", CatalogModelsEnv, id)
 		}
 		table[strings.ToLower(strings.TrimSpace(id))] = modelspecs.Spec{
-			ContextWindow:   e.ContextWindow,
-			MaxOutputTokens: e.MaxOutputTokens,
-			InputCostPerM:   e.InputUSDPerMTok,
-			OutputCostPerM:  e.OutputUSDPerMTok,
-			Reasoning:       e.Reasoning,
-			ToolCall:        e.ToolCall,
-			Temperature:     e.Temperature,
+			ContextWindow:     e.ContextWindow,
+			MaxOutputTokens:   e.MaxOutputTokens,
+			InputCostPerM:     e.InputUSDPerMTok,
+			OutputCostPerM:    e.OutputUSDPerMTok,
+			CacheReadCostPerM: e.CacheReadUSDPerMTok,
+			Reasoning:         e.Reasoning,
+			ToolCall:          e.ToolCall,
+			Temperature:       e.Temperature,
 		}
 	}
 	return table, nil
@@ -328,13 +330,14 @@ func resolveCatalog(modelID string, live *modelspecs.Registry, get func(string) 
 	if rec, ok := resolvedEnvRecord(get); ok && rec.Model == strings.ToLower(strings.TrimSpace(modelID)) {
 		return Resolved{
 			Spec: modelspecs.Spec{
-				ContextWindow:   rec.ContextWindow,
-				MaxOutputTokens: rec.MaxOutputTokens,
-				InputCostPerM:   rec.InputUSDPerMTok,
-				OutputCostPerM:  rec.OutputUSDPerMTok,
-				Reasoning:       rec.Reasoning,
-				ToolCall:        rec.ToolCall,
-				Temperature:     rec.Temperature,
+				ContextWindow:     rec.ContextWindow,
+				MaxOutputTokens:   rec.MaxOutputTokens,
+				InputCostPerM:     rec.InputUSDPerMTok,
+				OutputCostPerM:    rec.OutputUSDPerMTok,
+				CacheReadCostPerM: rec.CacheReadUSDPerMTok,
+				Reasoning:         rec.Reasoning,
+				ToolCall:          rec.ToolCall,
+				Temperature:       rec.Temperature,
 			},
 			Source: rec.Source,
 		}
@@ -411,30 +414,32 @@ var unknownWarns sync.Map
 // stated is absent from the record and reads unknown, a stated false
 // crosses as false.
 type ResolvedEnvRecord struct {
-	Model            string  `json:"model"`
-	Source           string  `json:"source"`
-	ContextWindow    int     `json:"context_window,omitempty"`
-	MaxOutputTokens  int     `json:"max_output_tokens,omitempty"`
-	InputUSDPerMTok  float64 `json:"input_usd_per_mtok,omitempty"`
-	OutputUSDPerMTok float64 `json:"output_usd_per_mtok,omitempty"`
-	Reasoning        *bool   `json:"reasoning,omitempty"`
-	ToolCall         *bool   `json:"tool_call,omitempty"`
-	Temperature      *bool   `json:"temperature,omitempty"`
+	Model               string  `json:"model"`
+	Source              string  `json:"source"`
+	ContextWindow       int     `json:"context_window,omitempty"`
+	MaxOutputTokens     int     `json:"max_output_tokens,omitempty"`
+	InputUSDPerMTok     float64 `json:"input_usd_per_mtok,omitempty"`
+	OutputUSDPerMTok    float64 `json:"output_usd_per_mtok,omitempty"`
+	CacheReadUSDPerMTok float64 `json:"cache_read_usd_per_mtok,omitempty"`
+	Reasoning           *bool   `json:"reasoning,omitempty"`
+	ToolCall            *bool   `json:"tool_call,omitempty"`
+	Temperature         *bool   `json:"temperature,omitempty"`
 }
 
 // ForwardableRecord is the record the host forwards for one resolved
 // gateway id: the resolution as the host answered it, flags included.
 func ForwardableRecord(modelID string, r Resolved) ResolvedEnvRecord {
 	return ResolvedEnvRecord{
-		Model:            modelID,
-		Source:           r.Source,
-		ContextWindow:    r.Spec.ContextWindow,
-		MaxOutputTokens:  r.Spec.MaxOutputTokens,
-		InputUSDPerMTok:  r.Spec.InputCostPerM,
-		OutputUSDPerMTok: r.Spec.OutputCostPerM,
-		Reasoning:        r.Spec.Reasoning,
-		ToolCall:         r.Spec.ToolCall,
-		Temperature:      r.Spec.Temperature,
+		Model:               modelID,
+		Source:              r.Source,
+		ContextWindow:       r.Spec.ContextWindow,
+		MaxOutputTokens:     r.Spec.MaxOutputTokens,
+		InputUSDPerMTok:     r.Spec.InputCostPerM,
+		OutputUSDPerMTok:    r.Spec.OutputCostPerM,
+		CacheReadUSDPerMTok: r.Spec.CacheReadCostPerM,
+		Reasoning:           r.Spec.Reasoning,
+		ToolCall:            r.Spec.ToolCall,
+		Temperature:         r.Spec.Temperature,
 	}
 }
 
@@ -486,7 +491,7 @@ func init() {
 // (or an unpriced operator entry) is ok=false — cost 0 is never a measured
 // zero. For a launch or a usage reading: an id in no table earns the
 // catalog's warning here.
-func StaticPricer(wireModelID string) (inputUSDPerMTok, outputUSDPerMTok float64, known bool) {
+func StaticPricer(wireModelID string) (inputUSDPerMTok, outputUSDPerMTok, cacheReadUSDPerMTok float64, known bool) {
 	return staticPrice(wireModelID, ResolveCatalog)
 }
 
@@ -496,18 +501,18 @@ func StaticPricer(wireModelID string) (inputUSDPerMTok, outputUSDPerMTok float64
 // price lookup is not where an unknown id is news; it must not consume the
 // per-id memo either, or the launch that follows in the same process says
 // nothing.
-func StaticPricerQuiet(wireModelID string) (inputUSDPerMTok, outputUSDPerMTok float64, known bool) {
+func StaticPricerQuiet(wireModelID string) (inputUSDPerMTok, outputUSDPerMTok, cacheReadUSDPerMTok float64, known bool) {
 	return staticPrice(wireModelID, ResolveCatalogQuiet)
 }
 
-func staticPrice(wireModelID string, resolve func(string, *modelspecs.Registry, func(string) string) Resolved) (inputUSDPerMTok, outputUSDPerMTok float64, known bool) {
+func staticPrice(wireModelID string, resolve func(string, *modelspecs.Registry, func(string) string) Resolved) (inputUSDPerMTok, outputUSDPerMTok, cacheReadUSDPerMTok float64, known bool) {
 	// Live-aware, like every other catalog consumer: the stamp and the
 	// estimator must read the SAME sources, or one claims what the other
 	// declined (round-2's HIGH). The registry's refresh is background-only;
 	// this never blocks on a fetch.
 	res := resolve(wireModelID, modelspecs.Default(), os.Getenv)
 	if !res.Priced() {
-		return 0, 0, false
+		return 0, 0, 0, false
 	}
-	return res.Spec.InputCostPerM, res.Spec.OutputCostPerM, true
+	return res.Spec.InputCostPerM, res.Spec.OutputCostPerM, res.Spec.CacheReadCostPerM, true
 }
