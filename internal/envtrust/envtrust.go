@@ -77,6 +77,39 @@ func MarkPlanted(names ...string) {
 	_ = os.Setenv(EnvPlantedNames, marker)
 }
 
+// UnmarkPlanted drops these variables from the planted set and re-exports
+// the marker, unsetting it when nothing remains planted. The re-export is
+// not optional: the marker is process-global state of its own, so a cleanup
+// that only clears the set leaves the next ResetForTest to re-seed from the
+// exported marker — and the plant outlives the test that made it. TESTS ONLY.
+func UnmarkPlanted(names ...string) {
+	if len(names) == 0 {
+		return
+	}
+	mu.Lock()
+	ensurePlantedLocked()
+	for _, name := range names {
+		delete(planted, CanonicalName(name))
+	}
+	marker := markerLocked()
+	mu.Unlock()
+	if marker == "" {
+		_ = os.Unsetenv(EnvPlantedNames)
+		return
+	}
+	_ = os.Setenv(EnvPlantedNames, marker)
+}
+
+// MarkPlantedForTest is MarkPlanted for the rest of tb. The planted set and
+// the exported marker are process-global, so a test that plants and walks
+// away leaves every later test — and every later -count pass — answering
+// for names nobody planted. TESTS ONLY.
+func MarkPlantedForTest(tb testing.TB, names ...string) {
+	tb.Helper()
+	MarkPlanted(names...)
+	tb.Cleanup(func() { UnmarkPlanted(names...) })
+}
+
 // Exportable reports whether a name is one a shell could export, which is
 // the only kind the marker can carry — and the only kind a `.env` may plant
 // (cmd/iterion applyDotEnv refuses any other key): a name only ASCII spells is

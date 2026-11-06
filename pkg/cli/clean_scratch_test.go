@@ -232,7 +232,7 @@ func TestTheCleanSweepsRefuseAPlantedHome(t *testing.T) {
 	base := t.TempDir()
 	planted := t.TempDir()
 	t.Setenv("ITERION_HOME", planted)
-	envtrust.MarkPlanted("ITERION_HOME")
+	envtrust.MarkPlantedForTest(t, "ITERION_HOME")
 
 	// The raw material: the LIVE resolution follows the plant.
 	if live := memory.WorkspaceScratchDir(base); !strings.HasPrefix(live, planted+string(filepath.Separator)) {
@@ -268,7 +268,7 @@ func TestTheCleanSweepsRefuseAPlantedHome(t *testing.T) {
 
 	// No operator home at all: both sweeps refuse — the store mapping
 	// answers "" and the cache sweep says so instead of deleting.
-	envtrust.MarkPlanted(store.HomeEnvName())
+	envtrust.MarkPlantedForTest(t, store.HomeEnvName())
 	if got := scratchRootForStore(plantedStore); got != "" {
 		t.Errorf("scratchRootForStore resolved %q with no operator home — the refusal must fail closed on \"\"", got)
 	}
@@ -279,5 +279,38 @@ func TestTheCleanSweepsRefuseAPlantedHome(t *testing.T) {
 	}
 	if len(r2.ScratchErrors) == 0 {
 		t.Error("the cache sweep deleted nothing but said nothing — a refused sweep nobody hears about is one nobody fixes")
+	}
+}
+
+// MarkPlantedForTest's cleanup must undo the plant COMPLETELY: the marker
+// MarkPlanted exports (envtrust.EnvPlantedNames) is process-global state of
+// its own, so a cleanup that only cleared the in-memory set would leave the
+// next reader to re-seed from the exported marker — the plant surviving the
+// test that made it. That is the leak #3095 reports: one pass of
+// TestTheCleanSweepsRefuseAPlantedHome left ITERION_HOME and the home
+// variable planted, and the next -count pass read every home as planted.
+//
+// Mutation coverage: an UnmarkPlanted that clears the set but keeps the
+// exported marker → the reset below re-seeds from it and the inherited home
+// never comes back; a MarkPlantedForTest that registers no cleanup → the
+// -count=2 pkg/cli run fails again on the three sweeps above.
+func TestMarkPlantedForTestCleanupRestoresTheInheritedHome(t *testing.T) {
+	envtrust.ResetForTest()
+
+	home := t.TempDir()
+	t.Setenv("ITERION_HOME", home)
+
+	t.Run("planted", func(t *testing.T) {
+		envtrust.MarkPlantedForTest(t, "ITERION_HOME", store.HomeEnvName())
+		if got := store.InheritedIterionDataDir(); got != "" {
+			t.Fatalf("a planted home names no operator home, got %q", got)
+		}
+	})
+
+	// Read as the next -count pass does: from the marker alone, the state a
+	// leaked marker would re-plant here.
+	envtrust.ResetForTest()
+	if got := store.InheritedIterionDataDir(); got != home {
+		t.Errorf("the planting subtest's cleanup did not restore the inherited home: got %q, want %q", got, home)
 	}
 }
