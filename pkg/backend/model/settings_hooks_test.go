@@ -11,7 +11,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/claw-code-go/pkg/api"
 	"github.com/SocialGouv/claw-code-go/pkg/api/hooks"
+	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -542,5 +544,78 @@ func TestRunCommandHook_ParentCancelNotReportedAsTimeout(t *testing.T) {
 	}
 	if strings.Contains(buf.String(), "timed out") {
 		t.Fatalf("parent cancellation misreported as a hook timeout, got: %q", buf.String())
+	}
+}
+
+// TestClawExecute_UntrustedWorkspaceRegistersNoSettingsHooks is the witness
+// for the EXECUTE-side arm of the untrusted-hooks refusal (claw_backend.go's
+// `case !task.WorkspaceTrust.Trusted():`). The wire-side half
+// (TestSettingsHooksForWire_UntrustedWorkspaceWiresNothing) covers what the
+// launcher ships; this covers the host path and the runner-side fallback
+// when the wire carried nil, where the switch's default arm would read the
+// CHECKOUT's .claude/settings.json and register its command hooks — fork-
+// authored command execution under the operator's hooks runner.
+//
+// Mutation: `case !task.WorkspaceTrust.Trusted():` → `case false:` and the
+// untrusted arm falls into the default, the hook fires, the marker appears —
+// the os.Stat assertion reddens on its own.
+func TestClawExecute_UntrustedWorkspaceRegistersNoSettingsHooks(t *testing.T) {
+	arrange := func(t *testing.T) (ws, marker string) {
+		t.Helper()
+		ws = t.TempDir()
+		marker = filepath.Join(t.TempDir(), "hook-fired")
+		if err := os.MkdirAll(filepath.Join(ws, ".claude"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		settings := `{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"touch ` + marker + `"}]}]}}`
+		if err := os.WriteFile(filepath.Join(ws, ".claude", "settings.json"), []byte(settings), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return ws, marker
+	}
+	newBackend := func(buf *bytes.Buffer) *ClawBackend {
+		mock := &execMockClient{streams: []<-chan api.StreamEvent{streamOf(textEvents("done", 100, 30))}}
+		reg := NewRegistry()
+		reg.Register("test", func(string) (api.APIClient, error) { return mock, nil })
+		return NewClawBackend(reg, EventHooks{}, RetryPolicy{},
+			WithClawLogger(iterlog.New(iterlog.LevelWarn, buf)))
+	}
+
+	ws, marker := arrange(t)
+	var buf bytes.Buffer
+	if _, err := newBackend(&buf).Execute(context.Background(), delegate.Task{
+		NodeID:         "n1",
+		Model:          "test/test-model",
+		UserPrompt:     "review this",
+		WorkDir:        ws,
+		WorkspaceTrust: store.RunTrustFork,
+	}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if _, serr := os.Stat(marker); serr == nil {
+		t.Error("the checkout's UserPromptSubmit hook FIRED on an untrusted run — its .claude/settings.json was registered")
+	}
+	if !strings.Contains(buf.String(), "REFUSED") {
+		t.Errorf("the refusal was not said, got: %q", buf.String())
+	}
+
+	// Control arm: the SAME document wires on a trusted run — without it the
+	// silence above could mean the fixture never worked.
+	ws, marker = arrange(t)
+	buf.Reset()
+	if _, err := newBackend(&buf).Execute(context.Background(), delegate.Task{
+		NodeID:         "n1",
+		Model:          "test/test-model",
+		UserPrompt:     "review this",
+		WorkDir:        ws,
+		WorkspaceTrust: store.RunTrustDefault,
+	}); err != nil {
+		t.Fatalf("control Execute: %v", err)
+	}
+	if _, serr := os.Stat(marker); serr != nil {
+		t.Errorf("control: the trusted workspace's hook did not fire (%v) — the refusal above proves nothing", serr)
+	}
+	if strings.Contains(buf.String(), "REFUSED") {
+		t.Errorf("control: the trusted run logged a refusal: %q", buf.String())
 	}
 }

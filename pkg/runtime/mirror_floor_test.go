@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/SocialGouv/iterion/pkg/plugin"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -198,5 +199,89 @@ func TestReconcileSkillFile_UntrustedPrecedenceIsNotMirrorOrder(t *testing.T) {
 	}
 	if got, _ := os.ReadFile(fx2.destPath); string(got) != "the bundle's playbook\n" {
 		t.Errorf("after library-then-bundle the run serves %q, want the bundle's playbook", got)
+	}
+}
+
+// TestMirrorPluginContribFile_UntrustedFloorReplacesAMarkerlessDivergedDest:
+// the FLOOR FIRST branch of reconcileSkillFile, on the path that actually
+// needs it. Plugin commands and agents mirror WITHOUT prepareSkillDir's
+// wholesale wipe, so a fork that commits `.claude/commands/<cmd>.md` with
+// diverged content and NO marker reaches reconcileSkillFile through
+// mirrorPluginContribFile with every on-disk input — the marker that is not
+// there, the tier sidecar that is not there, the destination's own bytes —
+// being the checkout's. The skills-side witness
+// (TestReconcileSkillFile_UntrustedArbitrationIgnoresThePlantedMarker) cannot
+// see this floor: its planted marker is neutralized by the in-memory tier
+// substitution above the branch, so mutating the branch itself leaves that
+// test green. Here the destination is MARKERLESS: with the branch muted, the
+// arbitration falls to the diverged-shadow tail and the fork keeps its text
+// under the plugin's command name — the assertions below redden on their own.
+func TestMirrorPluginContribFile_UntrustedFloorReplacesAMarkerlessDivergedDest(t *testing.T) {
+	commandKind := plugin.MirrorKind{Name: "command", Dir: "commands"}
+	arrange := func(t *testing.T) (workDir, destDir, markerDir, tmpPath, destPath string) {
+		t.Helper()
+		workDir = t.TempDir()
+		destDir = filepath.Join(workDir, ".claude", "commands")
+		markerDir = filepath.Join(destDir, bundleMirrorMarkerDir)
+		destPath = filepath.Join(destDir, "review.md")
+		// The plant is raw on purpose: it is the CHECKOUT's write, not a
+		// mirror's, so no handle stands between it and the disk — and no
+		// marker exists for it at all.
+		if err := os.MkdirAll(destDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(destPath, []byte("the fork's command text\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		tmpPath = filepath.Join(t.TempDir(), "review.md")
+		if err := os.WriteFile(tmpPath, []byte("the plugin's command\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return workDir, destDir, markerDir, tmpPath, destPath
+	}
+
+	workDir, destDir, markerDir, tmpPath, destPath := arrange(t)
+	pass := testMirrorPass(t, workDir, store.RunTrustFork)
+	// The caller's arrangement: both directories exist before the per-file
+	// reconcile (reconcileSkillFile owns the arbitration, not the mkdirs).
+	for _, d := range []string{destDir, markerDir} {
+		if err := pass.root().MkdirAll(d, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", d, err)
+		}
+	}
+	outcome, gotDest, err := mirrorPluginContribFile(destDir, markerDir, tmpPath, "review.md", commandKind, pass, nil)
+	if err != nil {
+		t.Fatalf("mirror: %v", err)
+	}
+	if gotDest != destPath {
+		t.Fatalf("dest = %q, want %q", gotDest, destPath)
+	}
+	if outcome != skillOutcomeRefreshed {
+		t.Errorf("outcome = %v, want Refreshed — a markerless diverged dest on a fork lane is replaced, never arbitrated against the workspace's own claims", outcome)
+	}
+	if got, _ := os.ReadFile(destPath); string(got) != "the plugin's command\n" {
+		t.Errorf("the fork run serves %q under the plugin's command name, want the plugin's command", got)
+	}
+
+	// Control arm: the SAME markerless diverged file on the TRUSTED lane is
+	// the operator's own edit — workspace wins, the contribution shadows.
+	// Without it the replacement above could mean the arbitration never
+	// shadows anything.
+	workDir, destDir, markerDir, tmpPath, destPath = arrange(t)
+	tpass := testMirrorPass(t, workDir, store.RunTrustDefault)
+	for _, d := range []string{destDir, markerDir} {
+		if err := tpass.root().MkdirAll(d, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", d, err)
+		}
+	}
+	outcome, _, err = mirrorPluginContribFile(destDir, markerDir, tmpPath, "review.md", commandKind, tpass, nil)
+	if err != nil {
+		t.Fatalf("control mirror: %v", err)
+	}
+	if outcome != skillOutcomeShadowed {
+		t.Errorf("control: the trusted arbitration did not shadow (outcome %v) — the fixture proves nothing", outcome)
+	}
+	if got, _ := os.ReadFile(destPath); string(got) != "the fork's command text\n" {
+		t.Errorf("control: the trusted workspace's file was overwritten: %q", got)
 	}
 }
