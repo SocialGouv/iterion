@@ -305,7 +305,7 @@ func TestApplyHostStateMounts_MountsOnlyTheIterionHomeTheOperatorChose(t *testin
 	t.Setenv(envtrust.EnvPlantedNames, "")
 	planted := t.TempDir()
 	t.Setenv("ITERION_HOME", planted)
-	envtrust.MarkPlanted("ITERION_HOME")
+	envtrust.MarkPlantedForTest(t, "ITERION_HOME")
 
 	var event map[string]any
 	emit := func(et store.EventType, data map[string]any) error {
@@ -385,7 +385,7 @@ func TestApplyHostStateMounts_APlantedHomeDirBindsNothingUnderIt(t *testing.T) {
 		}
 	}
 	t.Setenv(store.HomeEnvName(), home)
-	envtrust.MarkPlanted(store.HomeEnvName())
+	envtrust.MarkPlantedForTest(t, store.HomeEnvName())
 
 	var event map[string]any
 	emit := func(et store.EventType, data map[string]any) error {
@@ -421,12 +421,12 @@ func TestApplyScratchMount_SkippedUnderAHomeTheOperatorDidNotChoose(t *testing.T
 	}{
 		{"a planted ITERION_HOME", func(t *testing.T) {
 			t.Setenv("ITERION_HOME", t.TempDir())
-			envtrust.MarkPlanted("ITERION_HOME")
+			envtrust.MarkPlantedForTest(t, "ITERION_HOME")
 		}},
 		{"a planted home dir and no ITERION_HOME", func(t *testing.T) {
 			t.Setenv("ITERION_HOME", "")
 			t.Setenv(store.HomeEnvName(), t.TempDir())
-			envtrust.MarkPlanted(store.HomeEnvName())
+			envtrust.MarkPlantedForTest(t, store.HomeEnvName())
 		}},
 		{"no home at all", func(t *testing.T) {
 			t.Setenv("ITERION_HOME", "")

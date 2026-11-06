@@ -19,7 +19,7 @@ func TestTheBranchCancelGraceReadsPlantedAsUnset(t *testing.T) {
 	t.Setenv(envtrust.EnvPlantedNames, "")
 	t.Cleanup(envtrust.ResetForTest)
 	t.Setenv("ITERION_BRANCH_CANCEL_GRACE", "9m")
-	envtrust.MarkPlanted("ITERION_BRANCH_CANCEL_GRACE")
+	envtrust.MarkPlantedForTest(t, "ITERION_BRANCH_CANCEL_GRACE")
 	if got := defaultBranchCancelGracePeriod(); got != 5*time.Second {
 		t.Errorf("a planted grace moved the bound (%v)", got)
 	}

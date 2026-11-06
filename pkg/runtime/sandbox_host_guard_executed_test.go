@@ -297,7 +297,7 @@ func TestPlantedHatchesDoNotDisarmTheIsolationControls(t *testing.T) {
 			t.Fatalf("%s is already set — applyDotEnv would not have planted it", name)
 		}
 		t.Setenv(name, "off")
-		envtrust.MarkPlanted(name)
+		envtrust.MarkPlantedForTest(t, name)
 		if !envtrust.Planted(name) {
 			t.Fatalf("envtrust does not consider %s planted", name)
 		}

@@ -60,7 +60,7 @@ func TestTheScratchSweepDeletesOnlyUnderTheHomeTheOperatorChose(t *testing.T) {
 	if err := os.Chtimes(plantedStale, old, old); err != nil {
 		t.Fatal(err)
 	}
-	envtrust.MarkPlanted("ITERION_HOME")
+	envtrust.MarkPlantedForTest(t, "ITERION_HOME")
 	t.Setenv("ITERION_HOME", planted)
 	if live := memory.WorkspaceScratchDir(base); !hasPathPrefix(live, planted) {
 		t.Fatalf("fixture: the live resolution did not follow the planted home (%s) — the witness would prove nothing", live)
@@ -76,7 +76,7 @@ func TestTheScratchSweepDeletesOnlyUnderTheHomeTheOperatorChose(t *testing.T) {
 	// And the closed answer: no operator-chosen home at all (the home tier
 	// planted too) resolves no root, and a sweep with no root it can answer
 	// for deletes nothing.
-	envtrust.MarkPlanted(store.HomeEnvName())
+	envtrust.MarkPlantedForTest(t, store.HomeEnvName())
 	if got := sweepScratchRoot(base); got != "" {
 		t.Errorf("sweepScratchRoot resolved %q with no operator home — the refusal must fail closed on \"\"", got)
 	}

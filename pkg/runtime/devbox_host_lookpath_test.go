@@ -33,7 +33,7 @@ func TestHostDevboxLookPathRefusesAPlantedPATH(t *testing.T) {
 	}
 
 	// The repository's does not.
-	envtrust.MarkPlanted("PATH")
+	envtrust.MarkPlantedForTest(t, "PATH")
 	if got, err := hostDevboxLookPath(); !errors.Is(err, exec.ErrNotFound) {
 		t.Errorf("under a planted PATH hostDevboxLookPath = %q, %v, want a loud ErrNotFound — the repository does not choose the provisioning binary", got, err)
 	}
