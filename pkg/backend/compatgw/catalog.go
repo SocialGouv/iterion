@@ -204,7 +204,7 @@ func parseOperatorTable(raw string) (map[string]modelspecs.Spec, error) {
 		if e.InputUSDPerMTok > 0 != (e.OutputUSDPerMTok > 0) {
 			return nil, fmt.Errorf("openai_compatible: %s[%q]: the prices arrive as a pair or not at all", CatalogModelsEnv, id)
 		}
-		if e.InputUSDPerMTok < 0 || e.OutputUSDPerMTok < 0 {
+		if e.InputUSDPerMTok < 0 || e.OutputUSDPerMTok < 0 || e.CacheReadUSDPerMTok < 0 {
 			return nil, fmt.Errorf("openai_compatible: %s[%q]: a price is negative", CatalogModelsEnv, id)
 		}
 		table[strings.ToLower(strings.TrimSpace(id))] = modelspecs.Spec{

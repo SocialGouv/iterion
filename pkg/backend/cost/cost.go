@@ -210,9 +210,12 @@ func estimateUSDWithCache(model string, inputTokens, outputTokens, cacheReadToke
 		}
 		if cachePerM <= 0 {
 			// No cache price published: cached input costs what uncached
-			// input costs here — the pre-split arithmetic, kept exact so
-			// an unpriced model reports the number it always did.
-			cachePerM = inPerM
+			// input costs here. Return the pre-split expression itself —
+			// (uncached+cached)*inPerM is not bit-identical to
+			// uncached*inPerM + cached*inPerM in floating point, and this
+			// fallback's contract is that an unextended table reports the
+			// number it always did, every bit of it.
+			return (float64(inputTokens)*inPerM + float64(outputTokens)*outPerM) / 1_000_000.0
 		}
 		cached := min(max(cacheReadTokens, 0), inputTokens)
 		uncached := inputTokens - cached

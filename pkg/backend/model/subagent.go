@@ -148,7 +148,7 @@ func (s *SubagentSpend) Record(modelSpec string, u Usage) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	accumulateUsage(&s.usage, u)
-	s.costUSD += cost.EstimateUSD(modelSpec, u.InputTokens, u.OutputTokens)
+	s.costUSD += cost.EstimateUSDWithCache(modelSpec, u.InputTokens, u.OutputTokens, u.CacheReadTokens)
 }
 
 // Total is what the children of this node consumed: the summed usage, and the

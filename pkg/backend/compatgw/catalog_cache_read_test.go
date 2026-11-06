@@ -105,3 +105,14 @@ func TestForwardableRecord_RoundTripsTheCacheRate(t *testing.T) {
 		t.Errorf("CacheReadCostPerM = %v, want 0.12 — the cache rate died crossing the IPC", res.Spec.CacheReadCostPerM)
 	}
 }
+
+// A negative cache rate is a typo, and the operator table's contract refuses
+// typos loudly — "a price is negative" covers every price field or a
+// mistyped cache rate is silently ignored (the estimator degrades it to the
+// input rate) and the operator's mistake is never said.
+func TestOperatorModels_ANegativeCacheRateRefusesTheTable(t *testing.T) {
+	_, err := parseOperatorTable(`{"gw/m":{"input_usd_per_mtok":0.6,"output_usd_per_mtok":1.8,"cache_read_usd_per_mtok":-0.5}}`)
+	if err == nil {
+		t.Fatal("a negative cache rate parsed — the strict table must refuse it like any other negative price")
+	}
+}

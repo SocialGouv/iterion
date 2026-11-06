@@ -928,7 +928,11 @@ func annotateUsage(output map[string]any, model string, u Usage) int {
 }
 
 // clawCostEstimate is the backend's own price lookup, named so a test can
-// read a call's cost from the same table the result is built from.
+// read a call's cost from the same table the result is built from. It is
+// deliberately pre-cache (no cache-share parameter): the tests using it
+// price witness calls that carry no cache read, and a cache-carrying usage
+// is priced by the EstimateUSDWithCache sites above, never cheaper than
+// this figure.
 func clawCostEstimate(modelSpec string, inputTokens, outputTokens int) float64 {
 	return cost.EstimateUSD(modelSpec, inputTokens, outputTokens)
 }
