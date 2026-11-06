@@ -653,9 +653,20 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 	if task.WorkDir != "" || len(task.SettingsHooks) > 0 {
 		merged := NewDefaultLifecycleHooks(b.hooks)
 		wired := 0
-		if len(task.SettingsHooks) > 0 {
+		switch {
+		case !task.WorkspaceTrust.Trusted():
+			// The hooks document is READ FROM THE WORKSPACE — on a checkout
+			// the tenant did not write, wiring it hands the fork command
+			// execution under the operator's hooks runner, whatever form the
+			// document arrived in (the wire carries the same file's bytes).
+			// Refused typed by the trust, with the log: never silently
+			// degraded, never silently served.
+			if b.logger != nil {
+				b.logger.Warn("[%s#%d/claw] the workspace is untrusted — its .claude/settings.json hooks are REFUSED, none wired", task.NodeID, task.Iteration)
+			}
+		case len(task.SettingsHooks) > 0:
 			wired = registerSettingsHooksJSON(merged, task.SettingsHooks, b.logger)
-		} else {
+		default:
 			wired = registerSettingsHooks(merged, task.WorkDir, b.logger)
 		}
 		if wired > 0 {
@@ -2263,7 +2274,7 @@ func (b *ClawBackend) runnerIOTask(task delegate.Task, funds map[string]credrout
 	// The crossing's record of the env it composed: the runner names what
 	// each of its calls spends through it (NewSandboxRunnerRegistry).
 	ioTask.CredentialFunds = funds
-	ioTask.SettingsHooks = settingsHooksForWire(task.WorkDir, task.NodeID, task.Iteration, b.logger)
+	ioTask.SettingsHooks = settingsHooksForWire(task.WorkDir, task.NodeID, task.Iteration, task.WorkspaceTrust, b.logger)
 	ioTask.Retry = b.retry.wire()
 	// The runner's read tools take the container's scratch as a read root
 	// (#2650): the bot's briefs live under ${PROJECT_SCRATCH_DIR}, outside
@@ -2314,7 +2325,17 @@ func (b *ClawBackend) runnerIOTask(task delegate.Task, funds map[string]credrout
 // there is nothing useful to ship (no document, or one claw cannot parse — a
 // document of the wrong JSON type is warned about here, never shipped in
 // silence).
-func settingsHooksForWire(workDir, nodeID string, iteration int, logger *iterlog.Logger) json.RawMessage {
+func settingsHooksForWire(workDir, nodeID string, iteration int, trust store.RunTrust, logger *iterlog.Logger) json.RawMessage {
+	if !trust.Trusted() {
+		// The document is the workspace's own: on a checkout the tenant did
+		// not write, shipping it into the sandbox crossing hands the fork the
+		// in-container hooks runner. Wire NOTHING, and say so on the side
+		// that owns the refusal.
+		if logger != nil {
+			logger.Warn("[%s#%d/claw] the workspace is untrusted — its .claude/settings.json hooks are REFUSED, none cross", nodeID, iteration)
+		}
+		return nil
+	}
 	doc, err := readSettingsHooksDoc(workDir)
 	if err != nil {
 		if logger != nil {

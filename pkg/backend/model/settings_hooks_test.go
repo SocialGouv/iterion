@@ -13,6 +13,7 @@ import (
 
 	"github.com/SocialGouv/claw-code-go/pkg/api/hooks"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 func TestRegisterSettingsHooks_BlocksOnExit2(t *testing.T) {
@@ -437,7 +438,7 @@ func TestSettingsHooksForWire_WrongTypeDocWarns(t *testing.T) {
 		t.Fatal(err)
 	}
 	var buf bytes.Buffer
-	doc := settingsHooksForWire(ws, "n1", 0, iterlog.New(iterlog.LevelWarn, &buf))
+	doc := settingsHooksForWire(ws, "n1", 0, store.RunTrustDefault, iterlog.New(iterlog.LevelWarn, &buf))
 	if doc != nil {
 		t.Fatalf("doc = %s, want nil for an unparseable document", doc)
 	}
@@ -458,7 +459,7 @@ func TestSettingsHooksForWire_ValidDocShippedAndDiagnosed(t *testing.T) {
 		t.Fatal(err)
 	}
 	var buf bytes.Buffer
-	doc := settingsHooksForWire(ws, "n1", 0, iterlog.New(iterlog.LevelWarn, &buf))
+	doc := settingsHooksForWire(ws, "n1", 0, store.RunTrustDefault, iterlog.New(iterlog.LevelWarn, &buf))
 	if !strings.Contains(string(doc), "Stop") {
 		t.Fatalf("doc = %s, want the hooks document shipped", doc)
 	}
@@ -467,8 +468,38 @@ func TestSettingsHooksForWire_ValidDocShippedAndDiagnosed(t *testing.T) {
 	}
 	// No settings file → nil, no warning.
 	buf.Reset()
-	if doc := settingsHooksForWire(t.TempDir(), "n1", 0, iterlog.New(iterlog.LevelWarn, &buf)); doc != nil || buf.Len() != 0 {
+	if doc := settingsHooksForWire(t.TempDir(), "n1", 0, store.RunTrustDefault, iterlog.New(iterlog.LevelWarn, &buf)); doc != nil || buf.Len() != 0 {
 		t.Fatalf("missing file: doc=%v warn=%q, want nil and silence", doc, buf.String())
+	}
+}
+
+// TestSettingsHooksForWire_UntrustedWorkspaceWiresNothing: the document IS
+// the workspace's own. On a checkout the tenant did not write, shipping it
+// into the sandbox crossing hands the fork the in-container hooks runner —
+// command execution under the operator's automation, authored by the
+// checkout. Nothing crosses, and the refusal is said on the launcher.
+func TestSettingsHooksForWire_UntrustedWorkspaceWiresNothing(t *testing.T) {
+	ws := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(ws, ".claude"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	settings := `{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"true"}]}]}}`
+	if err := os.WriteFile(filepath.Join(ws, ".claude", "settings.json"), []byte(settings), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	doc := settingsHooksForWire(ws, "n1", 0, store.RunTrustFork, iterlog.New(iterlog.LevelWarn, &buf))
+	if doc != nil {
+		t.Fatalf("doc = %s, want nil — an untrusted workspace ships no hooks document", doc)
+	}
+	if !strings.Contains(buf.String(), "REFUSED") {
+		t.Fatalf("the refusal was not said on the launcher, got: %q", buf.String())
+	}
+	// Control arm: the SAME document crosses on a trusted workspace — without
+	// it the nil above could mean the fixture never worked.
+	buf.Reset()
+	if doc := settingsHooksForWire(ws, "n1", 0, store.RunTrustDefault, iterlog.New(iterlog.LevelWarn, &buf)); doc == nil {
+		t.Fatal("control: the trusted workspace's document did not cross — the refusal above proves nothing")
 	}
 }
 
