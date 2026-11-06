@@ -3,6 +3,7 @@ import { useDocumentStore } from "@/store/document";
 import type { Edge, WhenClause, LoopClause, WithEntry } from "@/api/types";
 import { TextField, NumberField, CheckboxField, SelectField, CommittedTextField } from "./FormField";
 import type { RefContext } from "@/lib/refCompletion";
+import { dslNameError } from "@/lib/dslName";
 import { useConfirm } from "@/hooks/useConfirm";
 import { Button, HelpHint, IconButton, Tooltip } from "@/components/ui";
 import { Cross2Icon } from "@radix-ui/react-icons";
@@ -221,6 +222,7 @@ export default function EdgeForm({ edge, edgeIndex, workflowName }: Props) {
               value={loop.name}
               onChange={(v) => setLoop({ ...loop, name: v })}
               placeholder="e.g. refine_loop"
+              error={dslNameError(loop.name) ?? undefined}
             />
             {loop.max_iterations_expr ? (
               <TextField
@@ -340,7 +342,7 @@ function WithEntryRow({
               setWith(next.length > 0 ? next : undefined);
             }}
             placeholder="target_field"
-            validate={(v) => (!v.trim() ? "Key cannot be empty" : null)}
+            validate={(v) => (!v.trim() ? "Key cannot be empty" : dslNameError(v))}
           />
         </div>
         <IconButton

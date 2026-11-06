@@ -13,6 +13,7 @@ import {
 import { TextField, CommittedTextField, NumberField, SelectField, SelectFieldWithCreate, PromptPickerField, NodeFormHeader } from "./FormField";
 import { NODE_COLORS } from "@/lib/constants";
 import { NodeIcon } from "@/components/icons/NodeIcon";
+import { dslNameError } from "@/lib/dslName";
 
 interface Props {
   decl: HumanDecl;
@@ -47,7 +48,7 @@ export default function HumanForm({ decl }: Props) {
         onCommit={(v) => setSelectedNode(v)}
         validate={(v) => {
           if (!v.trim()) return "Name cannot be empty";
-          if (/\s/.test(v)) return "Name cannot contain spaces";
+          if (dslNameError(v)) return dslNameError(v);
           const names = getAllNodeNames(document!);
           names.delete(decl.name);
           if (names.has(v)) return "Name already exists";
@@ -76,6 +77,7 @@ export default function HumanForm({ decl }: Props) {
         label="Publish"
         value={decl.publish ?? ""}
         onChange={(v) => updateHuman(decl.name, { publish: v || undefined })}
+        error={dslNameError(decl.publish ?? "") ?? undefined}
         placeholder="Artifact name"
         help="Publish this node's output as a persistent artifact, accessible downstream via {{artifacts.name}}."
       />
