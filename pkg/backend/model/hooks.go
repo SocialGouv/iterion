@@ -717,16 +717,29 @@ func (h *storeHooks) usageProgressFromStep(nodeID string, step LLMStepInfo) {
 
 // usageSampleLocked decides whether the state warrants a sample and, when
 // it does, advances the debounce watermark and returns the event payload.
-// Caller holds upMu. The USD figure is an ESTIMATE for pacing (cache
-// writes at 1.25× the input rate, cache reads at 0.1× — the standard
-// Anthropic multipliers), never an invoice; when the model is unpriced
-// the sample carries tokens only — zero means unknown, never free.
+// Caller holds upMu. The USD figure is an ESTIMATE for pacing, never an
+// invoice; when the model is unpriced the sample carries tokens only —
+// zero means unknown, never free.
 func (h *storeHooks) usageSampleLocked(st *usageProgressState) map[string]any {
 	totalTokens := st.in + st.out + st.cacheRead + st.cacheWrite
-	equivIn := st.in + st.cacheWrite + st.cacheWrite/4 + st.cacheRead/10
 	var used float64
 	if st.model != "" {
-		used = cost.EstimateUSD(st.model, equivIn, st.out)
+		if modelroute.Parse(st.model).Gateway() {
+			// Gateway accounting (Revi R7402a3): the wire's prompt count
+			// ALREADY includes the cached share — cached_tokens is a subset
+			// of prompt_tokens. Counting cacheRead on top would double it,
+			// and the Anthropic 0.1x read multiplier misprices a rate the
+			// operator table publishes itself. Only cacheWrite stays
+			// additive: only Anthropic wires populate it today.
+			totalTokens = st.in + st.out + st.cacheWrite
+			used = cost.EstimateUSDWithCache(st.model, st.in, st.out, st.cacheRead)
+		} else {
+			// Anthropic accounting: cache reads and writes are exclusive of
+			// the input count — cache writes at 1.25x the input rate, cache
+			// reads at 0.1x (the standard Anthropic multipliers).
+			equivIn := st.in + st.cacheWrite + st.cacheWrite/4 + st.cacheRead/10
+			used = cost.EstimateUSD(st.model, equivIn, st.out)
+		}
 	}
 	if used > 0 {
 		if used < usageProgressMinUSD {

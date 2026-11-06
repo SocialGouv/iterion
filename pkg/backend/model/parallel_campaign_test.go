@@ -70,6 +70,7 @@ var serialFamily = map[string]string{
 	"schema_feedback_size_test.go":      "Setenv",
 	"schema_mutation_witness_test.go":   "Setenv",
 	"subagent_cache_spend_test.go":      "SetGatewayPricer",
+	"hooks_usage_gateway_cache_test.go": "SetGatewayPricer",
 	"round2_chain_test.go":              "Setenv",
 	"round2_effort_test.go":             "Setenv",
 	"round2_extract_test.go":            "Setenv",
