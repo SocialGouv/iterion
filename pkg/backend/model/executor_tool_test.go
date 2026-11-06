@@ -355,7 +355,7 @@ func TestResolveScriptTemplate_ObjectAndArray(t *testing.T) {
 }
 
 func TestResolveTemplateWith_NoRefsPassthrough(t *testing.T) {
-	got := resolveTemplateWith("plain text {no template}", nil, nil, nil, nil, "", nil, nil, true, shellEscapeValue, false, nil)
+	got := resolveTemplateWith("plain text {no template}", nil, nil, nil, nil, "", nil, nil, true, shellEscapeValue, false, nil, nil)
 	if got != "plain text {no template}" {
 		t.Errorf("got %q", got)
 	}

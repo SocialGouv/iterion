@@ -282,6 +282,9 @@ func TestARefusalCutAcrossASecretQuotesNoPartOfIt(t *testing.T) {
 // an `11,22` that spells two elements, a whole JSON document. The vendor
 // receives each secret byte for byte where the author put it, and nothing it
 // spells; a scalar declaration still reads a secret's value as its spelling.
+// Only the author's own references ever resolve: a placeholder DATA carries
+// — the exact token, written into an input by a model — stays the text it
+// is, whatever the secret grants.
 //
 // Mutations seen red (each restored): the secret materialised before
 // narrowing — the backslash-n element reached the vendor as a newline, the
@@ -322,8 +325,10 @@ func TestASecretIsSwappedIntoAnArgumentAfterItIsRead(t *testing.T) {
 		{name: "a string element keeps a quote", declared: "array", items: "string", value: `["{{secrets.QUOTED}}"]`, want: jsonOf([]string{quoted})},
 		{name: "an element of an untyped list", declared: "array", value: `["{{secrets.QUOTED}}"]`, want: jsonOf([]string{quoted})},
 		{name: "an object value writes no key of its own", declared: "object", value: `{"name":"{{secrets.INJECT}}"}`, want: jsonOf(map[string]string{"name": inject})},
-		{name: "a placeholder data carries into a string", declared: "string", value: "{{input.doc}}", input: map[string]any{"doc": "pre " + ph("QUOTED") + " post"}, want: jsonOf("pre " + quoted + " post")},
-		{name: "a placeholder data carries into an untyped document", declared: "", value: "{{input.doc}}", input: map[string]any{"doc": map[string]any{"k": ph("QUOTED")}}, want: jsonOf(map[string]string{"k": quoted})},
+		// A placeholder DATA carries is never resolved — only the author's own
+		// references are: the vendor receives the placeholder as text.
+		{name: "a placeholder data carries into a string stays text", declared: "string", value: "{{input.doc}}", input: map[string]any{"doc": "pre " + ph("QUOTED") + " post"}, want: jsonOf("pre " + ph("QUOTED") + " post")},
+		{name: "a placeholder data carries into an untyped document stays text", declared: "", value: "{{input.doc}}", input: map[string]any{"doc": map[string]any{"k": ph("QUOTED")}}, want: jsonOf(map[string]string{"k": ph("QUOTED")})},
 		{name: "a whole-value secret reaches a string as it is", declared: "string", value: "{{secrets.QUOTED}}", want: jsonOf(quoted)},
 		{name: "a secret reaches an integer as its spelling", declared: "integer", value: "{{secrets.NUMBER}}", want: `42424`},
 		{name: "a secret element reaches integer items as its spelling", declared: "array", items: "integer", value: `["{{secrets.NUMBER}}"]`, want: `[42424]`},

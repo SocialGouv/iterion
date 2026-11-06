@@ -12,11 +12,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/SocialGouv/iterion/pkg/backend/secretguard"
 	"github.com/SocialGouv/iterion/pkg/connector/exec"
 	"github.com/SocialGouv/iterion/pkg/connector/spec"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
-	"github.com/SocialGouv/iterion/pkg/dsl/secretsink"
 )
 
 // Connector-action execution (ADR-098) — the third `tool` recipe.
@@ -433,13 +431,18 @@ const (
 // only place that knows which is which, so the conversion happens here rather
 // than in the DSL, where every value is text.
 //
-// Both transports narrow the SAME value: the rendering, placeholders and
-// all. The HTTP call swaps a secret in afterwards, in the strings the
-// narrowed argument carries (narrowValue's leaf), never into text that is
-// then read as JSON — there the secret's own bytes are syntax: a `"` or a
-// `\` fails to decode, a literal `\n` arrives as a newline, a
-// `","admin":"yes` writes a key of its own and a `1,2` spells two elements
-// (secretguard.MaterializeLeaves states the same rule for a tool input).
+// Both transports narrow the SAME value: the rendering, markers and all. An
+// authored `{{secrets.NAME}}` renders to a marker of this one rendering
+// (authoredSecrets) — never the placeholder, which data spells as well as
+// the author does — and once the argument is narrowed, leaf resolves each
+// marker in the strings the narrowed argument carries: the value, through the
+// `params` grant, on an HTTP call; the reference's canonical text (the
+// placeholder) on a native transport, which never holds the value. Nothing
+// else materialises: a placeholder data carries — written by a model into an
+// input, spelled with a JSON escape, split across two references that join
+// into it — stays the text it is, whatever the secret grants. JSON is read
+// from the marker form, never from a secret's bytes, and a marker a map key
+// would carry is refused, since a key is sent as written.
 func (e *ClawExecutor) renderActionParams(ctx context.Context, node *ir.ToolNode, op spec.Operation, input map[string]any, secrets actionSecrets) (map[string]any, error) {
 	declared := make(map[string]spec.Param, len(op.Params))
 	for _, p := range op.Params {
@@ -447,19 +450,15 @@ func (e *ClawExecutor) renderActionParams(ctx context.Context, node *ir.ToolNode
 	}
 	td := TemplateDataFromContext(ctx)
 	runID := RunIDFromContext(ctx)
-	// A `{{secrets.NAME}}` ref renders to a PLACEHOLDER, not a value — the
-	// whole point, since a secret must not sit in a command line or in a
-	// log. A vendor call materialises it, or the literal text
-	// `__ITERION_SECRET_NAME__` travels to the vendor as the argument. The
-	// raw form is right here: nothing on this path reaches a shell, so the
-	// shell-escaping variants would corrupt the value. The `params` sink: an
-	// authored value, named so a secret kept off the vendor call by its
-	// declaration stays off it. A native transport keeps the placeholder:
-	// its store persists and shows what it receives.
-	leaf := keepPlaceholder
-	if secrets == secretsMaterialized {
-		leaf = func(s string) string { return e.secretGuard.MaterializeFor(secretsink.Params, s) }
-	}
+	// A `{{secrets.NAME}}` ref renders to a MARKER of this rendering, never
+	// the placeholder — the placeholder is deterministic, so data spells it
+	// as well as the author does, and the materialiser could not tell the
+	// two apart. The marker is unguessable (crypto/rand), travels with the
+	// text through every read below, and is what leaf resolves: the value,
+	// through the `params` grant, immediately before a vendor call; the
+	// reference's canonical text (the placeholder) on a native transport,
+	// whose store persists and shows what it receives.
+	authored := newAuthoredSecrets(e.secretGuard, secrets)
 
 	out := make(map[string]any, len(node.Params))
 	for _, p := range node.Params {
@@ -485,18 +484,22 @@ func (e *ClawExecutor) renderActionParams(ctx context.Context, node *ir.ToolNode
 		if whole && !secret {
 			rendered = resolveScriptTemplate(p.Value, p.Refs, input, e.vars, td, runID, e.secretGuard)
 		} else {
-			rendered = resolveTemplateWith(p.Value, p.Refs, input, e.vars, td, runID, e.secretGuard, nil, false, rawTemplateValue, true, nil)
+			rendered = resolveTemplateWith(p.Value, p.Refs, input, e.vars, td, runID, e.secretGuard, nil, false, rawTemplateValue, true, nil, authored.marker)
 		}
 		decl, known := declared[p.Key]
 		if !known {
 			// exec refuses this too, and its message lists what the operation
 			// accepts; letting it through keeps ONE definition of that error.
-			out[p.Key] = leaf(rendered)
+			v, refusedKey, ok := authored.leafText(rendered)
+			if !ok {
+				return nil, refuseSecretKey(p.Key, -1, authored.shown(refusedKey))
+			}
+			out[p.Key] = v
 			continue
 		}
 		// The refusal is an *ActionParamError naming the key, returned as is
 		// so a caller reaches the type with errors.As.
-		v, err := coerceParam(decl, rendered, whole && !secret, leaf)
+		v, err := coerceParam(decl, rendered, whole && !secret, authored)
 		if err != nil {
 			return nil, err
 		}
@@ -521,9 +524,9 @@ func isWholeValueRef(value string, refs []*ir.Ref) bool {
 // number bare, an object as JSON text — so parsing it back is what lets a
 // `.bot` write `index: "{{outputs.pick.issue}}"` and have an integer reach an
 // integer field. Interpolated text arrives as text. Either way the value then
-// goes through narrowParam, the one conversion to the declared type, and leaf
-// reaches each string the result carries (narrowValue).
-func coerceParam(decl spec.Param, rendered string, typed bool, leaf func(string) string) (any, error) {
+// goes through narrowParam, the one conversion to the declared type, and
+// authored.leaf reaches each string the result carries (narrowValue).
+func coerceParam(decl spec.Param, rendered string, typed bool, authored *authoredSecrets) (any, error) {
 	// AUTHORED TEXT is not JSON, and reading it as JSON altered it.
 	//
 	// The renderer already knows which of the two this is — a whole-value
@@ -539,9 +542,13 @@ func coerceParam(decl spec.Param, rendered string, typed bool, leaf func(string)
 	// guessing from the text's shape.
 	if !typed {
 		if decl.Type == "" || decl.Type == "string" {
-			return leaf(rendered), nil
+			text, refusedKey, ok := authored.leafText(rendered)
+			if !ok {
+				return nil, refuseSecretKey(decl.Key, -1, authored.shown(refusedKey))
+			}
+			return text, nil
 		}
-		return narrowParam(decl, rendered, leaf)
+		return narrowParam(decl, rendered, authored)
 	}
 
 	trimmed := strings.TrimSpace(rendered)
@@ -557,10 +564,10 @@ func coerceParam(decl spec.Param, rendered string, typed bool, leaf func(string)
 	// 9007199254740993 came back as 9007199254740992, which addresses a
 	// different resource and looks perfectly plausible in a log.
 	if decoded, ok := decodeJSONValue(trimmed); ok {
-		return narrowParam(decl, decoded, leaf)
+		return narrowParam(decl, decoded, authored)
 	}
 	// Bare text the renderer left alone (an author who wrote a literal).
-	return narrowParam(decl, trimmed, leaf)
+	return narrowParam(decl, trimmed, authored)
 }
 
 // decodeJSONValue reads text as exactly ONE JSON value, numbers kept exact
@@ -602,36 +609,50 @@ func decodeJSONValue(text string) (any, bool) {
 // Only an operation that declares NO type (`type:` absent) takes the value as
 // it is: there is no declaration to narrow to.
 //
-// v holds a secret as its PLACEHOLDER, and leaf is what reaches each string
-// the narrowed value carries: materialised for an HTTP call, kept as written
-// (keepPlaceholder) for a native transport. So JSON is read from the
-// placeholder form, never from a secret's bytes, and the two transports
-// narrow the same value. A scalar declaration is the one reading of a leaf's
-// RESULT: it parses the spelling, where no syntax surrounds the secret, so
+// v holds each authored `{{secrets.NAME}}` as its MARKER (authoredSecrets),
+// and authored is what reads the strings the narrowed value carries: leaf
+// resolves a marker for the transport (the value through the `params` grant
+// on an HTTP call, the canonical placeholder on a native one), shown renders
+// a marker in a refusal's text. So JSON is read from the marker form, never
+// from a secret's bytes, and the two transports narrow the same value; a
+// placeholder that arrived through DATA is never resolved — it stays the
+// text it is. A scalar declaration is the one reading of a leaf's RESULT: it
+// parses the spelling, where no syntax surrounds the secret, so
 // `{{secrets.N}}` holding `12345` reaches an integer field over HTTP — and is
 // refused by a native transport, which never holds the value.
-func narrowParam(decl spec.Param, v any, leaf func(string) string) (any, error) {
-	return narrowValue(decl.Key, -1, decl.Type, decl.Items, v, leaf)
+func narrowParam(decl spec.Param, v any, authored *authoredSecrets) (any, error) {
+	return narrowValue(decl.Key, -1, decl.Type, decl.Items, v, authored)
 }
-
-// keepPlaceholder is a native transport's leaf: the narrowed argument keeps
-// every placeholder as written.
-func keepPlaceholder(s string) string { return s }
 
 // narrowValue is narrowParam for one value: the argument itself (item -1) or
 // the element at index item of an array argument. A refusal's Text is the
-// text before leaf: an authored secret is quoted as its placeholder.
-func narrowValue(key string, item int, declared, items string, v any, leaf func(string) string) (any, error) {
+// text with each marker shown as its canonical placeholder: never the marker,
+// never the value.
+func narrowValue(key string, item int, declared, items string, v any, authored *authoredSecrets) (any, error) {
 	refuse := func() error {
 		pe := &ActionParamError{Key: key, Item: item, Declared: declared, Got: describeJSONValue(v)}
 		if s, isText := v.(string); isText {
-			pe.Text = s
+			pe.Text = authored.shown(s)
+		}
+		return pe
+	}
+	// refuseBare is the refusal of a structure's text whose decode a marker
+	// broke: the reference stood outside a JSON string (`[{{secrets.N}}]`,
+	// `{"id": {{secrets.N}}}`), where the author meant the secret's VALUE as
+	// syntax. A secret is a string; no JSON syntax may surround it.
+	refuseBare := func() error {
+		pe := &ActionParamError{Key: key, Item: item, Declared: declared, BareSecret: true}
+		if s, isText := v.(string); isText {
+			pe.Text = authored.shown(s)
 		}
 		return pe
 	}
 	switch declared {
 	case "":
-		out, _ := secretguard.MaterializeLeaves(v, leaf)
+		out, refusedKey, ok := authored.leaves(v)
+		if !ok {
+			return nil, refuseSecretKey(key, item, authored.shown(refusedKey))
+		}
 		return out, nil
 	case "integer":
 		switch t := v.(type) {
@@ -650,7 +671,7 @@ func narrowValue(key string, item int, declared, items string, v any, leaf func(
 			}
 			return int64(t), nil
 		case string:
-			n, err := strconv.ParseInt(strings.TrimSpace(leaf(t)), 10, 64)
+			n, err := strconv.ParseInt(strings.TrimSpace(authored.leaf(t)), 10, 64)
 			if err != nil {
 				return nil, refuse()
 			}
@@ -666,7 +687,7 @@ func narrowValue(key string, item int, declared, items string, v any, leaf func(
 		case float64, int, int64:
 			return t, nil
 		case string:
-			n, err := strconv.ParseFloat(strings.TrimSpace(leaf(t)), 64)
+			n, err := strconv.ParseFloat(strings.TrimSpace(authored.leaf(t)), 64)
 			if err != nil {
 				return nil, refuse()
 			}
@@ -677,7 +698,7 @@ func narrowValue(key string, item int, declared, items string, v any, leaf func(
 		case bool:
 			return t, nil
 		case string:
-			b, err := strconv.ParseBool(strings.TrimSpace(leaf(t)))
+			b, err := strconv.ParseBool(strings.TrimSpace(authored.leaf(t)))
 			if err != nil {
 				return nil, refuse()
 			}
@@ -686,7 +707,7 @@ func narrowValue(key string, item int, declared, items string, v any, leaf func(
 	case "string":
 		switch t := v.(type) {
 		case string:
-			return leaf(t), nil
+			return authored.leaf(t), nil
 		case json.Number:
 			return t.String(), nil
 		case bool:
@@ -699,8 +720,14 @@ func narrowValue(key string, item int, declared, items string, v any, leaf func(
 		list, isList := v.([]any)
 		if s, isText := v.(string); isText {
 			decoded, ok := decodeJSONValue(strings.TrimSpace(s))
+			if !ok {
+				if authored.outsideString(s) {
+					return nil, refuseBare()
+				}
+				return nil, refuse()
+			}
 			list, isList = decoded.([]any)
-			if !ok || !isList {
+			if !isList {
 				return nil, refuse()
 			}
 		}
@@ -708,12 +735,15 @@ func narrowValue(key string, item int, declared, items string, v any, leaf func(
 			return nil, refuse()
 		}
 		if items == "" {
-			out, _ := secretguard.MaterializeLeaves(list, leaf)
+			out, refusedKey, ok := authored.leaves(list)
+			if !ok {
+				return nil, refuseSecretKey(key, item, authored.shown(refusedKey))
+			}
 			return out, nil
 		}
 		out := make([]any, len(list))
 		for i, el := range list {
-			n, err := narrowValue(key, i, items, "", el, leaf)
+			n, err := narrowValue(key, i, items, "", el, authored)
 			if err != nil {
 				return nil, err
 			}
@@ -724,16 +754,26 @@ func narrowValue(key string, item int, declared, items string, v any, leaf func(
 		obj, isObj := v.(map[string]any)
 		if s, isText := v.(string); isText {
 			decoded, ok := decodeJSONValue(strings.TrimSpace(s))
+			if !ok {
+				if authored.outsideString(s) {
+					return nil, refuseBare()
+				}
+				return nil, refuse()
+			}
 			obj, isObj = decoded.(map[string]any)
-			if !ok || !isObj {
+			if !isObj {
 				return nil, refuse()
 			}
 		}
 		if !isObj {
 			return nil, refuse()
 		}
-		// Values only: a map key is never materialised (MaterializeLeaves).
-		out, _ := secretguard.MaterializeLeaves(obj, leaf)
+		// Values only: a map key is sent as written, so a key holding a
+		// marker is refused rather than sent unresolved.
+		out, refusedKey, ok := authored.leaves(obj)
+		if !ok {
+			return nil, refuseSecretKey(key, item, authored.shown(refusedKey))
+		}
 		return out, nil
 	default:
 		// A type with no case here is refused, not passed through: sending
@@ -741,6 +781,14 @@ func narrowValue(key string, item int, declared, items string, v any, leaf func(
 		return nil, &ActionParamError{Key: key, Item: item, Declared: declared, Got: describeJSONValue(v), Unsupported: true}
 	}
 	return nil, refuse()
+}
+
+// refuseSecretKey is the refusal of a map key an authored `{{secrets.X}}`
+// stood in: a key is sent as written, on every declaration, so a secret may
+// not be one. The key is quoted as found, with the marker shown as the
+// reference's canonical placeholder.
+func refuseSecretKey(key string, item int, shownKey string) *ActionParamError {
+	return &ActionParamError{Key: key, Item: item, SecretKey: shownKey}
 }
 
 // ActionParamError is an action argument the type its operation declares
@@ -764,6 +812,15 @@ type ActionParamError struct {
 	Text string
 	// Unsupported marks a declared type this build has no conversion to.
 	Unsupported bool
+	// SecretKey is the map key — an authored reference shown as its
+	// placeholder, never its marker, never the value — a `{{secrets.X}}`
+	// stood in. A key is sent as written on every declaration, so a secret
+	// may not be one.
+	SecretKey string
+	// BareSecret marks a secret reference standing outside a JSON string in
+	// a structure's text (`[{{secrets.N}}]`, `{"id": {{secrets.N}}}`): a
+	// secret is a string, and no JSON syntax may surround it.
+	BareSecret bool
 }
 
 func (e *ActionParamError) Error() string {
@@ -774,6 +831,16 @@ func (e *ActionParamError) Error() string {
 	switch {
 	case e.Unsupported:
 		return fmt.Sprintf("%s: the operation declares type %q, which this build has no conversion to (%s given)", where, e.Declared, e.Got)
+	case e.SecretKey != "":
+		return fmt.Sprintf("%s: a secret reference may not stand in an object key (%s): a key is sent as written — put the reference in a value", where, quoteBounded(e.SecretKey))
+	case e.BareSecret:
+		// The escape depends on the structure: an array's elements take a
+		// declared type, an object has no per-key one.
+		escape := "quote the reference, and a string field carries its text"
+		if e.Declared == "array" {
+			escape = "declare the elements' type (items: integer) to read the spelling, or quote the reference"
+		}
+		return fmt.Sprintf("%s: %s holds a secret reference outside a JSON string — a secret is a string, so no JSON syntax may surround it: %s", where, quoteBounded(e.Text), escape)
 	case e.Got == describeJSONValue(""):
 		// The value was text: the text is what the author can act on.
 		return fmt.Sprintf("%s: %s does not read as %s, the type the operation declares", where, quoteBounded(e.Text), typeNoun(e.Declared))

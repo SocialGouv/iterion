@@ -52,7 +52,7 @@ func TestAModelCarriedPlaceholderIsTheAgentSinksInEveryAuthoredBody(t *testing.T
 			bodies := map[string]string{
 				"command": renderCommand("printf '%s %s %s' {{input.body}} {{outputs.writer.text}} {{vars.note}}", refs, input, vars, td, "run", g, nil, nil),
 				"script":  renderScript("publish({{input.body}}, {{outputs.writer.text}}, {{vars.note}})", refs, input, vars, td, "run", g, nil),
-				"param":   resolveTemplateWith("{{input.body}} {{outputs.writer.text}} {{vars.note}}", refs, input, vars, td, "run", g, nil, false, rawTemplateValue, true, nil),
+				"param":   resolveTemplateWith("{{input.body}} {{outputs.writer.text}} {{vars.note}}", refs, input, vars, td, "run", g, nil, false, rawTemplateValue, true, nil, nil),
 			}
 			for body, rendered := range bodies {
 				resolved := map[string]string{

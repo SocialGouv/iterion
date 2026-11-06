@@ -1566,7 +1566,7 @@ func resolveScriptTemplate(script string, refs []*ir.Ref, input map[string]any, 
 // hole as null — named once each so the production path and a dry run
 // cannot choose differently.
 func renderCommand(command string, refs []*ir.Ref, input, vars map[string]any, td *TemplateData, ctxRunID string, guard *secretguard.Guard, shapes *Shapes, unresolved func(ref string)) string {
-	return resolveTemplateWith(command, refs, input, vars, td, ctxRunID, guard, shapes, true, shellEscapeValue, false, unresolved)
+	return resolveTemplateWith(command, refs, input, vars, td, ctxRunID, guard, shapes, true, shellEscapeValue, false, unresolved, nil)
 }
 
 // A script body carries no declared shape: every namespace renders as a
@@ -1574,7 +1574,7 @@ func renderCommand(command string, refs []*ir.Ref, input, vars map[string]any, t
 // JS/Python/Ruby parser — `["a","b"]` for a `string[]`, the parsed document
 // for a `json`. Passing the declarations would be wiring nothing reads.
 func renderScript(script string, refs []*ir.Ref, input, vars map[string]any, td *TemplateData, ctxRunID string, guard *secretguard.Guard, unresolved func(ref string)) string {
-	return resolveTemplateWith(script, refs, input, vars, td, ctxRunID, guard, nil, false, jsonLiteralValue, true, unresolved)
+	return resolveTemplateWith(script, refs, input, vars, td, ctxRunID, guard, nil, false, jsonLiteralValue, true, unresolved, nil)
 }
 
 // resolveTemplateWith is the shared core: walk refs, look up each value,
@@ -1599,7 +1599,13 @@ func renderScript(script string, refs []*ir.Ref, input, vars map[string]any, td 
 // text is never re-read for braces, since a value may carry `{{…}}` of its
 // own and that is the value, not a reference. The production callers
 // listen to none; a dry run names them.
-func resolveTemplateWith(template string, refs []*ir.Ref, input map[string]any, vars map[string]any, td *TemplateData, ctxRunID string, guard *secretguard.Guard, shapes *Shapes, shellBody bool, defaultRender func(any, ValueShape) string, substituteNil bool, unresolved func(ref string)) string {
+//
+// secretRef, when set, renders each `{{secrets.NAME}}` the template holds in
+// place of secretRefText: an action's params render the author's own
+// references to markers of that one rendering (authoredSecrets), so their
+// materialiser can tell them from a placeholder data spells. Nil everywhere
+// else.
+func resolveTemplateWith(template string, refs []*ir.Ref, input map[string]any, vars map[string]any, td *TemplateData, ctxRunID string, guard *secretguard.Guard, shapes *Shapes, shellBody bool, defaultRender func(any, ValueShape) string, substituteNil bool, unresolved func(ref string), secretRef func(name string) string) string {
 	if len(refs) == 0 {
 		return template
 	}
@@ -1706,11 +1712,10 @@ func resolveTemplateWith(template string, refs []*ir.Ref, input map[string]any, 
 			// exec (executeToolNodeShell / Script), never landing in the
 			// persisted command text or logs. File secrets render their
 			// mounted path instead.
-			if guard != nil {
-				val = guard.ResolveSecretRef(ref.Path[0])
-			}
-			if val == nil || val == "" {
-				val = secretguard.PlaceholderForName(ref.Path[0])
+			if secretRef != nil {
+				val = secretRef(ref.Path[0])
+			} else {
+				val = secretRefText(guard, ref.Path[0])
 			}
 			handled = true
 		case ref.Kind == ir.RefArtifacts || ref.Kind == ir.RefAttachments || ref.Kind == ir.RefLoop:
@@ -1769,7 +1774,10 @@ func resolveTemplateWith(template string, refs []*ir.Ref, input map[string]any, 
 		// written by a model, not by the author: it is the agent sink's,
 		// whatever body it lands in. A secret kept off the agent is defused
 		// here, before the body's materialiser scans the rendered text and
-		// would resolve it under the body's own grant.
+		// would resolve it under the body's own grant. An action's params
+		// materialise no placeholder at all, only the author's markers
+		// (authoredSecrets): there a data placeholder is text whatever the
+		// secret grants.
 		if ref.Kind != ir.RefSecrets {
 			subs[ref.Raw] = guard.DefuseUngranted(secretsink.Agent, subs[ref.Raw])
 		}
@@ -1840,6 +1848,17 @@ func rawTemplateValue(val any, _ ValueShape) string {
 		return s
 	}
 	return formatValue(val)
+}
+
+// secretRefText is what an authored `{{secrets.NAME}}` renders to: the
+// guard's reading (the placeholder, a file secret's mounted path, the value
+// with placeholders off), or the name's own placeholder when the guard holds
+// none. Nil-safe.
+func secretRefText(guard *secretguard.Guard, name string) string {
+	if text := guard.ResolveSecretRef(name); text != "" {
+		return text
+	}
+	return secretguard.PlaceholderForName(name)
 }
 
 // ToolBodyEnv is the one reading of a tool body's environment forms. It
