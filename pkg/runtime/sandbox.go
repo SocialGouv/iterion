@@ -3515,15 +3515,31 @@ func writeThroughMirroredSkills(ctx context.Context, workDir string, trust store
 				}
 				return nil
 			}
-			// IsRegular, not !IsDir: WalkDir does not descend into a
-			// symlinked DIRECTORY, but it reports a symlinked FILE with
-			// IsDir() == false and the read would follow it — carrying an
-			// arbitrary host file into the container under a name the
-			// checkout chose. A link that stays inside the workspace loses
-			// nothing: its bytes are the checkout's own and already in the
-			// copy.
-			if d.Type().IsRegular() {
+			// The walk filter differs by lane. On an UNTRUSTED checkout it is
+			// IsRegular, not !IsDir: WalkDir does not descend into a symlinked
+			// DIRECTORY, but it reports a symlinked FILE with IsDir() == false
+			// and the read would follow it — carrying an arbitrary host file
+			// into the container under a name the checkout chose. A link that
+			// stays inside the workspace loses nothing: its bytes are the
+			// checkout's own and already in the copy. On a TRUSTED workspace the
+			// filter stays the pre-handle !IsDir(): the operator's own
+			// arrangement (a skills entry symlinked into a shared dotfiles
+			// tree) rides today and keeps riding — ADR-162 leaves a trusted
+			// run's behavior unchanged outside the points it names, and this
+			// walk is not one of them.
+			if d.Type().IsRegular() || (trust.Trusted() && !d.IsDir()) {
 				push(path, owned)
+				return nil
+			}
+			// A skipped link is said, never silent: on the untrusted lane the
+			// reader of the child's copy would otherwise report the name not
+			// covered with no trace of why.
+			if !trust.Trusted() && d.Type()&os.ModeSymlink != 0 && logger != nil {
+				rel := path
+				if r, rerr := filepath.Rel(workDir, path); rerr == nil {
+					rel = filepath.ToSlash(r)
+				}
+				logger.Warn("runtime: write-through skips the symlinked %s — an untrusted workspace's links never cross into the child's sandbox", rel)
 			}
 			return nil
 		})
