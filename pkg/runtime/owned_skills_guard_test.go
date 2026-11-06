@@ -52,7 +52,7 @@ func TestOwnedSkillsDirIsAbsoluteOrNothing(t *testing.T) {
 // expansion, by name. A relative one is resolved, not refused: a dispatcher
 // spec, a dry run or a subbot request handing the engine one must keep working.
 func TestMirrorAcceptsAnEmptyOrRelativeWorkspace(t *testing.T) {
-	if _, err := mirrorBundleSkills("", nil, nil); err != nil {
+	if _, err := mirrorBundleSkills("", nil, testTrustedPass(t), nil); err != nil {
 		t.Fatalf("an empty workspace is a no-op, not a refusal: %v", err)
 	}
 	dir := t.TempDir()
@@ -65,7 +65,7 @@ func TestMirrorAcceptsAnEmptyOrRelativeWorkspace(t *testing.T) {
 		t.Fatal(err)
 	}
 	b := newSkillsBundle(t, map[string]string{"lang-python.md": shippedBlock})
-	if _, err := mirrorBundleSkills("sub/ws", b, nil); err != nil {
+	if _, err := mirrorBundleSkills("sub/ws", b, testTrustedPass(t), nil); err != nil {
 		t.Fatalf("a relative workspace was refused: %v", err)
 	}
 	// Resolved against the process directory, and the bundle landed there.

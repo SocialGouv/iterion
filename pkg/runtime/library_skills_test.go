@@ -34,7 +34,7 @@ func TestMirrorLibrarySkills_MirrorsAndHints(t *testing.T) {
 	}
 
 	workDir := t.TempDir()
-	hints, _, _, err := mirrorLibrarySkills(workDir, "", wfWithSkills([]string{"changelog-writer"}, nil), nil, nil, nil)
+	hints, _, _, err := mirrorLibrarySkills(workDir, "", wfWithSkills([]string{"changelog-writer"}, nil), nil, nil, testTrustedPass(t), nil)
 	if err != nil {
 		t.Fatalf("mirror: %v", err)
 	}
@@ -78,7 +78,7 @@ func TestMirrorLibrarySkills_ShadowedIsHintedButNotOwned(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	hints, owned, _, err := mirrorLibrarySkills(workDir, "", wfWithSkills([]string{"changelog-writer"}, nil), nil, nil, nil)
+	hints, owned, _, err := mirrorLibrarySkills(workDir, "", wfWithSkills([]string{"changelog-writer"}, nil), nil, nil, testTrustedPass(t), nil)
 	if err != nil {
 		t.Fatalf("mirror: %v", err)
 	}
@@ -98,7 +98,7 @@ func TestMirrorLibrarySkills_ShadowedIsHintedButNotOwned(t *testing.T) {
 func TestMirrorLibrarySkills_UnknownRefSkipped(t *testing.T) {
 	t.Setenv("ITERION_HOME", t.TempDir())
 	workDir := t.TempDir()
-	hints, _, _, err := mirrorLibrarySkills(workDir, "", wfWithSkills([]string{"nope"}, nil), nil, nil, nil)
+	hints, _, _, err := mirrorLibrarySkills(workDir, "", wfWithSkills([]string{"nope"}, nil), nil, nil, testTrustedPass(t), nil)
 	if err != nil {
 		t.Fatalf("mirror: %v", err)
 	}
@@ -112,7 +112,7 @@ func TestMirrorLibrarySkills_UnknownRefSkipped(t *testing.T) {
 }
 
 func TestMirrorLibrarySkills_NoRefsNoOp(t *testing.T) {
-	hints, _, _, err := mirrorLibrarySkills(t.TempDir(), "", wfWithSkills(nil, nil), nil, nil, nil)
+	hints, _, _, err := mirrorLibrarySkills(t.TempDir(), "", wfWithSkills(nil, nil), nil, nil, testTrustedPass(t), nil)
 	if err != nil {
 		t.Fatalf("mirror: %v", err)
 	}
@@ -154,7 +154,7 @@ func TestMirrorLibrarySkills_LandsInBothDiscoveryShapes(t *testing.T) {
 	}
 
 	workDir := t.TempDir()
-	_, owned, _, err := mirrorLibrarySkills(workDir, "", wfWithSkills([]string{"deploy-target"}, nil), nil, nil, nil)
+	_, owned, _, err := mirrorLibrarySkills(workDir, "", wfWithSkills([]string{"deploy-target"}, nil), nil, nil, testTrustedPass(t), nil)
 	if err != nil {
 		t.Fatalf("mirror: %v", err)
 	}
@@ -226,7 +226,7 @@ func TestMirrorLibrarySkills_MigrationFromDirOnlyWorkspace(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, _, _, err := mirrorLibrarySkills(workDir, "", wfWithSkills([]string{"deploy-target"}, nil), nil, nil, nil); err != nil {
+	if _, _, _, err := mirrorLibrarySkills(workDir, "", wfWithSkills([]string{"deploy-target"}, nil), nil, nil, testTrustedPass(t), nil); err != nil {
 		t.Fatalf("mirror: %v", err)
 	}
 
@@ -266,7 +266,7 @@ func TestMirrorLibrarySkills_DirectoryAtFlatAliasPathShadows(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, owned, _, err := mirrorLibrarySkills(workDir, "", wfWithSkills([]string{"deploy-target"}, nil), nil, nil, nil)
+	_, owned, _, err := mirrorLibrarySkills(workDir, "", wfWithSkills([]string{"deploy-target"}, nil), nil, nil, testTrustedPass(t), nil)
 	if err != nil {
 		t.Fatalf("a directory at the flat-alias path aborted the pass: %v", err)
 	}
@@ -313,7 +313,7 @@ func TestMirrorLibrarySkills_StoreOutageFlagsIncomplete(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(markerDir, "own-skill.SKILL.md.sha256"), []byte(h), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	_, _, complete, err := mirrorLibrarySkills(workDir, "", wfWithSkills([]string{"own-skill"}, nil), nil, nil, nil)
+	_, _, complete, err := mirrorLibrarySkills(workDir, "", wfWithSkills([]string{"own-skill"}, nil), nil, nil, testTrustedPass(t), nil)
 	if err != nil {
 		t.Fatalf("mirror: %v", err)
 	}
@@ -326,7 +326,7 @@ func TestMirrorLibrarySkills_StoreOutageFlagsIncomplete(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(markerDir, "own-skill.SKILL.md.sha256"+tierSidecarSuffix), []byte("bundle"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	_, _, complete2, err := mirrorLibrarySkills(workDir, "", wfWithSkills([]string{"own-skill"}, nil), nil, nil, nil)
+	_, _, complete2, err := mirrorLibrarySkills(workDir, "", wfWithSkills([]string{"own-skill"}, nil), nil, nil, testTrustedPass(t), nil)
 	if err != nil {
 		t.Fatalf("mirror: %v", err)
 	}

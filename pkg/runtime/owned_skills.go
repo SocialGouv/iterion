@@ -156,7 +156,7 @@ func ownedSkillsContainerDir(containerWorkspace string) string {
 // it on every exit; in an adopted copy-based sandbox, where this host-side
 // reset cannot reach, the same list drives the reset in the copy, the refill
 // and the restore.
-func materializeOwnedSkills(workDir string, b *bundle.Bundle, logger *iterlog.Logger) error {
+func materializeOwnedSkills(workDir string, b *bundle.Bundle, pass *mirrorPass, logger *iterlog.Logger) error {
 	if workDir == "" {
 		return nil
 	}
@@ -167,7 +167,7 @@ func materializeOwnedSkills(workDir string, b *bundle.Bundle, logger *iterlog.Lo
 	if err := refuseAnOwnedCopyOutsideTheWorkspace(dir); err != nil {
 		return err
 	}
-	if err := os.RemoveAll(dir); err != nil {
+	if err := pass.root().RemoveAll(dir); err != nil {
 		return fmt.Errorf("runtime/bundle: reset owned skills dir %s: %w", dir, err)
 	}
 	// The manifest follows the reset on every return path below: files the
@@ -175,7 +175,7 @@ func materializeOwnedSkills(workDir string, b *bundle.Bundle, logger *iterlog.Lo
 	// tombstoned, so a TRACKED file of this directory keeps reading as the
 	// engine's own write (or its own deletion) rather than the run's work
 	// (#1571).
-	defer syncMirrorManifestTree(mirrorManifestPath(workDir), dir, logger)
+	defer syncMirrorManifestTree(pass.root(), mirrorManifestPath(workDir), dir, logger)
 	if b == nil || b.SkillsDir == "" {
 		return nil
 	}
@@ -185,11 +185,11 @@ func materializeOwnedSkills(workDir string, b *bundle.Bundle, logger *iterlog.Lo
 		}
 		return fmt.Errorf("runtime/bundle: stat bundle skills %s: %w", b.SkillsDir, err)
 	}
-	if err := copyDir(b.SkillsDir, dir); err != nil {
+	if err := pass.root().CopyTreeFrom(b.SkillsDir, dir); err != nil {
 		return fmt.Errorf("runtime/bundle: copy bundle skills into %s: %w", dir, err)
 	}
 	if logger != nil {
-		entries, err := os.ReadDir(dir)
+		entries, err := pass.root().ReadDir(dir)
 		if err == nil {
 			logger.Info("runtime: %d bundle skill entries written to the engine-owned copy at %s", len(entries), dir)
 		}

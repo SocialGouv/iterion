@@ -18,7 +18,7 @@ func TestMirrorInjectedPluginFiles_WritesEachKind(t *testing.T) {
 		{Kind: "commands", Name: "ship.md", Content: []byte("ship it\n")},
 		{Kind: "agents", Name: "auditor.md", Content: []byte("audit\n")},
 	}
-	if _, _, err := mirrorInjectedPluginFiles(workDir, files, nil); err != nil {
+	if _, _, err := mirrorInjectedPluginFiles(workDir, files, testTrustedPass(t), nil); err != nil {
 		t.Fatalf("mirror: %v", err)
 	}
 	for _, f := range files {
@@ -34,7 +34,7 @@ func TestMirrorInjectedPluginFiles_WritesEachKind(t *testing.T) {
 
 func TestMirrorInjectedPluginFiles_NoopOnEmpty(t *testing.T) {
 	workDir := t.TempDir()
-	if _, _, err := mirrorInjectedPluginFiles(workDir, nil, nil); err != nil {
+	if _, _, err := mirrorInjectedPluginFiles(workDir, nil, testTrustedPass(t), nil); err != nil {
 		t.Fatalf("mirror: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(workDir, ".claude")); !os.IsNotExist(err) {
@@ -56,7 +56,7 @@ func TestMirrorInjectedPluginFiles_ShadowedByWorkspaceFile(t *testing.T) {
 	}
 	_, _, err := mirrorInjectedPluginFiles(workDir, []ContributionFile{
 		{Kind: "skills", Name: "deploy-target.md", Content: []byte("plugin version\n")},
-	}, nil)
+	}, testTrustedPass(t), nil)
 	if err != nil {
 		t.Fatalf("mirror: %v", err)
 	}
@@ -72,7 +72,7 @@ func TestMirrorInjectedLibrarySkills_DirectoryFormAndHints(t *testing.T) {
 	workDir := t.TempDir()
 	hints, _, err := mirrorInjectedLibrarySkills(workDir, []LibrarySkillFile{
 		{Name: "deploy-target", Description: "Deploy an app and return a URL", Content: []byte("---\nname: deploy-target\n---\nbody\n")},
-	}, nil)
+	}, testTrustedPass(t), nil)
 	if err != nil {
 		t.Fatalf("mirror: %v", err)
 	}
@@ -93,7 +93,7 @@ func TestMirrorInjectedLibrarySkills_DirectoryFormAndHints(t *testing.T) {
 // on the host running the test.
 func TestMirrorPluginContributions_InjectedSuppressesLocalResolution(t *testing.T) {
 	workDir := t.TempDir()
-	if _, _, err := mirrorPluginContributions(workDir, &Contributions{}, false, nil); err != nil {
+	if _, _, err := mirrorPluginContributions(workDir, &Contributions{}, false, testTrustedPass(t), nil); err != nil {
 		t.Fatalf("mirror: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(workDir, ".claude")); !os.IsNotExist(err) {
@@ -124,7 +124,7 @@ func TestMirrorInjectedLibrarySkills_LandsInBothDiscoveryShapes(t *testing.T) {
 	workDir := t.TempDir()
 	hints, owned, err := mirrorInjectedLibrarySkills(workDir, []LibrarySkillFile{
 		{Name: "deploy-target", Description: "Deploy an app", Content: []byte("---\nname: deploy-target\n---\nbody\n")},
-	}, nil)
+	}, testTrustedPass(t), nil)
 	if err != nil {
 		t.Fatalf("mirror: %v", err)
 	}

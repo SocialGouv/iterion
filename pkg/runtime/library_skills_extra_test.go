@@ -40,7 +40,7 @@ func TestExtraSkillsAddToTheWorkflowsOwn(t *testing.T) {
 	writeLibrarySkill(t, storeDir, "house-standard", "the operator's own")
 
 	hints, _, _, err := mirrorLibrarySkills(workDir, storeDir, wfWithExtraSkills("bot-declared"),
-		[]string{"house-standard"}, nil, nil)
+		[]string{"house-standard"}, nil, testTrustedPass(t), nil)
 	if err != nil {
 		t.Fatalf("mirror: %v", err)
 	}
@@ -64,7 +64,7 @@ func TestExtraSkillCarriesItsDescriptionIntoTheRoster(t *testing.T) {
 	writeLibrarySkill(t, storeDir, "house-standard", "how this shop authors bots")
 
 	hints, _, _, err := mirrorLibrarySkills(workDir, storeDir, wfWithExtraSkills(),
-		[]string{"house-standard"}, nil, nil)
+		[]string{"house-standard"}, nil, testTrustedPass(t), nil)
 	if err != nil {
 		t.Fatalf("mirror: %v", err)
 	}

@@ -43,7 +43,7 @@ func TestMirrorPluginContributions_SameNameCollisionIsLoudAndReportedOnce(t *tes
 	var buf bytes.Buffer
 	logger := iterlog.New(iterlog.LevelWarn, &buf)
 	workDir := t.TempDir()
-	owned, _, err := mirrorPluginContributions(workDir, nil, false, logger)
+	owned, _, err := mirrorPluginContributions(workDir, nil, false, testTrustedPass(t), logger)
 	if err != nil {
 		t.Fatalf("mirrorPluginContributions: %v", err)
 	}
@@ -90,7 +90,7 @@ func TestMirrorPluginContributions_SelfCollisionNamesThePluginOnce(t *testing.T)
 
 	var buf bytes.Buffer
 	logger := iterlog.New(iterlog.LevelWarn, &buf)
-	owned, _, err := mirrorPluginContributions(t.TempDir(), nil, false, logger)
+	owned, _, err := mirrorPluginContributions(t.TempDir(), nil, false, testTrustedPass(t), logger)
 	if err != nil {
 		t.Fatalf("mirrorPluginContributions: %v", err)
 	}
@@ -137,7 +137,7 @@ func TestMirrorPluginContributions_CollisionWarningTellsTheTruthWhenTheWorkspace
 
 	var buf bytes.Buffer
 	logger := iterlog.New(iterlog.LevelWarn, &buf)
-	owned, _, err := mirrorPluginContributions(workDir, nil, false, logger)
+	owned, _, err := mirrorPluginContributions(workDir, nil, false, testTrustedPass(t), logger)
 	if err != nil {
 		t.Fatalf("mirrorPluginContributions: %v", err)
 	}
@@ -184,7 +184,7 @@ func TestMirrorPluginContributions_IdenticalContributionsCollideSilently(t *test
 	var buf bytes.Buffer
 	logger := iterlog.New(iterlog.LevelWarn, &buf)
 	workDir := t.TempDir()
-	if _, _, err := mirrorPluginContributions(workDir, nil, false, logger); err != nil {
+	if _, _, err := mirrorPluginContributions(workDir, nil, false, testTrustedPass(t), logger); err != nil {
 		t.Fatalf("mirrorPluginContributions: %v", err)
 	}
 	if logs := buf.String(); strings.Contains(logs, "is contributed by both") {
@@ -217,7 +217,7 @@ func TestMirrorPluginContributions_DirectoryFormSkillKeepsItsName(t *testing.T) 
 	}
 
 	workDir := t.TempDir()
-	owned, _, err := mirrorPluginContributions(workDir, nil, false, nil)
+	owned, _, err := mirrorPluginContributions(workDir, nil, false, testTrustedPass(t), nil)
 	if err != nil {
 		t.Fatalf("mirrorPluginContributions: %v", err)
 	}
@@ -270,7 +270,7 @@ func TestMirrorPluginContributions_SkillLandsInBothForms(t *testing.T) {
 	installPack(t, home, "the-pack", "skills/graphify.md", "content\n")
 
 	workDir := t.TempDir()
-	owned, _, err := mirrorPluginContributions(workDir, nil, false, nil)
+	owned, _, err := mirrorPluginContributions(workDir, nil, false, testTrustedPass(t), nil)
 	if err != nil {
 		t.Fatalf("mirrorPluginContributions: %v", err)
 	}
@@ -318,7 +318,7 @@ func TestMirrorInjectedPluginFiles_SkillLandsInBothForms(t *testing.T) {
 	workDir := t.TempDir()
 	owned, _, err := mirrorInjectedPluginFiles(workDir, []ContributionFile{
 		{Kind: "skills", Name: "deploy.md", Content: []byte("playbook\n")},
-	}, nil)
+	}, testTrustedPass(t), nil)
 	if err != nil {
 		t.Fatalf("mirrorInjectedPluginFiles: %v", err)
 	}
@@ -348,7 +348,7 @@ func TestMirrorInjectedPluginFiles_CommandsAndAgentsAreFlat(t *testing.T) {
 	_, _, err := mirrorInjectedPluginFiles(workDir, []ContributionFile{
 		{Kind: "commands", Name: "deploy.md", Content: []byte("a command")},
 		{Kind: "agents", Name: "scout.md", Content: []byte("an agent")},
-	}, nil)
+	}, testTrustedPass(t), nil)
 	if err != nil {
 		t.Fatalf("mirrorInjectedPluginFiles: %v", err)
 	}
@@ -384,7 +384,7 @@ func TestMirrorInjectedPluginFiles_DuplicatePayloadIsLoudAndReportedOnce(t *test
 	owned, _, err := mirrorInjectedPluginFiles(workDir, []ContributionFile{
 		{Kind: "skills", Name: "deploy.md", Content: []byte("A version\n")},
 		{Kind: "skills", Name: "deploy.md", Content: []byte("B version\n")},
-	}, logger)
+	}, testTrustedPass(t), logger)
 	if err != nil {
 		t.Fatalf("mirrorInjectedPluginFiles: %v", err)
 	}
@@ -421,7 +421,7 @@ func TestMirrorInjectedPluginFiles_DuplicateIdenticalBytesStillWarn(t *testing.T
 	if _, _, err := mirrorInjectedPluginFiles(workDir, []ContributionFile{
 		{Kind: "skills", Name: "deploy.md", Content: []byte("same body\n")},
 		{Kind: "skills", Name: "deploy.md", Content: []byte("same body\n")},
-	}, logger); err != nil {
+	}, testTrustedPass(t), logger); err != nil {
 		t.Fatalf("mirrorInjectedPluginFiles: %v", err)
 	}
 	logs := buf.String()
@@ -459,7 +459,7 @@ func TestMirrorPluginContributions_UppercaseMdExtensionMirrorsBothShapes(t *test
 	}
 
 	workDir := t.TempDir()
-	owned, _, err := mirrorPluginContributions(workDir, nil, false, nil)
+	owned, _, err := mirrorPluginContributions(workDir, nil, false, testTrustedPass(t), nil)
 	if err != nil {
 		t.Fatalf("mirrorPluginContributions returned an error on an .MD-extension skill: %v", err)
 	}
@@ -521,7 +521,7 @@ func TestMirrorPluginContributions_OneMalformedNameDoesNotDiscardOtherPlugins(t 
 	var buf bytes.Buffer
 	logger := iterlog.New(iterlog.LevelWarn, &buf)
 	workDir := t.TempDir()
-	owned, _, err := mirrorPluginContributions(workDir, nil, false, logger)
+	owned, _, err := mirrorPluginContributions(workDir, nil, false, testTrustedPass(t), logger)
 	if err != nil {
 		t.Fatalf("one malformed plugin file aborted the whole pass: %v", err)
 	}
@@ -559,7 +559,7 @@ func TestMirrorInjectedPluginFiles_OneMalformedEntryDoesNotDiscardTheRest(t *tes
 	_, _, err := mirrorInjectedPluginFiles(workDir, []ContributionFile{
 		{Kind: "skills", Name: "broken", Content: []byte("no extension")},
 		{Kind: "skills", Name: "kept.md", Content: []byte("still lands\n")},
-	}, logger)
+	}, testTrustedPass(t), logger)
 	if err != nil {
 		t.Fatalf("one malformed entry aborted the whole pass: %v", err)
 	}
@@ -605,7 +605,7 @@ func TestMirrorPluginContributions_IOFailureOnAmbientSkillIsSoftAndIncomplete(t 
 		t.Fatal(err)
 	}
 
-	owned, complete, err := mirrorPluginContributions(workDir, nil, false, nil)
+	owned, complete, err := mirrorPluginContributions(workDir, nil, false, testTrustedPass(t), nil)
 	if err != nil {
 		t.Fatalf("ambient-tier I/O error aborted the run: %v", err)
 	}
@@ -629,7 +629,7 @@ func TestMirrorInjectedPluginFiles_IOFailureOnPayloadSkillIsSoftAndIncomplete(t 
 	}
 	owned, complete, err := mirrorInjectedPluginFiles(workDir, []ContributionFile{
 		{Kind: "skills", Name: "deploy.md", Content: []byte("payload\n")},
-	}, nil)
+	}, testTrustedPass(t), nil)
 	if err != nil {
 		t.Fatalf("ambient-tier I/O error aborted the run: %v", err)
 	}
@@ -680,7 +680,7 @@ func TestMirrorPluginContributions_ValidationErrorSkipsOneEntryFatal(t *testing.
 	var buf bytes.Buffer
 	logger := iterlog.New(iterlog.LevelWarn, &buf)
 	workDir := t.TempDir()
-	_, _, err := mirrorPluginContributions(workDir, nil, false, logger)
+	_, _, err := mirrorPluginContributions(workDir, nil, false, testTrustedPass(t), logger)
 	if err != nil {
 		t.Fatalf("validation error was FATAL instead of soft: %v", err)
 	}

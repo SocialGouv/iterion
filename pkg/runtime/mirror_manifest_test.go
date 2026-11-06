@@ -28,7 +28,7 @@ import (
 // rewrite of a tracked file, the #1364 shape.
 func mirrorKeepSkill(t *testing.T, ws, skillsSrc string) {
 	t.Helper()
-	if _, err := mirrorBundleSkills(ws, &bundle.Bundle{SkillsDir: skillsSrc}, nil); err != nil {
+	if _, err := mirrorBundleSkills(ws, &bundle.Bundle{SkillsDir: skillsSrc}, testTrustedPass(t), nil); err != nil {
 		t.Fatalf("mirror pass: %v", err)
 	}
 }
@@ -130,8 +130,8 @@ func TestAgentEditAfterTheMirrorIsWork(t *testing.T) {
 // candidate, and the tracked one still matches its marker.
 func TestPrunerDeletionOfATrackedMirrorFileIsNoise(t *testing.T) {
 	ws, _ := keepSkillRepo(t)
-	ClearMirroredTierMarkers(ws, nil)
-	pruneWorkspaceMirror(ws, true, nil)
+	ClearMirroredTierMarkers(ws, testTrustedPass(t), nil)
+	pruneWorkspaceMirror(ws, testTrustedPass(t), true, nil)
 	if _, err := os.Lstat(filepath.Join(ws, ".claude", "skills", "keep", "SKILL.md")); !os.IsNotExist(err) {
 		t.Fatalf("the pruner did not remove the orphan: %v", err)
 	}

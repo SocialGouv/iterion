@@ -35,7 +35,7 @@ import (
 // the local library store is never consulted (the cloud path — a runner pod has
 // no library on disk, so the launching instance resolved the workflow's refs
 // for it; see Contributions).
-func mirrorLibrarySkills(workDir, projectStoreDir string, wf *ir.Workflow, extra []string, inj *Contributions, logger *iterlog.Logger) (hints map[string]string, owned []string, complete bool, err error) {
+func mirrorLibrarySkills(workDir, projectStoreDir string, wf *ir.Workflow, extra []string, inj *Contributions, pass *mirrorPass, logger *iterlog.Logger) (hints map[string]string, owned []string, complete bool, err error) {
 	if mirrorCwdGuard != nil && workDir != "" {
 		if err := mirrorCwdGuard(workDir); err != nil {
 			return nil, nil, false, err
@@ -73,7 +73,7 @@ func mirrorLibrarySkills(workDir, projectStoreDir string, wf *ir.Workflow, extra
 		// The cloud path: the launching instance already resolved BOTH the
 		// workflow's refs and the operator's extras into the payload, so the
 		// union is upstream of here and the pod just mirrors what it was sent.
-		injHints, injOwned, injErr := mirrorInjectedLibrarySkills(workDir, inj.Library, logger)
+		injHints, injOwned, injErr := mirrorInjectedLibrarySkills(workDir, inj.Library, pass, logger)
 		// The payload is authoritative for WHAT to mirror, but the workflow's
 		// declaration is checkable right here: every declared ref must have
 		// been produced this pass — by the payload, or by the bundle/plugin
@@ -86,7 +86,7 @@ func mirrorLibrarySkills(workDir, projectStoreDir string, wf *ir.Workflow, extra
 		markerDir := filepath.Join(dest, bundleMirrorMarkerDir)
 		complete := true
 		for _, name := range unionSkillRefs(collectSkillRefs(wf), extra) {
-			if skillCoveredThisPass(dest, markerDir, name) {
+			if skillCoveredThisPass(pass.root(), dest, markerDir, name) {
 				continue
 			}
 			complete = false
@@ -131,7 +131,7 @@ func mirrorLibrarySkills(workDir, projectStoreDir string, wf *ir.Workflow, extra
 			// the name. A PREVIOUS pass's library copy does not satisfy the ref:
 			// its sidecar is stale, and that file is exactly what the pruner
 			// would delete on a transient store outage (#1500 R17fd85).
-			if skillCoveredThisPass(dest, markerDir, name) {
+			if skillCoveredThisPass(pass.root(), dest, markerDir, name) {
 				if logger != nil {
 					logger.Debug("skill %q resolved from the bundle/plugin mirror, not the library", name)
 				}
@@ -151,7 +151,7 @@ func mirrorLibrarySkills(workDir, projectStoreDir string, wf *ir.Workflow, extra
 		}
 		if !dirsReady {
 			for _, d := range []string{dest, markerDir} {
-				if err := os.MkdirAll(d, 0o755); err != nil {
+				if err := pass.root().MkdirAll(d, 0o755); err != nil {
 					return nil, nil, false, fmt.Errorf("runtime/library: mkdir %s: %w", d, err)
 				}
 			}
@@ -174,7 +174,7 @@ func mirrorLibrarySkills(workDir, projectStoreDir string, wf *ir.Workflow, extra
 		// `<name>.SKILL.md.sha256` (unchanged pre/post-#1478), flat
 		// `<name>.md.sha256`.
 		mfName := name + ".md"
-		outcome, err := mirrorFileSkill(dest, markerDir, srcPath, mfName, skillTierLibrary, logger)
+		outcome, err := mirrorFileSkill(dest, markerDir, srcPath, mfName, skillTierLibrary, pass, logger)
 		if err != nil {
 			// I/O errors on a declared library skill (ENOSPC, EACCES,
 			// ENOTDIR when the checkout planted a plain file where the
@@ -302,13 +302,15 @@ func skillDescription(path string) string {
 // bundle or plugin mirror, which run before this one and outrank the library
 // (ADR-059). Both shapes are accepted: the directory form <name>/SKILL.md that
 // claude_code's Skill tool discovers, and the flat <name>.md that claw also
-// reads.
-func alreadyMirrored(dest, name string) bool {
+// reads. The stat goes through the workspace handle: the answer DRIVES a
+// write (the mirror's skip), so a path that resolves outside the workspace
+// answers false — fail closed.
+func alreadyMirrored(wr *workspaceRoot, dest, name string) bool {
 	for _, p := range []string{
 		filepath.Join(dest, name, "SKILL.md"),
 		filepath.Join(dest, name+".md"),
 	} {
-		if st, err := os.Stat(p); err == nil && !st.IsDir() {
+		if st, err := wr.Stat(p); err == nil && !st.IsDir() {
 			return true
 		}
 	}
@@ -333,13 +335,13 @@ func alreadyMirrored(dest, name string) bool {
 //
 // The injected and local paths both consult it, so "declared but produced by
 // no mirror this pass" cannot mean different things on the two paths.
-func skillCoveredThisPass(dest, markerDir, name string) bool {
+func skillCoveredThisPass(wr *workspaceRoot, dest, markerDir, name string) bool {
 	markerPath := filepath.Join(markerDir, name+".SKILL.md.sha256")
-	if _, err := os.Stat(markerPath + tierSidecarSuffix); err == nil {
+	if wr.Exists(markerPath + tierSidecarSuffix) {
 		return true
 	}
-	if _, err := os.Stat(markerPath); err == nil {
+	if wr.Exists(markerPath) {
 		return false
 	}
-	return alreadyMirrored(dest, name)
+	return alreadyMirrored(wr, dest, name)
 }

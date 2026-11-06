@@ -539,7 +539,7 @@ func TestTheResetDoesNotFollowAClaudeSymlinkOutOfTheWorkspace(t *testing.T) {
 		if err := os.Symlink(outside, filepath.Join(work, ".claude")); err != nil {
 			t.Fatal(err)
 		}
-		_, err := mirrorBundleSkills(work, newSkillsBundle(t, map[string]string{sharedNameSkill: shippedBlock}), nil)
+		_, err := mirrorBundleSkills(work, newSkillsBundle(t, map[string]string{sharedNameSkill: shippedBlock}), testTrustedPass(t), nil)
 		// What the guard is FOR, asserted before the shape of the refusal, so
 		// this is the line that speaks when the guard goes.
 		if _, statErr := os.Stat(theirs); statErr != nil {
@@ -567,7 +567,7 @@ func TestTheResetDoesNotFollowAClaudeSymlinkOutOfTheWorkspace(t *testing.T) {
 		if err := os.Symlink(work, filepath.Join(work, ".claude")); err != nil {
 			t.Fatal(err)
 		}
-		_, err := mirrorBundleSkills(work, newSkillsBundle(t, map[string]string{sharedNameSkill: shippedBlock}), nil)
+		_, err := mirrorBundleSkills(work, newSkillsBundle(t, map[string]string{sharedNameSkill: shippedBlock}), testTrustedPass(t), nil)
 		if _, statErr := os.Stat(committed); statErr != nil {
 			t.Errorf("the reset removed a file the checkout committed: %v", statErr)
 		}
@@ -586,7 +586,7 @@ func TestTheResetDoesNotFollowAClaudeSymlinkOutOfTheWorkspace(t *testing.T) {
 		if err := os.Symlink(real, link); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := mirrorBundleSkills(link, newSkillsBundle(t, map[string]string{sharedNameSkill: shippedBlock}), nil); err != nil {
+		if _, err := mirrorBundleSkills(link, newSkillsBundle(t, map[string]string{sharedNameSkill: shippedBlock}), testTrustedPass(t), nil); err != nil {
 			t.Fatalf("a workspace reached through a symlink was refused: %v", err)
 		}
 		if _, err := os.Stat(filepath.Join(real, ".claude", ownedSkillsDirName, sharedNameSkill)); err != nil {
@@ -607,7 +607,7 @@ func TestTheResetDoesNotFollowAClaudeSymlinkOutOfTheWorkspace(t *testing.T) {
 		if err := os.Symlink(inside, filepath.Join(work, ".claude")); err != nil {
 			t.Fatal(err)
 		}
-		_, err := mirrorBundleSkills(work, newSkillsBundle(t, map[string]string{sharedNameSkill: shippedBlock}), nil)
+		_, err := mirrorBundleSkills(work, newSkillsBundle(t, map[string]string{sharedNameSkill: shippedBlock}), testTrustedPass(t), nil)
 		var linkErr *claudeSymlinkError
 		if !errors.As(err, &linkErr) {
 			t.Fatalf("the mirror accepted a .claude resolving inside the workspace: %v", err)

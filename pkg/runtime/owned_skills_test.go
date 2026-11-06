@@ -55,7 +55,7 @@ func TestOwnedSkills_CheckoutCannotReplaceAShippedName(t *testing.T) {
 	writeCheckoutFile(t, workDir, ".claude/iterion-skills/lang-python.md", hostileBlock)
 
 	b := newSkillsBundle(t, map[string]string{"lang-python.md": shippedBlock})
-	if _, err := mirrorBundleSkills(workDir, b, nil); err != nil {
+	if _, err := mirrorBundleSkills(workDir, b, testTrustedPass(t), nil); err != nil {
 		t.Fatalf("mirror: %v", err)
 	}
 
@@ -86,7 +86,7 @@ func TestOwnedSkills_CheckoutCannotSupplyAnUnshippedName(t *testing.T) {
 	writeCheckoutFile(t, workDir, ".claude/iterion-skills/lang-cobol.md", hostileBlock)
 
 	b := newSkillsBundle(t, map[string]string{"lang-python.md": shippedBlock})
-	if _, err := mirrorBundleSkills(workDir, b, nil); err != nil {
+	if _, err := mirrorBundleSkills(workDir, b, testTrustedPass(t), nil); err != nil {
 		t.Fatalf("mirror: %v", err)
 	}
 
@@ -105,7 +105,7 @@ func TestOwnedSkills_ResetEvenWithoutABundle(t *testing.T) {
 	workDir := t.TempDir()
 	writeCheckoutFile(t, workDir, ".claude/iterion-skills/lang-python.md", hostileBlock)
 
-	if _, err := mirrorBundleSkills(workDir, nil, nil); err != nil {
+	if _, err := mirrorBundleSkills(workDir, nil, testTrustedPass(t), nil); err != nil {
 		t.Fatalf("mirror: %v", err)
 	}
 	if _, err := os.Stat(OwnedSkillsDir(workDir)); !os.IsNotExist(err) {
@@ -121,7 +121,7 @@ func TestOwnedSkills_CheckoutWithoutSkillsIsUnchanged(t *testing.T) {
 		"lang-python.md": shippedBlock,
 		"lang-go.md":     shippedBlock,
 	})
-	owned, err := mirrorBundleSkills(workDir, b, nil)
+	owned, err := mirrorBundleSkills(workDir, b, testTrustedPass(t), nil)
 	if err != nil {
 		t.Fatalf("mirror: %v", err)
 	}
@@ -159,11 +159,11 @@ func TestOwnedSkills_CheckoutWithoutSkillsIsUnchanged(t *testing.T) {
 func TestOwnedSkills_StaleNameIsRemovedOnRemirror(t *testing.T) {
 	workDir := t.TempDir()
 	first := newSkillsBundle(t, map[string]string{"lang-python.md": shippedBlock, "lang-cobol.md": shippedBlock})
-	if _, err := mirrorBundleSkills(workDir, first, nil); err != nil {
+	if _, err := mirrorBundleSkills(workDir, first, testTrustedPass(t), nil); err != nil {
 		t.Fatalf("mirror: %v", err)
 	}
 	second := newSkillsBundle(t, map[string]string{"lang-python.md": shippedBlock})
-	if _, err := mirrorBundleSkills(workDir, second, nil); err != nil {
+	if _, err := mirrorBundleSkills(workDir, second, testTrustedPass(t), nil); err != nil {
 		t.Fatalf("re-mirror: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(OwnedSkillsDir(workDir), "lang-cobol.md")); !os.IsNotExist(err) {
@@ -227,7 +227,7 @@ var _ sandbox.WorkspaceFileRefresher = (*recordingRefresher)(nil)
 func TestWriteThroughMirroredSkills_IncludesTheOwnedCopy(t *testing.T) {
 	workDir := t.TempDir()
 	b := newSkillsBundle(t, map[string]string{"lang-python.md": shippedBlock})
-	if _, err := mirrorBundleSkills(workDir, b, nil); err != nil {
+	if _, err := mirrorBundleSkills(workDir, b, testTrustedPass(t), nil); err != nil {
 		t.Fatalf("mirror: %v", err)
 	}
 	r := &recordingRefresher{}

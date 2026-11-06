@@ -3,6 +3,7 @@ package runtime
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -45,7 +46,7 @@ const pluginHooksSidecar = "plugin-hooks.json"
 // reading as the run's work (#1571, R213476), while a repository TRACKING
 // the file with no edit in between must not see the engine's own injection
 // banked either (#1364).
-func mergePluginHooks(workDir string, logger *iterlog.Logger) (complete bool, err error) {
+func mergePluginHooks(workDir string, pass *mirrorPass, logger *iterlog.Logger) (complete bool, err error) {
 	complete = true
 	if workDir == "" {
 		return complete, nil
@@ -86,7 +87,7 @@ func mergePluginHooks(workDir string, logger *iterlog.Logger) (complete bool, er
 	claudeDir := filepath.Join(workDir, ".claude")
 	settingsPath := filepath.Join(claudeDir, "settings.json")
 	sidecarPath := filepath.Join(claudeDir, bundleMirrorMarkerDir, pluginHooksSidecar)
-	prevBlob, prevErr := readHooksSidecar(sidecarPath)
+	prevBlob, prevErr := readHooksSidecar(pass.root(), sidecarPath)
 	if prevErr != nil && logger != nil {
 		logger.Warn("runtime/plugin: hooks sidecar: %v — prior injected hooks may be left stale", prevErr)
 	}
@@ -95,7 +96,7 @@ func mergePluginHooks(workDir string, logger *iterlog.Logger) (complete bool, er
 		return complete, nil // nothing to do, and nothing was ever injected
 	}
 
-	settings, err := readJSONObject(settingsPath)
+	settings, err := readJSONObject(pass.root(), settingsPath)
 	if err != nil {
 		return complete, fmt.Errorf("runtime/plugin: %w — refusing to rewrite %s", err, settingsPath)
 	}
@@ -152,24 +153,24 @@ func mergePluginHooks(workDir string, logger *iterlog.Logger) (complete bool, er
 
 	after, _ := json.Marshal(settings)
 
-	if err := os.MkdirAll(filepath.Dir(sidecarPath), 0o755); err != nil {
+	if err := pass.root().MkdirAll(filepath.Dir(sidecarPath), 0o755); err != nil {
 		return complete, fmt.Errorf("runtime/plugin: mkdir managed dir: %w", err)
 	}
 	if !bytes.Equal(before, after) {
 		// Decided BEFORE the write, from the file as found: may the result be
 		// recorded as the mirror's own bytes?
 		record := mirrorMayClaimSettings(workDir, settingsPath)
-		if err := writeJSONFile(settingsPath, settings); err != nil {
+		if err := writeJSONFile(pass.root(), settingsPath, settings); err != nil {
 			return complete, fmt.Errorf("runtime/plugin: write settings.json: %w", err)
 		}
 		if record {
 			if h, herr := hashFile(settingsPath); herr == nil {
-				recordMirrorWrite(mirrorManifestPath(workDir), settingsPath, h, logger)
+				recordMirrorWrite(pass.root(), mirrorManifestPath(workDir), settingsPath, h, logger)
 			}
 		}
 	}
 	if !reflect.DeepEqual(prevBlob, newBlob) {
-		if err := writeJSONFile(sidecarPath, newBlob); err != nil {
+		if err := writeJSONFile(pass.root(), sidecarPath, newBlob); err != nil {
 			return complete, fmt.Errorf("runtime/plugin: write hooks sidecar: %w", err)
 		}
 	}
@@ -214,15 +215,18 @@ func containsGroup(groups []any, g any) bool {
 }
 
 // readHooksSidecar reads iterion's own bookkeeping of the previously injected
-// hooks blob. A missing sidecar means nothing was ever injected (empty map, no
-// error). A read or parse failure is reported alongside an empty map so the
-// caller can warn and continue: the merge stays additive-correct (user hooks
-// are never removed), but prior injected hook groups may be left stale.
-func readHooksSidecar(path string) (map[string][]any, error) {
+// hooks blob, through the workspace handle: the sidecar lives under
+// `.claude/.iterion-managed/`, and a checkout that committed it as a link gets
+// the refusal, not the operator's bytes. A missing sidecar means nothing was
+// ever injected (empty map, no error). A read or parse failure is reported
+// alongside an empty map so the caller can warn and continue: the merge stays
+// additive-correct (user hooks are never removed), but prior injected hook
+// groups may be left stale.
+func readHooksSidecar(wr *workspaceRoot, path string) (map[string][]any, error) {
 	out := map[string][]any{}
-	data, err := os.ReadFile(path)
+	data, err := wr.ReadFile(path)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, os.ErrNotExist) {
 			return out, nil
 		}
 		return out, fmt.Errorf("read %s: %w", path, err)
@@ -236,14 +240,17 @@ func readHooksSidecar(path string) (map[string][]any, error) {
 	return out, nil
 }
 
-// readJSONObject reads path as a JSON object. Only a MISSING file yields an
-// empty map: a file that exists but cannot be read or parsed returns an error,
-// so a caller about to rewrite the file never mistakes a corrupt existing
+// readJSONObject reads path as a JSON object, through the workspace handle:
+// a settings.json the checkout committed as a SYMLINK to the operator's own
+// files reads as the refusal, not as settings — and the merge below then
+// rewrites nothing through it. Only a MISSING file yields an empty map: a
+// file that exists but cannot be read or parsed returns an error, so a
+// caller about to rewrite the file never mistakes a corrupt existing
 // settings file for an empty one (and destroys it on write-back).
-func readJSONObject(path string) (map[string]any, error) {
-	data, err := os.ReadFile(path)
+func readJSONObject(wr *workspaceRoot, path string) (map[string]any, error) {
+	data, err := wr.ReadFile(path)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, os.ErrNotExist) {
 			return map[string]any{}, nil
 		}
 		return nil, fmt.Errorf("read %s: %w", path, err)
@@ -258,10 +265,10 @@ func readJSONObject(path string) (map[string]any, error) {
 	return out, nil
 }
 
-func writeJSONFile(path string, v any) error {
+func writeJSONFile(wr *workspaceRoot, path string, v any) error {
 	data, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, append(data, '\n'), 0o644)
+	return wr.WriteFile(path, append(data, '\n'), 0o644)
 }

@@ -68,7 +68,7 @@ func TestMergePluginHooks_InjectIdempotentRemove(t *testing.T) {
 	writeHookyPlugin(t, home, true)
 
 	// First merge: user hook + plugin hook = 2.
-	if _, err := mergePluginHooks(ws, nil); err != nil {
+	if _, err := mergePluginHooks(ws, testTrustedPass(t), nil); err != nil {
 		t.Fatalf("merge 1: %v", err)
 	}
 	if n := preToolUseLen(t, settingsPath); n != 2 {
@@ -76,7 +76,7 @@ func TestMergePluginHooks_InjectIdempotentRemove(t *testing.T) {
 	}
 
 	// Second merge (resume/re-run): must NOT duplicate — still 2.
-	if _, err := mergePluginHooks(ws, nil); err != nil {
+	if _, err := mergePluginHooks(ws, testTrustedPass(t), nil); err != nil {
 		t.Fatalf("merge 2: %v", err)
 	}
 	if n := preToolUseLen(t, settingsPath); n != 2 {
@@ -85,7 +85,7 @@ func TestMergePluginHooks_InjectIdempotentRemove(t *testing.T) {
 
 	// Disable the plugin, merge again: plugin hook removed, user hook kept = 1.
 	writeHookyPlugin(t, home, false)
-	if _, err := mergePluginHooks(ws, nil); err != nil {
+	if _, err := mergePluginHooks(ws, testTrustedPass(t), nil); err != nil {
 		t.Fatalf("merge 3: %v", err)
 	}
 	if n := preToolUseLen(t, settingsPath); n != 1 {
@@ -109,7 +109,7 @@ func TestMergePluginHooks_MalformedSettingsRefusesRewrite(t *testing.T) {
 	}
 	writeHookyPlugin(t, home, true)
 
-	if _, err := mergePluginHooks(ws, nil); err == nil {
+	if _, err := mergePluginHooks(ws, testTrustedPass(t), nil); err == nil {
 		t.Fatal("want error for malformed settings.json, got nil")
 	}
 	got, err := os.ReadFile(settingsPath)
@@ -136,7 +136,7 @@ func TestMergePluginHooks_NullSettings(t *testing.T) {
 	}
 	writeHookyPlugin(t, home, true)
 
-	if _, err := mergePluginHooks(ws, nil); err != nil {
+	if _, err := mergePluginHooks(ws, testTrustedPass(t), nil); err != nil {
 		t.Fatalf("merge over null settings: %v", err)
 	}
 	if n := preToolUseLen(t, settingsPath); n != 1 {
@@ -223,7 +223,7 @@ func hooksResumeFixture(t *testing.T) (home, ws, settingsPath string) {
 	}
 	addCommit(t, ws, filepath.Join(".claude", "settings.json"), "{}\n", "track the repo's own settings")
 	writeHookyPlugin(t, home, true)
-	if _, err := mergePluginHooks(ws, nil); err != nil {
+	if _, err := mergePluginHooks(ws, testTrustedPass(t), nil); err != nil {
 		t.Fatalf("run-start merge: %v", err)
 	}
 	return home, ws, settingsPath
@@ -241,7 +241,7 @@ func TestMergePluginHooksOnResumeKeepsAnAgentEditAsWork(t *testing.T) {
 	agentEditSettings(t, settingsPath)
 
 	// The resume: same hook set, merge replayed.
-	if _, err := mergePluginHooks(ws, nil); err != nil {
+	if _, err := mergePluginHooks(ws, testTrustedPass(t), nil); err != nil {
 		t.Fatalf("resume merge: %v", err)
 	}
 
@@ -273,7 +273,7 @@ func TestMergePluginHooksNoOpMergeDoesNotTouchTheFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := mergePluginHooks(ws, nil); err != nil {
+	if _, err := mergePluginHooks(ws, testTrustedPass(t), nil); err != nil {
 		t.Fatalf("resume merge: %v", err)
 	}
 
@@ -302,7 +302,7 @@ func TestMergePluginHooksChangedHooksPlusAgentEditRewritesWithoutRecording(t *te
 	agentEditSettings(t, settingsPath)
 	addPostToolUseHook(t, home)
 
-	if _, err := mergePluginHooks(ws, nil); err != nil {
+	if _, err := mergePluginHooks(ws, testTrustedPass(t), nil); err != nil {
 		t.Fatalf("resume merge: %v", err)
 	}
 
@@ -329,7 +329,7 @@ func TestMergePluginHooksChangedHooksWithoutAgentEditRecords(t *testing.T) {
 	home, ws, settingsPath := hooksResumeFixture(t)
 	addPostToolUseHook(t, home)
 
-	if _, err := mergePluginHooks(ws, nil); err != nil {
+	if _, err := mergePluginHooks(ws, testTrustedPass(t), nil); err != nil {
 		t.Fatalf("resume merge: %v", err)
 	}
 

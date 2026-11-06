@@ -85,7 +85,7 @@ func TestPruneWorkspaceMirror_OrphanIsPrunedAcrossBothShapes(t *testing.T) {
 
 	var buf bytes.Buffer
 	logger := iterlog.New(iterlog.LevelInfo, &buf)
-	pruneWorkspaceMirror(workDir, true, logger)
+	pruneWorkspaceMirror(workDir, testTrustedPass(t), true, logger)
 
 	for _, p := range []string{
 		filepath.Join(skillsDir, "gone", "SKILL.md"),
@@ -128,7 +128,7 @@ func TestPruneWorkspaceMirror_FreshMirrorSurvives(t *testing.T) {
 		filepath.Join(markerDir, "kept.md.sha256"),
 		"KEPT BODY\n", "bundle")
 
-	pruneWorkspaceMirror(workDir, true, nil)
+	pruneWorkspaceMirror(workDir, testTrustedPass(t), true, nil)
 
 	for _, p := range []string{
 		filepath.Join(skillsDir, "kept", "SKILL.md"),
@@ -171,7 +171,7 @@ func TestPruneWorkspaceMirror_OperatorEditedFileIsPreserved(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	pruneWorkspaceMirror(workDir, true, nil)
+	pruneWorkspaceMirror(workDir, testTrustedPass(t), true, nil)
 
 	if _, err := os.Stat(oldPath); err != nil {
 		t.Fatalf("operator's edited copy was pruned: %v", err)
@@ -198,7 +198,7 @@ func TestPruneWorkspaceMirror_MarkerlessFileIsPreserved(t *testing.T) {
 	if err := os.WriteFile(p, []byte("mine\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	pruneWorkspaceMirror(workDir, true, nil)
+	pruneWorkspaceMirror(workDir, testTrustedPass(t), true, nil)
 	if _, err := os.Stat(p); err != nil {
 		t.Errorf("marker-less operator file was pruned: %v", err)
 	}
@@ -219,7 +219,7 @@ func TestPruneWorkspaceMirror_StaleMarkerWithoutDestIsCleaned(t *testing.T) {
 	if err := os.WriteFile(stale, []byte("deadbeef"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	pruneWorkspaceMirror(workDir, true, nil)
+	pruneWorkspaceMirror(workDir, testTrustedPass(t), true, nil)
 	if _, err := os.Stat(stale); !os.IsNotExist(err) {
 		t.Errorf("stale marker survived: %v", err)
 	}
@@ -241,7 +241,7 @@ func TestPruneWorkspaceMirror_AllThreeKindDirs(t *testing.T) {
 			filepath.Join(markerDir, "gone.md.sha256"),
 			"orphan\n", "")
 	}
-	pruneWorkspaceMirror(workDir, true, nil)
+	pruneWorkspaceMirror(workDir, testTrustedPass(t), true, nil)
 	for _, kind := range []string{"skills", "commands", "agents"} {
 		p := filepath.Join(workDir, ".claude", kind, "gone.md")
 		if _, err := os.Stat(p); !os.IsNotExist(err) {
@@ -266,7 +266,7 @@ func TestPruneWorkspaceMirror_InPlaceWorkspaceSkipsByDefault(t *testing.T) {
 		filepath.Join(markerDir, "gone.md.sha256"),
 		"orphan\n", "")
 
-	pruneWorkspaceMirror(workDir, false, nil)
+	pruneWorkspaceMirror(workDir, testTrustedPass(t), false, nil)
 
 	if _, err := os.Stat(filepath.Join(skillsDir, "gone.md")); err != nil {
 		t.Errorf("in-place workspace was pruned by default: %v", err)
@@ -285,7 +285,7 @@ func TestPruneWorkspaceMirror_InPlaceWorkspacePrunesWithEnvOptIn(t *testing.T) {
 		"orphan\n", "")
 
 	t.Setenv("ITERION_PRUNE_MIRROR_IN_CHECKOUT", "1")
-	pruneWorkspaceMirror(workDir, false, nil)
+	pruneWorkspaceMirror(workDir, testTrustedPass(t), false, nil)
 
 	if _, err := os.Stat(filepath.Join(skillsDir, "gone.md")); !os.IsNotExist(err) {
 		t.Errorf("orphan survived the env opt-in: %v", err)
@@ -312,7 +312,7 @@ func TestClearMirroredTierMarkers_WipesEveryKind(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	ClearMirroredTierMarkers(workDir, nil)
+	ClearMirroredTierMarkers(workDir, testTrustedPass(t), nil)
 	for _, kind := range []string{"skills", "commands", "agents"} {
 		markerDir := filepath.Join(workDir, ".claude", kind, bundleMirrorMarkerDir)
 		if _, err := os.Stat(filepath.Join(markerDir, "x.md.sha256.tier")); !os.IsNotExist(err) {
@@ -366,11 +366,11 @@ func TestPruneWorkspaceMirror_EndToEndRename(t *testing.T) {
 	}
 
 	// Mirror pass: what runPersistWorkspace does end-to-end.
-	ClearMirroredTierMarkers(workDir, nil)
+	ClearMirroredTierMarkers(workDir, testTrustedPass(t), nil)
 	if _, err := mirrorBundleSkillsFromSrcDir(t, workDir, skillsSrc); err != nil {
 		t.Fatal(err)
 	}
-	pruneWorkspaceMirror(workDir, true, nil)
+	pruneWorkspaceMirror(workDir, testTrustedPass(t), true, nil)
 
 	// "new" landed in both shapes.
 	if _, err := os.Stat(filepath.Join(skillsDest, "new", "SKILL.md")); err != nil {
@@ -395,7 +395,7 @@ func TestPruneWorkspaceMirror_EndToEndRename(t *testing.T) {
 // mirrorBundleSkills reads).
 func mirrorBundleSkillsFromSrcDir(t *testing.T, workDir, srcDir string) ([]string, error) {
 	t.Helper()
-	return mirrorBundleSkills(workDir, &bundle.Bundle{SkillsDir: srcDir}, nil)
+	return mirrorBundleSkills(workDir, &bundle.Bundle{SkillsDir: srcDir}, testTrustedPass(t), nil)
 }
 
 // F2 of the round-1 adversarial on this PR: a coincidence-adopted operator
@@ -405,7 +405,7 @@ func mirrorBundleSkillsFromSrcDir(t *testing.T, workDir, srcDir string) ([]strin
 // "iterion's" → pruner deletes the operator's file. Now the sidecar's
 // absence is a hard "not ours".
 //
-// Mutation: swap `iterionWroteFile(markerPath)` for `true` in the pruner
+// Mutation: swap `iterionWroteFile(testTrustedRoot(t), markerPath)` for `true` in the pruner
 // and the operator's file gets deleted → test red.
 func TestPruneWorkspaceMirror_AdoptedOperatorFileIsPreserved(t *testing.T) {
 	workDir := t.TempDir()
@@ -420,7 +420,7 @@ func TestPruneWorkspaceMirror_AdoptedOperatorFileIsPreserved(t *testing.T) {
 		filepath.Join(markerDir, "adopted.md.sha256"),
 		"identical body\n" /*tier*/, "" /*iterionWrote*/, false)
 
-	pruneWorkspaceMirror(workDir, true, nil)
+	pruneWorkspaceMirror(workDir, testTrustedPass(t), true, nil)
 
 	if _, err := os.Stat(filepath.Join(skillsDir, "adopted.md")); err != nil {
 		t.Fatalf("adopted operator file was deleted by the pruner: %v", err)
@@ -478,7 +478,7 @@ func TestPruneWorkspaceMirror_MarkerNameSharedBetweenFlatAndDirShape(t *testing.
 	// No tier sidecar → the file is "not touched this pass" from the
 	// pruner's POV. iterion-wrote sidecar is present (installMirroredFile
 	// creates it). Hash matches marker.
-	pruneWorkspaceMirror(workDir, true, nil)
+	pruneWorkspaceMirror(workDir, testTrustedPass(t), true, nil)
 
 	// The file must be pruned as an orphan — the pruner correctly resolved
 	// the marker to the flat destination that exists.
@@ -504,7 +504,7 @@ func TestPruneWorkspaceMirror_InPlaceWorkspaceAcceptsCommonTruthyEnvValues(t *te
 				"orphan\n", "")
 
 			t.Setenv("ITERION_PRUNE_MIRROR_IN_CHECKOUT", val)
-			pruneWorkspaceMirror(workDir, false, nil)
+			pruneWorkspaceMirror(workDir, testTrustedPass(t), false, nil)
 
 			if _, err := os.Stat(filepath.Join(skillsDir, "gone.md")); !os.IsNotExist(err) {
 				t.Errorf("env=%q did not opt in: orphan survived", val)
@@ -521,7 +521,7 @@ func TestPruneWorkspaceMirror_InPlaceWorkspaceAcceptsCommonTruthyEnvValues(t *te
 			filepath.Join(markerDir, "kept.md.sha256"),
 			"orphan\n", "")
 		t.Setenv("ITERION_PRUNE_MIRROR_IN_CHECKOUT", "maybe")
-		pruneWorkspaceMirror(workDir, false, nil)
+		pruneWorkspaceMirror(workDir, testTrustedPass(t), false, nil)
 		if _, err := os.Stat(filepath.Join(skillsDir, "kept.md")); err != nil {
 			t.Errorf("garbage env value should not opt in: file was pruned")
 		}
@@ -584,7 +584,7 @@ func TestReconcileSkillFile_MirroredWritesIterionWroteSidecarBeforeMarker(t *tes
 	}
 	destPath := filepath.Join(dstDir, "s.md")
 	markerPath := filepath.Join(markerDir, "s.md.sha256")
-	outcome, err := reconcileSkillFile(srcPath, destPath, markerPath, skillTierBundle, nil)
+	outcome, err := reconcileSkillFile(srcPath, destPath, markerPath, skillTierBundle, testTrustedPass(t), nil)
 	if err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
@@ -630,7 +630,7 @@ func TestMirrorPluginContributions_PartialFailureFlagsIncomplete(t *testing.T) {
 	}
 
 	workDir := t.TempDir()
-	_, complete, err := mirrorPluginContributions(workDir, nil, false, nil)
+	_, complete, err := mirrorPluginContributions(workDir, nil, false, testTrustedPass(t), nil)
 	if err != nil {
 		t.Fatalf("mirrorPluginContributions: %v", err)
 	}
@@ -647,7 +647,7 @@ func TestMirrorLibrarySkills_UnresolvedRefFlagsIncomplete(t *testing.T) {
 	t.Setenv("ITERION_HOME", home)
 	// No skill installed — `store.Resolve("missing")` misses.
 	workDir := t.TempDir()
-	_, _, complete, err := mirrorLibrarySkills(workDir, "", wfWithSkills([]string{"missing"}, nil), nil, nil, nil)
+	_, _, complete, err := mirrorLibrarySkills(workDir, "", wfWithSkills([]string{"missing"}, nil), nil, nil, testTrustedPass(t), nil)
 	if err != nil {
 		t.Fatalf("mirror: %v", err)
 	}
@@ -678,7 +678,7 @@ func TestPruneWorkspaceMirror_UppercaseMdAliasIsOutsideTheGrammar(t *testing.T) 
 		filepath.Join(markerDir, "Deploy.MD.sha256"),
 		"orphan\n", "")
 
-	pruneWorkspaceMirror(workDir, true, nil)
+	pruneWorkspaceMirror(workDir, testTrustedPass(t), true, nil)
 
 	if _, err := os.Stat(filepath.Join(skillsDir, "Deploy.MD")); err != nil {
 		t.Fatalf("Deploy.MD alias was pruned — the grammar was widened; the decided shape keeps it lowercase-only: %v", err)
@@ -753,7 +753,7 @@ func TestMirrorPluginContributions_BrokenPluginYamlFlagsIncomplete(t *testing.T)
 	}
 
 	workDir := t.TempDir()
-	_, complete, err := mirrorPluginContributions(workDir, nil, false, nil)
+	_, complete, err := mirrorPluginContributions(workDir, nil, false, testTrustedPass(t), nil)
 	if err != nil {
 		t.Fatalf("mirrorPluginContributions: %v", err)
 	}
@@ -789,11 +789,11 @@ func TestMirrorLibrarySkills_InjectedPayloadMissingDeclaredRefFlagsIncomplete(t 
 		"ALPHA BODY\n", "library")
 	// The real mirror sequence wipes every tier sidecar at pass start; the
 	// launch pass's sidecar must not count as fresh for THIS pass.
-	ClearMirroredTierMarkers(workDir, nil)
+	ClearMirroredTierMarkers(workDir, testTrustedPass(t), nil)
 
 	wf := wfWithSkills([]string{"alpha", "beta"}, nil)
 	inj := &Contributions{Library: []LibrarySkillFile{{Name: "beta", Description: "b", Content: []byte("BETA BODY\n")}}}
-	_, _, complete, err := mirrorLibrarySkills(workDir, "", wf, nil, inj, nil)
+	_, _, complete, err := mirrorLibrarySkills(workDir, "", wf, nil, inj, testTrustedPass(t), nil)
 	if err != nil {
 		t.Fatalf("mirrorLibrarySkills: %v", err)
 	}
@@ -817,7 +817,7 @@ func TestMirrorLibrarySkills_InjectedPayloadMissingDeclaredRefFlagsIncomplete(t 
 func TestMirrorPluginContributions_NilPayloadOnRunnerFlagsIncomplete(t *testing.T) {
 	t.Setenv("ITERION_HOME", t.TempDir()) // empty pod home: local resolution finds nothing
 	workDir := t.TempDir()
-	_, complete, err := mirrorPluginContributions(workDir, nil, true, nil)
+	_, complete, err := mirrorPluginContributions(workDir, nil, true, testTrustedPass(t), nil)
 	if err != nil {
 		t.Fatalf("mirrorPluginContributions: %v", err)
 	}
@@ -836,7 +836,7 @@ func TestMirrorPluginContributions_NilPayloadOnRunnerFlagsIncomplete(t *testing.
 func TestMirrorPluginContributions_LocalResolutionStillTrustedWithoutTheFlag(t *testing.T) {
 	t.Setenv("ITERION_HOME", t.TempDir())
 	workDir := t.TempDir()
-	_, complete, err := mirrorPluginContributions(workDir, nil, false, nil)
+	_, complete, err := mirrorPluginContributions(workDir, nil, false, testTrustedPass(t), nil)
 	if err != nil {
 		t.Fatalf("mirrorPluginContributions: %v", err)
 	}
@@ -874,19 +874,19 @@ func TestPruneWorkspaceMirror_HealthyCloudResumePrunesTrueOrphans(t *testing.T) 
 	wf := wfWithSkills([]string{"kept"}, nil)
 	inj := &Contributions{Library: []LibrarySkillFile{{Name: "kept", Description: "k", Content: []byte("KEPT BODY\n")}}}
 
-	ClearMirroredTierMarkers(workDir, nil)
-	_, pluginsComplete, err := mirrorPluginContributions(workDir, inj, false, nil)
+	ClearMirroredTierMarkers(workDir, testTrustedPass(t), nil)
+	_, pluginsComplete, err := mirrorPluginContributions(workDir, inj, false, testTrustedPass(t), nil)
 	if err != nil {
 		t.Fatalf("mirrorPluginContributions: %v", err)
 	}
-	_, _, libraryComplete, err := mirrorLibrarySkills(workDir, "", wf, nil, inj, nil)
+	_, _, libraryComplete, err := mirrorLibrarySkills(workDir, "", wf, nil, inj, testTrustedPass(t), nil)
 	if err != nil {
 		t.Fatalf("mirrorLibrarySkills: %v", err)
 	}
 	if !pluginsComplete || !libraryComplete {
 		t.Fatalf("a healthy payload must not veto the prune (plugins=%v library=%v)", pluginsComplete, libraryComplete)
 	}
-	pruneWorkspaceMirror(workDir, true, nil)
+	pruneWorkspaceMirror(workDir, testTrustedPass(t), true, nil)
 
 	if _, err := os.Stat(filepath.Join(skillsDir, "gone", "SKILL.md")); !os.IsNotExist(err) {
 		t.Errorf("true orphan survived a healthy resume prune (err=%v)", err)
@@ -916,9 +916,9 @@ func TestMirrorLibrarySkills_StaleLeftoverDoesNotSatisfyDeclaredRef(t *testing.T
 		filepath.Join(skillsDir, "alpha", "SKILL.md"),
 		filepath.Join(markerDir, "alpha.SKILL.md.sha256"),
 		"ALPHA BODY\n", "library")
-	ClearMirroredTierMarkers(workDir, nil)
+	ClearMirroredTierMarkers(workDir, testTrustedPass(t), nil)
 
-	_, _, complete, err := mirrorLibrarySkills(workDir, "", wfWithSkills([]string{"alpha"}, nil), nil, nil, nil)
+	_, _, complete, err := mirrorLibrarySkills(workDir, "", wfWithSkills([]string{"alpha"}, nil), nil, nil, testTrustedPass(t), nil)
 	if err != nil {
 		t.Fatalf("mirrorLibrarySkills: %v", err)
 	}
@@ -1025,7 +1025,7 @@ func TestMirrorPluginContributions_DegradedPayloadFlagsIncomplete(t *testing.T) 
 		Plugin:   []ContributionFile{{Kind: "skills", Name: "ok.md", Content: []byte("OK\n")}},
 		Degraded: true,
 	}
-	_, complete, err := mirrorPluginContributions(workDir, inj, false, nil)
+	_, complete, err := mirrorPluginContributions(workDir, inj, false, testTrustedPass(t), nil)
 	if err != nil {
 		t.Fatalf("mirrorPluginContributions: %v", err)
 	}
@@ -1042,7 +1042,7 @@ func TestMirrorPluginContributions_HealthyPayloadStaysComplete(t *testing.T) {
 	inj := &Contributions{
 		Plugin: []ContributionFile{{Kind: "skills", Name: "ok.md", Content: []byte("OK\n")}},
 	}
-	_, complete, err := mirrorPluginContributions(workDir, inj, false, nil)
+	_, complete, err := mirrorPluginContributions(workDir, inj, false, testTrustedPass(t), nil)
 	if err != nil {
 		t.Fatalf("mirrorPluginContributions: %v", err)
 	}
@@ -1070,7 +1070,7 @@ func TestMirrorLibrarySkills_BundleDirFormSatisfiesInjectedDeclaration(t *testin
 		t.Fatal(err)
 	}
 	b := &bundle.Bundle{SkillsDir: skillsSrc}
-	if _, err := mirrorBundleSkills(workDir, b, nil); err != nil {
+	if _, err := mirrorBundleSkills(workDir, b, testTrustedPass(t), nil); err != nil {
 		t.Fatalf("mirrorBundleSkills: %v", err)
 	}
 
@@ -1078,7 +1078,7 @@ func TestMirrorLibrarySkills_BundleDirFormSatisfiesInjectedDeclaration(t *testin
 	// bundle-owned ref.
 	wf := wfWithSkills([]string{"alpha"}, nil)
 	inj := &Contributions{}
-	_, _, complete, err := mirrorLibrarySkills(workDir, "", wf, nil, inj, nil)
+	_, _, complete, err := mirrorLibrarySkills(workDir, "", wf, nil, inj, testTrustedPass(t), nil)
 	if err != nil {
 		t.Fatalf("mirrorLibrarySkills: %v", err)
 	}
@@ -1119,7 +1119,7 @@ func TestPruneWorkspaceMirror_OperatorDirectoryNeverPrunedForAFlatMarker(t *test
 		t.Fatal(err)
 	}
 
-	pruneWorkspaceMirror(workDir, true, nil)
+	pruneWorkspaceMirror(workDir, testTrustedPass(t), true, nil)
 
 	if _, err := os.Stat(filepath.Join(skillsDir, "foo", "SKILL.md")); err != nil {
 		t.Fatalf("the operator's directory-form file was pruned: %v", err)
@@ -1152,7 +1152,7 @@ func TestPruneWorkspaceMirror_DirFormMarkerPrunesTheDirFormNotTheFlat(t *testing
 		t.Fatal(err)
 	}
 
-	pruneWorkspaceMirror(workDir, true, nil)
+	pruneWorkspaceMirror(workDir, testTrustedPass(t), true, nil)
 
 	if _, err := os.Stat(filepath.Join(skillsDir, "bar.SKILL.md")); err != nil {
 		t.Fatalf("the operator's flat file was pruned: %v", err)
@@ -1168,12 +1168,12 @@ func TestPruneWorkspaceMirror_DirFormMarkerPrunesTheDirFormNotTheFlat(t *testing
 func TestMarkIterionWrote_DerivesTheFormFromTheMarkerGrammar(t *testing.T) {
 	dir := t.TempDir()
 	flatMarker := filepath.Join(dir, "SKILL.md.sha256") // a COMMAND named SKILL.md
-	markIterionWrote(flatMarker, filepath.Join(dir, "commands", "SKILL.md"))
+	markIterionWrote(testTrustedRoot(t), flatMarker, filepath.Join(dir, "commands", "SKILL.md"))
 	if b, err := os.ReadFile(flatMarker + iterionWroteSidecarSuffix); err != nil || string(b) != "flat:SKILL.md" {
 		t.Errorf("flat-only kind named SKILL.md recorded %q (err %v), want flat:SKILL.md", b, err)
 	}
 	dirMarker := filepath.Join(dir, "deploy.SKILL.md.sha256")
-	markIterionWrote(dirMarker, filepath.Join(dir, "deploy", "SKILL.md"))
+	markIterionWrote(testTrustedRoot(t), dirMarker, filepath.Join(dir, "deploy", "SKILL.md"))
 	if b, err := os.ReadFile(dirMarker + iterionWroteSidecarSuffix); err != nil || string(b) != "dir:deploy" {
 		t.Errorf("directory-form skill recorded %q (err %v), want dir:deploy", b, err)
 	}
@@ -1205,7 +1205,7 @@ func TestMirrorFileSkill_FlatAliasOfASKILLMdSourceRecordsTheFlatForm(t *testing.
 		t.Fatal(err)
 	}
 
-	if _, err := mirrorFileSkill(dest, markerDir, filepath.Join(src, "foo.SKILL.md"), "foo.SKILL.md", skillTierBundle, nil); err != nil {
+	if _, err := mirrorFileSkill(dest, markerDir, filepath.Join(src, "foo.SKILL.md"), "foo.SKILL.md", skillTierBundle, testTrustedPass(t), nil); err != nil {
 		t.Fatalf("mirror: %v", err)
 	}
 
@@ -1229,8 +1229,8 @@ func TestMirrorFileSkill_FlatAliasOfASKILLMdSourceRecordsTheFlatForm(t *testing.
 	if err := os.RemoveAll(src); err != nil {
 		t.Fatal(err)
 	}
-	ClearMirroredTierMarkers(workDir, nil)
-	pruneWorkspaceMirror(workDir, true, nil)
+	ClearMirroredTierMarkers(workDir, testTrustedPass(t), nil)
+	pruneWorkspaceMirror(workDir, testTrustedPass(t), true, nil)
 
 	if _, err := os.Stat(filepath.Join(dest, "foo", "SKILL.md")); err != nil {
 		t.Fatalf("the operator's directory form was pruned: %v", err)

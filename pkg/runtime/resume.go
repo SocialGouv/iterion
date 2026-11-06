@@ -1952,13 +1952,21 @@ func (e *Engine) resumeRebuildState(ctx context.Context, r *store.Run, cp *store
 	// the host has v0.2.0 — the marker file logic preserves any user
 	// customisation. See F-RT-7.
 	e.defaultWorkDir()
-	ClearMirroredTierMarkers(e.workDir, e.logger)
-	ownedSkills, err := mirrorBundleSkills(e.workDir, e.bundle, e.logger)
+	// The mirror pass carries the workspace handle every write below goes
+	// through — one open per sequence, LOCAL, never an Engine field (see
+	// runPersistWorkspace). Opened from the run's trust.
+	pass, perr := newMirrorPass(e.workDir, e.trust)
+	if perr != nil {
+		return nil, nil, fmt.Errorf("runtime: open workspace handle (resume): %w", perr)
+	}
+	defer pass.Close()
+	ClearMirroredTierMarkers(e.workDir, pass, e.logger)
+	ownedSkills, err := mirrorBundleSkills(e.workDir, e.bundle, pass, e.logger)
 	if err != nil {
 		return nil, nil, fmt.Errorf("runtime: bundle skills (resume): %w", err)
 	}
 	e.defaultWorkDir()
-	ownedPluginSkills, pluginsComplete, err := mirrorPluginContributions(e.workDir, e.contributions, e.contributionsUnresolved, e.logger)
+	ownedPluginSkills, pluginsComplete, err := mirrorPluginContributions(e.workDir, e.contributions, e.contributionsUnresolved, pass, e.logger)
 	if err != nil {
 		if e.logger != nil {
 			e.logger.Warn("runtime: plugin contributions (resume): %v", err)
@@ -1966,7 +1974,7 @@ func (e *Engine) resumeRebuildState(ctx context.Context, r *store.Run, cp *store
 		return nil, nil, fmt.Errorf("runtime: plugin contributions (resume): %w", err)
 	}
 	ownedSkills = append(ownedSkills, ownedPluginSkills...)
-	hooksComplete, hooksErr := mergePluginHooks(e.workDir, e.logger)
+	hooksComplete, hooksErr := mergePluginHooks(e.workDir, pass, e.logger)
 	if hooksErr != nil && e.logger != nil {
 		e.logger.Warn("runtime: plugin hooks (resume): %v", hooksErr)
 	}
@@ -1975,7 +1983,7 @@ func (e *Engine) resumeRebuildState(ctx context.Context, r *store.Run, cp *store
 	// errors on the library mirror stay FATAL — same doctrine as launch:
 	// a resume of a run whose DSL declares `skills: [x]` cannot silently
 	// proceed without x.
-	ownedLibrarySkills, libraryComplete, libraryErr := e.applyLibrarySkills()
+	ownedLibrarySkills, libraryComplete, libraryErr := e.applyLibrarySkills(pass)
 	if libraryErr != nil {
 		return nil, nil, fmt.Errorf("runtime: library skills (resume): %w", libraryErr)
 	}
@@ -1986,7 +1994,7 @@ func (e *Engine) resumeRebuildState(ctx context.Context, r *store.Run, cp *store
 	// NOT a child subbot (one its parent did not declare `isolated:` runs
 	// in that parent's workspace; no child prunes either way).
 	if pluginsComplete && hooksComplete && libraryComplete && e.parentRunID == "" {
-		pruneWorkspaceMirror(e.workDir, r.Worktree, e.logger)
+		pruneWorkspaceMirror(e.workDir, pass, r.Worktree, e.logger)
 	} else if e.logger != nil {
 		e.logger.Debug("runtime: skipping orphan prune (pause resume) — child or incomplete mirror")
 	}
@@ -2368,12 +2376,19 @@ func (e *Engine) claimForFailureResume(ctx context.Context, runID string, loaded
 func (e *Engine) restoreResumeWorkspace(ctx context.Context, r *store.Run) error {
 	e.restoreRunEnv(ctx, r)
 	e.defaultWorkDir()
-	ClearMirroredTierMarkers(e.workDir, e.logger)
-	ownedSkills, err := mirrorBundleSkills(e.workDir, e.bundle, e.logger)
+	// One pass per sequence, opened from the run's trust — see
+	// resumeFromPause for why it is a local, never an Engine field.
+	pass, perr := newMirrorPass(e.workDir, e.trust)
+	if perr != nil {
+		return fmt.Errorf("runtime: open workspace handle (resume): %w", perr)
+	}
+	defer pass.Close()
+	ClearMirroredTierMarkers(e.workDir, pass, e.logger)
+	ownedSkills, err := mirrorBundleSkills(e.workDir, e.bundle, pass, e.logger)
 	if err != nil {
 		return fmt.Errorf("runtime: bundle skills (resume): %w", err)
 	}
-	ownedPluginSkills, pluginsComplete, err := mirrorPluginContributions(e.workDir, e.contributions, e.contributionsUnresolved, e.logger)
+	ownedPluginSkills, pluginsComplete, err := mirrorPluginContributions(e.workDir, e.contributions, e.contributionsUnresolved, pass, e.logger)
 	if err != nil {
 		if e.logger != nil {
 			e.logger.Warn("runtime: plugin contributions (resume): %v", err)
@@ -2381,11 +2396,11 @@ func (e *Engine) restoreResumeWorkspace(ctx context.Context, r *store.Run) error
 		return fmt.Errorf("runtime: plugin contributions (resume): %w", err)
 	}
 	ownedSkills = append(ownedSkills, ownedPluginSkills...)
-	hooksComplete, hooksErr := mergePluginHooks(e.workDir, e.logger)
+	hooksComplete, hooksErr := mergePluginHooks(e.workDir, pass, e.logger)
 	if hooksErr != nil && e.logger != nil {
 		e.logger.Warn("runtime: plugin hooks (resume): %v", hooksErr)
 	}
-	ownedLibrarySkills, libraryComplete, libraryErr := e.applyLibrarySkills()
+	ownedLibrarySkills, libraryComplete, libraryErr := e.applyLibrarySkills(pass)
 	if libraryErr != nil {
 		return fmt.Errorf("runtime: library skills (resume): %w", libraryErr)
 	}
@@ -2395,7 +2410,7 @@ func (e *Engine) restoreResumeWorkspace(ctx context.Context, r *store.Run) error
 	// flag carries the `.claude` symlink veto, #2061), not a
 	// child subbot.
 	if pluginsComplete && hooksComplete && libraryComplete && e.parentRunID == "" {
-		pruneWorkspaceMirror(e.workDir, r.Worktree, e.logger)
+		pruneWorkspaceMirror(e.workDir, pass, r.Worktree, e.logger)
 	} else if e.logger != nil {
 		e.logger.Debug("runtime: skipping orphan prune (failure resume) — child or incomplete mirror")
 	}
@@ -3628,16 +3643,48 @@ func (e *Engine) drainOperatorMessagesForPause(ctx context.Context, runID, nodeI
 	if len(msgs) == 0 {
 		return nil
 	}
+	// The attach path runs mid-run, OUTSIDE the run-start mirror sequence, so
+	// it opens its own pass — from the SAME trust the sequence used, never
+	// from nothing. A passless call answers untrusted (the refusal), and an
+	// untrusted run's attach then refuses the write rather than routing it
+	// through the checkout. A failure to open the handle fails closed the
+	// same way: the text is delivered without the skill, and the warn names
+	// the gap.
+	var attachPass *mirrorPass
+	if hasSkillRefs(msgs) {
+		p, perr := newMirrorPass(e.workDir, e.trust)
+		if perr != nil {
+			if e.logger != nil {
+				e.logger.Warn("queued-message skill mirror unavailable: open workspace handle: %v", perr)
+			}
+		} else {
+			attachPass = p
+			defer attachPass.Close()
+		}
+	}
 	texts := make([]string, 0, len(msgs))
 	for _, m := range msgs {
 		texts = append(texts, m.Text)
 		for _, ref := range m.SkillRefs {
-			if err := MirrorSingleSkill(e.workDir, e.bundle, ref, e.logger); err != nil && e.logger != nil {
+			if attachPass == nil {
+				break
+			}
+			if err := MirrorSingleSkill(e.workDir, e.bundle, ref, attachPass, e.logger); err != nil && e.logger != nil {
 				e.logger.Warn("queued-message skill mirror failed: ref=%s err=%v", ref, err)
 			}
 		}
 	}
 	return texts
+}
+
+// hasSkillRefs reports whether any drained message carries a skill to mirror.
+func hasSkillRefs(msgs []store.QueuedUserMessage) bool {
+	for _, m := range msgs {
+		if len(m.SkillRefs) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // answersEventData is the human_answers_recorded payload: the answers
