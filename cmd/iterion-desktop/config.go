@@ -260,7 +260,7 @@ func (c *Config) AddProject(absDir string) Project {
 	// Look up by Dir — if already registered, refresh.
 	for i := range c.RecentProjects {
 		if c.RecentProjects[i].Dir == absDir {
-			c.RecentProjects[i].LastOpened = time.Now().UTC()
+			c.RecentProjects[i].LastOpened = c.openedNowLocked()
 			c.CurrentProjectID = c.RecentProjects[i].ID
 			c.sortByMRU()
 			return c.RecentProjects[i]
@@ -271,7 +271,7 @@ func (c *Config) AddProject(absDir string) Project {
 		Name:       filepath.Base(absDir),
 		Kind:       ProjectKindLocal,
 		Dir:        absDir,
-		LastOpened: time.Now().UTC(),
+		LastOpened: c.openedNowLocked(),
 	}
 	c.RecentProjects = append(c.RecentProjects, p)
 	c.CurrentProjectID = p.ID
@@ -291,7 +291,7 @@ func (c *Config) AddCloudConnection(cloudURL, userID, email, name string) Projec
 	for i := range c.RecentProjects {
 		p := &c.RecentProjects[i]
 		if p.IsCloud() && p.CloudURL == cloudURL && p.CloudUserID == userID {
-			p.LastOpened = time.Now().UTC()
+			p.LastOpened = c.openedNowLocked()
 			p.CloudEmail = email
 			if name != "" {
 				p.Name = name
@@ -311,7 +311,7 @@ func (c *Config) AddCloudConnection(cloudURL, userID, email, name string) Projec
 		CloudURL:    cloudURL,
 		CloudUserID: userID,
 		CloudEmail:  email,
-		LastOpened:  time.Now().UTC(),
+		LastOpened:  c.openedNowLocked(),
 	}
 	c.RecentProjects = append(c.RecentProjects, p)
 	c.CurrentProjectID = p.ID
@@ -378,13 +378,28 @@ func (c *Config) SetCurrentProject(id string) bool {
 	defer c.mu.Unlock()
 	for i := range c.RecentProjects {
 		if c.RecentProjects[i].ID == id {
-			c.RecentProjects[i].LastOpened = time.Now().UTC()
+			c.RecentProjects[i].LastOpened = c.openedNowLocked()
 			c.CurrentProjectID = id
 			c.sortByMRU()
 			return true
 		}
 	}
 	return false
+}
+
+// openedNowLocked is the LastOpened stamp for the project being touched:
+// now, or just after the newest stamp in the list when the clock has not
+// moved past it. The MRU order is a sort on these stamps, and on Windows
+// two touches within the system clock's granularity (milliseconds) read
+// the same time, so the stable sort kept the older project first.
+func (c *Config) openedNowLocked() time.Time {
+	now := time.Now().UTC()
+	for _, p := range c.RecentProjects {
+		if !now.After(p.LastOpened) {
+			now = p.LastOpened.Add(time.Nanosecond)
+		}
+	}
+	return now
 }
 
 func (c *Config) sortByMRU() {
