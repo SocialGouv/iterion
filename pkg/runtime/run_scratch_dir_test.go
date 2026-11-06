@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/memory"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // varsReferencePath is the narrowing's detection (#2869): the shared
@@ -95,25 +97,28 @@ func TestRunScratchOwnerFollowsTheFamilyRoot(t *testing.T) {
 		t.Errorf("grandchild run scratch = %q, want the family root's subtree %q", got, want)
 	}
 
-	// A child whose parent was never recorded here keeps the last id the
-	// walk reached rather than failing.
+	// A child whose parent was never recorded here is refused, typed:
+	// ADR-162 U1's refusal won over #2869's tolerate-and-degrade (operator
+	// arbitration #120) — an unknown provenance must not resolve to a
+	// subtree keyed on the unreadable parent's id.
 	orphan := New(wf, s, &scratchPushSpy{}, WithWorkDir(repo), WithLogger(log.New(log.LevelWarn, os.Stderr)), WithParentRunID("run-elsewhere"))
-	run(orphan, "run-orphan")
-	if got, want := orphan.runScratchDirVarValue(), filepath.Join(orphan.projectScratchDirVarValue(), "runs", "run-elsewhere"); got != want {
-		t.Errorf("orphan child run scratch = %q, want the parent's id %q", got, want)
+	if err := orphan.Run(ctx, "run-orphan", nil); !errors.Is(err, store.ErrChildParentUnreadable) {
+		t.Fatalf("engine.Run with a never-recorded parent = %v, want %v", err, store.ErrChildParentUnreadable)
 	}
 }
 
 // TestRunScratchOwnerRefusesATraversalShapedParent is the containment half
-// of the owner walk (#2869): every id the walk adopts is a path component
-// of ${RUN_SCRATCH_DIR} and of the claw read root attached on it, and a
-// parent id arrives verbatim from a launch request. A '..'-shaped one must
-// end the walk, not become the component — otherwise
-// <project scratch>/runs/../../.. is the iterion home's projects dir and
-// the run reads every other repository's scratch. Driven through
-// Engine.Run, the path a POST /api/runs parent_run_id takes, and through a
-// RECORDED parent whose own parent id is traversal-shaped (the resume walk
-// reads r.ParentRunID from the record the same way).
+// of the owner walk (#2869), re-ruled by ADR-162 U1 (operator arbitration
+// #120): a parent id arrives verbatim from a launch request
+// (POST /api/runs parent_run_id), and one the store cannot read — a
+// never-recorded id, or a '..'-shaped one no run can carry — is REFUSED at
+// the child's creation, typed (store.ErrChildParentUnreadable), rather than
+// tolerated into a subtree keyed on the unreadable id. Driven through
+// Engine.Run, the path a POST /api/runs parent_run_id takes. The walk's
+// sanitize still guards the records written before the refusal (the resume
+// walk reads r.ParentRunID from the record the same way): a recorded parent
+// whose own recorded parent id is traversal-shaped keeps its place as the
+// family root, and the walk stops there.
 func TestRunScratchOwnerRefusesATraversalShapedParent(t *testing.T) {
 	t.Setenv("ITERION_HOME", t.TempDir())
 	ctx := context.Background()
@@ -131,35 +136,45 @@ func TestRunScratchOwnerRefusesATraversalShapedParent(t *testing.T) {
 
 	s := tmpStore(t)
 	repo, _ := initBareishRepo(t)
-	launch := func(runID, parentID string) (*Engine, string) {
+	launchErr := func(runID, parentID string) error {
 		t.Helper()
-		spy := &scratchPushSpy{}
-		eng := New(wf, s, spy, WithWorkDir(repo), WithLogger(log.New(log.LevelError, os.Stderr)), WithParentRunID(parentID))
-		if err := eng.Run(ctx, runID, nil); err != nil {
-			t.Fatalf("engine.Run(%s): %v", runID, err)
-		}
-		pushedRun, _ := spy.lastScratch(t)
-		return eng, pushedRun
-	}
-	underProjectScratch := func(eng *Engine, pushed, wantOwner string) {
-		t.Helper()
-		shared := eng.projectScratchDirVarValue()
-		if want := filepath.Join(shared, "runs", wantOwner); pushed != want {
-			t.Fatalf("pushed run read root = %q, want %q — the subtree left the project scratch %q", pushed, want, shared)
-		}
+		eng := New(wf, s, &scratchPushSpy{}, WithWorkDir(repo), WithLogger(log.New(log.LevelError, os.Stderr)), WithParentRunID(parentID))
+		return eng.Run(ctx, runID, nil)
 	}
 
+	// A '..'-shaped parent names no run this store can read: the launch is
+	// refused, never tolerated into <project scratch>/runs/../../.. — the
+	// iterion home's projects dir, where the run would read every other
+	// repository's scratch.
 	for i, parent := range []string{"../../..", "..", "a/../../b"} {
-		runID := fmt.Sprintf("run-traversal-%d", i)
-		eng, pushed := launch(runID, parent)
-		underProjectScratch(eng, pushed, runID)
+		if err := launchErr(fmt.Sprintf("run-traversal-%d", i), parent); !errors.Is(err, store.ErrChildParentUnreadable) {
+			t.Fatalf("engine.Run with parent %q = %v, want %v", parent, err, store.ErrChildParentUnreadable)
+		}
 	}
 
-	// A recorded parent whose own recorded parent id is traversal-shaped:
-	// the walk adopts the recorded parent and stops there.
-	launch("run-recorded-parent", "..")
-	eng, pushed := launch("run-recorded-child", "run-recorded-parent")
-	underProjectScratch(eng, pushed, "run-recorded-parent")
+	// A pre-refusal record — written before the refusal lane, or by a store
+	// that predates it — carries a recorded parent whose OWN recorded parent
+	// id is traversal-shaped. The walk adopts the recorded parent and its
+	// sanitize stops at the '..' hop: the child still keys its subtree on
+	// the recorded parent.
+	legacy, err := s.CreateRun(ctx, "run-recorded-parent", wf.Name, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy.ParentRunID = ".."
+	if err := s.SaveRun(ctx, legacy); err != nil {
+		t.Fatal(err)
+	}
+	spy := &scratchPushSpy{}
+	eng := New(wf, s, spy, WithWorkDir(repo), WithLogger(log.New(log.LevelError, os.Stderr)), WithParentRunID("run-recorded-parent"))
+	if err := eng.Run(ctx, "run-recorded-child", nil); err != nil {
+		t.Fatalf("engine.Run with a readable recorded parent: %v", err)
+	}
+	pushedRun, _ := spy.lastScratch(t)
+	shared := eng.projectScratchDirVarValue()
+	if want := filepath.Join(shared, "runs", "run-recorded-parent"); pushedRun != want {
+		t.Fatalf("pushed run read root = %q, want %q — the subtree left the project scratch %q", pushedRun, want, shared)
+	}
 }
 
 // TestEnsureRunScratchDirNeverCreatesThroughAPlantedLink is the host half
