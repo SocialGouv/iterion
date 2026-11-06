@@ -30,7 +30,6 @@ package runtime
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -58,20 +57,23 @@ func skillChannelRoot(workDir string) string {
 //
 // The root is reset unconditionally: the checkout may carry a directory of
 // the same name, and reading any of it back is the failure the channel
-// exists against.
-func mirrorSkillChannel(workDir string, owned []string, logger *iterlog.Logger) (string, map[string]string, error) {
+// exists against. Every read and write below goes through the pass's
+// workspace handle: a path that escapes the workspace is refused typed,
+// never followed.
+func mirrorSkillChannel(workDir string, owned []string, pass *mirrorPass, logger *iterlog.Logger) (string, map[string]string, error) {
 	root := skillChannelRoot(workDir)
-	if err := os.RemoveAll(root); err != nil {
+	wr := pass.root()
+	if err := wr.RemoveAll(root); err != nil {
 		return "", nil, fmt.Errorf("runtime: reset the skill channel root: %w", err)
 	}
 	dest := filepath.Join(root, ".claude", "skills")
-	if err := os.MkdirAll(dest, 0o755); err != nil {
+	if err := wr.MkdirAll(dest, 0o755); err != nil {
 		return "", nil, fmt.Errorf("runtime: create the skill channel root: %w", err)
 	}
 	allowlist := make(map[string]string, len(owned))
 	for _, ownedPath := range owned {
 		name := filepath.Base(ownedPath)
-		info, err := os.Stat(ownedPath)
+		info, err := wr.Stat(ownedPath)
 		if err != nil {
 			// The mirror reported the path this same pass; a vanishing
 			// entry is the workspace moving under the run — skip it rather
@@ -86,7 +88,7 @@ func mirrorSkillChannel(workDir string, owned []string, logger *iterlog.Logger) 
 				continue
 			}
 			dst := filepath.Join(dest, name)
-			if err := copyDir(ownedPath, dst); err != nil {
+			if err := wr.CopyTreeWithin(ownedPath, dst); err != nil {
 				return "", nil, fmt.Errorf("runtime: skill channel: copy %q: %w", name, err)
 			}
 			allowlist[name] = filepath.Join(dst, "SKILL.md")
@@ -97,7 +99,7 @@ func mirrorSkillChannel(workDir string, owned []string, logger *iterlog.Logger) 
 			continue
 		}
 		dst := filepath.Join(dest, name)
-		if err := copyFile(ownedPath, dst); err != nil {
+		if err := wr.CopyWithin(ownedPath, dst); err != nil {
 			return "", nil, fmt.Errorf("runtime: skill channel: copy %q: %w", name, err)
 		}
 		allowlist[stem] = dst

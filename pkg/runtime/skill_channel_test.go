@@ -37,7 +37,7 @@ func TestMirrorSkillChannel(t *testing.T) {
 	writeSkill(t, skillChannelRoot(workDir), ".claude/skills/review/SKILL.md", "planted twin\n")
 
 	owned := []string{filepath.Join(mirrored, "review"), flatSkill}
-	root, allowlist, err := mirrorSkillChannel(workDir, owned, nil)
+	root, allowlist, err := mirrorSkillChannel(workDir, owned, testMirrorPass(t, workDir, store.RunTrustFork), nil)
 	if err != nil {
 		t.Fatalf("mirrorSkillChannel: %v", err)
 	}
@@ -79,7 +79,7 @@ func TestMirrorSkillChannel_FirstOwnerOfANameWins(t *testing.T) {
 	first := writeSkill(t, mirrored, "review/SKILL.md", "bundle's review\n")
 	second := writeSkill(t, mirrored, "review.md", "library's review\n")
 
-	_, allowlist, err := mirrorSkillChannel(workDir, []string{filepath.Join(mirrored, "review"), second}, nil)
+	_, allowlist, err := mirrorSkillChannel(workDir, []string{filepath.Join(mirrored, "review"), second}, testMirrorPass(t, workDir, store.RunTrustFork), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,14 +112,14 @@ func TestApplyMirroredSkills_ArmsTheChannelByTrust(t *testing.T) {
 	owned := []string{filepath.Join(workDir, ".claude", "skills", "review")}
 
 	trusted := &recordingChannelExecutor{}
-	(&Engine{executor: trusted, workDir: workDir, trust: store.RunTrustDefault}).applyMirroredSkills(owned)
+	(&Engine{executor: trusted, workDir: workDir, trust: store.RunTrustDefault}).applyMirroredSkills(owned, testMirrorPass(t, workDir, store.RunTrustDefault))
 	if trusted.armed || trusted.channelRoot != "" {
 		t.Errorf("a trusted run armed the channel: %v, %q", trusted.allowlist, trusted.channelRoot)
 	}
 
 	for _, trust := range []store.RunTrust{store.RunTrustFork, store.RunTrust("vendored")} {
 		rec := &recordingChannelExecutor{}
-		(&Engine{executor: rec, workDir: workDir, trust: trust}).applyMirroredSkills(owned)
+		(&Engine{executor: rec, workDir: workDir, trust: trust}).applyMirroredSkills(owned, testMirrorPass(t, workDir, trust))
 		if !rec.armed {
 			t.Fatalf("trust=%q: the channel is not armed — the run would walk the checkout's roots", trust)
 		}
@@ -134,7 +134,8 @@ func TestApplyMirroredSkills_ArmsTheChannelByTrust(t *testing.T) {
 	// An untrusted run that owns NO skill arms the empty set: the `skill`
 	// tool refuses everything rather than falling back to the walk.
 	rec := &recordingChannelExecutor{}
-	(&Engine{executor: rec, workDir: t.TempDir(), trust: store.RunTrustFork}).applyMirroredSkills(nil)
+	emptyDir := t.TempDir()
+	(&Engine{executor: rec, workDir: emptyDir, trust: store.RunTrustFork}).applyMirroredSkills(nil, testMirrorPass(t, emptyDir, store.RunTrustFork))
 	if !rec.armed || len(rec.allowlist) != 0 {
 		t.Errorf("no owned skills = (armed %v, %v), want armed with the empty set", rec.armed, rec.allowlist)
 	}
@@ -151,7 +152,7 @@ func TestChannelBuildErrorArmsEmpty(t *testing.T) {
 		t.Fatal(err)
 	}
 	rec := &recordingChannelExecutor{}
-	(&Engine{executor: rec, workDir: workDir, trust: store.RunTrustFork}).applyMirroredSkills(nil)
+	(&Engine{executor: rec, workDir: workDir, trust: store.RunTrustFork}).applyMirroredSkills(nil, testMirrorPass(t, workDir, store.RunTrustFork))
 	if !rec.armed || len(rec.allowlist) != 0 {
 		t.Errorf("a channel that cannot be built = (armed %v, %v), want armed with the EMPTY set", rec.armed, rec.allowlist)
 	}

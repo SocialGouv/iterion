@@ -878,7 +878,7 @@ func (e *Engine) runPersistWorkspace(ctx context.Context, runID string, run *sto
 		st, stCode := e.markFailedBestEffort(ctx, runID, "library skills", libraryErr)
 		return setupErrFrom(st, stCode, fmt.Errorf("runtime: library skills: %w", libraryErr))
 	}
-	e.applyMirroredSkills(append(ownedSkills, ownedLibrarySkills...))
+	e.applyMirroredSkills(append(ownedSkills, ownedLibrarySkills...), pass)
 	// Prune orphans left by earlier passes on this worktree — a skill
 	// renamed or removed upstream keeps its copy and marker on disk
 	// forever otherwise, and claw's resolver keeps offering the flat form
@@ -1069,7 +1069,7 @@ func (e *Engine) applyLibrarySkills(pass *mirrorPass) (owned []string, complete 
 // An empty list is pushed too, rather than skipped: the setter is authoritative
 // for the run, and returning early would leave a reused executor advertising the
 // previous run's skills — paths in another workspace entirely.
-func (e *Engine) applyMirroredSkills(owned []string) {
+func (e *Engine) applyMirroredSkills(owned []string, pass *mirrorPass) {
 	e.rememberResourceSkills(owned)
 	type mirroredSkillSetter interface{ SetMirroredSkills([]string) }
 	if s, ok := e.executor.(mirroredSkillSetter); ok {
@@ -1095,7 +1095,7 @@ func (e *Engine) applyMirroredSkills(owned []string) {
 		s.SetSkillChannelRoot("")
 		return
 	}
-	root, allowlist, err := mirrorSkillChannel(e.workDir, owned, e.logger)
+	root, allowlist, err := mirrorSkillChannel(e.workDir, owned, pass, e.logger)
 	if err != nil {
 		if e.logger != nil {
 			e.logger.Warn("runtime: the skill channel could not be built (%v) — the untrusted run's skill tool serves NOTHING rather than walking the checkout", err)

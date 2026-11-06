@@ -1987,7 +1987,7 @@ func (e *Engine) resumeRebuildState(ctx context.Context, r *store.Run, cp *store
 	if libraryErr != nil {
 		return nil, nil, fmt.Errorf("runtime: library skills (resume): %w", libraryErr)
 	}
-	e.applyMirroredSkills(append(ownedSkills, ownedLibrarySkills...))
+	e.applyMirroredSkills(append(ownedSkills, ownedLibrarySkills...), pass)
 	// Three preconditions gate the pruner on resume too (launch site has
 	// the same rationale): I/O clean, plugin+hooks+library complete (the
 	// hooks flag carries the `.claude` symlink veto, #2061), this is
@@ -2404,7 +2404,7 @@ func (e *Engine) restoreResumeWorkspace(ctx context.Context, r *store.Run) error
 	if libraryErr != nil {
 		return fmt.Errorf("runtime: library skills (resume): %w", libraryErr)
 	}
-	e.applyMirroredSkills(append(ownedSkills, ownedLibrarySkills...))
+	e.applyMirroredSkills(append(ownedSkills, ownedLibrarySkills...), pass)
 	// Same three preconditions as the launch and pause-resume sites: I/O
 	// clean (already returned), plugin+hooks+library complete (the hooks
 	// flag carries the `.claude` symlink veto, #2061), not a

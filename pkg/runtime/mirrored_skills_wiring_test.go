@@ -24,7 +24,7 @@ func TestApplyMirroredSkillsReachesTheExecutor(t *testing.T) {
 	e := &Engine{executor: rec}
 
 	owned := []string{"/w/.claude/skills/a", "/w/.claude/skills/b.md"}
-	e.applyMirroredSkills(owned)
+	e.applyMirroredSkills(owned, testTrustedPass(t))
 	if len(rec.calls) != 1 || !slices.Equal(rec.calls[0], owned) {
 		t.Fatalf("executor received %v, want one call with %v", rec.calls, owned)
 	}
@@ -32,7 +32,7 @@ func TestApplyMirroredSkillsReachesTheExecutor(t *testing.T) {
 	// An empty list is PUSHED, not skipped. Returning early would leave a
 	// reused executor advertising the previous run's paths — which name a
 	// different workspace entirely.
-	e.applyMirroredSkills(nil)
+	e.applyMirroredSkills(nil, testTrustedPass(t))
 	if len(rec.calls) != 2 {
 		t.Fatalf("empty list not pushed: calls = %v", rec.calls)
 	}
@@ -45,5 +45,5 @@ func TestApplyMirroredSkillsReachesTheExecutor(t *testing.T) {
 // panicking — the engine drives several, and only some consume this.
 func TestApplyMirroredSkillsIgnoresExecutorsWithoutTheSetter(t *testing.T) {
 	e := &Engine{executor: nil}
-	e.applyMirroredSkills([]string{"/w/.claude/skills/a"}) // must not panic
+	e.applyMirroredSkills([]string{"/w/.claude/skills/a"}, testTrustedPass(t)) // must not panic
 }
