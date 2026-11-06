@@ -760,6 +760,7 @@ func (b *ClaudeCodeBackend) buildSpawnOptions(task Task) ([]claudesdk.Option, fu
 	// exclusions ride the flag settings layer (claudeSpawnPins).
 	amb := claudeAmbient(task)
 	reportLegacySources(b.Logger, amb)
+	reportUntrustedProjectHooks(b.Logger, task, amb)
 	opts = append(opts, amb.settingSourcesOption())
 	if dir, ok := skillChannelAddDir(task); ok {
 		opts = append(opts, claudesdk.WithAddDirs(dir))

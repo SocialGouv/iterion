@@ -12,6 +12,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/backend/ambient"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate/claudesdk"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // unsetSettingSourcesEnv makes ITERION_CLAUDE_CODE_SETTING_SOURCES absent for
@@ -247,5 +248,59 @@ func TestClaudeAmbientKeepsANestedWorktreesOwnFiles(t *testing.T) {
 		if !slices.ContainsFunc(op.excludes, func(e string) bool { return excludeMatches(e, f) }) {
 			t.Errorf("operator: %s is repository content and must be excluded: %v", f, op.excludes)
 		}
+	}
+}
+
+// TestClaudeAmbient_UntrustedProjectHooksTypedAndSaid is the witness for the
+// ADR-162 backend-parity disposition: claw wires NONE of an untrusted
+// workspace's settings.json hooks; claude_code cannot strip them from the
+// project scope (the scope carries the mirrored skills), so the gap is TYPED
+// on the spawn and SAID through the REAL Execute — never silently different.
+//
+// Mutations: the flag's RHS muted to `false` in claudeAmbient reddens the
+// typed assertion; reportUntrustedProjectHooks' call dropped from Execute
+// reddens the spawn-recorded log assertion.
+func TestClaudeAmbient_UntrustedProjectHooksTypedAndSaid(t *testing.T) {
+	unsetSettingSourcesEnv(t)
+	_, _, _, work := ambientTree(t)
+
+	// The typed half, at the translation seam every spawn passes through.
+	fork := claudeAmbient(Task{WorkDir: work, AmbientContext: ambient.Workspace, WorkspaceTrust: store.RunTrustFork})
+	if !fork.untrustedProjectHooks {
+		t.Error("untrusted + project scope: the parity gap is not typed on the spawn")
+	}
+	trusted := claudeAmbient(Task{WorkDir: work, AmbientContext: ambient.Workspace})
+	if trusted.untrustedProjectHooks {
+		t.Error("trusted workspace: the parity flag must stay off")
+	}
+
+	// The said half, through the REAL Execute against the stand-in CLI: the
+	// untrusted run's posture is on the record, the trusted one says nothing.
+	forkRec := spawnRecorded(t, Task{
+		NodeID:         "n",
+		AmbientContext: ambient.Workspace,
+		WorkspaceTrust: store.RunTrustFork,
+		OutputSchema:   []byte(`{"type":"object","properties":{"ok":{"type":"boolean"}}}`),
+	})
+	if !slices.ContainsFunc(forkRec.logs, func(l string) bool {
+		return strings.Contains(l, "untrusted") && strings.Contains(l, "settings.json hooks")
+	}) {
+		t.Errorf("the typed refusal was not said during Execute; backend log:\n%s", strings.Join(forkRec.logs, "\n"))
+	}
+	trustedRec := spawnRecorded(t, Task{
+		NodeID:         "n",
+		AmbientContext: ambient.Workspace,
+		OutputSchema:   []byte(`{"type":"object","properties":{"ok":{"type":"boolean"}}}`),
+	})
+	if slices.ContainsFunc(trustedRec.logs, func(l string) bool { return strings.Contains(l, "settings.json hooks") }) {
+		t.Errorf("the trusted run logged an untrusted-only line; backend log:\n%s", strings.Join(trustedRec.logs, "\n"))
+	}
+
+	// An untrusted run whose sources EXCLUDE the project scope (the legacy
+	// hatch pinning user only) carries no checkout hooks: nothing to type.
+	t.Setenv(settingSourcesEnv, "user")
+	userOnly := claudeAmbient(Task{WorkDir: work, WorkspaceTrust: store.RunTrustFork})
+	if userOnly.untrustedProjectHooks {
+		t.Error("sources without the project scope: the flag must stay off — no checkout hooks load")
 	}
 }

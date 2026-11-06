@@ -2,6 +2,7 @@ package delegate
 
 import (
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 
@@ -24,6 +25,16 @@ type claudeAmbientSpawn struct {
 	legacy bool
 	// unknown holds the tokens of that variable that name no scope.
 	unknown []string
+	// untrustedProjectHooks is the ADR-162 backend-parity gap, typed. claw
+	// wires NONE of an untrusted workspace's .claude/settings.json hooks
+	// (the Execute-side switch and settingsHooksForWire both refuse them);
+	// this backend cannot strip hooks from the project scope, because the
+	// scope is also what carries the engine's mirrored skills and plugin
+	// contributions — so on an untrusted run the checkout's hooks load and
+	// fire where admission confines every untrusted run: in the sandbox.
+	// The field makes the difference inspectable; reportUntrustedProjectHooks
+	// says it. Never silently served.
+	untrustedProjectHooks bool
 }
 
 // claudeAmbient translates the node's policy into Claude Code's two
@@ -48,22 +59,42 @@ type claudeAmbientSpawn struct {
 // ITERION_CLAUDE_CODE_SETTING_SOURCES, when set, replaces the scopes verbatim
 // and drops the exclusions: it is the operator's raw escape hatch.
 func claudeAmbient(task Task) claudeAmbientSpawn {
+	var spawn claudeAmbientSpawn
 	if srcs, set, unknown := settingSourcesFromEnv(); set {
-		return claudeAmbientSpawn{sources: srcs, legacy: true, unknown: unknown}
+		spawn = claudeAmbientSpawn{sources: srcs, legacy: true, unknown: unknown}
+	} else {
+		project := []claudesdk.SettingSource{claudesdk.SettingSourceProject}
+		both := []claudesdk.SettingSource{claudesdk.SettingSourceUser, claudesdk.SettingSourceProject}
+		root := ambient.RepoRoot(task.WorkDir)
+		switch task.AmbientContext {
+		case ambient.All:
+			spawn = claudeAmbientSpawn{sources: both}
+		case ambient.Operator:
+			spawn = claudeAmbientSpawn{sources: both, excludes: excludeTree(ambient.OperatorBoundary(root))}
+		case ambient.None:
+			spawn = claudeAmbientSpawn{sources: project, excludes: []string{"**"}}
+		default:
+			spawn = claudeAmbientSpawn{sources: project, excludes: excludeAncestors(root)}
+		}
 	}
-	project := []claudesdk.SettingSource{claudesdk.SettingSourceProject}
-	both := []claudesdk.SettingSource{claudesdk.SettingSourceUser, claudesdk.SettingSourceProject}
-	root := ambient.RepoRoot(task.WorkDir)
-	switch task.AmbientContext {
-	case ambient.All:
-		return claudeAmbientSpawn{sources: both}
-	case ambient.Operator:
-		return claudeAmbientSpawn{sources: both, excludes: excludeTree(ambient.OperatorBoundary(root))}
-	case ambient.None:
-		return claudeAmbientSpawn{sources: project, excludes: []string{"**"}}
-	default:
-		return claudeAmbientSpawn{sources: project, excludes: excludeAncestors(root)}
+	// The parity flag reads the FINAL sources — the operator's legacy escape
+	// hatch included: an empty list means the CLI loads nothing, so only an
+	// explicit project scope carries the checkout's hooks.
+	spawn.untrustedProjectHooks = !task.WorkspaceTrust.Trusted() &&
+		slices.Contains(spawn.sources, claudesdk.SettingSourceProject)
+	return spawn
+}
+
+// reportUntrustedProjectHooks is the typed refusal the ADR-162 parity rule
+// (a capability wired for one backend is wired, or typed-refused, for the
+// other) gets at this seam: the hooks cannot be removed from the scope the
+// mirrored skills load through, so the refusal is that the posture is said —
+// per node, on the record — with the reason and the bound named.
+func reportUntrustedProjectHooks(logger *iterlog.Logger, task Task, a claudeAmbientSpawn) {
+	if !a.untrustedProjectHooks || logger == nil {
+		return
 	}
+	logger.Warn("[%s#%d/claude_code] the workspace is untrusted — its .claude/settings.json hooks load with the project scope and fire IN-CONTAINER (claw refuses the same document outright; this backend cannot strip hooks from the scope that carries the mirrored skills — ADR-162)", task.NodeID, task.Iteration)
 }
 
 // settingSourcesOption emits the scopes, an empty list included.
