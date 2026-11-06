@@ -90,6 +90,59 @@ func openVendoredBundle(rel ...string) func(*testing.T, string) *bundle.Bundle {
 	}
 }
 
+// TestRunPersistWorkspace_UntrustedRunRegeneratesNoCatalog: the catalog
+// refresh writes into a bundle the WORKSPACE carries and folds in the
+// workspace overlay — on a checkout the operator did not write, that is
+// rewriting attacker-shipped content under the run's authority. The run
+// refuses typed, regenerates NOTHING (its own owner's copy included), and
+// says so on the launcher. The trusted control arm of
+// TestRunPersistWorkspace_CatalogRegenScopedToItsOwner proves the same
+// fixture DOES regenerate without the floor, so the untouched sentinel
+// here is the refusal, not a broken fixture.
+func TestRunPersistWorkspace_UntrustedRunRegeneratesNoCatalog(t *testing.T) {
+	wf := &ir.Workflow{Name: "catalog-untrusted", Nodes: map[string]ir.Node{}}
+	ws, owners := catalogRegenWorkspace(t, nil)
+	botregistry.ClearSchemaCache()
+	s, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	runID := "catalog-untrusted"
+	run, err := s.CreateRun(context.Background(), runID, wf.Name, nil)
+	if err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	run.BotID = "whats-next"
+	if err := s.SaveRun(context.Background(), run); err != nil {
+		t.Fatalf("SaveRun: %v", err)
+	}
+
+	var logs bytes.Buffer
+	eng := New(wf, s, nil,
+		WithWorkDir(ws),
+		WithLogger(iterlog.New(iterlog.LevelWarn, &logs)),
+		WithBundle(openVendoredBundle("bots", "whats-next")(t, ws)),
+		WithTrust(store.RunTrustFork, ""),
+	)
+	if err := eng.runPersistWorkspace(context.Background(), runID, run, false, worktreeContext{}); err != nil {
+		t.Fatalf("runPersistWorkspace: %v", err)
+	}
+
+	for _, owner := range owners {
+		source := filepath.Join(ws, "bots", owner, catalogGeneratedRel)
+		raw, err := os.ReadFile(source)
+		if err != nil {
+			t.Fatalf("read %s: %v", source, err)
+		}
+		if string(raw) != catalogSentinel {
+			t.Errorf("an UNTRUSTED run rewrote %s — the catalog floor did not hold:\n%s", source, raw)
+		}
+	}
+	if !strings.Contains(logs.String(), ErrUntrustedWorkspaceCatalog.Error()) {
+		t.Errorf("the typed refusal was not said on the launcher, got: %q", logs.String())
+	}
+}
+
 // TestRunPersistWorkspace_CatalogRegenScopedToItsOwner pins which catalog
 // a run-start regeneration may write. Only the run's OWN bundle skills
 // reach the workspace (mirrorBundleSkills), so every other owner's

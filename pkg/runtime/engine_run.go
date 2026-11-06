@@ -976,6 +976,16 @@ func (e *Engine) runPersistWorkspace(ctx context.Context, runID string, run *sto
 // behind an editor — where the server's wait is its request's and the
 // operator's is their command's, both of which end on their own.
 func (e *Engine) regenerateBotCatalog(ctx context.Context, botID string) (string, error) {
+	// The refresh writes into a bundle the WORKSPACE carries, folding in
+	// the workspace overlay: on a checkout the operator did not write,
+	// regenerating rewrites checkout-shipped content under the run's
+	// authority and renders attacker text into a catalog other runs read.
+	// An untrusted run regenerates NOTHING — the refusal is typed so the
+	// caller warns with the reason, and the on-disk catalog is served as
+	// found (the mirror reads it, never writes it).
+	if !e.trust.Trusted() {
+		return "", fmt.Errorf("%w (workspace %s)", ErrUntrustedWorkspaceCatalog, e.workDir)
+	}
 	if e.bundle == nil && botID != "" {
 		return "", nil
 	}
@@ -986,6 +996,11 @@ func (e *Engine) regenerateBotCatalog(ctx context.Context, botID string) (string
 	}
 	return botregistry.RegenerateWhatsNextCatalog(ctx, e.workDir)
 }
+
+// ErrUntrustedWorkspaceCatalog refuses the run-start bot-catalog
+// regeneration on a workspace the operator does not control: the write
+// would land in a bundle the checkout ships, under the run's authority.
+var ErrUntrustedWorkspaceCatalog = errors.New("runtime: bot catalog regeneration refused on an untrusted workspace")
 
 // catalogLockWait is how long a run start waits for a save that holds a
 // generated catalog's authoring lock. A save takes milliseconds; a wait
