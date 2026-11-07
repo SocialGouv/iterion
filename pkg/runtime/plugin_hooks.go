@@ -25,8 +25,11 @@ const pluginHooksSidecar = "plugin-hooks.json"
 // where claude_code discovers them via --setting-sources project and claw
 // bridges the command-type subset (see settings_hooks.go). User hooks
 // already in settings.json are preserved (only iterion's own prior injection,
-// tracked in a sidecar, is removed before re-injecting). A broken plugin is
-// logged and skipped; an existing settings.json that cannot be parsed returns
+// tracked in a sidecar, is removed before re-injecting). A plugin registry
+// that cannot be loaded skips the merge ENTIRELY — a load failure is not an
+// empty hook set, so the previously injected hooks stay as they are and the
+// sidecar keeps recording them. A broken individual plugin is logged and
+// skipped; an existing settings.json that cannot be parsed returns
 // an error WITHOUT rewriting the file (callers downgrade to warn + skip, so a
 // run never fails — but the user's file is never destroyed either).
 // No-op when workDir is empty or nothing is (or was) injected.
@@ -73,7 +76,14 @@ func mergePluginHooks(workDir string, pass *mirrorPass, logger *iterlog.Logger) 
 		// The untrusted lane reads and writes nothing here (the floor above):
 		// the `.claude` symlink veto is the pruner's own entry check, which
 		// stays armed — this pass simply never reaches the file.
-		return pluginHooksBlob(logger), complete, nil
+		forkBlob, loadErr := pluginHooksBlob(logger)
+		if loadErr != nil {
+			if logger != nil {
+				logger.Warn("runtime/plugin: load plugins for the hooks merge: %v — the run goes without operator plugin hooks this pass", loadErr)
+			}
+			return nil, complete, nil
+		}
+		return forkBlob, complete, nil
 	}
 	if err := refuseAClaudeSymlink(workDir); err != nil {
 		if logger != nil {
@@ -81,7 +91,19 @@ func mergePluginHooks(workDir string, pass *mirrorPass, logger *iterlog.Logger) 
 		}
 		return nil, false, nil
 	}
-	newBlob := pluginHooksBlob(logger)
+	newBlob, loadErr := pluginHooksBlob(logger)
+	if loadErr != nil {
+		// A registry that cannot be loaded is not an empty hook set: skipping
+		// the merge entirely keeps the previously injected hooks in place —
+		// mistaking the failure for "no plugin contributes" would strip them
+		// from settings.json and null the sidecar, and both backends (which
+		// read the file on this lane) would run without the operator's hooks
+		// until the registry heals.
+		if logger != nil {
+			logger.Warn("runtime/plugin: load plugins for the hooks merge: %v — skipping the merge this pass; any hooks already injected stay as they are", loadErr)
+		}
+		return nil, complete, nil
+	}
 
 	claudeDir := filepath.Join(workDir, ".claude")
 	settingsPath := filepath.Join(claudeDir, "settings.json")
@@ -181,16 +203,15 @@ func mergePluginHooks(workDir string, pass *mirrorPass, logger *iterlog.Logger) 
 // the plugin registry alone — never from the workspace — so it is the one
 // value both lanes can trust: the trusted merge writes it into the
 // workspace's settings.json, the untrusted lane hands it to the executor
-// without touching the tree. A plugin that fails to load or to produce its
+// without touching the tree. A registry that fails to load returns the error
+// — a failure is NOT an empty record, and the caller skips the pass rather
+// than strip a prior injection. A plugin that loads but fails to produce its
 // fragments is logged and skipped (ambient plugins must not brick a run);
 // nil when nothing contributes.
-func pluginHooksBlob(logger *iterlog.Logger) map[string][]any {
+func pluginHooksBlob(logger *iterlog.Logger) (map[string][]any, error) {
 	reg, err := plugin.Load()
 	if err != nil {
-		if logger != nil {
-			logger.Warn("runtime: load plugins for hooks merge: %v — skipping", err)
-		}
-		return nil
+		return nil, err
 	}
 	blob := map[string][]any{}
 	for _, p := range reg.Enabled() {
@@ -210,9 +231,9 @@ func pluginHooksBlob(logger *iterlog.Logger) map[string][]any {
 		}
 	}
 	if len(blob) == 0 {
-		return nil
+		return nil, nil
 	}
-	return blob
+	return blob, nil
 }
 
 // mirrorMayClaimSettings reports whether a settings.json the hooks merge is
