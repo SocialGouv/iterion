@@ -50,6 +50,16 @@ func Parse(spec string) Route {
 // Gateway reports whether an OpenAI-compatible gateway serves the route.
 func (r Route) Gateway() bool { return r.Provider == OpenAICompatible }
 
+// ChatCompletionsUsage reports whether the route speaks the OpenAI Chat
+// Completions usage shape, where prompt_tokens INCLUDES the cached share
+// (prompt_tokens_details.cached_tokens is a subset of prompt_tokens). The
+// gateway and the direct openai route speak it; the anthropic-shaped
+// routes (anthropic, bedrock, vertex) report cache reads and writes
+// exclusive of input_tokens, and a reader must not add them on top.
+func (r Route) ChatCompletionsUsage() bool {
+	return r.Gateway() || r.Provider == "openai"
+}
+
 // CapabilityID is the id capability tables are keyed on: the wire id of a
 // vendor route — claw's model registry, the effort matrices, the
 // adaptive-thinking profiles all know vendor ids — and "" for a gateway

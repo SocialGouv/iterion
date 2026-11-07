@@ -46,6 +46,35 @@ func TestUsageProgress_GatewayCacheReadCountsOnce(t *testing.T) {
 	}
 }
 
+// Revi R2ae8f4: the same inclusive accounting holds for a DIRECT OpenAI
+// Chat Completions route — the wire shape is the same (cached_tokens is a
+// subset of prompt_tokens), only the prefix differs from the gateway.
+// 1M input of which 800k cached + 100k output on gpt-4o ($2.50/$10.00)
+// is (1M*2.50 + 100k*10)/1M = $3.50 and 1.1M tokens — the pre-fix
+// Anthropic accounting reported $3.70 and 1.9M tokens.
+func TestUsageProgress_DirectOpenAICacheReadCountsOnce(t *testing.T) {
+	hooks, load := newUsageHooks(t, "run-up-openai-cache")
+
+	hooks.OnLLMRequest("review", LLMRequestInfo{Model: "openai/gpt-4o"})
+	hooks.OnLLMStepFinish("review", LLMStepInfo{
+		Number: 1, InputTokens: 1_000_000, CacheReadTokens: 800_000, OutputTokens: 100_000,
+	})
+
+	evts := load()
+	if len(evts) < 1 {
+		t.Fatal("direct-openai step feed emitted nothing")
+	}
+	last := evts[len(evts)-1]
+	used, _ := last.Data["used"].(float64)
+	if want := 3.50; used != want {
+		t.Errorf("pacing priced the cached share twice: used = %v, want %v (cache read is inside the Chat Completions prompt count)", used, want)
+	}
+	tok, _ := last.Data["tokens"].(float64)
+	if want := 1_100_000.0; tok != want {
+		t.Errorf("pacing counted the cached share twice: tokens = %v, want %v", tok, want)
+	}
+}
+
 // Anthropic-side claw steps keep their exclusive accounting: cache reads
 // are NOT part of InputTokens there, they add to the token total and price
 // at the 0.1x multiplier the pacing estimate has always used.

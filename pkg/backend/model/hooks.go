@@ -724,13 +724,15 @@ func (h *storeHooks) usageSampleLocked(st *usageProgressState) map[string]any {
 	totalTokens := st.in + st.out + st.cacheRead + st.cacheWrite
 	var used float64
 	if st.model != "" {
-		if modelroute.Parse(st.model).Gateway() {
-			// Gateway accounting (Revi R7402a3): the wire's prompt count
-			// ALREADY includes the cached share — cached_tokens is a subset
-			// of prompt_tokens. Counting cacheRead on top would double it,
-			// and the Anthropic 0.1x read multiplier misprices a rate the
-			// operator table publishes itself. Only cacheWrite stays
-			// additive: only Anthropic wires populate it today.
+		if modelroute.Parse(st.model).ChatCompletionsUsage() {
+			// Chat Completions accounting (Revi R7402a3, R2ae8f4): the
+			// wire's prompt count ALREADY includes the cached share —
+			// cached_tokens is a subset of prompt_tokens, on the gateway
+			// and on a direct openai route alike. Counting cacheRead on
+			// top would double it, and the Anthropic 0.1x read multiplier
+			// misprices a rate the operator table publishes itself. Only
+			// cacheWrite stays additive: only Anthropic wires populate it
+			// today.
 			totalTokens = st.in + st.out + st.cacheWrite
 			used = cost.EstimateUSDWithCache(st.model, st.in, st.out, st.cacheRead)
 		} else {
