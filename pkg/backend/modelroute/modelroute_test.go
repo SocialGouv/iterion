@@ -73,3 +73,27 @@ func TestIsRoutingProvider(t *testing.T) {
 		}
 	}
 }
+
+// ChatCompletionsUsage is the one reading of which claw provider speaks
+// the Chat Completions wire (cached share inside prompt_tokens). The set
+// is pinned here because it must move with claw-code-go's providers:
+// openai and xai share the openai provider, foundry builds on openaiwire;
+// moonshot and zai mirror the anthropic wire.
+func TestChatCompletionsUsageFollowsTheClawWires(t *testing.T) {
+	for spec, want := range map[string]bool{
+		"openai_compatible/scaleway/gpt-oss-120b": true,
+		"openai/gpt-4o":             true,
+		"xai/grok-4":                true,
+		"foundry/gpt-oss-120b":      true,
+		"anthropic/claude-opus-5-5": false,
+		"bedrock/claude-opus-4-8":   false,
+		"vertex/claude-opus-4-8":    false,
+		"moonshot/kimi-for-coding":  false,
+		"zai/glm-5.3":               false,
+		"gpt-4o":                    false, // bare id: the routing word decides
+	} {
+		if got := Parse(spec).ChatCompletionsUsage(); got != want {
+			t.Errorf("Parse(%q).ChatCompletionsUsage() = %v, want %v", spec, got, want)
+		}
+	}
+}

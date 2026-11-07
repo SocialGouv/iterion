@@ -1,6 +1,7 @@
 package model
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/backend/compatgw"
@@ -46,32 +47,49 @@ func TestUsageProgress_GatewayCacheReadCountsOnce(t *testing.T) {
 	}
 }
 
-// Revi R2ae8f4: the same inclusive accounting holds for a DIRECT OpenAI
-// Chat Completions route — the wire shape is the same (cached_tokens is a
-// subset of prompt_tokens), only the prefix differs from the gateway.
-// 1M input of which 800k cached + 100k output on gpt-4o ($2.50/$10.00)
-// is (1M*2.50 + 100k*10)/1M = $3.50 and 1.1M tokens — the pre-fix
-// Anthropic accounting reported $3.70 and 1.9M tokens.
-func TestUsageProgress_DirectOpenAICacheReadCountsOnce(t *testing.T) {
-	hooks, load := newUsageHooks(t, "run-up-openai-cache")
-
-	hooks.OnLLMRequest("review", LLMRequestInfo{Model: "openai/gpt-4o"})
-	hooks.OnLLMStepFinish("review", LLMStepInfo{
-		Number: 1, InputTokens: 1_000_000, CacheReadTokens: 800_000, OutputTokens: 100_000,
-	})
-
-	evts := load()
-	if len(evts) < 1 {
-		t.Fatal("direct-openai step feed emitted nothing")
+// Revi R2ae8f4 + R19425f: the same inclusive accounting holds for every
+// direct Chat Completions route — openai, xai (shared openai provider)
+// and foundry (built on openaiwire) — the wire shape is the same
+// (cached_tokens is a subset of prompt_tokens), only the prefix differs
+// from the gateway. gpt-4o pins the priced figure too: 1M input of which
+// 800k cached + 100k output at the static $2.50/$10.00 is $3.50 and 1.1M
+// tokens — the pre-fix Anthropic accounting reported $3.70 and 1.9M.
+func TestUsageProgress_DirectChatCompletionsCacheReadCountsOnce(t *testing.T) {
+	cases := []struct {
+		model    string
+		wantUsed float64 // 0 = the model is unpriced, "used" must be absent
+	}{
+		{"openai/gpt-4o", 3.50},
+		{"xai/grok-4", 0},
+		{"foundry/gpt-oss-120b", 0},
 	}
-	last := evts[len(evts)-1]
-	used, _ := last.Data["used"].(float64)
-	if want := 3.50; used != want {
-		t.Errorf("pacing priced the cached share twice: used = %v, want %v (cache read is inside the Chat Completions prompt count)", used, want)
-	}
-	tok, _ := last.Data["tokens"].(float64)
-	if want := 1_100_000.0; tok != want {
-		t.Errorf("pacing counted the cached share twice: tokens = %v, want %v", tok, want)
+	for i, c := range cases {
+		t.Run(c.model, func(t *testing.T) {
+			hooks, load := newUsageHooks(t, fmt.Sprintf("run-up-cc-cache-%d", i))
+
+			hooks.OnLLMRequest("review", LLMRequestInfo{Model: c.model})
+			hooks.OnLLMStepFinish("review", LLMStepInfo{
+				Number: 1, InputTokens: 1_000_000, CacheReadTokens: 800_000, OutputTokens: 100_000,
+			})
+
+			evts := load()
+			if len(evts) < 1 {
+				t.Fatal("chat-completions step feed emitted nothing")
+			}
+			last := evts[len(evts)-1]
+			if c.wantUsed > 0 {
+				used, _ := last.Data["used"].(float64)
+				if used != c.wantUsed {
+					t.Errorf("pacing priced the cached share twice: used = %v, want %v (cache read is inside the Chat Completions prompt count)", used, c.wantUsed)
+				}
+			} else if _, ok := last.Data["used"]; ok {
+				t.Errorf("unpriced model must omit used, got %v", last.Data["used"])
+			}
+			tok, _ := last.Data["tokens"].(float64)
+			if want := 1_100_000.0; tok != want {
+				t.Errorf("pacing counted the cached share twice: tokens = %v, want %v", tok, want)
+			}
+		})
 	}
 }
 
