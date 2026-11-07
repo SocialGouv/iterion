@@ -38,7 +38,7 @@ func TestTheFullRegistryWiresEveryFamilyTheHostHasTo(t *testing.T) {
 		// (ADR-162 U3); this is the same registration without the trust
 		// closure, for hosts with no notion of workspace provenance.
 		"RegisterClawCommandWithProvider": "wrapper over RegisterClawCommandWithTrust, the provenance-aware variant RegisterClawAll calls",
-		"RegisterClawSkill":   "wrapper over RegisterClawSkillWithProvider",
+		"RegisterClawSkill":               "wrapper over RegisterClawSkillWithProvider",
 		// The walk-only form, kept for hosts with no allowlist to pin
 		// (the sandboxed runner registers the pinned variant directly):
 		// RegisterClawAll calls the full form with the host's provider.
