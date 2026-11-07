@@ -112,6 +112,12 @@ type ClawExecutor struct {
 	// value. Atomic for the reason workDir is: it is read live per task.
 	// Access goes through WorkspaceTrust/SetWorkspaceTrust only.
 	workspaceTrust atomic.Pointer[store.RunTrust]
+	// injectedHooks is iterion's own plugin-contributed hook groups, pushed
+	// by the engine once per mirror pass (pushInjectedHooks) and stamped on
+	// every task beside the trust. Nil means none. Atomic for the reason
+	// workspaceTrust is: it is read live per task. Access goes through
+	// InjectedHooks/SetInjectedHooks only.
+	injectedHooks atomic.Pointer[map[string][]any]
 	// readScope is the claw read tools' scope, shared with the registry
 	// the host built (runview hands the same instance to both). The
 	// engine's SetScratchDirs push attaches the run's scratch read roots
@@ -1408,8 +1414,39 @@ func (e *ClawExecutor) WorkspaceTrust() store.RunTrust {
 	return store.RunTrustDefault
 }
 
+// SetInjectedHooks records the plugin-contributed hook groups ITERION merged
+// into the workspace's settings.json this pass. The engine pushes them once
+// per mirror pass (pushInjectedHooks), after the merge computed them.
+//
+// On a trusted workspace the settings.json file is their carrier and this
+// record is not consulted. On a workspace the tenant did not write, the
+// merge wrote nothing and this record is the ONLY hooks a node may run:
+// the file is the checkout's, so it is neither their authority nor allowed
+// to veto them — a fork switching off the operator's guards by committing a
+// settings.json that does not parse was the failure this field exists to
+// close.
+func (e *ClawExecutor) SetInjectedHooks(blob map[string][]any) {
+	if blob == nil {
+		e.injectedHooks.Store(nil)
+		return
+	}
+	e.injectedHooks.Store(&blob)
+}
+
+// InjectedHooks reports the groups SetInjectedHooks last pushed, or nil when
+// the engine never pushed any (no hooks plugin enabled, or a direct backend
+// use no engine drove).
+func (e *ClawExecutor) InjectedHooks() map[string][]any {
+	if h := e.injectedHooks.Load(); h != nil {
+		return *h
+	}
+	return nil
+}
+
 // stampWorkspace writes onto a task the facts that describe the run's
-// workspace: where it is, and who wrote it. Every task that names the
+// workspace: where it is, who wrote it, and the hook groups iterion itself
+// injected this pass (the in-memory record an untrusted workspace cannot
+// carry — see SetInjectedHooks). Every task that names the
 // workspace takes it from here — the agent task, the router's, the session
 // packer's — so a task assembler added later cannot set the directory and
 // leave the trusted zero value beside it.
@@ -1424,6 +1461,7 @@ func (e *ClawExecutor) stampWorkspace(t *delegate.Task) {
 	}
 	t.WorkDir = e.WorkDir()
 	t.WorkspaceTrust = e.WorkspaceTrust()
+	t.InjectedHooks = e.InjectedHooks()
 	if entry, ok := RunTrustEnvEntry(t.WorkspaceTrust); ok {
 		t.ExtraEnv = append(slices.Clip(t.ExtraEnv), entry)
 	}

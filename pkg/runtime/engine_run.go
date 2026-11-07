@@ -861,10 +861,11 @@ func (e *Engine) runPersistWorkspace(ctx context.Context, runID string, run *sto
 		return setupErrFrom(st, stCode, fmt.Errorf("runtime: plugin contributions: %w", err))
 	}
 	ownedSkills = append(ownedSkills, ownedPluginSkills...)
-	hooksComplete, hooksErr := mergePluginHooks(e.workDir, pass, e.logger)
+	injectedHooks, hooksComplete, hooksErr := mergePluginHooks(e.workDir, pass, e.logger)
 	if hooksErr != nil && e.logger != nil {
 		e.logger.Warn("runtime: plugin hooks: %v", hooksErr)
 	}
+	e.pushInjectedHooks(injectedHooks)
 	// Skill-library skills referenced by the workflow (DSL `skills:`), mirrored
 	// LAST so a same-named bundle/plugin/workspace file wins on collision
 	// (precedence: bundle > plugin > library > hand-authored — ADR-059). The

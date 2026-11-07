@@ -659,11 +659,14 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 			// the tenant did not write, wiring it hands the fork command
 			// execution under the operator's hooks runner, whatever form the
 			// document arrived in (the wire carries the same file's bytes).
-			// Refused typed by the trust, with the log: never silently
-			// degraded, never silently served.
+			// The checkout's own hooks are REFUSED, and iterion's own
+			// plugin-contributed groups wire from the in-memory record
+			// instead: the file is neither their authority nor allowed to
+			// veto them (registerInjectedHooks).
 			if b.logger != nil {
-				b.logger.Warn("[%s#%d/claw] the workspace is untrusted — its .claude/settings.json hooks are REFUSED, none wired", task.NodeID, task.Iteration)
+				b.logger.Warn("[%s#%d/claw] the workspace is untrusted — its .claude/settings.json hooks are REFUSED; iterion's own hook groups wire from memory", task.NodeID, task.Iteration)
 			}
+			wired = registerInjectedHooks(merged, task.InjectedHooks, b.logger)
 		case len(task.SettingsHooks) > 0:
 			wired = registerSettingsHooksJSON(merged, task.SettingsHooks, b.logger)
 		default:
@@ -2333,8 +2336,11 @@ func settingsHooksForWire(workDir, nodeID string, iteration int, trust store.Run
 	if !trust.Trusted() {
 		// The document is the workspace's own: on a checkout the tenant did
 		// not write, shipping it into the sandbox crossing hands the fork the
-		// in-container hooks runner. Wire NOTHING, and say so on the side
-		// that owns the refusal.
+		// in-container hooks runner. Wire NOTHING from the file, and say so on
+		// the side that owns the refusal. Iterion's own plugin-contributed
+		// groups cross on their own field instead (IOTask.InjectedHooks) and
+		// the in-container Execute registers them from that record
+		// (registerInjectedHooks).
 		if logger != nil {
 			logger.Warn("[%s#%d/claw] the workspace is untrusted — its .claude/settings.json hooks are REFUSED, none cross", nodeID, iteration)
 		}

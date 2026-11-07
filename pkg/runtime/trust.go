@@ -45,3 +45,26 @@ func (e *Engine) pushWorkspaceTrust() {
 		s.SetWorkspaceTrust(e.trust)
 	}
 }
+
+// injectedHooksSetter carries iterion's OWN plugin-contributed hook groups to
+// the backend, beside workspaceTrustSetter — see (*Engine).pushInjectedHooks.
+// Only ClawExecutor implements it.
+type injectedHooksSetter interface {
+	SetInjectedHooks(map[string][]any)
+}
+
+// pushInjectedHooks hands the executor the hook groups iterion merged this
+// pass, as an IN-MEMORY record. On a trusted workspace the same groups also
+// ride the workspace's settings.json (mergePluginHooks wrote them there),
+// and the record is not consulted. On a workspace the tenant did not write,
+// the record is the ONLY hooks a node may run: the file is the checkout's,
+// so it is neither their authority nor allowed to veto them — claude_code
+// gets the groups through the inline --settings layer, claw registers them
+// from the record, and nothing the checkout writes reaches either path.
+// Pushed once per mirror pass (run start and every resume), before any node
+// of that pass executes.
+func (e *Engine) pushInjectedHooks(blob map[string][]any) {
+	if s, ok := e.executor.(injectedHooksSetter); ok {
+		s.SetInjectedHooks(blob)
+	}
+}

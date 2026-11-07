@@ -266,7 +266,7 @@ func TestMergePluginHooksSkipsAClaudeSymlink(t *testing.T) {
 	var buf bytes.Buffer
 	logger := iterlog.New(iterlog.LevelWarn, &buf)
 
-	complete, err := mergePluginHooks(ws, testTrustedPass(t), logger)
+	_, complete, err := mergePluginHooks(ws, testTrustedPass(t), logger)
 	if err != nil {
 		t.Fatalf("mergePluginHooks through a .claude symlink = %v, want a soft skip, not an error", err)
 	}

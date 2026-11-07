@@ -1974,10 +1974,11 @@ func (e *Engine) resumeRebuildState(ctx context.Context, r *store.Run, cp *store
 		return nil, nil, fmt.Errorf("runtime: plugin contributions (resume): %w", err)
 	}
 	ownedSkills = append(ownedSkills, ownedPluginSkills...)
-	hooksComplete, hooksErr := mergePluginHooks(e.workDir, pass, e.logger)
+	injectedHooks, hooksComplete, hooksErr := mergePluginHooks(e.workDir, pass, e.logger)
 	if hooksErr != nil && e.logger != nil {
 		e.logger.Warn("runtime: plugin hooks (resume): %v", hooksErr)
 	}
+	e.pushInjectedHooks(injectedHooks)
 	// Re-apply the preset's "## Focus" bias + skill hints on resume so a
 	// paused run that resumes keeps running as the selected sous-bot. I/O
 	// errors on the library mirror stay FATAL — same doctrine as launch:
@@ -2396,10 +2397,11 @@ func (e *Engine) restoreResumeWorkspace(ctx context.Context, r *store.Run) error
 		return fmt.Errorf("runtime: plugin contributions (resume): %w", err)
 	}
 	ownedSkills = append(ownedSkills, ownedPluginSkills...)
-	hooksComplete, hooksErr := mergePluginHooks(e.workDir, pass, e.logger)
+	injectedHooks, hooksComplete, hooksErr := mergePluginHooks(e.workDir, pass, e.logger)
 	if hooksErr != nil && e.logger != nil {
 		e.logger.Warn("runtime: plugin hooks (resume): %v", hooksErr)
 	}
+	e.pushInjectedHooks(injectedHooks)
 	ownedLibrarySkills, libraryComplete, libraryErr := e.applyLibrarySkills(pass)
 	if libraryErr != nil {
 		return fmt.Errorf("runtime: library skills (resume): %w", libraryErr)
