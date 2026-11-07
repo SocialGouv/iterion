@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // TestOpenCodeBuildArgs pins the whole invocation: the `run` subcommand OPENS
@@ -345,7 +346,7 @@ func TestOpenCodeRefusesUntrustedProject(t *testing.T) {
 	for name, files := range vectors {
 		t.Run(name, func(t *testing.T) {
 			ws := writeWorkspace(t, files...)
-			err := refuseUntrustedOpenCodeProject(ws)
+			err := refuseUntrustedOpenCodeProject(ws, store.RunTrustDefault)
 			if err == nil {
 				t.Fatalf("%v accepted; opencode would load it as code", files)
 			}
@@ -355,7 +356,7 @@ func TestOpenCodeRefusesUntrustedProject(t *testing.T) {
 				}
 			}
 			t.Setenv(openCodeTrustProjectEnv, "1")
-			if err := refuseUntrustedOpenCodeProject(ws); err != nil {
+			if err := refuseUntrustedOpenCodeProject(ws, store.RunTrustDefault); err != nil {
 				t.Errorf("%s=1 must opt into project trust, got %v", openCodeTrustProjectEnv, err)
 			}
 		})
@@ -376,7 +377,7 @@ func TestOpenCodeRefusesUntrustedProject(t *testing.T) {
 			if err := os.MkdirAll(work, 0o750); err != nil {
 				t.Fatal(err)
 			}
-			if err := refuseUntrustedOpenCodeProject(work); err == nil {
+			if err := refuseUntrustedOpenCodeProject(work, store.RunTrustDefault); err == nil {
 				t.Fatalf("git=%t: a plugin in an ancestor of the workdir was accepted", withGit)
 			}
 		}
@@ -396,7 +397,7 @@ func TestOpenCodeRefusesUntrustedProject(t *testing.T) {
 		if err := os.Symlink(inner, link); err != nil {
 			t.Skipf("symlinks unavailable: %v", err)
 		}
-		if err := refuseUntrustedOpenCodeProject(link); err == nil {
+		if err := refuseUntrustedOpenCodeProject(link, store.RunTrustDefault); err == nil {
 			t.Fatal("a symlinked workdir hid a hostile .opencode from the walk")
 		}
 	})
@@ -411,7 +412,7 @@ func TestOpenCodeRefusesUntrustedProject(t *testing.T) {
 		if err := os.MkdirAll(deep, 0o750); err != nil {
 			t.Skipf("cannot build a deep tree here: %v", err)
 		}
-		err := refuseUntrustedOpenCodeProject(deep)
+		err := refuseUntrustedOpenCodeProject(deep, store.RunTrustDefault)
 		if err == nil {
 			t.Fatal("a workspace deeper than the cap was accepted without being screened")
 		}
@@ -443,7 +444,7 @@ func TestOpenCodeRefusesUntrustedProject(t *testing.T) {
 		if err := os.MkdirAll(work, 0o750); err != nil {
 			t.Fatal(err)
 		}
-		if err := refuseUntrustedOpenCodeProject(work); err != nil {
+		if err := refuseUntrustedOpenCodeProject(work, store.RunTrustDefault); err != nil {
 			t.Fatalf("refused on the operator's own home: %v", err)
 		}
 	})
@@ -472,7 +473,7 @@ func TestOpenCodeRefusesUntrustedProject(t *testing.T) {
 		if err := os.MkdirAll(work, 0o750); err != nil {
 			t.Fatal(err)
 		}
-		err := refuseUntrustedOpenCodeProject(work)
+		err := refuseUntrustedOpenCodeProject(work, store.RunTrustDefault)
 		if err == nil {
 			t.Fatal("a `.git` between the workspace and the plugin truncated the walk; opencode 2.x does not stop there")
 		}
@@ -493,7 +494,7 @@ func TestOpenCodeRefusesUntrustedProject(t *testing.T) {
 		if err := os.Symlink(filepath.Join(repo, "nonexistent", "nowhere"), filepath.Join(work, ".git")); err != nil {
 			t.Skipf("symlinks unavailable: %v", err)
 		}
-		if err := refuseUntrustedOpenCodeProject(work); err == nil {
+		if err := refuseUntrustedOpenCodeProject(work, store.RunTrustDefault); err == nil {
 			t.Fatal("a dangling .git symlink truncated the walk; opencode does not stop there")
 		}
 	})
@@ -520,14 +521,14 @@ func TestOpenCodeRefusesUntrustedProject(t *testing.T) {
 	// defaults its --workdir to the bind-mounted checkout, so waving it
 	// through would fail OPEN on exactly the directory at issue.
 	t.Run("no workspace is refused, never waved through", func(t *testing.T) {
-		if err := refuseUntrustedOpenCodeProject(""); err == nil {
+		if err := refuseUntrustedOpenCodeProject("", store.RunTrustDefault); err == nil {
 			t.Error("an empty workspace was accepted without being screened")
 		}
 	})
 
 	t.Run("a clean workspace runs", func(t *testing.T) {
 		ws := hermeticWorkspace(t)
-		if err := refuseUntrustedOpenCodeProject(ws); err != nil {
+		if err := refuseUntrustedOpenCodeProject(ws, store.RunTrustDefault); err != nil {
 			t.Errorf("clean workspace refused: %v", err)
 		}
 	})
@@ -537,7 +538,7 @@ func TestOpenCodeRefusesUntrustedProject(t *testing.T) {
 		if err := os.MkdirAll(filepath.Join(ws, ".opencode"), 0o750); err != nil {
 			t.Fatal(err)
 		}
-		if err := refuseUntrustedOpenCodeProject(ws); err != nil {
+		if err := refuseUntrustedOpenCodeProject(ws, store.RunTrustDefault); err != nil {
 			t.Errorf("empty .opencode refused: %v", err)
 		}
 	})
@@ -552,7 +553,7 @@ func TestOpenCodeRefusesUntrustedProject(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { _ = os.Chmod(dir, 0o750) })
-		if err := refuseUntrustedOpenCodeProject(ws); err == nil {
+		if err := refuseUntrustedOpenCodeProject(ws, store.RunTrustDefault); err == nil {
 			t.Fatal("an unreadable .opencode was read as clean")
 		}
 	})
@@ -623,7 +624,7 @@ func TestOpenCodeWitnessesReadNothingAboveTheirTempRoot(t *testing.T) {
 	}
 	// The hazard is real: an unpinned walk from under the child's TMPDIR
 	// refuses on the planted root.
-	if err := refuseUntrustedOpenCodeProject(probe); err == nil || !strings.Contains(err.Error(), root) {
+	if err := refuseUntrustedOpenCodeProject(probe, store.RunTrustDefault); err == nil || !strings.Contains(err.Error(), root) {
 		t.Fatalf("an unpinned walk from %s does not refuse on the planted root %s: %v", probe, root, err)
 	}
 

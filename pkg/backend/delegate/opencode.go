@@ -12,6 +12,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/backend/backendcaps"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // BackendOpenCode is the registration name for the opencode backend
@@ -152,7 +153,14 @@ func (b *OpenCodeBackend) Execute(ctx context.Context, task Task) (Result, error
 	if err := dispatchRefusal(ctx, BackendOpenCode, task); err != nil {
 		return Result{BackendName: BackendOpenCode, ExitCode: -1}, err
 	}
-	if err := refuseUntrustedOpenCodeProject(task.WorkDir); err != nil {
+	// Trust FIRST (ADR-162 U3). On an untrusted workspace this backend does
+	// not run at all, so the project screen below — whose message offers
+	// ITERION_OPENCODE_TRUST_PROJECT=1 as the way out — must not answer for
+	// it: that grant cannot lift a refusal it does not govern.
+	if !task.WorkspaceTrust.Trusted() {
+		return Result{BackendName: BackendOpenCode, ExitCode: -1}, refuseUntrustedWorkspace(BackendOpenCode)
+	}
+	if err := refuseUntrustedOpenCodeProject(task.WorkDir, task.WorkspaceTrust); err != nil {
 		return Result{BackendName: BackendOpenCode, ExitCode: -1}, err
 	}
 	cli := b.cli
@@ -211,9 +219,13 @@ func opencodeLegacyProtocol() CLIAgentProtocol {
 }
 
 // openCodeProjectTrusted reports whether the operator opted into the target
-// repository's own `.opencode/` resources.
-func openCodeProjectTrusted() bool {
-	return strings.TrimSpace(os.Getenv(openCodeTrustProjectEnv)) == "1"
+// repository's own `.opencode/` resources AND this run's workspace is one they
+// can have meant. The opt-in is a standing, fleet-wide statement about
+// checkouts the tenant writes; a workspace someone else authored is outside
+// what it can say, and here the difference is arbitrary code execution rather
+// than prompt text. Same rule as pi's `--approve` and `--skill`, same reason.
+func openCodeProjectTrusted(trust store.RunTrust) bool {
+	return strings.TrimSpace(os.Getenv(openCodeTrustProjectEnv)) == "1" && trust.Trusted()
 }
 
 // refuseUntrustedOpenCodeProject refuses a run whose workspace would hand
@@ -235,8 +247,8 @@ func openCodeProjectTrusted() bool {
 // while "does this level carry opencode resources at all" cannot be widened.
 //
 // Opt back in with ITERION_OPENCODE_TRUST_PROJECT=1, for a repository you own.
-func refuseUntrustedOpenCodeProject(workDir string) error {
-	if openCodeProjectTrusted() {
+func refuseUntrustedOpenCodeProject(workDir string, trust store.RunTrust) error {
+	if openCodeProjectTrusted(trust) {
 		return nil
 	}
 	if workDir == "" {

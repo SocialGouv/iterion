@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -38,6 +39,12 @@ type CLIAgentProtocol struct {
 	// Name is the backend registration name and the label stamped on
 	// Result.BackendName / log lines (e.g. "kimi").
 	Name string
+
+	// UntrustedWorkspace is what this CLI does with a workspace its tenant did
+	// not write (ADR-162 U3). The zero value refuses the run; a backend earns
+	// UntrustedWorkspaceFlooredByBackend by withdrawing the checkout's own
+	// configuration itself, watched by a row of the guarantee bench.
+	UntrustedWorkspace UntrustedWorkspacePolicy
 
 	// DefaultBinary is the CLI executable to invoke when the backend's
 	// Command override is empty (e.g. "kimi").
@@ -305,6 +312,69 @@ type CLIAgentParse struct {
 	Err error
 }
 
+// UntrustedWorkspacePolicy says how a CLI agent treats a workspace whose code
+// the tenant did not write. See CLIAgentProtocol.UntrustedWorkspace.
+type UntrustedWorkspacePolicy int
+
+const (
+	// UntrustedWorkspaceRefused: the backend does not run on an untrusted
+	// workspace at all. The zero value — an unanswered question refuses.
+	UntrustedWorkspaceRefused UntrustedWorkspacePolicy = iota
+	// UntrustedWorkspaceFlooredByBackend: the backend withdraws the checkout's
+	// own configuration itself — argv floors, or a screen that refuses what it
+	// cannot withdraw — and a row of the guarantee bench (e2e) watches it.
+	UntrustedWorkspaceFlooredByBackend
+)
+
+// ErrUntrustedWorkspaceRefused is the typed refusal of a backend that has no
+// floor for an untrusted workspace.
+var ErrUntrustedWorkspaceRefused = errors.New("delegate: this backend has no floor for a workspace its tenant did not write, and does not run on one")
+
+// refuseUntrustedWorkspace is the ONE refusal every backend without a floor
+// returns, so each names itself and the ways out the same way: the operator
+// either runs the node on a workspace the tenant wrote, or routes it to a
+// backend with a floor — and a backend earns a place on the untrusted lane by
+// declaring one, watched by a row of the guarantee bench (e2e).
+func refuseUntrustedWorkspace(backend string) error {
+	return fmt.Errorf("%w: %s. Run this node on a trusted workspace, or route it to a backend with a floor (%s)",
+		ErrUntrustedWorkspaceRefused, backend, strings.Join(flooredBackends(), ", "))
+}
+
+// untrustedWorkspacePolicies is every backend's answer to "does it run on a
+// workspace its tenant did not write?", in one table. The refusal's list of
+// backends with a floor is DERIVED from it: a hand-written list went stale the
+// day opencode was refused, and told its operators to route the node to
+// opencode. The CLI agents answer through their protocol, so a change there
+// changes this; a backend absent from the table has no floor.
+func untrustedWorkspacePolicies() map[string]UntrustedWorkspacePolicy {
+	return map[string]UntrustedWorkspacePolicy{
+		// Project and local setting sources withdrawn (settingSourcesFromEnv),
+		// iterion's own hooks passed inline, the project .mcp.json not loaded.
+		BackendClaudeCode: UntrustedWorkspaceFlooredByBackend,
+		// Floored in pkg/backend/model: settings hooks, the skill tool, memory.
+		BackendClaw: UntrustedWorkspaceFlooredByBackend,
+		// Refused in CodexBackend.Execute, before its binary is probed.
+		BackendCodex:    UntrustedWorkspaceRefused,
+		BackendPi:       piProtocol.UntrustedWorkspace,
+		BackendOpenCode: opencodeProtocol.UntrustedWorkspace,
+		BackendGrok:     grokProtocol.UntrustedWorkspace,
+		BackendKimi:     kimiProtocol.UntrustedWorkspace,
+	}
+}
+
+// flooredBackends lists, sorted, the backends that run on an untrusted
+// workspace — the ways out a refusal can honestly offer.
+func flooredBackends() []string {
+	var out []string
+	for name, policy := range untrustedWorkspacePolicies() {
+		if policy == UntrustedWorkspaceFlooredByBackend {
+			out = append(out, name)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
 // CLIAgentBackend is a delegate.Backend that drives a third-party agent CLI
 // described by a CLIAgentProtocol. It mirrors the codex backend's shape —
 // build native argv, run with a wall-clock timeout, parse stdout, retry on a
@@ -348,6 +418,17 @@ const (
 // Execute runs the target CLI for the given task and parses its output into a
 // delegate.Result.
 func (b *CLIAgentBackend) Execute(ctx context.Context, task Task) (Result, error) {
+	// Before anything reads the workspace. Every CLI agent reaches the checkout
+	// through here, so an unanswered policy cannot slip past on a path of its
+	// own; grok and kimi are refused because nobody has measured what their
+	// CLIs load from a project directory, not because a leak was observed.
+	if !task.WorkspaceTrust.Trusted() && b.Protocol.UntrustedWorkspace != UntrustedWorkspaceFlooredByBackend {
+		name := b.Protocol.Name
+		if name == "" {
+			name = "cli_agent"
+		}
+		return Result{BackendName: name, ExitCode: -1}, refuseUntrustedWorkspace(name)
+	}
 	if task.WorkDir != "" {
 		if err := validateWorkDir(task.WorkDir, task.BaseDir); err != nil {
 			return Result{}, err

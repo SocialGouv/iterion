@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/internal/proc"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // TestLive_Feat_OpenCodeProjectScreen is a CONFORMANCE bench, not a unit
@@ -118,7 +119,7 @@ func TestLive_Feat_OpenCodeProjectScreen(t *testing.T) {
 				t.Fatalf("the CLI (%d.x) loaded=%v, want %v — this row no longer exercises what it names, so its verdict proves nothing", major, loaded, want)
 			}
 
-			refused := refuseUntrustedOpenCodeProject(work) != nil
+			refused := refuseUntrustedOpenCodeProject(work, store.RunTrustDefault) != nil
 			if refused != tc.wantRefused {
 				t.Fatalf("iterion refused=%v, want %v — the screen no longer answers this layout the way the bench measured it", refused, tc.wantRefused)
 			}

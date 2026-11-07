@@ -50,6 +50,13 @@ func (b *CodexBackend) Execute(ctx context.Context, task Task) (Result, error) {
 	if err := dispatchRefusal(ctx, BackendCodex, task); err != nil {
 		return Result{ExitCode: -1, BackendName: BackendCodex}, err
 	}
+	// No floor (ADR-162 U3): codex reads the project's own config — its
+	// AGENTS.md, its ~/.codex config overlays, its MCP servers — and no floor
+	// covering all of that has been measured, so there is none: the workspace
+	// is refused, typed, before the binary is probed.
+	if !task.WorkspaceTrust.Trusted() {
+		return Result{ExitCode: -1, BackendName: BackendCodex}, refuseUntrustedWorkspace(BackendCodex)
+	}
 	task.Model = codexTaskModel(task.Model)
 	if task.Permission.Enabled() {
 		return Result{ExitCode: -1, BackendName: BackendCodex}, fmt.Errorf(

@@ -49,8 +49,12 @@ const BackendPi = backendcaps.Pi
 
 // piProtocol describes pi's headless invocation.
 var piProtocol = CLIAgentProtocol{
-	Name:          BackendPi,
-	DefaultBinary: "pi",
+	Name: BackendPi,
+	// Floored in piExtraArgsFor and piCodexSeed: --no-context-files, no
+	// checkout --skill/--approve, no subscription token where the fork reads —
+	// on an untrusted workspace; watched by the guarantee bench.
+	UntrustedWorkspace: UntrustedWorkspaceFlooredByBackend,
+	DefaultBinary:      "pi",
 
 	// Prompt on stdin, with no flag. Three independent reasons, each
 	// sufficient on its own:
