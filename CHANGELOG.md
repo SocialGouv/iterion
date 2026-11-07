@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [5.12.1](https://github.com/SocialGouv/iterion/compare/v5.12.0...v5.12.1) (2026-11-07)
+
+### Bug Fixes
+
+* **cost:** meter and price the gateway cache read end to end ([#3099](https://github.com/SocialGouv/iterion/issues/3099)) ([1a4f165](https://github.com/SocialGouv/iterion/commit/1a4f1650c3d4fa7b70b2a05e8724864545bf562e)), references [#16](https://github.com/SocialGouv/iterion/issues/16) [SocialGouv/claw-code-go#16](https://github.com/SocialGouv/claw-code-go/issues/16)
+
+    <details><summary>why</summary>
+
+    The chat-completions hosts report the prompt cache they served as prompt_tokens_details.cached_tokens on the terminal usage payload. claw-code-go now decodes and forwards it (SocialGouv/claw-code-go#16); this change consumes it and stops pricing cached tokens at the full input rate.
+
+    </details>
+
 ## [5.12.0](https://github.com/SocialGouv/iterion/compare/v5.11.0...v5.12.0) (2026-11-07)
 
 ### Features
