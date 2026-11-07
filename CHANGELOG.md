@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [5.12.2](https://github.com/SocialGouv/iterion/compare/v5.12.1...v5.12.2) (2026-11-07)
+
+### Bug Fixes
+
+* **model:** the _gateway_spec record carries the cache read rate it priced with ([#3104](https://github.com/SocialGouv/iterion/issues/3104)) ([15d4644](https://github.com/SocialGouv/iterion/commit/15d46446b1d8387809a307e6afa874da3e4db1c5)), references [#3099](https://github.com/SocialGouv/iterion/issues/3099) [SocialGouv/iterion#3103](https://github.com/SocialGouv/iterion/issues/3103)
+
+    <details><summary>why</summary>
+
+    The provenance stamp on a gateway node's output answered "which table priced this" with input/output rates only. Since #3099 the operator table also prices cache reads, and the pricer uses that rate — so a run whose cost reflected 0.1344/M cached tokens stamped a record that contradicted it (SocialGouv/iterion#3103, observed on run 01a1b687: cost 0.35897232 recomposed exactly with the cache rate, record without it). The stamp is the one place an operator can audit the pricing source; it must…
+
+    </details>
+
 ## [5.12.1](https://github.com/SocialGouv/iterion/compare/v5.12.0...v5.12.1) (2026-11-07)
 
 ### Bug Fixes
