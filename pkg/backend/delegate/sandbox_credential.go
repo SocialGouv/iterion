@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/backend/credroute"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // SandboxHomeState is what the run's sandbox will actually bind of the
@@ -133,7 +134,7 @@ func piSandboxCredentialSecretNames() []string {
 //
 // pi takes no SandboxHomeState: its file-based channel (the bridge) crosses
 // the boundary without the home bind, unlike claude_code's ~/.claude mount.
-func PiSandboxCredential(ctx context.Context, model string) (channel string, ok bool) {
+func PiSandboxCredential(ctx context.Context, model string, trust store.RunTrust) (channel string, ok bool) {
 	for _, name := range piSandboxCredentialSecretNames() {
 		if v, ok := os.LookupEnv(name); ok && v != "" {
 			return "the launcher env forwarded into the container (" + name + ")", true
@@ -145,7 +146,7 @@ func PiSandboxCredential(ctx context.Context, model string) (channel string, ok 
 		}
 	}
 	if provider := strings.ToLower(strings.TrimSpace(strings.Split(model, "/")[0])); provider == piCodexProvider {
-		if view, err := piLoadCodexView(ctx); err == nil && view.IsChatGPTMode() {
+		if view, err := piLoadCodexView(ctx, trust); err == nil && view.IsChatGPTMode() {
 			return "the ChatGPT-forfait bridge (the codex credential seeded into the sandbox)", true
 		}
 	}

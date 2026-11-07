@@ -657,7 +657,14 @@ func piSkillArgs(task Task, logger *iterlog.Logger) []string {
 	// .claude/skills/ would otherwise be handed a path that does not exist. The
 	// branch below drops unresolvable paths for the same reason; these two must
 	// not disagree.
-	if strings.TrimSpace(os.Getenv("ITERION_PI_TRUST_PROJECT")) == "1" {
+	//
+	// Gated on the workspace's provenance (ADR-162 U3) for the same reason the
+	// two other readers of this variable are: it is an operator's standing
+	// statement about checkouts they own, and it cannot speak for one they do
+	// not. An untrusted workspace falls through to the MirroredSkills branch
+	// below, which is sourced from the bundle and already excludes anything the
+	// checkout shadowed.
+	if strings.TrimSpace(os.Getenv("ITERION_PI_TRUST_PROJECT")) == "1" && task.WorkspaceTrust.Trusted() {
 		if _, err := os.Stat(dir); err != nil && task.Hostless() {
 			return nil
 		}
@@ -695,9 +702,17 @@ func piSkillArgs(task Task, logger *iterlog.Logger) []string {
 	// engine named skills, none of them resolved, and pi runs with none while
 	// the bot's prompt tells the agent to load them. Nothing else reports it.
 	if len(args) == 0 && named > 0 && logger != nil {
+		// The way out is offered only where it exists: on a workspace its
+		// tenant did not write, ITERION_PI_TRUST_PROJECT=1 is ignored, and
+		// suggesting it would send the operator after a switch that does
+		// nothing.
+		hint := "set ITERION_PI_TRUST_PROJECT=1 to load the workspace's own"
+		if !task.WorkspaceTrust.Trusted() {
+			hint = "this workspace was not written by its tenant, so its own skills are never loaded — ITERION_PI_TRUST_PROJECT does not lift that"
+		}
 		logger.Warn("[%s#%d/%s] no skills offered to pi: the engine named %d for this run "+
-			"but none resolved under %s (set ITERION_PI_TRUST_PROJECT=1 to load the workspace's own)",
-			task.NodeID, task.Iteration, BackendPi, named, dir)
+			"but none resolved under %s (%s)",
+			task.NodeID, task.Iteration, BackendPi, named, dir, hint)
 	}
 	return args
 }
@@ -781,7 +796,12 @@ func piExtraArgsFor(task Task, logger *iterlog.Logger) []string {
 		args = append(args, "--offline")
 	}
 
-	if strings.TrimSpace(os.Getenv("ITERION_PI_TRUST_PROJECT")) == "1" {
+	// A workspace its tenant did not write never buys this, whatever the
+	// environment says (ADR-162 U3): --approve executes project-local
+	// TypeScript inside the agent process, the process holding the run's
+	// credentials. The env var is an operator's statement about a checkout
+	// they trust; it cannot speak for one they do not.
+	if strings.TrimSpace(os.Getenv("ITERION_PI_TRUST_PROJECT")) == "1" && task.WorkspaceTrust.Trusted() {
 		args = append(args, "--approve")
 	}
 
@@ -797,7 +817,14 @@ func piExtraArgsFor(task Task, logger *iterlog.Logger) []string {
 	// pi's walk cannot be bounded, so every policy but `all` turns it off and
 	// iterion supplies the allowed files itself (piSystemPromptSuffix).
 	// ITERION_PI_NO_CONTEXT_FILES=1 stays the operator's raw off switch.
-	if !piUsesNativeContextFiles(task) {
+	//
+	// FLOOR (ADR-162 U3) on a workspace its tenant did not write, and the pi
+	// half of what claude_code gets by losing its `project` setting source:
+	// those AGENTS.md/CLAUDE.md are the checkout's, they are injected as
+	// INSTRUCTIONS, and the agent reading them is reviewing their author's
+	// own diff. Backend parity — the withdrawal is wired for both, or it is
+	// wired for neither.
+	if !piUsesNativeContextFiles(task) || !task.WorkspaceTrust.Trusted() {
 		args = append(args, "--no-context-files")
 	}
 

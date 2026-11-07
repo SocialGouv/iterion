@@ -358,7 +358,10 @@ func (a credentialAdmission) probeWithoutArm(ctx context.Context, backend string
 		_, ok = delegate.ClaudeCodeSandboxCredential(ctx, fields.Provider, a.placement.Home)
 		return true, ok
 	case delegate.BackendPi:
-		_, ok = delegate.PiSandboxCredential(ctx, fields.Model)
+		// The probe answers for the trust the run carries: on an untrusted
+		// workspace the bridge refuses (piLoadCodexView), and reporting its
+		// channel here would read as a credential the fork never receives.
+		_, ok = delegate.PiSandboxCredential(ctx, fields.Model, a.trust)
 		return true, ok
 	}
 	return false, false

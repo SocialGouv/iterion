@@ -108,7 +108,12 @@ func piAmbientFiles(task Task) []piContextFile {
 		d := dirs[i]
 		switch {
 		case d == root || strings.HasPrefix(d, strings.TrimSuffix(root, sep)+sep):
-			if task.AmbientContext.IncludesWorkspace() {
+			// FLOOR (ADR-162 U3): on a workspace its tenant did not write,
+			// these files are the checkout's own prose — the agent reading
+			// them is reviewing their author's diff. The policy's
+			// workspace half is withheld; the operator's half below is not
+			// (it names no file the checkout can write).
+			if task.WorkspaceTrust.Trusted() && task.AmbientContext.IncludesWorkspace() {
 				add(piContextFileFromDir(d))
 			}
 		case d != boundary && (d == sep || strings.HasPrefix(boundary, strings.TrimSuffix(d, sep)+sep)):

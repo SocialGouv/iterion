@@ -12,6 +12,7 @@ import (
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/secrets"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // Handing pi the operator's ChatGPT (Codex) subscription.
@@ -56,9 +57,16 @@ func piNoteCodexFallback(task Task, logger *iterlog.Logger, reason string) {
 	if logger == nil {
 		return
 	}
-	logger.Warn("[%s#%d/%s] node targets %s and %s; leaving pi to resolve its own "+
-		"credential (run `pi` then /login, or sign in with `codex login`)",
-		task.NodeID, task.Iteration, BackendPi, piCodexProvider, reason)
+	// The ways out are named only where they exist. On a workspace its tenant
+	// did not write, pi's own /login store does not reach a floored container,
+	// and on the host it would make the operator's own login serve the fork —
+	// the rule this bridge enforces; what works there is a model with an API key.
+	way := "run `pi` then /login, or sign in with `codex login`"
+	if !task.WorkspaceTrust.Trusted() {
+		way = "use an openai/… model with an API key — on a workspace its tenant did not write, no subscription login is used"
+	}
+	logger.Warn("[%s#%d/%s] node targets %s and %s; leaving pi to resolve its own credential (%s)",
+		task.NodeID, task.Iteration, BackendPi, piCodexProvider, reason, way)
 }
 
 // piOAuthCredential is one entry of pi's auth.json. `type: "oauth"` is the
@@ -97,12 +105,28 @@ func piCodexSeed(ctx context.Context, task Task, logger *iterlog.Logger) (map[st
 		}
 	}
 
+	// A workspace its tenant did not write: the bridge does not seed a ChatGPT
+	// token where the fork's agent reads (ADR-162 U3). pi's openai-codex
+	// provider takes its credential only from a FILE in an agent dir — a live
+	// access AND refresh token the agent process can read — and on such a
+	// workspace the only root that exists is inside the checkout (the
+	// host-state floor withdraws the shared one), so the token would sit in
+	// the attacker's tree, readable by an agent under their prompt. Stepped
+	// aside before anything is read or created, including the ignore guard
+	// piCodexSeedRoot would write there.
+	if !task.WorkspaceTrust.Trusted() {
+		if _, loc := task.StateDir(BackendPi); loc == StateInCheckout {
+			piNoteCodexFallback(task, logger, "this workspace was not written by its tenant, and the only place to seed pi's agent dir is inside its checkout — a ChatGPT subscription token is never written where the fork's agent reads it")
+			return nil, noop, nil
+		}
+	}
+
 	// No usable Codex credential is NOT an error: before this bridge existed,
 	// such a node ran off pi's own `/login` store, and failing here would take
 	// that working path away — while telling the operator to run `pi` and
 	// /login, which this code path never reads. Warn and step aside so pi
 	// resolves its own credential, exactly as it used to.
-	view, err := piLoadCodexView(ctx)
+	view, err := piLoadCodexView(ctx, task.WorkspaceTrust)
 	switch {
 	case err != nil:
 		piNoteCodexFallback(task, logger, fmt.Sprintf("no ChatGPT credential could be read (%v)", err))
@@ -189,13 +213,21 @@ func piCodexSeed(ctx context.Context, task Task, logger *iterlog.Logger) (map[st
 // routinely absent or empty while ~/.codex holds the real login, and treating
 // that as "no credential" is indistinguishable, to the operator, from having
 // none at all.
-func piLoadCodexView(ctx context.Context) (secrets.CodexCredentialsView, error) {
+func piLoadCodexView(ctx context.Context, trust store.RunTrust) (secrets.CodexCredentialsView, error) {
 	if creds, ok := secrets.CredentialsFromContext(ctx); ok {
 		if dir := creds.OAuthDir("codex"); dir != "" {
 			if view, err := secrets.LoadCodexCredentialsFrom(dir); err == nil && view.IsChatGPTMode() {
 				return view, nil
 			}
 		}
+	}
+	// Only a credential DELIVERED to the run may serve a workspace its tenant
+	// did not write (ADR-162 U3). The host's ~/.codex is the operator's own
+	// login — the store the host-state floor keeps out of such a run's
+	// container — and falling back to it would hand the fork's agent exactly
+	// what that floor withholds.
+	if !trust.Trusted() {
+		return secrets.CodexCredentialsView{}, fmt.Errorf("no ChatGPT credential was delivered to this run, and the host's own login is not used for a workspace its tenant did not write")
 	}
 	return secrets.LoadCodexCredentialsFromDisk()
 }
