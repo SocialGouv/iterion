@@ -69,6 +69,8 @@ var serialFamily = map[string]string{
 	"reask_extraction_failure_test.go":  "Setenv",
 	"schema_feedback_size_test.go":      "Setenv",
 	"schema_mutation_witness_test.go":   "Setenv",
+	"subagent_cache_spend_test.go":      "SetGatewayPricer",
+	"hooks_usage_gateway_cache_test.go": "SetGatewayPricer",
 	"round2_chain_test.go":              "Setenv",
 	"round2_effort_test.go":             "Setenv",
 	"round2_extract_test.go":            "Setenv",
@@ -204,6 +206,7 @@ var globalMutators = map[string]bool{
 	"SetDefault":           true,
 	"SetCredentialsLookup": true,
 	"SetOAuthDirLookup":    true,
+	"SetGatewayPricer":     true,
 }
 
 // readCampaign reads this package's own test files through the shared reader

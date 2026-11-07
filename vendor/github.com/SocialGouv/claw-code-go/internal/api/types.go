@@ -416,6 +416,14 @@ type UsageDelta struct {
 	// takes whichever of the two is non-zero — never the later one
 	// unconditionally, which would zero the Anthropic count.
 	InputTokens int `json:"input_tokens"`
+	// InputTokensDetails carries the chat-completions breakdown of the
+	// prompt count. CachedTokens is prompt_tokens_details.cached_tokens —
+	// the tokens the host served from its prompt cache, which providers
+	// bill at a discounted rate. 0 when the API omits the breakdown (and a
+	// real account of no cache read when it reports the block with 0).
+	InputTokensDetails struct {
+		CachedTokens int `json:"cached_tokens"`
+	} `json:"input_tokens_details"`
 	// OutputTokensDetails carries Anthropic's exact billed breakdown.
 	// ThinkingTokens counts the raw internal reasoning (always the full
 	// amount regardless of thinking.display); 0 when the API omits it.

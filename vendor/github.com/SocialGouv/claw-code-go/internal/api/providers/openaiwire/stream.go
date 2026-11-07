@@ -88,6 +88,7 @@ func StreamEvents(ctx context.Context, resp *http.Response, ch chan<- api.Stream
 		finishReason string
 		outputTokens int
 		inputTokens  int
+		cachedTokens int
 		sawUsage     bool
 		sawDone      bool
 		// cut: the connection dropped inside a line, which may have been a
@@ -99,7 +100,9 @@ func StreamEvents(ctx context.Context, resp *http.Response, ch chan<- api.Stream
 	// soFar is the usage an error event carries: what the stream had
 	// reported before failing, which is no final account of the call.
 	soFar := func() api.UsageDelta {
-		return api.UsageDelta{OutputTokens: outputTokens, InputTokens: inputTokens}
+		u := api.UsageDelta{OutputTokens: outputTokens, InputTokens: inputTokens}
+		u.InputTokensDetails.CachedTokens = cachedTokens
+		return u
 	}
 
 	// eventName is the current SSE event's `event:` field; a blank line ends
@@ -185,6 +188,9 @@ func StreamEvents(ctx context.Context, resp *http.Response, ch chan<- api.Stream
 		if frameUsage {
 			outputTokens = chunk.Usage.CompletionTokens
 			inputTokens = chunk.Usage.PromptTokens
+			if chunk.Usage.PromptTokensDetails != nil {
+				cachedTokens = chunk.Usage.PromptTokensDetails.CachedTokens
+			}
 			sawUsage = true
 		}
 		if failed {
@@ -319,10 +325,12 @@ func StreamEvents(ctx context.Context, resp *http.Response, ch chan<- api.Stream
 		stopReason = "tool_use"
 	}
 
+	finalUsage := api.UsageDelta{OutputTokens: outputTokens, InputTokens: inputTokens, Reported: sawUsage && !cut}
+	finalUsage.InputTokensDetails.CachedTokens = cachedTokens
 	send(api.StreamEvent{
 		Type:       api.EventMessageDelta,
 		StopReason: stopReason,
-		Usage:      api.UsageDelta{OutputTokens: outputTokens, InputTokens: inputTokens, Reported: sawUsage && !cut},
+		Usage:      finalUsage,
 	})
 	send(api.StreamEvent{Type: api.EventMessageStop})
 }

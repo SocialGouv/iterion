@@ -334,6 +334,15 @@ func aggregateStreamWithIdleWatchdog(ctx context.Context, ch <-chan api.StreamEv
 				if event.Usage.InputTokens > 0 {
 					res.usage.InputTokens = event.Usage.InputTokens
 				}
+				// The chat-completions hosts report their prompt cache
+				// read in the same terminal payload as the prompt count,
+				// so it arrives here too. Taken only when non-zero, the
+				// way the prompt count above is: Anthropic answers on
+				// message_start and sends a delta carrying nothing, which
+				// an unconditional read would erase.
+				if event.Usage.InputTokensDetails.CachedTokens > 0 {
+					res.usage.CacheReadTokens = event.Usage.InputTokensDetails.CachedTokens
+				}
 				// Exact billed thinking tokens (raw internal reasoning,
 				// independent of thinking.display); 0 when the provider
 				// omits the breakdown.
@@ -350,6 +359,7 @@ func aggregateStreamWithIdleWatchdog(ctx context.Context, ch <-chan api.StreamEv
 				// the provider's own account reports the call.
 				res.usage.InputTokens = max(res.usage.InputTokens, event.Usage.InputTokens)
 				res.usage.OutputTokens = max(res.usage.OutputTokens, event.Usage.OutputTokens)
+				res.usage.CacheReadTokens = max(res.usage.CacheReadTokens, event.Usage.InputTokensDetails.CachedTokens)
 				res.usage.ReasoningTokens = max(res.usage.ReasoningTokens, event.Usage.OutputTokensDetails.ThinkingTokens)
 				served = served || res.usage.InputTokens > 0 || res.usage.OutputTokens > 0
 				switch {

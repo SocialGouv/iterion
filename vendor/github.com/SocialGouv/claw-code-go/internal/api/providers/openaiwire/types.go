@@ -283,6 +283,13 @@ type FunctionDelta struct {
 type Usage struct {
 	PromptTokens     int `json:"prompt_tokens"`
 	CompletionTokens int `json:"completion_tokens"`
+	// PromptTokensDetails is the chat-completions breakdown of the prompt
+	// count. nil when the host omits the block; CachedTokens inside is the
+	// prompt-cache read count the host served (nil is no account, 0 is an
+	// account of no cache read).
+	PromptTokensDetails *struct {
+		CachedTokens int `json:"cached_tokens"`
+	} `json:"prompt_tokens_details,omitempty"`
 	// counted records that the decoded object named a counter.
 	counted bool
 }
@@ -295,13 +302,21 @@ func (u *Usage) Counted() bool { return u != nil && u.counted }
 // UnmarshalJSON decodes the counters and records whether any was present.
 func (u *Usage) UnmarshalJSON(b []byte) error {
 	var raw struct {
-		PromptTokens     *int `json:"prompt_tokens"`
-		CompletionTokens *int `json:"completion_tokens"`
+		PromptTokens        *int `json:"prompt_tokens"`
+		CompletionTokens    *int `json:"completion_tokens"`
+		PromptTokensDetails *struct {
+			CachedTokens *int `json:"cached_tokens"`
+		} `json:"prompt_tokens_details"`
 	}
 	if err := json.Unmarshal(b, &raw); err != nil {
 		return err
 	}
 	*u = Usage{counted: raw.PromptTokens != nil || raw.CompletionTokens != nil}
+	if raw.PromptTokensDetails != nil && raw.PromptTokensDetails.CachedTokens != nil {
+		u.PromptTokensDetails = &struct {
+			CachedTokens int `json:"cached_tokens"`
+		}{CachedTokens: *raw.PromptTokensDetails.CachedTokens}
+	}
 	if raw.PromptTokens != nil {
 		u.PromptTokens = *raw.PromptTokens
 	}

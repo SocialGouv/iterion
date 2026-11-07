@@ -834,6 +834,15 @@ func (loop *ConversationLoop) runOneTurnStreaming(ctx context.Context, events ch
 			if event.Usage.InputTokens > 0 {
 				inputTokens = event.Usage.InputTokens
 			}
+			// The chat-completions hosts report their cache read in the
+			// same terminal payload as the prompt count, so it arrives
+			// here too. Taken only when non-zero, the way the prompt
+			// count above is: Anthropic answers on message_start and
+			// sends a delta carrying nothing, which an unconditional
+			// read would erase.
+			if event.Usage.InputTokensDetails.CachedTokens > 0 {
+				cacheReadTokens = event.Usage.InputTokensDetails.CachedTokens
+			}
 
 		case api.EventMessageStop:
 			// stream complete

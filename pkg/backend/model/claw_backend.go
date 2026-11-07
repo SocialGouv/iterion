@@ -919,7 +919,7 @@ func meteredFailure(task delegate.Task, usage Usage) delegate.Result {
 	output := map[string]any{}
 	tokens := annotateUsage(output, task.Model, usage)
 	return delegate.Result{
-		CostUSD:         cost.EstimateUSD(task.Model, usage.InputTokens, usage.OutputTokens),
+		CostUSD:         cost.EstimateUSDWithCache(task.Model, usage.InputTokens, usage.OutputTokens, usage.CacheReadTokens),
 		UnreportedCalls: usage.UnreportedCalls,
 		EffectiveModel:  task.Model,
 		Output:          output,
@@ -935,11 +935,15 @@ func meteredFailure(task delegate.Task, usage Usage) delegate.Result {
 // provider did not report, for which those figures are a lower bound.
 func annotateUsage(output map[string]any, model string, u Usage) int {
 	cost.SetUnreportedCalls(output, u.UnreportedCalls)
-	return cost.Annotate(output, model, u.InputTokens, u.OutputTokens)
+	return cost.AnnotateWithCache(output, model, u.InputTokens, u.OutputTokens, u.CacheReadTokens)
 }
 
 // clawCostEstimate is the backend's own price lookup, named so a test can
-// read a call's cost from the same table the result is built from.
+// read a call's cost from the same table the result is built from. It is
+// deliberately pre-cache (no cache-share parameter): the tests using it
+// price witness calls that carry no cache read, and a cache-carrying usage
+// is priced by the EstimateUSDWithCache sites above, never cheaper than
+// this figure.
 func clawCostEstimate(modelSpec string, inputTokens, outputTokens int) float64 {
 	return cost.EstimateUSD(modelSpec, inputTokens, outputTokens)
 }
@@ -1041,7 +1045,7 @@ func (b *ClawBackend) generateStructured(ctx context.Context, client api.APIClie
 	tokens := annotateUsage(output, task.Model, result.TotalUsage)
 
 	return delegate.Result{
-		CostUSD:         cost.EstimateUSD(task.Model, result.TotalUsage.InputTokens, result.TotalUsage.OutputTokens),
+		CostUSD:         cost.EstimateUSDWithCache(task.Model, result.TotalUsage.InputTokens, result.TotalUsage.OutputTokens, result.TotalUsage.CacheReadTokens),
 		UnreportedCalls: result.TotalUsage.UnreportedCalls,
 		EffectiveModel:  task.Model,
 		Output:          output,
@@ -1073,7 +1077,7 @@ func (b *ClawBackend) generateText(ctx context.Context, client api.APIClient, ta
 	tokens := annotateUsage(output, task.Model, result.TotalUsage)
 
 	return delegate.Result{
-		CostUSD:         cost.EstimateUSD(task.Model, result.TotalUsage.InputTokens, result.TotalUsage.OutputTokens),
+		CostUSD:         cost.EstimateUSDWithCache(task.Model, result.TotalUsage.InputTokens, result.TotalUsage.OutputTokens, result.TotalUsage.CacheReadTokens),
 		UnreportedCalls: result.TotalUsage.UnreportedCalls,
 		EffectiveModel:  task.Model,
 		Output:          output,
@@ -1240,7 +1244,7 @@ func (b *ClawBackend) generateTextWithToolsAndSchema(ctx context.Context, client
 		if err := json.Unmarshal([]byte(text), &output); err == nil {
 			tokens := annotateUsage(output, task.Model, result.TotalUsage)
 			return delegate.Result{
-				CostUSD:         cost.EstimateUSD(task.Model, result.TotalUsage.InputTokens, result.TotalUsage.OutputTokens),
+				CostUSD:         cost.EstimateUSDWithCache(task.Model, result.TotalUsage.InputTokens, result.TotalUsage.OutputTokens, result.TotalUsage.CacheReadTokens),
 				UnreportedCalls: result.TotalUsage.UnreportedCalls,
 				EffectiveModel:  task.Model,
 				Output:          output,
@@ -1269,7 +1273,7 @@ func (b *ClawBackend) generateTextWithToolsAndSchema(ctx context.Context, client
 			b.logger.Warn("[%s] structured output read from the %s of the tool loop's final turn — its text held no JSON object to parse", task.NodeID, source)
 			tokens := annotateUsage(output, task.Model, result.TotalUsage)
 			return delegate.Result{
-				CostUSD:         cost.EstimateUSD(task.Model, result.TotalUsage.InputTokens, result.TotalUsage.OutputTokens),
+				CostUSD:         cost.EstimateUSDWithCache(task.Model, result.TotalUsage.InputTokens, result.TotalUsage.OutputTokens, result.TotalUsage.CacheReadTokens),
 				UnreportedCalls: result.TotalUsage.UnreportedCalls,
 				EffectiveModel:  task.Model,
 				Output:          output,
@@ -1338,7 +1342,7 @@ func (b *ClawBackend) generateTextWithToolsAndSchema(ctx context.Context, client
 		accumulateUsage(&both, obj.TotalUsage)
 		tokens := annotateUsage(obj.Object, task.Model, both)
 		return delegate.Result{
-			CostUSD:            cost.EstimateUSD(task.Model, both.InputTokens, both.OutputTokens),
+			CostUSD:            cost.EstimateUSDWithCache(task.Model, both.InputTokens, both.OutputTokens, both.CacheReadTokens),
 			UnreportedCalls:    both.UnreportedCalls,
 			EffectiveModel:     task.Model,
 			Output:             obj.Object,
@@ -1388,7 +1392,7 @@ func (b *ClawBackend) generateTextWithToolsAndSchema(ctx context.Context, client
 			accumulateUsage(&both, obj2.TotalUsage)
 			tokens := annotateUsage(obj2.Object, task.Model, both)
 			return delegate.Result{
-				CostUSD:            cost.EstimateUSD(task.Model, both.InputTokens, both.OutputTokens),
+				CostUSD:            cost.EstimateUSDWithCache(task.Model, both.InputTokens, both.OutputTokens, both.CacheReadTokens),
 				UnreportedCalls:    both.UnreportedCalls,
 				EffectiveModel:     task.Model,
 				Output:             obj2.Object,
@@ -1442,7 +1446,7 @@ func (b *ClawBackend) generateTextWithToolsAndSchema(ctx context.Context, client
 	output := map[string]any{"text": text}
 	tokens := annotateUsage(output, task.Model, billed)
 	return delegate.Result{
-		CostUSD:         cost.EstimateUSD(task.Model, billed.InputTokens, billed.OutputTokens),
+		CostUSD:         cost.EstimateUSDWithCache(task.Model, billed.InputTokens, billed.OutputTokens, billed.CacheReadTokens),
 		UnreportedCalls: billed.UnreportedCalls,
 		EffectiveModel:  task.Model,
 		Output:          output,
