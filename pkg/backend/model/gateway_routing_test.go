@@ -563,7 +563,7 @@ func TestCompactionConfig_AGatewayRouteSizesFromItsCatalogWindow(t *testing.T) {
 // window as the effective context window. Red when the stamp or the
 // window wiring is dropped.
 func TestClawBackend_TheCatalogRecordRidesTheResult(t *testing.T) {
-	t.Setenv("OPENAI_COMPATIBLE_MODELS", `{"gw/m":{"context_window":123456,"input_usd_per_mtok":1,"output_usd_per_mtok":2}}`)
+	t.Setenv("OPENAI_COMPATIBLE_MODELS", `{"gw/m":{"context_window":123456,"input_usd_per_mtok":1,"output_usd_per_mtok":2,"cache_read_usd_per_mtok":0.25}}`)
 	t.Setenv("OPENAI_COMPATIBLE_CATALOG_PROVIDER", "")
 	t.Setenv("OPENAI_COMPATIBLE_BASE_URL", "https://198.51.100.7")
 	t.Setenv("OPENAI_COMPATIBLE_API_KEY", "sk-test")
@@ -585,6 +585,12 @@ func TestClawBackend_TheCatalogRecordRidesTheResult(t *testing.T) {
 	}
 	if !strings.Contains(string(raw), `"source":"operator"`) || !strings.Contains(string(raw), `"context_window":123456`) {
 		t.Errorf("_gateway_spec = %s, want the operator provenance and window", raw)
+	}
+	// The record must carry the cache rate the pricer used: this stamp is
+	// the operator's answer to "WHICH table priced this run" (SocialGouv/
+	// iterion#3103 — a record without the rate contradicted the price).
+	if !strings.Contains(string(raw), `"cache_read_usd_per_mtok":0.25`) {
+		t.Errorf("_gateway_spec = %s, want the cache read rate the pricing used", raw)
 	}
 	if res.ContextWindow != 123456 {
 		t.Errorf("Result.ContextWindow = %d, want the gateway's", res.ContextWindow)
