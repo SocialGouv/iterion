@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [5.12.3](https://github.com/SocialGouv/iterion/compare/v5.12.2...v5.12.3) (2026-11-07)
+
+### Bug Fixes
+
+* **launch:** the server-minted forge grant vars ride every launch door ([#3108](https://github.com/SocialGouv/iterion/issues/3108)) ([5438630](https://github.com/SocialGouv/iterion/commit/543863087f701e89dcaee20d135546acd0af04ff)), references [#3107](https://github.com/SocialGouv/iterion/issues/3107)
+
+    <details><summary>why</summary>
+
+    A manual API launch of a forge bot whose bundle predates one of the server-minted launch vars died 400: applyPRLaunchContext injects all four grant vars (publish URL/token, PR-state and delivery-preflight endpoints) whenever the launch carries a pr_url, and the strict launch-input check then refused the ones the bundle declares no var for — the server refusing its own mint (#3107). The webhook lane was unaffected only because it rides on AllowUnknownInputs.
+
+    </details>
+
 ## [5.12.2](https://github.com/SocialGouv/iterion/compare/v5.12.1...v5.12.2) (2026-11-07)
 
 ### Bug Fixes
