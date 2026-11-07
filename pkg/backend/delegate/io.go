@@ -82,8 +82,17 @@ type IOTask struct {
 	// task the launcher also announces the trust before the task
 	// (EnvelopeWorkspaceTrust), which a runner that predates the field refuses.
 	WorkspaceTrust store.RunTrust `json:"workspace_trust,omitempty"`
-	BaseDir        string         `json:"base_dir,omitempty"`
-	RepoRoot       string         `json:"repo_root,omitempty"`
+	// InjectedHooks travels WITH WorkspaceTrust, for the same reason: on an
+	// untrusted workspace it is the only hook configuration a node may run
+	// (see Task.InjectedHooks), and the on-disk record of those groups lives
+	// inside the checkout, where the runner must not go looking for it.
+	// Dropped here the sandboxed run fails closed — no hooks at all — which
+	// is why the field exists beside SettingsHooks rather than folding into
+	// it: SettingsHooks is the workspace's document, this is iterion's own
+	// in-memory record.
+	InjectedHooks map[string][]any `json:"injected_hooks,omitempty"`
+	BaseDir       string           `json:"base_dir,omitempty"`
+	RepoRoot      string           `json:"repo_root,omitempty"`
 	// ScratchDir is the run's scratch read root as the RUNNER sees it —
 	// the fixed container path on a sandbox crossing, where the host path
 	// would not exist. The runner's read tools (read_file, glob, grep)

@@ -252,55 +252,61 @@ func TestClaudeAmbientKeepsANestedWorktreesOwnFiles(t *testing.T) {
 }
 
 // TestClaudeAmbient_UntrustedProjectHooksTypedAndSaid is the witness for the
-// ADR-162 backend-parity disposition: claw wires NONE of an untrusted
-// workspace's settings.json hooks; claude_code cannot strip them from the
-// project scope (the scope carries the mirrored skills), so the gap is TYPED
-// on the spawn and SAID through the REAL Execute — never silently different.
+// ADR-162 U3: on a workspace the tenant did not write, the checkout's own
+// scopes — project and local — never reach the spawn, whatever resolved them
+// (the ambient policy, or the operator's raw legacy list): the repo's
+// settings.json carries hooks and an `env` block, and its CLAUDE.md is
+// project-scope discovery. Iterion's own mirrored skills are untouched — on
+// an untrusted run they arrive through the pinned skill channel (#1719).
 //
-// Mutations: the flag's RHS muted to `false` in claudeAmbient reddens the
-// typed assertion; reportUntrustedProjectHooks' call dropped from Execute
-// reddens the spawn-recorded log assertion.
-func TestClaudeAmbient_UntrustedProjectHooksTypedAndSaid(t *testing.T) {
+// Mutations: dropping the withoutCheckoutScopes call in claudeAmbient reddens
+// every untrusted row on its own assertion; stripping `local` but not
+// `project` (or the reverse) reddens the legacy-hatch row.
+func TestClaudeAmbient_UntrustedDropsTheCheckoutScopes(t *testing.T) {
 	unsetSettingSourcesEnv(t)
 	_, _, _, work := ambientTree(t)
 
-	// The typed half, at the translation seam every spawn passes through.
-	fork := claudeAmbient(Task{WorkDir: work, AmbientContext: ambient.Workspace, WorkspaceTrust: store.RunTrustFork})
-	if !fork.untrustedProjectHooks {
-		t.Error("untrusted + project scope: the parity gap is not typed on the spawn")
-	}
-	trusted := claudeAmbient(Task{WorkDir: work, AmbientContext: ambient.Workspace})
-	if trusted.untrustedProjectHooks {
-		t.Error("trusted workspace: the parity flag must stay off")
+	project := claudesdk.SettingSourceProject
+	local := claudesdk.SettingSourceLocal
+	user := claudesdk.SettingSourceUser
+	for _, row := range []struct {
+		name    string
+		policy  ambient.Policy
+		legacy  string // "" = the variable stays absent
+		sources []claudesdk.SettingSource
+	}{
+		{"the default policy loads nothing of the checkout's", ambient.Workspace, "", nil},
+		{"all keeps only the operator's scope", ambient.All, "", []claudesdk.SettingSource{user}},
+		{"none resolves to nothing at all", ambient.None, "", nil},
+		{"the operator's raw list is floored as well", ambient.Workspace, "user,project,local", []claudesdk.SettingSource{user}},
+		{"a raw list of checkout scopes only loads nothing", ambient.Workspace, "project,local", nil},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			if row.legacy != "" {
+				t.Setenv(settingSourcesEnv, row.legacy)
+			}
+			spawn := claudeAmbient(Task{WorkDir: work, AmbientContext: row.policy, WorkspaceTrust: store.RunTrustFork})
+			for _, s := range spawn.sources {
+				if s == project || s == local {
+					t.Errorf("untrusted spawn still loads the checkout scope %q: %v", s, spawn.sources)
+				}
+			}
+			// nil and the empty list both read as "load nothing".
+			if len(spawn.sources)+len(row.sources) > 0 && !reflect.DeepEqual(spawn.sources, row.sources) {
+				t.Errorf("sources = %v, want %v", spawn.sources, row.sources)
+			}
+			if spawn.excludes != nil {
+				t.Errorf("exclusions outlived the scope they exclude from: %v", spawn.excludes)
+			}
+		})
 	}
 
-	// The said half, through the REAL Execute against the stand-in CLI: the
-	// untrusted run's posture is on the record, the trusted one says nothing.
-	forkRec := spawnRecorded(t, Task{
-		NodeID:         "n",
-		AmbientContext: ambient.Workspace,
-		WorkspaceTrust: store.RunTrustFork,
-		OutputSchema:   []byte(`{"type":"object","properties":{"ok":{"type":"boolean"}}}`),
-	})
-	if !slices.ContainsFunc(forkRec.logs, func(l string) bool {
-		return strings.Contains(l, "untrusted") && strings.Contains(l, "settings.json hooks")
-	}) {
-		t.Errorf("the typed refusal was not said during Execute; backend log:\n%s", strings.Join(forkRec.logs, "\n"))
-	}
-	trustedRec := spawnRecorded(t, Task{
-		NodeID:         "n",
-		AmbientContext: ambient.Workspace,
-		OutputSchema:   []byte(`{"type":"object","properties":{"ok":{"type":"boolean"}}}`),
-	})
-	if slices.ContainsFunc(trustedRec.logs, func(l string) bool { return strings.Contains(l, "settings.json hooks") }) {
-		t.Errorf("the trusted run logged an untrusted-only line; backend log:\n%s", strings.Join(trustedRec.logs, "\n"))
-	}
-
-	// An untrusted run whose sources EXCLUDE the project scope (the legacy
-	// hatch pinning user only) carries no checkout hooks: nothing to type.
-	t.Setenv(settingSourcesEnv, "user")
-	userOnly := claudeAmbient(Task{WorkDir: work, WorkspaceTrust: store.RunTrustFork})
-	if userOnly.untrustedProjectHooks {
-		t.Error("sources without the project scope: the flag must stay off — no checkout hooks load")
+	// The trusted control: every policy keeps its project scope, exclusions
+	// included — the floor reads Trusted(), not the shape of the list.
+	for _, policy := range []ambient.Policy{ambient.All, ambient.Workspace, ambient.Operator, ambient.None} {
+		spawn := claudeAmbient(Task{WorkDir: work, AmbientContext: policy})
+		if !slices.Contains(spawn.sources, project) {
+			t.Errorf("trusted %s: the project scope is gone: %v", policy, spawn.sources)
+		}
 	}
 }

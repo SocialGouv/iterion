@@ -589,6 +589,17 @@ type Task struct {
 	// untrusted one does.
 	WorkspaceTrust store.RunTrust
 
+	// InjectedHooks are the plugin-contributed hook groups ITERION resolved
+	// for this run, handed down in memory by the engine (they are what
+	// runtime's mergePluginHooks computes). On a trusted workspace they ride
+	// the workspace's settings.json, where the runtime merged them, and this
+	// field is not consulted. On a workspace the tenant did not write they
+	// are the ONLY hooks that run — the file is the checkout's, so it is
+	// neither their authority nor allowed to veto them: claude_code gets them
+	// through the inline --settings layer, claw registers them from this
+	// record, and nothing the checkout writes reaches either path.
+	InjectedHooks map[string][]any
+
 	// HomeScope is the engine-owned identity of the runner's HOME: run-scoped
 	// on the trunk, branch-scoped inside fan-out. It deliberately stays
 	// independent from the session identity, which fan-out branches do not

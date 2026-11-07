@@ -2,7 +2,6 @@ package delegate
 
 import (
 	"path/filepath"
-	"slices"
 	"strings"
 	"sync"
 
@@ -25,24 +24,14 @@ type claudeAmbientSpawn struct {
 	legacy bool
 	// unknown holds the tokens of that variable that name no scope.
 	unknown []string
-	// untrustedProjectHooks is the ADR-162 backend-parity gap, typed. claw
-	// wires NONE of an untrusted workspace's .claude/settings.json hooks
-	// (the Execute-side switch and settingsHooksForWire both refuse them);
-	// this backend cannot strip hooks from the project scope, because the
-	// scope is also what carries the engine's mirrored skills and plugin
-	// contributions — so on an untrusted run the checkout's hooks load and
-	// fire where admission confines every untrusted run: in the sandbox.
-	// The field makes the difference inspectable; reportUntrustedProjectHooks
-	// says it. Never silently served.
-	untrustedProjectHooks bool
 }
 
 // claudeAmbient translates the node's policy into Claude Code's two
-// mechanisms. The project scope always loads: it carries the engine's own
-// mirrored skills and plugin contributions (pkg/runtime/plugin_skills.go),
-// which the CLI only discovers under it. What a policy removes is memory
-// files (CLAUDE.md, CLAUDE.local.md, .claude/rules/) and the operator's user
-// scope:
+// mechanisms. On a trusted run the project scope always loads: it carries the
+// engine's own mirrored skills and plugin contributions
+// (pkg/runtime/plugin_skills.go), which the CLI only discovers under it. What
+// a policy removes is memory files (CLAUDE.md, CLAUDE.local.md,
+// .claude/rules/) and the operator's user scope:
 //
 //	all        user,project
 //	workspace  project, minus the memory files above the repository root
@@ -58,6 +47,18 @@ type claudeAmbientSpawn struct {
 //
 // ITERION_CLAUDE_CODE_SETTING_SOURCES, when set, replaces the scopes verbatim
 // and drops the exclusions: it is the operator's raw escape hatch.
+//
+// FLOOR (ADR-162 U3): on a workspace the tenant did not write, the checkout's
+// own scopes — `project` and `local`, both the same directory — are stripped
+// from whatever was resolved, the operator's raw list included: the repo's
+// .claude/settings.json carries HOOKS, which are commands the CLI runs on its
+// own lifecycle events with the run's credential in reach, and its `env`
+// block can redirect every model request. The agent's cwd IS that checkout.
+// The run's skills are untouched by the withdrawal: on an untrusted run they
+// arrive through the pinned skill channel (--add-dir, #1719), never through
+// the project scope. Iterion's own plugin hooks keep firing too — inlined
+// into the --settings layer whenever the resolved list loads no project
+// source (claudeSpawnPins).
 func claudeAmbient(task Task) claudeAmbientSpawn {
 	var spawn claudeAmbientSpawn
 	if srcs, set, unknown := settingSourcesFromEnv(); set {
@@ -77,24 +78,30 @@ func claudeAmbient(task Task) claudeAmbientSpawn {
 			spawn = claudeAmbientSpawn{sources: project, excludes: excludeAncestors(root)}
 		}
 	}
-	// The parity flag reads the FINAL sources — the operator's legacy escape
-	// hatch included: an empty list means the CLI loads nothing, so only an
-	// explicit project scope carries the checkout's hooks.
-	spawn.untrustedProjectHooks = !task.WorkspaceTrust.Trusted() &&
-		slices.Contains(spawn.sources, claudesdk.SettingSourceProject)
+	if !task.WorkspaceTrust.Trusted() {
+		spawn.sources = withoutCheckoutScopes(spawn.sources)
+		// The exclusions answered which of the workspace's own memory files
+		// a loaded project scope may not read; with the scope itself gone
+		// they exclude nothing, and carrying them would only misreport the
+		// posture. `user`-scope memory (the operator's own) stays loaded.
+		spawn.excludes = nil
+	}
 	return spawn
 }
 
-// reportUntrustedProjectHooks is the typed refusal the ADR-162 parity rule
-// (a capability wired for one backend is wired, or typed-refused, for the
-// other) gets at this seam: the hooks cannot be removed from the scope the
-// mirrored skills load through, so the refusal is that the posture is said —
-// per node, on the record — with the reason and the bound named.
-func reportUntrustedProjectHooks(logger *iterlog.Logger, task Task, a claudeAmbientSpawn) {
-	if !a.untrustedProjectHooks || logger == nil {
-		return
+// withoutCheckoutScopes drops the scopes that ARE the checkout — project and
+// local — from a resolved source list. An untrusted run whose list held only
+// those resolves to the empty list, emitted as `--setting-sources ""`: the
+// CLI loads nothing.
+func withoutCheckoutScopes(srcs []claudesdk.SettingSource) []claudesdk.SettingSource {
+	out := make([]claudesdk.SettingSource, 0, len(srcs))
+	for _, s := range srcs {
+		if s == claudesdk.SettingSourceProject || s == claudesdk.SettingSourceLocal {
+			continue
+		}
+		out = append(out, s)
 	}
-	logger.Warn("[%s#%d/claude_code] the workspace is untrusted — its .claude/settings.json hooks load with the project scope and fire IN-CONTAINER (claw refuses the same document outright; this backend cannot strip hooks from the scope that carries the mirrored skills — ADR-162)", task.NodeID, task.Iteration)
+	return out
 }
 
 // settingSourcesOption emits the scopes, an empty list included.

@@ -760,7 +760,6 @@ func (b *ClaudeCodeBackend) buildSpawnOptions(task Task) ([]claudesdk.Option, fu
 	// exclusions ride the flag settings layer (claudeSpawnPins).
 	amb := claudeAmbient(task)
 	reportLegacySources(b.Logger, amb)
-	reportUntrustedProjectHooks(b.Logger, task, amb)
 	opts = append(opts, amb.settingSourcesOption())
 	if dir, ok := skillChannelAddDir(task); ok {
 		opts = append(opts, claudesdk.WithAddDirs(dir))
@@ -1997,32 +1996,57 @@ func claudeEnvPinsAndDropped(task Task) (map[string]string, []string) {
 // here, once. `autoMemoryDirectory` is one key the CLI refuses to read from a
 // checked-in `.claude/settings.json` at all, so the target repository cannot
 // redirect where the memory is written.
+//
+// The same object carries iterion's own plugin-contributed hook groups
+// (task.InjectedHooks) whenever the spawn does not load the `project` source —
+// the file those groups are merged into on a trusted run. Keyed on the
+// RESOLVED sources, not on the trust: an untrusted run (whose checkout scopes
+// claudeAmbient strips) and an operator's own `none` alike get them inline,
+// and a run that loads `project` does not configure them twice. Measured on
+// claude-code 2.1.220: a Stop hook passed through `--settings` with
+// `--setting-sources user` FIRES, and the same hook left only in the project
+// file does not.
 func claudeSpawnPins(task Task) (env map[string]string, settings []byte) {
 	env = claudeEnvPins(task)
 	_, memory := autoMemorySpawn(task)
-	excludes := claudeAmbient(task).excludes
-	settings, err := claudeFlagSettings(env, memory, excludes)
+	amb := claudeAmbient(task)
+	var hooks map[string][]any
+	if len(task.InjectedHooks) > 0 && !loadsProjectSource(amb.sources) {
+		hooks = task.InjectedHooks
+	}
+	settings, err := claudeFlagSettings(env, memory, amb.excludes, hooks)
 	if err != nil {
 		// Strings and a bool cannot fail to marshal. If they somehow did,
 		// enabling auto-memory without pinning the directory would send the
 		// agent's notes to the operator's personal memory instead of the
 		// run's space: stay off rather than write to the wrong place.
 		env[autoMemoryDisableEnv] = "1"
-		settings, _ = claudeFlagSettings(env, nil, excludes)
+		settings, _ = claudeFlagSettings(env, nil, amb.excludes, hooks)
 	}
 	return env, settings
 }
 
+// loadsProjectSource reports whether a resolved source list loads the
+// workspace's project settings — the file iterion's own hooks are merged
+// into on a trusted run.
+func loadsProjectSource(srcs []claudesdk.SettingSource) bool {
+	return slices.Contains(srcs, claudesdk.SettingSourceProject)
+}
+
 // claudeFlagSettings is the `--settings` object: the pinned environment as an
-// `env` block, the memory keys when there are any, and the memory files the
-// node's ambient-context policy keeps out (`claudeMdExcludes`).
-func claudeFlagSettings(env map[string]string, memory map[string]any, excludes []string) ([]byte, error) {
+// `env` block, the memory keys when there are any, the memory files the
+// node's ambient-context policy keeps out (`claudeMdExcludes`), and iterion's
+// own hook groups when the spawn loads no project source (claudeSpawnPins).
+func claudeFlagSettings(env map[string]string, memory map[string]any, excludes []string, hooks map[string][]any) ([]byte, error) {
 	settings := map[string]any{"env": env}
 	for key, value := range memory {
 		settings[key] = value
 	}
 	if len(excludes) > 0 {
 		settings["claudeMdExcludes"] = excludes
+	}
+	if len(hooks) > 0 {
+		settings["hooks"] = hooks
 	}
 	return json.Marshal(settings)
 }

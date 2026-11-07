@@ -78,7 +78,7 @@ func TestCLILiveClaudeAmbientPolicies(t *testing.T) {
 			// Each policy starts a new session: newestTranscript reads its
 			// transcript, so nothing is ever deleted between cases.
 			amb := claudeAmbient(Task{WorkDir: repo, AmbientContext: c.policy})
-			raw, err := claudeFlagSettings(map[string]string{}, nil, amb.excludes)
+			raw, err := claudeFlagSettings(map[string]string{}, nil, amb.excludes, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
