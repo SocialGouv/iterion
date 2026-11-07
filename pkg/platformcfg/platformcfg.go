@@ -34,11 +34,14 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"slices"
+
 	"github.com/SocialGouv/iterion/internal/envtrust"
 	"github.com/SocialGouv/iterion/pkg/botsource"
 	"github.com/SocialGouv/iterion/pkg/config"
 	"github.com/SocialGouv/iterion/pkg/llmroute"
 	"github.com/SocialGouv/iterion/pkg/queue"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // BotRoles is the role→bot-id override record. Each field, when non-nil,
@@ -479,9 +482,19 @@ func EngineInjectedVarName(name string) bool { return botVarNameOK(name) }
 // the webhook lanes' warn-and-proceed contract) and the rest, which a
 // strict launch keeps refusing. Input order is preserved on both sides, so
 // a caller's sorted input stays sorted.
+//
+// The launch vars the server mints per run (store.ServerMintedLaunchVars —
+// the forge publish grant's endpoints and bearer, injected by
+// applyPRLaunchContext before any door sees the inputs) classify
+// engine-injected too, though they are not env-shaped bot-var names: the
+// server itself just injected them, so a strict door refusing them refuses
+// the server's own mint (#3107) — a bundle predating one of the names
+// declares no var for it, and the IR drops it at wiring time, which is the
+// opt-in the mint documents. The names are the mint's complete list, so the
+// classification cannot drift from what is actually injected.
 func SplitEngineInjectedInputs(names []string) (injected, refused []string) {
 	for _, name := range names {
-		if EngineInjectedVarName(name) {
+		if EngineInjectedVarName(name) || slices.Contains(store.ServerMintedLaunchVars[:], name) {
 			injected = append(injected, name)
 		} else {
 			refused = append(refused, name)

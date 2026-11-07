@@ -69,3 +69,31 @@ func TestSplitEngineInjectedInputs(t *testing.T) {
 		t.Errorf("nil input split to injected=%v refused=%v, want both empty", injected, refused)
 	}
 }
+
+// TestSplitEngineInjectedInputsPinsTheMintedForgeVars pins #3107: the four
+// launch vars the server mints per run (the forge publish grant's endpoints
+// and bearer) classify engine-injected even though they are not env-shaped
+// bot-var names — the server itself just injected them, so a strict launch
+// door refusing them refuses the server's own mint. A bundle predating one
+// of the names declares no var for it and the IR drops it at wiring time,
+// which is the opt-in the mint documents.
+func TestSplitEngineInjectedInputsPinsTheMintedForgeVars(t *testing.T) {
+	injected, refused := SplitEngineInjectedInputs([]string{
+		"forge_publish_url",
+		"forge_publish_token",
+		"forge_pr_state_url",
+		"forge_delivery_preflight_url",
+		"gate_contex",
+	})
+	if !slices.Equal(injected, []string{
+		"forge_publish_url",
+		"forge_publish_token",
+		"forge_pr_state_url",
+		"forge_delivery_preflight_url",
+	}) {
+		t.Errorf("injected = %v, want the four minted forge vars in input order", injected)
+	}
+	if !slices.Equal(refused, []string{"gate_contex"}) {
+		t.Errorf("refused = %v, want only the typo", refused)
+	}
+}
