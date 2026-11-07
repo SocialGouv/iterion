@@ -3,6 +3,154 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [5.12.0](https://github.com/SocialGouv/iterion/compare/v5.11.0...v5.12.0) (2026-11-07)
+
+### Features
+
+* **runtime:** the mirror pass — every mirror write through the workspace handle ([e8ef588](https://github.com/SocialGouv/iterion/commit/e8ef588c6b6fd89a296f2aa26f76a0a8d8d9b1ba)), references [#1730](https://github.com/SocialGouv/iterion/issues/1730) [#874](https://github.com/SocialGouv/iterion/issues/874)
+
+    <details><summary>why</summary>
+
+    ADR-162 U2, on the U1 carrier. The engine opens ONE mirror pass per sequence (runPersistWorkspace, both resume paths), opened from the run's trust and handed down as a LOCAL — never an Engine field that a later reader could find nil'd and answer "trusted" for. A nil pass answers untrusted and yields a refusing handle: the zero value of the guarantee is the refusal.
+
+    </details>
+* **runtime:** the workspace handle — every mirror write goes through it ([26e7da9](https://github.com/SocialGouv/iterion/commit/26e7da971145eeecca82a3e26b220053384cd78e)), references [#1730](https://github.com/SocialGouv/iterion/issues/1730) [#874](https://github.com/SocialGouv/iterion/issues/874)
+
+    <details><summary>why</summary>
+
+    ADR-162 U2. git checks out a symlink with the target it was committed with, so a fork can ship .claude or a directory one level deeper as a link into the operator's tree, and the untrusted mirror's remove-and-replace turns it into a delete and a rewrite outside the workspace. The guarantee has to BE the object writes go through, not a verdict recorded before them: on an untrusted run the handle is an os.Root over the workspace, refusing every escaping component at every operation; on a trusted…
+
+    </details>
+* **security:** the run's trust reaches every task, process, child and compile ([5c7409c](https://github.com/SocialGouv/iterion/commit/5c7409ce8543b65e1a568b650b368849aae24740)), references [#874](https://github.com/SocialGouv/iterion/issues/874) [#1639](https://github.com/SocialGouv/iterion/issues/1639)
+
+    <details><summary>why</summary>
+
+    ADR-162 U1, the carrier. One value per run, resolved by the engine and handed down, never re-derived from the workspace:
+
+    </details>
+
+### Bug Fixes
+
+* **claw:** refuse the workspace's settings hooks on an untrusted run ([52a338b](https://github.com/SocialGouv/iterion/commit/52a338be21933c4f1633eeaf2ecbd13d30e50ce8)), references [#1730](https://github.com/SocialGouv/iterion/issues/1730) [#874](https://github.com/SocialGouv/iterion/issues/874)
+
+    <details><summary>why</summary>
+
+    The settings document claw wires in-process and ships into the sandbox crossing is the workspace's own .claude/settings.json: hook commands that run under the operator's automation, authored by the checkout. When the task carries fork trust — a workspace the tenant did not write — that document is refused typed at both consumption sites: no hooks are registered for the in-process runner, and no hooks document crosses the sandbox boundary. The refusal is said on the launcher, never silent.
+
+    </details>
+* **cli,dispatcher:** a cli or dispatched run resolves its connectors at the run's trust ([1fe6824](https://github.com/SocialGouv/iterion/commit/1fe6824f4342b3c6d78228ff6342d868c31b5efa)), references [#1639](https://github.com/SocialGouv/iterion/issues/1639) [#874](https://github.com/SocialGouv/iterion/issues/874)
+
+    <details><summary>why</summary>
+
+    U1 review round 2: localConnectorsForRun resolved every CLI run's connectors with connection.TrustOfRun(store.RunTrustDefault), and the dispatched sub-bot did the same — so once a fork lane exists, a fork run's node process re-entering the CLI would hand an untrusted child a trusted resolver and spend the operator's local credential where the in-process path refuses with ErrUntrustedMutation.
+
+    </details>
+* **cloudsched:** pin the held-intent guard test off the cron boundary ([40c06cc](https://github.com/SocialGouv/iterion/commit/40c06cc213e26e7e87167b4f6871f98c6931e591)), references [#3097](https://github.com/SocialGouv/iterion/issues/3097)
+
+    <details><summary>why</summary>
+
+    TestRound2HeldIntentDoesNotRerunConsumedGuard based its schedule on time.Now(): a run landing in the minute before the daily 09:00 cron instant sees the second tick's +1m step cross that slot, and the ticker correctly materializes and fires the NEW slot — a second guard execution (launches=1 guard executions=2, CI run 42191154907). Per-slot the guard still ran exactly once; the production consumption record is written synchronously before launch and the held retry fires with the guard blanked,…
+
+    </details>
+* **delegate:** type and say the claude_code settings-hooks parity gap ([110a75e](https://github.com/SocialGouv/iterion/commit/110a75e1262719080660b1f39414430bf9c492a4)), references [#1730](https://github.com/SocialGouv/iterion/issues/1730) [#874](https://github.com/SocialGouv/iterion/issues/874)
+
+    <details><summary>why</summary>
+
+    claw wires none of an untrusted workspace's .claude/settings.json hooks (the Execute-side switch and settingsHooksForWire both refuse them); claude_code always loaded the project scope, so the same checkout's hooks fired under one backend and not the other, and nowhere was the difference typed or said — the shape AGENTS.md's backend-parity rule forbids.
+
+    </details>
+* **envtrust:** un-plant the exported marker when a test's plant ends ([ee96198](https://github.com/SocialGouv/iterion/commit/ee96198601d17aff5d62de0f9cddf5e659a130c9)), references [#3095](https://github.com/SocialGouv/iterion/issues/3095)
+
+    <details><summary>why</summary>
+
+    MarkPlanted records names in process-global state AND exports them in ITERION_DOTENV_PLANTED, but the only cleanup tests had was ResetForTest, which clears the in-memory set alone: the next read re-seeds from the exported marker and the plant outlives the test that made it. One pass of pkg/cli's TestTheCleanSweepsRefuseAPlantedHome left ITERION_HOME and the home variable planted, and a -count=2 run failed its second pass in TestScratchRootForStoreHandlesBothLayouts,…
+
+    </details>
+* **model,runview,cli:** every declared action param type narrows, and launch text seeds the executor at its var's type ([04515d0](https://github.com/SocialGouv/iterion/commit/04515d0b731e8c59ab655d87f042b9b2a743d37d)), references [#2991](https://github.com/SocialGouv/iterion/issues/2991) [#2834](https://github.com/SocialGouv/iterion/issues/2834) [#2991](https://github.com/SocialGouv/iterion/issues/2991)
+
+    <details><summary>why</summary>
+
+    A whole-value `{{vars.labels}}` on a `string[]` var reached an `array` action param as a string and was refused (#2991). The engine's own push narrows every var, but the executor is seeded BEFORE it: BuildExecutor and both resume builders stored the launch TEXT as text, and that seed is what the engine's pre-run admissions (startSandbox resolves routing fields ahead of runInitState) and an engine-less caller read.
+
+    </details>
+* **model:** an action argument is narrowed before a secret is swapped in, never after ([7ad21f8](https://github.com/SocialGouv/iterion/commit/7ad21f8d6e3712f0b6a828f255429509fa050249)), references [#2991](https://github.com/SocialGouv/iterion/issues/2991)
+
+    <details><summary>why</summary>
+
+    On an HTTP call a `{{secrets.X}}` was materialised into the rendered text BEFORE narrowParam read that text as JSON, so the secret's own bytes were read as syntax, while a native transport narrowed the placeholder. The same authored value narrowed two ways: an `array` or `object` param holding `'["{{secrets.PW}}"]'` delivered a literal backslash-n as a newline, refused a quote with a message quoting a placeholder that does read as an array, wrote a key of its own from a `","admin":"yes` secret,…
+
+    </details>
+* **model:** only the author's own secret references ever resolve in action params ([335d880](https://github.com/SocialGouv/iterion/commit/335d88051f83c0ba040dca0f3880057f6e5f6639)), references [#2991](https://github.com/SocialGouv/iterion/issues/2991) [#3092](https://github.com/SocialGouv/iterion/issues/3092)
+
+    <details><summary>why</summary>
+
+    An authored {{secrets.NAME}} in an action param renders to a per-render unguessable marker (crypto/rand) instead of the canonical placeholder: the placeholder is deterministic, so workflow data spells it as well as the author does — a model-written input, a JSON escape that decodes into it, two references whose values join into it — and with the argument narrowed before the swap, that placeholder materialised to the vendor. Narrowing now runs on the marker form and leaf resolves markers alone:…
+
+    </details>
+* **runtime:** an untrusted run regenerates no bot catalog ([fe9cf9e](https://github.com/SocialGouv/iterion/commit/fe9cf9e2fd1873637a6e0912826a62e0fb64bb80)), references [#1730](https://github.com/SocialGouv/iterion/issues/1730) [#874](https://github.com/SocialGouv/iterion/issues/874)
+
+    <details><summary>why</summary>
+
+    The run-start catalog refresh writes into a bundle the WORKSPACE carries, folding in the workspace overlay: on a checkout the operator did not write, regenerating rewrites checkout-shipped content under the run's authority and renders attacker text into a catalog other runs read. regenerateBotCatalog now refuses typed (ErrUntrustedWorkspaceCatalog) when the run's trust is not trusted; the call site keeps its best-effort shape and warns with the reason.
+
+    </details>
+* **runtime:** carry the skill channel through the workspace handle ([1ee0f12](https://github.com/SocialGouv/iterion/commit/1ee0f125b92462a0d316a80ac3d9b1a64341e533)), references [#1719](https://github.com/SocialGouv/iterion/issues/1719) [#1730](https://github.com/SocialGouv/iterion/issues/1730) [#874](https://github.com/SocialGouv/iterion/issues/874)
+
+    <details><summary>why</summary>
+
+    The untrusted-workspace skill channel (#1719) re-carries the owned skills into an engine-owned root; its writes land INSIDE the checkout, so every step now goes through the pass's workspace handle: the root reset, the destination mkdir, the owned-path stat, and the per-skill copies (CopyWithin / CopyTreeWithin replace copyFile / copyDir). A path that escapes the workspace is refused typed instead of followed.
+
+    </details>
+* **runtime:** child resources and the write-through go through the handle ([d653e92](https://github.com/SocialGouv/iterion/commit/d653e9200569d0a493df5c75dd7556cecd28d94c)), references [#1730](https://github.com/SocialGouv/iterion/issues/1730) [#874](https://github.com/SocialGouv/iterion/issues/874)
+
+    <details><summary>why</summary>
+
+    Two more host-side movers of workspace content now cross the workspace handle:
+
+    </details>
+* **runtime:** the write-through link filter follows only on the trusted lane ([72d60b4](https://github.com/SocialGouv/iterion/commit/72d60b4dace49d05ba2e8454fa34bec258a5d4bd)), references [#1730](https://github.com/SocialGouv/iterion/issues/1730) [#874](https://github.com/SocialGouv/iterion/issues/874)
+
+    <details><summary>why</summary>
+
+    writeThroughMirroredSkills' walk filter changed from !IsDir() to IsRegular() on BOTH lanes, so a trusted operator's symlinked skill files (a dotfiles arrangement, the target outside the walked roots) were silently skipped during adopted-sandbox refill — a fourth, unnamed deviation from ADR-162's rule that a trusted run changes only at the points it names, and a silent one: the child's reader reports the name not covered with no trace of why.
+
+    </details>
+* **runview:** an in-process resume re-reads its run under the resume's identity ([fc1b256](https://github.com/SocialGouv/iterion/commit/fc1b256f645f1151fc615fb71acd2bfa4fe40ecb)), references [#874](https://github.com/SocialGouv/iterion/issues/874) [#1639](https://github.com/SocialGouv/iterion/issues/1639)
+
+    <details><summary>why</summary>
+
+    spawnRun gives every store call of its run goroutine the launch's identity without its cancellation (sctx), but the body it runs there built its own context: Resume's TOCTOU re-check, made under spawnRun's lock before the engine claims the run, read it under context.Background(). On the Mongo store a tenant-scoped read without a tenant panics in withTenantFilter, and nothing recovers in the run goroutine, so an in-process resume over Mongo killed the process.
+
+    </details>
+* **security:** a hand-off never crosses an untrusted run, either way ([05f1288](https://github.com/SocialGouv/iterion/commit/05f12884bc382bd0893728d1dbc6456cca343fd4)), closes [#1639](https://github.com/SocialGouv/iterion/issues/1639), references [#874](https://github.com/SocialGouv/iterion/issues/874) [#1639](https://github.com/SocialGouv/iterion/issues/1639)
+
+    <details><summary>why</summary>
+
+    stampHandoffs takes the launched run's trust as a required parameter and seeds an untrusted target with nothing (inbound: review-pr consumes the PR's review_ledger, the tenant's own review prose). realWebhookHandoff skips a producing run that is not trusted (outbound: the fixer reads a review as prior_review and pushes commits). Both lanes that seed pass their target's trust. Trusted() admits one value, so an unknown trust loses as a fork does. This closes #1639.
+
+    </details>
+* **security:** a search rooted above a denied tree is refused at the gate ([941fa6a](https://github.com/SocialGouv/iterion/commit/941fa6aadaf36744226055a5606a8f57cd275ab9)), references [#3086](https://github.com/SocialGouv/iterion/issues/3086) [#3086](https://github.com/SocialGouv/iterion/issues/3086)
+
+    <details><summary>why</summary>
+
+    A `dir/**` deny was matched against the spellings a call carries, and none of a search rooted at dir's parent — or any ancestor — is under dir, so allow [Grep, Glob] beside DenyPathTrees("/run/iterion/secrets") still let Grep{path: "/run/iterion"}, Grep from "/", and Glob{pattern: "secrets/*", path: "/run/iterion"} walk the denied tree whole (#3086).
+
+    </details>
+* **security:** an omitted or MCP search root feeds the closing side too ([44e58f4](https://github.com/SocialGouv/iterion/commit/44e58f49f805f8226499babefafbbba8c4bf62cc)), references [#3086](https://github.com/SocialGouv/iterion/issues/3086) [#1710](https://github.com/SocialGouv/iterion/issues/1710) [#3086](https://github.com/SocialGouv/iterion/issues/3086)
+
+    <details><summary>why</summary>
+
+    Round 1 of the #3086 review found two holes left in the search-tree deny, both in what the closing verdicts read as a call's root:
+
+    </details>
+* **security:** the search-tree containment re-gates asks, and reads every MCP path key ([ba61a74](https://github.com/SocialGouv/iterion/commit/ba61a74a5b2ffc6f00a370b11177d6ca3efbb092)), references [#3086](https://github.com/SocialGouv/iterion/issues/3086)
+
+    <details><summary>why</summary>
+
+    Round 3 of the #3086 review found the containment closed only the deny half of its class, and the documented per-server MCP recipe bound only the verbs carrying a singular `path`:
+
+    </details>
+
 ## [5.11.0](https://github.com/SocialGouv/iterion/compare/v5.10.3...v5.11.0) (2026-11-05)
 
 ### Features
