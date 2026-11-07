@@ -133,17 +133,19 @@ func checkGatewayEnv(ctx context.Context, strict bool) error {
 // the catalog, not an omission. Nil only when the record cannot marshal.
 func gatewaySpecRecord(resolved compatgw.Resolved) json.RawMessage {
 	record := struct {
-		Source           string  `json:"source"`
-		ContextWindow    int     `json:"context_window,omitempty"`
-		MaxOutputTokens  int     `json:"max_output_tokens,omitempty"`
-		InputUSDPerMTok  float64 `json:"input_usd_per_mtok,omitempty"`
-		OutputUSDPerMTok float64 `json:"output_usd_per_mtok,omitempty"`
+		Source              string  `json:"source"`
+		ContextWindow       int     `json:"context_window,omitempty"`
+		MaxOutputTokens     int     `json:"max_output_tokens,omitempty"`
+		InputUSDPerMTok     float64 `json:"input_usd_per_mtok,omitempty"`
+		OutputUSDPerMTok    float64 `json:"output_usd_per_mtok,omitempty"`
+		CacheReadUSDPerMTok float64 `json:"cache_read_usd_per_mtok,omitempty"`
 	}{
-		Source:           resolved.Source,
-		ContextWindow:    resolved.Spec.ContextWindow,
-		MaxOutputTokens:  resolved.Spec.MaxOutputTokens,
-		InputUSDPerMTok:  resolved.Spec.InputCostPerM,
-		OutputUSDPerMTok: resolved.Spec.OutputCostPerM,
+		Source:              resolved.Source,
+		ContextWindow:       resolved.Spec.ContextWindow,
+		MaxOutputTokens:     resolved.Spec.MaxOutputTokens,
+		InputUSDPerMTok:     resolved.Spec.InputCostPerM,
+		OutputUSDPerMTok:    resolved.Spec.OutputCostPerM,
+		CacheReadUSDPerMTok: resolved.Spec.CacheReadCostPerM,
 	}
 	raw, err := json.Marshal(record)
 	if err != nil {
