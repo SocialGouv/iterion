@@ -170,7 +170,7 @@ func TestRecordPoolSpend_aFoldEndingOnTheGatewayBooksTheDonorsSlice(t *testing.T
 	h := newPoolHarnessForRun(t, credpoolLimitsForFine(), "run-1")
 	h.runner.cfg.Logger = iterlog.New(iterlog.LevelWarn, &buf)
 	plan := finePlan(t)
-	usage := newMetricsEmitter(&recordingEmitter{}, metrics.New(), plan)
+	usage := newMetricsEmitter(&recordingEmitter{}, metrics.New(), plan, nil)
 	hooks := model.NewStoreEventHooks(
 		context.Background(), usage, "run-1", iterlog.New(iterlog.LevelError, nil), nil, nil,
 	)
@@ -216,7 +216,7 @@ func TestRecordPoolSpend_aWordlessCodexEventJoinsTheOpenAIRow(t *testing.T) {
 	h := newPoolHarnessForRun(t, credpoolLimitsForFine(), "run-1")
 	h.runner.cfg.Logger = iterlog.New(iterlog.LevelWarn, &buf)
 	plan := finePlan(t)
-	usage := newMetricsEmitter(&recordingEmitter{}, metrics.New(), plan)
+	usage := newMetricsEmitter(&recordingEmitter{}, metrics.New(), plan, nil)
 	hooks := model.NewStoreEventHooks(
 		context.Background(), usage, "run-1", iterlog.New(iterlog.LevelError, nil), nil, nil,
 	)

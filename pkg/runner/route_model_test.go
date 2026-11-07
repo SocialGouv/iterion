@@ -48,7 +48,7 @@ func TestRouteModel(t *testing.T) {
 // on the Anthropic route, not folded back into the declared one because its
 // spec equals the declared wire id. Red when the emitter ignores wire_model.
 func TestMetricsEmitter_ARequestNamingItsWireIDIsItsOwnRoute(t *testing.T) {
-	usage := newMetricsEmitter(&recordingEmitter{}, metrics.New(), nil)
+	usage := newMetricsEmitter(&recordingEmitter{}, metrics.New(), nil, nil)
 	usage.observe(store.Event{Type: store.EventDelegateStarted, NodeID: "n",
 		Data: map[string]any{"backend": "claw", "declared_model": "openai/anthropic/claude-x"}})
 	usage.observe(store.Event{Type: store.EventLLMRequest, NodeID: "n",
@@ -89,7 +89,7 @@ func TestServedRoute(t *testing.T) {
 // executor names, never to the Anthropic credential the id's first segment
 // spells. Red when the meter ignores route_model.
 func TestMetricsEmitter_ADelegationIsChargedToTheRouteThatServed(t *testing.T) {
-	usage := newMetricsEmitter(&recordingEmitter{}, metrics.New(), nil)
+	usage := newMetricsEmitter(&recordingEmitter{}, metrics.New(), nil, nil)
 	usage.observe(store.Event{Type: store.EventDelegateStarted, NodeID: "n",
 		Data: map[string]any{"backend": "pi", "declared_model": "anthropic/claude-sonnet-4-5"}})
 	usage.observe(store.Event{Type: store.EventDelegateFinished, NodeID: "n",

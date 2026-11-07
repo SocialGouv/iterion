@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/SocialGouv/iterion/pkg/secrets"
-	httpdial "github.com/SocialGouv/iterion/pkg/secure/httpdial"
 	"net"
 	"net/url"
 	"strings"
+	"time"
+
+	"github.com/SocialGouv/iterion/pkg/secrets"
+	httpdial "github.com/SocialGouv/iterion/pkg/secure/httpdial"
 
 	"github.com/SocialGouv/iterion/pkg/backend/compatgw"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
@@ -128,9 +130,12 @@ func checkGatewayEnv(ctx context.Context, strict bool) error {
 
 // gatewaySpecRecord renders the invocation's catalog provenance: which
 // table answered and what it said (compact JSON — the output travels
-// through maps that must stay single-line-safe). An unknown record is
-// recorded AS unknown: the absence of a window or a price is a fact about
-// the catalog, not an omission. Nil only when the record cannot marshal.
+// through maps that must stay single-line-safe), and — when a price feed
+// answered — the feed's age, so the record that says WHICH table priced
+// the node also says HOW FRESH that word was (ADR-163 §6). An unknown
+// record is recorded AS unknown: the absence of a window or a price is a
+// fact about the catalog, not an omission. Nil only when the record
+// cannot marshal.
 func gatewaySpecRecord(resolved compatgw.Resolved) json.RawMessage {
 	record := struct {
 		Source              string  `json:"source"`
@@ -139,6 +144,7 @@ func gatewaySpecRecord(resolved compatgw.Resolved) json.RawMessage {
 		InputUSDPerMTok     float64 `json:"input_usd_per_mtok,omitempty"`
 		OutputUSDPerMTok    float64 `json:"output_usd_per_mtok,omitempty"`
 		CacheReadUSDPerMTok float64 `json:"cache_read_usd_per_mtok,omitempty"`
+		RefreshedAt         string  `json:"refreshed_at,omitempty"`
 	}{
 		Source:              resolved.Source,
 		ContextWindow:       resolved.Spec.ContextWindow,
@@ -146,6 +152,9 @@ func gatewaySpecRecord(resolved compatgw.Resolved) json.RawMessage {
 		InputUSDPerMTok:     resolved.Spec.InputCostPerM,
 		OutputUSDPerMTok:    resolved.Spec.OutputCostPerM,
 		CacheReadUSDPerMTok: resolved.Spec.CacheReadCostPerM,
+	}
+	if _, isFeed := compatgw.FeedSource(resolved.Source); isFeed && !resolved.RefreshedAt.IsZero() {
+		record.RefreshedAt = resolved.RefreshedAt.UTC().Format(time.RFC3339)
 	}
 	raw, err := json.Marshal(record)
 	if err != nil {

@@ -47,6 +47,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/lease"
 	"github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/platformcfg"
+	"github.com/SocialGouv/iterion/pkg/pricefeed"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -127,6 +128,8 @@ var orgScopedCollections = []string{
 var purgedByBespokeFilter = map[string]string{
 	"oauth_credentials":       "keyed by an owner in its own namespace (secrets.OrgOwnerKey / OrgTierOwnerKey), not by a tenant id",
 	"llm_routing_policies":    "composite _id (\"team:<id>\" / \"org:<id>\"), ADR-121 delivery 2",
+	"price_feeds":             "composite _id (\"team:<id>\" / \"org:<id>\"), ADR-163",
+	"price_feed_state":        "composite _id (\"<scope>:<id>/<feed>\"), purged by the scope prefix, ADR-163",
 	"org_usage":               "composite _id (\"org|<id>|<month>\", \"forkauthor|<id>|…\"), purged by the id-prefix alternation",
 	"schedule_launch_intents": "the tenant rides the embedded schedule document (schedule.tenant_id), not a top-level field",
 }
@@ -371,6 +374,19 @@ func (p *Purger) PurgeOrg(ctx context.Context, orgID string) (int64, error) {
 	for _, tm := range teams {
 		deleted += p.deleteMany(ctx, platformcfg.ColRoutingPolicies,
 			bson.M{"_id": platformcfg.TeamRoutingPolicyID(tm.ID)})
+	}
+	// The gateway price feed's tenant state (ADR-163): the feed lists are
+	// composite _id documents like the routing policies above; the state
+	// documents key "<scope>/<feed>", reached by prefix.
+	deleted += p.deleteMany(ctx, pricefeed.ColConfigs,
+		bson.M{"_id": pricefeed.OrgConfigDocID(orgID)})
+	deleted += p.deleteMany(ctx, pricefeed.ColStates,
+		bson.M{"_id": bson.M{"$regex": "^" + regexp.QuoteMeta(pricefeed.OrgConfigDocID(orgID)) + "/"}})
+	for _, tm := range teams {
+		deleted += p.deleteMany(ctx, pricefeed.ColConfigs,
+			bson.M{"_id": pricefeed.TeamConfigDocID(tm.ID)})
+		deleted += p.deleteMany(ctx, pricefeed.ColStates,
+			bson.M{"_id": bson.M{"$regex": "^" + regexp.QuoteMeta(pricefeed.TeamConfigDocID(tm.ID)) + "/"}})
 	}
 	// A launch intent carries its tenant INSIDE the schedule it embeds
 	// (cloudsched.LaunchIntent.Schedule), so neither loop above reaches it —

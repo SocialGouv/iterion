@@ -38,7 +38,7 @@ func (b *r6ProseBackend) Execute(_ context.Context, task delegate.Task) (delegat
 
 func r6Run(t *testing.T, node *ir.AgentNode, regd map[string]delegate.Backend) (*metricsEmitter, *eventLog, error) {
 	t.Helper()
-	usage := newMetricsEmitter(discardEmitter{}, metrics.New(), nil)
+	usage := newMetricsEmitter(discardEmitter{}, metrics.New(), nil, nil)
 	log := &eventLog{inner: usage}
 	hooks := model.NewStoreEventHooks(context.Background(), log, "run", iterlog.Nop(), nil, nil)
 	reg := delegate.NewRegistry()
@@ -147,7 +147,7 @@ func TestR6_StepObservedClawCorrectedThenClaudeCodeServes(t *testing.T) {
 	node := agentNode(delegate.BackendClaw, "openai/gpt-5",
 		ir.Fallback{Name: "door", Backend: delegate.BackendClaudeCode, Model: "anthropic/claude-opus-5"})
 	node.OutputSchema = "v"
-	usage := newMetricsEmitter(discardEmitter{}, metrics.New(), nil)
+	usage := newMetricsEmitter(discardEmitter{}, metrics.New(), nil, nil)
 	log := &eventLog{inner: usage}
 	hooks := model.NewStoreEventHooks(context.Background(), log, "run", iterlog.Nop(), nil, nil)
 	primary := &r6StepProse{r6ProseBackend: r6ProseBackend{cost: 1, tok: 1100, name: delegate.BackendClaw}, hooks: &hooks}

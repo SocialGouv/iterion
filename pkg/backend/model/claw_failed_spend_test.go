@@ -234,7 +234,7 @@ func TestClawRetryLoopKeepsEveryAttemptsSpend(t *testing.T) {
 		if attempt == 1 {
 			// A whole agentic turn, billed, then rate-limited: retryable, so
 			// the loop buys a second one.
-			return meteredFailure(task, Usage{InputTokens: 1_000, OutputTokens: 200}),
+			return meteredFailure(context.Background(), task, Usage{InputTokens: 1_000, OutputTokens: 200}),
 				&APIError{Message: "rate limited", StatusCode: 429, IsRetryable: true}
 		}
 		// The retry dies before the provider bills anything.

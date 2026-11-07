@@ -48,7 +48,7 @@ func (p *planRecordingEmitter) AppendPlanSnapshot(_ context.Context, _ string, s
 // sink is silently nil on every cloud run.
 func TestMetricsEmitter_forwardsPlanWriter(t *testing.T) {
 	inner := &planRecordingEmitter{}
-	m := newMetricsEmitter(inner, metrics.New(), nil)
+	m := newMetricsEmitter(inner, metrics.New(), nil, nil)
 
 	// The wrapper must advertise the capability (this is exactly the
 	// assertion NewStoreEventHooks performs on the emitter it receives).
@@ -78,7 +78,7 @@ func TestMetricsEmitter_forwardsPlanWriter(t *testing.T) {
 // delegates to the inner store; otherwise cloud runs drop NodesServed.
 func TestMetricsEmitter_forwardsNodeServedRecorder(t *testing.T) {
 	inner := &servedRecordingStore{}
-	m := newMetricsEmitter(inner, metrics.New(), nil)
+	m := newMetricsEmitter(inner, metrics.New(), nil, nil)
 	rec, ok := model.EventEmitter(m).(model.NodeServedRecorder)
 	if !ok {
 		t.Fatal("metricsEmitter does not satisfy model.NodeServedRecorder — cloud runs would drop NodesServed")
@@ -96,7 +96,7 @@ func TestMetricsEmitter_forwardsNodeServedRecorder(t *testing.T) {
 // no-op: an inner store that is NOT a NodeServedRecorder yields nil,
 // matching today's nil-servedSink path, not a loud error.
 func TestMetricsEmitter_nodeServedNoOpWhenInnerLacks(t *testing.T) {
-	m := newMetricsEmitter(&recordingEmitter{}, metrics.New(), nil)
+	m := newMetricsEmitter(&recordingEmitter{}, metrics.New(), nil, nil)
 	if err := m.RecordNodeServed(context.Background(), "run-1", "n", store.NodeServed{Backend: "x"}); err != nil {
 		t.Fatalf("no-op forward: unexpected error %v", err)
 	}
@@ -121,7 +121,7 @@ func (s *servedRecordingStore) RecordNodeServed(_ context.Context, _, nodeID str
 // no-op: an inner store that is NOT a PlanWriter yields (snap, false,
 // nil) — identical to today's nil-planSink path, not a loud error.
 func TestMetricsEmitter_planWriterNoOpWhenInnerLacks(t *testing.T) {
-	m := newMetricsEmitter(&recordingEmitter{}, metrics.New(), nil)
+	m := newMetricsEmitter(&recordingEmitter{}, metrics.New(), nil, nil)
 	snap := store.PlanSnapshot{NodeID: "n"}
 	_, wrote, err := m.AppendPlanSnapshot(context.Background(), "run-1", snap)
 	if err != nil {
@@ -186,7 +186,7 @@ func counterValue(t *testing.T, c prometheus.Counter) float64 {
 func TestMetricsEmitter_observeLLMStepFinished_tokensAndCost(t *testing.T) {
 	reg := metrics.New()
 	inner := &recordingEmitter{}
-	m := newMetricsEmitter(inner, reg, nil)
+	m := newMetricsEmitter(inner, reg, nil, nil)
 
 	// First request seeds modelByNode.
 	_, _ = m.AppendEvent(context.Background(), "run-1", store.Event{
@@ -231,7 +231,7 @@ func TestMetricsEmitter_observeLLMStepFinished_tokensAndCost(t *testing.T) {
 
 func TestMetricsEmitter_unknownModel_costStaysZero(t *testing.T) {
 	reg := metrics.New()
-	m := newMetricsEmitter(&recordingEmitter{}, reg, nil)
+	m := newMetricsEmitter(&recordingEmitter{}, reg, nil, nil)
 
 	// No prior llm_request — modelByNode is empty so the step is
 	// labelled "unknown" and the cost branch must NOT update the
@@ -254,7 +254,7 @@ func TestMetricsEmitter_unknownModel_costStaysZero(t *testing.T) {
 
 func TestMetricsEmitter_delegateFinished_aggregatedTokens(t *testing.T) {
 	reg := metrics.New()
-	m := newMetricsEmitter(&recordingEmitter{}, reg, nil)
+	m := newMetricsEmitter(&recordingEmitter{}, reg, nil, nil)
 
 	_, _ = m.AppendEvent(context.Background(), "run-3", store.Event{
 		Type:   store.EventDelegateFinished,
@@ -286,7 +286,7 @@ func TestMetricsEmitter_delegateFinished_aggregatedTokens(t *testing.T) {
 
 func TestMetricsEmitter_addTokens_ignoresZeroOrNegative(t *testing.T) {
 	reg := metrics.New()
-	m := newMetricsEmitter(&recordingEmitter{}, reg, nil)
+	m := newMetricsEmitter(&recordingEmitter{}, reg, nil, nil)
 
 	m.addTokens("claw", "x", "input", float64(0))
 	m.addTokens("claw", "x", "input", float64(-5))
@@ -299,7 +299,7 @@ func TestMetricsEmitter_addTokens_ignoresZeroOrNegative(t *testing.T) {
 }
 
 func TestMetricsEmitter_lookupModel_emptyNodeID(t *testing.T) {
-	m := newMetricsEmitter(&recordingEmitter{}, metrics.New(), nil)
+	m := newMetricsEmitter(&recordingEmitter{}, metrics.New(), nil, nil)
 	if got := m.lookupModel(""); got != "" {
 		t.Errorf("lookupModel(\"\") = %q, want empty", got)
 	}
@@ -316,7 +316,7 @@ func TestMetricsEmitter_lookupModel_emptyNodeID(t *testing.T) {
 // reading a different key.
 func TestMetricsEmitter_delegateFinished_costReachesRunTotals(t *testing.T) {
 	inner := &recordingEmitter{}
-	usage := newMetricsEmitter(inner, metrics.New(), nil)
+	usage := newMetricsEmitter(inner, metrics.New(), nil, nil)
 
 	hooks := model.NewStoreEventHooks(
 		context.Background(), usage, "run-4", iterlog.New(iterlog.LevelError, nil), nil, nil,
@@ -351,7 +351,7 @@ func TestMetricsEmitter_delegateFinished_costReachesRunTotals(t *testing.T) {
 // fabricated free call.
 func TestMetricsEmitter_delegateFinished_unpricedStaysZero(t *testing.T) {
 	inner := &recordingEmitter{}
-	usage := newMetricsEmitter(inner, metrics.New(), nil)
+	usage := newMetricsEmitter(inner, metrics.New(), nil, nil)
 
 	hooks := model.NewStoreEventHooks(
 		context.Background(), usage, "run-5", iterlog.New(iterlog.LevelError, nil), nil, nil,
@@ -373,7 +373,7 @@ func TestMetricsEmitter_delegateFinished_unpricedStaysZero(t *testing.T) {
 // they agreed to.
 func TestMetricsEmitter_clawCostIsNotCountedTwice(t *testing.T) {
 	inner := &recordingEmitter{}
-	usage := newMetricsEmitter(inner, metrics.New(), nil)
+	usage := newMetricsEmitter(inner, metrics.New(), nil, nil)
 	ctx := context.Background()
 
 	// A claw node: a priced step, then the delegation total for the same work.
@@ -412,7 +412,7 @@ func TestMetricsEmitter_clawCostIsNotCountedTwice(t *testing.T) {
 // A CLI delegate has no per-step events, so its delegation total is the
 // only cost signal and must still be counted.
 func TestMetricsEmitter_cliDelegateCostIsStillCounted(t *testing.T) {
-	usage := newMetricsEmitter(&recordingEmitter{}, metrics.New(), nil)
+	usage := newMetricsEmitter(&recordingEmitter{}, metrics.New(), nil, nil)
 	_, _ = usage.AppendEvent(context.Background(), "run-2", store.Event{
 		Type: store.EventDelegateFinished, RunID: "run-2", NodeID: "n1",
 		Data: map[string]any{"backend": "claude_code", "tokens": float64(900), "cost_usd": 0.42},
@@ -433,7 +433,7 @@ func TestMetricsEmitter_cliDelegateCostIsStillCounted(t *testing.T) {
 // taken off the table rather than the $0 the claw double-count guard used to
 // leave (a pool donor "reads $0 forever").
 func TestMetricsEmitter_sandboxedClaw_delegateOnlyIsPricedAndRouted(t *testing.T) {
-	usage := newMetricsEmitter(&recordingEmitter{}, metrics.New(), nil)
+	usage := newMetricsEmitter(&recordingEmitter{}, metrics.New(), nil, nil)
 	ctx := context.Background()
 
 	_, _ = usage.AppendEvent(ctx, "run-1", store.Event{
@@ -469,7 +469,7 @@ func TestMetricsEmitter_sandboxedClaw_delegateOnlyIsPricedAndRouted(t *testing.T
 // when it priced the call); the host-side table price is only for a delegation
 // that carries none.
 func TestMetricsEmitter_sandboxedClaw_delegateCostWinsOverTheTable(t *testing.T) {
-	usage := newMetricsEmitter(&recordingEmitter{}, metrics.New(), nil)
+	usage := newMetricsEmitter(&recordingEmitter{}, metrics.New(), nil, nil)
 	usage.observe(store.Event{Type: store.EventDelegateStarted, NodeID: "n",
 		Data: map[string]any{"backend": "claw", "declared_model": "openai/gpt-5.6-sol"}})
 	usage.observe(store.Event{Type: store.EventDelegateFinished, NodeID: "n",
@@ -482,7 +482,7 @@ func TestMetricsEmitter_sandboxedClaw_delegateCostWinsOverTheTable(t *testing.T)
 // Zero is unknown, never free: a delegation no source can price books its
 // tokens on the route and leaves the cost at zero — no fabricated figure.
 func TestMetricsEmitter_sandboxedClaw_unknownModelStaysUnpriced(t *testing.T) {
-	usage := newMetricsEmitter(&recordingEmitter{}, metrics.New(), nil)
+	usage := newMetricsEmitter(&recordingEmitter{}, metrics.New(), nil, nil)
 	usage.observe(store.Event{Type: store.EventDelegateStarted, NodeID: "n",
 		Data: map[string]any{"backend": "claw", "declared_model": "openai/gpt-99-nowhere"}})
 	usage.observe(store.Event{Type: store.EventDelegateFinished, NodeID: "n",
@@ -506,7 +506,7 @@ func TestMetricsEmitter_sandboxedClaw_unknownModelStaysUnpriced(t *testing.T) {
 // dropped — for the same model only; a different id (a fallback element) is
 // kept as reported.
 func TestMetricsEmitter_bareStepModelKeepsTheDeclaredProvider(t *testing.T) {
-	usage := newMetricsEmitter(&recordingEmitter{}, metrics.New(), nil)
+	usage := newMetricsEmitter(&recordingEmitter{}, metrics.New(), nil, nil)
 	usage.observe(store.Event{Type: store.EventDelegateStarted, NodeID: "n",
 		Data: map[string]any{"backend": "claw", "declared_model": "openai/gpt-5.6-sol"}})
 	usage.observe(store.Event{Type: store.EventLLMRequest, NodeID: "n",
@@ -518,7 +518,7 @@ func TestMetricsEmitter_bareStepModelKeepsTheDeclaredProvider(t *testing.T) {
 		t.Fatalf("routes = %v, want (claw, openai/gpt-5.6-sol): the bare step id must inherit the declared provider", routes)
 	}
 
-	other := newMetricsEmitter(&recordingEmitter{}, metrics.New(), nil)
+	other := newMetricsEmitter(&recordingEmitter{}, metrics.New(), nil, nil)
 	other.observe(store.Event{Type: store.EventDelegateStarted, NodeID: "n",
 		Data: map[string]any{"backend": "claw", "declared_model": "openai/gpt-5.6-sol"}})
 	other.observe(store.Event{Type: store.EventLLMRequest, NodeID: "n",
@@ -533,7 +533,7 @@ func TestMetricsEmitter_bareStepModelKeepsTheDeclaredProvider(t *testing.T) {
 // delegate_finished.effective_model is what the provider reports it ran; when
 // present it names the route over the declared model.
 func TestMetricsEmitter_effectiveModelNamesTheRoute(t *testing.T) {
-	usage := newMetricsEmitter(&recordingEmitter{}, metrics.New(), nil)
+	usage := newMetricsEmitter(&recordingEmitter{}, metrics.New(), nil, nil)
 	usage.observe(store.Event{Type: store.EventDelegateStarted, NodeID: "n",
 		Data: map[string]any{"backend": "claude_code", "declared_model": "anthropic/claude-opus-5"}})
 	usage.observe(store.Event{Type: store.EventDelegateFinished, NodeID: "n",
@@ -553,7 +553,7 @@ func TestMetricsEmitter_effectiveModelNamesTheRoute(t *testing.T) {
 // steps' exact input/output split, the cost is the steps' price, and the
 // delegation total (a summary of those steps) is not booked again.
 func TestMetricsEmitter_relayedSandboxedClawStepsMeterLikeInProcess(t *testing.T) {
-	usage := newMetricsEmitter(&recordingEmitter{}, metrics.New(), nil)
+	usage := newMetricsEmitter(&recordingEmitter{}, metrics.New(), nil, nil)
 	host := model.NewStoreEventHooks(context.Background(), usage, "run-relay", iterlog.New(iterlog.LevelError, nil), nil, nil)
 	relay := model.SandboxRelayHooks(func(env delegate.Envelope) error {
 		var ed delegate.EventData
@@ -597,7 +597,7 @@ func TestMetricsEmitter_relayedSandboxedClawStepsMeterLikeInProcess(t *testing.T
 // delegate_started; whether its steps were seen is decided per attempt, so a
 // relayed first pass never hides an unrelayed second one.
 func TestMetricsEmitter_newAttemptResetsTheStepGuard(t *testing.T) {
-	usage := newMetricsEmitter(&recordingEmitter{}, metrics.New(), nil)
+	usage := newMetricsEmitter(&recordingEmitter{}, metrics.New(), nil, nil)
 	start := store.Event{Type: store.EventDelegateStarted, NodeID: "n",
 		Data: map[string]any{"backend": "claw", "declared_model": "openai/gpt-5.6-sol"}}
 	usage.observe(start)
@@ -618,7 +618,7 @@ func TestMetricsEmitter_newAttemptResetsTheStepGuard(t *testing.T) {
 
 func TestMetricsEmitter_delegateBackground_countsPerPhase(t *testing.T) {
 	reg := metrics.New()
-	m := newMetricsEmitter(&recordingEmitter{}, reg, nil)
+	m := newMetricsEmitter(&recordingEmitter{}, reg, nil, nil)
 	for _, phase := range []string{"waiting", "abandoned"} {
 		_, _ = m.AppendEvent(context.Background(), "run-bg", store.Event{
 			Type: store.EventDelegateBackground, RunID: "run-bg", NodeID: "campaign",
@@ -646,7 +646,7 @@ func TestMetricsEmitter_delegateBackground_countsPerPhase(t *testing.T) {
 // its RunTotals assertion.
 func TestMetricsEmitter_delegateErrorBooksItsCost(t *testing.T) {
 	inner := &recordingEmitter{}
-	usage := newMetricsEmitter(inner, metrics.New(), nil)
+	usage := newMetricsEmitter(inner, metrics.New(), nil, nil)
 
 	hooks := model.NewStoreEventHooks(
 		context.Background(), usage, "run-e", iterlog.New(iterlog.LevelError, nil), nil, nil,
@@ -723,7 +723,7 @@ func TestMetricsEmitter_delegateErrorBooksItsCost(t *testing.T) {
 // branch guards against. The steps price through the real rate table
 // (claude-opus-5 is in it), so the steps alone book a measurable cost.
 func TestMetricsEmitter_delegateError_clawSummarisedNotDoubleCharged(t *testing.T) {
-	m := newMetricsEmitter(&recordingEmitter{}, metrics.New(), nil)
+	m := newMetricsEmitter(&recordingEmitter{}, metrics.New(), nil, nil)
 
 	// The loop registers its model, then its steps price on arrival.
 	_, _ = m.AppendEvent(context.Background(), "run-c", store.Event{

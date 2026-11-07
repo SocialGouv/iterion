@@ -114,7 +114,7 @@ func TestCredParity_MeterLedgerAndPlan(t *testing.T) {
 					t.Fatalf("inert bench: the publisher stamps no plan for this run")
 				}
 			}
-			em := newMetricsEmitter(nil, nil, plan)
+			em := newMetricsEmitter(nil, nil, plan, nil)
 			route := parityObservation(t, ctx, row, view, em)
 			slot, _ := ledgerSlot(creds, route)
 			credparity.Check(t, row, credparity.Ledger, slot, func(s credparity.Spend) string { return s.Slot })

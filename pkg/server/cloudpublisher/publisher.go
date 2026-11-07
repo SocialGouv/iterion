@@ -63,6 +63,14 @@ import (
 type Config struct {
 	NATS  *natsq.Conn
 	Store store.RunStore
+	// PriceFeedEffective answers the run's effective gateway price-feed
+	// table (ADR-163): the server-side fold over the org/team feed state,
+	// nil when no fresh feed answers. A func, not a store handle: the
+	// publisher never learns where feeds live, and the fold's precedence
+	// (fresh feed over operator floor, team over org) stays beside the
+	// stores that own it. Nil (local shape, no stores) means no feed and
+	// the operator table is the floor.
+	PriceFeedEffective func(ctx context.Context, orgID, teamID string, named []string) json.RawMessage
 	// MongoColl is the Mongo collection the publisher counts
 	// queued runs against (for queue_position computation). The
 	// caller passes it directly so the publisher doesn't have to
@@ -238,6 +246,15 @@ type Publisher struct {
 	identity             TeamResolver
 	pools                RunnerPoolResolver
 	requireLLMCredential bool
+	// priceFeedEffective answers the run's effective gateway price-feed
+	// table (ADR-163): the server-side fold over the org/team feed state,
+	// nil when no fresh feed answers. A func, not a store handle: the
+	// publisher never learns where feeds live, and the fold's precedence
+	// (fresh feed over operator floor, team over org) stays beside the
+	// stores that own it. Nil (local shape, no stores) means no feed and
+	// the operator table is the floor — the bundle then serializes
+	// exactly as before this field existed.
+	priceFeedEffective func(ctx context.Context, orgID, teamID string, named []string) json.RawMessage
 
 	// orgCache memoizes team → org id so the publish hot path doesn't
 	// add a Mongo read per launch (team/org membership changes are
@@ -453,6 +470,7 @@ func New(cfg Config) (*Publisher, error) {
 		sandboxImage:         cfg.SandboxImage,
 		credPool:             cfg.CredPool,
 		usageCaps:            cfg.UsageCaps,
+		priceFeedEffective:   cfg.PriceFeedEffective,
 		capPolicy:            cfg.CapPolicy,
 		budgetFloor:          cfg.BudgetFloor,
 		platformAudience:     cfg.PlatformCredentialAudience,
@@ -1522,6 +1540,16 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 			runID, res.doorGrant.String(), res.doorGrant.DonorID)
 	}
 	p.keepFollowableRecordRefs(&bundle)
+
+	// ADR-163: the run's effective price-feed table seals with the bundle
+	// — the one channel a runner reads without a database. Folded HERE,
+	// fresh at every launch and resume alike, so a feed refresh reaches
+	// the next run without a deployment order. Not secret; sealed because
+	// the bundle is sealed. A nil fold (no stores, no fresh feed) leaves
+	// the field absent and the runner at the operator floor.
+	if p.priceFeedEffective != nil {
+		bundle.GatewayPriceFeed = p.priceFeedEffective(ctx, orgID, tenantID, model.RouteGatewayModelIDs(wf))
+	}
 
 	// ADR-123: the bundle seals under a fresh per-run DEK that travels in
 	// the message — runner pods hold no platform key material. The ring

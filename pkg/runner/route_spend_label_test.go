@@ -80,7 +80,7 @@ func runChainWith(t *testing.T, node *ir.AgentNode, regd map[string]delegate.Bac
 // (queue.RunMessage.CredPlan) — the meter joins every observation to it.
 func runChainPlanned(t *testing.T, node *ir.AgentNode, regd map[string]delegate.Backend, scripted map[string]*scriptedBackend, rp model.RetryPolicy, plan map[string]string) (*metricsEmitter, *eventLog) {
 	t.Helper()
-	usage := newMetricsEmitter(discardEmitter{}, metrics.New(), plan)
+	usage := newMetricsEmitter(discardEmitter{}, metrics.New(), plan, nil)
 	log := &eventLog{inner: usage}
 	hooks := model.NewStoreEventHooks(context.Background(), log, "run", iterlog.Nop(), nil, nil)
 	reg := delegate.NewRegistry()

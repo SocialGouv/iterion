@@ -32,6 +32,9 @@ import (
 type metricsEmitter struct {
 	inner model.EventEmitter
 	reg   *metrics.Registry
+	// priceCtx prices the gateway branch through the run's carried
+	// environment (see newMetricsEmitter); nil prices from the process.
+	priceCtx context.Context
 
 	// modelByNode names the model each node's route is keyed on. Seeded by
 	// delegate_started (the node's declared spec, provider included),
@@ -188,10 +191,16 @@ func (t routeTotals) tokens() int64 {
 	return t.inputTokens + t.outputTokens + t.aggregateTokens
 }
 
-func newMetricsEmitter(inner model.EventEmitter, reg *metrics.Registry, credPlan map[string]string) *metricsEmitter {
+func newMetricsEmitter(inner model.EventEmitter, reg *metrics.Registry, credPlan map[string]string, priceCtx context.Context) *metricsEmitter {
 	return &metricsEmitter{
-		inner:          inner,
-		reg:            reg,
+		inner: inner,
+		reg:   reg,
+		// priceCtx is the run's context — the one injectCredentials
+		// planted the sealed price-feed table on (ADR-163): rateForLocked
+		// prices gateway models through it, so the org cap and the
+		// credential ledger book the same table the node's stamp carries.
+		// Nil (the zero construction) prices from the process env.
+		priceCtx:       priceCtx,
 		modelByNode:    make(map[string]string),
 		declaredByNode: make(map[string]string),
 		stepsSeen:      make(map[string]bool),
@@ -498,14 +507,23 @@ func (m *metricsEmitter) notePlanMissLocked(fp string, route routeKey, cost floa
 // also registers observe via runtime.WithEventObserver (see loop.go).
 
 // rateForLocked returns the cached per-token rates for the given model,
-// resolving once via cost.EstimateUSD. Called under m.mu.
+// resolving once via the cost probes — through the run's own environment
+// when the emitter carries one, so a feed-priced gateway node's org-cap
+// and ledger rows price at the sealed table, never the process floor.
+// Called under m.mu.
 func (m *metricsEmitter) rateForLocked(modelName string) modelRate {
 	if r, ok := m.priceByModel[modelName]; ok {
 		return r
 	}
 	const probe = 1_000_000
-	inUSD := cost.EstimateUSD(modelName, probe, 0)
-	outUSD := cost.EstimateUSD(modelName, 0, probe)
+	var inUSD, outUSD float64
+	if m.priceCtx != nil {
+		inUSD = cost.EstimateUSDQuietInEnv(m.priceCtx, modelName, probe, 0)
+		outUSD = cost.EstimateUSDQuietInEnv(m.priceCtx, modelName, 0, probe)
+	} else {
+		inUSD = cost.EstimateUSD(modelName, probe, 0)
+		outUSD = cost.EstimateUSD(modelName, 0, probe)
+	}
 	r := modelRate{
 		inputUSDPerToken:  inUSD / float64(probe),
 		outputUSDPerToken: outUSD / float64(probe),

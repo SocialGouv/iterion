@@ -58,7 +58,7 @@ func TestRouteModel_ExecutorToMeterChargesTheRouteThatServed(t *testing.T) {
 			{"openrouter/auto", "anthropic/claude-opus-4-8", "openrouter/anthropic/claude-opus-4-8"},
 			{"openrouter/anthropic/claude-sonnet-4.5", "anthropic/claude-sonnet-4.5-20250929", "openrouter/anthropic/claude-sonnet-4.5"},
 		} {
-			usage := newMetricsEmitter(discardEmitter{}, metrics.New(), nil)
+			usage := newMetricsEmitter(discardEmitter{}, metrics.New(), nil, nil)
 			reg := delegate.NewRegistry()
 			reg.Register(delegate.BackendPi, &openRouterPi{effective: tc.effective, reask: reask})
 			wf := &ir.Workflow{
@@ -108,7 +108,7 @@ func (usageWindowPi) Execute(_ context.Context, task delegate.Task) (delegate.Re
 // the last route that executed — here the OpenRouter fallback — never on the
 // declared Anthropic route. Red when the skip outcome carries no route.
 func TestRouteModel_ASkipBooksTheRouteThatBurned(t *testing.T) {
-	usage := newMetricsEmitter(discardEmitter{}, metrics.New(), nil)
+	usage := newMetricsEmitter(discardEmitter{}, metrics.New(), nil, nil)
 	reg := delegate.NewRegistry()
 	reg.Register(delegate.BackendPi, usageWindowPi{})
 	exec := model.NewClawExecutor(model.NewRegistry(), &ir.Workflow{Prompts: map[string]*ir.Prompt{"ask": {Body: "go"}}, Schemas: map[string]*ir.Schema{}},

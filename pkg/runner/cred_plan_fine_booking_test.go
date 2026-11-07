@@ -118,7 +118,7 @@ func finePlan(t *testing.T) map[string]string {
 // the donor's subscription, review spent $8 on the team's own key.
 func fineBookingUsage(t *testing.T, plan map[string]string) *metricsEmitter {
 	t.Helper()
-	usage := newMetricsEmitter(&recordingEmitter{}, metrics.New(), plan)
+	usage := newMetricsEmitter(&recordingEmitter{}, metrics.New(), plan, nil)
 	hooks := model.NewStoreEventHooks(
 		context.Background(), usage, "run-1", iterlog.New(iterlog.LevelError, nil), nil, nil,
 	)
@@ -195,7 +195,7 @@ func TestRecordPoolSpend_aPlanWhoseDoorNeverFiredBooksZero(t *testing.T) {
 	h := newPoolHarnessForRun(t, credpoolLimitsForFine(), "run-1")
 	plan := finePlan(t)
 
-	usage := newMetricsEmitter(&recordingEmitter{}, metrics.New(), plan)
+	usage := newMetricsEmitter(&recordingEmitter{}, metrics.New(), plan, nil)
 	hooks := model.NewStoreEventHooks(
 		context.Background(), usage, "run-1", iterlog.New(iterlog.LevelError, nil), nil, nil,
 	)
@@ -253,7 +253,7 @@ func clawHintPlan(t *testing.T) map[string]string {
 // donor books twice.
 func clawStepUsage(t *testing.T, plan map[string]string) (*metricsEmitter, float64) {
 	t.Helper()
-	usage := newMetricsEmitter(&recordingEmitter{}, metrics.New(), plan)
+	usage := newMetricsEmitter(&recordingEmitter{}, metrics.New(), plan, nil)
 	hooks := model.NewStoreEventHooks(
 		context.Background(), usage, "run-1", iterlog.New(iterlog.LevelError, nil), nil, nil,
 	)
@@ -341,7 +341,7 @@ func TestRecordPoolSpend_aWhollyUnjoinedAttemptBooksTheWholeAttempt(t *testing.T
 	// hit none of its keys, the attempt still spent.
 	h := newLoggedRunner(t, "run-1")
 	plan := finePlan(t)
-	usage := newMetricsEmitter(&recordingEmitter{}, metrics.New(), plan)
+	usage := newMetricsEmitter(&recordingEmitter{}, metrics.New(), plan, nil)
 	hooks := model.NewStoreEventHooks(
 		context.Background(), usage, "run-1", iterlog.New(iterlog.LevelError, nil), nil, nil,
 	)
@@ -427,7 +427,7 @@ func TestRecordPoolSpend_aFiredAgentRecoveryBooksTheDonorsSlice(t *testing.T) {
 	ctx := context.Background()
 
 	plan := recoveryRungPlan(t)
-	usage := newMetricsEmitter(&recordingEmitter{}, metrics.New(), plan)
+	usage := newMetricsEmitter(&recordingEmitter{}, metrics.New(), plan, nil)
 	hooks := model.NewStoreEventHooks(
 		context.Background(), usage, "run-1", iterlog.New(iterlog.LevelError, nil), nil, nil,
 	)
@@ -468,7 +468,7 @@ func TestRecordPoolSpend_gatewayFundedSpendKeepsTheEmptyTableQuiet(t *testing.T)
 	h.runner.cfg.Logger = iterlog.New(iterlog.LevelWarn, &buf)
 
 	plan := finePlan(t)
-	usage := newMetricsEmitter(&recordingEmitter{}, metrics.New(), plan)
+	usage := newMetricsEmitter(&recordingEmitter{}, metrics.New(), plan, nil)
 	hooks := model.NewStoreEventHooks(
 		context.Background(), usage, "run-1", iterlog.New(iterlog.LevelError, nil), nil, nil,
 	)
@@ -495,7 +495,7 @@ func TestRecordPoolSpend_gatewayFundedSpendKeepsTheEmptyTableQuiet(t *testing.T)
 	buf.Reset()
 	hEnv := newPoolHarnessForRun(t, credpoolLimitsForFine(), "run-4")
 	hEnv.runner.cfg.Logger = iterlog.New(iterlog.LevelWarn, &buf)
-	usageEnv := newMetricsEmitter(&recordingEmitter{}, metrics.New(), plan)
+	usageEnv := newMetricsEmitter(&recordingEmitter{}, metrics.New(), plan, nil)
 	hooksEnv := model.NewStoreEventHooks(
 		context.Background(), usageEnv, "run-4", iterlog.New(iterlog.LevelError, nil), nil, nil,
 	)
@@ -522,7 +522,7 @@ func TestRecordPoolSpend_gatewayFundedSpendKeepsTheEmptyTableQuiet(t *testing.T)
 	buf.Reset()
 	h2 := newPoolHarnessForRun(t, credpoolLimitsForFine(), "run-2")
 	h2.runner.cfg.Logger = iterlog.New(iterlog.LevelWarn, &buf)
-	usage2 := newMetricsEmitter(&recordingEmitter{}, metrics.New(), plan)
+	usage2 := newMetricsEmitter(&recordingEmitter{}, metrics.New(), plan, nil)
 	hooks2 := model.NewStoreEventHooks(
 		context.Background(), usage2, "run-2", iterlog.New(iterlog.LevelError, nil), nil, nil,
 	)
@@ -557,7 +557,7 @@ func TestRecordPoolSpend_gatewayFundedSpendKeepsTheEmptyTableQuiet(t *testing.T)
 func TestSupervisorUsageSink_JoinsThePlanLikeAnEvent(t *testing.T) {
 	sink := func(t *testing.T, plan map[string]string, pin string) (*metricsEmitter, func(in, out int)) {
 		t.Helper()
-		m := newMetricsEmitter(&recordingEmitter{}, metrics.New(), plan)
+		m := newMetricsEmitter(&recordingEmitter{}, metrics.New(), plan, nil)
 		specs := []supervise.Spec{{Name: "pacer", Model: pin}}
 		meterSupervisorSpecs(context.Background(), specs, m)
 		if specs[0].OnUsage == nil {
@@ -618,7 +618,7 @@ func TestRecordPoolSpend_aRuntimeNodeTheWalkCannotSeeBooksTheWholeAttempt(t *tes
 
 	h := newLoggedRunner(t, "run-1")
 	plan := finePlan(t)
-	usage := newMetricsEmitter(&recordingEmitter{}, metrics.New(), plan)
+	usage := newMetricsEmitter(&recordingEmitter{}, metrics.New(), plan, nil)
 	hooks := model.NewStoreEventHooks(
 		context.Background(), usage, "run-1", iterlog.New(iterlog.LevelError, nil), nil, nil,
 	)
@@ -707,7 +707,7 @@ func TestRecordPoolSpend_aFiredInteractionBooksTheDonorsSlice(t *testing.T) {
 	ctx := context.Background()
 
 	plan := interactionPlan(t)
-	usage := newMetricsEmitter(&recordingEmitter{}, metrics.New(), plan)
+	usage := newMetricsEmitter(&recordingEmitter{}, metrics.New(), plan, nil)
 	hooks := model.NewStoreEventHooks(
 		context.Background(), usage, "run-1", iterlog.New(iterlog.LevelError, nil), nil, nil,
 	)
@@ -809,7 +809,7 @@ func TestRecordPoolSpend_aFailedDelegationJoinsThePlanLikeAFinishedOne(t *testin
 			h := newPoolHarnessForRun(t, credpoolLimitsForFine(), "run-1")
 			h.runner.cfg.Logger = iterlog.New(iterlog.LevelWarn, &buf)
 			plan := finePlan(t)
-			usage := newMetricsEmitter(&recordingEmitter{}, metrics.New(), plan)
+			usage := newMetricsEmitter(&recordingEmitter{}, metrics.New(), plan, nil)
 			sc.fire(model.NewStoreEventHooks(
 				context.Background(), usage, "run-1", iterlog.New(iterlog.LevelError, nil), nil, nil,
 			))
@@ -851,7 +851,7 @@ func TestMetricsEmitter_aStepJoinsOnItsLoopsWordOverTheRecordedRoute(t *testing.
 		t.Fatalf("plan = %v, want impl rows for both its routes — the premise (two planned providers on one node) broke", plan)
 	}
 
-	usage := newMetricsEmitter(&recordingEmitter{}, metrics.New(), plan)
+	usage := newMetricsEmitter(&recordingEmitter{}, metrics.New(), plan, nil)
 	hooks := model.NewStoreEventHooks(
 		context.Background(), usage, "run-1", iterlog.New(iterlog.LevelError, nil), nil, nil,
 	)
@@ -940,7 +940,7 @@ func TestRecordPoolSpend_onlyAnUnplacedObservationThatSpentVoidsTheTable(t *test
 			h := newPoolHarnessForRun(t, credpoolLimitsForFine(), "run-1")
 			h.runner.cfg.Logger = iterlog.New(iterlog.LevelWarn, &buf)
 			plan := finePlan(t)
-			usage := newMetricsEmitter(&recordingEmitter{}, metrics.New(), plan)
+			usage := newMetricsEmitter(&recordingEmitter{}, metrics.New(), plan, nil)
 			hooks := model.NewStoreEventHooks(
 				context.Background(), usage, "run-1", iterlog.New(iterlog.LevelError, nil), nil, nil,
 			)

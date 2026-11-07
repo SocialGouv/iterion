@@ -1498,6 +1498,23 @@
         ],
         "type": "object"
       },
+      "EntryChange": {
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "new": {
+            "$ref": "#/components/schemas/Spec"
+          },
+          "old": {
+            "$ref": "#/components/schemas/Spec"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
       "ExecutionContext": {
         "properties": {
           "business_stores": {
@@ -1680,6 +1697,39 @@
         },
         "required": [
           "node_id"
+        ],
+        "type": "object"
+      },
+      "FeedConfig": {
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "interval": {
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          },
+          "params": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "timeout": {
+            "type": "integer"
+          },
+          "type": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "type",
+          "enabled",
+          "interval",
+          "timeout"
         ],
         "type": "object"
       },
@@ -3747,6 +3797,35 @@
         ],
         "type": "object"
       },
+      "Spec": {
+        "properties": {
+          "cache_read_cost_per_m": {
+            "type": "number"
+          },
+          "context_window": {
+            "type": "integer"
+          },
+          "input_cost_per_m": {
+            "type": "number"
+          },
+          "max_output_tokens": {
+            "type": "integer"
+          },
+          "output_cost_per_m": {
+            "type": "number"
+          },
+          "reasoning": {
+            "type": "boolean"
+          },
+          "temperature": {
+            "type": "boolean"
+          },
+          "tool_call": {
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
       "StatusMapping": {
         "properties": {
           "state": {
@@ -3897,6 +3976,37 @@
           "enabled",
           "created_at",
           "updated_at"
+        ],
+        "type": "object"
+      },
+      "SyncOutcome": {
+        "properties": {
+          "changes": {
+            "items": {
+              "$ref": "#/components/schemas/EntryChange"
+            },
+            "type": "array"
+          },
+          "error": {
+            "type": "string"
+          },
+          "feed": {
+            "type": "string"
+          },
+          "fresh_for": {
+            "type": "integer"
+          },
+          "refreshed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "feed",
+          "status"
         ],
         "type": "object"
       },
@@ -6350,6 +6460,108 @@
           "ambient_context",
           "permission",
           "backend"
+        ],
+        "type": "object"
+      },
+      "priceFeedView": {
+        "properties": {
+          "entries": {
+            "type": "integer"
+          },
+          "feed": {
+            "$ref": "#/components/schemas/FeedConfig"
+          },
+          "fresh_for": {
+            "type": "integer"
+          },
+          "last_error": {
+            "type": "string"
+          },
+          "refreshed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "feed",
+          "status"
+        ],
+        "type": "object"
+      },
+      "priceFeedsPutReq": {
+        "properties": {
+          "expected_updated_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "feeds": {
+            "format": "byte",
+            "type": "string"
+          }
+        },
+        "required": [
+          "feeds"
+        ],
+        "type": "object"
+      },
+      "priceFeedsSyncReq": {
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "priceFeedsSyncResponse": {
+        "properties": {
+          "results": {
+            "items": {
+              "$ref": "#/components/schemas/SyncOutcome"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "results"
+        ],
+        "type": "object"
+      },
+      "priceFeedsView": {
+        "properties": {
+          "feeds": {
+            "items": {
+              "$ref": "#/components/schemas/priceFeedView"
+            },
+            "type": "array"
+          },
+          "origin": {
+            "type": "string"
+          },
+          "scope": {
+            "type": "string"
+          },
+          "source_types": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "updated_by": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "scope",
+          "origin",
+          "feeds",
+          "source_types"
         ],
         "type": "object"
       },
@@ -10629,6 +10841,108 @@
           }
         },
         "summary": "POST /api/orgs/{id}/oauth/{kind}/refresh",
+        "tags": [
+          "orgs"
+        ]
+      }
+    },
+    "/api/orgs/{id}/price-feeds": {
+      "get": {
+        "operationId": "getOrgsByIdPriceFeeds",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/priceFeedsView"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "GET /api/orgs/{id}/price-feeds",
+        "tags": [
+          "orgs"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "put": {
+        "operationId": "putOrgsByIdPriceFeeds",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/priceFeedsPutReq"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/priceFeedsView"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "PUT /api/orgs/{id}/price-feeds",
+        "tags": [
+          "orgs"
+        ]
+      }
+    },
+    "/api/orgs/{id}/price-feeds/sync": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "description": "Org-admin only. Forces one feed's refresh (name) or every enabled feed's, answering what changed per id.",
+        "operationId": "postOrgsByIdPriceFeedsSync",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/priceFeedsSyncReq"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/priceFeedsSyncResponse"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "POST /api/orgs/{id}/price-feeds/sync",
         "tags": [
           "orgs"
         ]
@@ -15554,6 +15868,108 @@
           }
         },
         "summary": "PUT /api/teams/{id}/pool",
+        "tags": [
+          "teams"
+        ]
+      }
+    },
+    "/api/teams/{id}/price-feeds": {
+      "get": {
+        "operationId": "getTeamsByIdPriceFeeds",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/priceFeedsView"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "GET /api/teams/{id}/price-feeds",
+        "tags": [
+          "teams"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "put": {
+        "operationId": "putTeamsByIdPriceFeeds",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/priceFeedsPutReq"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/priceFeedsView"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "PUT /api/teams/{id}/price-feeds",
+        "tags": [
+          "teams"
+        ]
+      }
+    },
+    "/api/teams/{id}/price-feeds/sync": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "description": "Team-admin only. Forces one feed's refresh (name) or every enabled feed's, answering what changed per id.",
+        "operationId": "postTeamsByIdPriceFeedsSync",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/priceFeedsSyncReq"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/priceFeedsSyncResponse"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "POST /api/teams/{id}/price-feeds/sync",
         "tags": [
           "teams"
         ]

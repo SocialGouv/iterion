@@ -121,7 +121,7 @@ func TestR11_P1_PostChainExtractionServedRecord(t *testing.T) {
 	t.Setenv("ANTHROPIC_BASE_URL", "")
 	t.Setenv("ANTHROPIC_API_KEY", "test-key")
 	t.Setenv("ITERION_OUTPUT_CORRECTION_BUDGET", "2")
-	usage := newMetricsEmitter(discardEmitter{}, metrics.New(), nil)
+	usage := newMetricsEmitter(discardEmitter{}, metrics.New(), nil, nil)
 	sink := &r11Sink{inner: usage}
 	ex := &r11Extractor{json: `{"verdict":true,"reason":"extracted"}`}
 	p := &r8Backend{name: delegate.BackendClaudeCode, calls: []r8Call{
@@ -153,7 +153,7 @@ func TestR11_P1b_InChainExtractionDrift(t *testing.T) {
 	t.Setenv("ANTHROPIC_BASE_URL", "")
 	t.Setenv("ANTHROPIC_API_KEY", "test-key")
 	t.Setenv("ITERION_OUTPUT_CORRECTION_BUDGET", "2")
-	usage := newMetricsEmitter(discardEmitter{}, metrics.New(), nil)
+	usage := newMetricsEmitter(discardEmitter{}, metrics.New(), nil, nil)
 	sink := &r11Sink{inner: usage}
 	ex := &r11Extractor{json: `{"verdict":true,"reason":"extracted"}`}
 	p := &r8Backend{name: delegate.BackendClaudeCode, calls: []r8Call{
@@ -184,7 +184,7 @@ func TestR11_P2_InChainFailedExtractionThenAbandon(t *testing.T) {
 	t.Setenv("ANTHROPIC_BASE_URL", "")
 	t.Setenv("ANTHROPIC_API_KEY", "test-key")
 	t.Setenv("ITERION_OUTPUT_CORRECTION_BUDGET", "2")
-	usage := newMetricsEmitter(discardEmitter{}, metrics.New(), nil)
+	usage := newMetricsEmitter(discardEmitter{}, metrics.New(), nil, nil)
 	sink := &r11Sink{inner: usage}
 	ex := &r11Extractor{json: `{"verdict":true}`}
 	p := &r8Backend{name: delegate.BackendClaudeCode, calls: []r8Call{
@@ -220,7 +220,7 @@ func TestR11_P3_ExtractionStaysOffTheNodesPlanRow(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "test-key")
 	t.Setenv("ITERION_OUTPUT_CORRECTION_BUDGET", "2")
 	plan := map[string]string{"impl" + model.PlanKeySep + "anthropic": "fp-donor"}
-	usage := newMetricsEmitter(discardEmitter{}, metrics.New(), plan)
+	usage := newMetricsEmitter(discardEmitter{}, metrics.New(), plan, nil)
 	sink := &r11Sink{inner: usage}
 	ex := &r11Extractor{json: `{"verdict":true,"reason":"extracted"}`}
 	p := &r8Backend{name: delegate.BackendClaudeCode, calls: []r8Call{
@@ -253,7 +253,7 @@ func TestR11_P3b_ExtractionOnAnUnplannedProviderVoidsNothing(t *testing.T) {
 	t.Setenv("CODEX_HOME", t.TempDir())
 	t.Setenv("ITERION_OUTPUT_CORRECTION_BUDGET", "2")
 	plan := map[string]string{"impl" + model.PlanKeySep + "anthropic": "fp-donor"}
-	usage := newMetricsEmitter(discardEmitter{}, metrics.New(), plan)
+	usage := newMetricsEmitter(discardEmitter{}, metrics.New(), plan, nil)
 	sink := &r11Sink{inner: usage}
 	ex := &r11Extractor{json: `{"verdict":true,"reason":"extracted"}`}
 	p := &r8Backend{name: delegate.BackendClaudeCode, calls: []r8Call{

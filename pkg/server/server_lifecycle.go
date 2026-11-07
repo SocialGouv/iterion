@@ -331,6 +331,16 @@ func (s *Server) ListenAndServe() error {
 			s.runBoardSyncWorker(ctx, forgeBoardSyncInterval)
 		})
 	}
+	// Price-feed refresh sweep (cloud only, ADR-163): one elected
+	// replica refreshes every due feed on its own period and writes the
+	// durable state; a feed's staleness steps down to the operator floor
+	// with a warning, never a refusal. Off unless both tenant stores are
+	// wired — local mode has no feed and the operator table is the floor.
+	if s.priceFeedSyncStarts() {
+		s.goUntilShutdown("server.priceFeedSync", func(ctx context.Context) {
+			s.runElectedPriceFeedSync(ctx)
+		})
+	}
 	// Orphan-run sweeper (cloud only): flips queued/running rows whose
 	// runner died without a terminal write to failed_resumable. Needs
 	// both the Mongo store (stale scan capability) and the queue (KV

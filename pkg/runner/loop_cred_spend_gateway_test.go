@@ -66,7 +66,7 @@ func TestRecordCredentialSpend_GatewayRouteIsSkippedAsEnvFunded(t *testing.T) {
 	var buf bytes.Buffer
 	counter := credusage.NewMemoryCounter()
 	r := &Runner{cfg: Config{Logger: iterlog.New(iterlog.LevelInfo, &buf), CredUsage: counter}}
-	usage := newMetricsEmitter(nil, nil, nil)
+	usage := newMetricsEmitter(nil, nil, nil, nil)
 	usage.observe(store.Event{Type: store.EventLLMRequest, NodeID: "gw",
 		Data: map[string]any{"model": "openai_compatible/m"}})
 	usage.observe(store.Event{Type: store.EventDelegateFinished, NodeID: "gw",
@@ -100,7 +100,7 @@ func TestRecordCredentialSpend_AmbientRefusedBooksOnTheHeldPair(t *testing.T) {
 	var buf bytes.Buffer
 	counter := credusage.NewMemoryCounter()
 	r := &Runner{cfg: Config{Logger: iterlog.New(iterlog.LevelInfo, &buf), CredUsage: counter}}
-	usage := newMetricsEmitter(nil, nil, nil)
+	usage := newMetricsEmitter(nil, nil, nil, nil)
 	usage.observe(store.Event{Type: store.EventLLMRequest, NodeID: "gw",
 		Data: map[string]any{"model": "openai_compatible/m"}})
 	usage.observe(store.Event{Type: store.EventDelegateFinished, NodeID: "gw",

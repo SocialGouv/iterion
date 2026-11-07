@@ -4,7 +4,7 @@ import "testing"
 
 // withGatewayPricer wires a stub catalog for the duration of one test. The
 // production wiring lives in compatgw's init; here the stub IS the catalog.
-func withGatewayPricer(t *testing.T, loud, quiet func(string) (float64, float64, float64, bool)) {
+func withGatewayPricer(t *testing.T, loud, quiet func(string, func(string) string) (float64, float64, float64, bool)) {
 	t.Helper()
 	prevLoud, prevQuiet := gatewayPricer, gatewayPricerQuiet
 	gatewayPricer, gatewayPricerQuiet = loud, quiet
@@ -13,8 +13,8 @@ func withGatewayPricer(t *testing.T, loud, quiet func(string) (float64, float64,
 	})
 }
 
-func constGatewayPricer(input, output, cacheRead float64, known bool) func(string) (float64, float64, float64, bool) {
-	return func(string) (float64, float64, float64, bool) {
+func constGatewayPricer(input, output, cacheRead float64, known bool) func(string, func(string) string) (float64, float64, float64, bool) {
+	return func(string, func(string) string) (float64, float64, float64, bool) {
 		return input, output, cacheRead, known
 	}
 }

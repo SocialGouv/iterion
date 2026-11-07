@@ -98,7 +98,7 @@ func newPoolHarnessForRun(t *testing.T, limits credpool.Limits, runID string) *p
 // usageWith drives the PRODUCTION hook so the reported cost is the one the
 // real chain produces, not a number the test typed in.
 func usageWith(costUSD float64, tokens int) *metricsEmitter {
-	usage := newMetricsEmitter(&recordingEmitter{}, metrics.New(), nil)
+	usage := newMetricsEmitter(&recordingEmitter{}, metrics.New(), nil, nil)
 	hooks := model.NewStoreEventHooks(
 		context.Background(), usage, "run-1", iterlog.New(iterlog.LevelError, nil), nil, nil,
 	)
@@ -254,7 +254,7 @@ func TestRecordPoolSpend_authFailureAbsorbedByRecoveryStillParksTheDonor(t *test
 	h := newPoolHarness(t, credpool.Limits{MaxUSDPerDay: 10})
 	ctx := context.Background()
 
-	usage := newMetricsEmitter(&recordingEmitter{}, metrics.New(), nil)
+	usage := newMetricsEmitter(&recordingEmitter{}, metrics.New(), nil, nil)
 	st, err := store.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("store: %v", err)

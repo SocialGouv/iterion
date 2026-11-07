@@ -15,12 +15,12 @@ import (
 // failure, in the shape the engine books from. Nil when nothing was served.
 // Keeping this map separate from answers lets interaction callers strip the
 // reserved namespace without losing the bill. Unreported usage is not zero.
-func meteredHumanFailure(modelSpec string, result *ObjectResult[map[string]any]) map[string]any {
+func meteredHumanFailure(ctx context.Context, modelSpec string, result *ObjectResult[map[string]any]) map[string]any {
 	if result == nil || (result.TotalUsage.InputTokens == 0 && result.TotalUsage.OutputTokens == 0 && result.TotalUsage.UnreportedCalls == 0) {
 		return nil
 	}
 	output := map[string]any{}
-	annotateUsage(output, modelSpec, result.TotalUsage)
+	annotateUsage(ctx, output, modelSpec, result.TotalUsage)
 	return output
 }
 
@@ -142,7 +142,7 @@ func (e *ClawExecutor) executeHumanLLMWithSpend(ctx context.Context, node *ir.Hu
 		// then degrades to the human pause). A bare nil made that booking
 		// inert: the attempt is over — the human answers next, and a human
 		// reports no tokens — so this figure is final or lost.
-		return nil, meteredHumanFailure(modelSpec, result), fmt.Errorf("model: human node %q: structured generation: %w", node.ID, err)
+		return nil, meteredHumanFailure(ctx, modelSpec, result), fmt.Errorf("model: human node %q: structured generation: %w", node.ID, err)
 	}
 
 	output := result.Object
@@ -150,12 +150,12 @@ func (e *ClawExecutor) executeHumanLLMWithSpend(ctx context.Context, node *ir.Hu
 		output = make(map[string]any)
 	}
 
-	spend := meteredHumanFailure(modelSpec, result)
+	spend := meteredHumanFailure(ctx, modelSpec, result)
 	if spend == nil {
 		// A reported zero still replaces any model-written counters on a
 		// standalone human node; the booking guard ignores this zero bill.
 		spend = map[string]any{}
-		annotateUsage(spend, modelSpec, result.TotalUsage)
+		annotateUsage(ctx, spend, modelSpec, result.TotalUsage)
 	}
 	return output, spend, nil
 }

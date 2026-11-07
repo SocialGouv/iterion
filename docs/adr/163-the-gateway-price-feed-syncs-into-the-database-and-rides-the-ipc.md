@@ -35,3 +35,35 @@ The catalogue already has every seam the feed needs:
   - *A gitops bot regenerating `OPENAI_COMPATIBLE_MODELS` in the appsets repo* — git-native and reviewable, but the table stays frozen between rolls (a git cycle plus an ArgoCD rollout is hours, not minutes), and it covers only the operator-table slot. Kept as a possible later complement for change *review*, not as the sync mechanism.
   - *A runner-side feed tier in `resolveCatalog`* — smallest diff, but N runners fetch in parallel, sandbox egress must open, config lives in env rather than the database, and freshness varies per runner — the IPC record exists precisely so the host's answer beats any local read.
 - **Watch**: feed failures must be loud (one warning per feed per staleness transition, not per dispatch), and the drift warning must not spam — one per id per freshness window.
+
+
+## Amendment 2026-11-07 — the delivery's channel and bounds
+
+The implementation this ADR's ticket shipped (#3105) clarifies three
+points the decision left to the delivery:
+
+1. **The channel.** "The answer reaches the runner through the IPC
+   record it already reads" (§1) lands as TWO carried things: the run
+   BUNDLE gains `GatewayPriceFeed` — the folded table as bytes the
+   server sealed, an older runner decoding the bundle unchanged — which
+   the runner plants on the run's environment
+   (`ITERION_GATEWAY_PRICE_FEED`, host-written, refused when planted)
+   for the catalog to read between the IPC record and the operator
+   table; and the per-node IPC RECORD (`_gateway_spec`,
+   `ITERION_OPENAI_COMPATIBLE_RESOLVED`) still carries the dispatched
+   id's resolution, now naming `feed:<name>` with its `refreshed_at`
+   (§6 verbatim).
+2. **Freshness is judged once, at the fold.** The server resolves the
+   effective table (§1) — fresh entries only; the runner's readers
+   freeze the verdict per table value, so the stamp at dispatch and
+   every later meter (the node's bill, the org cap, the credential
+   ledger) read ONE answer for one invocation, ADR-122's
+   "never read again in mid-flight" held at the feed rung. A resumed
+   run is folded anew.
+3. **The `exec` source is the platform operator's** (§4's "an
+   operator-supplied command" made precise): a tenant admin cannot
+   configure one (super-admin only on the write) and it executes only
+   where the deployment exports `ITERION_PRICE_FEED_EXEC=1`. The HTTP
+   sources dial through the deployment's public-unicast guard
+   (`ITERION_LLM_ENDPOINT_ALLOW_PRIVATE`, the existing LLM-endpoint
+   hatch). §3's drift bound and §2's staleness are unchanged.

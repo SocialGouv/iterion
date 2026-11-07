@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -53,6 +54,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/pat"
 	"github.com/SocialGouv/iterion/pkg/platformcfg"
 	"github.com/SocialGouv/iterion/pkg/pluginsource"
+	"github.com/SocialGouv/iterion/pkg/pricefeed"
 	natsq "github.com/SocialGouv/iterion/pkg/queue/nats"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/runview/runstream"
@@ -516,6 +518,12 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		}(),
 		// The SAME resolver instance the server's admin PUT invalidates —
 		// publish-time pinning sees a mutation immediately on this replica.
+		// The run's effective price-feed table (ADR-163): folded fresh at
+		// every launch and resume from the tenant stores above; nil when
+		// no fresh feed answers and the operator table is the floor.
+		PriceFeedEffective: func(ctx context.Context, orgID, teamID string, named []string) json.RawMessage {
+			return server.EffectivePriceFeed(ctx, stores.priceFeedConfigs, stores.priceFeedStates, orgID, teamID, named, logger.Warn)
+		},
 		SandboxImage: func(ctx context.Context) string {
 			return sandboxResolver.Get(ctx).EffectiveImage()
 		},
@@ -781,6 +789,8 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		PluginSourceFetcher:         pluginFetcher,
 		BotSources:                  stores.botSources,
 		BotRolesSettings:            stores.botRoles,
+		PriceFeedConfigs:            stores.priceFeedConfigs,
+		PriceFeedStates:             stores.priceFeedStates,
 		RunnerPoolsSettings:         stores.runnerPools,
 		BotVarsSettings:             stores.botVars,
 		MaintenanceSettings:         stores.maintenance,
@@ -918,6 +928,8 @@ type cloudStores struct {
 	audit            *audit.MongoStore
 	usageCapSettings *usagecap.MongoSettingsStore
 	botRoles         *platformcfg.MongoStore[platformcfg.BotRoles]
+	priceFeedConfigs pricefeed.ConfigStore
+	priceFeedStates  pricefeed.StateStore
 	runnerPools      *platformcfg.MongoStore[platformcfg.RunnerPools]
 	sandboxCfg       *platformcfg.MongoStore[platformcfg.Sandbox]
 	botVars          *platformcfg.MongoStore[platformcfg.BotVars]
@@ -956,6 +968,8 @@ func buildCloudStores(ctx context.Context, st *mongostore.Store, logger *iterlog
 		pluginSources:    pluginsource.NewMongoStore(st.DB()),
 		botSources:       botsource.NewMongoStore(st.DB()),
 		botRoles:         platformcfg.NewMongoBotRoles(st.DB()),
+		priceFeedConfigs: pricefeed.NewMongoConfigStore(st.DB()),
+		priceFeedStates:  pricefeed.NewMongoStateStore(st.DB()),
 		runnerPools:      platformcfg.NewMongoRunnerPools(st.DB()),
 		sandboxCfg:       platformcfg.NewMongoSandbox(st.DB()),
 		botVars:          platformcfg.NewMongoBotVars(st.DB()),

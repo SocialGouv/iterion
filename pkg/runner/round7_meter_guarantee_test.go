@@ -69,7 +69,7 @@ func r7Exec(t *testing.T, node *ir.AgentNode, bs ...*r7Backend) (*metricsEmitter
 		t.Setenv(k, "")
 		os.Unsetenv(k)
 	}
-	usage := newMetricsEmitter(discardEmitter{}, metrics.New(), nil)
+	usage := newMetricsEmitter(discardEmitter{}, metrics.New(), nil, nil)
 	log := &eventLog{inner: usage}
 	hooks := model.NewStoreEventHooks(context.Background(), log, "run", iterlog.Nop(), nil, nil)
 	reg := delegate.NewRegistry()

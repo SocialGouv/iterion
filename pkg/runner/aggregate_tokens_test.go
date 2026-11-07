@@ -28,7 +28,7 @@ func TestDelegateAggregate_IsNotClaimedAsInput(t *testing.T) {
 		Fingerprints:         map[string]string{delegate.BackendClaudeCode: "fp-forfait"},
 	})
 
-	usage := newMetricsEmitter(nil, nil, nil)
+	usage := newMetricsEmitter(nil, nil, nil, nil)
 	usage.observe(store.Event{Type: store.EventLLMRequest, NodeID: "implement",
 		Data: map[string]any{"model": "anthropic/claude-opus-5"}})
 	usage.observe(store.Event{Type: store.EventDelegateFinished, NodeID: "implement",
@@ -71,7 +71,7 @@ func TestClawStepSplit_StaysADirectionalSplit(t *testing.T) {
 		Fingerprints: map[string]string{string(secrets.ProviderAnthropic): "fp-anthropic"},
 	})
 
-	usage := newMetricsEmitter(nil, nil, nil)
+	usage := newMetricsEmitter(nil, nil, nil, nil)
 	usage.observe(store.Event{Type: store.EventLLMRequest, NodeID: "n",
 		Data: map[string]any{"model": "anthropic/claude-opus-5"}})
 	usage.observe(store.Event{Type: store.EventLLMStepFinished, NodeID: "n",

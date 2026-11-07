@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/backend/compatgw"
 	"github.com/SocialGouv/iterion/pkg/queue"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -196,6 +197,13 @@ func (r *Runner) injectCredentials(ctx context.Context, msg *queue.RunMessage) (
 		r.startOAuthRefreshers(stopRefresh, msg.RunID, refreshFiles, maps.Clone(bundle.OAuthRecordRefs), maps.Clone(bundle.OAuthFingerprints), maps.Clone(bundle.OAuthRecordConnectedAt), maps.Clone(bundle.PoolSourced))
 	}
 	ctx = secrets.WithCredentials(ctx, creds)
+	// The run's price-feed table (ADR-163): bytes the server folded and
+	// sealed, planted on the run's environment here — the ONE
+	// bundle-to-context adapter, shared with the suites, so the wire shape
+	// and the planted name cannot drift. Not secret (prices), so cleanup
+	// leaves it; a malformed payload plants nothing and the run keeps the
+	// operator floor.
+	ctx = compatgw.OverlayFeedTable(ctx, bundle.GatewayPriceFeed)
 	return ctx, cleanup, nil
 }
 
