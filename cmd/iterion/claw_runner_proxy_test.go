@@ -13,6 +13,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/backend/tool"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // launcherProxies builds the runner's ToolDefs through the production
@@ -25,7 +26,7 @@ func launcherProxies(t *testing.T, d *proxyDispatcher, defs ...delegate.IOToolDe
 			t.Fatalf("launcherProxies(%q): placement %s — only launcher-placed tools come back as proxies", def.Name, placement)
 		}
 	}
-	out, err := makeHybridToolDefs(defs, d, t.TempDir(), sandboxScratchScope{}, model.NewRegistry(), model.EventHooks{}, 0, nil, false)
+	out, err := makeHybridToolDefs(defs, d, t.TempDir(), sandboxScratchScope{}, model.NewRegistry(), model.EventHooks{}, 0, nil, false, store.RunTrustDefault)
 	if err != nil {
 		t.Fatalf("makeHybridToolDefs: %v", err)
 	}

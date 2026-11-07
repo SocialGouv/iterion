@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/backend/tool"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // The container half of #2650 (#2874): registerSandboxLocalTools registers
@@ -56,7 +57,7 @@ func TestRegisterSandboxLocalTools_ScratchDirIsAReadRoot(t *testing.T) {
 
 	// The scope the proxy builds carries the scratch: the brief reads.
 	reg := tool.NewRegistry()
-	if err := registerSandboxLocalTools(reg, workspace, sandboxScratchScope{roots: []string{scratch}}, nil, 0, nil, false); err != nil {
+	if err := registerSandboxLocalTools(reg, workspace, sandboxScratchScope{roots: []string{scratch}}, nil, 0, nil, false, store.RunTrustDefault); err != nil {
 		t.Fatalf("registerSandboxLocalTools: %v", err)
 	}
 	brief := filepath.Join(scratch, "briefs", "lot-01.md")
@@ -81,7 +82,7 @@ func TestRegisterSandboxLocalTools_ScratchDirIsAReadRoot(t *testing.T) {
 	// pre-#2650 envelope, or the AddExtraRoot call removed), the same brief
 	// is outside every root and the read refuses.
 	bare := tool.NewRegistry()
-	if err := registerSandboxLocalTools(bare, workspace, sandboxScratchScope{}, nil, 0, nil, false); err != nil {
+	if err := registerSandboxLocalTools(bare, workspace, sandboxScratchScope{}, nil, 0, nil, false, store.RunTrustDefault); err != nil {
 		t.Fatalf("registerSandboxLocalTools without scratch: %v", err)
 	}
 	if _, err := readFile(t, bare, brief); err == nil || !strings.Contains(err.Error(), "outside workspace") {
@@ -111,7 +112,7 @@ func TestRegisterSandboxLocalTools_NarrowedRootsBothRead(t *testing.T) {
 	}
 
 	reg := tool.NewRegistry()
-	if err := registerSandboxLocalTools(reg, workspace, sandboxScratchScope{anchor: shared, roots: []string{runSubtree, shared}}, nil, 0, nil, false); err != nil {
+	if err := registerSandboxLocalTools(reg, workspace, sandboxScratchScope{anchor: shared, roots: []string{runSubtree, shared}}, nil, 0, nil, false, store.RunTrustDefault); err != nil {
 		t.Fatalf("registerSandboxLocalTools: %v", err)
 	}
 	readFile := func(path string) (string, error) {
@@ -131,7 +132,7 @@ func TestRegisterSandboxLocalTools_NarrowedRootsBothRead(t *testing.T) {
 	// The narrowed list alone (no shared root): the run subtree reads, the
 	// shared cache refuses.
 	narrow := tool.NewRegistry()
-	if err := registerSandboxLocalTools(narrow, workspace, sandboxScratchScope{anchor: shared, roots: []string{runSubtree}}, nil, 0, nil, false); err != nil {
+	if err := registerSandboxLocalTools(narrow, workspace, sandboxScratchScope{anchor: shared, roots: []string{runSubtree}}, nil, 0, nil, false, store.RunTrustDefault); err != nil {
 		t.Fatalf("registerSandboxLocalTools narrowed: %v", err)
 	}
 	if _, err := func() (string, error) {
@@ -164,7 +165,7 @@ func TestRegisterSandboxLocalTools_PlantedRunSubtreeLinkContainsNothing(t *testi
 	}
 
 	reg := tool.NewRegistry()
-	if err := registerSandboxLocalTools(reg, workspace, sandboxScratchScope{anchor: shared, roots: []string{runSubtree}}, nil, 0, nil, false); err != nil {
+	if err := registerSandboxLocalTools(reg, workspace, sandboxScratchScope{anchor: shared, roots: []string{runSubtree}}, nil, 0, nil, false, store.RunTrustDefault); err != nil {
 		t.Fatalf("registerSandboxLocalTools: %v", err)
 	}
 	td, err := reg.Resolve("read_file")

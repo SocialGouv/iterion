@@ -897,6 +897,10 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 		// switch becomes the tool's absence and the ceiling a value.
 		DisableWorkspaceCommands: model.SlashCommandsDisabled(),
 		CommandMaxBytes:          model.SlashCommandMaxBytesForRegistry(),
+		// The `command` tool's provenance floor (ADR-162 U3) consults the
+		// executor's LIVE trust — pushed by the engine after this registry
+		// exists, the same doctrine as the skill allowlist below.
+		WorkspaceTrust: executor.WorkspaceTrust,
 	}
 	// The workspace-scoped tools (`command`/`skill` lookups, bash,
 	// write_file, file_edit and the read tools through the scope above)

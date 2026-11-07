@@ -21,6 +21,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/toolcatalog"
 	"github.com/SocialGouv/iterion/pkg/internal/proc"
 	"github.com/SocialGouv/iterion/pkg/internal/shellquote"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // ctxKeyBashExtraEnv carries per-task env additions (KEY=value entries)
@@ -815,6 +816,13 @@ type ClawDefaults struct {
 	// carry it, so a registration reading it there would read nothing.
 	DisableWorkspaceCommands bool
 
+	// WorkspaceTrust is the workspace's provenance, consulted PER `command`
+	// call (ADR-162 U3): on a workspace its tenant did not write the tool
+	// resolves nothing from the checkout. Consulted live, never captured —
+	// the engine pushes the trust after this registry exists (the same
+	// doctrine as SkillAllowlist below). Nil is the trusted default.
+	WorkspaceTrust func() store.RunTrust
+
 	// CommandMaxBytes is the `command` tool's body/expansion ceiling: 0 is
 	// DefaultWorkspaceCommandMaxBytes, a negative value removes the
 	// ceiling. Hosts resolve the dial host-side (iterion:
@@ -985,7 +993,7 @@ func RegisterClawAll(reg *Registry, defaults ClawDefaults) error {
 		return err
 	}
 	if !defaults.DisableWorkspaceCommands {
-		if err := RegisterClawCommandWithProvider(reg, workspace, defaults.CommandMaxBytes); err != nil {
+		if err := RegisterClawCommandWithTrust(reg, workspace, defaults.CommandMaxBytes, defaults.WorkspaceTrust); err != nil {
 			return err
 		}
 	}

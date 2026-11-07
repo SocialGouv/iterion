@@ -17,6 +17,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/backend/tool"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // agentProbe is a well-formed `agent` input: claw's own validator accepts it,
@@ -34,7 +35,7 @@ const agentProbe = `{"description":"summarise","prompt":"Summarise Go interfaces
 // *delegate.ErrCapabilityUnsupported, in-container, on the default path.
 func TestTheInContainerAgentToolReachesARunner(t *testing.T) {
 	reg := tool.NewRegistry()
-	registrar := sandboxLocalToolRegistrar(sandboxScratchScope{}, model.NewRegistry(), model.EventHooks{}, 0, nil, false)
+	registrar := sandboxLocalToolRegistrar(sandboxScratchScope{}, model.NewRegistry(), model.EventHooks{}, 0, nil, false, store.RunTrustDefault)
 	if err := registrar(reg, t.TempDir()); err != nil {
 		t.Fatalf("sandboxLocalToolRegistrar: %v", err)
 	}
@@ -61,7 +62,7 @@ func TestTheInContainerAgentToolReachesARunner(t *testing.T) {
 // refuses every call, rather than letting claw's executor report a start.
 func TestAnUnwiredInContainerAgentToolStillRefusesInTheOpen(t *testing.T) {
 	reg := tool.NewRegistry()
-	if err := registerSandboxLocalTools(reg, t.TempDir(), sandboxScratchScope{}, nil, 0, nil, false); err != nil {
+	if err := registerSandboxLocalTools(reg, t.TempDir(), sandboxScratchScope{}, nil, 0, nil, false, store.RunTrustDefault); err != nil {
 		t.Fatalf("registerSandboxLocalTools: %v", err)
 	}
 	td, err := reg.Resolve("agent")

@@ -1836,7 +1836,7 @@ func (e *ClawExecutor) buildUserPromptParts(ctx context.Context, f backendFields
 	// ask_user prepend just below, and the schema re-ask that appends its
 	// feedback to this text. Expanding later would emit one prompt and
 	// send another.
-	expanded, hit := expandWorkspaceSlashCommand(userText, e.WorkDir(), backendName, f.id, LoopIterationFromContext(ctx), e.logger, &e.slashWarnedOnce, sess)
+	expanded, hit := e.expandWorkspaceSlashCommand(userText, backendName, f.id, LoopIterationFromContext(ctx), sess)
 	if hit {
 		userText = expanded
 		// The blocks above were split around the INVOCATION, so their TEXT

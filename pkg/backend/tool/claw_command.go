@@ -10,6 +10,7 @@ import (
 	clawcmds "github.com/SocialGouv/claw-code-go/pkg/api/commands"
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // DefaultWorkspaceCommandMaxBytes is the built-in ceiling on a workspace
@@ -69,6 +70,20 @@ func RegisterClawCommand(reg *Registry, workDir string, maxBytes int) error {
 // precisely for that review case (#2870). A nil provider behaves as the
 // empty workspace: every call answers "unknown command".
 func RegisterClawCommandWithProvider(reg *Registry, workspace func() string, maxBytes int) error {
+	return RegisterClawCommandWithTrust(reg, workspace, maxBytes, nil)
+}
+
+// RegisterClawCommandWithTrust is RegisterClawCommandWithProvider with the
+// workspace's PROVENANCE beside its location, consulted per call (ADR-162
+// U3): on a workspace its tenant did not write, the command's body is the
+// checkout's own prose handed to the model as a curated instruction, so the
+// tool resolves nothing — the call answers with the withdrawal, as text,
+// the shape every domain outcome takes on this surface. A nil trust
+// provider is the trusted default: hosts with no notion of provenance keep
+// today's behavior. The live closure, never a captured value: the engine
+// pushes the trust after the registry exists (the same doctrine as the
+// skill allowlist's provider).
+func RegisterClawCommandWithTrust(reg *Registry, workspace func() string, maxBytes int, trust func() store.RunTrust) error {
 	if maxBytes == 0 {
 		maxBytes = DefaultWorkspaceCommandMaxBytes
 	}
@@ -90,6 +105,9 @@ func RegisterClawCommandWithProvider(reg *Registry, workspace func() string, max
 		},
 	}
 	return RegisterClawTool(reg, t, func(ctx context.Context, input map[string]any) (string, error) {
+		if trust != nil && !trust().Trusted() {
+			return "workspace slash commands are not served from a workspace its tenant did not write — the command stays unresolved", nil
+		}
 		return executeWorkspaceCommand(ctx, workspace(), maxBytes, input)
 	})
 }

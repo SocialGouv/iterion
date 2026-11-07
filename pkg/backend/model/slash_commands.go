@@ -80,7 +80,14 @@ const slashCommandArgsPrefix = "\n\nARGUMENTS: "
 // full, clean it up"). Every abstention is logged with its reason and the
 // text travels unchanged, which is also what the backend did before this
 // existed: degraded, never silent.
-func expandWorkspaceSlashCommand(userText, workDir, backendName, nodeID string, iteration int, logger *iterlog.Logger, once *slashWarnOnce, sess *nodeBuildSession) (string, bool) {
+//
+// A METHOD on the executor, not a free function taking a workDir: the trust
+// that governs this loader is the executor's own (the field stampWorkspace
+// reads, pushed once per run by the engine), so a new call site cannot
+// construct the call without it — or pair one workspace's directory with
+// another's trust.
+func (e *ClawExecutor) expandWorkspaceSlashCommand(userText, backendName, nodeID string, iteration int, sess *nodeBuildSession) (string, bool) {
+	workDir, logger, once := e.WorkDir(), e.logger, &e.slashWarnedOnce
 	if backendName != delegate.BackendClaw || workDir == "" || userText == "" {
 		return userText, false
 	}
@@ -94,6 +101,25 @@ func expandWorkspaceSlashCommand(userText, workDir, backendName, nodeID string, 
 	}
 	name, args, ok := clawcmds.ParseInvocation(userText)
 	if !ok {
+		return userText, false
+	}
+	// FLOOR (ADR-162 U3): a workspace its tenant did not write does not write
+	// this node's prompt. The body substituted here is a file the CHECKOUT
+	// authored, read into the text a reviewing agent acts on — the same
+	// surface as a planted skill or hook, reached through the prompt instead
+	// of the settings.
+	//
+	// Placed after the invocation is parsed and the directory is known to
+	// exist, so the diagnostic fires only where something would really have
+	// been loaded — and the untrusted tree is never read past the directory
+	// listing. Claw's own loader already roots at the workspace and refuses a
+	// symlinked `.claude/commands`, so what is withdrawn here is provenance,
+	// not escape. Abstention in the shape every refusal here takes — the
+	// reason is logged and the text travels unchanged; nothing fails a node.
+	if !e.WorkspaceTrust().Trusted() {
+		warnSlashCommand(logger, nodeID, iteration,
+			"prompt opens with /%s, and this run's workspace was not written by its tenant — a command it authored is not loaded into the prompt (sending the text unchanged)",
+			safeDiag(name))
 		return userText, false
 	}
 	// The ceiling reaches the READ, not just the write: a large command file

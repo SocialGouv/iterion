@@ -10,6 +10,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/backend/tool"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // The runner half of the pinned skill mode (iterion#1719): the allowlist
@@ -38,7 +39,7 @@ func TestRegisterSandboxLocalTools_PinnedSkillMode(t *testing.T) {
 	reg := tool.NewRegistry()
 	if err := registerSandboxLocalTools(reg, workspace, sandboxScratchScope{},
 		model.NewSubagentRunner(model.NewRegistry(), tool.NewRegistry(), model.EventHooks{}, nil, ""), 0,
-		map[string]string{"review": pinnedRel}, true); err != nil {
+		map[string]string{"review": pinnedRel}, true, store.RunTrustDefault); err != nil {
 		t.Fatalf("registerSandboxLocalTools: %v", err)
 	}
 	td, err := reg.Resolve("skill")
@@ -56,7 +57,7 @@ func TestRegisterSandboxLocalTools_PinnedSkillMode(t *testing.T) {
 
 	// Armed with nothing, every name refuses — no silent fall back to the walk.
 	reg2 := tool.NewRegistry()
-	if err := registerSandboxLocalTools(reg2, workspace, sandboxScratchScope{}, nil, 0, nil, true); err != nil {
+	if err := registerSandboxLocalTools(reg2, workspace, sandboxScratchScope{}, nil, 0, nil, true, store.RunTrustDefault); err != nil {
 		t.Fatalf("registerSandboxLocalTools (empty pin): %v", err)
 	}
 	td2, _ := reg2.Resolve("skill")

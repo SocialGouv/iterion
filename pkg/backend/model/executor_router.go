@@ -239,7 +239,7 @@ func (e *ClawExecutor) executeLLMRouterUnified(ctx context.Context, node *ir.Rou
 		// A router prompt may invoke a workspace `.claude/commands/`
 		// command too. Resolved per backend, inside assemble, because the
 		// substitution is claw's alone — claude_code expands it natively.
-		routerText, _ := expandWorkspaceSlashCommand(userText, e.WorkDir(), bn, node.ID, LoopIterationFromContext(ctx), e.logger, &e.slashWarnedOnce, sess)
+		routerText, _ := e.expandWorkspaceSlashCommand(userText, bn, node.ID, LoopIterationFromContext(ctx), sess)
 		// ONE prompt event, emitted here rather than before the chain, and
 		// carrying the text this backend actually receives. Before the
 		// chain it could only carry the invocation; emitting a second,

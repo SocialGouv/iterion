@@ -16,6 +16,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/backend/tool"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // proxyDispatcher is the runner-side counterpart to the launcher-side
@@ -349,7 +350,7 @@ func relaySessionMirrorGap(d *proxyDispatcher, stderr io.Writer, reason string, 
 // exactly those entries — joined against THIS container's workspace — and
 // refuses everything else, so a checkout under review cannot plant a skill
 // under a walked root (iterion#1719). Disarmed, the workspace walk stands.
-func registerSandboxLocalTools(reg *tool.Registry, workspace string, scratch sandboxScratchScope, subagent tool.SubagentRunner, commandMaxBytes int, skillAllowlist map[string]string, skillArmed bool) error {
+func registerSandboxLocalTools(reg *tool.Registry, workspace string, scratch sandboxScratchScope, subagent tool.SubagentRunner, commandMaxBytes int, skillAllowlist map[string]string, skillArmed bool, trust store.RunTrust) error {
 	readScope := tool.NewReadScope(workspace)
 	for _, root := range scratch.roots {
 		if scratch.anchor == "" {
@@ -395,7 +396,7 @@ func registerSandboxLocalTools(reg *tool.Registry, workspace string, scratch san
 	// none, and the sandbox env-classification guard holds that line), and
 	// the kill switch's answer arrives as the tool's absence from the
 	// advertised set.
-	if err := tool.RegisterClawCommand(reg, workspace, commandMaxBytes); err != nil {
+	if err := tool.RegisterClawCommandWithTrust(reg, func() string { return workspace }, commandMaxBytes, func() store.RunTrust { return trust }); err != nil {
 		return err
 	}
 	// The subagent runner spawns its child conversation against THIS
@@ -433,8 +434,9 @@ func makeHybridToolDefs(
 	commandMaxBytes int,
 	skillAllowlist map[string]string,
 	skillArmed bool,
+	trust store.RunTrust,
 ) ([]delegate.ToolDef, error) {
-	return buildHybridToolDefs(defs, d, workspace, sandboxLocalToolRegistrar(scratch, modelReg, hooks, commandMaxBytes, skillAllowlist, skillArmed))
+	return buildHybridToolDefs(defs, d, workspace, sandboxLocalToolRegistrar(scratch, modelReg, hooks, commandMaxBytes, skillAllowlist, skillArmed, trust))
 }
 
 // sandboxScratchScope is the scratch read scope a task crossed: the roots
@@ -490,10 +492,10 @@ func ensureSandboxScratchRoots(scratch sandboxScratchScope) error {
 // one does (model.ParentLoop, which the in-container Execute fills from the
 // forwarded task). Lifecycle hooks are nil, as they are for this runner's own
 // loop — the launcher owns that layer.
-func sandboxLocalToolRegistrar(scratch sandboxScratchScope, modelReg *model.Registry, hooks model.EventHooks, commandMaxBytes int, skillAllowlist map[string]string, skillArmed bool) func(*tool.Registry, string) error {
+func sandboxLocalToolRegistrar(scratch sandboxScratchScope, modelReg *model.Registry, hooks model.EventHooks, commandMaxBytes int, skillAllowlist map[string]string, skillArmed bool, trust store.RunTrust) func(*tool.Registry, string) error {
 	return func(reg *tool.Registry, workspace string) error {
 		return registerSandboxLocalTools(reg, workspace, scratch,
-			model.NewSubagentRunner(modelReg, reg, hooks, nil, ""), commandMaxBytes, skillAllowlist, skillArmed)
+			model.NewSubagentRunner(modelReg, reg, hooks, nil, ""), commandMaxBytes, skillAllowlist, skillArmed, trust)
 	}
 }
 

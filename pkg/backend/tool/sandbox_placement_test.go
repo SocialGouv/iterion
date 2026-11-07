@@ -293,6 +293,10 @@ func assertEveryOptionalFamilyIsOn(t *testing.T, defaults ClawDefaults) {
 		// command and skill families register either way, against a static
 		// root.
 		"WorkspaceProvider": "nil derives the provider from Workspace — the families register either way",
+		// nil is the trusted default (ADR-162 U3): the withdrawal is a
+		// per-call answer, not a registration switch — the `command` family
+		// registers either way.
+		"WorkspaceTrust": "nil reads as trusted — the command family registers either way",
 		// RegisterClawAll allocates a fresh empty registry for each of
 		// these when nil, so the family registers either way. Their doc
 		// comment says so; if that ever changes, the family stops

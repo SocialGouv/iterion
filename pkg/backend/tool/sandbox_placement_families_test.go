@@ -34,6 +34,10 @@ func TestTheFullRegistryWiresEveryFamilyTheHostHasTo(t *testing.T) {
 		// the same tools over a workspace string captured once, for hosts
 		// whose workspace never moves after registration (#2870).
 		"RegisterClawCommand": "wrapper over RegisterClawCommandWithProvider",
+		// The provenance-aware variant RegisterClawAll calls directly
+		// (ADR-162 U3); this is the same registration without the trust
+		// closure, for hosts with no notion of workspace provenance.
+		"RegisterClawCommandWithProvider": "wrapper over RegisterClawCommandWithTrust, the provenance-aware variant RegisterClawAll calls",
 		"RegisterClawSkill":   "wrapper over RegisterClawSkillWithProvider",
 		// The walk-only form, kept for hosts with no allowlist to pin
 		// (the sandboxed runner registers the pinned variant directly):
