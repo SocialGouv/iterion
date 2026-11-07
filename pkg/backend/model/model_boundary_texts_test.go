@@ -282,6 +282,11 @@ var modelReadLeaves = map[string]string{
 	"Handoff":     "a path; the transcript's text is defused in HandoffRecorder.Seal (TestTheHandoffTranscriptDefusesAnUngrantedPlaceholder)",
 	"HandoffMode": "the resolved posture name, llmroute vocabulary (reuse|restart)",
 
+	// The workspace provenance posture (ADR-162): store.RunTrust's closed
+	// vocabulary, read by the ambient composers to GATE which files they
+	// walk — never rendered as prose a model reads.
+	"WorkspaceTrust": "the provenance posture, store's closed vocabulary, gating which files the composer walks — never prose",
+
 	// The image half of a content block: bytes and locators, not text. A
 	// replacement inside a base64 payload or a URL corrupts the attachment
 	// the node declared.
