@@ -875,14 +875,14 @@ func TestSpentOnTheProvider_ReadsWhatTheExecutionWrote(t *testing.T) {
 		t.Error("a nil emitter (the refusal came before any executor was built) reports spend")
 	}
 
-	refused := newMetricsEmitter(&recordingEmitter{}, metrics.New(), nil)
+	refused := newMetricsEmitter(&recordingEmitter{}, metrics.New(), nil, nil)
 	if refused.spentOnTheProvider() {
 		t.Error("an execution that wrote no usage event reports spend — that is the probe's own case, and charging it retires the run early")
 	}
 
 	// A claw step the rate table cannot price: tokens, cost 0 — the shape a
 	// forfait-backed run writes.
-	step := newMetricsEmitter(&recordingEmitter{}, metrics.New(), nil)
+	step := newMetricsEmitter(&recordingEmitter{}, metrics.New(), nil, nil)
 	if _, err := step.AppendEvent(ctx, "run-step", store.Event{
 		Type: store.EventLLMStepFinished, RunID: "run-step", NodeID: "n1",
 		Data: map[string]any{"input_tokens": float64(1200), "output_tokens": float64(300)},
@@ -897,7 +897,7 @@ func TestSpentOnTheProvider_ReadsWhatTheExecutionWrote(t *testing.T) {
 	}
 
 	// A delegation, through the hook the backends really call.
-	deleg := newMetricsEmitter(&recordingEmitter{}, metrics.New(), nil)
+	deleg := newMetricsEmitter(&recordingEmitter{}, metrics.New(), nil, nil)
 	hooks := model.NewStoreEventHooks(ctx, deleg, "run-deleg", iterlog.New(iterlog.LevelError, io.Discard), nil, nil)
 	hooks.OnDelegateFinished("n1", model.DelegateInfo{BackendName: "claude_code", Tokens: 900})
 	if cost, _, _, agg := deleg.RunTotals(); cost != 0 || agg != 900 {
@@ -923,7 +923,7 @@ func TestParkUsageLimitRetry_TheExecutionsSpendDecidesWhoPays(t *testing.T) {
 		d := &fakeDelivery{}
 
 		handled, status := r.parkUsageLimitRetry(context.Background(), weeklyWindowErr(wall), d, msg,
-			newMetricsEmitter(&recordingEmitter{}, metrics.New(), nil), logger)
+			newMetricsEmitter(&recordingEmitter{}, metrics.New(), nil, nil), logger)
 
 		if !handled || status != "usage_limit_retry" || d.acks != 1 {
 			t.Fatalf("handled=%v status=%q acks=%d, want an acked usage-limit park", handled, status, d.acks)
@@ -937,7 +937,7 @@ func TestParkUsageLimitRetry_TheExecutionsSpendDecidesWhoPays(t *testing.T) {
 		st := &cancelAwareStore{run: probedRunDoc("run-2247", wall, 2)}
 		r := &Runner{cfg: Config{Store: st}}
 		d := &fakeDelivery{}
-		usage := newMetricsEmitter(&recordingEmitter{}, metrics.New(), nil)
+		usage := newMetricsEmitter(&recordingEmitter{}, metrics.New(), nil, nil)
 		hooks := model.NewStoreEventHooks(context.Background(), usage, "run-2247", logger, nil, nil)
 		hooks.OnDelegateFinished("n1", model.DelegateInfo{BackendName: "claude_code", Tokens: 4096})
 
@@ -992,7 +992,7 @@ func TestArmUsageWindowRetry_ABlindReFailureKeepsTheWallWhoeverPays(t *testing.T
 	wall := now.Add(4 * 24 * time.Hour)
 	logger := iterlog.New(iterlog.LevelError, io.Discard)
 
-	usage := newMetricsEmitter(&recordingEmitter{}, metrics.New(), nil)
+	usage := newMetricsEmitter(&recordingEmitter{}, metrics.New(), nil, nil)
 	hooks := model.NewStoreEventHooks(context.Background(), usage, "run-2247", logger, nil, nil)
 	hooks.OnDelegateError("n1", model.DelegateInfo{
 		BackendName: "claude_code",

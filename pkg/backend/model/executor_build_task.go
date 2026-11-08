@@ -1236,7 +1236,7 @@ func (e *ClawExecutor) extractStructuredViaClaw(
 	// there, never on the node's row by prediction.
 	recoveryTask := delegate.Task{Model: modelSpec}
 	bill := func(u Usage) delegate.Result {
-		r := meteredFailure(recoveryTask, u)
+		r := meteredFailure(ctx, recoveryTask, u)
 		r.Credential = credential
 		return r
 	}

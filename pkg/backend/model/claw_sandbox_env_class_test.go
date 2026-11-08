@@ -99,6 +99,12 @@ var crossedByItsOwnBranch = map[string]string{
 	"ITERION_CLAW_STREAM_IDLE_TIMEOUT":       "same crossing as ITERION_CLAW_STREAM_COLD_TIMEOUT: the host's planted-as-unset answer, explicit empty included",
 	"OPENAI_COMPATIBLE_REASONING_EFFORTS":    "crosses on a gateway node as the host's planted-as-unset answer (envtrust.Inherited, explicit empty included), so the in-container route maps an effort by the operator's table, never by one the workspace .env or a devcontainer.json planted",
 	"ITERION_CLAW_WORKSPACE_AGENT_MAX_BYTES": "crosses always — the operator's value, or an explicit empty: an absent name lets the runner's workspace .env auto-load pick the ceiling its own agent files are read under, and a value the host read as planted never crosses (workspaceAgentMaxBytes denies it authority on both sides)",
+	// ADR-163: the run's price-feed table, folded by the server and
+	// planted on the run's environment (credroute overlay). The crossing
+	// crosses the overlay's bytes verbatim — explicit empty included, so
+	// a workspace .env cannot write the table the in-container catalog
+	// prices runs from.
+	"ITERION_GATEWAY_PRICE_FEED": "crosses on a gateway node as the run's own table, the credroute overlay's bytes verbatim (explicit empty included): an absent name lets the workspace .env fill one no server folded, and catalogEnv refuses planted values on both sides anyway",
 }
 
 // Why a name stays on the host.
@@ -202,8 +208,7 @@ var getterHandoffs = map[string]string{
 // DEFINES what crosses — the divergence the refusal guards against is the
 // point. An entry whose site is gone is dropped, like every table here.
 var consultsHandoffs = map[[2]string]string{
-	{"pkg/backend/compatgw.FromEnv", "internal/envtrust.Inherited"}:        "the crossing's gateway branch (forwardableProviderEnv): a gateway route a workspace .env planted must not cross (#2813) — Inherited reads a planted name as unset and the node fails loudly, by name",
-	{"pkg/backend/compatgw.ResolveCatalog", "internal/envtrust.Inherited"}: "the same branch's catalog record: a planted OPENAI_COMPATIBLE_MODELS table or catalog provider must not cross claiming source=operator",
+	{"pkg/backend/compatgw.FromEnv", "internal/envtrust.Inherited"}: "the crossing's gateway branch (forwardableProviderEnv): a gateway route a workspace .env planted must not cross (#2813) — Inherited reads a planted name as unset and the node fails loudly, by name",
 }
 
 // notEnvNames: constants this package spells like an env name, which no code
@@ -489,6 +494,7 @@ var crossingSpellings = map[string]string{
 // assertion keeps it two-sided with crossedByItsOwnBranch: an entry whose
 // name stops crossing by its own branch reds here.
 var consultsWhatCrosses = map[string]string{
+	"ITERION_GATEWAY_PRICE_FEED":          "the run's feed table crosses as the ctx-overlaid value the server folded (ADR-163): the host reads it through credroute.Inherited and crosses those same bytes, so the in-container catalog prices by the table the host priced by",
 	"OPENAI_COMPATIBLE_REASONING_EFFORTS": "the effort table crosses as the host's planted-as-unset answer, so the twin maps an effort by what the host maps it by",
 	"ITERION_CLAW_STREAM_COLD_TIMEOUT":    "the watchdog knob crosses as the host's planted-as-unset answer, so the twin resolves what the host resolves",
 	"ITERION_CLAW_STREAM_IDLE_TIMEOUT":    "the watchdog knob crosses as the host's planted-as-unset answer, so the twin resolves what the host resolves",

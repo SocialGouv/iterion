@@ -18,7 +18,7 @@ import (
 // source pin in loop_pool_test.go, which refuses an unlocked call at the
 // closure's site (rva r3 R2: a wrapper-only witness cannot see the site).
 func TestSupervisorUsageSink_IsRaceFreeAgainstTheEventStream(t *testing.T) {
-	m := newMetricsEmitter(nil, nil, nil)
+	m := newMetricsEmitter(nil, nil, nil, nil)
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() {
@@ -44,7 +44,7 @@ func TestSupervisorUsageSink_IsRaceFreeAgainstTheEventStream(t *testing.T) {
 // was assigned to a copy of specs[i] and never reached StartDeclared).
 func TestMeterSupervisorSpecs_TheSinkRidesTheSliceElement(t *testing.T) {
 	specs := []supervise.Spec{{Name: "pacer", Model: "openai_compatible/does-not-resolve"}}
-	m := newMetricsEmitter(nil, nil, nil)
+	m := newMetricsEmitter(nil, nil, nil, nil)
 	meterSupervisorSpecs(context.Background(), specs, m)
 	if specs[0].OnUsage == nil {
 		t.Fatal("meterSupervisorSpecs left OnUsage nil on the slice element — StartDeclared would receive a sink-less spec and every evaluation would spend off the ledger")

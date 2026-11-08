@@ -139,16 +139,18 @@ func SubagentSpendFromContext(ctx context.Context) *SubagentSpend {
 }
 
 // Record debits one child conversation: its usage, and its cost at the price
-// of the model that served it. Nil-safe, so a caller with no accumulator
-// needs no branch of its own.
-func (s *SubagentSpend) Record(modelSpec string, u Usage) {
+// of the model that served it — priced through the environment the parent
+// node's context carries, so a gateway child's feed-priced bill matches the
+// stamp its own result carries (ADR-163). Nil-safe, so a caller with no
+// accumulator needs no branch of its own.
+func (s *SubagentSpend) Record(ctx context.Context, modelSpec string, u Usage) {
 	if s == nil {
 		return
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	accumulateUsage(&s.usage, u)
-	s.costUSD += cost.EstimateUSDWithCache(modelSpec, u.InputTokens, u.OutputTokens, u.CacheReadTokens)
+	s.costUSD += cost.EstimateUSDWithCacheInEnv(ctx, modelSpec, u.InputTokens, u.OutputTokens, u.CacheReadTokens)
 }
 
 // Total is what the children of this node consumed: the summed usage, and the
@@ -340,7 +342,7 @@ func NewSubagentRunner(
 		// Debited before the error branch: tokens a child burned are billed
 		// whether or not it answered, and GenerateTextDirect returns the
 		// usage it accumulated with its error.
-		SubagentSpendFromContext(ctx).Record(modelSpec, partialUsage(result))
+		SubagentSpendFromContext(ctx).Record(ctx, modelSpec, partialUsage(result))
 		if err != nil {
 			return "", fmt.Errorf("subagent %s: %w", spec.AgentID, err)
 		}

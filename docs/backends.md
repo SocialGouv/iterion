@@ -1507,7 +1507,14 @@ when a call's usage never arrives — as for any unpriced route.
 The catalog resolves a gateway id with whole-entry precedence — fields are
 never merged across sources, and an answer carries its provenance:
 
-1. `OPENAI_COMPATIBLE_MODELS` — the operator's JSON table,
+1. The run's **price feed** (ADR-163), when the server folded one: a
+   fresh feed entry answers for the ids it carries, provenance
+   `"source":"feed:<name>"` with the feed's `refreshed_at` beside it.
+   Freshness is judged at the FOLD — the table that travels answers for
+   the run's whole invocation. See
+   [the price feed](#the-gateway-price-feed-auto-synced-operator-pricing-adr-163)
+   below for what feeds are and how they sync.
+2. `OPENAI_COMPATIBLE_MODELS` — the operator's JSON table,
    `{"<gateway id>": {"context_window": N, "max_output_tokens": N,
    "input_usd_per_mtok": F, "output_usd_per_mtok": F,
    "cache_read_usd_per_mtok": F,
@@ -1522,7 +1529,7 @@ never merged across sources, and an answer carries its provenance:
    each optional: a flag the table leaves out — or that no table answers —
    is UNKNOWN to every reader (`iterion models`, the studio picker, the
    REST catalog), never `false`; a vendor id keeps its curated verdict.
-2. `OPENAI_COMPATIBLE_CATALOG_PROVIDER=<q>` — the exact key `q/<id>` in the
+3. `OPENAI_COMPATIBLE_CATALOG_PROVIDER=<q>` — the exact key `q/<id>` in the
    models.dev table (the live table when loaded, else the embedded
    snapshot). `<q>` is the upstream provider key the gateway's ids live
    under in models.dev (`scaleway`, in the measured deployment). The
@@ -1534,9 +1541,75 @@ never merged across sources, and an answer carries its provenance:
    cross-provider-consensus fallback exists. The operator table above stays
    exact too: key it by the id the gateway serves (`scaleway/glm-5.2`), or
    its entry is passed over for the catalog's.
-3. Otherwise unknown, said out loud: the node's `_gateway_spec` records
+4. Otherwise unknown, said out loud: the node's `_gateway_spec` records
    `"source":"unknown"`, the estimator prices nothing, and compaction keeps
    the unknown-model floor.
+
+#### The gateway price feed: auto-synced operator pricing (ADR-163)
+
+The operator table above is a MANUAL mirror of the operator's tariffs:
+nothing resynchronized it, so a price change drifted silently until a
+human edited a values file and rolled the deployment. The price feed
+closes that: **auto-synced operator pricing in the database, riding the
+run to the runner** — the operator table stays the floor.
+
+- **Where it lives.** A feed is server-side, database-backed state at
+  the org/team level (`price_feeds`, one document per scope; the sync
+  state in `price_feed_state`, one per feed). Runners never fetch
+  prices: at every launch and resume the server folds the effective
+  table — the org's and the team's fresh entries, the team answering
+  over the org per id, first feed of a scope's list winning within it —
+  and seals it in the run bundle (`RunBundle.GatewayPriceFeed`, bytes:
+  an older runner decodes the bundle unchanged). The runner plants it
+  on the run's environment (`ITERION_GATEWAY_PRICE_FEED`, a
+  host-written name a project `.env` cannot plant), where the catalog
+  reads it between the host IPC record and the operator table; the
+  sandbox crossing forwards it beside the record. No runner egress, no
+  per-runner freshness drift, multi-replica safe by construction.
+- **Freshness is the fold's judgment.** The server judges each entry at
+  fold time (inside its window: `2 × interval`); the table that travels
+  answers for the run's whole invocation — the stamp at dispatch and
+  every later meter read one answer, whatever the wall clock does
+  mid-run. A resumed run is folded anew.
+- **Refresh.** One elected replica refreshes each enabled feed on its
+  own `interval` (bounded `timeout`, short backoff on failure). A feed
+  that has not refreshed successfully inside its window is **stale** —
+  a first-class state, warned once on the transition (and again after
+  every recovery), stepping down to the operator floor. Never a
+  refusal: a launch with no readable feed state proceeds on the floor.
+- **Precedence.** Fresh feed over operator table (for the ids it
+  carries), team over org. An entry without the price pair does not
+  travel — it can never shadow a priced operator or catalog entry with
+  an unpriced one. When a fresh feed and the operator table disagree,
+  the sync says so: one line per drifting id per refresh, naming both
+  values.
+- **Sources** are adapters behind one seam — a new operator tariff
+  shape is configuration or a small script, never an engine `if`:
+  `modelsdev` (the aggregator's shape, `provider` qualifier, optional
+  `url`), `scaleway` (that adapter with its qualifier pinned), `litellm`
+  (a proxy's `model_info` listing, per-token costs scaled to per-mtok),
+  and `exec` — a command printing the operator-table JSON on stdout
+  (no shell; `args` splits on spaces; stdout bounded; a descendant
+  holding the pipe cannot stall the sweep). The HTTP fetches dial
+  through the same public-unicast guard as the gateway's own client —
+  `ITERION_LLM_ENDPOINT_ALLOW_PRIVATE=1`, the operator's export, is the
+  one hatch. An `exec` feed is the PLATFORM operator's capability:
+  super-admin configures it, and it executes only on a deployment that
+  exports `ITERION_PRICE_FEED_EXEC=1` — a tenant admin cannot buy
+  server-side command execution with a feed list.
+- **Manual sync.** `iterion remote price-feeds sync [feed] --team … |
+  --org …` forces one feed or every enabled one, answering what changed
+  per id (old → new). `list`, `set --file`, and `delete` manage the
+  list; `interval`/`timeout` are seconds. The view redacts token-shaped
+  source params (the list is member-readable; a litellm bearer is not).
+- **Provenance.** A feed-priced node's `_gateway_spec` carries
+  `"source":"feed:<name>"` and `refreshed_at` — the record that answers
+  which table priced the run also answers how fresh its word was. The
+  meter prices through the same environment the dispatch resolved from
+  — the node's bill, the org's monthly cap and the credential ledger
+  read one table.
+- **Local runs** (`iterion run`, the local studio) have no feed: the
+  operator table is the floor, exactly as before.
 
 Accepted reasoning efforts use a separate, optional variable:
 

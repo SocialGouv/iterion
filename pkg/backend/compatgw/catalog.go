@@ -12,6 +12,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/cost"
 	"github.com/SocialGouv/iterion/pkg/backend/modelspecs"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/pricefeed"
 )
 
 // The gateway catalog (ADR-118): what a `openai_compatible/<id>` model
@@ -67,8 +68,9 @@ const ResolvedEnvName = "ITERION_OPENAI_COMPATIBLE_RESOLVED"
 const CatalogProviderEnv = "OPENAI_COMPATIBLE_CATALOG_PROVIDER"
 
 // Provenance of a resolved record — recorded on the node output
-// (`_gateway_spec`) and in the events, so an operator can tell WHICH table
-// answered.
+// (`_gateway_spec`) and in the events, so an operator can tell WHICH
+// table answered. A price feed's answer carries its identity
+// (`feed:<name>`, SourceFeed) beside these.
 const (
 	SourceOperator        = "operator"
 	SourceCatalogLive     = "catalog-live"
@@ -83,10 +85,14 @@ const snapshotStaleAfter = 180 * 24 * time.Hour
 
 // Resolved is one gateway id's catalog record. It is IMMUTABLE
 // per-invocation data (ADR-118 §resolution): consumers copy it, they never
-// write back to a process-global "current record".
+// write back to a process-global "current record". RefreshedAt is set
+// only when a price feed answered — the feed's age carried beside its
+// identity, so the record that answers "which table priced this run"
+// also answers "how fresh was it" (ADR-163 §6).
 type Resolved struct {
-	Spec   modelspecs.Spec
-	Source string
+	Spec        modelspecs.Spec
+	Source      string
+	RefreshedAt time.Time
 }
 
 // Known reports whether ANY table answered — an unknown record carries no
@@ -174,49 +180,18 @@ func operatorModels(get func(string) string) (map[string]modelspecs.Spec, error)
 }
 
 // parseOperatorTable parses the raw OPENAI_COMPATIBLE_MODELS value. Empty
-// is the empty table; anything malformed is a refusal. It is the ONE
-// parser of that format: the resolution reads the operator's table
-// through it, and the planted-table diagnostic re-reads a value the
+// is the empty table; anything malformed is a refusal. The ENTRY format
+// itself — the JSON an operator writes in the env table and a price-feed
+// source prints on stdout — has ONE decoder: pricefeed.ParseEntries.
+// This wrapper keeps the env name's refusal text and the memoisation
+// here, and the planted-table diagnostic re-reads a value the
 // resolution declined through the SAME code, so what an operator is told
 // about their typo is what would have refused their routes — not a second
 // decoder that agrees today.
 func parseOperatorTable(raw string) (map[string]modelspecs.Spec, error) {
-	if raw == "" {
-		return map[string]modelspecs.Spec{}, nil
-	}
-	var entries map[string]struct {
-		ContextWindow       int     `json:"context_window"`
-		MaxOutputTokens     int     `json:"max_output_tokens"`
-		InputUSDPerMTok     float64 `json:"input_usd_per_mtok"`
-		OutputUSDPerMTok    float64 `json:"output_usd_per_mtok"`
-		CacheReadUSDPerMTok float64 `json:"cache_read_usd_per_mtok"`
-		Reasoning           *bool   `json:"reasoning"`
-		ToolCall            *bool   `json:"tool_call"`
-		Temperature         *bool   `json:"temperature"`
-	}
-	dec := json.NewDecoder(strings.NewReader(raw))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&entries); err != nil {
-		return nil, fmt.Errorf("openai_compatible: %s does not parse: %w", CatalogModelsEnv, err)
-	}
-	table := map[string]modelspecs.Spec{}
-	for id, e := range entries {
-		if e.InputUSDPerMTok > 0 != (e.OutputUSDPerMTok > 0) {
-			return nil, fmt.Errorf("openai_compatible: %s[%q]: the prices arrive as a pair or not at all", CatalogModelsEnv, id)
-		}
-		if e.InputUSDPerMTok < 0 || e.OutputUSDPerMTok < 0 || e.CacheReadUSDPerMTok < 0 {
-			return nil, fmt.Errorf("openai_compatible: %s[%q]: a price is negative", CatalogModelsEnv, id)
-		}
-		table[strings.ToLower(strings.TrimSpace(id))] = modelspecs.Spec{
-			ContextWindow:     e.ContextWindow,
-			MaxOutputTokens:   e.MaxOutputTokens,
-			InputCostPerM:     e.InputUSDPerMTok,
-			OutputCostPerM:    e.OutputUSDPerMTok,
-			CacheReadCostPerM: e.CacheReadUSDPerMTok,
-			Reasoning:         e.Reasoning,
-			ToolCall:          e.ToolCall,
-			Temperature:       e.Temperature,
-		}
+	table, err := pricefeed.ParseEntries(raw, CatalogModelsEnv)
+	if err != nil {
+		return nil, fmt.Errorf("openai_compatible: %w", err)
 	}
 	return table, nil
 }
@@ -283,6 +258,7 @@ func ResetCatalogCaches() {
 	operatorRefusal = nil
 	operatorTableMu.Unlock()
 	plantedTableWarnOnce = sync.Once{}
+	ResetFeedTableCache()
 	unknownWarns.Range(func(k, _ any) bool {
 		unknownWarns.Delete(k)
 		return true
@@ -325,9 +301,10 @@ func ResolveCatalogQuiet(modelID string, live *modelspecs.Registry, get func(str
 }
 
 func resolveCatalog(modelID string, live *modelspecs.Registry, get func(string) string, warnUnknown bool) Resolved {
+	id := strings.ToLower(strings.TrimSpace(modelID))
 	// The host's resolution (sandbox forward) answers before anything
 	// local: agreement across the IPC beats any local freshness.
-	if rec, ok := resolvedEnvRecord(get); ok && rec.Model == strings.ToLower(strings.TrimSpace(modelID)) {
+	if rec, ok := resolvedEnvRecord(get); ok && rec.Model == id {
 		return Resolved{
 			Spec: modelspecs.Spec{
 				ContextWindow:     rec.ContextWindow,
@@ -339,8 +316,16 @@ func resolveCatalog(modelID string, live *modelspecs.Registry, get func(string) 
 				ToolCall:          rec.ToolCall,
 				Temperature:       rec.Temperature,
 			},
-			Source: rec.Source,
+			Source:      rec.Source,
+			RefreshedAt: rec.RefreshedAtTime(),
 		}
+	}
+	// The run's price feed (ADR-163): a FRESH feed entry answers before
+	// the operator table for the ids it carries; a stale one steps down
+	// with one warning per feed per process, and the operator table
+	// answers — never a refusal.
+	if e := feedTableLookup(get, id); e != nil {
+		return Resolved{Spec: e.Spec, Source: SourceFeed(e.Feed), RefreshedAt: e.RefreshedAt}
 	}
 	table, terr := operatorModels(get)
 	if terr != nil {
@@ -412,24 +397,37 @@ var unknownWarns sync.Map
 // crosses the IPC by construction instead of by two mirrored literals
 // agreeing. The capability flags are `*bool,omitempty`: a flag no table
 // stated is absent from the record and reads unknown, a stated false
-// crosses as false.
+// crosses as false. `refreshed_at` rides only when a price feed answered
+// (ADR-163 §6): the record that says which table priced the node also
+// says how fresh that word was.
 type ResolvedEnvRecord struct {
-	Model               string  `json:"model"`
-	Source              string  `json:"source"`
-	ContextWindow       int     `json:"context_window,omitempty"`
-	MaxOutputTokens     int     `json:"max_output_tokens,omitempty"`
-	InputUSDPerMTok     float64 `json:"input_usd_per_mtok,omitempty"`
-	OutputUSDPerMTok    float64 `json:"output_usd_per_mtok,omitempty"`
-	CacheReadUSDPerMTok float64 `json:"cache_read_usd_per_mtok,omitempty"`
-	Reasoning           *bool   `json:"reasoning,omitempty"`
-	ToolCall            *bool   `json:"tool_call,omitempty"`
-	Temperature         *bool   `json:"temperature,omitempty"`
+	Model               string     `json:"model"`
+	Source              string     `json:"source"`
+	ContextWindow       int        `json:"context_window,omitempty"`
+	MaxOutputTokens     int        `json:"max_output_tokens,omitempty"`
+	InputUSDPerMTok     float64    `json:"input_usd_per_mtok,omitempty"`
+	OutputUSDPerMTok    float64    `json:"output_usd_per_mtok,omitempty"`
+	CacheReadUSDPerMTok float64    `json:"cache_read_usd_per_mtok,omitempty"`
+	RefreshedAt         *time.Time `json:"refreshed_at,omitempty"`
+	Reasoning           *bool      `json:"reasoning,omitempty"`
+	ToolCall            *bool      `json:"tool_call,omitempty"`
+	Temperature         *bool      `json:"temperature,omitempty"`
+}
+
+// RefreshedAtTime answers the record's feed age as a value (zero when
+// no feed answered).
+func (r ResolvedEnvRecord) RefreshedAtTime() time.Time {
+	if r.RefreshedAt == nil {
+		return time.Time{}
+	}
+	return *r.RefreshedAt
 }
 
 // ForwardableRecord is the record the host forwards for one resolved
-// gateway id: the resolution as the host answered it, flags included.
+// gateway id: the resolution as the host answered it, flags and feed age
+// included.
 func ForwardableRecord(modelID string, r Resolved) ResolvedEnvRecord {
-	return ResolvedEnvRecord{
+	rec := ResolvedEnvRecord{
 		Model:               modelID,
 		Source:              r.Source,
 		ContextWindow:       r.Spec.ContextWindow,
@@ -441,6 +439,11 @@ func ForwardableRecord(modelID string, r Resolved) ResolvedEnvRecord {
 		ToolCall:            r.Spec.ToolCall,
 		Temperature:         r.Spec.Temperature,
 	}
+	if _, isFeed := FeedSource(r.Source); isFeed && !r.RefreshedAt.IsZero() {
+		stamp := r.RefreshedAt
+		rec.RefreshedAt = &stamp
+	}
+	return rec
 }
 
 // resolvedEnvRecord parses ResolvedEnvName's single record, tolerating a
@@ -456,12 +459,17 @@ func resolvedEnvRecord(get func(string) string) (ResolvedEnvRecord, bool) {
 	if raw == "" || json.Unmarshal([]byte(raw), &rec) != nil || rec.Model == "" {
 		return rec, false
 	}
-	// Provenance is one of the four constants — a stale or forged value
-	// with a fabricated source must not pass as a record.
+	// Provenance is one of the four constants — or a named price feed's
+	// `feed:<name>`: the feed's name is tenant data, so this validates the
+	// PREFIX, not a list. A stale or forged value with a fabricated source
+	// must not pass as a record; a feed record without its age still
+	// answers, priced and provenance-carried, the age simply unknown.
 	switch rec.Source {
 	case SourceOperator, SourceCatalogLive, SourceCatalogSnapshot:
 	default:
-		return rec, false
+		if _, ok := FeedSource(rec.Source); !ok {
+			return rec, false
+		}
 	}
 	rec.Model = strings.ToLower(strings.TrimSpace(rec.Model))
 	return rec, true
@@ -487,12 +495,15 @@ func init() {
 
 // StaticPricer prices one gateway WIRE id (the caller in cost.go has
 // already stripped the openai_compatible/ prefix — stripping here too would
-// cut a prefixed gateway id ("scaleway/<id>") at its own slash). Unknown
-// (or an unpriced operator entry) is ok=false — cost 0 is never a measured
-// zero. For a launch or a usage reading: an id in no table earns the
-// catalog's warning here.
-func StaticPricer(wireModelID string) (inputUSDPerMTok, outputUSDPerMTok, cacheReadUSDPerMTok float64, known bool) {
-	return staticPrice(wireModelID, ResolveCatalog)
+// cut a prefixed gateway id ("scaleway/<id>") at its own slash), reading
+// every catalog name through get — the env the METERING call carries, so
+// a run whose feed table rides its context prices at the same table its
+// stamp resolved from (the #3104 class, closed at the seam: one
+// resolution source, both readers). Unknown (or an unpriced operator
+// entry) is ok=false — cost 0 is never a measured zero. For a launch or
+// a usage reading: an id in no table earns the catalog's warning here.
+func StaticPricer(wireModelID string, get func(string) string) (inputUSDPerMTok, outputUSDPerMTok, cacheReadUSDPerMTok float64, known bool) {
+	return staticPrice(wireModelID, get, ResolveCatalog)
 }
 
 // StaticPricerQuiet is StaticPricer for a READ — the same sources and the
@@ -501,16 +512,19 @@ func StaticPricer(wireModelID string) (inputUSDPerMTok, outputUSDPerMTok, cacheR
 // price lookup is not where an unknown id is news; it must not consume the
 // per-id memo either, or the launch that follows in the same process says
 // nothing.
-func StaticPricerQuiet(wireModelID string) (inputUSDPerMTok, outputUSDPerMTok, cacheReadUSDPerMTok float64, known bool) {
-	return staticPrice(wireModelID, ResolveCatalogQuiet)
+func StaticPricerQuiet(wireModelID string, get func(string) string) (inputUSDPerMTok, outputUSDPerMTok, cacheReadUSDPerMTok float64, known bool) {
+	return staticPrice(wireModelID, get, ResolveCatalogQuiet)
 }
 
-func staticPrice(wireModelID string, resolve func(string, *modelspecs.Registry, func(string) string) Resolved) (inputUSDPerMTok, outputUSDPerMTok, cacheReadUSDPerMTok float64, known bool) {
+func staticPrice(wireModelID string, get func(string) string, resolve func(string, *modelspecs.Registry, func(string) string) Resolved) (inputUSDPerMTok, outputUSDPerMTok, cacheReadUSDPerMTok float64, known bool) {
+	if get == nil {
+		get = os.Getenv
+	}
 	// Live-aware, like every other catalog consumer: the stamp and the
 	// estimator must read the SAME sources, or one claims what the other
 	// declined (round-2's HIGH). The registry's refresh is background-only;
 	// this never blocks on a fetch.
-	res := resolve(wireModelID, modelspecs.Default(), os.Getenv)
+	res := resolve(wireModelID, modelspecs.Default(), get)
 	if !res.Priced() {
 		return 0, 0, 0, false
 	}

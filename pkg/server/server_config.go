@@ -36,6 +36,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/pat"
 	"github.com/SocialGouv/iterion/pkg/platformcfg"
 	"github.com/SocialGouv/iterion/pkg/pluginsource"
+	"github.com/SocialGouv/iterion/pkg/pricefeed"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/runview/runstream"
 	"github.com/SocialGouv/iterion/pkg/runwatch"
@@ -316,6 +317,13 @@ type Config struct {
 	// webhook lanes, and the runtime-mutable sandbox default image. Nil
 	// keeps the hardcoded/env defaults (local mode).
 	BotRolesSettings platformcfg.Store[platformcfg.BotRoles]
+	// PriceFeedConfigs / PriceFeedStates are the gateway price feed's
+	// tenant stores (ADR-163): one feed-list document per org/team, one
+	// state document per (scope, feed). Nil (local mode) disables the
+	// feed entirely — the operator table is the floor, the reconciler
+	// does not campaign, and the routes answer the empty view.
+	PriceFeedConfigs pricefeed.ConfigStore
+	PriceFeedStates  pricefeed.StateStore
 	// RunnerPoolsSettings is the sovereign-pool registry (#2029): which
 	// pools exist and their lifecycle state. Nil = no pools (every team
 	// reads unmapped).

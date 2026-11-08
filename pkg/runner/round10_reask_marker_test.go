@@ -209,7 +209,7 @@ func TestR10_MarkerPerSite(t *testing.T) {
 		{"router missing (post-chain)", true, r10Call{step: true, kind: r10Missing}, false},
 	}
 	for _, c := range cases {
-		usage := newMetricsEmitter(discardEmitter{}, metrics.New(), nil)
+		usage := newMetricsEmitter(discardEmitter{}, metrics.New(), nil, nil)
 		g := &r10Gate{inner: usage}
 		b := &r10Backend{name: delegate.BackendClaw, router: c.router, stepPrice: price, calls: []r10Call{c.first, {step: true, kind: r10Valid}}}
 		e := r10Executor(delegate.BackendClaw, g, b)

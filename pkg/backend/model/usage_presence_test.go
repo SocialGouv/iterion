@@ -95,18 +95,18 @@ func TestGenerateTextDirect_AFailedCallKeepsItsUsage(t *testing.T) {
 // A failure whose only spend is a call that went unreported is a bill of
 // unknown size, not nothing: the metered output says so.
 func TestMeteredFailure_AnUnreportedCallIsABill(t *testing.T) {
-	res := meteredFailure(delegate.Task{Model: "openai/gpt-x"}, Usage{UnreportedCalls: 1})
+	res := meteredFailure(context.Background(), delegate.Task{Model: "openai/gpt-x"}, Usage{UnreportedCalls: 1})
 	if got := cost.UnreportedCalls(res.Output); got != 1 {
 		t.Errorf("metered output %v, want one unreported call", res.Output)
 	}
-	if res := meteredFailure(delegate.Task{Model: "openai/gpt-x"}, Usage{}); res.Output != nil {
+	if res := meteredFailure(context.Background(), delegate.Task{Model: "openai/gpt-x"}, Usage{}); res.Output != nil {
 		t.Errorf("a spendless failure metered %v, want nothing", res.Output)
 	}
 }
 
 // A human-node generation that failed after an unreported call is a bill too.
 func TestMeteredHumanFailure_AnUnreportedCallIsABill(t *testing.T) {
-	out := meteredHumanFailure("openai/gpt-x", &ObjectResult[map[string]any]{TotalUsage: Usage{UnreportedCalls: 1}})
+	out := meteredHumanFailure(context.Background(), "openai/gpt-x", &ObjectResult[map[string]any]{TotalUsage: Usage{UnreportedCalls: 1}})
 	if cost.UnreportedCalls(out) != 1 {
 		t.Errorf("metered output %v, want one unreported call", out)
 	}

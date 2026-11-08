@@ -122,7 +122,7 @@ func TestCredParity_StructuredRecovery(t *testing.T) {
 					t.Fatalf("inert bench: the publisher stamps no plan for this run")
 				}
 			}
-			em := newMetricsEmitter(nil, nil, plan)
+			em := newMetricsEmitter(nil, nil, plan, nil)
 			em.observe(evt)
 			routes := em.RouteTotals()
 			if len(routes) != 1 {
@@ -178,7 +178,7 @@ func TestTheRecoveryBooksOnItsOwnKeysNeverOnThePlansPrediction(t *testing.T) {
 		{"keyless", credroute.Spend{}, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			em := newMetricsEmitter(nil, nil, plan)
+			em := newMetricsEmitter(nil, nil, plan, nil)
 			data := map[string]any{
 				"backend": delegate.BackendClaw, "reask": model.ReaskExtract, "provider": "anthropic",
 				"route_model": "anthropic/claude-opus-5-5", "effective_model": "anthropic/claude-opus-5-5",

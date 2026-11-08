@@ -161,7 +161,16 @@ var operatorInfraNames = map[string]bool{
 	"ITERION_LLM_ENDPOINT_ALLOW_PRIVATE":       true,
 	"ITERION_OPENAI_COMPATIBLE_RESOLVED":       true,
 	"ITERION_CONNECTOR_ALLOW_PRIVATE":          true,
-	"ITERION_WEBHOOK_FORGE_HOSTS":              true,
+	// The run's folded price-feed table (ADR-163): engine-written for the
+	// run from the sealed bundle. A stored value would price a tenant's
+	// own runs at a table no operator folded — metering integrity, the
+	// same class the resolved record above protects.
+	"ITERION_GATEWAY_PRICE_FEED": true,
+	// The exec source type's arming switch (ADR-163): exec feeds run a
+	// command ON THE SERVER. Arming them is the deployment operator's,
+	// never a stored tenant value's.
+	"ITERION_PRICE_FEED_EXEC":     true,
+	"ITERION_WEBHOOK_FORGE_HOSTS": true,
 	// The connector-action admission refusal: `off` lets a run start that
 	// nothing here can serve, so it fails at the node as it used to. A stored
 	// value must not decide that for a tenant's run.

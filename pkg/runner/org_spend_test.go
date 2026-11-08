@@ -31,7 +31,7 @@ func TestRecordOrgSpendKey(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			counter := orgusage.NewMemoryCounter()
 			r := &Runner{cfg: Config{OrgUsage: counter, Logger: iterlog.New(iterlog.LevelError, nil)}}
-			usage := newMetricsEmitter(nil, nil, nil)
+			usage := newMetricsEmitter(nil, nil, nil, nil)
 			usage.mu.Lock()
 			usage.runCostUSD = 1.5
 			usage.runInputTokens = 100
@@ -94,7 +94,7 @@ func TestGitOpTimeoutBoundsSubprocess(t *testing.T) {
 func TestRecordOrgSpend_NoOpShapes(t *testing.T) {
 	t.Run("nil counter", func(t *testing.T) {
 		r := &Runner{cfg: Config{Logger: iterlog.Nop()}}
-		usage := newMetricsEmitter(nil, nil, nil)
+		usage := newMetricsEmitter(nil, nil, nil, nil)
 		usage.mu.Lock()
 		usage.runCostUSD = 1
 		usage.mu.Unlock()
@@ -103,7 +103,7 @@ func TestRecordOrgSpend_NoOpShapes(t *testing.T) {
 	t.Run("zero totals record nothing", func(t *testing.T) {
 		counter := orgusage.NewMemoryCounter()
 		r := &Runner{cfg: Config{OrgUsage: counter, Logger: iterlog.Nop()}}
-		r.recordOrgSpend(context.Background(), &queue.RunMessage{RunID: "run-1", TenantID: "team-a", OrgID: "org-1"}, newMetricsEmitter(nil, nil, nil))
+		r.recordOrgSpend(context.Background(), &queue.RunMessage{RunID: "run-1", TenantID: "team-a", OrgID: "org-1"}, newMetricsEmitter(nil, nil, nil, nil))
 		if u, _ := counter.Usage(context.Background(), orgusage.OrgSubject("org-1"), time.Now().UTC()); u.CostUSD != 0 || u.InputTokens != 0 {
 			t.Fatalf("zero-spend attempt recorded usage: %+v", u)
 		}
@@ -111,7 +111,7 @@ func TestRecordOrgSpend_NoOpShapes(t *testing.T) {
 	t.Run("tenant-less message records nothing", func(t *testing.T) {
 		counter := orgusage.NewMemoryCounter()
 		r := &Runner{cfg: Config{OrgUsage: counter, Logger: iterlog.Nop()}}
-		usage := newMetricsEmitter(nil, nil, nil)
+		usage := newMetricsEmitter(nil, nil, nil, nil)
 		usage.mu.Lock()
 		usage.runCostUSD = 2
 		usage.mu.Unlock()
@@ -131,7 +131,7 @@ func TestRecordOrgSpend_NoOpShapes(t *testing.T) {
 // cost for priced models; delegate events add their aggregated count to
 // the input side (no price table → cost floor untouched).
 func TestMetricsEmitter_RunTotalsAccumulate(t *testing.T) {
-	m := newMetricsEmitter(&recordingEmitter{}, nil, nil) // nil registry: totals still accumulate
+	m := newMetricsEmitter(&recordingEmitter{}, nil, nil, nil) // nil registry: totals still accumulate
 
 	_, _ = m.AppendEvent(context.Background(), "run-1", store.Event{
 		Type: store.EventLLMRequest, NodeID: "n1",
@@ -209,7 +209,7 @@ func TestRecordOrgSpend_BumpsApiKeyFingerprintUsed(t *testing.T) {
 		OrgUsage: orgusage.NewMemoryCounter(),
 		Logger:   iterlog.Nop(),
 	}}
-	usage := newMetricsEmitter(nil, nil, nil)
+	usage := newMetricsEmitter(nil, nil, nil, nil)
 	usage.mu.Lock()
 	usage.runCostUSD = 1
 	usage.mu.Unlock()
@@ -269,7 +269,7 @@ func TestRecordOrgSpend_BumpsFingerprintEvenWithZeroUsage(t *testing.T) {
 		Fingerprints: map[string]string{string(secrets.ProviderAnthropic): fp},
 	})
 	// Zero totals: the gate that used to swallow the bump.
-	r.recordOrgSpend(ctx, &queue.RunMessage{RunID: "run-1", TenantID: "team-a", OrgID: "org-1"}, newMetricsEmitter(nil, nil, nil))
+	r.recordOrgSpend(ctx, &queue.RunMessage{RunID: "run-1", TenantID: "team-a", OrgID: "org-1"}, newMetricsEmitter(nil, nil, nil, nil))
 	got, err := apiKeys.Get(store.WithTenant(context.Background(), "team-a"), id)
 	if err != nil {
 		t.Fatalf("read key: %v", err)

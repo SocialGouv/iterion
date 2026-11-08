@@ -915,14 +915,14 @@ func askUserResult(err error) (delegate.Result, bool) {
 // stamp would read as an output rather than as a bill, and the engine's own
 // guard already skips a spendless failure. A call whose usage went
 // unreported is no such zero: its bill is unknown, and the map says so.
-func meteredFailure(task delegate.Task, usage Usage) delegate.Result {
+func meteredFailure(ctx context.Context, task delegate.Task, usage Usage) delegate.Result {
 	if usage.InputTokens == 0 && usage.OutputTokens == 0 && usage.UnreportedCalls == 0 {
 		return delegate.Result{}
 	}
 	output := map[string]any{}
-	tokens := annotateUsage(output, task.Model, usage)
+	tokens := annotateUsage(ctx, output, task.Model, usage)
 	return delegate.Result{
-		CostUSD:         cost.EstimateUSDWithCache(task.Model, usage.InputTokens, usage.OutputTokens, usage.CacheReadTokens),
+		CostUSD:         estimateUsageCost(ctx, task.Model, usage),
 		UnreportedCalls: usage.UnreportedCalls,
 		EffectiveModel:  task.Model,
 		Output:          output,
@@ -936,9 +936,17 @@ func meteredFailure(task delegate.Task, usage Usage) delegate.Result {
 // annotateUsage stamps a generation's usage onto its output: the `_tokens` /
 // `_model` / `_cost_usd` keys, and the count of calls whose usage the
 // provider did not report, for which those figures are a lower bound.
-func annotateUsage(output map[string]any, model string, u Usage) int {
+func annotateUsage(ctx context.Context, output map[string]any, model string, u Usage) int {
 	cost.SetUnreportedCalls(output, u.UnreportedCalls)
-	return cost.AnnotateWithCache(output, model, u.InputTokens, u.OutputTokens, u.CacheReadTokens)
+	return cost.AnnotateWithCacheInEnv(ctx, output, model, u.InputTokens, u.OutputTokens, u.CacheReadTokens)
+}
+
+// estimateUsageCost prices one metered usage through the environment the
+// invocation carries — the feed-table channel (ADR-163): the CostUSD a
+// result reports and the `_cost_usd` annotateUsage stamps read the same
+// table the dispatch's `_gateway_spec` stamp resolved from.
+func estimateUsageCost(ctx context.Context, model string, u Usage) float64 {
+	return cost.EstimateUSDWithCacheInEnv(ctx, model, u.InputTokens, u.OutputTokens, u.CacheReadTokens)
 }
 
 // clawCostEstimate is the backend's own price lookup, named so a test can
@@ -1024,7 +1032,7 @@ func (b *ClawBackend) generateStructured(ctx context.Context, client api.APIClie
 		logReaskCallFailure(b.logger, task.NodeID, err)
 		var structured *StructuredOutputError
 		if errors.As(err, &structured) {
-			fallback := meteredFailure(task, objectUsage(result))
+			fallback := meteredFailure(ctx, task, objectUsage(result))
 			fallback.ParseFallback = true
 			fallback.ParseError = structured.Error()
 			if fallback.Output == nil {
@@ -1036,7 +1044,7 @@ func (b *ClawBackend) generateStructured(ctx context.Context, client api.APIClie
 			}
 			return fallback, nil
 		}
-		return meteredFailure(task, objectUsage(result)), fmt.Errorf("claw backend: structured generation: %w", err)
+		return meteredFailure(ctx, task, objectUsage(result)), fmt.Errorf("claw backend: structured generation: %w", err)
 	}
 	captureSessionMessages(ctx, taskSessionKey(task), &TextResult{Messages: result.Messages})
 
@@ -1045,10 +1053,10 @@ func (b *ClawBackend) generateStructured(ctx context.Context, client api.APIClie
 		output = make(map[string]any)
 	}
 
-	tokens := annotateUsage(output, task.Model, result.TotalUsage)
+	tokens := annotateUsage(ctx, output, task.Model, result.TotalUsage)
 
 	return delegate.Result{
-		CostUSD:         cost.EstimateUSDWithCache(task.Model, result.TotalUsage.InputTokens, result.TotalUsage.OutputTokens, result.TotalUsage.CacheReadTokens),
+		CostUSD:         estimateUsageCost(ctx, task.Model, result.TotalUsage),
 		UnreportedCalls: result.TotalUsage.UnreportedCalls,
 		EffectiveModel:  task.Model,
 		Output:          output,
@@ -1073,14 +1081,14 @@ func (b *ClawBackend) generateText(ctx context.Context, client api.APIClient, ta
 		if r, ok := askUserResult(err); ok {
 			return r, nil
 		}
-		return meteredFailure(task, partialUsage(result)), fmt.Errorf("claw backend: text generation: %w", err)
+		return meteredFailure(ctx, task, partialUsage(result)), fmt.Errorf("claw backend: text generation: %w", err)
 	}
 
 	output := map[string]any{"text": result.Text}
-	tokens := annotateUsage(output, task.Model, result.TotalUsage)
+	tokens := annotateUsage(ctx, output, task.Model, result.TotalUsage)
 
 	return delegate.Result{
-		CostUSD:         cost.EstimateUSDWithCache(task.Model, result.TotalUsage.InputTokens, result.TotalUsage.OutputTokens, result.TotalUsage.CacheReadTokens),
+		CostUSD:         estimateUsageCost(ctx, task.Model, result.TotalUsage),
 		UnreportedCalls: result.TotalUsage.UnreportedCalls,
 		EffectiveModel:  task.Model,
 		Output:          output,
@@ -1173,7 +1181,7 @@ func (b *ClawBackend) generateTextWithToolsAndSchema(ctx context.Context, client
 		if r, ok := askUserResult(err); ok {
 			return r, nil
 		}
-		return meteredFailure(task, partialUsage(result)), fmt.Errorf("claw backend: text+tools generation: %w", err)
+		return meteredFailure(ctx, task, partialUsage(result)), fmt.Errorf("claw backend: text+tools generation: %w", err)
 	}
 
 	// A tool-equipped reviewer/judge that ended the loop WITHOUT calling a
@@ -1229,7 +1237,7 @@ func (b *ClawBackend) generateTextWithToolsAndSchema(ctx context.Context, client
 				// if that one fails too this is the figure the node reports.
 				abandoned := result.TotalUsage
 				accumulateUsage(&abandoned, partialUsage(reRun))
-				return meteredFailure(task, abandoned), fmt.Errorf("claw backend: nudge re-run: %w", reErr)
+				return meteredFailure(ctx, task, abandoned), fmt.Errorf("claw backend: nudge re-run: %w", reErr)
 			}
 			// Falling through to recovery: the nudge was billed too, so its
 			// partial usage rides the first pass's into every exit below.
@@ -1245,9 +1253,9 @@ func (b *ClawBackend) generateTextWithToolsAndSchema(ctx context.Context, client
 	if text != "" {
 		var output map[string]any
 		if err := json.Unmarshal([]byte(text), &output); err == nil {
-			tokens := annotateUsage(output, task.Model, result.TotalUsage)
+			tokens := annotateUsage(ctx, output, task.Model, result.TotalUsage)
 			return delegate.Result{
-				CostUSD:         cost.EstimateUSDWithCache(task.Model, result.TotalUsage.InputTokens, result.TotalUsage.OutputTokens, result.TotalUsage.CacheReadTokens),
+				CostUSD:         estimateUsageCost(ctx, task.Model, result.TotalUsage),
 				UnreportedCalls: result.TotalUsage.UnreportedCalls,
 				EffectiveModel:  task.Model,
 				Output:          output,
@@ -1274,9 +1282,9 @@ func (b *ClawBackend) generateTextWithToolsAndSchema(ctx context.Context, client
 		var output map[string]any
 		if raw != nil && json.Unmarshal(raw, &output) == nil {
 			b.logger.Warn("[%s] structured output read from the %s of the tool loop's final turn — its text held no JSON object to parse", task.NodeID, source)
-			tokens := annotateUsage(output, task.Model, result.TotalUsage)
+			tokens := annotateUsage(ctx, output, task.Model, result.TotalUsage)
 			return delegate.Result{
-				CostUSD:         cost.EstimateUSDWithCache(task.Model, result.TotalUsage.InputTokens, result.TotalUsage.OutputTokens, result.TotalUsage.CacheReadTokens),
+				CostUSD:         estimateUsageCost(ctx, task.Model, result.TotalUsage),
 				UnreportedCalls: result.TotalUsage.UnreportedCalls,
 				EffectiveModel:  task.Model,
 				Output:          output,
@@ -1343,9 +1351,9 @@ func (b *ClawBackend) generateTextWithToolsAndSchema(ctx context.Context, client
 		}
 		both := result.TotalUsage
 		accumulateUsage(&both, obj.TotalUsage)
-		tokens := annotateUsage(obj.Object, task.Model, both)
+		tokens := annotateUsage(ctx, obj.Object, task.Model, both)
 		return delegate.Result{
-			CostUSD:            cost.EstimateUSDWithCache(task.Model, both.InputTokens, both.OutputTokens, both.CacheReadTokens),
+			CostUSD:            estimateUsageCost(ctx, task.Model, both),
 			UnreportedCalls:    both.UnreportedCalls,
 			EffectiveModel:     task.Model,
 			Output:             obj.Object,
@@ -1393,9 +1401,9 @@ func (b *ClawBackend) generateTextWithToolsAndSchema(ctx context.Context, client
 				prevThinkingMs = obj.TotalUsage.ThinkingMs
 			}
 			accumulateUsage(&both, obj2.TotalUsage)
-			tokens := annotateUsage(obj2.Object, task.Model, both)
+			tokens := annotateUsage(ctx, obj2.Object, task.Model, both)
 			return delegate.Result{
-				CostUSD:            cost.EstimateUSDWithCache(task.Model, both.InputTokens, both.OutputTokens, both.CacheReadTokens),
+				CostUSD:            estimateUsageCost(ctx, task.Model, both),
 				UnreportedCalls:    both.UnreportedCalls,
 				EffectiveModel:     task.Model,
 				Output:             obj2.Object,
@@ -1443,13 +1451,13 @@ func (b *ClawBackend) generateTextWithToolsAndSchema(ctx context.Context, client
 		// top of it, and the node has nothing to show for either. The error
 		// says what every turn came back with, so the next run is fixed at
 		// its cause rather than re-run blind.
-		return meteredFailure(task, billed), fmt.Errorf("claw backend: text+tools generation produced empty response after tool loop and structured-output recovery failed — the tool loop's final turn: %s; the recovery pass: %v",
+		return meteredFailure(ctx, task, billed), fmt.Errorf("claw backend: text+tools generation produced empty response after tool loop and structured-output recovery failed — the tool loop's final turn: %s; the recovery pass: %v",
 			describeFinalTurn(final, stepMaxTokens(final, opts), recErr), recErr)
 	}
 	output := map[string]any{"text": text}
-	tokens := annotateUsage(output, task.Model, billed)
+	tokens := annotateUsage(ctx, output, task.Model, billed)
 	return delegate.Result{
-		CostUSD:         cost.EstimateUSDWithCache(task.Model, billed.InputTokens, billed.OutputTokens, billed.CacheReadTokens),
+		CostUSD:         estimateUsageCost(ctx, task.Model, billed),
 		UnreportedCalls: billed.UnreportedCalls,
 		EffectiveModel:  task.Model,
 		Output:          output,
@@ -2915,7 +2923,29 @@ func forwardableProviderEnv(ctx context.Context, model, providerHint string) (ma
 		env[compatgw.ReasoningEffortsEnv] = envtrust.Inherited(compatgw.ReasoningEffortsEnv)
 		env[compatgw.CatalogProviderEnv] = ""
 		env[compatgw.ResolvedEnvName] = ""
-		if resolved := compatgw.ResolveCatalog(modelroute.Parse(model).Wire, modelspecs.Default(), envtrust.Inherited); resolved.Known() {
+		// The run's price-feed table crosses beside them, the same
+		// explicit-empty contract: absent, the workspace .env would fill
+		// the name and the in-container catalog would read a table no
+		// server folded (catalogEnv refuses it — but the refusal must not
+		// depend on the mark alone). Present, it answers between the
+		// record and the operator table for every id the run's feeds
+		// carry, with the record still first for THIS node's id.
+		env[compatgw.FeedTableEnv] = ""
+		// Inherited, the same reader the record's own resolution two
+		// lines below uses: the overlay answers as itself, and a value
+		// the process read as PLANTED forwards as the explicit empty —
+		// the crossing's refill must not be the one planted-accepting
+		// reader in a branch whose every other read refuses the mark.
+		if feedTable := credroute.Inherited(ctx, compatgw.FeedTableEnv); feedTable != "" {
+			env[compatgw.FeedTableEnv] = feedTable
+		}
+		// Resolved through the environment THIS context carries — the
+		// run's feed table included, so a feed-priced node crosses a
+		// record whose numbers the container's own meter agrees with.
+		// Inherited's planted-name verdict is the point (#2813): a table
+		// a workspace .env planted still reads as unset here, whatever
+		// the ctx carries — the inline closure is the #2808 idiom.
+		if resolved := compatgw.ResolveCatalog(modelroute.Parse(model).Wire, modelspecs.Default(), func(name string) string { return credroute.Inherited(ctx, name) }); resolved.Known() {
 			if raw, merr := json.Marshal(compatgw.ForwardableRecord(modelroute.Parse(model).Wire, resolved)); merr == nil {
 				env[compatgw.ResolvedEnvName] = string(raw)
 			}

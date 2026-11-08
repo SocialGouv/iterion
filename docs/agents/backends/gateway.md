@@ -20,6 +20,18 @@ and the model-override fold (`model.ModelOverrides`). The env tables
 runner-side fallbacks, not the seat of truth.
 
 
+## The price feed (ADR-163)
+
+The operator table has an auto-synced twin: org/team feeds in the
+database (`price_feeds`), refreshed by one elected replica on each
+feed's interval, folded at every launch into the run bundle and planted
+on the run's environment — a fresh entry answers before the operator
+table for the ids it carries, a stale one steps down to it, and the
+`_gateway_spec` record carries `"feed:<name>"` with its age. Manual
+sync and the feed list: `iterion remote price-feeds`. The full contract
+— precedence, sources, drift — is
+[backends.md's price-feed section](../../backends.md#the-gateway-price-feed-auto-synced-operator-pricing-adr-163).
+
 Accepted efforts use `OPENAI_COMPATIBLE_REASONING_EFFORTS`, separate from the
 strict pricing table. Invalid entries warn and are ignored individually;
 values normalize case/whitespace and accept integers 1–100. Old runners ignore

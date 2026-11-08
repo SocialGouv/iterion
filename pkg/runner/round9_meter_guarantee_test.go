@@ -36,7 +36,7 @@ func r9Chain() *ir.AgentNode {
 func TestR9_S12_LoopIterationAfterInChainCorrection(t *testing.T) {
 	r8Env(t)
 	t.Setenv("ITERION_OUTPUT_CORRECTION_BUDGET", "1")
-	usage := newMetricsEmitter(discardEmitter{}, metrics.New(), nil)
+	usage := newMetricsEmitter(discardEmitter{}, metrics.New(), nil, nil)
 	sh := &r8Shared{}
 	claw := &r8Backend{name: delegate.BackendClaw, calls: []r8Call{
 		{step: true, prose: "I approve.", tokens: 1100, cost: 1},
@@ -67,7 +67,7 @@ func TestR9_S12_LoopIterationAfterInChainCorrection(t *testing.T) {
 func TestR9_S13_TrailingSetAsideAfterPanicThenNextIteration(t *testing.T) {
 	r8Env(t)
 	t.Setenv("ITERION_OUTPUT_CORRECTION_BUDGET", "1")
-	usage := newMetricsEmitter(discardEmitter{}, metrics.New(), nil)
+	usage := newMetricsEmitter(discardEmitter{}, metrics.New(), nil, nil)
 	sh := &r8Shared{}
 	claw := &r8Backend{name: delegate.BackendClaw, calls: []r8Call{
 		{step: true, prose: "I approve.", tokens: 1100, cost: 1},
@@ -106,7 +106,7 @@ func TestR9_S13_TrailingSetAsideAfterPanicThenNextIteration(t *testing.T) {
 func TestR9_F7_PostChainReaskSiblingUnsteppedFailure(t *testing.T) {
 	r8Env(t)
 	t.Setenv("ITERION_OUTPUT_CORRECTION_BUDGET", "1")
-	usage := newMetricsEmitter(discardEmitter{}, metrics.New(), nil)
+	usage := newMetricsEmitter(discardEmitter{}, metrics.New(), nil, nil)
 	sh := &r8Shared{}
 	startB, bStarted, aDone := make(chan struct{}), make(chan struct{}), make(chan struct{})
 	a := &r8Backend{name: delegate.BackendClaw, calls: []r8Call{
@@ -135,7 +135,7 @@ func TestR9_F7b_PostChainReaskSiblingFineTable(t *testing.T) {
 	r8Env(t)
 	t.Setenv("ITERION_OUTPUT_CORRECTION_BUDGET", "1")
 	plan := map[string]string{"impl" + model.PlanKeySep + "openai": "fp-donor"}
-	usage := newMetricsEmitter(discardEmitter{}, metrics.New(), plan)
+	usage := newMetricsEmitter(discardEmitter{}, metrics.New(), plan, nil)
 	sh := &r8Shared{}
 	startB, bStarted, aDone := make(chan struct{}), make(chan struct{}), make(chan struct{})
 	a := &r8Backend{name: delegate.BackendClaw, calls: []r8Call{
@@ -163,7 +163,7 @@ func TestR9_F7b_PostChainReaskSiblingFineTable(t *testing.T) {
 func TestR9_F8_PostChainReaskRestoresFalseOverSiblingSteps(t *testing.T) {
 	r8Env(t)
 	t.Setenv("ITERION_OUTPUT_CORRECTION_BUDGET", "1")
-	usage := newMetricsEmitter(discardEmitter{}, metrics.New(), nil)
+	usage := newMetricsEmitter(discardEmitter{}, metrics.New(), nil, nil)
 	sh := &r8Shared{}
 	startB, bStepped, aDone := make(chan struct{}), make(chan struct{}), make(chan struct{})
 	aCC := &r8Backend{name: delegate.BackendClaudeCode, calls: []r8Call{

@@ -46,6 +46,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/pat"
 	"github.com/SocialGouv/iterion/pkg/platformcfg"
 	"github.com/SocialGouv/iterion/pkg/pluginsource"
+	"github.com/SocialGouv/iterion/pkg/pricefeed"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/runwatch"
@@ -314,9 +315,18 @@ type Server struct {
 	// policy document (ADR-121 delivery 2: "org:<id>" / "team:<id>") —
 	// nil in local mode, where no tenant level exists to fold.
 	routingPolicyStoreFor func(docID string) platformcfg.Store[platformcfg.RoutingPolicyRecord]
-	botVars               *platformcfg.Resolver[platformcfg.BotVars]
-	botVarsStore          platformcfg.Store[platformcfg.BotVars]
-	maintenanceStore      platformcfg.Store[platformcfg.Maintenance]
+	// The gateway price feed's tenant state (ADR-163): the feed lists and
+	// the reconciler's answers. nil (local mode) means no feed exists and
+	// the operator table is every run's floor; the priceFeedTransitions
+	// memo bounds the staleness warnings to one line per feed per
+	// transition per process.
+	priceFeedConfigs       pricefeed.ConfigStore
+	priceFeedStates        pricefeed.StateStore
+	priceFeedTransitionsMu sync.Mutex
+	priceFeedTransitions   map[string]string
+	botVars                *platformcfg.Resolver[platformcfg.BotVars]
+	botVarsStore           platformcfg.Store[platformcfg.BotVars]
+	maintenanceStore       platformcfg.Store[platformcfg.Maintenance]
 	// budgetFloor reserves capacity for named workloads and caps individual
 	// repositories; nil (or an unwritten record) reserves and caps nothing,
 	// so every gate behaves as it did before the family existed.
@@ -948,68 +958,71 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 		// stalling /api/bots, /api/server/info and the pipeline board.
 		// Pre-allocating avoids it; the registry's append takes bgMu,
 		// not stateMu.
-		forgeProjSem:        make(chan struct{}, forgeProjectionSemCap),
-		authSvc:             cfg.AuthService,
-		signer:              cfg.AuthSigner,
-		oidcRegistry:        cfg.OIDCRegistry,
-		oidcStates:          cfg.OIDCStates,
-		desktopTickets:      cfg.DesktopTickets,
-		wsTickets:           cfg.WSTickets,
-		apiKeys:             cfg.ApiKeys,
-		genericSecrets:      cfg.GenericSecrets,
-		runSecrets:          cfg.RunSecrets,
-		sealer:              cfg.Sealer,
-		orgSSO:              cfg.OrgSSO,
-		orgDomains:          cfg.OrgDomains,
-		orgDomainTXT:        orgsso.DefaultTXTLookup(),
-		oauthStore:          cfg.OAuthForfait,
-		oauthPending:        cfg.OAuthPending,
-		webhookConfigs:      cfg.WebhookConfigs,
-		webhookDeliveries:   cfg.WebhookDeliveries,
-		webhookCounter:      cfg.WebhookCounter,
-		webhookDeferred:     cfg.WebhookDeferred,
-		syncDebounce:        webhookSyncDebounceFromEnv(),
-		orgUsage:            cfg.OrgUsage,
-		orgDefaults:         cfg.OrgDefaults,
-		credPool:            cfg.CredPoolBroker,
-		credPoolPools:       cfg.CredPoolPools,
-		credPoolPledges:     cfg.CredPoolPledges,
-		credPoolLeases:      cfg.CredPoolLeases,
-		credPoolLedger:      cfg.CredPoolLedger,
-		auditStore:          cfg.Audit,
-		usageCapSettings:    cfg.UsageCapSettings,
-		pats:                cfg.PATs,
-		queue:               cfg.Queue,
-		botBindings:         cfg.BotBindings,
-		forgeConnections:    cfg.ForgeConnections,
-		connectionStore:     cfg.Connections,
-		connectorPackages:   cfg.ConnectorPackageStore,
-		connectorCatalog:    cfg.ConnectorCatalog,
-		connectorCatalogRun: cfg.ConnectorCatalogForRun,
-		pluginSources:       cfg.PluginSources,
-		pluginSourceFetcher: cfg.PluginSourceFetcher,
-		botSources:          cfg.BotSources,
-		botRolesStore:       cfg.BotRolesSettings,
-		runnerPoolsStore:    cfg.RunnerPoolsSettings,
-		sandboxCfgStore:     cfg.SandboxSettings,
-		platformCredsStore:  cfg.PlatformCredentialsSettings,
-		botVarsStore:        cfg.BotVarsSettings,
-		maintenanceStore:    cfg.MaintenanceSettings,
-		forgeIntegrations:   cfg.ForgeIntegrations,
-		boardBindings:       cfg.BoardBindings,
-		provisionApprovals:  cfg.ProvisionApprovals,
-		forgeOAuthApps:      cfg.ForgeOAuthApps,
-		forgeGitHubApp:      cfg.ForgeGitHubApp,
-		memStore:            cfg.MemoryStore,
-		httpClient:          &http.Client{Timeout: 15 * time.Second},
-		browserSessions:     cfg.BrowserRegistry,
-		statsCache:          newRunStatsCache(),
-		locCache:            newRunLOCCache(),
-		marketplace:         cfg.Marketplace,
-		redis:               cfg.Redis,
-		usageCaps:           cfg.UsageCaps,
-		usageCapTrust:       usagecap.DefaultTrust(),
-		credUsage:           cfg.CredUsage,
+		forgeProjSem:         make(chan struct{}, forgeProjectionSemCap),
+		authSvc:              cfg.AuthService,
+		signer:               cfg.AuthSigner,
+		oidcRegistry:         cfg.OIDCRegistry,
+		oidcStates:           cfg.OIDCStates,
+		desktopTickets:       cfg.DesktopTickets,
+		wsTickets:            cfg.WSTickets,
+		apiKeys:              cfg.ApiKeys,
+		genericSecrets:       cfg.GenericSecrets,
+		runSecrets:           cfg.RunSecrets,
+		sealer:               cfg.Sealer,
+		orgSSO:               cfg.OrgSSO,
+		orgDomains:           cfg.OrgDomains,
+		orgDomainTXT:         orgsso.DefaultTXTLookup(),
+		oauthStore:           cfg.OAuthForfait,
+		oauthPending:         cfg.OAuthPending,
+		webhookConfigs:       cfg.WebhookConfigs,
+		webhookDeliveries:    cfg.WebhookDeliveries,
+		webhookCounter:       cfg.WebhookCounter,
+		webhookDeferred:      cfg.WebhookDeferred,
+		syncDebounce:         webhookSyncDebounceFromEnv(),
+		orgUsage:             cfg.OrgUsage,
+		orgDefaults:          cfg.OrgDefaults,
+		credPool:             cfg.CredPoolBroker,
+		credPoolPools:        cfg.CredPoolPools,
+		credPoolPledges:      cfg.CredPoolPledges,
+		credPoolLeases:       cfg.CredPoolLeases,
+		credPoolLedger:       cfg.CredPoolLedger,
+		auditStore:           cfg.Audit,
+		usageCapSettings:     cfg.UsageCapSettings,
+		pats:                 cfg.PATs,
+		queue:                cfg.Queue,
+		botBindings:          cfg.BotBindings,
+		forgeConnections:     cfg.ForgeConnections,
+		connectionStore:      cfg.Connections,
+		connectorPackages:    cfg.ConnectorPackageStore,
+		connectorCatalog:     cfg.ConnectorCatalog,
+		connectorCatalogRun:  cfg.ConnectorCatalogForRun,
+		pluginSources:        cfg.PluginSources,
+		pluginSourceFetcher:  cfg.PluginSourceFetcher,
+		botSources:           cfg.BotSources,
+		botRolesStore:        cfg.BotRolesSettings,
+		runnerPoolsStore:     cfg.RunnerPoolsSettings,
+		sandboxCfgStore:      cfg.SandboxSettings,
+		platformCredsStore:   cfg.PlatformCredentialsSettings,
+		botVarsStore:         cfg.BotVarsSettings,
+		maintenanceStore:     cfg.MaintenanceSettings,
+		forgeIntegrations:    cfg.ForgeIntegrations,
+		boardBindings:        cfg.BoardBindings,
+		provisionApprovals:   cfg.ProvisionApprovals,
+		forgeOAuthApps:       cfg.ForgeOAuthApps,
+		forgeGitHubApp:       cfg.ForgeGitHubApp,
+		memStore:             cfg.MemoryStore,
+		httpClient:           &http.Client{Timeout: 15 * time.Second},
+		browserSessions:      cfg.BrowserRegistry,
+		statsCache:           newRunStatsCache(),
+		locCache:             newRunLOCCache(),
+		marketplace:          cfg.Marketplace,
+		redis:                cfg.Redis,
+		usageCaps:            cfg.UsageCaps,
+		usageCapTrust:        usagecap.DefaultTrust(),
+		credUsage:            cfg.CredUsage,
+		priceFeedConfigs:     cfg.PriceFeedConfigs,
+		priceFeedStates:      cfg.PriceFeedStates,
+		priceFeedTransitions: map[string]string{},
 	}
 	// The tenant routing-policy levels (ADR-121 delivery 2): per-org and
 	// per-team policy documents in their own collection. No resolver, no

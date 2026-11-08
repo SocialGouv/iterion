@@ -193,6 +193,7 @@ func (s *Server) routes() {
 	// carries tenants at all — the handlers degrade honestly without it.
 	if s.authSvc != nil {
 		s.registerRoutingPolicyRoutes()
+		s.registerPriceFeedRoutes()
 	}
 	if s.genericSecrets != nil && s.sealer != nil && s.authSvc != nil {
 		s.registerGenericSecretRoutes()

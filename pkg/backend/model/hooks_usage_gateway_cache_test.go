@@ -18,7 +18,7 @@ import (
 // let a cost_gt supervisor fire at less than half the real spend.
 func TestUsageProgress_GatewayCacheReadCountsOnce(t *testing.T) {
 	// Not parallel: swaps the process-wide gateway pricer.
-	stub := func(string) (float64, float64, float64, bool) { return 0.60, 1.80, 0.12, true }
+	stub := func(string, func(string) string) (float64, float64, float64, bool) { return 0.60, 1.80, 0.12, true }
 	cost.SetGatewayPricer(stub, stub)
 	t.Cleanup(func() { cost.SetGatewayPricer(compatgw.StaticPricer, compatgw.StaticPricerQuiet) })
 

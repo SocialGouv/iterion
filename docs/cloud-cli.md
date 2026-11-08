@@ -171,6 +171,7 @@ the staging step alone and prints the upload id.
 | `tokens` | `list · create · revoke` |
 | `secrets` / `api-keys` | `list · set/create · rotate/update · delete` (`--scope team\|me`) |
 | `bindings` | per-bot secret bindings (`list · create · delete`) |
+| `price-feeds` | `list · set · delete · sync [feed]` (`--team \| --org`) — the gateway price feed (ADR-163): auto-synced operator pricing in the database, fresh entries answering over the operator table, `sync` reporting what changed per id. Sources: `modelsdev · scaleway · litellm · exec` — `exec` is super-admin only and runs only where the deployment exports `ITERION_PRICE_FEED_EXEC=1`; `interval`/`timeout` in seconds. See [backends.md](backends.md#the-gateway-price-feed-auto-synced-operator-pricing-adr-163). |
 | `webhooks` | `list · get · create · update · delete · rotate · deliveries` (`create` and `rotate` mint a team token on every call: studio only from a stored token) |
 | `forge` | `connections · refresh · repo-bots · oauth-apps · integrations` |
 | `audit` / `usage` / `limits` | `audit team\|org\|admin` · org usage · cost limits |

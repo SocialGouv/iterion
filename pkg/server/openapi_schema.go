@@ -101,6 +101,23 @@ func routeSchemas() map[string]routeOp {
 			Links []ssoLinkView `json:"links"`
 		}{}},
 
+		// The gateway price feed (ADR-163): a tenant's feed list and the
+		// manual sync; the state view derives staleness at read time.
+		"GET /api/orgs/{id}/price-feeds": {response: priceFeedsView{}},
+		"PUT /api/orgs/{id}/price-feeds": {request: priceFeedsPutReq{}, response: priceFeedsView{}},
+		"POST /api/orgs/{id}/price-feeds/sync": {
+			request:     priceFeedsSyncReq{},
+			response:    priceFeedsSyncResponse{},
+			description: "Org-admin only. Forces one feed's refresh (name) or every enabled feed's, answering what changed per id.",
+		},
+		"GET /api/teams/{id}/price-feeds": {response: priceFeedsView{}},
+		"PUT /api/teams/{id}/price-feeds": {request: priceFeedsPutReq{}, response: priceFeedsView{}},
+		"POST /api/teams/{id}/price-feeds/sync": {
+			request:     priceFeedsSyncReq{},
+			response:    priceFeedsSyncResponse{},
+			description: "Team-admin only. Forces one feed's refresh (name) or every enabled feed's, answering what changed per id.",
+		},
+
 		// OAuth metadata projections exclude provider UUIDs and sealed secrets.
 		"GET /api/me/oauth/connections":         {response: oauthConnectionsView{}},
 		"GET /api/teams/{id}/oauth/connections": {response: oauthConnectionsView{}},

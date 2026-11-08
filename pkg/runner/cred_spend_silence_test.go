@@ -21,7 +21,7 @@ func spendProbe(t *testing.T, counter credusage.Counter) (*Runner, *metricsEmitt
 	t.Helper()
 	var buf bytes.Buffer
 	r := &Runner{cfg: Config{Logger: iterlog.New(iterlog.LevelWarn, &buf), CredUsage: counter}}
-	usage := newMetricsEmitter(nil, nil, nil)
+	usage := newMetricsEmitter(nil, nil, nil, nil)
 	usage.observe(store.Event{Type: store.EventLLMRequest, NodeID: "n",
 		Data: map[string]any{"model": "anthropic/claude-opus-5"}})
 	usage.observe(store.Event{Type: store.EventDelegateFinished, NodeID: "n",
@@ -94,7 +94,7 @@ func TestRecordCredentialSpend_EarlyDeclinesAreLogged(t *testing.T) {
 
 	t.Run("no routes observed", func(t *testing.T) {
 		r, _, logbuf := spendProbe(t, credusage.NewMemoryCounter())
-		empty := newMetricsEmitter(nil, nil, nil)
+		empty := newMetricsEmitter(nil, nil, nil, nil)
 		r.recordCredentialSpend(secrets.WithCredentials(context.Background(), fullCreds),
 			&queue.RunMessage{RunID: "run-4", TenantID: "t"}, empty, time.Now().UTC())
 		// A run that consumed nothing is the ordinary case and must stay

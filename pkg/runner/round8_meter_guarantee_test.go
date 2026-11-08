@@ -190,7 +190,7 @@ func r8Report(t *testing.T, sh *r8Shared, usage *metricsEmitter) (float64, int64
 func TestR8_S8_PostChainClawReaskWithSteps(t *testing.T) {
 	r8Env(t)
 	t.Setenv("ITERION_OUTPUT_CORRECTION_BUDGET", "1")
-	usage := newMetricsEmitter(discardEmitter{}, metrics.New(), nil)
+	usage := newMetricsEmitter(discardEmitter{}, metrics.New(), nil, nil)
 	sh := &r8Shared{}
 	b := &r8Backend{name: delegate.BackendClaw, calls: []r8Call{
 		{step: true, missing: true, tokens: 1100, cost: 1},
@@ -213,7 +213,7 @@ func TestR8_S8_PostChainClawReaskWithSteps(t *testing.T) {
 func TestR8_S9_ThreeClawReasksThenClaudeCode(t *testing.T) {
 	r8Env(t)
 	t.Setenv("ITERION_OUTPUT_CORRECTION_BUDGET", "3")
-	usage := newMetricsEmitter(discardEmitter{}, metrics.New(), nil)
+	usage := newMetricsEmitter(discardEmitter{}, metrics.New(), nil, nil)
 	sh := &r8Shared{}
 	p := &r8Backend{name: delegate.BackendClaw, calls: []r8Call{
 		{step: true, prose: "a", tokens: 1100, cost: 1},
@@ -246,7 +246,7 @@ func TestR8_S10_CodexPiCorrectedAbandoned(t *testing.T) {
 		t.Run(be, func(t *testing.T) {
 			r8Env(t)
 			t.Setenv("ITERION_OUTPUT_CORRECTION_BUDGET", "1")
-			usage := newMetricsEmitter(discardEmitter{}, metrics.New(), nil)
+			usage := newMetricsEmitter(discardEmitter{}, metrics.New(), nil, nil)
 			sh := &r8Shared{}
 			p := &r8Backend{name: be, calls: []r8Call{
 				{prose: "a", tokens: 100, cost: 1, session: "S"},
@@ -330,7 +330,7 @@ func TestR8_X3_ExtractionAfterSteppedClawRoute(t *testing.T) {
 	t.Setenv("ANTHROPIC_BASE_URL", "")
 	t.Setenv("ANTHROPIC_API_KEY", "test-key")
 	t.Setenv("ITERION_OUTPUT_CORRECTION_BUDGET", "2")
-	usage := newMetricsEmitter(discardEmitter{}, metrics.New(), nil)
+	usage := newMetricsEmitter(discardEmitter{}, metrics.New(), nil, nil)
 	sh := &r8Shared{}
 	p := &r8Backend{name: delegate.BackendClaw, calls: []r8Call{{step: true, err: errors.New("r8: refused"), tokens: 1100, cost: 1}}}
 	r := &r8Backend{name: delegate.BackendClaudeCode, calls: []r8Call{
@@ -364,7 +364,7 @@ func r8ExtractionCase(t *testing.T, calls []r8Call) {
 	t.Setenv("ANTHROPIC_BASE_URL", "")
 	t.Setenv("ANTHROPIC_API_KEY", "test-key")
 	t.Setenv("ITERION_OUTPUT_CORRECTION_BUDGET", "2")
-	usage := newMetricsEmitter(discardEmitter{}, metrics.New(), nil)
+	usage := newMetricsEmitter(discardEmitter{}, metrics.New(), nil, nil)
 	sh := &r8Shared{}
 	p := &r8Backend{name: delegate.BackendClaudeCode, calls: calls}
 	ex := &r8Extractor{}
@@ -423,7 +423,7 @@ func r8Pair(t *testing.T, node *ir.AgentNode, usage *metricsEmitter, sh *r8Share
 func TestR8_F4_FanOutSiblingStartDuringInChainCorrection(t *testing.T) {
 	r8Env(t)
 	t.Setenv("ITERION_OUTPUT_CORRECTION_BUDGET", "1")
-	usage := newMetricsEmitter(discardEmitter{}, metrics.New(), nil)
+	usage := newMetricsEmitter(discardEmitter{}, metrics.New(), nil, nil)
 	sh := &r8Shared{}
 	startB, bStarted, aDone := make(chan struct{}), make(chan struct{}), make(chan struct{})
 	aClaw := &r8Backend{name: delegate.BackendClaw, calls: []r8Call{{step: true, err: errors.New("r8: stream died"), tokens: 1100, cost: 1}}}
@@ -450,7 +450,7 @@ func TestR8_F4_FanOutSiblingStartDuringInChainCorrection(t *testing.T) {
 func TestR8_F5_FanOutSiblingStartDuringFailedClawReask(t *testing.T) {
 	r8Env(t)
 	t.Setenv("ITERION_OUTPUT_CORRECTION_BUDGET", "1")
-	usage := newMetricsEmitter(discardEmitter{}, metrics.New(), nil)
+	usage := newMetricsEmitter(discardEmitter{}, metrics.New(), nil, nil)
 	sh := &r8Shared{}
 	startB, bStarted, aDone := make(chan struct{}), make(chan struct{}), make(chan struct{})
 	a := &r8Backend{name: delegate.BackendClaw, calls: []r8Call{
@@ -474,7 +474,7 @@ func TestR8_F5_FanOutSiblingStartDuringFailedClawReask(t *testing.T) {
 func TestR8_S11_TwoSessionTotalCorrectionsAbandoned(t *testing.T) {
 	r8Env(t)
 	t.Setenv("ITERION_OUTPUT_CORRECTION_BUDGET", "2")
-	usage := newMetricsEmitter(discardEmitter{}, metrics.New(), nil)
+	usage := newMetricsEmitter(discardEmitter{}, metrics.New(), nil, nil)
 	sh := &r8Shared{}
 	p := &r8Backend{name: delegate.BackendClaudeCode, calls: []r8Call{
 		{prose: "a", tokens: 100, cost: 1, session: "S", total: true},

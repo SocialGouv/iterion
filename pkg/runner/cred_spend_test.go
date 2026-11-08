@@ -38,7 +38,7 @@ func TestRecordCredentialSpend_SplitsOneRunAcrossItsCredentials(t *testing.T) {
 			string(secrets.ProviderAnthropic): "",
 		},
 	})
-	usage := newMetricsEmitter(nil, nil, nil)
+	usage := newMetricsEmitter(nil, nil, nil, nil)
 	usage.observe(store.Event{Type: store.EventLLMRequest, NodeID: "implement",
 		Data: map[string]any{"model": "anthropic/claude-opus-5"}})
 	usage.observe(store.Event{Type: store.EventDelegateFinished, NodeID: "implement",
@@ -105,7 +105,7 @@ func TestRecordCredentialSpend_MarksALentCredential(t *testing.T) {
 		PoolSourced:  map[string]bool{string(secrets.ProviderAnthropic): true},
 		Fingerprints: map[string]string{string(secrets.ProviderAnthropic): "fp-donor"},
 	})
-	usage := newMetricsEmitter(nil, nil, nil)
+	usage := newMetricsEmitter(nil, nil, nil, nil)
 	usage.observe(store.Event{Type: store.EventLLMRequest, NodeID: "n",
 		Data: map[string]any{"model": "anthropic/claude-opus-5"}})
 	usage.observe(store.Event{Type: store.EventDelegateFinished, NodeID: "n",
@@ -133,7 +133,7 @@ func TestRecordCredentialSpend_SkipsAnUnattributableRoute(t *testing.T) {
 		APIKeys:      map[secrets.Provider]string{secrets.ProviderAnthropic: "sk-a"},
 		Fingerprints: map[string]string{string(secrets.ProviderAnthropic): "fp-a"},
 	})
-	usage := newMetricsEmitter(nil, nil, nil)
+	usage := newMetricsEmitter(nil, nil, nil, nil)
 	usage.observe(store.Event{Type: store.EventLLMRequest, NodeID: "n",
 		Data: map[string]any{"model": "google/gemini-3"}})
 	usage.observe(store.Event{Type: store.EventDelegateFinished, NodeID: "n",
@@ -171,7 +171,7 @@ func TestCredentialNature_AgreesWithCredpoolMetered(t *testing.T) {
 // Metering never fails a run: no counter, no credentials, nothing spent.
 func TestRecordCredentialSpend_IsInertWithoutACounterOrCredentials(t *testing.T) {
 	r := &Runner{cfg: Config{Logger: iterlog.Nop()}}
-	usage := newMetricsEmitter(nil, nil, nil)
+	usage := newMetricsEmitter(nil, nil, nil, nil)
 	r.recordCredentialSpend(context.Background(), &queue.RunMessage{RunID: "x"}, usage, time.Now())
 	r.recordCredentialSpend(context.Background(), &queue.RunMessage{RunID: "x"}, nil, time.Now())
 
@@ -203,7 +203,7 @@ func TestRecordCredentialSpend_SandboxedClawChargesTheCodexSlot(t *testing.T) {
 			string(secrets.OAuthKindCodex): "fp-codex-platform",
 		},
 	})
-	usage := newMetricsEmitter(nil, nil, nil)
+	usage := newMetricsEmitter(nil, nil, nil, nil)
 	usage.observe(store.Event{Type: store.EventDelegateStarted, NodeID: "plan_review",
 		Data: map[string]any{"backend": "claw", "declared_model": "openai/gpt-5.6-sol"}})
 	usage.observe(store.Event{Type: store.EventDelegateFinished, NodeID: "plan_review",
@@ -248,7 +248,7 @@ func TestRecordCredentialSpend_WarnsOnceOnAnUnattributableRoute(t *testing.T) {
 		APIKeys:      map[secrets.Provider]string{secrets.ProviderAnthropic: "sk-a"},
 		Fingerprints: map[string]string{string(secrets.ProviderAnthropic): "fp-a"},
 	})
-	usage := newMetricsEmitter(nil, nil, nil)
+	usage := newMetricsEmitter(nil, nil, nil, nil)
 	usage.observe(store.Event{Type: store.EventLLMRequest, NodeID: "n",
 		Data: map[string]any{"model": "google/gemini-3"}})
 	usage.observe(store.Event{Type: store.EventDelegateFinished, NodeID: "n",
@@ -290,7 +290,7 @@ func TestRecordCredentialSpend_BooksAClaudeCodeRouteOnTheCredentialItsSessionNam
 			string(secrets.ProviderZAI): "fp-zai",
 		},
 	})
-	usage := newMetricsEmitter(nil, nil, nil)
+	usage := newMetricsEmitter(nil, nil, nil, nil)
 	for node, source := range map[string]string{
 		"pinned":   "facade:zai:https://api.z.ai/api/anthropic",
 		"unpinned": "anthropic-oauth",
@@ -332,7 +332,7 @@ func TestRecordCredentialSpend_BooksTheDirectLabelsOnTheKeyTheyNamed(t *testing.
 			string(secrets.ProviderAnthropic): "fp-ant",
 		},
 	})
-	usage := newMetricsEmitter(nil, nil, nil)
+	usage := newMetricsEmitter(nil, nil, nil, nil)
 	for node, source := range map[string]string{"pinned": "anthropic-direct", "ambient": "anthropic-env"} {
 		usage.observe(store.Event{Type: store.EventDelegateStarted, NodeID: node,
 			Data: map[string]any{"declared_model": "claude-opus-5-5"}})
