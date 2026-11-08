@@ -150,8 +150,8 @@ func TestNoCatalogYieldsANilINTERFACE(t *testing.T) {
 // So the fixture is the real builder, twice over the SAME workspace, and the
 // question is WHICH refusal comes back: no connection is seeded, so nothing
 // resolves either way — the trusted arm is refused by the tenant's connection
-// store (it got that far), the fork arm before it, and the fork arm's READ gets
-// the store's refusal again.
+// store (it got that far), the fork arms before it, READ included since
+// ADR-162 decision 6 withdrew the reads a launch used to serve a fork.
 func TestTheLaunchSurfacesTrustReachesTheResolution(t *testing.T) {
 	workspace := t.TempDir()
 	// The OPERATOR's own tier holds the package, which is both what a real
@@ -175,7 +175,7 @@ func TestTheLaunchSurfacesTrustReachesTheResolution(t *testing.T) {
 	}{
 		{"a trusted launch resolves as far as the tenant's connections", store.RunTrustDefault, "probe.issue.comment", false},
 		{"a fork launch's mutating action is refused before them", store.RunTrustFork, "probe.issue.comment", true},
-		{"a fork launch's read is not", store.RunTrustFork, "probe.issue.get", false},
+		{"a fork launch's read is refused before them too", store.RunTrustFork, "probe.issue.get", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r, _, err := LocalConnectors(actionWorkflow(), workspace, t.TempDir(), sealer, connection.TrustOfRun(tc.trust))
@@ -189,8 +189,8 @@ func TestTheLaunchSurfacesTrustReachesTheResolution(t *testing.T) {
 			if err == nil {
 				t.Fatalf("resolve %s: no connection is seeded, so nothing may resolve", tc.action)
 			}
-			if got := errors.Is(err, connection.ErrUntrustedMutation); got != tc.wantRefused {
-				t.Fatalf("resolve %s on trust %q: untrusted-mutation refusal = %v, want %v (error: %v)", tc.action, string(tc.trust), got, tc.wantRefused, err)
+			if got := errors.Is(err, connection.ErrUntrustedAction); got != tc.wantRefused {
+				t.Fatalf("resolve %s on trust %q: untrusted-action refusal = %v, want %v (error: %v)", tc.action, string(tc.trust), got, tc.wantRefused, err)
 			}
 			if !tc.wantRefused && !strings.Contains(err.Error(), "connection named") {
 				t.Errorf("error = %v, want the tenant's connection store to have been consulted", err)

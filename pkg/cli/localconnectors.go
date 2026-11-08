@@ -34,9 +34,9 @@ import (
 // ITERION_RUN_TRUST), a sub-bot child's parent document, a resumed run's own
 // document. A CLI run is not the operator's by virtue of the surface — a node
 // process of an untrusted run re-enters the CLI in the outsider's checkout —
-// so the resolver refuses a mutating action and skips the workspace tier on
-// exactly the runs the compile and the engine already treat as untrusted
-// (#1802).
+// so the resolver refuses every action and skips the workspace tier on exactly
+// the runs the compile and the engine already treat as untrusted (#1802,
+// tightened by ADR-162 decision 6).
 func localConnectorsForRun(wf *ir.Workflow, storeDir string, logger *iterlog.Logger, trust connection.ActionTrust) (model.ConnectorResolver, *http.Client, error) {
 	if !runview.WorkflowHasCatalogAction(wf) {
 		return nil, nil, nil

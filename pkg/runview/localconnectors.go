@@ -41,9 +41,10 @@ import (
 // The TRUST is a parameter for a stronger reason: it is a property of the RUN
 // this executor is being built for, so only the caller holds it — the launch
 // spec, the resumed run's document, the parent of a subbot. The resolver
-// refuses a mutating action until it is stated (connection.ActionTrust), which
-// is what keeps an untrusted workspace from spending the tenant's connector
-// credential (#1802).
+// refuses every action until the trust is stated and the tenant's own
+// (connection.ActionTrust), which is what keeps an untrusted workspace from
+// spending the tenant's connector credential (#1802, tightened by ADR-162
+// decision 6 to refuse the reads too).
 func LocalConnectors(wf *ir.Workflow, workDir, storeDir string, sealer secrets.Sealer, trust connection.ActionTrust) (model.ConnectorResolver, *http.Client, error) {
 	if sealer == nil || !WorkflowHasCatalogAction(wf) {
 		return nil, nil, nil

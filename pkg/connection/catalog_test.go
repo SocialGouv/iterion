@@ -2,6 +2,7 @@ package connection_test
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -427,10 +428,11 @@ func TestASkippedProjectTierSaysWhyItDidNotAnswer(t *testing.T) {
 	}
 }
 
-// TestTheWorkspaceTierIsNotConsultedForAnUntrustedRun is #2769.
+// TestTheWorkspaceTierIsNotConsultedForAnUntrustedRun is #2769, under the
+// resolution ADR-162 decision 6 tightened.
 //
 // The project tier outranks every other, and on a fork-lane run the workspace
-// IS the outsider's checkout. #1802 refuses a MUTATING action on such a run,
+// IS the outsider's checkout. #1802 refused a MUTATING action on such a run,
 // but its predicate is spec.Effect.Mutating() on the operation THE CATALOG
 // RESOLVED — so a reviewed tree only had to ship `connectors/probe/` declaring
 // `effect: read` on a DELETE and the guard read the attacker's own word for
@@ -440,14 +442,15 @@ func TestASkippedProjectTierSaysWhyItDidNotAnswer(t *testing.T) {
 // win is not BUILT for that run, decided where the tiers are built, which is
 // where the trust already is.
 //
-// The TRUSTED arm is what makes the untrusted ones mean something: the same
-// workspace, the same grant, serving the DELETE. And the fix is "that tier is
-// not consulted" rather than "no catalog" — an untrusted run still resolves
-// the operator's OWN package, and a review lane still reads.
+// Decision 6 then withdrew the reads #2769's witness used to reach the
+// resolution: an untrusted run resolves NO action, so WHICH package would have
+// served it can no longer be asked of the resolution. The tier floor keeps its
+// oracle at the CATALOG (ResolveOperation through the tiers the trust built —
+// the operator's own GET, never the outsider's DELETE), and the resolution's
+// half is the refusal itself.
 //
-// Asserted through the RESOLUTION, which is what a run reaches: the operation
-// handed to the executor is the oracle, and under the defect it was the
-// outsider's DELETE carrying a read's licence.
+// The TRUSTED arm is what makes the untrusted ones mean something: the same
+// workspace, the same grant, serving the DELETE all the way to the credential.
 func TestTheWorkspaceTierIsNotConsultedForAnUntrustedRun(t *testing.T) {
 	// GRANTED throughout: a closed tier is not consulted for anybody, so it
 	// could not prove anything about the trust. This is the deployment that
@@ -460,28 +463,72 @@ func TestTheWorkspaceTierIsNotConsultedForAnUntrustedRun(t *testing.T) {
 	writeTierPackageAs(t, home, "probe", "GET", "/repos/{owner}/{repo}/issues/comments", spec.EffectRead)
 	paths := connection.LocalPaths{Project: project, Home: home}
 
+	t.Run("a trusted run is served the workspace package its operator granted", func(t *testing.T) {
+		tiers, err := connection.LocalCatalogs(paths, trustedRun())
+		if err != nil {
+			t.Fatalf("tiers: %v", err)
+		}
+		st := connection.NewMemoryStore()
+		r := &connection.Resolver{
+			Catalog:  connection.NewLayeredCatalog(tiers...),
+			Store:    st,
+			Sealer:   sealer(t),
+			TenantID: "tenant-a",
+			Trust:    trustedRun(),
+		}
+		c := conn("c1", "tenant-a", "main")
+		// The placement the tier packages declare, PREFIX included:
+		// checkUsable compares every field of it, so a fixture the
+		// package does not match is refused before any tier question is
+		// asked and would prove nothing about which one served it.
+		c.AuthPlacement.ValuePrefix = "token "
+		seed(t, r, st, c)
+
+		_, op, cred, _, err := r.ResolveAction(context.Background(), "probe.issue.comment", "main")
+		if err != nil {
+			t.Fatalf("resolve = %v, want the operation — the tenant's own run holds the grant it made", err)
+		}
+		if op.HTTP.Method != "DELETE" {
+			t.Errorf("method = %s, want DELETE — the grant serves the workspace package for the tenant's own code", op.HTTP.Method)
+		}
+		if cred.Value != "the-token" {
+			t.Errorf("credential = %q, want the sealed token: the arm must resolve all the way, or it proves nothing about WHICH package won", cred.Value)
+		}
+	})
+
 	for _, tc := range []struct {
-		name   string
-		trust  connection.ActionTrust
-		method string // the method the resolution serves for probe.issue.comment
+		name  string
+		trust connection.ActionTrust
 	}{
-		{"a trusted run is served the workspace package its operator granted", trustedRun(), "DELETE"},
-		{"a fork-trust run is served the operator's own instead", connection.TrustOfRun(store.RunTrustFork), "GET"},
-		// Unstated is not trusted, by the same rule as mayMutate: a builder
-		// that forgot to say whose code this run holds must not open the tier
-		// either, or the hole reopens the day a plane serving forks wires a
-		// catalog without the field.
-		{"nor one nobody told (the zero value)", connection.ActionTrust{}, "GET"},
-		{"nor one that says it cannot tell", connection.TrustUnknown(), "GET"},
+		{"a fork-trust run", connection.TrustOfRun(store.RunTrustFork)},
+		// Unstated is not trusted, by the same rule as the resolution: a
+		// builder that forgot to say whose code this run holds must not open
+		// the tier either, or the hole reopens the day a plane serving forks
+		// wires a catalog without the field.
+		{"a run nobody told (the zero value)", connection.ActionTrust{}},
+		{"a run that says it cannot tell", connection.TrustUnknown()},
 		// A value this binary does not recognise — a document written by a
 		// newer replica mid-rollout, a hand-edited row — loses the tier too.
-		{"nor one this build does not know", connection.TrustOfRun(store.RunTrust("vendored")), "GET"},
+		{"a trust value this build does not know", connection.TrustOfRun(store.RunTrust("vendored"))},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
+		t.Run(tc.name+" is served by no tier it did not earn", func(t *testing.T) {
 			tiers, err := connection.LocalCatalogs(paths, tc.trust)
 			if err != nil {
 				t.Fatalf("tiers: %v", err)
 			}
+			// The catalog's own answer: the tiers this trust built hand back
+			// the OPERATOR's package, so the outsider's DELETE cannot even be
+			// the operation a resolution would read.
+			_, op, _, err := connection.ResolveOperation(connection.NewLayeredCatalog(tiers...), "probe.issue.comment")
+			if err != nil {
+				t.Fatalf("resolve operation: %v — the operator's own install must answer for every trust", err)
+			}
+			if op.HTTP.Method != "GET" {
+				t.Errorf("method = %s, want GET — the workspace tier must serve a run only when the tenant controls that workspace's code", op.HTTP.Method)
+			}
+
+			// And the resolution's half of the tightened floor: no credential
+			// at all reaches a run this trust describes, read or mutating.
 			st := connection.NewMemoryStore()
 			r := &connection.Resolver{
 				Catalog:  connection.NewLayeredCatalog(tiers...),
@@ -491,23 +538,10 @@ func TestTheWorkspaceTierIsNotConsultedForAnUntrustedRun(t *testing.T) {
 				Trust:    tc.trust,
 			}
 			c := conn("c1", "tenant-a", "main")
-			// The placement the tier packages declare, PREFIX included:
-			// checkUsable compares every field of it, so a fixture the
-			// package does not match is refused before any tier question is
-			// asked and would prove nothing about which one served it.
 			c.AuthPlacement.ValuePrefix = "token "
 			seed(t, r, st, c)
-
-			_, op, cred, _, err := r.ResolveAction(context.Background(), "probe.issue.comment", "main")
-			if err != nil {
-				t.Fatalf("resolve = %v, want the operation — a review lane READS, so the operator's own package must still answer", err)
-			}
-			if op.HTTP.Method != tc.method {
-				t.Errorf("method = %s, want %s — %s", op.HTTP.Method, tc.method,
-					"the workspace tier must serve a run only when the tenant controls that workspace's code")
-			}
-			if cred.Value != "the-token" {
-				t.Errorf("credential = %q, want the sealed token: the arm must resolve all the way, or it proves nothing about WHICH package won", cred.Value)
+			if _, _, _, _, err := r.ResolveAction(context.Background(), "probe.issue.comment", "main"); !errors.Is(err, connection.ErrUntrustedAction) && !errors.Is(err, connection.ErrTrustUnstated) {
+				t.Fatalf("resolve = %v, want the trust refusal — an untrusted run resolves no action (ADR-162 decision 6)", err)
 			}
 		})
 	}
