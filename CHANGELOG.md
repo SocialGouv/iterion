@@ -3,6 +3,63 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [5.13.0](https://github.com/SocialGouv/iterion/compare/v5.12.3...v5.13.0) (2026-11-08)
+
+### Features
+
+* **model,server:** the gateway price feed — operator pricing syncs into the database and rides the run ([#3105](https://github.com/SocialGouv/iterion/issues/3105)) ([#3110](https://github.com/SocialGouv/iterion/issues/3110)) ([1739549](https://github.com/SocialGouv/iterion/commit/17395495e77b489f6d2951b5df6acf955ed59b8c))
+
+    <details><summary>why</summary>
+
+    ADR-163. The operator table (OPENAI_COMPATIBLE_MODELS) was a manual mirror of the operator's tariffs: a price change drifted silently until a human edited a values file and rolled the deployment. The price feed run to the runner — the operator table stays the floor.
+
+    </details>
+
+### Bug Fixes
+
+* **delegate:** a backend without an untrusted-workspace floor refuses, typed, from one seam ([0c1688f](https://github.com/SocialGouv/iterion/commit/0c1688f31906fecdc605b45b005da56bdbfb39db)), references [#3100](https://github.com/SocialGouv/iterion/issues/3100) [#874](https://github.com/SocialGouv/iterion/issues/874)
+
+    <details><summary>why</summary>
+
+    ADR-162 U3, refusals concern. One policy table (untrustedWorkspacePolicies) says what every backend does with a workspace its tenant did not write, and one refusal (refuseUntrustedWorkspace, wrapping ErrUntrustedWorkspaceRefused) names the backend and the honest ways out — the list of floored backends is derived from the table, so a refused backend is never offered as the route. An unanswered question refuses: UntrustedWorkspaceRefused is the zero value.
+
+    </details>
+* **delegate:** floor an untrusted run's claude_code settings to memory surfaces ([c909cda](https://github.com/SocialGouv/iterion/commit/c909cda484b549ebc42f55182699474655b0f62c)), references [#1719](https://github.com/SocialGouv/iterion/issues/1719) [#3100](https://github.com/SocialGouv/iterion/issues/3100) [#874](https://github.com/SocialGouv/iterion/issues/874)
+
+    <details><summary>why</summary>
+
+    On a workspace the tenant did not write, the checkout's own setting scopes — project and local, both the same directory — never reach the CLI: its .claude/settings.json carries hooks (commands fired on the CLI's lifecycle with the run's credential in reach) and an env block able to redirect every model request. claudeAmbient strips both scopes from whatever resolved them, the operator's raw ITERION_CLAUDE_CODE_SETTING_SOURCES list included; a run left with nothing spawns with --setting-sources…
+
+    </details>
+* **delegate:** pi's configuration floors hold on a workspace its tenant did not write ([96ffc72](https://github.com/SocialGouv/iterion/commit/96ffc72e686bc91275fd675064f6e1d15c281ea9)), references [#3100](https://github.com/SocialGouv/iterion/issues/3100) [#874](https://github.com/SocialGouv/iterion/issues/874)
+
+    <details><summary>why</summary>
+
+    ADR-162 U3, pi concern. The operator's standing opt-ins cannot speak for a checkout they do not own, and the checkout's own prose is never injected as instruction into the agent reviewing its author's diff:
+
+    </details>
+* **model,tool:** a workspace its tenant did not write resolves no slash command ([de80326](https://github.com/SocialGouv/iterion/commit/de803261c7047357bf2ecc12b81ba592337e5c74)), references [#3100](https://github.com/SocialGouv/iterion/issues/3100) [#874](https://github.com/SocialGouv/iterion/issues/874)
+
+    <details><summary>why</summary>
+
+    ADR-162 U3, slash concern. Both surfaces of the workspace slash-command capability are floored on the workspace's provenance:
+
+    </details>
+* **runtime,model:** on an untrusted workspace the hooks answer comes from memory, and nothing is written ([6d9e01d](https://github.com/SocialGouv/iterion/commit/6d9e01d3be566948496f3ca8c5d54daf985aaf70)), references [#3100](https://github.com/SocialGouv/iterion/issues/3100) [#874](https://github.com/SocialGouv/iterion/issues/874)
+
+    <details><summary>why</summary>
+
+    ADR-162 U3, hooks concern. mergePluginHooks on a fork read the checkout's sidecar and wrote the merged blob into the fork's settings.json — and every failure path skipped the injection, so a checkout with an unparseable settings.json, a directory in its place, or a dangling .claude link vetoed every hook the operator enabled, their guards among them. Now the untrusted lane reads and writes nothing: the merged plugin fragment blob is computed from the plugin registry alone (pluginHooksBlob),…
+
+    </details>
+* **runtime:** an unloadable plugin registry skips the hooks merge instead of stripping it ([f29227e](https://github.com/SocialGouv/iterion/commit/f29227e49dbf7845590e2844cbe0543078be215f)), references [#3100](https://github.com/SocialGouv/iterion/issues/3100) [#874](https://github.com/SocialGouv/iterion/issues/874)
+
+    <details><summary>why</summary>
+
+    pluginHooksBlob swallowed a plugin.Load() failure into a nil blob, and the merge then proceeded as if no plugin contributed: on the trusted lane it stripped the previously injected hooks from the workspace's settings.json and rewrote the sidecar to null, so both backends (which read the file there) ran without the operator's hooks until the registry healed. main and the design branch both kept the early return. A load failure is not an empty hook set: pluginHooksBlob now returns the error, the…
+
+    </details>
+
 ## [5.12.3](https://github.com/SocialGouv/iterion/compare/v5.12.2...v5.12.3) (2026-11-07)
 
 ### Bug Fixes
