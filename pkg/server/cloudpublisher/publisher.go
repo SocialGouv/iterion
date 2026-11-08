@@ -3725,6 +3725,13 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		lp := *spec.LLMRoutePolicy // copy: never share the caller's pointer
 		r.LLMRoutePolicy = &lp
 	}
+	// The pool attachment rides the same carrier (ADR-164): the resume
+	// replays the frozen pool even after a detach, and the disabled answer
+	// (empty PoolID) stamps too — a level's opt-out must not vanish.
+	if spec.PoolAttachment != nil {
+		pa := *spec.PoolAttachment // copy: never share the caller's pointer
+		r.PoolAttachment = &pa
+	}
 	// 1b. Resolve BYOK credentials and seal them under a fresh
 	//     secrets_ref. Empty ref means "no team-scoped credentials
 	//     configured" — the runner falls back to env. This runs BEFORE the

@@ -256,7 +256,8 @@ type Server struct {
 	// leaves the /credentials/usage views unregistered.
 	credUsage       credusage.Counter
 	orgDefaults     OrgLimitDefaults
-	credPool        *credpool.Broker
+	credPool             *credpool.Broker
+	credPoolAttachments  credpool.AttachmentStore
 	credPoolPools   credpool.PoolStore
 	credPoolPledges credpool.PledgeStore
 	credPoolLeases  credpool.LeaseStore
@@ -985,6 +986,7 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 		credPoolPools:        cfg.CredPoolPools,
 		credPoolPledges:      cfg.CredPoolPledges,
 		credPoolLeases:       cfg.CredPoolLeases,
+		credPoolAttachments:  cfg.CredPoolAttachments,
 		credPoolLedger:       cfg.CredPoolLedger,
 		auditStore:           cfg.Audit,
 		usageCapSettings:     cfg.UsageCapSettings,

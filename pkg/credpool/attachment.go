@@ -159,11 +159,11 @@ type Attachment struct {
 	// configuration, and blocks the parent scope's pool from serving this
 	// scope: the fold resolves a disabled attachment as "no pool here, do
 	// not inherit".
-	Enabled   bool      `bson:"enabled" json:"enabled"`
-	Strategy  Strategy  `bson:"strategy" json:"strategy"`
+	Enabled   bool       `bson:"enabled" json:"enabled"`
+	Strategy  Strategy   `bson:"strategy" json:"strategy"`
 	Limits    DrawLimits `bson:"limits" json:"limits"`
-	CreatedAt time.Time `bson:"created_at" json:"created_at"`
-	UpdatedAt time.Time `bson:"updated_at" json:"updated_at"`
+	CreatedAt time.Time  `bson:"created_at" json:"created_at"`
+	UpdatedAt time.Time  `bson:"updated_at" json:"updated_at"`
 }
 
 // Scope ids. The shapes are the price feed's composite-id precedent; the
@@ -177,8 +177,8 @@ const (
 )
 
 // OrgScopeID, TeamScopeID and BotScopeID build the composite ids.
-func OrgScopeID(orgID string) string    { return "org:" + orgID }
-func TeamScopeID(teamID string) string  { return "team:" + teamID }
+func OrgScopeID(orgID string) string       { return "org:" + orgID }
+func TeamScopeID(teamID string) string     { return "team:" + teamID }
 func BotScopeID(teamID, bot string) string { return "bot:" + teamID + "/" + bot }
 
 // AttachmentLedgerID is the ledger pseudo-pledge id one attachment's draw
@@ -229,6 +229,24 @@ func (a Attachment) Validate() error {
 		return err
 	}
 	return a.Limits.Validate()
+}
+
+// BindingLayer is one binding-level answer the launch carries IN — the
+// provisioning record's pool: block (schedule row, trigger subscription,
+// webhook config), the routing `higher` layers' twin (route_resolve.go).
+// The fold reads these BEFORE the stored scopes: the binding level is the
+// most specific one. The block is validated at record-write time (slice:
+// routes); at launch an unreadable block REFUSES — the fold never folds
+// around garbage.
+type BindingLayer struct {
+	// Source names the record kind for the refusal and the provenance
+	// ("schedule", "webhook", "trigger").
+	Source string
+	// Enabled=false is a resolved-disabled answer at the binding level:
+	// it stops the inheritance exactly like a stored attachment's.
+	Enabled bool
+	PoolID  string
+	Strategy Strategy
 }
 
 // StatusNearLimit extends the display vocabulary: the entry carries

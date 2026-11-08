@@ -165,6 +165,12 @@ type LaunchSpec struct {
 	// onto the run doc beside RetryPolicy. Nil = the consumer applies the
 	// package defaults.
 	LLMRoutePolicy *store.RunLLMRoutePolicy
+	// PoolAttachment is the pool attachment already RESOLVED by the launch
+	// site (ADR-164): the frozen {pool, strategy} — nil when no attachment
+	// resolved (today's pool behavior), non-nil with an empty PoolID when a
+	// level resolved-disabled. Snapshotted verbatim onto the run doc beside
+	// LLMRoutePolicy.
+	PoolAttachment *store.RunPoolAttachment
 	// ModelOverrides are launch-time per-node/-group backend+model overrides
 	// (studio Launch dropdowns). Each entry targets nodes by selector (node id,
 	// id glob, or kind keyword agent|judge) and wins over the node's DSL

@@ -202,6 +202,11 @@ type Config struct {
 	CredPoolPledges credpool.PledgeStore
 	CredPoolLeases  credpool.LeaseStore
 	CredPoolLedger  credpool.Ledger
+	// CredPoolAttachments is the scope-scoped pool attachment store
+	// (ADR-164). Non-nil together with the broker: nil → no attachment
+	// ever resolves, the fold answers nil, and every run keeps today's
+	// pool behavior.
+	CredPoolAttachments credpool.AttachmentStore
 
 	// Audit, when non-nil, persists control-plane mutations (org
 	// status, secrets/bindings/webhooks CRUD, member changes…) and

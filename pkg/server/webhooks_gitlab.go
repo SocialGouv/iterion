@@ -1298,7 +1298,12 @@ func (s *Server) launchScheduledBot(ctx context.Context, sb cloudsched.Scheduled
 	if routeErr != nil {
 		return routeErr
 	}
+	poolAttachment, poolErr := s.resolveRunPoolAttachment(ctx, sb.TenantID, sb.BotID)
+	if poolErr != nil {
+		return poolErr
+	}
 	spec := buildScheduledLaunchSpec(sb, lb.Path, lb.Source, retry, route)
+	spec.PoolAttachment = poolAttachment
 	overrides, err := s.scheduledForgeOverrides(ctx, sb)
 	if err != nil {
 		return err
@@ -1444,6 +1449,10 @@ func (s *Server) launchWebhookBot(ctx context.Context, from launchOrigin, cfg we
 	if routeErr != nil {
 		return "", routeErr
 	}
+	poolAttachment, poolErr := s.resolveRunPoolAttachment(ctx, cfg.TenantID, botID)
+	if poolErr != nil {
+		return "", poolErr
+	}
 	spec := runview.LaunchSpec{
 		Vars:        vars,
 		RepoURL:     repoURL,
@@ -1477,6 +1486,7 @@ func (s *Server) launchWebhookBot(ctx context.Context, from launchOrigin, cfg we
 			Policy: cfg.RetryPolicy(),
 		}),
 		LLMRoutePolicy: routePolicy,
+		PoolAttachment: poolAttachment,
 	}
 	if deliveryID != "" {
 		// Typed provenance: the run-outcome spine is keyed by RUN, so the
