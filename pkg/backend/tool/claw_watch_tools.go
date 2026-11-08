@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+
+	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 )
 
 // WatchStore is the minimal run-store surface the watch tools need: the
@@ -13,14 +15,6 @@ type WatchStore interface {
 	AddWatchedIssues(ctx context.Context, runID string, issueIDs []string) ([]string, error)
 	RemoveWatchedIssues(ctx context.Context, runID string, issueIDs []string) ([]string, error)
 }
-
-// Capability names — mirror ir.CapWatchSubscribe / ir.CapWatchUnsubscribe
-// (pkg/dsl/ir/validate_capabilities.go is the source of truth). Kept as
-// local literals to avoid importing the IR validator into the tool registry.
-const (
-	capWatchSubscribe   = "watch.subscribe"
-	capWatchUnsubscribe = "watch.unsubscribe"
-)
 
 // WatchConfig configures in-process watch-subscription tools for the claw
 // backend. RunID binds every call to the executing run — the claw executor
@@ -45,8 +39,8 @@ const watchInputSchema = `{
 // adds the issue to this run's WatchedIssueIDs set; the server-side watch
 // coordinator (MVP3b) then delivers a queued message to the run whenever the
 // issue changes state on the native board. cfg.Capabilities is the surface
-// the REGISTRY carries; a node is held to its own watch grant downstream, per
-// tool, by the workflow's checkNodeToolAccess, same as the board tools.
+// the REGISTRY carries; a node is held to its own watch grant when the tool
+// is CALLED (requireHostCapability), same as the board tools.
 func RegisterClawWatchTools(reg *Registry, cfg *WatchConfig) error {
 	if cfg == nil || cfg.Store == nil || cfg.RunID == "" {
 		return nil
@@ -57,22 +51,24 @@ func RegisterClawWatchTools(reg *Registry, cfg *WatchConfig) error {
 	}
 
 	type watchTool struct {
-		name       string
-		capability string
-		add        bool
-		desc       string
+		name string
+		add  bool
+		desc string
 	}
 	tools := []watchTool{
-		{"subscribe", capWatchSubscribe, true, "Subscribe this run to a native-board issue: you will receive a queued message whenever the issue changes state. Use it right after dispatching an issue you want to track."},
-		{"unsubscribe", capWatchUnsubscribe, false, "Stop receiving updates for a native-board issue this run previously watched."},
+		{"subscribe", true, "Subscribe this run to a native-board issue: you will receive a queued message whenever the issue changes state. Use it right after dispatching an issue you want to track."},
+		{"unsubscribe", false, "Stop receiving updates for a native-board issue this run previously watched."},
 	}
 
 	for _, t := range tools {
-		if !granted[t.capability] {
+		if !granted[delegate.WatchToolCapability(t.name)] {
 			continue
 		}
 		t := t
 		exec := func(ctx context.Context, input json.RawMessage) (string, error) {
+			if err := requireHostCapability(ctx, "mcp."+delegate.WatchMCPServerName+"."+t.name, delegate.WatchToolCapability(t.name)); err != nil {
+				return "", err
+			}
 			var args struct {
 				IssueID string `json:"issue_id"`
 			}
@@ -97,8 +93,8 @@ func RegisterClawWatchTools(reg *Registry, cfg *WatchConfig) error {
 			out, _ := json.Marshal(map[string]any{"watched_issue_ids": set})
 			return string(out), nil
 		}
-		if err := reg.RegisterMCP("iterion_watch", t.name, t.desc, json.RawMessage(watchInputSchema), exec); err != nil {
-			return fmt.Errorf("register iterion_watch/%s: %w", t.name, err)
+		if err := reg.RegisterMCP(delegate.WatchMCPServerName, t.name, t.desc, json.RawMessage(watchInputSchema), exec); err != nil {
+			return fmt.Errorf("register %s/%s: %w", delegate.WatchMCPServerName, t.name, err)
 		}
 	}
 	return nil

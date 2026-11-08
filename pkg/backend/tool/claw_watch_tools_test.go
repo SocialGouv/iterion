@@ -67,7 +67,7 @@ func TestRegisterClawWatchTools_ExecuteMutatesRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("subscribe missing: %v", err)
 	}
-	out, err := sub.Execute(context.Background(), json.RawMessage(`{"issue_id":"native:abc"}`))
+	out, err := sub.Execute(WithHostCapabilities(context.Background(), []string{"watch.subscribe", "watch.unsubscribe"}, nil), json.RawMessage(`{"issue_id":"native:abc"}`))
 	if err != nil {
 		t.Fatalf("subscribe execute: %v", err)
 	}
@@ -87,7 +87,7 @@ func TestRegisterClawWatchTools_ExecuteMutatesRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unsubscribe missing: %v", err)
 	}
-	if _, err := unsub.Execute(context.Background(), json.RawMessage(`{"issue_id":"native:abc"}`)); err != nil {
+	if _, err := unsub.Execute(WithHostCapabilities(context.Background(), []string{"watch.subscribe", "watch.unsubscribe"}, nil), json.RawMessage(`{"issue_id":"native:abc"}`)); err != nil {
 		t.Fatalf("unsubscribe execute: %v", err)
 	}
 	if got := store.watched["run-7"]; len(got) != 0 {
@@ -102,7 +102,7 @@ func TestRegisterClawWatchTools_RejectsEmptyIssueID(t *testing.T) {
 		t.Fatal(err)
 	}
 	sub, _ := reg.Resolve("mcp.iterion_watch.subscribe")
-	if _, err := sub.Execute(context.Background(), json.RawMessage(`{"issue_id":""}`)); err == nil {
+	if _, err := sub.Execute(WithHostCapabilities(context.Background(), []string{"watch.subscribe", "watch.unsubscribe"}, nil), json.RawMessage(`{"issue_id":""}`)); err == nil {
 		t.Fatalf("expected error for empty issue_id")
 	}
 }

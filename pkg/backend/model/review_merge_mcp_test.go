@@ -127,7 +127,8 @@ func TestReviewPrGPTMergeWithRepositoryMCP(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("resolve granted board creation: %v", err)
 	}
-	out, err := create.Execute(context.Background(), json.RawMessage(`{"title":"Review finding"}`))
+	grantCtx := tool.WithHostCapabilities(context.Background(), []string{"board.create"}, nil)
+	out, err := create.Execute(grantCtx, json.RawMessage(`{"title":"Review finding"}`))
 	if err != nil || !strings.Contains(out, "Review finding") {
 		t.Fatalf("granted board operation did not execute: %s / %v", out, err)
 	}

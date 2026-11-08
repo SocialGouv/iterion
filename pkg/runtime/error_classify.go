@@ -5,6 +5,7 @@ import (
 	"github.com/SocialGouv/claw-code-go/pkg/api"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
+	"github.com/SocialGouv/iterion/pkg/backend/tool"
 	"strings"
 )
 
@@ -43,6 +44,12 @@ func ClassifyError(err error) ErrorCode {
 	// (CapabilityDenial, ADR-151).
 	if IsCapabilityDenial(err) {
 		return ErrCodeCapabilityDenied
+	}
+	// One of iterion's host tools (board, run store, watch) refused a node
+	// that does not hold its capability. The node's declaration and the
+	// run's trust decide it, and neither changes between attempts.
+	if errors.Is(err, tool.ErrHostCapabilityNotHeld) {
+		return ErrCodeToolFailedPermanent
 	}
 	// A tool node's failure, checked by TYPE before any provider reading:
 	// its stderr is data, and an HTTP-looking line in it ("status code 400",

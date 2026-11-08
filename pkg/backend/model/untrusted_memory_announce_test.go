@@ -19,6 +19,7 @@ import (
 // operator something that did not happen. The trusted claw node is the
 // control that the announcement is keyed on the trust at all.
 func TestBuildTask_TheMemoryWithdrawalIsAnnouncedWhereMemoryIsHanded(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name    string
 		trust   store.RunTrust

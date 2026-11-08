@@ -37,6 +37,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/mcp"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
+	"github.com/SocialGouv/iterion/pkg/backend/tool"
 	"github.com/SocialGouv/iterion/pkg/botregistry"
 	"github.com/SocialGouv/iterion/pkg/botsource"
 	"github.com/SocialGouv/iterion/pkg/bundle"
@@ -3856,9 +3857,15 @@ func modelOverridesFromMsg(entries []queue.ModelOverride) model.ModelOverrides {
 // floor's typed refusals. Each is decided by the run's own trust and program,
 // so a redelivery meets the same answer: acked, never retried — a retry costs
 // a pod and a clone of an outsider's tree per attempt, for nothing.
+//
+// A host tool refused for a capability the node never declared is not one:
+// that is the program's own fault, on any trust, and it classifies (by its
+// code, TOOL_FAILED_PERMANENT) as the deterministic failure it is — acked,
+// and banked like one.
 func isTrustFloorRefusal(execErr error) bool {
 	return errors.Is(execErr, mcp.ErrWithdrawnMCPServer) ||
-		errors.Is(execErr, delegate.ErrUntrustedWorkspaceRefused)
+		errors.Is(execErr, delegate.ErrUntrustedWorkspaceRefused) ||
+		errors.Is(execErr, tool.ErrHostCapabilityWithdrawn)
 }
 
 // recordTrustRefusal puts on the run's timeline a withdrawal the run could not

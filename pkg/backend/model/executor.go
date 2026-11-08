@@ -1832,6 +1832,14 @@ func (e *ClawExecutor) Execute(ctx context.Context, node ir.Node, input map[stri
 		ctx = withRuntimeContext(ctx, runID, e.sessions)
 	}
 
+	// The host-capability grant rides the context of THIS node's execution,
+	// whichever route reaches a host tool — an agent's tool loop, a tool
+	// node's `command:`, a subagent, the sandboxed runner's proxy. This is
+	// the one entry every node execution crosses, so no route starts
+	// without it.
+	held, withdrawn := e.nodeHostCapabilities(node)
+	ctx = tool.WithHostCapabilities(ctx, held, withdrawn)
+
 	output, err := e.executeNode(ctx, node, input)
 	if err != nil {
 		// The engine persists, logs and posts a node's error: a tool's output

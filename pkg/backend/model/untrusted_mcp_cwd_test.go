@@ -20,6 +20,7 @@ import (
 // itself started. The trusted row is the control — unchanged, it starts in the
 // checkout.
 func TestResolveTaskMCPServers_AForksStdioServerStartsOutsideTheCheckout(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name  string
 		trust store.RunTrust
@@ -33,7 +34,7 @@ func TestResolveTaskMCPServers_AForksStdioServerStartsOutsideTheCheckout(t *test
 				logger: iterlog.Nop(),
 				mcpManager: mcp.NewManager(map[string]*mcp.ServerConfig{
 					"srv": {Name: "srv", Transport: mcp.TransportStdio, Command: "/bin/sh", Args: []string{"-c", `printf '%s' "$PWD" "$1"`, "sh", "arg-kept"}},
-				}),
+				}, mcp.WithStartPolicy(mcp.StartAllServers)),
 			}
 			e.SetWorkspaceTrust(row.trust)
 			servers := e.resolveTaskMCPServers([]string{"srv"})

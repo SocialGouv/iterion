@@ -154,13 +154,17 @@ func connectorEndpointFor(boardEndpoint, boardPath string) string {
 }
 
 // workflowHasBoardCapability reports whether the workflow (or any of its
-// agent/judge nodes) declares a `board.*` capability — the gate for
-// starting the per-run board MCP listener.
-func workflowHasBoardCapability(wf *ir.Workflow) bool {
+// agent/judge nodes) holds a `board.*` capability — the gate for starting
+// the per-run board MCP listener. Held, not declared: the lists are read
+// through the workspace-trust floor (store.RunTrust.HostCapabilities), the
+// same resolver the executor hands each node, so a run whose nodes hold no
+// capability opens no listener for them to reach.
+func workflowHasBoardCapability(wf *ir.Workflow, trust store.RunTrust) bool {
 	if wf == nil {
 		return false
 	}
-	has := func(caps []string) bool {
+	has := func(declared []string) bool {
+		caps, _ := trust.HostCapabilities(declared)
 		for _, c := range caps {
 			if strings.HasPrefix(c, "board.") {
 				return true
@@ -188,15 +192,17 @@ func workflowHasBoardCapability(wf *ir.Workflow) bool {
 
 // workflowHasHostCapability gates the shared token-authenticated MCP
 // listener. Board tools use /board; read-only run tools use /runs on the same
-// listener and host-gateway alias.
-func workflowHasHostCapability(wf *ir.Workflow) bool {
-	if workflowHasBoardCapability(wf) {
+// listener and host-gateway alias. Read through the trust floor, like
+// workflowHasBoardCapability.
+func workflowHasHostCapability(wf *ir.Workflow, trust store.RunTrust) bool {
+	if workflowHasBoardCapability(wf, trust) {
 		return true
 	}
 	if wf == nil {
 		return false
 	}
-	has := func(caps []string) bool {
+	has := func(declared []string) bool {
+		caps, _ := trust.HostCapabilities(declared)
 		for _, capability := range caps {
 			if capability == runops.CapRunsRead || capability == connection.CapConnectors {
 				return true
@@ -1000,7 +1006,7 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 	// at `docker run` time — so the driver must know now that an
 	// endpoint will be advertised, proxy or no proxy (the default
 	// network: open starts none).
-	wantsBoardListener := p.BoardMCPHandler != nil && workflowHasHostCapability(p.Workflow)
+	wantsBoardListener := p.BoardMCPHandler != nil && workflowHasHostCapability(p.Workflow, p.Trust)
 	wantsAskUserListener := workflowHasInteractiveNode(p.Workflow)
 
 	info := sandbox.RunInfo{
@@ -3395,7 +3401,7 @@ func (e *Engine) adoptSharedSandbox(ctx context.Context, runID string, emitForSa
 	// (interaction semantics stay host-side, per run). A listener the parent
 	// never started is one the child does not get — the delegate falls back
 	// per node, loudly, and the event says so.
-	wantsBoard := workflowHasBoardCapability(e.workflow)
+	wantsBoard := workflowHasBoardCapability(e.workflow, e.trust)
 	wantsAskUser := workflowHasInteractiveNode(e.workflow)
 	if e.logger != nil {
 		if wantsBoard && shared.BoardEndpoint == "" {

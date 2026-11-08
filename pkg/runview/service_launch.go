@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -2001,6 +2002,12 @@ func consumeArtifactResumePreflight(opts []runtime.EngineOption, ex *launchExtra
 // future board transitions back to this run. The convention lives here,
 // not in the generic engine, so the runtime stays decoupled from a
 // bot-specific schema field.
+//
+// Subscribing a run to issues is the `watch.subscribe` host capability by
+// another door, so it is decided by the one resolver of those: a run whose
+// workspace its tenant did not write holds none, and its nodes' output
+// subscribes it to nothing. The trust is read off the run document, fail
+// closed — a run that cannot be read is not trusted.
 func (s *Service) stampWatchedFromOutput(ctx context.Context, runID, _ string, output map[string]any) {
 	if output == nil {
 		return
@@ -2014,6 +2021,14 @@ func (s *Service) stampWatchedFromOutput(ctx context.Context, runID, _ string, o
 		// valueless call a tenant-filtered store panics on (#1805): drop
 		// the stamp loudly instead of smuggling a bypass through.
 		s.logger.Warn("runview: stamp watched issues on run %s: no context — not stamped", runID)
+		return
+	}
+	trust := store.RunTrust("unreadable")
+	if r, err := s.store.LoadRun(ctx, runID); err == nil && r != nil {
+		trust = r.Trust
+	}
+	if held, _ := trust.HostCapabilities([]string{ir.CapWatchSubscribe}); !slices.Contains(held, ir.CapWatchSubscribe) {
+		s.logger.Warn("runview: run %s: %d dispatched issue(s) not watched — the run holds no %s (workspace trust %q)", runID, len(ids), ir.CapWatchSubscribe, string(trust))
 		return
 	}
 	if _, err := s.store.AddWatchedIssues(ctx, runID, ids); err != nil {

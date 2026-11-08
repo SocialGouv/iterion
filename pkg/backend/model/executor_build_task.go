@@ -26,6 +26,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/secrets"
+	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/google/uuid"
 )
 
@@ -152,9 +153,11 @@ func extractBackendFields(node ir.Node) (backendFields, error) {
 	}
 }
 
-// effectiveCapabilitiesOf is the ONE reading of the capability-inheritance
-// seam: a nil list inherits the workflow's; a DECLARED empty one
-// (`capabilities: []`, #1801) is an explicit no-grant and stays empty.
+// effectiveCapabilitiesOf is the ONE reading of the capability grant: a nil
+// list inherits the workflow's; a DECLARED empty one (`capabilities: []`,
+// #1801) is an explicit no-grant and stays empty; and the workspace-trust
+// floor (store.RunTrust.HostCapabilities) withdraws the whole list from a run
+// whose workspace its tenant did not write.
 //
 // buildTask, the EffectiveToolNames seam and the reserved-namespace grant
 // check (internalMCPToolGrant) all read it here, on the field
@@ -163,11 +166,13 @@ func extractBackendFields(node ir.Node) (backendFields, error) {
 // nodeCapabilities — its registry recipe's host tools, its native action and
 // its rung-4 recovery agent (#78=A, ADR-151): one grant rule for every node
 // kind.
-func effectiveCapabilitiesOf(declared, wfCapabilities []string) []string {
+//
+// withdrawn is what the floor took; it is empty on a trusted workspace.
+func effectiveCapabilitiesOf(declared, wfCapabilities []string, trust store.RunTrust) (held, withdrawn []string) {
 	if declared == nil {
-		return wfCapabilities
+		declared = wfCapabilities
 	}
-	return declared
+	return trust.HostCapabilities(declared)
 }
 
 // resolvePermissionPolicy builds the effective tool-permission policy for
@@ -1402,7 +1407,15 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 		resolvedModel = picked
 	}
 
-	effectiveCaps := effectiveCapabilitiesOf(f.capabilities, e.wfCapabilities)
+	effectiveCaps, withdrawnCaps := effectiveCapabilitiesOf(f.capabilities, e.wfCapabilities, e.WorkspaceTrust())
+	if len(withdrawnCaps) > 0 && sess.claimWithdrawal("capabilities") {
+		e.announceTrustWithdrawal(f.id, TrustWithdrawalInfo{
+			What:  "capabilities",
+			Items: withdrawnCaps,
+			Reason: "this run's workspace was not written by its tenant, and a host capability reaches the tenant's own state — " +
+				"its board, its run store, the watch fan-out — where a card names a bot and the args it launches with",
+		})
+	}
 
 	// Resolve node-level image inputs (templated paths) so the codex backend can
 	// forward them as `-i` for image-to-image. Empty/whitespace results (an
@@ -2367,4 +2380,18 @@ func (e *ClawExecutor) announceTrustWithdrawal(nodeID string, info TrustWithdraw
 	if e.hooks.OnTrustWithdrawal != nil {
 		e.hooks.OnTrustWithdrawal(nodeID, info)
 	}
+}
+
+// nodeHostCapabilities is the grant stamped onto a node execution's context,
+// read by every host tool when it is CALLED: the node's own `capabilities:`
+// list, else the workflow's; any other node — a tool node naming a host tool
+// in `command:` — holds what the workflow grants. Both through the one
+// resolver, so the grant a tool checks and the list a task carries agree.
+// withdrawn is what the floor took from that declaration.
+func (e *ClawExecutor) nodeHostCapabilities(node ir.Node) (held, withdrawn []string) {
+	// The SAME per-kind extraction the resolution grant (nodeCapabilities)
+	// reads — a tool node's own list included (#78=A) — so the stamp a
+	// host tool is held to at call time cannot disagree with what the node
+	// was offered.
+	return e.nodeCapabilitiesBoth(node, e.WorkspaceTrust())
 }
