@@ -494,3 +494,36 @@ func mustPledge(t *testing.T, h *harness, userID string, mutate func(*Pledge)) P
 	}
 	return p
 }
+
+func TestBrokerHasPool(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	// The harness's own pool-1 (org-1) is enabled.
+	ok, err := h.broker.HasPool(ctx, "pool-1")
+	if err != nil || !ok {
+		t.Errorf("HasPool(pool-1) = (%v, %v), want (true, nil)", ok, err)
+	}
+	// A disabled pool answers false: the attachment resolves to nothing
+	// the run may draw on, and the fold refuses naming the level.
+	if err := h.pools.Upsert(ctx, Pool{ID: "p-off", OrgID: "org-9", Enabled: false}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if ok, _ := h.broker.HasPool(ctx, "p-off"); ok {
+		t.Error("a disabled pool must not answer the fold's existence check")
+	}
+	if ok, _ := h.broker.HasPool(ctx, "p-absent"); ok {
+		t.Error("a vanished pool must not answer the fold's existence check")
+	}
+	// A private pool IS checkable by name — the attachment is the consent.
+	if err := h.pools.Upsert(ctx, Pool{ID: "p-priv", OwnerType: PoolOwnerUser, OwnerID: "u1", Visibility: PoolVisibilityPrivate, Enabled: true}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if ok, _ := h.broker.HasPool(ctx, "p-priv"); !ok {
+		t.Error("a private pool must answer HasPool — the fold reaches it only by attachment")
+	}
+	// A nil broker is a valid "pool disabled" value.
+	var nilBroker *Broker
+	if ok, _ := nilBroker.HasPool(ctx, "pool-1"); ok {
+		t.Error("a nil broker has no pools")
+	}
+}

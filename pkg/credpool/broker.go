@@ -646,6 +646,27 @@ func (b *Broker) resolvePools(ctx context.Context, req Request) (poolsEnabled in
 	return poolsEnabled, allowed, nil
 }
 
+// HasPool reports whether a named pool exists AND is enabled — the fold's
+// refuse-at-launch check (ADR-164): an attachment naming a pool that has
+// vanished or been switched off must refuse the launch naming the level,
+// never fold around it. An unknown or disabled pool is the same answer:
+// the attachment resolves to nothing the run may draw on.
+func (b *Broker) HasPool(ctx context.Context, poolID string) (bool, error) {
+	if b == nil || poolID == "" {
+		return false, nil
+	}
+	pools, err := b.pools.ListEnabled(ctx)
+	if err != nil {
+		return false, err
+	}
+	for _, p := range pools {
+		if p.ID == poolID {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // HasFallbackDonors reports whether ANY audience-admitted pool holds a
 // pledge the door could consider: matching one of the wants, marked
 // `fallback_use`, not the requester. It is the door's AMORTIZATION probe
