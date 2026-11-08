@@ -1386,6 +1386,23 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 		res.ModelClasses = routePolicy.ModelClasses
 	}
 
+	// The attached pool's entry rungs (ADR-164): the sealed entries with an
+	// explicit route binding land after the operator chain and the policy
+	// ladder, On the attachment's frozen triggers — the run's fallback
+	// chain literally ends at the paid gateway key. Same advisory screen,
+	// same refusals channel.
+	if poolAttachment != nil && poolAttachment.PoolID != "" {
+		var entryRefused []string
+		composeEntryRungs(wf, view, res.grants, poolAttachment.Strategy.Triggers, launchVars, func(refusal string) {
+			entryRefused = append(entryRefused, refusal)
+		})
+		for _, refusal := range entryRefused {
+			if p.logger != nil {
+				p.logger.Info("cloudpublisher: %s (run=%s)", refusal, runID)
+			}
+		}
+	}
+
 	// Record which review families the resolved credentials back — every
 	// tier included (BYOK, oauth-forfait, org, pool grant, platform). This is
 	// what lets SubmitLaunch resolve the credential-derived topology vars
