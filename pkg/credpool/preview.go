@@ -66,7 +66,7 @@ func (b *Broker) Preview(ctx context.Context, req Request) (Preview, error) {
 			for _, s := range skips {
 				out.Candidates = append(out.Candidates, PreviewCandidate{PledgeID: s.PledgeID, Source: want.Source, Ref: want.Ref, Status: s.Status})
 			}
-			ranked, err := b.rank(ctx, eligible, out.ObservedAt)
+			ranked, err := b.rank(ctx, eligible, out.ObservedAt, req.RankMode)
 			if err != nil {
 				return out, err
 			}

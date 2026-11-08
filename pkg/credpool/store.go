@@ -22,6 +22,69 @@ type PoolStore interface {
 	// donor") that no single index can answer.
 	ListEnabled(ctx context.Context) ([]Pool, error)
 	Upsert(ctx context.Context, p Pool) error
+	// Patch writes the named fields only (PoolPatch): a whole-document
+	// write would drop columns a newer binary added while an older one
+	// served — the rolling-update lesson ApiKeyPatch exists for. Both
+	// implementations merge the patch into the stored row; ErrNotFound
+	// when the pool does not exist.
+	Patch(ctx context.Context, id string, p PoolPatch) (Pool, error)
+}
+
+// PoolPatch names the fields a pool update may change. A nil field is left
+// alone; a non-nil field is written as given, zero values included — the
+// ApiKeyPatch discipline. The owner trio is deliberately absent: ownership
+// is decided at creation and never patched (move the entries instead).
+type PoolPatch struct {
+	Name       *string
+	Enabled    *bool
+	Audience   *Audience
+	Visibility *PoolVisibility
+}
+
+// IsEmpty reports whether the patch names no field at all. It reads the
+// $set body rather than a second hand-kept list of the fields.
+func (p PoolPatch) IsEmpty() bool { return len(p.setDoc()) == 0 }
+
+// applyTo writes the named fields onto p for the memory twin. applyTo and
+// setDoc enumerate the same fields: TestPoolPatch_everyFieldReachesBothWriters
+// refuses a field one of them forgets.
+func (p PoolPatch) applyTo(pool *Pool) {
+	if p.Name != nil {
+		pool.Name = *p.Name
+	}
+	if p.Enabled != nil {
+		pool.Enabled = *p.Enabled
+	}
+	if p.Audience != nil {
+		pool.Audience = *p.Audience
+	}
+	if p.Visibility != nil {
+		pool.Visibility = *p.Visibility
+	}
+}
+
+// AttachmentStore persists one attachment per scope (pool_attachments).
+// CAS on UpdatedAt — the loud-409 discipline: two concurrent editors of
+// one scope's attachment must not silently drop each other's write.
+type AttachmentStore interface {
+	// Get returns the scope's attachment, ErrNotFound when the scope has
+	// none (which is the ordinary "inherit from the parent" answer).
+	Get(ctx context.Context, scopeID string) (Attachment, error)
+	// Put inserts or replaces the whole document, stamping UpdatedAt.
+	Put(ctx context.Context, a Attachment) error
+	// PutIfUnchanged writes only while the stored UpdatedAt still equals
+	// expected; false means someone wrote in between (the route answers
+	// 409). ErrNotFound when the attachment does not exist.
+	PutIfUnchanged(ctx context.Context, a Attachment, expectedUpdatedAt time.Time) (bool, error)
+	// DeleteIfUnchanged removes the attachment only while its UpdatedAt
+	// still equals expected; false = someone wrote in between.
+	DeleteIfUnchanged(ctx context.Context, scopeID string, expectedUpdatedAt time.Time) (bool, error)
+	// Delete removes the attachment unconditionally (operator force-detach,
+	// tests). ErrNotFound when absent.
+	Delete(ctx context.Context, scopeID string) error
+	// List returns every attachment — the signal reconciler's walk and the
+	// orgsweep's opposite number.
+	List(ctx context.Context) ([]Attachment, error)
 }
 
 // PledgeStore persists donors' offers.
@@ -123,6 +186,14 @@ type LeaseStore interface {
 	// ListByDonor returns a donor's recent leases, newest first — the
 	// "what did my quota run" history.
 	ListByDonor(ctx context.Context, donorID string, limit int) ([]Lease, error)
+	// LiveCommitmentByAttachment reports what ONE ATTACHMENT currently has
+	// at stake across its open leases: the runs it is serving (the run
+	// counter the att: row's atomic reserve judges) and the allowance
+	// promised to them (the committed half of the admission rule). The
+	// attachment-level twin of LiveCommitment — without the committed half,
+	// N concurrent draws under one capped attachment would each be handed
+	// the same remaining allowance and could spend it N times over.
+	LiveCommitmentByAttachment(ctx context.Context, attachmentScopeID, excludeRunID string, now time.Time) (runs int, committedUSD float64, err error)
 }
 
 // Usage is one pledge's consumption within a period.

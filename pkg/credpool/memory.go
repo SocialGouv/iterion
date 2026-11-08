@@ -512,3 +512,128 @@ func periodName(period string) string {
 	}
 	return "day"
 }
+
+// ---------------------------------------------------------------------------
+// Pool patch + attachments (ADR-164)
+// ---------------------------------------------------------------------------
+
+// Patch applies the named fields to the stored row (PoolPatch.applyTo).
+func (s *MemoryPoolStore) Patch(_ context.Context, id string, p PoolPatch) (Pool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cur, ok := s.m[id]
+	if !ok {
+		return Pool{}, ErrNotFound
+	}
+	p.applyTo(&cur)
+	cur.UpdatedAt = time.Now().UTC()
+	s.m[id] = cur
+	return cur, nil
+}
+
+// MemoryAttachmentStore is the in-process attachment twin. Its semantics
+// are the contract the Mongo twin must match.
+type MemoryAttachmentStore struct {
+	mu sync.Mutex
+	m  map[string]Attachment
+}
+
+func NewMemoryAttachmentStore() *MemoryAttachmentStore {
+	return &MemoryAttachmentStore{m: map[string]Attachment{}}
+}
+
+func (s *MemoryAttachmentStore) Get(_ context.Context, scopeID string) (Attachment, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	a, ok := s.m[scopeID]
+	if !ok {
+		return Attachment{}, ErrNotFound
+	}
+	return a, nil
+}
+
+func (s *MemoryAttachmentStore) Put(_ context.Context, a Attachment) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now().UTC()
+	if prev, ok := s.m[a.ScopeID]; ok {
+		a.CreatedAt = prev.CreatedAt
+	} else if a.CreatedAt.IsZero() {
+		a.CreatedAt = now
+	}
+	if a.UpdatedAt.IsZero() {
+		a.UpdatedAt = now
+	}
+	s.m[a.ScopeID] = a
+	return nil
+}
+
+func (s *MemoryAttachmentStore) PutIfUnchanged(_ context.Context, a Attachment, expected time.Time) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	prev, ok := s.m[a.ScopeID]
+	if !ok {
+		return false, ErrNotFound
+	}
+	if !prev.UpdatedAt.Equal(expected) {
+		return false, nil
+	}
+	a.UpdatedAt = time.Now().UTC()
+	s.m[a.ScopeID] = a
+	return true, nil
+}
+
+func (s *MemoryAttachmentStore) DeleteIfUnchanged(_ context.Context, scopeID string, expected time.Time) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	prev, ok := s.m[scopeID]
+	if !ok {
+		return false, ErrNotFound
+	}
+	if !prev.UpdatedAt.Equal(expected) {
+		return false, nil
+	}
+	delete(s.m, scopeID)
+	return true, nil
+}
+
+func (s *MemoryAttachmentStore) Delete(_ context.Context, scopeID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.m[scopeID]; !ok {
+		return ErrNotFound
+	}
+	delete(s.m, scopeID)
+	return nil
+}
+
+func (s *MemoryAttachmentStore) List(_ context.Context) ([]Attachment, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []Attachment
+	for _, a := range s.m {
+		out = append(out, a)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ScopeID < out[j].ScopeID })
+	return out, nil
+}
+
+// LiveCommitmentByAttachment reports what ONE ATTACHMENT currently has at
+// stake across its open leases — the attachment-level twin of the pledge
+// LiveCommitment. Same "the asking run excludes itself" rule.
+func (s *MemoryLeaseStore) LiveCommitmentByAttachment(_ context.Context, attachmentScopeID, excludeRunID string, now time.Time) (int, float64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	runs, committed := 0, 0.0
+	for _, l := range s.m {
+		if l.AttachmentID != attachmentScopeID || l.Closed || !l.ExpiresAt.After(now) {
+			continue
+		}
+		if excludeRunID != "" && l.RunID == excludeRunID {
+			continue
+		}
+		runs++
+		committed += l.GrantedCostUSD
+	}
+	return runs, committed, nil
+}

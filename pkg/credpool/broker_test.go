@@ -17,15 +17,16 @@ import (
 // ---------------------------------------------------------------------------
 
 type harness struct {
-	broker  *Broker
-	pools   *MemoryPoolStore
-	pledges *MemoryPledgeStore
-	leases  *MemoryLeaseStore
-	ledger  *MemoryLedger
-	oauth   *secrets.MemoryOAuthStore
-	apiKeys *secrets.MemoryApiKeyStore
-	sealer  secrets.Sealer
-	now     time.Time
+	broker      *Broker
+	pools       *MemoryPoolStore
+	pledges     *MemoryPledgeStore
+	leases      *MemoryLeaseStore
+	ledger      *MemoryLedger
+	attachments *MemoryAttachmentStore
+	oauth       *secrets.MemoryOAuthStore
+	apiKeys     *secrets.MemoryApiKeyStore
+	sealer      secrets.Sealer
+	now         time.Time
 }
 
 const testOrg = "org-1"
