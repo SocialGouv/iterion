@@ -717,7 +717,16 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 		}
 	}
 
-	if m := task.Memory; m != nil {
+	// The bot's `memory:` space is the tenant's, like auto-memory's: its index
+	// and autoload go into the system prompt, its tools read and write it. On
+	// a workspace the tenant did not write, the reading hands the fork's agent
+	// the tenant's notes and the writing plants the fork's text where later
+	// trusted runs read it. Withdrawn out loud; the node runs without it.
+	if m := task.Memory; m != nil && !task.WorkspaceTrust.Trusted() {
+		if b.logger != nil {
+			b.logger.Warn("[%s] memory: withdrawn — this run's workspace was not written by its tenant, and the memory space is the tenant's (neither its notes nor its tools are handed to this agent)", task.NodeID)
+		}
+	} else if m := task.Memory; m != nil {
 		// Resolve the memory base path: project_root re-roots the scope
 		// under the run's RepoRoot so dispatcher worktrees + Nexie share
 		// the same tree; falls back to WorkDir when RepoRoot is empty

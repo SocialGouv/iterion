@@ -576,6 +576,26 @@ type nodeBuildSession struct {
 	commandNarrowingBy string
 	boardToken         string
 	boardMinted        bool
+	// withdrawalsAnnounced keeps each trust-floor withdrawal to one
+	// announcement per node execution: every element of a `fallbacks:`
+	// chain rebuilds the task, and each would say it again.
+	withdrawalsAnnounced map[string]bool
+}
+
+// claimWithdrawal reports whether THIS build announces the node's `what`
+// withdrawal, and records that it did.
+func (s *nodeBuildSession) claimWithdrawal(what string) bool {
+	if s == nil {
+		return true
+	}
+	if s.withdrawalsAnnounced[what] {
+		return false
+	}
+	if s.withdrawalsAnnounced == nil {
+		s.withdrawalsAnnounced = map[string]bool{}
+	}
+	s.withdrawalsAnnounced[what] = true
+	return true
 }
 
 // describeDivergence records on the outgoing delegate event that the
@@ -1526,6 +1546,18 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 		}
 		task.Permission = pol
 	}
+	// The bot's `memory:` space is the tenant's, and only the claw backend
+	// hands it to an agent: on a workspace its tenant did not write, claw
+	// withdraws it (ClawBackend.Execute) — said here, where the run's timeline
+	// is reachable, once per node execution. A task for another backend was
+	// never going to carry it, so nothing is withdrawn from it to announce.
+	if f.memory != nil && f.memory.Enabled && backendName == delegate.BackendClaw && !e.WorkspaceTrust().Trusted() && sess.claimWithdrawal("memory") {
+		e.announceTrustWithdrawal(f.id, TrustWithdrawalInfo{
+			What: "memory",
+			Reason: "this run's workspace was not written by its tenant, and the `memory:` space is the tenant's — " +
+				"neither its notes nor its tools are handed to this agent",
+		})
+	}
 	e.applyMemorySpec(&task, f.memory)
 	task.CursorFragments = resolveCursorFragments(f.cursors, e.cursors)
 	task.SkillHints = e.resolveSkillHints(f.skills)
@@ -2318,5 +2350,21 @@ func stampForkOrigin(output map[string]any, task *delegate.Task) {
 	delete(output, "_session_forked_from")
 	if task != nil && task.ForkSession && task.SessionID != "" {
 		output["_session_forked_from"] = task.SessionID
+	}
+}
+
+// announceTrustWithdrawal says out loud what the workspace-trust floor took
+// from a node: a warning in the process log and a workspace_trust_withdrawal
+// event on the run's timeline. The node runs on without it.
+func (e *ClawExecutor) announceTrustWithdrawal(nodeID string, info TrustWithdrawalInfo) {
+	if e.logger != nil {
+		if len(info.Items) > 0 {
+			e.logger.Warn("[%s] %s withdrawn (%s): %s", nodeID, info.What, strings.Join(info.Items, ", "), info.Reason)
+		} else {
+			e.logger.Warn("[%s] %s withdrawn: %s", nodeID, info.What, info.Reason)
+		}
+	}
+	if e.hooks.OnTrustWithdrawal != nil {
+		e.hooks.OnTrustWithdrawal(nodeID, info)
 	}
 }

@@ -91,13 +91,27 @@ func (s *Service) subbotRunnerFor(parentPath string, runLogger *iterlog.Logger) 
 		// this process runs many runs through s.logger (iterion#2822).
 		runLogger = s.logger.WithOwnRedactor()
 	}
-	sourceResolver := subbotsource.NewResolver(subbotsource.ResolverOptions{ParentlessBaseDir: s.workDir, WorkDir: s.workDir})
 	return func(ctx context.Context, req runtime.SubbotRequest) (map[string]any, error) {
 		depth, _ := ctx.Value(subbotDepthKey{}).(int)
 		if depth >= maxSubbotDepth {
 			return nil, fmt.Errorf("subbot recursion too deep (>%d) at %q — possible cycle", maxSubbotDepth, req.Source)
 		}
 
+		// The parent's run document, read ONCE and before the child is
+		// compiled: the child runs in what the parent produced, so it is
+		// compiled for the parent's trust, seeds its execution context from
+		// the parent's, and spends a connector credential on the parent's
+		// provenance. A parent that cannot be read is refused, typed — the
+		// rule the store applies when it creates the child's document.
+		//
+		// Read before the SOURCE is resolved too: the trust it carries
+		// decides whether `bot://` may resolve at all (subbotsource), so the
+		// refusal precedes any read of the checkout's lockfile.
+		parentRun, parentLoadErr := s.store.LoadRun(ctx, req.ParentRunID)
+		if parentLoadErr != nil {
+			return nil, fmt.Errorf("subbot %q: %w: %w", req.Source, store.ErrChildParentUnreadable, parentLoadErr)
+		}
+		sourceResolver := subbotsource.NewResolver(subbotsource.ResolverOptions{ParentlessBaseDir: s.workDir, WorkDir: s.workDir, Trust: parentRun.Trust})
 		resolvedSource, err := sourceResolver.Resolve(ctx, parentPath, req.Source)
 		if err != nil {
 			return nil, fmt.Errorf("resolve child %q: %w", req.Source, err)
@@ -121,16 +135,6 @@ func (s *Service) subbotRunnerFor(parentPath string, runLogger *iterlog.Logger) 
 		childWorkDir := filepath.Dir(childPath)
 		if req.WorkDir != "" {
 			childWorkDir = req.WorkDir
-		}
-		// The parent's run document, read ONCE and before the child is
-		// compiled: the child runs in what the parent produced, so it is
-		// compiled for the parent's trust, seeds its execution context from
-		// the parent's, and spends a connector credential on the parent's
-		// provenance. A parent that cannot be read is refused, typed — the
-		// rule the store applies when it creates the child's document.
-		parentRun, parentLoadErr := s.store.LoadRun(ctx, req.ParentRunID)
-		if parentLoadErr != nil {
-			return nil, fmt.Errorf("subbot %q: %w: %w", req.Source, store.ErrChildParentUnreadable, parentLoadErr)
 		}
 		childWf, hash, childBundle, err := CompileSubbotWorkflow(childPath, resolvedSource.Bundle, childWorkDir, parentRun.Trust)
 		if err != nil {

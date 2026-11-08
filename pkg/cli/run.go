@@ -716,13 +716,20 @@ type subbotDepthKey struct{}
 // resolved `with:` data as inputs, and returns the child's terminal node
 // output (mapped to outputs.<subbot>.<field> by the engine).
 func subbotRunnerForCLI(parentPath, storeDir string, s store.RunStore, logger *iterlog.Logger, opts RunOptions) runtime.SubbotRunner {
-	sourceResolver := subbotsource.NewResolver(subbotsource.ResolverOptions{})
 	return func(ctx context.Context, req runtime.SubbotRequest) (map[string]any, error) {
 		depth, _ := ctx.Value(subbotDepthKey{}).(int)
 		if depth >= maxSubbotDepth {
 			return nil, fmt.Errorf("subbot recursion too deep (>%d) at %q — possible cycle", maxSubbotDepth, req.Source)
 		}
 
+		// The parent's trust decides whether `bot://` may resolve at all:
+		// read it before the source, so the refusal precedes any read of the
+		// checkout's lockfile. The resolver is per-request: the trust is.
+		trust, err := runview.SubbotParentTrust(ctx, s, req.ParentRunID)
+		if err != nil {
+			return nil, fmt.Errorf("subbot %s: %w", req.Source, err)
+		}
+		sourceResolver := subbotsource.NewResolver(subbotsource.ResolverOptions{Trust: trust})
 		resolvedSource, err := sourceResolver.Resolve(ctx, parentPath, req.Source)
 		if err != nil {
 			return nil, fmt.Errorf("resolve child %q: %w", req.Source, err)
@@ -744,10 +751,6 @@ func subbotRunnerForCLI(parentPath, storeDir string, s store.RunStore, logger *i
 				return nil, fmt.Errorf("subbot %s: resolve child workspace: %w", req.Source, wdErr)
 			}
 			childWorkspace = wd
-		}
-		trust, err := runview.SubbotParentTrust(ctx, s, req.ParentRunID)
-		if err != nil {
-			return nil, fmt.Errorf("subbot %s: %w", req.Source, err)
 		}
 		childWf, hash, childBundle, err := runview.CompileSubbotWorkflow(childPath, resolvedSource.Bundle, childWorkspace, trust)
 		if err != nil {
