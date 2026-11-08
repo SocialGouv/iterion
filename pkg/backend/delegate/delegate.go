@@ -578,11 +578,12 @@ type Task struct {
 
 	// ContextWindow is the catalog context window (tokens) of the model the
 	// task resolves to, when a table the runtime trusts knows it; zero when
-	// unknown. CLI-harness backends (claude_code — serving claw and
-	// claude_code alike) stamp it into CLAUDE_CODE_MAX_CONTEXT_TOKENS at
-	// spawn so the harness compacts BEFORE the provider ceiling instead of
-	// dying on it; an explicit env setting always wins. API backends may use
-	// it to cap their own window estimates.
+	// unknown. The claude_code CLI-harness backend stamps it into
+	// CLAUDE_CODE_MAX_CONTEXT_TOKENS at spawn so the harness compacts BEFORE
+	// the provider ceiling instead of dying on it; an explicit env setting
+	// always wins. (The claw backend name is registered in production to the
+	// model package's direct-API ClawBackend — runview's executor — which
+	// resolves the window per call and never reads this field.)
 	ContextWindow int
 
 	// WorkDir is the working directory for the CLI subprocess.

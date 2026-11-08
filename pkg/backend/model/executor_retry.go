@@ -892,6 +892,10 @@ func (e *ClawExecutor) dispatchWithProviderFallback(
 			} else {
 				task.Model = baseModel
 			}
+			// The stamped context window belongs to the model serving this
+			// attempt, not the baseline: an override (or a baseline restore)
+			// without a refresh leaves the previous model's ceiling stamped.
+			refreshContextWindow(ctx, task)
 			return backendName, backend, task, nil
 		})
 	return out.Result, err
@@ -969,6 +973,10 @@ func (e *ClawExecutor) newElementBuilder(
 		} else {
 			task.Model = baseModels[bn]
 		}
+		// The stamped context window belongs to the model serving this
+		// attempt, not the baseline: an override (or a baseline restore)
+		// without a refresh leaves the previous model's ceiling stamped.
+		refreshContextWindow(ctx, task)
 		// A GLM id on the anthropic wire is a z.ai model: see RouteProviderHint.
 		task.ProviderHint = RouteProviderHint(ctx, bn, task.ProviderHint, task.Model)
 		// Gateway routing is claw-only, from both directions, and the env it

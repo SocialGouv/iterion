@@ -545,9 +545,28 @@ func forceCompactToTokens(messages []api.Message, targetTokens, preserveRecent i
 	return res.CompactedMessages, true
 }
 
+// forceCompactLadder walks the reactive retry targets from largest to
+// smallest and returns the first compaction that actually shrank the
+// transcript. Every rung is an ESTIMATE-anchored target: when the provider
+// counts far more tokens than the local estimator (cached turns the provider
+// still bills against the window, tokenizer drift), even the 256k rung can
+// be a no-op on a transcript the provider just refused — the review-pool
+// incident died on exactly that no-op (253,953 real input tokens estimated
+// under 256,000; first rung a no-op; error surfaced). Giving up at the first
+// no-op rung makes one token over the ceiling fatal; walking down recovers
+// the call.
+func forceCompactLadder(messages []api.Message, preserveRecent int) (compacted []api.Message, target int, ok bool) {
+	for _, target := range contextRetryTargets {
+		if out, shrunk := forceCompactToTokens(messages, target, preserveRecent); shrunk {
+			return out, target, true
+		}
+	}
+	return messages, 0, false
+}
+
 // callWithContextRetry runs one model call and, on a context-window
-// rejection, force-compacts the (pointer-shared) history to a shrinking
-// target and retries, up to maxContextCompactRetries. It mutates
+// rejection, force-compacts the (pointer-shared) history down the shrinking
+// ladder and retries, up to maxContextCompactRetries. It mutates
 // *messages in place so the compaction persists into the rest of the
 // tool loop. Non-context errors and exhausted retries surface unchanged.
 func callWithContextRetry(ctx context.Context, client api.APIClient, opts GenerationOptions, messages *[]api.Message, toolChoice *api.ToolChoice) (*aggregatedResponse, error) {
@@ -571,13 +590,9 @@ func callWithContextRetry(ctx context.Context, client api.APIClient, opts Genera
 		if !isContextWindowError(e) || attempt >= maxContextCompactRetries {
 			return agg, e
 		}
-		target := contextRetryTargets[len(contextRetryTargets)-1]
-		if attempt < len(contextRetryTargets) {
-			target = contextRetryTargets[attempt]
-		}
-		compacted, ok := forceCompactToTokens(*messages, target, opts.CompactPreserveRecent)
+		compacted, target, ok := forceCompactLadder(*messages, opts.CompactPreserveRecent)
 		if !ok {
-			return agg, e // can't shrink further → surface the original error
+			return agg, e // no rung shrank the transcript → surface the original error
 		}
 		*messages = compacted
 		// Same reseed as the threshold path: after a forced squeeze the

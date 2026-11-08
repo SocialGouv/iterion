@@ -136,3 +136,47 @@ func buildWindowJudgeTask(t *testing.T, wf *ir.Workflow, id string) delegate.Tas
 	}
 	return task
 }
+
+// A chain element that overrides the model serves the call with THAT model:
+// the stamped context window must follow the override, and a model-less
+// element after an override must restore the baseline's window, not keep the
+// override's (the review finding R75649a — a stale larger ceiling delays
+// compaction beyond the provider limit; a stale smaller one compacts early).
+func TestChainElementOverrideRefreshesContextWindow(t *testing.T) {
+	gatewayEnv(t, `{"deepseek-v4.1-flash": {"context_window": 262144}, "llama-3.3-70b": {"context_window": 131072}}`, "")
+	seedSpecs(t, nil)
+
+	e := NewClawExecutor(NewRegistry(), ir.Compile(parsertest.Parse("c.bot", ctxWindowSource).File).Workflow, WithLogger(iterlog.Nop()), WithWorkDir(t.TempDir()))
+	backend := &capturingBackend{}
+	builder := e.newElementBuilder("n", "claw", backend,
+		func(_ context.Context, _ string) (*delegate.Task, error) {
+			return &delegate.Task{NodeID: "n", Model: "deepseek-v4.1-flash", ContextWindow: 262144}, nil
+		})
+
+	_, _, task, err := builder(context.Background(), 0, chainElement{}, "")
+	if err != nil {
+		t.Fatalf("baseline element: %v", err)
+	}
+	if task.ContextWindow != 262144 {
+		t.Fatalf("baseline ContextWindow = %d, want 262144", task.ContextWindow)
+	}
+
+	_, _, task, err = builder(context.Background(), 1, chainElement{Model: "llama-3.3-70b"}, "")
+	if err != nil {
+		t.Fatalf("override element: %v", err)
+	}
+	if task.Model != "llama-3.3-70b" {
+		t.Fatalf("override Model = %q, want llama-3.3-70b", task.Model)
+	}
+	if task.ContextWindow != 131072 {
+		t.Errorf("override ContextWindow = %d, want 131072 (the override's window, not the baseline's)", task.ContextWindow)
+	}
+
+	_, _, task, err = builder(context.Background(), 2, chainElement{}, "")
+	if err != nil {
+		t.Fatalf("model-less element: %v", err)
+	}
+	if task.ContextWindow != 262144 {
+		t.Errorf("restored ContextWindow = %d, want 262144 (the baseline's, not the override's)", task.ContextWindow)
+	}
+}

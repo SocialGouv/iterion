@@ -671,6 +671,28 @@ func GenerateObjectDirect[T any](ctx context.Context, client api.APIClient, opts
 		}
 		fireOnRequest(o, len(msgs))
 		agg, err = callAndAggregate(ctx, client, req, o)
+		// Reactive context-window recovery at parity with the text loop's
+		// callWithContextRetry: a structured turn can carry the same
+		// oversized session history, and without the ladder the turn dies
+		// one token over the provider ceiling with no compaction attempted.
+		// msgs is a local copy — the squeezed slice is what answer/partial
+		// return, the same history the retry actually used.
+		for attempt := 0; err == nil && agg != nil && isContextWindowError(agg.err) && attempt < maxContextCompactRetries; attempt++ {
+			compacted, _, ok := forceCompactLadder(msgs, o.CompactPreserveRecent)
+			if !ok {
+				break
+			}
+			msgs = compacted
+			if o.OnContextCompactRetry != nil {
+				o.OnContextCompactRetry(attempt+1, agg.err, len(compacted), 0)
+			}
+			req, err = buildRequest(reqOpts, msgs, []api.Tool{syntheticTool}, tc)
+			if err != nil {
+				return nil, StepResult{}, false, err
+			}
+			fireOnRequest(o, len(msgs))
+			agg, err = callAndAggregate(ctx, client, req, o)
+		}
 		if err != nil {
 			return nil, StepResult{}, false, err
 		}

@@ -890,6 +890,64 @@ func TestGenerateObjectDirect(t *testing.T) {
 	}
 }
 
+// TestGenerateObjectDirect_RecoversFromContextOverflow gives the
+// structured turn the same reactive ladder the text loop has: a
+// context-window rejection on a session history the local estimator reads
+// under the first rung must compact and retry, not kill the node one token
+// over the provider ceiling (parity with the review-pool incident fix).
+func TestGenerateObjectDirect_RecoversFromContextOverflow(t *testing.T) {
+	type Weather struct {
+		City string `json:"city"`
+		Temp int    `json:"temp"`
+	}
+
+	overflow := []api.StreamEvent{
+		{Type: api.EventError, ErrorMessage: "openai: API error 400: litellm.ContextWindowExceededError: This model's maximum context length is 262144 tokens. However, you requested 8192 output tokens and your prompt contains at least 253953 input tokens"},
+	}
+	answer := []api.StreamEvent{
+		{Type: api.EventMessageStart, InputTokens: 80},
+		{Type: api.EventContentBlockStart, Index: 0, ContentBlock: api.ContentBlockInfo{Type: "tool_use", Index: 0, ID: "tu_1", Name: "structured_output"}},
+		{Type: api.EventContentBlockDelta, Index: 0, Delta: api.Delta{Type: "input_json_delta", PartialJSON: `{"city":"Paris","temp":22}`}},
+		{Type: api.EventContentBlockStop, Index: 0},
+		{Type: api.EventMessageDelta, StopReason: "tool_use", Usage: api.UsageDelta{Reported: true, OutputTokens: 15}},
+		{Type: api.EventMessageStop},
+	}
+	client := newMockClient(overflow, answer)
+
+	// ~100k estimated tokens: under the 256k and 128k ladder rungs, over
+	// 64k — the walk-down, not the first rung, is what recovers this call.
+	body := strings.Repeat("x ", 8_000)
+	var msgs []api.Message
+	for i := 0; i < 25; i++ {
+		role := "user"
+		if i%2 == 1 {
+			role = "assistant"
+		}
+		msgs = append(msgs, api.Message{Role: role, Content: []api.ContentBlock{{Type: "text", Text: body}}})
+	}
+
+	schema := json.RawMessage(`{"type":"object","properties":{"city":{"type":"string"},"temp":{"type":"integer"}},"required":["city","temp"]}`)
+	var retried int
+	result, err := GenerateObjectDirect[Weather](context.Background(), client, GenerationOptions{
+		Model:                 "openai_compatible/scaleway/deepseek-v4.1-flash",
+		ExplicitSchema:        schema,
+		Messages:              msgs,
+		OnContextCompactRetry: func(_ int, _ error, _, _ int) { retried++ },
+	})
+	if err != nil {
+		t.Fatalf("expected recovery via ladder walk-down, got error: %v", err)
+	}
+	if result.Object.City != "Paris" || result.Object.Temp != 22 {
+		t.Errorf("Object = %+v, want {Paris 22}", result.Object)
+	}
+	if retried == 0 {
+		t.Fatal("expected at least one context-compaction retry")
+	}
+	if calls := client.getCalls(); len(calls) < 2 {
+		t.Fatalf("expected >=2 model calls (fail + retry), got %d", len(calls))
+	}
+}
+
 func TestGenerateObjectDirect_NoSchema(t *testing.T) {
 	type Dummy struct{}
 	client := newMockClient()
@@ -1747,13 +1805,18 @@ func TestIsContextWindowError(t *testing.T) {
 // whose real window is smaller than the model's advertised one.
 type ctxOverflowClient struct {
 	failFirst int
+	errMsg    string // overrides the scripted overflow error when set
 	calls     int
 }
 
 func (c *ctxOverflowClient) StreamResponse(_ context.Context, _ api.CreateMessageRequest) (<-chan api.StreamEvent, error) {
 	c.calls++
 	if c.calls <= c.failFirst {
-		return nil, fmt.Errorf("claw backend: text+tools generation: stream error: openai stream error: context_length_exceeded: Your input exceeds the context window of this model")
+		msg := c.errMsg
+		if msg == "" {
+			msg = "claw backend: text+tools generation: stream error: openai stream error: context_length_exceeded: Your input exceeds the context window of this model"
+		}
+		return nil, fmt.Errorf("%s", msg)
 	}
 	ch := make(chan api.StreamEvent, 8)
 	for _, ev := range textEvents("done", 10, 2) {
@@ -1811,6 +1874,51 @@ func TestGenerateTextDirect_NonContextErrorNotRetried(t *testing.T) {
 	}
 	if retried != 0 {
 		t.Fatalf("non-context error should not trigger compaction retry, got %d", retried)
+	}
+}
+
+// TestGenerateTextDirect_RecoversWhenEstimateFitsFirstRung is the
+// review-pool incident shape: the provider refuses the request while the
+// LOCAL estimate still fits under the ladder's first (256k) rung — litellm
+// bills cached turns against the window, so its count ran ~30k tokens ahead
+// of the estimator (253,953 real vs under 256,000 estimated). The old
+// single-rung retry found nothing to shrink at 256k and surfaced the error;
+// the ladder must walk down to a rung that actually shrinks the transcript.
+func TestGenerateTextDirect_RecoversWhenEstimateFitsFirstRung(t *testing.T) {
+	// ~100k estimated tokens: under the 256k and 128k rungs, over 64k.
+	body := strings.Repeat("x ", 8_000) // ~16k chars ≈ ~4k tokens each
+	var msgs []api.Message
+	for i := 0; i < 25; i++ {
+		role := "user"
+		if i%2 == 1 {
+			role = "assistant"
+		}
+		msgs = append(msgs, api.Message{Role: role, Content: []api.ContentBlock{{Type: "text", Text: body}}})
+	}
+
+	// The exact litellm wording from the incident (run 01a1ba63-5bef):
+	// classified by the "maximum context length" marker.
+	client := &ctxOverflowClient{
+		failFirst: 1,
+		errMsg:    "claw backend: runner: openai: API error 400: litellm.ContextWindowExceededError: OpenAIException - This model's maximum context length is 262144 tokens. However, you requested 8192 output tokens and your prompt contains at least 253953 input tokens",
+	}
+	var retried int
+	res, err := GenerateTextDirect(context.Background(), client, GenerationOptions{
+		Model:                 "openai_compatible/scaleway/deepseek-v4.1-flash",
+		Messages:              msgs,
+		OnContextCompactRetry: func(_ int, _ error, _, _ int) { retried++ },
+	})
+	if err != nil {
+		t.Fatalf("expected recovery via ladder walk-down, got error: %v", err)
+	}
+	if res == nil || res.Text != "done" {
+		t.Fatalf("expected recovered text %q, got %+v", "done", res)
+	}
+	if retried == 0 {
+		t.Fatal("expected at least one context-compaction retry")
+	}
+	if client.calls < 2 {
+		t.Fatalf("expected >=2 model calls (fail + retry), got %d", client.calls)
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/backend/compatgw"
+	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/modelroute"
 	"github.com/SocialGouv/iterion/pkg/backend/modelspecs"
 )
@@ -75,6 +76,15 @@ func taskContextWindow(get func(string) string, model string) int {
 		return bare.ContextWindow
 	}
 	return 0
+}
+
+// refreshContextWindow recomputes the delegate stamp after a chain element
+// replaced the task's model: the stamped window belongs to the model that
+// will actually serve the call — an override to a smaller-window model must
+// not keep the baseline's larger ceiling, and a model-less element
+// restoring the baseline must not keep an override's.
+func refreshContextWindow(ctx context.Context, task *delegate.Task) {
+	task.ContextWindow = taskContextWindow(func(name string) string { return envGetenv(ctx, name) }, task.Model)
 }
 
 // gatewayCapabilities is a gateway id's catalog record read as capabilities:
