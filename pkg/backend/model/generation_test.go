@@ -946,6 +946,90 @@ func TestGenerateObjectDirect_RecoversFromContextOverflow(t *testing.T) {
 	if calls := client.getCalls(); len(calls) < 2 {
 		t.Fatalf("expected >=2 model calls (fail + retry), got %d", len(calls))
 	}
+	// The returned session history is the COMPACTED one — the history the
+	// successful request actually carried — not the oversized original:
+	// generateStructured persists ObjectResult.Messages, so a returned
+	// oversized history would resend the rejected transcript on every
+	// following session call (finding R7c4e86).
+	inChars, outChars := 0, 0
+	for _, m := range msgs {
+		for _, b := range m.Content {
+			if b.Text != "" {
+				inChars += len(b.Text)
+			}
+		}
+	}
+	for _, m := range result.Messages {
+		for _, b := range m.Content {
+			if b.Text != "" {
+				outChars += len(b.Text)
+			}
+		}
+	}
+	if outChars >= inChars {
+		t.Fatalf("persisted history carries %d text chars, not less than the original %d — the compacted conversation was not returned", outChars, inChars)
+	}
+}
+
+// TestGenerateObjectDirect_RecoversFromDirectStreamRefusal covers the
+// refusal arriving BEFORE the stream opens: StreamResponse returns the
+// context-limit 400 as its DIRECT error with a nil channel, so
+// callAndAggregate hands back err set and agg nil — a shape the
+// aggregate-only retry condition never saw (finding R532a71).
+func TestGenerateObjectDirect_RecoversFromDirectStreamRefusal(t *testing.T) {
+	type Weather struct {
+		City string `json:"city"`
+		Temp int    `json:"temp"`
+	}
+
+	answer := []api.StreamEvent{
+		{Type: api.EventMessageStart, InputTokens: 80},
+		{Type: api.EventContentBlockStart, Index: 0, ContentBlock: api.ContentBlockInfo{Type: "tool_use", Index: 0, ID: "tu_1", Name: "structured_output"}},
+		{Type: api.EventContentBlockDelta, Index: 0, Delta: api.Delta{Type: "input_json_delta", PartialJSON: `{"city":"Lyon","temp":19}`}},
+		{Type: api.EventContentBlockStop, Index: 0},
+		{Type: api.EventMessageDelta, StopReason: "tool_use", Usage: api.UsageDelta{Reported: true, OutputTokens: 12}},
+		{Type: api.EventMessageStop},
+	}
+	// The exact litellm wording from the incident; refused BEFORE the
+	// stream opens (nil channel, direct error return).
+	client := &ctxOverflowClient{
+		failFirst:     1,
+		errMsg:        "openai: API error 400: litellm.ContextWindowExceededError: This model's maximum context length is 262144 tokens. However, you requested 8192 output tokens and your prompt contains at least 253953 input tokens",
+		successEvents: answer,
+	}
+
+	// ~100k estimated tokens: under the 256k and 128k ladder rungs, over
+	// 64k — the walk-down, not the first rung, is what recovers this call.
+	body := strings.Repeat("x ", 8_000)
+	var msgs []api.Message
+	for i := 0; i < 25; i++ {
+		role := "user"
+		if i%2 == 1 {
+			role = "assistant"
+		}
+		msgs = append(msgs, api.Message{Role: role, Content: []api.ContentBlock{{Type: "text", Text: body}}})
+	}
+
+	schema := json.RawMessage(`{"type":"object","properties":{"city":{"type":"string"},"temp":{"type":"integer"}},"required":["city","temp"]}`)
+	var retried int
+	result, err := GenerateObjectDirect[Weather](context.Background(), client, GenerationOptions{
+		Model:                 "openai_compatible/scaleway/deepseek-v4.1-flash",
+		ExplicitSchema:        schema,
+		Messages:              msgs,
+		OnContextCompactRetry: func(_ int, _ error, _, _ int) { retried++ },
+	})
+	if err != nil {
+		t.Fatalf("expected recovery from the direct stream refusal, got error: %v", err)
+	}
+	if result.Object.City != "Lyon" || result.Object.Temp != 19 {
+		t.Errorf("Object = %+v, want {Lyon 19}", result.Object)
+	}
+	if retried == 0 {
+		t.Fatal("expected at least one context-compaction retry on the direct-error shape")
+	}
+	if calls := client.calls; calls < 2 {
+		t.Fatalf("expected >=2 model calls (refused + retry), got %d", calls)
+	}
 }
 
 func TestGenerateObjectDirect_NoSchema(t *testing.T) {
@@ -1802,11 +1886,15 @@ func TestIsContextWindowError(t *testing.T) {
 
 // ctxOverflowClient returns a context_length_exceeded error for its first
 // failFirst calls, then a successful text response — modelling a backend
-// whose real window is smaller than the model's advertised one.
+// whose real window is smaller than the model's advertised one. The error
+// is StreamResponse's DIRECT return (nil channel): the request was refused
+// before any stream opened. successEvents overrides the scripted success
+// when a caller needs a shape other than a plain text answer.
 type ctxOverflowClient struct {
-	failFirst int
-	errMsg    string // overrides the scripted overflow error when set
-	calls     int
+	failFirst     int
+	errMsg        string // overrides the scripted overflow error when set
+	successEvents []api.StreamEvent
+	calls         int
 }
 
 func (c *ctxOverflowClient) StreamResponse(_ context.Context, _ api.CreateMessageRequest) (<-chan api.StreamEvent, error) {
@@ -1818,8 +1906,12 @@ func (c *ctxOverflowClient) StreamResponse(_ context.Context, _ api.CreateMessag
 		}
 		return nil, fmt.Errorf("%s", msg)
 	}
-	ch := make(chan api.StreamEvent, 8)
-	for _, ev := range textEvents("done", 10, 2) {
+	success := c.successEvents
+	if len(success) == 0 {
+		success = textEvents("done", 10, 2)
+	}
+	ch := make(chan api.StreamEvent, len(success))
+	for _, ev := range success {
 		ch <- ev
 	}
 	close(ch)
