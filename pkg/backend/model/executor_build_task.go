@@ -1416,6 +1416,7 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 		RunStoreDir:           e.runStoreDir,
 		OutputSchema:          outputSchema,
 		Model:                 resolvedModel,
+		ContextWindow:         taskContextWindow(func(name string) string { return envGetenv(ctx, name) }, resolvedModel),
 		HasTools:              len(f.tools) > 0,
 		ToolMaxSteps:          f.toolMaxSteps,
 		MaxTokens:             f.maxTokens,

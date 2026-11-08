@@ -178,6 +178,7 @@ var serialFamily = map[string]string{
 	"settings_hooks_test.go":                   "Setenv",
 	"slash_commands_test.go":                   "Setenv",
 	"stream_error_wire_test.go":                "Setenv",
+	"task_context_window_test.go":              "Setenv",
 	"testparallel_test.go":                     "Setenv",
 	"tool_attachment_deliverable_link_test.go": "Setenv",
 	"tool_error_redaction_test.go":             "Setenv",

@@ -843,7 +843,7 @@ func (b *ClaudeCodeBackend) buildSpawnOptions(task Task) ([]claudesdk.Option, fu
 		mark := sandboxDelegateMark(task)
 		se.end = killSandboxDelegateReporting(run, mark, ownerOf(b.Logger, task, BackendClaudeCode), sandboxSpawnFiles(mark)...)
 		opts = append(opts, claudesdk.WithCommandBuilder(func(ctx context.Context, path string, args []string, cwd string, env map[string]string, openStdin bool) *exec.Cmd {
-			env = claudeModelDefaultEnv(env)
+			env = claudeContextWindowEnv(claudeModelDefaultEnv(env), task)
 			// Surface the resolved CLI invocation so failures like
 			// "session ended without result" can be traced back to a
 			// concrete `docker exec` command. Without this every silent
@@ -886,7 +886,7 @@ func (b *ClaudeCodeBackend) buildSpawnOptions(task Task) ([]claudesdk.Option, fu
 			return SweepLocalNodeSession(b.Logger, task, BackendClaudeCode, token, se.sinceStart())
 		}
 		opts = append(opts, claudesdk.WithCommandBuilder(func(ctx context.Context, path string, args []string, cwd string, env map[string]string, openStdin bool) *exec.Cmd {
-			env = withNodeSessionEnv(claudeModelDefaultEnv(env), token)
+			env = claudeContextWindowEnv(withNodeSessionEnv(claudeModelDefaultEnv(env), token), task)
 			keys := make([]string, 0, len(env))
 			for k := range env {
 				keys = append(keys, k)
@@ -2303,7 +2303,7 @@ func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, task Task, session
 		mark := sandboxDelegateMark(task) + "-fmt"
 		fe.end = killSandboxDelegateReporting(run, mark, ownerOf(b.Logger, task, BackendClaudeCode), sandboxSpawnFiles(mark)...)
 		opts = append(opts, claudesdk.WithCommandBuilder(func(ctx context.Context, path string, args []string, cwd string, env map[string]string, openStdin bool) *exec.Cmd {
-			env = claudeModelDefaultEnv(env)
+			env = claudeContextWindowEnv(claudeModelDefaultEnv(env), task)
 			b.Logger.Info("claude-code [fmt]: exec %v (cwd=%s, env_keys=%d, stdin=%v)",
 				redactedArgvPreview(path, args), cwd, len(env), openStdin)
 			// The MCP catalog is moved into a private in-container file and
@@ -2337,7 +2337,7 @@ func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, task Task, session
 			return SweepLocalNodeSession(b.Logger, task, BackendClaudeCode, token, fe.sinceStart())
 		}
 		opts = append(opts, claudesdk.WithCommandBuilder(func(ctx context.Context, path string, args []string, cwd string, env map[string]string, openStdin bool) *exec.Cmd {
-			env = withNodeSessionEnv(claudeModelDefaultEnv(env), token)
+			env = claudeContextWindowEnv(withNodeSessionEnv(claudeModelDefaultEnv(env), token), task)
 			cmd := exec.CommandContext(ctx, path, args...)
 			// Seed os.Environ() before the per-task entries — matching the
 			// SDK's default host spawn (claudesdk/process.go) and Pass 1 — so

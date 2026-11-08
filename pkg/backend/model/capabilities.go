@@ -50,6 +50,33 @@ func capabilitiesForModel(provider, modelID string) ModelCapabilities {
 	return mergeSpec(spec, curated)
 }
 
+// taskContextWindow resolves the catalog context window for a delegate
+// task's resolved model, for stamping into CLI harness envs at spawn
+// (delegate's claudeContextWindowEnv). It answers from every table the
+// dispatch seam itself trusts — the host's forwarded resolution, the
+// operator table, then the models.dev provider table
+// (compatgw.ResolveCatalogQuiet, the quiet read path), and finally the
+// aggregator's bare consensus index (ResolveBareModel) — and 0 when no
+// table knows, which callers must treat as "stamp nothing", never as a
+// guess.
+func taskContextWindow(get func(string) string, model string) int {
+	model = strings.ToLower(strings.TrimSpace(model))
+	if model == "" {
+		return 0
+	}
+	// Mirror the dispatch seam: it resolves the WIRE id (the host's
+	// forwarded record is keyed by it and the operator table names it), so
+	// a prefixed spec must not miss every table its bare id would hit.
+	wire := modelroute.Parse(model).Wire
+	if resolved := compatgw.ResolveCatalogQuiet(wire, modelspecs.Default(), get); resolved.Known() && resolved.Spec.ContextWindow > 0 {
+		return resolved.Spec.ContextWindow
+	}
+	if bare := ResolveBareModel(wire); bare.Found && bare.ContextWindow > 0 {
+		return bare.ContextWindow
+	}
+	return 0
+}
+
 // gatewayCapabilities is a gateway id's catalog record read as capabilities:
 // the flags as the table stated them — nil where it did not — the numbers,
 // and the table as the source.
