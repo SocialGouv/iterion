@@ -141,6 +141,11 @@ type CredentialPreviewSpec struct {
 	// equal, and every consumer reads one policy. Nil on both = the launch
 	// is unwired; everything is sealable.
 	LLMRoutePolicy *store.RunLLMRoutePolicy
+	// PoolAttachment is the launch's RESOLVED pool attachment (ADR-164),
+	// resolved by the server exactly as the launch site would — the same
+	// parity doctrine: the preview's pool answers what the launch will
+	// draw. Nil = no attachment, the legacy pool behavior.
+	PoolAttachment *store.RunPoolAttachment
 }
 
 type CredentialPreviewer interface {

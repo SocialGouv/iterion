@@ -671,8 +671,24 @@ type RunLLMRoutePolicy struct {
 // ENTRY choice re-resolves per attempt (the broker's supersede machinery
 // arbitrates per-attempt leases inside the same frozen pool).
 type RunPoolAttachment struct {
-	PoolID   string          `json:"pool_id" bson:"pool_id"`
+	PoolID string `json:"pool_id" bson:"pool_id"`
+	// ScopeID is the scope whose attachment resolved ("platform",
+	// "org:<id>", "team:<id>", "bot:<team>/<bot>", "binding:<source>") —
+	// the provenance the borrower-side draw caps book against (the att:
+	// ledger row names it). Empty for the disabled answer.
+	ScopeID  string          `json:"scope_id,omitempty" bson:"scope_id,omitempty"`
 	Strategy RunPoolStrategy `json:"strategy" bson:"strategy"`
+	// Limits are the attachment's borrower-side draw caps, frozen so the
+	// walk enforces exactly what the scope's record said at launch. Zero
+	// fields = uncapped axes.
+	Limits RunPoolDrawLimits `json:"limits" bson:"limits"`
+}
+
+// RunPoolDrawLimits is the frozen borrower-cap pair (credpool.DrawLimits's
+// wire twin).
+type RunPoolDrawLimits struct {
+	MaxRunsPerDay int     `json:"max_runs_per_day,omitempty" bson:"max_runs_per_day,omitempty"`
+	MaxUSDPerDay  float64 `json:"max_usd_per_day,omitempty" bson:"max_usd_per_day,omitempty"`
 }
 
 // RunPoolStrategy is the frozen fallback policy. Triggers is never

@@ -188,8 +188,10 @@ func (s *Server) resolveRunPoolAttachment(ctx context.Context, teamID, botID str
 	}
 	type poolAnswer struct {
 		level    string
+		scopeID  string
 		poolID   string
 		strategy credpool.Strategy
+		limits   credpool.DrawLimits
 		disabled bool
 		readErr  error
 	}
@@ -198,7 +200,7 @@ func (s *Server) resolveRunPoolAttachment(ctx context.Context, teamID, botID str
 	// The binding levels come in nearest-first from the caller; the first
 	// one answers, whatever it says (including disabled).
 	for _, bl := range higher {
-		answer = &poolAnswer{level: bl.Source, poolID: bl.PoolID, strategy: bl.Strategy, disabled: !bl.Enabled}
+		answer = &poolAnswer{level: bl.Source, scopeID: "binding:" + bl.Source, poolID: bl.PoolID, strategy: bl.Strategy, disabled: !bl.Enabled}
 		break
 	}
 
@@ -218,7 +220,7 @@ func (s *Server) resolveRunPoolAttachment(ctx context.Context, teamID, botID str
 			// carried through the answer's error field below.
 			return &poolAnswer{level: level, readErr: err}
 		}
-		return &poolAnswer{level: level, poolID: a.PoolID, strategy: a.Strategy, disabled: !a.Enabled}
+		return &poolAnswer{level: level, scopeID: scopeID, poolID: a.PoolID, strategy: a.Strategy, limits: a.Limits, disabled: !a.Enabled}
 	}
 	_ = botID
 	if answer == nil && teamID != "" {
@@ -250,7 +252,7 @@ func (s *Server) resolveRunPoolAttachment(ctx context.Context, teamID, botID str
 	// strategy freezes as an empty trigger list — an ANSWER, not an
 	// absence.
 	if answer.disabled {
-		return &store.RunPoolAttachment{PoolID: "", Strategy: store.RunPoolStrategy{Triggers: []string{}}}, nil
+		return &store.RunPoolAttachment{ScopeID: answer.scopeID, Strategy: store.RunPoolStrategy{Triggers: []string{}}}, nil
 	}
 
 	// The platform attachment carries the trigger ceiling even when a
@@ -287,13 +289,15 @@ func (s *Server) resolveRunPoolAttachment(ctx context.Context, teamID, botID str
 
 	triggers := effectivePoolTriggers(answer.strategy.Triggers, ceiling)
 	return &store.RunPoolAttachment{
-		PoolID: answer.poolID,
+		PoolID:  answer.poolID,
+		ScopeID: answer.scopeID,
 		Strategy: store.RunPoolStrategy{
 			Mode:      string(answer.strategy.Mode),
 			MarginPct: answer.strategy.MarginPct,
 			Triggers:  triggers,
 			ResetHold: answer.strategy.ResetHold,
 		},
+		Limits: store.RunPoolDrawLimits{MaxRunsPerDay: answer.limits.MaxRunsPerDay, MaxUSDPerDay: answer.limits.MaxUSDPerDay},
 	}, nil
 }
 

@@ -570,7 +570,7 @@ var errUntrustedRequiresSecrets = errors.New("untrusted workspace cannot be give
 // bundle. It is a required parameter rather than a field read from somewhere
 // convenient precisely so a future caller cannot omit it: the compiler asks
 // every call site who wrote the code this bundle is about to be handed to.
-func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID, tenantID, ownerID, botID, runnerPool string, wf *ir.Workflow, keyOverrides, secretOverrides map[string]string, view model.RouteView, launchVars map[string]string, trust store.RunTrust, pinnedProviders []string, routePolicy *store.RunLLMRoutePolicy) (credResolution, error) {
+func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID, tenantID, ownerID, botID, runnerPool string, wf *ir.Workflow, keyOverrides, secretOverrides map[string]string, view model.RouteView, launchVars map[string]string, trust store.RunTrust, pinnedProviders []string, routePolicy *store.RunLLMRoutePolicy, poolAttachment *store.RunPoolAttachment) (credResolution, error) {
 	// The launch-frozen pinned set (store.Run.PinnedProviders), passed in
 	// rather than derived here: the resume path must replay the launch's
 	// answer, not re-derive it from a source that may have moved. Only the
@@ -755,7 +755,9 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	defer func() { pairRefusals.warn(p, runID, llmCredentialOwed(bundle, wf, envFunded)) }()
 	res := credResolution{}
 	err = walkCredentialTiers(func() bool { return holdsDefaultLLMCredential(bundle) },
-		func() bool { return res.grant != nil }, func(tier credentialTier) error {
+		func() bool { return res.grant != nil || len(res.grants) > 0 },
+		func() bool { return poolAttachment != nil && poolAttachment.PoolID != "" },
+		func(tier credentialTier) error {
 			if envFunded && tier != credentialTierGeneric {
 				// Nothing on this tier funds an openai_compatible route.
 				return nil
@@ -1044,6 +1046,16 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 				p.fillFromOrg(ctx, runID, orgID, tenantID, botID, audienceBotID, withheld, &bundle, apiKeyFPs, wants, skips, skippedAPIKeys, skippedForfaits, pinnedSet, policy, orgNative)
 
 			case credentialTierPool:
+				// 5a. ATTACHED pool (ADR-164): the resolved attachment names one
+				//     pool and the tier fills every slot the pool can serve that
+				//     tiers 1–4 left empty — one grant per slot, forfaits before
+				//     metered keys, the gateway slot only through the attachment
+				//     (ADR-131 §5 amended). Law 1 lives inside: the pool never
+				//     touches a slot an explicit tier sealed.
+				if poolAttachment != nil && poolAttachment.PoolID != "" {
+					p.acquireFromAttachedPools(ctx, runID, orgID, tenantID, ownerID, botID, view, poolAttachment, &bundle, apiKeyFPs, wants, skips, skippedAPIKeys, skippedForfaits, policy, &res)
+					return nil
+				}
 				// 5. Mutualised pool — the LAST resort, and only for a run that has no
 				//    credential of its own at all. Spending a contributor's lent
 				//    subscription while the tenant holds a usable key of its own would
@@ -1606,6 +1618,13 @@ type credResolution struct {
 	// platform key material.
 	dek   []byte
 	grant *credpool.Grant
+	// grants carries EVERY sealed pool grant of an ATTACHED run (ADR-164):
+	// the per-slot acquisition seals one grant per slot the pool can serve,
+	// so an attached run may carry its forfait AND its gateway key side by
+	// side. grant stays the FIRST sealed grant (the whole-bundle semantics
+	// — platform skip, budget clamp, poolLease — read it); the release
+	// paths walk the slice so no sealed slot leaks its lease.
+	grants []*credpool.Grant
 	// doorGrant is the routing fallback door's grant (ADR-121 § Delivery
 	// 2, slice 5) — a DONOR-CONSENTED credential sealed for the policy
 	// ladder's needs on a run that holds its own credential. Kept apart
@@ -3759,7 +3778,7 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 	// The repository this launch serves rides the context into the walk:
 	// a key restricted to repositories is spent only for one of them.
 	ctx = secrets.WithLaunchRepo(ctx, spec.ProjectPath)
-	creds, err := p.resolveAndSealCredentials(ctx, runID, orgID, tenantID, ownerID, spec.BotID, runnerPool, wf, spec.KeyOverrides, spec.SecretOverrides, launchView, spec.Vars, spec.Trust, r.PinnedProviders, spec.LLMRoutePolicy)
+	creds, err := p.resolveAndSealCredentials(ctx, runID, orgID, tenantID, ownerID, spec.BotID, runnerPool, wf, spec.KeyOverrides, spec.SecretOverrides, launchView, spec.Vars, spec.Trust, r.PinnedProviders, spec.LLMRoutePolicy, spec.PoolAttachment)
 	// A donor's admission is consumed the moment it is granted. Armed BEFORE
 	// the error check: resolveAndSealCredentials can fail AFTER acquiring —
 	// sealing the bundle, persisting it — and still returns the grant. Every
@@ -4421,7 +4440,7 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 	// (launchVarsAsStrings keeps texts only).
 	resumeView := model.RouteViewForDispatch(wf, buildModelOverridesFromRun(prior.ModelOverrides), runFallbackEntriesFromRun(prior.Fallback), prior.Inputs)
 	secretsCtx = secrets.WithLaunchRepo(secretsCtx, prior.ProjectPath)
-	creds, secretsErr := p.resolveAndSealCredentials(secretsCtx, spec.RunID, priorOrgID, prior.TenantID, prior.OwnerID, prior.BotID, prior.RunnerPool, wf, prior.KeyOverrides, prior.SecretOverrides, resumeView, launchVarsAsStrings(prior.Inputs), prior.Trust, prior.PinnedProviders, prior.LLMRoutePolicy)
+	creds, secretsErr := p.resolveAndSealCredentials(secretsCtx, spec.RunID, priorOrgID, prior.TenantID, prior.OwnerID, prior.BotID, prior.RunnerPool, wf, prior.KeyOverrides, prior.SecretOverrides, resumeView, launchVarsAsStrings(prior.Inputs), prior.Trust, prior.PinnedProviders, prior.LLMRoutePolicy, prior.PoolAttachment)
 	grant = creds.poolLease()
 	releasedGrants = creds.releasedGrants
 	// Armed before the error check — see SubmitLaunch. Runs before the
@@ -5327,4 +5346,207 @@ func budgetOverridesFromRun(o *store.RunBudgetOverrides) *ir.BudgetOverrides {
 		MaxParallelBranches: o.MaxParallelBranches,
 		UnlimitedWorkflow:   o.UnlimitedWorkflow,
 	}
+}
+
+// closedAtMargin builds the pre-exhaustion predicate ONE time per launch
+// and hands it to the broker inside credpool.Request{ClosedAtMargin} — the
+// single construction the live walk and the credential preview share, so
+// they cannot diverge on who is near limit. An OAUTH-shaped entry whose
+// freshest account reading sits at or past the margin (or was rejected)
+// with a future reset is skipped; every other shape has no proactive
+// signal today (plain keys, gateway keys, zai/moonshot facades) and gates
+// on its provider cooldown alone — the preview says "reactive" about them
+// instead of promising a margin that would never fire.
+func (p *Publisher) closedAtMargin(ctx context.Context, marginPct float64) func(credpool.Pledge) (time.Time, bool) {
+	if p.usageCaps == nil || p.oauthForfait == nil {
+		return nil
+	}
+	return func(pl credpool.Pledge) (time.Time, bool) {
+		if pl.Source != credpool.SourceOAuth {
+			return time.Time{}, false
+		}
+		rec, err := p.oauthForfait.Get(ctx, pl.UserID, secrets.OAuthKind(pl.Ref))
+		if err != nil || rec.Fingerprint == "" {
+			return time.Time{}, false
+		}
+		backend := usageBackendForKind(rec.Kind)
+		if backend == "" {
+			return time.Time{}, false
+		}
+		// The scope argument collapses: an account fingerprint keys the
+		// account meter wherever the entry lends from (org-tier, platform,
+		// personal — one subscription, one meter).
+		key := usagecap.Key(backend, usagecap.ScopePlatform, rec.Fingerprint)
+		readings, err := p.usageCaps.Latest(ctx, key)
+		if err != nil {
+			return time.Time{}, false
+		}
+		for _, r := range readings {
+			if r.Status == usagecap.StatusRejected || r.Utilization*100 >= marginPct {
+				if !r.ResetsAt.IsZero() && r.ResetsAt.After(time.Now()) {
+					return r.ResetsAt, true
+				}
+			}
+		}
+		return time.Time{}, false
+	}
+}
+
+// acquireFromAttachedPools is the ATTACHED pool tier (ADR-164). The
+// resolved attachment names ONE pool; the tier fills every slot the pool
+// can serve that tiers 1–4 left empty — one grant per slot, the forfait
+// slots before the metered keys (poolWantOrder's order), the gateway slot
+// only when the attachment brought it in (the ADR-131 §5 amendment: the
+// key and its canonical URL seal as the PAIR the bundle maps already
+// carry). A grant the walk does not seal is released in place — its
+// acquisition superseded a lease all the same, so releasedGrants carries
+// it. Sealed grants append to res.grants; res.grant stays the FIRST
+// sealed one, the whole-bundle semantics' answer (platform skip, budget
+// clamp, poolLease).
+func (p *Publisher) acquireFromAttachedPools(ctx context.Context, runID, orgID, tenantID, ownerID, botID string, view model.RouteView, att *store.RunPoolAttachment, bundle *secrets.RunBundle, apiKeyFPs map[secrets.Provider]string, wants credSlotWants, skips *skipTracker, skippedAPIKeys skippedAPIKeys, skippedForfaits skippedForfaits, policy sharedTierPolicy, res *credResolution) {
+	if p.credPool == nil {
+		return
+	}
+	// One resolution per launch, exactly like the legacy tier: the wants,
+	// the diagnostics and the consulted line read the same walk.
+	wantList, resolution := wantsFor(view)
+	// The gateway want enters the vocabulary ONLY through the attachment
+	// (ADR-131 §5 amended) — appended last, metered last, and only where
+	// the run could spend it: a fail-open walk, or a route that actually
+	// names the gateway provider.
+	if !resolution.NarrowSafe || slices.Contains(resolution.Providers, string(secrets.ProviderOpenAICompatible)) {
+		wantList = append(wantList, credpool.Credential{Source: credpool.SourceAPIKey, Ref: string(secrets.ProviderOpenAICompatible)})
+	}
+	if len(resolution.Unknown) > 0 {
+		p.logger.Warn("cloudpublisher: attached pool asked for the FULL order for run %s — provider hint(s) match no known provider: %s (%s)",
+			runID, strings.Join(resolution.Unknown, ","), providersSummary(resolution.Providers))
+	}
+	// The strategy's pre-exhaustion predicate, built once (law 4): the
+	// margin skip fires only when the frozen triggers answer usage_window.
+	var marginFn func(credpool.Pledge) (time.Time, bool)
+	if slices.Contains(att.Strategy.Triggers, "usage_window") {
+		// The frozen list is the EFFECTIVE one (defaults applied at the
+		// fold): usage_window present = the strategy answers exhaustion.
+		marginFn = p.closedAtMargin(ctx, strategyMargin(att.Strategy))
+	}
+	for _, want := range wantList {
+		var slot string
+		switch want.Source {
+		case credpool.SourceOAuth:
+			slot = slotOfKind(want.Ref)
+		case credpool.SourceAPIKey:
+			slot = slotOfProvider(secrets.Provider(want.Ref))
+		}
+		// Law 1: the pool fills only EMPTY slots. A slot tiers 1–4 sealed
+		// (or the routing whitelist holds out) is passed over — never
+		// displaced, never duplicated.
+		if slotFilled(bundle, want) || !policy.sealableSlot(slot) {
+			continue
+		}
+		grant, err := p.credPool.Acquire(ctx, credpool.Request{
+			RunID:          runID,
+			OrgID:          orgID,
+			TenantID:       tenantID,
+			UserID:         ownerID,
+			BotID:          botID,
+			Wants:          []credpool.Credential{want},
+			PoolIDs:        []string{att.PoolID},
+			AttachmentID:   att.ScopeID,
+			DrawLimits:     credpool.DrawLimits{MaxRunsPerDay: att.Limits.MaxRunsPerDay, MaxUSDPerDay: att.Limits.MaxUSDPerDay},
+			RankMode:       credpool.StrategyMode(att.Strategy.Mode),
+			ClosedAtMargin: marginFn,
+		})
+		if err != nil {
+			// An ordinary abstention (no eligible entry for this slot): the
+			// loop moves to the next slot. A near-limit skip arms the
+			// durable retry on its reopen instant, per candidate.
+			var nd *credpool.NoDonorError
+			if errors.As(err, &nd) {
+				for _, s := range nd.Skips {
+					if s.Status == credpool.StatusNearLimit && !s.ReopenAt.IsZero() {
+						skips.note(s.ReopenAt)
+					}
+				}
+				p.logger.Info("cloudpublisher: run %s — attached pool %s abstained on slot %s: %v", runID, att.PoolID, slot, err)
+			} else {
+				p.logger.Warn("cloudpublisher: run %s — attached pool acquire failed on slot %s: %v", runID, slot, err)
+			}
+			continue
+		}
+		sealed := false
+		switch grant.Source {
+		case credpool.SourceOAuth:
+			if policy.sealableSlot(slotOfKind(grant.Ref)) {
+				setOAuthCredential(bundle, grant.Ref, grant.Payload, grant.Fingerprint, grant.RecordID, grant.RecordConnectedAt)
+				bundle.PoolSourced[grant.Ref] = true
+				sealed = true
+			}
+		case credpool.SourceAPIKey:
+			prov := secrets.Provider(grant.Ref)
+			if prov == secrets.ProviderOpenAICompatible {
+				// The amendment's whole point: a gateway entry seals as the
+				// PAIR — key + canonical URL through the one chokepoint, the
+				// endpoint-aware fingerprint riding the bundle. A grant
+				// carrying no URL is a pledge written before the entry's
+				// model requirement: refused by name, never sealed.
+				if grant.BaseURL == "" {
+					p.logger.Warn("cloudpublisher: run %s — attached pool grant for an openai_compatible key carries no base URL: refused, the lease is released", runID)
+				} else if policy.sealableSlot(slotOfProvider(prov)) {
+					fp := grant.Fingerprint
+					if fp == "" {
+						fp = secrets.APIKeyFingerprint(prov, string(grant.Payload), grant.BaseURL)
+					}
+					setAPIKey(bundle, prov, string(grant.Payload), grant.BaseURL, fp, false)
+					noteSealedAPIKey(apiKeyFPs, wants, prov, fp, grant.KeyMaxConcurrentRuns, grant.KeyName)
+					bundle.PoolSourced[string(prov)] = true
+					sealed = true
+				}
+			} else if policy.sealableSlot(slotOfProvider(prov)) {
+				fp := grant.Fingerprint
+				if fp == "" {
+					fp = secrets.FingerprintSHA256(string(grant.Payload))
+				}
+				setAPIKey(bundle, prov, string(grant.Payload), "", fp, false)
+				noteSealedAPIKey(apiKeyFPs, wants, prov, fp, grant.KeyMaxConcurrentRuns, grant.KeyName)
+				bundle.PoolSourced[string(prov)] = true
+				sealed = true
+			}
+		}
+		if sealed {
+			if res.grant == nil {
+				res.grant = grant
+			}
+			res.grants = append(res.grants, grant)
+			note := ""
+			if grant.Source.Metered() {
+				note = ", metered"
+			}
+			p.logger.Info("cloudpublisher: run %s — attached pool %s sealed slot %s (%s%s)", runID, att.PoolID, slot, grant.Credential, note)
+		} else {
+			p.logger.Info("cloudpublisher: run %s — attached pool grant %s not sealed (slot refused by the routing whitelist, or a gateway grant without its URL): lease released, the walk continues", runID, grant.String())
+			p.credPool.ReleaseGrant(ctx, grant)
+			res.releasedGrants = append(res.releasedGrants, grant)
+		}
+	}
+}
+
+// strategyMargin resolves the frozen margin: nil means the pool package's
+// default (85%).
+func strategyMargin(s store.RunPoolStrategy) float64 {
+	if s.MarginPct == nil {
+		return credpool.DefaultMarginPct
+	}
+	return *s.MarginPct
+}
+
+// slotFilled reports whether the bundle already holds a credential of the
+// want's kind — law 1's per-slot gate.
+func slotFilled(bundle *secrets.RunBundle, want credpool.Credential) bool {
+	switch want.Source {
+	case credpool.SourceOAuth:
+		return len(bundle.OAuthCredentials[want.Ref]) > 0
+	case credpool.SourceAPIKey:
+		return bundle.APIKeys[secrets.Provider(want.Ref)] != ""
+	}
+	return false
 }

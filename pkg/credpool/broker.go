@@ -280,6 +280,12 @@ type Grant struct {
 	// Zero means the donor set no spend cap, NOT "nothing left" — callers
 	// clamping a run budget must treat zero as "no ceiling from the pool".
 	RemainingUSD float64
+	// Backend and Model are the entry's route binding (Pledge.Backend /
+	// Pledge.Model): what the caller composes the entry's fallback rung
+	// from (ADR-164). Empty when the entry carries no explicit binding —
+	// the entry funds whatever its slot natively serves.
+	Backend string
+	Model   string
 	// BaseURL is the lent key's canonical gateway endpoint (ADR-131): it
 	// travels with the key so the caller seals the PAIR through one
 	// chokepoint, and the seal's AAD binds the URL the entry names. Empty
@@ -924,6 +930,8 @@ func (b *Broker) tryPledge(ctx context.Context, pool Pool, p Pledge, req Request
 		KeyMaxConcurrentRuns:   cred.maxConcurrentRuns,
 		KeyName:                cred.name,
 		BaseURL:                cred.baseURL,
+		Backend:                p.Backend,
+		Model:                  p.Model,
 		AttachmentID:           req.AttachmentID,
 		AttachmentRemainingUSD: attRemaining,
 		RemainingUSD:           remaining,
