@@ -106,6 +106,18 @@ type MCPPreparation struct {
 	// form of store.RunTrust (this package does not import store), "" for
 	// the trusted default.
 	Trust string
+	// Withdrawn is what the workspace-trust floor withheld from the catalog:
+	// ambient sources (the checkout's .mcp.json, plugin-contributed servers)
+	// an untrusted run is not booted with. The launcher announces it once.
+	Withdrawn []WithdrawnMCPServer
+}
+
+// WithdrawnMCPServer names one MCP server source the workspace-trust floor
+// withheld. Name is empty for the checkout's .mcp.json: its server names are
+// the checkout's text, and the source alone says what was withheld.
+type WithdrawnMCPServer struct {
+	Name   string
+	Source string
 }
 
 // ---------------------------------------------------------------------------

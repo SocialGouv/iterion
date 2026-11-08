@@ -2,12 +2,15 @@ package mcp
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 
 	"github.com/SocialGouv/iterion/internal/envtrust"
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
@@ -148,7 +151,7 @@ func PrepareWorkflow(wf *ir.Workflow, projectDir, workspace string, trust store.
 		return nil
 	}
 
-	projectServers, projectNames, err := loadProjectServers(projectDir)
+	projectServers, projectNames, err := loadProjectServers(projectDir, trust)
 	if err != nil {
 		return err
 	}
@@ -158,24 +161,37 @@ func PrepareWorkflow(wf *ir.Workflow, projectDir, workspace string, trust store.
 	// servers — exactly like project .mcp.json entries — so every agent/judge
 	// node gets their tools unless it filters MCP explicitly. This is the
 	// runtime half of the plugin "mcp" contribution kind.
+	//
+	// FLOOR, the plugin half of the .mcp.json one: a plugin server is the
+	// operator's configuration, but it runs where the agent runs. The CLI
+	// backends spawn it with the checkout as their working directory, and its
+	// launcher reads its own configuration from there: `npx` a checkout
+	// .npmrc, `python -m` a checkout directory that shadows the module. On a
+	// workspace its tenant did not write, none is booted, and the resolution
+	// records which it withheld so the launch can say so.
 	var log *iterlog.Logger
 	if len(logger) > 0 {
 		log = logger[0]
 	}
-	for name, cfg := range loadPluginServers(workspace, log) {
-		if _, clash := projectServers[name]; clash {
-			continue // a project .mcp.json entry of the same name wins
+	pluginServers, contributedBy := loadPluginServers(workspace, log)
+	withdrawn := withdrawnAmbientSources(projectDir, trust, pluginServers, contributedBy, wf.MCPServers)
+	if trust.Trusted() {
+		for name, cfg := range pluginServers {
+			if _, clash := projectServers[name]; clash {
+				continue // a project .mcp.json entry of the same name wins
+			}
+			projectServers[name] = cfg
+			projectNames = append(projectNames, name)
 		}
-		projectServers[name] = cfg
-		projectNames = append(projectNames, name)
 	}
+	wf.MCPPrepared = &ir.MCPPreparation{Trust: string(trust), Withdrawn: withdrawn.servers}
 
 	catalog, err := mergeCatalog(projectServers, wf.MCPServers)
 	if err != nil {
 		return err
 	}
 
-	workflowActive, err := resolveWorkflowActiveServers(wf.MCP, projectNames, catalog)
+	workflowActive, err := resolveWorkflowActiveServers(wf.MCP, projectNames, catalog, withdrawn)
 	if err != nil {
 		return err
 	}
@@ -206,7 +222,7 @@ func PrepareWorkflow(wf *ir.Workflow, projectDir, workspace string, trust store.
 		default:
 			continue
 		}
-		active, err := resolveNodeActiveServers(mcpCfg, workflowActive, catalog)
+		active, err := resolveNodeActiveServers(mcpCfg, workflowActive, catalog, withdrawn)
 		if err != nil {
 			return fmt.Errorf("mcp: node %q: %w", node.NodeID(), err)
 		}
@@ -218,7 +234,6 @@ func PrepareWorkflow(wf *ir.Workflow, projectDir, workspace string, trust store.
 		}
 	}
 
-	wf.MCPPrepared = &ir.MCPPreparation{Trust: string(trust)}
 	return nil
 }
 
@@ -232,8 +247,16 @@ func envDefaultTrue(key string) bool {
 	return value != "0" && value != "false"
 }
 
-func loadProjectServers(projectDir string) (map[string]*ServerConfig, []string, error) {
+func loadProjectServers(projectDir string, trust store.RunTrust) (map[string]*ServerConfig, []string, error) {
 	if !AutoLoadProjectEnabled() {
+		return map[string]*ServerConfig{}, nil, nil
+	}
+	// FLOOR for a workspace the tenant did not write: .mcp.json is a file IN
+	// the checkout whose entries carry `command` and `args`. Autoloading it
+	// lets an outsider's tree name the processes the agent boots. The bot's
+	// own `mcp_server:`/`mcp:` declarations are unaffected — those come from
+	// the workflow, which is the tenant's.
+	if !trust.Trusted() {
 		return map[string]*ServerConfig{}, nil, nil
 	}
 
@@ -349,18 +372,29 @@ func mergeCatalog(project map[string]*ServerConfig, explicit map[string]*ir.MCPS
 // lists onto set, erroring on any name absent from catalog. Shared by
 // resolveWorkflowActiveServers and resolveNodeActiveServers, which only
 // differ in how the initial set is seeded.
-func applyServerOverrides(set *orderedSet, cfg *ir.MCPConfig, catalog map[string]*ServerConfig) error {
+//
+// A name the workspace-trust floor withdrew is not a typo, and is not told it
+// is one: activating it is refused with the reason, and disabling it is a
+// no-op — the server is already absent, which is what `disable:` asked for,
+// and a bot opting out of a plugin server must not fail on a fork for it.
+func applyServerOverrides(set *orderedSet, cfg *ir.MCPConfig, catalog map[string]*ServerConfig, withdrawn withdrawal) error {
 	if cfg == nil {
 		return nil
 	}
 	for _, name := range cfg.Servers {
 		if _, ok := catalog[name]; !ok {
+			if source, gone := withdrawn.source(name); gone {
+				return fmt.Errorf("%w: MCP server %q (%s) is not booted on this run: its workspace was not written by its tenant", ErrWithdrawnMCPServer, name, source)
+			}
 			return fmt.Errorf("unknown MCP server %q", name)
 		}
 		set.Add(name)
 	}
 	for _, name := range cfg.Disable {
 		if _, ok := catalog[name]; !ok {
+			if _, gone := withdrawn.source(name); gone {
+				continue
+			}
 			return fmt.Errorf("unknown MCP server %q", name)
 		}
 		set.Remove(name)
@@ -368,7 +402,135 @@ func applyServerOverrides(set *orderedSet, cfg *ir.MCPConfig, catalog map[string
 	return nil
 }
 
-func resolveWorkflowActiveServers(cfg *ir.MCPConfig, projectNames []string, catalog map[string]*ServerConfig) ([]string, error) {
+// ErrWithdrawnMCPServer is the refusal of an explicit activation of an MCP
+// server the workspace-trust floor withdrew.
+var ErrWithdrawnMCPServer = errors.New("mcp: server withdrawn on an untrusted workspace")
+
+// checkoutMCPJSON names the checkout's own server file in a withdrawal.
+const checkoutMCPJSON = "the checkout's .mcp.json"
+
+// maxCheckoutMCPJSON bounds the read of an untrusted checkout's .mcp.json.
+const maxCheckoutMCPJSON = 1 << 20
+
+// withdrawal is what the floor withheld from one resolution: the servers it
+// announces (MCPPrepared.Withdrawn), and what tells an activation of one of
+// them from a name nobody declared.
+type withdrawal struct {
+	servers []ir.WithdrawnMCPServer
+	// checkout holds the server names of the checkout's .mcp.json, read for
+	// their names alone; checkoutUnread says the file is there but could not
+	// be read as one, so any name absent from the catalog may be one of its.
+	checkout       map[string]bool
+	checkoutUnread bool
+}
+
+// source reports whether name is a server the floor withheld, and where it
+// would have come from. The checkout is looked at before the plugins: of the
+// two, its entry is the one a trusted run resolves.
+func (w withdrawal) source(name string) (string, bool) {
+	if w.checkout[name] {
+		return checkoutMCPJSON, true
+	}
+	for _, s := range w.servers {
+		if s.Name != "" && s.Name == name {
+			return s.Source, true
+		}
+	}
+	if w.checkoutUnread {
+		return checkoutMCPJSON + ", not read", true
+	}
+	return "", false
+}
+
+// withdrawnAmbientSources lists what the floor takes from a run whose
+// workspace its tenant did not write: every plugin-contributed server, named
+// with its plugin, and the checkout's .mcp.json when it holds a server the
+// workflow does not declare itself. The file's server names are what the
+// announcement leaves out: they are the checkout's text, and the source
+// alone says what was withheld.
+func withdrawnAmbientSources(projectDir string, trust store.RunTrust, plugin map[string]*ServerConfig, contributedBy map[string]string, declared map[string]*ir.MCPServer) withdrawal {
+	if trust.Trusted() {
+		return withdrawal{}
+	}
+	var w withdrawal
+	for _, name := range slices.Sorted(maps.Keys(plugin)) {
+		// The workflow's own declaration of that name wins over the plugin's
+		// on every trust: the plugin's server would not have run, so it is not
+		// something this trust withheld.
+		if _, shadowed := declared[name]; shadowed {
+			continue
+		}
+		w.servers = append(w.servers, ir.WithdrawnMCPServer{Name: name, Source: "plugin " + contributedBy[name]})
+	}
+	if !AutoLoadProjectEnabled() || projectDir == "" {
+		return w
+	}
+	switch names, state := checkoutServerNames(filepath.Join(projectDir, ".mcp.json")); state {
+	case checkoutFileUnreadable:
+		w.checkoutUnread = true
+		w.servers = append(w.servers, ir.WithdrawnMCPServer{Source: checkoutMCPJSON})
+	case checkoutFileRead:
+		for _, name := range names {
+			if _, shadowed := declared[name]; shadowed {
+				continue
+			}
+			if w.checkout == nil {
+				w.checkout = map[string]bool{}
+			}
+			w.checkout[name] = true
+		}
+		if len(w.checkout) > 0 {
+			w.servers = append(w.servers, ir.WithdrawnMCPServer{Source: checkoutMCPJSON})
+		}
+	}
+	return w
+}
+
+// checkoutFile is what checkoutServerNames could make of the file.
+type checkoutFile int
+
+const (
+	checkoutFileAbsent checkoutFile = iota
+	checkoutFileUnreadable
+	checkoutFileRead
+)
+
+// checkoutServerNames reads the server NAMES of an untrusted checkout's
+// .mcp.json — never a command, an argument or a URL. A file that is not a
+// regular one (a link, a fifo), is over maxCheckoutMCPJSON, or is not JSON of
+// that shape is unreadable: its names stay unknown. The open is non-blocking
+// and its handle is what is checked, so a fifo swapped in after the Lstat
+// cannot park the compile.
+func checkoutServerNames(path string) ([]string, checkoutFile) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, checkoutFileAbsent
+	}
+	if !info.Mode().IsRegular() {
+		return nil, checkoutFileUnreadable
+	}
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, checkoutFileUnreadable
+	}
+	defer f.Close()
+	if st, err := f.Stat(); err != nil || !st.Mode().IsRegular() {
+		return nil, checkoutFileUnreadable
+	}
+	data, err := io.ReadAll(io.LimitReader(f, maxCheckoutMCPJSON+1))
+	if err != nil || len(data) > maxCheckoutMCPJSON {
+		return nil, checkoutFileUnreadable
+	}
+	var file struct {
+		MCPServers map[string]json.RawMessage `json:"mcpServers"`
+	}
+	if err := json.Unmarshal(data, &file); err != nil {
+		return nil, checkoutFileUnreadable
+	}
+	return slices.Sorted(maps.Keys(file.MCPServers)), checkoutFileRead
+}
+
+func resolveWorkflowActiveServers(cfg *ir.MCPConfig, projectNames []string, catalog map[string]*ServerConfig, withdrawn withdrawal) ([]string, error) {
 	autoload := true
 	if cfg != nil && cfg.AutoloadProject != nil {
 		autoload = *cfg.AutoloadProject
@@ -381,13 +543,13 @@ func resolveWorkflowActiveServers(cfg *ir.MCPConfig, projectNames []string, cata
 		}
 	}
 
-	if err := applyServerOverrides(set, cfg, catalog); err != nil {
+	if err := applyServerOverrides(set, cfg, catalog, withdrawn); err != nil {
 		return nil, err
 	}
 	return set.Values(), nil
 }
 
-func resolveNodeActiveServers(cfg *ir.MCPConfig, workflowActive []string, catalog map[string]*ServerConfig) ([]string, error) {
+func resolveNodeActiveServers(cfg *ir.MCPConfig, workflowActive []string, catalog map[string]*ServerConfig, withdrawn withdrawal) ([]string, error) {
 	inherit := true
 	if cfg != nil && cfg.Inherit != nil {
 		inherit = *cfg.Inherit
@@ -399,7 +561,7 @@ func resolveNodeActiveServers(cfg *ir.MCPConfig, workflowActive []string, catalo
 			set.Add(name)
 		}
 	}
-	if err := applyServerOverrides(set, cfg, catalog); err != nil {
+	if err := applyServerOverrides(set, cfg, catalog, withdrawn); err != nil {
 		return nil, err
 	}
 	return set.Values(), nil

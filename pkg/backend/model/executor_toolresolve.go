@@ -222,7 +222,7 @@ func (e *ClawExecutor) resolveTaskMCPServers(names []string) []delegate.TaskMCPS
 		if !ok || cfg == nil {
 			continue
 		}
-		out = append(out, delegate.TaskMCPServer{
+		server := delegate.TaskMCPServer{
 			Name:      cfg.Name,
 			Transport: string(cfg.Transport),
 			Command:   cfg.Command,
@@ -230,9 +230,26 @@ func (e *ClawExecutor) resolveTaskMCPServers(names []string) []delegate.TaskMCPS
 			URL:       cfg.URL,
 			Headers:   cfg.Headers,
 			Env:       cfg.Env,
-		})
+		}
+		if !e.WorkspaceTrust().Trusted() && cfg.Transport == mcp.TransportStdio {
+			server.Command, server.Args = neutralCwdLaunch(server.Command, server.Args)
+		}
+		out = append(out, server)
 	}
 	return out
+}
+
+// neutralCwdLaunch starts a stdio MCP server from the filesystem root instead
+// of the directory it is spawned in. claude_code and pi spawn the servers they
+// are handed with THEIR working directory — the checkout — and a launcher reads
+// its own configuration from there: `npx` a `.npmrc` whose `script-shell` runs
+// checkout code, `python -m` a directory shadowing the module. The CLI does not
+// honour a per-server cwd (measured: 2.1.220 starts a server declaring one in
+// its own directory), so the server is wrapped instead. The root exists in
+// every environment and no checkout can write to it; the server's own command
+// and arguments are passed through untouched.
+func neutralCwdLaunch(command string, args []string) (string, []string) {
+	return "/bin/sh", append([]string{"-c", `cd / && exec "$0" "$@"`, command}, args...)
 }
 
 // expandWildcards replaces wildcard entries ("mcp.<server>.*") with the

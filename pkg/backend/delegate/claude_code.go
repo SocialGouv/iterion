@@ -241,7 +241,11 @@ func claudeReadonlyWithheld() []string {
 //     (see formatOutput).
 func claudeSpawnBounds(task Task) []claudesdk.Option {
 	var opts []claudesdk.Option
-	if strictMCPFromEnv() {
+	// Strict on an untrusted workspace whatever the environment says: without
+	// it the CLI — whose cwd IS that checkout — merges the operator's personal
+	// servers and the servers its own scopes find there. The escape hatch is
+	// the trusted operator's, like the setting sources' floor.
+	if strictMCPFromEnv() || !task.WorkspaceTrust.Trusted() {
 		opts = append(opts, claudesdk.WithStrictMCPConfig(true))
 	}
 	opts = append(opts, claudesdk.WithDisallowedTools(claudeSpawnBoundWithheld(task)...))
