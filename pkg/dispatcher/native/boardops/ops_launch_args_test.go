@@ -2,20 +2,25 @@ package boardops
 
 import (
 	"encoding/json"
+	"errors"
+	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 )
 
-// The board TOOLS door drops the reserved launch context like every other
-// client-facing board write: the class says what a carded run clones, which
+// The board TOOLS door refuses the reserved launch context, typed, before
+// any operation sees it: the class says what a carded run clones, which
 // credential it resolves and which repository meters, bounds and debits it —
 // the server's stamp (native.ReservedLaunchArgs), never the caller's. Every
 // transport of this funnel is a client side (a bot run holding a board.*
 // grant, a webhook-authenticated MCP caller, the operator's session), so the
-// filter sits here in doCreate, one chokepoint for all five transports. The
-// caller's own vars land, and the response is the stored card, so the drop is
-// visible rather than silent.
+// refusal sits in CallWithEnv, one chokepoint for all five transports
+// (ADR-162 U4's board door — it replaced the silent drop this test used to
+// assert: a caller is told it was refused, not told a card that quietly lost
+// its launch context). doCreate still drops the class for any future caller
+// that reaches it past the door — the store stays writer-agnostic either way
+// (TestTheStoreStillAcceptsTheServerStamp below).
 func TestToolCreateDropsTheReservedLaunchContext(t *testing.T) {
 	s := newStore(t)
 	botArgs := map[string]string{"member_var": "v"}
@@ -28,29 +33,32 @@ func TestToolCreateDropsTheReservedLaunchContext(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	out, err := Call(s, NewCapabilities(CapBoardCreate), "create_issue", raw)
+	_, err = Call(s, NewCapabilities(CapBoardCreate), "create_issue", raw)
+	if !errors.Is(err, ErrReservedBotArg) {
+		t.Fatalf("err = %v, want the typed refusal of the reserved launch context", err)
+	}
+	for _, res := range native.ReservedLaunchArgs {
+		if !strings.Contains(err.Error(), `"`+res+`"`) {
+			t.Errorf("the refusal does not name %s: %v", res, err)
+		}
+	}
+	stored, lerr := s.List(native.ListFilter{})
+	if lerr != nil || len(stored) != 0 {
+		t.Fatalf("store.List = %v, %d cards, want none — a refused create writes nothing", lerr, len(stored))
+	}
+
+	// The caller's own vars still land when the class is absent: the door is
+	// about the reserved channel, not about bot_args.
+	out, err := Call(s, NewCapabilities(CapBoardCreate), "create_issue", json.RawMessage(`{"title":"tool card","bot":"probe","bot_args":{"member_var":"v"}}`))
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("the clean create was refused: %v", err)
 	}
 	var answered native.Issue
 	if err := json.Unmarshal(out, &answered); err != nil {
 		t.Fatal(err)
 	}
 	if answered.BotArgs["member_var"] != "v" {
-		t.Fatalf("the tool door dropped the caller's own var (%v) — this test only means something while the door is open", answered.BotArgs)
-	}
-	stored, err := s.List(native.ListFilter{})
-	if err != nil || len(stored) != 1 {
-		t.Fatalf("store.List = %v, %d cards, want 1", err, len(stored))
-	}
-	// The answer is the stored card: assert the class off the store, not the
-	// echo, so the door's filter is what the test sees.
-	for _, args := range []map[string]string{answered.BotArgs, stored[0].BotArgs} {
-		for _, res := range native.ReservedLaunchArgs {
-			if got, ok := args[res]; ok {
-				t.Errorf("the tool door persisted the reserved %s = %q — launch context is the server's stamp, not tool input", res, got)
-			}
-		}
+		t.Fatalf("the tool door dropped the caller's own var (%v)", answered.BotArgs)
 	}
 }
 

@@ -1,6 +1,10 @@
 package native
 
-import "github.com/SocialGouv/iterion/pkg/store"
+import (
+	"strings"
+
+	"github.com/SocialGouv/iterion/pkg/store"
+)
 
 // The publish grant a server mints for one run never belongs on a board card:
 // the mint happens at launch (applyPRLaunchContext), the card-launch lanes drop
@@ -38,6 +42,47 @@ import "github.com/SocialGouv/iterion/pkg/store"
 // bearer.
 func BotArgsForWrite(args map[string]string) map[string]string {
 	return store.DropServerMintedVars(args)
+}
+
+// KeepStoredMintedVars is the wholesale-patch half of that same boundary: the
+// grant vars a writer SENT are gone (BotArgsForWrite already ran), and the
+// ones the STORED card still holds come back off it, so an args rewrite — a
+// set_bot re-point, a studio Edit form, a trigger promote — scrubs no live
+// grant the launch lane still reads to refuse a crossing. A wholesale patch
+// may still retire one: the empty value that withdraws survives
+// BotArgsForWrite and names the var in kept, which blocks the re-stamp — the
+// patch said what it wanted for that name. The reserved twin of this move is
+// KeepStoredLaunchContext (card_launch_args.go).
+//
+// Called by both store twins at Update, right after BotArgsForWrite — the
+// same single site, held to the same bar on both twins by the BoardStore
+// conformance suite. Create never calls it: a card being created holds
+// nothing to keep. Neither map is mutated.
+func KeepStoredMintedVars(stored, kept map[string]string) map[string]string {
+	held := false
+	for _, name := range store.ServerMintedLaunchVars {
+		if v, ok := stored[name]; ok && strings.TrimSpace(v) != "" {
+			if _, inKept := kept[name]; !inKept {
+				held = true
+				break
+			}
+		}
+	}
+	if !held {
+		return kept
+	}
+	out := make(map[string]string, len(kept)+len(store.ServerMintedLaunchVars))
+	for k, v := range kept {
+		out[k] = v
+	}
+	for _, name := range store.ServerMintedLaunchVars {
+		if v, ok := stored[name]; ok && strings.TrimSpace(v) != "" {
+			if _, inKept := kept[name]; !inKept {
+				out[name] = v
+			}
+		}
+	}
+	return out
 }
 
 // IssueForRead is iss as a read surface may hand it out: its bot args carry the

@@ -44,3 +44,37 @@ func TestApplyPatchDropsTheMintedGrantFromACardsBotArgs(t *testing.T) {
 		t.Errorf("the withdrawal was dropped: got %q, present=%v", got, ok)
 	}
 }
+
+// TestApplyPatchKeepsAGrantTheCardAlreadyHeld — the wholesale-patch half of
+// the boundary, on the Mongo twin: a card from before the drop still carries a
+// live bearer, and an args rewrite (a set_bot re-point, a studio Edit form)
+// must not scrub it — the launch lane reads that bearer to refuse a crossing.
+// The sent grant is still dropped; the HELD one comes back off the record
+// (native.KeepStoredMintedVars), and only the explicit empty value retires it.
+func TestApplyPatchKeepsAGrantTheCardAlreadyHeld(t *testing.T) {
+	const sentinel = "sentinel-forge-grant-2036-mongo-held"
+	iss := &native.Issue{
+		ID:      "native:55555555-5555-4555-8555-555555555555",
+		Title:   "a card from before the drop",
+		BotArgs: map[string]string{"loop_cap": "5", launchstore.ForgePublishTokenVar: sentinel},
+	}
+
+	rewrite := map[string]string{"loop_cap": "9", launchstore.ForgePublishTokenVar: "attacker-bearer"}
+	if res := applyPatch(iss, native.Patch{BotArgs: &rewrite}, native.DefaultBoard()); res.err != nil {
+		t.Fatalf("applyPatch: %v", res.err)
+	}
+	if got := iss.BotArgs[launchstore.ForgePublishTokenVar]; got != sentinel {
+		t.Errorf("an args rewrite scrubbed or swapped the card's grant: %v", iss.BotArgs)
+	}
+	if iss.BotArgs["loop_cap"] != "9" {
+		t.Errorf("the rewrite's own arg was lost: %v", iss.BotArgs)
+	}
+
+	withdrawal := map[string]string{launchstore.ForgePublishTokenVar: ""}
+	if res := applyPatch(iss, native.Patch{BotArgs: &withdrawal}, native.DefaultBoard()); res.err != nil {
+		t.Fatalf("applyPatch withdrawal: %v", res.err)
+	}
+	if got, ok := iss.BotArgs[launchstore.ForgePublishTokenVar]; !ok || got != "" {
+		t.Errorf("the withdrawal did not retire the grant: present=%v got %q", ok, got)
+	}
+}

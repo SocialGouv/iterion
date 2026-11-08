@@ -15,6 +15,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/boardcaps"
@@ -190,7 +192,7 @@ var allTools = []Tool{
             "parent_id":{"type":"string","description":"Planner ticket that spawned this one (provenance). Auto-filled from the creating run's source issue when omitted."},
             "fields":{"type":"object","description":"Custom board fields (validated against board schema)."},
             "bot":{"type":"string","description":"CANONICAL bot that runs this issue when the dispatcher picks it up (e.g. feature-dev). The dispatcher routes by bot first, else assignee."},
-            "bot_args":{"type":"object","additionalProperties":{"type":"string"},"description":"Per-ticket workflow var overrides (--var key=value) applied at launch. Use spawned_from for planner provenance (synced with parent_id). The reserved __iterion_* launch-context keys (repo URL/ref, project path, credential overrides, integration id) are the server's stamp: the create drops them, and the returned card shows what landed."}
+            "bot_args":{"type":"object","additionalProperties":{"type":"string"},"description":"Per-ticket workflow var overrides (--var key=value) applied at launch. Use spawned_from for planner provenance (synced with parent_id). The reserved __iterion_* launch-context keys (repo URL/ref, project path, credential overrides, integration id) are the server's stamp: a call carrying one is refused, typed, whichever board tool it names."}
           },
           "required":["title"]
         }`),
@@ -358,6 +360,13 @@ func CallWithEnv(store native.BoardStore, caps Capabilities, name string, rawArg
 	if !caps.Has(t.Capability) {
 		return nil, &CapabilityDeniedError{Tool: name, Capability: t.Capability}
 	}
+	// The reserved launch context is refused at the DOOR, before any
+	// operation sees the arguments (refuseReservedBotArgs): every transport
+	// of this funnel is a client, and whatever the operation, a caller
+	// holding the capability must not write the server's own stamp.
+	if err := refuseReservedBotArgs(name, rawArgs); err != nil {
+		return nil, err
+	}
 	// Every operation runs against the classified store: a write's failure
 	// leaves typed undecided, whichever transport called (write_outcome.go).
 	ops := undecidedWrites{store: store}
@@ -405,12 +414,12 @@ func doCreate(store boardOps, raw json.RawMessage, env CallEnv) (json.RawMessage
 	// A tool-created card never carries the reserved launch context: what the
 	// run clones, which credential it resolves and which repository meters,
 	// bounds and debits it is the server's stamp (card_launch_args.go), never
-	// the caller's. Every transport of this funnel is a client (a bot run
-	// holding a board.* grant, a webhook-authenticated MCP caller, the
-	// operator's session — whose direct hand path stays `iterion issue
-	// create`). The publish grant is dropped store-side at Create
-	// (BotArgsForWrite); this class is dropped HERE, because the server's own
-	// stamp writes through the same store.Create.
+	// the caller's. The DOOR refuses that class typed before this function
+	// runs (refuseReservedBotArgs, ADR-162 U4); this drop is the depth below
+	// it, so a future internal caller of doCreate that bypasses the door
+	// still cannot plant the class. The publish grant is dropped store-side
+	// at Create (BotArgsForWrite); this class is dropped HERE, because the
+	// server's own stamp writes through the same store.Create.
 	botArgs = native.DropServerMintedLaunchVars(botArgs)
 	parentID := strings.TrimSpace(args.ParentID)
 	if parentID == "" {
@@ -443,6 +452,73 @@ func doCreate(store boardOps, raw json.RawMessage, env CallEnv) (json.RawMessage
 		return nil, err
 	}
 	return marshalIssue(iss)
+}
+
+// ReservedBotArgPrefix marks the bot_args keys iterion's server writes for
+// itself: the launch context a webhook-born card carries (the repo to clone
+// and its ref, the webhook's BYOK key and secret overrides), lifted off the
+// card when the dispatcher launches it. They are a server-side channel — the
+// server writes them through the store, never through a board tool — so the
+// PREFIX is the class, not native.ReservedLaunchArgs' exact list: a key under
+// it this build does not know yet is refused with the rest, until someone
+// decides a tool may write it. Case-insensitive, because the decoder folds
+// field names and a spelling an operation would honour is one the door
+// refuses.
+const ReservedBotArgPrefix = "__iterion_"
+
+// ErrReservedBotArg is the refusal of a board tool call whose bot_args carry
+// a key under ReservedBotArgPrefix. Typed so a caller can tell the reserved
+// channel from an ordinary argument error, and trust-independent: every
+// caller of a board tool is a client, trusted runs included (ADR-162 U4's
+// board door — one of the three sanctioned trusted-path changes).
+var ErrReservedBotArg = errors.New("boardops: reserved bot_args key")
+
+// refuseReservedBotArgs reads bot_args off ANY operation's arguments, at the
+// door every board transport crosses (CallWithEnv — claw's in-process
+// registry, `iterion __mcp-board` for claude_code and pi, the HTTP MCP
+// handler, the operator MCP), so an operation that learns to carry bot_args
+// later is covered without having to remember it. It decodes the way the
+// operations do (encoding/json: case-insensitive field names, duplicate
+// objects merged), so it sees exactly the keys an operation would write.
+// Arguments that do not decode are left to the operation, which reports
+// them; nothing is written from them.
+func refuseReservedBotArgs(tool string, raw json.RawMessage) error {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil
+	}
+	var probe struct {
+		BotArgs map[string]json.RawMessage `json:"bot_args"`
+	}
+	if err := json.Unmarshal(raw, &probe); err != nil {
+		return nil
+	}
+	var reserved []string
+	for k := range probe.BotArgs {
+		if strings.HasPrefix(strings.ToLower(k), ReservedBotArgPrefix) {
+			reserved = append(reserved, strconv.Quote(k))
+		}
+	}
+	if len(reserved) == 0 {
+		return nil
+	}
+	sort.Strings(reserved)
+	return fmt.Errorf("%w: %s refuses bot_args %s — keys under %q carry iterion's own launch context and are written by its server, never through a board tool",
+		ErrReservedBotArg, tool, strings.Join(reserved, ", "), ReservedBotArgPrefix)
+}
+
+// withoutReservedBotArgs returns args minus every key under
+// ReservedBotArgPrefix, and whether any was there.
+func withoutReservedBotArgs(args map[string]string) (map[string]string, bool) {
+	kept := make(map[string]string, len(args))
+	dropped := false
+	for k, v := range args {
+		if strings.HasPrefix(strings.ToLower(k), ReservedBotArgPrefix) {
+			dropped = true
+			continue
+		}
+		kept[k] = v
+	}
+	return kept, dropped
 }
 
 func doComment(store boardOps, raw json.RawMessage) (json.RawMessage, error) {
@@ -535,7 +611,32 @@ func doSetBot(store boardOps, raw json.RawMessage) (json.RawMessage, error) {
 	if err != nil {
 		return nil, err
 	}
-	iss, err := store.Update(resolved, native.Patch{Bot: &args.Bot})
+	// The reserved launch context (the repo to clone, the webhook's key and
+	// secret overrides) was minted for the card's CURRENT bot. Re-pointing
+	// the card through a tool must not hand it to another one: it is dropped
+	// with the change, and the new bot launches with what its own routing
+	// gives it.
+	//
+	// A card that cannot be read is not re-pointed: nothing would say what
+	// its context was minted for. On a bot change the args are REPLACED with
+	// the card's own non-reserved ones even when this read found nothing
+	// reserved: a reserved key written between the read and the write would
+	// otherwise ride the change to the new bot. A concurrent edit of the
+	// card's args in that window is overwritten — the price of the store
+	// having no atomic re-point. The publish grant the card may still hold
+	// survives the rewrite: the store keeps the minted class across a
+	// wholesale args write (native.KeepStoredMintedVars), one seam for every
+	// writer.
+	patch := native.Patch{Bot: &args.Bot}
+	cur, err := store.Get(resolved)
+	if err != nil {
+		return nil, fmt.Errorf("read issue %s before re-pointing its bot: %w", resolved, err)
+	}
+	if cur.Bot != args.Bot {
+		kept, _ := withoutReservedBotArgs(cur.BotArgs)
+		patch.BotArgs = &kept
+	}
+	iss, err := store.Update(resolved, patch)
 	if err != nil {
 		return nil, err
 	}
