@@ -254,6 +254,13 @@ type Grant struct {
 	// Zero means the donor set no spend cap, NOT "nothing left" — callers
 	// clamping a run budget must treat zero as "no ceiling from the pool".
 	RemainingUSD float64
+	// BaseURL is the lent key's canonical gateway endpoint (ADR-131): it
+	// travels with the key so the caller seals the PAIR through one
+	// chokepoint, and the seal's AAD binds the URL the entry names. Empty
+	// for a subscription and for a vendor key — non-empty is a promise the
+	// seal keeps (a grant naming openai_compatible must carry one; the
+	// publisher refuses and releases the grant otherwise).
+	BaseURL string
 	// Bound when the lease is inserted, never looked up by run ID later:
 	// concurrent acquisitions can hold different leases for the same run.
 	releaseGuard *ReleaseGuard
@@ -502,6 +509,19 @@ func (b *Broker) resolvePools(ctx context.Context, req Request) (poolsEnabled in
 	if err != nil {
 		return 0, nil, err
 	}
+	// A private pool answers NOTHING without an explicit pool attachment —
+	// no audience walk, no door probe, no whole-bundle tier. It is filtered
+	// here, before the count, so the abstention's numbers stay honest: the
+	// attachment path reaches it by explicit PoolIDs, where the attachment
+	// itself is the consent (ADR-164).
+	visible := make([]Pool, 0, len(pools))
+	for _, p := range pools {
+		if p.EffectiveVisibility() == PoolVisibilityPrivate {
+			continue
+		}
+		visible = append(visible, p)
+	}
+	pools = visible
 	poolsEnabled = len(pools)
 	if poolsEnabled == 0 {
 		return 0, nil, noDonor(ReasonNoEnabledPool, 0, 0, 0, nil)
@@ -746,6 +766,7 @@ func (b *Broker) tryPledge(ctx context.Context, pool Pool, p Pledge, req Request
 		RecordConnectedAt:    cred.connectedAt,
 		KeyMaxConcurrentRuns: cred.maxConcurrentRuns,
 		KeyName:              cred.name,
+		BaseURL:              cred.baseURL,
 		RemainingUSD:         remaining,
 		AcquiredAt:           lease.AcquiredAt,
 		releaseGuard:         &ReleaseGuard{lease: lease},
@@ -772,6 +793,9 @@ type openedCredential struct {
 	// empty for a subscription.
 	maxConcurrentRuns int
 	name              string
+	// baseURL is the lent gateway key's canonical endpoint
+	// (Grant.BaseURL); empty for a subscription and a vendor key.
+	baseURL string
 }
 
 // openCredential unseals whatever the pledge lends. It returns a non-empty
@@ -845,7 +869,7 @@ func (b *Broker) openCredential(ctx context.Context, p Pledge, now time.Time) (c
 		// the derivation from the plaintext stays the fallback. The key's
 		// own concurrency cap rides with it: the borrower's launch is
 		// admitted against it like the donor's own.
-		return openedCredential{payload: pt, fingerprint: k.Fingerprint, maxConcurrentRuns: k.MaxConcurrentRuns, name: k.Name}, "", nil
+		return openedCredential{payload: pt, fingerprint: k.Fingerprint, maxConcurrentRuns: k.MaxConcurrentRuns, name: k.Name, baseURL: k.BaseURL}, "", nil
 	}
 	return openedCredential{}, "", fmt.Errorf("credpool: unknown credential source %q", p.Source)
 }

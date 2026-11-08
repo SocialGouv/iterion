@@ -3,6 +3,8 @@ package credpool
 import (
 	"testing"
 	"time"
+
+	"github.com/SocialGouv/iterion/pkg/secrets"
 )
 
 func TestAudienceAllows(t *testing.T) {
@@ -259,5 +261,124 @@ func TestCostToMillis(t *testing.T) {
 		if got := CostToMillis(tc.in); got != tc.want {
 			t.Errorf("CostToMillis(%v) = %d, want %d", tc.in, got, tc.want)
 		}
+	}
+}
+
+func TestPoolValidate(t *testing.T) {
+	cases := []struct {
+		name    string
+		pool    Pool
+		wantErr bool
+	}{
+		{
+			// The zero values are the legacy row: an org-owned, audience
+			// open pool. Every pre-ADR-164 pool validates untouched.
+			name:    "legacy row (empty owner, empty visibility)",
+			pool:    Pool{ID: "p1", OrgID: "org1", Enabled: true},
+			wantErr: false,
+		},
+		{name: "explicit org owner", pool: Pool{ID: "p1", OrgID: "org1", OwnerType: PoolOwnerOrg, OwnerID: "org1", Enabled: true}},
+		{name: "org owner not its own org", pool: Pool{ID: "p1", OrgID: "org1", OwnerType: PoolOwnerOrg, OwnerID: "org2", Enabled: true}, wantErr: true},
+		{name: "user pool without an owner id", pool: Pool{ID: "p1", OwnerType: PoolOwnerUser, Enabled: true}, wantErr: true},
+		{
+			// The Audience org-implicit rule admits the owning org's teams —
+			// a user pool carrying an OrgID would hand a private pool to a
+			// whole org through that rule, contradicting owner-only draws.
+			name:    "user pool carrying an OrgID",
+			pool:    Pool{ID: "p1", OrgID: "org1", OwnerType: PoolOwnerUser, OwnerID: "u1", Enabled: true},
+			wantErr: true,
+		},
+		{name: "platform pool", pool: Pool{ID: "p1", OwnerType: PoolOwnerPlatform, Enabled: true}},
+		{name: "platform pool carrying an OrgID", pool: Pool{ID: "p1", OrgID: "org1", OwnerType: PoolOwnerPlatform, Enabled: true}, wantErr: true},
+		{name: "unknown owner type", pool: Pool{ID: "p1", OwnerType: "team", Enabled: true}, wantErr: true},
+		{name: "unknown visibility", pool: Pool{ID: "p1", OrgID: "org1", Visibility: "secret", Enabled: true}, wantErr: true},
+		{
+			// Private is a user-only shape: an org pool narrows with a zero
+			// Audience instead (the zero narrows to its own org), which keeps
+			// the org-implicit rule away from private pools entirely.
+			name:    "private org pool",
+			pool:    Pool{ID: "p1", OrgID: "org1", Visibility: PoolVisibilityPrivate, Enabled: true},
+			wantErr: true,
+		},
+		{name: "private user pool", pool: Pool{ID: "p1", OwnerType: PoolOwnerUser, OwnerID: "u1", Visibility: PoolVisibilityPrivate, Enabled: true}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.pool.Validate()
+			if (err != nil) != tc.wantErr {
+				t.Errorf("Validate() error = %v, wantErr %v", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestPoolOwnedBy(t *testing.T) {
+	orgPool := Pool{ID: "p1", OrgID: "org1", Enabled: true}
+	userPool := Pool{ID: "p2", OwnerType: PoolOwnerUser, OwnerID: "u1", Visibility: PoolVisibilityPrivate, Enabled: true}
+	platformPool := Pool{ID: "p3", OwnerType: PoolOwnerPlatform, Enabled: true}
+	if !orgPool.OwnedBy("", "org1") || !orgPool.OwnedBy(PoolOwnerOrg, "org1") {
+		t.Error("a legacy org pool is owned by its org, with or without the explicit owner type")
+	}
+	if orgPool.OwnedBy(PoolOwnerOrg, "org2") || orgPool.OwnedBy(PoolOwnerUser, "u1") {
+		t.Error("a foreign org, or a user, must not own an org pool")
+	}
+	if !userPool.OwnedBy(PoolOwnerUser, "u1") {
+		t.Error("a user pool is owned by its user")
+	}
+	if userPool.OwnedBy(PoolOwnerUser, "u2") || userPool.OwnedBy(PoolOwnerOrg, "org1") {
+		t.Error("nobody else owns a private user pool")
+	}
+	if !platformPool.OwnedBy(PoolOwnerPlatform, "") {
+		t.Error("the platform owns a platform pool")
+	}
+	if platformPool.OwnedBy(PoolOwnerOrg, "org1") {
+		t.Error("an org does not own the platform pool")
+	}
+}
+
+func TestPledgeValidate_routeBinding(t *testing.T) {
+	valid := Pledge{
+		UserID:     "u1",
+		Enabled:    true,
+		Credential: Credential{Source: SourceAPIKey, Ref: "anthropic", KeyID: "k1"},
+	}
+	if err := valid.Validate(); err != nil {
+		t.Fatalf("valid vendor-key pledge rejected: %v", err)
+	}
+	gateway := valid
+	gateway.Credential = Credential{Source: SourceAPIKey, Ref: string(secrets.ProviderOpenAICompatible), KeyID: "k2"}
+	if err := gateway.Validate(); err == nil {
+		t.Error("a gateway entry without a model id accepted — its fallback rung could never compose")
+	}
+	gateway.Model = "openai_compatible/scaleway/deepseek-v4.1-flash"
+	if err := gateway.Validate(); err != nil {
+		t.Errorf("valid gateway entry rejected: %v", err)
+	}
+	gateway.Model = "deepseek v4.1"
+	if err := gateway.Validate(); err == nil {
+		t.Error("a model id with whitespace accepted — ids are verbatim (ADR-122)")
+	}
+	if err := (Pledge{UserID: "u1", Credential: Credential{Source: SourceOAuth, Ref: "claude_code"}, Backend: "claude code"}).Validate(); err == nil {
+		t.Error("a backend with whitespace accepted")
+	}
+	if err := (Pledge{UserID: "u1", Credential: Credential{Source: SourceOAuth, Ref: "claude_code"}, Priority: -1}).Validate(); err == nil {
+		t.Error("a negative priority accepted")
+	}
+	if err := (Pledge{UserID: "u1", Credential: Credential{Source: SourceOAuth, Ref: "claude_code"}, LendScope: "team:abc"}).Validate(); err == nil {
+		t.Error("a foreign lend scope accepted")
+	}
+	if err := (Pledge{UserID: "u1", Credential: Credential{Source: SourceOAuth, Ref: "claude_code"}, LendScope: "orgtier:"}).Validate(); err == nil {
+		t.Error("an orgtier scope naming no org accepted")
+	}
+	if err := (Pledge{UserID: "u1", Credential: Credential{Source: SourceOAuth, Ref: "claude_code"}, LendScope: secrets.OrgTierTenantID("org9")}).Validate(); err != nil {
+		t.Errorf("valid orgtier lend scope rejected: %v", err)
+	}
+	if err := (Pledge{UserID: "u1", Credential: Credential{Source: SourceOAuth, Ref: "claude_code"}, LendScope: secrets.PlatformTenantID}).Validate(); err != nil {
+		t.Errorf("valid platform lend scope rejected: %v", err)
+	}
+	// A subscription entry may carry a model override without a backend.
+	sub := Pledge{UserID: "u1", Credential: Credential{Source: SourceOAuth, Ref: "claude_code"}, Model: "claude-sonnet-4-5"}
+	if err := sub.Validate(); err != nil {
+		t.Errorf("a subscription entry with a model override rejected: %v", err)
 	}
 }
