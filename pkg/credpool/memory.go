@@ -56,6 +56,17 @@ func (s *MemoryPoolStore) ListEnabled(_ context.Context) ([]Pool, error) {
 	return out, nil
 }
 
+func (s *MemoryPoolStore) ListAll(_ context.Context) ([]Pool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]Pool, 0, len(s.m))
+	for _, p := range s.m {
+		out = append(out, p)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out, nil
+}
+
 func (s *MemoryPoolStore) Upsert(_ context.Context, p Pool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

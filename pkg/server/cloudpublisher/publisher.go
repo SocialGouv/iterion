@@ -5541,6 +5541,10 @@ func (p *Publisher) acquireFromAttachedPools(ctx context.Context, runID, orgID, 
 			DrawLimits:     credpool.DrawLimits{MaxRunsPerDay: att.Limits.MaxRunsPerDay, MaxUSDPerDay: att.Limits.MaxUSDPerDay},
 			RankMode:       credpool.StrategyMode(att.Strategy.Mode),
 			ClosedAtMargin: marginFn,
+			// The per-slot walk's earlier leases are this acquisition's
+			// SIBLINGS (forfait and gateway sealed side by side) — the
+			// supersede machinery must never free them mid-run.
+			SideBySide: true,
 		})
 		if err != nil {
 			// An ordinary abstention (no eligible entry for this slot): the

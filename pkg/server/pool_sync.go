@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/credpool"
+	"github.com/SocialGouv/iterion/pkg/identity"
 	"github.com/SocialGouv/iterion/pkg/lease"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/server/cloudpublisher"
@@ -87,6 +88,12 @@ func (s *Server) poolSignalSyncPass(ctx context.Context, health *lease.Health) {
 // nothing warm-stale is idle.
 func (s *Server) poolSignalSyncSweep(ctx context.Context) lease.PassVerdict {
 	var pass lease.Pass
+	// The pool set = stored attachments' pools PLUS schedule-bound pools
+	// (ADR-164): a pool reached only through a schedule's pool: block has
+	// no attachment row, and leaving it out would leave the margin skip
+	// silently inert on the schedule lane — the reconcile exists to warm
+	// exactly what the launch-path margin predicate reads.
+	poolIDs := map[string]bool{}
 	atts, err := s.credPoolAttachments.List(ctx)
 	if err != nil {
 		s.warnf("pool signal sync: list attachments: %v", err)
@@ -94,15 +101,34 @@ func (s *Server) poolSignalSyncSweep(ctx context.Context) lease.PassVerdict {
 		return pass.Verdict()
 	}
 	for _, att := range atts {
-		if !att.Enabled {
-			continue
+		if att.Enabled {
+			poolIDs[att.PoolID] = true
 		}
-		pledges, err := s.credPoolPledges.ListByPool(ctx, att.PoolID)
+	}
+	if s.scheduledBots != nil && s.authStore() != nil {
+		teams, terr := s.authStore().ListTeams(ctx, identity.Page{Limit: 1000})
+		if terr == nil {
+			for _, tm := range teams {
+				scheds, serr := s.scheduledBots.ListByTenant(ctx, tm.ID)
+				if serr != nil {
+					continue // the schedule read failing must not drop the attachments' warmth
+				}
+				for _, sb := range scheds {
+					if sb.Pool != nil && sb.Pool.Enabled && sb.Pool.PoolID != "" {
+						poolIDs[sb.Pool.PoolID] = true
+					}
+				}
+			}
+		}
+	}
+	for poolID := range poolIDs {
+		pledges, err := s.credPoolPledges.ListByPool(ctx, poolID)
 		if err != nil {
-			s.warnf("pool signal sync: list pool %s's entries: %v", att.PoolID, err)
+			s.warnf("pool signal sync: list pool %s's entries: %v", poolID, err)
 			pass.FailedUnlessDone(ctx, err)
 			continue
 		}
+		att := credpool.Attachment{PoolID: poolID}
 		for _, pl := range pledges {
 			// Reactive shapes are skipped honestly — no provider telemetry
 			// today, no poller pretending otherwise (ADR-164 § signals).

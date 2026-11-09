@@ -240,7 +240,7 @@ func (s *Server) listPools(w http.ResponseWriter, r *http.Request, keep func(cre
 		s.writeJSONFor(w, r, []namedPoolView{})
 		return
 	}
-	pools, err := s.credPoolPools.ListEnabled(r.Context())
+	pools, err := s.credPoolPools.ListAll(r.Context())
 	if err != nil {
 		s.httpErrorFor(w, r, http.StatusInternalServerError, "list pools: %v", err)
 		return

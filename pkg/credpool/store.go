@@ -24,6 +24,11 @@ type PoolStore interface {
 	// union of predicates (including "is the requester themselves a
 	// donor") that no single index can answer.
 	ListEnabled(ctx context.Context) ([]Pool, error)
+	// ListAll returns every pool INCLUDING disabled ones — the owner's
+	// management surface must see a disabled pool to re-enable or delete
+	// it (a ListEnabled-only surface makes the id undiscoverable the
+	// moment the pool is paused).
+	ListAll(ctx context.Context) ([]Pool, error)
 	Upsert(ctx context.Context, p Pool) error
 	// Patch writes the named fields only (PoolPatch): a whole-document
 	// write would drop columns a newer binary added while an older one

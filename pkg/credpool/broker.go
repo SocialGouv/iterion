@@ -221,6 +221,12 @@ type Request struct {
 	// RankMode picks the entry ordering: the attachment's strategy mode.
 	// Zero behaves exactly as the legacy ranking (least_consumed).
 	RankMode StrategyMode
+	// SideBySide marks a per-slot acquisition of the ATTACHED tier
+	// (ADR-164): the run's earlier slot leases stay open — they are this
+	// acquisition's siblings, never a takeover. The supersede machinery
+	// (a newer attempt replacing a dead one) is skipped entirely, and the
+	// attempt's report charges EVERY open lease its fingerprint slice.
+	SideBySide bool
 	// ClosedAtMargin, when set, is consulted per candidate during
 	// eligibility: a non-empty reopenAt marks the entry NEAR LIMIT (its
 	// freshest usage reading sits at or past the strategy margin with a
@@ -349,7 +355,18 @@ func (b *Broker) Acquire(ctx context.Context, req Request) (*Grant, error) {
 	// so the retry is admitted as new. A run id another team holds is
 	// refused instead: its leases are that team's record of what their runs
 	// consumed, not this requester's to close.
-	superseded, err := b.supersedeOpenLeases(ctx, req, now, OutcomeSuperseded, nil)
+	// A SideBySide walk (the attached per-slot tier, ADR-164) keeps its
+	// earlier slot leases OPEN: they are siblings of this acquisition, not
+	// a takeover of it — superseding them would free the first donor's
+	// slot and committed allowance mid-run while both credentials stay
+	// sealed and spent. Only a non-side-by-side acquire replaces the
+	// run's previous attempt leases.
+	superseded, err := func() ([]supersededLease, error) {
+		if req.SideBySide {
+			return nil, nil
+		}
+		return b.supersedeOpenLeases(ctx, req, now, OutcomeSuperseded, nil)
+	}()
 	if err != nil {
 		return nil, err
 	}
@@ -1489,6 +1506,40 @@ func (b *Broker) ReportAttempt(ctx context.Context, runID string, attemptPublish
 		return nil
 	}
 	now := b.now()
+
+	// The SIDE-BY-SIDE shape (ADR-164 per-slot sealing): the run holds
+	// MULTIPLE open leases of this same attempt — one per sealed slot.
+	// Each donor is charged the fingerprint slice THEIR credential served
+	// (the fine table keys on fingerprint), and each lease closes its own
+	// CAS: no donor's slice books on a sibling's lease, and no lease
+	// stays open to hold a slot for a run that already settled its
+	// siblings. A single open lease keeps today's path byte for byte.
+	if open, oerr := b.leases.ListOpenByRun(ctx, runID); oerr == nil && len(open) > 1 {
+		charged := false
+		for i := range open {
+			l := open[i]
+			// The attempt's own lease is charged through the standard
+			// path below (its supersede/CAS semantics stay exact); the
+			// SIBLINGS charge here, each its own slice.
+			if l.ID == lease.ID {
+				continue
+			}
+			slice := out.effectiveCharge(l.Fingerprint)
+			won, cerr := b.leases.Close(ctx, l.ID, slice.CostUSD, "ok", now)
+			if cerr != nil {
+				b.logger.Warn("credpool: could not close the sibling lease %s of run %s: %v", l.ID, runID, cerr)
+				continue
+			}
+			if !won {
+				continue
+			}
+			if cerr := b.chargeAndReact(ctx, l, slice, now, runID); cerr != nil {
+				b.logger.Warn("credpool: sibling charge failed on lease %s: %v", l.ID, cerr)
+			}
+			charged = true
+		}
+		_ = charged
+	}
 
 	// The fine attribution resolves ONCE, against THIS lease's credential:
 	// everything below - the superseded stamp, the interim add, the close,

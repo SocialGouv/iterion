@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/SocialGouv/iterion/pkg/cloudsched"
 	"github.com/SocialGouv/iterion/pkg/server/cloudpublisher"
 	"net"
 	"net/http"
@@ -259,6 +260,7 @@ type Server struct {
 	orgDefaults         OrgLimitDefaults
 	credPool            *credpool.Broker
 	credPoolAttachments credpool.AttachmentStore
+	scheduledBots       cloudsched.Store
 	poolUsageProbe      cloudpublisher.UsageProbe
 	credPoolPools       credpool.PoolStore
 	credPoolPledges     credpool.PledgeStore
@@ -989,6 +991,7 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 		credPoolPledges:      cfg.CredPoolPledges,
 		credPoolLeases:       cfg.CredPoolLeases,
 		credPoolAttachments:  cfg.CredPoolAttachments,
+		scheduledBots:        cfg.ScheduledBots,
 		poolUsageProbe:       cfg.PoolUsageProbe,
 		credPoolLedger:       cfg.CredPoolLedger,
 		auditStore:           cfg.Audit,

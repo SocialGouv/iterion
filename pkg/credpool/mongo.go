@@ -107,6 +107,11 @@ func (s *MongoPoolStore) ListEnabled(ctx context.Context) ([]Pool, error) {
 		"credpool: list enabled pools", "credpool: decode pool")
 }
 
+func (s *MongoPoolStore) ListAll(ctx context.Context) ([]Pool, error) {
+	return mongoutil.FindAllSorted[Pool](ctx, s.col, bson.M{}, "_id",
+		"credpool: list pools", "credpool: decode pool")
+}
+
 func (s *MongoPoolStore) Upsert(ctx context.Context, p Pool) error {
 	now := time.Now().UTC()
 	p.UpdatedAt = now
