@@ -3,6 +3,63 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [5.15.0](https://github.com/SocialGouv/iterion/compare/v5.14.0...v5.15.0) (2026-11-09)
+
+### Features
+
+* **credpool,server,studio:** configurable key pools — named, attachable per scope, forfait-first fallback (ADR-164) ([#3117](https://github.com/SocialGouv/iterion/issues/3117)) ([2b52237](https://github.com/SocialGouv/iterion/commit/2b5223722a7ecddf21c5455fdbd299bea6aafcec)), references [#2906-shaped](https://github.com/SocialGouv/iterion/issues/2906-shaped) [#2972](https://github.com/SocialGouv/iterion/issues/2972) [#2906](https://github.com/SocialGouv/iterion/issues/2906) [#2699](https://github.com/SocialGouv/iterion/issues/2699)
+
+    <details><summary>why</summary>
+
+    A pool now carries an owner (org / user / platform — the zero values keep every legacy row an org-owned audience pool) and a visibility: audience (the legacy draw surface) or private, which answers nothing on the legacy walk — no whole-bundle tier, no door probe — until an explicit pool attachment names it (ADR-164; the attachment is the consent). Validation keeps the owner trio honest: a user pool carries no OrgID (the audience org-implicit rule must never open a private pool) and private is…
+
+    </details>
+
+### Bug Fixes
+
+* **delegate,runtime:** an untrusted pi run refuses the ChatGPT forfait typed ([19a553b](https://github.com/SocialGouv/iterion/commit/19a553bef55ca2c303f2dd6363c1e57ccf2a2a91)), references [#1768](https://github.com/SocialGouv/iterion/issues/1768) [#3102](https://github.com/SocialGouv/iterion/issues/3102) [#874](https://github.com/SocialGouv/iterion/issues/874)
+
+    <details><summary>why</summary>
+
+    The codex branch of PiSandboxCredential answered "found" for a delivered ChatGPT forfait on a fork: the OAuth file and its refresh flow are a channel the egress proxy cannot hold (decision 7), and the seed itself steps aside (piCodexSeed) — so the launch admitted and died credential-less mid-run (#1768). The probe now refuses typed under the channel name claw's landing floor uses for the same forfait, and the seed's gate widens from StateInCheckout-only to every untrusted run: a shared state…
+
+    </details>
+* **runtime:** an untrusted run binds no host home, identity, .git or repo toolchain ([a55cb59](https://github.com/SocialGouv/iterion/commit/a55cb59e569a0b9b3316ff0cacb9f47d81b097e6)), references [#1768](https://github.com/SocialGouv/iterion/issues/1768) [#3102](https://github.com/SocialGouv/iterion/issues/3102) [#874](https://github.com/SocialGouv/iterion/issues/874)
+
+    <details><summary>why</summary>
+
+    ADR-162 U5's host-state floor, first of the unit's four: a run whose workspace an outsider wrote resolves host_state none through ONE decision (resolveHostState) that both sandboxCredentialHome (read before the #1768 credential admission) and applyHostStateMounts (the mount plan) call — so the admission never sees a mounted login the plan would withdraw. The same trust marker keeps the operator's git identity out of the container's env, the worktree .git tree unmounted, the target repo's…
+
+    </details>
+* **sandbox:** the kubernetes copy floors the git-private tree out for untrusted runs ([fc8b60c](https://github.com/SocialGouv/iterion/commit/fc8b60c11a7bfb580e5d307fc3d2010bd8cb183c)), references [#3102](https://github.com/SocialGouv/iterion/issues/3102) [#874](https://github.com/SocialGouv/iterion/issues/874)
+
+    <details><summary>why</summary>
+
+    U5's .git floor was enforced only on the docker bind path; the kubernetes driver — the only one whose SupportsNetworkPolicy admits an untrusted run — tar-copied the clone root including .git (with the live forge token at .git/iterion-credentials) and re-pointed the container's credential.helper at the in-pod copy. The floor is now the copy itself: populateWorkspace skips the .git entry, fixupWorkspaceGit is skipped whole, the export extract drops every .git member host-side, and ExportWorkspace…
+
+    </details>
+* **security:** an untrusted run's credentials cross as Layer 2 placeholders ([08d6e65](https://github.com/SocialGouv/iterion/commit/08d6e652c84ec20075c5e52093d474682d164f3e)), references [#3102](https://github.com/SocialGouv/iterion/issues/3102) [#874](https://github.com/SocialGouv/iterion/issues/874)
+
+    <details><summary>why</summary>
+
+    ADR-162 decision 7 (U5), the credential half of the sandbox floor: the fork lane's container holds no credential value. Every sealed key or gateway pair crosses as a placeholder token the egress proxy substitutes toward the credential's own host, and every channel that proxy cannot hold — a forfait's OAuth file and refresh flow, the operator's host login, the launcher's ambient env, a signing-chain key that names no host to substitute toward — is refused typed at the landing, never crossed raw…
+
+    </details>
+* **security:** an untrusted run's egress floor — the credential's host, on a driver that enforces it ([3affc3d](https://github.com/SocialGouv/iterion/commit/3affc3d082eb7d1cce5410637f53ca17c2596400)), references [#3102](https://github.com/SocialGouv/iterion/issues/3102) [#874](https://github.com/SocialGouv/iterion/issues/874)
+
+    <details><summary>why</summary>
+
+    ADR-162 decision 7 (U5), the network half of the sandbox floor: the container holds no credential and has one route out. Three floors:
+
+    </details>
+* **security:** the start probe proves the untrusted run's network floor before the first spawn ([e47ebf1](https://github.com/SocialGouv/iterion/commit/e47ebf15cf9e12cc1e11517563e5816d1424ff6b)), references [#3102](https://github.com/SocialGouv/iterion/issues/3102) [#874](https://github.com/SocialGouv/iterion/issues/874)
+
+    <details><summary>why</summary>
+
+    ADR-162 decision 7, probe half of U5: before the first spawn, a probe that ignores the proxy env dials the roads the per-run policy must have closed — the cluster API service, the credential's own hosts, the runner pod's metrics port — and every one of those direct dials must FAIL or the run is refused typed. A non-enforcing CNI (kind's kindnetd) applies the NetworkPolicy as a no-op, and only this probe sees it.
+
+    </details>
+
 ## [5.14.0](https://github.com/SocialGouv/iterion/compare/v5.13.2...v5.14.0) (2026-11-09)
 
 ### Features
