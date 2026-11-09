@@ -25,7 +25,10 @@ an EXISTING one, and a resume driven by an existing run's own machinery
 assistant mission and watch coordinators) re-enters the engine on a run
 that already exists. Both are authorized by the run-by-id ladder
 (ADR-103) — a member of the run's team — and neither is metered; that is
-a known follow-up, not a property of the gate.
+a known follow-up, not a property of the gate. That holds for a TRUSTED
+run only: an untrusted (fork review lane) run is never resumed by a
+surface that crossed no gate — see the fork lane paragraph under
+[Limits, fields and platform defaults](#limits-fields-and-platform-defaults).
 
 ## The launch-admission order
 
@@ -112,7 +115,9 @@ is unaffected by one — including a wiring whose run store cannot count active
 runs, where step 3 is inert and the slot reserve is inert with it.
 
 Super-admins bypass the whole gate (they explicitly opt out of org
-scoping). Local mode (no identity store) has no gate. The gate
+scoping). Local mode (no identity store) has no gate. Neither bypass
+admits an untrusted subject: a fork run is refused there instead (see
+[the fork lane's bound](#limits-fields-and-platform-defaults) below). The gate
 **fail-opens** on a Mongo / store error so a transient blip doesn't
 wedge every launch — quotas are an operator policy, not a hard security
 boundary. The one nuance: when `AllowRun` errors at step 5 the launch
@@ -142,7 +147,7 @@ prevent (#1725, `runview.RunMayHaveStarted`):
 | `POST /api/v1/triggers/emit` (custom event) | the caller's | pre-check only, per request | **no** — an emit is one EVENT and fans out to 0..N launches; the pre-check's slot is handed back at once and the spine meters each launch it performs |
 | Trigger spine direct launches (`serviceLauncher`: `mode: direct` board triggers, run-completion chains, the emit fan-out, the local schedule source) | `trigger-spine` on the subscription's team | yes | yes — refunded when the refusal proves nothing started; kept on a landed-but-failed publish |
 | `cloudsched` scheduled launches (`launchScheduledBot`) | `cloud-scheduler` on the schedule's team | yes | yes, rolled back on a refused launch |
-| `POST /api/runs/{id}/fork` and `/rewind` (a run created from an existing one), and the resumes an existing run's own machinery drives (`/answer-human`, `/interactions/{iid}/answer`, `/host-event`, the assistant mission and watch coordinators) | the caller's, or the run's own | **no** — authorized by the run-by-id ladder (ADR-103), which takes a member of the run's team | **no** — known follow-up |
+| `POST /api/runs/{id}/fork` and `/rewind` (a run created from an existing one), and the resumes an existing run's own machinery drives (`/answer-human`, `/interactions/{iid}/answer`, `/host-event`, the assistant mission and watch coordinators) | the caller's, or the run's own | **no** — authorized by the run-by-id ladder (ADR-103), which takes a member of the run's team; on an untrusted run the resumes are refused instead (`resume_not_admitted`) | **no** — known follow-up |
 | Local mode (`iterion studio` / `iterion dispatch` with no identity store, the pipelines admission) | — | no gate exists | — |
 
 On the board dispatcher a denial is a **launch refusal** of the
@@ -210,10 +215,27 @@ The fork lane also closes every fail-open arm the rows above keep for
 ordinary work (ADR-162 decision 5, amending ADR-033): an untrusted launch
 is refused — not admitted unmetered — when the team or org cannot be read
 (`fork_team_unreadable`, `fork_org_unreadable`), when no usage counter is
-wired or the subject names no author (`fork_metering_unavailable`), or when
+wired, the subject names no author, or the launch would ride the
+super-admin or local-mode bypass (`fork_metering_unavailable`), or when
 the metering itself errors (`fork_metering_error`); all four are 503s a
 surface may retry, on whichever surface entered (delivery, debounce flush,
 retry sweeper).
+
+A fork run's RESUME owes the same bound, whichever surface asks. The gated
+resumes (`POST /api/runs/{id}/resume`, the WS answer, the retry sweeper)
+build their subject from the run document (`resumeLaunchSubject`), so its
+trust and the author subject its launch metered re-enter the gate, and a
+run document the gate could not read is an unknown trust, refused as a
+transient 503 (`resume_run_unreadable` — the sweeper re-arms, never resumes
+on the retry row alone). What the gate admitted rides the resume to the run
+service, the one choke point every resume crosses
+(`runview.CheckResumeAdmitted`, judged again by the cloud publisher on the
+document it republishes from): a resume whose admission does not name the
+run's own trust and author subject is refused, nothing claimed or
+published. The ungated resumes (`/answer-human`, an async answer's
+auto-resume, an assistant mission's `run.resume`) carry no admission, so on
+an untrusted run they answer **409 `resume_not_admitted`** — the gated
+resume, answers in its body, is the way to continue it.
 
 `Status`, `MonthlyCostCapUSD`, and `MonthlyRunQuota` are **Org**-document
 fields (org-wide, super-admin managed — `pkg/identity.Org`); the org

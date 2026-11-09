@@ -632,7 +632,11 @@ public-base fork:
   [quotas-and-limits.md](quotas-and-limits.md)). The runner charges the
   author's dollars beside the org's, and every resume or retry re-enters
   the same subject — an untrusted launch the gate cannot meter is REFUSED,
-  never admitted unmetered (the amendment to ADR-033).
+  never admitted unmetered (the amendment to ADR-033). A resume that
+  crosses no gate (`/answer-human`, an async answer's auto-resume, an
+  assistant mission) is refused on a fork run (`resume_not_admitted`), and
+  a run document the gate cannot read is an unknown trust, refused as
+  transient (`resume_run_unreadable`).
 
 **The delivery-row reasons.** Every refusal is a typed, stable reason on the
 delivery row (200/filtered — a 4xx would teach the forge to disable the
