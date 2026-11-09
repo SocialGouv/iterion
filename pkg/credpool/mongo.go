@@ -20,7 +20,9 @@ const (
 	colPledges     = "cred_pledges"
 	colLeases      = "cred_leases"
 	colLedger      = "cred_pool_usage"
-	colAttachments = "pool_attachments"
+	// ColAttachments is exported: the orgsweep purge names the collection
+	// (ADR-164) and must not mint a second copy of the name.
+	ColAttachments = "pool_attachments"
 )
 
 // EnsureSchema creates every index this package needs, idempotently.
@@ -33,7 +35,7 @@ func EnsureSchema(ctx context.Context, db *mongo.Database) error {
 			{Keys: bson.D{{Key: "org_id", Value: 1}}, Options: options.Index().SetName("pool_org")},
 			{Keys: bson.D{{Key: "owner_type", Value: 1}, {Key: "owner_id", Value: 1}}, Options: options.Index().SetName("pool_owner")},
 		}},
-		{colAttachments, []mongo.IndexModel{
+		{ColAttachments, []mongo.IndexModel{
 			// The reconciler's walk and the orgsweep's opposite number: which
 			// scopes point at one pool.
 			{Keys: bson.D{{Key: "pool_id", Value: 1}}, Options: options.Index().SetName("attachment_pool")},
@@ -725,7 +727,7 @@ func (l *MongoLedger) UsageMany(ctx context.Context, pledgeIDs []string, when ti
 type MongoAttachmentStore struct{ col *mongo.Collection }
 
 func NewMongoAttachmentStore(db *mongo.Database) *MongoAttachmentStore {
-	return &MongoAttachmentStore{col: db.Collection(colAttachments)}
+	return &MongoAttachmentStore{col: db.Collection(ColAttachments)}
 }
 
 func (s *MongoAttachmentStore) Get(ctx context.Context, scopeID string) (Attachment, error) {
