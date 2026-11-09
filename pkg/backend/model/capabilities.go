@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/backend/compatgw"
+	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/modelroute"
 	"github.com/SocialGouv/iterion/pkg/backend/modelspecs"
 )
@@ -48,6 +49,42 @@ func capabilitiesForModel(provider, modelID string) ModelCapabilities {
 		return curated
 	}
 	return mergeSpec(spec, curated)
+}
+
+// taskContextWindow resolves the catalog context window for a delegate
+// task's resolved model, for stamping into CLI harness envs at spawn
+// (delegate's claudeContextWindowEnv). It answers from every table the
+// dispatch seam itself trusts — the host's forwarded resolution, the
+// operator table, then the models.dev provider table
+// (compatgw.ResolveCatalogQuiet, the quiet read path), and finally the
+// aggregator's bare consensus index (ResolveBareModel) — and 0 when no
+// table knows, which callers must treat as "stamp nothing", never as a
+// guess.
+func taskContextWindow(get func(string) string, model string) int {
+	model = strings.ToLower(strings.TrimSpace(model))
+	if model == "" {
+		return 0
+	}
+	// Mirror the dispatch seam: it resolves the WIRE id (the host's
+	// forwarded record is keyed by it and the operator table names it), so
+	// a prefixed spec must not miss every table its bare id would hit.
+	wire := modelroute.Parse(model).Wire
+	if resolved := compatgw.ResolveCatalogQuiet(wire, modelspecs.Default(), get); resolved.Known() && resolved.Spec.ContextWindow > 0 {
+		return resolved.Spec.ContextWindow
+	}
+	if bare := ResolveBareModel(wire); bare.Found && bare.ContextWindow > 0 {
+		return bare.ContextWindow
+	}
+	return 0
+}
+
+// refreshContextWindow recomputes the delegate stamp after a chain element
+// replaced the task's model: the stamped window belongs to the model that
+// will actually serve the call — an override to a smaller-window model must
+// not keep the baseline's larger ceiling, and a model-less element
+// restoring the baseline must not keep an override's.
+func refreshContextWindow(ctx context.Context, task *delegate.Task) {
+	task.ContextWindow = taskContextWindow(func(name string) string { return envGetenv(ctx, name) }, task.Model)
 }
 
 // gatewayCapabilities is a gateway id's catalog record read as capabilities:

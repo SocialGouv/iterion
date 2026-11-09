@@ -660,23 +660,59 @@ func GenerateObjectDirect[T any](ctx context.Context, client api.APIClient, opts
 	// GenerateTextDirect once left every `output:`-bearing node — most of
 	// them in iterion — without a timeline and impossible to fork).
 	// served is false when the stream never opened: nothing was billed.
-	turn := func(o GenerationOptions, msgs []api.Message, tc *api.ToolChoice, number int) (agg *aggregatedResponse, step StepResult, served bool, err error) {
+	// The returned slice is the conversation the request actually carried:
+	// after a reactive compaction it is NOT the slice passed in, and the
+	// caller adopts it so answer, partial, the re-ask and the session
+	// persistence all ride the compacted history.
+	turn := func(o GenerationOptions, msgs []api.Message, tc *api.ToolChoice, number int) (agg *aggregatedResponse, step StepResult, used []api.Message, served bool, err error) {
+		used = msgs
 		reqOpts := o
 		// Request-only overlay: buildRequest then carries the synthetic tool
 		// alone, through extraTools.
 		reqOpts.Tools = nil
 		req, err := buildRequest(reqOpts, msgs, []api.Tool{syntheticTool}, tc)
 		if err != nil {
-			return nil, StepResult{}, false, err
+			return nil, StepResult{}, used, false, err
 		}
 		fireOnRequest(o, len(msgs))
 		agg, err = callAndAggregate(ctx, client, req, o)
+		// Reactive context-window recovery at parity with the text loop's
+		// callWithContextRetry: a structured turn can carry the same
+		// oversized session history. The overflow arrives either as the
+		// aggregate's error (the stream opened, then an error event) or as
+		// the DIRECT error of a request refused before its stream opened —
+		// agg nil, so only a normalized read of both sees it; the decision
+		// reads them exactly as callWithContextRetry does.
+		for attempt := 0; attempt < maxContextCompactRetries; attempt++ {
+			e := err
+			if e == nil && agg != nil {
+				e = agg.err
+			}
+			if e == nil || !isContextWindowError(e) {
+				break
+			}
+			compacted, _, ok := forceCompactLadder(msgs, o.CompactPreserveRecent)
+			if !ok {
+				break
+			}
+			msgs = compacted
+			used = compacted
+			if o.OnContextCompactRetry != nil {
+				o.OnContextCompactRetry(attempt+1, e, len(compacted), 0)
+			}
+			req, err = buildRequest(reqOpts, msgs, []api.Tool{syntheticTool}, tc)
+			if err != nil {
+				return nil, StepResult{}, used, false, err
+			}
+			fireOnRequest(o, len(msgs))
+			agg, err = callAndAggregate(ctx, client, req, o)
+		}
 		if err != nil {
-			return nil, StepResult{}, false, err
+			return nil, StepResult{}, used, false, err
 		}
 		accumulateUsage(&totalUsage, agg.usage)
 		if agg.err != nil {
-			return agg, StepResult{}, true, agg.err
+			return agg, StepResult{}, used, true, agg.err
 		}
 		step = StepResult{
 			Number:       number,
@@ -692,7 +728,7 @@ func GenerateObjectDirect[T any](ctx context.Context, client api.APIClient, opts
 			o.OnStepFinish(step)
 		}
 		captureFinalTurn(o, msgs, number, step)
-		return agg, step, true, nil
+		return agg, step, used, true, nil
 	}
 
 	// answer is the success shape: the object, and the replay-safe
@@ -762,7 +798,7 @@ func GenerateObjectDirect[T any](ctx context.Context, client api.APIClient, opts
 	if toolChoice == nil {
 		firstLabel = schemaName + " (instructed, not forced)"
 	}
-	agg, step, served, err := turn(opts, messages, toolChoice, 1)
+	agg, step, messages, served, err := turn(opts, messages, toolChoice, 1)
 	if err != nil {
 		if !served {
 			// The stream never opened — nothing was served, nothing is owed.
@@ -799,7 +835,7 @@ func GenerateObjectDirect[T any](ctx context.Context, client api.APIClient, opts
 		reaskOpts = lowered
 	}
 	reaskMessages := withTrailingUserText(messages, unforcedReaskInstruction(schemaName))
-	agg2, step2, _, err2 := turn(reaskOpts, reaskMessages, nil, 2)
+	agg2, step2, reaskMessages, _, err2 := turn(reaskOpts, reaskMessages, nil, 2)
 	if err2 != nil {
 		if isContextEnd(err2) && ctx.Err() != nil {
 			// The run's own cancellation or deadline stays what it is.
