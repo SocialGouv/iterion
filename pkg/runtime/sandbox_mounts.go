@@ -1269,10 +1269,11 @@ func addWorktreeGitMount(spec *sandbox.Spec, gitDir string, logger *iterlog.Logg
 	}
 	// ADR-162 U5: an untrusted run binds no .git. The git-private tree is
 	// where the rotated credential store, the repo's config and every
-	// sibling worktree's state live — the clone root tar-copies the REAL
-	// `.git` on the kubernetes path too (fixupWorkspaceGit), and the floor
-	// is the same answer there: in-sandbox git fails with `fatal: not a git
-	// repository`, which is the isolation working, not a defect.
+	// sibling worktree's state live — and the kubernetes copy floors the
+	// same tree out (populateWorkspace skips `.git`, fixupWorkspaceGit is
+	// skipped whole): one answer on both drivers, so in-sandbox git fails
+	// with `fatal: not a git repository`, which is the isolation working,
+	// not a defect.
 	if !trust.Trusted() {
 		if logger != nil {
 			logger.Info("runtime: untrusted workspace — the worktree .git directory is not mounted; in-sandbox git commands will not see a repository")
