@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -15,9 +17,11 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/identity"
 	"github.com/SocialGouv/iterion/pkg/orgusage"
+	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
 	mongostore "github.com/SocialGouv/iterion/pkg/store/mongo"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
@@ -901,3 +905,106 @@ func mustSigner(t *testing.T) *auth.JWTSigner {
 	}
 	return signer
 }
+
+// forkSpecPublisher records the LaunchSpec the REAL launch path hands the
+// run service's publisher — the oracle for what the lane stamps, one seam
+// past the launcher every other test doubles.
+type forkSpecPublisher struct {
+	mu    sync.Mutex
+	specs []runview.LaunchSpec
+}
+
+func (p *forkSpecPublisher) SubmitLaunch(_ context.Context, _ string, spec runview.LaunchSpec, _ *ir.Workflow, _ *runview.CompiledSource) (runview.LaunchSubmission, error) {
+	p.mu.Lock()
+	p.specs = append(p.specs, spec)
+	p.mu.Unlock()
+	return runview.LaunchSubmission{Status: store.RunStatusQueued, QueuePosition: 1}, nil
+}
+
+func (*forkSpecPublisher) CancelRun(context.Context, string) error { return nil }
+func (*forkSpecPublisher) CancelRunWithReason(context.Context, string, store.RunEndReason) error {
+	return nil
+}
+func (*forkSpecPublisher) SubmitResume(context.Context, runview.ResumeSpec, *ir.Workflow, *runview.CompiledSource) error {
+	return nil
+}
+
+func (p *forkSpecPublisher) only(t *testing.T) runview.LaunchSpec {
+	t.Helper()
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if len(p.specs) != 1 {
+		t.Fatalf("the lane published %d launches, want exactly 1", len(p.specs))
+	}
+	return p.specs[0]
+}
+
+// TestForkGesture_TheRealLauncherStampsTheSubjectOnTheSpec: the carrier
+// chain's first hop, driven on the REAL path end to end — a real delivery,
+// the real admission, the real launcher (no webhookLaunchBot double), a
+// real run service whose publisher alone is a double. The LaunchSpec is
+// what the publisher persists the document and the wire from, so the
+// subject MUST be on it: the admission composed it (gateMonthlyCaps stamps
+// it back onto the target), and launchWebhookBot is the only site that
+// threads it onto the spec.
+//
+// Mutation: drop `ForkAuthorSubject: forkAuthorSubject` from
+// launchWebhookBot's LaunchSpec (webhooks_gitlab.go) → the spec carries an
+// empty subject → red on its own assertion, while every other fork-gesture
+// witness stays green (the run still launches; only the dollars half of
+// the bound goes dark).
+func TestForkGesture_TheRealLauncherStampsTheSubjectOnTheSpec(t *testing.T) {
+	fx := newForkGestureFixture(t)
+	// The REAL launcher: no test double between the delivery and the
+	// LaunchSpec. The lane's default bot resolves from the catalog the way
+	// production's does.
+	fx.s.webhookLaunchBot = nil
+	if err := os.WriteFile(filepath.Join(fx.s.cfg.WorkDir, "bots", "review-pr.bot"), []byte(forkReviewProbeBot), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rs, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	pub := &forkSpecPublisher{}
+	fx.s.runs = newTestRunviewService(t, "", runview.WithStore(rs), runview.WithLaunchPublisher(pub))
+
+	w := fx.replay(t, 3001, "/revi")
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("code=%d body=%s — an admitted gesture must launch through the real lane", w.Code, w.Body.String())
+	}
+	spec := pub.only(t)
+	// The subject the gate composed and stamped back onto the target: the
+	// author's own budget, keyed on the numeric forge id (orgless team t1 →
+	// metered on the team id).
+	wantSubject := string(orgusage.ForkAuthorSubject("t1", "github", "4242"))
+	if spec.ForkAuthorSubject != wantSubject {
+		t.Fatalf("spec.ForkAuthorSubject = %q, want %q — the publisher persists the document and the wire from this spec, so the runner's second charge and every resume would meter nobody", spec.ForkAuthorSubject, wantSubject)
+	}
+	if spec.Trust != store.RunTrustFork {
+		t.Fatalf("spec.Trust = %q, want %q — the run must read untrusted on every carrier", spec.Trust, store.RunTrustFork)
+	}
+	if spec.RepoSHAExpected != forkForkPR().HeadSHA {
+		t.Fatalf("spec.RepoSHAExpected = %q, want the admitted head commit — the pin and the subject are one guarantee (the runner compares before it charges)", spec.RepoSHAExpected)
+	}
+	// Both budgets metered on the way in, exactly as the stubbed twin
+	// already proved — the real lane changes nothing there.
+	now := time.Now().UTC()
+	for subj, want := range map[orgusage.Subject]int{
+		orgusage.OrgSubject("t1"):                          1,
+		orgusage.ForkAuthorSubject("t1", "github", "4242"): 1,
+	} {
+		u, err := fx.counter.Usage(context.Background(), subj, now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if u.Runs != want {
+			t.Fatalf("subject %s metered %d run(s), want %d", subj, u.Runs, want)
+		}
+	}
+}
+
+// forkReviewProbeBot is the lane's default bot, compilable: the real
+// launcher resolves it from the catalog and the run service compiles it
+// before the publisher is asked.
+const forkReviewProbeBot = "workflow review_pr:\n  worktree: none\n  entry: done\n"
