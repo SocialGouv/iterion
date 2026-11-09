@@ -12,6 +12,7 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
+	"github.com/SocialGouv/iterion/pkg/credpool"
 	"github.com/SocialGouv/iterion/pkg/internal/mongoutil"
 	"github.com/SocialGouv/iterion/pkg/llmroute"
 )
@@ -90,6 +91,13 @@ type ProvisionApproval struct {
 	// what lands.
 	Routing    *llmroute.Policy `bson:"routing,omitempty" json:"routing,omitempty"`
 	RoutingSet bool             `bson:"routing_set,omitempty" json:"routing_set,omitempty"`
+	// Pool replays the request's pool block (ADR-164) under the same
+	// three-way rule as Routing: PoolSet false keeps the stored block,
+	// true with nil clears it, true with a block replaces it. The apply
+	// RE-VALIDATES the block's consent — what the pool's owner admitted
+	// at park time may be revoked by the time an org admin approves.
+	Pool    *credpool.Binding `bson:"pool,omitempty" json:"pool,omitempty"`
+	PoolSet bool              `bson:"pool_set,omitempty" json:"pool_set,omitempty"`
 
 	RequestedBy string    `bson:"requested_by" json:"requested_by"`
 	CreatedAt   time.Time `bson:"created_at" json:"created_at"`

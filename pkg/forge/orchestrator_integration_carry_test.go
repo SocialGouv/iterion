@@ -37,6 +37,7 @@ var provisionerOwnedIntegrationFields = map[string]string{
 	"ProjectBot":            "the provisioner's own record: minted by the first enable on a project-bot connection and carried from the existing row on every rebuild there; absent by construction on every other connection",
 	"LaunchVars":            "operator override, explicitly re-resolved (nil request = keep)",
 	"Routing":               "operator override, explicitly re-resolved (a RoutingSet request replaces or clears; a silent one adopts the stored block — ADR-129)",
+	"Pool":                  "operator override, explicitly re-resolved (a PoolSet request replaces or clears; a silent one adopts the stored block — ADR-164)",
 	"Overlap":               "operator override, explicitly re-resolved",
 	"HoldLabels":            "operator override, explicitly re-resolved",
 	"LabelAllowlist":        "operator override, explicitly re-resolved",

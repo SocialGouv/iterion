@@ -8,7 +8,6 @@ package cloudsched
 import (
 	"context"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/credpool"
@@ -68,6 +67,13 @@ type ScheduledBot struct {
 	// consumes it as the binding layer — nearest wins, a disabled block
 	// blocks inheritance. nil = the schedule binds nothing.
 	Pool *PoolBinding `bson:"pool,omitempty" json:"pool,omitempty"`
+	// PoolFromIntegration marks the row's pool block as the PROJECTION of
+	// the owning integration's own block (pkg/forge syncSchedules) — the
+	// twin of RoutingFromIntegration: a projected block follows every later
+	// integration write (a clear and a replace alike), an operator's block
+	// written through the schedule PATCH (the flag false) is the more
+	// specific voice and survives the rebuild.
+	PoolFromIntegration bool `bson:"pool_from_integration,omitempty" json:"pool_from_integration,omitempty"`
 	// Routing is the schedule's routing block (ADR-121, pkg/llmroute) —
 	// the binding level for a cron-provisioned bot: it overrides every
 	// UNLOCKED field of the shipped bot's `routing:` manifest block, and
@@ -309,9 +315,11 @@ func applySchedulePatch(sb *ScheduledBot, patch SchedulePatch) {
 	}
 	if patch.ClearPool {
 		sb.Pool = nil
+		sb.PoolFromIntegration = false
 	}
 	if patch.Pool != nil {
 		sb.Pool = patch.Pool
+		sb.PoolFromIntegration = false
 	}
 	if patch.RetryUsageWindow != nil {
 		sb.RetryUsageWindow = *patch.RetryUsageWindow
@@ -343,40 +351,16 @@ func (sb ScheduledBot) Policy() schedgate.Policy {
 	})
 }
 
-// PoolBinding is the schedule's binding-level pool opt-in (ADR-164): the
-// named pool, an on/off (off = resolved-disabled, the fold stops here),
-// and the fallback strategy. It is the machine lane's consent: a schedule
-// is written by a team admin, and writing the block is what grants the
-// schedule's launches the named pool.
-type PoolBinding struct {
-	PoolID   string            `bson:"pool_id" json:"pool_id"`
-	Enabled  bool              `bson:"enabled" json:"enabled"`
-	Strategy credpool.Strategy `bson:"strategy" json:"strategy"`
-}
+// PoolBinding is the schedule's binding-level pool opt-in (ADR-164) — the
+// ONE record-carried block shape, shared with the forge integration and
+// its webhook config (credpool.Binding).
+type PoolBinding = credpool.Binding
 
-// Validate checks the block's shape; the POOL's existence and the consent
-// are the write surface's job (it owns the stores and the caller's
-// identity).
-func (b PoolBinding) Validate() error {
-	if strings.TrimSpace(b.PoolID) == "" {
-		return fmt.Errorf("pool block names no pool")
-	}
-	return b.Strategy.Validate()
-}
-
-// Layer projects the block as the binding layer the launch fold consumes
-// (route_resolve.go's `higher`). ok=false when the schedule binds no pool
-// — the fold then reads the stored scopes alone.
+// PoolBindingLayer projects the block as the binding layer the launch fold
+// consumes (route_resolve.go's `higher`). ok=false when the schedule binds
+// no pool — the fold then reads the stored scopes alone.
 func (sb ScheduledBot) PoolBindingLayer() (credpool.BindingLayer, bool) {
-	if sb.Pool == nil {
-		return credpool.BindingLayer{}, false
-	}
-	return credpool.BindingLayer{
-		Source:   "schedule",
-		Enabled:  sb.Pool.Enabled,
-		PoolID:   sb.Pool.PoolID,
-		Strategy: sb.Pool.Strategy,
-	}, true
+	return sb.Pool.Layer("schedule")
 }
 
 // RoutingPolicy projects the schedule's routing block (ADR-121). Not

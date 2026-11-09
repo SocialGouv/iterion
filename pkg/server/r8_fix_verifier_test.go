@@ -15,6 +15,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/botsource"
 	"github.com/SocialGouv/iterion/pkg/bundle"
+	"github.com/SocialGouv/iterion/pkg/credpool"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/llmroute"
 )
@@ -180,12 +181,50 @@ func TestR8_TwoStoreRoutingDivergence_ApproveConsumesTheRecord(t *testing.T) {
 	}
 }
 
+// The CONSUMED-half witness for the POOL block divergence (ADR-164): the
+// routing witness's twin — a record silent about the pool replays into the
+// pre-write two-store pool refusal, deterministic, and approve consumes it
+// with the divergence named instead of leaving it pending forever.
+func TestR8_TwoStorePoolDivergence_ApproveConsumesTheRecord(t *testing.T) {
+	s, _, done := newApprovalTestServer(t)
+	defer done()
+	connID := firstConnID(t, s)
+
+	res := seedIntegration(t, s, connID, "group/api", ``)
+	ri, err := s.forgeIntegrations.Get(context.Background(), res.IntegrationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ri.Pool = &credpool.Binding{PoolID: "pool-a", Enabled: true}
+	if err := s.forgeIntegrations.Update(context.Background(), ri); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := s.webhookConfigs.Get(context.Background(), res.WebhookID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Pool = &credpool.Binding{PoolID: "pool-b", Enabled: true}
+	if err := s.webhookConfigs.Update(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	id := parkUpdate(t, s, res.IntegrationID, `{"schedule_crons":{"review-pr":"0 3 * * *"}}`)
+	aw := r6Approve(t, s, id)
+	if aw.Code != http.StatusConflict || !strings.Contains(aw.Body.String(), "pool block diverges") {
+		t.Fatalf("approve must consume a pool-diverged record with its reason: code=%d body=%s", aw.Code, aw.Body.String())
+	}
+	if got := r6OrgList(t, s); len(got) != 0 {
+		t.Fatalf("the pool-diverged record stayed pending after approve: %v", got)
+	}
+}
+
 // The class table behind deterministicProvisionRefusal, pinned at the source:
 // of the ErrProvisionDiverged wraps in the orchestrator, the SIX that carry
 // ErrProvisionDivergedRetry are the retry-convergent flavors the approval arm
-// SPARES (a re-run of the same request lands), and the TWO that do not are
-// the pre-write two-store detections it CONSUMES (only a re-submission with
-// the explicit gesture resolves them). A wrap moving between the classes is
+// SPARES (a re-run of the same request lands), and the THREE that do not
+// are the pre-write two-store detections it CONSUMES (launch vars, routing,
+// the pool block — only a re-submission with the explicit gesture resolves
+// them). A wrap moving between the classes is
 // the one-line refactor that flips deterministic dead ends to
 // pending-forever — or consumes a record a retry would have landed — so the
 // move must edit this assertion, with the witnesses either way.
@@ -228,7 +267,7 @@ func TestR8_ProvisionDivergedWraps_ClassTable(t *testing.T) {
 		}
 		return true
 	})
-	if len(retrySites) != 6 || len(plainSites) != 2 {
+	if len(retrySites) != 6 || len(plainSites) != 3 {
 		t.Fatalf("the ErrProvisionDiverged wrap table moved: %d retry-convergent site(s) (%v), %d deterministic site(s) (%v).\n"+
 			"The retry-convergent wraps are spared by the approval arm (the retry lands); the deterministic ones are consumed (only a re-submission resolves them). "+
 			"Say which side each wrap is on here and re-check deterministicProvisionRefusal and its witnesses.",

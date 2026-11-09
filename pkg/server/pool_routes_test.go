@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
-	"github.com/SocialGouv/iterion/pkg/cloudsched"
 	"github.com/SocialGouv/iterion/pkg/credpool"
 	"github.com/SocialGouv/iterion/pkg/identity"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -272,12 +271,12 @@ func TestValidateSchedulePoolBinding(t *testing.T) {
 		t.Fatalf("seed other pool: %v", err)
 	}
 	// A block naming no pool: refused.
-	err := s.validateSchedulePoolBinding(ctx, "team1", &cloudsched.PoolBinding{PoolID: "", Enabled: true})
+	err := s.validatePoolBindingWrite(ctx, "team1", &credpool.Binding{PoolID: "", Enabled: true})
 	if err == nil {
 		t.Error("an empty pool block accepted")
 	}
 	// A block naming a vanished pool: refused, naming it.
-	err = s.validateSchedulePoolBinding(ctx, "team1", &cloudsched.PoolBinding{PoolID: "pool-gone", Enabled: true})
+	err = s.validatePoolBindingWrite(ctx, "team1", &credpool.Binding{PoolID: "pool-gone", Enabled: true})
 	if err == nil || !strings.Contains(err.Error(), "pool-gone") {
 		t.Errorf("vanished pool err = %v, want a refusal naming the pool", err)
 	}
@@ -285,23 +284,23 @@ func TestValidateSchedulePoolBinding(t *testing.T) {
 	if err := s.credPoolPools.Upsert(ctx, credpool.Pool{ID: "pool-off", OrgID: "org1", Enabled: false}); err != nil {
 		t.Fatalf("seed disabled pool: %v", err)
 	}
-	err = s.validateSchedulePoolBinding(ctx, "team1", &cloudsched.PoolBinding{PoolID: "pool-off", Enabled: true})
+	err = s.validatePoolBindingWrite(ctx, "team1", &credpool.Binding{PoolID: "pool-off", Enabled: true})
 	if err == nil || !strings.Contains(err.Error(), "disabled") {
 		t.Errorf("disabled pool err = %v, want a refusal naming the disablement", err)
 	}
 	// An ORG pool of ANOTHER org: refused — the consent is the org's own.
-	err = s.validateSchedulePoolBinding(ctx, "team1", &cloudsched.PoolBinding{PoolID: "pool-other", Enabled: true})
+	err = s.validatePoolBindingWrite(ctx, "team1", &credpool.Binding{PoolID: "pool-other", Enabled: true})
 	if err == nil || !strings.Contains(err.Error(), "org") {
 		t.Errorf("foreign org pool err = %v, want a consent refusal", err)
 	}
 	// The team's own org pool: accepted.
-	if err := s.validateSchedulePoolBinding(ctx, "team1", &cloudsched.PoolBinding{
+	if err := s.validatePoolBindingWrite(ctx, "team1", &credpool.Binding{
 		PoolID: "pool-org", Enabled: true, Strategy: credpool.Strategy{Mode: credpool.StrategyPriority},
 	}); err != nil {
 		t.Errorf("own org pool refused: %v", err)
 	}
 	// A garbage strategy inside the block: refused by shape validation.
-	err = s.validateSchedulePoolBinding(ctx, "team1", &cloudsched.PoolBinding{
+	err = s.validatePoolBindingWrite(ctx, "team1", &credpool.Binding{
 		PoolID: "pool-org", Enabled: true, Strategy: credpool.Strategy{Mode: "weighted"},
 	})
 	if err == nil {

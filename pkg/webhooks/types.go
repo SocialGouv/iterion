@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/credpool"
 	"github.com/SocialGouv/iterion/pkg/llmroute"
 	"github.com/SocialGouv/iterion/pkg/retrypolicy"
 	"github.com/SocialGouv/iterion/pkg/schedgate"
@@ -391,6 +392,13 @@ type Config struct {
 	// binding level for webhook-provisioned bots. nil = the level says
 	// nothing. BREADTH: one webhook serves every bot its rules fan out to.
 	Routing *llmroute.Policy `bson:"routing,omitempty" json:"routing,omitempty"`
+	// Pool is the webhook's binding-level pool block (ADR-164) — the
+	// enforcement half of a forge integration's pool: block, written ONLY
+	// by the provisioner after the integration's write surface validated
+	// the block and the pool's consent. The webhook CRUD request has no
+	// pool field: a hand-written block would grant a pool no validated
+	// surface ever consented to. nil = the level says nothing.
+	Pool *credpool.Binding `bson:"pool,omitempty" json:"pool,omitempty"`
 
 	// AuthorizedRepliers + MinReplierRole gate who may "talk back" to the bot
 	// via a note (a /revi command or a reply): a note author is authorized
@@ -815,6 +823,13 @@ func (c Config) NormalizedReviewRequestLogins() []string {
 		}
 	}
 	return out
+}
+
+// PoolBindingLayer projects the webhook's pool block as the binding layer
+// the launch fold consumes (ADR-164). ok=false when the webhook binds no
+// pool.
+func (c Config) PoolBindingLayer() (credpool.BindingLayer, bool) {
+	return c.Pool.Layer("webhook")
 }
 
 // RoutingPolicy projects the webhook's routing block (ADR-121). Not

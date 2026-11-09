@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
+	"github.com/SocialGouv/iterion/pkg/credpool"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/identity"
 	"github.com/SocialGouv/iterion/pkg/llmroute"
@@ -156,7 +157,7 @@ func (s *Server) teamFundsItsOwnRuns(ctx context.Context, teamID string) (bool, 
 // three Set flags record that the body NAMED launch_vars / hold_labels /
 // label_allowlist, the fact the empty value itself cannot carry across
 // the json wire the approver's card reads.
-func (s *Server) parkProvisionRequest(w http.ResponseWriter, r *http.Request, id auth.Identity, orgID, teamID string, req forgeEnableReq, integrationID string, replace bool, baseBotIDs, baseHoldLabels, baseLabelAllowlist []string, routing *llmroute.Policy, routingSpoke bool) {
+func (s *Server) parkProvisionRequest(w http.ResponseWriter, r *http.Request, id auth.Identity, orgID, teamID string, req forgeEnableReq, integrationID string, replace bool, baseBotIDs, baseHoldLabels, baseLabelAllowlist []string, routing *llmroute.Policy, routingSpoke bool, pool *credpool.Binding, poolSpoke bool) {
 	a := forge.ProvisionApproval{
 		ID:                 uuid.NewString(),
 		OrgID:              orgID,
@@ -181,6 +182,8 @@ func (s *Server) parkProvisionRequest(w http.ResponseWriter, r *http.Request, id
 		LabelAllowlistSet:  req.LabelAllowlist != nil,
 		Routing:            routing,
 		RoutingSet:         routingSpoke,
+		Pool:               pool,
+		PoolSet:            poolSpoke,
 		RequestedBy:        id.UserID,
 		CreatedAt:          time.Now().UTC(),
 	}
@@ -324,6 +327,18 @@ func (s *Server) handleApproveProvision(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 	}
+	// The pool block's consent is RE-VALIDATED at apply time (ADR-164):
+	// the pool's owner may have narrowed its audience, disabled or deleted
+	// it since the team parked the request — what the org approves must
+	// still be admissible, or the approval would grant a pool no current
+	// consent covers.
+	if a.PoolSet && a.Pool != nil {
+		if err := s.validatePoolBindingWrite(ctx, a.TenantID, a.Pool); err != nil {
+			httpError(w, http.StatusConflict,
+				"the pool block this request parked is no longer admissible (%s) — reject the request; the team can re-submit against the pool's current consent", err.Error())
+			return
+		}
+	}
 	res, err := s.forgeOrchestrator.Provision(ctx, forge.ProvisionRequest{
 		TenantID:          a.TenantID,
 		ConnectionID:      a.ConnectionID,
@@ -338,6 +353,8 @@ func (s *Server) handleApproveProvision(w http.ResponseWriter, r *http.Request) 
 		LabelAllowlist:    a.LabelAllowlist,
 		Routing:           a.Routing,
 		RoutingSet:        a.RoutingSet,
+		Pool:              a.Pool,
+		PoolSet:           a.PoolSet,
 		ActorID:           id.UserID,
 		Replace:           a.Replace,
 	})

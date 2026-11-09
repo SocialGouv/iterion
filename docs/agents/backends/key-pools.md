@@ -28,6 +28,10 @@ is the decision; this page is the operator and debugging map.
   `/api/{orgs,teams}/{id}/pool-attachment`,
   `/api/teams/{id}/bots/{bot}/pool-attachment` (CAS 409 on a stale
   `expected_updated_at`).
+- **Binding level**: a `pool:` block on a schedule (create/PATCH) or a
+  forge integration (repo-bots enable/PATCH — parked by org approval,
+  consent re-checked at apply), projected onto the webhook config and the
+  scheduled rows; the launch folds it before every stored scope.
 - **CLI**: `iterion remote pools list|create|entries|entry|import|reset|attach|detach|sync`
   — scopes: yours by default, `--org`, `--team`, `--platform`.
 - **Studio**: the org and team "Key pool" tab — the attachment editor and

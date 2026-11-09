@@ -12,6 +12,7 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
+	"github.com/SocialGouv/iterion/pkg/credpool"
 	"github.com/SocialGouv/iterion/pkg/internal/mongoutil"
 	"github.com/SocialGouv/iterion/pkg/internal/storekit"
 	"github.com/SocialGouv/iterion/pkg/llmroute"
@@ -77,6 +78,13 @@ type RepoIntegration struct {
 	// rows, the verify pass, the org-approval park/apply) is rebuilt from
 	// it. Nil = the level says nothing.
 	Routing *llmroute.Policy `bson:"routing,omitempty" json:"routing,omitempty"`
+	// Pool is the operator's per-repo pool block (ADR-164): the binding
+	// level of the pool-attachment fold for every launch this integration
+	// makes. Like Routing it is projected onto the webhook config (the
+	// enforcement half the webhook lane reads) and the scheduled rows, and
+	// a diverged pair is refused on a silent re-provision. Nil = the level
+	// says nothing.
+	Pool *credpool.Binding `bson:"pool,omitempty" json:"pool,omitempty"`
 
 	// HoldLabels is the operator's bot-agnostic pause: a pull request or issue
 	// carrying one of these labels vetoes EVERY auto-launch on this repo. It

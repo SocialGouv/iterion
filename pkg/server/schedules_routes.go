@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -14,7 +13,6 @@ import (
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/cloudsched"
-	"github.com/SocialGouv/iterion/pkg/credpool"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/llmroute"
 	"github.com/SocialGouv/iterion/pkg/retrypolicy"
@@ -63,9 +61,9 @@ type createScheduleReq struct {
 	// silently store a no-op block audited as set).
 	Routing json.RawMessage `json:"routing,omitempty"`
 	// Pool block (ADR-164; validated on create) — the binding-level pool
-	// opt-in. See updateScheduleReq.Pool for the ABSENT/null/object
-	// mechanic and the write-time validation.
-	Pool *cloudsched.PoolBinding `json:"pool,omitempty"`
+	// opt-in, decoded STRICTLY through decodePoolBlock like the routing
+	// block beside it. On create, `null` and absent both mean no block.
+	Pool json.RawMessage `json:"pool,omitempty"`
 }
 
 type updateScheduleReq struct {
@@ -120,73 +118,6 @@ type updateScheduleReq struct {
 // past the author).
 func decodeScheduleRouting(raw json.RawMessage) (*llmroute.Policy, bool, *routingRequestError) {
 	return decodeRoutingBlock(raw, routingLocksRefused)
-}
-
-// validateSchedulePoolBinding checks a schedule request's pool block for
-// the write: shape, the pool's existence and enablement, and the pool's
-// CONSENT (its owner, or an audience admitting the team's org). The
-// launch-time fold still refuses a pool that vanished since (HasPool).
-func (s *Server) validateSchedulePoolBinding(ctx context.Context, teamID string, b *cloudsched.PoolBinding) error {
-	if b == nil {
-		return nil
-	}
-	if err := b.Validate(); err != nil {
-		return err
-	}
-	// Triggers validated at the write (the fold backstops, never replaces)
-	// and reset_hold refused until its runtime half exists — the same
-	// two guards the attachment routes carry.
-	if err := validatePoolTriggers(b.Strategy.Triggers); err != nil {
-		return err
-	}
-	if b.Strategy.ResetHold {
-		return fmt.Errorf("reset_hold is not honored yet — its runtime half lands in a follow-up; drop the flag for now")
-	}
-	if s.credPoolPools == nil {
-		return fmt.Errorf("pool attachments are not wired on this deployment")
-	}
-	pool, err := s.credPoolPools.Get(ctx, b.PoolID)
-	if err != nil {
-		return fmt.Errorf("the pool block names pool %q, which does not exist", b.PoolID)
-	}
-	if !pool.Enabled {
-		return fmt.Errorf("the pool block names pool %q, which is disabled", b.PoolID)
-	}
-	if pool.EffectiveVisibility() == credpool.PoolVisibilityPrivate && !pool.OwnedBy(credpool.PoolOwnerUser, "") {
-		// A private pool consents ONLY by ownership; the ownership check
-		// for a schedule (a team's machine lane) is the org's admin write
-		// that carries the block — user-private pools do not serve
-		// machine lanes.
-		return fmt.Errorf("pool %q is private: it serves no machine lane — attach it to a team of its owner instead", b.PoolID)
-	}
-	if pool.EffectiveOwnerType() == credpool.PoolOwnerPlatform {
-		// The instance pool serves the deployment's own admins only
-		// (poolAttachmentConsent's rule, mirrored): a team schedule may
-		// never bind it — its entries are the paid gateway defaults.
-		return fmt.Errorf("pool %q is the platform's instance pool — only the platform scope binds it", b.PoolID)
-	}
-	if pool.EffectiveOwnerType() == credpool.PoolOwnerOrg {
-		t, gerr := s.authStore().GetTeam(ctx, teamID)
-		if gerr != nil || t.OrgID == "" {
-			return fmt.Errorf("team %s resolves no org: the org pool %q cannot consent", teamID, b.PoolID)
-		}
-		if pool.OrgID != t.OrgID {
-			return fmt.Errorf("pool %q belongs to org %q, not this team's org", b.PoolID, pool.OrgID)
-		}
-		return nil
-	}
-	// A USER pool: the audience must admit the team's org (the same dial
-	// poolAttachmentConsent reads) — private pools were already refused
-	// above; an audience pool whose zero/explicit audience does not admit
-	// this team refuses here.
-	t, gerr := s.authStore().GetTeam(ctx, teamID)
-	if gerr != nil || t.OrgID == "" {
-		return fmt.Errorf("team %s resolves no org: the user pool %q cannot consent", teamID, b.PoolID)
-	}
-	if !pool.Audience.Allows(pool.OrgID, t.OrgID, teamID, "", false) {
-		return fmt.Errorf("pool %q's audience does not admit team %s — the pool owner widens it first", b.PoolID, teamID)
-	}
-	return nil
 }
 
 type routingRequestError struct {
@@ -297,8 +228,9 @@ func (s *Server) handleCreateSchedule(w http.ResponseWriter, r *http.Request) {
 		httpError(w, routeErr.status, "%s", routeErr.err.Error())
 		return
 	}
-	if err := s.validateSchedulePoolBinding(r.Context(), teamID, req.Pool); err != nil {
-		httpError(w, http.StatusBadRequest, "%s", err.Error())
+	createPool, _, poolErr := s.decodeAndValidatePoolBlock(r.Context(), teamID, req.Pool)
+	if poolErr != nil {
+		httpError(w, http.StatusBadRequest, "%s", poolErr.Error())
 		return
 	}
 	now := s.scheduleNow()
@@ -327,7 +259,7 @@ func (s *Server) handleCreateSchedule(w http.ResponseWriter, r *http.Request) {
 		RetryMaxWait:      req.RetryMaxWait,
 		RetryJitter:       req.RetryJitter,
 		Routing:           routing,
-		Pool:              req.Pool,
+		Pool:              createPool,
 		CreatedBy:         id.UserID,
 		CreatedAt:         now,
 		UpdatedAt:         now,
@@ -476,26 +408,12 @@ func (s *Server) handleUpdateSchedule(w http.ResponseWriter, r *http.Request) {
 	// clears (the schedule inherits again), an object replaces — validated
 	// at write time like the create lane (shape, the pool's existence and
 	// consent).
-	var patchPool *cloudsched.PoolBinding
-	clearPool := false
-	if len(req.Pool) > 0 {
-		// The request SPOKE: `null` clears, an object replaces (validated
-		// exactly like the create lane).
-		if string(req.Pool) == "null" {
-			clearPool = true
-		} else {
-			var b cloudsched.PoolBinding
-			if err := json.Unmarshal(req.Pool, &b); err != nil {
-				httpError(w, http.StatusBadRequest, "bad pool block: %v", err)
-				return
-			}
-			if err := s.validateSchedulePoolBinding(r.Context(), teamID, &b); err != nil {
-				httpError(w, http.StatusBadRequest, "%s", err.Error())
-				return
-			}
-			patchPool = &b
-		}
+	patchPool, poolSpoke, poolErr := s.decodeAndValidatePoolBlock(r.Context(), teamID, req.Pool)
+	if poolErr != nil {
+		httpError(w, http.StatusBadRequest, "%s", poolErr.Error())
+		return
 	}
+	clearPool := patchPool == nil && poolSpoke
 	// Same merge-then-validate for the retry policy: a patch touching one
 	// retry field must not be able to leave the row incoherent.
 	mergedRetry := cur.RetryPolicy()

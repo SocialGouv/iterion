@@ -110,6 +110,15 @@ type forgeEnableReq struct {
 	// (the binding level holds no lock primitive) and the block is
 	// validated before anything is written.
 	Routing json.RawMessage `json:"routing,omitempty"`
+	// Pool is the repo's pool block (ADR-164) — the binding level of the
+	// pool-attachment fold for every launch this integration makes:
+	// {pool_id, enabled, strategy}. The same three-way rule as Routing
+	// (absent keeps, null clears, an object replaces), decoded STRICTLY
+	// through decodePoolBlock and validated before anything is written or
+	// parked: the pool's existence and enablement and its CONSENT (an org
+	// pool of this team's org, or a user pool whose audience admits it —
+	// never a private or the platform's instance pool).
+	Pool json.RawMessage `json:"pool,omitempty"`
 }
 
 func (s *Server) handleEnableForgeRepoBots(w http.ResponseWriter, r *http.Request) {
@@ -134,6 +143,13 @@ func (s *Server) handleEnableForgeRepoBots(w http.ResponseWriter, r *http.Reques
 	routing, routingSpoke, rerr := decodeRoutingBlock(req.Routing, routingLocksRefused)
 	if rerr != nil {
 		httpError(w, rerr.status, "%s", rerr.err.Error())
+		return
+	}
+	// The pool block decodes and validates at the edge too (ADR-164): its
+	// consent is checked before anything is provisioned or parked.
+	pool, poolSpoke, perr := s.decodeAndValidatePoolBlock(r.Context(), teamID, req.Pool)
+	if perr != nil {
+		httpError(w, http.StatusBadRequest, "%s", perr.Error())
 		return
 	}
 	// Assert the connection belongs to this team before we provision.
@@ -182,7 +198,7 @@ func (s *Server) handleEnableForgeRepoBots(w http.ResponseWriter, r *http.Reques
 				return
 			}
 		}
-		s.parkProvisionRequest(w, r, id, orgID, teamID, req, integrationID, false, baseBots, baseHolds, baseAllow, routing, routingSpoke)
+		s.parkProvisionRequest(w, r, id, orgID, teamID, req, integrationID, false, baseBots, baseHolds, baseAllow, routing, routingSpoke, pool, poolSpoke)
 		return
 	}
 	ctx := store.WithTenant(r.Context(), teamID)
@@ -200,6 +216,8 @@ func (s *Server) handleEnableForgeRepoBots(w http.ResponseWriter, r *http.Reques
 		LabelAllowlist:    req.LabelAllowlist,
 		Routing:           routing,
 		RoutingSet:        routingSpoke,
+		Pool:              pool,
+		PoolSet:           poolSpoke,
 		ActorID:           id.UserID,
 	})
 	if err != nil {
@@ -256,6 +274,15 @@ type forgeUpdateReq struct {
 	// clears, an object replaces), through the ONE routing decoder with
 	// locks refused at the binding level.
 	Routing json.RawMessage `json:"routing,omitempty"`
+	// Pool is the repo's pool block (ADR-164) — the binding level of the
+	// pool-attachment fold for every launch this integration makes:
+	// {pool_id, enabled, strategy}. The same three-way rule as Routing
+	// (absent keeps, null clears, an object replaces), decoded STRICTLY
+	// through decodePoolBlock and validated before anything is written or
+	// parked: the pool's existence and enablement and its CONSENT (an org
+	// pool of this team's org, or a user pool whose audience admits it —
+	// never a private or the platform's instance pool).
+	Pool json.RawMessage `json:"pool,omitempty"`
 }
 
 func (s *Server) handleUpdateForgeRepoBots(w http.ResponseWriter, r *http.Request) {
@@ -291,6 +318,11 @@ func (s *Server) handleUpdateForgeRepoBots(w http.ResponseWriter, r *http.Reques
 		httpError(w, rerr.status, "%s", rerr.err.Error())
 		return
 	}
+	pool, poolSpoke, perr := s.decodeAndValidatePoolBlock(r.Context(), teamID, req.Pool)
+	if perr != nil {
+		httpError(w, http.StatusBadRequest, "%s", perr.Error())
+		return
+	}
 	// Org ex-ante validation: only an update EXPANDING the automated
 	// surface needs the org's approval — removals and tightenings go
 	// through directly (see expandsProvisionSurface). A store error FAILS
@@ -313,7 +345,8 @@ func (s *Server) handleUpdateForgeRepoBots(w http.ResponseWriter, r *http.Reques
 			HoldLabels:           req.HoldLabels,
 			LabelAllowlist:       req.LabelAllowlist,
 			Routing:              req.Routing,
-		}, ri.ID, true, ri.BotIDs, ri.HoldLabels, ri.LabelAllowlist, routing, routingSpoke)
+			Pool:                 req.Pool,
+		}, ri.ID, true, ri.BotIDs, ri.HoldLabels, ri.LabelAllowlist, routing, routingSpoke, pool, poolSpoke)
 		return
 	}
 	ctx := store.WithTenant(r.Context(), teamID)
@@ -331,6 +364,8 @@ func (s *Server) handleUpdateForgeRepoBots(w http.ResponseWriter, r *http.Reques
 		LabelAllowlist:    req.LabelAllowlist,
 		Routing:           routing,
 		RoutingSet:        routingSpoke,
+		Pool:              pool,
+		PoolSet:           poolSpoke,
 		ActorID:           id.UserID,
 		Replace:           true,
 	})
@@ -756,6 +791,13 @@ func expandsProvisionSurface(ri forge.RepoIntegration, req forgeUpdateReq) bool 
 	// null included. Absent keeps going direct — enabling one more bot
 	// must not demand the org's approval for a pin nobody touched.
 	if len(req.Routing) > 0 {
+		return true
+	}
+	// A pool block (ADR-164) moves which credentials fund the repo's
+	// unattended runs — the binding level outranks every stored scope in
+	// the pool fold. The routing precedent: park every SPOKEN block, null
+	// included; absent goes direct.
+	if len(req.Pool) > 0 {
 		return true
 	}
 	// Overlap: "allow" is the only unbounded concurrency policy (skip and

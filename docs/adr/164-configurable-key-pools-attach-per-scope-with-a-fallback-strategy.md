@@ -63,3 +63,12 @@ The machinery half-exists: `pkg/credpool` already mutualises lent subscriptions 
 - The att: draw caps' estimates: the dollar figures stay ESTIMATES on subscriptions (the credpool doctrine) — never summed as invoices.
 - #2972's landing: compose `PoolEligible` with attachments exactly as Decision 10 states, and re-run the attached-tier suite against the reservation gate.
 - #2699's landing: the pools' pod-env model dials migrate to team/binding DB routing policies — the `pool:` block is precisely that seat.
+
+## Amendment — 2026-11-09 (#3122): the binding block reaches the forge integration
+
+The "Known limits" line above named the binding-level `pool:` decoder as pending. It lands on both records that own a validated write surface:
+
+- **One shape, one decoder, one consent check.** `credpool.Binding` is the record-carried block (the schedule's `PoolBinding` is now its alias); `decodePoolBlock` decodes STRICTLY (a camelCase dial refuses) under the routing block's three-way rule (absent keeps, `null` clears, an object replaces), and `validatePoolBindingWrite` checks shape, triggers, the pool's existence and enablement, and its consent (an org pool of the team's org, a user pool whose audience admits it — never a private pool, never the platform's instance pool).
+- **The forge integration** (repo-bots enable/PATCH) carries the block on the record AND on the webhook config it provisions — the enforcement half the webhook lane folds as its `binding:webhook` layer — and projects it onto its scheduled rows with a provenance flag (`PoolFromIntegration`, the twin of `RoutingFromIntegration`): a projected block follows every integration write, an operator's own row block survives. A pair diverged between the two stores refuses a silent re-provision (the deterministic class the org-approval arm consumes).
+- **Org approval.** A spoken block parks (null included — the block moves which credentials fund the repo's unattended runs), the parked record replays it, and the apply RE-VALIDATES its consent: a pool disabled or narrowed while the request waited is refused (409), never granted by the approval.
+- **Unchanged posture**: trigger subscriptions and hand-written webhook configs have no pool field (the webhook CRUD request carries none); their launches read the stored scopes only.
