@@ -321,6 +321,48 @@ func TestForkRunOnPiWithAForwardedKeyIsRefusedTyped(t *testing.T) {
 	}
 }
 
+// TestForkRunOnPiFundedOnlyByTheChatGPTForfaitIsRefusedTyped is pi's codex
+// arm at the REAL gate (resolveAndStartSandbox): an `openai-codex/…` node
+// whose run holds a DELIVERED ChatGPT forfait has the bridge as its only
+// channel — an OAuth file and its refresh flow, which the egress proxy
+// cannot hold (ADR-162 decision 7) — and until U5 the probe answered
+// "found" while the seed stepped aside, launching a run that died
+// credential-less mid-node (#1768). The refusal is typed under the channel
+// name claw's landing floor uses for the same forfait; the trusted twin of
+// the same node keeps the bridge and admits.
+//
+// Mutant: drop the `!trust.Trusted()` refusal in PiSandboxCredential's codex
+// leg → the fork assertion reddens (errCanaryStop reaches it instead).
+func TestForkRunOnPiFundedOnlyByTheChatGPTForfaitIsRefusedTyped(t *testing.T) {
+	clearCredentialEnv(t)
+	// The forfait the runner materialises for the run: a real ChatGPT-mode
+	// auth.json in the ctx-delivered dir piLoadCodexView reads for any trust.
+	forfait := t.TempDir()
+	blob := `{"auth_mode":"chatgpt","tokens":{"access_token":"access-pi-run","refresh_token":"refresh-pi-run","account_id":"acct-pi-run","id_token":"id-pi-run"},"last_refresh":"2026-07-29T10:00:00Z"}`
+	if err := os.WriteFile(filepath.Join(forfait, "auth.json"), []byte(blob), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{
+		OAuthCredentialFiles: map[string]string{string(secrets.OAuthKindCodex): forfait},
+	})
+	piCodex := credentialWorkflow("review", "pi", "none")
+	piCodex.Nodes["review"].(*ir.AgentNode).Model = "openai-codex/gpt-5.6-sol"
+
+	var rerr *RuntimeError
+	err := credentialAdmissionRunCtx(t, ctx, piCodex, store.RunTrustFork, nil)
+	if !errors.As(err, &rerr) || rerr.Code != ErrCodeSandboxCrossingRefused {
+		t.Fatalf("pi fork run funded only by the ChatGPT forfait = %v, want the typed crossing refusal — the probe must not count the bridge as funding", err)
+	}
+	if !strings.Contains(err.Error(), "the run's ChatGPT forfait") {
+		t.Errorf("refusal %q must name the forfait channel the proxy cannot hold", err)
+	}
+	// Trusted twin: same node, same delivered forfait — the bridge funds it.
+	err = credentialAdmissionRunCtx(t, ctx, piCodex, "", nil)
+	if !errors.Is(err, errCanaryStop) {
+		t.Fatalf("trusted control = %v, want admission (canary) — the bridge still funds a trusted run", err)
+	}
+}
+
 // TestForkRunFundedByItsOwnKeyAdmits is the crossing's positive arm: the fork
 // lane refuses only the channels the proxy cannot hold — a key OF THE RUN
 // (a BYOK key sealed on the launch) crosses as a Layer 2 placeholder

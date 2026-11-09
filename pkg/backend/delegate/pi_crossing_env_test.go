@@ -2,6 +2,8 @@ package delegate
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/secrets"
@@ -73,6 +75,70 @@ func TestPi_ForkLaneCrossingEnv(t *testing.T) {
 		trusted := piRouteEnv(pinCtx, Task{Model: "glm-5.3", ProviderHint: "zai"})
 		if got := trusted["ZAI_API_KEY"]; got != "zai-pi-pinned-witness" {
 			t.Errorf("trusted control: ZAI_API_KEY = %q, want the raw pin — the trusted crossing is today's", got)
+		}
+	})
+}
+
+// WITNESS (ADR-162 decision 7, U5): the ChatGPT forfait on a pi node. The
+// bridge seeds it as an OAuth file plus its refresh flow — a channel the
+// egress proxy cannot substitute — and the fork lane's seed steps aside
+// (piCodexSeed), so the admission probe (PiSandboxCredential, the REAL
+// predicate both the launch gate and this test read) must refuse it TYPED
+// under the channel name claw's landing floor uses for the same forfait,
+// never answer "found" and let the launch die credential-less mid-run
+// (#1768). The forfait is DELIVERED to the run — the ctx copy the runner
+// materialises — which piLoadCodexView reads for any trust; the host's
+// ~/.codex has its own, separate refusal.
+//
+// Mutants: drop the `!trust.Trusted()` branch in the codex leg of
+// PiSandboxCredential → the fork row reddens on its crossing assertion;
+// widen piCodexSeed's gate back to StateInCheckout-only and the seed stays
+// refused here only because the probe holds — see the seed's own witness in
+// untrusted_pi_floor_test.go.
+func TestPi_ForkLaneRefusesTheChatGPTForfaitTyped(t *testing.T) {
+	// Hermetic: the ambient rows below read the launcher's env.
+	t.Setenv("OPENAI_API_KEY", "")
+	t.Setenv("KIMI_API_KEY", "")
+
+	// The forfait DELIVERED to the run: a real ChatGPT-mode auth.json, the
+	// shape LoadCodexCredentialsFrom parses (access + account_id is what
+	// IsChatGPTMode asks; expiry is judged at spend, not at load).
+	forfait := t.TempDir()
+	blob := `{"auth_mode":"chatgpt","tokens":{"access_token":"access-pi-run","refresh_token":"refresh-pi-run","account_id":"acct-pi-run","id_token":"id-pi-run"},"last_refresh":"2026-07-29T10:00:00Z"}`
+	if err := os.WriteFile(filepath.Join(forfait, "auth.json"), []byte(blob), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	delivered := secrets.WithCredentials(context.Background(), secrets.Credentials{
+		OAuthCredentialFiles: map[string]string{string(secrets.OAuthKindCodex): forfait},
+	})
+
+	t.Run("a fork is refused typed, under the forfait's channel", func(t *testing.T) {
+		channel, ok, crossing := PiSandboxCredential(delivered, "openai-codex/gpt-5.6-sol", store.RunTrustFork)
+		if ok || channel != "" {
+			t.Fatalf("fork probe = (%q, %v) — the forfait was counted as funding; the launch admits and dies credential-less mid-run (#1768)", channel, ok)
+		}
+		if crossing == nil {
+			t.Fatal("crossing = nil — an unstamped fork with a delivered forfait is a bare no-credential, not the named channel the operator must replace")
+		}
+		if crossing.Channel != "the run's ChatGPT forfait" {
+			t.Errorf("channel = %q, want %q — one vocabulary with claw's landing floor for the same forfait", crossing.Channel, "the run's ChatGPT forfait")
+		}
+	})
+
+	t.Run("the same forfait funds a trusted run", func(t *testing.T) {
+		channel, ok, crossing := PiSandboxCredential(delivered, "openai-codex/gpt-5.6-sol", store.RunTrustDefault)
+		if !ok || crossing != nil {
+			t.Fatalf("trusted probe = (%q, %v, %v) — the bridge still funds a trusted run", channel, ok, crossing)
+		}
+		if channel != "the ChatGPT-forfait bridge (the codex credential seeded into the sandbox)" {
+			t.Errorf("trusted channel = %q, want the bridge", channel)
+		}
+	})
+
+	t.Run("a fork with no forfait at all is credential-less, not refused", func(t *testing.T) {
+		_, ok, crossing := PiSandboxCredential(context.Background(), "openai-codex/gpt-5.6-sol", store.RunTrustFork)
+		if ok || crossing != nil {
+			t.Fatalf("no-forfait fork probe = (%v, %v) — the typed refusal belongs to a channel that EXISTS", ok, crossing)
 		}
 	})
 }

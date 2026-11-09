@@ -191,7 +191,10 @@ func piSandboxCredentialSecretNames() []string {
 //  3. the ChatGPT-forfait bridge (piLoadCodexView): an `openai-codex/…`
 //     node's credential is seeded into the sandbox over the state mirror —
 //     it works under host_state: none too, so it is read for real, not
-//     inferred from the mount.
+//     inferred from the mount. Under the fork lane this channel is refused
+//     TYPED (the run's ChatGPT forfait): it crosses as an OAuth file and a
+//     refresh flow, which the egress proxy cannot hold, and the seed itself
+//     steps aside for an untrusted run (piCodexSeed).
 //
 // pi takes no SandboxHomeState: its file-based channel (the bridge) crosses
 // the boundary without the home bind, unlike claude_code's ~/.claude mount.
@@ -225,6 +228,16 @@ func PiSandboxCredential(ctx context.Context, model string, trust store.RunTrust
 	}
 	if provider := strings.ToLower(strings.TrimSpace(strings.Split(model, "/")[0])); provider == piCodexProvider {
 		if view, err := piLoadCodexView(ctx, trust); err == nil && view.IsChatGPTMode() {
+			if !trust.Trusted() {
+				// The forfait crosses as an OAuth file the bridge seeds into
+				// the sandbox plus its refresh flow — a channel the egress
+				// proxy cannot substitute (decision 7) — and the fork lane's
+				// seed steps aside (piCodexSeed), so a "found" answer here
+				// would admit a launch that dies credential-less mid-run
+				// (#1768). Refused typed, under the same channel name claw's
+				// floor uses for the same forfait.
+				return "", false, &credroute.ErrCrossingRefused{Channel: "the run's ChatGPT forfait", Because: crossingBecause}
+			}
 			return "the ChatGPT-forfait bridge (the codex credential seeded into the sandbox)", true, nil
 		}
 	}

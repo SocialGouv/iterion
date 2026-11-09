@@ -376,9 +376,11 @@ func (a credentialAdmission) probeWithoutArm(ctx context.Context, backend string
 		_, ok, crossing = delegate.ClaudeCodeSandboxCredential(ctx, fields.Provider, a.placement.Home)
 		return true, ok, crossing
 	case delegate.BackendPi:
-		// The probe answers for the trust the run carries: on an untrusted
-		// workspace the bridge refuses (piLoadCodexView), and reporting its
-		// channel here would read as a credential the fork never receives.
+		// The probe answers for the trust the run carries: an untrusted
+		// workspace refuses the ChatGPT forfait typed — the OAuth file and
+		// its refresh flow are a channel the proxy cannot hold, and the
+		// seed steps aside too (piCodexSeed), so the fork hears the channel
+		// to replace instead of launching to die credential-less mid-run.
 		_, ok, crossing = delegate.PiSandboxCredential(ctx, fields.Model, a.trust)
 		return true, ok, crossing
 	}
