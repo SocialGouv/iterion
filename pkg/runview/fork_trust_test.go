@@ -3,6 +3,7 @@ package runview
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -120,28 +121,35 @@ func TestLaunch_RefusesAnUntrustedSpecOnTheInProcessPath(t *testing.T) {
 		Source: "workflow w:\n  start -> done\n",
 		Trust:  store.RunTrustFork,
 	}
+	// Every row asserts the refusal's OWN sentinel, never a bare error: the
+	// fixture's source does not launch in-process anyway (the trusted row
+	// below fails later, on its own merits), so `err != nil` would stay green
+	// with the guard muted.
 	_, err = svc.Launch(context.Background(), spec)
-	if err == nil {
-		t.Fatal("Launch = nil for an untrusted spec with no publisher — the run would persist with an empty Trust and read as trusted everywhere downstream")
+	if !errors.Is(err, ErrInProcessCannotDescribe) {
+		t.Fatalf("Launch = %v for an untrusted spec with no publisher, want ErrInProcessCannotDescribe — the run would persist with an empty Trust and read as trusted everywhere downstream", err)
 	}
-	if !strings.Contains(err.Error(), "persists none of the three") {
-		t.Fatalf("err = %v, want it to name why the path cannot carry the marker", err)
+	if !strings.Contains(err.Error(), `trust="fork"`) {
+		t.Fatalf("err = %v, want it to name the fact the path cannot carry", err)
 	}
 	// An unrecognised trust is refused too: Trusted() admits one value.
-	if _, err := svc.Launch(context.Background(), LaunchSpec{Source: spec.Source, Trust: store.RunTrust("vendored")}); err == nil {
-		t.Fatal("Launch = nil for a trust this binary does not recognise — an unknown trust must fail closed")
+	if _, err := svc.Launch(context.Background(), LaunchSpec{Source: spec.Source, Trust: store.RunTrust("vendored")}); !errors.Is(err, ErrInProcessCannotDescribe) {
+		t.Fatalf("Launch = %v for a trust this binary does not recognise, want ErrInProcessCannotDescribe — an unknown trust must fail closed", err)
 	}
-	// And the OTHER fact the path cannot keep: a pinned commit. The guard
-	// names both, so it must test both — a rule that names two facts and
-	// enforces one is the shape the runner's own pin guard was missing.
-	if _, err := svc.Launch(context.Background(), LaunchSpec{Source: spec.Source, RepoSHAExpected: "deadbeef"}); err == nil {
-		t.Fatal("Launch = nil for a pinned commit the in-process path cannot persist — the pin would be silently dropped")
+	// And the OTHER facts the path cannot keep, each ALONE on an otherwise
+	// trusted spec: the guard names three, so it must test three — a rule
+	// that names several facts and enforces fewer is the shape the runner's
+	// own pin guard was missing.
+	if _, err := svc.Launch(context.Background(), LaunchSpec{Source: spec.Source, RepoSHAExpected: "deadbeef"}); !errors.Is(err, ErrInProcessCannotDescribe) {
+		t.Fatalf("Launch = %v for a pinned commit the in-process path cannot persist, want ErrInProcessCannotDescribe — the pin would be silently dropped", err)
+	}
+	if _, err := svc.Launch(context.Background(), LaunchSpec{Source: spec.Source, ForkAuthorSubject: "fork-author:t1:github:4242"}); !errors.Is(err, ErrInProcessCannotDescribe) {
+		t.Fatalf("Launch = %v for a fork author subject the in-process path cannot persist, want ErrInProcessCannotDescribe — every later re-entry would run the author's code unmetered", err)
 	}
 	// And the trusted default is untouched: this must refuse nothing that
 	// works today. It gets past the guard and fails later, on its own merits.
-	if _, err := svc.Launch(context.Background(), LaunchSpec{Source: spec.Source}); err != nil &&
-		strings.Contains(err.Error(), "persists neither marker") {
-		t.Fatalf("a trusted in-process launch was refused by the new guard: %v", err)
+	if _, err := svc.Launch(context.Background(), LaunchSpec{Source: spec.Source}); errors.Is(err, ErrInProcessCannotDescribe) {
+		t.Fatalf("a trusted in-process launch was refused by the guard: %v", err)
 	}
 }
 

@@ -159,6 +159,13 @@ func validateRoutingPolicyForLaunch(p *store.RoutingPolicy, wf *ir.Workflow) err
 // launch reaches anything that acts on the id.
 var ErrRunIDTaken = errors.New("runview: run id already exists")
 
+// ErrInProcessCannotDescribe reports a launch the in-process path refuses
+// because it carries a fact only the cloud publisher persists onto the run
+// document — an untrusted trust, a pinned commit, a fork author's metering
+// subject. Every arm of that refusal wraps it, so a caller (and a witness)
+// tells it from a launch that failed later on its own merits.
+var ErrInProcessCannotDescribe = errors.New("runview: refusing a launch the in-process path cannot describe")
+
 // Launch starts a workflow asynchronously and returns once the run
 // handle has been registered with the manager (i.e. Cancel will work
 // from the moment Launch returns nil error).
@@ -197,7 +204,7 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 	// names one is a fork gesture's, and dropping it here would un-meter the
 	// author's dollars on every later re-entry.
 	if (!spec.Trust.Trusted() || spec.RepoSHAExpected != "" || spec.ForkAuthorSubject != "") && s.publisher == nil {
-		return nil, fmt.Errorf("runview: refusing a launch the in-process path cannot describe (trust=%q, pinned_commit=%v, fork_author=%v): it persists none of the three, so the run would read as trusted, unpinned and unmetered", string(spec.Trust), spec.RepoSHAExpected != "", spec.ForkAuthorSubject != "")
+		return nil, fmt.Errorf("%w (trust=%q, pinned_commit=%v, fork_author=%v): it persists none of the three, so the run would read as trusted, unpinned and unmetered", ErrInProcessCannotDescribe, string(spec.Trust), spec.RepoSHAExpected != "", spec.ForkAuthorSubject != "")
 	}
 	if spec.BranchName != "" {
 		if err := gitlib.ValidateBranchName(spec.BranchName); err != nil {
