@@ -3685,6 +3685,22 @@ spoof on their own. It changes nothing about the Anthropic subscription
 path above: that works on its own merits (billed to extra usage), and no
 User-Agent you configure affects how it is billed.
 
+## Key pools — named credential pools, attached per scope (ADR-164)
+
+Named pools of provider credentials (subscription forfaits + gateway
+keys) that a scope attaches over a default, with a fallback strategy
+that spends the free forfait capacity first and lands on the paid
+gateway entry last — a run never fails while any entry can serve. The
+decision and the four laws (an explicit credential always wins; zero
+pool without an opt-in; sovereignty intact; a finely switchable policy)
+are [ADR-164](adr/164-configurable-key-pools-attach-per-scope-with-a-fallback-strategy.md);
+the operator and debugging map is
+[key pools](agents/backends/key-pools.md). The surfaces:
+`iterion remote pools …`, the pool CRUD/entries/attachment routes, and
+the org and team "Key pool" studio tab. The legacy donation tier this
+generalises is [credential-pool.md](credential-pool.md), byte-identical
+without an attachment.
+
 ## Troubleshooting
 
 | Symptom | Likely cause | Fix |

@@ -633,7 +633,7 @@ func TestCredSlotAdmission_APoolLentKeyIsNotedAgainstItsOwnCap(t *testing.T) {
 	wf := &ir.Workflow{Nodes: map[string]ir.Node{"a": &ir.AgentNode{
 		BaseNode: ir.BaseNode{ID: "a"}, LLMFields: ir.LLMFields{Backend: "claw", Provider: "xai", Model: "xai/grok-4"},
 	}}}
-	creds, err := p.resolveAndSealCredentials(store.WithTenant(ctx, poolTeam), "run-lent", poolOrg, poolTeam, "requester", "bot", "", wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustDefault, nil, nil)
+	creds, err := p.resolveAndSealCredentials(store.WithTenant(ctx, poolTeam), "run-lent", poolOrg, poolTeam, "requester", "bot", "", wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustDefault, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("resolveAndSealCredentials: %v", err)
 	}

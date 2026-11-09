@@ -42,3 +42,19 @@ A deployment serves `openai_compatible/<gateway model id>` from its own environm
 - The honorabilite pool, its forked bot and its chart entry become unnecessary; they are retired after the migration runbook.
 - Old runners never serve a team-funded route from their environment: schema 26 fences them; old servers cannot corrupt a gateway row: PR-0 patches and refuses.
 - Known limits, filed as tickets: hard per-key concurrency cap; trigger-spine pins; server-helper credential channel and the N-pools guard; local `iterion models` gateway row; gateway capabilities (#2103); studio editor for pins; `review-pr` claude-slot tools on claw beyond PR-R.
+
+## Amendment — 2026-11-08: pools lend gateway keys through an attachment (ADR-164)
+
+§5's "the pool never lends a gateway key" and §2's "the pool and the fallback door never lend
+a gateway key at all" are AMENDED by [ADR-164](164-configurable-key-pools-attach-per-scope-with-a-fallback-strategy.md),
+not rewritten: a NAMED, ATTACHED pool may hold `openai_compatible` entries, and the attached pool
+tier seals them as the PAIR this ADR already defined (key + canonical URL through the `setAPIKey`
+chokepoint, the seal's AAD binding the entry's own URL, the endpoint-aware fingerprint riding
+`RunBundle.APIKeyFingerprints`). A gateway grant without its URL is refused and released — the
+seal refuses it independently. The DOOR keeps its by-name refusal (the pool tier is the only
+gateway lending path); `openai_compatible` stays out of `DefaultPairOrder` and
+`KnownRoutingProviders` — it enters the pool wants only through the attachment. The legacy
+(empty-bundle) pool tier keeps refusing gateway grants by name, byte for byte: the two
+postures coexist, and the tests pinning them (the lendability refusal, the provider-coverage
+walk, the whitelist closure) pass unchanged — they pin the legacy half; the attached half is
+pinned by the attached-tier suite. PR: #3114.

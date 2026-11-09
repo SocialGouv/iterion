@@ -46,7 +46,7 @@ func TestRVA_WhitelistRefusedPoolGrantIsReleased(t *testing.T) {
 		PairOrder: []string{llmroute.Pair(llmroute.HarnessClaudeCode, llmroute.CredClaudeForfait)},
 		Triggers:  []string{llmroute.TriggerUsageWindow},
 	}
-	creds, err := p.resolveAndSealCredentials(store.WithTenant(ctx, poolTeam), "run-pw", poolOrg, poolTeam, "requester", "bot", "", wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustDefault, nil, policy)
+	creds, err := p.resolveAndSealCredentials(store.WithTenant(ctx, poolTeam), "run-pw", poolOrg, poolTeam, "requester", "bot", "", wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustDefault, nil, policy, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

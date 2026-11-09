@@ -244,8 +244,8 @@ type BindingLayer struct {
 	Source string
 	// Enabled=false is a resolved-disabled answer at the binding level:
 	// it stops the inheritance exactly like a stored attachment's.
-	Enabled bool
-	PoolID  string
+	Enabled  bool
+	PoolID   string
 	Strategy Strategy
 }
 

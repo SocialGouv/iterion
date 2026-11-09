@@ -125,7 +125,7 @@ func pairOrderPublisher(t *testing.T) (*Publisher, *usagecap.MemStore, *bytes.Bu
 func TestPairOrder_HeldOutCredentialIsNamedOnceWithItsProvenance(t *testing.T) {
 	p, _, buf := pairOrderPublisher(t)
 	ctx := store.WithTenant(context.Background(), "team1")
-	creds, err := p.resolveAndSealCredentials(ctx, "run-po-1", "", "team1", "owner1", "", "", nil, nil, nil, model.RouteView{}, nil, store.RunTrustDefault, nil, pairOrderPolicy(llmroute.SourceTeam))
+	creds, err := p.resolveAndSealCredentials(ctx, "run-po-1", "", "team1", "owner1", "", "", nil, nil, nil, model.RouteView{}, nil, store.RunTrustDefault, nil, pairOrderPolicy(llmroute.SourceTeam), nil)
 	if err != nil {
 		t.Fatalf("resolveAndSealCredentials = %v, want nil — a narrowed pair order holds a credential out, it does not refuse the launch", err)
 	}
@@ -169,7 +169,7 @@ func TestPairOrder_TheShippedDefaultHoldsNothingOut(t *testing.T) {
 		Triggers:  []string{llmroute.TriggerUsageWindow},
 		Sources:   map[string]string{llmroute.FieldPairOrder: llmroute.SourceDefault},
 	}
-	creds, err := p.resolveAndSealCredentials(ctx, "run-po-2", "", "team1", "owner1", "", "", nil, nil, nil, model.RouteView{}, nil, store.RunTrustDefault, nil, policy)
+	creds, err := p.resolveAndSealCredentials(ctx, "run-po-2", "", "team1", "owner1", "", "", nil, nil, nil, model.RouteView{}, nil, store.RunTrustDefault, nil, policy, nil)
 	if err != nil {
 		t.Fatalf("resolveAndSealCredentials: %v", err)
 	}
@@ -188,7 +188,7 @@ func TestPairOrder_TheShippedDefaultHoldsNothingOut(t *testing.T) {
 func TestPairOrder_ADefaultSourcedListIsNamedAsTheLaunchDaysDefault(t *testing.T) {
 	p, _, buf := pairOrderPublisher(t)
 	ctx := store.WithTenant(context.Background(), "team1")
-	if _, err := p.resolveAndSealCredentials(ctx, "run-po-3", "", "team1", "owner1", "", "", nil, nil, nil, model.RouteView{}, nil, store.RunTrustDefault, nil, pairOrderPolicy(llmroute.SourceDefault)); err != nil {
+	if _, err := p.resolveAndSealCredentials(ctx, "run-po-3", "", "team1", "owner1", "", "", nil, nil, nil, model.RouteView{}, nil, store.RunTrustDefault, nil, pairOrderPolicy(llmroute.SourceDefault), nil); err != nil {
 		t.Fatalf("resolveAndSealCredentials: %v", err)
 	}
 	log := buf.String()
@@ -278,7 +278,7 @@ func TestPairOrder_ADroppedPinIsNamedAsDroppedNotHonoured(t *testing.T) {
 	pinned := firstKeyWithFingerprint(t, p.apiKeys, "fp-anthropic")
 	ctx := store.WithTenant(context.Background(), "team1")
 	creds, err := p.resolveAndSealCredentials(ctx, "run-po-pin", "", "team1", "owner1", "", "", nil,
-		map[string]string{string(secrets.ProviderAnthropic): pinned.ID}, nil, model.RouteView{}, nil, store.RunTrustDefault, nil, pairOrderPolicy(llmroute.SourceTeam))
+		map[string]string{string(secrets.ProviderAnthropic): pinned.ID}, nil, model.RouteView{}, nil, store.RunTrustDefault, nil, pairOrderPolicy(llmroute.SourceTeam), nil)
 	if err != nil {
 		t.Fatalf("resolveAndSealCredentials: %v", err)
 	}
@@ -312,7 +312,7 @@ func TestPairOrder_AHeldOutForfaitIsNamedByItsSlot(t *testing.T) {
 		Triggers:  []string{llmroute.TriggerUsageWindow},
 		Sources:   map[string]string{llmroute.FieldPairOrder: llmroute.SourcePlatform},
 	}
-	creds, err := p.resolveAndSealCredentials(ctx, "run-po-6", "", "team1", "owner1", "", "", nil, nil, nil, model.RouteView{}, nil, store.RunTrustDefault, nil, policy)
+	creds, err := p.resolveAndSealCredentials(ctx, "run-po-6", "", "team1", "owner1", "", "", nil, nil, nil, model.RouteView{}, nil, store.RunTrustDefault, nil, policy, nil)
 	if err != nil {
 		t.Fatalf("resolveAndSealCredentials: %v", err)
 	}
@@ -359,7 +359,7 @@ func TestPairOrder_AnAllowlistRefusalIsNotThePairOrdersLine(t *testing.T) {
 		Triggers:  []string{llmroute.TriggerUsageWindow},
 		Sources:   map[string]string{llmroute.FieldPairOrder: llmroute.SourceDefault, llmroute.FieldProviders: llmroute.SourceOrg},
 	}
-	creds, err := p.resolveAndSealCredentials(ctx, "run-po-7", "", "team1", "owner1", "", "", nil, nil, nil, model.RouteView{}, nil, store.RunTrustDefault, nil, policy)
+	creds, err := p.resolveAndSealCredentials(ctx, "run-po-7", "", "team1", "owner1", "", "", nil, nil, nil, model.RouteView{}, nil, store.RunTrustDefault, nil, policy, nil)
 	if err != nil {
 		t.Fatalf("resolveAndSealCredentials: %v", err)
 	}
@@ -392,7 +392,7 @@ func TestPairOrder_AnAllowlistDroppedPinNamesTheAllowlistNotThePairOrder(t *test
 	}
 	ctx := store.WithTenant(context.Background(), "team1")
 	if _, err := p.resolveAndSealCredentials(ctx, "run-po-8", "", "team1", "owner1", "", "", nil,
-		map[string]string{string(secrets.ProviderZAI): pinned.ID}, nil, model.RouteView{}, nil, store.RunTrustDefault, nil, policy); err != nil {
+		map[string]string{string(secrets.ProviderZAI): pinned.ID}, nil, model.RouteView{}, nil, store.RunTrustDefault, nil, policy, nil); err != nil {
 		t.Fatalf("resolveAndSealCredentials: %v", err)
 	}
 	log := buf.String()
@@ -422,7 +422,7 @@ func TestPairOrder_AnEmptyFrozenListNamesWhatItHeldOut(t *testing.T) {
 		Sources:   map[string]string{llmroute.FieldPairOrder: llmroute.SourceTeam},
 	}
 	ctx := store.WithTenant(context.Background(), "team1")
-	creds, err := p.resolveAndSealCredentials(ctx, "run-po-9", "", "team1", "owner1", "", "", nil, nil, nil, model.RouteView{}, nil, store.RunTrustDefault, nil, policy)
+	creds, err := p.resolveAndSealCredentials(ctx, "run-po-9", "", "team1", "owner1", "", "", nil, nil, nil, model.RouteView{}, nil, store.RunTrustDefault, nil, policy, nil)
 	if err != nil {
 		t.Fatalf("resolveAndSealCredentials: %v", err)
 	}
@@ -467,7 +467,7 @@ func TestPairOrder_ASlotBothFrozenListsHoldOutNamesTheAllowlistToo(t *testing.T)
 		t.Fatalf("the fixture's allowlist is %v — the probe needs anthropic admitted and zai refused", allowed)
 	}
 	ctx := store.WithTenant(context.Background(), "team1")
-	if _, err := p.resolveAndSealCredentials(ctx, "run-po-10", "", "team1", "owner1", "", "", nil, nil, nil, model.RouteView{}, nil, store.RunTrustDefault, nil, policy); err != nil {
+	if _, err := p.resolveAndSealCredentials(ctx, "run-po-10", "", "team1", "owner1", "", "", nil, nil, nil, model.RouteView{}, nil, store.RunTrustDefault, nil, policy, nil); err != nil {
 		t.Fatalf("resolveAndSealCredentials: %v", err)
 	}
 	log := buf.String()
@@ -507,7 +507,7 @@ func TestPairOrder_ASlotBothFrozenListsHoldOutNamesTheAllowlistToo(t *testing.T)
 	if !llmroute.SlotSealable(widened.PairOrder, "zai_key") {
 		t.Fatalf("the widened order still refuses zai_key — this leg must model an operator who did what the line asked")
 	}
-	if _, err := p.resolveAndSealCredentials(ctx, "run-po-10b", "", "team1", "owner1", "", "", nil, nil, nil, model.RouteView{}, nil, store.RunTrustDefault, nil, &widened); err != nil {
+	if _, err := p.resolveAndSealCredentials(ctx, "run-po-10b", "", "team1", "owner1", "", "", nil, nil, nil, model.RouteView{}, nil, store.RunTrustDefault, nil, &widened, nil); err != nil {
 		t.Fatalf("resolveAndSealCredentials after the widening: %v", err)
 	}
 	after := buf.String()
@@ -618,7 +618,7 @@ func TestPairOrder_EveryTierNamesWhatTheFrozenOrderHeldOut(t *testing.T) {
 			policy := &store.RunLLMRoutePolicy{PairOrder: order, Triggers: []string{llmroute.TriggerUsageWindow},
 				Sources: map[string]string{llmroute.FieldPairOrder: llmroute.SourceTeam}}
 			ctx := store.WithTenant(context.Background(), tc.tenantID)
-			creds, err := p.resolveAndSealCredentials(ctx, "run-po-tier", tc.orgID, tc.tenantID, "owner1", "", "", nil, nil, nil, model.RouteView{}, nil, store.RunTrustDefault, nil, policy)
+			creds, err := p.resolveAndSealCredentials(ctx, "run-po-tier", tc.orgID, tc.tenantID, "owner1", "", "", nil, nil, nil, model.RouteView{}, nil, store.RunTrustDefault, nil, policy, nil)
 			if err != nil {
 				t.Fatalf("resolveAndSealCredentials: %v", err)
 			}
@@ -694,7 +694,7 @@ func TestPairOrder_ARefusedSlotArmsNoSpeculativeRetry(t *testing.T) {
 			policy := &store.RunLLMRoutePolicy{PairOrder: order, Triggers: []string{llmroute.TriggerUsageWindow},
 				Sources: map[string]string{llmroute.FieldPairOrder: llmroute.SourceTeam}}
 			ctx := store.WithTenant(context.Background(), tc.tenantID)
-			creds, err := p.resolveAndSealCredentials(ctx, "run-po-clock", tc.orgID, tc.tenantID, "owner1", "", "", nil, nil, nil, model.RouteView{}, nil, store.RunTrustDefault, nil, policy)
+			creds, err := p.resolveAndSealCredentials(ctx, "run-po-clock", tc.orgID, tc.tenantID, "owner1", "", "", nil, nil, nil, model.RouteView{}, nil, store.RunTrustDefault, nil, policy, nil)
 			if err != nil {
 				t.Fatalf("resolveAndSealCredentials: %v", err)
 			}
@@ -735,7 +735,7 @@ func TestPairOrder_AFundedRunUnderTheLaunchDaysDefaultIsStillTheWarning(t *testi
 		Triggers:  []string{llmroute.TriggerUsageWindow},
 		Sources:   map[string]string{llmroute.FieldPairOrder: llmroute.SourceDefault},
 	}
-	creds, err := p.resolveAndSealCredentials(ctx, "run-po-13", "", "team1", "owner1", "", "", nil, nil, nil, model.RouteView{}, nil, store.RunTrustDefault, nil, policy)
+	creds, err := p.resolveAndSealCredentials(ctx, "run-po-13", "", "team1", "owner1", "", "", nil, nil, nil, model.RouteView{}, nil, store.RunTrustDefault, nil, policy, nil)
 	if err != nil {
 		t.Fatalf("resolveAndSealCredentials: %v", err)
 	}
@@ -783,7 +783,7 @@ func TestPairOrder_ADoublyRefusedPinNamesBothKnobs(t *testing.T) {
 	}
 	ctx := store.WithTenant(context.Background(), "team1")
 	if _, err := p.resolveAndSealCredentials(ctx, "run-po-14", "", "team1", "owner1", "", "", nil,
-		map[string]string{string(secrets.ProviderZAI): pinned.ID}, nil, model.RouteView{}, nil, store.RunTrustDefault, nil, policy); err != nil {
+		map[string]string{string(secrets.ProviderZAI): pinned.ID}, nil, model.RouteView{}, nil, store.RunTrustDefault, nil, policy, nil); err != nil {
 		t.Fatalf("resolveAndSealCredentials: %v", err)
 	}
 	log := buf.String()

@@ -685,9 +685,13 @@ type Lease struct {
 	// takeover's own, and stays silent on this lease.
 	SupersededByPublishedAt *time.Time `bson:"superseded_by_published_at,omitempty" json:"superseded_by_published_at,omitempty"`
 	// ExpiresAt bounds an abandoned lease. A pod killed mid-run never
-	// reports, so without this the donor would lose a concurrency slot
-	// permanently; the sweeper closes anything past this instant.
-	ExpiresAt time.Time `bson:"expires_at" json:"expires_at"`
+	// reports, so without this the donor would lose a concurrency dial
+	// (MaxConcurrentRuns) permanently; the sweeper closes anything past
+	// this instant. AttachmentID stamps the DRAW cap row (att:) the
+	// admission reserved against — empty for a legacy (unattached) grant,
+	// so a legacy lease reads as no attachment everywhere.
+	ExpiresAt    time.Time `bson:"expires_at" json:"expires_at"`
+	AttachmentID string    `bson:"attachment_id,omitempty" json:"attachment_id,omitempty"`
 }
 
 // Lease outcomes. Free-form for display, but these three are load-bearing:
