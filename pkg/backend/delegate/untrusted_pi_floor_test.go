@@ -11,6 +11,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/backend/ambient"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -31,8 +32,9 @@ import (
 //
 // Mutants: drop `&& task.WorkspaceTrust.Trusted()` from either TRUST_PROJECT
 // reader → the first two rows redden; from the context-files condition → the
-// third; from piAmbientFiles → the fourth; from piCodexSeed or piLoadCodexView
-// → the fifth and sixth.
+// third; from piAmbientFiles → the fourth; from piCodexSeed (its trust gate
+// or its StateInCheckout-only reading) → the fifth and seventh; from
+// piLoadCodexView → the sixth.
 func TestPi_UntrustedWorkspaceFloors(t *testing.T) {
 	t.Run("TRUST_PROJECT cannot opt a fork into the checkout's skills", func(t *testing.T) {
 		work := t.TempDir()
@@ -113,6 +115,68 @@ func TestPi_UntrustedWorkspaceFloors(t *testing.T) {
 		}
 		if !strings.Contains(buf.String(), "never written where the fork's agent reads") {
 			t.Errorf("the operator was not told why no credential came: %q", buf.String())
+		}
+	})
+
+	// The U5 widening: the gate is no longer "the seed root happens to sit in
+	// the checkout" but EVERY untrusted run. A shared state dir OUTSIDE the
+	// checkout was StateShared — the old gate seeded there, handing the fork
+	// a subscription to spend. The forfait is DELIVERED to the run (the ctx
+	// copy), which piLoadCodexView reads for any trust: this row proves the
+	// refusal is the trust gate, not a missing credential.
+	t.Run("the bridge seeds nothing for a fork even outside the checkout", func(t *testing.T) {
+		t.Setenv("ITERION_PI_AGENT_DIR", "")
+		t.Setenv("PI_CODING_AGENT_DIR", "")
+		t.Setenv("ITERION_FORBID_SUBSCRIPTION_OAUTH", "")
+		forfait := t.TempDir()
+		blob := `{"auth_mode":"chatgpt","tokens":{"access_token":"access-pi-run","refresh_token":"refresh-pi-run","account_id":"acct-pi-run","id_token":"id-pi-run"},"last_refresh":"2026-07-29T10:00:00Z"}`
+		if err := os.WriteFile(filepath.Join(forfait, "auth.json"), []byte(blob), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{
+			OAuthCredentialFiles: map[string]string{string(secrets.OAuthKindCodex): forfait},
+		})
+
+		work := t.TempDir()
+		shared := t.TempDir() // outside work: StateShared, not StateInCheckout
+		var buf bytes.Buffer
+		logger := iterlog.New(iterlog.LevelWarn, &buf)
+		task := Task{NodeID: "n", Model: "openai-codex/gpt-5.6-sol", WorkDir: work, SharedStateDir: shared, Sandbox: stubSandboxRun{}, WorkspaceTrust: store.RunTrustFork}
+		if _, loc := task.StateDir(BackendPi); loc != StateShared {
+			t.Fatalf("fixture: state location = %v, want StateShared — the row proves the gate outside the checkout", loc)
+		}
+		env, cleanup, err := piCodexSeed(ctx, task, logger)
+		if err != nil {
+			t.Fatalf("piCodexSeed: %v — stepping aside degrades with a note, it does not kill the node", err)
+		}
+		cleanup()
+		if len(env) != 0 {
+			t.Errorf("env = %v — a ChatGPT token was seeded for a fork to spend", env)
+		}
+		if _, serr := os.Stat(filepath.Join(shared, BackendPi)); !os.IsNotExist(serr) {
+			t.Errorf("the shared state root was written to — the seed stepped aside before creating anything")
+		}
+		if !strings.Contains(buf.String(), "never written where the fork's agent reads") {
+			t.Errorf("the operator was not told why no credential came: %q", buf.String())
+		}
+
+		// Trusted control, same task, same delivered forfait: the seed runs,
+		// the bridge funds the node — the floor is the fork lane's, not the
+		// bridge's.
+		var ctl bytes.Buffer
+		trusted := task
+		trusted.WorkspaceTrust = store.RunTrustDefault
+		env, cleanup, err = piCodexSeed(ctx, trusted, iterlog.New(iterlog.LevelWarn, &ctl))
+		if err != nil {
+			t.Fatalf("trusted control: piCodexSeed: %v", err)
+		}
+		defer cleanup()
+		if env["PI_CODING_AGENT_DIR"] == "" {
+			t.Fatalf("trusted control: env = %v, want the seeded agent dir", env)
+		}
+		cred := readSeededAuth(t, env)[piCodexProvider]
+		if cred.Access != "access-pi-run" {
+			t.Errorf("trusted control: seeded access = %q, want the delivered forfait's", cred.Access)
 		}
 	})
 

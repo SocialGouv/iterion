@@ -1,6 +1,10 @@
 package native
 
 import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -165,4 +169,92 @@ func mustGet(t *testing.T, s *Store, id string) *Issue {
 		t.Fatalf("Get %s: %v", id, err)
 	}
 	return iss
+}
+
+// plantGrantOnCard writes a live bearer onto a stored card's files and reopens
+// the store: the only state a card holding a grant can exist in, since the
+// write boundary drops the class from every Create and Update (cards from
+// before the drop — the studio's Edit form used to pre-fill it).
+func plantGrantOnCard(t *testing.T, s *Store, id string) {
+	t.Helper()
+	// The FS twin keeps one file per card under issues/, addressed by id.
+	iss := mustGet(t, s, id)
+	path := s.issuePath(iss.ID)
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read card file %s: %v", path, err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("unmarshal card: %v", err)
+	}
+	doc["bot_args"] = map[string]string{"loop_cap": "5", store.ForgePublishTokenVar: grantSentinel}
+	patched, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal card: %v", err)
+	}
+	if err := os.WriteFile(path, patched, 0o600); err != nil {
+		t.Fatalf("write card: %v", err)
+	}
+	if err := s.Reconcile(); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if got := mustGet(t, s, id).BotArgs[store.ForgePublishTokenVar]; got != grantSentinel {
+		t.Fatalf("the planted card does not hold the grant (%v) — the fixture, not the seam, is broken", got)
+	}
+}
+
+// TestTheWriteBoundaryKeepsAGrantTheCardAlreadyHeld — the wholesale-patch
+// half of the boundary. An args rewrite (a set_bot re-point, a studio Edit
+// form, a trigger promote) lands in Update with a whole map: the grant a
+// writer SENT is still dropped, and the grant the card HELD survives the swap,
+// because the launch lane reads that bearer to refuse a crossing and a patch
+// the caller meant as an args edit must not scrub it. The one way past the
+// keep is the explicit empty value that withdraws.
+func TestTheWriteBoundaryKeepsAGrantTheCardAlreadyHeld(t *testing.T) {
+	s := newTestStore(t)
+	created, err := s.Create(Issue{Title: "a card from before the drop", State: "ready"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	plantGrantOnCard(t, s, created.ID)
+
+	// A rewrite that does not name the grant: the card's own arg lands, the
+	// held bearer comes back off the record.
+	rewrite := map[string]string{"loop_cap": "9"}
+	updated, err := s.Update(created.ID, Patch{BotArgs: &rewrite})
+	if err != nil {
+		t.Fatalf("Update rewrite: %v", err)
+	}
+	if got := updated.BotArgs[store.ForgePublishTokenVar]; got != grantSentinel {
+		t.Errorf("an args rewrite scrubbed the card's grant: %v", updated.BotArgs)
+	}
+	if updated.BotArgs["loop_cap"] != "9" {
+		t.Errorf("the rewrite's own arg was lost: %v", updated.BotArgs)
+	}
+
+	// A rewrite carrying a forged value under the minted name: the forge is
+	// dropped (BotArgsForWrite), the held bearer still survives — a client
+	// can neither set nor SWAP the grant, only retire it.
+	forged := map[string]string{"loop_cap": "9", store.ForgePublishTokenVar: "attacker-bearer"}
+	updated, err = s.Update(created.ID, Patch{BotArgs: &forged})
+	if err != nil {
+		t.Fatalf("Update forged: %v", err)
+	}
+	if got := updated.BotArgs[store.ForgePublishTokenVar]; got != grantSentinel {
+		t.Errorf("a forged value displaced the card's grant: %v", updated.BotArgs)
+	}
+	if strings.Contains(fmt.Sprint(updated.BotArgs), "attacker-bearer") {
+		t.Errorf("the forged value was stored: %v", updated.BotArgs)
+	}
+
+	// The explicit withdrawal is the one patch that retires the grant.
+	withdraw := map[string]string{"loop_cap": "9", store.ForgePublishTokenVar: ""}
+	updated, err = s.Update(created.ID, Patch{BotArgs: &withdraw})
+	if err != nil {
+		t.Fatalf("Update withdrawal: %v", err)
+	}
+	if got, ok := updated.BotArgs[store.ForgePublishTokenVar]; !ok || got != "" {
+		t.Errorf("the withdrawal did not retire the grant: present=%v got %q", ok, got)
+	}
 }

@@ -3,6 +3,91 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [5.14.0](https://github.com/SocialGouv/iterion/compare/v5.13.2...v5.14.0) (2026-11-09)
+
+### Features
+
+* **feed-watch:** post run provenance as a Mattermost collapsible block ([#3118](https://github.com/SocialGouv/iterion/issues/3118)) ([3f53e68](https://github.com/SocialGouv/iterion/commit/3f53e68b4cb721f2bcb6c0820ce7f17c2f4d9f2d))
+
+    <details><summary>why</summary>
+
+    The digest's last message now carries props.mm_blocks with one collapsible block (collapsed by default, subtle header, the provenance table + run tokens as content) — Mattermost Blocks render on the Fabrique instance (11.7); a <details> fold is not an option there (Mattermost sanitizes it). The block is layout-only: no mm_blocks_actions, so a deployment with Blocks disabled drops it at render time and the digest still lands whole; Slack sinks ignore props and carry no provenance. The run-link…
+
+    </details>
+
+## [5.13.2](https://github.com/SocialGouv/iterion/compare/v5.13.1...v5.13.2) (2026-11-09)
+
+### Bug Fixes
+
+* **cli,store,server:** a refused door records no run; the facade witness meets decision 6 ([880d309](https://github.com/SocialGouv/iterion/commit/880d309caf6586e1ab489c61434da2df7b685b63)), references [#3101](https://github.com/SocialGouv/iterion/issues/3101) [#874](https://github.com/SocialGouv/iterion/issues/874)
+
+    <details><summary>why</summary>
+
+    Round 2's two HIGH findings, each answered at its class.
+
+    </details>
+* **runner,docs:** the connector trust refusal is acked, never redelivered ([8aa9293](https://github.com/SocialGouv/iterion/commit/8aa9293a60fd0020eb8bb78ced37472c32883eb1)), references [#3101](https://github.com/SocialGouv/iterion/issues/3101) [#874](https://github.com/SocialGouv/iterion/issues/874)
+
+    <details><summary>why</summary>
+
+    Round 2's remaining MEDIUM: isTrustFloorRefusal named only three of the workspace-trust floor's typed refusals — connection.ErrUntrustedAction (and its ErrTrustUnstated sibling), the very refusal decision 6 tightened, was missing — so a fork run refused at the connector chokepoint was nak'd and redelivered instead of acked: JetStream re-pays a pod, a sandbox and a full clone of the outsider's tree per delivery, and the final one parks as DLQ_PARKED, overwriting the untrusted_workspace_refused…
+
+    </details>
+* **runtime:** a bound secret's AllowedHosts open the run's egress allowlist ([#3119](https://github.com/SocialGouv/iterion/issues/3119)) ([27b748c](https://github.com/SocialGouv/iterion/commit/27b748cf3aafb74f0838c2554b9c88fc977534e6))
+
+    <details><summary>why</summary>
+
+    The forge-native ticket lookup of a review on a self-hosted forge died at the run's own CONNECT proxy: the iterion-default preset lists the SaaS code hosts only, and a binding's AllowedHosts never reached the network policy — they governed secret materialization alone, while the review-pr manifest documents them as what "the egress guard pins to that instance". Measured live on honorabilite MR !270 (run 01a1bdf3): every review on a PIC repo reported "forge issue lookup unverifiable — proxy…
+
+    </details>
+* **security:** an untrusted run gets no MCP server from the checkout or the ambient config ([d94d818](https://github.com/SocialGouv/iterion/commit/d94d818749376e4994ac70f4fe6f63b4259d5ec0)), references [#3101](https://github.com/SocialGouv/iterion/issues/3101) [#874](https://github.com/SocialGouv/iterion/issues/874)
+
+    <details><summary>why</summary>
+
+    The MCP catalog a run is handed is assembled from three ambient sources, and every one of them names a process the agent may then drive. On a workspace its tenant did not write, the checkout's `.mcp.json` IS the attacker's prose: a server entry there runs whatever binary it names with the run's own credentials. The plugin catalog is the operator's, but a fork run has no business reaching it either — its servers hold tenant state the fork lane exists to review, not to drive.
+
+    </details>
+* **security:** an untrusted run holds no host capability ([626bbb8](https://github.com/SocialGouv/iterion/commit/626bbb8109b0fd0529a0f6968af137166290f0a1)), references [#3101](https://github.com/SocialGouv/iterion/issues/3101) [#874](https://github.com/SocialGouv/iterion/issues/874)
+
+    <details><summary>why</summary>
+
+    A host capability (board.*, runs.read, watch.*, connectors) reaches the tenant's state beyond the workspace: its board, its run store, its watch fan-out, its connector facade. On a workspace its tenant did not write, none of them is held, whatever a node declares — and what a node is OFFERED follows, so the model never reads a tool it cannot call.
+
+    </details>
+* **security:** an untrusted run resolves no bot:// source and holds no tenant memory ([a4e336b](https://github.com/SocialGouv/iterion/commit/a4e336b30cf758c51becdb960f421128adaa521b)), references [#3101](https://github.com/SocialGouv/iterion/issues/3101) [#874](https://github.com/SocialGouv/iterion/issues/874)
+
+    <details><summary>why</summary>
+
+    Two more checkout-sourced channels floored at their seams:
+
+    </details>
+* **security:** an untrusted run resolves no connector read; --run-id settles its trust before the compile ([0e05aef](https://github.com/SocialGouv/iterion/commit/0e05aef8555b0d7bffa5996cadfd78d337782e7c)), references [#3101](https://github.com/SocialGouv/iterion/issues/3101) [#874](https://github.com/SocialGouv/iterion/issues/874)
+
+    <details><summary>why</summary>
+
+    Two HIGH findings of ADR-162 U4's round-1 review, each fixed at its class.
+
+    </details>
+* **security:** the board door refuses the reserved bot_args to every tool caller ([f819518](https://github.com/SocialGouv/iterion/commit/f819518196da9ed3219bc1c54d92640def2c7933)), references [#3101](https://github.com/SocialGouv/iterion/issues/3101) [#874](https://github.com/SocialGouv/iterion/issues/874)
+
+    <details><summary>why</summary>
+
+    The reserved `__iterion_*` bot args are the server's launch channel: what a carded run clones, which credential it resolves, which repository meters, bounds and debits it. boardops.CallWithEnv is the door every board transport crosses — claw's in-process registry, `iterion __mcp-board` for claude_code and pi, the HTTP MCP handler, the operator MCP — and every one of those callers is a client, so the refusal sits there, typed (ErrReservedBotArg), trust-independent: a TRUSTED run carrying the…
+
+    </details>
+
+## [5.13.1](https://github.com/SocialGouv/iterion/compare/v5.13.0...v5.13.1) (2026-11-09)
+
+### Bug Fixes
+
+* **delegate:** stamp the catalog context window into the CLI harness env ([#3112](https://github.com/SocialGouv/iterion/issues/3112)) ([ffdca65](https://github.com/SocialGouv/iterion/commit/ffdca657dea428783e805a86c83e5a028bad6e60)), references [#3111](https://github.com/SocialGouv/iterion/issues/3111) [#2000](https://github.com/SocialGouv/iterion/issues/2000)
+
+    <details><summary>why</summary>
+
+    A CLI harness that never learns the model's real context window compacts too late and dies on the provider ceiling: a review node loaded ~254k tokens against deepseek-v4.1-flash's 256k window and was refused for one token over (253953 prompt + 8192 max_tokens > 262144, CONTEXT_LENGTH_EXCEEDED, failed_resumable — issue #3111, epic #2000).
+
+    </details>
+
 ## [5.13.0](https://github.com/SocialGouv/iterion/compare/v5.12.3...v5.13.0) (2026-11-08)
 
 ### Features

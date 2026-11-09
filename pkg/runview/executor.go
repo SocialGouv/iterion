@@ -1126,6 +1126,7 @@ func expandHatchAdvice() string {
 // engine settles the sandbox. mcp.WithConfigRefresher is where it goes back.
 func expandMCPCatalog(wf *ir.Workflow, policy mcp.StartPolicy, logger *iterlog.Logger) map[string]*mcp.ServerConfig {
 	catalog := make(map[string]*mcp.ServerConfig, len(wf.ResolvedMCPServers))
+	untrusted := wf.MCPPrepared != nil && !store.RunTrust(wf.MCPPrepared.Trust).Trusted()
 	for name, server := range wf.ResolvedMCPServers {
 		origin := mcp.Origin(server.Origin)
 		// Whose environment answers `${VAR}` here? The launcher's — an
@@ -1167,6 +1168,20 @@ func expandMCPCatalog(wf *ir.Workflow, policy mcp.StartPolicy, logger *iterlog.L
 			// that was not.
 			Env:  maps.Clone(server.Env),
 			Auth: mcp.FromIRAuth(server.Auth),
+		}
+		// On a workspace its tenant did not write, a stdio server iterion
+		// boots itself — the health check, claw's in-process manager — starts
+		// from the filesystem root, not from iterion's working directory: a
+		// nested `iterion run` is started IN the checkout, and a launcher
+		// reads its configuration from its cwd (`npx` runs a checkout's
+		// node_modules/.bin shadow of the pinned package). The CLI backends'
+		// own spawns get the same start (resolveTaskMCPServers), so a server
+		// has one working directory whichever backend runs it. This lives in
+		// expandMCPCatalog — not in buildMCPManager's one pass — so the
+		// settled-policy refresher, which rebuilds the catalog through this
+		// same function, cannot hand a server its checkout cwd back.
+		if untrusted && catalog[name].Transport == mcp.TransportStdio {
+			catalog[name].WorkDir = "/"
 		}
 		// A reference that was dropped can leave the config unusable — an
 		// empty `command` for a stdio server, an empty `url` for http/sse.

@@ -905,13 +905,34 @@ var piCredentialEnvNames = []string{
 // even though the host has the key — the failure this function exists for.
 func piSandboxEnv(ctx context.Context, task Task) map[string]string {
 	env := map[string]string{}
-	for _, name := range piCredentialEnvNames {
-		if v, ok := os.LookupEnv(name); ok && v != "" {
-			env[name] = v
+	// ADR-162 decision 7: an untrusted run's container holds no credential
+	// value. The launcher's env never crosses — the pod's keys are the
+	// deployment's money, not the run's — and the run's own keys cross as
+	// Layer 2 placeholders the egress proxy substitutes toward the
+	// credential's host. The task carries the trust the engine stamped
+	// (stampWorkspace); its zero value is trusted, so a task that names no
+	// trust keeps today's crossing.
+	untrusted := !task.WorkspaceTrust.Trusted()
+	if !untrusted {
+		for _, name := range piCredentialEnvNames {
+			if v, ok := os.LookupEnv(name); ok && v != "" {
+				env[name] = v
+			}
 		}
 	}
 	for k, v := range piResolveEnv(ctx) {
 		env[k] = v
+	}
+	if untrusted {
+		// With the ambient loop skipped, every non-empty key name below is
+		// the run's own (piResolveEnv binds them from the run's
+		// credentials alone). The names come from piEnvKeys itself, so the
+		// placeholder sweep and the run's key binding cannot drift.
+		for _, name := range piEnvKeys {
+			if env[name] != "" {
+				env[name] = secrets.CredentialPlaceholder(env[name])
+			}
+		}
 	}
 	for _, kv := range task.ExtraEnv {
 		if k, v, ok := strings.Cut(kv, "="); ok {
@@ -939,6 +960,11 @@ func piRouteEnv(ctx context.Context, task Task) map[string]string {
 	}
 	if k := creds.PinnedAPIKey(p); k != "" {
 		env := map[string]string{}
+		// The untrusted crossing (ADR-162 decision 7): the pin crosses as
+		// its Layer 2 placeholder like every run key.
+		if !task.WorkspaceTrust.Trusted() {
+			k = secrets.CredentialPlaceholder(k)
+		}
 		piBindKey(env, p, k)
 		return env
 	}

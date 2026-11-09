@@ -105,6 +105,12 @@ type runCredKeys struct {
 	// (model.DetectedClawSpecUnder, the run's allowlist applied): the spec
 	// such a leg is asked about, exactly as the admission asks it.
 	detected func(nodeID string) (string, error)
+	// trust is the run's workspace trust (msg.Trust, the run document's own
+	// mirrored on the wire): the arm resolves the run's calls under it, so a
+	// leg an untrusted run's crossing refuses — a forfait, the launcher's
+	// ambient env (ADR-162 decision 7) — spends nothing to meter, exactly as
+	// the launch's admission reads it.
+	trust store.RunTrust
 }
 
 // scopeFor returns the meter scope a reading on this slot belongs to: the
@@ -154,7 +160,7 @@ func (k runCredKeys) bySlot(slot string) string {
 // subscription is the org's, and merging it with the deployment's would
 // make one org's exhausted window park every other tenant's runs.
 func usageCapCredKeys(ctx context.Context, msg *queue.RunMessage) runCredKeys {
-	k := runCredKeys{scope: usagecap.ScopePlatform, detected: model.DetectedClawSpecUnder(msg.LLMProviders)}
+	k := runCredKeys{scope: usagecap.ScopePlatform, detected: model.DetectedClawSpecUnder(msg.LLMProviders), trust: msg.Trust}
 	creds, ok := secrets.CredentialsFromContext(ctx)
 	// The pod's ambient credential exists whether or not the run carries a
 	// bundle, and a stamped run refuses it: its nothing-held default stays on
@@ -364,6 +370,9 @@ func (k runCredKeys) routeKey(ctx context.Context, route model.WireRoute) (key s
 	if err != nil {
 		return "", false
 	}
+	// The arm answers under the run's trust (ADR-162 decision 7): the same
+	// leg the launch's admission reads, not a trusted shadow of it.
+	ctx = credroute.WithRunTrust(ctx, k.trust)
 	placement := credroute.Sandbox{Contained: k.sandboxed}
 	for i, leg := range route.Legs {
 		spec := route.LegSpec(i, base)
@@ -1044,7 +1053,7 @@ func (k runCredKeys) supervisorKey(ctx context.Context, spec, hint string) (key 
 	if _, _, err := model.ParseModelSpec(spec); err != nil {
 		return "", false
 	}
-	spend, err := credroute.Resolve(ctx, credroute.Call{
+	spend, err := credroute.Resolve(credroute.WithRunTrust(ctx, k.trust), credroute.Call{
 		Backend: delegate.BackendClaw, Spec: spec, Leg: credroute.Leg{Provider: hint}, Role: credroute.RoleSupervisor,
 	})
 	if err != nil {

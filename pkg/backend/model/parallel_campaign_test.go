@@ -84,6 +84,7 @@ var serialFamily = map[string]string{
 	"round3_provider_ipc_test.go":       "Setenv",
 	"round3_tools_chain_test.go":        "Setenv",
 	"round6_chain_spend_test.go":        "Setenv",
+	"untrusted_memory_test.go":          "Setenv",
 
 	"anthropic_forfait_ctx_test.go":            "SetCredentialsLookup, SetOAuthDirLookup, Setenv",
 	"async_backend_test.go":                    "Setenv",
@@ -100,6 +101,7 @@ var serialFamily = map[string]string{
 	"claw_backend_test.go":                     "Setenv",
 	"claw_client_identity_test.go":             "Setenv",
 	"claw_compress_secret_test.go":             "Setenv",
+	"claw_crossing_env_test.go":                "Setenv",
 	"claw_dispatch_env_narrow_test.go":         "Setenv",
 	"claw_stream_belt_test.go":                 "Setenv",
 	"claw_stream_watchdog_crossing_test.go":    "Setenv",
@@ -179,6 +181,7 @@ var serialFamily = map[string]string{
 	"settings_hooks_test.go":                   "Setenv",
 	"slash_commands_test.go":                   "Setenv",
 	"stream_error_wire_test.go":                "Setenv",
+	"task_context_window_test.go":              "Setenv",
 	"testparallel_test.go":                     "Setenv",
 	"tool_attachment_deliverable_link_test.go": "Setenv",
 	"tool_error_redaction_test.go":             "Setenv",

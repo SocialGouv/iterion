@@ -186,6 +186,14 @@ var classification = map[store.FailureCode]Disposition{
 	// meets the same run credentials and the same switch.
 	store.FailureCredentialAmbientRefused:        DispositionDeterministic,
 	store.FailureCredentialSubscriptionForbidden: DispositionDeterministic,
+	// The fork lane's two sandbox refusals (ADR-162 decision 7): a
+	// credential channel the proxy cannot hold, and a driver that
+	// enforces no network policy around the container. A redelivery
+	// meets the same sealed channels and the same driver advertisement —
+	// the cures are an operator's (rewrite the channel, move the lane to
+	// a policy-holding driver), never a retry.
+	store.FailureSandboxCrossingRefused: DispositionDeterministic,
+	store.FailureSandboxNetworkRefused:  DispositionDeterministic,
 	// The driver can neither bind nor copy the run's attachments: a
 	// redelivery meets the same driver.
 	store.FailureAttachmentsUndeliverable: DispositionDeterministic,

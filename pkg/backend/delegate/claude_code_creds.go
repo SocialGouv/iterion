@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/internal/credheader"
+	"github.com/SocialGouv/iterion/pkg/backend/credroute"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate/claudesdk"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/usagecap"
@@ -1383,14 +1384,16 @@ func facadeEnvKey(slot string) string {
 // first, then the provider's process-env fallback, then the refusal. Shared
 // by every facade hint so a new provider cannot land with a weaker refusal
 // than its siblings.
-func facadeCredEnvForHint(slot string, creds secrets.Credentials, hasCreds bool) map[string]string {
+func facadeCredEnvForHint(slot string, creds secrets.Credentials, hasCreds bool, cross bool) map[string]string {
 	if hasCreds {
 		if k := creds.APIKey(secrets.Provider(slot)); k != "" {
 			// Under the ambient stamp the pod's routing env is outside the
 			// run's trust domain: a run-held key authenticates to the
 			// vendor's own endpoint, never to the pod's ANTHROPIC_BASE_URL.
-			if creds.AmbientRefused {
-				return facadeEnvForRunHeld(slot, k)
+			// The untrusted crossing (ADR-162 decision 7) routes the same
+			// way and carries the key as its placeholder.
+			if creds.AmbientRefused || cross {
+				return facadeEnvForRunHeld(slot, crossedKey(k, cross))
 			}
 			return facadeEnvFor(slot, k)
 		}
@@ -1401,8 +1404,8 @@ func facadeCredEnvForHint(slot string, creds secrets.Credentials, hasCreds bool)
 		// carries. After the run's own key, never before it — a tenant's
 		// instrument outranks the deployment's.
 		if k := creds.PinnedAPIKey(secrets.Provider(slot)); k != "" {
-			if creds.AmbientRefused {
-				return facadeEnvForRunHeld(slot, k)
+			if creds.AmbientRefused || cross {
+				return facadeEnvForRunHeld(slot, crossedKey(k, cross))
 			}
 			return facadeEnvFor(slot, k)
 		}
@@ -1701,7 +1704,12 @@ func anthropicCredEnvForCLI(ctx context.Context, providerHint string, sandboxed 
 func anthropicCredRouteForTask(ctx context.Context, task Task) (env, selected map[string]string, inheritAmbient bool) {
 	selected, inheritAmbient = selectedAnthropicCredEnvForCLI(ctx, task.ProviderHint, taskSandboxed(task))
 	env = map[string]string{}
-	if inheritAmbient && taskSandboxed(task) {
+	// The launcher's ambient env never crosses an untrusted run's sandbox
+	// (ADR-162 decision 7): it is one of the channels the egress proxy
+	// cannot hold — the spawn composes without it, and the admission's
+	// probe names it as the typed refusal when it was the only would-be
+	// channel.
+	if inheritAmbient && taskSandboxed(task) && credroute.CarriedRunTrust(ctx).Trusted() {
 		for key, value := range ambientAnthropicEnvForSandbox() {
 			env[key] = value
 		}
@@ -1812,13 +1820,21 @@ func init() {
 func selectedAnthropicCredEnvForCLI(ctx context.Context, providerHint string, sandboxed bool) (env map[string]string, inheritAmbient bool) {
 	providerHint = normalizeProviderHint(providerHint)
 	creds, hasCreds := secrets.CredentialsFromContext(ctx)
+	// ADR-162 decision 7: an untrusted run's SANDBOXED spawn holds its
+	// credential as a Layer 2 placeholder, never the value — the egress
+	// proxy substitutes it toward the credential's own host, and the
+	// container holds no key to exfiltrate. Read once here, at the one
+	// resolver every spawn composes, so the env, the probe and the spawn
+	// cannot disagree on which side of the crossing a key crossed as. A
+	// trusted run — stamped or not — keeps today's raw value.
+	cross := sandboxed && !credroute.CarriedRunTrust(ctx).Trusted()
 
 	// providerHint=="anthropic": force Anthropic-direct. Skip the z.ai
 	// branches entirely, even if ZAI_API_KEY is in the process env.
 	if providerHint == "anthropic" {
 		if hasCreds {
 			if k := creds.APIKey(secrets.ProviderAnthropic); k != "" {
-				return map[string]string{"ANTHROPIC_API_KEY": k}, false
+				return map[string]string{"ANTHROPIC_API_KEY": crossedKey(k, cross)}, false
 			}
 			// The forfait before a key a shared tier pinned for the route: a
 			// pin names the PROVIDER, and this CLI spends the subscription on
@@ -1833,7 +1849,7 @@ func selectedAnthropicCredEnvForCLI(ctx context.Context, providerHint string, sa
 			// Same licence as the facade branch below: an explicit pin may
 			// spend a key a shared tier funded for it.
 			if k := creds.PinnedAPIKey(secrets.ProviderAnthropic); k != "" {
-				return map[string]string{"ANTHROPIC_API_KEY": k}, false
+				return map[string]string{"ANTHROPIC_API_KEY": crossedKey(k, cross)}, false
 			}
 		}
 		// Process-env path: rely on ANTHROPIC_API_KEY inherited by the
@@ -1853,7 +1869,7 @@ func selectedAnthropicCredEnvForCLI(ctx context.Context, providerHint string, sa
 	// Each facade goes through the same function so none can land with a
 	// weaker refusal than its siblings.
 	if facadeEnvKey(providerHint) != "" {
-		return facadeCredEnvForHint(providerHint, creds, hasCreds), false
+		return facadeCredEnvForHint(providerHint, creds, hasCreds, cross), false
 	}
 
 	// Default precedence (providerHint is "" / "auto"), in
@@ -1867,7 +1883,7 @@ func selectedAnthropicCredEnvForCLI(ctx context.Context, providerHint string, sa
 			switch slot {
 			case string(secrets.ProviderAnthropic):
 				if k := creds.APIKey(secrets.ProviderAnthropic); k != "" {
-					return map[string]string{"ANTHROPIC_API_KEY": k}, false
+					return map[string]string{"ANTHROPIC_API_KEY": crossedKey(k, cross)}, false
 				}
 			case string(secrets.OAuthKindClaudeCode):
 				if d := creds.OAuthDir(string(secrets.OAuthKindClaudeCode)); d != "" {
@@ -1875,7 +1891,14 @@ func selectedAnthropicCredEnvForCLI(ctx context.Context, providerHint string, sa
 				}
 			default:
 				if k := creds.APIKey(secrets.Provider(slot)); k != "" {
-					if env := facadeEnvFor(slot, k); env != nil {
+					// Under the crossing the vendor's own endpoint serves the
+					// key (as under the stamp: the pod's routing env is not
+					// the run's), and the KEY is the placeholder.
+					if cross {
+						if env := facadeEnvForRunHeld(slot, crossedKey(k, cross)); env != nil {
+							return env, false
+						}
+					} else if env := facadeEnvFor(slot, k); env != nil {
 						return env, false
 					}
 				}
@@ -1925,4 +1948,46 @@ func ambientStampRefusal(ctx context.Context, inheritAmbient bool) error {
 		refused.Because = "the run refuses the ambient environment — fund it with a run-held key"
 	}
 	return refused
+}
+
+// crossedKey is the value a run key crosses the sandbox with: itself — or,
+// for an untrusted run, whose container holds no credential value
+// (ADR-162 decision 7), its Layer 2 placeholder, substituted by the egress
+// proxy toward the credential's own host. The placeholder is a pure function
+// of the value, so the spawn env and the proxy's rewriter derive the same
+// token with no coordination. A value with no placeholder (too short to be
+// a credential) crosses as the explicit empty: a suppression, which reads as
+// auth attempted and invalid rather than as an env gone missing.
+func crossedKey(key string, cross bool) string {
+	if !cross {
+		return key
+	}
+	if ph := secrets.CredentialPlaceholder(key); ph != "" {
+		return ph
+	}
+	return ""
+}
+
+// crossingRefusal refuses, for an untrusted run's SANDBOXED spawn, the
+// credential channels the egress proxy cannot hold (ADR-162 decision 7). It
+// reads the env the spawn would actually receive — the doctrine of
+// facadeHintRefusal, so a second copy of "what did the resolver pick?" can
+// never disagree with the routing — and answers nil for every trusted run.
+// The channel visible here is the forfait's config dir: an OAuth credential
+// with a file and a refresh flow is not a header token toward one host, and
+// Layer 2 cannot substitute it. The ambient channel needs no reader here:
+// ambientStampRefusal refuses it wherever it would serve, and the launch
+// admission refuses the run whose only credential is ambient.
+func crossingRefusal(ctx context.Context, task Task, env map[string]string) error {
+	if !taskSandboxed(task) || credroute.CarriedRunTrust(ctx).Trusted() {
+		return nil
+	}
+	if env["CLAUDE_CONFIG_DIR"] != "" {
+		return &credroute.ErrCrossingRefused{
+			Channel: "the run's Claude forfait",
+			Spec:    task.ProviderHint,
+			Because: "fund the run with an API key (a BYOK key, a pinned key) — Layer 2 substitutes header tokens toward the credential's own host and cannot hold an OAuth credential's file and refresh flow",
+		}
+	}
+	return nil
 }

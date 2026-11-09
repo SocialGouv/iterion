@@ -47,6 +47,22 @@ func (e *ClawExecutor) applyAutoMemory(ctx context.Context, task *delegate.Task,
 		}
 	}
 
+	// A workspace its tenant did not write gets no memory, in either
+	// direction. The space is the TENANT's: hydrating it hands the fork's
+	// agent the operator's own notes, and folding its edits back writes the
+	// fork's text into a store every later trusted run of the bot is handed —
+	// an "always approve" note outlives the fork run that planted it. Read
+	// from the field stampWorkspace reads, so the task and this decision
+	// cannot disagree. Refused out loud, like the copy-based sandbox below.
+	if !e.WorkspaceTrust().Trusted() {
+		e.announceTrustWithdrawal(f.id, TrustWithdrawalInfo{
+			What: "auto_memory",
+			Reason: "this run's workspace was not written by its tenant, and the memory space is the tenant's — " +
+				"MEMORY.md is neither read into this agent nor written back from it",
+		})
+		return noop
+	}
+
 	// A sandbox whose workspace is a COPY of the host's (kubernetes) cannot
 	// carry this round trip. The mirror is a directory the agent reads and
 	// rewrites for the whole node, and the copy-based drivers offer a push

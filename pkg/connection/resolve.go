@@ -39,7 +39,7 @@ type Resolver struct {
 	TenantID string
 	// Trust says who wrote the code in the workspace of the run this resolver
 	// serves, and it is REQUIRED: the zero value states nothing and refuses
-	// every mutating action (trust.go).
+	// every action, read or mutating (trust.go).
 	//
 	// A FIELD for the same reason as TenantID, and the reason is stronger
 	// here: the executor that calls ResolveAction holds no run document, so
@@ -54,9 +54,10 @@ type Resolver struct {
 // The order is deliberate. The OPERATION is resolved first, then the run's
 // TRUST, then the connection, then the credential — cheapest and least
 // sensitive first, so a misspelt operation id never causes a credential to be
-// unsealed, and a run that may not mutate never causes a tenant-scoped store
-// read either. Each step's failure names what to fix, because every one of
-// them surfaces to an operator as "the node failed" otherwise.
+// unsealed, and a run whose workspace the tenant does not control never causes
+// a tenant-scoped store read either. Each step's failure names what to fix,
+// because every one of them surfaces to an operator as "the node failed"
+// otherwise.
 func (r *Resolver) ResolveAction(ctx context.Context, actionID, alias string) (*spec.Package, spec.Operation, exec.Credential, string, error) {
 	return r.resolve(ctx, actionID, alias, CapAction)
 }
@@ -97,13 +98,15 @@ func (r *Resolver) resolve(ctx context.Context, actionID, alias string, want Cap
 
 	// WHO WROTE THE CODE, before the connection is even looked up.
 	//
-	// The EFFECT is the predicate (spec.Effect.Mutating(), which reads an
-	// unknown effect as mutating), so the operation has to be resolved first —
-	// and that touches only the local catalog. Placed before the store read so
-	// an untrusted run's mutating action learns nothing about which aliases
-	// this tenant has, and before openCredential so nothing is unsealed for
-	// it. trust.go holds the whole reasoning.
-	if op.Effect.Mutating() && !r.Trust.mayMutate() {
+	// The TRUST alone is the predicate — not the effect: #1802 refused only
+	// mutations and let a review READ, and ADR-162 decision 6 withdrew the
+	// reads too, because what such a run reads can leave through the run's one
+	// route out. The operation is still resolved first so the refusal can name
+	// it, and that touches only the local catalog. Placed before the store read
+	// so an untrusted run's action learns nothing about which aliases this
+	// tenant has, and before openCredential so nothing is unsealed for it.
+	// trust.go holds the whole reasoning.
+	if !r.Trust.tenantsOwnCode() {
 		return nil, zero, exec.Credential{}, "", &TrustError{Action: op.ID, Alias: alias, Effect: op.Effect, Trust: r.Trust}
 	}
 
@@ -294,12 +297,14 @@ func (r *Resolver) checkUsable(conn Connection, pkg *spec.Package, tier Tier, op
 //
 // A run whose workspace the tenant does not control is told nothing: the list
 // is tenant data, and the reader of a refusal served to such a run is whoever
-// wrote that run's workspace — a misspelt alias on a READ operation would make
-// the error an inventory of the tenant's connections (#1802's rule, applied by
-// #2810 one layer up to the catalog's packages). The gate reads the same
-// predicate those decisions read, and sits HERE rather than at the one call
-// site so every future caller inherits it. Withheld before the List call, so
-// the probe costs the tenant's store nothing either.
+// wrote that run's workspace — the error would be an inventory of the tenant's
+// connections (#1802's rule, applied by #2810 one layer up to the catalog's
+// packages). The resolution now refuses such a run before any store read, so
+// this gate is the second lock on the same door rather than the only one — kept
+// because the refusal that reaches it can come from a caller yet to be written.
+// It reads the same predicate those decisions read, and sits HERE rather than
+// at the one call site so every future caller inherits it. Withheld before the
+// List call, so the probe costs the tenant's store nothing either.
 func (r *Resolver) suggestAlias(ctx context.Context, connector string) string {
 	if !r.Trust.tenantsOwnCode() {
 		return ""

@@ -170,6 +170,17 @@ func New(root string, opts ...StoreOption) (*FilesystemRunStore, error) {
 	// never accidentally committed.
 	// Failures (read-only FS, permission, etc.) are non-fatal.
 	_ = ensureGitignore(root)
+	return Open(root, opts...), nil
+}
+
+// Open returns a FilesystemRunStore over root WITHOUT creating anything: a
+// root that does not exist reads as a store with no runs (LoadRun answers
+// ErrRunNotFound). Reads are the contract — a caller that must not
+// materialize the store (a pre-compile peek) opens through here so a launch
+// it then refuses leaves no directory behind. Writes behave exactly as on a
+// New store: they create their own directory, so a WRITE through Open does
+// adopt the path.
+func Open(root string, opts ...StoreOption) *FilesystemRunStore {
 	s := &FilesystemRunStore{
 		root:           root,
 		seq:            make(map[string]int64),
@@ -180,7 +191,7 @@ func New(root string, opts ...StoreOption) (*FilesystemRunStore, error) {
 	for _, opt := range opts {
 		opt(s)
 	}
-	return s, nil
+	return s
 }
 
 // ensureGitignore writes a self-ignoring .gitignore at the store root if none

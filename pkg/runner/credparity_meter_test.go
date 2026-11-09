@@ -48,7 +48,15 @@ func TestCredParity_MeterLedgerAndPlan(t *testing.T) {
 			forfaitDir := applyParityPosture(t, row)
 			creds := row.Run.Credentials(forfaitDir)
 			ctx := secrets.WithCredentials(context.Background(), creds)
-			msg := &queue.RunMessage{RunID: "run-parity", TenantID: "team-a", LLMProviders: row.Run.Allowlist}
+			// The run's trust as the wire mirrors it (queue.RunMessage.Trust):
+			// the arm resolves the run's calls under it, exactly as the
+			// launch's admission does (ADR-162 decision 7).
+			trust := store.RunTrustDefault
+			if row.Trust == credparity.Fork {
+				trust = store.RunTrustFork
+				ctx = credroute.WithRunTrust(ctx, trust)
+			}
+			msg := &queue.RunMessage{RunID: "run-parity", TenantID: "team-a", LLMProviders: row.Run.Allowlist, Trust: trust}
 			// The row's call site, of its kind (model.CallSites' vocabulary).
 			node := row.Node.IR()
 			wf := &ir.Workflow{Name: "parity", Nodes: map[string]ir.Node{row.Node.ID: node}}
@@ -140,6 +148,67 @@ func TestCredParity_MeterLedgerAndPlan(t *testing.T) {
 				return credparity.Fingerprint(s.Slot)
 			})
 		})
+	}
+}
+
+// TestTheMeterReadsTheRunsTrustFromTheMessage: the wire mirrors the run's
+// trust on queue.RunMessage.Trust, and the meter's key walk (runCredKeys)
+// carries it into the resolution itself (credroute.WithRunTrust) — the
+// caller's ctx need not know it. A fork row whose channel the floor refuses
+// must answer "not metered" with the trust riding the message ALONE, and the
+// same row on a trusted message keeps its meter key. Mutants — either
+// WithRunTrust stamp in usage_cap.go dropped — redden the first half.
+func TestTheMeterReadsTheRunsTrustFromTheMessage(t *testing.T) {
+	t.Cleanup(model.SetCredentialsLookup(model.RunCredentialsLookup))
+	t.Cleanup(model.SetOAuthDirLookup(model.RunOAuthDirLookup))
+	subject := 0
+	for _, row := range credparity.Rows() {
+		if row.Trust != credparity.Fork || !row.Want.Refused() {
+			continue
+		}
+		forfeitDir := applyParityPosture(t, row)
+		creds := row.Run.Credentials(forfeitDir)
+		// The ctx carries the credentials and NOTHING else: no trust
+		// stamp — the message is the wire's only carrier.
+		ctx := secrets.WithCredentials(context.Background(), creds)
+		wf := &ir.Workflow{Name: "parity-trust", Nodes: map[string]ir.Node{row.Node.ID: row.Node.IR()}}
+		view := model.RouteView{Workflow: wf, AllowedProviders: row.Run.Allowlist}
+		var routes []model.WireRoute
+		for _, route := range model.AnthropicWireRoutes(view) {
+			if route.NodeID == row.Node.SiteID() {
+				routes = append(routes, route)
+			}
+		}
+		if len(routes) == 0 {
+			continue
+		}
+		subject++
+		keys := usageCapCredKeys(ctx, &queue.RunMessage{RunID: "run-parity-trust", TenantID: "team-a", LLMProviders: row.Run.Allowlist, Trust: store.RunTrustFork})
+		keys.sandboxed = row.Sandboxed
+		for _, route := range routes {
+			if key, metered := keys.routeKey(ctx, route); metered {
+				t.Errorf("row %q: fork metered under %q with the trust riding the message alone — the meter's walk never saw the lane", row.Name, key)
+			}
+		}
+		// The trusted control stays spendable on the rows only the trust
+		// floor refuses: judge it just there.
+		if row.Want.Refusal == credparity.UntrustedChannel {
+			keys = usageCapCredKeys(ctx, &queue.RunMessage{RunID: "run-parity-trust", TenantID: "team-a", LLMProviders: row.Run.Allowlist})
+			keys.sandboxed = row.Sandboxed
+			metered := false
+			for _, route := range routes {
+				if _, ok := keys.routeKey(ctx, route); ok {
+					metered = true
+				}
+			}
+			if !metered {
+				t.Errorf("row %q: trusted control meters nothing — the row's channel must be spendable where the floor does not apply", row.Name)
+			}
+		}
+		break
+	}
+	if subject == 0 {
+		t.Fatal("no fork-refused row on the anthropic wire in the parity table — this witness has no subject")
 	}
 }
 

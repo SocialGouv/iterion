@@ -1297,10 +1297,14 @@ tool notify:
     ## ── The run footer (docs/agents/bots/run-link.md) ──────────────
     ## Anything this bot posts outside the deployment names the run that
     ## wrote it: the steps, the model and the cost behind the digest, and
-    ## the way into the platform. Mattermost renders no <details> fold
-    ## (mattermost/mattermost#38480), so the Revi-style provenance travels
-    ## as a compact block on the LAST message, and the split reserves its
-    ## room (FOOTER_RESERVE) instead of clipping it.
+    ## the way into the platform. The provenance rides a Mattermost Blocks
+    ## `collapsible` attached to the LAST message of every sink (a
+    ## <details> fold is not an option: Mattermost sanitizes it,
+    ## mattermost/mattermost#38480). The block is layout-only — no
+    ## mm_blocks_actions — so a deployment with Blocks disabled drops it at
+    ## render time and the digest still lands whole; Slack sinks ignore
+    ## `props` and carry no provenance. The split reserves the footer's
+    ## text room (FOOTER_RESERVE) instead of clipping it.
     run_url = str({{run.url}} or '').strip()
     run_id = str({{run.id}} or '').strip()
     run_tokens = int({{run.tokens}} or 0)
@@ -1355,20 +1359,27 @@ tool notify:
     step_label = 'Synthèse'
     if ai_fallback and ai_served_by:
         step_label = step_label + ' (repli : ' + cell(ai_served_by) + ')'
+    provenance_blocks = None
     if ai_model or ai_backend or ai_tokens:
-        footer = nl2.join([
-            '##### Détails du run IA · Iterion',
-            chr(10).join([
-                '| Étape | Modèle | Harness | Effort demandé | Tokens |',
-                '|---|---|---|---|---:|',
-                '| ' + step_label + ' | ' + cell(ai_model) + ' | ' + cell(ai_backend) +
-                ' | ' + cell(effort) + ' | ' + fmt_tokens(ai_tokens) + ' |']),
-            'Tokens du run au moment de publier : **' + fmt_tokens(run_tokens) + '**.',
-            sig])
-    else:
-        # No provenance reached the node: publish the run link alone
-        # rather than an empty table that claims a step nobody served.
-        footer = sig
+        provenance_blocks = [{
+            'type': 'collapsible',
+            'collapsed': True,
+            'header': [{'type': 'text', 'text': 'Détails du run IA · Iterion',
+                        'is_subtle': True, 'size': 'small'}],
+            'content': [{'type': 'text', 'text': nl2.join([
+                chr(10).join([
+                    '| Étape | Modèle | Harness | Effort demandé | Tokens |',
+                    '|---|---|---|---|---:|',
+                    '| ' + step_label + ' | ' + cell(ai_model) + ' | ' + cell(ai_backend) +
+                    ' | ' + cell(effort) + ' | ' + fmt_tokens(ai_tokens) + ' |']),
+                'Tokens du run au moment de publier : **' + fmt_tokens(run_tokens) + '**.',
+            ])}],
+        }]
+    # The sig alone stays in the message text: the run link is load-bearing
+    # and must be readable without expanding anything. No provenance
+    # reached the node, there is no block either — no empty table that
+    # claims a step nobody served.
+    footer = sig
     FOOTER_RESERVE = len(nl2 + footer)
 
     def out(o):
@@ -1487,6 +1498,11 @@ tool notify:
             for i, text in enumerate(msgs, 1):
                 print('DRY-RUN -> webhook=' + name + ' channel=' + p['channel'] +
                       ' part=' + str(i) + '/' + str(len(msgs)) + ' chars=' + str(len(text)), file=sys.stderr)
+        if provenance_blocks:
+            print('DRY-RUN provenance: the last part of every sink carries a props.mm_blocks collapsible ('
+                  + str(len(json.dumps(provenance_blocks))) + ' bytes of blocks)', file=sys.stderr)
+        else:
+            print('DRY-RUN provenance: none reached this run — no blocks attached', file=sys.stderr)
         out({'posted': False, 'dry_run': True, 'delivered': 0, 'targets': [n for n, _, _ in plans],
              'parts': parts_max, 'posts': 0,
              'summary': 'dry-run: ' + str(len(plans)) + ' sink(s) x up to ' + str(parts_max) +
@@ -1504,6 +1520,8 @@ tool notify:
         for i, text in enumerate(msgs, 1):
             body = dict(p)
             body['text'] = text
+            if provenance_blocks and i == len(msgs):
+                body['props'] = {'mm_blocks': provenance_blocks}
             req = urllib.request.Request(whmap[name], data=json.dumps(body).encode('utf-8'),
                                          headers={'Content-Type': 'application/json',
                                                   'User-Agent': 'feed-watch (iterion)'}, method='POST')

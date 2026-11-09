@@ -68,7 +68,7 @@ func (e *ClawExecutor) EffectiveToolNamesOnRoutes(node ir.Node, mayEscalateToUlt
 	}
 	// The same seam as buildTask, read through the same helper: a declared
 	// empty `capabilities: []` (#1801) is no grant, not an inheritance.
-	caps := effectiveCapabilitiesOf(f.capabilities, e.wfCapabilities)
+	caps, _ := effectiveCapabilitiesOf(f.capabilities, e.wfCapabilities, e.WorkspaceTrust())
 	// An incoming edge may raise this node to ultracode at dispatch:
 	// `_reasoning_effort` is a mapped input and `ultracode` IS a member of
 	// ir.ValidReasoningEfforts (docs/ultracode.md documents that edge). That

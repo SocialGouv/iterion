@@ -383,7 +383,7 @@ func TestAddWorktreeGitMount(t *testing.T) {
 
 	t.Run("empty gitDir is a silent no-op", func(t *testing.T) {
 		spec := &sandbox.Spec{}
-		addWorktreeGitMount(spec, "", nil)
+		addWorktreeGitMount(spec, "", nil, store.RunTrustDefault)
 		if len(spec.Mounts) != 0 {
 			t.Errorf("Mounts = %v, want empty", spec.Mounts)
 		}
@@ -391,7 +391,7 @@ func TestAddWorktreeGitMount(t *testing.T) {
 
 	t.Run("missing gitDir on disk is a silent no-op", func(t *testing.T) {
 		spec := &sandbox.Spec{}
-		addWorktreeGitMount(spec, filepath.Join(tmp, "does", "not", "exist"), nil)
+		addWorktreeGitMount(spec, filepath.Join(tmp, "does", "not", "exist"), nil, store.RunTrustDefault)
 		if len(spec.Mounts) != 0 {
 			t.Errorf("Mounts = %v, want empty", spec.Mounts)
 		}
@@ -399,7 +399,7 @@ func TestAddWorktreeGitMount(t *testing.T) {
 
 	t.Run("present gitDir mounts the whole .git at the same host path", func(t *testing.T) {
 		spec := &sandbox.Spec{}
-		addWorktreeGitMount(spec, gitDir, nil)
+		addWorktreeGitMount(spec, gitDir, nil, store.RunTrustDefault)
 		if len(spec.Mounts) != 1 {
 			t.Fatalf("Mounts = %v, want exactly one entry", spec.Mounts)
 		}
@@ -841,7 +841,7 @@ func TestResolveSandboxSpecWithFallbackProvenance(t *testing.T) {
 	shared := writeRepoDevcontainer(t, `{"image":"alpine:3.20","containerEnv":{"SHARED_KEY":"from-repo"}}`)
 
 	t.Run("repo provenance excludes workflow-authored keys", func(t *testing.T) {
-		res, err := resolveSandboxSpecWithFallback(wf, shared, "", "", "ghcr.io/test/sandbox:v1", "")
+		res, err := resolveSandboxSpecWithFallback(wf, shared, "", "", "ghcr.io/test/sandbox:v1", "", store.RunTrustDefault)
 		if err != nil {
 			t.Fatalf("unexpected err: %v", err)
 		}
@@ -852,7 +852,7 @@ func TestResolveSandboxSpecWithFallbackProvenance(t *testing.T) {
 
 	t.Run("repo provenance names the repo-contributed keys", func(t *testing.T) {
 		silent := &ir.Workflow{Sandbox: &ir.SandboxSpec{Mode: string(sandbox.ModeAuto)}}
-		res, err := resolveSandboxSpecWithFallback(silent, repo, "", "", "ghcr.io/test/sandbox:v1", "")
+		res, err := resolveSandboxSpecWithFallback(silent, repo, "", "", "ghcr.io/test/sandbox:v1", "", store.RunTrustDefault)
 		if err != nil {
 			t.Fatalf("unexpected err: %v", err)
 		}
@@ -866,7 +866,7 @@ func TestResolveSandboxSpecWithFallbackProvenance(t *testing.T) {
 
 	t.Run("denied keys travel for the start event", func(t *testing.T) {
 		silent := &ir.Workflow{Sandbox: &ir.SandboxSpec{Mode: string(sandbox.ModeAuto)}}
-		res, err := resolveSandboxSpecWithFallback(silent, repo, "", "", "ghcr.io/test/sandbox:v1", "")
+		res, err := resolveSandboxSpecWithFallback(silent, repo, "", "", "ghcr.io/test/sandbox:v1", "", store.RunTrustDefault)
 		if err != nil {
 			t.Fatalf("unexpected err: %v", err)
 		}
@@ -877,7 +877,7 @@ func TestResolveSandboxSpecWithFallbackProvenance(t *testing.T) {
 
 	t.Run("a non-devcontainer spec carries no repo provenance", func(t *testing.T) {
 		repoNoDC := t.TempDir()
-		res, err := resolveSandboxSpecWithFallback(wf, repoNoDC, "", "", "ghcr.io/test/sandbox:v1", "")
+		res, err := resolveSandboxSpecWithFallback(wf, repoNoDC, "", "", "ghcr.io/test/sandbox:v1", "", store.RunTrustDefault)
 		if err != nil {
 			t.Fatalf("unexpected err: %v", err)
 		}
@@ -931,7 +931,7 @@ func TestResolveSandboxSpecRepoCloudRedirectNeverReachesTheEnv(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			res, err := resolveSandboxSpecWithFallback(tc.wf, writeRepoDevcontainer(t, tc.json), "", "", "ghcr.io/test/sandbox:v1", "")
+			res, err := resolveSandboxSpecWithFallback(tc.wf, writeRepoDevcontainer(t, tc.json), "", "", "ghcr.io/test/sandbox:v1", "", store.RunTrustDefault)
 			if err != nil {
 				t.Fatalf("unexpected err: %v", err)
 			}
@@ -969,7 +969,7 @@ func TestResolveSandboxSpecRepoCloudRedirectNeverReachesTheEnv(t *testing.T) {
 			Env:  map[string]string{"CLAUDE_CODE_USE_BEDROCK": "1", "AWS_REGION": "eu-west-3"},
 		}}
 		repo := writeRepoDevcontainer(t, `{"image":"alpine:3.20","containerEnv":{"AWS_ACCESS_KEY_ID":"AKIAPLANTEDEXAMPLE00","AWS_SECRET_ACCESS_KEY":"planted","AWS_REGION":"us-east-1"}}`)
-		res, err := resolveSandboxSpecWithFallback(wf, repo, "", "", "ghcr.io/test/sandbox:v1", "")
+		res, err := resolveSandboxSpecWithFallback(wf, repo, "", "", "ghcr.io/test/sandbox:v1", "", store.RunTrustDefault)
 		if err != nil {
 			t.Fatalf("unexpected err: %v", err)
 		}
@@ -1076,7 +1076,7 @@ func TestResolveSandboxSpecModeLessNetworkBlock(t *testing.T) {
 			Mode:    string(sandbox.ModeAuto),
 			Network: &ir.SandboxNetwork{Preset: "iterion-default", Rules: []string{"team.example"}},
 		}}
-		res, err := resolveSandboxSpecWithFallback(wf, repo, "", "", "ghcr.io/test/sandbox:v1", "")
+		res, err := resolveSandboxSpecWithFallback(wf, repo, "", "", "ghcr.io/test/sandbox:v1", "", store.RunTrustDefault)
 		if err != nil {
 			t.Fatalf("unexpected err: %v", err)
 		}
@@ -1101,7 +1101,7 @@ func TestResolveSandboxSpecModeLessNetworkBlock(t *testing.T) {
 			Mode:    string(sandbox.ModeAuto),
 			Network: &ir.SandboxNetwork{Rules: []string{"team.example"}},
 		}}
-		res, err := resolveSandboxSpecWithFallback(wf, repo, "", "", "ghcr.io/test/sandbox:v1", "")
+		res, err := resolveSandboxSpecWithFallback(wf, repo, "", "", "ghcr.io/test/sandbox:v1", "", store.RunTrustDefault)
 		if err != nil {
 			t.Fatalf("unexpected err: %v", err)
 		}
@@ -1128,7 +1128,7 @@ func TestResolveSandboxSpecModeLessNetworkBlock(t *testing.T) {
 			Mode:    string(sandbox.ModeAuto),
 			Network: &ir.SandboxNetwork{Preset: "iteron-default", Rules: []string{"team.example"}},
 		}}
-		res, err := resolveSandboxSpecWithFallback(wf, repo, "", "", "ghcr.io/test/sandbox:v1", "")
+		res, err := resolveSandboxSpecWithFallback(wf, repo, "", "", "ghcr.io/test/sandbox:v1", "", store.RunTrustDefault)
 		if err != nil {
 			t.Fatalf("unexpected err: %v", err)
 		}
@@ -1148,7 +1148,7 @@ func TestResolveSandboxSpecModeLessNetworkBlock(t *testing.T) {
 			Mode:    string(sandbox.ModeAuto),
 			Network: &ir.SandboxNetwork{},
 		}}
-		res, err := resolveSandboxSpecWithFallback(wf, repo, "", "", "ghcr.io/test/sandbox:v1", "")
+		res, err := resolveSandboxSpecWithFallback(wf, repo, "", "", "ghcr.io/test/sandbox:v1", "", store.RunTrustDefault)
 		if err != nil {
 			t.Fatalf("unexpected err: %v", err)
 		}

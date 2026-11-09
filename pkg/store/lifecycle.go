@@ -168,6 +168,23 @@ const (
 	// vendor's own CLI (ADR-161 decision 7).
 	FailureCredentialSubscriptionForbidden FailureCode = "CREDENTIAL_SUBSCRIPTION_FORBIDDEN"
 
+	// FailureSandboxCrossingRefused: an untrusted (fork-lane) run was refused
+	// because a channel it would spend cannot cross the sandbox the egress
+	// proxy can hold (ADR-162 decision 7): a forfait's OAuth credential, a
+	// provider whose key rides an SDK signing chain, the launcher's ambient
+	// env — or a Layer 2 the start cannot arm (TLS inspection off, a driver
+	// that cannot inspect). The alternative is the container holding the
+	// credential raw, or a placeholder that resolves nowhere.
+	FailureSandboxCrossingRefused FailureCode = "SANDBOX_CROSSING_REFUSED"
+
+	// FailureSandboxNetworkRefused: an untrusted (fork-lane) run was refused
+	// because its only route out is the egress proxy and only a driver that
+	// enforces a network policy can hold that floor (ADR-162 decision 7) —
+	// kubernetes today; docker refuses, typed, until it isolates the
+	// container's network. Starting it anyway would hand the container a
+	// proxy env nothing enforces: one ignored variable away from full egress.
+	FailureSandboxNetworkRefused FailureCode = "SANDBOX_NETWORK_REFUSED"
+
 	// FailureAttachmentsUndeliverable: the run carries attachments and the
 	// selected sandbox driver can neither bind-mount their directory into
 	// the container nor copy it in, so no node could have opened them.
@@ -330,6 +347,8 @@ var ReservedFailureCodes = []FailureCode{
 	FailureSandboxCredentialUnreachable,
 	FailureCredentialAmbientRefused,
 	FailureCredentialSubscriptionForbidden,
+	FailureSandboxCrossingRefused,
+	FailureSandboxNetworkRefused,
 	FailureAttachmentsUndeliverable,
 	FailureAttachmentPathUnavailable,
 	FailureAttachmentsUnfetchable,

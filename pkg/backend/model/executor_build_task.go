@@ -26,6 +26,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/secrets"
+	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/google/uuid"
 )
 
@@ -152,9 +153,11 @@ func extractBackendFields(node ir.Node) (backendFields, error) {
 	}
 }
 
-// effectiveCapabilitiesOf is the ONE reading of the capability-inheritance
-// seam: a nil list inherits the workflow's; a DECLARED empty one
-// (`capabilities: []`, #1801) is an explicit no-grant and stays empty.
+// effectiveCapabilitiesOf is the ONE reading of the capability grant: a nil
+// list inherits the workflow's; a DECLARED empty one (`capabilities: []`,
+// #1801) is an explicit no-grant and stays empty; and the workspace-trust
+// floor (store.RunTrust.HostCapabilities) withdraws the whole list from a run
+// whose workspace its tenant did not write.
 //
 // buildTask, the EffectiveToolNames seam and the reserved-namespace grant
 // check (internalMCPToolGrant) all read it here, on the field
@@ -163,11 +166,13 @@ func extractBackendFields(node ir.Node) (backendFields, error) {
 // nodeCapabilities — its registry recipe's host tools, its native action and
 // its rung-4 recovery agent (#78=A, ADR-151): one grant rule for every node
 // kind.
-func effectiveCapabilitiesOf(declared, wfCapabilities []string) []string {
+//
+// withdrawn is what the floor took; it is empty on a trusted workspace.
+func effectiveCapabilitiesOf(declared, wfCapabilities []string, trust store.RunTrust) (held, withdrawn []string) {
 	if declared == nil {
-		return wfCapabilities
+		declared = wfCapabilities
 	}
-	return declared
+	return trust.HostCapabilities(declared)
 }
 
 // resolvePermissionPolicy builds the effective tool-permission policy for
@@ -576,6 +581,26 @@ type nodeBuildSession struct {
 	commandNarrowingBy string
 	boardToken         string
 	boardMinted        bool
+	// withdrawalsAnnounced keeps each trust-floor withdrawal to one
+	// announcement per node execution: every element of a `fallbacks:`
+	// chain rebuilds the task, and each would say it again.
+	withdrawalsAnnounced map[string]bool
+}
+
+// claimWithdrawal reports whether THIS build announces the node's `what`
+// withdrawal, and records that it did.
+func (s *nodeBuildSession) claimWithdrawal(what string) bool {
+	if s == nil {
+		return true
+	}
+	if s.withdrawalsAnnounced[what] {
+		return false
+	}
+	if s.withdrawalsAnnounced == nil {
+		s.withdrawalsAnnounced = map[string]bool{}
+	}
+	s.withdrawalsAnnounced[what] = true
+	return true
 }
 
 // describeDivergence records on the outgoing delegate event that the
@@ -1382,7 +1407,15 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 		resolvedModel = picked
 	}
 
-	effectiveCaps := effectiveCapabilitiesOf(f.capabilities, e.wfCapabilities)
+	effectiveCaps, withdrawnCaps := effectiveCapabilitiesOf(f.capabilities, e.wfCapabilities, e.WorkspaceTrust())
+	if len(withdrawnCaps) > 0 && sess.claimWithdrawal("capabilities") {
+		e.announceTrustWithdrawal(f.id, TrustWithdrawalInfo{
+			What:  "capabilities",
+			Items: withdrawnCaps,
+			Reason: "this run's workspace was not written by its tenant, and a host capability reaches the tenant's own state — " +
+				"its board, its run store, the watch fan-out — where a card names a bot and the args it launches with",
+		})
+	}
 
 	// Resolve node-level image inputs (templated paths) so the codex backend can
 	// forward them as `-i` for image-to-image. Empty/whitespace results (an
@@ -1416,6 +1449,7 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 		RunStoreDir:           e.runStoreDir,
 		OutputSchema:          outputSchema,
 		Model:                 resolvedModel,
+		ContextWindow:         taskContextWindow(func(name string) string { return envGetenv(ctx, name) }, resolvedModel),
 		HasTools:              len(f.tools) > 0,
 		ToolMaxSteps:          f.toolMaxSteps,
 		MaxTokens:             f.maxTokens,
@@ -1524,6 +1558,18 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 			pol.AddGrantRule(rule)
 		}
 		task.Permission = pol
+	}
+	// The bot's `memory:` space is the tenant's, and only the claw backend
+	// hands it to an agent: on a workspace its tenant did not write, claw
+	// withdraws it (ClawBackend.Execute) — said here, where the run's timeline
+	// is reachable, once per node execution. A task for another backend was
+	// never going to carry it, so nothing is withdrawn from it to announce.
+	if f.memory != nil && f.memory.Enabled && backendName == delegate.BackendClaw && !e.WorkspaceTrust().Trusted() && sess.claimWithdrawal("memory") {
+		e.announceTrustWithdrawal(f.id, TrustWithdrawalInfo{
+			What: "memory",
+			Reason: "this run's workspace was not written by its tenant, and the `memory:` space is the tenant's — " +
+				"neither its notes nor its tools are handed to this agent",
+		})
 	}
 	e.applyMemorySpec(&task, f.memory)
 	task.CursorFragments = resolveCursorFragments(f.cursors, e.cursors)
@@ -2318,4 +2364,34 @@ func stampForkOrigin(output map[string]any, task *delegate.Task) {
 	if task != nil && task.ForkSession && task.SessionID != "" {
 		output["_session_forked_from"] = task.SessionID
 	}
+}
+
+// announceTrustWithdrawal says out loud what the workspace-trust floor took
+// from a node: a warning in the process log and a workspace_trust_withdrawal
+// event on the run's timeline. The node runs on without it.
+func (e *ClawExecutor) announceTrustWithdrawal(nodeID string, info TrustWithdrawalInfo) {
+	if e.logger != nil {
+		if len(info.Items) > 0 {
+			e.logger.Warn("[%s] %s withdrawn (%s): %s", nodeID, info.What, strings.Join(info.Items, ", "), info.Reason)
+		} else {
+			e.logger.Warn("[%s] %s withdrawn: %s", nodeID, info.What, info.Reason)
+		}
+	}
+	if e.hooks.OnTrustWithdrawal != nil {
+		e.hooks.OnTrustWithdrawal(nodeID, info)
+	}
+}
+
+// nodeHostCapabilities is the grant stamped onto a node execution's context,
+// read by every host tool when it is CALLED: the node's own `capabilities:`
+// list, else the workflow's; any other node — a tool node naming a host tool
+// in `command:` — holds what the workflow grants. Both through the one
+// resolver, so the grant a tool checks and the list a task carries agree.
+// withdrawn is what the floor took from that declaration.
+func (e *ClawExecutor) nodeHostCapabilities(node ir.Node) (held, withdrawn []string) {
+	// The SAME per-kind extraction the resolution grant (nodeCapabilities)
+	// reads — a tool node's own list included (#78=A) — so the stamp a
+	// host tool is held to at call time cannot disagree with what the node
+	// was offered.
+	return e.nodeCapabilitiesBoth(node, e.WorkspaceTrust())
 }

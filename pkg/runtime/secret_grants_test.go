@@ -108,14 +108,17 @@ func TestRefuseUnservableSecretGrantsReadsTheRunsService(t *testing.T) {
 	}
 }
 
-// tlsCapableDriver is the canary driver claiming TLS-inspection support, so
-// the launch counts the `egress` grant as served; it still refuses to
-// Start, which is how a test tells "the launch went on" from "refused".
+// tlsCapableDriver is the canary driver claiming TLS-inspection and
+// network-policy support, so the launch counts the `egress` grant as
+// served and the fork lane's floors (ADR-162 decision 7) admit on it; it
+// still refuses to Start, which is how a test tells "the launch went on"
+// from "refused".
 type tlsCapableDriver struct{ specCapturingDriver }
 
 func (d *tlsCapableDriver) Capabilities() sandbox.Capabilities {
 	c := d.specCapturingDriver.Capabilities()
 	c.SupportsTLSInspection = true
+	c.SupportsNetworkPolicy = true
 	return c
 }
 

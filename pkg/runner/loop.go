@@ -34,12 +34,15 @@ import (
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/mcp"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
+	"github.com/SocialGouv/iterion/pkg/backend/tool"
 	"github.com/SocialGouv/iterion/pkg/botregistry"
 	"github.com/SocialGouv/iterion/pkg/botsource"
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/cloud/metrics"
+	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/credpool"
 	"github.com/SocialGouv/iterion/pkg/credusage"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
@@ -872,6 +875,16 @@ func classifyExecResult(execErr error, runID string) execOutcome {
 	// runner could hold would recognise it. Ack; the run stays exactly as
 	// the engine left it (failed_resumable or failed, with its own code)
 	// and waits for a HUMAN who changed something.
+	if isTrustFloorRefusal(execErr) {
+		return execOutcome{
+			finalStatus: "untrusted_workspace_refused",
+			op:          "ack-untrusted-workspace-refused",
+			action:      actionAck,
+			level:       logWarn,
+			logFmt:      "runner: run %s refused by the workspace-trust floor — NOT redelivering (the same run under the same trust meets the same refusal): %v",
+			logArgs:     []any{runID, execErr},
+		}
+	}
 	if errors.Is(execErr, runtime.ErrDeliberateFailure) {
 		return execOutcome{
 			finalStatus: "deliberate_failure",
@@ -2264,6 +2277,39 @@ func (r *Runner) recordRunnerBuild(ctx context.Context, msg *queue.RunMessage, l
 // (runtime.RemedyOf, runtime.CodeRemedy); "fix the cause, then --force" is
 // left to a failure that names none: --force never cures a scratch that did
 // not travel, and an operator sent there comes back to the same refusal.
+// announceWithdrawnMCP says what the workspace-trust floor took from the run's
+// MCP catalog: a warning naming each server with its plugin, and one
+// workspace_trust_withdrawal event on the run's timeline, before any node runs.
+// A trusted run withdraws nothing and says nothing.
+func (r *Runner) announceWithdrawnMCP(ctx context.Context, msg *queue.RunMessage, withdrawn []ir.WithdrawnMCPServer) {
+	if len(withdrawn) == 0 {
+		return
+	}
+	items := make([]string, 0, len(withdrawn))
+	for _, w := range withdrawn {
+		if w.Name == "" {
+			items = append(items, w.Source)
+			continue
+		}
+		items = append(items, w.Name+" ("+w.Source+")")
+	}
+	const reason = "this run's workspace was not written by its tenant, and an ambient MCP server runs where the agent runs — " +
+		"its launcher reads its own configuration from the checkout, with the server's secret in its environment"
+	r.cfg.Logger.Warn("runner: run %s: MCP servers withdrawn (%s): %s", msg.RunID, strings.Join(items, ", "), reason)
+	if r.cfg.Store == nil {
+		return
+	}
+	wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), parkStoreOpTimeout)
+	defer cancel()
+	idCtx := store.WithIdentity(wctx, msg.TenantID, msg.OwnerID)
+	if _, err := r.cfg.Store.AppendEvent(idCtx, msg.RunID, store.Event{
+		Type: store.EventWorkspaceTrustWithdrawal,
+		Data: map[string]any{"withdrawn": "mcp_servers", "items": items, "reason": reason},
+	}); err != nil {
+		r.cfg.Logger.Warn("runner: run %s: could not emit workspace_trust_withdrawal: %v", msg.RunID, err)
+	}
+}
+
 func (r *Runner) recordRetrySkipped(msg *queue.RunMessage, code store.FailureCode, cause string, refusal error, released store.RunStatus) {
 	if r.cfg.Store == nil {
 		return
@@ -2654,7 +2700,13 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 	// rather than run a bot missing the tools it declared. Resolved for the
 	// run's own trust, the one its engine is launched with.
 	if err := mcp.PrepareWorkflow(wf, workDir, workDir, msg.Trust, r.cfg.Logger); err != nil {
+		if errors.Is(err, mcp.ErrWithdrawnMCPServer) {
+			r.recordTrustRefusal(ctx, msg, "mcp_servers", err)
+		}
 		return fmt.Errorf("runner: resolve MCP servers for %s: %w", msg.RunID, err)
+	}
+	if wf.MCPPrepared != nil {
+		r.announceWithdrawnMCP(ctx, msg, wf.MCPPrepared.Withdrawn)
 	}
 
 	// No-sandbox file secrets: a workflow with `as: file` secrets whose run
@@ -3800,4 +3852,44 @@ func modelOverridesFromMsg(entries []queue.ModelOverride) model.ModelOverrides {
 		out[i] = model.OverrideEntry{Selector: e.Selector, Backend: e.Backend, Model: e.Model, Provider: e.Provider, Effort: e.Effort}
 	}
 	return model.OverridesFrom(out)
+}
+
+// isTrustFloorRefusal reports whether execErr is one of the workspace-trust
+// floor's typed refusals. Each is decided by the run's own trust and program,
+// so a redelivery meets the same answer: acked, never retried — a retry costs
+// a pod and a clone of an outsider's tree per attempt, for nothing.
+//
+// The connector chokepoint's two sentinels are here by name (ADR-162 decision
+// 6): a fork run refused at ResolveAction/ResolveAgent is the floor refusing
+// reads and mutations alike, and a resolver nobody stated is the same floor
+// seen from a wiring defect — both are trust, neither is a transient.
+//
+// A host tool refused for a capability the node never declared is not one:
+// that is the program's own fault, on any trust, and it classifies (by its
+// code, TOOL_FAILED_PERMANENT) as the deterministic failure it is — acked,
+// and banked like one.
+func isTrustFloorRefusal(execErr error) bool {
+	return errors.Is(execErr, mcp.ErrWithdrawnMCPServer) ||
+		errors.Is(execErr, delegate.ErrUntrustedWorkspaceRefused) ||
+		errors.Is(execErr, connection.ErrUntrustedAction) ||
+		errors.Is(execErr, connection.ErrTrustUnstated) ||
+		errors.Is(execErr, tool.ErrHostCapabilityWithdrawn)
+}
+
+// recordTrustRefusal puts on the run's timeline a withdrawal the run could not
+// run without — an MCP server its workflow activates by name — before the
+// refusal is returned: the engine that would otherwise say it never starts.
+func (r *Runner) recordTrustRefusal(ctx context.Context, msg *queue.RunMessage, what string, cause error) {
+	if r.cfg.Store == nil {
+		return
+	}
+	wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), parkStoreOpTimeout)
+	defer cancel()
+	idCtx := store.WithIdentity(wctx, msg.TenantID, msg.OwnerID)
+	if _, err := r.cfg.Store.AppendEvent(idCtx, msg.RunID, store.Event{
+		Type: store.EventWorkspaceTrustWithdrawal,
+		Data: map[string]any{"withdrawn": what, "reason": cause.Error(), "refused": true},
+	}); err != nil {
+		r.cfg.Logger.Warn("runner: run %s: could not emit workspace_trust_withdrawal: %v", msg.RunID, err)
+	}
 }

@@ -24,6 +24,7 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -124,6 +125,26 @@ func (a *activeSandbox) shutdown(ctx context.Context, logger *iterlog.Logger) {
 //     tool surface (pkg/askusermcp) so interactive nodes keep the
 //     native ask_user tools in-container — the stdio __mcp-ask-user
 //     subcommand's host binary path is invisible there.
+//
+// portOfListenerEndpoint reads the numeric port a listener endpoint
+// advertises ("http://host:port[/path]", the shape startSandboxMCPListener
+// and the proxy's Endpoint write). ok is false for an empty endpoint or one
+// no listener URL could have produced — never a guessed default.
+func portOfListenerEndpoint(endpoint string) (int, bool) {
+	if endpoint == "" {
+		return 0, false
+	}
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		return 0, false
+	}
+	port, err := strconv.Atoi(u.Port())
+	if err != nil || port <= 0 || port > 65535 {
+		return 0, false
+	}
+	return port, true
+}
+
 func startSandboxMCPListener(driver sandbox.Driver, handler http.Handler, path string) (endpoint string, srv *http.Server, err error) {
 	bind, advertise, err := proxyAddressesForDriver(driver)
 	if err != nil {
@@ -154,13 +175,17 @@ func connectorEndpointFor(boardEndpoint, boardPath string) string {
 }
 
 // workflowHasBoardCapability reports whether the workflow (or any of its
-// agent/judge nodes) declares a `board.*` capability — the gate for
-// starting the per-run board MCP listener.
-func workflowHasBoardCapability(wf *ir.Workflow) bool {
+// agent/judge nodes) holds a `board.*` capability — the gate for starting
+// the per-run board MCP listener. Held, not declared: the lists are read
+// through the workspace-trust floor (store.RunTrust.HostCapabilities), the
+// same resolver the executor hands each node, so a run whose nodes hold no
+// capability opens no listener for them to reach.
+func workflowHasBoardCapability(wf *ir.Workflow, trust store.RunTrust) bool {
 	if wf == nil {
 		return false
 	}
-	has := func(caps []string) bool {
+	has := func(declared []string) bool {
+		caps, _ := trust.HostCapabilities(declared)
 		for _, c := range caps {
 			if strings.HasPrefix(c, "board.") {
 				return true
@@ -188,15 +213,17 @@ func workflowHasBoardCapability(wf *ir.Workflow) bool {
 
 // workflowHasHostCapability gates the shared token-authenticated MCP
 // listener. Board tools use /board; read-only run tools use /runs on the same
-// listener and host-gateway alias.
-func workflowHasHostCapability(wf *ir.Workflow) bool {
-	if workflowHasBoardCapability(wf) {
+// listener and host-gateway alias. Read through the trust floor, like
+// workflowHasBoardCapability.
+func workflowHasHostCapability(wf *ir.Workflow, trust store.RunTrust) bool {
+	if workflowHasBoardCapability(wf, trust) {
 		return true
 	}
 	if wf == nil {
 		return false
 	}
-	has := func(caps []string) bool {
+	has := func(declared []string) bool {
+		caps, _ := trust.HostCapabilities(declared)
 		for _, capability := range caps {
 			if capability == runops.CapRunsRead || capability == connection.CapConnectors {
 				return true
@@ -496,7 +523,7 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 	if warning := plantedSandboxDefaultImage(); warning != "" && logger != nil {
 		logger.Warn("runtime: %s — this run's sandbox starts from %s", warning, defaultImage)
 	}
-	res, err := resolveSandboxSpecWithFallback(p.Workflow, p.RepoRoot, p.CLIOverride, p.GlobalDefault, defaultImage, defaultImageFallback)
+	res, err := resolveSandboxSpecWithFallback(p.Workflow, p.RepoRoot, p.CLIOverride, p.GlobalDefault, defaultImage, defaultImageFallback, p.Trust)
 	if err != nil {
 		return nil, err
 	}
@@ -625,9 +652,51 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 	// two facts startNetworkProxy reads (a rewriter is wired, the driver
 	// injects the CA); the noop driver runs the nodes on the host.
 	realDriver := driver.Name() != "noop"
+	// ADR-162 decision 7 — the credential crossing. An untrusted run's
+	// sealed keys cross as Layer 2 placeholders, and the proxy this start
+	// runs is what substitutes them toward the credential's own host. The
+	// crossing composes over the executor's guard HERE, once, where the
+	// driver's caps and the operator's hatch are known and nothing has
+	// been pulled, mounted or started: a start that cannot arm the
+	// substitution — TLS inspection off (ITERION_SANDBOX_TLS_INSPECT), a
+	// driver that cannot inject its CA — would hand the container
+	// placeholders that resolve nowhere, which is a typed refusal, never a
+	// run that authenticates with a token that cannot work. A run with no
+	// LLM credential never reaches this question: the admission above
+	// refused it. Trusted runs keep the guard's rewriter exactly as it
+	// was.
+	rewriter := p.SecretRewriter
+	if !p.Trust.Trusted() {
+		if crossings := credentialCrossings(ctx); len(crossings) > 0 {
+			if !sandboxTLSInspectEnabled() || !realDriver || !caps.SupportsTLSInspection {
+				return nil, &RuntimeError{
+					Code:    ErrCodeSandboxCrossingRefused,
+					Message: "untrusted (fork-lane) run refused before its sandbox started: its credentials cross as Layer 2 placeholders the sandbox proxy substitutes toward the credential's own host, and this start cannot arm that substitution (TLS inspection disabled or a driver without it)",
+					Hint:    "run the fork lane on a driver whose sandbox supports TLS inspection (kubernetes), and leave ITERION_SANDBOX_TLS_INSPECT at its default — an untrusted container holds no credential value and its only route out is the proxy",
+				}
+			}
+			rewriter = composeCredentialCrossing(rewriter, crossings)
+		}
+	}
+	// ADR-162 decision 7 — the network floor. The proxy is the untrusted
+	// run's ONLY route out, and that holds only where the network enforces
+	// it: a driver that writes no policy around the container leaves the
+	// proxy env a convention one ignored variable away from full egress
+	// (docker reaches it through proxy env alone today). So the admission
+	// reads the driver's SupportsNetworkPolicy and refuses the untrusted
+	// run TYPED on a driver that cannot hold the floor — kubernetes today;
+	// docker until it isolates the container's network. Trusted runs keep
+	// today's start on every driver.
+	if !p.Trust.Trusted() && !caps.SupportsNetworkPolicy {
+		return nil, &RuntimeError{
+			Code:    ErrCodeSandboxNetworkRefused,
+			Message: fmt.Sprintf("untrusted (fork-lane) run refused before its sandbox started: its only route out is the egress proxy and driver %q enforces no network policy around the container", driver.Name()),
+			Hint:    "run the fork lane on a driver whose sandbox enforces a per-run network policy (kubernetes, with a NetworkPolicy-aware CNI) — docker refuses fork runs until it isolates the container's network",
+		}
+	}
 	if err := refuseUnservableSecretGrants(p.Workflow, p.EffectiveBackend, secretSinkService{
 		sandboxed:  realDriver,
-		egress:     realDriver && p.SecretRewriter != nil && caps.SupportsTLSInspection,
+		egress:     realDriver && rewriter != nil && caps.SupportsTLSInspection,
 		simulation: p.Simulation,
 		held:       p.SecretHeld,
 	}); err != nil {
@@ -846,7 +915,7 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 	if caps.SupportsHostBindMounts {
 		addClawBinaryMount(spec, p.Workflow, p.EffectiveBackend)
 		addRewriterMounts(spec)
-		addWorktreeGitMount(spec, p.WorktreeGitDir, logger)
+		addWorktreeGitMount(spec, p.WorktreeGitDir, logger, p.Trust)
 	}
 	if err := addSecretFileMounts(ctx, spec, p.Workflow, p.SecretVars); err != nil {
 		return nil, err
@@ -944,15 +1013,24 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 	// token alone. After the sandbox starts, seedClaudeConfigDir below
 	// copies it into the writable CLAUDE_CONFIG_DIR the delegate points the
 	// CLI at. Added past the noop gate — a real driver is required to mount.
-	claudeOAuthMounted, err := addClaudeOAuthSecretFile(ctx, spec)
-	if err != nil {
-		return nil, fmt.Errorf("runtime: sandbox: claude forfait delivery: %w", err)
-	}
-	// Same for a resolved ChatGPT forfait, so a sandboxed claw/codex node
-	// authenticates as the RUN rather than as the pod.
-	codexOAuthMounted, err := addCodexOAuthSecretFile(ctx, spec)
-	if err != nil {
-		return nil, fmt.Errorf("runtime: sandbox: chatgpt forfait delivery: %w", err)
+	// The fork lane's floor (ADR-162 decision 7): an untrusted run's
+	// container holds no credential value. The forfaits are OAuth
+	// credentials — a file and a refresh flow, not a header token toward
+	// one host — which the egress proxy cannot hold; the credential
+	// admission refuses the legs that would spend them typed, and the
+	// delivery never mounts them. A trusted run keeps today's delivery.
+	var claudeOAuthMounted, codexOAuthMounted bool
+	if p.Trust.Trusted() {
+		claudeOAuthMounted, err = addClaudeOAuthSecretFile(ctx, spec)
+		if err != nil {
+			return nil, fmt.Errorf("runtime: sandbox: claude forfait delivery: %w", err)
+		}
+		// Same for a resolved ChatGPT forfait, so a sandboxed claw/codex
+		// node authenticates as the RUN rather than as the pod.
+		codexOAuthMounted, err = addCodexOAuthSecretFile(ctx, spec)
+		if err != nil {
+			return nil, fmt.Errorf("runtime: sandbox: chatgpt forfait delivery: %w", err)
+		}
 	}
 	// The forfait config dirs are seeded AFTER the container starts (below),
 	// but their paths are constants: advertise them on the container env now
@@ -980,6 +1058,7 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 	// strictly — read once here, where the ctx lives; the proxy start has
 	// no credential access.
 	runGatewayHost := ""
+	var secretEgressHosts []string
 	if creds, ok := secrets.CredentialsFromContext(ctx); ok {
 		if _, baseURL, gerr := creds.GatewayCredentialForRoute(secrets.ProviderOpenAICompatible); gerr == nil && baseURL != "" {
 			runGatewayHost = (compatgw.Config{BaseURL: baseURL}).Host()
@@ -987,8 +1066,21 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 				return nil, err
 			}
 		}
+		secretEgressHosts = secretEgressHostCandidates(creds.GenericHosts, logger)
 	}
-	proxy, proxyEndpoint, proxyCACert, err := startNetworkProxy(spec, driver, p.RunID, p.SecretRewriter, emitEvent, logger, runGatewayHost)
+	// ADR-162 decision 7 — the fork lane's egress floor: the credential's
+	// own host is the proxy's WHOLE allowlist. nil hands the trusted lane
+	// to startNetworkProxy unchanged; a fork run passes its crossing
+	// table's hosts (never nil — an untrusted run no credential names a
+	// host for starts under an allowlist that refuses every dial, fail
+	// closed). The bound secrets' hosts (secretEgressHosts above) stay a
+	// separate, additive opening: the operator bound them, and a fork's
+	// review reads the forge it reviews the same way a trusted one does.
+	var forkEgressHosts []string
+	if !p.Trust.Trusted() {
+		forkEgressHosts = credentialCrossingEgressHosts(ctx)
+	}
+	proxy, proxyEndpoint, proxyCACert, err := startNetworkProxy(spec, driver, p.RunID, rewriter, emitEvent, logger, runGatewayHost, secretEgressHosts, forkEgressHosts)
 	if err != nil {
 		return nil, fmt.Errorf("runtime: sandbox: network proxy: %w", err)
 	}
@@ -1000,8 +1092,46 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 	// at `docker run` time — so the driver must know now that an
 	// endpoint will be advertised, proxy or no proxy (the default
 	// network: open starts none).
-	wantsBoardListener := p.BoardMCPHandler != nil && workflowHasHostCapability(p.Workflow)
+	wantsBoardListener := p.BoardMCPHandler != nil && workflowHasHostCapability(p.Workflow, p.Trust)
 	wantsAskUserListener := workflowHasInteractiveNode(p.Workflow)
+
+	// ADR-162 decision 7 — the untrusted run's per-run policy names
+	// EXACTLY the proxy's port and the run's own listener ports, so an
+	// interactive workflow's ask-user listener binds BEFORE the driver
+	// writes that policy (kubernetes advertises the downward-API pod IP):
+	// its port must exist when Driver.Start renders the NetworkPolicy,
+	// not after. A trusted run keeps today's order — the listener binds
+	// once the live sandbox exists. The pre-bound listener is the active
+	// sandbox's to own from the moment below; until then one defer shuts
+	// it down on every path out of here (the mirror of the host guard's
+	// adoption flag).
+	var preboundAskUser *http.Server
+	preboundAskUserEndpoint, preboundAskUserToken := "", ""
+	if !p.Trust.Trusted() && wantsAskUserListener {
+		token, terr := askusermcp.NewRunToken()
+		if terr != nil {
+			if logger != nil {
+				logger.Warn("runtime: sandbox: ask-user MCP token mint failed (native ask_user disabled for this run): %v", terr)
+			}
+		} else {
+			endpoint, srv, aerr := startSandboxMCPListener(driver, askusermcp.Handler(askusermcp.DefaultPath, token), askusermcp.DefaultPath)
+			if aerr != nil {
+				if logger != nil {
+					logger.Warn("runtime: sandbox: ask-user MCP listener failed to start (native ask_user disabled for this run): %v", aerr)
+				}
+			} else {
+				preboundAskUser, preboundAskUserEndpoint, preboundAskUserToken = srv, endpoint, token
+			}
+		}
+	}
+	preboundAskUserAdopted := false
+	defer func() {
+		if preboundAskUser != nil && !preboundAskUserAdopted {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = preboundAskUser.Shutdown(shutdownCtx)
+		}
+	}()
 
 	info := sandbox.RunInfo{
 		RunID:              p.RunID,
@@ -1020,6 +1150,25 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 		// through its bind, and only a WorkspaceExporter's drain consumes
 		// the entries (ADR-143).
 		ReadBackDirs: readBackDirs,
+		UntrustedRun: !p.Trust.Trusted(),
+	}
+	if info.UntrustedRun {
+		// The policy's port scope: the proxy's port, then the ask-user
+		// listener's when one is pre-bound. Every listener the untrusted
+		// run may reach on the runner pod is named here — above a runner
+		// concurrency of one, another run's listener sits on a port this
+		// list does not carry and the policy refuses it.
+		info.RunnerEgressPorts = []int{}
+		if port, ok := portOfListenerEndpoint(proxyEndpoint); ok {
+			info.RunnerEgressPorts = append(info.RunnerEgressPorts, port)
+		}
+		if port, ok := portOfListenerEndpoint(preboundAskUserEndpoint); ok {
+			info.RunnerEgressPorts = append(info.RunnerEgressPorts, port)
+		}
+		// The probe's direct-dial targets: the credential's own hosts,
+		// the fork lane's whole allowlist — served through the proxy,
+		// refused directly.
+		info.EgressAllowlistHosts = forkEgressHosts
 	}
 
 	prepared, err := driver.Prepare(ctx, *spec)
@@ -1068,6 +1217,20 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 				Cause:   err,
 			}
 		}
+		var probe *sandbox.NetworkFloorProbeError
+		if errors.As(err, &probe) {
+			message := fmt.Sprintf("untrusted (fork-lane) run refused before its sandbox started: %v", probe)
+			hint := "the cluster's CNI does not enforce the per-run NetworkPolicy (kind's kindnetd does not) — run the fork lane on a cluster whose CNI enforces NetworkPolicy (Calico, Cilium, weave-net, kube-router)"
+			if probe.Unproven {
+				hint = "the start probe could not prove the network floor — " + probe.Detail + "; the fork lane needs an image that can dial (bash+timeout or nc) on a NetworkPolicy-enforcing CNI"
+			}
+			return nil, &RuntimeError{
+				Code:    ErrCodeSandboxNetworkRefused,
+				Message: message,
+				Hint:    hint,
+				Cause:   err,
+			}
+		}
 		return nil, fmt.Errorf("runtime: sandbox: start: %w", err)
 	}
 	emitSandboxStarted(prepared, spec, driver.Name(), source, schedulingSummary(driver), emitEvent)
@@ -1088,6 +1251,15 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 	// teardown removes the copies (active.shutdown, which the error paths
 	// below also call), so the armed defer stands down.
 	hostGuardAdopted = true
+	// The pre-bound ask-user listener joins the active sandbox the same
+	// way: its teardown (and every error path below) shuts it down, so
+	// the defer above stands down with this flag.
+	if preboundAskUser != nil {
+		active.askUserEndpoint = preboundAskUserEndpoint
+		active.askUserToken = preboundAskUserToken
+		active.askUserListener = preboundAskUser
+		preboundAskUserAdopted = true
+	}
 
 	// Second half of the Claude forfait delivery: copy the read-only mount
 	// into the writable CLAUDE_CONFIG_DIR the claude_code delegate points
@@ -1143,7 +1315,9 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 	// surface, authenticated by a per-run bearer token. Non-fatal on
 	// failure: the delegate then disables the tools per node with a loud
 	// warning (the [INTERACTION PROTOCOL] JSON fallback still applies).
-	if wantsAskUserListener {
+	// An untrusted run's listener was pre-bound above, before the driver
+	// wrote the policy that names its port.
+	if wantsAskUserListener && active.askUserListener == nil {
 		token, terr := askusermcp.NewRunToken()
 		if terr != nil {
 			if logger != nil {
@@ -1257,6 +1431,38 @@ func sandboxModelHosts(logger *iterlog.Logger) []string {
 	})
 }
 
+// secretEgressHostCandidates unions the AllowedHosts of every generic
+// secret the run sealed (a bot-secret binding's egress lock — the forge
+// host of the repo's connection among them) into sandbox network rule
+// candidates. An entry that is no host pattern is dropped with a warning
+// naming its secret: the run keeps no egress to it — fail closed — and
+// the operator sees the value to fix.
+func secretEgressHostCandidates(hosts map[string][]string, logger *iterlog.Logger) []string {
+	if len(hosts) == 0 {
+		return nil
+	}
+	seen := make(map[string]bool, len(hosts))
+	out := make([]string, 0, len(hosts))
+	for name, list := range hosts {
+		for _, raw := range list {
+			host := strings.TrimSpace(raw)
+			if host == "" || seen[host] {
+				continue
+			}
+			if _, err := netproxy.Compile(netproxy.ModeAllowlist, []string{host}); err != nil {
+				if logger != nil {
+					logger.Warn("runtime: sandbox: secret %q carries an egress host %q that is no host pattern — dropped, the run keeps no egress to it (%v)", name, host, err)
+				}
+				continue
+			}
+			seen[host] = true
+			out = append(out, host)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
 // refuseRunGatewayAlias refuses a credential whose gateway host is the
 // engine-owned alias in ANY spelling: the dial rewrites casings and a root
 // dot away before its own local-destination guard, so the alias's road to
@@ -1337,10 +1543,26 @@ func startNetworkProxy(
 	emitEvent func(store.EventType, map[string]any) error,
 	logger *iterlog.Logger,
 	runGatewayHost string,
+	secretEgressHosts []string,
+	forkEgressHosts []string,
 ) (*netproxy.Proxy, string, []byte, error) {
 	mode, rules, err := ResolveNetworkPolicy(spec)
 	if err != nil {
 		return nil, "", nil, err
+	}
+
+	// ADR-162 decision 7 — the fork lane's egress floor. An untrusted
+	// run's only route out is this proxy, and the credential's own host
+	// is its WHOLE allowlist: no preset (iterion-default would admit the
+	// code hosts, the registries and **.googleapis.com — exactly the
+	// exfiltration roads a fork's diff must not gain) and no rule the
+	// workflow declares (the workflow is the untrusted artifact itself).
+	// forkEgressHosts is nil on the trusted lane; non-nil — empty counts —
+	// REPLACES the spec's policy before anything below reads it, so a
+	// workflow block naming `mode: open` widens nothing either.
+	if forkEgressHosts != nil {
+		mode = netproxy.ModeAllowlist
+		rules = append([]string{}, forkEgressHosts...)
 	}
 
 	// TLS inspection needs the driver to inject the per-run CA into the
@@ -1365,13 +1587,35 @@ func startNetworkProxy(
 		return nil, "", nil, nil
 	}
 
-	// The run's own gateway is admitted by an EXACT rule prepended ahead
-	// of the spec's: a workflow naming no rule for it still reaches its
-	// credential's endpoint, and a workflow rule refusing it still wins
-	// (last match) — loudly, below.
-	if runGatewayHost != "" {
-		rules = append([]string{runGatewayHost}, rules...)
+	// Rules the credentials themselves carry, weakest position first: the
+	// run's own gateway admits by an EXACT rule, the bound secrets' hosts
+	// follow, and the spec's rules land last — a workflow `!` exclusion
+	// stays the final word on any host (last match wins).
+	//
+	// The secret hosts are the DESIGN answer to a review that must read
+	// the forge it reviews: a binding's AllowedHosts is its egress lock,
+	// and a self-hosted forge appears in no preset — without this join the
+	// forge-native ticket lookup dies at the proxy's CONNECT. Allowlist
+	// mode only: a denylist would flip the entries to denials, and open
+	// mode admits them already. An entry opens exactly the host its
+	// credential names — never more.
+	if mode == netproxy.ModeAllowlist && len(secretEgressHosts) > 0 {
+		if logger != nil {
+			logger.Info("runtime: sandbox: egress opens %d host(s) from the run's bound secrets: %s (run %s)", len(secretEgressHosts), strings.Join(secretEgressHosts, ", "), runID)
+		}
 	}
+	// The gateway keeps its unconditional prepend (its pre-existing
+	// semantics); the secret hosts join an ALLOWLIST only — in a denylist
+	// the same entries would flip to denials, refusing the very host the
+	// credential names.
+	head := make([]string, 0, 1+len(secretEgressHosts))
+	if runGatewayHost != "" {
+		head = append(head, runGatewayHost)
+	}
+	if mode == netproxy.ModeAllowlist {
+		head = append(head, secretEgressHosts...)
+	}
+	rules = append(head, rules...)
 
 	policy, err := netproxy.Compile(mode, rules)
 	if err != nil {
@@ -1602,7 +1846,12 @@ func resolveSandboxSpec(
 	wf *ir.Workflow,
 	repoRoot, cliOverride, globalDefault, defaultImage string,
 ) (*sandbox.Spec, string, string, error) {
-	res, err := resolveSandboxSpecWithFallback(wf, repoRoot, cliOverride, globalDefault, defaultImage, "")
+	// Trusted on purpose: this wrapper feeds the mode-level probes
+	// (sandboxDriverForRun → RunWillBeSandboxed), which ask WHETHER a run
+	// is sandboxed and on which driver — questions the untrusted floor's
+	// devcontainer skip cannot change (see resolveSandboxSpecWithFallback).
+	// The start path itself passes the run's own trust.
+	res, err := resolveSandboxSpecWithFallback(wf, repoRoot, cliOverride, globalDefault, defaultImage, "", store.RunTrustDefault)
 	if err != nil {
 		return nil, res.source, res.skipReason, err
 	}
@@ -1635,9 +1884,20 @@ type resolvedSpec struct {
 // resolveSandboxSpecWithFallback carries the registry fallback for a
 // version-pinned built-in image (see resolveDefaultSandboxImageWithFallback)
 // down to the spec the driver receives, plus the trust metadata.
+// An UNTRUSTED run (ADR-162 U5) never reads the repository's
+// devcontainer: the file is the repository's — its image, its mounts,
+// its postCreateCommand — and mode=auto for an untrusted workspace
+// resolves from the workflow's own sandbox block over the operator's
+// default image, the same shape the "no devcontainer found" fallback
+// takes. What that floor cannot change is the mode's answer: both
+// branches resolve an ACTIVE spec from the same mode, so the launch-time
+// probes (RunWillBeSandboxed, via resolveSandboxSpec on the trusted
+// chain) never disagree with the start on WHETHER the run is sandboxed
+// or on which driver serves it.
 func resolveSandboxSpecWithFallback(
 	wf *ir.Workflow,
 	repoRoot, cliOverride, globalDefault, defaultImage, defaultImageFallback string,
+	trust store.RunTrust,
 ) (resolvedSpec, error) {
 	mode, source := pickMode(wf, cliOverride, globalDefault)
 	if mode == "" || mode == string(sandbox.ModeNone) {
@@ -1657,6 +1917,28 @@ func resolveSandboxSpecWithFallback(
 			// falls back to the working directory), so a run reaches
 			// this only through a library caller that passes none.
 			return resolvedSpec{source: source, skipReason: "mode=auto requires a git repository (worktree must be active or workdir must be inside a repo)"}, nil
+		}
+		if !trust.Trusted() {
+			// The floor: no devcontainer of the repository under review is
+			// read, parsed or executed. Refusing an untrusted auto run with
+			// no operator image is the honest failure — the alternative
+			// (reading the repo's devcontainer to fill the gap) is the
+			// exfiltration the floor exists for. Production callers always
+			// resolve a default image (resolveDefaultSandboxImageWithFallback),
+			// so this guards embedders, exactly as the trusted branch below
+			// does.
+			if defaultImage == "" {
+				return resolvedSpec{source: source}, fmt.Errorf("runtime: sandbox: mode=auto on an untrusted workspace resolved no default sandbox image — the repository's devcontainer is not read for an untrusted run")
+			}
+			var spec sandbox.Spec
+			if wf != nil && wf.Sandbox != nil {
+				spec = fromIRSpec(wf.Sandbox)
+			}
+			spec.Mode = sandbox.ModeAuto
+			spec.Image = defaultImage
+			spec.ImageFallback = defaultImageFallback
+			expandSandboxSpec(&spec, repoRoot)
+			return resolvedSpec{spec: &spec, source: source + " (untrusted workspace: repo devcontainer ignored; default image: " + defaultImage + ")"}, nil
 		}
 		dc, path, err := devcontainer.ReadFromRepo(repoRoot)
 		if err != nil {
@@ -2082,6 +2364,29 @@ func pickHostState(wfHostState, cli, global string) (string, string) {
 		return global, "ITERION_SANDBOX_HOST_STATE"
 	}
 	return string(sandbox.HostStateAuto), "default"
+}
+
+// resolveHostState is the ONE decision on what this run's sandbox binds
+// of the operator's home: pickHostState's chain, then the trust floor
+// (ADR-162 U5) — an untrusted workspace resolves `host_state: none`
+// whatever the chain said, because the home is where every login lives
+// (~/.claude/.credentials.json, ~/.codex/auth.json, ~/.gitconfig) and
+// none of it speaks for a run whose code an outsider wrote. The floor
+// sits ON the decision, not on the mount: sandboxCredentialHome (read
+// before credential admission) and applyHostStateMounts (the mount
+// plan) both call HERE, so the probe's reading and the plan cannot
+// disagree — an untrusted run's admission never sees a mounted home a
+// later mount would then withdraw (#1768's ordering hazard, the other
+// way round).
+//
+// The trust marker is the hatch: marking the workspace trusted
+// (store.RunTrust zero value) restores the chain verbatim.
+func resolveHostState(wf *ir.Workflow, p SandboxParams) (string, string) {
+	resolved, source := pickHostState(workflowHostState(wf), p.HostStateOverride, p.HostStateDefault)
+	if !p.Trust.Trusted() {
+		return string(sandbox.HostStateNone), source + " (floored: untrusted workspace — no host home crosses)"
+	}
+	return resolved, source
 }
 
 // hostStateMount describes a single auto-bind from the host into the
@@ -3395,7 +3700,7 @@ func (e *Engine) adoptSharedSandbox(ctx context.Context, runID string, emitForSa
 	// (interaction semantics stay host-side, per run). A listener the parent
 	// never started is one the child does not get — the delegate falls back
 	// per node, loudly, and the event says so.
-	wantsBoard := workflowHasBoardCapability(e.workflow)
+	wantsBoard := workflowHasBoardCapability(e.workflow, e.trust)
 	wantsAskUser := workflowHasInteractiveNode(e.workflow)
 	if e.logger != nil {
 		if wantsBoard && shared.BoardEndpoint == "" {

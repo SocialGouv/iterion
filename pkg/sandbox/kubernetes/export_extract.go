@@ -123,10 +123,23 @@ func (r *Run) exportTarget(root, name string) (rel, abs string, skip bool, err e
 		r.driver.logger.Warn("sandbox: export refused %q from the pod's archive: %v", name, err)
 		return "", "", true, nil
 	}
-	if exportExcluded(landing) {
+	if exportExcluded(landing) || (r.info.UntrustedRun && untrustedExportExcluded(landing)) {
 		return landing, abs, true, nil
 	}
 	return landing, abs, false, nil
+}
+
+// untrustedExportExcluded reports whether rel — a landing path the export
+// extract was about to write — is git-private state an untrusted run never
+// delivers: the WHOLE `.git` tree (ADR-162 U5). The untrusted copy crossed
+// no `.git` (populateWorkspace), but the pod's archiver runs in the
+// sandbox, on an image the workflow chose, and the fork's agent has a
+// shell: a `.git` planted in the workspace must not come back through the
+// export onto the host clone — not its config, and not its refs either.
+// Decided HERE, host-side, on the landing path, for the same reason
+// exportExcluded is: a pattern the in-pod tar applies is a request.
+func untrustedExportExcluded(rel string) bool {
+	return rel == ".git" || strings.HasPrefix(rel, ".git/")
 }
 
 // writeExportFile writes one regular member. An existing symlink at the path

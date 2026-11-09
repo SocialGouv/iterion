@@ -37,7 +37,7 @@ func TestTheAdmissionNamesEveryRefusedNodeSorted(t *testing.T) {
 	t.Cleanup(model.SetCredentialsLookup(model.RunCredentialsLookup))
 	ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{
 		AmbientRefused: true,
-		APIKeys:        map[secrets.Provider]string{secrets.ProviderZAI: "zai-run"},
+		APIKeys:        map[secrets.Provider]string{secrets.ProviderZAI: "zai-run-key-witness"},
 	})
 	wf := &ir.Workflow{
 		Name:    "named",
@@ -131,9 +131,11 @@ func TestTheAdmissionWarnsOnARefusedFallbackAndSupervisor(t *testing.T) {
 // A subbot child adopting its parent's sandbox is judged on the home mount
 // that sandbox carries (SharedSandbox.CredentialHome): a fork-lane child whose
 // claw node reaches its credential only through the operator's ~/.codex the
-// parent mounted is admitted, and refused where the parent mounted nothing.
-// Mutant — the adopt branch's admission reading no home: the mounted arm is
-// refused.
+// parent mounted finds a channel the egress proxy cannot hold (ADR-162
+// decision 7) — the host login is refused typed, naming it — and the child
+// whose parent mounted nothing has no channel at all. Mutant — the adopt
+// branch's admission reading no home: the mounted arm falls to the bare
+// credential refusal, a different code than the typed one.
 func TestAnAdoptedChildIsJudgedOnItsParentsHomeMount(t *testing.T) {
 	clearCredentialEnv(t)
 	home := t.TempDir()
@@ -145,12 +147,12 @@ func TestAnAdoptedChildIsJudgedOnItsParentsHomeMount(t *testing.T) {
 	}
 	ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{})
 	for _, tc := range []struct {
-		name  string
-		home  credroute.SandboxHomeState
-		admit bool
+		name string
+		home credroute.SandboxHomeState
+		code ErrorCode
 	}{
-		{"the parent mounts the operator's home", credroute.SandboxHomeState{Mounted: true, HomeDir: home}, true},
-		{"the parent mounts nothing of it", credroute.SandboxHomeState{}, false},
+		{"the parent mounts the operator's home", credroute.SandboxHomeState{Mounted: true, HomeDir: home}, ErrCodeSandboxCrossingRefused},
+		{"the parent mounts nothing of it", credroute.SandboxHomeState{}, ErrCodeSandboxCredentialUnreachable},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			st := tmpStore(t)
@@ -169,11 +171,11 @@ func TestAnAdoptedChildIsJudgedOnItsParentsHomeMount(t *testing.T) {
 			cleanup, err := e.startSandbox(ctx, "run-child", workDir, "", nil)
 			cleanup()
 			var rerr *RuntimeError
-			switch {
-			case tc.admit && err != nil:
-				t.Fatalf("the child reaching the parent's mounted login = %v, want it adopted", err)
-			case !tc.admit && (!errors.As(err, &rerr) || rerr.Code != ErrCodeSandboxCredentialUnreachable):
-				t.Fatalf("the child with no channel = %v, want %s", err, ErrCodeSandboxCredentialUnreachable)
+			if !errors.As(err, &rerr) || rerr.Code != tc.code {
+				t.Fatalf("%s = %v, want the typed refusal %s", tc.name, err, tc.code)
+			}
+			if tc.code == ErrCodeSandboxCrossingRefused && !strings.Contains(err.Error(), "the operator's host login") {
+				t.Errorf("refusal %q must name the host-login channel the proxy cannot hold", err)
 			}
 		})
 	}

@@ -48,12 +48,14 @@ import (
 // what tells the operator WHY the run cannot launch.
 
 // sandboxCredentialHome resolves what this sandbox will actually bind of
-// the operator's home: the resolved host_state, the driver's bind
-// capability, and the planted-home refusal — the same inputs
-// applyHostStateMounts will apply below, so the probe and the mount plan
-// cannot disagree.
+// the operator's home: the resolved host_state (through resolveHostState,
+// whose untrusted floor answers `none` BEFORE this read — an untrusted
+// run is never admitted on a login the mount plan would withdraw), the
+// driver's bind capability, and the planted-home refusal — the same
+// inputs applyHostStateMounts will apply below, so the probe and the
+// mount plan cannot disagree.
 func sandboxCredentialHome(p SandboxParams, caps sandbox.Capabilities) credroute.SandboxHomeState {
-	resolved, _ := pickHostState(workflowHostState(p.Workflow), p.HostStateOverride, p.HostStateDefault)
+	resolved, _ := resolveHostState(p.Workflow, p)
 	if !sandbox.HostState(resolved).Active() || !caps.SupportsHostBindMounts {
 		return credroute.SandboxHomeState{}
 	}
@@ -203,6 +205,10 @@ func (a credentialAdmission) admit(ctx context.Context, emitEvent func(store.Eve
 	if !fork && !stamped {
 		return nil
 	}
+	// The arms read the same trust the admission judges under (ADR-162
+	// decision 7): a fork run's keys cross as Layer 2 placeholders and its
+	// unholdable channels refuse, exactly as they will at the spawn.
+	ctx = credroute.WithRunTrust(ctx, a.trust)
 	var refused []nodeVerdict
 	var undecidable, warned []string
 	backendOf := func(n ir.Node) string { return dispatchedBackendName(n, a.wf, a.resolver) }
@@ -231,14 +237,24 @@ func (a credentialAdmission) admit(ctx context.Context, emitEvent func(store.Eve
 				undecidable = append(undecidable, fmt.Sprintf("%s (%s)", site.ID, site.Backend))
 				break
 			}
-			if decided, ok := a.probeWithoutArm(ctx, site.Backend, siteFields(site.Node)); !decided {
+			if decided, ok, crossing := a.probeWithoutArm(ctx, site.Backend, siteFields(site.Node)); !decided {
 				undecidable = append(undecidable, fmt.Sprintf("%s (%s)", site.ID, site.Backend))
+			} else if crossing != nil {
+				// ADR-162 decision 7: the channel exists but cannot cross
+				// the fork lane's sandbox — a forfait, the launcher's
+				// ambient env, a host login. Refused typed, naming it.
+				refused = append(refused, nodeVerdict{node: site.ID, nodeID: site.NodeID, backend: site.Backend, refusal: &credroute.Refusal{
+					Backend: site.Backend, Spec: site.LegSpec(0, ""), Reason: credroute.ReasonUntrustedChannel, Cause: crossing,
+				}})
 			} else if !ok {
 				refused = append(refused, nodeVerdict{node: site.ID, nodeID: site.NodeID, backend: site.Backend, refusal: &credroute.Refusal{
 					Backend: site.Backend, Reason: credroute.ReasonNoCredential,
 				}})
 			}
 		case verdict.refusal != nil:
+			// An arm's own refusal, the ambient stamp's or the fork lane's
+			// typed crossing floor (ADR-162 decision 7) among them: the
+			// arms read the same trust the admission stamped on ctx above.
 			refused = append(refused, verdict)
 		case verdict.spend.Channel == credroute.ChannelOwnConfig:
 			// The backend reads its own configuration, never a run
@@ -348,23 +364,27 @@ func (a credentialAdmission) judgeRescue(ctx context.Context, site model.CallSit
 // probeWithoutArm is today's per-backend reading of a sandboxed fork-lane
 // node whose backend no arm decides yet (ADR-161 decision 9, interim):
 // decided is false where no probe reads the backend, or the site exposes no
-// fields to probe.
-func (a credentialAdmission) probeWithoutArm(ctx context.Context, backend string, fields *ir.LLMFields) (decided, ok bool) {
+// fields to probe. crossing, where set, is a channel the fork lane's proxy
+// cannot hold (ADR-162 decision 7): the verdict refuses on it typed, not as
+// a bare no-credential.
+func (a credentialAdmission) probeWithoutArm(ctx context.Context, backend string, fields *ir.LLMFields) (decided, ok bool, crossing *credroute.ErrCrossingRefused) {
 	if fields == nil {
-		return false, false
+		return false, false, nil
 	}
 	switch backend {
 	case delegate.BackendClaudeCode:
-		_, ok = delegate.ClaudeCodeSandboxCredential(ctx, fields.Provider, a.placement.Home)
-		return true, ok
+		_, ok, crossing = delegate.ClaudeCodeSandboxCredential(ctx, fields.Provider, a.placement.Home)
+		return true, ok, crossing
 	case delegate.BackendPi:
-		// The probe answers for the trust the run carries: on an untrusted
-		// workspace the bridge refuses (piLoadCodexView), and reporting its
-		// channel here would read as a credential the fork never receives.
-		_, ok = delegate.PiSandboxCredential(ctx, fields.Model, a.trust)
-		return true, ok
+		// The probe answers for the trust the run carries: an untrusted
+		// workspace refuses the ChatGPT forfait typed — the OAuth file and
+		// its refresh flow are a channel the proxy cannot hold, and the
+		// seed steps aside too (piCodexSeed), so the fork hears the channel
+		// to replace instead of launching to die credential-less mid-run.
+		_, ok, crossing = delegate.PiSandboxCredential(ctx, fields.Model, a.trust)
+		return true, ok, crossing
 	}
-	return false, false
+	return false, false, nil
 }
 
 // asRefusal is err as the resolver's refusal; an arm's error that is none is
@@ -401,6 +421,8 @@ func admissionCode(reason credroute.Reason) ErrorCode {
 	switch reason {
 	case credroute.ReasonAmbientStamp, credroute.ReasonArmPending:
 		return ErrCodeCredentialAmbientRefused
+	case credroute.ReasonUntrustedChannel:
+		return ErrCodeSandboxCrossingRefused
 	case credroute.ReasonSubscriptionSwitch:
 		return ErrCodeCredentialSubscriptionForbidden
 	}
@@ -445,6 +467,14 @@ func (a credentialAdmission) refusal(refused []nodeVerdict, fork bool) error {
 			Cause:   first.refusal,
 			Message: fmt.Sprintf("%s refused %s: only the pod's environment would fund node(s) %s, and the run's credentials are its only funds (ADR-131 §7)", who, where, strings.Join(parts, ", ")),
 			Hint:    "attach a credential for each named route to the run (a BYOK key, a pinned key, a connected forfait, a gateway pair), or route the node to a model the run's own credentials serve — the stamp refuses the pod's keys and logins by design. A backend that reads its own configuration (kimi, grok, opencode) never spends a run credential: route its node to claw or claude_code.",
+		}
+	case code == ErrCodeSandboxCrossingRefused:
+		return &RuntimeError{
+			Code:    code,
+			NodeID:  nodeID,
+			Cause:   first.refusal,
+			Message: fmt.Sprintf("%s refused %s: node(s) %s would spend a credential channel the sandbox's egress proxy cannot hold — a forfait's OAuth flow, a signing-chain key, the launcher's ambient env (ADR-162 decision 7)", who, where, strings.Join(parts, ", ")),
+			Hint:    "fund the named nodes with a bearer key the proxy substitutes toward its provider's host (a BYOK key, a pinned key, a gateway pair) — a forfait or a pod env key cannot cross an untrusted run's sandbox",
 		}
 	case code == ErrCodeCredentialSubscriptionForbidden:
 		return &RuntimeError{

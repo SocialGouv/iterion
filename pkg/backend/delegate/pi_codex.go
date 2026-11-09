@@ -105,20 +105,20 @@ func piCodexSeed(ctx context.Context, task Task, logger *iterlog.Logger) (map[st
 		}
 	}
 
-	// A workspace its tenant did not write: the bridge does not seed a ChatGPT
-	// token where the fork's agent reads (ADR-162 U3). pi's openai-codex
-	// provider takes its credential only from a FILE in an agent dir — a live
-	// access AND refresh token the agent process can read — and on such a
-	// workspace the only root that exists is inside the checkout (the
-	// host-state floor withdraws the shared one), so the token would sit in
-	// the attacker's tree, readable by an agent under their prompt. Stepped
-	// aside before anything is read or created, including the ignore guard
-	// piCodexSeedRoot would write there.
+	// A workspace its tenant did not write: the bridge never seeds a ChatGPT
+	// token where the fork's agent reads (ADR-162 U3, decision 7). pi's
+	// openai-codex provider takes its credential only from a FILE in an agent
+	// dir — a live access AND refresh token the agent process can read — and
+	// the OAuth file + refresh flow is a channel the egress proxy cannot
+	// substitute, so no state location makes it crossable: in the checkout it
+	// sits in the attacker's tree, and a shared root still hands the fork a
+	// subscription to spend. Stepped aside for EVERY untrusted run, before
+	// anything is read or created, including the ignore guard piCodexSeedRoot
+	// would write; the admission probe (PiSandboxCredential) refuses the
+	// channel typed, so the launch names it instead of dying mid-run.
 	if !task.WorkspaceTrust.Trusted() {
-		if _, loc := task.StateDir(BackendPi); loc == StateInCheckout {
-			piNoteCodexFallback(task, logger, "this workspace was not written by its tenant, and the only place to seed pi's agent dir is inside its checkout — a ChatGPT subscription token is never written where the fork's agent reads it")
-			return nil, noop, nil
-		}
+		piNoteCodexFallback(task, logger, "this workspace was not written by its tenant — a ChatGPT subscription token is never written where the fork's agent reads it")
+		return nil, noop, nil
 	}
 
 	// No usable Codex credential is NOT an error: before this bridge existed,

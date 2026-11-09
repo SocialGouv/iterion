@@ -9,14 +9,16 @@ import (
 )
 
 // WHO WROTE THE CODE of the run a resolution serves, and what that buys
-// (#1802, for the fork review lane of #874).
+// (#1802, tightened by ADR-162 decision 6 for the fork review lane of #874).
 //
 // A `tool … action:` node authenticates with the tenant's binding, and nothing
 // on that path asked whose workflow it came from. A run over a workspace
 // authored outside the tenant — the lane's store.RunTrustFork — would
 // therefore have spent the tenant's credential on whatever the fork's own
 // graph declared: an issue closed, a release deleted, a comment posted as the
-// tenant. The lane's contract is a REVIEW, so it reads.
+// tenant. #1802 let such a run READ; decision 6 withdraws that too, because
+// what the run reads can leave through the run's one route out — so an
+// untrusted workspace resolves no connector action at all.
 //
 // The refusal lives at the RESOLUTION rather than at the node executor,
 // because this is the one place a connector credential is produced
@@ -25,18 +27,18 @@ import (
 // facade docs/adr/098-connector-catalog.md owes — inherits the refusal instead
 // of having to remember it.
 
-// ErrUntrustedMutation is what a mutating action is worth on a run whose
-// workspace the tenant does not control.
+// ErrUntrustedAction is what ANY action — read or mutating — is worth on a run
+// whose workspace the tenant does not control.
 //
 // A SENTINEL because the two facts a caller has to tell apart are fixed in
 // different places: this one is a property of the RUN (the same connection
 // serves the same node on the tenant's own branch), while a CapabilityError is
 // a grant an operator widens on the record.
-var ErrUntrustedMutation = errors.New("connection: a run whose workspace was authored outside the tenant resolves read operations only")
+var ErrUntrustedAction = errors.New("connection: a run whose workspace was authored outside the tenant resolves no connector action at all")
 
 // ErrTrustUnstated is a WIRING defect, not a lane decision: something built a
-// resolver without saying whose code the run holds, so no mutating action can
-// be admitted — the answer is unknown, not "trusted".
+// resolver without saying whose code the run holds, so no action can be
+// admitted — the answer is unknown, not "trusted".
 var ErrTrustUnstated = errors.New("connection: the resolver was built without stating who wrote the code in this run's workspace")
 
 // ActionTrust is the run's trust AS A RESOLUTION RECEIVES IT: store.RunTrust
@@ -52,9 +54,9 @@ var ErrTrustUnstated = errors.New("connection: the resolver was built without st
 // so. A guard whose condition can never be true is documented as working;
 // this one has to be wrong-proof BEFORE anything sets RunTrustFork.
 //
-// So stated-ness is part of the value: a mutating action resolves only when
-// somebody said whose code this run holds AND the answer was "the tenant's".
-// TrustOfRun states it; TrustUnknown says, on purpose, that it cannot be read.
+// So stated-ness is part of the value: an action resolves only when somebody
+// said whose code this run holds AND the answer was "the tenant's". TrustOfRun
+// states it; TrustUnknown says, on purpose, that it cannot be read.
 type ActionTrust struct {
 	trust  store.RunTrust
 	stated bool
@@ -83,23 +85,19 @@ func TrustUnknown() ActionTrust { return ActionTrust{} }
 // mid-rollout, a hand-edited row) are refused by construction rather than by
 // enumeration.
 //
-// ONE predicate for every decision that rests on this single fact — whether a
-// mutating action resolves (mayMutate), whether the workspace's own connector
-// packages may be BELIEVED about what an operation does
-// (projectTierConsulted), and which aliases a resolver may suggest to a run
-// (suggestAlias). Two copies would let a resolver refuse the mutation
-// and still read the effect from the package the reviewed tree declared, which
-// is #2769 exactly: the refusal's predicate is `effect:` as the catalog served
-// it, so the tier that serves and the verdict that reads it cannot answer to
-// different rules.
+// ONE predicate for every decision that rests on this single fact — whether an
+// action resolves at all, whether the workspace's own connector packages may be
+// BELIEVED about what an operation does (projectTierConsulted), and which
+// aliases a resolver may suggest to a run (suggestAlias). Two copies would let
+// a resolver refuse the action and still read the effect from the package the
+// reviewed tree declared, which is #2769 exactly: the refusal's predicate is
+// `effect:` as the catalog served it, so the tier that serves and the verdict
+// that reads it cannot answer to different rules.
 func (t ActionTrust) tenantsOwnCode() bool { return t.stated && t.trust.Trusted() }
 
-// mayMutate reports whether a resolution serving this run may hand over a
-// credential for an operation that changes remote state.
-func (t ActionTrust) mayMutate() bool { return t.tenantsOwnCode() }
-
-// TrustError is the resolution chokepoint's typed refusal of an action whose
-// effect this run's trust does not buy.
+// TrustError is the resolution chokepoint's typed refusal of an action this
+// run's trust does not buy — any action, since ADR-162 decision 6 withdrew the
+// reads #1802 still allowed.
 //
 // Typed, and separate from CapabilityError: a caller that could not tell them
 // apart would send an operator to widen a capability that is already right.
@@ -122,7 +120,7 @@ func (e *TrustError) Error() string {
 			e.Action, e.effectPhrase(), e.Alias)
 	}
 	return fmt.Sprintf("operation %q %s, and this run's workspace holds code the tenant does not control (trust=%q), so connection %q hands over nothing"+
-		" — a review lane resolves read operations only",
+		" — such a run resolves no connector action at all, read or mutating (ADR-162 decision 6: what the run reads can leave through the run's one route out)",
 		e.Action, e.effectPhrase(), string(e.Trust.trust), e.Alias)
 }
 
@@ -132,7 +130,7 @@ func (e *TrustError) Unwrap() error {
 	if e.unstated() {
 		return ErrTrustUnstated
 	}
-	return ErrUntrustedMutation
+	return ErrUntrustedAction
 }
 
 // unstated is the ONE predicate the message and the sentinel share. Two copies
@@ -144,10 +142,17 @@ func (e *TrustError) unstated() bool { return !e.Trust.stated }
 //
 // An effect this build does not know — a typo, a package from a newer schema —
 // is mutating by spec.Effect.Mutating(), which fails safe; the sentence has to
-// say THAT rather than assert what the operation does.
+// say THAT rather than assert what the operation does. The phrase describes
+// what was ASKED, never whether it was owed: a read refuses on the same trust
+// as a mutation since ADR-162 decision 6, and a sentence that called a read a
+// state change would be the lie an operator reads first.
 func (e *TrustError) effectPhrase() string {
-	if e.Effect.Known() {
+	switch {
+	case e.Effect == spec.EffectRead:
+		return fmt.Sprintf("has effect %q, which only reads", string(e.Effect))
+	case e.Effect.Known():
 		return fmt.Sprintf("has effect %q, which changes remote state", string(e.Effect))
+	default:
+		return fmt.Sprintf("declares effect %q, which this build does not know and therefore reads as mutating", string(e.Effect))
 	}
-	return fmt.Sprintf("declares effect %q, which this build does not know and therefore reads as mutating", string(e.Effect))
 }

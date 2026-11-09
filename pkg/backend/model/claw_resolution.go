@@ -100,7 +100,33 @@ func resolveClawCall(ctx context.Context, reg *Registry, call credroute.Call) (c
 	res := clawResolution{env: env, facts: facts}
 	spend, err := containerSpend(ctx, env, facts, spec, hint, call.Sandbox.Home)
 	if err != nil {
+		// The one refusal the trust floor rewords (ADR-162 decision 7): a
+		// leg nothing funds where the withheld ambient layer was its only
+		// would-be channel — the launch's answer names the channel the
+		// fork lane cannot hold, not a bare "no credential". Every other
+		// refusal keeps its own reason (an unfunded hint, a factory's
+		// refusal of the id).
+		if cross := !credroute.CarriedRunTrust(ctx).Trusted(); cross && facts.withheldAmbient {
+			var none *errNoClawCredential
+			if errors.As(err, &none) {
+				return res, clawRefusal(call, &credroute.ErrCrossingRefused{
+					Channel: "the launcher's ambient env",
+					Spec:    spec,
+					Because: "fund the run with an API key (a BYOK key, a pinned key, a gateway pair) — Layer 2 substitutes placeholder tokens toward the credential's own host and cannot hold this channel",
+				})
+			}
+		}
 		return res, clawRefusal(call, err)
+	}
+	if !credroute.CarriedRunTrust(ctx).Trusted() {
+		// The floor on the landed spend (ADR-162 decision 7): what the
+		// egress proxy cannot hold is refused typed, and a crossing the
+		// floor admits ships no forfait mount — the container holds
+		// placeholder tokens only.
+		if cerr := clawUntrustedLandingRefusal(spend); cerr != nil {
+			return res, clawRefusal(call, cerr)
+		}
+		stripForfaitCrossing(env)
 	}
 	res.spend = spend
 	return res, nil
@@ -146,9 +172,12 @@ func clawRefusal(call credroute.Call, err error) *credroute.Refusal {
 	var ambient *ErrAmbientCredentialRefused
 	var hintUnfunded *ErrProviderHintUnfunded
 	var glmUnfunded *ErrGLMHintUnfunded
+	var crossing *credroute.ErrCrossingRefused
 	switch {
 	case errors.As(err, &ambient):
 		r.Reason = credroute.ReasonAmbientStamp
+	case errors.As(err, &crossing):
+		r.Reason = credroute.ReasonUntrustedChannel
 	case errors.Is(err, secrets.ErrSubscriptionOAuthForbidden):
 		r.Reason = credroute.ReasonSubscriptionSwitch
 	case errors.As(err, &hintUnfunded), errors.As(err, &glmUnfunded):

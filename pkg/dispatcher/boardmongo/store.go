@@ -1286,10 +1286,11 @@ func applyPatch(iss *native.Issue, p native.Patch, board *native.Board) patchRes
 		changed = append(changed, "bot")
 	}
 	if p.BotArgs != nil {
-		// The publish grant never rides a card (native/card_grant.go).
-		// Dropped BEFORE the wholesale swap, so a patch carrying the grant
-		// and nothing else clears the args instead of storing it.
-		kept := native.BotArgsForWrite(*p.BotArgs)
+		// The publish grant never rides a card (native/card_grant.go): a
+		// SENT grant is dropped before the swap, and the STORED one comes
+		// back off the record — an args rewrite scrubs no grant the launch
+		// lane still reads, and an explicit empty value still withdraws it.
+		kept := native.KeepStoredMintedVars(iss.BotArgs, native.BotArgsForWrite(*p.BotArgs))
 		var next map[string]string
 		if len(kept) > 0 {
 			next = make(map[string]string, len(kept))

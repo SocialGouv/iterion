@@ -336,8 +336,10 @@ func TestConnectorFacadeRefusesAnActionOnlyConnection(t *testing.T) {
 
 func TestConnectorFacadeHonoursTheRunsTrust(t *testing.T) {
 	// A run whose workspace the tenant does not control (the fork review
-	// lane) resolves READ operations only — the facade must not become the
-	// way round #1802's refusal.
+	// lane) resolves NO connector action at all — read or mutating
+	// (ADR-162 decision 6): what such a run reads can leave through the
+	// run's one route out. The facade must not become the way round the
+	// refusal #1802 put on the node path.
 	rig := newFacadeTestRig(t,
 		[]string{connection.CapConnectors},
 		store.RunTrustFork, true,
@@ -348,16 +350,18 @@ func TestConnectorFacadeHonoursTheRunsTrust(t *testing.T) {
 		"arguments": map[string]any{"operation": "probe.issue.close", "connection": "main"},
 	})
 	text, isError := rpcText(t, out)
-	if !isError || !strings.Contains(text, "read operations only") {
+	if !isError || !strings.Contains(text, "resolves no connector action at all") {
 		t.Errorf("a fork run mutating through the facade: isError=%v %s", isError, text)
 	}
-	// Reads still work.
+	// The READ the model chose refuses on the same trust — decision 6
+	// withdrew #1802's reads-allowed remainder.
 	_, out = rig.rpc(t, "run-token", "tools/call", map[string]any{
 		"name":      "probe_issue_list",
 		"arguments": map[string]any{"connection": "main"},
 	})
-	if _, isError = rpcText(t, out); isError {
-		t.Errorf("a fork run must still READ: %v", out)
+	text, isError = rpcText(t, out)
+	if !isError || !strings.Contains(text, "resolves no connector action at all") {
+		t.Errorf("a fork run READING through the facade: isError=%v %s", isError, text)
 	}
 
 	// And an UNSTATED trust (the minter could not read the run) fails the

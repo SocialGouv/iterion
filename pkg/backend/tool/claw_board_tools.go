@@ -46,6 +46,9 @@ func RegisterClawBoardTools(reg *Registry, cfg *BoardConfig) error {
 	for _, t := range boardops.ToolsFor(caps) {
 		t := t // capture for closure
 		exec := func(ctx context.Context, input json.RawMessage) (string, error) {
+			if err := requireHostCapability(ctx, "mcp.iterion_board."+t.Name, t.Capability); err != nil {
+				return "", err
+			}
 			raw, err := boardops.CallWithEnv(cfg.Store, caps, t.Name, input, env)
 			if err != nil {
 				return "", err

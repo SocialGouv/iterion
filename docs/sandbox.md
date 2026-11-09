@@ -117,6 +117,34 @@ stamped `pi` or `codex` leg is refused too — same code, its own remedy
 their dispatch reads the pod's stores and keys past the run's seal. Each
 of these refusals also stands at the dispatch, before the CLI starts.
 
+**An untrusted run's sandbox is a floor, not a fence post.** The fork
+lane's run — a workspace an outsider wrote — is held to
+[ADR-162](adr/162-the-fork-review-lane-is-a-gesture-on-floors-that-land-first.md)
+decision 7's floors, each refused typed at the
+seat that owns it. No host state crosses: the operator's home and git
+identity, the checkout's `.git` tree, the repository's devcontainer and
+devbox resolve `host_state` none through the one decision the credential
+admission and the mount plan share. No credential value crosses: every
+sealed key or gateway pair enters the container as a placeholder the
+egress proxy substitutes toward the credential's own host, and a channel
+the proxy cannot hold — a forfait's OAuth file and refresh flow, the
+operator's host login, the launcher's ambient env, a signing key that
+names no host — refuses the landing with `SANDBOX_CROSSING_REFUSED`,
+never crosses raw or dead
+([secrets](secrets.md#layer-2--tls-inspection-egress-default-on-for-sandboxed-runs)).
+The network is a floor too: the run is admitted only on a driver whose
+CNI enforces NetworkPolicy (docker, which cannot, refuses it with
+`SANDBOX_NETWORK_REFUSED`), and the per-run policy the kubernetes driver
+writes names exactly the runner pod's IP on the run's own TCP ports —
+DNS dropped, the proxy resolves runner-side. A non-enforcing CNI (kind's
+kindnetd) applies that policy as a no-op, so before the first spawn a
+start probe that ignores the proxy env dials the roads the policy must
+have closed — the cluster API service, the credential's own hosts, the
+runner pod's metrics port — and every direct dial must fail: one that
+connects, or a floor no probe could witness, refuses the run with the
+same `SANDBOX_NETWORK_REFUSED`, naming the road that stayed open or the
+verdict that never came.
+
 ## Quick start
 
 The shortest path to a sandboxed run:

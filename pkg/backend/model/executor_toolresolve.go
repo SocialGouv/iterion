@@ -15,6 +15,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/toolcatalog"
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // ---------------------------------------------------------------------------
@@ -90,28 +91,60 @@ func (e *ClawExecutor) internalMCPToolGrant(node ir.Node, server, qualified stri
 			return nil
 		}
 	}
-	return fmt.Errorf("model: node %q cannot access MCP tool %q because it holds no %q capability "+
+	refusal := fmt.Errorf("model: node %q cannot access MCP tool %q because it holds no %q capability "+
 		"(iterion's own servers are opened by the node's `capabilities:` list, not by its `mcp:` scope)",
 		node.NodeID(), qualified, capability)
+	// The refusal is TYPED, as the call-time check's is: the declaration and
+	// the trust decide it and neither changes between attempts, so the
+	// boundary classifies it permanent rather than spending its retry. A
+	// capability the node DECLARES and the workspace-trust floor withdrew is
+	// the floor's refusal, not the program's fault.
+	for _, declared := range e.nodeCapabilitiesDeclared(node) {
+		if declared == capability {
+			return fmt.Errorf("%w: %w", tool.ErrHostCapabilityWithdrawn, refusal)
+		}
+	}
+	return fmt.Errorf("%w: %w", tool.ErrHostCapabilityNotHeld, refusal)
 }
 
 // nodeCapabilities is the grant a node is held to, for every node kind:
 // its own declared `capabilities:` list through effectiveCapabilitiesOf (nil
 // inherits the workflow's, a declared `capabilities: []` grants nothing,
-// #1801). An LLM node's list is extractBackendFields' — the field buildTask
-// reads; a tool node declares its own (#78=A, ADR-151), read here for its
-// registry recipe's host tools and by its native action transport alike, so
-// no recipe of a tool node answers a different grant than another. A node
-// kind that carries no list of its own is held to the workflow's.
+// #1801; a workspace its tenant did not write holds none). An LLM node's
+// list is extractBackendFields' — the field buildTask reads; a tool node
+// declares its own (#78=A, ADR-151), read here for its registry recipe's
+// host tools and by its native action transport alike, so no recipe of a
+// tool node answers a different grant than another. A node kind that
+// carries no list of its own is held to the workflow's.
 func (e *ClawExecutor) nodeCapabilities(node ir.Node) []string {
+	return e.nodeCapabilitiesAs(node, e.WorkspaceTrust())
+}
+
+// nodeCapabilitiesDeclared is the same grant read as if the workspace were
+// trusted: what the PROGRAM declares, before the trust floor. The resolution
+// refusal reads it to say which of the two decided — a declared capability the
+// floor withdrew is the floor's refusal, an undeclared one the program's.
+func (e *ClawExecutor) nodeCapabilitiesDeclared(node ir.Node) []string {
+	return e.nodeCapabilitiesAs(node, store.RunTrustDefault)
+}
+
+func (e *ClawExecutor) nodeCapabilitiesAs(node ir.Node, trust store.RunTrust) []string {
+	held, _ := e.nodeCapabilitiesBoth(node, trust)
+	return held
+}
+
+// nodeCapabilitiesBoth is nodeCapabilitiesAs with the withdrawal kept: the
+// grant stamp (nodeHostCapabilities) reads both so a refusal can say the floor
+// took what the node declares.
+func (e *ClawExecutor) nodeCapabilitiesBoth(node ir.Node, trust store.RunTrust) (held, withdrawn []string) {
 	if tn, ok := node.(*ir.ToolNode); ok {
-		return effectiveCapabilitiesOf(tn.Capabilities, e.wfCapabilities)
+		return effectiveCapabilitiesOf(tn.Capabilities, e.wfCapabilities, trust)
 	}
 	f, err := extractBackendFields(node)
 	if err != nil {
-		return e.wfCapabilities
+		return effectiveCapabilitiesOf(nil, e.wfCapabilities, trust)
 	}
-	return effectiveCapabilitiesOf(f.capabilities, e.wfCapabilities)
+	return effectiveCapabilitiesOf(f.capabilities, e.wfCapabilities, trust)
 }
 
 // resolveToolsForNode resolves a list of tool names to delegate.ToolDef
@@ -222,7 +255,7 @@ func (e *ClawExecutor) resolveTaskMCPServers(names []string) []delegate.TaskMCPS
 		if !ok || cfg == nil {
 			continue
 		}
-		out = append(out, delegate.TaskMCPServer{
+		server := delegate.TaskMCPServer{
 			Name:      cfg.Name,
 			Transport: string(cfg.Transport),
 			Command:   cfg.Command,
@@ -230,9 +263,26 @@ func (e *ClawExecutor) resolveTaskMCPServers(names []string) []delegate.TaskMCPS
 			URL:       cfg.URL,
 			Headers:   cfg.Headers,
 			Env:       cfg.Env,
-		})
+		}
+		if !e.WorkspaceTrust().Trusted() && cfg.Transport == mcp.TransportStdio {
+			server.Command, server.Args = neutralCwdLaunch(server.Command, server.Args)
+		}
+		out = append(out, server)
 	}
 	return out
+}
+
+// neutralCwdLaunch starts a stdio MCP server from the filesystem root instead
+// of the directory it is spawned in. claude_code and pi spawn the servers they
+// are handed with THEIR working directory — the checkout — and a launcher reads
+// its own configuration from there: `npx` a `.npmrc` whose `script-shell` runs
+// checkout code, `python -m` a directory shadowing the module. The CLI does not
+// honour a per-server cwd (measured: 2.1.220 starts a server declaring one in
+// its own directory), so the server is wrapped instead. The root exists in
+// every environment and no checkout can write to it; the server's own command
+// and arguments are passed through untouched.
+func neutralCwdLaunch(command string, args []string) (string, []string) {
+	return "/bin/sh", append([]string{"-c", `cd / && exec "$0" "$@"`, command}, args...)
 }
 
 // expandWildcards replaces wildcard entries ("mcp.<server>.*") with the

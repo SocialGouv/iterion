@@ -281,6 +281,15 @@ type MCPServerDegradedInfo struct {
 	Err   error // why the tools were dropped
 }
 
+// TrustWithdrawalInfo is what a workspace its tenant did not write
+// (store.RunTrust) withdrew from a node — the payload of the
+// OnTrustWithdrawal hook and of store.EventWorkspaceTrustWithdrawal.
+type TrustWithdrawalInfo struct {
+	What   string   // "capabilities" | "memory" | "auto_memory" | "mcp_servers"
+	Items  []string // the names withdrawn, when there are names
+	Reason string
+}
+
 // ReasoningEffortAdjustment records a route's explicit effort substitution.
 type ReasoningEffortAdjustment struct {
 	Model     string
@@ -403,6 +412,13 @@ type EventHooks struct {
 	// execution instead, so its `fallbacks:` get their turn.
 	OnMCPServerDegraded func(nodeID string, info MCPServerDegradedInfo)
 
+	// OnTrustWithdrawal fires when a workspace its tenant did not write
+	// withdrew something the node would otherwise have been handed — a
+	// host capability, a memory space. The node runs on without it; the
+	// store hook persists it as workspace_trust_withdrawal, the one record
+	// of what an untrusted run's agent ran without.
+	OnTrustWithdrawal func(nodeID string, info TrustWithdrawalInfo)
+
 	// OnNodeFinished fires after a node's executor returns successfully.
 	// The output map carries iterion's conventional usage keys (`_tokens`,
 	// `_cost_usd`, `_model`) so observers (e.g. the Prometheus exporter)
@@ -500,6 +516,7 @@ func ChainHooks(a, b EventHooks) EventHooks {
 		OnReasoningEffortAdjusted: chainCb2(a.OnReasoningEffortAdjusted, b.OnReasoningEffortAdjusted),
 		OnSessionDegraded:         chainCb2(a.OnSessionDegraded, b.OnSessionDegraded),
 		OnMCPServerDegraded:       chainCb2(a.OnMCPServerDegraded, b.OnMCPServerDegraded),
+		OnTrustWithdrawal:         chainCb2(a.OnTrustWithdrawal, b.OnTrustWithdrawal),
 		OnNodeFinished:            chainCb2(a.OnNodeFinished, b.OnNodeFinished),
 	}
 }

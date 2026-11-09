@@ -212,7 +212,10 @@ const (
 	// pkg/connection's resolution; reads still resolve, which is what a review
 	// lane needs), and any mutating bot. It does NOT withdraw the LLM
 	// credential: the lane's whole purpose is to produce a review, and its
-	// spend is bounded by the per-author budget instead.
+	// spend is bounded by the per-author budget instead. And it withdraws
+	// every host capability the workflow declares (HostCapabilities): no
+	// board, no run store, no watch — said per node
+	// (workspace_trust_withdrawal).
 	RunTrustFork RunTrust = "fork"
 )
 
@@ -224,6 +227,26 @@ const (
 // for "fork" AND for anything this binary does not recognise, which is the
 // only safe answer to "I do not know who wrote this code".
 func (t RunTrust) Trusted() bool { return t == RunTrustDefault }
+
+// HostCapabilities is the one answer to "which of the host capabilities a
+// workflow declares (`capabilities:`) does a run of this trust hold".
+//
+// A capability reaches the TENANT's state beyond the workspace — its board, its
+// run store, the watch fan-out — and a card or a run is where a prompt injected
+// into an outsider's code would go to outlive the run: a board card names a bot
+// and the bot args it launches with. So a workspace its tenant did not write
+// holds none of them. The refusal is the whole declared list, not a family: a
+// capability this binary does not know yet is withdrawn with the rest, until
+// someone decides it is safe to hand an outsider's code.
+//
+// held is never nil on the untrusted side, so a caller that reads nil as
+// "inherit the workflow's list" cannot mistake the refusal for an absence.
+func (t RunTrust) HostCapabilities(declared []string) (held, withdrawn []string) {
+	if t.Trusted() {
+		return declared, nil
+	}
+	return []string{}, append([]string(nil), declared...)
+}
 
 // Lowest is the less trusted of two provenances: the untrusted one when either
 // is (t first), the trusted default only when both are. A run that learns its

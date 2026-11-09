@@ -25,6 +25,9 @@ func RegisterClawRunTools(reg *Registry, cfg *RunConfig) error {
 	for _, definition := range runops.ToolsFor(caps) {
 		definition := definition
 		exec := func(ctx context.Context, input json.RawMessage) (string, error) {
+			if err := requireHostCapability(ctx, "mcp.iterion_runs."+definition.Name, runops.CapRunsRead); err != nil {
+				return "", err
+			}
 			raw, err := runops.Call(ctx, cfg.Store, caps, definition.Name, input)
 			if err != nil {
 				return "", err

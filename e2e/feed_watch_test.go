@@ -344,8 +344,12 @@ func TestFeedWatch_ScriptsStateMachine(t *testing.T) {
 	if body := stripFooter(text); body != "**digest**" {
 		t.Fatalf("webhook payload body = %q", body)
 	}
-	if !strings.Contains(text, footerHeading) || !strings.HasSuffix(text, runFooterSig(runURLDefault, runIDDefault)) {
-		t.Fatalf("webhook payload must carry the run footer: %q", text)
+	if !strings.HasSuffix(text, runFooterSig(runURLDefault, runIDDefault)) {
+		t.Fatalf("webhook payload text must end with the run footer: %q", text)
+	}
+	if header, content := provenanceBlock(t, gotBody); header != provenanceHeading ||
+		!strings.Contains(content, "claude-fable-x") || !strings.Contains(content, "claude_code") {
+		t.Fatalf("the provenance block must name the step that served: header %q content %q", header, content)
 	}
 
 	// commit_state — clears exactly the snapshot, archives the digest.
@@ -731,11 +735,15 @@ func longDigest(blocks int) string {
 // notify node appends to every message of a split digest.
 var partMarker = regexp.MustCompile(`\n\n_\(\d+/\d+[^)]*\)_$`)
 
-// The run footer the notify/notify_silence nodes append (the details
-// heading when AI provenance is shown, the signature always).
+// The provenance the notify node attaches to the LAST message of every
+// sink as a Mattermost Blocks collapsible (props.mm_blocks), and the run
+// footer — the signature — that closes the TEXT of every digest message.
 const (
-	footerHeading = "##### Détails du run IA · Iterion"
-	footerSig     = "🤖 [iterion](https://iterion.cloud)"
+	// The collapsible header, WITHOUT the markdown heading prefix: the
+	// block text renders its own markdown, and the `##### ` form was the
+	// in-text shape the provenance wore before it moved into the block.
+	provenanceHeading = "Détails du run IA · Iterion"
+	footerSig         = "🤖 [iterion](https://iterion.cloud)"
 
 	// The run refs subScript substitutes by default (the deployment shape).
 	runURLDefault = "https://iterion.cloud/studio/runs/run-e2e-1"
@@ -758,12 +766,9 @@ func runFooterSig(runURL, runID string) string {
 	return sig
 }
 
-// stripFooter removes the run footer from a message: the block starts at
-// the details heading when provenance is shown, at the signature when not.
+// stripFooter removes the run footer from a message: the signature line
+// the text carries (the provenance rides the payload's props, not text).
 func stripFooter(m string) string {
-	if i := strings.LastIndex(m, footerHeading); i >= 0 {
-		return strings.TrimRight(m[:i], "\n")
-	}
 	if i := strings.LastIndex(m, footerSig); i >= 0 {
 		return strings.TrimRight(m[:i], "\n")
 	}
@@ -811,6 +816,62 @@ func (s *notifySink) texts(channel string) []string {
 		}
 	}
 	return got
+}
+
+// bodiesFor returns the received payloads for one channel, in order —
+// the full webhook bodies, props included.
+func (s *notifySink) bodiesFor(channel string) []map[string]any {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var got []map[string]any
+	for _, b := range s.bodies {
+		if ch, _ := b["channel"].(string); ch == channel {
+			got = append(got, b)
+		}
+	}
+	return got
+}
+
+// lastBody returns the most recent payload received for one channel.
+func (s *notifySink) lastBody(channel string) map[string]any {
+	bodies := s.bodiesFor(channel)
+	if len(bodies) == 0 {
+		return nil
+	}
+	return bodies[len(bodies)-1]
+}
+
+// provenanceBlock extracts and validates the mm_blocks collapsible a
+// delivered payload carries: exactly one block, a collapsible, collapsed
+// by default, the provenance heading in its header, the table in its
+// content. Returns (header, content).
+func provenanceBlock(t *testing.T, body map[string]any) (string, string) {
+	t.Helper()
+	props, _ := body["props"].(map[string]any)
+	blocks, _ := props["mm_blocks"].([]any)
+	if len(blocks) != 1 {
+		t.Fatalf("props.mm_blocks must carry exactly one block, got %d (%v)", len(blocks), props)
+	}
+	blk, _ := blocks[0].(map[string]any)
+	if blk["type"] != "collapsible" {
+		t.Fatalf("the provenance block must be a collapsible, got %v", blk["type"])
+	}
+	if blk["collapsed"] != true {
+		t.Fatalf("the provenance block must start collapsed, got %v", blk["collapsed"])
+	}
+	headerBlocks, _ := blk["header"].([]any)
+	if len(headerBlocks) != 1 {
+		t.Fatalf("the collapsible header must carry one block, got %d", len(headerBlocks))
+	}
+	hb, _ := headerBlocks[0].(map[string]any)
+	header, _ := hb["text"].(string)
+	contentBlocks, _ := blk["content"].([]any)
+	if len(contentBlocks) != 1 {
+		t.Fatalf("the collapsible content must carry one block, got %d", len(contentBlocks))
+	}
+	cb, _ := contentBlocks[0].(map[string]any)
+	content, _ := cb["text"].(string)
+	return header, content
 }
 
 // TestFeedWatch_NotifySplitsLongDigest drives the REAL notify script: a
@@ -944,18 +1005,26 @@ func TestFeedWatch_NotifySplitsLongDigest(t *testing.T) {
 			t.Fatalf("expected a split, got %d message(s)", len(got))
 		}
 		last := got[len(got)-1]
-		for _, want := range []string{
-			footerHeading, "claude-fable-x", "claude_code",
-			"[`run-e2e-1`](https://iterion.cloud/studio/runs/run-e2e-1)",
-			"Tokens du run",
-		} {
-			if !strings.Contains(last, want) {
-				t.Fatalf("the run footer must carry %q whole on the last message, got: %q", want, tail(last))
+		if !strings.HasSuffix(last, runFooterSig(runURLDefault, runIDDefault)) {
+			t.Fatalf("the last message must close on the run footer: %q", tail(last))
+		}
+		header, content := provenanceBlock(t, sink.lastBody("#demo"))
+		if header != provenanceHeading {
+			t.Fatalf("the provenance block header moved: %q", header)
+		}
+		for _, want := range []string{"claude-fable-x", "claude_code", "Tokens du run"} {
+			if !strings.Contains(content, want) {
+				t.Fatalf("the provenance block must carry %q whole on the last message, got: %q", want, tail(content))
 			}
 		}
 		for _, m := range got[:len(got)-1] {
-			if strings.Contains(m, footerHeading) || strings.Contains(m, "/studio/runs/") {
+			if strings.Contains(m, "/studio/runs/") {
 				t.Fatalf("an earlier message carries part of the run footer: %q", tail(m))
+			}
+		}
+		for i, b := range sink.bodiesFor("#demo")[:len(got)-1] {
+			if _, has := b["props"]; has {
+				t.Fatalf("message %d carries the provenance block — only the LAST message does", i+1)
 			}
 		}
 		if body := reassemble(t, got); body != msg {
@@ -976,8 +1045,12 @@ func TestFeedWatch_NotifySplitsLongDigest(t *testing.T) {
 		if len(got) != 1 {
 			t.Fatalf("want 1 message, got %d", len(got))
 		}
-		if !strings.HasSuffix(got[0], runFooterSig(runURLDefault, runIDDefault)) || !strings.Contains(got[0], footerHeading) {
+		if !strings.HasSuffix(got[0], runFooterSig(runURLDefault, runIDDefault)) {
 			t.Fatalf("the single message must end with the run footer: %q", tail(got[0]))
+		}
+		if header, content := provenanceBlock(t, sink.lastBody("#demo")); header != provenanceHeading ||
+			!strings.Contains(content, "claude-fable-x") {
+			t.Fatalf("the single message must carry the provenance block: header %q content %q", header, content)
 		}
 		if body := stripFooter(got[0]); body != msg {
 			t.Fatalf("footer appended over unchanged content:\nwant %q\ngot %q", msg, body)
@@ -1047,8 +1120,8 @@ func TestFeedWatch_NotifySplitsLongDigest(t *testing.T) {
 		if len(got) != 1 {
 			t.Fatalf("want 1 message, got %d", len(got))
 		}
-		if strings.Contains(got[0], footerHeading) {
-			t.Fatalf("an empty provenance table claims a step nobody served: %q", tail(got[0]))
+		if b := sink.lastBody("#demo"); b["props"] != nil {
+			t.Fatalf("an empty provenance must publish no mm_blocks block, got %v", b["props"])
 		}
 		if !strings.HasSuffix(got[0], runFooterSig(runURLDefault, runIDDefault)) {
 			t.Fatalf("the run signature must still close the message: %q", tail(got[0]))
@@ -1138,14 +1211,18 @@ func TestFeedWatch_NotifySplitsLongDigest(t *testing.T) {
 		if !strings.Contains(got[1], "digest truncated") {
 			t.Fatalf("the capped tail must be announced, got: %q", tail(got[1]))
 		}
-		if !strings.Contains(got[1], footerHeading) || !strings.HasSuffix(got[1], runFooterSig(runURLDefault, runIDDefault)) {
-			t.Fatalf("the capped tail must still carry the run footer under its truncation notice: %q", tail(got[1]))
+		if !strings.HasSuffix(got[1], runFooterSig(runURLDefault, runIDDefault)) {
+			t.Fatalf("the capped tail must still close on the run footer under its truncation notice: %q", tail(got[1]))
+		}
+		if header, content := provenanceBlock(t, sink.lastBody("#demo")); header != provenanceHeading ||
+			!strings.Contains(content, "claude-fable-x") {
+			t.Fatalf("the capped tail must still carry the provenance block: header %q content %q", header, content)
 		}
 		if strings.Contains(got[0], "digest truncated") {
 			t.Fatal("only the LAST message announces the truncation")
 		}
-		if strings.Contains(got[0], footerHeading) {
-			t.Fatal("only the LAST message carries the run footer")
+		if b := sink.bodiesFor("#demo")[0]; b["props"] != nil {
+			t.Fatal("only the LAST message carries the provenance block")
 		}
 	})
 
@@ -1274,8 +1351,8 @@ func TestFeedWatch_SilenceAlertLinksItsRun(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("want 1 silence alert, got %d", len(got))
 	}
-	if strings.Contains(got[0], footerHeading) {
-		t.Fatalf("a silence alert has no AI step behind it — no provenance table: %q", tail(got[0]))
+	if b := sink.lastBody("#demo"); b["props"] != nil {
+		t.Fatalf("a silence alert has no AI step behind it — no provenance block: %v", b["props"])
 	}
 	if !strings.HasSuffix(got[0], runFooterSig(runURLDefault, runIDDefault)) {
 		t.Fatalf("the silence alert must end with the run signature: %q", tail(got[0]))

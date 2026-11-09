@@ -192,6 +192,27 @@ func cliLaunchTrust() store.RunTrust {
 	return store.RunTrustDefault.Lowest(store.RunTrust(envtrust.CarriedRunTrust()))
 }
 
+// cliRunTrust settles the workspace trust this `iterion run` executes under:
+// the carrier's (cliLaunchTrust), lowered by the recorded trust of the run
+// document `--run-id` names when one already exists. The engine adopts the
+// document's trust at Run (adoptRunTrust), so settling it here makes the
+// compile, the connector lineage and the MCP health check answer to the same
+// value instead of learning it after they have acted — re-entered with a fork
+// run's own id, the launch must not boot the operator's ambient MCP servers
+// or resolve the tenant's connectors first. A fresh id has no document; any
+// other read failure is returned, not guessed.
+func cliRunTrust(ctx context.Context, s store.RunStore, runID string) (store.RunTrust, error) {
+	trust := cliLaunchTrust()
+	r, err := s.LoadRun(ctx, runID)
+	switch {
+	case errors.Is(err, store.ErrRunNotFound):
+		return trust, nil
+	case err != nil:
+		return "", fmt.Errorf("read run %s to settle its workspace trust: %w", runID, err)
+	}
+	return trust.Lowest(r.Trust), nil
+}
+
 // skipMCPHealthFromEnv reports whether ITERION_SKIP_MCP_HEALTH is truthy, so
 // the toggle also applies without the CLI flag — e.g. to launcher scripts
 // that export it, and to any entry point that reuses RunRun.
@@ -260,10 +281,27 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 	}
 	defer telemetry.shutdown()
 
+	// The launch trust settles BEFORE the compile, from a READ-ONLY view of
+	// the store (store.Open creates nothing): `--run-id` can name a run whose
+	// document already exists, and the trust that document holds floors this
+	// launch (cliRunTrust below) — the engine adopts it at Run, so the
+	// compile, the connector lineage and the MCP health check answer to the
+	// settled value instead of learning it after they have acted. The
+	// materializing open (tee + store.New) stays AFTER the compile door: a
+	// document the engine refuses must record no run at all, and a tee opened
+	// here would leave runs/<id>/ behind for every refused attempt. Anchored
+	// like every other store consumer of this run: the cwd, the .bot's dir
+	// only when the cwd cannot be read (runStoreDir).
+	storeDir := runStoreDir(opts.File, opts.StoreDir)
+
 	// A run started from inside an untrusted run's workspace is itself
 	// untrusted (cliLaunchTrust); an operator's own `iterion run` carries
-	// nothing and stays trusted. One value for the engine and the compile.
-	launchTrust := cliLaunchTrust()
+	// nothing and stays trusted; a `--run-id` that names an existing fork run
+	// is lowered to it. One value for the engine and the compile.
+	launchTrust, err := cliRunTrust(ctx, store.Open(storeDir), runID)
+	if err != nil {
+		return err
+	}
 	engineOpts := []runtime.EngineOption{
 		runtime.WithLogger(logger),
 		runtime.WithRecoveryDispatch(recovery.Dispatch(recovery.DefaultRecipes())),
@@ -317,7 +355,6 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 	}
 
 	runName := store.GenerateRunName(iterFile + ":" + runID)
-	storeDir := runStoreDir(iterFile, opts.StoreDir)
 	// Workspace versioning, on the same terms as a studio launch: a run
 	// started from the terminal must capture too, or `iterion rewind`
 	// cannot restore what its nodes produced.
@@ -716,13 +753,20 @@ type subbotDepthKey struct{}
 // resolved `with:` data as inputs, and returns the child's terminal node
 // output (mapped to outputs.<subbot>.<field> by the engine).
 func subbotRunnerForCLI(parentPath, storeDir string, s store.RunStore, logger *iterlog.Logger, opts RunOptions) runtime.SubbotRunner {
-	sourceResolver := subbotsource.NewResolver(subbotsource.ResolverOptions{})
 	return func(ctx context.Context, req runtime.SubbotRequest) (map[string]any, error) {
 		depth, _ := ctx.Value(subbotDepthKey{}).(int)
 		if depth >= maxSubbotDepth {
 			return nil, fmt.Errorf("subbot recursion too deep (>%d) at %q — possible cycle", maxSubbotDepth, req.Source)
 		}
 
+		// The parent's trust decides whether `bot://` may resolve at all:
+		// read it before the source, so the refusal precedes any read of the
+		// checkout's lockfile. The resolver is per-request: the trust is.
+		trust, err := runview.SubbotParentTrust(ctx, s, req.ParentRunID)
+		if err != nil {
+			return nil, fmt.Errorf("subbot %s: %w", req.Source, err)
+		}
+		sourceResolver := subbotsource.NewResolver(subbotsource.ResolverOptions{Trust: trust})
 		resolvedSource, err := sourceResolver.Resolve(ctx, parentPath, req.Source)
 		if err != nil {
 			return nil, fmt.Errorf("resolve child %q: %w", req.Source, err)
@@ -744,10 +788,6 @@ func subbotRunnerForCLI(parentPath, storeDir string, s store.RunStore, logger *i
 				return nil, fmt.Errorf("subbot %s: resolve child workspace: %w", req.Source, wdErr)
 			}
 			childWorkspace = wd
-		}
-		trust, err := runview.SubbotParentTrust(ctx, s, req.ParentRunID)
-		if err != nil {
-			return nil, fmt.Errorf("subbot %s: %w", req.Source, err)
 		}
 		childWf, hash, childBundle, err := runview.CompileSubbotWorkflow(childPath, resolvedSource.Bundle, childWorkspace, trust)
 		if err != nil {

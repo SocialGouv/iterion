@@ -666,6 +666,57 @@ func TestForceCompactToTokens(t *testing.T) {
 	})
 }
 
+// TestForceCompactLadder pins the walk-down the reactive retry relies on:
+// a rung the transcript already fits under (by local estimate) is a no-op,
+// and the ladder must continue to the next smaller rung instead of giving
+// up — the review-pool incident died when the provider refused a transcript
+// the estimator read as under the 256k first rung, and the old single-rung
+// logic surfaced the error without ever trying 128k.
+func TestForceCompactLadder(t *testing.T) {
+	t.Parallel()
+
+	t.Run("walks past no-op rungs to the first that shrinks", func(t *testing.T) {
+		// ~80k estimated tokens: under the 256k and 128k rungs, over 64k.
+		msgs := charMessagesOfSize(20, 16_000)
+		out, target, ok := forceCompactLadder(msgs, 0)
+		if !ok {
+			t.Fatal("expected the ladder to find a shrinking rung for an oversized transcript")
+		}
+		if target != 64_000 {
+			t.Errorf("ladder stopped at rung %d, want 64000 (the first rung under the estimate)", target)
+		}
+		if len(out) >= len(msgs) {
+			t.Errorf("compacted len = %d, want < %d", len(out), len(msgs))
+		}
+	})
+
+	t.Run("a transcript over the first rung stops there", func(t *testing.T) {
+		// ~300k estimated tokens: the 256k rung shrinks it, no walking needed.
+		msgs := charMessagesOfSize(40, 30_000)
+		out, target, ok := forceCompactLadder(msgs, 0)
+		if !ok {
+			t.Fatal("expected the ladder to shrink a transcript well over the first rung")
+		}
+		if target != 256_000 {
+			t.Errorf("ladder stopped at rung %d, want 256000 (the first rung)", target)
+		}
+		if len(out) >= len(msgs) {
+			t.Errorf("compacted len = %d, want < %d", len(out), len(msgs))
+		}
+	})
+
+	t.Run("a small transcript fits every rung and surfaces the error path", func(t *testing.T) {
+		msgs := charMessagesOfSize(3, 100)
+		out, target, ok := forceCompactLadder(msgs, 0)
+		if ok {
+			t.Fatalf("expected ok=false when no rung shrinks the transcript, got rung %d", target)
+		}
+		if len(out) != len(msgs) {
+			t.Errorf("output len = %d, want %d (unchanged)", len(out), len(msgs))
+		}
+	})
+}
+
 // The dispatch pins the node's executable tool set on the context every
 // Execute receives, so a tool whose answer depends on it — tool_search
 // (#2717) — speaks for THIS node rather than the registry's whole

@@ -12,6 +12,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -716,8 +717,8 @@ func (d *Driver) Start(ctx context.Context, prepared sandbox.PreparedSpec, info 
 	// a proxied run whose runner can't introspect its own IP is refused
 	// below. Enforcement requires a NetworkPolicy-aware CNI (Calico,
 	// Cilium, ...) — see docs/sandbox.md § cloud.
+	runnerIP := os.Getenv(PodIPEnvVar)
 	if info.ProxyEndpoint != "" {
-		runnerIP := os.Getenv(PodIPEnvVar)
 		if runnerIP == "" {
 			// Fail-closed: the workflow requested isolated network
 			// (sandbox.network with an allowlist), the proxy alone
@@ -737,6 +738,8 @@ func (d *Driver) Start(ctx context.Context, prepared sandbox.PreparedSpec, info 
 			RunID:        info.RunID,
 			FriendlyName: info.FriendlyName,
 			RunnerPodIP:  runnerIP,
+			Untrusted:    info.UntrustedRun,
+			EgressPorts:  info.RunnerEgressPorts,
 			Owner:        owner,
 		})
 		if err != nil {
@@ -760,6 +763,19 @@ func (d *Driver) Start(ctx context.Context, prepared sandbox.PreparedSpec, info 
 	if err := d.kubectl.waitForPodRunning(ctx, d.namespace, podName, readySecs); err != nil {
 		_ = r.Cleanup(ctx)
 		return nil, fmt.Errorf("kubernetes: wait for pod ready: %w", err)
+	}
+
+	// ADR-162 decision 7 — the untrusted run's start proves its floor
+	// BEFORE the first spawn: the probe exec'd above dials, proxy env
+	// ignored, the roads the policy just closed (cluster API, the
+	// credential's host, the runner's metrics port) and every dial must
+	// fail. A non-enforcing CNI applies the policy as a no-op and only
+	// this probe sees it — the run is refused typed, pod cleaned up.
+	if r.networkPolicyApplied && info.UntrustedRun {
+		if err := r.probeNetworkFloor(ctx, networkFloorProbeTargets(info, runnerIP)); err != nil {
+			_ = r.Cleanup(ctx)
+			return nil, err
+		}
 	}
 
 	// Phase 5 V2: the kubernetes driver has no host filesystem to
@@ -1159,10 +1175,23 @@ func (r *Run) runPostCreate(ctx context.Context, snippet string) error {
 // (objects + the `origin` remote), so the sandboxed bot can commit and
 // push (finalize_mr) against the real remote. The clone's checkout is the
 // same base commit as the worktree.
+//
+// An UNTRUSTED run's copy crosses the working tree only, never `.git`
+// (ADR-162 U5, the same floor the docker driver's addWorktreeGitMount
+// enforces by not binding the tree): the git-private half of the clone is
+// where the runner's rotated credential store (.git/iterion-credentials),
+// the repo config and its hooks live — a copy is a mount by other means,
+// and no state location of the container makes it safe to hand over. An
+// in-pod git command then fails `fatal: not a git repository`, which is
+// the isolation working, not a defect.
 func (r *Run) populateWorkspace(ctx context.Context, hostSrc, podDst string) error {
 	src := resolveCloneRoot(ctx, hostSrc)
+	skip := []string(nil)
+	if r.info.UntrustedRun {
+		skip = []string{".git"}
+	}
 	r.driver.logger.Info("sandbox: copying workspace %s into pod %s:%s", src, r.podName, podDst)
-	return r.streamDirIntoPod(ctx, src, podDst)
+	return r.streamDirIntoPod(ctx, src, podDst, skip...)
 }
 
 // seedMountTargets is the container path of every seed: the manifest
@@ -1199,8 +1228,11 @@ func (r *Run) seedDir(ctx context.Context, seed sandbox.SeedDir) error {
 
 // streamDirIntoPod archives the CONTENTS of src on the host and extracts
 // them into podDst in the pod: one tar pipeline over kubectl exec, nothing
-// staged on either side.
-func (r *Run) streamDirIntoPod(ctx context.Context, src, podDst string) error {
+// staged on either side. skipTop names top-level entries that never cross
+// — the untrusted run's `.git` (populateWorkspace); the exclusion is by
+// ENTRY NAME at the listing, so nothing under the skipped tree is archived
+// at all, rather than filtered by pattern later in the stream.
+func (r *Run) streamDirIntoPod(ctx context.Context, src, podDst string, skipTop ...string) error {
 	// Archive the worktree CONTENTS by name, never the "." root entry. A "./"
 	// archive member makes the in-pod tar restore the source dir's mode+mtime
 	// onto podDst itself — the pod's /workspace emptyDir, which is root-owned
@@ -1212,17 +1244,22 @@ func (r *Run) streamDirIntoPod(ctx context.Context, src, podDst string) error {
 	if err != nil {
 		return fmt.Errorf("read workspace source %s: %w", src, err)
 	}
-	if len(entries) == 0 {
-		return nil // nothing to copy
-	}
 	// The entry names are OPERANDS, fenced off the option parser with "--":
 	// a name that starts with "--" (a repository file, an attachment name a
 	// launch request chose) is otherwise an option to GNU tar, and
 	// `--checkpoint-action=exec=…` runs a command on the HOST, the trusted
 	// side of this pipe.
 	tarArgs := []string{"-C", src, "-cf", "-", "--"}
+	copied := 0
 	for _, e := range entries {
+		if slices.Contains(skipTop, e.Name()) {
+			continue
+		}
 		tarArgs = append(tarArgs, e.Name())
+		copied++
+	}
+	if copied == 0 {
+		return nil // nothing to copy
 	}
 	hostTar := exec.CommandContext(ctx, "tar", tarArgs...)
 	// --no-overwrite-dir stays as defence in depth for any pre-existing subdir.
@@ -1403,24 +1440,41 @@ func (r *Run) ExportWorkspace(ctx context.Context) error {
 	r.driver.logger.Info("sandbox: exporting workspace from pod %s:%s back to %s", r.podName, r.prepared.workspace, hostDst)
 	attempts, pause := exportRetrySettings(r.driver.logger)
 	hostGit := filepath.Join(hostDst, ".git")
-	before, err := gitDirFiles(hostGit)
-	if err != nil {
-		return fmt.Errorf("list host .git before export: %w", err)
+	// An UNTRUSTED run's export never touches the host's git-private tree
+	// (ADR-162 U5): the pod was populated without `.git` and no member may
+	// land under it (exportTarget), so there is nothing to clear the host's
+	// loose refs FOR — clearing them anyway would delete refs nothing
+	// arrives to replace — and no raced-leftover walk either: its premise
+	// ("only a raced archive can have written under .git") is false when
+	// .git members are categorically dropped. The pod's tree crosses as
+	// working-tree files only.
+	untrusted := r.info.UntrustedRun
+	var before map[string]bool
+	if !untrusted {
+		snapshot, err := gitDirFiles(hostGit)
+		if err != nil {
+			return fmt.Errorf("list host .git before export: %w", err)
+		}
+		before = snapshot
 	}
 	var last error
 	for attempt := 1; attempt <= attempts; attempt++ {
 		// Cleared before EVERY attempt: a pod-side gc between two attempts
 		// may pack a ref the previous extract wrote loose, and a stale loose
 		// file would shadow the packed value this attempt brings.
-		if err := clearHostLooseRefs(hostGit); err != nil {
-			return fmt.Errorf("clear host loose refs before export extract: %w", err)
+		if !untrusted {
+			if err := clearHostLooseRefs(hostGit); err != nil {
+				return fmt.Errorf("clear host loose refs before export extract: %w", err)
+			}
 		}
 		retryable, extracted, err := r.exportOnce(ctx, hostDst)
 		if err == nil {
 			if attempt > 1 {
 				r.driver.logger.Warn("sandbox: workspace export succeeded on attempt %d/%d, after tar saw the tree change mid-archive", attempt, attempts)
-				if err := r.dropRacedGitLeftovers(hostGit, before, extracted); err != nil {
-					return err
+				if !untrusted {
+					if err := r.dropRacedGitLeftovers(hostGit, before, extracted); err != nil {
+						return err
+					}
 				}
 			}
 			return nil
@@ -1647,8 +1701,18 @@ if [ -d "$ws/.git" ]; then
 fi`
 
 // fixupWorkspaceGit runs [fixupWorkspaceGitScript] inside the pod right
-// after populateWorkspace. No-op for non-git workspaces.
+// after populateWorkspace. No-op for non-git workspaces — and for an
+// UNTRUSTED run, skipped outright (ADR-162 U5): the fixup's whole job is
+// wiring the copied clone's plumbing, the credential.helper re-point above
+// all, and an untrusted run's copy crossed no `.git` to wire. Skipping
+// rather than relying on the script's own `-d "$ws/.git"` guard keeps the
+// floor at the composition site: a later change that re-added the git tree
+// to the copy would find nothing here willing to re-point a credential
+// into an untrusted container.
 func (r *Run) fixupWorkspaceGit(ctx context.Context, podWorkspace string) error {
+	if r.info.UntrustedRun {
+		return nil
+	}
 	res, err := r.Exec(ctx, []string{"sh", "-c", fixupWorkspaceGitScript, "sh", podWorkspace}, sandbox.ExecOpts{})
 	if err != nil {
 		return err

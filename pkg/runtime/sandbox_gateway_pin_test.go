@@ -233,7 +233,7 @@ func startGatewayRunProxy(t *testing.T, drv sandbox.Driver, mode string, gateway
 	if inspect {
 		rewriter, drv = &recordingRewriter{}, inspectingDriver{drv}
 	}
-	prx, endpoint, caPEM, err := startNetworkProxy(spec, drv, "run-gateway-pin", rewriter, events.emit, nil, runGatewayHost)
+	prx, endpoint, caPEM, err := startNetworkProxy(spec, drv, "run-gateway-pin", rewriter, events.emit, nil, runGatewayHost, nil, nil)
 	if err != nil {
 		t.Fatalf("startNetworkProxy: %v", err)
 	}
@@ -568,7 +568,7 @@ func gatewayPinRunHeldChild(t *testing.T, dns *scriptedDNS, drv sandbox.Driver, 
 		dns.script(gw, "NX")
 		events := &blockedEvents{}
 		spec := compileSandboxSpec(t, netPolicySource("    network:\n      mode: allowlist\n      rules: [\""+gw+"\"]"))
-		prx, endpoint, _, err := startNetworkProxy(spec, drv, "run-tunnel", nil, events.emit, nil, "")
+		prx, endpoint, _, err := startNetworkProxy(spec, drv, "run-tunnel", nil, events.emit, nil, "", nil, nil)
 		if err != nil || prx == nil {
 			t.Fatalf("startNetworkProxy: %v", err)
 		}

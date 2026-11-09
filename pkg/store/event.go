@@ -928,6 +928,19 @@ const (
 	// independent, so `refused` alone does not mean "nothing to fix"),
 	// error.
 	EventMCPServerDegraded EventType = "mcp_server_degraded"
+	// EventWorkspaceTrustWithdrawal records what a workspace its tenant did
+	// not write (store.RunTrust) cost a node, or the whole run: a host
+	// capability, a memory space, an MCP server the tenant's environment
+	// would otherwise hand the agent reading that code. The node runs on
+	// without it — the fork lane exists to produce a review — so this event
+	// is the one place the run record says what the review ran without.
+	// NodeID is empty for a withdrawal decided before any node runs.
+	//
+	// Data keys: withdrawn (what: "capabilities" | "memory" | "auto_memory" |
+	// "mcp_servers"), items (the names withdrawn, when there are names),
+	// reason, and refused: true when the run could not start without it (an
+	// MCP server its workflow activates by name).
+	EventWorkspaceTrustWithdrawal EventType = "workspace_trust_withdrawal"
 	// EventSandboxBuildStarted fires when the engine calls
 	// [sandbox.Builder.Build] between Prepare and Start (V2-6, docker
 	// driver via `docker buildx build --load`). Data:

@@ -1550,6 +1550,21 @@ func (h *storeHooks) onMCPServerDegraded(nodeID string, info MCPServerDegradedIn
 	h.emit(nodeID, store.EventMCPServerDegraded, data)
 }
 
+// onTrustWithdrawal implements the OnTrustWithdrawal hook: what a workspace
+// its tenant did not write cost the node becomes a first-class store event.
+// The executor has already logged it; this is the half a reader of
+// events.jsonl — the studio, a gate — can see.
+func (h *storeHooks) onTrustWithdrawal(nodeID string, info TrustWithdrawalInfo) {
+	data := map[string]any{
+		"withdrawn": info.What,
+		"reason":    info.Reason,
+	}
+	if len(info.Items) > 0 {
+		data["items"] = append([]string(nil), info.Items...)
+	}
+	h.emit(nodeID, store.EventWorkspaceTrustWithdrawal, data)
+}
+
 // onProviderFallback implements the OnProviderFallback hook: it turns a
 // chain fall-through into a first-class store event.
 //
@@ -1796,6 +1811,7 @@ func NewStoreEventHooks(ctx context.Context, emitter EventEmitter, runID string,
 		},
 		OnSessionDegraded:   h.onSessionDegraded,
 		OnMCPServerDegraded: h.onMCPServerDegraded,
+		OnTrustWithdrawal:   h.onTrustWithdrawal,
 		// OnToolNodeResult handles direct tool nodes with full I/O content.
 		OnToolNodeResult: h.onToolNodeResult,
 		// …and OnToolNodeDeliverables hands over the files that output

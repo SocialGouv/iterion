@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/backendcaps"
+	"github.com/SocialGouv/iterion/pkg/backend/credroute"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate/claudesdk"
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
 	"github.com/SocialGouv/iterion/pkg/backend/rewrite"
@@ -241,7 +242,11 @@ func claudeReadonlyWithheld() []string {
 //     (see formatOutput).
 func claudeSpawnBounds(task Task) []claudesdk.Option {
 	var opts []claudesdk.Option
-	if strictMCPFromEnv() {
+	// Strict on an untrusted workspace whatever the environment says: without
+	// it the CLI — whose cwd IS that checkout — merges the operator's personal
+	// servers and the servers its own scopes find there. The escape hatch is
+	// the trusted operator's, like the setting sources' floor.
+	if strictMCPFromEnv() || !task.WorkspaceTrust.Trusted() {
 		opts = append(opts, claudesdk.WithStrictMCPConfig(true))
 	}
 	opts = append(opts, claudesdk.WithDisallowedTools(claudeSpawnBoundWithheld(task)...))
@@ -843,7 +848,7 @@ func (b *ClaudeCodeBackend) buildSpawnOptions(task Task) ([]claudesdk.Option, fu
 		mark := sandboxDelegateMark(task)
 		se.end = killSandboxDelegateReporting(run, mark, ownerOf(b.Logger, task, BackendClaudeCode), sandboxSpawnFiles(mark)...)
 		opts = append(opts, claudesdk.WithCommandBuilder(func(ctx context.Context, path string, args []string, cwd string, env map[string]string, openStdin bool) *exec.Cmd {
-			env = claudeModelDefaultEnv(env)
+			env = claudeContextWindowEnv(claudeModelDefaultEnv(env), task)
 			// Surface the resolved CLI invocation so failures like
 			// "session ended without result" can be traced back to a
 			// concrete `docker exec` command. Without this every silent
@@ -886,7 +891,7 @@ func (b *ClaudeCodeBackend) buildSpawnOptions(task Task) ([]claudesdk.Option, fu
 			return SweepLocalNodeSession(b.Logger, task, BackendClaudeCode, token, se.sinceStart())
 		}
 		opts = append(opts, claudesdk.WithCommandBuilder(func(ctx context.Context, path string, args []string, cwd string, env map[string]string, openStdin bool) *exec.Cmd {
-			env = withNodeSessionEnv(claudeModelDefaultEnv(env), token)
+			env = claudeContextWindowEnv(withNodeSessionEnv(claudeModelDefaultEnv(env), token), task)
 			keys := make([]string, 0, len(env))
 			for k := range env {
 				keys = append(keys, k)
@@ -947,6 +952,12 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (result Resu
 			return Result{}, err
 		}
 	}
+	// The run's workspace trust rides the delegate's ctx (ADR-162 decision
+	// 7): under it the crossing hands keys as Layer 2 placeholders and the
+	// channels the egress proxy cannot hold are refused (crossingRefusal,
+	// the probes). The task carries the trust the engine stamped
+	// (stampWorkspace), never re-derived from the workspace.
+	ctx = credroute.WithRunTrust(ctx, task.WorkspaceTrust)
 	// cliTurnCompleted records that the CLI carried this call to its own
 	// ResultMessage. It is the discriminator turnFinished needs and the
 	// defer below cannot read: `rm` is declared further down, so the
@@ -1755,6 +1766,11 @@ func (b *ClaudeCodeBackend) setupCredsAndSession(ctx context.Context, task Task,
 	if err := ambientStampRefusal(ctx, inheritAmbient); err != nil {
 		return opts, "", credSpawn{}, err
 	}
+	// The untrusted crossing (ADR-162 decision 7): a channel the egress
+	// proxy cannot hold — a forfait — is refused here, not crossed.
+	if err := crossingRefusal(ctx, task, credEnv); err != nil {
+		return opts, "", credSpawn{}, err
+	}
 	// The model half of the same refusal: a funded facade route whose id the
 	// facade does not serve is not "served" — it is substituted under the
 	// requested label. Refused before the spawn, typed `unavailable`, so the
@@ -2303,7 +2319,7 @@ func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, task Task, session
 		mark := sandboxDelegateMark(task) + "-fmt"
 		fe.end = killSandboxDelegateReporting(run, mark, ownerOf(b.Logger, task, BackendClaudeCode), sandboxSpawnFiles(mark)...)
 		opts = append(opts, claudesdk.WithCommandBuilder(func(ctx context.Context, path string, args []string, cwd string, env map[string]string, openStdin bool) *exec.Cmd {
-			env = claudeModelDefaultEnv(env)
+			env = claudeContextWindowEnv(claudeModelDefaultEnv(env), task)
 			b.Logger.Info("claude-code [fmt]: exec %v (cwd=%s, env_keys=%d, stdin=%v)",
 				redactedArgvPreview(path, args), cwd, len(env), openStdin)
 			// The MCP catalog is moved into a private in-container file and
@@ -2337,7 +2353,7 @@ func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, task Task, session
 			return SweepLocalNodeSession(b.Logger, task, BackendClaudeCode, token, fe.sinceStart())
 		}
 		opts = append(opts, claudesdk.WithCommandBuilder(func(ctx context.Context, path string, args []string, cwd string, env map[string]string, openStdin bool) *exec.Cmd {
-			env = withNodeSessionEnv(claudeModelDefaultEnv(env), token)
+			env = claudeContextWindowEnv(withNodeSessionEnv(claudeModelDefaultEnv(env), token), task)
 			cmd := exec.CommandContext(ctx, path, args...)
 			// Seed os.Environ() before the per-task entries — matching the
 			// SDK's default host spawn (claudesdk/process.go) and Pass 1 — so
@@ -2371,6 +2387,11 @@ func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, task Task, session
 	// The hintless half of the same stamp doctrine (Pass 2 resumes the
 	// same session on the same route, so it holds the same line).
 	if err := ambientStampRefusal(ctx, inheritAmbient); err != nil {
+		return nil, credSpawn{}, nil, err
+	}
+	// The untrusted crossing (ADR-162 decision 7), Pass 2 holding Pass 1's
+	// line: a channel the egress proxy cannot hold is refused, not crossed.
+	if err := crossingRefusal(ctx, task, credEnv); err != nil {
 		return nil, credSpawn{}, nil, err
 	}
 	// The substitution refusal of Pass 1 (setupCredsAndSession): this pass
