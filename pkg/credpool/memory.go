@@ -33,6 +33,16 @@ func (s *MemoryPoolStore) GetByOrg(_ context.Context, orgID string) (Pool, error
 	return Pool{}, ErrNotFound
 }
 
+func (s *MemoryPoolStore) Get(_ context.Context, id string) (Pool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	p, ok := s.m[id]
+	if !ok {
+		return Pool{}, ErrNotFound
+	}
+	return p, nil
+}
+
 func (s *MemoryPoolStore) ListEnabled(_ context.Context) ([]Pool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -57,6 +67,16 @@ func (s *MemoryPoolStore) Upsert(_ context.Context, p Pool) error {
 	}
 	p.UpdatedAt = now
 	s.m[p.ID] = p
+	return nil
+}
+
+func (s *MemoryPoolStore) Delete(_ context.Context, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.m[id]; !ok {
+		return ErrNotFound
+	}
+	delete(s.m, id)
 	return nil
 }
 

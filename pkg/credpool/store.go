@@ -16,6 +16,9 @@ type PoolStore interface {
 	// it to other orgs must be reachable from those orgs, so selection
 	// goes through ListEnabled instead.
 	GetByOrg(ctx context.Context, orgID string) (Pool, error)
+	// Get returns one pool by id — the named-pool management surface's
+	// lookup (ADR-164). ErrNotFound when absent.
+	Get(ctx context.Context, id string) (Pool, error)
 	// ListEnabled returns every pool currently accepting requests. The
 	// broker filters them by audience in Go, because the audience is a
 	// union of predicates (including "is the requester themselves a
@@ -28,6 +31,9 @@ type PoolStore interface {
 	// implementations merge the patch into the stored row; ErrNotFound
 	// when the pool does not exist.
 	Patch(ctx context.Context, id string, p PoolPatch) (Pool, error)
+	// Delete removes an empty pool. The route refuses a pool that still
+	// holds entries or attachments; this method carries no cascade.
+	Delete(ctx context.Context, id string) error
 }
 
 // PoolPatch names the fields a pool update may change. A nil field is left

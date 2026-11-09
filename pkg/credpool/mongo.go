@@ -91,6 +91,10 @@ func (s *MongoPoolStore) GetByOrg(ctx context.Context, orgID string) (Pool, erro
 	return mongoutil.FindOne[Pool](ctx, s.col, bson.M{"org_id": orgID}, ErrNotFound, "credpool: get pool by org")
 }
 
+func (s *MongoPoolStore) Get(ctx context.Context, id string) (Pool, error) {
+	return mongoutil.FindOne[Pool](ctx, s.col, bson.M{"_id": id}, ErrNotFound, "credpool: get pool")
+}
+
 func (s *MongoPoolStore) ListEnabled(ctx context.Context) ([]Pool, error) {
 	return mongoutil.FindAllSorted[Pool](ctx, s.col, bson.M{"enabled": true}, "_id",
 		"credpool: list enabled pools", "credpool: decode pool")
@@ -161,6 +165,10 @@ func (p PoolPatch) setDoc() bson.M {
 		set["visibility"] = string(*p.Visibility)
 	}
 	return set
+}
+
+func (s *MongoPoolStore) Delete(ctx context.Context, id string) error {
+	return mongoutil.DeleteOneChecked(ctx, s.col, bson.M{"_id": id}, ErrNotFound, "credpool: delete pool")
 }
 
 // ---------------------------------------------------------------------------

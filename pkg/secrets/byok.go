@@ -425,6 +425,14 @@ type ApiKeyStore interface {
 	// user-scoped to ownerUserID, which is strictly narrower than an id
 	// lookup, and is the only thing the pool ever lends.
 	GetOwned(ctx context.Context, id, ownerUserID string) (ApiKey, error)
+	// GetForLend reads a key a POOL pledge lends, by the reserved scope the
+	// pledge names (ADR-164: "orgtier:<org>" or the platform sentinel) —
+	// the operator-pushed rows the org/platform tiers store under sentinel
+	// tenants, which carry no personal owner. The read enforces the row's
+	// tenancy: a pledge names the scope AND the key, and the key must LIVE
+	// in that scope — a pledge can never re-scope somebody else's
+	// credential, and a borrower's context never widens the read.
+	GetForLend(ctx context.Context, id, tenantScope string) (ApiKey, error)
 	// Patch writes ONLY the fields the patch names and returns the row as
 	// stored afterwards. There is deliberately no whole-document writer:
 	// a replace carries back whatever a stale read holds (an is_default a
@@ -850,6 +858,19 @@ func (m *MemoryApiKeyStore) Get(ctx context.Context, id string) (ApiKey, error) 
 	return k, nil
 }
 
+func (m *MemoryApiKeyStore) GetForLend(_ context.Context, id, tenantScope string) (ApiKey, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	k, ok := m.keys[id]
+	// The lend term mirrors GetOwned's ownership term: the key must LIVE
+	// in the scope the pledge names. A memory store that waved tenancy
+	// through would let a pledge aim a foreign tenant's key.
+	if !ok || tenantScope == "" || k.TenantID != tenantScope {
+		return ApiKey{}, ErrApiKeyNotFound
+	}
+	return k, nil
+}
+
 func (m *MemoryApiKeyStore) GetOwned(_ context.Context, id, ownerUserID string) (ApiKey, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -1235,6 +1256,18 @@ func (s *MongoApiKeyStore) GetOwned(ctx context.Context, id, ownerUserID string)
 	return mongoutil.FindOne[ApiKey](ctx, s.coll,
 		bson.M{"_id": id, "scope_user": ownerUserID},
 		ErrApiKeyNotFound, "secrets: get owned api key")
+}
+
+func (s *MongoApiKeyStore) GetForLend(ctx context.Context, id, tenantScope string) (ApiKey, error) {
+	if tenantScope == "" {
+		return ApiKey{}, ErrApiKeyNotFound
+	}
+	// The tenant term IS the lend boundary: the row must live in the scope
+	// the pledge names. No scope_user term — reserved-scope rows carry
+	// none.
+	return mongoutil.FindOne[ApiKey](ctx, s.coll,
+		bson.M{"_id": id, "tenant_id": tenantScope},
+		ErrApiKeyNotFound, "secrets: get lendable api key")
 }
 
 // Patch is one $set of the named fields, matched by both _id AND

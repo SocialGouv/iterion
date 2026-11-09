@@ -940,6 +940,25 @@ func (b *Broker) tryPledge(ctx context.Context, pool Pool, p Pledge, req Request
 	}, "", nil
 }
 
+// VerifyEntry checks a pledge names a credential its lender actually
+// holds — the SAME open path an acquisition runs, without granting: an
+// oauth record under the lender's key (or a key row in the pledged
+// scope), unsealable, not gone. One truth for what "lending requires
+// holding" means; the management routes refuse on its answer.
+func (b *Broker) VerifyEntry(ctx context.Context, p Pledge) error {
+	if b == nil {
+		return nil
+	}
+	_, gone, err := b.openCredential(ctx, p, b.now())
+	if err != nil {
+		return err
+	}
+	if gone != "" {
+		return errors.New(gone)
+	}
+	return nil
+}
+
 // meteredNote flags, in the launch log, the case where the allowance is
 // real money rather than a slice of an already-paid-for plan.
 func meteredNote(src CredentialSource) string {
@@ -1006,15 +1025,25 @@ func (b *Broker) openCredential(ctx context.Context, p Pledge, now time.Time) (c
 		if b.apiKeys == nil {
 			return openedCredential{}, "", fmt.Errorf("credpool: no api-key store wired; cannot serve %s", p.Credential)
 		}
-		// GetOwned, not Get: this read runs on the BORROWER's context, in
-		// another tenant than the donor's, and the tenant-scoped Get would
-		// find nothing — parking an innocent donor's pledge with "the lent
-		// API key was deleted" on every cross-team draw, which is every
-		// draw a pool exists for.
-		k, gerr := b.apiKeys.GetOwned(ctx, p.KeyID, p.UserID)
+		// Operator-pushed entries (LendScope set) read by the RESERVED
+		// scope the pledge names — the org/platform tiers' sentinel-tenant
+		// rows, which carry no personal owner. Personal lenders keep the
+		// GetOwned read.
+		var k secrets.ApiKey
+		var gerr error
+		if p.LendScope != "" {
+			k, gerr = b.apiKeys.GetForLend(ctx, p.KeyID, p.LendScope)
+		} else {
+			// GetOwned, not Get: this read runs on the BORROWER's context, in
+			// another tenant than the donor's, and the tenant-scoped Get would
+			// find nothing — parking an innocent donor's pledge with "the lent
+			// API key was deleted" on every cross-team draw, which is every
+			// draw a pool exists for.
+			k, gerr = b.apiKeys.GetOwned(ctx, p.KeyID, p.UserID)
+		}
 		if gerr != nil {
 			if errors.Is(gerr, secrets.ErrApiKeyNotFound) {
-				return openedCredential{}, "the lent API key was deleted — pledge another to resume sharing", nil
+				return openedCredential{}, "the lent API key was deleted or moved out of its pledged scope — pledge another to resume sharing", nil
 			}
 			return openedCredential{}, "", gerr
 		}
