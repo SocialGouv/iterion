@@ -2,7 +2,7 @@
 
 Who a run borrows credentials from when its own do not fill every slot:
 named pools (forfaits + gateway keys) attached at a cascade level, with a
-switchable strategy. [ADR-164](../../../adr/164-configurable-key-pools-attach-per-scope-with-a-fallback-strategy.md)
+switchable strategy. [ADR-164](../../adr/164-configurable-key-pools-attach-per-scope-with-a-fallback-strategy.md)
 is the decision; this page is the operator and debugging map.
 
 ## The four laws — read before touching anything
@@ -83,5 +83,5 @@ runs one signal pass inline — the proof the readings are warm.
 - **Sovereign teams**: the attachment is inert there, warned at launch
   and in the preview. That is law 3 working, not a bug.
 
-Full contract: [ADR-164](../../../adr/164-configurable-key-pools-attach-per-scope-with-a-fallback-strategy.md);
+Full contract: [ADR-164](../../adr/164-configurable-key-pools-attach-per-scope-with-a-fallback-strategy.md);
 the legacy donation tier: [credential-pool.md](../../credential-pool.md).
