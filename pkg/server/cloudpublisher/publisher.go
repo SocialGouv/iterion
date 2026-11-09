@@ -2840,6 +2840,14 @@ func (p *Publisher) warnRefusedPins(ctx context.Context, runID, tenantID, botID 
 // usageBackendForKind maps a forfait kind to the meter backend the runner
 // records under. "" for a kind whose windows are not metered.
 func usageBackendForKind(kind secrets.OAuthKind) string {
+	return UsageBackendForKind(kind)
+}
+
+// UsageBackendForKind maps an OAuth subscription kind to the backend its
+// usage-cap readings key on. Exported for the server-side pool reconciler,
+// which must key readings exactly as the launch-path margin predicate does
+// — two mappings would be two meters for one subscription.
+func UsageBackendForKind(kind secrets.OAuthKind) string {
 	if kind == secrets.OAuthKindClaudeCode {
 		return delegate.BackendClaudeCode
 	}

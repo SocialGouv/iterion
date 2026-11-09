@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/SocialGouv/iterion/pkg/server/cloudpublisher"
 	"net"
 	"net/http"
 	"strings"
@@ -254,15 +255,16 @@ type Server struct {
 	orgUsage          orgusage.Counter
 	// credUsage is the per-CREDENTIAL monthly ledger the runner feeds; nil
 	// leaves the /credentials/usage views unregistered.
-	credUsage       credusage.Counter
-	orgDefaults     OrgLimitDefaults
-	credPool             *credpool.Broker
-	credPoolAttachments  credpool.AttachmentStore
-	credPoolPools   credpool.PoolStore
-	credPoolPledges credpool.PledgeStore
-	credPoolLeases  credpool.LeaseStore
-	credPoolLedger  credpool.Ledger
-	auditStore      audit.Store
+	credUsage           credusage.Counter
+	orgDefaults         OrgLimitDefaults
+	credPool            *credpool.Broker
+	credPoolAttachments credpool.AttachmentStore
+	poolUsageProbe      cloudpublisher.UsageProbe
+	credPoolPools       credpool.PoolStore
+	credPoolPledges     credpool.PledgeStore
+	credPoolLeases      credpool.LeaseStore
+	credPoolLedger      credpool.Ledger
+	auditStore          audit.Store
 	// auditInsertTimeout bounds one background audit insert from the moment
 	// it is queued (defaultAuditInsertTimeout when 0; tests shorten it). An
 	// erasure scrubs again once that bound has passed (waitOutAuditInserts).
@@ -987,6 +989,7 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 		credPoolPledges:      cfg.CredPoolPledges,
 		credPoolLeases:       cfg.CredPoolLeases,
 		credPoolAttachments:  cfg.CredPoolAttachments,
+		poolUsageProbe:       cfg.PoolUsageProbe,
 		credPoolLedger:       cfg.CredPoolLedger,
 		auditStore:           cfg.Audit,
 		usageCapSettings:     cfg.UsageCapSettings,

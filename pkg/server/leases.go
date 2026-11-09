@@ -21,6 +21,7 @@ const (
 	leaseForgeTokenRefresh   = "forge-token-refresh"
 	leaseOrgPurgeSweeper     = "org-purge-sweeper"
 	leasePriceFeedSync       = "price-feed-sync"
+	leasePoolSignalSync      = "pool-signal-sync"
 )
 
 // leasedNets is every name above, with what runs on every replica while that
@@ -51,6 +52,7 @@ var leasedNets = []struct {
 	{leaseForgeTokenRefresh, "the forge token refresh sweep, whose every pass refreshes each due OAuth token once per replica — on a forge that rotates refresh tokens the loser ends needs_reauth and writes its stale copy over the winner's", (*Server).forgeTokenRefreshStarts},
 	{leaseOrgPurgeSweeper, "the nightly org purge, whose every pass lists and deletes the S3 objects of each run of every org past its grace once per replica — the run batch bounds one replica's pass, not the deployment's", (*Server).orgPurgeStarts},
 	{leasePriceFeedSync, "the price-feed refresh sweep, whose every pass re-fetches every due feed's tariff table once per replica and last-write-wins the durable state (ADR-163)", (*Server).priceFeedSyncStarts},
+	{leasePoolSignalSync, "the pool-signal sweep, whose every pass probes each attached pool's OAuth entries' usage windows once per replica and last-write-wins the shared readings (ADR-164)", (*Server).poolSignalSyncStarts},
 }
 
 // priceFeedSyncStarts is the price-feed sweep's start condition: both
@@ -58,6 +60,14 @@ var leasedNets = []struct {
 // gateSweepStart.
 func (s *Server) priceFeedSyncStarts() bool {
 	return s.priceFeedConfigs != nil && s.priceFeedStates != nil
+}
+
+// poolSignalSyncStarts is the pool-signal sweep's start condition
+// (server_lifecycle.go): the attachment store, the broker, the readings
+// ledger, the probe and the oauth store wired — the cloud shape whose
+// readings the margin predicate consumes.
+func (s *Server) poolSignalSyncStarts() bool {
+	return s.credPoolAttachments != nil && s.credPool != nil && s.usageCaps != nil && s.poolUsageProbe != nil && s.oauthStore != nil
 }
 
 // forgeTokenRefreshStarts is the forge token refresh sweep's start condition

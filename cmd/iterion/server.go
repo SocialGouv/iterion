@@ -812,6 +812,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		CredPoolBroker:              credBroker,
 		CredPoolPools:               stores.credPools,
 		CredPoolAttachments:         stores.credAttachments,
+		PoolUsageProbe:              cloudpublisher.AnthropicForfaitProbe(8 * time.Second),
 		CredPoolPledges:             stores.credPledges,
 		CredPoolLeases:              stores.credLeases,
 		CredPoolLedger:              stores.credLedger,

@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"embed"
+	"github.com/SocialGouv/iterion/pkg/server/cloudpublisher"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/assistantmission"
@@ -207,6 +208,11 @@ type Config struct {
 	// ever resolves, the fold answers nil, and every run keeps today's
 	// pool behavior.
 	CredPoolAttachments credpool.AttachmentStore
+	// PoolUsageProbe is the subscription usage probe the pool-signal-sync
+	// reconciler refreshes the attached pools' readings with — the same
+	// probe the launch path's stale-but-suggestive fallback runs, wired
+	// beside CredPoolAttachments. nil → the reconciler never starts.
+	PoolUsageProbe cloudpublisher.UsageProbe
 
 	// Audit, when non-nil, persists control-plane mutations (org
 	// status, secrets/bindings/webhooks CRUD, member changes…) and
