@@ -902,21 +902,22 @@ func (b *Broker) tryPledge(ctx context.Context, pool Pool, p Pledge, req Request
 		acquiredAt = nextAcquiredAt(acquiredAt, &prev[i].AcquiredAt)
 	}
 	lease := Lease{
-		ID:              uuid.NewString(),
-		RunID:           req.RunID,
-		PledgeID:        p.ID,
-		PoolID:          pool.ID,
-		DonorID:         p.UserID,
-		Fingerprint:     cred.fingerprint,
-		TenantID:        req.TenantID,
-		RequesterID:     req.UserID,
-		BotID:           req.BotID,
-		Credential:      p.Credential,
-		GrantedCostUSD:  remaining,
-		ConsumedRunUnit: !readmitting,
-		AcquiredAt:      acquiredAt,
-		ExpiresAt:       acquiredAt.Add(b.leaseTTL),
-		AttachmentID:    req.AttachmentID,
+		ID:                 uuid.NewString(),
+		RunID:              req.RunID,
+		PledgeID:           p.ID,
+		PoolID:             pool.ID,
+		DonorID:            p.UserID,
+		Fingerprint:        cred.fingerprint,
+		TenantID:           req.TenantID,
+		RequesterID:        req.UserID,
+		BotID:              req.BotID,
+		Credential:         p.Credential,
+		GrantedCostUSD:     remaining,
+		ConsumedRunUnit:    !readmitting,
+		AcquiredAt:         acquiredAt,
+		ExpiresAt:          acquiredAt.Add(b.leaseTTL),
+		AttachmentID:       req.AttachmentID,
+		AttConsumedRunUnit: req.AttachmentID != "" && !attReadmit,
 	}
 	if err := b.leases.Put(ctx, lease); err != nil {
 		release()
@@ -1266,11 +1267,13 @@ func (b *Broker) releaseLease(ctx context.Context, lease Lease) {
 	// a failed launch and let the donor be drawn on past their own ceiling.
 	if lease.ConsumedRunUnit {
 		b.releaseReservation(ctx, lease.PledgeID, lease.AcquiredAt)
-		// The attachment row consumed its unit at the same admission; one
-		// truth for "took a unit" keeps the two refunds from drifting.
-		if lease.AttachmentID != "" {
-			b.releaseReservation(ctx, AttachmentLedgerID(lease.AttachmentID), lease.AcquiredAt)
-		}
+	}
+	// The att: row refunds on ITS OWN admission truth — gating on the
+	// donor's ConsumedRunUnit would under-count when a resume renews the
+	// att: row while consuming a NEW donor's unit (a different pledge
+	// serving the same attachment).
+	if lease.AttachmentID != "" && lease.AttConsumedRunUnit {
+		b.releaseReservation(ctx, AttachmentLedgerID(lease.AttachmentID), lease.AcquiredAt)
 	}
 	b.logger.Info("credpool: run %s never launched — returned donor %s's admission", lease.RunID, lease.DonorID)
 }

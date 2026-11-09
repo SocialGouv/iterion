@@ -3824,6 +3824,21 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 			}
 		}()
 	}
+	// The per-slot attached tier seals BEYOND the first grant (ADR-164):
+	// every additional sealed slot releases under the same !launched
+	// condition, or its lease holds the donor's slot for the whole TTL on
+	// a run that never ran (the failure mode the arming comment names).
+	for gi, g := range creds.grants {
+		if gi == 0 || g == nil {
+			continue // grant (the first) is released above
+		}
+		g2 := g
+		defer func() {
+			if !launched {
+				p.credPool.ReleaseGrant(ctx, g2)
+			}
+		}()
+	}
 	if creds.doorGrant != nil {
 		defer func() {
 			if !launched {
@@ -4315,6 +4330,9 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 	// once the resolution returns: their acquisition superseded a previous
 	// lease, which the rollback reopens beside the sealed grant's.
 	var releasedGrants []*credpool.Grant
+	// The attached tier's sealed grants BEYOND the first (ADR-164): their
+	// superseded undo rides the rollback beside releasedGrants.
+	var extraSealedGrants []*credpool.Grant
 	// heldSlots are the credential slots this resume's admission holds
 	// (cred_slots.go), set once it is granted. Given back by the rollback
 	// below ONLY when it reverted the flip: a publish can report an error
@@ -4340,6 +4358,12 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 			// previous lease all the same: its acquisition is undone with
 			// the sealed grant's.
 			for _, g := range releasedGrants {
+				p.credPool.ReopenSuperseded(rollbackCtx, g)
+			}
+			// The attached tier's EXTRA sealed grants (slot 2+) superseded
+			// previous leases too — their undo rides the same rollback
+			// (ADR-164 per-slot sealing).
+			for _, g := range extraSealedGrants {
 				p.credPool.ReopenSuperseded(rollbackCtx, g)
 			}
 			p.releaseCredSlots(rollbackCtx, spec.RunID, heldSlots)
@@ -4473,6 +4497,9 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 	creds, secretsErr := p.resolveAndSealCredentials(secretsCtx, spec.RunID, priorOrgID, prior.TenantID, prior.OwnerID, prior.BotID, prior.RunnerPool, wf, prior.KeyOverrides, prior.SecretOverrides, resumeView, launchVarsAsStrings(prior.Inputs), prior.Trust, prior.PinnedProviders, prior.LLMRoutePolicy, prior.PoolAttachment)
 	grant = creds.poolLease()
 	releasedGrants = creds.releasedGrants
+	if len(creds.grants) > 1 {
+		extraSealedGrants = creds.grants[1:]
+	}
 	// Armed before the error check — see SubmitLaunch. Runs before the
 	// rollback above (defers unwind in reverse): the grant's own lease is
 	// closed before the one it superseded can be reopened.
@@ -4480,6 +4507,19 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 		defer func() {
 			if !republished {
 				p.credPool.ReleaseGrant(ctx, creds.grant)
+			}
+		}()
+	}
+	// grants[1:] release beside it (ADR-164 per-slot sealing): same
+	// !republished undo, the run never republished.
+	for gi, g := range creds.grants {
+		if gi == 0 || g == nil {
+			continue
+		}
+		g2 := g
+		defer func() {
+			if !republished {
+				p.credPool.ReleaseGrant(ctx, g2)
 			}
 		}()
 	}

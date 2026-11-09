@@ -692,6 +692,14 @@ type Lease struct {
 	// so a legacy lease reads as no attachment everywhere.
 	ExpiresAt    time.Time `bson:"expires_at" json:"expires_at"`
 	AttachmentID string    `bson:"attachment_id,omitempty" json:"attachment_id,omitempty"`
+	// AttConsumedRunUnit records whether THIS lease's att: admission was a
+	// Reserve (a fresh draw unit the release must refund) versus a Renew —
+	// it is NOT the donor flag's echo: a resume onto a different pledge of
+	// the same attachment consumes a donor unit while the att: row renews,
+	// and gating the att: refund on ConsumedRunUnit would under-count the
+	// borrower's draw cap (the round-2 review's R95acf7 shape). Empty
+	// AttachmentID leaves it meaningless.
+	AttConsumedRunUnit bool `bson:"att_consumed_run_unit,omitempty" json:"att_consumed_run_unit,omitempty"`
 }
 
 // Lease outcomes. Free-form for display, but these three are load-bearing:

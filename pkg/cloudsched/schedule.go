@@ -211,6 +211,11 @@ type SchedulePatch struct {
 	// contradictory — the route handler refuses that shape.
 	Routing      *llmroute.Policy
 	ClearRouting bool
+	// Pool block (ADR-164): nil = leave untouched; ClearPool removes the
+	// stored block (the schedule inherits again). Pool + ClearPool set
+	// together are contradictory — the route handler refuses that shape.
+	Pool      *PoolBinding
+	ClearPool bool
 	// Retry policy fields; nil = leave untouched. An explicit empty string
 	// (or 0) clears the field so the schedule stops overriding the bot.
 	RetryUsageWindow *string
@@ -301,6 +306,12 @@ func applySchedulePatch(sb *ScheduledBot, patch SchedulePatch) {
 	if patch.Routing != nil {
 		sb.Routing = patch.Routing
 		sb.RoutingFromIntegration = false
+	}
+	if patch.ClearPool {
+		sb.Pool = nil
+	}
+	if patch.Pool != nil {
+		sb.Pool = patch.Pool
 	}
 	if patch.RetryUsageWindow != nil {
 		sb.RetryUsageWindow = *patch.RetryUsageWindow

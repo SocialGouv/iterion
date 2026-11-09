@@ -652,8 +652,9 @@ func (s *Server) handleImportPoolEntry(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleResetPoolEntry is the MANUAL reset (ADR-164 § resets): clears the
-// provider cooldown, forgets the stale readings the margin skip was
-// acting on, and clears the held bits naming the entry. The provider's
+// provider cooldown and forgets the stale readings the margin skip was
+// acting on. (reset_hold's held bits join here when its runtime half
+// lands — ADR-164 watch.) The provider's
 // own window may not have reset — the reset says "try it", and the next
 // refusal re-cooldowns honestly.
 func (s *Server) handleResetPoolEntry(w http.ResponseWriter, r *http.Request) {
@@ -803,6 +804,21 @@ func (s *Server) putPoolAttachment(w http.ResponseWriter, r *http.Request, scope
 	}
 	if err := a.Validate(); err != nil {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "%s", err)
+		return
+	}
+	// The trigger vocabulary is validated HERE, at the write — the fold's
+	// fail-closed posture backstops, it does not replace: a typo'd trigger
+	// stored 200 would brick every later launch of the scope with 422s.
+	if err := validatePoolTriggers(a.Strategy.Triggers); err != nil {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "%s", err)
+		return
+	}
+	// reset_hold's RUNTIME half (held-bit on switch, the resume's
+	// held-entry re-acquisition) is not landed yet — accepting true would
+	// silently never hold. Warn-not-fake: the write refuses until the
+	// machinery exists (ADR-164 watch).
+	if a.Strategy.ResetHold {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "reset_hold is not honored yet — its runtime half (held-entry resume) lands in a follow-up; drop the flag for now")
 		return
 	}
 	// A cap-less attachment is allowed: the preview and the launch warn
