@@ -3,6 +3,7 @@ package cloudpublisher
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/credpool"
@@ -23,6 +24,7 @@ type attachedFixture struct {
 	pledges *credpool.MemoryPledgeStore
 	atts    *credpool.MemoryAttachmentStore
 	leases  *credpool.MemoryLeaseStore
+	oauth   *secrets.MemoryOAuthStore
 }
 
 func newAttachedFixture(t *testing.T) *attachedFixture {
@@ -98,7 +100,7 @@ func newAttachedFixture(t *testing.T) *attachedFixture {
 			runSecrets: rs, sealer: sealer, credPool: broker,
 			logger: iterlog.New(iterlog.LevelError, nil), rotatedOAuthKinds: rotatedClaude,
 		},
-		rs: rs, sealer: sealer, pools: pools, pledges: pledges, atts: atts, leases: leases,
+		rs: rs, sealer: sealer, pools: pools, pledges: pledges, atts: atts, leases: leases, oauth: oauth,
 	}
 }
 
@@ -164,13 +166,13 @@ func TestAttachedPool_sealsForfaitAndGatewaySlots(t *testing.T) {
 	if !bundle.PoolSourced[string(secrets.ProviderOpenAICompatible)] || !bundle.PoolSourced["claude_code"] {
 		t.Error("both sealed slots must carry the PoolSourced stamp (metering reaches the donor rows)")
 	}
-	// Two leases: one per served pledge — each slot drew its own donor.
-	leases, err := f.leases.ListByRun(context.Background(), "run-att")
-	if err != nil {
-		t.Fatalf("leases: %v", err)
-	}
-	if len(leases) != 2 {
-		t.Errorf("open leases = %d, want 2 (one per slot: forfait donor + gateway lender)", len(leases))
+	// Two OPEN leases: one per served pledge — each slot drew its own
+	// donor, and the gateway slot's acquisition is the forfait's SIBLING:
+	// it must not supersede (close) the forfait's lease while both
+	// credentials stay sealed and spent (R916b92). Counting every lease,
+	// closed ones included, would miss exactly that.
+	if open := openLeases(t, f, "run-att"); len(open) != 2 {
+		t.Errorf("open leases = %d, want 2 (one per slot: forfait donor + gateway lender — neither superseded by its sibling)", len(open))
 	}
 }
 
@@ -333,6 +335,100 @@ func TestAttachedPool_disabledBlocksTheLegacyTier(t *testing.T) {
 	if creds.secretsRef != "" {
 		if bundle := bundleFrom(t, pub, sctx, creds, "run-optout"); len(bundle.OAuthCredentials["claude_code"]) != 0 {
 			t.Error("the legacy donation landed despite the opt-out — law 2 broken at the enforcement half")
+		}
+	}
+}
+
+// openLeases counts the run's leases still open.
+func openLeases(t *testing.T, f *attachedFixture, runID string) []credpool.Lease {
+	t.Helper()
+	all, err := f.leases.ListByRun(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("leases: %v", err)
+	}
+	var open []credpool.Lease
+	for _, l := range all {
+		if !l.Closed {
+			open = append(open, l)
+		}
+	}
+	return open
+}
+
+// A RESUME after a dead pod: the previous attempt's attached leases are
+// still open (nobody reported). The resume's FIRST acquisition takes the
+// attempt over — the dead attempt's leases close — and its later slots
+// are the new grant's siblings: two open leases, never four.
+func TestAttachedPool_aResumeSupersedesTheDeadAttemptsLeases(t *testing.T) {
+	f := newAttachedFixture(t)
+	f.resolveAttached(t, "run-resume", nil, frozenAttachment("pool-att"))
+	if got := len(openLeases(t, f, "run-resume")); got != 2 {
+		t.Fatalf("first attempt: open leases = %d, want 2", got)
+	}
+	_, creds := f.resolveAttached(t, "run-resume", nil, frozenAttachment("pool-att"))
+	if len(creds.grants) != 2 {
+		t.Fatalf("resume sealed %d grants, want 2", len(creds.grants))
+	}
+	open := openLeases(t, f, "run-resume")
+	if len(open) != 2 {
+		t.Fatalf("after the resume: open leases = %d, want 2 — the dead attempt's leases must be superseded, not left holding the donors' slots", len(open))
+	}
+	for _, l := range open {
+		if l.AcquiredAt.Before(creds.grants[0].AcquiredAt) {
+			t.Errorf("lease %s (pledge %s) of the DEAD attempt is still open", l.ID, l.PledgeID)
+		}
+	}
+}
+
+// reset_hold on the attached walk: the forfait slot switches to the
+// second forfait while the first cools down; the first recovers; the
+// RESUME keeps the switched-to entry when the dial is on, and returns to
+// the strategy's first choice when it is off.
+func TestAttachedPool_resetHoldKeepsTheSwitchedEntryOnResume(t *testing.T) {
+	for _, hold := range []bool{true, false} {
+		f := newAttachedFixture(t)
+		ctx := context.Background()
+		seedOAuth(t, f.oauth, f.sealer, "donor2", "sk-ant-donated-2")
+		second := credpool.Pledge{
+			ID: credpool.PledgeID("donor2", credpool.SourceOAuth, "claude_code"), PoolID: "pool-att",
+			UserID: "donor2", Credential: credpool.Credential{Source: credpool.SourceOAuth, Ref: "claude_code"},
+			Enabled: true, Health: credpool.HealthOK, Priority: 3,
+		}
+		if err := f.pledges.Upsert(ctx, second); err != nil {
+			t.Fatal(err)
+		}
+		firstID := credpool.PledgeID("donor", credpool.SourceOAuth, "claude_code")
+		setCooldown := func(until *time.Time) {
+			p, err := f.pledges.Get(ctx, firstID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			p.CooldownUntil = until
+			if err := f.pledges.Upsert(ctx, p); err != nil {
+				t.Fatal(err)
+			}
+		}
+		att := frozenAttachment("pool-att")
+		att.Strategy.ResetHold = hold
+
+		later := time.Now().Add(time.Hour)
+		setCooldown(&later)
+		_, creds := f.resolveAttached(t, "run-hold", nil, att)
+		if creds.grant == nil || creds.grant.PledgeID != second.ID {
+			t.Fatalf("hold=%v: with the first forfait cooling the slot drew %v, want the second forfait", hold, creds.grant)
+		}
+		if creds.grant.Held != hold {
+			t.Fatalf("hold=%v: the switched-to grant held=%v", hold, creds.grant.Held)
+		}
+
+		setCooldown(nil) // the first forfait's window reset
+		_, creds = f.resolveAttached(t, "run-hold", nil, att)
+		want := firstID
+		if hold {
+			want = second.ID
+		}
+		if creds.grant == nil || creds.grant.PledgeID != want {
+			t.Fatalf("hold=%v: the resume drew %v, want %s", hold, creds.grant, want)
 		}
 	}
 }

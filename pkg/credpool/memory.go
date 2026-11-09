@@ -285,6 +285,22 @@ func (s *MemoryLeaseStore) Reopen(_ context.Context, leaseID string, supersededA
 	return true, nil
 }
 
+// ClearHeld lifts the reset_hold mark from every lease of the entry — see
+// LeaseStore.ClearHeld.
+func (s *MemoryLeaseStore) ClearHeld(_ context.Context, pledgeID string) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for id, l := range s.m {
+		if l.PledgeID == pledgeID && l.Held {
+			l.Held = false
+			s.m[id] = l
+			n++
+		}
+	}
+	return n, nil
+}
+
 // ListByRun returns every lease of a run, any state, newest acquired
 // first — see LeaseStore.ListByRun.
 func (s *MemoryLeaseStore) ListByRun(_ context.Context, runID string) ([]Lease, error) {

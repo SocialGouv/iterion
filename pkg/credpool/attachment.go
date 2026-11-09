@@ -59,11 +59,13 @@ type Strategy struct {
 	// pre-empting a warm entry.
 	Triggers []string `bson:"triggers,omitempty" json:"triggers,omitempty"`
 	// ResetHold keeps a switch held until a manual reset: when the strategy
-	// switches (seal-time skip or in-run rung), the run doc carries a held
-	// bit naming the entry it moved to, and a resume re-acquires THAT entry
-	// instead of re-ranking — until the operator clears it through the
-	// entry reset route. Off (the default) lets the periodic reset reopen
-	// the previous order on its own.
+	// switches AT SEAL TIME (a better-ranked entry of the kind did not
+	// serve), the lease it opens on the next entry is marked Held, and a
+	// resume re-acquires THAT entry instead of re-ranking — until the
+	// operator lifts the hold through the entry reset route. A switch made
+	// IN-RUN by the entry rungs does not hold: the in-run chain restarts
+	// from its top on every attempt. Off (the default) lets the periodic
+	// reset reopen the previous order on its own.
 	ResetHold bool `bson:"reset_hold,omitempty" json:"reset_hold,omitempty"`
 }
 

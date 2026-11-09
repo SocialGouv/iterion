@@ -48,13 +48,9 @@ func (s *Server) validatePoolBindingWrite(ctx context.Context, teamID string, b 
 		return err
 	}
 	// Triggers validated at the write (the fold backstops, never replaces)
-	// and reset_hold refused until its runtime half exists — the same
-	// two guards the attachment routes carry.
+	// — the same guard the attachment routes carry.
 	if err := validatePoolTriggers(b.Strategy.Triggers); err != nil {
 		return err
-	}
-	if b.Strategy.ResetHold {
-		return fmt.Errorf("reset_hold is not honored yet — its runtime half lands in a follow-up; drop the flag for now")
 	}
 	if s.credPoolPools == nil {
 		return fmt.Errorf("pool attachments are not wired on this deployment")

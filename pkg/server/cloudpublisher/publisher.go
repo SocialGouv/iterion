@@ -5530,6 +5530,13 @@ func (p *Publisher) acquireFromAttachedPools(ctx context.Context, runID, orgID, 
 		// fold): usage_window present = the strategy answers exhaustion.
 		marginFn = p.closedAtMargin(ctx, strategyMargin(att.Strategy))
 	}
+	// The FIRST acquisition of this resolution is the attempt's takeover:
+	// it supersedes whatever the run's previous attempt left open (a pod
+	// killed mid-run leaves its leases open — a resume that never closed
+	// them would hold every donor's slot and committed allowance until the
+	// TTL). Every acquisition AFTER a grant is that grant's SIBLING (the
+	// forfait and the gateway sealed side by side) and must never free it.
+	sideBySide := false
 	for _, want := range wantList {
 		var slot string
 		switch want.Source {
@@ -5544,7 +5551,21 @@ func (p *Publisher) acquireFromAttachedPools(ctx context.Context, runID, orgID, 
 		if slotFilled(bundle, want) || !policy.sealableSlot(slot) {
 			continue
 		}
+		// reset_hold (ADR-164): the run's held entry of this kind leads the
+		// ranking, and the lease this acquisition opens is marked held when
+		// the strategy switches. A failed read of the hold degrades to the
+		// ordinary ranking — named, never silent.
+		var preferPledge string
+		if att.Strategy.ResetHold {
+			held, herr := p.credPool.HeldPledge(ctx, runID, want)
+			if herr != nil {
+				p.logger.Warn("cloudpublisher: run %s: the held pool entry of %s could not be read — ranking without the hold: %v", runID, want, herr)
+			}
+			preferPledge = held
+		}
 		grant, err := p.credPool.Acquire(ctx, credpool.Request{
+			HoldOnSwitch:   att.Strategy.ResetHold,
+			PreferPledgeID: preferPledge,
 			RunID:          runID,
 			OrgID:          orgID,
 			TenantID:       tenantID,
@@ -5556,11 +5577,11 @@ func (p *Publisher) acquireFromAttachedPools(ctx context.Context, runID, orgID, 
 			DrawLimits:     credpool.DrawLimits{MaxRunsPerDay: att.Limits.MaxRunsPerDay, MaxUSDPerDay: att.Limits.MaxUSDPerDay},
 			RankMode:       credpool.StrategyMode(att.Strategy.Mode),
 			ClosedAtMargin: marginFn,
-			// The per-slot walk's earlier leases are this acquisition's
-			// SIBLINGS (forfait and gateway sealed side by side) — the
-			// supersede machinery must never free them mid-run.
-			SideBySide: true,
+			SideBySide:     sideBySide,
 		})
+		if grant != nil {
+			sideBySide = true
+		}
 		if err != nil {
 			// An ordinary abstention (no eligible entry for this slot): the
 			// loop moves to the next slot. A near-limit skip arms the

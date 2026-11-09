@@ -700,6 +700,12 @@ type Lease struct {
 	// borrower's draw cap (the round-2 review's R95acf7 shape). Empty
 	// AttachmentID leaves it meaningless.
 	AttConsumedRunUnit bool `bson:"att_consumed_run_unit,omitempty" json:"att_consumed_run_unit,omitempty"`
+	// Held marks the entry the strategy SWITCHED to under reset_hold
+	// (ADR-164): a better-ranked entry of the same kind was skipped
+	// (margin, cooldown, exhaustion, health) or the run already held this
+	// entry. A resume prefers the run's newest held entry of the kind over
+	// re-ranking, until the entry reset route clears the mark.
+	Held bool `bson:"held,omitempty" json:"held,omitempty"`
 }
 
 // Lease outcomes. Free-form for display, but these three are load-bearing:

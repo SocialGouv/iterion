@@ -652,11 +652,11 @@ func (s *Server) handleImportPoolEntry(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleResetPoolEntry is the MANUAL reset (ADR-164 § resets): clears the
-// provider cooldown and forgets the stale readings the margin skip was
-// acting on. (reset_hold's held bits join here when its runtime half
-// lands — ADR-164 watch.) The provider's
-// own window may not have reset — the reset says "try it", and the next
-// refusal re-cooldowns honestly.
+// provider cooldown, forgets the stale readings the margin skip was acting
+// on, and lifts every reset_hold naming the entry (the runs holding it
+// re-rank at their next resume). The provider's own window may not have
+// reset — the reset says "try it", and the next refusal re-cooldowns
+// honestly.
 func (s *Server) handleResetPoolEntry(w http.ResponseWriter, r *http.Request) {
 	pool, _, ok := s.poolManageOrFail(w, r)
 	if !ok {
@@ -694,6 +694,12 @@ func (s *Server) handleResetPoolEntry(w http.ResponseWriter, r *http.Request) {
 		// skip was acting on are forgotten, whatever their freshness said.
 		if _, err := s.usageCaps.DeleteByFingerprint(r.Context(), s.credFingerprintOf(p)); err != nil {
 			s.httpErrorFor(w, r, http.StatusInternalServerError, "forget readings: %v", err)
+			return
+		}
+	}
+	if s.credPool != nil {
+		if _, err := s.credPool.ClearHolds(r.Context(), p.ID); err != nil {
+			s.httpErrorFor(w, r, http.StatusInternalServerError, "lift holds: %v", err)
 			return
 		}
 	}
@@ -811,14 +817,6 @@ func (s *Server) putPoolAttachment(w http.ResponseWriter, r *http.Request, scope
 	// stored 200 would brick every later launch of the scope with 422s.
 	if err := validatePoolTriggers(a.Strategy.Triggers); err != nil {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "%s", err)
-		return
-	}
-	// reset_hold's RUNTIME half (held-bit on switch, the resume's
-	// held-entry re-acquisition) is not landed yet — accepting true would
-	// silently never hold. Warn-not-fake: the write refuses until the
-	// machinery exists (ADR-164 watch).
-	if a.Strategy.ResetHold {
-		s.httpErrorFor(w, r, http.StatusBadRequest, "reset_hold is not honored yet — its runtime half (held-entry resume) lands in a follow-up; drop the flag for now")
 		return
 	}
 	// A cap-less attachment is allowed: the preview and the launch warn

@@ -266,6 +266,12 @@ func TestLeaseStampAndList_Mongo(t *testing.T) {
 		_ = client.Disconnect(drop)
 	})
 	testLeaseStampAndList(t, ctx, NewMongoLeaseStore(db))
+	testLeaseClearHeld(t, ctx, NewMongoLeaseStore(db.Client().Database(db.Name()+"_held")))
+	t.Cleanup(func() {
+		drop, dropCancel := mongotest.TeardownCtx()
+		defer dropCancel()
+		_ = db.Client().Database(db.Name() + "_held").Drop(drop)
+	})
 }
 
 // TestReportAttempt_aGrantlessTakeoverReportsNothingAtTheProductionOrder:

@@ -372,6 +372,16 @@ func (s *MongoLeaseStore) Reopen(ctx context.Context, leaseID string, superseded
 
 // ListByRun returns every lease of a run, any state, newest acquired
 // first — see LeaseStore.ListByRun.
+// ClearHeld lifts the reset_hold mark from every lease of the entry in
+// one update — see LeaseStore.ClearHeld.
+func (s *MongoLeaseStore) ClearHeld(ctx context.Context, pledgeID string) (int, error) {
+	res, err := s.col.UpdateMany(ctx, bson.M{"pledge_id": pledgeID, "held": true}, bson.M{"$unset": bson.M{"held": ""}})
+	if err != nil {
+		return 0, fmt.Errorf("credpool: clear the holds of pledge %s: %w", pledgeID, err)
+	}
+	return int(res.ModifiedCount), nil
+}
+
 func (s *MongoLeaseStore) ListByRun(ctx context.Context, runID string) ([]Lease, error) {
 	cur, err := s.col.Find(ctx, bson.M{"run_id": runID},
 		options.Find().SetSort(bson.D{{Key: "acquired_at", Value: -1}, {Key: "_id", Value: -1}}))

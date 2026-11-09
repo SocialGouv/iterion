@@ -67,6 +67,10 @@ runs one signal pass inline — the proof the readings are warm.
 - **In-run**: the entries' rungs ride the run's fallback chain
   (`On:` the attachment's triggers) — a usage-window failure walks
   forfait → next entry → gateway, exactly the composed order.
+- **reset_hold**: a SEAL-time switch marks its lease held, and the resume
+  re-acquires that entry first instead of returning to one whose window
+  reset — until `pools reset` on the entry lifts the hold. In-run rung
+  switches do not hold.
 
 ## Debugging
 

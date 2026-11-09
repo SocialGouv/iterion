@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -99,6 +100,14 @@ func runPoolRoute(s *Server, w *httptest.ResponseRecorder, r *http.Request) {
 		s.handlePutOrgPoolAttachment(w, r)
 	case strings.HasSuffix(r.URL.Path, "/pool-attachment") && r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/orgs/"):
 		s.handleGetOrgPoolAttachment(w, r)
+	case strings.HasSuffix(r.URL.Path, "/pool-attachment") && r.Method == http.MethodPut && strings.Contains(r.URL.Path, "/teams/"):
+		s.handlePutTeamPoolAttachment(w, r)
+	case strings.HasSuffix(r.URL.Path, "/reset") && r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/api/pools/"):
+		parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/pools/"), "/")
+		r.SetPathValue("id", parts[0])
+		pledge, _ := url.PathUnescape(parts[2])
+		r.SetPathValue("pledge", pledge)
+		s.handleResetPoolEntry(w, r)
 	default:
 		w.WriteHeader(http.StatusTeapot)
 	}
@@ -379,4 +388,64 @@ func runPoolRouteEntryPut(s *Server, w *httptest.ResponseRecorder, ctx context.C
 	r := poolRouteReq(ctx, http.MethodPut, "/api/pools/"+poolID+"/entries", body)
 	r.SetPathValue("id", poolID)
 	s.handlePutPoolEntry(w, r)
+}
+
+// The manual reset lifts the entry's cooldown AND every reset_hold naming
+// it (ADR-164, #3122): a run holding the entry re-ranks at its next resume.
+// reset_hold is accepted at the attachment write now that the hold is real.
+func TestPoolEntryReset_liftsTheCooldownAndTheHolds(t *testing.T) {
+	s, _ := poolRoutesServer(t)
+	ctx := auth.WithIdentity(context.Background(), auth.Identity{UserID: "jo"})
+	w := httptest.NewRecorder()
+	runPoolRoute(s, w, poolRouteReq(ctx, http.MethodPost, "/api/me/pools", `{"name":"held"}`))
+	if w.Code != http.StatusOK {
+		t.Fatalf("create pool = %d (%s)", w.Code, w.Body.String())
+	}
+	poolID := createdPoolID(t, s, ctx)
+
+	// A held attachment writes (the dial was refused while its runtime half
+	// was missing).
+	w = httptest.NewRecorder()
+	runPoolRoute(s, w, poolRouteReq(ctx, http.MethodPut, "/api/teams/team1/pool-attachment",
+		`{"pool_id":"`+poolID+`","enabled":true,"mode":"priority","reset_hold":true}`))
+	if w.Code != http.StatusOK {
+		t.Fatalf("attach with reset_hold = %d (%s), want 200", w.Code, w.Body.String())
+	}
+
+	// The entry cools down and a run holds it.
+	until := time.Now().Add(time.Hour)
+	entry := credpool.Pledge{ID: "jo|api_key|anthropic", PoolID: poolID, UserID: "jo",
+		Credential: credpool.Credential{Source: credpool.SourceAPIKey, Ref: "anthropic", KeyID: "key-jo-anthropic"},
+		Enabled:    true, Health: credpool.HealthOK, CooldownUntil: &until}
+	if err := s.credPoolPledges.Upsert(context.Background(), entry); err != nil {
+		t.Fatal(err)
+	}
+	leases := credpool.NewMemoryLeaseStore()
+	sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.credPool = credpool.NewBroker(credpool.BrokerConfig{
+		Pools: s.credPoolPools, Pledges: s.credPoolPledges, Leases: leases, Ledger: credpool.NewMemoryLedger(),
+		OAuth: secrets.NewMemoryOAuthStore(), APIKeys: secrets.NewMemoryApiKeyStore(), Sealer: sealer,
+		Logger: iterlog.New(iterlog.LevelError, nil),
+	})
+	now := time.Now().UTC()
+	if err := leases.Put(context.Background(), credpool.Lease{ID: "l1", RunID: "run-held", PledgeID: entry.ID, Credential: entry.Credential,
+		Held: true, Closed: true, AcquiredAt: now, ExpiresAt: now.Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+
+	w = httptest.NewRecorder()
+	runPoolRoute(s, w, poolRouteReq(ctx, http.MethodPost, "/api/pools/"+poolID+"/entries/"+url.PathEscape(entry.ID)+"/reset", `{}`))
+	if w.Code != http.StatusOK {
+		t.Fatalf("reset = %d (%s), want 200", w.Code, w.Body.String())
+	}
+	got, err := s.credPoolPledges.Get(context.Background(), entry.ID)
+	if err != nil || got.CooldownUntil != nil {
+		t.Fatalf("after reset the entry still cools: %+v (%v)", got.CooldownUntil, err)
+	}
+	if held, err := s.credPool.HeldPledge(context.Background(), "run-held", entry.Credential); err != nil || held != "" {
+		t.Fatalf("after reset the run still holds %q (%v) — the reset must lift the holds naming the entry", held, err)
+	}
 }

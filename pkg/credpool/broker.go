@@ -234,6 +234,20 @@ type Request struct {
 	// publisher constructor so live and preview cannot diverge; the pool
 	// package never reads usagecap itself (dependency direction).
 	ClosedAtMargin func(p Pledge) (reopenAt time.Time, near bool)
+	// HoldOnSwitch is the attachment's reset_hold (ADR-164): the lease
+	// this acquisition opens is marked Held when the strategy SWITCHED to
+	// its entry — a better-ranked entry of the kind did not serve — or
+	// when it re-serves PreferPledgeID.
+	HoldOnSwitch bool
+	// PreferPledgeID is the entry the run holds for this kind (its newest
+	// Held lease): ranked FIRST when it is eligible, so a resume re-acquires
+	// it instead of returning to an entry whose window reset meanwhile.
+	// Ineligible, it yields to the ordinary ranking.
+	PreferPledgeID string
+
+	// holdLease is the per-candidate verdict the ranking walk hands to
+	// tryPledge: mark the lease it opens as Held.
+	holdLease bool
 }
 
 // Grant is a served donation.
@@ -308,6 +322,9 @@ type Grant struct {
 	// also clamp to. Zero means the attachment set no spend cap, NOT
 	// "nothing left" (same convention as RemainingUSD).
 	AttachmentRemainingUSD float64
+	// Held reports the lease was marked as the run's held entry
+	// (reset_hold — Request.HoldOnSwitch).
+	Held bool
 	// Bound when the lease is inserted, never looked up by run ID later:
 	// concurrent acquisitions can hold different leases for the same run.
 	releaseGuard *ReleaseGuard
@@ -475,13 +492,43 @@ func (b *Broker) acquireKind(ctx context.Context, pool Pool, candidates []Pledge
 	if err != nil {
 		return nil, skips, err
 	}
+	// The run's held entry (reset_hold) leads when it is eligible: the
+	// strategy switched to it earlier, and a reset window elsewhere must
+	// not pull the run back until the operator resets the hold.
+	if req.PreferPledgeID != "" {
+		for i, p := range ranked {
+			if p.ID == req.PreferPledgeID && i > 0 {
+				ranked = append([]Pledge{p}, append(ranked[:i:i], ranked[i+1:]...)...)
+				break
+			}
+		}
+	}
+	// A candidate the eligibility filter dropped with a priority AT LEAST
+	// as good as the one that serves means the strategy moved off an entry
+	// that was in play (an equal-priority peer near its margin included —
+	// holding an equivalent entry is harmless, flipping back is the thrash
+	// reset_hold exists to stop).
+	bestSkipped := func(prio int) bool {
+		for _, s := range skips {
+			for _, c := range candidates {
+				if c.ID == s.PledgeID && c.Priority <= prio {
+					return true
+				}
+			}
+		}
+		return false
+	}
 
 	// Walk the ranking: a donor whose ledger refuses (raced to their cap,
 	// concurrency full) or whose credential is gone simply yields to the
 	// next — and lands on the skips list under the status tryPledge
 	// decided, so the operator can tell "exhausted" from "serving" from
 	// "unhealthy" from "paused".
-	for _, p := range ranked {
+	for i, p := range ranked {
+		// reset_hold: hold when this candidate serves AFTER a better one
+		// declined (ranked ahead of it, or filtered out with a better
+		// priority), or when it is the entry the run already holds.
+		req.holdLease = req.HoldOnSwitch && (p.ID == req.PreferPledgeID || i > 0 || bestSkipped(p.Priority))
 		grant, status, err := b.tryPledge(ctx, pool, p, req, now)
 		if err != nil {
 			b.logger.Warn("credpool: pledge %s unusable for run %s: %v", p.ID, req.RunID, err)
@@ -935,6 +982,7 @@ func (b *Broker) tryPledge(ctx context.Context, pool Pool, p Pledge, req Request
 		ExpiresAt:          acquiredAt.Add(b.leaseTTL),
 		AttachmentID:       req.AttachmentID,
 		AttConsumedRunUnit: req.AttachmentID != "" && !attReadmit,
+		Held:               req.holdLease,
 	}
 	if err := b.leases.Put(ctx, lease); err != nil {
 		release()
@@ -966,8 +1014,37 @@ func (b *Broker) tryPledge(ctx context.Context, pool Pool, p Pledge, req Request
 		AttachmentRemainingUSD: attRemaining,
 		RemainingUSD:           remaining,
 		AcquiredAt:             lease.AcquiredAt,
+		Held:                   lease.Held,
 		releaseGuard:           &ReleaseGuard{lease: lease},
 	}, "", nil
+}
+
+// HeldPledge returns the entry the run holds for the wanted kind under
+// reset_hold — the pledge of its NEWEST Held lease of that credential, any
+// state (the previous attempt's lease is closed by its report) — or "".
+func (b *Broker) HeldPledge(ctx context.Context, runID string, want Credential) (string, error) {
+	if b == nil || runID == "" {
+		return "", nil
+	}
+	leases, err := b.leases.ListByRun(ctx, runID)
+	if err != nil {
+		return "", fmt.Errorf("credpool: read the run's held entry: %w", err)
+	}
+	for _, l := range leases {
+		if l.Held && l.Source == want.Source && l.Ref == want.Ref {
+			return l.PledgeID, nil
+		}
+	}
+	return "", nil
+}
+
+// ClearHolds lifts every reset_hold naming the entry — the manual reset's
+// hold half: the runs holding it re-rank at their next resume.
+func (b *Broker) ClearHolds(ctx context.Context, pledgeID string) (int, error) {
+	if b == nil {
+		return 0, nil
+	}
+	return b.leases.ClearHeld(ctx, pledgeID)
 }
 
 // VerifyEntry checks a pledge names a credential its lender actually

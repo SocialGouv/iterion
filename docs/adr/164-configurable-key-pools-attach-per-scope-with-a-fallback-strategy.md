@@ -72,3 +72,13 @@ The "Known limits" line above named the binding-level `pool:` decoder as pending
 - **The forge integration** (repo-bots enable/PATCH) carries the block on the record AND on the webhook config it provisions — the enforcement half the webhook lane folds as its `binding:webhook` layer — and projects it onto its scheduled rows with a provenance flag (`PoolFromIntegration`, the twin of `RoutingFromIntegration`): a projected block follows every integration write, an operator's own row block survives. A pair diverged between the two stores refuses a silent re-provision (the deterministic class the org-approval arm consumes).
 - **Org approval.** A spoken block parks (null included — the block moves which credentials fund the repo's unattended runs), the parked record replays it, and the apply RE-VALIDATES its consent: a pool disabled or narrowed while the request waited is refused (409), never granted by the approval.
 - **Unchanged posture**: trigger subscriptions and hand-written webhook configs have no pool field (the webhook CRUD request carries none); their launches read the stored scopes only.
+
+### reset_hold's runtime half (same date, #3122)
+
+Decision 7's held bit lands on the LEASE, not the run doc — the lease is already the per-attempt record of which entry served, and the manual reset needs one store to clear:
+
+- A seal-time switch marks the lease it opens `Held`: the broker's ranking walk holds the entry that serves after a candidate at least as well ranked declined (ranked ahead of it and refused, or filtered out — margin, cooldown, health — with an equal or better priority), or that re-serves the run's held entry. The strategy's first choice is never held.
+- The resume's walk (the same `acquireFromAttachedPools`) reads the run's newest held lease of the kind (`HeldPledge`, closed leases included) and ranks that entry first when it is eligible; ineligible, the ordinary ranking serves.
+- The entry reset route lifts every hold naming the entry (`LeaseStore.ClearHeld`, memory + Mongo twins); the write surfaces accept the dial.
+- Scope, stated: a switch made IN-RUN by the entry rungs does not hold — the in-run chain restarts from its top on every attempt.
+- With it, the attached walk's takeover is per resolution: its FIRST acquisition supersedes what the run's previous attempt left open (a dead pod's leases no longer hold the donors' slots until the TTL), every later slot is that grant's sibling.
