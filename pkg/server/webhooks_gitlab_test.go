@@ -61,7 +61,7 @@ func glReq(ctx context.Context, body, event string) *http.Request {
 const glOpenMR = `{
   "object_kind": "merge_request",
   "project": {"id": 42, "path_with_namespace": "acme/widgets", "git_http_url": "https://gitlab.com/acme/widgets.git"},
-  "object_attributes": {"iid": 7, "action": "open", "source_branch": "feature/x", "target_branch": "main",
+  "object_attributes": {"source_project_id": 42, "target_project_id": 42, "iid": 7, "action": "open", "source_branch": "feature/x", "target_branch": "main",
     "title": "Add X", "description": "desc", "url": "https://gitlab.com/acme/widgets/-/merge_requests/7",
     "last_commit": {"id": "sha1"}}
 }`
@@ -121,7 +121,7 @@ func TestGitLabWebhook_HappyPath(t *testing.T) {
 const glDraftMR = `{
   "object_kind": "merge_request",
   "project": {"id": 42, "path_with_namespace": "acme/widgets", "git_http_url": "https://gitlab.com/acme/widgets.git"},
-  "object_attributes": {"iid": 9, "action": "open", "source_branch": "wip/x", "target_branch": "main",
+  "object_attributes": {"source_project_id": 42, "target_project_id": 42, "iid": 9, "action": "open", "source_branch": "wip/x", "target_branch": "main",
     "title": "Draft: Add X", "description": "wip", "url": "https://gitlab.com/acme/widgets/-/merge_requests/9",
     "draft": true, "work_in_progress": true, "last_commit": {"id": "sha9"}}
 }`
@@ -131,7 +131,7 @@ const glDraftMR = `{
 const glReadyMR = `{
   "object_kind": "merge_request",
   "project": {"id": 42, "path_with_namespace": "acme/widgets", "git_http_url": "https://gitlab.com/acme/widgets.git"},
-  "object_attributes": {"iid": 9, "action": "update", "source_branch": "wip/x", "target_branch": "main",
+  "object_attributes": {"source_project_id": 42, "target_project_id": 42, "iid": 9, "action": "update", "source_branch": "wip/x", "target_branch": "main",
     "title": "Add X", "description": "ready", "url": "https://gitlab.com/acme/widgets/-/merge_requests/9",
     "draft": false, "work_in_progress": false, "last_commit": {"id": "sha9"}},
   "changes": {"draft": {"previous": true, "current": false}}
@@ -215,7 +215,7 @@ func glReRequestMRState(actor, reviewer, updatedAt, state string, reRequested bo
 	  "object_kind": "merge_request",
 	  "user": {"username": "` + actor + `"},
 	  "project": {"id": 42, "path_with_namespace": "acme/widgets", "git_http_url": "https://gitlab.com/acme/widgets.git"},
-	  "object_attributes": {"iid": 7, "action": "update", "state": "` + state + `", "source_branch": "feature/x", "target_branch": "main",
+	  "object_attributes": {"source_project_id": 42, "target_project_id": 42, "iid": 7, "action": "update", "state": "` + state + `", "source_branch": "feature/x", "target_branch": "main",
 	    "title": "Add X", "description": "desc", "url": "https://gitlab.com/acme/widgets/-/merge_requests/7",
 	    "updated_at": "` + updatedAt + `", "last_commit": {"id": "sha1"}},
 	  "changes": {"reviewers": {"previous": [], "current": [{"id": 575, "username": "` + reviewer + `", "re_requested": ` + map[bool]string{true: "true", false: "false"}[reRequested] + `}]}}
@@ -357,7 +357,7 @@ func TestGitLabWebhook_PushWithReviewersDiffDoesNotDoubleLaunch(t *testing.T) {
 	  "object_kind": "merge_request",
 	  "user": {"username": "alice"},
 	  "project": {"id": 42, "path_with_namespace": "acme/widgets", "git_http_url": "https://gitlab.com/acme/widgets.git"},
-	  "object_attributes": {"iid": 7, "action": "update", "state": "opened", "oldrev": "sha0", "source_branch": "feature/x", "target_branch": "main",
+	  "object_attributes": {"source_project_id": 42, "target_project_id": 42, "iid": 7, "action": "update", "state": "opened", "oldrev": "sha0", "source_branch": "feature/x", "target_branch": "main",
 	    "title": "Add X", "description": "desc", "url": "https://gitlab.com/acme/widgets/-/merge_requests/7",
 	    "updated_at": "2026-09-01 10:00:00 UTC", "last_commit": {"id": "sha1"}},
 	  "changes": {"reviewers": {"previous": [], "current": [{"id": 575, "username": "iterion-bot", "re_requested": true}]}}
@@ -366,7 +366,7 @@ func TestGitLabWebhook_PushWithReviewersDiffDoesNotDoubleLaunch(t *testing.T) {
 	  "object_kind": "merge_request",
 	  "user": {"username": "alice"},
 	  "project": {"id": 42, "path_with_namespace": "acme/widgets", "git_http_url": "https://gitlab.com/acme/widgets.git"},
-	  "object_attributes": {"iid": 7, "action": "update", "state": "opened", "oldrev": "sha0", "source_branch": "feature/x", "target_branch": "main",
+	  "object_attributes": {"source_project_id": 42, "target_project_id": 42, "iid": 7, "action": "update", "state": "opened", "oldrev": "sha0", "source_branch": "feature/x", "target_branch": "main",
 	    "title": "Add X", "description": "desc", "url": "https://gitlab.com/acme/widgets/-/merge_requests/7",
 	    "updated_at": "2026-09-01 10:00:05 UTC", "last_commit": {"id": "sha1"}}
 	}`
@@ -435,7 +435,7 @@ func TestGitLabWebhook_ReRequestUnauthorizedReplierFiltered(t *testing.T) {
 	  "object_kind": "merge_request",
 	  "user": {"username": "mallory"},
 	  "project": {"id": 42, "path_with_namespace": "acme/widgets", "git_http_url": "https://gitlab.com/acme/widgets.git"},
-	  "object_attributes": {"iid": 7, "action": "update", "state": "opened", "oldrev": "sha0", "source_branch": "feature/x", "target_branch": "main",
+	  "object_attributes": {"source_project_id": 42, "target_project_id": 42, "iid": 7, "action": "update", "state": "opened", "oldrev": "sha0", "source_branch": "feature/x", "target_branch": "main",
 	    "title": "Add X", "description": "desc", "url": "https://gitlab.com/acme/widgets/-/merge_requests/7",
 	    "updated_at": "2026-09-01 10:03:00 UTC", "last_commit": {"id": "sha-co"}},
 	  "changes": {"reviewers": {"previous": [], "current": [{"id": 575, "username": "iterion-bot", "re_requested": true}]}}
@@ -471,7 +471,7 @@ func TestGitLabWebhook_ResyncOnDeadMRFiltered(t *testing.T) {
 		  "object_kind": "merge_request",
 		  "user": {"username": "alice"},
 		  "project": {"id": 42, "path_with_namespace": "acme/widgets", "git_http_url": "https://gitlab.com/acme/widgets.git"},
-		  "object_attributes": {"iid": 7, "action": "update", ` + st + `"oldrev": "prev", "source_branch": "feature/x", "target_branch": "main",
+		  "object_attributes": {"source_project_id": 42, "target_project_id": 42, "iid": 7, "action": "update", ` + st + `"oldrev": "prev", "source_branch": "feature/x", "target_branch": "main",
 		    "title": "Add X", "description": "desc", "url": "https://gitlab.com/acme/widgets/-/merge_requests/7",
 		    "last_commit": {"id": "` + sha + `"}}
 		}`
@@ -1198,5 +1198,63 @@ func TestGitLabWebhook_ReRequestRespectsHoldLabel(t *testing.T) {
 	}
 	if !strings.Contains(rows[0].Error, "hold label") {
 		t.Fatalf("audit reason = %q, want the hold-label explanation", rows[0].Error)
+	}
+}
+
+// TestGitLabWebhook_FailsClosedOnAnUnprovenHead: ADR-162 decision 1's
+// GitLab row — the ordinary MR lane stamps "trusted" on exactly what the
+// payload proves. A payload naming NEITHER project (a minimal or legacy
+// GitLab answer) is filtered, fail-closed like forkGuardRefusal, instead
+// of riding through as trusted on the forge's silence.
+func TestGitLabWebhook_FailsClosedOnAnUnprovenHead(t *testing.T) {
+	s := newWebhookTestServer(t)
+	var calls int
+	s.webhookLaunchBot = func(context.Context, string, map[string]string, string, string, string, map[string]string, map[string]string) (string, error) {
+		calls++
+		return "run-x", nil
+	}
+	cfg := glConfig()
+	// A minimal payload: no source project, no project ids — neither a
+	// fork nor a same-repo head is proven.
+	minimal := `{
+  "object_kind": "merge_request",
+  "project": {"id": 42, "path_with_namespace": "acme/widgets", "git_http_url": "https://gitlab.com/acme/widgets.git"},
+  "object_attributes": {"iid": 11, "action": "open", "source_branch": "feature/y", "target_branch": "main",
+    "title": "Unproven", "url": "https://gitlab.com/acme/widgets/-/merge_requests/11",
+    "last_commit": {"id": "sha11"}}
+}`
+	w := httptest.NewRecorder()
+	s.handleGitLabWebhook(w, glReq(gitlabCtx(cfg), minimal, gitlab.EventHeaderMergeRequest))
+	if calls != 0 {
+		t.Fatalf("an MR naming neither project launched %d run(s) — same-repo is never assumed, only proven", calls)
+	}
+	if w.Code != http.StatusOK {
+		t.Fatalf("code=%d — a refusal is a 200/filtered verdict", w.Code)
+	}
+	rowsOut, err := s.webhookDeliveries.ListByWebhook(context.Background(), cfg.TenantID, cfg.ID, 10)
+	if err != nil || len(rowsOut) != 1 {
+		t.Fatalf("rows=%+v err=%v, want the refusal recorded", rowsOut, err)
+	}
+	if !strings.Contains(rowsOut[0].Error, "head project unproven") {
+		t.Fatalf("reason = %q, want the unproven-head wording", rowsOut[0].Error)
+	}
+}
+
+// TestGitLabWebhook_AProvenSameRepoHeadStillLaunches: the trusted-path
+// twin of the row above — a payload that PROVES the head lives in this
+// project (equal source and target project ids, the shape real GitLab
+// sends for a same-repo MR) launches exactly as it did before the guard.
+func TestGitLabWebhook_AProvenSameRepoHeadStillLaunches(t *testing.T) {
+	s := newWebhookTestServer(t)
+	var calls int
+	s.webhookLaunchBot = func(context.Context, string, map[string]string, string, string, string, map[string]string, map[string]string) (string, error) {
+		calls++
+		return "run-x", nil
+	}
+	cfg := glConfig()
+	w := httptest.NewRecorder()
+	s.handleGitLabWebhook(w, glReq(gitlabCtx(cfg), glOpenMR, gitlab.EventHeaderMergeRequest))
+	if w.Code != http.StatusAccepted || calls != 1 {
+		t.Fatalf("code=%d calls=%d — a proven same-repo MR must keep its ordinary review", w.Code, calls)
 	}
 }

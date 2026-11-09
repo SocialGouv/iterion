@@ -143,14 +143,16 @@ func (s *Server) handleGitLabMergeRequestEvent(ctx context.Context, w http.Respo
 	// budget), and the launch pair (this project's clone URL + the fork's
 	// branch name) names no repository — the checkout misses, or hits a
 	// same-named branch here and the bot reviews the wrong code under the
-	// bot's identity. The payload names both projects (ids + source path),
-	// so a PROVEN fork is filtered here, naming the fork. A payload naming
-	// neither stays on its way: this lane refuses what the payload proves,
-	// while the lanes that resolve the MR through the API fail closed on an
-	// unproven head. A collaborator runs a bot on fork code deliberately,
-	// from a branch in this project.
-	if p.IsFork() {
-		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusFiltered, payloadHash, srcIP, gitlabForkRefusal(p.HeadRepoFullName))
+	// bot's identity. FAILS CLOSED on the head (ADR-162 decision 1, the
+	// GitLab row): a PROVEN fork is filtered naming the fork, and a payload
+	// that names NEITHER project is filtered too — this lane stamps
+	// "trusted" on exactly what the payload proves, so a head neither
+	// project names is refused, never assumed same-repo on the forge's
+	// silence (forkGuardRefusal's shape, the GitHub site next door). A
+	// collaborator runs a bot on fork code deliberately, from a branch in
+	// this project.
+	if reason := gitlabHeadRefusal(p); reason != "" {
+		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusFiltered, payloadHash, srcIP, reason)
 		writeJSONStatus(w, http.StatusOK, map[string]string{"status": webhooks.StatusFiltered})
 		return
 	}
@@ -260,16 +262,10 @@ func (s *Server) handleGitLabMergeRequestEvent(ctx context.Context, w http.Respo
 
 	targets := forgePREventTargets(cfg, rules, idemBase, p.MRURL, p.TargetBranch,
 		strings.TrimSpace(p.Title+"\n\n"+p.Description), p.CloneURL, p.SourceBranch, extra,
-		// The MR lane refuses a PROVEN fork above (`p.IsFork()`), and
-		// deliberately lets a payload naming neither project through — its
-		// own comment says so, and the API-resolving lanes fail closed on
-		// that shape instead. So this stamps "trusted" on a head this lane
-		// did not prove, which is weaker than the GitHub site next door
-		// (forkGuardRefusal fails closed on a withheld or unnamed head).
-		// It matches today's behaviour exactly — origin/main carried no
-		// marker at all — but when the admission half lands, an unproven
-		// GitLab head must get a non-trusted class here rather than this
-		// default.
+		// The head gate above (`gitlabHeadRefusal`, ADR-162 decision 1)
+		// refuses everything but a PROVEN same-repo head, so the default
+		// trust here is stated rather than guessed: only a payload that
+		// proves the head lives in this project reaches the launch.
 		launchProvenance{})
 
 	// Push debounce: a synchronize launch waits out a quiet window so a
@@ -326,7 +322,7 @@ func (s *Server) handleGitLabIssueEvent(ctx context.Context, w http.ResponseWrit
 	idemKey := knowledge.ChecksumHex([]byte(fmt.Sprintf("gl|issue|%s|%s|%d|%d|%s", cfg.TenantID, cfg.ID, p.ProjectID, p.IssueIID, label)))
 
 	route := s.boardRouteForLabel(ctx, cfg.TenantID, botID)
-	vars := applyWebhookVarLayers(gitlabIssueLabeledVars(p, nil, route.ArgsVar), cfg)
+	vars := applyWebhookVarLayers(gitlabIssueLabeledVars(p, nil, route.ArgsVar), cfg, store.RunTrustDefault)
 	// An issue carries no MR source branch — the bot opens its MR from the
 	// project default branch (finalize_mr cuts the branch from there).
 	s.dispatchInvocation(ctx, w, r, cfg, meta, idemKey, route, vars, p.CloneURL, p.DefaultBranch, payloadHash, srcIP, launchProvenance{})
@@ -488,7 +484,7 @@ func (s *Server) handleGitLabNote(ctx context.Context, w http.ResponseWriter, r 
 		"trigger_note":      p.NoteBody,
 		"replier":           p.AuthorUsername,
 		"converse_question": question,
-	}), cfg)
+	}), cfg, store.RunTrustDefault)
 	// The discussion transcript the gate fetched — the operator's reply
 	// typically references Revi's earlier review note; the bot grounds its
 	// answer in it.
@@ -579,7 +575,7 @@ func (s *Server) handleGitLabCommandNote(ctx context.Context, w http.ResponseWri
 	}
 	var vars map[string]string
 	if surface == "issue" {
-		vars = applyWebhookVarLayers(buildGitLabIssueCommandVars(p, route, cmdArgs, nil), cfg)
+		vars = applyWebhookVarLayers(buildGitLabIssueCommandVars(p, route, cmdArgs, nil), cfg, store.RunTrustDefault)
 	} else {
 		// Fork guard, fail-CLOSED — the same class of gap #683 closed on the
 		// GitHub/Forgejo command lane: the launch pair (this project's
@@ -606,7 +602,7 @@ func (s *Server) handleGitLabCommandNote(ctx context.Context, w http.ResponseWri
 			filtered(gitlabCommandForkRefusal(cmd, resolved))
 			return
 		}
-		vars = applyWebhookVarLayers(buildCommandVars(p, route, cmdArgs, nil), cfg)
+		vars = applyWebhookVarLayers(buildCommandVars(p, route, cmdArgs, nil), cfg, store.RunTrustDefault)
 		stampBranchImprovePushBack(vars, route.BotID, s.roleBots().Brancher, p.SourceBranch, cfg.BranchImproveAsPR)
 		// The revision the command is about, so the shared launch tail can tell a
 		// consumer whether the review it is handed still matches the MR head.
@@ -939,6 +935,24 @@ func (s *Server) canRouteToConverseBot(ctx context.Context, cfg webhooks.Config,
 // lanes refuse the same MR (same-project only), so the refusal never
 // advertises them as an escape hatch: fork work needs a branch in this
 // project before any bot runs on it.
+// gitlabHeadRefusal is the MR auto-lane's fail-closed head gate (ADR-162
+// decision 1, the GitLab row): "" only when the payload PROVES the head
+// lives in this project. A proven fork keeps gitlabForkRefusal's wording;
+// a head neither project names — a minimal or legacy answer, or a payload
+// a proxy rewrote — gets its own, because the two refusals send the
+// operator looking in different places (a fork to close, an unproven head
+// to fix the delivery). Same-repo is never assumed, only proven.
+func gitlabHeadRefusal(p gitlab.Parsed) string {
+	switch {
+	case p.SameRepoAsBase():
+		return ""
+	case p.IsFork():
+		return gitlabForkRefusal(p.HeadRepoFullName)
+	default:
+		return "head project unproven — the payload names neither the MR's source nor its target project, so neither a fork nor a same-repo head is proven, and this lane stamps \"trusted\" on exactly what the payload proves — auto-launch blocked (same-repo is never assumed, only proven)"
+	}
+}
+
 func gitlabForkRefusal(head string) string {
 	where := "the head lives in another project"
 	if head != "" {
@@ -1434,14 +1448,14 @@ func buildScheduledLaunchSpec(sb cloudsched.ScheduledBot, path, source string, r
 // it does not already prove.
 func (s *Server) webhookLauncherFor(cfg webhooks.Config, t forgeLaunchTarget, deliveryID string, from launchOrigin) func(context.Context, string, map[string]string, string, string, string, map[string]string, map[string]string) (string, error) {
 	return func(ctx context.Context, botID string, vars map[string]string, repoURL, repoRef, projectPath string, keyOverrides, secretOverrides map[string]string) (string, error) {
-		return s.launchWebhookBot(ctx, from, cfg, botID, vars, repoURL, repoRef, projectPath, keyOverrides, secretOverrides, t.Trust, t.ExpectedSHA, deliveryID)
+		return s.launchWebhookBot(ctx, from, cfg, botID, vars, repoURL, repoRef, projectPath, keyOverrides, secretOverrides, t.Trust, t.ExpectedSHA, t.forkAuthorSubject(), deliveryID)
 	}
 }
 
 // launchWebhookBot resolves the bot's source and submits it through the run
 // service (which, in cloud mode, routes to the publisher). from is the
 // delivery the launch answers, as its audit line records it.
-func (s *Server) launchWebhookBot(ctx context.Context, from launchOrigin, cfg webhooks.Config, botID string, vars map[string]string, repoURL, repoRef, projectPath string, keyOverrides, secretOverrides map[string]string, trust store.RunTrust, expectedSHA, deliveryID string) (string, error) {
+func (s *Server) launchWebhookBot(ctx context.Context, from launchOrigin, cfg webhooks.Config, botID string, vars map[string]string, repoURL, repoRef, projectPath string, keyOverrides, secretOverrides map[string]string, trust store.RunTrust, expectedSHA, forkAuthorSubject, deliveryID string) (string, error) {
 	if s.runs == nil {
 		return "", errors.New("run service unavailable")
 	}
@@ -1470,8 +1484,17 @@ func (s *Server) launchWebhookBot(ctx context.Context, from launchOrigin, cfg we
 		// lane itself seeds vars from the delivery payload (reviewPRVars,
 		// fixerPRVars, the fork lane), and a payload-written name must
 		// leave a routing field undecided at the gate, never certify the
-		// payload's choice (ADR-129 §4 rule 2 — the O6 witness).
-		TrustedVarNames: trustedVarNames(cfg.OperatorLaunchVars),
+		// payload's choice (ADR-129 §4 rule 2 — the O6 witness). An
+		// UNTRUSTED launch certifies none at all (decision 4): the
+		// operator layer is the base repository's configuration, which
+		// may stop a fork run, never steer it — and a routing gate
+		// narrowed through the repo's own vars is the repo steering.
+		TrustedVarNames: trustedVarNamesFor(trust, cfg.OperatorLaunchVars),
+		// The fork review lane's per-contributor metering subject, as the
+		// admission gate composed it (never re-derived here): it rides the
+		// document and the wire so the runner charges the author's dollars
+		// and every resume re-enters the same subject.
+		ForkAuthorSubject: forkAuthorSubject,
 		// This lane injects server-computed keys blindly (forge_publish_*,
 		// canonical PR vars — the contract forge_publish.go documents), so
 		// the #1757 unknown-input refusal does not apply to it: a launched
