@@ -314,3 +314,83 @@ func TestGitHubListPullRequests_ErrorMapping(t *testing.T) {
 		t.Errorf("401 → %v want ErrUnauthorized", err)
 	}
 }
+
+// TestGitHubGetPullRequest_ForkAdmissionFields: the fork review lane's
+// admission reads three fields off the pull request the API answers — the
+// author's NUMERIC id (the per-contributor bound's key), the BASE's clone
+// URL (the one repository a fork launch names) and the base's visibility
+// (a private base is refused before the bound is metered). GitHub reports
+// `visibility` on the repository object; a payload that carries only the
+// legacy `private` boolean still decides, and one that carries neither
+// stays unproven — the admission refuses unproven, never guesses public.
+func TestGitHubGetPullRequest_ForkAdmissionFields(t *testing.T) {
+	cases := []struct {
+		name          string
+		baseRepo      map[string]any
+		userID        any
+		wantVis       string
+		wantAuthorID  string
+		wantBaseClone string
+	}{
+		{
+			name: "visibility wins",
+			baseRepo: map[string]any{
+				"clone_url": "https://github.com/o/r.git", "private": false, "visibility": "public",
+			},
+			userID:        4242,
+			wantVis:       "public",
+			wantAuthorID:  "4242",
+			wantBaseClone: "https://github.com/o/r.git",
+		},
+		{
+			name: "the private boolean decides when visibility is absent",
+			baseRepo: map[string]any{
+				"clone_url": "https://github.com/o/r.git", "private": true,
+			},
+			userID:        7,
+			wantVis:       "private",
+			wantAuthorID:  "7",
+			wantBaseClone: "https://github.com/o/r.git",
+		},
+		{
+			name: "neither present stays unproven",
+			baseRepo: map[string]any{
+				"clone_url": "https://github.com/o/r.git",
+			},
+			userID:        9,
+			wantVis:       "",
+			wantAuthorID:  "9",
+			wantBaseClone: "https://github.com/o/r.git",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"number": 5, "title": "t", "state": "open",
+					"head": map[string]any{
+						"ref": "feature", "sha": "deadbeef",
+						"repo": map[string]any{"full_name": "alice/fork", "clone_url": "https://github.com/alice/fork.git"},
+					},
+					"base": map[string]any{"ref": "main", "repo": tc.baseRepo},
+					"user": map[string]any{"login": "alice", "id": tc.userID},
+				})
+			}))
+			defer srv.Close()
+			c := &AdminClient{HTTP: srv.Client(), APIBase: srv.URL, Token: "t"}
+			pr, err := c.GetPullRequest(context.Background(), "o/r", 5)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if pr.AuthorID != tc.wantAuthorID {
+				t.Fatalf("AuthorID = %q, want %q — the per-contributor bound keys on the numeric id", pr.AuthorID, tc.wantAuthorID)
+			}
+			if pr.BaseVisibility != tc.wantVis {
+				t.Fatalf("BaseVisibility = %q, want %q", pr.BaseVisibility, tc.wantVis)
+			}
+			if pr.BaseCloneURL != tc.wantBaseClone {
+				t.Fatalf("BaseCloneURL = %q, want %q", pr.BaseCloneURL, tc.wantBaseClone)
+			}
+		})
+	}
+}

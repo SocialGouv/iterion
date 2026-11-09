@@ -132,6 +132,26 @@ type PullRef struct {
 	// Never serialised: it is the refusing lane's diagnosis, not a field of
 	// the pull request.
 	HeadRepoErr error `json:"-"`
+	// AuthorID is the pull request author's NUMERIC forge user id, when the
+	// provider names one — the id the fork review lane's per-contributor
+	// bound is keyed on (orgusage.ForkAuthorSubject), because a login is
+	// renameable and a login-keyed bound resets itself on demand. Empty
+	// when the provider omits it; a lane that needs it refuses on empty
+	// rather than falling back to Author.
+	AuthorID string `json:"author_id,omitempty"`
+	// BaseCloneURL is the BASE repository's clone URL, when the provider
+	// names it — the one repository a fork review launches on (its
+	// pull-request head ref resolves the fork's commit inside the base's
+	// object database). Empty when the provider omits it.
+	BaseCloneURL string `json:"base_clone_url,omitempty"`
+	// BaseVisibility is the base repository's visibility as the provider
+	// spells it ("public" | "private" | "internal" on GitHub; empty when
+	// the provider does not say). The fork review lane admits a PROVEN
+	// public base only: an untrusted clone holds no forge token, and one
+	// handed to it would persist in the fork's workspace — so a base that
+	// is not PROVEN public (private, internal, or unnamed) is refused,
+	// never guessed.
+	BaseVisibility string `json:"base_visibility,omitempty"`
 	// LinkedIssues are issue numbers this PR references / closes, best-effort
 	// parsed from the title/body ("fixes #12", "Closes #7", "!?").
 	LinkedIssues []int `json:"linked_issues,omitempty"`

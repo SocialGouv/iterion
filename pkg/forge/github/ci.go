@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/forge"
@@ -57,9 +58,23 @@ type githubPull struct {
 	Head    githubHead `json:"head"`
 	Base    struct {
 		Ref string `json:"ref"`
+		// The base repository slice the fork review lane's admission reads:
+		// its clone URL (the one repository a fork launch names) and its
+		// visibility (a fork of a PRIVATE base is refused — the untrusted
+		// clone would need a token that must never persist in the fork's
+		// workspace). GitHub reports both `private` (always present on the
+		// repository object) and `visibility`
+		// (public|private|internal); visibility wins when present, else
+		// the boolean decides, else the base is not PROVEN anything.
+		Repo struct {
+			CloneURL   string `json:"clone_url"`
+			Private    *bool  `json:"private"`
+			Visibility string `json:"visibility"`
+		} `json:"repo"`
 	} `json:"base"`
 	User struct {
 		Login string `json:"login"`
+		ID    int64  `json:"id"`
 	} `json:"user"`
 	MergedAt  *time.Time `json:"merged_at"`
 	CreatedAt time.Time  `json:"created_at"`
@@ -83,11 +98,33 @@ func (gp githubPull) toRef() forge.PullRef {
 		HeadCloneURL:     gp.Head.Repo.CloneURL,
 		HeadRepoDeclared: gp.Head.RepoDeclared,
 		Author:           gp.User.Login,
+		AuthorID:         strconv.FormatInt(gp.User.ID, 10),
+		BaseCloneURL:     gp.Base.Repo.CloneURL,
+		BaseVisibility:   baseVisibility(gp.Base.Repo.Visibility, gp.Base.Repo.Private),
 		Draft:            gp.Draft,
 		CreatedAt:        gp.CreatedAt,
 		UpdatedAt:        gp.UpdatedAt,
 		LinkedIssues:     forge.ParseIssueRefs(false, gp.Title, gp.Body),
 	}
+}
+
+// baseVisibility resolves the base repository's visibility from the two
+// spellings GitHub's repository object carries. `visibility` (the enum)
+// wins when present; a present `private` boolean decides when it is not;
+// neither present means the answer did not say, and an unsaid visibility
+// stays EMPTY — the fork lane's admission reads that as "not proven
+// public" and refuses, never as public.
+func baseVisibility(visibility string, private *bool) string {
+	if v := strings.ToLower(strings.TrimSpace(visibility)); v != "" {
+		return v
+	}
+	if private == nil {
+		return ""
+	}
+	if *private {
+		return "private"
+	}
+	return "public"
 }
 
 // ListPullRequests lists PRs for repo ("owner/repo"). GitHub's /pulls endpoint
