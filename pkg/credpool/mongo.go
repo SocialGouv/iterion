@@ -16,10 +16,10 @@ import (
 
 // Collection names.
 const (
-	colPools       = "cred_pools"
-	colPledges     = "cred_pledges"
-	colLeases      = "cred_leases"
-	colLedger      = "cred_pool_usage"
+	colPools   = "cred_pools"
+	colPledges = "cred_pledges"
+	colLeases  = "cred_leases"
+	colLedger  = "cred_pool_usage"
 	// ColAttachments is exported: the orgsweep purge names the collection
 	// (ADR-164) and must not mint a second copy of the name.
 	ColAttachments = "pool_attachments"
@@ -48,6 +48,11 @@ func EnsureSchema(ctx context.Context, db *mongo.Database) error {
 			// The concurrency + commitment reading: live leases of one pledge.
 			{Keys: bson.D{{Key: "pledge_id", Value: 1}, {Key: "closed", Value: 1}, {Key: "expires_at", Value: 1}},
 				Options: options.Index().SetName("lease_live")},
+			// The attachment draw-caps' live commitment: live leases of one
+			// attachment scope (LiveCommitmentByAttachment, the att: reserve
+			// every attached acquisition consults).
+			{Keys: bson.D{{Key: "attachment_id", Value: 1}, {Key: "closed", Value: 1}, {Key: "expires_at", Value: 1}},
+				Options: options.Index().SetName("lease_live_att")},
 			// "which donor is serving this run right now", newest first.
 			{Keys: bson.D{{Key: "run_id", Value: 1}, {Key: "closed", Value: 1}, {Key: "acquired_at", Value: -1}},
 				Options: options.Index().SetName("lease_run")},

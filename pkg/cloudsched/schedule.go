@@ -6,10 +6,12 @@
 package cloudsched
 
 import (
+	"strings"
 	"context"
 	"fmt"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/credpool"
 	"github.com/robfig/cron/v3"
 
 	"github.com/SocialGouv/iterion/pkg/llmroute"
@@ -59,6 +61,13 @@ type ScheduledBot struct {
 	RetryMaxAttempts int    `bson:"retry_max_attempts,omitempty" json:"retry_max_attempts,omitempty"`
 	RetryMaxWait     string `bson:"retry_max_wait,omitempty" json:"retry_max_wait,omitempty"`
 	RetryJitter      string `bson:"retry_jitter,omitempty" json:"retry_jitter,omitempty"`
+	// Pool is the schedule's pool block (ADR-164): the binding-level opt-in
+	// naming the pool this schedule's launches draw from, with its
+	// strategy. Validated at record-write time (the schedule routes: the
+	// writer must manage the team AND the pool must consent); the fold
+	// consumes it as the binding layer — nearest wins, a disabled block
+	// blocks inheritance. nil = the schedule binds nothing.
+	Pool *PoolBinding `bson:"pool,omitempty" json:"pool,omitempty"`
 	// Routing is the schedule's routing block (ADR-121, pkg/llmroute) —
 	// the binding level for a cron-provisioned bot: it overrides every
 	// UNLOCKED field of the shipped bot's `routing:` manifest block, and
@@ -321,6 +330,42 @@ func (sb ScheduledBot) Policy() schedgate.Policy {
 		GuardVar:      sb.GuardVar,
 		StaleAfter:    sb.StaleAfter,
 	})
+}
+
+// PoolBinding is the schedule's binding-level pool opt-in (ADR-164): the
+// named pool, an on/off (off = resolved-disabled, the fold stops here),
+// and the fallback strategy. It is the machine lane's consent: a schedule
+// is written by a team admin, and writing the block is what grants the
+// schedule's launches the named pool.
+type PoolBinding struct {
+	PoolID   string            `bson:"pool_id" json:"pool_id"`
+	Enabled  bool              `bson:"enabled" json:"enabled"`
+	Strategy credpool.Strategy `bson:"strategy" json:"strategy"`
+}
+
+// Validate checks the block's shape; the POOL's existence and the consent
+// are the write surface's job (it owns the stores and the caller's
+// identity).
+func (b PoolBinding) Validate() error {
+	if strings.TrimSpace(b.PoolID) == "" {
+		return fmt.Errorf("pool block names no pool")
+	}
+	return b.Strategy.Validate()
+}
+
+// Layer projects the block as the binding layer the launch fold consumes
+// (route_resolve.go's `higher`). ok=false when the schedule binds no pool
+// — the fold then reads the stored scopes alone.
+func (sb ScheduledBot) PoolBindingLayer() (credpool.BindingLayer, bool) {
+	if sb.Pool == nil {
+		return credpool.BindingLayer{}, false
+	}
+	return credpool.BindingLayer{
+		Source:   "schedule",
+		Enabled:  sb.Pool.Enabled,
+		PoolID:   sb.Pool.PoolID,
+		Strategy: sb.Pool.Strategy,
+	}, true
 }
 
 // RoutingPolicy projects the schedule's routing block (ADR-121). Not

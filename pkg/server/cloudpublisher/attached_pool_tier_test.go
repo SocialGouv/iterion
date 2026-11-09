@@ -278,3 +278,61 @@ func TestAttachedPool_explicitKeyKeepsItsSlot(t *testing.T) {
 		t.Errorf("grants = %d, want 1 — the filled slot was never asked of the pool", len(creds.grants))
 	}
 }
+
+// Law 2's enforcement half (Revi 2026-11-09): a RESOLVED-DISABLED
+// attachment blocks the LEGACY audience walk too — a scope that opted out
+// of pools entirely gets no shared credential injected, even
+// credential-less, even with an audience pool wide open.
+func TestAttachedPool_disabledBlocksTheLegacyTier(t *testing.T) {
+	sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
+	if err != nil {
+		t.Fatalf("sealer: %v", err)
+	}
+	ctx := context.Background()
+	oauth := secrets.NewMemoryOAuthStore()
+	seedOAuth(t, oauth, sealer, "donor", "sk-ant-donated")
+	// The LEGACY audience pool: enabled, audience admits its own org, and
+	// a healthy donor who WOULD serve a credential-less run.
+	pools := credpool.NewMemoryPoolStore()
+	if err := pools.Upsert(ctx, credpool.Pool{ID: "pool-legacy", OrgID: poolOrg, Enabled: true}); err != nil {
+		t.Fatalf("seed legacy pool: %v", err)
+	}
+	pledges := credpool.NewMemoryPledgeStore()
+	if err := pledges.Upsert(ctx, credpool.Pledge{
+		ID: credpool.PledgeID("donor", credpool.SourceOAuth, "claude_code"), PoolID: "pool-legacy",
+		UserID: "donor", Credential: credpool.Credential{Source: credpool.SourceOAuth, Ref: "claude_code"},
+		Enabled: true, Health: credpool.HealthOK,
+	}); err != nil {
+		t.Fatalf("seed legacy pledge: %v", err)
+	}
+	atts := credpool.NewMemoryAttachmentStore()
+	// The team OPTED OUT: resolved-disabled at its own level.
+	if err := atts.Put(ctx, credpool.Attachment{
+		ScopeID: credpool.TeamScopeID(poolTeam), PoolID: "pool-att", Enabled: false,
+	}); err != nil {
+		t.Fatalf("seed attachment: %v", err)
+	}
+	broker := credpool.NewBroker(credpool.BrokerConfig{
+		Pools: pools, Pledges: pledges, Leases: credpool.NewMemoryLeaseStore(),
+		Ledger: credpool.NewMemoryLedger(), OAuth: oauth,
+		Sealer: sealer, Logger: testLogger(),
+	})
+	pub := &Publisher{
+		runSecrets: secrets.NewMemoryRunSecretsStore(), sealer: sealer, credPool: broker,
+		logger: iterlog.New(iterlog.LevelError, nil), rotatedOAuthKinds: rotatedClaude,
+	}
+	sctx := store.WithTenant(context.Background(), poolTeam)
+	creds, err := pub.resolveAndSealCredentials(sctx, "run-optout", poolOrg, poolTeam, "requester", "docs-refresh", "", nil, nil, nil, model.RouteView{}, nil, store.RunTrustDefault, nil, nil,
+		&store.RunPoolAttachment{PoolID: "", ScopeID: credpool.TeamScopeID(poolTeam), Strategy: store.RunPoolStrategy{Triggers: []string{}}})
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if creds.grant != nil || len(creds.grants) != 0 {
+		t.Errorf("a disabled attachment must suppress the LEGACY tier too — grant = %v, grants = %d", creds.grant, len(creds.grants))
+	}
+	if creds.secretsRef != "" {
+		if bundle := bundleFrom(t, pub, sctx, creds, "run-optout"); len(bundle.OAuthCredentials["claude_code"]) != 0 {
+			t.Error("the legacy donation landed despite the opt-out — law 2 broken at the enforcement half")
+		}
+	}
+}

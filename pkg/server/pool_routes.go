@@ -416,7 +416,13 @@ type poolEntryRequest struct {
 	Backend     string           `json:"backend,omitempty"`
 	Model       string           `json:"model,omitempty"`
 	Priority    *int             `json:"priority,omitempty"`
-	LendScope   string           `json:"lend_scope,omitempty"`
+	// LendScope is ACCEPTED on the wire and IGNORED: the scope is derived
+	// from the pool's owner (poolLendScope). A request-named scope would
+	// let a pool manager aim an entry at a foreign reserved scope (the
+	// platform sentinel, another org's orgtier) and lend keys it was never
+	// granted — the field exists so an old client does not 400; its value
+	// never reaches a row.
+	LendScope string `json:"lend_scope,omitempty"`
 }
 
 // poolLenderKey resolves the identity an entry's credential lives under.
@@ -428,6 +434,22 @@ func poolLenderKey(pool credpool.Pool) string {
 		return secrets.PlatformOwnerKey
 	default:
 		return pool.OwnerID
+	}
+}
+
+// poolLendScope derives the reserved scope an entry reads its credential
+// from, from the POOL's owner — never from the request. An org pool reads
+// its org-tier rows, a platform pool the platform sentinel, a user pool
+// the lender's personal keys (no reserved scope). The derived value and
+// poolLenderKey agree by construction: one owner scope, one read.
+func poolLendScope(pool credpool.Pool) string {
+	switch pool.EffectiveOwnerType() {
+	case credpool.PoolOwnerOrg:
+		return secrets.OrgTierTenantID(pool.OrgID)
+	case credpool.PoolOwnerPlatform:
+		return secrets.PlatformTenantID
+	default:
+		return ""
 	}
 }
 
@@ -456,8 +478,14 @@ func (s *Server) handlePutPoolEntry(w http.ResponseWriter, r *http.Request) {
 		UserID:     lender,
 		Credential: credpool.Credential{Source: src, Ref: req.Ref, KeyID: strings.TrimSpace(req.KeyID)},
 		Enabled:    true, Health: credpool.HealthOK,
-		Backend: req.Backend, Model: req.Model, LendScope: req.LendScope,
-		Bots: req.Bots, FallbackUse: req.FallbackUse,
+		Backend: req.Backend, Model: req.Model,
+		// LendScope is DERIVED from the pool's owner scope, never taken
+		// from the request: a request-named scope would let any pool
+		// manager aim an entry at a foreign reserved scope (platform,
+		// another org's orgtier) and lend keys it was never granted —
+		// the lend consent is the pool's ownership, read here.
+		LendScope: poolLendScope(pool),
+		Bots:      req.Bots, FallbackUse: req.FallbackUse,
 	}
 	if req.Enabled != nil {
 		p.Enabled = *req.Enabled

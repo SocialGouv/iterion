@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/SocialGouv/iterion/pkg/credpool"
 	"io"
 	"net/http"
 	"net/url"
@@ -1298,7 +1299,14 @@ func (s *Server) launchScheduledBot(ctx context.Context, sb cloudsched.Scheduled
 	if routeErr != nil {
 		return routeErr
 	}
-	poolAttachment, poolErr := s.resolveRunPoolAttachment(ctx, sb.TenantID, sb.BotID)
+	// The schedule's own pool block is the BINDING layer (ADR-164): the
+	// most specific answer the fold reads, validated at record-write time
+	// (the schedule routes' consent check).
+	var poolHigher []credpool.BindingLayer
+	if bl, ok := sb.PoolBindingLayer(); ok {
+		poolHigher = append(poolHigher, bl)
+	}
+	poolAttachment, poolErr := s.resolveRunPoolAttachment(ctx, sb.TenantID, sb.BotID, poolHigher...)
 	if poolErr != nil {
 		return poolErr
 	}

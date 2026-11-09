@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
+	"github.com/SocialGouv/iterion/pkg/cloudsched"
 	"github.com/SocialGouv/iterion/pkg/credpool"
 	"github.com/SocialGouv/iterion/pkg/identity"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -18,7 +19,7 @@ import (
 
 // poolRoutesServer is the fold's test server with the pool stores wired —
 // the org/team fixtures the attachment authorities read.
-func poolRoutesServer(t *testing.T) *Server {
+func poolRoutesServer(t *testing.T) (*Server, *secrets.MemoryApiKeyStore) {
 	t.Helper()
 	s := newOrgTestServer(t)
 	seedOrg(t, s, "org1", "org1")
@@ -30,6 +31,8 @@ func poolRoutesServer(t *testing.T) *Server {
 	s.credPoolAttachments = credpool.NewMemoryAttachmentStore()
 	pools := credpool.NewMemoryPoolStore()
 	s.credPoolPools = pools
+	s.credPoolPledges = credpool.NewMemoryPledgeStore()
+	poolRoutesAPIKeys := secrets.NewMemoryApiKeyStore()
 	// "jo" is an org1 ADMIN: the level's write right AND the pool's
 	// ownership can cohabit on one identity for the consent scenarios.
 	if err := s.authStore().UpsertOrgMembership(context.Background(), identity.OrgMembership{
@@ -43,14 +46,15 @@ func poolRoutesServer(t *testing.T) *Server {
 	}
 	s.credPool = credpool.NewBroker(credpool.BrokerConfig{
 		Pools:   pools,
-		Pledges: credpool.NewMemoryPledgeStore(),
+		Pledges: s.credPoolPledges,
 		Leases:  credpool.NewMemoryLeaseStore(),
 		Ledger:  credpool.NewMemoryLedger(),
 		OAuth:   secrets.NewMemoryOAuthStore(),
+		APIKeys: poolRoutesAPIKeys,
 		Sealer:  sealer,
 		Logger:  iterlog.New(iterlog.LevelError, nil),
 	})
-	return s
+	return s, poolRoutesAPIKeys
 }
 
 func poolRouteReq(ctx context.Context, method, path, body string) *http.Request {
@@ -70,6 +74,11 @@ func runPoolRoute(s *Server, w *httptest.ResponseRecorder, r *http.Request) {
 	} else if strings.Contains(r.URL.Path, "/teams/") {
 		r.SetPathValue("id", "team1")
 	}
+	if strings.HasSuffix(r.URL.Path, "/entries") && r.Method == http.MethodPut {
+		r.SetPathValue("id", strings.SplitN(strings.TrimPrefix(r.URL.Path, "/api/pools/"), "/", 2)[0])
+		s.handlePutPoolEntry(w, r)
+		return
+	}
 	switch {
 	case strings.HasSuffix(r.URL.Path, "/pools") && r.Method == http.MethodPost && strings.Contains(r.URL.Path, "/me/"):
 		s.handleCreateMyPool(w, r)
@@ -87,7 +96,7 @@ func runPoolRoute(s *Server, w *httptest.ResponseRecorder, r *http.Request) {
 // opt-in, never a takeover); the OWNER attaching their own pool answers,
 // and a stale CAS write loses loudly.
 func TestPoolAttachmentRoutes_consentAndCAS(t *testing.T) {
-	s := poolRoutesServer(t)
+	s, _ := poolRoutesServer(t)
 	ctx := auth.WithIdentity(context.Background(), auth.Identity{UserID: "jo"})
 	// The owner creates a private pool.
 	w := httptest.NewRecorder()
@@ -142,7 +151,7 @@ func TestPoolAttachmentRoutes_consentAndCAS(t *testing.T) {
 // attachment would refuse every launch at the fold naming a level nobody
 // can fix from the surface they wrote it on.
 func TestPoolAttachmentRoutes_unknownPoolRefused(t *testing.T) {
-	s := poolRoutesServer(t)
+	s, _ := poolRoutesServer(t)
 	if err := s.authStore().UpsertOrgMembership(context.Background(), identity.OrgMembership{
 		UserID: "orgadmin", OrgID: "org1", Role: identity.OrgRoleAdmin, JoinedAt: time.Now(),
 	}); err != nil {
@@ -174,4 +183,114 @@ func createdPoolID(t *testing.T, s *Server, ctx context.Context) string {
 		t.Fatalf("decode pool id: %v (%s)", err, w.Body.String())
 	}
 	return v.ID
+}
+
+// Fix round (Revi 2026-11-09): the entry's LendScope is DERIVED from the
+// pool's owner scope — a request-named scope (platform, a foreign
+// orgtier) is ignored, or any pool manager could aim an entry at a
+// foreign reserved scope and lend keys it was never granted.
+func TestPoolEntryRequest_lendScopeIgnored(t *testing.T) {
+	s, poolRoutesAPIKeys := poolRoutesServer(t)
+	ctx := auth.WithIdentity(context.Background(), auth.Identity{UserID: "jo"})
+	// jo creates a USER pool (private): its lender is personal — no
+	// reserved scope. The request tries to aim the entry at the PLATFORM
+	// sentinel's key rows.
+	w := httptest.NewRecorder()
+	runPoolRoute(s, w, poolRouteReq(ctx, http.MethodPost, "/api/me/pools", `{"name":"mine"}`))
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &created); err != nil || created.ID == "" {
+		t.Fatalf("create pool: %v (%s)", err, w.Body.String())
+	}
+	sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+	if err != nil {
+		t.Fatalf("sealer: %v", err)
+	}
+	// jo's own personal key — VerifyEntry passes for it; the request then
+	// LIES about the lend scope, naming the platform sentinel. The stored
+	// row must carry the DERIVED scope (empty: personal), never the lie.
+	own := secrets.ApiKey{
+		ID: "key-jo-gw", TenantID: "team1", ScopeTeamID: "team1", ScopeUserID: "jo",
+		Provider: secrets.ProviderOpenAICompatible, Name: "jo's key",
+		BaseURL: "https://gw.example",
+	}
+	ownSealed, err := secrets.SealAPIKeyFor(sealer, own, []byte("sk-jo-gw-000"))
+	if err != nil {
+		t.Fatalf("seal jo's key: %v", err)
+	}
+	own.SealedSecret = ownSealed
+	if err := poolRoutesAPIKeys.Create(context.Background(), own); err != nil {
+		t.Fatalf("seed jo's key: %v", err)
+	}
+
+	// The entry names lend_scope "platform:" with jo's own key id (which
+	// verifies): the stored row must carry the DERIVED scope (empty for a
+	// user pool), never the request's.
+	w = httptest.NewRecorder()
+	body := `{"source":"api_key","ref":"openai_compatible","key_id":"key-jo-gw","lend_scope":"` + secrets.PlatformTenantID + `","model":"openai_compatible/x"}`
+	runPoolRoute(s, w, poolRouteReq(ctx, http.MethodPut, "/api/pools/"+created.ID+"/entries", body))
+	if w.Code != http.StatusOK {
+		t.Fatalf("put entry = %d (%s), want 200", w.Code, w.Body.String())
+	}
+	pledges, err := s.credPoolPledges.ListByPool(context.Background(), created.ID)
+	if err != nil || len(pledges) != 1 {
+		t.Fatalf("pledges = (%d, %v), want the one stored entry", len(pledges), err)
+	}
+	if pledges[0].LendScope != "" {
+		t.Errorf("stored LendScope = %q, want empty (derived: a user pool reads personal keys) — the request's %q must never reach a row", pledges[0].LendScope, secrets.PlatformTenantID)
+	}
+	if pledges[0].KeyID != "key-jo-gw" {
+		t.Errorf("stored key id = %q, want the entry's own key", pledges[0].KeyID)
+	}
+}
+
+// Fix round (Revi 2026-11-09): the schedule-lane pool block is validated
+// AT RECORD-WRITE time — shape, the pool's existence and enablement, and
+// the consent (an org pool only serves teams of its own org).
+func TestValidateSchedulePoolBinding(t *testing.T) {
+	s, _ := poolRoutesServer(t)
+	ctx := context.Background()
+	if err := s.credPoolPools.Upsert(ctx, credpool.Pool{ID: "pool-org", OrgID: "org1", Enabled: true}); err != nil {
+		t.Fatalf("seed org pool: %v", err)
+	}
+	if err := s.credPoolPools.Upsert(ctx, credpool.Pool{ID: "pool-other", OrgID: "org9", Enabled: true}); err != nil {
+		t.Fatalf("seed other pool: %v", err)
+	}
+	// A block naming no pool: refused.
+	err := s.validateSchedulePoolBinding(ctx, "team1", &cloudsched.PoolBinding{PoolID: "", Enabled: true})
+	if err == nil {
+		t.Error("an empty pool block accepted")
+	}
+	// A block naming a vanished pool: refused, naming it.
+	err = s.validateSchedulePoolBinding(ctx, "team1", &cloudsched.PoolBinding{PoolID: "pool-gone", Enabled: true})
+	if err == nil || !strings.Contains(err.Error(), "pool-gone") {
+		t.Errorf("vanished pool err = %v, want a refusal naming the pool", err)
+	}
+	// A block naming a DISABLED pool: refused.
+	if err := s.credPoolPools.Upsert(ctx, credpool.Pool{ID: "pool-off", OrgID: "org1", Enabled: false}); err != nil {
+		t.Fatalf("seed disabled pool: %v", err)
+	}
+	err = s.validateSchedulePoolBinding(ctx, "team1", &cloudsched.PoolBinding{PoolID: "pool-off", Enabled: true})
+	if err == nil || !strings.Contains(err.Error(), "disabled") {
+		t.Errorf("disabled pool err = %v, want a refusal naming the disablement", err)
+	}
+	// An ORG pool of ANOTHER org: refused — the consent is the org's own.
+	err = s.validateSchedulePoolBinding(ctx, "team1", &cloudsched.PoolBinding{PoolID: "pool-other", Enabled: true})
+	if err == nil || !strings.Contains(err.Error(), "org") {
+		t.Errorf("foreign org pool err = %v, want a consent refusal", err)
+	}
+	// The team's own org pool: accepted.
+	if err := s.validateSchedulePoolBinding(ctx, "team1", &cloudsched.PoolBinding{
+		PoolID: "pool-org", Enabled: true, Strategy: credpool.Strategy{Mode: credpool.StrategyPriority},
+	}); err != nil {
+		t.Errorf("own org pool refused: %v", err)
+	}
+	// A garbage strategy inside the block: refused by shape validation.
+	err = s.validateSchedulePoolBinding(ctx, "team1", &cloudsched.PoolBinding{
+		PoolID: "pool-org", Enabled: true, Strategy: credpool.Strategy{Mode: "weighted"},
+	})
+	if err == nil {
+		t.Error("a garbage strategy mode accepted")
+	}
 }

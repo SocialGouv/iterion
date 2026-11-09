@@ -1063,7 +1063,12 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 				//    credentials" is the condition the pool exists for. An org-funded
 				//    run therefore never reaches it — by construction, since the fill
 				//    above left the bundle non-empty.
-				if len(bundle.APIKeys) == 0 && len(bundle.OAuthCredentials) == 0 {
+				//
+				//    A resolved-disabled attachment (non-nil, empty PoolID) skips the
+				//    legacy walk too: the scope opted OUT of pools entirely —
+				//    "attached or legacy audience pools" is what the frozen
+				//    snapshot's doc promises, and law 2 is the opt-out's own text.
+				if poolAttachment == nil && len(bundle.APIKeys) == 0 && len(bundle.OAuthCredentials) == 0 {
 					if grant := p.acquireFromPool(ctx, runID, orgID, tenantID, ownerID, botID, view, bundle.PinnedAPIKeys); grant != nil {
 						// The lent credential goes in the slot its KIND belongs to, so
 						// the runner cannot tell a donation from the tenant's own.
