@@ -502,7 +502,7 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 	if warning := plantedSandboxDefaultImage(); warning != "" && logger != nil {
 		logger.Warn("runtime: %s — this run's sandbox starts from %s", warning, defaultImage)
 	}
-	res, err := resolveSandboxSpecWithFallback(p.Workflow, p.RepoRoot, p.CLIOverride, p.GlobalDefault, defaultImage, defaultImageFallback)
+	res, err := resolveSandboxSpecWithFallback(p.Workflow, p.RepoRoot, p.CLIOverride, p.GlobalDefault, defaultImage, defaultImageFallback, p.Trust)
 	if err != nil {
 		return nil, err
 	}
@@ -852,7 +852,7 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 	if caps.SupportsHostBindMounts {
 		addClawBinaryMount(spec, p.Workflow, p.EffectiveBackend)
 		addRewriterMounts(spec)
-		addWorktreeGitMount(spec, p.WorktreeGitDir, logger)
+		addWorktreeGitMount(spec, p.WorktreeGitDir, logger, p.Trust)
 	}
 	if err := addSecretFileMounts(ctx, spec, p.Workflow, p.SecretVars); err != nil {
 		return nil, err
@@ -1665,7 +1665,12 @@ func resolveSandboxSpec(
 	wf *ir.Workflow,
 	repoRoot, cliOverride, globalDefault, defaultImage string,
 ) (*sandbox.Spec, string, string, error) {
-	res, err := resolveSandboxSpecWithFallback(wf, repoRoot, cliOverride, globalDefault, defaultImage, "")
+	// Trusted on purpose: this wrapper feeds the mode-level probes
+	// (sandboxDriverForRun → RunWillBeSandboxed), which ask WHETHER a run
+	// is sandboxed and on which driver — questions the untrusted floor's
+	// devcontainer skip cannot change (see resolveSandboxSpecWithFallback).
+	// The start path itself passes the run's own trust.
+	res, err := resolveSandboxSpecWithFallback(wf, repoRoot, cliOverride, globalDefault, defaultImage, "", store.RunTrustDefault)
 	if err != nil {
 		return nil, res.source, res.skipReason, err
 	}
@@ -1698,9 +1703,20 @@ type resolvedSpec struct {
 // resolveSandboxSpecWithFallback carries the registry fallback for a
 // version-pinned built-in image (see resolveDefaultSandboxImageWithFallback)
 // down to the spec the driver receives, plus the trust metadata.
+// An UNTRUSTED run (ADR-162 U5) never reads the repository's
+// devcontainer: the file is the repository's — its image, its mounts,
+// its postCreateCommand — and mode=auto for an untrusted workspace
+// resolves from the workflow's own sandbox block over the operator's
+// default image, the same shape the "no devcontainer found" fallback
+// takes. What that floor cannot change is the mode's answer: both
+// branches resolve an ACTIVE spec from the same mode, so the launch-time
+// probes (RunWillBeSandboxed, via resolveSandboxSpec on the trusted
+// chain) never disagree with the start on WHETHER the run is sandboxed
+// or on which driver serves it.
 func resolveSandboxSpecWithFallback(
 	wf *ir.Workflow,
 	repoRoot, cliOverride, globalDefault, defaultImage, defaultImageFallback string,
+	trust store.RunTrust,
 ) (resolvedSpec, error) {
 	mode, source := pickMode(wf, cliOverride, globalDefault)
 	if mode == "" || mode == string(sandbox.ModeNone) {
@@ -1720,6 +1736,28 @@ func resolveSandboxSpecWithFallback(
 			// falls back to the working directory), so a run reaches
 			// this only through a library caller that passes none.
 			return resolvedSpec{source: source, skipReason: "mode=auto requires a git repository (worktree must be active or workdir must be inside a repo)"}, nil
+		}
+		if !trust.Trusted() {
+			// The floor: no devcontainer of the repository under review is
+			// read, parsed or executed. Refusing an untrusted auto run with
+			// no operator image is the honest failure — the alternative
+			// (reading the repo's devcontainer to fill the gap) is the
+			// exfiltration the floor exists for. Production callers always
+			// resolve a default image (resolveDefaultSandboxImageWithFallback),
+			// so this guards embedders, exactly as the trusted branch below
+			// does.
+			if defaultImage == "" {
+				return resolvedSpec{source: source}, fmt.Errorf("runtime: sandbox: mode=auto on an untrusted workspace resolved no default sandbox image — the repository's devcontainer is not read for an untrusted run")
+			}
+			var spec sandbox.Spec
+			if wf != nil && wf.Sandbox != nil {
+				spec = fromIRSpec(wf.Sandbox)
+			}
+			spec.Mode = sandbox.ModeAuto
+			spec.Image = defaultImage
+			spec.ImageFallback = defaultImageFallback
+			expandSandboxSpec(&spec, repoRoot)
+			return resolvedSpec{spec: &spec, source: source + " (untrusted workspace: repo devcontainer ignored; default image: " + defaultImage + ")"}, nil
 		}
 		dc, path, err := devcontainer.ReadFromRepo(repoRoot)
 		if err != nil {
@@ -2145,6 +2183,29 @@ func pickHostState(wfHostState, cli, global string) (string, string) {
 		return global, "ITERION_SANDBOX_HOST_STATE"
 	}
 	return string(sandbox.HostStateAuto), "default"
+}
+
+// resolveHostState is the ONE decision on what this run's sandbox binds
+// of the operator's home: pickHostState's chain, then the trust floor
+// (ADR-162 U5) — an untrusted workspace resolves `host_state: none`
+// whatever the chain said, because the home is where every login lives
+// (~/.claude/.credentials.json, ~/.codex/auth.json, ~/.gitconfig) and
+// none of it speaks for a run whose code an outsider wrote. The floor
+// sits ON the decision, not on the mount: sandboxCredentialHome (read
+// before credential admission) and applyHostStateMounts (the mount
+// plan) both call HERE, so the probe's reading and the plan cannot
+// disagree — an untrusted run's admission never sees a mounted home a
+// later mount would then withdraw (#1768's ordering hazard, the other
+// way round).
+//
+// The trust marker is the hatch: marking the workspace trusted
+// (store.RunTrust zero value) restores the chain verbatim.
+func resolveHostState(wf *ir.Workflow, p SandboxParams) (string, string) {
+	resolved, source := pickHostState(workflowHostState(wf), p.HostStateOverride, p.HostStateDefault)
+	if !p.Trust.Trusted() {
+		return string(sandbox.HostStateNone), source + " (floored: untrusted workspace — no host home crosses)"
+	}
+	return resolved, source
 }
 
 // hostStateMount describes a single auto-bind from the host into the

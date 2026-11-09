@@ -382,7 +382,7 @@ func TestWorktreeGitMountUnguardedIsUnchanged(t *testing.T) {
 		t.Fatal(err)
 	}
 	spec := &sandbox.Spec{}
-	addWorktreeGitMount(spec, gitDir, iterlog.Nop())
+	addWorktreeGitMount(spec, gitDir, iterlog.Nop(), store.RunTrustDefault)
 	if len(spec.Mounts) != 1 {
 		t.Fatalf("mounts = %v, want the single .git bind", spec.Mounts)
 	}

@@ -219,7 +219,13 @@ func addOptionalBindMount(
 // Nothing is invented when the host has no identity either. git then fails
 // with its own message, which names the real problem (a host that was never
 // configured) instead of attributing commits to an identity nobody chose.
-func seedGitIdentityEnv(spec *sandbox.Spec, workspacePath string, logger *iterlog.Logger) {
+//
+// An UNTRUSTED run gets no identity at all (ADR-162 U5): the operator's
+// user.name/user.email would attribute the workspace's commits to the
+// operator. The gpg-sign suppression above still applies — it removes a
+// capability, it does not lend one — and git's own "Author identity
+// unknown" is the honest failure a commit-producing untrusted run meets.
+func seedGitIdentityEnv(spec *sandbox.Spec, workspacePath string, logger *iterlog.Logger, trust store.RunTrust) {
 	if spec.Env == nil {
 		spec.Env = map[string]string{}
 	}
@@ -233,6 +239,12 @@ func seedGitIdentityEnv(spec *sandbox.Spec, workspacePath string, logger *iterlo
 		spec.Env["GIT_CONFIG_VALUE_0"] = "false"
 	}
 
+	if !trust.Trusted() {
+		if logger != nil {
+			logger.Warn("runtime: untrusted workspace — no git identity crosses; an in-sandbox `git commit` fails with \"Author identity unknown\" (mark the workspace trusted to lend one)")
+		}
+		return
+	}
 	name := gitConfigValue(workspacePath, "user.name")
 	email := gitConfigValue(workspacePath, "user.email")
 	if name == "" || email == "" {
@@ -277,7 +289,10 @@ func applyHostStateMounts(
 	emitEvent func(store.EventType, map[string]any) error,
 	logger *iterlog.Logger,
 ) (sharedStateDir string, err error) {
-	resolvedHostState, hsSource := pickHostState(workflowHostState(wf), p.HostStateOverride, p.HostStateDefault)
+	// resolveHostState is the same decision sandboxCredentialHome read
+	// before credential admission (the untrusted floor included), so the
+	// mount plan and the probe cannot disagree on what crosses.
+	resolvedHostState, hsSource := resolveHostState(wf, p)
 	spec.HostState = sandbox.HostState(resolvedHostState)
 	absWorkspace, absErr := filepath.Abs(p.WorkspacePath)
 	if absErr != nil {
@@ -292,7 +307,7 @@ func applyHostStateMounts(
 		return "", err
 	}
 	if !spec.HostState.Active() {
-		seedGitIdentityEnv(spec, p.WorkspacePath, logger)
+		seedGitIdentityEnv(spec, p.WorkspacePath, logger, p.Trust)
 		// The worktree .git bind is not host_state-gated, so its #2069
 		// shadows apply here too — and the one audit event carries them.
 		guard.guardWorktreeGit(spec, p.WorktreeGitDir)
@@ -1248,8 +1263,20 @@ func mountIsHostBind(mount string) bool {
 // credentials through via [sandbox.WorkspaceFileRefresher] — see
 // pkg/sandbox/kubernetes/driver.go (populateWorkspace /
 // fixupWorkspaceGit) and ADR-082 Phase 3.
-func addWorktreeGitMount(spec *sandbox.Spec, gitDir string, logger *iterlog.Logger) {
+func addWorktreeGitMount(spec *sandbox.Spec, gitDir string, logger *iterlog.Logger, trust store.RunTrust) {
 	if gitDir == "" {
+		return
+	}
+	// ADR-162 U5: an untrusted run binds no .git. The git-private tree is
+	// where the rotated credential store, the repo's config and every
+	// sibling worktree's state live — the clone root tar-copies the REAL
+	// `.git` on the kubernetes path too (fixupWorkspaceGit), and the floor
+	// is the same answer there: in-sandbox git fails with `fatal: not a git
+	// repository`, which is the isolation working, not a defect.
+	if !trust.Trusted() {
+		if logger != nil {
+			logger.Info("runtime: untrusted workspace — the worktree .git directory is not mounted; in-sandbox git commands will not see a repository")
+		}
 		return
 	}
 	// Walk up two levels: <repoRoot>/.git/worktrees/<run-id> → <repoRoot>/.git

@@ -9,6 +9,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // TestResolveRepoDevbox_PrecedenceChain pins the chain the rest of the
@@ -45,9 +46,38 @@ func TestResolveRepoDevbox_PrecedenceChain(t *testing.T) {
 			if tc.workflow != "" {
 				wf = &ir.Workflow{RepoDevbox: tc.workflow}
 			}
-			if got := resolveRepoDevbox(tc.override, wf); got != tc.want {
+			if got := resolveRepoDevbox(tc.override, wf, store.RunTrustDefault); got != tc.want {
 				t.Errorf("resolveRepoDevbox(%q, %q) with env %q = %v, want %v",
 					tc.override, tc.workflow, tc.env, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestResolveRepoDevbox_UntrustedFloorsOff: the trust floor reads FIRST —
+// not even an explicit `--repo-devbox on` re-arms the target repo's
+// toolchain on a workspace whose code an outsider wrote (#874 4b,
+// ADR-162 U5). The bot's own devbox.json is untouched by this floor; it
+// is exercised through TestApplyDevboxProvisioning_UntrustedSkipsOnlyTheRepo.
+func TestResolveRepoDevbox_UntrustedFloorsOff(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		override string
+		workflow string
+	}{
+		{"nothing set", "", ""},
+		{"operator override on", "on", ""},
+		{"workflow on", "", "on"},
+		{"both on", "on", "on"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("ITERION_REPO_DEVBOX", "on")
+			var wf *ir.Workflow
+			if tc.workflow != "" {
+				wf = &ir.Workflow{RepoDevbox: tc.workflow}
+			}
+			if got := resolveRepoDevbox(tc.override, wf, store.RunTrustFork); got {
+				t.Errorf("resolveRepoDevbox(%q, %q) on trust=fork = true, want the floor's false", tc.override, tc.workflow)
 			}
 		})
 	}

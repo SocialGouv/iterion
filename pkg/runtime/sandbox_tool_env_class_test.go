@@ -128,7 +128,7 @@ func resolveRepoContainerEnv(t *testing.T, wf *ir.Workflow, containerEnv map[str
 		t.Fatal(err)
 	}
 	repo := writeRepoDevcontainer(t, `{"image":"alpine:3.20","containerEnv":`+string(planted)+`}`)
-	res, err := resolveSandboxSpecWithFallback(wf, repo, "", "", "ghcr.io/test/sandbox:v1", "")
+	res, err := resolveSandboxSpecWithFallback(wf, repo, "", "", "ghcr.io/test/sandbox:v1", "", store.RunTrustDefault)
 	if err != nil {
 		t.Fatalf("resolve the sandbox spec: %v", err)
 	}

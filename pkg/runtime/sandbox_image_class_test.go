@@ -7,6 +7,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/internal/appinfo"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // TestAClassNamedSandboxImageResolvesToTheStockVariant is decision (a) of
@@ -22,7 +23,7 @@ func TestAClassNamedSandboxImageResolvesToTheStockVariant(t *testing.T) {
 			Name:    "wf",
 			Sandbox: &ir.SandboxSpec{Mode: string(sandbox.ModeInline), Image: class},
 		}
-		res, err := resolveSandboxSpecWithFallback(wf, t.TempDir(), "", "", "ghcr.io/test/sandbox:v1", "")
+		res, err := resolveSandboxSpecWithFallback(wf, t.TempDir(), "", "", "ghcr.io/test/sandbox:v1", "", store.RunTrustDefault)
 		if err != nil {
 			t.Fatalf("class %q: resolveSandboxSpecWithFallback: %v", class, err)
 		}
@@ -56,7 +57,7 @@ func TestAFreeFormSandboxImageIsNeverReadAsAClass(t *testing.T) {
 			Name:    "wf",
 			Sandbox: &ir.SandboxSpec{Mode: string(sandbox.ModeInline), Image: image},
 		}
-		res, err := resolveSandboxSpecWithFallback(wf, t.TempDir(), "", "", "ghcr.io/test/sandbox:v1", "")
+		res, err := resolveSandboxSpecWithFallback(wf, t.TempDir(), "", "", "ghcr.io/test/sandbox:v1", "", store.RunTrustDefault)
 		if err != nil {
 			t.Fatalf("image %q: resolveSandboxSpecWithFallback: %v", image, err)
 		}

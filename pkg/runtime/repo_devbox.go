@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // repoDevboxEnabled reports whether the TARGET REPO's `devbox.json` is
@@ -26,16 +27,28 @@ import (
 // stack, at every single review.
 func (e *Engine) repoDevboxEnabled() bool {
 	var wf *ir.Workflow
+	var trust store.RunTrust
 	if e != nil {
 		wf = e.workflow
+		trust = e.trust
 	}
-	return resolveRepoDevbox(e.repoDevboxOverride, wf)
+	return resolveRepoDevbox(e.repoDevboxOverride, wf, trust)
 }
 
 // resolveRepoDevbox is the chain itself, split out so both provisioning
 // paths (host and sandbox) answer the question identically — the sandbox
 // one runs from SandboxParams, with no Engine in reach.
-func resolveRepoDevbox(override string, wf *ir.Workflow) bool {
+//
+// The trust floor reads FIRST (#874 constraint 4b, ADR-162 U5): the
+// target repo's devbox.json is the target repo's file, and installing it
+// — Nix evaluation, plugins, postCreate — executes that file's choices.
+// An untrusted workspace installs nothing of it, whatever the chain said:
+// the override cannot re-arm what the trust marker refuses (the marker
+// itself is the hatch — a workspace marked trusted keeps the full chain).
+func resolveRepoDevbox(override string, wf *ir.Workflow, trust store.RunTrust) bool {
+	if !trust.Trusted() {
+		return false
+	}
 	if v, ok := parseOnOff(override); ok {
 		return v
 	}

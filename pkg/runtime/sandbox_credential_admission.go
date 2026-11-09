@@ -48,12 +48,14 @@ import (
 // what tells the operator WHY the run cannot launch.
 
 // sandboxCredentialHome resolves what this sandbox will actually bind of
-// the operator's home: the resolved host_state, the driver's bind
-// capability, and the planted-home refusal — the same inputs
-// applyHostStateMounts will apply below, so the probe and the mount plan
-// cannot disagree.
+// the operator's home: the resolved host_state (through resolveHostState,
+// whose untrusted floor answers `none` BEFORE this read — an untrusted
+// run is never admitted on a login the mount plan would withdraw), the
+// driver's bind capability, and the planted-home refusal — the same
+// inputs applyHostStateMounts will apply below, so the probe and the
+// mount plan cannot disagree.
 func sandboxCredentialHome(p SandboxParams, caps sandbox.Capabilities) credroute.SandboxHomeState {
-	resolved, _ := pickHostState(workflowHostState(p.Workflow), p.HostStateOverride, p.HostStateDefault)
+	resolved, _ := resolveHostState(p.Workflow, p)
 	if !sandbox.HostState(resolved).Active() || !caps.SupportsHostBindMounts {
 		return credroute.SandboxHomeState{}
 	}

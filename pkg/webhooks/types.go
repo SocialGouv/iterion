@@ -277,9 +277,10 @@ type Config struct {
 	//     allowlist`). store.RunTrust DOES reach pkg/runtime and pkg/runner
 	//     — it rides queue.RunMessage, refuses a pinless untrusted workspace
 	//     (loop_gitws.go) and is stamped onto a sub-bot's document
-	//     (runtime.WithTrust). What no path routes it into is the TOOLCHAIN
-	//     and NETWORK policy: resolveRepoDevbox(override, workflow) takes no
-	//     trust argument, and the sandbox network policy has none either.
+	//     (runtime.WithTrust). The TOOLCHAIN half is floored (ADR-162 U5):
+	//     resolveRepoDevbox(override, workflow, trust) answers false for
+	//     every untrusted workspace, and the repo's devcontainer is not
+	//     read either. The NETWORK policy floor rides the same unit.
 	//   - constraint 5 beyond the gate context — the base repo's project
 	//     settings must not be honoured. Among THOSE surfaces only the
 	//     gate-context write is trust-gated: applyWebhookVarLayers still

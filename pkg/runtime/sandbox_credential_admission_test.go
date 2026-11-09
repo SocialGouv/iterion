@@ -243,10 +243,15 @@ func TestForkRunWithAnEmptyAuthorizationLineIsRefused(t *testing.T) {
 	}
 }
 
-// TestForkRunWithMountedLoginAdmits: while host_state is mounted (nothing
-// on main floors it for an untrusted run), the operator's file-based login
-// DOES reach a docker sandbox — refusing here would kill a run that works.
-func TestForkRunWithMountedLoginAdmits(t *testing.T) {
+// TestForkRunWithALoginTheFloorNoLongerMountsIsRefused: until ADR-162 U5
+// the operator's file-based login DID reach a docker sandbox for a fork
+// run (this was #1768's admitted case — host_state mounted, login
+// readable). The host-state floor resolves BEFORE the admission now, so
+// the login is not mounted and the run is refused, typed, naming the
+// channel that no longer carries it — the admission's own message is the
+// operator's explanation, which is the point of refusing here rather
+// than at the node.
+func TestForkRunWithALoginTheFloorNoLongerMountsIsRefused(t *testing.T) {
 	clearCredentialEnv(t)
 	home := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(home, ".claude"), 0o700); err != nil {
@@ -257,8 +262,12 @@ func TestForkRunWithMountedLoginAdmits(t *testing.T) {
 	}
 	t.Setenv("HOME", home)
 	err := credentialAdmissionRun(t, credentialWorkflow("review", "claude_code", ""), store.RunTrustFork, nil)
-	if !errors.Is(err, errCanaryStop) {
-		t.Fatalf("fork run with the login mounted = %v, want admission (canary)", err)
+	var rerr *RuntimeError
+	if !errors.As(err, &rerr) || rerr.Code != ErrCodeSandboxCredentialUnreachable {
+		t.Fatalf("fork run whose only credential is the login the floor no longer mounts = %v, want the typed credential refusal", err)
+	}
+	if !strings.Contains(err.Error(), "file-based login") {
+		t.Errorf("refusal %q must name the file-based login channel it no longer carries", err)
 	}
 }
 
