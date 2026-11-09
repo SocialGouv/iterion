@@ -1133,6 +1133,46 @@ func TestNewWritesSelfIgnoringGitignore(t *testing.T) {
 	})
 }
 
+// TestOpenReadsWithoutMaterializing pins Open's half of the pre-compile peek
+// contract: a caller that only READS (cliRunTrust settling a launch's trust
+// before the compile door) must leave no store behind for a launch the door
+// then refuses — a run directory on disk is a run record to everything that
+// counts runs (e2e/author_twin_test.go refuses exactly that), and New's own
+// contract is to create the root.
+func TestOpenReadsWithoutMaterializing(t *testing.T) {
+	ctx := context.Background()
+	root := filepath.Join(t.TempDir(), "absent")
+
+	s := Open(root)
+	if _, err := s.LoadRun(ctx, "run-1"); !errors.Is(err, ErrRunNotFound) {
+		t.Fatalf("LoadRun over a missing root: %v, want ErrRunNotFound — an unreadable store must read as no runs, not as a failure to peek", err)
+	}
+	// The peek itself must not have adopted the path: no root, no runs dir,
+	// no self-ignoring .gitignore.
+	if _, err := os.Stat(root); !os.IsNotExist(err) {
+		t.Fatalf("Open materialized the store root: stat err=%v, want not-exist", err)
+	}
+
+	// Over an EXISTING root, Open reads the same records New writes: the
+	// trust a peek settles comes from the run document the launch will
+	// actually land in.
+	dir := t.TempDir()
+	w, err := New(dir)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if _, err := w.CreateRun(ctx, "run-2", "wf", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	r, err := Open(dir).LoadRun(ctx, "run-2")
+	if err != nil {
+		t.Fatalf("Open over an existing root: %v", err)
+	}
+	if r.ID != "run-2" {
+		t.Errorf("Open read run %q, want run-2", r.ID)
+	}
+}
+
 func TestRunFilesStore(t *testing.T) {
 	ctx := context.Background()
 	s := tmpStore(t)

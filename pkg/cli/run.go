@@ -281,28 +281,24 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 	}
 	defer telemetry.shutdown()
 
-	// The store and the log tee open before the compile: `--run-id` can name
-	// a run whose document already exists, and the trust that document holds
-	// floors this launch (cliRunTrust below) — the engine adopts it at Run,
-	// so the compile, the connector lineage and the MCP health check answer
-	// to the settled value instead of learning it after they have acted.
-	// Anchored like every other store consumer of this run: the cwd, the
-	// .bot's dir only when the cwd cannot be read (runStoreDir).
+	// The launch trust settles BEFORE the compile, from a READ-ONLY view of
+	// the store (store.Open creates nothing): `--run-id` can name a run whose
+	// document already exists, and the trust that document holds floors this
+	// launch (cliRunTrust below) — the engine adopts it at Run, so the
+	// compile, the connector lineage and the MCP health check answer to the
+	// settled value instead of learning it after they have acted. The
+	// materializing open (tee + store.New) stays AFTER the compile door: a
+	// document the engine refuses must record no run at all, and a tee opened
+	// here would leave runs/<id>/ behind for every refused attempt. Anchored
+	// like every other store consumer of this run: the cwd, the .bot's dir
+	// only when the cwd cannot be read (runStoreDir).
 	storeDir := runStoreDir(opts.File, opts.StoreDir)
-	logger, logCloser := teeRunLog(logger, level, storeDir, runID)
-	if logCloser != nil {
-		defer logCloser.Close()
-	}
-	s, err := store.New(storeDir, store.WithLogger(logger))
-	if err != nil {
-		return fmt.Errorf("cannot create store: %w", err)
-	}
 
 	// A run started from inside an untrusted run's workspace is itself
 	// untrusted (cliLaunchTrust); an operator's own `iterion run` carries
 	// nothing and stays trusted; a `--run-id` that names an existing fork run
 	// is lowered to it. One value for the engine and the compile.
-	launchTrust, err := cliRunTrust(ctx, s, runID)
+	launchTrust, err := cliRunTrust(ctx, store.Open(storeDir), runID)
 	if err != nil {
 		return err
 	}
@@ -366,6 +362,16 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 		engineOpts = append(engineOpts, runtime.WithWorkspaceTracker(tracker))
 	}
 
+	logger, logCloser := teeRunLog(logger, level, storeDir, runID)
+	// Re-emit the engineOpts entry: the handle changed either way — the
+	// tee's own logger, or the per-run fork the failure path returns — and
+	// this one is the run's (the slot BuildExecutor sets its matcher on).
+	// WithLogger overwrites on each call, so appending is sufficient.
+	engineOpts = append(engineOpts, runtime.WithLogger(logger))
+	if logCloser != nil {
+		defer logCloser.Close()
+	}
+
 	// DSL-declared supervisors (`supervisor NAME:`): wire an in-process
 	// event hub onto the engine so each coordinator can observe this run
 	// live. Injection (store-direct) is set up after the store exists.
@@ -376,6 +382,11 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 	if len(wf.Supervisors) > 0 && supervise.DeclaredEnabledOrWarn(opts.Supervisors, len(wf.Supervisors), logger) {
 		superviseHub = supervise.NewEventHub()
 		engineOpts = append(engineOpts, runtime.WithEventObserver(superviseHub.Publish))
+	}
+
+	s, err := store.New(storeDir, store.WithLogger(logger))
+	if err != nil {
+		return fmt.Errorf("cannot create store: %w", err)
 	}
 
 	// Wrap the concrete pointer in the interface only when non-nil so

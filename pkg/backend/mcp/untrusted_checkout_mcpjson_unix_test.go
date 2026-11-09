@@ -131,11 +131,11 @@ func TestPrepareWorkflow_TheCheckoutsServerNamesTellAWithdrawnServerFromATypo(t 
 		}},
 	} {
 		t.Run("fork, unreadable ("+unreadable.name+"): every unknown name may be one of its", func(t *testing.T) {
-			wf, err := prepare(t, store.RunTrustFork, unreadable.plant, nil, &ir.MCPConfig{Servers: []string{"porj"}})
+			_, err := prepare(t, store.RunTrustFork, unreadable.plant, nil, &ir.MCPConfig{Servers: []string{"porj"}})
 			if !errors.Is(err, ErrWithdrawnMCPServer) || !strings.Contains(err.Error(), ".mcp.json, not read") {
 				t.Fatalf("err = %v, want ErrWithdrawnMCPServer naming the unread .mcp.json", err)
 			}
-			wf, err = prepare(t, store.RunTrustFork, unreadable.plant, nil, nil)
+			wf, err := prepare(t, store.RunTrustFork, unreadable.plant, nil, nil)
 			if err != nil || !announced(wf) {
 				t.Errorf("err=%v preparation=%+v, want the unread file announced", err, wf.MCPPrepared)
 			}
