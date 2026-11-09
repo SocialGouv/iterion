@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [5.15.1](https://github.com/SocialGouv/iterion/compare/v5.15.0...v5.15.1) (2026-11-09)
+
+### Bug Fixes
+
+* **review-pr:** the review's duration cap follows the workload the egress join admits ([#3121](https://github.com/SocialGouv/iterion/issues/3121)) ([d76a353](https://github.com/SocialGouv/iterion/commit/d76a35332932a9b5d86e9783b639289331586fcc)), references [#3119](https://github.com/SocialGouv/iterion/issues/3119)
+
+    <details><summary>why</summary>
+
+    120m killed a PIC review at the 108-minute wall one node short of converge (run 01a1c0a6, honorabilite MR !270): with the forge-native ticket lookup reachable (PR #3119), the reviewer explored its forge for 118 minutes. The money guard is unchanged — max_cost_usd 48 still bounds the spend; the duration cap only needs to clear the workload it admits.
+
+    </details>
+
 ## [5.15.0](https://github.com/SocialGouv/iterion/compare/v5.14.0...v5.15.0) (2026-11-09)
 
 ### Features
