@@ -24,6 +24,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/runtime/recovery"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
+	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -153,14 +154,25 @@ func (r hostCapRun) cards(t *testing.T) (titles []string, launchable int) {
 // hostDriver is the sandbox the bench's fork rows run under: main's
 // admission floor (#1773) refuses an untrusted run with no per-run sandbox,
 // so the fork rows promise one — a driver that answers the probe with a
-// container's name and runs its commands on the host. The shape is
-// pkg/runtime's podDriver's, duplicated here because test helpers do not
-// cross packages.
+// container's name and runs its commands on the host. U5's floors (ADR-162
+// decision 7) are promised the same way: a fork's only route out is the
+// egress proxy, so the driver claims the network-policy capability a
+// policy-enforcing driver holds, and its runs are funded with a run-held
+// key (below), never the launcher's ambient env — which the floor now
+// refuses. The shape is pkg/runtime's podDriver's, duplicated here because
+// test helpers do not cross packages.
 type hostDriver struct{}
 
 func (hostDriver) Name() string { return "docker" }
 func (hostDriver) Capabilities() sandbox.Capabilities {
-	return sandbox.Capabilities{SupportsImage: true, SupportsMounts: true}
+	return sandbox.Capabilities{
+		SupportsImage: true, SupportsMounts: true,
+		// U5's network floor admits a fork only on a driver that enforces a
+		// policy around the container; the credential crossing needs one
+		// that can inject the proxy's CA (the substitution is armed at
+		// start). The bench claims both, as it claims the container itself.
+		SupportsNetworkPolicy: true, SupportsTLSInspection: true,
+	}
 }
 
 type hostPrepared struct{}
@@ -266,6 +278,17 @@ func runHostCapEngine(t *testing.T, trust store.RunTrust, node *ir.AgentNode, wf
 	eng := iterruntime.New(wf, st, ex, opts...)
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
+	if trust != store.RunTrustDefault {
+		// U5's floors (ADR-162 decision 7): the launcher's ambient env no
+		// longer crosses an untrusted run, so the fork rows are funded the
+		// way an operator funds a fork lane — a run-held BYOK key, pointed
+		// at the stub so the crossing arms toward a host the table names.
+		// The ambient ANTHROPIC_* above still funds the trusted controls.
+		ctx = secrets.WithCredentials(ctx, secrets.Credentials{
+			APIKeys:     map[secrets.Provider]string{secrets.ProviderAnthropic: "sk-bench-fork-lane"},
+			APIBaseURLs: map[secrets.Provider]string{secrets.ProviderAnthropic: srv.URL},
+		})
+	}
 	runErr := eng.Run(ctx, runID, nil)
 	events, _ := st.LoadEvents(context.Background(), runID)
 	return hostCapRun{dispatcherDir: filepath.Join(storeDir, "dispatcher"), events: events, err: runErr}
@@ -582,6 +605,15 @@ func TestReviewPR_ConvergeDegradesOnAFork(t *testing.T) {
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 			defer cancel()
+			if trust != store.RunTrustDefault {
+				// Same funding as runHostCapEngine's fork rows: a run-held
+				// key, never the launcher's ambient env (U5's floor). No
+				// base URL — the stand-in CLI never dials; the key only
+				// admits the claude_code leg the spawn needs.
+				ctx = secrets.WithCredentials(ctx, secrets.Credentials{
+					APIKeys: map[secrets.Provider]string{secrets.ProviderAnthropic: "sk-bench-fork-lane"},
+				})
+			}
 			runErr := iterruntime.New(wf, st, ex, opts...).Run(ctx, runID, map[string]any{"workspace_dir": ws})
 			r, _ := st.LoadRun(context.Background(), runID)
 			events, _ := st.LoadEvents(context.Background(), runID)

@@ -100,6 +100,61 @@ func TestTheForkLanesProxyAllowlistIsTheCredentialsOwnHost(t *testing.T) {
 	}
 }
 
+// TestABoundSecretsHostStillOpensAForkLanesAllowlist: the fork floor and
+// the bound-secret opening (#3119) meet at the proxy the start composes —
+// the floor REPLACES everything the workflow declares (the artifact is
+// the untrusted thing), but the OPERATOR's bindings still open it: a
+// fork's review reads the self-hosted forge its credential is pinned to
+// the same way a trusted one does. Both roads admitted, the preset's
+// roads still refused.
+func TestABoundSecretsHostStillOpensAForkLanesAllowlist(t *testing.T) {
+	clearCredentialEnv(t)
+	const key = "sk-gw-fork-binding-witness"
+	ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{
+		APIKeys:     map[secrets.Provider]string{secrets.ProviderOpenAICompatible: key},
+		APIBaseURLs: map[secrets.Provider]string{secrets.ProviderOpenAICompatible: "https://example.com"},
+	})
+	forkEgressHosts := credentialCrossingEgressHosts(ctx)
+	if len(forkEgressHosts) != 1 || forkEgressHosts[0] != "example.com" {
+		t.Fatalf("the crossing table's hosts = %v, want exactly the credential's own host example.com", forkEgressHosts)
+	}
+	// The operator's binding: a self-hosted forge no preset names, exactly
+	// the #3119 shape — a review that must read the forge it reviews.
+	secretHosts := []string{"git.selfhosted.example.org"}
+
+	connectBoth := func(spec *sandbox.Spec, secret, forkEgress []string, host string) string {
+		prx, endpoint, _, err := startNetworkProxy(spec, &specCapturingDriver{hostBinds: true}, "run-fork-binding", nil,
+			func(store.EventType, map[string]any) error { return nil }, nil, "", secret, forkEgress)
+		if err != nil {
+			t.Fatalf("startNetworkProxy: %v", err)
+		}
+		t.Cleanup(func() {
+			sctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			_ = prx.Shutdown(sctx)
+		})
+		line, _ := connect(t, prx.Addr().String(), host+":443", tokenFromEndpoint(t, endpoint))
+		return line
+	}
+
+	// The hostile spec a fork's diff would write, again: OPEN mode with
+	// the preset's roads named.
+	hostile := &sandbox.Spec{Network: &sandbox.Network{
+		Mode:   sandbox.NetworkModeOpen,
+		Preset: netproxy.PresetIterionDefault,
+	}}
+	for _, host := range []string{"example.com", "git.selfhosted.example.org"} {
+		if line := connectBoth(hostile, secretHosts, forkEgressHosts, host); !strings.Contains(line, "200") && !strings.Contains(line, "502") {
+			t.Fatalf("CONNECT %s through the fork proxy = %q, want admitted (200 established, or 502 past the verdict) — the credential's host and the operator's binding are both the run's roads", host, line)
+		}
+	}
+	for _, host := range []string{"api.github.com", "storage.googleapis.com"} {
+		if line := connectBoth(hostile, secretHosts, forkEgressHosts, host); !strings.Contains(line, "403") {
+			t.Fatalf("CONNECT %s through the fork proxy = %q, want 403 — the preset's roads stay refused beside the binding", host, line)
+		}
+	}
+}
+
 // dockerCapsDriver is the docker driver's advertisement today: it can
 // inject the inspection CA (so the credential crossing arms on it) but
 // enforces no network policy around the container — the proxy env alone
