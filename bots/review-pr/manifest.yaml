@@ -1,7 +1,12 @@
 name: review-pr
 display_name: Revi
 icon: 🔎
-version: 0.9.18
+version: 0.9.19
+## 0.9.19 — max_duration 120m → 180m: with the forge-native ticket lookup
+## reachable (PR #3119), a PIC review explored its forge for 118 min and
+## died at the 108-minute wall one node short of converge — the workload
+## the egress join admits outgrew a cap sized before it existed. The money
+## guard is unchanged.
 ## 0.9.18 — GPT convergence uses its file tools and board capabilities
 ## without inheriting the reviewed repository's MCP servers (#3017).
 ## 0.9.17 — the claude reviewer slots declare their tool surface

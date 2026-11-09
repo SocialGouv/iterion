@@ -529,9 +529,12 @@ workflow review_pr:
     ## 90% wall applies here, no grace: 90m refused new nodes at 81 min.
     ## The two deaths sized above ran ~40 min each (push → death: 84 min
     ## for two runs of one PR, 53 min for the other); a review funded to
-    ## ~$43 may run 45-60 min, so 120m keeps its 108-minute wall clear of
-    ## the workload the cost cap now admits.
-    max_duration: "120m"
+    ## ~$43 may run 45-60 min, so 120m kept its 108-minute wall clear of
+    ## the workload the cost cap admits. 2026-11-09: with the forge-native
+    ## ticket lookup reachable (PR #3119), a PIC review explored the forge
+    ## for 118 min and died one wall short of converge — 180m moves the
+    ## wall to 162 min for that workload.
+    max_duration: "180m"
     ## Sized from production, twice. The 2026-09-03 sample said median
     ## ~$3.6/run, p95 ~$10.5, and the cap was 12 with the exit grace
     ## (cap × 1.1) walking an over-cap run forward to publish. Three days
