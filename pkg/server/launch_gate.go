@@ -265,6 +265,26 @@ type launchSubject struct {
 	ForkAuthor *webhooks.ForkAuthorRef
 }
 
+// resumeLaunchSubject builds the admission subject of a RESUME from the run
+// document being resumed — the ONE seam every resume surface crosses (the
+// runs API, the WS answer twin, the retry sweeper), so the document's TRUST
+// and the fork author's metering subject ride every re-entry or none does
+// (ADR-162 decision 5: "whichever surface enters"). The subject is read,
+// never re-derived: the run document carries the subject the launch's
+// admission composed, and a resume re-entering a different one would unhook
+// the author's bound mid-run. A nil run (the store could not answer) keeps
+// the bare existing-run subject: the gate still runs, on the ordinary arms.
+func resumeLaunchSubject(run *store.Run) launchSubject {
+	if run == nil {
+		return launchSubject{ExistingRun: true}
+	}
+	subj := launchSubject{ExistingRun: true, BotID: run.BotID, Repo: run.ProjectPath, Trust: run.Trust}
+	if !run.Trust.Trusted() && run.ForkAuthorSubject != "" {
+		subj.ForkAuthor = &webhooks.ForkAuthorRef{Subject: run.ForkAuthorSubject}
+	}
+	return subj
+}
+
 func (a *launchAdmission) rollback(logger interface{ Warn(string, ...any) }) {
 	if a == nil {
 		return

@@ -883,11 +883,14 @@ func (c *runConn) handleAnswer(env runWSEnvelope) {
 	// review-pr could be refused on the band held for it, and where the
 	// reserves take a whole cap no question could be answered at all. A run
 	// the store cannot answer for falls back to the ordinary subject; the
-	// paths below report that failure.
+	// paths below report that failure. resumeLaunchSubject is the seam the
+	// HTTP resume and the retry sweeper cross too: the run's TRUST and, on
+	// a fork run, the author subject the launch metered ride it, so an
+	// untrusted answer re-enters the same bound the launch entered.
 	var subj launchSubject
 	if c.server.runs != nil {
 		if runMeta, err := c.server.runs.LoadRunCtx(c.authCtx(), c.runID); err == nil && runMeta != nil {
-			subj = launchSubject{ExistingRun: true, BotID: runMeta.BotID, Repo: runMeta.ProjectPath}
+			subj = resumeLaunchSubject(runMeta)
 		}
 	}
 	adm, d := c.server.gateLaunch(auth.WithIdentity(c.authCtx(), c.identity), subj)

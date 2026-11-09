@@ -17,7 +17,6 @@ import (
 	"github.com/SocialGouv/iterion/pkg/store"
 	mongostore "github.com/SocialGouv/iterion/pkg/store/mongo"
 	"github.com/SocialGouv/iterion/pkg/trigger"
-	"github.com/SocialGouv/iterion/pkg/webhooks"
 )
 
 // Retry sweeper: the half of the usage-window retry that outlives the pod.
@@ -172,18 +171,13 @@ func (s *Server) resumeDueRetry(ctx context.Context, retryStore store.RunRetrySt
 	// loses the budget subject, but the durable retry row still proves this
 	// is an existing run: maintenance must not abandon its continuation.
 	// The run's TRUST and — on a fork run — the author subject the launch
-	// metered ride the same document (ADR-162 decision 5): an untrusted
+	// metered ride the same document (ADR-162 decision 5), carried by the
+	// resumeLaunchSubject seam every resume surface shares: an untrusted
 	// resume is metered on both counters again, and every arm of the gate
 	// that would admit it unmetered (an unreadable team among them) refuses
 	// instead, which this sweeper re-arms rather than abandons — a store
 	// blip is not the end of a paid run's retry.
-	subj := launchSubject{ExistingRun: true}
-	if run != nil {
-		subj = launchSubject{ExistingRun: true, BotID: run.BotID, Repo: run.ProjectPath, Trust: run.Trust}
-		if !run.Trust.Trusted() && run.ForkAuthorSubject != "" {
-			subj.ForkAuthor = &webhooks.ForkAuthorRef{Subject: run.ForkAuthorSubject}
-		}
-	}
+	subj := resumeLaunchSubject(run)
 	adm, deny := s.gateLaunch(retryLaunchCtx(runCtx, ref), subj)
 	if deny != nil {
 		if retryDenialIsTransient(deny.reason) {

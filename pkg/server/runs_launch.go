@@ -1001,10 +1001,14 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 	)
 	// Nil in a degraded/local wiring — and the gate must still answer there,
 	// so an unreadable run costs the subject, never the admission.
+	// resumeLaunchSubject is the seam that carries the run's TRUST and, on
+	// a fork run, the author subject the launch metered (decision 5): an
+	// untrusted resume is metered on both counters again, and every arm of
+	// the gate that would admit it unmetered refuses instead.
 	if s.runs != nil {
 		gateMeta, gateMetaErr = s.runs.LoadRunCtx(r.Context(), id)
 		if gateMetaErr == nil && gateMeta != nil {
-			subj = launchSubject{ExistingRun: true, BotID: gateMeta.BotID, Repo: gateMeta.ProjectPath}
+			subj = resumeLaunchSubject(gateMeta)
 		}
 	}
 	adm, d := s.gateLaunch(r.Context(), subj)
