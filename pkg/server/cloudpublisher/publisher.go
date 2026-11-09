@@ -4293,6 +4293,14 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 	if spec.ExpectedStatus == store.RunStatusCancelled {
 		return fmt.Errorf("cloudpublisher: durable resume refuses cancelled run %s", spec.RunID)
 	}
+	// The message below replays prior's Trust and ForkAuthorSubject, so the
+	// admission is judged against THIS document, before the claim: the run
+	// service compared it with its own earlier read, and a resume published
+	// from a document the gate never judged would carry an untrusted run past
+	// the bound it launched under.
+	if err := runview.CheckResumeAdmitted(prior, spec.Admitted); err != nil {
+		return fmt.Errorf("cloudpublisher: %w", err)
+	}
 	// The runview layer validates first, but SubmitResume repeats the
 	// boundary check because another request may have changed the row
 	// since that read.

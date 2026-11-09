@@ -65,6 +65,13 @@ const scratchNotPortableErrorCode = "scratch_not_portable"
 // (writeCredentialAtCapacityError, and the WS answer's error code).
 const credentialAtCapacityErrorCode = "credential_at_capacity"
 
+// resumeNotAdmittedErrorCode tells a client that the run service refused a
+// resume whose admission does not match the run (runview.ErrResumeNotAdmitted):
+// an untrusted run resumed by a surface that crossed no admission gate, or a
+// run document that moved under the gate. Nothing was claimed or published;
+// the remedy is the gated resume (POST /api/runs/{id}/resume, the WS answer).
+const resumeNotAdmittedErrorCode = "resume_not_admitted"
+
 // --- Request / response shapes ---
 
 type launchRunRequest struct {
@@ -1128,6 +1135,7 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 			Answers:           answers,
 			Force:             req.Force,
 			AcceptScratchLoss: req.AcceptScratchLoss,
+			Admitted:          resumeAdmitted(subj, adm),
 		}
 		if resumeLB != nil {
 			resumeLB.stampResumeBundle(&pfSpec)
@@ -1161,6 +1169,10 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 		AcceptScratchLoss: req.AcceptScratchLoss,
 		Timeout:           timeout,
 		Budget:            budget,
+		// What the gate above judged on the run it read: the run service
+		// refuses the resume when the document it re-enters names another
+		// trust or another fork author subject.
+		Admitted: resumeAdmitted(subj, adm),
 	}
 	hostInputs, historyErr := s.assistantChatHostInputs(ctx, runMeta)
 	if historyErr != nil {
@@ -1236,6 +1248,8 @@ func (s *Server) writeResumeError(w http.ResponseWriter, r *http.Request, err er
 		code = artifactContractIncompatibleErrorCode
 	case errors.Is(err, runview.ErrRunNotResumable):
 		status, code = http.StatusConflict, runNotResumableErrorCode
+	case errors.Is(err, runview.ErrResumeNotAdmitted):
+		status, code = http.StatusConflict, resumeNotAdmittedErrorCode
 	}
 	body := map[string]any{"error": fmt.Sprintf("resume: %v", err)}
 	if code != "" {

@@ -190,7 +190,10 @@ func TestResume_IsCompiledForTheRunsRecordedTrust(t *testing.T) {
 			if err := svc.store.SaveRun(context.Background(), r); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := svc.Resume(context.Background(), ResumeSpec{RunID: runID, FilePath: botPath}); err != nil {
+			// The admission a gated surface stamps for this run's trust: the
+			// run service refuses a fork run's resume no gate judged.
+			if _, err := svc.Resume(context.Background(), ResumeSpec{RunID: runID, FilePath: botPath,
+				Admitted: &ResumeAdmission{Trust: trust}}); err != nil {
 				t.Fatalf("Resume: %v", err)
 			}
 			if !pub.resumed || pub.resumeWFNone {

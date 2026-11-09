@@ -475,6 +475,13 @@ type ResumeSpec struct {
 	// ReceiptID correlates the durable mission action with run_resumed. It is
 	// host-issued and never accepted from an assistant artifact directly.
 	ReceiptID string
+	// Admitted is what the launch gate judged for this resume, stamped by the
+	// surfaces that cross it (the HTTP resume, the WS answer, the retry
+	// sweeper); nil on every surface that crosses none. Resume and the cloud
+	// publisher's SubmitResume compare it with the run document they resume
+	// (CheckResumeAdmitted): an untrusted run is never resumed on a nil or a
+	// mismatched admission.
+	Admitted *ResumeAdmission
 	// Source mirrors LaunchSpec.Source: cloud-mode callers can supply
 	// the .bot contents inline so the server pod does not need to
 	// resolve FilePath against a local filesystem.

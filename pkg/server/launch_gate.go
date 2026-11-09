@@ -15,6 +15,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/errtrack"
 	"github.com/SocialGouv/iterion/pkg/identity"
 	"github.com/SocialGouv/iterion/pkg/orgusage"
+	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/trigger"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
@@ -131,6 +132,11 @@ const (
 	// monthly caps: 402s that reset on the 1st.
 	denyForkAuthorRuns = "fork_author_run_quota_exceeded"
 	denyForkAuthorCost = "fork_author_cost_cap_exceeded"
+	// denyResumeRunUnreadable: a resume whose run document could not be read,
+	// so the trust it would re-enter under is unknown — and an unknown trust
+	// loses (ADR-162 decision 8). A 503 the surface may retry: the retry
+	// sweeper re-arms it (retryDenialIsTransient).
+	denyResumeRunUnreadable = "resume_run_unreadable"
 )
 
 // launchExemptPrincipal reports whether a principal launches with no human
@@ -263,26 +269,53 @@ type launchSubject struct {
 	// on an untrusted one — gateMonthlyCaps refuses an untrusted subject it
 	// cannot meter (denyForkMeteringUnavailable), never fails open.
 	ForkAuthor *webhooks.ForkAuthorRef
+	// TrustUnknown marks a RESUME whose run document could not be read: the
+	// trust it would re-enter under is unknown, so the zero Trust above must
+	// not read as trusted. gateLaunch refuses it before every other arm
+	// (denyResumeRunUnreadable) — an unknown trust loses (ADR-162 decision
+	// 8). Only resumeLaunchSubject(nil) sets it.
+	TrustUnknown bool
 }
 
 // resumeLaunchSubject builds the admission subject of a RESUME from the run
-// document being resumed — the ONE seam every resume surface crosses (the
-// runs API, the WS answer twin, the retry sweeper), so the document's TRUST
-// and the fork author's metering subject ride every re-entry or none does
-// (ADR-162 decision 5: "whichever surface enters"). The subject is read,
+// document being resumed — the ONE seam every gated resume surface crosses
+// (the runs API, the WS answer twin, the retry sweeper), so the document's
+// TRUST and the fork author's metering subject ride every re-entry or none
+// does (ADR-162 decision 5: "whichever surface enters"). The subject is read,
 // never re-derived: the run document carries the subject the launch's
 // admission composed, and a resume re-entering a different one would unhook
-// the author's bound mid-run. A nil run (the store could not answer) keeps
-// the bare existing-run subject: the gate still runs, on the ordinary arms.
+// the author's bound mid-run.
+//
+// A nil run (the store could not answer) is an UNKNOWN trust, never the
+// trusted default: the gate refuses it as transient, and the retry sweeper —
+// the surface that otherwise proceeds on its retry row alone — re-arms. The
+// two operator surfaces answer their own failed read before any resume, from
+// the one read the gate's subject came from. Whatever a surface admitted
+// rides its ResumeSpec (resumeAdmitted), and the run service refuses a resume
+// whose admission does not name the trust of the document it re-enters.
 func resumeLaunchSubject(run *store.Run) launchSubject {
 	if run == nil {
-		return launchSubject{ExistingRun: true}
+		return launchSubject{ExistingRun: true, TrustUnknown: true}
 	}
 	subj := launchSubject{ExistingRun: true, BotID: run.BotID, Repo: run.ProjectPath, Trust: run.Trust}
 	if !run.Trust.Trusted() && run.ForkAuthorSubject != "" {
 		subj.ForkAuthor = &webhooks.ForkAuthorRef{Subject: run.ForkAuthorSubject}
 	}
 	return subj
+}
+
+// resumeAdmitted is what the gate judged for a resume, handed to the run
+// service on ResumeSpec.Admitted: the subject's trust, and the fork author
+// subject the gate actually charged (the admission handle's second counter),
+// never the one the subject merely named. Every arm that admits an untrusted
+// subject meters both counters, so an untrusted admission always carries the
+// author subject; a trusted one carries none.
+func resumeAdmitted(subj launchSubject, adm *launchAdmission) *runview.ResumeAdmission {
+	a := &runview.ResumeAdmission{Trust: subj.Trust}
+	if adm != nil {
+		a.ForkAuthorSubject = string(adm.forkSubject)
+	}
+	return a
 }
 
 func (a *launchAdmission) rollback(logger interface{ Warn(string, ...any) }) {
@@ -328,7 +361,9 @@ func (a *launchAdmission) rollback(logger interface{ Warn(string, ...any) }) {
 // an EXISTING one (runs_control.go), and a resume driven by an existing
 // run's own machinery (answer-human, the interaction answer, host-event, the
 // assistant mission and watch coordinators) re-enters it. Those are
-// authorized by the run-by-id ladder (ADR-103) and are not metered.
+// authorized by the run-by-id ladder (ADR-103) and are not metered — on a
+// TRUSTED run: they carry no admission, and the run service refuses an
+// untrusted run's resume that no gate judged (runview.CheckResumeAdmitted).
 // On allow it returns the admission handle for the metered increment
 // (nil when nothing was metered).
 //
@@ -349,6 +384,17 @@ func (a *launchAdmission) rollback(logger interface{ Warn(string, ...any) }) {
 // version of that mistake anyone ever sees.
 func (s *Server) gateLaunch(ctx context.Context, subj launchSubject) (*launchAdmission, *launchDenial) {
 	id, _ := auth.FromContext(ctx)
+	// A resume whose run could not be read has no trust to judge, and an
+	// unknown trust loses (ADR-162 decision 8): first, ahead of the local
+	// and super-admin bypasses, because the run behind it may be a fork run
+	// whose every re-entry owes the per-contributor bound.
+	if subj.TrustUnknown {
+		return nil, &launchDenial{
+			status: http.StatusServiceUnavailable,
+			reason: denyResumeRunUnreadable,
+			detail: "the run this resume re-enters could not be read, so its trust is unknown — an unknown trust is not admitted; retry once the store answers",
+		}
+	}
 	if d := s.gateMaintenance(ctx, subj); d != nil {
 		return nil, d
 	}
@@ -359,9 +405,11 @@ func (s *Server) gateLaunch(ctx context.Context, subj launchSubject) (*launchAdm
 	// at all, so an untrusted launch there is unmeterable in principle,
 	// and the super-admin bypass is the second: the fork-author bound is
 	// the perimeter against an outside party, not operator policy, so no
-	// principal stands above it. No surface can reach either arm with an
-	// untrusted subject today (the in-process launch refuses one, decision
-	// 10); the arms exist so the next surface inherits the closed posture.
+	// principal stands above it. The gated resumes reach both arms with a
+	// fork run's trust (resumeLaunchSubject): a super-admin's resume of a
+	// fork run, or a resume on a local server holding one, is refused rather
+	// than re-entered unmetered. No launch surface reaches them (the
+	// in-process launch refuses an untrusted spec, decision 10).
 	if !subj.Trust.Trusted() {
 		if st == nil {
 			return nil, s.forkClosedDenial(denyForkMeteringUnavailable,

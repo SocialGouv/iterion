@@ -81,8 +81,11 @@ func TestSubmitResume_CarriesTrustAndWithholdsSecretsOnTheSecondAttempt(t *testi
 		if err := st.UpdateRunStatus(ctx, "run-resume", store.RunStatusFailedResumable, "needs retry"); err != nil {
 			t.Fatalf("UpdateRunStatus: %v", err)
 		}
+		// The admission a gated surface stamps for this trust: SubmitResume
+		// refuses an untrusted run's resume no gate judged.
 		if err := p.SubmitResume(context.Background(), runview.ResumeSpec{
 			RunID: "run-resume", Source: spec.Source, Answers: map[string]any{"ok": true},
+			Admitted: &runview.ResumeAdmission{Trust: trust},
 		}, wf, &runview.CompiledSource{Hash: "hash"}); err != nil {
 			t.Fatalf("SubmitResume: %v", err)
 		}

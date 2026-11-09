@@ -308,6 +308,11 @@ func (s *Server) writeSteerError(w http.ResponseWriter, r *http.Request, err err
 		s.httpErrorFor(w, r, http.StatusConflict, "%s", terminal.Error())
 	case errors.Is(err, runview.ErrNotAwaitingHuman):
 		s.httpErrorFor(w, r, http.StatusConflict, "%s", err.Error())
+	case errors.Is(err, runview.ErrResumeNotAdmitted):
+		// answer-human and an async answer's auto-resume cross no admission
+		// gate, so the run service refuses them on an untrusted run; the
+		// message names the gated resume that admits it.
+		s.httpErrorCode(w, r, http.StatusConflict, resumeNotAdmittedErrorCode, "%s", err.Error())
 	case errors.Is(err, runtime.ErrNoBudgetDeclared):
 		s.httpErrorFor(w, r, http.StatusConflict, "%s", err.Error())
 	case errors.Is(err, runview.ErrRunNotHeld):

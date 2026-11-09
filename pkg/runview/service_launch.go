@@ -717,6 +717,11 @@ func (s *Service) PreflightResume(parent context.Context, spec ResumeSpec) error
 	if err != nil {
 		return err
 	}
+	// Resume's own choke point, answered here too: the preflight exists so
+	// a resume Resume would refuse never consumes what the caller staged.
+	if err := CheckResumeAdmitted(r, spec.Admitted); err != nil {
+		return err
+	}
 	if err := validateResumable(r, spec.Answers, spec.Automatic); err != nil {
 		return err
 	}
@@ -810,6 +815,14 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 	// missing tenant_id in ctx (which Background carries).
 	r, err := s.store.LoadRun(parent, spec.RunID)
 	if err != nil {
+		return nil, err
+	}
+	// The one choke point every resume surface crosses, judged on the
+	// document this resume re-enters before anything is reconciled, compiled,
+	// spawned or published: an untrusted run resumes only on an admission
+	// that metered its own bound. The cloud publisher repeats the comparison
+	// against the document it republishes from.
+	if err := CheckResumeAdmitted(r, spec.Admitted); err != nil {
 		return nil, err
 	}
 	if r.Status == store.RunStatusRunning {
