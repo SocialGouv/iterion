@@ -20,6 +20,9 @@ const (
 	colPledges = "cred_pledges"
 	colLeases  = "cred_leases"
 	colLedger  = "cred_pool_usage"
+	// ColAttachments is exported: the orgsweep purge names the collection
+	// (ADR-164) and must not mint a second copy of the name.
+	ColAttachments = "pool_attachments"
 )
 
 // EnsureSchema creates every index this package needs, idempotently.
@@ -30,6 +33,12 @@ func EnsureSchema(ctx context.Context, db *mongo.Database) error {
 	}{
 		{colPools, []mongo.IndexModel{
 			{Keys: bson.D{{Key: "org_id", Value: 1}}, Options: options.Index().SetName("pool_org")},
+			{Keys: bson.D{{Key: "owner_type", Value: 1}, {Key: "owner_id", Value: 1}}, Options: options.Index().SetName("pool_owner")},
+		}},
+		{ColAttachments, []mongo.IndexModel{
+			// The reconciler's walk and the orgsweep's opposite number: which
+			// scopes point at one pool.
+			{Keys: bson.D{{Key: "pool_id", Value: 1}}, Options: options.Index().SetName("attachment_pool")},
 		}},
 		{colPledges, []mongo.IndexModel{
 			{Keys: bson.D{{Key: "pool_id", Value: 1}}, Options: options.Index().SetName("pledge_pool")},
@@ -39,6 +48,11 @@ func EnsureSchema(ctx context.Context, db *mongo.Database) error {
 			// The concurrency + commitment reading: live leases of one pledge.
 			{Keys: bson.D{{Key: "pledge_id", Value: 1}, {Key: "closed", Value: 1}, {Key: "expires_at", Value: 1}},
 				Options: options.Index().SetName("lease_live")},
+			// The attachment draw-caps' live commitment: live leases of one
+			// attachment scope (LiveCommitmentByAttachment, the att: reserve
+			// every attached acquisition consults).
+			{Keys: bson.D{{Key: "attachment_id", Value: 1}, {Key: "closed", Value: 1}, {Key: "expires_at", Value: 1}},
+				Options: options.Index().SetName("lease_live_att")},
 			// "which donor is serving this run right now", newest first.
 			{Keys: bson.D{{Key: "run_id", Value: 1}, {Key: "closed", Value: 1}, {Key: "acquired_at", Value: -1}},
 				Options: options.Index().SetName("lease_run")},
@@ -84,9 +98,18 @@ func (s *MongoPoolStore) GetByOrg(ctx context.Context, orgID string) (Pool, erro
 	return mongoutil.FindOne[Pool](ctx, s.col, bson.M{"org_id": orgID}, ErrNotFound, "credpool: get pool by org")
 }
 
+func (s *MongoPoolStore) Get(ctx context.Context, id string) (Pool, error) {
+	return mongoutil.FindOne[Pool](ctx, s.col, bson.M{"_id": id}, ErrNotFound, "credpool: get pool")
+}
+
 func (s *MongoPoolStore) ListEnabled(ctx context.Context) ([]Pool, error) {
 	return mongoutil.FindAllSorted[Pool](ctx, s.col, bson.M{"enabled": true}, "_id",
 		"credpool: list enabled pools", "credpool: decode pool")
+}
+
+func (s *MongoPoolStore) ListAll(ctx context.Context) ([]Pool, error) {
+	return mongoutil.FindAllSorted[Pool](ctx, s.col, bson.M{}, "_id",
+		"credpool: list pools", "credpool: decode pool")
 }
 
 func (s *MongoPoolStore) Upsert(ctx context.Context, p Pool) error {
@@ -108,6 +131,56 @@ func (s *MongoPoolStore) Upsert(ctx context.Context, p Pool) error {
 		return fmt.Errorf("credpool: upsert pool: %w", err)
 	}
 	return nil
+}
+
+// Patch writes the named fields only (PoolPatch.applyTo's twin): the $set
+// body carries exactly the patched fields, so a column a newer binary added
+// survives an older binary's edit. Get first, applyTo for nothing — the
+// memory twin reuses applyTo; the Mongo twin goes straight to the $set doc,
+// because a read-modify-write would re-drop a column a newer binary wrote
+// between our read and our write.
+func (s *MongoPoolStore) Patch(ctx context.Context, id string, p PoolPatch) (Pool, error) {
+	if p.IsEmpty() {
+		return mongoutil.FindOne[Pool](ctx, s.col, bson.M{"_id": id}, ErrNotFound, "credpool: patch pool (empty patch)")
+	}
+	now := time.Now().UTC()
+	set := p.setDoc()
+	set["updated_at"] = now
+	var out Pool
+	err := s.col.FindOneAndUpdate(ctx, bson.M{"_id": id}, bson.M{"$set": set},
+		options.FindOneAndUpdate().SetReturnDocument(options.After)).Decode(&out)
+	if err != nil {
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			return Pool{}, ErrNotFound
+		}
+		return Pool{}, fmt.Errorf("credpool: patch pool: %w", err)
+	}
+	return out, nil
+}
+
+// setDoc is the Mongo $set body for the named fields. applyTo (store.go)
+// and setDoc enumerate the same fields:
+// TestPoolPatch_everyFieldReachesBothWriters refuses a field one of them
+// forgets.
+func (p PoolPatch) setDoc() bson.M {
+	set := bson.M{}
+	if p.Name != nil {
+		set["name"] = *p.Name
+	}
+	if p.Enabled != nil {
+		set["enabled"] = *p.Enabled
+	}
+	if p.Audience != nil {
+		set["audience"] = *p.Audience
+	}
+	if p.Visibility != nil {
+		set["visibility"] = string(*p.Visibility)
+	}
+	return set
+}
+
+func (s *MongoPoolStore) Delete(ctx context.Context, id string) error {
+	return mongoutil.DeleteOneChecked(ctx, s.col, bson.M{"_id": id}, ErrNotFound, "credpool: delete pool")
 }
 
 // ---------------------------------------------------------------------------
@@ -655,4 +728,129 @@ func (l *MongoLedger) UsageMany(ctx context.Context, pledgeIDs []string, when ti
 		}
 	}
 	return out, cur.Err()
+}
+
+// ---------------------------------------------------------------------------
+// Attachments (ADR-164)
+// ---------------------------------------------------------------------------
+
+type MongoAttachmentStore struct{ col *mongo.Collection }
+
+func NewMongoAttachmentStore(db *mongo.Database) *MongoAttachmentStore {
+	return &MongoAttachmentStore{col: db.Collection(ColAttachments)}
+}
+
+func (s *MongoAttachmentStore) Get(ctx context.Context, scopeID string) (Attachment, error) {
+	return mongoutil.FindOne[Attachment](ctx, s.col, bson.M{"_id": scopeID}, ErrNotFound, "credpool: get attachment")
+}
+
+func (s *MongoAttachmentStore) Put(ctx context.Context, a Attachment) error {
+	now := time.Now().UTC()
+	if prev, err := s.Get(ctx, a.ScopeID); err == nil {
+		a.CreatedAt = prev.CreatedAt
+	} else if !errors.Is(err, ErrNotFound) {
+		return err
+	} else if a.CreatedAt.IsZero() {
+		a.CreatedAt = now
+	}
+	a.UpdatedAt = now
+	set, err := mongoutil.SetBodyWithoutID(a, "credpool: attachment")
+	if err != nil {
+		return err
+	}
+	delete(set, "created_at")
+	_, err = s.col.UpdateOne(ctx, bson.M{"_id": a.ScopeID}, bson.M{
+		"$set":         set,
+		"$setOnInsert": bson.M{"_id": a.ScopeID, "created_at": a.CreatedAt},
+	}, options.UpdateOne().SetUpsert(true))
+	if err != nil {
+		return fmt.Errorf("credpool: put attachment: %w", err)
+	}
+	return nil
+}
+
+func (s *MongoAttachmentStore) PutIfUnchanged(ctx context.Context, a Attachment, expected time.Time) (bool, error) {
+	// CAS on updated_at: two concurrent editors of one scope's attachment
+	// must not silently drop each other's write — the loser answers 409.
+	cur, err := s.Get(ctx, a.ScopeID)
+	if err != nil {
+		return false, err
+	}
+	if !cur.UpdatedAt.Equal(expected) {
+		return false, nil
+	}
+	a.CreatedAt = cur.CreatedAt
+	a.UpdatedAt = time.Now().UTC()
+	set, err := mongoutil.SetBodyWithoutID(a, "credpool: attachment")
+	if err != nil {
+		return false, err
+	}
+	delete(set, "created_at")
+	res, err := s.col.UpdateOne(ctx,
+		bson.M{"_id": a.ScopeID, "updated_at": expected.UTC()},
+		bson.M{"$set": set})
+	if err != nil {
+		return false, fmt.Errorf("credpool: cas put attachment: %w", err)
+	}
+	return res.MatchedCount > 0, nil
+}
+
+func (s *MongoAttachmentStore) DeleteIfUnchanged(ctx context.Context, scopeID string, expected time.Time) (bool, error) {
+	res, err := s.col.DeleteOne(ctx, bson.M{"_id": scopeID, "updated_at": expected.UTC()})
+	if err != nil {
+		return false, fmt.Errorf("credpool: cas delete attachment: %w", err)
+	}
+	if res.DeletedCount == 0 {
+		if _, gerr := s.Get(ctx, scopeID); errors.Is(gerr, ErrNotFound) {
+			return false, ErrNotFound
+		}
+		return false, nil
+	}
+	return true, nil
+}
+
+func (s *MongoAttachmentStore) Delete(ctx context.Context, scopeID string) error {
+	return mongoutil.DeleteOneChecked(ctx, s.col, bson.M{"_id": scopeID}, ErrNotFound, "credpool: delete attachment")
+}
+
+func (s *MongoAttachmentStore) List(ctx context.Context) ([]Attachment, error) {
+	return mongoutil.FindAllSorted[Attachment](ctx, s.col, bson.M{}, "_id",
+		"credpool: list attachments", "credpool: decode attachment")
+}
+
+// LiveCommitmentByAttachment reports what ONE ATTACHMENT currently has at
+// stake across its open leases — see LeaseStore.LiveCommitmentByAttachment.
+// Index lease_live_att ({attachment_id, closed, expires_at}) backs it.
+func (s *MongoLeaseStore) LiveCommitmentByAttachment(ctx context.Context, attachmentScopeID, excludeRunID string, now time.Time) (int, float64, error) {
+	filter := bson.M{
+		"attachment_id": attachmentScopeID,
+		"closed":        false,
+		"expires_at":    bson.M{"$gt": now.UTC()},
+	}
+	if excludeRunID != "" {
+		filter["run_id"] = bson.M{"$ne": excludeRunID}
+	}
+	cur, err := s.col.Aggregate(ctx, []bson.M{
+		{"$match": filter},
+		{"$group": bson.M{
+			"_id":       nil,
+			"runs":      bson.M{"$sum": 1},
+			"committed": bson.M{"$sum": "$granted_cost_usd"},
+		}},
+	})
+	if err != nil {
+		return 0, 0, fmt.Errorf("credpool: live commitment by attachment: %w", err)
+	}
+	defer cur.Close(ctx)
+	var out []struct {
+		Runs      int     `bson:"runs"`
+		Committed float64 `bson:"committed"`
+	}
+	if err := cur.All(ctx, &out); err != nil {
+		return 0, 0, fmt.Errorf("credpool: decode live commitment by attachment: %w", err)
+	}
+	if len(out) == 0 {
+		return 0, 0, nil
+	}
+	return out[0].Runs, out[0].Committed, nil
 }

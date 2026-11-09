@@ -359,7 +359,7 @@ func TestRequireLLMCredential_APinnedKeyFundsTheLaunch(t *testing.T) {
 			wf := wfPinning("moonshot")
 			pinned := derivePinnedProviders(model.RouteView{Workflow: wf})
 			ctx := store.WithTenant(context.Background(), "team1")
-			_, err := p.resolveAndSealCredentials(ctx, "run-req", "", "team1", "owner1", "", "", wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustDefault, pinned, nil)
+			_, err := p.resolveAndSealCredentials(ctx, "run-req", "", "team1", "owner1", "", "", wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustDefault, pinned, nil, nil)
 			if tc.wantRefused {
 				if !errors.Is(err, runview.ErrNoLLMCredential) {
 					t.Fatalf("err = %v, want ErrNoLLMCredential — an unfunded pin must still be refused", err)
@@ -394,7 +394,7 @@ func TestPinnedProvider_TierStampAndAuditLineNameThePinnedKey(t *testing.T) {
 	wf := wfPinning("moonshot")
 	pinned := derivePinnedProviders(model.RouteView{Workflow: wf})
 	ctx := store.WithTenant(context.Background(), "team1")
-	res, err := p.resolveAndSealCredentials(ctx, "run-1", "", "team1", "owner1", "", "", wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustDefault, pinned, nil)
+	res, err := p.resolveAndSealCredentials(ctx, "run-1", "", "team1", "owner1", "", "", wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustDefault, pinned, nil, nil)
 	if err != nil {
 		t.Fatalf("resolveAndSealCredentials: %v", err)
 	}
@@ -437,7 +437,7 @@ func TestPinnedProvider_AnOrgKeyFundedFirstKeepsItsSlotFromThePlatformTier(t *te
 	p.oauthForfait = oauth
 
 	ctx := store.WithTenant(context.Background(), "team-in")
-	creds, err := p.resolveAndSealCredentials(ctx, "run-1", orgID, "team-in", "webhook:cfg-1", "", "", nil, nil, nil, model.RouteView{}, nil, store.RunTrustDefault, []string{"moonshot"}, nil)
+	creds, err := p.resolveAndSealCredentials(ctx, "run-1", orgID, "team-in", "webhook:cfg-1", "", "", nil, nil, nil, model.RouteView{}, nil, store.RunTrustDefault, []string{"moonshot"}, nil, nil)
 	if err != nil {
 		t.Fatalf("resolveAndSealCredentials: %v", err)
 	}

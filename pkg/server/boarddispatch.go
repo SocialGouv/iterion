@@ -2022,6 +2022,10 @@ func (s *Server) processBoardCard(ctx context.Context, tenant string, iss native
 	if routeErr != nil {
 		return &launchRefusal{cardID: iss.ID, cause: routeErr}
 	}
+	poolAttachment, poolErr := s.resolveRunPoolAttachment(ctx, tenant, lb.BotID)
+	if poolErr != nil {
+		return &launchRefusal{cardID: iss.ID, cause: poolErr}
+	}
 	retryPolicy := s.resolveRunRetryPolicy(ctx, tenant, lb.BotID, retryLayers...)
 	// A card that targets a pull request also needs the repo's launch policy
 	// and a publish grant, neither of which can ride the card itself — and it
@@ -2067,6 +2071,7 @@ func (s *Server) processBoardCard(ctx context.Context, tenant string, iss native
 		SecretOverrides: lc.SecretOverrides,
 		RetryPolicy:     retryPolicy,
 		LLMRoutePolicy:  routePolicy,
+		PoolAttachment:  poolAttachment,
 		// Stamp the card onto the run record (ADR-046 SourceRef) — the
 		// card→run edge SetLastRun writes below is not enough: the
 		// fork-adoption sweep resolves an issue's runs through the indexed

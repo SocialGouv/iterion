@@ -798,6 +798,11 @@ func (s *Server) launchTicketNow(ctx context.Context, teamID string, from launch
 		s.logger.Warn("pipeline admission: ticket %s: %v", iss.ID, routeErr)
 		return "", fmt.Errorf("ticket %s: %w: %w", iss.ID, errTicketRoutingUnresolved, routeErr)
 	}
+	poolAttachment, poolErr := s.resolveRunPoolAttachment(ctx, teamID, bot.Launch.BotID)
+	if poolErr != nil {
+		s.logger.Warn("pipeline admission: ticket %s: %v", iss.ID, poolErr)
+		return "", fmt.Errorf("ticket %s: %w: %w", iss.ID, errTicketRoutingUnresolved, poolErr)
+	}
 	retryPolicy := s.resolveRunRetryPolicy(ctx, teamID, bot.Launch.BotID, retryLayers...)
 	// The board dispatcher's composition (processBoardCard): the grant a card
 	// carries is dropped or, when it is another team's, refused; a card that
@@ -892,6 +897,7 @@ func (s *Server) launchTicketNow(ctx context.Context, teamID string, from launch
 		PipelineTicketID: iss.ID,
 		RetryPolicy:      retryPolicy,
 		LLMRoutePolicy:   routePolicy,
+		PoolAttachment:   poolAttachment,
 	}
 	// The resolved bundle carries the source, the compile dir, the runner
 	// ref and the tier that served it — so a run says which tier it came

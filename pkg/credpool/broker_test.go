@@ -17,15 +17,16 @@ import (
 // ---------------------------------------------------------------------------
 
 type harness struct {
-	broker  *Broker
-	pools   *MemoryPoolStore
-	pledges *MemoryPledgeStore
-	leases  *MemoryLeaseStore
-	ledger  *MemoryLedger
-	oauth   *secrets.MemoryOAuthStore
-	apiKeys *secrets.MemoryApiKeyStore
-	sealer  secrets.Sealer
-	now     time.Time
+	broker      *Broker
+	pools       *MemoryPoolStore
+	pledges     *MemoryPledgeStore
+	leases      *MemoryLeaseStore
+	ledger      *MemoryLedger
+	attachments *MemoryAttachmentStore
+	oauth       *secrets.MemoryOAuthStore
+	apiKeys     *secrets.MemoryApiKeyStore
+	sealer      secrets.Sealer
+	now         time.Time
 }
 
 const testOrg = "org-1"
@@ -1035,5 +1036,41 @@ func TestAcquire_lentSubscriptionNamesTheDonorsRecord(t *testing.T) {
 	}
 	if keyGrant.RecordID != "" || !keyGrant.RecordConnectedAt.IsZero() {
 		t.Fatalf("a lent API key names OAuth record %q connected at %s", keyGrant.RecordID, keyGrant.RecordConnectedAt)
+	}
+}
+
+// TestResolvePools_skipsPrivatePools pins law 2's store half: a PRIVATE pool
+// answers nothing on the legacy walk — no whole-bundle tier, no door probe,
+// no preview — whatever its Audience says. The attachment path reaches it by
+// explicit PoolIDs, where the attachment itself is the consent (ADR-164).
+func TestResolvePools_skipsPrivatePools(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	// A private pool wide open on paper: AllTeams would admit everyone, so
+	// only the visibility filter keeps it out of the legacy walk.
+	priv := Pool{ID: "pool-priv", OwnerType: PoolOwnerUser, OwnerID: "u-priv",
+		Visibility: PoolVisibilityPrivate, Enabled: true, Audience: Audience{AllTeams: true}}
+	if err := h.pools.Upsert(ctx, priv); err != nil {
+		t.Fatalf("seed private pool: %v", err)
+	}
+	h.donor(t, "u-priv", Limits{}, func(p *Pledge) { p.PoolID = "pool-priv" })
+
+	// The harness's own pool-1 holds a PAUSED donor: without the private
+	// pool, the walk has one pool and zero eligible pledges. If the private
+	// pool leaked into the walk, its donor would serve and the counts would
+	// name two pools.
+	h.donor(t, "bob", Limits{}, func(p *Pledge) { p.Enabled = false })
+
+	_, err := h.broker.Acquire(ctx, Request{
+		RunID: "r1", OrgID: testOrg, TenantID: "team-1", UserID: "alice",
+		Wants: []Credential{{Source: SourceOAuth, Ref: string(secrets.OAuthKindClaudeCode)}},
+	})
+	var nd *NoDonorError
+	if !errors.As(err, &nd) {
+		t.Fatalf("Acquire = %v, want a typed NoDonorError", err)
+	}
+	if nd.Reason != ReasonNoEligiblePledge || nd.PoolsEnabled != 1 {
+		t.Errorf("abstention = (reason=%s pools_enabled=%d), want (no_eligible_pledge, 1 pool — the private pool must be invisible to the legacy walk)", nd.Reason, nd.PoolsEnabled)
 	}
 }

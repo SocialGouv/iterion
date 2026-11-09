@@ -341,6 +341,14 @@ func (s *Server) ListenAndServe() error {
 			s.runElectedPriceFeedSync(ctx)
 		})
 	}
+	// Key pools' signal reconciler (ADR-164, cloud only): warms the
+	// attached pools' OAuth entries' usage readings so the launch-path
+	// margin predicate pays no probe latency. Election inside the loop.
+	if s.poolSignalSyncStarts() {
+		s.goUntilShutdown("server.poolSignalSync", func(ctx context.Context) {
+			s.runElectedPoolSignalSync(ctx)
+		})
+	}
 	// Orphan-run sweeper (cloud only): flips queued/running rows whose
 	// runner died without a terminal write to failed_resumable. Needs
 	// both the Mongo store (stale scan capability) and the queue (KV

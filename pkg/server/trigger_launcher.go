@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/SocialGouv/iterion/pkg/credpool"
 	"github.com/SocialGouv/iterion/pkg/llmroute"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/retrypolicy"
@@ -35,6 +36,10 @@ type serviceLauncher struct {
 	// (pkg/llmroute, ADR-121), injected for the same no-*Server reason.
 	// Slice 1 resolves the platform level only.
 	resolveRoute func(ctx context.Context, teamID, botID string, higher ...llmroute.Layer) (*store.RunLLMRoutePolicy, error)
+	// resolvePoolAttachment is the server's pool-attachment resolution
+	// (ADR-164), injected for the same no-*Server reason. Nil (tests) →
+	// nil, nil: no attachment, today's pool behavior.
+	resolvePoolAttachment func(ctx context.Context, teamID, botID string, higher ...credpool.BindingLayer) (*store.RunPoolAttachment, error)
 	// resolveBot is the server's tiered bot resolution (the subscription's
 	// team → platform override → baked catalog), injected for the same
 	// no-*Server reason. REQUIRED: a second, override-blind resolution path
@@ -58,12 +63,13 @@ const triggerSpineActor = "trigger-spine"
 // missing on the other.
 func (s *Server) triggerLauncher() *serviceLauncher {
 	return &serviceLauncher{
-		launch:       s.launchTriggered,
-		logger:       s.logger,
-		resolveRetry: s.resolveRunRetryPolicy,
-		resolveRoute: s.resolveRunLLMRoutePolicy,
-		resolveBot:   s.resolveBotSource,
-		gate:         s.gateLaunch,
+		launch:                s.launchTriggered,
+		logger:                s.logger,
+		resolveRetry:          s.resolveRunRetryPolicy,
+		resolveRoute:          s.resolveRunLLMRoutePolicy,
+		resolvePoolAttachment: s.resolveRunPoolAttachment,
+		resolveBot:            s.resolveBotSource,
+		gate:                  s.gateLaunch,
 	}
 }
 
@@ -74,6 +80,10 @@ func (l *serviceLauncher) Launch(ctx context.Context, plan trigger.LaunchPlan) (
 	routePolicy, routeErr := l.routePolicyFor(ctx, plan)
 	if routeErr != nil {
 		return "", routeErr
+	}
+	poolAttachment, poolErr := l.poolAttachmentFor(ctx, plan)
+	if poolErr != nil {
+		return "", poolErr
 	}
 	spec := runview.LaunchSpec{
 		// The spine mints nothing, so a grant var in a plan's vars came from
@@ -89,6 +99,7 @@ func (l *serviceLauncher) Launch(ctx context.Context, plan trigger.LaunchPlan) (
 		SourceRef:       plan.SourceRef,
 		RetryPolicy:     l.retryPolicyFor(ctx, plan),
 		LLMRoutePolicy:  routePolicy,
+		PoolAttachment:  poolAttachment,
 		// The spine's vars are subscription-computed and may blind-carry
 		// keys (an ArgsVar payload, forge plumbing) the launched bot does
 		// not declare — the #1725 opt-out is the wiring for that (#1872
@@ -164,6 +175,17 @@ func (l *serviceLauncher) routePolicyFor(ctx context.Context, plan trigger.Launc
 		Source: llmroute.SourceTrigger,
 		Policy: plan.Routing,
 	})
+}
+
+// poolAttachmentFor resolves the launch's pool attachment — the trigger
+// subscription's pool: block rides `higher` when the spine carries one
+// (the binding layer the provisioning record owns). Nil resolver → nil,
+// nil: no attachment resolved, the consumer keeps today's pool behavior.
+func (l *serviceLauncher) poolAttachmentFor(ctx context.Context, plan trigger.LaunchPlan) (*store.RunPoolAttachment, error) {
+	if l.resolvePoolAttachment == nil {
+		return nil, nil
+	}
+	return l.resolvePoolAttachment(ctx, plan.TenantID, plan.BotID)
 }
 
 var _ trigger.Launcher = (*serviceLauncher)(nil)

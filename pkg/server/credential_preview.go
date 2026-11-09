@@ -182,6 +182,15 @@ func (s *Server) handleCredentialPreview(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	spec.LLMRoutePolicy = routePolicy
+	// The pool attachment resolves exactly as the launch site does (ADR-164
+	// preview parity): the preview's pool answers what the launch will
+	// draw, refusals included.
+	poolAttachment, poolErr := s.resolveRunPoolAttachment(ctx, spec.Context.TeamID, spec.Context.BotID)
+	if poolErr != nil {
+		httpError(w, http.StatusUnprocessableEntity, "%v", poolErr)
+		return
+	}
+	spec.PoolAttachment = poolAttachment
 	out, err := s.runs.PreviewCredentials(ctx, spec)
 	if errors.Is(err, runview.ErrCredentialPreviewUnavailable) {
 		httpError(w, http.StatusServiceUnavailable, "credential preview is unavailable")

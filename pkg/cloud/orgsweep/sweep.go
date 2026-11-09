@@ -34,6 +34,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/SocialGouv/iterion/pkg/credpool"
 	"os"
 	"regexp"
 	"strconv"
@@ -130,6 +131,7 @@ var purgedByBespokeFilter = map[string]string{
 	"llm_routing_policies":    "composite _id (\"team:<id>\" / \"org:<id>\"), ADR-121 delivery 2",
 	"price_feeds":             "composite _id (\"team:<id>\" / \"org:<id>\"), ADR-163",
 	"price_feed_state":        "composite _id (\"<scope>:<id>/<feed>\"), purged by the scope prefix, ADR-163",
+	"pool_attachments":        "composite _id (\"platform\" / \"org:<id>\" / \"team:<id>\" / \"bot:<team>/<bot>\"), purged by the scope prefix, ADR-164 — the platform doc is NOT an org row and stays",
 	"org_usage":               "composite _id (\"org|<id>|<month>\", \"forkauthor|<id>|…\"), purged by the id-prefix alternation",
 	"schedule_launch_intents": "the tenant rides the embedded schedule document (schedule.tenant_id), not a top-level field",
 }
@@ -387,6 +389,19 @@ func (p *Purger) PurgeOrg(ctx context.Context, orgID string) (int64, error) {
 			bson.M{"_id": pricefeed.TeamConfigDocID(tm.ID)})
 		deleted += p.deleteMany(ctx, pricefeed.ColStates,
 			bson.M{"_id": bson.M{"$regex": "^" + regexp.QuoteMeta(pricefeed.TeamConfigDocID(tm.ID)) + "/"}})
+	}
+	// The key pools' scope attachments (ADR-164): composite _id documents —
+	// the org doc, each team's doc, each team's bot-scoped docs by prefix.
+	// The PLATFORM doc is the deployment's own (the instance default pool);
+	// an org purge never touches it.
+	deleted += p.deleteMany(ctx, credpool.ColAttachments,
+		bson.M{"_id": credpool.OrgScopeID(orgID)})
+	for _, tm := range teams {
+		deleted += p.deleteMany(ctx, credpool.ColAttachments,
+			bson.M{"_id": bson.M{"$in": bson.A{
+				credpool.TeamScopeID(tm.ID),
+				bson.M{"$regex": "^" + regexp.QuoteMeta("bot:"+tm.ID+"/")},
+			}}})
 	}
 	// A launch intent carries its tenant INSIDE the schedule it embeds
 	// (cloudsched.LaunchIntent.Schedule), so neither loop above reaches it —

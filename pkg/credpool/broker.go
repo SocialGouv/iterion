@@ -55,6 +55,9 @@ const (
 type PledgeSkip struct {
 	PledgeID string
 	Status   Status
+	// ReopenAt is the reset instant a NEAR_LIMIT skip arms the durable
+	// usage-window retry on (the skipTracker's reopen). Zero elsewhere.
+	ReopenAt time.Time
 }
 
 // NoDonorError is a typed ErrNoDonor: it carries the reason for the
@@ -202,6 +205,35 @@ type Request struct {
 	// it: a run with no credential of its own is served by ANY active
 	// pledge, consenting or not, exactly as before the door existed.
 	FallbackOnly bool
+	// PoolIDs restricts the walk to NAMED pools (ADR-164): the launch's
+	// resolved attachment. The attachment IS the consent — the audience
+	// union is short-circuited, private pools are reachable, and each
+	// named pool still counts in PoolsAdmitted. Empty keeps the legacy
+	// ListEnabled+Audience walk, byte for byte.
+	PoolIDs []string
+	// AttachmentID names the scope whose att: ledger row the DRAW caps
+	// reserve against (empty = no attachment — no borrower-side caps).
+	// Stamped on the lease so a release refunds the right row.
+	AttachmentID string
+	// DrawLimits are the attachment's borrower-side caps (the att: row's
+	// Limits). Zero fields = uncapped axes.
+	DrawLimits DrawLimits
+	// RankMode picks the entry ordering: the attachment's strategy mode.
+	// Zero behaves exactly as the legacy ranking (least_consumed).
+	RankMode StrategyMode
+	// SideBySide marks a per-slot acquisition of the ATTACHED tier
+	// (ADR-164): the run's earlier slot leases stay open — they are this
+	// acquisition's siblings, never a takeover. The supersede machinery
+	// (a newer attempt replacing a dead one) is skipped entirely, and the
+	// attempt's report charges EVERY open lease its fingerprint slice.
+	SideBySide bool
+	// ClosedAtMargin, when set, is consulted per candidate during
+	// eligibility: a non-empty reopenAt marks the entry NEAR LIMIT (its
+	// freshest usage reading sits at or past the strategy margin with a
+	// future reset) and the next entry serves instead. Built by ONE
+	// publisher constructor so live and preview cannot diverge; the pool
+	// package never reads usagecap itself (dependency direction).
+	ClosedAtMargin func(p Pledge) (reopenAt time.Time, near bool)
 }
 
 // Grant is a served donation.
@@ -254,6 +286,28 @@ type Grant struct {
 	// Zero means the donor set no spend cap, NOT "nothing left" — callers
 	// clamping a run budget must treat zero as "no ceiling from the pool".
 	RemainingUSD float64
+	// Backend and Model are the entry's route binding (Pledge.Backend /
+	// Pledge.Model): what the caller composes the entry's fallback rung
+	// from (ADR-164). Empty when the entry carries no explicit binding —
+	// the entry funds whatever its slot natively serves.
+	Backend string
+	Model   string
+	// BaseURL is the lent key's canonical gateway endpoint (ADR-131): it
+	// travels with the key so the caller seals the PAIR through one
+	// chokepoint, and the seal's AAD binds the URL the entry names. Empty
+	// for a subscription and for a vendor key — non-empty is a promise the
+	// seal keeps (a gateway grant carrying none is refused and released by
+	// the publisher).
+	BaseURL string
+	// AttachmentID names the attachment scope this grant was acquired
+	// under; the att: ledger row consumed the draw unit and the lease is
+	// stamped with the same id. Empty = legacy (unattached) grant.
+	AttachmentID string
+	// AttachmentRemainingUSD is what was left of the attachment's draw cap
+	// after this admission — the borrower-side ceiling the run budget must
+	// also clamp to. Zero means the attachment set no spend cap, NOT
+	// "nothing left" (same convention as RemainingUSD).
+	AttachmentRemainingUSD float64
 	// Bound when the lease is inserted, never looked up by run ID later:
 	// concurrent acquisitions can hold different leases for the same run.
 	releaseGuard *ReleaseGuard
@@ -301,7 +355,18 @@ func (b *Broker) Acquire(ctx context.Context, req Request) (*Grant, error) {
 	// so the retry is admitted as new. A run id another team holds is
 	// refused instead: its leases are that team's record of what their runs
 	// consumed, not this requester's to close.
-	superseded, err := b.supersedeOpenLeases(ctx, req, now, OutcomeSuperseded, nil)
+	// A SideBySide walk (the attached per-slot tier, ADR-164) keeps its
+	// earlier slot leases OPEN: they are siblings of this acquisition, not
+	// a takeover of it — superseding them would free the first donor's
+	// slot and committed allowance mid-run while both credentials stay
+	// sealed and spent. Only a non-side-by-side acquire replaces the
+	// run's previous attempt leases.
+	superseded, err := func() ([]supersededLease, error) {
+		if req.SideBySide {
+			return nil, nil
+		}
+		return b.supersedeOpenLeases(ctx, req, now, OutcomeSuperseded, nil)
+	}()
 	if err != nil {
 		return nil, err
 	}
@@ -374,11 +439,21 @@ func (b *Broker) admit(ctx context.Context, req Request, now time.Time) (*Grant,
 }
 
 // wantMatchesPledge reports whether the pledge is of a kind any of the
-// requested wants would take — the eligibility filter for the "how many
-// pledges did the walk actually consider?" count.
+// requested wants ∩ pool vocabulary — the eligibility filter for the "how
+// many pledges did the walk actually consider?" count.
 func wantMatchesPledge(wants []Credential, p Pledge) bool {
 	for _, w := range wants {
 		if p.Source == w.Source && p.Ref == w.Ref {
+			return true
+		}
+	}
+	return false
+}
+
+// poolIDsContain reports whether id is among the named pools.
+func poolIDsContain(ids []string, id string) bool {
+	for _, v := range ids {
+		if v == id {
 			return true
 		}
 	}
@@ -396,7 +471,7 @@ func (b *Broker) acquireKind(ctx context.Context, pool Pool, candidates []Pledge
 		return nil, skips, nil
 	}
 
-	ranked, err := b.rank(ctx, eligible, now)
+	ranked, err := b.rank(ctx, eligible, now, req.RankMode)
 	if err != nil {
 		return nil, skips, err
 	}
@@ -445,6 +520,18 @@ func eligiblePledges(candidates []Pledge, req Request, want Credential, now time
 			continue
 		}
 		if ok, status := p.AvailableForLaunch(now, req.BotID); ok {
+			// The margin skip fires HERE — the single site both the live
+			// walk (acquireKind) and the preview walk share, so they cannot
+			// diverge on who is near limit. A near-limit entry yields to
+			// the next candidate with a reset instant the publisher arms
+			// its durable retry on.
+			if req.ClosedAtMargin != nil {
+				reopenAt, near := req.ClosedAtMargin(p)
+				if near {
+					skips = append(skips, PledgeSkip{PledgeID: p.ID, Status: StatusNearLimit, ReopenAt: reopenAt})
+					continue
+				}
+			}
 			eligible = append(eligible, p)
 		} else {
 			skips = append(skips, PledgeSkip{PledgeID: p.ID, Status: status})
@@ -502,7 +589,43 @@ func (b *Broker) resolvePools(ctx context.Context, req Request) (poolsEnabled in
 	if err != nil {
 		return 0, nil, err
 	}
+	// A private pool answers NOTHING without an explicit pool attachment —
+	// no audience walk, no door probe, no whole-bundle tier. It is filtered
+	// here, before the count, so the abstention's numbers stay honest: the
+	// attachment path reaches it by explicit PoolIDs, where the attachment
+	// itself is the consent (ADR-164).
+	visible := make([]Pool, 0, len(pools))
+	for _, p := range pools {
+		if p.EffectiveVisibility() == PoolVisibilityPrivate && !poolIDsContain(req.PoolIDs, p.ID) {
+			continue
+		}
+		visible = append(visible, p)
+	}
+	pools = visible
 	poolsEnabled = len(pools)
+	if len(req.PoolIDs) > 0 {
+		// The attachment path: ONLY the named pools, admitted whatever
+		// their audience says — the attachment is the consent. The
+		// own-org sort and the reciprocity lookup are the legacy walk's
+		// concerns and stay out of it.
+		allowed = make([]poolCandidates, 0, len(pools))
+		for _, pool := range pools {
+			if !poolIDsContain(req.PoolIDs, pool.ID) {
+				continue
+			}
+			candidates, lerr := b.pledges.ListByPool(ctx, pool.ID)
+			if lerr != nil {
+				return 0, nil, lerr
+			}
+			allowed = append(allowed, poolCandidates{pool: pool, candidates: candidates})
+		}
+		if len(allowed) == 0 {
+			// Every named pool is disabled or unknown — the attachment
+			// resolves to nothing; the abstention says so honestly.
+			return poolsEnabled, nil, noDonor(ReasonNoEnabledPool, poolsEnabled, 0, 0, nil)
+		}
+		return poolsEnabled, allowed, nil
+	}
 	if poolsEnabled == 0 {
 		return 0, nil, noDonor(ReasonNoEnabledPool, 0, 0, 0, nil)
 	}
@@ -546,6 +669,27 @@ func (b *Broker) resolvePools(ctx context.Context, req Request) (poolsEnabled in
 	return poolsEnabled, allowed, nil
 }
 
+// HasPool reports whether a named pool exists AND is enabled — the fold's
+// refuse-at-launch check (ADR-164): an attachment naming a pool that has
+// vanished or been switched off must refuse the launch naming the level,
+// never fold around it. An unknown or disabled pool is the same answer:
+// the attachment resolves to nothing the run may draw on.
+func (b *Broker) HasPool(ctx context.Context, poolID string) (bool, error) {
+	if b == nil || poolID == "" {
+		return false, nil
+	}
+	pools, err := b.pools.ListEnabled(ctx)
+	if err != nil {
+		return false, err
+	}
+	for _, p := range pools {
+		if p.ID == poolID {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // HasFallbackDonors reports whether ANY audience-admitted pool holds a
 // pledge the door could consider: matching one of the wants, marked
 // `fallback_use`, not the requester. It is the door's AMORTIZATION probe
@@ -579,10 +723,14 @@ func (b *Broker) HasFallbackDonors(ctx context.Context, req Request) (bool, erro
 	return false, nil
 }
 
-// rank orders eligible pledges by fairness: least consumed today first
-// (as a fraction of what the donor offered, so a small pledge is not
-// drained before a large one), ties broken by least-recently served.
-func (b *Broker) rank(ctx context.Context, eligible []Pledge, now time.Time) ([]Pledge, error) {
+// rank orders eligible pledges. least_consumed (the legacy ranking, and the
+// zero RankMode): least consumed today first — as a fraction of what the
+// donor offered, so a small pledge is not drained before a large one — ties
+// broken by least-recently served. priority (ADR-164): the operator's
+// explicit order wins — lower Priority first; equal priorities keep
+// forfaits before metered keys (a free forfait rides ahead of a paid key —
+// the poolWantOrder philosophy), then the legacy fairness comparison.
+func (b *Broker) rank(ctx context.Context, eligible []Pledge, now time.Time, mode StrategyMode) ([]Pledge, error) {
 	ids := make([]string, 0, len(eligible))
 	for _, p := range eligible {
 		ids = append(ids, p.ID)
@@ -607,6 +755,19 @@ func (b *Broker) rank(ctx context.Context, eligible []Pledge, now time.Time) ([]
 	ranked := make([]Pledge, len(eligible))
 	copy(ranked, eligible)
 	sort.SliceStable(ranked, func(i, j int) bool {
+		if mode == StrategyPriority {
+			// The operator's explicit order outranks the fairness score;
+			// equal priorities fall through to forfaits-before-metered and
+			// then the legacy comparison, so a pool of equal-priority
+			// entries still rotates fairly.
+			if ranked[i].Priority != ranked[j].Priority {
+				return ranked[i].Priority < ranked[j].Priority
+			}
+			mi, mj := ranked[i].Source.Metered(), ranked[j].Source.Metered()
+			if mi != mj {
+				return !mi
+			}
+		}
 		si, sj := score(ranked[i]), score(ranked[j])
 		if si != sj {
 			return si < sj
@@ -658,6 +819,46 @@ func (b *Broker) tryPledge(ctx context.Context, pool Pool, p Pledge, req Request
 		return nil, "", err
 	}
 
+	// The ATTACHMENT row first (ADR-164): the borrower scope's draw caps are
+	// the cheaper refusal, and denying here consumes nothing of the donor's.
+	// The run's leases are read once, here, for both the attachment's
+	// readmission test and the acquisition floor below.
+	prev, err := b.leases.ListByRun(ctx, req.RunID)
+	if err != nil {
+		return nil, "", fmt.Errorf("credpool: read the run's leases for the acquisition floor: %w", err)
+	}
+	var (
+		attRemaining float64
+		attDeny      DenyReason
+		attReadmit   bool
+	)
+	if req.AttachmentID != "" {
+		for _, l := range prev {
+			if l.AttachmentID == req.AttachmentID {
+				attReadmit = true
+				break
+			}
+		}
+		attRuns, attCommitted, aerr := b.leases.LiveCommitmentByAttachment(ctx, req.AttachmentID, req.RunID, now)
+		if aerr != nil {
+			return nil, "", aerr
+		}
+		attLive := LiveCommitment{Runs: attRuns, CommittedUSD: attCommitted}
+		if attReadmit {
+			attRemaining, attDeny, aerr = b.ledger.Renew(ctx, AttachmentLedgerID(req.AttachmentID), now, req.DrawLimits.AsLimits(), attLive)
+		} else {
+			attRemaining, attDeny, aerr = b.ledger.Reserve(ctx, AttachmentLedgerID(req.AttachmentID), now, req.DrawLimits.AsLimits(), attLive)
+		}
+		if aerr != nil {
+			return nil, "", aerr
+		}
+		if attDeny != DenyNone {
+			// The SCOPE is capped out — honest display state: exhausted, the
+			// borrower's own ceiling, not the donor's.
+			return nil, StatusExhausted, nil
+		}
+	}
+
 	var remaining float64
 	var deny DenyReason
 	if readmitting { //nolint:staticcheck // reads better than an inverted condition
@@ -665,19 +866,34 @@ func (b *Broker) tryPledge(ctx context.Context, pool Pool, p Pledge, req Request
 	} else {
 		remaining, deny, err = b.ledger.Reserve(ctx, p.ID, now, p.Limits, live)
 	}
+	// The donor's row refusing or erroring must give the ATT: row back
+	// BEFORE the walk moves to the next candidate — otherwise every
+	// capped-out donor in the ranking burns the borrower scope another
+	// run unit (a K-donor walk costs K+1 draws for one run), and the
+	// refusal's early return keeps the att: reservation of an acquisition
+	// that never happened.
 	if err != nil {
+		if req.AttachmentID != "" && !attReadmit {
+			b.releaseReservation(ctx, AttachmentLedgerID(req.AttachmentID), now)
+		}
 		return nil, "", err
 	}
 	if deny != DenyNone {
+		if req.AttachmentID != "" && !attReadmit {
+			b.releaseReservation(ctx, AttachmentLedgerID(req.AttachmentID), now)
+		}
 		b.logger.Debug("credpool: pledge %s declined run %s (%s)", p.ID, req.RunID, deny)
 		return nil, deny.skipStatus(live), nil
 	}
 
 	// From here on, any failure must give back whatever was consumed.
-	// Renew consumed nothing, so it has nothing to return.
+	// Renew consumed nothing, so it has nothing to return — on either row.
 	release := func() {
 		if !readmitting {
 			b.releaseReservation(ctx, p.ID, now)
+		}
+		if req.AttachmentID != "" && !attReadmit {
+			b.releaseReservation(ctx, AttachmentLedgerID(req.AttachmentID), now)
 		}
 	}
 
@@ -698,30 +914,27 @@ func (b *Broker) tryPledge(ctx context.Context, pool Pool, p Pledge, req Request
 	// an attempt's report can tell its own lease from a successor's.
 	// Advisory under concurrency (two acquisitions read before either
 	// writes): the tie then resolves by lease id, deterministically.
-	prev, err := b.leases.ListByRun(ctx, req.RunID)
-	if err != nil {
-		release()
-		return nil, "", fmt.Errorf("credpool: read the run's leases for the acquisition floor: %w", err)
-	}
 	acquiredAt := now
 	for i := range prev {
 		acquiredAt = nextAcquiredAt(acquiredAt, &prev[i].AcquiredAt)
 	}
 	lease := Lease{
-		ID:              uuid.NewString(),
-		RunID:           req.RunID,
-		PledgeID:        p.ID,
-		PoolID:          pool.ID,
-		DonorID:         p.UserID,
-		Fingerprint:     cred.fingerprint,
-		TenantID:        req.TenantID,
-		RequesterID:     req.UserID,
-		BotID:           req.BotID,
-		Credential:      p.Credential,
-		GrantedCostUSD:  remaining,
-		ConsumedRunUnit: !readmitting,
-		AcquiredAt:      acquiredAt,
-		ExpiresAt:       acquiredAt.Add(b.leaseTTL),
+		ID:                 uuid.NewString(),
+		RunID:              req.RunID,
+		PledgeID:           p.ID,
+		PoolID:             pool.ID,
+		DonorID:            p.UserID,
+		Fingerprint:        cred.fingerprint,
+		TenantID:           req.TenantID,
+		RequesterID:        req.UserID,
+		BotID:              req.BotID,
+		Credential:         p.Credential,
+		GrantedCostUSD:     remaining,
+		ConsumedRunUnit:    !readmitting,
+		AcquiredAt:         acquiredAt,
+		ExpiresAt:          acquiredAt.Add(b.leaseTTL),
+		AttachmentID:       req.AttachmentID,
+		AttConsumedRunUnit: req.AttachmentID != "" && !attReadmit,
 	}
 	if err := b.leases.Put(ctx, lease); err != nil {
 		release()
@@ -737,19 +950,43 @@ func (b *Broker) tryPledge(ctx context.Context, pool Pool, p Pledge, req Request
 	b.logger.Info("credpool: run %s served by donor %s (%s, allowance=$%.2f%s)",
 		req.RunID, p.UserID, p.Credential, remaining, meteredNote(p.Source))
 	return &Grant{
-		PledgeID:             p.ID,
-		DonorID:              p.UserID,
-		Credential:           p.Credential,
-		Payload:              cred.payload,
-		Fingerprint:          cred.fingerprint,
-		RecordID:             cred.recordID,
-		RecordConnectedAt:    cred.connectedAt,
-		KeyMaxConcurrentRuns: cred.maxConcurrentRuns,
-		KeyName:              cred.name,
-		RemainingUSD:         remaining,
-		AcquiredAt:           lease.AcquiredAt,
-		releaseGuard:         &ReleaseGuard{lease: lease},
+		PledgeID:               p.ID,
+		DonorID:                p.UserID,
+		Credential:             p.Credential,
+		Payload:                cred.payload,
+		Fingerprint:            cred.fingerprint,
+		RecordID:               cred.recordID,
+		RecordConnectedAt:      cred.connectedAt,
+		KeyMaxConcurrentRuns:   cred.maxConcurrentRuns,
+		KeyName:                cred.name,
+		BaseURL:                cred.baseURL,
+		Backend:                p.Backend,
+		Model:                  p.Model,
+		AttachmentID:           req.AttachmentID,
+		AttachmentRemainingUSD: attRemaining,
+		RemainingUSD:           remaining,
+		AcquiredAt:             lease.AcquiredAt,
+		releaseGuard:           &ReleaseGuard{lease: lease},
 	}, "", nil
+}
+
+// VerifyEntry checks a pledge names a credential its lender actually
+// holds — the SAME open path an acquisition runs, without granting: an
+// oauth record under the lender's key (or a key row in the pledged
+// scope), unsealable, not gone. One truth for what "lending requires
+// holding" means; the management routes refuse on its answer.
+func (b *Broker) VerifyEntry(ctx context.Context, p Pledge) error {
+	if b == nil {
+		return nil
+	}
+	_, gone, err := b.openCredential(ctx, p, b.now())
+	if err != nil {
+		return err
+	}
+	if gone != "" {
+		return errors.New(gone)
+	}
+	return nil
 }
 
 // meteredNote flags, in the launch log, the case where the allowance is
@@ -772,6 +1009,9 @@ type openedCredential struct {
 	// empty for a subscription.
 	maxConcurrentRuns int
 	name              string
+	// baseURL is the lent gateway key's canonical endpoint
+	// (Grant.BaseURL); empty for a subscription and a vendor key.
+	baseURL string
 }
 
 // openCredential unseals whatever the pledge lends. It returns a non-empty
@@ -815,15 +1055,25 @@ func (b *Broker) openCredential(ctx context.Context, p Pledge, now time.Time) (c
 		if b.apiKeys == nil {
 			return openedCredential{}, "", fmt.Errorf("credpool: no api-key store wired; cannot serve %s", p.Credential)
 		}
-		// GetOwned, not Get: this read runs on the BORROWER's context, in
-		// another tenant than the donor's, and the tenant-scoped Get would
-		// find nothing — parking an innocent donor's pledge with "the lent
-		// API key was deleted" on every cross-team draw, which is every
-		// draw a pool exists for.
-		k, gerr := b.apiKeys.GetOwned(ctx, p.KeyID, p.UserID)
+		// Operator-pushed entries (LendScope set) read by the RESERVED
+		// scope the pledge names — the org/platform tiers' sentinel-tenant
+		// rows, which carry no personal owner. Personal lenders keep the
+		// GetOwned read.
+		var k secrets.ApiKey
+		var gerr error
+		if p.LendScope != "" {
+			k, gerr = b.apiKeys.GetForLend(ctx, p.KeyID, p.LendScope)
+		} else {
+			// GetOwned, not Get: this read runs on the BORROWER's context, in
+			// another tenant than the donor's, and the tenant-scoped Get would
+			// find nothing — parking an innocent donor's pledge with "the lent
+			// API key was deleted" on every cross-team draw, which is every
+			// draw a pool exists for.
+			k, gerr = b.apiKeys.GetOwned(ctx, p.KeyID, p.UserID)
+		}
 		if gerr != nil {
 			if errors.Is(gerr, secrets.ErrApiKeyNotFound) {
-				return openedCredential{}, "the lent API key was deleted — pledge another to resume sharing", nil
+				return openedCredential{}, "the lent API key was deleted or moved out of its pledged scope — pledge another to resume sharing", nil
 			}
 			return openedCredential{}, "", gerr
 		}
@@ -845,7 +1095,7 @@ func (b *Broker) openCredential(ctx context.Context, p Pledge, now time.Time) (c
 		// the derivation from the plaintext stays the fallback. The key's
 		// own concurrency cap rides with it: the borrower's launch is
 		// admitted against it like the donor's own.
-		return openedCredential{payload: pt, fingerprint: k.Fingerprint, maxConcurrentRuns: k.MaxConcurrentRuns, name: k.Name}, "", nil
+		return openedCredential{payload: pt, fingerprint: k.Fingerprint, maxConcurrentRuns: k.MaxConcurrentRuns, name: k.Name, baseURL: k.BaseURL}, "", nil
 	}
 	return openedCredential{}, "", fmt.Errorf("credpool: unknown credential source %q", p.Source)
 }
@@ -1034,6 +1284,13 @@ func (b *Broker) releaseLease(ctx context.Context, lease Lease) {
 	// a failed launch and let the donor be drawn on past their own ceiling.
 	if lease.ConsumedRunUnit {
 		b.releaseReservation(ctx, lease.PledgeID, lease.AcquiredAt)
+	}
+	// The att: row refunds on ITS OWN admission truth — gating on the
+	// donor's ConsumedRunUnit would under-count when a resume renews the
+	// att: row while consuming a NEW donor's unit (a different pledge
+	// serving the same attachment).
+	if lease.AttachmentID != "" && lease.AttConsumedRunUnit {
+		b.releaseReservation(ctx, AttachmentLedgerID(lease.AttachmentID), lease.AcquiredAt)
 	}
 	b.logger.Info("credpool: run %s never launched — returned donor %s's admission", lease.RunID, lease.DonorID)
 }
@@ -1250,6 +1507,40 @@ func (b *Broker) ReportAttempt(ctx context.Context, runID string, attemptPublish
 	}
 	now := b.now()
 
+	// The SIDE-BY-SIDE shape (ADR-164 per-slot sealing): the run holds
+	// MULTIPLE open leases of this same attempt — one per sealed slot.
+	// Each donor is charged the fingerprint slice THEIR credential served
+	// (the fine table keys on fingerprint), and each lease closes its own
+	// CAS: no donor's slice books on a sibling's lease, and no lease
+	// stays open to hold a slot for a run that already settled its
+	// siblings. A single open lease keeps today's path byte for byte.
+	if open, oerr := b.leases.ListOpenByRun(ctx, runID); oerr == nil && len(open) > 1 {
+		charged := false
+		for i := range open {
+			l := open[i]
+			// The attempt's own lease is charged through the standard
+			// path below (its supersede/CAS semantics stay exact); the
+			// SIBLINGS charge here, each its own slice.
+			if l.ID == lease.ID {
+				continue
+			}
+			slice := out.effectiveCharge(l.Fingerprint)
+			won, cerr := b.leases.Close(ctx, l.ID, slice.CostUSD, "ok", now)
+			if cerr != nil {
+				b.logger.Warn("credpool: could not close the sibling lease %s of run %s: %v", l.ID, runID, cerr)
+				continue
+			}
+			if !won {
+				continue
+			}
+			if cerr := b.chargeAndReact(ctx, l, slice, now, runID); cerr != nil {
+				b.logger.Warn("credpool: sibling charge failed on lease %s: %v", l.ID, cerr)
+			}
+			charged = true
+		}
+		_ = charged
+	}
+
 	// The fine attribution resolves ONCE, against THIS lease's credential:
 	// everything below - the superseded stamp, the interim add, the close,
 	// the ledger debit - books the resolved slice, never the raw aggregate.
@@ -1338,6 +1629,15 @@ func (b *Broker) chargeAndReact(ctx context.Context, lease Lease, out Outcome, n
 			// donation in silence.
 			b.logger.Error("credpool: run %s spent $%.4f on donor %s but the charge failed: %v (their ledger under-reports it)", runID, out.CostUSD, lease.DonorID, err)
 			return fmt.Errorf("credpool: charge donor: %w", err)
+		}
+		// The borrower's own draw caps book the same slice on the att: row,
+		// at the same acquisition instant. A failed booking only LOOSENS a
+		// borrower cap (no donor is cheated), so it warns instead of
+		// failing the report.
+		if lease.AttachmentID != "" {
+			if err := b.ledger.AddSpend(ctx, AttachmentLedgerID(lease.AttachmentID), lease.AcquiredAt, out.CostUSD, out.InputTokens, out.OutputTokens, out.AggregateTokens); err != nil {
+				b.logger.Error("credpool: run %s spent on attachment %s but the draw charge failed: %v (the borrower's att: row under-reports it)", runID, lease.AttachmentID, err)
+			}
 		}
 	}
 

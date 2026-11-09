@@ -321,6 +321,63 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/admin/llm/pool-attachment": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /api/admin/llm/pool-attachment */
+        get: operations["getAdminLlmPoolAttachment"];
+        /** PUT /api/admin/llm/pool-attachment */
+        put: operations["putAdminLlmPoolAttachment"];
+        post?: never;
+        /** DELETE /api/admin/llm/pool-attachment */
+        delete: operations["deleteAdminLlmPoolAttachment"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/llm/pools": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /api/admin/llm/pools */
+        get: operations["getAdminLlmPools"];
+        put?: never;
+        /** POST /api/admin/llm/pools */
+        post: operations["postAdminLlmPools"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/llm/pools/sync": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * POST /api/admin/llm/pools/sync
+         * @description Super-admin only. Runs one pool-signal-sync sweep inline (the onboarding proof).
+         */
+        post: operations["postAdminLlmPoolsSync"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/admin/orgs": {
         parameters: {
             query?: never;
@@ -1634,6 +1691,24 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/me/pools": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /api/me/pools */
+        get: operations["getMePools"];
+        put?: never;
+        /** POST /api/me/pools */
+        post: operations["postMePools"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/me/secrets": {
         parameters: {
             query?: never;
@@ -2220,6 +2295,47 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/orgs/{id}/pool-attachment": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/orgs/{id}/pool-attachment */
+        get: operations["getOrgsByIdPoolAttachment"];
+        /** PUT /api/orgs/{id}/pool-attachment */
+        put: operations["putOrgsByIdPoolAttachment"];
+        post?: never;
+        /** DELETE /api/orgs/{id}/pool-attachment */
+        delete: operations["deleteOrgsByIdPoolAttachment"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/orgs/{id}/pools": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/orgs/{id}/pools */
+        get: operations["getOrgsByIdPools"];
+        put?: never;
+        /** POST /api/orgs/{id}/pools */
+        post: operations["postOrgsByIdPools"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/orgs/{id}/price-feeds": {
         parameters: {
             query?: never;
@@ -2552,6 +2668,111 @@ export interface paths {
         put?: never;
         /** POST /api/parse */
         post: operations["postParse"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/pools/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        /** PUT /api/pools/{id} */
+        put: operations["putPoolsById"];
+        post?: never;
+        /** DELETE /api/pools/{id} */
+        delete: operations["deletePoolsById"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/pools/{id}/entries": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/pools/{id}/entries */
+        get: operations["getPoolsByIdEntries"];
+        /** PUT /api/pools/{id}/entries */
+        put: operations["putPoolsByIdEntries"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/pools/{id}/entries/import": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * POST /api/pools/{id}/entries/import
+         * @description Pool-manager only. Seals a subscription credentials blob verbatim under the pool's lender key and pledges it; a shape with no funding lane answers inert with a named reason.
+         */
+        post: operations["postPoolsByIdEntriesImport"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/pools/{id}/entries/{pledge}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                pledge: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** DELETE /api/pools/{id}/entries/{pledge} */
+        delete: operations["deletePoolsByIdEntriesByPledge"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/pools/{id}/entries/{pledge}/reset": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                pledge: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * POST /api/pools/{id}/entries/{pledge}/reset
+         * @description Pool-manager only. Clears the provider cooldown, forgets the stale readings the margin skip acted on, resets held state.
+         */
+        post: operations["postPoolsByIdEntriesByPledgeReset"];
         delete?: never;
         options?: never;
         head?: never;
@@ -4282,6 +4503,28 @@ export interface paths {
         patch: operations["patchTeamsByIdBotsByBotIdBindingsByBindingId"];
         trace?: never;
     };
+    "/api/teams/{id}/bots/{bot}/pool-attachment": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                bot: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/teams/{id}/bots/{bot}/pool-attachment */
+        get: operations["getTeamsByIdBotsByBotPoolAttachment"];
+        /** PUT /api/teams/{id}/bots/{bot}/pool-attachment */
+        put: operations["putTeamsByIdBotsByBotPoolAttachment"];
+        post?: never;
+        /** DELETE /api/teams/{id}/bots/{bot}/pool-attachment */
+        delete: operations["deleteTeamsByIdBotsByBotPoolAttachment"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/teams/{id}/config-editor/shares": {
         parameters: {
             query?: never;
@@ -5060,6 +5303,27 @@ export interface paths {
         put: operations["putTeamsByIdPool"];
         post?: never;
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/teams/{id}/pool-attachment": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/teams/{id}/pool-attachment */
+        get: operations["getTeamsByIdPoolAttachment"];
+        /** PUT /api/teams/{id}/pool-attachment */
+        put: operations["putTeamsByIdPoolAttachment"];
+        post?: never;
+        /** DELETE /api/teams/{id}/pool-attachment */
+        delete: operations["deleteTeamsByIdPoolAttachment"];
         options?: never;
         head?: never;
         patch?: never;
@@ -6511,6 +6775,12 @@ export interface components {
             value_from_revision?: boolean;
             version: number;
         };
+        Audience: {
+            all_teams?: boolean;
+            contributors?: boolean;
+            orgs?: string[];
+            teams?: string[];
+        };
         AuthMeResponse: {
             active_org_id?: string;
             active_org_role?: string;
@@ -6951,6 +7221,10 @@ export interface components {
             status: string;
             version: number;
         };
+        DrawLimits: {
+            max_runs_per_day?: number;
+            max_usd_per_day?: number;
+        };
         Entry: {
             backends?: string[];
             context_window: number;
@@ -7182,6 +7456,12 @@ export interface components {
             last_reason?: string;
             /** Format: date-time */
             not_before?: string;
+        };
+        Limits: {
+            max_concurrent_runs?: number;
+            max_runs_per_day?: number;
+            max_usd_per_day?: number;
+            max_usd_per_week?: number;
         };
         LineageContext: {
             parent_node_id?: string;
@@ -7694,6 +7974,12 @@ export interface components {
             state: string;
             status: string;
         };
+        Strategy: {
+            margin_pct?: number;
+            mode?: string;
+            reset_hold?: boolean;
+            triggers?: string[];
+        };
         Subscription: {
             args_var?: string;
             bot_id: string;
@@ -7797,6 +8083,12 @@ export interface components {
             /** Format: date-time */
             updated_at?: string;
             watcher_id?: string;
+        };
+        Window: {
+            end_hour: number;
+            start_hour: number;
+            timezone?: string;
+            weekdays?: number[];
         };
         WireEdge: {
             condition?: string;
@@ -7966,6 +8258,15 @@ export interface components {
             refused_until?: string;
             repos: string[];
             scope_user_id?: string;
+        };
+        attachmentView: {
+            enabled: boolean;
+            limits: components["schemas"]["DrawLimits"];
+            pool_id: string;
+            scope_id: string;
+            strategy: components["schemas"]["Strategy"];
+            /** Format: date-time */
+            updated_at?: string;
         };
         boardBindingReq: {
             connection_id: string;
@@ -8302,6 +8603,18 @@ export interface components {
             model?: string;
             set: boolean;
         };
+        namedPoolView: {
+            audience: components["schemas"]["Audience"];
+            enabled: boolean;
+            id: string;
+            name?: string;
+            org_id?: string;
+            owner_id?: string;
+            owner_type: string;
+            /** Format: date-time */
+            updated_at?: string;
+            visibility: string;
+        };
         oauthConnectionView: {
             access_token_expires_at?: string;
             account_checked_at?: string;
@@ -8414,6 +8727,68 @@ export interface components {
             routing_effective?: components["schemas"]["RunLLMRoutePolicy"];
             routing_effective_scope: string;
             stored?: components["schemas"]["PlatformCredentials"];
+        };
+        poolAttachmentRequest: {
+            enabled?: boolean;
+            /** Format: date-time */
+            expected_updated_at?: string;
+            margin_pct?: number;
+            max_runs_per_day?: number;
+            max_usd_per_day?: number;
+            mode?: string;
+            pool_id: string;
+            reset_hold?: boolean;
+            triggers?: string[];
+        };
+        poolCreateRequest: {
+            audience?: components["schemas"]["Audience"];
+            enabled?: boolean;
+            name?: string;
+            visibility?: string;
+        };
+        poolEntryRequest: {
+            backend?: string;
+            bots?: string[];
+            enabled?: boolean;
+            fallback_use?: boolean;
+            key_id?: string;
+            lend_scope?: string;
+            limits?: components["schemas"]["Limits"];
+            model?: string;
+            priority?: number;
+            ref: string;
+            source: string;
+            window?: components["schemas"]["Window"];
+        };
+        poolEntryView: {
+            backend?: string;
+            /** Format: date-time */
+            cooldown_until?: string;
+            enabled: boolean;
+            health: string;
+            health_detail?: string;
+            id: string;
+            key_id?: string;
+            lender: string;
+            limits: components["schemas"]["Limits"];
+            model?: string;
+            pool_id: string;
+            priority?: number;
+            ref: string;
+            source: string;
+            status: string;
+        };
+        poolImportRequest: {
+            credentials_json: string;
+            model?: string;
+            priority?: number;
+            source: string;
+        };
+        poolPutRequest: {
+            audience?: components["schemas"]["Audience"];
+            enabled?: boolean;
+            name?: string;
+            visibility?: string;
         };
         previewBackendOption: {
             unavailable_reason?: string;
@@ -9349,6 +9724,222 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
+            /** @description The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getAdminLlmPoolAttachment: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["attachmentView"];
+                };
+            };
+            /** @description The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    putAdminLlmPoolAttachment: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["poolAttachmentRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["attachmentView"];
+                };
+            };
+            /** @description The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    deleteAdminLlmPoolAttachment: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: string;
+                    };
+                };
+            };
+            /** @description The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getAdminLlmPools: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["namedPoolView"][];
+                };
+            };
+            /** @description The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    postAdminLlmPools: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["poolCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["namedPoolView"];
+                };
+            };
+            /** @description The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    postAdminLlmPoolsSync: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: string;
+                    };
+                };
+            };
             /** @description The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone. */
             401: {
                 headers: {
@@ -11776,6 +12367,50 @@ export interface operations {
             };
         };
     };
+    getMePools: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["namedPoolView"][];
+                };
+            };
+        };
+    };
+    postMePools: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["poolCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["namedPoolView"];
+                };
+            };
+        };
+    };
     getMeSecrets: {
         parameters: {
             query?: never;
@@ -12705,6 +13340,126 @@ export interface operations {
             };
         };
     };
+    getOrgsByIdPoolAttachment: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["attachmentView"];
+                };
+            };
+        };
+    };
+    putOrgsByIdPoolAttachment: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["poolAttachmentRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["attachmentView"];
+                };
+            };
+        };
+    };
+    deleteOrgsByIdPoolAttachment: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: string;
+                    };
+                };
+            };
+        };
+    };
+    getOrgsByIdPools: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["namedPoolView"][];
+                };
+            };
+        };
+    };
+    postOrgsByIdPools: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["poolCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["namedPoolView"];
+                };
+            };
+        };
+    };
     getOrgsByIdPriceFeeds: {
         parameters: {
             query?: never;
@@ -13255,6 +14010,178 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    putPoolsById: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["poolPutRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["namedPoolView"];
+                };
+            };
+        };
+    };
+    deletePoolsById: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: string;
+                    };
+                };
+            };
+        };
+    };
+    getPoolsByIdEntries: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["poolEntryView"][];
+                };
+            };
+        };
+    };
+    putPoolsByIdEntries: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["poolEntryRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["poolEntryView"];
+                };
+            };
+        };
+    };
+    postPoolsByIdEntriesImport: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["poolImportRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["poolEntryView"];
+                };
+            };
+        };
+    };
+    deletePoolsByIdEntriesByPledge: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                pledge: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: string;
+                    };
+                };
+            };
+        };
+    };
+    postPoolsByIdEntriesByPledgeReset: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                pledge: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["poolEntryView"];
+                };
             };
         };
     };
@@ -15610,6 +16537,81 @@ export interface operations {
             };
         };
     };
+    getTeamsByIdBotsByBotPoolAttachment: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                bot: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["attachmentView"];
+                };
+            };
+        };
+    };
+    putTeamsByIdBotsByBotPoolAttachment: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                bot: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["poolAttachmentRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["attachmentView"];
+                };
+            };
+        };
+    };
+    deleteTeamsByIdBotsByBotPoolAttachment: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                bot: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: string;
+                    };
+                };
+            };
+        };
+    };
     getTeamsByIdConfigEditorShares: {
         parameters: {
             query?: never;
@@ -16933,6 +17935,78 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    getTeamsByIdPoolAttachment: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["attachmentView"];
+                };
+            };
+        };
+    };
+    putTeamsByIdPoolAttachment: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["poolAttachmentRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["attachmentView"];
+                };
+            };
+        };
+    };
+    deleteTeamsByIdPoolAttachment: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: string;
+                    };
+                };
             };
         };
     };

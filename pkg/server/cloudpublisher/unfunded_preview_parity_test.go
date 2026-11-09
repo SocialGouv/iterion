@@ -23,7 +23,7 @@ func resolveWithRouting(t *testing.T, p *Publisher, src string, policy *store.Ru
 	t.Helper()
 	wf := compileTestSource(t, src)
 	ctx := store.WithTenant(context.Background(), "team1")
-	creds, err := p.resolveAndSealCredentials(ctx, "run-ladder", "", "team1", "owner1", "", "", wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustDefault, nil, policy)
+	creds, err := p.resolveAndSealCredentials(ctx, "run-ladder", "", "team1", "owner1", "", "", wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustDefault, nil, policy, nil)
 	return wf, creds, err
 }
 
@@ -401,7 +401,7 @@ func resolveAsLaunched(t *testing.T, p *Publisher, src string) error {
 		t.Fatalf("runnerPoolForTeam: %v", err)
 	}
 	wf := compileTestSource(t, src)
-	_, rerr := p.resolveAndSealCredentials(ctx, "run-pooled", "", "team1", "owner1", "", pool, wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustDefault, nil, nil)
+	_, rerr := p.resolveAndSealCredentials(ctx, "run-pooled", "", "team1", "owner1", "", pool, wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustDefault, nil, nil, nil)
 	return rerr
 }
 

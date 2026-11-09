@@ -2,9 +2,11 @@ package cloudpublisher
 
 import (
 	"github.com/SocialGouv/iterion/pkg/backend/model"
+	"github.com/SocialGouv/iterion/pkg/credpool"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/llmroute"
 	"github.com/SocialGouv/iterion/pkg/runtime"
+	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -125,4 +127,55 @@ func snapshotFallbackRoutes(wf *ir.Workflow) func() {
 			}
 		}
 	}
+}
+
+// composeEntryRungs lands the sealed pool entries' fallback rungs (ADR-164):
+// one rung per sealed grant carrying an explicit route binding, AFTER the
+// operator's chain and the policy ladder — the run's fallback chain
+// literally ends at the paid gateway key. The Provider names the SLOT the
+// grant sealed (claude_forfait / anthropic_key / openai_compatible_key —
+// the vocabulary wantForSlot reverses), On carries the frozen triggers,
+// Metered marks the entries that spend real money. A grant without a
+// binding composes nothing: it funds whatever its slot natively serves,
+// and a rung naming nothing would be dead weight on every node. Same
+// advisory screen as composePolicyLadder; refusals land in the same
+// report.
+func composeEntryRungs(wf *ir.Workflow, view model.RouteView, grants []*credpool.Grant, triggers []string, launchVars map[string]string, refused func(string)) {
+	if wf == nil || len(grants) == 0 || len(triggers) == 0 {
+		return
+	}
+	entryIR := make([]ir.Fallback, 0, len(grants))
+	for _, g := range grants {
+		if g == nil || (g.Backend == "" && g.Model == "") {
+			continue
+		}
+		provider := slotOfProvider(secrets.Provider(g.Ref))
+		if g.Source == credpool.SourceOAuth {
+			provider = slotOfKind(g.Ref)
+		}
+		entryIR = append(entryIR, ir.Fallback{
+			Name:     ir.RunFallbackName,
+			Backend:  g.Backend,
+			Model:    g.Model,
+			Provider: provider,
+			On:       triggers,
+			Metered:  g.Source.Metered(),
+		})
+	}
+	if len(entryIR) == 0 {
+		return
+	}
+	sandboxed := runtime.WorkflowSandboxActive(wf, "", "")
+	report := func(refusals []string) {
+		if refused == nil {
+			return
+		}
+		for _, r := range refusals {
+			refused(r)
+		}
+	}
+	report(ir.ApplyRunFallback(wf, entryIR, sandboxed, launchVars, func(n ir.LLMNode) string {
+		ov := view.Overrides.ForNode(n.NodeID(), n.NodeKind())
+		return ov.Backend
+	}))
 }

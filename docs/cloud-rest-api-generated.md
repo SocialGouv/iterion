@@ -70,6 +70,12 @@ registered by `board_forge.go`, `local_secrets_routes.go`, `notifications_routes
 | `POST` | `/api/admin/llm/oauth/{kind}/authorize/start` | platform admin | yes |
 | `POST` | `/api/admin/llm/oauth/{kind}/credentials` | platform admin | yes |
 | `POST` | `/api/admin/llm/oauth/{kind}/refresh` | platform admin | yes |
+| `DELETE` | `/api/admin/llm/pool-attachment` | platform admin | yes |
+| `GET` | `/api/admin/llm/pool-attachment` | platform admin | yes |
+| `PUT` | `/api/admin/llm/pool-attachment` | platform admin | yes |
+| `GET` | `/api/admin/llm/pools` | platform admin | yes |
+| `POST` | `/api/admin/llm/pools` | platform admin | yes |
+| `POST` | `/api/admin/llm/pools/sync` | platform admin | yes |
 | `GET` | `/api/admin/orgs` | platform admin | yes |
 | `POST` | `/api/admin/orgs` | platform admin | yes |
 | `DELETE` | `/api/admin/orgs/{id}` | platform admin | yes |
@@ -285,6 +291,8 @@ registered by `board_forge.go`, `local_secrets_routes.go`, `notifications_routes
 | `GET` | `/api/me/pool/history` | session | yes |
 | `DELETE` | `/api/me/pool/{source}/{ref}` | session | yes |
 | `PUT` | `/api/me/pool/{source}/{ref}` | session | yes |
+| `GET` | `/api/me/pools` | session | yes |
+| `POST` | `/api/me/pools` | session | yes |
 | `GET` | `/api/me/secrets` | session | yes |
 | `POST` | `/api/me/secrets` | session | yes |
 | `DELETE` | `/api/me/secrets/{secret_id}` | session | yes |
@@ -374,6 +382,11 @@ registered by `board_forge.go`, `local_secrets_routes.go`, `notifications_routes
 | `POST` | `/api/orgs/{id}/oauth/{kind}/authorize/start` | session | yes |
 | `POST` | `/api/orgs/{id}/oauth/{kind}/credentials` | session | yes |
 | `POST` | `/api/orgs/{id}/oauth/{kind}/refresh` | session | yes |
+| `DELETE` | `/api/orgs/{id}/pool-attachment` | session | yes |
+| `GET` | `/api/orgs/{id}/pool-attachment` | session | yes |
+| `PUT` | `/api/orgs/{id}/pool-attachment` | session | yes |
+| `GET` | `/api/orgs/{id}/pools` | session | yes |
+| `POST` | `/api/orgs/{id}/pools` | session | yes |
 | `GET` | `/api/orgs/{id}/price-feeds` | session | yes |
 | `PUT` | `/api/orgs/{id}/price-feeds` | session | yes |
 | `POST` | `/api/orgs/{id}/price-feeds/sync` | session | yes |
@@ -434,6 +447,18 @@ registered by `board_forge.go`, `local_secrets_routes.go`, `notifications_routes
 | `POST` | `/api/v1/plugins/{name}/disable` | platform admin | yes |
 | `POST` | `/api/v1/plugins/{name}/enable` | platform admin | yes |
 | `POST` | `/api/v1/plugins/{name}/lifecycle/{phase}` | platform admin | yes |
+
+## `/api/pools` family
+
+| Method | Path | Auth | Spec |
+|---|---|---|---|
+| `DELETE` | `/api/pools/{id}` | session | yes |
+| `PUT` | `/api/pools/{id}` | session | yes |
+| `GET` | `/api/pools/{id}/entries` | session | yes |
+| `PUT` | `/api/pools/{id}/entries` | session | yes |
+| `POST` | `/api/pools/{id}/entries/import` | session | yes |
+| `DELETE` | `/api/pools/{id}/entries/{pledge}` | session | yes |
+| `POST` | `/api/pools/{id}/entries/{pledge}/reset` | session | yes |
 
 ## `/api/preferences` family
 
@@ -589,6 +614,9 @@ registered by `board_forge.go`, `local_secrets_routes.go`, `notifications_routes
 | `POST` | `/api/teams/{id}/bots/{bot_id}/bindings` | session | yes |
 | `DELETE` | `/api/teams/{id}/bots/{bot_id}/bindings/{binding_id}` | session | yes |
 | `PATCH` | `/api/teams/{id}/bots/{bot_id}/bindings/{binding_id}` | session | yes |
+| `DELETE` | `/api/teams/{id}/bots/{bot}/pool-attachment` | session | yes |
+| `GET` | `/api/teams/{id}/bots/{bot}/pool-attachment` | session | yes |
+| `PUT` | `/api/teams/{id}/bots/{bot}/pool-attachment` | session | yes |
 | `GET` | `/api/teams/{id}/config-editor/shares` | session | yes |
 | `GET` | `/api/teams/{id}/config-editor/shares/{sid}/config` | session | yes |
 | `PATCH` | `/api/teams/{id}/config-editor/shares/{sid}/config` | session | yes |
@@ -650,6 +678,9 @@ registered by `board_forge.go`, `local_secrets_routes.go`, `notifications_routes
 | `PATCH` | `/api/teams/{id}/plugin-sources/{source_id}` | session | yes |
 | `GET` | `/api/teams/{id}/pool` | session | yes |
 | `PUT` | `/api/teams/{id}/pool` | session | yes |
+| `DELETE` | `/api/teams/{id}/pool-attachment` | session | yes |
+| `GET` | `/api/teams/{id}/pool-attachment` | session | yes |
+| `PUT` | `/api/teams/{id}/pool-attachment` | session | yes |
 | `GET` | `/api/teams/{id}/price-feeds` | session | yes |
 | `PUT` | `/api/teams/{id}/price-feeds` | session | yes |
 | `POST` | `/api/teams/{id}/price-feeds/sync` | session | yes |

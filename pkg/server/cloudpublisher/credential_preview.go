@@ -3,6 +3,7 @@ package cloudpublisher
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -163,7 +164,7 @@ func (p *Publisher) PreviewCredentials(ctx context.Context, spec runview.Credent
 	var err error
 	if envFunded {
 		// Nothing to walk: no stage acquires anything for this run.
-	} else if err = walkCredentialPlan(func() bool { return len(x.api)+len(x.oauth) > 0 }, func() bool { return x.poolGranted }, func(tier credentialTier, active bool) error {
+	} else if err = walkCredentialPlan(func() bool { return len(x.api)+len(x.oauth) > 0 }, func() bool { return x.poolGranted }, func() bool { return spec.PoolAttachment != nil && spec.PoolAttachment.PoolID != "" }, func(tier credentialTier, active bool) error {
 		switch tier {
 		case credentialTierBYOK:
 			if err := x.apiStage("", spec.Context.TeamID, spec.OwnerID, usagecap.TenantScope(spec.Context.TeamID), previewBotID, spec.Launch.KeyOverrides, false, true); err != nil {
@@ -195,6 +196,85 @@ func (p *Publisher) PreviewCredentials(ctx context.Context, spec runview.Credent
 			if sharedTiersBlocked {
 				x.warn("Pool not consulted: " + blockedPosture(sovereignPreview, runnerPool) + ".")
 				return nil
+			}
+			// The ATTACHED pool (ADR-164): the preview answers exactly what
+			// the live walk will draw — same named pool, same want order
+			// (the gateway want enters only through the attachment), same
+			// filled-slot gate (law 1), same margin predicate constructor
+			// (law 4's parity).
+			if spec.PoolAttachment != nil && spec.PoolAttachment.PoolID != "" {
+				attachedWants := wants
+				if !routes.NarrowSafe || slices.Contains(routes.Providers, string(secrets.ProviderOpenAICompatible)) {
+					attachedWants = append(append([]credpool.Credential{}, attachedWants...), credpool.Credential{Source: credpool.SourceAPIKey, Ref: string(secrets.ProviderOpenAICompatible)})
+				}
+				var marginFn func(credpool.Pledge) (time.Time, bool)
+				if slices.Contains(spec.PoolAttachment.Strategy.Triggers, "usage_window") {
+					marginFn = p.closedAtMargin(ctx, strategyMargin(spec.PoolAttachment.Strategy))
+				}
+				// Law 1's gate, exactly as the live walk: a slot tiers 1–4
+				// sealed (or the whitelist holds out) is not asked of the
+				// pool — a candidate the launch would never draw must not
+				// read as one it might.
+				asked := make([]credpool.Credential, 0, len(attachedWants))
+				for _, w := range attachedWants {
+					_, filled := false, false
+					switch w.Source {
+					case credpool.SourceOAuth:
+						_, filled = x.oauth[w.Ref]
+					case credpool.SourceAPIKey:
+						_, filled = x.api[secrets.Provider(w.Ref)]
+					}
+					if filled {
+						continue
+					}
+					slot := ""
+					switch w.Source {
+					case credpool.SourceOAuth:
+						slot = slotOfKind(w.Ref)
+					case credpool.SourceAPIKey:
+						slot = slotOfProvider(secrets.Provider(w.Ref))
+					}
+					if x.policy.sealableSlot(slot) {
+						asked = append(asked, w)
+					}
+				}
+				x.out.Pool.Considered = active
+				pool, err := p.credPool.Preview(ctx, credpool.Request{
+					OrgID: x.orgID, TenantID: spec.Context.TeamID, UserID: spec.OwnerID, BotID: spec.Context.BotID,
+					Wants: asked, PoolIDs: []string{spec.PoolAttachment.PoolID},
+					RankMode: credpool.StrategyMode(spec.PoolAttachment.Strategy.Mode), ClosedAtMargin: marginFn,
+				})
+				if err != nil {
+					x.out.Pool.Reason = "unknown"
+					x.conditional("Attached pool metadata unavailable; selection is conditional.")
+					break
+				}
+				if active {
+					x.out.Pool.Reason = string(pool.Reason)
+				}
+				for rank, d := range pool.Candidates {
+					c := runview.CredentialPreviewCandidate{Tier: "pool", Rank: rank, Source: string(d.Source), Provider: d.Ref, Wire: secrets.WireFamily(d.Ref), Label: "Key pool " + spec.PoolAttachment.PoolID, State: string(d.Status), Reason: d.Reason, Conditional: true, Windows: []runview.CredentialPreviewWindow{}, Capacity: &runview.CredentialPreviewCapacity{LiveRuns: d.LiveRuns, MaxConcurrentRuns: d.MaxConcurrentRuns, RemainingUSD: d.RemainingUSD}}
+					if d.Source == credpool.SourceAPIKey && d.Ref == string(secrets.ProviderOpenAICompatible) {
+						c.Label = "Key pool gateway entry (paired key+URL)"
+					}
+					if d.Status == credpool.StatusActive && d.Source == credpool.SourceAPIKey && d.Ref != string(secrets.ProviderOpenAICompatible) {
+						c.Reason = strings.TrimSpace(c.Reason + " reactive — no provider telemetry; gates on its provider cooldown alone.")
+					}
+					if !active {
+						c.Selection = "not_consulted"
+						c.Reason += " Pool is bypassed while any earlier credential is selected."
+					}
+					i := x.add(c)
+					if d.Selected && active {
+						x.poolGranted = true
+						if d.Source == credpool.SourceOAuth {
+							x.oauth[d.Ref] = i
+						} else {
+							x.api[secrets.Provider(d.Ref)] = i
+						}
+					}
+				}
+				break
 			}
 			// The live walk's own filter: a provider a key sealed for its
 			// routes already funds is not asked of the pool.

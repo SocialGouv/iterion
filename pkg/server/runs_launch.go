@@ -797,6 +797,14 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 		s.httpErrorFor(w, r, http.StatusUnprocessableEntity, "%v", routeErr)
 		return
 	}
+	// The pool attachment resolves beside the routing policy (ADR-164); an
+	// unreadable level, a vanished pool or a garbage block refuses the
+	// launch the same way.
+	poolAttachment, poolErr := s.resolveRunPoolAttachment(r.Context(), retryTeamID, botID)
+	if poolErr != nil {
+		s.httpErrorFor(w, r, http.StatusUnprocessableEntity, "%v", poolErr)
+		return
+	}
 
 	spec := runview.LaunchSpec{
 		FilePath:  absPath,
@@ -832,6 +840,7 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 		// the one path where the author is watching.
 		RetryPolicy:        s.resolveRunRetryPolicy(r.Context(), retryTeamID, botID),
 		LLMRoutePolicy:     routePolicy,
+		PoolAttachment:     poolAttachment,
 		ModelOverrides:     req.ModelOverrides,
 		RoutingPolicy:      req.RoutingPolicy,
 		Fallback:           req.Fallback,

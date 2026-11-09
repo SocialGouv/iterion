@@ -51,7 +51,7 @@ func TestPublisherReadsOneView(t *testing.T) {
 		t.Fatalf("pinned = %v, want none — the gateway route names no bundle slot", pinned)
 	}
 	ctx := store.WithTenant(context.Background(), "team1")
-	res, err := p.resolveAndSealCredentials(ctx, "run-view", "", "team1", "webhook:cfg-1", "", "", wf, nil, nil, view, nil, store.RunTrustDefault, nil, nil)
+	res, err := p.resolveAndSealCredentials(ctx, "run-view", "", "team1", "webhook:cfg-1", "", "", wf, nil, nil, view, nil, store.RunTrustDefault, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("resolveAndSealCredentials: %v", err)
 	}

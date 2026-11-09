@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/SocialGouv/iterion/pkg/credpool"
 	"github.com/SocialGouv/iterion/pkg/llmroute"
 	"github.com/SocialGouv/iterion/pkg/platformcfg"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -159,4 +160,201 @@ func (s *Server) tenantRouteLayer(ctx context.Context, docID, source string) (*l
 		return nil, nil
 	}
 	return &llmroute.Layer{Source: source, Policy: *rec.Policy}, nil
+}
+
+// Launch-time resolution of a run's pool attachment (ADR-164). The
+// routing-policy fold's sibling, for the same reasons: only the launch
+// sites see every level at once, the run doc is the carrier every consumer
+// already loads, and "why did this run draw from that pool" must be
+// answerable from the snapshot alone.
+//
+// The levels, nearest first: the launch's binding layers (the provisioning
+// records' pool: blocks), then the TEAM, ORG and PLATFORM pool-attachment
+// records. The nearest answer wins; an absent level inherits the next one;
+// an Enabled=false answer is RESOLVED-DISABLED — the fold stops there and
+// the run draws from no pool at all (attached or legacy audience pools:
+// an explicit opt-out outranks the inheritance). A read failure REFUSES
+// the launch (never folded around — a wedged store must not lift pool
+// governance), as does a block the fold cannot read or a pool that has
+// vanished or been switched off — each naming its level. The platform
+// attachment's triggers are the ceiling: the levels below may only narrow
+// what the platform lets them fire, exactly like the routing triggers.
+//
+// NIL snapshot = no attachment resolved anywhere: every run keeps today's
+// pool behavior byte for byte (law 2 — zero pool without an opt-in).
+func (s *Server) resolveRunPoolAttachment(ctx context.Context, teamID, botID string, higher ...credpool.BindingLayer) (*store.RunPoolAttachment, error) {
+	if s.credPoolAttachments == nil || s.credPool == nil {
+		return nil, nil
+	}
+	type poolAnswer struct {
+		level    string
+		scopeID  string
+		poolID   string
+		strategy credpool.Strategy
+		limits   credpool.DrawLimits
+		disabled bool
+		readErr  error
+	}
+	var answer *poolAnswer
+
+	// The binding levels come in nearest-first from the caller; the first
+	// one answers, whatever it says (including disabled).
+	for _, bl := range higher {
+		answer = &poolAnswer{level: bl.Source, scopeID: "binding:" + bl.Source, poolID: bl.PoolID, strategy: bl.Strategy, disabled: !bl.Enabled}
+		break
+	}
+
+	// The stored scopes, team then org then platform. A team-less launch
+	// (the platform admin view's ("", "")) walks platform only, like the
+	// routing fold. Absence inherits; a read failure refuses.
+	readAt := func(scopeID, level string) *poolAnswer {
+		rctx, cancel := context.WithTimeout(ctx, platformcfg.FetchTimeout)
+		defer cancel()
+		a, err := s.credPoolAttachments.Get(rctx, scopeID)
+		if err != nil {
+			if err == credpool.ErrNotFound {
+				return nil
+			}
+			// A read failure refuses the launch — never folded around (a
+			// wedged store must not lift pool governance). The refusal is
+			// carried through the answer's error field below.
+			return &poolAnswer{level: level, readErr: err}
+		}
+		return &poolAnswer{level: level, scopeID: scopeID, poolID: a.PoolID, strategy: a.Strategy, limits: a.Limits, disabled: !a.Enabled}
+	}
+	_ = botID
+	// The BOT level (ADR-164): the bot-in-team attachment — nearest after
+	// the binding layers, before the team level. A schedule with no pool
+	// block inherits this answer; the routes store bot:<team>/<bot> docs
+	// and the orgsweep purges them, so the fold MUST read them or the
+	// level is writable-and-ignored (the round-2 review's R2948d2).
+	if answer == nil && teamID != "" && botID != "" {
+		answer = readAt(credpool.BotScopeID(teamID, botID), "bot")
+	}
+	if answer == nil && teamID != "" {
+		answer = readAt(credpool.TeamScopeID(teamID), "team")
+	}
+	if answer == nil && teamID != "" {
+		if s.authStore() == nil {
+			return nil, fmt.Errorf("pool attachment: refusing launch: no identity store to resolve team %s's org level", teamID)
+		}
+		t, err := s.authStore().GetTeam(ctx, teamID)
+		if err != nil {
+			return nil, fmt.Errorf("pool attachment: refusing launch: org resolve for team %s: %w", teamID, err)
+		}
+		if t.OrgID != "" {
+			answer = readAt(credpool.OrgScopeID(t.OrgID), "org")
+		}
+	}
+	if answer == nil {
+		answer = readAt(credpool.ScopePlatform, "platform")
+	}
+	if answer == nil {
+		return nil, nil
+	}
+	if answer.readErr != nil {
+		return nil, fmt.Errorf("pool attachment: refusing launch: %s level: %w", answer.level, answer.readErr)
+	}
+
+	// Resolved-disabled: the run draws from no pool at all. The empty
+	// strategy freezes as an empty trigger list — an ANSWER, not an
+	// absence.
+	if answer.disabled {
+		return &store.RunPoolAttachment{ScopeID: answer.scopeID, Strategy: store.RunPoolStrategy{Triggers: []string{}}}, nil
+	}
+
+	// The platform attachment carries the trigger ceiling even when a
+	// nearer level won. Its own garbage refuses the launch too (fail-closed
+	// at its level) — an unreadable platform ceiling must not silently
+	// become "no ceiling".
+	ceiling := llmroute.Triggers
+	rctx, cancel := context.WithTimeout(ctx, platformcfg.FetchTimeout)
+	defer cancel()
+	if plat, err := s.credPoolAttachments.Get(rctx, credpool.ScopePlatform); err == nil && plat.Enabled {
+		if err := validatePoolTriggers(plat.Strategy.Triggers); err != nil {
+			return nil, fmt.Errorf("pool attachment: refusing launch: platform level: %w", err)
+		}
+		if len(plat.Strategy.Triggers) > 0 {
+			ceiling = plat.Strategy.Triggers
+		}
+	} else if err != nil && err != credpool.ErrNotFound {
+		return nil, fmt.Errorf("pool attachment: refusing launch: platform level: %w", err)
+	}
+
+	if err := answer.strategy.Validate(); err != nil {
+		return nil, fmt.Errorf("pool attachment: refusing launch: %s level: %w", answer.level, err)
+	}
+	if err := validatePoolTriggers(answer.strategy.Triggers); err != nil {
+		return nil, fmt.Errorf("pool attachment: refusing launch: %s level: %w", answer.level, err)
+	}
+	ok, err := s.credPool.HasPool(ctx, answer.poolID)
+	if err != nil {
+		return nil, fmt.Errorf("pool attachment: refusing launch: %s level: pool %s: %w", answer.level, answer.poolID, err)
+	}
+	if !ok {
+		return nil, fmt.Errorf("pool attachment: refusing launch: %s level names pool %q, which is disabled or gone", answer.level, answer.poolID)
+	}
+
+	triggers := effectivePoolTriggers(answer.strategy.Triggers, ceiling)
+	return &store.RunPoolAttachment{
+		PoolID:  answer.poolID,
+		ScopeID: answer.scopeID,
+		Strategy: store.RunPoolStrategy{
+			Mode:      string(answer.strategy.Mode),
+			MarginPct: answer.strategy.MarginPct,
+			Triggers:  triggers,
+			ResetHold: answer.strategy.ResetHold,
+		},
+		Limits: store.RunPoolDrawLimits{MaxRunsPerDay: answer.limits.MaxRunsPerDay, MaxUSDPerDay: answer.limits.MaxUSDPerDay},
+	}, nil
+}
+
+// validatePoolTriggers checks a trigger list against the llmroute closed
+// vocabulary — the VALUES the routing policy shares; the platform ceiling
+// narrows, never widens, and an unknown name refuses rather than folding
+// around (the routing fold's garbage rule).
+func validatePoolTriggers(triggers []string) error {
+	for _, t := range triggers {
+		known := false
+		for _, v := range llmroute.Triggers {
+			if v == t {
+				known = true
+				break
+			}
+		}
+		if !known {
+			return fmt.Errorf("unknown trigger %q (the vocabulary is %v)", t, llmroute.Triggers)
+		}
+	}
+	return nil
+}
+
+// effectivePoolTriggers resolves the frozen trigger list: the winner's
+// list (empty = the default [usage_window] the pool exists for) narrowed
+// to the platform ceiling — the levels below may only narrow what the
+// platform allows them to fire.
+func effectivePoolTriggers(winner, ceiling []string) []string {
+	base := winner
+	if len(base) == 0 {
+		base = []string{"usage_window"}
+	}
+	// An empty ceiling is the FULL vocabulary: no platform attachment, no
+	// constraint. A populated one narrows.
+	out := make([]string, 0, len(base))
+	for _, t := range base {
+		if len(ceiling) == 0 {
+			out = append(out, t)
+			continue
+		}
+		for _, c := range ceiling {
+			if c == t {
+				out = append(out, t)
+				break
+			}
+		}
+	}
+	if out == nil {
+		out = []string{}
+	}
+	return out
 }

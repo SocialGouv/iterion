@@ -66,7 +66,7 @@ func (b *Broker) Preview(ctx context.Context, req Request) (Preview, error) {
 			for _, s := range skips {
 				out.Candidates = append(out.Candidates, PreviewCandidate{PledgeID: s.PledgeID, Source: want.Source, Ref: want.Ref, Status: s.Status})
 			}
-			ranked, err := b.rank(ctx, eligible, out.ObservedAt)
+			ranked, err := b.rank(ctx, eligible, out.ObservedAt, req.RankMode)
 			if err != nil {
 				return out, err
 			}
@@ -131,7 +131,14 @@ func oauthCredentialGone(rec secrets.OAuthRecord, now time.Time) string {
 	return ""
 }
 func apiKeyCredentialGone(k secrets.ApiKey, p Pledge, now time.Time) string {
-	if k.ScopeUserID == "" || k.ScopeUserID != p.UserID {
+	if p.LendScope != "" {
+		// An operator-pushed entry: the ownership term is the TENANT match
+		// (GetForLend already enforced it), never ScopeUserID — reserved-
+		// scope rows carry none.
+		if k.TenantID != p.LendScope {
+			return "the lent key no longer lives in its pledged scope — pledge it again"
+		}
+	} else if k.ScopeUserID == "" || k.ScopeUserID != p.UserID {
 		return "that API key is not yours to lend — pledge a personal key instead"
 	}
 	if k.Provider != secrets.Provider(p.Ref) {
@@ -157,7 +164,13 @@ func (b *Broker) previewCredential(ctx context.Context, p Pledge, now time.Time)
 		if b.apiKeys == nil {
 			return "", fmt.Errorf("api-key store unavailable")
 		}
-		k, err := b.apiKeys.GetOwned(ctx, p.KeyID, p.UserID)
+		var k secrets.ApiKey
+		var err error
+		if p.LendScope != "" {
+			k, err = b.apiKeys.GetForLend(ctx, p.KeyID, p.LendScope)
+		} else {
+			k, err = b.apiKeys.GetOwned(ctx, p.KeyID, p.UserID)
+		}
 		if errors.Is(err, secrets.ErrApiKeyNotFound) {
 			return "API key deleted", nil
 		}

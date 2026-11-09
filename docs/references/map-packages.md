@@ -136,7 +136,7 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `pkg/connector/identity` | preserves the meaning of connector names across generation. | — |
 | `pkg/connector/overlay` | the AUTHORED half of a connector package. | — |
 | `pkg/connector/spec` | the connector catalog's declarative model: what a connector package IS, independent of where it came from (a generated vendor OpenAPI description, a… | — |
-| `pkg/credpool` | mutualises LLM subscription credentials that individual developers lend to a deployment. | `LeaseStore`, `Ledger`, `PledgeStore`, `PoolStore` |
+| `pkg/credpool` | mutualises LLM subscription credentials that individual developers lend to a deployment. | `AttachmentStore`, `LeaseStore`, `Ledger`, `PledgeStore`, `PoolStore` |
 | `pkg/credusage` | meters per-CREDENTIAL monthly LLM spend — the question the org bucket cannot answer. | `Counter` |
 | `pkg/deeplink` | builds the URLs that point a human at a page of the studio. | — |
 | `pkg/dispatcher` | implements iterion's long-running dispatcher. | `ManagedRunner`, `RunLauncher`, `Runner` |

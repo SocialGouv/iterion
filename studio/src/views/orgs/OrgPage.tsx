@@ -52,6 +52,7 @@ import { listOrgTeamSummaries } from "@/api/orgGovernance";
 import { createOrgTeam } from "@/api/orgs";
 import { fmtBytes, fmtUSD, getOrgUsage } from "@/api/usage";
 import GovernanceTab from "@/views/orgs/GovernanceTab";
+import PoolSection from "@/views/orgs/PoolSection";
 import SSOTab from "@/views/teams/tabs/SSOTab";
 import UsageTab from "@/views/teams/tabs/UsageTab";
 import AuditTab from "@/views/teams/tabs/AuditTab";
@@ -61,7 +62,7 @@ import AuditTab from "@/views/teams/tabs/AuditTab";
 // whom canManageOrg admits.
 const ORG_SCOPE: WriteScope = { kind: "org" };
 
-type Tab = "members" | "teams" | "sso" | "usage" | "audit" | "billing" | "governance";
+type Tab = "members" | "teams" | "sso" | "usage" | "audit" | "billing" | "governance" | "pool";
 
 const TABS: Array<{ id: Tab; label: string }> = [
   { id: "members", label: "Members + invitations" },
@@ -71,6 +72,7 @@ const TABS: Array<{ id: Tab; label: string }> = [
   { id: "audit", label: "Audit log" },
   { id: "billing", label: "Plan + quotas" },
   { id: "governance", label: "Governance" },
+  { id: "pool", label: "Key pool" },
 ];
 
 export default function OrgPage() {
@@ -177,6 +179,7 @@ export default function OrgPage() {
           {tab === "audit" && <AuditTab orgID={org.orgID} canManage={canManage} />}
           {tab === "billing" && <OrgBilling orgID={org.orgID} />}
           {tab === "governance" && <GovernanceTab orgID={org.orgID} canManage={canManage} />}
+          {tab === "pool" && <PoolSection scope="org" id={org.orgID} canManage={canManage} />}
         </main>
       </div>
     </div>

@@ -9,6 +9,14 @@ the **fourth** tier of the credential resolution described there — below it
 sit only the deployment's own platform credentials (DB-backed) and the
 runner-pod env backstop.
 
+> **Named key pools (ADR-164)** generalise everything below: pools are now NAMED and
+> multi-owner (org / user / platform), `private` pools answer nothing without an explicit
+> attachment, and an attached pool fills per SLOT (a run holding its own credentials still
+> draws from the pool for the slots it lacks). This page describes the LEGACY draw — the
+> whole-bundle, empty-run tier and the audience walk — which stays byte-identical. Read
+> [ADR-164](adr/164-configurable-key-pools-attach-per-scope-with-a-fallback-strategy.md)
+> and the [key pools reference](agents/backends/key-pools.md) for the attached surface.
+
 ## The one-paragraph model
 
 A contributor connects a subscription through the ordinary personal OAuth

@@ -680,6 +680,51 @@ type RunLLMRoutePolicy struct {
 	Sources map[string]string `json:"sources,omitempty" bson:"sources,omitempty"`
 }
 
+// RunPoolAttachment is the launch-time snapshot of the resolved pool
+// attachment (ADR-164) — a wire twin of credpool.Strategy, for the same
+// reason RunLLMRouteOverride mirrors llmroute.Override: this package must
+// stay importable from pkg/credpool's own tests, which reach pkg/store.
+//
+// NIL on the run doc = no attachment resolved anywhere in the fold — the
+// run keeps today's behavior byte for byte (the legacy audience pools, the
+// empty-bundle tier, the door). NON-NIL with an empty PoolID is the
+// resolved-DISABLED answer: a level wrote Enabled=false and the fold stops
+// there — no pool serves this run, attached or legacy. NON-NIL with a
+// PoolID names the one pool that serves it, under the frozen strategy; the
+// ENTRY choice re-resolves per attempt (the broker's supersede machinery
+// arbitrates per-attempt leases inside the same frozen pool).
+type RunPoolAttachment struct {
+	PoolID string `json:"pool_id" bson:"pool_id"`
+	// ScopeID is the scope whose attachment resolved ("platform",
+	// "org:<id>", "team:<id>", "bot:<team>/<bot>", "binding:<source>") —
+	// the provenance the borrower-side draw caps book against (the att:
+	// ledger row names it). Empty for the disabled answer.
+	ScopeID  string          `json:"scope_id,omitempty" bson:"scope_id,omitempty"`
+	Strategy RunPoolStrategy `json:"strategy" bson:"strategy"`
+	// Limits are the attachment's borrower-side draw caps, frozen so the
+	// walk enforces exactly what the scope's record said at launch. Zero
+	// fields = uncapped axes.
+	Limits RunPoolDrawLimits `json:"limits" bson:"limits"`
+}
+
+// RunPoolDrawLimits is the frozen borrower-cap pair (credpool.DrawLimits's
+// wire twin).
+type RunPoolDrawLimits struct {
+	MaxRunsPerDay int     `json:"max_runs_per_day,omitempty" bson:"max_runs_per_day,omitempty"`
+	MaxUSDPerDay  float64 `json:"max_usd_per_day,omitempty" bson:"max_usd_per_day,omitempty"`
+}
+
+// RunPoolStrategy is the frozen fallback policy. Triggers is never
+// omitempty: the frozen list is the EFFECTIVE one (defaults and the
+// platform ceiling applied) — an empty list is the answer "never
+// pre-empt", not an absence.
+type RunPoolStrategy struct {
+	Mode      string   `json:"mode,omitempty" bson:"mode,omitempty"`
+	MarginPct *float64 `json:"margin_pct,omitempty" bson:"margin_pct,omitempty"`
+	Triggers  []string `json:"triggers" bson:"triggers"`
+	ResetHold bool     `json:"reset_hold,omitempty" bson:"reset_hold,omitempty"`
+}
+
 // ProviderAllowlist is the run's frozen providers list (ADR-129 §5) exactly
 // as the launch stamped it — nil on a nil policy or one that named no list:
 // no allowlist is in force. Nil-safe, so every lane (the cloud publisher,
@@ -1310,6 +1355,11 @@ type Run struct {
 	// the audit line the policy owes. Nil for runs launched before this
 	// existed; treat nil as the package defaults.
 	LLMRoutePolicy *RunLLMRoutePolicy `json:"llm_route_policy,omitempty" bson:"llm_route_policy,omitempty"`
+	// PoolAttachment is the launch-frozen pool attachment (ADR-164) — see
+	// RunPoolAttachment for the three readings (nil / disabled / named).
+	// The resume replays it: the pool and the strategy freeze, the entry
+	// choice re-resolves per attempt.
+	PoolAttachment *RunPoolAttachment `json:"pool_attachment,omitempty" bson:"pool_attachment,omitempty"`
 	// RetryState is the live retry bookkeeping for this run (cloud only).
 	// Nil until a retryable failure arms one. See RunRetryState.
 	RetryState *RunRetryState `json:"retry_state,omitempty" bson:"retry_state,omitempty"`

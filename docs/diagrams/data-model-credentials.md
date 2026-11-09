@@ -170,10 +170,19 @@ erDiagram
     int64 cost_usd_millis "integer millis"
     datetime period_start
   }
+  pool_attachments {
+    string _id PK "'platform' | 'org:<id>' | 'team:<id>' | 'bot:<team>/<bot>'"
+    string pool_id FK "cred_pools._id"
+    bool enabled "false = resolved-disabled: the fold stops here, no inheritance"
+    object strategy "mode, margin_pct, triggers, reset_hold"
+    object limits "max_runs_per_day, max_usd_per_day - the borrower's draw caps"
+    datetime updated_at "CAS stamp"
+  }
   run_secrets }o--|| runs : "run_id"
   run_secrets }o..o{ api_keys : "bundle.api_keys / bundle.pinned_api_keys - plaintext, with base_url beside a gateway key"
   run_secrets }o..o{ oauth_credentials : "bundle.oauth_record_refs"
   cred_pools }o--|| orgs : "org_id"
+  pool_attachments }o--|| cred_pools : "pool_id"
   cred_pledges }o--|| cred_pools : "pool_id"
   cred_pledges }o--|| users : "user_id"
   cred_pledges }o--o| api_keys : "key_id"

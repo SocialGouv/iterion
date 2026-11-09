@@ -641,7 +641,7 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 		spec.AttachmentPromote, spec.Preset, RunModelOverrides(spec.ModelOverrides),
 		spec.ParentRunID,
 		precreateInputs,
-		launchExtras{workDir: workDir, dailyCap: spec.DailyCap, source: spec.SourceRef, routingPolicy: spec.RoutingPolicy, routePolicy: spec.LLMRoutePolicy, onOutcome: spec.OnOutcome, observers: spec.ExtraObservers, loopBudgetGuard: spec.LoopBudgetGuard, supervisors: spec.Supervisors, budgetAsk: spec.Budget, executionContext: ctxContract, permission: spec.Permission, worktreeBaseCommit: spec.WorktreeBaseCommit, botOrigin: spec.BotOrigin, delegation: spec.Delegation, budgetOverrides: rawBudget, compiled: cs, botSourceTier: spec.BotSourceTier},
+		launchExtras{workDir: workDir, dailyCap: spec.DailyCap, source: spec.SourceRef, routingPolicy: spec.RoutingPolicy, routePolicy: spec.LLMRoutePolicy, poolAttachment: spec.PoolAttachment, onOutcome: spec.OnOutcome, observers: spec.ExtraObservers, loopBudgetGuard: spec.LoopBudgetGuard, supervisors: spec.Supervisors, budgetAsk: spec.Budget, executionContext: ctxContract, permission: spec.Permission, worktreeBaseCommit: spec.WorktreeBaseCommit, botOrigin: spec.BotOrigin, delegation: spec.Delegation, budgetOverrides: rawBudget, compiled: cs, botSourceTier: spec.BotSourceTier},
 		s.store,
 		func(ctx, _ context.Context, eng *runtime.Engine) error {
 			return eng.Run(ctx, runID, inputs)
@@ -1458,6 +1458,31 @@ func (s *Service) spawnRun(
 		}
 	}
 
+	// Persist the launch's resolved pool attachment on the run document
+	// (ADR-164), the same carrier and the same reasons as routePolicy
+	// above. Non-nil even when disabled: the disabled answer (an empty
+	// PoolID) must reach the doc, or a level's opt-out would vanish on the
+	// way to the run — and a resume must replay the frozen pool even after
+	// a detach.
+	if ex.poolAttachment != nil {
+		doc, stampErr := s.store.LoadRun(sctx, runID)
+		if stampErr == nil {
+			pa := *ex.poolAttachment // copy: never share the caller's pointer
+			doc.PoolAttachment = &pa
+			stampErr = s.store.SaveRun(sctx, doc)
+		}
+		if stampErr != nil {
+			s.manager.Deregister(runID)
+			_ = lock.Unlock()
+			s.dropRunLog(runID)
+			err := fmt.Errorf("runview: persist pool attachment: %w", stampErr)
+			if startedRun {
+				return nil, &RunPersistedError{RunID: runID, Err: err}
+			}
+			return nil, err
+		}
+	}
+
 	// Persist the RAW budget intent while this runner owns the run lock. The
 	// launch engine also stamps it through WithBudgetOverrides, but Resume does
 	// not call runtime.runResolveDoc; without this explicit write, a debug-mode
@@ -1743,6 +1768,10 @@ type launchExtras struct {
 	// the tier the bot resolver served, which the isolation floor judges.
 	// Empty on a resume, whose document carries it already.
 	botSourceTier string
+	// poolAttachment mirrors LaunchSpec.PoolAttachment (ADR-164): the
+	// frozen {pool, strategy} — non-nil even when disabled (empty PoolID),
+	// so a level's opt-out stamps the run instead of vanishing.
+	poolAttachment *store.RunPoolAttachment
 	// routePolicy mirrors LaunchSpec.LLMRoutePolicy on a LAUNCH: the
 	// resolved adaptive-routing snapshot the in-process lane stamps on the
 	// run document (#2665 item 7), for a local resume to replay. Nil on a
