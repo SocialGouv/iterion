@@ -454,6 +454,11 @@ func TestCredentialPreview_AnswersTheLaunchsUnfundedSentence_PoolMappedTeam(t *t
 		if previewWarning(v, `runner pool "pool-a"`) == "" {
 			t.Errorf("no warning names the posture that holds the shared tiers out: %v", v.Warnings)
 		}
+		// The pool block's reason code names the same posture as the
+		// warning, never the empty-bundle gate's "credentials_present".
+		if v.Pool.Considered || v.Pool.Reason != "runner_pool" {
+			t.Errorf("pool block = considered %v reason %q, want unconsidered with reason %q", v.Pool.Considered, v.Pool.Reason, "runner_pool")
+		}
 	})
 
 	t.Run("the same team unmapped: both start on the platform tier", func(t *testing.T) {

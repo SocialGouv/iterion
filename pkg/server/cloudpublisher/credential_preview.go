@@ -195,6 +195,7 @@ func (p *Publisher) PreviewCredentials(ctx context.Context, spec runview.Credent
 		case credentialTierPool:
 			if sharedTiersBlocked {
 				x.warn("Pool not consulted: " + blockedPosture(sovereignPreview, runnerPool) + ".")
+				x.out.Pool.Reason = blockedPoolReason(sovereignPreview)
 				return nil
 			}
 			// The ATTACHED pool (ADR-164): the preview answers exactly what
@@ -554,6 +555,17 @@ func (p *Publisher) PreviewCredentials(ctx context.Context, spec runview.Credent
 // keeps the shared tiers out of this run — they can hold at once, and they
 // are not remedied the same way: a policy is the team's to change, a pool
 // mapping the platform's.
+// blockedPoolReason is the pool block's reason code when a posture keeps
+// the pool tier out of the walk: "sovereign" (llm_fallback=none — the
+// team's own policy, the first remedy to name) or "runner_pool" (a
+// platform mapping). The warning beside it carries the full sentence.
+func blockedPoolReason(sovereign bool) string {
+	if sovereign {
+		return "sovereign"
+	}
+	return "runner_pool"
+}
+
 func blockedPosture(sovereign bool, runnerPool string) string {
 	reasons := make([]string, 0, 2)
 	if sovereign {

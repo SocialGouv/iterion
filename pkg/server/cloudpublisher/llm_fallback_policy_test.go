@@ -182,6 +182,12 @@ func TestCredentialPreview_LLMFallbackNone_ShowsSharedTiersUnconsulted(t *testin
 	if !strings.Contains(joined, "llm_fallback=none") {
 		t.Errorf("warnings do not name the policy: %v", v.Warnings)
 	}
+	// The pool block's reason names WHY the pool was not consulted: the
+	// sovereign posture, never the empty-bundle gate's
+	// "credentials_present" (no candidate is present to claim it).
+	if v.Pool.Considered || v.Pool.Reason != "sovereign" {
+		t.Errorf("pool block = considered %v reason %q, want unconsidered with reason %q", v.Pool.Considered, v.Pool.Reason, "sovereign")
+	}
 }
 
 // The fallback door is the pool tier wearing another coat: under
