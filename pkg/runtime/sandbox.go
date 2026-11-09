@@ -986,6 +986,7 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 	// strictly — read once here, where the ctx lives; the proxy start has
 	// no credential access.
 	runGatewayHost := ""
+	var secretEgressHosts []string
 	if creds, ok := secrets.CredentialsFromContext(ctx); ok {
 		if _, baseURL, gerr := creds.GatewayCredentialForRoute(secrets.ProviderOpenAICompatible); gerr == nil && baseURL != "" {
 			runGatewayHost = (compatgw.Config{BaseURL: baseURL}).Host()
@@ -993,8 +994,9 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 				return nil, err
 			}
 		}
+		secretEgressHosts = secretEgressHostCandidates(creds.GenericHosts, logger)
 	}
-	proxy, proxyEndpoint, proxyCACert, err := startNetworkProxy(spec, driver, p.RunID, p.SecretRewriter, emitEvent, logger, runGatewayHost)
+	proxy, proxyEndpoint, proxyCACert, err := startNetworkProxy(spec, driver, p.RunID, p.SecretRewriter, emitEvent, logger, runGatewayHost, secretEgressHosts)
 	if err != nil {
 		return nil, fmt.Errorf("runtime: sandbox: network proxy: %w", err)
 	}
@@ -1263,6 +1265,38 @@ func sandboxModelHosts(logger *iterlog.Logger) []string {
 	})
 }
 
+// secretEgressHostCandidates unions the AllowedHosts of every generic
+// secret the run sealed (a bot-secret binding's egress lock — the forge
+// host of the repo's connection among them) into sandbox network rule
+// candidates. An entry that is no host pattern is dropped with a warning
+// naming its secret: the run keeps no egress to it — fail closed — and
+// the operator sees the value to fix.
+func secretEgressHostCandidates(hosts map[string][]string, logger *iterlog.Logger) []string {
+	if len(hosts) == 0 {
+		return nil
+	}
+	seen := make(map[string]bool, len(hosts))
+	out := make([]string, 0, len(hosts))
+	for name, list := range hosts {
+		for _, raw := range list {
+			host := strings.TrimSpace(raw)
+			if host == "" || seen[host] {
+				continue
+			}
+			if _, err := netproxy.Compile(netproxy.ModeAllowlist, []string{host}); err != nil {
+				if logger != nil {
+					logger.Warn("runtime: sandbox: secret %q carries an egress host %q that is no host pattern — dropped, the run keeps no egress to it (%v)", name, host, err)
+				}
+				continue
+			}
+			seen[host] = true
+			out = append(out, host)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
 // refuseRunGatewayAlias refuses a credential whose gateway host is the
 // engine-owned alias in ANY spelling: the dial rewrites casings and a root
 // dot away before its own local-destination guard, so the alias's road to
@@ -1343,6 +1377,7 @@ func startNetworkProxy(
 	emitEvent func(store.EventType, map[string]any) error,
 	logger *iterlog.Logger,
 	runGatewayHost string,
+	secretEgressHosts []string,
 ) (*netproxy.Proxy, string, []byte, error) {
 	mode, rules, err := ResolveNetworkPolicy(spec)
 	if err != nil {
@@ -1371,13 +1406,35 @@ func startNetworkProxy(
 		return nil, "", nil, nil
 	}
 
-	// The run's own gateway is admitted by an EXACT rule prepended ahead
-	// of the spec's: a workflow naming no rule for it still reaches its
-	// credential's endpoint, and a workflow rule refusing it still wins
-	// (last match) — loudly, below.
-	if runGatewayHost != "" {
-		rules = append([]string{runGatewayHost}, rules...)
+	// Rules the credentials themselves carry, weakest position first: the
+	// run's own gateway admits by an EXACT rule, the bound secrets' hosts
+	// follow, and the spec's rules land last — a workflow `!` exclusion
+	// stays the final word on any host (last match wins).
+	//
+	// The secret hosts are the DESIGN answer to a review that must read
+	// the forge it reviews: a binding's AllowedHosts is its egress lock,
+	// and a self-hosted forge appears in no preset — without this join the
+	// forge-native ticket lookup dies at the proxy's CONNECT. Allowlist
+	// mode only: a denylist would flip the entries to denials, and open
+	// mode admits them already. An entry opens exactly the host its
+	// credential names — never more.
+	if mode == netproxy.ModeAllowlist && len(secretEgressHosts) > 0 {
+		if logger != nil {
+			logger.Info("runtime: sandbox: egress opens %d host(s) from the run's bound secrets: %s (run %s)", len(secretEgressHosts), strings.Join(secretEgressHosts, ", "), runID)
+		}
 	}
+	// The gateway keeps its unconditional prepend (its pre-existing
+	// semantics); the secret hosts join an ALLOWLIST only — in a denylist
+	// the same entries would flip to denials, refusing the very host the
+	// credential names.
+	head := make([]string, 0, 1+len(secretEgressHosts))
+	if runGatewayHost != "" {
+		head = append(head, runGatewayHost)
+	}
+	if mode == netproxy.ModeAllowlist {
+		head = append(head, secretEgressHosts...)
+	}
+	rules = append(head, rules...)
 
 	policy, err := netproxy.Compile(mode, rules)
 	if err != nil {
