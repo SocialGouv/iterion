@@ -278,8 +278,14 @@ func TestSchemaVersionConstant(t *testing.T) {
 	// neutralize — failing open, on the pod. MinSchemaVersion stays 27: the
 	// v27 publisher already stamps the tier on the run document, so the
 	// runner re-reads it from there instead of dropping the decision.
-	if SchemaVersion != 28 {
-		t.Errorf("SchemaVersion = %d, want 28 (bump intentionally)", SchemaVersion)
+	// v=29 carries ForkAuthorSubject (ADR-162 U6): dropped, a stale runner
+	// leaves the fork lane's per-contributor DOLLAR bound unenforced for
+	// the run's lifetime — a perimeter failing open, on the pod.
+	// MinSchemaVersion stays 27: no message below v29 is a fork run, so
+	// there is no old payload whose dropped subject loses an enforced
+	// bound.
+	if SchemaVersion != 29 {
+		t.Errorf("SchemaVersion = %d, want 29 (bump intentionally)", SchemaVersion)
 	}
 	if MinSchemaVersion != 27 {
 		t.Errorf("MinSchemaVersion = %d, want 27", MinSchemaVersion)

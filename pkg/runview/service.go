@@ -254,6 +254,14 @@ type LaunchSpec struct {
 	// RepoSHAExpected pins the commit this launch admitted, for a RepoRef an
 	// untrusted party can move. Empty disables the runner's comparison.
 	RepoSHAExpected string
+	// ForkAuthorSubject is the per-contributor metering subject the fork
+	// review lane's admission composed (orgusage.ForkAuthorSubject's exact
+	// spelling, built on the metering id the org budget used). Persisted on
+	// the run document and mirrored onto the queue message, so the runner's
+	// recordOrgSpend charges the author's dollars beside the org's and every
+	// resume/retry re-enters the SAME subject. Empty on every trusted
+	// launch.
+	ForkAuthorSubject string
 	// ProjectPath is the stable forge slug ("group/project") the run
 	// targets, persisted on the run so the studio can filter/group runs
 	// by repository and the runner's spend meter (repoForSpend) can charge

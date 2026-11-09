@@ -164,6 +164,12 @@ type updateOrgReq struct {
 	MonthlyRunQuota   *int     `json:"monthly_run_quota,omitempty"`
 	MemoryQuotaBytes  *int64   `json:"memory_quota_bytes,omitempty"`
 	MonthlyCostCapUSD *float64 `json:"monthly_cost_cap_usd,omitempty"`
+	// ForkAuthorRunQuota / ForkAuthorCostCapUSD: the fork review lane's
+	// per-contributor bound. A NEGATIVE value (-1) is the explicit
+	// `unbounded` escape hatch; 0 inherits the platform default; positive
+	// is the cap. See applyForkAuthorBound.
+	ForkAuthorRunQuota   *int     `json:"fork_author_run_quota,omitempty"`
+	ForkAuthorCostCapUSD *float64 `json:"fork_author_cost_cap_usd,omitempty"`
 }
 
 type setOrgStatusReq struct {
@@ -218,6 +224,23 @@ func applyNonNegative[T int | int64 | float64](w http.ResponseWriter, p *T, dst 
 	if *p < 0 {
 		httpError(w, http.StatusBadRequest, "%s must be >= 0", field)
 		return false
+	}
+	*dst = *p
+	return true
+}
+
+// applyForkAuthorBound is applyNonNegative's fork-lane sibling: the bound's
+// ladder reads a NEGATIVE value as the explicit `unbounded` escape hatch
+// (ADR-162 Q4), so it accepts -1 (normalising any negative to -1) where the
+// org's own quotas reject every negative. 0 keeps its inherit-the-default
+// meaning on both.
+func applyForkAuthorBound[T int | float64](w http.ResponseWriter, p *T, dst *T, field string) bool {
+	if p == nil {
+		return true
+	}
+	if *p < 0 {
+		*dst = -1
+		return true
 	}
 	*dst = *p
 	return true
@@ -356,6 +379,17 @@ func (s *Server) handleAdminUpdateOrg(w http.ResponseWriter, r *http.Request) {
 	if !applyNonNegative(w, req.MonthlyCostCapUSD, &o.MonthlyCostCapUSD, "monthly_cost_cap_usd") {
 		return
 	}
+	// The fork review lane's per-contributor bound (ADR-162 Q4). Unlike the
+	// rows above it accepts NEGATIVE values: -1 is the explicit
+	// `unbounded` escape hatch, distinct from 0, which inherits the
+	// platform default — the bound is a perimeter against an outside
+	// party, so "unset" can never mean "open".
+	if !applyForkAuthorBound(w, req.ForkAuthorRunQuota, &o.ForkAuthorRunQuota, "fork_author_run_quota") {
+		return
+	}
+	if !applyForkAuthorBound(w, req.ForkAuthorCostCapUSD, &o.ForkAuthorCostCapUSD, "fork_author_cost_cap_usd") {
+		return
+	}
 	o.UpdatedAt = time.Now().UTC()
 	if err := store.UpdateOrg(r.Context(), o); err != nil {
 		httpError(w, mapAuthErrorStatus(err), "%s", err.Error())
@@ -382,7 +416,8 @@ func (s *Server) handleAdminUpdateOrg(w http.ResponseWriter, r *http.Request) {
 	}
 	s.auditPlatform(r, o.ID, "org.updated", "org", o.ID, map[string]any{
 		"monthly_run_quota": o.MonthlyRunQuota, "memory_quota_bytes": o.MemoryQuotaBytes,
-		"monthly_cost_cap_usd": o.MonthlyCostCapUSD,
+		"monthly_cost_cap_usd":  o.MonthlyCostCapUSD,
+		"fork_author_run_quota": o.ForkAuthorRunQuota, "fork_author_cost_cap_usd": o.ForkAuthorCostCapUSD,
 	})
 	writeJSON(w, toOrgView(o))
 }

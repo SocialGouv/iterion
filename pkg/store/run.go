@@ -284,6 +284,10 @@ func ChildTrustFromParent(child, parent *Run) {
 	}
 	child.Trust = parent.Trust
 	child.RepoSHAExpected = parent.RepoSHAExpected
+	// The child's spend is its author's spend: a sub-bot of a fork run
+	// charges the SAME per-contributor bound (decision 5's subject rides
+	// the document), not a fresh one the child would meter on nothing.
+	child.ForkAuthorSubject = parent.ForkAuthorSubject
 }
 
 // IsFork names the one untrusted class this binary knows, for the sites that
@@ -1605,6 +1609,15 @@ type Run struct {
 	// this one. Empty disables the comparison — every lane whose ref no
 	// untrusted party can move.
 	RepoSHAExpected string `json:"repo_sha_expected,omitempty" bson:"repo_sha_expected,omitempty"`
+	// ForkAuthorSubject is the per-contributor metering subject the fork
+	// review lane's launch composed and metered (ADR-162 decision 5):
+	// orgusage.ForkAuthorSubject's exact spelling, built on the same id the
+	// org budget metered on. Empty on every trusted run and every run that
+	// predates the fork lane. Read by the resume/retry surfaces — which
+	// re-meter the bound on the SAME subject rather than re-deriving it —
+	// and mirrored onto the queue message so the runner's recordOrgSpend
+	// charges the author's dollars beside the org's.
+	ForkAuthorSubject string `json:"fork_author_subject,omitempty" bson:"fork_author_subject,omitempty"`
 	// ProjectPath is the stable forge slug ("group/project" on GitLab,
 	// "owner/repo" on GitHub/Forgejo) the run targets. Distinct from the
 	// raw RepoURL clone URL: it is the normalized, human-meaningful

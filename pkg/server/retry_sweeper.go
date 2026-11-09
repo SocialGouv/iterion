@@ -17,6 +17,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/store"
 	mongostore "github.com/SocialGouv/iterion/pkg/store/mongo"
 	"github.com/SocialGouv/iterion/pkg/trigger"
+	"github.com/SocialGouv/iterion/pkg/webhooks"
 )
 
 // Retry sweeper: the half of the usage-window retry that outlives the pod.
@@ -170,9 +171,18 @@ func (s *Server) resumeDueRetry(ctx context.Context, retryStore store.RunRetrySt
 	// refuse the run it exists to protect. Nil (the store could not answer)
 	// loses the budget subject, but the durable retry row still proves this
 	// is an existing run: maintenance must not abandon its continuation.
+	// The run's TRUST and — on a fork run — the author subject the launch
+	// metered ride the same document (ADR-162 decision 5): an untrusted
+	// resume is metered on both counters again, and every arm of the gate
+	// that would admit it unmetered (an unreadable team among them) refuses
+	// instead, which this sweeper re-arms rather than abandons — a store
+	// blip is not the end of a paid run's retry.
 	subj := launchSubject{ExistingRun: true}
 	if run != nil {
-		subj = launchSubject{ExistingRun: true, BotID: run.BotID, Repo: run.ProjectPath}
+		subj = launchSubject{ExistingRun: true, BotID: run.BotID, Repo: run.ProjectPath, Trust: run.Trust}
+		if !run.Trust.Trusted() && run.ForkAuthorSubject != "" {
+			subj.ForkAuthor = &webhooks.ForkAuthorRef{Subject: run.ForkAuthorSubject}
+		}
 	}
 	adm, deny := s.gateLaunch(retryLaunchCtx(runCtx, ref), subj)
 	if deny != nil {
@@ -395,6 +405,13 @@ func retryDenialIsTransient(reason string) bool {
 	// the 1st like they do, so abandoning the run on it would throw work
 	// away for a condition that resolves itself on a calendar.
 	case denyMonthlyRunQuota, denyMonthlyCostCap, denyConcurrencyCap, denyLaunchRateLimited, denyRepoQuota:
+		return true
+	// The fork lane's fail-closed arms (ADR-162 decision 5) are all 503
+	// conditions — an unreadable team or org, a counter that cannot be
+	// reached — and its ceilings refill monthly like the org's. None of
+	// them is the end of a paid run's retry; re-arming costs an attempt
+	// and the blip resolves.
+	case denyForkTeamUnreadable, denyForkOrgUnreadable, denyForkMeteringUnavailable, denyForkMeteringError, denyForkAuthorRuns, denyForkAuthorCost:
 		return true
 	default:
 		return false

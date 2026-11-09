@@ -187,11 +187,21 @@ import (
 // runner consuming a v27 message re-reads the tier from the document (the
 // floor's second carrier) instead of dropping the decision — the one
 // direction in which ignoring the field cannot fail open.
-const SchemaVersion = 28
+// v=29 (2026-11-09): ForkAuthorSubject (ADR-162 U6, decision 5) — the fork
+// review lane's per-contributor metering subject, so the runner's
+// recordOrgSpend charges the author's dollars beside the org's. Breaking by
+// the additive-field rule: a stale runner dropping it would leave the
+// per-contributor DOLLAR bound unenforced for the run's lifetime — a
+// perimeter failing open, in silence, on the pod. Server-first rollout;
+// MinSchemaVersion stays 28: a pre-fork message carries no subject to drop
+// (nothing set RunTrustFork before v29), and a v29 message on a stale
+// runner is rejected at the schema check and parks replayably.
+const SchemaVersion = 29
 
 // MinSchemaVersion is the oldest wire version a consumer still accepts.
 // Pre-v27 messages cannot prove an absolute donor ceiling. Resume republishes
 // them with a fresh grant and its explicit amount; replaying old bytes cannot.
+// v28 stays acceptable beside v29 (see the v29 note above SchemaVersion).
 const MinSchemaVersion = 27
 
 // RunMessage is the JSON envelope published on
@@ -226,6 +236,14 @@ type RunMessage struct {
 	// runner can withhold workspace-level capabilities without a document
 	// read. Empty is the trusted default.
 	Trust store.RunTrust `json:"trust,omitempty"`
+	// ForkAuthorSubject is the fork review lane's per-contributor metering
+	// subject (orgusage.ForkAuthorSubject's exact spelling, composed on the
+	// metering id the org budget used), mirrored from the run document so
+	// the runner's recordOrgSpend charges the author's dollars beside the
+	// org's — where spend is measured, not from a document a failed run may
+	// never have loaded. Empty on every trusted run (and every run that
+	// predates the fork lane).
+	ForkAuthorSubject string `json:"fork_author_subject,omitempty"`
 	// BotID is the stable bundle/bot identifier for this run. It qualifies
 	// structured visibility=bot memory and is preserved on resume.
 	BotID string `json:"bot_id,omitempty"`

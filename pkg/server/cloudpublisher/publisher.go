@@ -3695,23 +3695,24 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		// iterion_version — on the one path where launcher and runner are
 		// separate deployments that move independently, and where the IR
 		// one compiles has to load on the other.
-		IterionVersion:  appinfo.FullVersion(),
-		FilePath:        spec.FilePath,
-		Status:          store.RunStatusQueued,
-		Inputs:          inputs,
-		CreatedAt:       now,
-		UpdatedAt:       now,
-		QueuedAt:        &now,
-		TenantID:        tenantID,
-		OwnerID:         ownerID,
-		RunnerPool:      runnerPool,
-		RepoURL:         spec.RepoURL,
-		RepoSHA:         spec.RepoRef,
-		Trust:           spec.Trust,
-		RepoSHAExpected: spec.RepoSHAExpected,
-		ProjectPath:     spec.ProjectPath,
-		BotID:           spec.BotID,
-		BotSourceTenant: botSourceTenantOf(spec.BotBundle),
+		IterionVersion:    appinfo.FullVersion(),
+		FilePath:          spec.FilePath,
+		Status:            store.RunStatusQueued,
+		Inputs:            inputs,
+		CreatedAt:         now,
+		UpdatedAt:         now,
+		QueuedAt:          &now,
+		TenantID:          tenantID,
+		OwnerID:           ownerID,
+		RunnerPool:        runnerPool,
+		RepoURL:           spec.RepoURL,
+		RepoSHA:           spec.RepoRef,
+		Trust:             spec.Trust,
+		RepoSHAExpected:   spec.RepoSHAExpected,
+		ForkAuthorSubject: spec.ForkAuthorSubject,
+		ProjectPath:       spec.ProjectPath,
+		BotID:             spec.BotID,
+		BotSourceTenant:   botSourceTenantOf(spec.BotBundle),
 		// The tier the launch resolver actually served, in its own field:
 		// BotSourceTenant is empty for a baked bundle AND for a run that
 		// resolved no bot, so it cannot say which of the two happened.
@@ -4099,10 +4100,14 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		// Trust and the admitted commit ride the wire as well as the
 		// document: the runner compares before it has any reason to read
 		// the document, and a comparison that needs a second store round
-		// trip is one a degraded store turns off.
-		Trust:           spec.Trust,
-		RepoSHAExpected: spec.RepoSHAExpected,
-		BotID:           spec.BotID,
+		// trip is one a degraded store turns off. The fork author's
+		// metering subject rides with them (decision 5's second charge):
+		// the runner's recordOrgSpend reads it where spend is measured,
+		// not from the document a failed run may never have loaded.
+		Trust:             spec.Trust,
+		RepoSHAExpected:   spec.RepoSHAExpected,
+		ForkAuthorSubject: spec.ForkAuthorSubject,
+		BotID:             spec.BotID,
 		// The resolved source's tier rides the wire beside BotID (#1959):
 		// the runner's isolation floor reads it before any document read,
 		// and a subbot's child message — a struct copy — inherits it.
@@ -4713,10 +4718,14 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 		// verdict on who wrote it — and the same pinned commit. Read off the
 		// prior document beside RepoURL/RepoSHA: an attempt that re-cloned
 		// the fork's head without them would resolve credentials as a
-		// trusted run and fetch whatever the ref points at now.
-		Trust:           prior.Trust,
-		RepoSHAExpected: prior.RepoSHAExpected,
-		BotID:           prior.BotID,
+		// trusted run and fetch whatever the ref points at now. The fork
+		// author's metering subject replays with them — a resumed fork run
+		// charges the SAME per-contributor bound, and its runner charges
+		// the same subject's dollars.
+		Trust:             prior.Trust,
+		RepoSHAExpected:   prior.RepoSHAExpected,
+		ForkAuthorSubject: prior.ForkAuthorSubject,
+		BotID:             prior.BotID,
 		// Same replay doctrine as Trust: the resumed attempt inherits the
 		// tier the launch resolved, so the runner's isolation floor (#1959)
 		// judges the SAME source on every attempt — a resume must never

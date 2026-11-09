@@ -732,6 +732,37 @@ type DeferredTarget struct {
 	// the trusted default and no pin, i.e. to what it did yesterday.
 	Trust       store.RunTrust `bson:"trust,omitempty" json:"trust,omitempty"`
 	ExpectedSHA string         `bson:"expected_sha,omitempty" json:"expected_sha,omitempty"`
+	// ForkAuthor is the outside author the gesture admitted, parked with
+	// the provenance it belongs to: a flush that re-enters the launch tail
+	// must meter the per-contributor bound, and an untrusted target that
+	// cannot be metered is refused, not launched unmetered. Nil on every
+	// row but a fork gesture's; a row written before the field decodes to
+	// nil, i.e. to what it was.
+	ForkAuthor *ForkAuthorRef `bson:"fork_author,omitempty" json:"fork_author,omitempty"`
+}
+
+// ForkAuthorRef names the OUTSIDE author a fork review gesture admitted,
+// for the per-contributor bound (ADR-162 decision 5). It rides the
+// provenance a target carries: the identity halves on a first admission
+// (the forge provider and the pull request author's NUMERIC forge id),
+// and — once the launch gate has metered the bound — the composed
+// orgusage.Subject, which is what the run document, the queue message and
+// the runner's second charge read. The subject is composed at the ONE
+// place the metering id is decided (gateMonthlyCaps), so the subject
+// charged, the one stamped on the document and the one re-charged on a
+// re-entry can never diverge.
+type ForkAuthorRef struct {
+	// Provider is the forge the pull request lives on ("github" — the
+	// lane is github-only).
+	Provider string `bson:"provider,omitempty" json:"provider,omitempty"`
+	// AuthorID is the pull request author's NUMERIC forge user id — never
+	// the login, which is renameable and would reset the bound on demand.
+	AuthorID string `bson:"author_id,omitempty" json:"author_id,omitempty"`
+	// Subject is the composed orgusage.Subject once the gate has metered
+	// the bound on it. A re-entry that replays a stored row (the debounce
+	// flush, the delivery retry, the run-retry sweeper) carries this and
+	// never re-derives the identity halves.
+	Subject string `bson:"subject,omitempty" json:"subject,omitempty"`
 }
 
 // DeferredLaunch parks one webhook delivery's resolved launch for a

@@ -192,9 +192,12 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 	// enforcement site downstream (the publish grant, the credential resolve,
 	// a resume, a forked child) reads the marker off that document. Refuse
 	// rather than carry a fact this path cannot keep: silently downgrading an
-	// untrusted launch to a trusted run is worse than not launching it.
-	if (!spec.Trust.Trusted() || spec.RepoSHAExpected != "") && s.publisher == nil {
-		return nil, fmt.Errorf("runview: refusing a launch the in-process path cannot describe (trust=%q, pinned_commit=%v): it persists neither marker, so the run would read as trusted and unpinned", string(spec.Trust), spec.RepoSHAExpected != "")
+	// untrusted launch to a trusted run is worse than not launching it. The
+	// fork author's metering subject rides the same refusal: a launch that
+	// names one is a fork gesture's, and dropping it here would un-meter the
+	// author's dollars on every later re-entry.
+	if (!spec.Trust.Trusted() || spec.RepoSHAExpected != "" || spec.ForkAuthorSubject != "") && s.publisher == nil {
+		return nil, fmt.Errorf("runview: refusing a launch the in-process path cannot describe (trust=%q, pinned_commit=%v, fork_author=%v): it persists none of the three, so the run would read as trusted, unpinned and unmetered", string(spec.Trust), spec.RepoSHAExpected != "", spec.ForkAuthorSubject != "")
 	}
 	if spec.BranchName != "" {
 		if err := gitlib.ValidateBranchName(spec.BranchName); err != nil {

@@ -124,7 +124,7 @@ func TestLaunch_RefusesAnUntrustedSpecOnTheInProcessPath(t *testing.T) {
 	if err == nil {
 		t.Fatal("Launch = nil for an untrusted spec with no publisher — the run would persist with an empty Trust and read as trusted everywhere downstream")
 	}
-	if !strings.Contains(err.Error(), "persists neither marker") {
+	if !strings.Contains(err.Error(), "persists none of the three") {
 		t.Fatalf("err = %v, want it to name why the path cannot carry the marker", err)
 	}
 	// An unrecognised trust is refused too: Trusted() admits one value.

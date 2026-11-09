@@ -154,6 +154,13 @@ their settings).`,
 // zero values mean "no limit" — the safe default for existing
 // deployments. Per-org overrides live on the Team document and are
 // managed via PATCH /api/admin/orgs/{id}.
+//
+// The fork review lane's per-contributor bound is the exception
+// (ADR-162 Q4): its platform default is 20 runs / $20, because it is
+// the perimeter against an outside party rather than operator
+// convenience — an unset value is a number, and the escape hatch is
+// the explicit `unbounded` (the literal string, on either env var,
+// which resolves to no cap).
 func orgLimitDefaultsFromEnv() server.OrgLimitDefaults {
 	intEnv := func(key string) int {
 		n, err := strconv.Atoi(os.Getenv(key))
@@ -169,7 +176,40 @@ func orgLimitDefaultsFromEnv() server.OrgLimitDefaults {
 	if f, err := strconv.ParseFloat(os.Getenv("ITERION_ORG_DEFAULT_MONTHLY_COST_CAP_USD"), 64); err == nil && f > 0 {
 		d.MonthlyCostCapUSD = f
 	}
+	d.ForkAuthorRunQuota = boundEnvInt("ITERION_ORG_DEFAULT_FORK_AUTHOR_RUN_QUOTA", 20)
+	d.ForkAuthorCostCapUSD = boundEnvFloat("ITERION_ORG_DEFAULT_FORK_AUTHOR_COST_CAP_USD", 20)
 	return d
+}
+
+// boundEnvInt / boundEnvFloat read a fork-author bound knob: the literal
+// `unbounded` (case-insensitive) resolves to 0 — no cap, the explicit escape
+// hatch — and an unset, invalid or negative value resolves to the shipped
+// default, because the bound is a perimeter and its unset state is a number,
+// never "open".
+func boundEnvInt(key string, def int) int {
+	if strings.EqualFold(strings.TrimSpace(os.Getenv(key)), "unbounded") {
+		return 0
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(os.Getenv(key)))
+	if err != nil || n < 0 || strings.TrimSpace(os.Getenv(key)) == "" {
+		return def
+	}
+	return n
+}
+
+func boundEnvFloat(key string, def float64) float64 {
+	if strings.EqualFold(strings.TrimSpace(os.Getenv(key)), "unbounded") {
+		return 0
+	}
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return def
+	}
+	f, err := strconv.ParseFloat(raw, 64)
+	if err != nil || f < 0 {
+		return def
+	}
+	return f
 }
 
 // trustedProxyWarning names what a trusted-proxy list costs a deployment
