@@ -73,6 +73,29 @@
         ],
         "type": "object"
       },
+      "Audience": {
+        "properties": {
+          "all_teams": {
+            "type": "boolean"
+          },
+          "contributors": {
+            "type": "boolean"
+          },
+          "orgs": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "teams": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
       "AuthMeResponse": {
         "properties": {
           "active_org_id": {
@@ -1418,6 +1441,17 @@
         ],
         "type": "object"
       },
+      "DrawLimits": {
+        "properties": {
+          "max_runs_per_day": {
+            "type": "integer"
+          },
+          "max_usd_per_day": {
+            "type": "number"
+          }
+        },
+        "type": "object"
+      },
       "Entry": {
         "properties": {
           "backends": {
@@ -2158,6 +2192,23 @@
           "attempts",
           "last_at"
         ],
+        "type": "object"
+      },
+      "Limits": {
+        "properties": {
+          "max_concurrent_runs": {
+            "type": "integer"
+          },
+          "max_runs_per_day": {
+            "type": "integer"
+          },
+          "max_usd_per_day": {
+            "type": "number"
+          },
+          "max_usd_per_week": {
+            "type": "number"
+          }
+        },
         "type": "object"
       },
       "LineageContext": {
@@ -3841,6 +3892,26 @@
         ],
         "type": "object"
       },
+      "Strategy": {
+        "properties": {
+          "margin_pct": {
+            "type": "number"
+          },
+          "mode": {
+            "type": "string"
+          },
+          "reset_hold": {
+            "type": "boolean"
+          },
+          "triggers": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
       "Subscription": {
         "properties": {
           "args_var": {
@@ -4140,6 +4211,30 @@
             "type": "string"
           }
         },
+        "type": "object"
+      },
+      "Window": {
+        "properties": {
+          "end_hour": {
+            "type": "integer"
+          },
+          "start_hour": {
+            "type": "integer"
+          },
+          "timezone": {
+            "type": "string"
+          },
+          "weekdays": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "start_hour",
+          "end_hour"
+        ],
         "type": "object"
       },
       "WireEdge": {
@@ -4749,6 +4844,37 @@
           "created_at",
           "bots",
           "repos"
+        ],
+        "type": "object"
+      },
+      "attachmentView": {
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "limits": {
+            "$ref": "#/components/schemas/DrawLimits"
+          },
+          "pool_id": {
+            "type": "string"
+          },
+          "scope_id": {
+            "type": "string"
+          },
+          "strategy": {
+            "$ref": "#/components/schemas/Strategy"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "scope_id",
+          "pool_id",
+          "enabled",
+          "strategy",
+          "limits"
         ],
         "type": "object"
       },
@@ -5895,6 +6021,46 @@
         ],
         "type": "object"
       },
+      "namedPoolView": {
+        "properties": {
+          "audience": {
+            "$ref": "#/components/schemas/Audience"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "org_id": {
+            "type": "string"
+          },
+          "owner_id": {
+            "type": "string"
+          },
+          "owner_type": {
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "visibility": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "enabled",
+          "owner_type",
+          "visibility",
+          "audience"
+        ],
+        "type": "object"
+      },
       "oauthConnectionView": {
         "properties": {
           "access_token_expires_at": {
@@ -6297,6 +6463,210 @@
           "facade_default_effective",
           "routing_effective_scope"
         ],
+        "type": "object"
+      },
+      "poolAttachmentRequest": {
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "expected_updated_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "margin_pct": {
+            "type": "number"
+          },
+          "max_runs_per_day": {
+            "type": "integer"
+          },
+          "max_usd_per_day": {
+            "type": "number"
+          },
+          "mode": {
+            "type": "string"
+          },
+          "pool_id": {
+            "type": "string"
+          },
+          "reset_hold": {
+            "type": "boolean"
+          },
+          "triggers": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "pool_id"
+        ],
+        "type": "object"
+      },
+      "poolCreateRequest": {
+        "properties": {
+          "audience": {
+            "$ref": "#/components/schemas/Audience"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "name": {
+            "type": "string"
+          },
+          "visibility": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "poolEntryRequest": {
+        "properties": {
+          "backend": {
+            "type": "string"
+          },
+          "bots": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "fallback_use": {
+            "type": "boolean"
+          },
+          "key_id": {
+            "type": "string"
+          },
+          "lend_scope": {
+            "type": "string"
+          },
+          "limits": {
+            "$ref": "#/components/schemas/Limits"
+          },
+          "model": {
+            "type": "string"
+          },
+          "priority": {
+            "type": "integer"
+          },
+          "ref": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          },
+          "window": {
+            "$ref": "#/components/schemas/Window"
+          }
+        },
+        "required": [
+          "source",
+          "ref"
+        ],
+        "type": "object"
+      },
+      "poolEntryView": {
+        "properties": {
+          "backend": {
+            "type": "string"
+          },
+          "cooldown_until": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "health": {
+            "type": "string"
+          },
+          "health_detail": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "key_id": {
+            "type": "string"
+          },
+          "lender": {
+            "type": "string"
+          },
+          "limits": {
+            "$ref": "#/components/schemas/Limits"
+          },
+          "model": {
+            "type": "string"
+          },
+          "pool_id": {
+            "type": "string"
+          },
+          "priority": {
+            "type": "integer"
+          },
+          "ref": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "pool_id",
+          "lender",
+          "source",
+          "ref",
+          "enabled",
+          "limits",
+          "status",
+          "health"
+        ],
+        "type": "object"
+      },
+      "poolImportRequest": {
+        "properties": {
+          "credentials_json": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "priority": {
+            "type": "integer"
+          },
+          "source": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "source",
+          "credentials_json"
+        ],
+        "type": "object"
+      },
+      "poolPutRequest": {
+        "properties": {
+          "audience": {
+            "$ref": "#/components/schemas/Audience"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "name": {
+            "type": "string"
+          },
+          "visibility": {
+            "type": "string"
+          }
+        },
         "type": "object"
       },
       "previewBackendOption": {
@@ -7613,6 +7983,192 @@
           }
         },
         "summary": "POST /api/admin/llm/oauth/{kind}/refresh",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/api/admin/llm/pool-attachment": {
+      "delete": {
+        "operationId": "deleteAdminLlmPoolAttachment",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "401": {
+            "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
+          },
+          "403": {
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
+          }
+        },
+        "summary": "DELETE /api/admin/llm/pool-attachment",
+        "tags": [
+          "admin"
+        ]
+      },
+      "get": {
+        "operationId": "getAdminLlmPoolAttachment",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/attachmentView"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "401": {
+            "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
+          },
+          "403": {
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
+          }
+        },
+        "summary": "GET /api/admin/llm/pool-attachment",
+        "tags": [
+          "admin"
+        ]
+      },
+      "put": {
+        "operationId": "putAdminLlmPoolAttachment",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/poolAttachmentRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/attachmentView"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "401": {
+            "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
+          },
+          "403": {
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
+          }
+        },
+        "summary": "PUT /api/admin/llm/pool-attachment",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/api/admin/llm/pools": {
+      "get": {
+        "operationId": "getAdminLlmPools",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/namedPoolView"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "401": {
+            "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
+          },
+          "403": {
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
+          }
+        },
+        "summary": "GET /api/admin/llm/pools",
+        "tags": [
+          "admin"
+        ]
+      },
+      "post": {
+        "operationId": "postAdminLlmPools",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/poolCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/namedPoolView"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "401": {
+            "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
+          },
+          "403": {
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
+          }
+        },
+        "summary": "POST /api/admin/llm/pools",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/api/admin/llm/pools/sync": {
+      "post": {
+        "description": "Super-admin only. Runs one pool-signal-sync sweep inline (the onboarding proof).",
+        "operationId": "postAdminLlmPoolsSync",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "401": {
+            "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
+          },
+          "403": {
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
+          }
+        },
+        "summary": "POST /api/admin/llm/pools/sync",
         "tags": [
           "admin"
         ]
@@ -9886,6 +10442,59 @@
         ]
       }
     },
+    "/api/me/pools": {
+      "get": {
+        "operationId": "getMePools",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/namedPoolView"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "GET /api/me/pools",
+        "tags": [
+          "me"
+        ]
+      },
+      "post": {
+        "operationId": "postMePools",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/poolCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/namedPoolView"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "POST /api/me/pools",
+        "tags": [
+          "me"
+        ]
+      }
+    },
     "/api/me/secrets": {
       "get": {
         "operationId": "getMeSecrets",
@@ -10846,6 +11455,151 @@
         ]
       }
     },
+    "/api/orgs/{id}/pool-attachment": {
+      "delete": {
+        "operationId": "deleteOrgsByIdPoolAttachment",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "DELETE /api/orgs/{id}/pool-attachment",
+        "tags": [
+          "orgs"
+        ]
+      },
+      "get": {
+        "operationId": "getOrgsByIdPoolAttachment",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/attachmentView"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "GET /api/orgs/{id}/pool-attachment",
+        "tags": [
+          "orgs"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "put": {
+        "operationId": "putOrgsByIdPoolAttachment",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/poolAttachmentRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/attachmentView"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "PUT /api/orgs/{id}/pool-attachment",
+        "tags": [
+          "orgs"
+        ]
+      }
+    },
+    "/api/orgs/{id}/pools": {
+      "get": {
+        "operationId": "getOrgsByIdPools",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/namedPoolView"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "GET /api/orgs/{id}/pools",
+        "tags": [
+          "orgs"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postOrgsByIdPools",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/poolCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/namedPoolView"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "POST /api/orgs/{id}/pools",
+        "tags": [
+          "orgs"
+        ]
+      }
+    },
     "/api/orgs/{id}/price-feeds": {
       "get": {
         "operationId": "getOrgsByIdPriceFeeds",
@@ -11458,6 +12212,256 @@
         "summary": "POST /api/parse",
         "tags": [
           "parse"
+        ]
+      }
+    },
+    "/api/pools/{id}": {
+      "delete": {
+        "operationId": "deletePoolsById",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "DELETE /api/pools/{id}",
+        "tags": [
+          "pools"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "put": {
+        "operationId": "putPoolsById",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/poolPutRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/namedPoolView"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "PUT /api/pools/{id}",
+        "tags": [
+          "pools"
+        ]
+      }
+    },
+    "/api/pools/{id}/entries": {
+      "get": {
+        "operationId": "getPoolsByIdEntries",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/poolEntryView"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "GET /api/pools/{id}/entries",
+        "tags": [
+          "pools"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "put": {
+        "operationId": "putPoolsByIdEntries",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/poolEntryRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/poolEntryView"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "PUT /api/pools/{id}/entries",
+        "tags": [
+          "pools"
+        ]
+      }
+    },
+    "/api/pools/{id}/entries/import": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "description": "Pool-manager only. Seals a subscription credentials blob verbatim under the pool's lender key and pledges it; a shape with no funding lane answers inert with a named reason.",
+        "operationId": "postPoolsByIdEntriesImport",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/poolImportRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/poolEntryView"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "POST /api/pools/{id}/entries/import",
+        "tags": [
+          "pools"
+        ]
+      }
+    },
+    "/api/pools/{id}/entries/{pledge}": {
+      "delete": {
+        "operationId": "deletePoolsByIdEntriesByPledge",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "DELETE /api/pools/{id}/entries/{pledge}",
+        "tags": [
+          "pools"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "pledge",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/api/pools/{id}/entries/{pledge}/reset": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "pledge",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "description": "Pool-manager only. Clears the provider cooldown, forgets the stale readings the margin skip acted on, resets held state.",
+        "operationId": "postPoolsByIdEntriesByPledgeReset",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/poolEntryView"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "POST /api/pools/{id}/entries/{pledge}/reset",
+        "tags": [
+          "pools"
         ]
       }
     },
@@ -14220,6 +15224,96 @@
         ]
       }
     },
+    "/api/teams/{id}/bots/{bot}/pool-attachment": {
+      "delete": {
+        "operationId": "deleteTeamsByIdBotsByBotPoolAttachment",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "DELETE /api/teams/{id}/bots/{bot}/pool-attachment",
+        "tags": [
+          "teams"
+        ]
+      },
+      "get": {
+        "operationId": "getTeamsByIdBotsByBotPoolAttachment",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/attachmentView"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "GET /api/teams/{id}/bots/{bot}/pool-attachment",
+        "tags": [
+          "teams"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "bot",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "put": {
+        "operationId": "putTeamsByIdBotsByBotPoolAttachment",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/poolAttachmentRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/attachmentView"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "PUT /api/teams/{id}/bots/{bot}/pool-attachment",
+        "tags": [
+          "teams"
+        ]
+      }
+    },
     "/api/teams/{id}/config-editor/shares": {
       "get": {
         "operationId": "getTeamsByIdConfigEditorShares",
@@ -15868,6 +16962,88 @@
           }
         },
         "summary": "PUT /api/teams/{id}/pool",
+        "tags": [
+          "teams"
+        ]
+      }
+    },
+    "/api/teams/{id}/pool-attachment": {
+      "delete": {
+        "operationId": "deleteTeamsByIdPoolAttachment",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "DELETE /api/teams/{id}/pool-attachment",
+        "tags": [
+          "teams"
+        ]
+      },
+      "get": {
+        "operationId": "getTeamsByIdPoolAttachment",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/attachmentView"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "GET /api/teams/{id}/pool-attachment",
+        "tags": [
+          "teams"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "put": {
+        "operationId": "putTeamsByIdPoolAttachment",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/poolAttachmentRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/attachmentView"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "PUT /api/teams/{id}/pool-attachment",
         "tags": [
           "teams"
         ]

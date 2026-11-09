@@ -196,10 +196,11 @@ func (s *Server) routes() {
 		s.registerPriceFeedRoutes()
 	}
 	// Key pools (ADR-164): the named pools, their entries and the
-	// per-scope attachments. Gated on the stores (nil → no routes — the
-	// deployment carries no pool surface), inside the auth gate like the
-	// tenant config surfaces above.
-	if s.credPoolAttachments != nil && s.credPoolPools != nil && s.authSvc != nil {
+	// per-scope attachments. Registered inside the auth gate like the
+	// tenant config surfaces above; the handlers degrade honestly (503)
+	// when the stores are nil — the openapi dump and the CLI stay usable
+	// on a deployment that never wired pools.
+	if s.authSvc != nil {
 		s.registerPoolsRoutes()
 	}
 	if s.genericSecrets != nil && s.sealer != nil && s.authSvc != nil {

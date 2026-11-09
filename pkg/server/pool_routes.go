@@ -523,6 +523,13 @@ func (s *Server) handleDeletePoolEntry(w http.ResponseWriter, r *http.Request) {
 	s.writeJSONFor(w, r, map[string]string{"status": "deleted"})
 }
 
+type poolImportRequest struct {
+	Source          string `json:"source"`
+	CredentialsJSON string `json:"credentials_json"`
+	Model           string `json:"model,omitempty"`
+	Priority        *int   `json:"priority,omitempty"`
+}
+
 // handleImportPoolEntry is the operator's bulk-push lane (ADR-164): an
 // oauth credentials blob (the claude credentials.json shape, or the codex
 // auth.json paste) sealed under the pool's lender key, then pledged. A
@@ -537,12 +544,7 @@ func (s *Server) handleImportPoolEntry(w http.ResponseWriter, r *http.Request) {
 	if !s.requireSafeOrigin(w, r) {
 		return
 	}
-	var req struct {
-		Source          string `json:"source"`
-		CredentialsJSON string `json:"credentials_json"`
-		Model           string `json:"model,omitempty"`
-		Priority        *int   `json:"priority,omitempty"`
-	}
+	var req poolImportRequest
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 256<<10)).Decode(&req); err != nil {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "bad json: %v", err)
 		return
