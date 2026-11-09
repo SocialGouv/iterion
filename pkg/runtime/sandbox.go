@@ -24,6 +24,7 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -124,6 +125,26 @@ func (a *activeSandbox) shutdown(ctx context.Context, logger *iterlog.Logger) {
 //     tool surface (pkg/askusermcp) so interactive nodes keep the
 //     native ask_user tools in-container — the stdio __mcp-ask-user
 //     subcommand's host binary path is invisible there.
+//
+// portOfListenerEndpoint reads the numeric port a listener endpoint
+// advertises ("http://host:port[/path]", the shape startSandboxMCPListener
+// and the proxy's Endpoint write). ok is false for an empty endpoint or one
+// no listener URL could have produced — never a guessed default.
+func portOfListenerEndpoint(endpoint string) (int, bool) {
+	if endpoint == "" {
+		return 0, false
+	}
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		return 0, false
+	}
+	port, err := strconv.Atoi(u.Port())
+	if err != nil || port <= 0 || port > 65535 {
+		return 0, false
+	}
+	return port, true
+}
+
 func startSandboxMCPListener(driver sandbox.Driver, handler http.Handler, path string) (endpoint string, srv *http.Server, err error) {
 	bind, advertise, err := proxyAddressesForDriver(driver)
 	if err != nil {
@@ -657,6 +678,22 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 			rewriter = composeCredentialCrossing(rewriter, crossings)
 		}
 	}
+	// ADR-162 decision 7 — the network floor. The proxy is the untrusted
+	// run's ONLY route out, and that holds only where the network enforces
+	// it: a driver that writes no policy around the container leaves the
+	// proxy env a convention one ignored variable away from full egress
+	// (docker reaches it through proxy env alone today). So the admission
+	// reads the driver's SupportsNetworkPolicy and refuses the untrusted
+	// run TYPED on a driver that cannot hold the floor — kubernetes today;
+	// docker until it isolates the container's network. Trusted runs keep
+	// today's start on every driver.
+	if !p.Trust.Trusted() && !caps.SupportsNetworkPolicy {
+		return nil, &RuntimeError{
+			Code:    ErrCodeSandboxNetworkRefused,
+			Message: fmt.Sprintf("untrusted (fork-lane) run refused before its sandbox started: its only route out is the egress proxy and driver %q enforces no network policy around the container", driver.Name()),
+			Hint:    "run the fork lane on a driver whose sandbox enforces a per-run network policy (kubernetes, with a NetworkPolicy-aware CNI) — docker refuses fork runs until it isolates the container's network",
+		}
+	}
 	if err := refuseUnservableSecretGrants(p.Workflow, p.EffectiveBackend, secretSinkService{
 		sandboxed:  realDriver,
 		egress:     realDriver && rewriter != nil && caps.SupportsTLSInspection,
@@ -1031,7 +1068,19 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 		}
 		secretEgressHosts = secretEgressHostCandidates(creds.GenericHosts, logger)
 	}
-	proxy, proxyEndpoint, proxyCACert, err := startNetworkProxy(spec, driver, p.RunID, rewriter, emitEvent, logger, runGatewayHost, secretEgressHosts)
+	// ADR-162 decision 7 — the fork lane's egress floor: the credential's
+	// own host is the proxy's WHOLE allowlist. nil hands the trusted lane
+	// to startNetworkProxy unchanged; a fork run passes its crossing
+	// table's hosts (never nil — an untrusted run no credential names a
+	// host for starts under an allowlist that refuses every dial, fail
+	// closed). The bound secrets' hosts (secretEgressHosts above) stay a
+	// separate, additive opening: the operator bound them, and a fork's
+	// review reads the forge it reviews the same way a trusted one does.
+	var forkEgressHosts []string
+	if !p.Trust.Trusted() {
+		forkEgressHosts = credentialCrossingEgressHosts(ctx)
+	}
+	proxy, proxyEndpoint, proxyCACert, err := startNetworkProxy(spec, driver, p.RunID, rewriter, emitEvent, logger, runGatewayHost, secretEgressHosts, forkEgressHosts)
 	if err != nil {
 		return nil, fmt.Errorf("runtime: sandbox: network proxy: %w", err)
 	}
@@ -1045,6 +1094,44 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 	// network: open starts none).
 	wantsBoardListener := p.BoardMCPHandler != nil && workflowHasHostCapability(p.Workflow, p.Trust)
 	wantsAskUserListener := workflowHasInteractiveNode(p.Workflow)
+
+	// ADR-162 decision 7 — the untrusted run's per-run policy names
+	// EXACTLY the proxy's port and the run's own listener ports, so an
+	// interactive workflow's ask-user listener binds BEFORE the driver
+	// writes that policy (kubernetes advertises the downward-API pod IP):
+	// its port must exist when Driver.Start renders the NetworkPolicy,
+	// not after. A trusted run keeps today's order — the listener binds
+	// once the live sandbox exists. The pre-bound listener is the active
+	// sandbox's to own from the moment below; until then one defer shuts
+	// it down on every path out of here (the mirror of the host guard's
+	// adoption flag).
+	var preboundAskUser *http.Server
+	preboundAskUserEndpoint, preboundAskUserToken := "", ""
+	if !p.Trust.Trusted() && wantsAskUserListener {
+		token, terr := askusermcp.NewRunToken()
+		if terr != nil {
+			if logger != nil {
+				logger.Warn("runtime: sandbox: ask-user MCP token mint failed (native ask_user disabled for this run): %v", terr)
+			}
+		} else {
+			endpoint, srv, aerr := startSandboxMCPListener(driver, askusermcp.Handler(askusermcp.DefaultPath, token), askusermcp.DefaultPath)
+			if aerr != nil {
+				if logger != nil {
+					logger.Warn("runtime: sandbox: ask-user MCP listener failed to start (native ask_user disabled for this run): %v", aerr)
+				}
+			} else {
+				preboundAskUser, preboundAskUserEndpoint, preboundAskUserToken = srv, endpoint, token
+			}
+		}
+	}
+	preboundAskUserAdopted := false
+	defer func() {
+		if preboundAskUser != nil && !preboundAskUserAdopted {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = preboundAskUser.Shutdown(shutdownCtx)
+		}
+	}()
 
 	info := sandbox.RunInfo{
 		RunID:              p.RunID,
@@ -1063,6 +1150,21 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 		// through its bind, and only a WorkspaceExporter's drain consumes
 		// the entries (ADR-143).
 		ReadBackDirs: readBackDirs,
+		UntrustedRun: !p.Trust.Trusted(),
+	}
+	if info.UntrustedRun {
+		// The policy's port scope: the proxy's port, then the ask-user
+		// listener's when one is pre-bound. Every listener the untrusted
+		// run may reach on the runner pod is named here — above a runner
+		// concurrency of one, another run's listener sits on a port this
+		// list does not carry and the policy refuses it.
+		info.RunnerEgressPorts = []int{}
+		if port, ok := portOfListenerEndpoint(proxyEndpoint); ok {
+			info.RunnerEgressPorts = append(info.RunnerEgressPorts, port)
+		}
+		if port, ok := portOfListenerEndpoint(preboundAskUserEndpoint); ok {
+			info.RunnerEgressPorts = append(info.RunnerEgressPorts, port)
+		}
 	}
 
 	prepared, err := driver.Prepare(ctx, *spec)
@@ -1131,6 +1233,15 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 	// teardown removes the copies (active.shutdown, which the error paths
 	// below also call), so the armed defer stands down.
 	hostGuardAdopted = true
+	// The pre-bound ask-user listener joins the active sandbox the same
+	// way: its teardown (and every error path below) shuts it down, so
+	// the defer above stands down with this flag.
+	if preboundAskUser != nil {
+		active.askUserEndpoint = preboundAskUserEndpoint
+		active.askUserToken = preboundAskUserToken
+		active.askUserListener = preboundAskUser
+		preboundAskUserAdopted = true
+	}
 
 	// Second half of the Claude forfait delivery: copy the read-only mount
 	// into the writable CLAUDE_CONFIG_DIR the claude_code delegate points
@@ -1186,7 +1297,9 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 	// surface, authenticated by a per-run bearer token. Non-fatal on
 	// failure: the delegate then disables the tools per node with a loud
 	// warning (the [INTERACTION PROTOCOL] JSON fallback still applies).
-	if wantsAskUserListener {
+	// An untrusted run's listener was pre-bound above, before the driver
+	// wrote the policy that names its port.
+	if wantsAskUserListener && active.askUserListener == nil {
 		token, terr := askusermcp.NewRunToken()
 		if terr != nil {
 			if logger != nil {
@@ -1413,10 +1526,25 @@ func startNetworkProxy(
 	logger *iterlog.Logger,
 	runGatewayHost string,
 	secretEgressHosts []string,
+	forkEgressHosts []string,
 ) (*netproxy.Proxy, string, []byte, error) {
 	mode, rules, err := ResolveNetworkPolicy(spec)
 	if err != nil {
 		return nil, "", nil, err
+	}
+
+	// ADR-162 decision 7 — the fork lane's egress floor. An untrusted
+	// run's only route out is this proxy, and the credential's own host
+	// is its WHOLE allowlist: no preset (iterion-default would admit the
+	// code hosts, the registries and **.googleapis.com — exactly the
+	// exfiltration roads a fork's diff must not gain) and no rule the
+	// workflow declares (the workflow is the untrusted artifact itself).
+	// forkEgressHosts is nil on the trusted lane; non-nil — empty counts —
+	// REPLACES the spec's policy before anything below reads it, so a
+	// workflow block naming `mode: open` widens nothing either.
+	if forkEgressHosts != nil {
+		mode = netproxy.ModeAllowlist
+		rules = append([]string{}, forkEgressHosts...)
 	}
 
 	// TLS inspection needs the driver to inject the per-run CA into the

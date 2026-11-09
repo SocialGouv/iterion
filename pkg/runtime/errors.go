@@ -76,6 +76,11 @@ const (
 	// start cannot arm the substitution at all (TLS inspection off, a driver
 	// that cannot inspect: sandbox.go's crossing floor).
 	ErrCodeSandboxCrossingRefused = store.FailureSandboxCrossingRefused
+	// Raised for an UNTRUSTED (fork-lane) run whose only route out is the
+	// egress proxy on a driver that cannot enforce a network policy around
+	// the container (sandbox.go's network floor, ADR-162 decision 7): the
+	// proxy env would be a convention, not a floor.
+	ErrCodeSandboxNetworkRefused = store.FailureSandboxNetworkRefused
 	// Raised at sandbox start when the run carries attachments and the
 	// selected driver can neither bind-mount nor copy their directory in
 	// (sandbox_attachments.go). The operator attached the files on purpose;

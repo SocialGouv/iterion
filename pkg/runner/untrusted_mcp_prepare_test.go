@@ -290,7 +290,10 @@ type hostDriver struct{}
 
 func (hostDriver) Name() string { return "docker" }
 func (hostDriver) Capabilities() sandbox.Capabilities {
-	return sandbox.Capabilities{SupportsImage: true, SupportsMounts: true}
+	// SupportsNetworkPolicy: the fork row must EXECUTE (without the
+	// plugin's tools), so the fixture claims the network floor an
+	// untrusted start requires (ADR-162 decision 7).
+	return sandbox.Capabilities{SupportsImage: true, SupportsMounts: true, SupportsNetworkPolicy: true}
 }
 
 type hostPrepared struct{}

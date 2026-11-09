@@ -68,6 +68,26 @@ func credentialCrossings(ctx context.Context) []crossingEntry {
 	return entries
 }
 
+// credentialCrossingEgressHosts is the fork lane's whole proxy allowlist
+// (ADR-162 decision 7): the union of the hosts every crossing credential
+// names — the credential's own host and nothing else. Always non-nil (an
+// empty answer is a fork run no credential names a host for, and the
+// allowlist refuses every dial, fail closed) so the caller can tell it from
+// the trusted lane's nil.
+func credentialCrossingEgressHosts(ctx context.Context) []string {
+	hosts := []string{}
+	seen := map[string]bool{}
+	for _, e := range credentialCrossings(ctx) {
+		for _, h := range e.hosts {
+			if h != "" && !seen[h] {
+				seen[h] = true
+				hosts = append(hosts, h)
+			}
+		}
+	}
+	return hosts
+}
+
 // credentialCrossing is the composed Layer 2 rewriter for an untrusted run:
 // the credential substitution over whatever the executor's secret guard
 // already serves (declared workflow secrets, host-scoped exactly as

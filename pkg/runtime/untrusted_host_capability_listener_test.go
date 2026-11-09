@@ -23,7 +23,10 @@ func (capturedPrepared) DriverName() string { return "docker" }
 
 func (d *infoCapturingDriver) Name() string { return "docker" }
 func (d *infoCapturingDriver) Capabilities() sandbox.Capabilities {
-	return sandbox.Capabilities{SupportsImage: true, SupportsMounts: true}
+	// SupportsNetworkPolicy: the fork rows must reach Start to witness the
+	// listener wiring, so the fixture claims the network floor an untrusted
+	// start requires (ADR-162 decision 7).
+	return sandbox.Capabilities{SupportsImage: true, SupportsMounts: true, SupportsNetworkPolicy: true}
 }
 func (d *infoCapturingDriver) Prepare(context.Context, sandbox.Spec) (sandbox.PreparedSpec, error) {
 	return capturedPrepared{}, nil

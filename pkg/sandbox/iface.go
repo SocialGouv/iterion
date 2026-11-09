@@ -601,6 +601,22 @@ type RunInfo struct {
 	// at it (and ideally append it to the system store). Empty when
 	// inspection is off — the proxy is then a transparent tunnel.
 	ProxyCACert []byte
+
+	// UntrustedRun, when true, marks a run whose workspace code the
+	// engine does not trust (the fork lane, ADR-162 decision 7). Its
+	// container holds no credential value and its only route out is the
+	// proxy, so a driver that writes a per-run network policy must hold
+	// that floor: no cluster DNS (the proxy resolves runner-side; the
+	// container reaches it by IP), and the runner pod reachable on
+	// EXACTLY RunnerEgressPorts — never on another run's listener.
+	UntrustedRun bool
+
+	// RunnerEgressPorts are the ports on the runner pod this run's own
+	// listeners serve — the proxy's port first, then the run's ask-user
+	// listener's when an interactive workflow bound one. Set only for an
+	// untrusted run, whose policy names them exactly; a trusted run keeps
+	// the driver's default (every port on the runner pod).
+	RunnerEgressPorts []int
 }
 
 // ExecOpts controls a single [Run.Exec] invocation.

@@ -332,11 +332,15 @@ type recordingSpecDriver struct {
 
 func (d *recordingSpecDriver) Name() string { return "docker" }
 func (d *recordingSpecDriver) Capabilities() sandbox.Capabilities {
+	// SupportsNetworkPolicy: the fork row must reach Prepare to witness the
+	// floored spec, so this docker-shaped fixture claims the network floor
+	// an untrusted start requires (ADR-162 decision 7).
 	return sandbox.Capabilities{
 		SupportsImage:          true,
 		SupportsMounts:         true,
 		SupportsHostBindMounts: true,
 		SupportsPostCreate:     true,
+		SupportsNetworkPolicy:  true,
 	}
 }
 func (d *recordingSpecDriver) Prepare(_ context.Context, spec sandbox.Spec) (sandbox.PreparedSpec, error) {

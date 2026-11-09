@@ -65,7 +65,10 @@ type podDriver struct {
 func (d *podDriver) Name() string { return "docker" }
 
 func (d *podDriver) Capabilities() sandbox.Capabilities {
-	return sandbox.Capabilities{SupportsImage: true, SupportsMounts: true}
+	// SupportsNetworkPolicy: this fixture stands for a host that holds the
+	// fork lane's floors (ADR-162 decision 7) — an untrusted run must start
+	// here, not be refused at the network admission.
+	return sandbox.Capabilities{SupportsImage: true, SupportsMounts: true, SupportsNetworkPolicy: true}
 }
 
 func (d *podDriver) Prepare(_ context.Context, spec sandbox.Spec) (sandbox.PreparedSpec, error) {

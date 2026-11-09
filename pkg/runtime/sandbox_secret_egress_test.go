@@ -37,7 +37,7 @@ func TestABoundSecretsAllowedHostsOpenTheRunEgress(t *testing.T) {
 	}
 	emit := func(store.EventType, map[string]any) error { return nil }
 
-	prx, endpoint, _, err := startNetworkProxy(spec, drv, "run-secret-egress", nil, emit, nil, "", []string{"host.docker.internal"})
+	prx, endpoint, _, err := startNetworkProxy(spec, drv, "run-secret-egress", nil, emit, nil, "", []string{"host.docker.internal"}, nil)
 	if err != nil {
 		t.Fatalf("startNetworkProxy: %v", err)
 	}
@@ -97,7 +97,7 @@ func TestAWorkflowExclusionStaysTheFinalWordOnABindingHost(t *testing.T) {
 	}
 	emit := func(store.EventType, map[string]any) error { return nil }
 
-	prx, endpoint, _, err := startNetworkProxy(spec, drv, "run-secret-excl", nil, emit, nil, "", []string{"host.docker.internal"})
+	prx, endpoint, _, err := startNetworkProxy(spec, drv, "run-secret-excl", nil, emit, nil, "", []string{"host.docker.internal"}, nil)
 	if err != nil {
 		t.Fatalf("startNetworkProxy: %v", err)
 	}

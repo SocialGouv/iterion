@@ -737,6 +737,8 @@ func (d *Driver) Start(ctx context.Context, prepared sandbox.PreparedSpec, info 
 			RunID:        info.RunID,
 			FriendlyName: info.FriendlyName,
 			RunnerPodIP:  runnerIP,
+			Untrusted:    info.UntrustedRun,
+			EgressPorts:  info.RunnerEgressPorts,
 			Owner:        owner,
 		})
 		if err != nil {
