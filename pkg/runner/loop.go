@@ -42,6 +42,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/botsource"
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/cloud/metrics"
+	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/credpool"
 	"github.com/SocialGouv/iterion/pkg/credusage"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
@@ -3858,6 +3859,11 @@ func modelOverridesFromMsg(entries []queue.ModelOverride) model.ModelOverrides {
 // so a redelivery meets the same answer: acked, never retried — a retry costs
 // a pod and a clone of an outsider's tree per attempt, for nothing.
 //
+// The connector chokepoint's two sentinels are here by name (ADR-162 decision
+// 6): a fork run refused at ResolveAction/ResolveAgent is the floor refusing
+// reads and mutations alike, and a resolver nobody stated is the same floor
+// seen from a wiring defect — both are trust, neither is a transient.
+//
 // A host tool refused for a capability the node never declared is not one:
 // that is the program's own fault, on any trust, and it classifies (by its
 // code, TOOL_FAILED_PERMANENT) as the deterministic failure it is — acked,
@@ -3865,6 +3871,8 @@ func modelOverridesFromMsg(entries []queue.ModelOverride) model.ModelOverrides {
 func isTrustFloorRefusal(execErr error) bool {
 	return errors.Is(execErr, mcp.ErrWithdrawnMCPServer) ||
 		errors.Is(execErr, delegate.ErrUntrustedWorkspaceRefused) ||
+		errors.Is(execErr, connection.ErrUntrustedAction) ||
+		errors.Is(execErr, connection.ErrTrustUnstated) ||
 		errors.Is(execErr, tool.ErrHostCapabilityWithdrawn)
 }
 

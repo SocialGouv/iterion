@@ -7,8 +7,11 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/mcp"
 	"github.com/SocialGouv/iterion/pkg/backend/tool"
+	"github.com/SocialGouv/iterion/pkg/connection"
+	"github.com/SocialGouv/iterion/pkg/connector/spec"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/runtime/recovery"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // TestClassify_TrustFloorRefusalsAreNotRedelivered.
@@ -25,6 +28,18 @@ func TestClassify_TrustFloorRefusalsAreNotRedelivered(t *testing.T) {
 		{"an MCP server the workflow activates is withdrawn", fmt.Errorf("runner: resolve MCP servers for r: %w", fmt.Errorf("%w: plug", mcp.ErrWithdrawnMCPServer))},
 		{"a backend with no floor", fmt.Errorf("node a: %w", delegate.ErrUntrustedWorkspaceRefused)},
 		{"a host capability the node declares, withdrawn", engineFailure(fmt.Errorf("tool node: %w", tool.ErrHostCapabilityWithdrawn))},
+		// ADR-162 decision 6: the connector chokepoint refuses a fork run's
+		// action — read or mutating — as *connection.TrustError, which is
+		// exactly the typed-refusal shape this classifier must meet; the
+		// chain is the production one (TrustError as the executor's cause).
+		{"a connector action the run's trust refuses, read or mutating", engineFailure(&connection.TrustError{
+			Action: "probe.issue.list", Alias: "main",
+			Effect: spec.EffectRead, Trust: connection.TrustOfRun(store.RunTrustFork),
+		})},
+		{"a resolver nobody stated the trust of", engineFailure(&connection.TrustError{
+			Action: "probe.issue.close", Alias: "main",
+			Effect: spec.EffectUpdate, Trust: connection.TrustUnknown(),
+		})},
 	} {
 		out := classifyExecResult(c.err, "run-1")
 		if out.action != actionAck || out.finalStatus != "untrusted_workspace_refused" {
