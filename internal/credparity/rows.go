@@ -59,6 +59,19 @@ func stampings(r Row, unstamped, stamped func(*Row)) []Row {
 	return []Row{u, s}
 }
 
+// forkCannotHoldForfait and forkCannotHoldAmbient are the fork lane's floor
+// on a row's sandboxed copy (ADR-162 decision 7): the channel the leg lands
+// on is one the sandbox's egress proxy cannot hold — the run's forfait (an
+// OAuth credential and its refresh flow), the launcher's ambient env — so the
+// call is refused typed, untrusted-channel, where it spent on the host.
+func forkCannotHoldForfait(r *Row) { r.Want = Refuses(UntrustedChannel) }
+
+func forkCannotHoldAmbient(r *Row) {
+	if !r.Run.Stamped {
+		r.Want = Refuses(UntrustedChannel)
+	}
+}
+
 // Rows is the parity table.
 func Rows() []Row {
 	var rows []Row
@@ -74,7 +87,7 @@ func Rows() []Row {
 		Node:    claw(""),
 		Want:    Spent(0, RunForfait, string(secrets.OAuthKindClaudeCode), ForfaitToken),
 	}, nil, nil) {
-		add(sides(r, nil, nil)...)
+		add(sides(r, nil, forkCannotHoldForfait)...)
 	}
 
 	// A redirected wire keeps the forfait home: the pod's key spends, and
@@ -87,7 +100,7 @@ func Rows() []Row {
 		Node:    claw(""),
 		Want:    Spent(0, PodEnv, "", PodAnthropic),
 	}, nil, func(r *Row) { r.Want = Refuses(AmbientStamp) }) {
-		add(sides(r, nil, nil)...)
+		add(sides(r, nil, forkCannotHoldAmbient)...)
 	}
 
 	// `provider: "anthropic"` goes to Anthropic direct past a z.ai wire: the
@@ -103,7 +116,7 @@ func Rows() []Row {
 		Node:    claw("anthropic", Leg{Provider: "anthropic"}),
 		Want:    Spent(0, RunForfait, string(secrets.OAuthKindClaudeCode), ForfaitToken),
 	}, nil, nil) {
-		add(sides(r, nil, nil)...)
+		add(sides(r, nil, forkCannotHoldForfait)...)
 	}
 
 	// SEEN RED (t50 r2 #1): ClawBackend.Execute's switch guard refuses the
@@ -142,7 +155,9 @@ func Rows() []Row {
 			Node:      claw(spelling.provider, legs...),
 			Sandboxed: true,
 			Trust:     Fork,
-			Want:      Spent(0, RunForfait, string(secrets.OAuthKindClaudeCode), ForfaitToken),
+			// ADR-162 U5: the hinted leg lands on the run's forfait, a channel
+			// the fork lane's proxy cannot hold.
+			Want: Refuses(UntrustedChannel),
 		})
 	}
 
@@ -157,7 +172,7 @@ func Rows() []Row {
 		Run:     Run{Forfait: true, Plan: true},
 		Node:    claw(""),
 		Want:    Spent(0, PodEnv, "", PodAnthropic),
-	}, nil, nil)...)
+	}, nil, forkCannotHoldAmbient)...)
 
 	// The plan books the forfait it predicted where the call spends it.
 	add(sides(Row{
@@ -166,7 +181,7 @@ func Rows() []Row {
 		Run:    Run{Forfait: true, Plan: true},
 		Node:   claw(""),
 		Want:   Spent(0, RunForfait, string(secrets.OAuthKindClaudeCode), ForfaitToken),
-	}, nil, nil)...)
+	}, nil, forkCannotHoldForfait)...)
 
 	// Nothing of the run's nor the pod's: the call carries no credential and
 	// dies on the provider's refusal. The meter keyed the scope's
@@ -309,7 +324,16 @@ func Rows() []Row {
 			Node:    node,
 			Want:    Spent(0, PodEnv, "", PodAnthropic),
 		}, nil, func(r *Row) { r.Want = Refuses(AmbientStamp) }) {
-			add(sides(r, nil, nil)...)
+			// ADR-162 U5: a DISPATCHED site (the router) crosses the fork
+			// lane's sandbox, and the pod's key is a channel the proxy cannot
+			// hold. The direct generations (a human node's LLM half, a
+			// self-repair rung) call in process on the host whatever the
+			// run's sandbox: no crossing, no floor — the pod's env spends.
+			var forkFlip func(*Row)
+			if site.kind == LLMRouter {
+				forkFlip = forkCannotHoldAmbient
+			}
+			add(sides(r, nil, forkFlip)...)
 		}
 		add(sides(Row{
 			Name:    site.label + " on a stamped run's own key",
@@ -334,7 +358,7 @@ func Rows() []Row {
 		Node:    Node{ID: "impl", Backend: "claw", Legs: []Leg{{}}},
 		Want:    Spent(0, PodEnv, "", PodAnthropic),
 	}, nil, func(r *Row) { r.Want = Refuses(AmbientStamp) }) {
-		add(sides(r, nil, nil)...)
+		add(sides(r, nil, forkCannotHoldAmbient)...)
 	}
 
 	// SEEN RED (#2022, U0–U2's third review): an LLM router naming no model
@@ -363,7 +387,11 @@ func Rows() []Row {
 		Posture: map[string]string{"OPENAI_API_KEY": PodOpenAI},
 		Node:    unnamedRouter,
 		Want:    Refuses(NoCredential),
-	}, nil, nil)...)
+	}, nil, func(r *Row) {
+		// ADR-162 U5: the pod's key the fork lane withholds is named as the
+		// channel the proxy cannot hold, not as a bare no-credential.
+		r.Want = Refuses(UntrustedChannel)
+	})...)
 	// The allowlist's drop reads the same model: a default outside the run's
 	// allowlist empties the router's chain, which its dispatch refuses —
 	// read as the leg's model it kept the leg, and sent the default there.
@@ -406,7 +434,10 @@ func Rows() []Row {
 		Posture: map[string]string{"ITERION_FORBID_SUBSCRIPTION_OAUTH": "1", "ANTHROPIC_AUTH_TOKEN": PodBearer, "ANTHROPIC_BASE_URL": gatewayURL},
 		Node:    claw(""),
 		Want:    Refuses(SubscriptionSwitch),
-	}, nil, nil)...)
+		// ADR-162 U5: in the fork lane the bearer never crosses — the ambient
+		// channel's typed refusal is the operative one (the switch's subject
+		// never reaches the wire either way); on the host the switch refuses.
+	}, nil, forkCannotHoldAmbient)...)
 
 	// Port row (#2244): the engine's client sends no ambient header line, so
 	// a header-bearing pod spends its key.
@@ -416,7 +447,7 @@ func Rows() []Row {
 		Posture: map[string]string{"ANTHROPIC_API_KEY": PodAnthropic, "ANTHROPIC_CUSTOM_HEADERS": "X-Tenant: a\nAuthorization: " + HeaderBearer},
 		Node:    claw(""),
 		Want:    Spent(0, PodEnv, "", PodAnthropic),
-	}, nil, nil)...)
+	}, nil, forkCannotHoldAmbient)...)
 
 	// claw sends a key alone where a bearer sits beside it.
 	add(sides(Row{
@@ -425,7 +456,7 @@ func Rows() []Row {
 		Posture: map[string]string{"ANTHROPIC_API_KEY": PodAnthropic, "ANTHROPIC_AUTH_TOKEN": PodBearer},
 		Node:    claw(""),
 		Want:    Spent(0, PodEnv, "", PodAnthropic),
-	}, nil, nil)...)
+	}, nil, forkCannotHoldAmbient)...)
 
 	// THE BEHAVIOUR CHANGE (ADR-161 decision 4): a stamped run's sealed key
 	// serves its supervisor — ADR-131 §7 refuses the pod's environment only.

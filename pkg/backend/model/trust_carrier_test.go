@@ -16,6 +16,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
+	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -231,8 +232,14 @@ func TestTrustCarrier_TheSandboxCrossingCarriesTheTrust(t *testing.T) {
 		t.Run(row.name, func(t *testing.T) {
 			operatorEnv(t)
 			t.Setenv("OPENAI_API_KEY", "sk-test-crossing")
+			// ADR-162 U5: the fork lane crosses only a key OF THE RUN, as a
+			// Layer 2 placeholder — the launcher's ambient env no longer
+			// funds a crossing — so the row seals one to reach the stream.
+			ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{
+				APIKeys: map[secrets.Provider]string{secrets.ProviderOpenAI: "sk-run-crossing-witness"},
+			})
 			run := &trustStreamRun{rec: filepath.Join(t.TempDir(), "envelopes")}
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 			defer cancel()
 			_, _ = newTestClawBackend().executeViaSandboxRunner(ctx, delegate.Task{
 				NodeID: "n", Model: "openai/gpt-6", WorkDir: t.TempDir(), Sandbox: run, WorkspaceTrust: row.trust,

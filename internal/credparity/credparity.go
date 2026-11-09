@@ -79,6 +79,10 @@ const (
 	ContentBoundary    Reason = "content-boundary"
 	NoArm              Reason = "no-arm"
 	ArmPending         Reason = "arm-pending"
+	// UntrustedChannel is ADR-162 decision 7: the fork lane's sandbox cannot
+	// hold the channel the leg would spend — a forfait's OAuth flow, a
+	// signing-chain key, the launcher's ambient env, a host login.
+	UntrustedChannel Reason = "untrusted-channel"
 )
 
 // The admission codes ADR-161 decision 7 assigns, the ones the launch's one
@@ -87,6 +91,10 @@ const (
 	CodeUnreachable           = "SANDBOX_CREDENTIAL_UNREACHABLE"
 	CodeAmbientRefused        = "CREDENTIAL_AMBIENT_REFUSED"
 	CodeSubscriptionForbidden = "CREDENTIAL_SUBSCRIPTION_FORBIDDEN"
+	// CodeCrossingRefused is ADR-162 decision 7's own: the launch refuses an
+	// untrusted run whose leg would spend a channel the sandbox's egress
+	// proxy cannot hold.
+	CodeCrossingRefused = "SANDBOX_CROSSING_REFUSED"
 )
 
 // AdmissionCode is the code a launch refused for reason carries.
@@ -96,6 +104,8 @@ func AdmissionCode(reason Reason) string {
 		return CodeAmbientRefused
 	case SubscriptionSwitch:
 		return CodeSubscriptionForbidden
+	case UntrustedChannel:
+		return CodeCrossingRefused
 	}
 	return CodeUnreachable
 }
@@ -152,18 +162,21 @@ const (
 )
 
 // The fixed values the rows spell their credentials with. Each is distinct,
-// so a reader's answer names its channel by value alone.
+// so a reader's answer names its channel by value alone. A key OF THE RUN is
+// at least 8 characters, the threshold secrets.CredentialPlaceholder crosses
+// at: the fork lane crosses a run key as a Layer 2 placeholder (ADR-162
+// decision 7), and a shorter stand-in would be omitted, not crossed.
 const (
 	ForfaitToken = "sk-ant-oat-run"
-	RunAnthropic = "sk-run"
-	RunZAI       = "zai-run"
+	RunAnthropic = "sk-run-anthropic"
+	RunZAI       = "zai-run-key"
 	PodAnthropic = "sk-pod"
 	PodBearer    = "tok-pod"
 	PodZAI       = "zai-pod"
 	PodOpenAI    = "sk-openai-pod"
 	HeaderBearer = "Bearer hdr-pod"
 	RunMoonshot  = "moonshot-run"
-	RunXAI       = "xai-run"
+	RunXAI       = "xai-run-key"
 	RunOpenAI    = "sk-openai-run"
 )
 

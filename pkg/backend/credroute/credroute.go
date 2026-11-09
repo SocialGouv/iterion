@@ -136,6 +136,12 @@ const (
 	// ReasonArmPending: the interim guard refuses a stamped leg of a backend
 	// whose arm has not landed.
 	ReasonArmPending Reason = "arm-pending"
+	// ReasonUntrustedChannel: an untrusted run's leg would spend a channel
+	// the sandbox proxy cannot hold (ADR-162 decision 7) — a forfait's
+	// OAuth credential, a provider whose credential rides an SDK signing
+	// chain, or the launcher's ambient env — or the start's Layer 2 is
+	// unusable (TLS inspection off, a driver that cannot inspect).
+	ReasonUntrustedChannel Reason = "untrusted-channel"
 )
 
 var (

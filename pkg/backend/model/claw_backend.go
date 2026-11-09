@@ -1667,7 +1667,12 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 	// env (IOTask.CredentialFunds) for the runner to name its calls by. A leg
 	// the container would resolve on no credential still crosses, as before:
 	// the provider's refusal is the call's answer.
-	resolution, err := resolveClawCall(ctx, b.registry, clawCall(task, credroute.Sandbox{Contained: true}))
+	// The run's workspace trust rides the crossing's ctx (ADR-162 decision
+	// 7): under it the keys below cross as Layer 2 placeholders and the
+	// channels the egress proxy cannot hold are refused. The task carries
+	// the trust the engine stamped (stampWorkspace), never re-derived from
+	// the workspace.
+	resolution, err := resolveClawCall(credroute.WithRunTrust(ctx, task.WorkspaceTrust), b.registry, clawCall(task, credroute.Sandbox{Contained: true}))
 	var refusal *credroute.Refusal
 	if err != nil && (!errors.As(err, &refusal) || refusal.Reason != credroute.ReasonNoCredential || resolution.env == nil) {
 		return delegate.Result{}, err
@@ -2667,6 +2672,12 @@ type crossingFacts struct {
 	// channel its value comes from — written where the crossing writes the
 	// value, never matched from it afterwards.
 	funds map[string]credroute.Spend
+	// withheldAmbient records that the stamp or the trust floor withheld a
+	// real credential value of the pod's environment (ADR-131 §7, ADR-162
+	// decision 7): the launcher's ambient env was a would-be channel, which
+	// the landing rewords into the floor's typed refusal where nothing else
+	// funds the leg.
+	withheldAmbient bool
 }
 
 // fund records that name crosses carrying spend's credential.
@@ -2696,6 +2707,14 @@ func forwardableProviderEnv(ctx context.Context, model, providerHint string) (ma
 		ok = false
 	}
 	stamped := ok && creds.AmbientRefused
+	// ADR-162 decision 7: an untrusted run's container holds its credential
+	// as a Layer 2 placeholder, substituted by the egress proxy toward the
+	// credential's own host — the crossing below carries keys as
+	// placeholders, and every channel that is not a substitutable token
+	// toward a known host (a forfait's OAuth flow, an SDK-signed key) is
+	// refused typed. This function is the SANDBOXED crossing only, so
+	// untrusted by itself arms the floor.
+	cross := !credroute.CarriedRunTrust(ctx).Trusted()
 	for _, name := range providerCredentialEnvVars {
 		v := envGetenv(ctx, name)
 		// A value a workspace .env planted on the host is the repository
@@ -2755,9 +2774,15 @@ func forwardableProviderEnv(ctx context.Context, model, providerHint string) (ma
 		// The pod's credential is not a stamped run's money. It crosses as the
 		// explicit empty rather than absent, so that no value the container
 		// itself carries under that name stands in for it either; the run's
-		// own key for the node overwrites it below.
-		withheld := stamped && stampWithheldEnvName(name)
+		// own key for the node overwrites it below. ADR-162 decision 7
+		// widens the withholding to trust: an untrusted run's sandbox never
+		// carries the launcher's ambient env either, stamp or no stamp — it
+		// is one of the channels the egress proxy cannot hold.
+		withheld := (stamped || cross) && stampWithheldEnvName(name)
 		if withheld {
+			if v != "" {
+				refused.withheldAmbient = true
+			}
 			v = ""
 		}
 		// A planted name crosses as the explicit empty even when its class
@@ -2849,7 +2874,7 @@ func forwardableProviderEnv(ctx context.Context, model, providerHint string) (ma
 		pairServed := false
 		if ok {
 			if key, baseURL, perr := creds.GatewayCredentialForRoute(secrets.ProviderOpenAICompatible); perr == nil && key != "" && baseURL != "" {
-				env[compatgw.APIKeyEnv] = key
+				env[compatgw.APIKeyEnv] = clawCrossedKey(key, cross)
 				env[compatgw.BaseURLEnv] = baseURL
 				pairServed = true
 				spend := credroute.KeySpend(creds, secrets.ProviderOpenAICompatible)
@@ -2862,6 +2887,18 @@ func forwardableProviderEnv(ctx context.Context, model, providerHint string) (ma
 			// with no pair of its own is refused, as checkGatewaySource
 			// refuses it at the dispatch seam.
 			return nil, crossingFacts{}, &ErrAmbientCredentialRefused{Provider: string(secrets.ProviderOpenAICompatible), Spec: model}
+		}
+		if !pairServed && cross && !stamped {
+			// The operator's env gateway is the launcher's ambient env
+			// (ADR-162 decision 7): a channel the fork lane's egress proxy
+			// cannot hold, refused typed where the stamp has not already
+			// refused it — the run's own sealed pair crossed above or
+			// nothing does.
+			return nil, crossingFacts{}, &credroute.ErrCrossingRefused{
+				Channel: "the launcher's ambient env",
+				Spec:    model,
+				Because: "fund the run with an API key (a BYOK key, a pinned key) or its own gateway pair — Layer 2 substitutes placeholder tokens toward the credential's own host and cannot hold this channel",
+			}
 		}
 		if !pairServed {
 			// The read is envtrust.Inherited, not os.Getenv: a gateway route a
@@ -3007,8 +3044,14 @@ func forwardableProviderEnv(ctx context.Context, model, providerHint string) (ma
 			continue
 		}
 		if name := byokEnvVar[provider]; name != "" {
-			env[name] = key
-			refused.fund(name, credroute.KeySpend(creds, provider))
+			// The untrusted crossing hands the key as its Layer 2
+			// placeholder (ADR-162 decision 7); a value too short to carry
+			// one crosses not at all — the landing below refuses a leg that
+			// needed it, and every other leg never sees it.
+			if crossed := clawCrossedKey(key, cross); crossed != "" {
+				env[name] = crossed
+				refused.fund(name, credroute.KeySpend(creds, provider))
+			}
 		}
 	}
 	// A PINNED key (secrets.RunBundle.PinnedAPIKeys) crosses only for the
@@ -3029,8 +3072,12 @@ func forwardableProviderEnv(ctx context.Context, model, providerHint string) (ma
 	if prov := clawPinnedProvider(model); prov != "" && creds.APIKey(prov) == "" {
 		if k := creds.PinnedAPIKey(prov); k != "" {
 			if name := byokEnvVar[prov]; name != "" {
-				env[name] = k
-				refused.fund(name, credroute.KeySpend(creds, prov))
+				// The pin crosses as its Layer 2 placeholder for an
+				// untrusted run, like every run key (ADR-162 decision 7).
+				if crossed := clawCrossedKey(k, cross); crossed != "" {
+					env[name] = crossed
+					refused.fund(name, credroute.KeySpend(creds, prov))
+				}
 			}
 		}
 	}
@@ -3042,6 +3089,11 @@ func forwardableProviderEnv(ctx context.Context, model, providerHint string) (ma
 	// is true of a machine default and false of a credential resolved FOR
 	// THIS RUN.
 	if creds.OAuthDir(string(secrets.OAuthKindCodex)) != "" {
+		// Under the fork lane's floor the forfait env still composes here
+		// so the landing can name the leg that would spend it (ADR-162
+		// decision 7): resolveClawCall refuses that leg typed, and a
+		// crossing it admits ships no forfait mount at all
+		// (stripForfaitCrossing) — the container holds placeholders only.
 		env["CODEX_HOME"] = secrets.CodexSandboxConfigDir
 		refused.fund("CODEX_HOME", credroute.ForfaitSpend(creds, secrets.OAuthKindCodex))
 		// Forced ONLY when the run resolved no OpenAI key of its own. A
@@ -3083,6 +3135,63 @@ func forwardableProviderEnv(ctx context.Context, model, providerHint string) (ma
 		return nil, crossingFacts{}, &ErrAmbientCredentialRefused{Provider: provider, Spec: model}
 	}
 	return env, refused, nil
+}
+
+// clawCrossedKey is the value one run key crosses the sandbox with
+// (ADR-162 decision 7): itself for a trusted run; for an untrusted run, the
+// key's Layer 2 placeholder — a pure function of the value, which is how
+// the crossing here and the egress proxy's rewriter agree with no
+// coordination — or "" for a value too short to carry one, which crosses
+// not at all.
+func clawCrossedKey(key string, cross bool) string {
+	if !cross {
+		return key
+	}
+	return secrets.CredentialPlaceholder(key)
+}
+
+// clawUntrustedLandingRefusal is the fork lane's floor on the LANDED spend
+// (ADR-162 decision 7): the channels the sandbox's egress proxy cannot hold
+// — an OAuth forfait (a config dir and a refresh flow, never a header token
+// toward one host), the operator's host login, the pod's environment, a
+// provider whose credential rides an SDK signing chain and names no host to
+// substitute toward — are refused typed rather than crossed raw or crossed
+// dead. The stamp's own refusals have fired by the time a leg lands here;
+// this floor catches what no stamp refused — an unstamped fork lane, a
+// run's own forfait.
+func clawUntrustedLandingRefusal(spend credroute.Spend) error {
+	because := "fund the run with an API key (a BYOK key, a pinned key, a gateway pair) — Layer 2 substitutes placeholder tokens toward the credential's own host and cannot hold this channel"
+	switch spend.Channel {
+	case credroute.ChannelRunForfait:
+		channel := "the run's Claude forfait"
+		if spend.Slot == string(secrets.OAuthKindCodex) {
+			channel = "the run's ChatGPT forfait"
+		}
+		return &credroute.ErrCrossingRefused{Channel: channel, Because: because}
+	case credroute.ChannelPodEnv:
+		return &credroute.ErrCrossingRefused{Channel: "the launcher's ambient env", Because: because}
+	case credroute.ChannelHostLogin:
+		return &credroute.ErrCrossingRefused{Channel: "the operator's host login", Because: because}
+	case credroute.ChannelRunKey, credroute.ChannelPinnedKey:
+		if spend.Slot != "" && len(secrets.CredentialEgressHosts(secrets.Provider(spend.Slot), spend.BaseURL)) == 0 {
+			return &credroute.ErrCrossingRefused{
+				Channel: fmt.Sprintf("a %s key", spend.Slot),
+				Because: "this provider's credential rides a signing chain Layer 2 cannot substitute toward a host — fund the node with a bearer-keyed provider (anthropic, openai, zai, moonshot, xai, openrouter, a gateway pair)",
+			}
+		}
+	}
+	return nil
+}
+
+// stripForfaitCrossing removes the forfait mounts from an untrusted
+// crossing's shipping env (ADR-162 decision 7): a crossing the floor admits
+// carries placeholder tokens only. The names cross as the explicit empty,
+// never absent — an absent name is one the container's own env or the
+// runner's workspace .env auto-load fills.
+func stripForfaitCrossing(env map[string]string) {
+	env["CODEX_HOME"] = ""
+	env["CLAUDE_CONFIG_DIR"] = ""
+	delete(env, "ITERION_OPENAI_USE_OAUTH")
 }
 
 // stampWithheldEnvName reports whether the host value of a forwarded name is

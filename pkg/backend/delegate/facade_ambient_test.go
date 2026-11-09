@@ -15,7 +15,7 @@ import (
 func TestFacadeCredEnvForHint_ThePodEnvDoesNotFundAStampedRun(t *testing.T) {
 	t.Setenv("ZAI_API_KEY", "sk-pod-zai")
 	stamped := secrets.Credentials{AmbientRefused: true}
-	env := facadeCredEnvForHint(string(secrets.ProviderZAI), stamped, true)
+	env := facadeCredEnvForHint(string(secrets.ProviderZAI), stamped, true, false)
 	for k, v := range env {
 		if v == "sk-pod-zai" {
 			t.Fatalf("%s=%q — the pod's env key funds a stamped run's facade node", k, v)

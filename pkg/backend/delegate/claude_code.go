@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/backendcaps"
+	"github.com/SocialGouv/iterion/pkg/backend/credroute"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate/claudesdk"
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
 	"github.com/SocialGouv/iterion/pkg/backend/rewrite"
@@ -951,6 +952,12 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (result Resu
 			return Result{}, err
 		}
 	}
+	// The run's workspace trust rides the delegate's ctx (ADR-162 decision
+	// 7): under it the crossing hands keys as Layer 2 placeholders and the
+	// channels the egress proxy cannot hold are refused (crossingRefusal,
+	// the probes). The task carries the trust the engine stamped
+	// (stampWorkspace), never re-derived from the workspace.
+	ctx = credroute.WithRunTrust(ctx, task.WorkspaceTrust)
 	// cliTurnCompleted records that the CLI carried this call to its own
 	// ResultMessage. It is the discriminator turnFinished needs and the
 	// defer below cannot read: `rm` is declared further down, so the
@@ -1759,6 +1766,11 @@ func (b *ClaudeCodeBackend) setupCredsAndSession(ctx context.Context, task Task,
 	if err := ambientStampRefusal(ctx, inheritAmbient); err != nil {
 		return opts, "", credSpawn{}, err
 	}
+	// The untrusted crossing (ADR-162 decision 7): a channel the egress
+	// proxy cannot hold — a forfait — is refused here, not crossed.
+	if err := crossingRefusal(ctx, task, credEnv); err != nil {
+		return opts, "", credSpawn{}, err
+	}
 	// The model half of the same refusal: a funded facade route whose id the
 	// facade does not serve is not "served" — it is substituted under the
 	// requested label. Refused before the spawn, typed `unavailable`, so the
@@ -2375,6 +2387,11 @@ func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, task Task, session
 	// The hintless half of the same stamp doctrine (Pass 2 resumes the
 	// same session on the same route, so it holds the same line).
 	if err := ambientStampRefusal(ctx, inheritAmbient); err != nil {
+		return nil, credSpawn{}, nil, err
+	}
+	// The untrusted crossing (ADR-162 decision 7), Pass 2 holding Pass 1's
+	// line: a channel the egress proxy cannot hold is refused, not crossed.
+	if err := crossingRefusal(ctx, task, credEnv); err != nil {
 		return nil, credSpawn{}, nil, err
 	}
 	// The substitution refusal of Pass 1 (setupCredsAndSession): this pass

@@ -69,7 +69,11 @@ func credentialAdmissionRunRoutes(t *testing.T, ctx context.Context, wf *ir.Work
 func credentialAdmissionDetecting(t *testing.T, ctx context.Context, wf *ir.Workflow, trust store.RunTrust, routes model.RouteView, detected func(nodeID string) (string, error), events *[]store.Event) error {
 	t.Helper()
 	t.Setenv("ITERION_MODE", "local") // pin the factory to docker,podman,noop
-	d := &specCapturingDriver{hostBinds: true}
+	// TLS-capable, as the production docker driver is: an untrusted run's
+	// sealed keys cross as Layer 2 placeholders (ADR-162 decision 7), and the
+	// start must be able to arm that substitution — the driver-without-it
+	// refusal has its own witness.
+	d := &tlsCapableDriver{specCapturingDriver{hostBinds: true}}
 	_, err := resolveAndStartSandbox(ctx, SandboxParams{
 		DetectedClawSpec: detected,
 		Routes:           routes,
@@ -156,32 +160,43 @@ func TestTrustedRunKeepsItsNoCredentialBehavior(t *testing.T) {
 	}
 }
 
-// TestForkRunWithAForwardedKeyAdmits is the fork arm that HAS a channel:
-// the launcher's ANTHROPIC_API_KEY is forwarded by name at exec — the
-// channel a spec-level check cannot see, and the reason the predicate
-// reads the real spawn.
-func TestForkRunWithAForwardedKeyAdmits(t *testing.T) {
+// TestForkRunWithAForwardedKeyIsRefusedTyped is the fork arm that HAS a
+// channel: the launcher's ANTHROPIC_API_KEY, forwarded by name at exec — the
+// channel a spec-level check cannot see, and the reason the predicate reads
+// the real spawn. Under the fork lane (ADR-162 decision 7) that channel is
+// the launcher's ambient env, which the egress proxy cannot hold: the probe
+// names it as a typed crossing refusal, never a bare "no credential" and
+// never an admission to die mid-run on a key the container would hold raw.
+func TestForkRunWithAForwardedKeyIsRefusedTyped(t *testing.T) {
 	clearCredentialEnv(t)
 	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-admission-witness-9f8e7d6c5b4a")
 	err := credentialAdmissionRun(t, credentialWorkflow("review", "claude_code", "none"), store.RunTrustFork, nil)
-	if !errors.Is(err, errCanaryStop) {
-		t.Fatalf("fork run with a forwarded key = %v, want admission (canary)", err)
+	var rerr *RuntimeError
+	if !errors.As(err, &rerr) || rerr.Code != ErrCodeSandboxCrossingRefused {
+		t.Fatalf("fork run with a forwarded key = %v, want the typed crossing refusal", err)
+	}
+	if !strings.Contains(err.Error(), "the launcher's ambient env") {
+		t.Errorf("refusal %q must name the channel the proxy cannot hold", err)
 	}
 }
 
-// TestForkRunWithAForwardedAuthorizationHeaderAdmits: the launcher's
+// TestForkRunWithAForwardedAuthorizationHeaderIsRefusedTyped: the launcher's
 // ANTHROPIC_CUSTOM_HEADERS block is forwarded beside the token channels
 // (ambientForwardedChannels), and an Authorization line in it is the
-// credential the pod spends — the probe must name it, or a header-only pod
-// is refused as credential-less on a run that authenticates fine. A block
-// of other header names carries nothing the CLI authenticates with and
-// stays a refusal — the strong reading, not the block's presence.
-func TestForkRunWithAForwardedAuthorizationHeaderAdmits(t *testing.T) {
+// credential the pod spends — an ambient channel the fork lane's proxy
+// cannot hold (ADR-162 decision 7), refused typed naming it. A block of
+// other header names carries nothing the CLI authenticates with and stays
+// the bare credential refusal — the strong reading, not the block's presence.
+func TestForkRunWithAForwardedAuthorizationHeaderIsRefusedTyped(t *testing.T) {
 	clearCredentialEnv(t)
 	t.Setenv("ANTHROPIC_CUSTOM_HEADERS", "Authorization: Bearer gw-admission-secret")
 	err := credentialAdmissionRun(t, credentialWorkflow("review", "claude_code", "none"), store.RunTrustFork, nil)
-	if !errors.Is(err, errCanaryStop) {
-		t.Fatalf("fork run with a forwarded header credential = %v, want admission (canary)", err)
+	var rerr *RuntimeError
+	if !errors.As(err, &rerr) || rerr.Code != ErrCodeSandboxCrossingRefused {
+		t.Fatalf("fork run with a forwarded header credential = %v, want the typed crossing refusal", err)
+	}
+	if !strings.Contains(err.Error(), "the launcher's ambient env") {
+		t.Errorf("refusal %q must name the channel the proxy cannot hold", err)
 	}
 }
 
@@ -198,17 +213,22 @@ func TestForkRunWithANamelessHeaderBlockIsRefused(t *testing.T) {
 	}
 }
 
-// TestForkRunWithAForwardedXAPIKeyHeaderAdmits: an x-api-key line in the
-// forwarded block is applied over the key header the CLI's own auth sets, so
-// it is the credential a header-only pod spends — the probe reads the set the
+// TestForkRunWithAForwardedXAPIKeyHeaderIsRefusedTyped: an x-api-key line in
+// the forwarded block is applied over the key header the CLI's own auth sets,
+// so it is the credential a header-only pod spends — read on the set the
 // ambient meter keys (every header the Anthropic wire's auth sets, not the
-// Authorization line alone) and admits it.
-func TestForkRunWithAForwardedXAPIKeyHeaderAdmits(t *testing.T) {
+// Authorization line alone). Under the fork lane it is the launcher's ambient
+// env, a channel the proxy cannot hold (ADR-162 decision 7): refused typed.
+func TestForkRunWithAForwardedXAPIKeyHeaderIsRefusedTyped(t *testing.T) {
 	clearCredentialEnv(t)
 	t.Setenv("ANTHROPIC_CUSTOM_HEADERS", "x-api-key: gw-admission-key")
 	err := credentialAdmissionRun(t, credentialWorkflow("review", "claude_code", "none"), store.RunTrustFork, nil)
-	if !errors.Is(err, errCanaryStop) {
-		t.Fatalf("fork run with a forwarded x-api-key header = %v, want admission (canary)", err)
+	var rerr *RuntimeError
+	if !errors.As(err, &rerr) || rerr.Code != ErrCodeSandboxCrossingRefused {
+		t.Fatalf("fork run with a forwarded x-api-key header = %v, want the typed crossing refusal", err)
+	}
+	if !strings.Contains(err.Error(), "the launcher's ambient env") {
+		t.Errorf("refusal %q must name the channel the proxy cannot hold", err)
 	}
 }
 
@@ -283,14 +303,36 @@ func TestForkRunOnPiWithoutCredentialChannelIsRefused(t *testing.T) {
 	}
 }
 
-// TestForkRunOnPiWithAForwardedKeyAdmits: the piSandboxEnv allowlist is the
-// channel, measured against the real spawn's own list.
-func TestForkRunOnPiWithAForwardedKeyAdmits(t *testing.T) {
+// TestForkRunOnPiWithAForwardedKeyIsRefusedTyped: the piSandboxEnv allowlist
+// would forward the launcher's KIMI_API_KEY — but on an untrusted run the
+// sandbox forwards none of the launcher's env (ADR-162 decision 7): the key
+// the node would have spent is named as the channel the proxy cannot hold,
+// typed, at the same gate.
+func TestForkRunOnPiWithAForwardedKeyIsRefusedTyped(t *testing.T) {
 	clearCredentialEnv(t)
 	t.Setenv("KIMI_API_KEY", "kimi-admission-witness-9f8e7d6c5b4a")
 	err := credentialAdmissionRun(t, credentialWorkflow("review", "pi", "none"), store.RunTrustFork, nil)
+	var rerr *RuntimeError
+	if !errors.As(err, &rerr) || rerr.Code != ErrCodeSandboxCrossingRefused {
+		t.Fatalf("pi fork run with a forwarded key = %v, want the typed crossing refusal", err)
+	}
+	if !strings.Contains(err.Error(), "the launcher's ambient env") {
+		t.Errorf("refusal %q must name the channel the proxy cannot hold", err)
+	}
+}
+
+// TestForkRunFundedByItsOwnKeyAdmits is the crossing's positive arm: the fork
+// lane refuses only the channels the proxy cannot hold — a key OF THE RUN
+// (a BYOK key sealed on the launch) crosses as a Layer 2 placeholder
+// (ADR-162 decision 7) and admits at the same gate the refusals are read.
+func TestForkRunFundedByItsOwnKeyAdmits(t *testing.T) {
+	clearCredentialEnv(t)
+	ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{
+		APIKeys: map[secrets.Provider]string{secrets.ProviderAnthropic: "sk-ant-run-key-witness-0a1b2c"},
+	})
+	err := credentialAdmissionRunCtx(t, ctx, credentialWorkflow("review", "claude_code", "none"), store.RunTrustFork, nil)
 	if !errors.Is(err, errCanaryStop) {
-		t.Fatalf("pi fork run with a forwarded key = %v, want admission (canary)", err)
+		t.Fatalf("fork run funded by its own key = %v, want admission (canary) — the key crosses as a placeholder", err)
 	}
 }
 
@@ -308,10 +350,11 @@ func TestForkRunOnClawWithoutCredentialChannelIsRefused(t *testing.T) {
 
 // TestForkRunOnClawReadsTheNodesProviderHint: a `provider: "anthropic"` claw
 // node goes to Anthropic direct whatever the pod's ANTHROPIC_BASE_URL says,
-// so its run's Claude forfait crosses the sandbox past a z.ai-redirected
-// wire — the probe composes that crossing under the node's hint, as the
-// dispatch does, and admits. The hint-less twin of the same node leaves the
-// forfait home and has no channel.
+// so its run's Claude forfait would cross the sandbox past a z.ai-redirected
+// wire — under the fork lane (ADR-162 decision 7) the resolver composes that
+// crossing under the node's hint, as the dispatch does, and refuses it typed:
+// an OAuth forfait is a channel the egress proxy cannot hold. The hint-less
+// twin of the same node leaves the forfait home and has no channel at all.
 func TestForkRunOnClawReadsTheNodesProviderHint(t *testing.T) {
 	clearCredentialEnv(t)
 	t.Setenv("ANTHROPIC_BASE_URL", "https://api.z.ai/api/anthropic")
@@ -332,11 +375,16 @@ func TestForkRunOnClawReadsTheNodesProviderHint(t *testing.T) {
 		return wf
 	}
 	var rerr *RuntimeError
-	if err := credentialAdmissionRunCtx(t, ctx, clawNode(""), store.RunTrustFork, nil); !errors.As(err, &rerr) || rerr.Code != ErrCodeSandboxCredentialUnreachable {
+	err := credentialAdmissionRunCtx(t, ctx, clawNode(""), store.RunTrustFork, nil)
+	if !errors.As(err, &rerr) || rerr.Code != ErrCodeSandboxCredentialUnreachable {
 		t.Fatalf("bench: the hint-less claw node = %v, want the typed credential refusal — the forfait stays off a redirected wire", err)
 	}
-	if err := credentialAdmissionRunCtx(t, ctx, clawNode("anthropic"), store.RunTrustFork, nil); !errors.Is(err, errCanaryStop) {
-		t.Fatalf("the hinted claw node = %v, want admission (canary) — its run's forfait crosses to Anthropic direct", err)
+	err = credentialAdmissionRunCtx(t, ctx, clawNode("anthropic"), store.RunTrustFork, nil)
+	if !errors.As(err, &rerr) || rerr.Code != ErrCodeSandboxCrossingRefused {
+		t.Fatalf("the hinted claw node = %v, want the typed crossing refusal — its run's forfait is a channel the proxy cannot hold", err)
+	}
+	if !strings.Contains(err.Error(), "the run's Claude forfait") {
+		t.Errorf("refusal %q must name the forfait channel the proxy cannot hold", err)
 	}
 }
 

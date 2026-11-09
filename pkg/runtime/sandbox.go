@@ -631,9 +631,35 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 	// two facts startNetworkProxy reads (a rewriter is wired, the driver
 	// injects the CA); the noop driver runs the nodes on the host.
 	realDriver := driver.Name() != "noop"
+	// ADR-162 decision 7 — the credential crossing. An untrusted run's
+	// sealed keys cross as Layer 2 placeholders, and the proxy this start
+	// runs is what substitutes them toward the credential's own host. The
+	// crossing composes over the executor's guard HERE, once, where the
+	// driver's caps and the operator's hatch are known and nothing has
+	// been pulled, mounted or started: a start that cannot arm the
+	// substitution — TLS inspection off (ITERION_SANDBOX_TLS_INSPECT), a
+	// driver that cannot inject its CA — would hand the container
+	// placeholders that resolve nowhere, which is a typed refusal, never a
+	// run that authenticates with a token that cannot work. A run with no
+	// LLM credential never reaches this question: the admission above
+	// refused it. Trusted runs keep the guard's rewriter exactly as it
+	// was.
+	rewriter := p.SecretRewriter
+	if !p.Trust.Trusted() {
+		if crossings := credentialCrossings(ctx); len(crossings) > 0 {
+			if !sandboxTLSInspectEnabled() || !realDriver || !caps.SupportsTLSInspection {
+				return nil, &RuntimeError{
+					Code:    ErrCodeSandboxCrossingRefused,
+					Message: "untrusted (fork-lane) run refused before its sandbox started: its credentials cross as Layer 2 placeholders the sandbox proxy substitutes toward the credential's own host, and this start cannot arm that substitution (TLS inspection disabled or a driver without it)",
+					Hint:    "run the fork lane on a driver whose sandbox supports TLS inspection (kubernetes), and leave ITERION_SANDBOX_TLS_INSPECT at its default — an untrusted container holds no credential value and its only route out is the proxy",
+				}
+			}
+			rewriter = composeCredentialCrossing(rewriter, crossings)
+		}
+	}
 	if err := refuseUnservableSecretGrants(p.Workflow, p.EffectiveBackend, secretSinkService{
 		sandboxed:  realDriver,
-		egress:     realDriver && p.SecretRewriter != nil && caps.SupportsTLSInspection,
+		egress:     realDriver && rewriter != nil && caps.SupportsTLSInspection,
 		simulation: p.Simulation,
 		held:       p.SecretHeld,
 	}); err != nil {
@@ -950,15 +976,24 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 	// token alone. After the sandbox starts, seedClaudeConfigDir below
 	// copies it into the writable CLAUDE_CONFIG_DIR the delegate points the
 	// CLI at. Added past the noop gate — a real driver is required to mount.
-	claudeOAuthMounted, err := addClaudeOAuthSecretFile(ctx, spec)
-	if err != nil {
-		return nil, fmt.Errorf("runtime: sandbox: claude forfait delivery: %w", err)
-	}
-	// Same for a resolved ChatGPT forfait, so a sandboxed claw/codex node
-	// authenticates as the RUN rather than as the pod.
-	codexOAuthMounted, err := addCodexOAuthSecretFile(ctx, spec)
-	if err != nil {
-		return nil, fmt.Errorf("runtime: sandbox: chatgpt forfait delivery: %w", err)
+	// The fork lane's floor (ADR-162 decision 7): an untrusted run's
+	// container holds no credential value. The forfaits are OAuth
+	// credentials — a file and a refresh flow, not a header token toward
+	// one host — which the egress proxy cannot hold; the credential
+	// admission refuses the legs that would spend them typed, and the
+	// delivery never mounts them. A trusted run keeps today's delivery.
+	var claudeOAuthMounted, codexOAuthMounted bool
+	if p.Trust.Trusted() {
+		claudeOAuthMounted, err = addClaudeOAuthSecretFile(ctx, spec)
+		if err != nil {
+			return nil, fmt.Errorf("runtime: sandbox: claude forfait delivery: %w", err)
+		}
+		// Same for a resolved ChatGPT forfait, so a sandboxed claw/codex
+		// node authenticates as the RUN rather than as the pod.
+		codexOAuthMounted, err = addCodexOAuthSecretFile(ctx, spec)
+		if err != nil {
+			return nil, fmt.Errorf("runtime: sandbox: chatgpt forfait delivery: %w", err)
+		}
 	}
 	// The forfait config dirs are seeded AFTER the container starts (below),
 	// but their paths are constants: advertise them on the container env now
@@ -996,7 +1031,7 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 		}
 		secretEgressHosts = secretEgressHostCandidates(creds.GenericHosts, logger)
 	}
-	proxy, proxyEndpoint, proxyCACert, err := startNetworkProxy(spec, driver, p.RunID, p.SecretRewriter, emitEvent, logger, runGatewayHost, secretEgressHosts)
+	proxy, proxyEndpoint, proxyCACert, err := startNetworkProxy(spec, driver, p.RunID, rewriter, emitEvent, logger, runGatewayHost, secretEgressHosts)
 	if err != nil {
 		return nil, fmt.Errorf("runtime: sandbox: network proxy: %w", err)
 	}

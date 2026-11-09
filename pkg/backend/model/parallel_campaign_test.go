@@ -101,6 +101,7 @@ var serialFamily = map[string]string{
 	"claw_backend_test.go":                     "Setenv",
 	"claw_client_identity_test.go":             "Setenv",
 	"claw_compress_secret_test.go":             "Setenv",
+	"claw_crossing_env_test.go":                "Setenv",
 	"claw_dispatch_env_narrow_test.go":         "Setenv",
 	"claw_stream_belt_test.go":                 "Setenv",
 	"claw_stream_watchdog_crossing_test.go":    "Setenv",

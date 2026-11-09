@@ -17,6 +17,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/detect"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/secrets"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // TestCredParity_Dispatch drives every row of ADR-161's parity table
@@ -49,6 +50,13 @@ func TestCredParity_Dispatch(t *testing.T) {
 		t.Run(row.Label(), func(t *testing.T) {
 			forfaitDir := applyParityRow(t, row)
 			ctx := secrets.WithCredentials(context.Background(), row.Run.Credentials(forfaitDir))
+			// The dispatch resolves under the run's trust, as the spawn does
+			// (executeViaSandboxRunner stamps it): an untrusted run's
+			// crossing refuses the channels the sandbox proxy cannot hold
+			// (ADR-162 decision 7).
+			if row.Trust == credparity.Fork {
+				ctx = credroute.WithRunTrust(ctx, store.RunTrustFork)
+			}
 
 			node := row.Node.IR()
 			e := &ClawExecutor{allowedProviders: AllowedProviderSet(row.Run.Allowlist), detector: detect.NewCachedDetector(0)}
@@ -283,6 +291,14 @@ func paritySpend(t *testing.T, row credparity.Row, leg int, client api.APIClient
 		cred = token
 		if cred == "" {
 			cred = key
+		}
+	}
+	// A run key the fork lane crossed is named by its Layer 2 placeholder
+	// (secrets.CredentialPlaceholder, a pure function of the value): the
+	// container's client carries the placeholder, the row's channel the key.
+	for _, k := range row.Run.Keys {
+		if k != "" && cred == secrets.CredentialPlaceholder(k) {
+			cred = k
 		}
 	}
 	switch {
