@@ -191,6 +191,29 @@ to a team and by the caller's role in it.
 | Monthly LLM cost cap (USD) | `MonthlyCostCapUSD` | `ITERION_ORG_DEFAULT_MONTHLY_COST_CAP_USD` | `monthly_cost_cap_exceeded` | 402 |
 | Monthly run quota | `MonthlyRunQuota` | `ITERION_ORG_DEFAULT_MONTHLY_RUN_QUOTA` | `monthly_run_quota_exceeded` | 402 |
 | Per-repository quota | `budget_floor` platform settings (`repo_quotas`) | n/a — runtime-mutable, no env default | `repo_quota_exceeded` | 402 |
+| Fork review lane: one contributor's monthly run quota (ADR-162) | `Org.ForkAuthorRunQuota` | `ITERION_ORG_DEFAULT_FORK_AUTHOR_RUN_QUOTA` (default **20**) | `fork_author_run_quota_exceeded` | 402 |
+| Fork review lane: one contributor's monthly LLM cost cap (ADR-162) | `Org.ForkAuthorCostCapUSD` | `ITERION_ORG_DEFAULT_FORK_AUTHOR_COST_CAP_USD` (default **$20**) | `fork_author_cost_cap_exceeded` | 402 |
+
+The two fork review lane rows are the one place this table's "zero means no
+limit" convention is inverted, deliberately (ADR-162 Q4): that bound is the
+perimeter against an OUTSIDE party — a pull request author who owes the
+tenant nothing — so its unset value is a number, not an opening. The ladder
+for both rows: a **negative** org field (`-1`) is the explicit `unbounded`
+escape hatch; `0` inherits the platform default (20 runs / $20); positive
+is the cap; and the platform env var accepts the literal `unbounded` to
+ship the deployment with no default bound at all. Both are metered on
+`orgusage.ForkAuthorSubject` — the author's NUMERIC forge id, keyed beside
+the org's own budget — by the same launch-gate round trip that meters the
+org, and charged per run by the runner (`recordOrgSpend`'s second charge).
+
+The fork lane also closes every fail-open arm the rows above keep for
+ordinary work (ADR-162 decision 5, amending ADR-033): an untrusted launch
+is refused — not admitted unmetered — when the team or org cannot be read
+(`fork_team_unreadable`, `fork_org_unreadable`), when no usage counter is
+wired or the subject names no author (`fork_metering_unavailable`), or when
+the metering itself errors (`fork_metering_error`); all four are 503s a
+surface may retry, on whichever surface entered (delivery, debounce flush,
+retry sweeper).
 
 `Status`, `MonthlyCostCapUSD`, and `MonthlyRunQuota` are **Org**-document
 fields (org-wide, super-admin managed — `pkg/identity.Org`); the org

@@ -28,10 +28,13 @@ for the dated super-admin API, existing-run resume exemption and local
 
 - **Explicit compatibility window.** A consumer accepts only
   `[MinSchemaVersion, SchemaVersion]` and rejects anything outside it in both
-  directions. The current v28 consumer accepts v27 and v28: a v27 message
-  predates the wire-carried `bot_source_tier`, and the run document its
-  publisher persisted already carries the stamp — the runner re-reads the
-  tier from there, so the #1959 floor never silently drops.
+  directions. The current v29 consumer accepts v27 through v29: a v27
+  message predates the wire-carried `bot_source_tier`, and the run document
+  its publisher persisted already carries the stamp — the runner re-reads the
+  tier from there, so the #1959 floor never silently drops; a v28 message
+  predates `fork_author_subject`, and no v28 message is a fork run (nothing
+  set `RunTrustFork` before v29 shipped with it), so there is no subject to
+  drop.
 - **Server first by default.** Both orders can park a message, and a resume
   recovers the run either way — but not at the same moment. Old runners
   rejecting the new version park runs a resume recovers as soon as the fleet
@@ -124,6 +127,26 @@ fail open. A run whose document predates the stamp carries an empty tier and
 reads as the operator's own launch: unfloored, as it was.
 
 Use **server-first**; old runners park the v28 message replayably and a
+resume recovers once the fleet is upgraded.
+
+## v29 fork-author metering subject
+
+`fork_author_subject` carries the fork review lane's per-contributor
+metering subject (ADR-162 U6, decision 5 — `orgusage.ForkAuthorSubject`'s
+exact spelling, composed at the launch gate on the same id the org budget
+metered on), so the runner's `recordOrgSpend` charges the pull request
+author's dollars beside the org's, where spend is measured — not from a
+document a failed run may never have loaded. Breaking by the
+additive-field rule: a stale runner that drops it leaves the
+per-contributor DOLLAR bound unenforced for the run's lifetime — a
+perimeter failing open, in silence, on the pod.
+
+`MinSchemaVersion` stays **27**: no message below v29 is a fork run (nothing
+set `RunTrustFork` before this field shipped), so there is no old payload
+whose dropped subject loses an enforced bound — the one direction in which
+ignoring the field cannot fail open does not arise.
+
+Use **server-first**; old runners park the v29 message replayably and a
 resume recovers once the fleet is upgraded.
 
 
