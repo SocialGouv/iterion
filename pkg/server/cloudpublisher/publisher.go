@@ -3847,7 +3847,7 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 	// donor's allowance. This is the enforcement: the engine stops the run
 	// on its own cost budget, instead of the overspend being discovered
 	// after the fact when the donor is already out of pocket.
-	budget := clampBudgetToGrant(spec.Budget, wf, creds.grant, 0, p.logger, runID)
+	budget := clampBudgetToGrant(spec.Budget, wf, creds.grant, 0, p.logger, runID, creds.grants...)
 
 	// Resolve the credential-derived topology vars (review_mode +
 	// mono_family, plan_review, llm_families) from what actually sealed
@@ -4569,7 +4569,7 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 	// AND stamps the doc's effective-caps snapshot further down — the same
 	// figure, so the studio never advertises a cap the run does not have.
 	merged := runtime.MergeResumeBudgetAsk(spec.Budget, prior.BudgetOverrides)
-	wire := clampBudgetToGrant(merged, wf, creds.grant, checkpointCostUSD(prior), p.logger, spec.RunID)
+	wire := clampBudgetToGrant(merged, wf, creds.grant, checkpointCostUSD(prior), p.logger, spec.RunID, creds.grants...)
 	msg := &queue.RunMessage{
 		V:                queue.SchemaVersion,
 		Contributions:    contributions,
@@ -5198,13 +5198,29 @@ func checkpointCostUSD(r *store.Run) float64 {
 // NEXT. Handing the marginal figure to a cumulative tracker fails the
 // budget check before the first node runs — a $6-of-$10 run coming back
 // with a $4 ceiling against $6 already counted, dead on arrival.
-func clampBudgetToGrant(o *ir.BudgetOverrides, wf *ir.Workflow, grant *credpool.Grant, alreadySpentUSD float64, logger *iterlog.Logger, runID string) *queue.BudgetOverrides {
+func clampBudgetToGrant(o *ir.BudgetOverrides, wf *ir.Workflow, grant *credpool.Grant, alreadySpentUSD float64, logger *iterlog.Logger, runID string, grants ...*credpool.Grant) *queue.BudgetOverrides {
 	if grant == nil || grant.RemainingUSD <= 0 {
 		return budgetForWire(o)
 	}
 	allowance := grant.RemainingUSD
 	if alreadySpentUSD > 0 {
 		allowance += alreadySpentUSD
+	}
+	// The ATTACHMENT's draw cap is a ceiling like the donor's (ADR-164):
+	// an attached run clamps to the TIGHTEST of its donors' allowances and
+	// every capped attachment remaining — a capped scope whose balance was
+	// mostly committed to concurrent runs must not be spendable past its
+	// cap by the one run that held the largest grant. Zero = uncapped axis.
+	for _, g := range grants {
+		if g == nil || g.AttachmentRemainingUSD <= 0 {
+			continue
+		}
+		if g.AttachmentRemainingUSD < allowance {
+			allowance = g.AttachmentRemainingUSD
+			if logger != nil {
+				logger.Info("cloudpublisher: run %s cost budget capped at $%.2f by its attachment's remaining draw allowance", runID, allowance)
+			}
+		}
 	}
 	effective := ir.BudgetOverrides{}
 	if o != nil {

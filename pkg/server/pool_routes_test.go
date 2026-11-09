@@ -44,6 +44,20 @@ func poolRoutesServer(t *testing.T) (*Server, *secrets.MemoryApiKeyStore) {
 	if err != nil {
 		t.Fatalf("sealer: %v", err)
 	}
+	// The lender's own anthropic key, seeded so entry-put verification
+	// passes and the re-homing test has a stored row to point at.
+	own := secrets.ApiKey{
+		ID: "key-jo-anthropic", TenantID: "team1", ScopeTeamID: "team1", ScopeUserID: "jo",
+		Provider: secrets.ProviderAnthropic, Name: "jo's anthropic",
+	}
+	sealed, serr := secrets.SealAPIKey(sealer, own.ID, []byte("sk-jo-anthropic-0"))
+	if serr != nil {
+		t.Fatalf("seal jo's key: %v", serr)
+	}
+	own.SealedSecret = sealed
+	if err := poolRoutesAPIKeys.Create(context.Background(), own); err != nil {
+		t.Fatalf("seed jo's key: %v", err)
+	}
 	s.credPool = credpool.NewBroker(credpool.BrokerConfig{
 		Pools:   pools,
 		Pledges: s.credPoolPledges,
@@ -293,4 +307,77 @@ func TestValidateSchedulePoolBinding(t *testing.T) {
 	if err == nil {
 		t.Error("a garbage strategy mode accepted")
 	}
+}
+
+// Revi round 2 (Rac48bb + Ra08682): the platform pool's owner consents at
+// the platform scope (super-admin), and a credential pledged to one pool
+// cannot be silently re-homed to a second pool by the deterministic id.
+func TestPoolAttachmentRoutes_platformPoolConsentsAtItsOwnScope(t *testing.T) {
+	s, _ := poolRoutesServer(t)
+	// A super-admin identity: isSuperAdmin rides the identity flag.
+	adminCtx := auth.WithIdentity(context.Background(), auth.Identity{UserID: "root", IsSuperAdmin: true})
+	// A platform pool created by the admin lane.
+	w := httptest.NewRecorder()
+	runPoolRoutePlatformCreate(s, w, poolRouteReq(adminCtx, http.MethodPost, "/api/admin/llm/pools", `{"name":"instance default"}`))
+	if w.Code != http.StatusOK {
+		t.Fatalf("platform create = %d (%s)", w.Code, w.Body.String())
+	}
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &created); err != nil || created.ID == "" {
+		t.Fatalf("decode: %v", err)
+	}
+	// The SAME super-admin attaches it at the PLATFORM floor: allowed —
+	// the write IS the consent.
+	w = httptest.NewRecorder()
+	s.handlePutPlatformPoolAttachment(w, poolRouteReq(adminCtx, http.MethodPut, "/api/admin/llm/pool-attachment",
+		`{"pool_id":"`+created.ID+`","enabled":true}`))
+	if w.Code != http.StatusOK {
+		t.Fatalf("platform attach = %d (%s), want 200 — the instance floor is the platform pool's purpose", w.Code, w.Body.String())
+	}
+}
+
+func runPoolRoutePlatformCreate(s *Server, w *httptest.ResponseRecorder, r *http.Request) {
+	s.handleCreatePlatformPool(w, r)
+}
+
+// A credential already an entry of pool A cannot be re-homed to pool B by
+// the deterministic pledge id — 409 naming the holding pool.
+func TestPoolEntryRoutes_rehomingRefused(t *testing.T) {
+	s, _ := poolRoutesServer(t)
+	ctx := auth.WithIdentity(context.Background(), auth.Identity{UserID: "jo"})
+	w := httptest.NewRecorder()
+	runPoolRoute(s, w, poolRouteReq(ctx, http.MethodPost, "/api/me/pools", `{"name":"first"}`))
+	var first struct {
+		ID string `json:"id"`
+	}
+	_ = json.Unmarshal(w.Body.Bytes(), &first)
+	w = httptest.NewRecorder()
+	runPoolRoute(s, w, poolRouteReq(ctx, http.MethodPost, "/api/me/pools", `{"name":"second"}`))
+	var second struct {
+		ID string `json:"id"`
+	}
+	_ = json.Unmarshal(w.Body.Bytes(), &second)
+
+	entry := `{"source":"api_key","ref":"anthropic","key_id":"key-jo-anthropic"}`
+	w = httptest.NewRecorder()
+	runPoolRouteEntryPut(s, w, ctx, first.ID, entry)
+	if w.Code != http.StatusOK {
+		t.Fatalf("first pool entry = %d (%s)", w.Code, w.Body.String())
+	}
+	w = httptest.NewRecorder()
+	runPoolRouteEntryPut(s, w, ctx, second.ID, entry)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("re-homing = %d (%s), want 409 naming the holding pool", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), first.ID) {
+		t.Errorf("409 body = %s, want it naming the holding pool", w.Body.String())
+	}
+}
+
+func runPoolRouteEntryPut(s *Server, w *httptest.ResponseRecorder, ctx context.Context, poolID, body string) {
+	r := poolRouteReq(ctx, http.MethodPut, "/api/pools/"+poolID+"/entries", body)
+	r.SetPathValue("id", poolID)
+	s.handlePutPoolEntry(w, r)
 }

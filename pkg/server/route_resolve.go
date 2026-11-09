@@ -223,6 +223,14 @@ func (s *Server) resolveRunPoolAttachment(ctx context.Context, teamID, botID str
 		return &poolAnswer{level: level, scopeID: scopeID, poolID: a.PoolID, strategy: a.Strategy, limits: a.Limits, disabled: !a.Enabled}
 	}
 	_ = botID
+	// The BOT level (ADR-164): the bot-in-team attachment — nearest after
+	// the binding layers, before the team level. A schedule with no pool
+	// block inherits this answer; the routes store bot:<team>/<bot> docs
+	// and the orgsweep purges them, so the fold MUST read them or the
+	// level is writable-and-ignored (the round-2 review's R2948d2).
+	if answer == nil && teamID != "" && botID != "" {
+		answer = readAt(credpool.BotScopeID(teamID, botID), "bot")
+	}
 	if answer == nil && teamID != "" {
 		answer = readAt(credpool.TeamScopeID(teamID), "team")
 	}

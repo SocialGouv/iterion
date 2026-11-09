@@ -219,3 +219,25 @@ func TestResolveRunPoolAttachment_PlatformCeilingAndDefaults(t *testing.T) {
 	}
 	var _ = store.RunPoolAttachment{} // import anchor
 }
+
+// Revi round 2 (R2948d2): the bot-in-team level is READ — a stored
+// bot:<team>/<bot> attachment answers before the team level, and its
+// disabled form blocks the inheritance at that level.
+func TestResolveRunPoolAttachment_botLevelAnswers(t *testing.T) {
+	s := poolFoldServer(t)
+	seedPoolFoldTeam(t, s, "team1")
+	putAttachment(t, s, credpool.TeamScopeID("team1"), "pool-b")
+	putAttachment(t, s, credpool.BotScopeID("team1", "docs-refresh"), "pool-a")
+	got, err := s.resolveRunPoolAttachment(context.Background(), "team1", "docs-refresh")
+	if err != nil || got == nil {
+		t.Fatalf("resolve = (%v, %v)", got, err)
+	}
+	if got.PoolID != "pool-a" {
+		t.Errorf("bot level ignored: pool = %q, want the bot-in-team attachment's pool-a", got.PoolID)
+	}
+	// A bot with no attachment of its own inherits the team's.
+	got2, err := s.resolveRunPoolAttachment(context.Background(), "team1", "other-bot")
+	if err != nil || got2 == nil || got2.PoolID != "pool-b" {
+		t.Fatalf("team inheritance = (%v, %v), want pool-b", got2, err)
+	}
+}

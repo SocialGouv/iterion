@@ -527,3 +527,33 @@ func TestBrokerHasPool(t *testing.T) {
 		t.Error("a nil broker has no pools")
 	}
 }
+
+// Revi round 2 (R3827a2): the donor's reserve refusing must give the att:
+// row back BEFORE the walk moves to the next candidate — a K-donor walk
+// costs exactly ONE draw unit, not K+1.
+func TestAcquire_attachmentRefundedWhenTheDonorDenies(t *testing.T) {
+	h := newHarnessWithAttachments(t)
+	// Two PAUSED donors: the walk walks both candidates and abstains —
+	// the att: reserve ran once, and no candidate denied path may leave
+	// it consumed.
+	h.donor(t, "bob", Limits{}, func(p *Pledge) { p.Enabled = false })
+	h.donor(t, "ray", Limits{}, func(p *Pledge) { p.Enabled = false })
+	poolIDs, attID, lims := attachForTest(t, h, Strategy{}, DrawLimits{MaxRunsPerDay: 1})
+
+	_, err := h.broker.Acquire(context.Background(), Request{
+		RunID: "r1", OrgID: testOrg, TenantID: "team-1", UserID: "alice",
+		PoolIDs: poolIDs, AttachmentID: attID, DrawLimits: lims,
+		Wants: []Credential{{Source: SourceOAuth, Ref: string(secrets.OAuthKindClaudeCode)}},
+	})
+	var nd *NoDonorError
+	if !errors.As(err, &nd) {
+		t.Fatalf("acquire = %v, want NoDonorError (both donors paused)", err)
+	}
+	day, _, err := h.ledger.Usage(context.Background(), AttachmentLedgerID(attID), h.now)
+	if err != nil {
+		t.Fatalf("att usage: %v", err)
+	}
+	if day.Runs != 0 {
+		t.Errorf("att row runs = %d, want 0 — every walked candidate's denial must refund the borrower's draw unit", day.Runs)
+	}
+}

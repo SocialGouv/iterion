@@ -849,10 +849,22 @@ func (b *Broker) tryPledge(ctx context.Context, pool Pool, p Pledge, req Request
 	} else {
 		remaining, deny, err = b.ledger.Reserve(ctx, p.ID, now, p.Limits, live)
 	}
+	// The donor's row refusing or erroring must give the ATT: row back
+	// BEFORE the walk moves to the next candidate — otherwise every
+	// capped-out donor in the ranking burns the borrower scope another
+	// run unit (a K-donor walk costs K+1 draws for one run), and the
+	// refusal's early return keeps the att: reservation of an acquisition
+	// that never happened.
 	if err != nil {
+		if req.AttachmentID != "" && !attReadmit {
+			b.releaseReservation(ctx, AttachmentLedgerID(req.AttachmentID), now)
+		}
 		return nil, "", err
 	}
 	if deny != DenyNone {
+		if req.AttachmentID != "" && !attReadmit {
+			b.releaseReservation(ctx, AttachmentLedgerID(req.AttachmentID), now)
+		}
 		b.logger.Debug("credpool: pledge %s declined run %s (%s)", p.ID, req.RunID, deny)
 		return nil, deny.skipStatus(live), nil
 	}

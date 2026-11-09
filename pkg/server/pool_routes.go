@@ -510,6 +510,14 @@ func (s *Server) handlePutPoolEntry(w http.ResponseWriter, r *http.Request) {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "the entry names no credential its lender holds: %s", err)
 		return
 	}
+	// One lender lends one credential to ONE pool: the deterministic id
+	// would otherwise Upsert the entry out of the pool it already serves,
+	// silently re-homing it (the first pool's surface shows it gone with
+	// no audit). Delete-first is the mover's explicit gesture.
+	if existing, gerr := s.credPoolPledges.Get(r.Context(), p.ID); gerr == nil && existing.PoolID != pool.ID {
+		s.httpErrorFor(w, r, http.StatusConflict, "this credential is already an entry of pool %s — remove it there first (one lender lends one credential to one pool)", existing.PoolID)
+		return
+	}
 	if err := s.credPoolPledges.Upsert(r.Context(), p); err != nil {
 		s.httpErrorFor(w, r, http.StatusInternalServerError, "put entry: %v", err)
 		return
@@ -543,7 +551,20 @@ func (s *Server) handleDeletePoolEntry(w http.ResponseWriter, r *http.Request) {
 	if !s.requireSafeOrigin(w, r) {
 		return
 	}
-	if err := s.credPoolPledges.Delete(r.Context(), r.PathValue("pledge")); err != nil {
+	// The pledge must BELONG to the pool the path names: pledge ids are
+	// deterministic (lender|source|ref), so without this check anyone
+	// managing their own pool could delete another pool's entries by id
+	// (the reset route has carried the same guard since landing).
+	p, err := s.credPoolPledges.Get(r.Context(), r.PathValue("pledge"))
+	if err != nil {
+		s.httpErrorFor(w, r, http.StatusNotFound, "entry not found")
+		return
+	}
+	if p.PoolID != pool.ID {
+		s.httpErrorFor(w, r, http.StatusNotFound, "entry not found in this pool")
+		return
+	}
+	if err := s.credPoolPledges.Delete(r.Context(), p.ID); err != nil {
 		s.httpErrorFor(w, r, http.StatusNotFound, "entry not found")
 		return
 	}
@@ -616,6 +637,10 @@ func (s *Server) handleImportPoolEntry(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := p.Validate(); err != nil {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "%s", err)
+		return
+	}
+	if existing, gerr := s.credPoolPledges.Get(r.Context(), p.ID); gerr == nil && existing.PoolID != pool.ID {
+		s.httpErrorFor(w, r, http.StatusConflict, "this credential is already an entry of pool %s — remove it there first (one lender lends one credential to one pool)", existing.PoolID)
 		return
 	}
 	if err := s.credPoolPledges.Upsert(r.Context(), p); err != nil {
@@ -708,15 +733,21 @@ type poolAttachmentRequest struct {
 // poolAttachmentConsent is the pool half of the authority: the writer
 // owns the pool, or its Audience admits the scope (org/team the level
 // names, requester's user id for the reciprocity dial's future use).
-func (s *Server) poolAttachmentConsent(ctx context.Context, id auth.Identity, pool credpool.Pool, orgID, teamID string) bool {
+func (s *Server) poolAttachmentConsent(r *http.Request, id auth.Identity, pool credpool.Pool, orgID, teamID, scopeID string) bool {
+	// A PLATFORM pool consents through its OWN admins' write at the
+	// PLATFORM scope: the instance floor is the platform pool's purpose
+	// (the R&D onboarding recipe), the route is super-admin-gated, and the
+	// write IS the explicit consent — never audience-implied, and never at
+	// a lower scope (an org/team attachment of the instance pool goes
+	// through the audience, whose zero value admits nobody).
+	if pool.EffectiveOwnerType() == credpool.PoolOwnerPlatform && scopeID == credpool.ScopePlatform && s.isSuperAdmin(r) {
+		return true
+	}
 	if pool.EffectiveOwnerType() == credpool.PoolOwnerUser && pool.OwnerID == id.UserID {
 		return true
 	}
 	if pool.EffectiveOwnerType() == credpool.PoolOwnerOrg && pool.OrgID == orgID && orgID != "" {
 		return true
-	}
-	if pool.EffectiveOwnerType() == credpool.PoolOwnerPlatform {
-		return false // the platform pool's consent is an explicit attachment its admins write — never audience-implied
 	}
 	return pool.Audience.Allows(pool.OrgID, orgID, teamID, id.UserID, false)
 }
@@ -757,7 +788,7 @@ func (s *Server) putPoolAttachment(w http.ResponseWriter, r *http.Request, scope
 		s.httpErrorFor(w, r, http.StatusBadRequest, "the attachment names pool %q, which does not exist", req.PoolID)
 		return
 	}
-	if !s.poolAttachmentConsent(r.Context(), id, pool, orgID, teamID) {
+	if !s.poolAttachmentConsent(r, id, pool, orgID, teamID, scopeID) {
 		s.httpErrorFor(w, r, http.StatusForbidden, "the pool's owner (or its audience) must consent — an attachment is an opt-in, never a takeover")
 		return
 	}
