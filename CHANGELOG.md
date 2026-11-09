@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [5.13.1](https://github.com/SocialGouv/iterion/compare/v5.13.0...v5.13.1) (2026-11-09)
+
+### Bug Fixes
+
+* **delegate:** stamp the catalog context window into the CLI harness env ([#3112](https://github.com/SocialGouv/iterion/issues/3112)) ([ffdca65](https://github.com/SocialGouv/iterion/commit/ffdca657dea428783e805a86c83e5a028bad6e60)), references [#3111](https://github.com/SocialGouv/iterion/issues/3111) [#2000](https://github.com/SocialGouv/iterion/issues/2000)
+
+    <details><summary>why</summary>
+
+    A CLI harness that never learns the model's real context window compacts too late and dies on the provider ceiling: a review node loaded ~254k tokens against deepseek-v4.1-flash's 256k window and was refused for one token over (253953 prompt + 8192 max_tokens > 262144, CONTEXT_LENGTH_EXCEEDED, failed_resumable — issue #3111, epic #2000).
+
+    </details>
+
 ## [5.13.0](https://github.com/SocialGouv/iterion/compare/v5.12.3...v5.13.0) (2026-11-08)
 
 ### Features
