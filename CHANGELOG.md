@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [5.14.0](https://github.com/SocialGouv/iterion/compare/v5.13.2...v5.14.0) (2026-11-09)
+
+### Features
+
+* **feed-watch:** post run provenance as a Mattermost collapsible block ([#3118](https://github.com/SocialGouv/iterion/issues/3118)) ([3f53e68](https://github.com/SocialGouv/iterion/commit/3f53e68b4cb721f2bcb6c0820ce7f17c2f4d9f2d))
+
+    <details><summary>why</summary>
+
+    The digest's last message now carries props.mm_blocks with one collapsible block (collapsed by default, subtle header, the provenance table + run tokens as content) — Mattermost Blocks render on the Fabrique instance (11.7); a <details> fold is not an option there (Mattermost sanitizes it). The block is layout-only: no mm_blocks_actions, so a deployment with Blocks disabled drops it at render time and the digest still lands whole; Slack sinks ignore props and carry no provenance. The run-link…
+
+    </details>
+
 ## [5.13.2](https://github.com/SocialGouv/iterion/compare/v5.13.1...v5.13.2) (2026-11-09)
 
 ### Bug Fixes
