@@ -725,7 +725,7 @@ func TestSyncDebounce_GitLabMergedMRPurgesParkedLaunch(t *testing.T) {
 	push := `{
 	  "object_kind": "merge_request",
 	  "project": {"id": 42, "path_with_namespace": "acme/widgets", "git_http_url": "https://gitlab.com/acme/widgets.git"},
-	  "object_attributes": {"iid": 7, "action": "update", "state": "opened", "oldrev": "sha0", "source_branch": "feature/x", "target_branch": "main",
+	  "object_attributes": {"source_project_id": 42, "target_project_id": 42, "iid": 7, "action": "update", "state": "opened", "oldrev": "sha0", "source_branch": "feature/x", "target_branch": "main",
 	    "title": "Add X", "description": "desc", "url": "https://gitlab.com/acme/widgets/-/merge_requests/7",
 	    "last_commit": {"id": "sha1"}}
 	}`
@@ -738,7 +738,7 @@ func TestSyncDebounce_GitLabMergedMRPurgesParkedLaunch(t *testing.T) {
 	merged := `{
 	  "object_kind": "merge_request",
 	  "project": {"id": 42, "path_with_namespace": "acme/widgets", "git_http_url": "https://gitlab.com/acme/widgets.git"},
-	  "object_attributes": {"iid": 7, "action": "merge", "state": "merged", "source_branch": "feature/x", "target_branch": "main",
+	  "object_attributes": {"source_project_id": 42, "target_project_id": 42, "iid": 7, "action": "merge", "state": "merged", "source_branch": "feature/x", "target_branch": "main",
 	    "title": "Add X", "description": "desc", "url": "https://gitlab.com/acme/widgets/-/merge_requests/7",
 	    "last_commit": {"id": "sha1"}}
 	}`

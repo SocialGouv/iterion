@@ -96,7 +96,7 @@ func TestDispatchInvocation_RefusesProvenanceTheBoardCardCannotCarry(t *testing.
 		route := webhooks.CommandRoute{BotID: "review-pr", Mode: string(bundle.ExecutionDirect)}
 		s.dispatchInvocation(ctx(), rec, nil, forkCfg, meta, "idem-direct-fork", route, map[string]string{},
 			"https://github.com/o/r.git", "refs/pull/7/head", "hash", "1.2.3.4",
-			launchProvenance{Trust: store.RunTrustFork, ExpectedSHA: "deadbeef"})
+			launchProvenance{Trust: store.RunTrustFork, ExpectedSHA: "deadbeef", ForkAuthor: &webhooks.ForkAuthorRef{Provider: "github", AuthorID: "4242"}})
 		if launched != 1 {
 			t.Fatalf("a direct route with fork provenance launched %d run(s), want 1 — refusing it would close the very path the fork review lane needs (body: %s)", launched, rec.Body.String())
 		}

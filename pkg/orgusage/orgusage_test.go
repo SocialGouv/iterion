@@ -164,6 +164,62 @@ func runCounterSuite(t *testing.T, c Counter) {
 			t.Fatalf("metered Runs = %d past cap %d", u.Runs, cap)
 		}
 	})
+
+	// The fork review lane's per-contributor bound rides the SAME counter
+	// as the org budget, on its own SUBJECT kind (ADR-162 decision 5): the
+	// bound must hold and charge through both twins exactly as the org's
+	// does — a Memory-only bound would meter nothing in production, a
+	// Mongo-only one nothing in tests.
+	t.Run("the fork author bound meters beside the org's", func(t *testing.T) {
+		org := OrgSubject("t-fork-org")
+		author := ForkAuthorSubject("t-fork-org", "github", "4242")
+		// The org admits two launches while the author's own cap is one:
+		// the SECOND is denied on the author's subject and consumes
+		// neither budget.
+		if deny, err := c.AllowRun(ctx, org, now, 0, 0); err != nil || deny != DenyNone {
+			t.Fatalf("org AllowRun: deny=%v err=%v", deny, err)
+		}
+		if deny, err := c.AllowRun(ctx, author, now, 1, 0); err != nil || deny != DenyNone {
+			t.Fatalf("author AllowRun #1: deny=%v err=%v", deny, err)
+		}
+		deny, err := c.AllowRun(ctx, author, now, 1, 0)
+		if err != nil {
+			t.Fatalf("author AllowRun #2: %v", err)
+		}
+		if deny != DenyRuns {
+			t.Fatalf("author deny = %v, want DenyRuns past the per-contributor cap", deny)
+		}
+		if u, _ := c.Usage(ctx, author, now); u.Runs != 1 {
+			t.Fatalf("author runs = %d, want 1 — a denied call consumes nothing", u.Runs)
+		}
+		// The runner's second charge lands on the author's subject and
+		// trips the dollar cap for the NEXT launch, exactly as the org's
+		// does.
+		if err := c.AddSpend(ctx, author, now, 2.5, 10, 5, 0); err != nil {
+			t.Fatalf("AddSpend: %v", err)
+		}
+		// maxRuns above the author's spent count so the DOLLAR cap is the
+		// one that trips — the run cap already has its own row above.
+		if deny, err := c.AllowRun(ctx, author, now, 5, CostToMillis(2)); err != nil || deny != DenyCost {
+			t.Fatalf("author AllowRun past the dollar cap: deny=%v err=%v (want DenyCost)", deny, err)
+		}
+		if u, _ := c.Usage(ctx, author, now); u.Runs != 1 {
+			t.Fatalf("author runs = %d after a dollar denial, want 1", u.Runs)
+		}
+		// ReleaseRun hands the author's unit back with the org's — the
+		// admission handle's rollback releases BOTH counters.
+		if err := c.ReleaseRun(ctx, author, now); err != nil {
+			t.Fatalf("ReleaseRun: %v", err)
+		}
+		if u, _ := c.Usage(ctx, author, now); u.Runs != 0 {
+			t.Fatalf("author runs = %d after a release, want 0", u.Runs)
+		}
+		// And the two subjects never collide: the org's budget is untouched
+		// by the author's denials and charges.
+		if u, _ := c.Usage(ctx, org, now); u.Runs != 1 || u.CostUSD != 0 {
+			t.Fatalf("org usage = %+v, want the one admitted run and no spend leak", u)
+		}
+	})
 }
 
 func TestMemoryCounter(t *testing.T) {

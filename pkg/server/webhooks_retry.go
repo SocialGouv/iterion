@@ -163,14 +163,18 @@ func (s *Server) acceptWebhookTargets(ctx context.Context, w http.ResponseWriter
 	ctx, cancel := launchBookingContext(ctx)
 	defer cancel()
 	results := make([]webhookLaunchResult, 0, len(targets))
-	var launches []func(context.Context) webhookLaunchResult
+	type pendingLaunch struct {
+		idx int
+		fn  func(context.Context) webhookLaunchResult
+	}
+	var launches []pendingLaunch
 	var firstID string
-	for _, t := range targets {
+	for i, t := range targets {
 		t.durableRetry = true
 		result, launch := s.prepareWebhookTarget(ctx, r, cfg, meta, t, hash, ip)
 		results = append(results, result)
 		if launch != nil {
-			launches = append(launches, launch)
+			launches = append(launches, pendingLaunch{idx: i, fn: launch})
 			if firstID == "" {
 				firstID = result.DeliveryID
 			}
@@ -202,12 +206,23 @@ func (s *Server) acceptWebhookTargets(ctx context.Context, w http.ResponseWriter
 		response["launches"] = results
 	}
 	writeWebhookAccepted(w, response)
-	for _, launch := range launches {
+	// The post-launch observer (the fork gesture's Q1 note) needs the run
+	// id, which exists only once a launch returns — so the tail runs the
+	// launches and the observers in ONE bounded pass, pairing each target
+	// with its own result. Skipped for every target that carries no
+	// observer — i.e. every lane but the fork gesture's.
+	for _, pl := range launches {
 		launchCtx, cancelLaunch := launchBookingContext(ctx)
-		result := launch(launchCtx)
+		result := pl.fn(launchCtx)
 		cancelLaunch()
+		results[pl.idx] = result
 		if result.Status == webhooks.StatusLaunched {
 			s.scheduleForgeBoardProjection(meta.ProjectPath)
+		}
+	}
+	for i, t := range targets {
+		if t.onLaunched != nil && i < len(results) {
+			t.onLaunched(results[i])
 		}
 	}
 }
@@ -302,7 +317,7 @@ func (s *Server) prepareWebhookRetry(ctx context.Context, d webhooks.Delivery) (
 		SubjectID: d.SubjectID, ParentSubjectID: d.ParentSubjectID, SubjectSHA: d.SubjectSHA}
 	out, launch := s.prepareWebhookTarget(ctx, syntheticRequestForBase(d.PublicBase), cfg, meta, forgeLaunchTarget{
 		durableRetry: true, retryAttempt: &d.Attempts, BotID: d.BotID, IdemKey: d.IdempotencyKey, Vars: cloneWebhookVars(t.Vars), RepoURL: t.RepoURL,
-		RepoRef: t.RepoRef, Trust: t.Trust, ExpectedSHA: t.ExpectedSHA,
+		RepoRef: t.RepoRef, Trust: t.Trust, ExpectedSHA: t.ExpectedSHA, ForkAuthor: t.ForkAuthor,
 	}, d.PayloadHash, d.SourceIP)
 	if launch == nil {
 		return out, nil

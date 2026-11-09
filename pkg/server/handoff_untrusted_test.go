@@ -152,6 +152,7 @@ func TestLaunchWebhookTarget_AnUntrustedTargetIsLaunchedWithoutAHandoff(t *testi
 		}
 		if !trust.Trusted() {
 			target.ExpectedSHA = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+			target.ForkAuthor = &webhooks.ForkAuthorRef{Provider: "github", AuthorID: "4242"}
 		}
 		res := s.launchWebhookTarget(ctx, nil, cfg, meta, target, "hash", "1.2.3.4")
 		if res.Status != webhooks.StatusLaunched || got == nil {

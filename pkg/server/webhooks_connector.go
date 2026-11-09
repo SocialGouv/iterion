@@ -10,6 +10,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/connector/spec"
 	"github.com/SocialGouv/iterion/pkg/knowledge"
+	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
 )
 
@@ -242,7 +243,7 @@ func (s *Server) handleConnectorDelivery(ctx context.Context, w http.ResponseWri
 	if pl.Comment.ID != 0 {
 		vars["comment_id"] = fmt.Sprint(pl.Comment.ID)
 	}
-	applyWebhookVarLayers(vars, cfg)
+	applyWebhookVarLayers(vars, cfg, store.RunTrustDefault)
 
 	// Trusted, stated rather than defaulted: the delivery is believed on the
 	// connection's word and the payload names only the repo to clone — the

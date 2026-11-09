@@ -8,6 +8,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/knowledge"
+	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
 	"github.com/SocialGouv/iterion/pkg/webhooks/prforge"
 )
@@ -203,7 +204,7 @@ func (s *Server) handlePRForgeReview(ctx context.Context, w http.ResponseWriter,
 		}
 		healIdem := healIdempotencyKey(cfg, p)
 		mission := autoHealMission(p.DequeueReason, p.TargetBranch, p.Title, p.Description)
-		healVars := applyWebhookVarLayers(fixerPRVars(p.TargetBranch, p.SourceBranch, p.PRURL, mission, false, nil), cfg)
+		healVars := applyWebhookVarLayers(fixerPRVars(p.TargetBranch, p.SourceBranch, p.PRURL, mission, false, nil), cfg, store.RunTrustDefault)
 		// The revision this heal is about, under a name ONLY the fixer claim
 		// reads. Not `head_sha`: that key also arms markGateInFlight, and this
 		// lane deliberately stood down from the gate — `applyWebhookVarLayers`
@@ -525,7 +526,7 @@ func (s *Server) handleGitHubIssues(w http.ResponseWriter, r *http.Request, cfg 
 	// runner clones the repo's default branch; featurly's worktree: auto
 	// branches from there.
 	route := s.boardRouteForLabel(ctx, cfg.TenantID, botID)
-	vars := applyWebhookVarLayers(issueLabeledVars(p, nil, route.ArgsVar), cfg)
+	vars := applyWebhookVarLayers(issueLabeledVars(p, nil, route.ArgsVar), cfg, store.RunTrustDefault)
 	s.dispatchInvocation(ctx, w, r, cfg, meta, idemKey, route, vars, p.CloneURL, "", payloadHash, srcIP, launchProvenance{})
 }
 

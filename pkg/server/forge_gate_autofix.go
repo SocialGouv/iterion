@@ -365,7 +365,7 @@ func (s *Server) autofixForRunID(ctx context.Context, runID, via string) error {
 	vars := applyWebhookVarLayers(fixerPRVars(
 		pr.TargetBranch, pr.SourceBranch, prURL,
 		fmt.Sprintf("The merge gate %q is red on this pull request. Address the findings of the review that set it, then push.", gateCtx),
-		cfg.BranchImproveAsPR, nil), cfg)
+		cfg.BranchImproveAsPR, nil), cfg, store.RunTrustDefault)
 	vars["head_sha"] = pr.HeadSHA
 
 	// The shared launch tail, not a copy of it. It owns the claim (atomically,

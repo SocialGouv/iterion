@@ -135,7 +135,18 @@ type webhookEventMeta struct {
 // repo's shared gate_context, and a lane that skipped it would post its status
 // under the bot's default context — leaving the required one stale, which is
 // exactly what a manual /revi is supposed to repair.
-func applyWebhookVarLayers(vars map[string]string, cfg webhooks.Config) map[string]string {
+//
+// An UNTRUSTED target gets NEITHER layer (ADR-162 decision 4): these are the
+// base repository's configuration, and the base's configuration may stop a
+// fork run, never steer or grant it — a var pinned here decides where the run
+// posts, what it reads and which routing gates it narrows, all of which is
+// the repo's own choice about its OWN code. The check is the trust the
+// TARGET carries, not the config's lane kind, so a lane that later gains an
+// untrusted class inherits the floor without a second guard to forget.
+func applyWebhookVarLayers(vars map[string]string, cfg webhooks.Config, trust store.RunTrust) map[string]string {
+	if !trust.Trusted() {
+		return vars
+	}
 	mergeVarsInto(vars, cfg.LaunchVars)
 	mergeVarsInto(vars, cfg.OperatorLaunchVars)
 	return vars
@@ -161,6 +172,17 @@ func trustedVarNames(m map[string]string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// trustedVarNamesFor is trustedVarNames with the fork lane's floor: an
+// untrusted launch certifies NO routing-narrowing var names, because the
+// only names it could certify come from the base repository's operator
+// layer — which decision 4 withdraws from an untrusted target entirely.
+func trustedVarNamesFor(trust store.RunTrust, m map[string]string) []string {
+	if !trust.Trusted() {
+		return nil
+	}
+	return trustedVarNames(m)
 }
 
 // suppressedByHoldLabel applies the bot-agnostic hold-label veto shared by
@@ -745,7 +767,7 @@ func (s *Server) insertAndLaunchWebhook(
 ) {
 	s.acceptWebhookTargets(ctx, w, r, cfg, meta, []forgeLaunchTarget{{
 		BotID: botID, IdemKey: idemKey, Vars: vars, RepoURL: repoURL, RepoRef: repoRef,
-		Trust: prov.Trust, ExpectedSHA: prov.ExpectedSHA,
+		Trust: prov.Trust, ExpectedSHA: prov.ExpectedSHA, ForkAuthor: prov.ForkAuthor,
 	}}, payloadHash, srcIP)
 }
 
@@ -800,6 +822,11 @@ type launchProvenance struct {
 	// ExpectedSHA pins the commit the admission proved, for a RepoRef whose
 	// author can move it between the admission and the runner's fetch.
 	ExpectedSHA string
+	// ForkAuthor names the OUTSIDE author the fork review gesture admitted,
+	// for the per-contributor bound the launch gate meters (decision 5).
+	// Nil on every lane but the fork gesture's — an untrusted target that
+	// names no author is refused by the gate, never launched unmetered.
+	ForkAuthor *webhooks.ForkAuthorRef
 }
 
 // forgeLaunchTarget is one resolved (bot, idempotency key, vars) triple of a
@@ -812,11 +839,17 @@ type forgeLaunchTarget struct {
 	retryAttempt *int
 	// durableRetry is set by intake; internal gate/debounce launches keep their own recovery owner.
 	durableRetry bool
-	BotID        string
-	IdemKey      string
-	Vars         map[string]string
-	RepoURL      string
-	RepoRef      string
+	// onLaunched, when set, is called with the launch's result once it
+	// completes — the fork review gesture's Q1 note, which needs the run
+	// link and posts AFTER the launch, from the booking context the tail
+	// already runs it in. Never persisted, never replayed: a retry that
+	// relaunches owes its own note, and a duplicate fires none.
+	onLaunched func(webhookLaunchResult)
+	BotID      string
+	IdemKey    string
+	Vars       map[string]string
+	RepoURL    string
+	RepoRef    string
 	// Trust says who wrote the code at (RepoURL, RepoRef). The zero value is
 	// the trusted default, so every target built before the fork lane existed
 	// keeps its meaning. launchWebhookTarget cross-checks it against the
@@ -827,6 +860,10 @@ type forgeLaunchTarget struct {
 	// author can move (a fork pull request's head). Carried to the runner,
 	// which refuses the run when the fetch lands elsewhere.
 	ExpectedSHA string
+	// ForkAuthor names the outside author a fork gesture admitted, for the
+	// per-contributor bound the tail's admission gate meters. Nil on every
+	// lane but the fork gesture's.
+	ForkAuthor *webhooks.ForkAuthorRef
 }
 
 // webhookLaunchResult is one bot's outcome inside a (possibly multi-bot)
@@ -1273,7 +1310,26 @@ func (s *Server) prepareWebhookTarget(
 	// Select predecessors without side effects. Admission reads maintenance
 	// ONCE, after this lookup, and credits only verified live replacement slots.
 	predecessors := s.supersededRunIDs(ctx, cfg, meta, botID)
-	adm, d := s.gateLaunch(ctx, launchSubject{BotID: botID, Repo: meta.ProjectPath, ReplacingRunIDs: predecessors})
+	// The subject the gate meters carries the target's TRUST and — on the
+	// fork lane — the outside author the admission proved (decision 5):
+	// the gate meters the per-contributor bound from it, and every arm of
+	// it that would admit a launch unmetered refuses an untrusted subject
+	// instead of failing open.
+	adm, d := s.gateLaunch(ctx, launchSubject{
+		BotID: botID, Repo: meta.ProjectPath, ReplacingRunIDs: predecessors,
+		Trust: t.Trust, ForkAuthor: t.ForkAuthor,
+	})
+	// The admission composed the author's metering subject (org id, else
+	// team id — the same id the org budget metered on). Stamped back onto
+	// the target HERE, at the one point every later carrier reads: the
+	// durable retry row below, and the launcher closure, whose LaunchSpec
+	// persists it onto the run document and the queue message so the
+	// runner's second charge and a resume re-enter the SAME subject.
+	if adm != nil && adm.forkSubject != "" && t.ForkAuthor != nil {
+		fa := *t.ForkAuthor
+		fa.Subject = string(adm.forkSubject)
+		t.ForkAuthor = &fa
+	}
 	if d != nil {
 		if reusePriorFailure != nil {
 			out = s.failWebhookRetry(ctx, *reusePriorFailure, d.reason, false)
@@ -1297,6 +1353,7 @@ func (s *Server) prepareWebhookTarget(
 		delivery.RetryTarget = &webhooks.DeferredTarget{
 			BotID: t.BotID, IdemKey: t.IdemKey, Vars: cloneWebhookVars(t.Vars),
 			RepoURL: t.RepoURL, RepoRef: t.RepoRef, Trust: t.Trust, ExpectedSHA: t.ExpectedSHA,
+			ForkAuthor: t.ForkAuthor,
 		}
 		delivery.PublicBase = s.publicBaseURL(r)
 	}
@@ -1545,6 +1602,16 @@ func (s *Server) prepareWebhookTarget(
 // an explicit resume — the runner never imports the webhook layer, so the
 // vocabulary lives in the store, not here.
 const prClosedRunReason = store.RunEndReasonPRClosed
+
+// forkAuthorSubject returns the composed per-contributor metering subject
+// a fork target carries once the admission gate has metered it, "" when the
+// target is not a fork one or has not been admitted yet.
+func (t forgeLaunchTarget) forkAuthorSubject() string {
+	if t.ForkAuthor == nil {
+		return ""
+	}
+	return t.ForkAuthor.Subject
+}
 
 // forkLaneMismatchRefusal words the launch tail's lane-disjointness refusal.
 // It exists as its own helper, beside forkGuardRefusal, because the two

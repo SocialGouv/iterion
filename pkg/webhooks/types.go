@@ -268,9 +268,8 @@ type Config struct {
 	// store.RunTrustFork, which withdraws the publish grant, the tenant's
 	// workflow secrets and every mutating bot, wherever those are read.
 	//
-	// THAT LIST IS NOT #874's FIVE CONSTRAINTS. Two of them are UNENFORCED
-	// and belong to the admission half, and they are named here so the gap
-	// is carried forward rather than read as already closed:
+	// THAT LIST IS NOT #874's FIVE CONSTRAINTS. Two of them were deferred
+	// to the admission half (ADR-162 U6) and have LANDED with it:
 	//
 	//   - constraint 4b — fork code must not execute the TARGET repo's own
 	//     toolchain or config (`repo_devbox: off`, sandbox `network:
@@ -282,34 +281,25 @@ type Config struct {
 	//     every untrusted workspace, and the repo's devcontainer is not
 	//     read either. The NETWORK policy floor rides the same unit.
 	//   - constraint 5 beyond the gate context — the base repo's project
-	//     settings must not be honoured. Among THOSE surfaces only the
-	//     gate-context write is trust-gated: applyWebhookVarLayers still
-	//     layers cfg.LaunchVars and cfg.OperatorLaunchVars onto a target
-	//     whatever its trust, and the hold-label veto is trust-blind. The
-	//     per-fork-author bound exists as orgusage.ForkAuthorSubject with NO
-	//     production caller.
-	//
-	// Why deferred rather than done here: nothing sets RunTrustFork, so
-	// PR1's safety is safety-by-refusal — the marker's readers must be
-	// correct before anything can carry it. 4b and 5 are ADMISSION-time
-	// controls: they shape how a fork run is built, which is the half that
-	// does not exist yet, and a guard whose condition can never be true is
-	// documented as working, which is worse than absent. They are on #874's
-	// remainder.
+	//     settings must not be honoured: applyWebhookVarLayers refuses to
+	//     layer cfg.LaunchVars and cfg.OperatorLaunchVars onto an untrusted
+	//     target, and the hold label BLOCKS the gesture (ADR-162 Q2). The
+	//     per-fork-author bound is metered by the launch gate on
+	//     orgusage.ForkAuthorSubject — runs and dollars, beside the org's
+	//     own quota (decision 5).
 	//
 	// The two kinds are DISJOINT, enforced in both directions at the launch
 	// tail (launchWebhookTarget): a fork-lane config never launches a
 	// same-repo target, and an ordinary config never launches a fork target.
 	//
-	// NOT SETTABLE THROUGH THE API YET, deliberately: no create/PATCH request
-	// struct carries it, so today every config decodes false and the fork
-	// lane admits nothing. The admission half — the maintainer gesture that
-	// opts one pull request in, and the per-author budget — is a follow-up,
-	// and the field becomes settable WITH it. When it does, the PATCH route
-	// has to refuse changing it on an existing config: the per-author budget
-	// is keyed on the config, so flipping the kind under it re-interprets
-	// rows written for the other one. That guard does not exist today and
-	// this comment is not claiming it does.
+	// SETTABLE AT CREATION ONLY (ADR-162 decision 1): `POST
+	// /api/teams/{id}/webhooks` accepts fork_lane, github-only — the
+	// creation refuses it typed on every other provider, naming the
+	// witness that provider lacks. The PATCH route refuses a CHANGE of it
+	// on an existing config (a restatement of the stored value is a
+	// no-op): flipping the kind under a config would re-read its parked
+	// debounce targets as the other kind and re-interpret the per-author
+	// budget's rows, which were written under the kind it carried.
 	ForkLane bool `bson:"fork_lane,omitempty" json:"fork_lane,omitempty"`
 
 	// ForgeBaseURL, when set, pins the forge instance this webhook's bot
@@ -716,6 +706,30 @@ const (
 // a parked delivery — the serialized twin of the server's in-memory
 // launch target, so the sweep can replay the launch exactly as the
 // handler would have performed it.
+// ForkAuthorRef names the OUTSIDE author a fork review gesture admitted,
+// for the per-contributor bound (ADR-162 decision 5). It rides the
+// provenance a target carries: the identity halves on a first admission
+// (the forge provider and the pull request author's NUMERIC forge id),
+// and — once the launch gate has metered the bound — the composed
+// orgusage.Subject, which is what the run document, the queue message and
+// the runner's second charge read. The subject is composed at the ONE
+// place the metering id is decided (gateMonthlyCaps), so the subject
+// charged, the one stamped on the document and the one re-charged on a
+// re-entry can never diverge.
+type ForkAuthorRef struct {
+	// Provider is the forge the pull request lives on ("github" — the
+	// lane is github-only).
+	Provider string `bson:"provider,omitempty" json:"provider,omitempty"`
+	// AuthorID is the pull request author's NUMERIC forge user id — never
+	// the login, which is renameable and would reset the bound on demand.
+	AuthorID string `bson:"author_id,omitempty" json:"author_id,omitempty"`
+	// Subject is the composed orgusage.Subject once the gate has metered
+	// the bound on it. A re-entry that replays a stored row (the debounce
+	// flush, the delivery retry, the run-retry sweeper) carries this and
+	// never re-derives the identity halves.
+	Subject string `bson:"subject,omitempty" json:"subject,omitempty"`
+}
+
 type DeferredTarget struct {
 	BotID   string            `bson:"bot_id" json:"bot_id"`
 	IdemKey string            `bson:"idem_key" json:"idem_key"`
@@ -739,30 +753,6 @@ type DeferredTarget struct {
 	// row but a fork gesture's; a row written before the field decodes to
 	// nil, i.e. to what it was.
 	ForkAuthor *ForkAuthorRef `bson:"fork_author,omitempty" json:"fork_author,omitempty"`
-}
-
-// ForkAuthorRef names the OUTSIDE author a fork review gesture admitted,
-// for the per-contributor bound (ADR-162 decision 5). It rides the
-// provenance a target carries: the identity halves on a first admission
-// (the forge provider and the pull request author's NUMERIC forge id),
-// and — once the launch gate has metered the bound — the composed
-// orgusage.Subject, which is what the run document, the queue message and
-// the runner's second charge read. The subject is composed at the ONE
-// place the metering id is decided (gateMonthlyCaps), so the subject
-// charged, the one stamped on the document and the one re-charged on a
-// re-entry can never diverge.
-type ForkAuthorRef struct {
-	// Provider is the forge the pull request lives on ("github" — the
-	// lane is github-only).
-	Provider string `bson:"provider,omitempty" json:"provider,omitempty"`
-	// AuthorID is the pull request author's NUMERIC forge user id — never
-	// the login, which is renameable and would reset the bound on demand.
-	AuthorID string `bson:"author_id,omitempty" json:"author_id,omitempty"`
-	// Subject is the composed orgusage.Subject once the gate has metered
-	// the bound on it. A re-entry that replays a stored row (the debounce
-	// flush, the delivery retry, the run-retry sweeper) carries this and
-	// never re-derives the identity halves.
-	Subject string `bson:"subject,omitempty" json:"subject,omitempty"`
 }
 
 // DeferredLaunch parks one webhook delivery's resolved launch for a
