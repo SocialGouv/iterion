@@ -1165,6 +1165,10 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 		if port, ok := portOfListenerEndpoint(preboundAskUserEndpoint); ok {
 			info.RunnerEgressPorts = append(info.RunnerEgressPorts, port)
 		}
+		// The probe's direct-dial targets: the credential's own hosts,
+		// the fork lane's whole allowlist — served through the proxy,
+		// refused directly.
+		info.EgressAllowlistHosts = forkEgressHosts
 	}
 
 	prepared, err := driver.Prepare(ctx, *spec)
@@ -1210,6 +1214,20 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 				Code:    ErrCodeCapabilityUnsupported,
 				Message: "sandbox: the image's planted credential and routing env could not be neutralised",
 				Hint:    "rebuild the image without those variables in its `ENV`, or name the ones the operator wants through with " + EnvSandboxImageEnvAllow + " (host-side, exact names — docs/sandbox.md, « the env an IMAGE bakes in »)",
+				Cause:   err,
+			}
+		}
+		var probe *sandbox.NetworkFloorProbeError
+		if errors.As(err, &probe) {
+			message := fmt.Sprintf("untrusted (fork-lane) run refused before its sandbox started: %v", probe)
+			hint := "the cluster's CNI does not enforce the per-run NetworkPolicy (kind's kindnetd does not) — run the fork lane on a cluster whose CNI enforces NetworkPolicy (Calico, Cilium, weave-net, kube-router)"
+			if probe.Unproven {
+				hint = "the start probe could not prove the network floor — " + probe.Detail + "; the fork lane needs an image that can dial (bash+timeout or nc) on a NetworkPolicy-enforcing CNI"
+			}
+			return nil, &RuntimeError{
+				Code:    ErrCodeSandboxNetworkRefused,
+				Message: message,
+				Hint:    hint,
 				Cause:   err,
 			}
 		}

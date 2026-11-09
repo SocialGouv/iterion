@@ -27,6 +27,12 @@ func kubectlCaptureShim(t *testing.T) (capture string) {
 		"case \"$*\" in\n" +
 		"  *\" apply \"*) cat >> \"$ITERION_TEST_KUBECTL_CAPTURE\"; printf '\\n---\\n' >> \"$ITERION_TEST_KUBECTL_CAPTURE\"; exit 0 ;;\n" +
 		"  *\" wait \"*) echo \"$*\" >> \"$ITERION_TEST_KUBECTL_CAPTURE.wait\"; exit 0 ;;\n" +
+		// The start probe's `kubectl exec` gets a scripted verdict:
+		// REFUSED by default (the floor holds), or whatever a witness
+		// sets in ITERION_TEST_KUBECTL_EXEC_REPLY — CONNECTED <target>
+		// stands for a non-enforcing CNI, NOPROBE for an image that
+		// cannot dial. The exec'd argv lands in .exec for assertions.
+		"  *\" exec \"*) echo \"$*\" >> \"$ITERION_TEST_KUBECTL_CAPTURE.exec\"; printf '%s\\n' \"${ITERION_TEST_KUBECTL_EXEC_REPLY:-REFUSED}\"; exit 0 ;;\n" +
 		"esac\n" +
 		"exit 0\n"
 	if err := os.WriteFile(filepath.Join(dir, "kubectl"), []byte(script), 0o755); err != nil {

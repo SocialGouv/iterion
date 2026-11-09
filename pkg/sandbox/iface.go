@@ -20,6 +20,7 @@ package sandbox
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"os/exec"
 )
@@ -617,6 +618,37 @@ type RunInfo struct {
 	// untrusted run, whose policy names them exactly; a trusted run keeps
 	// the driver's default (every port on the runner pod).
 	RunnerEgressPorts []int
+
+	// EgressAllowlistHosts is the fork lane's whole proxy allowlist (the
+	// credential's own hosts). Set only for an untrusted run, whose start
+	// probe dials each of them DIRECTLY — every dial the per-run policy
+	// did not name must fail, or the floor is unproven (ADR-162 decision 7).
+	EgressAllowlistHosts []string
+}
+
+// NetworkFloorProbeError is the typed refusal the start probe returns
+// when the network floor it must witness is NOT holding: a dial the
+// per-run policy refuses still connected (a non-enforcing CNI — kind's
+// kindnetd — applies the policy as a no-op, and only the probe sees it),
+// or the probe could not run at all (Unproven — an image with no way to
+// dial proves nothing, and the fork lane is refused, fail closed).
+type NetworkFloorProbeError struct {
+	// Target is the host:port the probe REACHED — the road the policy
+	// should have closed. Empty when Unproven holds.
+	Target string
+	// Unproven marks a probe that could not run (no dial-capable tool in
+	// the image, or the exec itself failed): the floor is unwitnessed,
+	// which for an untrusted run is the same verdict as broken.
+	Unproven bool
+	// Detail carries the why for an operator reading the run log.
+	Detail string
+}
+
+func (e *NetworkFloorProbeError) Error() string {
+	if e.Unproven {
+		return fmt.Sprintf("sandbox: the network floor is unproven: %s", e.Detail)
+	}
+	return fmt.Sprintf("sandbox: the network floor is broken: a direct dial to %s connected — the per-run policy should have refused it", e.Target)
 }
 
 // ExecOpts controls a single [Run.Exec] invocation.

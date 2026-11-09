@@ -148,6 +148,46 @@ func TestADriverThatCannotEnforceTheNetworkRefusesTheForkRun(t *testing.T) {
 	}
 }
 
+// probeRefusingDriver is the kindnetd stand-in: a driver that holds the
+// fork lane's floors and writes the policy, whose start probe then finds
+// a road the policy should have closed.
+type probeRefusingDriver struct{ infoCapturingDriver }
+
+func (d *probeRefusingDriver) Capabilities() sandbox.Capabilities {
+	c := d.infoCapturingDriver.Capabilities()
+	c.SupportsHostBindMounts = true
+	c.SupportsTLSInspection = true
+	c.SupportsNetworkPolicy = true
+	return c
+}
+
+func (d *probeRefusingDriver) Start(context.Context, sandbox.PreparedSpec, sandbox.RunInfo) (sandbox.Run, error) {
+	return nil, &sandbox.NetworkFloorProbeError{Target: "10.42.0.7:9090"}
+}
+
+// TestTheStartProbesRefusalSurfacesTypedThroughTheLaunch: the probe's
+// verdict is a launch-time typed refusal — the operator reads WHICH road
+// stayed open and on WHICH CNI to run the fork lane, not a wrapped
+// start error.
+func TestTheStartProbesRefusalSurfacesTypedThroughTheLaunch(t *testing.T) {
+	clearCredentialEnv(t)
+	ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{
+		APIKeys: map[secrets.Provider]string{secrets.ProviderAnthropic: "sk-ant-probe-floor-witness"},
+	})
+	wf := credentialWorkflow("review", "claude_code", "none")
+	err := crossingStart(t, ctx, wf, store.RunTrustFork, &probeRefusingDriver{infoCapturingDriver{}})
+	var rerr *RuntimeError
+	if !errors.As(err, &rerr) || rerr.Code != ErrCodeSandboxNetworkRefused {
+		t.Fatalf("a probe-refused fork run = %v, want the typed network refusal", err)
+	}
+	if !strings.Contains(rerr.Error(), "10.42.0.7:9090") {
+		t.Fatalf("the refusal does not name the road that stayed open: %q", rerr.Error())
+	}
+	if !strings.Contains(rerr.Hint, "kindnetd") || !strings.Contains(rerr.Hint, "CNI") {
+		t.Fatalf("the hint does not tell the operator where to run the fork lane: %q", rerr.Hint)
+	}
+}
+
 // policyInfoDriver is infoCapturingDriver (which reaches Driver.Start
 // and records the RunInfo handed it) on a driver that holds the fork
 // lane's floors — where the per-run policy is written.

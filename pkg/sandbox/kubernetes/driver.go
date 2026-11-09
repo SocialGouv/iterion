@@ -716,8 +716,8 @@ func (d *Driver) Start(ctx context.Context, prepared sandbox.PreparedSpec, info 
 	// a proxied run whose runner can't introspect its own IP is refused
 	// below. Enforcement requires a NetworkPolicy-aware CNI (Calico,
 	// Cilium, ...) — see docs/sandbox.md § cloud.
+	runnerIP := os.Getenv(PodIPEnvVar)
 	if info.ProxyEndpoint != "" {
-		runnerIP := os.Getenv(PodIPEnvVar)
 		if runnerIP == "" {
 			// Fail-closed: the workflow requested isolated network
 			// (sandbox.network with an allowlist), the proxy alone
@@ -762,6 +762,19 @@ func (d *Driver) Start(ctx context.Context, prepared sandbox.PreparedSpec, info 
 	if err := d.kubectl.waitForPodRunning(ctx, d.namespace, podName, readySecs); err != nil {
 		_ = r.Cleanup(ctx)
 		return nil, fmt.Errorf("kubernetes: wait for pod ready: %w", err)
+	}
+
+	// ADR-162 decision 7 — the untrusted run's start proves its floor
+	// BEFORE the first spawn: the probe exec'd above dials, proxy env
+	// ignored, the roads the policy just closed (cluster API, the
+	// credential's host, the runner's metrics port) and every dial must
+	// fail. A non-enforcing CNI applies the policy as a no-op and only
+	// this probe sees it — the run is refused typed, pod cleaned up.
+	if r.networkPolicyApplied && info.UntrustedRun {
+		if err := r.probeNetworkFloor(ctx, networkFloorProbeTargets(info, runnerIP)); err != nil {
+			_ = r.Cleanup(ctx)
+			return nil, err
+		}
 	}
 
 	// Phase 5 V2: the kubernetes driver has no host filesystem to
