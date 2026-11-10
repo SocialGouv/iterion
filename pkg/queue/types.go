@@ -193,7 +193,7 @@ import (
 // the additive-field rule: a stale runner dropping it would leave the
 // per-contributor DOLLAR bound unenforced for the run's lifetime — a
 // perimeter failing open, in silence, on the pod. Server-first rollout;
-// MinSchemaVersion stays 28: a pre-fork message carries no subject to drop
+// MinSchemaVersion stays 27: a v27 or v28 message carries no subject to drop
 // (nothing set RunTrustFork before v29), and a v29 message on a stale
 // runner is rejected at the schema check and parks replayably.
 const SchemaVersion = 29
@@ -201,7 +201,8 @@ const SchemaVersion = 29
 // MinSchemaVersion is the oldest wire version a consumer still accepts.
 // Pre-v27 messages cannot prove an absolute donor ceiling. Resume republishes
 // them with a fresh grant and its explicit amount; replaying old bytes cannot.
-// v28 stays acceptable beside v29 (see the v29 note above SchemaVersion).
+// v27 and v28 stay acceptable beside v29 (see the v28 and v29 notes above
+// SchemaVersion).
 const MinSchemaVersion = 27
 
 // RunMessage is the JSON envelope published on
