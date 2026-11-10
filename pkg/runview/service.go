@@ -940,6 +940,11 @@ type Service struct {
 	// in the user's own checkout.
 	forgeToken ForgeTokenResolver
 
+	// forkKeyPinCheck reports whether a key pin's row still exists, so a fork
+	// drops a pin the credential sweep would have cleared (Fork). Installed by
+	// the server via WithForkKeyPinCheck; nil keeps every pin the parent froze.
+	forkKeyPinCheck ForkKeyPinCheck
+
 	// completionNotifier POSTs a run-completion webhook when an
 	// in-process run carrying a callback URL reaches a terminal state.
 	// Default-constructed in NewService; never nil for in-process runs.
@@ -1178,6 +1183,17 @@ type ResumePolicyFiller func(ctx context.Context, run *store.Run, spec *ResumeSp
 
 func WithResumePolicyFiller(fn ResumePolicyFiller) ServiceOption {
 	return func(s *Service) { s.resumePolicyFiller = fn }
+}
+
+// ForkKeyPinCheck reports whether the API key row keyID still exists in the
+// tenant's key store: false with a nil error only when the row is gone. An
+// error is a store that could not answer.
+type ForkKeyPinCheck func(ctx context.Context, tenantID, keyID string) (exists bool, err error)
+
+// WithForkKeyPinCheck wires the key-row lookup a fork reads to drop a key pin
+// whose key no longer exists (Fork). See ForkKeyPinCheck.
+func WithForkKeyPinCheck(fn ForkKeyPinCheck) ServiceOption {
+	return func(s *Service) { s.forkKeyPinCheck = fn }
 }
 
 // WithForgeTokenResolver wires the forge-credential lookup used to merge

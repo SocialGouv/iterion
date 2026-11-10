@@ -33,6 +33,9 @@ import (
 type boundarySource struct {
 	replay bool
 	frozen *store.RunContentBoundary
+	// forkedFrom is the parent run of a replayed fork child: its frame — the
+	// stamp, the pins — is the parent's, frozen at the parent's launch.
+	forkedFrom string
 }
 
 // boundaryDerived is the launch's source: the walk decides.
@@ -42,6 +45,13 @@ var boundaryDerived = boundarySource{}
 // included — a run launched before the producer existed stays unstamped.
 func boundaryFrozen(b *store.RunContentBoundary) boundarySource {
 	return boundarySource{replay: true, frozen: b}
+}
+
+// forkOf marks a replay as a fork child's: parent names the run whose frame
+// it inherited ("" for a run that is no fork).
+func (s boundarySource) forkOf(parent string) boundarySource {
+	s.forkedFrom = parent
+	return s
 }
 
 // resolve is the run's boundary under this source: the frozen stamp on a

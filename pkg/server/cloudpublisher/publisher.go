@@ -1495,7 +1495,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	// pin stamps no boundary on a key the operator did not name. Returned
 	// WITH res: a pool grant the walk acquired must reach the caller's
 	// release.
-	if refusal := p.gatewayPinRefusal(ctx, tenantID, ownerID, audienceBotID, keyOverrides, gateway.mayRide, bundle, apiKeyIDs, policy, allowed, boundary.replay); refusal != nil {
+	if refusal := p.gatewayPinRefusal(ctx, tenantID, ownerID, audienceBotID, keyOverrides, gateway.mayRide, bundle, apiKeyIDs, policy, allowed, boundary); refusal != nil {
 		return res, refusal
 	}
 
@@ -4810,7 +4810,7 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 	// The run's content boundary replays as the launch froze it (ADR-131
 	// §4): the bundle this resume seals carries the ambient refusal, and the
 	// ladder screens, on the stamp the message replays beside it.
-	creds, secretsErr := p.resolveAndSealCredentials(secretsCtx, spec.RunID, priorOrgID, prior.TenantID, prior.OwnerID, prior.BotID, prior.RunnerPool, wf, prior.KeyOverrides, prior.SecretOverrides, resumeView, launchVarsAsStrings(prior.Inputs), prior.Trust, prior.PinnedProviders, prior.LLMRoutePolicy, prior.PoolAttachment, boundaryFrozen(prior.ContentBoundary))
+	creds, secretsErr := p.resolveAndSealCredentials(secretsCtx, spec.RunID, priorOrgID, prior.TenantID, prior.OwnerID, prior.BotID, prior.RunnerPool, wf, prior.KeyOverrides, prior.SecretOverrides, resumeView, launchVarsAsStrings(prior.Inputs), prior.Trust, prior.PinnedProviders, prior.LLMRoutePolicy, prior.PoolAttachment, boundaryFrozen(prior.ContentBoundary).forkOf(prior.ForkedFrom))
 	grant = creds.poolLease()
 	releasedGrants = creds.releasedGrants
 	if len(creds.grants) > 1 {

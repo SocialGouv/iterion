@@ -77,11 +77,19 @@ type GatewayPinRefusedError struct {
 	// webhook's current key_overrides never reaches it (and deleting the key
 	// already swept the webhook's pin), so only a relaunch takes a new one.
 	Replay bool
+	// ForkedFrom names the parent of a replayed fork child: the child never
+	// launched — it inherited the pin its parent froze — so a relaunch would
+	// throw the fork away; a second fork of the parent drops a pin whose key
+	// no longer exists (runview.Fork).
+	ForkedFrom string
 }
 
 func (e *GatewayPinRefusedError) Error() string {
 	remedy := fmt.Sprintf("repair the key, or repin or clear the %s entry of key_overrides on the webhook or trigger subscription that launched the run", secrets.ProviderOpenAICompatible)
-	if e.Replay {
+	switch {
+	case e.ForkedFrom != "":
+		remedy = fmt.Sprintf("this run is a fork of run %s and replays the pin it inherited, frozen at that run's launch; no webhook or subscription edit reaches it: repair the key, or fork run %s again — a fork drops a key pin whose key no longer exists", e.ForkedFrom, e.ForkedFrom)
+	case e.Replay:
 		remedy = "this run's own pin, frozen at its launch, is replayed by every resume and no webhook or subscription edit reaches it: repair the key, or relaunch the run, which takes the launching webhook's current pin"
 	}
 	return fmt.Sprintf("cloudpublisher: tenant %s pins api key %s for the %s gateway, but %s — a pin on a gateway key is exclusive (ADR-131 §6): no other key, no shared tier and not the runner's environment serves the run's gateway routes in its place; %s",
@@ -94,10 +102,11 @@ func (e *GatewayPinRefusedError) Error() string {
 // content boundary is derived from what sealed. A pin is honoured when the
 // gateway slot holds the very key it names; otherwise the run is refused by
 // name. mayRide is gatewayRoutes.mayRide: a run that rides no gateway route
-// has no use for the key, and its pin is idle rather than broken. replay
-// is the resume's word (boundarySource.replay): the refusal then names the
-// run's frozen pin and a relaunch as the remedy.
-func (p *Publisher) gatewayPinRefusal(ctx context.Context, tenantID, ownerID, audienceBotID string, keyOverrides map[string]string, mayRide bool, bundle secrets.RunBundle, sealed sealedKeyIDs, policy sharedTierPolicy, allowed map[string]bool, replay bool) error {
+// has no use for the key, and its pin is idle rather than broken. boundary
+// is the resolution's source: on a replay the refusal names the run's frozen
+// pin and a relaunch as the remedy — a fork child's, its parent and a second
+// fork.
+func (p *Publisher) gatewayPinRefusal(ctx context.Context, tenantID, ownerID, audienceBotID string, keyOverrides map[string]string, mayRide bool, bundle secrets.RunBundle, sealed sealedKeyIDs, policy sharedTierPolicy, allowed map[string]bool, boundary boundarySource) error {
 	pin := keyOverrides[string(secrets.ProviderOpenAICompatible)]
 	if pin == "" || !mayRide {
 		return nil
@@ -106,7 +115,7 @@ func (p *Publisher) gatewayPinRefusal(ctx context.Context, tenantID, ownerID, au
 		return nil
 	}
 	cause, detail := p.gatewayPinFault(ctx, tenantID, ownerID, audienceBotID, pin, policy, allowed)
-	return &GatewayPinRefusedError{Tenant: tenantID, KeyID: pin, Cause: cause, Detail: detail, Replay: replay}
+	return &GatewayPinRefusedError{Tenant: tenantID, KeyID: pin, Cause: cause, Detail: detail, Replay: boundary.replay, ForkedFrom: boundary.forkedFrom}
 }
 
 // gatewayPinFault names why a pinned gateway key is not in the gateway slot.

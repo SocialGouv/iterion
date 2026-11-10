@@ -652,7 +652,10 @@ identity, undecryptable, or held out by the run's providers allowlist or
 frozen pair order; on a resume, the pin is named as the run's own, frozen
 at its launch, and the remedy is a relaunch — editing the webhook never
 reaches a running run, and deleting the key already cleared the webhook's
-pin). Nothing else pays those routes in its place: not the
+pin; a fork child's names its parent and a second fork as the remedy). A
+fork copies the parent's pins but drops one whose key no longer exists,
+named in the fork's notes — the sweep's rule: a swept pin is the explicit
+clear. Nothing else pays those routes in its place: not the
 team's other gateway key, not a shared tier's or an attached pool's, not the
 runner pod's environment. One chokepoint decides it after the tier walk
 (`gatewayPinRefusal`), reading what the walk sealed, so the env-funded run —

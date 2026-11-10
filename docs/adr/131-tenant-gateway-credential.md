@@ -213,7 +213,11 @@ walk consulted no tier once the pinned key was out of the probe's sight — are 
 the same way. A resume replays the run's pins through the same walk and is held to the same
 rule; its refusal (`GatewayPinRefusedError.Replay`) names the pin as the run's own, frozen at
 launch, and a relaunch as the remedy — no webhook edit reaches a running run, and deleting the
-key already swept the webhook's pin. A run that rides no gateway route leaves the pin idle. `warnRefusedPins` keeps its
+key already swept the webhook's pin. A fork child never launched: its refusal
+(`GatewayPinRefusedError.ForkedFrom`) names its parent and a second fork, and `runview.Fork`
+drops a copied key pin whose key no longer exists (the sweep's rule, wired by the cloud
+server's `WithForkKeyPinCheck`), named in the fork's notes, so the child resumes on the team's
+current key. A run that rides no gateway route leaves the pin idle. `warnRefusedPins` keeps its
 warn-only lines for vendor pins and says nothing of a gateway pin's fate. The rule holds
 wherever a pin reaches the walk (the webhook lane, the trigger spine, a resume); §6's lane
 stamps for the scheduled and board lanes stay PR-R's.

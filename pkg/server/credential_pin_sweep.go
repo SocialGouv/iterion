@@ -101,6 +101,21 @@ func (s *Server) sweepCredentialPins(ctx context.Context, tenantID, recordID str
 	return swept, errors.Join(errs...)
 }
 
+// keyPinRowExists reports whether the API key a pin names still exists in
+// the tenant's store — the fork's reading of the sweep's rule
+// (runview.WithForkKeyPinCheck): a pin whose row is gone is the explicit
+// clear. false with a nil error only when the store says the row is gone.
+func (s *Server) keyPinRowExists(ctx context.Context, tenantID, keyID string) (bool, error) {
+	_, err := s.apiKeys.Get(store.WithTenant(ctx, tenantID), keyID)
+	switch {
+	case errors.Is(err, secrets.ErrApiKeyNotFound):
+		return false, nil
+	case err != nil:
+		return false, err
+	}
+	return true, nil
+}
+
 // pinsName reports whether any pin entry's value names the record. The map
 // key — a provider for key pins, a workflow secret name for secret pins —
 // is display, not identity: a pin binds the id it carries.

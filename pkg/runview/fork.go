@@ -60,10 +60,12 @@ type ForkResult struct {
 	NewRunID    string            `json:"new_run_id"`
 	ParentRunID string            `json:"parent_run_id"`
 	ForkAnchor  *store.ForkAnchor `json:"fork_anchor,omitempty"`
-	// Notes carries typed admissions the fork granted without a verdict —
-	// today only the unverifiable-source case: values admitted without a
-	// pre-check, which the child's first resume judges against the var
-	// constraints. Empty for a fork where every supplied value was checked.
+	// Notes carries what the fork decided that the caller must see: typed
+	// admissions granted without a verdict (the unverifiable-source case:
+	// values admitted without a pre-check, which the child's first resume
+	// judges against the var constraints), and each key pin of the parent the
+	// fork dropped because its key no longer exists (dropSweptKeyPins). Empty
+	// for a fork that checked every supplied value and dropped no pin.
 	Notes []string `json:"notes,omitempty"`
 }
 
@@ -196,6 +198,7 @@ func (s *Service) Fork(ctx context.Context, spec ForkSpec) (*ForkResult, error) 
 	// defaults), the pinned providers (empty reads as the one-key-per-family
 	// fill) and the attached pool (ADR-164).
 	child.KeyOverrides = maps.Clone(parent.KeyOverrides)
+	droppedPins := s.dropSweptKeyPins(ctx, parent, child)
 	child.LLMRoutePolicy = parent.LLMRoutePolicy
 	child.PinnedProviders = slices.Clone(parent.PinnedProviders)
 	child.PoolAttachment = parent.PoolAttachment
@@ -413,7 +416,44 @@ func (s *Service) Fork(ctx context.Context, spec ForkSpec) (*ForkResult, error) 
 			s.logger.Warn("runview: fork %s records ForkSuppliedInputs=%v — the child's first resume judges them against the var constraints", child.ID, child.ForkSuppliedInputs)
 		}
 	}
+	for _, dropped := range droppedPins {
+		result.Notes = append(result.Notes, dropped)
+		if s.logger != nil {
+			s.logger.Warn("runview: fork %s of %s: %s", child.ID, parent.ID, dropped)
+		}
+	}
 	return result, nil
+}
+
+// dropSweptKeyPins applies the credential sweep's rule to the key pins a fork
+// copies: a pin whose key row no longer exists is the explicit clear, not a
+// replacement (pkg/server's sweep clears the webhook's and the subscription's
+// pins at the key's deletion; the parent's document keeps its frozen copy).
+// The child — the recovery path of a run that cannot continue — would
+// otherwise replay a pin no resume can honour: a gateway pin is exclusive, so
+// every resume of it would be refused. Each dropped pin is returned as the
+// fork's note. A pin the store cannot answer for is kept, said in the log:
+// the child's resume then names it.
+func (s *Service) dropSweptKeyPins(ctx context.Context, parent, child *store.Run) []string {
+	if s.forkKeyPinCheck == nil || len(child.KeyOverrides) == 0 {
+		return nil
+	}
+	providers := slices.Sorted(maps.Keys(child.KeyOverrides))
+	var notes []string
+	for _, prov := range providers {
+		keyID := child.KeyOverrides[prov]
+		exists, err := s.forkKeyPinCheck(ctx, parent.TenantID, keyID)
+		switch {
+		case err != nil:
+			if s.logger != nil {
+				s.logger.Warn("runview: fork of %s: the %s key pin %s could not be checked (%v) — kept: the child's resume names it if its key is gone", parent.ID, prov, keyID, err)
+			}
+		case !exists:
+			delete(child.KeyOverrides, prov)
+			notes = append(notes, fmt.Sprintf("the parent's %s key pin %s was dropped: its key no longer exists (deleted since the pin was written — a swept pin is the explicit clear), so the child's routes take the team's current key", prov, keyID))
+		}
+	}
+	return notes
 }
 
 func invalidateForkAnchorArtifacts(cp *store.Checkpoint, nodeID string) {
