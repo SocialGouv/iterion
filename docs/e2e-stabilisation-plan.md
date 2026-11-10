@@ -35,8 +35,8 @@ Repeated from #1424 verbatim so the plan cannot drift from its own definition:
 |---|--:|--:|--:|--:|--:|--:|
 | runtime | 60 | 59 | 1 | 0 | 0 | 0 |
 | cli | 57 | 57 | 0 | 0 | 0 | 0 |
+| cloud | 51 | 51 | 0 | 0 | 0 | 0 |
 | dsl | 51 | 49 | 0 | 0 | 2 | 0 |
-| cloud | 50 | 50 | 0 | 0 | 0 | 0 |
 | server-api | 32 | 32 | 0 | 0 | 0 | 0 |
 | bots | 31 | 29 | 1 | 0 | 0 | 1 |
 | backends | 19 | 15 | 3 | 0 | 0 | 1 |
@@ -53,7 +53,7 @@ Repeated from #1424 verbatim so the plan cannot drift from its own definition:
 | forge | 7 | 7 | 0 | 0 | 0 | 0 |
 | integrations | 6 | 3 | 0 | 0 | 0 | 3 |
 | desktop | 1 | 0 | 0 | 0 | 1 | 0 |
-| Total | 428 | 406 | 7 | 4 | 5 | 6 |
+| Total | 429 | 407 | 7 | 4 | 5 | 6 |
 
 The surface axis is the matrix's **Family** column — the one the gate reads and
 the "front door per family" section documents. The `ID` prefix is a naming

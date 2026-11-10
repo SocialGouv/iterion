@@ -499,10 +499,15 @@ surface ([scheduling.md](scheduling.md#retry--a-provider-quota-window-is-waited-
 - the run sits at `failed_resumable` with `USAGE_LIMIT_BLOCKED`, and a
   `run_retry_scheduled` event naming the instant it comes back — the earlier of
   the wall and a skipped credential's reopening;
-- the pull request carries one pause notice, which names that same instant;
-  nothing relaunches the run before it — not the sweeper, not its probe, not
-  the gate reconciler, which counts a parked review as alive (also in the gap
-  before its retry is armed) and leaves the head's one relaunch unspent;
+- the pull request carries one pause notice, which names that same instant
+  and says the credential is probed hourly until then: one parked run per
+  credential — the earliest-parked — is relaunched once an hour to ask the
+  provider whether the wall fell early, and when it gets past the wall (a
+  forfait topped up by hand) every run parked on the same credentials resumes
+  in the same pass. Nothing else relaunches a parked review before its date —
+  not the due pass, not the gate reconciler, which counts a parked review as
+  alive (also in the gap before its retry is armed) and leaves the head's one
+  relaunch unspent;
 - the minutes an attempt spends only meeting the wall leave the run's
   `max_duration` (`duration_refunded_ms` on `run_failed`), so a week-long wait
   no longer kills the review on its duration budget;
@@ -515,7 +520,7 @@ What still needs a human: a spend ceiling (it reopens when an admin raises
 it), a chain whose every route is a dead credential (`AUTH_FAILED`), and a
 park whose attempt budget is spent — that one is dead, and the gate's usual
 repair (one relaunch per head, then the board) takes over. To look before the
-wall on a forfait topped up by hand, `iterion remote runs resume
+hourly probe on a forfait topped up by hand, `iterion remote runs resume
 --usage-blocked` resumes every parked run at once.
 
 ---

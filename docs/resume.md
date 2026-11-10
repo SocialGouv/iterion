@@ -202,7 +202,11 @@ so the *effective* token can differ even though the sealed blob does not.
 And an exhausted fallback chain that met a usage window on any route is
 `USAGE_LIMIT_BLOCKED`, not `AUTH_FAILED`, whatever its other routes met: the
 run parks until the window reopens, and the dead route is named in the
-`node_recovery` event's `chain_routes` ([scheduling.md](scheduling.md)).
+`node_recovery` event's `chain_routes` ([scheduling.md](scheduling.md)). In
+cloud, the one automatic resume before that date is the probe of the run's
+credential window: one run parked on the same credentials is relaunched each
+hour, and the others resume with it once it gets past the wall
+([scheduling.md](scheduling.md#retry--a-provider-quota-window-is-waited-out-not-re-attempted)).
 
 When a surface declines to bring a run back, it says so on the timeline:
 **`run_retry_skipped {reason: deterministic, code, error, hint, status?,
