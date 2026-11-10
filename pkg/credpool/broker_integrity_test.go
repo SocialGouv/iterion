@@ -462,6 +462,82 @@ func TestReleaseCaptured_doesNotCloseANewerAttempt(t *testing.T) {
 	}
 }
 
+// A schema park's captured release covers the WHOLE attempt: the
+// side-by-side siblings its resolution sealed (forfait and key) never ran
+// either, and a sibling left open would hold its donor's slot — and the
+// unit it consumed — to the TTL. A newer attempt's leases stay open.
+func TestReleaseCaptured_releasesTheAttemptsSideBySideSiblings(t *testing.T) {
+	ctx := context.Background()
+	h := newHarnessWithAttachments(t)
+	alice := h.donor(t, "alice", Limits{MaxRunsPerDay: 3})
+	bob, _ := h.donorKey(t, "bob", "anthropic", Limits{MaxRunsPerDay: 3})
+	_, attID, lims := attachForTest(t, h, Strategy{}, DrawLimits{})
+	g1, g2, _ := r6SideBySide(t, h, h.broker, "run-c", attID, lims)
+
+	guard := h.broker.CaptureRelease(ctx, "run-c")
+	if guard == nil {
+		t.Fatal("CaptureRelease returned nil for an attempt with open leases")
+	}
+	h.broker.ReleaseCaptured(ctx, guard)
+	for _, g := range []*Grant{g1, g2} {
+		l, err := h.leases.Get(ctx, g.releaseGuard.lease.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !l.Closed || l.Outcome != OutcomeNotLaunched {
+			t.Errorf("lease of %s after the captured release: closed=%v outcome=%q, want %q", l.PledgeID, l.Closed, l.Outcome, OutcomeNotLaunched)
+		}
+	}
+	for _, p := range []Pledge{alice, bob} {
+		day, _, err := h.ledger.Usage(ctx, p.ID, g1.AcquiredAt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if day.Runs != 0 {
+			t.Errorf("%s's day still counts %d run unit(s) after the release of an attempt that never ran", p.ID, day.Runs)
+		}
+	}
+
+	// A guard captured before a newer attempt opened its side-by-side
+	// leases releases only its own attempt.
+	g3, g4, _ := r6SideBySide(t, h, h.broker, "run-d", attID, lims)
+	guard = h.broker.CaptureRelease(ctx, "run-d")
+	h.now = h.now.Add(time.Second)
+	n1, err := h.broker.Acquire(ctx, r6AttReq("run-d", claudeWant(), attID, lims, "B1", false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.now = h.now.Add(40 * time.Millisecond)
+	n2, err := h.broker.Acquire(ctx, r6AttReq("run-d", Credential{Source: SourceAPIKey, Ref: "anthropic"}, attID, lims, "B1", true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.broker.ReleaseCaptured(ctx, guard)
+	for _, g := range []*Grant{g3, g4} {
+		if l, _ := h.leases.Get(ctx, g.releaseGuard.lease.ID); l.Outcome != OutcomeSuperseded {
+			t.Errorf("A1's lease on %s: outcome=%q, want the newer attempt's supersede to stand", l.PledgeID, l.Outcome)
+		}
+	}
+	for _, g := range []*Grant{n1, n2} {
+		if l, _ := h.leases.Get(ctx, g.releaseGuard.lease.ID); l.Closed {
+			t.Errorf("the newer attempt's lease on %s was closed (%q) by an older attempt's captured release", l.PledgeID, l.Outcome)
+		}
+	}
+
+	// An older attempt's lease a failed supersede left open is no sibling:
+	// it ran, and releasing it would refund the unit it consumed.
+	_, _, _ = r6SideBySide(t, h, h.broker, "run-e", attID, lims)
+	orphan := Lease{ID: "orphan-a0", RunID: "run-e", PledgeID: alice.ID, DonorID: "alice", TenantID: "team-1", AttemptID: "A0",
+		ConsumedRunUnit: true, AcquiredAt: h.now.Add(-time.Hour), ExpiresAt: h.now.Add(time.Hour)}
+	if err := h.leases.Put(ctx, orphan); err != nil {
+		t.Fatal(err)
+	}
+	h.broker.ReleaseCaptured(ctx, h.broker.CaptureRelease(ctx, "run-e"))
+	if l, _ := h.leases.Get(ctx, orphan.ID); l.Closed {
+		t.Errorf("another attempt's open lease was released (%q) with the captured attempt", l.Outcome)
+	}
+}
+
 // A run whose attempts keep being abandoned (crash-looping pod) must be
 // charged as new each time, not renew forever against a record that never
 // learned what it spent.

@@ -1744,6 +1744,16 @@ func (c credResolution) poolLease() *credpool.Grant {
 	return c.doorGrant
 }
 
+// poolAttemptID is the attempt identity of the resolution's pool leases —
+// one per resolution, shared by every lease it opened — that the run
+// message carries to the attempt's spend report. Empty without a lease.
+func (c credResolution) poolAttemptID() string {
+	if g := c.poolLease(); g != nil {
+		return g.AttemptID
+	}
+	return ""
+}
+
 func (c credResolution) applyTo(r *store.Run) {
 	s := c.stamp()
 	r.CredFingerprints = s.Fingerprints
@@ -3203,12 +3213,13 @@ func (p *Publisher) acquireFromPool(ctx context.Context, runID, orgID, tenantID,
 	p.logger.Info("cloudpublisher: credential pool consulted for run %s — wants=%s (%s narrow_safe=%v)",
 		runID, wantsSummary(wants), providersSummary(res.Providers), res.NarrowSafe)
 	grant, err := p.credPool.Acquire(ctx, credpool.Request{
-		RunID:    runID,
-		OrgID:    orgID,
-		TenantID: tenantID,
-		UserID:   ownerID,
-		BotID:    botID,
-		Wants:    wants,
+		RunID:     runID,
+		OrgID:     orgID,
+		TenantID:  tenantID,
+		UserID:    ownerID,
+		BotID:     botID,
+		Wants:     wants,
+		AttemptID: uuid.NewString(),
 	})
 	if err != nil {
 		// A typed abstention names the reason: distinguishing "the audience
@@ -3549,7 +3560,7 @@ func (p *Publisher) acquireDoorGrant(
 		return nil, nil
 	}
 
-	doorReq := credpool.Request{RunID: runID, OrgID: orgID, TenantID: tenantID, UserID: ownerID, BotID: botID, Wants: wants, FallbackOnly: true}
+	doorReq := credpool.Request{RunID: runID, OrgID: orgID, TenantID: tenantID, UserID: ownerID, BotID: botID, Wants: wants, FallbackOnly: true, AttemptID: uuid.NewString()}
 	if ok, err := p.credPool.HasFallbackDonors(ctx, doorReq); err != nil || !ok {
 		if p.logger != nil {
 			p.logger.Info("cloudpublisher: fallback door NOT CONSULTED for run %s — no opted-in donor serves wants=%s (reason=%v)", runID, wantsSummary(doorReq.Wants), err)
@@ -4068,6 +4079,7 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		Permission:      spec.Permission,
 		BackendConfig:   queue.BackendConfig{Default: queue.BackendClaw},
 		PoolGrantless:   creds.poolLease() == nil,
+		PoolAttemptID:   creds.poolAttemptID(),
 		PublishedAtRFC:  publishInstant(time.Now().UTC(), *r.QueuedAt, creds.poolLease()).Format(time.RFC3339Nano),
 		TenantID:        tenantID,
 		OrgID:           orgID,
@@ -4686,6 +4698,7 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 		Budget:        wire,
 		BackendConfig: queue.BackendConfig{Default: queue.BackendClaw},
 		PoolGrantless: creds.poolLease() == nil,
+		PoolAttemptID: creds.poolAttemptID(),
 		// The fine plan re-derived with the re-sealed bundle, the same rule
 		// the launch stamps (#2288): the resumed attempt's donors may be
 		// different donors, and the plan must name THESE credentials.

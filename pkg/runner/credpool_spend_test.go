@@ -403,6 +403,48 @@ func TestRecordPoolSpend_aLateReportStaysOnItsAttemptInsideASupersedeWindow(t *t
 	}
 }
 
+// TestRecordPoolSpend_theMessagesAttemptIDPinsItsLease: a publication
+// floored past its marker can follow the resume's acquisition, so the
+// publication instant alone would pin the successor's lease. The runner
+// reports with the attempt id the message carries, which pins the
+// attempt's own lease whatever the instants.
+func TestRecordPoolSpend_theMessagesAttemptIDPinsItsLease(t *testing.T) {
+	// Two slots: the harness's own run-1 holds one.
+	h := newPoolHarness(t, credpool.Limits{MaxUSDPerDay: 10, MaxConcurrentRuns: 2})
+	ctx := context.Background()
+	want := []credpool.Credential{{Source: credpool.SourceOAuth, Ref: "claude_code"}}
+	gA, err := h.broker.Acquire(ctx, credpool.Request{RunID: "run-2", OrgID: "org-1", TenantID: "team-1", UserID: "requester", Wants: want, AttemptID: "A1"})
+	if err != nil {
+		t.Fatalf("attempt A acquire: %v", err)
+	}
+	gB, err := h.broker.Acquire(ctx, credpool.Request{RunID: "run-2", OrgID: "org-1", TenantID: "team-1", UserID: "requester", Wants: want, AttemptID: "A2"})
+	if err != nil {
+		t.Fatalf("resume acquire: %v", err)
+	}
+	// A's publication follows the resume's acquisition.
+	T_A := store.PublishAt(gB.AcquiredAt, gB.AcquiredAt)
+	msgA := &queue.RunMessage{RunID: "run-2", TenantID: "team-1", PoolAttemptID: gA.AttemptID, PublishedAtRFC: T_A.Format(time.RFC3339Nano)}
+
+	h.runner.recordPoolSpend(msgA, usageWith(3, 400), nil, false)
+
+	all, err := h.leases.ListByRun(ctx, "run-2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, l := range all {
+		switch l.AttemptID {
+		case "A1":
+			if l.Outcome != credpool.OutcomeSupersededReported || l.CostUSD != 3 {
+				t.Errorf("A's lease after its report: closed=%v outcome=%q cost=%.2f, want %q with $3", l.Closed, l.Outcome, l.CostUSD, credpool.OutcomeSupersededReported)
+			}
+		case "A2":
+			if l.Closed || l.CostUSD != 0 {
+				t.Errorf("the resume's lease after A's report: closed=%v outcome=%q cost=%.2f, want open and uncharged", l.Closed, l.Outcome, l.CostUSD)
+			}
+		}
+	}
+}
+
 // TestRecordPoolSpend_aGrantlessDeliveryNeverReachesTheBroker: a delivery
 // published without a pool grant runs on env credentials — its spend
 // belongs to no donor, and its report must never reach the broker, where

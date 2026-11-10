@@ -128,6 +128,15 @@ func TestPoolTier_credentiallessRunGetsADonorsSubscription(t *testing.T) {
 	if creds.grant == nil || creds.grant.DonorID != "donor" {
 		t.Fatalf("grant = %+v, want the donor's", creds.grant)
 	}
+	// The lease carries the resolution's attempt id, the one its message
+	// names, so the attempt's report pins exactly it.
+	open, err := f.leases.GetOpenByRun(context.Background(), "run-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id := creds.poolAttemptID(); id == "" || open.AttemptID != id {
+		t.Fatalf("lease attempt id = %q, resolution's = %q — want one non-empty identity", open.AttemptID, id)
+	}
 }
 
 // The enforcement half: the run's cost budget must be capped at what

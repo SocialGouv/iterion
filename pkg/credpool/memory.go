@@ -366,6 +366,9 @@ func (s *MemoryLeaseStore) AddCost(_ context.Context, leaseID string, costUSD fl
 	if !ok {
 		return ErrNotFound
 	}
+	if l.Closed && l.Outcome != OutcomeSuperseded && l.Outcome != OutcomeSupersededGrantless {
+		return nil
+	}
 	l.CostUSD += costUSD
 	s.m[leaseID] = l
 	return nil

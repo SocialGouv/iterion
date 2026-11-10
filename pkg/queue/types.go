@@ -307,6 +307,13 @@ type RunMessage struct {
 	// publications older than the field read as pool-served, which is what
 	// they were.
 	PoolGrantless bool `json:"pool_grantless,omitempty"`
+	// PoolAttemptID is the attempt identity the publication's credential
+	// resolution stamped on every pool lease it opened
+	// (credpool.Lease.AttemptID): the attempt's spend report settles
+	// exactly those leases. Empty when the attempt holds no pool lease, and
+	// on a publication older than the field — its report then pins its
+	// lease by PublishedAtRFC.
+	PoolAttemptID string `json:"pool_attempt_id,omitempty"`
 	// Budget carries launch-time budget-cap overrides ("non-zero wins,
 	// zero inherits" — the wire mirror of ir.BudgetOverrides). The runner
 	// applies it after loading the workflow and BEFORE its multitenant
