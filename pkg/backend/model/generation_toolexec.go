@@ -27,6 +27,181 @@ import (
 // Tool execution
 // ---------------------------------------------------------------------------
 
+// dispatcherNodeKey carries, on the node execution's own context, the
+// dispatcher that context belongs to. It is what makes [toolDispatcher.dispatch]
+// refuse a context it cannot vouch for — see the contract on that method.
+type dispatcherNodeKey struct{}
+
+// toolDispatcher is the one door a tool call goes through. It holds what
+// dispatching a call needs — the node's tool map, its lifecycle runner, its
+// permission policy, its secret materializer, its event callbacks — as a
+// value instead of as six positional arguments threaded down a call chain.
+//
+// That is the point. A caller that composes calls on the node's behalf (the
+// codemode script host, ADR pending) gets ONE object, and a call it makes
+// takes the pipeline the model's own loop takes: the same lifecycle hooks,
+// the same permission gate, the same secret materialization, the same events,
+// the same `tool_search` view of the node. Every added dispatch path is
+// another gate to keep in agreement, and the gate is the
+// anti-prompt-injection boundary.
+//
+// Two things this door does NOT carry, named because a caller that assumes
+// them is the defect:
+//
+//   - **De-materialization is not here.** The secret materializer runs on the
+//     way IN; re-placeholdering a tool result that echoed its own input is the
+//     model boundary's pass (unmaterializeEchoingResults, in the loop in
+//     generation.go), and it needs two things no dispatcher field holds. A
+//     caller that returns tool output into a model's context owes that pass
+//     too.
+//   - **Four per-node facts ride the CONTEXT, not this struct**, so the
+//     contract on dispatch is a contract on its ctx, enforced below.
+//
+// # The census this comment is responsible for
+//
+// What is counted is a site that RUNS a tool's Execute closure in this
+// process. That is a greppable class rather than a judgement: Execute is a
+// struct field of GenerationTool and tool.ToolDef, so reaching it needs a
+// selector, and the inventory in generation_toolexec_callers_test.go holds
+// the count instead of this sentence. That inventory covers more than this
+// paragraph does, because touching a closure has three roles: RUNNING one is
+// a dispatch path, WRAPPING one is a gate (guardTool,
+// scopeMCPServerNamingTool), and CARRYING one across a conversion must add no
+// judgement at all. Two other sites RUN one today, each with a DIFFERENT gate:
+//
+//   - claw_backend.go — the launcher's handler for a call a SANDBOXED node
+//     forwarded over IPC. It cannot reuse this door: the runner already ran
+//     the in-process pipeline on its side, and what crosses is an envelope,
+//     not a tool_use block. So it re-derives what it must hold on the
+//     boundary: the advertised-tool check, tool.SandboxPlacementOf, the
+//     permission gate re-applied on the tool's identity, and this same
+//     context pin. The `allowed-tools:` narrowing is NOT a fifth item there,
+//     and that is not an oversight — it is held where each surface can hold
+//     it: the prompt-invoked narrowing by the advertised set the launcher
+//     built, which that first check enforces; the model-invoked one
+//     in-container, dispatch-side, because that scope is created there
+//     mid-generation and reaches the launcher only on a pause
+//     (tool.CommandScope says the same from the mechanism's own side).
+//   - executor_tool.go — a DSL tool node's `command:` running a registry
+//     tool. It honours the authoring allowlist (checkToolNodePolicy over
+//     tool.ToolChecker), NOT permission.Policy, which that file does not
+//     import; it pins no node set and fires no PreToolUse, because no model
+//     reads tool_search there. So it is not a second gate on a model's call,
+//     and the census says so rather than leaving a reader to assume it.
+//
+// The census of permission.Policy itself is not duplicated here: it already
+// lives at ClawExecutor.resolvePermissionPolicy. Two censuses in two files
+// drift; one plus a pointer cannot.
+type toolDispatcher struct {
+	toolMap       map[string]*GenerationTool
+	onToolStarted func(ToolCallInfo)
+	onToolCall    func(ToolCallInfo)
+	runner        *hooks.Runner
+	materialize   func(string) string
+	policy        *permission.Policy
+}
+
+// newToolDispatcher builds the node's door and returns the context that door
+// vouches for. A caller dispatches with THAT context, or a descendant of it.
+//
+// Handing the context back, rather than letting a caller supply any context,
+// is the whole guard: see [toolDispatcher.dispatch].
+func newToolDispatcher(
+	ctx context.Context,
+	toolMap map[string]*GenerationTool,
+	onToolStarted func(ToolCallInfo),
+	onToolCall func(ToolCallInfo),
+	runner *hooks.Runner,
+	materialize func(string) string,
+	policy *permission.Policy,
+) (*toolDispatcher, context.Context) {
+	d := &toolDispatcher{
+		toolMap:       toolMap,
+		onToolStarted: onToolStarted,
+		onToolCall:    onToolCall,
+		runner:        runner,
+		materialize:   materialize,
+		policy:        policy,
+	}
+	return d, context.WithValue(ctx, dispatcherNodeKey{}, d)
+}
+
+// dispatch runs one tool_use block through the full pipeline.
+//
+// # The contract, and why it is enforced rather than documented
+//
+// ctx MUST be the context newToolDispatcher returned, or a descendant of it,
+// because four per-node facts ride a context and not this struct — and three
+// of them fail OPEN:
+//
+//   - the `allowed-tools:` command scope (#1717): absent, nothing is narrowed;
+//   - the child-conversation Ask degradation (#2877): absent, a child's Ask
+//     pauses the whole run instead of degrading to a refusal;
+//   - the parent policy a child inherits: absent, a child spawned through the
+//     `agent` tool is left ungated entirely;
+//   - the parent loop shape that bounds a child's tools: absent, a child falls
+//     back to the run's whole registry instead of this node's set.
+//
+// (tool.HostCapabilitiesFrom is the fifth and the exception: it fails CLOSED,
+// refusing when nothing is held. That is the precedent this guard follows.)
+//
+// So the guard is one chokepoint, not four re-pinned facts. Re-pinning facts
+// was tried and is WRONG in a way that passes the whole suite: writing a
+// captured scope over a caller's live one erases a narrowing that was
+// present, and writing a captured "asks allowed" over a child's context
+// restores the run pause #2877 removes. A guard that refuses an unvouched
+// context cannot widen anything, because it never writes a value at all.
+//
+// # What the guard does NOT check, stated because the difference matters
+//
+// It checks PROVENANCE, not content: newToolDispatcher vouches for whatever
+// context it was handed, so a dispatcher built from a factless context
+// vouches for a factless context. The guard therefore narrows the mis-wire
+// from "any context" to "a context that went through this constructor" — it
+// catches a host that dispatches with its own context, which is the shape
+// that invites itself, and it cannot catch one that CONSTRUCTS from the wrong
+// context. Supplying a node execution's context to the constructor is the
+// caller's responsibility; on the loop's path GenerateText guarantees it for
+// the scope (no generation runs scopeless, generation.go), and the suite
+// proves the whole conduit: stripping the four facts inside dispatch while
+// keeping the key reddens 17 tests across all four.
+//
+// That is also why the refusal says only what the guard knows. An earlier
+// revision told the caller the narrowing and the child-ask degradation "would
+// all be missing", which the guard never checked and which is false for the
+// case it actually fires on most — a second dispatcher on a fully pinned
+// context.
+//
+// The node's executable tool set is pinned here, derived from the same map
+// executeOneTool resolves the call against, at the same instant: the pin
+// cannot disagree with the lookup. A tool whose answer depends on that set —
+// tool_search, which searches the registry's whole catalogue — must speak for
+// THIS node (#2717), and tool.NodeExecutableToolsFrom deliberately reports
+// "not pinned" rather than guessing. TestToolDispatcher_ThePinnedSetFollowsTheToolMap
+// is what holds that, and it fails against a set snapshotted at construction.
+//
+// Because the set is derived per call, d.toolMap is owned by the goroutine
+// that dispatches: a caller changing it between calls does so from that
+// goroutine (as that test does). A concurrent writer is a process-fatal
+// "concurrent map iteration and map write", not a race report — measured.
+// The derivation also costs what it costs: ~5 µs and ~9 KB per dispatch at
+// 120 tools, noise beside any real tool call, but a script host composing
+// thousands of cheap calls a turn pays ~5 ms and ~9 MB per 1000 dispatches.
+func (d *toolDispatcher) dispatch(ctx context.Context, tu toolUseBlock) (api.ContentBlock, error) {
+	if owner, _ := ctx.Value(dispatcherNodeKey{}).(*toolDispatcher); owner != d {
+		return *refusalOutcome(fmt.Sprintf(
+			"tool %q: refused before dispatch — this context did not come from this node's dispatcher. "+
+				"Dispatch with the context newToolDispatcher returned, or a descendant of it",
+			tu.Name), tu, d.onToolCall), nil
+	}
+	names := make([]string, 0, len(d.toolMap))
+	for name := range d.toolMap {
+		names = append(names, name)
+	}
+	ctx = tool.WithNodeExecutableTools(ctx, names)
+	return executeOneTool(ctx, tu, d.toolMap, d.onToolStarted, d.onToolCall, d.runner, d.materialize, d.policy)
+}
+
 // executeToolsDirect runs each tool_use block and builds tool_result content blocks.
 //
 // When runner is non-nil, the function fires PreToolUse before each
@@ -51,19 +226,10 @@ func executeToolsDirect(
 	policy *permission.Policy,
 ) ([]api.ContentBlock, error) {
 	results := make([]api.ContentBlock, 0, len(toolUses))
-
-	// The node's executable tool set travels on the context so a tool whose
-	// answer depends on it — tool_search, which searches the registry's whole
-	// catalogue — speaks for THIS node and cannot name a tool the node cannot
-	// call as a plain match (#2717).
-	names := make([]string, 0, len(toolMap))
-	for name := range toolMap {
-		names = append(names, name)
-	}
-	ctx = tool.WithNodeExecutableTools(ctx, names)
+	d, ctx := newToolDispatcher(ctx, toolMap, onToolStarted, onToolCall, runner, materialize, policy)
 
 	for _, tu := range toolUses {
-		block, abort := executeOneTool(ctx, tu, toolMap, onToolStarted, onToolCall, runner, materialize, policy)
+		block, abort := d.dispatch(ctx, tu)
 		if abort != nil {
 			return results, abort
 		}
