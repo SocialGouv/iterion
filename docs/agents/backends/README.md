@@ -13,5 +13,6 @@ native harness. Leaves, one line each:
 | [facade-substitution.md](facade-substitution.md) | GLM/Kimi served under a claude/gpt label, or a base URL the substitution verdict ignores. |
 | [metering.md](metering.md) | Trusted delegate counters, reserved output metadata, interaction spend and recovery retry accounting. |
 | [plugins-compression.md](plugins-compression.md) | Output compression (rtk), secret substitution, or a plugin changing what a node sees. |
+| [codemode.md](codemode.md) | The model's code calling the node's own tools: the dispatcher door and its context contract, why confinement is kernel-side, and what is NOT built yet (ADR-165). |
 | [sandbox.md](sandbox.md) | `SANDBOX_*` and `ATTACHMENT*` failures, host binds dropped or carried, changing what a node may execute. |
 | [prompt-engineering-dials.md](prompt-engineering-dials.md) | Authoring `cursor:` / `supervisor:` / ultracode. |
