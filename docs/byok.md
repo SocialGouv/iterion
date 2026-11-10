@@ -658,7 +658,8 @@ identity, undecryptable, or held out by the run's providers allowlist or
 frozen pair order; on a resume, the pin is named as the run's own, frozen
 at its launch, and the remedy is a relaunch — editing the webhook never
 reaches a running run, and deleting the key already cleared the webhook's
-pin; a fork child's names its parent and a second fork as the remedy). A
+pin; a fork child's names its parent, and a second fork as the remedy
+when the key no longer exists — a key that exists is inherited again). A
 fork copies the parent's pins but drops one whose key no longer exists,
 named in the fork's notes — the sweep's rule: a swept pin is the explicit
 clear. Nothing else pays those routes in its place: not the

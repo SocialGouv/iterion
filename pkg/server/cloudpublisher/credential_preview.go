@@ -550,8 +550,8 @@ func (p *Publisher) previewCredentials(ctx context.Context, spec runview.Credent
 	posture := p.unfundedPostureFor(wf, sovereignPreview, previewTeamGateway, envFunded, spec.Launch.Trust, runnerPool)
 	refusal := unfundedRefusalFor(spec.Context.TeamID, previewRoutes, metadataFunding(x, posture), !metadataHoldsDefault(x), posture, gateway.heldOut(), x.busy)
 	if refusal == nil && posture.TeamGateway {
-		if tolerated := teamGatewayTolerated(previewRoutes.providers, previewRoutes.pins, previewRoutes.primary, metadataFunding(x, posture)); tolerated != "" {
-			x.warn("The run is held to its team's gateway (team_gateway) and no credential it carries funds " + tolerated + " — a rescue route fires only once its node's own route failed, and the runner's pod expands an env dial with its own environment; a call that lands there answers the ambient refusal.")
+		if tolerated, why := teamGatewayTolerated(previewRoutes.providers, previewRoutes.pins, previewRoutes.primary, metadataFunding(x, posture)); tolerated != "" {
+			x.warn("The run is held to its team's gateway (team_gateway) and no credential it carries funds " + tolerated + " — " + why + ".")
 		}
 	}
 	wires := map[string][]string{}

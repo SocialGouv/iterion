@@ -418,6 +418,12 @@ func EffectiveProviders(v RouteView, known map[string]bool) ProviderResolution {
 // supervisorSitePrefix opens a supervisor's walk site (`supervisor:<name>`).
 const supervisorSitePrefix = "supervisor:"
 
+// SupervisorSite reports whether a walk site (ProviderResolution.Pins) is a
+// supervisor's — a route the run's supervision spends, not a node's.
+func SupervisorSite(site string) bool {
+	return strings.HasPrefix(site, supervisorSitePrefix)
+}
+
 // fallbackSite names the walk site a route was read at — the key a pin is
 // recorded under (ProviderResolution.Pins): the node's id for its own
 // route, `node#name` for an authored `fallbacks:` route, its index when the
@@ -753,7 +759,7 @@ func (a *providerAccumulator) endRoute() {
 			a.forbiddenPrimary[p] = appendSite(a.forbiddenPrimary[p], r.site)
 		}
 	}
-	if r.primary && !r.deferred && !strings.HasPrefix(r.site, supervisorSitePrefix) {
+	if r.primary && !r.deferred && !SupervisorSite(r.site) {
 		for _, p := range r.named {
 			if a.decidedPrimary == nil {
 				a.decidedPrimary = map[string][]string{}

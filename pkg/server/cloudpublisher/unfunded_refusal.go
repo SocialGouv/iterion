@@ -490,11 +490,12 @@ func sortedProviders(m map[string][]string) []string {
 
 // teamGatewayTolerated names what the content boundary's strict arm leaves
 // unrefused on a team_gateway run: each unfunded provider no decided primary
-// route names — only a rescue route or an env dial does — with the sites
-// naming it. "" when there is none. The launch warns it, the preview mirrors
-// the warning.
-func teamGatewayTolerated(attributed []string, sites, primary map[string][]string, funded map[string]bool) string {
-	var named []string
+// route names, with the sites naming it, and why each kind of site is left
+// unrefused. named is "" when there is none. The launch warns it, the preview
+// mirrors the warning.
+func teamGatewayTolerated(attributed []string, sites, primary map[string][]string, funded map[string]bool) (named, why string) {
+	var entries []string
+	supervisor, other := false, false
 	for _, prov := range unfundedAmong(attributed, funded) {
 		if _, strict := primary[prov]; strict {
 			continue
@@ -502,10 +503,26 @@ func teamGatewayTolerated(attributed []string, sites, primary map[string][]strin
 		entry := prov
 		if at := sites[prov]; len(at) > 0 {
 			entry = fmt.Sprintf("%s (named by %s)", prov, strings.Join(at, ", "))
+			for _, site := range at {
+				if model.SupervisorSite(site) {
+					supervisor = true
+				} else {
+					other = true
+				}
+			}
+		} else {
+			other = true
 		}
-		named = append(named, entry)
+		entries = append(entries, entry)
 	}
-	return strings.Join(named, "; ")
+	var reasons []string
+	if other {
+		reasons = append(reasons, "a rescue route fires only once its node's own route failed, and the runner resolves an env dial or a var the launch left undecided with its own environment and vars; a call that lands on such a provider answers the ambient refusal")
+	}
+	if supervisor {
+		reasons = append(reasons, "a supervisor is never started on a team_gateway run (every supervisor spec is refused)")
+	}
+	return strings.Join(entries, "; "), strings.Join(reasons, "; ")
 }
 
 // UnfundedProvidersError is the typed refusal of a launch whose attributed

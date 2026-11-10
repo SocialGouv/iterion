@@ -273,3 +273,32 @@ func TestBusyPoolEntry_ALaunchOnABusyVendorEntryWaitsAndThePreviewSaysSo(t *test
 		t.Fatalf("the preview's refusal = %q, want the launch's wait sentence (busy, nothing to provision); warnings %v", w, preview.Warnings)
 	}
 }
+
+// The tolerated warning of a team_gateway run says why each kind of site is
+// left unrefused: a supervisor is never started under the boundary (runview
+// refuses every spec), which no "rescue route" or "env dial" explains.
+func TestTeamGatewayTolerated_NamesASupervisorAsASupervisor(t *testing.T) {
+	sites := map[string][]string{"xai": {"supervisor:watch"}, "openai": {"review#rescue"}}
+	for _, row := range []struct {
+		name               string
+		attributed         []string
+		supervisor, rescue bool
+	}{
+		{"a supervisor only", []string{"xai"}, true, false},
+		{"a rescue only", []string{"openai"}, false, true},
+		{"both", []string{"openai", "xai"}, true, true},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			named, why := teamGatewayTolerated(row.attributed, sites, nil, map[string]bool{})
+			if named == "" {
+				t.Fatal("nothing tolerated")
+			}
+			if got := strings.Contains(why, "supervisor is never started"); got != row.supervisor {
+				t.Fatalf("why = %q, want the supervisor reason %v", why, row.supervisor)
+			}
+			if got := strings.Contains(why, "rescue route"); got != row.rescue {
+				t.Fatalf("why = %q, want the rescue reason %v", why, row.rescue)
+			}
+		})
+	}
+}

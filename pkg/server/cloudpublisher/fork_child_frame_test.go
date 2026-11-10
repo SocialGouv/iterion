@@ -248,3 +248,22 @@ func TestFork_AChildsPinRefusalNamesItsParent(t *testing.T) {
 		t.Fatalf("a fork child's refusal %q must name its parent and a second fork, never a relaunch that discards the fork", msg)
 	}
 }
+
+// A second fork of the parent drops a pin whose key no longer exists, and
+// only that one (runview.Fork): for every other cause — the key's audience,
+// the frozen lists, its secret, an unread store — the key exists, a second
+// fork inherits the same pin and is refused the same way, so the fork
+// child's refusal offers it only for a missing key.
+func TestFork_AChildsPinRefusalOffersASecondForkOnlyForAMissingKey(t *testing.T) {
+	t.Parallel()
+	for _, cause := range []GatewayPinCause{GatewayPinMissing, GatewayPinWithheld, GatewayPinInvisible, GatewayPinHeldOut, GatewayPinUndecryptable, GatewayPinUnread, GatewayPinUnsealed} {
+		msg := (&GatewayPinRefusedError{Tenant: "team1", KeyID: "key-gw", Cause: cause, Detail: "detail", Replay: true, ForkedFrom: "run-parent"}).Error()
+		offered := strings.Contains(msg, "fork run run-parent again")
+		if offered != (cause == GatewayPinMissing) {
+			t.Fatalf("cause %s: second fork offered=%v in %q, want it only for a missing key", cause, offered, msg)
+		}
+		if !strings.Contains(msg, "fork of run run-parent") || !strings.Contains(msg, "repair the key") || strings.Contains(msg, "relaunch") {
+			t.Fatalf("cause %s: %q must name the parent and the key's repair, never a relaunch", cause, msg)
+		}
+	}
+}

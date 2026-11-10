@@ -80,15 +80,18 @@ type GatewayPinRefusedError struct {
 	// ForkedFrom names the parent of a replayed fork child: the child never
 	// launched — it inherited the pin its parent froze — so a relaunch would
 	// throw the fork away; a second fork of the parent drops a pin whose key
-	// no longer exists (runview.Fork).
+	// no longer exists (runview.Fork), and only that one — offered for
+	// GatewayPinMissing alone.
 	ForkedFrom string
 }
 
 func (e *GatewayPinRefusedError) Error() string {
 	remedy := fmt.Sprintf("repair the key, or repin or clear the %s entry of key_overrides on the webhook or trigger subscription that launched the run", secrets.ProviderOpenAICompatible)
 	switch {
-	case e.ForkedFrom != "":
+	case e.ForkedFrom != "" && e.Cause == GatewayPinMissing:
 		remedy = fmt.Sprintf("this run is a fork of run %s and replays the pin it inherited, frozen at that run's launch; no webhook or subscription edit reaches it: repair the key, or fork run %s again — a fork drops a key pin whose key no longer exists", e.ForkedFrom, e.ForkedFrom)
+	case e.ForkedFrom != "":
+		remedy = fmt.Sprintf("this run is a fork of run %s and replays the pin it inherited, frozen at that run's launch; no webhook or subscription edit reaches it: repair the key — the key exists, so a second fork of run %s inherits the same pin and is refused the same way", e.ForkedFrom, e.ForkedFrom)
 	case e.Replay:
 		remedy = "this run's own pin, frozen at its launch, is replayed by every resume and no webhook or subscription edit reaches it: repair the key, or relaunch the run, which takes the launching webhook's current pin"
 	}

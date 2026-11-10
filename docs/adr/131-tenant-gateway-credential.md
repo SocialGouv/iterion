@@ -156,7 +156,9 @@ so it is refused by name at launch (or resume) whatever `ITERION_CLOUD_REQUIRE_L
 says, with the boundary's own sentence (`UnfundedProvidersError.TeamGateway`); the
 preview mirrors it. A provider only a rescue route (`fallbacks:`, the run-level chain)
 or an env dial (`${DIAL:-…}`, which the runner's pod expands with its own environment)
-names is warned about by name, never refused (`teamGatewayTolerated`).
+names is warned about by name, never refused (`teamGatewayTolerated`), and so is one only a
+supervisor names — never started on a `team_gateway` run (`runview.FundedSupervisorSpecs`
+refuses every spec), which the warning says.
 
 Under `team_gateway` the policy ladder lands no stage on a node whose route goes to
 the gateway: `llmroute.StageModel` refuses it with `ReasonContentBoundary`, since the
@@ -227,7 +229,9 @@ the same way. A resume replays the run's pins through the same walk and is held 
 rule; its refusal (`GatewayPinRefusedError.Replay`) names the pin as the run's own, frozen at
 launch, and a relaunch as the remedy — no webhook edit reaches a running run, and deleting the
 key already swept the webhook's pin. A fork child never launched: its refusal
-(`GatewayPinRefusedError.ForkedFrom`) names its parent and a second fork, and `runview.Fork`
+(`GatewayPinRefusedError.ForkedFrom`) names its parent and, for a key that no longer exists,
+a second fork (any other cause leaves the key in place, so a second fork inherits the same
+pin: the remedy is the key's repair), and `runview.Fork`
 drops a copied key pin whose key no longer exists (the sweep's rule, wired by the cloud
 server's `WithForkKeyPinCheck`), named in the fork's notes, so the child resumes on the team's
 current key. A run that rides no gateway route leaves the pin idle. `warnRefusedPins` keeps its

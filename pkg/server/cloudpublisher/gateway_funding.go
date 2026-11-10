@@ -223,8 +223,12 @@ func (p *Publisher) gatewayRouting(ctx context.Context, view model.RouteView, te
 // the run's launch sealed: team_gateway always does, own_keys does when it
 // names the pair's key or host (derivedContentBoundary: a key sealed for a
 // route the walk could not decide, under a runner pool). A stamp written
-// before the producer (nil) records none — the walk of that time never
-// sealed a gateway key.
+// before the producer (nil) records none: a server of that time froze a
+// routing pair order that could not name the gateway pair — its vocabulary
+// refused `openai_compatible_key` (llmroute.validKeyProvider) and its default
+// order (llmroute.Normalize's DefaultPairOrder) lacked it — so its whitelist
+// held the gateway slot out of every tier, the attached pool's gateway want
+// included, and no launch of that time sealed a gateway key.
 func launchSealedGateway(b *store.RunContentBoundary) bool {
 	return b != nil && (b.TeamGateway() || b.KeyID != "" || b.GatewayHost != "")
 }
