@@ -232,6 +232,7 @@ var operatorInfraNames = map[string]bool{
 	"ITERION_RETRY_CIRCUIT_COOLDOWN":       true,
 	"ITERION_RETRY_PROBE_FLOOR":            true,
 	"ITERION_RETRY_PROBE_BUDGET":           true,
+	"ITERION_RETRY_PROBE_BEFORE_WINDOW":    true,
 	"ITERION_ROUTE_COOLDOWN":               true,
 	"ITERION_MODEL_SPECS":                  true,
 	"ITERION_CLAW_SLASH_COMMAND_MAX_BYTES": true,

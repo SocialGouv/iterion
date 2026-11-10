@@ -8,6 +8,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/forge"
+	"github.com/SocialGouv/iterion/pkg/retrypolicy"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -106,8 +107,21 @@ func (s *Server) noticeGatePausedForRetry(ctx context.Context, run *store.Run) {
 	}
 	if s.logger != nil {
 		s.logger.Info("forge gate: run %s parked on a provider quota — pause notice posted on %s (retry at %s)",
-			run.ID, target.prURL, run.RetryState.RetryAfter.Format(time.RFC3339))
+			run.ID, target.prURL, gatePauseResumeAt(run, time.Now().UTC()).Format(time.RFC3339))
 	}
+}
+
+// gatePauseResumeAt is the instant the notice promises: the armed retry, never
+// earlier than the instant every automatic re-launcher waits for
+// (retrypolicy.UsageWindowNotBefore) — the notice and the resumer read the
+// same window, so the pull request is never told a time the sweeper will not
+// keep, nor relaunched before the time it was told.
+func gatePauseResumeAt(run *store.Run, now time.Time) time.Time {
+	at := run.RetryState.RetryAfter.UTC()
+	if notBefore, waits := retrypolicy.UsageWindowNotBefore(run, now); waits && notBefore.After(at) {
+		at = notBefore
+	}
+	return at
 }
 
 // forgeIssueCommenter is the ONE method this notice needs. Narrow on
@@ -223,7 +237,7 @@ func pauseNoticeRoleFor(produces []bundle.ProducedArtifact, consumes []bundle.Co
 // pushes back), unknown says nothing about pushes (a bot that gates but
 // exposes no reviewer/fixer shape has no established etiquette to inherit).
 func gatePauseNoticeBody(run *store.Run, role pauseNoticeRole, now time.Time) string {
-	at := run.RetryState.RetryAfter.UTC()
+	at := gatePauseResumeAt(run, now)
 	var b strings.Builder
 	b.WriteString(gatePauseNoticeMarker)
 	switch role {

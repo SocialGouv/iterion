@@ -396,6 +396,36 @@ type RetryDueRef struct {
 	// re-resolves the same stored-bot tier the launch used.
 	BotSourceTenant string               `bson:"bot_source_tenant"`
 	RetryState      *store.RunRetryState `bson:"retry_state"`
+	// The run-record facts a usage park is read from
+	// (store.Run.UsageWindowPark), projected so a pass can tell a row its
+	// window still holds without a second read per row.
+	Status               store.RunStatus         `bson:"status"`
+	FailureCode          store.FailureCode       `bson:"failure_code"`
+	ContinuationState    store.ContinuationState `bson:"continuation_state"`
+	SkippedCredReopensAt *time.Time              `bson:"skipped_cred_reopens_at"`
+}
+
+// Record is the run record this row was projected from, carrying the fields
+// a usage park is read from — never more: a reader that needs the policy,
+// the inputs or the bot loads the run.
+func (r RetryDueRef) Record() *store.Run {
+	return &store.Run{
+		ID:                   r.ID,
+		TenantID:             r.TenantID,
+		Status:               r.Status,
+		FailureCode:          r.FailureCode,
+		ContinuationState:    r.ContinuationState,
+		SkippedCredReopensAt: r.SkippedCredReopensAt,
+		RetryState:           r.RetryState,
+	}
+}
+
+// retryDueProjection is what both scans read of a run: the identity the
+// resume needs, the retry state, and the record fields a usage park is read
+// from (RetryDueRef.Record).
+var retryDueProjection = bson.M{
+	"_id": 1, "tenant_id": 1, "owner_id": 1, "bot_id": 1, "bot_source_tenant": 1, "file_path": 1, retryStateField: 1,
+	"status": 1, "failure_code": 1, "continuation_state": 1, "skipped_cred_reopens_at": 1,
 }
 
 // RetryAfter returns the armed instant, or the zero time when absent.
@@ -420,7 +450,7 @@ func (s *Store) ListRunsDueForRetry(ctx context.Context, before time.Time, limit
 			retryPath("retry_after"): bson.M{"$lte": before.UTC()},
 		}),
 		options.Find().
-			SetProjection(bson.M{"_id": 1, "tenant_id": 1, "owner_id": 1, "bot_id": 1, "bot_source_tenant": 1, "file_path": 1, retryStateField: 1}).
+			SetProjection(retryDueProjection).
 			SetSort(bson.M{retryPath("retry_after"): 1}).
 			SetLimit(int64(limit)))
 	if err != nil {
@@ -483,7 +513,7 @@ func (s *Store) ListRunsForRetryProbe(ctx context.Context, now time.Time, floor 
 			},
 		}),
 		options.Find().
-			SetProjection(bson.M{"_id": 1, "tenant_id": 1, "owner_id": 1, "bot_id": 1, "bot_source_tenant": 1, "file_path": 1, retryStateField: 1}).
+			SetProjection(retryDueProjection).
 			SetSort(bson.M{retryPath("retry_after"): 1}).
 			SetLimit(int64(limit)))
 	if err != nil {

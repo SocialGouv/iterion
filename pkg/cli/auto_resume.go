@@ -264,7 +264,15 @@ func autoResumeLoop(
 			// Reset-aware wait: retrying inside the forfait window can
 			// never succeed, so the delay tracks the provider's reset
 			// hint instead of the exponential backoff.
-			delay = usageLimitDelay(err, cfg.Retry, time.Now())
+			now := time.Now()
+			delay = usageLimitDelay(err, cfg.Retry, now)
+			// Never before the window the run record names — the one
+			// instant every automatic re-launcher waits for (#3127).
+			if notBefore, waits := retrypolicy.UsageWindowNotBefore(r, now); waits {
+				if until := notBefore.Sub(now); until > delay {
+					delay = until
+				}
+			}
 			logger.Warn("auto-resume: provider usage window exhausted; waiting %s for the quota reset",
 				delay.Round(time.Minute))
 		}

@@ -225,6 +225,7 @@ func (w *probeSequenceWorld) snapshot() retryprobetest.Snapshot {
 		Row:          doc.RetryState,
 		Status:       doc.Status,
 		Continuation: doc.ContinuationState,
+		Record:       doc,
 		Metered:      meteredRetryRuns(w.t, w.counter),
 		Resumes:      len(w.resumer.calls),
 		Armings:      w.st.PaidArmings + w.st.FreeRearms,
@@ -350,13 +351,28 @@ func (w *probeSequenceWorld) apply(step retryprobetest.Step, now time.Time) bool
 		}
 	case retryprobetest.StepDue:
 		// The armed instant arrives, which is what the due pass needs to see
-		// a row a previous step armed for days out.
+		// a row a previous step armed for days out. Time passes by the
+		// distance to it, and the window instants the record names pass with
+		// it: an arming puts its instant at or past the window, so its arrival
+		// is the window's too, while a row pulled or re-armed early keeps its
+		// window ahead — the hold the due pass then makes (#3127).
 		row := w.st.Row()
 		if row == nil || row.RetryAfter == nil || !row.RetryAfter.After(now) {
 			return false
 		}
 		due := now.Truncate(time.Millisecond)
-		w.st.Mutate(func(r *store.Run) { r.RetryState.RetryAfter = &due })
+		passed := row.RetryAfter.Sub(due)
+		w.st.Mutate(func(r *store.Run) {
+			r.RetryState.RetryAfter = &due
+			if r.RetryState.Wall != nil {
+				wall := r.RetryState.Wall.Add(-passed)
+				r.RetryState.Wall = &wall
+			}
+			if r.SkippedCredReopensAt != nil {
+				skipped := r.SkippedCredReopensAt.Add(-passed)
+				r.SkippedCredReopensAt = &skipped
+			}
+		})
 	default:
 		w.t.Fatalf("server property: unsupported step %s", step.Kind)
 	}
@@ -478,6 +494,11 @@ func TestProbeGuarantee_TheSweepersPassesKeepItOverRandomSequences(t *testing.T)
 	// is how the probe budget the ledger asserts against is the one the scan
 	// applies.
 	t.Setenv(EnvRetryProbeBudget, strconv.Itoa(probeSequenceProbeBudget))
+	// The seeded wall is dated four days out, and by default the probe pass
+	// pulls no wait before the window its record names (#3127). The
+	// guarantees below are the ones an operator who opts into probing before
+	// the window relies on, so the sequences run under that opt-in.
+	t.Setenv(EnvRetryProbeBeforeWindow, "true")
 	notice, comments, noticed := newProbeNoticeServer(t)
 	kinds := sweeperProbeSteps()
 	seen := map[string]int{}

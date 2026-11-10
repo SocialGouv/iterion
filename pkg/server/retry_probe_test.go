@@ -97,8 +97,8 @@ func TestSweepRetryProbes_OperatorBoundsReachTheScan(t *testing.T) {
 	if len(lister.probeCalls) != 1 {
 		t.Fatalf("probe scans = %d, want 1", len(lister.probeCalls))
 	}
-	if got := lister.probeCalls[0]; got.floor != 15*time.Minute || got.budget != 3 || got.limit != retryProbeBatch {
-		t.Fatalf("scan bounds = %+v, want floor 15m, budget 3, limit %d", got, retryProbeBatch)
+	if got := lister.probeCalls[0]; got.floor != 15*time.Minute || got.budget != 3 || got.limit != retryProbeScan {
+		t.Fatalf("scan bounds = %+v, want floor 15m, budget 3, limit %d", got, retryProbeScan)
 	}
 
 	t.Setenv(EnvRetryProbeBudget, "0")
@@ -175,12 +175,11 @@ func TestSweepRetryProbes_TheProbeBatchLeavesTheDuePassRoom(t *testing.T) {
 	if len(lister.probeCalls) != 1 {
 		t.Fatalf("probe scans = %d, want 1", len(lister.probeCalls))
 	}
-	if got := lister.probeCalls[0].limit; got >= retrySweepBatch {
-		t.Fatalf("the probe pass asked for %d rows a pass while the due pass can only take %d: every slot a probe takes delays a retry the provider's own instant made due",
-			got, retrySweepBatch)
-	}
-	if len(st.pulls) >= retrySweepBatch {
-		t.Fatalf("pulls in one pass = %d, want fewer than the due pass's %d", len(st.pulls), retrySweepBatch)
+	// The pass READS past the batch (retryProbeScan: waits their window
+	// still holds are skipped, not counted) and PULLS at most the batch.
+	if len(st.pulls) >= retrySweepBatch || len(st.pulls) != retryProbeBatch {
+		t.Fatalf("pulls in one pass = %d, want the batch of %d — fewer than the due pass's %d: every slot a probe takes delays a retry the provider's own instant made due",
+			len(st.pulls), retryProbeBatch, retrySweepBatch)
 	}
 }
 

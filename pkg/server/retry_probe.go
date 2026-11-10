@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/cloud/metrics"
+	"github.com/SocialGouv/iterion/pkg/retrypolicy"
 	"github.com/SocialGouv/iterion/pkg/store"
 	mongostore "github.com/SocialGouv/iterion/pkg/store/mongo"
 )
@@ -44,6 +45,14 @@ const (
 	// `0` turns the pass off — the manual sweep (`iterion remote runs
 	// resume --usage-blocked`) remains the operator's own path.
 	EnvRetryProbeBudget = "ITERION_RETRY_PROBE_BUDGET"
+	// EnvRetryProbeBeforeWindow, set to a true value, lets the pass pull a
+	// wait forward BEFORE the usage window its record names
+	// (retrypolicy.UsageWindowNotBefore). Off by default: every probe is a
+	// pod and the run's own active minutes spent against a wall the
+	// provider dated (#3127). The operator who tops up a forfait by hand and
+	// wants it noticed within the hour turns it on; the manual sweep stays
+	// the one-shot path.
+	EnvRetryProbeBeforeWindow = "ITERION_RETRY_PROBE_BEFORE_WINDOW"
 
 	// defaultRetryProbeFloor matches usageWindowBlindWait: one speculative
 	// pod an hour is the cost this codebase has already accepted for a run
@@ -65,6 +74,12 @@ const (
 	// floor, and leaves the due pass three of its five slots — plus a
 	// pending gauge that still MEANS something when it sits at the cap.
 	retryProbeBatch = 2
+	// retryProbeScan bounds the rows one pass reads to find its batch. The
+	// window rule is read in Go, on the record (retrypolicy is the one
+	// reader), so the scan lists waits their window still holds; sorted
+	// ascending on retry_after they come first, and reading only the batch
+	// would let them starve the waits behind them for good.
+	retryProbeScan = 50
 )
 
 // retryProbeBounds is the probe's two knobs, resolved per pass so an
@@ -72,6 +87,9 @@ const (
 type retryProbeBounds struct {
 	floor  time.Duration
 	budget int
+	// beforeWindow is EnvRetryProbeBeforeWindow: probe a wait its window
+	// still holds.
+	beforeWindow bool
 }
 
 // retryProbeBoundsFromEnv reads the operator's overrides. An unparseable or
@@ -90,6 +108,11 @@ func retryProbeBoundsFromEnv() retryProbeBounds {
 			b.budget = n
 		}
 	}
+	if raw := strings.TrimSpace(envOperator(EnvRetryProbeBeforeWindow)); raw != "" {
+		if on, err := strconv.ParseBool(raw); err == nil {
+			b.beforeWindow = on
+		}
+	}
 	return b
 }
 
@@ -106,12 +129,26 @@ func (s *Server) sweepRetryProbes(ctx context.Context, lister retryDueLister, no
 	if bounds.budget <= 0 {
 		return
 	}
-	refs, err := lister.ListRunsForRetryProbe(store.WithoutTenantFilter(ctx), now, bounds.floor, bounds.budget, retryProbeBatch)
+	refs, err := lister.ListRunsForRetryProbe(store.WithoutTenantFilter(ctx), now, bounds.floor, bounds.budget, retryProbeScan)
 	if err != nil {
 		s.warnf("retry sweeper: probe scan: %v", err)
 		return
 	}
+	probed := 0
 	for _, ref := range refs {
+		if probed >= retryProbeBatch {
+			return
+		}
+		// A wait whose record names a window still ahead is not pulled: the
+		// resume it would buy relaunches into that wall (#3127). Read on the
+		// record, through the one function every re-launcher reads.
+		if !bounds.beforeWindow {
+			if notBefore, waits := retrypolicy.UsageWindowNotBefore(ref.Record(), now); waits {
+				s.debugf("retry sweeper: run %s not probed — its usage window holds it until %s", ref.ID, notBefore.Format(time.RFC3339))
+				continue
+			}
+		}
+		probed++
 		s.probeRetry(ctx, retryStore, ref, bounds, now)
 	}
 }

@@ -446,18 +446,7 @@ func runtimeCodeOf(err error) runtime.ErrorCode {
 // manifests or bindings exist. A run predating the snapshot (nil) gets the
 // package defaults plus the platform ceiling, which is also what a run
 // launched by a surface that does not resolve policies gets.
-func runRetryPolicy(r *store.Run) retrypolicy.Policy {
-	var pol retrypolicy.Policy
-	if r != nil && r.RetryPolicy != nil {
-		pol = retrypolicy.Policy{
-			UsageWindow: r.RetryPolicy.UsageWindow,
-			MaxAttempts: r.RetryPolicy.MaxAttempts,
-			MaxWait:     r.RetryPolicy.MaxWait,
-			Jitter:      r.RetryPolicy.Jitter,
-		}
-	}
-	return retrypolicy.Clamp(retrypolicy.Normalize(pol), retrypolicy.CeilingFromEnv(), nil)
-}
+func runRetryPolicy(r *store.Run) retrypolicy.Policy { return retrypolicy.ForRun(r) }
 
 // parkUsageLimitRetry arms a durable retry for a usage-window failure and
 // acks the delivery. Reports handled=false when this is not that case, or
