@@ -1638,6 +1638,109 @@ func TestBuildRequest_MirrorsMultipleSystemBlocksInOrder(t *testing.T) {
 	}
 }
 
+// TestBuildRequest_MarksTheLastServedSystemBlock reddens when the system
+// prefix stops being closed by a breakpoint: the prompt cache covers a prefix
+// up to and including a marked block, so the block a composer appends AFTER
+// the system prompt's own marker — the ambient-context corpus every claw node
+// receives under the default policy — is re-billed on every tool turn unless
+// the tail carries one. The blank trailing block is the second half of the
+// contract: a breakpoint (4 per request) is not spent on bytes no model reads.
+func TestBuildRequest_MarksTheLastServedSystemBlock(t *testing.T) {
+	opts := GenerationOptions{
+		Model: "claude-sonnet-4-6",
+		SystemBlocks: []api.ContentBlock{
+			{
+				Type:         "text",
+				Text:         "the operating posture and the node's task",
+				CacheControl: api.EphemeralCacheControl(),
+			},
+			// What clawAmbientSystemContext appends: no marker of its own.
+			{Type: "text", Text: "<project_instructions>AGENTS.md…</project_instructions>"},
+			{Type: "text", Text: "  "},
+		},
+	}
+
+	req, err := buildRequest(opts, []api.Message{{Role: "user"}}, nil, nil)
+	if err != nil {
+		t.Fatalf("buildRequest: %v", err)
+	}
+	if len(req.SystemBlocks) != 3 {
+		t.Fatalf("SystemBlocks len = %d, want 3", len(req.SystemBlocks))
+	}
+	if req.SystemBlocks[1].CacheControl == nil {
+		t.Error("the appended ambient block closes the system prefix: want an ephemeral marker, got none")
+	} else if req.SystemBlocks[1].CacheControl.Type != "ephemeral" {
+		t.Errorf("SystemBlocks[1].CacheControl.Type = %q, want ephemeral", req.SystemBlocks[1].CacheControl.Type)
+	}
+	if req.SystemBlocks[2].CacheControl != nil {
+		t.Error("a blank block serves no model: it must not spend a breakpoint")
+	}
+	// The caller's own marker is left where it put it, so a request that
+	// shares only the posture still hits on that shorter prefix.
+	if req.SystemBlocks[0].CacheControl == nil {
+		t.Error("the caller's marker on the first block must survive")
+	}
+	// Anthropic admits 4 breakpoints per request, and the tools array takes
+	// one of its own (marked below in buildRequest).
+	marks := 0
+	for _, b := range req.SystemBlocks {
+		if b.CacheControl != nil {
+			marks++
+		}
+	}
+	if marks > 3 {
+		t.Errorf("system breakpoints = %d, want at most 3 so the tools array keeps one", marks)
+	}
+}
+
+// TestBuildRequest_SingleSystemBlockKeepsOneMarker pins that the tail marking
+// does not double-spend a breakpoint on the one-block shape the claw backend
+// builds when a node's policy excludes the workspace (ambient_context: none).
+func TestBuildRequest_SingleSystemBlockKeepsOneMarker(t *testing.T) {
+	opts := GenerationOptions{
+		Model: "claude-sonnet-4-6",
+		SystemBlocks: []api.ContentBlock{{
+			Type:         "text",
+			Text:         "the operating posture and the node's task",
+			CacheControl: api.EphemeralCacheControl(),
+		}},
+	}
+	req, err := buildRequest(opts, []api.Message{{Role: "user"}}, nil, nil)
+	if err != nil {
+		t.Fatalf("buildRequest: %v", err)
+	}
+	if len(req.SystemBlocks) != 1 {
+		t.Fatalf("SystemBlocks len = %d, want 1", len(req.SystemBlocks))
+	}
+	if req.SystemBlocks[0].CacheControl == nil {
+		t.Error("the only system block must carry the marker")
+	}
+}
+
+// TestBuildRequest_UnservedSystemBlocksTakeNoMarker covers the all-blank
+// shape: nothing is served, so nothing is marked and the request still builds.
+func TestBuildRequest_UnservedSystemBlocksTakeNoMarker(t *testing.T) {
+	opts := GenerationOptions{
+		Model: "claude-sonnet-4-6",
+		SystemBlocks: []api.ContentBlock{
+			{Type: "text", Text: ""},
+			{Type: "text", Text: "\n\t "},
+		},
+	}
+	req, err := buildRequest(opts, []api.Message{{Role: "user"}}, nil, nil)
+	if err != nil {
+		t.Fatalf("buildRequest: %v", err)
+	}
+	for i, b := range req.SystemBlocks {
+		if b.CacheControl != nil {
+			t.Errorf("SystemBlocks[%d] is unserved and must take no marker", i)
+		}
+	}
+	if req.System != "" {
+		t.Errorf("System = %q, want empty", req.System)
+	}
+}
+
 func TestBuildRequest_FallsBackToSystemString(t *testing.T) {
 	opts := GenerationOptions{
 		Model:  "claude-sonnet-4-6",

@@ -172,11 +172,30 @@ func buildRequest(opts GenerationOptions, messages []api.Message, extraTools []a
 		blocks := make([]api.ContentBlock, len(opts.SystemBlocks))
 		copy(blocks, opts.SystemBlocks)
 		systemTexts := make([]string, 0, len(blocks))
+		lastServed := -1
 		for i := range blocks {
 			blocks[i].Text = screen(blocks[i].Text)
 			if blocks[i].Type == "text" && strings.TrimSpace(blocks[i].Text) != "" {
 				systemTexts = append(systemTexts, blocks[i].Text)
+				lastServed = i
 			}
+		}
+		// The system prefix ends on a cache breakpoint, like the tools array
+		// below. The prompt cache covers a prefix up to and INCLUDING a
+		// marked block, so a block sitting after the last marker is re-billed
+		// at full input price on every tool turn: the ambient-context block
+		// (clawAmbientSystemContext, appended after the system prompt's own
+		// marker) is that block on every claw node whose policy includes the
+		// workspace — the default — and it carries the repository's whole
+		// instruction corpus, bounded at clawAmbientMaxBytes. Marking the
+		// tail HERE is the one point every composer crosses, so a caller that
+		// appends a block owes no re-mark of its own (the memory blocks carry
+		// one, memory_tools.go, which this makes redundant rather than
+		// wrong). An unserved block — empty, or emptied by the model
+		// boundary's screen — never takes the marker: it would spend a
+		// breakpoint (4 per request) on bytes no model reads.
+		if lastServed >= 0 {
+			blocks[lastServed].CacheControl = api.EphemeralCacheControl()
 		}
 		req.SystemBlocks = blocks
 		req.System = strings.Join(systemTexts, "\n\n")
