@@ -411,7 +411,13 @@ func (s *Server) handleUpdateSchedule(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, "%s", poolErr.Error())
 		return
 	}
-	if !s.schedulePoolBindingAdmitted(w, r, id, teamID, patchPool) {
+	// The gate judges a CHANGE: an edit dialog sends the whole record back,
+	// and echoing the stored block unchanged binds nothing new.
+	gatePool := patchPool
+	if patchPool.Equal(cur.Pool) {
+		gatePool = nil
+	}
+	if !s.schedulePoolBindingAdmitted(w, r, id, teamID, gatePool) {
 		return
 	}
 	clearPool := patchPool == nil && poolSpoke
