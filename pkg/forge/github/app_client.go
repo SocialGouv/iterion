@@ -110,6 +110,29 @@ func SecurityReadInstallationPermissions() map[string]string {
 	}
 }
 
+// PermissionActions is the repository permission GitHub gates a workflow
+// dispatch on ("Actions" in the App's settings).
+const PermissionActions = "actions"
+
+// WorkflowDispatchInstallationPermissions is the grant set minted for ONE
+// workflow dispatch: actions write — what POST
+// /repos/{owner}/{repo}/actions/workflows/{file}/dispatches is gated on —
+// plus the metadata baseline, which also serves the default-branch read the
+// dispatch is aimed with.
+//
+// It is a separate opt-in profile and NEVER part of the runtime or management
+// sets: a token holding actions:write can re-run any existing workflow on any
+// branch the token can reach, so it is minted server-side, per call, for the
+// one repository a bot's publish grant names — and only for a bot whose
+// manifest declares the actions scope. The run's own forge token never
+// carries it.
+func WorkflowDispatchInstallationPermissions() map[string]string {
+	return map[string]string{
+		PermissionActions: "write",
+		"metadata":        "read",
+	}
+}
+
 // ProjectsInstallationPermissions is the grant set minted ONLY for project-board
 // calls (GitHub Projects v2, ADR-097): the ORGANIZATION-level projects
 // permission plus the mandatory metadata baseline.

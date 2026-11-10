@@ -192,6 +192,14 @@ var forgeSentinelFamilies = map[string]forgeSentinelFamily{
 		err: forge.ErrNotMergeable, wantStatus: 0,
 		why: "the merge request cannot take a merge/arming right now — the caller reports it, the forge stays authoritative",
 	},
+
+	// The workflow dispatch. A marker riding BESIDE the forge's own answer
+	// (a typed 404, a 422, a permission error), never a class: it says
+	// "nothing was queued", which the dispatch endpoint reports itself.
+	"forge.ErrWorkflowNotDispatched": {
+		err: forge.ErrWorkflowNotDispatched, wantStatus: 0,
+		why: "the forge answered a dispatch with a refusal (or a read it depends on was refused) — the dispatch endpoint answers 422 workflow_dispatch_refused_by_forge itself",
+	},
 }
 
 // forgeSentinelRoot is the tree the sweep walks. Everything under it, provider
