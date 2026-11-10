@@ -13,6 +13,28 @@
 {{- if not $gw.existingSecret }}
 {{- fail (printf "runnerPools[]: pool %s needs gateway.existingSecret (a manual k8s Secret carrying the gateway API key)" $pool.name) }}
 {{- end }}
+{{- /* The pool's sandbox (ADR-162 Q3): runnerPools[].sandbox.enabled, runner.sandbox.enabled when the pool does not spell it. Where it differs from the release-wide flag the pool renders its own literals over the shared ConfigMap's (literal env beats envFrom), so a pool can resolve the kubernetes sandbox for every run without moving every trusted `sandbox:` bot of the release into sibling pods, and a pool can opt out of a release-wide sandbox. */ -}}
+{{- $sandbox := include "iterion.poolSandbox" (dict "root" $ "pool" $pool) }}
+{{- $releaseSandbox := "" }}
+{{- if $.Values.runner.sandbox.enabled }}{{- $releaseSandbox = "true" }}{{- end }}
+{{- $ownSandbox := ne $sandbox $releaseSandbox }}
+{{- $poolEnv := $pool.env | default dict }}
+{{- if $ownSandbox }}
+{{- range $key := list "ITERION_SANDBOX_OVERRIDE" "ITERION_SANDBOX_HOST_STATE" }}
+{{- if hasKey $poolEnv $key }}
+{{- fail (printf "runnerPools[%s].env.%s conflicts with runnerPools[%s].sandbox.enabled, which decides it on this pool — drop the env entry" $pool.name $key $pool.name) }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- if and $sandbox (not $.Values.runner.sandbox.enabled) }}
+{{- /* Fail closed until ADR-154's pool shape (#2965) renders what a sandboxed pool needs beside the flag: its own ServiceAccount and Role, the pool label on its siblings, and its standing NetworkPolicy. */ -}}
+{{- if $.Values.serviceAccount.create }}
+{{- fail (printf "runnerPools[%s].sandbox.enabled: the pool would resolve the kubernetes sandbox where the release does not provision it, and the chart renders the sandbox Role only under runner.sandbox.enabled (runner-rbac.yaml) — the pool runs under the shared ServiceAccount %q, which then holds no grant, so every sandboxed run would fail at its first kubectl apply. The pool's own ServiceAccount and Role are ADR-154 decision 2 (#2965), not rendered yet: bring the ServiceAccount and bind the sandbox driver's grants to it yourself (serviceAccount.create=false, docs/cloud-deployment.md § Sovereign runner pools), or leave the pool's sandbox off" $pool.name (include "iterion.serviceAccountName" $)) }}
+{{- end }}
+{{- if $.Values.networkPolicy.enabled }}
+{{- fail (printf "runnerPools[%s].sandbox.enabled with networkPolicy.enabled: the release-wide NetworkPolicy selects this pool's runner pods and admits only the server and metrics ports, so a sandbox sibling cannot reach its runner's per-run egress proxy and every sandboxed run times out. The pool's standing policy that admits its own siblings is ADR-154 decision 3 (#2965), not rendered yet: set networkPolicy.enabled=false and bring the pool's policy yourself (docs/cloud-deployment.md § NetworkPolicy egress), or leave the pool's sandbox off" $pool.name) }}
+{{- end }}
+{{- end }}
 ---
 # One runner Deployment PER sovereign pool (plan v2 D10'): the pod is
 # pinned to the pool three ways — ITERION_RUNNER_POOL (the admission
@@ -97,7 +119,7 @@ spec:
               value: {{ printf "ITERION_RUNS_POOL_%s" $pool.name | quote }}
             - name: ITERION_NATS_DLQ_STREAM
               value: {{ printf "ITERION_RUNS_POOL_%s_DLQ" $pool.name | quote }}
-            {{- if $.Values.runner.sandbox.enabled }}
+            {{- if $sandbox }}
             - name: ITERION_POD_IP
               valueFrom:
                 fieldRef:
@@ -140,6 +162,25 @@ spec:
               value: {{ .podReadyTimeout | quote }}
             {{- end }}
             {{- end }}
+            {{- if $ownSandbox }}
+            # runnerPools[].sandbox.enabled (ADR-162 Q3): this pool resolves
+            # the kubernetes sandbox where the release does not. Literal env
+            # beats the shared ConfigMap's envFrom: the empty override lifts
+            # the release's ITERION_SANDBOX_OVERRIDE=none on this pool alone,
+            # and host_state is pinned to none as runner.sandbox.enabled pins
+            # it release-wide (the driver has no host filesystem to bind).
+            - name: ITERION_SANDBOX_OVERRIDE
+              value: ""
+            - name: ITERION_SANDBOX_HOST_STATE
+              value: "none"
+            {{- end }}
+            {{- else if $ownSandbox }}
+            # runnerPools[].sandbox.enabled=false: this pool opts out of the
+            # release's sandbox. The CLI-strength override neutralizes every
+            # bot-declared `sandbox:` block on this pool, as the ConfigMap
+            # does release-wide when runner.sandbox.enabled is off.
+            - name: ITERION_SANDBOX_OVERRIDE
+              value: "none"
             {{- end }}
             # The pool's gateway credential (P3's openai_compatible
             # escape hatch): the base URL is configuration, the API key

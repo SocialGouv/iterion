@@ -132,6 +132,28 @@ reference otherwise; under the digest guard either way. Takes a dict:
 {{- end -}}
 
 {{/*
+Whether a pool resolves the kubernetes sandbox (ADR-162 Q3): the pool's own
+`sandbox.enabled` when it spells the key (hasKey, not sprig default: default
+reads false as absent, and a pool could never opt out of a release-wide
+true), runner.sandbox.enabled otherwise. Renders "true" or nothing, so a
+caller reads it with `if`. A value that is not a boolean is refused: the
+string "false" is truthy to the templates. Takes a dict: `root` (the top
+context) and `pool` (the runnerPools[] entry).
+*/}}
+{{- define "iterion.poolSandbox" -}}
+{{- $own := .pool.sandbox | default dict -}}
+{{- if not (kindIs "map" $own) -}}
+{{- fail (printf "runnerPools[%s].sandbox must be a map (sandbox.enabled: true|false), got %v" .pool.name $own) -}}
+{{- end -}}
+{{- if hasKey $own "enabled" -}}
+{{- if not (kindIs "bool" $own.enabled) -}}
+{{- fail (printf "runnerPools[%s].sandbox.enabled must be a boolean, got %v (%s) — the string \"false\" is truthy to the templates" .pool.name $own.enabled (kindOf $own.enabled)) -}}
+{{- end -}}
+{{- if $own.enabled -}}true{{- end -}}
+{{- else if .root.Values.runner.sandbox.enabled -}}true{{- end -}}
+{{- end -}}
+
+{{/*
 ServiceAccount name. Use the override when set, otherwise derive
 from the release.
 */}}
