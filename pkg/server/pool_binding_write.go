@@ -142,7 +142,14 @@ func poolLayersOf(cfg *webhooks.Config) []credpool.BindingLayer {
 // the card to another bot while the id stays. The integration's block
 // speaks only for the bots it runs and only while it is enabled — for any
 // other bot the card's run folds the stored scopes like any team run.
+//
+// An OPT-OUT block always speaks: it grants nothing, and dropping it would
+// let a carded run of this repo draw the team's pool while the same
+// integration's routing and var layers still apply.
 func cardPoolLayers(cfg *webhooks.Config, botID string) []credpool.BindingLayer {
+	if cfg != nil && cfg.Pool != nil && !cfg.Pool.Enabled {
+		return poolLayersOf(cfg)
+	}
 	if cfg == nil || !cfg.Enabled || !cfg.AllowsBot(botID) {
 		return nil
 	}

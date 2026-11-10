@@ -170,7 +170,21 @@ func (s *Server) handleEnableForgeRepoBots(w http.ResponseWriter, r *http.Reques
 	// forge-side until approved. Validated exactly like the direct path
 	// above, so what the admin approves is what would have run. A store
 	// error here FAILS the request (503): the gate never fails open.
-	orgID, gerr := s.provisionOrgRequiringApproval(r.Context(), id, teamID, pool != nil && pool.Enabled)
+	// drawsShared reads the block the repo's runs will fold AFTER this
+	// request: the spoken one, or — when the request says nothing (an
+	// add-bots enable) — the one the existing integration already carries.
+	// An unreadable integration counts as drawing (the gate fails closed).
+	drawsShared := pool != nil && pool.Enabled
+	if !poolSpoke && s.forgeIntegrations != nil {
+		existing, xerr := s.forgeIntegrations.GetByConnRepo(store.WithTenant(r.Context(), teamID), teamID, req.ConnectionID, strings.TrimSpace(req.Repo))
+		switch {
+		case xerr == nil:
+			drawsShared = existing.Pool != nil && existing.Pool.Enabled
+		case !errors.Is(xerr, forge.ErrIntegrationNotFound):
+			drawsShared = true
+		}
+	}
+	orgID, gerr := s.provisionOrgRequiringApproval(r.Context(), id, teamID, drawsShared)
 	if gerr != nil {
 		httpError(w, http.StatusServiceUnavailable, "provision-approval gate unavailable: %v", gerr)
 		return
@@ -327,7 +341,13 @@ func (s *Server) handleUpdateForgeRepoBots(w http.ResponseWriter, r *http.Reques
 	// surface needs the org's approval — removals and tightenings go
 	// through directly (see expandsProvisionSurface). A store error FAILS
 	// the request (503): the gate never fails open.
-	uOrgID, ugerr := s.provisionOrgRequiringApproval(r.Context(), id, teamID, pool != nil && pool.Enabled)
+	// The block the repo's runs fold after this PATCH: the spoken one, or
+	// the integration's stored one when the request says nothing about it.
+	effective := ri.Pool
+	if poolSpoke {
+		effective = pool
+	}
+	uOrgID, ugerr := s.provisionOrgRequiringApproval(r.Context(), id, teamID, effective != nil && effective.Enabled)
 	if ugerr != nil {
 		httpError(w, http.StatusServiceUnavailable, "provision-approval gate unavailable: %v", ugerr)
 		return
