@@ -276,8 +276,12 @@ Single URL, two event kinds dispatched on `X-Gitlab-Event`
   (`source_project_id`/`target_project_id` and the source project's own
   path under `object_attributes.source`), so a proven fork is filtered
   with a reason naming the fork (`gitlab.Parsed.IsFork`) — the same
-  posture as the GitHub/Forgejo lanes; a payload naming neither project
-  stays on its way, and the API-side lanes fail closed on it.
+  posture as the GitHub/Forgejo lanes. The project ids decide before the
+  paths: two different ids are a fork whatever the paths say, so a source
+  path that merely compares equal to the base's never proves a same-repo
+  head (`gitlab.Parsed.SameRepoAsBase`). A payload naming neither project
+  is filtered too (`head project unproven`): same-repo is never assumed,
+  only proven.
 - **`Note Hook`** — the generic slash-command and conversation surface.
   A note's first non-whitespace token is the command; quoting "please run
   /revi" mid-text never triggers (anti-oscillation guard —
@@ -413,8 +417,8 @@ failures; [pkg/server/webhooks_github.go](../pkg/server/webhooks_github.go)):
   under iterion's own identity. Serving forks needs a lane of its own
   (read-only, no publish grant, no fixer launch, no repo secrets, project
   settings not honoured), not a switch on the existing ones — see
-  [the fork review lane](#fork-review-lane) for the half of that lane that
-  ships today.
+  [the fork review lane](#fork-review-lane) and
+  [the fork review gesture](#fork-review-gesture) that opts one commit in.
 - **`issue_comment`** → the universal `/command` slash path (e.g.
   `/featurly <prompt>`, `/billy`), routed through the command registry —
   including the `/revi <question>` ⇄ bare `/revi` split, resolved by the
@@ -489,12 +493,13 @@ no-fork guarantees hold regardless.
 ### <a name="fork-review-lane"></a>The fork review lane — what ships today
 
 A fork pull request is still refused on every ordinary lane, unconditionally,
-and no setting lifts that. What exists now is the **enforcement half** of the
-separate lane [#874](https://github.com/SocialGouv/iterion/issues/874)
-specifies: the controls that make serving a fork survivable. The **admission**
-half — the maintainer gesture that opts one pull request in, and the
-per-contributor budget — is a follow-up, so today **nothing produces a fork
-launch** and the lane admits nothing.
+and no setting lifts that. The lane [#874](https://github.com/SocialGouv/iterion/issues/874)
+specifies has LANDED (ADR-162): the enforcement half — the controls that make
+serving a fork survivable — plus the **admission half**: a maintainer's
+`/command` gesture on the fork pull request opts one commit of one PUBLIC
+base in, on a config the operator created for it, bounded per contributor.
+The gesture and its delivery rows are the next section
+([The fork review gesture](#fork-review-gesture)).
 
 **A run says who wrote its code.** `store.RunTrust` rides the run document,
 not the launching surface, because the decisions it governs are taken again
@@ -515,20 +520,13 @@ capabilities rather than inheriting them.
 | Executing a tree nobody approved | the runner compares the fetched commit against the one the admission pinned (`RepoSHAExpected`), after the fetch and before the checkout | the run is refused, naming both commits |
 | The pull request's hand-offs, both ways: an untrusted run is seeded with no earlier run's `review` or `review_ledger`, and its own artifacts seed no later consumer — the fixer reads a `review` as `prior_review` and pushes commits (#1639) | `stampHandoffs` takes the launched run's trust and seeds an untrusted target with nothing; `realWebhookHandoff` skips a producing run that is not trusted | none: a hand-off miss is silent by design, and the consumer starts from its default |
 
-**And what it does NOT withdraw yet.** That table is not #874's five
-constraints. Two are **unenforced**, and belong to the admission half:
+**And what the admission half adds.** That table is the enforcement floor;
+#874's remaining two constraints landed with the gesture (ADR-162 U6):
 
-| #874 constraint | State | Why |
+| #874 constraint | State | Where |
 |---|---|---|
-| **4b** — fork code must not execute the TARGET repo's toolchain/config (`repo_devbox: off`, sandbox `network: allowlist`) | **deferred to PR2** | `store.RunTrust` *does* reach `pkg/runtime` and `pkg/runner` — it rides the queue message, refuses a pinless untrusted workspace, and is stamped onto a sub-bot's document. What no path routes it into is the **toolchain and network policy**: `resolveRepoDevbox(override, workflow)` takes no trust argument, and the sandbox network policy has none either |
-| **5 beyond the gate context** — the base repo's project settings not honoured (launch vars, hold labels), plus the per-contributor bound | **deferred to PR2** | among those surfaces only the gate-context write is trust-gated; `applyWebhookVarLayers` layers `cfg.LaunchVars`/`OperatorLaunchVars` whatever the trust, the hold-label veto is trust-blind, and `orgusage.ForkAuthorSubject` has no production caller |
-
-Deferred rather than done here because nothing sets `RunTrustFork`: this half's
-safety is **safety-by-refusal**, so the marker's READERS must be right before
-anything can carry it. 4b and 5 are admission-time controls — they shape how a
-fork run is *built*, which is the half that does not exist yet, and a guard
-whose condition can never be true reads as working while proving nothing. Both
-are on #874's remainder.
+| **4b** — fork code must not execute the TARGET repo's toolchain/config (`repo_devbox: off`, sandbox `network: allowlist`) | **floored (U5)** | `resolveRepoDevbox(override, workflow, trust)` answers false for every untrusted workspace, the repo's devcontainer is not read, and the sandbox network policy floors to the credential's own host |
+| **5 beyond the gate context** — the base repo's project settings not honoured (launch vars, hold labels), plus the per-contributor bound | **floored (U6)** | `applyWebhookVarLayers` layers NEITHER `cfg.LaunchVars` NOR `cfg.OperatorLaunchVars` onto an untrusted target (and no routing gate is narrowed through the repo's vars — `trustedVarNames` stays empty); the hold label BLOCKS the gesture (Q2); and the per-contributor bound is metered by the launch gate on `orgusage.ForkAuthorSubject`, runs and dollars, beside the org's own quota (decision 5) |
 
 **Lane kinds are disjoint.** `webhooks.Config.ForkLane` makes a config a lane
 KIND, not a permission. The check sits at the launch tail
@@ -540,16 +538,24 @@ directions are refused: a fork target on an ordinary subscription (the
 dangerous one — that config carries the repo's grant and secret pins), and a
 same-repo target on the fork lane. A board-mode route is refused separately
 inside `dispatchInvocation`: it returns before the tail, and a board card has
-no seat for provenance.
+no seat for provenance. **Gate relaunch and gate auto-fix stay refused on a
+fork-lane config** by the same disjointness gate — the targets they rebuild
+are trusted zero-provenance ones, and the fork lane refuses exactly that
+pairing.
 
-`ForkLane` is **not settable through the API yet**, deliberately — no
-create/PATCH request struct carries it — so every config decodes `false`. When
-the admission half makes it settable, the PATCH route must refuse changing it
-on an existing config, because the per-contributor budget will be keyed on it.
+`ForkLane` is **settable at creation only** (ADR-162 decision 1): `POST
+/api/teams/{id}/webhooks` accepts `fork_lane`, **github-only** — creation
+refuses it typed on every other provider, naming the witness that provider
+lacks (GitLab's MR head ref is unwired; Forgejo's head-repository proof,
+author id and ref have no witness; generic has no pull request). The PATCH
+route refuses a CHANGE of it on an existing config (a restatement of the
+stored value is a no-op): flipping the kind under a config would re-read its
+parked debounce targets as the other kind and re-interpret the per-author
+budget's rows.
 
-**An opt-in is a GESTURE, not a record.** The admission half will be a
-maintainer `/command` on the pull request, authorised by the collaborator-
-permission gate the `/command` lanes already apply, resolving the head through
+**An opt-in is a GESTURE, not a record.** The admission is a
+maintainer `/command` on the pull request, authorised by the commenter's live
+collaborator permission on the base repository, resolving the head through
 the forge API at that moment and pinning THAT commit onto the launch. Iterion
 stores no "this PR is opted in" row, deliberately — and this is the design's
 invariant, not an implementation detail:
@@ -568,14 +574,16 @@ invariant, not an implementation detail:
 
 The cost is honest and small: re-reviewing a new head is a new gesture.
 
-**GitLab: the seam is named, and nothing refuses it yet.** The lane's launch
+**GitLab: the seam is named, and the lane is refused.** The lane's launch
 pair needs the base project's own merge-request head ref —
 `refs/merge-requests/<iid>/head`, GitLab's twin of `refs/pull/<n>/head` — and
 that is the seam a GitLab fork lane would be built on. It is named here rather
-than wired. Nothing refuses a GitLab fork-lane config today for the simple
-reason that nothing can set `ForkLane` at all; the admission half must add
-that provider refusal in the same change that makes the field settable, or
-GitLab gets a half-built path instead of an honest "no".
+than wired, and a `fork_lane` config is refused at creation on GitLab (typed,
+naming the unwired ref) so the provider gets an honest "no" instead of a
+half-built path. The ordinary GitLab MR lane, for its part, **fails closed on
+a head neither project names** (ADR-162 decision 1): a payload that proves
+neither a fork nor a same-repo head is filtered — same-repo is never assumed,
+only proven — instead of being stamped "trusted" on the forge's silence.
 
 **Why a fork lane can name one repository at all.** The launch pair that made
 the original refusal unconditional was `<base>.CloneURL` + a head branch
@@ -584,6 +592,106 @@ repo's own pull-request head ref (`refs/pull/<n>/head` on GitHub and Forgejo),
 which names ONE repository — the base — and resolves to the fork's commit. The
 base stays the clone's only remote, so `base_ref` and `origin/<base>` remain
 the base's, not a tree the contributor controls.
+
+### <a name="fork-review-gesture"></a>The fork review gesture — admission
+
+The gesture is the lane's whole comment lane
+([pkg/server/webhooks_fork_gesture.go](../pkg/server/webhooks_fork_gesture.go)):
+a `/revi` (or a command the config's own table names) on a fork pull request,
+delivered to a fork-lane config. One gesture admits one commit of one
+public-base fork:
+
+- **Who may gesture** (decision 2): the commenter's LIVE collaborator
+  permission on the base repository, at or above `developer` (GitHub's
+  `write`) — whatever the route or webhook configured lower, the floor holds.
+  The `AuthorizedRepliers` login short-circuit the ordinary `/command` lanes
+  consult is deliberately NOT consulted here: a login is renameable — free,
+  instant and unlimited on GitHub — so a login-keyed authorization resets
+  itself on demand. The self-comment loop guard stays (the note below would
+  otherwise re-trigger itself).
+- **What it admits** (decision 3): the pull request as the forge API answers
+  it at the moment of the gesture — OPEN, head repository NAMED and not the
+  base (a proven fork), base visibility PUBLIC, the author's NUMERIC forge
+  id present. An optional SHA argument narrows the gesture to that commit;
+  a head that moved needs a new gesture. The launch runs on the base's
+  clone URL and `refs/pull/<n>/head` with `RepoSHAExpected` pinned, so the
+  runner refuses a push that landed between the gesture and the fetch.
+- **What the maintainer sees** (Q1): a note on the fork pull request naming
+  the run link and the pinned commit, and NOTHING the run wrote — the run
+  holds no publish grant at all, so its findings live on the run the note
+  links. Posted by the server, from the same forge identity that read the
+  pull request, once the gesture's own launch returns a run. A launch that
+  first failed and is relaunched from the delivery's durable retry row (the
+  retry sweeper, the super-admin manual retry) posts NO note: the row does
+  not carry the note's inputs, so the run is found from the delivery row
+  and the studio — a known gap.
+- **What the base's configuration may do** (decision 4 + Q2): stop the
+  gesture — a configured hold label blocks it — and nothing else. Neither
+  `LaunchVars` nor `OperatorLaunchVars` is layered onto the launch, no
+  routing gate is narrowed through the repo's vars, and model routing
+  resolves from the database cascade, because it spends the tenant's money,
+  not the repository's.
+- **What it costs** (decision 5 + Q4): the launch gate meters the org's
+  budget as it does every launch, AND the pull request author's own
+  per-contributor bound — runs and dollars per month on
+  `orgusage.ForkAuthorSubject` (the author's numeric forge id), defaulting
+  to 20 runs / $20 with an explicit `unbounded` escape hatch, held on the
+  org beside its quota (see
+  [quotas-and-limits.md](quotas-and-limits.md)). The runner charges the
+  author's dollars beside the org's, and every resume or retry re-enters
+  the same subject — an untrusted launch the gate cannot meter is REFUSED,
+  never admitted unmetered (the amendment to ADR-033). A resume that
+  crosses no gate (`/answer-human`, an async answer's auto-resume, an
+  assistant mission) is refused on a fork run (`resume_not_admitted`), and
+  a run document the gate cannot read is an unknown trust, refused as
+  transient (`resume_run_unreadable`). A launch that names a fork run as
+  its `parent_run_id` or delegation `source_run_id` is judged as the fork
+  run — the same author's spend, on every arm — and the run service
+  publishes no untrusted launch its gate did not judge on that trust
+  (`launch_not_admitted`).
+
+**The delivery-row reasons.** Every refusal is a typed, stable reason on the
+delivery row (200/filtered — a 4xx would teach the forge to disable the
+hook). Each row has a witness in
+[pkg/server/webhooks_fork_gesture_test.go](../pkg/server/webhooks_fork_gesture_test.go)
+that replays a real GitHub delivery through the handler on a fake forge:
+
+| Row | Reason (stable shape) | Refused because |
+|---|---|---|
+| No route | `fork gesture: no route — …` | the lane routes its own table; the command is on none of it |
+| Board-mode route | `fork gesture: a board-mode route cannot carry a fork launch …` | a card holds only bot args — no seat for the launch's provenance |
+| Wrong surface | `fork gesture: the command is not enabled on issue comments …` | the gesture reviews a fork pull request, not an issue |
+| Bot out of scope | `fork gesture: bot "…" is not permitted by this webhook` | the webhook's bot scope |
+| Hold label | `fork gesture: hold label "…" …` | the base's configuration can stop a fork run, never steer it (Q2) |
+| Non-writer | `fork gesture: … holds no write-level permission on …` | live permission only, floored at developer; the replier allowlist is never consulted (a login is renameable) |
+| Closed pull request | `fork gesture: the pull request is closed/merged …` | one gesture reviews one commit of an OPEN pull request |
+| Loop guard: identity unreadable | `loop guard unevaluable: the bot's own identity is unreadable: …` | the lane cannot tell its own note from a maintainer's gesture, so it does not guess (the forge's error is quoted) |
+| Loop guard: no login | `loop guard unevaluable: … the forge named no login` | same — an identity with no login matches nobody, so nothing can be excluded |
+| Loop guard: own comment | `self comment (loop-guard)` | the comment was written by the identity the lane speaks as — its own note echoing back |
+| Same-repo | `fork gesture: same-repo pull request …` | the lane admits a PROVEN fork; the repo's own PRs belong to its ordinary webhook |
+| Head withheld | `fork gesture: head repo withheld …` | the forge declared a head repository and did not name it (a deleted or blocked fork has exactly this shape) |
+| Head not named | `fork gesture: head repo not named …` | a fork is never assumed, only proven |
+| Private base | `fork gesture: the base repository is not PROVEN public …` | an untrusted clone holds no forge token, and one handed to it would persist in the fork's workspace — refused BEFORE the per-author bound is metered |
+| No author id | `fork gesture: the pull request names no numeric author id …` | the per-contributor bound is keyed on it; unkeyed means unbounded (an answer whose user carries no id, or is null, stays id-less — never user `0`) |
+| No head commit | `fork gesture: the pull request names no head commit …` | the gesture pins the commit it admits; a pin against nothing disables the runner's comparison |
+| Stale SHA | `fork gesture: the gesture pinned … but the pull request's head is …` | a new head needs a new gesture |
+| Bad args | `fork gesture: /revi takes an optional commit SHA to pin, nothing else …` | prose is not a pin |
+
+A fork-lane config serves the gesture and nothing else: every OTHER entry it
+has — an issue label, a zero-touch open — composes a trusted target, and
+every launch from a config crosses one provenance precondition
+(`webhookProvenanceRefusal`: the launch tail, the durable retry, and the
+board branch of a board-mode route before it writes any card — a Ready card
+the dispatcher would launch never reaches the tail), so each is filtered
+with `fork-lane mismatch — this subscription is the opt-in fork review lane
+…` before anything is carded or metered.
+
+The bound's own refusals (denial tokens `fork_author_run_quota_exceeded`,
+`fork_author_cost_cap_exceeded`, and the fail-closed arms
+`fork_team_unreadable` / `fork_org_unreadable` / `fork_metering_unavailable`
+/ `fork_metering_error`) arrive through the launch gate's standard denial
+envelope — see [quotas-and-limits.md](quotas-and-limits.md) — whichever
+surface entered (delivery, debounce flush, retry sweeper).
 
 ### PR auto-lane: review, not mutate (Revi vs Billy)
 

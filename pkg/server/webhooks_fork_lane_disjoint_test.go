@@ -74,10 +74,13 @@ func TestLaunchWebhookTarget_RefusesALaneKindMismatch(t *testing.T) {
 				Vars:    map[string]string{"pr_url": "https://github.com/o/r/pull/7", "base_ref": "main"},
 				Trust:   c.trust,
 			}
-			// An untrusted target must carry the commit its admission proved;
-			// the tail refuses one that does not.
+			// An untrusted target must carry the commit its admission proved
+			// and the author its bound meters; the tail refuses one that
+			// does not (the pin check) and the gate refuses one that cannot
+			// be metered (decision 5).
 			if !c.trust.Trusted() {
 				target.ExpectedSHA = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+				target.ForkAuthor = &webhooks.ForkAuthorRef{Provider: "github", AuthorID: "4242"}
 			}
 
 			res := s.launchWebhookTarget(ctx, nil, cfg, meta, target, "hash", "1.2.3.4")
@@ -177,6 +180,7 @@ func TestLaunchWebhookTarget_TrustPredicateAndPinCoupling(t *testing.T) {
 		target := forgeLaunchTarget{
 			IdemKey: "idem-ok", BotID: "review-pr", Vars: vars(),
 			Trust: store.RunTrustFork, ExpectedSHA: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+			ForkAuthor: &webhooks.ForkAuthorRef{Provider: "github", AuthorID: "4242"},
 		}
 		res := s.launchWebhookTarget(ctx, nil, cfg, meta, target, "hash", "1.2.3.4")
 		if res.Status != webhooks.StatusLaunched || *launched != 1 {

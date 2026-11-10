@@ -139,11 +139,13 @@ func (s *Server) resumeDueRetry(ctx context.Context, retryStore store.RunRetrySt
 	// sharing the reconciler's gate context. Disarm it and say so. The
 	// park's own outcome event already reached every consumer, so this
 	// path must NOT replay it (the DLQ notice has no dedup of its own).
-	// The read is a guard, not a gate: a store that cannot answer leaves
-	// the retry row as the authority, loudly.
+	// The same read names the admission subject below, and a store that
+	// cannot answer it leaves the run's trust unknown: the gate refuses an
+	// unknown trust as transient, so the retry re-arms instead of resuming
+	// on the retry row alone.
 	run, lerr := s.cfg.Store.LoadRun(runCtx, ref.ID)
 	if lerr != nil {
-		s.warnf("retry sweeper: run %s: cannot read the run doc before resuming its retry (%v) — proceeding on the retry row alone: a DLQ-parked run whose stale retry survived would be resumed on top of the gate reconciler's repair", ref.ID, lerr)
+		s.warnf("retry sweeper: run %s: cannot read the run doc before resuming its retry (%v) — its trust is unknown, so admission defers it to a later pass", ref.ID, lerr)
 	} else if run != nil && run.FailureCode == store.FailureDLQParked {
 		s.disarmRetry(runCtx, retryStore, ref,
 			"auto-retry abandoned: the run is parked on the DLQ (DLQ_PARKED) — its armed retry was stale; only an operator's resume (iterion remote runs resume) wakes it")
@@ -167,13 +169,17 @@ func (s *Server) resumeDueRetry(ctx context.Context, retryStore store.RunRetrySt
 	// The run doc read above already carries what the gate needs to know
 	// about this launch, so pass it: a retry judged as ordinary work would
 	// face the ceiling its OWN reservation lowered, and the reservation would
-	// refuse the run it exists to protect. Nil (the store could not answer)
-	// loses the budget subject, but the durable retry row still proves this
-	// is an existing run: maintenance must not abandon its continuation.
-	subj := launchSubject{ExistingRun: true}
-	if run != nil {
-		subj = launchSubject{ExistingRun: true, BotID: run.BotID, Repo: run.ProjectPath}
-	}
+	// refuse the run it exists to protect.
+	// The run's TRUST and — on a fork run — the author subject the launch
+	// metered ride the same document (ADR-162 decision 5), carried by the
+	// resumeLaunchSubject seam every resume surface shares: an untrusted
+	// resume is metered on both counters again, and every arm of the gate
+	// that would admit it unmetered (an unreadable team among them) refuses
+	// instead, which this sweeper re-arms rather than abandons — a store
+	// blip is not the end of a paid run's retry. Nil (the store could not
+	// answer) is an unknown trust, refused as transient the same way: the
+	// run behind the retry row may be a fork run.
+	subj := resumeLaunchSubject(run)
 	adm, deny := s.gateLaunch(retryLaunchCtx(runCtx, ref), subj)
 	if deny != nil {
 		if retryDenialIsTransient(deny.reason) {
@@ -234,6 +240,9 @@ func (s *Server) resumeDueRetry(ctx context.Context, retryStore store.RunRetrySt
 		// flip cancelled → queued (clearing run.Error) and the runner would
 		// receive a message with no PR-closed marker left on the doc.
 		Automatic: true,
+		// What the gate above judged and metered: the run service refuses
+		// the resume when the document it re-enters names another trust.
+		Admitted: gateAdmitted(subj, adm),
 	}
 	if lb != nil {
 		lb.stampResumeBundle(&retrySpec)
@@ -395,6 +404,17 @@ func retryDenialIsTransient(reason string) bool {
 	// the 1st like they do, so abandoning the run on it would throw work
 	// away for a condition that resolves itself on a calendar.
 	case denyMonthlyRunQuota, denyMonthlyCostCap, denyConcurrencyCap, denyLaunchRateLimited, denyRepoQuota:
+		return true
+	// The fork lane's fail-closed arms (ADR-162 decision 5) are all 503
+	// conditions — an unreadable team or org, a counter that cannot be
+	// reached — and its ceilings refill monthly like the org's. None of
+	// them is the end of a paid run's retry; re-arming costs an attempt
+	// and the blip resolves.
+	case denyForkTeamUnreadable, denyForkOrgUnreadable, denyForkMeteringUnavailable, denyForkMeteringError, denyForkAuthorRuns, denyForkAuthorCost:
+		return true
+	// A run document the sweeper could not read is a store blip too: the
+	// next pass reads it again and judges the trust it names.
+	case denyResumeRunUnreadable:
 		return true
 	default:
 		return false

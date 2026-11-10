@@ -86,8 +86,8 @@ func TestCredentialPreviewWebhookMatchesActualLaunchSourceAndIdentity(t *testing
 		t.Fatal("stored bundle did not reach preview compilation")
 	}
 	ctx := store.WithIdentity(auth.WithIdentity(t.Context(), auth.Identity{UserID: "webhook:hook", TeamID: "t1", Kind: auth.KindWebhook}), "t1", "webhook:hook")
-	vars := applyWebhookVarLayers(map[string]string{}, cfg)
-	if _, err := s.launchWebhookBot(ctx, webhookLaunch(nil, ""), cfg, "probe", vars, "", "", "", cfg.KeyOverrides, nil, store.RunTrustDefault, "", ""); err != nil {
+	vars := applyWebhookVarLayers(map[string]string{}, cfg, store.RunTrustDefault)
+	if _, err := s.launchWebhookBot(ctx, webhookLaunch(nil, ""), cfg, "probe", vars, "", "", "", cfg.KeyOverrides, nil, store.RunTrustDefault, "", "", ""); err != nil {
 		t.Fatal(err)
 	}
 	if pub.preview.OwnerID != pub.launchedOwner || pub.preview.OwnerID != "webhook:hook" {

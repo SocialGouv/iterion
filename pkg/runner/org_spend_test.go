@@ -392,3 +392,41 @@ func TestMarkCredFingerprintsUsed_SkipsOAuthSlots(t *testing.T) {
 		t.Fatalf("store asked for %v, want exactly the one API-key fingerprint", spy.asked)
 	}
 }
+
+// TestRecordOrgSpend_ChargesTheForkAuthorBesideTheOrg: the fork review
+// lane's SECOND charge (ADR-162 decision 5) — a message carrying the
+// author's metering subject charges the same spend on it beside the org's,
+// and a message without one (every trusted run's, and every run that
+// predates the fork lane) charges the org alone.
+func TestRecordOrgSpend_ChargesTheForkAuthorBesideTheOrg(t *testing.T) {
+	counter := orgusage.NewMemoryCounter()
+	r := &Runner{cfg: Config{OrgUsage: counter, Logger: iterlog.New(iterlog.LevelError, nil)}}
+	usage := newMetricsEmitter(nil, nil, nil, nil)
+	usage.mu.Lock()
+	usage.runCostUSD = 1.5
+	usage.runInputTokens = 100
+	usage.runOutputTokens = 50
+	usage.mu.Unlock()
+
+	author := orgusage.ForkAuthorSubject("org-1", "github", "4242")
+	r.recordOrgSpend(context.Background(), &queue.RunMessage{
+		RunID: "run-1", TenantID: "team-a", OrgID: "org-1",
+		ForkAuthorSubject: string(author),
+	}, usage)
+
+	now := time.Now().UTC()
+	orgU, err := counter.Usage(context.Background(), orgusage.OrgSubject("org-1"), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if orgU.CostUSD != 1.5 || orgU.InputTokens != 100 || orgU.OutputTokens != 50 {
+		t.Fatalf("org usage = %+v, want the same charge the org always took", orgU)
+	}
+	authorU, err := counter.Usage(context.Background(), author, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if authorU.CostUSD != 1.5 || authorU.InputTokens != 100 || authorU.OutputTokens != 50 {
+		t.Fatalf("fork-author usage = %+v, want the SAME figures the org was charged — the bound's ceiling reads what the run actually spent", authorU)
+	}
+}

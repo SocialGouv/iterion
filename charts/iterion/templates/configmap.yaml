@@ -183,6 +183,16 @@ data:
   {{- if .launchRatePerMin }}
   ITERION_ORG_DEFAULT_LAUNCH_RATE_PER_MIN: {{ .launchRatePerMin | quote }}
   {{- end }}
+  {{- /* The fork review lane's per-contributor bound (ADR-162 Q4) inverts the
+  "0 = unlimited" convention above: unset ships the server's 20 runs / $20,
+  so the key is rendered whenever the operator WROTE one — 0 included, which
+  the server refuses at boot rather than read as a second "unbounded". */}}
+  {{- if not (kindIs "invalid" .forkAuthorRunQuota) }}
+  ITERION_ORG_DEFAULT_FORK_AUTHOR_RUN_QUOTA: {{ .forkAuthorRunQuota | quote }}
+  {{- end }}
+  {{- if not (kindIs "invalid" .forkAuthorCostCapUsd) }}
+  ITERION_ORG_DEFAULT_FORK_AUTHOR_COST_CAP_USD: {{ .forkAuthorCostCapUsd | quote }}
+  {{- end }}
   {{- end }}
   {{- if .Values.secrets.auth.oidc.google.enabled }}
   ITERION_OIDC_GOOGLE_ENABLED: "true"

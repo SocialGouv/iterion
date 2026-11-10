@@ -62,8 +62,17 @@ type Parsed struct {
 
 // SameRepoAsBase reports whether the head branch is PROVEN to live in the
 // event's own project — the contract of forge.PullRef.SameRepoAs: an empty
-// head is never proven.
-func (p Parsed) SameRepoAsBase() bool { return forge.SameRepo(p.HeadRepoFullName, p.ProjectPath) }
+// head is never proven. The project ids decide BEFORE the paths, as IsFork's
+// do: two different ids are a fork whatever the paths say (a path is a
+// case-insensitive name, an id is the project), so the path comparison only
+// ever confirms what the ids did not refute, and the two predicates can
+// never both hold.
+func (p Parsed) SameRepoAsBase() bool {
+	if p.SourceProjectID > 0 && p.TargetProjectID > 0 && p.SourceProjectID != p.TargetProjectID {
+		return false
+	}
+	return forge.SameRepo(p.HeadRepoFullName, p.ProjectPath)
+}
 
 // IsFork reports a PROVEN fork: the payload names two different projects
 // for the head and the base (by id, else by path). A payload naming neither

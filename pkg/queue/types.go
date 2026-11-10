@@ -187,11 +187,35 @@ import (
 // runner consuming a v27 message re-reads the tier from the document (the
 // floor's second carrier) instead of dropping the decision — the one
 // direction in which ignoring the field cannot fail open.
-const SchemaVersion = 28
+// v=29 (2026-11-09): ForkAuthorSubject (ADR-162 U6, decision 5) — the fork
+// review lane's per-contributor metering subject, so the runner's
+// recordOrgSpend charges the author's dollars beside the org's. Breaking by
+// the additive-field rule: a stale runner dropping it would leave the
+// per-contributor DOLLAR bound unenforced for the run's lifetime — a
+// perimeter failing open, in silence, on the pod. Server-first rollout;
+// MinSchemaVersion stays 27, because a v27 or v28 message can only carry a
+// fork run's trust in one case, and that case parks: no v28 server LAUNCHES
+// untrusted work, but a v28 replica still serving mid-rollout can REPUBLISH
+// a fork run a v29 replica created (its resume, a launch naming it as a
+// parent), replaying the trust with no subject. Validate parks any untrusted
+// message older than ForkAuthorSubjectSchemaVersion as a version mismatch,
+// so an upgraded runner never runs it unmetered; a v28 runner, which knows
+// neither the field nor the rule, still would — so the fork lane is enabled
+// only once every server and runner replica runs v29
+// (docs/cloud-queue-schema-rollout.md). A v29 message on a stale runner is
+// rejected at the schema check and parks replayably.
+const SchemaVersion = 29
+
+// ForkAuthorSubjectSchemaVersion is the first wire version that carries
+// RunMessage.ForkAuthorSubject: an untrusted message older than it cannot
+// name the author whose bound it spends, and Validate parks it.
+const ForkAuthorSubjectSchemaVersion = 29
 
 // MinSchemaVersion is the oldest wire version a consumer still accepts.
 // Pre-v27 messages cannot prove an absolute donor ceiling. Resume republishes
 // them with a fresh grant and its explicit amount; replaying old bytes cannot.
+// v27 and v28 stay acceptable beside v29 (see the v28 and v29 notes above
+// SchemaVersion).
 const MinSchemaVersion = 27
 
 // RunMessage is the JSON envelope published on
@@ -226,6 +250,14 @@ type RunMessage struct {
 	// runner can withhold workspace-level capabilities without a document
 	// read. Empty is the trusted default.
 	Trust store.RunTrust `json:"trust,omitempty"`
+	// ForkAuthorSubject is the fork review lane's per-contributor metering
+	// subject (orgusage.ForkAuthorSubject's exact spelling, composed on the
+	// metering id the org budget used), mirrored from the run document so
+	// the runner's recordOrgSpend charges the author's dollars beside the
+	// org's — where spend is measured, not from a document a failed run may
+	// never have loaded. Empty on every trusted run (and every run that
+	// predates the fork lane).
+	ForkAuthorSubject string `json:"fork_author_subject,omitempty"`
 	// BotID is the stable bundle/bot identifier for this run. It qualifies
 	// structured visibility=bot memory and is preserved on resume.
 	BotID string `json:"bot_id,omitempty"`
@@ -665,6 +697,15 @@ func (m *RunMessage) Validate() error {
 	}
 	if m.RunID == "" {
 		return fmt.Errorf("queue: RunID required")
+	}
+	// A message older than the fork author subject cannot carry it, so an
+	// UNTRUSTED one would run with the author's per-contributor dollar bound
+	// unenforced: a server replica still on v28 mid-rollout republishing the
+	// resume of a fork run an upgraded replica created. Parked as a version
+	// mismatch — transient, never Termed — so a resume from an upgraded
+	// server, whose gate meters the author, recovers it.
+	if m.V < ForkAuthorSubjectSchemaVersion && !m.Trust.Trusted() {
+		return fmt.Errorf("%w: a v%d message carries trust %q but predates the fork author subject (v%d) — parked for a resume from an upgraded server rather than run with the author's bound unenforced", ErrSchemaVersion, m.V, string(m.Trust), ForkAuthorSubjectSchemaVersion)
 	}
 	// The pool name is grammar-checked, not tenant-checked, and only when
 	// set: an empty pool is the shared default (pre-v22 messages included),

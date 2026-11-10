@@ -87,6 +87,29 @@ type webhookConfigReq struct {
 	// set, the inbound handler is the connector lane (#2761). An explicit
 	// empty string clears the binding.
 	ConnectorConnectionID *string `json:"connector_connection_id,omitempty"`
+	// ForkLane opts the config into the fork review lane at CREATION
+	// (ADR-162 decision 1). Github-only, checked at creation with a typed
+	// refusal per other provider; IMMUTABLE afterwards — the PATCH arm
+	// below refuses any change, so a value present on the request is
+	// honoured only when it restates the stored one.
+	ForkLane *bool `json:"fork_lane,omitempty"`
+}
+
+// forkLaneProviderRefusal is the typed creation refusal for a fork-lane
+// config on a provider whose lane does not exist, one arm per provider
+// because each names the witness it lacks — the row an operator can act
+// on rather than a generic "not supported".
+func forkLaneProviderRefusal(provider webhooks.Provider) error {
+	switch provider {
+	case webhooks.ProviderGitLab:
+		return errors.New("fork_lane is github-only: GitLab's merge-request head ref (refs/merge-requests/<iid>/head) is unwired — the seam is named in docs/webhooks.md, nothing launches on it")
+	case webhooks.ProviderForgejo:
+		return errors.New("fork_lane is github-only: Forgejo's head-repository proof, author id and pull-request ref have no witness — the admission would take the payload's word for all three")
+	case webhooks.ProviderGeneric:
+		return errors.New("fork_lane is github-only: the generic webhook has no pull request to admit")
+	default:
+		return fmt.Errorf("fork_lane is github-only (provider %q)", provider)
+	}
 }
 
 // overlapOrEmpty resolves an optional overlap policy. Empty is meaningful
@@ -276,6 +299,16 @@ func (s *Server) handleCreateWebhook(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, "%s", err.Error())
 		return
 	}
+	// The fork review lane is github-only (ADR-162 decision 1), checked
+	// HERE at creation rather than at delivery: a config that could be
+	// created on another provider would sit enabled with no lane behind
+	// it, silently swallowing deliveries. Typed per provider — the refusal
+	// names the witness the provider lacks, which is the fact an operator
+	// needs before asking for that lane.
+	if req.ForkLane != nil && *req.ForkLane && provider != webhooks.ProviderGitHub {
+		httpError(w, http.StatusBadRequest, "%s", forkLaneProviderRefusal(provider).Error())
+		return
+	}
 	wildcard := req.WildcardBots != nil && *req.WildcardBots
 	botIDs, wildcard, err := normalizeBotScope(req.BotIDs, wildcard)
 	if err != nil {
@@ -351,6 +384,9 @@ func (s *Server) handleCreateWebhook(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		cfg.ConnectorConnectionID = *req.ConnectorConnectionID
+	}
+	if req.ForkLane != nil {
+		cfg.ForkLane = *req.ForkLane
 	}
 	// HMAC-mode webhooks need the minted plaintext sealed at rest so a
 	// later request can recompute HMAC(body) — the operator pastes the
@@ -549,6 +585,18 @@ func (s *Server) handleUpdateWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 	var req webhookConfigReq
 	if !decodeJSON(w, r, &req) {
+		return
+	}
+	// The lane KIND is immutable on an existing config (ADR-162 decision
+	// 1). A flip would re-read every parked debounce target of the other
+	// kind through the disjointness gate — silently terminally, since the
+	// stored provenance cannot change with the config — and the
+	// per-author budget's rows were written under the kind the config
+	// carried. A restatement of the stored value is a no-op, so the field
+	// stays round-trippable for a client that echoes the row back.
+	if req.ForkLane != nil && *req.ForkLane != cfg.ForkLane {
+		httpError(w, http.StatusConflict,
+			"fork_lane is immutable on an existing webhook: flipping the lane kind would re-read its parked debounce targets as the other kind and re-interpret the per-author budget's rows — delete and recreate the webhook instead")
 		return
 	}
 	// An explicit overlap clear IS a deliberate gesture, and it must be a

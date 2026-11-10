@@ -77,6 +77,20 @@ func (r *Runner) recordOrgSpend(ctx context.Context, msg *queue.RunMessage, usag
 			r.cfg.Logger.Warn("runner: org spend record for %s (run %s): %v", key, msg.RunID, err)
 		}
 		cancel()
+		// The fork review lane's SECOND charge (ADR-162 decision 5): the
+		// same spend on the pull request author's own subject, beside the
+		// org's — the dollars are charged where spend is measured, so the
+		// per-contributor bound's ceiling reads what the run actually
+		// spent, not a server-side guess. The subject rides the message
+		// exactly as the gate composed it (never re-derived here), and a
+		// message without one is a trusted run's — nothing to charge.
+		if msg.ForkAuthorSubject != "" {
+			bg, cancel := context.WithTimeout(context.Background(), spendWriteTimeout)
+			if err := r.cfg.OrgUsage.AddSpend(bg, orgusage.Subject(msg.ForkAuthorSubject), now, costUSD, in, out, aggregate); err != nil {
+				r.cfg.Logger.Warn("runner: fork-author spend record for %s (run %s): %v", msg.ForkAuthorSubject, msg.RunID, err)
+			}
+			cancel()
+		}
 	}
 }
 

@@ -407,6 +407,17 @@ type Org struct {
 	// launches are denied once crossed).
 	MonthlyCostCapUSD float64 `bson:"monthly_cost_cap_usd,omitempty" json:"monthly_cost_cap_usd,omitempty"`
 
+	// ForkAuthorRunQuota / ForkAuthorCostCapUSD are the fork review lane's
+	// PER-CONTRIBUTOR bound (ADR-162 decision 5, Q4): the runs and dollars
+	// one outside pull-request author may spend per month reviewing their
+	// forks, metered on orgusage.ForkAuthorSubject beside the org's own
+	// quota. Ladder: a NEGATIVE value is the explicit `unbounded` escape
+	// hatch; 0 inherits the platform default (20 runs / $20 unless the
+	// operator set otherwise); positive is the cap. Super-admin managed,
+	// like the org's own budget.
+	ForkAuthorRunQuota   int     `bson:"fork_author_run_quota,omitempty" json:"fork_author_run_quota,omitempty"`
+	ForkAuthorCostCapUSD float64 `bson:"fork_author_cost_cap_usd,omitempty" json:"fork_author_cost_cap_usd,omitempty"`
+
 	// RequireProvisionApproval (org-admin managed) parks any repo-bot
 	// provisioning requested by a TEAM admin as a pending approval an ORG
 	// admin must approve before anything is created forge-side. Org

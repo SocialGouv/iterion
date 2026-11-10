@@ -922,6 +922,7 @@ func testRunTrustRoundTrip(t *testing.T, s store.RunStore) {
 	}
 	r.Trust = store.RunTrustFork
 	r.RepoSHAExpected = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+	r.ForkAuthorSubject = conformanceForkAuthor
 	if err := s.SaveRun(ctx, r); err != nil {
 		t.Fatalf("SaveRun: %v", err)
 	}
@@ -938,7 +939,14 @@ func testRunTrustRoundTrip(t *testing.T, s store.RunStore) {
 	if got.RepoSHAExpected != "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef" {
 		t.Errorf("persisted RepoSHAExpected = %q; want the pinned commit", got.RepoSHAExpected)
 	}
+	if got.ForkAuthorSubject != conformanceForkAuthor {
+		t.Errorf("persisted ForkAuthorSubject = %q; want %q — a backend that drops it un-meters the fork author on every resume and on the runner's second charge", got.ForkAuthorSubject, conformanceForkAuthor)
+	}
 }
+
+// conformanceForkAuthor is a fork author metering subject in
+// orgusage.ForkAuthorSubject's spelling (storetest imports no orgusage).
+const conformanceForkAuthor = "forkauthor|org-1|github|4242"
 
 // testRunTrustImmutable pins the marker as WRITE-ONCE in both stores. A run's
 // answer to "who wrote this code" never legitimately changes, and every
@@ -974,6 +982,7 @@ func testRunTrustImmutable(t *testing.T, s store.RunStore) {
 	}
 	marking.Trust = store.RunTrustFork
 	marking.RepoSHAExpected = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+	marking.ForkAuthorSubject = conformanceForkAuthor
 	if err := s.SaveRun(ctx, marking); err != nil {
 		t.Fatalf("SaveRun (marking): %v", err)
 	}
@@ -989,6 +998,7 @@ func testRunTrustImmutable(t *testing.T, s store.RunStore) {
 	}
 	stale.Trust = ""
 	stale.RepoSHAExpected = ""
+	stale.ForkAuthorSubject = ""
 	if err := s.SaveRun(ctx, stale); err != nil {
 		t.Fatalf("SaveRun (stale): %v", err)
 	}
@@ -1002,6 +1012,12 @@ func testRunTrustImmutable(t *testing.T, s store.RunStore) {
 	if got.RepoSHAExpected == "" {
 		t.Errorf("RepoSHAExpected was cleared by a stale save; want the pinned commit to survive")
 	}
+	// The fork lane's metering subject rides the same write-once contract:
+	// cleared, every later gated resume is refused for want of an author to
+	// meter, and every ungated re-entry skips the runner's second charge.
+	if got.ForkAuthorSubject != conformanceForkAuthor {
+		t.Errorf("ForkAuthorSubject = %q after a save that carried the zero value; want %q to survive", got.ForkAuthorSubject, conformanceForkAuthor)
+	}
 	// And a saver carrying a DIFFERENT non-empty value must not overwrite it
 	// either: write-once means the first answer stands, whatever a later
 	// writer believes. The two store twins disagreed here — one kept the
@@ -1013,6 +1029,7 @@ func testRunTrustImmutable(t *testing.T, s store.RunStore) {
 	}
 	rival.Trust = store.RunTrustDefault + "some-other-class"
 	rival.RepoSHAExpected = "1111111111111111111111111111111111111111"
+	rival.ForkAuthorSubject = "forkauthor|org-1|github|1"
 	if err := s.SaveRun(ctx, rival); err != nil {
 		t.Fatalf("SaveRun (rival): %v", err)
 	}
@@ -1025,6 +1042,9 @@ func testRunTrustImmutable(t *testing.T, s store.RunStore) {
 	}
 	if after.RepoSHAExpected != "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef" {
 		t.Errorf("RepoSHAExpected = %q after a rival save; want the original pin", after.RepoSHAExpected)
+	}
+	if after.ForkAuthorSubject != conformanceForkAuthor {
+		t.Errorf("ForkAuthorSubject = %q after a rival save; want the original subject — re-pointing it moves the run's spend onto another author's bound", after.ForkAuthorSubject)
 	}
 }
 
@@ -1149,7 +1169,8 @@ func SeedParentRun(t *testing.T, s store.RunStore, parentRunID string) *store.Ru
 
 // testChildRunInheritsTrust pins the child stamp: a child run executes in its
 // parent's workspace, so CreateChildRun gives it the parent's provenance —
-// Trust and the pinned commit — in the create write itself. The readback is
+// Trust, the pinned commit and the fork author's metering subject — in the
+// create write itself. The readback is
 // the assertion that matters: the child ENGINE adopts the document, and a
 // backend that dropped the field on insert would hand it the trusted zero
 // value.
@@ -1173,6 +1194,7 @@ func testChildRunInheritsTrust(t *testing.T, s store.RunStore) {
 		r.Trust = trust
 		if !trust.Trusted() {
 			r.RepoSHAExpected = pin
+			r.ForkAuthorSubject = conformanceForkAuthor
 		}
 		if err := s.SaveRun(ctx, r); err != nil {
 			t.Fatalf("SaveRun(%s): %v", id, err)
@@ -1189,8 +1211,8 @@ func testChildRunInheritsTrust(t *testing.T, s store.RunStore) {
 	if err != nil {
 		t.Fatalf("LoadRun(child_trust_ok): %v", err)
 	}
-	if !ok.Trust.Trusted() || ok.RepoSHAExpected != "" {
-		t.Fatalf("a child of a trusted parent persisted Trust=%q RepoSHAExpected=%q; want the trusted zero value and no pin", ok.Trust, ok.RepoSHAExpected)
+	if !ok.Trust.Trusted() || ok.RepoSHAExpected != "" || ok.ForkAuthorSubject != "" {
+		t.Fatalf("a child of a trusted parent persisted Trust=%q RepoSHAExpected=%q ForkAuthorSubject=%q; want the trusted zero value, no pin and no author", ok.Trust, ok.RepoSHAExpected, ok.ForkAuthorSubject)
 	}
 
 	seed("child_trust_parent_fork", store.RunTrustFork)
@@ -1206,6 +1228,9 @@ func testChildRunInheritsTrust(t *testing.T, s store.RunStore) {
 	}
 	if fork.RepoSHAExpected != pin {
 		t.Errorf("persisted child RepoSHAExpected = %q, want %q — the admitted commit still names what may run", fork.RepoSHAExpected, pin)
+	}
+	if fork.ForkAuthorSubject != conformanceForkAuthor {
+		t.Errorf("persisted child ForkAuthorSubject = %q, want %q — a sub-bot of a fork run is its author's spend, and a child with no subject is refused on every gated resume", fork.ForkAuthorSubject, conformanceForkAuthor)
 	}
 }
 

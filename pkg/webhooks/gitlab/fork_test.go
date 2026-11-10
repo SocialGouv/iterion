@@ -61,3 +61,31 @@ func TestParseMergeRequest_ForkSourceProject(t *testing.T) {
 		t.Fatalf("a payload without source/target must stay unproven: %+v", legacy)
 	}
 }
+
+// TestParseMergeRequest_TheIdsRefuteAnEqualPath: the project ids decide before
+// the path. A payload naming two different projects by id is a fork even when
+// the source's path compares equal to the base's (a case-insensitive name,
+// where the id is the project): SameRepoAsBase must not prove a same-repo head
+// the ids already refuted, or a lane that asks it first admits the fork as
+// trusted.
+//
+// Mutation: drop the id refutation from SameRepoAsBase → both predicates hold
+// at once (red on its own assertion).
+func TestParseMergeRequest_TheIdsRefuteAnEqualPath(t *testing.T) {
+	body := strings.Replace(mrForkPayload,
+		`"source": {"id": 9, "path_with_namespace": "mallory/widgets", "git_http_url": "https://gitlab.com/mallory/widgets.git"}`,
+		`"source": {"id": 9, "path_with_namespace": "Acme/Widgets", "git_http_url": "https://gitlab.com/Acme/Widgets.git"}`, 1)
+	p, err := ParseMergeRequest([]byte(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.SourceProjectID != 9 || p.TargetProjectID != 42 || p.HeadRepoFullName != "Acme/Widgets" {
+		t.Fatalf("payload shape = ids %d/%d head %q — this row proves nothing", p.SourceProjectID, p.TargetProjectID, p.HeadRepoFullName)
+	}
+	if p.SameRepoAsBase() {
+		t.Fatal("SameRepoAsBase = true on two different project ids — a path equal by name does not make a fork the base project")
+	}
+	if !p.IsFork() {
+		t.Fatal("IsFork = false on two different project ids")
+	}
+}

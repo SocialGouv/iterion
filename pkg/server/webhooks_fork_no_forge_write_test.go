@@ -2,9 +2,12 @@ package server
 
 import (
 	"context"
+	"encoding/base64"
 	"testing"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
+	"github.com/SocialGouv/iterion/pkg/identity"
 	"github.com/SocialGouv/iterion/pkg/orgusage"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
@@ -29,16 +32,38 @@ func TestLaunchWebhookTarget_AnUntrustedLaunchMakesNoForgeWrite(t *testing.T) {
 		s.orgUsage = orgusage.NewMemoryCounter()
 		s.webhookConfigs = webhooks.NewMemoryConfigStore()
 		s.webhookDeliveries = webhooks.NewMemoryDeliveryStore()
+		// An identity store holding the fixture's team: the fork target is
+		// metered by the launch gate now (decision 5), and a server with no
+		// identity store is local mode — which refuses an untrusted launch
+		// outright rather than admitting it unmetered.
+		idst := identity.NewMemoryStore()
+		if _, err := idst.CreateTeam(context.Background(), identity.Team{ID: "team1", Name: "team1", Slug: "forkwrite-team1", CreatedAt: time.Now()}); err != nil {
+			t.Fatal(err)
+		}
+		signer, err := auth.NewJWTSigner(base64.RawStdEncoding.EncodeToString(make([]byte, 32)), time.Minute)
+		if err != nil {
+			t.Fatal(err)
+		}
+		svc, err := auth.NewService(auth.Config{Store: idst, Sessions: auth.NewMemorySessionStore(), Signer: signer, SignupMode: auth.SignupOpen, RefreshTTL: time.Hour})
+		if err != nil {
+			t.Fatal(err)
+		}
+		s.authSvc = svc
 		s.webhookLaunchBot = func(context.Context, string, map[string]string, string, string, string, map[string]string, map[string]string) (string, error) {
 			return "run-" + idem, nil
 		}
-		ctx := auth.WithIdentity(context.Background(), auth.Identity{UserID: "u", TeamID: "team1", IsSuperAdmin: true})
+		// A webhook member, not a super-admin: the fork lane's bound is the
+		// perimeter against an outside party, and the gate's super-admin
+		// bypass is one of the arms decision 5 closes for an untrusted
+		// subject — a super-admin fork launch is refused, not excused.
+		ctx := auth.WithIdentity(context.Background(), auth.Identity{UserID: "u", TeamID: "team1", Role: identity.RoleMember, Kind: auth.KindWebhook})
 		meta := webhookEventMeta{ProjectPath: "o/r", SubjectID: "pr:42", Kind: "pull_request"}
 		target := forgeLaunchTarget{
 			IdemKey: idem, BotID: "review-pr", Vars: inFlightVars(), Trust: trust,
 		}
 		if !trust.Trusted() {
 			target.ExpectedSHA = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+			target.ForkAuthor = &webhooks.ForkAuthorRef{Provider: "github", AuthorID: "4242"}
 		}
 		res := s.launchWebhookTarget(ctx, nil, cfg, meta, target, "hash", "1.2.3.4")
 		if res.Status != webhooks.StatusLaunched {

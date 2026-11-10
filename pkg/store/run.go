@@ -282,8 +282,29 @@ func ChildTrustFromParent(child, parent *Run) {
 	if child == nil || parent == nil {
 		return
 	}
-	child.Trust = parent.Trust
+	InheritTrustAndAuthor(child, parent)
 	child.RepoSHAExpected = parent.RepoSHAExpected
+}
+
+// InheritTrustAndAuthor gives a run built from another the two facts it
+// inherits whatever workspace it lands in: who wrote the code it executes
+// (Trust) and whose per-contributor bound pays for it (ForkAuthorSubject,
+// ADR-162 decision 5). It is the ONE carrier of both, so neither travels
+// without the other: a child reading untrusted with no subject is refused on
+// every gated resume (no author to meter) and skips the runner's second
+// charge on every ungated one. Every constructor of a run from a parent run
+// calls it — CreateChildRun through ChildTrustFromParent, and runview's Fork,
+// which places the commit pin itself (only the arm that re-clones has a fetch
+// for the pin to certify).
+func InheritTrustAndAuthor(child, parent *Run) {
+	if child == nil || parent == nil {
+		return
+	}
+	child.Trust = parent.Trust
+	// The child's spend is its author's spend: a sub-bot or a fork of a fork
+	// run charges the SAME per-contributor bound (decision 5's subject rides
+	// the document), not a fresh one the child would meter on nothing.
+	child.ForkAuthorSubject = parent.ForkAuthorSubject
 }
 
 // IsFork names the one untrusted class this binary knows, for the sites that
@@ -1605,6 +1626,15 @@ type Run struct {
 	// this one. Empty disables the comparison — every lane whose ref no
 	// untrusted party can move.
 	RepoSHAExpected string `json:"repo_sha_expected,omitempty" bson:"repo_sha_expected,omitempty"`
+	// ForkAuthorSubject is the per-contributor metering subject the fork
+	// review lane's launch composed and metered (ADR-162 decision 5):
+	// orgusage.ForkAuthorSubject's exact spelling, built on the same id the
+	// org budget metered on. Empty on every trusted run and every run that
+	// predates the fork lane. Read by the resume/retry surfaces — which
+	// re-meter the bound on the SAME subject rather than re-deriving it —
+	// and mirrored onto the queue message so the runner's recordOrgSpend
+	// charges the author's dollars beside the org's.
+	ForkAuthorSubject string `json:"fork_author_subject,omitempty" bson:"fork_author_subject,omitempty"`
 	// ProjectPath is the stable forge slug ("group/project" on GitLab,
 	// "owner/repo" on GitHub/Forgejo) the run targets. Distinct from the
 	// raw RepoURL clone URL: it is the normalized, human-meaningful

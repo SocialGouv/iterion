@@ -881,13 +881,27 @@ func (c *runConn) handleAnswer(env runWSEnvelope) {
 	// the direction nobody expects — judged as ordinary work, a RESERVED bot
 	// faces the ceiling its OWN reservation lowered, so answering a paused
 	// review-pr could be refused on the band held for it, and where the
-	// reserves take a whole cap no question could be answered at all. A run
-	// the store cannot answer for falls back to the ordinary subject; the
-	// paths below report that failure.
-	var subj launchSubject
+	// reserves take a whole cap no question could be answered at all.
+	// resumeLaunchSubject is the seam the HTTP resume and the retry sweeper
+	// cross too: the run's TRUST and, on a fork run, the author subject the
+	// launch metered ride it, so an untrusted answer re-enters the same bound
+	// the launch entered.
+	//
+	// ONE read serves the gate's subject and the resume below, as in
+	// handleResumeRun: a run the store cannot answer for is gated on the
+	// ordinary subject and its failure answered before anything resumes —
+	// never a later read the gate did not judge. What the gate admitted
+	// rides the ResumeSpec, and the run service refuses a resume whose
+	// document names another trust.
+	var (
+		runMeta *store.Run
+		loadErr = errors.New("run service unavailable")
+		subj    launchSubject
+	)
 	if c.server.runs != nil {
-		if runMeta, err := c.server.runs.LoadRunCtx(c.authCtx(), c.runID); err == nil && runMeta != nil {
-			subj = launchSubject{ExistingRun: true, BotID: runMeta.BotID, Repo: runMeta.ProjectPath}
+		runMeta, loadErr = c.server.runs.LoadRunCtx(c.authCtx(), c.runID)
+		if loadErr == nil && runMeta != nil {
+			subj = resumeLaunchSubject(runMeta)
 		}
 	}
 	adm, d := c.server.gateLaunch(auth.WithIdentity(c.authCtx(), c.identity), subj)
@@ -917,9 +931,12 @@ func (c *runConn) handleAnswer(env runWSEnvelope) {
 		c.sendError("no_answers", "answers is required", env.AckID)
 		return
 	}
-	runMeta, err := c.server.runs.LoadRunCtx(c.authCtx(), c.runID)
-	if err != nil {
-		c.sendError("run_not_found", err.Error(), env.AckID)
+	if loadErr != nil || runMeta == nil {
+		msg := "run not found"
+		if loadErr != nil {
+			msg = loadErr.Error()
+		}
+		c.sendError("run_not_found", msg, env.AckID)
 		return
 	}
 	filePath := req.FilePath
@@ -954,6 +971,7 @@ func (c *runConn) handleAnswer(env runWSEnvelope) {
 		Source:     req.Source,
 		Answers:    req.Answers,
 		HostInputs: hostInputs,
+		Admitted:   gateAdmitted(subj, adm),
 	}); err != nil {
 		// The callee reports whether anything durable happened — see
 		// handleLaunchRun. ErrRunNotResumable carries no marker, so the
@@ -974,6 +992,12 @@ func (c *runConn) handleAnswer(env runWSEnvelope) {
 		// code writeCredentialAtCapacityError answers over HTTP.
 		if errors.Is(err, cloudpublisher.ErrCredentialAtCapacity) {
 			c.sendError(credentialAtCapacityErrorCode, runtime.OperatorMessage(err), env.AckID)
+			return
+		}
+		// The document the run service re-entered names another trust than
+		// the one this answer was admitted on: nothing was published.
+		if errors.Is(err, runview.ErrResumeNotAdmitted) {
+			c.sendError(resumeNotAdmittedErrorCode, err.Error(), env.AckID)
 			return
 		}
 		c.sendError("resume_failed", runtime.OperatorMessage(err), env.AckID)

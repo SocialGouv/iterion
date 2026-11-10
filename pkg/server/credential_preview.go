@@ -124,7 +124,7 @@ func (s *Server) handleCredentialPreview(w http.ResponseWriter, r *http.Request)
 			httpError(w, http.StatusBadRequest, "webhook source resolves its vars from the config layers and the delivery payload; a caller-supplied vars map is not part of that launch")
 			return
 		}
-		spec.Launch.Vars = applyWebhookVarLayers(map[string]string{}, cfg)
+		spec.Launch.Vars = applyWebhookVarLayers(map[string]string{}, cfg, store.RunTrustDefault)
 		// The launch trusts the config's OPERATOR layer for the routing
 		// pre-flights (webhooks_gitlab.go's webhook lane); the preview
 		// answers for the same launch, so it trusts the same names — a

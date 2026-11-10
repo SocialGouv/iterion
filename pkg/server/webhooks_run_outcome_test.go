@@ -169,7 +169,7 @@ func TestWebhookLaunchStampsTheDeliveryProvenance(t *testing.T) {
 		UserID: "webhook:hook", TeamID: "t1", Kind: auth.KindWebhook,
 	}), "t1", "webhook:hook")
 	if _, err := s.launchWebhookBot(ctx, webhookLaunch(nil, ""), cfg, "probe", map[string]string{}, "", "", "acme/repo",
-		nil, nil, store.RunTrustDefault, "", "d-42"); err != nil {
+		nil, nil, store.RunTrustDefault, "", "", "d-42"); err != nil {
 		t.Fatalf("launchWebhookBot = %v, want nil", err)
 	}
 	spec := pub.only(t)
@@ -200,7 +200,7 @@ func TestWebhookLaunchWithoutADeliveryLeavesSourceNil(t *testing.T) {
 		UserID: "webhook:hook", TeamID: "t1", Kind: auth.KindWebhook,
 	}), "t1", "webhook:hook")
 	if _, err := s.launchWebhookBot(ctx, webhookLaunch(nil, ""), cfg, "probe", map[string]string{}, "", "", "acme/repo",
-		nil, nil, store.RunTrustDefault, "", ""); err != nil {
+		nil, nil, store.RunTrustDefault, "", "", ""); err != nil {
 		t.Fatalf("launchWebhookBot = %v, want nil", err)
 	}
 	if spec := pub.only(t); spec.SourceRef != nil {

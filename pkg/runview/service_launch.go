@@ -159,6 +159,13 @@ func validateRoutingPolicyForLaunch(p *store.RoutingPolicy, wf *ir.Workflow) err
 // launch reaches anything that acts on the id.
 var ErrRunIDTaken = errors.New("runview: run id already exists")
 
+// ErrInProcessCannotDescribe reports a launch the in-process path refuses
+// because it carries a fact only the cloud publisher persists onto the run
+// document — an untrusted trust, a pinned commit, a fork author's metering
+// subject. Every arm of that refusal wraps it, so a caller (and a witness)
+// tells it from a launch that failed later on its own merits.
+var ErrInProcessCannotDescribe = errors.New("runview: refusing a launch the in-process path cannot describe")
+
 // Launch starts a workflow asynchronously and returns once the run
 // handle has been registered with the manager (i.e. Cancel will work
 // from the moment Launch returns nil error).
@@ -192,9 +199,20 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 	// enforcement site downstream (the publish grant, the credential resolve,
 	// a resume, a forked child) reads the marker off that document. Refuse
 	// rather than carry a fact this path cannot keep: silently downgrading an
-	// untrusted launch to a trusted run is worse than not launching it.
-	if (!spec.Trust.Trusted() || spec.RepoSHAExpected != "") && s.publisher == nil {
-		return nil, fmt.Errorf("runview: refusing a launch the in-process path cannot describe (trust=%q, pinned_commit=%v): it persists neither marker, so the run would read as trusted and unpinned", string(spec.Trust), spec.RepoSHAExpected != "")
+	// untrusted launch to a trusted run is worse than not launching it. The
+	// fork author's metering subject rides the same refusal: a launch that
+	// names one is a fork gesture's, and dropping it here would un-meter the
+	// author's dollars on every later re-entry.
+	if (!spec.Trust.Trusted() || spec.RepoSHAExpected != "" || spec.ForkAuthorSubject != "") && s.publisher == nil {
+		return nil, fmt.Errorf("%w (trust=%q, pinned_commit=%v, fork_author=%v): it persists none of the three, so the run would read as trusted, unpinned and unmetered", ErrInProcessCannotDescribe, string(spec.Trust), spec.RepoSHAExpected != "", spec.ForkAuthorSubject != "")
+	}
+	// The trust is settled: the launch is published under it only on an
+	// admission that judged it (ADR-162 decision 5). The one choke point every
+	// launch surface crosses, so a surface whose gate judged the request
+	// rather than the run — a launch naming a fork run as its source — cannot
+	// publish an untrusted run past the author's bound.
+	if err := CheckLaunchAdmitted(spec); err != nil {
+		return nil, err
 	}
 	if spec.BranchName != "" {
 		if err := gitlib.ValidateBranchName(spec.BranchName); err != nil {
@@ -351,22 +369,67 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 // sub-bot's parent: an unknown provenance never resolves to trusted, and a
 // launch naming a run its tenant cannot read describes nothing the product
 // produces.
+//
+// An untrusted source hands its fork author's metering subject over with its
+// trust (store.InheritTrustAndAuthor's rule, on a spec): the new run is that
+// author's spend, and an untrusted run with no subject is refused on every
+// gated resume. Two sources naming two different authors are refused — one
+// run meters one author's bound, and picking either is a guess.
 func (s *Service) inheritSourceTrust(ctx context.Context, spec *LaunchSpec) error {
-	sources := []struct{ role, id string }{{"parent_run_id", spec.ParentRunID}}
+	delegationSource := ""
 	if spec.Delegation != nil {
-		sources = append(sources, struct{ role, id string }{"delegation source run", spec.Delegation.SourceRunID})
+		delegationSource = spec.Delegation.SourceRunID
 	}
-	for _, src := range sources {
+	inherited, err := s.LaunchSourceAdmission(ctx, spec.ParentRunID, delegationSource)
+	if err != nil {
+		return err
+	}
+	spec.Trust = spec.Trust.Lowest(inherited.Trust)
+	if inherited.ForkAuthorSubject == "" {
+		return nil
+	}
+	if spec.ForkAuthorSubject != "" && spec.ForkAuthorSubject != inherited.ForkAuthorSubject {
+		return fmt.Errorf("runview: the launch's source runs are metered on fork author %q, and the launch already names %q — one run meters one author's bound", inherited.ForkAuthorSubject, spec.ForkAuthorSubject)
+	}
+	spec.ForkAuthorSubject = inherited.ForkAuthorSubject
+	return nil
+}
+
+// LaunchSourceAdmission is what a launch built FROM other runs inherits from
+// them — its parent (parent_run_id) and the run a delegation repairs: the
+// lowest of their trusts and, from an untrusted one, the fork author subject
+// it meters. It is inheritSourceTrust's reading, offered to the launch
+// surface so its admission gate judges the trust the run will be published
+// under BEFORE Launch publishes it (CheckLaunchAdmitted holds the two to the
+// same answer). The zero value — trusted, no author — when the launch names
+// no source.
+//
+// A source that cannot be read is refused, typed
+// (store.ErrChildParentUnreadable), and two untrusted sources metering two
+// different authors are refused as well.
+func (s *Service) LaunchSourceAdmission(ctx context.Context, parentRunID, delegationSourceRunID string) (GateAdmission, error) {
+	var out GateAdmission
+	for _, src := range []struct{ role, id string }{
+		{"parent_run_id", parentRunID},
+		{"delegation source run", delegationSourceRunID},
+	} {
 		if strings.TrimSpace(src.id) == "" {
 			continue
 		}
 		r, err := s.store.LoadRun(ctx, src.id)
 		if err != nil {
-			return fmt.Errorf("runview: %w: the launch's %s %q: %w", store.ErrChildParentUnreadable, src.role, src.id, err)
+			return GateAdmission{}, fmt.Errorf("runview: %w: the launch's %s %q: %w", store.ErrChildParentUnreadable, src.role, src.id, err)
 		}
-		spec.Trust = spec.Trust.Lowest(r.Trust)
+		out.Trust = out.Trust.Lowest(r.Trust)
+		if r.Trust.Trusted() || r.ForkAuthorSubject == "" {
+			continue
+		}
+		if out.ForkAuthorSubject != "" && out.ForkAuthorSubject != r.ForkAuthorSubject {
+			return GateAdmission{}, fmt.Errorf("runview: the launch's %s %q is metered on fork author %q, and its other source on %q — one run meters one author's bound", src.role, src.id, r.ForkAuthorSubject, out.ForkAuthorSubject)
+		}
+		out.ForkAuthorSubject = r.ForkAuthorSubject
 	}
-	return nil
+	return out, nil
 }
 
 // hookEventObservers builds ExecutorSpec.EventObservers for every
@@ -707,6 +770,11 @@ func (s *Service) PreflightResume(parent context.Context, spec ResumeSpec) error
 	if err != nil {
 		return err
 	}
+	// Resume's own choke point, answered here too: the preflight exists so
+	// a resume Resume would refuse never consumes what the caller staged.
+	if err := CheckResumeAdmitted(r, spec.Admitted); err != nil {
+		return err
+	}
 	if err := validateResumable(r, spec.Answers, spec.Automatic); err != nil {
 		return err
 	}
@@ -800,6 +868,14 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 	// missing tenant_id in ctx (which Background carries).
 	r, err := s.store.LoadRun(parent, spec.RunID)
 	if err != nil {
+		return nil, err
+	}
+	// The one choke point every resume surface crosses, judged on the
+	// document this resume re-enters before anything is reconciled, compiled,
+	// spawned or published: an untrusted run resumes only on an admission
+	// that metered its own bound. The cloud publisher repeats the comparison
+	// against the document it republishes from.
+	if err := CheckResumeAdmitted(r, spec.Admitted); err != nil {
 		return nil, err
 	}
 	if r.Status == store.RunStatusRunning {

@@ -243,8 +243,11 @@ func (s *Service) Fork(ctx context.Context, spec ForkSpec) (*ForkResult, error) 
 	// tenant's secrets and can be handed a publish grant, whichever branch it
 	// took. Inside the repo-targeted branch this was carried; the worktree
 	// branch (checked FIRST, and taken by any workflow declaring
-	// `worktree: auto`) and the local branch silently dropped it.
-	child.Trust = parent.Trust
+	// `worktree: auto`) and the local branch silently dropped it. The fork
+	// author's metering subject rides the same carrier: the child of a fork
+	// run is that author's spend, and every gated resume of it re-meters the
+	// SAME bound the parent's launch entered.
+	store.InheritTrustAndAuthor(child, parent)
 	if parent.Worktree {
 		// A fork materialises a checkout without entering Engine.Run, so it
 		// must ask the same shared-pool bound itself before growing the pool.

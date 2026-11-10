@@ -251,8 +251,14 @@ func TestFenceRetryExistingRun(t *testing.T) {
 		armTestFence(t, s)
 		at := time.Now().UTC().Add(-time.Minute)
 		s.sweepDueRetries(context.Background(), &fakeRetryLister{refs: []mongostore.RetryDueRef{dueRef("run-a", at)}}, resumer, time.Now().UTC())
-		if len(resumer.calls) != 1 || len(st.abandoned) != 0 {
-			t.Fatalf("unreadable=%v: resumes=%d abandoned=%v", unreadable, len(resumer.calls), st.abandoned)
+		// An unreadable run doc is an unknown trust, which admission defers
+		// (resume_run_unreadable, transient) — never a fence abandonment.
+		wantResumes := 1
+		if unreadable {
+			wantResumes = 0
+		}
+		if len(resumer.calls) != wantResumes || len(st.abandoned) != 0 {
+			t.Fatalf("unreadable=%v: resumes=%d (want %d) abandoned=%v", unreadable, len(resumer.calls), wantResumes, st.abandoned)
 		}
 	}
 }

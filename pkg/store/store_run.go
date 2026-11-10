@@ -220,6 +220,13 @@ func (s *FilesystemRunStore) SaveRun(_ context.Context, r *Run) error {
 		if persisted.RepoSHAExpected != "" {
 			rr.RepoSHAExpected = persisted.RepoSHAExpected
 		}
+		// Same write-once contract for the fork lane's metering subject:
+		// a saver that carries the zero value must not silently un-meter
+		// a run whose every later re-entry (resume, retry, the runner's
+		// second charge) reads it back from this document.
+		if persisted.ForkAuthorSubject != "" {
+			rr.ForkAuthorSubject = persisted.ForkAuthorSubject
+		}
 		if persisted.Status == rr.Status {
 			rr.OutcomeSeq = persisted.OutcomeSeq
 			rr.ContinuationState = persisted.ContinuationState

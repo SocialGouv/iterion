@@ -662,6 +662,13 @@ config:
     monthlyCostCapUsd: 0
     maxConcurrentRuns: 0
     launchRatePerMin: 0
+    # The fork review lane's per-contributor monthly bound (ADR-162,
+    # docs/quotas-and-limits.md) is the one pair where unset is NOT
+    # unlimited: left unset, the server ships 20 runs / $20 per outside
+    # contributor. Set a positive cap, or the literal "unbounded" to open
+    # it; 0 refuses the server boot (it is not a spelling of unbounded).
+    # forkAuthorRunQuota: 20
+    # forkAuthorCostCapUsd: 20
   # --- Legal pages (every mode) -------------------------------------
   # The operator's legal surface (docs/adr/160-legal-content-is-deployment-configuration.md):
   # the texts a public service owes its visitors are DEPLOYMENT

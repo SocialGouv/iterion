@@ -254,6 +254,22 @@ type LaunchSpec struct {
 	// RepoSHAExpected pins the commit this launch admitted, for a RepoRef an
 	// untrusted party can move. Empty disables the runner's comparison.
 	RepoSHAExpected string
+	// ForkAuthorSubject is the per-contributor metering subject the fork
+	// review lane's admission composed (orgusage.ForkAuthorSubject's exact
+	// spelling, built on the metering id the org budget used). Persisted on
+	// the run document and mirrored onto the queue message, so the runner's
+	// recordOrgSpend charges the author's dollars beside the org's and every
+	// resume/retry re-enters the SAME subject. Empty on every trusted
+	// launch.
+	ForkAuthorSubject string
+	// Admitted is what the launch gate judged for this launch, stamped by the
+	// surface that crossed it (the run launch API, the inbound webhook tail):
+	// the trust it admitted and the fork author subject it charged. Launch
+	// compares it with the trust the launch is published under — its own,
+	// lowered to that of the runs it is launched from — and refuses an
+	// untrusted launch on a nil or a different admission
+	// (CheckLaunchAdmitted). Nil on every surface that crossed no gate.
+	Admitted *GateAdmission
 	// ProjectPath is the stable forge slug ("group/project") the run
 	// targets, persisted on the run so the studio can filter/group runs
 	// by repository and the runner's spend meter (repoForSpend) can charge
@@ -467,6 +483,13 @@ type ResumeSpec struct {
 	// ReceiptID correlates the durable mission action with run_resumed. It is
 	// host-issued and never accepted from an assistant artifact directly.
 	ReceiptID string
+	// Admitted is what the launch gate judged for this resume, stamped by the
+	// surfaces that cross it (the HTTP resume, the WS answer, the retry
+	// sweeper); nil on every surface that crosses none. Resume and the cloud
+	// publisher's SubmitResume compare it with the run document they resume
+	// (CheckResumeAdmitted): an untrusted run is never resumed on a nil or a
+	// mismatched admission.
+	Admitted *GateAdmission
 	// Source mirrors LaunchSpec.Source: cloud-mode callers can supply
 	// the .bot contents inline so the server pod does not need to
 	// resolve FilePath against a local filesystem.

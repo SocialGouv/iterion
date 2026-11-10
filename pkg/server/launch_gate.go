@@ -15,18 +15,35 @@ import (
 	"github.com/SocialGouv/iterion/pkg/errtrack"
 	"github.com/SocialGouv/iterion/pkg/identity"
 	"github.com/SocialGouv/iterion/pkg/orgusage"
+	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/trigger"
+	"github.com/SocialGouv/iterion/pkg/webhooks"
 )
 
 // OrgLimitDefaults are the platform-wide launch limits applied when a
 // team doesn't carry its own override (Team field == 0). Zero means
-// "no limit" — the safe default for existing deployments.
+// "no limit" — the safe default for existing deployments, EXCEPT the
+// fork-author bound pair, whose platform default is 20 runs / $20
+// (ADR-162 Q4): that bound is the perimeter against an outside party,
+// not operator convenience, so its unset value is a number, and the
+// escape hatch is the explicit `unbounded`.
 type OrgLimitDefaults struct {
 	MonthlyRunQuota   int
 	MonthlyCostCapUSD float64
 	MaxConcurrentRuns int
 	LaunchRatePerMin  int
+	// ForkAuthorRunQuota / ForkAuthorCostCapUSD are the per-contributor
+	// bound of the fork review lane (runs and dollars per month, metered
+	// on orgusage.ForkAuthorSubject). The ladder: a NEGATIVE org field is
+	// the explicit `unbounded` escape hatch; 0 inherits THIS default; and
+	// this default itself resolves from
+	// ITERION_ORG_DEFAULT_FORK_AUTHOR_{RUN_QUOTA,COST_CAP_USD}, which
+	// accepts the literal `unbounded` as 0 (no cap) and refuses the boot on
+	// any other non-positive value. 0 after the ladder means no cap —
+	// AllowRun's own convention.
+	ForkAuthorRunQuota   int
+	ForkAuthorCostCapUSD float64
 }
 
 // launchDenial is one launch-gate refusal: an HTTP status, a stable
@@ -98,6 +115,29 @@ const (
 	// the rung a launch takes: a viewer (read-only) or the orthogonal
 	// config_editor capability (rank 0, ADR-078).
 	denyMemberRoleRequired = "member_role_required"
+	// The fork review lane's per-contributor bound (ADR-162 decision 5,
+	// amending ADR-033): an untrusted launch fails CLOSED on every arm
+	// that admits a trusted one unmetered, because this subject is the
+	// perimeter against an outside party — not operator policy, whose
+	// degraded arms fail open. Each token is one row of the lane's
+	// delivery-reason table (docs/webhooks.md).
+	denyForkTeamUnreadable = "fork_team_unreadable"
+	denyForkOrgUnreadable  = "fork_org_unreadable"
+	// denyForkMeteringUnavailable: no counter to meter the bound on — a
+	// local-mode server (no identity store) or one built without the
+	// orgusage store — or an untrusted subject that names no fork author
+	// to meter. Both are 503s the surface may retry, never silent passes.
+	denyForkMeteringUnavailable = "fork_metering_unavailable"
+	denyForkMeteringError       = "fork_metering_error"
+	// The bound's own ceilings, the per-contributor twin of the org's
+	// monthly caps: 402s that reset on the 1st.
+	denyForkAuthorRuns = "fork_author_run_quota_exceeded"
+	denyForkAuthorCost = "fork_author_cost_cap_exceeded"
+	// denyResumeRunUnreadable: a resume whose run document could not be read,
+	// so the trust it would re-enter under is unknown — and an unknown trust
+	// loses (ADR-162 decision 8). A 503 the surface may retry: the retry
+	// sweeper re-arms it (retryDenialIsTransient).
+	denyResumeRunUnreadable = "resume_run_unreadable"
 )
 
 // launchExemptPrincipal reports whether a principal launches with no human
@@ -178,6 +218,13 @@ type launchAdmission struct {
 	counter            orgusage.Counter
 	usageKey           orgusage.Subject
 	when               time.Time
+	// forkSubject is the per-contributor metering subject the fork lane's
+	// second charge reserved (orgusage.ForkAuthorSubject, composed on the
+	// metering id the org budget used). Empty when the launch was not an
+	// untrusted one — the single value the launch tail stamps onto the
+	// target, whose carriers (run document, queue message, the runner's
+	// AddSpend) re-enter this SAME subject instead of re-deriving it.
+	forkSubject orgusage.Subject
 	// The per-minute launch bucket whose token this launch consumed
 	// (#1726). rollback refunds it: a launch the caller refuses after the
 	// gate — a malformed body, a lost duplicate race — must not leave the
@@ -207,6 +254,81 @@ type launchSubject struct {
 	// Repo is the forge slug (store.Run.ProjectPath), the same identity
 	// pkg/credusage meters against — never a second one derived here.
 	Repo string
+	// Trust says who wrote the code this launch runs (ADR-162 decision 5:
+	// "launchSubject carries the trust as a required field"). The zero value
+	// is the trusted default — every surface that cannot name a trust
+	// launches none, because the only producer of untrusted work (the fork
+	// review gesture) sets it. It is REQUIRED in the sense the gate owes
+	// its answer to: an untrusted subject is metered TWICE (the org's
+	// budget and the per-contributor bound) and refused by every arm that
+	// would admit it unmetered — a caller that forgot the field keeps the
+	// pre-fork behaviour exactly, which for an untrusted launch is a
+	// refusal at the disjointness gate one step earlier.
+	Trust store.RunTrust
+	// ForkAuthor names the OUTSIDE author the fork review gesture admitted,
+	// for the per-contributor bound. Nil on every trusted subject; REQUIRED
+	// on an untrusted one — gateMonthlyCaps refuses an untrusted subject it
+	// cannot meter (denyForkMeteringUnavailable), never fails open.
+	ForkAuthor *webhooks.ForkAuthorRef
+	// TrustUnknown marks a RESUME whose run document could not be read: the
+	// trust it would re-enter under is unknown, so the zero Trust above must
+	// not read as trusted. gateLaunch refuses it before every other arm
+	// (denyResumeRunUnreadable) — an unknown trust loses (ADR-162 decision
+	// 8). Only resumeLaunchSubject(nil) sets it.
+	TrustUnknown bool
+}
+
+// resumeLaunchSubject builds the admission subject of a RESUME from the run
+// document being resumed — the ONE seam every gated resume surface crosses
+// (the runs API, the WS answer twin, the retry sweeper), so the document's
+// TRUST and the fork author's metering subject ride every re-entry or none
+// does (ADR-162 decision 5: "whichever surface enters"). The subject is read,
+// never re-derived: the run document carries the subject the launch's
+// admission composed, and a resume re-entering a different one would unhook
+// the author's bound mid-run.
+//
+// A nil run (the store could not answer) is an UNKNOWN trust, never the
+// trusted default: the gate refuses it as transient, and the retry sweeper —
+// the surface that otherwise proceeds on its retry row alone — re-arms. The
+// two operator surfaces answer their own failed read before any resume, from
+// the one read the gate's subject came from. Whatever a surface admitted
+// rides its ResumeSpec (gateAdmitted), and the run service refuses a resume
+// whose admission does not name the trust of the document it re-enters.
+func resumeLaunchSubject(run *store.Run) launchSubject {
+	if run == nil {
+		return launchSubject{ExistingRun: true, TrustUnknown: true}
+	}
+	return launchSubject{ExistingRun: true, BotID: run.BotID, Repo: run.ProjectPath}.withStoredTrust(run.Trust, run.ForkAuthorSubject)
+}
+
+// withStoredTrust stamps a trust and a stored fork author subject — read off
+// a run document, never re-derived — onto the subject: the one place a stored
+// subject becomes the ForkAuthor the gate meters, for a resume (the run it
+// re-enters) and a launch built from other runs (the runs it is launched
+// from, runview.Service.LaunchSourceAdmission). A trusted entry names no
+// author whatever the document holds; an untrusted one with no stored subject
+// names none either, and the gate refuses it (denyForkMeteringUnavailable).
+func (subj launchSubject) withStoredTrust(trust store.RunTrust, forkAuthorSubject string) launchSubject {
+	subj.Trust = trust
+	subj.ForkAuthor = nil
+	if !trust.Trusted() && forkAuthorSubject != "" {
+		subj.ForkAuthor = &webhooks.ForkAuthorRef{Subject: forkAuthorSubject}
+	}
+	return subj
+}
+
+// gateAdmitted is what the gate judged for a launch or a resume, handed to the
+// run service on LaunchSpec.Admitted / ResumeSpec.Admitted: the subject's
+// trust, and the fork author subject the gate actually charged (the admission
+// handle's second counter), never the one the subject merely named. Every arm
+// that admits an untrusted subject meters both counters, so an untrusted
+// admission always carries the author subject; a trusted one carries none.
+func gateAdmitted(subj launchSubject, adm *launchAdmission) *runview.GateAdmission {
+	a := &runview.GateAdmission{Trust: subj.Trust}
+	if adm != nil {
+		a.ForkAuthorSubject = string(adm.forkSubject)
+	}
+	return a
 }
 
 func (a *launchAdmission) rollback(logger interface{ Warn(string, ...any) }) {
@@ -220,6 +342,16 @@ func (a *launchAdmission) rollback(logger interface{ Warn(string, ...any) }) {
 		defer cancel()
 		if err := a.counter.ReleaseRun(ctx, a.usageKey, a.when); err != nil && logger != nil {
 			logger.Warn("launch gate: admission rollback for %s: %v (monthly run counter over-counts by one)", a.usageKey, err)
+		}
+		// The fork lane's SECOND counter releases with the first (decision
+		// 5): the handle owns both reservations, and a caller that abandons
+		// the launch hands back the author's unit with the org's — an
+		// outside contributor's bound left holding a run that never was is
+		// a denial-of-service against the person it exists to protect.
+		if a.forkSubject != "" {
+			if err := a.counter.ReleaseRun(ctx, a.forkSubject, a.when); err != nil && logger != nil {
+				logger.Warn("launch gate: admission rollback for %s: %v (fork-author run counter over-counts by one)", a.forkSubject, err)
+			}
 		}
 	}
 	if a.rate != nil && a.rateKey != "" {
@@ -242,7 +374,9 @@ func (a *launchAdmission) rollback(logger interface{ Warn(string, ...any) }) {
 // an EXISTING one (runs_control.go), and a resume driven by an existing
 // run's own machinery (answer-human, the interaction answer, host-event, the
 // assistant mission and watch coordinators) re-enters it. Those are
-// authorized by the run-by-id ladder (ADR-103) and are not metered.
+// authorized by the run-by-id ladder (ADR-103) and are not metered — on a
+// TRUSTED run: they carry no admission, and the run service refuses an
+// untrusted run's resume that no gate judged (runview.CheckResumeAdmitted).
 // On allow it returns the admission handle for the metered increment
 // (nil when nothing was metered).
 //
@@ -263,10 +397,43 @@ func (a *launchAdmission) rollback(logger interface{ Warn(string, ...any) }) {
 // version of that mistake anyone ever sees.
 func (s *Server) gateLaunch(ctx context.Context, subj launchSubject) (*launchAdmission, *launchDenial) {
 	id, _ := auth.FromContext(ctx)
+	// A resume whose run could not be read has no trust to judge, and an
+	// unknown trust loses (ADR-162 decision 8): first, ahead of the local
+	// and super-admin bypasses, because the run behind it may be a fork run
+	// whose every re-entry owes the per-contributor bound.
+	if subj.TrustUnknown {
+		return nil, &launchDenial{
+			status: http.StatusServiceUnavailable,
+			reason: denyResumeRunUnreadable,
+			detail: "the run this resume re-enters could not be read, so its trust is unknown — an unknown trust is not admitted; retry once the store answers",
+		}
+	}
 	if d := s.gateMaintenance(ctx, subj); d != nil {
 		return nil, d
 	}
 	st := s.authStore()
+	// ADR-162 decision 5, the amendment to ADR-033: every arm below that
+	// admits a launch UNMETERED refuses an untrusted subject instead. The
+	// local-mode arm is the first — a local server has no orgusage counter
+	// at all, so an untrusted launch there is unmeterable in principle,
+	// and the super-admin bypass is the second: the fork-author bound is
+	// the perimeter against an outside party, not operator policy, so no
+	// principal stands above it. The gated resumes reach both arms with a
+	// fork run's trust (resumeLaunchSubject), and so does the run launch API
+	// when its request names a fork run as parent_run_id or delegation source
+	// (Service.LaunchSourceAdmission): a super-admin's resume of a fork run,
+	// a super-admin's launch built from one, or either on a local server
+	// holding one, is refused rather than admitted unmetered.
+	if !subj.Trust.Trusted() {
+		if st == nil {
+			return nil, s.forkClosedDenial(denyForkMeteringUnavailable,
+				"this server runs in local mode and meters no launch — an untrusted launch cannot be admitted unmetered")
+		}
+		if id.IsSuperAdmin {
+			return nil, s.forkClosedDenial(denyForkMeteringUnavailable,
+				"the super-admin bypass admits a launch unmetered, which an untrusted subject never is — the per-contributor bound is the perimeter, not operator policy")
+		}
+	}
 	// st == nil is local/filesystem mode (no auth, single operator); a
 	// super-admin bypasses the gate entirely.
 	if st == nil || id.IsSuperAdmin {
@@ -330,7 +497,15 @@ func (s *Server) gateLaunch(ctx context.Context, subj launchSubject) (*launchAdm
 		case err != nil:
 			// A degraded read keeps the fail-open of the doc comment, but
 			// says so: what follows is a launch with no suspend check and
-			// no metering, which is invisible from the outside otherwise.
+			// no metering, which is invisible from the outside otherwise —
+			// EXCEPT for an untrusted subject, which decision 5 refuses
+			// here: a team the gate cannot read is a team whose suspension
+			// state and metering id are unknown, and an untrusted launch
+			// admitted past this point would spend a budget nobody bounded.
+			if !subj.Trust.Trusted() {
+				return nil, s.forkClosedDenial(denyForkTeamUnreadable,
+					fmt.Sprintf("the fork lane's budget holder (team %s) could not be read: %v — an untrusted launch is not admitted past an unreadable team", id.TeamID, err))
+			}
 			if s.logger != nil {
 				s.logger.Warn("launch gate: team %s unreadable (%v) — launching UNGATED: suspend unchecked, run unmetered", id.TeamID, err)
 			}
@@ -340,6 +515,24 @@ func (s *Server) gateLaunch(ctx context.Context, subj launchSubject) (*launchAdm
 	// The team's parent org owns the monthly budget + the top-level
 	// suspend. Either level being suspended blocks the launch.
 	org := s.orgForTeam(ctx, st, id, t)
+	// orgForTeam folds a FAILED org read into the zero Org (it cannot tell
+	// the caller), and gateMonthlyCaps below would then fall back to the
+	// team id as the metering key — silently metering the fork lane's
+	// per-contributor bound on a different id than the org budget, and
+	// skipping the org-level fork caps. An untrusted subject refuses here
+	// instead: an org the gate cannot read is an org whose budget the gate
+	// cannot bound. An orgless team (no OrgID on either side) is the
+	// legitimate pre-backfill shape and meters on the team id as before.
+	if !subj.Trust.Trusted() {
+		orgID := id.OrgID
+		if orgID == "" {
+			orgID = t.OrgID
+		}
+		if orgID != "" && org.ID == "" {
+			return nil, s.forkClosedDenial(denyForkOrgUnreadable,
+				fmt.Sprintf("the fork lane's budget org %s could not be read — the per-contributor bound meters on the same id the org budget does, and an unreadable org is not one to guess", orgID))
+		}
+	}
 	if !t.CanLaunch() {
 		return nil, &launchDenial{
 			status: http.StatusForbidden,
@@ -623,6 +816,39 @@ func (s *Server) gateLaunchRate(t identity.Team) (string, authBucketCfg, *launch
 	return key, bucket, nil
 }
 
+// forkClosedDenial is the one constructor for the fork lane's fail-closed
+// arms (ADR-162 decision 5): a 503 the surface may retry, never a silent
+// pass and never a 4xx the forge would read as a verdict. The retry
+// sweeper treats every token it names as transient (retryDenialIsTransient).
+func (s *Server) forkClosedDenial(reason, detail string) *launchDenial {
+	return &launchDenial{status: http.StatusServiceUnavailable, reason: reason, detail: detail}
+}
+
+// forkAuthorCaps resolves the per-contributor bound's two ceilings off the
+// ladder (ADR-162 decision 5 + Q4): a NEGATIVE org field is the explicit
+// `unbounded` escape hatch; 0 inherits the platform default; the platform
+// default itself comes from the settings env (20 runs / $20 unless the
+// operator set another value or the literal `unbounded`). Zero after the
+// ladder means no cap — AllowRun's own convention, so `unbounded` and
+// "no default configured" are the same state to the counter.
+func (s *Server) forkAuthorCaps(org identity.Org) (maxRuns int, capUSD float64) {
+	if org.ForkAuthorRunQuota < 0 {
+		maxRuns = 0
+	} else if org.ForkAuthorRunQuota > 0 {
+		maxRuns = org.ForkAuthorRunQuota
+	} else {
+		maxRuns = s.orgDefaults.ForkAuthorRunQuota
+	}
+	if org.ForkAuthorCostCapUSD < 0 {
+		capUSD = 0
+	} else if org.ForkAuthorCostCapUSD > 0 {
+		capUSD = org.ForkAuthorCostCapUSD
+	} else {
+		capUSD = s.orgDefaults.ForkAuthorCostCapUSD
+	}
+	return maxRuns, capUSD
+}
+
 // gateMonthlyCaps charges the month's run counter and checks BOTH
 // monthly caps (run quota + LLM cost cap) off the counter's single
 // CAS round trip — the increment IS the metering, so this runs even
@@ -634,8 +860,20 @@ func (s *Server) gateLaunchRate(t identity.Team) (string, authBucketCfg, *launch
 // the org couldn't be resolved (pre-backfill row) we fall back to the
 // team id as the metering key + platform defaults, so launches still
 // meter.
+//
+// An UNTRUSTED subject is metered TWICE (ADR-162 decision 5): on the
+// org's budget exactly as ADR-033 decides, and on
+// orgusage.ForkAuthorSubject — the pull request author's own runs and
+// dollars, beside the org's. Every fail-open arm below is closed for
+// that subject: no counter, no author to meter, a metering error —
+// each is a refusal, because this subject is the perimeter against an
+// outside party, not operator policy.
 func (s *Server) gateMonthlyCaps(ctx context.Context, org identity.Org, t identity.Team, floor budgetfloor.Policy, subj launchSubject, now time.Time) (*launchAdmission, *launchDenial) {
 	if s.orgUsage == nil {
+		if !subj.Trust.Trusted() {
+			return nil, s.forkClosedDenial(denyForkMeteringUnavailable,
+				"this server meters no launch (no usage counter wired) — an untrusted launch is refused rather than admitted unmetered")
+		}
 		return nil, nil
 	}
 	meteredID := org.ID
@@ -643,6 +881,27 @@ func (s *Server) gateMonthlyCaps(ctx context.Context, org identity.Org, t identi
 		meteredID = t.ID
 	}
 	usageKey := orgusage.OrgSubject(meteredID)
+	// The fork lane's second subject, composed HERE — the one place the
+	// metering id is decided — so the subject charged, the one stamped on
+	// the run document and the one the runner re-charges on its second
+	// AddSpend are the same string by construction. A re-entry that holds
+	// a stored subject (the retry sweeper reading a run document) carries
+	// it ready-made and never re-derives the identity halves.
+	var forkSubject orgusage.Subject
+	if !subj.Trust.Trusted() {
+		if subj.ForkAuthor == nil {
+			return nil, s.forkClosedDenial(denyForkMeteringUnavailable,
+				"the launch names no fork author to meter the per-contributor bound on — an untrusted launch is refused rather than admitted unmetered")
+		}
+		if subj.ForkAuthor.Subject != "" {
+			forkSubject = orgusage.Subject(subj.ForkAuthor.Subject)
+		} else if subj.ForkAuthor.Provider == "" || subj.ForkAuthor.AuthorID == "" {
+			return nil, s.forkClosedDenial(denyForkMeteringUnavailable,
+				"the fork author names no provider or no numeric forge id — the per-contributor bound is keyed on both (a login is renameable), and an untrusted launch is refused rather than metered on a guess")
+		} else {
+			forkSubject = orgusage.ForkAuthorSubject(meteredID, subj.ForkAuthor.Provider, subj.ForkAuthor.AuthorID)
+		}
+	}
 	maxRuns := orValue(org.MonthlyRunQuota, s.orgDefaults.MonthlyRunQuota)
 	capUSD := orValue(org.MonthlyCostCapUSD, s.orgDefaults.MonthlyCostCapUSD)
 	// Dollars held for OTHER workloads come off this launch's ceiling. Only
@@ -672,6 +931,10 @@ func (s *Server) gateMonthlyCaps(ctx context.Context, org identity.Org, t identi
 	}
 	deny, err := s.orgUsage.AllowRun(ctx, usageKey, now, maxRuns, orgusage.CostToMillis(capUSD))
 	if err != nil {
+		if !subj.Trust.Trusted() {
+			return nil, s.forkClosedDenial(denyForkMeteringError,
+				fmt.Sprintf("run metering for %s failed: %v — an untrusted launch is refused rather than admitted unmetered", usageKey, err))
+		}
 		if s.logger != nil {
 			s.logger.Warn("launch gate: run metering for %s: %v (fail-open, launch unmetered)", usageKey, err)
 		}
@@ -693,7 +956,52 @@ func (s *Server) gateMonthlyCaps(ctx context.Context, org identity.Org, t identi
 			resetAt: nextMonthStart(now),
 		}
 	}
-	return &launchAdmission{counter: s.orgUsage, usageKey: usageKey, when: now}, nil
+	adm := &launchAdmission{counter: s.orgUsage, usageKey: usageKey, when: now}
+	if forkSubject != "" {
+		// The SECOND charge: the author's own runs and dollars this month.
+		// The org's increment above is already reserved by adm; an author
+		// denial hands it back (ReleaseRun on the org key) before
+		// returning, so a refused gesture costs the org nothing either.
+		forkRuns, forkUSD := s.forkAuthorCaps(org)
+		fdeny, ferr := s.orgUsage.AllowRun(ctx, forkSubject, now, forkRuns, orgusage.CostToMillis(forkUSD))
+		if ferr != nil {
+			releaseCtx, cancel := context.WithTimeout(context.WithoutCancel(context.Background()), 5*time.Second)
+			if rerr := s.orgUsage.ReleaseRun(releaseCtx, usageKey, now); rerr != nil && s.logger != nil {
+				s.logger.Warn("launch gate: org counter rollback after a fork-author metering error: %v", rerr)
+			}
+			cancel()
+			return nil, s.forkClosedDenial(denyForkMeteringError,
+				fmt.Sprintf("fork-author metering for %s failed: %v — an untrusted launch is refused rather than admitted unmetered", forkSubject, ferr))
+		}
+		switch fdeny {
+		case orgusage.DenyRuns:
+			releaseCtx, cancel := context.WithTimeout(context.WithoutCancel(context.Background()), 5*time.Second)
+			if rerr := s.orgUsage.ReleaseRun(releaseCtx, usageKey, now); rerr != nil && s.logger != nil {
+				s.logger.Warn("launch gate: org counter rollback after a fork-author run denial: %v", rerr)
+			}
+			cancel()
+			return nil, &launchDenial{
+				status:  http.StatusPaymentRequired,
+				reason:  denyForkAuthorRuns,
+				detail:  fmt.Sprintf("this contributor's monthly fork review quota (%d) is exhausted — a fresh gesture next month, or the org admin raises the bound", forkRuns),
+				resetAt: nextMonthStart(now),
+			}
+		case orgusage.DenyCost:
+			releaseCtx, cancel := context.WithTimeout(context.WithoutCancel(context.Background()), 5*time.Second)
+			if rerr := s.orgUsage.ReleaseRun(releaseCtx, usageKey, now); rerr != nil && s.logger != nil {
+				s.logger.Warn("launch gate: org counter rollback after a fork-author cost denial: %v", rerr)
+			}
+			cancel()
+			return nil, &launchDenial{
+				status:  http.StatusPaymentRequired,
+				reason:  denyForkAuthorCost,
+				detail:  fmt.Sprintf("this contributor's monthly fork review spend ($%.2f) reached the bound — the reviews this author already ran consumed it", forkUSD),
+				resetAt: nextMonthStart(now),
+			}
+		}
+		adm.forkSubject = forkSubject
+	}
+	return adm, nil
 }
 
 // costCapDenialDetail is concurrencyDenialDetail's twin on the dollar axis,

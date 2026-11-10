@@ -497,6 +497,12 @@ type Server struct {
 	// PR-surface command comment (the issue_comment payload carries no head
 	// branch — test seam). nil → realWebhookPRForgePRResolver.
 	webhookPRForgePRResolver func(ctx context.Context, cfg webhooks.Config, provider webhooks.Provider, p prforge.ParsedNote, route webhooks.CommandRoute) (forge.PullRef, error)
+	// webhookForkGestureAPI overrides the fork review gesture's forge
+	// client resolution (ADR-162 U6) — ONE client serving the commenter
+	// gate, the pull-request admission read and the Q1 note, so tests
+	// replay a REAL GitHub delivery against a fake forge at exactly the
+	// seam the production path crosses. nil → realWebhookForkGestureAPI.
+	webhookForkGestureAPI func(ctx context.Context, cfg webhooks.Config, provider webhooks.Provider, p prforge.ParsedNote, botID string) (prforgeReplierAPI, string)
 	// webhookPRForgeReviewReplyGate overrides the review-thread reply gate
 	// (forge token + thread fetch + bot-in-thread + replier authz — test
 	// seam). Returns (authorized, threadContext, reason, err). nil →

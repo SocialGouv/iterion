@@ -148,6 +148,49 @@ func TestRunMessage_ValidateSchemaMismatch(t *testing.T) {
 	}
 }
 
+// TestRunMessage_AnUntrustedMessageOlderThanTheForkSubjectParks: a message
+// below ForkAuthorSubjectSchemaVersion cannot carry the fork author's
+// metering subject, so one carrying a fork run's trust — a v28 server replica
+// republishing, mid-rollout, a fork run an upgraded replica created — would
+// run with the author's dollar bound unenforced. Each row is the JSON a
+// publisher of that version writes, decoded and validated the way the
+// runner's Delivery.Decode does; the untrusted rows park as a version
+// mismatch (ErrSchemaVersion: transient, a resume from an upgraded server
+// recovers the run), the trusted v28 row and the v29 fork row run.
+//
+// Mutation: drop the rule from Validate → the three untrusted pre-v29 rows
+// validate.
+func TestRunMessage_AnUntrustedMessageOlderThanTheForkSubjectParks(t *testing.T) {
+	for _, row := range []struct {
+		name   string
+		body   string
+		parked bool
+	}{
+		{"a v28 fork resume", `{"v":28,"run_id":"r","workflow_name":"w","ir_compiled":{},"trust":"fork"}`, true},
+		{"a v27 fork resume", `{"v":27,"run_id":"r","workflow_name":"w","ir_compiled":{},"trust":"fork"}`, true},
+		{"a v28 message of a trust this binary does not know", `{"v":28,"run_id":"r","workflow_name":"w","ir_compiled":{},"trust":"vendor"}`, true},
+		{"a trusted v28 message (the control)", `{"v":28,"run_id":"r","workflow_name":"w","ir_compiled":{}}`, false},
+		{"a v29 fork message naming its author (the control)", `{"v":29,"run_id":"r","workflow_name":"w","ir_compiled":{},"trust":"fork","fork_author_subject":"forkauthor|t1|github|4242"}`, false},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			var m RunMessage
+			if err := json.Unmarshal([]byte(row.body), &m); err != nil {
+				t.Fatal(err)
+			}
+			err := m.Validate()
+			if !row.parked {
+				if err != nil {
+					t.Fatalf("Validate = %v, want nil", err)
+				}
+				return
+			}
+			if !errors.Is(err, ErrSchemaVersion) {
+				t.Fatalf("Validate = %v, want %v — the run parks for a resume, never runs with the author's bound unenforced", err, ErrSchemaVersion)
+			}
+		})
+	}
+}
+
 func TestRunMessage_ValidateRequiresRunID(t *testing.T) {
 	m := &RunMessage{
 		V:            SchemaVersion,
@@ -278,8 +321,14 @@ func TestSchemaVersionConstant(t *testing.T) {
 	// neutralize — failing open, on the pod. MinSchemaVersion stays 27: the
 	// v27 publisher already stamps the tier on the run document, so the
 	// runner re-reads it from there instead of dropping the decision.
-	if SchemaVersion != 28 {
-		t.Errorf("SchemaVersion = %d, want 28 (bump intentionally)", SchemaVersion)
+	// v=29 carries ForkAuthorSubject (ADR-162 U6): dropped, a stale runner
+	// leaves the fork lane's per-contributor DOLLAR bound unenforced for
+	// the run's lifetime — a perimeter failing open, on the pod.
+	// MinSchemaVersion stays 27: no message below v29 is a fork run, so
+	// there is no old payload whose dropped subject loses an enforced
+	// bound.
+	if SchemaVersion != 29 {
+		t.Errorf("SchemaVersion = %d, want 29 (bump intentionally)", SchemaVersion)
 	}
 	if MinSchemaVersion != 27 {
 		t.Errorf("MinSchemaVersion = %d, want 27", MinSchemaVersion)

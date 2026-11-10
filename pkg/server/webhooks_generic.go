@@ -8,6 +8,7 @@ import (
 	"net/http"
 
 	"github.com/SocialGouv/iterion/pkg/knowledge"
+	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
 	"github.com/SocialGouv/iterion/pkg/webhooks/generic"
 )
@@ -106,7 +107,7 @@ func (s *Server) handleGenericWebhook(w http.ResponseWriter, r *http.Request) {
 	for k, v := range req.Vars {
 		vars[k] = v
 	}
-	applyWebhookVarLayers(vars, cfg)
+	applyWebhookVarLayers(vars, cfg, store.RunTrustDefault)
 
 	// The generic JSON trigger names its own repo and has no fork lane:
 	// trusted, stated rather than defaulted.
