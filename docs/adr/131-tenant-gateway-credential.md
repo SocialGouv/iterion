@@ -127,14 +127,19 @@ bundle funds can only die at the runner, so it is refused by name at launch (or 
 whatever `ITERION_CLOUD_REQUIRE_LLM_CREDENTIAL` says, with the boundary's own sentence
 (`UnfundedProvidersError.TeamGateway`); the preview mirrors it.
 
-Under `team_gateway` the policy ladder lands no stage on a node whose model routes to
+Under `team_gateway` the policy ladder lands no stage on a node whose route goes to
 the gateway: `llmroute.StageModel` refuses it with `ReasonContentBoundary`, since the
 wholesale crossings (`claw+openai_key`, codex's forfait and key) would carry the
-node's content to a vendor credential. The fallback door's probe screens the same
-way, so no donor is asked for such a crossing. The publisher's screen, its door, the
-credential preview and the runner's authoritative screen (`ExecutorSpec.ContentBoundary`,
+node's content to a vendor credential. The route is read as dispatch resolves it
+(`ir.PolicyLadderReading`): a `{{vars.model}}` by the run's vars, then `${…}`; a
+`provider:` step naming the gateway counts; a route the reading cannot decide is
+refused too (`ReasonContentBoundaryUndecided`). The fallback door's probe screens the
+same way, so no donor is asked for such a crossing. The publisher's screen, its door,
+the credential preview and the runner's authoritative screen (`ExecutorSpec.ContentBoundary`,
 and the usage-cap pre-flight's escape estimate) all read the boundary the run
-carries. The vendor-routed nodes of a mixed run keep their rungs: the arbitration
+carries, and the executor drops at dispatch every policy rung of a node whose route,
+over the vars dispatch resolves, goes to the gateway (a resume restores the launch's
+vars after the screen ran). The vendor-routed nodes of a mixed run keep their rungs: the arbitration
 refuses a mixed run's auxiliaries (classifier, supervisors, server-side helpers),
 not a node's own vendor route and its fallbacks. An unstamped run (the operator's
 environment gateway, a run launched before the producer) keeps the crossing.
