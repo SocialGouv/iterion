@@ -12,9 +12,47 @@ name: 🧪 Tests
 # (gh-readonly-queue/main/...) used to get them from that unfiltered push. A
 # queue build with no checks waits for a context that never arrives and
 # dequeues the PR after the 60-minute timeout.
+# A release commit does not cancel the merge it followed (#3161). The
+# concurrency group below is keyed by ref, which on `main` is the SAME ref for
+# every commit — so each push kills the run before it. A merge is immediately
+# followed by the release bot's `chore: release`, landing with no PR, so that
+# release cancelled the witness of the merge that triggered it, every time.
+# Measured 2026-11-10: seven consecutive cancellations, the last `main` verdict
+# five hours and ~25 commits earlier, and `main` believed broken for forty
+# minutes on a flake nobody could attribute.
+#
+# `paths-ignore` is the surgical half of the fix: no run is CREATED for a
+# release commit, so it joins no concurrency group and cancels nothing. It is
+# scoped to `push` alone — a pull request or a queue build touching these files
+# still runs the full suite, and the nine other workflows that fire on push
+# (images, release, docs) are untouched, which `[skip ci]` in the release
+# message could not have said.
+#
+# The paths are what a release writes, each by a declared writer: package.json
+# (release-it's bump), CHANGELOG.md (.release-it.mjs `infile`),
+# charts/iterion/Chart.yaml (scripts/sync-chart-version.sh at after:bump) and
+# internal/mdcode/testdata/committed-reading.txt (cmd/corpus-reading --cut at
+# before:git:beforeRelease). 19 of the last 20 releases touched exactly these.
+#
+# The 20th also bumped a bot manifest, because `cmd/release-floors --apply`
+# realigns syntax-floor pins — and that is the deliberate shape of this fix:
+# a release touching anything outside the list simply creates its run as it
+# does today. The failure mode is "no improvement", never a new defect. What
+# WOULD break it silently is renaming one of these paths, so
+# internal/ciguard pins them against the tree.
+#
+# The residual, stated: a commit whose ONLY changes are these four files gets
+# no Tests run on `main`. A corpus re-pin landed directly is the real case.
+# Its content is the reading golden, whose guard lives in this very suite —
+# so it is witnessed by the next commit's run rather than its own.
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - CHANGELOG.md
+      - charts/iterion/Chart.yaml
+      - internal/mdcode/testdata/committed-reading.txt
+      - package.json
   pull_request:
   merge_group:
     types: [checks_requested]
