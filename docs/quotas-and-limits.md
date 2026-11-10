@@ -206,7 +206,12 @@ tenant nothing — so its unset value is a number, not an opening. The ladder
 for both rows: a **negative** org field (`-1`) is the explicit `unbounded`
 escape hatch; `0` inherits the platform default (20 runs / $20); positive
 is the cap; and the platform env var accepts the literal `unbounded` to
-ship the deployment with no default bound at all. Both are metered on
+ship the deployment with no default bound at all. On the env var the hatch
+has that ONE spelling: unset ships the default, a positive number is the
+cap, and anything else — `0` included, which the neighbouring
+`ITERION_ORG_DEFAULT_*` knobs read as "no limit" — refuses the server boot
+(`invalid fork-author bound`) rather than opening the perimeter or being
+silently replaced by the default. Both are metered on
 `orgusage.ForkAuthorSubject` — the author's NUMERIC forge id, keyed beside
 the org's own budget — by the same launch-gate round trip that meters the
 org, and charged per run by the runner (`recordOrgSpend`'s second charge).
@@ -220,6 +225,13 @@ super-admin or local-mode bypass (`fork_metering_unavailable`), or when
 the metering itself errors (`fork_metering_error`); all four are 503s a
 surface may retry, on whichever surface entered (delivery, debounce flush,
 retry sweeper).
+
+A run built FROM a fork run is that author's spend too: a sub-bot child
+(`CreateChildRun`), a fork of the run (`POST /api/runs/{id}/fork`) and a
+launch naming it as `parent_run_id` or delegation source all inherit its
+author subject with its trust (`store.InheritTrustAndAuthor`), so the
+child's resume re-enters the same bound instead of being refused for want
+of an author.
 
 A fork run's RESUME owes the same bound, whichever surface asks. The gated
 resumes (`POST /api/runs/{id}/resume`, the WS answer, the retry sweeper)

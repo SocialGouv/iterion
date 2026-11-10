@@ -276,8 +276,12 @@ Single URL, two event kinds dispatched on `X-Gitlab-Event`
   (`source_project_id`/`target_project_id` and the source project's own
   path under `object_attributes.source`), so a proven fork is filtered
   with a reason naming the fork (`gitlab.Parsed.IsFork`) — the same
-  posture as the GitHub/Forgejo lanes; a payload naming neither project
-  stays on its way, and the API-side lanes fail closed on it.
+  posture as the GitHub/Forgejo lanes. The project ids decide before the
+  paths: two different ids are a fork whatever the paths say, so a source
+  path that merely compares equal to the base's never proves a same-repo
+  head (`gitlab.Parsed.SameRepoAsBase`). A payload naming neither project
+  is filtered too (`head project unproven`): same-repo is never assumed,
+  only proven.
 - **`Note Hook`** — the generic slash-command and conversation surface.
   A note's first non-whitespace token is the command; quoting "please run
   /revi" mid-text never triggers (anti-oscillation guard —
@@ -653,13 +657,26 @@ that replays a real GitHub delivery through the handler on a fake forge:
 | Hold label | `fork gesture: hold label "…" …` | the base's configuration can stop a fork run, never steer it (Q2) |
 | Non-writer | `fork gesture: … holds no write-level permission on …` | live permission only, floored at developer; the replier allowlist is never consulted (a login is renameable) |
 | Closed pull request | `fork gesture: the pull request is closed/merged …` | one gesture reviews one commit of an OPEN pull request |
+| Loop guard: identity unreadable | `loop guard unevaluable: the bot's own identity is unreadable: …` | the lane cannot tell its own note from a maintainer's gesture, so it does not guess (the forge's error is quoted) |
+| Loop guard: no login | `loop guard unevaluable: … the forge named no login` | same — an identity with no login matches nobody, so nothing can be excluded |
+| Loop guard: own comment | `self comment (loop-guard)` | the comment was written by the identity the lane speaks as — its own note echoing back |
 | Same-repo | `fork gesture: same-repo pull request …` | the lane admits a PROVEN fork; the repo's own PRs belong to its ordinary webhook |
 | Head withheld | `fork gesture: head repo withheld …` | the forge declared a head repository and did not name it (a deleted or blocked fork has exactly this shape) |
 | Head not named | `fork gesture: head repo not named …` | a fork is never assumed, only proven |
 | Private base | `fork gesture: the base repository is not PROVEN public …` | an untrusted clone holds no forge token, and one handed to it would persist in the fork's workspace — refused BEFORE the per-author bound is metered |
-| No author id | `fork gesture: the pull request names no numeric author id …` | the per-contributor bound is keyed on it; unkeyed means unbounded |
+| No author id | `fork gesture: the pull request names no numeric author id …` | the per-contributor bound is keyed on it; unkeyed means unbounded (an answer whose user carries no id, or is null, stays id-less — never user `0`) |
+| No head commit | `fork gesture: the pull request names no head commit …` | the gesture pins the commit it admits; a pin against nothing disables the runner's comparison |
 | Stale SHA | `fork gesture: the gesture pinned … but the pull request's head is …` | a new head needs a new gesture |
 | Bad args | `fork gesture: /revi takes an optional commit SHA to pin, nothing else …` | prose is not a pin |
+
+A fork-lane config serves the gesture and nothing else: every OTHER entry it
+has — an issue label, a zero-touch open — composes a trusted target, and
+every launch from a config crosses one provenance precondition
+(`webhookProvenanceRefusal`: the launch tail, the durable retry, and the
+board branch of a board-mode route before it writes any card — a Ready card
+the dispatcher would launch never reaches the tail), so each is filtered
+with `fork-lane mismatch — this subscription is the opt-in fork review lane
+…` before anything is carded or metered.
 
 The bound's own refusals (denial tokens `fork_author_run_quota_exceeded`,
 `fork_author_cost_cap_exceeded`, and the fail-closed arms
