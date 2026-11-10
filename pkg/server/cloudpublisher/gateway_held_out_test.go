@@ -19,6 +19,7 @@
 package cloudpublisher
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"slices"
@@ -27,6 +28,9 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/model"
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -276,4 +280,86 @@ func TestGatewayKey_ARepoLessPreviewSaysTheEnvFundedAnswerIsConditional(t *testi
 	if got := selectedDescriptions(control); !slices.Contains(got, "team:api_key:openai_compatible") {
 		t.Fatalf("control: a preview naming the key's repository selected %v, want the gateway key", got)
 	}
+}
+
+// W19 (B6 and the C4 gap of the round-1 review): an ATTACHED pool's gateway
+// entry serving the launch is a gateway key a tier the walk consults holds —
+// the probe reads it like the team's own, through the entry's own audiences —
+// so a decided gateway route it funds is attributed: the walk seals the entry
+// and the run is held to the team's gateway (team_gateway, ambient refused,
+// no vendor crossing on the gateway node), the mixed run as the gateway-only
+// one, which is no longer left to the pod's gateway. An entry whose key row
+// excludes the launch attributes nothing, and the preview reads the same.
+func TestGatewayKey_AnAttachedPoolsGatewayEntryAttributesTheRoute(t *testing.T) {
+	mixed := func() *ir.Workflow {
+		return &ir.Workflow{Nodes: map[string]ir.Node{
+			"gw":    &ir.AgentNode{BaseNode: ir.BaseNode{ID: "gw"}, LLMFields: ir.LLMFields{Backend: "claw", Model: "openai_compatible/team/m"}, Tools: []string{}},
+			"draft": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "draft"}, LLMFields: ir.LLMFields{Backend: "claude_code"}},
+		}}
+	}
+	for _, row := range []struct {
+		name      string
+		wf        func() *ir.Workflow
+		policy    *store.RunLLMRoutePolicy
+		excluded  bool
+		gwCrosses bool
+	}{
+		{"mixed run, the entry serves the launch", mixed, ladderPolicy(), false, false},
+		{"gateway-only run, the entry serves the launch", gatewayOnlyWorkflow, nil, false, false},
+		{"gateway-only run, the entry's key row names another repository", gatewayOnlyWorkflow, nil, true, false},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			f := newAttachedFixture(t)
+			if row.excluded {
+				other := []string{"acme/other"}
+				if _, err := f.apiKeys.Patch(store.WithTenant(context.Background(), poolTeam), "key-gw", secrets.ApiKeyPatch{Repos: &other}); err != nil {
+					t.Fatalf("patch: %v", err)
+				}
+			}
+			keys := secrets.NewMemoryApiKeyStore()
+			seedKey(t, keys, f.sealer, poolTeam, secrets.ProviderOpenAI, "sk-openai-team")
+			f.pub.apiKeys = keys
+			var buf bytes.Buffer
+			f.pub.logger = iterlog.New(iterlog.LevelInfo, &buf)
+			wf := row.wf()
+			ctx := secrets.WithLaunchRepo(store.WithTenant(context.Background(), poolTeam), gwRepo)
+			creds, err := f.pub.resolveAndSealCredentials(ctx, "run-gw-19", poolOrg, poolTeam, "requester", "docs-refresh", "", wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustDefault, nil, row.policy, frozenAttachment("pool-att"), boundaryDerived)
+			if err != nil {
+				t.Fatalf("resolveAndSealCredentials: %v", err)
+			}
+			var b secrets.RunBundle
+			if creds.secretsRef != "" {
+				b = bundleFrom(t, f.pub, ctx, creds, "run-gw-19")
+			}
+			sealed := b.APIKeys[secrets.ProviderOpenAICompatible] != ""
+			if sealed == row.excluded || creds.contentBoundary.TeamGateway() == row.excluded || b.AmbientLLMRefused == row.excluded {
+				t.Fatalf("entry sealed=%v boundary=%+v ambient=%v, want the entry %s (log:\n%s)", sealed, creds.contentBoundary, b.AmbientLLMRefused,
+					map[bool]string{false: "sealed under team_gateway", true: "left out and the run own_keys"}[row.excluded], buf.String())
+			}
+			if row.excluded && !strings.Contains(buf.String(), envFundedLine) {
+				t.Fatalf("an entry its key row excludes attributed the gateway route: the run is not env-funded (log:\n%s)", buf.String())
+			}
+			if row.policy != nil && policyCrossing(wf, "gw") != row.gwCrosses {
+				t.Fatalf("gateway node crossing = %v under a pool-funded team_gateway run", policyCrossing(wf, "gw"))
+			}
+			if row.policy != nil {
+				return
+			}
+			preview, perr := previewReadOnly(f.pub).PreviewCredentials(ctx, runviewPreviewSpecAttached(), gatewayOnlyWorkflow())
+			if perr != nil {
+				t.Fatalf("preview: %v", perr)
+			}
+			if got := slices.Contains(selectedDescriptions(preview), "pool:api_key:openai_compatible"); got == row.excluded {
+				t.Fatalf("preview selected %v, want the pool's gateway entry selected = %v", selectedDescriptions(preview), !row.excluded)
+			}
+		})
+	}
+}
+
+// runviewPreviewSpecAttached is the preview spec of the attached fixture's
+// launch: its team, its requester, the frozen attachment.
+func runviewPreviewSpecAttached() runview.CredentialPreviewSpec {
+	spec := previewSpec(poolTeam, "requester")
+	spec.PoolAttachment = frozenAttachment("pool-att")
+	return spec
 }

@@ -1510,9 +1510,9 @@ model: the id is the gateway's own naming. A key restricted to bots or
 repositories proves nothing there ([models.md](models.md)).
 
 In the cloud, that key funds the team's gateway routes (ADR-131 §5). When a
-credential tier the launch consults — the team's own, then the org's and the
-platform's unless the team is sovereign or pool-mapped — holds a gateway key
-serving the launch's bot and repository, the credential walk seals it with its
+credential tier the launch consults — the team's own, then the org's, an
+attached pool's gateway entry and the platform's unless the team is sovereign
+or pool-mapped — holds a gateway key serving the launch's bot and repository, the credential walk seals it with its
 base URL and endpoint-aware fingerprint, and the run's literal
 `openai_compatible/…` routes spend it, never the runner's environment; a capped
 key still decides it, the run then parks on it. A key the run's frozen pair order

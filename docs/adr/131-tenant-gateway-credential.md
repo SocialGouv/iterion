@@ -66,8 +66,11 @@ pinned by the attached-tier suite. PR: #3114.
 The credential walk, its funding refusals, the allowlist gate and the preview read the
 first; the pool wants, the legacy pool and the fallback door read the second. "The team
 holds a gateway key" is a lazy probe of the tiers the walk consults (the team's own;
-the org's and the platform's unless the team is sovereign or pool-mapped), under the
-audiences `secrets.Resolve` applies and without the usability predicate; it attributes
+the org's, an attached pool's (ADR-164) and the platform's unless the team is sovereign
+or pool-mapped), under the audiences `secrets.Resolve` applies and without the usability
+predicate — an attached pool's gateway entry counts when the broker would serve it to the
+launch now and its key row's own `bots`/`repos` admit the launch, so a decided gateway
+route the entry funds is attributed and the run is `team_gateway`; it attributes
 the routes only to a key that can seal for the run — the run's frozen lists admit the
 gateway slot and the key's sealed secret opens. A held key that cannot seal leaves
 the routes to the pod's gateway (§5's replay clause), named on the env-funded line and

@@ -3,7 +3,6 @@ package cloudpublisher
 import (
 	"context"
 	"fmt"
-	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -163,7 +162,7 @@ func (p *Publisher) previewCredentials(ctx context.Context, spec runview.Credent
 	// source may serve several, or a pattern): a gateway key its repository
 	// audience alone keeps out is reported, never read as absent.
 	gateway := p.gatewayRouting(x.ctx, previewView, spec.Context.TeamID, x.orgID, spec.OwnerID, previewBotID, sovereignPreview, pooledPreview,
-		gatewayProbe{lists: x.policy, allowed: x.allowed, repoUnknown: secrets.LaunchRepoFromContext(x.ctx) == ""})
+		gatewayProbe{lists: x.policy, allowed: x.allowed, repoUnknown: secrets.LaunchRepoFromContext(x.ctx) == "", attachment: spec.PoolAttachment, botID: spec.Context.BotID})
 	previewView, envFunded := gateway.view, gateway.envFunded
 	x.policy = x.policy.withGatewaySlot(gateway.sealable)
 	if sovereignPreview && !envFunded {
@@ -286,10 +285,6 @@ func (p *Publisher) previewCredentials(ctx context.Context, spec runview.Credent
 			// (law 4's parity).
 			if spec.PoolAttachment != nil && spec.PoolAttachment.PoolID != "" {
 				attachedWants := append(append([]credpool.Credential{}, wants...), credpool.Credential{Source: credpool.SourceAPIKey, Ref: string(secrets.ProviderOpenAICompatible)})
-				var marginFn func(credpool.Pledge) (time.Time, bool)
-				if slices.Contains(spec.PoolAttachment.Strategy.Triggers, "usage_window") {
-					marginFn = p.closedAtMargin(ctx, strategyMargin(spec.PoolAttachment.Strategy))
-				}
 				// Law 1's gate, exactly as the live walk: a slot tiers 1–4
 				// sealed (or the whitelist holds out) is not asked of the
 				// pool — a candidate the launch would never draw must not
@@ -318,11 +313,7 @@ func (p *Publisher) previewCredentials(ctx context.Context, spec runview.Credent
 					}
 				}
 				x.out.Pool.Considered = active
-				pool, err := p.previewLent(ctx, credpool.Request{
-					OrgID: x.orgID, TenantID: spec.Context.TeamID, UserID: spec.OwnerID, BotID: spec.Context.BotID,
-					Wants: asked, PoolIDs: []string{spec.PoolAttachment.PoolID},
-					RankMode: credpool.StrategyMode(spec.PoolAttachment.Strategy.Mode), ClosedAtMargin: marginFn,
-				})
+				pool, err := p.previewLent(ctx, p.attachedPoolPreviewRequest(ctx, x.orgID, spec.Context.TeamID, spec.OwnerID, spec.Context.BotID, spec.PoolAttachment, asked))
 				if err != nil {
 					x.out.Pool.Reason = "unknown"
 					x.conditional("Attached pool metadata unavailable; selection is conditional.")

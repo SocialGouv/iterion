@@ -6,6 +6,7 @@ import (
 	"slices"
 
 	"github.com/SocialGouv/iterion/pkg/backend/model"
+	"github.com/SocialGouv/iterion/pkg/credpool"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -95,6 +96,13 @@ type gatewayProbe struct {
 	// preview's, when it names none): a key its repository audience alone
 	// keeps out is reported (gatewayRoutes.repoOnly), never read as absent.
 	repoUnknown bool
+	// attachment is the launch's resolved pool attachment (ADR-164), nil when
+	// none: its pool is a tier the walk consults, so a gateway entry it would
+	// serve this launch — read like the walk draws it, through the entry's
+	// key row audiences (previewLent) — attributes the routes like a team key.
+	// botID is the launch's bot as the pool reads it (the walk's raw botID).
+	attachment *store.RunPoolAttachment
+	botID      string
 }
 
 // gatewayRouting is ADR-131 §5's one answer about a run's gateway routes,
@@ -181,12 +189,19 @@ type gatewayHold struct {
 // undecryptable key up in silence, the next key of the provider taking its
 // place. What was held and could not seal is named in the answer's note.
 //
+// The ATTACHED pool (ADR-164) is one of those tiers, between the org's and
+// the platform's as the walk visits them: a gateway entry it would serve this
+// launch now — the broker's own selection, held to the entry's key row
+// audiences (previewLent) — funds the routes like a team key, so the walk
+// seals it and the run is held to the team's gateway. Its key is lent, never
+// opened here: the broker opens it at the grant.
+//
 // A tier whose keys cannot be listed is read as HOLDING one, said out loud:
 // the walk then consults that tier, whose own read decides — the tenant's
 // fails the launch, a shared tier's skips with its own line — where reading
 // it as empty would send the team's routes to the pod's money in silence.
 func (p *Publisher) gatewayKeyHold(ctx context.Context, tenantID, orgID, ownerID, audienceBotID string, sharedTiersBlocked bool, probe gatewayProbe) gatewayHold {
-	if p.apiKeys == nil || tenantID == "" {
+	if tenantID == "" {
 		return gatewayHold{}
 	}
 	repo := secrets.LaunchRepoFromContext(ctx)
@@ -198,6 +213,9 @@ func (p *Publisher) gatewayKeyHold(ctx context.Context, tenantID, orgID, ownerID
 	// list that failed); otherwise the walk moves to the next tier, as the
 	// walk's own fill would.
 	visit := func(tier, scope, userID string) (hold gatewayHold, decided bool) {
+		if p.apiKeys == nil {
+			return gatewayHold{}, false
+		}
 		visible, err := p.apiKeys.ListByTeam(store.WithTenant(ctx, scope), scope, userID)
 		if err != nil {
 			if p.logger != nil {
@@ -242,6 +260,9 @@ func (p *Publisher) gatewayKeyHold(ctx context.Context, tenantID, orgID, ownerID
 				return hold
 			}
 		}
+		if hold, decided := p.attachedGatewayHold(ctx, orgID, tenantID, ownerID, slot, probe); decided {
+			return hold
+		}
 		if p.platformAudience == nil || p.platformAudience.Get(ctx).Allows(orgID, tenantID) {
 			if hold, decided := visit("platform", secrets.PlatformTenantID, ""); decided {
 				return hold
@@ -249,4 +270,31 @@ func (p *Publisher) gatewayKeyHold(ctx context.Context, tenantID, orgID, ownerID
 		}
 	}
 	return gatewayHold{note: unopened, repoOnly: repoOnly}
+}
+
+// attachedGatewayHold is gatewayKeyHold's attached-pool tier: decided when
+// the attachment's pool would serve this launch a gateway entry (funding the
+// routes, or held out by the run's frozen lists, noted like a team key), or
+// when its metadata cannot be read (read as holding one, as a key list that
+// failed is). Not decided when there is no attachment or no entry serves.
+func (p *Publisher) attachedGatewayHold(ctx context.Context, orgID, tenantID, ownerID, slot string, probe gatewayProbe) (gatewayHold, bool) {
+	att := probe.attachment
+	if att == nil || att.PoolID == "" || p.credPool == nil {
+		return gatewayHold{}, false
+	}
+	want := credpool.Credential{Source: credpool.SourceAPIKey, Ref: string(secrets.ProviderOpenAICompatible)}
+	pv, err := p.previewLent(ctx, p.attachedPoolPreviewRequest(ctx, orgID, tenantID, ownerID, probe.botID, att, []credpool.Credential{want}))
+	if err != nil {
+		if p.logger != nil {
+			p.logger.Warn("cloudpublisher: attached pool %s metadata for the gateway probe: %v — read as holding a gateway entry: the walk consults the pool and its own draw decides", att.PoolID, err)
+		}
+		return gatewayHold{funds: true, note: fmt.Sprintf("the attached pool %s could not be read (%v), so the gateway probe read it as holding a gateway entry and the walk's own draw decided", att.PoolID, err)}, true
+	}
+	if !slices.ContainsFunc(pv.Candidates, func(c credpool.PreviewCandidate) bool { return c.Selected && c.Ref == want.Ref }) {
+		return gatewayHold{}, false
+	}
+	if !probe.lists.sealableHeldSlot(slot) {
+		return gatewayHold{note: fmt.Sprintf("the attached pool %s's gateway entry serves this launch, but %s", att.PoolID, slotHeldOutBy(probe.allowed, slot))}, true
+	}
+	return gatewayHold{funds: true}, true
 }

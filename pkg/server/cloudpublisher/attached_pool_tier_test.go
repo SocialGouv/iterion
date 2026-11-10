@@ -25,6 +25,9 @@ type attachedFixture struct {
 	atts    *credpool.MemoryAttachmentStore
 	leases  *credpool.MemoryLeaseStore
 	oauth   *secrets.MemoryOAuthStore
+	// apiKeys is the store the broker reads lent rows from (the gateway
+	// entry's key-gw lives there).
+	apiKeys *secrets.MemoryApiKeyStore
 }
 
 func newAttachedFixture(t *testing.T) *attachedFixture {
@@ -100,7 +103,7 @@ func newAttachedFixture(t *testing.T) *attachedFixture {
 			runSecrets: rs, sealer: sealer, credPool: broker,
 			logger: iterlog.New(iterlog.LevelError, nil), rotatedOAuthKinds: rotatedClaude,
 		},
-		rs: rs, sealer: sealer, pools: pools, pledges: pledges, atts: atts, leases: leases, oauth: oauth,
+		rs: rs, sealer: sealer, pools: pools, pledges: pledges, atts: atts, leases: leases, oauth: oauth, apiKeys: apiKeys,
 	}
 }
 

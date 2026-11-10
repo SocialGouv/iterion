@@ -798,7 +798,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 		policy = policy.withProviderAllowlist(allowed)
 	}
 	gateway := p.gatewayRouting(ctx, view, tenantID, orgID, ownerID, audienceBotID, sovereign, runnerPool != "",
-		gatewayProbe{lists: policy, allowed: allowed, opens: func(k secrets.ApiKey) error {
+		gatewayProbe{lists: policy, allowed: allowed, attachment: poolAttachment, botID: botID, opens: func(k secrets.ApiKey) error {
 			_, err := secrets.OpenApiKey(p.sealer, k)
 			return err
 		}})
@@ -5958,6 +5958,23 @@ func (p *Publisher) acquireFromAttachedPools(ctx context.Context, runID, orgID, 
 			p.credPool.ReleaseGrant(ctx, grant)
 			res.releasedGrants = append(res.releasedGrants, grant)
 		}
+	}
+}
+
+// attachedPoolPreviewRequest is the read-only Request for an attached pool's
+// candidates (ADR-164): the credential preview's and the gateway probe's one
+// constructor, carrying the live walk's strategy — its rank mode and, when
+// the frozen triggers answer usage_window, its margin predicate (law 4) — so
+// neither reads a candidate the walk would not draw.
+func (p *Publisher) attachedPoolPreviewRequest(ctx context.Context, orgID, tenantID, ownerID, botID string, att *store.RunPoolAttachment, wants []credpool.Credential) credpool.Request {
+	var marginFn func(credpool.Pledge) (time.Time, bool)
+	if slices.Contains(att.Strategy.Triggers, "usage_window") {
+		marginFn = p.closedAtMargin(ctx, strategyMargin(att.Strategy))
+	}
+	return credpool.Request{
+		OrgID: orgID, TenantID: tenantID, UserID: ownerID, BotID: botID,
+		Wants: wants, PoolIDs: []string{att.PoolID},
+		RankMode: credpool.StrategyMode(att.Strategy.Mode), ClosedAtMargin: marginFn,
 	}
 }
 
