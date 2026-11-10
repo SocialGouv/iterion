@@ -75,6 +75,21 @@ and the limits are applied before the interpreter exists — `RLIMIT_AS` /
 non-dumpable, a parent-death signal, and Landlock in deny-all where the kernel
 offers it.
 
+**We already own the host half.** claw-code-go — first-party, vendored, and
+being folded into this tree — executes model-authored JavaScript today:
+`internal/runtime/workflow.go` runs a prelude and then the script on a goja
+runtime over a `goja_nodejs` event loop, with a resolve/reject bridge and caps
+(512 KiB of source, 15/60 minutes, 200 `agent()` calls). No iterion node can
+reach it: `workflow` is a claw tool iterion does not advertise.
+
+Two differences are the whole of CM-1's work, so read them before writing any:
+that host binds **`agent`**, so its scripts orchestrate sub-agents and never
+touch the node's tools; and it runs **in process**, so its caps are exactly the
+engine-level ones F19 says are unenforceable. CM-1 moves that machinery into a
+child process under kernel limits and swaps `agent` for a `tools.*` binding
+backed by `dispatch`. A seam that crosses claw is improved in its `.works/`
+worktree and bumped — never forked here.
+
 `GOMEMLIMIT` is a GC target. It is not a cap, and it is not an answer here.
 
 Where Landlock is missing on an in-pod runner, codemode is granted only to a
