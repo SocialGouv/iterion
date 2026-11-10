@@ -7,6 +7,7 @@ import (
 	"fmt"
 
 	"github.com/SocialGouv/iterion/pkg/credpool"
+	"github.com/SocialGouv/iterion/pkg/webhooks"
 )
 
 // decodePoolBlock is the ONE decoder of a provisioning record's pool:
@@ -52,6 +53,13 @@ func (s *Server) validatePoolBindingWrite(ctx context.Context, teamID string, b 
 	if err := validatePoolTriggers(b.Strategy.Triggers); err != nil {
 		return err
 	}
+	// An OPT-OUT block (enabled=false) grants nothing — it stops the fold
+	// at this level, whatever the named pool's state or owner — so it needs
+	// no consent: refusing it would make "keep this repo out of the
+	// platform's pool" unwritable.
+	if !b.Enabled {
+		return nil
+	}
 	if s.credPoolPools == nil {
 		return fmt.Errorf("pool attachments are not wired on this deployment")
 	}
@@ -62,7 +70,7 @@ func (s *Server) validatePoolBindingWrite(ctx context.Context, teamID string, b 
 	if !pool.Enabled {
 		return fmt.Errorf("the pool block names pool %q, which is disabled", b.PoolID)
 	}
-	if pool.EffectiveVisibility() == credpool.PoolVisibilityPrivate && !pool.OwnedBy(credpool.PoolOwnerUser, "") {
+	if pool.EffectiveVisibility() == credpool.PoolVisibilityPrivate {
 		// A private pool consents ONLY by ownership, and a record's block
 		// is a team's MACHINE lane (a schedule, a forge integration's
 		// webhook): user-private pools do not serve machine lanes.
@@ -84,13 +92,13 @@ func (s *Server) validatePoolBindingWrite(ctx context.Context, teamID string, b 
 		}
 		return nil
 	}
-	// A USER pool: the audience must admit the team's org (the same dial
+	// A USER pool: its audience must admit the team (the same dial
 	// poolAttachmentConsent reads) — private pools were already refused
-	// above; an audience pool whose zero/explicit audience does not admit
-	// this team refuses here.
+	// above. The audience may name the team itself, so a team outside any
+	// org can be admitted; only an unreadable team refuses.
 	t, gerr := s.authStore().GetTeam(ctx, teamID)
-	if gerr != nil || t.OrgID == "" {
-		return fmt.Errorf("team %s resolves no org: the user pool %q cannot consent", teamID, b.PoolID)
+	if gerr != nil {
+		return fmt.Errorf("team %s could not be read: the user pool %q cannot consent: %w", teamID, b.PoolID, gerr)
 	}
 	if !pool.Audience.Allows(pool.OrgID, t.OrgID, teamID, "", false) {
 		return fmt.Errorf("pool %q's audience does not admit team %s — the pool owner widens it first", b.PoolID, teamID)
@@ -111,4 +119,32 @@ func (s *Server) decodeAndValidatePoolBlock(ctx context.Context, teamID string, 
 		return nil, false, err
 	}
 	return b, spoke, nil
+}
+
+// poolLayersOf projects an integration's webhook config pool block into the
+// fold's binding layers — the ONE projection every lane that launches or
+// previews on behalf of an integration passes: the direct webhook lane,
+// the board and pipeline card lanes, the webhook-source credential
+// preview. An opt-out block (enabled=false) is a layer too: it stops the
+// fold there. Nil config or no block = no layer.
+func poolLayersOf(cfg *webhooks.Config) []credpool.BindingLayer {
+	if cfg == nil {
+		return nil
+	}
+	if bl, ok := cfg.PoolBindingLayer(); ok {
+		return []credpool.BindingLayer{bl}
+	}
+	return nil
+}
+
+// cardPoolLayers is poolLayersOf for a CARD lane: the card names the
+// integration through a member-writable bot-arg, and a member may re-bind
+// the card to another bot while the id stays. The integration's block
+// speaks only for the bots it runs and only while it is enabled — for any
+// other bot the card's run folds the stored scopes like any team run.
+func cardPoolLayers(cfg *webhooks.Config, botID string) []credpool.BindingLayer {
+	if cfg == nil || !cfg.Enabled || !cfg.AllowsBot(botID) {
+		return nil
+	}
+	return poolLayersOf(cfg)
 }

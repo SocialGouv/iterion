@@ -170,7 +170,7 @@ func (s *Server) handleEnableForgeRepoBots(w http.ResponseWriter, r *http.Reques
 	// forge-side until approved. Validated exactly like the direct path
 	// above, so what the admin approves is what would have run. A store
 	// error here FAILS the request (503): the gate never fails open.
-	orgID, gerr := s.provisionOrgRequiringApproval(r.Context(), id, teamID)
+	orgID, gerr := s.provisionOrgRequiringApproval(r.Context(), id, teamID, pool != nil && pool.Enabled)
 	if gerr != nil {
 		httpError(w, http.StatusServiceUnavailable, "provision-approval gate unavailable: %v", gerr)
 		return
@@ -327,7 +327,7 @@ func (s *Server) handleUpdateForgeRepoBots(w http.ResponseWriter, r *http.Reques
 	// surface needs the org's approval — removals and tightenings go
 	// through directly (see expandsProvisionSurface). A store error FAILS
 	// the request (503): the gate never fails open.
-	uOrgID, ugerr := s.provisionOrgRequiringApproval(r.Context(), id, teamID)
+	uOrgID, ugerr := s.provisionOrgRequiringApproval(r.Context(), id, teamID, pool != nil && pool.Enabled)
 	if ugerr != nil {
 		httpError(w, http.StatusServiceUnavailable, "provision-approval gate unavailable: %v", ugerr)
 		return

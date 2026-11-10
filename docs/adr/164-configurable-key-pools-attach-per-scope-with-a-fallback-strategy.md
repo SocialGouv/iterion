@@ -82,3 +82,11 @@ Decision 7's held bit lands on the LEASE, not the run doc — the lease is alrea
 - The entry reset route lifts every hold naming the entry (`LeaseStore.ClearHeld`, memory + Mongo twins); the write surfaces accept the dial.
 - Scope, stated: a switch made IN-RUN by the entry rungs does not hold — the in-run chain restarts from its top on every attempt.
 - With it, the attached walk's takeover is per resolution: its FIRST acquisition supersedes what the run's previous attempt left open (a dead pod's leases no longer hold the donors' slots until the TTL), every later slot is that grant's sibling.
+
+### The first local review round on #3123 (same date)
+
+- **Consent asks only of a block that draws**: an opt-out block (`enabled: false`) grants nothing — it stops the fold at its level whatever the named pool's state or owner — so it writes with a valid shape alone; that is how a repo stays out of the platform's attached pool. A user pool's audience may name a team outside any org.
+- **Every lane that launches for an integration folds its block**: the direct webhook lane, the board and pipeline card lanes (only for a bot the integration runs, while it is enabled — a card's bot is member-writable), and the webhook-source credential preview. The signal reconciler warms a pool an integration binds, and a pool still drawn by an enabled binding block refuses deletion (409), like an attached one.
+- **A request that binds a live shared pool is reviewed** under the `shared_credentials` approval scope even when the team funds its own runs: those runs are the pool's.
+- **An attempt's report settles exactly its own leases**: the leases one resolution opens share an attempt id, and the report books each its fingerprint slice in whatever state it is (open, or superseded by the next attempt's takeover) — never a lease of another attempt of the same run. A lease returned unused is never the report's target.
+- **reset_hold's switch is an exhaustion**: margin, cooldown, health or an exhausted allowance of an entry ranked at least as well — never a paused, bot-filtered, out-of-hours or busy one, nor a store error; the run's NEWEST lease of the kind decides what it holds.

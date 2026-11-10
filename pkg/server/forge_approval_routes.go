@@ -52,7 +52,7 @@ func (s *Server) registerForgeApprovalRoutes() {
 // blip would silently bypass Org.RequireProvisionApproval. A team with no
 // parent org (local mode, legacy rows) legitimately has no approval
 // authority and provisions directly.
-func (s *Server) provisionOrgRequiringApproval(ctx context.Context, id auth.Identity, teamID string) (string, error) {
+func (s *Server) provisionOrgRequiringApproval(ctx context.Context, id auth.Identity, teamID string, drawsShared bool) (string, error) {
 	if s.provisionApprovals == nil || s.authSvc == nil {
 		return "", nil
 	}
@@ -74,10 +74,13 @@ func (s *Server) provisionOrgRequiringApproval(ctx context.Context, id auth.Iden
 		return "", nil // org admin / super-admin: auto-approved by right
 	}
 	// A team that funds its OWN runs answers to nobody for what it spends,
-	// so an org that scoped its gate to shared credentials lets it through.
-	// Same fail-closed rule as the reads above: a store error parks the
-	// request rather than waving it past the gate.
-	if o.EffectiveProvisionApprovalScope() == identity.ProvisionApprovalSharedCredentials {
+	// so an org that scoped its gate to shared credentials lets it through
+	// — unless THIS request binds the repo's runs to a shared key pool
+	// (drawsShared, ADR-164): those runs are funded by the pool, not the
+	// team, which is exactly what the scope exists to review. Same
+	// fail-closed rule as the reads above: a store error parks the request
+	// rather than waving it past the gate.
+	if o.EffectiveProvisionApprovalScope() == identity.ProvisionApprovalSharedCredentials && !drawsShared {
 		funded, err := s.teamFundsItsOwnRuns(ctx, teamID)
 		if err != nil {
 			return "", fmt.Errorf("resolve team %s credentials for the provision-approval gate: %w", teamID, err)

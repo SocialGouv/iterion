@@ -580,7 +580,8 @@ func (s *Server) handleUpdateWebhook(w http.ResponseWriter, r *http.Request) {
 	// whose approval flow is the governed path. Tightenings and neutral
 	// fields (launch vars, rate limits, names) stay direct.
 	if strings.HasPrefix(cfg.ProvisionedBy, "forge:") {
-		gateOrg, gerr := s.provisionOrgRequiringApproval(r.Context(), id, teamID)
+		// The webhook CRUD carries no pool block: it never binds a shared pool.
+		gateOrg, gerr := s.provisionOrgRequiringApproval(r.Context(), id, teamID, false)
 		if gerr != nil {
 			httpError(w, http.StatusServiceUnavailable, "provision-approval gate unavailable: %v", gerr)
 			return

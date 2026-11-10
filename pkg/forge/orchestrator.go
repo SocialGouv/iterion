@@ -1479,10 +1479,16 @@ func (o *Orchestrator) syncSchedulesWithPool(ctx context.Context, tenantID, inte
 	// share a creation instant, so no store ordering recovers which row
 	// served which invocation.
 	priorByBot := map[string][]cloudsched.ScheduledBot{}
-	if prior, err := o.Schedules.ListByIntegration(ctx, tenantID, integrationID); err == nil {
-		for _, row := range prior {
-			priorByBot[row.BotID] = append(priorByBot[row.BotID], row)
-		}
+	// The rows are read BEFORE they are deleted below, and the read failing
+	// refuses the sync: a rebuild from nothing would erase every row's
+	// operator-owned state — its own pool and routing blocks (an opt-out
+	// replaced by the integration's projection), cadence, vars, pause.
+	prior, err := o.Schedules.ListByIntegration(ctx, tenantID, integrationID)
+	if err != nil {
+		return fmt.Errorf("forge: read the integration's schedule rows before rebuilding them: %w", err)
+	}
+	for _, row := range prior {
+		priorByBot[row.BotID] = append(priorByBot[row.BotID], row)
 	}
 	for bot, q := range priorByBot {
 		sort.Slice(q, func(i, j int) bool {
@@ -2395,13 +2401,6 @@ func nilIfEmpty(m map[string]string) map[string]string {
 	return m
 }
 
-// nilIfEmptyRouting collapses an explicitly-empty routing block to nil —
-// the schedule rows' and the integration record's stored shape for "the
-// level says nothing". A spoken clear arrives as a non-nil empty policy
-// (the JSON `null` mapped to a typed nil at the HTTP edge reads as
-// RoutingSet=true, Routing=nil, so the empty shape comes from a record
-// that predates the collapse); storing it as nil keeps every reader's
-// `nil = unset` honest and every GET's `routing: null` truthful.
 // clonePoolBinding copies a pool block so each projected row owns its own
 // value (the strategy's margin pointer and trigger slice included) — rows
 // sharing one pointer would let a later in-place edit of one leak into
@@ -2419,6 +2418,13 @@ func clonePoolBinding(b *credpool.Binding) *credpool.Binding {
 	return &c
 }
 
+// nilIfEmptyRouting collapses an explicitly-empty routing block to nil —
+// the schedule rows' and the integration record's stored shape for "the
+// level says nothing". A spoken clear arrives as a non-nil empty policy
+// (the JSON `null` mapped to a typed nil at the HTTP edge reads as
+// RoutingSet=true, Routing=nil, so the empty shape comes from a record
+// that predates the collapse); storing it as nil keeps every reader's
+// `nil = unset` honest and every GET's `routing: null` truthful.
 func nilIfEmptyRouting(p *llmroute.Policy) *llmroute.Policy {
 	if p == nil || reflect.DeepEqual(*p, llmroute.Policy{}) {
 		return nil

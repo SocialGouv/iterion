@@ -93,21 +93,15 @@ type updateScheduleReq struct {
 	// wholesale. The same mechanic the platform record's PUT uses.
 	Routing json.RawMessage `json:"routing,omitempty"`
 	// Pool block (ADR-164): the binding-level opt-in — {pool_id, enabled,
-	// strategy{mode, margin_pct, triggers, reset_hold}}. Same ABSENT/null/
-	// object mechanic. Validated at record-write time below: the block's
-	// shape, the pool's existence and enablement, and the pool's CONSENT
-	// (its owner, or an audience admitting this team) — an attachment is
-	// an opt-in, never a takeover. This block is also the machine lane's
-	// grant: the schedule's launches draw the named pool because an admin
-	// of this team wrote the block.
-	// Pool block (ADR-164): the binding-level opt-in — {pool_id, enabled,
 	// strategy{mode, margin_pct, triggers, reset_hold}}. ABSENT leaves the
 	// stored block untouched, `null` clears it (the schedule inherits
 	// again), an object replaces it wholesale. Validated at record-write
-	// time: the block's shape, the pool's existence and enablement, and
-	// the pool's CONSENT. This block is also the machine lane's grant:
-	// the schedule's launches draw the named pool because an admin of
-	// this team wrote the block.
+	// time (validatePoolBindingWrite): an ENABLED block needs the pool to
+	// exist, be enabled and CONSENT (an org pool of this team's org, a user
+	// pool whose audience admits the team); an opt-out block (enabled
+	// false) grants nothing and needs only a valid shape. An enabled block
+	// is the machine lane's grant: the schedule's launches draw the named
+	// pool because an admin of this team wrote it.
 	Pool json.RawMessage `json:"pool,omitempty"`
 }
 

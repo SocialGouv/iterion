@@ -329,3 +329,95 @@ func TestRepoBotsPool_DirectLaneRoundTrips(t *testing.T) {
 	}
 	stored("patch clear", nil)
 }
+
+// TestCardPoolLayers_theIntegrationSpeaksOnlyForItsBotsWhileEnabled: a card
+// names its integration through a member-writable bot-arg and can be
+// re-bound to another bot; the integration's pool block (an opt-out
+// included) speaks for the bots it runs, while it is enabled.
+func TestCardPoolLayers_theIntegrationSpeaksOnlyForItsBotsWhileEnabled(t *testing.T) {
+	cfg := &webhooks.Config{ID: "wh", TenantID: "t1", Enabled: true, BotIDs: []string{"review-pr"},
+		Pool: &credpool.Binding{PoolID: "pool-a", Enabled: true}}
+	if got := cardPoolLayers(cfg, "review-pr"); len(got) != 1 || got[0].PoolID != "pool-a" || got[0].Source != "webhook" {
+		t.Fatalf("an allowed bot of an enabled integration = %+v, want the webhook layer", got)
+	}
+	if got := cardPoolLayers(cfg, "app-dev"); got != nil {
+		t.Fatalf("a card re-bound to a bot the integration does not run drew its pool layer %+v", got)
+	}
+	off := *cfg
+	off.Enabled = false
+	if got := cardPoolLayers(&off, "review-pr"); got != nil {
+		t.Fatalf("a disabled integration still speaks for the card: %+v", got)
+	}
+	optOut := *cfg
+	optOut.Pool = &credpool.Binding{PoolID: "pool-a", Enabled: false}
+	if got := cardPoolLayers(&optOut, "review-pr"); len(got) != 1 || got[0].Enabled {
+		t.Fatalf("the integration's opt-out did not reach the card lane as a disabled layer: %+v", got)
+	}
+	if cardPoolLayers(nil, "review-pr") != nil {
+		t.Fatal("a card naming no integration has no pool layer")
+	}
+}
+
+// B: a team that funds its own runs still parks when THIS request binds the
+// repo to a shared pool — those runs are funded by the pool, the very thing
+// the shared_credentials scope reviews. An opt-out block binds nothing and
+// keeps the funded team's direct lane.
+func TestApprovalScope_sharedCredentialsParksAFundedTeamBindingAPool(t *testing.T) {
+	s, done := scopedApprovalServer(t, identity.ProvisionApprovalSharedCredentials)
+	defer done()
+	seedTeamKey(t, s, "t1")
+	pools := credpool.NewMemoryPoolStore()
+	s.credPoolPools = pools
+	if err := pools.Upsert(context.Background(), credpool.Pool{ID: "pool-o1", OrgID: "o1", Enabled: true, OwnerType: credpool.PoolOwnerOrg, OwnerID: "o1"}); err != nil {
+		t.Fatal(err)
+	}
+	conn := firstConnID(t, s)
+	bind := `{"connection_id":"` + conn + `","repo":"group/api","bot_ids":["review-pr"],"pool":{"pool_id":"pool-o1","enabled":true}}`
+	w := httptest.NewRecorder()
+	s.handleEnableForgeRepoBots(w, forgeReq(teamAdminCtx(), "POST", "/api/teams/t1/forge/repo-bots", bind, "t1"))
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("a funded team binding a live shared pool: code=%d body=%s, want 202 (parked for review)", w.Code, w.Body.String())
+	}
+	optOut := `{"connection_id":"` + conn + `","repo":"group/api","bot_ids":["review-pr"],"pool":{"pool_id":"pool-o1","enabled":false}}`
+	w = httptest.NewRecorder()
+	s.handleEnableForgeRepoBots(w, forgeReq(teamAdminCtx(), "POST", "/api/teams/t1/forge/repo-bots", optOut, "t1"))
+	if w.Code != http.StatusOK {
+		t.Fatalf("a funded team opting a repo OUT of a pool: code=%d body=%s, want 200 (direct — it binds nothing shared)", w.Code, w.Body.String())
+	}
+}
+
+// G: an opt-out block grants nothing, so it needs no consent — naming the
+// platform's instance pool, a disabled pool or one that no longer exists
+// must write (the fold honours it); an ENABLED block keeps every check.
+// I: a user pool's audience may admit a team outside any org by name.
+func TestValidatePoolBindingWrite_optOutNeedsNoConsentAndAudienceMayNameATeam(t *testing.T) {
+	s, _ := poolRoutesServer(t)
+	ctx := context.Background()
+	pools := s.credPoolPools.(*credpool.MemoryPoolStore)
+	for _, p := range []credpool.Pool{
+		{ID: "pool-platform", Enabled: true, OwnerType: credpool.PoolOwnerPlatform},
+		{ID: "pool-off", OrgID: "org1", Enabled: false, OwnerType: credpool.PoolOwnerOrg, OwnerID: "org1"},
+		{ID: "pool-teams", Enabled: true, OwnerType: credpool.PoolOwnerUser, OwnerID: "jo", Audience: credpool.Audience{Teams: []string{"t-noorg"}}},
+	} {
+		if err := pools.Upsert(ctx, p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, id := range []string{"pool-platform", "pool-off", "pool-gone"} {
+		if err := s.validatePoolBindingWrite(ctx, "team1", &credpool.Binding{PoolID: id, Enabled: false}); err != nil {
+			t.Errorf("opt-out of %s refused: %v — an opt-out grants nothing", id, err)
+		}
+		if err := s.validatePoolBindingWrite(ctx, "team1", &credpool.Binding{PoolID: id, Enabled: true}); err == nil {
+			t.Errorf("binding %s ENABLED was accepted — only the opt-out skips the consent", id)
+		}
+	}
+	if _, err := s.authStore().CreateTeam(ctx, identity.Team{ID: "t-noorg", Name: "t-noorg", Slug: "t-noorg", CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.validatePoolBindingWrite(ctx, "t-noorg", &credpool.Binding{PoolID: "pool-teams", Enabled: true}); err != nil {
+		t.Errorf("a user pool whose audience names the org-less team refused it: %v", err)
+	}
+	if err := s.validatePoolBindingWrite(ctx, "team1", &credpool.Binding{PoolID: "pool-teams", Enabled: true}); err == nil {
+		t.Error("a team the user pool's audience does not name was admitted")
+	}
+}

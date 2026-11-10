@@ -706,6 +706,12 @@ type Lease struct {
 	// entry. A resume prefers the run's newest held entry of the kind over
 	// re-ranking, until the entry reset route clears the mark.
 	Held bool `bson:"held,omitempty" json:"held,omitempty"`
+	// AttemptID names the credential resolution that opened the lease —
+	// the leases ONE attempt seals side by side (the attached tier's
+	// forfait and gateway slots) share it. The attempt's report settles
+	// exactly these siblings, whatever their state, and never a lease of
+	// another attempt of the same run. Empty on single-lease acquisitions.
+	AttemptID string `bson:"attempt_id,omitempty" json:"attempt_id,omitempty"`
 }
 
 // Lease outcomes. Free-form for display, but these three are load-bearing:

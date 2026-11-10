@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
+	"github.com/SocialGouv/iterion/pkg/credpool"
 	"github.com/SocialGouv/iterion/pkg/llmroute"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/secrets"
@@ -50,6 +51,7 @@ func (s *Server) handleCredentialPreview(w http.ResponseWriter, r *http.Request)
 	spec.Launch.Permission = strings.TrimSpace(req.Permission)
 	disabled := false
 	previewRepo := ""
+	var previewPoolLayers []credpool.BindingLayer
 	switch req.Source.Kind {
 	case "personal":
 		if req.Source.ID != "" {
@@ -101,6 +103,8 @@ func (s *Server) handleCredentialPreview(w http.ResponseWriter, r *http.Request)
 		}
 		spec.OwnerID = webhookActor(cfg.ID)
 		spec.Launch.KeyOverrides = cfg.KeyOverrides
+		// The webhook's pool block folds as the launch's binding layer does.
+		previewPoolLayers = poolLayersOf(&cfg)
 		// The repository the webhook serves rides the preview's context as
 		// it rides the launch's: a key restricted to repositories previews
 		// as withheld for any other, and as withheld when the webhook
@@ -185,7 +189,7 @@ func (s *Server) handleCredentialPreview(w http.ResponseWriter, r *http.Request)
 	// The pool attachment resolves exactly as the launch site does (ADR-164
 	// preview parity): the preview's pool answers what the launch will
 	// draw, refusals included.
-	poolAttachment, poolErr := s.resolveRunPoolAttachment(ctx, spec.Context.TeamID, spec.Context.BotID)
+	poolAttachment, poolErr := s.resolveRunPoolAttachment(ctx, spec.Context.TeamID, spec.Context.BotID, previewPoolLayers...)
 	if poolErr != nil {
 		httpError(w, http.StatusUnprocessableEntity, "%v", poolErr)
 		return

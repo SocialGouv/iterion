@@ -370,8 +370,6 @@ func (s *MongoLeaseStore) Reopen(ctx context.Context, leaseID string, superseded
 	return false, nil
 }
 
-// ListByRun returns every lease of a run, any state, newest acquired
-// first — see LeaseStore.ListByRun.
 // ClearHeld lifts the reset_hold mark from every lease of the entry in
 // one update — see LeaseStore.ClearHeld.
 func (s *MongoLeaseStore) ClearHeld(ctx context.Context, pledgeID string) (int, error) {
@@ -382,6 +380,8 @@ func (s *MongoLeaseStore) ClearHeld(ctx context.Context, pledgeID string) (int, 
 	return int(res.ModifiedCount), nil
 }
 
+// ListByRun returns every lease of a run, any state, newest acquired
+// first — see LeaseStore.ListByRun.
 func (s *MongoLeaseStore) ListByRun(ctx context.Context, runID string) ([]Lease, error) {
 	cur, err := s.col.Find(ctx, bson.M{"run_id": runID},
 		options.Find().SetSort(bson.D{{Key: "acquired_at", Value: -1}, {Key: "_id", Value: -1}}))

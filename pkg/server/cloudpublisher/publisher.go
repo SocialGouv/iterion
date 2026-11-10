@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/SocialGouv/iterion/pkg/dsl/unit"
+	"github.com/google/uuid"
 	"slices"
 	"sort"
 	"strings"
@@ -5537,6 +5538,10 @@ func (p *Publisher) acquireFromAttachedPools(ctx context.Context, runID, orgID, 
 	// TTL). Every acquisition AFTER a grant is that grant's SIBLING (the
 	// forfait and the gateway sealed side by side) and must never free it.
 	sideBySide := false
+	// One attempt identity for every lease this resolution opens: the
+	// attempt's report settles exactly these siblings (credpool
+	// ReportAttempt), never another attempt's leases of the same run.
+	attemptID := uuid.NewString()
 	for _, want := range wantList {
 		var slot string
 		switch want.Source {
@@ -5578,6 +5583,7 @@ func (p *Publisher) acquireFromAttachedPools(ctx context.Context, runID, orgID, 
 			RankMode:       credpool.StrategyMode(att.Strategy.Mode),
 			ClosedAtMargin: marginFn,
 			SideBySide:     sideBySide,
+			AttemptID:      attemptID,
 		})
 		if grant != nil {
 			sideBySide = true

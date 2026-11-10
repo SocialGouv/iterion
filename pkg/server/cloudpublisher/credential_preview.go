@@ -163,7 +163,9 @@ func (p *Publisher) PreviewCredentials(ctx context.Context, spec runview.Credent
 	}
 	var err error
 	if envFunded {
-		// Nothing to walk: no stage acquires anything for this run.
+		// Nothing to walk: no stage acquires anything for this run — the
+		// pool block names why it was not consulted.
+		x.out.Pool.Reason = "env_funded"
 	} else if err = walkCredentialPlan(func() bool { return len(x.api)+len(x.oauth) > 0 }, func() bool { return x.poolGranted }, func() bool { return spec.PoolAttachment != nil && spec.PoolAttachment.PoolID != "" }, func(tier credentialTier, active bool) error {
 		switch tier {
 		case credentialTierBYOK:
@@ -551,10 +553,6 @@ func (p *Publisher) PreviewCredentials(ctx context.Context, spec runview.Credent
 	return x.out, nil
 }
 
-// blockedPosture names, for an operator's remedy, which of the two postures
-// keeps the shared tiers out of this run — they can hold at once, and they
-// are not remedied the same way: a policy is the team's to change, a pool
-// mapping the platform's.
 // blockedPoolReason is the pool block's reason code when a posture keeps
 // the pool tier out of the walk: "sovereign" (llm_fallback=none — the
 // team's own policy, the first remedy to name) or "runner_pool" (a
@@ -566,6 +564,10 @@ func blockedPoolReason(sovereign bool) string {
 	return "runner_pool"
 }
 
+// blockedPosture names, for an operator's remedy, which of the two postures
+// keeps the shared tiers out of this run — they can hold at once, and they
+// are not remedied the same way: a policy is the team's to change, a pool
+// mapping the platform's.
 func blockedPosture(sovereign bool, runnerPool string) string {
 	reasons := make([]string, 0, 2)
 	if sovereign {

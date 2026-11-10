@@ -199,3 +199,34 @@ func TestResetHold_anEqualPriorityPeerNearItsMarginStillHolds(t *testing.T) {
 		t.Fatalf("served by %q held=%v, want ok and HELD — its equal-priority peer was skipped", g.DonorID, g.Held)
 	}
 }
+
+// TestResetHold_aDecliningPreferredEntryDoesNotHoldTheFirstChoice: the held
+// entry is moved ahead of the ordinary order; when IT declines for
+// exhaustion, the natural first choice that serves next is no switch off
+// anything — it must not be held (only declines of the ordinary order
+// count).
+func TestResetHold_aDecliningPreferredEntryDoesNotHoldTheFirstChoice(t *testing.T) {
+	ctx := context.Background()
+	h := newHarnessWithAttachments(t)
+	h.donor(t, "first", Limits{}, func(p *Pledge) { p.Priority = 0 })
+	second := h.donor(t, "second", Limits{MaxRunsPerDay: 1}, func(p *Pledge) { p.Priority = 5 })
+	poolIDs, attID, _ := attachForTest(t, h, Strategy{Mode: StrategyPriority, ResetHold: true}, DrawLimits{})
+
+	// r0 spends "second"'s one daily run (first sits past its margin).
+	near := func(p Pledge) (time.Time, bool) { return h.now.Add(time.Hour), p.UserID == "first" }
+	if g, err := h.broker.Acquire(ctx, holdRequest(h, poolIDs, attID, "r0", near)); err != nil || g.PledgeID != second.ID {
+		t.Fatalf("r0 = %+v, %v — want second serving", g, err)
+	}
+
+	// r1 prefers "second" (as a held resume would): it is exhausted for the
+	// day and declines; "first", warm again, serves — not held.
+	req := holdRequest(h, poolIDs, attID, "r1", nil)
+	req.PreferPledgeID = second.ID
+	g, err := h.broker.Acquire(ctx, req)
+	if err != nil {
+		t.Fatalf("acquire: %v", err)
+	}
+	if g.DonorID != "first" || g.Held {
+		t.Fatalf("served by %q held=%v, want first and NOT held — the preferred entry's decline is no switch off the natural order", g.DonorID, g.Held)
+	}
+}

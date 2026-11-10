@@ -3,12 +3,14 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/credpool"
+	"github.com/SocialGouv/iterion/pkg/identity"
 	"github.com/SocialGouv/iterion/pkg/lease"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/google/uuid"
@@ -387,6 +389,19 @@ func (s *Server) handleDeletePool(w http.ResponseWriter, r *http.Request) {
 			s.httpErrorFor(w, r, http.StatusConflict, "an attachment at %s still names this pool — detach it first", a.ScopeID)
 			return
 		}
+	}
+	// So must a binding-level block that draws it (a forge integration's
+	// webhook config, a schedule row): its record's launches would refuse
+	// the moment the pool vanished. An opt-out block names the pool without
+	// drawing it and does not stand in the way.
+	where, berr := s.enabledBindingNaming(r.Context(), pool.ID)
+	if berr != nil {
+		s.httpErrorFor(w, r, http.StatusInternalServerError, "list binding blocks: %v", berr)
+		return
+	}
+	if where != "" {
+		s.httpErrorFor(w, r, http.StatusConflict, "%s still binds this pool — clear its pool block first", where)
+		return
 	}
 	if err := s.credPoolPools.Delete(r.Context(), pool.ID); err != nil {
 		s.httpErrorFor(w, r, http.StatusInternalServerError, "delete pool: %v", err)
@@ -1028,4 +1043,42 @@ func (s *Server) auditAttachmentWrite(r *http.Request, scopeID, action string, a
 	default:
 		s.auditTenant(r, scopeID, action, "pool_attachment", a.PoolID, nil)
 	}
+}
+
+// enabledBindingNaming names the first binding-level record (a webhook
+// config, a schedule row) whose ENABLED pool block draws the pool, or ""
+// when none does. Every team is walked: a pool's consent can span teams.
+func (s *Server) enabledBindingNaming(ctx context.Context, poolID string) (string, error) {
+	if s.authStore() == nil || (s.webhookConfigs == nil && s.scheduledBots == nil) {
+		return "", nil
+	}
+	teams, err := s.authStore().ListTeams(ctx, identity.Page{Limit: 1000})
+	if err != nil {
+		return "", fmt.Errorf("list teams: %w", err)
+	}
+	for _, tm := range teams {
+		if s.webhookConfigs != nil {
+			cfgs, err := s.webhookConfigs.ListByTenant(ctx, tm.ID)
+			if err != nil {
+				return "", fmt.Errorf("list team %s's webhook configs: %w", tm.ID, err)
+			}
+			for _, c := range cfgs {
+				if c.Pool != nil && c.Pool.Enabled && c.Pool.PoolID == poolID {
+					return fmt.Sprintf("webhook config %s (team %s)", c.ID, tm.ID), nil
+				}
+			}
+		}
+		if s.scheduledBots != nil {
+			rows, err := s.scheduledBots.ListByTenant(ctx, tm.ID)
+			if err != nil {
+				return "", fmt.Errorf("list team %s's schedules: %w", tm.ID, err)
+			}
+			for _, sb := range rows {
+				if sb.Pool != nil && sb.Pool.Enabled && sb.Pool.PoolID == poolID {
+					return fmt.Sprintf("schedule %s (team %s)", sb.ID, tm.ID), nil
+				}
+			}
+		}
+	}
+	return "", nil
 }

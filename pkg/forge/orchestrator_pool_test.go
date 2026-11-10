@@ -248,3 +248,48 @@ func TestClonePoolBinding_ProjectedRowsShareNoState(t *testing.T) {
 		t.Fatal("clone(nil) must stay nil — an absent block is not an empty one")
 	}
 }
+
+// listFailingStore fails ListByIntegration on demand — a transient read.
+type listFailingStore struct {
+	*cloudsched.MemoryStore
+	fail bool
+}
+
+func (s *listFailingStore) ListByIntegration(ctx context.Context, tenantID, integrationID string) ([]cloudsched.ScheduledBot, error) {
+	if s.fail {
+		return nil, errors.New("store blip")
+	}
+	return s.MemoryStore.ListByIntegration(ctx, tenantID, integrationID)
+}
+
+// TestSyncSchedules_aFailedRowReadRefusesTheRebuild: the rebuild deletes
+// every row and recreates it from what it READ — a read that failed must
+// refuse the sync, or the operator's own row block (an opt-out here) is
+// erased and replaced by the integration's projection.
+func TestSyncSchedules_aFailedRowReadRefusesTheRebuild(t *testing.T) {
+	mem := &listFailingStore{MemoryStore: cloudsched.NewMemoryStore()}
+	now := time.Unix(1700000000, 0).UTC()
+	o := &Orchestrator{Schedules: mem, Now: func() time.Time { return now }, NewID: func() string { return "s1" }}
+	inv := map[string][]bundle.Invocation{
+		"docs-refresh": {{Kind: bundle.InvocationKindSchedule, Schedule: &bundle.InvocationSchedule{SuggestedCron: "0 3 * * *"}}},
+	}
+	ctx := context.Background()
+	if err := o.syncSchedulesWithPool(ctx, "t1", "ri-1", "https://github.com/org/app.git", inv, nil, "u1", nil, poolTestBlock("pool-a")); err != nil {
+		t.Fatalf("seed sync: %v", err)
+	}
+	rows, _ := mem.MemoryStore.ListByIntegration(ctx, "t1", "ri-1")
+	optOut := &credpool.Binding{PoolID: "pool-a", Enabled: false}
+	if _, err := mem.Update(ctx, rows[0].ID, cloudsched.SchedulePatch{UpdatedAt: now.Add(time.Minute), Pool: optOut}); err != nil {
+		t.Fatal(err)
+	}
+
+	mem.fail = true
+	if err := o.syncSchedulesWithPool(ctx, "t1", "ri-1", "https://github.com/org/app.git", inv, nil, "u1", nil, poolTestBlock("pool-a")); err == nil {
+		t.Fatal("a sync whose row read failed reported success — it rebuilds from nothing")
+	}
+	mem.fail = false
+	rows, _ = mem.MemoryStore.ListByIntegration(ctx, "t1", "ri-1")
+	if len(rows) != 1 || !rows[0].Pool.Equal(optOut) || rows[0].PoolFromIntegration {
+		t.Fatalf("after the refused sync the row = %+v — the operator's opt-out must survive untouched", rows)
+	}
+}
