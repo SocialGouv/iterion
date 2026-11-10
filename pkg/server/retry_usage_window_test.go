@@ -100,17 +100,106 @@ func TestUsageWindow_HeldWaitsDoNotStarveTheProbe(t *testing.T) {
 	}
 }
 
-// A row due before its window — re-armed after a failed resume, pulled by a
-// probe whose marker has aged out — is held until the window, free of
-// charge, instead of relaunched into the wall.
+// A row due before its window — pulled forward by a probe whose resume never
+// came, its pull aged past the marker's TTL — is held until the window, free
+// of charge, instead of relaunched into the wall. It comes back the way its
+// arming would have: the come-back pad past the window, spread by the run's
+// jitter, never on the instant the wall falls.
 func TestUsageWindow_TheDuePassHoldsARowItsWindowStillHolds(t *testing.T) {
 	st := newFakeRetryStore()
 	resumer := &fakeResumer{}
 	s := newRetrySweeperServer(t, st, resumer)
 	now := time.Now().UTC()
-	wall, parked := now.Add(4*24*time.Hour), now.Add(-time.Hour)
-	ref := dueRef("run-reamed", now.Add(-time.Minute))
+	wall, parked := now.Add(4*24*time.Hour), now.Add(-3*time.Hour)
+	announced, pulledAt := wall.Add(time.Minute), now.Add(-store.ProbeMarkerTTL-time.Minute)
+	const jitter = 20 * time.Minute
+	// Five rows on one wall, every pull aged out: what a sweeper that was
+	// down for an hour finds.
+	var refs []mongostore.RetryDueRef
+	for _, id := range []string{"run-1", "run-2", "run-3", "run-4", "run-5"} {
+		ref := dueRef(id, pulledAt)
+		ref.RetryState.Wall = &wall
+		ref.RetryState.ScheduledAt = &parked
+		ref.RetryState.ProbeFrom = &announced
+		ref.RetryState.LastProbeAt = &pulledAt
+		run := ref.Record()
+		run.Status = store.RunStatusFailedResumable
+		run.FailureCode = store.FailureUsageLimitBlocked
+		run.RetryPolicy = &store.RunRetryPolicy{Jitter: jitter.String()}
+		st.loadRun[ref.ID] = run
+		st.claimWins[ref.ID] = true
+		refs = append(refs, ref)
+	}
+
+	s.sweepDueRetries(context.Background(), &fakeRetryLister{refs: refs}, resumer, now)
+
+	if len(resumer.calls) != 0 {
+		t.Fatalf("resumed %v — the record names a wall at %s, and a resume before it only meets it again", resumer.calls, wall.Format(time.RFC3339))
+	}
+	wakes := map[time.Time]bool{}
+	earliest := wall.Add(time.Minute)
+	for _, ref := range refs {
+		got, ok := st.rearmed[ref.ID]
+		if !ok || got.Before(earliest) || !got.Before(earliest.Add(jitter)) {
+			t.Fatalf("%s held until %v (%v), want within [%s, %s): the come-back pad past the wall, spread by the run's %s jitter",
+				ref.ID, got, ok, earliest.Format(time.RFC3339), earliest.Add(jitter).Format(time.RFC3339), jitter)
+		}
+		wakes[got] = true
+	}
+	if len(wakes) < 2 {
+		t.Fatalf("five rows held to one wall all wake at %v — unjittered, they resume together and can exhaust the fresh window at once", wakes)
+	}
+	if len(st.armBudget) != 0 {
+		t.Errorf("the hold charged an attempt (%v) — nothing reached the provider", st.armBudget)
+	}
+}
+
+// Unjittered, the hold still comes back just past the wall, never on it: a
+// resume a second early, or against a provider clock a little behind ours,
+// meets the wall — one paid attempt and one pod, with no marker to make it
+// free.
+func TestUsageWindow_TheHoldComesBackJustPastTheWall(t *testing.T) {
+	st := newFakeRetryStore()
+	resumer := &fakeResumer{}
+	s := newRetrySweeperServer(t, st, resumer)
+	now := time.Now().UTC()
+	wall, parked := now.Add(4*24*time.Hour), now.Add(-3*time.Hour)
+	announced, pulledAt := wall.Add(time.Minute), now.Add(-store.ProbeMarkerTTL-time.Minute)
+	ref := dueRef("run-pulled", pulledAt)
 	ref.RetryState.Wall = &wall
+	ref.RetryState.ScheduledAt = &parked
+	ref.RetryState.ProbeFrom = &announced
+	ref.RetryState.LastProbeAt = &pulledAt
+	run := ref.Record()
+	run.Status = store.RunStatusFailedResumable
+	run.FailureCode = store.FailureUsageLimitBlocked
+	run.RetryPolicy = &store.RunRetryPolicy{Jitter: "0s"}
+	st.loadRun[ref.ID] = run
+	st.claimWins[ref.ID] = true
+
+	s.sweepDueRetries(context.Background(), &fakeRetryLister{refs: []mongostore.RetryDueRef{ref}}, resumer, now)
+
+	if got, ok := st.rearmed[ref.ID]; !ok || !got.Equal(wall.Add(time.Minute)) {
+		t.Fatalf("held until %v (%v), want %s — a minute past the wall %s",
+			got, ok, wall.Add(time.Minute).Format(time.RFC3339), wall.Format(time.RFC3339))
+	}
+}
+
+// The wall a row carries is the wait's dedup identity, and a park that
+// brought no dated news keeps the one the row already holds — one that can
+// belong to another credential, or to a window the run already got past.
+// The instant the arming chose is the fact of THIS park: a row due at it is
+// resumed, never held to a kept wall days further out (the team key that
+// reopens this afternoon while a forfait it no longer runs on is walled
+// until Monday).
+func TestUsageWindow_TheDuePassResumesARowAtTheInstantItsArmingChose(t *testing.T) {
+	st := newFakeRetryStore()
+	resumer := &fakeResumer{}
+	s := newRetrySweeperServer(t, st, resumer)
+	now := time.Now().UTC()
+	keptWall, parked := now.Add(4*24*time.Hour), now.Add(-5*time.Hour)
+	ref := dueRef("run-kept-wall", now.Add(-time.Minute))
+	ref.RetryState.Wall = &keptWall
 	ref.RetryState.ScheduledAt = &parked
 	run := ref.Record()
 	run.Status = store.RunStatusFailedResumable
@@ -120,14 +209,9 @@ func TestUsageWindow_TheDuePassHoldsARowItsWindowStillHolds(t *testing.T) {
 
 	s.sweepDueRetries(context.Background(), &fakeRetryLister{refs: []mongostore.RetryDueRef{ref}}, resumer, now)
 
-	if len(resumer.calls) != 0 {
-		t.Fatalf("resumed %v — the record names a wall at %s, and a resume before it only meets it again", resumer.calls, wall.Format(time.RFC3339))
-	}
-	if got, ok := st.rearmed[ref.ID]; !ok || !got.Equal(wall) {
-		t.Fatalf("held until %v (%v), want the wall %s", got, ok, wall.Format(time.RFC3339))
-	}
-	if len(st.armBudget) != 0 {
-		t.Errorf("the hold charged an attempt (%v) — nothing reached the provider", st.armBudget)
+	if len(resumer.calls) != 1 {
+		t.Fatalf("Resume calls = %d (held until %v), want 1 — the arming chose %s, and the wall %s away is one the row kept, not this park's",
+			len(resumer.calls), st.rearmed[ref.ID], ref.RetryAfter().Format(time.RFC3339), time.Until(keptWall).Round(time.Hour))
 	}
 }
 
@@ -157,12 +241,14 @@ func TestUsageWindow_TheMaxWaitHorizonStillWakesTheRun(t *testing.T) {
 	}
 }
 
-// The notice promises the instant the resumer keeps: the armed retry, never
-// earlier than the window.
+// The notice promises the instant the resumer keeps: the armed retry — a
+// wall the row kept from another park does not move it — and, for a row its
+// window holds past the armed instant (a pull whose resume aged out), the
+// come-back past that window, which the due pass holds it to.
 func TestUsageWindow_ThePauseNoticeNamesTheWindowTheResumerWaitsFor(t *testing.T) {
 	now := time.Date(2026, 11, 10, 3, 58, 0, 0, time.UTC)
 	soon, wall := now.Add(time.Hour), bkoWall
-	run := &store.Run{
+	kept := &store.Run{
 		ID:          "bko-82",
 		Status:      store.RunStatusFailedResumable,
 		FailureCode: store.FailureUsageLimitBlocked,
@@ -174,8 +260,28 @@ func TestUsageWindow_ThePauseNoticeNamesTheWindowTheResumerWaitsFor(t *testing.T
 			Attempts:    1,
 		},
 	}
-	body := gatePauseNoticeBody(run, pauseNoticeRoleReviewer, now)
-	if want := wall.Format("15:04 UTC on 2006-01-02"); !strings.Contains(body, want) {
+	body := gatePauseNoticeBody(kept, pauseNoticeRoleReviewer, now)
+	if want := soon.Format("15:04 UTC on 2006-01-02"); !strings.Contains(body, want) {
+		t.Fatalf("notice = %q, want the resume promised at %s — the instant the arming chose, which the sweeper keeps", body, want)
+	}
+
+	pulledAt, announced := now.Add(-2*time.Hour), wall.Add(time.Minute)
+	pulled := &store.Run{
+		ID:          "bko-82",
+		Status:      store.RunStatusFailedResumable,
+		FailureCode: store.FailureUsageLimitBlocked,
+		RetryState: &store.RunRetryState{
+			RetryAfter:  &pulledAt,
+			ProbeFrom:   &announced,
+			LastProbeAt: &pulledAt,
+			Wall:        &wall,
+			ScheduledAt: &pulledAt,
+			Reason:      store.RetryReasonUsageWindow,
+			Attempts:    1,
+		},
+	}
+	body = gatePauseNoticeBody(pulled, pauseNoticeRoleReviewer, now)
+	if want := wall.Add(time.Minute).Format("15:04 UTC on 2006-01-02"); !strings.Contains(body, want) {
 		t.Fatalf("notice = %q, want the resume promised at %s — the sweeper holds the run until its wall", body, want)
 	}
 }

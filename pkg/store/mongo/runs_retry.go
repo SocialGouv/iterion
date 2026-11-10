@@ -120,6 +120,12 @@ func (s *Store) ScheduleRunRetry(ctx context.Context, runID string, at, wall tim
 		// The marker is CONSUMED by every arming — that is what makes the
 		// park after a probe charged normally.
 		retryPath("probe_from"): "$$REMOVE",
+		// The credential window the wait belongs to: the credentials the
+		// attempt that met the wall sealed, read off the document in this
+		// same update — every resume re-stamps cred_fingerprints, and no
+		// later write of this row copies them again
+		// (store.RunRetryState.WallCredentials).
+		retryPath("wall_credentials"): bson.M{"$ifNull": bson.A{"$cred_fingerprints", bson.A{}}},
 		// Arming IS the promotion: continuation_state must only say
 		// retry_armed once a retry actually exists (the block point
 		// stamps unknown), and this write is the one that creates it.
@@ -399,13 +405,13 @@ type RetryDueRef struct {
 	// The run-record facts a usage window is read from
 	// (store.Run.UsageWindowPark, and retrypolicy.UsageWindowNotBefore's
 	// max_wait horizon from the launch's retry policy), projected so a pass
-	// can tell a row its window still holds — and which credential window it
-	// waits on — without a second read per row.
+	// can tell a row its window still holds without a second read per row.
+	// The credential window it waits on rides the retry state
+	// (RunRetryState.WallCredentials).
 	Status               store.RunStatus         `bson:"status"`
 	FailureCode          store.FailureCode       `bson:"failure_code"`
 	ContinuationState    store.ContinuationState `bson:"continuation_state"`
 	SkippedCredReopensAt *time.Time              `bson:"skipped_cred_reopens_at"`
-	CredFingerprints     []string                `bson:"cred_fingerprints"`
 	RetryPolicy          *store.RunRetryPolicy   `bson:"retry_policy"`
 }
 
@@ -420,7 +426,6 @@ func (r RetryDueRef) Record() *store.Run {
 		FailureCode:          r.FailureCode,
 		ContinuationState:    r.ContinuationState,
 		SkippedCredReopensAt: r.SkippedCredReopensAt,
-		CredFingerprints:     r.CredFingerprints,
 		RetryPolicy:          r.RetryPolicy,
 		RetryState:           r.RetryState,
 	}
@@ -432,7 +437,7 @@ func (r RetryDueRef) Record() *store.Run {
 var retryDueProjection = bson.M{
 	"_id": 1, "tenant_id": 1, "owner_id": 1, "bot_id": 1, "bot_source_tenant": 1, "file_path": 1, retryStateField: 1,
 	"status": 1, "failure_code": 1, "continuation_state": 1, "skipped_cred_reopens_at": 1,
-	"cred_fingerprints": 1, "retry_policy": 1,
+	"retry_policy": 1,
 }
 
 // Leased reports a live claim on the row: a replica is acting on it, the
@@ -567,9 +572,14 @@ func retryProbeMarkerIndex() mongo.IndexModel {
 // budget of a credential window are read over ALL its rows, the probed one
 // included, and a scan that hid the row a probe just pulled would hand the
 // window a second probe in the same hour.
+//
+// The bound is the caller's (pkg/server.credentialProbeScan, which an
+// operator can raise): a non-positive one reads the default page, and a
+// large one is honoured — cutting it silently would hand the windows past it
+// a second probe within their floor.
 func (s *Store) ListRunsForCredentialProbe(ctx context.Context, since time.Time, limit int) ([]RetryDueRef, error) {
-	if limit <= 0 || limit > 500 {
-		limit = 100
+	if limit <= 0 {
+		limit = 500
 	}
 	cur, err := s.runs.Find(ctx,
 		withTenantFilter(ctx, bson.M{"$or": []bson.M{

@@ -136,6 +136,7 @@ func copyRetryState(r *store.Run) *store.RunRetryState {
 	out.ProbeFrom = copyInstant(r.RetryState.ProbeFrom)
 	out.LastProbeAt = copyInstant(r.RetryState.LastProbeAt)
 	out.Wall = copyInstant(r.RetryState.Wall)
+	out.WallCredentials = slices.Clone(r.RetryState.WallCredentials)
 	return &out
 }
 
@@ -240,6 +241,13 @@ func (s *Store) ScheduleRunRetry(_ context.Context, _ string, at, wall time.Time
 	st.LastError = ""
 	st.ClaimedAt = nil
 	st.ProbeFrom = nil
+	// The credentials the attempt that met the wall sealed, copied in the
+	// arming's own update (mongo: $ifNull of cred_fingerprints, an empty
+	// set when the run has none — which reads back as no credential).
+	st.WallCredentials = slices.Clone(s.run.CredFingerprints)
+	if len(st.WallCredentials) == 0 {
+		st.WallCredentials = nil
+	}
 	// A zero wall says this arming brought no news about the provider's
 	// window, so the row keeps its wall AND that wall's budget; otherwise only
 	// an arming that MOVES the wall starts the budget over. last_probe_at
@@ -509,7 +517,8 @@ func (s *Store) CredentialProbeRows(since time.Time, _ int) []*store.Run {
 	if !armed && !marked {
 		return nil
 	}
-	// A one-row store lists its row under any limit: the scan coerces a
-	// non-positive or absurd one to 100, as Mongo's does, and never below one.
+	// A one-row store lists its row under any limit: the scan reads a
+	// default page for a non-positive one, as Mongo's does, and honours any
+	// other — never below one.
 	return []*store.Run{copyRun(s.run)}
 }

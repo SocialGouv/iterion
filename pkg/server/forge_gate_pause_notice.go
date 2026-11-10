@@ -111,17 +111,13 @@ func (s *Server) noticeGatePausedForRetry(ctx context.Context, run *store.Run) {
 	}
 }
 
-// gatePauseResumeAt is the instant the notice promises: the armed retry, never
-// earlier than the instant every automatic re-launcher waits for
-// (retrypolicy.UsageWindowNotBefore) — the notice and the resumer read the
-// same window, so the pull request is never told a time the sweeper will not
-// keep, nor relaunched before the time it was told.
+// gatePauseResumeAt is the instant the notice promises: the one every reader
+// of the park says (retrypolicy.UsageParkResumesAt) — the notice, the owner's
+// notification and the operator's alert read the same window the resumer
+// holds the run to, so the pull request is never told a time the sweeper
+// will not keep, nor relaunched before the time it was told.
 func gatePauseResumeAt(run *store.Run, now time.Time) time.Time {
-	at := run.RetryState.RetryAfter.UTC()
-	if notBefore, waits := retrypolicy.UsageWindowNotBefore(run, now); waits && notBefore.After(at) {
-		at = notBefore
-	}
-	return at
+	return retrypolicy.UsageParkResumesAt(run, now)
 }
 
 // forgeIssueCommenter is the ONE method this notice needs. Narrow on
@@ -267,14 +263,16 @@ func gatePauseNoticeBody(run *store.Run, role pauseNoticeRole, now time.Time) st
 		// and when it resumes; make no push-side claim either way.
 		b.WriteString(".\n")
 	}
-	if cadence, perRun, ok := usageWindowProbeCadence(run, now); ok {
+	if cadence, budget, perRun, ok := usageWindowProbeCadence(run, now); ok {
 		// The date is the window the provider named, and nothing relaunches
 		// the run before it but the probe this sentence describes: one run
-		// per credential, or this one under the per-run escape hatch.
+		// per credential, or this one under the per-run escape hatch. Its
+		// bound is said too: the notice is posted once, when the park opens
+		// the wall, and nothing corrects a promise the budget stops keeping.
 		if perRun {
-			fmt.Fprintf(&b, "\nUntil then iterion retries it %s, in case the quota comes back early (a manual top-up).\n", everyCadence(cadence))
+			fmt.Fprintf(&b, "\nUntil then iterion retries it %s, %s, in case the quota comes back early (a manual top-up).\n", everyCadence(cadence), atMostTimes(budget))
 		} else {
-			fmt.Fprintf(&b, "\nUntil then iterion probes this credential's quota %s — one parked run checks it for every run waiting on it — and resumes this one as soon as the quota is back (a manual top-up included).\n", everyCadence(cadence))
+			fmt.Fprintf(&b, "\nUntil then iterion probes this credential's quota %s, %s — one parked run checks it for every run waiting on it — and resumes this one as soon as the quota is back (a manual top-up included).\n", everyCadence(cadence), atMostTimes(budget))
 		}
 	}
 	if cause := gatePauseCause(run); cause != "" {
@@ -286,6 +284,14 @@ func gatePauseNoticeBody(run *store.Run, role pauseNoticeRole, now time.Time) st
 		}
 	}
 	return b.String()
+}
+
+// atMostTimes renders the probe budget for a reader: "at most 24 times".
+func atMostTimes(budget int) string {
+	if budget == 1 {
+		return "at most once"
+	}
+	return fmt.Sprintf("at most %d times", budget)
 }
 
 // everyCadence renders the probe floor for a reader: "every hour", "every 2

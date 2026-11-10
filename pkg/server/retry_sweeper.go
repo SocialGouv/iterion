@@ -166,17 +166,18 @@ func (s *Server) resumeDueRetry(ctx context.Context, retryStore store.RunRetrySt
 
 	// The window the run is parked on is read before anything is metered:
 	// a row due before it — pulled forward by a probe whose pull has aged
-	// out, re-armed after a failed resume — would relaunch into a wall the
-	// provider dated, at the price of a pod and the run's own minutes
-	// (#3127). It waits, free of charge, until the window or the run's own
-	// max_wait horizon, whichever comes first. A pull still in flight is let
+	// out — would relaunch into a wall the provider dated, at the price of a
+	// pod and the run's own minutes (#3127). It waits, free of charge, until
+	// the window or the run's own max_wait horizon, whichever comes first;
+	// a row due at the instant its own arming chose is never held
+	// (retrypolicy.UsageWindowNotBefore). A pull still in flight is let
 	// through: it is the one relaunch the window allows before its date — its
 	// credential window's probe, a run released on that probe's answer
 	// (retry_probe_credential.go), or a wait probed on its own under the
 	// operator's per-run escape hatch (EnvRetryProbeBeforeWindow).
 	if run != nil && !ref.RetryState.ProbeInFlight(time.Now().UTC()) {
 		if notBefore, waits := retrypolicy.UsageWindowNotBefore(run, time.Now().UTC()); waits {
-			s.deferToUsageWindow(runCtx, retryStore, ref, notBefore)
+			s.deferToUsageWindow(runCtx, retryStore, ref, run, notBefore)
 			return
 		}
 	}
@@ -630,11 +631,15 @@ func (s *Server) infof(format string, args ...any) {
 
 // deferToUsageWindow moves a due retry to the instant its usage window lets
 // it resume (retrypolicy.UsageWindowNotBefore), spending no attempt: nothing
-// reached the provider, and the attempt budget prices work that does. The CAS
-// is the armed instant the scan read, so a row an operator resumed or another
-// pass moved in between is left to whoever moved it.
-func (s *Server) deferToUsageWindow(ctx context.Context, retryStore store.RunRetryStore, ref mongostore.RetryDueRef, notBefore time.Time) {
-	delayed, err := retryStore.DelayRunRetry(ctx, ref.ID, ref.RetryAfter(), notBefore, "", "")
+// reached the provider, and the attempt budget prices work that does. It
+// comes back the way the arming would have: the come-back pad past the
+// window and the run's jitter (retrypolicy.UsageWindowWake), so the rows of
+// one wall do not all resume on the instant it falls. The CAS is the armed
+// instant the scan read, so a row an operator resumed or another pass moved
+// in between is left to whoever moved it.
+func (s *Server) deferToUsageWindow(ctx context.Context, retryStore store.RunRetryStore, ref mongostore.RetryDueRef, run *store.Run, notBefore time.Time) {
+	wake := retrypolicy.UsageWindowWake(run, notBefore)
+	delayed, err := retryStore.DelayRunRetry(ctx, ref.ID, ref.RetryAfter(), wake, "", "")
 	if err != nil {
 		s.warnf("retry sweeper: run %s: cannot hold the retry until its usage window at %s: %v", ref.ID, notBefore.Format(time.RFC3339), err)
 		return
@@ -645,8 +650,8 @@ func (s *Server) deferToUsageWindow(ctx context.Context, retryStore store.RunRet
 		return
 	}
 	s.countRetry("window_wait")
-	s.auditRetry(ref, "run.retry.window_wait", map[string]any{"retry_after": notBefore})
-	s.infof("retry sweeper: run %s waits for its provider usage window — not resuming before %s", ref.ID, notBefore.Format(time.RFC3339))
+	s.auditRetry(ref, "run.retry.window_wait", map[string]any{"retry_after": wake, "window_reopens_at": notBefore})
+	s.infof("retry sweeper: run %s waits for its provider usage window, which reopens at %s — resuming at %s", ref.ID, notBefore.Format(time.RFC3339), wake.Format(time.RFC3339))
 }
 
 // deferCredSlotRetry moves a run parked on a credential's concurrency cap

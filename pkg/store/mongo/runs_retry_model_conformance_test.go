@@ -132,6 +132,11 @@ func conformSequence(t *testing.T, seed uint64, script []retryOp, seen map[strin
 	real := retryTestStore(t)
 	ctx := retryCtx()
 	seedFailedResumable(t, real, runID)
+	// Sealed credentials, so the paid arming's copy of them into the wait's
+	// credential window is compared on every step (the probe's grouping key).
+	if err := real.SetRunCredStamp(ctx, runID, store.RunCredStamp{Fingerprints: []string{"fp-b", "fp-a"}}); err != nil {
+		t.Fatalf("seed %d: SetRunCredStamp: %v", seed, err)
+	}
 
 	// The model starts as a COPY of the seeded row, so the first
 	// divergence the comparison reports is one of the operations and
@@ -144,6 +149,7 @@ func conformSequence(t *testing.T, seed uint64, script []retryOp, seen map[strin
 		ID:                seeded.ID,
 		Status:            seeded.Status,
 		ContinuationState: seeded.ContinuationState,
+		CredFingerprints:  seeded.CredFingerprints,
 		RetryState:        seeded.RetryState,
 	})
 
@@ -553,11 +559,11 @@ func describeConformRow(status store.RunStatus, continuation store.ContinuationS
 	if row == nil {
 		return fmt.Sprintf("status=%s continuation=%s retry_state=absent", status, continuation)
 	}
-	return fmt.Sprintf("status=%s continuation=%s retry_after=%s wall=%s probe_from=%s probe_count=%d attempts=%d reason=%s code=%s last_error=%q scheduled_at=%v claimed_at=%v last_probe_at=%v",
+	return fmt.Sprintf("status=%s continuation=%s retry_after=%s wall=%s probe_from=%s probe_count=%d attempts=%d reason=%s code=%s last_error=%q scheduled_at=%v claimed_at=%v last_probe_at=%v credential_window=%q",
 		status, continuation,
 		conformInstant(row.RetryAfter), conformInstant(row.Wall), conformInstant(row.ProbeFrom), row.ProbeCount, row.Attempts,
 		row.Reason, row.Code, row.LastError,
-		row.ScheduledAt != nil, row.ClaimedAt != nil, row.LastProbeAt != nil)
+		row.ScheduledAt != nil, row.ClaimedAt != nil, row.LastProbeAt != nil, row.CredentialWindow())
 }
 
 func conformInstant(t *time.Time) string {

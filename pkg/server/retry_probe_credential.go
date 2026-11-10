@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -24,10 +25,13 @@ import (
 // (retrypolicy.UsageWindowNotBefore), this pass groups the parked runs by the
 // credentials their park names (store.UsageWindowPark.Credential) and:
 //
-//   - pulls ONE of them forward per probe floor — the canary, the
-//     earliest-parked (RunRetryState.ScheduledAt, then the run id: a key the
-//     records carry, never the order a scan answered in), so two replicas and
-//     a restarted one pick the same run;
+//   - pulls ONE of them forward per probe floor — the canary, the wait pulled
+//     least recently (RunRetryState.LastProbeAt, never-pulled first), then the
+//     earliest-parked (ScheduledAt), then the run id: keys the records carry,
+//     never the order a scan answered in, so two replicas and a restarted one
+//     pick the same run, and a canary whose resume never reaches the provider
+//     (a transient refusal before publish, its tenant's quota) hands the next
+//     probe to another run instead of taking every one of them;
 //   - when the canary's resume gets past the wall (a hand top-up, a wall that
 //     fell early), releases every other run parked on the same credentials in
 //     the same pass;
@@ -37,21 +41,38 @@ import (
 //
 // Everything is read from the run records the scan returns, so the decision
 // is the same on every replica and survives a restart: the PACE is the latest
-// pull any of the window's rows carries (last_probe_at), the BUDGET the
-// largest probe count any of them carries (probe_count, which belongs to a
-// wall), and a probe's ANSWER the state of the run it pulled — found through
-// the marker its pull left, read through its wall door
-// (RunRetryState.AnnouncedProbeFrom), which only an arming consumes. Every
-// write is the store's CAS on the instant the scan read: a replica that lost
-// the race moves on.
+// pull any of the window's rows carries (last_probe_at), the BUDGET the pulls
+// its rows carry on the walls they wait on, summed (probe_count, which belongs
+// to a wall — summed because the canary rotates, so no one row carries the
+// window's count), and a probe's ANSWER the state of the run it pulled —
+// found through the marker its pull left, read through its wall door
+// (RunRetryState.AnnouncedProbeFrom), which only an arming consumes. The
+// window itself is the credentials the wall was met on, copied by the paid
+// arming (RunRetryState.WallCredentials) — never the run's current stamp,
+// which the canary's own resume re-writes. Every write is the store's CAS on
+// the instant the scan read: a replica that lost the race moves on.
 
 const (
-	// credentialProbeScan bounds the rows the pass reads: every armed
-	// usage-window wait and every marked probe, platform-wide, at the
-	// store's own ceiling. A window cut by the bound can see a second probe
-	// within its floor, so a pass that comes back full says so.
-	credentialProbeScan = 500
+	// EnvRetryCredentialProbeScan overrides how many rows the credential pass
+	// reads: every armed usage-window wait and every marked probe,
+	// platform-wide. A window cut by the bound can lose the row that carries
+	// its pace or its canary and be probed again within its floor, so a pass
+	// that comes back full says so — and this raises the bound.
+	EnvRetryCredentialProbeScan = "ITERION_RETRY_CREDENTIAL_PROBE_SCAN"
+	// defaultCredentialProbeScan is the bound a deployment gets unset.
+	defaultCredentialProbeScan = 500
 )
+
+// credentialProbeScan resolves the pass's scan bound: the operator's
+// override when it parses to a positive count, the default otherwise.
+func credentialProbeScan() int {
+	if raw := strings.TrimSpace(envOperator(EnvRetryCredentialProbeScan)); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+			return n
+		}
+	}
+	return defaultCredentialProbeScan
+}
 
 // credentialProbeLookback is how far back a pull still speaks for its
 // credential window: long enough for its answer (store.ProbeMarkerTTL, the
@@ -79,8 +100,8 @@ type credentialWindow struct {
 func credentialWindowsOf(rows []mongostore.RetryDueRef, now time.Time) []*credentialWindow {
 	byKey := map[string]*credentialWindow{}
 	for _, row := range rows {
-		key := store.UsageWindowCredential(row.CredFingerprints)
-		if key == "" || row.RetryState == nil {
+		key := row.RetryState.CredentialWindow()
+		if key == "" {
 			continue
 		}
 		w := byKey[key]
@@ -166,9 +187,22 @@ func parkedAt(row mongostore.RetryDueRef) time.Time {
 	return row.RetryState.ScheduledAt.UTC()
 }
 
+// lastPulledAt is the instant a wait was last pulled forward — as a canary or
+// a release — zero when never.
+func lastPulledAt(row mongostore.RetryDueRef) time.Time {
+	if row.RetryState == nil || row.RetryState.LastProbeAt == nil {
+		return time.Time{}
+	}
+	return row.RetryState.LastProbeAt.UTC()
+}
+
 // canaryOrder is the stable order a credential window picks its probe in:
-// earliest-parked first, then the run id.
+// the wait pulled least recently first (never pulled before any), then the
+// earliest-parked, then the run id.
 func canaryOrder(a, b mongostore.RetryDueRef) int {
+	if c := lastPulledAt(a).Compare(lastPulledAt(b)); c != 0 {
+		return c
+	}
 	if c := parkedAt(a).Compare(parkedAt(b)); c != 0 {
 		return c
 	}
@@ -180,13 +214,14 @@ func canaryOrder(a, b mongostore.RetryDueRef) int {
 // Releases do not: they are the answer of a probe already paid for.
 func (s *Server) sweepCredentialProbes(ctx context.Context, retryStore store.RunRetryStore, lister retryDueLister, bounds retryProbeBounds, now time.Time) int {
 	since := now.Add(-credentialProbeLookback(bounds.floor))
-	rows, err := lister.ListRunsForCredentialProbe(store.WithoutTenantFilter(ctx), since, credentialProbeScan)
+	scan := credentialProbeScan()
+	rows, err := lister.ListRunsForCredentialProbe(store.WithoutTenantFilter(ctx), since, scan)
 	if err != nil {
 		s.warnf("retry sweeper: credential probe scan: %v", err)
 		return 0
 	}
-	if len(rows) >= credentialProbeScan {
-		s.warnf("retry sweeper: the credential probe read %d rows, its bound — a credential window cut by it can be probed twice within %s", len(rows), bounds.floor)
+	if len(rows) >= scan {
+		s.warnf("retry sweeper: the credential probe read %d rows, its bound — a credential window cut by it can be probed twice within %s; raise %s", len(rows), bounds.floor, EnvRetryCredentialProbeScan)
 	}
 	pulled := 0
 	for _, w := range credentialWindowsOf(rows, now) {
@@ -263,6 +298,11 @@ func (s *Server) releaseCredentialWindow(ctx context.Context, retryStore store.R
 
 // probeCredentialWindow pulls the window's canary when its pace and budget
 // allow, and reports whether a pull landed.
+//
+// The budget is the window's: the pulls its rows carry on the walls they wait
+// on, summed — the canary rotates, so the window's count is spread over its
+// rows and the largest of them would let it probe once per budget PER RUN.
+// Releases are pulls too and count: each is a pod relaunched into the wall.
 func (s *Server) probeCredentialWindow(ctx context.Context, retryStore store.RunRetryStore, w *credentialWindow, bounds retryProbeBounds, now time.Time) bool {
 	var last time.Time
 	spent := 0
@@ -271,7 +311,7 @@ func (s *Server) probeCredentialWindow(ctx context.Context, retryStore store.Run
 			if at := row.RetryState.LastProbeAt; at != nil && at.After(last) {
 				last = at.UTC()
 			}
-			spent = max(spent, row.RetryState.ProbeCount)
+			spent += row.RetryState.ProbeCount
 		}
 	}
 	if !last.IsZero() && now.Before(last.Add(bounds.floor)) {
@@ -300,22 +340,24 @@ func (s *Server) probeCredentialWindow(ctx context.Context, retryStore store.Run
 
 // usageWindowProbeCadence is what the pull-request notice says about a parked
 // run beside the date it promises: how often the provider is asked whether
-// the wall fell early, or false when nothing asks before the window — probing
-// off, the window not holding the run, or a run that names no credential (no
+// the wall fell early and at most how many times (the probe budget of one
+// wall: the window stops asking once it is spent, and the run then waits for
+// its date), or false when nothing asks before the window — probing off, the
+// window not holding the run, or a run that names no credential (no
 // credential window speaks for it) under the default.
-func usageWindowProbeCadence(run *store.Run, now time.Time) (cadence time.Duration, perRun, ok bool) {
+func usageWindowProbeCadence(run *store.Run, now time.Time) (cadence time.Duration, budget int, perRun, ok bool) {
 	bounds := retryProbeBoundsFromEnv()
 	if bounds.budget <= 0 {
-		return 0, false, false
+		return 0, 0, false, false
 	}
 	if _, waits := retrypolicy.UsageWindowNotBefore(run, now); !waits {
-		return 0, false, false
+		return 0, 0, false, false
 	}
 	if bounds.beforeWindow {
-		return bounds.floor, true, true
+		return bounds.floor, bounds.budget, true, true
 	}
 	if run.UsageWindowPark().Credential == "" {
-		return 0, false, false
+		return 0, 0, false, false
 	}
-	return bounds.floor, false, true
+	return bounds.floor, bounds.budget, false, true
 }

@@ -863,6 +863,30 @@ type RunRetryState struct {
 	// predates this field, so a spent budget is reachable) belongs to the
 	// wait it is already on.
 	Wall *time.Time `json:"wall,omitempty" bson:"wall,omitempty"`
+	// WallCredentials are the credentials the attempt that met this wait's
+	// wall sealed (Run.CredFingerprints as the PAID arming read it): the
+	// credential window the wait belongs to (CredentialWindow), which the
+	// sweeper probes once for every run parked on it.
+	//
+	// Copied by the paid arming, in the arming's own update, and written by
+	// nothing else: a pull, a free re-arm, a delay and a clear all keep it.
+	// Run.CredFingerprints itself cannot be the key — every resume re-stamps
+	// it, so a probe's canary whose re-resolution sealed another set (the
+	// next pool slot, an empty resolution) left its own window, which then
+	// lost its pace, its outstanding probe and its probe budget and pulled a
+	// second canary within the hour. Absent on a row armed before this
+	// field: such a wait names no credential window, and waits for its own.
+	WallCredentials []string `json:"wall_credentials,omitempty" bson:"wall_credentials,omitempty"`
+}
+
+// CredentialWindow is the credential-window key of the wait this row is on
+// (UsageWindowCredential of WallCredentials), empty when the row names none.
+// Nil-safe.
+func (s *RunRetryState) CredentialWindow() string {
+	if s == nil {
+		return ""
+	}
+	return UsageWindowCredential(s.WallCredentials)
 }
 
 // UsageWall is the instant the wait this row is on ends, or the zero time when

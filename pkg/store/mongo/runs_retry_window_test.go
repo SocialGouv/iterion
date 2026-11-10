@@ -88,6 +88,12 @@ func TestRunRetryScans_ListTheCredentialWindow(t *testing.T) {
 	if err := s.ClearRunRetry(ctx, "cred-probed"); err != nil {
 		t.Fatalf("ClearRunRetry: %v", err)
 	}
+	// The resume re-stamps the run's sealed credentials (cloudpublisher's
+	// SetRunCredStamp, unconditional): its re-resolution sealed the next
+	// slot. The probe still belongs to the window its wall was met on.
+	if err := s.SetRunCredStamp(ctx, "cred-probed", store.RunCredStamp{Fingerprints: []string{"fp-zai-slot-2"}}); err != nil {
+		t.Fatalf("SetRunCredStamp re-stamp: %v", err)
+	}
 
 	listed := func(since time.Time) map[string]RetryDueRef {
 		t.Helper()
@@ -111,6 +117,9 @@ func TestRunRetryScans_ListTheCredentialWindow(t *testing.T) {
 	}
 	if probed.RetryState == nil || probed.RetryState.ProbeFrom == nil || probed.RetryState.RetryAfter != nil {
 		t.Fatalf("probed row retry state = %+v, want the marker without an armed retry", probed.RetryState)
+	}
+	if key := probed.RetryState.CredentialWindow(); key != "fp-zai" {
+		t.Fatalf("probed row credential window = %q after its resume re-stamped its credentials, want fp-zai — the arming's copy, which no later write moves", key)
 	}
 	if got := listed(now.Add(time.Hour)); len(got) != 1 || got["cred-armed"].ID == "" {
 		t.Fatalf("listed %v with the lookback after the pull, want only the armed wait", got)
