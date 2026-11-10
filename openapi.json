@@ -7122,6 +7122,12 @@
       },
       "updateOrgReq": {
         "properties": {
+          "fork_author_cost_cap_usd": {
+            "type": "number"
+          },
+          "fork_author_run_quota": {
+            "type": "integer"
+          },
           "memory_quota_bytes": {
             "type": "integer"
           },

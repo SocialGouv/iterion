@@ -8922,6 +8922,8 @@ export interface components {
             secret?: string;
         };
         updateOrgReq: {
+            fork_author_cost_cap_usd?: number;
+            fork_author_run_quota?: number;
             memory_quota_bytes?: number;
             monthly_cost_cap_usd?: number;
             monthly_run_quota?: number;
