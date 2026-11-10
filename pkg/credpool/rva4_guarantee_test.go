@@ -252,6 +252,16 @@ func (w *r4World) r4Readmits(run, pledgeID string, side bool) bool {
 
 func (w *r4World) holdSnapshot(run string, kind int, side bool) []r4Cand {
 	ctx := context.Background()
+	// The ledger judges on the acquisition's own instant: the run's floor
+	// (nextAcquiredAt over its leases), which can cross midnight.
+	at := w.h.now
+	prev, err := w.h.leases.ListByRun(ctx, run)
+	if err != nil {
+		w.t.Fatal(err)
+	}
+	for i := range prev {
+		at = nextAcquiredAt(at, &prev[i].AcquiredAt)
+	}
 	var out []r4Cand
 	for _, rp := range w.pledges {
 		if rp.kind != kind {
@@ -265,7 +275,7 @@ func (w *r4World) holdSnapshot(run string, kind int, side bool) []r4Cand {
 		if ok && w.near[p.ID] {
 			ok, st = false, StatusNearLimit
 		}
-		day, week, err := w.h.ledger.Usage(ctx, p.ID, w.h.now)
+		day, week, err := w.h.ledger.Usage(ctx, p.ID, at)
 		if err != nil {
 			w.t.Fatal(err)
 		}

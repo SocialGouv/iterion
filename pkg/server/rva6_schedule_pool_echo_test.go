@@ -91,7 +91,7 @@ func TestPoolReview6_E1b_aWrittenDefaultIsAChange(t *testing.T) {
 // stored block's pool is disabled (or its consent withdrawn), a client that
 // sends the whole record back still pauses the schedule — there is no pool
 // write to refuse.
-func TestPoolReview6_E2_anEchoOfAStaleBlockRefusesThePause(t *testing.T) {
+func TestPoolReview6_E2_anEchoOfAStaleBlockStillPauses(t *testing.T) {
 	ctx := context.Background()
 	block := `{"pool_id":"pool-o1","enabled":true}`
 	s, pools, done := r6ScheduleWithProjectedBlock(t, block)
@@ -112,6 +112,9 @@ func TestPoolReview6_E2_anEchoOfAStaleBlockRefusesThePause(t *testing.T) {
 	t.Logf("same PATCH without the block -> %d", w2.Code)
 	if w1.Code != 200 || !got.Disabled {
 		t.Errorf("an unchanged echo (no pool write) refused the whole edit: %d", w1.Code)
+	}
+	if w2.Code != 200 {
+		t.Errorf("the same pause without the block = %d, want 200", w2.Code)
 	}
 }
 

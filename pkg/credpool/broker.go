@@ -1392,7 +1392,7 @@ func (b *Broker) releaseReservation(ctx context.Context, pledgeID string, when t
 type ReleaseGuard struct {
 	lease Lease
 	// siblings are the open side-by-side leases of lease's attempt that
-	// CaptureRelease pinned with it: the attempt never ran on any of them.
+	// CaptureRelease pinned with it, released with it.
 	siblings []Lease
 }
 
@@ -1482,6 +1482,19 @@ func (b *Broker) Release(ctx context.Context, runID string) {
 }
 
 func (b *Broker) releaseLease(ctx context.Context, lease Lease) {
+	// A lease its attempt already charged (an interim report of an earlier
+	// delivery) served a run: it closes as abandoned — its run unit stays
+	// consumed, like the sweeper's — never as returned unused.
+	fresh, gerr := b.leases.Get(ctx, lease.ID)
+	if gerr == nil && fresh.CostUSD > 0 {
+		if _, err := b.leases.Close(ctx, lease.ID, 0, OutcomeAbandoned, b.now()); err != nil {
+			b.logger.Warn("credpool: could not close lease %s of run %s, which already spent: %v", lease.ID, lease.RunID, err)
+		}
+		return
+	}
+	if gerr != nil && !errors.Is(gerr, ErrNotFound) {
+		b.logger.Warn("credpool: could not read lease %s of run %s before releasing it: %v — released as unused", lease.ID, lease.RunID, gerr)
+	}
 	won, err := b.leases.Close(ctx, lease.ID, 0, OutcomeNotLaunched, b.now())
 	if err != nil {
 		b.logger.Warn("credpool: could not release lease %s of abandoned run %s: %v", lease.ID, lease.RunID, err)
@@ -1702,9 +1715,10 @@ func nextAcquiredAt(now time.Time, prev *time.Time) time.Time {
 // previous attempt's unwind window.
 //
 // A superseded lease its attempt reports against still charges the donor —
-// the supersede that closed it charged nothing — once, through the stamp's
-// CAS: a redelivered report of the same attempt loses the CAS. A lease
-// reported, or closed any other way, stays silent, as in Report.
+// the supersede that closed it charged nothing: each interim report as it
+// comes, the final report once, through the stamp's CAS (a redelivered
+// final loses it). A lease reported, or closed any other way, stays
+// silent, as in Report.
 func (b *Broker) ReportAttempt(ctx context.Context, runID string, attemptPublishedAt time.Time, out Outcome) error {
 	if b == nil || runID == "" {
 		return nil
@@ -1801,12 +1815,19 @@ func (b *Broker) settleAttempt(ctx context.Context, runID string, settling []Lea
 	}
 	// The lease that carries the att: row is chosen from the leases'
 	// STATES — the first, booker first, not closed by a path no report
-	// books on — so every report of the attempt (a redelivery, a cancel
-	// racing a finish) picks the same one and its CAS books the row once.
+	// books on — so every final report of the attempt (a redelivery, a
+	// cancel racing a finish) picks the same one and its CAS books the row
+	// once. An INTERIM report closes nothing and books every delivery's
+	// spend: its carrier is the first lease it charges, so a lease a final
+	// report already closed never swallows the interim's att: share.
 	order := bookerFirst(len(settling), booker)
+	carries := func(l Lease) bool { return !closedWithoutBooking(l, attemptPublishedAt) }
+	if out.Interim {
+		carries = func(l Lease) bool { return interimCharges(l, attemptPublishedAt) }
+	}
 	attLease := -1
 	for _, i := range order {
-		if !closedWithoutBooking(settling[i], attemptPublishedAt) {
+		if carries(settling[i]) {
 			attLease = i
 			break
 		}
@@ -1822,10 +1843,10 @@ func (b *Broker) settleAttempt(ctx context.Context, runID string, settling []Lea
 		// rides the next lease the snapshot shows bookable — the same lease
 		// every later report of the attempt picks from the states, since
 		// this one is now closed that way.
-		if i == attLease && !charged && err == nil && closedWithoutBooking(final, attemptPublishedAt) {
+		if i == attLease && !charged && err == nil && !carries(final) {
 			attLease = -1
 			for _, j := range order[k+1:] {
-				if !closedWithoutBooking(settling[j], attemptPublishedAt) {
+				if carries(settling[j]) {
 					attLease = j
 					break
 				}
@@ -1910,16 +1931,16 @@ const (
 
 // settleStep settles one report on one read of the lease.
 func (b *Broker) settleStep(ctx context.Context, lease Lease, out Outcome, attemptPublishedAt, now time.Time) (settleOutcome, error) {
-	// The lease is superseded: charge through the stamp's CAS. The
-	// supersede added nothing, so this is the attempt's only charge on it,
-	// and a redelivered report of the same attempt loses the CAS.
+	// The lease is superseded: the supersede added nothing, so the
+	// attempt's reports charge it — an interim one as it comes, the final
+	// one through the stamp's CAS, which a redelivered final loses.
 	if lease.Closed {
 		switch lease.Outcome {
 		case OutcomeSuperseded:
 			// An acquisition's supersede: the takeover's own lease is the
 			// one the pin would pick for the takeover's report — this is
 			// the superseded attempt's own report, and its spend is the
-			// donor's, once, through the stamp's CAS.
+			// donor's.
 		case OutcomeSupersededGrantless:
 			// A grantless takeover holds no lease of its own: the report of
 			// the publication the close carried — the takeover's own,
@@ -2187,6 +2208,22 @@ func closedWithoutBooking(l Lease, attemptPublishedAt time.Time) bool {
 	case OutcomeSupersededGrantless:
 		return l.SupersededByPublishedAt != nil &&
 			l.SupersededByPublishedAt.Truncate(time.Millisecond).Equal(attemptPublishedAt.Truncate(time.Millisecond))
+	}
+	return false
+}
+
+// interimCharges reports a lease an interim report charges: open, or
+// superseded — except a grantless takeover's own publication, which no
+// report charges.
+func interimCharges(l Lease, attemptPublishedAt time.Time) bool {
+	if !l.Closed {
+		return true
+	}
+	switch l.Outcome {
+	case OutcomeSuperseded:
+		return true
+	case OutcomeSupersededGrantless:
+		return !closedWithoutBooking(l, attemptPublishedAt)
 	}
 	return false
 }

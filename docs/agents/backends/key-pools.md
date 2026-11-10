@@ -76,9 +76,9 @@ runs one signal pass inline — the proof the readings are warm.
 
 - **The pool never serves**: is there an attachment at the resolved
   level? (`GET .../pool-attachment` per level — `attached: false` =
-  inherit.)
-  `Enabled: false` anywhere between the launch and the platform floor
-  BLOCKS. Is the pool `Enabled`? Private pools answer only their
+  inherit, its other fields empty.)
+  An ATTACHED level with `Enabled: false` anywhere between the launch and
+  the platform floor BLOCKS. Is the pool `Enabled`? Private pools answer only their
   attachment.
 - **A slot never draws**: an explicit tier sealed it (law 1), or the
   routing whitelist holds the slot out — the credential preview shows the

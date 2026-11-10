@@ -45,9 +45,12 @@ func NormalizePage(offset, limit int, defaultLimit int64) (skip, take int64) {
 
 // FindPageSorted is FindAllSorted with Skip/Limit pagination, for the
 // "list X" methods that page over an entire collection rather than
-// filtering by a parent id.
+// filtering by a parent id. The order is total — sortKey, then _id — so
+// consecutive pages agree on where rows tied on sortKey sit: without the
+// tiebreak the server may order a tie differently per query, and a walk
+// over the pages loses or repeats the rows straddling a boundary.
 func FindPageSorted[T any](ctx context.Context, coll *mongo.Collection, filter bson.M, sortKey string, skip, limit int64, findErrMsg, decodeErrMsg string) ([]T, error) {
-	cur, err := coll.Find(ctx, filter, options.Find().SetSort(bson.M{sortKey: 1}).SetSkip(skip).SetLimit(limit))
+	cur, err := coll.Find(ctx, filter, options.Find().SetSort(bson.D{{Key: sortKey, Value: 1}, {Key: "_id", Value: 1}}).SetSkip(skip).SetLimit(limit))
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", findErrMsg, err)
 	}

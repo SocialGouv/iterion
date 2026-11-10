@@ -397,3 +397,148 @@ func TestPoolReview6_G6_aReturnedSiblingNeverCarriesTheAttRow(t *testing.T) {
 		t.Errorf("the att: row booked $%.2f of a $3 attempt whose open sibling booked it whole", att)
 	}
 }
+
+// seqHookLeases runs a sequence of hooks, one per Close (a report's own, not
+// a supersede's or a release's) or stamp of the named lease, right before it
+// reaches the store. Not re-entrant: a CAS a hook makes on the same lease
+// does not consume the next hook.
+type seqHookLeases struct {
+	*MemoryLeaseStore
+	hookID  string
+	hooks   []func()
+	running bool
+}
+
+func (s *seqHookLeases) fire(leaseID string) {
+	if leaseID == s.hookID && len(s.hooks) > 0 && !s.running {
+		h := s.hooks[0]
+		s.hooks = s.hooks[1:]
+		s.running = true
+		h()
+		s.running = false
+	}
+}
+
+func (s *seqHookLeases) Close(ctx context.Context, leaseID string, cost float64, outcome string, when time.Time) (bool, error) {
+	if outcome != OutcomeSuperseded && outcome != OutcomeNotLaunched {
+		s.fire(leaseID)
+	}
+	return s.MemoryLeaseStore.Close(ctx, leaseID, cost, outcome, when)
+}
+
+func (s *seqHookLeases) StampSupersededReport(ctx context.Context, leaseID string, cost float64, when time.Time) (bool, error) {
+	s.fire(leaseID)
+	return s.MemoryLeaseStore.StampSupersededReport(ctx, leaseID, cost, when)
+}
+
+// G7 — both re-reads: the report's Close loses to the resume's supersede,
+// the re-read's stamp loses to the resume's rollback (the lease reopened),
+// and the second re-read closes it. Each lease books the coarse attempt
+// once and none stays open.
+func TestPoolReview6_G7_aSupersedeThenItsRollbackInsideOneReport(t *testing.T) {
+	ctx := context.Background()
+	h := newHarnessWithAttachments(t)
+	hl := &seqHookLeases{MemoryLeaseStore: h.leases}
+	b := r6Broker(h, hl)
+	alice := h.donor(t, "alice", Limits{})
+	bob, _ := h.donorKey(t, "bob", "anthropic", Limits{})
+	_, attID, lims := attachForTest(t, h, Strategy{}, DrawLimits{})
+	day := h.now
+	_, g2, pub := r6SideBySide(t, h, b, "run-d", attID, lims)
+	h.now = h.now.Add(time.Hour)
+	var r2 *Grant
+	hl.hookID = g2.releaseGuard.lease.ID
+	hl.hooks = []func(){
+		func() { // before the report's Close: the resume supersedes A1
+			var err error
+			if r2, err = b.Acquire(ctx, r6AttReq("run-d", claudeWant(), attID, lims, "A2", false)); err != nil {
+				t.Fatalf("R2: %v", err)
+			}
+		},
+		func() { // before the re-read's stamp: the resume is refused, rolled back
+			b.ReleaseGrant(ctx, r2)
+			b.ReopenSuperseded(ctx, r2)
+		},
+	}
+	if err := b.ReportAttemptID(ctx, "run-d", "A1", pub, Outcome{CostUSD: 3}); err != nil {
+		t.Fatal(err)
+	}
+	ls, _ := h.leases.ListByRun(ctx, "run-d")
+	for _, l := range ls {
+		if l.AttemptID == "A1" && (!l.Closed || l.Outcome != "ok") {
+			t.Errorf("A1's lease on %s after its final report: closed=%v outcome=%q, want closed ok", l.PledgeID, l.Closed, l.Outcome)
+		}
+	}
+	a, bb, att := rva2Spent(t, h, alice.ID, day), rva2Spent(t, h, bob.ID, day), rva2Spent(t, h, AttachmentLedgerID(attID), day)
+	if a != 3 || bb != 3 || att != 3 {
+		t.Errorf("A1 spent $3 coarse: alice=$%.2f bob=$%.2f att=$%.2f, want $3 each", a, bb, att)
+	}
+}
+
+// G8 — an INTERIM report racing a FINAL of the same attempt (a slow pod and
+// its redelivery): the interim's snapshot sees the carrier already closed by
+// the final. Its att: share rides the first lease it charges, so the
+// borrower's row books every spend a donor's lease booked.
+func TestPoolReview6_G8_anInterimRacingAFinalStillBooksTheAttRow(t *testing.T) {
+	ctx := context.Background()
+	h := newHarnessWithAttachments(t)
+	hl := &seqHookLeases{MemoryLeaseStore: h.leases}
+	b := r6Broker(h, hl)
+	alice := h.donor(t, "alice", Limits{})
+	bob, _ := h.donorKey(t, "bob", "anthropic", Limits{})
+	_, attID, lims := attachForTest(t, h, Strategy{}, DrawLimits{})
+	day := h.now
+	g1, _, pub := r6SideBySide(t, h, b, "run-d", attID, lims)
+	h.now = h.now.Add(time.Hour)
+	// The final settles newest first — bob's lease (the carrier), then
+	// alice's; the interim lands right before the final's Close of alice's.
+	hl.hookID = g1.releaseGuard.lease.ID
+	hl.hooks = []func(){func() {
+		if err := b.ReportAttemptID(ctx, "run-d", "A1", pub, Outcome{CostUSD: 1, Interim: true}); err != nil {
+			t.Fatalf("interim: %v", err)
+		}
+	}}
+	if err := b.ReportAttemptID(ctx, "run-d", "A1", pub, Outcome{CostUSD: 2}); err != nil {
+		t.Fatal(err)
+	}
+	a, bb, att := rva2Spent(t, h, alice.ID, day), rva2Spent(t, h, bob.ID, day), rva2Spent(t, h, AttachmentLedgerID(attID), day)
+	t.Logf("interim $1 racing final $2 (coarse): alice=$%.2f bob=$%.2f att:row=$%.2f", a, bb, att)
+	if a != 3 || bb != 2 || att != 3 {
+		t.Errorf("interim $1 racing final $2: alice=$%.2f bob=$%.2f att=$%.2f, want alice $3 (both), bob $2 (the final; the interim saw it closed), att $3 (each report once)", a, bb, att)
+	}
+}
+
+// G9 — a captured release of an attempt that already RAN (an earlier
+// delivery's interim charged its leases; the final delivery is parked and
+// its DLQ copy lost) closes the leases as abandoned: the run units the
+// attempt consumed stay consumed.
+func TestPoolReview6_G9_aCapturedReleaseKeepsTheUnitsOfAnAttemptThatRan(t *testing.T) {
+	ctx := context.Background()
+	h := newHarnessWithAttachments(t)
+	alice := h.donor(t, "alice", Limits{MaxRunsPerDay: 3})
+	bob, _ := h.donorKey(t, "bob", "anthropic", Limits{MaxRunsPerDay: 3})
+	_, attID, lims := attachForTest(t, h, Strategy{}, DrawLimits{})
+	g1, g2, pub := r6SideBySide(t, h, h.broker, "run-c", attID, lims)
+	if err := h.broker.ReportAttemptID(ctx, "run-c", "A1", pub, Outcome{CostUSD: 1, Interim: true}); err != nil {
+		t.Fatal(err)
+	}
+	h.broker.ReleaseCaptured(ctx, h.broker.CaptureRelease(ctx, "run-c"))
+	for _, g := range []*Grant{g1, g2} {
+		l, err := h.leases.Get(ctx, g.releaseGuard.lease.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !l.Closed || l.Outcome != OutcomeAbandoned {
+			t.Errorf("lease of %s after the captured release: closed=%v outcome=%q, want %q (its attempt ran)", l.PledgeID, l.Closed, l.Outcome, OutcomeAbandoned)
+		}
+	}
+	for _, id := range []string{alice.ID, bob.ID, AttachmentLedgerID(attID)} {
+		u, _, err := h.ledger.Usage(ctx, id, g1.AcquiredAt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if u.Runs != 1 {
+			t.Errorf("%s: runs=%d after the release of an attempt that ran, want its unit kept (1)", id, u.Runs)
+		}
+	}
+}

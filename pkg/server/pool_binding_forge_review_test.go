@@ -2,12 +2,15 @@ package server
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -333,6 +336,74 @@ func TestPoolForgeReview_PoolDeleteSeesABindingPastTheFirstThousandTeams(t *test
 	}
 	if _, err := s.credPoolPools.Get(ctx, "pool-o"); err != nil {
 		t.Errorf("the pool is gone: %v", err)
+	}
+}
+
+// deletingTeamsStore deletes one team right after the first ListTeams page
+// is served: a team removed while the pool DELETE guard walks.
+type deletingTeamsStore struct {
+	identity.Store
+	once   sync.Once
+	victim string
+	armed  bool
+}
+
+func (d *deletingTeamsStore) ListTeams(ctx context.Context, p identity.Page) ([]identity.Team, error) {
+	page, err := d.Store.ListTeams(ctx, p)
+	if d.armed && p.Offset == 0 {
+		d.once.Do(func() { _ = d.DeleteTeam(ctx, d.victim) })
+	}
+	return page, err
+}
+
+// swapAuthStore rewires the server's identity store.
+func swapAuthStore(t *testing.T, s *Server, st identity.Store) {
+	t.Helper()
+	key := make([]byte, 32)
+	_, _ = rand.Read(key)
+	signer, err := auth.NewJWTSigner(base64.RawStdEncoding.EncodeToString(key), 15*time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc, err := auth.NewService(auth.Config{Store: st, Sessions: auth.NewMemorySessionStore(), Signer: signer, SignupMode: auth.SignupOpen, RefreshTTL: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.authSvc = svc
+}
+
+// TestPoolForgeReview_PoolDeleteSeesABindingWhileAnEarlierTeamIsDeleted:
+// a team deleted between two pages of the guard's walk shifts every later
+// team back one row; the team that sat on the page boundary — live, its
+// enabled block naming the pool — is still read, and the delete refused.
+func TestPoolForgeReview_PoolDeleteSeesABindingWhileAnEarlierTeamIsDeleted(t *testing.T) {
+	for _, armed := range []bool{false, true} {
+		t.Run(map[bool]string{false: "control", true: "an earlier team deleted mid-walk"}[armed], func(t *testing.T) {
+			s, _ := poolRoutesServer(t)
+			ctx := context.Background()
+			// 500 teams before team1: team1 opens the second page.
+			seedTeamsBefore(t, s, "team1", 500)
+			mem := s.authStore()
+			swapAuthStore(t, s, &deletingTeamsStore{Store: mem, victim: "filler-0000", armed: armed})
+			if err := s.credPoolPools.Upsert(ctx, credpool.Pool{ID: "pool-o", OrgID: "org1", Enabled: true, OwnerType: credpool.PoolOwnerOrg, OwnerID: "org1"}); err != nil {
+				t.Fatal(err)
+			}
+			cs := webhooks.NewMemoryConfigStore()
+			s.webhookConfigs = cs
+			if err := cs.Create(ctx, webhooks.Config{ID: "wh-1", TenantID: "team1", Enabled: true, Pool: &credpool.Binding{PoolID: "pool-o", Enabled: true}, ProvisionedBy: "forge:c1"}); err != nil {
+				t.Fatal(err)
+			}
+			r := poolRouteReq(auth.WithIdentity(ctx, auth.Identity{UserID: "jo"}), http.MethodDelete, "/api/pools/pool-o", "")
+			r.SetPathValue("id", "pool-o")
+			w := httptest.NewRecorder()
+			s.handleDeletePool(w, r)
+			if _, err := mem.GetTeam(ctx, "team1"); err != nil {
+				t.Fatalf("team1 must be live: %v", err)
+			}
+			if w.Code == http.StatusOK {
+				t.Errorf("pool deleted (%d %s) while live team1's enabled webhook block names it", w.Code, w.Body.String())
+			}
+		})
 	}
 }
 

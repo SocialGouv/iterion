@@ -865,7 +865,14 @@ func (s *Server) putPoolAttachment(w http.ResponseWriter, r *http.Request, scope
 		}
 	}
 	s.auditAttachmentWrite(r, scopeID, auditName, a)
-	updated, _ := s.credPoolAttachments.Get(r.Context(), scopeID)
+	// The view answers what the store holds (its CAS stamp included); a
+	// failed read-back answers the write's outcome honestly instead of an
+	// empty view claiming an attachment.
+	updated, err := s.credPoolAttachments.Get(r.Context(), scopeID)
+	if err != nil {
+		s.httpErrorFor(w, r, http.StatusServiceUnavailable, "the attachment was written but could not be read back: %v — reload it", err)
+		return
+	}
 	s.writeJSONFor(w, r, attachmentViewOf(updated))
 }
 

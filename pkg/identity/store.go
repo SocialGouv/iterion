@@ -161,24 +161,38 @@ type Page struct {
 	Limit  int
 }
 
-// allTeamsPageSize is the page AllTeams walks the teams by.
-const allTeamsPageSize = 500
+// AllTeams reads pages of allTeamsPageSize teams, each overlapping the
+// previous one by allTeamsOverlap.
+const (
+	allTeamsPageSize = 500
+	allTeamsOverlap  = 250
+)
 
-// AllTeams walks every team, page after page, oldest first: a caller that
-// must see EVERY team — a sweep, a guard refusing a delete while any team
-// binds the thing — cannot stop at one bounded page. Offset paging over a
-// changing collection may skip a team deleted mid-walk, never a live one
-// that already existed.
+// AllTeams walks every team, oldest first (created_at, then id — the total
+// order both stores page by): a caller that must see EVERY team — a sweep,
+// a guard refusing a delete while any team binds the thing — cannot stop at
+// one bounded page. Offset pages over a collection that changes mid-walk
+// shift: a team deleted ahead of the cursor moves every later team back one
+// row. Consecutive pages therefore overlap (the repeats are dropped), so a
+// live team is missed only when more than allTeamsOverlap earlier teams
+// are deleted between two page reads. On an error the teams read so far
+// come back with it.
 func AllTeams(ctx context.Context, st interface {
 	ListTeams(context.Context, Page) ([]Team, error)
 }) ([]Team, error) {
 	var out []Team
-	for offset := 0; ; offset += allTeamsPageSize {
+	seen := map[string]bool{}
+	for offset := 0; ; offset += allTeamsPageSize - allTeamsOverlap {
 		page, err := st.ListTeams(ctx, Page{Offset: offset, Limit: allTeamsPageSize})
 		if err != nil {
 			return out, err
 		}
-		out = append(out, page...)
+		for _, t := range page {
+			if !seen[t.ID] {
+				seen[t.ID] = true
+				out = append(out, t)
+			}
+		}
 		if len(page) < allTeamsPageSize {
 			return out, nil
 		}

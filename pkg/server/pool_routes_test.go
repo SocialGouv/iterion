@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -480,5 +481,41 @@ func TestPoolAttachmentRoutes_anUnattachedLevelAnswersAttachedFalse(t *testing.T
 	code, body = get()
 	if code != http.StatusOK || body["attached"] != true || body["pool_id"] != "pool-o" {
 		t.Fatalf("GET an attached org level = %d %v, want attached=true on pool-o", code, body)
+	}
+}
+
+// readBackFailingAttachments fails every Get once a Put has landed: the
+// read-back after an attachment write.
+type readBackFailingAttachments struct {
+	credpool.AttachmentStore
+	failGet bool
+}
+
+func (f *readBackFailingAttachments) Get(ctx context.Context, scopeID string) (credpool.Attachment, error) {
+	if f.failGet {
+		return credpool.Attachment{}, errors.New("store unavailable")
+	}
+	return f.AttachmentStore.Get(ctx, scopeID)
+}
+
+func (f *readBackFailingAttachments) Put(ctx context.Context, a credpool.Attachment) error {
+	err := f.AttachmentStore.Put(ctx, a)
+	f.failGet = true
+	return err
+}
+
+// TestPoolAttachmentRoutes_aFailedReadBackIsNoAttachedView: a write whose
+// read-back fails answers 503, never an empty view claiming attached=true.
+func TestPoolAttachmentRoutes_aFailedReadBackIsNoAttachedView(t *testing.T) {
+	s, _ := poolRoutesServer(t)
+	s.credPoolAttachments = &readBackFailingAttachments{AttachmentStore: s.credPoolAttachments}
+	ctx := auth.WithIdentity(context.Background(), auth.Identity{UserID: "jo"})
+	if err := s.credPoolPools.Upsert(context.Background(), credpool.Pool{ID: "pool-o", OrgID: "org1", Enabled: true, OwnerType: credpool.PoolOwnerOrg, OwnerID: "org1"}); err != nil {
+		t.Fatal(err)
+	}
+	w := httptest.NewRecorder()
+	runPoolRoute(s, w, poolRouteReq(ctx, http.MethodPut, "/api/orgs/org1/pool-attachment", `{"pool_id":"pool-o","enabled":true}`))
+	if w.Code != http.StatusServiceUnavailable || strings.Contains(w.Body.String(), `"attached":true`) {
+		t.Fatalf("PUT with a failed read-back = %d %s, want 503 and no attached view", w.Code, w.Body.String())
 	}
 }
