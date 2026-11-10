@@ -17,7 +17,7 @@ import (
 // The pairing is the point: a path here with no writer is a path that stopped
 // being part of a release, and ignoring it then costs a real run for nothing.
 var releaseWrittenPaths = map[string]string{
-	"package.json":              "release-it's own version bump",
+	"package.json":              "release-it's own version bump — by being release-it, so there is no declaration check (4) could assert against",
 	"CHANGELOG.md":              ".release-it.mjs: the conventional-changelog plugin's `infile`",
 	"charts/iterion/Chart.yaml": ".release-it.mjs hook after:bump -> scripts/sync-chart-version.sh",
 	"internal/mdcode/testdata/committed-reading.txt": ".release-it.mjs hook before:git:beforeRelease -> cmd/corpus-reading --cut",
@@ -43,10 +43,17 @@ const (
 // validates, so a stale entry silently stops matching, the release resumes
 // cancelling, and nothing anywhere says so. That is what this pins.
 //
-// Mutations seen red: renaming an ignored path in the workflow (the tree check
-// names it); dropping one from the workflow (the writer check names it); and
-// changing the `infile` in .release-it.mjs without touching the workflow (the
-// config check names it).
+// Mutations seen red, each on its own message: renaming an ignored path in the
+// workflow (the tree check names it); dropping one from the workflow (the
+// writer check names it); changing a writer's declaration in .release-it.mjs
+// without touching the workflow (the config check names it); and — the one an
+// adversarial round added, because the first version of this guard was GREEN
+// for it — a path filter ADDED to `pull_request:` or `merge_group:` while the
+// push one stays. Checks (1) to (4) only see a filter MOVED off push.
+//
+// Mutating any of this takes a file on DISK. The guard reads the filesystem,
+// so `go test -overlay` hands it a workflow the walk never sees and comes back
+// falsely green — a mistake already made once in this repo's history.
 func TestTheReleaseCommitCreatesNoTestsRun(t *testing.T) {
 	t.Parallel()
 
@@ -64,6 +71,39 @@ func TestTheReleaseCommitCreatesNoTestsRun(t *testing.T) {
 	}
 	if err := yaml.Unmarshal(src, &wf); err != nil {
 		t.Fatalf("parse %s: %v", testsWorkflowPath, err)
+	}
+
+	// (0) FIRST, because it is the only direction that breaks a merge rather
+	// than a convenience: a path filter on the events that produce the
+	// REQUIRED checks. `test`, `race`, `vendor-check`, `mongo-conformance`,
+	// `golangci` and `brand` are required by ruleset 18857412, and GitHub's
+	// own workflow-syntax page says it outright — "You should not use path or
+	// branch filtering to skip workflow runs if the workflow is required to
+	// pass before merging", because a skipped run never reports and the check
+	// stays Pending. This file's header records what that costs here: a queue
+	// build with no checks waits for a context that never arrives and dequeues
+	// after sixty minutes.
+	//
+	// The checks above reject a filter MOVED off `push` (the list then reads
+	// empty there). They are blind to one ADDED alongside it, which is the
+	// shape a well-meaning edit takes — "the release touches these files, so
+	// skip them everywhere" — and the shape that silences a merge. Pull
+	// requests whose entire diff is one of these paths are real and recurring:
+	// #2603, #2608 and #2617 each changed committed-reading.txt alone.
+	var triggers struct {
+		On map[string]map[string]any `yaml:"on"`
+	}
+	if err := yaml.Unmarshal(src, &triggers); err != nil {
+		t.Fatalf("parse %s trigger map: %v", testsWorkflowPath, err)
+	}
+	for _, event := range []string{"pull_request", "merge_group"} {
+		for _, filter := range []string{"paths", "paths-ignore"} {
+			if _, present := triggers.On[event][filter]; present {
+				t.Errorf("tests.yml's %s trigger carries %q. Six REQUIRED checks come from this workflow, and a run a path filter skips never reports them: "+
+					"the check stays Pending, the pull request is blocked, and a queue entry dequeues after sixty minutes. The release skip belongs to `push` ALONE — "+
+					"on push there is no check to withhold, only a run to not create", event, filter)
+			}
+		}
 	}
 
 	ignored := wf.On.Push.PathsIgnore
@@ -105,14 +145,30 @@ func TestTheReleaseCommitCreatesNoTestsRun(t *testing.T) {
 		}
 	}
 
-	// (4) The CHANGELOG entry is tied to the release config that owns it, so
-	// the two cannot drift apart unnoticed.
+	// (4) Each writer named above is tied to the release config that invokes
+	// it. Without this the pairing is prose: if `after:bump` stops calling
+	// sync-chart-version.sh, or `before:git:beforeRelease` stops calling
+	// corpus-reading --cut, that path quietly stops being release-written and
+	// the skip costs a real `main` run for nothing — check (3)'s own failure
+	// mode, which only an assertion can see.
+	//
+	// package.json is deliberately absent: release-it bumps it by being
+	// release-it, so there is no declaration to read. Its entry in
+	// releaseWrittenPaths says that.
 	cfg, err := os.ReadFile(releaseItConfig)
 	if err != nil {
 		t.Fatalf("read %s: %v", releaseItConfig, err)
 	}
-	if !strings.Contains(string(cfg), "infile: 'CHANGELOG.md'") {
-		t.Errorf("%s no longer declares `infile: 'CHANGELOG.md'`: the changelog a release writes moved or is configured another way, so tests.yml's paths-ignore names a file the release may not touch and may miss the one it does", releaseItConfig)
+	declarations := map[string]string{
+		"CHANGELOG.md":                                   "infile: 'CHANGELOG.md'",
+		"charts/iterion/Chart.yaml":                      "bash scripts/sync-chart-version.sh",
+		"internal/mdcode/testdata/committed-reading.txt": "go run ./cmd/corpus-reading --cut",
+	}
+	for path, declaration := range declarations {
+		if !strings.Contains(string(cfg), declaration) {
+			t.Errorf("%s no longer declares %q, the writer that makes %q a file a release touches: tests.yml's paths-ignore then skips a `main` run for a path the release may not write, "+
+				"and may miss the one it does. Re-pair the two, or drop the path from both", releaseItConfig, declaration, path)
+		}
 	}
 
 	// The push trigger must still be branch-scoped: paths-ignore on an
