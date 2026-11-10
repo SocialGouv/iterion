@@ -55,7 +55,14 @@ func mixedGatewayWorkflow() *ir.Workflow {
 // needs.
 func resolveBoundaryRun(t *testing.T, p *Publisher, runID, orgID string, wf *ir.Workflow, trust store.RunTrust, policy *store.RunLLMRoutePolicy) credResolution {
 	t.Helper()
-	creds, err := p.resolveAndSealCredentials(gatewayLaunchCtx(), runID, orgID, "team1", "owner1", gwBot, "", wf, nil, nil, model.RouteView{Workflow: wf}, nil, trust, nil, policy, nil, boundaryDerived)
+	return resolveBoundaryRunOn(t, p, runID, orgID, "", wf, trust, policy)
+}
+
+// resolveBoundaryRunOn is resolveBoundaryRun for a launch mapped to a runner
+// pool (D13) — "" is the default runner.
+func resolveBoundaryRunOn(t *testing.T, p *Publisher, runID, orgID, runnerPool string, wf *ir.Workflow, trust store.RunTrust, policy *store.RunLLMRoutePolicy) credResolution {
+	t.Helper()
+	creds, err := p.resolveAndSealCredentials(gatewayLaunchCtx(), runID, orgID, "team1", "owner1", gwBot, runnerPool, wf, nil, nil, model.RouteView{Workflow: wf}, nil, trust, nil, policy, nil, boundaryDerived)
 	if err != nil {
 		t.Fatalf("resolveAndSealCredentials: %v", err)
 	}
@@ -94,8 +101,8 @@ func TestContentBoundary_ADecidedGatewayRouteTheTeamFundsIsTeamGateway(t *testin
 }
 
 // B2: every other launch the walk resolves stamps own_keys EXPLICITLY, never
-// nil (arbitration 2) — a key sealed for an env-templated dial (attributed to
-// nothing, ADR-129 §4), a gateway route attributed to a key the run's frozen
+// nil (arbitration 2) — a key sealed for an env-templated dial under a runner
+// pool (attributed to nothing, ADR-129 §4), a gateway route attributed to a key the run's frozen
 // pair order holds out (attributed, never sealed: both facts are owed), a
 // vendor-only run, and a run whose gateway routes ride the pod's environment
 // — and none of them carries the ambient refusal.
@@ -107,26 +114,27 @@ func TestContentBoundary_EveryOtherWalkedLaunchStampsOwnKeys(t *testing.T) {
 		"review": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "review"}, LLMFields: ir.LLMFields{Backend: "claw", Model: "anthropic/claude-sonnet-4-5"}},
 	}}
 	for _, row := range []struct {
-		name      string
-		wf        *ir.Workflow
-		policy    *store.RunLLMRoutePolicy
-		seed      func(*Publisher)
-		gwSealed  bool
-		anySealed bool
+		name       string
+		runnerPool string
+		wf         *ir.Workflow
+		policy     *store.RunLLMRoutePolicy
+		seed       func(*Publisher)
+		gwSealed   bool
+		anySealed  bool
 	}{
-		{"a key sealed for an env-templated gateway dial", dial, nil, func(p *Publisher) { seedGatewayKey(t, p.apiKeys, p.sealer, "team1", nil) }, true, true},
-		{"a gateway route attributed to a key the frozen pair order holds out", gatewayOnlyWorkflow(), preUpgradePolicy(), func(p *Publisher) { seedGatewayKey(t, p.apiKeys, p.sealer, "team1", nil) }, false, false},
-		{"a vendor-only run", vendor, nil, func(p *Publisher) {
+		{"a key sealed for an env-templated gateway dial under a runner pool", "pool-a", dial, nil, func(p *Publisher) { seedGatewayKey(t, p.apiKeys, p.sealer, "team1", nil) }, true, true},
+		{"a gateway route attributed to a key the frozen pair order holds out", "", gatewayOnlyWorkflow(), preUpgradePolicy(), func(p *Publisher) { seedGatewayKey(t, p.apiKeys, p.sealer, "team1", nil) }, false, false},
+		{"a vendor-only run", "", vendor, nil, func(p *Publisher) {
 			seedGatewayKey(t, p.apiKeys, p.sealer, "team1", nil)
 			seedKey(t, p.apiKeys, p.sealer, "team1", secrets.ProviderAnthropic, "sk-ant-team")
 		}, false, true},
-		{"a gateway run the pod's environment funds", gatewayOnlyWorkflow(), nil, func(*Publisher) {}, false, false},
+		{"a gateway run the pod's environment funds", "", gatewayOnlyWorkflow(), nil, func(*Publisher) {}, false, false},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			p, buf := gatewayKeyPublisher(t)
 			row.seed(p)
-			creds := resolveBoundaryRun(t, p, "run-cb-2", "", row.wf, store.RunTrustDefault, row.policy)
-			b := openGatewayBundle(t, p, "run-cb-2", creds)
+			creds := resolveBoundaryRunOn(t, p, "run-cb-2", "", row.runnerPool, row.wf, store.RunTrustDefault, row.policy)
+			b := openGatewayBundleOn(t, p, "run-cb-2", row.runnerPool, creds)
 			if got := b.APIKeys[secrets.ProviderOpenAICompatible] != ""; got != row.gwSealed {
 				t.Fatalf("fixture: gateway sealed = %v, want %v — the row tests another shape (log:\n%s)", got, row.gwSealed, buf.String())
 			}

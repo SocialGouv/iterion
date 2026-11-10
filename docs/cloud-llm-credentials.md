@@ -287,8 +287,10 @@ the key (ADR-131 §5): when a tier the launch consults holds a gateway key servi
 launch's bot and repository, the run's literal `openai_compatible/…` routes are funded
 by it — the walk seals the pair — and the run is no longer env-funded; with no such key
 a run whose every route rides the gateway is served from the deployment's environment
-as before. An env-templated route (`${DIAL:-…}`) is never attributed to the key, but
-the key is sealed all the same and claw's dispatch prefers it to the pod's gateway.
+as before. An env-templated route (`${DIAL:-…}`) is never attributed to the key; under a
+dedicated runner pool the key is sealed for it all the same and claw's dispatch prefers
+it to the pod's gateway, while a default-runner run with routes the walk cannot decide
+never carries it.
 Under `none` a gateway route nothing of the team's own funds is refused by name, a
 pool-stamped run excepted. A webhook pin on a gateway key is exclusive (ADR-131 §6):
 admitted at write like any key of the team, it fills the gateway slot of every run

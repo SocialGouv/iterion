@@ -78,7 +78,15 @@ closes the default as a seal-whitelist entry (`llmroute.SealOnly` — the ladder
 composer drops it, `StageModel` maps it nowhere), and the walk's vocabulary names the
 provider. The pool's does not, so an attached pool still brings the gateway want in
 through the attachment alone, and law 1 holds: a team key fills the slot first. The
-frozen pre-upgrade list is `store.RunLLMRoutePolicy.PairOrder` (its twin
+gateway pair seals for a run that ATTRIBUTES a gateway route to a key, or — under a
+dedicated runner pool (D13), whose pod carries the operator's gateway dials — for a
+run with a route the walk cannot decide (not narrow-safe, or an env-templated
+`${DIAL:-…}`). A default-runner run with undecided routes never seals it: its dials
+do not expand to the gateway, and the pair would start the run's sandbox proxy,
+reserve a slot of the key's concurrency cap and open the gateway host in an
+untrusted run's fork lane for a key no route spends (operator arbitration, round 1
+of the PR-C' review). One predicate (`gatewayRoutes.sealable`) gates every tier, the
+attached pool and the preview. The frozen pre-upgrade list is `store.RunLLMRoutePolicy.PairOrder` (its twin
 `store.Run.PinnedProviders` is frozen beside it), replayed as stored on a resume; its
 one named warning is `pairOrderRefusals`.
 
@@ -92,7 +100,8 @@ route to a key (the keyed view's attributed routes name `openai_compatible`) AND
 gateway key sealed, in either channel; a mixed run, its vendor routes funded beside
 it, is `team_gateway` too. Every other launch the walk resolves is stamped
 `own_keys` explicitly, never left nil. An env-templated route is never attributed
-(ADR-129 §4), so a run whose gateway key seals only for such a dial stays `own_keys`.
+(ADR-129 §4), so a pool-mapped run whose gateway key seals only for such a dial
+stays `own_keys`.
 `KeyID` is the id of the key row that filled the gateway slot, recorded beside the
 fingerprint at every seal site (`noteSealedAPIKey`: the team's BYOK tier, a webhook
 pin included, the restore, the org and platform tiers, an attached pool's entry);
@@ -141,8 +150,8 @@ pin on an `openai_compatible` key like a pin on any key of the team — its spen
 stays, so a user-scoped gateway key is still refused under the lane's synthetic actor. The
 exclusivity is ONE chokepoint in the walk (`gatewayPinRefusal`), asked after the tier walk and
 before the content boundary is derived: when a run that may ride a gateway route
-(`gatewayRoutes.mayRide` — a decided gateway route on the keyed reading, or an undecided
-route, whatever the probe found) carries a gateway pin, its gateway slot must hold the very
+(`gatewayRoutes.mayRide` — a decided gateway route on the keyed reading whatever the probe
+found, or, under a runner pool, an undecided route) carries a gateway pin, its gateway slot must hold the very
 key the pin names, or the launch is refused with `GatewayPinRefusedError` naming the key and
 why: missing (deleted), withheld by its bot or repository audience, invisible to the launch's
 identity, undecryptable, or held out by the run's providers allowlist or frozen pair order.

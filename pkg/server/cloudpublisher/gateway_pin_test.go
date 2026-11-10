@@ -63,7 +63,14 @@ func seedPinKey(t *testing.T, p *Publisher, prov secrets.Provider, secret string
 // launch's bot and repository, and the webhook's key_overrides.
 func resolvePinnedRun(t *testing.T, p *Publisher, runID string, wf *ir.Workflow, pins map[string]string, policy *store.RunLLMRoutePolicy, boundary boundarySource) (credResolution, error) {
 	t.Helper()
-	return p.resolveAndSealCredentials(gatewayLaunchCtx(), runID, "", "team1", pinActor, gwBot, "", wf, pins, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustDefault, nil, policy, nil, boundary)
+	return resolvePinnedRunOn(t, p, runID, "", wf, pins, policy, boundary)
+}
+
+// resolvePinnedRunOn is resolvePinnedRun for a launch mapped to a runner pool
+// (D13) — "" is the default runner.
+func resolvePinnedRunOn(t *testing.T, p *Publisher, runID, runnerPool string, wf *ir.Workflow, pins map[string]string, policy *store.RunLLMRoutePolicy, boundary boundarySource) (credResolution, error) {
+	t.Helper()
+	return p.resolveAndSealCredentials(gatewayLaunchCtx(), runID, "", "team1", pinActor, gwBot, runnerPool, wf, pins, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustDefault, nil, policy, nil, boundary)
 }
 
 func gatewayPin(keyID string) map[string]string {
@@ -113,6 +120,7 @@ func TestGatewayPin_ABrokenPinRefusesTheLaunchByName(t *testing.T) {
 	for _, row := range []struct {
 		name     string
 		wf       *ir.Workflow
+		pool     string
 		policy   *store.RunLLMRoutePolicy
 		resume   bool
 		other    bool
@@ -149,7 +157,7 @@ func TestGatewayPin_ABrokenPinRefusesTheLaunchByName(t *testing.T) {
 				return seedPinKey(t, p, secrets.ProviderOpenAICompatible, "sk-gw-pinned", nil, "").ID
 			},
 			cause: GatewayPinHeldOut, sentence: "frozen routing pair order names no pair for the openai_compatible_key slot"},
-		{name: "deleted, on an env-templated gateway dial the walk cannot decide", wf: dial, other: true, pinned: missing,
+		{name: "deleted, on an env-templated gateway dial the walk cannot decide, under a runner pool", wf: dial, pool: "pool-a", other: true, pinned: missing,
 			cause: GatewayPinMissing, sentence: "deleted since the pin was written"},
 		{name: "deleted, on a resume replaying team_gateway", resume: true, other: true, pinned: missing,
 			cause: GatewayPinMissing, sentence: "deleted since the pin was written"},
@@ -168,7 +176,7 @@ func TestGatewayPin_ABrokenPinRefusesTheLaunchByName(t *testing.T) {
 			if row.resume {
 				boundary = boundaryFrozen(&store.RunContentBoundary{Kind: store.ContentBoundaryTeamGateway, KeyID: pin, GatewayHost: gwHost})
 			}
-			creds, err := resolvePinnedRun(t, p, "run-pin-2", wf, gatewayPin(pin), row.policy, boundary)
+			creds, err := resolvePinnedRunOn(t, p, "run-pin-2", row.pool, wf, gatewayPin(pin), row.policy, boundary)
 			var refusal *GatewayPinRefusedError
 			if !errors.As(err, &refusal) {
 				t.Fatalf("err = %v, want a *GatewayPinRefusedError — the launch proceeded on gateway slot %q, boundary %+v (log:\n%s)",

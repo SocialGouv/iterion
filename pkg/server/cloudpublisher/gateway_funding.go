@@ -17,23 +17,29 @@ type gatewayRoutes struct {
 	// envFunded: every route rides the gateway and nothing of a tier funds
 	// it — the walk acquires nothing.
 	envFunded bool
-	// sealable: the run may ride a gateway route, so a tier may seal the
-	// gateway slot for it (sharedTierPolicy.withGatewaySlot): the walk
-	// attributes a gateway route to the key, or some route is one the walk
-	// cannot decide — not narrow-safe, or deferring to the runner's
-	// environment (a `${DIAL:-vendor/…}` the runner may expand to the
-	// gateway). A decided vendor-only run never carries the pair: on the
-	// runner it pins the gateway host on the run's proxy, makes the run
-	// always-proxied and keeps a subbot out of its parent's sandbox, all for
-	// a key no route spends.
+	// sealable: a tier may seal the gateway slot for the run
+	// (sharedTierPolicy.withGatewaySlot) — the operator's arbitration of
+	// #2005 PR-C' round 1, in two arms. The run ATTRIBUTES a gateway route
+	// to a key (a decided `openai_compatible/…` route under the keyed
+	// view); or some route is one the walk cannot decide — not narrow-safe,
+	// or deferring to the runner's environment (a `${DIAL:-vendor/…}` the
+	// runner may expand to the gateway) — AND the launch is mapped to a
+	// dedicated runner pool (D13), whose pod carries the operator's
+	// gateway dials. A default-runner run with undecided routes never
+	// carries the pair: its dials do not expand to the gateway, and the
+	// pair would start the run's sandbox proxy, pin the gateway host on
+	// it, reserve a slot of the key's concurrency cap and open the
+	// gateway host in an untrusted run's fork lane, all for a key no
+	// route spends. A decided vendor-only run never carries it either.
 	sealable bool
 	// mayRide: the run may ride a gateway route once a key funds it — a
-	// decided gateway route on the keyed reading, or a route the walk cannot
-	// decide — whatever the probe found. It differs from sealable on one
-	// shape only: a decided gateway route no tier holds a key for, which the
-	// unkeyed reading leaves to the pod's environment. A gateway pin governs
-	// every run this names (gatewayPinRefusal): a pinned key the probe cannot
-	// see is no reason for the pod's gateway to serve the routes in its place.
+	// decided gateway route on the keyed reading whatever the probe found,
+	// or, under a runner pool, a route the walk cannot decide. It differs
+	// from sealable on one shape only: a decided gateway route no tier
+	// holds a key for, which the unkeyed reading leaves to the pod's
+	// environment. A gateway pin governs every run this names
+	// (gatewayPinRefusal): a pinned key the probe cannot see is no reason
+	// for the pod's gateway to serve the routes in its place.
 	mayRide bool
 }
 
@@ -70,7 +76,9 @@ func (p *Publisher) gatewayRouting(ctx context.Context, view model.RouteView, te
 	keyed.GatewayKeyFunded = true
 	walk := model.EffectiveProviders(keyed, walkProviderSet)
 	routed := slices.Contains(walk.Providers, gw)
-	mayRide := routed || !walk.NarrowSafe || walk.EnvDeferred
+	// A route the walk cannot decide rides the gateway only where the pod
+	// carrying the run expands its dials there: a dedicated runner pool.
+	undecidedOnPool := pooled && (!walk.NarrowSafe || walk.EnvDeferred)
 	attributed := routed &&
 		((sovereign && !pooled) || p.gatewayKeyHeld(ctx, tenantID, orgID, ownerID, audienceBotID, sovereign || pooled))
 	if !attributed {
@@ -79,8 +87,8 @@ func (p *Publisher) gatewayRouting(ctx context.Context, view model.RouteView, te
 	return gatewayRoutes{
 		view:      keyed,
 		envFunded: walk.OnlyEnvFunded(),
-		sealable:  slices.Contains(walk.Providers, gw) || !walk.NarrowSafe || walk.EnvDeferred,
-		mayRide:   mayRide,
+		sealable:  attributed || undecidedOnPool,
+		mayRide:   routed || undecidedOnPool,
 	}
 }
 

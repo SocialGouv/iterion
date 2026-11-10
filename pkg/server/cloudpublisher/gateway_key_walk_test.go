@@ -16,8 +16,11 @@
 // runner pool → its pool-stamped row; the attributed set read under the
 // pool's vocabulary → W9's refused row; the launch's or the preview's
 // holds-nothing counting a gateway key → W10, each surface alone. The
-// gateway slot always sealable → W11 and W12's vendor row; without its
-// env-deferred arm → W7's first dial and W12's dial row; without its
+// gateway slot always sealable → W11 and W12's vendor row; its undecided arm
+// read without the runner pool → W7's default-runner rows, W7b, W7c and W12;
+// without the undecided arm → W7's pool rows and the content boundary's
+// dial row; mayRide read without the
+// runner pool → W7 and W7c; without its
 // attributed arm → W1-W6; the frozen list noted before the gate → W11's
 // frozen arm; the preview without the gate or its reason → W11's preview
 // asserts; the attached pool on its former want condition → W12's dial row;
@@ -114,10 +117,25 @@ func resolveGatewayRun(t *testing.T, p *Publisher, runID string, wf *ir.Workflow
 // bundle (nothing sealed at all).
 func openGatewayBundle(t *testing.T, p *Publisher, runID string, creds credResolution) secrets.RunBundle {
 	t.Helper()
+	return openGatewayBundleOn(t, p, runID, "", creds)
+}
+
+// openGatewayBundleOn opens what a resolution sealed for a launch mapped to
+// runnerPool: the seal binds the pool, so only its own runner opens it.
+func openGatewayBundleOn(t *testing.T, p *Publisher, runID, runnerPool string, creds credResolution) secrets.RunBundle {
+	t.Helper()
 	if creds.secretsRef == "" {
 		return secrets.RunBundle{}
 	}
-	return sealedBundle(t, p, runID, creds)
+	rec, err := p.runSecrets.Get(store.WithTenant(context.Background(), "team1"), creds.secretsRef)
+	if err != nil {
+		t.Fatalf("RunSecrets.Get: %v", err)
+	}
+	b, err := secrets.OpenRunBundle(mustDEKSealer(t, creds.dek), rec.TenantID, runnerPool, runID, rec.KeyID, rec.SealedBundle)
+	if err != nil {
+		t.Fatalf("OpenRunBundle: %v", err)
+	}
+	return b
 }
 
 // W1: the team holds a gateway key serving the launch → the walk seals the
@@ -342,14 +360,17 @@ func TestGatewayKey_AFrozenPreUpgradeOrderReplaysAsStoredAndSaysSoOnce(t *testin
 	}
 }
 
-// W7, the operator's production case: the routes are ENV-TEMPLATED dials the
-// runner pod expands (the publisher reads the default only), so the walk
-// cannot attribute them to the gateway — ADR-129 §4: an undecided route is
-// never key-funded — but the BYOK tier, which seals every provider of the
-// walk's vocabulary, still seals the team's gateway PAIR for the runner's
-// claw dispatch to prefer over the pod's environment. The key's audience is
-// the control: a key the launch's bot is not named on is not sealed.
-func TestGatewayKey_AnEnvTemplatedRouteSealsTheKeyButIsNeverAttributed(t *testing.T) {
+// W7, the operator's production case and its arbitration (#2005 PR-C'
+// round 1): the routes are ENV-TEMPLATED dials the runner pod expands (the
+// publisher reads the default only), so the walk cannot attribute them to the
+// gateway — ADR-129 §4: an undecided route is never key-funded. Under a
+// dedicated runner pool (D13, the pod carries the operator's gateway dials)
+// the BYOK tier seals the team's gateway PAIR for the runner's claw dispatch
+// to prefer over the pod's environment; on the default runner, whose dials
+// never expand to the gateway, it seals nothing. The key's audience is the
+// pool arm's control: a key the launch's bot is not named on is not sealed.
+func TestGatewayKey_AnEnvTemplatedRouteSealsTheKeyOnlyUnderARunnerPool(t *testing.T) {
+	serves := func(k *secrets.ApiKey) { k.Bots = []string{gwBot}; k.Repos = []string{gwRepo} }
 	for _, dial := range []string{
 		"${C3_UNSET_ROUTE_DIAL:-anthropic/claude-sonnet-4-5}",
 		"${C3_UNSET_ROUTE_DIAL:-openai_compatible/scaleway/deepseek-v4.1-flash}",
@@ -358,21 +379,23 @@ func TestGatewayKey_AnEnvTemplatedRouteSealsTheKeyButIsNeverAttributed(t *testin
 			"review": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "review"}, LLMFields: ir.LLMFields{Backend: "claw", Model: dial}},
 		}}
 		for _, row := range []struct {
-			name   string
-			shape  func(*secrets.ApiKey)
-			sealed bool
+			name       string
+			runnerPool string
+			shape      func(*secrets.ApiKey)
+			sealed     bool
 		}{
-			{"key serves the launch", func(k *secrets.ApiKey) { k.Bots = []string{gwBot}; k.Repos = []string{gwRepo} }, true},
-			{"key's bots exclude the launch", func(k *secrets.ApiKey) { k.Bots = []string{"other-bot"} }, false},
+			{"runner pool, key serves the launch", "pool-a", serves, true},
+			{"runner pool, key's bots exclude the launch", "pool-a", func(k *secrets.ApiKey) { k.Bots = []string{"other-bot"} }, false},
+			{"default runner, key serves the launch", "", serves, false},
 		} {
 			t.Run(dial+"/"+row.name, func(t *testing.T) {
 				p, buf := gatewayKeyPublisher(t)
 				seedGatewayKey(t, p.apiKeys, p.sealer, "team1", row.shape)
-				creds, err := resolveGatewayRun(t, p, "run-gw-7", wf, nil)
+				creds, err := p.resolveAndSealCredentials(gatewayLaunchCtx(), "run-gw-7", "", "team1", "owner1", gwBot, row.runnerPool, wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustDefault, nil, nil, nil, boundaryDerived)
 				if err != nil {
 					t.Fatalf("resolveAndSealCredentials: %v", err)
 				}
-				b := openGatewayBundle(t, p, "run-gw-7", creds)
+				b := openGatewayBundleOn(t, p, "run-gw-7", row.runnerPool, creds)
 				gw := secrets.ProviderOpenAICompatible
 				if got := b.APIKeys[gw] == gwTeamKey; got != row.sealed {
 					t.Fatalf("gateway key sealed = %v, want %v (log:\n%s)", got, row.sealed, buf.String())
@@ -380,15 +403,107 @@ func TestGatewayKey_AnEnvTemplatedRouteSealsTheKeyButIsNeverAttributed(t *testin
 				if row.sealed && (b.APIBaseURLs[gw] != gwURL || b.APIKeyFingerprints[gw] != gwFingerprint) {
 					t.Errorf("the key travelled without its pair: url=%q fp=%q", b.APIBaseURLs[gw], b.APIKeyFingerprints[gw])
 				}
-				routing := p.gatewayRouting(gatewayLaunchCtx(), model.RouteView{Workflow: wf}, "team1", "", "owner1", gwBot, false, false)
-				if !routing.sealable {
-					t.Errorf("the gateway slot is closed to a run whose dial the runner may expand to the gateway")
+				routing := p.gatewayRouting(gatewayLaunchCtx(), model.RouteView{Workflow: wf}, "team1", "", "owner1", gwBot, false, row.runnerPool != "")
+				if routing.sealable != (row.runnerPool != "") || routing.mayRide != routing.sealable {
+					t.Errorf("sealable=%v mayRide=%v under runner pool %q: an undecided route rides the gateway exactly under a runner pool", routing.sealable, routing.mayRide, row.runnerPool)
 				}
 				if attributed := attributedRoutes(routing.view).providers; slices.Contains(attributed, string(gw)) {
 					t.Errorf("attributed = %v: an env-templated route is the runner's to expand, never attributed to the gateway key", attributed)
 				}
+				if row.runnerPool != "" {
+					return
+				}
+				// The preview reads the same gate (this publisher maps the team
+				// to no runner pool): the key is not selected, and it says why.
+				preview, err := previewReadOnly(p).PreviewCredentials(gatewayLaunchCtx(), previewSpec("team1", "owner1"), wf)
+				if err != nil {
+					t.Fatalf("preview: %v", err)
+				}
+				if got := selectedDescriptions(preview); slices.Contains(got, "team:api_key:openai_compatible") {
+					t.Fatalf("preview selected %v: the default-runner launch seals no gateway key", got)
+				}
+				named := false
+				for _, c := range preview.Candidates {
+					if c.Provider == string(gw) && strings.Contains(c.Reason, "only under a dedicated runner pool") {
+						named = true
+					}
+				}
+				if !named {
+					t.Errorf("the preview does not say why the team's gateway key stays out: %+v", preview.Candidates)
+				}
 			})
 		}
+	}
+}
+
+// W7b, the regression the arbitration closes (B1 of the round-1 review):
+// a default-runner review whose dials are env-templated holds NO slot of the
+// team's capped gateway key — the second concurrent launch queues instead of
+// parking on a key its runner never spends, and no gateway fingerprint is
+// stamped on either run document.
+func TestGatewayKey_ADefaultRunnerEnvDialRunHoldsNoSlotOfTheGatewayKey(t *testing.T) {
+	sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	spy := newLedgerRetrySpy(t)
+	keys := secrets.NewMemoryApiKeyStore()
+	seedKey(t, keys, sealer, cappedTeam, secrets.ProviderAnthropic, "sk-ant-team")
+	seedGatewayKey(t, keys, sealer, cappedTeam, func(k *secrets.ApiKey) {
+		k.Bots = []string{"review-pr", "revi-converse"}
+		k.Repos = []string{gwRepo}
+		k.MaxConcurrentRuns = 1
+		k.Name = "pliage-team"
+	})
+	published := &publishedRuns{}
+	p := cappedKeyPublisher(spy, keys, sealer, nil, published)
+	ctx := store.WithIdentity(context.Background(), cappedTeam, "webhook:cfg-1")
+	// The review-pr shape: an env-templated dial beside an unpinned node, so
+	// the walk is neither decided nor narrow-safe.
+	wf := &ir.Workflow{Name: "wf", Nodes: map[string]ir.Node{
+		"review": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "review"}, LLMFields: ir.LLMFields{Backend: "claude_code", Model: "${C3_UNSET_ROUTE_DIAL:-claude-opus-5-5}", Provider: "anthropic"}, Tools: []string{}},
+		"triage": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "triage"}, LLMFields: ir.LLMFields{Backend: "claude_code"}, Tools: []string{}},
+	}}
+	spec := runview.LaunchSpec{FilePath: "main.bot", Source: "workflow wf:\n  start -> done\n", BotID: "review-pr", ProjectPath: gwRepo}
+	for _, id := range []string{"run-rv-1", "run-rv-2"} {
+		sub, err := p.SubmitLaunch(ctx, id, spec, wf, &runview.CompiledSource{Hash: "hash"})
+		if err != nil {
+			t.Fatalf("SubmitLaunch %s: %v", id, err)
+		}
+		r, err := spy.LoadRun(ctx, id)
+		if err != nil {
+			t.Fatalf("LoadRun %s: %v", id, err)
+		}
+		if sub.Status != store.RunStatusQueued {
+			t.Fatalf("%s: status=%s failure=%s error=%q — a default-runner env-dial run parked on the gateway key's cap", id, sub.Status, sub.FailureCode, r.Error)
+		}
+		if slices.Contains(r.CredFingerprints, gwFingerprint) {
+			t.Fatalf("%s: run stamp %v names the gateway key a default-runner env dial never spends", id, r.CredFingerprints)
+		}
+	}
+	if got := published.ids(); len(got) != 2 {
+		t.Fatalf("published = %v, want both reviews", got)
+	}
+}
+
+// W7c, the pin's half of the arbitration (gatewayRoutes.mayRide reads the
+// seal gate's undecided arm): a gateway pin on a default-runner run whose
+// dials are env-templated is idle — the run rides no gateway route there,
+// so nothing seals and nothing is refused — while the same pin under a
+// runner pool governs the run (its refusal: TestGatewayPin_ABrokenPinRefusesTheLaunchByName).
+func TestGatewayKey_AGatewayPinOnADefaultRunnerEnvDialIsIdle(t *testing.T) {
+	dial := &ir.Workflow{Nodes: map[string]ir.Node{
+		"review": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "review"}, LLMFields: ir.LLMFields{Backend: "claw", Model: "${C3_UNSET_ROUTE_DIAL:-anthropic/claude-sonnet-4-5}"}},
+	}}
+	p, buf := gatewayKeyPublisher(t)
+	seedKey(t, p.apiKeys, p.sealer, "team1", secrets.ProviderAnthropic, "sk-ant-team")
+	pin := seedPinKey(t, p, secrets.ProviderOpenAICompatible, "sk-gw-pinned", nil, "").ID
+	creds, err := resolvePinnedRunOn(t, p, "run-gw-7c", "", dial, gatewayPin(pin), nil, boundaryDerived)
+	if err != nil {
+		t.Fatalf("a gateway pin on a default-runner env dial refused the launch: %v (log:\n%s)", err, buf.String())
+	}
+	if got := openGatewayBundle(t, p, "run-gw-7c", creds).APIKeys[secrets.ProviderOpenAICompatible]; got != "" {
+		t.Fatalf("gateway slot = %q: the pinned key sealed for a run that rides no gateway route", got)
 	}
 }
 
@@ -531,23 +646,29 @@ func TestGatewayKey_ADecidedVendorRunNeverCarriesThePair(t *testing.T) {
 }
 
 // W12 (R1, the attached pool): the pool's gateway want reads the same answer
-// as every tier — an env-templated dial the runner may expand to the gateway
-// draws the attached pool's gateway entry even though this process's
-// expansion reads narrow-safe, and a decided vendor-only run never does.
+// as every tier. The attached pool is a shared tier, so a pool-mapped launch
+// (D13) never reaches it; on the default runner an env-templated dial or an
+// unpinned node the walk cannot decide never draws the pool's gateway entry
+// (the arbitration's default-runner arm), and a decided vendor-only run never
+// does either.
 func TestGatewayKey_TheAttachedPoolsGatewayWantReadsTheSameAnswer(t *testing.T) {
 	for _, row := range []struct {
-		name, model string
-		sealed      bool
+		name, model, backend string
+		sealed               bool
 	}{
-		{"env-templated dial", "${C3_UNSET_ROUTE_DIAL:-anthropic/claude-sonnet-4-5}", true},
-		{"decided vendor route", "anthropic/claude-sonnet-4-5", false},
+		{"env-templated dial on the default runner", "${C3_UNSET_ROUTE_DIAL:-anthropic/claude-sonnet-4-5}", "claw", false},
+		{"unpinned claude_code node on the default runner", "", "claude_code", false},
+		{"decided vendor route", "anthropic/claude-sonnet-4-5", "claw", false},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			f := newAttachedFixture(t)
 			wf := &ir.Workflow{Nodes: map[string]ir.Node{
-				"review": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "review"}, LLMFields: ir.LLMFields{Backend: "claw", Model: row.model}},
+				"review": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "review"}, LLMFields: ir.LLMFields{Backend: row.backend, Model: row.model}},
 			}}
 			bundle, _ := f.resolveAttached(t, "run-gw-12", wf, frozenAttachment("pool-att"))
+			if len(bundle.OAuthCredentials["claude_code"]) == 0 {
+				t.Fatalf("the attached pool sealed no forfait: the walk never reached it, so the gateway assertion proves nothing")
+			}
 			if got := bundle.APIKeys[secrets.ProviderOpenAICompatible] != ""; got != row.sealed {
 				t.Fatalf("attached gateway entry sealed = %v, want %v", got, row.sealed)
 			}

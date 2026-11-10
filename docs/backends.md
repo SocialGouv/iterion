@@ -1518,10 +1518,12 @@ base URL and endpoint-aware fingerprint, and the run's literal
 key still decides it, the run then parks on it. With no such key, a run whose
 every route rides the gateway is env-funded as before. An env-templated route
 (`${DIAL:-…}`) is never attributed to the key — what the runner expands it to
-is not the publisher's word — but the key is sealed all the same, and claw's
-dispatch prefers it to the pod's gateway. A run whose every route is a decided
-vendor route never carries the key (it would pin the gateway host on the run's
-proxy for nothing), and a gateway key is never the run's default credential:
+is not the publisher's word. Under a dedicated runner pool, whose pod carries
+the operator's gateway dials, the key is sealed for such a route all the same
+and claw's dispatch prefers it to the pod's gateway; on the default runner it
+is not, nor for a route the walk cannot decide. A run whose every route is a
+decided vendor route never carries the key either (it would pin the gateway
+host on the run's proxy for nothing), and a gateway key is never the run's default credential:
 the legacy pool and the fallback door still serve the vendor routes of a team
 that holds only its gateway key. Under `llm_fallback=none` a gateway
 route nothing of the team's own funds is refused by name, a pool-stamped run

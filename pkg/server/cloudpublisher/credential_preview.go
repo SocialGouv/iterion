@@ -786,7 +786,7 @@ func (x *credentialPreview) add(c runview.CredentialPreviewCandidate) int {
 // tenant's providers allowlist, or the launch's routing pair order.
 func (x *credentialPreview) exclusionReason(slot string) string {
 	if x.policy.gatewayOut(slot) {
-		return " No route of this run rides the openai_compatible gateway — the live launch seals no gateway key for it."
+		return " No route of this run rides the openai_compatible gateway — a decided gateway route rides it, and a route the walk cannot decide only under a dedicated runner pool: the live launch seals no gateway key for it."
 	}
 	if excluderOfSlot(x.allowed, slot) == excludedByProviderAllowlist {
 		return " Outside this launch's providers allowlist — the live launch seals no credential for it."
