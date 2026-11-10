@@ -41,7 +41,7 @@ func TestDispatchInvocation_RefusesProvenanceTheBoardCardCannotCarry(t *testing.
 		return auth.WithIdentity(context.Background(), auth.Identity{UserID: "u", TeamID: "t1", Role: identity.RoleMember, Kind: auth.KindWebhook})
 	}
 
-	dispatch := func(t *testing.T, s *Server, mode string, prov launchProvenance, idem string) (*httptest.ResponseRecorder, int) {
+	dispatch := func(t *testing.T, s *Server, cfg webhooks.Config, mode string, prov launchProvenance, idem string) (*httptest.ResponseRecorder, int) {
 		t.Helper()
 		launched := 0
 		s.webhookLaunchBot = func(context.Context, string, map[string]string, string, string, string, map[string]string, map[string]string) (string, error) {
@@ -54,9 +54,17 @@ func TestDispatchInvocation_RefusesProvenanceTheBoardCardCannotCarry(t *testing.
 		return rec, launched
 	}
 
+	// On a FORK-LANE config, so the lane precondition the branch crosses
+	// first (webhookProvenanceRefusal) admits the fork target and what is
+	// measured is the card's own refusal.
 	t.Run("a fork-trust provenance on the board branch is refused", func(t *testing.T) {
 		s := newServer(t)
-		rec, launched := dispatch(t, s, string(bundle.ExecutionBoard), launchProvenance{Trust: store.RunTrustFork}, "idem-board-fork")
+		forkCfg := cfg
+		forkCfg.ForkLane = true
+		rec, launched := dispatch(t, s, forkCfg, string(bundle.ExecutionBoard), launchProvenance{
+			Trust: store.RunTrustFork, ExpectedSHA: "deadbeef",
+			ForkAuthor: &webhooks.ForkAuthorRef{Provider: "github", AuthorID: "4242"},
+		}, "idem-board-fork")
 		if launched != 0 {
 			t.Fatalf("launched %d run(s), want 0", launched)
 		}
@@ -70,7 +78,7 @@ func TestDispatchInvocation_RefusesProvenanceTheBoardCardCannotCarry(t *testing.
 
 	t.Run("a pinned commit on the board branch is refused too", func(t *testing.T) {
 		s := newServer(t)
-		_, launched := dispatch(t, s, string(bundle.ExecutionBoard), launchProvenance{ExpectedSHA: "deadbeef"}, "idem-board-pin")
+		_, launched := dispatch(t, s, cfg, string(bundle.ExecutionBoard), launchProvenance{ExpectedSHA: "deadbeef"}, "idem-board-pin")
 		if launched != 0 {
 			t.Fatalf("launched %d run(s), want 0 — a pin the card drops is a pin nobody checks", launched)
 		}

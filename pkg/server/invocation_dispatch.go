@@ -166,21 +166,34 @@ func (s *Server) dispatchInvocation(
 		}, prov.Trust)
 	}
 	if route.Mode == string(bundle.ExecutionBoard) && s.cfg.CloudBoardFor != nil {
+		// Every card this branch materialises answers the tail's provenance
+		// precondition FIRST, the same function (webhookProvenanceRefusal):
+		// with a coordinator the card IS the launch and the tail is never
+		// reached; without one the tracking card is written before the tail
+		// refuses, and would track a launch that never was. So a fork-lane
+		// config never cards a same-repo target, whichever of its entries —
+		// a /command, an issue label, a zero-touch open — asks, and an
+		// ordinary config never cards a fork one.
+		if reason := webhookProvenanceRefusal(cfg.ForkLane, prov.Trust, prov.ExpectedSHA); reason != "" {
+			s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusFiltered, payloadHash, srcIP, reason)
+			if s.logger != nil {
+				s.logger.Warn("webhooks: %s/%s refused for %s: %s", cfg.Provider, meta.ProjectPath, route.BotID, reason)
+			}
+			writeJSONStatus(w, http.StatusOK, map[string]string{"status": webhooks.StatusFiltered, "reason": reason})
+			return
+		}
 		if s.cfg.CloudBoardCoordinator != nil {
 			// This branch RETURNS without reaching the launch tail — the card
-			// is the launch — so neither the lane-disjointness gate nor the
-			// commit pin in launchWebhookTarget is crossed. The card has no
-			// seat for provenance either: it carries only BotArgs, which
-			// processBoardCard lifts into a LaunchSpec that hard-codes the
-			// trusted default. A launch that knows something about its code
-			// and cannot carry it must not be laundered into one that claims
-			// to know nothing.
+			// is the launch. The card has no seat for provenance: it carries
+			// only BotArgs, which processBoardCard lifts into a LaunchSpec
+			// that hard-codes the trusted default. A launch that knows
+			// something about its code and cannot carry it must not be
+			// laundered into one that claims to know nothing.
 			//
 			// Only THIS branch: a direct-mode route, and a board route with
 			// no coordinator, both fall through to the tail carrying prov,
 			// and refusing them would close the path the fork review lane
-			// needs. Inert on every caller today (all six hand over the
-			// trusted zero value).
+			// needs.
 			if !prov.Trust.Trusted() || prov.ExpectedSHA != "" {
 				reason := fmt.Sprintf("board-mode dispatch cannot carry this launch's provenance (trust=%q, pinned_commit=%v): the card holds only bot args, so the run it produces would read as trusted and unpinned",
 					string(prov.Trust), prov.ExpectedSHA != "")

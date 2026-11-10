@@ -300,8 +300,7 @@ func (s *Server) prepareWebhookRetry(ctx context.Context, d webhooks.Delivery) (
 		}
 		return s.failWebhookRetry(ctx, d, "webhook_retry_disabled", true), nil
 	}
-	if (cfg.ForkLane && !d.RetryTarget.Trust.IsFork()) || (!cfg.ForkLane && !d.RetryTarget.Trust.Trusted()) ||
-		(!d.RetryTarget.Trust.Trusted() && d.RetryTarget.ExpectedSHA == "") {
+	if webhookProvenanceRefusal(cfg.ForkLane, d.RetryTarget.Trust, d.RetryTarget.ExpectedSHA) != "" {
 		return s.failWebhookRetry(ctx, d, "webhook_retry_provenance_refused", true), nil
 	}
 	if d.Attempts >= webhookMaxAttempts() {

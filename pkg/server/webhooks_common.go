@@ -1216,33 +1216,11 @@ func (s *Server) prepareWebhookTarget(
 	// lane's neutering — a silent, confusing degradation. A trusted config
 	// launching a fork target is the real hazard: it is how an untrusted tree
 	// would reach a publish grant and the tenant's secrets.
-	// Both predicates, each on the side it belongs to, and NOT `ForkLane !=
-	// IsFork()`: that spelling admits an unrecognised trust onto an ordinary
-	// lane, because IsFork() is false for it — the exact reading store.RunTrust
-	// forbids ("Never use it to gate a capability — Trusted() is that
-	// predicate"), at the one site that gates the most. An ordinary lane
-	// therefore requires PROVEN trusted; the fork lane requires the one
-	// untrusted class this binary can reason about, so a third class added
-	// later is served by neither until someone decides what it means.
-	if (cfg.ForkLane && !t.Trust.IsFork()) || (!cfg.ForkLane && !t.Trust.Trusted()) {
-		reason := forkLaneMismatchRefusal(cfg.ForkLane, t.Trust)
-		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusFiltered, payloadHash, srcIP, reason)
-		if s.logger != nil {
-			s.logger.Warn("webhooks: %s/%s %s refused for %s: %s", cfg.Provider, meta.ProjectPath, meta.SubjectID, botID, reason)
-		}
-		out.Status = webhooks.StatusFiltered
-		out.Error = reason
-		return out, nil
-	}
-
-	// An untrusted launch MUST carry the commit its admission proved. The
-	// runner's comparison is a no-op on an empty pin, so the two facts are
-	// only a guarantee together — and "they always travel together" was
-	// written as a comment on DeferredTarget without ever being checked.
-	// Checked here, at the chokepoint all five callers cross.
-	if !t.Trust.Trusted() && strings.TrimSpace(t.ExpectedSHA) == "" {
-		reason := "untrusted launch carries no admitted commit (trust=" + string(t.Trust) +
-			"): the ref it would fetch is one its author can move, and an empty pin disables the runner's comparison entirely"
+	// The precondition lives in webhookProvenanceRefusal, which the durable
+	// retry and the board branch of dispatchInvocation cross too — the board
+	// branch before it writes any card, since a Ready card is a launch that
+	// never reaches this line.
+	if reason := webhookProvenanceRefusal(cfg.ForkLane, t.Trust, t.ExpectedSHA); reason != "" {
 		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusFiltered, payloadHash, srcIP, reason)
 		if s.logger != nil {
 			s.logger.Warn("webhooks: %s/%s %s refused for %s: %s", cfg.Provider, meta.ProjectPath, meta.SubjectID, botID, reason)
@@ -1611,6 +1589,43 @@ func (t forgeLaunchTarget) forkAuthorSubject() string {
 		return ""
 	}
 	return t.ForkAuthor.Subject
+}
+
+// webhookProvenanceRefusal is the ONE precondition every launch from a
+// webhook config crosses before anything is metered, recorded or launched —
+// the launch tail (prepareWebhookTarget), the durable retry, and the board
+// branch of dispatchInvocation before it writes any card (with a coordinator
+// the card IS the launch and the tail is never reached; without one the
+// tracking card would outlive the tail's refusal). "" admits; otherwise the
+// refusal's wording.
+//
+// Two facts, in order:
+//
+//   - Lane disjointness, both directions. A fork-lane config launching a
+//     trusted target would run a repository's own work with the fork lane's
+//     neutering — and a TRUSTED launch on that lane's entries (an issue
+//     label, a board card) is the lane serving what it exists not to serve.
+//     A trusted config launching a fork target is the real hazard: it is how
+//     an untrusted tree would reach a publish grant and the tenant's secrets.
+//     Both predicates sit on their own side, and NOT `ForkLane != IsFork()`:
+//     that spelling admits an unrecognised trust onto an ordinary lane,
+//     because IsFork() is false for it — the reading store.RunTrust forbids
+//     ("Never use it to gate a capability — Trusted() is that predicate"). An
+//     ordinary lane requires PROVEN trusted; the fork lane requires the one
+//     untrusted class this binary can reason about, so a third class added
+//     later is served by neither until someone decides what it means.
+//   - An untrusted launch carries the commit its admission proved. The
+//     runner's comparison is a no-op on an empty pin, so the two facts are
+//     only a guarantee together.
+func webhookProvenanceRefusal(cfgForkLane bool, trust store.RunTrust, expectedSHA string) string {
+	if (cfgForkLane && !trust.IsFork()) || (!cfgForkLane && !trust.Trusted()) {
+		return forkLaneMismatchRefusal(cfgForkLane, trust)
+	}
+	if !trust.Trusted() && strings.TrimSpace(expectedSHA) == "" {
+		return "untrusted launch carries no admitted commit (trust=" + string(trust) +
+			"): the ref it would fetch is one its author can move, and an empty pin disables the runner's comparison entirely"
+	}
+	return ""
 }
 
 // forkLaneMismatchRefusal words the launch tail's lane-disjointness refusal.
