@@ -2067,18 +2067,21 @@ func (e *ClawExecutor) assembleEffectiveTools(f backendFields, backendName strin
 	// orchestration surface is the `agent` subagent tool (claw's own
 	// `workflow` tool is not granted — see withClawOrchestrationTools); ensure
 	// it is in the allowlist when the node restricts its tool set (mirrors the
-	// board-tools append above). An unrestricted tool set already exposes the
-	// claw builtins, and the claude_code backend orchestrates via its native
-	// mechanism, so neither needs the explicit append. A sandboxed node keeps
-	// the grant: the runner registers `agent` in the container.
+	// board-tools append above). The guard is the undeclared-list contract
+	// stated above: on claw an undeclared list is no tool at all, so there is
+	// no set to append to — granting `agent` there would build a tool loop the
+	// node does not have. claude_code orchestrates via its native mechanism
+	// and needs no append either. A sandboxed node keeps the grant: the runner
+	// registers `agent` in the container.
 	if ultracode && backendName == delegate.BackendClaw && len(effectiveTools) > 0 {
 		effectiveTools = withClawOrchestrationTools(effectiveTools)
 	}
 	// Keep the agent's task list available so the per-run Session board
-	// (Tasks tab) is populated regardless of a node's `tools:` list. Only
+	// (Tasks tab) is populated whatever a node's `tools:` list names. Only
 	// the claw backend needs the append: claude_code always has its native
-	// TodoWrite under bypassPermissions, and an unrestricted claw set
-	// already exposes `todo_write` via RegisterClawAll. The posture nudge
+	// TodoWrite under bypassPermissions. The same undeclared-list guard
+	// applies — a node that declares nothing runs no tool loop on claw, and
+	// `todo_write` must not be what creates one. The posture nudge
 	// (agenticOperatingPosture) prompts claw to actually maintain it.
 	if backendName == delegate.BackendClaw && len(effectiveTools) > 0 {
 		effectiveTools = ensureToolPresent(effectiveTools, "todo_write")

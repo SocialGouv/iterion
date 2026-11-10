@@ -134,7 +134,7 @@ and for workflows that never delegated. The event stream is the full history
 different models).
 
 A schema re-ask — the one more turn a node gets after a schema-invalid
-answer ([backends.md](backends.md#a-schema-invalid-answer-gets-one-more-turn-the-schema-re-ask))
+answer ([backends.md](backends.md#a-schema-invalid-answer-gets-bounded-correction-turns-the-schema-re-ask))
 — is announced by a `delegate_retry` carrying `reask`
 (`continue_conversation` / `resume_session` / `restart`) beside the
 validation `error`, and closes with its own `delegate_finished` /

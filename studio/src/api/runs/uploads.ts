@@ -1,5 +1,5 @@
 // Extracted from api/runs.ts to keep that file focused.
-// Server info + attachment staging: getServerInfo for the BackendStatusPill /
+// Server info + attachment staging: getServerInfo for the Run button /
 // LaunchView, uploadAttachment for the staged-upload XHR (with progress),
 // and read-back of a promoted run attachment (gate payload previews).
 

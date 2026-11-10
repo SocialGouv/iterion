@@ -16,8 +16,10 @@
 ##     memory (visibility: "bot") is Evoly's headline feature.
 ##   - Default models are forfait-friendly: claw nodes use openai/gpt-6-astra
 ##     (ChatGPT forfait), the single cross-family "claude" reviewer uses
-##     claude_code (Claude Code OAuth forfait). claw+anthropic would need
-##     an API key (Anthropic forfait is Claude-Code-only), so it is avoided.
+##     claude_code (Claude Code OAuth forfait). claw DOES serve a Claude
+##     subscription, but Anthropic bills a third-party client against the
+##     subscription's separate extra-usage balance rather than the plan's
+##     limits (ADR-085), so claw+anthropic is avoided here.
 ##   - The workflow name, the bundle dir, and manifest.name are ALL
 ##     "evolve" so botID is stable across CLI (wf.Name) and dispatcher
 ##     (bundle name) launches — otherwise the per-bot memory tree would

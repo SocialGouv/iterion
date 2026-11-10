@@ -924,10 +924,11 @@ agent campaign:
   ## tail; a 3-way live benchmark (2026-07-23) showed the only run that
   ## reached the full corpus — bot READMEs + cloud + studio — was the one
   ## that DECOMPOSED. Coverage via the agent's own judgment, not engine
-  ## fan-out. The `agent` subagent tool carries the fan-out on the default
-  ## claude_code route only: on `--var llm_backend=claw` every call is
-  ## typed-refused (C159, #1940) and the campaign decomposes within itself,
-  ## which the ultracode grant tells it to do.
+  ## fan-out. The `agent` subagent tool is served on BOTH routes: #1940 wired
+  ## a subagent runner at each of claw's hosts, so clawRefusedBuiltins is
+  ## empty and C159 fires for nothing. The ultracode grant tells either route
+  ## to decompose; what the routes do NOT share is the shape of the fan-out,
+  ## so judge a claw run on its own output rather than on this note.
   reasoning_effort: "${ITERION_DOC_ALIGN_EFFORT_CLAUDE:-ultracode}"
   interaction: human
 
