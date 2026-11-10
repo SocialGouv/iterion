@@ -366,16 +366,25 @@ going quiet.
 **One window, every reader (cloud).** The run record names the window a
 parked run waits on: the wall its park is on (`RunRetryState.Wall`, the
 provider's own instant or the bounded guess) and the reopening of a credential
-the launch passed over (`skipped_cred_reopens_at`), the earlier of the two.
-Every automatic re-launcher reads that one instant —
+the launch passed over (`skipped_cred_reopens_at`), the earlier of the two —
+never past the instant the arming itself chose. The wall is the wait's
+identity, and a park that brought no dated news keeps the one the row already
+holds: a forfait the launch passed over while the run now waits on a team
+key's five hours, or a window the run already got past before a blind
+refusal. Read alone it held such a run days past its own arming's instant;
+the arming's instant is the fact of the park, so a kept wall never outlives
+it. Every automatic re-launcher reads that one instant —
 `retrypolicy.UsageWindowNotBefore` — and none resumes the run before it on its
-own: the due pass holds a row due too early (re-armed after a failed resume, a
-pull whose resume aged out) until the window, free of charge
-(`run.retry.window_wait` on the audit trail); the in-process `--auto-resume`
-loop waits for it; and the pull-request notice promises that same instant. The
-one relaunch before it is the probe of the run's **credential window** below —
-one run per credential, not one per parked run — and the notice says so beside
-the date. Measured before this rule (#3127): a review parked on a weekly wall
+own: the due pass holds a row due too early (a pull whose resume aged out)
+until the window, free of charge, coming back the way the arming would have —
+a minute past the window, spread by the run's jitter (`run.retry.window_wait`
+on the audit trail); and the pull-request notice, the owner's notification and
+the operator's alert all promise the same instant
+(`retrypolicy.UsageParkResumesAt`). The in-process `--auto-resume` loop keeps
+its own reading of the refusal in hand: the filesystem store holds no retry
+row. The one relaunch before it is the probe of the run's **credential
+window** below — one run per credential, not one per parked run — and the
+notice says so beside the date, with its bound. Measured before this rule (#3127): a review parked on a weekly wall
 dated four days out was announced for that date and relaunched every hour by
 the probe, each attempt a pod and ten of the run's active minutes, and so was
 every other run parked on the same forfait. Two bounds keep the rule from
@@ -389,7 +398,11 @@ When a run stops on a usage window, the span since its last booking — no node
 finished, no token spent, no call unreported — leaves the duration budget
 before the checkpoint is written, and the `run_failed` event says how much
 (`duration_refunded_ms`). Work stays counted: a node that finished, or a route
-that spent tokens before another route met the wall, ends the refundable span.
+that spent tokens before another route met the wall, ends the refundable span,
+and so does the body of a node with no executor — a subbot's child run (its
+nodes book in the child's budget), a compute, a wait — whatever it answered: a
+subbot whose child worked fifty minutes before meeting the wall keeps those
+minutes on the parent's `max_duration`.
 Before this, twelve zero-token resumes took a review to "budget hard limit
 reached: duration at 90%" days before its window reopened.
 
@@ -400,6 +413,18 @@ another route no longer turns a five-hour wait into a pause for a human
 (`AUTH_FAILED`, #3032). The dead route stays in the evidence: the
 `node_recovery` event carries `chain_routes`, each route's own code and
 error. A chain whose routes are all dead credentials is still `AUTH_FAILED`.
+The window is read the same whichever backend served the route: claude_code
+and pi type it, claw types the facade's HTTP 429 and its stream error frames
+(`[1308]`, `[1310]`) at its own boundary — its transport retry loop no longer
+re-issues them; the executor's in-place budget treats them as every backend's,
+codex types its limit notice, and a refusal a hop flattened to text is read
+from the marker it prints. A refusal of the ACCOUNT — a spend ceiling, a
+fair-usage restriction — names no reset and no wait is known to cure it: such
+routes park the chain as a window does, except beside a dead credential, where
+the chain stays `AUTH_FAILED` and the human the pause calls can revive the
+dead route. The wall such a chain parks on is read route by route — the route
+that reopens first decides, typed or parsed from its own words — so it is the
+same in every order the walk met its routes in.
 
 **Observing a reset nobody announced (cloud).** An operator who tops up or
 clears their forfait by hand reopens the window with no notice, and a retry
@@ -411,14 +436,20 @@ its next tick.
 
 A wall belongs to a **credential**, not to a run, so a wait the window rule
 above still holds is probed through its **credential window**: the runs
-parked on the same credentials — the set their last attempt sealed
-(`cred_fingerprints`), whose window the record names — are probed together,
-ONE of them per floor:
+parked on the same credentials — the set the attempt that met the wall
+sealed, copied into the wait by its paid arming (`retry_state.wall_credentials`)
+— are probed together, ONE of them per floor. The run's own stamp
+(`cred_fingerprints`) cannot be the key: every resume re-writes it, and a
+canary whose re-resolution sealed another set (the next pool slot, an empty
+resolution) would leave its window, which then lost its pace and its budget
+and pulled a fresh canary within the hour:
 
-- the **canary** is the earliest-parked run of the window (its last paid park,
-  then its id): a key the records carry, never the order a scan answered in,
-  so two replicas and a restarted one pick the same run, and the same run is
-  probed hour after hour;
+- the **canary** is the wait of the window pulled least recently (never-pulled
+  first), then the earliest-parked (its last paid park), then its id: keys the
+  records carry, never the order a scan answered in, so two replicas and a
+  restarted one pick the same run — and the canary walks the window, so a run
+  whose resume never reaches the provider (a refusal before publish, its
+  tenant's quota) does not take every probe;
 - when the canary gets past the wall — it has run longer than a refused
   resume takes to come back (the marker's TTL, 1 h), reached a human gate, or
   finished — every other run parked on the same credentials **before** the
@@ -427,12 +458,14 @@ ONE of them per floor:
   still meets the wall is re-armed on its announced instant, free;
 - when the canary meets the wall again, nobody else moves: its free re-arm
   puts back the provider's instant, and its pull stamp paces the window for a
-  floor.
+  floor. A run released on an answer is not released again on it, and the
+  pass that releases takes no new probe of the window.
 
 Everything is read from the run records — the pace is the latest pull any of
-the window's rows carries (`last_probe_at`), the budget the largest probe
-count (`probe_count`, per wall), the answer the state of the run the pull
-marked (`probe_from`) — and every write is the store's compare-and-swap, so
+the window's rows carries (`last_probe_at`), the budget the pulls its rows carry,
+summed (`probe_count`, per wall — summed because the canary walks the window,
+releases included), the answer the state of the run the pull marked
+(`probe_from`) — and every write is the store's compare-and-swap, so
 the sweeper on every replica takes the same decision and a restart does not
 probe twice. The cost is one pod per credential per floor, not one per parked
 run. The window key is the whole sealed set, because the record does not say
@@ -456,6 +489,7 @@ The probe is bounded, and its bounds are the deployment's:
 | `ITERION_RETRY_PROBE_FLOOR` | How long a credential window (or a wait probed on its own) rests between probes, and how close to its announced instant probing stops being worth a pod | `1h` |
 | `ITERION_RETRY_PROBE_BUDGET` | Probes one provider wall may spend — a credential window's, or a wait's probed on its own; `0` turns probing off | `24` |
 | `ITERION_RETRY_PROBE_BEFORE_WINDOW` | `true`: probe every wait on its own before the usage window its record names (one pod per parked run) | off |
+| `ITERION_RETRY_CREDENTIAL_PROBE_SCAN` | Rows one credential pass reads (every armed usage-window wait and every marked probe, platform-wide); a pass that reads its bound says so in the log, since a window cut by it can be probed twice within its floor | `500` |
 
 The probe ships **armed**: a deployment that sets none of these variables
 probes each credential window hourly, up to twenty-four times — a bounded day

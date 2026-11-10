@@ -200,12 +200,18 @@ from it — can differ on the next attempt and keeps its retries. So can
 into a fresh file and refreshes it when it is at or past its expiry lead,
 so the *effective* token can differ even though the sealed blob does not.
 And an exhausted fallback chain that met a usage window on any route is
-`USAGE_LIMIT_BLOCKED`, not `AUTH_FAILED`, whatever its other routes met: the
-run parks until the window reopens, and the dead route is named in the
-`node_recovery` event's `chain_routes` ([scheduling.md](scheduling.md)). In
-cloud, the one automatic resume before that date is the probe of the run's
+`USAGE_LIMIT_BLOCKED`, not `AUTH_FAILED`, whatever its other routes met and
+whichever backend served the route — claude_code, pi, claw (an HTTP 429 or a
+stream error frame naming the window) or codex (its limit notice): the run
+parks until the window reopens, and the dead route is named in the
+`node_recovery` event's `chain_routes` ([scheduling.md](scheduling.md)). A
+refusal of the account (a spend ceiling, a fair-usage restriction) names no
+reset and no wait cures it: beside a dead credential the chain stays
+`AUTH_FAILED`, so the human the pause calls can revive that route. In cloud,
+the one automatic resume before that date is the probe of the run's
 credential window: one run parked on the same credentials is relaunched each
-hour, and the others resume with it once it gets past the wall
+hour, up to the probe budget, and the others resume with it once it gets past
+the wall
 ([scheduling.md](scheduling.md#retry--a-provider-quota-window-is-waited-out-not-re-attempted)).
 
 When a surface declines to bring a run back, it says so on the timeline:

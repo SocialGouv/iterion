@@ -500,9 +500,10 @@ surface ([scheduling.md](scheduling.md#retry--a-provider-quota-window-is-waited-
   `run_retry_scheduled` event naming the instant it comes back — the earlier of
   the wall and a skipped credential's reopening;
 - the pull request carries one pause notice, which names that same instant
-  and says the credential is probed hourly until then: one parked run per
-  credential — the earliest-parked — is relaunched once an hour to ask the
-  provider whether the wall fell early, and when it gets past the wall (a
+  and says the credential is probed hourly until then, at most
+  `ITERION_RETRY_PROBE_BUDGET` times: one parked run per credential — the one
+  pulled least recently, earliest-parked first — is relaunched once an hour to
+  ask the provider whether the wall fell early, and when it gets past the wall (a
   forfait topped up by hand) every run parked on the same credentials resumes
   in the same pass. Nothing else relaunches a parked review before its date —
   not the due pass, not the gate reconciler, which counts a parked review as

@@ -274,17 +274,28 @@ gap used to count the run dead, relaunch a second review into the same wall
 and spend the head's one relaunch on a quota (#3127). A usage failure whose
 continuation is not settled final is parked (`store.Run.UsageWindowPark`): a
 continuation the runner stated (`retry_armed`, `redelivery_pending`) on every
-offer, and an unknown one on the sweep — the outcome event that follows the
-arming offers the run again. The runner states the continuation before it
+offer, and an unknown one on the sweep while the record is younger than the
+settle window (`ITERION_USAGE_PARK_SETTLE_WINDOW`, default `15m`) — the
+outcome event that follows the arming offers the run again. Past it nothing
+is going to arm the run (a lane with no runner, a runner lost before arming,
+an abandon write that failed), and the sweep — the only net under a missed
+event — repairs it as dead. The runner states the continuation before it
 fires that event, so an unknown one on the event is a lane that never states
 it, and the run is repaired as before; so is a park settled final (the
-attempt budget spent, the retry abandoned). But the check then sits on its in-flight claim, which
+attempt budget spent, the retry abandoned). Every other reader of "is this
+run dead" takes the same reading (`runWillResume`): the relaunch escalation,
+the autofix sweep, the stop on a closed pull request, the assistant's watch
+and the grant's expiry. But the check then sits on its in-flight claim, which
 reads exactly like a review that died — and nothing said how long to wait.
 So the park **comments on the pull request**, once per park (fired from the
 run-outcome event, never the every-minute sweep): what happened, the instant
-the retry fires — never earlier than the usage window the sweeper itself waits
-for (`retrypolicy.UsageWindowNotBefore`), so the notice and the resumer cannot
-disagree — the attempt number, and the provider's own sentence. When
+the retry fires — the one every announcement of the park says
+(`retrypolicy.UsageParkResumesAt`: the owner's notification and the
+operator's alert name it too), never earlier than the usage window the
+sweeper itself waits for, so the notice and the resumer cannot disagree — how
+often, and at most how many times, the credential is probed before it (the
+probe stops at its budget, and the notice is posted once), the attempt
+number, and the provider's own sentence. When
 that sentence is an account **spend ceiling** rather than a time window, the
 notice says so explicitly — a ceiling reopens when an admin raises it (or
 the month rolls), so the armed retries can otherwise exhaust themselves
