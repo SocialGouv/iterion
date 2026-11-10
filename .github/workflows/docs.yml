@@ -10,8 +10,11 @@ on:
     branches: [main]
     paths:
       - "docs/**"
-      # The release commit only touches CHANGELOG.md; docs/changelog.md
-      # includes it, so the site must rebuild on that path too.
+      # CHANGELOG.md is the only path of a release commit the site depends on
+      # (docs/changelog.md includes it), so the site must rebuild on it. The
+      # release writes three more — package.json, charts/iterion/Chart.yaml and
+      # internal/mdcode's reading golden — which this site does not read; the
+      # inventory of the four lives in tests.yml's push filter.
       - "CHANGELOG.md"
       - "pnpm-workspace.yaml"
       - ".github/workflows/docs.yml"

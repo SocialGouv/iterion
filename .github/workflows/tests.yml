@@ -12,9 +12,62 @@ name: 🧪 Tests
 # (gh-readonly-queue/main/...) used to get them from that unfiltered push. A
 # queue build with no checks waits for a context that never arrives and
 # dequeues the PR after the 60-minute timeout.
+# A release commit does not cancel the merge it followed (#3161). The
+# concurrency group below is keyed by ref, which on `main` is the SAME ref for
+# every commit — so each push kills the run before it. A merge is immediately
+# followed by the release bot's `chore: release`, landing with no PR, so that
+# release cancelled the witness of the merge that triggered it, every time.
+# Measured over the last 100 `main` pushes: 51 runs cancelled, of which 26 were
+# cancelled by a release push and 25 by an ordinary merge. So this removes HALF
+# the cancellations and no more — the other half is merge-on-merge, whose fix is
+# the concurrency key itself (`cancel-in-progress: ${{ github.event_name !=
+# 'push' }}`, or a group keyed by sha on push), which costs runner time on a
+# pool that is already the bottleneck and is therefore a separate decision.
+# Worth doing anyway because of WHERE the release lands: release-cancelled runs
+# died at a median of ~3 minutes, the youngest and cheapest-to-finish of all of
+# them. In the worst drought of the window — 14 consecutive pushes, 2.1 h, zero
+# verdict — this alone would have produced about four verdicts instead of none.
+#
+# `paths-ignore` is the surgical half of the fix: no run is CREATED for a
+# release commit, so it joins no concurrency group and cancels nothing. It is
+# scoped to `push` alone — a pull request or a queue build touching these files
+# still runs the full suite, and the nine other workflows that fire on push
+# (images, release, docs) are untouched, which `[skip ci]` in the release
+# message could not have said.
+#
+# The paths are what a release writes, each by a declared writer: package.json
+# (release-it's bump), CHANGELOG.md (.release-it.mjs `infile`),
+# charts/iterion/Chart.yaml (scripts/sync-chart-version.sh at after:bump) and
+# internal/mdcode/testdata/committed-reading.txt (cmd/corpus-reading --cut at
+# before:git:beforeRelease). Over the last 100 releases: package.json,
+# CHANGELOG.md and the chart 100/100, the reading golden 72/100 — a release
+# that writes only the first three is a SUBSET of this list, so it is skipped
+# too. Exactly two releases ever carried a fifth path, both from
+# `cmd/release-floors --apply` realigning syntax-floor pins.
+#
+# A release touching anything outside the list simply creates its run as it
+# does today: the failure mode of this filter is "no improvement", never a new
+# defect. What WOULD break it silently is renaming one of these paths, so
+# internal/ciguard pins them against the tree — and pins the one direction that
+# breaks a MERGE rather than a convenience: a path filter must never reach
+# `pull_request:` or `merge_group:`, which produce six required checks.
+#
+# The residual, measured at push level because that is what GitHub filters: of
+# the last 55 pushes to `main`, 17 would be skipped and all 17 are
+# `chore: release` — no ordinary push lost a witness. A path filter reads the
+# WHOLE push diff rather than the tip commit, so a landing train that happens
+# to END on a corpus re-pin still runs. And a bad release cut cannot hide in
+# the gap: internal/mdcode re-derives the reading from the tree and compares it
+# byte for byte, on every pull request branched after the release, not merely
+# on `main`'s next commit.
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - CHANGELOG.md
+      - charts/iterion/Chart.yaml
+      - internal/mdcode/testdata/committed-reading.txt
+      - package.json
   pull_request:
   merge_group:
     types: [checks_requested]
