@@ -538,3 +538,44 @@ func TestFundingReaders_AForfaitFundsNoUntrustedRun(t *testing.T) {
 		t.Errorf("trusted control: bundle funding = %v, want the forfait's anthropic", got)
 	}
 }
+
+// The deferred and unattributed remedies say how far an integration's routing
+// override reaches — a node's own route, nothing else — so an operator facing
+// a supervisor, a sub-bot or a fallback route is pointed at the bot's text or
+// the launch's fallback chain rather than at an override that cannot lift the
+// refusal. Judged on the gate's judge, one row per remedy.
+//
+// Mutation: either remedy's sentence back to "the integration's routing
+// overrides pin a node's provider, model and backend" (overrideReach dropped)
+// → its row is red on the reach assertion.
+func TestFundingRefusal_TheRemedyNamesWhatARoutingOverrideReaches(t *testing.T) {
+	for _, row := range []struct {
+		name, bot, remedy string
+		seed              func(t *testing.T, p *Publisher)
+	}{
+		{"an unattributed route", unattributedBesideVendorBot, "the routes of second name no provider this launch can read", seedTeamOpenAI},
+		{"a deferred route", envDialBot, "the routes of draft are decided on the runner", seedTeamAnthropic},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			p := forkFundingPublisher(t)
+			row.seed(t, p)
+			wf := compileTestSource(t, row.bot)
+			err := p.FundingRefusal(store.WithTenant(context.Background(), "team1"), forkFundingSpec(store.RunTrustFork), wf)
+			if err == nil {
+				t.Fatal("FundingRefusal = nil, want the untrusted refusal")
+			}
+			msg := err.Error()
+			start := strings.Index(msg, row.remedy)
+			if start < 0 {
+				t.Fatalf("refusal %q, want the remedy %q", msg, row.remedy)
+			}
+			remedy := msg[start:]
+			if end := strings.Index(remedy, "; and "); end >= 0 {
+				remedy = remedy[:end]
+			}
+			if !strings.Contains(remedy, "pin a node's own route (provider, model and backend) and nothing else") || !strings.Contains(remedy, "a supervisor") {
+				t.Fatalf("remedy %q does not say an override reaches a node's own route alone", remedy)
+			}
+		})
+	}
+}

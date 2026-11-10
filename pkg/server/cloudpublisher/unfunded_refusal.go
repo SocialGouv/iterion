@@ -452,12 +452,12 @@ func (e *UnfundedProvidersError) Error() string {
 				strings.Join(e.Gateway, ", ")))
 		}
 		if len(e.Deferred) > 0 {
-			remedies = append(remedies, fmt.Sprintf("the routes of %s are decided on the runner — an ${…} dial the pool's runner expands with its own environment, whose env block pins the routing dials ahead of the platform record, or a run var this launch leaves undecided — so no verdict reached before the run is the route it takes: give them literal routes (the integration's routing overrides pin a node's provider, model and backend) until a run's settings arrive frozen at claim (ADR-132)",
-				strings.Join(e.Deferred, ", ")))
+			remedies = append(remedies, fmt.Sprintf("the routes of %s are decided on the runner — an ${…} dial the pool's runner expands with its own environment, whose env block pins the routing dials ahead of the platform record, or a run var this launch leaves undecided — so no verdict reached before the run is the route it takes: give them literal routes until a run's settings arrive frozen at claim (ADR-132) — %s",
+				strings.Join(e.Deferred, ", "), overrideReach))
 		}
 		if len(e.Unattributed) > 0 {
-			remedies = append(remedies, fmt.Sprintf("the routes of %s name no provider this launch can read — a model with no provider/ prefix, an auto, empty or unknown provider step, a subbot whose child bot is not read here, a supervisor with no model — so the pool's runner decides what they spend: pin each to a vendor provider the team holds an API key for (a `provider:` hint or a provider/ model prefix; the integration's routing overrides pin a node's provider, model and backend)",
-				strings.Join(e.Unattributed, ", ")))
+			remedies = append(remedies, fmt.Sprintf("the routes of %s name no provider this launch can read — a model with no provider/ prefix, an auto, empty or unknown provider step, a subbot whose child bot is not read here, a supervisor with no model — so the pool's runner decides what they spend: pin each to a vendor provider the team holds an API key for, by a `provider:` hint or a provider/ model prefix — %s",
+				strings.Join(e.Unattributed, ", "), overrideReach))
 		}
 		if len(e.WireDefault) > 0 {
 			remedies = append(remedies, fmt.Sprintf("the routes of %s may spend the anthropic wire's default credential — a claude_code route that pins no anthropic-wire provider, or a route whose backend the runner picks — and the team holds an API key for none of the slots listed, or the providers allowlist admits none: provision one the allowlist admits, or pin the route's backend and provider",
@@ -480,6 +480,16 @@ func (e *UnfundedProvidersError) Error() string {
 	return fmt.Sprintf("cloudpublisher: %v: every provider the LLM routes of this run name is unfunded — no tier (byok, oauth-forfait, pool, platform) holds a credential for %s; provision one for tenant %s, or unset ITERION_CLOUD_REQUIRE_LLM_CREDENTIAL to let the runner fall back to its env",
 		runview.ErrNoLLMCredential, strings.Join(named, "; "), e.Tenant)
 }
+
+// overrideReach is where the untrusted remedy says a route is pinned. An
+// integration's routing override reaches a node's own route alone (ForNode:
+// an agent, a judge, an llm router, a recovery rung's synthetic agent); the
+// sites the refusal may also name — a sub-bot node, a supervisor, an authored
+// `fallbacks:` route (`node#name`), an interaction or direct generation, a
+// run-level fallback stage (`run-fallback#<stage>`) — are pinned by the bot's
+// own text or the launch's fallback chain, so a remedy offering the override
+// for them names a lever that cannot lift the refusal.
+const overrideReach = "an integration's routing overrides pin a node's own route (provider, model and backend) and nothing else: a sub-bot node, a supervisor, a fallbacks: route (node#name), an interaction generation or a run-level fallback stage (run-fallback#…) is pinned in the bot's own text or the launch's fallback chain"
 
 // namedProviders renders each refused provider with the route sites that
 // named it, in the refusal's sorted order.
