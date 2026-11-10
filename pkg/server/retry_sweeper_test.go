@@ -399,9 +399,20 @@ func TestCircuitRetryDelaySpreadsRunsAndHonorsOriginalHorizon(t *testing.T) {
 
 // TestSweepDueRetries_TransientDenialReArms pins the denial classification: a
 // monthly quota refills on the 1st and a concurrency cap clears in minutes,
-// so those must defer the retry rather than throw the run away.
+// so those must defer the retry rather than throw the run away. Every token
+// by name, the fork lane's included (ADR-162 decision 5): an unreadable team
+// or org, an unreachable or erring counter and the author's monthly ceilings
+// are blips or calendar conditions, and a fork run's paid continuation is
+// never abandoned on one (the sweeper's abandonRetry).
+//
+// Mutation: narrow the fork case of retryDenialIsTransient to
+// denyForkTeamUnreadable → the five other fork tokens red, each by name.
 func TestSweepDueRetries_TransientDenialReArms(t *testing.T) {
-	for _, reason := range []string{denyMonthlyRunQuota, denyMonthlyCostCap, denyConcurrencyCap, denyLaunchRateLimited} {
+	for _, reason := range []string{
+		denyMonthlyRunQuota, denyMonthlyCostCap, denyConcurrencyCap, denyLaunchRateLimited, denyRepoQuota,
+		denyForkTeamUnreadable, denyForkOrgUnreadable, denyForkMeteringUnavailable, denyForkMeteringError,
+		denyForkAuthorRuns, denyForkAuthorCost, denyResumeRunUnreadable,
+	} {
 		if !retryDenialIsTransient(reason) {
 			t.Errorf("%s classified permanent — the run would be dropped for a condition that clears itself", reason)
 		}

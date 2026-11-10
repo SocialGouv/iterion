@@ -398,3 +398,48 @@ func TestForkGesture_TheRealGitHubClientsUnidentifiedAuthorIsRefused(t *testing.
 		})
 	}
 }
+
+// TestGateLaunch_AForkAuthorWithoutAProviderOrAnIDIsRefused: gateMonthlyCaps'
+// keyed-identity arm, on its own. The gesture refuses a pull request with no
+// numeric author id upstream (TestForkGesture_TheRealGitHubClientsUnidentified…),
+// so that row never reached this arm and the two guards covered each other. A
+// ForkAuthorRef with no stored subject and no provider or no numeric id — a
+// parked retry target, a future producer — is refused fail-closed here, never
+// metered on one subject every id-less author would share.
+//
+// Mutation: `} else if false && (subj.ForkAuthor.Provider == "" || …) {` →
+// both rows are admitted on the shared subject (red on their own assertion).
+func TestGateLaunch_AForkAuthorWithoutAProviderOrAnIDIsRefused(t *testing.T) {
+	for _, row := range []struct {
+		name   string
+		ref    webhooks.ForkAuthorRef
+		shared orgusage.Subject
+	}{
+		{"no numeric id", webhooks.ForkAuthorRef{Provider: "github"}, orgusage.ForkAuthorSubject("t1", "github", "")},
+		{"no provider", webhooks.ForkAuthorRef{AuthorID: "4242"}, orgusage.ForkAuthorSubject("t1", "", "4242")},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			s := newOrgTestServer(t)
+			c := orgusage.NewMemoryCounter()
+			s.orgUsage = c
+			s.orgDefaults = OrgLimitDefaults{ForkAuthorRunQuota: 20, ForkAuthorCostCapUSD: 20}
+			ctx := seedGate(t, s, gateSpec{id: "t1"})
+			subj := forkGateSubject()
+			ref := row.ref
+			subj.ForkAuthor = &ref
+			adm, d := s.gateLaunch(ctx, subj)
+			if d == nil || d.reason != denyForkMeteringUnavailable {
+				t.Fatalf("denial = %+v (admission %+v), want %q — an author keyed on nothing is not metered on a guess", d, adm, denyForkMeteringUnavailable)
+			}
+			for _, subject := range []orgusage.Subject{orgusage.OrgSubject("t1"), row.shared} {
+				u, err := c.Usage(context.Background(), subject, time.Now().UTC())
+				if err != nil {
+					t.Fatal(err)
+				}
+				if u.Runs != 0 {
+					t.Fatalf("%s runs = %d after the refusal, want 0", subject, u.Runs)
+				}
+			}
+		})
+	}
+}
