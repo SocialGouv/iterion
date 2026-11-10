@@ -188,6 +188,17 @@ func (s *Service) Fork(ctx context.Context, spec ForkSpec) (*ForkResult, error) 
 	// by the credential that funded the parent, and a child doc left
 	// unstamped would re-derive (or lose) the pair on resume.
 	child.ContentBoundary = parent.ContentBoundary
+	// So does the rest of the launch-frozen credential frame every resume
+	// replays (SubmitResume reads each off the document): the webhook's key
+	// pins — the stamp names the pinned key, and a child without the pin
+	// would seal another key under it (ADR-131 §6) —, the routing policy
+	// (allowlist and pair order, ADR-129 §5: nil reads as the package
+	// defaults), the pinned providers (empty reads as the one-key-per-family
+	// fill) and the attached pool (ADR-164).
+	child.KeyOverrides = maps.Clone(parent.KeyOverrides)
+	child.LLMRoutePolicy = parent.LLMRoutePolicy
+	child.PinnedProviders = slices.Clone(parent.PinnedProviders)
+	child.PoolAttachment = parent.PoolAttachment
 	if spec.ForkName != "" {
 		child.Name = spec.ForkName
 	} else {
