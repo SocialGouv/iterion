@@ -178,27 +178,6 @@ const gateRefusedRemedy = ") — push again or comment the bot's command to re-r
 // what gives way, bounded to what the envelope leaves it: 140 − 27 (prefix)
 // − 56 (remedy) = 57 runes, counted in RUNES on both constants — the remedy's
 // em-dash makes len() (bytes: 58) read two short of the truth.
-// runParkedOnUsageWindow reports a run parked on a provider usage window whose
-// retry is not armed (yet): the record says USAGE_LIMIT_BLOCKED and no
-// continuation has been settled final (store.Run.UsageWindowPark). Such a run
-// is not dead, and counting it dead relaunches a second review into the same
-// wall and spends the head's one relaunch on a quota (#3127, the #49/#68
-// relaunches of 2026-11-10).
-//
-// An UNKNOWN continuation is read by the path that offers the run. The runner
-// states the continuation (retry_armed, redelivery_pending) before it fires
-// the outcome event, so an unknown one on the event is a lane that never
-// states it, and the run is dead as it always was. On the sweep, an unknown
-// continuation is the gap between the engine's failed_resumable write and the
-// runner's arming, which lands after the post-engine steps: the event that
-// follows the arming offers the run again.
-func runParkedOnUsageWindow(run *store.Run, via string) bool {
-	if !run.UsageWindowPark().Parked {
-		return false
-	}
-	return run.ContinuationState != "" || via == gateTriggerSweep
-}
-
 func gateRefusalDescription(r *gateRefusal) string {
 	reason := "no reason recorded"
 	if r != nil && strings.TrimSpace(r.Reason) != "" {
@@ -316,7 +295,7 @@ func (s *Server) reconcileGateForRunID(ctx context.Context, runID, via string) e
 		if via == gateTriggerEvent {
 			s.noticeGateDLQParked(ctx, run)
 		}
-	} else if runAwaitsArmedRetry(run) || runParkedOnUsageWindow(run, via) {
+	} else if runWillResume(run, via == gateTriggerEvent, time.Now().UTC()) {
 		// A resumable failure is only "not dead" when something will
 		// actually resume it. The runner arms a durable retry for
 		// usage-window failures (persisted BEFORE the outcome event fires

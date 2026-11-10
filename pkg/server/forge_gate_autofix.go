@@ -134,11 +134,11 @@ func (s *Server) autofixForRunID(ctx context.Context, runID, via string) error {
 	}
 	// A run that will resume is still expected to post its own verdict; acting
 	// on the interim state would fire on a gate that is about to change. Only
-	// an ARMED retry makes that true (same distinction as the reconciler): a
-	// failed_resumable with nothing coming back for it is final, and a red
-	// verdict it did post before dying deserves its fix pass.
-	if run.Status == store.RunStatusFailedResumable &&
-		run.RetryState != nil && run.RetryState.RetryAfter != nil {
+	// something coming back for it makes that true — the reconciler's own
+	// reading (runWillResume): a failed_resumable with nothing coming back for
+	// it is final, and a red verdict it did post before dying deserves its
+	// fix pass.
+	if runWillResume(run, false, time.Now().UTC()) {
 		return nil
 	}
 	// A DECLINED run is an ANSWER, not a failure to repair (#706): the bot

@@ -925,7 +925,9 @@ func (c *assistantWatchCoordinator) observeFailureForWatch(ctx context.Context, 
 	}
 	// The native retry sweeper already owns this episode. Waking a model now
 	// would spend a turn diagnosing a failure that is scheduled to disappear.
-	if observed.Status == store.RunStatusFailedResumable && observed.RetryState != nil && observed.RetryState.RetryAfter != nil {
+	// Read on the run's own failure: an unknown continuation is a lane that
+	// never states one, and the model is woken as it always was.
+	if runWillResume(observed, true, time.Now().UTC()) {
 		return nil
 	}
 	rctx := store.WithIdentity(ctx, w.TenantID, w.OwnerID)

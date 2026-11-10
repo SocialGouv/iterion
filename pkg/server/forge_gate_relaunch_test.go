@@ -264,6 +264,39 @@ func TestGateRelaunch(t *testing.T) {
 			t.Fatalf("launched %d runs, want 1 — a run no lane will resume must not hold the gate", *w.launched)
 		}
 	})
+	// The settling gap is seconds to minutes. A park no lane armed past it —
+	// an in-process lane with no runner, a runner lost before arming, an
+	// abandon write that failed — is dead to the sweep, the only net under a
+	// missed event: holding it "settling" for the sweep's whole horizon left
+	// the required check absent for eight days.
+	t.Run("an unarmed usage park past its settle window is dead to the sweep", func(t *testing.T) {
+		t.Setenv(EnvUsageParkSettleWindow, "0s")
+		w := build(t, nil)
+		runID := seedParkedRun(t, w.s, "")
+		if err := w.s.reconcileGateForRunID(context.Background(), runID, gateTriggerSweep); err != nil {
+			t.Fatalf("reconcile: %v", err)
+		}
+		if *w.launched != 1 {
+			t.Fatalf("launched %d runs, want 1 — nothing armed the park within its settle window, so nothing will", *w.launched)
+		}
+	})
+	// The siblings of the reconciler's question read the same state: a
+	// replacement review in its settling gap is still running to the
+	// relaunch escalation, and not over to the grant's expiry.
+	t.Run("a settling usage park is running to every reader of the dead question", func(t *testing.T) {
+		w := build(t, nil)
+		runID := seedParkedRun(t, w.s, "")
+		if running, why := w.s.relaunchStillRunning(context.Background(), runID); !running {
+			t.Errorf("relaunchStillRunning = false (%s) — the escalation would file 'the relaunch died too' for a run the reconciler holds parked", why)
+		}
+		run, err := w.s.cfg.Store.LoadRun(context.Background(), runID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if runIsOver(run, false) {
+			t.Error("runIsOver = true for a settling usage park — its grant would be cut back under it")
+		}
+	})
 	// The boundary: once the park is settled final (the attempt budget spent,
 	// the retry abandoned) nothing will wake the run, and it is dead.
 	t.Run("a usage park settled final is dead and relaunched", func(t *testing.T) {

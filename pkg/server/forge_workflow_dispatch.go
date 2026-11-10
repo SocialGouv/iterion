@@ -212,7 +212,7 @@ func (s *Server) handleForgeDispatchWorkflow(w http.ResponseWriter, r *http.Requ
 		refuse(http.StatusForbidden, code, "the run may not present this grant: a run whose workspace holds code the tenant did not write, or of another tenant, never dispatches")
 		return
 	}
-	if runIsOver(run) {
+	if runIsOver(run, false) {
 		refuse(http.StatusForbidden, dispatchRefusedRunOver,
 			fmt.Sprintf("run %s is over (%s) — a grant outlives its run for the gate repairs, never for a dispatch", run.ID, run.Status))
 		return

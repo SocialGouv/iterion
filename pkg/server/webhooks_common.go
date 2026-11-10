@@ -1919,7 +1919,7 @@ func (s *Server) runIsStoppable(ctx context.Context, runID string) bool {
 		return true
 	case store.RunStatusFailedResumable:
 		// Only the ones something will actually come back for.
-		return run.RetryState != nil && run.RetryState.RetryAfter != nil
+		return runWillResume(run, false, time.Now().UTC())
 	default:
 		return false
 	}
