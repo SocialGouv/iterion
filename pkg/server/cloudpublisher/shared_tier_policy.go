@@ -54,6 +54,27 @@ type sharedTierPolicy struct {
 	// beside the per-tier probes; nil asks nobody (a policy built without
 	// tiers, as in unit tests, then behaves like `tier`).
 	runNative *tierNative
+	// ridesNoGateway is gatewayRoutes.sealable's negation for this run
+	// (withGatewaySlot): no route of it may ride the openai_compatible
+	// gateway, so no tier seals the gateway slot. The zero value admits it
+	// (a policy built without the run's routing, as in unit tests).
+	ridesNoGateway bool
+}
+
+// withGatewaySlot returns the policy with the run's gateway answer joined to
+// the seal gate (gatewayRoutes.sealable): the one predicate every tier that
+// could fill the gateway slot passes — the tenant, org and platform fills,
+// the restore, the attached pool — and the preview reads.
+func (pol sharedTierPolicy) withGatewaySlot(sealable bool) sharedTierPolicy {
+	pol.ridesNoGateway = !sealable
+	return pol
+}
+
+// gatewayOut reports a slot the run's routes never ride: the gateway's, on a
+// run that rides no gateway route. Not a refusal of any frozen list — the run
+// simply has no use for the credential.
+func (pol sharedTierPolicy) gatewayOut(slot string) bool {
+	return pol.ridesNoGateway && slot == slotOfProvider(secrets.ProviderOpenAICompatible)
 }
 
 // orNative composes two tiers' probes into the run's: held by either is held
@@ -206,9 +227,13 @@ func (pol sharedTierPolicy) withSlotWhitelist(pairOrder []string, rec *pairOrder
 	return pol
 }
 
-// sealableSlot answers the whitelist for one credential slot. A policy
-// built without the gate admits everything.
+// sealableSlot answers the whitelist for one credential slot, the run's
+// gateway answer included (gatewayOut). A policy built without the gates
+// admits everything.
 func (pol sharedTierPolicy) sealableSlot(slot string) bool {
+	if pol.gatewayOut(slot) {
+		return false
+	}
 	if pol.slotSealable == nil {
 		return true
 	}
@@ -228,6 +253,12 @@ func (pol sharedTierPolicy) sealableSlot(slot string) bool {
 // already has a line of its own: the pool grant, released with its reason,
 // and the preview, which names every exclusion per candidate.
 func (pol sharedTierPolicy) sealableHeldSlot(slot string) bool {
+	// Asked first: a slot the run never rides is not a credential a frozen
+	// list held out, and naming it would put the §5 line on every vendor run
+	// of a team that holds a gateway key.
+	if pol.gatewayOut(slot) {
+		return false
+	}
 	if pol.sealableSlot(slot) {
 		return true
 	}
@@ -450,11 +481,38 @@ func llmCredentialOwed(bundle secrets.RunBundle, wf *ir.Workflow, envFunded bool
 	return !envFunded && !holdsLLMCredential(bundle) && (wf == nil || wf.UsesLLM())
 }
 
-// holdsDefaultLLMCredential reports whether an UNPINNED route has something
-// to spend. The pool is consulted when it has not: a pinned-only key serves
-// the routes that read the wire's default and nobody else.
+// holdsDefaultLLMCredential reports whether a route the walk did not
+// attribute — an UNPINNED route — has something of the run's own to spend:
+// a forfait, or a default-channel key of any slot but the gateway's. A
+// pinned-only key serves the routes that name its provider and nobody else;
+// a gateway key serves the routes the walk attributes to it and never an
+// unattributed one (ADR-131 §5: the gateway slot never pays an unattributed
+// route). ONE predicate for every reader of the question, on the sealed
+// bundle here and on the preview's predicted fills (defaultLLMCredentialIn):
+// the pool tier's admission, the legacy pool's gate, the fallback door, and
+// the sovereign refusal of a run nothing of the team's own funds.
 func holdsDefaultLLMCredential(b secrets.RunBundle) bool {
-	return len(b.APIKeys) > 0 || len(b.OAuthCredentials) > 0
+	slots := make([]secrets.Provider, 0, len(b.APIKeys))
+	for prov, key := range b.APIKeys {
+		if key != "" {
+			slots = append(slots, prov)
+		}
+	}
+	return defaultLLMCredentialIn(slots, len(b.OAuthCredentials))
+}
+
+// defaultLLMCredentialIn is holdsDefaultLLMCredential over the two channels
+// as a caller sees them: the default-channel key slots and the forfait count.
+func defaultLLMCredentialIn(defaultKeySlots []secrets.Provider, oauthKinds int) bool {
+	if oauthKinds > 0 {
+		return true
+	}
+	for _, prov := range defaultKeySlots {
+		if prov != secrets.ProviderOpenAICompatible {
+			return true
+		}
+	}
+	return false
 }
 
 // familyHolderName names, for the audit line, what holds a refused key's

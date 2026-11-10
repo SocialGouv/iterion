@@ -217,26 +217,6 @@ func fundedProviderSet(apiSlots []secrets.Provider, oauthKinds []string, posture
 	return funded
 }
 
-// holdsNothingForUnattributedRoutes is the sovereign arm's "the team holds
-// nothing of its own", ONE reading of the two channels for both surfaces (the
-// launch's sealed bundle, the preview's predicted fills): no OAuth forfait,
-// and no key of any slot but the gateway's. A gateway key funds the routes the
-// walk attributes to it and never an unattributed one (ADR-131 §5: the gateway
-// slot never pays an unattributed route) — counted, it would start a run whose
-// unreadable route rides the pod's environment for a team that registered its
-// gateway key alone.
-func holdsNothingForUnattributedRoutes(apiSlots []secrets.Provider, oauthKinds int) bool {
-	if oauthKinds > 0 {
-		return false
-	}
-	for _, prov := range apiSlots {
-		if prov != secrets.ProviderOpenAICompatible {
-			return false
-		}
-	}
-	return true
-}
-
 // bundleFunding is fundedProviderSet on a SEALED bundle: the launch's own
 // reading, the one its refusals are computed on.
 func bundleFunding(bundle secrets.RunBundle, posture unfundedPosture) map[string]bool {
@@ -325,9 +305,10 @@ func (p *Publisher) unfundedPostureFor(wf *ir.Workflow, sovereign, envFunded boo
 // postures in the launch's own order — the untrusted posture first, then the
 // deployment knob, then the sovereign policy — and, where no NAME is left to
 // refuse, the strict postures' refusal of a run they can attribute nothing of
-// while the run holds nothing at all (holdsNothing:
-// holdsNothingForUnattributedRoutes, on the launch's sealed bundle and on the
-// preview's metadata). The FIRST refusal answers for the run, nil meaning
+// while the run holds nothing at all (holdsNothing: !holdsDefaultLLMCredential
+// on the launch's sealed bundle, its twin on the preview's metadata — an
+// unattributable route is unpinned, so only a default credential, never the
+// gateway key, funds it). The FIRST refusal answers for the run, nil meaning
 // "this run starts".
 //
 // The untrusted posture answers first because its remedy is the only true
@@ -336,7 +317,7 @@ func (p *Publisher) unfundedPostureFor(wf *ir.Workflow, sovereign, envFunded boo
 // holding nothing means holding nothing that FUNDS — a sealed forfait is not
 // funding there (fundedProviderSet), so the funded set itself is the answer,
 // read without the gateway slot: a gateway key never pays an unattributed
-// route (holdsNothingForUnattributedRoutes).
+// route (holdsDefaultLLMCredential).
 //
 // The pre-metering refusal of a fork run (the launch gate's funding arm, in
 // pkg/server) reads this producer through the credential preview

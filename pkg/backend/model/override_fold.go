@@ -79,6 +79,14 @@ type ProviderResolution struct {
 	// whatever credential the process holds (claw substitutes the first
 	// available provider; claude_code walks its bundle precedence).
 	NarrowSafe bool
+	// EnvDeferred reports a route whose own text defers to an environment or
+	// to the run's vars (envDeferred): what it spends is decided where the
+	// run executes, even when this process's expansion reads narrow-safe — a
+	// `${DIAL:-default}` whose default names a vendor may expand to the
+	// gateway on the runner. Such a route is never env-funded nor
+	// key-attributed, and a reader that must not drop a credential the
+	// runner's expansion may spend reads this beside NarrowSafe.
+	EnvDeferred bool
 	// Unknown lists the hints that named something and matched no known
 	// provider — a typo in `provider:`, a model prefix the pool never
 	// lends — so the caller can say WHICH pin made it widen. Sorted.
@@ -498,7 +506,7 @@ type routeRead struct {
 }
 
 func (a *providerAccumulator) result() ProviderResolution {
-	res := ProviderResolution{NarrowSafe: a.narrowSafe}
+	res := ProviderResolution{NarrowSafe: a.narrowSafe, EnvDeferred: a.envSeen}
 	// The widenings that matter here are narrowSafe's (an unresolvable or
 	// unknown route may spend anything), a recorded provider (some tier
 	// holds what it spends) and an env-dependent route (it may resolve to

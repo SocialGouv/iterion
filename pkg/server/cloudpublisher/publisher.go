@@ -763,8 +763,10 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	// Anthropic on the runner. The same is true, one level up, of a var the
 	// publisher's OWN environment decided (RouteView.LateVars): the walk
 	// reads the run's vars through the view, and a late name leaves the route
-	// undecided.
-	view, envFunded := p.gatewayRouting(ctx, view, tenantID, orgID, ownerID, audienceBotID, sovereign, runnerPool != "")
+	// undecided. The same answer says whether the gateway slot may seal at
+	// all (gatewayRoutes.sealable, joined to the seal gate below).
+	gateway := p.gatewayRouting(ctx, view, tenantID, orgID, ownerID, audienceBotID, sovereign, runnerPool != "")
+	view, envFunded := gateway.view, gateway.envFunded
 
 	// Refused-but-only keys, per provider AND per tier, remembered across
 	// the tiers for the restore step — the api-key twin of skippedForfaits
@@ -815,6 +817,9 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	if allowed != nil {
 		policy = policy.withProviderAllowlist(allowed)
 	}
+	// ADR-131 §5: the gateway slot seals only for a run that may ride a
+	// gateway route — every tier that could fill it asks this gate.
+	policy = policy.withGatewaySlot(gateway.sealable)
 	// The probes stay unread for an env-funded run: no tier is consulted.
 	var tenantNative, orgNative, platformNative *tierNative
 	if envFunded {
@@ -1170,7 +1175,11 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 				//    legacy walk too: the scope opted OUT of pools entirely —
 				//    "attached or legacy audience pools" is what the frozen
 				//    snapshot's doc promises, and law 2 is the opt-out's own text.
-				if poolAttachment == nil && len(bundle.APIKeys) == 0 && len(bundle.OAuthCredentials) == 0 {
+				//
+				//    "No credential of its own" is holdsDefaultLLMCredential's
+				//    reading: a gateway key funds the gateway routes alone, so it
+				//    leaves a vendor route the pool may still serve.
+				if poolAttachment == nil && !holdsDefaultLLMCredential(bundle) {
 					if grant := p.acquireFromPool(ctx, runID, orgID, tenantID, ownerID, botID, view, bundle.PinnedAPIKeys); grant != nil {
 						// The lent credential goes in the slot its KIND belongs to, so
 						// the runner cannot tell a donation from the tenant's own.
@@ -1656,8 +1665,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	// contradict the launch it describes — a refusal left outside it is a
 	// refusal no view mirrors.
 	posture := p.unfundedPostureFor(wf, sovereign, envFunded, trust, runnerPool)
-	holdsNothing := holdsNothingForUnattributedRoutes(fundedAPIKeySlots(bundle), len(bundle.OAuthCredentials))
-	if refusal := unfundedRefusalFor(tenantID, attributed, bundleFunding(bundle, posture), holdsNothing, posture); refusal != nil {
+	if refusal := unfundedRefusalFor(tenantID, attributed, bundleFunding(bundle, posture), !holdsDefaultLLMCredential(bundle), posture); refusal != nil {
 		return res, refusal
 	}
 	if noLLMCred && len(bundle.GenericSecrets) == 0 {
@@ -5662,12 +5670,11 @@ func (p *Publisher) acquireFromAttachedPools(ctx context.Context, runID, orgID, 
 	// the diagnostics and the consulted line read the same walk.
 	wantList, resolution := wantsFor(view)
 	// The gateway want enters the vocabulary ONLY through the attachment
-	// (ADR-131 §5 amended) — appended last, metered last, and only where
-	// the run could spend it: a fail-open walk, or a route that actually
-	// names the gateway provider.
-	if !resolution.NarrowSafe || slices.Contains(resolution.Providers, string(secrets.ProviderOpenAICompatible)) {
-		wantList = append(wantList, credpool.Credential{Source: credpool.SourceAPIKey, Ref: string(secrets.ProviderOpenAICompatible)})
-	}
+	// (ADR-131 §5 amended) — appended last, metered last, and asked only
+	// where the run may ride a gateway route: the seal gate below answers
+	// that (sharedTierPolicy.gatewayOut, gatewayRoutes.sealable), the one
+	// predicate every tier filling the slot reads.
+	wantList = append(wantList, credpool.Credential{Source: credpool.SourceAPIKey, Ref: string(secrets.ProviderOpenAICompatible)})
 	if len(resolution.Unknown) > 0 {
 		p.logger.Warn("cloudpublisher: attached pool asked for the FULL order for run %s — provider hint(s) match no known provider: %s (%s)",
 			runID, strings.Join(resolution.Unknown, ","), providersSummary(resolution.Providers))

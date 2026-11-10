@@ -9,11 +9,32 @@ import (
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
+// gatewayRoutes is what gatewayRouting answers about one run.
+type gatewayRoutes struct {
+	// view is the view every later derivation of the run reads — the
+	// gateway routes attributed to the key when one funds them.
+	view model.RouteView
+	// envFunded: every route rides the gateway and nothing of a tier funds
+	// it — the walk acquires nothing.
+	envFunded bool
+	// sealable: the run may ride a gateway route, so a tier may seal the
+	// gateway slot for it (sharedTierPolicy.withGatewaySlot): the walk
+	// attributes a gateway route to the key, or some route is one the walk
+	// cannot decide — not narrow-safe, or deferring to the runner's
+	// environment (a `${DIAL:-vendor/…}` the runner may expand to the
+	// gateway). A decided vendor-only run never carries the pair: on the
+	// runner it pins the gateway host on the run's proxy, makes the run
+	// always-proxied and keeps a subbot out of its parent's sandbox, all for
+	// a key no route spends.
+	sealable bool
+}
+
 // gatewayRouting is ADR-131 §5's one answer about a run's gateway routes,
 // shared by the credential walk and the credential preview (the parity
 // doctrine: a preview reading its own predicate would show a slot the launch
 // refuses, or hide one it seals). It returns the view every later derivation
-// of the run reads, and whether the run is env-funded on that view.
+// of the run reads, whether the run is env-funded on that view, and whether
+// the gateway slot may seal for it.
 //
 // The run's DECIDED gateway routes (a literal `openai_compatible/…` model)
 // are attributed to the gateway key — model.RouteView.GatewayKeyFunded — when
@@ -30,19 +51,26 @@ import (
 // at all, so a run that never routes to the gateway costs nothing here.
 // sovereign and pooled are the walk's postures (llm_fallback=none, a runner
 // pool mapping); either keeps the shared tiers out of the probe, as out of
-// the walk.
-func (p *Publisher) gatewayRouting(ctx context.Context, view model.RouteView, tenantID, orgID, ownerID, audienceBotID string, sovereign, pooled bool) (model.RouteView, bool) {
+// the walk. A nil workflow is a program nobody read: it fails open, gateway
+// slot included.
+func (p *Publisher) gatewayRouting(ctx context.Context, view model.RouteView, tenantID, orgID, ownerID, audienceBotID string, sovereign, pooled bool) gatewayRoutes {
 	if view.Workflow == nil {
-		return view, false
+		return gatewayRoutes{view: view, sealable: true}
 	}
+	gw := string(secrets.ProviderOpenAICompatible)
 	keyed := view
 	keyed.GatewayKeyFunded = true
 	walk := model.EffectiveProviders(keyed, walkProviderSet)
-	if slices.Contains(walk.Providers, string(secrets.ProviderOpenAICompatible)) &&
-		((sovereign && !pooled) || p.gatewayKeyHeld(ctx, tenantID, orgID, ownerID, audienceBotID, sovereign || pooled)) {
-		return keyed, walk.OnlyEnvFunded()
+	attributed := slices.Contains(walk.Providers, gw) &&
+		((sovereign && !pooled) || p.gatewayKeyHeld(ctx, tenantID, orgID, ownerID, audienceBotID, sovereign || pooled))
+	if !attributed {
+		keyed, walk = view, model.EffectiveProviders(view, walkProviderSet)
 	}
-	return view, model.EffectiveProviders(view, walkProviderSet).OnlyEnvFunded()
+	return gatewayRoutes{
+		view:      keyed,
+		envFunded: walk.OnlyEnvFunded(),
+		sealable:  slices.Contains(walk.Providers, gw) || !walk.NarrowSafe || walk.EnvDeferred,
+	}
 }
 
 // gatewayKeyHeld answers "the team holds a gateway key" (ADR-131 §5): whether

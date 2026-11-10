@@ -15,7 +15,16 @@
 // arm dropped from gatewayRouting → W9's refused row, or made blind to the
 // runner pool → its pool-stamped row; the attributed set read under the
 // pool's vocabulary → W9's refused row; the launch's or the preview's
-// holds-nothing counting a gateway key → W10, each surface alone.
+// holds-nothing counting a gateway key → W10, each surface alone. The
+// gateway slot always sealable → W11 and W12's vendor row; without its
+// env-deferred arm → W7's first dial and W12's dial row; without its
+// attributed arm → W1-W6; the frozen list noted before the gate → W11's
+// frozen arm; the preview without the gate or its reason → W11's preview
+// asserts; the attached pool on its former want condition → W12's dial row;
+// the walk without the gate → W11, W12. holdsDefaultLLMCredential counting a
+// gateway key → W10, W13, W14; the legacy pool's, the door's, the preview's
+// admission, door and sovereign twins on their former readings → W13, W14,
+// W13's preview, W14's preview, W10, W10's preview, each alone.
 
 package cloudpublisher
 
@@ -31,6 +40,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/credpool"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/identity"
 	"github.com/SocialGouv/iterion/pkg/llmroute"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/runview"
@@ -370,8 +380,11 @@ func TestGatewayKey_AnEnvTemplatedRouteSealsTheKeyButIsNeverAttributed(t *testin
 				if row.sealed && (b.APIBaseURLs[gw] != gwURL || b.APIKeyFingerprints[gw] != gwFingerprint) {
 					t.Errorf("the key travelled without its pair: url=%q fp=%q", b.APIBaseURLs[gw], b.APIKeyFingerprints[gw])
 				}
-				view, _ := p.gatewayRouting(gatewayLaunchCtx(), model.RouteView{Workflow: wf}, "team1", "", "owner1", gwBot, false, false)
-				if attributed := attributedRoutes(view).providers; slices.Contains(attributed, string(gw)) {
+				routing := p.gatewayRouting(gatewayLaunchCtx(), model.RouteView{Workflow: wf}, "team1", "", "owner1", gwBot, false, false)
+				if !routing.sealable {
+					t.Errorf("the gateway slot is closed to a run whose dial the runner may expand to the gateway")
+				}
+				if attributed := attributedRoutes(routing.view).providers; slices.Contains(attributed, string(gw)) {
 					t.Errorf("attributed = %v: an env-templated route is the runner's to expand, never attributed to the gateway key", attributed)
 				}
 			})
@@ -461,5 +474,192 @@ func TestGatewayKey_AGatewayKeyAloneDoesNotFundAnUnattributedRoute(t *testing.T)
 	}
 	if want := "The live launch refuses: " + launchErr.Error(); previewWarning(v, want) == "" {
 		t.Fatalf("the preview does not answer the launch's own sentence.\n want: %s\n got warnings: %v", want, v.Warnings)
+	}
+}
+
+// W11 (R1): the gateway slot seals only for a run that may ride a gateway
+// route — one the walk attributes to the key, or a route it cannot decide (not
+// narrow-safe, or deferring to the runner's environment: W7). A decided
+// vendor-only run never carries the pair, whatever the team holds: the pair
+// would pin the gateway host on the run's proxy, make the run always-proxied
+// and keep a subbot out of its parent's sandbox, for nothing. The preview
+// names why the team's gateway key stays out.
+func TestGatewayKey_ADecidedVendorRunNeverCarriesThePair(t *testing.T) {
+	p, buf := gatewayKeyPublisher(t)
+	seedGatewayKey(t, p.apiKeys, p.sealer, "team1", nil)
+	seedKey(t, p.apiKeys, p.sealer, "team1", secrets.ProviderAnthropic, "sk-ant-team")
+	wf := &ir.Workflow{Nodes: map[string]ir.Node{
+		"review": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "review"}, LLMFields: ir.LLMFields{Backend: "claw", Model: "anthropic/claude-sonnet-4-5"}},
+	}}
+	creds, err := resolveGatewayRun(t, p, "run-gw-11", wf, nil)
+	if err != nil {
+		t.Fatalf("resolveAndSealCredentials: %v", err)
+	}
+	b := openGatewayBundle(t, p, "run-gw-11", creds)
+	gw := secrets.ProviderOpenAICompatible
+	if b.APIKeys[secrets.ProviderAnthropic] != "sk-ant-team" {
+		t.Fatalf("anthropic slot = %q: the fixture must seal the vendor key, or the absence below proves nothing", b.APIKeys[secrets.ProviderAnthropic])
+	}
+	if b.APIKeys[gw] != "" || b.APIBaseURLs[gw] != "" || b.APIKeyFingerprints[gw] != "" {
+		t.Fatalf("a decided vendor-only run carries the gateway pair: key=%q url=%q fp=%q", b.APIKeys[gw], b.APIBaseURLs[gw], b.APIKeyFingerprints[gw])
+	}
+	// Under a pair order frozen before the gateway entry, the slot the run
+	// never rides is no credential that list held out: no §5 line.
+	buf.Reset()
+	if _, err := resolveGatewayRun(t, p, "run-gw-11b", wf, preUpgradePolicy()); err != nil {
+		t.Fatalf("resolveAndSealCredentials (frozen order): %v", err)
+	}
+	if strings.Contains(buf.String(), heldOutMarker) {
+		t.Errorf("a slot no route of the run rides is reported as held out by the pair order:\n%s", buf.String())
+	}
+	preview, err := previewReadOnly(p).PreviewCredentials(gatewayLaunchCtx(), previewSpec("team1", "owner1"), wf)
+	if err != nil {
+		t.Fatalf("preview: %v", err)
+	}
+	if got := selectedDescriptions(preview); slices.Contains(got, "team:api_key:openai_compatible") {
+		t.Fatalf("preview selected %v: the launch seals no gateway key for this run", got)
+	}
+	named := false
+	for _, c := range preview.Candidates {
+		if c.Provider == string(gw) && strings.Contains(c.Reason, "No route of this run rides the openai_compatible gateway") {
+			named = true
+		}
+	}
+	if !named {
+		t.Errorf("the preview does not say why the team's gateway key stays out: %+v", preview.Candidates)
+	}
+}
+
+// W12 (R1, the attached pool): the pool's gateway want reads the same answer
+// as every tier — an env-templated dial the runner may expand to the gateway
+// draws the attached pool's gateway entry even though this process's
+// expansion reads narrow-safe, and a decided vendor-only run never does.
+func TestGatewayKey_TheAttachedPoolsGatewayWantReadsTheSameAnswer(t *testing.T) {
+	for _, row := range []struct {
+		name, model string
+		sealed      bool
+	}{
+		{"env-templated dial", "${C3_UNSET_ROUTE_DIAL:-anthropic/claude-sonnet-4-5}", true},
+		{"decided vendor route", "anthropic/claude-sonnet-4-5", false},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			f := newAttachedFixture(t)
+			wf := &ir.Workflow{Nodes: map[string]ir.Node{
+				"review": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "review"}, LLMFields: ir.LLMFields{Backend: "claw", Model: row.model}},
+			}}
+			bundle, _ := f.resolveAttached(t, "run-gw-12", wf, frozenAttachment("pool-att"))
+			if got := bundle.APIKeys[secrets.ProviderOpenAICompatible] != ""; got != row.sealed {
+				t.Fatalf("attached gateway entry sealed = %v, want %v", got, row.sealed)
+			}
+		})
+	}
+}
+
+// W13 (R2): a gateway key is not a default LLM credential — it funds the
+// routes the walk attributes to it, never an unpinned one. A mixed run whose
+// team holds ONLY its gateway key still reaches the legacy pool for its vendor
+// route, on the launch and in the preview alike.
+func TestGatewayKey_AGatewayKeyDoesNotCloseTheLegacyPool(t *testing.T) {
+	f := newPoolFixture(t, credpool.Limits{})
+	f.pub.identity = &fakeTeamResolver{orgs: map[string]string{poolTeam: poolOrg}, orgDocs: map[string]identity.Org{poolOrg: {ID: poolOrg}}}
+	f.pub.apiKeys = secrets.NewMemoryApiKeyStore()
+	seedGatewayKey(t, f.pub.apiKeys, f.sealer, poolTeam, nil)
+	wf := &ir.Workflow{Nodes: map[string]ir.Node{
+		"gw":     &ir.AgentNode{BaseNode: ir.BaseNode{ID: "gw"}, LLMFields: ir.LLMFields{Backend: "claw", Model: "openai_compatible/team/m"}},
+		"review": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "review"}, LLMFields: ir.LLMFields{Backend: "claw", Model: "anthropic/claude-opus-5"}},
+	}}
+	ctx := store.WithTenant(context.Background(), poolTeam)
+	creds, err := f.pub.resolveAndSealCredentials(ctx, "run-gw-13", poolOrg, poolTeam, "owner1", gwBot, "", wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustDefault, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("resolveAndSealCredentials: %v", err)
+	}
+	b := bundleFrom(t, f.pub, ctx, creds, "run-gw-13")
+	if b.APIKeys[secrets.ProviderOpenAICompatible] != gwTeamKey {
+		t.Fatalf("gateway slot = %q: the team's key must fund the gateway route", b.APIKeys[secrets.ProviderOpenAICompatible])
+	}
+	if creds.grant == nil || len(b.OAuthCredentials["claude_code"]) == 0 {
+		t.Fatalf("pool grant = %v: the gateway key closed the legacy pool for the run's anthropic route", creds.grant)
+	}
+	preview, err := previewReadOnly(f.pub).PreviewCredentials(ctx, previewSpec(poolTeam, "owner1"), wf)
+	if err != nil {
+		t.Fatalf("preview: %v", err)
+	}
+	if got := selectedDescriptions(preview); !slices.Contains(got, "pool:oauth:claude_code") {
+		t.Fatalf("preview selected %v, want the pool's forfait the launch draws", got)
+	}
+}
+
+// W14 (R2): the fallback door opens only for a run that holds a DEFAULT
+// credential of its own. A run whose every route rides the gateway and whose
+// only credential is the team's gateway key stays shut out, as it was while
+// env-funded: the door would otherwise ask a consenting donor for an openai
+// key to cross the gateway node wholesale (claw+openai_key).
+func TestGatewayKey_AGatewayOnlyRunNeverReachesTheFallbackDoor(t *testing.T) {
+	sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
+	if err != nil {
+		t.Fatalf("sealer: %v", err)
+	}
+	ctx := context.Background()
+	keys := secrets.NewMemoryApiKeyStore()
+	seedGatewayKey(t, keys, sealer, poolTeam, nil)
+	donorKeys := secrets.NewMemoryApiKeyStore()
+	keyID := secrets.NewApiKeyID()
+	sealed, err := secrets.SealAPIKey(sealer, keyID, []byte("sk-openai-donated"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := donorKeys.Create(store.WithTenant(ctx, "donor-team"), secrets.ApiKey{
+		ID: keyID, TenantID: "donor-team", ScopeTeamID: "donor-team", ScopeUserID: "donor",
+		Provider: secrets.ProviderOpenAI, Name: "lent", SealedSecret: sealed, Fingerprint: secrets.FingerprintSHA256("sk-openai-donated"),
+	}); err != nil {
+		t.Fatalf("seed donor key: %v", err)
+	}
+	pools := credpool.NewMemoryPoolStore()
+	if err := pools.Upsert(ctx, credpool.Pool{ID: "pool-1", OrgID: poolOrg, Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	pledges := credpool.NewMemoryPledgeStore()
+	if err := pledges.Upsert(ctx, credpool.Pledge{
+		ID: credpool.PledgeID("donor", credpool.SourceAPIKey, "openai"), PoolID: "pool-1", UserID: "donor",
+		Credential: credpool.Credential{Source: credpool.SourceAPIKey, Ref: "openai", KeyID: keyID},
+		Enabled:    true, Health: credpool.HealthOK, Limits: credpool.Limits{MaxUSDPerDay: 5}, FallbackUse: true,
+	}); err != nil {
+		t.Fatalf("seed pledge: %v", err)
+	}
+	broker := credpool.NewBroker(credpool.BrokerConfig{
+		Pools: pools, Pledges: pledges, Leases: credpool.NewMemoryLeaseStore(), Ledger: credpool.NewMemoryLedger(),
+		OAuth: secrets.NewMemoryOAuthStore(), APIKeys: donorKeys, Sealer: sealer, Logger: testLogger(),
+	})
+	p := &Publisher{apiKeys: keys, runSecrets: secrets.NewMemoryRunSecretsStore(), sealer: sealer, credPool: broker, logger: testLogger(),
+		identity: &fakeTeamResolver{orgs: map[string]string{poolTeam: poolOrg}, orgDocs: map[string]identity.Org{poolOrg: {ID: poolOrg}}}}
+	wf := &ir.Workflow{Nodes: map[string]ir.Node{"gw": &ir.AgentNode{
+		BaseNode:  ir.BaseNode{ID: "gw"},
+		LLMFields: ir.LLMFields{Backend: "claw", Model: "openai_compatible/team/m"},
+		Tools:     []string{},
+	}}}
+	policy := &store.RunLLMRoutePolicy{
+		PairOrder: []string{llmroute.Pair(llmroute.HarnessClaw, "openai_compatible_key"), llmroute.Pair(llmroute.HarnessClaw, "openai_key")},
+		Triggers:  []string{llmroute.TriggerUsageWindow},
+	}
+	tctx := store.WithTenant(ctx, poolTeam)
+	creds, err := p.resolveAndSealCredentials(tctx, "run-gw-14", poolOrg, poolTeam, "owner1", gwBot, "", wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustDefault, nil, policy, nil)
+	if err != nil {
+		t.Fatalf("resolveAndSealCredentials: %v", err)
+	}
+	b := bundleFrom(t, p, tctx, creds, "run-gw-14")
+	if b.APIKeys[secrets.ProviderOpenAICompatible] != gwTeamKey {
+		t.Fatalf("gateway slot = %q: the run must be key-funded, or the door question is moot", b.APIKeys[secrets.ProviderOpenAICompatible])
+	}
+	if creds.doorGrant != nil || b.APIKeys[secrets.ProviderOpenAI] != "" {
+		t.Fatalf("door grant = %v, openai slot = %q: a gateway-only run reached the fallback door", creds.doorGrant, b.APIKeys[secrets.ProviderOpenAI])
+	}
+	spec := previewSpec(poolTeam, "owner1")
+	spec.LLMRoutePolicy = policy
+	preview, err := previewReadOnly(p).PreviewCredentials(tctx, spec, wf)
+	if err != nil {
+		t.Fatalf("preview: %v", err)
+	}
+	if preview.Pool.DoorReason != "" || len(preview.Pool.DoorWants) != 0 {
+		t.Fatalf("preview door = %q %v: the launch never arms the door for this run", preview.Pool.DoorReason, preview.Pool.DoorWants)
 	}
 }

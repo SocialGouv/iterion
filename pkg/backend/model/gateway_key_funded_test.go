@@ -139,3 +139,31 @@ func TestCredentialPlan_RowsAnAttributedGatewayRouteOnTheServersFingerprint(t *t
 		t.Fatalf("plan = %v on an unkeyed view: an env-funded gateway route books nobody", plan)
 	}
 }
+
+// EnvDeferred says the run has a route whose own text defers to an
+// environment or to the run's vars — decided where it runs, not here — even
+// when this process's expansion reads narrow-safe (a `${DIAL:-default}` whose
+// default names a vendor). The cloud publisher seals a team's gateway key for
+// such a run (the runner may expand the dial to the gateway), and for no
+// decided vendor-only run. Mutant: the field never set → the dial rows red.
+func TestEffectiveProviders_EnvDeferredNamesARouteDecidedWhereItRuns(t *testing.T) {
+	t.Parallel()
+	for _, row := range []struct {
+		name, provider, model string
+		want                  bool
+	}{
+		{"vendor default behind an unset dial", "", "${C3_UNSET_ROUTE_DIAL:-anthropic/claude-sonnet-4-5}", true},
+		{"a dial in the provider hint", "${C3_UNSET_PROVIDER_DIAL:-anthropic}", "anthropic/claude-sonnet-4-5", true},
+		{"a run var", "", "{{vars.model}}", true},
+		{"a literal vendor route", "", "anthropic/claude-sonnet-4-5", false},
+		{"a literal gateway route", "", "openai_compatible/team/m", false},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			wf := &ir.Workflow{Nodes: map[string]ir.Node{"a": gatewayNode("claw", row.provider, row.model)}}
+			if got := EffectiveProviders(RouteView{Workflow: wf}, KnownProviderSet()); got.EnvDeferred != row.want {
+				t.Fatalf("EnvDeferred = %v, want %v (narrow=%v providers=%v)", got.EnvDeferred, row.want, got.NarrowSafe, got.Providers)
+			}
+		})
+	}
+}

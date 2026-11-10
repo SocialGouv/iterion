@@ -156,8 +156,12 @@ func (p *Publisher) previewCredentials(ctx context.Context, spec runview.Credent
 	// run whose every route rides the gateway and whose consulted tiers hold
 	// no gateway key serving it is env-funded — no candidate, no tier read;
 	// a held key attributes the gateway routes to it on the view every
-	// derivation below reads, exactly as the launch's walk does.
-	previewView, envFunded := p.gatewayRouting(x.ctx, previewView, spec.Context.TeamID, x.orgID, spec.OwnerID, previewBotID, sovereignPreview, pooledPreview)
+	// derivation below reads, exactly as the launch's walk does — and the
+	// gateway slot seals for no candidate of a run that rides no gateway
+	// route, the gate the live walk joins to the same policy.
+	gateway := p.gatewayRouting(x.ctx, previewView, spec.Context.TeamID, x.orgID, spec.OwnerID, previewBotID, sovereignPreview, pooledPreview)
+	previewView, envFunded := gateway.view, gateway.envFunded
+	x.policy = x.policy.withGatewaySlot(gateway.sealable)
 	if sovereignPreview && !envFunded {
 		x.warn("The team runs with llm_fallback=none: the shared tiers (org, pool, platform) are not consulted, and a route nothing of the team's own funds refuses the launch.")
 	}
@@ -224,7 +228,7 @@ func (p *Publisher) previewCredentials(ctx context.Context, spec runview.Credent
 		// Nothing to walk: no stage acquires anything for this run — the
 		// pool block names why it was not consulted.
 		x.out.Pool.Reason = "env_funded"
-	} else if err = walkCredentialPlan(func() bool { return len(x.api)+len(x.oauth) > 0 }, func() bool { return x.poolGranted }, func() bool { return spec.PoolAttachment != nil && spec.PoolAttachment.PoolID != "" }, func(tier credentialTier, active bool) error {
+	} else if err = walkCredentialPlan(func() bool { return metadataHoldsDefault(x) }, func() bool { return x.poolGranted }, func() bool { return spec.PoolAttachment != nil && spec.PoolAttachment.PoolID != "" }, func(tier credentialTier, active bool) error {
 		switch tier {
 		case credentialTierBYOK:
 			if err := x.apiStage("", spec.Context.TeamID, spec.OwnerID, usagecap.TenantScope(spec.Context.TeamID), previewBotID, spec.Launch.KeyOverrides, false, true); err != nil {
@@ -264,10 +268,7 @@ func (p *Publisher) previewCredentials(ctx context.Context, spec runview.Credent
 			// filled-slot gate (law 1), same margin predicate constructor
 			// (law 4's parity).
 			if spec.PoolAttachment != nil && spec.PoolAttachment.PoolID != "" {
-				attachedWants := wants
-				if !routes.NarrowSafe || slices.Contains(routes.Providers, string(secrets.ProviderOpenAICompatible)) {
-					attachedWants = append(append([]credpool.Credential{}, attachedWants...), credpool.Credential{Source: credpool.SourceAPIKey, Ref: string(secrets.ProviderOpenAICompatible)})
-				}
+				attachedWants := append(append([]credpool.Credential{}, wants...), credpool.Credential{Source: credpool.SourceAPIKey, Ref: string(secrets.ProviderOpenAICompatible)})
 				var marginFn func(credpool.Pledge) (time.Time, bool)
 				if slices.Contains(spec.PoolAttachment.Strategy.Triggers, "usage_window") {
 					marginFn = p.closedAtMargin(ctx, strategyMargin(spec.PoolAttachment.Strategy))
@@ -524,7 +525,7 @@ func (p *Publisher) previewCredentials(ctx context.Context, spec runview.Credent
 	previewRoutes := attributedRoutes(previewView)
 	restoreRoutes()
 	posture := p.unfundedPostureFor(wf, sovereignPreview, envFunded, spec.Launch.Trust, runnerPool)
-	refusal := unfundedRefusalFor(spec.Context.TeamID, previewRoutes, metadataFunding(x, posture), metadataHoldsNothing(x), posture)
+	refusal := unfundedRefusalFor(spec.Context.TeamID, previewRoutes, metadataFunding(x, posture), !metadataHoldsDefault(x), posture)
 	wires := map[string][]string{}
 	selectSlot := func(i int) {
 		c := &x.out.Candidates[i]
@@ -584,7 +585,7 @@ func (p *Publisher) previewCredentials(ctx context.Context, spec runview.Credent
 	// like. Same arm conditions as the live door: a run that holds its
 	// own credential, no whole-bundle grant predicted, not env-funded,
 	// and a policy whose ladder can dispatch a missing kind.
-	if !envFunded && len(x.api)+len(x.oauth) > 0 && !x.poolGranted &&
+	if !envFunded && metadataHoldsDefault(x) && !x.poolGranted &&
 		spec.LLMRoutePolicy != nil && len(spec.LLMRoutePolicy.Triggers) > 0 && len(spec.LLMRoutePolicy.PairOrder) > 0 && p.credPool != nil && !sharedTiersBlocked {
 		wants, _, ok := doorWantsFor(spec.LLMRoutePolicy, previewView, spec.Launch.Vars, doorServesMetadata(x, spec.Launch.Trust.AmbientLLMRefused()))
 		if !ok {
@@ -671,20 +672,18 @@ func doorServesMetadata(x *credentialPreview, untrusted bool) func(_, credential
 	}
 }
 
-// metadataHoldsNothing is holdsNothingForUnattributedRoutes on the fills this
-// preview PREDICTS: the sovereign refusal of a run nothing of the team's
-// funds and no route of which the walk can attribute reads it, and it is the
-// same twinning as metadataFunding below — a different SOURCE for the same
-// question, never a different question.
-func metadataHoldsNothing(x *credentialPreview) bool {
-	slots := make([]secrets.Provider, 0, len(x.api)+len(x.pinnedAPI))
+// metadataHoldsDefault is holdsDefaultLLMCredential on the fills this preview
+// PREDICTS — the default-channel keys (x.api) and the forfaits: the pool
+// tier's admission, the fallback door and the sovereign refusal of a run no
+// route of which the walk can attribute all read it, the same twinning as
+// metadataFunding below — a different SOURCE for the same question, never a
+// different question.
+func metadataHoldsDefault(x *credentialPreview) bool {
+	slots := make([]secrets.Provider, 0, len(x.api))
 	for prov := range x.api {
 		slots = append(slots, prov)
 	}
-	for prov := range x.pinnedAPI {
-		slots = append(slots, prov)
-	}
-	return holdsNothingForUnattributedRoutes(slots, len(x.oauth))
+	return defaultLLMCredentialIn(slots, len(x.oauth))
 }
 
 // metadataFunding is bundleFunding on the fills this preview PREDICTS: what
@@ -775,10 +774,14 @@ func (x *credentialPreview) add(c runview.CredentialPreviewCandidate) int {
 	return len(x.out.Candidates) - 1
 }
 
-// exclusionReason names the gate that excluded a credential slot, through
-// the ONE judgement every message prescribing a remedy asks (excluderOfSlot):
-// the tenant's providers allowlist, or the launch's routing pair order.
+// exclusionReason names the gate that excluded a credential slot: the run's
+// routes riding no gateway (the gateway slot), else through the ONE
+// judgement every message prescribing a remedy asks (excluderOfSlot) — the
+// tenant's providers allowlist, or the launch's routing pair order.
 func (x *credentialPreview) exclusionReason(slot string) string {
+	if x.policy.gatewayOut(slot) {
+		return " No route of this run rides the openai_compatible gateway — the live launch seals no gateway key for it."
+	}
 	if excluderOfSlot(x.allowed, slot) == excludedByProviderAllowlist {
 		return " Outside this launch's providers allowlist — the live launch seals no credential for it."
 	}
