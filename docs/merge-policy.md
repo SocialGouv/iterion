@@ -221,6 +221,89 @@ sparingly; the queue is the default path. Non-admins must go through a PR + the
 queue.
 For reviewed chantier work, the [operator direct-landing lane](#the-operator-direct-landing-lane-decided-2026-10-22) generalises this bypass — and owes it what a hotfix does not: the train, the locally reproduced gate and the greppable trailers.
 
+### A parked gate (decided 2026-11-10)
+
+`revi/review` can stay `PENDING` for days with nothing wrong with the pull
+request: `iterion-forge-core[bot]` posts a `<!-- iterion:gate-paused -->`
+comment naming a **dated automatic resume** and the upstream error. Measured on
+2026-11-10 (#3132): a 429 `[1310] Weekly/Monthly Limit Exhausted` on the
+reviewer node parked the run for ~103 h while the other six required checks
+were green. Read that comment before concluding anything about the PR, and
+before pushing again — a push restarts the review sooner but lands on the same
+exhausted quota.
+
+**The first move is not this bypass.** It is the one
+[review-and-merge.md](agents/workflow/review-and-merge.md#a-parked-gate-is-a-rerouting-signal-not-a-wait)
+names: identify the blocked credential and **lend a live one** at runtime
+(`iterion remote admin llm oauth set …`, no redeploy), which needs the
+operator's explicit go. This bypass is for when that is unavailable or refused.
+Re-shaping the *pools* under pressure is a different act — deployment
+configuration ([sovereign pools](sovereign-pools.md)), decided outside an
+incident.
+
+**Then the operator (admin) may merge that pull request, bypassing the parked
+gate.** What it owes:
+
+1. **The other six required checks green, read as a SET** — `gh pr checks`, not
+   the one you are waiting on. The required set is exactly `test`, `race`,
+   `vendor-check`, `mongo-conformance`, `golangci`, `brand` and `revi/review`
+   (ruleset 18857412); the legs behind the two aggregators (`test-unit`,
+   `test-e2e`, `studio`, `race-shard (n)`) are deliberately **not** required and
+   are where the work is. Queued, cancelled, missing **or skipped** is not
+   success: a job skipped by a job-level `if:` reports SUCCESS, so a required
+   check that never ran satisfies the gate
+   ([tests.yml](../.github/workflows/tests.yml) says so of the Homebrew-tap
+   skip, which five required checks carry).
+2. **A converged local adversarial loop**, per
+   [the loop](agents/workflow/adversarial-review-loop.md). It stands in for the
+   gate **with a measured residual**: of 8 logged gate verdicts, 4 found a class
+   the converged internal rounds had skirted. So the residual is assumed
+   explicitly in the merge, and it is **not assumable on a wide diff** — there,
+   wait for the window or lend a credential, as the incident lane scopes itself
+   the same way ("reckless when it is a wide refactor", below).
+3. **The checks belong to the head AND to the base being merged.** A commit
+   pushed after they ran invalidates them. Less obvious and more dangerous:
+   `strict_required_status_checks_policy` is **false** on this ruleset, so a
+   green set computed against an older `main` stays green and GitHub neither
+   re-runs nor flags it. Re-pushing refreshes the merge ref, but it does not
+   converge here: `main` advances every 20–40 minutes on a busy day — the release
+   bot pushes with no PR at all — so a CI cycle finishes behind the tip it was
+   chasing, and the queue, which would settle it, is the thing the parked gate
+   closed. So **build the integrated tree locally and run the gate on it**: a
+   fresh worktree on `origin/main`, `git merge --no-ff` each branch going in, then
+   the gate members the diffs touch. That tests the merge ref, which the non-strict
+   policy never does. Measured on 2026-11-10 with four branches: `main` had
+   re-pinned `docs/merge-gate.md` in the reading golden and one branch changed the
+   **adjacent** line (`docs/merge-policy.md`), so the hunks overlapped — green
+   apart, conflicting combined. Resolve a golden conflict by regenerating it
+   (`git checkout --ours`, then `corpus-reading --write`, then check only your own
+   files moved), never by picking a side; and note `rerere` will offer a replay
+   from the train merge that is not valid for a rebase.
+4. **The trailers, greppable** — `Adversarial-Rounds:` / `Adversarial-Model:`
+   (the reviewer marked **self** when the loop was a self-review), plus
+   `Gate-Bypass: revi/review parked (quota) — #<pr>` in the squash body, since
+   an ungreppable bypass is a bypass that did not happen.
+5. **Verify what landed, and stop a reviver.** As for any admin merge:
+   `git diff --stat` the landed tree against what you reviewed, and check
+   `iterion remote runs list` for a parked review run that a redelivery
+   re-claimed after the close
+   ([the known gap](merge-gate.md#a-paused-review-says-so-on-the-pr)).
+
+**What this bypass gives up, stated plainly.** The required set ran on real CI,
+on the merge ref as of its run — that is its strength over a locally reproduced
+gate. What it does not have is the queue's one unique guarantee: the rebuild
+against **current** `main` and against the entries ahead of it, which is what
+closes the semantic inter-PR conflict class (two PRs each green against
+`main`-at-branch-time that break `main` combined — regenerated artefacts such as
+the reading golden being the most frequent shape). On that axis this bypass is
+weaker than both the queue and the direct-landing lane's train.
+
+**What it does not license**: merging while another required check is red,
+skipped or unresolved; skipping the loop because the diff looks small; or
+reading the pause as a verdict. And `bots/review-pr` is the gate the tenant
+repositories that require its context lean on — a parked gate is a reason to
+lend it a credential, never to quietly lower what it guards.
+
 ### The fast lane for an incident fix, and its exact procedure
 
 The queue is a single writer with one lane: a green incident fix waits behind
@@ -489,6 +572,8 @@ contract — the exhaustive local gate, the converged adversarial loop, the
 post-hoc CI witness, the red-`main` priority, and the duty to warn sessions
 with queued PRs or unpushed branches — lives in
 [the review-and-merge page](agents/workflow/review-and-merge.md#the-operator-direct-landing-lane-decided-2026-10-22).
-Every existing PR keeps the queue and its `revi/review` blocking gate; the
+Every existing PR keeps the queue and its `revi/review` blocking gate — save
+where [a parked gate](#a-parked-gate-decided-2026-11-10) opens the narrower
+admin merge; the
 lane is the admin bypass generalised from hotfixes to reviewed chantier work,
 and its bypass is greppable in the trailers by design.
