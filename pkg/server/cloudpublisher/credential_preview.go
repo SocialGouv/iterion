@@ -517,7 +517,7 @@ func (p *Publisher) previewCredentials(ctx context.Context, spec runview.Credent
 	// immediately: the live fallback door runs BEFORE the ladder, so the door
 	// block below must answer on the authored program, as it does live.
 	restoreRoutes := snapshotFallbackRoutes(wf)
-	composePolicyLadder(wf, previewView, spec.LLMRoutePolicy, model.AllowedProviderSet(previewView.AllowedProviders), spec.Launch.Vars, doorServesMetadata(x), nil)
+	composePolicyLadder(wf, previewView, spec.LLMRoutePolicy, model.AllowedProviderSet(previewView.AllowedProviders), spec.Launch.Vars, doorServesMetadata(x, spec.Launch.Trust.AmbientLLMRefused()), nil)
 	previewRoutes := attributedRoutes(previewView)
 	restoreRoutes()
 	posture := p.unfundedPostureFor(wf, sovereignPreview, envFunded, spec.Launch.Trust, runnerPool)
@@ -583,7 +583,7 @@ func (p *Publisher) previewCredentials(ctx context.Context, spec runview.Credent
 	// and a policy whose ladder can dispatch a missing kind.
 	if !envFunded && len(x.api)+len(x.oauth) > 0 && !x.poolGranted &&
 		spec.LLMRoutePolicy != nil && len(spec.LLMRoutePolicy.Triggers) > 0 && len(spec.LLMRoutePolicy.PairOrder) > 0 && p.credPool != nil && !sharedTiersBlocked {
-		wants, _, ok := doorWantsFor(spec.LLMRoutePolicy, previewView, spec.Launch.Vars, doorServesMetadata(x))
+		wants, _, ok := doorWantsFor(spec.LLMRoutePolicy, previewView, spec.Launch.Vars, doorServesMetadata(x, spec.Launch.Trust.AmbientLLMRefused()))
 		if !ok {
 			x.out.Pool.DoorReason = "no_dispatchable_wants"
 		} else {
@@ -642,8 +642,9 @@ func blockedPosture(sovereign bool, runnerPool string, untrusted bool) string {
 }
 
 // doorServesMetadata is the preview's answer to doorServes: the same
-// held-slot predicate over the metadata that assumes materialization.
-func doorServesMetadata(x *credentialPreview) func(_, credential string) bool {
+// held-slot predicate, under the same posture, over the metadata that
+// assumes materialization.
+func doorServesMetadata(x *credentialPreview, untrusted bool) func(_, credential string) bool {
 	return func(_, credential string) bool {
 		for prov := range x.api {
 			if slotOfProvider(prov) == credential {
@@ -654,6 +655,9 @@ func doorServesMetadata(x *credentialPreview) func(_, credential string) bool {
 			if slotOfProvider(prov) == credential {
 				return true
 			}
+		}
+		if untrusted {
+			return false
 		}
 		for kind := range x.oauth {
 			if slotOfKind(kind) == credential {

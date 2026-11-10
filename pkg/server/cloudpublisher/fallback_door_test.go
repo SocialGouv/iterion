@@ -402,7 +402,7 @@ func TestDoorServes_pinnedKeyFundsItsSlot(t *testing.T) {
 		APIKeys:       map[secrets.Provider]string{secrets.ProviderAnthropic: "own"},
 		PinnedAPIKeys: map[secrets.Provider]string{secrets.ProviderZAI: "pinned-for-its-routes"},
 	}
-	serves := doorServes(bundle)
+	serves := doorServes(bundle, false)
 	if !serves("claw", "anthropic_key") || !serves("claw", "zai_key") {
 		t.Fatal("a pinned key must fund its slot exactly like a sealed one")
 	}
@@ -426,15 +426,15 @@ func TestAcquireDoorGrant_guards(t *testing.T) {
 	_ = args
 
 	// A whole-bundle grant: the whole-bundle tier's case, never the door's.
-	if g, _ := f.pub.acquireDoorGrant(ctx, "r", poolOrg, poolTeam, "requester", "bot", model.RouteView{Workflow: wf}, policy, nil, &bundle, &credpool.Grant{}, false, false, map[secrets.Provider]string{}, credSlotWants{}, sealable); g != nil {
+	if g, _ := f.pub.acquireDoorGrant(ctx, "r", poolOrg, poolTeam, "requester", "bot", model.RouteView{Workflow: wf}, policy, nil, &bundle, &credpool.Grant{}, false, false, store.RunTrustDefault, map[secrets.Provider]string{}, credSlotWants{}, sealable); g != nil {
 		t.Fatal("the door fired behind a whole-bundle grant")
 	}
 	// An env-funded run acquires nothing at all (#2038).
-	if g, _ := f.pub.acquireDoorGrant(ctx, "r", poolOrg, poolTeam, "requester", "bot", model.RouteView{Workflow: wf}, policy, nil, &bundle, nil, true, false, map[secrets.Provider]string{}, credSlotWants{}, sealable); g != nil {
+	if g, _ := f.pub.acquireDoorGrant(ctx, "r", poolOrg, poolTeam, "requester", "bot", model.RouteView{Workflow: wf}, policy, nil, &bundle, nil, true, false, store.RunTrustDefault, map[secrets.Provider]string{}, credSlotWants{}, sealable); g != nil {
 		t.Fatal("the door fired on an env-funded run")
 	}
 	// An empty bundle belongs to the whole-bundle tier.
-	if g, _ := f.pub.acquireDoorGrant(ctx, "r", poolOrg, poolTeam, "requester", "bot", model.RouteView{Workflow: wf}, policy, nil, &secrets.RunBundle{}, nil, false, false, map[secrets.Provider]string{}, credSlotWants{}, sealable); g != nil {
+	if g, _ := f.pub.acquireDoorGrant(ctx, "r", poolOrg, poolTeam, "requester", "bot", model.RouteView{Workflow: wf}, policy, nil, &secrets.RunBundle{}, nil, false, false, store.RunTrustDefault, map[secrets.Provider]string{}, credSlotWants{}, sealable); g != nil {
 		t.Fatal("the door fired on an empty bundle")
 	}
 }

@@ -218,7 +218,7 @@ func TestAcquireDoorGrant_AnUnsealedGrantIsReleased(t *testing.T) {
 	// donation marks write into them).
 	bundle := &secrets.RunBundle{APIKeys: map[secrets.Provider]string{secrets.ProviderAnthropic: "sk-own"},
 		PoolSourced: map[string]bool{}, PlatformSourced: map[string]bool{}}
-	g, _ := f.pub.acquireDoorGrant(ctx, "r1", poolOrg, poolTeam, "requester", "bot", model.RouteView{Workflow: wf}, policy, nil, bundle, nil, false, false, map[secrets.Provider]string{}, credSlotWants{}, func(string) bool { return true })
+	g, _ := f.pub.acquireDoorGrant(ctx, "r1", poolOrg, poolTeam, "requester", "bot", model.RouteView{Workflow: wf}, policy, nil, bundle, nil, false, false, store.RunTrustDefault, map[secrets.Provider]string{}, credSlotWants{}, func(string) bool { return true })
 	if g == nil {
 		t.Fatal("fixture: the door acquired nothing — the release witness would be vacuous")
 	}
@@ -229,7 +229,7 @@ func TestAcquireDoorGrant_AnUnsealedGrantIsReleased(t *testing.T) {
 	// donor and skips the tiers behind the door).
 	refusedBundle := &secrets.RunBundle{APIKeys: map[secrets.Provider]string{secrets.ProviderAnthropic: "sk-own"},
 		PoolSourced: map[string]bool{}, PlatformSourced: map[string]bool{}}
-	g, released := f.pub.acquireDoorGrant(ctx, "r2", poolOrg, poolTeam, "requester", "bot", model.RouteView{Workflow: wf}, policy, nil, refusedBundle, nil, false, false, map[secrets.Provider]string{}, credSlotWants{}, func(string) bool { return false })
+	g, released := f.pub.acquireDoorGrant(ctx, "r2", poolOrg, poolTeam, "requester", "bot", model.RouteView{Workflow: wf}, policy, nil, refusedBundle, nil, false, false, store.RunTrustDefault, map[secrets.Provider]string{}, credSlotWants{}, func(string) bool { return false })
 	if g != nil {
 		t.Fatal("an unsealed door grant was returned — its lease outlives a credential the run never carried")
 	}
@@ -241,7 +241,7 @@ func TestAcquireDoorGrant_AnUnsealedGrantIsReleased(t *testing.T) {
 	// The slot must be FREE again: a third acquire grants. Under the leak,
 	// the refused arm's lease would leave the pledge "serving" and this
 	// arm would be declined.
-	if g3, _ := f.pub.acquireDoorGrant(ctx, "r3", poolOrg, poolTeam, "requester", "bot", model.RouteView{Workflow: wf}, policy, nil, &secrets.RunBundle{APIKeys: map[secrets.Provider]string{secrets.ProviderAnthropic: "sk-own"}, PoolSourced: map[string]bool{}, PlatformSourced: map[string]bool{}}, nil, false, false, map[secrets.Provider]string{}, credSlotWants{}, func(string) bool { return true }); g3 == nil {
+	if g3, _ := f.pub.acquireDoorGrant(ctx, "r3", poolOrg, poolTeam, "requester", "bot", model.RouteView{Workflow: wf}, policy, nil, &secrets.RunBundle{APIKeys: map[secrets.Provider]string{secrets.ProviderAnthropic: "sk-own"}, PoolSourced: map[string]bool{}, PlatformSourced: map[string]bool{}}, nil, false, false, store.RunTrustDefault, map[secrets.Provider]string{}, credSlotWants{}, func(string) bool { return true }); g3 == nil {
 		t.Fatal("the refused arm's lease was not released: the pledge is still serving it")
 	}
 	logs := f.logs.String()

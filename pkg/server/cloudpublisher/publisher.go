@@ -1442,7 +1442,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	// untouched: this runs only after it declined (res.grant == nil), and
 	// never on an env-funded run or an empty bundle (the pool tier's own
 	// condition — a run with nothing acquires through it, not the door).
-	doorGrantSealed, doorReleased := p.acquireDoorGrant(ctx, runID, orgID, tenantID, ownerID, botID, view, routePolicy, launchVars, &bundle, res.grant, envFunded, runnerPool != "" || sovereign, apiKeyFPs, wants, policy.sealableSlot)
+	doorGrantSealed, doorReleased := p.acquireDoorGrant(ctx, runID, orgID, tenantID, ownerID, botID, view, routePolicy, launchVars, &bundle, res.grant, envFunded, runnerPool != "" || sovereign, trust, apiKeyFPs, wants, policy.sealableSlot)
 	if doorReleased != nil {
 		res.releasedGrants = append(res.releasedGrants, doorReleased)
 	}
@@ -1453,7 +1453,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	// held pairs in policy order, landed on the program the derivations below
 	// judge. envFunded above already read the PRE-ladder program: what it
 	// decided (acquire nothing) is what makes the selection idle.
-	if stages := composePolicyLadder(wf, view, routePolicy, allowed, launchVars, doorServes(bundle), func(refusal string) {
+	if stages := composePolicyLadder(wf, view, routePolicy, allowed, launchVars, doorServes(bundle, trust.AmbientLLMRefused()), func(refusal string) {
 		if p.logger != nil {
 			p.logger.Info("cloudpublisher: %s (run=%s)", refusal, runID)
 		}
@@ -3450,7 +3450,16 @@ func credentialTierForSlot(bundle secrets.RunBundle, grant *credpool.Grant, slot
 
 // doorServes adapts a bundle to the held-pair predicate the ladder block
 // also uses: does the run's OWN credential set fund this policy slot?
-func doorServes(bundle secrets.RunBundle) func(_, credential string) bool {
+//
+// untrusted is the run's posture (store.RunTrust.AmbientLLMRefused), read the
+// way fundedProviderSet reads it: under the untrusted posture a forfait funds
+// nothing — it cannot cross the run's sandbox (ADR-162 decision 7) — so no
+// forfait pair is held and the ladder lands no forfait rung on a fork run's
+// program. Such a rung would carry no provider hint (a forfait slot has
+// none) and a bare model, a route the walk cannot attribute: the fork run
+// would be refused on a rung its runner never spends, with a remedy no
+// routing override reaches.
+func doorServes(bundle secrets.RunBundle, untrusted bool) func(_, credential string) bool {
 	return func(_, credential string) bool {
 		for prov := range bundle.APIKeys {
 			if slotOfProvider(prov) == credential {
@@ -3461,6 +3470,9 @@ func doorServes(bundle secrets.RunBundle) func(_, credential string) bool {
 			if slotOfProvider(prov) == credential {
 				return true
 			}
+		}
+		if untrusted {
+			return false
 		}
 		for kind := range bundle.OAuthCredentials {
 			if slotOfKind(kind) == credential {
@@ -3594,6 +3606,7 @@ func (p *Publisher) acquireDoorGrant(
 	wholeGrant *credpool.Grant,
 	envFunded bool,
 	sharedTiersBlocked bool,
+	trust store.RunTrust,
 	apiKeyFPs map[secrets.Provider]string,
 	slotWants credSlotWants,
 	sealable func(slot string) bool,
@@ -3613,7 +3626,7 @@ func (p *Publisher) acquireDoorGrant(
 		return nil, nil
 	}
 
-	wants, unmapped, ok := doorWantsFor(routePolicy, view, launchVars, doorServes(*bundle))
+	wants, unmapped, ok := doorWantsFor(routePolicy, view, launchVars, doorServes(*bundle, trust.AmbientLLMRefused()))
 	if p.logger != nil {
 		for _, slot := range unmapped {
 			p.logger.Info("cloudpublisher: fallback door skips run %s — pair slot %q matches no pool credential kind", runID, slot)
