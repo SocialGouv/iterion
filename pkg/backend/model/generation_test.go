@@ -1648,6 +1648,8 @@ func TestBuildRequest_MirrorsMultipleSystemBlocksInOrder(t *testing.T) {
 func TestBuildRequest_MarksTheLastServedSystemBlock(t *testing.T) {
 	opts := GenerationOptions{
 		Model: "claude-sonnet-4-6",
+		// A tool loop: the only shape a second turn can reuse the prefix in.
+		Tools: []GenerationTool{{Name: "bash", Description: "run"}},
 		SystemBlocks: []api.ContentBlock{
 			{
 				Type:         "text",
@@ -1693,16 +1695,18 @@ func TestBuildRequest_MarksTheLastServedSystemBlock(t *testing.T) {
 	}
 }
 
-// TestBuildRequest_SingleSystemBlockKeepsOneMarker pins that the tail marking
-// does not double-spend a breakpoint on the one-block shape the claw backend
-// builds when a node's policy excludes the workspace (ambient_context: none).
-func TestBuildRequest_SingleSystemBlockKeepsOneMarker(t *testing.T) {
+// TestBuildRequest_SingleSystemBlockTakesExactlyOneMarker is the one-block
+// shape the claw backend builds when a node's policy excludes the workspace
+// (ambient_context: none). It carries NO caller marker on purpose: with one,
+// the assertion would witness what the caller wrote rather than what
+// buildRequest does, and no mutation of this function could redden it.
+func TestBuildRequest_SingleSystemBlockTakesExactlyOneMarker(t *testing.T) {
 	opts := GenerationOptions{
 		Model: "claude-sonnet-4-6",
+		Tools: []GenerationTool{{Name: "bash", Description: "run"}},
 		SystemBlocks: []api.ContentBlock{{
-			Type:         "text",
-			Text:         "the operating posture and the node's task",
-			CacheControl: api.EphemeralCacheControl(),
+			Type: "text",
+			Text: "the operating posture and the node's task",
 		}},
 	}
 	req, err := buildRequest(opts, []api.Message{{Role: "user"}}, nil, nil)
@@ -1712,8 +1716,66 @@ func TestBuildRequest_SingleSystemBlockKeepsOneMarker(t *testing.T) {
 	if len(req.SystemBlocks) != 1 {
 		t.Fatalf("SystemBlocks len = %d, want 1", len(req.SystemBlocks))
 	}
-	if req.SystemBlocks[0].CacheControl == nil {
-		t.Error("the only system block must carry the marker")
+	marks := 0
+	for _, b := range req.SystemBlocks {
+		if b.CacheControl != nil {
+			marks++
+		}
+	}
+	if marks != 1 {
+		t.Errorf("system breakpoints = %d, want exactly 1 (the tail, not spent twice)", marks)
+	}
+}
+
+// TestBuildRequest_AOneShotRequestTakesNoSystemMarker is the sign witness. The
+// cache writes at ~1.25x and reads at ~0.1x, so marking a prefix no second
+// request will read COSTS ~0.25x of it. Two shapes are one-shot and must stay
+// unmarked: a node with no tools (the loop breaks on the first reply carrying
+// no tool_use) and the structured path, which nils opts.Tools and hands its
+// synthetic tool through extraTools for a single turn.
+func TestBuildRequest_AOneShotRequestTakesNoSystemMarker(t *testing.T) {
+	blocks := []api.ContentBlock{
+		{Type: "text", Text: "the operating posture and the node's task"},
+		{Type: "text", Text: "<project_instructions>AGENTS.md…</project_instructions>"},
+	}
+	cases := []struct {
+		name  string
+		opts  GenerationOptions
+		extra []api.Tool
+		cheap *api.ToolChoice
+	}{
+		{
+			name: "no tools at all",
+			opts: GenerationOptions{Model: "claude-sonnet-4-6", SystemBlocks: blocks},
+		},
+		{
+			name:  "structured output: tools nil, synthetic tool via extraTools",
+			opts:  GenerationOptions{Model: "claude-sonnet-4-6", SystemBlocks: blocks},
+			extra: []api.Tool{{Name: "structured_output"}},
+			cheap: &api.ToolChoice{Type: "tool", Name: "structured_output"},
+		},
+		{
+			name: "a tool loop bounded to a single step",
+			opts: GenerationOptions{
+				Model:        "claude-sonnet-4-6",
+				SystemBlocks: blocks,
+				Tools:        []GenerationTool{{Name: "bash", Description: "run"}},
+				MaxSteps:     1,
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req, err := buildRequest(tc.opts, []api.Message{{Role: "user"}}, tc.extra, tc.cheap)
+			if err != nil {
+				t.Fatalf("buildRequest: %v", err)
+			}
+			for i, b := range req.SystemBlocks {
+				if b.CacheControl != nil {
+					t.Errorf("SystemBlocks[%d] carries a marker: a one-shot request pays the write and never reads it", i)
+				}
+			}
+		})
 	}
 }
 
@@ -1722,6 +1784,7 @@ func TestBuildRequest_SingleSystemBlockKeepsOneMarker(t *testing.T) {
 func TestBuildRequest_UnservedSystemBlocksTakeNoMarker(t *testing.T) {
 	opts := GenerationOptions{
 		Model: "claude-sonnet-4-6",
+		Tools: []GenerationTool{{Name: "bash", Description: "run"}},
 		SystemBlocks: []api.ContentBlock{
 			{Type: "text", Text: ""},
 			{Type: "text", Text: "\n\t "},

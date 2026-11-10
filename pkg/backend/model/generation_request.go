@@ -181,20 +181,37 @@ func buildRequest(opts GenerationOptions, messages []api.Message, extraTools []a
 			}
 		}
 		// The system prefix ends on a cache breakpoint, like the tools array
-		// below. The prompt cache covers a prefix up to and INCLUDING a
-		// marked block, so a block sitting after the last marker is re-billed
-		// at full input price on every tool turn: the ambient-context block
-		// (clawAmbientSystemContext, appended after the system prompt's own
-		// marker) is that block on every claw node whose policy includes the
-		// workspace — the default — and it carries the repository's whole
-		// instruction corpus, bounded at clawAmbientMaxBytes. Marking the
-		// tail HERE is the one point every composer crosses, so a caller that
-		// appends a block owes no re-mark of its own (the memory blocks carry
-		// one, memory_tools.go, which this makes redundant rather than
-		// wrong). An unserved block — empty, or emptied by the model
-		// boundary's screen — never takes the marker: it would spend a
-		// breakpoint (4 per request) on bytes no model reads.
-		if lastServed >= 0 {
+		// below — but ONLY for a request a second turn can reuse. The cache
+		// writes at ~1.25x and reads at ~0.1x, so the break-even is two
+		// requests: marking a prefix nothing will read again costs ~0.25x of
+		// it and buys nothing. `opts.Tools` is the discriminator because it
+		// is what GenerateTextDirect loops over; the structured path nils it
+		// and hands its synthetic tool through extraTools for ONE turn, and a
+		// node with no tools answers in one turn too (the loop breaks on the
+		// first reply that carries no tool_use).
+		//
+		// Where a second turn IS possible, the prompt cache covers a prefix
+		// up to and INCLUDING a marked block, so a block sitting after the
+		// last marker is re-billed at full input price every turn: the
+		// ambient-context block (clawAmbientSystemContext, appended after the
+		// system prompt's own marker) is that block on every claw node whose
+		// policy includes the workspace — the default — and it carries the
+		// repository's whole instruction corpus, bounded at
+		// clawAmbientMaxBytes. Marking the tail HERE is the one point every
+		// composer crosses, so a caller that appends a block owes no re-mark
+		// of its own (the memory blocks carry one, memory_tools.go, which
+		// this makes redundant rather than wrong). An unserved block — empty,
+		// or emptied by the model boundary's screen — never takes the marker:
+		// it would spend a breakpoint (4 per request) on bytes no model reads.
+		//
+		// The prefix this closes is still per-NODE, since the posture and the
+		// node's task sit in block 0 ahead of the shared corpus: the entry is
+		// written once per node and read by that node's later turns, not
+		// across nodes. Making it run-invariant means emitting the corpus
+		// BEFORE the posture, which reorders what the model reads first and
+		// is a behaviour change, not a cost one.
+		multiTurn := len(opts.Tools) > 0 && (opts.MaxSteps == 0 || opts.MaxSteps > 1)
+		if lastServed >= 0 && multiTurn {
 			blocks[lastServed].CacheControl = api.EphemeralCacheControl()
 		}
 		req.SystemBlocks = blocks
