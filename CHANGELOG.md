@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [5.20.0](https://github.com/SocialGouv/iterion/compare/v5.19.0...v5.20.0) (2026-11-10)
+
+### Features
+
+* **cloudpublisher,model,llmroute:** the walk spends a team's own gateway key — PR-C' of [#2005](https://github.com/SocialGouv/iterion/issues/2005) (ADR-131) ([#3165](https://github.com/SocialGouv/iterion/issues/3165)) ([b545c96](https://github.com/SocialGouv/iterion/commit/b545c96e2cf5fb5207cf8a7f474b9c2e90c123bb))
+
+    <details><summary>why</summary>
+
+    A team that registered its own openai_compatible gateway key (e.g. a PLIAGE LiteLLM key per product) now has it SPENT by its runs: the credential walk seals the key with its canonical base URL for a run that may ride a gateway route (an attributed decided route on any runner; an undecided ${DIAL} route only on a dedicated runner pool), stamps the run's ContentBoundary (team_gateway / own_keys) with AmbientLLMRefused on the same fact, refuses vendor crossings on gateway nodes under team_gateway,…
+
+    </details>
+
 ## [5.19.0](https://github.com/SocialGouv/iterion/compare/v5.18.0...v5.19.0) (2026-11-10)
 
 ### Features
