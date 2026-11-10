@@ -11,6 +11,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/SocialGouv/iterion/internal/gittest"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 )
@@ -186,11 +187,8 @@ func TestWorkflowKick_TheRepositoryComesFromTheOrigin(t *testing.T) {
 	for _, origin := range []string{"https://github.com/acme/widgets.git", "git@github.com:acme/widgets.git"} {
 		t.Run(origin, func(t *testing.T) {
 			dir := t.TempDir()
-			for _, args := range [][]string{{"init", "-q"}, {"remote", "add", "origin", origin}} {
-				if out, err := exec.Command("git", append([]string{"-C", dir}, args...)...).CombinedOutput(); err != nil {
-					t.Fatalf("git %v: %v %s", args, err, out)
-				}
-			}
+			gittest.Run(t, dir, "init", "-q")
+			gittest.Run(t, dir, "remote", "add", "origin", origin)
 			stub := newKickStub(t, http.StatusOK, `{"dispatched":true,"ref":"main"}`)
 			out := runKick(t, dir, map[string]any{
 				"forge_dispatch_url":  stub.srv.URL + "/api/v1/forge/dispatch-workflow",
