@@ -63,6 +63,11 @@ func (e *Engine) handleNodeFailure(ctx context.Context, rs *runState, nodeID str
 	}
 	if execErr != nil {
 		emitData["error"] = execErr.Error()
+		// The chain's message names its LAST route only; the verdict of
+		// every route is the evidence behind the one code above.
+		if routes := ChainRouteVerdicts(execErr); routes != nil {
+			emitData["chain_routes"] = routes
+		}
 	}
 	if err := e.emit(rs.ctx, rs.runID, store.EventNodeRecovery, nodeID, emitData); err != nil {
 		// Best-effort — recovery proceeds even when the event store is

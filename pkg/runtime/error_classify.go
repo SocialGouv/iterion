@@ -27,7 +27,11 @@ func ClassifyError(err error) ErrorCode {
 	}
 	// Before the RuntimeError code: a route of the chain may carry its own
 	// RuntimeError, and errors.As must not let that one route decide for
-	// the others.
+	// the others. A usage window on any route decides first — the run waits
+	// for it to reopen, whatever the other routes met.
+	if chainWaitsOnUsageWindow(err) {
+		return ErrCodeUsageLimitBlocked
+	}
 	if code, decided := classifyRefusedChain(err); decided {
 		return code
 	}

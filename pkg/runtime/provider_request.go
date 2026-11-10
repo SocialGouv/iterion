@@ -66,16 +66,9 @@ var routeLocalCodes = map[ErrorCode]bool{
 // always had — and a chain a RuntimeError encloses, whose code is the
 // engine's own verdict on the whole chain.
 func classifyRefusedChain(err error) (code ErrorCode, decided bool) {
-	var chain *model.ErrChainExhausted
-	if !errors.As(err, &chain) || len(chain.Errs) == 0 {
+	chain := exhaustedChainToRead(err)
+	if chain == nil {
 		return "", false
-	}
-	var enclosing *RuntimeError
-	if errors.As(err, &enclosing) {
-		var inner *model.ErrChainExhausted
-		if errors.As(enclosing.Cause, &inner) && inner == chain {
-			return "", false
-		}
 	}
 	var others []error
 	schema := false
@@ -99,6 +92,71 @@ func classifyRefusedChain(err error) (code ErrorCode, decided bool) {
 		return "", false
 	}
 	return ClassifyError(&model.ErrChainExhausted{Chain: chain.Chain, Errs: others}), true
+}
+
+// exhaustedChainToRead is the exhausted fallback chain a chain reading may
+// decide, or nil: no chain in err, an empty one, or one a RuntimeError
+// encloses — whose code is the engine's own verdict on the whole chain, so no
+// reading of its routes overrides it.
+func exhaustedChainToRead(err error) *model.ErrChainExhausted {
+	var chain *model.ErrChainExhausted
+	if !errors.As(err, &chain) || len(chain.Errs) == 0 {
+		return nil
+	}
+	var enclosing *RuntimeError
+	if errors.As(err, &enclosing) {
+		var inner *model.ErrChainExhausted
+		if errors.As(enclosing.Cause, &inner) && inner == chain {
+			return nil
+		}
+	}
+	return chain
+}
+
+// chainWaitsOnUsageWindow reports an exhausted fallback chain that holds at
+// least one route refused on a provider usage window, whatever its other
+// routes say. Waiting cures that route, so the node parks on the window
+// (USAGE_LIMIT_BLOCKED) and the run resumes when it reopens; a credential
+// another route found dead is a fact the diagnostic names (ChainRouteVerdicts),
+// not the reason for the stop. Read BEFORE the credential check, by type, on
+// every route: errors.As over Unwrap() []error finds the first
+// *delegate.ErrAuthFailed of the set wherever it sits, so a dead route
+// anywhere in the walk used to pause the run for a human with a five-hour
+// wait as its whole cause (#3032). A chain whose routes are all dead
+// credentials holds no window and keeps AUTH_FAILED.
+func chainWaitsOnUsageWindow(err error) bool {
+	chain := exhaustedChainToRead(err)
+	if chain == nil {
+		return false
+	}
+	for _, cause := range chain.Errs {
+		if cause != nil && ClassifyError(cause) == ErrCodeUsageLimitBlocked {
+			return true
+		}
+	}
+	return false
+}
+
+// ChainRouteVerdicts is the per-route evidence of an exhausted fallback
+// chain — each route's own classification and error, in walk order — or nil
+// when err holds no such chain. The node's single code says what the run
+// does next; this says what every route met, so a dead credential behind a
+// usage window stays visible on the node_recovery event.
+func ChainRouteVerdicts(err error) []map[string]any {
+	var chain *model.ErrChainExhausted
+	if !errors.As(err, &chain) || len(chain.Errs) == 0 {
+		return nil
+	}
+	out := make([]map[string]any, 0, len(chain.Errs))
+	for i, cause := range chain.Errs {
+		verdict := map[string]any{"route": i}
+		if cause != nil {
+			verdict["code"] = string(ClassifyError(cause))
+			verdict["error"] = cause.Error()
+		}
+		out = append(out, verdict)
+	}
+	return out
 }
 
 func providerParameterCause(err error) string {
