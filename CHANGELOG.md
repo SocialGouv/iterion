@@ -3,6 +3,119 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [5.16.0](https://github.com/SocialGouv/iterion/compare/v5.15.1...v5.16.0) (2026-11-10)
+
+### Features
+
+* **credpool,forge,server:** key pools follow-ups — the forge-integration pool: block, reset_hold's runtime half, the sovereign preview reason (ADR-164) ([#3123](https://github.com/SocialGouv/iterion/issues/3123)) ([9e98941](https://github.com/SocialGouv/iterion/commit/9e98941090d702e53fbe36b8577db7334554e1bd)), closes [#3122](https://github.com/SocialGouv/iterion/issues/3122) [#2000](https://github.com/SocialGouv/iterion/issues/2000) [#3117](https://github.com/SocialGouv/iterion/issues/3117)
+
+    <details><summary>why</summary>
+
+    Landed through the admin lane (Revi unavailable: its z.ai key's weekly quota is exhausted): a six-round local adversarial loop (opus, effort max) — rounds 4-6 without a high on the product, round 4 by randomized guarantee tests on the real broker (~29,600 grants, 0 data race), every fix proven by a mutant red on its own assertion; `task check` green; every CI check green on 3f4770b7a. The closing round's remaining medium/lows are filed as follow-ups.
+
+    </details>
+* **forge:** PullRef carries the fork review lane's admission fields ([d9f95e2](https://github.com/SocialGouv/iterion/commit/d9f95e2bf98e506909ef6d41ab72c56e27c615c1)), references [#3120](https://github.com/SocialGouv/iterion/issues/3120) [#874](https://github.com/SocialGouv/iterion/issues/874)
+
+    <details><summary>why</summary>
+
+    ADR-162 U6, decision 3: the admission reads three fields off the pull request the forge API answers — the author's NUMERIC user id (the per-contributor bound's key, never the login, which is renameable), the BASE repository's clone URL (the one repository a fork launch names: the base's own refs/pull/<n>/head resolves the fork's commit inside the base's object database), and the base's visibility (a private base is refused before the bound is metered — an untrusted clone holds no forge token,…
+
+    </details>
+* **server,queue:** the fork review lane's per-contributor bound — metered twice, failing closed ([1e375d5](https://github.com/SocialGouv/iterion/commit/1e375d54ce0ffdd0deb0d7aa19c2614d0507af08)), references [#3120](https://github.com/SocialGouv/iterion/issues/3120) [#874](https://github.com/SocialGouv/iterion/issues/874)
+
+    <details><summary>why</summary>
+
+    ADR-162 U6, decision 5 (amending ADR-033) + Q4: an untrusted launch is metered on the org's budget AND on orgusage.ForkAuthorSubject — the pull request author's numeric forge id — with runs and dollars per month held on the org beside its quota, a platform default of 20 runs / $20 in the settings ladder, and an explicit `unbounded` escape hatch (a negative org field, or the literal on the env var).
+
+    </details>
+* **server:** the fork review gesture — the lane admits one commit of a public fork ([a9d3e2a](https://github.com/SocialGouv/iterion/commit/a9d3e2a1ef21ca75ba4ae163e4a139726e952751)), references [#3120](https://github.com/SocialGouv/iterion/issues/3120) [#874](https://github.com/SocialGouv/iterion/issues/874)
+
+    <details><summary>why</summary>
+
+    ADR-162 U6, decisions 1-5 + Q1/Q2: the fork review lane's whole comment lane. ForkLane becomes settable at creation (POST /api/teams/{id}/webhooks), github-only with a typed per-provider refusal naming the witness each provider lacks, and IMMUTABLE on PATCH — flipping the kind would re-read parked debounce targets as the other kind and re-interpret the per-author budget's rows. The gesture routes BEFORE the ordinary command machinery (including the /revi approve intercept) on the lane's own…
+
+    </details>
+
+### Bug Fixes
+
+* **chart:** the fork-author bound's knobs reach the server through orgDefaults ([4e29c8d](https://github.com/SocialGouv/iterion/commit/4e29c8db55e4fbdfebd4e70ba5bd931bec90fc2b)), references [#3120](https://github.com/SocialGouv/iterion/issues/3120) [#874](https://github.com/SocialGouv/iterion/issues/874)
+
+    <details><summary>why</summary>
+
+    Round-3 review (low): the chart README maps config.orgDefaults.* to ITERION_ORG_DEFAULT_*, but the configmap templated only the four older knobs, so an operator's orgDefaults.forkAuthorCostCapUsd (or `unbounded`) was dropped in silence and the server shipped 20 runs / $20 — an explicit choice replaced without a word (philosophy rule 1).
+
+    </details>
+* **cmd:** the fork-author bound's env knobs take a positive cap or `unbounded`, nothing else ([fc4e5a9](https://github.com/SocialGouv/iterion/commit/fc4e5a99b9128375caf227ec169542b70fb3065c)), references [#3120](https://github.com/SocialGouv/iterion/issues/3120) [#874](https://github.com/SocialGouv/iterion/issues/874)
+
+    <details><summary>why</summary>
+
+    Round-2 review, findings 3 (the env half) and 4. boundEnvInt and boundEnvFloat read "0" as a valid value, and 0 is no cap: a second, implicit spelling of `unbounded` — the very reading the neighbouring ITERION_ORG_DEFAULT_* knobs give 0, so an operator setting it by analogy shipped every outside contributor unbounded. A negative or unparseable value was silently replaced by the default.
+
+    </details>
+* **forge,webhooks:** an unidentified GitHub author stays unidentified; GitLab ids refute an equal path ([7d5bed7](https://github.com/SocialGouv/iterion/commit/7d5bed7fbe1f4324d6aed7d7d382247c0a0beff6)), references [#3120](https://github.com/SocialGouv/iterion/issues/3120) [#874](https://github.com/SocialGouv/iterion/issues/874)
+
+    <details><summary>why</summary>
+
+    Round-2 review, findings 11 and 6.
+
+    </details>
+* **orgusage,cmd,server:** a fork-author dollar cap the counter cannot enforce is refused ([ace00f9](https://github.com/SocialGouv/iterion/commit/ace00f9c5a5f875110f7038c804b9f84f7f310d9)), references [#3120](https://github.com/SocialGouv/iterion/issues/3120) [#874](https://github.com/SocialGouv/iterion/issues/874)
+
+    <details><summary>why</summary>
+
+    Round-3 review (two lows, one class): AllowRun applies a cost cap only when maxCostMillis > 0, and CostToMillis turns some POSITIVE dollar caps into "no cap": a value below half a millidollar rounds to 0, and +Inf or a value past int64 millidollars (1e300) converts to an implementation-defined int64, negative on amd64. ITERION_ORG_DEFAULT_FORK_AUTHOR_COST_CAP_USD accepted 0.0004 and 1e-9 (and only its IsInf arm, unwitnessed, kept inf out), and PATCH /api/admin/orgs accepted 0.0004 and 1e300 —…
+
+    </details>
+* **queue:** an untrusted message older than the fork author subject parks ([3df6985](https://github.com/SocialGouv/iterion/commit/3df69858530cf4acd4e3a06dd7c70a5c836cd891)), references [#3120](https://github.com/SocialGouv/iterion/issues/3120) [#874](https://github.com/SocialGouv/iterion/issues/874)
+
+    <details><summary>why</summary>
+
+    Round-3 review (low): the v29 note justified MinSchemaVersion=27 by "no v28 message is a fork run", which holds for launches only. Mid server rollout a v28 replica republishes a fork run a v29 replica created — its resume, the retry sweeper's, a launch naming it as parent — replaying trust=fork with no fork_author_subject (v28 has no field for it). A v29 runner accepts v27–v29, so it ran the message with the author's dollar bound unenforced and recordOrgSpend's second charge skipped.
+
+    </details>
+* **runview,server:** a launch built from a fork run is judged and published as the fork run ([bc80e58](https://github.com/SocialGouv/iterion/commit/bc80e585e9e2597cc0bcdb37b99e1920d85eb35c)), references [#3120](https://github.com/SocialGouv/iterion/issues/3120) [#874](https://github.com/SocialGouv/iterion/issues/874)
+
+    <details><summary>why</summary>
+
+    Round-3 review, two MEDIUM findings of one class — the trust the gate judged differed from the trust of the run it admitted, the launch-side twin of round 1's resume HIGH. POST /api/runs gated a request naming a fork run (parent_run_id, or a delegation's source_run_id) with launchSubject{BotID: …}, whose zero Trust reads as trusted; only then did Service.Launch's inheritSourceTrust lower the spec to trust=fork and copy the parent's ForkAuthorSubject. The run was published untrusted past every…
+
+    </details>
+* **runview,server:** every resume of an untrusted run crosses one admission choke point ([82a0cb2](https://github.com/SocialGouv/iterion/commit/82a0cb2888b7e043425062ad27d478c7f0c2a82e))
+
+    <details><summary>why</summary>
+
+    Round-2 review, three HIGH findings of one class: a fork run re-entering the engine past ADR-162 decision 5's bound.
+
+    </details>
+* **server:** a fork run's manual resume re-enters the bound it launched under ([63d233b](https://github.com/SocialGouv/iterion/commit/63d233bc6397b15166c8dbc23c42f82805e520a6)), references [#3120](https://github.com/SocialGouv/iterion/issues/3120) [#874](https://github.com/SocialGouv/iterion/issues/874)
+
+    <details><summary>why</summary>
+
+    handleResumeRun (runs API) and its WS answer twin rebuilt their admission subject as {ExistingRun, BotID, Repo}, dropping the run document's Trust and ForkAuthorSubject: a fork run's resume was admitted as a trusted subject, so no ADR-033 fail-closed arm applied and gateMonthlyCaps metered the org counter while the per-contributor twin of ADR-162 decision 5 never moved. The retry sweeper carried both fields -- the surfaces disagreed.
+
+    </details>
+* **server:** every launch from a webhook config crosses one provenance precondition ([3a555da](https://github.com/SocialGouv/iterion/commit/3a555dacdc8758c81c0e30f48464740910e62b85)), references [#3120](https://github.com/SocialGouv/iterion/issues/3120) [#874](https://github.com/SocialGouv/iterion/issues/874)
+
+    <details><summary>why</summary>
+
+    Round-2 review, finding 17: a fork-lane config kept a TRUSTED launch entry that never met the lane-disjointness gate. An `issues: labeled` delivery (or a zero-touch open) composes a same-repo target and hands it to dispatchInvocation; on a board-mode route with a cloud coordinator the board branch wrote a Ready card the dispatcher later launches, returning before the launch tail, and that branch only checked the untrusted direction. Without a coordinator it wrote a tracking card before the tail…
+
+    </details>
+* **server:** the ordinary GitLab MR lane fails closed on a head neither project names ([cc6c01d](https://github.com/SocialGouv/iterion/commit/cc6c01df15e3be5e958fc9637c01ab1be1d4aea2)), references [#3120](https://github.com/SocialGouv/iterion/issues/3120) [#874](https://github.com/SocialGouv/iterion/issues/874)
+
+    <details><summary>why</summary>
+
+    ADR-162 decision 1's GitLab row: the MR auto lane used to stamp "trusted" on whatever the payload failed to prove — a fork was filtered only when the payload PROVED it, and a payload naming neither the source nor the target project rode through as a trusted launch on the forge's silence, weaker than the GitHub site next door (forkGuardRefusal fails closed on a withheld or unnamed head).
+
+    </details>
+* **store,runview:** one carrier for a fork run's trust and author subject; Mongo holds it write-once ([30306b4](https://github.com/SocialGouv/iterion/commit/30306b493015f31bfb06be42c55ea351366d78f6)), references [#3120](https://github.com/SocialGouv/iterion/issues/3120) [#874](https://github.com/SocialGouv/iterion/issues/874)
+
+    <details><summary>why</summary>
+
+    Round-2 review, findings 2/15 and 5/16.
+
+    </details>
+
 ## [5.15.1](https://github.com/SocialGouv/iterion/compare/v5.15.0...v5.15.1) (2026-11-09)
 
 ### Bug Fixes
