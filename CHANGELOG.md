@@ -3,6 +3,112 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [5.19.0](https://github.com/SocialGouv/iterion/compare/v5.18.0...v5.19.0) (2026-11-10)
+
+### Features
+
+* **chart:** a runner pool resolves the kubernetes sandbox on its own flag ([669d09a](https://github.com/SocialGouv/iterion/commit/669d09a8df1fc81562dd93f07c11f6a3eb52f535)), closes [#2965](https://github.com/SocialGouv/iterion/issues/2965), references [#3125](https://github.com/SocialGouv/iterion/issues/3125) [#874](https://github.com/SocialGouv/iterion/issues/874)
+
+    <details><summary>why</summary>
+
+    ADR-162 Q3 runs fork runs on a dedicated pool that resolves a kubernetes sandbox for every run, and rejects option B — runner.sandbox.enabled for the whole release, which would move every trusted `sandbox:` bot into sibling pods. runnerPools[].sandbox.enabled is that flag for one pool: unset, the pool follows runner.sandbox.enabled (iterion.poolSandbox, a boolean only); set, the pool renders the sandbox's downward-API env and, where it differs from the release-wide flag, its own literals over…
+
+    </details>
+* **server,cloudpublisher:** a fork run its team's own keys cannot fund is refused before metering ([7e27f81](https://github.com/SocialGouv/iterion/commit/7e27f81587a226fad946e5916a9993b2a24c58be)), references [#3125](https://github.com/SocialGouv/iterion/issues/3125) [#3125](https://github.com/SocialGouv/iterion/issues/3125) [#3126](https://github.com/SocialGouv/iterion/issues/3126) [#874](https://github.com/SocialGouv/iterion/issues/874)
+
+    <details><summary>why</summary>
+
+    The operator's decision on the fork-run funding question (#3125): keep ADR-154 D13 for the fork lane's pool — a pool-stamped fork run is sealed no shared tier (no org key, no contributor pool, no platform key) and spends only its team's own BYOK API key or gateway key — and refuse, typed and BEFORE the org's counter or the outside author's bound moves, a fork run those keys cannot fund, judged by the one producer the credential preview and the publisher's walk already read.
+
+    </details>
+* **webhooks,cloudpublisher:** a fork run executes on the pool its fork-lane config names ([6a6df25](https://github.com/SocialGouv/iterion/commit/6a6df254433900fc2de022268a89a31dabea6c74)), references [#3125](https://github.com/SocialGouv/iterion/issues/3125) [#874](https://github.com/SocialGouv/iterion/issues/874)
+
+    <details><summary>why</summary>
+
+    ADR-162 Q3 and decision 10: a fork run executes only through the publisher, on a runner whose sandbox resolves active — in the cloud, the dedicated pool the fork-lane config names, behind ADR-154's pool boundary.
+
+    </details>
+
+### Bug Fixes
+
+* **chart:** an opted-out pool mounts no token, an opted-in pool owns the sandbox default, and a misspelled pool sandbox flag is refused ([024b704](https://github.com/SocialGouv/iterion/commit/024b7047e6c590bfb995109f67c1996250ac519a)), references [#3125](https://github.com/SocialGouv/iterion/issues/3125) [#3125](https://github.com/SocialGouv/iterion/issues/3125) [#874](https://github.com/SocialGouv/iterion/issues/874)
+
+    <details><summary>why</summary>
+
+    Review round 1 of ADR-162 U7 part 1 (#3125).
+
+    </details>
+* **chart:** the pool sandbox interim binds its grants to a named ServiceAccount, never the namespace's default ([a4d4310](https://github.com/SocialGouv/iterion/commit/a4d43103ff7a6399f36c1e5e988a498d88e4f31c)), references [#2965](https://github.com/SocialGouv/iterion/issues/2965) [#3125](https://github.com/SocialGouv/iterion/issues/3125) [#874](https://github.com/SocialGouv/iterion/issues/874)
+
+    <details><summary>why</summary>
+
+    The refusal and docs/cloud-deployment.md said the interim (serviceAccount.create=false, then bind the sandbox driver's grants by hand) hands those grants to every pod of the release that mounts the account. With serviceAccount.name left empty, iterion.serviceAccountName resolves to the namespace's `default` ServiceAccount, so the grants (secrets get/list/create/delete, pods/exec, networkpolicies delete) would reach every pod of the namespace that names no account of its own, not just the…
+
+    </details>
+* **cloudpublisher:** a fork run's routing policy lands no forfait rung ([9746b93](https://github.com/SocialGouv/iterion/commit/9746b93d4a263e6e11c9070fd693faab97bd13a2)), references [draft#run-fallback](https://github.com/draft/issues/run-fallback) [#3125](https://github.com/SocialGouv/iterion/issues/3125) [#874](https://github.com/SocialGouv/iterion/issues/874)
+
+    <details><summary>why</summary>
+
+    The resolved default routing policy, which every production launch carries, heads its pair order with claude_code:claude_forfait and codex:chatgpt_forfait and arms every trigger. A team with a connected forfait therefore had a forfait rung composed onto every eligible node of its fork runs. The rung carries no provider hint (a forfait slot has none) and, on claude_code, a bare model, so the walk could not attribute it: the untrusted arm refused the run fork_run_unfunded on…
+
+    </details>
+* **cloudpublisher:** a fork-lane pool provisioning or draining stays transient ([d4b3851](https://github.com/SocialGouv/iterion/commit/d4b3851593ecc36e4f62b8c6cfc162b1c0e4027d)), references [#3125](https://github.com/SocialGouv/iterion/issues/3125) [#874](https://github.com/SocialGouv/iterion/issues/874)
+
+    <details><summary>why</summary>
+
+    routesForTrust read every decided registry refusal of an untrusted run's pool as the permanent ErrForkLanePool, the registry's lifecycle states included. A fork run parked on a usage window while the operator briefly drained or re-provisioned the lane's pool was therefore abandoned by the retry sweeper (denyForkLanePoolRefused is not transient), and the webhook's durable retry exhausted on the 422, while a trusted run on the same pool was re-armed. The refusal's own remedy (activate the pool)…
+
+    </details>
+* **cloudpublisher:** a fork-lane pool the registry does not route is refused as permanent ([817e668](https://github.com/SocialGouv/iterion/commit/817e66880c8bbdd4aa7d18ed964f98b8d1844826)), references [#3125](https://github.com/SocialGouv/iterion/issues/3125) [#874](https://github.com/SocialGouv/iterion/issues/874)
+
+    <details><summary>why</summary>
+
+    A fork-lane pool the registry did not know, or that was not active, made the funding judge return an untyped error, which the gate mapped to fork_funding_unreadable — a 503 classed as transient. The pool name is checked only for grammar at creation and is immutable afterwards, so a misspelled or never-registered fork_lane_pool was answered as a retryable store blip on every gesture, durable retry and resume, and the retry kept re-arming.
+
+    </details>
+* **cloudpublisher:** the fork refusal's remedy says how far a routing override reaches ([e28246e](https://github.com/SocialGouv/iterion/commit/e28246e5eff00eaceef567fe6a1704182a8f5dc7)), references [#3125](https://github.com/SocialGouv/iterion/issues/3125) [#874](https://github.com/SocialGouv/iterion/issues/874)
+
+    <details><summary>why</summary>
+
+    The deferred and unattributed remedies told every site that "the integration's routing overrides pin a node's provider, model and backend". An override reaches a node's own route alone (ForNode). It does not reach a sub-bot node, a supervisor, an authored `fallbacks:` route, an interaction or direct generation, or a run-level fallback stage, so for those sites the refusal named a lever that cannot lift it: the operator adds the override and the next gesture is refused the same way.
+
+    </details>
+* **model,cloudpublisher,server:** a fork run whose route the pool's runner decides, or that rides the gateway, is refused before metering ([ee7f702](https://github.com/SocialGouv/iterion/commit/ee7f70215721fa7f0a030d6c0886ac6def6fcea3)), references [#3125](https://github.com/SocialGouv/iterion/issues/3125) [#2005](https://github.com/SocialGouv/iterion/issues/2005) [#3125](https://github.com/SocialGouv/iterion/issues/3125) [#874](https://github.com/SocialGouv/iterion/issues/874)
+
+    <details><summary>why</summary>
+
+    Review round 1 of ADR-162 U7 part 1 (#3125).
+
+    </details>
+* **model,cloudpublisher:** a fork run whose route names no provider, or reads a wire default its team holds no slot of, is refused before metering ([abc4397](https://github.com/SocialGouv/iterion/commit/abc4397f7a4a4bf0f462067be795195b12272004)), references [#3125](https://github.com/SocialGouv/iterion/issues/3125) [#874](https://github.com/SocialGouv/iterion/issues/874)
+
+    <details><summary>why</summary>
+
+    Under the untrusted posture a route the walk could not attribute to a provider was never judged once the team held any vendor key: a claude_code node with no model or a bare one, `provider: auto`, an unknown hint, a subbot (its child bot is never read), a supervisor with no model. The unattributable fallback fired only when the team held nothing at all. The gate's funding judge then admitted and metered the gesture, the publisher sealed a bundle, and the runner refused the route ambient: a fork…
+
+    </details>
+* **model,cloudpublisher:** a wire-default route an allowlist leaves slotless refuses the fork run ([2b9d20d](https://github.com/SocialGouv/iterion/commit/2b9d20d8d761fc04557abc2e80630a3e1a6b61b1)), references [#3125](https://github.com/SocialGouv/iterion/issues/3125) [#874](https://github.com/SocialGouv/iterion/issues/874)
+
+    <details><summary>why</summary>
+
+    Under a providers allowlist that admits no anthropic-wire provider, endRoute dropped every slot of a surviving route's wire-default read, so the route never appeared in WireDefaultSites and the per-site judge never saw it. A claude_code route hinted off the wire (or a backend-less route the runner may put on claude_code) still walks the wire's default on the runner, finds no slot it may spend, and is refused ambient: the fork gesture was metered first and refused for funding after.
+
+    </details>
+* **runner,cloudpublisher:** an untrusted run is ambient-refused even when no bundle is sealed ([bc1dfbe](https://github.com/SocialGouv/iterion/commit/bc1dfbe3b3f0a9722566e4ec83a7a2377775a63d)), references [#1670](https://github.com/SocialGouv/iterion/issues/1670) [#3126](https://github.com/SocialGouv/iterion/issues/3126) [#874](https://github.com/SocialGouv/iterion/issues/874)
+
+    <details><summary>why</summary>
+
+    ADR-162 decision 7: an untrusted run spends only the credentials sealed for it; every fallback to the pod's environment — the deployment's vendor keys, a pool's gateway — answers a typed refusal. The refusal rode only the sealed bundle (RunBundle.AmbientLLMRefused), and resolveAndSealCredentials returns BEFORE sealing when the walk holds no LLM credential and no generic secret. An untrusted run is never handed a generic secret (#1670), so every untrusted run no tier funds shipped no bundle, no…
+
+    </details>
+* **server:** the team pool mapping refuses a pool another team's fork lane runs on ([55cf1bb](https://github.com/SocialGouv/iterion/commit/55cf1bbb29c764153f8a3fdc641c2f50276763d1)), references [#3125](https://github.com/SocialGouv/iterion/issues/3125) [#874](https://github.com/SocialGouv/iterion/issues/874)
+
+    <details><summary>why</summary>
+
+    The fork lane's pool rule (forkLanePoolRefusal) runs at the launch and at every resume, but the only writer of the team→pool mapping never looked at fork-lane configs. A pool an unmapped team's fork lane names could be mapped as another team's sovereign pool, and that lane's queued, running or redelivered untrusted runs then executed on the new holder's pods: the runner admits a stamped run on its pool alone. ADR-154's one-team-per-pool boundary, which this handler's D13 check exists to hold,…
+
+    </details>
+
 ## [5.18.0](https://github.com/SocialGouv/iterion/compare/v5.17.2...v5.18.0) (2026-11-10)
 
 ### Features
