@@ -102,7 +102,7 @@ func usageWindowRetryAt(execErr error, pol retrypolicy.Policy, now time.Time, sk
 		return time.Time{}, "", false
 	}
 	if !skippedReopensAt.IsZero() {
-		if alt := skippedReopensAt.Add(time.Minute); alt.Before(at) {
+		if alt := skippedReopensAt.Add(retrypolicy.UsageWindowComeBack); alt.Before(at) {
 			if reservesLastAttempt(pol, attemptsSpent, authoritativeAt, now) {
 				// The budget has one arming left and the wall is still
 				// ahead: spending it on another credential's reopening
@@ -142,18 +142,19 @@ func usageWindowRefusalAt(execErr error, now time.Time) (at time.Time, source st
 	if execErr == nil {
 		return time.Time{}, "", time.Time{}, false
 	}
-	at, source, ok = usageWindowEvidence(execErr)
+	ev, ok := usageWindowEvidence(execErr, now)
 	if !ok {
 		return time.Time{}, "", time.Time{}, false
 	}
+	at, source = ev.resetAt, ev.source
 	// A usage window with no usable reset instant still gets a retry — the
 	// window is real, only its end is unknown.
 	if at.IsZero() {
-		if parsed, pok := delegate.ParseResetHint(execErr.Error(), now); pok {
+		if parsed, pok := delegate.ParseResetHint(ev.words, now); pok {
 			// The come-back pad rides the WAKE only: both deliveries of one
 			// window — the typed error and the flattened text — wake just past
 			// the reset and name the same wall, the refusal's own instant.
-			return parsed.Add(time.Minute), source + "+parsed_text", parsed, true
+			return parsed.Add(retrypolicy.UsageWindowComeBack), source + "+parsed_text", parsed, true
 		}
 		return now.Add(usageWindowBlindWait), source + blindWaitSource, time.Time{}, true
 	}
@@ -161,7 +162,7 @@ func usageWindowRefusalAt(execErr error, now time.Time) (at time.Time, source st
 	// wake; authoritativeAt travels as the refusal's own instant, the value
 	// the wall readers key on — a typed park and a flattened park of the same
 	// window must answer the same wall.
-	return at.Add(time.Minute), source, at, true
+	return at.Add(retrypolicy.UsageWindowComeBack), source, at, true
 }
 
 // refusalNamesNoInstant reports that this refusal named no reset of its own,
@@ -268,7 +269,11 @@ func usageRefusalWall(execErr error, now time.Time) (wall time.Time, dated, ok b
 	if !authoritative.IsZero() {
 		wall = authoritative.UTC()
 	}
-	if _, textDated, hinted := delegate.ParseResetHintDated(execErr.Error(), now); hinted {
+	// The words asked are the deciding refusal's own (usageWindowEvidence):
+	// a chain's message names its last route, which may not be the one the
+	// wall was read from.
+	ev, _ := usageWindowEvidence(execErr, now)
+	if _, textDated, hinted := delegate.ParseResetHintDated(ev.words, now); hinted {
 		return wall, textDated, true
 	}
 	again, _, _, okAgain := usageWindowRefusalAt(execErr, now.Add(time.Second))
@@ -395,6 +400,20 @@ func reservesLastAttempt(pol retrypolicy.Policy, attemptsSpent int, authoritativ
 	return !authoritativeAt.Add(pol.JitterDuration()).After(now.Add(pol.MaxWaitDuration()))
 }
 
+// usageEvidence is one usage-window refusal as the runner reads it.
+type usageEvidence struct {
+	// resetAt is the instant the refusal's TYPE carries, zero when it carries
+	// none (a window that named no reset, a refusal read from its code or its
+	// flattened text).
+	resetAt time.Time
+	// source names where the evidence came from, for the timeline.
+	source string
+	// words are the refusal's own words: what an instant its type did not
+	// carry is parsed from, and what tells a dated wall from one derived from
+	// now (usageRefusalWall).
+	words string
+}
+
 // usageWindowEvidence answers the one question "did this error mean the
 // provider's quota window is shut, and when does it reopen".
 //
@@ -403,16 +422,38 @@ func reservesLastAttempt(pol retrypolicy.Policy, attemptsSpent int, authoritativ
 // evidence chain drift — the pool's did, silently dropping the text-parsed
 // reset the retry path relies on.
 //
-// Sources are tried structure-first, string-last on purpose. The typed
-// error is authoritative when it survives to here; the code is
+// An exhausted fallback chain is read ROUTE BY ROUTE (runtime.UsageWindowRoutes):
+// every route a window refused, whatever backend raised it, and the one that
+// reopens FIRST decides — the resume re-walks the chain and proceeds on it.
+// Neither shortcut is a fact about that route: errors.As returns the FIRST
+// typed refusal of the walk (a throttle on an earlier route hid a dated window
+// behind it), and the chain's message names its LAST route only. So the
+// instant, the source and the words the wall is dated from are the same in
+// every order the walk met its routes in.
+//
+// Otherwise the sources are tried structure-first, string-last on purpose.
+// The typed error is authoritative when it survives to here; the code is
 // authoritative when a recovery dispatcher classified it.
-func usageWindowEvidence(execErr error) (resetAt time.Time, source string, ok bool) {
+func usageWindowEvidence(execErr error, now time.Time) (usageEvidence, bool) {
+	if execErr == nil {
+		return usageEvidence{}, false
+	}
+	if routes := runtime.UsageWindowRoutes(execErr); len(routes) > 0 {
+		return earliestRouteEvidence(routes, now), true
+	}
+	return errorEvidence(execErr)
+}
+
+// errorEvidence reads one error — a whole node failure, or one route of a
+// chain — as a usage-window refusal.
+func errorEvidence(err error) (usageEvidence, bool) {
+	words := err.Error()
 	var rl *delegate.ErrRateLimited
 	switch {
-	case errors.As(execErr, &rl) && rl.Kind == delegate.RateLimitKindUsageWindow:
-		return rl.ResetAt, "typed_error", true
-	case runtimeCodeOf(execErr) == runtime.ErrCodeUsageLimitBlocked:
-		return time.Time{}, "runtime_code", true
+	case errors.As(err, &rl) && rl.Kind == delegate.RateLimitKindUsageWindow:
+		return usageEvidence{resetAt: rl.ResetAt, source: "typed_error", words: words}, true
+	case runtimeCodeOf(err) == runtime.ErrCodeUsageLimitBlocked:
+		return usageEvidence{source: "runtime_code", words: words}, true
 	// The flattened message, last. This source was DOCUMENTED above from the
 	// start and never implemented, so a host that had neither of the two
 	// above got no retry at all — the case the doc calls "not hypothetical".
@@ -420,10 +461,68 @@ func usageWindowEvidence(execErr error) (resetAt time.Time, source string, ok bo
 	// every one of them carrying the provider's own words in run.Error, and
 	// not one armed a retry; four pull requests waited on a required check
 	// nobody would ever answer.
-	case delegate.UsageWindowInFlattenedError(execErr.Error()):
-		return time.Time{}, "flattened_text", true
+	case delegate.UsageWindowInFlattenedError(words):
+		return usageEvidence{source: "flattened_text", words: words}, true
 	}
-	return time.Time{}, "", false
+	return usageEvidence{}, false
+}
+
+// earliestRouteEvidence picks, among the routes a usage window refused, the
+// one whose refusal names the earliest reopening — typed, or parsed from its
+// own words. A route that names none speaks only when no route does: its end
+// is unknown, so it neither holds the run behind a dated wall nor overrides
+// one. Ties go to the stronger source, then to the words, so the pick never
+// depends on the walk's order.
+func earliestRouteEvidence(routes []error, now time.Time) usageEvidence {
+	var best usageEvidence
+	var bestAt time.Time
+	found := false
+	for _, route := range routes {
+		ev, ok := errorEvidence(route)
+		if !ok {
+			// The route's own classification said window (that is how it is
+			// listed) through a reading errorEvidence does not repeat — a
+			// chain nested in the route: its words still speak for it.
+			ev = usageEvidence{source: "runtime_code", words: route.Error()}
+		}
+		at := ev.resetAt
+		if at.IsZero() {
+			if parsed, pok := delegate.ParseResetHint(ev.words, now); pok {
+				at = parsed
+			}
+		}
+		if found && !routeReopensFirst(at, ev, bestAt, best) {
+			continue
+		}
+		best, bestAt, found = ev, at, true
+	}
+	return best
+}
+
+// routeReopensFirst orders two routes' evidence: a named reopening before an
+// unknown one, the earlier instant first, then the stronger source, then the
+// words.
+func routeReopensFirst(at time.Time, ev usageEvidence, bestAt time.Time, best usageEvidence) bool {
+	switch {
+	case at.IsZero() != bestAt.IsZero():
+		return !at.IsZero()
+	case !at.Equal(bestAt):
+		return at.Before(bestAt)
+	case evidenceRank(ev.source) != evidenceRank(best.source):
+		return evidenceRank(ev.source) < evidenceRank(best.source)
+	}
+	return ev.words < best.words
+}
+
+// evidenceRank orders the evidence sources structure-first.
+func evidenceRank(source string) int {
+	switch source {
+	case "typed_error":
+		return 0
+	case "runtime_code":
+		return 1
+	}
+	return 2
 }
 
 // runtimeCodeOf extracts the RuntimeError code from an error chain, or "". An

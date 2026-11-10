@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"slices"
 	"strings"
 	"sync"
 
@@ -707,8 +708,12 @@ func (m *metricsEmitter) observe(evt store.Event) {
 	case store.EventNodeRecovery:
 		// The engine already classified the failure here (typed, from
 		// recovery.Classify) — this is the only place the reason survives
-		// once recovery turns an auth rejection into a pause.
-		if code, _ := evt.Data["code"].(string); code == string(runtime.ErrCodeAuthFailed) {
+		// once recovery turns an auth rejection into a pause. A dead
+		// credential on ONE route of an exhausted chain is read too: the
+		// node's code is then the window another route met (the run waits
+		// for it, #3032), and the rejection lives in the route verdicts
+		// the same event carries (runtime.ChainRouteVerdicts).
+		if code, _ := evt.Data["code"].(string); code == string(runtime.ErrCodeAuthFailed) || chainRouteRejectedCredential(evt.Data["chain_routes"]) {
 			m.mu.Lock()
 			m.sawAuthFailure = true
 			m.mu.Unlock()
@@ -990,6 +995,17 @@ func (m *metricsEmitter) spentOnTheProvider() bool {
 	}
 	costUSD, inputTokens, outputTokens, aggregateTokens := m.RunTotals()
 	return costUSD > 0 || inputTokens > 0 || outputTokens > 0 || aggregateTokens > 0
+}
+
+// chainRouteRejectedCredential reports a node_recovery event's route verdicts
+// (runtime.ChainRouteVerdicts, the engine's own slice: the observer sees the
+// event as the engine emitted it) naming a credential the provider rejected.
+func chainRouteRejectedCredential(v any) bool {
+	routes, _ := v.([]map[string]any)
+	return slices.ContainsFunc(routes, func(route map[string]any) bool {
+		code, _ := route["code"].(string)
+		return code == string(runtime.ErrCodeAuthFailed)
+	})
 }
 
 // SawAuthFailure reports whether the provider rejected this run's

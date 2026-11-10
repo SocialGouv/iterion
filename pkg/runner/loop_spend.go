@@ -197,8 +197,14 @@ func (r *Runner) recordPoolSpend(msg *queue.RunMessage, usage *metricsEmitter, e
 	// leaves execErr saying only "paused". Without this the donor's dead
 	// credential stays first in the rotation and pauses the next run too,
 	// costing them a unit of their daily quota every time.
-	if condition == credpool.ConditionOK && usage.SawAuthFailure() {
-		condition = credpool.ConditionAuthFailed
+	//
+	// It outranks a usage window too. A chain whose one route met a window
+	// and another a dead credential stops on the window (the run waits for
+	// it, #3032), so execErr reads as a window; resting the donor on that
+	// window's cooldown would bring the dead credential back into rotation,
+	// still dead, the moment the other route's window reopened.
+	if condition != credpool.ConditionAuthFailed && usage.SawAuthFailure() {
+		condition, cooldownUntil = credpool.ConditionAuthFailed, time.Time{}
 	}
 	bg, cancel := context.WithTimeout(context.Background(), spendWriteTimeout)
 	defer cancel()
@@ -306,9 +312,10 @@ func classifyPoolCondition(execErr error, now time.Time) (credpool.Condition, ti
 	// text-parsed fallback — a runner with no dispatcher classifies
 	// nothing, and the pool must still rest the donor rather than send the
 	// next run into the same shut window.
-	if at, _, ok := usageWindowEvidence(execErr); ok {
+	if ev, ok := usageWindowEvidence(execErr, now); ok {
+		at := ev.resetAt
 		if at.IsZero() {
-			if parsed, pok := delegate.ParseResetHint(execErr.Error(), now); pok {
+			if parsed, pok := delegate.ParseResetHint(ev.words, now); pok {
 				at = parsed
 			}
 		}
