@@ -1,9 +1,11 @@
 package model
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/llmroute"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -56,6 +58,52 @@ func TestResolveChain_TheContentBoundaryDropsPolicyRungsOffAGatewayNode(t *testi
 			}
 			if labeled[0].Model != operatorRung.Model {
 				t.Fatalf("first route = %+v, want the operator's explicit run-level route kept", labeled[0])
+			}
+		})
+	}
+}
+
+// The belt and the policy-ladder screen judge one route with one predicate
+// (ir.RouteNamesGateway): on every spelling the screen holds a node to the
+// gateway (a case variant, a space before the slash, an empty id, a step model
+// or hint spelled so, a gateway `model:` whose steps each pin their own), the
+// belt drops the node's policy rungs too. A spelling dispatch cannot serve
+// fails the primary with an untyped error, which reaches a rung past any `on:`
+// filter — the vendor credential the boundary keeps the node from. Each row
+// asserts both verdicts; the vendor rows are the control.
+func TestResolveChain_TheBeltHoldsEveryRouteTheScreenHolds(t *testing.T) {
+	t.Parallel()
+	policyRung := ir.Fallback{Name: ir.RunFallbackName, Backend: "claw", Model: "anthropic/claude-opus-5", Provider: "anthropic", On: []string{"usage_window"}, RunStage: 0, RunStageSet: true, Policy: true}
+	wf := &ir.Workflow{Vars: map[string]*ir.Var{"model": {Name: "model", Type: ir.VarString, HasDefault: true, Default: "anthropic/claude-opus-5"}}}
+	for _, row := range []struct {
+		name, model, provider, value string
+		held                         bool
+	}{
+		{name: "case variant", model: "{{vars.model}}", value: "OpenAI_Compatible/team/m", held: true},
+		{name: "space before the slash", model: "{{vars.model}}", value: "openai_compatible /team/m", held: true},
+		{name: "empty id", model: "{{vars.model}}", value: "openai_compatible/", held: true},
+		{name: "a step model, case variant", model: "anthropic/claude-opus-5", provider: "zai:{{vars.model}}", value: "OpenAI_Compatible/team/m", held: true},
+		{name: "a step hint, case variant", model: "anthropic/claude-opus-5", provider: "{{vars.model}}", value: " OpenAI_Compatible ", held: true},
+		{name: "a gateway model whose every step pins its own", model: "{{vars.model}}", provider: "zai:glm-5.3", value: "openai_compatible/team/m", held: true},
+		{name: "the canonical spelling", model: "{{vars.model}}", value: "openai_compatible/team/m", held: true},
+		{name: "a vendor route (control)", model: "{{vars.model}}", value: "anthropic/claude-sonnet-4-6"},
+		{name: "a prefix that only starts like the gateway's (control)", model: "{{vars.model}}", value: "openai_compatible_x/team/m"},
+		{name: "a vendor step under a vendor model (control)", model: "anthropic/claude-opus-5", provider: "zai:{{vars.model}}", value: "glm-5.3"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			reading := ir.NewPolicyLadderReading(wf, map[string]string{"model": row.value})
+			_, landed, reason := reading.StageModel("claw", "anthropic_key", row.model, row.provider, llmroute.ClassTable{}, true)
+			if screenHeld := !landed && reason == llmroute.ReasonContentBoundary; screenHeld != row.held {
+				t.Fatalf("screen: landed=%v reason=%q, want held=%v", landed, reason, row.held)
+			}
+			e := &ClawExecutor{logger: iterlog.Nop(), vars: map[string]any{"model": row.value}}
+			WithContentBoundary(&store.RunContentBoundary{Kind: store.ContentBoundaryTeamGateway})(e)
+			node := chainAgentNode("gw", "claw", row.provider, []ir.Fallback{policyRung})
+			node.Model = row.model
+			kept := slices.ContainsFunc(e.resolveChain(node), func(el chainElement) bool { return el.Label != "" })
+			if kept == row.held {
+				t.Fatalf("belt: policy rung kept=%v on %q (model %q, provider %q), want held=%v — the screen's verdict", kept, row.value, row.model, row.provider, row.held)
 			}
 		})
 	}

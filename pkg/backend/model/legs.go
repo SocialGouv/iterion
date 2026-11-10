@@ -93,15 +93,20 @@ func routerModelFallback() (spec string, packaged bool) {
 // is expanded, parsed, and the allowlist applied (dropForbidden). See
 // ClawExecutor.resolveProviderChain for the vocabulary.
 func (c chainReading) providerChain(node ir.Node) []chainElement {
-	// A launch-time provider override (a routing-policy cell or the
-	// launch's own rows) carries the same vocabulary as the node's own
-	// field — a validated cell may name a multi-step chain or a
-	// `provider:model` step — so it is read through the ONE parse below.
-	// Returning the raw string as a single element handed dispatch a
-	// provider name no credential family matches, while the write gate
-	// and the credential preview certified each step of the chain.
+	return c.dropForbidden(node, parseProviderChain(c.providerField(node)))
+}
+
+// providerField is the node's `provider:` field as dispatch resolves it,
+// before the parse: a launch-time provider override (a routing-policy cell or
+// the launch's own rows) collapses the node's own field. The override carries
+// the same vocabulary as the node's field — a validated cell may name a
+// multi-step chain or a `provider:model` step — so it is read through the ONE
+// parse (providerChain). Handing dispatch the raw string as a single element
+// named a provider no credential family matches, while the write gate and the
+// credential preview certified each step of the chain.
+func (c chainReading) providerField(node ir.Node) string {
 	if ov := c.overrides.ForNode(node.NodeID(), node.NodeKind()); ov.Provider != "" {
-		return c.dropForbidden(node, parseProviderChain(c.field(ov.Provider)))
+		return c.field(ov.Provider)
 	}
 	var raw string
 	switch n := node.(type) {
@@ -112,7 +117,7 @@ func (c chainReading) providerChain(node ir.Node) []chainElement {
 	case *ir.RouterNode:
 		raw = n.Provider
 	}
-	return c.dropForbidden(node, parseProviderChain(c.field(raw)))
+	return c.field(raw)
 }
 
 // dropForbidden drops every chain element whose resolved provider is outside

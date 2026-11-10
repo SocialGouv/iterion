@@ -490,10 +490,10 @@ func (r PolicyLadderReading) field(raw string) string {
 // StageModel maps one stage onto one node from the node's route as the run
 // sets it (model and provider, unresolved — the override first): the
 // resolved model through llmroute.StageModel. Under the content boundary two
-// routes map on no pair before the model is read:
-//   - a `provider:` chain with a step naming the gateway — a
-//     `openai_compatible` hint, or a step model routed there — sends the
-//     node's content to the gateway whatever its `model:` says
+// routes map on no pair:
+//   - a route to the gateway (RouteNamesGateway) — its `model:`, or a step
+//     of its `provider:` chain, a `openai_compatible` hint or a step model
+//     routed there — keeps the node's content on the gateway
 //     (ReasonContentBoundary);
 //   - a route this reading cannot decide (a `{{…}}` span left in either
 //     field) may be the gateway's at dispatch, and a crossing mapped from
@@ -503,7 +503,7 @@ func (r PolicyLadderReading) StageModel(harness, credential, model, provider str
 	resolved := r.field(model)
 	if teamGateway {
 		chain := r.field(provider)
-		if providerChainNamesGateway(chain) {
+		if RouteNamesGateway(resolved, chain) {
 			return "", false, llmroute.ReasonContentBoundary
 		}
 		if strings.Contains(resolved, "{{") || strings.Contains(chain, "{{") {
@@ -511,6 +511,20 @@ func (r PolicyLadderReading) StageModel(harness, credential, model, provider str
 		}
 	}
 	return llmroute.StageModel(harness, credential, resolved, classes, teamGateway)
+}
+
+// RouteNamesGateway reports whether a node's route goes to the team's
+// gateway, from its `model:` and its `provider:` chain each read as the run
+// resolves them (template, environment, trim): the model is a gateway route
+// (llmroute.GatewayRoute: the routing prefix read case-blind and trimmed, an
+// empty id included), or a step of the chain is (providerChainNamesGateway).
+// It is the one predicate of the content boundary's hold (ADR-131 §4): the
+// policy-ladder screen (StageModel) and the executor's dispatch belt
+// (model.ClawExecutor.resolveChainUnder) call it, so a spelling one holds the
+// other holds. Read generously on purpose, like GatewayRoute: a spelling
+// dispatch cannot serve is still a node its author meant for the gateway.
+func RouteNamesGateway(model, provider string) bool {
+	return llmroute.GatewayRoute(model) || providerChainNamesGateway(provider)
 }
 
 // providerChainNamesGateway reports whether a resolved `provider:` chain has

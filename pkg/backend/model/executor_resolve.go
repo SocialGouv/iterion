@@ -146,7 +146,10 @@ func (e *ClawExecutor) chainNeedsGateway(node ir.Node, detected string) bool {
 
 // elementNamesGateway reports whether one chain element is a gateway route:
 // its own model, or the node's baseline it inherits, routes to the gateway,
-// or its provider hint is the gateway's.
+// or its provider hint is the gateway's. The model is read the way dispatch
+// serves it (modelroute.Parse), since detection picks the backend that can
+// serve the route; the content boundary's hold reads generously instead
+// (ir.RouteNamesGateway, ownRouteNamesGateway).
 func elementNamesGateway(el chainElement, base string) bool {
 	m := el.Model
 	if m == "" {
@@ -250,7 +253,7 @@ func (e *ClawExecutor) resolveChain(node ir.Node) []chainElement {
 // the chain read needs).
 func (e *ClawExecutor) resolveChainUnder(node ir.Node, nodeBackend string) []chainElement {
 	chain := e.resolveProviderChain(node)
-	heldOnGateway := e.teamGateway && e.ownRouteNamesGateway(node, chain)
+	heldOnGateway := e.teamGateway && e.ownRouteNamesGateway(node)
 	for _, fb := range nodeFallbacks(node) {
 		if !e.fallbackWhenActive(node.NodeID(), fb) {
 			continue
@@ -284,19 +287,17 @@ func (e *ClawExecutor) resolveChainUnder(node ir.Node, nodeBackend string) []cha
 	return dedupeChain(e.dropForbidden(node, chain), nodeBackend, e.baselineModel(node))
 }
 
-// ownRouteNamesGateway reports whether the node's own route — the elements
-// of its `provider:` chain, each inheriting the node's resolved baseline
-// model — goes to the team's gateway: the dispatch reading of the route the
-// policy-ladder screen classifies (ir.PolicyLadderReading), taken here over
-// the vars dispatch resolves.
-func (e *ClawExecutor) ownRouteNamesGateway(node ir.Node, chain []chainElement) bool {
-	base := e.baselineModel(node)
-	for _, el := range chain {
-		if elementNamesGateway(el, base) {
-			return true
-		}
-	}
-	return false
+// ownRouteNamesGateway reports whether the node's own route goes to the
+// team's gateway, judged by the policy-ladder screen's predicate
+// (ir.RouteNamesGateway) over the two fields the screen reads — the node's
+// baseline model (the launch override first) and its `provider:` field (the
+// override first) — each resolved over the vars dispatch resolves. The
+// screen's undecided arm stays the screen's: a `{{…}}` span left here is an
+// admission reading ahead of the engine's vars push (EffectiveFallbackBackends),
+// which keeps the rungs so it judges every backend dispatch may reach.
+func (e *ClawExecutor) ownRouteNamesGateway(node ir.Node) bool {
+	c := e.chainReading()
+	return ir.RouteNamesGateway(c.baselineModel(node), c.providerField(node))
 }
 
 // warnBoundaryDrop names, once per node, the policy rungs the content
