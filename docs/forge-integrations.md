@@ -160,6 +160,32 @@ time — to the boolean request-body fields `merge_requests_events` /
 Unknown events / scope keys / levels fail manifest parsing
 ([pkg/bundle/manifest.go:validateForgeRequirements](../pkg/bundle/manifest.go)).
 
+The scope keys are `pull_requests`, `repository`, `issues`, `webhooks`,
+`statuses`, `approvals`, `merge`, `reviewers` and `actions`, each at `read`,
+`write` or `admin`. Most are informational — they size the requested OAuth
+scope and are shown in the enable dialog. Five mint a **capability into the
+run's publish grant** at `write` (or `admin`), and a bot that does not declare
+one never holds it:
+
+| scope | grant capability | what it lets the run ask the server to do |
+|---|---|---|
+| `approvals` | `approve` | approve the merge request ([merge gate](merge-gate.md)) |
+| `merge` | `merge` | arm merge-when-pipeline-succeeds |
+| `reviewers` | `reviewers` | request reviewers on escalation |
+| `actions` | `dispatch_workflow` | dispatch one workflow of the grant's repository (`POST /api/v1/forge/dispatch-workflow`) |
+
+(`statuses` is what makes a bot a required check.) The operator pin
+`forge_publish_mutations` set to anything but `true` strips them all.
+
+`actions` is the opt-in of [`workflow-kick`](../bots/workflow-kick/README.md):
+the server dispatches the named `*.yml` on the repository's default branch
+with a GitHub App token minted for that one call
+(`{actions: write, metadata: read}`, the one repository), so the Actions
+permission never rides the connection's managed token that every run mounts —
+the App installation must grant `Actions: Read and write` for that per-call
+mint to succeed. A repo-bound schedule of such a bot is minted its grant at the
+tick, carrying `dispatch_workflow` alone.
+
 Enabling **several** bots on one repo (a reviewer + a dependency guard)
 is the common case: the orchestrator writes one `BotRule` per
 co-enabled bot, and an inbound delivery fans out to every rule that

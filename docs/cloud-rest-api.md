@@ -35,9 +35,10 @@ tree both ways by `pkg/server/docs_rest_inventory_test.go`.
 (The `/api/v1/native`, `/api/v1/dispatcher`, `/api/v1/mcp/board` and
 `/api/v1/mcp/runs` sub-trees register on the *same* mux but bypass the
 route recorder — they are handed the bare `ServeMux` rather than the recording
-wrapper — so they are deliberately absent from that spec, and so are the three
+wrapper — so they are deliberately absent from that spec, and so are the four
 run-token forge routes (`POST /api/v1/forge/publish-review`,
-`GET /api/v1/forge/pull-request`, `POST /api/v1/forge/delivery-preflight`).
+`GET /api/v1/forge/pull-request`, `POST /api/v1/forge/delivery-preflight`,
+`POST /api/v1/forge/dispatch-workflow`).
 The exception worth knowing:
 the forge-facing `/api/v1/native/issues/*` routes and the dependency
 graph go through the recorded path and therefore **do** appear.)

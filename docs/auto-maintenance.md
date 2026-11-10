@@ -53,7 +53,7 @@ three members of an aggregate proves nothing about the third.
 
 ### 2. Renovate opens the PRs
 
-Four gestures, in this order:
+Five gestures, in this order:
 
 **2a. Install the App on the repository.** The org's `socialgouv-renovate` App
 is `repository_selection: selected` — a repository not explicitly added never
@@ -117,6 +117,40 @@ agreement 4, and the preflight derives it rather than checking a fixed list:
 | `helpers:pinGitHubActionDigests` | `workflows: write` — it rewrites `.github/workflows/**`, and GitHub refuses an App push there without it |
 | `dependencyDashboard` | `issues: write` — the dashboard is an issue |
 | `vulnerabilityAlerts` | `vulnerability_alerts: read` |
+
+**2e. Give it a cadence GitHub keeps.** The workflow's own `schedule:` is a
+best-effort trigger, and on buildkit-operator it was a poor one: 41 of ~813
+expected hourly passes fired between 27/10 and 10/11/2026 (≈ 5 %, median gap
+6.2 h), so a security advisory waited 4 h 51 for the pass that opened its PR
+([#3130](https://github.com/SocialGouv/iterion/issues/3130)). The external
+trigger is an iterion schedule of the
+[`workflow-kick`](../bots/workflow-kick/README.md) bot, which dispatches the
+workflow (`workflow_dispatch`, which the recipe above already declares) every
+hour:
+
+1. **The App permission.** The GitHub App behind the repository's iterion
+   connection holds `Actions: Read and write` — an org owner approves the
+   pending permission request. The server checks the recorded grant before it
+   mints and names this permission when it is missing
+   (`workflow_dispatch_permission_missing`).
+2. **Enable `workflow-kick`** on the repository's integration (Studio →
+   Integrations). Provisioning creates its hourly schedule (`7 * * * *`) bound
+   to the integration.
+3. **Name the workflow** on that schedule: `PATCH
+   /api/teams/{id}/schedules/{sid}` with `{"vars": {"workflow":
+   "renovate.yml"}}`, or Studio → Automations → Schedules. Until then each
+   tick ends `NO_WORKFLOW`.
+
+The bot declares `forge.token_scopes: { actions: write }`, which mints the
+dispatch capability into its run's publish grant; nothing else gets it. The
+dispatch itself is made by the server with a GitHub App token minted for that
+one call — `{actions: write, metadata: read}`, narrowed to the repository — so
+no run, and no other bot, ever holds the Actions permission, and the runtime
+token every run mounts is unchanged. A refusal (another repository, a file
+name that is not a plain `*.yml`, an untrusted run, a second dispatch by the
+same run, a connection that is not a GitHub App) is typed and comes before any
+forge call; the run ends `WORKFLOW_NOT_DISPATCHED` with the code, and the
+schedule's health surface shows it.
 
 ### 3. The ruleset requires the CI checks — and only those, for now
 
