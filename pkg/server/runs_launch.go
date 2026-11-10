@@ -72,6 +72,12 @@ const credentialAtCapacityErrorCode = "credential_at_capacity"
 // the remedy is the gated resume (POST /api/runs/{id}/resume, the WS answer).
 const resumeNotAdmittedErrorCode = "resume_not_admitted"
 
+// launchNotAdmittedErrorCode is its launch twin (runview.ErrLaunchNotAdmitted):
+// a run the launch names as its parent or delegation source changed trust
+// between the gate's read and the run service's. Nothing was published; the
+// remedy is to retry the launch, which the gate judges afresh.
+const launchNotAdmittedErrorCode = "launch_not_admitted"
+
 // --- Request / response shapes ---
 
 type launchRunRequest struct {
@@ -442,7 +448,35 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 			inferredAdmission = true
 		}
 	}
-	adm, d := s.gateLaunch(r.Context(), launchSubject{BotID: launchBotLabel})
+	// A launch built FROM other runs — a REST child or a cloud shard naming
+	// parent_run_id, a delegation naming source_run_id — runs under the lowest
+	// of their trusts and meters their fork author (Service.Launch's
+	// inheritSourceTrust). The gate judges THAT subject, read off the same
+	// documents through the same rule, so the run it admits is the run Launch
+	// publishes: a launch naming a fork run is the author's spend, refused on
+	// the super-admin and local-mode arms and metered on the author's bound
+	// like the gesture that created the fork run (ADR-162 decision 5). The run
+	// service compares the two (runview.CheckLaunchAdmitted) and refuses a
+	// launch whose admission names another trust or author.
+	//
+	// These are the only store reads ahead of the suspend check, and only a
+	// request naming a source pays them — the order a resume takes, whose
+	// subject comes from a run document too. A source that cannot be read
+	// refuses the launch here with the answer the run service gave it before.
+	var sourceAdm runview.GateAdmission
+	if s.runs != nil {
+		var serr error
+		if sourceAdm, serr = s.runs.LaunchSourceAdmission(r.Context(), req.ParentRunID, strings.TrimSpace(req.SourceRunID)); serr != nil {
+			s.httpErrorFor(w, r, http.StatusBadRequest, "launch: %v", serr)
+			span.SetStatus(codes.Error, "launch source unreadable")
+			return
+		}
+	}
+	subjectFor := func(bot string) launchSubject {
+		return launchSubject{BotID: bot}.withStoredTrust(sourceAdm.Trust, sourceAdm.ForkAuthorSubject)
+	}
+	gateSubj := subjectFor(launchBotLabel)
+	adm, d := s.gateLaunch(r.Context(), gateSubj)
 	if d != nil {
 		s.writeLaunchDenial(w, r, d)
 		span.SetStatus(codes.Error, "launch denied")
@@ -546,7 +580,8 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 	if inferredAdmission && launchLB != nil && botID != launchBotLabel {
 		adm.rollback(s.logger)
 		adm = nil
-		adm, d = s.gateLaunch(r.Context(), launchSubject{BotID: botID})
+		gateSubj = subjectFor(botID)
+		adm, d = s.gateLaunch(r.Context(), gateSubj)
 		if d != nil {
 			s.writeLaunchDenial(w, r, d)
 			span.SetStatus(codes.Error, "launch denied")
@@ -866,6 +901,10 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 		WorkDir:            delegationTarget.WorkDir,
 		WorktreeBaseCommit: delegationTarget.WorktreeBaseCommit,
 		Delegation:         delegation,
+		// What the gate above judged — the trust the source runs hand this
+		// launch, and the author subject it charged — for the run service to
+		// hold against the trust it publishes under (CheckLaunchAdmitted).
+		Admitted: gateAdmitted(gateSubj, adm),
 	}
 	if origin, originErr := inferRunBotOrigin(&store.Run{FilePath: absPath}); originErr == nil {
 		spec.BotOrigin = origin
@@ -929,6 +968,14 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 			// any team, and the answer is the same for both.
 			s.httpErrorFor(w, r, http.StatusConflict, "%v", err)
 			span.SetStatus(codes.Error, "run id taken")
+			return
+		}
+		if errors.Is(err, runview.ErrLaunchNotAdmitted) {
+			// A source run's trust moved between the gate's read and the run
+			// service's: nothing was published, and the same launch is judged
+			// afresh on retry.
+			s.httpErrorCode(w, r, http.StatusConflict, launchNotAdmittedErrorCode, "%s", err.Error())
+			span.SetStatus(codes.Error, "launch not admitted")
 			return
 		}
 		if errors.Is(err, bundle.ErrAuthorDocument) {
@@ -1135,7 +1182,7 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 			Answers:           answers,
 			Force:             req.Force,
 			AcceptScratchLoss: req.AcceptScratchLoss,
-			Admitted:          resumeAdmitted(subj, adm),
+			Admitted:          gateAdmitted(subj, adm),
 		}
 		if resumeLB != nil {
 			resumeLB.stampResumeBundle(&pfSpec)
@@ -1172,7 +1219,7 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 		// What the gate above judged on the run it read: the run service
 		// refuses the resume when the document it re-enters names another
 		// trust or another fork author subject.
-		Admitted: resumeAdmitted(subj, adm),
+		Admitted: gateAdmitted(subj, adm),
 	}
 	hostInputs, historyErr := s.assistantChatHostInputs(ctx, runMeta)
 	if historyErr != nil {

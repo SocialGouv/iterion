@@ -85,7 +85,7 @@ func TestSubmitResume_CarriesTrustAndWithholdsSecretsOnTheSecondAttempt(t *testi
 		// refuses an untrusted run's resume no gate judged.
 		if err := p.SubmitResume(context.Background(), runview.ResumeSpec{
 			RunID: "run-resume", Source: spec.Source, Answers: map[string]any{"ok": true},
-			Admitted: &runview.ResumeAdmission{Trust: trust},
+			Admitted: &runview.GateAdmission{Trust: trust},
 		}, wf, &runview.CompiledSource{Hash: "hash"}); err != nil {
 			t.Fatalf("SubmitResume: %v", err)
 		}

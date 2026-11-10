@@ -91,7 +91,7 @@ func TestSubmitLaunchAndResume_TheForkAuthorSubjectRidesDocumentAndWire(t *testi
 	if err := p.SubmitResume(ctx, runview.ResumeSpec{
 		RunID: "run-fork", Source: spec.Source,
 		// What a gated surface admitted on this document (decision 5).
-		Admitted: &runview.ResumeAdmission{Trust: store.RunTrustFork, ForkAuthorSubject: subject},
+		Admitted: &runview.GateAdmission{Trust: store.RunTrustFork, ForkAuthorSubject: subject},
 	}, wf, &runview.CompiledSource{Hash: "hash"}); err != nil {
 		t.Fatalf("SubmitResume: %v", err)
 	}
@@ -147,11 +147,11 @@ func TestSubmitResume_AnUntrustedPriorRepublishesOnlyOnItsOwnAdmission(t *testin
 	}
 	for _, row := range []struct {
 		name     string
-		admitted *runview.ResumeAdmission
+		admitted *runview.GateAdmission
 	}{
 		{"no admission", nil},
-		{"a trusted admission", &runview.ResumeAdmission{}},
-		{"another author's admission", &runview.ResumeAdmission{Trust: store.RunTrustFork, ForkAuthorSubject: string(orgusage.ForkAuthorSubject("t1", "github", "9999"))}},
+		{"a trusted admission", &runview.GateAdmission{}},
+		{"another author's admission", &runview.GateAdmission{Trust: store.RunTrustFork, ForkAuthorSubject: string(orgusage.ForkAuthorSubject("t1", "github", "9999"))}},
 	} {
 		t.Run(row.name+" is refused", func(t *testing.T) {
 			p, st, published, ctx := setup(t)

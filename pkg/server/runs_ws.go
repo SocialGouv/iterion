@@ -971,7 +971,7 @@ func (c *runConn) handleAnswer(env runWSEnvelope) {
 		Source:     req.Source,
 		Answers:    req.Answers,
 		HostInputs: hostInputs,
-		Admitted:   resumeAdmitted(subj, adm),
+		Admitted:   gateAdmitted(subj, adm),
 	}); err != nil {
 		// The callee reports whether anything durable happened — see
 		// handleLaunchRun. ErrRunNotResumable carries no marker, so the

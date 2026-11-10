@@ -242,7 +242,7 @@ func (s *Server) resumeDueRetry(ctx context.Context, retryStore store.RunRetrySt
 		Automatic: true,
 		// What the gate above judged and metered: the run service refuses
 		// the resume when the document it re-enters names another trust.
-		Admitted: resumeAdmitted(subj, adm),
+		Admitted: gateAdmitted(subj, adm),
 	}
 	if lb != nil {
 		lb.stampResumeBundle(&retrySpec)

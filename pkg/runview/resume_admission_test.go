@@ -78,12 +78,12 @@ func TestResume_AnUntrustedRunResumesOnlyOnItsOwnAdmission(t *testing.T) {
 
 	for _, row := range []struct {
 		name     string
-		admitted *ResumeAdmission
+		admitted *GateAdmission
 	}{
 		{"a fork run with no admission is refused", nil},
-		{"a fork run on a trusted admission is refused", &ResumeAdmission{}},
-		{"a fork run on another author's admission is refused", &ResumeAdmission{Trust: store.RunTrustFork, ForkAuthorSubject: "fork-author:t1:github:9999"}},
-		{"a fork run on an admission that metered no author is refused", &ResumeAdmission{Trust: store.RunTrustFork}},
+		{"a fork run on a trusted admission is refused", &GateAdmission{}},
+		{"a fork run on another author's admission is refused", &GateAdmission{Trust: store.RunTrustFork, ForkAuthorSubject: "fork-author:t1:github:9999"}},
+		{"a fork run on an admission that metered no author is refused", &GateAdmission{Trust: store.RunTrustFork}},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			svc, pub, botPath := setup(t, store.RunTrustFork, author)
@@ -95,7 +95,7 @@ func TestResume_AnUntrustedRunResumesOnlyOnItsOwnAdmission(t *testing.T) {
 	t.Run("a fork run on its own admission resumes", func(t *testing.T) {
 		svc, pub, botPath := setup(t, store.RunTrustFork, author)
 		if _, err := svc.Resume(context.Background(), ResumeSpec{RunID: "run-admission", FilePath: botPath,
-			Admitted: &ResumeAdmission{Trust: store.RunTrustFork, ForkAuthorSubject: author}}); err != nil {
+			Admitted: &GateAdmission{Trust: store.RunTrustFork, ForkAuthorSubject: author}}); err != nil {
 			t.Fatalf("Resume = %v, want the admitted fork run resumed", err)
 		}
 		if !pub.resumed {
@@ -116,7 +116,7 @@ func TestResume_AnUntrustedRunResumesOnlyOnItsOwnAdmission(t *testing.T) {
 	t.Run("a trusted run on a fork admission is refused", func(t *testing.T) {
 		svc, pub, botPath := setup(t, store.RunTrustDefault, "")
 		_, err := svc.Resume(context.Background(), ResumeSpec{RunID: "run-admission", FilePath: botPath,
-			Admitted: &ResumeAdmission{Trust: store.RunTrustFork, ForkAuthorSubject: author}})
+			Admitted: &GateAdmission{Trust: store.RunTrustFork, ForkAuthorSubject: author}})
 		refused(t, svc, pub, err)
 	})
 
@@ -126,7 +126,7 @@ func TestResume_AnUntrustedRunResumesOnlyOnItsOwnAdmission(t *testing.T) {
 			t.Fatalf("PreflightResume = %v, want ErrResumeNotAdmitted — the upload a refused resume carries would be consumed first", err)
 		}
 		if err := svc.PreflightResume(context.Background(), ResumeSpec{RunID: "run-admission", FilePath: botPath,
-			Admitted: &ResumeAdmission{Trust: store.RunTrustFork, ForkAuthorSubject: author}}); err != nil {
+			Admitted: &GateAdmission{Trust: store.RunTrustFork, ForkAuthorSubject: author}}); err != nil {
 			t.Fatalf("PreflightResume = %v on the run's own admission, want nil", err)
 		}
 	})

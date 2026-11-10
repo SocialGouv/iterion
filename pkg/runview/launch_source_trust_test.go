@@ -105,7 +105,9 @@ func TestLaunch_ARunLaunchedFromAnotherIsNeverMoreTrustedThanIt(t *testing.T) {
 			if row.seeded {
 				seedSourceRun(t, svc.store, "source", row.seed)
 			}
-			spec := LaunchSpec{FilePath: botPath}
+			// The admission a gate stamps for the trust the source hands the
+			// launch: the run service publishes an untrusted launch only on it.
+			spec := LaunchSpec{FilePath: botPath, Admitted: &GateAdmission{Trust: row.want}}
 			row.via(&spec)
 			_, err = svc.Launch(context.Background(), spec)
 			if row.refused {
@@ -193,7 +195,7 @@ func TestResume_IsCompiledForTheRunsRecordedTrust(t *testing.T) {
 			// The admission a gated surface stamps for this run's trust: the
 			// run service refuses a fork run's resume no gate judged.
 			if _, err := svc.Resume(context.Background(), ResumeSpec{RunID: runID, FilePath: botPath,
-				Admitted: &ResumeAdmission{Trust: trust}}); err != nil {
+				Admitted: &GateAdmission{Trust: trust}}); err != nil {
 				t.Fatalf("Resume: %v", err)
 			}
 			if !pub.resumed || pub.resumeWFNone {
@@ -431,7 +433,8 @@ func TestLaunch_ARunLaunchedFromAForkRunIsItsAuthorsSpend(t *testing.T) {
 			if err := svc.store.SaveRun(context.Background(), r); err != nil {
 				t.Fatal(err)
 			}
-			spec := LaunchSpec{FilePath: botPath, ForkAuthorSubject: row.specSubject}
+			spec := LaunchSpec{FilePath: botPath, ForkAuthorSubject: row.specSubject,
+				Admitted: &GateAdmission{Trust: row.trust, ForkAuthorSubject: row.want}}
 			row.via(&spec)
 			_, err = svc.Launch(context.Background(), spec)
 			if row.refused {

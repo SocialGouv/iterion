@@ -231,7 +231,17 @@ A run built FROM a fork run is that author's spend too: a sub-bot child
 launch naming it as `parent_run_id` or delegation source all inherit its
 author subject with its trust (`store.InheritTrustAndAuthor`), so the
 child's resume re-enters the same bound instead of being refused for want
-of an author.
+of an author. The launch is judged as what it inherits: `POST /api/runs`
+reads the trust and author subject its `parent_run_id` and `source_run_id`
+hand it (`runview.Service.LaunchSourceAdmission`) BEFORE the gate, so a
+launch built from a fork run meets every arm above — metered on the
+author's bound, refused at its ceilings, refused on the super-admin and
+local-mode bypasses. The run service holds every launch to the admission
+its surface's gate stamped (`runview.CheckLaunchAdmitted`, the launch twin
+of the resume's choke point below): an untrusted launch with no admission,
+or one judged on another trust or author than its source runs hand it, is
+refused — **409 `launch_not_admitted`** on the run launch API — nothing
+compiled or published.
 
 A fork run's RESUME owes the same bound, whichever surface asks. The gated
 resumes (`POST /api/runs/{id}/resume`, the WS answer, the retry sweeper)

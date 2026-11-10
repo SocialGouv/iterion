@@ -206,6 +206,14 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 	if (!spec.Trust.Trusted() || spec.RepoSHAExpected != "" || spec.ForkAuthorSubject != "") && s.publisher == nil {
 		return nil, fmt.Errorf("%w (trust=%q, pinned_commit=%v, fork_author=%v): it persists none of the three, so the run would read as trusted, unpinned and unmetered", ErrInProcessCannotDescribe, string(spec.Trust), spec.RepoSHAExpected != "", spec.ForkAuthorSubject != "")
 	}
+	// The trust is settled: the launch is published under it only on an
+	// admission that judged it (ADR-162 decision 5). The one choke point every
+	// launch surface crosses, so a surface whose gate judged the request
+	// rather than the run — a launch naming a fork run as its source — cannot
+	// publish an untrusted run past the author's bound.
+	if err := CheckLaunchAdmitted(spec); err != nil {
+		return nil, err
+	}
 	if spec.BranchName != "" {
 		if err := gitlib.ValidateBranchName(spec.BranchName); err != nil {
 			return nil, fmt.Errorf("branch_name: %w", err)
@@ -368,28 +376,60 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 // gated resume. Two sources naming two different authors are refused — one
 // run meters one author's bound, and picking either is a guess.
 func (s *Service) inheritSourceTrust(ctx context.Context, spec *LaunchSpec) error {
-	sources := []struct{ role, id string }{{"parent_run_id", spec.ParentRunID}}
+	delegationSource := ""
 	if spec.Delegation != nil {
-		sources = append(sources, struct{ role, id string }{"delegation source run", spec.Delegation.SourceRunID})
+		delegationSource = spec.Delegation.SourceRunID
 	}
-	for _, src := range sources {
+	inherited, err := s.LaunchSourceAdmission(ctx, spec.ParentRunID, delegationSource)
+	if err != nil {
+		return err
+	}
+	spec.Trust = spec.Trust.Lowest(inherited.Trust)
+	if inherited.ForkAuthorSubject == "" {
+		return nil
+	}
+	if spec.ForkAuthorSubject != "" && spec.ForkAuthorSubject != inherited.ForkAuthorSubject {
+		return fmt.Errorf("runview: the launch's source runs are metered on fork author %q, and the launch already names %q — one run meters one author's bound", inherited.ForkAuthorSubject, spec.ForkAuthorSubject)
+	}
+	spec.ForkAuthorSubject = inherited.ForkAuthorSubject
+	return nil
+}
+
+// LaunchSourceAdmission is what a launch built FROM other runs inherits from
+// them — its parent (parent_run_id) and the run a delegation repairs: the
+// lowest of their trusts and, from an untrusted one, the fork author subject
+// it meters. It is inheritSourceTrust's reading, offered to the launch
+// surface so its admission gate judges the trust the run will be published
+// under BEFORE Launch publishes it (CheckLaunchAdmitted holds the two to the
+// same answer). The zero value — trusted, no author — when the launch names
+// no source.
+//
+// A source that cannot be read is refused, typed
+// (store.ErrChildParentUnreadable), and two untrusted sources metering two
+// different authors are refused as well.
+func (s *Service) LaunchSourceAdmission(ctx context.Context, parentRunID, delegationSourceRunID string) (GateAdmission, error) {
+	var out GateAdmission
+	for _, src := range []struct{ role, id string }{
+		{"parent_run_id", parentRunID},
+		{"delegation source run", delegationSourceRunID},
+	} {
 		if strings.TrimSpace(src.id) == "" {
 			continue
 		}
 		r, err := s.store.LoadRun(ctx, src.id)
 		if err != nil {
-			return fmt.Errorf("runview: %w: the launch's %s %q: %w", store.ErrChildParentUnreadable, src.role, src.id, err)
+			return GateAdmission{}, fmt.Errorf("runview: %w: the launch's %s %q: %w", store.ErrChildParentUnreadable, src.role, src.id, err)
 		}
-		spec.Trust = spec.Trust.Lowest(r.Trust)
+		out.Trust = out.Trust.Lowest(r.Trust)
 		if r.Trust.Trusted() || r.ForkAuthorSubject == "" {
 			continue
 		}
-		if spec.ForkAuthorSubject != "" && spec.ForkAuthorSubject != r.ForkAuthorSubject {
-			return fmt.Errorf("runview: the launch's %s %q is metered on fork author %q, and the launch already names %q — one run meters one author's bound", src.role, src.id, r.ForkAuthorSubject, spec.ForkAuthorSubject)
+		if out.ForkAuthorSubject != "" && out.ForkAuthorSubject != r.ForkAuthorSubject {
+			return GateAdmission{}, fmt.Errorf("runview: the launch's %s %q is metered on fork author %q, and its other source on %q — one run meters one author's bound", src.role, src.id, r.ForkAuthorSubject, out.ForkAuthorSubject)
 		}
-		spec.ForkAuthorSubject = r.ForkAuthorSubject
+		out.ForkAuthorSubject = r.ForkAuthorSubject
 	}
-	return nil
+	return out, nil
 }
 
 // hookEventObservers builds ExecutorSpec.EventObservers for every

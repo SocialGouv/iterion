@@ -262,6 +262,14 @@ type LaunchSpec struct {
 	// resume/retry re-enters the SAME subject. Empty on every trusted
 	// launch.
 	ForkAuthorSubject string
+	// Admitted is what the launch gate judged for this launch, stamped by the
+	// surface that crossed it (the run launch API, the inbound webhook tail):
+	// the trust it admitted and the fork author subject it charged. Launch
+	// compares it with the trust the launch is published under — its own,
+	// lowered to that of the runs it is launched from — and refuses an
+	// untrusted launch on a nil or a different admission
+	// (CheckLaunchAdmitted). Nil on every surface that crossed no gate.
+	Admitted *GateAdmission
 	// ProjectPath is the stable forge slug ("group/project") the run
 	// targets, persisted on the run so the studio can filter/group runs
 	// by repository and the runner's spend meter (repoForSpend) can charge
@@ -481,7 +489,7 @@ type ResumeSpec struct {
 	// publisher's SubmitResume compare it with the run document they resume
 	// (CheckResumeAdmitted): an untrusted run is never resumed on a nil or a
 	// mismatched admission.
-	Admitted *ResumeAdmission
+	Admitted *GateAdmission
 	// Source mirrors LaunchSpec.Source: cloud-mode callers can supply
 	// the .bot contents inline so the server pod does not need to
 	// resolve FilePath against a local filesystem.

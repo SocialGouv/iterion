@@ -41,12 +41,23 @@ import (
 // succeeds, so the handler's metered unit stays spent — the shape a runner
 // claiming the message produces.
 type forkResumePublisher struct {
-	mu      sync.Mutex
-	resumes int
+	mu       sync.Mutex
+	resumes  int
+	launches []runview.LaunchSpec
 }
 
-func (p *forkResumePublisher) SubmitLaunch(context.Context, string, runview.LaunchSpec, *ir.Workflow, *runview.CompiledSource) (runview.LaunchSubmission, error) {
+func (p *forkResumePublisher) SubmitLaunch(_ context.Context, _ string, spec runview.LaunchSpec, _ *ir.Workflow, _ *runview.CompiledSource) (runview.LaunchSubmission, error) {
+	p.mu.Lock()
+	p.launches = append(p.launches, spec)
+	p.mu.Unlock()
 	return runview.LaunchSubmission{}, nil
+}
+
+// launched is every launch spec the run service handed the queue, in order.
+func (p *forkResumePublisher) launched() []runview.LaunchSpec {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]runview.LaunchSpec(nil), p.launches...)
 }
 
 func (*forkResumePublisher) CancelRun(context.Context, string) error { return nil }
@@ -581,7 +592,7 @@ func TestSweepDueRetries_AForkRunsResumeCarriesWhatTheGateAdmitted(t *testing.T)
 		t.Fatalf("Resume called %d times, want 1 (abandoned=%v rearmed=%v)", len(resumer.calls), st.abandoned, st.rearmed)
 	}
 	got := resumer.calls[0].Admitted
-	want := runview.ResumeAdmission{Trust: store.RunTrustFork, ForkAuthorSubject: subject}
+	want := runview.GateAdmission{Trust: store.RunTrustFork, ForkAuthorSubject: subject}
 	if got == nil || *got != want {
 		t.Fatalf("Admitted = %+v, want %+v — the run service cannot tell a metered fork retry from an unmetered one", got, want)
 	}

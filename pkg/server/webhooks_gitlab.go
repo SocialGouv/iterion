@@ -1507,6 +1507,12 @@ func (s *Server) launchWebhookBot(ctx context.Context, from launchOrigin, cfg we
 		// from — this launch's verdict has to outlive this launch.
 		Trust:           trust,
 		RepoSHAExpected: expectedSHA,
+		// The trust and author subject above ARE the tail's admission: the
+		// target's trust is the subject its gate judged, and its author
+		// subject the one that gate charged (stamped back onto the target
+		// before webhookLauncherFor hands it here). The run service holds
+		// the launch to them (CheckLaunchAdmitted).
+		Admitted:        &runview.GateAdmission{Trust: trust, ForkAuthorSubject: forkAuthorSubject},
 		KeyOverrides:    keyOverrides,
 		SecretOverrides: secretOverrides,
 		// A webhook-launched run is often the one an author is waiting on,

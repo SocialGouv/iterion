@@ -292,27 +292,39 @@ type launchSubject struct {
 // the surface that otherwise proceeds on its retry row alone — re-arms. The
 // two operator surfaces answer their own failed read before any resume, from
 // the one read the gate's subject came from. Whatever a surface admitted
-// rides its ResumeSpec (resumeAdmitted), and the run service refuses a resume
+// rides its ResumeSpec (gateAdmitted), and the run service refuses a resume
 // whose admission does not name the trust of the document it re-enters.
 func resumeLaunchSubject(run *store.Run) launchSubject {
 	if run == nil {
 		return launchSubject{ExistingRun: true, TrustUnknown: true}
 	}
-	subj := launchSubject{ExistingRun: true, BotID: run.BotID, Repo: run.ProjectPath, Trust: run.Trust}
-	if !run.Trust.Trusted() && run.ForkAuthorSubject != "" {
-		subj.ForkAuthor = &webhooks.ForkAuthorRef{Subject: run.ForkAuthorSubject}
+	return launchSubject{ExistingRun: true, BotID: run.BotID, Repo: run.ProjectPath}.withStoredTrust(run.Trust, run.ForkAuthorSubject)
+}
+
+// withStoredTrust stamps a trust and a stored fork author subject — read off
+// a run document, never re-derived — onto the subject: the one place a stored
+// subject becomes the ForkAuthor the gate meters, for a resume (the run it
+// re-enters) and a launch built from other runs (the runs it is launched
+// from, runview.Service.LaunchSourceAdmission). A trusted entry names no
+// author whatever the document holds; an untrusted one with no stored subject
+// names none either, and the gate refuses it (denyForkMeteringUnavailable).
+func (subj launchSubject) withStoredTrust(trust store.RunTrust, forkAuthorSubject string) launchSubject {
+	subj.Trust = trust
+	subj.ForkAuthor = nil
+	if !trust.Trusted() && forkAuthorSubject != "" {
+		subj.ForkAuthor = &webhooks.ForkAuthorRef{Subject: forkAuthorSubject}
 	}
 	return subj
 }
 
-// resumeAdmitted is what the gate judged for a resume, handed to the run
-// service on ResumeSpec.Admitted: the subject's trust, and the fork author
-// subject the gate actually charged (the admission handle's second counter),
-// never the one the subject merely named. Every arm that admits an untrusted
-// subject meters both counters, so an untrusted admission always carries the
-// author subject; a trusted one carries none.
-func resumeAdmitted(subj launchSubject, adm *launchAdmission) *runview.ResumeAdmission {
-	a := &runview.ResumeAdmission{Trust: subj.Trust}
+// gateAdmitted is what the gate judged for a launch or a resume, handed to the
+// run service on LaunchSpec.Admitted / ResumeSpec.Admitted: the subject's
+// trust, and the fork author subject the gate actually charged (the admission
+// handle's second counter), never the one the subject merely named. Every arm
+// that admits an untrusted subject meters both counters, so an untrusted
+// admission always carries the author subject; a trusted one carries none.
+func gateAdmitted(subj launchSubject, adm *launchAdmission) *runview.GateAdmission {
+	a := &runview.GateAdmission{Trust: subj.Trust}
 	if adm != nil {
 		a.ForkAuthorSubject = string(adm.forkSubject)
 	}
@@ -407,10 +419,11 @@ func (s *Server) gateLaunch(ctx context.Context, subj launchSubject) (*launchAdm
 	// and the super-admin bypass is the second: the fork-author bound is
 	// the perimeter against an outside party, not operator policy, so no
 	// principal stands above it. The gated resumes reach both arms with a
-	// fork run's trust (resumeLaunchSubject): a super-admin's resume of a
-	// fork run, or a resume on a local server holding one, is refused rather
-	// than re-entered unmetered. No launch surface reaches them (the
-	// in-process launch refuses an untrusted spec, decision 10).
+	// fork run's trust (resumeLaunchSubject), and so does the run launch API
+	// when its request names a fork run as parent_run_id or delegation source
+	// (Service.LaunchSourceAdmission): a super-admin's resume of a fork run,
+	// a super-admin's launch built from one, or either on a local server
+	// holding one, is refused rather than admitted unmetered.
 	if !subj.Trust.Trusted() {
 		if st == nil {
 			return nil, s.forkClosedDenial(denyForkMeteringUnavailable,
