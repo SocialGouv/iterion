@@ -25,6 +25,7 @@ For the architectural trade-off against prompt-only orchestration, read [why-not
 - [Feature matrix](comparisons/feature-matrix.md) — 21 features across 10 products, with sources and conditions.
 - [Iterion feature inventory](comparisons/feature-inventory.md) — 140 criteria across 16 categories.
 - [Methodology and sources](comparisons/methodology.md) — capability scope and proposed integrations.
+- [Live agents — OpenMausBot, mapped onto iterion](references/live-agents-openmausbot.md) — what an always-on personal-agent product does that a parked run does not, the gap, and what is not pursued. Read it before proposing a long-lived agent or a crew.
 
 ## Author `.bot` workflows
 

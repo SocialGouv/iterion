@@ -215,6 +215,7 @@ All 26 epics, their mark, and where the detail lives. Counts are board items
 | ⚙️ [Runtime](https://github.com/SocialGouv/iterion/issues/1403) | 🟡 | 24 | fan-out, checkpoints, resume, rewind |
 | 🛡️ [Seki](https://github.com/SocialGouv/iterion/issues/1398) | 🟡 | 9 | security audit on the cloud |
 | 🧠 [Memory & knowledge](https://github.com/SocialGouv/iterion/issues/1430) | ⚪ | 1 | scopes, the knowledge store, lifecycle, quotas |
+| 🛰️ [Standing crews](https://github.com/SocialGouv/iterion/issues/3133) | ⚪ | 13 | bots that stay addressable, wake on events, remember and work together — opened 2026-11-10 by [the live-agents study](references/live-agents-openmausbot.md), counted that day |
 
 ## ✅ Keeping this page honest
 
