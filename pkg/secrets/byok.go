@@ -655,7 +655,14 @@ func OrderedAPIKeyCandidates(visible []ApiKey, userID string, providers []Provid
 		if a != b {
 			return a < b
 		}
-		return keys[i].CreatedAt.Before(keys[j].CreatedAt)
+		if !keys[i].CreatedAt.Equal(keys[j].CreatedAt) {
+			return keys[i].CreatedAt.Before(keys[j].CreatedAt)
+		}
+		// An exact tie breaks on the id, a stable key: the store's listing
+		// order (map order in memory, unspecified within a tie in Mongo)
+		// would pick the winner — frozen into a run's stamp and content
+		// boundary — by chance.
+		return keys[i].ID < keys[j].ID
 	})
 	wanted := make(map[Provider]bool, len(providers))
 	out := make([]APIKeyCandidate, 0, len(keys)+len(overrides))

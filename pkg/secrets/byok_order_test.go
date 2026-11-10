@@ -45,3 +45,24 @@ func TestOrderedAPIKeysMatchesResolveAndKeepsInput(t *testing.T) {
 		}
 	}
 }
+
+// Two keys tied on rank AND created_at are ordered by id: a stable key, not
+// the store's listing order (map order in memory, unspecified within a tie
+// in Mongo). The winner is frozen into a run's content boundary KeyID and
+// its stamp, so it must not depend on the order the rows arrive in — both
+// orders yield the same sequence.
+func TestOrderedAPIKeysBreaksAnExactTieOnTheID(t *testing.T) {
+	at := time.Unix(1_700_000_000, 0).UTC()
+	a := ApiKey{ID: "key-a", TenantID: "t", ScopeTeamID: "t", Provider: ProviderOpenAICompatible, CreatedAt: at}
+	b := ApiKey{ID: "key-b", TenantID: "t", ScopeTeamID: "t", Provider: ProviderOpenAICompatible, CreatedAt: at}
+	for _, rows := range [][]ApiKey{{a, b}, {b, a}} {
+		ordered := OrderedAPIKeyCandidates(rows, "", []Provider{ProviderOpenAICompatible}, nil)
+		ids := make([]string, len(ordered))
+		for i, c := range ordered {
+			ids[i] = c.Key.ID
+		}
+		if !reflect.DeepEqual(ids, []string{"key-a", "key-b"}) {
+			t.Fatalf("input %s,%s ordered %v, want [key-a key-b] whatever the listing order", rows[0].ID, rows[1].ID, ids)
+		}
+	}
+}
