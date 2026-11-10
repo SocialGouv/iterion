@@ -131,16 +131,20 @@ hour:
 1. **The App permission.** The GitHub App behind the repository's iterion
    connection holds `Actions: Read and write` — an org owner approves the
    pending permission request. The server checks the recorded grant before it
-   mints and names this permission when it is missing
-   (`workflow_dispatch_permission_missing`).
+   mints; when the record lacks it, it re-reads the installation's live grant
+   and records it, so an approval made after the install counts from the next
+   tick, with no refresh to run. It names this permission only when the
+   installation still lacks it (`workflow_dispatch_permission_missing`).
 2. **Enable `workflow-kick`** on the repository's integration (Studio →
    Integrations). Provisioning creates its hourly schedule (`7 * * * *`) bound
    to the integration.
 3. **Name the workflow** on that schedule: `PATCH
    /api/teams/{id}/schedules/{sid}` with `{"vars": {"workflow":
-   "renovate.yml"}}`, or Studio → Automations → Schedules. Until then the
-   tick mints no grant and each run ends `NO_WORKFLOW`; once set, the grant is
-   bound to that file and dispatches nothing else.
+   "renovate.yml"}}`, or Studio → Automations → Schedules (team admin). Until
+   then the tick mints no grant and each run ends `NO_WORKFLOW`; once set, the
+   grant is bound to that file and dispatches nothing else. A manifest
+   declaring the `actions` scope cannot default this var: the bundle decode
+   refuses it, so the operator, not the bot's author, names the workflow.
 
 The bot declares `forge.token_scopes: { actions: write }`, which mints the
 dispatch capability into its schedule run's publish grant — a pull-request or

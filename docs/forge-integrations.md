@@ -182,7 +182,8 @@ them all.
 
 `actions` is the opt-in of [`workflow-kick`](../bots/workflow-kick/README.md):
 the server dispatches the named `*.yml` on the repository's default branch
-with a GitHub App token minted for that one call
+(sent fully qualified, `refs/heads/<branch>`, never a same-named tag) with a
+GitHub App token minted for that one call
 (`{actions: write, metadata: read}`, the one repository), so the Actions
 permission never rides the connection's managed token that every run mounts —
 the App installation must grant `Actions: Read and write` for that per-call

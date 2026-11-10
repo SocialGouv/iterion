@@ -21,7 +21,7 @@ iterion server ── checks the grant ──► mints a GitHub App token for TH
                                          │
                                          ▼
                  POST /repos/{owner}/{repo}/actions/workflows/{file}/dispatches
-                 (ref = the repository's default branch, no inputs)
+                 (ref = refs/heads/<default branch>, no inputs)
 ```
 
 - The manifest declares `forge.token_scopes: { actions: write }`. That scope
@@ -64,11 +64,11 @@ call:
 
 and reports the forge's own refusal after the call:
 `workflow_dispatch_permission_missing` (the App installation lacks
-`Actions: Read and write`), `workflow_dispatch_refused_by_forge` (an unknown
+`Actions: Read and write`, its live grant re-read), `workflow_dispatch_refused_by_forge` (an unknown
 workflow answers 404, a workflow without `workflow_dispatch` 422),
 `workflow_dispatch_credential_unavailable` (the per-call token could not be
-minted) and `workflow_dispatch_unconfirmed` (no answer — the run may have been
-queued). A 5xx answer carries its code in `error_code` and keeps its reason in
+minted) and `workflow_dispatch_unconfirmed` (no answer, or a 5xx from the
+forge — the run may have been queued). A 5xx answer carries its code in `error_code` and keeps its reason in
 the server log; no answer is `retryable`, since the claim is spent before the
 forge is asked. A refusal ends the run `WORKFLOW_NOT_DISPATCHED` with the code
 and the reason, which the schedule's health surface shows; the next tick is the
@@ -81,15 +81,20 @@ retry.
    `renovate.yml` does).
 2. **The App permission.** The GitHub App behind the repository's connection
    holds `Actions: Read and write`; an org owner approves the pending request.
+   An approval made after the install counts from the next tick: when the
+   connection's recorded grant lacks the permission, the server re-reads the
+   installation's live one before it refuses.
 3. **Enable** `workflow-kick` on the repository's integration (Studio →
    Integrations, alongside the review bots). Provisioning creates its hourly
    schedule (`7 * * * *`) bound to that integration.
 4. **Set the workflow**: patch the schedule's vars with `workflow` — e.g.
    `{"vars": {"workflow": "renovate.yml"}}` on
    `PATCH /api/teams/{id}/schedules/{sid}`, or Studio → Automations →
-   Schedules. Until then the tick mints no grant and each run ends
-   `NO_WORKFLOW`. The grant is bound to that value: the run dispatches that
-   file and no other.
+   Schedules (team admin). Until then the tick mints no grant and each run
+   ends `NO_WORKFLOW`. The grant is bound to that value: the run dispatches
+   that file and no other. A manifest declaring `actions` cannot default it in
+   an invocation's `default_vars` — the bundle decode refuses it — so the
+   operator, never the bot's author, names the workflow.
 
 `forge_publish_mutations` pinned to anything but `true` — on the integration's
 launch policy (its webhook config included, the pull-request lane's own
