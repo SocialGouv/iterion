@@ -34,7 +34,11 @@ const PlanKeySep = "|"
 // catches only a MISS (an observation joining no key voids its fine table,
 // the coarse booking), never a row answering for a route the walk did not
 // read. With the walk narrow-safe every route names its providers, and the
-// plan covers the run's whole program.
+// plan covers the run's whole program. Nil too when a route defers to the
+// runner's environment (EnvDeferred): the provider the walk read is the
+// publisher's expansion of `${DIAL:-…}`, and the runner's pod may expand it
+// to another — a row answering for a dispatch the runner does not make, and
+// a miss for the one it does.
 //
 // Nil also when a provider the plan would name is funded TWICE — a pinned
 // key beside its own forfait — on a walk that is not forfait-first for it:
@@ -66,7 +70,7 @@ const PlanKeySep = "|"
 // direction. Spreading wider than the application is a booking-safe
 // over-claim, never a misattribution.
 func CredentialPlan(res ProviderResolution, bundle secrets.RunBundle) map[string]string {
-	if !res.NarrowSafe || len(res.Sites) == 0 {
+	if !res.NarrowSafe || res.EnvDeferred || len(res.Sites) == 0 {
 		return nil
 	}
 	chain := make(map[string]bool)

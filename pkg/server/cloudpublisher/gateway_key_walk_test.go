@@ -436,6 +436,32 @@ func TestGatewayKey_AnEnvTemplatedRouteSealsTheKeyOnlyUnderARunnerPool(t *testin
 	}
 }
 
+// W7d (A2 of the round-1 review): a key that may be spent is counted. Under a
+// runner pool the walk seals the team's gateway key for an env-templated dial
+// the pod may expand to the gateway — so the run's stamp names the key and the
+// admission reserves a slot of its max_concurrent_runs, though the
+// publisher's own expansion of the dial reads a vendor route.
+func TestGatewayKey_AnEnvDialRunUnderARunnerPoolHoldsTheSealedKeysSlot(t *testing.T) {
+	wf := &ir.Workflow{Nodes: map[string]ir.Node{
+		"review": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "review"}, LLMFields: ir.LLMFields{Backend: "claw", Model: "${C3_UNSET_ROUTE_DIAL:-anthropic/claude-sonnet-4-5}"}},
+	}}
+	p, buf := gatewayKeyPublisher(t)
+	seedGatewayKey(t, p.apiKeys, p.sealer, "team1", func(k *secrets.ApiKey) { k.MaxConcurrentRuns = 1 })
+	creds, err := p.resolveAndSealCredentials(gatewayLaunchCtx(), "run-gw-7d", "", "team1", "owner1", gwBot, "pool-a", wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustDefault, nil, nil, nil, boundaryDerived)
+	if err != nil {
+		t.Fatalf("resolveAndSealCredentials: %v", err)
+	}
+	if got := openGatewayBundleOn(t, p, "run-gw-7d", "pool-a", creds).APIKeys[secrets.ProviderOpenAICompatible]; got != gwTeamKey {
+		t.Fatalf("gateway slot = %q: the fixture must seal the key, or the stamp below proves nothing (log:\n%s)", got, buf.String())
+	}
+	if !slices.Contains(creds.fingerprints, gwFingerprint) {
+		t.Fatalf("run stamp = %v: the sealed gateway key a pool pod may spend is not counted", creds.fingerprints)
+	}
+	if len(creds.credSlots) != 1 {
+		t.Fatalf("cred slots = %+v, want the gateway key's one capped slot reserved", creds.credSlots)
+	}
+}
+
 // W7b, the regression the arbitration closes (B1 of the round-1 review):
 // a default-runner review whose dials are env-templated holds NO slot of the
 // team's capped gateway key — the second concurrent launch queues instead of

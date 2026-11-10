@@ -307,3 +307,25 @@ func TestCredentialPlan_theAgentRecoveryRungPlansUnderTheRuntimeID(t *testing.T)
 		t.Fatalf("plan = %v, want %v — the rung keys a second row under the runtime id the recovery dispatch's events carry", plan, want)
 	}
 }
+
+// A route that defers to the runner's environment (`${DIAL:-…}`) names, on
+// the publisher, the provider of ITS expansion — the runner's pod may expand
+// it elsewhere (a pool pod's dial to the team's gateway). A plan row keyed
+// on the publisher's reading would answer for a dispatch the runner does not
+// make, and the runner's observation under the provider it did dispatch
+// joins nothing: a miss that voids the lease's fine table while the run's
+// own key paid. Same walk, narrow-safe, still no plan.
+func TestCredentialPlan_AnEnvDeferredRouteStampsNoPlan(t *testing.T) {
+	t.Parallel()
+
+	wf := &ir.Workflow{Nodes: map[string]ir.Node{
+		"review": agentWith("review", "", "${CRED_PLAN_UNSET_DIAL:-anthropic/claude-opus-5}"),
+	}}
+	res := EffectiveProviders(RouteView{Workflow: wf}, knownForTest)
+	if !res.NarrowSafe || !res.EnvDeferred || !slices.Equal(res.Providers, []string{"anthropic"}) {
+		t.Fatalf("test premise: want a narrow-safe env-deferred walk naming anthropic, got %+v", res)
+	}
+	if plan := CredentialPlan(res, planBundle()); plan != nil {
+		t.Fatalf("plan = %v, want nil: the publisher's expansion of an env dial is not the runner's dispatch", plan)
+	}
+}
