@@ -786,7 +786,7 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 	}
 
 	checker := buildToolChecker(spec.Workflow)
-	classifier, classErr := newLLMClassifierFromEnv(spec.Ctx, reg, spec.Logger)
+	classifier, classErr := newLLMClassifierFromEnv(spec.Ctx, reg, spec.Logger, spec.ContentBoundary)
 	if classErr != nil {
 		return nil, fmt.Errorf("runview: build LLM classifier: %w", classErr)
 	}
@@ -1529,13 +1529,25 @@ func buildToolChecker(wf *ir.Workflow) tool.ToolChecker {
 	return tool.BuildChecker(wf.ToolPolicy, nodeOverrides, nil)
 }
 
+// ErrClassifierBoundaryRefused is the build-time refusal of a vendor LLM
+// classifier on a run held to its team's gateway (ADR-131 §4): the
+// classifier reads every tool call's arguments, the gateway nodes' included.
+var ErrClassifierBoundaryRefused = errors.New("runview: the run's content boundary (team_gateway) refuses a vendor LLM classifier")
+
 // newLLMClassifierFromEnv builds an LLMClassifier when the
 // ITERION_LLM_CLASSIFIER_MODEL env var is set (e.g.
 // "anthropic/claude-haiku-4-5"). The classifier is chained over the
 // default RuleClassifier and uses a 30-minute TTL cache.
 //
 // Returns (nil, nil) when the env var is empty.
-func newLLMClassifierFromEnv(ctx context.Context, reg *model.Registry, logger *iterlog.Logger) (permissions.Classifier, error) {
+//
+// Under the run's team_gateway content boundary a spec that is not a route
+// to the gateway is refused here, before any resolution, and the run fails
+// at executor build — the answer a gateway-only run already got from the
+// ambient refusal, now given to a mixed run too, whose bundle holds the
+// team's vendor key the spec would otherwise resolve on. A gateway spec
+// stays admitted: the run's sealed pair serves it.
+func newLLMClassifierFromEnv(ctx context.Context, reg *model.Registry, logger *iterlog.Logger, boundary *store.RunContentBoundary) (permissions.Classifier, error) {
 	// Four production surfaces construct an ExecutorSpec with a nil Ctx
 	// (the studio launch and resume, both CLI paths): the classifier
 	// resolves under the run's credentials when there are any, under a
@@ -1547,6 +1559,9 @@ func newLLMClassifierFromEnv(ctx context.Context, reg *model.Registry, logger *i
 	spec := strings.TrimSpace(ir.LookupEnv("ITERION_LLM_CLASSIFIER_MODEL"))
 	if spec == "" {
 		return nil, nil
+	}
+	if boundary.TeamGateway() && !llmroute.GatewayRoute(spec) {
+		return nil, fmt.Errorf("%w: ITERION_LLM_CLASSIFIER_MODEL %q is not a route to the team's gateway %q, and the classifier reads every tool call's arguments — set it to an openai_compatible/<model> spec the gateway serves, or unset it", ErrClassifierBoundaryRefused, spec, boundary.GatewayHost)
 	}
 	// ResolveWithContext, never Resolve: an ambient-refused run funds its
 	// LLM routes from the sealed credentials only, so the classifier's

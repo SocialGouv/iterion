@@ -25,7 +25,7 @@ func TestNewLLMClassifierFromEnv_AmbientRefusedAndGatewaySpec(t *testing.T) {
 	t.Setenv("ITERION_LLM_CLASSIFIER_MODEL", "anthropic/claude-haiku-4-5")
 	ctx := secrets.WithCredentials(context.Background(), secrets.Credentials{AmbientRefused: true})
 	reg := model.NewRegistry()
-	_, err := newLLMClassifierFromEnv(ctx, reg, nil)
+	_, err := newLLMClassifierFromEnv(ctx, reg, nil, nil)
 	var ambient *model.ErrAmbientCredentialRefused
 	if !errors.As(err, &ambient) {
 		t.Fatalf("err = %v, want *model.ErrAmbientCredentialRefused (a vendor classifier on a stamped run is refused at build)", err)
@@ -42,7 +42,7 @@ func TestNewLLMClassifierFromEnv_AmbientRefusedAndGatewaySpec(t *testing.T) {
 		APIKeys:        map[secrets.Provider]string{secrets.ProviderOpenAICompatible: "sk-run-classifier"},
 		APIBaseURLs:    map[secrets.Provider]string{secrets.ProviderOpenAICompatible: "https://run-gw.example"},
 	})
-	classifier, err := newLLMClassifierFromEnv(ctx, reg, nil)
+	classifier, err := newLLMClassifierFromEnv(ctx, reg, nil, nil)
 	if err != nil {
 		t.Fatalf("a gateway classifier spec refused under the stamp: %v", err)
 	}
@@ -54,7 +54,7 @@ func TestNewLLMClassifierFromEnv_AmbientRefusedAndGatewaySpec(t *testing.T) {
 // on it — the ambient refusal is a decision, a nil dereference is a crash.
 func TestNewLLMClassifierFromEnv_ANilCtxDoesNotPanic(t *testing.T) {
 	t.Setenv("ITERION_LLM_CLASSIFIER_MODEL", "anthropic/claude-haiku-4-5")
-	classifier, err := newLLMClassifierFromEnv(nil, model.NewRegistry(), iterlog.Nop())
+	classifier, err := newLLMClassifierFromEnv(nil, model.NewRegistry(), iterlog.Nop(), nil)
 	if err == nil && classifier == nil {
 		t.Fatal("a nil ctx built neither a classifier nor a refusal")
 	}

@@ -141,7 +141,11 @@ carries, and the executor drops at dispatch every policy rung of a node whose ro
 over the vars dispatch resolves, goes to the gateway (a resume restores the launch's
 vars after the screen ran). The vendor-routed nodes of a mixed run keep their rungs: the arbitration
 refuses a mixed run's auxiliaries (classifier, supervisors, server-side helpers),
-not a node's own vendor route and its fallbacks. An unstamped run (the operator's
+not a node's own vendor route and its fallbacks. The tool-policy LLM classifier
+(`ITERION_LLM_CLASSIFIER_MODEL`) reads every tool call's arguments, so a vendor spec
+fails the run at executor build (`runview.ErrClassifierBoundaryRefused`) — the answer a
+gateway-only run already got from the ambient refusal — while a gateway spec is served
+by the run's pair. An unstamped run (the operator's
 environment gateway, a run launched before the producer) keeps the crossing.
 
 ### The schema bound (#2005 PR-C', same date)
