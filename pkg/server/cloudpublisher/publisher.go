@@ -4663,10 +4663,15 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 		if rolledBack {
 			// This branch RUNS under test — a flip-less store
 			// (retryStoreSpy) lands here — but with a nil grant and an empty
-			// releasedGrants, so the reopen loop is unasserted: PR-C' wires
-			// a credPool and a refused grant into that fixture, and
-			// witnesses the door's append beside it (publisher.go's
-			// acquireDoorGrant call site).
+			// releasedGrants, so its reopen loop is unasserted HERE. The loop
+			// is undo, shared with the flip branch above, where
+			// TestFailedResumeWithARefusedGrantReopensTheSupersededLease
+			// asserts it with a refused grant. The door's released grant
+			// has no production path to witness: its wants read the pool's
+			// vocabulary, which never names the gateway (ADR-131 §5), and
+			// its whitelist belt never refuses a ladder slot — its carry is
+			// witnessed at the unit level
+			// (TestAcquireDoorGrant_AnUnsealedGrantIsReleased).
 			undo(rollbackCtx)
 		}
 		// The rewind baseline goes back with the status — and ONLY with it.

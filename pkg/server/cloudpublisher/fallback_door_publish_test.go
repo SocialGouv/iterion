@@ -374,11 +374,13 @@ func TestFallbackDoorPreview_shutForAPoolMappedTeam(t *testing.T) {
 	}
 }
 
-// The door's refused-gateway path is unreachable at v25 (the door's wants
-// map slots through allKnownProviders, which excludes the provider until
-// #2005 PR-C'): the released-grant carry is witnessed at the unit level
+// The door's refused-gateway path is unreachable in production for good: the
+// door's wants map slots through the pool's vocabulary (wantForSlot over
+// model.KnownPoolProviders), which never names the gateway (ADR-131 §5). The
+// released-grant carry is witnessed at the unit level
 // (TestAcquireDoorGrant_AnUnsealedGrantIsReleased) and the pool lane's
-// release-reopen chain by TestFailedResumeWithARefusedGrantReopens (the
-// pool lane is drift-reachable by mutating poolWantOrder, whose contents
-// nothing pins — its gateway arm is exactly as unreachable in production
-// as the door's until PR-C'). PR-C' lifts this.
+// release-reopen chain by
+// TestFailedResumeWithARefusedGrantReopensTheSupersededLease, which reaches
+// the legacy pool's gateway arm only by mutating poolWantOrder — whose
+// gateway-free contents TestWantForSlot_totalOverTheVocabulary pins, so that
+// arm is exactly as unreachable in production as the door's.

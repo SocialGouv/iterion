@@ -58,7 +58,7 @@ func TestEveryBundleSealedTodayIsByteForByteWhatItWas(t *testing.T) {
 		}
 	}
 	if _, ok := b.APIKeys[secrets.ProviderOpenAICompatible]; ok {
-		t.Fatal("the walk sealed a gateway key — inertness is over, lift this test with PR-C'")
+		t.Fatal("the walk sealed a gateway key into a team that holds none — the fixture no longer tests a vendor-only bundle")
 	}
 }
 

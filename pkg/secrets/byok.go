@@ -146,8 +146,8 @@ const (
 	// (a LiteLLM endpoint in front of a regional model host, a vLLM
 	// server …): the record carries the gateway's base URL beside the key,
 	// and the model id after the `openai_compatible/` prefix is sent to it
-	// verbatim. Until the walk vocabulary learns it (#2005 PR-C'), such a
-	// key is storable but never sealed into a run.
+	// verbatim. The credential walk seals such a key with its URL for a
+	// run that may ride a gateway route (ADR-131 §5).
 	ProviderOpenAICompatible Provider = "openai_compatible"
 )
 

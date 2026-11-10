@@ -16,11 +16,16 @@
 // runner pod), those credentials fund it and the env is only the fallback,
 // a funding its call site chooses.
 //
-// When the run's gateway credential becomes openable server-side (#2005
-// PR-C' reopens the sealed bundle through the stamped key id), the funding
-// change lands HERE for the two Resolve surfaces, and at the supervisor's
-// ResolveWithContext call with it: its ctx-first precedence keeps spending
-// the run's ctx credentials whatever this package funds.
+// A run's own gateway credential is not openable server-side: the run
+// document names the key that filled its gateway slot
+// (store.Run.ContentBoundary.KeyID, ADR-131 §4), but no path here reopens
+// the sealed bundle — ADR-131's server-helper credential channel, a ticket
+// of its own. Until it lands, every surface of this channel refuses a run
+// stamped team_gateway whatever its model (pkg/runview contentRefusal).
+// When it lands, the funding change lands HERE for the two Resolve
+// surfaces, and at the supervisor's ResolveWithContext call with it: its
+// ctx-first precedence keeps spending the run's ctx credentials whatever
+// this package funds.
 // The HOST/ACCOUNT proof #2645 asks of the pool guard lands with it: the
 // guard's openai_compatible check is spelling-only while the env funds the
 // call, so a run stamped to a pool is still served from the deployment's
