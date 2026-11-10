@@ -462,6 +462,33 @@ func TestGatewayKey_AnEnvDialRunUnderARunnerPoolHoldsTheSealedKeysSlot(t *testin
 	}
 }
 
+// The rule above counts the GATEWAY key alone: a vendor key the same env-dial
+// run seals keeps the narrowing the publisher's expansion of the dial reads
+// (here anthropic), so an openai key the run's routes never name holds no
+// slot of its ceiling — the stamp of a vendor key is unchanged by the
+// gateway seal rule.
+func TestGatewayKey_AnEnvDialRunCountsNoVendorKeyItsRoutesDoNotName(t *testing.T) {
+	wf := &ir.Workflow{Nodes: map[string]ir.Node{
+		"review": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "review"}, LLMFields: ir.LLMFields{Backend: "claw", Model: "${C3_UNSET_ROUTE_DIAL:-anthropic/claude-sonnet-4-5}"}},
+	}}
+	p, buf := gatewayKeyPublisher(t)
+	seedGatewayKey(t, p.apiKeys, p.sealer, "team1", nil)
+	seedKeyFP(t, p.apiKeys, p.sealer, "team1", secrets.ProviderOpenAI, "sk-openai-team", "fp-openai-team")
+	creds, err := p.resolveAndSealCredentials(gatewayLaunchCtx(), "run-gw-7e", "", "team1", "owner1", gwBot, "pool-a", wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustDefault, nil, nil, nil, boundaryDerived)
+	if err != nil {
+		t.Fatalf("resolveAndSealCredentials: %v", err)
+	}
+	if got := openGatewayBundleOn(t, p, "run-gw-7e", "pool-a", creds).APIKeys[secrets.ProviderOpenAI]; got != "sk-openai-team" {
+		t.Fatalf("openai slot = %q: the fixture must seal the vendor key, or the stamp below proves nothing (log:\n%s)", got, buf.String())
+	}
+	if !slices.Contains(creds.fingerprints, gwFingerprint) {
+		t.Fatalf("run stamp = %v: the sealed gateway key is not counted", creds.fingerprints)
+	}
+	if slices.Contains(creds.fingerprints, "fp-openai-team") {
+		t.Fatalf("run stamp = %v: an openai key no route of the run names is counted — the gateway seal rule widened the vendor narrowing", creds.fingerprints)
+	}
+}
+
 // W7b, the regression the arbitration closes (B1 of the round-1 review):
 // a default-runner review whose dials are env-templated holds NO slot of the
 // team's capped gateway key — the second concurrent launch queues instead of

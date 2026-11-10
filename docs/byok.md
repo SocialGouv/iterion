@@ -246,10 +246,10 @@ executes. A run counts against a key only when **both** hold:
    whose every node pins `provider: anthropic` executes on the forfait and
    holds no slot on the z.ai facade key it also carries. A run with an
    unpinned or unresolvable route keeps every fingerprint (it takes
-   whatever the process holds — fail open toward protection), and so does a
-   run with a route that defers to the runner's environment (`${DIAL:-…}`):
-   the publisher's expansion of the dial is not the runner's word, and a
-   key the run may spend is counted.
+   whatever the process holds — fail open toward protection). A sealed
+   gateway key (`openai_compatible`) is always counted: the walk seals it
+   only for a run that may ride a gateway route, including a runner-pool
+   run whose `${DIAL:-…}` routes the pod expands.
 **Model-idle is not a release.** The runner sets `run.llm_idle_since` the
 moment the run's last model-calling node finishes and clears it the moment
 one starts (concurrent branches are counted, not flipped; every re-stamp

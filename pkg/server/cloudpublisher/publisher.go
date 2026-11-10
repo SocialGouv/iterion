@@ -1974,6 +1974,14 @@ type spendable struct {
 // counting it would hold a slot of its concurrency ceiling (and report a
 // funding tier) for a run that never draws on it.
 func (s spendable) spendsKey(bundle secrets.RunBundle, prov secrets.Provider) bool {
+	// A sealed gateway key is spent by construction: the walk seals the pair
+	// only for a run that may ride a gateway route (gatewayRoutes.sealable),
+	// including a route deferring to a runner pool's environment that this
+	// process cannot read — so it is counted whatever the routes narrow the
+	// vendor keys to.
+	if prov == secrets.ProviderOpenAICompatible {
+		return true
+	}
 	slot := strings.ToLower(string(prov))
 	if !s.allows(slot) {
 		return false
@@ -2002,14 +2010,11 @@ func (s spendable) allows(provider string) bool {
 // a sealed key funds is spent by the run (its key's fingerprint is stamped)
 // and lent by no pool. Both read the same RouteView: the run's vars by
 // provenance, so a templated route the launch's declared defaults decide
-// narrows here exactly as it resolves at dispatch (ADR-129 §4). A route that
-// defers to the runner's environment fails open like an unreadable one: the
-// publisher's expansion of `${DIAL:-…}` is not the runner's word — a pool
-// pod may expand it to the gateway whose key the walk sealed for it — and a
-// key the run may spend is counted.
+// narrows here exactly as it resolves at dispatch (ADR-129 §4). The gateway
+// key is not narrowed here: spendsKey counts a sealed one by construction.
 func spendableProviders(view model.RouteView) spendable {
 	res := model.EffectiveProviders(view, walkProviderSet)
-	if !res.NarrowSafe || res.EnvDeferred || len(res.Providers) == 0 {
+	if !res.NarrowSafe || len(res.Providers) == 0 {
 		return spendable{}
 	}
 	pinned := make(map[string]bool, len(res.Providers))
