@@ -105,17 +105,37 @@ func (s *Server) poolSignalSyncSweep(ctx context.Context) lease.PassVerdict {
 			poolIDs[att.PoolID] = true
 		}
 	}
-	if s.scheduledBots != nil && s.authStore() != nil {
+	// The binding-level blocks the stored attachments cannot see: a
+	// schedule row's, and a forge integration's on its webhook config (the
+	// block the webhook and card lanes fold). A pool reached only through
+	// one of them still needs warm readings, or its margin skip is inert on
+	// that lane. A failed read is named and skipped — it must not drop the
+	// attachments' warmth.
+	if (s.scheduledBots != nil || s.webhookConfigs != nil) && s.authStore() != nil {
 		teams, terr := s.authStore().ListTeams(ctx, identity.Page{Limit: 1000})
-		if terr == nil {
-			for _, tm := range teams {
+		if terr != nil {
+			s.warnf("pool signal sync: list teams for the binding-level pools: %v", terr)
+		}
+		for _, tm := range teams {
+			if s.scheduledBots != nil {
 				scheds, serr := s.scheduledBots.ListByTenant(ctx, tm.ID)
 				if serr != nil {
-					continue // the schedule read failing must not drop the attachments' warmth
+					s.warnf("pool signal sync: list team %s's schedules: %v", tm.ID, serr)
 				}
 				for _, sb := range scheds {
 					if sb.Pool != nil && sb.Pool.Enabled && sb.Pool.PoolID != "" {
 						poolIDs[sb.Pool.PoolID] = true
+					}
+				}
+			}
+			if s.webhookConfigs != nil {
+				cfgs, werr := s.webhookConfigs.ListByTenant(ctx, tm.ID)
+				if werr != nil {
+					s.warnf("pool signal sync: list team %s's webhook configs: %v", tm.ID, werr)
+				}
+				for _, c := range cfgs {
+					if c.Enabled && c.Pool != nil && c.Pool.Enabled && c.Pool.PoolID != "" {
+						poolIDs[c.Pool.PoolID] = true
 					}
 				}
 			}

@@ -798,7 +798,7 @@ func (s *Server) launchTicketNow(ctx context.Context, teamID string, from launch
 		s.logger.Warn("pipeline admission: ticket %s: %v", iss.ID, routeErr)
 		return "", fmt.Errorf("ticket %s: %w: %w", iss.ID, errTicketRoutingUnresolved, routeErr)
 	}
-	poolAttachment, poolErr := s.resolveRunPoolAttachment(ctx, teamID, bot.Launch.BotID)
+	poolAttachment, poolErr := s.resolveRunPoolAttachment(ctx, teamID, bot.Launch.BotID, cardPoolLayers(integration, bot.Launch.BotID)...)
 	if poolErr != nil {
 		s.logger.Warn("pipeline admission: ticket %s: %v", iss.ID, poolErr)
 		return "", fmt.Errorf("ticket %s: %w: %w", iss.ID, errTicketRoutingUnresolved, poolErr)

@@ -63,3 +63,37 @@ The machinery half-exists: `pkg/credpool` already mutualises lent subscriptions 
 - The att: draw caps' estimates: the dollar figures stay ESTIMATES on subscriptions (the credpool doctrine) — never summed as invoices.
 - #2972's landing: compose `PoolEligible` with attachments exactly as Decision 10 states, and re-run the attached-tier suite against the reservation gate.
 - #2699's landing: the pools' pod-env model dials migrate to team/binding DB routing policies — the `pool:` block is precisely that seat.
+
+## Amendment — 2026-11-09 (#3122): the binding block reaches the forge integration
+
+The "Known limits" line above named the binding-level `pool:` decoder as pending. It lands on both records that own a validated write surface:
+
+- **One shape, one decoder, one consent check.** `credpool.Binding` is the record-carried block (the schedule's `PoolBinding` is now its alias); `decodePoolBlock` decodes STRICTLY (a camelCase dial refuses) under the routing block's three-way rule (absent keeps, `null` clears, an object replaces), and `validatePoolBindingWrite` checks shape, triggers, the pool's existence and enablement, and its consent (an org pool of the team's org, a user pool whose audience admits it — never a private pool, never the platform's instance pool).
+- **The forge integration** (repo-bots enable/PATCH) carries the block on the record AND on the webhook config it provisions — the enforcement half the webhook lane folds as its `binding:webhook` layer — and projects it onto its scheduled rows with a provenance flag (`PoolFromIntegration`, the twin of `RoutingFromIntegration`): a projected block follows every integration write, an operator's own row block survives. A pair diverged between the two stores refuses a silent re-provision (the deterministic class the org-approval arm consumes).
+- **Org approval.** A spoken block parks (null included — the block moves which credentials fund the repo's unattended runs), the parked record replays it, and the apply RE-VALIDATES its consent: a pool disabled or narrowed while the request waited is refused (409), never granted by the approval.
+- **Unchanged posture**: trigger subscriptions and hand-written webhook configs have no pool field (the webhook CRUD request carries none); their launches read the stored scopes only.
+
+### reset_hold's runtime half (same date, #3122)
+
+Decision 7's held bit lands on the LEASE, not the run doc — the lease is already the per-attempt record of which entry served, and the manual reset needs one store to clear:
+
+- A seal-time switch marks the lease it opens `Held`: the broker's ranking walk holds the entry that serves after a candidate at least as well ranked declined (ranked ahead of it and refused, or filtered out — margin, cooldown, health — with an equal or better priority), or that re-serves the run's held entry. The strategy's first choice is never held.
+- The resume's walk (the same `acquireFromAttachedPools`) reads the run's newest held lease of the kind (`HeldPledge`, closed leases included) and ranks that entry first when it is eligible; ineligible, the ordinary ranking serves.
+- The entry reset route lifts every hold naming the entry (`LeaseStore.ClearHeld`, memory + Mongo twins); the write surfaces accept the dial.
+- Scope, stated: a switch made IN-RUN by the entry rungs does not hold — the in-run chain restarts from its top on every attempt.
+- With it, the attached walk's takeover is per resolution: its FIRST acquisition supersedes what the run's previous attempt left open (a dead pod's leases no longer hold the donors' slots until the TTL), every later slot is that grant's sibling.
+
+### The first local review round on #3123 (same date)
+
+- **Consent asks only of a block that draws**: an opt-out block (`enabled: false`) grants nothing — it stops the fold at its level whatever the named pool's state or owner — so it writes with a valid shape alone; that is how a repo stays out of the platform's attached pool. A user pool's audience may name a team outside any org.
+- **Every lane that launches for an integration folds its block**: the direct webhook lane, the board and pipeline card lanes (only for a bot the integration runs, while it is enabled — a card's bot is member-writable), and the webhook-source credential preview. The signal reconciler warms a pool an integration binds, and a pool still drawn by an enabled binding block refuses deletion (409), like an attached one.
+- **A request that binds a live shared pool is reviewed** under the `shared_credentials` approval scope even when the team funds its own runs: those runs are the pool's.
+- **An attempt's report settles exactly its own leases**: the leases one resolution opens share an attempt id, and the report books each its fingerprint slice in whatever state it is (open, or superseded by the next attempt's takeover) — never a lease of another attempt of the same run. A lease returned unused settles nothing, and its attempt's siblings still settle by their shared attempt id — the report never reaches past it to an older attempt's lease.
+- **reset_hold's switch is an exhaustion**: margin, cooldown, health or an exhausted allowance of an entry ranked at least as well — never a paused, bot-filtered, out-of-hours or busy one, nor a store error; the run's NEWEST lease of the kind decides what it holds.
+
+### The second and third local review rounds on #3123 (same date)
+
+- **A coarse report is booked conservatively**: when the report carries no per-credential split, every lease of the attempt books the whole attempt and takes its condition — a donor's cap bites early rather than never, and a failing credential is parked whichever slot it served. Only the borrower's `att:` draw row books the attempt once, on a lease of the attempt that served.
+- **reset_hold's exhaustion is real spend**: a runs-per-day ceiling always counts; a $ ceiling counts only when the spend is real — with runs in flight the ceiling can be met by allowance merely promised to them, which is busy, like a full concurrency slot set.
+- **The self-funded exemption reads the effective block**: the one the repo's runs fold after the request — the spoken block, or the integration's stored one when the request says nothing (an add-bots enable, a bots-only PATCH, an unreadable integration counting as drawing), and the managed webhook config's own block on a CRUD patch. A schedule write binding a live pool is reviewed the same way; a schedule has no parking lane, so an org that would review it refuses it (409) — an org admin binds it, or the binding rides an integration through the repo-bots API.
+- **A card lane always folds an integration's opt-out block**, whatever the integration's state or the card's bot — it grants nothing; an enabled block still speaks only for the bots the integration runs, while it is enabled.

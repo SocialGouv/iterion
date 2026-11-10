@@ -2,6 +2,7 @@ package credpool
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 )
@@ -58,12 +59,27 @@ type Strategy struct {
 	// pre-empting a warm entry.
 	Triggers []string `bson:"triggers,omitempty" json:"triggers,omitempty"`
 	// ResetHold keeps a switch held until a manual reset: when the strategy
-	// switches (seal-time skip or in-run rung), the run doc carries a held
-	// bit naming the entry it moved to, and a resume re-acquires THAT entry
-	// instead of re-ranking — until the operator clears it through the
-	// entry reset route. Off (the default) lets the periodic reset reopen
-	// the previous order on its own.
+	// switches AT SEAL TIME (a better-ranked entry of the kind did not
+	// serve), the lease it opens on the next entry is marked Held, and a
+	// resume re-acquires THAT entry instead of re-ranking — until the
+	// operator lifts the hold through the entry reset route. A switch made
+	// IN-RUN by the entry rungs does not hold: the in-run chain restarts
+	// from its top on every attempt. Off (the default) lets the periodic
+	// reset reopen the previous order on its own.
 	ResetHold bool `bson:"reset_hold,omitempty" json:"reset_hold,omitempty"`
+}
+
+// Equal reports whether two strategies say the same thing, the margin
+// compared by value (two nil margins are equal; nil and an explicit 85
+// are NOT — the absent dial and the written one are different answers).
+func (s Strategy) Equal(o Strategy) bool {
+	if s.Mode != o.Mode || s.ResetHold != o.ResetHold || !slices.Equal(s.Triggers, o.Triggers) {
+		return false
+	}
+	if s.MarginPct == nil || o.MarginPct == nil {
+		return s.MarginPct == nil && o.MarginPct == nil
+	}
+	return *s.MarginPct == *o.MarginPct
 }
 
 // Margin returns the effective threshold.
@@ -229,6 +245,49 @@ func (a Attachment) Validate() error {
 		return err
 	}
 	return a.Limits.Validate()
+}
+
+// Binding is the pool: block a provisioning record carries — a schedule
+// row, a forge integration and the webhook config it provisions (ADR-164):
+// the named pool, an on/off (off = resolved-disabled, the fold stops here)
+// and the fallback strategy. It is the machine lane's consent: the record
+// is written by a team admin through a validated write surface, and
+// writing the block is what grants the record's launches the named pool.
+// ONE type for every record, so the shape check and the projection cannot
+// drift between them.
+type Binding struct {
+	PoolID   string   `bson:"pool_id" json:"pool_id"`
+	Enabled  bool     `bson:"enabled" json:"enabled"`
+	Strategy Strategy `bson:"strategy" json:"strategy"`
+}
+
+// Validate checks the block's shape; the POOL's existence and the consent
+// are the write surface's job (it owns the stores and the caller's
+// identity).
+func (b Binding) Validate() error {
+	if strings.TrimSpace(b.PoolID) == "" {
+		return fmt.Errorf("pool block names no pool")
+	}
+	return b.Strategy.Validate()
+}
+
+// Layer projects the block as the binding layer the launch fold consumes
+// (route_resolve.go's `higher`), naming the record kind. ok=false when the
+// record binds no pool — the fold then reads the stored scopes alone.
+func (b *Binding) Layer(source string) (BindingLayer, bool) {
+	if b == nil {
+		return BindingLayer{}, false
+	}
+	return BindingLayer{Source: source, Enabled: b.Enabled, PoolID: b.PoolID, Strategy: b.Strategy}, true
+}
+
+// Equal reports whether two blocks say the same thing — nil equals nil
+// only (an absent block and a present one never match).
+func (b *Binding) Equal(o *Binding) bool {
+	if b == nil || o == nil {
+		return b == nil && o == nil
+	}
+	return b.PoolID == o.PoolID && b.Enabled == o.Enabled && b.Strategy.Equal(o.Strategy)
 }
 
 // BindingLayer is one binding-level answer the launch carries IN — the

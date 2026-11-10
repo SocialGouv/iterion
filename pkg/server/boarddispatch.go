@@ -1705,7 +1705,8 @@ type boardLaunchContext struct {
 // the tenant check is the guard that makes the recorded level true — another
 // team's config is as unreadable here as a deleted one.
 //
-// The integration itself rides back beside its layers: its two var layers
+// The integration itself rides back beside its layers: its pool block is the
+// lanes' binding layer for the pool fold (poolLayersOf), and its two var layers
 // are the lanes' to apply around the card's bot_args
 // (applyCardIntegrationVarLayers, #2665 item 1) — read in the same live
 // fetch, under the same tenant check, so the vars a carded run reads and
@@ -2022,7 +2023,9 @@ func (s *Server) processBoardCard(ctx context.Context, tenant string, iss native
 	if routeErr != nil {
 		return &launchRefusal{cardID: iss.ID, cause: routeErr}
 	}
-	poolAttachment, poolErr := s.resolveRunPoolAttachment(ctx, tenant, lb.BotID)
+	// The integration's pool block is the card lane's BINDING layer, as on
+	// the direct webhook lane — its opt-out included (ADR-164).
+	poolAttachment, poolErr := s.resolveRunPoolAttachment(ctx, tenant, lb.BotID, cardPoolLayers(integration, lb.BotID)...)
 	if poolErr != nil {
 		return &launchRefusal{cardID: iss.ID, cause: poolErr}
 	}

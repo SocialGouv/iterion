@@ -1471,7 +1471,10 @@ func (s *Server) launchWebhookBot(ctx context.Context, from launchOrigin, cfg we
 	if routeErr != nil {
 		return "", routeErr
 	}
-	poolAttachment, poolErr := s.resolveRunPoolAttachment(ctx, cfg.TenantID, botID)
+	// The webhook config's pool block is the BINDING layer (ADR-164) — the
+	// enforcement half of the forge integration's block, written only by
+	// the provisioner after the integration surface validated its consent.
+	poolAttachment, poolErr := s.resolveRunPoolAttachment(ctx, cfg.TenantID, botID, poolLayersOf(&cfg)...)
 	if poolErr != nil {
 		return "", poolErr
 	}

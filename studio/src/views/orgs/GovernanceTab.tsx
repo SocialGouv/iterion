@@ -326,7 +326,26 @@ function approvalExtras(a: ProvisionApproval): string {
   if (a.overlap) parts.push(`overlap: ${a.overlap}`);
   const routing = routingSummary(a);
   if (routing) parts.push(routing);
+  const pool = poolSummary(a);
+  if (pool) parts.push(pool);
   return parts.join(" · ");
+}
+
+// poolSummary renders the pool block a parked request speaks about (ADR-164)
+// — which key pool would fund the repo's unattended runs — as one line: the
+// pool, OPTED OUT when the block disables the pool for this repo, the
+// strategy verbatim when the block carries one; CLEARED when the request
+// wipes a stored block. "" when the request says nothing about the pool
+// (pool_set absent).
+function poolSummary(a: ProvisionApproval): string {
+  if (!a.pool_set) return "";
+  if (!a.pool) return "pool: CLEARED";
+  const state = a.pool.enabled ? "" : " (OPTED OUT)";
+  const strategy =
+    a.pool.strategy && Object.keys(a.pool.strategy).length > 0
+      ? `, ${JSON.stringify(a.pool.strategy)}`
+      : "";
+  return `pool: ${a.pool.pool_id}${state}${strategy}`;
 }
 
 // routingSummary renders the routing block a parked request speaks about —

@@ -172,6 +172,10 @@ type LeaseStore interface {
 	// is ordered by lease id, descending, so the pick is deterministic and
 	// the same in both stores.
 	ListByRun(ctx context.Context, runID string) ([]Lease, error)
+	// ClearHeld lifts the reset_hold mark from every lease of the entry,
+	// any state, and reports how many it cleared — the manual reset's
+	// hold half (ADR-164).
+	ClearHeld(ctx context.Context, pledgeID string) (int, error)
 	// StampSupersededReport marks a superseded lease as reported by its own
 	// attempt and adds the spend to it: a CAS on a superseded close — the
 	// close that charged nothing, an acquisition's or a grantless

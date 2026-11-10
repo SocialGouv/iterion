@@ -17,6 +17,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/cloudsched"
 	"github.com/SocialGouv/iterion/pkg/connection"
+	"github.com/SocialGouv/iterion/pkg/credpool"
 	"github.com/SocialGouv/iterion/pkg/lease"
 	"github.com/SocialGouv/iterion/pkg/llmroute"
 	"github.com/SocialGouv/iterion/pkg/secrets"
@@ -287,6 +288,12 @@ type ProvisionRequest struct {
 	Routing *llmroute.Policy
 	// RoutingSet marks that the request spoke about routing at all.
 	RoutingSet bool
+	// Pool is the per-repo pool block (ADR-164), under Routing's
+	// three-way rule: PoolSet=false keeps the stored block, PoolSet=true
+	// with nil clears it, with a block replaces it. The caller validated
+	// the block's consent (the server's validatePoolBindingWrite).
+	Pool    *credpool.Binding
+	PoolSet bool
 	// Replace makes BotIDs the EXACT desired set instead of a union with the
 	// existing integration's bots — the per-bot unbind path. The webhook
 	// events, command map and schedules reconcile down accordingly. Removing
@@ -553,6 +560,21 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 			desiredRouting = prevCfg.Routing
 		}
 	}
+	// The pool block follows the routing block's rule exactly (ADR-164):
+	// a spoken block replaces or clears; a silent request keeps the
+	// stored one, and a pair diverged between the two stores is REFUSED
+	// — a silent re-provision cannot tell a deliberate drop from a stale
+	// store.
+	var desiredPool *credpool.Binding
+	if req.PoolSet {
+		desiredPool = req.Pool
+	} else if hasExisting {
+		if hasPrevCfg && !existing.Pool.Equal(prevCfg.Pool) {
+			return ProvisionResult{}, fmt.Errorf("%w: the pool block diverges between the integration and the webhook config — a silent re-provision cannot tell a deliberate drop from a stale store; re-run with an explicit pool block (or null to clear): provisioning converges",
+				ErrProvisionDiverged)
+		}
+		desiredPool = existing.Pool
+	}
 
 	// Resolve every bot's forge requirements (its optional forge: block for
 	// credentials/scopes) AND its invocations (the typed routing contract).
@@ -627,13 +649,15 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 		changed := !maps.Equal(operatorVars, existing.LaunchVars) || operatorOverlap != existing.Overlap ||
 			operatorAutoFix != existing.AutoFixOnGateFailure || !slices.Equal(operatorHold, existing.HoldLabels) ||
 			!slices.Equal(operatorLabels, existing.LabelAllowlist) ||
-			!policiesEqualRouting(desiredRouting, existing.Routing)
+			!policiesEqualRouting(desiredRouting, existing.Routing) ||
+			!desiredPool.Equal(existing.Pool)
 		if hasPrevCfg {
 			changed = changed || !slices.Equal(operatorLabels, prevCfg.LabelAllowlist) ||
 				!slices.Equal(operatorHold, prevCfg.HoldLabels) ||
 				operatorOverlap != prevCfg.Overlap ||
 				!maps.Equal(operatorVars, prevCfg.OperatorLaunchVars) ||
-				!policiesEqualRouting(desiredRouting, prevCfg.Routing)
+				!policiesEqualRouting(desiredRouting, prevCfg.Routing) ||
+				!desiredPool.Equal(prevCfg.Pool)
 		}
 		if changed {
 			// The config is the enforcement half, so it cannot be skipped:
@@ -658,6 +682,7 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 			cfg.HoldLabels = operatorHold
 			cfg.LabelAllowlist = operatorLabels
 			cfg.Routing = nilIfEmptyRouting(desiredRouting)
+			cfg.Pool = desiredPool
 			cfg.UpdatedAt = o.clock()
 			if uerr := o.Webhooks.Update(ctx, cfg); uerr != nil {
 				return ProvisionResult{}, fmt.Errorf("forge: update webhook operator settings: %w", uerr)
@@ -668,6 +693,7 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 			existing.LabelAllowlist = operatorLabels
 			existing.AutoFixOnGateFailure = operatorAutoFix
 			existing.Routing = nilIfEmptyRouting(desiredRouting)
+			existing.Pool = desiredPool
 			existing.UpdatedAt = o.clock()
 			if uerr := o.Integrations.Update(ctx, existing); uerr != nil {
 				return ProvisionResult{}, fmt.Errorf("%w: the webhook config carries the new settings but the integration update failed: %v — re-run the same request, provisioning converges (%w)", ErrProvisionDiverged, uerr, ErrProvisionDivergedRetry)
@@ -700,7 +726,7 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 		// overlap/guard, retry, stale-after, ref and routing.
 		// An earlier activation may have succeeded while its projection failed.
 		// Reconcile even an otherwise identical retry; the carry preserves tuning.
-		if err := o.syncProvisionSchedules(ctx, existing, CloneURLFor(conn.BaseURL(), req.RepoFullName), invByBot, req.ScheduleCrons, req.ActorID, nilIfEmptyRouting(desiredRouting)); err != nil {
+		if err := o.syncProvisionSchedules(ctx, existing, CloneURLFor(conn.BaseURL(), req.RepoFullName), invByBot, req.ScheduleCrons, req.ActorID, nilIfEmptyRouting(desiredRouting), desiredPool); err != nil {
 			return ProvisionResult{}, err
 		}
 		return ProvisionResult{
@@ -886,6 +912,7 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 		Overlap:            operatorOverlap,
 		HoldLabels:         operatorHold,
 		Routing:            desiredRouting,
+		Pool:               desiredPool,
 		SecretOverrides:    secretOverrides,
 		MinReplierRole:     minRole,
 		CommandMap:         commandMap,
@@ -1003,6 +1030,7 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 		LabelAllowlist:       operatorLabels,
 		AutoFixOnGateFailure: operatorAutoFix,
 		Routing:              nilIfEmptyRouting(desiredRouting),
+		Pool:                 desiredPool,
 		CreatedBy:            req.ActorID,
 		CreatedAt:            now,
 		UpdatedAt:            now,
@@ -1055,7 +1083,7 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 	// Materialise cloud schedules for the enabled bots' schedule invocations.
 	// The repo clone URL rides along so a stateful scheduled bot gets a git
 	// workspace (#219) — without it the run lands in the pod's bare WorkDir.
-	if err := o.syncProvisionSchedules(ctx, ri, CloneURLFor(conn.BaseURL(), req.RepoFullName), invByBot, req.ScheduleCrons, req.ActorID, nilIfEmptyRouting(desiredRouting)); err != nil {
+	if err := o.syncProvisionSchedules(ctx, ri, CloneURLFor(conn.BaseURL(), req.RepoFullName), invByBot, req.ScheduleCrons, req.ActorID, nilIfEmptyRouting(desiredRouting), desiredPool); err != nil {
 		return ProvisionResult{}, err
 	}
 
@@ -1423,16 +1451,24 @@ func (o *Orchestrator) Deprovision(ctx context.Context, tenantID, integrationID 
 // would silently postpone the row past the slot it is due for), the
 // keepalive silence cutoff and the pinned checkout ref.
 // No-op when no schedule store is wired.
-func (o *Orchestrator) syncProvisionSchedules(ctx context.Context, ri RepoIntegration, repoURL string, invByBot map[string][]bundle.Invocation, crons map[string]string, actor string, routing *llmroute.Policy) error {
+func (o *Orchestrator) syncProvisionSchedules(ctx context.Context, ri RepoIntegration, repoURL string, invByBot map[string][]bundle.Invocation, crons map[string]string, actor string, routing *llmroute.Policy, pool *credpool.Binding) error {
 	if o.Schedules == nil {
 		return nil
 	}
 	return o.Integrations.WithProvisionVersion(ctx, ri.ID, ri.Version, false, func(ctx context.Context) error {
-		return o.syncSchedules(ctx, ri.TenantID, ri.ID, repoURL, invByBot, crons, actor, routing)
+		return o.syncSchedulesWithPool(ctx, ri.TenantID, ri.ID, repoURL, invByBot, crons, actor, routing, pool)
 	})
 }
 
 func (o *Orchestrator) syncSchedules(ctx context.Context, tenantID, integrationID, repoURL string, invByBot map[string][]bundle.Invocation, crons map[string]string, actor string, integRouting *llmroute.Policy) error {
+	return o.syncSchedulesWithPool(ctx, tenantID, integrationID, repoURL, invByBot, crons, actor, integRouting, nil)
+}
+
+// syncSchedulesWithPool is syncSchedules carrying the integration's pool
+// block too (ADR-164): projected onto every row whose block is absent or
+// itself a projection (PoolFromIntegration), never over an operator's own
+// row block — RoutingFromIntegration's rule, applied to the pool.
+func (o *Orchestrator) syncSchedulesWithPool(ctx context.Context, tenantID, integrationID, repoURL string, invByBot map[string][]bundle.Invocation, crons map[string]string, actor string, integRouting *llmroute.Policy, integPool *credpool.Binding) error {
 	if o.Schedules == nil {
 		return nil
 	}
@@ -1443,10 +1479,16 @@ func (o *Orchestrator) syncSchedules(ctx context.Context, tenantID, integrationI
 	// share a creation instant, so no store ordering recovers which row
 	// served which invocation.
 	priorByBot := map[string][]cloudsched.ScheduledBot{}
-	if prior, err := o.Schedules.ListByIntegration(ctx, tenantID, integrationID); err == nil {
-		for _, row := range prior {
-			priorByBot[row.BotID] = append(priorByBot[row.BotID], row)
-		}
+	// The rows are read BEFORE they are deleted below, and the read failing
+	// refuses the sync: a rebuild from nothing would erase every row's
+	// operator-owned state — its own pool and routing blocks (an opt-out
+	// replaced by the integration's projection), cadence, vars, pause.
+	prior, err := o.Schedules.ListByIntegration(ctx, tenantID, integrationID)
+	if err != nil {
+		return fmt.Errorf("forge: read the integration's schedule rows before rebuilding them: %w", err)
+	}
+	for _, row := range prior {
+		priorByBot[row.BotID] = append(priorByBot[row.BotID], row)
 	}
 	for bot, q := range priorByBot {
 		sort.Slice(q, func(i, j int) bool {
@@ -1542,6 +1584,11 @@ func (o *Orchestrator) syncSchedules(ctx context.Context, tenantID, integrationI
 				// projected, and never an operator's.
 				sb.Routing = prev.Routing
 				sb.RoutingFromIntegration = prev.RoutingFromIntegration
+				// The pool block carries under the same provenance rule:
+				// the operator's own row block survives, a projected one
+				// is re-projected below.
+				sb.Pool = prev.Pool
+				sb.PoolFromIntegration = prev.PoolFromIntegration
 				sb.CreatedBy = prev.CreatedBy
 				sb.CreatedAt = prev.CreatedAt
 			}
@@ -1556,6 +1603,10 @@ func (o *Orchestrator) syncSchedules(ctx context.Context, tenantID, integrationI
 			if sb.Routing == nil || sb.RoutingFromIntegration {
 				sb.Routing = nilIfEmptyRouting(integRouting)
 				sb.RoutingFromIntegration = sb.Routing != nil
+			}
+			if sb.Pool == nil || sb.PoolFromIntegration {
+				sb.Pool = clonePoolBinding(integPool)
+				sb.PoolFromIntegration = sb.Pool != nil
 			}
 			if !carriedNextFire {
 				// No cadence (no suggestion, no override, nothing carried)
@@ -1805,7 +1856,8 @@ func carryOperatorWebhookSettings(cfg *webhooks.Config, prev webhooks.Config) {
 	cfg.RetryMaxAttempts = prev.RetryMaxAttempts
 	cfg.RetryMaxWait = prev.RetryMaxWait
 	cfg.RetryJitter = prev.RetryJitter
-	// Routing is deliberately NOT carried: the provision literal already
+	// Routing — and the pool block, under the same rule — is deliberately
+	// NOT carried: the provision literal already
 	// carries the request's resolved block in every voice — a silent request
 	// arrives with the resolution's adopted value (the integration's block,
 	// falling back to prev's), a spoken block arrives as spoken. A nil
@@ -2302,13 +2354,15 @@ func (o *Orchestrator) verifyOperatorSettings(ctx context.Context, wantInteg Rep
 		integ.AutoFixOnGateFailure != wantInteg.AutoFixOnGateFailure,
 		!slices.Equal(integ.HoldLabels, wantInteg.HoldLabels),
 		!slices.Equal(integ.LabelAllowlist, wantInteg.LabelAllowlist),
-		!policiesEqualRouting(integ.Routing, wantInteg.Routing):
+		!policiesEqualRouting(integ.Routing, wantInteg.Routing),
+		!integ.Pool.Equal(wantInteg.Pool):
 		return fmt.Errorf("%w: the integration does not read back what was written — re-run the same request, provisioning converges (%w)", ErrProvisionDiverged, ErrProvisionDivergedRetry)
 	case !maps.Equal(cfg.OperatorLaunchVars, wantCfg.OperatorLaunchVars),
 		cfg.Overlap != wantCfg.Overlap,
 		!slices.Equal(cfg.HoldLabels, wantCfg.HoldLabels),
 		!slices.Equal(cfg.LabelAllowlist, wantCfg.LabelAllowlist),
-		!policiesEqualRouting(cfg.Routing, wantCfg.Routing):
+		!policiesEqualRouting(cfg.Routing, wantCfg.Routing),
+		!cfg.Pool.Equal(wantCfg.Pool):
 		return fmt.Errorf("%w: the webhook config does not read back what was written — re-run the same request, provisioning converges (%w)", ErrProvisionDiverged, ErrProvisionDivergedRetry)
 	}
 	return nil
@@ -2345,6 +2399,23 @@ func nilIfEmpty(m map[string]string) map[string]string {
 		return nil
 	}
 	return m
+}
+
+// clonePoolBinding copies a pool block so each projected row owns its own
+// value (the strategy's margin pointer and trigger slice included) — rows
+// sharing one pointer would let a later in-place edit of one leak into
+// every sibling.
+func clonePoolBinding(b *credpool.Binding) *credpool.Binding {
+	if b == nil {
+		return nil
+	}
+	c := *b
+	if b.Strategy.MarginPct != nil {
+		m := *b.Strategy.MarginPct
+		c.Strategy.MarginPct = &m
+	}
+	c.Strategy.Triggers = slices.Clone(b.Strategy.Triggers)
+	return &c
 }
 
 // nilIfEmptyRouting collapses an explicitly-empty routing block to nil —

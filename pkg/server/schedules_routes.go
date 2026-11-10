@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -63,9 +62,9 @@ type createScheduleReq struct {
 	// silently store a no-op block audited as set).
 	Routing json.RawMessage `json:"routing,omitempty"`
 	// Pool block (ADR-164; validated on create) — the binding-level pool
-	// opt-in. See updateScheduleReq.Pool for the ABSENT/null/object
-	// mechanic and the write-time validation.
-	Pool *cloudsched.PoolBinding `json:"pool,omitempty"`
+	// opt-in, decoded STRICTLY through decodePoolBlock like the routing
+	// block beside it. On create, `null` and absent both mean no block.
+	Pool json.RawMessage `json:"pool,omitempty"`
 }
 
 type updateScheduleReq struct {
@@ -95,21 +94,15 @@ type updateScheduleReq struct {
 	// wholesale. The same mechanic the platform record's PUT uses.
 	Routing json.RawMessage `json:"routing,omitempty"`
 	// Pool block (ADR-164): the binding-level opt-in — {pool_id, enabled,
-	// strategy{mode, margin_pct, triggers, reset_hold}}. Same ABSENT/null/
-	// object mechanic. Validated at record-write time below: the block's
-	// shape, the pool's existence and enablement, and the pool's CONSENT
-	// (its owner, or an audience admitting this team) — an attachment is
-	// an opt-in, never a takeover. This block is also the machine lane's
-	// grant: the schedule's launches draw the named pool because an admin
-	// of this team wrote the block.
-	// Pool block (ADR-164): the binding-level opt-in — {pool_id, enabled,
 	// strategy{mode, margin_pct, triggers, reset_hold}}. ABSENT leaves the
 	// stored block untouched, `null` clears it (the schedule inherits
 	// again), an object replaces it wholesale. Validated at record-write
-	// time: the block's shape, the pool's existence and enablement, and
-	// the pool's CONSENT. This block is also the machine lane's grant:
-	// the schedule's launches draw the named pool because an admin of
-	// this team wrote the block.
+	// time (validatePoolBindingWrite): an ENABLED block needs the pool to
+	// exist, be enabled and CONSENT (an org pool of this team's org, a user
+	// pool whose audience admits the team); an opt-out block (enabled
+	// false) grants nothing and needs only a valid shape. An enabled block
+	// is the machine lane's grant: the schedule's launches draw the named
+	// pool because an admin of this team wrote it.
 	Pool json.RawMessage `json:"pool,omitempty"`
 }
 
@@ -120,73 +113,6 @@ type updateScheduleReq struct {
 // past the author).
 func decodeScheduleRouting(raw json.RawMessage) (*llmroute.Policy, bool, *routingRequestError) {
 	return decodeRoutingBlock(raw, routingLocksRefused)
-}
-
-// validateSchedulePoolBinding checks a schedule request's pool block for
-// the write: shape, the pool's existence and enablement, and the pool's
-// CONSENT (its owner, or an audience admitting the team's org). The
-// launch-time fold still refuses a pool that vanished since (HasPool).
-func (s *Server) validateSchedulePoolBinding(ctx context.Context, teamID string, b *cloudsched.PoolBinding) error {
-	if b == nil {
-		return nil
-	}
-	if err := b.Validate(); err != nil {
-		return err
-	}
-	// Triggers validated at the write (the fold backstops, never replaces)
-	// and reset_hold refused until its runtime half exists — the same
-	// two guards the attachment routes carry.
-	if err := validatePoolTriggers(b.Strategy.Triggers); err != nil {
-		return err
-	}
-	if b.Strategy.ResetHold {
-		return fmt.Errorf("reset_hold is not honored yet — its runtime half lands in a follow-up; drop the flag for now")
-	}
-	if s.credPoolPools == nil {
-		return fmt.Errorf("pool attachments are not wired on this deployment")
-	}
-	pool, err := s.credPoolPools.Get(ctx, b.PoolID)
-	if err != nil {
-		return fmt.Errorf("the pool block names pool %q, which does not exist", b.PoolID)
-	}
-	if !pool.Enabled {
-		return fmt.Errorf("the pool block names pool %q, which is disabled", b.PoolID)
-	}
-	if pool.EffectiveVisibility() == credpool.PoolVisibilityPrivate && !pool.OwnedBy(credpool.PoolOwnerUser, "") {
-		// A private pool consents ONLY by ownership; the ownership check
-		// for a schedule (a team's machine lane) is the org's admin write
-		// that carries the block — user-private pools do not serve
-		// machine lanes.
-		return fmt.Errorf("pool %q is private: it serves no machine lane — attach it to a team of its owner instead", b.PoolID)
-	}
-	if pool.EffectiveOwnerType() == credpool.PoolOwnerPlatform {
-		// The instance pool serves the deployment's own admins only
-		// (poolAttachmentConsent's rule, mirrored): a team schedule may
-		// never bind it — its entries are the paid gateway defaults.
-		return fmt.Errorf("pool %q is the platform's instance pool — only the platform scope binds it", b.PoolID)
-	}
-	if pool.EffectiveOwnerType() == credpool.PoolOwnerOrg {
-		t, gerr := s.authStore().GetTeam(ctx, teamID)
-		if gerr != nil || t.OrgID == "" {
-			return fmt.Errorf("team %s resolves no org: the org pool %q cannot consent", teamID, b.PoolID)
-		}
-		if pool.OrgID != t.OrgID {
-			return fmt.Errorf("pool %q belongs to org %q, not this team's org", b.PoolID, pool.OrgID)
-		}
-		return nil
-	}
-	// A USER pool: the audience must admit the team's org (the same dial
-	// poolAttachmentConsent reads) — private pools were already refused
-	// above; an audience pool whose zero/explicit audience does not admit
-	// this team refuses here.
-	t, gerr := s.authStore().GetTeam(ctx, teamID)
-	if gerr != nil || t.OrgID == "" {
-		return fmt.Errorf("team %s resolves no org: the user pool %q cannot consent", teamID, b.PoolID)
-	}
-	if !pool.Audience.Allows(pool.OrgID, t.OrgID, teamID, "", false) {
-		return fmt.Errorf("pool %q's audience does not admit team %s — the pool owner widens it first", b.PoolID, teamID)
-	}
-	return nil
 }
 
 type routingRequestError struct {
@@ -297,8 +223,12 @@ func (s *Server) handleCreateSchedule(w http.ResponseWriter, r *http.Request) {
 		httpError(w, routeErr.status, "%s", routeErr.err.Error())
 		return
 	}
-	if err := s.validateSchedulePoolBinding(r.Context(), teamID, req.Pool); err != nil {
-		httpError(w, http.StatusBadRequest, "%s", err.Error())
+	createPool, _, poolErr := s.decodeAndValidatePoolBlock(r.Context(), teamID, req.Pool)
+	if poolErr != nil {
+		httpError(w, http.StatusBadRequest, "%s", poolErr.Error())
+		return
+	}
+	if !s.schedulePoolBindingAdmitted(w, r, id, teamID, createPool) {
 		return
 	}
 	now := s.scheduleNow()
@@ -327,7 +257,7 @@ func (s *Server) handleCreateSchedule(w http.ResponseWriter, r *http.Request) {
 		RetryMaxWait:      req.RetryMaxWait,
 		RetryJitter:       req.RetryJitter,
 		Routing:           routing,
-		Pool:              req.Pool,
+		Pool:              createPool,
 		CreatedBy:         id.UserID,
 		CreatedAt:         now,
 		UpdatedAt:         now,
@@ -476,26 +406,22 @@ func (s *Server) handleUpdateSchedule(w http.ResponseWriter, r *http.Request) {
 	// clears (the schedule inherits again), an object replaces — validated
 	// at write time like the create lane (shape, the pool's existence and
 	// consent).
-	var patchPool *cloudsched.PoolBinding
-	clearPool := false
-	if len(req.Pool) > 0 {
-		// The request SPOKE: `null` clears, an object replaces (validated
-		// exactly like the create lane).
-		if string(req.Pool) == "null" {
-			clearPool = true
-		} else {
-			var b cloudsched.PoolBinding
-			if err := json.Unmarshal(req.Pool, &b); err != nil {
-				httpError(w, http.StatusBadRequest, "bad pool block: %v", err)
-				return
-			}
-			if err := s.validateSchedulePoolBinding(r.Context(), teamID, &b); err != nil {
-				httpError(w, http.StatusBadRequest, "%s", err.Error())
-				return
-			}
-			patchPool = &b
-		}
+	patchPool, poolSpoke, poolErr := s.decodeAndValidatePoolBlock(r.Context(), teamID, req.Pool)
+	if poolErr != nil {
+		httpError(w, http.StatusBadRequest, "%s", poolErr.Error())
+		return
 	}
+	// An edit dialog sends the whole record back: echoing the stored block
+	// unchanged is no pool write at all — the row keeps its block AND its
+	// provenance (a projected block stays the integration's), and the
+	// review gate judges only a CHANGE.
+	if patchPool.Equal(cur.Pool) {
+		patchPool, poolSpoke = nil, false
+	}
+	if !s.schedulePoolBindingAdmitted(w, r, id, teamID, patchPool) {
+		return
+	}
+	clearPool := patchPool == nil && poolSpoke
 	// Same merge-then-validate for the retry policy: a patch touching one
 	// retry field must not be able to leave the row incoherent.
 	mergedRetry := cur.RetryPolicy()
@@ -619,4 +545,29 @@ func (s *Server) handleDeleteSchedule(w http.ResponseWriter, r *http.Request) {
 	}
 	s.auditTenant(r, teamID, "schedule.deleted", "schedule", sb.ID, map[string]any{"bot_id": sb.BotID})
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// schedulePoolBindingAdmitted gates a schedule write that binds a LIVE pool
+// behind the org's provisioning review, as the repo-bots API does: a
+// recurring unattended run drawing a shared pool is exactly what an org
+// requiring approval reviews. A schedule has no parking lane, so an org
+// that would review the binding refuses it here (409) — an org admin binds
+// it, or the binding rides an integration through the repo-bots API. An
+// opt-out block binds nothing and needs no review. Writes the refusal and
+// returns false when the write must not proceed.
+func (s *Server) schedulePoolBindingAdmitted(w http.ResponseWriter, r *http.Request, id auth.Identity, teamID string, pool *credpool.Binding) bool {
+	if pool == nil || !pool.Enabled {
+		return true
+	}
+	gateOrg, err := s.provisionOrgRequiringApproval(r.Context(), id, teamID, true)
+	if err != nil {
+		httpError(w, http.StatusServiceUnavailable, "provision-approval gate unavailable: %v", err)
+		return false
+	}
+	if gateOrg != "" {
+		httpError(w, http.StatusConflict,
+			"this org reviews shared-pool bindings: an org admin binds pool %q on this schedule, or bind it through the repo-bots API (/api/teams/{id}/forge/repo-bots), which queues it for an org admin", pool.PoolID)
+		return false
+	}
+	return true
 }

@@ -163,7 +163,9 @@ func (p *Publisher) PreviewCredentials(ctx context.Context, spec runview.Credent
 	}
 	var err error
 	if envFunded {
-		// Nothing to walk: no stage acquires anything for this run.
+		// Nothing to walk: no stage acquires anything for this run — the
+		// pool block names why it was not consulted.
+		x.out.Pool.Reason = "env_funded"
 	} else if err = walkCredentialPlan(func() bool { return len(x.api)+len(x.oauth) > 0 }, func() bool { return x.poolGranted }, func() bool { return spec.PoolAttachment != nil && spec.PoolAttachment.PoolID != "" }, func(tier credentialTier, active bool) error {
 		switch tier {
 		case credentialTierBYOK:
@@ -195,6 +197,7 @@ func (p *Publisher) PreviewCredentials(ctx context.Context, spec runview.Credent
 		case credentialTierPool:
 			if sharedTiersBlocked {
 				x.warn("Pool not consulted: " + blockedPosture(sovereignPreview, runnerPool) + ".")
+				x.out.Pool.Reason = blockedPoolReason(sovereignPreview)
 				return nil
 			}
 			// The ATTACHED pool (ADR-164): the preview answers exactly what
@@ -548,6 +551,17 @@ func (p *Publisher) PreviewCredentials(ctx context.Context, spec runview.Credent
 		}
 	}
 	return x.out, nil
+}
+
+// blockedPoolReason is the pool block's reason code when a posture keeps
+// the pool tier out of the walk: "sovereign" (llm_fallback=none — the
+// team's own policy, the first remedy to name) or "runner_pool" (a
+// platform mapping). The warning beside it carries the full sentence.
+func blockedPoolReason(sovereign bool) string {
+	if sovereign {
+		return "sovereign"
+	}
+	return "runner_pool"
 }
 
 // blockedPosture names, for an operator's remedy, which of the two postures

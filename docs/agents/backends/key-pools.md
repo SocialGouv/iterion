@@ -28,6 +28,10 @@ is the decision; this page is the operator and debugging map.
   `/api/{orgs,teams}/{id}/pool-attachment`,
   `/api/teams/{id}/bots/{bot}/pool-attachment` (CAS 409 on a stale
   `expected_updated_at`).
+- **Binding level**: a `pool:` block on a schedule (create/PATCH) or a
+  forge integration (repo-bots enable/PATCH — parked by org approval,
+  consent re-checked at apply), projected onto the webhook config and the
+  scheduled rows; the launch folds it before every stored scope.
 - **CLI**: `iterion remote pools list|create|entries|entry|import|reset|attach|detach|sync`
   — scopes: yours by default, `--org`, `--team`, `--platform`.
 - **Studio**: the org and team "Key pool" tab — the attachment editor and
@@ -63,6 +67,10 @@ runs one signal pass inline — the proof the readings are warm.
 - **In-run**: the entries' rungs ride the run's fallback chain
   (`On:` the attachment's triggers) — a usage-window failure walks
   forfait → next entry → gateway, exactly the composed order.
+- **reset_hold**: a SEAL-time switch marks its lease held, and the resume
+  re-acquires that entry first instead of returning to one whose window
+  reset — until `pools reset` on the entry lifts the hold. In-run rung
+  switches do not hold.
 
 ## Debugging
 

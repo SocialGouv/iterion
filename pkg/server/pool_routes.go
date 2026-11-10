@@ -3,12 +3,14 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/credpool"
+	"github.com/SocialGouv/iterion/pkg/identity"
 	"github.com/SocialGouv/iterion/pkg/lease"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/google/uuid"
@@ -388,6 +390,19 @@ func (s *Server) handleDeletePool(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// So must a binding-level block that draws it (a forge integration's
+	// webhook config, a schedule row): its record's launches would refuse
+	// the moment the pool vanished. An opt-out block names the pool without
+	// drawing it and does not stand in the way.
+	where, berr := s.enabledBindingNaming(r.Context(), pool.ID)
+	if berr != nil {
+		s.httpErrorFor(w, r, http.StatusInternalServerError, "list binding blocks: %v", berr)
+		return
+	}
+	if where != "" {
+		s.httpErrorFor(w, r, http.StatusConflict, "%s still binds this pool — clear its pool block first", where)
+		return
+	}
 	if err := s.credPoolPools.Delete(r.Context(), pool.ID); err != nil {
 		s.httpErrorFor(w, r, http.StatusInternalServerError, "delete pool: %v", err)
 		return
@@ -652,11 +667,11 @@ func (s *Server) handleImportPoolEntry(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleResetPoolEntry is the MANUAL reset (ADR-164 § resets): clears the
-// provider cooldown and forgets the stale readings the margin skip was
-// acting on. (reset_hold's held bits join here when its runtime half
-// lands — ADR-164 watch.) The provider's
-// own window may not have reset — the reset says "try it", and the next
-// refusal re-cooldowns honestly.
+// provider cooldown, forgets the stale readings the margin skip was acting
+// on, and lifts every reset_hold naming the entry (the runs holding it
+// re-rank at their next resume). The provider's own window may not have
+// reset — the reset says "try it", and the next refusal re-cooldowns
+// honestly.
 func (s *Server) handleResetPoolEntry(w http.ResponseWriter, r *http.Request) {
 	pool, _, ok := s.poolManageOrFail(w, r)
 	if !ok {
@@ -694,6 +709,12 @@ func (s *Server) handleResetPoolEntry(w http.ResponseWriter, r *http.Request) {
 		// skip was acting on are forgotten, whatever their freshness said.
 		if _, err := s.usageCaps.DeleteByFingerprint(r.Context(), s.credFingerprintOf(p)); err != nil {
 			s.httpErrorFor(w, r, http.StatusInternalServerError, "forget readings: %v", err)
+			return
+		}
+	}
+	if s.credPool != nil {
+		if _, err := s.credPool.ClearHolds(r.Context(), p.ID); err != nil {
+			s.httpErrorFor(w, r, http.StatusInternalServerError, "lift holds: %v", err)
 			return
 		}
 	}
@@ -811,14 +832,6 @@ func (s *Server) putPoolAttachment(w http.ResponseWriter, r *http.Request, scope
 	// stored 200 would brick every later launch of the scope with 422s.
 	if err := validatePoolTriggers(a.Strategy.Triggers); err != nil {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "%s", err)
-		return
-	}
-	// reset_hold's RUNTIME half (held-bit on switch, the resume's
-	// held-entry re-acquisition) is not landed yet — accepting true would
-	// silently never hold. Warn-not-fake: the write refuses until the
-	// machinery exists (ADR-164 watch).
-	if a.Strategy.ResetHold {
-		s.httpErrorFor(w, r, http.StatusBadRequest, "reset_hold is not honored yet — its runtime half (held-entry resume) lands in a follow-up; drop the flag for now")
 		return
 	}
 	// A cap-less attachment is allowed: the preview and the launch warn
@@ -1030,4 +1043,42 @@ func (s *Server) auditAttachmentWrite(r *http.Request, scopeID, action string, a
 	default:
 		s.auditTenant(r, scopeID, action, "pool_attachment", a.PoolID, nil)
 	}
+}
+
+// enabledBindingNaming names the first binding-level record (a webhook
+// config, a schedule row) whose ENABLED pool block draws the pool, or ""
+// when none does. Every team is walked: a pool's consent can span teams.
+func (s *Server) enabledBindingNaming(ctx context.Context, poolID string) (string, error) {
+	if s.authStore() == nil || (s.webhookConfigs == nil && s.scheduledBots == nil) {
+		return "", nil
+	}
+	teams, err := s.authStore().ListTeams(ctx, identity.Page{Limit: 1000})
+	if err != nil {
+		return "", fmt.Errorf("list teams: %w", err)
+	}
+	for _, tm := range teams {
+		if s.webhookConfigs != nil {
+			cfgs, err := s.webhookConfigs.ListByTenant(ctx, tm.ID)
+			if err != nil {
+				return "", fmt.Errorf("list team %s's webhook configs: %w", tm.ID, err)
+			}
+			for _, c := range cfgs {
+				if c.Pool != nil && c.Pool.Enabled && c.Pool.PoolID == poolID {
+					return fmt.Sprintf("webhook config %s (team %s)", c.ID, tm.ID), nil
+				}
+			}
+		}
+		if s.scheduledBots != nil {
+			rows, err := s.scheduledBots.ListByTenant(ctx, tm.ID)
+			if err != nil {
+				return "", fmt.Errorf("list team %s's schedules: %w", tm.ID, err)
+			}
+			for _, sb := range rows {
+				if sb.Pool != nil && sb.Pool.Enabled && sb.Pool.PoolID == poolID {
+					return fmt.Sprintf("schedule %s (team %s)", sb.ID, tm.ID), nil
+				}
+			}
+		}
+	}
+	return "", nil
 }

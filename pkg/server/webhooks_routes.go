@@ -628,7 +628,11 @@ func (s *Server) handleUpdateWebhook(w http.ResponseWriter, r *http.Request) {
 	// whose approval flow is the governed path. Tightenings and neutral
 	// fields (launch vars, rate limits, names) stay direct.
 	if strings.HasPrefix(cfg.ProvisionedBy, "forge:") {
-		gateOrg, gerr := s.provisionOrgRequiringApproval(r.Context(), id, teamID)
+		// The CRUD writes no pool block, but a managed config CARRIES the
+		// integration's: an expanding patch (more bots, a wildcard) widens
+		// who draws that pool, so a live block disarms the self-funded
+		// exemption exactly as on the repo-bots API.
+		gateOrg, gerr := s.provisionOrgRequiringApproval(r.Context(), id, teamID, cfg.Pool != nil && cfg.Pool.Enabled)
 		if gerr != nil {
 			httpError(w, http.StatusServiceUnavailable, "provision-approval gate unavailable: %v", gerr)
 			return

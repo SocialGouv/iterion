@@ -370,6 +370,16 @@ func (s *MongoLeaseStore) Reopen(ctx context.Context, leaseID string, superseded
 	return false, nil
 }
 
+// ClearHeld lifts the reset_hold mark from every lease of the entry in
+// one update — see LeaseStore.ClearHeld.
+func (s *MongoLeaseStore) ClearHeld(ctx context.Context, pledgeID string) (int, error) {
+	res, err := s.col.UpdateMany(ctx, bson.M{"pledge_id": pledgeID, "held": true}, bson.M{"$unset": bson.M{"held": ""}})
+	if err != nil {
+		return 0, fmt.Errorf("credpool: clear the holds of pledge %s: %w", pledgeID, err)
+	}
+	return int(res.ModifiedCount), nil
+}
+
 // ListByRun returns every lease of a run, any state, newest acquired
 // first — see LeaseStore.ListByRun.
 func (s *MongoLeaseStore) ListByRun(ctx context.Context, runID string) ([]Lease, error) {

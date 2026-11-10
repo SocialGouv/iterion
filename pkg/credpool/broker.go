@@ -234,6 +234,25 @@ type Request struct {
 	// publisher constructor so live and preview cannot diverge; the pool
 	// package never reads usagecap itself (dependency direction).
 	ClosedAtMargin func(p Pledge) (reopenAt time.Time, near bool)
+	// HoldOnSwitch is the attachment's reset_hold (ADR-164): the lease
+	// this acquisition opens is marked Held when the strategy SWITCHED to
+	// its entry — a better-ranked entry of the kind did not serve — or
+	// when it re-serves PreferPledgeID.
+	HoldOnSwitch bool
+	// PreferPledgeID is the entry the run holds for this kind (its newest
+	// Held lease): ranked FIRST when it is eligible, so a resume re-acquires
+	// it instead of returning to an entry whose window reset meanwhile.
+	// Ineligible, it yields to the ordinary ranking.
+	PreferPledgeID string
+
+	// AttemptID names the credential resolution this acquisition belongs
+	// to (one per launch or resume resolution): the leases sharing it are
+	// one attempt's side-by-side siblings, settled together by its report.
+	AttemptID string
+
+	// holdLease is the per-candidate verdict the ranking walk hands to
+	// tryPledge: mark the lease it opens as Held.
+	holdLease bool
 }
 
 // Grant is a served donation.
@@ -308,6 +327,9 @@ type Grant struct {
 	// also clamp to. Zero means the attachment set no spend cap, NOT
 	// "nothing left" (same convention as RemainingUSD).
 	AttachmentRemainingUSD float64
+	// Held reports the lease was marked as the run's held entry
+	// (reset_hold — Request.HoldOnSwitch).
+	Held bool
 	// Bound when the lease is inserted, never looked up by run ID later:
 	// concurrent acquisitions can hold different leases for the same run.
 	releaseGuard *ReleaseGuard
@@ -475,14 +497,61 @@ func (b *Broker) acquireKind(ctx context.Context, pool Pool, candidates []Pledge
 	if err != nil {
 		return nil, skips, err
 	}
+	// The run's held entry (reset_hold) leads when it is eligible: the
+	// strategy switched to it earlier, and a reset window elsewhere must
+	// not pull the run back until the operator resets the hold.
+	preferredMoved := false
+	if req.PreferPledgeID != "" {
+		for i, p := range ranked {
+			if p.ID == req.PreferPledgeID && i > 0 {
+				ranked = append([]Pledge{p}, append(ranked[:i:i], ranked[i+1:]...)...)
+				preferredMoved = true
+				break
+			}
+		}
+	}
+	// A candidate the eligibility filter dropped with a priority AT LEAST
+	// as good as the one that serves means the strategy moved off an entry
+	// that was in play (an equal-priority peer near its margin included —
+	// holding an equivalent entry is harmless, flipping back is the thrash
+	// reset_hold exists to stop).
+	// Only the ELIGIBILITY filter's skips (taken before the walk): a skip
+	// the walk itself appends below — a store blip read as unhealthy — is
+	// not an entry that declined.
+	eligibilitySkips := skips[:len(skips):len(skips)]
+	bestSkipped := func(prio int) bool {
+		for _, s := range eligibilitySkips {
+			if !switchStatus(s.Status) {
+				continue
+			}
+			for _, c := range candidates {
+				if c.ID == s.PledgeID && c.Priority <= prio {
+					return true
+				}
+			}
+		}
+		return false
+	}
 
 	// Walk the ranking: a donor whose ledger refuses (raced to their cap,
 	// concurrency full) or whose credential is gone simply yields to the
 	// next — and lands on the skips list under the status tryPledge
 	// decided, so the operator can tell "exhausted" from "serving" from
 	// "unhealthy" from "paused".
+	// rankedDeclined: a better-ranked candidate was REFUSED with an
+	// exhaustion-class status (a store blip is not a switch — the entry did
+	// not decline, the read failed).
+	rankedDeclined := false
 	for _, p := range ranked {
-		grant, status, err := b.tryPledge(ctx, pool, p, req, now)
+		// reset_hold: hold when this candidate serves AFTER a better one
+		// declined for exhaustion (ranked ahead of it, or filtered out with
+		// a priority at least as good), or when it is the run's held entry.
+		req.holdLease = req.HoldOnSwitch && (p.ID == req.PreferPledgeID || rankedDeclined || bestSkipped(p.Priority))
+		grant, status, capped, err := b.tryPledge(ctx, pool, p, req, now)
+		if errors.Is(err, errScopeDrawCapped) {
+			skips = append(skips, PledgeSkip{PledgeID: p.ID, Status: status})
+			return nil, skips, nil
+		}
 		if err != nil {
 			b.logger.Warn("credpool: pledge %s unusable for run %s: %v", p.ID, req.RunID, err)
 			skips = append(skips, PledgeSkip{PledgeID: p.ID, Status: StatusUnhealthy})
@@ -492,6 +561,12 @@ func (b *Broker) acquireKind(ctx context.Context, pool Pool, candidates []Pledge
 			return grant, skips, nil
 		}
 		skips = append(skips, PledgeSkip{PledgeID: p.ID, Status: status})
+		// The held entry moved ahead of the ordinary order declining is no
+		// switch OFF the natural first choice that serves next.
+		movedPreferred := preferredMoved && p.ID == req.PreferPledgeID
+		if (capped || switchStatus(status)) && !movedPreferred {
+			rankedDeclined = true
+		}
 	}
 	return nil, skips, nil
 }
@@ -793,7 +868,7 @@ func (b *Broker) rank(ctx context.Context, eligible []Pledge, now time.Time, mod
 // tryPledge admits one eligible pledge or explains why not: a nil grant
 // with a Status names the decline (exhausted, serving, unhealthy) for the
 // abstention's skips; an error is a store failure the caller reports.
-func (b *Broker) tryPledge(ctx context.Context, pool Pool, p Pledge, req Request, now time.Time) (*Grant, Status, error) {
+func (b *Broker) tryPledge(ctx context.Context, pool Pool, p Pledge, req Request, now time.Time) (*Grant, Status, bool, error) {
 	// What this donor already has at stake: the runs they are serving and
 	// the allowance promised to them. Both bound this admission — without
 	// the promised half, ten runs launched together would each be handed
@@ -804,7 +879,7 @@ func (b *Broker) tryPledge(ctx context.Context, pool Pool, p Pledge, req Request
 	// itself.
 	liveRuns, committed, err := b.leases.LiveCommitment(ctx, p.ID, req.RunID, now)
 	if err != nil {
-		return nil, "", err
+		return nil, "", false, err
 	}
 	live := LiveCommitment{Runs: liveRuns, CommittedUSD: committed}
 
@@ -816,7 +891,7 @@ func (b *Broker) tryPledge(ctx context.Context, pool Pool, p Pledge, req Request
 	// against it forever would let a crash-looping run draw unmetered.
 	readmitting, err := b.leases.HasServedAttempt(ctx, req.RunID, p.ID)
 	if err != nil {
-		return nil, "", err
+		return nil, "", false, err
 	}
 
 	// The ATTACHMENT row first (ADR-164): the borrower scope's draw caps are
@@ -825,8 +900,17 @@ func (b *Broker) tryPledge(ctx context.Context, pool Pool, p Pledge, req Request
 	// readmission test and the acquisition floor below.
 	prev, err := b.leases.ListByRun(ctx, req.RunID)
 	if err != nil {
-		return nil, "", fmt.Errorf("credpool: read the run's leases for the acquisition floor: %w", err)
+		return nil, "", false, fmt.Errorf("credpool: read the run's leases for the acquisition floor: %w", err)
 	}
+	// The lease's acquisition instant is fixed BEFORE the ledger is asked:
+	// the ledger judges, books and refunds on the day the lease is dated —
+	// a floor that moves the lease past midnight must not leave the reserve
+	// judged on the previous day.
+	acquiredAt := now
+	for i := range prev {
+		acquiredAt = nextAcquiredAt(acquiredAt, &prev[i].AcquiredAt)
+	}
+	now = acquiredAt
 	var (
 		attRemaining float64
 		attDeny      DenyReason
@@ -834,14 +918,14 @@ func (b *Broker) tryPledge(ctx context.Context, pool Pool, p Pledge, req Request
 	)
 	if req.AttachmentID != "" {
 		for _, l := range prev {
-			if l.AttachmentID == req.AttachmentID {
+			if l.AttachmentID == req.AttachmentID && !returnedUnused(l) {
 				attReadmit = true
 				break
 			}
 		}
 		attRuns, attCommitted, aerr := b.leases.LiveCommitmentByAttachment(ctx, req.AttachmentID, req.RunID, now)
 		if aerr != nil {
-			return nil, "", aerr
+			return nil, "", false, aerr
 		}
 		attLive := LiveCommitment{Runs: attRuns, CommittedUSD: attCommitted}
 		if attReadmit {
@@ -850,12 +934,14 @@ func (b *Broker) tryPledge(ctx context.Context, pool Pool, p Pledge, req Request
 			attRemaining, attDeny, aerr = b.ledger.Reserve(ctx, AttachmentLedgerID(req.AttachmentID), now, req.DrawLimits.AsLimits(), attLive)
 		}
 		if aerr != nil {
-			return nil, "", aerr
+			return nil, "", false, aerr
 		}
 		if attDeny != DenyNone {
 			// The SCOPE is capped out — honest display state: exhausted, the
 			// borrower's own ceiling, not the donor's.
-			return nil, StatusExhausted, nil
+			// The SCOPE's draw cap is no entry's exhaustion — every
+			// candidate shares the row: the walk stops (no hold, no switch).
+			return nil, StatusExhausted, false, errScopeDrawCapped
 		}
 	}
 
@@ -876,14 +962,57 @@ func (b *Broker) tryPledge(ctx context.Context, pool Pool, p Pledge, req Request
 		if req.AttachmentID != "" && !attReadmit {
 			b.releaseReservation(ctx, AttachmentLedgerID(req.AttachmentID), now)
 		}
-		return nil, "", err
+		return nil, "", false, err
 	}
 	if deny != DenyNone {
 		if req.AttachmentID != "" && !attReadmit {
 			b.releaseReservation(ctx, AttachmentLedgerID(req.AttachmentID), now)
 		}
 		b.logger.Debug("credpool: pledge %s declined run %s (%s)", p.ID, req.RunID, deny)
-		return nil, deny.skipStatus(live), nil
+		// capped: the entry declined because its allowance is EXHAUSTED —
+		// runs/day always (consumed at admission), a $ ceiling only when the
+		// spend is real: with runs in flight the ceiling may be met by
+		// allowance merely PROMISED to them (shareAcrossSlots hands the
+		// first run all that remains), which is busy, not exhausted. A
+		// full concurrency slot set is busy too.
+		capped := deny == DenyRunsPerDay
+		// The run's OWN earlier unit on this entry — an attempt its resume
+		// superseded, which a late report can still stamp into an admission
+		// — is no exhaustion of the entry for this run: whether the late
+		// report or the resume lands first must not decide a hold. An
+		// ABANDONED unit never becomes an admission, so it is no own unit.
+		ownUnit := false
+		for _, l := range prev {
+			if l.PledgeID == p.ID && l.ConsumedRunUnit && !returnedUnused(l) && l.Outcome != OutcomeAbandoned {
+				ownUnit = true
+				break
+			}
+		}
+		if deny == DenyRunsPerDay && ownUnit {
+			b.logger.Debug("credpool: pledge %s runs/day refusal of run %s is its own earlier unit — busy, not exhausted", p.ID, req.RunID)
+			return nil, StatusServing, false, nil
+		}
+		// A busy entry whose allowance is ALSO spent is exhausted: the
+		// ledgers check concurrency first, so read the usage the refusal
+		// did not report.
+		if deny == DenyConcurrency {
+			if day, week, uerr := b.ledger.Usage(ctx, p.ID, now); uerr == nil {
+				runs := day.Runs + 1
+				if readmitting || ownUnit {
+					runs = 0
+				}
+				capped = p.Limits.Deny(runs, day.CostUSD, week.CostUSD) != DenyNone
+			}
+		}
+		if deny == DenyCostPerDay || deny == DenyCostPerWeek {
+			capped = live.Runs == 0
+			if !capped {
+				if day, week, uerr := b.ledger.Usage(ctx, p.ID, now); uerr == nil {
+					capped = p.Limits.Deny(0, day.CostUSD, week.CostUSD) != DenyNone
+				}
+			}
+		}
+		return nil, deny.skipStatus(live), capped, nil
 	}
 
 	// From here on, any failure must give back whatever was consumed.
@@ -900,24 +1029,20 @@ func (b *Broker) tryPledge(ctx context.Context, pool Pool, p Pledge, req Request
 	cred, gone, err := b.openCredential(ctx, p, now)
 	if err != nil {
 		release()
-		return nil, "", err
+		return nil, "", false, err
 	}
 	if gone != "" {
 		release()
 		// The donor pledged a credential that is no longer usable. Park the
 		// pledge rather than re-discovering this on every launch.
 		b.markUnhealthy(ctx, p.ID, HealthTokenExpired, gone)
-		return nil, StatusUnhealthy, nil
+		return nil, StatusUnhealthy, false, nil
 	}
 
 	// The run's leases stay strictly ordered at the stores' precision, so
 	// an attempt's report can tell its own lease from a successor's.
 	// Advisory under concurrency (two acquisitions read before either
 	// writes): the tie then resolves by lease id, deterministically.
-	acquiredAt := now
-	for i := range prev {
-		acquiredAt = nextAcquiredAt(acquiredAt, &prev[i].AcquiredAt)
-	}
 	lease := Lease{
 		ID:                 uuid.NewString(),
 		RunID:              req.RunID,
@@ -935,10 +1060,12 @@ func (b *Broker) tryPledge(ctx context.Context, pool Pool, p Pledge, req Request
 		ExpiresAt:          acquiredAt.Add(b.leaseTTL),
 		AttachmentID:       req.AttachmentID,
 		AttConsumedRunUnit: req.AttachmentID != "" && !attReadmit,
+		Held:               req.holdLease,
+		AttemptID:          req.AttemptID,
 	}
 	if err := b.leases.Put(ctx, lease); err != nil {
 		release()
-		return nil, "", fmt.Errorf("credpool: record lease: %w", err)
+		return nil, "", false, fmt.Errorf("credpool: record lease: %w", err)
 	}
 
 	// Best-effort fairness bookkeeping; a miss only costs tie-break
@@ -966,8 +1093,61 @@ func (b *Broker) tryPledge(ctx context.Context, pool Pool, p Pledge, req Request
 		AttachmentRemainingUSD: attRemaining,
 		RemainingUSD:           remaining,
 		AcquiredAt:             lease.AcquiredAt,
+		Held:                   lease.Held,
 		releaseGuard:           &ReleaseGuard{lease: lease},
-	}, "", nil
+	}, "", false, nil
+}
+
+// errScopeDrawCapped ends an attachment walk: the borrower's draw cap
+// refuses the run, and every candidate shares that row.
+var errScopeDrawCapped = errors.New("credpool: the attachment's draw cap refuses this run")
+
+// HeldPledge returns the entry the run holds for the wanted kind under
+// reset_hold — the pledge of its NEWEST Held lease of that credential, any
+// state (the previous attempt's lease is closed by its report) — or "".
+func (b *Broker) HeldPledge(ctx context.Context, runID string, want Credential) (string, error) {
+	if b == nil || runID == "" {
+		return "", nil
+	}
+	leases, err := b.leases.ListByRun(ctx, runID)
+	if err != nil {
+		return "", fmt.Errorf("credpool: read the run's held entry: %w", err)
+	}
+	// The run's NEWEST lease of the kind decides (a lease returned unused
+	// is no switch and is skipped): held, it names the entry; not held, the
+	// run already left the held entry — an older hold must not resurrect.
+	for _, l := range leases {
+		if l.Source != want.Source || l.Ref != want.Ref || (l.Closed && l.Outcome == OutcomeNotLaunched) {
+			continue
+		}
+		if l.Held {
+			return l.PledgeID, nil
+		}
+		return "", nil
+	}
+	return "", nil
+}
+
+// switchStatus reports whether a declining candidate's status means the
+// strategy MOVED OFF it for exhaustion — the reset_hold trigger: at its
+// margin, cooling on a provider refusal, failing auth, or out of its
+// allowance. A paused, bot-filtered, out-of-hours or busy entry was never
+// in play for this run, or is only momentarily unavailable.
+func switchStatus(s Status) bool {
+	switch s {
+	case StatusNearLimit, StatusCooling, StatusUnhealthy, StatusExhausted:
+		return true
+	}
+	return false
+}
+
+// ClearHolds lifts every reset_hold naming the entry — the manual reset's
+// hold half: the runs holding it re-rank at their next resume.
+func (b *Broker) ClearHolds(ctx context.Context, pledgeID string) (int, error) {
+	if b == nil {
+		return 0, nil
+	}
+	return b.leases.ClearHeld(ctx, pledgeID)
 }
 
 // VerifyEntry checks a pledge names a credential its lender actually
@@ -1507,44 +1687,83 @@ func (b *Broker) ReportAttempt(ctx context.Context, runID string, attemptPublish
 	}
 	now := b.now()
 
-	// The SIDE-BY-SIDE shape (ADR-164 per-slot sealing): the run holds
-	// MULTIPLE open leases of this same attempt — one per sealed slot.
-	// Each donor is charged the fingerprint slice THEIR credential served
-	// (the fine table keys on fingerprint), and each lease closes its own
-	// CAS: no donor's slice books on a sibling's lease, and no lease
-	// stays open to hold a slot for a run that already settled its
-	// siblings. A single open lease keeps today's path byte for byte.
-	if open, oerr := b.leases.ListOpenByRun(ctx, runID); oerr == nil && len(open) > 1 {
-		charged := false
-		for i := range open {
-			l := open[i]
-			// The attempt's own lease is charged through the standard
-			// path below (its supersede/CAS semantics stay exact); the
-			// SIBLINGS charge here, each its own slice.
-			if l.ID == lease.ID {
-				continue
-			}
-			slice := out.effectiveCharge(l.Fingerprint)
-			won, cerr := b.leases.Close(ctx, l.ID, slice.CostUSD, "ok", now)
-			if cerr != nil {
-				b.logger.Warn("credpool: could not close the sibling lease %s of run %s: %v", l.ID, runID, cerr)
-				continue
-			}
-			if !won {
-				continue
-			}
-			if cerr := b.chargeAndReact(ctx, l, slice, now, runID); cerr != nil {
-				b.logger.Warn("credpool: sibling charge failed on lease %s: %v", l.ID, cerr)
-			}
-			charged = true
+	// The SIDE-BY-SIDE shape (ADR-164 per-slot sealing): one attempt seals
+	// several leases (forfait and gateway), sharing its AttemptID. The
+	// report settles EXACTLY that attempt's siblings, each on its own
+	// fingerprint slice and in whatever state it is — open (closed now, or
+	// charged without closing on an interim report), superseded by the
+	// next attempt's takeover (charged once through the stamp's CAS) — and
+	// never a lease of another attempt of the same run: a late report of a
+	// superseded attempt must not settle the resume's open leases. A lease
+	// without an AttemptID (single-lease acquisitions) has no siblings.
+	var errs []error
+	settling := []Lease{*lease}
+	if lease.AttemptID != "" {
+		all, lerr := b.leases.ListByRun(ctx, runID)
+		if lerr != nil {
+			errs = append(errs, fmt.Errorf("credpool: read the attempt's sibling leases: %w", lerr))
 		}
-		_ = charged
+		for _, l := range all {
+			if l.ID != lease.ID && l.AttemptID == lease.AttemptID {
+				settling = append(settling, l)
+			}
+		}
 	}
+	// A COARSE report (no per-credential split) cannot attribute the
+	// attempt, and the doctrine is conservative-on-ignore: EVERY lease of
+	// the attempt books it whole and takes its condition — a donor's cap
+	// bites early rather than never, and a failing credential is parked
+	// whichever slot it served. Only the BORROWER's att: draw row books the
+	// attempt once: on one lease that served — the attempt's own, or, when
+	// that one was returned unused, the first sibling that was not.
+	booker := 0
+	if returnedUnused(settling[0]) {
+		for i := 1; i < len(settling); i++ {
+			if !returnedUnused(settling[i]) {
+				booker = i
+				break
+			}
+		}
+	}
+	// The lease that carries the att: row is chosen from the leases'
+	// STATES — the first, booker first, not closed by a path no report
+	// books on — so every report of the attempt (a redelivery, a cancel
+	// racing a finish) picks the same one and its CAS books the row once.
+	order := bookerFirst(len(settling), booker)
+	attLease := -1
+	for _, i := range order {
+		if !closedWithoutBooking(settling[i], attemptPublishedAt) {
+			attLease = i
+			break
+		}
+	}
+	for _, i := range order {
+		l := settling[i]
+		if i != attLease && out.ByFingerprint == nil {
+			l.AttachmentID = ""
+		}
+		_, err := b.settleLease(ctx, l, out, attemptPublishedAt, now, runID)
+		if err != nil {
+			if i > 0 {
+				err = fmt.Errorf("credpool: settle sibling lease %s: %w", l.ID, err)
+			}
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
 
+// settleLease books one lease's share of an attempt's report — the
+// semantics every lease of the attempt shares: the fine attribution
+// resolved against THIS lease's credential, a superseded lease charged
+// once through the stamp's CAS, an interim report charged without
+// closing, a final report closing the lease (a redelivery loses the CAS).
+// A lease reported, released or abandoned elsewhere stays silent.
+func (b *Broker) settleLease(ctx context.Context, lease Lease, rawOut Outcome, attemptPublishedAt, now time.Time, runID string) (bool, error) {
 	// The fine attribution resolves ONCE, against THIS lease's credential:
 	// everything below - the superseded stamp, the interim add, the close,
 	// the ledger debit - books the resolved slice, never the raw aggregate.
-	out = out.effectiveCharge(lease.Fingerprint)
+	out := rawOut.effectiveCharge(lease.Fingerprint)
 
 	outcome := "ok"
 	switch out.Condition {
@@ -1554,8 +1773,8 @@ func (b *Broker) ReportAttempt(ctx context.Context, runID string, attemptPublish
 		outcome = string(ConditionAuthFailed)
 	}
 
-	// The attempt's lease is superseded: charge through the stamp's CAS.
-	// The supersede added nothing, so this is the attempt's only charge,
+	// The lease is superseded: charge through the stamp's CAS. The
+	// supersede added nothing, so this is the attempt's only charge on it,
 	// and a redelivered report of the same attempt loses the CAS.
 	if lease.Closed {
 		switch lease.Outcome {
@@ -1574,22 +1793,22 @@ func (b *Broker) ReportAttempt(ctx context.Context, runID string, attemptPublish
 			// runner) stamps through.
 			if lease.SupersededByPublishedAt != nil &&
 				lease.SupersededByPublishedAt.Truncate(time.Millisecond).Equal(attemptPublishedAt.Truncate(time.Millisecond)) {
-				return nil
+				return false, nil
 			}
 		default:
-			return nil // reported, released or abandoned elsewhere — as in Report
+			return false, nil // reported, released or abandoned elsewhere — as in Report
 		}
 		won, err := b.leases.StampSupersededReport(ctx, lease.ID, out.CostUSD, now)
 		if err != nil {
 			if errors.Is(err, ErrNotFound) {
-				return nil
+				return false, nil
 			}
-			return err
+			return false, err
 		}
 		if !won {
-			return nil
+			return false, nil
 		}
-		return b.chargeAndReact(ctx, *lease, out, now, runID)
+		return true, b.chargeAndReact(ctx, lease, out, now, runID)
 	}
 
 	// Interim: the attempt spent but the queue will redeliver the same
@@ -1598,20 +1817,20 @@ func (b *Broker) ReportAttempt(ctx context.Context, runID string, attemptPublish
 		if err := b.leases.AddCost(ctx, lease.ID, out.CostUSD); err != nil {
 			b.logger.Warn("credpool: could not record the interim spend of run %s on lease %s: %v", runID, lease.ID, err)
 		}
-		return b.chargeAndReact(ctx, *lease, out, now, runID)
+		return true, b.chargeAndReact(ctx, lease, out, now, runID)
 	}
 
 	won, err := b.leases.Close(ctx, lease.ID, out.CostUSD, outcome, now)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
-			return nil
+			return false, nil
 		}
-		return fmt.Errorf("credpool: close lease: %w", err)
+		return false, fmt.Errorf("credpool: close lease: %w", err)
 	}
 	if !won {
-		return nil // another report got there first; it did the charging
+		return false, nil // another report got there first; it did the charging
 	}
-	return b.chargeAndReact(ctx, *lease, out, now, runID)
+	return true, b.chargeAndReact(ctx, lease, out, now, runID)
 }
 
 // chargeAndReact debits the donor for what an attempt consumed and applies
@@ -1786,6 +2005,42 @@ type FingerprintSpend struct {
 	InputTokens     int64
 	OutputTokens    int64
 	AggregateTokens int64
+}
+
+// bookerFirst orders the attempt's leases for settlement: the booker
+// first, then the others in their listed order.
+func bookerFirst(n, booker int) []int {
+	order := make([]int, 0, n)
+	order = append(order, booker)
+	for i := 0; i < n; i++ {
+		if i != booker {
+			order = append(order, i)
+		}
+	}
+	return order
+}
+
+// closedWithoutBooking reports a lease closed by a path no report books
+// on: swept as abandoned, returned unused, or the grantless takeover's own
+// report of its publication.
+func closedWithoutBooking(l Lease, attemptPublishedAt time.Time) bool {
+	if !l.Closed {
+		return false
+	}
+	switch l.Outcome {
+	case OutcomeAbandoned, OutcomeNotLaunched:
+		return true
+	case OutcomeSupersededGrantless:
+		return l.SupersededByPublishedAt != nil &&
+			l.SupersededByPublishedAt.Truncate(time.Millisecond).Equal(attemptPublishedAt.Truncate(time.Millisecond))
+	}
+	return false
+}
+
+// returnedUnused reports a lease closed because its grant was given back
+// before the run launched on it.
+func returnedUnused(l Lease) bool {
+	return l.Closed && l.Outcome == OutcomeNotLaunched
 }
 
 // effectiveCharge resolves what THIS lease books from the report: with a
