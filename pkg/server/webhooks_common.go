@@ -842,8 +842,9 @@ type forgeLaunchTarget struct {
 	// onLaunched, when set, is called with the launch's result once it
 	// completes — the fork review gesture's Q1 note, which needs the run
 	// link and posts AFTER the launch, from the booking context the tail
-	// already runs it in. Never persisted, never replayed: a retry that
-	// relaunches owes its own note, and a duplicate fires none.
+	// already runs it in. Never persisted: a relaunch from the durable retry
+	// row (the sweeper, the manual retry — prepareWebhookRetry) rebuilds the
+	// target without it and posts no note, and a duplicate fires none.
 	onLaunched func(webhookLaunchResult)
 	BotID      string
 	IdemKey    string

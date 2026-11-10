@@ -620,7 +620,11 @@ public-base fork:
   the run link and the pinned commit, and NOTHING the run wrote — the run
   holds no publish grant at all, so its findings live on the run the note
   links. Posted by the server, from the same forge identity that read the
-  pull request.
+  pull request, once the gesture's own launch returns a run. A launch that
+  first failed and is relaunched from the delivery's durable retry row (the
+  retry sweeper, the super-admin manual retry) posts NO note: the row does
+  not carry the note's inputs, so the run is found from the delivery row
+  and the studio — a known gap.
 - **What the base's configuration may do** (decision 4 + Q2): stop the
   gesture — a configured hold label blocks it — and nothing else. Neither
   `LaunchVars` nor `OperatorLaunchVars` is layered onto the launch, no
