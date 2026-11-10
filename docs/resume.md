@@ -199,6 +199,10 @@ from it — can differ on the next attempt and keeps its retries. So can
 `AUTH_FAILED`: every claim re-materialises the sealed OAuth-forfait blob
 into a fresh file and refreshes it when it is at or past its expiry lead,
 so the *effective* token can differ even though the sealed blob does not.
+And an exhausted fallback chain that met a usage window on any route is
+`USAGE_LIMIT_BLOCKED`, not `AUTH_FAILED`, whatever its other routes met: the
+run parks until the window reopens, and the dead route is named in the
+`node_recovery` event's `chain_routes` ([scheduling.md](scheduling.md)).
 
 When a surface declines to bring a run back, it says so on the timeline:
 **`run_retry_skipped {reason: deterministic, code, error, hint, status?,

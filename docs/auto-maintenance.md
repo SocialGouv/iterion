@@ -489,6 +489,37 @@ firmly as a missing one: the day one of them answers, the list has to lose it.
 
 ---
 
+## When the provider's quota runs out
+
+The lane's reviews run on a provider forfait, and a forfait has walls: a
+five-hour window, a weekly cap (z.ai `[1308]`, `[1310]`). A review that meets
+one is **parked**, not dead, and what an operator sees is the same on every
+surface ([scheduling.md](scheduling.md#retry--a-provider-quota-window-is-waited-out-not-re-attempted)):
+
+- the run sits at `failed_resumable` with `USAGE_LIMIT_BLOCKED`, and a
+  `run_retry_scheduled` event naming the instant it comes back — the earlier of
+  the wall and a skipped credential's reopening;
+- the pull request carries one pause notice, which names that same instant;
+  nothing relaunches the run before it — not the sweeper, not its probe, not
+  the gate reconciler, which counts a parked review as alive (also in the gap
+  before its retry is armed) and leaves the head's one relaunch unspent;
+- the minutes an attempt spends only meeting the wall leave the run's
+  `max_duration` (`duration_refunded_ms` on `run_failed`), so a week-long wait
+  no longer kills the review on its duration budget;
+- a fallback chain that met the window on one route and a dead credential on
+  another still parks on the window; the dead route is named in the
+  `node_recovery` event's `chain_routes`, and repairing or retiring that route
+  is a separate, human task.
+
+What still needs a human: a spend ceiling (it reopens when an admin raises
+it), a chain whose every route is a dead credential (`AUTH_FAILED`), and a
+park whose attempt budget is spent — that one is dead, and the gate's usual
+repair (one relaunch per head, then the board) takes over. To look before the
+wall on a forfait topped up by hand, `iterion remote runs resume
+--usage-blocked` resumes every parked run at once.
+
+---
+
 ## The preflight
 
 ```

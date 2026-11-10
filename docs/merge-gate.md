@@ -267,11 +267,24 @@ block for an admin.
 
 A review that hits the provider's quota does not die: the runner arms a
 durable retry and the reconciler leaves the check alone, because that armed
-retry is the promise. But the check then sits on its in-flight claim, which
+retry is the promise. It leaves it alone from the moment the run fails on the
+window, too: the engine writes `failed_resumable` / `USAGE_LIMIT_BLOCKED`
+before the runner's post-engine steps arm the retry, and a sweep tick in that
+gap used to count the run dead, relaunch a second review into the same wall
+and spend the head's one relaunch on a quota (#3127). A usage failure whose
+continuation is not settled final is parked (`store.Run.UsageWindowPark`): a
+continuation the runner stated (`retry_armed`, `redelivery_pending`) on every
+offer, and an unknown one on the sweep — the outcome event that follows the
+arming offers the run again. The runner states the continuation before it
+fires that event, so an unknown one on the event is a lane that never states
+it, and the run is repaired as before; so is a park settled final (the
+attempt budget spent, the retry abandoned). But the check then sits on its in-flight claim, which
 reads exactly like a review that died — and nothing said how long to wait.
 So the park **comments on the pull request**, once per park (fired from the
 run-outcome event, never the every-minute sweep): what happened, the instant
-the retry fires, the attempt number, and the provider's own sentence. When
+the retry fires — never earlier than the usage window the sweeper itself waits
+for (`retrypolicy.UsageWindowNotBefore`), so the notice and the resumer cannot
+disagree — the attempt number, and the provider's own sentence. When
 that sentence is an account **spend ceiling** rather than a time window, the
 notice says so explicitly — a ceiling reopens when an admin raises it (or
 the month rolls), so the armed retries can otherwise exhaust themselves

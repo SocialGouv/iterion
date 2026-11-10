@@ -363,16 +363,56 @@ identically local and cloud. A run that stops retrying records **why**
 (budget spent, admission denied, source no longer resolvable) rather than
 going quiet.
 
+**One window, every reader (cloud).** The run record names the window a
+parked run waits on: the wall its park is on (`RunRetryState.Wall`, the
+provider's own instant or the bounded guess) and the reopening of a credential
+the launch passed over (`skipped_cred_reopens_at`), the earlier of the two.
+Every automatic re-launcher reads that one instant —
+`retrypolicy.UsageWindowNotBefore` — and none resumes the run before it: the
+due pass holds a row due too early (pulled forward, re-armed after a failed
+resume) until the window, free of charge (`run.retry.window_wait` on the audit
+trail); the probe below does not pull it; the in-process `--auto-resume` loop
+waits for it; and the pull-request notice promises that same instant. Measured
+before this rule (#3127): a review parked on a weekly wall dated four days out
+was announced for that date and relaunched every hour by the probe, each
+attempt a pod and ten of the run's active minutes against a wall that could
+not move. Two bounds keep the rule from parking a run indefinitely: a record
+that names **no** window keeps the cadence its arming chose, and the run's own
+`max_wait`, measured from its last paid park, still wakes it to check again.
+
+**Parked minutes leave `max_duration`.** The wait between attempts was never
+counted; the part of an attempt that only re-meets the wall now is not either.
+When a run stops on a usage window, the span since its last booking — no node
+finished, no token spent, no call unreported — leaves the duration budget
+before the checkpoint is written, and the `run_failed` event says how much
+(`duration_refunded_ms`). Work stays counted: a node that finished, or a route
+that spent tokens before another route met the wall, ends the refundable span.
+Before this, twelve zero-token resumes took a review to "budget hard limit
+reached: duration at 90%" days before its window reopened.
+
+**A usage window wins an exhausted chain.** When a node's fallback chain is
+exhausted and at least one route met a usage window, the node stops on
+`USAGE_LIMIT_BLOCKED` whatever the other routes met — a dead credential on
+another route no longer turns a five-hour wait into a pause for a human
+(`AUTH_FAILED`, #3032). The dead route stays in the evidence: the
+`node_recovery` event carries `chain_routes`, each route's own code and
+error. A chain whose routes are all dead credentials is still `AUTH_FAILED`.
+
 **Observing a reset nobody announced (cloud).** An operator who tops up or
 clears their forfait by hand reopens the window with no notice, and a retry
 armed for the date the provider named is invisible to every sweep until that
 date — six reviews once slept four days on a wall that had fallen the first
 afternoon. So the sweeper also runs a **pull-forward probe**: it moves a
 not-yet-due `usage_window` retry to *now*, and the ordinary pass resumes it on
-its next tick. The runner's usage preflight is the authoritative reading of
-the window and it refuses *before* anything spends, so the worst case is one
-wasted pod and a retry re-armed on the instant the provider names; the best
-case is a run that comes back hours or days early.
+its next tick. The probe obeys the window rule above: by default it pulls only
+a wait whose record names no window still ahead (a skipped credential that has
+already reopened, a legacy row with no wall), because a pull before a dated
+wall is a pod and the run's own minutes spent to be refused again.
+`ITERION_RETRY_PROBE_BEFORE_WINDOW=true` is the operator's escape hatch: it
+lets the probe pull a wait before its window, the behaviour described in the
+rest of this section, for a deployment whose forfaits are topped up by hand
+often enough to pay for it. The manual sweep (`iterion remote runs resume
+--usage-blocked`) is not an automatic re-launcher and ignores the window.
 
 The probe is bounded, and its bounds are the deployment's:
 
@@ -380,10 +420,13 @@ The probe is bounded, and its bounds are the deployment's:
 |---|---|---|
 | `ITERION_RETRY_PROBE_FLOOR` | How long a wait rests between probes, and how close to its announced instant probing stops being worth a pod | `1h` |
 | `ITERION_RETRY_PROBE_BUDGET` | Probes one armed wait may spend; `0` turns probing off | `24` |
+| `ITERION_RETRY_PROBE_BEFORE_WINDOW` | `true`: probe a wait before the usage window its record names | off |
 
-The probe ships **armed**: a deployment that sets neither variable probes every
-parked wait hourly, up to twenty-four times — a bounded day of observation,
-then the run simply waits for the instant the provider named. That is the
+The probe ships **armed** for the waits the window rule leaves it: a
+deployment that sets none of these variables probes such a wait hourly, up to
+twenty-four times — a bounded day of observation, then the run simply waits for
+the instant the provider named. With `ITERION_RETRY_PROBE_BEFORE_WINDOW=true`
+that bounded day applies to every parked wait. That is the
 decision, and the bet it makes is one pod an hour per parked wait (the price
 this codebase already accepts for a refusal that names no instant at all)
 against a run sleeping through a window that reopened the first afternoon.
