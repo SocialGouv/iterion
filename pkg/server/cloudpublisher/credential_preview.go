@@ -28,13 +28,21 @@ func (p *Publisher) PreviewCredentials(ctx context.Context, spec runview.Credent
 }
 
 // previewProgram is the program a preview judges: the route view its walk
-// reads and the pinned set its seal decisions take. A launch derives both
-// from the spec (launchPreviewProgram); a resume replays its run document's
-// — the dispatch view over the run's own inputs and the launch-frozen pinned
-// set — exactly as SubmitResume hands them to the walk.
+// reads, the pinned set its seal decisions take and the content boundary its
+// gateway answer and screens read. A launch derives all three from the spec
+// (launchPreviewProgram, the boundary derived as the launch's walk derives
+// it); a resume replays its run document's — the dispatch view over the
+// run's own inputs, the launch-frozen pinned set and the frozen stamp —
+// exactly as SubmitResume hands them to the walk.
 type previewProgram struct {
 	view   model.RouteView
 	pinned []string
+	// boundary is the resolution's boundary source (content_boundary.go):
+	// the zero value derives it, as a launch; a resume replays the run's
+	// frozen stamp, which decides whether its gateway routes are attributed
+	// to a key (gatewayRouting) and whether the run is held to its team's
+	// gateway, whatever the stores read now.
+	boundary boundarySource
 }
 
 // launchPreviewProgram is the program a launch that has not happened yet
@@ -162,7 +170,7 @@ func (p *Publisher) previewCredentials(ctx context.Context, spec runview.Credent
 	// source may serve several, or a pattern): a gateway key its repository
 	// audience alone keeps out is reported, never read as absent.
 	gateway := p.gatewayRouting(x.ctx, previewView, spec.Context.TeamID, x.orgID, spec.OwnerID, previewBotID, sovereignPreview, pooledPreview,
-		gatewayProbe{lists: x.policy, allowed: x.allowed, repoUnknown: secrets.LaunchRepoFromContext(x.ctx) == "", attachment: spec.PoolAttachment, botID: spec.Context.BotID})
+		gatewayProbe{lists: x.policy, allowed: x.allowed, repoUnknown: secrets.LaunchRepoFromContext(x.ctx) == "", attachment: spec.PoolAttachment, botID: spec.Context.BotID, boundary: prog.boundary})
 	previewView, envFunded := gateway.view, gateway.envFunded
 	x.policy = x.policy.withGatewaySlot(gateway.sealable)
 	if sovereignPreview && !envFunded {
@@ -530,12 +538,16 @@ func (p *Publisher) previewCredentials(ctx context.Context, spec runview.Credent
 	// the launch's own composer over the fills predicted here, and RESTORED
 	// immediately: the live fallback door runs BEFORE the ladder, so the door
 	// block below must answer on the authored program, as it does live.
-	// The content boundary the launch would stamp (ADR-131 §4), through the
-	// launch's own predicate over the fills predicted here: the ladder and
-	// the door below screen on it as the launch's do.
+	// The content boundary the walk would hold the run to (ADR-131 §4): a
+	// launch's through the launch's own producer over the fills predicted
+	// here, a resume's as its run document froze it — the walk replays the
+	// stamp, so the preview does too. The ladder and the door below screen on
+	// it as the walk's do.
 	_, gwKey := x.api[secrets.ProviderOpenAICompatible]
 	_, gwPinned := x.pinnedAPI[secrets.ProviderOpenAICompatible]
-	previewTeamGateway := teamGatewayBoundary(previewView, gwKey || gwPinned)
+	previewTeamGateway := prog.boundary.resolve(func() *store.RunContentBoundary {
+		return derivedContentBoundary(teamGatewayBoundary(previewView, gwKey || gwPinned), gwKey || gwPinned, "", "")
+	}).TeamGateway()
 	restoreRoutes := snapshotFallbackRoutes(wf)
 	composePolicyLadder(wf, previewView, spec.LLMRoutePolicy, model.AllowedProviderSet(previewView.AllowedProviders), spec.Launch.Vars, doorServesMetadata(x, spec.Launch.Trust.AmbientLLMRefused()), previewTeamGateway, nil)
 	previewRoutes := attributedRoutes(previewView)
@@ -548,7 +560,7 @@ func (p *Publisher) previewCredentials(ctx context.Context, spec runview.Credent
 		previewRoutes = previewRoutes.gatewayToEnvironment()
 	}
 	posture := p.unfundedPostureFor(wf, sovereignPreview, previewTeamGateway, envFunded, spec.Launch.Trust, runnerPool)
-	refusal := unfundedRefusalFor(spec.Context.TeamID, previewRoutes, metadataFunding(x, posture), !metadataHoldsDefault(x), posture, gateway.heldOut(), x.busy)
+	refusal := unfundedRefusalFor(spec.Context.TeamID, previewRoutes, metadataFunding(x, posture), !metadataHoldsDefault(x), posture, gateway, x.busy)
 	if refusal == nil && posture.TeamGateway {
 		if tolerated, why := teamGatewayTolerated(previewRoutes.providers, previewRoutes.pins, previewRoutes.primary, metadataFunding(x, posture)); tolerated != "" {
 			x.warn("The run is held to its team's gateway (team_gateway) and no credential it carries funds " + tolerated + " — " + why + ".")

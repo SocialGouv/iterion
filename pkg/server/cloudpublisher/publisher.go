@@ -1746,7 +1746,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	// contradict the launch it describes — a refusal left outside it is a
 	// refusal no view mirrors.
 	posture := p.unfundedPostureFor(wf, sovereign, teamGateway, envFunded, trust, runnerPool)
-	if refusal := unfundedRefusalFor(tenantID, attributed, bundleFunding(bundle, posture), !holdsDefaultLLMCredential(bundle), posture, gateway.heldOut(), res.busy); refusal != nil {
+	if refusal := unfundedRefusalFor(tenantID, attributed, bundleFunding(bundle, posture), !holdsDefaultLLMCredential(bundle), posture, gateway, res.busy); refusal != nil {
 		return res, refusal
 	}
 	// What the boundary's strict arm leaves unrefused is said: a provider only

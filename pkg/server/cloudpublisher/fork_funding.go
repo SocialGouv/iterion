@@ -67,9 +67,13 @@ func (p *Publisher) FundingRefusal(ctx context.Context, spec runview.CredentialP
 // SubmitResume hands the walk — the dispatch view over the run's own inputs,
 // its frozen pinned set, model overrides, fallback chain, routing policy and
 // pool attachment, its owner, key pins and repository — and the run's frozen
-// trust and pool stamp, never its team's current mapping. A key the team
-// removed since the launch is therefore a refusal here, before the resume is
-// metered, exactly as the resume's own walk would refuse it at publish.
+// trust, pool stamp and content boundary, never its team's current mapping
+// nor a boundary re-derived from today's stores. A key the team removed since
+// the launch is therefore a refusal here, before the resume is metered,
+// exactly as the resume's own walk would refuse it at publish; and so is a
+// gateway route a launch that sealed no gateway key left to the runner's
+// environment, whatever key the team holds now (gatewayRouting's replay
+// rule).
 func (p *Publisher) ResumeFundingRefusal(ctx context.Context, prior *store.Run, wf *ir.Workflow) error {
 	if prior == nil {
 		return errors.New("cloudpublisher: resume funding: no run document to judge")
@@ -99,7 +103,8 @@ func (p *Publisher) ResumeFundingRefusal(ctx context.Context, prior *store.Run, 
 		spec.Launch.ForkLanePool = prior.RunnerPool
 	}
 	ctx = secrets.WithLaunchRepo(store.WithOwner(store.WithTenant(ctx, prior.TenantID), prior.OwnerID), prior.ProjectPath)
-	_, verdict, err := p.previewCredentials(ctx, spec, wf, previewProgram{view: view, pinned: prior.PinnedProviders})
+	_, verdict, err := p.previewCredentials(ctx, spec, wf, previewProgram{view: view, pinned: prior.PinnedProviders,
+		boundary: boundaryFrozen(prior.ContentBoundary).forkOf(prior.ForkedFrom)})
 	if err != nil {
 		return err
 	}

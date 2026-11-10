@@ -387,9 +387,13 @@ func (p *Publisher) unfundedPostureFor(wf *ir.Workflow, sovereign, teamGateway, 
 // where the launch starts and to stay silent where it refuses (#2485). An arm
 // kept outside this producer is exactly that silence, for that arm alone.
 //
-// heldOut names, per provider, what a consulted tier held for it that did not
-// seal (gatewayRoutes.heldOut): a refusal naming that provider carries it, so
-// the sentence never claims no tier holds what one does. routes.primary is
+// gateway is the run's gateway answer (gatewayRouting). Its heldOut names,
+// per provider, what a consulted tier held for it that did not seal: a
+// refusal naming that provider carries it, so the sentence never claims no
+// tier holds what one does. Its replayHeldOut names, on a replay whose frozen
+// content boundary records no gateway key its launch sealed, the key the
+// replay rule holds out: the untrusted arm's gateway remedy names that frozen
+// boundary as the cause, never a key to provision. routes.primary is
 // the attributed set's decided primary routes (attributedRoutes), the content
 // boundary's strict set. busy names, per provider, the pool entries that
 // exist for the launch but could not serve it now (busy_entries.go): whether
@@ -397,8 +401,8 @@ func (p *Publisher) unfundedPostureFor(wf *ir.Workflow, sovereign, teamGateway, 
 // arm that refused — the knob's refusal ends with one funded provider, a
 // strict arm's with every one, and only a strict arm's can be left unfunded
 // by a pool lending one credential per run (OneGrant).
-func unfundedRefusalFor(tenant string, routes routeAttribution, funded map[string]bool, holdsNothing bool, posture unfundedPosture, heldOut map[string]string, busy busyProviders) *UnfundedProvidersError {
-	refusal := unfundedRefusalArm(tenant, routes, funded, holdsNothing, posture, heldOut)
+func unfundedRefusalFor(tenant string, routes routeAttribution, funded map[string]bool, holdsNothing bool, posture unfundedPosture, gateway gatewayRoutes, busy busyProviders) *UnfundedProvidersError {
+	refusal := unfundedRefusalArm(tenant, routes, funded, holdsNothing, posture, gateway)
 	if refusal != nil {
 		var oneGrant []string
 		refusal.Busy, oneGrant = busy.busyFor(refusal.Providers)
@@ -411,8 +415,9 @@ func unfundedRefusalFor(tenant string, routes routeAttribution, funded map[strin
 
 // unfundedRefusalArm is unfundedRefusalFor's decision: which arm refuses, and
 // what it names.
-func unfundedRefusalArm(tenant string, routes routeAttribution, funded map[string]bool, holdsNothing bool, posture unfundedPosture, heldOut map[string]string) *UnfundedProvidersError {
+func unfundedRefusalArm(tenant string, routes routeAttribution, funded map[string]bool, holdsNothing bool, posture unfundedPosture, gateway gatewayRoutes) *UnfundedProvidersError {
 	attributed, sites, primary := routes.providers, routes.pins, routes.primary
+	heldOut := gateway.heldOut()
 	if posture.Untrusted {
 		holdsNothing = true
 		for prov := range funded {
@@ -436,6 +441,9 @@ func unfundedRefusalArm(tenant string, routes routeAttribution, funded map[strin
 			refusal.Untrusted, refusal.Pool = true, posture.Pool
 			refusal.Gateway, refusal.Deferred = routes.gateway, routes.deferred
 			refusal.Unattributed, refusal.WireDefault = unattributed, wire
+			if len(routes.gateway) > 0 {
+				refusal.ReplayHeldOut = gateway.replayHeldOut
+			}
 			return refusal
 		}
 	}
@@ -570,6 +578,13 @@ type UnfundedProvidersError struct {
 	// no gateway key of the team's own is sealed for it — a route that key
 	// funds names the openai_compatible provider instead). Sorted.
 	Gateway []string
+	// ReplayHeldOut names, on the untrusted arm with Gateway, why a resume
+	// leaves those routes to the runner's environment while a key may serve
+	// them: the run's frozen content boundary records no gateway key its
+	// launch sealed, and a replay seals none its launch did not
+	// (gatewayRoutes.replayHeldOut). The remedy is then a new launch or a
+	// vendor route, never a key to provision. Empty otherwise.
+	ReplayHeldOut string
 	// Deferred lists, on the untrusted arm, the sites whose route the pool's
 	// runner decides — an `${…}` dial expanded with the pool's own
 	// environment, or a late run var — so no verdict this process reaches is
@@ -690,7 +705,11 @@ func (e *UnfundedProvidersError) Error() string {
 		if len(e.Providers) > 0 {
 			remedies = append(remedies, "provision a team API key for: "+e.namedList())
 		}
-		if len(e.Gateway) > 0 {
+		switch {
+		case len(e.Gateway) > 0 && e.ReplayHeldOut != "":
+			remedies = append(remedies, fmt.Sprintf("the routes of %s ride the openai_compatible gateway, which funds no fork run on the runner's environment — the runner's gateway is the refused environment, and this resume replays the run's frozen content boundary: %s — that frozen boundary refuses them, not a missing key: launch the run anew (a new launch decides its own boundary and seals the team's gateway key), or route them to a vendor provider the team holds an API key for",
+				strings.Join(e.Gateway, ", "), e.ReplayHeldOut))
+		case len(e.Gateway) > 0:
 			remedies = append(remedies, fmt.Sprintf("the routes of %s ride the openai_compatible gateway, which funds no fork run on the runner's environment — the runner's gateway is the refused environment, and no gateway key of the team's own is sealed for them: provision the team's gateway key for this bot and repository, or route them to a vendor provider the team holds an API key for",
 				strings.Join(e.Gateway, ", ")))
 		}
