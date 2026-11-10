@@ -79,7 +79,7 @@ type Registry struct {
 	// parked run just sits there as failed_resumable.
 	RunsUsageWindowBlocked prometheus.Counter
 	RunsRetryScheduled     prometheus.Counter
-	RunsRetryResumed       *prometheus.CounterVec // result (enqueued|abandoned|failed|slot_wait|window_wait)
+	RunsRetryResumed       *prometheus.CounterVec // result (enqueued|abandoned|failed|slot_wait|window_wait|release_deferred)
 	RunsRetryPending       prometheus.Gauge
 	// RunsRetrySweeps is what makes the three above readable. Every one of
 	// them sits at 0 on a healthy idle deployment — and also on a deployment

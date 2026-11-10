@@ -62,9 +62,18 @@ const UsageWindowComeBack = time.Minute
 // THIS park, so a kept wall never outlives it; what the window still holds is
 // a run due EARLIER than its arming chose — a probe's pull whose resume aged
 // out.
+//
+// A run released on its credential window's answer (RunRetryState.Released)
+// is not held at all: the window's probe got past the wall, which is the
+// news the date was waiting for. Its resume can come long after the release —
+// behind the shared circuit, or a transient refusal re-armed on the ordinary
+// backoff — and holding it to the date then would undo the answer.
 func UsageWindowNotBefore(r *store.Run, now time.Time) (time.Time, bool) {
 	park := r.UsageWindowPark()
 	if !park.Parked || park.ReopensAt.IsZero() {
+		return time.Time{}, false
+	}
+	if r.RetryState.Released(now) {
 		return time.Time{}, false
 	}
 	notBefore := park.ReopensAt

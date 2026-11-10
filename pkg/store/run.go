@@ -877,6 +877,39 @@ type RunRetryState struct {
 	// second canary within the hour. Absent on a row armed before this
 	// field: such a wait names no credential window, and waits for its own.
 	WallCredentials []string `json:"wall_credentials,omitempty" bson:"wall_credentials,omitempty"`
+	// ReleasedBy names the run whose probe of this wait's credential window
+	// got past the wall, when THAT answer is what pulled this row forward
+	// (RunRetryStore.ReleaseRunRetry) — empty on a probe's own pull. It
+	// qualifies the marker: written beside ProbeFrom by the release and
+	// consumed with it by every write that consumes the marker, so it says
+	// nothing once ProbeFrom is gone. Read it through Released.
+	//
+	// A release is not a probe. A probe is a guess the preflight is expected
+	// to refuse, so a resume that never reached the provider stands down to
+	// the announced instant and its admission is handed back; a release
+	// follows an answer that the wall fell, so it is expected to succeed — a
+	// transient refusal of its resume comes back on the ordinary backoff,
+	// free, and the window no longer holds it. Only the runner's
+	// meets-the-wall-again path treats both alike: either re-arms free on the
+	// announced instant (ProbeInFlight).
+	ReleasedBy string `json:"released_by,omitempty" bson:"released_by,omitempty"`
+}
+
+// Released reports a row pulled forward on its credential window's answer
+// (ReleasedBy) whose set-aside wall is still ahead — the wait the window no
+// longer holds (retrypolicy.UsageWindowNotBefore), whose transient refusal
+// comes back on the ordinary backoff instead of the announced instant, and
+// whose resume is metered like any launch. Nil-safe.
+func (s *RunRetryState) Released(now time.Time) bool {
+	return s.AnnouncedProbeFrom(now) != nil && s.ReleasedBy != ""
+}
+
+// SpeculativeProbeInFlight is ProbeInFlight for a probe's OWN pull: the
+// resume the preflight is expected to refuse, which nobody meters. A
+// release's resume is in flight too (its re-park is free), but it is expected
+// to succeed and is metered like any launch. Nil-safe.
+func (s *RunRetryState) SpeculativeProbeInFlight(now time.Time) bool {
+	return s.ProbeInFlight(now) && s.ReleasedBy == ""
 }
 
 // CredentialWindow is the credential-window key of the wait this row is on

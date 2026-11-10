@@ -246,10 +246,16 @@ func (s *Server) sweepCredentialProbes(ctx context.Context, retryStore store.Run
 // probe — has its own answer coming. That is also what keeps one answer from
 // releasing the same wait twice.
 //
-// The release IS a pull: the wait is moved to now with the provider's
-// instant held aside, so the due pass resumes it past its window hold, and a
-// wait whose resume still meets the wall is re-armed free on that instant —
-// a release on a wrong answer costs a pod, never the run's life.
+// The release is a pull that records its answer (RunRetryState.ReleasedBy):
+// the wait is moved to now with the provider's instant held aside, and a wait
+// whose resume still meets the wall is re-armed free on that instant — a
+// release on a wrong answer costs a pod, never the run's life. The recorded
+// answer is what keeps the release from being read as a probe's guess: the
+// window no longer holds the run however late its resume comes (behind the
+// shared circuit), a transient refusal of that resume — a mass release is
+// what trips the tenant's concurrency cap — re-arms it on the ordinary
+// backoff instead of the provider's announced instant (reArmRetry), and its
+// resume is metered like any launch.
 func (s *Server) releaseCredentialWindow(ctx context.Context, retryStore store.RunRetryStore, w *credentialWindow, now time.Time) (released int, outstanding bool) {
 	var answeredAt time.Time
 	var answeredBy string
@@ -275,7 +281,7 @@ func (s *Server) releaseCredentialWindow(ctx context.Context, retryStore store.R
 		}
 		runCtx := store.WithIdentity(ctx, wait.TenantID, "retry-sweeper")
 		announced := wait.RetryAfter()
-		ok, err := retryStore.PullRunRetry(runCtx, wait.ID, announced, now)
+		ok, err := retryStore.ReleaseRunRetry(runCtx, wait.ID, announced, now, answeredBy)
 		if err != nil {
 			s.warnf("retry sweeper: release %s: %v", wait.ID, err)
 			continue

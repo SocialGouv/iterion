@@ -172,9 +172,10 @@ func (s *Server) resumeDueRetry(ctx context.Context, retryStore store.RunRetrySt
 	// a row due at the instant its own arming chose is never held
 	// (retrypolicy.UsageWindowNotBefore). A pull still in flight is let
 	// through: it is the one relaunch the window allows before its date — its
-	// credential window's probe, a run released on that probe's answer
-	// (retry_probe_credential.go), or a wait probed on its own under the
-	// operator's per-run escape hatch (EnvRetryProbeBeforeWindow).
+	// credential window's probe, or a wait probed on its own under the
+	// operator's per-run escape hatch (EnvRetryProbeBeforeWindow). A run
+	// released on that probe's answer (retry_probe_credential.go) is let
+	// through however old its pull: the window no longer holds it at all.
 	if run != nil && !ref.RetryState.ProbeInFlight(time.Now().UTC()) {
 		if notBefore, waits := retrypolicy.UsageWindowNotBefore(run, time.Now().UTC()); waits {
 			s.deferToUsageWindow(runCtx, retryStore, ref, run, notBefore)
@@ -354,8 +355,10 @@ func (s *Server) resumeDueRetry(ctx context.Context, retryStore store.RunRetrySt
 	// are metered again. A marker left over from a pull whose own resume is
 	// long gone names no probe in flight (store.ProbeInFlight bounds it by the
 	// age of the pull): that row is due on its own account and its resume is
-	// an ordinary billable launch.
-	if ref.RetryState.ProbeInFlight(time.Now().UTC()) {
+	// an ordinary billable launch. So is a RELEASE's: it follows an answer
+	// that the wall fell and is expected to do real work
+	// (RunRetryState.SpeculativeProbeInFlight).
+	if ref.RetryState.SpeculativeProbeInFlight(time.Now().UTC()) {
 		adm.rollback(s.logger)
 	}
 
@@ -527,6 +530,9 @@ func (s *Server) disarmRetry(ctx context.Context, retryStore store.RunRetryStore
 // reArmRetry gives a failed resume another chance inside the attempt
 // budget. ScheduleRunRetry's own budget check is what stops this looping.
 func (s *Server) reArmRetry(ctx context.Context, retryStore store.RunRetryStore, ref mongostore.RetryDueRef, cause error) {
+	if s.backOffReleasedRetry(ctx, retryStore, ref, cause) {
+		return
+	}
 	if s.standDownProbedRetry(ctx, retryStore, ref.TenantID, ref.ID, cause.Error()) {
 		return
 	}
@@ -546,6 +552,54 @@ func (s *Server) reArmRetry(ctx context.Context, retryStore store.RunRetryStore,
 	s.countRetry("failed")
 	s.auditRetry(ref, "run.retry.failed", map[string]any{"error": cause.Error()})
 	s.warnf("retry sweeper: run %s: resume failed (%v) — retrying at %s", ref.ID, cause, at.Format(time.RFC3339))
+}
+
+// backOffReleasedRetry re-arms a RELEASED row (RunRetryState.Released) whose
+// resume did not start for a transient reason on the ordinary backoff, free of
+// charge, and reports true — which tells reArmRetry its own paths must not
+// run.
+//
+// The stand-down built for a probe is the wrong settlement here: it puts the
+// provider's announced instant back, days away, on a run whose window's probe
+// has just proved the wall fell — and the answer that released it cannot
+// release it again (releaseCredentialWindow skips a wait pulled since). A mass
+// release is the likeliest thing to trip the tenant's concurrency cap or its
+// launch rate, so the runs it moves would sit out the whole wall behind a cap
+// that frees in minutes. The charged re-arm is wrong too: every refusal would
+// spend an attempt, and a cap held for an hour retires the run. So the row
+// keeps its release — the marker and the answer that wrote it — and comes back
+// one backoff later, as often as the refusal lasts; the announced instant
+// bounds that, past it the row is an ordinary due retry.
+//
+// The decision reads the row the scan listed, and the CAS is the armed instant
+// that scan read: every write that consumes the marker moves retry_after, so a
+// row whose CAS still holds still carries the release. A lost CAS is a row
+// someone else moved, left to them.
+func (s *Server) backOffReleasedRetry(ctx context.Context, retryStore store.RunRetryStore, ref mongostore.RetryDueRef, cause error) bool {
+	now := time.Now().UTC()
+	if !ref.RetryState.Released(now) {
+		return false
+	}
+	at := now.Add(retryReenqueueBackoff)
+	delayed, err := retryStore.DelayRunRetry(ctx, ref.ID, ref.RetryAfter(), at, "", "")
+	if err != nil {
+		s.warnf("retry sweeper: run %s: cannot re-arm the released retry after a failed resume (%v): %v — deferring the decision to the next pass", ref.ID, cause, err)
+		return true
+	}
+	if !delayed {
+		s.warnf("retry sweeper: run %s: the released retry was not re-armed — the row moved since the scan listed it armed for %s",
+			ref.ID, ref.RetryAfter().Format(time.RFC3339))
+		return true
+	}
+	s.countRetry("release_deferred")
+	s.auditRetry(ref, "run.retry.release_deferred", map[string]any{
+		"retry_after": at,
+		"error":       cause.Error(),
+		"released_by": ref.RetryState.ReleasedBy,
+	})
+	s.warnf("retry sweeper: run %s, released by its credential window's probe (run %s), did not resume (%v) — retrying at %s, no attempt spent",
+		ref.ID, ref.RetryState.ReleasedBy, cause, at.Format(time.RFC3339))
+	return true
 }
 
 // retryMaxAttempts reads the run's launch-time attempt budget. Falls back

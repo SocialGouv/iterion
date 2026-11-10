@@ -118,8 +118,10 @@ func (s *Store) ScheduleRunRetry(ctx context.Context, runID string, at, wall tim
 		retryPath("last_error"): "$$REMOVE",
 		retryPath("claimed_at"): "$$REMOVE",
 		// The marker is CONSUMED by every arming — that is what makes the
-		// park after a probe charged normally.
-		retryPath("probe_from"): "$$REMOVE",
+		// park after a probe charged normally — and the release that
+		// qualified it with it.
+		retryPath("probe_from"):  "$$REMOVE",
+		retryPath("released_by"): "$$REMOVE",
 		// The credential window the wait belongs to: the credentials the
 		// attempt that met the wall sealed, read off the document in this
 		// same update — every resume re-stamps cred_fingerprints, and no
@@ -246,6 +248,35 @@ func (s *Store) PullRunRetry(ctx context.Context, runID string, expectedAfter, p
 	return res.MatchedCount > 0, nil
 }
 
+// ReleaseRunRetry is PullRunRetry on a probe's answer (store.RunRetryStore):
+// the same filter and the same marker, plus released_by — the run whose probe
+// got past the wall — which every write that consumes the marker consumes
+// with it.
+func (s *Store) ReleaseRunRetry(ctx context.Context, runID string, expectedAfter, releaseAt time.Time, releasedBy string) (bool, error) {
+	now := time.Now().UTC()
+	filter := withTenantFilter(ctx, bson.M{
+		"_id":                    runID,
+		"status":                 string(store.RunStatusFailedResumable),
+		retryPath("retry_after"): expectedAfter.UTC(),
+		retryPath("probe_from"):  bson.M{"$exists": false},
+	})
+	update := bson.M{
+		"$set": bson.M{
+			retryPath("retry_after"):   releaseAt.UTC(),
+			retryPath("probe_from"):    expectedAfter.UTC(),
+			retryPath("released_by"):   releasedBy,
+			retryPath("last_probe_at"): now,
+			"updated_at":               now,
+		},
+		"$inc": bson.M{retryPath("probe_count"): 1, "version": 1},
+	}
+	res, err := s.runs.UpdateOne(ctx, filter, versionRunUpdate(update))
+	if err != nil {
+		return false, fmt.Errorf("store/mongo: release retry %s: %w", runID, err)
+	}
+	return res.MatchedCount > 0, nil
+}
+
 // RearmProbedRunRetry re-arms a probe-marked retry at `at` and consumes the
 // marker, without touching attempts — neither the counter nor the budget
 // filter. Both matter: a probe that charged an attempt would retire a run
@@ -271,6 +302,7 @@ func (s *Store) RearmProbedRunRetry(ctx context.Context, runID string, at, wall 
 	set := bson.M{
 		retryPath("retry_after"): at.UTC(),
 		retryPath("probe_from"):  "$$REMOVE",
+		retryPath("released_by"): "$$REMOVE",
 		retryPath("claimed_at"):  "$$REMOVE",
 		// The row was armed before the pull and stays armed: an
 		// outcome consumer deferring to retry_armed must not see a
@@ -379,7 +411,8 @@ func (s *Store) AbandonRunRetry(ctx context.Context, runID, reason string, expec
 			// Nothing is armed, so there is no wait left to probe: a marker
 			// surviving here would make the next arming of a
 			// hand-resumed run free.
-			retryPath("probe_from"): "",
+			retryPath("probe_from"):  "",
+			retryPath("released_by"): "",
 		},
 		"$inc": bson.M{"version": 1},
 	}

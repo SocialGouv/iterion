@@ -190,10 +190,17 @@ func TestSweepRetryProbes_TheProbeBatchLeavesTheDuePassRoom(t *testing.T) {
 // see what a resume costs.
 func newMeteredRetrySweeperServer(t *testing.T, st store.RunStore) (*Server, *orgusage.MemoryCounter) {
 	t.Helper()
+	return newGatedRetrySweeperServer(t, st, gateSpec{id: "team-1"})
+}
+
+// newGatedRetrySweeperServer is newMeteredRetrySweeperServer under the team
+// limits spec names (a concurrency cap, a launch rate).
+func newGatedRetrySweeperServer(t *testing.T, st store.RunStore, spec gateSpec) (*Server, *orgusage.MemoryCounter) {
+	t.Helper()
 	s := newOrgTestServer(t)
 	counter := orgusage.NewMemoryCounter()
 	s.orgUsage = counter
-	seedGate(t, s, gateSpec{id: "team-1"})
+	seedGate(t, s, spec)
 	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, "bots", "feed-watch"), 0o755); err != nil {
 		t.Fatalf("mkdir fixture: %v", err)
@@ -318,6 +325,31 @@ func TestSweepDueRetries_AProbeDrivenResumeRefundsItsLaunchRateToken(t *testing.
 
 	if len(resumer.calls) != 2 {
 		t.Fatalf("resumes = %d, want 2 — the first probe kept the minute's only launch-rate token", len(resumer.calls))
+	}
+}
+
+// A run RELEASED on its credential window's answer is pulled like a probe —
+// the marker, the pull stamp, a free re-arm if the answer was wrong — but it
+// is no guess the preflight is expected to refuse: the window's probe got past
+// the wall, so the resume is expected to do real work and is metered like any
+// launch. Handed back, every run of a mass release would work unmetered
+// against the org's monthly run quota and launch rate.
+func TestSweepDueRetries_AReleasedRunsResumeIsMetered(t *testing.T) {
+	st := newFakeRetryStore()
+	s, counter := newMeteredRetrySweeperServer(t, st)
+	resumer := &fakeResumer{}
+	now := time.Now().UTC()
+	ref := probedRef("run-released", now, now.Add(4*24*time.Hour))
+	ref.RetryState.ReleasedBy = "run-canary"
+	st.claimWins[ref.ID] = true
+
+	s.sweepDueRetries(context.Background(), &fakeRetryLister{refs: []mongostore.RetryDueRef{ref}}, resumer, now)
+
+	if len(resumer.calls) != 1 {
+		t.Fatalf("Resume called %d times, want 1 — the premise of this witness", len(resumer.calls))
+	}
+	if got := meteredRetryRuns(t, counter); got != 1 {
+		t.Fatalf("monthly runs metered = %d after a released run's resume, want 1: a release follows an answer that the wall fell, and its resume does real work", got)
 	}
 }
 

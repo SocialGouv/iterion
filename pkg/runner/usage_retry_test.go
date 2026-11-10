@@ -548,6 +548,10 @@ func (c *cancelAwareStore) PullRunRetry(ctx context.Context, _ string, _, _ time
 	return false, ctx.Err()
 }
 
+func (c *cancelAwareStore) ReleaseRunRetry(ctx context.Context, _ string, _, _ time.Time, _ string) (bool, error) {
+	return false, ctx.Err()
+}
+
 // RearmProbedRunRetry models the store's CAS on the probe marker: no marker,
 // no free re-arm.
 func (c *cancelAwareStore) RearmProbedRunRetry(ctx context.Context, _ string, at, wall time.Time) (bool, error) {

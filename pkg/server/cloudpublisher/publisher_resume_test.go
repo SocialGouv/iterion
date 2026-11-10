@@ -108,6 +108,10 @@ func (r *retryStoreSpy) PullRunRetry(_ context.Context, _ string, _, _ time.Time
 	return false, nil
 }
 
+func (r *retryStoreSpy) ReleaseRunRetry(_ context.Context, _ string, _, _ time.Time, _ string) (bool, error) {
+	return false, nil
+}
+
 func (r *retryStoreSpy) RearmProbedRunRetry(_ context.Context, _ string, _, _ time.Time) (bool, error) {
 	return false, nil
 }

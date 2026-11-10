@@ -58,6 +58,16 @@ type RunRetryStore interface {
 	// RunRetryState.ProbeFrom, counts the probe and refuses a row that
 	// already carries a marker.
 	PullRunRetry(ctx context.Context, runID string, expectedAfter, probeAt time.Time) (pulled bool, err error)
+	// ReleaseRunRetry is PullRunRetry on an ANSWER: the probe of the row's
+	// credential window, run releasedBy, got past the wall, so the row is
+	// pulled to releaseAt for the due pass to resume. Same filter (the
+	// status, the exact retry_after, no marker held) and the same marker
+	// (expectedAfter kept in ProbeFrom, the pull stamped), plus
+	// RunRetryState.ReleasedBy — the fact every reader that must tell a
+	// release from a guess keys on. It counts on the wall's probe ledger like
+	// a pull: a release on a wrong answer is a pod relaunched into the wall,
+	// and the window's budget bounds those too.
+	ReleaseRunRetry(ctx context.Context, runID string, expectedAfter, releaseAt time.Time, releasedBy string) (released bool, err error)
 	// RearmProbedRunRetry re-arms a PROBE-MARKED retry at `at` without
 	// spending an attempt or consulting the attempt budget, and consumes
 	// the marker. It is how both halves settle a probe that found the

@@ -164,6 +164,16 @@ func (f *credFleet) PullRunRetry(ctx context.Context, id string, expectedAfter, 
 	return ok, err
 }
 
+func (f *credFleet) ReleaseRunRetry(ctx context.Context, id string, expectedAfter, releaseAt time.Time, releasedBy string) (bool, error) {
+	ok, err := f.twin(id).ReleaseRunRetry(ctx, id, expectedAfter, releaseAt, releasedBy)
+	if ok {
+		f.mu.Lock()
+		f.pulled = append(f.pulled, fleetPull{runID: id, at: f.now})
+		f.mu.Unlock()
+	}
+	return ok, err
+}
+
 func (f *credFleet) ScheduleRunRetry(ctx context.Context, id string, at, wall time.Time, reason, code string, maxAttempts int) (bool, int, error) {
 	return f.twin(id).ScheduleRunRetry(ctx, id, at, wall, reason, code, maxAttempts)
 }
@@ -186,6 +196,19 @@ func (f *credFleet) ClearRunRetry(ctx context.Context, id string) error {
 
 func (f *credFleet) AbandonRunRetry(ctx context.Context, id, reason string, expectedAfter time.Time) (bool, error) {
 	return f.twin(id).AbandonRunRetry(ctx, id, reason, expectedAfter)
+}
+
+// CountActiveRunsByTenant is the count the admission gate's concurrency cap
+// reads (activeRunCounter): the fleet's runs queued or running for tenantID.
+func (f *credFleet) CountActiveRunsByTenant(_ context.Context, tenantID string) (int, error) {
+	n := 0
+	for _, id := range f.order {
+		doc := f.runs[id].Doc()
+		if doc.TenantID == tenantID && (doc.Status == store.RunStatusQueued || doc.Status == store.RunStatusRunning) {
+			n++
+		}
+	}
+	return n, nil
 }
 
 func (f *credFleet) RecordRetryFailure(context.Context, string, string, time.Time, int, time.Duration) (*store.RetryCircuitState, error) {
@@ -854,5 +877,64 @@ func TestCredentialProbe_APassThatReleasesTakesNoNewProbe(t *testing.T) {
 	answer := w.start.Add(store.ProbeMarkerTTL)
 	if got := w.f.pullsAt(answer); !slices.Equal(got, []string{"run-b"}) {
 		t.Fatalf("pulls in the pass that read the canary's answer = %v, want run-b released alone — run-late met the wall after the pull, and the window just got its answer", got)
+	}
+}
+
+// A mass release is the likeliest thing to trip the tenant's concurrency cap.
+// The REAL admission gate refuses the released runs past the cap
+// (denyConcurrencyCap, a transient denial), and each refused run comes back on
+// the ordinary backoff, free of charge, as long as the refusal lasts: its
+// window's probe proved the wall fell, so it is never stood down to the
+// provider's announced instant days away — which the answer that released it
+// could not undo, since a wait pulled since an answer is not released on it.
+// Every released run resumes as the cap frees, and none spends an attempt.
+func TestCredentialProbe_AReleasedRunRefusedOnTheTenantsCapComesBackWhenItFrees(t *testing.T) {
+	const capRuns = 3
+	w := newCredWorld(t)
+	w.s, _ = newGatedRetrySweeperServer(t, w.f, gateSpec{id: "team-1", maxConcurrentRuns: capRuns})
+	wall := w.start.Add(4 * 24 * time.Hour)
+	ids := []string{"run-a", "run-b", "run-c", "run-d", "run-e", "run-f", "run-g", "run-h"}
+	for i, id := range ids {
+		w.f.park(id, []string{"fp-zai"}, w.start.Add(-time.Duration(60-i)*time.Minute), wall)
+	}
+	// The canary finishes at once (a hand top-up); every released run works
+	// for half an hour, holding one of the tenant's slots.
+	w.onResume = func(id string) {
+		if id == "run-a" {
+			w.f.twin(id).Mutate(func(run *store.Run) { run.Status = store.RunStatusFinished })
+			return
+		}
+		w.f.twin(id).Mutate(func(run *store.Run) { run.Status = store.RunStatusRunning })
+		w.later(30*time.Minute, func() {
+			w.f.twin(id).Mutate(func(run *store.Run) { run.Status = store.RunStatusFinished })
+		})
+	}
+
+	w.run(0, 5*time.Minute)
+	if got := w.f.pullsAt(w.start.Add(time.Minute)); len(got) != len(ids)-1 {
+		t.Fatalf("released at +1m = %v, want the %d runs parked on the canary's window — the premise of this witness", got, len(ids)-1)
+	}
+	if len(w.resumer.calls) != 1+capRuns {
+		t.Fatalf("resumes by +5m = %v, want the canary and the %d the tenant's cap admits — the premise of this witness: the others were refused", w.resumer.calls, capRuns)
+	}
+	for _, id := range ids[1:] {
+		if row := w.f.twin(id).Row(); row.RetryAfter != nil && !row.RetryAfter.Before(wall) {
+			t.Fatalf("run %s, released and refused on the tenant's cap, is armed for %s — put back on the provider's announced instant though its window's probe got through; the answer that released it cannot release it again, so it sits out the whole wall",
+				id, row.RetryAfter.Format(time.RFC3339))
+		}
+	}
+
+	w.run(6*time.Minute, 70*time.Minute)
+	resumed := map[string]bool{}
+	for _, c := range w.resumer.calls {
+		resumed[c.runID] = true
+	}
+	for _, id := range ids {
+		if !resumed[id] {
+			t.Fatalf("run %s was never resumed in the 70 minutes the cap took to free — resumes: %v", id, w.resumer.calls)
+		}
+		if got := w.f.twin(id).Row().Attempts; got != 1 {
+			t.Fatalf("run %s spent %d attempts, want the 1 its park spent — a cap refusing a released run is no attempt of its", id, got)
+		}
 	}
 }

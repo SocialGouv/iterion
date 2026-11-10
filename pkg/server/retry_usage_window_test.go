@@ -154,6 +154,44 @@ func TestUsageWindow_TheDuePassHoldsARowItsWindowStillHolds(t *testing.T) {
 	}
 }
 
+// A run released on its credential window's answer is not held, however long
+// after the release its resume comes: the shared circuit deferred it past the
+// marker's TTL, so the pull no longer reads as in flight — but the window's
+// probe got past the wall, and that answer travels with the row
+// (RunRetryState.ReleasedBy). Held to the date, the run would sit out the
+// whole wall, and it is no longer a wait a later answer could release.
+func TestUsageWindow_AReleasedRunIsNotHeldHoweverLateItsResume(t *testing.T) {
+	st := newFakeRetryStore()
+	resumer := &fakeResumer{}
+	s := newRetrySweeperServer(t, st, resumer)
+	now := time.Now().UTC()
+	wall, parked := now.Add(4*24*time.Hour), now.Add(-5*time.Hour)
+	announced, releasedAt := wall.Add(time.Minute), now.Add(-store.ProbeMarkerTTL-time.Hour)
+	ref := dueRef("run-released", now.Add(-time.Minute))
+	ref.RetryState.Wall = &wall
+	ref.RetryState.ScheduledAt = &parked
+	ref.RetryState.ProbeFrom = &announced
+	ref.RetryState.LastProbeAt = &releasedAt
+	ref.RetryState.ProbeCount = 1
+	ref.RetryState.ReleasedBy = "run-canary"
+	run := ref.Record()
+	run.Status = store.RunStatusFailedResumable
+	run.FailureCode = store.FailureUsageLimitBlocked
+	st.loadRun[ref.ID] = run
+	st.claimWins[ref.ID] = true
+	if ref.RetryState.ProbeInFlight(now) {
+		t.Fatal("the release reads as a pull in flight — the premise of this witness is a resume deferred past the marker's TTL")
+	}
+
+	s.sweepDueRetries(context.Background(), &fakeRetryLister{refs: []mongostore.RetryDueRef{ref}}, resumer, now)
+
+	if len(resumer.calls) != 1 {
+		held, ok := st.rearmed[ref.ID]
+		t.Fatalf("resumes = %d (held until %v: %v), want the released run resumed — its window's probe got past the wall, and holding it to %s undoes that answer",
+			len(resumer.calls), held, ok, wall.Format(time.RFC3339))
+	}
+}
+
 // Unjittered, the hold still comes back just past the wall, never on it: a
 // resume a second early, or against a provider clock a little behind ours,
 // meets the wall — one paid attempt and one pod, with no marker to make it

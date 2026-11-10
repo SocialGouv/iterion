@@ -150,6 +150,11 @@ func (f *fakeRetryStore) PullRunRetry(ctx context.Context, runID string, expecte
 	return f.pullOK, nil
 }
 
+// ReleaseRunRetry is a pull on a probe's answer, recorded with the pulls.
+func (f *fakeRetryStore) ReleaseRunRetry(ctx context.Context, runID string, expectedAfter, releaseAt time.Time, _ string) (bool, error) {
+	return f.PullRunRetry(ctx, runID, expectedAfter, releaseAt)
+}
+
 // RearmProbedRunRetry models the store's CAS on the marker: no marker on the
 // run doc, no re-arm — and the marker is CONSUMED, so a second call reports
 // false the way the real update's filter does.

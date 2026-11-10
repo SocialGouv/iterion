@@ -44,6 +44,9 @@ const (
 	// directed script only, so the random draws over the ops above — and the
 	// coverage their seeds were tuned to — are unchanged.
 	opScanCredential retryOp = "ListRunsForCredentialProbe"
+	// opRelease is the credential window's release, reached by its directed
+	// script only, for opScanCredential's reason.
+	opRelease retryOp = "ReleaseRunRetry"
 	// conformBudget is the ATTEMPT budget an arming is refused past.
 	conformBudget = 4
 	// conformProbeBudget is the probe budget the scan's own bound uses. TWO,
@@ -72,6 +75,10 @@ var conformScripts = map[string][]retryOp{
 	// pulled one, a resumed one that only its marker keeps listed (the probe
 	// whose run got past the wall), a re-armed one, and a settled one.
 	"credential": {opSchedule, opScanCredential, opPull, opScanCredential, opClear, opScanCredential, opRearm, opScanCredential, opAbandon, opScanCredential},
+	// The release and the marker it qualifies, consumed by each write that
+	// consumes the marker: a delay keeps both, a refused second release
+	// over the live marker, the free re-arm, the paid arming and the settle.
+	"release": {opSchedule, opRelease, opDelay, opRelease, opRearm, opRelease, opSchedule, opRelease, opClear, opSchedule, opRelease, opAbandon},
 }
 
 // TestRunRetryProbeModel_AnswersWhatTheStoreAnswers walks 30 seeded random
@@ -114,6 +121,8 @@ func conformWantedStates() []string {
 		"credential scan listed an armed wait",
 		"credential scan listed a marker only",
 		"credential scan refused the row",
+		"release landed",
+		"release refused over a live marker",
 	}
 	for _, term := range probeScanTerms {
 		want = append(want, "probe scan refused the row on the "+term)
@@ -435,6 +444,10 @@ func noteConformance(seen map[string]int, op retryOp, got string, before *store.
 		// The exact state the pull's third filter term exists for: the CAS
 		// matches and a marker is already held aside.
 		seen["pull refused over a live marker"]++
+	case op == opRelease && got == "true":
+		seen["release landed"]++
+	case op == opRelease && got == "false" && before != nil && before.ProbeFrom != nil:
+		seen["release refused over a live marker"]++
 	case op == opRearm && got == "true":
 		seen["re-arm landed"]++
 	case op == opSchedule && strings.HasPrefix(got, "false"):
@@ -498,6 +511,16 @@ func applyRetryOp(ctx context.Context, real *Store, model *retryprobetest.Store,
 		}
 		ok, err := model.PullRunRetry(ctx, runID, expected, at)
 		return fmt.Sprintf("%v", ok), err
+	case opRelease:
+		// Released to the instant the step names, on the answer of a canary
+		// whose id the row then carries.
+		const by = "run-conform-canary"
+		if onStore {
+			ok, err := real.ReleaseRunRetry(ctx, runID, expected, at, by)
+			return fmt.Sprintf("%v", ok), err
+		}
+		ok, err := model.ReleaseRunRetry(ctx, runID, expected, at, by)
+		return fmt.Sprintf("%v", ok), err
 	case opRearm:
 		if onStore {
 			ok, err := real.RearmProbedRunRetry(ctx, runID, at, args.wall)
@@ -559,9 +582,9 @@ func describeConformRow(status store.RunStatus, continuation store.ContinuationS
 	if row == nil {
 		return fmt.Sprintf("status=%s continuation=%s retry_state=absent", status, continuation)
 	}
-	return fmt.Sprintf("status=%s continuation=%s retry_after=%s wall=%s probe_from=%s probe_count=%d attempts=%d reason=%s code=%s last_error=%q scheduled_at=%v claimed_at=%v last_probe_at=%v credential_window=%q",
+	return fmt.Sprintf("status=%s continuation=%s retry_after=%s wall=%s probe_from=%s released_by=%q probe_count=%d attempts=%d reason=%s code=%s last_error=%q scheduled_at=%v claimed_at=%v last_probe_at=%v credential_window=%q",
 		status, continuation,
-		conformInstant(row.RetryAfter), conformInstant(row.Wall), conformInstant(row.ProbeFrom), row.ProbeCount, row.Attempts,
+		conformInstant(row.RetryAfter), conformInstant(row.Wall), conformInstant(row.ProbeFrom), row.ReleasedBy, row.ProbeCount, row.Attempts,
 		row.Reason, row.Code, row.LastError,
 		row.ScheduledAt != nil, row.ClaimedAt != nil, row.LastProbeAt != nil, row.CredentialWindow())
 }
