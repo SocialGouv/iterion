@@ -159,7 +159,7 @@ func (p *Publisher) previewCredentials(ctx context.Context, spec runview.Credent
 	// derivation below reads, exactly as the launch's walk does — and the
 	// gateway slot seals for no candidate of a run that rides no gateway
 	// route, the gate the live walk joins to the same policy.
-	gateway := p.gatewayRouting(x.ctx, previewView, spec.Context.TeamID, x.orgID, spec.OwnerID, previewBotID, sovereignPreview, pooledPreview)
+	gateway := p.gatewayRouting(x.ctx, previewView, spec.Context.TeamID, x.orgID, spec.OwnerID, previewBotID, sovereignPreview, pooledPreview, gatewayProbe{lists: x.policy, allowed: x.allowed})
 	previewView, envFunded := gateway.view, gateway.envFunded
 	x.policy = x.policy.withGatewaySlot(gateway.sealable)
 	if sovereignPreview && !envFunded {
@@ -174,9 +174,15 @@ func (p *Publisher) previewCredentials(ctx context.Context, spec runview.Credent
 	if untrustedPreview {
 		x.warn("The run is untrusted (fork lane) and executes on its lane's runner pool: the shared tiers (org, pool, platform) are not consulted, the runner's environment is refused and a forfait cannot cross its sandbox — only the team's own vendor API keys fund it, on routes decided before the run (no gateway route, no ${…} dial or late var the pool's runner resolves itself), and any other route refuses the launch before it is metered.")
 	}
-	if envFunded {
+	switch {
+	case envFunded && gateway.note != "":
+		x.out.Warnings = append(x.out.Warnings, "Every model route of this run rides the runner's openai_compatible gateway: "+gateway.note+" — no credential is acquired for it.")
+	case envFunded:
 		x.out.Warnings = append(x.out.Warnings, "Every model route of this run rides the runner's openai_compatible gateway, and no credential tier this launch consults holds a gateway key serving it: no credential is acquired for it.")
-	} else {
+	case gateway.note != "" && !gateway.view.GatewayKeyFunded:
+		x.warn("The run's openai_compatible routes ride the runner's environment gateway: " + gateway.note + ".")
+	}
+	if !envFunded {
 		if pooledPreview && !untrustedPreview {
 			x.warn(fmt.Sprintf("The team is mapped to runner pool %q: the shared tiers (org, pool, platform) are not consulted — only the team's own credentials fund this run.", runnerPool))
 		}
@@ -531,7 +537,7 @@ func (p *Publisher) previewCredentials(ctx context.Context, spec runview.Credent
 	previewRoutes := attributedRoutes(previewView)
 	restoreRoutes()
 	posture := p.unfundedPostureFor(wf, sovereignPreview, envFunded, spec.Launch.Trust, runnerPool)
-	refusal := unfundedRefusalFor(spec.Context.TeamID, previewRoutes, metadataFunding(x, posture), !metadataHoldsDefault(x), posture)
+	refusal := unfundedRefusalFor(spec.Context.TeamID, previewRoutes, metadataFunding(x, posture), !metadataHoldsDefault(x), posture, gateway.heldOut())
 	wires := map[string][]string{}
 	selectSlot := func(i int) {
 		c := &x.out.Candidates[i]

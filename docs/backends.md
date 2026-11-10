@@ -1515,7 +1515,9 @@ platform's unless the team is sovereign or pool-mapped — holds a gateway key
 serving the launch's bot and repository, the credential walk seals it with its
 base URL and endpoint-aware fingerprint, and the run's literal
 `openai_compatible/…` routes spend it, never the runner's environment; a capped
-key still decides it, the run then parks on it. With no such key, a run whose
+key still decides it, the run then parks on it. A key the run's frozen pair order
+holds out, or whose sealed secret does not open, decides nothing: the routes ride
+the runner's gateway, and the launch names the key and why. With no such key, a run whose
 every route rides the gateway is env-funded as before. An env-templated route
 (`${DIAL:-…}`) is never attributed to the key — what the runner expands it to
 is not the publisher's word. Under a dedicated runner pool, whose pod carries

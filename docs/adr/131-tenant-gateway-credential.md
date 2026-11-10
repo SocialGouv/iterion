@@ -67,7 +67,12 @@ The credential walk, its funding refusals, the allowlist gate and the preview re
 first; the pool wants, the legacy pool and the fallback door read the second. "The team
 holds a gateway key" is a lazy probe of the tiers the walk consults (the team's own;
 the org's and the platform's unless the team is sovereign or pool-mapped), under the
-audiences `secrets.Resolve` applies and without the usability predicate. Its answer
+audiences `secrets.Resolve` applies and without the usability predicate; it attributes
+the routes only to a key that can seal for the run — the run's frozen lists admit the
+gateway slot and the key's sealed secret opens. A held key that cannot seal leaves
+the routes to the pod's gateway (§5's replay clause), named on the env-funded line and
+in every unfunded refusal naming the provider, as is a tier read as holding one
+because its key list failed; the sovereign posture keeps attributing. Its answer
 rides `model.RouteView.GatewayKeyFunded`, under which a decided gateway route records
 the `openai_compatible` provider pinned at its site; an env-templated route stays
 undecided (ADR-129 §4). Under `none` the sovereign posture attributes the gateway

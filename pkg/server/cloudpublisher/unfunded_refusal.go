@@ -330,7 +330,11 @@ func (p *Publisher) unfundedPostureFor(wf *ir.Workflow, sovereign, envFunded boo
 // be a second, weaker reading of a decision it only observes, free to warn
 // where the launch starts and to stay silent where it refuses (#2485). An arm
 // kept outside this producer is exactly that silence, for that arm alone.
-func unfundedRefusalFor(tenant string, routes routeAttribution, funded map[string]bool, holdsNothing bool, posture unfundedPosture) *UnfundedProvidersError {
+//
+// heldOut names, per provider, what a consulted tier held for it that did not
+// seal (gatewayRoutes.heldOut): a refusal naming that provider carries it, so
+// the sentence never claims no tier holds what one does.
+func unfundedRefusalFor(tenant string, routes routeAttribution, funded map[string]bool, holdsNothing bool, posture unfundedPosture, heldOut map[string]string) *UnfundedProvidersError {
 	attributed, sites := routes.providers, routes.pins
 	if posture.Untrusted {
 		holdsNothing = true
@@ -351,7 +355,7 @@ func unfundedRefusalFor(tenant string, routes routeAttribution, funded map[strin
 			// at once — an unfunded provider, a gateway route, a deferred
 			// route, an unattributed route, an unfunded wire-default read —
 			// so the remedy it names is the whole of it.
-			refusal := newUnfundedProvidersError(tenant, unfunded, sites, posture.Sovereign)
+			refusal := newUnfundedProvidersError(tenant, unfunded, sites, heldOut, posture.Sovereign)
 			refusal.Untrusted, refusal.Pool = true, posture.Pool
 			refusal.Gateway, refusal.Deferred = routes.gateway, routes.deferred
 			refusal.Unattributed, refusal.WireDefault = unattributed, wire
@@ -376,7 +380,7 @@ func unfundedRefusalFor(tenant string, routes routeAttribution, funded map[strin
 	// start — the other route's failure is the run's to report. Only a run
 	// whose EVERY attributed provider is unfunded cannot start at all.
 	if posture.Knob && len(unfunded) == len(attributed) {
-		return newUnfundedProvidersError(tenant, unfunded, sites, false)
+		return newUnfundedProvidersError(tenant, unfunded, sites, heldOut, false)
 	}
 	// The sovereign policy arms the same refusal STRICTLY, without the
 	// deployment knob: under llm_fallback=none every provider a route names
@@ -384,7 +388,7 @@ func unfundedRefusalFor(tenant string, routes routeAttribution, funded map[strin
 	// excuse another pinned route, whose only remaining funding would be the
 	// runner pod's platform env.
 	if posture.Sovereign {
-		return newUnfundedProvidersError(tenant, unfunded, sites, true)
+		return newUnfundedProvidersError(tenant, unfunded, sites, heldOut, true)
 	}
 	return nil
 }
@@ -440,6 +444,10 @@ type UnfundedProvidersError struct {
 	// nothing that funds it, so Providers and Sites are empty by
 	// construction.
 	Unattributable bool
+	// HeldOut maps a named provider to what a consulted tier held for it
+	// that did not seal, and why (the gateway probe's note): the key, or the
+	// tier read as holding one. Empty when no tier held anything for it.
+	HeldOut map[string]string
 }
 
 func (e *UnfundedProvidersError) Unwrap() error { return runview.ErrNoLLMCredential }
@@ -489,7 +497,7 @@ func (e *UnfundedProvidersError) Error() string {
 		return fmt.Sprintf("cloudpublisher: %v: tenant %s runs with llm_fallback=none — no shared tier (org, pool, platform) is consulted, so every provider a route names must hold a credential of the team's own; provision: %s",
 			runview.ErrNoLLMCredential, e.Tenant, strings.Join(named, "; "))
 	}
-	return fmt.Sprintf("cloudpublisher: %v: every provider the LLM routes of this run name is unfunded — no tier (byok, oauth-forfait, pool, platform) holds a credential for %s; provision one for tenant %s, or unset ITERION_CLOUD_REQUIRE_LLM_CREDENTIAL to let the runner fall back to its env",
+	return fmt.Sprintf("cloudpublisher: %v: every provider the LLM routes of this run name is unfunded — no tier (byok, oauth-forfait, pool, platform) sealed a credential for %s; provision one for tenant %s, or unset ITERION_CLOUD_REQUIRE_LLM_CREDENTIAL to let the runner fall back to its env",
 		runview.ErrNoLLMCredential, strings.Join(named, "; "), e.Tenant)
 }
 
@@ -508,24 +516,35 @@ const overrideReach = "an integration's routing overrides pin a node's own route
 func (e *UnfundedProvidersError) namedProviders() []string {
 	named := make([]string, 0, len(e.Providers))
 	for _, prov := range e.Providers {
+		entry := prov
 		if sites := e.Sites[prov]; len(sites) > 0 {
-			named = append(named, fmt.Sprintf("%s (named by %s)", prov, strings.Join(sites, ", ")))
-			continue
+			entry = fmt.Sprintf("%s (named by %s)", prov, strings.Join(sites, ", "))
 		}
-		named = append(named, prov)
+		if held := e.HeldOut[prov]; held != "" {
+			entry += " — " + held
+		}
+		named = append(named, entry)
 	}
 	return named
 }
 
-// newUnfundedProvidersError builds the refusal, keeping only the sites of the
-// providers it names: a refusal that carried the whole pin map would hand the
-// caller route sites its own refusal says nothing about.
-func newUnfundedProvidersError(tenant string, unfunded []string, pins map[string][]string, sovereign bool) *UnfundedProvidersError {
+// newUnfundedProvidersError builds the refusal, keeping only the sites and
+// held-key notes of the providers it names: a refusal that carried the whole
+// pin map would hand the caller route sites its own refusal says nothing
+// about.
+func newUnfundedProvidersError(tenant string, unfunded []string, pins map[string][]string, heldOut map[string]string, sovereign bool) *UnfundedProvidersError {
 	sites := make(map[string][]string, len(unfunded))
+	var held map[string]string
 	for _, prov := range unfunded {
 		if named := pins[prov]; len(named) > 0 {
 			sites[prov] = named
 		}
+		if note := heldOut[prov]; note != "" {
+			if held == nil {
+				held = map[string]string{}
+			}
+			held[prov] = note
+		}
 	}
-	return &UnfundedProvidersError{Tenant: tenant, Providers: unfunded, Sites: sites, Sovereign: sovereign}
+	return &UnfundedProvidersError{Tenant: tenant, Providers: unfunded, Sites: sites, Sovereign: sovereign, HeldOut: held}
 }

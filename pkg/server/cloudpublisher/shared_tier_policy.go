@@ -2,6 +2,7 @@ package cloudpublisher
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"strings"
 
@@ -215,6 +216,16 @@ func excluderOfSlot(allowed map[string]bool, slot string) slotExcluder {
 		}
 	}
 	return excludedByPairOrder
+}
+
+// slotHeldOutBy says which of the run's frozen lists holds a credential slot
+// out, for a sentence that names it (excluderOfSlot's judgement): allowed is
+// the run's providers allowlist, nil when none is in force.
+func slotHeldOutBy(allowed map[string]bool, slot string) string {
+	if excluderOfSlot(allowed, slot) == excludedByProviderAllowlist {
+		return fmt.Sprintf("this run's providers allowlist (%s) holds the %s slot out", model.ProviderAllowlistNames(allowed), slot)
+	}
+	return fmt.Sprintf("this run's frozen routing pair order names no pair for the %s slot", slot)
 }
 
 // withSlotWhitelist returns the policy with the whitelist set, reporting the

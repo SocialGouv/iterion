@@ -768,8 +768,40 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	// publisher's OWN environment decided (RouteView.LateVars): the walk
 	// reads the run's vars through the view, and a late name leaves the route
 	// undecided. The same answer says whether the gateway slot may seal at
-	// all (gatewayRoutes.sealable, joined to the seal gate below).
-	gateway := p.gatewayRouting(ctx, view, tenantID, orgID, ownerID, audienceBotID, sovereign, runnerPool != "")
+	// all (gatewayRoutes.sealable, joined to the seal gate below). The probe
+	// reads the run's frozen lists — built first, below — and opens a held
+	// key as the walk does, so a key that cannot seal attributes nothing.
+	// The shared tiers' ordering, read ONCE: the org fill, the platform fill
+	// and the restore of this launch apply the same answer. The facade
+	// policy's `auto` asks each tier whether it holds an Anthropic-native
+	// credential, lazily — a tier the question never reaches costs no read.
+	policy := p.sharedTierPolicyFor(ctx)
+	// The adaptive-routing whitelist (ADR-121 §1, slice 3): the launch's
+	// RESOLVED policy — the spec's snapshot on a launch, the run doc's
+	// frozen one on a resume — names the (harness, credential) pairs a run
+	// may occupy; a slot no listed pair names is invisible to every tier.
+	// nil (an unwired launch) admits everything: today's behavior.
+	//
+	// ADR-131 §5's second half rides the same gate: the frozen list is
+	// replayed as stored AND says once what it held out. The record is
+	// opened here and emitted at the walk's end (never per site). It carries
+	// the allowlist because its line prescribes a remedy: a slot the OTHER
+	// frozen list holds out too is not lifted by widening this one.
+	pairRefusals := newPairOrderRefusals(routePolicy, allowed)
+	if routePolicy != nil {
+		policy = policy.withSlotWhitelist(routePolicy.PairOrder, pairRefusals)
+	}
+	// ADR-129 §5: the allowlist bounds what any tier may seal — the pruned
+	// provider is funded by no channel (the nil-allowed gate admits
+	// everything, as before).
+	if allowed != nil {
+		policy = policy.withProviderAllowlist(allowed)
+	}
+	gateway := p.gatewayRouting(ctx, view, tenantID, orgID, ownerID, audienceBotID, sovereign, runnerPool != "",
+		gatewayProbe{lists: policy, allowed: allowed, opens: func(k secrets.ApiKey) error {
+			_, err := secrets.OpenApiKey(p.sealer, k)
+			return err
+		}})
 	view, envFunded := gateway.view, gateway.envFunded
 
 	// Refused-but-only keys, per provider AND per tier, remembered across
@@ -798,32 +830,6 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	// Every tier's walk reports here what its audience kept out, so the one
 	// thing a refusal does not leave behind — a trace — exists by the end.
 	withheld := newAudienceWithholdings(audienceBotID, secrets.LaunchRepoFromContext(ctx))
-	// The shared tiers' ordering, read ONCE: the org fill, the platform fill
-	// and the restore of this launch apply the same answer. The facade
-	// policy's `auto` asks each tier whether it holds an Anthropic-native
-	// credential, lazily — a tier the question never reaches costs no read.
-	policy := p.sharedTierPolicyFor(ctx)
-	// The adaptive-routing whitelist (ADR-121 §1, slice 3): the launch's
-	// RESOLVED policy — the spec's snapshot on a launch, the run doc's
-	// frozen one on a resume — names the (harness, credential) pairs a run
-	// may occupy; a slot no listed pair names is invisible to every tier.
-	// nil (an unwired launch) admits everything: today's behavior.
-	//
-	// ADR-131 §5's second half rides the same gate: the frozen list is
-	// replayed as stored AND says once what it held out. The record is
-	// opened here and emitted at the walk's end (never per site). It carries
-	// the allowlist because its line prescribes a remedy: a slot the OTHER
-	// frozen list holds out too is not lifted by widening this one.
-	pairRefusals := newPairOrderRefusals(routePolicy, allowed)
-	if routePolicy != nil {
-		policy = policy.withSlotWhitelist(routePolicy.PairOrder, pairRefusals)
-	}
-	// ADR-129 §5: the allowlist bounds what any tier may seal — the pruned
-	// provider is funded by no channel (the nil-allowed gate admits
-	// everything, as before).
-	if allowed != nil {
-		policy = policy.withProviderAllowlist(allowed)
-	}
 	// ADR-131 §5: the gateway slot seals only for a run that may ride a
 	// gateway route — every tier that could fill it asks this gate.
 	policy = policy.withGatewaySlot(gateway.sealable)
@@ -1661,7 +1667,13 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	// left unfunded.
 	credentialOwed := llmCredentialOwed(bundle, wf, envFunded)
 	if envFunded {
-		if p.logger != nil {
+		switch {
+		case p.logger == nil:
+		case gateway.note != "":
+			// A held key the run cannot use is said by name: the line that
+			// claims no tier holds one would be false.
+			p.logger.Warn("cloudpublisher: run %s is env-funded — every model route rides the runner's openai_compatible gateway: %s; no LLM credential acquired", runID, gateway.note)
+		default:
 			p.logger.Info("cloudpublisher: run %s is env-funded — every model route rides the runner's openai_compatible gateway and no credential tier this launch consults holds a gateway key serving it; no LLM credential acquired", runID)
 		}
 	} else if credentialOwed {
@@ -1687,6 +1699,12 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	// same stage, through the same composer, or it judges a program this
 	// launch does not.
 	attributed := attributedRoutes(view)
+	// A held gateway key that cannot seal leaves a mixed run's gateway routes
+	// to the runner's environment: said by name, as the env-funded line says
+	// it for a run whose every route rides the gateway.
+	if gateway.note != "" && !envFunded && !slices.Contains(attributed.providers, string(secrets.ProviderOpenAICompatible)) && p.logger != nil {
+		p.logger.Warn("cloudpublisher: run %s — its openai_compatible routes ride the runner's environment gateway: %s", runID, gateway.note)
+	}
 	// The fine plan rides ONLY a pool-served run: it is the producer the
 	// lease's fine booking slices by, and a lease-less run has no consumer
 	// for it. Derived from the same post-ladder walk the refusal reads —
@@ -1708,7 +1726,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	// contradict the launch it describes — a refusal left outside it is a
 	// refusal no view mirrors.
 	posture := p.unfundedPostureFor(wf, sovereign, envFunded, trust, runnerPool)
-	if refusal := unfundedRefusalFor(tenantID, attributed, bundleFunding(bundle, posture), !holdsDefaultLLMCredential(bundle), posture); refusal != nil {
+	if refusal := unfundedRefusalFor(tenantID, attributed, bundleFunding(bundle, posture), !holdsDefaultLLMCredential(bundle), posture, gateway.heldOut()); refusal != nil {
 		return res, refusal
 	}
 	// A run held to its team's gateway seals its bundle even with nothing in

@@ -10,8 +10,8 @@
 // the envFunded predicate read without the probe → W1, W3, W4, W5; the probe
 // ignoring the audiences → W2; the probe applying the usability predicate →
 // W3; the preview keeping its own predicate → W4; the SealOnly filter dropped
-// from the ladder composer → W5; the probe consulting the frozen pair order →
-// W6; the wants guard dropped → W8 (and W6's legacy pool row); the sovereign
+// from the ladder composer → W5; the probe asking the frozen pair order
+// without noting it on the §5 record → W6 (and W15); the wants guard dropped → W8 (and W6's legacy pool row); the sovereign
 // arm dropped from gatewayRouting → W9's refused row, or made blind to the
 // runner pool → its pool-stamped row; the attributed set read under the
 // pool's vocabulary → W9's refused row; the launch's or the preview's
@@ -403,7 +403,7 @@ func TestGatewayKey_AnEnvTemplatedRouteSealsTheKeyOnlyUnderARunnerPool(t *testin
 				if row.sealed && (b.APIBaseURLs[gw] != gwURL || b.APIKeyFingerprints[gw] != gwFingerprint) {
 					t.Errorf("the key travelled without its pair: url=%q fp=%q", b.APIBaseURLs[gw], b.APIKeyFingerprints[gw])
 				}
-				routing := p.gatewayRouting(gatewayLaunchCtx(), model.RouteView{Workflow: wf}, "team1", "", "owner1", gwBot, false, row.runnerPool != "")
+				routing := p.gatewayRouting(gatewayLaunchCtx(), model.RouteView{Workflow: wf}, "team1", "", "owner1", gwBot, false, row.runnerPool != "", gatewayProbe{})
 				if routing.sealable != (row.runnerPool != "") || routing.mayRide != routing.sealable {
 					t.Errorf("sealable=%v mayRide=%v under runner pool %q: an undecided route rides the gateway exactly under a runner pool", routing.sealable, routing.mayRide, row.runnerPool)
 				}
