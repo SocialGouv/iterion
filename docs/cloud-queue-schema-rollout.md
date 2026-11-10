@@ -38,8 +38,9 @@ for the dated super-admin API, existing-run resume exemption and local
   the v29 section); a v27, v28 or v29 publisher never derives a
   `content_boundary`, and one that REPLAYS a frozen `team_gateway` stamp on a
   resume — an old server replica resuming a run a v30 replica stamped — is
-  parked as a version mismatch (see the v30 section); every other v27–v29
-  message carries `own_keys` or no stamp, the readings the v30 runner applies.
+  parked as a version mismatch (see the v30 section; a v27 publisher, or a
+  v28 one built before PR-B'2, replays none); every other v27–v29 message
+  carries `own_keys` or no stamp, the readings the v30 runner applies.
 - **Server first by default.** Both orders can park a message, and a resume
   recovers the run either way — but not at the same moment. Old runners
   rejecting the new version park runs a resume recovers as soon as the fleet
@@ -178,19 +179,23 @@ team's boundary — failing open on the pod — so it must reject the message,
 and does: its window is [27, 29].
 
 `MinSchemaVersion` stays **27**: the fence is the maximum that rises, so
-raising the minimum would force a drain for no added safety. A v27, v28 or v29
-publisher never derives a stamp, but its resume replays the run document's
-frozen one (the carriage is PR-B'2's): an old server replica still serving
-mid-rollout, or a server rolled back to v29, that resumes a run a v30 replica
-stamped `team_gateway` publishes a pre-v30 message carrying the stamp over a
-bundle walked by the old rules — no gateway key sealed, no
-`ambient_llm_refused` — whose gateway routes would spend the pod's
+raising the minimum would force a drain for no added safety. A v29 publisher
+— and a v28 one since PR-B'2 (#2721), which added the carriage — never
+derives a stamp, but its resume replays the run document's frozen one: an old
+server replica still serving mid-rollout, or a server rolled back to v29, that
+resumes a run a v30 replica stamped `team_gateway` publishes a pre-v30 message
+carrying the stamp over a bundle walked by the old rules — no gateway key
+sealed, no `ambient_llm_refused` — whose gateway routes would spend the pod's
 environment. The v30 runner parks such a message as a version mismatch
-(`ContentBoundaryProducerSchemaVersion`); a resume from an upgraded server
-recovers it. As a second layer, the runner reads the message's `team_gateway`
-stamp as the ambient refusal whatever the bundle says, an empty bundle
-included. Every other v27–v29 message carries `own_keys` or no stamp, the
-readings the v30 runner applies.
+(`ContentBoundaryProducerSchemaVersion`); the run document tells the operator
+to resume it from a server replica that publishes v30, which recovers it. As a
+second layer, the runner reads the message's `team_gateway` stamp as the
+ambient refusal whatever the bundle says, an empty bundle included. Every
+other v27–v29 message carries `own_keys` or no stamp, the readings the v30
+runner applies. A v27 publisher, or a v28 one built before PR-B'2, replays
+nothing: its resume of a stamped run publishes no stamp, which the runner —
+reading the message alone — cannot tell from an unstamped run. Do not roll
+the server back below PR-B'2 while `team_gateway` runs are resumable.
 
 Roll **runners and pools first**, the server after. With the minimum
 unchanged a v30 runner admits every trusted message an old server still

@@ -215,17 +215,22 @@ import (
 // serving auxiliary gateway spend off the team's boundary, failing open on
 // the pod. It rejects: its window is [27, 29]. MinSchemaVersion stays 27 —
 // the fence is the maximum that rises; raising the minimum would force a
-// drain of v27–v29 messages for no added safety. A v27–v29 publisher never
-// DERIVES a stamp, but its resume replays the run document's frozen one: a
-// v29 replica still serving mid-rollout (or a server rolled back) resuming a
-// run a v30 replica stamped team_gateway publishes a pre-v30 message
-// carrying the stamp over a bundle walked by the old rules — no gateway key
-// sealed, no AmbientLLMRefused — whose gateway routes would fall to the
-// pod's environment. Validate parks a message older than
+// drain of v27–v29 messages for no added safety. A v29 publisher — and a v28
+// one since PR-B'2 (#2721) added the carriage — never DERIVES a stamp, but
+// its resume replays the run document's frozen one: a v29 replica still
+// serving mid-rollout (or a server rolled back) resuming a run a v30 replica
+// stamped team_gateway publishes a pre-v30 message carrying the stamp over a
+// bundle walked by the old rules — no gateway key sealed, no
+// AmbientLLMRefused — whose gateway routes would fall to the pod's
+// environment. Validate parks a message older than
 // ContentBoundaryProducerSchemaVersion carrying team_gateway as a version
 // mismatch, so a resume from an upgraded server recovers it; every other
 // v27–v29 message carries own_keys or no stamp, the readings the new runner
-// applies. Runners and pools roll FIRST, the server after: with the minimum
+// applies. A v27 publisher, or a v28 one built before PR-B'2, replays
+// nothing: its resume of a stamped run carries no stamp, which no rule can
+// tell from an unstamped run — the runner reads the message alone — so a
+// server rolled back below PR-B'2 drops a team_gateway run's boundary on
+// resume. Runners and pools roll FIRST, the server after: with the minimum
 // unchanged a new runner admits every trusted message the old server still
 // publishes (the v29 rule above still parks an untrusted message older than
 // v29), and an old runner never sees a v30 message.
@@ -446,8 +451,8 @@ type RunMessage struct {
 	// (ADR-131 §4) so the claiming runner knows which credential class
 	// funds the run without a second store read: the publisher stamps it at
 	// launch (ContentBoundaryProducerSchemaVersion) and replays the
-	// document's stamp on resume (since v28, before any producer existed —
-	// Validate parks a pre-producer replay of team_gateway). Nil on a
+	// document's stamp on resume (since PR-B'2, at v28, before any producer
+	// existed — Validate parks a pre-producer replay of team_gateway). Nil on a
 	// message whose run predates the producer, or whose resolution never
 	// walked; a nil pointer serialises as absent.
 	ContentBoundary *store.RunContentBoundary `json:"content_boundary,omitempty"`

@@ -182,16 +182,18 @@ tier, ADR-162's fork-author subject). §4's and the Delivery's "`SchemaVersion`
 stale runner that dropped the stamp would serve auxiliary gateway spend off the
 team's boundary, so it must reject — it does, its window is [27, 29].
 `MinSchemaVersion` stays 27: the fence is the maximum that rises; raising the
-minimum would force a drain for no added safety. A v27 to v29 publisher never
-derives a stamp, but its resume replays the document's frozen one (the carriage
-is PR-B'2's): an old server replica still serving mid-rollout, or a server
-rolled back, that resumes a run a v30 replica stamped `team_gateway` publishes a
-pre-v30 message carrying the stamp over a bundle walked by the old rules — no
-gateway key, no `AmbientLLMRefused`. `Validate` parks such a message as a
-version mismatch (`ContentBoundaryProducerSchemaVersion`), and the runner reads
-the message's stamp as the ambient refusal whatever the bundle says, an empty
-bundle included; every other v27 to v29 message carries `own_keys` or no stamp,
-the readings the v30 runner applies. Runners and pools roll first, the server
+minimum would force a drain for no added safety. A v29 publisher — and a v28 one
+since PR-B'2, which added the carriage — never derives a stamp, but its resume
+replays the document's frozen one: an old server replica still serving
+mid-rollout, or a server rolled back, that resumes a run a v30 replica stamped
+`team_gateway` publishes a pre-v30 message carrying the stamp over a bundle
+walked by the old rules — no gateway key, no `AmbientLLMRefused`. `Validate`
+parks such a message as a version mismatch (`ContentBoundaryProducerSchemaVersion`),
+and the runner reads the message's stamp as the ambient refusal whatever the
+bundle says, an empty bundle included; every other v27 to v29 message carries
+`own_keys` or no stamp, the readings the v30 runner applies. A v27 publisher, or
+a v28 one before PR-B'2, replays nothing: its resume carries no stamp, which the
+runner, reading the message alone, cannot tell from an unstamped run. Runners and pools roll first, the server
 after (§10): with the minimum unchanged no trusted message parks except that
 stale replay, which a resume from an upgraded server recovers; the v29 rule
 still parks an untrusted message older than v29
