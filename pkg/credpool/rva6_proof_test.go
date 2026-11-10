@@ -398,8 +398,8 @@ func TestPoolReview6_G6_aReturnedSiblingNeverCarriesTheAttRow(t *testing.T) {
 	}
 }
 
-// seqHookLeases runs a sequence of hooks, one per Close (a report's own, not
-// a supersede's or a release's) or stamp of the named lease, right before it
+// seqHookLeases runs a sequence of hooks, one per Close (any but a
+// supersede's or a release's) or stamp of the named lease, right before it
 // reaches the store. Not re-entrant: a CAS a hook makes on the same lease
 // does not consume the next hook.
 type seqHookLeases struct {
@@ -509,36 +509,105 @@ func TestPoolReview6_G8_anInterimRacingAFinalStillBooksTheAttRow(t *testing.T) {
 }
 
 // G9 — a captured release of an attempt that already RAN (an earlier
-// delivery's interim charged its leases; the final delivery is parked and
-// its DLQ copy lost) closes the leases as abandoned: the run units the
-// attempt consumed stay consumed.
-func TestPoolReview6_G9_aCapturedReleaseKeepsTheUnitsOfAnAttemptThatRan(t *testing.T) {
+// delivery's interim charged its lease; the final delivery is parked and
+// its DLQ copy lost) gives the run unit back, its spend staying booked: the
+// run's resume reserves one unit again — one unit for the run, the renewal
+// doctrine's count — and is served even on a one-run-a-day entry.
+func TestPoolReview6_G9_theResumeAfterACapturedReleaseOfARunThatRan(t *testing.T) {
+	for _, interim := range []bool{false, true} {
+		t.Run(map[bool]string{false: "no interim", true: "an interim charged the lease"}[interim], func(t *testing.T) {
+			ctx := context.Background()
+			h := newHarnessWithAttachments(t)
+			alice := h.donor(t, "alice", Limits{MaxRunsPerDay: 1})
+			_, attID, lims := attachForTest(t, h, Strategy{}, DrawLimits{MaxRunsPerDay: 1})
+			g1, err := h.broker.Acquire(ctx, r6AttReq("run-c", claudeWant(), attID, lims, "A1", false))
+			if err != nil {
+				t.Fatal(err)
+			}
+			pub := store.PublishAt(g1.AcquiredAt.Add(5*time.Millisecond), g1.AcquiredAt)
+			h.now = h.now.Add(10 * time.Millisecond)
+			if interim {
+				if err := h.broker.ReportAttemptID(ctx, "run-c", "A1", pub, Outcome{CostUSD: 0.5, Interim: true}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			h.broker.ReleaseCaptured(ctx, h.broker.CaptureRelease(ctx, "run-c"))
+			h.now = h.now.Add(time.Minute)
+			g2, err := h.broker.Acquire(ctx, r6AttReq("run-c", claudeWant(), attID, lims, "A2", false))
+			if err != nil || g2.DonorID != "alice" {
+				t.Fatalf("the resume of the parked run was refused (%v)", err)
+			}
+			for _, id := range []string{alice.ID, AttachmentLedgerID(attID)} {
+				u, _, err := h.ledger.Usage(ctx, id, g1.AcquiredAt)
+				if err != nil {
+					t.Fatal(err)
+				}
+				wantCost := 0.0
+				if interim {
+					wantCost = 0.5
+				}
+				if u.Runs != 1 || u.CostUSD != wantCost {
+					t.Errorf("%s after the resume: runs=%d spent=$%.2f, want one unit for the run and $%.2f booked", id, u.Runs, u.CostUSD, wantCost)
+				}
+			}
+		})
+	}
+}
+
+// addCostHookLeases fires a hook once, right before an AddCost of the named
+// lease reaches the store.
+type addCostHookLeases struct {
+	*MemoryLeaseStore
+	hookID string
+	hook   func()
+}
+
+func (s *addCostHookLeases) AddCost(ctx context.Context, leaseID string, cost float64) (bool, error) {
+	if leaseID == s.hookID && s.hook != nil {
+		h := s.hook
+		s.hook = nil
+		h()
+	}
+	return s.MemoryLeaseStore.AddCost(ctx, leaseID, cost)
+}
+
+// G10 — G8's mirror: the interim's snapshot reads both leases OPEN, and the
+// final settles the attempt before the interim's write lands. An interim
+// never charges a lease its attempt already settled — the lost write
+// re-reads it, as G8's snapshot did — so each donor's ledger agrees with
+// its lease, the audit trail.
+func TestPoolReview6_G10_anInterimLandingAfterTheFinalChargesNoSettledLease(t *testing.T) {
 	ctx := context.Background()
 	h := newHarnessWithAttachments(t)
-	alice := h.donor(t, "alice", Limits{MaxRunsPerDay: 3})
-	bob, _ := h.donorKey(t, "bob", "anthropic", Limits{MaxRunsPerDay: 3})
+	hl := &addCostHookLeases{MemoryLeaseStore: h.leases}
+	b := r6Broker(h, hl)
+	alice := h.donor(t, "alice", Limits{})
+	bob, _ := h.donorKey(t, "bob", "anthropic", Limits{})
 	_, attID, lims := attachForTest(t, h, Strategy{}, DrawLimits{})
-	g1, g2, pub := r6SideBySide(t, h, h.broker, "run-c", attID, lims)
-	if err := h.broker.ReportAttemptID(ctx, "run-c", "A1", pub, Outcome{CostUSD: 1, Interim: true}); err != nil {
+	day := h.now
+	g1, g2, pub := r6SideBySide(t, h, b, "run-d", attID, lims)
+	h.now = h.now.Add(time.Hour)
+	hl.hookID = g2.releaseGuard.lease.ID
+	hl.hook = func() {
+		if err := b.ReportAttemptID(ctx, "run-d", "A1", pub, Outcome{CostUSD: 2}); err != nil {
+			t.Fatalf("final: %v", err)
+		}
+	}
+	if err := b.ReportAttemptID(ctx, "run-d", "A1", pub, Outcome{CostUSD: 1, Interim: true}); err != nil {
 		t.Fatal(err)
 	}
-	h.broker.ReleaseCaptured(ctx, h.broker.CaptureRelease(ctx, "run-c"))
-	for _, g := range []*Grant{g1, g2} {
-		l, err := h.leases.Get(ctx, g.releaseGuard.lease.ID)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !l.Closed || l.Outcome != OutcomeAbandoned {
-			t.Errorf("lease of %s after the captured release: closed=%v outcome=%q, want %q (its attempt ran)", l.PledgeID, l.Closed, l.Outcome, OutcomeAbandoned)
+	for _, c := range []struct {
+		who   string
+		pid   string
+		lease string
+	}{{"alice", alice.ID, g1.releaseGuard.lease.ID}, {"bob", bob.ID, g2.releaseGuard.lease.ID}} {
+		spent := rva2Spent(t, h, c.pid, day)
+		l, _ := h.leases.Get(ctx, c.lease)
+		if spent != 2 || l.CostUSD != spent {
+			t.Errorf("%s: ledger $%.2f, lease $%.2f — want the final's $2 on both (the interim landed after the attempt settled)", c.who, spent, l.CostUSD)
 		}
 	}
-	for _, id := range []string{alice.ID, bob.ID, AttachmentLedgerID(attID)} {
-		u, _, err := h.ledger.Usage(ctx, id, g1.AcquiredAt)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if u.Runs != 1 {
-			t.Errorf("%s: runs=%d after the release of an attempt that ran, want its unit kept (1)", id, u.Runs)
-		}
+	if att := rva2Spent(t, h, AttachmentLedgerID(attID), day); att != 2 {
+		t.Errorf("att: row $%.2f, want the final's $2 once", att)
 	}
 }

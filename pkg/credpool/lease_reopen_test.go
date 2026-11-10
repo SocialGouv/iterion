@@ -37,8 +37,8 @@ func testLeaseReopen(t *testing.T, ctx context.Context, s LeaseStore) {
 	}
 
 	put("superseded")
-	if err := s.AddCost(ctx, "superseded", 1); err != nil {
-		t.Fatal(err)
+	if landed, err := s.AddCost(ctx, "superseded", 1); err != nil || !landed {
+		t.Fatalf("add cost on an open lease = (%v, %v), want (true, nil)", landed, err)
 	}
 	closeAs("superseded", 0, OutcomeSuperseded, at)
 	if ok, err := s.Reopen(ctx, "superseded", at); err != nil || !ok {
@@ -135,8 +135,12 @@ func testLeaseAddCost(t *testing.T, ctx context.Context, s LeaseStore) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := s.AddCost(ctx, id, 1.5); err != nil {
+		landed, err := s.AddCost(ctx, id, 1.5)
+		if err != nil {
 			t.Fatalf("add cost on a %q lease: %v", c.outcome, err)
+		}
+		if landed != c.adds {
+			t.Errorf("AddCost on a %q lease: landed=%v, want %v", c.outcome, landed, c.adds)
 		}
 		l, err := s.Get(ctx, id)
 		if err != nil {

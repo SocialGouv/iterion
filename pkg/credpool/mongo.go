@@ -432,19 +432,18 @@ func (s *MongoLeaseStore) SetSupersededByPublication(ctx context.Context, leaseI
 
 // AddCost accumulates an interim attempt's spend onto a lease its attempt
 // still reports against (open or superseded) — see LeaseStore.AddCost.
-func (s *MongoLeaseStore) AddCost(ctx context.Context, leaseID string, costUSD float64) error {
-	if costUSD == 0 {
-		return nil
-	}
-	if _, err := s.col.UpdateOne(ctx,
+// A zero increment still matches: landed answers the lease's state.
+func (s *MongoLeaseStore) AddCost(ctx context.Context, leaseID string, costUSD float64) (bool, error) {
+	res, err := s.col.UpdateOne(ctx,
 		bson.M{"_id": leaseID, "$or": bson.A{
 			bson.M{"closed": false},
 			bson.M{"outcome": bson.M{"$in": bson.A{OutcomeSuperseded, OutcomeSupersededGrantless}}},
 		}},
-		bson.M{"$inc": bson.M{"cost_usd": costUSD}}); err != nil {
-		return fmt.Errorf("credpool: accumulate lease cost: %w", err)
+		bson.M{"$inc": bson.M{"cost_usd": costUSD}})
+	if err != nil {
+		return false, fmt.Errorf("credpool: accumulate lease cost: %w", err)
 	}
-	return nil
+	return res.MatchedCount > 0, nil
 }
 
 func (s *MongoLeaseStore) LiveCommitment(ctx context.Context, pledgeID, excludeRunID string, now time.Time) (int, float64, error) {

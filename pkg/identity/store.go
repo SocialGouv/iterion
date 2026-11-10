@@ -174,9 +174,10 @@ const (
 // one bounded page. Offset pages over a collection that changes mid-walk
 // shift: a team deleted ahead of the cursor moves every later team back one
 // row. Consecutive pages therefore overlap (the repeats are dropped), so a
-// live team is missed only when more than allTeamsOverlap earlier teams
-// are deleted between two page reads. On an error the teams read so far
-// come back with it.
+// team that existed when the walk started is missed only when more than
+// allTeamsOverlap earlier teams are deleted between two page reads; a team
+// created mid-walk is read only if it sorts past the walk's position. On
+// an error the teams read so far come back with it.
 func AllTeams(ctx context.Context, st interface {
 	ListTeams(context.Context, Page) ([]Team, error)
 }) ([]Team, error) {

@@ -240,9 +240,6 @@ func getByIDs[T any](m map[string]T, ids []string) map[string]T {
 	return out
 }
 
-// paginate applies a Page's offset/limit to items, clamping limit to a
-// default of 50 and offset to a non-negative in-range value. Shared by
-// every MemoryStore List* method.
 // createdBefore is the paged lists' total order — created_at, then id —
 // the Mongo twin's (mongoutil.FindPageSorted): consecutive pages agree on
 // where rows tied on created_at sit.
@@ -253,6 +250,9 @@ func createdBefore(a time.Time, aID string, b time.Time, bID string) bool {
 	return aID < bID
 }
 
+// paginate applies a Page's offset/limit to items, clamping limit to a
+// default of 50 and offset to a non-negative in-range value. Shared by
+// every MemoryStore List* method.
 func paginate[T any](items []T, page Page) []T {
 	limit := page.Limit
 	if limit <= 0 {

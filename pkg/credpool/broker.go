@@ -1482,19 +1482,6 @@ func (b *Broker) Release(ctx context.Context, runID string) {
 }
 
 func (b *Broker) releaseLease(ctx context.Context, lease Lease) {
-	// A lease its attempt already charged (an interim report of an earlier
-	// delivery) served a run: it closes as abandoned — its run unit stays
-	// consumed, like the sweeper's — never as returned unused.
-	fresh, gerr := b.leases.Get(ctx, lease.ID)
-	if gerr == nil && fresh.CostUSD > 0 {
-		if _, err := b.leases.Close(ctx, lease.ID, 0, OutcomeAbandoned, b.now()); err != nil {
-			b.logger.Warn("credpool: could not close lease %s of run %s, which already spent: %v", lease.ID, lease.RunID, err)
-		}
-		return
-	}
-	if gerr != nil && !errors.Is(gerr, ErrNotFound) {
-		b.logger.Warn("credpool: could not read lease %s of run %s before releasing it: %v — released as unused", lease.ID, lease.RunID, gerr)
-	}
 	won, err := b.leases.Close(ctx, lease.ID, 0, OutcomeNotLaunched, b.now())
 	if err != nil {
 		b.logger.Warn("credpool: could not release lease %s of abandoned run %s: %v", lease.ID, lease.RunID, err)
@@ -1609,7 +1596,7 @@ func (b *Broker) Report(ctx context.Context, runID string, out Outcome) error {
 		// Onto the lease as well as the ledger: the lease IS the donor's
 		// audit trail, and a redelivered run whose trail showed only the
 		// last attempt would contradict the ceilings it was charged against.
-		if err := b.leases.AddCost(ctx, lease.ID, out.CostUSD); err != nil {
+		if _, err := b.leases.AddCost(ctx, lease.ID, out.CostUSD); err != nil {
 			b.logger.Warn("credpool: could not record the interim spend of run %s on lease %s: %v", runID, lease.ID, err)
 		}
 		return b.chargeAndReact(ctx, lease, out, now, runID)
@@ -1912,6 +1899,26 @@ func (b *Broker) settleLease(ctx context.Context, lease Lease, rawOut Outcome, a
 	}
 }
 
+// addInterimCost records an interim report's spend on the lease and says
+// whether it charges: a lease its attempt already settled (a racing final
+// closed it before this write) stays silent, like any reported lease — the
+// lost CAS re-reads it. A store error records nothing on the lease but
+// still charges: the ledger is the donor's truth, the lease their trail.
+func (b *Broker) addInterimCost(ctx context.Context, lease Lease, costUSD float64) (settleOutcome, error) {
+	landed, err := b.leases.AddCost(ctx, lease.ID, costUSD)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return settleSilent, nil
+		}
+		b.logger.Warn("credpool: could not record the interim spend of run %s on lease %s: %v", lease.RunID, lease.ID, err)
+		return settleWon, nil
+	}
+	if !landed {
+		return settleLost, nil
+	}
+	return settleWon, nil
+}
+
 // settleRereads bounds how many times a report re-reads a lease that moved
 // under its CAS. Each move is a concurrent supersede or reopen of the same
 // run; two cover a supersede followed by its rollback.
@@ -1961,10 +1968,7 @@ func (b *Broker) settleStep(ctx context.Context, lease Lease, out Outcome, attem
 		// superseded, so a takeover that does not happen can still reopen
 		// it for the attempt that goes on.
 		if out.Interim {
-			if err := b.leases.AddCost(ctx, lease.ID, out.CostUSD); err != nil {
-				b.logger.Warn("credpool: could not record the interim spend of run %s on superseded lease %s: %v", lease.RunID, lease.ID, err)
-			}
-			return settleWon, nil
+			return b.addInterimCost(ctx, lease, out.CostUSD)
 		}
 		won, err := b.leases.StampSupersededReport(ctx, lease.ID, out.CostUSD, now)
 		if err != nil {
@@ -1982,10 +1986,7 @@ func (b *Broker) settleStep(ctx context.Context, lease Lease, out Outcome, attem
 	// Interim: the attempt spent but the queue will redeliver the same
 	// bundle — charge now, the lease stays open.
 	if out.Interim {
-		if err := b.leases.AddCost(ctx, lease.ID, out.CostUSD); err != nil {
-			b.logger.Warn("credpool: could not record the interim spend of run %s on lease %s: %v", lease.RunID, lease.ID, err)
-		}
-		return settleWon, nil
+		return b.addInterimCost(ctx, lease, out.CostUSD)
 	}
 
 	outcome := "ok"
