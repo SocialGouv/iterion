@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -108,16 +109,23 @@ type ForgePublishGrant struct {
 	// (deferGateVerdict).
 	Deferred *gateDeferral `json:"deferred,omitempty"`
 	// Capabilities are the GESTURES this grant may execute through the
-	// publish surface: a subset of {publishCapApprove, publishCapMerge,
-	// publishCapReviewers} (the verdict block) and publishCapDispatchWorkflow
-	// (the dispatch endpoint). Minted at launch from the bot's manifest
-	// forge.token_scopes (the matching scope at write level), stripped
-	// wholesale by the operator pin forge_publish_mutations != true — the
-	// per-repo disarm that needs no release. Empty = a comment-and-gate
-	// grant: the verdict verbs answer in-band refused, a dispatch is refused,
-	// nothing mutates. Fail-closed by construction: an unresolvable manifest
-	// mints none.
+	// publish surface. A pull-request launch's grant carries a subset of
+	// {publishCapApprove, publishCapMerge, publishCapReviewers} (the verdict
+	// block); a repo-bound schedule's carries publishCapDispatchWorkflow (the
+	// dispatch endpoint) alone — no other lane mints it. Minted at launch from
+	// the manifest of the bundle the launch runs (forge.token_scopes, the
+	// matching scope at write level), stripped wholesale by the operator pin
+	// forge_publish_mutations != true — the per-repo disarm that needs no
+	// release. Empty = a comment-and-gate grant: the verdict verbs answer
+	// in-band refused, a dispatch is refused, nothing mutates. Fail-closed by
+	// construction: an unresolvable manifest mints none.
 	Capabilities []string `json:"capabilities,omitempty"`
+	// DispatchWorkflow is the one workflow file a grant carrying
+	// publishCapDispatchWorkflow may dispatch — the workflow the schedule row
+	// names (dispatchWorkflowVar), bound at the tick. The dispatch endpoint
+	// refuses any other file, typed, before the forge is asked; a grant
+	// carrying the capability with no workflow bound dispatches nothing.
+	DispatchWorkflow string `json:"dispatch_workflow,omitempty"`
 	// NoPullRequest marks a grant bound to no pull request — the one a
 	// repo-bound schedule mints at its tick (scheduledDispatchGrant). It may
 	// do what its Capabilities name and nothing else: every surface that acts
@@ -131,12 +139,13 @@ type ForgePublishGrant struct {
 	// pull-request launch's grant, so a stored record without the key reads
 	// as one.
 	NoPullRequest bool `json:"no_pull_request,omitempty"`
-	// Dispatches records the workflow dispatches spent on this grant, one per
-	// (run, workflow), claimed BEFORE the forge is asked
-	// (claimWorkflowDispatch): a replay or a loop inside the run finds its
-	// claim and is refused, so it can never fan the dispatch out. An attempt
-	// the forge refused stays recorded — the run's next launch, under its own
-	// grant, is the retry.
+	// Dispatches records the workflow dispatch spent on this grant — at most
+	// one, claimed BEFORE the forge is asked (claimWorkflowDispatch). The
+	// claim is the grant's, not a run's: every run that presents the grant
+	// (the one it was minted for, a fork or a sub-bot it was handed to, a
+	// replay) finds it and is refused, so one grant never fans the dispatch
+	// out. An attempt the forge refused stays recorded — the schedule's next
+	// tick, under its own grant, is the retry.
 	Dispatches []grantDispatch `json:"dispatches,omitempty"`
 	// Shared marks a grant a second run publishes with — a launch that pinned
 	// the token, a fork (shareGrant) — so no one run's verdict or end may cut
@@ -1638,7 +1647,7 @@ func (s *Server) injectForgePublishVars(ctx context.Context, teamID, preferredCo
 		}
 		return vars, "", nil
 	}
-	caps := s.forgePublishCapabilitiesFor(ctx, teamID, botID)
+	caps := s.pullRequestGrantCapabilitiesFor(ctx, teamID, botID)
 	vars, minted, err := s.registerRunGrant(ForgePublishGrant{
 		TeamID: teamID, Bot: strings.TrimSpace(botID), ConnectionID: conn.ID, Repo: repo, Capabilities: caps,
 	}, host, vars, base)
@@ -1667,7 +1676,10 @@ func (s *Server) injectForgePublishVars(ctx context.Context, teamID, preferredCo
 // schedule — hands its run the same endpoint set, and a new endpoint reaches
 // all of them at once. Which of those endpoints serve the grant is the
 // grant's own record: one bound to no pull request is refused by every
-// pull-request endpoint (pullRequestGrant).
+// pull-request endpoint (pullRequestGrant). The dispatch endpoint is the one
+// exception: it is named only to a grant carrying publishCapDispatchWorkflow,
+// and removed from vars otherwise — a value a caller left there would be an
+// endpoint of its choosing the bearer is scoped toward.
 //
 // The operator pin forge_publish_mutations (anything but "true") strips every
 // capability here, whichever lane minted. A registry that refuses the grant
@@ -1695,7 +1707,11 @@ func (s *Server) registerRunGrant(g ForgePublishGrant, host string, vars map[str
 	vars[forgePublishVarURL] = base + "/api/v1/forge/publish-review"
 	vars[forgePublishVarPRState] = base + "/api/v1/forge/pull-request"
 	vars[forgePublishVarPreflight] = base + "/api/v1/forge/delivery-preflight"
-	vars[forgePublishVarDispatch] = base + forgeDispatchWorkflowPath
+	if slices.Contains(g.Capabilities, publishCapDispatchWorkflow) {
+		vars[forgePublishVarDispatch] = base + forgeDispatchWorkflowPath
+	} else {
+		delete(vars, forgePublishVarDispatch)
+	}
 	vars[forgePublishVarToken] = token
 	return vars, mintedGrant(token), nil
 }

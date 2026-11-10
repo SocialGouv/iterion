@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/cloudsched"
 	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/forge"
@@ -24,6 +25,8 @@ import (
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/webhooks"
+	"github.com/redis/go-redis/v9"
 )
 
 // The workflow-dispatch witnesses (#3130). Each one drives the REAL path —
@@ -217,6 +220,9 @@ type dispatchWorld struct {
 	f    *fakeDispatchForge
 	runs store.RunStore
 	conn forge.Connection
+	// manifests caches each bot's resolved manifest: resolving walks the
+	// whole catalogue.
+	manifests map[string]*bundle.Manifest
 }
 
 func newDispatchWorld(t *testing.T) *dispatchWorld {
@@ -248,18 +254,47 @@ func newDispatchWorld(t *testing.T) *dispatchWorld {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	return &dispatchWorld{s: s, f: f, runs: rs, conn: conn}
+	return &dispatchWorld{s: s, f: f, runs: rs, conn: conn, manifests: map[string]*bundle.Manifest{}}
+}
+
+// manifestOf is botID's manifest as a tick of team1's schedule reads it: the
+// launch resolution's own (resolveBotSource → launchBot.Manifest).
+func (w *dispatchWorld) manifestOf(t *testing.T, botID string) *bundle.Manifest {
+	t.Helper()
+	if m, ok := w.manifests[botID]; ok {
+		return m
+	}
+	lb, err := w.s.resolveBotSource(context.Background(), "team1", botID)
+	if err != nil {
+		t.Fatalf("resolve %s: %v", botID, err)
+	}
+	defer lb.Cleanup()
+	w.manifests[botID] = lb.Manifest
+	return lb.Manifest
+}
+
+// tick is the schedule mint as launchScheduledBot calls it for botID on
+// integ1, with the schedule row's vars.
+func (w *dispatchWorld) tick(t *testing.T, botID, scheduleID string, vars map[string]string) (map[string]string, mintedGrant, error) {
+	t.Helper()
+	return w.s.scheduledDispatchGrant(context.Background(), cloudsched.ScheduledBot{
+		ID: scheduleID, TenantID: "team1", BotID: botID, RepoIntegrationID: "integ1",
+	}, w.manifestOf(t, botID), vars)
 }
 
 // scheduleGrant mints a schedule run's grant through the production mint for
-// botID and records the run holding it, exactly as a launch would: the run's
-// inputs carry the minted vars. It returns the run id, the token and the
-// dispatch endpoint's path.
+// botID, bound to renovate.yml, and records the run holding it, exactly as a
+// launch would: the run's inputs carry the minted vars. It returns the token
+// and the dispatch endpoint's path.
 func (w *dispatchWorld) scheduleGrant(t *testing.T, botID, runID string, trust store.RunTrust) (string, string) {
 	t.Helper()
-	vars, minted, err := w.s.scheduledDispatchGrant(context.Background(), cloudsched.ScheduledBot{
-		ID: "sch-" + runID, TenantID: "team1", BotID: botID, RepoIntegrationID: "integ1",
-	}, map[string]string{"workflow": "renovate.yml"})
+	return w.scheduleGrantFor(t, botID, runID, "renovate.yml", trust)
+}
+
+// scheduleGrantFor is scheduleGrant for a schedule row naming workflow.
+func (w *dispatchWorld) scheduleGrantFor(t *testing.T, botID, runID, workflow string, trust store.RunTrust) (string, string) {
+	t.Helper()
+	vars, minted, err := w.tick(t, botID, "sch-"+runID, map[string]string{"workflow": workflow})
 	if err != nil {
 		t.Fatalf("scheduledDispatchGrant: %v", err)
 	}
@@ -337,8 +372,8 @@ func TestWorkflowDispatch_AScheduleOfTheShippedBotDispatchesWithAPerCallNarrowTo
 	w := newDispatchWorld(t)
 	token, _ := w.scheduleGrant(t, "workflow-kick", "run-ok", store.RunTrustDefault)
 	g, _ := w.s.forgePublishTokens.lookup(token)
-	if !slices.Equal(g.Capabilities, []string{publishCapDispatchWorkflow}) || g.Repo != "acme/widgets" || g.ConnectionID != "conn1" || g.TeamID != "team1" {
-		t.Fatalf("schedule grant = %+v, want the integration's (team1, conn1, acme/widgets) carrying only %s", g, publishCapDispatchWorkflow)
+	if !slices.Equal(g.Capabilities, []string{publishCapDispatchWorkflow}) || g.Repo != "acme/widgets" || g.ConnectionID != "conn1" || g.TeamID != "team1" || g.DispatchWorkflow != "renovate.yml" {
+		t.Fatalf("schedule grant = %+v, want the integration's (team1, conn1, acme/widgets) carrying only %s, bound to renovate.yml", g, publishCapDispatchWorkflow)
 	}
 
 	code, out, raw := w.dispatch(t, token, "run-ok", "acme/widgets", "renovate.yml")
@@ -369,16 +404,13 @@ func TestWorkflowDispatch_AScheduleOfTheShippedBotDispatchesWithAPerCallNarrowTo
 // minted by the PR launch path from the same manifest — is refused the
 // dispatch, typed, before any forge call.
 //
-// Mutation witnessed: forgePublishCapabilitiesFor appending
-// publishCapDispatchWorkflow unconditionally → the PR grant dispatches (and
-// the schedule mints) → red.
+// Mutation witnessed: declaresWorkflowDispatch answering true for every
+// manifest → the warden's schedule mints a dispatch grant → red.
 func TestWorkflowDispatch_ABotWithoutTheActionsScopeHoldsNoCapability(t *testing.T) {
 	t.Run("its schedule mints no grant", func(t *testing.T) {
 		w := newDispatchWorld(t)
 		in := map[string]string{"workflow": "renovate.yml"}
-		vars, minted, err := w.s.scheduledDispatchGrant(context.Background(), cloudsched.ScheduledBot{
-			ID: "sch-warden", TenantID: "team1", BotID: "gitops-warden", RepoIntegrationID: "integ1",
-		}, in)
+		vars, minted, err := w.tick(t, "gitops-warden", "sch-warden", in)
 		if err != nil || minted != "" || !maps.Equal(vars, in) {
 			t.Fatalf("schedule of a bot without the scope = (%v, %q, %v), want its vars untouched and no grant", vars, minted, err)
 		}
@@ -488,7 +520,7 @@ func TestWorkflowDispatch_AConnectionThatCannotDispatchIsRefusedTyped(t *testing
 			}
 			vars, minted, err := w.s.scheduledDispatchGrant(context.Background(), cloudsched.ScheduledBot{
 				ID: "sch-" + tc.name, TenantID: "team1", BotID: "workflow-kick", RepoIntegrationID: "integ-" + tc.name,
-			}, nil)
+			}, w.manifestOf(t, "workflow-kick"), map[string]string{"workflow": "renovate.yml"})
 			if err != nil || minted == "" {
 				t.Fatalf("grant on the %s connection = (%q, %v), want one — the refusal belongs to the dispatch, typed", tc.name, minted, err)
 			}
@@ -505,13 +537,16 @@ func TestWorkflowDispatch_AConnectionThatCannotDispatchIsRefusedTyped(t *testing
 	}
 }
 
-// One dispatch per (run, workflow): a replay is refused typed and never
-// reaches the forge, concurrent replays included; another workflow of the
-// same run is its own claim.
+// One dispatch per GRANT: a replay is refused typed and never reaches the
+// forge, concurrent replays included — and so is every other run presenting
+// the same grant under its own run id: a sub-bot child handed the token
+// through `with:`, a fork that inherited it. One grant cannot fan the
+// dispatch out, whichever run comes first.
 //
-// Mutation witnessed: claimWorkflowDispatch claiming unconditionally → the
-// replay dispatches a second time → red.
-func TestWorkflowDispatch_OneDispatchPerRunAndWorkflow(t *testing.T) {
+// Mutations witnessed: claimWorkflowDispatch claiming unconditionally → the
+// replay dispatches a second time → red; the claim keyed on the presenting
+// run (the shape before) → each child run dispatches again → red.
+func TestWorkflowDispatch_OneDispatchPerGrant(t *testing.T) {
 	t.Run("a replay is refused", func(t *testing.T) {
 		w := newDispatchWorld(t)
 		token, _ := w.scheduleGrant(t, "workflow-kick", "run-once", store.RunTrustDefault)
@@ -525,10 +560,37 @@ func TestWorkflowDispatch_OneDispatchPerRunAndWorkflow(t *testing.T) {
 		if _, dispatches, _ := w.f.snapshot(); len(dispatches) != 1 {
 			t.Fatalf("forge dispatches = %+v, want exactly one", dispatches)
 		}
-		if code, _, raw := w.dispatch(t, token, "run-once", "acme/widgets", "lint.yml"); code != http.StatusOK {
-			t.Fatalf("another workflow of the same run = %d %s, want 200 — the claim is per workflow", code, raw)
-		}
 	})
+	for _, childFirst := range []bool{false, true} {
+		t.Run(fmt.Sprintf("other runs holding the grant (child first: %v)", childFirst), func(t *testing.T) {
+			w := newDispatchWorld(t)
+			token, _ := w.scheduleGrant(t, "workflow-kick", "run-parent", store.RunTrustDefault)
+			// What a sub-bot child given the parent's grant through `with:`,
+			// or a fork inheriting the parent's inputs, records: the same
+			// token under a run id of its own.
+			children := []string{"run-child-1", "run-child-2", "run-child-3"}
+			for _, id := range children {
+				w.holdRun(t, id, map[string]string{forgePublishVarToken: token, "workflow": "renovate.yml"}, store.RunTrustDefault)
+			}
+			order := append([]string{"run-parent"}, children...)
+			if childFirst {
+				order = append(append([]string(nil), children...), "run-parent")
+			}
+			oks := 0
+			for _, id := range order {
+				code, out, raw := w.dispatch(t, token, id, "acme/widgets", "renovate.yml")
+				switch {
+				case code == http.StatusOK:
+					oks++
+				case code != http.StatusConflict || out.Code != dispatchRefusedRepeat:
+					t.Fatalf("dispatch by %s = %d %s, want 200 for the first presenter and 409 %s after", id, code, raw, dispatchRefusedRepeat)
+				}
+			}
+			if _, dispatches, _ := w.f.snapshot(); oks != 1 || len(dispatches) != 1 {
+				t.Fatalf("%d runs presenting one grant got %d dispatches through (%d forge dispatches), want exactly one", len(order), oks, len(dispatches))
+			}
+		})
+	}
 	t.Run("concurrent replays dispatch once", func(t *testing.T) {
 		w := newDispatchWorld(t)
 		token, _ := w.scheduleGrant(t, "workflow-kick", "run-race", store.RunTrustDefault)
@@ -559,6 +621,78 @@ func TestWorkflowDispatch_OneDispatchPerRunAndWorkflow(t *testing.T) {
 		if _, dispatches, _ := w.f.snapshot(); len(dispatches) != 1 {
 			t.Fatalf("forge dispatches = %+v, want exactly one", dispatches)
 		}
+	})
+	// The cloud twin: on Valkey the claim's update re-runs fn when another
+	// replica wrote the grant between its WATCH and its EXEC. A pass that
+	// finds the other replica's claim must answer "not claimed", whatever an
+	// earlier pass of the same call decided. The interleaving is forced, not
+	// raced for: a goroutine race on miniredis does not reach it.
+	//
+	// Mutation witnessed: the `claimed` reset at the top of the claim's fn
+	// removed → the second pass keeps the first pass's true → the run
+	// dispatches over the other replica's claim → red.
+	t.Run("valkey: a claim another replica commits mid-transaction wins", func(t *testing.T) {
+		w := newDispatchWorld(t)
+		mr, rdb := newTestRedis(t)
+		rivalClient := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+		t.Cleanup(func() { _ = rivalClient.Close() })
+		st := &interleavingGrantStore{
+			valkeyForgePublishTokenStore: newValkeyForgePublishTokenStore(rdb, nil),
+			rival:                        newValkeyForgePublishTokenStore(rivalClient, nil),
+			rivalRun:                     "run-vrace-replica-b",
+		}
+		w.s.forgePublishTokens = st
+		token, _ := w.scheduleGrant(t, "workflow-kick", "run-vrace", store.RunTrustDefault)
+		code, out, raw := w.dispatch(t, token, "run-vrace", "acme/widgets", "renovate.yml")
+		if st.rivalErr != nil {
+			t.Fatalf("the rival replica's claim: %v", st.rivalErr)
+		}
+		if st.passes() < 2 {
+			t.Fatalf("the claim's fn ran %d time(s) — the interleaving did not force the re-run the witness is about", st.passes())
+		}
+		if code != http.StatusConflict || out.Code != dispatchRefusedRepeat {
+			t.Fatalf("dispatch over another replica's mid-transaction claim = %d %s, want 409 %s", code, raw, dispatchRefusedRepeat)
+		}
+		if _, dispatches, _ := w.f.snapshot(); len(dispatches) != 0 {
+			t.Fatalf("forge dispatches = %+v, want none — the other replica holds the claim", dispatches)
+		}
+		if c := w.claims(t, token); len(c) != 1 || c[0].RunID != st.rivalRun {
+			t.Fatalf("claims on the grant = %+v, want the other replica's one", c)
+		}
+	})
+}
+
+// interleavingGrantStore is the Valkey grant store with a second replica (a
+// client of its own) committing a claim on the same grant INSIDE the first
+// claim's transaction — after its WATCH and read, before its EXEC — once.
+type interleavingGrantStore struct {
+	*valkeyForgePublishTokenStore
+	rival    *valkeyForgePublishTokenStore
+	rivalRun string
+	rivalErr error
+
+	once sync.Once
+	mu   sync.Mutex
+	runs int
+}
+
+func (s *interleavingGrantStore) passes() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.runs
+}
+
+func (s *interleavingGrantStore) update(token string, fn func(*ForgePublishGrant)) (bool, error) {
+	return s.valkeyForgePublishTokenStore.update(token, func(g *ForgePublishGrant) {
+		s.mu.Lock()
+		s.runs++
+		s.mu.Unlock()
+		fn(g)
+		s.once.Do(func() {
+			_, s.rivalErr = s.rival.update(token, func(g *ForgePublishGrant) {
+				g.Dispatches = append(g.Dispatches, grantDispatch{RunID: s.rivalRun, Workflow: "renovate.yml", At: time.Now().UTC()})
+			})
+		})
 	})
 }
 
@@ -615,7 +749,7 @@ func TestWorkflowDispatch_TheForgesRefusalIsReportedTyped(t *testing.T) {
 	} {
 		t.Run(tc.workflow, func(t *testing.T) {
 			w := newDispatchWorld(t)
-			token, _ := w.scheduleGrant(t, "workflow-kick", "run-refused", store.RunTrustDefault)
+			token, _ := w.scheduleGrantFor(t, "workflow-kick", "run-refused", tc.workflow, store.RunTrustDefault)
 			code, out, raw := w.dispatch(t, token, "run-refused", "acme/widgets", tc.workflow)
 			if code != http.StatusUnprocessableEntity || out.Code != dispatchRefusedByForge || out.Dispatched || !strings.Contains(out.Reason, tc.want) {
 				t.Fatalf("dispatch of %s = %d %s, want 422 %s naming %q", tc.workflow, code, raw, dispatchRefusedByForge, tc.want)
@@ -641,20 +775,49 @@ func TestWorkflowDispatch_ForgePublishMutationsDisarmsTheScheduleGrant(t *testin
 		if err := w.s.forgeIntegrations.Update(context.Background(), ri); err != nil {
 			t.Fatal(err)
 		}
-		_, minted, err := w.s.scheduledDispatchGrant(context.Background(), cloudsched.ScheduledBot{
-			ID: "sch-off", TenantID: "team1", BotID: "workflow-kick", RepoIntegrationID: "integ1",
-		}, nil)
+		_, minted, err := w.tick(t, "workflow-kick", "sch-off", map[string]string{"workflow": "renovate.yml"})
 		if err != nil || minted != "" {
 			t.Fatalf("disarmed integration minted (%q, %v), want nothing", minted, err)
 		}
 	})
 	t.Run("on the schedule row", func(t *testing.T) {
 		w := newDispatchWorld(t)
-		_, minted, err := w.s.scheduledDispatchGrant(context.Background(), cloudsched.ScheduledBot{
-			ID: "sch-off", TenantID: "team1", BotID: "workflow-kick", RepoIntegrationID: "integ1",
-		}, map[string]string{publishMutationKillSwitchVar: "off"})
+		_, minted, err := w.tick(t, "workflow-kick", "sch-off", map[string]string{"workflow": "renovate.yml", publishMutationKillSwitchVar: "off"})
 		if err != nil || minted != "" {
 			t.Fatalf("disarmed schedule row minted (%q, %v), want nothing", minted, err)
+		}
+	})
+
+	// The pin an operator PATCHes onto the webhook config — the half the
+	// orchestrator treats as authoritative — is the pull-request lane's
+	// reading (repoLaunchPolicy); the schedule lane reads the same one.
+	//
+	// Mutation witnessed: scheduledDispatchGrant reading integ.LaunchVars
+	// instead of repoLaunchPolicy → the schedule mints its dispatch grant
+	// while the pull-request lane is disarmed → red.
+	t.Run("on the webhook config", func(t *testing.T) {
+		w := newDispatchWorld(t)
+		cfgs := webhooks.NewMemoryConfigStore()
+		w.s.webhookConfigs = cfgs
+		if err := cfgs.Create(context.Background(), webhooks.Config{
+			ID: "wh1", TenantID: "team1", LaunchVars: map[string]string{publishMutationKillSwitchVar: "false"},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		ri, err := w.s.forgeIntegrations.Get(context.Background(), "integ1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		ri.WebhookID = "wh1"
+		if err := w.s.forgeIntegrations.Update(context.Background(), ri); err != nil {
+			t.Fatal(err)
+		}
+		if got := w.s.repoLaunchPolicy(context.Background(), ri, "workflow-kick")[publishMutationKillSwitchVar]; got != "false" {
+			t.Fatalf("the fixture's pull-request lane reads %s=%q, want \"false\" — it must be disarmed to witness the schedule lane", publishMutationKillSwitchVar, got)
+		}
+		_, minted, err := w.tick(t, "workflow-kick", "sch-off", map[string]string{"workflow": "renovate.yml"})
+		if err != nil || minted != "" {
+			t.Fatalf("a schedule on an integration disarmed through its webhook config minted (%q, %v), want nothing", minted, err)
 		}
 	})
 }

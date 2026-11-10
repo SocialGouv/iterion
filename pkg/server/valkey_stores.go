@@ -190,21 +190,58 @@ const forgePublishTokenKeyPrefix = "iterion:forgepub:tok:"
 // the name proves nothing a holder of the keyspace can present.
 const forgePublishTokenDigestKeyPrefix = "iterion:forgepub:tokd:"
 
+// forgePublishUnboundTokenKeyPrefix keys a grant bound to no pull request
+// (ForgePublishGrant.NoPullRequest) by the SHA-256 of its bearer, apart from
+// every other grant. The binding is a field a build older than it does not
+// know: decoding the record, that build would read the zero value — a
+// pull-request launch's grant — and honour it on the review, the merge-gate
+// status and the pull-request read while replicas of two versions share the
+// store. Under this prefix an older build finds no grant at all, so it
+// answers "unknown token": the binding fails closed for every reader that
+// cannot honour it.
+const forgePublishUnboundTokenKeyPrefix = "iterion:forgepub:tokn:"
+
 // forgePublishTokenKey is where a grant minted by this build lives.
 func forgePublishTokenKey(token string) string {
 	sum := sha256.Sum256([]byte(token))
 	return forgePublishTokenDigestKeyPrefix + hex.EncodeToString(sum[:])
 }
 
+// forgePublishUnboundTokenKey is where a grant bound to no pull request lives.
+func forgePublishUnboundTokenKey(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return forgePublishUnboundTokenKeyPrefix + hex.EncodeToString(sum[:])
+}
+
+// forgePublishRegisterKey is the key Register writes g under: the unbound
+// namespace for a grant bound to no pull request, the digest key otherwise.
+func forgePublishRegisterKey(token string, g ForgePublishGrant) string {
+	if g.NoPullRequest {
+		return forgePublishUnboundTokenKey(token)
+	}
+	return forgePublishTokenKey(token)
+}
+
+// bindStoredGrant applies what the key a grant was read from says of it: a
+// record under the unbound namespace is bound to no pull request whatever its
+// body carries — the namespace is the binding older builds cannot miss, and
+// the body must not be able to contradict it.
+func bindStoredGrant(key string, g *ForgePublishGrant) {
+	if strings.HasPrefix(key, forgePublishUnboundTokenKeyPrefix) {
+		g.NoPullRequest = true
+	}
+}
+
 // forgePublishTokenKeys are the keys a grant can live under, in READ order:
-// the digest key, then the legacy key whose name was the bearer. The second
-// read is the cutover's bridge — a grant minted by a previous build stays
-// usable for at most one grant TTL (forgePublishDefaultTTL: 9 days, the retry
-// window plus a margin), after which no legacy key can exist and the second
-// half can go. Every reader, writer and reaper of a grant goes through this
-// one list, so the two keys cannot drift apart.
+// the digest key, the unbound key (a grant bound to no pull request), then
+// the legacy key whose name was the bearer. The legacy read is the cutover's
+// bridge — a grant minted by a previous build stays usable for at most one
+// grant TTL (forgePublishDefaultTTL: 9 days, the retry window plus a margin),
+// after which no legacy key can exist and that read can go. Every reader,
+// writer and reaper of a grant goes through this one list, so the keys cannot
+// drift apart.
 func forgePublishTokenKeys(token string) []string {
-	return []string{forgePublishTokenKey(token), forgePublishTokenKeyPrefix + token}
+	return []string{forgePublishTokenKey(token), forgePublishUnboundTokenKey(token), forgePublishTokenKeyPrefix + token}
 }
 
 // valkeyForgePublishTokenStore shares per-run forge-publish grants across
@@ -228,7 +265,7 @@ func (s *valkeyForgePublishTokenStore) Register(token string, g ForgePublishGran
 	defer cancel()
 	// Redis TTL replaces the in-memory sweep. The grant is safe to name in
 	// the error (team/conn/repo); the token is not.
-	if err := s.rdb.Set(ctx, forgePublishTokenKey(token), b, forgePublishDefaultTTL).Err(); err != nil {
+	if err := s.rdb.Set(ctx, forgePublishRegisterKey(token, g), b, forgePublishDefaultTTL).Err(); err != nil {
 		return fmt.Errorf("store forge publish token (repo=%s): %w", g.Repo, err)
 	}
 	return nil
@@ -275,8 +312,8 @@ func (s *valkeyForgePublishTokenStore) expireIn(token string, d time.Duration) {
 // the transaction retry rather than be overwritten.
 func (s *valkeyForgePublishTokenStore) update(token string, fn func(*ForgePublishGrant)) (bool, error) {
 	// In read order, one transaction per key: a grant lives under exactly one
-	// of them (Register writes the digest key only), and a miss on the first
-	// is the cutover's legacy case, not an absent grant.
+	// of them (Register writes one, forgePublishRegisterKey), so a miss on a
+	// key is not an absent grant until the last key misses too.
 	for _, key := range forgePublishTokenKeys(token) {
 		found, err := s.updateKey(key, fn)
 		if err != nil || found {
@@ -303,6 +340,7 @@ func (s *valkeyForgePublishTokenStore) updateKey(key string, fn func(*ForgePubli
 		if err := json.Unmarshal(b, &g); err != nil {
 			return fmt.Errorf("decode forge publish grant: %w", err)
 		}
+		bindStoredGrant(key, &g)
 		fn(&g)
 		out, err := mergeGrantJSON(b, g)
 		if err != nil {
@@ -361,7 +399,7 @@ func mergeGrantJSON(raw []byte, g ForgePublishGrant) ([]byte, error) {
 
 // forgePublishGrantKeys are the JSON keys ForgePublishGrant owns; a test pins
 // the list to the struct's tags.
-var forgePublishGrantKeys = []string{"team_id", "connection_id", "repo", "bot", "capabilities", "no_pull_request", "dispatches", "verdict", "refusal", "deferred", "shared", "cut_back"}
+var forgePublishGrantKeys = []string{"team_id", "connection_id", "repo", "bot", "capabilities", "dispatch_workflow", "no_pull_request", "dispatches", "verdict", "refusal", "deferred", "shared", "cut_back"}
 
 func (s *valkeyForgePublishTokenStore) lookup(token string) (ForgePublishGrant, bool) {
 	ctx, cancel := valkeyCtx()
@@ -375,6 +413,7 @@ func (s *valkeyForgePublishTokenStore) lookup(token string) (ForgePublishGrant, 
 		if json.Unmarshal(b, &g) != nil {
 			return ForgePublishGrant{}, false
 		}
+		bindStoredGrant(key, &g)
 		// ExpiresAt left zero: Redis already evicted the key if it lapsed.
 		return g, true
 	}

@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/cloudsched"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	forgegithub "github.com/SocialGouv/iterion/pkg/forge/github"
@@ -22,16 +23,20 @@ import (
 // Workflow dispatch through the deterministic publish surface.
 //
 // A bot that declares the `actions` scope in its manifest
-// (bundle.ForgeScopeActions) carries publishCapDispatchWorkflow on its run's
-// publish grant, and may ask the server to dispatch ONE of the grant
-// repository's own workflows: POST /api/v1/forge/dispatch-workflow, bearer =
-// the grant token (X-Iterion-Run). The server dispatches with a GitHub-App
-// installation token minted for that one call, narrowed to that repository and
-// to {actions: write, metadata: read} — the run's own forge token never
-// carries the Actions permission, and this one never reaches the pod.
+// (bundle.ForgeScopeActions), launched by a repo-bound schedule, carries
+// publishCapDispatchWorkflow on its run's publish grant — bound to the ONE
+// workflow file the schedule row names — and may ask the server to dispatch
+// that workflow of the grant repository: POST /api/v1/forge/dispatch-workflow,
+// bearer = the grant token (X-Iterion-Run). The server dispatches with a
+// GitHub-App installation token minted for that one call, narrowed to that
+// repository and to {actions: write, metadata: read} — the run's own forge
+// token never carries the Actions permission, and this one never reaches the
+// pod. A grant dispatches at most once.
 //
-// Every refusal is typed (a `code` in the JSON body), and every one of them is
-// decided before the forge is asked.
+// Every answer that is not a dispatch carries a typed code: `code` in a 4xx
+// body, `error_code` in a 5xx one (a 5xx body is reduced to its code at the
+// HTTP boundary; the reason stays in the server log). Every refusal the
+// server decides is decided before the forge is asked.
 // ---------------------------------------------------------------------------
 
 // forgeDispatchWorkflowPath is the dispatch endpoint. Like the other grant
@@ -39,21 +44,35 @@ import (
 // front it (isAuthExempt).
 const forgeDispatchWorkflowPath = "/api/v1/forge/dispatch-workflow"
 
-// The typed refusal codes the dispatch endpoint answers with — what a bot
-// reads from the `code` field, a log line greps for and a test asserts.
-// grantUntrustedRunReason and grantTenantMismatchReason are runOwnsGrant's
-// own words, reused rather than respelled.
+// dispatchWorkflowVar is the launch var naming the workflow file a dispatch
+// bot starts. The schedule lane binds the grant to the value on the schedule
+// row — the operator's own, written by a team admin — so the run can dispatch
+// that file and no other, whatever its own inputs say.
+const dispatchWorkflowVar = "workflow"
+
+// The typed codes the dispatch endpoint answers with — what a bot reads from
+// the `code` (or, on a 5xx, `error_code`) field, a log line greps for and a
+// test asserts. grantUntrustedRunReason and grantTenantMismatchReason are
+// runOwnsGrant's own words, reused rather than respelled.
 const (
+	dispatchRefusedNoToken      = "workflow_dispatch_no_grant_token"
+	dispatchRefusedUnknownGrant = "workflow_dispatch_grant_unknown"
+	dispatchRefusedNotEnabled   = "workflow_dispatch_not_enabled"
+	dispatchRefusedBadRequest   = "workflow_dispatch_bad_request"
 	dispatchRefusedNoCapability = "workflow_dispatch_no_capability"
 	dispatchRefusedBadFile      = "workflow_dispatch_bad_workflow_file"
+	dispatchRefusedWorkflow     = "workflow_dispatch_workflow_outside_grant"
 	dispatchRefusedRepo         = "workflow_dispatch_repo_outside_grant"
 	dispatchRefusedRun          = "workflow_dispatch_run_not_grant_holder"
+	dispatchRefusedRunOver      = "workflow_dispatch_run_over"
+	dispatchRefusedNoConnection = "workflow_dispatch_connection_missing"
 	dispatchRefusedUnsupported  = "workflow_dispatch_unsupported"
 	dispatchRefusedRepeat       = "workflow_dispatch_repeat"
 	dispatchRefusedPermission   = "workflow_dispatch_permission_missing"
 	dispatchRefusedCredential   = "workflow_dispatch_credential_unavailable"
 	dispatchRefusedByForge      = "workflow_dispatch_refused_by_forge"
 	dispatchUnconfirmed         = "workflow_dispatch_unconfirmed"
+	dispatchUnavailable         = "workflow_dispatch_unavailable"
 )
 
 // auditActionWorkflowDispatch is the audit action of every dispatch the
@@ -66,7 +85,8 @@ const auditActionWorkflowDispatch = "forge.workflow.dispatch"
 // per-call token can be minted from.
 var errWorkflowDispatchUnsupported = errors.New("workflow dispatch is not supported on this connection")
 
-// grantDispatch is one (run, workflow) dispatch claimed on a grant.
+// grantDispatch is the dispatch claimed on a grant: which run presented it,
+// for which workflow, when.
 type grantDispatch struct {
 	RunID    string    `json:"run_id"`
 	Workflow string    `json:"workflow"`
@@ -76,13 +96,13 @@ type grantDispatch struct {
 type dispatchWorkflowRequest struct {
 	// RunID is the run presenting the grant ({{run.id}}). It is checked
 	// against the run record, which must hold this very grant token: the
-	// trust and tenant of THAT run decide, and the one-dispatch claim is
-	// keyed by it.
+	// trust, tenant and liveness of THAT run decide.
 	RunID string `json:"run_id"`
 	// Repo is the repository the caller means ("owner/name"). It must be
 	// the grant's: a mismatch is refused, never retargeted.
 	Repo string `json:"repo"`
-	// Workflow is the workflow file's basename ("renovate.yml").
+	// Workflow is the workflow file's basename ("renovate.yml"). It must be
+	// the one the grant is bound to.
 	Workflow string `json:"workflow"`
 }
 
@@ -102,42 +122,47 @@ type dispatchWorkflowResponse struct {
 
 // handleForgeDispatchWorkflow is POST /api/v1/forge/dispatch-workflow.
 func (s *Server) handleForgeDispatchWorkflow(w http.ResponseWriter, r *http.Request) {
+	var req dispatchWorkflowRequest
+	repo := ""
+	refuse := func(status int, code, reason string) {
+		s.logWarn("forge dispatch: %q by run %q on %q refused (%s): %s", req.Workflow, req.RunID, repo, code, reason)
+		writeDispatchAnswer(w, status, dispatchWorkflowResponse{Code: code, Reason: reason, Repo: repo, Workflow: req.Workflow})
+	}
 	token := strings.TrimSpace(r.Header.Get("X-Iterion-Run"))
 	if token == "" {
-		httpError(w, http.StatusUnauthorized, "missing X-Iterion-Run header")
+		refuse(http.StatusUnauthorized, dispatchRefusedNoToken, "missing X-Iterion-Run header (the run's forge_publish_token)")
 		return
 	}
 	if s.forgePublishTokens == nil || s.forgeConnections == nil {
-		httpError(w, http.StatusNotFound, "workflow dispatch is not enabled on this server (no forge connections wired)")
+		refuse(http.StatusNotFound, dispatchRefusedNotEnabled, "workflow dispatch is not enabled on this server (no forge connections wired)")
 		return
 	}
 	grant, ok := s.forgePublishTokens.lookup(token)
 	if !ok {
-		httpError(w, http.StatusUnauthorized, "unknown or expired run token")
+		refuse(http.StatusUnauthorized, dispatchRefusedUnknownGrant, "unknown or expired run token")
 		return
 	}
-	var req dispatchWorkflowRequest
+	repo = grant.Repo
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096))
+	// Decision 3 (#3130): the default branch, no inputs. A body naming
+	// anything else — a ref, inputs — is refused, never silently dropped.
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&req); err != nil {
-		httpError(w, http.StatusBadRequest, "invalid request body (want {run_id, repo, workflow}): %v", err)
+		refuse(http.StatusBadRequest, dispatchRefusedBadRequest,
+			fmt.Sprintf("invalid request body (want exactly {run_id, repo, workflow}; a dispatch runs on the default branch with no inputs): %v", err))
 		return
 	}
 	req.RunID, req.Repo, req.Workflow = strings.TrimSpace(req.RunID), strings.TrimSpace(req.Repo), strings.TrimSpace(req.Workflow)
 	if req.RunID == "" || req.Repo == "" || req.Workflow == "" {
-		httpError(w, http.StatusBadRequest, "run_id, repo and workflow are all required")
+		refuse(http.StatusBadRequest, dispatchRefusedBadRequest, "run_id, repo and workflow are all required")
 		return
 	}
-	refuse := func(status int, code, reason string) {
-		s.logWarn("forge dispatch: %s %s on %s refused (%s): %s", req.Workflow, req.RunID, grant.Repo, code, reason)
-		writeJSONStatus(w, status, dispatchWorkflowResponse{Code: code, Reason: reason, Repo: grant.Repo, Workflow: req.Workflow})
-	}
 
-	// (1) The capability: minted at launch from the bot's manifest actions
-	// scope, never a request parameter.
+	// (1) The capability: minted at a repo-bound schedule's tick from the
+	// manifest of the bundle it launched, never a request parameter.
 	if !slices.Contains(grant.Capabilities, publishCapDispatchWorkflow) {
 		refuse(http.StatusForbidden, dispatchRefusedNoCapability,
-			"the publish grant lacks capability "+publishCapDispatchWorkflow+" — declare forge.token_scopes actions: write in the bot manifest (and leave forge_publish_mutations unpinned or \"true\")")
+			"the publish grant lacks capability "+publishCapDispatchWorkflow+" — it is minted only for a repo-bound schedule's run of a bot declaring forge.token_scopes actions: write")
 		return
 	}
 	// (2) The file: it lands in a forge API path.
@@ -146,24 +171,31 @@ func (s *Server) handleForgeDispatchWorkflow(w http.ResponseWriter, r *http.Requ
 			"workflow must be a plain *.yml or *.yaml file name (no directory, no traversal), e.g. renovate.yml")
 		return
 	}
-	// (3) The repository: the grant's own, never retargeted.
+	// (3) The workflow: the one the grant was bound to at mint, never one
+	// the run picks.
+	if grant.DispatchWorkflow == "" || req.Workflow != grant.DispatchWorkflow {
+		refuse(http.StatusForbidden, dispatchRefusedWorkflow,
+			fmt.Sprintf("the grant is bound to workflow %q (the schedule's %s var), not %q", grant.DispatchWorkflow, dispatchWorkflowVar, req.Workflow))
+		return
+	}
+	// (4) The repository: the grant's own, never retargeted.
 	if !strings.EqualFold(req.Repo, grant.Repo) {
 		refuse(http.StatusForbidden, dispatchRefusedRepo,
 			fmt.Sprintf("the run token is scoped to repository %q, not %q", grant.Repo, req.Repo))
 		return
 	}
-	// (4) The run: it must hold this very grant, and be one the grant may
-	// speak for — runOwnsGrant decides trust (a fork-lane run never
-	// dispatches) and tenancy, and audits a refusal itself.
+	// (5) The run: it must hold this very grant, be one the grant may speak
+	// for — runOwnsGrant decides trust (a fork-lane run never dispatches)
+	// and tenancy, and audits a refusal itself — and still be running.
 	if s.cfg.Store == nil {
-		httpError(w, http.StatusServiceUnavailable, "no run store is wired, so the run presenting the grant cannot be verified")
+		refuse(http.StatusServiceUnavailable, dispatchUnavailable, "no run store is wired, so the run presenting the grant cannot be verified")
 		return
 	}
 	run, err := s.cfg.Store.LoadRun(store.WithoutTenantFilter(r.Context()), req.RunID)
 	if err != nil && !errors.Is(err, store.ErrRunNotFound) {
 		// The store did not answer: that says nothing about the run, so it
 		// is not a refusal of it.
-		httpError(w, http.StatusServiceUnavailable, "the run presenting the grant could not be read: %v", err)
+		refuse(http.StatusServiceUnavailable, dispatchUnavailable, "the run presenting the grant could not be read: "+err.Error())
 		return
 	}
 	if err != nil || run == nil || !sameGrantToken(runInputString(run, forgePublishVarToken), token) {
@@ -178,26 +210,32 @@ func (s *Server) handleForgeDispatchWorkflow(w http.ResponseWriter, r *http.Requ
 		refuse(http.StatusForbidden, code, "the run may not present this grant: a run whose workspace holds code the tenant did not write, or of another tenant, never dispatches")
 		return
 	}
-	// (5) The connection: a provider the server can dispatch through.
+	if runIsOver(run) {
+		refuse(http.StatusForbidden, dispatchRefusedRunOver,
+			fmt.Sprintf("run %s is over (%s) — a grant outlives its run for the gate repairs, never for a dispatch", run.ID, run.Status))
+		return
+	}
+	// (6) The connection: a provider the server can dispatch through.
 	conn, err := s.forgeConnections.Get(r.Context(), grant.TeamID, grant.ConnectionID)
 	if err != nil {
-		httpError(w, http.StatusNotFound, "connection not found")
+		refuse(http.StatusNotFound, dispatchRefusedNoConnection, "the grant's forge connection "+grant.ConnectionID+" could not be read: "+err.Error())
 		return
 	}
 	if err := workflowDispatchSupported(conn); err != nil {
 		refuse(http.StatusUnprocessableEntity, dispatchRefusedUnsupported, err.Error())
 		return
 	}
-	// (6) One dispatch per (run, workflow), claimed before the forge is
-	// asked, so neither a replay nor a loop fans it out.
-	claimed, err := s.claimWorkflowDispatch(token, run.ID, req.Workflow)
+	// (7) One dispatch per grant, claimed before the forge is asked, so no
+	// replay, loop, fork or sub-bot presenting the same grant fans it out.
+	claimed, prior, err := s.claimWorkflowDispatch(token, run.ID, req.Workflow)
 	if err != nil {
-		httpError(w, http.StatusServiceUnavailable, "the dispatch claim could not be recorded on the grant: %v", err)
+		refuse(http.StatusServiceUnavailable, dispatchUnavailable, "the dispatch claim could not be recorded on the grant: "+err.Error())
 		return
 	}
 	if !claimed {
 		refuse(http.StatusConflict, dispatchRefusedRepeat,
-			"run "+run.ID+" already dispatched (or attempted) "+req.Workflow+" — one dispatch per run and workflow; the next launch is the retry")
+			fmt.Sprintf("this grant already dispatched (or attempted) %s, by run %s at %s — one dispatch per grant; the schedule's next tick is the retry",
+				prior.Workflow, prior.RunID, prior.At.Format(time.RFC3339)))
 		return
 	}
 
@@ -245,10 +283,14 @@ func (s *Server) handleForgeDispatchWorkflow(w http.ResponseWriter, r *http.Requ
 // writeDispatchAnswer writes a dispatch answer that is not a success. A 5xx
 // body is reduced to its error_code at the HTTP boundary (httpx.WriteErrorJSON
 // keeps the detail in the log, never on the wire), so the typed code rides
-// that one field there; a 4xx keeps the whole answer.
+// that one field there; a 4xx keeps the whole answer. No answer is
+// retryable: the claim is spent before the forge is asked, so the same grant
+// can only be refused again — the schedule's next tick, under a grant of its
+// own, is the retry, and for an unconfirmed dispatch a retry is exactly what
+// must not happen.
 func writeDispatchAnswer(w http.ResponseWriter, status int, out dispatchWorkflowResponse) {
 	if status >= 500 {
-		writeJSONStatus(w, status, map[string]any{"error_code": out.Code, "error": out.Reason, "retryable": true})
+		writeJSONStatus(w, status, map[string]any{"error_code": out.Code, "error": out.Reason, "retryable": false})
 		return
 	}
 	writeJSONStatus(w, status, out)
@@ -263,9 +305,11 @@ func sameGrantToken(recorded, presented string) bool {
 
 // workflowDispatchSupported is THE predicate deciding which connections the
 // server dispatches through: a GitHub App connection. GitLab and Forgejo have
-// no dispatch capability in iterion; a GitHub OAuth or PAT connection cannot
-// mint the narrow per-call token the dispatch is made with, and its own
-// credential carries whatever scope its owner gave it.
+// no dispatch path in iterion; a GitHub OAuth or PAT connection cannot mint
+// the narrow per-call token the dispatch is made with, and its own credential
+// carries whatever scope its owner gave it. A provider gaining a dispatch
+// path brings its credential with it (workflowDispatcherFor), never the
+// connection's runtime one.
 func workflowDispatchSupported(conn forge.Connection) error {
 	if conn.Provider != forge.ProviderGitHub {
 		return fmt.Errorf("%w: provider %s has no workflow dispatch in iterion", errWorkflowDispatchUnsupported, conn.Provider)
@@ -276,30 +320,30 @@ func workflowDispatchSupported(conn forge.Connection) error {
 	return nil
 }
 
-// claimWorkflowDispatch records (runID, workflow) on the grant unless it is
-// already there, atomically under the grant store's update. claimed is false
-// when an earlier call holds the claim.
-func (s *Server) claimWorkflowDispatch(token, runID, workflow string) (bool, error) {
-	claimed := false
+// claimWorkflowDispatch records the grant's one dispatch — runID presenting
+// it, for workflow — unless a claim is already there, atomically under the
+// grant store's update. claimed is false when an earlier call holds the
+// claim, which prior then describes.
+func (s *Server) claimWorkflowDispatch(token, runID, workflow string) (claimed bool, prior grantDispatch, err error) {
 	found, err := s.forgePublishTokens.update(token, func(g *ForgePublishGrant) {
 		// Reset on every call: the Valkey update re-runs fn when the grant
-		// changed under it.
-		claimed = false
-		for _, d := range g.Dispatches {
-			if d.RunID == runID && strings.EqualFold(d.Workflow, workflow) {
-				return
-			}
+		// changed under it, and a pass that found a claim must not inherit
+		// an earlier pass's "claimed".
+		claimed, prior = false, grantDispatch{}
+		if len(g.Dispatches) > 0 {
+			prior = g.Dispatches[0]
+			return
 		}
 		g.Dispatches = append(g.Dispatches, grantDispatch{RunID: runID, Workflow: workflow, At: time.Now().UTC()})
 		claimed = true
 	})
 	if err != nil {
-		return false, err
+		return false, grantDispatch{}, err
 	}
 	if !found {
-		return false, errors.New("the grant expired or was revoked")
+		return false, grantDispatch{}, errors.New("the grant expired or was revoked")
 	}
-	return claimed, nil
+	return claimed, prior, nil
 }
 
 // workflowDispatcherFor resolves the dispatch capability for (conn, repo),
@@ -361,35 +405,44 @@ func (s *Server) forgeWorkflowDispatchTokenMinter(ctx context.Context, conn forg
 // scheduledDispatchGrant mints the publish grant of a repo-bound schedule's
 // run, for a bot whose manifest declares the workflow-dispatch capability —
 // the one gesture a run that names no pull request can make through the
-// publish surface. Every other scheduled launch mints nothing, exactly as
+// publish surface. m is the manifest of the bundle the tick launches
+// (launchBot.Manifest, the tier that supplied the source), never a second
+// lookup: a team row that shadows a catalogue slug without declaring the
+// scope gets nothing. Every other scheduled launch mints nothing, exactly as
 // before.
 //
 // The grant is bound to the schedule's integration — its team, connection
-// and repository — carries ONLY publishCapDispatchWorkflow, and is bound to
-// no pull request (NoPullRequest): a schedule names none, so the review, the
+// and repository — carries ONLY publishCapDispatchWorkflow, is bound to the
+// one workflow file the schedule row names (dispatchWorkflowVar) and to no
+// pull request (NoPullRequest): a schedule names none, so the review, the
 // merge-gate commit status, the verdict gestures, the pull-request read, the
 // delivery preflight and the server's gate repairs all refuse it, typed,
 // before any forge call (pullRequestGrant). The dispatch endpoint is the one
-// surface it reaches.
+// surface it reaches, for that one workflow, once.
 // vars is never mutated: a copy carries the grant.
 //
-// Two shapes launch without a grant, said in the log, and the bot answers its
-// own typed "no dispatch endpoint bound": a schedule that names no
-// integration (it cannot be bound to a repository), and a dispatch the
-// operator disarmed with forge_publish_mutations set to anything but "true"
-// — on the integration's launch vars or on the schedule row. A disarmed bot
-// is minted nothing: a grant with no capability and no pull request serves no
-// surface at all.
-func (s *Server) scheduledDispatchGrant(ctx context.Context, sb cloudsched.ScheduledBot, vars map[string]string) (map[string]string, mintedGrant, error) {
+// Three shapes launch without a grant, said in the log; the bot answers its
+// own typed code. A schedule that names no integration (it cannot be bound to
+// a repository); one whose row names no workflow (the bot ends NO_WORKFLOW);
+// and a dispatch the operator disarmed with forge_publish_mutations set to
+// anything but "true" — in the integration's launch policy, read through
+// repoLaunchPolicy exactly as the pull-request lane reads it, or on the
+// schedule row. A disarmed bot is minted nothing: a grant with no capability
+// and no pull request serves no surface at all.
+func (s *Server) scheduledDispatchGrant(ctx context.Context, sb cloudsched.ScheduledBot, m *bundle.Manifest, vars map[string]string) (map[string]string, mintedGrant, error) {
 	if s.forgePublishTokens == nil || s.forgeConnections == nil {
 		return vars, "", nil
 	}
-	caps := s.forgePublishCapabilitiesFor(ctx, sb.TenantID, sb.BotID)
-	if !slices.Contains(caps, publishCapDispatchWorkflow) {
+	if !declaresWorkflowDispatch(m) {
 		return vars, "", nil
 	}
 	if sb.RepoIntegrationID == "" {
 		s.logWarn("forge dispatch: schedule %s (%s) declares the workflow-dispatch capability but pins no repo integration — no grant minted, the run cannot dispatch", sb.ID, sb.BotID)
+		return vars, "", nil
+	}
+	workflow := strings.TrimSpace(vars[dispatchWorkflowVar])
+	if workflow == "" {
+		s.infof("forge dispatch: schedule %s (%s) names no %s var — no grant minted, the run ends NO_WORKFLOW", sb.ID, sb.BotID, dispatchWorkflowVar)
 		return vars, "", nil
 	}
 	if s.forgeIntegrations == nil {
@@ -406,7 +459,8 @@ func (s *Server) scheduledDispatchGrant(ctx context.Context, sb cloudsched.Sched
 	if err != nil {
 		return vars, "", fmt.Errorf("schedule %s: resolve forge connection %s for the dispatch grant: %w", sb.ID, integ.ConnectionID, err)
 	}
-	for _, pin := range []string{integ.LaunchVars[publishMutationKillSwitchVar], vars[publishMutationKillSwitchVar]} {
+	policy := s.repoLaunchPolicy(ctx, integ, sb.BotID)
+	for _, pin := range []string{policy[publishMutationKillSwitchVar], vars[publishMutationKillSwitchVar]} {
 		if ks := strings.TrimSpace(pin); ks != "" && ks != "true" {
 			s.infof("forge dispatch: schedule %s on %s: workflow dispatch disarmed by operator pin %s=%q — no grant minted",
 				sb.ID, integ.RepoFullName, publishMutationKillSwitchVar, ks)
@@ -423,7 +477,8 @@ func (s *Server) scheduledDispatchGrant(ctx context.Context, sb cloudsched.Sched
 	}
 	return s.registerRunGrant(ForgePublishGrant{
 		TeamID: sb.TenantID, Bot: strings.TrimSpace(sb.BotID), ConnectionID: conn.ID, Repo: integ.RepoFullName,
-		Capabilities:  []string{publishCapDispatchWorkflow},
-		NoPullRequest: true,
+		Capabilities:     []string{publishCapDispatchWorkflow},
+		DispatchWorkflow: workflow,
+		NoPullRequest:    true,
 	}, hostOfURL(conn.BaseURL()), out, base)
 }

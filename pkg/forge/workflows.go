@@ -9,11 +9,19 @@ import (
 // ---------------------------------------------------------------------------
 // Workflow dispatch — trigger one of a repository's own CI workflows on
 // demand. The external trigger a forge-side cron that does not fire reliably
-// needs: the server dispatches the workflow file a bot names, through the
-// deterministic publish surface, with a credential minted for that one call.
-// A provider without a dispatch API simply does not implement the interface —
-// the same optional-capability contract as MergeApprover; the publish surface
-// answers that as a typed "not supported", never a silent no-op.
+// needs: the server dispatches the workflow file a schedule names, through
+// the deterministic publish surface, with a credential minted for that one
+// call.
+//
+// Unlike MergeApprover, the server does not discover this capability by
+// asserting it on a connection's client: that client holds the connection's
+// runtime credential, and a dispatch is never made with it. The server builds
+// the dispatcher per provider WITH the narrow per-call credential that
+// provider can mint (pkg/server workflowDispatcherFor — today the GitHub App
+// installation token), and answers every other connection with a typed
+// "unsupported", never a silent no-op. A provider gaining a dispatch path
+// implements this interface on its client AND brings its per-call credential
+// there.
 // ---------------------------------------------------------------------------
 
 // WorkflowDispatch reports a dispatch the forge accepted.

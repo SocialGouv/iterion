@@ -1345,7 +1345,9 @@ func (s *Server) launchScheduledBot(ctx context.Context, sb cloudsched.Scheduled
 	// A bot that declares the workflow-dispatch capability gets its publish
 	// grant here, after admission so a denied tick mints nothing; every
 	// other scheduled launch mints none, as buildScheduledLaunchSpec says.
-	vars, minted, err := s.scheduledDispatchGrant(ctx, sb, spec.Vars)
+	// The capability is read from lb.Manifest — the bundle this tick runs —
+	// so the source and the grant come from one resolution.
+	vars, minted, err := s.scheduledDispatchGrant(ctx, sb, lb.Manifest, spec.Vars)
 	if err != nil {
 		adm.rollback(s.logger)
 		return err

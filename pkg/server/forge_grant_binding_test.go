@@ -222,7 +222,7 @@ func TestScheduleGrant_TheGateRepairPostsNothingWithIt(t *testing.T) {
 	w, rec := bindingWorld(t, "memory")
 	vars, minted, err := w.s.scheduledDispatchGrant(context.Background(), cloudsched.ScheduledBot{
 		ID: "sch-gate-repair", TenantID: "team1", BotID: "workflow-kick", RepoIntegrationID: "integ1",
-	}, map[string]string{
+	}, w.manifestOf(t, "workflow-kick"), map[string]string{
 		"workflow": "renovate.yml", "pr_url": w.prURL(), "gate_context": "revi/review", "head_sha": bindingHeadSHA,
 	})
 	if err != nil || minted == "" {
@@ -364,6 +364,13 @@ func TestEveryPullRequestSurfaceResolvesItsGrantThroughTheBinding(t *testing.T) 
 		"withoutCardGrant":            "the tenant door of a board card's token, which is dropped whatever its binding",
 		"relaunchStillRunning":        "reads Deferred, which only a pull-request surface writes",
 	}
+	// The binding is DECIDED in pullRequestGrant alone; the Valkey store
+	// keeps it in the key namespace, which is storage, not a decision.
+	fieldReadAllowed := map[string]string{
+		"pullRequestGrant":        "the binding itself",
+		"forgePublishRegisterKey": "the Valkey key namespace an unbound grant is written under, which older builds do not read",
+		"bindStoredGrant":         "a record read from that namespace is unbound whatever its body says",
+	}
 	mustBind := []string{
 		"handleForgePublishReview", "handleForgePullRequest", "handleForgeDeliveryPreflight",
 		"reconcileGateForRunID", "autofixForRunID", "gateNoticeTarget", "injectForgePublishVars",
@@ -411,7 +418,7 @@ func TestEveryPullRequestSurfaceResolvesItsGrantThroughTheBinding(t *testing.T) 
 						}
 					}
 				case *ast.SelectorExpr:
-					if x.Sel.Name == "NoPullRequest" && owner != "pullRequestGrant" {
+					if _, ok := fieldReadAllowed[owner]; x.Sel.Name == "NoPullRequest" && !ok {
 						fieldReads = append(fieldReads, name+":"+strconv.Itoa(fset.Position(x.Pos()).Line)+" ("+owner+")")
 					}
 				}
@@ -424,6 +431,11 @@ func TestEveryPullRequestSurfaceResolvesItsGrantThroughTheBinding(t *testing.T) 
 	}
 	var stale []string
 	for fn := range rawLookupAllowed {
+		if !seen[fn] {
+			stale = append(stale, fn)
+		}
+	}
+	for fn := range fieldReadAllowed {
 		if !seen[fn] {
 			stale = append(stale, fn)
 		}
