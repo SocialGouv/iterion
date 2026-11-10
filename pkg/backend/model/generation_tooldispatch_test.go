@@ -81,8 +81,17 @@ func TestToolDispatcher_RefusesAContextItDoesNotVouchFor(t *testing.T) {
 		t.Fatal("a dispatch on an unvouched context must NOT execute: the command narrowing, the child-ask degradation and a child's inherited policy all ride that context and all fail open")
 	}
 	raw, _ := json.Marshal(block)
-	if !strings.Contains(string(raw), "not the one this node's dispatcher vouches for") {
+	if !strings.Contains(string(raw), "did not come from this node's dispatcher") {
 		t.Errorf("the refusal must name what is wrong so a mis-wired host is told loudly, got: %s", raw)
+	}
+	// And it must claim ONLY what the guard checked. An earlier revision told
+	// the caller the narrowing and the child-ask degradation "would all be
+	// missing" — which this guard never looks at, and which is false in the
+	// case it fires on most: a second dispatcher on a fully pinned context.
+	for _, overclaim := range []string{"would all be missing", "command narrowing", "child-ask degradation"} {
+		if strings.Contains(string(raw), overclaim) {
+			t.Errorf("the refusal states %q, which the provenance guard never checked: %s", overclaim, raw)
+		}
 	}
 
 	// The control: the context the constructor handed back works, and so does
@@ -102,6 +111,36 @@ func TestToolDispatcher_RefusesAContextItDoesNotVouchFor(t *testing.T) {
 	}
 	if !executed {
 		t.Fatal("a descendant carries the node's facts and must reach execution")
+	}
+}
+
+// TestToolDispatcher_CarriesTheNodesFactsItWasBuiltFrom is the counterpart the
+// other tests here do not provide: they all construct from a bare context, so
+// none of them ever sees the dispatcher with a per-node fact PRESENT.
+//
+// The guard checks provenance, not content — so what has to be shown is that a
+// dispatcher built from a node context is a faithful conduit for what rides
+// that context, and not merely that an unvouched one is refused. Here the fact
+// is the `allowed-tools:` narrowing (#1717): a tool the active command scope
+// excludes must be refused through dispatch, on the scope's own message.
+func TestToolDispatcher_CarriesTheNodesFactsItWasBuiltFrom(t *testing.T) {
+	t.Parallel()
+	scope := &tool.CommandScope{}
+	scope.Apply("audit", []string{"read_file"})
+	var executed bool
+	d, ctx := newToolDispatcher(tool.WithCommandScope(context.Background(), scope),
+		bashTool(&executed), nil, nil, nil, nil, nil)
+
+	block, abort := d.dispatch(ctx, bashCall("echo hi")[0])
+	if abort != nil {
+		t.Fatalf("a narrowing refusal is a tool error, not a loop abort: %v", abort)
+	}
+	if executed {
+		t.Fatal("the command narrowing rides the context the dispatcher was built from: a tool it excludes must NOT run through dispatch")
+	}
+	raw, _ := json.Marshal(block)
+	if !strings.Contains(string(raw), "allowed-tools") {
+		t.Errorf("the refusal must be the SCOPE's, naming the command that narrowed — not the provenance guard's, got: %s", raw)
 	}
 }
 

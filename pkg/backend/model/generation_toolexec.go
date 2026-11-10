@@ -152,9 +152,25 @@ func newToolDispatcher(
 // restores the run pause #2877 removes. A guard that refuses an unvouched
 // context cannot widen anything, because it never writes a value at all.
 //
-// The refusal is the gate's own shape — a synthetic isError tool_result the
-// model can adapt to — so a mis-wired host is told, loudly, instead of
-// quietly receiving a call with three controls missing.
+// # What the guard does NOT check, stated because the difference matters
+//
+// It checks PROVENANCE, not content: newToolDispatcher vouches for whatever
+// context it was handed, so a dispatcher built from a factless context
+// vouches for a factless context. The guard therefore narrows the mis-wire
+// from "any context" to "a context that went through this constructor" — it
+// catches a host that dispatches with its own context, which is the shape
+// that invites itself, and it cannot catch one that CONSTRUCTS from the wrong
+// context. Supplying a node execution's context to the constructor is the
+// caller's responsibility; on the loop's path GenerateText guarantees it for
+// the scope (no generation runs scopeless, generation.go), and the suite
+// proves the whole conduit: stripping the four facts inside dispatch while
+// keeping the key reddens 17 tests across all four.
+//
+// That is also why the refusal says only what the guard knows. An earlier
+// revision told the caller the narrowing and the child-ask degradation "would
+// all be missing", which the guard never checked and which is false for the
+// case it actually fires on most — a second dispatcher on a fully pinned
+// context.
 //
 // The node's executable tool set is pinned here, derived from the same map
 // executeOneTool resolves the call against, at the same instant: the pin
@@ -163,11 +179,18 @@ func newToolDispatcher(
 // THIS node (#2717), and tool.NodeExecutableToolsFrom deliberately reports
 // "not pinned" rather than guessing. TestToolDispatcher_ThePinnedSetFollowsTheToolMap
 // is what holds that, and it fails against a set snapshotted at construction.
+//
+// Because the set is derived per call, d.toolMap is owned by the goroutine
+// that dispatches: a caller changing it between calls does so from that
+// goroutine (as that test does). A concurrent writer is a process-fatal
+// "concurrent map iteration and map write", not a race report — measured.
+// The derivation also costs what it costs: ~5 µs and ~9 KB per dispatch at
+// 120 tools, noise beside any real tool call, but a script host composing
+// thousands of cheap calls a turn pays ~5 ms and ~9 MB per 1000 dispatches.
 func (d *toolDispatcher) dispatch(ctx context.Context, tu toolUseBlock) (api.ContentBlock, error) {
 	if owner, _ := ctx.Value(dispatcherNodeKey{}).(*toolDispatcher); owner != d {
 		return *refusalOutcome(fmt.Sprintf(
-			"tool %q: refused before dispatch — this context is not the one this node's dispatcher vouches for, "+
-				"so the command narrowing, the child-ask degradation and the parent policy a child inherits would all be missing. "+
+			"tool %q: refused before dispatch — this context did not come from this node's dispatcher. "+
 				"Dispatch with the context newToolDispatcher returned, or a descendant of it",
 			tu.Name), tu, d.onToolCall), nil
 	}

@@ -164,6 +164,111 @@ func TestEverySiteRunningAnExecuteNamesItsGate(t *testing.T) {
 	}
 }
 
+// toolFunnelCallers is the second half of the census, and the half that
+// actually closes it: for each function in the tool-running funnel, the set of
+// functions allowed to call it.
+//
+// The inventory above keys on a selector named `Execute`, which is the right
+// class for finding who WRAPS or CARRIES a closure — but it cannot see a new
+// dispatch path at all. Every real run in this package is funnelled through
+// runToolExecution, which already owns the only Execute selector, so a second
+// door calling executeOneTool directly contains no selector, and the inventory
+// stays green while its own entry ("Reached only through
+// toolDispatcher.dispatch") goes false. Measured: a probe file holding
+//
+//	func ScriptHostRunTool(...) { return executeOneTool(ctx, ..., nil, nil, nil, nil, nil) }
+//
+// runs a tool with no node-set pin and no command scope, and the inventory
+// passes over a tree containing it.
+//
+// So this pins the funnel's CALLERS instead of a spelling. It is the greppable
+// form of what the doc comment promises: anything dispatching on a node's
+// behalf takes the door.
+var toolFunnelCallers = map[string]map[string]bool{
+	// The door. dispatch is the only way in, which is what makes the
+	// dispatcher's pipeline unavoidable rather than merely available.
+	"executeOneTool": {"dispatch": true},
+	// The last step before a tool's own closure runs.
+	"runToolExecution": {"executeOneTool": true},
+}
+
+// TestTheToolFunnelIsReachedOnlyThroughTheDoor refuses a second dispatch path.
+//
+// Mutations seen red: a new production function calling executeOneTool (named
+// as an offender); and allowing it by widening toolFunnelCallers (the entry is
+// then an explicit, reviewable decision rather than silence). In the same run
+// the Execute inventory above stayed GREEN, which is the whole reason this
+// second check exists.
+//
+// Mutating it takes a file on DISK: both walks read the filesystem rather than
+// the build's file set, so `go test -overlay` adds a door to the build that the
+// walk cannot see. The trade is deliberate — reading the real directory is what
+// makes a build-tag-excluded file fail loudly instead of silently — but it means
+// a probe for this guard is written, run and removed, never overlaid.
+func TestTheToolFunnelIsReachedOnlyThroughTheDoor(t *testing.T) {
+	t.Parallel()
+
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatalf("read this package's own directory: %v", err)
+	}
+	visited := 0
+	var offenders []string
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		src, rerr := os.ReadFile(name) // #nosec G304 -- this package's own files
+		if rerr != nil {
+			t.Errorf("%s could not be read, so it was NOT inventoried: %v", name, rerr)
+			continue
+		}
+		visited++
+		fset := token.NewFileSet()
+		f, perr := parser.ParseFile(fset, name, src, 0)
+		if perr != nil {
+			t.Errorf("%s could not be parsed, so it was NOT inventoried: %v", name, perr)
+			continue
+		}
+		for _, decl := range f.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok {
+				continue
+			}
+			ast.Inspect(fn.Body, func(node ast.Node) bool {
+				call, isCall := node.(*ast.CallExpr)
+				if !isCall {
+					return true
+				}
+				ident, isIdent := call.Fun.(*ast.Ident)
+				if !isIdent {
+					return true
+				}
+				allowed, funnel := toolFunnelCallers[ident.Name]
+				// A function calling itself is recursion, not a new door;
+				// and the funnel's own declaration is not its caller.
+				if !funnel || ident.Name == fn.Name.Name || allowed[fn.Name.Name] {
+					return true
+				}
+				offenders = append(offenders, name+":"+fn.Name.Name+" -> "+ident.Name)
+				return true
+			})
+		}
+	}
+
+	sort.Strings(offenders)
+	for _, o := range offenders {
+		t.Errorf("%s: a dispatch path reaches the tool-running funnel without going through toolDispatcher.dispatch. "+
+			"Every dispatch path is another gate to keep in agreement with the door's — the lifecycle hooks, the `allowed-tools:` command scope, "+
+			"permission.Policy, secret materialization, the events and the node-set pin. Route the call through dispatch, or widen toolFunnelCallers "+
+			"and say in its entry which of those this path holds instead", o)
+	}
+	if visited < toolExecuteWalkFloor {
+		t.Errorf("the walk read %d production files, under the floor of %d: it collapsed, so its answer about the funnel means nothing", visited, toolExecuteWalkFloor)
+	}
+}
+
 // callsAnExecute reports whether the node contains a call to a method named
 // Execute, called or taken as a value. Found through the syntax tree, never by
 // the spelling of a line.
