@@ -83,18 +83,23 @@ func sealedGatewayKey(bundle secrets.RunBundle) (held bool, baseURL string) {
 	return false, ""
 }
 
-// derivedContentBoundary is the stamp a launch writes: team_gateway with the
-// id of the key row that filled the gateway slot and the host its sealed URL
-// dials — the host the runner pins on the run's proxy (compatgw's reading,
-// the same call pkg/runtime makes) — or own_keys, explicitly: a run the walk
-// resolved is never left unstamped.
-func derivedContentBoundary(teamGateway bool, keyID, baseURL string) *store.RunContentBoundary {
-	if !teamGateway {
-		return &store.RunContentBoundary{Kind: store.ContentBoundaryOwnKeys}
+// derivedContentBoundary is the stamp a launch writes: team_gateway or
+// own_keys, explicitly — a run the walk resolved is never left unstamped —
+// with, whenever the launch sealed a gateway key (gatewaySealed), the id of
+// the key row that filled the gateway slot and the host its sealed URL dials
+// (the host the runner pins on the run's proxy: compatgw's reading, the same
+// call pkg/runtime makes). An own_keys stamp names them for a key sealed for a
+// route the walk could not decide (a runner pool's env dial): a replay reads
+// them to know its launch sealed one (launchSealedGateway), and seals none a
+// stamp naming none never sealed.
+func derivedContentBoundary(teamGateway, gatewaySealed bool, keyID, baseURL string) *store.RunContentBoundary {
+	b := &store.RunContentBoundary{Kind: store.ContentBoundaryOwnKeys}
+	if teamGateway {
+		b.Kind = store.ContentBoundaryTeamGateway
 	}
-	return &store.RunContentBoundary{
-		Kind:        store.ContentBoundaryTeamGateway,
-		KeyID:       keyID,
-		GatewayHost: (compatgw.Config{BaseURL: baseURL}).Host(),
+	if teamGateway || gatewaySealed {
+		b.KeyID = keyID
+		b.GatewayHost = (compatgw.Config{BaseURL: baseURL}).Host()
 	}
+	return b
 }

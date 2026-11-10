@@ -313,7 +313,7 @@ func (p *Publisher) previewCredentials(ctx context.Context, spec runview.Credent
 					}
 				}
 				x.out.Pool.Considered = active
-				pool, err := p.previewLent(ctx, p.attachedPoolPreviewRequest(ctx, x.orgID, spec.Context.TeamID, spec.OwnerID, spec.Context.BotID, spec.PoolAttachment, asked))
+				pool, err := p.previewLent(ctx, p.attachedPoolRequest(ctx, x.orgID, spec.Context.TeamID, spec.OwnerID, spec.Context.BotID, spec.PoolAttachment, asked))
 				if err != nil {
 					x.out.Pool.Reason = "unknown"
 					x.conditional("Attached pool metadata unavailable; selection is conditional.")
@@ -538,6 +538,13 @@ func (p *Publisher) previewCredentials(ctx context.Context, spec runview.Credent
 	composePolicyLadder(wf, previewView, spec.LLMRoutePolicy, model.AllowedProviderSet(previewView.AllowedProviders), spec.Launch.Vars, doorServesMetadata(x, spec.Launch.Trust.AmbientLLMRefused()), previewTeamGateway, nil)
 	previewRoutes := attributedRoutes(previewView)
 	restoreRoutes()
+	// The launch's reading of a gateway route attributed to a key no tier
+	// fills (gatewayRoutes.unsealedNote): it rides the runner's environment
+	// gateway, named, and the refusals read it as the environment's.
+	if unsealed := gateway.unsealedNote(gwKey || gwPinned, previewTeamGateway, x.poolGranted); unsealed != "" {
+		x.warn("The run's openai_compatible routes ride the runner's environment gateway: " + unsealed + ".")
+		previewRoutes = previewRoutes.gatewayToEnvironment()
+	}
 	posture := p.unfundedPostureFor(wf, sovereignPreview, previewTeamGateway, envFunded, spec.Launch.Trust, runnerPool)
 	refusal := unfundedRefusalFor(spec.Context.TeamID, previewRoutes, metadataFunding(x, posture), !metadataHoldsDefault(x), posture, gateway.heldOut())
 	if refusal == nil && posture.TeamGateway {
@@ -1138,7 +1145,7 @@ func (x *credentialPreview) windows(ctx context.Context, c *runview.CredentialPr
 // stays out, as the candidate's reason keeps it out: a shared-tier key's
 // repositories are its owner's to know.
 func repoOnlyGatewayKey(h *heldGatewayKey) string {
-	return fmt.Sprintf("the %s tier's gateway key %q (%s) is restricted to repositories this preview does not know", h.tier, h.key.Name, h.key.ID)
+	return h.String() + " is restricted to repositories this preview does not know"
 }
 
 // addRepoOnlyGatewayKey lists that key for an env-funded preview, whose tier
@@ -1151,6 +1158,9 @@ func (x *credentialPreview) addRepoOnlyGatewayKey(h *heldGatewayKey, owner strin
 		Label: k.Name, State: string(credpool.StatusRepoFiltered), Selection: "not_consulted", Conditional: true, Windows: []runview.CredentialPreviewWindow{},
 		Reason: " This key's repository audience does not name " + previewLaunchRepo("") + ". A launch on a repository it names seals it; on any other the run rides the runner's gateway."}
 	switch {
+	case h.poolID != "":
+		c.Tier = "pool"
+		c.Label = "Key pool gateway entry (paired key+URL)"
 	case h.tier == "tenant" && k.ScopeUserID == owner && owner != "":
 		c.Tier = "user"
 	case h.tier == "tenant":

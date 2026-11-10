@@ -313,7 +313,11 @@ LLM routes spend these credentials only. The walk stamps the run's content bound
 at launch (`Run.ContentBoundary`, carried on the queue message; ADR-131 §4):
 `team_gateway` — with the id of the key row that filled the gateway slot and the host
 its URL dials — when it attributes a gateway route to the key and seals it, a mixed
-run included; `own_keys` for every other launch it resolves. The bundle's
+run included; `own_keys` for every other launch it resolves, naming the key and host
+too when the launch sealed one for a route it could not decide. A resume reads that
+record: a `team_gateway` run keeps its gateway routes attributed (a slot it cannot fill
+is refused by name), and a run whose launch sealed no gateway key seals none — its
+gateway routes ride the deployment's environment as at launch. The bundle's
 `AmbientLLMRefused` is armed on the same decision (and on every untrusted run,
 ADR-162); a resume replays the frozen stamp, never re-deriving it, and seals the flag
 even when its walk finds nothing. Under `team_gateway` the routing ladder and the

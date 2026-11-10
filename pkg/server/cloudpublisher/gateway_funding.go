@@ -2,6 +2,7 @@ package cloudpublisher
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 
@@ -59,12 +60,33 @@ type gatewayRoutes struct {
 	// it, any other rides the runner's gateway. nil on a launch, which
 	// always knows its repository.
 	repoOnly *heldGatewayKey
+	// attributedTo is the key the probe attributed the gateway routes to
+	// (gatewayHold.by); nil when none did — the sovereign posture attributing
+	// them without one included: those routes are owed a key of the team's
+	// own and refused by name, never left to the pod's environment.
+	attributedTo *heldGatewayKey
+	// replayHeldOut names, on a replay whose frozen stamp records no gateway
+	// key the launch sealed, what this resolution would have attributed or
+	// sealed and held out instead (gatewayRouting's replay rule). Empty
+	// otherwise; the walk warns it.
+	replayHeldOut string
 }
 
-// heldGatewayKey is a gateway key the probe held, with the tier it lives in.
+// heldGatewayKey is a gateway key the probe held, with the tier it lives in;
+// poolID names the attached pool when the key is that pool's lent entry.
 type heldGatewayKey struct {
-	tier string
-	key  secrets.ApiKey
+	tier   string
+	key    secrets.ApiKey
+	poolID string
+}
+
+// String names the key the way every gateway sentence does: its tier (or its
+// attached pool), its name and its id.
+func (h heldGatewayKey) String() string {
+	if h.poolID != "" {
+		return fmt.Sprintf("the attached pool %s's gateway entry %q (%s)", h.poolID, h.key.Name, h.key.ID)
+	}
+	return fmt.Sprintf("the %s tier's gateway key %q (%s)", h.tier, h.key.Name, h.key.ID)
 }
 
 // heldOut is the note keyed by the provider the unfunded refusal names: what
@@ -97,12 +119,17 @@ type gatewayProbe struct {
 	// keeps out is reported (gatewayRoutes.repoOnly), never read as absent.
 	repoUnknown bool
 	// attachment is the launch's resolved pool attachment (ADR-164), nil when
-	// none: its pool is a tier the walk consults, so a gateway entry it would
-	// serve this launch — read like the walk draws it, through the entry's
-	// key row audiences (previewLent) — attributes the routes like a team key.
-	// botID is the launch's bot as the pool reads it (the walk's raw botID).
+	// none: its pool is a tier the walk consults, so a gateway entry it holds
+	// for this launch — its eligibility and its key row's audiences, never its
+	// availability (attachedGatewayHold) — attributes the routes like a team
+	// key. botID is the launch's bot as the pool reads it (the walk's raw
+	// botID).
 	attachment *store.RunPoolAttachment
 	botID      string
+	// boundary is the resolution's boundary source (content_boundary.go): a
+	// replay's frozen stamp, not the probe, decides whether the gateway
+	// routes are attributed (gatewayRouting). The zero value is a launch.
+	boundary boundarySource
 }
 
 // gatewayRouting is ADR-131 §5's one answer about a run's gateway routes,
@@ -147,17 +174,92 @@ func (p *Publisher) gatewayRouting(ctx context.Context, view model.RouteView, te
 		hold = p.gatewayKeyHold(ctx, tenantID, orgID, ownerID, audienceBotID, sovereign || pooled, probe)
 	}
 	attributed := routed && ((sovereign && !pooled) || hold.funds)
+	sealable, mayRide := attributed || undecidedOnPool, routed || undecidedOnPool
+	replayHeldOut := ""
+	switch frozen := probe.boundary.frozen; {
+	case !probe.boundary.replay:
+	case frozen.TeamGateway():
+		// The launch attributed the gateway routes and sealed their key:
+		// the frozen stamp decides, whatever the probe reads now (an attached
+		// entry its RunID-blind read counts the run's own lease against, a
+		// key deleted since). The walk asks every tier for the slot, and a
+		// slot it cannot fill is refused by name (the boundary's strict arm)
+		// — never left to the pod's environment the stamp refuses.
+		attributed, sealable = routed, routed || undecidedOnPool
+	case !launchSealedGateway(frozen):
+		// The launch sealed no gateway key: a replay seals none either. The
+		// routes ride the runner's environment gateway as at launch — a
+		// resume reading a var its launch held undecided, a key created since,
+		// a fork re-routing a node never move the run onto the team's key
+		// under a stamp that holds no boundary.
+		if attributed || undecidedOnPool {
+			by := "the gateway slot"
+			if hold.by != nil {
+				by = hold.by.String()
+			}
+			replayHeldOut = fmt.Sprintf("%s is held out: the run's launch sealed no gateway key (content boundary %s), and a replay seals none its launch did not", by, frozenKind(frozen))
+		}
+		attributed, sealable, mayRide = false, false, false
+	}
 	if !attributed {
 		keyed, walk = view, model.EffectiveProviders(view, walkProviderSet)
 	}
-	return gatewayRoutes{
-		view:      keyed,
-		envFunded: walk.OnlyEnvFunded(),
-		sealable:  attributed || undecidedOnPool,
-		mayRide:   routed || undecidedOnPool,
-		note:      hold.note,
-		repoOnly:  hold.repoOnly,
+	g := gatewayRoutes{
+		view:          keyed,
+		envFunded:     walk.OnlyEnvFunded(),
+		sealable:      sealable,
+		mayRide:       mayRide,
+		note:          hold.note,
+		repoOnly:      hold.repoOnly,
+		replayHeldOut: replayHeldOut,
 	}
+	if attributed {
+		g.attributedTo = hold.by
+	}
+	return g
+}
+
+// launchSealedGateway reports whether a frozen stamp records a gateway key
+// the run's launch sealed: team_gateway always does, own_keys does when it
+// names the pair's key or host (derivedContentBoundary: a key sealed for a
+// route the walk could not decide, under a runner pool). A stamp written
+// before the producer (nil) records none — the walk of that time never
+// sealed a gateway key.
+func launchSealedGateway(b *store.RunContentBoundary) bool {
+	return b != nil && (b.TeamGateway() || b.KeyID != "" || b.GatewayHost != "")
+}
+
+// frozenKind names a frozen stamp's kind for a sentence, "none" for a run
+// stamped before the producer.
+func frozenKind(b *store.RunContentBoundary) string {
+	if b == nil || b.Kind == "" {
+		return "none"
+	}
+	return b.Kind
+}
+
+// unsealedNote is the walk's reading, after the tier walk, of a gateway route
+// the probe attributed to a key no tier then sealed — a platform key while a
+// pool grant keeps the platform tier unconsulted, an attached pool's entry its
+// draw could not serve now. Outside the content boundary (a launch derives
+// own_keys for it) such routes ride the runner's environment gateway, as a held
+// key that cannot seal leaves them (gatewayRoutes.note): the note names the key
+// and why, and the unfunded refusal reads them as the environment's. "" when
+// the case does not arise: nothing attributed to a key (the sovereign
+// posture's owed routes included), the slot sealed, or the run held to its
+// gateway (the boundary's strict arm names the slot).
+func (g gatewayRoutes) unsealedNote(gatewaySealed, teamGateway, poolGranted bool) string {
+	if g.attributedTo == nil || gatewaySealed || teamGateway {
+		return ""
+	}
+	why := "no tier sealed it for this run (the tier lines above say why)"
+	switch {
+	case g.attributedTo.poolID != "":
+		why = "its pool's draw served no entry now (the attached pool's line above says why)"
+	case g.attributedTo.tier == "platform" && poolGranted:
+		why = "the platform tier is not consulted once a pool grant serves the run"
+	}
+	return g.attributedTo.String() + " attributed them, but " + why
 }
 
 // gatewayHold is the probe's answer: whether a consulted tier holds a
@@ -167,6 +269,10 @@ type gatewayHold struct {
 	funds    bool
 	note     string
 	repoOnly *heldGatewayKey
+	// by is the key that funds the run when funds is set by a key the probe
+	// read — what a gateway route attributed to it and then left unsealed is
+	// named by (gatewayRoutes.unsealedNote).
+	by *heldGatewayKey
 }
 
 // gatewayKeyHold answers "the team holds a gateway key that funds the run"
@@ -190,10 +296,11 @@ type gatewayHold struct {
 // place. What was held and could not seal is named in the answer's note.
 //
 // The ATTACHED pool (ADR-164) is one of those tiers, between the org's and
-// the platform's as the walk visits them: a gateway entry it would serve this
-// launch now — the broker's own selection, held to the entry's key row
-// audiences (previewLent) — funds the routes like a team key, so the walk
-// seals it and the run is held to the team's gateway. Its key is lent, never
+// the platform's as the walk visits them: a gateway entry it holds for this
+// launch — the pool's eligibility and the entry's key row audiences, read
+// without availability like a team key (attachedGatewayHold) — funds the
+// routes like a team key, so the walk asks the pool for the slot and the run
+// is held to the team's gateway when the draw seals it. Its key is lent, never
 // opened here: the broker opens it at the grant.
 //
 // A tier whose keys cannot be listed is read as HOLDING one, said out loud:
@@ -234,12 +341,13 @@ func (p *Publisher) gatewayKeyHold(ctx context.Context, tenantID, orgID, ownerID
 				}
 				continue
 			}
-			held := fmt.Sprintf("the %s tier's gateway key %q (%s) serves this launch", tier, k.Name, k.ID)
+			key := &heldGatewayKey{tier: tier, key: k}
+			held := key.String() + " serves this launch"
 			if !probe.lists.sealableHeldSlot(slot) {
 				return gatewayHold{note: held + ", but " + slotHeldOutBy(probe.allowed, slot)}, true
 			}
 			if probe.opens == nil {
-				return gatewayHold{funds: true}, true
+				return gatewayHold{funds: true, by: key}, true
 			}
 			if err := probe.opens(k); err != nil {
 				if unopened == "" {
@@ -247,7 +355,7 @@ func (p *Publisher) gatewayKeyHold(ctx context.Context, tenantID, orgID, ownerID
 				}
 				continue
 			}
-			return gatewayHold{funds: true}, true
+			return gatewayHold{funds: true, by: key}, true
 		}
 		return gatewayHold{}, false
 	}
@@ -262,6 +370,8 @@ func (p *Publisher) gatewayKeyHold(ctx context.Context, tenantID, orgID, ownerID
 		}
 		if hold, decided := p.attachedGatewayHold(ctx, orgID, tenantID, ownerID, slot, probe); decided {
 			return hold
+		} else if repoOnly == nil {
+			repoOnly = hold.repoOnly
 		}
 		if p.platformAudience == nil || p.platformAudience.Get(ctx).Allows(orgID, tenantID) {
 			if hold, decided := visit("platform", secrets.PlatformTenantID, ""); decided {
@@ -273,28 +383,83 @@ func (p *Publisher) gatewayKeyHold(ctx context.Context, tenantID, orgID, ownerID
 }
 
 // attachedGatewayHold is gatewayKeyHold's attached-pool tier: decided when
-// the attachment's pool would serve this launch a gateway entry (funding the
+// the attachment's pool holds a gateway entry for this launch (funding the
 // routes, or held out by the run's frozen lists, noted like a team key), or
 // when its metadata cannot be read (read as holding one, as a key list that
-// failed is). Not decided when there is no attachment or no entry serves.
-func (p *Publisher) attachedGatewayHold(ctx context.Context, orgID, tenantID, ownerID, slot string, probe gatewayProbe) (gatewayHold, bool) {
+// failed is). Not decided when there is no attachment or no entry is there
+// for the launch.
+//
+// It reads EXISTENCE and AUDIENCE, never availability — the team-key tier's
+// doctrine: an entry the pool's eligibility admits (enabled, healthy, its
+// pledge's bot filter, its lent row's own bots and repositories, the row
+// still there) funds the routes whatever its ledger, cooldown, window or the
+// attachment's draw caps say now. The walk's draw decides with the run's own
+// identity (a resume's open lease and its day's unit are its own, which a
+// RunID-blind preview counts against it): an entry that cannot serve then
+// leaves the gateway slot empty, said by name, instead of the probe moving
+// the run onto the pod's gateway. A launch whose repository is unknown (the
+// preview's) reports an entry its row's repository audience alone keeps out
+// (gatewayRoutes.repoOnly), never reads it absent.
+func (p *Publisher) attachedGatewayHold(ctx context.Context, orgID, tenantID, ownerID, slot string, probe gatewayProbe) (hold gatewayHold, decided bool) {
 	att := probe.attachment
 	if att == nil || att.PoolID == "" || p.credPool == nil {
 		return gatewayHold{}, false
 	}
 	want := credpool.Credential{Source: credpool.SourceAPIKey, Ref: string(secrets.ProviderOpenAICompatible)}
-	pv, err := p.previewLent(ctx, p.attachedPoolPreviewRequest(ctx, orgID, tenantID, ownerID, probe.botID, att, []credpool.Credential{want}))
-	if err != nil {
+	unread := func(err error) (gatewayHold, bool) {
 		if p.logger != nil {
 			p.logger.Warn("cloudpublisher: attached pool %s metadata for the gateway probe: %v — read as holding a gateway entry: the walk consults the pool and its own draw decides", att.PoolID, err)
 		}
 		return gatewayHold{funds: true, note: fmt.Sprintf("the attached pool %s could not be read (%v), so the gateway probe read it as holding a gateway entry and the walk's own draw decided", att.PoolID, err)}, true
 	}
-	if !slices.ContainsFunc(pv.Candidates, func(c credpool.PreviewCandidate) bool { return c.Selected && c.Ref == want.Ref }) {
-		return gatewayHold{}, false
+	pv, err := p.credPool.Preview(ctx, p.attachedPoolRequest(ctx, orgID, tenantID, ownerID, probe.botID, att, []credpool.Credential{want}))
+	if err != nil {
+		return unread(err)
 	}
-	if !probe.lists.sealableHeldSlot(slot) {
-		return gatewayHold{note: fmt.Sprintf("the attached pool %s's gateway entry serves this launch, but %s", att.PoolID, slotHeldOutBy(probe.allowed, slot))}, true
+	repo := secrets.LaunchRepoFromContext(ctx)
+	var repoOnly *heldGatewayKey
+	for _, c := range pv.Candidates {
+		if c.Source != want.Source || c.Ref != want.Ref || c.PledgeID == "" || !entryThereForLaunch(c.Status) {
+			continue
+		}
+		// The lent row: one deleted since the pledge was written lends
+		// nothing; a row that cannot be read is read as holding one, as a
+		// failed list is.
+		k, err := p.credPool.LentKeyRow(ctx, c.PledgeID)
+		switch {
+		case errors.Is(err, secrets.ErrApiKeyNotFound):
+			continue
+		case err != nil:
+			return unread(err)
+		}
+		why := lentAudience(k, probe.botID, repo)
+		if why.Bot {
+			continue
+		}
+		if why.Repo {
+			if probe.repoUnknown && repo == "" && repoOnly == nil {
+				repoOnly = &heldGatewayKey{tier: "pool", key: k, poolID: att.PoolID}
+			}
+			continue
+		}
+		entry := &heldGatewayKey{tier: "pool", key: k, poolID: att.PoolID}
+		if !probe.lists.sealableHeldSlot(slot) {
+			return gatewayHold{note: entry.String() + " serves this launch, but " + slotHeldOutBy(probe.allowed, slot)}, true
+		}
+		return gatewayHold{funds: true, by: entry}, true
 	}
-	return gatewayHold{funds: true}, true
+	return gatewayHold{repoOnly: repoOnly}, false
+}
+
+// entryThereForLaunch reports whether a preview candidate's status leaves the
+// entry in the pool for this launch, availability aside: a paused pledge, an
+// unhealthy one (its credential failing or gone) and one whose pledge's bot
+// filter refuses the launch are not; busy, exhausted, cooling, out of hours,
+// near limit and an unread capacity are only not available NOW.
+func entryThereForLaunch(st credpool.Status) bool {
+	switch st {
+	case credpool.StatusPaused, credpool.StatusUnhealthy, credpool.StatusBotFiltered, credpool.StatusRepoFiltered, credpool.StatusNoFallbackConsent:
+		return false
+	}
+	return true
 }

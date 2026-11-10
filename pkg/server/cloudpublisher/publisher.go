@@ -798,11 +798,14 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 		policy = policy.withProviderAllowlist(allowed)
 	}
 	gateway := p.gatewayRouting(ctx, view, tenantID, orgID, ownerID, audienceBotID, sovereign, runnerPool != "",
-		gatewayProbe{lists: policy, allowed: allowed, attachment: poolAttachment, botID: botID, opens: func(k secrets.ApiKey) error {
+		gatewayProbe{lists: policy, allowed: allowed, attachment: poolAttachment, botID: botID, boundary: boundary, opens: func(k secrets.ApiKey) error {
 			_, err := secrets.OpenApiKey(p.sealer, k)
 			return err
 		}})
 	view, envFunded := gateway.view, gateway.envFunded
+	if gateway.replayHeldOut != "" && p.logger != nil {
+		p.logger.Warn("cloudpublisher: run %s — %s; its openai_compatible routes ride the runner's environment gateway, as at its launch", runID, gateway.replayHeldOut)
+	}
 
 	// Refused-but-only keys, per provider AND per tier, remembered across
 	// the tiers for the restore step — the api-key twin of skippedForfaits
@@ -1506,7 +1509,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	// refusal and the two screens below read the same value.
 	res.contentBoundary = boundary.resolve(func() *store.RunContentBoundary {
 		held, baseURL := sealedGatewayKey(bundle)
-		return derivedContentBoundary(teamGatewayBoundary(view, held), apiKeyIDs.of(secrets.ProviderOpenAICompatible), baseURL)
+		return derivedContentBoundary(teamGatewayBoundary(view, held), held, apiKeyIDs.of(secrets.ProviderOpenAICompatible), baseURL)
 	})
 	teamGateway := res.contentBoundary.TeamGateway()
 	// ADR-131 §7, the ambient stamp's second fact: a run held to its team's
@@ -1706,6 +1709,15 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	// same stage, through the same composer, or it judges a program this
 	// launch does not.
 	attributed := attributedRoutes(view)
+	// A gateway route the probe attributed to a key no tier then sealed rides
+	// the runner's environment gateway outside the boundary, as a held key
+	// that cannot seal leaves it: named here, and read by the refusals below
+	// as the environment's — never a provider the run left unfunded.
+	gatewaySealed, _ := sealedGatewayKey(bundle)
+	if unsealed := gateway.unsealedNote(gatewaySealed, teamGateway, res.grant != nil); unsealed != "" {
+		gateway.note = unsealed
+		attributed = attributed.gatewayToEnvironment()
+	}
 	// A held gateway key that cannot seal leaves a mixed run's gateway routes
 	// to the runner's environment: said by name, as the env-funded line says
 	// it for a run whose every route rides the gateway.
@@ -5818,14 +5830,9 @@ func (p *Publisher) acquireFromAttachedPools(ctx context.Context, runID, orgID, 
 		p.logger.Warn("cloudpublisher: attached pool asked for the FULL order for run %s — provider hint(s) match no known provider: %s (%s)",
 			runID, strings.Join(resolution.Unknown, ","), providersSummary(resolution.Providers))
 	}
-	// The strategy's pre-exhaustion predicate, built once (law 4): the
-	// margin skip fires only when the frozen triggers answer usage_window.
-	var marginFn func(credpool.Pledge) (time.Time, bool)
-	if slices.Contains(att.Strategy.Triggers, "usage_window") {
-		// The frozen list is the EFFECTIVE one (defaults applied at the
-		// fold): usage_window present = the strategy answers exhaustion.
-		marginFn = p.closedAtMargin(ctx, strategyMargin(att.Strategy))
-	}
+	// The attachment's request shape, built once: the margin predicate (law
+	// 4), the draw caps, the rank mode — the preview's and the probe's too.
+	base := p.attachedPoolRequest(ctx, orgID, tenantID, ownerID, botID, att, nil)
 	// The FIRST acquisition of this resolution is the attempt's takeover:
 	// it supersedes whatever the run's previous attempt left open (a pod
 	// killed mid-run leaves its leases open — a resume that never closed
@@ -5863,23 +5870,14 @@ func (p *Publisher) acquireFromAttachedPools(ctx context.Context, runID, orgID, 
 			}
 			preferPledge = held
 		}
-		grant, released, err := p.acquireLent(ctx, credpool.Request{
-			HoldOnSwitch:   att.Strategy.ResetHold,
-			PreferPledgeID: preferPledge,
-			RunID:          runID,
-			OrgID:          orgID,
-			TenantID:       tenantID,
-			UserID:         ownerID,
-			BotID:          botID,
-			Wants:          []credpool.Credential{want},
-			PoolIDs:        []string{att.PoolID},
-			AttachmentID:   att.ScopeID,
-			DrawLimits:     credpool.DrawLimits{MaxRunsPerDay: att.Limits.MaxRunsPerDay, MaxUSDPerDay: att.Limits.MaxUSDPerDay},
-			RankMode:       credpool.StrategyMode(att.Strategy.Mode),
-			ClosedAtMargin: marginFn,
-			SideBySide:     sideBySide,
-			AttemptID:      attemptID,
-		})
+		req := base
+		req.Wants = []credpool.Credential{want}
+		req.RunID = runID
+		req.HoldOnSwitch = att.Strategy.ResetHold
+		req.PreferPledgeID = preferPledge
+		req.SideBySide = sideBySide
+		req.AttemptID = attemptID
+		grant, released, err := p.acquireLent(ctx, req)
 		if grant != nil || released != nil {
 			// The resolution's first acquisition took the attempt over —
 			// a grant the lent key's audience then refused included.
@@ -5967,20 +5965,27 @@ func (p *Publisher) acquireFromAttachedPools(ctx context.Context, runID, orgID, 
 	}
 }
 
-// attachedPoolPreviewRequest is the read-only Request for an attached pool's
-// candidates (ADR-164): the credential preview's and the gateway probe's one
-// constructor, carrying the live walk's strategy — its rank mode and, when
-// the frozen triggers answer usage_window, its margin predicate (law 4) — so
-// neither reads a candidate the walk would not draw.
-func (p *Publisher) attachedPoolPreviewRequest(ctx context.Context, orgID, tenantID, ownerID, botID string, att *store.RunPoolAttachment, wants []credpool.Credential) credpool.Request {
+// attachedPoolRequest is an attached pool's Request as the attachment shapes
+// it (ADR-164): the named pool, the attachment's draw scope and its
+// borrower-side caps, the strategy's rank mode and — when the frozen triggers
+// answer usage_window — its margin predicate (law 4). One constructor for the
+// live walk (which adds the run's own fields: its id, the hold, the attempt,
+// side by side), the credential preview (whose candidates are then the ones
+// the walk would draw now) and the gateway probe (which reads existence and
+// audience only, attachedGatewayHold).
+func (p *Publisher) attachedPoolRequest(ctx context.Context, orgID, tenantID, ownerID, botID string, att *store.RunPoolAttachment, wants []credpool.Credential) credpool.Request {
 	var marginFn func(credpool.Pledge) (time.Time, bool)
 	if slices.Contains(att.Strategy.Triggers, "usage_window") {
+		// The frozen list is the EFFECTIVE one (defaults applied at the
+		// fold): usage_window present = the strategy answers exhaustion.
 		marginFn = p.closedAtMargin(ctx, strategyMargin(att.Strategy))
 	}
 	return credpool.Request{
 		OrgID: orgID, TenantID: tenantID, UserID: ownerID, BotID: botID,
 		Wants: wants, PoolIDs: []string{att.PoolID},
-		RankMode: credpool.StrategyMode(att.Strategy.Mode), ClosedAtMargin: marginFn,
+		AttachmentID: att.ScopeID,
+		DrawLimits:   credpool.DrawLimits{MaxRunsPerDay: att.Limits.MaxRunsPerDay, MaxUSDPerDay: att.Limits.MaxUSDPerDay},
+		RankMode:     credpool.StrategyMode(att.Strategy.Mode), ClosedAtMargin: marginFn,
 	}
 }
 

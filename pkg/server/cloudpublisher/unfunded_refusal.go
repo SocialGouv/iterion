@@ -2,6 +2,7 @@ package cloudpublisher
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -141,6 +142,39 @@ func (r routeAttribution) unfundedWireDefault(funded map[string]bool, unfunded [
 	}
 	sort.Strings(out)
 	return out
+}
+
+// gatewayToEnvironment re-reads the gateway routes the walk attributed to a
+// key no tier then sealed (gatewayRoutes.unsealedNote) as the runner's
+// environment's, as a held key that cannot seal leaves them: the
+// openai_compatible provider leaves the attributed and primary sets — never a
+// provider the run left unfunded — and its sites join gateway, the
+// environment-funded routes only the untrusted posture, refused that
+// environment, refuses.
+func (r routeAttribution) gatewayToEnvironment() routeAttribution {
+	gw := string(secrets.ProviderOpenAICompatible)
+	r.providers = slices.DeleteFunc(slices.Clone(r.providers), func(prov string) bool { return prov == gw })
+	if sites := r.pins[gw]; len(sites) > 0 {
+		set := siteSet(r.gateway)
+		for _, site := range sites {
+			set[site] = true
+		}
+		r.gateway = make([]string, 0, len(set))
+		for site := range set {
+			r.gateway = append(r.gateway, site)
+		}
+		sort.Strings(r.gateway)
+	}
+	if _, ok := r.primary[gw]; ok {
+		primary := make(map[string][]string, len(r.primary))
+		for prov, sites := range r.primary {
+			if prov != gw {
+				primary[prov] = sites
+			}
+		}
+		r.primary = primary
+	}
+	return r
 }
 
 // siteSet is a site list as a set.

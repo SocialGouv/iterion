@@ -16,7 +16,9 @@
 // the knob → W17b. The preview's probe told it knows the repository → W18;
 // the repo-restricted key left unlisted → W18's candidate assert. The
 // boundary's strict arm read over the whole attributed set → W20's three rows;
-// the launch's tolerated warning, or the preview's, silenced → W20.
+// the launch's tolerated warning, or the preview's, silenced → W20. The
+// broker's Preview blind to the attachment's draw cap, or the shared request
+// without the caps → W21.
 
 package cloudpublisher
 
@@ -30,6 +32,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/model"
+	"github.com/SocialGouv/iterion/pkg/credpool"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/runview"
@@ -431,5 +434,43 @@ func TestGatewayKey_ATeamGatewayRunsRescueAndEnvDialRoutesAreWarnedNotRefused(t 
 				t.Fatalf("the preview does not mirror the launch's warning naming %s: %v", row.tolerated, preview.Warnings)
 			}
 		})
+	}
+}
+
+// W21 (Y-6 of the round-2 review): the credential preview's attached-pool
+// read is the walk's request — the attachment's draw scope and caps ride it
+// (attachedPoolRequest) and the broker's Preview judges them — so an
+// attachment whose runs-per-day draw cap is spent selects no entry, as the
+// walk draws none. Before, the preview selected the gateway entry the walk
+// then refused (errScopeDrawCapped).
+func TestGatewayKey_ThePreviewReadsTheAttachmentsDrawCap(t *testing.T) {
+	f := newAttachedFixture(t)
+	att := frozenAttachment("pool-att")
+	att.Limits.MaxRunsPerDay = 1
+	ctx := secrets.WithLaunchRepo(store.WithTenant(context.Background(), poolTeam), gwRepo)
+	wf := gatewayOnlyWorkflow()
+	if _, err := f.pub.resolveAndSealCredentials(ctx, "run-gw-21", poolOrg, poolTeam, "requester", "docs-refresh", "", wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustDefault, nil, nil, att, boundaryDerived); err != nil {
+		t.Fatalf("first launch: %v", err)
+	}
+	if open := openLeases(t, f, "run-gw-21"); len(open) != 1 {
+		t.Fatalf("fixture: the first launch drew %d leases, want the gateway entry's one (the draw cap's single run)", len(open))
+	}
+	spec := runviewPreviewSpecAttached()
+	spec.PoolAttachment = att
+	preview, err := previewReadOnly(f.pub).PreviewCredentials(ctx, spec, gatewayOnlyWorkflow())
+	if err != nil {
+		t.Fatalf("preview: %v", err)
+	}
+	if got := selectedDescriptions(preview); slices.Contains(got, "pool:api_key:openai_compatible") {
+		t.Fatalf("the preview selects the gateway entry of an attachment whose draw cap is spent (selected %v): the walk draws none", got)
+	}
+	exhausted := false
+	for _, c := range preview.Candidates {
+		if c.Tier == "pool" && c.Provider == string(secrets.ProviderOpenAICompatible) && c.State == string(credpool.StatusExhausted) && strings.Contains(c.Reason, "draw cap") {
+			exhausted = true
+		}
+	}
+	if !exhausted {
+		t.Fatalf("the gateway entry is not shown exhausted by the attachment's draw cap: %+v", preview.Candidates)
 	}
 }

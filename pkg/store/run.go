@@ -1059,11 +1059,13 @@ type RunCredStamp struct {
 type RunContentBoundary struct {
 	// Kind names the credential class that funds the run.
 	Kind string `json:"kind" bson:"kind"`
-	// KeyID is the id of the key that answered. Optional: a kind whose
-	// funding needs no key row leaves it empty.
+	// KeyID is the id of the gateway key row the launch sealed: under
+	// team_gateway the key that answered, under own_keys a key sealed for a
+	// route the launch could not decide. Empty when the launch sealed no
+	// gateway key — a replay then seals none.
 	KeyID string `json:"key_id,omitempty" bson:"key_id,omitempty"`
 	// GatewayHost is the canonical host of the tenant gateway serving
-	// the key. Optional for the same reason.
+	// the key, recorded beside KeyID.
 	GatewayHost string `json:"gateway_host,omitempty" bson:"gateway_host,omitempty"`
 }
 

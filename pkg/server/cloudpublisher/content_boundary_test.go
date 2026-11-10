@@ -105,7 +105,9 @@ func TestContentBoundary_ADecidedGatewayRouteTheTeamFundsIsTeamGateway(t *testin
 // pool (attributed to nothing, ADR-129 §4), a gateway route attributed to a key the run's frozen
 // pair order holds out (attributed, never sealed: both facts are owed), a
 // vendor-only run, and a run whose gateway routes ride the pod's environment
-// — and none of them carries the ambient refusal.
+// — and none of them carries the ambient refusal. The stamp names the gateway
+// key and host exactly when the launch sealed one (the env dial's row): what a
+// replay reads to know its launch sealed a gateway key (launchSealedGateway).
 func TestContentBoundary_EveryOtherWalkedLaunchStampsOwnKeys(t *testing.T) {
 	dial := &ir.Workflow{Nodes: map[string]ir.Node{
 		"review": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "review"}, LLMFields: ir.LLMFields{Backend: "claw", Model: "${C4_UNSET_ROUTE_DIAL:-openai_compatible/scaleway/deepseek-v4.1-flash}"}},
@@ -138,8 +140,18 @@ func TestContentBoundary_EveryOtherWalkedLaunchStampsOwnKeys(t *testing.T) {
 			if got := b.APIKeys[secrets.ProviderOpenAICompatible] != ""; got != row.gwSealed {
 				t.Fatalf("fixture: gateway sealed = %v, want %v — the row tests another shape (log:\n%s)", got, row.gwSealed, buf.String())
 			}
-			if !reflect.DeepEqual(creds.contentBoundary, ownKeys()) {
-				t.Fatalf("content boundary = %+v, want an explicit own_keys stamp", creds.contentBoundary)
+			want := ownKeys()
+			if creds.contentBoundary == nil {
+				t.Fatal("content boundary = nil, want an explicit own_keys stamp")
+			}
+			if row.gwSealed {
+				want.KeyID, want.GatewayHost = creds.contentBoundary.KeyID, gwHost
+				if want.KeyID == "" {
+					t.Fatalf("content boundary = %+v names no gateway key, though the launch sealed one", creds.contentBoundary)
+				}
+			}
+			if !reflect.DeepEqual(creds.contentBoundary, want) {
+				t.Fatalf("content boundary = %+v, want an explicit own_keys stamp %+v", creds.contentBoundary, want)
 			}
 			if sealed := creds.secretsRef != ""; sealed != row.anySealed {
 				t.Fatalf("fixture: bundle sealed = %v, want %v — the row tests another shape (log:\n%s)", sealed, row.anySealed, buf.String())

@@ -3,8 +3,10 @@ package cloudpublisher
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"reflect"
+	"slices"
 	"testing"
 	"time"
 
@@ -453,15 +455,16 @@ func TestSubmitLaunchAndResume_credFingerprintsRideTheRunDocument(t *testing.T) 
 }
 
 // ADR-131 §4, the replay: a run launched on its team's gateway key keeps its
-// team_gateway stamp through a resume whose walk would now answer own_keys
-// (the key was deleted since). The re-read document carries the launch's
-// bytes, the resume's message replays them, and the bundle the resume seals
-// carries the ambient refusal on the FROZEN boundary — beside a vendor key the
-// walk still seals, and sealed even with no credential in it, or the runner
-// would serve the gateway routes from the pod's environment. Mutants: the
-// resume deriving instead of replaying → the vendor row's bundle reads no
-// refusal; the empty-bundle seal gate dropped → the empty row seals nothing;
-// the resume writing its derivation on the document → the bytes move.
+// team_gateway stamp through a resume whose walk would now answer otherwise
+// (the key was deleted since). The frozen stamp decides the gateway routes'
+// attribution on the resume (gatewayRouting's replay rule), so the slot the
+// walk cannot fill is refused BY NAME — the boundary's strict arm, naming the
+// gateway route — instead of publishing a dead attempt (a bundle whose
+// ambient refusal answers the gateway node's every call) or the pod's
+// environment. The document keeps the launch's bytes and nothing is
+// published. Mutants: the replay re-deriving the attribution from the probe
+// → both rows publish; the resume writing a derivation on the document → the
+// bytes move.
 func TestSubmitResume_ReplaysTheFrozenTeamGatewayBoundary(t *testing.T) {
 	gwNode := &ir.AgentNode{BaseNode: ir.BaseNode{ID: "implement"}, LLMFields: ir.LLMFields{Backend: "claw", Model: "openai_compatible/team/m"}}
 	for _, row := range []struct {
@@ -528,10 +531,15 @@ func TestSubmitResume_ReplaysTheFrozenTeamGatewayBoundary(t *testing.T) {
 			if err := rs.SaveRun(ctx, run); err != nil {
 				t.Fatalf("SaveRun: %v", err)
 			}
-			if err := p.SubmitResume(ctx, runview.ResumeSpec{
+			err = p.SubmitResume(ctx, runview.ResumeSpec{
 				RunID: "run-gwb", FilePath: "wf.bot", Source: "workflow wf:\n  start -> done\n",
-			}, wf, &runview.CompiledSource{Hash: "hash"}); err != nil {
-				t.Fatalf("SubmitResume: %v", err)
+			}, wf, &runview.CompiledSource{Hash: "hash"})
+			var refusal *UnfundedProvidersError
+			if !errors.As(err, &refusal) || !refusal.TeamGateway || !slices.Equal(refusal.Providers, []string{string(secrets.ProviderOpenAICompatible)}) || !slices.Equal(refusal.Sites[string(secrets.ProviderOpenAICompatible)], []string{"implement"}) {
+				t.Fatalf("SubmitResume = %v, want the frozen team_gateway boundary's refusal naming the gateway route its walk cannot fund (openai_compatible, named by implement)", err)
+			}
+			if len(published) != 1 {
+				t.Fatalf("the refused resume published %d message(s) after the launch's", len(published)-1)
 			}
 			run, err = rs.LoadRun(ctx, "run-gwb")
 			if err != nil {
@@ -539,27 +547,6 @@ func TestSubmitResume_ReplaysTheFrozenTeamGatewayBoundary(t *testing.T) {
 			}
 			if resumed, _ := json.Marshal(run.ContentBoundary); string(resumed) != string(launchBoundary) {
 				t.Fatalf("resumed run's content_boundary = %s, want the launch's %s byte for byte — the stamp is frozen, never re-derived", resumed, launchBoundary)
-			}
-			if len(published) != 2 || !reflect.DeepEqual(published[1].ContentBoundary, run.ContentBoundary) {
-				t.Fatalf("the resume's message does not replay the frozen stamp: %+v", published)
-			}
-			msg := published[1]
-			if msg.SecretsRef == "" {
-				t.Fatal("the resume sealed no bundle: the ambient refusal has no carriage, and the runner would serve the gateway route from the pod's environment")
-			}
-			rec, err := runSecrets.Get(ctx, msg.SecretsRef)
-			if err != nil {
-				t.Fatalf("RunSecrets.Get: %v", err)
-			}
-			b, err := secrets.OpenRunBundle(mustDEKSealer(t, msg.BundleDEK), rec.TenantID, "", "run-gwb", rec.KeyID, rec.SealedBundle)
-			if err != nil {
-				t.Fatalf("OpenRunBundle: %v", err)
-			}
-			if b.APIKeys[secrets.ProviderOpenAICompatible] != "" || (b.APIKeys[secrets.ProviderAnthropic] != "") != row.vendor {
-				t.Fatalf("fixture: the resume sealed %v — the deleted gateway key must be gone (or the walk agrees with the launch and the replay proves nothing), the vendor key present iff the row seeds it", b.APIKeys)
-			}
-			if !b.AmbientLLMRefused {
-				t.Fatalf("the resume's bundle carries no ambient refusal: the frozen team_gateway boundary must arm it whatever the resume's walk finds")
 			}
 		})
 	}

@@ -68,9 +68,14 @@ first; the pool wants, the legacy pool and the fallback door read the second. "T
 holds a gateway key" is a lazy probe of the tiers the walk consults (the team's own;
 the org's, an attached pool's (ADR-164) and the platform's unless the team is sovereign
 or pool-mapped), under the audiences `secrets.Resolve` applies and without the usability
-predicate — an attached pool's gateway entry counts when the broker would serve it to the
-launch now and its key row's own `bots`/`repos` admit the launch, so a decided gateway
-route the entry funds is attributed and the run is `team_gateway`; it attributes
+predicate — an attached pool's gateway entry counts when the pool's eligibility admits it
+(enabled, healthy, its pledge's bot filter) and its key row's own `bots`/`repos` admit the
+launch, whatever its availability now (busy, capped, cooling, the attachment's draw caps:
+the walk's draw, which knows the run's own leases, decides), so a decided gateway route the
+entry funds is attributed and, when the draw seals it, the run is `team_gateway`. A route
+attributed to a key no tier then seals (an entry the draw cannot serve now, a platform key
+while a pool grant keeps the platform tier unconsulted) rides the pod's gateway outside the
+boundary, named (`gatewayRoutes.unsealedNote`), and no unfunded refusal counts it; it attributes
 the routes only to a key that can seal for the run — the run's frozen lists admit the
 gateway slot and the key's sealed secret opens. A held key that cannot seal leaves
 the routes to the pod's gateway (§5's replay clause), named on the env-funded line and
@@ -114,14 +119,28 @@ stays `own_keys`.
 fingerprint at every seal site (`noteSealedAPIKey`: the team's BYOK tier, a webhook
 pin included, the restore, the org and platform tiers, an attached pool's entry);
 `GatewayHost` is the host its sealed URL dials (`compatgw.Config.Host`, the host the
-runner pins on the run's proxy).
+runner pins on the run's proxy). An `own_keys` stamp names them too when the launch
+sealed a gateway key for a route it could not decide (a runner pool's env dial): the
+stamp records whether the launch sealed one.
+
+A replay reads that record, never the probe, to decide the gateway routes
+(`gatewayRouting`'s replay rule). A frozen `team_gateway` keeps them attributed and the
+slot sealable whatever the probe reads now — an attached entry whose RunID-blind preview
+counts the run's own open lease or day's unit against it, a key deleted since — so the
+walk asks every tier and a slot it cannot fill is refused by name by the boundary's
+strict arm, never published as a dead attempt. A stamp that records no gateway key
+(`own_keys` naming none, or a run stamped before the producer) seals none on a replay: a
+var the launch read late and the resume reads decided, a key created since, a fork's
+`NewInputs` re-routing a node — the routes ride the runner's environment gateway as at
+launch, the hold-out named. A fork child replays its parent's stamp (`runview.Fork`
+copies it), so its first resume follows the same rule.
 
 The launch writes the stamp through `credResolution.applyTo`, outside `stamp()`: a
 resume replays the document's bytes (`boundaryFrozen(prior.ContentBoundary)`) and
 never re-derives them. `RunBundle.AmbientLLMRefused` is armed on the same value —
 derived at launch, the frozen one at resume — ORed with ADR-162's untrusted arm,
 never clearing it; a resume replaying `team_gateway` seals its bundle even with
-nothing in it, so the refusal keeps its carriage when the team's key is gone. The same
+nothing in it (a route the walk cannot attribute), so the refusal keeps its carriage. The same
 value arms the unfunded refusal strictly: a `team_gateway` run's node whose own decided
 route (`model.ProviderResolution.DecidedPrimary`: a primary route reading neither the
 environment nor an undecided var) nothing in the bundle funds can only die at the runner,

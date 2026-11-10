@@ -53,15 +53,23 @@ func (p *Publisher) lentKeyAudience(ctx context.Context, pledgeID, keyID, botID 
 	case keyID != "" && k.ID != keyID:
 		return k, why, fmt.Sprintf("is no longer the row its pledge lends (the pledge names %s now)", k.ID)
 	}
-	audienceBotID := botregistry.NormalizeName(botID)
 	repo := secrets.LaunchRepoFromContext(ctx)
-	why = secrets.AudienceRefusal{Bot: !k.ServesBotForLaunch(audienceBotID), Repo: !k.ServesRepoForLaunch(repo)}
+	why = lentAudience(k, botID, repo)
 	if !why.Bot && !why.Repo {
 		return k, why, ""
 	}
-	said := newAudienceWithholdings(audienceBotID, repo)
+	said := newAudienceWithholdings(botregistry.NormalizeName(botID), repo)
 	said.note(k, why)
 	return k, why, "is withheld from this launch: " + said.cause(k.ID)
+}
+
+// lentAudience is the reading a lent key row's audiences get: the canonical
+// bot the BYOK audience compares (botregistry.NormalizeName of the request's
+// bot) and the launch's repository. The walk's grant, the preview's candidate
+// and the gateway probe's entry all read it here.
+func lentAudience(k secrets.ApiKey, botID, repo string) secrets.AudienceRefusal {
+	audienceBotID := botregistry.NormalizeName(botID)
+	return secrets.AudienceRefusal{Bot: !k.ServesBotForLaunch(audienceBotID), Repo: !k.ServesRepoForLaunch(repo)}
 }
 
 // acquireLent is the one Acquire of the walk's pool paths: the broker's grant,

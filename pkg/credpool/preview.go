@@ -31,7 +31,8 @@ type Preview struct {
 }
 
 // Preview follows Acquire's audience, eligibility, preference and fairness
-// ordering, using the ledger's own pure admission calculation. It does not
+// ordering, using the ledger's own pure admission calculation — the
+// attachment's draw caps (AttachmentID, DrawLimits) included. It does not
 // supersede leases, reserve capacity, mark a donor, probe or open a credential.
 // Only new launches are previewed; RunID is deliberately ignored.
 func (b *Broker) Preview(ctx context.Context, req Request) (Preview, error) {
@@ -59,6 +60,10 @@ func (b *Broker) Preview(ctx context.Context, req Request) (Preview, error) {
 		}
 		return out, err
 	}
+	// The attachment's draw caps (ADR-164), judged first and once, as
+	// tryPledge judges them: every candidate shares the scope's att: row, so
+	// a capped scope serves none of them.
+	drawStatus, drawReason := b.previewDrawCap(ctx, req, out.ObservedAt)
 	selected := false
 	for _, want := range req.Wants {
 		for _, pc := range pools {
@@ -72,6 +77,11 @@ func (b *Broker) Preview(ctx context.Context, req Request) (Preview, error) {
 			}
 			for _, p := range ranked {
 				c := PreviewCandidate{PledgeID: p.ID, Source: p.Source, Ref: p.Ref, Status: StatusActive, MaxConcurrentRuns: p.Limits.MaxConcurrentRuns}
+				if drawStatus != "" {
+					c.Status, c.Reason = drawStatus, drawReason
+					out.Candidates = append(out.Candidates, c)
+					continue
+				}
 				n, committed, err := b.leases.LiveCommitment(ctx, p.ID, "", out.ObservedAt)
 				if err != nil {
 					c.Status = "unknown"
@@ -115,6 +125,27 @@ func (b *Broker) Preview(ctx context.Context, req Request) (Preview, error) {
 		out.Reason = ReasonNoEligiblePledge
 	}
 	return out, nil
+}
+
+// previewDrawCap reads the attachment's draw caps for a preview: "" when the
+// request names no attachment or its scope admits one more run; exhausted
+// when a cap is spent; unknown when its ledger could not be read.
+func (b *Broker) previewDrawCap(ctx context.Context, req Request, now time.Time) (Status, string) {
+	if req.AttachmentID == "" {
+		return "", ""
+	}
+	runs, committed, err := b.leases.LiveCommitmentByAttachment(ctx, req.AttachmentID, "", now)
+	if err != nil {
+		return "unknown", "attachment capacity unavailable"
+	}
+	day, week, err := b.ledger.Usage(ctx, AttachmentLedgerID(req.AttachmentID), now)
+	if err != nil {
+		return "unknown", "attachment usage unavailable"
+	}
+	if _, deny := previewAdmission(req.DrawLimits.AsLimits(), day, week, LiveCommitment{Runs: runs, CommittedUSD: committed}); deny != DenyNone {
+		return StatusExhausted, "The attachment's draw cap is spent for the period: the scope draws no entry until it resets."
+	}
+	return "", ""
 }
 
 func previewAdmission(l Limits, day, week Usage, live LiveCommitment) (float64, DenyReason) {
