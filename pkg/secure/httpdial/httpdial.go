@@ -7,9 +7,11 @@
 //
 // The guard blocks the conventional SSRF categories — loopback, private
 // (RFC1918 / ULA), link-local, multicast, unspecified — plus the ranges it
-// lists (the shared CGNAT space, the deprecated IPv4-compatible block, the
-// NAT64 local-use prefix), a NAT64 well-known or 6to4 address whose
-// embedded IPv4 address it blocks, and the cloud metadata endpoints. Under
+// lists (the shared CGNAT space, the reserved Class E block, benchmarking,
+// the IETF protocol assignments, the deprecated IPv4-compatible and
+// site-local blocks, the NAT64 local-use prefix), a NAT64 well-known, 6to4
+// or SIIT-translated address whose embedded IPv4 address it blocks, and the
+// cloud metadata endpoints. Under
 // strict it refuses the names no public host carries (ReservedName: a single
 // label, the names a cluster, a cloud, a container or a workstation
 // reserves) before any lookup, and looks every other name up absolute. The
@@ -32,7 +34,8 @@ import (
 // It refuses what net.IP's own predicates name (loopback, unspecified,
 // multicast, link-local, private), the ranges in nonPublicPrefixes, an
 // address of a v4Embeddings prefix whose embedded IPv4 address it refuses,
-// and the AWS/GCP/Azure/Alibaba metadata endpoints. An IPv4-mapped address
+// and the AWS/GCP/Azure/Alibaba metadata endpoints with Azure's WireServer.
+// An IPv4-mapped address
 // is judged as the IPv4 address it maps. The set is these lists, not every
 // range IANA marks not globally reachable.
 func IsPublicUnicast(ip net.IP) bool {
@@ -53,8 +56,10 @@ func IsPublicUnicast(ip net.IP) bool {
 	// Cloud metadata services sit on top of the link-local range and the
 	// shared address space (already covered above); belt-and-suspenders
 	// string check for readability and to cover the IPv6 metadata aliases.
+	// Azure's WireServer is the exception in public space: 168.63.129.16 is
+	// reached only from inside Azure, as its metadata and agent endpoint.
 	switch ip.String() {
-	case "169.254.169.254", "100.100.100.200", "fd00:ec2::254", "fe80::a9fe:a9fe":
+	case "169.254.169.254", "100.100.100.200", "fd00:ec2::254", "fe80::a9fe:a9fe", "168.63.129.16":
 		return false
 	}
 	return true
@@ -62,13 +67,22 @@ func IsPublicUnicast(ip net.IP) bool {
 
 // nonPublicPrefixes are refused whole, beside net.IP's own predicates. The
 // shared address space serves carrier NAT, overlay networks and cluster pod
-// ranges. The two IPv6 blocks carry an IPv4 address and are refused
+// ranges. Three more IPv4 blocks hold no Internet host (RFC 6890): the
+// reserved Class E block, which clusters reuse for pod and Service ranges
+// (the limited broadcast sits at its top), the benchmarking block, which
+// fake-IP DNS proxies answer from, and the IETF protocol assignments, where
+// a cloud has put its metadata (192.0.0.192). The deprecated site-local
+// block is a site's own space. The two IPv4-carrying IPv6 blocks are refused
 // whatever address they carry: the deprecated IPv4-compatible form, which
 // no host is written in and which a reader that maps it delivers to the
 // IPv4 address it carries, and the NAT64 local-use prefix, whose operator
 // picks the prefix length and so where the IPv4 address sits.
 var nonPublicPrefixes = []netip.Prefix{
 	netip.MustParsePrefix("100.64.0.0/10"),  // shared address space, CGNAT (RFC 6598)
+	netip.MustParsePrefix("240.0.0.0/4"),    // reserved, Class E (RFC 1112 §4), limited broadcast included
+	netip.MustParsePrefix("198.18.0.0/15"),  // benchmarking (RFC 2544)
+	netip.MustParsePrefix("192.0.0.0/24"),   // IETF protocol assignments (RFC 6890 §2.2.2)
+	netip.MustParsePrefix("fec0::/10"),      // site-local (RFC 3879, deprecated)
 	ipv4CompatiblePrefix,                    // IPv4-compatible (RFC 4291 §2.5.5.1, deprecated)
 	netip.MustParsePrefix("64:ff9b:1::/48"), // NAT64 local-use prefix (RFC 8215)
 }
@@ -89,8 +103,9 @@ var v4Embeddings = []struct {
 	prefix netip.Prefix
 	at     int // byte offset of the IPv4 address in the IPv6 one
 }{
-	{netip.MustParsePrefix("64:ff9b::/96"), 12}, // NAT64 well-known prefix (RFC 6052 §2.2): bits 96-127
-	{netip.MustParsePrefix("2002::/16"), 2},     // 6to4 (RFC 3056 §2, deprecated by RFC 7526): bits 16-47
+	{netip.MustParsePrefix("64:ff9b::/96"), 12},    // NAT64 well-known prefix (RFC 6052 §2.2): bits 96-127
+	{netip.MustParsePrefix("2002::/16"), 2},        // 6to4 (RFC 3056 §2, deprecated by RFC 7526): bits 16-47
+	{netip.MustParsePrefix("::ffff:0:0:0/96"), 12}, // SIIT IPv4-translated (RFC 2765 §2.1): bits 96-127
 }
 
 // embeddedIPv4 returns the IPv4 address ip carries when ip falls in a

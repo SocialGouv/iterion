@@ -90,6 +90,45 @@ func TestIsPublicUnicast(t *testing.T) {
 		{"2002:a9fe:a9fe::1", false}, // 169.254.169.254
 		{"2002:808:808::1", true},    // 8.8.8.8
 		{"2003::1", true},
+
+		// IPv4 blocks no Internet host sits in (RFC 6890), refused whole:
+		// the reserved Class E 240.0.0.0/4 (reused for cluster pod and
+		// Service ranges; the limited broadcast at its top), benchmarking
+		// 198.18.0.0/15 (RFC 2544; the fake-IP range of DNS proxies), the
+		// IETF protocol assignments 192.0.0.0/24 (192.0.0.192 is Oracle
+		// Cloud Classic's metadata). Both edges refused, the public
+		// neighbours on either side not.
+		{"240.0.0.0", false},
+		{"240.0.0.1", false},
+		{"255.255.255.255", false},
+		{"::ffff:240.0.0.1", false},
+		{"198.18.0.0", false},
+		{"198.19.255.255", false},
+		{"198.17.255.255", true},
+		{"198.20.0.0", true},
+		{"192.0.0.0", false},
+		{"192.0.0.192", false},
+		{"192.0.0.255", false},
+		{"191.255.255.255", true},
+		{"192.0.1.0", true},
+		// Azure's WireServer: public space, reached only from inside Azure
+		// as the platform's metadata and agent endpoint.
+		{"168.63.129.16", false},
+		{"168.63.129.17", true},
+		// SIIT IPv4-translated ::ffff:0:0:0/96 (RFC 2765 §2.1): a
+		// translator delivers to the IPv4 address in bits 96-127, so the
+		// address is as public as the one it carries. The rows beside it pin
+		// the mask: the IPv4-mapped ::ffff:0:0/96 is judged as its IPv4
+		// address (above), and the next /96 is no translated address.
+		{"::ffff:0:7f00:1", false},    // 127.0.0.1
+		{"::ffff:0:a00:1", false},     // 10.0.0.1
+		{"::ffff:0:a9fe:a9fe", false}, // 169.254.169.254
+		{"::ffff:0:808:808", true},    // 8.8.8.8
+		{"::ffff:1:7f00:1", true},
+		// Site-local fec0::/10 (deprecated by RFC 3879): a site's own space,
+		// both edges.
+		{"fec0::1", false},
+		{"feff:ffff:ffff:ffff:ffff:ffff:ffff:ffff", false},
 	}
 	for _, tc := range cases {
 		ip := net.ParseIP(tc.ip)
@@ -372,7 +411,8 @@ func (r *recordingResolver) LookupIPAddr(_ context.Context, host string) ([]net.
 func TestNewClasses_RefusedStrictAdmittedLifted(t *testing.T) {
 	// The IPv4-compatible class is no sample: no strictness admits it
 	// (TestResolvePublicHostWith_IPv4CompatibleRefusedAtEveryStrictness).
-	samples := []string{"100.64.0.1", "64:ff9b::7f00:1", "64:ff9b:1::a00:1", "2002:7f00:1::"}
+	samples := []string{"100.64.0.1", "64:ff9b::7f00:1", "64:ff9b:1::a00:1", "2002:7f00:1::",
+		"240.0.0.1", "198.18.0.1", "192.0.0.192", "168.63.129.16", "::ffff:0:7f00:1", "fec0::1"}
 	ctx := context.Background()
 	// A canceled context stops the dial before any packet: an error that is
 	// not the guard's refusal is the dialer's cancellation.
