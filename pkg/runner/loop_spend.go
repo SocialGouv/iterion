@@ -198,11 +198,21 @@ func (r *Runner) recordPoolSpend(msg *queue.RunMessage, usage *metricsEmitter, e
 	// credential stays first in the rotation and pauses the next run too,
 	// costing them a unit of their daily quota every time.
 	//
-	// It outranks a usage window too. A chain whose one route met a window
-	// and another a dead credential stops on the window (the run waits for
-	// it, #3032), so execErr reads as a window; resting the donor on that
-	// window's cooldown would bring the dead credential back into rotation,
-	// still dead, the moment the other route's window reopened.
+	//
+	// It outranks a usage window too — as the COARSE answer, the one every
+	// lease takes when the attempt's verdicts cannot be told apart by
+	// credential. A chain whose one route met a window and another a dead
+	// credential stops on the window (the run waits for it, #3032), so
+	// execErr reads as a window; resting a dead donor on that window's
+	// cooldown would hand the credential back, still dead, the moment the
+	// window reopened.
+	//
+	// Which of the two the donor's credential met is a fact of the route it
+	// served, and the route verdicts carry it: the fine condition table
+	// (usage.fineConditions) places each verdict on the credential its route
+	// spent, and the broker gives each lease its own row — a healthy donor
+	// whose subscription met the window rests on it while the team key that
+	// was dead takes the blame, in whichever order the chain walked them.
 	if condition != credpool.ConditionAuthFailed && usage.SawAuthFailure() {
 		condition, cooldownUntil = credpool.ConditionAuthFailed, time.Time{}
 	}
@@ -260,6 +270,7 @@ func (r *Runner) recordPoolSpend(msg *queue.RunMessage, usage *metricsEmitter, e
 		AggregateTokens: aggregate,
 		Condition:       condition,
 		CooldownUntil:   cooldownUntil,
+		Conditions:      usage.fineConditions(),
 		Interim:         interim,
 		ByFingerprint:   byFingerprint,
 	}); err != nil {

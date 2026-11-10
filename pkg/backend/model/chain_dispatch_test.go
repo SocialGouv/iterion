@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/backend/credroute"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 
 	"github.com/SocialGouv/iterion/pkg/llmroute"
@@ -24,15 +25,21 @@ type backendScriptedBackend struct {
 	// can mutate it without cross-talk.
 	tokens  int
 	costUSD float64
+	// session and credential are what the call reports it ran on: the
+	// session label and the credential keys (ADR-161 decision 8).
+	session    string
+	credential credroute.Spend
 }
 
 func (b *backendScriptedBackend) Execute(_ context.Context, task delegate.Task) (delegate.Result, error) {
 	b.tasks = append(b.tasks, task)
 	res := delegate.Result{
-		BackendName: b.name,
-		Tokens:      b.tokens,
-		CostUSD:     b.costUSD,
-		Output:      map[string]any{"served_by": b.name},
+		BackendName:        b.name,
+		Tokens:             b.tokens,
+		CostUSD:            b.costUSD,
+		Output:             map[string]any{"served_by": b.name},
+		SessionFingerprint: b.session,
+		Credential:         b.credential,
 	}
 	if b.costUSD > 0 {
 		res.Output["_cost_usd"] = b.costUSD
@@ -596,6 +603,54 @@ func TestErrChainExhaustedPreservesEveryCause(t *testing.T) {
 	}
 	if len(exhausted.Errs) != 2 {
 		t.Errorf("carried %d causes, want one per element", len(exhausted.Errs))
+	}
+}
+
+// TestErrChainExhaustedNamesTheRouteOfEveryCause: each cause of an exhausted
+// chain travels with the route it failed on — the backend, the provider, the
+// session label and the credential keys the call reported — at its own
+// index, in either order of the walk. A reader that must tell WHOSE
+// credential a verdict is about (the credential pool resting or evicting a
+// lent donor) reads it there, never from the position of the cause.
+func TestErrChainExhaustedNamesTheRouteOfEveryCause(t *testing.T) {
+	t.Parallel()
+	teamKey := credroute.Spend{Channel: credroute.ChannelRunKey, Slot: "zai", Fingerprint: "fp-team-zai"}
+	for _, clawFirst := range []bool{false, true} {
+		subscription := &backendScriptedBackend{name: delegate.BackendClaudeCode, fail: usageWindowErr(), session: "anthropic-oauth"}
+		key := &backendScriptedBackend{name: delegate.BackendClaw, credential: teamKey,
+			fail: &delegate.ErrAuthFailed{Provider: "zai", Detail: "401 invalid api key"}}
+		reg := delegate.NewRegistry()
+		reg.Register(delegate.BackendClaudeCode, subscription)
+		reg.Register(delegate.BackendClaw, key)
+		e := newFallbackExecutor(reg, EventHooks{})
+		base := delegate.BackendClaudeCode
+		chain := []chainElement{{Label: "subscription"}, {Label: "key", Backend: delegate.BackendClaw, Provider: "zai"}}
+		if clawFirst {
+			base = delegate.BackendClaw
+			chain = []chainElement{{Label: "key", Provider: "zai"}, {Label: "subscription", Backend: delegate.BackendClaudeCode}}
+		}
+		build := e.newElementBuilder("review", base, nil,
+			func(_ context.Context, bn string) (*delegate.Task, error) {
+				return &delegate.Task{NodeID: "review"}, nil
+			})
+		_, err := e.dispatchChain(context.Background(), "review", chain, "claude-opus-5", build)
+		var exhausted *ErrChainExhausted
+		if !errors.As(err, &exhausted) || len(exhausted.Errs) != 2 {
+			t.Fatalf("clawFirst=%v: terminal error = %v, want a two-cause ErrChainExhausted", clawFirst, err)
+		}
+		for i, cause := range exhausted.Errs {
+			route := exhausted.Route(i)
+			var auth *delegate.ErrAuthFailed
+			if errors.As(cause, &auth) {
+				if route.Backend != delegate.BackendClaw || route.Provider != "zai" || route.Credential != teamKey {
+					t.Fatalf("clawFirst=%v: the dead key's verdict (cause %d) names route %+v, want the claw route on the team's z.ai key %+v", clawFirst, i, route, teamKey)
+				}
+				continue
+			}
+			if route.Backend != delegate.BackendClaudeCode || route.Source != "anthropic-oauth" || route.Credential != (credroute.Spend{}) {
+				t.Fatalf("clawFirst=%v: the window's verdict (cause %d) names route %+v, want the claude_code session on the subscription", clawFirst, i, route)
+			}
+		}
 	}
 }
 

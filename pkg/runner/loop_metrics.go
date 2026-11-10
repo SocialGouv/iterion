@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/cost"
 	"github.com/SocialGouv/iterion/pkg/backend/credroute"
@@ -114,6 +115,19 @@ type metricsEmitter struct {
 	// dead, pledge still "active").
 	sawAuthFailure bool
 
+	// credVerdicts is what each credential the attempt's exhausted chains
+	// ran on met, keyed by its fingerprint (chainRouteVerdictLocked): the
+	// route verdicts of the node_recovery events, each placed on the
+	// credential its route spent — never on a credential another route of
+	// the same chain spent. unplacedVerdict says a credential verdict could
+	// not be placed (a route naming neither its keys nor a plan row), and
+	// unchainedVerdict that one was read outside any chain (the node's own
+	// code); either withholds the fine condition table
+	// (fineConditions), and the pool report keeps the coarse condition.
+	credVerdicts     map[string]credVerdict
+	unplacedVerdict  bool
+	unchainedVerdict bool
+
 	// missed accumulates the observations a STAMPED plan named nothing for,
 	// on the routes a plan is supposed to answer. Env-funded spend is
 	// excluded — the openai_compatible gateway and a claude_code session
@@ -210,6 +224,7 @@ func newMetricsEmitter(inner model.EventEmitter, reg *metrics.Registry, credPlan
 		declinedRoutes: make(map[routeKey]bool),
 		credPlan:       credPlan,
 		byFingerprint:  make(map[string]credpool.FingerprintSpend),
+		credVerdicts:   make(map[string]credVerdict),
 	}
 }
 
@@ -713,11 +728,19 @@ func (m *metricsEmitter) observe(evt store.Event) {
 		// node's code is then the window another route met (the run waits
 		// for it, #3032), and the rejection lives in the route verdicts
 		// the same event carries (runtime.ChainRouteVerdicts).
-		if code, _ := evt.Data["code"].(string); code == string(runtime.ErrCodeAuthFailed) || chainRouteRejectedCredential(evt.Data["chain_routes"]) {
-			m.mu.Lock()
+		code, _ := evt.Data["code"].(string)
+		routes, chained := evt.Data["chain_routes"].([]map[string]any)
+		m.mu.Lock()
+		if code == string(runtime.ErrCodeAuthFailed) || chainRouteRejectedCredential(routes) {
 			m.sawAuthFailure = true
-			m.mu.Unlock()
 		}
+		if !chained && credentialVerdictCode(code) {
+			m.unchainedVerdict = true
+		}
+		for _, route := range routes {
+			m.chainRouteVerdictLocked(evt.NodeID, route)
+		}
+		m.mu.Unlock()
 	case store.EventDelegateStall:
 		// The F8.1 class: a served model blocking on an orchestration wait
 		// it never armed. Counted per outcome so "recovered in place" and
@@ -1000,12 +1023,139 @@ func (m *metricsEmitter) spentOnTheProvider() bool {
 // chainRouteRejectedCredential reports a node_recovery event's route verdicts
 // (runtime.ChainRouteVerdicts, the engine's own slice: the observer sees the
 // event as the engine emitted it) naming a credential the provider rejected.
-func chainRouteRejectedCredential(v any) bool {
-	routes, _ := v.([]map[string]any)
+func chainRouteRejectedCredential(routes []map[string]any) bool {
 	return slices.ContainsFunc(routes, func(route map[string]any) bool {
 		code, _ := route["code"].(string)
 		return code == string(runtime.ErrCodeAuthFailed)
 	})
+}
+
+// credentialVerdictCode reports a failure code that changes a credential's
+// availability in the pool: a dead credential, or a usage window.
+func credentialVerdictCode(code string) bool {
+	return code == string(runtime.ErrCodeAuthFailed) || code == string(runtime.ErrCodeUsageLimitBlocked)
+}
+
+// credVerdict is what one credential met across the attempt's exhausted
+// chains: a rejection, a usage window, and the earliest instant one of its
+// windows named (zero: none did).
+type credVerdict struct {
+	authFailed bool
+	window     bool
+	windowAt   time.Time
+}
+
+// chainRouteVerdictLocked places one route verdict of an exhausted chain on
+// the credential its route spent (verdictFingerprintLocked). Only a verdict
+// that changes a credential's availability is placed; a route the runner
+// cannot place marks the attempt's verdicts unplaced. Called under m.mu.
+func (m *metricsEmitter) chainRouteVerdictLocked(nodeID string, route map[string]any) {
+	code, _ := route["code"].(string)
+	if !credentialVerdictCode(code) {
+		return
+	}
+	backend, _ := route["backend"].(string)
+	modelSpec, _ := route["route_model"].(string)
+	provider, _ := route["provider"].(string)
+	var source string
+	if backend == delegate.BackendClaudeCode {
+		source, _ = route["fingerprint"].(string)
+	}
+	fp, placed := m.verdictFingerprintLocked(nodeID, routeKey{backend: backend, model: modelSpec, source: source, credential: observedCredential(route)}, provider)
+	if !placed {
+		m.unplacedVerdict = true
+		return
+	}
+	if fp == "" {
+		// The environment's credential (planRouteFundedByEnv): no lease
+		// lends it, so its verdict is no donor's.
+		return
+	}
+	v := m.credVerdicts[fp]
+	if code == string(runtime.ErrCodeAuthFailed) {
+		v.authFailed = true
+	} else {
+		v.window = true
+		if at := routeWindowReopensAt(route); !at.IsZero() && (v.windowAt.IsZero() || at.Before(v.windowAt)) {
+			v.windowAt = at
+		}
+	}
+	m.credVerdicts[fp] = v
+}
+
+// routeWindowReopensAt is the instant a route's usage-window refusal names:
+// its typed reset (reset_at), else one parsed from its words, zero when it
+// names none.
+func routeWindowReopensAt(route map[string]any) time.Time {
+	if raw, _ := route["reset_at"].(string); raw != "" {
+		if at, err := time.Parse(time.RFC3339Nano, raw); err == nil {
+			return at.UTC()
+		}
+	}
+	words, _ := route["error"].(string)
+	if at, ok := delegate.ParseResetHint(words, time.Now().UTC()); ok {
+		return at.UTC()
+	}
+	return time.Time{}
+}
+
+// verdictFingerprintLocked names the credential one route of a chain spent,
+// for its verdict: the route's own credential keys (ADR-161 decision 8), or —
+// for a route whose backend reports none — the credential plan's row for the
+// node and the route's provider, the join its spend books by
+// (fingerprintFor). placed is false when neither names one: the verdict may be
+// any credential's, the lease's included. An env-funded route
+// (planRouteFundedByEnv) is placed on nobody — no lease lends the
+// environment's credential. Called under m.mu.
+func (m *metricsEmitter) verdictFingerprintLocked(nodeID string, route routeKey, provider string) (fp string, placed bool) {
+	if planRouteFundedByEnv(route) {
+		return "", true
+	}
+	if route.credential.Channel != "" {
+		return ownFingerprint(route.credential), true
+	}
+	if len(m.credPlan) == 0 || nodeID == "" || route.backend == "" {
+		return "", false
+	}
+	if provider == "" {
+		provider = planProviderFor(route)
+	}
+	if provider == "" {
+		return "", false
+	}
+	fp = m.credPlan[nodeID+model.PlanKeySep+provider]
+	return fp, fp != ""
+}
+
+// fineConditions is the attempt's fine condition table for the pool report
+// (credpool.Outcome.Conditions): what each credential its exhausted chains
+// met, one row per credential in a stable order. Nil — the coarse condition
+// stands for every lease — when the attempt met no chain verdict, when one
+// could not be placed, or when a credential verdict was read outside any
+// chain: a table missing a verdict would clear a lease whose credential met
+// it. A credential that met a rejection is AUTH_FAILED whatever else it met:
+// resting it on a window would hand it back still dead.
+func (m *metricsEmitter) fineConditions() []credpool.FingerprintCondition {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(m.credVerdicts) == 0 || m.unplacedVerdict || m.unchainedVerdict {
+		return nil
+	}
+	out := make([]credpool.FingerprintCondition, 0, len(m.credVerdicts))
+	for fp, v := range m.credVerdicts {
+		row := credpool.FingerprintCondition{Fingerprint: fp}
+		switch {
+		case v.authFailed:
+			row.Condition = credpool.ConditionAuthFailed
+		case v.window:
+			row.Condition, row.CooldownUntil = credpool.ConditionUsageWindow, v.windowAt
+		default:
+			continue
+		}
+		out = append(out, row)
+	}
+	slices.SortFunc(out, func(a, b credpool.FingerprintCondition) int { return strings.Compare(a.Fingerprint, b.Fingerprint) })
+	return out
 }
 
 // SawAuthFailure reports whether the provider rejected this run's

@@ -4,8 +4,10 @@ import (
 	"errors"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/SocialGouv/claw-code-go/pkg/api"
+	"github.com/SocialGouv/iterion/pkg/backend/credroute"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 )
@@ -182,6 +184,14 @@ func UsageWindowRoutes(err error) []error {
 // when err holds no such chain. The node's single code says what the run
 // does next; this says what every route met, so a dead credential behind a
 // usage window stays visible on the node_recovery event.
+//
+// Each verdict names the route it is about (model.ErrChainExhausted.Routes):
+// the backend, the model spec, the provider, the claude_code session label
+// and the credential keys its call resolved (credroute.PutEventKeys), under
+// the keys a delegate event carries them — so a reader books a verdict on the
+// credential that met it, the way it books the route's spend, and never on a
+// credential another route of the same chain spent. A typed usage-window
+// refusal carries its reset instant too (reset_at).
 func ChainRouteVerdicts(err error) []map[string]any {
 	var chain *model.ErrChainExhausted
 	if !errors.As(err, &chain) || len(chain.Errs) == 0 {
@@ -193,7 +203,20 @@ func ChainRouteVerdicts(err error) []map[string]any {
 		if cause != nil {
 			verdict["code"] = string(ClassifyError(cause))
 			verdict["error"] = cause.Error()
+			var rl *delegate.ErrRateLimited
+			if errors.As(cause, &rl) && rl.Kind == delegate.RateLimitKindUsageWindow && !rl.ResetAt.IsZero() {
+				verdict["reset_at"] = rl.ResetAt.UTC().Format(time.RFC3339Nano)
+			}
 		}
+		route := chain.Route(i)
+		for key, value := range map[string]string{
+			"backend": route.Backend, "route_model": route.Model, "provider": route.Provider, "fingerprint": route.Source,
+		} {
+			if value != "" {
+				verdict[key] = value
+			}
+		}
+		credroute.PutEventKeys(verdict, route.Credential)
 		out = append(out, verdict)
 	}
 	return out

@@ -839,6 +839,36 @@ func (s chainSpend) applyTo(r delegate.Result) delegate.Result {
 type ErrChainExhausted struct {
 	Chain string  // the chain in its source form, for the message
 	Errs  []error // one per element, in walk order
+	// Routes names the route each Errs entry failed on, at the same index:
+	// whose credential a route's verdict is about travels with the verdict,
+	// so no reader guesses it from the walk. Shorter than Errs (nil on a
+	// chain built without it) where a route is unknown.
+	Routes []ChainRoute
+}
+
+// ChainRoute is the route one element of an exhausted chain ran on: the
+// backend, the model spec and the provider it served under
+// (servingProvider), the claude_code session label (Source,
+// delegate.Result.SessionFingerprint) and the credential keys its call
+// resolved (Credential, delegate.Result.Credential — ADR-161 decision 8). The
+// zero value of a field is unknown: a route that failed to build ran nothing,
+// a route skipped on a remembered cooldown made no call, and a backend whose
+// credential arm has not landed reports no keys.
+type ChainRoute struct {
+	Backend    string
+	Model      string
+	Provider   string
+	Source     string
+	Credential credroute.Spend
+}
+
+// Route is the route the i-th element of the walk failed on, the zero
+// ChainRoute when the chain does not name it.
+func (e *ErrChainExhausted) Route(i int) ChainRoute {
+	if i < 0 || i >= len(e.Routes) {
+		return ChainRoute{}
+	}
+	return e.Routes[i]
 }
 
 func (e *ErrChainExhausted) Error() string {
@@ -1168,7 +1198,8 @@ func (e *ClawExecutor) dispatchChain(
 		err         error
 		spent       chainSpend
 		causes      []error
-		nextAllowed int // first index the walk may execute (skip filter)
+		routes      []ChainRoute // the route of each cause, same index
+		nextAllowed int          // first index the walk may execute (skip filter)
 		// lastCat is the most recent EXECUTE failure's classification. A
 		// later build error must route on it, not on Unclassified: a
 		// usage_window outage followed by an unbuildable rescue route
@@ -1265,6 +1296,7 @@ func (e *ClawExecutor) dispatchChain(
 			// not veto the elements after it.
 			err = buildErr
 			causes = append(causes, buildErr)
+			routes = append(routes, ChainRoute{Backend: backendName, Model: el.Model, Provider: el.Provider})
 			// A build spends nothing of its own. Zero the terminal
 			// result so a prior failed-execute that already sits in
 			// `spent` is not applied twice when the walk ends on a
@@ -1322,6 +1354,7 @@ func (e *ClawExecutor) dispatchChain(
 					// run-level durable retry or credential-pool donor rest.
 					if cd.Cause != nil {
 						causes = append(causes, cd.Cause)
+						routes = append(routes, ChainRoute{Backend: backendName, Model: task.Model, Provider: servingProvider(backendName, task)})
 					}
 					// No call ran on this dispatch, hence there is no failed
 					// attempt to roll back. Keep the last-good durable slot for
@@ -1483,6 +1516,10 @@ func (e *ClawExecutor) dispatchChain(
 			}), nil
 		}
 		causes = append(causes, err)
+		routes = append(routes, ChainRoute{
+			Backend: backendName, Model: task.Model, Provider: servingProvider(backendName, task),
+			Source: result.SessionFingerprint, Credential: result.Credential,
+		})
 		noteSpend(backendName, task, result)
 
 		if ctx.Err() != nil {
@@ -1578,7 +1615,7 @@ func (e *ClawExecutor) dispatchChain(
 	// lending donor's ledger.
 	result = spent.applyTo(result)
 	if len(chain) > 1 {
-		return itemised(chainOutcome{Result: result, BackendName: lastBackend, Route: lastModel, Provider: lastProvider, Task: lastTask}), &ErrChainExhausted{Chain: chainLabel(chain), Errs: causes}
+		return itemised(chainOutcome{Result: result, BackendName: lastBackend, Route: lastModel, Provider: lastProvider, Task: lastTask}), &ErrChainExhausted{Chain: chainLabel(chain), Errs: causes, Routes: routes}
 	}
 	return itemised(chainOutcome{Result: result, BackendName: lastBackend, Route: lastModel, Provider: lastProvider, Task: lastTask}), err
 }

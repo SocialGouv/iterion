@@ -1563,6 +1563,19 @@ type Outcome struct {
 	// could parse one from ConditionUsageWindow. Zero falls back to a
 	// bounded blind wait.
 	CooldownUntil time.Time
+	// Conditions is Condition split per credential, the twin of
+	// ByFingerprint for the donor's HEALTH: what each credential the
+	// attempt's exhausted fallback chains met — a dead credential, a usage
+	// window — keyed by its fingerprint (the route verdict's own credential
+	// keys, or the credential plan's for the route). NON-NIL means the
+	// runner placed every such verdict of the attempt: a lease takes the
+	// entry of its own credential, and a lease whose credential met none
+	// takes ConditionOK — a chain whose window one route met and whose dead
+	// credential another route met says nothing about the first route's
+	// donor being dead. NIL (a verdict the runner could not place, or a
+	// failure read outside any chain) keeps Condition for every lease, the
+	// conservative-on-ignore direction.
+	Conditions []FingerprintCondition
 	// Interim marks an attempt that spent the credential but does NOT
 	// settle the run: the queue will redeliver the same sealed bundle, so
 	// the next attempt executes on the same lease. The spend is charged,
@@ -1604,6 +1617,9 @@ func (b *Broker) Report(ctx context.Context, runID string, out Outcome) error {
 		return err
 	}
 	now := b.now()
+	// The lease credential's own health, when the report carries the fine
+	// condition table (Outcome.Conditions).
+	out = out.effectiveCondition(lease.Fingerprint)
 
 	outcome := "ok"
 	switch out.Condition {
@@ -2211,6 +2227,16 @@ type FingerprintSpend struct {
 	AggregateTokens int64
 }
 
+// FingerprintCondition is one credential's row in an attempt's fine
+// condition table (Outcome.Conditions): what the credential with this
+// fingerprint met, and — for a usage window — when it reopens (zero: a
+// bounded blind rest).
+type FingerprintCondition struct {
+	Fingerprint   string
+	Condition     Condition
+	CooldownUntil time.Time
+}
+
 // bookerFirst orders the attempt's leases for settlement: the booker
 // first, then the others in their listed order.
 func bookerFirst(n, booker int) []int {
@@ -2267,9 +2293,10 @@ func returnedUnused(l Lease) bool {
 // effectiveCharge resolves what THIS lease books from the report: with a
 // fine table, only the slice matching the lease credential's fingerprint
 // (zero when the fallback never fired on it); without one, the coarse
-// whole-attempt charge. The condition and cooldown fields ride unchanged —
-// they describe the credential's health, not its bill.
+// whole-attempt charge. The credential's health resolves the same way, from
+// its own table (effectiveCondition).
 func (out Outcome) effectiveCharge(fingerprint string) Outcome {
+	out = out.effectiveCondition(fingerprint)
 	if out.ByFingerprint == nil {
 		return out
 	}
@@ -2291,4 +2318,22 @@ func (out Outcome) effectiveCharge(fingerprint string) Outcome {
 		}
 	}
 	return eff
+}
+
+// effectiveCondition resolves the lease credential's health from the
+// report: with a fine condition table, its own row — ConditionOK when its
+// credential met nothing; without one, or on a lease stamped before the
+// fingerprint existed, the whole attempt's condition.
+func (out Outcome) effectiveCondition(fingerprint string) Outcome {
+	if out.Conditions == nil || fingerprint == "" {
+		return out
+	}
+	out.Condition, out.CooldownUntil = ConditionOK, time.Time{}
+	for _, fc := range out.Conditions {
+		if fc.Fingerprint == fingerprint {
+			out.Condition, out.CooldownUntil = fc.Condition, fc.CooldownUntil
+			break
+		}
+	}
+	return out
 }

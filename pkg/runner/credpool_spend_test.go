@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/backend/credroute"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/cloud/metrics"
@@ -468,13 +469,15 @@ func TestRecordPoolSpend_aGrantlessDeliveryNeverReachesTheBroker(t *testing.T) {
 	}
 }
 
-// A chain whose one route met a usage window and another the lent donor's
-// dead credential stops on the window (#3032): the node's code says
-// USAGE_LIMIT_BLOCKED, and the rejection lives in the route verdicts the
-// node_recovery event carries. Pool health still sees the dead credential —
-// read through the same engine-and-recovery wiring the runner uses — and the
-// donor is counted an auth failure, not rested on the other route's window
-// and handed back, still dead, when it reopens.
+// A chain whose one route met a usage window and another a dead credential
+// stops on the window (#3032): the node's code says USAGE_LIMIT_BLOCKED, and
+// the rejection lives in the route verdicts the node_recovery event carries.
+// When those verdicts cannot be placed on a credential — no route names its
+// keys and no credential plan rides the publication — pool health still sees
+// the dead credential, read through the same engine-and-recovery wiring the
+// runner uses: the coarse answer counts the donor an auth failure rather than
+// resting a possibly dead credential on the other route's window and handing
+// it back, still dead, when it reopens.
 func TestRecordPoolSpend_aDeadDonorBehindAUsageWindowIsStillAnAuthFailure(t *testing.T) {
 	h := newPoolHarness(t, credpool.Limits{MaxUSDPerDay: 10})
 	ctx := context.Background()
@@ -527,4 +530,98 @@ func (windowBehindDeadDonorExecutor) Execute(context.Context, ir.Node, map[strin
 		&delegate.ErrRateLimited{Provider: "zai", Kind: delegate.RateLimitKindUsageWindow,
 			Detail: "[1308][Usage limit reached for 5 hour.]", ResetAt: time.Now().Add(5 * time.Hour)},
 	}})
+}
+
+// The donor's condition is the verdict of the route ITS credential served,
+// read from the route verdicts — each names the route it is about, and the
+// runner places it on the credential that route spent, the way it books the
+// route's spend: the route's own credential keys, or the credential plan's
+// row. In both orders of each chain:
+//
+//   - [the donor's lent subscription → a five-hour window, the team's z.ai
+//     key → dead]: the donor rests on its own window and is no auth failure
+//     — blamed for the team key, a healthy donor is evicted after two runs and
+//     never rested on the window it actually met;
+//   - [the donor's subscription → dead, the team key → a window]: the donor is
+//     the dead credential, whatever window another route met.
+func TestRecordPoolSpend_theDonorTakesTheVerdictOfItsOwnRoute(t *testing.T) {
+	reset := time.Now().UTC().Add(5 * time.Hour).Truncate(time.Second)
+	// The routes as the executor's walk names them
+	// (TestErrChainExhaustedNamesTheRouteOfEveryCause): a claude_code session
+	// reports no credential keys and, unhinted, no provider — its session
+	// label names the subscription; the claw route reports its keys.
+	donor := model.ChainRoute{Backend: delegate.BackendClaudeCode, Model: "claude-sonnet-4-5", Source: "anthropic-oauth"}
+	team := model.ChainRoute{Backend: delegate.BackendClaw, Model: "zai/glm-5.3", Provider: "zai",
+		Credential: credroute.Spend{Channel: credroute.ChannelRunKey, Slot: "zai", Fingerprint: "fp-team-zai"}}
+	window := &delegate.ErrRateLimited{Provider: "anthropic", Kind: delegate.RateLimitKindUsageWindow,
+		Detail: "Claude usage limit reached", ResetAt: reset}
+	dead := &delegate.ErrAuthFailed{Provider: "zai", Detail: "401 invalid api key"}
+	for _, tc := range []struct {
+		name     string
+		routes   []model.ChainRoute
+		errs     []error
+		wantDead bool
+	}{
+		{"donor window then team dead", []model.ChainRoute{donor, team}, []error{window, dead}, false},
+		{"team dead then donor window", []model.ChainRoute{team, donor}, []error{dead, window}, false},
+		{"donor dead then team window", []model.ChainRoute{donor, team}, []error{dead, window}, true},
+		{"team window then donor dead", []model.ChainRoute{team, donor}, []error{window, dead}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newPoolHarness(t, credpool.Limits{MaxUSDPerDay: 10})
+			ctx := context.Background()
+			plan := map[string]string{"agent|anthropic": donorFingerprint}
+			usage := newMetricsEmitter(&recordingEmitter{}, metrics.New(), plan, nil)
+			st, err := store.New(t.TempDir())
+			if err != nil {
+				t.Fatalf("store: %v", err)
+			}
+			wf := &ir.Workflow{
+				Name:  "donor_route_verdict",
+				Entry: "agent",
+				Nodes: map[string]ir.Node{
+					"agent": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "agent"}},
+					"done":  &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+				},
+				Edges: []*ir.Edge{{From: "agent", To: "done"}},
+			}
+			chain := &model.ErrChainExhausted{Chain: "routes", Errs: tc.errs, Routes: tc.routes}
+			eng := runtime.New(wf, st, chainExecutor{chain: chain},
+				runtime.WithEventObserver(usage.observe),
+				runtime.WithRecoveryDispatch(recovery.Dispatch(recovery.DefaultRecipes())),
+				runtime.WithWorkDir(t.TempDir()))
+			execErr := eng.Run(ctx, "run-1", map[string]any{})
+			var rt *runtime.RuntimeError
+			if !errors.As(execErr, &rt) || rt.Code != runtime.ErrCodeUsageLimitBlocked {
+				t.Fatalf("run ended on %v, want the chain's USAGE_LIMIT_BLOCKED — the premise of this witness", execErr)
+			}
+
+			h.runner.recordPoolSpend(&queue.RunMessage{RunID: "run-1", TenantID: "team-1", CredPlan: plan}, usage, execErr, false)
+
+			p, err := h.pledges.Get(ctx, donorPledgeID())
+			if err != nil {
+				t.Fatalf("pledge: %v", err)
+			}
+			if tc.wantDead {
+				if p.ConsecutiveAuthFailures == 0 {
+					t.Fatalf("auth failures = 0 (cooldown until %v) — the donor's own route met the dead credential, and resting it on the other route's window hands it back still dead", p.CooldownUntil)
+				}
+				return
+			}
+			if p.ConsecutiveAuthFailures != 0 {
+				t.Fatalf("auth failures = %d — the donor's subscription met a usage window; the dead credential was the team's z.ai key, another route's", p.ConsecutiveAuthFailures)
+			}
+			// The broker pads the reset by its come-back minute.
+			if want := reset.Add(time.Minute); p.CooldownUntil == nil || !p.CooldownUntil.Equal(want) {
+				t.Fatalf("cooldown = %v, want the donor rested until just past its own window's reset at %s", p.CooldownUntil, reset.Format(time.RFC3339))
+			}
+		})
+	}
+}
+
+// chainExecutor fails every node on one exhausted chain.
+type chainExecutor struct{ chain *model.ErrChainExhausted }
+
+func (e chainExecutor) Execute(context.Context, ir.Node, map[string]any) (map[string]any, error) {
+	return nil, fmt.Errorf("model: node %q: %w", "agent", e.chain)
 }
