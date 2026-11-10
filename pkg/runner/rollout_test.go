@@ -2,6 +2,7 @@ package runner
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -116,6 +117,45 @@ func TestAdmissionParkOutcome(t *testing.T) {
 			}
 			if got.Continuation != store.ContinuationFinal {
 				t.Fatalf("continuation = %q, want final — nothing on the platform wakes an admission-parked run", got.Continuation)
+			}
+		})
+	}
+}
+
+// A message parked by a stale-producer rule carries a version this runner
+// accepts: the fleet is not what lags, the server replica that published it
+// is. The run document names the remedy that recovers it — a resume from a
+// server replica that publishes the rule's version — and never tells the
+// operator to wait for the runners. A version outside the window keeps the
+// fleet's remedy (the control).
+func TestPlanAdmissionMismatch_AStaleProducerParkNamesTheServerRemedy(t *testing.T) {
+	base := func(v int) queue.RunMessage {
+		return queue.RunMessage{V: v, RunID: "r1", TenantID: "t", OwnerID: "o", WorkflowName: "w", IRCompiled: []byte(`{}`),
+			BackendConfig: queue.BackendConfig{Default: queue.BackendClaw}, Trust: store.RunTrustDefault}
+	}
+	teamGateway := base(queue.ContentBoundaryProducerSchemaVersion - 1)
+	teamGateway.ContentBoundary = &store.RunContentBoundary{Kind: store.ContentBoundaryTeamGateway}
+	fork := base(queue.ForkAuthorSubjectSchemaVersion - 1)
+	fork.Trust = store.RunTrustFork
+	future := base(queue.SchemaVersion + 1)
+	for _, row := range []struct {
+		name      string
+		msg       queue.RunMessage
+		want      string
+		forbidden string
+	}{
+		{"team_gateway before its producer", teamGateway, fmt.Sprintf("resume this run from a server replica that publishes v%d or later", queue.ContentBoundaryProducerSchemaVersion), "once the runner fleet accepts"},
+		{"untrusted before the fork author subject", fork, fmt.Sprintf("resume this run from a server replica that publishes v%d or later", queue.ForkAuthorSubjectSchemaVersion), "once the runner fleet accepts"},
+		{"a version the fleet does not speak (control)", future, "once the runner fleet accepts", "server replica that publishes"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			err := row.msg.Validate()
+			if !errors.Is(err, queue.ErrSchemaVersion) {
+				t.Fatalf("fixture: Validate = %v, want a schema version mismatch", err)
+			}
+			plan := planAdmissionMismatch(admissionMismatchSchema, err, 0, queue.Envelope{V: row.msg.V, RunID: "r1"}, 5, 5)
+			if !strings.Contains(plan.parkedRunError, row.want) || strings.Contains(plan.parkedRunError, row.forbidden) {
+				t.Fatalf("run-document error = %q, want %q and not %q", plan.parkedRunError, row.want, row.forbidden)
 			}
 		})
 	}

@@ -724,6 +724,27 @@ type TraceContext struct {
 // in one pod's logs. Observed in production during exactly such a rollout.
 var ErrSchemaVersion = errors.New("queue: schema version")
 
+// StaleProducerError is the version mismatch of a message whose version this
+// consumer accepts but whose publisher predates a decision the message needs
+// (ForkAuthorSubjectSchemaVersion, ContentBoundaryProducerSchemaVersion): a
+// server replica older than Want republished a run a newer one created. The
+// runner fleet is not what lags — only a resume from a server replica that
+// publishes Want or later recovers the run. ErrSchemaVersion is in its chain,
+// so it parks like every version mismatch.
+type StaleProducerError struct {
+	V    int // the message's wire version
+	Want int // the first wire version whose publisher makes the decision
+	msg  string
+}
+
+func (e *StaleProducerError) Error() string { return e.msg }
+
+func (e *StaleProducerError) Unwrap() error { return ErrSchemaVersion }
+
+func staleProducer(v, want int, format string, args ...any) error {
+	return &StaleProducerError{V: v, Want: want, msg: ErrSchemaVersion.Error() + ": " + fmt.Sprintf(format, args...)}
+}
+
 // Validate enforces the invariants a runner must rely on before
 // touching the workflow:
 //   - schema version matches (rolling-upgrade safety)
@@ -746,7 +767,7 @@ func (m *RunMessage) Validate() error {
 	// mismatch — transient, never Termed — so a resume from an upgraded
 	// server, whose gate meters the author, recovers it.
 	if m.V < ForkAuthorSubjectSchemaVersion && !m.Trust.Trusted() {
-		return fmt.Errorf("%w: a v%d message carries trust %q but predates the fork author subject (v%d) — parked for a resume from an upgraded server rather than run with the author's bound unenforced", ErrSchemaVersion, m.V, string(m.Trust), ForkAuthorSubjectSchemaVersion)
+		return staleProducer(m.V, ForkAuthorSubjectSchemaVersion, "a v%d message carries trust %q but predates the fork author subject (v%d) — parked for a resume from an upgraded server rather than run with the author's bound unenforced", m.V, string(m.Trust), ForkAuthorSubjectSchemaVersion)
 	}
 	// A message older than the stamp's producer replays a team_gateway stamp
 	// it did not derive (a stale replica resuming a run an upgraded one
@@ -754,7 +775,7 @@ func (m *RunMessage) Validate() error {
 	// ambient refusal, so the run's gateway routes would spend the pod's
 	// environment. Parked as a version mismatch, like the rule above.
 	if m.V < ContentBoundaryProducerSchemaVersion && m.ContentBoundary.TeamGateway() {
-		return fmt.Errorf("%w: a v%d message carries the team_gateway content boundary but predates its producer (v%d) — parked for a resume from an upgraded server rather than run with the run's gateway unsealed and the pod's environment admitted", ErrSchemaVersion, m.V, ContentBoundaryProducerSchemaVersion)
+		return staleProducer(m.V, ContentBoundaryProducerSchemaVersion, "a v%d message carries the team_gateway content boundary but predates its producer (v%d) — parked for a resume from an upgraded server rather than run with the run's gateway unsealed and the pod's environment admitted", m.V, ContentBoundaryProducerSchemaVersion)
 	}
 	// The pool name is grammar-checked, not tenant-checked, and only when
 	// set: an empty pool is the shared default (pre-v22 messages included),

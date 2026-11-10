@@ -133,13 +133,21 @@ func planAdmissionMismatch(kind admissionMismatchKind, mismatchErr error, delay 
 			delay = natsq.SchemaMismatchNakDelay
 		}
 	}
+	// A stale-producer park carries a version this runner accepts: the
+	// server replica that published it lags, not the fleet, and only a
+	// resume from one that publishes the rule's version recovers the run.
+	remedy := "resume this run once the runner fleet accepts the schema the server publishes: it re-publishes the run at that version"
+	var stale *queue.StaleProducerError
+	if errors.As(mismatchErr, &stale) {
+		remedy = fmt.Sprintf("the runners accept v%d; resume this run from a server replica that publishes v%d or later: it re-publishes the run at that version", stale.V, stale.Want)
+	}
 	plan := admissionMismatchPlan{
 		reason: string(kind),
 		delay:  delay,
 		final:  maxDeliver > 0 && delivered >= maxDeliver,
 		parkedRunError: fmt.Sprintf(
-			"schema version mismatch: %v (queue message v%d parked on DLQ — resume this run once the runner fleet accepts the schema the server publishes: it re-publishes the run at that version; a replay of the parked copy is refused — see docs/cloud-queue-schema-rollout.md)",
-			mismatchErr, env.V,
+			"schema version mismatch: %v (queue message v%d parked on DLQ — %s; a replay of the parked copy is refused — see docs/cloud-queue-schema-rollout.md)",
+			mismatchErr, env.V, remedy,
 		),
 	}
 	if kind == admissionMismatchFutureEpoch {
