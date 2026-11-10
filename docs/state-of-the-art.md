@@ -216,6 +216,7 @@ All 26 epics, their mark, and where the detail lives. Counts are board items
 | 🛡️ [Seki](https://github.com/SocialGouv/iterion/issues/1398) | 🟡 | 9 | security audit on the cloud |
 | 🧠 [Memory & knowledge](https://github.com/SocialGouv/iterion/issues/1430) | ⚪ | 1 | scopes, the knowledge store, lifecycle, quotas |
 | 🛰️ [Standing crews](https://github.com/SocialGouv/iterion/issues/3133) | ⚪ | 13 | bots that stay addressable, wake on events, remember and work together — opened 2026-11-10 by [the live-agents study](references/live-agents-openmausbot.md), counted that day |
+| 🧩 [Codemode](https://github.com/SocialGouv/iterion/issues/3153) | ⚪ | 3 | the model writes code that calls the node's own tools; claw absorbed into the tree; one reference harness — opened 2026-11-10, counted that day. Nothing of the runtime is wired: what is measured is the fold's fallout and the fact that cloud runs are **not** sandboxed by default |
 
 ## ✅ Keeping this page honest
 
