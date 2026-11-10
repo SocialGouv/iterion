@@ -202,10 +202,12 @@ func (r *Runner) recordPoolSpend(msg *queue.RunMessage, usage *metricsEmitter, e
 	}
 	bg, cancel := context.WithTimeout(context.Background(), spendWriteTimeout)
 	defer cancel()
-	// The report carries this delivery's attempt identity — its
-	// publication — so a superseding acquisition's lease is never closed or
-	// charged by a previous attempt's late teardown report. A publication
-	// that cannot be read falls back to the open lease inside the broker.
+	// The report carries this delivery's attempt identity — the attempt id
+	// its publication stamped on its pool leases, and its publication
+	// instant — so a superseding acquisition's lease is never closed or
+	// charged by a previous attempt's late teardown report. A message
+	// without the id pins by the instant; a publication that cannot be read
+	// falls back to the open lease inside the broker.
 	publishedAt, perr := time.Parse(time.RFC3339Nano, msg.PublishedAtRFC)
 	if perr != nil {
 		publishedAt = time.Time{}
@@ -245,7 +247,7 @@ func (r *Runner) recordPoolSpend(msg *queue.RunMessage, usage *metricsEmitter, e
 	if miss.observations > 0 {
 		r.cfg.Logger.Warn("runner: credential-pool report for run %s carries a stamped plan whose keys answered none of %d observation(s) totalling %.6f USD / %d tokens (a runtime node the walk cannot see — a subagent loop, a runtime model arg — or a route that drifted from its launch reading) — no fine table rides, the lease books the whole attempt", msg.RunID, miss.observations, miss.costUSD, miss.tokens)
 	}
-	if err := r.cfg.CredPool.ReportAttempt(bg, msg.RunID, publishedAt, credpool.Outcome{
+	if err := r.cfg.CredPool.ReportAttemptID(bg, msg.RunID, msg.PoolAttemptID, publishedAt, credpool.Outcome{
 		CostUSD:         costUSD,
 		InputTokens:     in,
 		OutputTokens:    out,

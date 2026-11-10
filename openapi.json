@@ -4849,6 +4849,9 @@
       },
       "attachmentView": {
         "properties": {
+          "attached": {
+            "type": "boolean"
+          },
           "enabled": {
             "type": "boolean"
           },
@@ -4871,6 +4874,7 @@
         },
         "required": [
           "scope_id",
+          "attached",
           "pool_id",
           "enabled",
           "strategy",

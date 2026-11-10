@@ -724,8 +724,9 @@ const (
 	// OutcomeSuperseded — a later attempt of the same run took over.
 	OutcomeSuperseded = "superseded"
 	// OutcomeSupersededReported — a superseded lease its own attempt later
-	// reported against: the supersede charged nothing, the stamp's CAS let
-	// exactly one report charge, and the lease no longer reads as a plain
+	// settled: the supersede charged nothing, the stamp's CAS let exactly
+	// one FINAL report charge (interim reports charged it as they came,
+	// without the stamp), and the lease no longer reads as a plain
 	// supersede (Reopen's CAS misses it). HasServedAttempt reads it as
 	// SERVED — the attempt did run and pay — so a later acquisition of the
 	// run RENEWS the donor's allowance instead of reserving a unit, which
@@ -736,7 +737,10 @@ const (
 	// over, and the takeover holds no lease of its own, so a report of the
 	// takeover must never charge this lease (ReportAttempt stays silent).
 	OutcomeSupersededGrantless = "superseded_grantless"
-	// OutcomeNotLaunched — the grant was returned; the run never started.
+	// OutcomeNotLaunched — the grant was returned: the run never started on
+	// it, or its attempt was parked before settling (a captured release —
+	// an earlier delivery's interim spend stays booked, its run unit is
+	// given back all the same, #3151).
 	OutcomeNotLaunched = "not_launched"
 )
 
@@ -748,9 +752,9 @@ const (
 //   - not_launched: Release already gave its run unit back, so treating it
 //     as an admission would let the next attempt renew against a unit that
 //     no longer exists — and slip past the donor's daily ceiling.
-//   - superseded: the attempt it belonged to was still open when the next
-//     one asked, i.e. it died without reporting. Same reasoning as
-//     abandoned, minus the wait for the sweeper.
+//   - superseded: the attempt it belonged to had not settled (no final
+//     report) when the next one asked — at most interim reports charged
+//     it. Same reasoning as abandoned, minus the wait for the sweeper.
 var nonAdmissionOutcomes = []string{OutcomeAbandoned, OutcomeNotLaunched, OutcomeSuperseded}
 
 func isNonAdmission(outcome string) bool {

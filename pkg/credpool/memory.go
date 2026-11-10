@@ -359,16 +359,19 @@ func (s *MemoryLeaseStore) SetSupersededByPublication(_ context.Context, leaseID
 	return nil
 }
 
-func (s *MemoryLeaseStore) AddCost(_ context.Context, leaseID string, costUSD float64) error {
+func (s *MemoryLeaseStore) AddCost(_ context.Context, leaseID string, costUSD float64) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	l, ok := s.m[leaseID]
 	if !ok {
-		return ErrNotFound
+		return false, ErrNotFound
+	}
+	if l.Closed && l.Outcome != OutcomeSuperseded && l.Outcome != OutcomeSupersededGrantless {
+		return false, nil
 	}
 	l.CostUSD += costUSD
 	s.m[leaseID] = l
-	return nil
+	return true, nil
 }
 
 func (s *MemoryLeaseStore) LiveCommitment(_ context.Context, pledgeID, excludeRunID string, now time.Time) (int, float64, error) {

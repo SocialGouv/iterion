@@ -113,7 +113,8 @@ func TestReportAttempt_aLateTeardownReportStaysOnItsOwnLease(t *testing.T) {
 
 // TestReportAttempt_anInterimReportStaysOnItsOwnLease: an interim report of
 // an attempt superseded mid-unwind charges the attempt's own lease (its
-// audit trail), and leaves the successor's open.
+// audit trail), leaves the successor's open, and leaves the stamp to the
+// attempt's final report.
 func TestReportAttempt_anInterimReportStaysOnItsOwnLease(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
@@ -123,15 +124,72 @@ func TestReportAttempt_anInterimReportStaysOnItsOwnLease(t *testing.T) {
 	if err := h.broker.ReportAttempt(ctx, "run-1", T_A, Outcome{CostUSD: 1.5, Interim: true}); err != nil {
 		t.Fatalf("attempt A interim report: %v", err)
 	}
+	charged, err := h.leases.Get(ctx, L.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !charged.Closed || charged.Outcome != OutcomeSuperseded || charged.CostUSD != 1.5 {
+		t.Fatalf("A's lease after its interim report: %+v, want still %q with $1.50", charged, OutcomeSuperseded)
+	}
+	if open := leaseOfRun(t, h, "run-1"); open == nil || open.ID != L2.ID {
+		t.Fatalf("the successor lease is not open for the successor: %+v", open)
+	}
+	// The attempt's final report stamps the lease, once.
+	for range 2 {
+		if err := h.broker.ReportAttempt(ctx, "run-1", T_A, Outcome{CostUSD: 2}); err != nil {
+			t.Fatalf("attempt A final report: %v", err)
+		}
+	}
 	stamped, err := h.leases.Get(ctx, L.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !stamped.Closed || stamped.Outcome != OutcomeSupersededReported || stamped.CostUSD != 1.5 {
-		t.Fatalf("A's lease after its interim report: %+v, want closed %q with $1.50", stamped, OutcomeSupersededReported)
+	if stamped.Outcome != OutcomeSupersededReported || stamped.CostUSD != 3.5 {
+		t.Fatalf("A's lease after its final report: %+v, want %q with $3.50", stamped, OutcomeSupersededReported)
 	}
-	if open := leaseOfRun(t, h, "run-1"); open == nil || open.ID != L2.ID {
-		t.Fatalf("the successor lease is not open for the successor: %+v", open)
+	day, _, err := h.ledger.Usage(ctx, PledgeID("alice", SourceOAuth, "claude_code"), h.now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if day.CostUSD != 3.5 {
+		t.Fatalf("the donor's ledger records $%.2f, want the interim 1.5 + the final 2", day.CostUSD)
+	}
+}
+
+// TestReportAttempt_anInterimLeavesTheSupersedeUndoable: an interim report
+// says the attempt goes on (the queue redelivers it). When the resume that
+// superseded it is refused and rolled back, the attempt's lease reopens, and
+// its final report closes it — the attempt never runs on a closed lease.
+func TestReportAttempt_anInterimLeavesTheSupersedeUndoable(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.donor(t, "alice", Limits{MaxUSDPerDay: 10})
+	T_A, L, _, G := supersedeWindow(t, h, "run-1")
+
+	if err := h.broker.ReportAttempt(ctx, "run-1", T_A, Outcome{CostUSD: 1.5, Interim: true}); err != nil {
+		t.Fatalf("attempt A interim report: %v", err)
+	}
+	h.broker.ReleaseGrant(ctx, G)
+	h.broker.ReopenSuperseded(ctx, G)
+	if open := leaseOfRun(t, h, "run-1"); open == nil || open.ID != L.ID {
+		t.Fatalf("after the rollback the run's open lease is %+v, want A's %s: the attempt goes on", open, L.ID)
+	}
+	if err := h.broker.ReportAttempt(ctx, "run-1", T_A, Outcome{CostUSD: 2}); err != nil {
+		t.Fatalf("attempt A final report: %v", err)
+	}
+	got, err := h.leases.Get(ctx, L.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Closed || got.Outcome != "ok" || got.CostUSD != 3.5 {
+		t.Fatalf("A's lease after its final report: %+v, want closed ok with $3.50", got)
+	}
+	day, _, err := h.ledger.Usage(ctx, PledgeID("alice", SourceOAuth, "claude_code"), h.now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if day.CostUSD != 3.5 {
+		t.Fatalf("the donor's ledger records $%.2f, want 1.5 + 2", day.CostUSD)
 	}
 }
 
@@ -737,5 +795,67 @@ func TestReportAttempt_noFineTableKeepsTheCoarseBooking(t *testing.T) {
 	}
 	if day.CostUSD != 4 {
 		t.Fatalf("an unstamped lease booked $%.2f, want $4 — a missing fingerprint keeps the coarse booking, never a zero", day.CostUSD)
+	}
+}
+
+// TestReportAttemptID_aPublicationFlooredPastTheNextAcquisition: the
+// publication instant pins by ORDER, and a publication floored past its
+// marker can follow the resume's acquisition; the attempt id the message
+// carries pins the attempt's own lease whatever the instants say.
+func TestReportAttemptID_aPublicationFlooredPastTheNextAcquisition(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.donor(t, "alice", Limits{MaxUSDPerDay: 10})
+	reqA := h.request("run-1")
+	reqA.AttemptID = "A1"
+	gA, err := h.broker.Acquire(ctx, reqA)
+	if err != nil {
+		t.Fatalf("attempt A acquire: %v", err)
+	}
+	// A's publication is floored two milliseconds past its lease (its
+	// marker), and the resume acquires inside that window at the frozen
+	// clock: its lease lands one millisecond after A's — before A's
+	// publication.
+	pubA := store.PublishAt(gA.AcquiredAt.Add(2*time.Millisecond), gA.AcquiredAt)
+	reqB := h.request("run-1")
+	reqB.AttemptID = "A2"
+	gB, err := h.broker.Acquire(ctx, reqB)
+	if err != nil {
+		t.Fatalf("resume acquire: %v", err)
+	}
+	if !gB.AcquiredAt.Before(pubA) {
+		t.Fatalf("setup: the resume's lease (%s) does not precede A's publication (%s)", gB.AcquiredAt, pubA)
+	}
+	if gA.AttemptID != "A1" || gB.AttemptID != "A2" {
+		t.Fatalf("grants carry attempt ids %q/%q, want A1/A2", gA.AttemptID, gB.AttemptID)
+	}
+
+	if err := h.broker.ReportAttemptID(ctx, "run-1", "A1", pubA, Outcome{CostUSD: 3}); err != nil {
+		t.Fatalf("attempt A late report: %v", err)
+	}
+	a, err := h.leases.Get(ctx, gA.releaseGuard.lease.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.Outcome != OutcomeSupersededReported || a.CostUSD != 3 {
+		t.Fatalf("A's lease after its late report: %+v, want %q with $3", a, OutcomeSupersededReported)
+	}
+	if open := leaseOfRun(t, h, "run-1"); open == nil || open.ID != gB.releaseGuard.lease.ID || open.CostUSD != 0 {
+		t.Fatalf("the resume's lease after A's late report: %+v, want open and uncharged", open)
+	}
+
+	// An id no lease of the run carries settles nothing.
+	if err := h.broker.ReportAttemptID(ctx, "run-1", "A9", pubA, Outcome{CostUSD: 5}); err != nil {
+		t.Fatalf("report of an unknown attempt: %v", err)
+	}
+	if open := leaseOfRun(t, h, "run-1"); open == nil || open.ID != gB.releaseGuard.lease.ID {
+		t.Fatalf("a report of an unknown attempt moved the resume's lease: %+v", open)
+	}
+	day, _, err := h.ledger.Usage(ctx, PledgeID("alice", SourceOAuth, "claude_code"), h.now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if day.CostUSD != 3 {
+		t.Fatalf("the donor's ledger records $%.2f, want A's 3 only", day.CostUSD)
 	}
 }

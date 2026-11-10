@@ -3,7 +3,9 @@ package identity
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -181,5 +183,121 @@ func TestDuplicatePoolHolders(t *testing.T) {
 		{ID: "c", Slug: "gamma", RunnerPool: "q"},
 	}); err != nil {
 		t.Fatalf("clean fleet refused: %v", err)
+	}
+}
+
+// TestAllTeams_walksEveryPage: a walk over every team crosses page
+// boundaries — none lost, none twice.
+func TestAllTeams_walksEveryPage(t *testing.T) {
+	ctx := context.Background()
+	m := NewMemoryStore()
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	const n = 2*allTeamsPageSize + 3
+	for i := 0; i < n; i++ {
+		slug := fmt.Sprintf("team-%04d", i)
+		if _, err := m.CreateTeam(ctx, Team{ID: slug, Name: slug, Slug: slug, CreatedAt: base.Add(time.Duration(i) * time.Second)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	teams, err := AllTeams(ctx, m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	for _, tm := range teams {
+		if seen[tm.ID] {
+			t.Fatalf("team %s walked twice", tm.ID)
+		}
+		seen[tm.ID] = true
+	}
+	if len(seen) != n {
+		t.Fatalf("walked %d teams, want %d", len(seen), n)
+	}
+}
+
+// deletingTeamLister serves ListTeams from a MemoryStore and deletes one
+// team once the first page is served — a team removed while a sweep or the
+// pool DELETE guard walks.
+type deletingTeamLister struct {
+	m      *MemoryStore
+	once   sync.Once
+	victim string
+}
+
+func (d *deletingTeamLister) ListTeams(ctx context.Context, p Page) ([]Team, error) {
+	page, err := d.m.ListTeams(ctx, p)
+	if p.Offset == 0 {
+		d.once.Do(func() {
+			if derr := d.m.DeleteTeam(ctx, d.victim); derr != nil {
+				panic(derr)
+			}
+		})
+	}
+	return page, err
+}
+
+// TestAllTeams_aDeletionMidWalkMissesNoLiveTeam: an earlier team deleted
+// between two page reads shifts every later team back one row; the
+// overlapping pages still read the team that sat on the boundary.
+func TestAllTeams_aDeletionMidWalkMissesNoLiveTeam(t *testing.T) {
+	ctx := context.Background()
+	m := NewMemoryStore()
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	const n = allTeamsPageSize + 5
+	for i := 0; i < n; i++ {
+		slug := fmt.Sprintf("team-%04d", i)
+		if _, err := m.CreateTeam(ctx, Team{ID: slug, Name: slug, Slug: slug, CreatedAt: base.Add(time.Duration(i) * time.Second)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	teams, err := AllTeams(ctx, &deletingTeamLister{m: m, victim: "team-0000"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	for _, tm := range teams {
+		seen[tm.ID] = true
+	}
+	live, _ := m.ListTeams(ctx, Page{Limit: 10 * n})
+	for _, tm := range live {
+		if !seen[tm.ID] {
+			t.Errorf("AllTeams missed the live team %s (walked %d, live %d)", tm.ID, len(teams), len(live))
+		}
+	}
+}
+
+// TestAllTeams_teamsTiedOnCreatedAt: a created_at tie straddling a page
+// boundary — the id breaks it, so every walk reads each team once.
+func TestAllTeams_teamsTiedOnCreatedAt(t *testing.T) {
+	ctx := context.Background()
+	m := NewMemoryStore()
+	at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	const n = allTeamsPageSize + 1
+	for i := 0; i < n; i++ {
+		slug := fmt.Sprintf("team-%04d", i)
+		if _, err := m.CreateTeam(ctx, Team{ID: slug, Name: slug, Slug: slug, CreatedAt: at}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for round := 0; round < 20; round++ {
+		// One page at a time, the way AllTeams reads them — the ties must
+		// sit at the same rows in every query.
+		var walked []string
+		for offset := 0; offset < n; offset += allTeamsPageSize {
+			page, err := m.ListTeams(ctx, Page{Offset: offset, Limit: allTeamsPageSize})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, tm := range page {
+				walked = append(walked, tm.ID)
+			}
+		}
+		seen := map[string]bool{}
+		for _, id := range walked {
+			seen[id] = true
+		}
+		if len(walked) != n || len(seen) != n {
+			t.Fatalf("round %d: plain pages over %d tied teams read %d rows, %d distinct", round, n, len(walked), len(seen))
+		}
 	}
 }

@@ -112,7 +112,7 @@ func (s *Server) poolSignalSyncSweep(ctx context.Context) lease.PassVerdict {
 	// that lane. A failed read is named and skipped — it must not drop the
 	// attachments' warmth.
 	if (s.scheduledBots != nil || s.webhookConfigs != nil) && s.authStore() != nil {
-		teams, terr := s.authStore().ListTeams(ctx, identity.Page{Limit: 1000})
+		teams, terr := identity.AllTeams(ctx, s.authStore())
 		if terr != nil {
 			s.warnf("pool signal sync: list teams for the binding-level pools: %v", terr)
 		}

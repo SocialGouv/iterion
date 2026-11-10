@@ -252,6 +252,16 @@ func (w *r4World) r4Readmits(run, pledgeID string, side bool) bool {
 
 func (w *r4World) holdSnapshot(run string, kind int, side bool) []r4Cand {
 	ctx := context.Background()
+	// The ledger judges on the acquisition's own instant: the run's floor
+	// (nextAcquiredAt over its leases), which can cross midnight.
+	at := w.h.now
+	prev, err := w.h.leases.ListByRun(ctx, run)
+	if err != nil {
+		w.t.Fatal(err)
+	}
+	for i := range prev {
+		at = nextAcquiredAt(at, &prev[i].AcquiredAt)
+	}
 	var out []r4Cand
 	for _, rp := range w.pledges {
 		if rp.kind != kind {
@@ -265,7 +275,7 @@ func (w *r4World) holdSnapshot(run string, kind int, side bool) []r4Cand {
 		if ok && w.near[p.ID] {
 			ok, st = false, StatusNearLimit
 		}
-		day, week, err := w.h.ledger.Usage(ctx, p.ID, w.h.now)
+		day, week, err := w.h.ledger.Usage(ctx, p.ID, at)
 		if err != nil {
 			w.t.Fatal(err)
 		}
@@ -490,7 +500,16 @@ func r4Ms(t time.Time) time.Time { return t.Truncate(time.Millisecond) }
 func (w *r4World) report(a *r4Attempt, out Outcome, label string) {
 	ctx := context.Background()
 	bl, bg, bp := w.snapLeases(), w.snapLedger(), w.snapPledges()
-	err := w.h.broker.ReportAttempt(ctx, a.run, a.pub, out)
+	// The runner reports with the attempt id its message carries (a
+	// grantless publication carries none). In realistic timing a share of
+	// the reports pins by the publication instant instead, as a message
+	// older than the field does — the frozen clock's collisions are what
+	// the id exists for.
+	attemptID := ""
+	if !a.grantless && (!w.realistic || w.rng.Intn(3) != 0) {
+		attemptID = a.id
+	}
+	err := w.h.broker.ReportAttemptID(ctx, a.run, attemptID, a.pub, out)
 	if err != nil {
 		w.violate("REPORT", "report %s %s: %v", a.id, label, err)
 	}
@@ -552,8 +571,13 @@ func (w *r4World) report(a *r4Attempt, out Outcome, label string) {
 		if nl.Closed != wantClosed {
 			w.violate("I1", "lease %s closed=%v after %s report, want %v", r4LeaseStr(nl), nl.Closed, label, wantClosed)
 		}
-		if l.Closed && nl.Outcome != OutcomeSupersededReported {
+		// A final report stamps a superseded lease; an interim one charges
+		// it and leaves the stamp — and the supersede undoable.
+		if l.Closed && !out.Interim && nl.Outcome != OutcomeSupersededReported {
 			w.violate("I2", "superseded lease %s not stamped by its attempt's report", r4LeaseStr(nl))
+		}
+		if l.Closed && out.Interim && nl.Outcome != l.Outcome {
+			w.violate("I2", "interim report of %s moved superseded lease %s to %q", a.id, r4LeaseStr(nl), nl.Outcome)
 		}
 		if d := CostToMillis(nl.CostUSD) - CostToMillis(l.CostUSD); d != CostToMillis(charge) {
 			w.violate("I2", "lease %s cost moved %+d millis, want %d (%s)", r4LeaseStr(nl), d, CostToMillis(charge), label)
@@ -858,10 +882,9 @@ func r4Run(t *testing.T, hostile bool) {
 		// Production-like timing by default (publication a few ms after
 		// its resolution, no acquisition inside a publication's ms) — the
 		// shape every invariant holds on. RVA4_RACE=1 freezes the clock to
-		// force millisecond collisions: it surfaces known PRE-EXISTING
-		// timing classes (a publication pushed past the next acquisition, an
-		// interim stamp on a superseded lease) tracked as follow-ups of
-		// #3122, not this suite's verdict.
+		// force millisecond collisions — a publication floored past the
+		// next acquisition — which the attempt id carried by the message
+		// settles; every report then carries it.
 		w.realistic = os.Getenv("RVA4_RACE") == ""
 		for s := 0; s < steps; s++ {
 			w.step()

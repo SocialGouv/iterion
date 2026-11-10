@@ -161,6 +161,45 @@ type Page struct {
 	Limit  int
 }
 
+// AllTeams reads pages of allTeamsPageSize teams, each overlapping the
+// previous one by allTeamsOverlap.
+const (
+	allTeamsPageSize = 500
+	allTeamsOverlap  = 250
+)
+
+// AllTeams walks every team, oldest first (created_at, then id — the total
+// order both stores page by): a caller that must see EVERY team — a sweep,
+// a guard refusing a delete while any team binds the thing — cannot stop at
+// one bounded page. Offset pages over a collection that changes mid-walk
+// shift: a team deleted ahead of the cursor moves every later team back one
+// row. Consecutive pages therefore overlap (the repeats are dropped), so a
+// team that existed when the walk started is missed only when more than
+// allTeamsOverlap earlier teams are deleted between two page reads; a team
+// created mid-walk is read only if it sorts at or past the next page's
+// first row. On an error the teams read so far come back with it.
+func AllTeams(ctx context.Context, st interface {
+	ListTeams(context.Context, Page) ([]Team, error)
+}) ([]Team, error) {
+	var out []Team
+	seen := map[string]bool{}
+	for offset := 0; ; offset += allTeamsPageSize - allTeamsOverlap {
+		page, err := st.ListTeams(ctx, Page{Offset: offset, Limit: allTeamsPageSize})
+		if err != nil {
+			return out, err
+		}
+		for _, t := range page {
+			if !seen[t.ID] {
+				seen[t.ID] = true
+				out = append(out, t)
+			}
+		}
+		if len(page) < allTeamsPageSize {
+			return out, nil
+		}
+	}
+}
+
 // UserFilter narrows a ListUsers page. The zero value selects every
 // user, which is what the method meant before a filter existed.
 type UserFilter struct {

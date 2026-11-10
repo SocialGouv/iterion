@@ -171,8 +171,20 @@ func TestAttachedPool_sealsForfaitAndGatewaySlots(t *testing.T) {
 	// it must not supersede (close) the forfait's lease while both
 	// credentials stay sealed and spent (R916b92). Counting every lease,
 	// closed ones included, would miss exactly that.
-	if open := openLeases(t, f, "run-att"); len(open) != 2 {
+	open := openLeases(t, f, "run-att")
+	if len(open) != 2 {
 		t.Errorf("open leases = %d, want 2 (one per slot: forfait donor + gateway lender — neither superseded by its sibling)", len(open))
+	}
+	// One attempt identity for the resolution, the one its message carries:
+	// the attempt's report settles both siblings, and only them.
+	id := creds.poolAttemptID()
+	if id == "" {
+		t.Fatal("the resolution names no attempt id — its message would pin the report by the publication instant alone")
+	}
+	for _, l := range open {
+		if l.AttemptID != id {
+			t.Errorf("lease %s carries attempt %q, want the resolution's %q", l.ID, l.AttemptID, id)
+		}
 	}
 }
 

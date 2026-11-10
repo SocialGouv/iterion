@@ -210,6 +210,12 @@ func TestFallbackDoorPublish_doorServedRunIsNotGrantless(t *testing.T) {
 	if len(open) == 0 {
 		t.Fatal("the door lease did not survive publication — the grantless supersede closed it")
 	}
+	// The message names the attempt the door lease belongs to: the
+	// attempt's report settles exactly that lease (credpool
+	// ReportAttemptID), whatever the publication instant.
+	if msg.PoolAttemptID == "" || msg.PoolAttemptID != open[0].AttemptID {
+		t.Fatalf("PoolAttemptID = %q, want the door lease's attempt id %q", msg.PoolAttemptID, open[0].AttemptID)
+	}
 }
 
 // TestFallbackDoorPublish_resumeSwitchesDonorsAndSaysSo: launch served by
@@ -261,6 +267,11 @@ func TestFallbackDoorPublish_resumeSwitchesDonorsAndSaysSo(t *testing.T) {
 	open, _ := f.leases.ListOpenByRun(context.Background(), "run-sw")
 	if len(open) != 1 || open[0].DonorID != "donor" {
 		t.Fatalf("open leases after the resume = %+v, want donor A's alone (B's superseded at the acquisition, A's alive after publication)", open)
+	}
+	// The resume's message names ITS attempt — the new lease's id, never
+	// the launch's.
+	if msg.PoolAttemptID == "" || msg.PoolAttemptID != open[0].AttemptID || msg.PoolAttemptID == before[0].AttemptID {
+		t.Fatalf("resume PoolAttemptID = %q, want the resume lease's %q (the launch's was %q)", msg.PoolAttemptID, open[0].AttemptID, before[0].AttemptID)
 	}
 }
 

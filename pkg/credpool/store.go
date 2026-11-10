@@ -154,9 +154,14 @@ type LeaseStore interface {
 	// through. A lease reported, or closed at another instant, is left alone
 	// (false).
 	Reopen(ctx context.Context, leaseID string, supersededAt time.Time) (bool, error)
-	// AddCost accumulates an interim attempt's spend on a still-open lease,
-	// so a redelivered run's audit trail matches the donor's ledger.
-	AddCost(ctx context.Context, leaseID string, costUSD float64) error
+	// AddCost accumulates an interim attempt's spend on a lease its attempt
+	// still reports against — open, or superseded (plainly or grantless),
+	// whose stamp it leaves for the final report and whose Reopen it keeps
+	// possible — so a redelivered run's audit trail matches the donor's
+	// ledger. A lease reported, released or abandoned is left alone, and
+	// landed=false says so: the lease closed that way before the interim
+	// reached it.
+	AddCost(ctx context.Context, leaseID string, costUSD float64) (landed bool, err error)
 	// SetSupersededByPublication records, on a lease closed by a GRANTLESS
 	// takeover, the publication that takeover was published at: a report
 	// carrying exactly it is the takeover's own, and stays silent on the

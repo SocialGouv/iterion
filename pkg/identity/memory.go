@@ -240,6 +240,16 @@ func getByIDs[T any](m map[string]T, ids []string) map[string]T {
 	return out
 }
 
+// createdBefore is the paged lists' total order — created_at, then id —
+// the Mongo twin's (mongoutil.FindPageSorted): consecutive pages agree on
+// where rows tied on created_at sit.
+func createdBefore(a time.Time, aID string, b time.Time, bID string) bool {
+	if !a.Equal(b) {
+		return a.Before(b)
+	}
+	return aID < bID
+}
+
 // paginate applies a Page's offset/limit to items, clamping limit to a
 // default of 50 and offset to a non-negative in-range value. Shared by
 // every MemoryStore List* method.
@@ -275,7 +285,9 @@ func (m *MemoryStore) ListUsers(_ context.Context, f UserFilter) ([]User, error)
 		}
 		users = append(users, u)
 	}
-	sort.Slice(users, func(i, j int) bool { return users[i].CreatedAt.Before(users[j].CreatedAt) })
+	sort.Slice(users, func(i, j int) bool {
+		return createdBefore(users[i].CreatedAt, users[i].ID, users[j].CreatedAt, users[j].ID)
+	})
 	return paginate(users, f.Page), nil
 }
 
@@ -510,7 +522,9 @@ func (m *MemoryStore) ListTeams(_ context.Context, page Page) ([]Team, error) {
 	for _, t := range m.teams {
 		teams = append(teams, t)
 	}
-	sort.Slice(teams, func(i, j int) bool { return teams[i].CreatedAt.Before(teams[j].CreatedAt) })
+	sort.Slice(teams, func(i, j int) bool {
+		return createdBefore(teams[i].CreatedAt, teams[i].ID, teams[j].CreatedAt, teams[j].ID)
+	})
 	return paginate(teams, page), nil
 }
 
@@ -646,7 +660,9 @@ func (m *MemoryStore) ListOrgs(_ context.Context, page Page) ([]Org, error) {
 	for _, o := range m.orgs {
 		orgs = append(orgs, o)
 	}
-	sort.Slice(orgs, func(i, j int) bool { return orgs[i].CreatedAt.Before(orgs[j].CreatedAt) })
+	sort.Slice(orgs, func(i, j int) bool {
+		return createdBefore(orgs[i].CreatedAt, orgs[i].ID, orgs[j].CreatedAt, orgs[j].ID)
+	})
 	return paginate(orgs, page), nil
 }
 

@@ -8260,6 +8260,7 @@ export interface components {
             scope_user_id?: string;
         };
         attachmentView: {
+            attached: boolean;
             enabled: boolean;
             limits: components["schemas"]["DrawLimits"];
             pool_id: string;
