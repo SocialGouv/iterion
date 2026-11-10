@@ -48,6 +48,9 @@ func TestFork_CarriesTrustOntoARepoTargetedChild(t *testing.T) {
 		parent.SecretOverrides = map[string]string{"forge_token": "sec-1"}
 		parent.Trust = trust
 		parent.RepoSHAExpected = expectedSHA
+		if !trust.Trusted() {
+			parent.ForkAuthorSubject = "forkauthor|t1|github|4242"
+		}
 		parent.Status = store.RunStatusCancelled
 		parent.Checkpoint = &store.Checkpoint{NodeID: "step1", ArtifactsKnown: true}
 		if err := st.SaveRun(ctx, parent); err != nil {
@@ -92,6 +95,13 @@ func TestFork_CarriesTrustOntoARepoTargetedChild(t *testing.T) {
 		}
 		if child.RepoSHAExpected != "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef" {
 			t.Fatalf("child.RepoSHAExpected = %q, want the parent's pin — a child that re-clones a movable ref without it takes whatever the ref points at now", child.RepoSHAExpected)
+		}
+		// The fork author's metering subject travels with the trust
+		// (store.InheritTrustAndAuthor): an untrusted child with no subject
+		// is refused on every gated resume and skips the runner's second
+		// charge on every other one.
+		if child.ForkAuthorSubject != "forkauthor|t1|github|4242" {
+			t.Fatalf("child.ForkAuthorSubject = %q, want the parent's — the child of a fork run is its author's spend", child.ForkAuthorSubject)
 		}
 	})
 

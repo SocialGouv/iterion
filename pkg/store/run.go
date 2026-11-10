@@ -282,10 +282,27 @@ func ChildTrustFromParent(child, parent *Run) {
 	if child == nil || parent == nil {
 		return
 	}
-	child.Trust = parent.Trust
+	InheritTrustAndAuthor(child, parent)
 	child.RepoSHAExpected = parent.RepoSHAExpected
-	// The child's spend is its author's spend: a sub-bot of a fork run
-	// charges the SAME per-contributor bound (decision 5's subject rides
+}
+
+// InheritTrustAndAuthor gives a run built from another the two facts it
+// inherits whatever workspace it lands in: who wrote the code it executes
+// (Trust) and whose per-contributor bound pays for it (ForkAuthorSubject,
+// ADR-162 decision 5). It is the ONE carrier of both, so neither travels
+// without the other: a child reading untrusted with no subject is refused on
+// every gated resume (no author to meter) and skips the runner's second
+// charge on every ungated one. Every constructor of a run from a parent run
+// calls it — CreateChildRun through ChildTrustFromParent, and runview's Fork,
+// which places the commit pin itself (only the arm that re-clones has a fetch
+// for the pin to certify).
+func InheritTrustAndAuthor(child, parent *Run) {
+	if child == nil || parent == nil {
+		return
+	}
+	child.Trust = parent.Trust
+	// The child's spend is its author's spend: a sub-bot or a fork of a fork
+	// run charges the SAME per-contributor bound (decision 5's subject rides
 	// the document), not a fresh one the child would meter on nothing.
 	child.ForkAuthorSubject = parent.ForkAuthorSubject
 }

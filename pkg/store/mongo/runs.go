@@ -420,6 +420,7 @@ func (s *Store) SaveRun(ctx context.Context, r *store.Run) error {
 	// them; left in, the $literal document would overwrite what it preserves.
 	delete(doc, "trust")
 	delete(doc, "repo_sha_expected")
+	delete(doc, "fork_author_subject")
 	doc["version"] = r.CASVersion + 1
 	terminalInc := 0
 	switch r.Status {
@@ -460,6 +461,12 @@ func (s *Store) SaveRun(ctx context.Context, r *store.Run) error {
 		// race, and every capability this run is denied is read back from it.
 		"trust":             writeOnceString("$trust", string(r.Trust)),
 		"repo_sha_expected": writeOnceString("$repo_sha_expected", r.RepoSHAExpected),
+		// The fork lane's metering subject holds the same contract as the
+		// trust it travels with (the FS twin's write-once in SaveRun): a
+		// saver carrying the zero value must not un-meter a run whose every
+		// later re-entry — a resume, a retry, the runner's second charge —
+		// reads the subject back from this document.
+		"fork_author_subject": writeOnceString("$fork_author_subject", r.ForkAuthorSubject),
 		"routing_policy": bson.M{"$cond": bson.A{
 			bson.M{"$ne": bson.A{bson.M{"$ifNull": bson.A{"$routing_policy", nil}}, nil}},
 			"$routing_policy",

@@ -361,6 +361,12 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 // sub-bot's parent: an unknown provenance never resolves to trusted, and a
 // launch naming a run its tenant cannot read describes nothing the product
 // produces.
+//
+// An untrusted source hands its fork author's metering subject over with its
+// trust (store.InheritTrustAndAuthor's rule, on a spec): the new run is that
+// author's spend, and an untrusted run with no subject is refused on every
+// gated resume. Two sources naming two different authors are refused — one
+// run meters one author's bound, and picking either is a guess.
 func (s *Service) inheritSourceTrust(ctx context.Context, spec *LaunchSpec) error {
 	sources := []struct{ role, id string }{{"parent_run_id", spec.ParentRunID}}
 	if spec.Delegation != nil {
@@ -375,6 +381,13 @@ func (s *Service) inheritSourceTrust(ctx context.Context, spec *LaunchSpec) erro
 			return fmt.Errorf("runview: %w: the launch's %s %q: %w", store.ErrChildParentUnreadable, src.role, src.id, err)
 		}
 		spec.Trust = spec.Trust.Lowest(r.Trust)
+		if r.Trust.Trusted() || r.ForkAuthorSubject == "" {
+			continue
+		}
+		if spec.ForkAuthorSubject != "" && spec.ForkAuthorSubject != r.ForkAuthorSubject {
+			return fmt.Errorf("runview: the launch's %s %q is metered on fork author %q, and the launch already names %q — one run meters one author's bound", src.role, src.id, r.ForkAuthorSubject, spec.ForkAuthorSubject)
+		}
+		spec.ForkAuthorSubject = r.ForkAuthorSubject
 	}
 	return nil
 }

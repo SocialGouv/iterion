@@ -369,3 +369,89 @@ func TestResume_StoreCallsCarryTheResumeIdentity(t *testing.T) {
 		}
 	}
 }
+
+// subjectCapturingPublisher records the fork author subject a launch was
+// published with — what the publisher persists onto the run document and the
+// queue message.
+type subjectCapturingPublisher struct {
+	trustCapturingPublisher
+	subject string
+}
+
+func (p *subjectCapturingPublisher) SubmitLaunch(ctx context.Context, runID string, spec LaunchSpec, wf *ir.Workflow, src *CompiledSource) (LaunchSubmission, error) {
+	p.mu.Lock()
+	p.subject = spec.ForkAuthorSubject
+	p.mu.Unlock()
+	return p.trustCapturingPublisher.SubmitLaunch(ctx, runID, spec, wf, src)
+}
+
+// TestLaunch_ARunLaunchedFromAForkRunIsItsAuthorsSpend: a run launched FROM
+// a fork run (parent_run_id, a delegation's source) inherits the fork's
+// author subject with its trust — store.InheritTrustAndAuthor's rule, on the
+// spec — so the runner's second charge lands on that author's bound and the
+// new run's gated resume has an author to re-meter. A trusted source hands
+// none over, and two sources naming two different authors are refused: one
+// run meters one author's bound.
+//
+// Mutation: drop the subject carry from inheritSourceTrust → the fork rows
+// publish with no subject (red on their own assertion).
+func TestLaunch_ARunLaunchedFromAForkRunIsItsAuthorsSpend(t *testing.T) {
+	const author = "forkauthor|t1|github|4242"
+	for _, row := range []struct {
+		name        string
+		trust       store.RunTrust
+		subject     string
+		specSubject string
+		via         func(spec *LaunchSpec)
+		want        string
+		refused     bool
+	}{
+		{name: "a fork parent", trust: store.RunTrustFork, subject: author, via: func(s *LaunchSpec) { s.ParentRunID = "source" }, want: author},
+		{name: "a fork delegation source", trust: store.RunTrustFork, subject: author, via: func(s *LaunchSpec) {
+			s.Delegation = &store.RunDelegation{SourceRunID: "source", Kind: "run_failure"}
+		}, want: author},
+		{name: "a trusted parent hands no author over", trust: store.RunTrustDefault, via: func(s *LaunchSpec) { s.ParentRunID = "source" }},
+		{name: "two authors are refused", trust: store.RunTrustFork, subject: author, specSubject: "forkauthor|t1|github|1",
+			via: func(s *LaunchSpec) { s.ParentRunID = "source" }, refused: true},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			dir := t.TempDir()
+			botPath := filepath.Join(dir, "source_trust.bot")
+			if err := os.WriteFile(botPath, []byte(sourceTrustBot), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			pub := &subjectCapturingPublisher{}
+			svc, err := NewService(dir, WithLogger(iterlog.Nop()), WithLaunchPublisher(pub))
+			if err != nil {
+				t.Fatal(err)
+			}
+			r := storetest.SeedParentRun(t, svc.store, "source")
+			r.Trust = row.trust
+			r.ForkAuthorSubject = row.subject
+			if err := svc.store.SaveRun(context.Background(), r); err != nil {
+				t.Fatal(err)
+			}
+			spec := LaunchSpec{FilePath: botPath, ForkAuthorSubject: row.specSubject}
+			row.via(&spec)
+			_, err = svc.Launch(context.Background(), spec)
+			if row.refused {
+				if err == nil || !strings.Contains(err.Error(), "one run meters one author's bound") {
+					t.Fatalf("Launch = %v, want the two-author refusal", err)
+				}
+				if pub.launched {
+					t.Fatal("a launch naming two fork authors was published")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Launch: %v", err)
+			}
+			if !pub.launched {
+				t.Fatal("nothing was published — this row proves nothing")
+			}
+			if pub.subject != row.want {
+				t.Fatalf("published with fork author subject %q, want %q", pub.subject, row.want)
+			}
+		})
+	}
+}
