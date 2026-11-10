@@ -449,3 +449,36 @@ func TestPoolEntryReset_liftsTheCooldownAndTheHolds(t *testing.T) {
 		t.Fatalf("after reset the run still holds %q (%v) — the reset must lift the holds naming the entry", held, err)
 	}
 }
+
+// TestPoolAttachmentRoutes_anUnattachedLevelAnswersAttachedFalse: a level
+// with nothing attached answers 200 attached=false (it inherits), so the
+// studio offers the attach form instead of reading a 404 as "no such
+// feature"; an attached level answers attached=true with its pool.
+func TestPoolAttachmentRoutes_anUnattachedLevelAnswersAttachedFalse(t *testing.T) {
+	s, _ := poolRoutesServer(t)
+	ctx := auth.WithIdentity(context.Background(), auth.Identity{UserID: "jo"})
+	get := func() (int, map[string]any) {
+		t.Helper()
+		w := httptest.NewRecorder()
+		runPoolRoute(s, w, poolRouteReq(ctx, http.MethodGet, "/api/orgs/org1/pool-attachment", ""))
+		var body map[string]any
+		_ = json.Unmarshal(w.Body.Bytes(), &body)
+		return w.Code, body
+	}
+	code, body := get()
+	if code != http.StatusOK || body["attached"] != false || body["scope_id"] != credpool.OrgScopeID("org1") || body["pool_id"] != "" {
+		t.Fatalf("GET an unattached org level = %d %v, want 200 attached=false", code, body)
+	}
+	if err := s.credPoolPools.Upsert(context.Background(), credpool.Pool{ID: "pool-o", OrgID: "org1", Enabled: true, OwnerType: credpool.PoolOwnerOrg, OwnerID: "org1"}); err != nil {
+		t.Fatal(err)
+	}
+	w := httptest.NewRecorder()
+	runPoolRoute(s, w, poolRouteReq(ctx, http.MethodPut, "/api/orgs/org1/pool-attachment", `{"pool_id":"pool-o","enabled":true}`))
+	if w.Code != http.StatusOK {
+		t.Fatalf("attach: %d %s", w.Code, w.Body.String())
+	}
+	code, body = get()
+	if code != http.StatusOK || body["attached"] != true || body["pool_id"] != "pool-o" {
+		t.Fatalf("GET an attached org level = %d %v, want attached=true on pool-o", code, body)
+	}
+}

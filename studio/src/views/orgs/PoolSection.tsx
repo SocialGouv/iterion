@@ -48,7 +48,9 @@ export default function PoolSection({
     queryKey: [`${scope}-pool-attachment`, id],
     queryFn: () => getAttachment(id),
   });
-  const view = query.data ?? null;
+  // null: the server lacks the feature. attached=false: nothing is attached
+  // at this level (it inherits) — the attach form's case.
+  const view = query.data && query.data.attached !== false ? query.data : null;
 
   const poolIDAttached = view?.pool_id ?? "";
   const entriesQuery = useQuery({

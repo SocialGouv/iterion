@@ -2,11 +2,14 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/cloudsched"
@@ -14,6 +17,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/identity"
+	"github.com/SocialGouv/iterion/pkg/llmroute"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -158,17 +162,56 @@ func TestPoolForgeReview_WebhookPreviewIgnoresTheConfigsPoolBlock(t *testing.T) 
 	}
 }
 
+// TestPoolForgeReview_WebhookPreviewFoldsTheConfigsRoutingBlock: the
+// webhook-source preview folds the config's routing block as the webhook
+// lane's launch does — the whitelist it previews is the one the launch
+// seals — and refuses a caller-supplied run level that launch never folds.
+func TestPoolForgeReview_WebhookPreviewFoldsTheConfigsRoutingBlock(t *testing.T) {
+	s, rs := newTeamForkServer(t, &tierPublisher{})
+	pub := &credentialPreviewPublisher{}
+	s.runs = newTestRunviewService(t, "", runview.WithStore(rs), runview.WithLaunchPublisher(pub))
+	wirePoolFold(t, s)
+	configs := webhooks.NewMemoryConfigStore()
+	s.webhookConfigs = configs
+	cfg := webhooks.Config{ID: "hook", TenantID: "t1", Enabled: true, BotIDs: []string{"probe"}, DefaultBotID: "probe",
+		Routing: &llmroute.Policy{Triggers: []string{"unavailable"}}}
+	if err := configs.Create(t.Context(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	w := callCredentialPreview(s, `{"source":{"kind":"webhook","id":"hook"}}`, auth.Identity{UserID: "human", TeamID: "t1", Role: identity.RoleMember})
+	if w.Code != http.StatusOK {
+		t.Fatalf("preview=%d %s", w.Code, w.Body.String())
+	}
+	ctx := store.WithIdentity(auth.WithIdentity(t.Context(), auth.Identity{UserID: "webhook:hook", TeamID: "t1", Kind: auth.KindWebhook}), "t1", "webhook:hook")
+	if _, err := s.launchWebhookBot(ctx, webhookLaunch(nil, ""), cfg, "probe", applyWebhookVarLayers(map[string]string{}, cfg, store.RunTrustDefault), "", "", "", nil, nil, store.RunTrustDefault, "", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if pub.launched.LLMRoutePolicy == nil || !slices.Equal(pub.launched.LLMRoutePolicy.Triggers, []string{"unavailable"}) {
+		t.Fatalf("setup: the launch did not fold the webhook's routing block: %+v", pub.launched.LLMRoutePolicy)
+	}
+	if !reflect.DeepEqual(pub.preview.LLMRoutePolicy, pub.launched.LLMRoutePolicy) {
+		t.Errorf("preview/launch routing drift for the same webhook: preview=%+v launch=%+v", pub.preview.LLMRoutePolicy, pub.launched.LLMRoutePolicy)
+	}
+	w = callCredentialPreview(s, `{"source":{"kind":"webhook","id":"hook"},"llm_routing":{"triggers":["usage_window"]}}`, auth.Identity{UserID: "human", TeamID: "t1", Role: identity.RoleMember})
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("a webhook preview with a caller run level = %d, want 400", w.Code)
+	}
+}
+
 // RVA-E: the elected signal reconciler warms "stored attachments' pools
 // PLUS schedule-bound pools" — its own comment calls leaving a
 // schedule-only pool out a defect (the margin skip silently inert on that
 // lane). A pool reached only through a forge integration's block (the
 // webhook config, the enforcement half) is left out the same way.
 func TestPoolForgeReview_SignalSweepMissesAPoolBoundOnlyByTheIntegration(t *testing.T) {
-	for _, lane := range []string{"schedule (control)", "forge integration / webhook config"} {
+	for _, lane := range []string{"schedule (control)", "forge integration / webhook config", "schedule of a team past the first thousand"} {
 		t.Run(lane, func(t *testing.T) {
 			s, _ := newTeamForkServer(t, &tierPublisher{})
 			wirePoolFold(t, s)
 			ctx := context.Background()
+			if lane == "schedule of a team past the first thousand" {
+				seedTeamsBefore(t, s, "t1", 1000)
+			}
 			sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
 			if err != nil {
 				t.Fatal(err)
@@ -193,7 +236,7 @@ func TestPoolForgeReview_SignalSweepMissesAPoolBoundOnlyByTheIntegration(t *test
 			sched := cloudsched.NewMemoryStore()
 			s.scheduledBots = sched
 			bound := &credpool.Binding{PoolID: "pool-bound", Enabled: true}
-			if lane == "schedule (control)" {
+			if lane != "forge integration / webhook config" {
 				if err := sched.Create(ctx, cloudsched.ScheduledBot{ID: "sb-1", TenantID: "t1", BotID: "probe", Cron: "0 2 * * 1", Pool: bound}); err != nil {
 					t.Fatal(err)
 				}
@@ -244,6 +287,52 @@ func TestPoolForgeReview_PoolDeleteIgnoresBindingBlocks(t *testing.T) {
 	t.Logf("the bound integration's next launch fold: %v", ferr)
 	if w.Code == http.StatusOK {
 		t.Errorf("the pool was deleted while a binding block names it — every launch of that integration now refuses")
+	}
+}
+
+// seedTeamsBefore creates n teams created before team id, so a walk over
+// the teams in creation order reaches id only past n of them.
+func seedTeamsBefore(t *testing.T, s *Server, id string, n int) {
+	t.Helper()
+	ctx := context.Background()
+	tm, err := s.authStore().GetTeam(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := tm.CreatedAt
+	for i := 0; i < n; i++ {
+		slug := fmt.Sprintf("filler-%04d", i)
+		if _, err := s.authStore().CreateTeam(ctx, identity.Team{ID: slug, Name: slug, Slug: slug,
+			CreatedAt: at.Add(-time.Duration(n-i) * time.Millisecond)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// TestPoolForgeReview_PoolDeleteSeesABindingPastTheFirstThousandTeams: the
+// DELETE guard walks EVERY team — a binding on the 1001st team, in creation
+// order, still refuses the delete.
+func TestPoolForgeReview_PoolDeleteSeesABindingPastTheFirstThousandTeams(t *testing.T) {
+	s, _ := poolRoutesServer(t)
+	ctx := context.Background()
+	seedTeamsBefore(t, s, "team1", 1000)
+	if err := s.credPoolPools.Upsert(ctx, credpool.Pool{ID: "pool-o", OrgID: "org1", Enabled: true, OwnerType: credpool.PoolOwnerOrg, OwnerID: "org1"}); err != nil {
+		t.Fatal(err)
+	}
+	cs := webhooks.NewMemoryConfigStore()
+	s.webhookConfigs = cs
+	if err := cs.Create(ctx, webhooks.Config{ID: "wh-1", TenantID: "team1", Enabled: true, Pool: &credpool.Binding{PoolID: "pool-o", Enabled: true}, ProvisionedBy: "forge:c1"}); err != nil {
+		t.Fatal(err)
+	}
+	r := poolRouteReq(auth.WithIdentity(ctx, auth.Identity{UserID: "jo"}), http.MethodDelete, "/api/pools/pool-o", "")
+	r.SetPathValue("id", "pool-o")
+	w := httptest.NewRecorder()
+	s.handleDeletePool(w, r)
+	if w.Code == http.StatusOK {
+		t.Errorf("the pool was deleted while the 1001st team's binding block names it: %d %s", w.Code, w.Body.String())
+	}
+	if _, err := s.credPoolPools.Get(ctx, "pool-o"); err != nil {
+		t.Errorf("the pool is gone: %v", err)
 	}
 }
 

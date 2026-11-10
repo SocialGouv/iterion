@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -132,7 +133,12 @@ func poolEntryViewOf(p credpool.Pledge) poolEntryView {
 }
 
 type attachmentView struct {
-	ScopeID   string              `json:"scope_id"`
+	ScopeID string `json:"scope_id"`
+	// Attached says whether the level stores an attachment. A level with
+	// none answers attached=false (it inherits) rather than a 404, so a
+	// client tells "nothing attached here" from "no such feature on this
+	// server" — and offers the attach form for the first.
+	Attached  bool                `json:"attached"`
 	PoolID    string              `json:"pool_id"`
 	Enabled   bool                `json:"enabled"`
 	Strategy  credpool.Strategy   `json:"strategy"`
@@ -141,7 +147,7 @@ type attachmentView struct {
 }
 
 func attachmentViewOf(a credpool.Attachment) attachmentView {
-	return attachmentView{ScopeID: a.ScopeID, PoolID: a.PoolID, Enabled: a.Enabled,
+	return attachmentView{ScopeID: a.ScopeID, Attached: true, PoolID: a.PoolID, Enabled: a.Enabled,
 		Strategy: a.Strategy, Limits: a.Limits, UpdatedAt: &a.UpdatedAt}
 }
 
@@ -780,8 +786,13 @@ func (s *Server) getPoolAttachment(w http.ResponseWriter, r *http.Request, scope
 		return
 	}
 	a, err := s.credPoolAttachments.Get(r.Context(), scopeID)
+	if errors.Is(err, credpool.ErrNotFound) {
+		// Nothing attached at this level: it inherits.
+		s.writeJSONFor(w, r, attachmentView{ScopeID: scopeID})
+		return
+	}
 	if err != nil {
-		s.httpErrorFor(w, r, http.StatusNotFound, "no attachment at this level (inherit)")
+		s.httpErrorFor(w, r, http.StatusServiceUnavailable, "pool attachment read failed: %v", err)
 		return
 	}
 	s.writeJSONFor(w, r, attachmentViewOf(a))
@@ -1052,7 +1063,7 @@ func (s *Server) enabledBindingNaming(ctx context.Context, poolID string) (strin
 	if s.authStore() == nil || (s.webhookConfigs == nil && s.scheduledBots == nil) {
 		return "", nil
 	}
-	teams, err := s.authStore().ListTeams(ctx, identity.Page{Limit: 1000})
+	teams, err := identity.AllTeams(ctx, s.authStore())
 	if err != nil {
 		return "", fmt.Errorf("list teams: %w", err)
 	}

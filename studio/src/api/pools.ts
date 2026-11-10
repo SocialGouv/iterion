@@ -49,6 +49,9 @@ export interface PoolStrategy {
 
 export interface PoolAttachment {
   scope_id: string;
+  // false: nothing is attached at this level (it inherits) — the GET
+  // answers so rather than 404, which means the server lacks the feature.
+  attached: boolean;
   pool_id: string;
   enabled: boolean;
   strategy: PoolStrategy;
@@ -147,9 +150,9 @@ export async function resetPoolEntry(poolID: string, entryID: string): Promise<K
   return request(`/pools/${poolID}/entries/${entryID}/reset`, { method: "POST", body: JSON.stringify({}) });
 }
 
-// The attachment reads resolve to null on servers without the feature
-// (404): "no attachment at this level" and "older backend" both mean the
-// editor has nothing to show yet — the section stays hidden.
+// The attachment reads resolve to null only on servers without the feature
+// (404) — the section stays hidden there. A level with nothing attached
+// answers attached=false, and the editor offers the attach form.
 export async function getOrgPoolAttachment(orgID: string): Promise<PoolAttachment | null> {
   try {
     return await guard404("pool_attachment", () => request<PoolAttachment>(`/orgs/${orgID}/pool-attachment`));

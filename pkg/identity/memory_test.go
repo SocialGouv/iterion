@@ -3,6 +3,7 @@ package identity
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -181,5 +182,34 @@ func TestDuplicatePoolHolders(t *testing.T) {
 		{ID: "c", Slug: "gamma", RunnerPool: "q"},
 	}); err != nil {
 		t.Fatalf("clean fleet refused: %v", err)
+	}
+}
+
+// TestAllTeams_walksEveryPage: a walk over every team crosses page
+// boundaries — none lost, none twice.
+func TestAllTeams_walksEveryPage(t *testing.T) {
+	ctx := context.Background()
+	m := NewMemoryStore()
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	const n = 2*allTeamsPageSize + 3
+	for i := 0; i < n; i++ {
+		slug := fmt.Sprintf("team-%04d", i)
+		if _, err := m.CreateTeam(ctx, Team{ID: slug, Name: slug, Slug: slug, CreatedAt: base.Add(time.Duration(i) * time.Second)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	teams, err := AllTeams(ctx, m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	for _, tm := range teams {
+		if seen[tm.ID] {
+			t.Fatalf("team %s walked twice", tm.ID)
+		}
+		seen[tm.ID] = true
+	}
+	if len(seen) != n {
+		t.Fatalf("walked %d teams, want %d", len(seen), n)
 	}
 }

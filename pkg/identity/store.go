@@ -161,6 +161,30 @@ type Page struct {
 	Limit  int
 }
 
+// allTeamsPageSize is the page AllTeams walks the teams by.
+const allTeamsPageSize = 500
+
+// AllTeams walks every team, page after page, oldest first: a caller that
+// must see EVERY team — a sweep, a guard refusing a delete while any team
+// binds the thing — cannot stop at one bounded page. Offset paging over a
+// changing collection may skip a team deleted mid-walk, never a live one
+// that already existed.
+func AllTeams(ctx context.Context, st interface {
+	ListTeams(context.Context, Page) ([]Team, error)
+}) ([]Team, error) {
+	var out []Team
+	for offset := 0; ; offset += allTeamsPageSize {
+		page, err := st.ListTeams(ctx, Page{Offset: offset, Limit: allTeamsPageSize})
+		if err != nil {
+			return out, err
+		}
+		out = append(out, page...)
+		if len(page) < allTeamsPageSize {
+			return out, nil
+		}
+	}
+}
+
 // UserFilter narrows a ListUsers page. The zero value selects every
 // user, which is what the method meant before a filter existed.
 type UserFilter struct {

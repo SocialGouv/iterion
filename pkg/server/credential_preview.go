@@ -52,6 +52,10 @@ func (s *Server) handleCredentialPreview(w http.ResponseWriter, r *http.Request)
 	disabled := false
 	previewRepo := ""
 	var previewPoolLayers []credpool.BindingLayer
+	// The routing layers the launch folds above the stored scopes: the
+	// caller's run level on the personal lane, the config's routing block
+	// on the webhook lane.
+	var routeLayers []llmroute.Layer
 	switch req.Source.Kind {
 	case "personal":
 		if req.Source.ID != "" {
@@ -67,6 +71,9 @@ func (s *Server) handleCredentialPreview(w http.ResponseWriter, r *http.Request)
 		// silently dropped.
 		spec.Launch.Vars = req.Vars
 		spec.Launch.TrustedVarNames = trustedVarNames(req.Vars)
+		if req.LLMRouting != nil {
+			routeLayers = append(routeLayers, llmroute.Layer{Source: llmroute.SourceRun, Launcher: true, Policy: *req.LLMRouting})
+		}
 	case "webhook":
 		if req.Source.ID == "" {
 			httpError(w, http.StatusBadRequest, "webhook source requires an id")
@@ -103,7 +110,15 @@ func (s *Server) handleCredentialPreview(w http.ResponseWriter, r *http.Request)
 		}
 		spec.OwnerID = webhookActor(cfg.ID)
 		spec.Launch.KeyOverrides = cfg.KeyOverrides
-		// The webhook's pool block folds as the launch's binding layer does.
+		// The webhook's routing and pool blocks fold as the launch's
+		// (launchWebhookBot): the routing block as the webhook layer, the
+		// pool block as the binding layer. A caller's run-level routing is
+		// no part of that launch, refused like its vars.
+		if req.LLMRouting != nil {
+			httpError(w, http.StatusBadRequest, "webhook source routes by the config's routing block; a caller-supplied llm_routing is not part of that launch")
+			return
+		}
+		routeLayers = append(routeLayers, llmroute.Layer{Source: llmroute.SourceWebhook, Policy: cfg.RoutingPolicy()})
 		previewPoolLayers = poolLayersOf(&cfg)
 		// The repository the webhook serves rides the preview's context as
 		// it rides the launch's: a key restricted to repositories previews
@@ -172,15 +187,12 @@ func (s *Server) handleCredentialPreview(w http.ResponseWriter, r *http.Request)
 		spec.Launch.Source = ""
 	}
 	// The preview's whitelist must answer what the LAUNCH will seal: the
-	// policy resolved exactly as the launch site resolves it — the run
-	// level the caller sent folded as the HEAD Launcher layer, the bot's
-	// manifest layer and the team beneath (a ("","") resolution would
-	// drop them and preview a policy the launch never folds).
-	var runLayers []llmroute.Layer
-	if req.LLMRouting != nil {
-		runLayers = append(runLayers, llmroute.Layer{Source: llmroute.SourceRun, Launcher: true, Policy: *req.LLMRouting})
-	}
-	routePolicy, routeErr := s.resolveRunLLMRoutePolicy(ctx, spec.Context.TeamID, spec.Context.BotID, runLayers...)
+	// policy resolved exactly as the launch site resolves it — the lane's
+	// own layer (the caller's run level as the HEAD Launcher layer, or the
+	// webhook's routing block), the bot's manifest layer and the team
+	// beneath (a ("","") resolution would drop them and preview a policy
+	// the launch never folds).
+	routePolicy, routeErr := s.resolveRunLLMRoutePolicy(ctx, spec.Context.TeamID, spec.Context.BotID, routeLayers...)
 	if routeErr != nil {
 		httpError(w, http.StatusUnprocessableEntity, "%v", routeErr)
 		return

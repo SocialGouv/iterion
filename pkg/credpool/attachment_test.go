@@ -557,3 +557,31 @@ func TestAcquire_attachmentRefundedWhenTheDonorDenies(t *testing.T) {
 		t.Errorf("att row runs = %d, want 0 — every walked candidate's denial must refund the borrower's draw unit", day.Runs)
 	}
 }
+
+// TestStrategyEqual_triggersAreASetDefaultsAreAnswers: the trigger order
+// means nothing; an absent dial (following its default) and the default
+// written are different answers.
+func TestStrategyEqual_triggersAreASetDefaultsAreAnswers(t *testing.T) {
+	m85 := 85.0
+	for _, c := range []struct {
+		name string
+		a, b Strategy
+		want bool
+	}{
+		{"same", Strategy{Triggers: []string{"usage_window"}}, Strategy{Triggers: []string{"usage_window"}}, true},
+		{"reordered triggers", Strategy{Triggers: []string{"unavailable", "usage_window"}}, Strategy{Triggers: []string{"usage_window", "unavailable"}}, true},
+		{"one more trigger", Strategy{Triggers: []string{"usage_window"}}, Strategy{Triggers: []string{"usage_window", "unavailable"}}, false},
+		{"another trigger", Strategy{Triggers: []string{"usage_window"}}, Strategy{Triggers: []string{"unavailable"}}, false},
+		{"absent vs written trigger default", Strategy{}, Strategy{Triggers: []string{"usage_window"}}, false},
+		{"absent vs written mode default", Strategy{}, Strategy{Mode: StrategyPriority}, false},
+		{"absent vs written margin default", Strategy{}, Strategy{MarginPct: &m85}, false},
+		{"reset_hold", Strategy{}, Strategy{ResetHold: true}, false},
+	} {
+		if got := c.a.Equal(c.b); got != c.want {
+			t.Errorf("%s: Equal = %v, want %v", c.name, got, c.want)
+		}
+		if got := c.b.Equal(c.a); got != c.want {
+			t.Errorf("%s (reversed): Equal = %v, want %v", c.name, got, c.want)
+		}
+	}
+}

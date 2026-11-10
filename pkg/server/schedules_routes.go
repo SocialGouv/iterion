@@ -406,7 +406,7 @@ func (s *Server) handleUpdateSchedule(w http.ResponseWriter, r *http.Request) {
 	// clears (the schedule inherits again), an object replaces — validated
 	// at write time like the create lane (shape, the pool's existence and
 	// consent).
-	patchPool, poolSpoke, poolErr := s.decodeAndValidatePoolBlock(r.Context(), teamID, req.Pool)
+	patchPool, poolSpoke, poolErr := decodePoolBlock(req.Pool)
 	if poolErr != nil {
 		httpError(w, http.StatusBadRequest, "%s", poolErr.Error())
 		return
@@ -414,9 +414,14 @@ func (s *Server) handleUpdateSchedule(w http.ResponseWriter, r *http.Request) {
 	// An edit dialog sends the whole record back: echoing the stored block
 	// unchanged is no pool write at all — the row keeps its block AND its
 	// provenance (a projected block stays the integration's), and the
-	// review gate judges only a CHANGE.
+	// write validation and the review gate judge only a CHANGE (a stored
+	// block whose pool was disabled since must not refuse a pause).
 	if patchPool.Equal(cur.Pool) {
 		patchPool, poolSpoke = nil, false
+	}
+	if err := s.validatePoolBindingWrite(r.Context(), teamID, patchPool); err != nil {
+		httpError(w, http.StatusBadRequest, "%s", err.Error())
+		return
 	}
 	if !s.schedulePoolBindingAdmitted(w, r, id, teamID, patchPool) {
 		return

@@ -75,7 +75,8 @@ runs one signal pass inline — the proof the readings are warm.
 ## Debugging
 
 - **The pool never serves**: is there an attachment at the resolved
-  level? (`GET .../pool-attachment` per level — absent = inherit.)
+  level? (`GET .../pool-attachment` per level — `attached: false` =
+  inherit.)
   `Enabled: false` anywhere between the launch and the platform floor
   BLOCKS. Is the pool `Enabled`? Private pools answer only their
   attachment.

@@ -69,17 +69,32 @@ type Strategy struct {
 	ResetHold bool `bson:"reset_hold,omitempty" json:"reset_hold,omitempty"`
 }
 
-// Equal reports whether two strategies say the same thing, the margin
-// compared by value (two nil margins are equal; nil and an explicit 85
-// are NOT — the absent dial and the written one are different answers).
+// Equal reports whether two strategies say the same thing. The triggers
+// compare as a set — their order means nothing to the fold or the rungs.
+// A dial left absent and the same value written are different answers:
+// the absent one follows its default (a zero mode, a nil margin, an empty
+// trigger list), the written one pins it, so mode "" and "priority", a nil
+// margin and an explicit 85, or [] and [usage_window] are NOT equal.
 func (s Strategy) Equal(o Strategy) bool {
-	if s.Mode != o.Mode || s.ResetHold != o.ResetHold || !slices.Equal(s.Triggers, o.Triggers) {
+	if s.Mode != o.Mode || s.ResetHold != o.ResetHold || !sameStringSet(s.Triggers, o.Triggers) {
 		return false
 	}
 	if s.MarginPct == nil || o.MarginPct == nil {
 		return s.MarginPct == nil && o.MarginPct == nil
 	}
 	return *s.MarginPct == *o.MarginPct
+}
+
+// sameStringSet reports whether two lists hold the same strings, in any
+// order (Validate refuses a duplicate trigger).
+func sameStringSet(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	as, bs := slices.Clone(a), slices.Clone(b)
+	slices.Sort(as)
+	slices.Sort(bs)
+	return slices.Equal(as, bs)
 }
 
 // Margin returns the effective threshold.
