@@ -163,9 +163,11 @@ Unknown events / scope keys / levels fail manifest parsing
 The scope keys are `pull_requests`, `repository`, `issues`, `webhooks`,
 `statuses`, `approvals`, `merge`, `reviewers` and `actions`, each at `read`,
 `write` or `admin`. Most are informational — they size the requested OAuth
-scope and are shown in the enable dialog. Five mint a **capability into the
-run's publish grant** at `write` (or `admin`), and a bot that does not declare
-one never holds it:
+scope and are shown in the enable dialog. Four mint a **capability into the
+run's publish grant** at `write` (or `admin`) — read from the manifest of the
+bundle the launch runs, so a team bundle shadowing a catalogue slug without
+declaring them holds none — and a bot that does not declare one never holds
+it:
 
 | scope | grant capability | what it lets the run ask the server to do |
 |---|---|---|
@@ -174,8 +176,9 @@ one never holds it:
 | `reviewers` | `reviewers` | request reviewers on escalation |
 | `actions` | `dispatch_workflow` | dispatch one workflow of the grant's repository (`POST /api/v1/forge/dispatch-workflow`) |
 
-(`statuses` is what makes a bot a required check.) The operator pin
-`forge_publish_mutations` set to anything but `true` strips them all.
+(`statuses` is what makes a bot a required check; it mints no capability.)
+The operator pin `forge_publish_mutations` set to anything but `true` strips
+them all.
 
 `actions` is the opt-in of [`workflow-kick`](../bots/workflow-kick/README.md):
 the server dispatches the named `*.yml` on the repository's default branch
@@ -183,14 +186,20 @@ with a GitHub App token minted for that one call
 (`{actions: write, metadata: read}`, the one repository), so the Actions
 permission never rides the connection's managed token that every run mounts —
 the App installation must grant `Actions: Read and write` for that per-call
-mint to succeed. A repo-bound schedule of such a bot is minted its grant at the
-tick, carrying `dispatch_workflow` alone and bound to **no pull request**: the
-review and gate endpoint (`POST /api/v1/forge/publish-review`, its commit
+mint to succeed. Only a repo-bound schedule of such a bot is minted the
+capability — a pull-request, API or board launch never is — at the tick,
+carrying `dispatch_workflow` alone, bound to the **one workflow file** the
+schedule row's `workflow` var names (any other file is refused,
+`workflow_dispatch_workflow_outside_grant`), dispatching it **once per grant**,
+and bound to **no pull request**: the review and gate endpoint (`POST /api/v1/forge/publish-review`, its commit
 status and verdict gestures included), the pull-request read, the delivery
 preflight and the server's own gate repairs refuse it with `403
 grant_bound_to_no_pull_request` before any forge call, so a schedule's run can
 never post a review or paint a required check such as `revi/review` on any
-head of the repository. A pull-request launch's grant is unchanged.
+head of the repository. In Valkey such a grant lives under a key namespace of
+its own, which a server older than the binding does not read: mid-rollout, an
+older replica answers it "unknown token" rather than honouring it as a
+pull-request grant. A pull-request launch's grant is otherwise unchanged.
 
 Enabling **several** bots on one repo (a reviewer + a dependency guard)
 is the common case: the orchestrator writes one `BotRule` per

@@ -1574,10 +1574,12 @@ The bot holds no forge credential for this: its manifest declares the
 `actions` scope, which mints the dispatch capability into the run's
 publish grant, and the server dispatches with a GitHub App installation
 token minted for that one call ({actions: write, metadata: read},
-narrowed to the one repository). Refused, typed, before any forge call:
-a repository other than the grant's, a file name that is not a plain
-`*.yml`/`*.yaml`, an untrusted run, a non-GitHub-App connection, and a
-second dispatch of the same workflow by the same run.
+narrowed to the one repository). The grant is minted at the schedule
+tick only, bound to the workflow the schedule row names, and dispatches
+it once. Refused, typed, before any forge call: another workflow or
+repository than the grant's, a file name that is not a plain
+`*.yml`/`*.yaml`, an untrusted or ended run, a non-GitHub-App connection,
+and a second dispatch on the same grant.
 
 - **Use when**:
   Enable on a repository integration whose CI workflow must run on a
@@ -1588,7 +1590,7 @@ second dispatch of the same workflow by the same run.
   approves it). Set the schedule's `workflow` var to the file name. It
   edits nothing and posts nothing; it only starts the workflow.
 - **Tags**: scheduled, deps, tooling
-- **Vars**: `forge_dispatch_url` (string), `forge_publish_token` (string), `repo` (string), `workflow` (string, required)
+- **Vars**: `forge_dispatch_url` (string), `forge_publish_token` (string), `repo` (string), `workflow` (string)
 - **Path**: `bots/workflow-kick/main.bot`
 
 ### Steer — judge the direction, converse

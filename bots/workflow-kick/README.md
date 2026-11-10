@@ -25,11 +25,17 @@ iterion server ── checks the grant ──► mints a GitHub App token for TH
 ```
 
 - The manifest declares `forge.token_scopes: { actions: write }`. That scope
-  mints the `dispatch_workflow` capability into the run's **publish grant**; a
-  bot that does not declare it never holds the capability.
-- The grant is minted at the schedule tick, bound to the schedule's **repo
-  integration** (its team, connection and repository), and carries that one
-  capability.
+  mints the `dispatch_workflow` capability into the run's **publish grant**,
+  read from the manifest of the bundle the tick launches; a bot that does not
+  declare it never holds the capability.
+- The grant is minted at the schedule tick and nowhere else — a pull-request,
+  API or board launch of this bot gets no dispatch capability and no
+  `forge_dispatch_url`. It is bound to the schedule's **repo integration** (its
+  team, connection and repository), to the **one workflow file** the schedule
+  row's `workflow` var names, and carries that one capability. The server
+  dispatches that file and no other, **once per grant**: every run presenting
+  the grant (a replay, a fork, a sub-bot it was handed to) shares the one
+  claim, and the next tick, under a grant of its own, is the retry.
 - It is bound to **no pull request**, so the dispatch is all it does: the
   review and merge-gate endpoint, the pull-request read and the delivery
   preflight refuse it (`403 grant_bound_to_no_pull_request`) before any forge
@@ -43,22 +49,30 @@ call:
 
 | code | when |
 |---|---|
-| `workflow_dispatch_no_capability` | the grant lacks the capability — the bot's manifest does not declare `actions: write`, or `forge_publish_mutations` disarms it |
+| `workflow_dispatch_no_grant_token` / `workflow_dispatch_grant_unknown` | no bearer, or one naming no live grant (401) |
+| `workflow_dispatch_bad_request` | the body is not exactly `{run_id, repo, workflow}` — a `ref` or `inputs` is refused, never dropped: the dispatch runs on the default branch with no inputs |
+| `workflow_dispatch_no_capability` | the grant lacks the capability — a launch other than a repo-bound schedule's (a pull-request, API or board launch), or a bot whose manifest does not declare `actions: write` |
 | `workflow_dispatch_bad_workflow_file` | `workflow` is not a plain `*.yml` / `*.yaml` file name |
+| `workflow_dispatch_workflow_outside_grant` | `workflow` is not the file the schedule row named when the grant was minted |
 | `workflow_dispatch_repo_outside_grant` | `repo` is not the grant's repository |
 | `workflow_dispatch_run_not_grant_holder` | the calling run does not hold this grant |
 | `grant_untrusted_run` / `grant_tenant_mismatch` | the run's workspace holds code the tenant did not write (ADR-162), or the run is another tenant's |
+| `workflow_dispatch_run_over` | the calling run has ended — a grant outlives its run for the gate repairs, never for a dispatch |
+| `workflow_dispatch_connection_missing` | the grant's connection is gone (404) |
 | `workflow_dispatch_unsupported` | the connection is not a GitHub App connection (GitLab, Forgejo, a GitHub OAuth or PAT connection) |
-| `workflow_dispatch_repeat` | this run already dispatched (or attempted) this workflow — one per run and workflow, so a replay or a loop cannot fan out |
+| `workflow_dispatch_repeat` | this grant already dispatched (or attempted) its workflow — once per grant, so no replay, loop, fork or sub-bot fans it out |
 
 and reports the forge's own refusal after the call:
 `workflow_dispatch_permission_missing` (the App installation lacks
 `Actions: Read and write`), `workflow_dispatch_refused_by_forge` (an unknown
-workflow answers 404, a workflow without `workflow_dispatch` or an unknown ref
-422), `workflow_dispatch_unconfirmed` (no answer — the run may have been
-queued). A refusal ends the run `WORKFLOW_NOT_DISPATCHED` with the code and the
-server's reason, which the schedule's health surface shows; the next tick is
-the retry.
+workflow answers 404, a workflow without `workflow_dispatch` 422),
+`workflow_dispatch_credential_unavailable` (the per-call token could not be
+minted) and `workflow_dispatch_unconfirmed` (no answer — the run may have been
+queued). A 5xx answer carries its code in `error_code` and keeps its reason in
+the server log; no answer is `retryable`, since the claim is spent before the
+forge is asked. A refusal ends the run `WORKFLOW_NOT_DISPATCHED` with the code
+and the reason, which the schedule's health surface shows; the next tick is the
+retry.
 
 ## Wiring it on a repository
 
@@ -73,7 +87,14 @@ the retry.
 4. **Set the workflow**: patch the schedule's vars with `workflow` — e.g.
    `{"vars": {"workflow": "renovate.yml"}}` on
    `PATCH /api/teams/{id}/schedules/{sid}`, or Studio → Automations →
-   Schedules. Until then each tick ends `NO_WORKFLOW`.
+   Schedules. Until then the tick mints no grant and each run ends
+   `NO_WORKFLOW`. The grant is bound to that value: the run dispatches that
+   file and no other.
+
+`forge_publish_mutations` pinned to anything but `true` — on the integration's
+launch policy (its webhook config included, the pull-request lane's own
+reading) or on the schedule row — disarms the dispatch: the tick mints no
+grant and each run ends `NO_DISPATCH_GRANT`.
 
 `repo` may stay empty: the bot reads it from the checkout's origin remote. The
 server refuses it anyway if it is not the integration's repository.
@@ -82,7 +103,7 @@ server refuses it anyway if it is not the integration's repository.
 
 | var | | |
 |---|---|---|
-| `workflow` | required | the workflow file name (`renovate.yml`) |
+| `workflow` | required | the workflow file name (`renovate.yml`), set on the schedule row; the grant is bound to it. Empty ends `NO_WORKFLOW` |
 | `repo` | optional | `owner/name`; empty = the checkout's origin |
 | `forge_dispatch_url`, `forge_publish_token` | minted | the dispatch endpoint and its bearer, minted by the server with the grant |
 

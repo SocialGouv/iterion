@@ -138,23 +138,27 @@ hour:
    to the integration.
 3. **Name the workflow** on that schedule: `PATCH
    /api/teams/{id}/schedules/{sid}` with `{"vars": {"workflow":
-   "renovate.yml"}}`, or Studio → Automations → Schedules. Until then each
-   tick ends `NO_WORKFLOW`.
+   "renovate.yml"}}`, or Studio → Automations → Schedules. Until then the
+   tick mints no grant and each run ends `NO_WORKFLOW`; once set, the grant is
+   bound to that file and dispatches nothing else.
 
 The bot declares `forge.token_scopes: { actions: write }`, which mints the
-dispatch capability into its run's publish grant; nothing else gets it. That
-grant is bound to no pull request, so it dispatches and does nothing else: a
+dispatch capability into its schedule run's publish grant — a pull-request or
+API launch never gets it, nor does any other bot. That grant is bound to the
+named workflow, dispatches it once, and is bound to no pull request, so it
+dispatches and does nothing else: a
 review, a commit status — the required check included — or a pull-request read
 made with it is refused (`grant_bound_to_no_pull_request`) before any forge
 call. The
 dispatch itself is made by the server with a GitHub App token minted for that
 one call — `{actions: write, metadata: read}`, narrowed to the repository — so
 no run, and no other bot, ever holds the Actions permission, and the runtime
-token every run mounts is unchanged. A refusal (another repository, a file
-name that is not a plain `*.yml`, an untrusted run, a second dispatch by the
-same run, a connection that is not a GitHub App) is typed and comes before any
-forge call; the run ends `WORKFLOW_NOT_DISPATCHED` with the code, and the
-schedule's health surface shows it.
+token every run mounts is unchanged. A refusal (another workflow or
+repository, a file name that is not a plain `*.yml`, an untrusted or ended
+run, a second dispatch on the same grant, a connection that is not a GitHub
+App) is typed and comes before any forge call; the run ends
+`WORKFLOW_NOT_DISPATCHED` with the code, and the schedule's health surface
+shows it.
 
 ### 3. The ruleset requires the CI checks — and only those, for now
 
