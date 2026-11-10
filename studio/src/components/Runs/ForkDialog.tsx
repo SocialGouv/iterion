@@ -86,6 +86,11 @@ export default function ForkDialog({ run, anchor, open, onOpenChange }: Props) {
           : `Forked → ${resp.new_run_id}`,
         "success",
       );
+      // What the fork decided that changes the child — a dropped key pin
+      // moves it onto the team's current key — stays on screen until read.
+      for (const note of resp.notes ?? []) {
+        addToast(`Fork ${resp.new_run_id}: ${note}`, "warning", { persistent: true });
+      }
       onOpenChange(false);
     });
   };

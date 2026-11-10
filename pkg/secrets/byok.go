@@ -146,8 +146,8 @@ const (
 	// (a LiteLLM endpoint in front of a regional model host, a vLLM
 	// server …): the record carries the gateway's base URL beside the key,
 	// and the model id after the `openai_compatible/` prefix is sent to it
-	// verbatim. Until the walk vocabulary learns it (#2005 PR-C'), such a
-	// key is storable but never sealed into a run.
+	// verbatim. The credential walk seals such a key with its URL for a
+	// run that may ride a gateway route (ADR-131 §5).
 	ProviderOpenAICompatible Provider = "openai_compatible"
 )
 
@@ -655,7 +655,14 @@ func OrderedAPIKeyCandidates(visible []ApiKey, userID string, providers []Provid
 		if a != b {
 			return a < b
 		}
-		return keys[i].CreatedAt.Before(keys[j].CreatedAt)
+		if !keys[i].CreatedAt.Equal(keys[j].CreatedAt) {
+			return keys[i].CreatedAt.Before(keys[j].CreatedAt)
+		}
+		// An exact tie breaks on the id, a stable key: the store's listing
+		// order (map order in memory, unspecified within a tie in Mongo)
+		// would pick the winner — frozen into a run's stamp and content
+		// boundary — by chance.
+		return keys[i].ID < keys[j].ID
 	})
 	wanted := make(map[Provider]bool, len(providers))
 	out := make([]APIKeyCandidate, 0, len(keys)+len(overrides))
@@ -799,12 +806,9 @@ func checkApiKeyAADID(id string) error {
 // stamps what the server stamped: the server's fingerprint travels in the
 // bundle beside a gateway key (RunBundle.APIKeyFingerprints), and a key
 // met without one is recomputed here from the URL the bundle pairs it
-// with (pkg/runner loop_credentials.go). The pool and fallback-door
-// fallbacks still hash the plaintext alone (cloudpublisher) and move onto
-// this helper with #2005 PR-C' — harmless until then: they refuse a
-// gateway key by name instead of sealing one — the vocabulary is pinned by
-// cloudpublisher's provider-coverage test, the pool lane's refusal by
-// TestPoolGatewayRefusal_Drift.
+// with (pkg/runner loop_credentials.go). The pool tiers and the fallback
+// door identify a lent key whose donor record carries no stamp the same way
+// (cloudpublisher).
 func APIKeyFingerprint(p Provider, secret, baseURL string) string {
 	if p == ProviderOpenAICompatible {
 		return FingerprintSHA256(string(p) + "\x00" + baseURL + "\x00" + secret)

@@ -1258,6 +1258,11 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 		// Repo-targeted runs merge in a server-side clone; the service
 		// needs the forge credential lookup to clone and push.
 		opts = append(opts, runview.WithForgeTokenResolver(s.forgeTokenForRun))
+		// A fork drops a key pin whose key no longer exists — the credential
+		// sweep's rule, on the frame the fork copies (runview.Fork).
+		if s.apiKeys != nil {
+			opts = append(opts, runview.WithForkKeyPinCheck(s.keyPinRowExists))
+		}
 		// D12 pre-stamp cohort: the conflict resolver refuses an
 		// unstamped run whose tenant is NOW pool-mapped — the current
 		// mapping is the only signal left for runs that predate the

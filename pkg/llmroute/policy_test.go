@@ -201,19 +201,28 @@ func TestNormalize_ExplicitEmptyTriggersSurvive(t *testing.T) {
 }
 
 func TestValidate_PairOrder(t *testing.T) {
-	tests := []struct {
+	type pairOrderCase struct {
 		name  string
 		pairs []string
 		want  string // substring of the expected error; "" = valid
-	}{
+	}
+	tests := []pairOrderCase{
 		{"arbitrary default order", DefaultPairOrder, ""},
 		{"every known provider key", providerKeyPairs(), ""},
+		{"the gateway slot on claw", []string{Pair(HarnessClaw, "openai_compatible_key")}, ""},
 		{"not a pair", []string{"claude_code"}, "not harness+credential"},
 		{"empty side", []string{"+claude_forfait"}, "not harness+credential"},
 		{"unknown harness", []string{Pair("notabackend", CredClaudeForfait)}, `unknown harness "notabackend"`},
 		{"unknown credential", []string{Pair(HarnessClaw, "forfait_claude")}, `unknown credential "forfait_claude"`},
 		{"duplicate", []string{Pair(HarnessClaw, "anthropic_key"), Pair(HarnessClaw, "anthropic_key")}, "twice"},
 		{"explicitly empty", []string{}, "pair_order is empty"},
+	}
+	// The gateway slot pairs with claw alone: no other harness spends a
+	// gateway key, so every other harness naming it is refused.
+	for _, h := range Harnesses {
+		if h != HarnessClaw {
+			tests = append(tests, pairOrderCase{"the gateway slot on " + h, []string{Pair(h, "openai_compatible_key")}, "pairs with claw only"})
+		}
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -240,7 +249,7 @@ func TestValidate_ExplicitEmptyTriggersRefused(t *testing.T) {
 
 func providerKeyPairs() []string {
 	var pairs []string
-	for _, p := range []string{"anthropic", "openai", "bedrock", "vertex", "azure", "openrouter", "xai", "zai", "moonshot"} {
+	for _, p := range []string{"anthropic", "openai", "bedrock", "vertex", "azure", "openrouter", "xai", "zai", "moonshot", "openai_compatible"} {
 		pairs = append(pairs, Pair(HarnessClaw, p+"_key"))
 	}
 	return pairs
@@ -347,6 +356,7 @@ func TestKeyProviderSlotsMirrorSecretsProviders(t *testing.T) {
 		secrets.ProviderAnthropic, secrets.ProviderOpenAI, secrets.ProviderBedrock,
 		secrets.ProviderVertex, secrets.ProviderAzure, secrets.ProviderOpenRouter,
 		secrets.ProviderXAI, secrets.ProviderZAI, secrets.ProviderMoonshot,
+		secrets.ProviderOpenAICompatible,
 	} {
 		if !validCredential(string(p) + "_key") {
 			t.Errorf("secrets.Provider %q has no matching %q slot in the policy vocabulary", p, string(p)+"_key")
@@ -963,28 +973,25 @@ func TestValidateOverrides_RefusesAHintTheHarnessIgnores(t *testing.T) {
 	}
 }
 
-// ProviderHints must stay validKeyProvider's names plus the gateway: a
-// provider the credential slots learn (secrets.Provider) is one the
-// overrides and the providers allowlist must be able to pin, and any
-// other name in ProviderHints would promise a route no slot can fund.
+// ProviderHints must stay exactly validKeyProvider's names, the gateway's
+// included: a provider the credential slots learn (secrets.Provider) is
+// one the overrides and the providers allowlist must be able to pin, and
+// any other name in ProviderHints would promise a route no slot can fund.
 // In-package so the unexported validKeyProvider is read directly.
 func TestProviderHints_MirrorTheKeyProviders(t *testing.T) {
 	want := []string{
 		string(secrets.ProviderAnthropic), string(secrets.ProviderOpenAI), string(secrets.ProviderBedrock),
 		string(secrets.ProviderVertex), string(secrets.ProviderAzure), string(secrets.ProviderOpenRouter),
 		string(secrets.ProviderXAI), string(secrets.ProviderZAI), string(secrets.ProviderMoonshot),
-		ProviderOpenAICompatible,
+		string(secrets.ProviderOpenAICompatible),
 	}
 	sort.Strings(want)
 	got := append([]string(nil), ProviderHints...)
 	sort.Strings(got)
 	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("ProviderHints %v != validKeyProvider's names + %q: %v", got, ProviderOpenAICompatible, want)
+		t.Fatalf("ProviderHints %v != validKeyProvider's names %v", got, want)
 	}
 	for _, h := range ProviderHints {
-		if h == ProviderOpenAICompatible {
-			continue // the gateway, whose credential the runner's environment funds
-		}
 		if !validKeyProvider(h) {
 			t.Errorf("ProviderHints names %q, which validKeyProvider refuses", h)
 		}

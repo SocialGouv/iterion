@@ -138,7 +138,7 @@ func doorWf() *ir.Workflow {
 func (f *doorFixture) resolve(t *testing.T, runID string, policy *store.RunLLMRoutePolicy, wf *ir.Workflow) (secrets.RunBundle, credResolution) {
 	t.Helper()
 	ctx := store.WithTenant(context.Background(), poolTeam)
-	creds, err := f.pub.resolveAndSealCredentials(ctx, runID, poolOrg, poolTeam, "requester", "docs-refresh", "", wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustDefault, nil, policy, nil)
+	creds, err := f.pub.resolveAndSealCredentials(ctx, runID, poolOrg, poolTeam, "requester", "docs-refresh", "", wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustDefault, nil, policy, nil, boundaryDerived)
 	if err != nil {
 		t.Fatalf("resolveAndSealCredentials: %v", err)
 	}
@@ -314,11 +314,16 @@ func TestCredResolution_poolLease(t *testing.T) {
 }
 
 // TestWantForSlot_totalOverTheVocabulary: the inverse of the sealing maps
-// covers the CLOSED pair vocabulary — both forfaits, every known provider
-// key, nothing else.
+// covers the pool's CLOSED vocabulary — both forfaits, every provider key a
+// pool may lend, nothing else. The gateway slot is the WALK's and never the
+// pool's (ADR-131 §5): it maps no want, and the want order names no gateway
+// key — the journey-wire of the vocabulary split, since widening the walk's
+// list without carving the pool's makes the pool ask donors for a gateway
+// key.
 // Mutant: any mapping arm flipped to false (or a provider dropped) → this
 // test reds; the exhaustiveness is what keeps a rung from arming silently
-// for nothing after a vocabulary extension.
+// for nothing after a vocabulary extension. wantForSlot or poolWantOrder
+// reading the walk's list (allKnownProviders) → the gateway rows red.
 func TestWantForSlot_totalOverTheVocabulary(t *testing.T) {
 	w, ok := wantForSlot(llmroute.CredClaudeForfait)
 	if !ok || w != (credpool.Credential{Source: credpool.SourceOAuth, Ref: string(secrets.OAuthKindClaudeCode)}) {
@@ -328,10 +333,18 @@ func TestWantForSlot_totalOverTheVocabulary(t *testing.T) {
 	if !ok || w != (credpool.Credential{Source: credpool.SourceOAuth, Ref: string(secrets.OAuthKindCodex)}) {
 		t.Fatalf("chatgpt_forfait → %+v ok=%v, want the codex OAuth want", w, ok)
 	}
-	for _, prov := range allKnownProviders {
+	for _, prov := range model.KnownPoolProviders {
 		w, ok := wantForSlot(slotOfProvider(prov))
 		if !ok || w != (credpool.Credential{Source: credpool.SourceAPIKey, Ref: string(prov)}) {
 			t.Fatalf("%s → %+v ok=%v, want the provider's api_key want", prov, w, ok)
+		}
+	}
+	if w, ok := wantForSlot(slotOfProvider(secrets.ProviderOpenAICompatible)); ok {
+		t.Fatalf("openai_compatible_key → %+v: the gateway slot maps a pool want — the door would ask a donor for a gateway key", w)
+	}
+	for _, w := range poolWantOrder {
+		if w.Source == credpool.SourceAPIKey && w.Ref == string(secrets.ProviderOpenAICompatible) {
+			t.Fatalf("poolWantOrder = %v names the gateway key: a run that pins nothing would ask the pool for one", poolWantOrder)
 		}
 	}
 	if _, ok := wantForSlot("pool"); ok {
@@ -360,7 +373,7 @@ func TestDoorWantsFor_restoresTheProgramByteExactly(t *testing.T) {
 		// Both pairs held: NOTHING is missing, the derivation probes
 		// nothing — the trivially-restoring case.
 		return true
-	})
+	}, false)
 	if ok || len(wants) != 0 || len(unmapped) != 0 {
 		t.Fatalf("all-held derivation = %+v unmapped=%v ok=%v, want nothing armed", wants, unmapped, ok)
 	}
@@ -378,7 +391,7 @@ func TestDoorWantsFor_restoresTheProgramByteExactly(t *testing.T) {
 	// restores. The pre-probe snapshot is the same two-rung-free program.
 	wants, _, ok = doorWantsFor(policy, model.RouteView{Workflow: wf}, nil, func(_, credential string) bool {
 		return credential == "anthropic_key"
-	})
+	}, false)
 	if !ok || len(wants) != 1 || wants[0] != (credpool.Credential{Source: credpool.SourceAPIKey, Ref: "zai"}) {
 		t.Fatalf("door wants = %+v ok=%v, want exactly the zai api_key", wants, ok)
 	}
@@ -426,15 +439,15 @@ func TestAcquireDoorGrant_guards(t *testing.T) {
 	_ = args
 
 	// A whole-bundle grant: the whole-bundle tier's case, never the door's.
-	if g, _ := f.pub.acquireDoorGrant(ctx, "r", poolOrg, poolTeam, "requester", "bot", model.RouteView{Workflow: wf}, policy, nil, &bundle, &credpool.Grant{}, false, false, store.RunTrustDefault, map[secrets.Provider]string{}, credSlotWants{}, sealable); g != nil {
+	if g, _ := f.pub.acquireDoorGrant(ctx, "r", poolOrg, poolTeam, "requester", "bot", model.RouteView{Workflow: wf}, policy, nil, &bundle, &credpool.Grant{}, false, false, store.RunTrustDefault, map[secrets.Provider]string{}, newSealedKeyIDs(), credSlotWants{}, sealable, false); g != nil {
 		t.Fatal("the door fired behind a whole-bundle grant")
 	}
 	// An env-funded run acquires nothing at all (#2038).
-	if g, _ := f.pub.acquireDoorGrant(ctx, "r", poolOrg, poolTeam, "requester", "bot", model.RouteView{Workflow: wf}, policy, nil, &bundle, nil, true, false, store.RunTrustDefault, map[secrets.Provider]string{}, credSlotWants{}, sealable); g != nil {
+	if g, _ := f.pub.acquireDoorGrant(ctx, "r", poolOrg, poolTeam, "requester", "bot", model.RouteView{Workflow: wf}, policy, nil, &bundle, nil, true, false, store.RunTrustDefault, map[secrets.Provider]string{}, newSealedKeyIDs(), credSlotWants{}, sealable, false); g != nil {
 		t.Fatal("the door fired on an env-funded run")
 	}
 	// An empty bundle belongs to the whole-bundle tier.
-	if g, _ := f.pub.acquireDoorGrant(ctx, "r", poolOrg, poolTeam, "requester", "bot", model.RouteView{Workflow: wf}, policy, nil, &secrets.RunBundle{}, nil, false, false, store.RunTrustDefault, map[secrets.Provider]string{}, credSlotWants{}, sealable); g != nil {
+	if g, _ := f.pub.acquireDoorGrant(ctx, "r", poolOrg, poolTeam, "requester", "bot", model.RouteView{Workflow: wf}, policy, nil, &secrets.RunBundle{}, nil, false, false, store.RunTrustDefault, map[secrets.Provider]string{}, newSealedKeyIDs(), credSlotWants{}, sealable, false); g != nil {
 		t.Fatal("the door fired on an empty bundle")
 	}
 }

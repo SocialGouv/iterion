@@ -171,6 +171,12 @@ type ExecutorSpec struct {
 	// node's own model at materialization. Cloud only: a local launch
 	// seals no channels, so no ladder exists to apply.
 	PolicyLadder []ir.PolicyLadderStage
+	// ContentBoundary is the run's frozen content boundary (ADR-131 §4,
+	// queue.RunMessage.ContentBoundary): under team_gateway the ladder's
+	// screen lands no stage on a node routed to the team's gateway — a
+	// crossing would carry that node's content to a vendor credential. Nil
+	// (a local launch, a run stamped before the producer) screens as before.
+	ContentBoundary *store.RunContentBoundary
 	// LLMRouteTriggers is the run's RESOLVED adaptive-routing trigger set
 	// (ADR-121, the launch-frozen snapshot) — threaded to the executor so
 	// the route cooldown ledger arms the categories the policy names
@@ -548,19 +554,13 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 	// node's own model, and the stage's On carries the resolved policy's
 	// trigger set — the chain's default set would stop the auth-typed
 	// failure the launch-time selection exists to fall through.
-	policyRefusals := ir.ApplyPolicyLadder(spec.Workflow, spec.PolicyLadder, sandboxedHere, spec.Vars, func(n ir.LLMNode) string {
-		ov := overrides.ForNode(n.NodeID(), n.NodeKind())
-		if ov.Model != "" {
-			return ir.ExpandEnvWithDefault(ov.Model)
-		}
-		return ir.ExpandEnvWithDefault(n.GetLLMFields().Model)
-	}, func(n ir.LLMNode) string {
+	policyRefusals := ir.ApplyPolicyLadder(spec.Workflow, spec.PolicyLadder, sandboxedHere, spec.Vars, overrides.LadderRoute, func(n ir.LLMNode) string {
 		// The dispatch reads the override backend FIRST — the screen reads
 		// the same, or a cross-backend crossing crosses a session-bearing
 		// node unscreened (the review's F2).
 		ov := overrides.ForNode(n.NodeID(), n.NodeKind())
 		return ov.Backend
-	}, llmroute.ResolveClasses(spec.LLMRouteClasses))
+	}, llmroute.ResolveClasses(spec.LLMRouteClasses), spec.ContentBoundary.TeamGateway())
 	for _, refusal := range policyRefusals {
 		spec.Logger.Warn("policy ladder stage not applied — %s", refusal)
 	}
@@ -708,6 +708,10 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 		model.WithRetryPolicy(retryPolicy),
 		model.WithLLMRouteTriggers(spec.LLMRouteTriggers),
 		model.WithAllowedProviders(spec.LLMProviders),
+		// The ladder screen above read the spec's vars; dispatch reads the
+		// vars the engine pushes (a resume restores the launch's after this
+		// build), so the boundary holds a gateway-routed node at dispatch too.
+		model.WithContentBoundary(spec.ContentBoundary),
 		model.WithEventHooks(hooks),
 		model.WithToolRegistry(toolReg),
 		model.WithClawReadScope(readScope),
@@ -782,7 +786,7 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 	}
 
 	checker := buildToolChecker(spec.Workflow)
-	classifier, classErr := newLLMClassifierFromEnv(spec.Ctx, reg, spec.Logger)
+	classifier, classErr := newLLMClassifierFromEnv(spec.Ctx, reg, spec.Logger, spec.ContentBoundary)
 	if classErr != nil {
 		return nil, fmt.Errorf("runview: build LLM classifier: %w", classErr)
 	}
@@ -1525,13 +1529,25 @@ func buildToolChecker(wf *ir.Workflow) tool.ToolChecker {
 	return tool.BuildChecker(wf.ToolPolicy, nodeOverrides, nil)
 }
 
+// ErrClassifierBoundaryRefused is the build-time refusal of a vendor LLM
+// classifier on a run held to its team's gateway (ADR-131 §4): the
+// classifier reads every tool call's arguments, the gateway nodes' included.
+var ErrClassifierBoundaryRefused = errors.New("runview: the run's content boundary (team_gateway) refuses a vendor LLM classifier")
+
 // newLLMClassifierFromEnv builds an LLMClassifier when the
 // ITERION_LLM_CLASSIFIER_MODEL env var is set (e.g.
 // "anthropic/claude-haiku-4-5"). The classifier is chained over the
 // default RuleClassifier and uses a 30-minute TTL cache.
 //
 // Returns (nil, nil) when the env var is empty.
-func newLLMClassifierFromEnv(ctx context.Context, reg *model.Registry, logger *iterlog.Logger) (permissions.Classifier, error) {
+//
+// Under the run's team_gateway content boundary a spec that is not a route
+// to the gateway is refused here, before any resolution, and the run fails
+// at executor build — the answer a gateway-only run already got from the
+// ambient refusal, now given to a mixed run too, whose bundle holds the
+// team's vendor key the spec would otherwise resolve on. A gateway spec
+// stays admitted: the run's sealed pair serves it.
+func newLLMClassifierFromEnv(ctx context.Context, reg *model.Registry, logger *iterlog.Logger, boundary *store.RunContentBoundary) (permissions.Classifier, error) {
 	// Four production surfaces construct an ExecutorSpec with a nil Ctx
 	// (the studio launch and resume, both CLI paths): the classifier
 	// resolves under the run's credentials when there are any, under a
@@ -1543,6 +1559,9 @@ func newLLMClassifierFromEnv(ctx context.Context, reg *model.Registry, logger *i
 	spec := strings.TrimSpace(ir.LookupEnv("ITERION_LLM_CLASSIFIER_MODEL"))
 	if spec == "" {
 		return nil, nil
+	}
+	if boundary.TeamGateway() && !llmroute.GatewayRoute(spec) {
+		return nil, fmt.Errorf("%w: ITERION_LLM_CLASSIFIER_MODEL %q is not a route to the team's gateway %q, and the classifier reads every tool call's arguments — set it to an openai_compatible/<model> spec the gateway serves, or unset it", ErrClassifierBoundaryRefused, spec, boundary.GatewayHost)
 	}
 	// ResolveWithContext, never Resolve: an ambient-refused run funds its
 	// LLM routes from the sealed credentials only, so the classifier's

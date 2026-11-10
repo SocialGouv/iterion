@@ -1502,6 +1502,111 @@ when a call's usage never arrives — as for any unpriced route.
 > `sessionboard.ErrGatewayBoardNeedsPin`, the twin of the supervisors'
 > gate.)
 
+**A team's own gateway key** ([ADR-131](adr/131-tenant-gateway-credential.md))
+proves `openai_compatible/…` specs in the cloud model catalog
+(`GET /api/models`, credential source `OPENAI_COMPATIBLE_API_KEY`) through
+**claw only** — pi and claude_code never light up on it — and recommends no
+model: the id is the gateway's own naming. A key restricted to bots or
+repositories proves nothing there ([models.md](models.md)).
+
+In the cloud, that key funds the team's gateway routes (ADR-131 §5). When a
+credential tier the launch consults — the team's own, then the org's, an
+attached pool's gateway entry and the platform's unless the team is sovereign
+or pool-mapped — holds a gateway key serving the launch's bot and repository, the credential walk seals it with its
+base URL and endpoint-aware fingerprint, and the run's literal
+`openai_compatible/…` routes spend it, never the runner's environment; a capped
+key still decides it, the run then parks on it. A key the run's frozen pair order
+holds out, or whose sealed secret does not open, decides nothing: the routes ride
+the runner's gateway, and the launch names the key and why. With no such key, a run whose
+every route rides the gateway is env-funded as before. An env-templated route
+(`${DIAL:-…}`) is never attributed to the key — what the runner expands it to
+is not the publisher's word. Under a dedicated runner pool, whose pod carries
+the operator's gateway dials, the key is sealed for such a route all the same
+and claw's dispatch prefers it to the pod's gateway; on the default runner it
+is not, nor for a route the walk cannot decide. A run whose every route is a
+decided vendor route never carries the key either (it would pin the gateway
+host on the run's proxy for nothing), and a gateway key is never the run's default credential:
+the legacy pool and the fallback door still serve the vendor routes of a team
+that holds only its gateway key. Under `llm_fallback=none` a gateway
+route nothing of the team's own funds is refused by name, a pool-stamped run
+excepted. The routing pair `claw+openai_compatible_key` is a seal-whitelist
+entry of the pair order, never a fallback rung; a run frozen before the entry
+existed replays its order as stored and says once what it held out. The
+legacy pool and the fallback door never lend a gateway key.
+
+A run whose gateway routes that key funds is stamped `team_gateway` at launch
+(`content_boundary` on the run document, frozen and replayed by every resume
+and fork; ADR-131 §4): a gateway route the walk attributes to the key, and the
+key sealed — a mixed run, vendor keys beside it, included. Every other launch
+the walk resolves is stamped `own_keys`. Under `team_gateway` the run's sealed
+bundle refuses every fallback to the pod's environment (`AmbientLLMRefused`,
+auxiliaries included), the server-side helpers and the supervisors refuse the
+run's auxiliary specs, and the routing ladder lands no crossing on a node routed
+to the gateway — `claw+openai_key` or codex would carry that node's content to
+a vendor credential — nor asks a donor for one; the run's vendor-routed nodes
+keep theirs. Since no environment fallback serves it, a `team_gateway` run
+whose route nothing in its bundle funds is refused by name at launch (and at
+resume), with or without `ITERION_CLOUD_REQUIRE_LLM_CREDENTIAL`.
+
+The team's default gateway model is a routing decision, not a field of the
+key: an override cell on selector `*` pinning
+`openai_compatible/<provider>/<model>`, the gateway's id verbatim (ADR-122):
+
+```json
+{"selector": "*", "model": "openai_compatible/scaleway/glm-5.3"}
+```
+
+It belongs in the routing record whose launches the key funds, and no wider
+one:
+
+- a key with no `bots` or `repos` audience: the team's routing policy
+  (`GET`/`PUT /api/teams/{id}/routing-policy`), which every launch of every
+  bot of the team folds;
+- a key restricted to repositories: the `routing` block of each repository
+  integration it serves (`GET /api/teams/{id}/forge/repo-bots`,
+  `PATCH /api/teams/{id}/forge/repo-bots/{integration_id}`; a block the
+  PATCH carries parks for the org's approval where the org requires one);
+  a key restricted to bots: an integration that enables only those bots.
+
+On the team's policy, a restricted key's cell would also route launches the
+key cannot fund onto the gateway — the team's other repositories or bots,
+and for a repository restriction the scheduled, board and pipeline lanes,
+which name no repository (ADR-131 §3) — and under `llm_fallback=none` such a
+launch is refused (§5). Until PR-R stamps the scheduled lane with its
+integration's repository, an integration's own schedules cannot spend a
+repository-restricted key either.
+
+The cell re-targets the `model:` of every LLM node the record reaches — not
+its `backend:` or `provider:`. A node whose backend resolves to claw (named,
+or picked by auto-detection) and that carries no vendor `provider:` hint
+runs the gateway on claw. Any other — pinned to a CLI backend by its own
+`backend:` or the workflow's `default_backend:`, or carrying a vendor hint —
+is refused the gateway model (the parity rule above) and walks to its own
+fallbacks: the gateway never serves it. A cell pinning `backend: claw` as
+well moves a node whose only obstacle is its CLI backend, and claw keeps
+only the tools the node declares. A node with both a CLI backend and a
+vendor hint — review-pr's claude slots and revi-converse's agent run
+`claude_code` with `provider: anthropic` by default — cannot be moved by
+cells at all: a cell never clears a hint, and a provider pinned beside
+`backend: claw` may only be `anthropic` (any other is refused at write when
+one cell holds both, at launch when two do). A bot with such nodes
+therefore takes cells narrower than `*`, naming the nodes the gateway can
+serve. The fold decides per selector and field
+([ADR-129](adr/129-per-integration-typed-routing-overrides.md)): a bot's own
+`routing:` cell or an integration's on the same selector wins over the
+team's, a more specific selector wins wherever it is written, and the
+launch's own model overrides win over every cell.
+
+Both writes REPLACE the record's whole routing policy (`null` clears it), so
+operator tooling reads, edits and writes back: GET the record; pin the model
+on a `*` cell of `overrides` — replacing the `*` model pin when there is one
+(a second is refused), appending the cell otherwise — and keep every other
+field and cell; then write the whole policy back. The team route takes
+`expected_updated_at`, the `updated_at` the GET returned (the zero time
+`0001-01-01T00:00:00Z` when it returned no policy), and answers a write that
+raced another with a 409: re-read and retry. The integration route carries
+no such stamp.
+
 ### What a gateway model costs and how big it is (ADR-122)
 
 The catalog resolves a gateway id with whole-entry precedence — fields are

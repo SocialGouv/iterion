@@ -1105,6 +1105,11 @@ export interface ForkRunResponse {
   new_run_id: string;
   parent_run_id: string;
   fork_anchor?: ForkAnchor;
+  // notes is what the fork decided that the caller must see
+  // (runview.ForkResult.Notes): a key pin of the parent dropped because its
+  // key no longer exists — the child then spends the team's current key —,
+  // typed inputs admitted without a pre-check. Absent when there is none.
+  notes?: string[];
 }
 
 /** Safe subset of POST /runs/:id/rewind used by assistant host actions. */

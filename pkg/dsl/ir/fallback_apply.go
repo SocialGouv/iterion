@@ -462,6 +462,85 @@ func providerHintFor(credential string) string {
 	return ""
 }
 
+// PolicyLadderReading is the one reading every classifier of a node's policy
+// ladder takes of the node's route — the screen (ApplyPolicyLadder, on the
+// publisher's composer, its fallback door probe and the runner) and the
+// runner's usage-cap escape estimate: each field resolved the way dispatch
+// resolves it (model.ResolveRoutingFieldWith — the run's `{{vars.*}}` spans
+// first, then `${…}` against this process's environment, trimmed), so a
+// node whose `model: "{{vars.model}}"` the run decides is classified by the
+// route it runs, never by its template text.
+type PolicyLadderReading struct {
+	view map[string]any
+}
+
+// NewPolicyLadderReading is the reading over a launch's vars (the declared
+// defaults under the launch's overrides, launchVarsView), the view the
+// screen itself builds.
+func NewPolicyLadderReading[V any](w *Workflow, vars map[string]V) PolicyLadderReading {
+	view, _ := launchVarsView(w, vars)
+	return PolicyLadderReading{view: view}
+}
+
+// field resolves one routing field: template, environment, trim.
+func (r PolicyLadderReading) field(raw string) string {
+	return strings.TrimSpace(ExpandWithDefault(expandVarsRefs(raw, r.view), lookupEnv))
+}
+
+// StageModel maps one stage onto one node from the node's route as the run
+// sets it (model and provider, unresolved — the override first): the
+// resolved model through llmroute.StageModel. Under the content boundary two
+// routes map on no pair:
+//   - a route to the gateway (RouteNamesGateway) — its `model:`, or a step
+//     of its `provider:` chain, a `openai_compatible` hint or a step model
+//     routed there — keeps the node's content on the gateway
+//     (ReasonContentBoundary);
+//   - a route this reading cannot decide (a `{{…}}` span left in either
+//     field) may be the gateway's at dispatch, and a crossing mapped from
+//     template text would carry the node off it
+//     (ReasonContentBoundaryUndecided).
+func (r PolicyLadderReading) StageModel(harness, credential, model, provider string, classes llmroute.ClassTable, teamGateway bool) (string, bool, string) {
+	resolved := r.field(model)
+	if teamGateway {
+		chain := r.field(provider)
+		if RouteNamesGateway(resolved, chain) {
+			return "", false, llmroute.ReasonContentBoundary
+		}
+		if strings.Contains(resolved, "{{") || strings.Contains(chain, "{{") {
+			return "", false, llmroute.ReasonContentBoundaryUndecided
+		}
+	}
+	return llmroute.StageModel(harness, credential, resolved, classes, teamGateway)
+}
+
+// RouteNamesGateway reports whether a node's route goes to the team's
+// gateway, from its `model:` and its `provider:` chain each read as the run
+// resolves them (template, environment, trim): the model is a gateway route
+// (llmroute.GatewayRoute: the routing prefix read case-blind and trimmed, an
+// empty id included), or a step of the chain is (providerChainNamesGateway).
+// It is the one predicate of the content boundary's hold (ADR-131 §4): the
+// policy-ladder screen (StageModel) and the executor's dispatch belt
+// (model.ClawExecutor.resolveChainUnder) call it, so a spelling one holds the
+// other holds. Read generously on purpose, like GatewayRoute: a spelling
+// dispatch cannot serve is still a node its author meant for the gateway.
+func RouteNamesGateway(model, provider string) bool {
+	return llmroute.GatewayRoute(model) || providerChainNamesGateway(provider)
+}
+
+// providerChainNamesGateway reports whether a resolved `provider:` chain has
+// a step that routes to the gateway: its hint is the gateway's, or its
+// `hint:model` model is a gateway route — the steps dispatch parses
+// (SplitProviderStep, the one parse of the element form).
+func providerChainNamesGateway(chain string) bool {
+	for _, token := range strings.Split(chain, ",") {
+		hint, model, _ := SplitProviderStep(strings.TrimSpace(token))
+		if strings.EqualFold(strings.TrimSpace(hint), llmroute.ProviderOpenAICompatible) || llmroute.GatewayRoute(model) {
+			return true
+		}
+	}
+	return false
+}
+
 // PolicyLadderStage is one rung of the adaptive-routing policy's computed
 // ladder (ADR-121 §1): a held (harness, credential) pair from the
 // resolved policy's pair order. The MODEL is computed per node at
@@ -478,10 +557,10 @@ type PolicyLadderStage struct {
 // compiled workflow through the SAME screen ApplyRunFallback applies —
 // agent nodes only, nodes with routes of their own excluded, every stage
 // through the C176/C135 predicates and the sandboxed-codex refusal — with
-// ONE difference: the stage's model is computed PER NODE through
-// nodeModel (the node's own model is what the crossing maps; a pair with
-// no delivery-1 mapping for this node is skipped for that node, never
-// emitted modelless). The triggers ride the stage's On verbatim — the
+// ONE difference: the stage's model is computed PER NODE from the node's
+// route (PolicyLadderReading.StageModel: the node's own model is what the
+// crossing maps; a pair with no delivery-1 mapping for this node is skipped
+// for that node, never emitted modelless). The triggers ride the stage's On verbatim — the
 // policy's resolved vocabulary, which includes auth and
 // transient_exhausted, NOT the chain's narrower default set: the
 // launch-time selection exists to fall through the auth-typed
@@ -495,11 +574,22 @@ type PolicyLadderStage struct {
 // publish serializes source, not IR): the two screens are the documented
 // twin — the publisher's answer feeds its derivations (advisory), the
 // runner's is authoritative.
-// The backend callback: the launch's model overrides win over the DSL
-// field at DISPATCH — the screen MUST read the same backend or a
-// cross-backend stage crosses a session-bearing node unscreened. nil = the
-// DSL reading.
-func ApplyPolicyLadder(w *Workflow, stages []PolicyLadderStage, sandboxed bool, vars map[string]string, nodeModel func(LLMNode) string, nodeBackend func(LLMNode) string, classes llmroute.ClassTable) []string {
+// The route callback returns the node's `model:` and `provider:` as the run
+// SETS them — the launch's model override wins over the DSL field — and
+// unresolved: the screen resolves both through the run's vars and
+// environment itself (PolicyLadderReading), the one reading every
+// classifier of a node's ladder shares. nil = the DSL fields. The backend
+// callback: the launch's model overrides win over the DSL field at DISPATCH
+// — the screen MUST read the same backend or a cross-backend stage crosses
+// a session-bearing node unscreened. nil = the DSL reading.
+//
+// teamGateway is the run's content boundary (ADR-131 §4,
+// store.RunContentBoundary.TeamGateway — the frozen stamp the run carries,
+// on the publisher and the runner alike): under it no stage lands on a node
+// whose route goes to the team's gateway, nor on one whose route the
+// reading cannot decide (PolicyLadderReading.StageModel, named per node like
+// every refusal); a node routed elsewhere keeps its rungs.
+func ApplyPolicyLadder(w *Workflow, stages []PolicyLadderStage, sandboxed bool, vars map[string]string, nodeRoute func(LLMNode) (model, provider string), nodeBackend func(LLMNode) string, classes llmroute.ClassTable, teamGateway bool) []string {
 	if w == nil || len(stages) == 0 {
 		return nil
 	}
@@ -510,6 +600,7 @@ func ApplyPolicyLadder(w *Workflow, stages []PolicyLadderStage, sandboxed bool, 
 	// undecided (ADR-129 §4).
 	view, _ := launchVarsView(w, vars)
 	run := runBackend.withVars(view)
+	reading := PolicyLadderReading{view: view}
 
 	var refusals []string
 	for _, n := range w.Nodes {
@@ -548,9 +639,9 @@ func ApplyPolicyLadder(w *Workflow, stages []PolicyLadderStage, sandboxed bool, 
 		for i, st := range stages {
 			stage := stageBase + i
 			routeBackend := run.routeName(st.Harness)
-			nodeMdl := ""
-			if nodeModel != nil {
-				nodeMdl = nodeModel(nn)
+			nodeMdl, nodeProvider := nn.GetLLMFields().Model, nn.GetLLMFields().Provider
+			if nodeRoute != nil {
+				nodeMdl, nodeProvider = nodeRoute(nn)
 			}
 			refuse := func(reason string) {
 				refusals = append(refusals, fmt.Sprintf(
@@ -563,7 +654,7 @@ func ApplyPolicyLadder(w *Workflow, stages []PolicyLadderStage, sandboxed bool, 
 			// distinguishes the structural no-mapping (the pair cannot
 			// serve the family) from the class table's cell resolving
 			// nowhere (a model_classes cell fixes that one).
-			mdl, ok, mapReason := llmroute.StageModel(st.Harness, st.Credential, nodeMdl, classes)
+			mdl, ok, mapReason := reading.StageModel(st.Harness, st.Credential, nodeMdl, nodeProvider, classes, teamGateway)
 			if !ok {
 				refuse(mapReason + " — stage skipped")
 				continue

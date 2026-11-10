@@ -21,6 +21,9 @@ type PreviewCandidate struct {
 	RemainingUSD      *float64         `json:"remaining_usd,omitempty"`
 	LiveRuns          *int             `json:"live_runs,omitempty"`
 	MaxConcurrentRuns int              `json:"max_concurrent_runs,omitempty"`
+	// Refuses is the eligibility skip's PledgeSkip.Refuses: the verdict on
+	// the launch no clock clears, whatever Status shows.
+	Refuses Status `json:"-"`
 }
 
 // Preview is a point-in-time estimate, never a reservation or proof of unseal.
@@ -31,7 +34,8 @@ type Preview struct {
 }
 
 // Preview follows Acquire's audience, eligibility, preference and fairness
-// ordering, using the ledger's own pure admission calculation. It does not
+// ordering, using the ledger's own pure admission calculation — the
+// attachment's draw caps (AttachmentID, DrawLimits) included. It does not
 // supersede leases, reserve capacity, mark a donor, probe or open a credential.
 // Only new launches are previewed; RunID is deliberately ignored.
 func (b *Broker) Preview(ctx context.Context, req Request) (Preview, error) {
@@ -59,12 +63,16 @@ func (b *Broker) Preview(ctx context.Context, req Request) (Preview, error) {
 		}
 		return out, err
 	}
+	// The attachment's draw caps (ADR-164), judged first and once, as
+	// tryPledge judges them: every candidate shares the scope's att: row, so
+	// a capped scope serves none of them.
+	drawStatus, drawReason := b.previewDrawCap(ctx, req, out.ObservedAt)
 	selected := false
 	for _, want := range req.Wants {
 		for _, pc := range pools {
 			eligible, skips := eligiblePledges(pc.candidates, req, want, out.ObservedAt)
 			for _, s := range skips {
-				out.Candidates = append(out.Candidates, PreviewCandidate{PledgeID: s.PledgeID, Source: want.Source, Ref: want.Ref, Status: s.Status})
+				out.Candidates = append(out.Candidates, PreviewCandidate{PledgeID: s.PledgeID, Source: want.Source, Ref: want.Ref, Status: s.Status, Refuses: s.Refuses})
 			}
 			ranked, err := b.rank(ctx, eligible, out.ObservedAt, req.RankMode)
 			if err != nil {
@@ -72,6 +80,11 @@ func (b *Broker) Preview(ctx context.Context, req Request) (Preview, error) {
 			}
 			for _, p := range ranked {
 				c := PreviewCandidate{PledgeID: p.ID, Source: p.Source, Ref: p.Ref, Status: StatusActive, MaxConcurrentRuns: p.Limits.MaxConcurrentRuns}
+				if drawStatus != "" {
+					c.Status, c.Reason = drawStatus, drawReason
+					out.Candidates = append(out.Candidates, c)
+					continue
+				}
 				n, committed, err := b.leases.LiveCommitment(ctx, p.ID, "", out.ObservedAt)
 				if err != nil {
 					c.Status = "unknown"
@@ -117,6 +130,27 @@ func (b *Broker) Preview(ctx context.Context, req Request) (Preview, error) {
 	return out, nil
 }
 
+// previewDrawCap reads the attachment's draw caps for a preview: "" when the
+// request names no attachment or its scope admits one more run; exhausted
+// when a cap is spent; unknown when its ledger could not be read.
+func (b *Broker) previewDrawCap(ctx context.Context, req Request, now time.Time) (Status, string) {
+	if req.AttachmentID == "" {
+		return "", ""
+	}
+	runs, committed, err := b.leases.LiveCommitmentByAttachment(ctx, req.AttachmentID, "", now)
+	if err != nil {
+		return "unknown", "attachment capacity unavailable"
+	}
+	day, week, err := b.ledger.Usage(ctx, AttachmentLedgerID(req.AttachmentID), now)
+	if err != nil {
+		return "unknown", "attachment usage unavailable"
+	}
+	if _, deny := previewAdmission(req.DrawLimits.AsLimits(), day, week, LiveCommitment{Runs: runs, CommittedUSD: committed}); deny != DenyNone {
+		return StatusExhausted, "The attachment's draw cap is spent for the period: the scope draws no entry until it resets."
+	}
+	return "", ""
+}
+
 func previewAdmission(l Limits, day, week Usage, live LiveCommitment) (float64, DenyReason) {
 	if l.MaxConcurrentRuns > 0 && live.Runs >= l.MaxConcurrentRuns {
 		return 0, DenyConcurrency
@@ -149,6 +183,25 @@ func apiKeyCredentialGone(k secrets.ApiKey, p Pledge, now time.Time) string {
 	}
 	return ""
 }
+
+// CredentialGone says why the credential the pledge pledgeID lends could no
+// longer serve once its entry frees — deleted, expired, out of its pledged
+// scope, re-pointed at another provider, a subscription disconnected or past
+// renewal — and "" when it still could. It is the predicate the walk applies
+// when it opens the credential (openCredential), read without opening it: the
+// walk opens a credential only once the entry's ledger admits, so an entry
+// declined as busy was never judged by it.
+func (b *Broker) CredentialGone(ctx context.Context, pledgeID string) (string, error) {
+	if b == nil {
+		return "", fmt.Errorf("credpool: no broker")
+	}
+	p, err := b.pledges.Get(ctx, pledgeID)
+	if err != nil {
+		return "", err
+	}
+	return b.previewCredential(ctx, p, b.now())
+}
+
 func (b *Broker) previewCredential(ctx context.Context, p Pledge, now time.Time) (string, error) {
 	switch p.Source {
 	case SourceOAuth:
@@ -164,13 +217,7 @@ func (b *Broker) previewCredential(ctx context.Context, p Pledge, now time.Time)
 		if b.apiKeys == nil {
 			return "", fmt.Errorf("api-key store unavailable")
 		}
-		var k secrets.ApiKey
-		var err error
-		if p.LendScope != "" {
-			k, err = b.apiKeys.GetForLend(ctx, p.KeyID, p.LendScope)
-		} else {
-			k, err = b.apiKeys.GetOwned(ctx, p.KeyID, p.UserID)
-		}
+		k, err := b.lentKeyRow(ctx, p)
 		if errors.Is(err, secrets.ErrApiKeyNotFound) {
 			return "API key deleted", nil
 		}

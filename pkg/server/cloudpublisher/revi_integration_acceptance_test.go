@@ -512,7 +512,7 @@ func TestReviIntegrationAcceptance_TheShippedSlotsAreRefused(t *testing.T) {
 	wf := compileTestSource(t, reviShippedBot)
 	view := model.RouteViewForLaunch(wf, buildModelOverrides(runview.EffectiveModelOverrides(nil, pol)), nil, map[string]string(nil), nil)
 	view.AllowedProviders = policyProviders(pol)
-	walk := model.EffectiveProviders(view, knownPoolProviders)
+	walk := model.EffectiveProviders(view, walkProviderSet)
 	if walk.OnlyEnvFunded() {
 		t.Error("the shipped texts classify env-funded under the acceptance's cell — the dials would then be free")
 	}

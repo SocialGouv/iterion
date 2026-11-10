@@ -37,9 +37,12 @@ The isolation chain, in the order a run meets it:
    name the team's own pool, an unmapped team's a pool no team holds, and
    a resume re-judges both (`ErrForkLanePool`). The shared-tier rule above
    holds for a fork run in full, so **a fork run is funded by its team's own
-   vendor API keys alone** (no forfait either: it cannot cross the run's
-   sandbox; no gateway credential before #2005 PR-C'): the launch gate
-   refuses one those keys cannot fund, typed (`fork_run_unfunded`), before
+   API keys alone** — its vendor keys, and its `openai_compatible` gateway
+   key on the literal `openai_compatible/…` routes that key serves, sealed
+   with its canonical base URL (no forfait: it cannot cross the run's
+   sandbox; never the pool pod's gateway: it is the refused environment).
+   The launch gate refuses one those keys cannot fund, typed
+   (`fork_run_unfunded`), before
    the org or the outside author is metered — and refuses every route the
    pool's runner decides itself, since the pool's env block pins the
    routing dials ([below](#routing-dials-the-pools-env-block-is-pinned))
@@ -69,13 +72,19 @@ The isolation chain, in the order a run meets it:
    declared supervisors and the session board send content derived from a
    run to a model resolved outside the run's own execution. All three take
    their model registry from one credential channel
-   (`pkg/backend/auxllm.Registry` — the server process env today). The
-   resolver and the session board resolve through plain `Resolve`, so the
-   run's own gateway credential, once #2005 PR-C' reopens the sealed bundle
-   server-side, funds them from that one place (#2645); declared
-   supervisors resolve through `ResolveWithContext` on the run's ctx, whose
-   sealed credentials already fund them where the ctx carries them — the
-   PR-C' change must touch that call site too (`pkg/supervise/bot.go`). On a run
+   (`pkg/backend/auxllm.Registry` — the server process env today). No
+   server-side path reopens a run's sealed bundle: the run document names
+   the key that filled its gateway slot (`ContentBoundary.KeyID`, written at
+   launch since #2005 PR-C'), but opening it here is a ticket of its own
+   (ADR-131's known limit, the server-helper credential channel), and until
+   it lands a run stamped `team_gateway` is refused by all three surfaces
+   whatever their model (`ErrPoolContentRefused`, the content boundary
+   outranking the pool stamp). When it lands, the resolver and the session
+   board — which resolve through plain `Resolve` — are funded from that one
+   place (#2645); declared supervisors resolve through `ResolveWithContext` on the run's
+   ctx, whose sealed credentials already fund them where the ctx carries
+   them, so that change must touch their call site too
+   (`pkg/supervise/bot.go`). On a run
    stamped to a pool they consult the run document's frozen stamp and
    refuse with `ErrPoolContentRefused` (HTTP 403 on the resolver route),
    naming the remedy — unless the surface's model is itself

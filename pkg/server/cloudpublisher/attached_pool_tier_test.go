@@ -25,6 +25,9 @@ type attachedFixture struct {
 	atts    *credpool.MemoryAttachmentStore
 	leases  *credpool.MemoryLeaseStore
 	oauth   *secrets.MemoryOAuthStore
+	// apiKeys is the store the broker reads lent rows from (the gateway
+	// entry's key-gw lives there).
+	apiKeys *secrets.MemoryApiKeyStore
 }
 
 func newAttachedFixture(t *testing.T) *attachedFixture {
@@ -100,7 +103,7 @@ func newAttachedFixture(t *testing.T) *attachedFixture {
 			runSecrets: rs, sealer: sealer, credPool: broker,
 			logger: iterlog.New(iterlog.LevelError, nil), rotatedOAuthKinds: rotatedClaude,
 		},
-		rs: rs, sealer: sealer, pools: pools, pledges: pledges, atts: atts, leases: leases, oauth: oauth,
+		rs: rs, sealer: sealer, pools: pools, pledges: pledges, atts: atts, leases: leases, oauth: oauth, apiKeys: apiKeys,
 	}
 }
 
@@ -109,7 +112,7 @@ func newAttachedFixture(t *testing.T) *attachedFixture {
 func (f *attachedFixture) resolveAttached(t *testing.T, runID string, wf *ir.Workflow, att *store.RunPoolAttachment) (secrets.RunBundle, credResolution) {
 	t.Helper()
 	ctx := store.WithTenant(context.Background(), poolTeam)
-	creds, err := f.pub.resolveAndSealCredentials(ctx, runID, poolOrg, poolTeam, "requester", "docs-refresh", "", wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustDefault, nil, nil, att)
+	creds, err := f.pub.resolveAndSealCredentials(ctx, runID, poolOrg, poolTeam, "requester", "docs-refresh", "", wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustDefault, nil, nil, att, boundaryDerived)
 	if err != nil {
 		t.Fatalf("resolveAndSealCredentials: %v", err)
 	}
@@ -276,7 +279,7 @@ func TestAttachedPool_explicitKeyKeepsItsSlot(t *testing.T) {
 		apiKeys: apiKeys, logger: iterlog.New(iterlog.LevelError, nil), rotatedOAuthKinds: rotatedClaude,
 	}
 	sctx := store.WithTenant(context.Background(), poolTeam)
-	creds, err := pub.resolveAndSealCredentials(sctx, "run-law1", poolOrg, poolTeam, "owner1", "docs-refresh", "", nil, nil, nil, model.RouteView{}, nil, store.RunTrustDefault, nil, nil, frozenAttachment("pool-mix"))
+	creds, err := pub.resolveAndSealCredentials(sctx, "run-law1", poolOrg, poolTeam, "owner1", "docs-refresh", "", nil, nil, nil, model.RouteView{}, nil, store.RunTrustDefault, nil, nil, frozenAttachment("pool-mix"), boundaryDerived)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -337,7 +340,7 @@ func TestAttachedPool_disabledBlocksTheLegacyTier(t *testing.T) {
 	}
 	sctx := store.WithTenant(context.Background(), poolTeam)
 	creds, err := pub.resolveAndSealCredentials(sctx, "run-optout", poolOrg, poolTeam, "requester", "docs-refresh", "", nil, nil, nil, model.RouteView{}, nil, store.RunTrustDefault, nil, nil,
-		&store.RunPoolAttachment{PoolID: "", ScopeID: credpool.TeamScopeID(poolTeam), Strategy: store.RunPoolStrategy{Triggers: []string{}}})
+		&store.RunPoolAttachment{PoolID: "", ScopeID: credpool.TeamScopeID(poolTeam), Strategy: store.RunPoolStrategy{Triggers: []string{}}}, boundaryDerived)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}

@@ -575,11 +575,8 @@ func (p Pledge) Cooling(now time.Time) bool {
 // token, surfaced to the donor and in the acquisition trace so "why did
 // nobody serve this run" is answerable.
 func (p Pledge) Available(now time.Time, botID string) (bool, Status) {
-	if !p.Enabled {
-		return false, StatusPaused
-	}
-	if p.Health != HealthOK && p.Health != "" {
-		return false, StatusUnhealthy
+	if parked := p.parked(); parked != "" {
+		return false, parked
 	}
 	if p.Cooling(now) {
 		return false, StatusCooling
@@ -606,10 +603,39 @@ func (p Pledge) AvailableForLaunch(now time.Time, botID string) (bool, Status) {
 	if ok, status := p.Available(now, botID); !ok {
 		return false, status
 	}
-	if len(p.Bots) > 0 && !p.servesBot(botID) {
-		return false, StatusBotFiltered
+	if refused := p.launchRefusal(botID); refused != "" {
+		return false, refused
 	}
 	return true, StatusActive
+}
+
+// parked is the pledge's own state that holds it out of every selection:
+// paused by its donor, or unhealthy. "" when neither.
+func (p Pledge) parked() Status {
+	if !p.Enabled {
+		return StatusPaused
+	}
+	if p.Health != HealthOK && p.Health != "" {
+		return StatusUnhealthy
+	}
+	return ""
+}
+
+// launchRefusal is the part of AvailableForLaunch no clock clears: the pledge
+// parked (paused, unhealthy), or its bot allow-list refusing the launch —
+// fail closed on an empty bot id, as AvailableForLaunch. "" when the pledge
+// serves the launch once its cooldown ends, its sharing hours open and its
+// ledger admits. Available reports the cooldown and the sharing hours before
+// the allow-list, so its status alone cannot tell an entry that will serve
+// this launch from one that never will.
+func (p Pledge) launchRefusal(botID string) Status {
+	if parked := p.parked(); parked != "" {
+		return parked
+	}
+	if len(p.Bots) > 0 && !p.servesBot(botID) {
+		return StatusBotFiltered
+	}
+	return ""
 }
 
 func (p Pledge) servesBot(botID string) bool {

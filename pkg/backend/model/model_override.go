@@ -187,6 +187,23 @@ func (o ModelOverrides) ForNode(id string, kind ir.NodeKind) NodeModelOverride {
 	return out
 }
 
+// LadderRoute is a node's `model:` and `provider:` as the run sets them —
+// each launch override wins its field, the way dispatch reads them
+// (chainReading.baselineModel, providerChain) — unresolved: the route
+// callback of ir.ApplyPolicyLadder, whose PolicyLadderReading resolves both.
+// Every caller of the screen passes this one reading.
+func (o ModelOverrides) LadderRoute(n ir.LLMNode) (model, provider string) {
+	ov := o.ForNode(n.NodeID(), n.NodeKind())
+	model, provider = n.GetLLMFields().Model, n.GetLLMFields().Provider
+	if ov.Model != "" {
+		model = ov.Model
+	}
+	if ov.Provider != "" {
+		provider = ov.Provider
+	}
+	return model, provider
+}
+
 // ForNodeFieldSources resolves exactly as ForNode and additionally names,
 // for the fields the composed-pair check reads (backend, provider), the
 // rule that won each. ONE walk: ForNode delegates here, so the pair's

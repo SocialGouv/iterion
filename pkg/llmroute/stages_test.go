@@ -2,7 +2,10 @@ package llmroute
 
 import (
 	"reflect"
+	"strings"
 	"testing"
+
+	"github.com/SocialGouv/iterion/pkg/secrets"
 )
 
 // The default order enumerates the ADR's "then the rest": every slot a
@@ -15,6 +18,7 @@ func TestDefaultPairOrderCoversEverySealableSlot(t *testing.T) {
 		CredClaudeForfait: true, CredChatGPTForfait: true,
 		"anthropic_key": true, "openai_key": true, "zai_key": true, "moonshot_key": true,
 		"bedrock_key": true, "vertex_key": true, "azure_key": true, "openrouter_key": true, "xai_key": true,
+		"openai_compatible_key": true,
 	}
 	listed := map[string]bool{}
 	for _, pair := range DefaultPairOrder {
@@ -73,17 +77,110 @@ func TestStageModelPairKeyed(t *testing.T) {
 		// nothing — a re-prefixed invalid spec would dispatch nowhere.
 		{HarnessClaudeCode, "anthropic_key", "openai_compatible/mistral", "", false},
 		{HarnessClaw, "anthropic_key", "openai_compatible/mistral", "", false},
+		// The gateway's own ids are provider-first, so its spelling nests:
+		// the nested spec maps exactly as the one-segment one, never as an
+		// anthropic-wire id re-prefixed into `anthropic/openai_compatible/…`.
+		{HarnessClaw, "anthropic_key", "openai_compatible/scaleway/glm-5.3", "", false},
+		{HarnessClaw, "zai_key", "openai_compatible/scaleway/glm-5.3", "", false},
+		{HarnessClaudeCode, "anthropic_key", "openai_compatible/scaleway/glm-5.3", "", false},
+		// The wholesale crossing answers both spellings alike: familyNone
+		// classifies standard and crosses to the class's openai rendering —
+		// a vendor openai key serving a node written for the gateway.
+		{HarnessClaw, "openai_key", "openai_compatible/mistral", "openai/gpt-6-sol", true},
+		{HarnessClaw, "openai_key", "openai_compatible/scaleway/glm-5.3", "openai/gpt-6-sol", true},
+		// The trap: a provider-first id WITHOUT the gateway prefix is no
+		// gateway spec and no family's own id — no same-family mapping serves
+		// it, and the crossing never sends it to the vendor endpoint as
+		// written (`openai/gpt-oss-120b`).
+		{HarnessClaw, "anthropic_key", "scaleway/gpt-oss-120b", "", false},
+		{HarnessClaw, "zai_key", "scaleway/gpt-oss-120b", "", false},
+		{HarnessClaudeCode, "anthropic_key", "scaleway/gpt-oss-120b", "", false},
+		{HarnessClaw, "openai_key", "scaleway/gpt-oss-120b", "openai/gpt-6-sol", true},
+		// The class: dispatch reads the routing prefix at the FIRST slash and
+		// sends the rest verbatim, so a nested id belongs to its prefix's
+		// family, never to the bare-id reading. openai/ is the openai wire
+		// whatever id it carries (`qwen/qwen-max` behind an OpenAI-shaped
+		// endpoint): its rungs carry the node's own id.
+		{HarnessClaw, "openai_key", "openai/qwen/qwen-max", "openai/qwen/qwen-max", true},
+		{HarnessCodex, CredChatGPTForfait, "openai/qwen/qwen-max", "qwen/qwen-max", true},
+		{HarnessClaw, "anthropic_key", "openai/qwen/qwen-max", "", false},
+		{HarnessClaudeCode, CredClaudeForfait, "openai/qwen/qwen-max", "", false},
+		// anthropic/ is the anthropic wire, a region-prefixed id included:
+		// its prefix is stripped once, never doubled.
+		{HarnessClaw, "anthropic_key", "anthropic/eu/claude-opus-5", "anthropic/eu/claude-opus-5", true},
+		{HarnessClaudeCode, CredClaudeForfait, "anthropic/eu/claude-opus-5", "eu/claude-opus-5", true},
+		{HarnessClaw, "openai_key", "anthropic/eu/claude-opus-5", "openai/gpt-6-sol", true},
+		// Any other prefix is no family's, however deep its id: no
+		// same-family rung serves another vendor's route, and the crossing
+		// answers it as any foreign model.
+		{HarnessClaw, "anthropic_key", "moonshot/kimi-code/kimi-for-coding", "", false},
+		{HarnessClaw, "zai_key", "moonshot/kimi-code/kimi-for-coding", "", false},
+		{HarnessClaudeCode, CredClaudeForfait, "moonshot/kimi-code/kimi-for-coding", "", false},
+		{HarnessClaw, "openai_key", "moonshot/kimi-code/kimi-for-coding", "openai/gpt-6-sol", true},
+		{HarnessClaw, "anthropic_key", "xai/grok/grok-3-mini", "", false},
+		{HarnessClaudeCode, CredClaudeForfait, "openrouter/anthropic/claude-opus-5", "", false},
 		{"pi", CredClaudeForfait, "claude-opus-5-5", "", false},
 	}
 	for _, tt := range tests {
-		got, ok, _ := StageModel(tt.harness, tt.credential, tt.nodeModel, ResolveClasses(nil))
+		got, ok, reason := StageModel(tt.harness, tt.credential, tt.nodeModel, ResolveClasses(nil), false)
 		if ok != tt.ok || (ok && got != tt.want) {
 			t.Errorf("StageModel(%s, %s, %s) = %q, %v — want %q, %v", tt.harness, tt.credential, tt.nodeModel, got, ok, tt.want, tt.ok)
 		}
+		// The shipped table is full, so every refusal here is structural.
+		if !ok && reason != ReasonNoMapping {
+			t.Errorf("StageModel(%s, %s, %s) refused with %q, want %q", tt.harness, tt.credential, tt.nodeModel, reason, ReasonNoMapping)
+		}
+	}
+
+	// One reading per prefix: a nested id maps as its one-segment spelling
+	// on every pair the default order lists — same family, same refusal,
+	// same reason. The nesting belongs to the id, never to a second family
+	// reading. Where a family's rung re-prefixes the node's own id, the two
+	// models differ by that id (the rows above pin them); a prefix that is
+	// no family's maps both spellings to one answer, the crossing included.
+	spellings := []struct {
+		one, nested string
+		sameModel   bool
+	}{
+		{"openai_compatible/glm-5.3", "openai_compatible/scaleway/glm-5.3", true},
+		{"moonshot/kimi-k2", "moonshot/kimi-code/kimi-for-coding", true},
+		{"xai/grok-3-mini", "xai/grok/grok-3-mini", true},
+		{"openrouter/claude-opus-5", "openrouter/anthropic/claude-opus-5", true},
+		{"scaleway/gpt-oss-120b", "scaleway/oss/gpt-oss-120b", true},
+		{"openai/gpt-6-mini", "openai/qwen/qwen-max", false},
+		{"codex/gpt-6-mini", "codex/qwen/qwen-max", false},
+		{"anthropic/claude-opus-5", "anthropic/eu/claude-opus-5", false},
+	}
+	for _, sp := range spellings {
+		for _, pair := range DefaultPairOrder {
+			h, c, err := ParsePair(pair)
+			if err != nil {
+				t.Fatalf("default order entry %q: %v", pair, err)
+			}
+			oneModel, oneOK, oneReason := StageModel(h, c, sp.one, ResolveClasses(nil), false)
+			nestedModel, nestedOK, nestedReason := StageModel(h, c, sp.nested, ResolveClasses(nil), false)
+			if oneOK != nestedOK || oneReason != nestedReason || (sp.sameModel && oneModel != nestedModel) {
+				t.Errorf("%s: %s → (%q, %v, %q) but %s → (%q, %v, %q) — the two spellings of one prefix disagree", pair, sp.one, oneModel, oneOK, oneReason, sp.nested, nestedModel, nestedOK, nestedReason)
+			}
+		}
 	}
 	// A node with no model maps nothing: a modelless stage is never born.
-	if _, ok, _ := StageModel(HarnessClaw, "anthropic_key", "", ResolveClasses(nil)); ok {
+	if _, ok, _ := StageModel(HarnessClaw, "anthropic_key", "", ResolveClasses(nil), false); ok {
 		t.Error("StageModel with an empty node model = ok — a modelless stage would be refused downstream")
+	}
+	// Nor does a prefix with nothing after its slash (`anthropic/`, a
+	// template whose variable expanded empty): it names no id, so no pair
+	// maps it to a modelless rung or re-prefixes the empty id.
+	for _, spec := range []string{"anthropic/", "openai/", "codex/"} {
+		for _, pair := range DefaultPairOrder {
+			h, c, err := ParsePair(pair)
+			if err != nil {
+				t.Fatalf("default order entry %q: %v", pair, err)
+			}
+			if got, ok, _ := StageModel(h, c, spec, ResolveClasses(nil), false); ok && (got == "" || strings.HasSuffix(got, "/")) {
+				t.Errorf("StageModel(%s, %s) = %q — a rung with no model id", pair, spec, got)
+			}
+		}
 	}
 
 	// The class feature's FIRST payoff, named: the table's fast rung
@@ -100,7 +197,7 @@ func TestStageModelPairKeyed(t *testing.T) {
 		{HarnessClaw, "openai_key", "anthropic/claude-haiku-4-5", "openai/gpt-6-luna"},
 	}
 	for _, tt := range fast {
-		got, ok, _ := StageModel(tt.harness, tt.credential, tt.nodeModel, ResolveClasses(nil))
+		got, ok, _ := StageModel(tt.harness, tt.credential, tt.nodeModel, ResolveClasses(nil), false)
 		if !ok || got != tt.want {
 			t.Errorf("fast crossing StageModel(%s, %s, %s) = %q, %v — want %q (the table's fast rung)", tt.harness, tt.credential, tt.nodeModel, got, ok, tt.want)
 		}
@@ -111,17 +208,128 @@ func TestStageModelPairKeyed(t *testing.T) {
 	// custom table reaches it — the shipped one is full) names the class
 	// and family, the fixable refusal.
 	empty := ClassTable{}
-	_, _, reason := StageModel("pi", CredClaudeForfait, "claude-opus-5-5", ResolveClasses(nil))
+	_, _, reason := StageModel("pi", CredClaudeForfait, "claude-opus-5-5", ResolveClasses(nil), false)
 	if reason != ReasonNoMapping {
 		t.Fatalf("structural skip reason = %q, want %q", reason, ReasonNoMapping)
 	}
 	custom := ResolveClasses(nil)
 	custom.forward = map[string]map[string]string{ClassStandard: {familyOpenAI: "gpt-6-sol"}}
-	_, ok, reason := StageModel(HarnessCodex, CredChatGPTForfait, "claude-opus-5-5", custom)
+	_, ok, reason := StageModel(HarnessCodex, CredChatGPTForfait, "claude-opus-5-5", custom, false)
 	if ok || reason != "class top resolves nowhere on family openai" {
 		t.Fatalf("class-unresolved = %q, %v — want the named class+family reason", reason, ok)
 	}
 	_ = empty
+}
+
+// ADR-131 §4, the stamped counterpart of TestStageModelPairKeyed's gateway
+// rows: under a team_gateway content boundary a node routed to the team's
+// gateway maps on NO pair the default order lists — the wholesale crossings
+// those rows pin (claw+openai_key, codex's forfait and key) included — and
+// the reason names the boundary. Without the boundary (the operator's env
+// gateway, an unstamped run) the crossings land exactly as the rows above
+// pin. A node routed to a vendor maps the same under either answer: the
+// boundary holds the gateway's content, not a mixed run's vendor nodes.
+// Mutants: the boundary check dropped → the stamped rows red; the check
+// blind to the flag → the unstamped crossings red; the check on every node →
+// the vendor rows red.
+func TestStageModelUnderTheTeamGatewayBoundary(t *testing.T) {
+	classes := ResolveClasses(nil)
+	crossings := []struct{ harness, credential string }{
+		{HarnessClaw, "openai_key"}, {HarnessCodex, CredChatGPTForfait}, {HarnessCodex, "openai_key"},
+	}
+	gatewayModels := []string{"openai_compatible/scaleway/glm-5.3", "openai_compatible/mistral", " OpenAI_Compatible/scaleway/glm-5.3"}
+	for _, cr := range crossings {
+		for _, mdl := range gatewayModels[:2] {
+			if _, ok, _ := StageModel(cr.harness, cr.credential, mdl, classes, false); !ok {
+				t.Fatalf("unstamped StageModel(%s+%s, %s) refused — the control crossing is gone, so the stamped refusal below proves nothing", cr.harness, cr.credential, mdl)
+			}
+		}
+	}
+	for _, pair := range DefaultPairOrder {
+		h, c, err := ParsePair(pair)
+		if err != nil {
+			t.Fatalf("default order entry %q: %v", pair, err)
+		}
+		for _, mdl := range gatewayModels {
+			if got, ok, reason := StageModel(h, c, mdl, classes, true); ok || reason != ReasonContentBoundary {
+				t.Errorf("stamped StageModel(%s, %s) = %q, %v, %q — want a drop with the boundary's reason: a gateway node's content never crosses to a vendor credential", pair, mdl, got, ok, reason)
+			}
+		}
+		for _, mdl := range []string{"claude-opus-5-5", "anthropic/claude-opus-5", "openai/gpt-6-mini", "gpt-6-sol", "scaleway/gpt-oss-120b"} {
+			wantModel, wantOK, wantReason := StageModel(h, c, mdl, classes, false)
+			if got, ok, reason := StageModel(h, c, mdl, classes, true); got != wantModel || ok != wantOK || reason != wantReason {
+				t.Errorf("stamped StageModel(%s, %s) = (%q, %v, %q), unstamped (%q, %v, %q) — the boundary moved a vendor node's rung", pair, mdl, got, ok, reason, wantModel, wantOK, wantReason)
+			}
+		}
+	}
+}
+
+// The gateway pair is a seal-whitelist entry and never a ladder rung: the
+// order lists it — once, on claw — so the whitelist can seal the gateway
+// slot, and no arm of StageModel has a case for the slot, so a stage
+// naming it drops on every harness and every node, whatever the node's
+// model — the gateway's own spelling and a vendor's alike. The absence of
+// that case on every arm IS the guarantee.
+func TestStageModelNeverMapsTheGatewayPair(t *testing.T) {
+	var listed []string
+	for _, pair := range DefaultPairOrder {
+		if _, c, err := ParsePair(pair); err == nil && c == "openai_compatible_key" {
+			listed = append(listed, pair)
+		}
+	}
+	if want := []string{Pair(HarnessClaw, "openai_compatible_key")}; !reflect.DeepEqual(listed, want) {
+		t.Fatalf("DefaultPairOrder names the gateway slot as %v, want exactly %v — the whitelist seals the slot through claw's pair alone", listed, want)
+	}
+	for _, harness := range Harnesses {
+		for _, nodeModel := range []string{
+			"openai_compatible/scaleway/glm-5.3", "openai_compatible/glm-5.3",
+			"claude-opus-5-5", "anthropic/claude-opus-5-5", "openai/gpt-6-mini", "gpt-6-sol",
+		} {
+			got, ok, reason := StageModel(harness, "openai_compatible_key", nodeModel, ResolveClasses(nil), false)
+			if ok || reason != ReasonNoMapping {
+				t.Errorf("StageModel(%s+openai_compatible_key, %s) = %q, %v, %q — want a drop with %q: the gateway slot is never a rung", harness, nodeModel, got, ok, reason, ReasonNoMapping)
+			}
+		}
+	}
+}
+
+// claude_code maps exactly the slots its delegate spends — the
+// anthropic-wire slots, secrets.AnthropicWireSlotOrder (the OAuth kind is
+// the Claude forfait). A pair naming any other slot hands the delegate a
+// provider hint it does not route on: the session would spend the wire's
+// default precedence (the forfait, the Anthropic key) under that pair's
+// name, and the fallback door would ask a donor for a credential the rung
+// never spends. Every slot of the vocabulary is asked, the gateway's
+// included.
+func TestStageModelClaudeCodeMapsTheSlotsItSpends(t *testing.T) {
+	spends := map[string]bool{}
+	for _, slot := range secrets.AnthropicWireSlotOrder {
+		if slot == string(secrets.OAuthKindClaudeCode) {
+			slot = CredClaudeForfait
+		} else {
+			slot += "_key"
+		}
+		if !validCredential(slot) {
+			t.Errorf("secrets.AnthropicWireSlotOrder names %q, a slot the policy vocabulary does not know", slot)
+		}
+		spends[slot] = true
+	}
+	slots := []string{CredClaudeForfait, CredChatGPTForfait}
+	for _, p := range ProviderHints {
+		slots = append(slots, p+"_key")
+	}
+	for _, slot := range slots {
+		got, ok, reason := StageModel(HarnessClaudeCode, slot, "claude-opus-5-5", ResolveClasses(nil), false)
+		if spends[slot] {
+			if !ok || got != "claude-opus-5-5" {
+				t.Errorf("StageModel(claude_code+%s, claude-opus-5-5) = %q, %v — the delegate spends this slot, want the node's id", slot, got, ok)
+			}
+			continue
+		}
+		if ok || reason != ReasonNoMapping {
+			t.Errorf("StageModel(claude_code+%s, claude-opus-5-5) = %q, %v, %q — the delegate never spends this slot, want a drop with %q", slot, got, ok, reason, ReasonNoMapping)
+		}
+	}
 }
 
 // SlotSealable is the whitelist's granularity: a slot is sealable when ANY
@@ -142,22 +350,45 @@ func TestSlotSealable(t *testing.T) {
 	}
 }
 
-// ADR-131 §5 promises a frozen PRE-UPGRADE pair order "replayed as stored
-// with one named warning". The gateway slot is what would make a stored
-// list pre-upgrade, and today it is outside BOTH the shipped default and
-// the vocabulary a tenant's own order may name: no run can freeze a list
-// the gateway upgrade widens, so the clause has no gateway leg to warn
-// about. The day PR-C' (#2005) widens the vocabulary this reds, and the
-// obligation lands with it at the owner site — the seal whitelist
-// (*Publisher).resolveAndSealCredentials builds from the run document's
-// frozen pair order.
-func TestGatewayPairStaysOutOfTheWhitelistUntilTheReplayWarningLands(t *testing.T) {
-	const gatewaySlot = "openai_compatible_key"
-	if SlotSealable(DefaultPairOrder, gatewaySlot) {
-		t.Errorf("SlotSealable(DefaultPairOrder, %q) = true: the shipped default names the gateway slot, so every run frozen before it replays a pre-upgrade list — ADR-131 §5 owes its one named warning (#2914), emitted where the whitelist is built from the run doc's frozen pair order (pkg/server/cloudpublisher/publisher.go, resolveAndSealCredentials)", gatewaySlot)
+// ADR-131 §5: the gateway slot joins the shipped default and the policy
+// vocabulary as a SEAL-WHITELIST entry, never a ladder rung. Sealable under
+// the default — a run launched today seals its team's gateway key — and
+// SealOnly, the predicate the ladder composer drops the pair on, true for
+// that slot alone: every other slot the default names orders a rung. A run
+// frozen BEFORE the entry existed replays its list as stored and says so
+// once; that half is witnessed at the owner site, where the whitelist is
+// built from the run document's frozen pair order
+// (pkg/server/cloudpublisher, TestGatewayKey_AFrozenPreUpgradeOrderReplaysAsStoredAndSaysSoOnce).
+// Mutants: SealOnly answering false for the gateway → the first assertion
+// reds; answering true for every slot → the loop reds on anthropic_key.
+func TestGatewayPairIsASealWhitelistEntryNeverARung(t *testing.T) {
+	if !SlotSealable(DefaultPairOrder, gatewaySlot) {
+		t.Fatalf("SlotSealable(DefaultPairOrder, %q) = false: the shipped default must name the gateway slot, or no launch ever seals a team's gateway key", gatewaySlot)
 	}
-	if validCredential(gatewaySlot) {
-		t.Errorf("validCredential(%q) = true: the policy vocabulary accepts the gateway slot, so a tenant can freeze an order naming it — ADR-131 §5 owes its one named warning (#2914) at the same site (pkg/server/cloudpublisher/publisher.go, resolveAndSealCredentials)", gatewaySlot)
+	if !validCredential(gatewaySlot) {
+		t.Fatalf("validCredential(%q) = false: the policy vocabulary refuses the slot the default names", gatewaySlot)
+	}
+	if !SealOnly(gatewaySlot) {
+		t.Fatalf("SealOnly(%q) = false: the gateway pair would become a ladder stage the moment a run seals its key", gatewaySlot)
+	}
+	for _, pair := range DefaultPairOrder {
+		_, c, err := ParsePair(pair)
+		if err != nil {
+			t.Fatalf("default order entry %q: %v", pair, err)
+		}
+		if c != gatewaySlot && SealOnly(c) {
+			t.Errorf("SealOnly(%q) = true: a rung slot of the default would never order a stage", c)
+		}
+	}
+	// The structural half the composer relies on: no harness maps a node
+	// model onto the gateway slot, so even a stage that slipped through
+	// would drop on every node.
+	for _, h := range []string{HarnessClaw, HarnessClaudeCode, HarnessCodex} {
+		for _, mdl := range []string{"openai_compatible/scaleway/glm-5.3", "anthropic/claude-opus-5", "gpt-6-sol"} {
+			if got, ok, _ := StageModel(h, gatewaySlot, mdl, ClassTable{}, false); ok {
+				t.Errorf("StageModel(%s, %s, %s) = %q: the gateway slot must map no stage", h, gatewaySlot, mdl, got)
+			}
+		}
 	}
 }
 

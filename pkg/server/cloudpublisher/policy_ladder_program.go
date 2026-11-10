@@ -35,7 +35,12 @@ import (
 // A CLAMPED-EMPTY trigger set is the "never switch" answer: no ladder at all.
 // (The wire's On would otherwise round-trip empty into the chain DEFAULT set
 // — the ceiling's forbidden triggers armed, the slice-3 review's M4.)
-func composePolicyLadder(wf *ir.Workflow, view model.RouteView, routePolicy *store.RunLLMRoutePolicy, allowed map[string]bool, launchVars map[string]string, serves func(_, credential string) bool, refused func(string)) []ir.PolicyLadderStage {
+//
+// teamGateway is the run's content boundary (ADR-131 §4): the stages still
+// compose — a mixed run's vendor nodes keep their rungs — and the screen
+// lands none on a node routed to the team's gateway, refused by name. The
+// runner's screen reads the boundary the message carries, the same value.
+func composePolicyLadder(wf *ir.Workflow, view model.RouteView, routePolicy *store.RunLLMRoutePolicy, allowed map[string]bool, launchVars map[string]string, serves func(_, credential string) bool, teamGateway bool, refused func(string)) []ir.PolicyLadderStage {
 	if wf == nil || routePolicy == nil || len(routePolicy.Triggers) == 0 {
 		return nil
 	}
@@ -45,9 +50,16 @@ func composePolicyLadder(wf *ir.Workflow, view model.RouteView, routePolicy *sto
 	}
 	stages := make([]ir.PolicyLadderStage, 0, len(held))
 	for _, pair := range held {
-		if h, c, err := llmroute.ParsePair(pair); err == nil {
+		// A seal-whitelist entry (the gateway pair, ADR-131 §5) is HELD once
+		// the walk seals its key, and orders no rung: as a stage it would ride
+		// the run message only to drop on every node (StageModel maps it on no
+		// harness), each drop a refusal event.
+		if h, c, err := llmroute.ParsePair(pair); err == nil && !llmroute.SealOnly(c) {
 			stages = append(stages, ir.PolicyLadderStage{Harness: h, Credential: c, On: routePolicy.Triggers, CrossHarness: routePolicy.CrossHarness})
 		}
+	}
+	if len(stages) == 0 {
+		return nil
 	}
 	report := func(refusals []string) {
 		if refused == nil {
@@ -82,16 +94,10 @@ func composePolicyLadder(wf *ir.Workflow, view model.RouteView, routePolicy *sto
 		ov := view.Overrides.ForNode(n.NodeID(), n.NodeKind())
 		return ov.Backend
 	}))
-	report(ir.ApplyPolicyLadder(wf, stages, sandboxed, launchVars, func(n ir.LLMNode) string {
-		ov := view.Overrides.ForNode(n.NodeID(), n.NodeKind())
-		if ov.Model != "" {
-			return ir.ExpandEnvWithDefault(ov.Model)
-		}
-		return ir.ExpandEnvWithDefault(n.GetLLMFields().Model)
-	}, func(n ir.LLMNode) string {
+	report(ir.ApplyPolicyLadder(wf, stages, sandboxed, launchVars, view.Overrides.LadderRoute, func(n ir.LLMNode) string {
 		ov := view.Overrides.ForNode(n.NodeID(), n.NodeKind())
 		return ov.Backend
-	}, llmroute.ResolveClasses(routePolicy.ModelClasses)))
+	}, llmroute.ResolveClasses(routePolicy.ModelClasses), teamGateway))
 	return stages
 }
 

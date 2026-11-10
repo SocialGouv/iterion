@@ -59,10 +59,11 @@ func TestConfigHost(t *testing.T) {
 
 func TestValidate(t *testing.T) {
 	// The accept side needs no DNS here: the strict refusals below all sit
-	// on numeric addresses or reserved aliases (fail-closed, resolvable
-	// offline), and the accept side of the dial guard is httpdial's own
-	// suite. TestNewClient_RefusesARedirect exercises a full accepted
-	// client (strict lifted, loopback — the escape hatch's own shape).
+	// on numeric addresses, reserved aliases or malformed names, each
+	// refused before any lookup, and the accept side of the dial guard is
+	// httpdial's own suite. TestNewClient_RefusesARedirect exercises a full
+	// accepted client (strict lifted, loopback — the escape hatch's own
+	// shape).
 	for name, cfg := range map[string]Config{
 		"no scheme":       {BaseURL: "gw.example.com"},
 		"ftp":             {BaseURL: "ftp://gw.example.com"},
@@ -74,14 +75,47 @@ func TestValidate(t *testing.T) {
 		"private strict":  {BaseURL: "http://10.0.0.9:4000"},
 		"metadata strict": {BaseURL: "http://169.254.169.254"},
 		"cluster alias":   {BaseURL: "http://gw.default.svc.cluster.local:4000"},
+		// The shared space and the non-public IPv6 transition addresses,
+		// under the same hatch as the private ones (lifted below).
+		"cgnat strict":                     {BaseURL: "http://100.64.0.1:4000"},
+		"nat64 strict":                     {BaseURL: "http://[64:ff9b::7f00:1]:4000"},
+		"nat64 local-use strict":           {BaseURL: "http://[64:ff9b:1::a00:1]:4000"},
+		"6to4 strict":                      {BaseURL: "http://[2002:7f00:1::]:4000"},
+		"dotted metadata alias strict":     {BaseURL: "http://metadata.google.internal./v1"},
+		"dotted service alias strict":      {BaseURL: "http://gw.svc./v1"},
+		"empty-label host strict":          {BaseURL: "http://gw..example.test/v1"},
+		"double-dotted alias strict":       {BaseURL: "http://gw.svc../v1"},
+		"metadata alias, cased, strict":    {BaseURL: "http://Metadata.Google.Internal/v1"},
+		"kubernetes alias, dotted, strict": {BaseURL: "http://kubernetes.default./v1"},
 	} {
 		if err := cfg.Validate(true); err == nil {
 			t.Errorf("%s accepted", name)
 		}
 	}
+	// A reserved name is refused as the dial refuses it — by the guard,
+	// before any lookup, in any spelling — so the refusal names the escape
+	// hatch that lifts it; a resolver's failure would not.
+	for _, base := range []string{"http://gw.default.svc.cluster.local:4000", "http://metadata.google.internal./v1", "http://gw.svc./v1", "http://kubernetes.default./v1"} {
+		err := (Config{BaseURL: base}).Validate(true)
+		if err == nil || !strings.Contains(err.Error(), "ITERION_LLM_ENDPOINT_ALLOW_PRIVATE=1") {
+			t.Errorf("Validate(true) on %s = %v; want the guard's refusal naming the escape hatch", base, err)
+		}
+	}
+	// A malformed name is no address class: no hatch lifts it, and its
+	// refusal names none.
+	if err := (Config{BaseURL: "http://gw..example.test/v1"}).Validate(true); err == nil || strings.Contains(err.Error(), "ITERION_LLM_ENDPOINT_ALLOW_PRIVATE") {
+		t.Errorf("Validate(true) on an empty-label host = %v; want a refusal that names no escape hatch", err)
+	}
+	// An IPv4-compatible address is refused at every strictness, as the dial
+	// refuses it: no hatch lifts it, so its refusal names none.
+	for _, strict := range []bool{true, false} {
+		if err := (Config{BaseURL: "http://[::127.0.0.1]:4000"}).Validate(strict); err == nil || strings.Contains(err.Error(), "ITERION_LLM_ENDPOINT_ALLOW_PRIVATE") {
+			t.Errorf("Validate(%v) on an IPv4-compatible loopback = %v; want a refusal that names no escape hatch", strict, err)
+		}
+	}
 	// The escape hatch lifts the address requirement — for a self-hosted
 	// gateway — and nothing else.
-	for _, addr := range []string{"http://127.0.0.1:4000", "http://10.0.0.9:4000"} {
+	for _, addr := range []string{"http://127.0.0.1:4000", "http://[::1]:4000", "http://10.0.0.9:4000", "http://100.64.0.1:4000", "http://[64:ff9b::7f00:1]:4000", "http://[64:ff9b:1::a00:1]:4000", "http://[2002:7f00:1::]:4000"} {
 		if err := (Config{BaseURL: addr}).Validate(false); err != nil {
 			t.Errorf("%s refused with the hatch lifted: %v", addr, err)
 		}

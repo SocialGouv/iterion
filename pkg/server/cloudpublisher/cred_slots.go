@@ -235,14 +235,39 @@ func (p *Publisher) armCredSlotRetry(ctx context.Context, retryStore store.RunRe
 	return nil
 }
 
+// sealedKey is what a site that seals an API key knows of the row it
+// sealed: the row's id, its audit identity, its concurrency cap and label.
+type sealedKey struct {
+	id          string
+	fingerprint string
+	max         int
+	name        string
+}
+
+// sealedKeyIDs records, per provider slot, the id of the key row that filled
+// it — the walk's last fill of a slot wins, as for the fingerprint stamp. The
+// content boundary reads the gateway slot's (ADR-131 §4: the KeyID of a
+// team_gateway stamp). A struct, not a bare map, so it cannot be passed where
+// the fingerprint map is expected.
+type sealedKeyIDs struct{ byProvider map[secrets.Provider]string }
+
+func newSealedKeyIDs() sealedKeyIDs {
+	return sealedKeyIDs{byProvider: map[secrets.Provider]string{}}
+}
+
+// of is the id of the row that filled prov's slot, "" when none did.
+func (s sealedKeyIDs) of(prov secrets.Provider) string { return s.byProvider[prov] }
+
 // noteSealedAPIKey is the one call every site that seals an API key makes:
-// it records the per-provider stamp the meters read (apiKeyFPs) and the
-// capped key the admission reserves (wants) together — a site that stamped
-// without noting would meter the key's runs and never admit them against
-// its cap. A lent key arrives with its donor record's cap
-// (credpool.Grant.KeyMaxConcurrentRuns), so one ledger row governs the key
-// whoever runs on it.
-func noteSealedAPIKey(apiKeyFPs map[secrets.Provider]string, wants credSlotWants, prov secrets.Provider, fingerprint string, max int, name string) {
-	apiKeyFPs[prov] = fingerprint
-	wants.note(fingerprint, max, prov, name)
+// it records the per-provider stamp the meters read (apiKeyFPs), the row
+// that filled the slot (keyIDs) and the capped key the admission reserves
+// (wants) together — a site that stamped without noting would meter the
+// key's runs and never admit them against its cap. A lent key arrives with
+// its donor record's id and cap (credpool.Grant.KeyID,
+// KeyMaxConcurrentRuns), so one ledger row governs the key whoever runs on
+// it.
+func noteSealedAPIKey(apiKeyFPs map[secrets.Provider]string, keyIDs sealedKeyIDs, wants credSlotWants, prov secrets.Provider, key sealedKey) {
+	apiKeyFPs[prov] = key.fingerprint
+	keyIDs.byProvider[prov] = key.id
+	wants.note(key.fingerprint, key.max, prov, key.name)
 }

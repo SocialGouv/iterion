@@ -1014,6 +1014,18 @@ var piEnvKeys = map[secrets.Provider]string{
 	secrets.ProviderOpenRouter: "OPENROUTER_API_KEY",
 }
 
+// PiForwardsRunKey reports whether a key the run holds for p reaches pi. The
+// run's keys enter pi's environment through piEnvKeys alone (piResolveEnv
+// for the run's own key, piRouteEnv for a pinned one), so a provider outside
+// it — azure, bedrock, vertex, the gateway — funds no pi call whatever the
+// run holds: pi finds such a credential only in its host's own environment,
+// where a cloud tenant's key never is. Exported for the cloud model catalog,
+// which must not offer pi on a tenant key the runner never hands it.
+func PiForwardsRunKey(p secrets.Provider) bool {
+	_, ok := piEnvKeys[p]
+	return ok
+}
+
 // piResolveEnv layers per-run credential overrides onto the inherited
 // environment.
 //

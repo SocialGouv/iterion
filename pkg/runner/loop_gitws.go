@@ -560,8 +560,10 @@ func (r *Runner) verifyFetchedCommit(ctx context.Context, dir string, msg *queue
 // After the transport/ref shape passes, the URL's host is run through the
 // shared SSRF guard (httpdial.ResolvePublicHost) so a holder of a per-org
 // `iwh_` webhook token cannot point the runner at an internal address
-// (loopback, RFC1918/ULA, link-local, cloud metadata, cluster aliases) to
-// probe the cloud network. Mirrors the completion-webhook guard in pkg/notify.
+// (loopback, RFC1918/ULA, CGNAT, link-local, cloud metadata, a non-public
+// IPv6 transition address, a name no public host carries) to probe the
+// cloud network.
+// Mirrors the completion-webhook guard in pkg/notify.
 // On-prem deployments with internal forges set
 // ITERION_RUNNER_CLONE_ALLOW_PRIVATE=1 to relax the strict mode.
 func validateRepoTarget(ctx context.Context, repoURL, repoSHA string) (net.IP, error) {
@@ -586,9 +588,15 @@ func validateRepoTarget(ctx context.Context, repoURL, repoSHA string) (net.IP, e
 	// which re-validates and pins the resolved IP at the moment of the dial.
 	// ssh remotes are not proxied — for them this pre-check, the hosts pin and
 	// the pod egress policy remain the guard.
+	// The hatch is named on the refusal it lifts (httpdial.ErrNotPublic)
+	// alone: a malformed name or a failed lookup stays refused whatever the
+	// hatch says, and naming it there is advice about the wrong problem.
 	ip, err := httpdial.ResolvePublicHost(ctx, host, !allowPrivate)
-	if err != nil {
+	if errors.Is(err, httpdial.ErrNotPublic) {
 		return nil, fmt.Errorf("runner: repo host %q is not a public address (set ITERION_RUNNER_CLONE_ALLOW_PRIVATE=1 to allow internal forges): %w", host, err)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("runner: repo host %q refused: %w", host, err)
 	}
 	return ip, nil
 }

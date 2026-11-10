@@ -34,7 +34,12 @@ const PlanKeySep = "|"
 // catches only a MISS (an observation joining no key voids its fine table,
 // the coarse booking), never a row answering for a route the walk did not
 // read. With the walk narrow-safe every route names its providers, and the
-// plan covers the run's whole program.
+// plan covers the run's whole program. A route deferring to the runner's
+// environment (EnvDeferred, a `${DIAL:-…}`) is planned on the publisher's
+// expansion of its dial: the plan is a prediction (ADR-161 decision 8). An
+// observation carrying its own credential keys books on its own fingerprint
+// whatever the pod expanded the dial to, and a keyless one joining no row is
+// a miss that voids the table — the coarse booking a nil plan gives anyway.
 //
 // Nil also when a provider the plan would name is funded TWICE — a pinned
 // key beside its own forfait — on a walk that is not forfait-first for it:

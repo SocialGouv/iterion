@@ -224,14 +224,17 @@ operator owns ([oauth-forfait.md](oauth-forfait.md#what-a-forfait-is-and-is-not)
   runner deployment carries no ambient LLM env — then a credential-less
   run can never start, and refusing it early is free information.
 - **An untrusted (fork-lane) run is always refused when its team's own
-  vendor API keys do not fund it**, knob or not: it runs on its lane's
-  pool, so no shared tier is sealed into it (D13); the runner refuses its
-  env and a forfait cannot cross its sandbox (ADR-162 decision 7). The rule
-  is the `llm_fallback: none` one — strict per attributed provider — with
-  the forfaits not counted, three route classes refused whatever the team
-  holds: a route riding the `openai_compatible` gateway (the env-funded
-  program included — no gateway credential is sealed into a pool run until
-  PR-C'), a route the pool's runner decides itself (an `${…}` dial it
+  API keys do not fund it** — its vendor keys, and its `openai_compatible`
+  gateway key on the literal gateway routes it serves — knob or not: it runs
+  on its lane's pool, so no shared tier is sealed into it (D13); the runner
+  refuses its env and a forfait cannot cross its sandbox (ADR-162 decision
+  7). The rule is the `llm_fallback: none` one — strict per attributed
+  provider, a literal gateway route the team's sealed gateway key funds
+  judged as the `openai_compatible` provider — with the forfaits not counted
+  and three route classes refused: a route riding the runner's
+  `openai_compatible` gateway, which no gateway key of the team's own funds
+  (the env-funded program included), and, whatever the team holds, a route
+  the pool's runner decides itself (an `${…}` dial it
   expands with its own environment, a late run var), and a route the walk
   cannot attribute to a provider (`ProviderResolution.UnattributedSites`);
   and a route that may spend the anthropic wire's default credential is
@@ -282,10 +285,24 @@ two gateways is two identities. Any key may carry a `repos` audience (`owner/rep
 it is checked in the credential walk before a webhook pin, and a launch that names no
 repository cannot spend a restricted key. Every tier may hold a gateway key — team,
 personal, org (shared through the org audience) and platform — and `llm_fallback=none`
-keeps a sovereign team on its own for every route the walk resolves. Until the walk
-learns the provider (#2005 PR-C'), a gateway key is storable but never sealed into a
-run: a gateway route is still served from the deployment's environment, `none`
-included; a webhook pin on such a key is refused at write; the pool never lends one.
+keeps a sovereign team on its own for every route the walk resolves. The walk spends
+the key (ADR-131 §5): when a tier the launch consults holds a gateway key serving the
+launch's bot and repository, the run's literal `openai_compatible/…` routes are funded
+by it — the walk seals the pair — and the run is no longer env-funded; with no such key
+a run whose every route rides the gateway is served from the deployment's environment
+as before. An env-templated route (`${DIAL:-…}`) is never attributed to the key; under a
+dedicated runner pool the key is sealed for it all the same and claw's dispatch prefers
+it to the pod's gateway, while a default-runner run with routes the walk cannot decide
+never carries it.
+Under `none` a gateway route nothing of the team's own funds is refused by name, a
+pool-stamped run excepted. A webhook pin on a gateway key is exclusive (ADR-131 §6):
+admitted at write like any key of the team, it fills the gateway slot of every run
+that may ride a gateway route, or the launch (or resume) is refused by name — the key
+deleted, withheld by an audience, invisible to the launch's identity, undecryptable or
+held out by a frozen list (`cloudpublisher.GatewayPinRefusedError`) — never served by
+the team's other gateway key, a shared tier or the pod's environment; a run that
+rides no gateway route leaves the pin idle. The legacy pool and the fallback door
+never lend one.
 Moving a key's `base_url` is a rotation — the secret is re-sent and sealed under the
 new URL — so a mutator who never held the secret cannot redirect it. In the sealed run
 bundle the key is ONE credential with its URL: `RunBundle.APIBaseURLs` beside
@@ -295,16 +312,28 @@ half short; the publisher writes its key maps through one chokepoint
 (`APIKeyFingerprints`, which the runner stamps rather than recomputing — a gateway
 key's identity folds its URL in) always travel with the key. The runner reads the pair
 (`Credentials.GatewayCredentialForRoute`) and honours `AmbientLLMRefused` — the run's
-LLM routes spend these credentials only — from #2005 PR-B'2; the walk sets them from
-PR-C'. An UNTRUSTED run (ADR-162 decision 7) is refused the pod's environment whether
+LLM routes spend these credentials only. The walk stamps the run's content boundary
+at launch (`Run.ContentBoundary`, carried on the queue message; ADR-131 §4):
+`team_gateway` — with the id of the key row that filled the gateway slot and the host
+its URL dials — when it attributes a gateway route to the key and seals it, a mixed
+run included; `own_keys` for every other launch it resolves, naming the key and host
+too when the launch sealed one for a route it could not decide. A resume reads that
+record: a `team_gateway` run keeps its gateway routes attributed (a slot it cannot fill
+is refused by name), and a run whose launch sealed no gateway key seals none — its
+gateway routes ride the deployment's environment as at launch. The bundle's
+`AmbientLLMRefused` is armed on the same decision (and on every untrusted run,
+ADR-162); a resume replays the frozen stamp, never re-deriving it, and seals the flag
+even when its walk finds nothing. Under `team_gateway` the routing ladder and the
+fallback door take no vendor crossing for a node routed to the gateway.
+An UNTRUSTED run (ADR-162 decision 7) is refused the pod's environment whether
 or not a bundle arrives: the publisher stamps every bundle it seals for one, and an
 untrusted run can still reach a runner with none (a publisher that seals nothing, a run
 that calls no model), so the runner derives the same
 refusal from the queue message's trust — `store.RunTrust.AmbientLLMRefused`, the one
-predicate both sides read (#3126). A fork run whose model routes its team's own vendor
-API keys cannot fund — a gateway route among them, since no gateway credential is sealed
-into a pool run before PR-C' — is refused before that: at the launch gate before it is
-metered, and at publish ([webhooks.md](webhooks.md#fork-lane-funding)).
+predicate both sides read (#3126). A fork run whose model routes its team's own keys
+cannot fund — a gateway route among them unless the team's own gateway key funds it —
+is refused before that: at the launch gate before it is metered, and at publish
+([webhooks.md](webhooks.md#fork-lane-funding)).
 
 A refusal answers `400` with the reason, and leaves a trace an operator can
 find after the fact: a `Warn` in the server log and an audit event naming the

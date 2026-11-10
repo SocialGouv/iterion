@@ -204,7 +204,44 @@ import (
 // only once every server and runner replica runs v29
 // (docs/cloud-queue-schema-rollout.md). A v29 message on a stale runner is
 // rejected at the schema check and parks replayably.
-const SchemaVersion = 29
+// v=30 (2026-11-10): ContentBoundary gets its producer (ADR-131 §4, #2005
+// PR-C'). The publisher stamps every launch its credential walk resolves —
+// team_gateway when the walk attributes a gateway route to the team's key and
+// seals it, own_keys otherwise — and replays the frozen stamp on resume; the
+// run's bundle carries AmbientLLMRefused on the same decision. Breaking by
+// the additive-field rule: a stale runner dropping the stamp would land
+// vendor crossings on the run's gateway nodes, run its supervisors on the
+// pod's environment and admit the server-side helpers the boundary refuses —
+// serving auxiliary gateway spend off the team's boundary, failing open on
+// the pod. It rejects: its window is [27, 29]. MinSchemaVersion stays 27 —
+// the fence is the maximum that rises; raising the minimum would force a
+// drain of v27–v29 messages for no added safety. A v29 publisher — and a v28
+// one since PR-B'2 (#2721) added the carriage — never DERIVES a stamp, but
+// its resume replays the run document's frozen one: a v29 replica still
+// serving mid-rollout (or a server rolled back) resuming a run a v30 replica
+// stamped team_gateway publishes a pre-v30 message carrying the stamp over a
+// bundle walked by the old rules — no gateway key sealed, no
+// AmbientLLMRefused — whose gateway routes would fall to the pod's
+// environment. Validate parks a message older than
+// ContentBoundaryProducerSchemaVersion carrying team_gateway as a version
+// mismatch, so a resume from an upgraded server recovers it; every other
+// v27–v29 message carries own_keys or no stamp, the readings the new runner
+// applies. A v27 publisher, or a v28 one built before PR-B'2, replays
+// nothing: its resume of a stamped run carries no stamp, which no rule can
+// tell from an unstamped run — the runner reads the message alone — so a
+// server rolled back below PR-B'2 drops a team_gateway run's boundary on
+// resume. Runners and pools roll FIRST, the server after: with the minimum
+// unchanged a new runner admits every trusted message the old server still
+// publishes (the v29 rule above still parks an untrusted message older than
+// v29), and an old runner never sees a v30 message.
+const SchemaVersion = 30
+
+// ContentBoundaryProducerSchemaVersion is the first wire version whose
+// publisher seals a team_gateway run's gateway key and arms its
+// AmbientLLMRefused on the stamp's decision: a message older than it that
+// carries team_gateway is a stale replica's replay of a frozen stamp over an
+// old-rules bundle, and Validate parks it.
+const ContentBoundaryProducerSchemaVersion = 30
 
 // ForkAuthorSubjectSchemaVersion is the first wire version that carries
 // RunMessage.ForkAuthorSubject: an untrusted message older than it cannot
@@ -214,8 +251,8 @@ const ForkAuthorSubjectSchemaVersion = 29
 // MinSchemaVersion is the oldest wire version a consumer still accepts.
 // Pre-v27 messages cannot prove an absolute donor ceiling. Resume republishes
 // them with a fresh grant and its explicit amount; replaying old bytes cannot.
-// v27 and v28 stay acceptable beside v29 (see the v28 and v29 notes above
-// SchemaVersion).
+// v27, v28 and v29 stay acceptable beside v30 (see the v28, v29 and v30
+// notes above SchemaVersion).
 const MinSchemaVersion = 27
 
 // RunMessage is the JSON envelope published on
@@ -410,12 +447,14 @@ type RunMessage struct {
 	// execute the run outside the team's pool, which is the leak the pool
 	// exists to make impossible.
 	RunnerPool string `json:"runner_pool,omitempty"`
-	// ContentBoundary mirrors the run document's frozen gateway stamp
-	// (ADR-131) so the claiming runner knows which tenant credential funds
-	// the run without a second store read. Never set at v26: the producer
-	// and the v27 schema bump land with a later change. A nil pointer
-	// serialises as absent, so messages published today are byte-identical
-	// to yesterday's.
+	// ContentBoundary mirrors the run document's frozen content boundary
+	// (ADR-131 §4) so the claiming runner knows which credential class
+	// funds the run without a second store read: the publisher stamps it at
+	// launch (ContentBoundaryProducerSchemaVersion) and replays the
+	// document's stamp on resume (since PR-B'2, at v28, before any producer
+	// existed — Validate parks a pre-producer replay of team_gateway). Nil on a
+	// message whose run predates the producer, or whose resolution never
+	// walked; a nil pointer serialises as absent.
 	ContentBoundary *store.RunContentBoundary `json:"content_boundary,omitempty"`
 	// CredPlan is the launch-frozen node-and-provider → credential-
 	// fingerprint plan the PUBLISHER resolves (the walk that sealed the
@@ -690,6 +729,44 @@ type TraceContext struct {
 // in one pod's logs. Observed in production during exactly such a rollout.
 var ErrSchemaVersion = errors.New("queue: schema version")
 
+// StaleProducerError is the version mismatch of a message whose version this
+// consumer accepts but whose publisher predates a decision the message needs
+// (ForkAuthorSubjectSchemaVersion, ContentBoundaryProducerSchemaVersion): a
+// server replica older than Want republished a run a newer one created. The
+// runner fleet is not what lags — only a resume from a server replica that
+// publishes Want or later recovers the run. ErrSchemaVersion is in its chain,
+// so it parks like every version mismatch.
+type StaleProducerError struct {
+	V    int // the message's wire version
+	Want int // the first wire version whose publisher makes every decision the message needs
+	msg  string
+}
+
+func (e *StaleProducerError) Error() string { return e.msg }
+
+func (e *StaleProducerError) Unwrap() error { return ErrSchemaVersion }
+
+// staleRule is one stale-producer rule that fired: the version whose
+// publisher makes the decision, and the sentence naming it.
+type staleRule struct {
+	want int
+	text string
+}
+
+// staleProducer is the mismatch of every rule that fired: Want is the
+// highest of their versions — a replica publishing a lower one is still
+// stale for another rule — and the sentence names each decision the message
+// predates, in rule order.
+func staleProducer(v int, rules []staleRule) error {
+	want := 0
+	texts := make([]string, 0, len(rules))
+	for _, r := range rules {
+		want = max(want, r.want)
+		texts = append(texts, r.text)
+	}
+	return &StaleProducerError{V: v, Want: want, msg: ErrSchemaVersion.Error() + ": " + strings.Join(texts, "; and ")}
+}
+
 // Validate enforces the invariants a runner must rely on before
 // touching the workflow:
 //   - schema version matches (rolling-upgrade safety)
@@ -705,6 +782,9 @@ func (m *RunMessage) Validate() error {
 	if m.RunID == "" {
 		return fmt.Errorf("queue: RunID required")
 	}
+	// The stale-producer rules, every one judged: a message breaking two
+	// is parked under both, and its remedy names the later producer.
+	var stale []staleRule
 	// A message older than the fork author subject cannot carry it, so an
 	// UNTRUSTED one would run with the author's per-contributor dollar bound
 	// unenforced: a server replica still on v28 mid-rollout republishing the
@@ -712,7 +792,18 @@ func (m *RunMessage) Validate() error {
 	// mismatch — transient, never Termed — so a resume from an upgraded
 	// server, whose gate meters the author, recovers it.
 	if m.V < ForkAuthorSubjectSchemaVersion && !m.Trust.Trusted() {
-		return fmt.Errorf("%w: a v%d message carries trust %q but predates the fork author subject (v%d) — parked for a resume from an upgraded server rather than run with the author's bound unenforced", ErrSchemaVersion, m.V, string(m.Trust), ForkAuthorSubjectSchemaVersion)
+		stale = append(stale, staleRule{ForkAuthorSubjectSchemaVersion, fmt.Sprintf("a v%d message carries trust %q but predates the fork author subject (v%d) — parked for a resume from an upgraded server rather than run with the author's bound unenforced", m.V, string(m.Trust), ForkAuthorSubjectSchemaVersion)})
+	}
+	// A message older than the stamp's producer replays a team_gateway stamp
+	// it did not derive (a stale replica resuming a run an upgraded one
+	// stamped) over a bundle sealed by the old rules: no gateway key, no
+	// ambient refusal, so the run's gateway routes would spend the pod's
+	// environment. Parked as a version mismatch, like the rule above.
+	if m.V < ContentBoundaryProducerSchemaVersion && m.ContentBoundary.TeamGateway() {
+		stale = append(stale, staleRule{ContentBoundaryProducerSchemaVersion, fmt.Sprintf("a v%d message carries the team_gateway content boundary but predates its producer (v%d) — parked for a resume from an upgraded server rather than run with the run's gateway unsealed and the pod's environment admitted", m.V, ContentBoundaryProducerSchemaVersion)})
+	}
+	if len(stale) > 0 {
+		return staleProducer(m.V, stale)
 	}
 	// The pool name is grammar-checked, not tenant-checked, and only when
 	// set: an empty pool is the shared default (pre-v22 messages included),

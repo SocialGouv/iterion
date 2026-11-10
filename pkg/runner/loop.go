@@ -3622,6 +3622,11 @@ func (r *Runner) executorSpec(ctx context.Context, msg *queue.RunMessage, wf *ir
 		LLMRouteTriggers:     llmRouteTriggers(msg),
 		LLMRouteClasses:      llmRouteClasses(msg),
 		LLMRouteCrossHarness: llmRouteCrossHarness(msg),
+		// The frozen content boundary rides into the ladder's screen: under
+		// team_gateway no stage lands on a node routed to the team's
+		// gateway (ADR-131 §4) — the publisher's screen is advisory, this one
+		// decides.
+		ContentBoundary: msg.ContentBoundary,
 		// The run's frozen provider allowlist (ADR-129 §5): the dispatch
 		// drops every chain element resolving outside it, so a rescue route
 		// the tenant forbids burns no retry budget. Nil = no allowlist.

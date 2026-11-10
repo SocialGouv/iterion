@@ -200,8 +200,9 @@ func TestFireForRun_SSRFGuardBlocksLoopback(t *testing.T) {
 // records the hosts it was asked for and answers each with one fixed IP.
 // The default is TEST-NET-3 (203.0.113.10) — never routable, yet public
 // unicast per httpdial.IsPublicUnicast, which blocks the conventional SSRF
-// categories (loopback, private, link-local, multicast, unspecified) plus
-// the cloud metadata endpoints.
+// categories (loopback, private, link-local, multicast, unspecified), the
+// CGNAT space and the non-public IPv6 transition addresses, plus the cloud
+// metadata endpoints.
 type stubResolver struct {
 	mu      sync.Mutex
 	lookups []string
@@ -243,6 +244,18 @@ func TestVetURL(t *testing.T) {
 		{"private blocked", "http://10.0.0.5/cb", false, true, false},
 		{"cluster alias blocked", "http://foo.svc.cluster.local/cb", false, true, false},
 		{"metadata alias blocked", "http://metadata.google.internal/cb", false, true, false},
+		{"dotted metadata alias blocked", "http://metadata.google.internal./cb", false, true, false},
+		// The shared (CGNAT) space and the non-public IPv6 transition
+		// addresses are the private classes' case: blocked, and lifted by
+		// the notifier's own allowPrivate.
+		{"cgnat blocked", "http://100.64.0.1/cb", false, true, false},
+		{"cgnat allowed", "http://100.64.0.1/cb", true, false, false},
+		// An IPv4-compatible address is refused whatever allowPrivate says:
+		// no hatch lifts it.
+		{"v4-compatible loopback blocked", "http://[::127.0.0.1]:9000/cb", false, true, false},
+		{"v4-compatible loopback blocked under allowPrivate", "http://[::127.0.0.1]:9000/cb", true, true, false},
+		{"nat64 blocked", "http://[64:ff9b::7f00:1]/cb", false, true, false},
+		{"6to4 blocked", "http://[2002:7f00:1::]/cb", false, true, false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

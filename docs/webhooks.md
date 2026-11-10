@@ -530,7 +530,7 @@ Every row, what ships and what does not yet:
 | **#874 4b** — fork code must not execute the TARGET repo's toolchain/config (`repo_devbox: off`, sandbox `network: allowlist`) | **floored (U5)** | `resolveRepoDevbox(override, workflow, trust)` answers false for every untrusted workspace, the repo's devcontainer is not read, and the sandbox network policy floors to the credential's own host |
 | **#874 5 beyond the gate context** — the base repo's project settings not honoured (launch vars, hold labels), plus the per-contributor bound | **floored (U6)** | `applyWebhookVarLayers` layers NEITHER `cfg.LaunchVars` NOR `cfg.OperatorLaunchVars` onto an untrusted target (and no routing gate is narrowed through the repo's vars — `trustedVarNames` stays empty); the hold label BLOCKS the gesture (Q2); and the per-contributor bound is metered by the launch gate on `orgusage.ForkAuthorSubject`, runs and dollars, beside the org's own quota (decision 5) |
 | **The pod's own money** — an untrusted run spends only the credentials sealed for it (decision 7) | **floored (#3126)** | the publisher stamps `AmbientLLMRefused` on every untrusted run's bundle, and the runner derives the same refusal from the run's wire trust when no bundle was sealed at all (`store.RunTrust.AmbientLLMRefused`, one predicate both sides read): every fallback to the pod's environment answers a typed refusal |
-| **What funds it** — the team's own vendor API keys alone, on routes decided before the run: a pool-stamped fork run is sealed no shared tier (ADR-154 D13), the runner refuses its env and a forfait cannot cross its sandbox (decision 7) | **floored (U7 part 1)** | the launch gate's funding arm refuses a fork run those keys cannot fund, typed (`fork_run_unfunded`), BEFORE the org's counter or the author's bound moves — a provider no team key funds, a route riding the `openai_compatible` gateway, a route the pool's runner decides itself (an `${…}` dial, a late var), a route the server cannot attribute to a provider, a route that may spend the anthropic wire's default credential the team holds no slot of — on the gesture's delivery, the debounce flush, the durable retry and every gated resume; the judge is the publisher's own unfunded decision — [funding a fork run](#fork-lane-funding) |
+| **What funds it** — the team's own API keys alone (its vendor keys, and its `openai_compatible` gateway key on the literal gateway routes it serves), on routes decided before the run: a pool-stamped fork run is sealed no shared tier (ADR-154 D13), the runner refuses its env and a forfait cannot cross its sandbox (decision 7) | **floored (U7 part 1)** | the launch gate's funding arm refuses a fork run those keys cannot fund, typed (`fork_run_unfunded`), BEFORE the org's counter or the author's bound moves — a provider no team key funds, a route riding the runner's `openai_compatible` gateway (no gateway key of the team's own funds it), a route the pool's runner decides itself (an `${…}` dial, a late var), a route the server cannot attribute to a provider, a route that may spend the anthropic wire's default credential the team holds no slot of — on the gesture's delivery, the debounce flush, the durable retry and every gated resume; the judge is the publisher's own unfunded decision — [funding a fork run](#fork-lane-funding) |
 | **Where it runs** — only through the publisher, on a pool whose sandbox resolves active (decision 10, Q3) | **the pool ships (U7 part 1); its sandbox waits on #2965** | the fork-lane config names its pool (`fork_lane_pool`, required at creation, immutable) and the publisher stamps it as the run's `RunnerPool` on every carrier — [the lane's pool](#fork-lane-pool). The chart's `runnerPools[].sandbox.enabled` is the flag that would sandbox that pool alone, but with the chart's defaults (`serviceAccount.create`) and under the prod values (`networkPolicy.enabled`) turning it on FAILS the render until #2965 renders the pool's ServiceAccount, Role and standing policy; until then the operator brings them by hand ([cloud-deployment.md](cloud-deployment.md#sovereign-runner-pools), at the cost it names), and a pool deployed without its sandbox refuses every fork run at the runner (`untrusted_without_sandbox`) |
 | **The pool's boundary** — its own ServiceAccount and Role, the pool label on its sandbox siblings, its standing NetworkPolicy (ADR-154 decisions 1–3) | **not yet: #2965** | until it lands the chart REFUSES a pool sandbox where the release does not provision one, under `serviceAccount.create` and under `networkPolicy.enabled` ([cloud-deployment.md](cloud-deployment.md#sovereign-runner-pools)) |
 | **The CNI enforces NetworkPolicy** on the cloud cluster (matryoshka) | **not yet: the operator's gesture** | verified before the pool is enabled; the sandbox start probe (U5) then witnesses it per run, and refuses a run on a CNI that applies the policy as a no-op |
@@ -759,17 +759,22 @@ refuses is `fork_lane_pool_refused` (422) with neither budget charged.
 Because the pool IS a pool, ADR-154's pool semantics apply to a fork run in
 full: the publisher consults no shared credential tier for it (D13 — the
 org's and the platform's keys are never sealed into a pool run), so the lane
-spends the team's own vendor API keys — no tier seals a team gateway
-credential into a pool run until #2005 PR-C' — and the pool pod's own
-gateway credential is the ambient env decision 7 refuses.
+spends the team's own keys alone — its vendor API keys, and its
+`openai_compatible` gateway key, sealed with its canonical base URL for the
+gateway routes it serves — while the pool pod's own gateway credential is the
+ambient env decision 7 refuses.
 
 ### <a name="fork-lane-funding"></a>Funding a fork run — the team's own keys
 
-**A team that enables the fork lane must hold its own vendor LLM API key**
-for every provider the lane's bot pins: a provider key of the team's BYOK
-tier. A key stored with a gateway base URL (`openai_compatible`) funds no
-fork run yet — no tier seals a team gateway credential into a pool-stamped
-run until #2005 PR-C'. Nothing else funds a fork run:
+**A team that enables the fork lane must hold its own LLM API key** for
+every provider the lane's bot pins: a vendor key of the team's BYOK tier, or,
+for a route riding the gateway (a literal `openai_compatible/…` model), the
+team's key stored with a gateway base URL (`openai_compatible`). The walk
+seals that gateway key with its canonical base URL when it serves the lane's
+bot and the delivery's repository and can seal (the run's providers allowlist
+admits the slot, its secret opens), and judges the route as the
+`openai_compatible` provider, like a vendor route. Nothing else funds a fork
+run:
 
 | Funding | Why it does not fund a fork run |
 |---|---|
@@ -779,12 +784,13 @@ run until #2005 PR-C'. Nothing else funds a fork run:
 
 **And the routes must be decided before the run.** The judge reads the
 bot's routes in the server; the run takes them on the lane's pool, so three
-route classes are refused whatever the team holds, and a fourth is judged per
-route — each named by the route sites in the refusal:
+route classes are refused — the first unless the team's own gateway key funds
+it, the other two whatever the team holds — and a fourth is judged per route,
+each named by the route sites in the refusal:
 
 | Route | Why the judge refuses it |
 |---|---|
-| One riding the `openai_compatible` gateway (a literal `openai_compatible/…` model, a gateway hint, or a dial this server expands to one) | nothing funds it on a fork run: the pool's gateway is the refused environment, and no team gateway credential is sealed into a pool run until #2005 PR-C' |
+| One riding the runner's `openai_compatible` gateway: a literal `openai_compatible/…` model no gateway key of the team's own funds, or a dial this server expands to one | the pool's gateway is the refused environment. The team's gateway key, provisioned for the lane's bot and the delivery's repository, funds the literal route instead (the refusal's remedy) — on a resume, only when the run's launch sealed it: the resume replays the frozen content boundary, so a route edited to the gateway since a launch that sealed no gateway key is refused whatever key the team holds, the refusal naming that boundary and a new launch as the remedy; a dial stays refused whatever the team holds — the runner decides it (next row) |
 | One the runner decides itself: a routing field — the provider (or its override), the model, the backend — that reads an `${…}` dial, or a run var the launch leaves undecided | the pool's runner expands the dial with ITS environment, whose env block pins the routing dials ahead of the platform record ([sovereign-pools.md](sovereign-pools.md#routing-dials-the-pools-env-block-is-pinned)) — the route this server reads is not the one the run takes, and a verdict on it would admit, and meter, a run the runner then refuses ambient |
 | One that names no provider the server can read: a model with no `provider/` prefix, an `auto`, empty or unknown provider step, a sub-bot node (its child bot's routes are not read), a supervisor with no model | no verdict says the team's keys fund it — the runner resolves what it spends. The cost: a `claude_code` route on a bare model the team's Anthropic key would serve is refused too; pinning its provider (`provider: anthropic`, or a routing override) lifts it |
 | Judged per route: one that may spend the anthropic wire's default credential — a `claude_code` route that pins no anthropic-wire provider (`provider: openai` on `claude_code` included), a route whose backend no field names (the runner's default backend and credential detection pick it) | funded only when the team holds one of the wire slots it may read (the Anthropic, z.ai or Moonshot key, per the route) or an anthropic-wire provider it names: otherwise the runner's slot-order walk finds no sealed key and refuses the route ambient. A providers allowlist that admits none of the route's slots leaves it nothing it may spend, refused the same way |

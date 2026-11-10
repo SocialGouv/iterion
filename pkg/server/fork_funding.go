@@ -18,12 +18,13 @@ import (
 // ADR-154 D13). A fork run executes on its lane's pool, so the publisher
 // seals no shared tier into it (no org key, no contributor pool, no platform
 // key); the runner refuses its pod's environment; and a forfait cannot cross
-// its sandbox. Its team's own vendor API keys are all that funds it — no
-// tier seals a team gateway credential into a pool run until #2005 PR-C' —
-// and only on routes decided before the run: a gateway route, an `${…}` dial
-// the pool's runner expands with its own environment, a route the walk
-// cannot attribute to a provider, and an anthropic-wire default read the
-// team holds no slot of are refused. A
+// its sandbox. Its team's own keys are all that funds it — its vendor API
+// keys, and its openai_compatible gateway key, sealed with its canonical base
+// URL for the literal gateway routes it serves — and only on routes decided
+// before the run: a route riding the runner's gateway (no gateway key of the
+// team's own funds it), an `${…}` dial the pool's runner expands with its own
+// environment, a route the walk cannot attribute to a provider, and an
+// anthropic-wire default read the team holds no slot of are refused. A
 // team funded only by shared keys would otherwise have every gesture metered
 // on the org's budget and the outside author's bound, then refused at
 // publish or at the runner.

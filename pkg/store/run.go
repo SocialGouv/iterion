@@ -1059,12 +1059,20 @@ type RunCredStamp struct {
 type RunContentBoundary struct {
 	// Kind names the credential class that funds the run.
 	Kind string `json:"kind" bson:"kind"`
-	// KeyID is the id of the key that answered. Optional: a kind whose
-	// funding needs no key row leaves it empty.
+	// KeyID is the id of the gateway key row the launch sealed: under
+	// team_gateway the key that answered, under own_keys a key sealed for a
+	// route the launch could not decide. Empty when the launch sealed no
+	// gateway key — a replay then seals none.
 	KeyID string `json:"key_id,omitempty" bson:"key_id,omitempty"`
 	// GatewayHost is the canonical host of the tenant gateway serving
-	// the key. Optional for the same reason.
+	// the key, recorded beside KeyID.
 	GatewayHost string `json:"gateway_host,omitempty" bson:"gateway_host,omitempty"`
+}
+
+// TeamGateway reports whether the boundary holds the run to its team's
+// gateway (ContentBoundaryTeamGateway). Nil-safe: an unstamped run is not.
+func (b *RunContentBoundary) TeamGateway() bool {
+	return b != nil && b.Kind == ContentBoundaryTeamGateway
 }
 
 // The content boundary kinds.
@@ -1716,9 +1724,12 @@ type Run struct {
 	// credential fact under the PinnedProviders doctrine: it travels with
 	// the run, is replayed by every resume/fork lane exactly as frozen,
 	// and is never re-derived — a lane that re-derived it would silently
-	// move a running run onto whichever key answers today. Nil on runs
-	// launched before the stamp existed (a pre-existing document decodes
-	// nil, and the producer lands with a later change).
+	// move a running run onto whichever key answers today. The cloud
+	// publisher writes it at launch from its credential walk: team_gateway
+	// when the walk attributes a gateway route to the team's key and seals
+	// it, own_keys otherwise. Nil on a run launched before that producer,
+	// on a launch whose resolution never walked (a deployment that seals
+	// nothing), and on every local run.
 	ContentBoundary *RunContentBoundary `json:"content_boundary,omitempty" bson:"content_boundary,omitempty"`
 
 	// Attachments holds the metadata for binary inputs declared in

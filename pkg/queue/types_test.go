@@ -327,8 +327,12 @@ func TestSchemaVersionConstant(t *testing.T) {
 	// MinSchemaVersion stays 27: no message below v29 is a fork run, so
 	// there is no old payload whose dropped subject loses an enforced
 	// bound.
-	if SchemaVersion != 29 {
-		t.Errorf("SchemaVersion = %d, want 29 (bump intentionally)", SchemaVersion)
+	// v=30 carries ContentBoundary's producer (ADR-131 §4): dropped, a stale
+	// runner lands vendor crossings on a team_gateway run's gateway nodes and
+	// runs its auxiliaries on the pod's environment — failing open, on the
+	// pod. MinSchemaVersion stays 27: the fence is the maximum that rises.
+	if SchemaVersion != 30 {
+		t.Errorf("SchemaVersion = %d, want 30 (bump intentionally)", SchemaVersion)
 	}
 	if MinSchemaVersion != 27 {
 		t.Errorf("MinSchemaVersion = %d, want 27", MinSchemaVersion)
@@ -336,10 +340,12 @@ func TestSchemaVersionConstant(t *testing.T) {
 }
 
 // TestValidate_DualAcceptWindow pins the explicit compatibility window.
-// At v28 the window is [27, 28]: a v27 message lacks the wire-carried
+// At v30 the window is [27, 30]: a v27 message lacks the wire-carried
 // BotSourceTier (#1959) but its publisher already stamped the run document,
-// so the floor re-reads it from there. Refusals remain TRANSIENT
-// ErrSchemaVersion.
+// so the floor re-reads it from there; a v27, v28 or v29 message carrying no
+// content boundary is the unstamped reading (one replaying team_gateway parks:
+// TestRunMessage_ATeamGatewayMessageOlderThanTheProducerParks).
+// Refusals remain TRANSIENT ErrSchemaVersion.
 func TestValidate_DualAcceptWindow(t *testing.T) {
 	base := func(v int) *RunMessage {
 		return &RunMessage{

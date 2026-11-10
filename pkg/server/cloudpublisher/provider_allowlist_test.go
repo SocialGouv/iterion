@@ -99,7 +99,7 @@ func TestProviders_RescuePrunedPrimaryRefused(t *testing.T) {
 	p, _ := allowlistPublisher(t, secrets.ProviderAnthropic, secrets.ProviderZAI)
 	wf := compileTestSource(t, anthropicPinnedZaiRescueBot)
 	ctx := store.WithTenant(context.Background(), "team1")
-	creds, err := p.resolveAndSealCredentials(ctx, "run-allow-1", "", "team1", "owner1", "", "", wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustDefault, nil, providersPolicy("anthropic"), nil)
+	creds, err := p.resolveAndSealCredentials(ctx, "run-allow-1", "", "team1", "owner1", "", "", wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustDefault, nil, providersPolicy("anthropic"), nil, boundaryDerived)
 	if err != nil {
 		t.Fatalf("resolveAndSealCredentials = %v, want nil — the rescue is pruned, not refused", err)
 	}
@@ -117,7 +117,7 @@ func TestProviders_RescuePrunedPrimaryRefused(t *testing.T) {
 	// The refusal half: the same program, the list narrowed past the primary.
 	p2, _ := allowlistPublisher(t, secrets.ProviderZAI)
 	wf2 := compileTestSource(t, anthropicPinnedZaiRescueBot)
-	_, err = p2.resolveAndSealCredentials(ctx, "run-allow-2", "", "team1", "owner1", "", "", wf2, nil, nil, model.RouteView{Workflow: wf2}, nil, store.RunTrustDefault, nil, providersPolicy("openai_compatible"), nil)
+	_, err = p2.resolveAndSealCredentials(ctx, "run-allow-2", "", "team1", "owner1", "", "", wf2, nil, nil, model.RouteView{Workflow: wf2}, nil, store.RunTrustDefault, nil, providersPolicy("openai_compatible"), nil, boundaryDerived)
 	if !errors.Is(err, model.ErrProviderOutsideAllowlist) {
 		t.Fatalf("resolveAndSealCredentials = %v, want model.ErrProviderOutsideAllowlist — refused, never re-routed", err)
 	}
@@ -141,7 +141,7 @@ func TestProviders_UnreadableRouteRefusesUnderAnAllowlist(t *testing.T) {
 	p, _ := allowlistPublisher(t)
 	wf := compileTestSource(t, templatedRescueBot)
 	ctx := store.WithTenant(context.Background(), "team1")
-	_, err := p.resolveAndSealCredentials(ctx, "run-allow-3", "", "team1", "owner1", "", "", wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustDefault, nil, providersPolicy("anthropic"), nil)
+	_, err := p.resolveAndSealCredentials(ctx, "run-allow-3", "", "team1", "owner1", "", "", wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustDefault, nil, providersPolicy("anthropic"), nil, boundaryDerived)
 	if !errors.Is(err, model.ErrRouteUnreadableUnderAllowlist) {
 		t.Fatalf("resolveAndSealCredentials = %v, want model.ErrRouteUnreadableUnderAllowlist", err)
 	}
@@ -158,7 +158,7 @@ func TestProviders_UnreadableRouteRefusesUnderAnAllowlist(t *testing.T) {
 	// Without an allowlist the same launch proceeds (the refusal is the
 	// list's doing, not the walk's default posture).
 	p2, _ := allowlistPublisher(t)
-	if _, err := p2.resolveAndSealCredentials(ctx, "run-allow-4", "", "team1", "owner1", "", "", wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustDefault, nil, nil, nil); err != nil {
+	if _, err := p2.resolveAndSealCredentials(ctx, "run-allow-4", "", "team1", "owner1", "", "", wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustDefault, nil, nil, nil, boundaryDerived); err != nil {
 		t.Fatalf("no-allowlist resolveAndSealCredentials = %v, want nil", err)
 	}
 }
@@ -236,7 +236,7 @@ func TestProviders_LadderDropsAPairOutsideTheAllowlist(t *testing.T) {
 	policy.Triggers = []string{"usage_window", "unavailable"}
 	policy.PairOrder = []string{"claw+anthropic_key", "claw+zai_key"}
 	ctx := store.WithTenant(context.Background(), "team1")
-	creds, err := p.resolveAndSealCredentials(ctx, "run-allow-5", "", "team1", "owner1", "", "", wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustDefault, nil, policy, nil)
+	creds, err := p.resolveAndSealCredentials(ctx, "run-allow-5", "", "team1", "owner1", "", "", wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustDefault, nil, policy, nil, boundaryDerived)
 	if err != nil {
 		t.Fatalf("resolveAndSealCredentials: %v", err)
 	}
@@ -267,7 +267,7 @@ func TestProviders_DoorNeverAsksForAPairOutsideTheAllowlist(t *testing.T) {
 	policy := providersPolicy("anthropic")
 	policy.Triggers = []string{"usage_window", "unavailable"}
 	policy.PairOrder = []string{"claw+anthropic_key", "claw+zai_key"}
-	wants, _, ok := doorWantsFor(policy, view, nil, func(_, _ string) bool { return false })
+	wants, _, ok := doorWantsFor(policy, view, nil, func(_, _ string) bool { return false }, false)
 	if !ok {
 		t.Fatal("doorWantsFor = not ok, want the anthropic want kept")
 	}
@@ -332,7 +332,7 @@ func TestProviders_PrefixlessModelRefusesAtTheGate(t *testing.T) {
 	p, _ := allowlistPublisher(t, secrets.ProviderAnthropic)
 	wf := compileTestSource(t, bareModelBot)
 	ctx := store.WithTenant(context.Background(), "team1")
-	_, err := p.resolveAndSealCredentials(ctx, "run-bare", "", "team1", "owner1", "", "", wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustDefault, nil, providersPolicy("openai"), nil)
+	_, err := p.resolveAndSealCredentials(ctx, "run-bare", "", "team1", "owner1", "", "", wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustDefault, nil, providersPolicy("openai"), nil, boundaryDerived)
 	if err == nil {
 		t.Fatal("resolveAndSealCredentials = nil error, want the unreadable refusal — the route names no provider the list could check")
 	}
@@ -341,7 +341,7 @@ func TestProviders_PrefixlessModelRefusesAtTheGate(t *testing.T) {
 	}
 	// The class twin: no list, the same launch walks (the gate is inert).
 	p2, _ := allowlistPublisher(t, secrets.ProviderAnthropic)
-	if _, err := p2.resolveAndSealCredentials(ctx, "run-bare-2", "", "team1", "owner1", "", "", wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustDefault, nil, nil, nil); err != nil {
+	if _, err := p2.resolveAndSealCredentials(ctx, "run-bare-2", "", "team1", "owner1", "", "", wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustDefault, nil, nil, nil, boundaryDerived); err != nil {
 		t.Errorf("no-allowlist resolveAndSealCredentials = %v, want nil", err)
 	}
 }
@@ -355,7 +355,7 @@ func TestProviders_LaunchNamesThePrunedRescue(t *testing.T) {
 	p, buf := allowlistPublisher(t, secrets.ProviderAnthropic, secrets.ProviderZAI)
 	wf := compileTestSource(t, anthropicPinnedZaiRescueBot)
 	ctx := store.WithTenant(context.Background(), "team1")
-	creds, err := p.resolveAndSealCredentials(ctx, "run-named", "", "team1", "owner1", "", "", wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustDefault, nil, providersPolicy("anthropic"), nil)
+	creds, err := p.resolveAndSealCredentials(ctx, "run-named", "", "team1", "owner1", "", "", wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustDefault, nil, providersPolicy("anthropic"), nil, boundaryDerived)
 	if err != nil {
 		t.Fatalf("resolveAndSealCredentials = %v, want nil — the rescue is pruned, not refused", err)
 	}
@@ -466,6 +466,12 @@ func TestProviderOfSlot_TotalOverThePairVocabulary(t *testing.T) {
 		if providerOfSlot(c) == "" {
 			t.Errorf("providerOfSlot(%q) = \"\" — map the slot or name the exception; under an allowlist its pairs are dropped from ladder, door and seal in silence", c)
 		}
+	}
+	// The gateway slot maps like any key slot now that the walk vocabulary
+	// names its provider (ADR-131 §5): a providers allowlist that lists
+	// openai_compatible admits the team's gateway key to the seal.
+	if got := providerOfSlot(slotOfProvider(secrets.ProviderOpenAICompatible)); got != string(secrets.ProviderOpenAICompatible) {
+		t.Errorf("providerOfSlot(openai_compatible_key) = %q, want openai_compatible", got)
 	}
 	if got := providerOfSlot(llmroute.CredClaudeForfait); got != string(secrets.ProviderAnthropic) {
 		t.Errorf("providerOfSlot(claude_forfait) = %q, want anthropic", got)

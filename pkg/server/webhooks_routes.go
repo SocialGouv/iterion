@@ -560,24 +560,20 @@ func (s *Server) validateKeyOverrides(ctx context.Context, tenantID, actor strin
 		if string(k.Provider) != prov {
 			return fmt.Errorf("key_overrides[%s]: api key %q is for provider %q", prov, keyID, k.Provider)
 		}
-		// A gateway key is storable but no run spends it until the walk
-		// learns the provider (#2005 PR-C', which lifts this refusal and
-		// makes such a pin exclusive, ADR-131 §6). Until then a pin on one
-		// would be dropped at launch without a word — refused at write
-		// instead, so the operator's explicit choice is never replaced in
-		// silence.
-		if k.Provider == secrets.ProviderOpenAICompatible {
-			return fmt.Errorf("key_overrides[%s]: api key %q is an openai_compatible gateway key, which no run spends yet (#2005) — a pin on it would be dropped at launch", prov, keyID)
-		}
-		// The same reason as the gateway arm above, for the other key a
-		// launch cannot spend: this lane fires under a synthetic actor no
-		// key is scoped to, so secrets.Resolve never even lists a
-		// user-scoped key as a candidate — the pin is dropped and the run
-		// seals the team's default instead. Resolve cannot report it (an
-		// invisible key never reaches onWithheld, which answers for the bot
-		// and repository audiences only), so the write refuses it, and the
-		// operator's explicit choice is never replaced in silence. The
-		// secret twin below has always refused the same shape.
+		// A gateway key pins like any key of the team: the walk spends it,
+		// and the launch keeps such a pin exclusive (ADR-131 §6 — a pinned
+		// gateway key the run cannot seal refuses the launch by name,
+		// cloudpublisher's gatewayPinRefusal), so nothing here judges the
+		// provider.
+		//
+		// The one key a launch cannot spend is refused here: this lane fires
+		// under a synthetic actor no key is scoped to, so secrets.Resolve
+		// never even lists a user-scoped key as a candidate — a vendor pin is
+		// dropped and the run seals the team's default instead. Resolve
+		// cannot report it (an invisible key never reaches onWithheld, which
+		// answers for the bot and repository audiences only), so the write
+		// refuses it, and the operator's explicit choice is never replaced in
+		// silence. The secret twin below has always refused the same shape.
 		if !secrets.SpendableBy(k, tenantID, actor) {
 			return fmt.Errorf("key_overrides[%s]: api key %q is not spendable by this lane — it launches as %q, which sees only this team's org-scoped keys, so the pin would be dropped at launch; pin an org-scoped key of this team or clear the pin", prov, keyID, actor)
 		}

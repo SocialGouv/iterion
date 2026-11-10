@@ -58,11 +58,12 @@ const runNotResumableErrorCode = "run_not_resumable"
 const scratchNotPortableErrorCode = "scratch_not_portable"
 
 // credentialAtCapacityErrorCode tells a client that the resume was refused
-// because a key the run sealed is full of other runs
-// (cloudpublisher.ErrCredentialAtCapacity): nothing was published, the run
-// was put back as it was, and the same request succeeds once a slot frees.
-// Every operator surface that resumes a run answers it
-// (writeCredentialAtCapacityError, and the WS answer's error code).
+// because a key the run sealed is full of other runs, or a pool entry the run
+// needs exists but is busy now (cloudpublisher.ErrCredentialAtCapacity):
+// nothing was published, the run was put back as it was, and the same request
+// succeeds once a slot frees. Every operator surface that resumes a run
+// answers it (writeCredentialAtCapacityError, and the WS answer's error code),
+// and so does a launch refused on a busy pool entry.
 const credentialAtCapacityErrorCode = "credential_at_capacity"
 
 // resumeNotAdmittedErrorCode tells a client that the run service refused a
@@ -988,6 +989,10 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 			span.SetStatus(codes.Error, "queue unavailable")
 			return
 		}
+		if s.writeCredentialAtCapacityError(w, r, "launch", err) {
+			span.SetStatus(codes.Error, "credential at capacity")
+			return
+		}
 		if s.writeNoLLMCredentialError(w, r, "launch", err) {
 			span.SetStatus(codes.Error, "no llm credential")
 			return
@@ -1279,7 +1284,7 @@ func (s *Server) writeResumeError(w http.ResponseWriter, r *http.Request, err er
 	if s.writeNoLLMCredentialError(w, r, "resume", err) {
 		return
 	}
-	if s.writeCredentialAtCapacityError(w, r, err) {
+	if s.writeCredentialAtCapacityError(w, r, "resume", err) {
 		return
 	}
 	status, code := http.StatusBadRequest, ""
@@ -1307,21 +1312,23 @@ func (s *Server) writeResumeError(w http.ResponseWriter, r *http.Request, err er
 }
 
 // writeCredentialAtCapacityError answers a resume the cloud publisher
-// refused because a key the run sealed is full of other runs
-// (cloudpublisher.ErrCredentialAtCapacity): 429 with
-// credentialAtCapacityErrorCode — the resume was refused before publishing
-// and the run put back as it was, a parked run keeping its armed retry,
-// which the sweeper asks again; any other is the caller's to resume once a
-// slot frees. The answer the launch gate gives a concurrency cap, with the
-// same remedy (wait, or free a slot). Shared by every HTTP surface that
+// refused because a key the run sealed is full of other runs, or a pool entry
+// it needs exists but is busy now (cloudpublisher.ErrCredentialAtCapacity):
+// 429 with credentialAtCapacityErrorCode — the resume was refused before
+// publishing and the run put back as it was, a parked run keeping its armed
+// retry, which the sweeper asks again; any other is the caller's to resume
+// once a slot frees. The answer the launch gate gives a concurrency cap, with
+// the same remedy (wait, or free a slot). Shared by every HTTP surface that
 // resumes a run — resume, answer-human, an async answer's auto-resume, a
-// host event — so none answers the refusal as a server failure.
-func (s *Server) writeCredentialAtCapacityError(w http.ResponseWriter, r *http.Request, err error) bool {
+// host event — so none answers the refusal as a server failure, and by the
+// launch, which a busy pool entry refuses the same way. operation prefixes
+// the error ("resume", "launch").
+func (s *Server) writeCredentialAtCapacityError(w http.ResponseWriter, r *http.Request, operation string, err error) bool {
 	if !errors.Is(err, cloudpublisher.ErrCredentialAtCapacity) {
 		return false
 	}
 	s.writeJSONError(w, r, http.StatusTooManyRequests, map[string]any{
-		"error":      fmt.Sprintf("resume: %v", err),
+		"error":      fmt.Sprintf("%s: %v", operation, err),
 		"error_code": credentialAtCapacityErrorCode,
 	})
 	return true

@@ -3,7 +3,6 @@ package cloudpublisher
 import (
 	"context"
 	"fmt"
-	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -29,13 +28,21 @@ func (p *Publisher) PreviewCredentials(ctx context.Context, spec runview.Credent
 }
 
 // previewProgram is the program a preview judges: the route view its walk
-// reads and the pinned set its seal decisions take. A launch derives both
-// from the spec (launchPreviewProgram); a resume replays its run document's
-// — the dispatch view over the run's own inputs and the launch-frozen pinned
-// set — exactly as SubmitResume hands them to the walk.
+// reads, the pinned set its seal decisions take and the content boundary its
+// gateway answer and screens read. A launch derives all three from the spec
+// (launchPreviewProgram, the boundary derived as the launch's walk derives
+// it); a resume replays its run document's — the dispatch view over the
+// run's own inputs, the launch-frozen pinned set and the frozen stamp —
+// exactly as SubmitResume hands them to the walk.
 type previewProgram struct {
 	view   model.RouteView
 	pinned []string
+	// boundary is the resolution's boundary source (content_boundary.go):
+	// the zero value derives it, as a launch; a resume replays the run's
+	// frozen stamp, which decides whether its gateway routes are attributed
+	// to a key (gatewayRouting) and whether the run is held to its team's
+	// gateway, whatever the stores read now.
+	boundary boundarySource
 }
 
 // launchPreviewProgram is the program a launch that has not happened yet
@@ -87,7 +94,7 @@ func (p *Publisher) previewCredentials(ctx context.Context, spec runview.Credent
 			Candidates: []runview.CredentialPreviewCandidate{}, Wires: []runview.CredentialPreviewWire{},
 			Pool:     runview.CredentialPreviewPool{Reason: "credentials_present", Wants: []string{}},
 			Warnings: []string{"Observation only: no secret was opened, no provider was probed, and no capacity was reserved. Selected slots assume successful materialization and admission; model routing decides which slot is spent. Alternatives show current metadata, not a guaranteed future grant.", "Runner environment credentials and required workflow secrets are outside this preview."}},
-		api: map[secrets.Provider]int{}, pinnedAPI: map[secrets.Provider]int{}, oauth: map[string]int{}, skippedAPI: map[secrets.Provider][]int{}, skippedOAuth: map[string][]int{}, accountGroups: map[string]string{}, floorHeld: map[int]bool{},
+		api: map[secrets.Provider]int{}, pinnedAPI: map[secrets.Provider]int{}, oauth: map[string]int{}, skippedAPI: map[secrets.Provider][]int{}, skippedOAuth: map[string][]int{}, accountGroups: map[string]string{}, floorHeld: map[int]bool{}, busy: busyProviders{},
 	}
 	x.orgID = p.orgIDForTeam(ctx, spec.Context.TeamID)
 	// The same canonicalisation the live walk applies, or the preview would
@@ -95,9 +102,6 @@ func (p *Publisher) previewCredentials(ctx context.Context, spec runview.Credent
 	previewBotID := botregistry.NormalizeName(spec.Context.BotID)
 	previewView := prog.view
 	x.pinned = pinnedProviderSet(prog.pinned)
-	// Same predicate as the live fill (#2038): an env-funded run acquires no
-	// LLM credential, so the preview shows no candidate and reads no tier.
-	envFunded := wf != nil && model.EffectiveProviders(previewView, knownPoolProviders).OnlyEnvFunded()
 	// The live resolution's own policy snapshot and tier probes (read-only
 	// store reads, like every other stage here) — and the launch's
 	// RESOLVED routing policy whitelists the slots exactly as the launch
@@ -130,9 +134,6 @@ func (p *Publisher) previewCredentials(ctx context.Context, spec runview.Credent
 		x.warn("The team's llm_fallback policy could not be read; the live launch refuses on this error and this preview is conditional.")
 	case policy == identity.LLMFallbackNone:
 		sovereignPreview = true
-		if !envFunded {
-			x.warn("The team runs with llm_fallback=none: the shared tiers (org, pool, platform) are not consulted, and a route nothing of the team's own funds refuses the launch.")
-		}
 	}
 	// The run's runner pool, through the launch's own reader (D13): a pool
 	// run consults NO shared tier — a pool pod would hold other tenants'
@@ -158,6 +159,23 @@ func (p *Publisher) previewCredentials(ctx context.Context, spec runview.Credent
 			pooledPreview, runnerPool = true, mapped
 		}
 	}
+	// The live fill's own answer (#2038 under ADR-131 §5, gatewayRouting): a
+	// run whose every route rides the gateway and whose consulted tiers hold
+	// no gateway key serving it is env-funded — no candidate, no tier read;
+	// a held key attributes the gateway routes to it on the view every
+	// derivation below reads, exactly as the launch's walk does — and the
+	// gateway slot seals for no candidate of a run that rides no gateway
+	// route, the gate the live walk joins to the same policy.
+	// A preview that names no repository does not know the launch's (the
+	// source may serve several, or a pattern): a gateway key its repository
+	// audience alone keeps out is reported, never read as absent.
+	gateway := p.gatewayRouting(x.ctx, previewView, spec.Context.TeamID, x.orgID, spec.OwnerID, previewBotID, sovereignPreview, pooledPreview,
+		gatewayProbe{lists: x.policy, allowed: x.allowed, repoUnknown: secrets.LaunchRepoFromContext(x.ctx) == "", attachment: spec.PoolAttachment, botID: spec.Context.BotID, boundary: prog.boundary})
+	previewView, envFunded := gateway.view, gateway.envFunded
+	x.policy = x.policy.withGatewaySlot(gateway.sealable)
+	if sovereignPreview && !envFunded {
+		x.warn("The team runs with llm_fallback=none: the shared tiers (org, pool, platform) are not consulted, and a route nothing of the team's own funds refuses the launch.")
+	}
 	// The launch's own `runnerPool != "" || sovereign`: ONE expression for the
 	// two postures that block the shared tiers, read by every site below that
 	// mirrors one — the tier walk, the fallback door, and therefore the
@@ -165,11 +183,24 @@ func (p *Publisher) previewCredentials(ctx context.Context, spec runview.Credent
 	sharedTiersBlocked := sovereignPreview || pooledPreview
 	blocked := blockedPosture(sovereignPreview, runnerPool, untrustedPreview)
 	if untrustedPreview {
-		x.warn("The run is untrusted (fork lane) and executes on its lane's runner pool: the shared tiers (org, pool, platform) are not consulted, the runner's environment is refused and a forfait cannot cross its sandbox — only the team's own vendor API keys fund it, on routes decided before the run (no gateway route, no ${…} dial or late var the pool's runner resolves itself), and any other route refuses the launch before it is metered.")
+		x.warn("The run is untrusted (fork lane) and executes on its lane's runner pool: the shared tiers (org, pool, platform) are not consulted, the runner's environment is refused and a forfait cannot cross its sandbox — only the team's own API keys fund it (its vendor keys, and its openai_compatible gateway key on the literal gateway routes it serves), on routes decided before the run (no route riding the runner's gateway, no ${…} dial or late var the pool's runner resolves itself), and any other route refuses the launch before it is metered.")
 	}
-	if envFunded {
-		x.out.Warnings = append(x.out.Warnings, "Every model route of this run rides the runner's openai_compatible gateway: no credential is acquired for it.")
-	} else {
+	switch {
+	case envFunded && gateway.repoOnly != nil:
+		// The answer depends on the repository the launch will name: on one
+		// the key lists, it seals and the run is held to the team's gateway.
+		x.conditional("Every model route of this run rides the runner's openai_compatible gateway unless the launch's repository is one a gateway key names: " + repoOnlyGatewayKey(gateway.repoOnly) + " — a launch on one of them seals it and the run is held to the team's gateway (team_gateway); on any other no credential is acquired for it.")
+		x.addRepoOnlyGatewayKey(gateway.repoOnly, spec.OwnerID)
+	case envFunded && gateway.note != "":
+		x.out.Warnings = append(x.out.Warnings, "Every model route of this run rides the runner's openai_compatible gateway: "+gateway.note+" — no credential is acquired for it.")
+	case envFunded:
+		x.out.Warnings = append(x.out.Warnings, "Every model route of this run rides the runner's openai_compatible gateway, and no credential tier this launch consults holds a gateway key serving it: no credential is acquired for it.")
+	case gateway.note != "" && !gateway.view.GatewayKeyFunded:
+		x.warn("The run's openai_compatible routes ride the runner's environment gateway: " + gateway.note + ".")
+	case gateway.repoOnly != nil && !gateway.view.GatewayKeyFunded:
+		x.warn("The run's openai_compatible routes ride the runner's environment gateway unless the launch's repository is one a gateway key names: " + repoOnlyGatewayKey(gateway.repoOnly) + ".")
+	}
+	if !envFunded {
 		if pooledPreview && !untrustedPreview {
 			x.warn(fmt.Sprintf("The team is mapped to runner pool %q: the shared tiers (org, pool, platform) are not consulted — only the team's own credentials fund this run.", runnerPool))
 		}
@@ -221,7 +252,7 @@ func (p *Publisher) previewCredentials(ctx context.Context, spec runview.Credent
 		// Nothing to walk: no stage acquires anything for this run — the
 		// pool block names why it was not consulted.
 		x.out.Pool.Reason = "env_funded"
-	} else if err = walkCredentialPlan(func() bool { return len(x.api)+len(x.oauth) > 0 }, func() bool { return x.poolGranted }, func() bool { return spec.PoolAttachment != nil && spec.PoolAttachment.PoolID != "" }, func(tier credentialTier, active bool) error {
+	} else if err = walkCredentialPlan(func() bool { return metadataHoldsDefault(x) }, func() bool { return x.poolGranted }, func() bool { return spec.PoolAttachment != nil && spec.PoolAttachment.PoolID != "" }, func(tier credentialTier, active bool) error {
 		switch tier {
 		case credentialTierBYOK:
 			if err := x.apiStage("", spec.Context.TeamID, spec.OwnerID, usagecap.TenantScope(spec.Context.TeamID), previewBotID, spec.Launch.KeyOverrides, false, true); err != nil {
@@ -261,14 +292,7 @@ func (p *Publisher) previewCredentials(ctx context.Context, spec runview.Credent
 			// filled-slot gate (law 1), same margin predicate constructor
 			// (law 4's parity).
 			if spec.PoolAttachment != nil && spec.PoolAttachment.PoolID != "" {
-				attachedWants := wants
-				if !routes.NarrowSafe || slices.Contains(routes.Providers, string(secrets.ProviderOpenAICompatible)) {
-					attachedWants = append(append([]credpool.Credential{}, attachedWants...), credpool.Credential{Source: credpool.SourceAPIKey, Ref: string(secrets.ProviderOpenAICompatible)})
-				}
-				var marginFn func(credpool.Pledge) (time.Time, bool)
-				if slices.Contains(spec.PoolAttachment.Strategy.Triggers, "usage_window") {
-					marginFn = p.closedAtMargin(ctx, strategyMargin(spec.PoolAttachment.Strategy))
-				}
+				attachedWants := append(append([]credpool.Credential{}, wants...), credpool.Credential{Source: credpool.SourceAPIKey, Ref: string(secrets.ProviderOpenAICompatible)})
 				// Law 1's gate, exactly as the live walk: a slot tiers 1–4
 				// sealed (or the whitelist holds out) is not asked of the
 				// pool — a candidate the launch would never draw must not
@@ -297,11 +321,7 @@ func (p *Publisher) previewCredentials(ctx context.Context, spec runview.Credent
 					}
 				}
 				x.out.Pool.Considered = active
-				pool, err := p.credPool.Preview(ctx, credpool.Request{
-					OrgID: x.orgID, TenantID: spec.Context.TeamID, UserID: spec.OwnerID, BotID: spec.Context.BotID,
-					Wants: asked, PoolIDs: []string{spec.PoolAttachment.PoolID},
-					RankMode: credpool.StrategyMode(spec.PoolAttachment.Strategy.Mode), ClosedAtMargin: marginFn,
-				})
+				pool, served, err := p.previewLent(ctx, p.attachedPoolRequest(ctx, x.orgID, spec.Context.TeamID, spec.OwnerID, spec.Context.BotID, spec.PoolAttachment, asked))
 				if err != nil {
 					x.out.Pool.Reason = "unknown"
 					x.conditional("Attached pool metadata unavailable; selection is conditional.")
@@ -309,6 +329,7 @@ func (p *Publisher) previewCredentials(ctx context.Context, spec runview.Credent
 				}
 				if active {
 					x.out.Pool.Reason = string(pool.Reason)
+					p.noteBusyCandidates(ctx, x.busy, "the attached pool "+spec.PoolAttachment.PoolID+"'s", false, pool.Candidates, served, spec.Context.BotID)
 				}
 				for rank, d := range pool.Candidates {
 					c := runview.CredentialPreviewCandidate{Tier: "pool", Rank: rank, Source: string(d.Source), Provider: d.Ref, Wire: secrets.WireFamily(d.Ref), Label: "Key pool " + spec.PoolAttachment.PoolID, State: string(d.Status), Reason: d.Reason, Conditional: true, Windows: []runview.CredentialPreviewWindow{}, Capacity: &runview.CredentialPreviewCapacity{LiveRuns: d.LiveRuns, MaxConcurrentRuns: d.MaxConcurrentRuns, RemainingUSD: d.RemainingUSD}}
@@ -348,7 +369,7 @@ func (p *Publisher) previewCredentials(ctx context.Context, spec runview.Credent
 				poolWants = wants
 			}
 			x.out.Pool.Considered = active
-			pool, err := p.credPool.Preview(ctx, credpool.Request{OrgID: x.orgID, TenantID: spec.Context.TeamID, UserID: spec.OwnerID, BotID: spec.Context.BotID, Wants: poolWants})
+			pool, served, err := p.previewLent(ctx, credpool.Request{OrgID: x.orgID, TenantID: spec.Context.TeamID, UserID: spec.OwnerID, BotID: spec.Context.BotID, Wants: poolWants})
 			if err != nil {
 				x.out.Pool.Reason = "unknown"
 				x.conditional("Pool metadata unavailable; selection is conditional.")
@@ -356,6 +377,7 @@ func (p *Publisher) previewCredentials(ctx context.Context, spec runview.Credent
 			}
 			if active {
 				x.out.Pool.Reason = string(pool.Reason)
+				p.noteBusyCandidates(ctx, x.busy, "the credential pool's", true, pool.Candidates, served, spec.Context.BotID)
 			}
 			for rank, d := range pool.Candidates {
 				c := runview.CredentialPreviewCandidate{Tier: "pool", Rank: rank, Source: string(d.Source), Provider: d.Ref, Wire: secrets.WireFamily(d.Ref), Label: "Shared pool credential", State: string(d.Status), Reason: d.Reason, Conditional: true, Windows: []runview.CredentialPreviewWindow{}, Capacity: &runview.CredentialPreviewCapacity{LiveRuns: d.LiveRuns, MaxConcurrentRuns: d.MaxConcurrentRuns, RemainingUSD: d.RemainingUSD}}
@@ -516,12 +538,34 @@ func (p *Publisher) previewCredentials(ctx context.Context, spec runview.Credent
 	// the launch's own composer over the fills predicted here, and RESTORED
 	// immediately: the live fallback door runs BEFORE the ladder, so the door
 	// block below must answer on the authored program, as it does live.
+	// The content boundary the walk would hold the run to (ADR-131 §4): a
+	// launch's through the launch's own producer over the fills predicted
+	// here, a resume's as its run document froze it — the walk replays the
+	// stamp, so the preview does too. The ladder and the door below screen on
+	// it as the walk's do.
+	_, gwKey := x.api[secrets.ProviderOpenAICompatible]
+	_, gwPinned := x.pinnedAPI[secrets.ProviderOpenAICompatible]
+	previewTeamGateway := prog.boundary.resolve(func() *store.RunContentBoundary {
+		return derivedContentBoundary(teamGatewayBoundary(previewView, gwKey || gwPinned), gwKey || gwPinned, "", "")
+	}).TeamGateway()
 	restoreRoutes := snapshotFallbackRoutes(wf)
-	composePolicyLadder(wf, previewView, spec.LLMRoutePolicy, model.AllowedProviderSet(previewView.AllowedProviders), spec.Launch.Vars, doorServesMetadata(x, spec.Launch.Trust.AmbientLLMRefused()), nil)
+	composePolicyLadder(wf, previewView, spec.LLMRoutePolicy, model.AllowedProviderSet(previewView.AllowedProviders), spec.Launch.Vars, doorServesMetadata(x, spec.Launch.Trust.AmbientLLMRefused()), previewTeamGateway, nil)
 	previewRoutes := attributedRoutes(previewView)
 	restoreRoutes()
-	posture := p.unfundedPostureFor(wf, sovereignPreview, envFunded, spec.Launch.Trust, runnerPool)
-	refusal := unfundedRefusalFor(spec.Context.TeamID, previewRoutes, metadataFunding(x, posture), metadataHoldsNothing(x), posture)
+	// The launch's reading of a gateway route attributed to a key no tier
+	// fills (gatewayRoutes.unsealedNote): it rides the runner's environment
+	// gateway, named, and the refusals read it as the environment's.
+	if unsealed := gateway.unsealedNote(gwKey || gwPinned, previewTeamGateway, x.poolGranted); unsealed != "" {
+		x.warn("The run's openai_compatible routes ride the runner's environment gateway: " + unsealed + ".")
+		previewRoutes = previewRoutes.gatewayToEnvironment()
+	}
+	posture := p.unfundedPostureFor(wf, sovereignPreview, previewTeamGateway, envFunded, spec.Launch.Trust, runnerPool)
+	refusal := unfundedRefusalFor(spec.Context.TeamID, previewRoutes, metadataFunding(x, posture), !metadataHoldsDefault(x), posture, gateway, x.busy)
+	if refusal == nil && posture.TeamGateway {
+		if tolerated, why := teamGatewayTolerated(previewRoutes.providers, previewRoutes.pins, previewRoutes.primary, metadataFunding(x, posture)); tolerated != "" {
+			x.warn("The run is held to its team's gateway (team_gateway) and no credential it carries funds " + tolerated + " — " + why + ".")
+		}
+	}
 	wires := map[string][]string{}
 	selectSlot := func(i int) {
 		c := &x.out.Candidates[i]
@@ -581,9 +625,9 @@ func (p *Publisher) previewCredentials(ctx context.Context, spec runview.Credent
 	// like. Same arm conditions as the live door: a run that holds its
 	// own credential, no whole-bundle grant predicted, not env-funded,
 	// and a policy whose ladder can dispatch a missing kind.
-	if !envFunded && len(x.api)+len(x.oauth) > 0 && !x.poolGranted &&
+	if !envFunded && metadataHoldsDefault(x) && !x.poolGranted &&
 		spec.LLMRoutePolicy != nil && len(spec.LLMRoutePolicy.Triggers) > 0 && len(spec.LLMRoutePolicy.PairOrder) > 0 && p.credPool != nil && !sharedTiersBlocked {
-		wants, _, ok := doorWantsFor(spec.LLMRoutePolicy, previewView, spec.Launch.Vars, doorServesMetadata(x, spec.Launch.Trust.AmbientLLMRefused()))
+		wants, _, ok := doorWantsFor(spec.LLMRoutePolicy, previewView, spec.Launch.Vars, doorServesMetadata(x, spec.Launch.Trust.AmbientLLMRefused()), previewTeamGateway)
 		if !ok {
 			x.out.Pool.DoorReason = "no_dispatchable_wants"
 		} else {
@@ -592,7 +636,7 @@ func (p *Publisher) previewCredentials(ctx context.Context, spec runview.Credent
 				doorWants = append(doorWants, string(w.Source)+":"+w.Ref)
 			}
 			x.out.Pool.DoorWants = doorWants
-			door, derr := p.credPool.Preview(ctx, credpool.Request{OrgID: x.orgID, TenantID: spec.Context.TeamID, UserID: spec.OwnerID, BotID: spec.Context.BotID, Wants: wants, FallbackOnly: true})
+			door, _, derr := p.previewLent(ctx, credpool.Request{OrgID: x.orgID, TenantID: spec.Context.TeamID, UserID: spec.OwnerID, BotID: spec.Context.BotID, Wants: wants, FallbackOnly: true})
 			if derr != nil {
 				x.out.Pool.DoorReason = "unknown"
 				x.warn("Fallback-door pool metadata unavailable; selection is conditional.")
@@ -668,13 +712,18 @@ func doorServesMetadata(x *credentialPreview, untrusted bool) func(_, credential
 	}
 }
 
-// metadataHoldsNothing is `!holdsLLMCredential(bundle)` on the fills this
-// preview PREDICTS: the sovereign refusal of a run nothing of the team's
-// funds and no route of which the walk can attribute reads it, and it is the
-// same twinning as metadataFunding below — a different SOURCE for the same
-// question, never a different question.
-func metadataHoldsNothing(x *credentialPreview) bool {
-	return len(x.api)+len(x.pinnedAPI)+len(x.oauth) == 0
+// metadataHoldsDefault is holdsDefaultLLMCredential on the fills this preview
+// PREDICTS — the default-channel keys (x.api) and the forfaits: the pool
+// tier's admission, the fallback door and the sovereign refusal of a run no
+// route of which the walk can attribute all read it, the same twinning as
+// metadataFunding below — a different SOURCE for the same question, never a
+// different question.
+func metadataHoldsDefault(x *credentialPreview) bool {
+	slots := make([]secrets.Provider, 0, len(x.api))
+	for prov := range x.api {
+		slots = append(slots, prov)
+	}
+	return defaultLLMCredentialIn(slots, len(x.oauth))
 }
 
 // metadataFunding is bundleFunding on the fills this preview PREDICTS: what
@@ -720,6 +769,10 @@ type credentialPreview struct {
 	skippedOAuth  map[string][]int
 	accountGroups map[string]string
 	poolGranted   bool
+	// busy is the walk's busy-entry reading of the consulted pools'
+	// candidates (noteBusyCandidates): the refusal it predicts waits where
+	// the launch's would.
+	busy busyProviders
 	// pinned are the providers a route of the previewed launch NAMES. A
 	// shared tier may fund one of them even on a wire family another slot
 	// already fills, so the preview has to apply the same exception or it
@@ -765,10 +818,14 @@ func (x *credentialPreview) add(c runview.CredentialPreviewCandidate) int {
 	return len(x.out.Candidates) - 1
 }
 
-// exclusionReason names the gate that excluded a credential slot, through
-// the ONE judgement every message prescribing a remedy asks (excluderOfSlot):
-// the tenant's providers allowlist, or the launch's routing pair order.
+// exclusionReason names the gate that excluded a credential slot: the run's
+// routes riding no gateway (the gateway slot), else through the ONE
+// judgement every message prescribing a remedy asks (excluderOfSlot) — the
+// tenant's providers allowlist, or the launch's routing pair order.
 func (x *credentialPreview) exclusionReason(slot string) string {
+	if x.policy.gatewayOut(slot) {
+		return " No route of this run rides the openai_compatible gateway — a decided gateway route rides it, and a route the walk cannot decide only under a dedicated runner pool: the live launch seals no gateway key for it."
+	}
 	if excluderOfSlot(x.allowed, slot) == excludedByProviderAllowlist {
 		return " Outside this launch's providers allowlist — the live launch seals no credential for it."
 	}
@@ -1099,6 +1156,37 @@ func (x *credentialPreview) windows(ctx context.Context, c *runview.CredentialPr
 		c.Reason = "No fresh usage-window observation; the launch assumes availability."
 	}
 	return false, false
+}
+
+// repoOnlyGatewayKey names a gateway key only its repository audience keeps
+// from a preview that knows no repository. The key's own repository list
+// stays out, as the candidate's reason keeps it out: a shared-tier key's
+// repositories are its owner's to know.
+func repoOnlyGatewayKey(h *heldGatewayKey) string {
+	return h.String() + " is restricted to repositories this preview does not know"
+}
+
+// addRepoOnlyGatewayKey lists that key for an env-funded preview, whose tier
+// walk is skipped: the repo_filtered state and reason apiStage gives a key
+// its repository audience keeps out, not consulted, conditional on the
+// launch's repository.
+func (x *credentialPreview) addRepoOnlyGatewayKey(h *heldGatewayKey, owner string) {
+	k := h.key
+	c := runview.CredentialPreviewCandidate{Tier: h.tier, Source: "api_key", Provider: string(k.Provider), Wire: secrets.WireFamily(string(k.Provider)),
+		Label: k.Name, State: string(credpool.StatusRepoFiltered), Selection: "not_consulted", Conditional: true, Windows: []runview.CredentialPreviewWindow{},
+		Reason: " This key's repository audience does not name " + previewLaunchRepo("") + ". A launch on a repository it names seals it; on any other the run rides the runner's gateway."}
+	switch {
+	case h.poolID != "":
+		c.Tier = "pool"
+		c.Label = "Key pool gateway entry (paired key+URL)"
+	case h.tier == "tenant" && k.ScopeUserID == owner && owner != "":
+		c.Tier = "user"
+	case h.tier == "tenant":
+		c.Tier = "team"
+	default:
+		c.Label = "Shared " + h.tier + " API key"
+	}
+	x.add(c)
 }
 
 // previewLaunchRepo names the repository a preview was asked for. A preview

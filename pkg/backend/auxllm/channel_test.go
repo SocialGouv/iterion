@@ -415,9 +415,10 @@ func f() { _ = model.ParseModelSpec("openai/x"); _ = hint }`,
 // The channel's decision today is the process env, so the registry it hands
 // out must be funded exactly by that env: a credential present in the env
 // resolves, the same spec without it refuses by name. The day the decision
-// changes (#2005 PR-C' moves the funding to the run's gateway credential),
-// this test is the tripwire that names the change — rewrite it with the new
-// decision, never silently.
+// changes (the run's gateway credential reopened server-side — ADR-131's
+// server-helper credential channel, a ticket of its own), this test is the
+// tripwire that names the change — rewrite it with the new decision, never
+// silently.
 func TestRegistryServesTheProcessEnvCredential(t *testing.T) {
 	const spec = "moonshot/kimi-k2"
 

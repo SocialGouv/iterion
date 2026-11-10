@@ -259,15 +259,16 @@ const maxGatewayBaseURLBytes = 2048
 // glued to the URL, an IPv6 zone), a value over maxGatewayBaseURLBytes, a
 // port outside 1–65535, a path with an empty, "." or ".." segment, a host
 // with an empty label, a literal address that is not public unicast
-// (loopback, private, link-local, metadata — pkg/secure/httpdial's set),
+// (loopback, private, CGNAT, link-local, metadata, a non-public IPv6
+// transition address — pkg/secure/httpdial's set),
 // a single-label host (localhost and every /etc/hosts alias, _gateway,
 // instance-data, a Service name — a public gateway has a dot), the names a
-// cluster, a cloud or a container reserves for itself (reservedGatewayHosts
-// and reservedGatewaySuffixes), and a host written as a number in any base
-// (see canonicalGatewayHost). The path is ASCII letters, digits and
-// "-._~:@/" only: a blank-looking printable rune must not glue a secret to
-// it, and a backslash or a sub-delimiter is read as something else by a
-// browser's parser. A name that RESOLVES to such an address is the
+// cluster, a cloud or a container reserves for itself (httpdial.ReservedName,
+// the set the strict dial guard refuses too), and a host written as a
+// number in any base (see canonicalGatewayHost). The path is ASCII
+// letters, digits and "-._~:@/" only: a blank-looking printable rune must
+// not glue a secret to it, and a backslash or a sub-delimiter is read as
+// something else by a browser's parser. A name that RESOLVES to such an address is the
 // dial-time guard's to refuse, once a run dials the gateway.
 //
 // The host is CONVERTED before it is judged: an internationalised name is
@@ -319,10 +320,10 @@ func ValidateGatewayBaseURL(raw string) (string, error) {
 	}
 	if ip != nil {
 		if !httpdial.IsPublicUnicast(ip) {
-			return "", &ShapeError{Field: "base_url", Reason: "names a loopback, private, link-local or metadata address — a gateway a run dials is a public host"}
+			return "", &ShapeError{Field: "base_url", Reason: "names a non-public address (loopback, private, CGNAT, link-local, metadata, or a non-public IPv6 transition address) — a gateway a run dials is a public host"}
 		}
-	} else if reservedGatewayHost(host) {
-		return "", &ShapeError{Field: "base_url", Reason: "names a host the cluster, the cloud or the container reserves (" + strings.Join(reservedGatewayHosts, ", ") + ", *" + strings.Join(reservedGatewaySuffixes, ", *") + ")"}
+	} else if httpdial.ReservedName(host) {
+		return "", &ShapeError{Field: "base_url", Reason: "names a host the cluster, the cloud or the container reserves (" + httpdial.ReservedNames() + ")"}
 	}
 	hostport := host
 	if port := u.Port(); port != "" {
@@ -483,29 +484,4 @@ func literalHost(ip net.IP) string {
 		return "[" + s + "]"
 	}
 	return s
-}
-
-// reservedGatewayHosts and reservedGatewaySuffixes name what no tenant
-// gateway can legitimately be: the names a cluster, a cloud, a container or
-// a workstation resolves to itself (single-label aliases such as
-// localhost4 or ip6-localhost are already refused as single labels).
-var (
-	reservedGatewayHosts    = []string{"localhost.localdomain", "kubernetes.default"}
-	reservedGatewaySuffixes = []string{".localhost", ".localdomain", ".localdomain4", ".localdomain6", ".local", ".internal", ".svc", ".cluster.local"}
-)
-
-// reservedGatewayHost reports a host name no tenant gateway can legitimately
-// carry.
-func reservedGatewayHost(host string) bool {
-	for _, h := range reservedGatewayHosts {
-		if host == h {
-			return true
-		}
-	}
-	for _, suffix := range reservedGatewaySuffixes {
-		if strings.HasSuffix(host, suffix) {
-			return true
-		}
-	}
-	return false
 }

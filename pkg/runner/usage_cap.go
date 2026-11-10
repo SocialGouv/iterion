@@ -867,13 +867,19 @@ func ladderEscapes(wf *ir.Workflow, msg *queue.RunMessage, sandboxed bool) map[s
 	//   - a codex stage on a SANDBOXED run is refused by the screen
 	//     (fallback_apply.go) — the runner's own sandbox tiers are known
 	//     here, so the refusal is decided, not guessed;
-	//   - an unmappable model (StageModel's no-mapping pairs) is dropped
-	//     per node — checked against the node's own model.
+	//   - an unmappable model (StageModel's no-mapping pairs, and a node
+	//     routed to the team's gateway under the run's team_gateway content
+	//     boundary) is dropped per node — checked against the node's own
+	//     model and the boundary the message carries.
 	// RESIDUAL, said: the per-node predicates (ungated ask-rules, tools
 	// inversion, session continuity) are not re-judged here — a stage
 	// refused by one of them after its park was deleted converts the
 	// durable retry into a bare failure. Delivery-1 boundary.
 	ovs := modelOverridesFromMsg(msg.ModelOverrides)
+	// The screen's own reading of each node's route, over the vars the
+	// materializing screen reads (the message's): a `{{vars.model}}` node
+	// is judged by the route the run decides, never by its template text.
+	reading := ir.NewPolicyLadderReading(wf, msg.Vars)
 	for _, st := range stages {
 		if st.Backend == delegate.BackendClaudeCode {
 			continue // the anthropic wire itself: no escape
@@ -892,21 +898,18 @@ func ladderEscapes(wf *ir.Workflow, msg *queue.RunMessage, sandboxed bool) map[s
 			if !ok || nn.NodeKind() != ir.NodeAgent || len(nn.GetFallbacks()) > 0 {
 				continue
 			}
-			// The EFFECTIVE model — the override the launch stamped wins
+			// The EFFECTIVE route — the override the launch stamped wins
 			// over the declared field, exactly as the materializing
-			// screen's own nodeModel callback reads it. A node with no
+			// screen's own route callback reads it (LadderRoute), mapped
+			// through the screen's own per-node mapping. A node with no
 			// model of its own has NO ladder: the materializer drops its
 			// stages (StageModel maps nothing modelless), so it cannot
 			// escape off the capped wire — the park stands. A model that
 			// maps nothing likewise drops the stage (named there) and is
 			// no escape. (R27b623: the declared field alone disagreed
 			// with the materializer whenever an override decided.)
-			ov := ovs.ForNode(nn.NodeID(), nn.NodeKind())
-			nodeModel := nn.GetLLMFields().Model
-			if ov.Model != "" {
-				nodeModel = ov.Model
-			}
-			if _, mappable, _ := llmroute.StageModel(st.Backend, st.Provider, nodeModel, llmroute.ResolveClasses(msg.FallbackModelClasses)); !mappable {
+			nodeModel, nodeProvider := ovs.LadderRoute(nn)
+			if _, mappable, _ := reading.StageModel(st.Backend, st.Provider, nodeModel, nodeProvider, llmroute.ResolveClasses(msg.FallbackModelClasses), msg.ContentBoundary.TeamGateway()); !mappable {
 				continue
 			}
 			escapes[nn.NodeID()] = true

@@ -3,7 +3,6 @@ package compatgw
 import (
 	"context"
 	"fmt"
-	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -139,14 +138,17 @@ func sandboxProxyFunc(strict bool, proxyURL *url.URL) func(*http.Request) (*url.
 	}
 }
 
-// resolveHost validates a gateway HOST the same way the dial will: through
-// httpdial, so Validate cannot accept what the transport would refuse.
-func resolveHost(host string) (net.IP, error) {
+// judgeHost judges a gateway HOST as the strict dial does — through httpdial
+// at strict: the names no public host carries in any spelling, then every
+// address the name resolves to — so Validate cannot pass a host the
+// transport refuses on the same answer. A refusal wraps httpdial.ErrNotPublic,
+// on which Validate names the escape hatch; a failed lookup or a malformed
+// name does not, and gets no such advice.
+func judgeHost(host string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	// Non-strict: the ADDRESS judgement is Validate's job (with the
-	// remedy attached), not the resolver's.
-	return httpdial.ResolvePublicHost(ctx, host, false)
+	_, err := httpdial.ResolvePublicHost(ctx, host, true)
+	return err
 }
 
 // redirectRefusedPolicy is the client's redirect policy: a gateway that

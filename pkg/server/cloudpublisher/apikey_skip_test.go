@@ -2,7 +2,11 @@ package cloudpublisher
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
+	"reflect"
+	"slices"
 	"testing"
 	"time"
 
@@ -342,7 +346,7 @@ func TestResolve_ceilingWalksToNextKeyAndStampsFingerprints(t *testing.T) {
 	}
 	// The harvest names the credential the bundle ACTUALLY sealed — the
 	// meter would count the wrong key otherwise.
-	creds, err := p.resolveAndSealCredentials(ctx, "run-c2", "", "team1", "owner1", "", "", nil, nil, nil, model.RouteView{}, nil, store.RunTrustDefault, nil, nil, nil)
+	creds, err := p.resolveAndSealCredentials(ctx, "run-c2", "", "team1", "owner1", "", "", nil, nil, nil, model.RouteView{}, nil, store.RunTrustDefault, nil, nil, nil, boundaryDerived)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -365,7 +369,11 @@ func TestResolve_ceilingWalksToNextKeyAndStampsFingerprints(t *testing.T) {
 // run's document must carry the sealed credentials' fingerprints via the
 // launch's single SaveRun, and a RESUME whose re-resolution finds nothing
 // must CLEAR the stamp, not keep metering a credential the run no longer
-// holds.
+// holds. The content boundary (ADR-131 §4) rides the same SaveRun at launch
+// — an explicit own_keys for this vendor run — and is the one launch fact
+// the resume does NOT re-resolve: the re-read document carries the launch's
+// bytes. TestSubmitResume_ReplaysTheFrozenTeamGatewayBoundary is the variant
+// where a re-derivation would answer differently.
 func TestSubmitLaunchAndResume_credFingerprintsRideTheRunDocument(t *testing.T) {
 	sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 	if err != nil {
@@ -412,6 +420,13 @@ func TestSubmitLaunchAndResume_credFingerprintsRideTheRunDocument(t *testing.T) 
 	if !found {
 		t.Fatalf("launched run carries %v, want fp-wired — the ceiling is blind to launches otherwise", run.CredFingerprints)
 	}
+	launchBoundary, err := json.Marshal(run.ContentBoundary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `{"kind":"own_keys"}`; string(launchBoundary) != want {
+		t.Fatalf("launched run's content_boundary = %s, want %s — the launch writes an explicit stamp", launchBoundary, want)
+	}
 
 	// The key disappears; the resume's re-resolution finds nothing and
 	// must CLEAR the stamp.
@@ -433,5 +448,106 @@ func TestSubmitLaunchAndResume_credFingerprintsRideTheRunDocument(t *testing.T) 
 	}
 	if len(run.CredFingerprints) != 0 {
 		t.Fatalf("resumed run still carries %v — a stale stamp holds a slot on a credential the run no longer has", run.CredFingerprints)
+	}
+	if resumed, _ := json.Marshal(run.ContentBoundary); string(resumed) != string(launchBoundary) {
+		t.Fatalf("resumed run's content_boundary = %s, want the launch's %s byte for byte", resumed, launchBoundary)
+	}
+}
+
+// ADR-131 §4, the replay: a run launched on its team's gateway key keeps its
+// team_gateway stamp through a resume whose walk would now answer otherwise
+// (the key was deleted since). The frozen stamp decides the gateway routes'
+// attribution on the resume (gatewayRouting's replay rule), so the slot the
+// walk cannot fill is refused BY NAME — the boundary's strict arm, naming the
+// gateway route — instead of publishing a dead attempt (a bundle whose
+// ambient refusal answers the gateway node's every call) or the pod's
+// environment. The document keeps the launch's bytes and nothing is
+// published. Mutants: the replay re-deriving the attribution from the probe
+// → both rows publish; the resume writing a derivation on the document → the
+// bytes move.
+func TestSubmitResume_ReplaysTheFrozenTeamGatewayBoundary(t *testing.T) {
+	gwNode := &ir.AgentNode{BaseNode: ir.BaseNode{ID: "implement"}, LLMFields: ir.LLMFields{Backend: "claw", Model: "openai_compatible/team/m"}}
+	for _, row := range []struct {
+		name   string
+		nodes  map[string]ir.Node
+		vendor bool
+	}{
+		{"nothing left to seal at the resume", map[string]ir.Node{"implement": gwNode}, false},
+		{"a vendor key still sealed at the resume", map[string]ir.Node{"implement": gwNode,
+			"review": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "review"}, LLMFields: ir.LLMFields{Backend: "claw", Model: "anthropic/claude-opus-5"}}}, true},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
+			if err != nil {
+				t.Fatalf("sealer: %v", err)
+			}
+			rs, err := store.New(t.TempDir())
+			if err != nil {
+				t.Fatalf("store: %v", err)
+			}
+			keys := secrets.NewMemoryApiKeyStore()
+			var keyID string
+			seedGatewayKey(t, keys, sealer, "team1", func(k *secrets.ApiKey) { keyID = k.ID })
+			if row.vendor {
+				seedKey(t, keys, sealer, "team1", secrets.ProviderAnthropic, "sk-ant-team")
+			}
+			ctx := store.WithIdentity(context.Background(), "team1", "owner1")
+			runSecrets := secrets.NewMemoryRunSecretsStore()
+			var published []*queue.RunMessage
+			p := &Publisher{
+				apiKeys:    keys,
+				usageCaps:  usagecap.NewMemStore(),
+				store:      rs,
+				runSecrets: runSecrets,
+				sealer:     sealer,
+				logger:     testLogger(),
+				publishRun: func(_ context.Context, m *queue.RunMessage) error { published = append(published, m); return nil },
+			}
+			wf := &ir.Workflow{Name: "wf", Nodes: row.nodes}
+			if _, err := p.SubmitLaunch(ctx, "run-gwb", runview.LaunchSpec{
+				FilePath: "wf.bot", Source: "workflow wf:\n  start -> done\n",
+			}, wf, &runview.CompiledSource{Hash: "hash"}); err != nil {
+				t.Fatalf("SubmitLaunch: %v", err)
+			}
+			run, err := rs.LoadRun(ctx, "run-gwb")
+			if err != nil {
+				t.Fatalf("LoadRun: %v", err)
+			}
+			launchBoundary, err := json.Marshal(run.ContentBoundary)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if want := `{"kind":"team_gateway","key_id":"` + keyID + `","gateway_host":"gw.example"}`; string(launchBoundary) != want {
+				t.Fatalf("launched run's content_boundary = %s, want %s", launchBoundary, want)
+			}
+			if len(published) != 1 || !reflect.DeepEqual(published[0].ContentBoundary, run.ContentBoundary) {
+				t.Fatalf("the launch's message does not carry the document's stamp: %+v", published)
+			}
+
+			if err := keys.Delete(ctx, keyID); err != nil {
+				t.Fatalf("delete key: %v", err)
+			}
+			run.Status = store.RunStatusPausedOperator
+			if err := rs.SaveRun(ctx, run); err != nil {
+				t.Fatalf("SaveRun: %v", err)
+			}
+			err = p.SubmitResume(ctx, runview.ResumeSpec{
+				RunID: "run-gwb", FilePath: "wf.bot", Source: "workflow wf:\n  start -> done\n",
+			}, wf, &runview.CompiledSource{Hash: "hash"})
+			var refusal *UnfundedProvidersError
+			if !errors.As(err, &refusal) || !refusal.TeamGateway || !slices.Equal(refusal.Providers, []string{string(secrets.ProviderOpenAICompatible)}) || !slices.Equal(refusal.Sites[string(secrets.ProviderOpenAICompatible)], []string{"implement"}) {
+				t.Fatalf("SubmitResume = %v, want the frozen team_gateway boundary's refusal naming the gateway route its walk cannot fund (openai_compatible, named by implement)", err)
+			}
+			if len(published) != 1 {
+				t.Fatalf("the refused resume published %d message(s) after the launch's", len(published)-1)
+			}
+			run, err = rs.LoadRun(ctx, "run-gwb")
+			if err != nil {
+				t.Fatalf("LoadRun: %v", err)
+			}
+			if resumed, _ := json.Marshal(run.ContentBoundary); string(resumed) != string(launchBoundary) {
+				t.Fatalf("resumed run's content_boundary = %s, want the launch's %s byte for byte — the stamp is frozen, never re-derived", resumed, launchBoundary)
+			}
+		})
 	}
 }

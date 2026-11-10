@@ -4,11 +4,14 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/usagecap"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/queue"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // The ladder's escapes: a node whose PRIMARY rides the capped wire but
@@ -103,5 +106,59 @@ func TestUsageCapPreflight_PolicyLadderEscapesThePark(t *testing.T) {
 		{Backend: "codex", Provider: "chatgpt_forfait", On: []string{"usage_window"}},
 	}}, iterlog.Nop()); err == nil {
 		t.Fatal("the same stage as an OPERATOR rescue stays excluded — the carve-out is about operator routes")
+	}
+}
+
+// ADR-131 §4: the escape estimate reads the boundary the message carries, as
+// the materializer does — under team_gateway a node routed to the team's
+// gateway takes no stage, so the estimate must not count it as escaping.
+// The vendor node of the same run still escapes, and an unstamped run's
+// gateway node escapes as before. Mutant: the estimate blind to the boundary
+// → the stamped gateway node escapes.
+func TestLadderEscapes_ReadTheContentBoundary(t *testing.T) {
+	wf := &ir.Workflow{Nodes: map[string]ir.Node{
+		"gw":     &ir.AgentNode{BaseNode: ir.BaseNode{ID: "gw"}, LLMFields: ir.LLMFields{Backend: "claw", Model: "openai_compatible/scaleway/glm-5.3"}},
+		"vendor": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "vendor"}, LLMFields: ir.LLMFields{Backend: "claude_code", Model: "claude-opus-5-5"}},
+	}}
+	stages := queue.RunFallback{{Backend: "codex", Provider: "chatgpt_forfait", Policy: true, On: []string{"usage_window"}}}
+	open := ladderEscapes(wf, &queue.RunMessage{Fallback: stages}, false)
+	if !open["gw"] || !open["vendor"] {
+		t.Fatalf("unstamped escapes = %v, want both nodes — the control", open)
+	}
+	held := ladderEscapes(wf, &queue.RunMessage{Fallback: stages, ContentBoundary: &store.RunContentBoundary{Kind: store.ContentBoundaryTeamGateway}}, false)
+	if held["gw"] {
+		t.Fatalf("stamped escapes = %v: the gateway node takes no stage under team_gateway", held)
+	}
+	if !held["vendor"] {
+		t.Fatalf("stamped escapes = %v: the vendor node keeps its stage", held)
+	}
+}
+
+// The runner's ladder screen is the authority (the publisher's is advisory):
+// the ExecutorSpec the claim builds must carry the message's frozen content
+// boundary, or the screen lands vendor crossings on a team_gateway run's
+// gateway nodes. A source pin beside the behaviour witness in pkg/runview
+// (TestBuildExecutor_PolicyLadderHonoursTheContentBoundary), which proves the
+// spec field is read. Mutant: the field dropped from the literal → red.
+func TestTheExecutorSpecCarriesTheMessagesContentBoundary(t *testing.T) {
+	src, err := os.ReadFile("loop.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(src)
+	start := strings.Index(body, "runview.ExecutorSpec{")
+	if start < 0 {
+		t.Fatal("loop.go builds no runview.ExecutorSpec literal — re-anchor this witness")
+	}
+	end := strings.Index(body[start:], "\n\t}")
+	if end < 0 {
+		t.Fatal("the ExecutorSpec literal has no end this witness can find — re-anchor it")
+	}
+	literal := body[start : start+end]
+	if !strings.Contains(literal, "PolicyLadder:") {
+		t.Fatal("the anchored literal carries no PolicyLadder — this is not the claim's executor spec; re-anchor")
+	}
+	if !strings.Contains(literal, "ContentBoundary: msg.ContentBoundary") {
+		t.Fatal("the claim's ExecutorSpec does not carry msg.ContentBoundary: the runner's ladder screen would ignore the run's boundary")
 	}
 }

@@ -23,7 +23,7 @@ func resolveWithRouting(t *testing.T, p *Publisher, src string, policy *store.Ru
 	t.Helper()
 	wf := compileTestSource(t, src)
 	ctx := store.WithTenant(context.Background(), "team1")
-	creds, err := p.resolveAndSealCredentials(ctx, "run-ladder", "", "team1", "owner1", "", "", wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustDefault, nil, policy, nil)
+	creds, err := p.resolveAndSealCredentials(ctx, "run-ladder", "", "team1", "owner1", "", "", wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustDefault, nil, policy, nil, boundaryDerived)
 	return wf, creds, err
 }
 
@@ -84,7 +84,7 @@ func TestResolve_LLMFallbackNone_APolicyLadderRungDoesNotDisarmTheRefusal(t *tes
 		// nothing. The attributed reading is a lower bound the ladder can
 		// only grow, which is what makes the rung cost a name instead of the
 		// gate.
-		if walk := model.EffectiveProviders(model.RouteView{Workflow: wf}, knownPoolProviders); walk.NarrowSafe {
+		if walk := model.EffectiveProviders(model.RouteView{Workflow: wf}, walkProviderSet); walk.NarrowSafe {
 			t.Fatalf("the composed program is narrow-safe (providers=%v): the narrowing reading this fences was not empty here, so the test no longer covers the disarm it names", walk.Providers)
 		}
 
@@ -120,9 +120,9 @@ func TestResolve_LLMFallbackNone_APolicyLadderRungDoesNotDisarmTheRefusal(t *tes
 		seedKeyFP(t, p.apiKeys, p.sealer, "team1", secrets.ProviderZAI, "sk-zai-team", "fp-zai-team")
 		funded := fundedProviderSet([]secrets.Provider{secrets.ProviderZAI}, nil, unfundedPosture{})
 
-		compiled := model.EffectiveProviders(model.RouteView{Workflow: compileTestSource(t, twoRoutesBot)}, knownPoolProviders)
+		compiled := model.EffectiveProviders(model.RouteView{Workflow: compileTestSource(t, twoRoutesBot)}, walkProviderSet)
 		wf, creds, err := resolveWithRouting(t, p, twoRoutesBot, zaiLadderPolicy())
-		composed := model.EffectiveProviders(model.RouteView{Workflow: wf}, knownPoolProviders)
+		composed := model.EffectiveProviders(model.RouteView{Workflow: wf}, walkProviderSet)
 
 		if len(creds.Ladder) == 0 {
 			t.Fatalf("no rung landed: the policy's %s pair must be held by the team's zai key", llmroute.Pair(llmroute.HarnessClaw, "zai_key"))
@@ -138,7 +138,7 @@ func TestResolve_LLMFallbackNone_APolicyLadderRungDoesNotDisarmTheRefusal(t *tes
 		// The premise, stated through the producer the launch reads: on the
 		// pre-ladder set EVERY attributed provider is unfunded, which is
 		// exactly what the knob refuses.
-		if r := unfundedRefusalFor("team1", routeAttribution{providers: compiled.Providers, pins: compiled.Pins}, funded, false, unfundedPosture{Knob: true}); r == nil {
+		if r := unfundedRefusalFor("team1", routeAttribution{providers: compiled.Providers, pins: compiled.Pins, primary: compiled.DecidedPrimary}, funded, false, unfundedPosture{Knob: true}, gatewayRoutes{}, nil); r == nil {
 			t.Fatalf("premise lost: the pre-ladder set %v no longer refuses under the knob, so this test cannot see the ordering it names", compiled.Providers)
 		}
 		if err != nil {
@@ -286,12 +286,12 @@ func TestCredentialPreview_JudgesTheProgramThePolicyLadderComposed(t *testing.T)
 	seedKeyFP(t, p.apiKeys, p.sealer, "team1", secrets.ProviderZAI, "sk-zai-team", "fp-zai-team")
 
 	previewWf := compileTestSource(t, twoRoutesBot)
-	authored := model.EffectiveProviders(model.RouteView{Workflow: previewWf}, knownPoolProviders)
+	authored := model.EffectiveProviders(model.RouteView{Workflow: previewWf}, walkProviderSet)
 	// The premise, stated through the producer both surfaces read: on the
 	// AUTHORED program the knob's rule refuses. Without it this witness
 	// cannot see the stage it judges.
-	if r := unfundedRefusalFor("team1", routeAttribution{providers: authored.Providers, pins: authored.Pins},
-		fundedProviderSet([]secrets.Provider{secrets.ProviderZAI}, nil, unfundedPosture{}), false, unfundedPosture{Knob: true}); r == nil {
+	if r := unfundedRefusalFor("team1", routeAttribution{providers: authored.Providers, pins: authored.Pins, primary: authored.DecidedPrimary},
+		fundedProviderSet([]secrets.Provider{secrets.ProviderZAI}, nil, unfundedPosture{}), false, unfundedPosture{Knob: true}, gatewayRoutes{}, nil); r == nil {
 		t.Fatalf("premise lost: the authored set %v no longer refuses under the knob", authored.Providers)
 	}
 
@@ -313,7 +313,7 @@ func TestCredentialPreview_JudgesTheProgramThePolicyLadderComposed(t *testing.T)
 	if launchErr != nil {
 		t.Fatalf("resolveAndSealCredentials = %v, want nil — the ladder's rung is funded routing this run may spend", launchErr)
 	}
-	if sites := model.EffectiveProviders(model.RouteView{Workflow: launchWf}, knownPoolProviders).Pins["zai"]; len(sites) != 1 || sites[0] != "draft#run-fallback" {
+	if sites := model.EffectiveProviders(model.RouteView{Workflow: launchWf}, walkProviderSet).Pins["zai"]; len(sites) != 1 || sites[0] != "draft#run-fallback" {
 		t.Fatalf("the launch's composed pins for zai = %v, want [draft#run-fallback]: the program this witness compares against is not the composed one", sites)
 	}
 
@@ -321,7 +321,7 @@ func TestCredentialPreview_JudgesTheProgramThePolicyLadderComposed(t *testing.T)
 		t.Errorf("the preview refuses a launch that starts: %q — it read the program as AUTHORED, where the launch reads the one its routing policy composed", w)
 	}
 	// Composing is a READING here: the rung must not survive the mirror.
-	if after := model.EffectiveProviders(model.RouteView{Workflow: previewWf}, knownPoolProviders); len(after.Pins["zai"]) != 0 {
+	if after := model.EffectiveProviders(model.RouteView{Workflow: previewWf}, walkProviderSet); len(after.Pins["zai"]) != 0 {
 		t.Errorf("the preview left the ladder's rung on the program it was handed (pins=%v): a read model restores what it composed", after.Pins)
 	}
 }
@@ -401,7 +401,7 @@ func resolveAsLaunched(t *testing.T, p *Publisher, src string) error {
 		t.Fatalf("runnerPoolForTeam: %v", err)
 	}
 	wf := compileTestSource(t, src)
-	_, rerr := p.resolveAndSealCredentials(ctx, "run-pooled", "", "team1", "owner1", "", pool, wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustDefault, nil, nil, nil)
+	_, rerr := p.resolveAndSealCredentials(ctx, "run-pooled", "", "team1", "owner1", "", pool, wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustDefault, nil, nil, nil, boundaryDerived)
 	return rerr
 }
 
@@ -519,10 +519,10 @@ func TestCredentialPreview_HoldsOnlyThePairsItsOwnMetadataServes(t *testing.T) {
 	// team funds nothing of, and the sovereign posture refuses them by name.
 	probe := compileTestSource(t, anthropicPinnedBot)
 	probeView := model.RouteView{Workflow: probe}
-	composePolicyLadder(probe, probeView, forfaitLadderPolicy(), nil, nil, func(_, _ string) bool { return true }, nil)
+	composePolicyLadder(probe, probeView, forfaitLadderPolicy(), nil, nil, func(_, _ string) bool { return true }, false, nil)
 	probeRoutes := attributedRoutes(probeView)
 	if r := unfundedRefusalFor("team1", probeRoutes,
-		fundedProviderSet([]secrets.Provider{secrets.ProviderAnthropic}, nil, unfundedPosture{}), false, unfundedPosture{Sovereign: true}); r == nil {
+		fundedProviderSet([]secrets.Provider{secrets.ProviderAnthropic}, nil, unfundedPosture{}), false, unfundedPosture{Sovereign: true}, gatewayRoutes{}, nil); r == nil {
 		t.Fatalf("premise lost: holding every pair the policy lists no longer names an unfunded provider (attributed=%v) — this witness cannot see the held-pair predicate", probeRoutes.providers)
 	}
 

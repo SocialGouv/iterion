@@ -89,7 +89,7 @@ func newPoolFixture(t *testing.T, limits credpool.Limits) *poolFixture {
 func (f *poolFixture) resolve(t *testing.T, runID string, wf *ir.Workflow) (secrets.RunBundle, credResolution) {
 	t.Helper()
 	ctx := store.WithTenant(context.Background(), poolTeam)
-	creds, err := f.pub.resolveAndSealCredentials(ctx, runID, poolOrg, poolTeam, "requester", "docs-refresh", "", wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustDefault, nil, nil, nil)
+	creds, err := f.pub.resolveAndSealCredentials(ctx, runID, poolOrg, poolTeam, "requester", "docs-refresh", "", wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustDefault, nil, nil, nil, boundaryDerived)
 	if err != nil {
 		t.Fatalf("resolveAndSealCredentials: %v", err)
 	}
@@ -375,7 +375,7 @@ func TestAcquireFromPool_LogsWarnWithReasonOnAbstention(t *testing.T) {
 		// forever. The signal is the terminal "no credential" Warn.
 		buf := bufFor(t)
 		p := &Publisher{logger: iterlog.New(iterlog.LevelDebug, buf)}
-		if g := p.acquireFromPool(context.Background(), "run-1", "org", "team", "user", "bot", model.RouteView{Workflow: &ir.Workflow{}}, nil); g != nil {
+		if g, _ := p.acquireFromPool(context.Background(), "run-1", "org", "team", "user", "bot", model.RouteView{Workflow: &ir.Workflow{}}, nil, nil); g != nil {
 			t.Fatalf("nil broker must not grant, got %+v", g)
 		}
 		log := buf.String()
@@ -399,7 +399,7 @@ func TestAcquireFromPool_LogsWarnWithReasonOnAbstention(t *testing.T) {
 		if err := f.pools.Upsert(context.Background(), pool); err != nil {
 			t.Fatalf("disable pool: %v", err)
 		}
-		if g := f.pub.acquireFromPool(context.Background(), "run-np", poolOrg, poolTeam, "u", "bot", model.RouteView{Workflow: &ir.Workflow{}}, nil); g != nil {
+		if g, _ := f.pub.acquireFromPool(context.Background(), "run-np", poolOrg, poolTeam, "u", "bot", model.RouteView{Workflow: &ir.Workflow{}}, nil, nil); g != nil {
 			t.Fatalf("disabled pool must not grant, got %+v", g)
 		}
 		log := buf.String()
@@ -426,7 +426,7 @@ func TestAcquireFromPool_LogsWarnWithReasonOnAbstention(t *testing.T) {
 				LLMFields: ir.LLMFields{Model: "fake-provider/some-model"},
 			},
 		}}
-		g := f.pub.acquireFromPool(context.Background(), "run-2", poolOrg, poolTeam, "u", "bot", model.RouteView{Workflow: wf}, nil)
+		g, _ := f.pub.acquireFromPool(context.Background(), "run-2", poolOrg, poolTeam, "u", "bot", model.RouteView{Workflow: wf}, nil, nil)
 		if g == nil {
 			t.Fatalf("unknown pin must fail open and take the donor; got no grant. log:\n%s", buf.String())
 		}
@@ -446,7 +446,7 @@ func TestAcquireFromPool_LogsWarnWithReasonOnAbstention(t *testing.T) {
 		pledge.Enabled = false
 		_ = f.pledges.Upsert(context.Background(), pledge)
 
-		if g := f.pub.acquireFromPool(context.Background(), "run-3", poolOrg, poolTeam, "u", "bot", model.RouteView{Workflow: &ir.Workflow{}}, nil); g != nil {
+		if g, _ := f.pub.acquireFromPool(context.Background(), "run-3", poolOrg, poolTeam, "u", "bot", model.RouteView{Workflow: &ir.Workflow{}}, nil, nil); g != nil {
 			t.Fatalf("no eligible pledge must not grant, got %+v", g)
 		}
 		log := buf.String()
@@ -487,7 +487,7 @@ func TestResolveAndSealCredentials_WarnsOnceWhenNothingResolvedForASpendingRun(t
 			_ = f.pledges.Upsert(context.Background(), pledge)
 
 			ctx := store.WithTenant(context.Background(), poolTeam)
-			creds, err := f.pub.resolveAndSealCredentials(ctx, "run-terminal", poolOrg, poolTeam, "u", "bot", "", tc.wf, nil, nil, model.RouteView{Workflow: tc.wf}, nil, store.RunTrustDefault, nil, nil, nil)
+			creds, err := f.pub.resolveAndSealCredentials(ctx, "run-terminal", poolOrg, poolTeam, "u", "bot", "", tc.wf, nil, nil, model.RouteView{Workflow: tc.wf}, nil, store.RunTrustDefault, nil, nil, nil, boundaryDerived)
 			if err != nil {
 				t.Fatalf("resolveAndSealCredentials: %v", err)
 			}
@@ -541,7 +541,7 @@ func TestResolveAndSealCredentials_WarnsWhenOnlyAGenericSecretResolved(t *testin
 	}
 
 	ctx := store.WithTenant(context.Background(), poolTeam)
-	creds, err := p.resolveAndSealCredentials(ctx, "run-generic-only", poolOrg, poolTeam, "requester", "review-pr", "", wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustDefault, nil, nil, nil)
+	creds, err := p.resolveAndSealCredentials(ctx, "run-generic-only", poolOrg, poolTeam, "requester", "review-pr", "", wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustDefault, nil, nil, nil, boundaryDerived)
 	if err != nil {
 		t.Fatalf("resolveAndSealCredentials: %v", err)
 	}

@@ -6,12 +6,25 @@ import (
 	"github.com/SocialGouv/iterion/pkg/secrets"
 )
 
-// KnownRoutingProviders is the provider vocabulary every launch-time walk
-// reads routes against — the providers a credential tier can hold a key
-// for. ONE list: the cloud publisher's pool tiers and preview and the
-// in-process lane's gate (#2665 item 7) all read it, so a provider joining
-// the vocabulary reaches every reader the same day.
-var KnownRoutingProviders = []secrets.Provider{
+// The launch-time provider vocabulary is TWO lists, one derivation (ADR-131
+// §5): each reader takes the list its question needs.
+//
+//   - KnownPoolProviders is what a credential POOL may lend a key for: the
+//     vendor providers. The legacy pool, the fallback door and the pool wants
+//     read it, so they never ask a donor for a gateway key — a gateway key
+//     authenticates against its own tenant's endpoint (an attached pool
+//     brings the gateway want in through the attachment alone, ADR-164).
+//   - KnownRoutingProviders is what the WALK reads routes and tiers against:
+//     every provider a credential tier can hold a key for, the pool's list
+//     plus the openai_compatible gateway. The cloud publisher's credential
+//     walk, its funding refusals, its allowlist gate and preview, and the
+//     in-process lane's gate (#2665 item 7) read it.
+//
+// A vendor provider joins KnownPoolProviders and so reaches every reader the
+// same day; only a provider the pool must never lend joins the walk alone —
+// TestKnownPoolProvidersAreTheRoutingVocabularyLessTheGateway pins the
+// difference to the gateway.
+var KnownPoolProviders = []secrets.Provider{
 	secrets.ProviderAnthropic,
 	secrets.ProviderOpenAI,
 	secrets.ProviderBedrock,
@@ -23,11 +36,24 @@ var KnownRoutingProviders = []secrets.Provider{
 	secrets.ProviderMoonshot,
 }
 
+// KnownRoutingProviders is the walk's vocabulary: KnownPoolProviders, in its
+// order, then the gateway — last, so every reader that walks the list in
+// order (the tier fills, the restore) meets the vendor providers where it
+// always did.
+var KnownRoutingProviders = append(append([]secrets.Provider(nil), KnownPoolProviders...), secrets.ProviderOpenAICompatible)
+
 // KnownProviderSet is KnownRoutingProviders as the lower-cased set
-// EffectiveProviders takes.
-func KnownProviderSet() map[string]bool {
-	m := make(map[string]bool, len(KnownRoutingProviders))
-	for _, p := range KnownRoutingProviders {
+// EffectiveProviders takes — the walk's vocabulary.
+func KnownProviderSet() map[string]bool { return providerSet(KnownRoutingProviders) }
+
+// KnownPoolProviderSet is KnownPoolProviders as the lower-cased set
+// EffectiveProviders takes — the pool wants' vocabulary, under which a
+// gateway route names nothing (RouteView.GatewayKeyFunded).
+func KnownPoolProviderSet() map[string]bool { return providerSet(KnownPoolProviders) }
+
+func providerSet(list []secrets.Provider) map[string]bool {
+	m := make(map[string]bool, len(list))
+	for _, p := range list {
 		m[strings.ToLower(string(p))] = true
 	}
 	return m

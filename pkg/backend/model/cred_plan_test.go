@@ -307,3 +307,26 @@ func TestCredentialPlan_theAgentRecoveryRungPlansUnderTheRuntimeID(t *testing.T)
 		t.Fatalf("plan = %v, want %v — the rung keys a second row under the runtime id the recovery dispatch's events carry", plan, want)
 	}
 }
+
+// A route that defers to the runner's environment (`${DIAL:-…}`) is planned
+// on the publisher's expansion: the plan is a prediction (ADR-161 decision 8)
+// — an observation carrying its own credential keys books on its own
+// fingerprint whatever the pod expanded the dial to, and one joining no row
+// is a miss that voids the table, the coarse booking a nil plan gives
+// anyway. A nil plan here would book every lease of a side-by-side attempt
+// the whole attempt.
+func TestCredentialPlan_AnEnvDeferredRouteIsPlannedOnThePublishersExpansion(t *testing.T) {
+	t.Parallel()
+
+	wf := &ir.Workflow{Nodes: map[string]ir.Node{
+		"review": agentWith("review", "", "${CRED_PLAN_UNSET_DIAL:-anthropic/claude-opus-5}"),
+	}}
+	res := EffectiveProviders(RouteView{Workflow: wf}, knownForTest)
+	if !res.NarrowSafe || !res.EnvDeferred || !slices.Equal(res.Providers, []string{"anthropic"}) {
+		t.Fatalf("test premise: want a narrow-safe env-deferred walk naming anthropic, got %+v", res)
+	}
+	want := map[string]string{"review|anthropic": "fp-own-anthropic"}
+	if plan := CredentialPlan(res, planBundle()); !maps.Equal(plan, want) {
+		t.Fatalf("plan = %v, want %v: an env dial's walk is planned on the publisher's expansion", plan, want)
+	}
+}

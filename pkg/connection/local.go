@@ -433,9 +433,10 @@ func LocalHTTPClient() *http.Client {
 // `unknown_outcome` — terminal, un-retryable, off the auto-resume list — which
 // is right for a lost answer and exactly wrong for a request that was never
 // written. It recognises the ordinary shapes by type (a *net.DNSError, a
-// dial-stage *net.OpError), but the guard's own refusal is an opaque
-// `fmt.Errorf` string from httpdial, and matching it by text would break the
-// first time that wording changed.
+// dial-stage *net.OpError), but not the guard's own refusals — httpdial's
+// errors: httpdial.ErrNotPublic in a strict refusal's chain, a plain error
+// for a malformed name — and an executor that learned each of them would
+// miss the next one the guard grows.
 //
 // So the fact is attached where it is KNOWN. A dialer that returned an error
 // returned no connection, so nothing can have been written on it — and
@@ -466,6 +467,13 @@ func markDialFailuresAsNotSent(c *http.Client) {
 // way to permit the host. The remedy is added here rather than in httpdial
 // because the env var is this package's, and the guard is shared with callers
 // (webhooks, OIDC, the preview proxy) for whom it is not a way out at all.
+//
+// It is added on exactly the refusals the hatch lifts: the guard wraps
+// httpdial.ErrNotPublic around each of them (an address that is not public, a
+// name no public host carries, refused before any lookup), and around
+// nothing else. A host that does not resolve is a typo or a dead
+// DNS, a malformed name stays refused under the hatch, and telling their
+// author to open a security guard would be advice about the wrong problem.
 type privateHostHint struct{ base http.RoundTripper }
 
 func (t *privateHostHint) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -473,37 +481,15 @@ func (t *privateHostHint) RoundTrip(req *http.Request) (*http.Response, error) {
 	if err == nil {
 		return resp, nil
 	}
-	ip, ok := refusedAsPrivate(req.Context(), req.URL.Hostname())
-	if !ok {
+	if !errors.Is(err, httpdial.ErrNotPublic) {
 		return nil, err
 	}
-	return nil, fmt.Errorf("%w (%s is a private or loopback address; set %s=1 to let connector calls reach a self-hosted instance)",
-		err, ip, AllowPrivateHostsEnv)
+	return nil, fmt.Errorf("%w (%s is not a public address; set %s=1 to let connector calls reach a self-hosted instance)",
+		err, req.URL.Hostname(), AllowPrivateHostsEnv)
 }
 
-// refusedAsPrivate reports whether host is one the guard refuses FOR WHAT IT
-// RESOLVED TO, and the address that settles it.
-//
-// The two-step is the whole point, and both callers need exactly it: resolving
-// with the policy OFF separates two failures that look alike from the outside.
-// A host that resolves and is refused for its address is the hatch's case; a
-// host that does not resolve at all is a typo or a dead DNS, and telling its
-// author to open a security guard would be advice about the wrong problem. A
-// cancelled or timed-out context lands in the second branch, so the answer is
-// "no" rather than a guess.
-func refusedAsPrivate(ctx context.Context, host string) (net.IP, bool) {
-	if host == "" {
-		return nil, false
-	}
-	ip, err := httpdial.ResolvePublicHost(ctx, host, false)
-	if err != nil || httpdial.IsPublicUnicast(ip) {
-		return nil, false
-	}
-	return ip, true
-}
-
-// UnreachableBaseURL says why this process will refuse to call baseURL, or ""
-// when it will reach it.
+// UnreachableBaseURL says why this process will refuse to call baseURL when
+// AllowPrivateHostsEnv would permit it, or "" otherwise.
 //
 // Told at the moment a connection is ADDED, because that is where the mistake
 // is made. The refusal otherwise arrives a layer away — in a run, from a
@@ -511,18 +497,23 @@ func refusedAsPrivate(ctx context.Context, host string) (net.IP, bool) {
 // broken connector rather than as a host this deployment does not permit.
 // Advice only: the answer can change with the environment, so it never
 // refuses the record.
+//
+// The verdict is the dial's own — the guard at the strictness
+// LocalHTTPClient dials at with the hatch closed — and the advice rides the
+// refusal the hatch lifts (httpdial.ErrNotPublic) alone: a host that does
+// not resolve, or one no hatch admits, gets none.
 func UnreachableBaseURL(ctx context.Context, baseURL string) string {
 	if baseURL == "" || allowPrivateHosts() {
 		return ""
 	}
 	u, err := url.Parse(baseURL)
-	if err != nil {
+	if err != nil || u.Hostname() == "" {
 		return ""
 	}
-	ip, ok := refusedAsPrivate(ctx, u.Hostname())
-	if !ok {
+	_, refusal := httpdial.ResolvePublicHost(ctx, u.Hostname(), true)
+	if !errors.Is(refusal, httpdial.ErrNotPublic) {
 		return ""
 	}
-	return fmt.Sprintf("%s resolves to %s, a private or loopback address that connector calls refuse by default — set %s=1 to permit a self-hosted instance",
-		u.Hostname(), ip, AllowPrivateHostsEnv)
+	return fmt.Sprintf("%s is not a public address (%v), which connector calls refuse by default — set %s=1 to permit a self-hosted instance",
+		u.Hostname(), refusal, AllowPrivateHostsEnv)
 }

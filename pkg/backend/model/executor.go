@@ -145,6 +145,16 @@ type ClawExecutor struct {
 	// parallel branches share the executor.
 	rerouteWarnMu sync.Mutex
 	rerouteWarned map[string]bool
+	// teamGateway is the run's frozen content boundary (ADR-131 §4,
+	// store.RunContentBoundary.TeamGateway): under it a node whose own
+	// route goes to the team's gateway walks no policy-ladder rung
+	// (resolveChainUnder) — the dispatch-side belt of the ladder screen,
+	// which reads the run's vars before this executor holds the ones
+	// dispatch resolves (a resume restores them after the screen ran).
+	teamGateway bool
+	// boundaryWarned dedupes that drop's warn, one per node; guarded
+	// by rerouteWarnMu.
+	boundaryWarned map[string]bool
 	// allowedProviders is the run's provider allowlist (ADR-129 §5) the
 	// dispatch enforces: a chain element whose resolved provider is outside
 	// it is dropped before dispatch, so a forbidden rescue route burns no
@@ -723,6 +733,14 @@ func (e *ClawExecutor) ModelOverrides() ModelOverrides { return e.modelOverrides
 // budget on a call the tenant does not allow. Empty/nil = no allowlist.
 func WithAllowedProviders(providers []string) ClawExecutorOption {
 	return func(e *ClawExecutor) { e.allowedProviders = AllowedProviderSet(providers) }
+}
+
+// WithContentBoundary sets the run's frozen content boundary (ADR-131 §4,
+// queue.RunMessage.ContentBoundary): under team_gateway a node whose own
+// route goes to the team's gateway never walks a policy-ladder rung. Nil
+// (an unstamped run) and own_keys hold nothing.
+func WithContentBoundary(b *store.RunContentBoundary) ClawExecutorOption {
+	return func(e *ClawExecutor) { e.teamGateway = b.TeamGateway() }
 }
 
 // WithCompressOverride sets the run-level compression override (CLI --compress

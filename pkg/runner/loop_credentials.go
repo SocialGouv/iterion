@@ -19,8 +19,10 @@ import (
 // stamps the plaintext into ctx via secrets.WithCredentials, and
 // returns a cleanup func that performs LOCAL hygiene (wipes the
 // in-memory plaintext keys + removes the OAuth temp dirs) at the call
-// site. When no bundle is attached or the runner has no Sealer wired,
-// returns the original ctx unchanged.
+// site. When no bundle is attached, returns the original ctx unchanged —
+// except for a run the pod's environment must not fund: an untrusted run
+// (store.RunTrust.AmbientLLMRefused) or one stamped team_gateway, whose
+// context carries the ambient refusal instead (both below).
 //
 // The cleanup func runs on every executeRun return. Removal of the
 // *persistent* sealed bundle from the store is intentionally NOT part
@@ -43,9 +45,15 @@ import (
 // exactly what a sealed empty bundle would have said — and with a bundle
 // the stamp is the bundle's OR the trust's. A trusted run without a bundle
 // keeps its context unchanged: the environment is its funding.
+//
+// A team_gateway stamp on the message (ADR-131 §4) is the ambient refusal
+// on the same terms, whatever the bundle carries: a carriage that lost the
+// flag — a stale replica's resume over an old-rules bundle, or no bundle at
+// all — must not let the run's gateway routes fall to the pod's
+// environment. The two facts are OR'ed in one condition per branch.
 func (r *Runner) injectCredentials(ctx context.Context, msg *queue.RunMessage) (context.Context, func(), error) {
 	if msg.SecretsRef == "" {
-		if msg.Trust.AmbientLLMRefused() {
+		if msg.Trust.AmbientLLMRefused() || msg.ContentBoundary.TeamGateway() {
 			return secrets.WithCredentials(ctx, secrets.Credentials{AmbientRefused: true}), nil, nil
 		}
 		return ctx, nil, nil
@@ -104,10 +112,10 @@ func (r *Runner) injectCredentials(ctx context.Context, msg *queue.RunMessage) (
 	// keep the fingerprint-less meter they always had.
 	// The server's own fingerprint travels in the bundle for a gateway key
 	// (RunBundle.APIKeyFingerprints): its identity folds its base URL in.
-	// Absent — every vendor key, and every bundle sealed before #2005
-	// PR-C' — the runner recomputes the identity the server would have
-	// stamped: sha256 of the secret for a vendor key, the URL-folded form
-	// for a gateway key met with its URL.
+	// Absent — every vendor key, and a bundle sealed by a server that
+	// predates the field — the runner recomputes the identity the server
+	// would have stamped: sha256 of the secret for a vendor key, the
+	// URL-folded form for a gateway key met with its URL.
 	fingerprints := map[string]string{}
 	stamped := func(prov secrets.Provider, key, baseURL string) string {
 		if fp := bundle.APIKeyFingerprints[prov]; fp != "" {
@@ -141,11 +149,11 @@ func (r *Runner) injectCredentials(ctx context.Context, msg *queue.RunMessage) (
 		PinnedAPIKeys: bundle.PinnedAPIKeys,
 		// The gateway roots paired with the key maps, and the word that this
 		// run spends its own credentials only — the publisher's stamp, or the
-		// wire's trust when a bundle sealed without it. Not secret: cleanup
-		// below leaves them, as it leaves the hostnames.
+		// wire's trust or team_gateway stamp when a bundle sealed without it.
+		// Not secret: cleanup below leaves them, as it leaves the hostnames.
 		APIBaseURLs:       bundle.APIBaseURLs,
 		PinnedAPIBaseURLs: bundle.PinnedAPIBaseURLs,
-		AmbientRefused:    bundle.AmbientLLMRefused || msg.Trust.AmbientLLMRefused(),
+		AmbientRefused:    bundle.AmbientLLMRefused || msg.Trust.AmbientLLMRefused() || msg.ContentBoundary.TeamGateway(),
 		Generic:           bundle.GenericSecrets,
 		// Per-secret egress narrowing from bot-secret bindings; the guard
 		// intersects these with the workflow's declared hosts. Hostnames

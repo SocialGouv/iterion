@@ -71,7 +71,7 @@ func (s *Server) handleDeliverHostEvent(w http.ResponseWriter, r *http.Request) 
 		case errors.Is(err, cloudpublisher.ErrCredentialAtCapacity):
 			// The event resumes the run: a key it sealed is full of other
 			// runs, answered as every resume surface answers it.
-			s.writeCredentialAtCapacityError(w, r, err)
+			s.writeCredentialAtCapacityError(w, r, "resume", err)
 		default:
 			s.httpErrorFor(w, r, http.StatusInternalServerError, "deliver host event: %v", err)
 		}

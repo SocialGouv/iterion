@@ -1825,7 +1825,7 @@ func TestSplitMsgFallback_TransportOffGolden(t *testing.T) {
 		Session:   ir.SessionInherit,
 		Tools:     []string{},
 	}}}
-	if r := ir.ApplyPolicyLadder(w, ladder, false, nil, func(n ir.LLMNode) string { return n.GetLLMFields().Model }, nil, llmroute.ResolveClasses(nil)); len(r) != 1 {
+	if r := ir.ApplyPolicyLadder(w, ladder, false, nil, nil, nil, llmroute.ResolveClasses(nil), false); len(r) != 1 {
 		t.Fatalf("transport default: refusals = %v, want the session refusal — an emptiness gate would have lifted it", r)
 	}
 
@@ -1839,7 +1839,7 @@ func TestSplitMsgFallback_TransportOffGolden(t *testing.T) {
 		Session:   ir.SessionInherit,
 		Tools:     []string{},
 	}}}
-	if r := ir.ApplyPolicyLadder(w2, ladder2, false, nil, func(n ir.LLMNode) string { return n.GetLLMFields().Model }, nil, llmroute.ResolveClasses(nil)); len(r) != 0 {
+	if r := ir.ApplyPolicyLadder(w2, ladder2, false, nil, nil, nil, llmroute.ResolveClasses(nil), false); len(r) != 0 {
 		t.Fatalf("transport restart: refused = %v, want the stage to land through the same pipe", r)
 	}
 }

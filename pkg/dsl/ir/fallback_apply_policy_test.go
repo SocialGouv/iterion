@@ -28,9 +28,7 @@ func TestApplyPolicyLadder(t *testing.T) {
 	}
 
 	w := mk("claude-opus-5-5", "")
-	refusals := ApplyPolicyLadder(w, stages, false, nil, func(n LLMNode) string {
-		return n.GetLLMFields().Model
-	}, nil, llmroute.ResolveClasses(nil))
+	refusals := ApplyPolicyLadder(w, stages, false, nil, nil, nil, llmroute.ResolveClasses(nil), false)
 	node := w.Nodes["implement"].(*AgentNode)
 	if len(node.Fallbacks) != 1 {
 		t.Fatalf("stages = %d (%+v), refusals = %v — want 1 (the claw crossing is refused: the node has no permission gate or claw-eligible toolset), refusals naming it", len(node.Fallbacks), node.Fallbacks, refusals)
@@ -57,7 +55,7 @@ func TestApplyPolicyLadder(t *testing.T) {
 	wn := wOp.Nodes["implement"].(*AgentNode)
 	wn.Fallbacks = append(wn.Fallbacks, Fallback{Name: RunFallbackName, Backend: "claude_code", Model: "claude-opus-5-5", RunStage: 0, RunStageSet: true})
 	opStages := stages[:1] // the claude_code crossing only: the claw stage needs a permission gate this node does not carry
-	if refusals := ApplyPolicyLadder(wOp, opStages, false, nil, func(n LLMNode) string { return n.GetLLMFields().Model }, nil, llmroute.ResolveClasses(nil)); len(refusals) != 0 {
+	if refusals := ApplyPolicyLadder(wOp, opStages, false, nil, nil, nil, llmroute.ResolveClasses(nil), false); len(refusals) != 0 {
 		t.Fatalf("operator-armed node refused the ladder: %v", refusals)
 	}
 	if got := len(wn.Fallbacks); got != 2 {
@@ -74,7 +72,7 @@ func TestApplyPolicyLadder(t *testing.T) {
 		LLMFields: LLMFields{Backend: "claude_code", Model: "claude-opus-5-5"},
 		Fallbacks: []Fallback{{Name: "authored", Backend: "claude_code", Model: "claude-opus-5-5"}},
 	}
-	if refusals := ApplyPolicyLadder(w2, stages, false, nil, func(n LLMNode) string { return n.GetLLMFields().Model }, nil, llmroute.ResolveClasses(nil)); len(refusals) != 0 {
+	if refusals := ApplyPolicyLadder(w2, stages, false, nil, nil, nil, llmroute.ResolveClasses(nil), false); len(refusals) != 0 {
 		t.Fatalf("an authored node screened = %v, want silence (the author vetted where it may go)", refusals)
 	}
 	if got := len(w2.Nodes["implement"].(*AgentNode).Fallbacks); got != 1 {
@@ -83,7 +81,7 @@ func TestApplyPolicyLadder(t *testing.T) {
 
 	// A node whose model maps nothing for the pair skips the stage, named.
 	w3 := mk("", "")
-	refusals = ApplyPolicyLadder(w3, stages, false, nil, func(n LLMNode) string { return "" }, nil, llmroute.ResolveClasses(nil))
+	refusals = ApplyPolicyLadder(w3, stages, false, nil, func(n LLMNode) (string, string) { return "", "" }, nil, llmroute.ResolveClasses(nil), false)
 	if got := len(w3.Nodes["implement"].(*AgentNode).Fallbacks); got != 0 {
 		t.Fatalf("modelless stages emitted: %d", got)
 	}
@@ -114,7 +112,7 @@ func TestApplyPolicyLadder_SessionContract(t *testing.T) {
 
 	// Cross-backend on a session node: refused, named.
 	w := mkSession("claude_code", "claude-opus-5-5", SessionInherit)
-	refusals := ApplyPolicyLadder(w, stages, false, nil, func(n LLMNode) string { return n.GetLLMFields().Model }, nil, llmroute.ResolveClasses(nil))
+	refusals := ApplyPolicyLadder(w, stages, false, nil, nil, nil, llmroute.ResolveClasses(nil), false)
 	if len(refusals) != 1 || !strings.Contains(refusals[0], "session") {
 		t.Fatalf("refusals = %v, want the session-continuity refusal naming the crossing", refusals)
 	}
@@ -126,7 +124,7 @@ func TestApplyPolicyLadder_SessionContract(t *testing.T) {
 	// (the dispatch keeps it; ADR-087 §3's rebuild-and-evict applies only
 	// to cross-backend falls, which the screen refuses here).
 	w2 := mkSession("claw", "anthropic/claude-opus-5-5", SessionInherit)
-	refusals = ApplyPolicyLadder(w2, stages, false, nil, func(n LLMNode) string { return n.GetLLMFields().Model }, nil, llmroute.ResolveClasses(nil))
+	refusals = ApplyPolicyLadder(w2, stages, false, nil, nil, nil, llmroute.ResolveClasses(nil), false)
 	if len(refusals) != 0 {
 		t.Fatalf("same-backend refused: %v", refusals)
 	}
@@ -138,9 +136,9 @@ func TestApplyPolicyLadder_SessionContract(t *testing.T) {
 	// node overridden to claude_code refuses the claw stage on its
 	// session — the DSL field alone would have passed it unscreened.
 	w3 := mkSession("claw", "anthropic/claude-opus-5-5", SessionInherit)
-	refusals = ApplyPolicyLadder(w3, stages, false, nil, func(n LLMNode) string { return n.GetLLMFields().Model }, func(n LLMNode) string {
+	refusals = ApplyPolicyLadder(w3, stages, false, nil, nil, func(n LLMNode) string {
 		return "claude_code"
-	}, llmroute.ResolveClasses(nil))
+	}, llmroute.ResolveClasses(nil), false)
 	if len(refusals) != 1 || !strings.Contains(refusals[0], "session") {
 		t.Fatalf("override-blind refusals = %v, want the session refusal through the override", refusals)
 	}
@@ -159,7 +157,7 @@ func TestApplyPolicyLadder_ClassOverrideBites(t *testing.T) {
 	}
 	stages := []PolicyLadderStage{{Harness: "codex", Credential: "chatgpt_forfait", On: []string{"usage_window"}}}
 	w := mk("claude-opus-5-5")
-	if r := ApplyPolicyLadder(w, stages, false, nil, func(n LLMNode) string { return n.GetLLMFields().Model }, nil, llmroute.ResolveClasses(nil)); len(r) != 0 {
+	if r := ApplyPolicyLadder(w, stages, false, nil, nil, nil, llmroute.ResolveClasses(nil), false); len(r) != 0 {
 		t.Fatalf("the shipped-table crossing refused: %v", r)
 	}
 	if got := w.Nodes["implement"].(*AgentNode).Fallbacks[0].Model; got != "gpt-6-sol" {
@@ -170,7 +168,7 @@ func TestApplyPolicyLadder_ClassOverrideBites(t *testing.T) {
 	// it, and the shipped cell would not.
 	w2 := mk("claude-opus-5-5")
 	overridden := llmroute.ResolveClasses(map[string]map[string]string{"top": {"openai": "gpt-6-astra"}})
-	if r := ApplyPolicyLadder(w2, stages, false, nil, func(n LLMNode) string { return n.GetLLMFields().Model }, nil, overridden); len(r) != 0 {
+	if r := ApplyPolicyLadder(w2, stages, false, nil, nil, nil, overridden, false); len(r) != 0 {
 		t.Fatalf("the overridden crossing refused: %v", r)
 	}
 	if got := w2.Nodes["implement"].(*AgentNode).Fallbacks[0].Model; got != "gpt-6-astra" {
@@ -202,13 +200,13 @@ func TestApplyPolicyLadder_CrossHarnessThirdState(t *testing.T) {
 	// OFF (the default): the cross-backend crossing is refused — the
 	// existing byte-identical contract.
 	w := mkSess("claude-opus-5-5")
-	if r := ApplyPolicyLadder(w, stages(""), false, nil, func(n LLMNode) string { return n.GetLLMFields().Model }, nil, tbl); len(r) != 1 {
+	if r := ApplyPolicyLadder(w, stages(""), false, nil, nil, nil, tbl, false); len(r) != 1 {
 		t.Fatalf("off: refusals = %v, want the session refusal", r)
 	}
 	// The ACTIVE modes land the stage on the same node.
 	for _, mode := range []string{"reuse", "restart"} {
 		w2 := mkSess("claude-opus-5-5")
-		if r := ApplyPolicyLadder(w2, stages(mode), false, nil, func(n LLMNode) string { return n.GetLLMFields().Model }, nil, tbl); len(r) != 0 {
+		if r := ApplyPolicyLadder(w2, stages(mode), false, nil, nil, nil, tbl, false); len(r) != 0 {
 			t.Fatalf("%s: refused = %v, want the stage to land (the third state)", mode, r)
 		}
 		got := w2.Nodes["implement"].(*AgentNode).Fallbacks[0]
@@ -224,7 +222,7 @@ func TestApplyPolicyLadder_CrossHarnessThirdState(t *testing.T) {
 	// the screen.
 	w3 := mkSess("claude-opus-5-5")
 	w3.Nodes["implement"].(*AgentNode).Tools = nil
-	if r := ApplyPolicyLadder(w3, stages("restart"), false, nil, func(n LLMNode) string { return n.GetLLMFields().Model }, nil, tbl); len(r) == 0 || !strings.Contains(r[0], "tools") {
+	if r := ApplyPolicyLadder(w3, stages("restart"), false, nil, nil, nil, tbl, false); len(r) == 0 || !strings.Contains(r[0], "tools") {
 		t.Fatalf("the undeclared-tools crossing landed under restart: %v — the screen must stand under every posture", r)
 	}
 
@@ -243,5 +241,44 @@ func TestApplyPolicyLadder_CrossHarnessThirdState(t *testing.T) {
 	}
 	if got := len(w4.Nodes["implement"].(*AgentNode).Fallbacks); got != 0 {
 		t.Fatalf("the operator stage landed on a session node: %d — the operator screen never relaxes", got)
+	}
+}
+
+// ADR-131 §4 (§6-ter n°13): the screen reads the run's content boundary. Under
+// team_gateway a node whose model routes to the team's gateway takes no stage
+// — the wholesale crossing claw+openai_key would carry its content to a
+// vendor credential — and the refusal names the node and the boundary; a
+// vendor node of the same run keeps its rung. Without the boundary (the
+// operator's env gateway) the crossing lands on both, as llmroute's
+// unstamped rows pin. Mutant: the materializer passing false for the
+// boundary → the stamped gateway node takes the rung.
+func TestApplyPolicyLadder_TheTeamGatewayBoundaryHoldsTheGatewayNode(t *testing.T) {
+	mk := func() *Workflow {
+		return &Workflow{Nodes: map[string]Node{
+			"gw":     &AgentNode{BaseNode: BaseNode{ID: "gw"}, LLMFields: LLMFields{Backend: "claw", Model: "openai_compatible/scaleway/glm-5.3"}, Tools: []string{}},
+			"review": &AgentNode{BaseNode: BaseNode{ID: "review"}, LLMFields: LLMFields{Backend: "claw", Model: "anthropic/claude-opus-5"}, Tools: []string{}},
+		}}
+	}
+	stages := []PolicyLadderStage{{Harness: "claw", Credential: "openai_key", On: []string{"usage_window"}}}
+	rungs := func(w *Workflow, id string) []Fallback { return w.Nodes[id].(*AgentNode).Fallbacks }
+
+	open := mk()
+	if r := ApplyPolicyLadder(open, stages, false, nil, nil, nil, llmroute.ResolveClasses(nil), false); len(r) != 0 {
+		t.Fatalf("unstamped: refusals = %v, want the crossing to land on both nodes", r)
+	}
+	if got := rungs(open, "gw"); len(got) != 1 || got[0].Model != "openai/gpt-6-sol" {
+		t.Fatalf("unstamped gateway node rungs = %+v, want the openai crossing — the control the stamped row needs", got)
+	}
+
+	held := mk()
+	r := ApplyPolicyLadder(held, stages, false, nil, nil, nil, llmroute.ResolveClasses(nil), true)
+	if got := rungs(held, "gw"); len(got) != 0 {
+		t.Fatalf("stamped gateway node rungs = %+v, want none: its content stays on the team's gateway", got)
+	}
+	if len(r) != 1 || !strings.Contains(r[0], `"gw"`) || !strings.Contains(r[0], llmroute.ReasonContentBoundary) {
+		t.Fatalf("refusals = %v, want one naming the gateway node and the boundary", r)
+	}
+	if got := rungs(held, "review"); len(got) != 1 || !got[0].Policy {
+		t.Fatalf("stamped vendor node rungs = %+v, want its crossing kept", got)
 	}
 }

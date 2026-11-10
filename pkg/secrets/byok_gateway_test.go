@@ -106,6 +106,10 @@ func TestValidateGatewayBaseURL(t *testing.T) {
 	for _, bad := range []string{"", "http://gw.example.test", "gw.example.test", "https://", "https://user:pw@gw.example.test", "https://gw.example.test/?x=1", "https://gw.example.test/#frag", "ftp://gw.example.test",
 		// Addresses no run may dial, and names a cluster or a cloud reserves.
 		"https://127.0.0.1:8443", "https://localhost", "https://10.1.2.3", "https://169.254.169.254/latest", "https://[::1]", "https://0.0.0.0", "https://metadata.google.internal", "https://kubernetes.default.svc", "https://kubernetes.default", "https://gw.svc.cluster.local", "https://printer.local", "https://api.localhost",
+		// The shared (CGNAT) space and the non-public IPv6 transition
+		// addresses: the write door refuses them as it refuses the private
+		// classes — with no hatch.
+		"https://100.64.0.1", "https://[::127.0.0.1]", "https://[64:ff9b::7f00:1]", "https://[64:ff9b:1::a00:1]", "https://[2002:7f00:1::]",
 		// Ports outside the range, empty and dot segments.
 		"https://gw.example.test:0", "https://gw.example.test:99999", "https://gw.example.test//v1", "https://gw.example.test/a/../b", "https://gw.example.test/./x",
 		// Percent-escapes (a zoned IPv6 literal rides one), whitespace and

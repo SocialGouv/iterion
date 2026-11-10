@@ -321,7 +321,7 @@ func TestResolveAndSeal_AnUnfundedUntrustedRunIsRefusedAtPublish(t *testing.T) {
 			seedSharedTiers(t, p)
 			wf := compileTestSource(t, anthropicPinnedBot)
 			ctx := store.WithTenant(context.Background(), "team1")
-			res, err := p.resolveAndSealCredentials(ctx, "run-unfunded-fork", "org1", "team1", "owner1", "review-pr", "forks", wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustFork, nil, nil, nil)
+			res, err := p.resolveAndSealCredentials(ctx, "run-unfunded-fork", "org1", "team1", "owner1", "review-pr", "forks", wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustFork, nil, nil, nil, boundaryDerived)
 			var refusal *UnfundedProvidersError
 			if !errors.As(err, &refusal) || !refusal.Untrusted || !errors.Is(err, runview.ErrNoLLMCredential) {
 				t.Fatalf("resolveAndSealCredentials = %v, want the typed untrusted refusal", err)
@@ -371,7 +371,7 @@ func TestResolveAndSeal_AForkRunsGatewayOrDeferredRouteIsRefusedAtPublish(t *tes
 			row.seed(t, p)
 			wf := compileTestSource(t, row.bot)
 			ctx := store.WithTenant(context.Background(), "team1")
-			res, err := p.resolveAndSealCredentials(ctx, "run-fork-routes", "org1", "team1", "owner1", "review-pr", "forks", wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustFork, nil, nil, nil)
+			res, err := p.resolveAndSealCredentials(ctx, "run-fork-routes", "org1", "team1", "owner1", "review-pr", "forks", wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustFork, nil, nil, nil, boundaryDerived)
 			var refusal *UnfundedProvidersError
 			if !errors.As(err, &refusal) || !refusal.Untrusted || !row.class(refusal) {
 				t.Fatalf("resolveAndSealCredentials = %v, want the typed untrusted refusal naming the row's route class", err)
@@ -379,7 +379,7 @@ func TestResolveAndSeal_AForkRunsGatewayOrDeferredRouteIsRefusedAtPublish(t *tes
 			if res.secretsRef != "" {
 				t.Fatalf("a refused fork run sealed a bundle (ref=%q)", res.secretsRef)
 			}
-			ctrl, cerr := p.resolveAndSealCredentials(ctx, "run-trusted-routes", "org1", "team1", "owner1", "review-pr", "", wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustDefault, nil, nil, nil)
+			ctrl, cerr := p.resolveAndSealCredentials(ctx, "run-trusted-routes", "org1", "team1", "owner1", "review-pr", "", wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustDefault, nil, nil, nil, boundaryDerived)
 			if cerr != nil || ctrl.secretsRef == "" {
 				t.Fatalf("trusted control: resolveAndSealCredentials = (ref %q, %v), want a sealed bundle — the fixture must fund a trusted run", ctrl.secretsRef, cerr)
 			}
