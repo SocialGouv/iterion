@@ -228,6 +228,16 @@ const (
 // only safe answer to "I do not know who wrote this code".
 func (t RunTrust) Trusted() bool { return t == RunTrustDefault }
 
+// AmbientLLMRefused reports whether a run of this trust refuses the
+// launcher's ambient LLM credentials — the pod environment's vendor keys and
+// gateway, which are the deployment's money (ADR-162 decision 7): every
+// untrusted run, an unrecognised trust included, spends only the credentials
+// sealed for it. It is the ONE predicate both carriers of the refusal read:
+// the publisher's stamp on the sealed bundle (RunBundle.AmbientLLMRefused)
+// and the runner's derivation from the queue message's trust, which holds
+// when the publisher sealed no bundle at all.
+func (t RunTrust) AmbientLLMRefused() bool { return !t.Trusted() }
+
 // HostCapabilities is the one answer to "which of the host capabilities a
 // workflow declares (`capabilities:`) does a run of this trust hold".
 //

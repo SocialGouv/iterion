@@ -32,8 +32,22 @@ import (
 // Credentials.OAuthCredentialFiles so the delegate backends point
 // the spawned CLI at them. The cleanup func tears the dirs down on
 // every exit path.
+//
+// The ambient refusal travels with the RUN, not with an optional bundle
+// (ADR-162 decision 7, #3126): an untrusted run spends only what was sealed
+// for it, and the publisher seals no bundle at all for a run no tier funds.
+// So the refusal is derived from the message's trust here, through the
+// predicate the publisher's stamp reads too (store.RunTrust.
+// AmbientLLMRefused), on both branches: with no bundle the run's context
+// carries credentials that hold nothing and refuse the pod's environment —
+// exactly what a sealed empty bundle would have said — and with a bundle
+// the stamp is the bundle's OR the trust's. A trusted run without a bundle
+// keeps its context unchanged: the environment is its funding.
 func (r *Runner) injectCredentials(ctx context.Context, msg *queue.RunMessage) (context.Context, func(), error) {
 	if msg.SecretsRef == "" {
+		if msg.Trust.AmbientLLMRefused() {
+			return secrets.WithCredentials(ctx, secrets.Credentials{AmbientRefused: true}), nil, nil
+		}
 		return ctx, nil, nil
 	}
 	if r.cfg.RunSecrets == nil {
@@ -125,12 +139,13 @@ func (r *Runner) injectCredentials(ctx context.Context, msg *queue.RunMessage) (
 	creds := secrets.Credentials{
 		APIKeys:       bundle.APIKeys,
 		PinnedAPIKeys: bundle.PinnedAPIKeys,
-		// The gateway roots paired with the key maps, and the publisher's
-		// word that this run spends its own credentials only. Not secret:
-		// cleanup below leaves them, as it leaves the hostnames.
+		// The gateway roots paired with the key maps, and the word that this
+		// run spends its own credentials only — the publisher's stamp, or the
+		// wire's trust when a bundle sealed without it. Not secret: cleanup
+		// below leaves them, as it leaves the hostnames.
 		APIBaseURLs:       bundle.APIBaseURLs,
 		PinnedAPIBaseURLs: bundle.PinnedAPIBaseURLs,
-		AmbientRefused:    bundle.AmbientLLMRefused,
+		AmbientRefused:    bundle.AmbientLLMRefused || msg.Trust.AmbientLLMRefused(),
 		Generic:           bundle.GenericSecrets,
 		// Per-secret egress narrowing from bot-secret bindings; the guard
 		// intersects these with the workflow's declared hosts. Hostnames

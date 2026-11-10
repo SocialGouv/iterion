@@ -658,6 +658,23 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 		PlatformSourced:    map[string]bool{},
 		PoolSourced:        map[string]bool{},
 	}
+	// ADR-162 decision 7: every untrusted run carries the ambient stamp.
+	// The stamp is the producer `ambientStampRefusal` has honoured all
+	// along — under it the run's LLM routes are funded by this bundle's
+	// credentials only, every fallback to the pod environment answers a
+	// typed refusal, and #1768's ambient channel stops counting. Set on the
+	// bundle as it is BUILT, before any return below, so whichever way the
+	// walk leaves, a bundle it seals carries it. It does not travel alone:
+	// the walk seals NO bundle for a run no tier funds (the noLLMCred
+	// return below), so the runner derives the same refusal from the
+	// message's trust (store.RunTrust.AmbientLLMRefused — this predicate)
+	// whether or not a bundle arrives (#3126). A trusted run keeps whatever
+	// the credential tiers decided (ADR-131 §7 stamps a run to its own
+	// credentials regardless of trust; this adds the untrusted case, it
+	// never clears one).
+	if trust.AmbientLLMRefused() {
+		bundle.AmbientLLMRefused = true
+	}
 
 	// #2038: a run whose every LLM route is an openai_compatible route is
 	// funded by the RUNNER's environment — the walk acquires nothing for it:
@@ -1589,21 +1606,6 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	// the field absent and the runner at the operator floor.
 	if p.priceFeedEffective != nil {
 		bundle.GatewayPriceFeed = p.priceFeedEffective(ctx, orgID, tenantID, model.RouteGatewayModelIDs(wf))
-	}
-
-	// ADR-162 decision 7: every untrusted run carries the ambient stamp.
-	// The stamp is the producer `ambientStampRefusal` has honoured all
-	// along — under it the run's LLM routes are funded by this bundle's
-	// credentials only, every fallback to the pod environment answers a
-	// typed refusal, and #1768's ambient channel stops counting. It is set
-	// HERE, at the one site every sealed bundle passes, rather than at any
-	// arm: a fork run's launcher env is the deployment's money, and the
-	// publisher is where the run's funds are decided. A trusted run keeps
-	// whatever the credential tiers decided (ADR-131 §7 stamps a run to
-	// its own credentials regardless of trust; this adds the untrusted
-	// case, it never clears one).
-	if !trust.Trusted() {
-		bundle.AmbientLLMRefused = true
 	}
 
 	// ADR-123: the bundle seals under a fresh per-run DEK that travels in
