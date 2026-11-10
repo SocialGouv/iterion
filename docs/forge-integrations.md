@@ -184,7 +184,13 @@ with a GitHub App token minted for that one call
 permission never rides the connection's managed token that every run mounts —
 the App installation must grant `Actions: Read and write` for that per-call
 mint to succeed. A repo-bound schedule of such a bot is minted its grant at the
-tick, carrying `dispatch_workflow` alone.
+tick, carrying `dispatch_workflow` alone and bound to **no pull request**: the
+review and gate endpoint (`POST /api/v1/forge/publish-review`, its commit
+status and verdict gestures included), the pull-request read, the delivery
+preflight and the server's own gate repairs refuse it with `403
+grant_bound_to_no_pull_request` before any forge call, so a schedule's run can
+never post a review or paint a required check such as `revi/review` on any
+head of the repository. A pull-request launch's grant is unchanged.
 
 Enabling **several** bots on one repo (a reviewer + a dependency guard)
 is the common case: the orchestrator writes one `BotRule` per

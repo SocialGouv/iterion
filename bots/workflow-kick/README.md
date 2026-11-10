@@ -30,6 +30,11 @@ iterion server ── checks the grant ──► mints a GitHub App token for TH
 - The grant is minted at the schedule tick, bound to the schedule's **repo
   integration** (its team, connection and repository), and carries that one
   capability.
+- It is bound to **no pull request**, so the dispatch is all it does: the
+  review and merge-gate endpoint, the pull-request read and the delivery
+  preflight refuse it (`403 grant_bound_to_no_pull_request`) before any forge
+  call. A schedule's run cannot post a review, nor a commit status such as the
+  `revi/review` required check, on any head of the repository.
 - The run's own forge token never carries the Actions permission: the server
   mints a separate installation token per dispatch and keeps it.
 

@@ -989,6 +989,15 @@ that from doing harm of its own:
   re-checked against the grant exactly as the publish endpoint checks them. A
   red status is not a merge, but posting one on any repo a team connection
   reaches is precisely the blast radius the grant exists to bound.
+- **A grant bound to no pull request speaks for no head.** The grant a
+  repo-bound schedule mints for the workflow dispatch
+  ([`workflow-kick`](../bots/workflow-kick/README.md)) carries
+  `dispatch_workflow` alone and names no pull request, so every surface that
+  acts on one refuses it before any forge call
+  (`grant_bound_to_no_pull_request`): the publish endpoint — review, gate
+  status, verdict gestures — the pull-request read, the delivery preflight,
+  this repair, the auto-fix lane and the PR notices, whatever `pr_url` the
+  run's vars carry. A pull-request launch pinning such a grant is refused.
 - **`failure`, not `success`.** A review that did not happen has approved
   nothing.
 - **The remedy has to be one that can work.** The generic wording — *"review

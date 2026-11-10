@@ -142,7 +142,11 @@ hour:
    tick ends `NO_WORKFLOW`.
 
 The bot declares `forge.token_scopes: { actions: write }`, which mints the
-dispatch capability into its run's publish grant; nothing else gets it. The
+dispatch capability into its run's publish grant; nothing else gets it. That
+grant is bound to no pull request, so it dispatches and does nothing else: a
+review, a commit status — the required check included — or a pull-request read
+made with it is refused (`grant_bound_to_no_pull_request`) before any forge
+call. The
 dispatch itself is made by the server with a GitHub App token minted for that
 one call — `{actions: write, metadata: read}`, narrowed to the repository — so
 no run, and no other bot, ever holds the Actions permission, and the runtime
