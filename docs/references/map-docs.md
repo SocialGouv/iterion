@@ -375,7 +375,7 @@ One row per page under `docs/`, ADRs included. An ADR's **status** is the column
 | [`docs/forge-integrations.md`](../forge-integrations.md) | Forge integrations (connect a repo, auto-provision) | bot (e.g. | — |
 | [`docs/forge-permissions.md`](../forge-permissions.md) | Forge permissions & identity — who a bot acts as | This is the model people most often get wrong: **the iterion user who launches | — |
 | [`docs/forge-security-read.md`](../forge-security-read.md) | Forge security-read — org-wide Dependabot alerts for bots | The security-read flow gives a bot read access to a GitHub org's | — |
-| [`docs/getting-started.md`](../getting-started.md) | Get started with Iterion Cloud in one prompt | Paste one prompt into your AI coding agent and it installs Iterion, connects it to iterion.cloud, and verifies readiness to deploy. | — |
+| [`docs/getting-started.md`](../getting-started.md) | Get started with Iterion Cloud in one prompt | Paste one prompt into your AI coding agent and it installs Iterion, connects it to iterion.cloud, checks the connection, then offers to… | — |
 | [`docs/github-board-sync.md`](../github-board-sync.md) | GitHub project board ↔ native board sync | Making a GitHub **Projects v2** board (the roadmap humans read) and iterion's | — |
 | [`docs/gitops-warden-rollout.md`](../gitops-warden-rollout.md) | gitops-warden — binding, calibrating, and flipping a repo to enforce | The runbook for [gitops-warden](https://github.com/SocialGouv/iterion/tree/main/bots/gitops-warden) | — |
 | [`docs/grammar/V1_SCOPE.md`](../grammar/V1_SCOPE.md) | Current scope of the V1 grammar and AST | The filename and grammar version remain `V1` for compatibility: Iterion has | — |
@@ -383,7 +383,7 @@ One row per page under `docs/`, ADRs included. An ADR's **status** is the column
 | [`docs/human-in-the-loop.md`](../human-in-the-loop.md) | Human in the loop | Most iterion nodes run unattended. | — |
 | [`docs/import.md`](../import.md) | `iterion import` — workflow scripts (.js) → draft .bot | `iterion import` converts a Claude-Code **workflow script** | — |
 | [`docs/improvement-ratchet.md`](../improvement-ratchet.md) | The ratchet | open. | — |
-| [`docs/index.md`](../index.md) | — | The cloud onboarding, ready to paste: give the whole block below to a fresh | — |
+| [`docs/index.md`](../index.md) | — | A `.bot` is a readable graph. | — |
 | [`docs/install.md`](../install.md) | 🖥️ Install | One Go core, delivered wherever you work — a scriptable CLI, a visual studio, a | — |
 | [`docs/layering.md`](../layering.md) | The layer map — package layers as an executable guard | The package layers are pinned by a test, not by prose: | — |
 | [`docs/legal-templates/README.md`](../legal-templates/README.md) | Legal page templates | The four markdown templates an operator fills in — with their DPO and | — |

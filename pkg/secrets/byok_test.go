@@ -3,6 +3,7 @@ package secrets
 import (
 	"context"
 	"crypto/rand"
+	"strings"
 	"testing"
 	"time"
 )
@@ -172,6 +173,21 @@ func TestParseProvider(t *testing.T) {
 				t.Fatalf("ParseProvider(%q) = %q, want %q", c.in, got, c.want)
 			}
 		})
+	}
+}
+
+// TestParseProvider_RefusalNamesTheKnownIDs: the server returns this error
+// verbatim to `api-keys create`, so a caller who typed the vendor's name
+// (`kimi`) reads the id it meant (`moonshot`) in the refusal itself.
+func TestParseProvider_RefusalNamesTheKnownIDs(t *testing.T) {
+	_, err := ParseProvider("kimi")
+	if err == nil {
+		t.Fatal(`ParseProvider("kimi") err = nil, want a refusal`)
+	}
+	for _, id := range []string{"anthropic", "moonshot", "zai", "openai_compatible"} {
+		if !strings.Contains(err.Error(), id) {
+			t.Errorf("refusal %q does not name the known id %q", err, id)
+		}
 	}
 }
 

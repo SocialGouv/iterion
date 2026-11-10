@@ -34,7 +34,7 @@ PNG="docs/public/og.png"
 SHA="docs/public/og.png.sha"
 
 # sha256sum is GNU; macOS ships shasum instead. Same two-way form the repo
-# already uses in scripts/desktop/generate-manifest.sh and docs/install.sh.
+# already uses in scripts/desktop/generate-manifest.sh and docs/public/install.sh.
 sha256_of() {
   if command -v sha256sum >/dev/null 2>&1; then
     sha256sum "$1" | cut -d' ' -f1

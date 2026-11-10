@@ -4,8 +4,8 @@ For developers who already live in AI coding tools. Zero to a real agent
 workflow — running, watched, and landed — in a few minutes.
 
 Already on iterion.cloud, or want your agent to do the setup? [Get started
-in one prompt](getting-started.md) installs, connects, and verifies the
-cloud path for you.
+in one prompt](getting-started.md) installs, connects, and checks the
+cloud path for you, then offers a first bot on your repository.
 
 ## 1. Install
 
