@@ -290,14 +290,22 @@ func (e *ClawExecutor) resolveChainUnder(node ir.Node, nodeBackend string) []cha
 // ownRouteNamesGateway reports whether the node's own route goes to the
 // team's gateway, judged by the policy-ladder screen's predicate
 // (ir.RouteNamesGateway) over the two fields the screen reads — the node's
-// baseline model (the launch override first) and its `provider:` field (the
-// override first) — each resolved over the vars dispatch resolves. The
-// screen's undecided arm stays the screen's: a `{{…}}` span left here is an
-// admission reading ahead of the engine's vars push (EffectiveFallbackBackends),
-// which keeps the rungs so it judges every backend dispatch may reach.
+// model and its `provider:` field, each with the launch override first
+// (ModelOverrides.LadderRoute) — each resolved over the vars dispatch
+// resolves. The model override is resolved here as the screen resolves it
+// (vars, environment, trim): baselineModel hands it on as written, the spec
+// dispatch builds, and a `{{vars.model}}` override read raw names no gateway
+// while the screen's reading of the same override does. The screen's
+// undecided arm stays the screen's: a `{{…}}` span left here is an admission
+// reading ahead of the engine's vars push (EffectiveFallbackBackends), which
+// keeps the rungs so it judges every backend dispatch may reach.
 func (e *ClawExecutor) ownRouteNamesGateway(node ir.Node) bool {
 	c := e.chainReading()
-	return ir.RouteNamesGateway(c.baselineModel(node), c.providerField(node))
+	model := c.baselineModel(node)
+	if ov := c.overrides.ForNode(node.NodeID(), node.NodeKind()); ov.Model != "" {
+		model = c.field(ov.Model)
+	}
+	return ir.RouteNamesGateway(model, c.providerField(node))
 }
 
 // warnBoundaryDrop names, once per node, the policy rungs the content

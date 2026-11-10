@@ -108,3 +108,55 @@ func TestResolveChain_TheBeltHoldsEveryRouteTheScreenHolds(t *testing.T) {
 		})
 	}
 }
+
+// A launch-time MODEL override is a routing field like the node's own
+// `model:`: the screen reads it through the launch override first
+// (ModelOverrides.LadderRoute) and resolves it — vars, environment, trim — so
+// the belt resolves it the same way before judging whether the node's own
+// route goes to the gateway. On a resume the screen runs on the declared
+// defaults (a vendor route: the rung lands) and the belt on the restored vars
+// (the gateway): read raw, the override's `{{vars.model}}` named no gateway,
+// the belt kept the rung, the primary failed on the unresolved spec and the
+// rung took the node's content to the vendor.
+func TestResolveChain_TheBeltResolvesALaunchModelOverrideAsTheScreenDoes(t *testing.T) {
+	t.Parallel()
+	policyRung := ir.Fallback{Name: ir.RunFallbackName, Backend: "claw", Model: "anthropic/claude-opus-5", Provider: "anthropic", On: []string{"usage_window"}, RunStage: 0, RunStageSet: true, Policy: true}
+	wf := &ir.Workflow{Vars: map[string]*ir.Var{"model": {Name: "model", Type: ir.VarString, HasDefault: true, Default: "anthropic/claude-opus-5"}}}
+	gateway := map[string]string{"model": "openai_compatible/team/m"}
+	vendor := map[string]string{"model": "anthropic/claude-sonnet-4-6"}
+	for _, row := range []struct {
+		name, override string
+		screenVars     map[string]string // nil: the declared defaults (a resume's screen)
+		beltVars       map[string]string
+		screenHeld     bool
+		beltHeld       bool
+	}{
+		{name: "launch: {{vars.model}} override set to the gateway", override: "{{vars.model}}", screenVars: gateway, beltVars: gateway, screenHeld: true, beltHeld: true},
+		{name: "resume: the screen on the defaults, the belt on the restored gateway var", override: "{{vars.model}}", beltVars: gateway, beltHeld: true},
+		{name: "an env-dial override defaulting to the gateway", override: "${ITERION_TEST_UNSET_OVERRIDE_DIAL:-openai_compatible/team/d}", screenVars: vendor, beltVars: vendor, screenHeld: true, beltHeld: true},
+		{name: "a vendor override value (control)", override: "{{vars.model}}", screenVars: vendor, beltVars: vendor},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			var ov ModelOverrides
+			ov.SetModel("*", row.override)
+			node := chainAgentNode("gw", "claw", "", []ir.Fallback{policyRung})
+			node.Model = "anthropic/claude-opus-5"
+			lm, lp := ov.LadderRoute(node)
+			_, landed, reason := ir.NewPolicyLadderReading(wf, row.screenVars).StageModel("claw", "anthropic_key", lm, lp, llmroute.ClassTable{}, true)
+			if screenHeld := !landed && reason == llmroute.ReasonContentBoundary; screenHeld != row.screenHeld {
+				t.Fatalf("screen: landed=%v reason=%q, want held=%v", landed, reason, row.screenHeld)
+			}
+			vars := map[string]any{}
+			for k, v := range row.beltVars {
+				vars[k] = v
+			}
+			e := &ClawExecutor{logger: iterlog.Nop(), vars: vars, modelOverrides: ov}
+			WithContentBoundary(&store.RunContentBoundary{Kind: store.ContentBoundaryTeamGateway})(e)
+			kept := slices.ContainsFunc(e.resolveChain(node), func(el chainElement) bool { return el.Label != "" })
+			if kept == row.beltHeld {
+				t.Fatalf("belt: policy rung kept=%v under the override %q (vars %v), want held=%v", kept, row.override, row.beltVars, row.beltHeld)
+			}
+		})
+	}
+}

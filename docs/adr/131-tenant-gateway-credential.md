@@ -163,8 +163,9 @@ and the usage-cap pre-flight's escape estimate) all read the boundary the run
 carries, and the executor drops at dispatch every policy rung of a node whose route,
 over the vars dispatch resolves, goes to the gateway (a resume restores the launch's
 vars after the screen ran) — judged by the screen's own predicate
-(`ir.RouteNamesGateway`), so every spelling the screen reads as the gateway's, dispatch
-reads so too. The vendor-routed nodes of a mixed run keep their rungs: the arbitration
+(`ir.RouteNamesGateway`) over the fields the screen reads, a launch-time model or
+provider override first and resolved as the screen resolves it, so every spelling the
+screen reads as the gateway's, dispatch reads so too. The vendor-routed nodes of a mixed run keep their rungs: the arbitration
 refuses a mixed run's auxiliaries (classifier, supervisors, server-side helpers),
 not a node's own vendor route and its fallbacks. The tool-policy LLM classifier
 (`ITERION_LLM_CLASSIFIER_MODEL`) reads every tool call's arguments, so a vendor spec
