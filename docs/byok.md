@@ -405,19 +405,24 @@ its OWN key has the vocabulary the donor already had.
 
 **Where it stops, said plainly.** `bots` governs the walk in `secrets.Resolve`
 — the team, org and platform **API-key** tiers, and every one of their restore
-lanes. Two things it does not reach:
+lanes — and every key a pool or the fallback door lends (below). One thing it
+does not reach:
 
 - **OAuth forfaits.** The field lives on `secrets.ApiKey`; the tenant, team, org
   and platform *forfait* tiers open `OAuthRecord`s and are not gated. A team
   funded by a Claude Code subscription gets nothing from this feature — on the
   same anthropic wire it believes it just restricted. An `OAuthRecord` twin is
   the real answer and is a separate change.
-- **A key PLEDGED to the credential pool.** The pool opens a lent key through
-  `GetOwned`, outside this walk, and applies the pledge's own `Bots`. So a
-  personal key scoped to one bot and then pledged is served to whatever the
-  PLEDGE admits. Which audience should win — or whether they should intersect,
-  as `IntersectHosts` does for egress — is an open decision; until it is taken,
-  set the audience on the pledge as well as on the key.
+
+**A key PLEDGED to a pool keeps its audiences — they intersect.** The broker
+opens a lent key outside this walk and applies the pledge's own `Bots`; the
+publisher then holds every lent-key grant — the legacy pool's, an attached
+pool's entry (a gateway entry included) and the fallback door's — to the key
+row's own `bots` and `repos` (`cloudpublisher.acquireLent`, reading the row
+the pledge lends through `credpool.Broker.LentKeyRow`). A grant they refuse is
+released, nothing is sealed, and the broker serves no second pledge for that
+want on that launch; the credential preview shows the candidate
+`bot_filtered` or `repo_filtered`. Both audiences must admit the launch.
 
 **A withheld key is announced, never silent.** Narrowing an audience does not
 stop the excluded run: it walks down to the next key, the org tier, the pool,

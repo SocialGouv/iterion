@@ -164,13 +164,7 @@ func (b *Broker) previewCredential(ctx context.Context, p Pledge, now time.Time)
 		if b.apiKeys == nil {
 			return "", fmt.Errorf("api-key store unavailable")
 		}
-		var k secrets.ApiKey
-		var err error
-		if p.LendScope != "" {
-			k, err = b.apiKeys.GetForLend(ctx, p.KeyID, p.LendScope)
-		} else {
-			k, err = b.apiKeys.GetOwned(ctx, p.KeyID, p.UserID)
-		}
+		k, err := b.lentKeyRow(ctx, p)
 		if errors.Is(err, secrets.ErrApiKeyNotFound) {
 			return "API key deleted", nil
 		}

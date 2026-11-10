@@ -318,7 +318,7 @@ func (p *Publisher) previewCredentials(ctx context.Context, spec runview.Credent
 					}
 				}
 				x.out.Pool.Considered = active
-				pool, err := p.credPool.Preview(ctx, credpool.Request{
+				pool, err := p.previewLent(ctx, credpool.Request{
 					OrgID: x.orgID, TenantID: spec.Context.TeamID, UserID: spec.OwnerID, BotID: spec.Context.BotID,
 					Wants: asked, PoolIDs: []string{spec.PoolAttachment.PoolID},
 					RankMode: credpool.StrategyMode(spec.PoolAttachment.Strategy.Mode), ClosedAtMargin: marginFn,
@@ -369,7 +369,7 @@ func (p *Publisher) previewCredentials(ctx context.Context, spec runview.Credent
 				poolWants = wants
 			}
 			x.out.Pool.Considered = active
-			pool, err := p.credPool.Preview(ctx, credpool.Request{OrgID: x.orgID, TenantID: spec.Context.TeamID, UserID: spec.OwnerID, BotID: spec.Context.BotID, Wants: poolWants})
+			pool, err := p.previewLent(ctx, credpool.Request{OrgID: x.orgID, TenantID: spec.Context.TeamID, UserID: spec.OwnerID, BotID: spec.Context.BotID, Wants: poolWants})
 			if err != nil {
 				x.out.Pool.Reason = "unknown"
 				x.conditional("Pool metadata unavailable; selection is conditional.")
@@ -619,7 +619,7 @@ func (p *Publisher) previewCredentials(ctx context.Context, spec runview.Credent
 				doorWants = append(doorWants, string(w.Source)+":"+w.Ref)
 			}
 			x.out.Pool.DoorWants = doorWants
-			door, derr := p.credPool.Preview(ctx, credpool.Request{OrgID: x.orgID, TenantID: spec.Context.TeamID, UserID: spec.OwnerID, BotID: spec.Context.BotID, Wants: wants, FallbackOnly: true})
+			door, derr := p.previewLent(ctx, credpool.Request{OrgID: x.orgID, TenantID: spec.Context.TeamID, UserID: spec.OwnerID, BotID: spec.Context.BotID, Wants: wants, FallbackOnly: true})
 			if derr != nil {
 				x.out.Pool.DoorReason = "unknown"
 				x.warn("Fallback-door pool metadata unavailable; selection is conditional.")

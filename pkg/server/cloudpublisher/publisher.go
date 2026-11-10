@@ -1193,7 +1193,14 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 				//    reading: a gateway key funds the gateway routes alone, so it
 				//    leaves a vendor route the pool may still serve.
 				if poolAttachment == nil && !holdsDefaultLLMCredential(bundle) {
-					if grant := p.acquireFromPool(ctx, runID, orgID, tenantID, ownerID, botID, view, bundle.PinnedAPIKeys); grant != nil {
+					grant, released := p.acquireFromPool(ctx, runID, orgID, tenantID, ownerID, botID, view, bundle.PinnedAPIKeys)
+					if released != nil {
+						// Released for its lent key's audience: the acquisition
+						// superseded a previous lease all the same, so the
+						// rollback must reopen it.
+						res.releasedGrants = append(res.releasedGrants, released)
+					}
+					if grant != nil {
 						// The lent credential goes in the slot its KIND belongs to, so
 						// the runner cannot tell a donation from the tenant's own.
 						// A grant the walk does not SEAL — its slot refused by the
@@ -3386,7 +3393,7 @@ func withoutFundedProviders(wants []credpool.Credential, funded func(provider st
 // credential (platform tier) or fail at the LLM call, both worth a line an
 // operator can grep instead of half a day of investigation on a path that
 // decides who pays (#654).
-func (p *Publisher) acquireFromPool(ctx context.Context, runID, orgID, tenantID, ownerID, botID string, view model.RouteView, pinned map[secrets.Provider]string) *credpool.Grant {
+func (p *Publisher) acquireFromPool(ctx context.Context, runID, orgID, tenantID, ownerID, botID string, view model.RouteView, pinned map[secrets.Provider]string) (granted, released *credpool.Grant) {
 	if p.credPool == nil {
 		// No pool at all — a static configuration fact. Debug, not Warn:
 		// pkg/log forwards Warn to the error tracker's breadcrumbs, and a
@@ -3395,7 +3402,7 @@ func (p *Publisher) acquireFromPool(ctx context.Context, runID, orgID, tenantID,
 		// Warn at the end of resolveAndSealCredentials is the signal.
 		p.logger.Debug("cloudpublisher: credential pool NOT CONSULTED for run %s — no pool broker wired (reason=%s)",
 			runID, credpool.ReasonPoolDisabled)
-		return nil
+		return nil, nil
 	}
 	// One walk per launch: the wants, the diagnostics and the consulted
 	// line all read the same resolution.
@@ -3412,7 +3419,7 @@ func (p *Publisher) acquireFromPool(ctx context.Context, runID, orgID, tenantID,
 		if len(wants) == 0 {
 			p.logger.Info("cloudpublisher: credential pool NOT CONSULTED for run %s — every provider it would lend is already funded by a key sealed for the routes that name it (%s)",
 				runID, providersSummary(res.Providers))
-			return nil
+			return nil, nil
 		}
 	}
 	if len(wants) == 0 && res.OnlyEnvFunded() {
@@ -3420,7 +3427,7 @@ func (p *Publisher) acquireFromPool(ctx context.Context, runID, orgID, tenantID,
 		// this bundle (a frozen pair order that predates it), or the pod's
 		// own: nothing the pool lends serves it (ADR-131 §5).
 		p.logger.Info("cloudpublisher: credential pool NOT CONSULTED for run %s — every model route rides the openai_compatible gateway, which no pool lends", runID)
-		return nil
+		return nil, nil
 	}
 	if len(wants) == 0 {
 		// Every route resolved to a KNOWN provider the pool never lends.
@@ -3428,14 +3435,14 @@ func (p *Publisher) acquireFromPool(ctx context.Context, runID, orgID, tenantID,
 		// the guard for a narrower order tomorrow, not a live path.
 		p.logger.Warn("cloudpublisher: credential pool NOT CONSULTED for run %s — bot pins provider(s) no donation matches (%s)",
 			runID, providersSummary(res.Providers))
-		return nil
+		return nil, nil
 	}
 	// Trace the derived wants once per run — the pointer the incident
 	// this fix serves (#668) asked for so an operator can see what the
 	// resolver is asking on their behalf, not only what it got back.
 	p.logger.Info("cloudpublisher: credential pool consulted for run %s — wants=%s (%s narrow_safe=%v)",
 		runID, wantsSummary(wants), providersSummary(res.Providers), res.NarrowSafe)
-	grant, err := p.credPool.Acquire(ctx, credpool.Request{
+	grant, released, err := p.acquireLent(ctx, credpool.Request{
 		RunID:     runID,
 		OrgID:     orgID,
 		TenantID:  tenantID,
@@ -3445,6 +3452,11 @@ func (p *Publisher) acquireFromPool(ctx context.Context, runID, orgID, tenantID,
 		AttemptID: uuid.NewString(),
 	})
 	if err != nil {
+		var withheld *LentKeyWithheldError
+		if errors.As(err, &withheld) {
+			p.logger.Warn("cloudpublisher: credential pool declined run %s — %v", runID, err)
+			return nil, released
+		}
 		// A typed abstention names the reason: distinguishing "the audience
 		// refused me" from "every donor was cooling" is exactly the class
 		// of ambiguity that turned a half-day of investigation into "the
@@ -3454,7 +3466,7 @@ func (p *Publisher) acquireFromPool(ctx context.Context, runID, orgID, tenantID,
 			if nd.Reason == credpool.ReasonNoEnabledPool {
 				// Static configuration, like the nil broker above.
 				p.logger.Debug("cloudpublisher: credential pool NOT CONSULTED for run %s — no enabled pool (reason=%s)", runID, nd.Reason)
-				return nil
+				return nil, nil
 			}
 			// A pool EXISTS and refused: which pools opened, how many
 			// pledges of a wanted kind were walked, and what state held
@@ -3462,13 +3474,13 @@ func (p *Publisher) acquireFromPool(ctx context.Context, runID, orgID, tenantID,
 			// bot_filtered / cooling / exhausted / serving).
 			p.logger.Warn("cloudpublisher: credential pool declined run %s — reason=%s pools_enabled=%d pools_admitted=%d pledges_considered=%d skips=%s wants=%s",
 				runID, nd.Reason, nd.PoolsEnabled, nd.PoolsAdmitted, nd.PledgesConsidered, pledgeSkipSummary(nd.Skips), wantsSummary(wants))
-			return nil
+			return nil, nil
 		}
 		if errors.Is(err, credpool.ErrNoDonor) {
 			// A wrapper we did not recognise still counts as an abstention;
 			// keep it visible instead of falling silently to the next tier.
 			p.logger.Warn("cloudpublisher: credential pool declined run %s — %v", runID, err)
-			return nil
+			return nil, nil
 		}
 		if errors.Is(err, credpool.ErrRunHeldElsewhere) {
 			// The run id's open leases belong to another team: not this
@@ -3476,17 +3488,17 @@ func (p *Publisher) acquireFromPool(ctx context.Context, runID, orgID, tenantID,
 			// on its own credentials, and the log names the refusal rather
 			// than a store blip.
 			p.logger.Warn("cloudpublisher: credential pool refused run %s — %v", runID, err)
-			return nil
+			return nil, nil
 		}
 		// A store failure must not fail the launch: the pool is a
 		// best-effort extra tier, and a run with no credential still
 		// surfaces a legible error at the LLM call site.
 		p.logger.Warn("cloudpublisher: credential pool lookup for run %s: %v", runID, err)
-		return nil
+		return nil, nil
 	}
 	p.logger.Info("cloudpublisher: run %s runs on a pooled contributor credential (donor=%s %s allowance=$%.2f)",
 		runID, grant.DonorID, grant.Credential, grant.RemainingUSD)
-	return grant
+	return grant, nil
 }
 
 // wantsSummary renders a wants list for the abstention log — the field
@@ -3812,8 +3824,15 @@ func (p *Publisher) acquireDoorGrant(
 	if p.logger != nil {
 		p.logger.Info("cloudpublisher: fallback door consulted for run %s — wants=%s (donor-consented only)", runID, wantsSummary(doorReq.Wants))
 	}
-	grant, err := p.credPool.Acquire(ctx, doorReq)
+	grant, released, err := p.acquireLent(ctx, doorReq)
 	if err != nil {
+		var withheld *LentKeyWithheldError
+		if errors.As(err, &withheld) {
+			if p.logger != nil {
+				p.logger.Warn("cloudpublisher: fallback door declined for run %s — %v", runID, err)
+			}
+			return nil, released
+		}
 		var nd *credpool.NoDonorError
 		if errors.As(err, &nd) {
 			if p.logger != nil {
@@ -5838,7 +5857,7 @@ func (p *Publisher) acquireFromAttachedPools(ctx context.Context, runID, orgID, 
 			}
 			preferPledge = held
 		}
-		grant, err := p.credPool.Acquire(ctx, credpool.Request{
+		grant, released, err := p.acquireLent(ctx, credpool.Request{
 			HoldOnSwitch:   att.Strategy.ResetHold,
 			PreferPledgeID: preferPledge,
 			RunID:          runID,
@@ -5855,10 +5874,20 @@ func (p *Publisher) acquireFromAttachedPools(ctx context.Context, runID, orgID, 
 			SideBySide:     sideBySide,
 			AttemptID:      attemptID,
 		})
-		if grant != nil {
+		if grant != nil || released != nil {
+			// The resolution's first acquisition took the attempt over —
+			// a grant the lent key's audience then refused included.
 			sideBySide = true
 		}
 		if err != nil {
+			// A grant its lent key's audience refused was released: the
+			// acquisition superseded a lease all the same.
+			var withheld *LentKeyWithheldError
+			if errors.As(err, &withheld) {
+				res.releasedGrants = append(res.releasedGrants, released)
+				p.logger.Warn("cloudpublisher: run %s — attached pool %s abstained on slot %s: %v", runID, att.PoolID, slot, err)
+				continue
+			}
 			// An ordinary abstention (no eligible entry for this slot): the
 			// loop moves to the next slot. A near-limit skip arms the
 			// durable retry on its reopen instant, per candidate.
