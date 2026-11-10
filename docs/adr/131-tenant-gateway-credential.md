@@ -117,3 +117,19 @@ carries. The vendor-routed nodes of a mixed run keep their rungs: the arbitratio
 refuses a mixed run's auxiliaries (classifier, supervisors, server-side helpers),
 not a node's own vendor route and its fallbacks. An unstamped run (the operator's
 environment gateway, a run launched before the producer) keeps the crossing.
+
+### The schema bound (#2005 PR-C', same date)
+
+The producer ships with queue `SchemaVersion` **30**, not 27: 26 to 29 were
+claimed meanwhile (ADR-130's `env_expansion`, the donor ceiling, the bot-source
+tier, ADR-162's fork-author subject). §4's and the Delivery's "`SchemaVersion`
+27", §10's "schema 27" and the Consequences' "schema 26 fences them" read 30. A
+stale runner that dropped the stamp would serve auxiliary gateway spend off the
+team's boundary, so it must reject — it does, its window is [27, 29].
+`MinSchemaVersion` stays 27: the fence is the maximum that rises, and a v27 to
+v29 message carries no stamp because its publisher wrote none, which is the
+unstamped reading; raising the minimum would force a drain for no added safety.
+Runners and pools roll first, the server after (§10): with the minimum unchanged
+no trusted message parks in either direction; the v29 rule still parks an
+untrusted message older than v29 (docs/cloud-queue-schema-rollout.md, v29 and
+v30).

@@ -204,7 +204,24 @@ import (
 // only once every server and runner replica runs v29
 // (docs/cloud-queue-schema-rollout.md). A v29 message on a stale runner is
 // rejected at the schema check and parks replayably.
-const SchemaVersion = 29
+// v=30 (2026-11-10): ContentBoundary gets its producer (ADR-131 §4, #2005
+// PR-C'). The publisher stamps every launch its credential walk resolves —
+// team_gateway when the walk attributes a gateway route to the team's key and
+// seals it, own_keys otherwise — and replays the frozen stamp on resume; the
+// run's bundle carries AmbientLLMRefused on the same decision. Breaking by
+// the additive-field rule: a stale runner dropping the stamp would land
+// vendor crossings on the run's gateway nodes, run its supervisors on the
+// pod's environment and admit the server-side helpers the boundary refuses —
+// serving auxiliary gateway spend off the team's boundary, failing open on
+// the pod. It rejects: its window is [27, 29]. MinSchemaVersion stays 27 —
+// the fence is the maximum that rises; raising the minimum would force a
+// drain of v27–v29 messages for no added safety (a v27–v29 message carries
+// no stamp because its publisher wrote none, which is the unstamped reading
+// the new runner applies). Runners and pools roll FIRST, the server after:
+// with the minimum unchanged a new runner admits every trusted message the
+// old server still publishes (the v29 rule above still parks an untrusted
+// message older than v29), and an old runner never sees a v30 message.
+const SchemaVersion = 30
 
 // ForkAuthorSubjectSchemaVersion is the first wire version that carries
 // RunMessage.ForkAuthorSubject: an untrusted message older than it cannot
@@ -214,8 +231,8 @@ const ForkAuthorSubjectSchemaVersion = 29
 // MinSchemaVersion is the oldest wire version a consumer still accepts.
 // Pre-v27 messages cannot prove an absolute donor ceiling. Resume republishes
 // them with a fresh grant and its explicit amount; replaying old bytes cannot.
-// v27 and v28 stay acceptable beside v29 (see the v28 and v29 notes above
-// SchemaVersion).
+// v27, v28 and v29 stay acceptable beside v30 (see the v28, v29 and v30
+// notes above SchemaVersion).
 const MinSchemaVersion = 27
 
 // RunMessage is the JSON envelope published on
@@ -410,12 +427,12 @@ type RunMessage struct {
 	// execute the run outside the team's pool, which is the leak the pool
 	// exists to make impossible.
 	RunnerPool string `json:"runner_pool,omitempty"`
-	// ContentBoundary mirrors the run document's frozen gateway stamp
-	// (ADR-131) so the claiming runner knows which tenant credential funds
-	// the run without a second store read. Never set at v26: the producer
-	// and the v27 schema bump land with a later change. A nil pointer
-	// serialises as absent, so messages published today are byte-identical
-	// to yesterday's.
+	// ContentBoundary mirrors the run document's frozen content boundary
+	// (ADR-131 §4) so the claiming runner knows which credential class
+	// funds the run without a second store read: the publisher stamps it at
+	// launch and replays the document's stamp on resume (v29). Nil on a
+	// message whose run predates the producer, or whose resolution never
+	// walked; a nil pointer serialises as absent.
 	ContentBoundary *store.RunContentBoundary `json:"content_boundary,omitempty"`
 	// CredPlan is the launch-frozen node-and-provider → credential-
 	// fingerprint plan the PUBLISHER resolves (the walk that sealed the

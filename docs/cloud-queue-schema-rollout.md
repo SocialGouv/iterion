@@ -28,14 +28,15 @@ for the dated super-admin API, existing-run resume exemption and local
 
 - **Explicit compatibility window.** A consumer accepts only
   `[MinSchemaVersion, SchemaVersion]` and rejects anything outside it in both
-  directions. The current v29 consumer accepts v27 through v29: a v27
+  directions. The current v30 consumer accepts v27 through v30: a v27
   message predates the wire-carried `bot_source_tier`, and the run document
   its publisher persisted already carries the stamp — the runner re-reads the
   tier from there, so the #1959 floor never silently drops; a v28 message
   predates `fork_author_subject`, and an UNTRUSTED one — a v28 server
   replica republishing a fork run a v29 replica created — is parked as a
   version mismatch rather than run with the author's bound unenforced (see
-  the v29 section).
+  the v29 section); a v27, v28 or v29 message carries no `content_boundary`
+  because its publisher wrote none, which is exactly the unstamped reading.
 - **Server first by default.** Both orders can park a message, and a resume
   recovers the run either way — but not at the same moment. Old runners
   rejecting the new version park runs a resume recovers as soon as the fleet
@@ -158,6 +159,37 @@ resume recovers once the fleet is upgraded. **Enable the fork review lane
 (create the first fork-lane webhook config) only once every server AND
 runner replica runs v29**: with no fork run in existence until then, no old
 replica can republish one.
+
+## v30 content boundary producer (ADR-131 §4)
+
+`content_boundary` has been on the message since PR-B'2, consumed and never
+written. From v30 the publisher writes it for every launch its credential
+walk resolves — `team_gateway` (with the key row's id and the gateway host)
+when the walk attributes a gateway route to the team's own key and seals it,
+`own_keys` otherwise — and replays the run document's frozen stamp on every
+resume; the sealed bundle's `ambient_llm_refused` is armed on the same
+decision. Breaking by the additive-field rule: a stale v29 runner would drop
+the stamp and land vendor crossings on the run's gateway nodes, run its
+supervisors on the pod's environment and serve auxiliary spend off the
+team's boundary — failing open on the pod — so it must reject the message,
+and does: its window is [27, 29].
+
+`MinSchemaVersion` stays **27**: the fence is the maximum that rises. A v27,
+v28 or v29 message carries no stamp because its publisher wrote none, which is
+the unstamped reading the v30 runner applies, so raising the minimum would
+force a drain for no added safety.
+
+Roll **runners and pools first**, the server after. With the minimum
+unchanged a v30 runner admits every trusted message an old server still
+publishes, so nothing a trusted run publishes parks (*Deploy ordering* below: the runner-first
+condition holds by construction); a server rolled first would make old
+runners park every v30 message until they are upgraded.
+
+The v29 and v30 orders compose: when both reach a fleet in one rollout,
+roll the runners and pools first — the v30 condition — and keep the fork
+review lane disabled until every server and runner replica runs v30. An
+untrusted message an old server republishes in between is the v29 case
+above: parked replayably, recovered by a resume once the server rolls.
 
 
 ## v12 runner-epoch bootstrap

@@ -784,8 +784,8 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	// ONE identity per provider, in either channel: the fills skip a
 	// provider the other channel holds, so the stamp and the bundle's own
 	// fingerprint map agree by construction. A future policy that seals a
-	// provider in BOTH channels needs per-channel stamps (schema 27's
-	// vocabulary) before it can meter honestly — PR-C' owns that.
+	// provider in BOTH channels needs per-channel stamps before it can meter
+	// honestly — a change of its own, outside #2005 PR-C' (arbitration 7).
 	apiKeyFPs := map[secrets.Provider]string{}
 	// The key row that filled each slot, beside its stamp: the content
 	// boundary names the gateway slot's (ADR-131 §4).
