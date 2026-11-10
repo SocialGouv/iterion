@@ -454,8 +454,16 @@ and pulled a fresh canary within the hour:
   resume takes to come back (the marker's TTL, 1 h), reached a human gate, or
   finished — every other run parked on the same credentials **before** the
   canary was pulled is released in the same pass (`run.retry.released` on the
-  audit trail, naming the canary). A release is a pull: a run whose resume
-  still meets the wall is re-armed on its announced instant, free;
+  audit trail, naming the canary). A release is a pull that records its
+  answer (`retry_state.released_by`, consumed with the marker): a run whose
+  resume still meets the wall is re-armed on its announced instant, free —
+  but a release is no probe's guess. The window no longer holds the run
+  however late its resume comes (behind the shared circuit), its resume is
+  metered like any launch, and a transient refusal of it — a mass release is
+  what trips the tenant's concurrency cap or launch rate — re-arms it on the
+  ordinary 15-minute backoff, free (`run.retry.release_deferred`), instead of
+  the announced instant a probe's stand-down puts back: the answer that
+  released it cannot release it again;
 - when the canary meets the wall again, nobody else moves: its free re-arm
   puts back the provider's instant, and its pull stamp paces the window for a
   floor. A run released on an answer is not released again on it, and the
