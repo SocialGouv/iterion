@@ -188,7 +188,9 @@ It reads what the walk SEALED, so the shapes the walk would otherwise end in —
 other gateway key, a shared tier's, an attached pool's entry, or an env-funded run whose
 walk consulted no tier once the pinned key was out of the probe's sight — are all refused
 the same way. A resume replays the run's pins through the same walk and is held to the same
-rule. A run that rides no gateway route leaves the pin idle. `warnRefusedPins` keeps its
+rule; its refusal (`GatewayPinRefusedError.Replay`) names the pin as the run's own, frozen at
+launch, and a relaunch as the remedy — no webhook edit reaches a running run, and deleting the
+key already swept the webhook's pin. A run that rides no gateway route leaves the pin idle. `warnRefusedPins` keeps its
 warn-only lines for vendor pins and says nothing of a gateway pin's fate. The rule holds
 wherever a pin reaches the walk (the webhook lane, the trigger spine, a resume); §6's lane
 stamps for the scheduled and board lanes stay PR-R's.

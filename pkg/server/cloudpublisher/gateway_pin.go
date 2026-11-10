@@ -72,11 +72,20 @@ type GatewayPinRefusedError struct {
 	// Detail spells the cause out for the operator: the audience that
 	// refused, the list that held the slot out, the open error.
 	Detail string
+	// Replay reports a resume: the pin is the run's own, frozen on its
+	// document at launch and replayed by every resume — the launching
+	// webhook's current key_overrides never reaches it (and deleting the key
+	// already swept the webhook's pin), so only a relaunch takes a new one.
+	Replay bool
 }
 
 func (e *GatewayPinRefusedError) Error() string {
-	return fmt.Sprintf("cloudpublisher: tenant %s pins api key %s for the %s gateway, but %s — a pin on a gateway key is exclusive (ADR-131 §6): no other key, no shared tier and not the runner's environment serves the run's gateway routes in its place; repair the key, or repin or clear the %s entry of key_overrides on the webhook or trigger subscription that launched the run",
-		e.Tenant, e.KeyID, secrets.ProviderOpenAICompatible, e.Detail, secrets.ProviderOpenAICompatible)
+	remedy := fmt.Sprintf("repair the key, or repin or clear the %s entry of key_overrides on the webhook or trigger subscription that launched the run", secrets.ProviderOpenAICompatible)
+	if e.Replay {
+		remedy = "this run's own pin, frozen at its launch, is replayed by every resume and no webhook or subscription edit reaches it: repair the key, or relaunch the run, which takes the launching webhook's current pin"
+	}
+	return fmt.Sprintf("cloudpublisher: tenant %s pins api key %s for the %s gateway, but %s — a pin on a gateway key is exclusive (ADR-131 §6): no other key, no shared tier and not the runner's environment serves the run's gateway routes in its place; %s",
+		e.Tenant, e.KeyID, secrets.ProviderOpenAICompatible, e.Detail, remedy)
 }
 
 // gatewayPinRefusal is §6's one chokepoint. resolveAndSealCredentials asks it
@@ -85,8 +94,10 @@ func (e *GatewayPinRefusedError) Error() string {
 // content boundary is derived from what sealed. A pin is honoured when the
 // gateway slot holds the very key it names; otherwise the run is refused by
 // name. mayRide is gatewayRoutes.mayRide: a run that rides no gateway route
-// has no use for the key, and its pin is idle rather than broken.
-func (p *Publisher) gatewayPinRefusal(ctx context.Context, tenantID, ownerID, audienceBotID string, keyOverrides map[string]string, mayRide bool, bundle secrets.RunBundle, sealed sealedKeyIDs, policy sharedTierPolicy, allowed map[string]bool) error {
+// has no use for the key, and its pin is idle rather than broken. replay
+// is the resume's word (boundarySource.replay): the refusal then names the
+// run's frozen pin and a relaunch as the remedy.
+func (p *Publisher) gatewayPinRefusal(ctx context.Context, tenantID, ownerID, audienceBotID string, keyOverrides map[string]string, mayRide bool, bundle secrets.RunBundle, sealed sealedKeyIDs, policy sharedTierPolicy, allowed map[string]bool, replay bool) error {
 	pin := keyOverrides[string(secrets.ProviderOpenAICompatible)]
 	if pin == "" || !mayRide {
 		return nil
@@ -95,7 +106,7 @@ func (p *Publisher) gatewayPinRefusal(ctx context.Context, tenantID, ownerID, au
 		return nil
 	}
 	cause, detail := p.gatewayPinFault(ctx, tenantID, ownerID, audienceBotID, pin, policy, allowed)
-	return &GatewayPinRefusedError{Tenant: tenantID, KeyID: pin, Cause: cause, Detail: detail}
+	return &GatewayPinRefusedError{Tenant: tenantID, KeyID: pin, Cause: cause, Detail: detail, Replay: replay}
 }
 
 // gatewayPinFault names why a pinned gateway key is not in the gateway slot.

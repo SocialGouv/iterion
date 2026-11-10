@@ -1492,7 +1492,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	// pin stamps no boundary on a key the operator did not name. Returned
 	// WITH res: a pool grant the walk acquired must reach the caller's
 	// release.
-	if refusal := p.gatewayPinRefusal(ctx, tenantID, ownerID, audienceBotID, keyOverrides, gateway.mayRide, bundle, apiKeyIDs, policy, allowed); refusal != nil {
+	if refusal := p.gatewayPinRefusal(ctx, tenantID, ownerID, audienceBotID, keyOverrides, gateway.mayRide, bundle, apiKeyIDs, policy, allowed, boundary.replay); refusal != nil {
 		return res, refusal
 	}
 

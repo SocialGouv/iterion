@@ -649,7 +649,10 @@ names, or the launch — or the resume — is refused by name
 (`cloudpublisher.GatewayPinRefusedError`: the key id and why — deleted,
 withheld by its bot or repository audience, invisible to the launch's
 identity, undecryptable, or held out by the run's providers allowlist or
-frozen pair order). Nothing else pays those routes in its place: not the
+frozen pair order; on a resume, the pin is named as the run's own, frozen
+at its launch, and the remedy is a relaunch — editing the webhook never
+reaches a running run, and deleting the key already cleared the webhook's
+pin). Nothing else pays those routes in its place: not the
 team's other gateway key, not a shared tier's or an attached pool's, not the
 runner pod's environment. One chokepoint decides it after the tier walk
 (`gatewayPinRefusal`), reading what the walk sealed, so the env-funded run —
