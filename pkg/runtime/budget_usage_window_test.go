@@ -113,3 +113,150 @@ func TestUsageWindowParks_DoNotSpendTheDurationBudget(t *testing.T) {
 		t.Fatalf("the resume after the window reopened failed: %v", err)
 	}
 }
+
+// subbotWorkflow is prepare → a subbot node → (review →) done, capped at
+// 120 minutes.
+func subbotWorkflow(name string, withReview bool) *ir.Workflow {
+	wf := &ir.Workflow{
+		Name:  name,
+		Entry: "prepare",
+		Nodes: map[string]ir.Node{
+			"prepare": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "prepare"}},
+			"child":   &ir.SubbotNode{BaseNode: ir.BaseNode{ID: "child"}, Source: "child.bot"},
+			"done":    &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+		},
+		Edges:   []*ir.Edge{{From: "prepare", To: "child"}, {From: "child", To: "done"}},
+		Schemas: map[string]*ir.Schema{},
+		Prompts: map[string]*ir.Prompt{},
+		Vars:    map[string]*ir.Var{},
+		Loops:   map[string]*ir.Loop{},
+		Budget:  &ir.Budget{MaxDuration: "120m"},
+	}
+	if withReview {
+		wf.Nodes["review"] = &ir.AgentNode{BaseNode: ir.BaseNode{ID: "review"}}
+		wf.Edges = []*ir.Edge{{From: "prepare", To: "child"}, {From: "child", To: "review"}, {From: "review", To: "done"}}
+	}
+	return wf
+}
+
+func weeklyWallRefusal() *delegate.ErrRateLimited {
+	return &delegate.ErrRateLimited{Provider: "zai", Kind: delegate.RateLimitKindUsageWindow,
+		Detail: "429 · [1310] Weekly Limit Exhausted", ResetAt: time.Date(2026, 11, 14, 17, 24, 0, 0, time.UTC)}
+}
+
+// A subbot's child run works (its nodes book in the CHILD's budget), then
+// stops on a usage window. Those minutes were the parent's active work: the
+// stop hands back none of them, cycle after cycle, so the parent's
+// max_duration still sees every subbot minute.
+func TestUsageWindowParks_ASubbotsWorkStaysOnTheParentsDuration(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("TMPDIR", t.TempDir())
+	clock := newBudgetTestClock()
+	exec := newStubExecutor()
+	exec.on("prepare", func(map[string]any) (map[string]any, error) {
+		clock.Advance(10 * time.Minute)
+		return map[string]any{"ok": true, "_tokens": 100}, nil
+	})
+	const childWork = 50 * time.Minute
+	runner := func(context.Context, SubbotRequest) (map[string]any, error) {
+		clock.Advance(childWork)
+		return nil, &RuntimeError{Code: ErrCodeUsageLimitBlocked, Message: "child stopped on a usage window", Cause: weeklyWallRefusal()}
+	}
+	st := tmpStore(t)
+	eng := New(subbotWorkflow("subbot_walled", false), st, exec, WithSubbotRunner(runner))
+	eng.budgetClock = clock.Now
+	ctx := context.Background()
+
+	err := eng.Run(ctx, "run-subbot-walled", nil)
+	var rt *RuntimeError
+	if !errors.As(err, &rt) || rt.Code != ErrCodeUsageLimitBlocked {
+		t.Fatalf("the run ended on %v, want the child's usage window", err)
+	}
+	r, lerr := st.LoadRun(ctx, "run-subbot-walled")
+	if lerr != nil || r.Checkpoint == nil {
+		t.Fatalf("checkpoint: %v", lerr)
+	}
+	if got, want := time.Duration(r.Checkpoint.BudgetElapsedNS), 10*time.Minute+childWork; got != want {
+		t.Fatalf("the parent's duration budget carries %s, want %s — the subbot's %s of work was handed back as if it had only met the wall",
+			got, want, childWork)
+	}
+}
+
+// A subbot that SUCCEEDED after fifty minutes of work, then the next agent
+// node meets the wall at once: the refund is the walled node's own approach
+// to the wall, never the successful subbot's minutes.
+func TestUsageWindowParks_ASucceededSubbotIsNotRefundedWithTheNextNodesWall(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("TMPDIR", t.TempDir())
+	clock := newBudgetTestClock()
+	exec := newStubExecutor()
+	exec.on("prepare", func(map[string]any) (map[string]any, error) {
+		clock.Advance(10 * time.Minute)
+		return map[string]any{"ok": true, "_tokens": 100}, nil
+	})
+	exec.on("review", func(map[string]any) (map[string]any, error) {
+		return nil, weeklyWallRefusal()
+	})
+	const childWork = 50 * time.Minute
+	runner := func(context.Context, SubbotRequest) (map[string]any, error) {
+		clock.Advance(childWork)
+		return map[string]any{"verdict": "ok", "_tokens": 5000}, nil
+	}
+	st := tmpStore(t)
+	eng := New(subbotWorkflow("subbot_ok", true), st, exec, WithSubbotRunner(runner))
+	eng.budgetClock = clock.Now
+	ctx := context.Background()
+
+	err := eng.Run(ctx, "run-subbot-ok", nil)
+	var rt *RuntimeError
+	if !errors.As(err, &rt) || rt.Code != ErrCodeUsageLimitBlocked {
+		t.Fatalf("the run ended on %v, want the review's usage window", err)
+	}
+	r, lerr := st.LoadRun(ctx, "run-subbot-ok")
+	if lerr != nil || r.Checkpoint == nil {
+		t.Fatalf("checkpoint: %v", lerr)
+	}
+	if got, want := time.Duration(r.Checkpoint.BudgetElapsedNS), 10*time.Minute+childWork; got != want {
+		t.Fatalf("the parent's duration budget carries %s, want %s — the successful subbot's minutes left max_duration with the next node's wall",
+			got, want)
+	}
+}
+
+// The same on a fan-out branch: a subbot whose child works fifty minutes on
+// a branch, then stops on a usage window. A successful branch node books its
+// output on the branch's own path; the failed one books nothing, and its
+// child's minutes stay on the parent's duration all the same.
+func TestUsageWindowParks_ABranchSubbotsWorkStaysOnTheParentsDuration(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("TMPDIR", t.TempDir())
+	wf := subbotFanOutWorkflow(true, 1)
+	wf.Budget.MaxDuration = "600m"
+	clock := newBudgetTestClock()
+	exec := newStubExecutor()
+	exec.on("entry", func(map[string]any) (map[string]any, error) {
+		clock.Advance(10 * time.Minute)
+		return map[string]any{"items": []any{map[string]any{"id": "a"}}, "_tokens": 100}, nil
+	})
+	const childWork = 50 * time.Minute
+	runner := func(context.Context, SubbotRequest) (map[string]any, error) {
+		clock.Advance(childWork)
+		return nil, &RuntimeError{Code: ErrCodeUsageLimitBlocked, Message: "child stopped on a usage window", Cause: weeklyWallRefusal()}
+	}
+	st := tmpStore(t)
+	eng := New(wf, st, exec, WithSubbotRunner(runner))
+	eng.budgetClock = clock.Now
+	ctx := context.Background()
+
+	err := eng.Run(ctx, "run-branch-subbot", nil)
+	var rt *RuntimeError
+	if !errors.As(err, &rt) || rt.Code != ErrCodeUsageLimitBlocked {
+		t.Fatalf("the run ended on %v, want the child's usage window", err)
+	}
+	r, lerr := st.LoadRun(ctx, "run-branch-subbot")
+	if lerr != nil || r.Checkpoint == nil {
+		t.Fatalf("checkpoint: %v", lerr)
+	}
+	if got, want := time.Duration(r.Checkpoint.BudgetElapsedNS), 10*time.Minute+childWork; got != want {
+		t.Fatalf("the parent's duration budget carries %s, want %s — the branch subbot's minutes left max_duration as if they had only met the wall", got, want)
+	}
+}

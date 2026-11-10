@@ -72,21 +72,12 @@ type SharedBudget struct {
 	// lower bound at most, so neither ceiling sees all of them.
 	unreportedCalls int
 
-	// booked is the budget's reading at its last booking, or at the start of
-	// this attempt (construction, Restore): what a stop on a provider usage
-	// window compares against to tell a span that only met the wall from one
-	// that did work (refundSpanSinceBooking).
-	booked budgetBooking
-}
-
-// budgetBooking is one reading of the counters and of the clock.
-type budgetBooking struct {
-	elapsed         time.Duration
-	tokens          int
-	cost            float64
-	iterations      int
-	unpricedTokens  int
-	unreportedCalls int
+	// bookedElapsed is the elapsed reading at the last instant the run's work
+	// was accounted for — a booking (a node's spend, a noted call), the end of
+	// an executor-less node's body (markWorked), or the start of this attempt
+	// (Restore). What follows it is what a stop on a provider usage window
+	// may hand back (refundSpanSinceBooking).
+	bookedElapsed time.Duration
 }
 
 const (
@@ -322,24 +313,37 @@ func (b *SharedBudget) Restore(tokens int, cost float64, iterations int, elapsed
 	b.markBookedLocked()
 }
 
-// markBookedLocked records the budget's reading as of now: the attempt's
-// start, or a booking that just landed.
+// markBookedLocked records that the run's work is accounted for up to now:
+// the attempt's start, a booking that just landed.
 func (b *SharedBudget) markBookedLocked() {
-	b.booked = budgetBooking{
-		elapsed:         b.elapsed(),
-		tokens:          b.tokensUsed,
-		cost:            b.costUsed,
-		iterations:      b.iterationsUsed,
-		unpricedTokens:  b.unpricedTokens,
-		unreportedCalls: b.unreportedCalls,
+	b.bookedElapsed = b.elapsed()
+}
+
+// markWorked records that the span up to now did work no counter prices: the
+// body of an executor-less node — a subbot's child run (its nodes book in
+// the CHILD's budget), a compute, a wait. Such a span is the run's active
+// minutes whatever ends it, so a stop on a usage window that follows hands
+// back nothing of it — the node's own failure included, which is how a
+// subbot whose child worked fifty minutes before meeting the wall reaches
+// the parent's max_duration. Nil-safe.
+func (b *SharedBudget) markWorked() {
+	if b == nil {
+		return
 	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.markBookedLocked()
 }
 
 // refundSpanSinceBooking hands back to the duration budget the span since the
-// last booking — the time the run spent meeting a provider usage window and
-// nothing else — and reports it. It refunds nothing when anything was booked
-// since (a node finished, a call spent tokens or went unreported): that span
-// did work, and its minutes are the run's.
+// run's work was last accounted for (bookedElapsed) — the time the run spent
+// meeting a provider usage window and nothing else — and reports it.
+//
+// Every writer of a counter (recordUsage, noteUnreported, Restore) and every
+// executor-less node body (markWorked) moves that reading, so the span is
+// the walled node's own approach to the wall: a node that spent tokens before
+// it met the wall booked them first (recordFailedNodeSpend), and its span
+// then starts at that booking.
 //
 // Called on a stop on a usage window only. Such a run parks and is resumed
 // once the window reopens; a resume that re-hits the wall spends no token and
@@ -354,12 +358,7 @@ func (b *SharedBudget) refundSpanSinceBooking() time.Duration {
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if b.tokensUsed != b.booked.tokens || b.costUsed != b.booked.cost ||
-		b.iterationsUsed != b.booked.iterations || b.unpricedTokens != b.booked.unpricedTokens ||
-		b.unreportedCalls != b.booked.unreportedCalls {
-		return 0
-	}
-	span := b.elapsed() - b.booked.elapsed
+	span := b.elapsed() - b.bookedElapsed
 	if span <= 0 {
 		return 0
 	}

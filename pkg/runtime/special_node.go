@@ -60,6 +60,8 @@ func (e *Engine) execSpecialNode(
 	}
 
 	output, err := body()
+	// The body's span was work whatever it answered (budget.markWorked).
+	rs.budget.markWorked()
 	if err != nil {
 		return "", err
 	}
@@ -102,6 +104,8 @@ func (e *Engine) execSpecialNode(
 // stores, and validates the output. emit carries no schema, so (matching the
 // main loop) it is not validated.
 func (e *Engine) executeSpecialNodeForBranch(ctx context.Context, rs *runState, branchID, nodeID string, node ir.Node, sc resolveScope, result *branchResult, slot *branchSlot) (output map[string]any, done, handled bool) {
+	// The body's span was work whatever it answered (budget.markWorked).
+	defer rs.budget.markWorked()
 	// store records a successful body output on the branch and validates it,
 	// returning the (output,done) the caller propagates. validate=false skips
 	// the schema check (emit has no output schema).
