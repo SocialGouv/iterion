@@ -40,6 +40,10 @@ const (
 	opAbandon   retryOp = "AbandonRunRetry"
 	opScanDue   retryOp = "ListRunsDueForRetry"
 	opScanProbe retryOp = "ListRunsForRetryProbe"
+	// opScanCredential is the credential probe's scan. It is reached by its
+	// directed script only, so the random draws over the ops above — and the
+	// coverage their seeds were tuned to — are unchanged.
+	opScanCredential retryOp = "ListRunsForCredentialProbe"
 	// conformBudget is the ATTEMPT budget an arming is refused past.
 	conformBudget = 4
 	// conformProbeBudget is the probe budget the scan's own bound uses. TWO,
@@ -64,6 +68,10 @@ var retryOps = []retryOp{opSchedule, opDelay, opPull, opRearm, opClaim, opClear,
 var conformScripts = map[string][]retryOp{
 	"budget":  {opSchedule, opPull, opRearm, opPull, opRearm, opScanProbe},
 	"limit-0": {opSchedule, opScanProbe, opScanDue},
+	// The credential scan's two branches and its refusal: an armed wait, a
+	// pulled one, a resumed one that only its marker keeps listed (the probe
+	// whose run got past the wall), a re-armed one, and a settled one.
+	"credential": {opSchedule, opScanCredential, opPull, opScanCredential, opClear, opScanCredential, opRearm, opScanCredential, opAbandon, opScanCredential},
 }
 
 // TestRunRetryProbeModel_AnswersWhatTheStoreAnswers walks 30 seeded random
@@ -103,6 +111,9 @@ func conformWantedStates() []string {
 		"due scan listed the row",
 		"probe scan listed the row",
 		"probe scan at limit 0 listed the row",
+		"credential scan listed an armed wait",
+		"credential scan listed a marker only",
+		"credential scan refused the row",
 	}
 	for _, term := range probeScanTerms {
 		want = append(want, "probe scan refused the row on the "+term)
@@ -299,7 +310,7 @@ func (g *conformGen) next(step int, before *store.RunRetryState) (retryOp, retry
 			wall = *before.Wall
 		}
 	}
-	return op, retryOpArgs{at: at, expected: expected, wall: wall, limit: limit, reason: reason}
+	return op, retryOpArgs{at: at, expected: expected, wall: wall, limit: limit, reason: reason, since: g.base.Add(-time.Hour)}
 }
 
 // TestRunRetryProbeModel_TheSequencesReachTheStatesThePairingCompares is the
@@ -430,6 +441,12 @@ func noteConformance(seen map[string]int, op retryOp, got string, before *store.
 		seen["due scan listed the row"]++
 	case op == opScanProbe && got == "listed=1":
 		seen["probe scan listed the row"]++
+	case op == opScanCredential && got == "listed=1" && before != nil && before.RetryAfter != nil:
+		seen["credential scan listed an armed wait"]++
+	case op == opScanCredential && got == "listed=1":
+		seen["credential scan listed a marker only"]++
+	case op == opScanCredential && got == "listed=0":
+		seen["credential scan refused the row"]++
 	}
 }
 
@@ -445,6 +462,8 @@ type retryOpArgs struct {
 	wall   time.Time
 	limit  int
 	reason string
+	// since is the credential scan's marker lookback.
+	since time.Time
 }
 
 // applyRetryOp runs one operation against the store (real=true) or the model
@@ -512,6 +531,16 @@ func applyRetryOp(ctx context.Context, real *Store, model *retryprobetest.Store,
 			return fmt.Sprintf("listed=%d", len(rows)), err
 		}
 		return fmt.Sprintf("listed=%d", len(model.ProbeRows(at, conformFloor, conformProbeBudget, args.limit))), nil
+	case opScanCredential:
+		// `since` an hour before the sequence began: every pull the sequence
+		// lands is stamped after it, so the marker branch is compared on the
+		// marker's presence and the arming branch on its own terms.
+		since := args.since
+		if onStore {
+			rows, err := real.ListRunsForCredentialProbe(store.WithoutTenantFilter(ctx), since, args.limit)
+			return fmt.Sprintf("listed=%d", len(rows)), err
+		}
+		return fmt.Sprintf("listed=%d", len(model.CredentialProbeRows(since, args.limit))), nil
 	}
 	return "", fmt.Errorf("unknown op %s", op)
 }

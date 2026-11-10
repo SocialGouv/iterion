@@ -28,7 +28,10 @@ func ForRun(r *store.Run) Policy {
 // still holds the run at now (#3127). Every automatic path reads it — the
 // sweeper's due pass and its pull-forward probe, the pull-request pause
 // notice, the local auto-resume loop — so none of them can promise one
-// instant while another relaunches before it.
+// instant while another relaunches before it. The one relaunch before it is
+// the probe of the run's CREDENTIAL window (pkg/server's credential probe):
+// one run per credential per floor asks the provider whether the wall fell
+// early, and the notice names that cadence beside the date.
 //
 // It is the window the record names (store.Run.UsageWindowPark: the wall the
 // park waits on, or a skipped credential's earlier reopening), bounded by

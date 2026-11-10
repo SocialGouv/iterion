@@ -39,6 +39,8 @@ type fakeRetryLister struct {
 	probeRefs  []mongostore.RetryDueRef
 	probeCalls []probeScan
 	probeErr   error
+	// credRefs is what the credential probe's scan returns.
+	credRefs []mongostore.RetryDueRef
 	// dueErr is the same shape for the DUE scan: rows AND an error, so the
 	// caller's error check is what the test exercises rather than an empty
 	// slice that would pass either way.
@@ -69,6 +71,10 @@ func (f *fakeRetryLister) ListRunsForRetryProbe(_ context.Context, now time.Time
 		return f.probeRefs[:limit], f.probeErr
 	}
 	return f.probeRefs, f.probeErr
+}
+
+func (f *fakeRetryLister) ListRunsForCredentialProbe(_ context.Context, _ time.Time, _ int) ([]mongostore.RetryDueRef, error) {
+	return f.credRefs, nil
 }
 
 // fakeRetryStore records the sweeper's decisions. Embedding store.RunStore

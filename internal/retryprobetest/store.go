@@ -22,6 +22,7 @@ package retryprobetest
 
 import (
 	"context"
+	"slices"
 	"sync"
 	"time"
 
@@ -53,6 +54,14 @@ type Store struct {
 	PullErr, RearmErr, ScheduleErr, AbandonErr error
 	PullErrOnce, RearmErrOnce                  bool
 
+	// Clock is the clock the store stamps its own instants with
+	// (scheduled_at, claimed_at, last_probe_at, updated_at) — Mongo's, which
+	// is the server's wall clock. Nil reads time.Now; a driver that walks a
+	// sequence across simulated hours sets it, or every pull it takes is
+	// stamped at the instant the test started and the probe's PACE is never
+	// what the store would hold.
+	Clock func() time.Time
+
 	// Observations, all monotonic.
 	Pulls           int
 	FreeRearms      int
@@ -68,6 +77,14 @@ type Store struct {
 
 // New builds a store holding run as its only document.
 func New(run *store.Run) *Store { return &Store{run: run} }
+
+// now is the store's own clock (Clock, else the wall clock).
+func (s *Store) now() time.Time {
+	if s.Clock != nil {
+		return s.Clock()
+	}
+	return time.Now()
+}
 
 // bsonTime is the instant as the database would hold it: UTC, truncated to
 // the millisecond BSON stores. Every CAS below compares truncated values on
@@ -129,6 +146,11 @@ func copyRun(r *store.Run) *store.Run {
 	out := *r
 	out.RetryState = copyRetryState(r)
 	out.SkippedCredReopensAt = copyInstant(r.SkippedCredReopensAt)
+	out.CredFingerprints = slices.Clone(r.CredFingerprints)
+	if r.RetryPolicy != nil {
+		pol := *r.RetryPolicy
+		out.RetryPolicy = &pol
+	}
 	return &out
 }
 
@@ -211,7 +233,7 @@ func (s *Store) ScheduleRunRetry(_ context.Context, _ string, at, wall time.Time
 	}
 	moved := s.wallMoves(wall)
 	st := s.state()
-	now := bsonTime(time.Now())
+	now := bsonTime(s.now())
 	st.RetryAfter = bsonPtr(at)
 	st.ScheduledAt = &now
 	st.Reason, st.Code = reason, code
@@ -257,7 +279,7 @@ func (s *Store) DelayRunRetry(_ context.Context, _ string, expectedAfter, delaye
 		st.Code = code
 	}
 	st.ClaimedAt = nil
-	s.run.UpdatedAt = bsonTime(time.Now())
+	s.run.UpdatedAt = bsonTime(s.now())
 	s.Delays++
 	return true, nil
 }
@@ -282,7 +304,7 @@ func (s *Store) PullRunRetry(_ context.Context, _ string, expectedAfter, probeAt
 		st.ProbeFrom != nil {
 		return false, nil
 	}
-	now := bsonTime(time.Now())
+	now := bsonTime(s.now())
 	st.RetryAfter = bsonPtr(probeAt)
 	st.ProbeFrom = bsonPtr(expectedAfter)
 	st.LastProbeAt = &now
@@ -323,7 +345,7 @@ func (s *Store) RearmProbedRunRetry(_ context.Context, _ string, at, wall time.T
 		}
 	}
 	s.run.ContinuationState = store.ContinuationRetryArmed
-	s.run.UpdatedAt = bsonTime(time.Now())
+	s.run.UpdatedAt = bsonTime(s.now())
 	s.FreeRearms++
 	return true, nil
 }
@@ -335,7 +357,7 @@ func (s *Store) ClaimRunRetry(_ context.Context, _ string, expectedAfter time.Ti
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	st := s.run.RetryState
-	now := bsonTime(time.Now())
+	now := bsonTime(s.now())
 	if st == nil || s.run.Status != store.RunStatusFailedResumable || !sameInstant(st.RetryAfter, expectedAfter) {
 		return false, nil
 	}
@@ -359,7 +381,7 @@ func (s *Store) ClearRunRetry(_ context.Context, _ string) error {
 	if st := s.run.RetryState; st != nil {
 		st.RetryAfter, st.ClaimedAt = nil, nil
 	}
-	s.run.UpdatedAt = bsonTime(time.Now())
+	s.run.UpdatedAt = bsonTime(s.now())
 	s.Clears++
 	return nil
 }
@@ -387,7 +409,7 @@ func (s *Store) AbandonRunRetry(_ context.Context, _, reason string, expectedAft
 	st.LastError = reason
 	st.RetryAfter, st.ProbeFrom = nil, nil
 	s.run.ContinuationState = store.ContinuationFinal
-	s.run.UpdatedAt = bsonTime(time.Now())
+	s.run.UpdatedAt = bsonTime(s.now())
 	s.Abandons = append(s.Abandons, reason)
 	return true, nil
 }
@@ -468,4 +490,26 @@ func (s *Store) ProbeRows(now time.Time, floor time.Duration, maxProbes, limit i
 		return nil
 	}
 	return takeScanLimit([]*store.RunRetryState{copyRetryState(s.run)}, limit)
+}
+
+// CredentialProbeRows mirrors the filter of mongo.Store.ListRunsForCredentialProbe:
+// an armed usage-window wait (failed_resumable, reason usage_window,
+// retry_after present), or a row carrying a pull-forward marker pulled at or
+// after since, whatever its status. None of ProbeRows's per-row bounds: the
+// pace and the budget of a credential window are read over all its rows.
+func (s *Store) CredentialProbeRows(since time.Time, _ int) []*store.Run {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	st := s.run.RetryState
+	if st == nil {
+		return nil
+	}
+	armed := s.run.Status == store.RunStatusFailedResumable && st.Reason == store.RetryReasonUsageWindow && st.RetryAfter != nil
+	marked := st.ProbeFrom != nil && st.LastProbeAt != nil && !st.LastProbeAt.Before(bsonTime(since))
+	if !armed && !marked {
+		return nil
+	}
+	// A one-row store lists its row under any limit: the scan coerces a
+	// non-positive or absurd one to 100, as Mongo's does, and never below one.
+	return []*store.Run{copyRun(s.run)}
 }

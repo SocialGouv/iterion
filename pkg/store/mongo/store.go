@@ -400,6 +400,7 @@ func (s *Store) EnsureSchema(ctx context.Context, eventsTTLDays int) error {
 		// Partial on the input so only runs launched with a pr_url index.
 		// Refs #2636.
 		{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "inputs.pr_url", Value: 1}, {Key: "created_at", Value: 1}}, Options: options.Index().SetName("tenant_pr_url_created").SetPartialFilterExpression(bson.M{"inputs.pr_url": bson.M{"$exists": true}})},
+		retryProbeMarkerIndex(),
 	}); err != nil {
 		return err
 	}

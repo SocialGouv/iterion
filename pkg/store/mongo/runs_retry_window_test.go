@@ -47,3 +47,72 @@ func TestRunRetryScans_ProjectTheUsagePark(t *testing.T) {
 		t.Fatalf("due row record = %+v, want USAGE_LIMIT_BLOCKED armed", rec)
 	}
 }
+
+// The credential probe's scan lists every armed usage-window wait and every
+// run a pull still marks — the probe whose resume cleared its retry, which
+// only its marker keeps visible — and projects the credentials and the retry
+// policy the pass groups and bounds them by (#3127). Against a real replica
+// set: the $or and the projection ARE Mongo's.
+//
+//	ITERION_TEST_MONGO_URI='mongodb://localhost:27077/?replicaSet=rs0' \
+//	    devbox run -- go test ./pkg/store/mongo/ -run TestRunRetryScans_ListTheCredentialWindow
+func TestRunRetryScans_ListTheCredentialWindow(t *testing.T) {
+	s := retryTestStore(t)
+	ctx := retryCtx()
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	wall := now.Add(4 * 24 * time.Hour)
+	arm := func(id, reason string) {
+		t.Helper()
+		seedFailedResumable(t, s, id)
+		r, err := s.LoadRun(ctx, id)
+		if err != nil {
+			t.Fatalf("LoadRun %s: %v", id, err)
+		}
+		r.RetryPolicy = &store.RunRetryPolicy{MaxWait: "36h"}
+		if err := s.SaveRun(ctx, r); err != nil {
+			t.Fatalf("SaveRun %s: %v", id, err)
+		}
+		if err := s.SetRunCredStamp(ctx, id, store.RunCredStamp{Fingerprints: []string{"fp-zai"}}); err != nil {
+			t.Fatalf("SetRunCredStamp %s: %v", id, err)
+		}
+		if scheduled, _, err := s.ScheduleRunRetry(ctx, id, wall.Add(time.Minute), wall, reason, "USAGE_LIMIT_BLOCKED", 5); err != nil || !scheduled {
+			t.Fatalf("ScheduleRunRetry %s = (%v, %v)", id, scheduled, err)
+		}
+	}
+	arm("cred-armed", store.RetryReasonUsageWindow)
+	arm("cred-probed", store.RetryReasonUsageWindow)
+	arm("cred-other-reason", "transient")
+	if pulled, err := s.PullRunRetry(ctx, "cred-probed", wall.Add(time.Minute), now); err != nil || !pulled {
+		t.Fatalf("PullRunRetry = (%v, %v)", pulled, err)
+	}
+	if err := s.ClearRunRetry(ctx, "cred-probed"); err != nil {
+		t.Fatalf("ClearRunRetry: %v", err)
+	}
+
+	listed := func(since time.Time) map[string]RetryDueRef {
+		t.Helper()
+		rows, err := s.ListRunsForCredentialProbe(store.WithoutTenantFilter(ctx), since, 500)
+		if err != nil {
+			t.Fatalf("ListRunsForCredentialProbe: %v", err)
+		}
+		out := map[string]RetryDueRef{}
+		for _, r := range rows {
+			out[r.ID] = r
+		}
+		return out
+	}
+	got := listed(now.Add(-time.Hour))
+	if _, ok := got["cred-other-reason"]; ok || len(got) != 2 {
+		t.Fatalf("listed %v, want the armed wait and the probed run only", got)
+	}
+	armed, probed := got["cred-armed"], got["cred-probed"]
+	if rec := armed.Record(); rec.UsageWindowPark().Credential != "fp-zai" || rec.RetryPolicy == nil || rec.RetryPolicy.MaxWait != "36h" {
+		t.Fatalf("armed row record = %+v, want its credential fp-zai and its 36h max_wait projected", rec)
+	}
+	if probed.RetryState == nil || probed.RetryState.ProbeFrom == nil || probed.RetryState.RetryAfter != nil {
+		t.Fatalf("probed row retry state = %+v, want the marker without an armed retry", probed.RetryState)
+	}
+	if got := listed(now.Add(time.Hour)); len(got) != 1 || got["cred-armed"].ID == "" {
+		t.Fatalf("listed %v with the lookback after the pull, want only the armed wait", got)
+	}
+}

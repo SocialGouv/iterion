@@ -267,6 +267,16 @@ func gatePauseNoticeBody(run *store.Run, role pauseNoticeRole, now time.Time) st
 		// and when it resumes; make no push-side claim either way.
 		b.WriteString(".\n")
 	}
+	if cadence, perRun, ok := usageWindowProbeCadence(run, now); ok {
+		// The date is the window the provider named, and nothing relaunches
+		// the run before it but the probe this sentence describes: one run
+		// per credential, or this one under the per-run escape hatch.
+		if perRun {
+			fmt.Fprintf(&b, "\nUntil then iterion retries it %s, in case the quota comes back early (a manual top-up).\n", everyCadence(cadence))
+		} else {
+			fmt.Fprintf(&b, "\nUntil then iterion probes this credential's quota %s — one parked run checks it for every run waiting on it — and resumes this one as soon as the quota is back (a manual top-up included).\n", everyCadence(cadence))
+		}
+	}
 	if cause := gatePauseCause(run); cause != "" {
 		fmt.Fprintf(&b, "\n> %s\n", cause)
 		if isSpendCeilingCause(cause) {
@@ -276,6 +286,24 @@ func gatePauseNoticeBody(run *store.Run, role pauseNoticeRole, now time.Time) st
 		}
 	}
 	return b.String()
+}
+
+// everyCadence renders the probe floor for a reader: "every hour", "every 2
+// hours", "every 30 minutes".
+func everyCadence(d time.Duration) string {
+	switch {
+	case d == time.Hour:
+		return "every hour"
+	case d > time.Hour && d%time.Hour == 0:
+		return fmt.Sprintf("every %d hours", int(d/time.Hour))
+	case d >= time.Minute && d%time.Minute == 0:
+		if d == time.Minute {
+			return "every minute"
+		}
+		return fmt.Sprintf("every %d minutes", int(d/time.Minute))
+	default:
+		return "every " + d.String()
+	}
 }
 
 // instantOrUnknown renders an instant for a debug line, naming the legacy

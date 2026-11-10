@@ -15,7 +15,9 @@ import (
 // and the sweeper relaunched the run at 04:14, 04:58 and 05:59Z — each attempt
 // USAGE_LIMIT_BLOCKED, each spending a pod and ten of the run's active
 // minutes. The window the record names is now read by the probe pass, the
-// due pass and the notice through retrypolicy.UsageWindowNotBefore.
+// due pass and the notice through retrypolicy.UsageWindowNotBefore, and a
+// wait it holds is probed through its credential window only — one run per
+// credential per floor (retry_probe_credential_test.go).
 
 var (
 	bkoParkedAt = time.Date(2026, 11, 10, 3, 58, 0, 0, time.UTC)
@@ -37,10 +39,11 @@ func bkoParkedRef(id string) mongostore.RetryDueRef {
 	return ref
 }
 
-// The replay: the sweeper's own passes, on the ticks bko#82 was relaunched
-// at, pull nothing forward and resume nothing; on the tick after the wall
-// the due pass resumes it.
-func TestUsageWindow_Bko82IsNotRelaunchedBeforeItsWall(t *testing.T) {
+// The replay, on a record that names no credential (ambient credentials, a
+// run stamped before the field): no credential window speaks for it, so the
+// sweeper's own passes, on the ticks bko#82 was relaunched at, pull nothing
+// forward and resume nothing before its wall.
+func TestUsageWindow_ARunNamingNoCredentialIsNotRelaunchedBeforeItsWall(t *testing.T) {
 	st := newFakeRetryStore()
 	resumer := &fakeResumer{}
 	s := newRetrySweeperServer(t, st, resumer)
@@ -66,8 +69,8 @@ func TestUsageWindow_Bko82IsNotRelaunchedBeforeItsWall(t *testing.T) {
 	}
 }
 
-// The escape hatch: an operator who tops up forfaits by hand and wants it seen
-// within the hour opts back into probing before the window.
+// The per-run escape hatch: every wait is probed on its own, before its
+// window, whatever credential window it belongs to.
 func TestUsageWindow_TheOperatorMayProbeBeforeTheWindow(t *testing.T) {
 	t.Setenv(EnvRetryProbeBeforeWindow, "true")
 	st := newFakeRetryStore()

@@ -61,6 +61,19 @@ func (l *modelRetryLister) ListRunsForRetryProbe(_ context.Context, now time.Tim
 	return probeRefs(l.st.ProbeRows(now, floor, maxProbes, limit)), nil
 }
 
+func (l *modelRetryLister) ListRunsForCredentialProbe(_ context.Context, since time.Time, limit int) ([]mongostore.RetryDueRef, error) {
+	return credentialProbeRefs(l.st.CredentialProbeRows(since, limit)), nil
+}
+
+// credentialProbeRefs is the credential scan's rows as Mongo projects them.
+func credentialProbeRefs(rows []*store.Run) []mongostore.RetryDueRef {
+	out := make([]mongostore.RetryDueRef, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, refOfRun(r))
+	}
+	return out
+}
+
 func probeRefs(rows []*store.RunRetryState) []mongostore.RetryDueRef {
 	out := make([]mongostore.RetryDueRef, 0, len(rows))
 	for _, row := range rows {
@@ -177,7 +190,7 @@ func newProbeNoticeServer(t *testing.T) (*Server, *stubCommenter, *store.Run) {
 // newProbeSequenceWorld seeds the row every sequence starts from: a run
 // parked on a provider wall four days out, one attempt spent, no probe taken
 // yet — the shape the ticket measured on six reviews.
-func newProbeSequenceWorld(t *testing.T, notice *Server, comments *stubCommenter, noticed *store.Run, base time.Time) *probeSequenceWorld {
+func newProbeSequenceWorld(t *testing.T, notice *Server, comments *stubCommenter, noticed *store.Run, base time.Time, creds []string) *probeSequenceWorld {
 	t.Helper()
 	// Truncated to the millisecond the database stores: a row seeded with
 	// more precision than Mongo can hold would answer a CAS the real one
@@ -194,6 +207,10 @@ func newProbeSequenceWorld(t *testing.T, notice *Server, comments *stubCommenter
 		Name:         "weekly digest",
 		WorkflowHash: "wf-hash-1",
 		FilePath:     probeSequenceBot,
+		// The credentials the park names: with some, the run is alone on its
+		// credential window and the credential probe pulls it; with none,
+		// only the per-run escape hatch does.
+		CredFingerprints: creds,
 		RetryPolicy: &store.RunRetryPolicy{
 			UsageWindow: "resume", MaxAttempts: probeSequenceBudget, MaxWait: "192h", Jitter: "0s",
 		},
@@ -411,9 +428,9 @@ func sweeperProbeSteps() []retryprobetest.StepKind {
 	}
 }
 
-func runSweeperSequence(t *testing.T, notice *Server, comments *stubCommenter, noticed *store.Run, base time.Time, seq []retryprobetest.Step, seen map[string]int) []string {
+func runSweeperSequence(t *testing.T, notice *Server, comments *stubCommenter, noticed *store.Run, base time.Time, creds []string, seq []retryprobetest.Step, seen map[string]int) []string {
 	t.Helper()
-	w := newProbeSequenceWorld(t, notice, comments, noticed, base)
+	w := newProbeSequenceWorld(t, notice, comments, noticed, base, creds)
 	// The seeded park is a wall the pull request may legitimately be told
 	// about once.
 	ledger := &retryprobetest.Ledger{
@@ -490,28 +507,45 @@ func noteSweeper(seen map[string]int, step retryprobetest.Step, before, after re
 // three real passes over 60 seeded sequences, asserting the guarantee after
 // every step.
 func TestProbeGuarantee_TheSweepersPassesKeepItOverRandomSequences(t *testing.T) {
+	// The seeded wall is dated four days out, so the wait its window holds is
+	// probed one of two ways (#3127), and the guarantee has to hold for both:
+	// through its credential window — alone on it, the run is its own canary
+	// — and on its own under the operator's per-run escape hatch.
+	for _, mode := range []struct {
+		name         string
+		creds        []string
+		beforeWindow string
+	}{
+		{name: "credential window", creds: []string{"fp-forfait"}, beforeWindow: "false"},
+		{name: "per-run escape hatch", beforeWindow: "true"},
+	} {
+		t.Run(mode.name, func(t *testing.T) {
+			t.Setenv(EnvRetryProbeBeforeWindow, mode.beforeWindow)
+			sweepersKeepTheGuarantee(t, mode.creds)
+		})
+	}
+}
+
+// sweepersKeepTheGuarantee drives the three real passes over 60 seeded
+// sequences, asserting the guarantee after every step.
+func sweepersKeepTheGuarantee(t *testing.T, creds []string) {
 	// The pass reads its bounds from the environment on every tick, so this
 	// is how the probe budget the ledger asserts against is the one the scan
 	// applies.
 	t.Setenv(EnvRetryProbeBudget, strconv.Itoa(probeSequenceProbeBudget))
-	// The seeded wall is dated four days out, and by default the probe pass
-	// pulls no wait before the window its record names (#3127). The
-	// guarantees below are the ones an operator who opts into probing before
-	// the window relies on, so the sequences run under that opt-in.
-	t.Setenv(EnvRetryProbeBeforeWindow, "true")
 	notice, comments, noticed := newProbeNoticeServer(t)
 	kinds := sweeperProbeSteps()
 	seen := map[string]int{}
 	for seed := uint64(1); seed <= 60; seed++ {
 		base := time.Now().UTC()
 		seq := retryprobetest.Generate(seed, kinds, base)
-		bad := runSweeperSequence(t, notice, comments, noticed, base, seq, seen)
+		bad := runSweeperSequence(t, notice, comments, noticed, base, creds, seq, seen)
 		if len(bad) == 0 {
 			continue
 		}
 		shortest, at := bad, len(seq)
 		for n := 1; n < len(seq); n++ {
-			if b := runSweeperSequence(t, notice, comments, noticed, base, seq[:n], nil); len(b) > 0 {
+			if b := runSweeperSequence(t, notice, comments, noticed, base, creds, seq[:n], nil); len(b) > 0 {
 				shortest, at = b, n
 				break
 			}

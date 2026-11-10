@@ -59,6 +59,10 @@ type retryDueLister interface {
 	// ListRunsForRetryProbe is the other half of the same capability: the
 	// not-yet-due rows the due scan structurally cannot see (retry_probe.go).
 	ListRunsForRetryProbe(ctx context.Context, now time.Time, floor time.Duration, maxProbes, limit int) ([]mongostore.RetryDueRef, error)
+	// ListRunsForCredentialProbe is what the credential probe groups: every
+	// armed usage-window wait, and every run a pull marked at or after
+	// since (retry_probe_credential.go).
+	ListRunsForCredentialProbe(ctx context.Context, since time.Time, limit int) ([]mongostore.RetryDueRef, error)
 }
 
 // runRetrySweeper ticks sweepDueRetries until ctx is cancelled. Started by
@@ -165,9 +169,11 @@ func (s *Server) resumeDueRetry(ctx context.Context, retryStore store.RunRetrySt
 	// out, re-armed after a failed resume — would relaunch into a wall the
 	// provider dated, at the price of a pod and the run's own minutes
 	// (#3127). It waits, free of charge, until the window or the run's own
-	// max_wait horizon, whichever comes first. A probe still in flight is the
-	// operator's explicit opt-in to look early (EnvRetryProbeBeforeWindow)
-	// and is let through.
+	// max_wait horizon, whichever comes first. A pull still in flight is let
+	// through: it is the one relaunch the window allows before its date — its
+	// credential window's probe, a run released on that probe's answer
+	// (retry_probe_credential.go), or a wait probed on its own under the
+	// operator's per-run escape hatch (EnvRetryProbeBeforeWindow).
 	if run != nil && !ref.RetryState.ProbeInFlight(time.Now().UTC()) {
 		if notBefore, waits := retrypolicy.UsageWindowNotBefore(run, time.Now().UTC()); waits {
 			s.deferToUsageWindow(runCtx, retryStore, ref, notBefore)

@@ -396,18 +396,22 @@ type RetryDueRef struct {
 	// re-resolves the same stored-bot tier the launch used.
 	BotSourceTenant string               `bson:"bot_source_tenant"`
 	RetryState      *store.RunRetryState `bson:"retry_state"`
-	// The run-record facts a usage park is read from
-	// (store.Run.UsageWindowPark), projected so a pass can tell a row its
-	// window still holds without a second read per row.
+	// The run-record facts a usage window is read from
+	// (store.Run.UsageWindowPark, and retrypolicy.UsageWindowNotBefore's
+	// max_wait horizon from the launch's retry policy), projected so a pass
+	// can tell a row its window still holds — and which credential window it
+	// waits on — without a second read per row.
 	Status               store.RunStatus         `bson:"status"`
 	FailureCode          store.FailureCode       `bson:"failure_code"`
 	ContinuationState    store.ContinuationState `bson:"continuation_state"`
 	SkippedCredReopensAt *time.Time              `bson:"skipped_cred_reopens_at"`
+	CredFingerprints     []string                `bson:"cred_fingerprints"`
+	RetryPolicy          *store.RunRetryPolicy   `bson:"retry_policy"`
 }
 
 // Record is the run record this row was projected from, carrying the fields
-// a usage park is read from — never more: a reader that needs the policy,
-// the inputs or the bot loads the run.
+// its usage window is read from — never more: a reader that needs the
+// inputs or the bot loads the run.
 func (r RetryDueRef) Record() *store.Run {
 	return &store.Run{
 		ID:                   r.ID,
@@ -416,16 +420,26 @@ func (r RetryDueRef) Record() *store.Run {
 		FailureCode:          r.FailureCode,
 		ContinuationState:    r.ContinuationState,
 		SkippedCredReopensAt: r.SkippedCredReopensAt,
+		CredFingerprints:     r.CredFingerprints,
+		RetryPolicy:          r.RetryPolicy,
 		RetryState:           r.RetryState,
 	}
 }
 
-// retryDueProjection is what both scans read of a run: the identity the
-// resume needs, the retry state, and the record fields a usage park is read
+// retryDueProjection is what the scans read of a run: the identity the
+// resume needs, the retry state, and the record fields a usage window is read
 // from (RetryDueRef.Record).
 var retryDueProjection = bson.M{
 	"_id": 1, "tenant_id": 1, "owner_id": 1, "bot_id": 1, "bot_source_tenant": 1, "file_path": 1, retryStateField: 1,
 	"status": 1, "failure_code": 1, "continuation_state": 1, "skipped_cred_reopens_at": 1,
+	"cred_fingerprints": 1, "retry_policy": 1,
+}
+
+// Leased reports a live claim on the row: a replica is acting on it, the
+// term the probe scan excludes such a row on (ListRunsForRetryProbe), for a
+// pass that reads the row from a scan that does not apply it.
+func (r RetryDueRef) Leased(now time.Time) bool {
+	return r.RetryState != nil && r.RetryState.ClaimedAt != nil && !r.RetryState.ClaimedAt.Before(now.Add(-retryClaimLease))
 }
 
 // RetryAfter returns the armed instant, or the zero time when absent.
@@ -523,6 +537,63 @@ func (s *Store) ListRunsForRetryProbe(ctx context.Context, now time.Time, floor 
 	var out []RetryDueRef
 	if err := cur.All(ctx, &out); err != nil {
 		return nil, fmt.Errorf("store/mongo: decode runs for retry probe: %w", err)
+	}
+	return out, nil
+}
+
+// retryProbeMarkerIndex backs the marker branch of ListRunsForCredentialProbe:
+// runs carrying a pull-forward marker, whatever their status. Partial on the
+// marker, so the index holds the handful of runs a probe pulled, not the
+// collection — the other branch of that scan rides status_created. Declared
+// here, beside the filter it serves, because this file owns the marker's BSON
+// path (pkg/store's probe-marker chokepoint).
+func retryProbeMarkerIndex() mongo.IndexModel {
+	return mongo.IndexModel{
+		Keys:    bson.D{{Key: retryPath("last_probe_at"), Value: 1}},
+		Options: options.Index().SetName("retry_probe_marker").SetPartialFilterExpression(bson.M{retryPath("probe_from"): bson.M{"$exists": true}}),
+	}
+}
+
+// ListRunsForCredentialProbe returns what the probe pass reads to probe a
+// credential window once for every run parked on it
+// (pkg/server.sweepCredentialProbes): every armed usage-window wait, and every
+// run carrying a pull-forward marker pulled at or after `since`, whatever its
+// status — the probe in flight, and the one whose resume got past the wall,
+// which no longer waits anywhere and is the answer the others are released
+// on. Sorted on _id: the pass groups the rows itself, and the order of a scan
+// is no fact about the window.
+//
+// None of ListRunsForRetryProbe's per-row bounds apply: the pace and the
+// budget of a credential window are read over ALL its rows, the probed one
+// included, and a scan that hid the row a probe just pulled would hand the
+// window a second probe in the same hour.
+func (s *Store) ListRunsForCredentialProbe(ctx context.Context, since time.Time, limit int) ([]RetryDueRef, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	cur, err := s.runs.Find(ctx,
+		withTenantFilter(ctx, bson.M{"$or": []bson.M{
+			{
+				"status":                 string(store.RunStatusFailedResumable),
+				retryPath("reason"):      store.RetryReasonUsageWindow,
+				retryPath("retry_after"): bson.M{"$exists": true},
+			},
+			{
+				retryPath("probe_from"):    bson.M{"$exists": true},
+				retryPath("last_probe_at"): bson.M{"$gte": since.UTC()},
+			},
+		}}),
+		options.Find().
+			SetProjection(retryDueProjection).
+			SetSort(bson.M{"_id": 1}).
+			SetLimit(int64(limit)))
+	if err != nil {
+		return nil, fmt.Errorf("store/mongo: list runs for credential probe: %w", err)
+	}
+	defer cur.Close(ctx)
+	var out []RetryDueRef
+	if err := cur.All(ctx, &out); err != nil {
+		return nil, fmt.Errorf("store/mongo: decode runs for credential probe: %w", err)
 	}
 	return out, nil
 }

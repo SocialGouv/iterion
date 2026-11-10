@@ -1,6 +1,10 @@
 package store
 
-import "time"
+import (
+	"slices"
+	"strings"
+	"time"
+)
 
 // UsageWindowPark is what a run record says about a run waiting on a provider
 // usage window: whether it is parked on one, and the earliest instant that
@@ -30,6 +34,21 @@ type UsageWindowPark struct {
 	// was persisted names none): the window is unreadable and the automatic
 	// cadence stays the one the arming chose.
 	ReopensAt time.Time
+	// Credential names the credential window the park waits on: the
+	// credentials the run's last attempt sealed (Run.CredFingerprints),
+	// sorted, deduplicated and joined. Runs parked on the same credentials
+	// wait on the same provider window, so the sweeper probes that window
+	// with ONE of them and releases the others on its answer
+	// (pkg/server.sweepCredentialProbes).
+	//
+	// The record does not say WHICH sealed credential refused, so the key is
+	// the whole set: two runs share a window when they sealed the same
+	// credentials. A run that sealed a second credential beside the walled
+	// one waits in a window of its own — one more probe, never a run
+	// released on another credential's answer. Empty when the record names
+	// no credential (ambient credentials, a run stamped before the field):
+	// no probe speaks for such a run, and it waits for its window.
+	Credential string
 }
 
 // UsageWindowPark reads the run record's usage park. Nil-safe.
@@ -43,7 +62,25 @@ func (r *Run) UsageWindowPark() UsageWindowPark {
 	if !armed && !settling {
 		return UsageWindowPark{}
 	}
-	return UsageWindowPark{Parked: true, ReopensAt: usageWindowReopensAt(rs, r.SkippedCredReopensAt)}
+	return UsageWindowPark{
+		Parked:     true,
+		ReopensAt:  usageWindowReopensAt(rs, r.SkippedCredReopensAt),
+		Credential: UsageWindowCredential(r.CredFingerprints),
+	}
+}
+
+// UsageWindowCredential is the credential-window key of a sealed credential
+// set: sorted and deduplicated, so the order a resolution stamped the set in
+// is no fact about the window. Empty for an empty set.
+func UsageWindowCredential(fingerprints []string) string {
+	set := make([]string, 0, len(fingerprints))
+	for _, fp := range fingerprints {
+		if fp = strings.TrimSpace(fp); fp != "" {
+			set = append(set, fp)
+		}
+	}
+	slices.Sort(set)
+	return strings.Join(slices.Compact(set), ",")
 }
 
 // usageWindowReopensAt is the earliest of the instants the record names for

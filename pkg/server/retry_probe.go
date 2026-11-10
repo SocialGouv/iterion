@@ -41,17 +41,20 @@ const (
 	// EnvRetryProbeFloor overrides how long a row rests between probes, and
 	// how close to its announced instant probing stops being worth a pod.
 	EnvRetryProbeFloor = "ITERION_RETRY_PROBE_FLOOR"
-	// EnvRetryProbeBudget overrides the probes one armed wait may spend.
-	// `0` turns the pass off — the manual sweep (`iterion remote runs
-	// resume --usage-blocked`) remains the operator's own path.
+	// EnvRetryProbeBudget overrides the probes one provider window may
+	// spend — a credential window's, or one wait's where no credential
+	// window speaks for it. `0` turns the pass off — the manual sweep
+	// (`iterion remote runs resume --usage-blocked`) remains the operator's
+	// own path.
 	EnvRetryProbeBudget = "ITERION_RETRY_PROBE_BUDGET"
-	// EnvRetryProbeBeforeWindow, set to a true value, lets the pass pull a
-	// wait forward BEFORE the usage window its record names
-	// (retrypolicy.UsageWindowNotBefore). Off by default: every probe is a
-	// pod and the run's own active minutes spent against a wall the
-	// provider dated (#3127). The operator who tops up a forfait by hand and
-	// wants it noticed within the hour turns it on; the manual sweep stays
-	// the one-shot path.
+	// EnvRetryProbeBeforeWindow, set to a true value, probes EVERY wait on
+	// its own, before the usage window its record names
+	// (retrypolicy.UsageWindowNotBefore) — one pod per parked run per floor,
+	// the behaviour before credential windows (#3127). Off by default: a
+	// wait its window holds is probed through its credential window, one
+	// run for all the runs parked on it (sweepCredentialProbes), and a wait
+	// that names no credential waits for its window. The per-run escape
+	// hatch, operator-grade; the manual sweep stays the one-shot path.
 	EnvRetryProbeBeforeWindow = "ITERION_RETRY_PROBE_BEFORE_WINDOW"
 
 	// defaultRetryProbeFloor matches usageWindowBlindWait: one speculative
@@ -87,8 +90,8 @@ const (
 type retryProbeBounds struct {
 	floor  time.Duration
 	budget int
-	// beforeWindow is EnvRetryProbeBeforeWindow: probe a wait its window
-	// still holds.
+	// beforeWindow is EnvRetryProbeBeforeWindow: probe every wait on its
+	// own, a wait its window still holds included.
 	beforeWindow bool
 }
 
@@ -120,6 +123,13 @@ func retryProbeBoundsFromEnv() retryProbeBounds {
 // (injectable clock, platform-wide scan, per-row tenant stamped before every
 // write) and multi-replica-safe for the same reason: the pull is a
 // compare-and-swap on the instant the scan read, so a loser just moves on.
+//
+// Two halves share the pass's batch. A wait its usage window still holds is
+// probed through its CREDENTIAL window — one run pulled per credential per
+// floor, the others released on its answer (sweepCredentialProbes, #3127) —
+// and every other wait (its window unreadable or already passed) on its own,
+// as below. ITERION_RETRY_PROBE_BEFORE_WINDOW=true probes every wait on its
+// own.
 func (s *Server) sweepRetryProbes(ctx context.Context, lister retryDueLister, now time.Time) {
 	retryStore := store.AsRunRetryStore(s.cfg.Store)
 	if retryStore == nil {
@@ -129,55 +139,73 @@ func (s *Server) sweepRetryProbes(ctx context.Context, lister retryDueLister, no
 	if bounds.budget <= 0 {
 		return
 	}
+	probed := 0
+	if !bounds.beforeWindow {
+		probed = s.sweepCredentialProbes(ctx, retryStore, lister, bounds, now)
+	}
+	if probed >= retryProbeBatch {
+		return
+	}
 	refs, err := lister.ListRunsForRetryProbe(store.WithoutTenantFilter(ctx), now, bounds.floor, bounds.budget, retryProbeScan)
 	if err != nil {
 		s.warnf("retry sweeper: probe scan: %v", err)
 		return
 	}
-	probed := 0
 	for _, ref := range refs {
 		if probed >= retryProbeBatch {
 			return
 		}
-		// A wait whose record names a window still ahead is not pulled: the
-		// resume it would buy relaunches into that wall (#3127). Read on the
-		// record, through the one function every re-launcher reads.
+		// A wait whose record names a window still ahead is not pulled on its
+		// own: the resume it would buy relaunches into that wall (#3127), and
+		// its credential window speaks for it. Read on the record, through
+		// the one function every re-launcher reads.
 		if !bounds.beforeWindow {
 			if notBefore, waits := retrypolicy.UsageWindowNotBefore(ref.Record(), now); waits {
-				s.debugf("retry sweeper: run %s not probed — its usage window holds it until %s", ref.ID, notBefore.Format(time.RFC3339))
+				s.debugf("retry sweeper: run %s not probed on its own — its usage window holds it until %s", ref.ID, notBefore.Format(time.RFC3339))
 				continue
 			}
 		}
 		probed++
-		s.probeRetry(ctx, retryStore, ref, bounds, now)
+		s.probeRetry(ctx, retryStore, ref, bounds, now, "")
 	}
 }
 
-// probeRetry pulls one row forward. It does NOT resume: the due pass owns
-// that, and routing the probe through it keeps one resume path with one set
-// of failure branches.
-func (s *Server) probeRetry(ctx context.Context, retryStore store.RunRetryStore, ref mongostore.RetryDueRef, bounds retryProbeBounds, now time.Time) {
+// probeRetry pulls one row forward and reports whether the pull landed. It
+// does NOT resume: the due pass owns that, and routing the probe through it
+// keeps one resume path with one set of failure branches. `window` names the
+// credential window the row is probed for, empty for a row probed on its own.
+func (s *Server) probeRetry(ctx context.Context, retryStore store.RunRetryStore, ref mongostore.RetryDueRef, bounds retryProbeBounds, now time.Time, window string) bool {
 	runCtx := store.WithIdentity(ctx, ref.TenantID, "retry-sweeper")
 	announced := ref.RetryAfter()
 	pulled, err := retryStore.PullRunRetry(runCtx, ref.ID, announced, now)
 	if err != nil {
 		s.warnf("retry sweeper: probe pull %s: %v", ref.ID, err)
-		return
+		return false
 	}
 	if !pulled {
 		// Another replica pulled it, or the row moved under the scan. Both
 		// are ordinary outcomes of a CAS, not failures.
-		return
+		return false
 	}
 	s.countRetryProbe(metrics.RetryProbePulled)
 	probe := retryProbeCount(ref) + 1
-	s.auditRetry(ref, "run.retry.probed", map[string]any{
+	meta := map[string]any{
 		"announced_retry_after": announced,
 		"probe":                 probe,
 		"probe_budget":          bounds.budget,
-	})
+	}
+	if window != "" {
+		meta["credential_window"] = window
+	}
+	s.auditRetry(ref, "run.retry.probed", meta)
+	if window != "" {
+		s.infof("retry sweeper: run %s (tenant %s) pulled forward as the probe of its credential window (probe %d/%d) — its provider reset is announced for %s; the runs parked on the same credentials wait for its answer",
+			ref.ID, ref.TenantID, probe, bounds.budget, announced.Format(time.RFC3339))
+		return true
+	}
 	s.infof("retry sweeper: run %s (tenant %s) pulled forward for usage-window probe %d/%d — its provider reset is announced for %s, the runner's preflight answers now",
 		ref.ID, ref.TenantID, probe, bounds.budget, announced.Format(time.RFC3339))
+	return true
 }
 
 // standDownProbedRetry puts the provider's announced instant back on a

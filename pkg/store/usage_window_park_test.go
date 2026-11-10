@@ -52,3 +52,24 @@ func TestUsageWindowPark_ReopensAtTheEarlierOfTheWallAndTheSkippedCredential(t *
 		t.Errorf("ReopensAt = %s on a record naming no window, want zero", got)
 	}
 }
+
+// The credential window is the sealed SET: the order a resolution stamped it
+// in, a duplicate or a blank entry is no fact about which window the run
+// waits on, and a run that names no credential belongs to no window.
+func TestUsageWindowPark_CredentialIsTheSealedSetInAnyOrder(t *testing.T) {
+	park := func(fps ...string) string {
+		return (&Run{Status: RunStatusFailedResumable, FailureCode: FailureUsageLimitBlocked, CredFingerprints: fps}).UsageWindowPark().Credential
+	}
+	if a, b := park("fp-zai", "fp-codex"), park("fp-codex", " fp-zai", "fp-codex", ""); a != b || a != "fp-codex,fp-zai" {
+		t.Fatalf("Credential = %q and %q, want both %q", a, b, "fp-codex,fp-zai")
+	}
+	if got := park("fp-zai"); got == park("fp-zai", "fp-codex") {
+		t.Fatalf("a run that sealed a second credential shares the window key %q of a run that sealed one", got)
+	}
+	if got := park(); got != "" {
+		t.Fatalf("Credential = %q on a record naming no credential, want empty", got)
+	}
+	if got := (&Run{Status: RunStatusQueued, CredFingerprints: []string{"fp-zai"}}).UsageWindowPark().Credential; got != "" {
+		t.Fatalf("Credential = %q on a run that is not parked, want empty", got)
+	}
+}
