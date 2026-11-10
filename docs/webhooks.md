@@ -697,7 +697,7 @@ that replays a real GitHub delivery through the handler on a fake forge:
 | Bad args | `fork gesture: /revi takes an optional commit SHA to pin, nothing else …` | prose is not a pin |
 | No pool | `fork lane names no runner pool — …` | the config was stored before `fork_lane_pool` existed; a fork run executes only on the pool its lane names, so the launch tail refuses it BEFORE either budget is metered (the durable retry exhausts the row, the board branch writes no card — the same precondition) |
 | Unfunded | `fork_run_unfunded` (`launch_error`, HTTP 422 with the publisher's sentence as `detail`) | the team holds no vendor API key of its own for a provider the bot's routes pin, or a route rides the `openai_compatible` gateway, or a route is decided on the runner (an `${…}` dial, a late var), or a route names no provider the server can read, or a route may spend the anthropic wire's default credential and the team holds none of its slots — the shared tiers, the runner's env and a forfait fund no fork run ([funding a fork run](#fork-lane-funding)); refused BEFORE either budget is metered |
-| Pool refused | `fork_lane_pool_refused` (`launch_error`, 422) | the lane's pool fails the fork lane's pool rule now — the team was mapped to a sovereign pool since the lane was created, another team holds the pool, or the registry does not route it (unknown, not `active`) ([the lane's pool](#fork-lane-pool)); judged with the funding, BEFORE either budget is metered, permanent |
+| Pool refused | `fork_lane_pool_refused` (`launch_error`, 422) | the lane's pool fails the fork lane's pool rule now — the team was mapped to a sovereign pool since the lane was created, another team holds the pool, or the registry does not route it (unknown, `disabled`) ([the lane's pool](#fork-lane-pool)); judged with the funding, BEFORE either budget is metered, permanent — a pool `provisioning` or `draining` answers `fork_funding_unreadable` instead, transient |
 | Program unjudgeable | `fork_funding_unjudgeable` (`launch_error`, 422) | the program the run would execute cannot be built — the bot is gone from its catalog, its source no longer compiles, the launch funnel refuses an input; permanent |
 | Funding undecided | `fork_funding_unreadable` (`launch_error`, 503) | the funding judge could not answer — a credential store read failed, a tier's metadata was unreadable, the pool registry could not be read; fail-closed, retryable |
 
@@ -743,10 +743,15 @@ or published, and the retry sweeper abandons a resume refused with it (it is
 permanent, like a pool remap); a store that cannot say who holds the pool
 refuses as the transient it is. The pool then crosses the registry's routing
 gate like every pool (registered, `active`); for an untrusted run the
-registry's decided refusal — a pool it does not know, one not `active` — is
+registry's decided refusal — a pool it does not know, a `disabled` one — is
 `ErrForkLanePool` too, since the fork-lane config names the pool and cannot
-be edited (register and activate it, or recreate the webhook), while a
-registry that cannot be read stays transient. The launch gate asks the same
+be edited (register and activate it, or recreate the webhook), while a pool
+`provisioning` or `draining` — a lifecycle step the operator's next change
+cures — and a registry that cannot be read stay transient, so a parked fork
+run is re-armed rather than abandoned. The team mapping route
+(`PUT /api/admin/teams/{id}/runner-pool`) refuses, 409, a pool another
+team's fork-lane config names, disabled or not: mapping a team there would
+put that lane's in-flight runs on the team's sovereign pods. The launch gate asks the same
 rule and the same routing gate BEFORE it meters (the funding judge reads
 them first): a gesture, a durable retry or a resume whose pool the rule now
 refuses is `fork_lane_pool_refused` (422) with neither budget charged.
@@ -770,7 +775,7 @@ run until #2005 PR-C'. Nothing else funds a fork run:
 |---|---|
 | The org's shared keys, a contributor pool, the platform's keys | a fork run is pool-stamped, and D13 seals no shared tier into a pool run — the pool pod never holds anyone else's key |
 | The runner's environment — its vendor keys, its pool's `openai_compatible` gateway | decision 7's ambient refusal: an untrusted run spends only what was sealed for it, so a route riding the runner's gateway alone is refused too |
-| A connected forfait (Claude, ChatGPT) | the sandbox's egress proxy substitutes a bearer placeholder toward the credential's host and cannot hold an OAuth credential and its refresh flow (`credroute.ErrCrossingRefused`) |
+| A connected forfait (Claude, ChatGPT) | the sandbox's egress proxy substitutes a bearer placeholder toward the credential's host and cannot hold an OAuth credential and its refresh flow (`credroute.ErrCrossingRefused`) — so the team's routing policy lands no forfait rung on a fork run either: a forfait pair is not held under the untrusted posture |
 
 **And the routes must be decided before the run.** The judge reads the
 bot's routes in the server; the run takes them on the lane's pool, so three
@@ -782,7 +787,7 @@ route — each named by the route sites in the refusal:
 | One riding the `openai_compatible` gateway (a literal `openai_compatible/…` model, a gateway hint, or a dial this server expands to one) | nothing funds it on a fork run: the pool's gateway is the refused environment, and no team gateway credential is sealed into a pool run until #2005 PR-C' |
 | One the runner decides itself: a routing field — the provider (or its override), the model, the backend — that reads an `${…}` dial, or a run var the launch leaves undecided | the pool's runner expands the dial with ITS environment, whose env block pins the routing dials ahead of the platform record ([sovereign-pools.md](sovereign-pools.md#routing-dials-the-pools-env-block-is-pinned)) — the route this server reads is not the one the run takes, and a verdict on it would admit, and meter, a run the runner then refuses ambient |
 | One that names no provider the server can read: a model with no `provider/` prefix, an `auto`, empty or unknown provider step, a sub-bot node (its child bot's routes are not read), a supervisor with no model | no verdict says the team's keys fund it — the runner resolves what it spends. The cost: a `claude_code` route on a bare model the team's Anthropic key would serve is refused too; pinning its provider (`provider: anthropic`, or a routing override) lifts it |
-| Judged per route: one that may spend the anthropic wire's default credential — a `claude_code` route that pins no anthropic-wire provider (`provider: openai` on `claude_code` included), a route whose backend no field names (the runner's default backend and credential detection pick it) | funded only when the team holds one of the wire slots it may read (the Anthropic, z.ai or Moonshot key, per the route) or an anthropic-wire provider it names: otherwise the runner's slot-order walk finds no sealed key and refuses the route ambient |
+| Judged per route: one that may spend the anthropic wire's default credential — a `claude_code` route that pins no anthropic-wire provider (`provider: openai` on `claude_code` included), a route whose backend no field names (the runner's default backend and credential detection pick it) | funded only when the team holds one of the wire slots it may read (the Anthropic, z.ai or Moonshot key, per the route) or an anthropic-wire provider it names: otherwise the runner's slot-order walk finds no sealed key and refuses the route ambient. A providers allowlist that admits none of the route's slots leaves it nothing it may spend, refused the same way |
 
 `review-pr` reads EVERY route through an `${ITERION_VIBE_*}` dial — its
 nodes, its supervisors, its rescue route — so a fork gesture of

@@ -21,7 +21,9 @@ The isolation chain, in the order a run meets it:
    state — never routed onto the shared pool. The mapping enforces the
    one-team-per-pool invariant (D13): a second team onto a held pool is
    refused with the holder named — two teams on one pool would let each
-   team's runs carry the other's credentials to the same pods.
+   team's runs carry the other's credentials to the same pods. A pool
+   another team's fork-lane config names is refused the same way (409,
+   naming the configs): that lane's untrusted runs execute there.
    A pool team's launch also consults no shared credential tier — org,
    contributor pool and platform credentials never enter its bundle, so
    the pod holds no stranger's key; a route nothing of the team's own
@@ -249,7 +251,8 @@ Operator notes:
   replace, validated: pool name grammar, duplicate names, lifecycle
   states; audited with the previous state).
 - `PUT /api/admin/teams/{id}/runner-pool` — the mapping (super-admin;
-  refuses pools the registry does not know).
+  refuses pools the registry does not know, a pool another team holds, and
+  a pool another team's fork-lane config names).
 - `GET /api/admin/dlq?pool=<p>` and the peek/replay/discard routes take the
   same `?pool=` parameter — each pool parks on its own DLQ stream, and the
   depth gauge sums the shared DLQ with every registry-known pool's.
