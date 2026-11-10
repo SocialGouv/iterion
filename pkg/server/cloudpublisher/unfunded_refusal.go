@@ -298,7 +298,9 @@ type unfundedPosture struct {
 	// pool, platform) is sealed into it (ADR-154 D13); the runner's
 	// environment — its vendor keys and its pool's gateway — answers a
 	// typed refusal, and a forfait cannot cross its sandbox (ADR-162
-	// decision 7). The team's own vendor API keys are all that funds it.
+	// decision 7). The team's own keys are all that funds it: its vendor API
+	// keys, and its openai_compatible gateway key on the decided gateway
+	// routes the walk attributes to it.
 	//
 	// Three route classes are refused whatever the team holds. A gateway
 	// route the runner's environment funds: the gateway it rides IS that
@@ -556,7 +558,8 @@ type UnfundedProvidersError struct {
 	// credentials are the only funding — as opposed to the deployment knob.
 	Sovereign bool
 	// Untrusted marks the untrusted (fork-lane) arm: the run spends the
-	// team's own vendor API keys alone — no shared tier is sealed into a
+	// team's own keys alone (its vendor API keys, and its gateway key on the
+	// gateway routes attributed to it) — no shared tier is sealed into a
 	// pool run, the runner's environment is refused and a forfait cannot
 	// cross its sandbox. It answers before the others, so it carries the
 	// run's remedy whatever else is armed.
@@ -703,7 +706,7 @@ func (e *UnfundedProvidersError) Error() string {
 			remedies = append(remedies, fmt.Sprintf("the routes of %s may spend the anthropic wire's default credential — a claude_code route that pins no anthropic-wire provider, or a route whose backend the runner picks — and the team holds an API key for none of the slots listed, or the providers allowlist admits none: provision one the allowlist admits, or pin the route's backend and provider",
 				strings.Join(e.WireDefault, ", ")))
 		}
-		return fmt.Sprintf("cloudpublisher: %v: tenant %s's untrusted (fork-lane) run on %s spends the team's own vendor API keys alone — %s; %s",
+		return fmt.Sprintf("cloudpublisher: %v: tenant %s's untrusted (fork-lane) run on %s spends the team's own API keys alone (its vendor keys, and its openai_compatible gateway key on the literal gateway routes it serves) — %s; %s",
 			runview.ErrNoLLMCredential, e.Tenant, pool, why, strings.Join(remedies, "; and "))
 	}
 	// The arm that names NO provider: nothing to walk, and the remedy is a

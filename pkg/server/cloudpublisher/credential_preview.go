@@ -175,7 +175,7 @@ func (p *Publisher) previewCredentials(ctx context.Context, spec runview.Credent
 	sharedTiersBlocked := sovereignPreview || pooledPreview
 	blocked := blockedPosture(sovereignPreview, runnerPool, untrustedPreview)
 	if untrustedPreview {
-		x.warn("The run is untrusted (fork lane) and executes on its lane's runner pool: the shared tiers (org, pool, platform) are not consulted, the runner's environment is refused and a forfait cannot cross its sandbox — only the team's own vendor API keys fund it, on routes decided before the run (no gateway route, no ${…} dial or late var the pool's runner resolves itself), and any other route refuses the launch before it is metered.")
+		x.warn("The run is untrusted (fork lane) and executes on its lane's runner pool: the shared tiers (org, pool, platform) are not consulted, the runner's environment is refused and a forfait cannot cross its sandbox — only the team's own API keys fund it (its vendor keys, and its openai_compatible gateway key on the literal gateway routes it serves), on routes decided before the run (no route riding the runner's gateway, no ${…} dial or late var the pool's runner resolves itself), and any other route refuses the launch before it is metered.")
 	}
 	switch {
 	case envFunded && gateway.repoOnly != nil:
