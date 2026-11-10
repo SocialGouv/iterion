@@ -466,7 +466,8 @@ func isPublicPath(path string) bool {
 	// operator-JWT gate must not front them — a sandboxed or
 	// runner-launched run carries no JWT.
 	if strings.HasPrefix(path, "/api/v1/mcp/") ||
-		path == "/api/v1/forge/publish-review" || path == "/api/v1/forge/pull-request" || path == "/api/v1/forge/delivery-preflight" {
+		path == "/api/v1/forge/publish-review" || path == "/api/v1/forge/pull-request" || path == "/api/v1/forge/delivery-preflight" ||
+		path == "/api/v1/forge/dispatch-workflow" {
 		return true
 	}
 	if strings.HasPrefix(path, "/assets/") || strings.HasPrefix(path, "/static/") {

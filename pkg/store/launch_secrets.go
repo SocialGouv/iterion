@@ -6,12 +6,13 @@ import (
 )
 
 // The launch vars a server mints for one run's forge publish grant: its bearer
-// and the three endpoints the bearer is presented to.
+// and the four endpoints the bearer is presented to.
 const (
 	ForgePublishURLVar           = "forge_publish_url"
 	ForgePublishTokenVar         = "forge_publish_token"
 	ForgePRStateURLVar           = "forge_pr_state_url"
 	ForgeDeliveryPreflightURLVar = "forge_delivery_preflight_url"
+	ForgeDispatchURLVar          = "forge_dispatch_url"
 )
 
 // ServerMintedLaunchVars are the launch vars a server mints for one run: the
@@ -21,7 +22,13 @@ const (
 // (DropServerMintedVars): the server binds the bearer to its endpoints, and a
 // client able to set an endpoint while the run keeps its bearer would point a
 // live grant at a host of its choosing.
-var ServerMintedLaunchVars = [...]string{ForgePublishURLVar, ForgePublishTokenVar, ForgePRStateURLVar, ForgeDeliveryPreflightURLVar}
+var ServerMintedLaunchVars = [...]string{ForgePublishURLVar, ForgePublishTokenVar, ForgePRStateURLVar, ForgeDeliveryPreflightURLVar, ForgeDispatchURLVar}
+
+// ServerMintedEndpointVars are the ServerMintedLaunchVars that name an
+// endpoint the bearer is presented to — every one but the bearer itself. The
+// run's secret guard scopes the bearer to their hosts, so an endpoint missing
+// here would be one the egress gate refuses the grant toward.
+var ServerMintedEndpointVars = [...]string{ForgePublishURLVar, ForgePRStateURLVar, ForgeDeliveryPreflightURLVar, ForgeDispatchURLVar}
 
 // ServerMintedSecretVars are the ServerMintedLaunchVars that are credentials.
 // Every read surface that hands a run's inputs out masks them

@@ -434,6 +434,11 @@ func (s *Server) routes() {
 		// pull request is still open before it pushes or posts.
 		s.mux.ServeMux.HandleFunc("GET /api/v1/forge/pull-request", s.handleForgePullRequest)
 		s.mux.ServeMux.HandleFunc("POST /api/v1/forge/delivery-preflight", s.handleForgeDeliveryPreflight)
+		// The workflow-dispatch gesture of the same grant, honoured only for
+		// a grant carrying publishCapDispatchWorkflow. Spelled literally (=
+		// forgeDispatchWorkflowPath): the REST inventory reads literal
+		// registrations only.
+		s.mux.ServeMux.HandleFunc("POST /api/v1/forge/dispatch-workflow", s.handleForgeDispatchWorkflow)
 	}
 	// Event-driven trigger subscription CRUD backing the Triggers /
 	// Automations view. No-op without a TriggerStore.

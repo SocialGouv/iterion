@@ -327,11 +327,12 @@ func verdictMissingCaps(caps []string, v *publishReviewVerdict) []string {
 // gesture records, with the mode that claimed to drive it.
 const auditActionVerdictGesture = "forge.verdict.gesture"
 
-// forgePublishCapabilitiesFor resolves the merge-gate capabilities a bot's
-// manifest declares, as grant capability names. A manifest that cannot be
-// resolved (an inline .bot, a loose bundle) declares nothing: empty is the
-// fail-closed default, and a launch that expected gestures learns it from
-// the verdict_result refusal instead of a launch failure.
+// forgePublishCapabilitiesFor resolves the grant capabilities a bot's
+// manifest declares — the merge-gate gestures and the workflow dispatch — as
+// grant capability names. A manifest that cannot be resolved (an inline .bot,
+// a loose bundle) declares nothing: empty is the fail-closed default, and a
+// launch that expected gestures learns it from the verdict_result refusal (a
+// dispatch from its typed refusal) instead of a launch failure.
 func (s *Server) forgePublishCapabilitiesFor(ctx context.Context, teamID, botID string) []string {
 	m := s.botManifestFor(ctx, teamID, strings.TrimSpace(botID))
 	if m == nil || m.Forge == nil {
@@ -355,6 +356,9 @@ func (s *Server) forgePublishCapabilitiesFor(ctx context.Context, teamID, botID 
 	}
 	if atWrite(bundle.ForgeScopeReviewers) {
 		caps = append(caps, publishCapReviewers)
+	}
+	if atWrite(bundle.ForgeScopeActions) {
+		caps = append(caps, publishCapDispatchWorkflow)
 	}
 	sort.Strings(caps)
 	return caps

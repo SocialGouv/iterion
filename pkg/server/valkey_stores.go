@@ -361,7 +361,7 @@ func mergeGrantJSON(raw []byte, g ForgePublishGrant) ([]byte, error) {
 
 // forgePublishGrantKeys are the JSON keys ForgePublishGrant owns; a test pins
 // the list to the struct's tags.
-var forgePublishGrantKeys = []string{"team_id", "connection_id", "repo", "bot", "capabilities", "verdict", "refusal", "deferred", "shared", "cut_back"}
+var forgePublishGrantKeys = []string{"team_id", "connection_id", "repo", "bot", "capabilities", "dispatches", "verdict", "refusal", "deferred", "shared", "cut_back"}
 
 func (s *valkeyForgePublishTokenStore) lookup(token string) (ForgePublishGrant, bool) {
 	ctx, cancel := valkeyCtx()

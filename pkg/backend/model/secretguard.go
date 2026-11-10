@@ -157,7 +157,7 @@ func mintedVarMask(name string, v any) (string, bool) {
 // sorted so the registered scope does not depend on map order.
 func mintedGrantHosts(vars map[string]string) []string {
 	seen := map[string]bool{}
-	for _, name := range []string{store.ForgePublishURLVar, store.ForgePRStateURLVar, store.ForgeDeliveryPreflightURLVar} {
+	for _, name := range store.ServerMintedEndpointVars {
 		raw := strings.TrimSpace(vars[name])
 		if raw == "" {
 			continue

@@ -1342,12 +1342,23 @@ func (s *Server) launchScheduledBot(ctx context.Context, sb cloudsched.Scheduled
 	if deny != nil {
 		return deny.err()
 	}
+	// A bot that declares the workflow-dispatch capability gets its publish
+	// grant here, after admission so a denied tick mints nothing; every
+	// other scheduled launch mints none, as buildScheduledLaunchSpec says.
+	vars, minted, err := s.scheduledDispatchGrant(ctx, sb, spec.Vars)
+	if err != nil {
+		adm.rollback(s.logger)
+		return err
+	}
+	spec.Vars = vars
 	if _, err = s.launchRun(ctx, systemLaunch(scheduledLaunchActor), spec); err != nil {
 		// The slot follows the error's own fact (#1725): a launch proven
 		// not to have started hands the metered unit back; a publish that
 		// landed keeps it — the run it describes exists or may be claimed.
+		// The grant follows the same fact: nothing holds it.
 		if !runview.RunMayHaveStarted(err) {
 			adm.rollback(s.logger)
+			s.revokeUnlaunchedGrant(minted)
 		}
 		return err
 	}
@@ -1395,11 +1406,13 @@ func (s *Server) scheduledForgeOverrides(ctx context.Context, sb cloudsched.Sche
 // the pinned repo (mandatory for stateful bots persisting state to git) and
 // stamps the BotID for the publisher's credential-resolution path.
 func buildScheduledLaunchSpec(sb cloudsched.ScheduledBot, path, source string, retry *store.RunRetryPolicy, route *store.RunLLMRoutePolicy) runview.LaunchSpec {
-	// A schedule row mints no grant: the publish bearer and the three
-	// endpoints it is presented to are the server's own, minted per launch,
-	// so a value stored under those names on the row is a stale token or an
-	// endpoint of someone's choosing. Dropped before TrustedVarNames too —
-	// nothing is trusted by a name that no longer reaches the run.
+	// A schedule row mints no grant: the publish bearer and the endpoints it
+	// is presented to are the server's own, minted per launch (for a bot
+	// declaring the workflow-dispatch capability, by scheduledDispatchGrant
+	// at the tick), so a value stored under those names on the row is a stale
+	// token or an endpoint of someone's choosing. Dropped before
+	// TrustedVarNames too — nothing is trusted by a name that no longer
+	// reaches the run.
 	vars := store.DropServerMintedVars(sb.Vars)
 	return runview.LaunchSpec{
 		// Tenant-configured vars ride blind (#1725's opt-out): the schedule
