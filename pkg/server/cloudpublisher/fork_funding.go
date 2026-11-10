@@ -52,7 +52,7 @@ func (p *Publisher) FundingRefusal(ctx context.Context, spec runview.CredentialP
 		if err != nil {
 			return err
 		}
-		if err := p.poolRoutes(ctx, pool); err != nil {
+		if err := p.routesForTrust(ctx, pool, spec.Launch.Trust); err != nil {
 			return fmt.Errorf("cloudpublisher: the fork lane's runner pool does not route: %w", err)
 		}
 	}

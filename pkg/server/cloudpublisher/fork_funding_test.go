@@ -10,6 +10,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/identity"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/platformcfg"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -429,8 +430,14 @@ func TestResumeFundingRefusal_AForkRunWhoseTeamLostItsKeyIsRefused(t *testing.T)
 // Mutations, each seen red and restored byte-identical:
 //   - FundingRefusal no longer reading launchRunnerPool → "a team mapped to
 //     another pool" and "a pool another team holds" admit;
-//   - FundingRefusal no longer asking poolRoutes → "a pool the registry does
-//     not route" admits;
+//   - FundingRefusal no longer asking the registry's routing gate → "a pool
+//     the registry does not know", "a pool not active" and "a registry that
+//     cannot be read" admit;
+//   - routesForTrust no longer typing the registry's decided refusal → "a
+//     pool the registry does not know" and "a pool not active" answer the
+//     untyped (transient) refusal;
+//   - routesForTrust typing every registry error → "a registry that cannot
+//     be read" answers ErrForkLanePool (a blip read as permanent);
 //   - ResumeFundingRefusal no longer asking resumePoolRefusal → "the team was
 //     mapped since the launch" admits.
 func TestFundingJudges_TheForkLanePoolRuleAnswersBeforeTheFundingWalk(t *testing.T) {
@@ -448,14 +455,25 @@ func TestFundingJudges_TheForkLanePoolRuleAnswersBeforeTheFundingWalk(t *testing
 		name     string
 		mapped   map[string]string
 		lanePool string
+		registry RunnerPoolResolver
 		typed    bool
+		naming   string
 	}{
 		{name: "a team mapped to another pool", mapped: map[string]string{"team1": "t-sov"}, lanePool: "forks", typed: true},
 		{name: "a pool another team holds", mapped: map[string]string{"team2": "forks"}, lanePool: "forks", typed: true},
-		{name: "a pool the registry does not route", lanePool: "unregistered"},
+		// The config names the pool and is immutable: a definitive refusal,
+		// never the retryable blip.
+		{name: "a pool the registry does not know", lanePool: "unregistered", typed: true, naming: `"unregistered"`},
+		{name: "a pool not active", lanePool: "forks", typed: true, naming: `"draining"`,
+			registry: fakePoolRegistry{rec: &platformcfg.RunnerPools{Pools: []platformcfg.RunnerPool{{Name: "forks", State: platformcfg.RunnerPoolDraining}}}}},
+		{name: "a registry that cannot be read", lanePool: "forks", naming: "registry unreachable",
+			registry: fakePoolRegistry{err: errors.New("registry unreachable")}},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			p := funded(t, row.mapped)
+			if row.registry != nil {
+				p.pools = row.registry
+			}
 			spec := forkFundingSpec(store.RunTrustFork)
 			spec.Launch.ForkLanePool = row.lanePool
 			err := p.FundingRefusal(ctx, spec, wf)
@@ -465,8 +483,8 @@ func TestFundingJudges_TheForkLanePoolRuleAnswersBeforeTheFundingWalk(t *testing
 			if errors.Is(err, ErrForkLanePool) != row.typed {
 				t.Fatalf("FundingRefusal = %v, ErrForkLanePool=%v, want %v", err, errors.Is(err, ErrForkLanePool), row.typed)
 			}
-			if !row.typed && !strings.Contains(err.Error(), `"unregistered"`) {
-				t.Fatalf("FundingRefusal = %v, want the registry's refusal naming the pool", err)
+			if row.naming != "" && !strings.Contains(err.Error(), row.naming) {
+				t.Fatalf("FundingRefusal = %v, want the registry's refusal naming %s", err, row.naming)
 			}
 		})
 	}

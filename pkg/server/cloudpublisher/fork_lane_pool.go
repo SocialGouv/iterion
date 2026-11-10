@@ -92,3 +92,20 @@ func (p *Publisher) forkLanePoolRefusal(ctx context.Context, tenantID, teamPool,
 	}
 	return nil
 }
+
+// routesForTrust is the registry's routing gate (poolRoutes) as a run of
+// trust answers it, at the launch, the resume and the pre-metering funding
+// judge alike. For an untrusted run the registry's DECIDED refusal
+// (ErrPoolNotRouted) is the fork lane's own: the run's pool is the one its
+// fork-lane config names, and the config is immutable, so every gesture,
+// durable retry and resume would meet the same answer — a misspelled or
+// never-activated pool is refused as ErrForkLanePool (definitive, never the
+// retryable registry blip), naming the remedy. A registry that cannot be read
+// stays the transient it is.
+func (p *Publisher) routesForTrust(ctx context.Context, pool string, trust store.RunTrust) error {
+	err := p.poolRoutes(ctx, pool)
+	if err != nil && !trust.Trusted() && errors.Is(err, ErrPoolNotRouted) {
+		return fmt.Errorf("%w: %w — a fork-lane config's pool cannot be edited: register the pool and set it active, or recreate the fork-lane webhook naming a pool the registry routes", ErrForkLanePool, err)
+	}
+	return err
+}

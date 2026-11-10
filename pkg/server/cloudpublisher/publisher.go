@@ -350,6 +350,12 @@ func (p *Publisher) orgIDForTeam(ctx context.Context, teamID string) string {
 // burned, on a refusal no retry can cure.
 var ErrPoolRemapped = errors.New("cloudpublisher: the run's runner pool no longer matches its team's mapping")
 
+// ErrPoolNotRouted marks the registry's DECIDED refusal to route a pool
+// (poolRoutes): no registry wired, a registry holding no pools, a pool it
+// does not know, a pool not in state active. A registry that cannot be read
+// is not this error — it refuses as the transient it is.
+var ErrPoolNotRouted = errors.New("cloudpublisher: the runner-pool registry does not route this pool")
+
 // poolRoutes decides whether a team's frozen pool may route right now: the
 // registry must know the pool AND its state must be active (the operator's
 // explicit "runners for this pool are deployed and consuming" — plan v2.1
@@ -362,25 +368,25 @@ func (p *Publisher) poolRoutes(ctx context.Context, pool string) error {
 		return nil
 	}
 	if p.pools == nil {
-		return fmt.Errorf("cloudpublisher: team is mapped to runner pool %q but no pool registry is wired — refusing (routing requires an explicit registry entry in state active)", pool)
+		return fmt.Errorf("%w: team is mapped to runner pool %q but no pool registry is wired — refusing (routing requires an explicit registry entry in state active)", ErrPoolNotRouted, pool)
 	}
 	rec, err := p.pools.Get(ctx)
 	if err != nil {
 		return fmt.Errorf("cloudpublisher: read the runner-pool registry for pool %q: %w (refusing)", pool, err)
 	}
 	if rec == nil {
-		return fmt.Errorf("cloudpublisher: team is mapped to runner pool %q but the registry holds no pools — refusing", pool)
+		return fmt.Errorf("%w: team is mapped to runner pool %q but the registry holds no pools — refusing", ErrPoolNotRouted, pool)
 	}
 	for i := range rec.Pools {
 		if rec.Pools[i].Name != pool {
 			continue
 		}
 		if rec.Pools[i].State != platformcfg.RunnerPoolActive {
-			return fmt.Errorf("cloudpublisher: runner pool %q is %q — routing requires state %q (the operator flips it when the pool's runners are deployed and consuming)", pool, rec.Pools[i].State, platformcfg.RunnerPoolActive)
+			return fmt.Errorf("%w: runner pool %q is %q — routing requires state %q (the operator flips it when the pool's runners are deployed and consuming)", ErrPoolNotRouted, pool, rec.Pools[i].State, platformcfg.RunnerPoolActive)
 		}
 		return nil
 	}
-	return fmt.Errorf("cloudpublisher: team is mapped to runner pool %q but the registry does not know it — refusing", pool)
+	return fmt.Errorf("%w: team is mapped to runner pool %q but the registry does not know it — refusing", ErrPoolNotRouted, pool)
 }
 
 // resumePoolRefusal is the pool rule a resume answers to, read by
@@ -407,7 +413,7 @@ func (p *Publisher) resumePoolRefusal(ctx context.Context, prior *store.Run) err
 	} else if err := p.forkLanePoolRefusal(ctx, prior.TenantID, currentPool, prior.RunnerPool); err != nil {
 		return fmt.Errorf("cloudpublisher: resume of run %s refused: %w", prior.ID, err)
 	}
-	if err := p.poolRoutes(ctx, prior.RunnerPool); err != nil {
+	if err := p.routesForTrust(ctx, prior.RunnerPool, prior.Trust); err != nil {
 		return fmt.Errorf("cloudpublisher: resume of run %s refused: %w", prior.ID, err)
 	}
 	return nil
@@ -3744,7 +3750,7 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		return runview.LaunchSubmission{}, err
 	}
 	if runnerPool != "" {
-		if err := p.poolRoutes(ctx, runnerPool); err != nil {
+		if err := p.routesForTrust(ctx, runnerPool, spec.Trust); err != nil {
 			return runview.LaunchSubmission{}, err
 		}
 	}
