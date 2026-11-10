@@ -3,6 +3,7 @@ package model
 import (
 	"slices"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
@@ -543,5 +544,58 @@ func TestEffectiveProviders_DecidedPrimaryNamesTheDecidedPrimaryRoutesOnly(t *te
 	want := map[string][]string{"anthropic": {"literal"}}
 	if len(res.DecidedPrimary) != len(want) || !slices.Equal(res.DecidedPrimary["anthropic"], want["anthropic"]) {
 		t.Fatalf("DecidedPrimary = %v, want %v: an env dial, an undecided var, a rescue, the run-level chain and a supervisor name no decided primary route", res.DecidedPrimary, want)
+	}
+}
+
+// On a backend whose credential the `provider:` hint picks — every backend
+// the walk reads but claw — a primary route whose chain decided defers only
+// when its PROVIDER text reads the environment or an undecided var: the model
+// text then picks the model the runner sends, never the credential
+// (claude_code's credential is the hint's whatever model the pod expands). So
+// `backend: claude_code` + `provider: anthropic` + `model: "${DIAL:-…}"` is a
+// decided primary route, refused under team_gateway like its literal-model
+// twin. claw (whose slot follows the model's prefix) and a backend the walk
+// cannot read (the runner may expand it to claw) keep the model's deferral.
+func TestEffectiveProviders_AHintDecidedRouteDefersOnItsProviderText(t *testing.T) {
+	node := func(backend, provider, mdl string) *ir.AgentNode {
+		n := agentWith("review", provider, mdl)
+		n.Backend = backend
+		return n
+	}
+	for _, row := range []struct {
+		name     string
+		node     *ir.AgentNode
+		override NodeModelOverride
+		decided  bool
+	}{
+		{name: "claude_code, literal hint, env-dial model", node: node("claude_code", "anthropic", "${HINT_DECIDED_UNSET_MODEL:-claude-opus-5-5}"), decided: true},
+		{name: "claude_code, literal hint, undecided var model", node: node("claude_code", "anthropic", "{{vars.model}}"), decided: true},
+		{name: "pi, literal hint, env-dial model", node: node("pi", "zai", "${HINT_DECIDED_UNSET_MODEL:-anthropic/glm-5.2}"), decided: true},
+		{name: "claude_code, literal provider override, env-dial node model", node: node("claude_code", "${HINT_DECIDED_UNSET_PROVIDER:-zai}", "${HINT_DECIDED_UNSET_MODEL:-claude-opus-5-5}"), override: NodeModelOverride{Provider: "anthropic"}, decided: true},
+		{name: "claude_code, env-dial hint (control)", node: node("claude_code", "${HINT_DECIDED_UNSET_PROVIDER:-anthropic}", "claude-opus-5-5")},
+		{name: "claw, literal hint, env-dial model (control: the model picks the slot)", node: node("claw", "anthropic", "${HINT_DECIDED_UNSET_MODEL:-anthropic/claude-opus-5}")},
+		{name: "an env-dial backend, literal hint, env-dial model (control)", node: node("${HINT_DECIDED_UNSET_BACKEND:-claude_code}", "anthropic", "${HINT_DECIDED_UNSET_MODEL:-claude-opus-5-5}")},
+		{name: "claude_code, literal hint, literal model (control)", node: node("claude_code", "anthropic", "claude-opus-5-5"), decided: true},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			var ovs ModelOverrides
+			if row.override.Provider != "" {
+				ovs.SetProvider("*", row.override.Provider)
+			}
+			wf := &ir.Workflow{Nodes: map[string]ir.Node{"review": row.node}}
+			res := EffectiveProviders(RouteView{Workflow: wf, Overrides: ovs, LateVars: map[string]bool{"model": true}}, knownForTest)
+			var hint string
+			if row.override.Provider != "" {
+				hint = row.override.Provider
+			} else {
+				hint = strings.TrimSpace(ir.ExpandEnvWithDefault(row.node.Provider))
+			}
+			if !slices.Contains(res.Providers, hint) {
+				t.Fatalf("test premise: the walk records the hint %q, got %v", hint, res.Providers)
+			}
+			if got := slices.Equal(res.DecidedPrimary[hint], []string{"review"}); got != row.decided {
+				t.Fatalf("DecidedPrimary = %v, want %q decided by review = %v", res.DecidedPrimary, hint, row.decided)
+			}
+		})
 	}
 }

@@ -437,6 +437,40 @@ func TestGatewayKey_ATeamGatewayRunsRescueAndEnvDialRoutesAreWarnedNotRefused(t 
 	}
 }
 
+// W20b (P-2 of the round-3 review): a node on a backend whose credential its
+// `provider:` hint picks (claude_code) with a literal hint and an env-dial
+// model is a DECIDED primary route — claude_code spends the hint's credential
+// whatever model the pod expands the dial to — so a team_gateway run that
+// funds nothing for it is refused at launch by name, exactly as the
+// literal-model twin is, and the preview predicts the refusal.
+func TestGatewayKey_ATeamGatewayRunsHintDecidedRouteWithAnEnvDialModelIsRefused(t *testing.T) {
+	for _, mdl := range []string{"${W20B_UNSET_DIAL_MODEL:-claude-opus-5-5}", "claude-opus-5-5"} {
+		t.Run(mdl, func(t *testing.T) {
+			wf := func() *ir.Workflow {
+				return &ir.Workflow{Nodes: map[string]ir.Node{
+					"gw":     &ir.AgentNode{BaseNode: ir.BaseNode{ID: "gw"}, LLMFields: ir.LLMFields{Backend: "claw", Model: "openai_compatible/team/m"}, Tools: []string{}},
+					"review": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "review"}, LLMFields: ir.LLMFields{Backend: "claude_code", Provider: "anthropic", Model: mdl}, Tools: []string{}},
+				}}
+			}
+			p, buf := gatewayKeyPublisher(t)
+			seedGatewayKey(t, p.apiKeys, p.sealer, "team1", nil)
+			w := wf()
+			_, err := p.resolveAndSealCredentials(gatewayLaunchCtx(), "run-gw-20b", "", "team1", "owner1", gwBot, "", w, nil, nil, model.RouteView{Workflow: w}, nil, store.RunTrustDefault, nil, nil, nil, boundaryDerived)
+			var refusal *UnfundedProvidersError
+			if !errors.As(err, &refusal) || !refusal.TeamGateway || !slices.Equal(refusal.Providers, []string{"anthropic"}) || !slices.Equal(refusal.Sites["anthropic"], []string{"review"}) {
+				t.Fatalf("launch = %v, want the boundary's refusal naming anthropic (named by review) (log:\n%s)", err, buf.String())
+			}
+			preview, perr := previewReadOnly(p).PreviewCredentials(gatewayLaunchCtx(), previewSpec("team1", "owner1"), wf())
+			if perr != nil {
+				t.Fatalf("preview: %v", perr)
+			}
+			if previewWarning(preview, "The live launch refuses") == "" {
+				t.Fatalf("the preview does not predict the launch's refusal: %v", preview.Warnings)
+			}
+		})
+	}
+}
+
 // W21 (Y-6 of the round-2 review): the credential preview's attached-pool
 // read is the walk's request — the attachment's draw scope and caps ride it
 // (attachedPoolRequest) and the broker's Preview judges them — so an

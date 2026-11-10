@@ -143,7 +143,10 @@ never clearing it; a resume replaying `team_gateway` seals its bundle even with
 nothing in it (a route the walk cannot attribute), so the refusal keeps its carriage. The same
 value arms the unfunded refusal strictly: a `team_gateway` run's node whose own decided
 route (`model.ProviderResolution.DecidedPrimary`: a primary route reading neither the
-environment nor an undecided var) nothing in the bundle funds can only die at the runner,
+environment nor an undecided var where it picks the credential — on a backend whose
+`provider:` hint picks it, every one but claw, the hint's text alone, so `backend:
+claude_code` + `provider: anthropic` + `model: "${DIAL:-…}"` is decided) nothing in the
+bundle funds can only die at the runner,
 so it is refused by name at launch (or resume) whatever `ITERION_CLOUD_REQUIRE_LLM_CREDENTIAL`
 says, with the boundary's own sentence (`UnfundedProvidersError.TeamGateway`); the
 preview mirrors it. A provider only a rescue route (`fallbacks:`, the run-level chain)

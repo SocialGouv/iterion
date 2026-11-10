@@ -142,13 +142,16 @@ type ProviderResolution struct {
 	// DecidedPrimary maps a provider of Providers to the sites of the
 	// PRIMARY node routes that name it with a DECIDED text: the node's own
 	// chain, an interaction generation, a Verified Action's recovery rungs, a
-	// human node's generation — whose provider and model read neither the
-	// environment (`${…}`: the runner's pod expands it with its own) nor an
-	// undecided var (`{{…}}`). A rescue route (`node#name`, the run-level
-	// chain's `run-fallback#<stage>`) and a supervisor are outside it. The
-	// content boundary's strict refusal reads it: a team_gateway run's
-	// decided primary route that nothing in its bundle funds can only die at
-	// the runner. Sorted, deduplicated.
+	// human node's generation — whose text that picks the credential reads
+	// neither the environment (`${…}`: the runner's pod expands it with its
+	// own) nor an undecided var (`{{…}}`): the provider and the model, or —
+	// on a backend whose `provider:` hint picks the credential and whose
+	// chain decided (hintDecidesDeferral) — the provider text alone. A
+	// rescue route (`node#name`, the run-level chain's
+	// `run-fallback#<stage>`) and a supervisor are outside it. The content
+	// boundary's strict refusal reads it: a team_gateway run's decided
+	// primary route that nothing in its bundle funds can only die at the
+	// runner. Sorted, deduplicated.
 	DecidedPrimary map[string][]string
 	// Unreadable lists the routes the walk could not read while an
 	// allowlist was in force — a `{{vars.*}}` or empty-`${…}` field, a
@@ -879,6 +882,7 @@ func (a *providerAccumulator) resolveNode(node ir.Node, fields *ir.LLMFields, ov
 	if strings.TrimSpace(ov.Provider) != "" {
 		a.noteWireDefault(prov, m)
 		if a.chainDecides(prov, m) {
+			a.hintDecidesDeferral(prov)
 			a.prefixSlotForClaw(m)
 			return
 		}
@@ -893,10 +897,30 @@ func (a *providerAccumulator) resolveNode(node ir.Node, fields *ir.LLMFields, ov
 	}
 	a.noteWireDefault(chain, m)
 	if a.chainDecides(chain, m) {
+		a.hintDecidesDeferral(chain)
 		a.prefixSlotForClaw(m)
 		return
 	}
 	a.prefixOrWiden(m)
+}
+
+// hintDecidesDeferral re-reads, on a primary route whose `provider:` chain
+// just decided, whether the route defers (routeRead.deferred, what keeps it
+// out of ProviderResolution.DecidedPrimary): on a backend whose credential
+// the hint picks — every backend the walk reads but claw — only the chain's
+// own text does. The model text there picks the model the runner sends, never
+// the credential (claude_code spends the hint's whatever model the pod
+// expands a `${DIAL:-…}` to), so a literal hint beside an env-dial or
+// undecided model is a decided route. claw, whose slot follows the model's
+// prefix (prefixSlotForClaw), and a backend the walk cannot read (the runner
+// may expand it to claw) keep the deferral envDeferred read on every text.
+// Only the decided-route reading moves: envDeferred's widening and EnvDeferred
+// stay as they were.
+func (a *providerAccumulator) hintDecidesDeferral(chain string) {
+	if a.route == nil || a.backend == "" || a.backend == delegate.BackendClaw {
+		return
+	}
+	a.route.deferred = strings.Contains(chain, "{{") || strings.Contains(chain, "${")
 }
 
 // prefixSlotForClaw records, on a route whose `provider:` chain just
