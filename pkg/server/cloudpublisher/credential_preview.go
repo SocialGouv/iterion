@@ -313,7 +313,7 @@ func (p *Publisher) previewCredentials(ctx context.Context, spec runview.Credent
 					}
 				}
 				x.out.Pool.Considered = active
-				pool, err := p.previewLent(ctx, p.attachedPoolRequest(ctx, x.orgID, spec.Context.TeamID, spec.OwnerID, spec.Context.BotID, spec.PoolAttachment, asked))
+				pool, served, err := p.previewLent(ctx, p.attachedPoolRequest(ctx, x.orgID, spec.Context.TeamID, spec.OwnerID, spec.Context.BotID, spec.PoolAttachment, asked))
 				if err != nil {
 					x.out.Pool.Reason = "unknown"
 					x.conditional("Attached pool metadata unavailable; selection is conditional.")
@@ -321,7 +321,7 @@ func (p *Publisher) previewCredentials(ctx context.Context, spec runview.Credent
 				}
 				if active {
 					x.out.Pool.Reason = string(pool.Reason)
-					noteBusyCandidates(x.busy, "the attached pool "+spec.PoolAttachment.PoolID+"'s", pool.Candidates)
+					p.noteBusyCandidates(ctx, x.busy, "the attached pool "+spec.PoolAttachment.PoolID+"'s", false, pool.Candidates, served, spec.Context.BotID)
 				}
 				for rank, d := range pool.Candidates {
 					c := runview.CredentialPreviewCandidate{Tier: "pool", Rank: rank, Source: string(d.Source), Provider: d.Ref, Wire: secrets.WireFamily(d.Ref), Label: "Key pool " + spec.PoolAttachment.PoolID, State: string(d.Status), Reason: d.Reason, Conditional: true, Windows: []runview.CredentialPreviewWindow{}, Capacity: &runview.CredentialPreviewCapacity{LiveRuns: d.LiveRuns, MaxConcurrentRuns: d.MaxConcurrentRuns, RemainingUSD: d.RemainingUSD}}
@@ -361,7 +361,7 @@ func (p *Publisher) previewCredentials(ctx context.Context, spec runview.Credent
 				poolWants = wants
 			}
 			x.out.Pool.Considered = active
-			pool, err := p.previewLent(ctx, credpool.Request{OrgID: x.orgID, TenantID: spec.Context.TeamID, UserID: spec.OwnerID, BotID: spec.Context.BotID, Wants: poolWants})
+			pool, served, err := p.previewLent(ctx, credpool.Request{OrgID: x.orgID, TenantID: spec.Context.TeamID, UserID: spec.OwnerID, BotID: spec.Context.BotID, Wants: poolWants})
 			if err != nil {
 				x.out.Pool.Reason = "unknown"
 				x.conditional("Pool metadata unavailable; selection is conditional.")
@@ -369,7 +369,7 @@ func (p *Publisher) previewCredentials(ctx context.Context, spec runview.Credent
 			}
 			if active {
 				x.out.Pool.Reason = string(pool.Reason)
-				noteBusyCandidates(x.busy, "the credential pool's", pool.Candidates)
+				p.noteBusyCandidates(ctx, x.busy, "the credential pool's", true, pool.Candidates, served, spec.Context.BotID)
 			}
 			for rank, d := range pool.Candidates {
 				c := runview.CredentialPreviewCandidate{Tier: "pool", Rank: rank, Source: string(d.Source), Provider: d.Ref, Wire: secrets.WireFamily(d.Ref), Label: "Shared pool credential", State: string(d.Status), Reason: d.Reason, Conditional: true, Windows: []runview.CredentialPreviewWindow{}, Capacity: &runview.CredentialPreviewCapacity{LiveRuns: d.LiveRuns, MaxConcurrentRuns: d.MaxConcurrentRuns, RemainingUSD: d.RemainingUSD}}
@@ -624,7 +624,7 @@ func (p *Publisher) previewCredentials(ctx context.Context, spec runview.Credent
 				doorWants = append(doorWants, string(w.Source)+":"+w.Ref)
 			}
 			x.out.Pool.DoorWants = doorWants
-			door, derr := p.previewLent(ctx, credpool.Request{OrgID: x.orgID, TenantID: spec.Context.TeamID, UserID: spec.OwnerID, BotID: spec.Context.BotID, Wants: wants, FallbackOnly: true})
+			door, _, derr := p.previewLent(ctx, credpool.Request{OrgID: x.orgID, TenantID: spec.Context.TeamID, UserID: spec.OwnerID, BotID: spec.Context.BotID, Wants: wants, FallbackOnly: true})
 			if derr != nil {
 				x.out.Pool.DoorReason = "unknown"
 				x.warn("Fallback-door pool metadata unavailable; selection is conditional.")

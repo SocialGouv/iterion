@@ -3502,7 +3502,7 @@ func (p *Publisher) acquireFromPool(ctx context.Context, runID, orgID, tenantID,
 			// each one out (paused / unhealthy / out_of_hours /
 			// bot_filtered / cooling / exhausted / serving). An entry only
 			// unavailable now is noted for the refusals (busy_entries.go).
-			p.noteBusySkips(ctx, busy, "the credential pool's", nd, botID)
+			p.noteBusySkips(ctx, busy, "the credential pool's", true, nd, botID)
 			p.logger.Warn("cloudpublisher: credential pool declined run %s — reason=%s pools_enabled=%d pools_admitted=%d pledges_considered=%d skips=%s wants=%s",
 				runID, nd.Reason, nd.PoolsEnabled, nd.PoolsAdmitted, nd.PledgesConsidered, pledgeSkipSummary(nd.Skips), wantsSummary(wants))
 			return nil, nil
@@ -5912,7 +5912,7 @@ func (p *Publisher) acquireFromAttachedPools(ctx context.Context, runID, orgID, 
 				// An entry only unavailable now (busy, its day or the
 				// attachment's draw cap spent, cooling) is noted: a refusal
 				// it alone leaves unfunded is a wait (busy_entries.go).
-				p.noteBusySkips(ctx, res.busy, "the attached pool "+att.PoolID+"'s", nd, botID)
+				p.noteBusySkips(ctx, res.busy, "the attached pool "+att.PoolID+"'s", false, nd, botID)
 				p.logger.Info("cloudpublisher: run %s — attached pool %s abstained on slot %s: %v", runID, att.PoolID, slot, err)
 			} else {
 				p.logger.Warn("cloudpublisher: run %s — attached pool acquire failed on slot %s: %v", runID, slot, err)

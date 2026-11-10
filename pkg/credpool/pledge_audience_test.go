@@ -1,6 +1,8 @@
 package credpool
 
 import (
+	"context"
+	"errors"
 	"testing"
 	"time"
 )
@@ -66,5 +68,53 @@ func TestAPledgeWithAnAudienceRefusesALaunchNamingNoBot(t *testing.T) {
 	// answering it: "is my contribution live at all?"
 	if ok, status := p.Available(now, ""); !ok {
 		t.Fatalf("the donor status view reports a live pledge as unavailable (status %q)", status)
+	}
+}
+
+// Available reports a cooldown and closed sharing hours before the bot
+// allow-list, so a skip's Status alone cannot tell an entry that will serve
+// the launch once its window opens from one that never will. The eligibility
+// skip carries the verdict no clock clears (Refuses), the acquisition's skips
+// and the preview's candidates alike: a borrower that reads a cooling entry as
+// a wait reads this first.
+func TestAnEligibilitySkipCarriesTheRefusalTheClockMasks(t *testing.T) {
+	h := newHarness(t)
+	cooling := h.now.Add(time.Hour)
+	closed := &Window{StartHour: (h.now.Hour() + 12) % 24, EndHour: (h.now.Hour() + 13) % 24}
+	for _, row := range []struct {
+		name    string
+		shape   func(*Pledge)
+		botID   string
+		status  Status
+		refuses Status
+	}{
+		{"cooling, its allow-list naming the launch's bot", func(p *Pledge) { p.Bots, p.CooldownUntil = []string{"docs-refresh"}, &cooling }, "docs-refresh", StatusCooling, ""},
+		{"cooling, its allow-list naming another bot", func(p *Pledge) { p.Bots, p.CooldownUntil = []string{"another-bot"}, &cooling }, "docs-refresh", StatusCooling, StatusBotFiltered},
+		{"out of hours, its allow-list naming another bot", func(p *Pledge) { p.Bots, p.Window = []string{"another-bot"}, closed }, "docs-refresh", StatusOutOfHours, StatusBotFiltered},
+		{"cooling, a launch naming no bot against an allow-list", func(p *Pledge) { p.Bots, p.CooldownUntil = []string{"another-bot"}, &cooling }, "", StatusCooling, StatusBotFiltered},
+		{"paused", func(p *Pledge) { p.Enabled = false }, "docs-refresh", StatusPaused, StatusPaused},
+		{"unhealthy", func(p *Pledge) { p.Health = HealthTokenExpired }, "docs-refresh", StatusUnhealthy, StatusUnhealthy},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			h := newHarness(t)
+			h.donor(t, "alice", Limits{}, row.shape)
+			req := h.request("run-1")
+			req.BotID = row.botID
+			_, err := h.broker.Acquire(context.Background(), req)
+			var nd *NoDonorError
+			if !errors.As(err, &nd) || len(nd.Skips) != 1 {
+				t.Fatalf("Acquire = %v, want one skip", err)
+			}
+			if s := nd.Skips[0]; s.Status != row.status || s.Refuses != row.refuses {
+				t.Fatalf("skip = (%s, refuses %q), want (%s, refuses %q)", s.Status, s.Refuses, row.status, row.refuses)
+			}
+			view, err := h.broker.Preview(context.Background(), req)
+			if err != nil || len(view.Candidates) != 1 {
+				t.Fatalf("Preview = %+v, %v, want one candidate", view, err)
+			}
+			if c := view.Candidates[0]; c.Status != row.status || c.Refuses != row.refuses {
+				t.Fatalf("preview candidate = (%s, refuses %q), want (%s, refuses %q)", c.Status, c.Refuses, row.status, row.refuses)
+			}
+		})
 	}
 }

@@ -133,7 +133,11 @@ now (another run holds it, its day or the attachment's draw cap is spent, it coo
 refused in the capacity class a team key at its `max_concurrent_runs` answers
 (`UnfundedProvidersError.Busy`, `ErrCredentialAtCapacity`): the retry sweeper waits for it
 for free on the slot cadence until `max_wait`, an operator is answered 429; a refusal
-naming one provider nothing holds stays `ErrNoLLMCredential`. A stamp that records no gateway key
+naming one provider nothing holds stays `ErrNoLLMCredential`. Busy means the entry would
+serve this launch once free: one whose pledge serves another bot, whose credential is gone
+(deleted, expired, disconnected) or whose lent row's audiences exclude the launch is
+absent whatever it is busy with, and the legacy pool, which lends one credential per run,
+cannot make two providers a wait. A stamp that records no gateway key
 (`own_keys` naming none, or a run stamped before the producer) seals none on a replay: a
 var the launch read late and the resume reads decided, a key created since, a fork's
 `NewInputs` re-routing a node — the routes ride the runner's environment gateway as at

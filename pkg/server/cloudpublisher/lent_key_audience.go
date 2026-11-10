@@ -99,11 +99,22 @@ func (p *Publisher) acquireLent(ctx context.Context, req credpool.Request) (gran
 // own audience keeps out (bot_filtered, else repo_filtered) — the row's lists
 // stay out of the reason, as apiStage keeps a shared key's out — and when it
 // was the selection the preview selects nothing in its place: the live grant
-// is released, and the broker serves no second pledge for that want.
-func (p *Publisher) previewLent(ctx context.Context, req credpool.Request) (credpool.Preview, error) {
-	out, err := p.credPool.Preview(ctx, req)
+// is released, and the broker serves no second pledge for that want. served
+// names the wants the broker would serve before that judgement (an admitted
+// candidate whose credential holds): the walk reads skips only where the
+// broker serves nothing, and a grant the audience then releases was served.
+func (p *Publisher) previewLent(ctx context.Context, req credpool.Request) (out credpool.Preview, served map[credpool.Credential]bool, err error) {
+	out, err = p.credPool.Preview(ctx, req)
 	if err != nil {
-		return out, err
+		return out, nil, err
+	}
+	for _, c := range out.Candidates {
+		if c.Status == credpool.StatusActive {
+			if served == nil {
+				served = map[credpool.Credential]bool{}
+			}
+			served[credpool.Credential{Source: c.Source, Ref: c.Ref}] = true
+		}
 	}
 	audienceBotID := botregistry.NormalizeName(req.BotID)
 	for i := range out.Candidates {
@@ -131,5 +142,5 @@ func (p *Publisher) previewLent(ctx context.Context, req credpool.Request) (cred
 			c.Reason = "The lent key's audience could not be read."
 		}
 	}
-	return out, nil
+	return out, served, nil
 }

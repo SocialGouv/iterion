@@ -21,6 +21,9 @@ type PreviewCandidate struct {
 	RemainingUSD      *float64         `json:"remaining_usd,omitempty"`
 	LiveRuns          *int             `json:"live_runs,omitempty"`
 	MaxConcurrentRuns int              `json:"max_concurrent_runs,omitempty"`
+	// Refuses is the eligibility skip's PledgeSkip.Refuses: the verdict on
+	// the launch no clock clears, whatever Status shows.
+	Refuses Status `json:"-"`
 }
 
 // Preview is a point-in-time estimate, never a reservation or proof of unseal.
@@ -69,7 +72,7 @@ func (b *Broker) Preview(ctx context.Context, req Request) (Preview, error) {
 		for _, pc := range pools {
 			eligible, skips := eligiblePledges(pc.candidates, req, want, out.ObservedAt)
 			for _, s := range skips {
-				out.Candidates = append(out.Candidates, PreviewCandidate{PledgeID: s.PledgeID, Source: want.Source, Ref: want.Ref, Status: s.Status})
+				out.Candidates = append(out.Candidates, PreviewCandidate{PledgeID: s.PledgeID, Source: want.Source, Ref: want.Ref, Status: s.Status, Refuses: s.Refuses})
 			}
 			ranked, err := b.rank(ctx, eligible, out.ObservedAt, req.RankMode)
 			if err != nil {
@@ -180,6 +183,25 @@ func apiKeyCredentialGone(k secrets.ApiKey, p Pledge, now time.Time) string {
 	}
 	return ""
 }
+
+// CredentialGone says why the credential the pledge pledgeID lends could no
+// longer serve once its entry frees — deleted, expired, out of its pledged
+// scope, re-pointed at another provider, a subscription disconnected or past
+// renewal — and "" when it still could. It is the predicate the walk applies
+// when it opens the credential (openCredential), read without opening it: the
+// walk opens a credential only once the entry's ledger admits, so an entry
+// declined as busy was never judged by it.
+func (b *Broker) CredentialGone(ctx context.Context, pledgeID string) (string, error) {
+	if b == nil {
+		return "", fmt.Errorf("credpool: no broker")
+	}
+	p, err := b.pledges.Get(ctx, pledgeID)
+	if err != nil {
+		return "", err
+	}
+	return b.previewCredential(ctx, p, b.now())
+}
+
 func (b *Broker) previewCredential(ctx context.Context, p Pledge, now time.Time) (string, error) {
 	switch p.Source {
 	case SourceOAuth:

@@ -202,7 +202,11 @@ or the attachment's draw cap are spent, its window cools) is the same wait:
 the publisher's refusal of a run whose every unfunded provider only such an
 entry holds unwraps to `ErrCredentialAtCapacity` (a launch refused on one is
 answered 429 with the same code), where a provider nothing holds stays the
-422 `NO_LLM_CREDENTIAL` refusal.
+422 `NO_LLM_CREDENTIAL` refusal. An entry that would refuse the launch once
+free — its pledge serving another bot, its credential gone or expired, its
+lent row's audiences excluding the launch — holds nothing for it, and two
+providers only the legacy pool's busy entries hold are no wait: that pool
+lends one credential per run.
 
 The ledger never becomes a second truth. A holder is free when its run
 stops counting under the two rules below, and a refusal re-reads the row's

@@ -392,11 +392,12 @@ func (p *Publisher) unfundedPostureFor(wf *ir.Workflow, sovereign, teamGateway, 
 // boundary's strict set. busy names, per provider, the pool entries that
 // exist for the launch but could not serve it now (busy_entries.go): a
 // refusal whose every named provider only such an entry holds is a wait
-// (UnfundedProvidersError.Waits), whichever arm refused.
+// (UnfundedProvidersError.Waits), whichever arm refused — unless two or more
+// of them are held only by a pool lending one credential per run.
 func unfundedRefusalFor(tenant string, routes routeAttribution, funded map[string]bool, holdsNothing bool, posture unfundedPosture, heldOut map[string]string, busy busyProviders) *UnfundedProvidersError {
 	refusal := unfundedRefusalArm(tenant, routes, funded, holdsNothing, posture, heldOut)
 	if refusal != nil {
-		refusal.Busy = busy.busyFor(refusal.Providers)
+		refusal.Busy, refusal.OneGrant = busy.busyFor(refusal.Providers)
 	}
 	return refusal
 }
@@ -593,15 +594,22 @@ type UnfundedProvidersError struct {
 	// its slot, its day or the attachment's draw cap is spent, it cools.
 	// Empty for a provider nothing busy holds.
 	Busy map[string][]string
+	// OneGrant names the providers, two or more, that only busy entries of a
+	// pool lending one credential per run hold (the credential pool, whose
+	// broker grants the first want that serves): however many of its entries
+	// free, it funds one of them. Empty otherwise.
+	OneGrant []string
 }
 
 // Waits reports whether every provider the refusal names is held by a busy
 // pool entry: nothing is missing, the run waits for an entry to free. A
 // refusal naming one provider nothing holds does not wait — no wait cures it
-// — nor does an untrusted refusal that also names a route class no credential
-// lifts (a gateway, deferred, unattributed or wire-default site).
+// — nor one naming several that a pool lending one credential per run alone
+// holds (OneGrant): that wait ends in the refusal of all but one — nor an
+// untrusted refusal that also names a route class no credential lifts (a
+// gateway, deferred, unattributed or wire-default site).
 func (e *UnfundedProvidersError) Waits() bool {
-	if len(e.Providers) == 0 || len(e.Gateway)+len(e.Deferred)+len(e.Unattributed)+len(e.WireDefault) > 0 {
+	if len(e.Providers) == 0 || len(e.OneGrant) > 1 || len(e.Gateway)+len(e.Deferred)+len(e.Unattributed)+len(e.WireDefault) > 0 {
 		return false
 	}
 	for _, prov := range e.Providers {
@@ -629,7 +637,7 @@ func (e *UnfundedProvidersError) Error() string {
 			held = " (the run is held to its team's gateway, content boundary team_gateway, ADR-131 §4: no environment fallback serves it meanwhile)"
 		}
 		return fmt.Sprintf("cloudpublisher: %v: every credential this run lacks for tenant %s exists but is busy now%s — %s; the run waits for it: the same request succeeds once an entry frees (another run ends, its day or its window resets)",
-			ErrCredentialAtCapacity, e.Tenant, held, strings.Join(e.namedProviders(), "; "))
+			ErrCredentialAtCapacity, e.Tenant, held, e.namedList())
 	}
 	if e.Untrusted {
 		pool := "its fork lane's runner pool"
@@ -643,7 +651,7 @@ func (e *UnfundedProvidersError) Error() string {
 		}
 		remedies := make([]string, 0, 3)
 		if len(e.Providers) > 0 {
-			remedies = append(remedies, "provision a team API key for: "+strings.Join(e.namedProviders(), "; "))
+			remedies = append(remedies, "provision a team API key for: "+e.namedList())
 		}
 		if len(e.Gateway) > 0 {
 			remedies = append(remedies, fmt.Sprintf("the routes of %s ride the openai_compatible gateway, which funds no fork run on the runner's environment — the runner's gateway is the refused environment, and no gateway key of the team's own is sealed for them: provision the team's gateway key for this bot and repository, or route them to a vendor provider the team holds an API key for",
@@ -670,17 +678,16 @@ func (e *UnfundedProvidersError) Error() string {
 		return fmt.Sprintf("cloudpublisher: %v: tenant %s runs with llm_fallback=none and holds no credential of its own, and this workflow's model routes cannot be attributed to a provider — provision a team credential, or pin a model route the policy can check",
 			runview.ErrNoLLMCredential, e.Tenant)
 	}
-	named := e.namedProviders()
 	if e.TeamGateway && !e.Sovereign {
 		return fmt.Sprintf("cloudpublisher: %v: this run is held to its team's gateway (content boundary team_gateway, ADR-131 §4) — every environment fallback of it is refused, so every provider a node's own decided route names must be funded by a credential the run carries; provision one for tenant %s: %s",
-			runview.ErrNoLLMCredential, e.Tenant, strings.Join(named, "; "))
+			runview.ErrNoLLMCredential, e.Tenant, e.namedList())
 	}
 	if e.Sovereign {
 		return fmt.Sprintf("cloudpublisher: %v: tenant %s runs with llm_fallback=none — no shared tier (org, pool, platform) is consulted, so every provider a route names must hold a credential of the team's own; provision: %s",
-			runview.ErrNoLLMCredential, e.Tenant, strings.Join(named, "; "))
+			runview.ErrNoLLMCredential, e.Tenant, e.namedList())
 	}
 	return fmt.Sprintf("cloudpublisher: %v: every provider the LLM routes of this run name is unfunded — no tier (byok, oauth-forfait, pool, platform) sealed a credential for %s; provision one for tenant %s, or unset ITERION_CLOUD_REQUIRE_LLM_CREDENTIAL to let the runner fall back to its env",
-		runview.ErrNoLLMCredential, strings.Join(named, "; "), e.Tenant)
+		runview.ErrNoLLMCredential, e.namedList(), e.Tenant)
 }
 
 // overrideReach is where the untrusted remedy says a route is pinned. An
@@ -711,6 +718,17 @@ func (e *UnfundedProvidersError) namedProviders() []string {
 		named = append(named, entry)
 	}
 	return named
+}
+
+// namedList is namedProviders joined for a sentence, with the reason a
+// one-credential pool's busy entries cannot fund OneGrant's providers
+// together.
+func (e *UnfundedProvidersError) namedList() string {
+	list := strings.Join(e.namedProviders(), "; ")
+	if len(e.OneGrant) > 1 {
+		list += fmt.Sprintf(" (the credential pool lends one credential per run: its busy entries for %s cannot fund them together, whichever frees)", strings.Join(e.OneGrant, " and "))
+	}
+	return list
 }
 
 // newUnfundedProvidersError builds the refusal, keeping only the sites and

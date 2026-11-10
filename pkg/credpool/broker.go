@@ -62,6 +62,14 @@ type PledgeSkip struct {
 	// ReopenAt is the reset instant a NEAR_LIMIT skip arms the durable
 	// usage-window retry on (the skipTracker's reopen). Zero elsewhere.
 	ReopenAt time.Time
+	// Refuses is the pledge's verdict on the launch that no clock clears
+	// (Pledge.launchRefusal: paused, unhealthy, its bot allow-list), judged
+	// whatever Status says: a cooling or out_of_hours skip whose Refuses is
+	// set would refuse this launch once its window opens. The eligibility
+	// filter's refusal records it; the other skips are of a pledge that
+	// passed AvailableForLaunch, or no_fallback_consent (an absence itself),
+	// so "" there.
+	Refuses Status
 }
 
 // NoDonorError is a typed ErrNoDonor: it carries the reason for the
@@ -617,7 +625,7 @@ func eligiblePledges(candidates []Pledge, req Request, want Credential, now time
 			}
 			eligible = append(eligible, p)
 		} else {
-			skips = append(skips, PledgeSkip{PledgeID: p.ID, Status: status, Credential: want})
+			skips = append(skips, PledgeSkip{PledgeID: p.ID, Status: status, Refuses: p.launchRefusal(req.BotID), Credential: want})
 		}
 	}
 	return eligible, skips
