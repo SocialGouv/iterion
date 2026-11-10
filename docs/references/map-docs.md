@@ -423,6 +423,7 @@ One row per page under `docs/`, ADRs included. An ADR's **status** is the column
 | [`docs/references/dsl-grammar.md`](dsl-grammar.md) | Iterion `.bot` grammar reference | This is the readable inventory of the syntax accepted by the current parser. | — |
 | [`docs/references/dsl-properties.md`](dsl-properties.md) | Iterion `.bot` property reference | The same `iterion dsl spec --write` command generates Monaco's lexical | — |
 | [`docs/references/external-methodologies.md`](external-methodologies.md) | External Methodologies Cross-Check — IACDM & AI-DLC 2026 | Two independent 2026 methodology papers mapped onto iterion's mechanisms: | — |
+| [`docs/references/live-agents-openmausbot.md`](live-agents-openmausbot.md) | Live agents — OpenMausBot, mapped onto iterion | What an always-on agent product does that a parked iterion run does not. | — |
 | [`docs/references/map-bots.md`](map-bots.md) | Bot and skill map | Run `task map:gen` and commit; `task map:check` fails on drift. | — |
 | [`docs/references/map-docs.md`](map-docs.md) | Docs and ADR map | Run `task map:gen` and commit; `task map:check` fails on drift. | — |
 | [`docs/references/map-packages.md`](map-packages.md) | Package map | Run `task map:gen` and commit; `task map:check` fails on drift. | — |

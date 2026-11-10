@@ -194,6 +194,9 @@ store.
 
 `overlap: keepalive` runs a bot **continuously**: every tick relaunches
 it, but with **at-most-one-live** semantics *and* a **staleness cutoff**.
+(A bot that stays addressable and is woken by an event, rather than relaunched
+on a clock, is a different question:
+[the live-agents study](references/live-agents-openmausbot.md).)
 It is how you keep an agent (a watcher, a poller, your own long-lived
 bot) alive as a stream of fresh, individually-budgeted runs rather than
 one immortal run that fights `max_duration`, per-node deadlines, and the
