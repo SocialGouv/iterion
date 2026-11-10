@@ -72,6 +72,20 @@ type PledgeSkip struct {
 	Refuses Status
 }
 
+// LaunchVerdict is a declining entry's state as every reader of a skip must
+// judge it: the verdict no clock clears (refuses, PledgeSkip.Refuses) wins over
+// the status the eligibility filter reported first (a cooldown, closed sharing
+// hours). An entry whose pledge serves another bot is bot_filtered for this
+// launch, cooling or not. The busy reading (an entry the launch waits on),
+// the gateway probe (an attached entry there for the launch) and reset_hold's
+// switch reading (an entry the strategy moved off) all read it.
+func LaunchVerdict(status, refuses Status) Status {
+	if refuses != "" {
+		return refuses
+	}
+	return status
+}
+
 // NoDonorError is a typed ErrNoDonor: it carries the reason for the
 // abstention plus the exact counts the walk saw and the per-pledge
 // skips, so an operator investigating a run that landed on the platform
@@ -533,11 +547,13 @@ func (b *Broker) acquireKind(ctx context.Context, pool Pool, candidates []Pledge
 	// reset_hold exists to stop).
 	// Only the ELIGIBILITY filter's skips (taken before the walk): a skip
 	// the walk itself appends below — a store blip read as unhealthy — is
-	// not an entry that declined.
+	// not an entry that declined. Each is judged by its LaunchVerdict: an
+	// entry whose pledge serves another bot was never in play, whatever
+	// clock it is also on.
 	eligibilitySkips := skips[:len(skips):len(skips)]
 	bestSkipped := func(prio int) bool {
 		for _, s := range eligibilitySkips {
-			if !switchStatus(s.Status) {
+			if !switchStatus(LaunchVerdict(s.Status, s.Refuses)) {
 				continue
 			}
 			for _, c := range candidates {

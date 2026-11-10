@@ -374,6 +374,14 @@ func TestGatewayKey_AnAttributedRouteNoTierSealsIsNamedAndLeftToTheEnvironment(t
 		{"a paused entry lends nothing", func(p *credpool.Pledge) { p.Enabled = false }},
 		{"an unhealthy entry lends nothing", func(p *credpool.Pledge) { p.Health = credpool.HealthAuthFailed }},
 		{"an entry its pledge's bot filter refuses lends nothing", func(p *credpool.Pledge) { p.Bots = []string{"review-pr"} }},
+		// The eligibility filter reports a cooldown or closed sharing hours
+		// before the bot filter: the probe reads the verdict no clock clears.
+		{"an entry its pledge's bot filter refuses lends nothing while it cools", func(p *credpool.Pledge) {
+			p.Bots, p.CooldownUntil = []string{"review-pr"}, coolingFor(time.Hour)
+		}},
+		{"an entry its pledge's bot filter refuses lends nothing out of its sharing hours", func(p *credpool.Pledge) {
+			p.Bots, p.Window = []string{"review-pr"}, closedWindow()
+		}},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			f := newAttachedFixture(t)

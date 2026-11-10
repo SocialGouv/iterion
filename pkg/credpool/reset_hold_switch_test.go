@@ -82,6 +82,41 @@ func TestResetHoldSwitch_HB_aNeverInPlayEntryMakesTheFirstChoiceHeld(t *testing.
 	}
 }
 
+// H-G: a clock does not put a never-in-play entry in play. The eligibility
+// filter reports a cooldown before the pledge's bot allow-list, so a better
+// entry that serves another bot skips as cooling; the switch reading judges it
+// by the verdict no clock clears (LaunchVerdict), as the busy reading does —
+// bot-filtered, never in play, so the next entry is this bot's first choice and
+// is not held. An entry cooling for this bot, or failing auth, was in play: the
+// next one is held.
+func TestResetHoldSwitch_HG_aClockDoesNotPutANeverInPlayEntryInPlay(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(h *harness, p *Pledge)
+		held   bool
+	}{
+		{"bot-filtered and cooling", func(h *harness, p *Pledge) {
+			until := h.now.Add(time.Hour)
+			p.Bots, p.CooldownUntil = []string{"some-other-bot"}, &until
+		}, false},
+		{"cooling, its allow-list naming this bot (control)", func(h *harness, p *Pledge) {
+			until := h.now.Add(time.Hour)
+			p.Bots, p.CooldownUntil = []string{"docs-refresh"}, &until
+		}, true},
+		{"failing auth (control)", func(_ *harness, p *Pledge) { p.Health = HealthAuthFailed }, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarnessWithAttachments(t)
+			h.donor(t, "x", Limits{}, func(p *Pledge) { p.Priority = 0; tc.mutate(h, p) })
+			h.donor(t, "y", Limits{}, func(p *Pledge) { p.Priority = 1 })
+			g := rvaResume(t, h, "r", StrategyPriority, nil)
+			if g.DonorID != "y" || g.Held != tc.held {
+				t.Errorf("%s: served by %s held=%v, want y held=%v", tc.name, g.DonorID, g.Held, tc.held)
+			}
+		})
+	}
+}
+
 // H-B': least_consumed (all priorities 0): one paused entry anywhere in the
 // kind holds EVERY run's first acquisition, and the hold then overrides the
 // least-consumed rotation on every resume.

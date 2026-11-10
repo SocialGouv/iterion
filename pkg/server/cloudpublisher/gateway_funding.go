@@ -425,7 +425,7 @@ func (p *Publisher) attachedGatewayHold(ctx context.Context, orgID, tenantID, ow
 	repo := secrets.LaunchRepoFromContext(ctx)
 	var repoOnly *heldGatewayKey
 	for _, c := range pv.Candidates {
-		if c.Source != want.Source || c.Ref != want.Ref || c.PledgeID == "" || !entryThereForLaunch(c.Status) {
+		if c.Source != want.Source || c.Ref != want.Ref || c.PledgeID == "" || !entryThereForLaunch(credpool.LaunchVerdict(c.Status, c.Refuses)) {
 			continue
 		}
 		// The lent row: one deleted since the pledge was written lends
@@ -461,7 +461,9 @@ func (p *Publisher) attachedGatewayHold(ctx context.Context, orgID, tenantID, ow
 // entry in the pool for this launch, availability aside: a paused pledge, an
 // unhealthy one (its credential failing or gone) and one whose pledge's bot
 // filter refuses the launch are not; busy, exhausted, cooling, out of hours,
-// near limit and an unread capacity are only not available NOW.
+// near limit and an unread capacity are only not available NOW. The caller
+// passes the candidate's credpool.LaunchVerdict: a cooldown or closed sharing
+// hours reported first does not hide the bot filter.
 func entryThereForLaunch(st credpool.Status) bool {
 	switch st {
 	case credpool.StatusPaused, credpool.StatusUnhealthy, credpool.StatusBotFiltered, credpool.StatusRepoFiltered, credpool.StatusNoFallbackConsent:

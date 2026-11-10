@@ -76,18 +76,15 @@ func entryBusy(st credpool.Status) bool {
 
 // waitsOn is the busy reading of one entry a pool passed over, the walk's and
 // the preview's: a wait when the entry would serve this launch once free. Its
-// state is judged by the verdict no clock clears first (refuses: the pledge
-// paused, unhealthy, its bot filter refusing the launch) and must then be a
-// busy one (entryBusy); its credential must still be one the walk would open
-// (credpool.Broker.CredentialGone, openCredential's own predicate); a lent
-// API key's row must serve the launch's audiences — the grant's check
-// (acquireLent) would refuse any other. Whatever cannot be read is not proven
-// to serve the launch and is no wait.
+// state is judged by the verdict no clock clears first (credpool.LaunchVerdict
+// — refuses: the pledge paused, unhealthy, its bot filter refusing the launch)
+// and must then be a busy one (entryBusy); its credential must still be one
+// the walk would open (credpool.Broker.CredentialGone, openCredential's own
+// predicate); a lent API key's row must serve the launch's audiences — the
+// grant's check (acquireLent) would refuse any other. Whatever cannot be read
+// is not proven to serve the launch and is no wait.
 func (p *Publisher) waitsOn(ctx context.Context, pledgeID string, source credpool.CredentialSource, status, refuses credpool.Status, botID string) bool {
-	if refuses != "" {
-		status = refuses
-	}
-	if !entryBusy(status) {
+	if !entryBusy(credpool.LaunchVerdict(status, refuses)) {
 		return false
 	}
 	if gone, err := p.credPool.CredentialGone(ctx, pledgeID); err != nil || gone != "" {
