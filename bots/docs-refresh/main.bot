@@ -924,10 +924,16 @@ agent campaign:
   ## tail; a 3-way live benchmark (2026-07-23) showed the only run that
   ## reached the full corpus — bot READMEs + cloud + studio — was the one
   ## that DECOMPOSED. Coverage via the agent's own judgment, not engine
-  ## fan-out. The `agent` subagent tool carries the fan-out on the default
-  ## claude_code route only: on `--var llm_backend=claw` every call is
-  ## typed-refused (C159, #1940) and the campaign decomposes within itself,
-  ## which the ultracode grant tells it to do.
+  ## fan-out. The `agent` subagent tool is served on BOTH routes: #1940 wired
+  ## a subagent runner at each of claw's hosts, so clawRefusedBuiltins is
+  ## empty and C159 fires for nothing — the old note here was wrong about the
+  ## WHY. It was right about the route, for another reason: this node declares
+  ## no `tools:`, so on claw its surface is only what the engine appends —
+  ## ask_user, the four board tools, agent, todo_write — and its subagents
+  ## select from that same set. With auto-memory off, the default, that means
+  ## no file and no shell tool: no survey, no fix, no commit. `--auto-memory
+  ## on` adds read_file/write_file/glob, which buys the survey and the fix but
+  ## never the commit. `claude_code` stays the route that can do the whole job.
   reasoning_effort: "${ITERION_DOC_ALIGN_EFFORT_CLAUDE:-ultracode}"
   interaction: human
 

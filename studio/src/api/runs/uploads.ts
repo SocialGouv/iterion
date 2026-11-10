@@ -1,6 +1,8 @@
 // Extracted from api/runs.ts to keep that file focused.
-// Server info + attachment staging: getServerInfo for the BackendStatusPill /
-// LaunchView, uploadAttachment for the staged-upload XHR (with progress),
+// Server info + attachment staging: getServerInfo for the server-info store
+// (cloud/local mode, auth), LaunchView and the chat dock's action requests —
+// the Run button's credential signal comes from the separate backend-detect
+// endpoint, not from here — uploadAttachment for the staged-upload XHR (with progress),
 // and read-back of a promoted run attachment (gate payload previews).
 
 import type { ServerInfo, StagedUpload } from "../types";

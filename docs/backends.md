@@ -2612,12 +2612,25 @@ forwarding is claw-only.
 
 | Provider | Detection |
 |---|---|
-| `anthropic` | `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN` |
+| `anthropic` | `ANTHROPIC_API_KEY`, while `ANTHROPIC_BASE_URL` does not name z.ai (a bearer does **not** count — see below) |
+| `zai` | `ZAI_API_KEY`, **or** `ANTHROPIC_AUTH_TOKEN` against an `ANTHROPIC_BASE_URL` that names z.ai |
+| `moonshot` | `MOONSHOT_API_KEY` |
 | `openai` | `OPENAI_API_KEY`, **or** Codex CLI signed in via "Sign in with ChatGPT" (see `OpenAI via ChatGPT forfait` below) |
 | `xai` | `XAI_API_KEY` (xAI Grok — OpenAI-compatible chat completions at `api.x.ai`) |
 | `foundry` (Azure) | `AZURE_OPENAI_API_KEY` + `AZURE_OPENAI_ENDPOINT` |
 | `bedrock` | `AWS_REGION` or `AWS_DEFAULT_REGION` (full chain handled by AWS SDK) |
 | `vertex` | `GOOGLE_CLOUD_PROJECT` |
+
+**A bearer does not make the `anthropic` row available.**
+`ANTHROPIC_AUTH_TOKEN` counts for the `zai` row, and only against a z.ai base
+URL: `anthropicAvailable` is `ANTHROPIC_API_KEY != "" && !hasZAIBaseURL`
+([detect.go](../pkg/backend/detect/detect.go)). So a host whose only Anthropic
+credential is a subscription reports `anthropic` **unavailable** — and, when no
+OTHER row is available either (no ChatGPT sign-in, no AWS region, no GCP
+project, no z.ai façade), `claw` with it, since claw's availability is the OR
+of its provider rows. Claw's own registry walk would nonetheless spend that
+login, unless `ITERION_FORBID_SUBSCRIPTION_OAUTH=1` refuses it. A node PINNED
+to `claw` still runs on it; what the probe withholds is auto-selection.
 
 When `model:` on the agent is also empty, the runtime substitutes a
 sensible default for the first available provider (the detector's

@@ -21,8 +21,9 @@ import (
 //     A field that resolves to nothing, and the explicit `auto`, fall through
 //     to step 2 — one rule (ir.BackendFallsThrough), shared with the pre-run
 //     readings that must answer for the route this one takes.
-//  2. workflow-level default (e.defaultBackend, from `default_backend:` or
-//     IR Preferences.BackendOrder[0]), with the same fall-through rule
+//  2. workflow-level default (e.defaultBackend — the workflow's
+//     `default_backend:`, or the run-level RunSpec.Backend a studio/CLI launch
+//     sets for THIS run only, model.WithDefaultBackend), same fall-through rule
 //  3. ITERION_DEFAULT_BACKEND env var (legacy explicit override)
 //  4. detect.Resolve over ITERION_BACKEND_PREFERENCE (auto-selection based
 //     on credentials present on the host)

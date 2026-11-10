@@ -32,8 +32,10 @@ When a node declares `reasoning_effort: ultracode`, iterion:
    section is backend-neutral: how a subagent's report comes back is the
    backend's to state.
 3. **Makes the subagent tool available.** On the `claw` backend, the `agent`
-   subagent tool is added to the node's allowlist when the node restricts its
-   tools (an unrestricted set already exposes the claw builtins) — and claw
+   subagent tool is added to the node's allowlist when the node already holds
+   one — there is no "unrestricted set" on claw, where the list IS the surface,
+   and appending to an empty one would make `agent` the node's whole
+   surface — and claw
    **serves it**: a child conversation needs a host-wired subagent runner,
    and iterion wires one at both hosts (in process and in the sandbox
    container), so the dispatch returns the child's real answer

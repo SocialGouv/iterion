@@ -30,7 +30,7 @@ primary's schema habits) gets ONE re-ask with the validation error, in the
 conversation (claw) or session (claude_code/codex/pi) it came from, before
 the node fails; `delegate_retry.reask` names the mode, and the re-ask's own
 `delegate_*` events carry `attempt: 2`
-([the schema re-ask](../../backends.md#a-schema-invalid-answer-gets-one-more-turn-the-schema-re-ask)).
+([the schema re-ask](../../backends.md#a-schema-invalid-answer-gets-bounded-correction-turns-the-schema-re-ask)).
 Two route properties extend the chain (ADR-091):
 `action: skip` is a TERMINAL degrade — the node completes with a
 zero-value output stamped `_skipped` instead of failing the run (the
@@ -43,7 +43,7 @@ guards both. See
 [ADR-091](../../adr/091-fallback-skip-route-and-plan-peer-review.md) +
 [docs/backends.md](../../backends.md).
 
-**Auto-detection.** When neither the node (`backend:`) nor the workflow (`default_backend:`) names a backend, and `ITERION_DEFAULT_BACKEND` is unset, the resolver in [pkg/backend/model/executor.go:resolveBackendName](../../../pkg/backend/model/executor.go) probes the host for credentials (Claude Code OAuth, ANTHROPIC_API_KEY, OPENAI_API_KEY, AWS, GCP) and picks the first match in `ITERION_BACKEND_PREFERENCE` (default `claude_code,claw`; other CLI backends, including codex, are explicit opt-ins). When `model:` is also empty and the resolved backend is `claw`, the runtime substitutes a sensible model spec for the first available provider. The studio surfaces the live detection via the toolbar BackendStatusPill and disables Run when no credential is found. See [docs/backends.md](../../backends.md).
+**Auto-detection.** When neither the node (`backend:`) nor the workflow (`default_backend:`) names a backend, and `ITERION_DEFAULT_BACKEND` is unset, the resolver in [pkg/backend/model/executor_resolve.go:resolveBackendName](../../../pkg/backend/model/executor_resolve.go) probes the host for credentials (Claude Code OAuth, ANTHROPIC_API_KEY, OPENAI_API_KEY, AWS, GCP) and picks the first match in `ITERION_BACKEND_PREFERENCE` (default `claude_code,claw`; other CLI backends, including codex, are explicit opt-ins). When `model:` is also empty and the resolved backend is `claw`, the runtime substitutes a sensible model spec for the first available provider. The studio surfaces the live detection on the Run button and disables Run when no credential is found. See [docs/backends.md](../../backends.md).
 
 **System-prompt composition (adaptivity parity).** A node's `system:`
 prompt is the *task*, never the whole operating posture. How it composes

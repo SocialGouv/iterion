@@ -2066,29 +2066,39 @@ func (e *ClawExecutor) assembleEffectiveTools(f backendFields, backendName strin
 	// Ultracode grants standing consent to orchestrate subagents. On claw the
 	// orchestration surface is the `agent` subagent tool (claw's own
 	// `workflow` tool is not granted — see withClawOrchestrationTools); ensure
-	// it is in the allowlist when the node restricts its tool set (mirrors the
-	// board-tools append above). An unrestricted tool set already exposes the
-	// claw builtins, and the claude_code backend orchestrates via its native
-	// mechanism, so neither needs the explicit append. A sandboxed node keeps
-	// the grant: the runner registers `agent` in the container.
+	// it is in the allowlist when the node holds a tool set (mirrors the
+	// board-tools append above). The guard reads the RUNNING UNION, not the
+	// author's declaration: appending to an EMPTY union would make `agent` the
+	// node's whole surface on claw, where the list IS the surface. A node that
+	// declared `interaction:` already has a union — the ask_user append above
+	// is deliberately unguarded on claw — so there the grant does fire, and a
+	// node that declared neither gets nothing. `tools: []` reads here exactly
+	// like no line at all — the union is what this guard sees, and that is the
+	// one place where the author's declaration and the running union come
+	// apart (toolcatalog.ToolsDeclared is what keeps them distinct elsewhere).
+	// claude_code orchestrates via its native mechanism and needs no append.
+	// A sandboxed node keeps the grant: the runner registers `agent` in the
+	// container.
 	if ultracode && backendName == delegate.BackendClaw && len(effectiveTools) > 0 {
 		effectiveTools = withClawOrchestrationTools(effectiveTools)
 	}
 	// Keep the agent's task list available so the per-run Session board
-	// (Tasks tab) is populated regardless of a node's `tools:` list. Only
+	// (Tasks tab) is populated whatever a node's `tools:` list names. Only
 	// the claw backend needs the append: claude_code always has its native
-	// TodoWrite under bypassPermissions, and an unrestricted claw set
-	// already exposes `todo_write` via RegisterClawAll. The posture nudge
+	// TodoWrite under bypassPermissions. The same running-union guard applies —
+	// `todo_write` must not be what gives a surface-less claw node its whole
+	// surface — so a node whose union is empty gets none, while one that
+	// declared `interaction:` or a `tools:` list gets it. The posture nudge
 	// (agenticOperatingPosture) prompts claw to actually maintain it.
 	if backendName == delegate.BackendClaw && len(effectiveTools) > 0 {
 		effectiveTools = ensureToolPresent(effectiveTools, "todo_write")
 	}
 	// Auto-memory is maintained with ORDINARY FILE TOOLS — that is the whole
 	// mechanism, on both backends. claude_code always has its native toolset
-	// under bypassPermissions, and an unrestricted claw set already exposes
-	// these; but a claw node that restricts `tools:` would be told to keep a
-	// MEMORY.md it has no way to read or write. Grant exactly the three the
-	// instructions call for.
+	// under bypassPermissions; on claw there is no "unrestricted set" to fall
+	// back on — the list IS the surface — so a claw node would be told to keep
+	// a MEMORY.md it has no way to read or write whatever it declared. Grant
+	// exactly the three the instructions call for.
 	//
 	// The grant itself is declared beside the switch (automemory.ClawToolGrant),
 	// so the reader that asks whether auto-memory gives a node a durable write

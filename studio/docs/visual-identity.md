@@ -118,7 +118,7 @@ informational `--color-info` (cyan-500 in dark, cyan-700 in light).
 | Token | Dark | Light | Use for |
 |---|---|---|---|
 | `info` | `cyan-500` (`#06b6d4`) | `cyan-700` (`#0e7490`) | Informational toasts, neutral status (the text colour; `info-solid` is the background under a white label) |
-| `live` | `cyan-400` (`#22d3ee`) | `cyan-600` (`#0891b2`) | Pulse on active runs, BackendStatusPill detecting, RunHeader active LiveDot |
+| `live` | `cyan-400` (`#22d3ee`) | `cyan-600` (`#0891b2`) | Pulse on active runs, the backend detection probe, RunHeader active LiveDot |
 
 Why same family: `live` reads as a "fresher, more-active" cyan against
 `info`'s calmer tone. The hue family stays consistent so the eye does
