@@ -1044,7 +1044,12 @@ to that same policy:
 
 - **`overrides`** — per-node routing cells. One entry is
   `{selector, backend, model, provider, effort}`, the selector an exact node
-  id, an id glob, a kind keyword (`agent`, `judge`, `router`) or `*`. Values
+  id, an id glob, a kind keyword (`agent`, `judge`, `router`) or `*` — or,
+  since ADR-132 D21, a node's `fallbacks:` route (`<node>#<route>`) or a
+  supervisor (`supervisor:<name>`), each optionally prefixed by the bot it is
+  for (`review-pr/…`; required on the route and supervisor forms) — the
+  grammar and its guards in
+  [backends.md](backends.md#the-openai-compatible-gateway-openai_compatible). Values
   are **literals**: `llmroute.Validate` refuses a cell containing `{{` or
   `${`, naming the field — a pin the launch pre-flights cannot read is a pin
   the tenancy gate cannot certify. `effort` re-targets the node's reasoning
@@ -1125,8 +1130,11 @@ Precedence, end to end:
 
 The launch wins that line at the two shapes ONE flat list can express: the
 SAME selector (the launch's rows sit after the policy's, and the later rule
-wins a tie), and a `*` row, which shadows every policy cell on that field
-outright. The residual the fold's own comment names: a policy cell on a MORE
+wins a tie), and a `*` row, which shadows every policy NODE cell on that
+field outright (a route or supervisor cell is reached by no node row, so no
+`*` row shadows it). The bot dimension resolves in the same fold, keyed on
+the launch's bot: a cell for another bot drops, one for this bot folds as
+its bare target after the unscoped cells. The residual the fold's own comment names: a policy cell on a MORE
 SPECIFIC selector than any launch row pinning the same field still wins that
 field on specificity inside the folded list — carrying the layer across the
 wire would take ranks on the wire twins — so a launcher states a field-wide

@@ -599,3 +599,40 @@ of §6 finds the shipped shape without the decision being rewritten after approv
 sequencing: §7 forbids de-dialling before the pools' pins exist as records, and that write happens
 on the operator's go, on targets outside this repository. The wave's arbitration box carries the
 question (ARB-13).
+
+## Implementation disposition — D21's route-scoped cells, and the supervisor selector (2026-11-10)
+
+D21 shipped in `feat/routing-cells-node-selectors`, with ADR-131 §8's `supervisor:<name>` beside it
+(the operator's activation of 2026-11-10 needs both: Revi's pacers and its GLM rescues). Grammar:
+`[<bot>/]<target>`, `<target>` one of the node selectors, `<node>#<route>`, `supervisor:<name>`
+(`llmroute.ParseSelector`). Where §2 left a choice open, the option it leans to was taken and is
+stated here:
+
+- **The bot dimension** is the bot's launch identity (`LaunchSpec.BotID`, the manifest name the
+  catalogue launches under — §7's `rgaa-audit/…`), matched exactly or as a `path.Match` glob. It is
+  REQUIRED on a route-scoped and on a supervisor cell (§2's guard; supervisor names collide across
+  bots the same way) and OPTIONAL on a node cell, whose stored records predate it. `*/…` is the
+  greppable spelling of "every bot". Among cells reaching one node, the node target's specificity
+  decides first and the bot-scoped cell wins the tie — "a more specific selector wins wherever it is
+  written".
+- **The route-field guard** is enforced as a refusal of `effort` on a route-scoped cell (a route runs
+  at its node's effort, so the pin would be a silent no-op), which implies §2's "at least one route
+  field". A supervisor cell pins `model` only.
+- **The zero-match warning** fires for a cell that names the run's bot BY NAME and whose target
+  matches nothing in it (a glob or an unscoped cell matching nothing is the fold's ordinary reach): at
+  the integration write screen (`runview.ScreenPolicyOverrides`, per enabled bot) and once per
+  (bot, selector) per process at launch. The match counts are NOT recorded in the provenance map: the
+  snapshot's `Sources` is a persisted `field → level` map, and a count there is a schema change this
+  slice does not make — named follow-up.
+- **One reading of a pinned route or supervisor**, `ModelOverrides.EffectiveFallback` /
+  `EffectiveSupervisorModel`, read by the walk, dispatch's chain, `CallSites` (admission and the
+  usage-cap pre-flight), `supervise.SpecsFromWorkflow` (every spawn and the pre-flight) with its
+  gateway screen, the composed-pair check and the price-feed narrowing. A launch `--fallback` stage
+  and a policy rung are not authored routes and are never reached.
+
+§7's sequencing is unchanged and not acted on: no dial is removed, no record is written. One fact it
+must now carry: the cells that move every Revi site to a team's gateway fix provider as well as model
+and backend — a cell that leaves the provider to a slot's dial leaves the route to the pod that
+expands it (ADR-129's 2026-11-10 amendment). And a `team_gateway` run still starts no supervisor
+(`runview.FundedSupervisorSpecs`, ADR-131's arbitration), pinned or not: the supervisor cells keep the
+gate's reading of the run gateway-only, they do not make a pacer run there.

@@ -720,3 +720,40 @@ than re-polarized, so there is no string knob left to fail open.
 ## Amendment 2026-10-21 — the acceptance run is team-funded
 
 §4's "an env-funded run stays provable through a var — which is #2005's shape exactly" and §7's "is classified env-funded, and seals nothing" predate the operator's decision of 2026-10-21 ([ADR-131](131-tenant-gateway-credential.md)). From #2005 PR-C' on (§5), the acceptance run holds the team's `openai_compatible` key, is classified team-funded, and seals exactly that key with its base URL; from PR-R on (§8), override cells gain the selector class `supervisor:<name>` so an integration can pin a supervisor's route beside its nodes. Until those land, the acceptance run is env-funded as §4 and §7 say, and selectors stay as `policy.go` lists them.
+
+## Amendment 2026-11-10 — cells reach routes and supervisors, and a claw cell may pin the gateway hint
+
+The operator's decision of 2026-11-10 (every product team routes its Revi onto its own gateway key
+through this record's cells, not through env dials nor bot edits) met three limits of the shipped
+shape. All three are closed in `feat/routing-cells-node-selectors`; what the code does:
+
+- **Selectors** (ADR-132 §2 D21, ADR-131 §8). §3's selector vocabulary gains `<node>#<route>` — an
+  authored `fallbacks:` route, by the site key the walk records it under — and `supervisor:<name>`,
+  each behind an optional bot dimension `<bot>/` that is REQUIRED on those two forms
+  (`llmroute.ParseSelector`, `validateOverride`). The bot dimension resolves at the one launch fold
+  (`runview.policyOverrideEntries`, keyed on `LaunchSpec.BotID`): a cell for another bot drops, one
+  for this bot folds as its bare target after the unscoped cells. The snapshot and its provenance keys
+  (`overrides.<selector>.<field>`) keep the selector as the level wrote it; the folded list — §6's
+  one list, unchanged on the wire — carries this bot's. A launch `*` row shadows node cells only.
+- **The walk reads what dispatch reads.** §4's walk read a node's own `provider:` chain through
+  `envDeferred` even when a provider override collapses it at dispatch (`chainReading.providerField`):
+  an `${…}` dial there deferred the route and an empty-default one (`${ITERION_VIBE_PROVIDER_GPT:-}`)
+  widened it, under a cell that had fixed backend, provider and model. The collapsed chain is now read
+  nowhere (`providerAccumulator.resolveNode`), so a cell fixing every field the walk reads decides the
+  route — `DecidedPrimary`, no `EnvDeferred`, the gateway attributed to the team's key. The card lanes'
+  shape check (`refuseUndecidedRoutingFields`) judges the field the override pins, not the node's.
+- **§3's provider rule beside claw.** "claw honours a single-value `anthropic` hint" and §7's "a `claw`
+  cell may carry no `provider:` of its own" are superseded: claw acts on `anthropic` (its
+  force-Anthropic-direct switch, now `model.clawForcesAnthropicDirect` alone) and on
+  `openai_compatible` (the gateway crossing check, `refuseGatewayCrossing`, which serves the gateway
+  model the hint names and refuses any other model loudly), so `HonoursProviderHintValue(claw, ·)`
+  admits both, in both twins. A cell holding `provider: openai_compatible` beside a model that is not
+  `openai_compatible/…` is refused at write. This is the cell that moves a slot whose own hint names a
+  vendor (Revi's `${ITERION_VIBE_PROVIDER_CLAUDE:-anthropic}`) onto the gateway: a provider cell
+  replaces the slot's chain. `claude_code` + a gateway model stays refused at dispatch (backend parity).
+
+§7's acceptance line therefore holds for the shipped Revi pair, still dialled: the activation block
+(`docs/backends.md`, the gateway section) decides every route on the gateway
+(`TestReviShippedBots_EveryCellDecidesItsRouteOnTheTeamGateway`), the team's key seals and the run is
+stamped `team_gateway` (`TestReviShippedBots_TheTeamGatewayKeySealsAndStampsTheBoundary`), and a run no
+cell reaches reads byte for byte what it read before (`TestReviShippedBots_DefaultLaunchReadsWhatOriginMainRead`).

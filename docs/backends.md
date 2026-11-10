@@ -1586,16 +1586,88 @@ fallbacks: the gateway never serves it. A cell pinning `backend: claw` as
 well moves a node whose only obstacle is its CLI backend, and claw keeps
 only the tools the node declares. A node with both a CLI backend and a
 vendor hint — review-pr's claude slots and revi-converse's agent run
-`claude_code` with `provider: anthropic` by default — cannot be moved by
-cells at all: a cell never clears a hint, and a provider pinned beside
-`backend: claw` may only be `anthropic` (any other is refused at write when
-one cell holds both, at launch when two do). A bot with such nodes
-therefore takes cells narrower than `*`, naming the nodes the gateway can
-serve. The fold decides per selector and field
+`claude_code` with `provider: anthropic` by default — moves only under a
+cell that also pins the provider: a model cell never clears a hint, but a
+`provider` cell REPLACES the node's whole `provider:` chain, dial included,
+and beside `backend: claw` it may be `anthropic` or `openai_compatible`.
+Claw acts on those two values and on no other — `anthropic` at its
+force-Anthropic-direct switch, `openai_compatible` at the gateway crossing
+check, which serves the gateway model the hint names and refuses any other
+model loudly — so any other value beside claw is refused (at write when one
+cell holds both, at launch when two do), and `openai_compatible` beside a
+model that is not `openai_compatible/…` is refused at write. A
+`claude_code` route is still refused a gateway model at dispatch, whatever
+the cells say. The cell that moves such a node onto the gateway is
+therefore `{"backend": "claw", "provider": "openai_compatible", "model":
+"openai_compatible/<provider>/<model>"}` on that node: it fixes every field
+the launch walk reads, so the walk DECIDES the route from the cell — the
+node's own `${…}` dials are read nowhere, the route counts among the run's
+decided primaries, and the credential walk attributes it to the team's key
+(sealed, `team_gateway` stamped). A cell that leaves the provider to a
+node's dial leaves the route to the environment that expands it. The fold
+decides per selector and field
 ([ADR-129](adr/129-per-integration-typed-routing-overrides.md)): a bot's own
 `routing:` cell or an integration's on the same selector wins over the
 team's, a more specific selector wins wherever it is written, and the
 launch's own model overrides win over every cell.
+
+A cell reaches more than a node's own route
+([ADR-132](adr/132-a-run-reads-no-environment.md) §2, D21):
+
+```
+selector := [ <bot> "/" ] <target>
+<target> := "*" | agent | judge | router | <node id> | <node glob>
+          | <node id> "#" <route>       one `fallbacks:` route of that node
+          | "supervisor:" <name>        one declared supervisor
+```
+
+- `<bot>` is the bot the cell is for — its manifest name (`review-pr`), or a
+  glob over it. A node cell may omit it (it then reaches the same-named node
+  of every bot the record reaches); a route-scoped or supervisor cell MUST
+  carry it, since node ids and supervisor names collide across bots —
+  `*/…` spells "every bot" on purpose. The launch resolves it: a cell for
+  another bot drops, a cell for this bot folds as its bare target, after
+  every unscoped cell, so on the same node target the bot-scoped cell wins.
+- `<node id>#<route>` names an authored `fallbacks:` route by the key the
+  walk records it under: its name (`reviewer_claude#glm`), or its index when
+  the author named none (`converge#0`). It pins `backend`, `model` and
+  `provider`, which replace the route's own; `effort` is refused (a route
+  runs at its node's). A launch's `--fallback` stage and a policy rung are
+  not authored routes and are never reached.
+- `supervisor:<name>` pins a supervisor's `model` — nothing else, a
+  supervisor declares nothing else. Note that a `team_gateway` run starts no
+  supervisor at all (`runview.FundedSupervisorSpecs`), pinned or not.
+- A launch's `*` row shadows node cells only, never a route or supervisor
+  cell. A cell naming its bot by name whose target matches nothing in that
+  bot is warned — at the integration's write screen and once per name at
+  launch.
+
+Moving every site of the shipped Revi pair onto a team's gateway is then,
+on the forge integration (or the team's policy):
+
+```json
+{"overrides": [
+  {"selector": "review-pr/converge",               "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
+  {"selector": "review-pr/converge_gpt",           "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
+  {"selector": "review-pr/reviewer_claude",        "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
+  {"selector": "review-pr/reviewer_claude_glance", "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
+  {"selector": "review-pr/reviewer_gpt",           "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
+  {"selector": "review-pr/reviewer_gpt_glance",    "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
+  {"selector": "review-pr/converge#glm",               "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
+  {"selector": "review-pr/reviewer_claude#glm",        "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
+  {"selector": "review-pr/reviewer_claude_glance#glm", "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
+  {"selector": "review-pr/supervisor:pacer",     "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
+  {"selector": "review-pr/supervisor:pacer_gpt", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
+  {"selector": "revi-converse/converse_agent",     "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
+  {"selector": "revi-converse/converse_agent#glm", "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"}
+]}
+```
+
+— witnessed on the shipped bots by
+`TestReviShippedBots_EveryCellDecidesItsRouteOnTheTeamGateway` (the walk
+names the gateway alone, every primary decided) and
+`TestReviShippedBots_TheTeamGatewayKeySealsAndStampsTheBoundary` (the key
+sealed, `team_gateway` stamped), `pkg/server/cloudpublisher`.
 
 Both writes REPLACE the record's whole routing policy (`null` clears it), so
 operator tooling reads, edits and writes back: GET the record; pin the model
