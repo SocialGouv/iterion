@@ -193,10 +193,23 @@ import (
 // the additive-field rule: a stale runner dropping it would leave the
 // per-contributor DOLLAR bound unenforced for the run's lifetime — a
 // perimeter failing open, in silence, on the pod. Server-first rollout;
-// MinSchemaVersion stays 27: a v27 or v28 message carries no subject to drop
-// (nothing set RunTrustFork before v29), and a v29 message on a stale
-// runner is rejected at the schema check and parks replayably.
+// MinSchemaVersion stays 27, because a v27 or v28 message can only carry a
+// fork run's trust in one case, and that case parks: no v28 server LAUNCHES
+// untrusted work, but a v28 replica still serving mid-rollout can REPUBLISH
+// a fork run a v29 replica created (its resume, a launch naming it as a
+// parent), replaying the trust with no subject. Validate parks any untrusted
+// message older than ForkAuthorSubjectSchemaVersion as a version mismatch,
+// so an upgraded runner never runs it unmetered; a v28 runner, which knows
+// neither the field nor the rule, still would — so the fork lane is enabled
+// only once every server and runner replica runs v29
+// (docs/cloud-queue-schema-rollout.md). A v29 message on a stale runner is
+// rejected at the schema check and parks replayably.
 const SchemaVersion = 29
+
+// ForkAuthorSubjectSchemaVersion is the first wire version that carries
+// RunMessage.ForkAuthorSubject: an untrusted message older than it cannot
+// name the author whose bound it spends, and Validate parks it.
+const ForkAuthorSubjectSchemaVersion = 29
 
 // MinSchemaVersion is the oldest wire version a consumer still accepts.
 // Pre-v27 messages cannot prove an absolute donor ceiling. Resume republishes
@@ -684,6 +697,15 @@ func (m *RunMessage) Validate() error {
 	}
 	if m.RunID == "" {
 		return fmt.Errorf("queue: RunID required")
+	}
+	// A message older than the fork author subject cannot carry it, so an
+	// UNTRUSTED one would run with the author's per-contributor dollar bound
+	// unenforced: a server replica still on v28 mid-rollout republishing the
+	// resume of a fork run an upgraded replica created. Parked as a version
+	// mismatch — transient, never Termed — so a resume from an upgraded
+	// server, whose gate meters the author, recovers it.
+	if m.V < ForkAuthorSubjectSchemaVersion && !m.Trust.Trusted() {
+		return fmt.Errorf("%w: a v%d message carries trust %q but predates the fork author subject (v%d) — parked for a resume from an upgraded server rather than run with the author's bound unenforced", ErrSchemaVersion, m.V, string(m.Trust), ForkAuthorSubjectSchemaVersion)
 	}
 	// The pool name is grammar-checked, not tenant-checked, and only when
 	// set: an empty pool is the shared default (pre-v22 messages included),

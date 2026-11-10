@@ -32,9 +32,10 @@ for the dated super-admin API, existing-run resume exemption and local
   message predates the wire-carried `bot_source_tier`, and the run document
   its publisher persisted already carries the stamp — the runner re-reads the
   tier from there, so the #1959 floor never silently drops; a v28 message
-  predates `fork_author_subject`, and no v28 message is a fork run (nothing
-  set `RunTrustFork` before v29 shipped with it), so there is no subject to
-  drop.
+  predates `fork_author_subject`, and an UNTRUSTED one — a v28 server
+  replica republishing a fork run a v29 replica created — is parked as a
+  version mismatch rather than run with the author's bound unenforced (see
+  the v29 section).
 - **Server first by default.** Both orders can park a message, and a resume
   recovers the run either way — but not at the same moment. Old runners
   rejecting the new version park runs a resume recovers as soon as the fleet
@@ -141,13 +142,22 @@ additive-field rule: a stale runner that drops it leaves the
 per-contributor DOLLAR bound unenforced for the run's lifetime — a
 perimeter failing open, in silence, on the pod.
 
-`MinSchemaVersion` stays **27**: no message below v29 is a fork run (nothing
-set `RunTrustFork` before this field shipped), so there is no old payload
-whose dropped subject loses an enforced bound — the one direction in which
-ignoring the field cannot fail open does not arise.
+`MinSchemaVersion` stays **27**. No v28 server LAUNCHES untrusted work —
+nothing set `RunTrustFork` before this field shipped — but mid-rollout a
+v28 server replica can REPUBLISH a fork run a v29 replica created: its
+resume (or the retry sweeper's, or a launch naming it as a parent) replays
+the run's `trust: fork` with no subject, because v28 has no field to carry
+it. A v29 runner parks any untrusted message below v29 as a version mismatch
+(`queue.ForkAuthorSubjectSchemaVersion`, delayed Nak then
+`failed_resumable`), and a resume from an upgraded server — whose gate meters
+the author — recovers it. A v28 runner knows neither the field nor that
+rule and would run it, org-metered only.
 
 Use **server-first**; old runners park the v29 message replayably and a
-resume recovers once the fleet is upgraded.
+resume recovers once the fleet is upgraded. **Enable the fork review lane
+(create the first fork-lane webhook config) only once every server AND
+runner replica runs v29**: with no fork run in existence until then, no old
+replica can republish one.
 
 
 ## v12 runner-epoch bootstrap
