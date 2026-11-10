@@ -224,14 +224,17 @@ operator owns ([oauth-forfait.md](oauth-forfait.md#what-a-forfait-is-and-is-not)
   runner deployment carries no ambient LLM env — then a credential-less
   run can never start, and refusing it early is free information.
 - **An untrusted (fork-lane) run is always refused when its team's own
-  vendor API keys do not fund it**, knob or not: it runs on its lane's
-  pool, so no shared tier is sealed into it (D13); the runner refuses its
-  env and a forfait cannot cross its sandbox (ADR-162 decision 7). The rule
-  is the `llm_fallback: none` one — strict per attributed provider — with
-  the forfaits not counted, three route classes refused whatever the team
-  holds: a route riding the `openai_compatible` gateway (the env-funded
-  program included — no gateway credential is sealed into a pool run until
-  PR-C'), a route the pool's runner decides itself (an `${…}` dial it
+  API keys do not fund it** — its vendor keys, and its `openai_compatible`
+  gateway key on the literal gateway routes it serves — knob or not: it runs
+  on its lane's pool, so no shared tier is sealed into it (D13); the runner
+  refuses its env and a forfait cannot cross its sandbox (ADR-162 decision
+  7). The rule is the `llm_fallback: none` one — strict per attributed
+  provider, a literal gateway route the team's sealed gateway key funds
+  judged as the `openai_compatible` provider — with the forfaits not counted
+  and three route classes refused: a route riding the runner's
+  `openai_compatible` gateway, which no gateway key of the team's own funds
+  (the env-funded program included), and, whatever the team holds, a route
+  the pool's runner decides itself (an `${…}` dial it
   expands with its own environment, a late run var), and a route the walk
   cannot attribute to a provider (`ProviderResolution.UnattributedSites`);
   and a route that may spend the anthropic wire's default credential is

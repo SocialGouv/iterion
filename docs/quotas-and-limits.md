@@ -230,8 +230,10 @@ retry sweeper).
 
 Before it meters anything, the gate also asks whether the fork run can be
 funded at all: a fork run is pool-stamped, so it spends only its team's own
-vendor API keys, on routes decided before the run (no shared tier, no
-runner env, no forfait, no gateway route, no `${…}` dial the pool's runner
+API keys — its vendor keys, and its `openai_compatible` gateway key on the
+literal gateway routes it serves — on routes decided before the run (no
+shared tier, no runner env, no forfait, no route riding the runner's gateway,
+no `${…}` dial the pool's runner
 expands, no route the server cannot attribute to a provider, no anthropic-wire
 default read the team holds no slot of —
 [webhooks.md](webhooks.md#fork-lane-funding)). A run those keys

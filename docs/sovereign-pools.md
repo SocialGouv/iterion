@@ -37,9 +37,12 @@ The isolation chain, in the order a run meets it:
    name the team's own pool, an unmapped team's a pool no team holds, and
    a resume re-judges both (`ErrForkLanePool`). The shared-tier rule above
    holds for a fork run in full, so **a fork run is funded by its team's own
-   vendor API keys alone** (no forfait either: it cannot cross the run's
-   sandbox; no gateway credential before #2005 PR-C'): the launch gate
-   refuses one those keys cannot fund, typed (`fork_run_unfunded`), before
+   API keys alone** — its vendor keys, and its `openai_compatible` gateway
+   key on the literal `openai_compatible/…` routes that key serves, sealed
+   with its canonical base URL (no forfait: it cannot cross the run's
+   sandbox; never the pool pod's gateway: it is the refused environment).
+   The launch gate refuses one those keys cannot fund, typed
+   (`fork_run_unfunded`), before
    the org or the outside author is metered — and refuses every route the
    pool's runner decides itself, since the pool's env block pins the
    routing dials ([below](#routing-dials-the-pools-env-block-is-pinned))
