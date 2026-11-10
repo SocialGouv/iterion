@@ -926,9 +926,12 @@ agent campaign:
   ## that DECOMPOSED. Coverage via the agent's own judgment, not engine
   ## fan-out. The `agent` subagent tool is served on BOTH routes: #1940 wired
   ## a subagent runner at each of claw's hosts, so clawRefusedBuiltins is
-  ## empty and C159 fires for nothing. The ultracode grant tells either route
-  ## to decompose; what the routes do NOT share is the shape of the fan-out,
-  ## so judge a claw run on its own output rather than on this note.
+  ## empty and C159 fires for nothing — the old note here was wrong about the
+  ## WHY. It was right about the route, for another reason: this node declares
+  ## no `tools:`, so on claw its whole surface is the engine's own appends
+  ## (ask_user, the board pair, agent, todo_write) and its subagents select
+  ## from that same set — no file and no shell tool, hence no survey, no fix
+  ## and no commit. `claude_code` stays the route that can do this node's job.
   reasoning_effort: "${ITERION_DOC_ALIGN_EFFORT_CLAUDE:-ultracode}"
   interaction: human
 
