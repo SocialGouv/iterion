@@ -302,16 +302,24 @@ half short; the publisher writes its key maps through one chokepoint
 (`APIKeyFingerprints`, which the runner stamps rather than recomputing — a gateway
 key's identity folds its URL in) always travel with the key. The runner reads the pair
 (`Credentials.GatewayCredentialForRoute`) and honours `AmbientLLMRefused` — the run's
-LLM routes spend these credentials only — from #2005 PR-B'2; the walk sets them from
-PR-C'. An UNTRUSTED run (ADR-162 decision 7) is refused the pod's environment whether
+LLM routes spend these credentials only. The walk stamps the run's content boundary
+at launch (`Run.ContentBoundary`, carried on the queue message; ADR-131 §4):
+`team_gateway` — with the id of the key row that filled the gateway slot and the host
+its URL dials — when it attributes a gateway route to the key and seals it, a mixed
+run included; `own_keys` for every other launch it resolves. The bundle's
+`AmbientLLMRefused` is armed on the same decision (and on every untrusted run,
+ADR-162); a resume replays the frozen stamp, never re-deriving it, and seals the flag
+even when its walk finds nothing. Under `team_gateway` the routing ladder and the
+fallback door take no vendor crossing for a node routed to the gateway.
+An UNTRUSTED run (ADR-162 decision 7) is refused the pod's environment whether
 or not a bundle arrives: the publisher stamps every bundle it seals for one, and an
 untrusted run can still reach a runner with none (a publisher that seals nothing, a run
 that calls no model), so the runner derives the same
 refusal from the queue message's trust — `store.RunTrust.AmbientLLMRefused`, the one
-predicate both sides read (#3126). A fork run whose model routes its team's own vendor
-API keys cannot fund — a gateway route among them, since no gateway credential is sealed
-into a pool run before PR-C' — is refused before that: at the launch gate before it is
-metered, and at publish ([webhooks.md](webhooks.md#fork-lane-funding)).
+predicate both sides read (#3126). A fork run whose model routes its team's own keys
+cannot fund — a gateway route among them unless the team's own gateway key funds it —
+is refused before that: at the launch gate before it is metered, and at publish
+([webhooks.md](webhooks.md#fork-lane-funding)).
 
 A refusal answers `400` with the reason, and leaves a trace an operator can
 find after the fact: a `Warn` in the server log and an audit event naming the

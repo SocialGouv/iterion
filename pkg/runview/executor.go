@@ -171,6 +171,12 @@ type ExecutorSpec struct {
 	// node's own model at materialization. Cloud only: a local launch
 	// seals no channels, so no ladder exists to apply.
 	PolicyLadder []ir.PolicyLadderStage
+	// ContentBoundary is the run's frozen content boundary (ADR-131 §4,
+	// queue.RunMessage.ContentBoundary): under team_gateway the ladder's
+	// screen lands no stage on a node routed to the team's gateway — a
+	// crossing would carry that node's content to a vendor credential. Nil
+	// (a local launch, a run stamped before the producer) screens as before.
+	ContentBoundary *store.RunContentBoundary
 	// LLMRouteTriggers is the run's RESOLVED adaptive-routing trigger set
 	// (ADR-121, the launch-frozen snapshot) — threaded to the executor so
 	// the route cooldown ledger arms the categories the policy names
@@ -560,7 +566,7 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 		// node unscreened (the review's F2).
 		ov := overrides.ForNode(n.NodeID(), n.NodeKind())
 		return ov.Backend
-	}, llmroute.ResolveClasses(spec.LLMRouteClasses))
+	}, llmroute.ResolveClasses(spec.LLMRouteClasses), spec.ContentBoundary.TeamGateway())
 	for _, refusal := range policyRefusals {
 		spec.Logger.Warn("policy ladder stage not applied — %s", refusal)
 	}

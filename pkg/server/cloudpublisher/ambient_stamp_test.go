@@ -53,7 +53,7 @@ func TestEveryUntrustedRunCarriesTheAmbientStamp(t *testing.T) {
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			runID := "run-stamp-" + row.name
-			creds, err := p.resolveAndSealCredentials(ctx, runID, "", "team1", "owner1", "", "", nil, nil, nil, model.RouteView{}, nil, row.trust, nil, nil, nil)
+			creds, err := p.resolveAndSealCredentials(ctx, runID, "", "team1", "owner1", "", "", nil, nil, nil, model.RouteView{}, nil, row.trust, nil, nil, nil, boundaryDerived)
 			if err != nil {
 				t.Fatalf("resolveAndSealCredentials: %v", err)
 			}

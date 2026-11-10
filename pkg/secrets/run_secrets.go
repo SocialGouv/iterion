@@ -67,8 +67,9 @@ type RunBundle struct {
 	// run's LLM routes are funded by the credentials of this bundle ONLY:
 	// every fallback to the pod environment (a vendor key, the
 	// deployment's gateway) answers a typed refusal instead of a call on
-	// somebody else's account. Absent (false) on every bundle a server
-	// before #2005 PR-C' seals.
+	// somebody else's account. The publisher sets it on an untrusted run
+	// (ADR-162) and on a run whose content boundary is its team's gateway
+	// (ADR-131 §4); absent (false) on every other bundle.
 	AmbientLLMRefused bool `json:"ambient_llm_refused,omitempty"`
 	// GatewayPriceFeed carries the run's effective gateway price table as
 	// the server folded it (ADR-163): fresh org/team feed entries, the

@@ -1530,6 +1530,18 @@ entry of the pair order, never a fallback rung; a run frozen before the entry
 existed replays its order as stored and says once what it held out. The
 legacy pool and the fallback door never lend a gateway key.
 
+A run whose gateway routes that key funds is stamped `team_gateway` at launch
+(`content_boundary` on the run document, frozen and replayed by every resume
+and fork; ADR-131 §4): a gateway route the walk attributes to the key, and the
+key sealed — a mixed run, vendor keys beside it, included. Every other launch
+the walk resolves is stamped `own_keys`. Under `team_gateway` the run's sealed
+bundle refuses every fallback to the pod's environment (`AmbientLLMRefused`,
+auxiliaries included), the server-side helpers and the supervisors refuse the
+run's auxiliary specs, and the routing ladder lands no crossing on a node routed
+to the gateway — `claw+openai_key` or codex would carry that node's content to
+a vendor credential — nor asks a donor for one; the run's vendor-routed nodes
+keep theirs.
+
 The team's default gateway model is a routing decision, not a field of the
 key: an override cell on selector `*` pinning
 `openai_compatible/<provider>/<model>`, the gateway's id verbatim (ADR-122):

@@ -81,3 +81,39 @@ through the attachment alone, and law 1 holds: a team key fills the slot first. 
 frozen pre-upgrade list is `store.RunLLMRoutePolicy.PairOrder` (its twin
 `store.Run.PinnedProviders` is frozen beside it), replayed as stored on a resume; its
 one named warning is `pairOrderRefusals`.
+
+### The content boundary producer (#2005 PR-C', same date)
+
+§4's stamp has its producer. A launch's credential walk decides the run's
+`store.Run.ContentBoundary` after the tier walk — the last step that may seal the
+gateway key — and before the fallback door and the policy ladder, which compose the
+crossings it refuses. The run is `team_gateway` when the walk ATTRIBUTES a gateway
+route to a key (the keyed view's attributed routes name `openai_compatible`) AND the
+gateway key sealed, in either channel; a mixed run, its vendor routes funded beside
+it, is `team_gateway` too. Every other launch the walk resolves is stamped
+`own_keys` explicitly, never left nil. An env-templated route is never attributed
+(ADR-129 §4), so a run whose gateway key seals only for such a dial stays `own_keys`.
+`KeyID` is the id of the key row that filled the gateway slot, recorded beside the
+fingerprint at every seal site (`noteSealedAPIKey`: the team's BYOK tier, a webhook
+pin included, the restore, the org and platform tiers, an attached pool's entry);
+`GatewayHost` is the host its sealed URL dials (`compatgw.Config.Host`, the host the
+runner pins on the run's proxy).
+
+The launch writes the stamp through `credResolution.applyTo`, outside `stamp()`: a
+resume replays the document's bytes (`boundaryFrozen(prior.ContentBoundary)`) and
+never re-derives them. `RunBundle.AmbientLLMRefused` is armed on the same value —
+derived at launch, the frozen one at resume — ORed with ADR-162's untrusted arm,
+never clearing it; a resume replaying `team_gateway` seals its bundle even with
+nothing in it, so the refusal keeps its carriage when the team's key is gone.
+
+Under `team_gateway` the policy ladder lands no stage on a node whose model routes to
+the gateway: `llmroute.StageModel` refuses it with `ReasonContentBoundary`, since the
+wholesale crossings (`claw+openai_key`, codex's forfait and key) would carry the
+node's content to a vendor credential. The fallback door's probe screens the same
+way, so no donor is asked for such a crossing. The publisher's screen, its door, the
+credential preview and the runner's authoritative screen (`ExecutorSpec.ContentBoundary`,
+and the usage-cap pre-flight's escape estimate) all read the boundary the run
+carries. The vendor-routed nodes of a mixed run keep their rungs: the arbitration
+refuses a mixed run's auxiliaries (classifier, supervisors, server-side helpers),
+not a node's own vendor route and its fallbacks. An unstamped run (the operator's
+environment gateway, a run launched before the producer) keeps the crossing.

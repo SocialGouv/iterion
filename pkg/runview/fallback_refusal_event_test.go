@@ -132,3 +132,63 @@ func TestBuildExecutor_RunFallbackScreensAVarsBackendWithTheLaunchVars(t *testin
 			len(refusals), refusals)
 	}
 }
+
+// ADR-131 §4: the executor's ladder screen — the runner's authoritative one —
+// reads the run's frozen content boundary from the spec. Under team_gateway a
+// node routed to the team's gateway takes no policy stage and the refusal
+// reaches the timeline; an unstamped run lands the crossing. Mutant: the
+// screen reading no boundary → the stamped node takes the rung.
+func TestBuildExecutor_PolicyLadderHonoursTheContentBoundary(t *testing.T) {
+	for _, row := range []struct {
+		name     string
+		boundary *store.RunContentBoundary
+		lands    bool
+	}{
+		{"team_gateway", &store.RunContentBoundary{Kind: store.ContentBoundaryTeamGateway, KeyID: "k", GatewayHost: "gw.example"}, false},
+		{"own_keys", &store.RunContentBoundary{Kind: store.ContentBoundaryOwnKeys}, true},
+		{"unstamped", nil, true},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			st, err := store.New(t.TempDir())
+			if err != nil {
+				t.Fatalf("store.New: %v", err)
+			}
+			agent := &ir.AgentNode{}
+			agent.ID = "gw"
+			agent.Backend = "claw"
+			agent.Model = "openai_compatible/scaleway/glm-5.3"
+			agent.Tools = []string{}
+			spec := ExecutorSpec{
+				Ctx:             context.Background(),
+				Store:           st,
+				RunID:           "run-boundary-" + row.name,
+				Workflow:        &ir.Workflow{Name: "canary", Nodes: map[string]ir.Node{"gw": agent}},
+				PolicyLadder:    []ir.PolicyLadderStage{{Harness: "claw", Credential: "openai_key", On: []string{"usage_window"}}},
+				ContentBoundary: row.boundary,
+			}
+			if _, err := BuildExecutor(spec); err != nil {
+				t.Fatalf("BuildExecutor: %v", err)
+			}
+			if landed := len(agent.Fallbacks) == 1 && agent.Fallbacks[0].Policy; landed != row.lands {
+				t.Fatalf("policy rung landed = %v (%+v), want %v", landed, agent.Fallbacks, row.lands)
+			}
+			evts, err := st.LoadEvents(context.Background(), spec.RunID)
+			if err != nil {
+				t.Fatalf("Events: %v", err)
+			}
+			refusals := refusalEvents(evts)
+			if row.lands {
+				if len(refusals) != 0 {
+					t.Fatalf("a landed crossing wrote refusals: %+v", refusals)
+				}
+				return
+			}
+			if len(refusals) != 1 {
+				t.Fatalf("want the boundary's refusal on the timeline, got %d", len(refusals))
+			}
+			if reason, _ := refusals[0].Data["reason"].(string); !strings.Contains(reason, "team_gateway") {
+				t.Fatalf("refusal reason %q does not name the boundary", reason)
+			}
+		})
+	}
+}

@@ -499,7 +499,14 @@ type PolicyLadderStage struct {
 // field at DISPATCH — the screen MUST read the same backend or a
 // cross-backend stage crosses a session-bearing node unscreened. nil = the
 // DSL reading.
-func ApplyPolicyLadder(w *Workflow, stages []PolicyLadderStage, sandboxed bool, vars map[string]string, nodeModel func(LLMNode) string, nodeBackend func(LLMNode) string, classes llmroute.ClassTable) []string {
+//
+// teamGateway is the run's content boundary (ADR-131 §4,
+// store.RunContentBoundary.TeamGateway — the frozen stamp the run carries,
+// on the publisher and the runner alike): under it no stage lands on a node
+// whose model routes to the team's gateway (llmroute.StageModel's
+// ReasonContentBoundary, named per node like every refusal); a node routed
+// elsewhere keeps its rungs.
+func ApplyPolicyLadder(w *Workflow, stages []PolicyLadderStage, sandboxed bool, vars map[string]string, nodeModel func(LLMNode) string, nodeBackend func(LLMNode) string, classes llmroute.ClassTable, teamGateway bool) []string {
 	if w == nil || len(stages) == 0 {
 		return nil
 	}
@@ -563,7 +570,7 @@ func ApplyPolicyLadder(w *Workflow, stages []PolicyLadderStage, sandboxed bool, 
 			// distinguishes the structural no-mapping (the pair cannot
 			// serve the family) from the class table's cell resolving
 			// nowhere (a model_classes cell fixes that one).
-			mdl, ok, mapReason := llmroute.StageModel(st.Harness, st.Credential, nodeMdl, classes)
+			mdl, ok, mapReason := llmroute.StageModel(st.Harness, st.Credential, nodeMdl, classes, teamGateway)
 			if !ok {
 				refuse(mapReason + " — stage skipped")
 				continue

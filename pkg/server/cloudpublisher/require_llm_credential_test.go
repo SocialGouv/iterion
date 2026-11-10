@@ -83,7 +83,7 @@ func TestResolve_RequireLLMCredentialRefusesOnlyARunThatCannotStart(t *testing.T
 				logger: iterlog.New(iterlog.LevelInfo, &buf), requireLLMCredential: tc.require}
 			wf := compileTestSource(t, tc.bot)
 			ctx := store.WithTenant(context.Background(), "team1")
-			_, err = p.resolveAndSealCredentials(ctx, "run-req", "", "team1", "owner1", "", "", wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustDefault, nil, nil, nil)
+			_, err = p.resolveAndSealCredentials(ctx, "run-req", "", "team1", "owner1", "", "", wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustDefault, nil, nil, nil, boundaryDerived)
 			if tc.refused {
 				if !errors.Is(err, runview.ErrNoLLMCredential) {
 					t.Fatalf("resolveAndSealCredentials = %v, want runview.ErrNoLLMCredential", err)
@@ -112,7 +112,7 @@ func TestResolve_RequireLLMCredentialNamesTheUnfundedProviders(t *testing.T) {
 		runSecrets: secrets.NewMemoryRunSecretsStore(), sealer: sealer,
 		logger: iterlog.Nop(), requireLLMCredential: true}
 	ctx := store.WithTenant(context.Background(), "team1")
-	_, err = p.resolveAndSealCredentials(ctx, "run-req", "", "team1", "owner1", "", "", compileTestSource(t, twoRoutesBot), nil, nil, model.RouteView{Workflow: compileTestSource(t, twoRoutesBot)}, nil, store.RunTrustDefault, nil, nil, nil)
+	_, err = p.resolveAndSealCredentials(ctx, "run-req", "", "team1", "owner1", "", "", compileTestSource(t, twoRoutesBot), nil, nil, model.RouteView{Workflow: compileTestSource(t, twoRoutesBot)}, nil, store.RunTrustDefault, nil, nil, nil, boundaryDerived)
 	if err == nil || !strings.Contains(err.Error(), "anthropic") || !strings.Contains(err.Error(), "openai") {
 		t.Fatalf("refusal = %v, want it to name both pinned providers", err)
 	}

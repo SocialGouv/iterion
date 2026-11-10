@@ -79,7 +79,7 @@ func TestFundingRefusal_AForkRunLandsNoForfaitRung(t *testing.T) {
 					t.Fatalf("trust %q: FundingRefusal = %v, want nil — the team's own key funds the route, and no forfait rung lands on a fork run", trust, err)
 				}
 			}
-			res, err := p.resolveAndSealCredentials(ctx, "run-fork-ladder", "org1", "team1", "owner1", "review-pr", "forks", wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustFork, nil, resolvedDefaultPolicy(), nil)
+			res, err := p.resolveAndSealCredentials(ctx, "run-fork-ladder", "org1", "team1", "owner1", "review-pr", "forks", wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustFork, nil, resolvedDefaultPolicy(), nil, boundaryDerived)
 			if err != nil || res.secretsRef == "" {
 				t.Fatalf("resolveAndSealCredentials = (ref %q, %v), want a sealed bundle — the team's own key funds the route", res.secretsRef, err)
 			}
@@ -88,7 +88,7 @@ func TestFundingRefusal_AForkRunLandsNoForfaitRung(t *testing.T) {
 					t.Fatalf("the fork run's ladder carries the forfait stage %+v — a forfait funds no fork run", st)
 				}
 			}
-			ctrl, cerr := p.resolveAndSealCredentials(ctx, "run-trusted-ladder", "org1", "team1", "owner1", "review-pr", "", wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustDefault, nil, resolvedDefaultPolicy(), nil)
+			ctrl, cerr := p.resolveAndSealCredentials(ctx, "run-trusted-ladder", "org1", "team1", "owner1", "review-pr", "", wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustDefault, nil, resolvedDefaultPolicy(), nil, boundaryDerived)
 			if cerr != nil || ctrl.secretsRef == "" {
 				t.Fatalf("trusted control: resolveAndSealCredentials = (ref %q, %v), want a sealed bundle", ctrl.secretsRef, cerr)
 			}
@@ -127,7 +127,7 @@ func TestFundingRefusal_AnAllowlistLeavingAWireRouteNoSlotRefusesTheForkRun(t *t
 	if !errors.As(err, &refusal) || !refusal.Untrusted || len(refusal.WireDefault) != 1 || refusal.WireDefault[0] != "draft (no slot the providers allowlist admits)" {
 		t.Fatalf("FundingRefusal = %v, want the untrusted refusal naming draft's wire-default read the allowlist leaves empty", err)
 	}
-	res, err := p.resolveAndSealCredentials(ctx, "run-fork-allowlist", "org1", "team1", "owner1", "review-pr", "forks", wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustFork, nil, policy, nil)
+	res, err := p.resolveAndSealCredentials(ctx, "run-fork-allowlist", "org1", "team1", "owner1", "review-pr", "forks", wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustFork, nil, policy, nil, boundaryDerived)
 	if !errors.As(err, &refusal) || len(refusal.WireDefault) != 1 || res.secretsRef != "" {
 		t.Fatalf("resolveAndSealCredentials = (ref %q, %v), want the wire-default refusal and nothing sealed", res.secretsRef, err)
 	}

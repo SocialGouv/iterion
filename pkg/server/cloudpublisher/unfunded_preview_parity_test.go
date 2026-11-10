@@ -23,7 +23,7 @@ func resolveWithRouting(t *testing.T, p *Publisher, src string, policy *store.Ru
 	t.Helper()
 	wf := compileTestSource(t, src)
 	ctx := store.WithTenant(context.Background(), "team1")
-	creds, err := p.resolveAndSealCredentials(ctx, "run-ladder", "", "team1", "owner1", "", "", wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustDefault, nil, policy, nil)
+	creds, err := p.resolveAndSealCredentials(ctx, "run-ladder", "", "team1", "owner1", "", "", wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustDefault, nil, policy, nil, boundaryDerived)
 	return wf, creds, err
 }
 
@@ -401,7 +401,7 @@ func resolveAsLaunched(t *testing.T, p *Publisher, src string) error {
 		t.Fatalf("runnerPoolForTeam: %v", err)
 	}
 	wf := compileTestSource(t, src)
-	_, rerr := p.resolveAndSealCredentials(ctx, "run-pooled", "", "team1", "owner1", "", pool, wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustDefault, nil, nil, nil)
+	_, rerr := p.resolveAndSealCredentials(ctx, "run-pooled", "", "team1", "owner1", "", pool, wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustDefault, nil, nil, nil, boundaryDerived)
 	return rerr
 }
 
@@ -519,7 +519,7 @@ func TestCredentialPreview_HoldsOnlyThePairsItsOwnMetadataServes(t *testing.T) {
 	// team funds nothing of, and the sovereign posture refuses them by name.
 	probe := compileTestSource(t, anthropicPinnedBot)
 	probeView := model.RouteView{Workflow: probe}
-	composePolicyLadder(probe, probeView, forfaitLadderPolicy(), nil, nil, func(_, _ string) bool { return true }, nil)
+	composePolicyLadder(probe, probeView, forfaitLadderPolicy(), nil, nil, func(_, _ string) bool { return true }, false, nil)
 	probeRoutes := attributedRoutes(probeView)
 	if r := unfundedRefusalFor("team1", probeRoutes,
 		fundedProviderSet([]secrets.Provider{secrets.ProviderAnthropic}, nil, unfundedPosture{}), false, unfundedPosture{Sovereign: true}); r == nil {

@@ -107,7 +107,7 @@ func gatewayLaunchCtx() context.Context {
 
 func resolveGatewayRun(t *testing.T, p *Publisher, runID string, wf *ir.Workflow, policy *store.RunLLMRoutePolicy) (credResolution, error) {
 	t.Helper()
-	return p.resolveAndSealCredentials(gatewayLaunchCtx(), runID, "", "team1", "owner1", gwBot, "", wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustDefault, nil, policy, nil)
+	return p.resolveAndSealCredentials(gatewayLaunchCtx(), runID, "", "team1", "owner1", gwBot, "", wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustDefault, nil, policy, nil, boundaryDerived)
 }
 
 // openGatewayBundle opens what a resolution sealed; an empty ref is the empty
@@ -242,7 +242,7 @@ func TestGatewayKey_ThePreviewAnswersTheWalksPredicate(t *testing.T) {
 	if got := selectedDescriptions(preview); !slices.Contains(got, "team:api_key:openai_compatible") {
 		t.Fatalf("preview selected %v, want the team's gateway key", got)
 	}
-	creds, err := p.resolveAndSealCredentials(store.WithTenant(context.Background(), "team1"), "run-gw-4", "", "team1", spec.OwnerID, spec.Context.BotID, "", envFundedWorkflow, nil, nil, model.RouteView{Workflow: envFundedWorkflow}, nil, store.RunTrustDefault, nil, nil, nil)
+	creds, err := p.resolveAndSealCredentials(store.WithTenant(context.Background(), "team1"), "run-gw-4", "", "team1", spec.OwnerID, spec.Context.BotID, "", envFundedWorkflow, nil, nil, model.RouteView{Workflow: envFundedWorkflow}, nil, store.RunTrustDefault, nil, nil, nil, boundaryDerived)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -315,7 +315,7 @@ func TestGatewayKey_AFrozenPreUpgradeOrderReplaysAsStoredAndSaysSoOnce(t *testin
 	f.pub.apiKeys = secrets.NewMemoryApiKeyStore()
 	seedGatewayKey(t, f.pub.apiKeys, f.sealer, poolTeam, nil)
 	ctx := store.WithTenant(context.Background(), poolTeam)
-	creds, err := f.pub.resolveAndSealCredentials(ctx, "run-gw-6", poolOrg, poolTeam, "owner1", gwBot, "", envFundedWorkflow, nil, nil, model.RouteView{Workflow: envFundedWorkflow}, nil, store.RunTrustDefault, nil, preUpgradePolicy(), nil)
+	creds, err := f.pub.resolveAndSealCredentials(ctx, "run-gw-6", poolOrg, poolTeam, "owner1", gwBot, "", envFundedWorkflow, nil, nil, model.RouteView{Workflow: envFundedWorkflow}, nil, store.RunTrustDefault, nil, preUpgradePolicy(), nil, boundaryDerived)
 	if err != nil {
 		t.Fatalf("resolveAndSealCredentials: %v", err)
 	}
@@ -418,7 +418,7 @@ func TestGatewayKey_TheSovereignPostureOwesTheGatewayRoutesAKey(t *testing.T) {
 		t.Helper()
 		wf := compileTestSource(t, gatewayBot)
 		ctx := store.WithTenant(context.Background(), "team1")
-		return p.resolveAndSealCredentials(ctx, "run-gw-9", "", "team1", "owner1", "", runnerPool, wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustDefault, nil, nil, nil)
+		return p.resolveAndSealCredentials(ctx, "run-gw-9", "", "team1", "owner1", "", runnerPool, wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustDefault, nil, nil, nil, boundaryDerived)
 	}
 	t.Run("no key, no runner pool: refused by name", func(t *testing.T) {
 		p, _ := llmFallbackPublisher(t, map[string]string{"team1": "none"})
@@ -569,7 +569,7 @@ func TestGatewayKey_AGatewayKeyDoesNotCloseTheLegacyPool(t *testing.T) {
 		"review": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "review"}, LLMFields: ir.LLMFields{Backend: "claw", Model: "anthropic/claude-opus-5"}},
 	}}
 	ctx := store.WithTenant(context.Background(), poolTeam)
-	creds, err := f.pub.resolveAndSealCredentials(ctx, "run-gw-13", poolOrg, poolTeam, "owner1", gwBot, "", wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustDefault, nil, nil, nil)
+	creds, err := f.pub.resolveAndSealCredentials(ctx, "run-gw-13", poolOrg, poolTeam, "owner1", gwBot, "", wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustDefault, nil, nil, nil, boundaryDerived)
 	if err != nil {
 		t.Fatalf("resolveAndSealCredentials: %v", err)
 	}
@@ -642,7 +642,7 @@ func TestGatewayKey_AGatewayOnlyRunNeverReachesTheFallbackDoor(t *testing.T) {
 		Triggers:  []string{llmroute.TriggerUsageWindow},
 	}
 	tctx := store.WithTenant(ctx, poolTeam)
-	creds, err := p.resolveAndSealCredentials(tctx, "run-gw-14", poolOrg, poolTeam, "owner1", gwBot, "", wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustDefault, nil, policy, nil)
+	creds, err := p.resolveAndSealCredentials(tctx, "run-gw-14", poolOrg, poolTeam, "owner1", gwBot, "", wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustDefault, nil, policy, nil, boundaryDerived)
 	if err != nil {
 		t.Fatalf("resolveAndSealCredentials: %v", err)
 	}

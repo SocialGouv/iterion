@@ -122,7 +122,7 @@ func TestStageModelPairKeyed(t *testing.T) {
 		{"pi", CredClaudeForfait, "claude-opus-5-5", "", false},
 	}
 	for _, tt := range tests {
-		got, ok, reason := StageModel(tt.harness, tt.credential, tt.nodeModel, ResolveClasses(nil))
+		got, ok, reason := StageModel(tt.harness, tt.credential, tt.nodeModel, ResolveClasses(nil), false)
 		if ok != tt.ok || (ok && got != tt.want) {
 			t.Errorf("StageModel(%s, %s, %s) = %q, %v — want %q, %v", tt.harness, tt.credential, tt.nodeModel, got, ok, tt.want, tt.ok)
 		}
@@ -157,15 +157,15 @@ func TestStageModelPairKeyed(t *testing.T) {
 			if err != nil {
 				t.Fatalf("default order entry %q: %v", pair, err)
 			}
-			oneModel, oneOK, oneReason := StageModel(h, c, sp.one, ResolveClasses(nil))
-			nestedModel, nestedOK, nestedReason := StageModel(h, c, sp.nested, ResolveClasses(nil))
+			oneModel, oneOK, oneReason := StageModel(h, c, sp.one, ResolveClasses(nil), false)
+			nestedModel, nestedOK, nestedReason := StageModel(h, c, sp.nested, ResolveClasses(nil), false)
 			if oneOK != nestedOK || oneReason != nestedReason || (sp.sameModel && oneModel != nestedModel) {
 				t.Errorf("%s: %s → (%q, %v, %q) but %s → (%q, %v, %q) — the two spellings of one prefix disagree", pair, sp.one, oneModel, oneOK, oneReason, sp.nested, nestedModel, nestedOK, nestedReason)
 			}
 		}
 	}
 	// A node with no model maps nothing: a modelless stage is never born.
-	if _, ok, _ := StageModel(HarnessClaw, "anthropic_key", "", ResolveClasses(nil)); ok {
+	if _, ok, _ := StageModel(HarnessClaw, "anthropic_key", "", ResolveClasses(nil), false); ok {
 		t.Error("StageModel with an empty node model = ok — a modelless stage would be refused downstream")
 	}
 	// Nor does a prefix with nothing after its slash (`anthropic/`, a
@@ -177,7 +177,7 @@ func TestStageModelPairKeyed(t *testing.T) {
 			if err != nil {
 				t.Fatalf("default order entry %q: %v", pair, err)
 			}
-			if got, ok, _ := StageModel(h, c, spec, ResolveClasses(nil)); ok && (got == "" || strings.HasSuffix(got, "/")) {
+			if got, ok, _ := StageModel(h, c, spec, ResolveClasses(nil), false); ok && (got == "" || strings.HasSuffix(got, "/")) {
 				t.Errorf("StageModel(%s, %s) = %q — a rung with no model id", pair, spec, got)
 			}
 		}
@@ -197,7 +197,7 @@ func TestStageModelPairKeyed(t *testing.T) {
 		{HarnessClaw, "openai_key", "anthropic/claude-haiku-4-5", "openai/gpt-6-luna"},
 	}
 	for _, tt := range fast {
-		got, ok, _ := StageModel(tt.harness, tt.credential, tt.nodeModel, ResolveClasses(nil))
+		got, ok, _ := StageModel(tt.harness, tt.credential, tt.nodeModel, ResolveClasses(nil), false)
 		if !ok || got != tt.want {
 			t.Errorf("fast crossing StageModel(%s, %s, %s) = %q, %v — want %q (the table's fast rung)", tt.harness, tt.credential, tt.nodeModel, got, ok, tt.want)
 		}
@@ -208,17 +208,60 @@ func TestStageModelPairKeyed(t *testing.T) {
 	// custom table reaches it — the shipped one is full) names the class
 	// and family, the fixable refusal.
 	empty := ClassTable{}
-	_, _, reason := StageModel("pi", CredClaudeForfait, "claude-opus-5-5", ResolveClasses(nil))
+	_, _, reason := StageModel("pi", CredClaudeForfait, "claude-opus-5-5", ResolveClasses(nil), false)
 	if reason != ReasonNoMapping {
 		t.Fatalf("structural skip reason = %q, want %q", reason, ReasonNoMapping)
 	}
 	custom := ResolveClasses(nil)
 	custom.forward = map[string]map[string]string{ClassStandard: {familyOpenAI: "gpt-6-sol"}}
-	_, ok, reason := StageModel(HarnessCodex, CredChatGPTForfait, "claude-opus-5-5", custom)
+	_, ok, reason := StageModel(HarnessCodex, CredChatGPTForfait, "claude-opus-5-5", custom, false)
 	if ok || reason != "class top resolves nowhere on family openai" {
 		t.Fatalf("class-unresolved = %q, %v — want the named class+family reason", reason, ok)
 	}
 	_ = empty
+}
+
+// ADR-131 §4, the stamped counterpart of TestStageModelPairKeyed's gateway
+// rows: under a team_gateway content boundary a node routed to the team's
+// gateway maps on NO pair the default order lists — the wholesale crossings
+// those rows pin (claw+openai_key, codex's forfait and key) included — and
+// the reason names the boundary. Without the boundary (the operator's env
+// gateway, an unstamped run) the crossings land exactly as the rows above
+// pin. A node routed to a vendor maps the same under either answer: the
+// boundary holds the gateway's content, not a mixed run's vendor nodes.
+// Mutants: the boundary check dropped → the stamped rows red; the check
+// blind to the flag → the unstamped crossings red; the check on every node →
+// the vendor rows red.
+func TestStageModelUnderTheTeamGatewayBoundary(t *testing.T) {
+	classes := ResolveClasses(nil)
+	crossings := []struct{ harness, credential string }{
+		{HarnessClaw, "openai_key"}, {HarnessCodex, CredChatGPTForfait}, {HarnessCodex, "openai_key"},
+	}
+	gatewayModels := []string{"openai_compatible/scaleway/glm-5.3", "openai_compatible/mistral", " OpenAI_Compatible/scaleway/glm-5.3"}
+	for _, cr := range crossings {
+		for _, mdl := range gatewayModels[:2] {
+			if _, ok, _ := StageModel(cr.harness, cr.credential, mdl, classes, false); !ok {
+				t.Fatalf("unstamped StageModel(%s+%s, %s) refused — the control crossing is gone, so the stamped refusal below proves nothing", cr.harness, cr.credential, mdl)
+			}
+		}
+	}
+	for _, pair := range DefaultPairOrder {
+		h, c, err := ParsePair(pair)
+		if err != nil {
+			t.Fatalf("default order entry %q: %v", pair, err)
+		}
+		for _, mdl := range gatewayModels {
+			if got, ok, reason := StageModel(h, c, mdl, classes, true); ok || reason != ReasonContentBoundary {
+				t.Errorf("stamped StageModel(%s, %s) = %q, %v, %q — want a drop with the boundary's reason: a gateway node's content never crosses to a vendor credential", pair, mdl, got, ok, reason)
+			}
+		}
+		for _, mdl := range []string{"claude-opus-5-5", "anthropic/claude-opus-5", "openai/gpt-6-mini", "gpt-6-sol", "scaleway/gpt-oss-120b"} {
+			wantModel, wantOK, wantReason := StageModel(h, c, mdl, classes, false)
+			if got, ok, reason := StageModel(h, c, mdl, classes, true); got != wantModel || ok != wantOK || reason != wantReason {
+				t.Errorf("stamped StageModel(%s, %s) = (%q, %v, %q), unstamped (%q, %v, %q) — the boundary moved a vendor node's rung", pair, mdl, got, ok, reason, wantModel, wantOK, wantReason)
+			}
+		}
+	}
 }
 
 // The gateway pair is a seal-whitelist entry and never a ladder rung: the
@@ -242,7 +285,7 @@ func TestStageModelNeverMapsTheGatewayPair(t *testing.T) {
 			"openai_compatible/scaleway/glm-5.3", "openai_compatible/glm-5.3",
 			"claude-opus-5-5", "anthropic/claude-opus-5-5", "openai/gpt-6-mini", "gpt-6-sol",
 		} {
-			got, ok, reason := StageModel(harness, "openai_compatible_key", nodeModel, ResolveClasses(nil))
+			got, ok, reason := StageModel(harness, "openai_compatible_key", nodeModel, ResolveClasses(nil), false)
 			if ok || reason != ReasonNoMapping {
 				t.Errorf("StageModel(%s+openai_compatible_key, %s) = %q, %v, %q — want a drop with %q: the gateway slot is never a rung", harness, nodeModel, got, ok, reason, ReasonNoMapping)
 			}
@@ -276,7 +319,7 @@ func TestStageModelClaudeCodeMapsTheSlotsItSpends(t *testing.T) {
 		slots = append(slots, p+"_key")
 	}
 	for _, slot := range slots {
-		got, ok, reason := StageModel(HarnessClaudeCode, slot, "claude-opus-5-5", ResolveClasses(nil))
+		got, ok, reason := StageModel(HarnessClaudeCode, slot, "claude-opus-5-5", ResolveClasses(nil), false)
 		if spends[slot] {
 			if !ok || got != "claude-opus-5-5" {
 				t.Errorf("StageModel(claude_code+%s, claude-opus-5-5) = %q, %v — the delegate spends this slot, want the node's id", slot, got, ok)
@@ -342,7 +385,7 @@ func TestGatewayPairIsASealWhitelistEntryNeverARung(t *testing.T) {
 	// would drop on every node.
 	for _, h := range []string{HarnessClaw, HarnessClaudeCode, HarnessCodex} {
 		for _, mdl := range []string{"openai_compatible/scaleway/glm-5.3", "anthropic/claude-opus-5", "gpt-6-sol"} {
-			if got, ok, _ := StageModel(h, gatewaySlot, mdl, ClassTable{}); ok {
+			if got, ok, _ := StageModel(h, gatewaySlot, mdl, ClassTable{}, false); ok {
 				t.Errorf("StageModel(%s, %s, %s) = %q: the gateway slot must map no stage", h, gatewaySlot, mdl, got)
 			}
 		}

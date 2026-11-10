@@ -138,7 +138,7 @@ func doorWf() *ir.Workflow {
 func (f *doorFixture) resolve(t *testing.T, runID string, policy *store.RunLLMRoutePolicy, wf *ir.Workflow) (secrets.RunBundle, credResolution) {
 	t.Helper()
 	ctx := store.WithTenant(context.Background(), poolTeam)
-	creds, err := f.pub.resolveAndSealCredentials(ctx, runID, poolOrg, poolTeam, "requester", "docs-refresh", "", wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustDefault, nil, policy, nil)
+	creds, err := f.pub.resolveAndSealCredentials(ctx, runID, poolOrg, poolTeam, "requester", "docs-refresh", "", wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustDefault, nil, policy, nil, boundaryDerived)
 	if err != nil {
 		t.Fatalf("resolveAndSealCredentials: %v", err)
 	}
@@ -373,7 +373,7 @@ func TestDoorWantsFor_restoresTheProgramByteExactly(t *testing.T) {
 		// Both pairs held: NOTHING is missing, the derivation probes
 		// nothing — the trivially-restoring case.
 		return true
-	})
+	}, false)
 	if ok || len(wants) != 0 || len(unmapped) != 0 {
 		t.Fatalf("all-held derivation = %+v unmapped=%v ok=%v, want nothing armed", wants, unmapped, ok)
 	}
@@ -391,7 +391,7 @@ func TestDoorWantsFor_restoresTheProgramByteExactly(t *testing.T) {
 	// restores. The pre-probe snapshot is the same two-rung-free program.
 	wants, _, ok = doorWantsFor(policy, model.RouteView{Workflow: wf}, nil, func(_, credential string) bool {
 		return credential == "anthropic_key"
-	})
+	}, false)
 	if !ok || len(wants) != 1 || wants[0] != (credpool.Credential{Source: credpool.SourceAPIKey, Ref: "zai"}) {
 		t.Fatalf("door wants = %+v ok=%v, want exactly the zai api_key", wants, ok)
 	}
@@ -439,15 +439,15 @@ func TestAcquireDoorGrant_guards(t *testing.T) {
 	_ = args
 
 	// A whole-bundle grant: the whole-bundle tier's case, never the door's.
-	if g, _ := f.pub.acquireDoorGrant(ctx, "r", poolOrg, poolTeam, "requester", "bot", model.RouteView{Workflow: wf}, policy, nil, &bundle, &credpool.Grant{}, false, false, store.RunTrustDefault, map[secrets.Provider]string{}, credSlotWants{}, sealable); g != nil {
+	if g, _ := f.pub.acquireDoorGrant(ctx, "r", poolOrg, poolTeam, "requester", "bot", model.RouteView{Workflow: wf}, policy, nil, &bundle, &credpool.Grant{}, false, false, store.RunTrustDefault, map[secrets.Provider]string{}, newSealedKeyIDs(), credSlotWants{}, sealable, false); g != nil {
 		t.Fatal("the door fired behind a whole-bundle grant")
 	}
 	// An env-funded run acquires nothing at all (#2038).
-	if g, _ := f.pub.acquireDoorGrant(ctx, "r", poolOrg, poolTeam, "requester", "bot", model.RouteView{Workflow: wf}, policy, nil, &bundle, nil, true, false, store.RunTrustDefault, map[secrets.Provider]string{}, credSlotWants{}, sealable); g != nil {
+	if g, _ := f.pub.acquireDoorGrant(ctx, "r", poolOrg, poolTeam, "requester", "bot", model.RouteView{Workflow: wf}, policy, nil, &bundle, nil, true, false, store.RunTrustDefault, map[secrets.Provider]string{}, newSealedKeyIDs(), credSlotWants{}, sealable, false); g != nil {
 		t.Fatal("the door fired on an env-funded run")
 	}
 	// An empty bundle belongs to the whole-bundle tier.
-	if g, _ := f.pub.acquireDoorGrant(ctx, "r", poolOrg, poolTeam, "requester", "bot", model.RouteView{Workflow: wf}, policy, nil, &secrets.RunBundle{}, nil, false, false, store.RunTrustDefault, map[secrets.Provider]string{}, credSlotWants{}, sealable); g != nil {
+	if g, _ := f.pub.acquireDoorGrant(ctx, "r", poolOrg, poolTeam, "requester", "bot", model.RouteView{Workflow: wf}, policy, nil, &secrets.RunBundle{}, nil, false, false, store.RunTrustDefault, map[secrets.Provider]string{}, newSealedKeyIDs(), credSlotWants{}, sealable, false); g != nil {
 		t.Fatal("the door fired on an empty bundle")
 	}
 }

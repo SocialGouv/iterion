@@ -89,7 +89,7 @@ func newPoolFixture(t *testing.T, limits credpool.Limits) *poolFixture {
 func (f *poolFixture) resolve(t *testing.T, runID string, wf *ir.Workflow) (secrets.RunBundle, credResolution) {
 	t.Helper()
 	ctx := store.WithTenant(context.Background(), poolTeam)
-	creds, err := f.pub.resolveAndSealCredentials(ctx, runID, poolOrg, poolTeam, "requester", "docs-refresh", "", wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustDefault, nil, nil, nil)
+	creds, err := f.pub.resolveAndSealCredentials(ctx, runID, poolOrg, poolTeam, "requester", "docs-refresh", "", wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustDefault, nil, nil, nil, boundaryDerived)
 	if err != nil {
 		t.Fatalf("resolveAndSealCredentials: %v", err)
 	}
@@ -487,7 +487,7 @@ func TestResolveAndSealCredentials_WarnsOnceWhenNothingResolvedForASpendingRun(t
 			_ = f.pledges.Upsert(context.Background(), pledge)
 
 			ctx := store.WithTenant(context.Background(), poolTeam)
-			creds, err := f.pub.resolveAndSealCredentials(ctx, "run-terminal", poolOrg, poolTeam, "u", "bot", "", tc.wf, nil, nil, model.RouteView{Workflow: tc.wf}, nil, store.RunTrustDefault, nil, nil, nil)
+			creds, err := f.pub.resolveAndSealCredentials(ctx, "run-terminal", poolOrg, poolTeam, "u", "bot", "", tc.wf, nil, nil, model.RouteView{Workflow: tc.wf}, nil, store.RunTrustDefault, nil, nil, nil, boundaryDerived)
 			if err != nil {
 				t.Fatalf("resolveAndSealCredentials: %v", err)
 			}
@@ -541,7 +541,7 @@ func TestResolveAndSealCredentials_WarnsWhenOnlyAGenericSecretResolved(t *testin
 	}
 
 	ctx := store.WithTenant(context.Background(), poolTeam)
-	creds, err := p.resolveAndSealCredentials(ctx, "run-generic-only", poolOrg, poolTeam, "requester", "review-pr", "", wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustDefault, nil, nil, nil)
+	creds, err := p.resolveAndSealCredentials(ctx, "run-generic-only", poolOrg, poolTeam, "requester", "review-pr", "", wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustDefault, nil, nil, nil, boundaryDerived)
 	if err != nil {
 		t.Fatalf("resolveAndSealCredentials: %v", err)
 	}

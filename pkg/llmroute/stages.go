@@ -61,12 +61,25 @@ import (
 // whitelist alone, a gateway route is the node's own spec and never a
 // crossing's target, and a case on any arm would make the pair a ladder
 // rung.
-func StageModel(harness, credential, nodeModel string, classes ClassTable) (model string, ok bool, reason string) {
+//
+// teamGateway is the run's content boundary (ADR-131 §4,
+// store.RunContentBoundary.TeamGateway): under it a node routed to the
+// team's gateway maps on NO pair (ReasonContentBoundary) — its same-family
+// rungs refuse the gateway spelling anyway, and the wholesale crossings
+// (claw+openai_key, codex's) would carry the node's content to a vendor
+// credential, off the gateway the run is held to. A node routed elsewhere
+// maps as without the boundary, and an unstamped run (the operator's own
+// environment gateway, a run launched before the stamp) keeps the
+// crossing.
+func StageModel(harness, credential, nodeModel string, classes ClassTable, teamGateway bool) (model string, ok bool, reason string) {
 	if classes.forward == nil {
 		classes = ResolveClasses(nil)
 	}
 	if nodeModel == "" {
 		return "", false, ReasonNoMapping
+	}
+	if teamGateway && gatewayRoute(nodeModel) {
+		return "", false, ReasonContentBoundary
 	}
 	family, bare := modelFamily(nodeModel)
 	switch harness {
@@ -147,6 +160,23 @@ func crossToClass(classes ClassTable, family, bare, targetFamily string) (string
 // carrying the class and family: a level can fix THAT one with a
 // model_classes cell, never this one.
 const ReasonNoMapping = "has no delivery-1 model mapping"
+
+// ReasonContentBoundary is the stage-skip reason for a node routed to the
+// team's gateway on a run whose content boundary holds it there (ADR-131
+// §4) — verbatim into the caller's drop line. No model_classes cell lifts
+// it: the boundary is the run's, frozen at launch.
+const ReasonContentBoundary = "is refused for a node routed to the team's gateway: the run's content boundary (team_gateway) holds its content there, and a crossing would carry it to a vendor credential"
+
+// gatewayRoute reports whether a node model is a route to the gateway: its
+// routing prefix — everything before the first slash, read case-blind and
+// trimmed, the walk's own reading (model.rawGatewayPrefix) — is the
+// gateway's, whatever follows. Read generously on purpose: under the
+// boundary, a spelling dispatch might not serve is still a node its author
+// meant for the gateway, and the refusal is the safe answer.
+func gatewayRoute(nodeModel string) bool {
+	prefix, _, routed := strings.Cut(strings.TrimSpace(nodeModel), "/")
+	return routed && strings.EqualFold(strings.TrimSpace(prefix), ProviderOpenAICompatible)
+}
 
 // shippedOpenAIDefault is the openai family's shipped crossing default
 // (the class table's standard rung; per-level overrides are delivery 2).

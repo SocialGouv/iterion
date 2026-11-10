@@ -867,8 +867,10 @@ func ladderEscapes(wf *ir.Workflow, msg *queue.RunMessage, sandboxed bool) map[s
 	//   - a codex stage on a SANDBOXED run is refused by the screen
 	//     (fallback_apply.go) — the runner's own sandbox tiers are known
 	//     here, so the refusal is decided, not guessed;
-	//   - an unmappable model (StageModel's no-mapping pairs) is dropped
-	//     per node — checked against the node's own model.
+	//   - an unmappable model (StageModel's no-mapping pairs, and a node
+	//     routed to the team's gateway under the run's team_gateway content
+	//     boundary) is dropped per node — checked against the node's own
+	//     model and the boundary the message carries.
 	// RESIDUAL, said: the per-node predicates (ungated ask-rules, tools
 	// inversion, session continuity) are not re-judged here — a stage
 	// refused by one of them after its park was deleted converts the
@@ -906,7 +908,7 @@ func ladderEscapes(wf *ir.Workflow, msg *queue.RunMessage, sandboxed bool) map[s
 			if ov.Model != "" {
 				nodeModel = ov.Model
 			}
-			if _, mappable, _ := llmroute.StageModel(st.Backend, st.Provider, nodeModel, llmroute.ResolveClasses(msg.FallbackModelClasses)); !mappable {
+			if _, mappable, _ := llmroute.StageModel(st.Backend, st.Provider, nodeModel, llmroute.ResolveClasses(msg.FallbackModelClasses), msg.ContentBoundary.TeamGateway()); !mappable {
 				continue
 			}
 			escapes[nn.NodeID()] = true

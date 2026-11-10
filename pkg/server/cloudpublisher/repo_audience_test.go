@@ -64,7 +64,7 @@ func TestFacadeAutoIgnoresAKeyTheRepoAudienceWithholds(t *testing.T) {
 				logger: testLogger(), usageCaps: usagecap.NewMemStore(),
 				platformAudience: audienceResolver(&platformcfg.PlatformCredentials{FacadeDefault: &fd}, nil)}
 			ctx := secrets.WithLaunchRepo(store.WithTenant(context.Background(), "team1"), tc.launchRepo)
-			res, err := p.resolveAndSealCredentials(ctx, "run-native", "", "team1", "webhook:cfg-1", "review-pr", "", nil, nil, nil, model.RouteView{}, nil, store.RunTrustDefault, nil, nil, nil)
+			res, err := p.resolveAndSealCredentials(ctx, "run-native", "", "team1", "webhook:cfg-1", "review-pr", "", nil, nil, nil, model.RouteView{}, nil, store.RunTrustDefault, nil, nil, nil, boundaryDerived)
 			if err != nil {
 				t.Fatalf("resolve: %v", err)
 			}
@@ -107,7 +107,7 @@ func TestWithheldDiagnosticsNameTheRepository(t *testing.T) {
 		var buf bytes.Buffer
 		p := &Publisher{apiKeys: keys, runSecrets: secrets.NewMemoryRunSecretsStore(), sealer: sealer, logger: iterlog.New(iterlog.LevelInfo, &buf)}
 		ctx := secrets.WithLaunchRepo(store.WithTenant(context.Background(), "team1"), tc.launchRepo)
-		if _, err := p.resolveAndSealCredentials(ctx, "run-pin", "", "team1", "webhook:cfg-1", "review-pr", "", nil, map[string]string{"anthropic": k.ID}, nil, model.RouteView{}, nil, store.RunTrustDefault, nil, nil, nil); err != nil {
+		if _, err := p.resolveAndSealCredentials(ctx, "run-pin", "", "team1", "webhook:cfg-1", "review-pr", "", nil, map[string]string{"anthropic": k.ID}, nil, model.RouteView{}, nil, store.RunTrustDefault, nil, nil, nil, boundaryDerived); err != nil {
 			t.Fatal(err)
 		}
 		log := buf.String()
@@ -125,7 +125,7 @@ func TestWithheldDiagnosticsNameTheRepository(t *testing.T) {
 	var buf bytes.Buffer
 	p := &Publisher{apiKeys: keys, runSecrets: secrets.NewMemoryRunSecretsStore(), sealer: sealer, logger: iterlog.New(iterlog.LevelInfo, &buf)}
 	ctx := secrets.WithLaunchRepo(store.WithTenant(context.Background(), "team1"), "acme/y")
-	if _, err := p.resolveAndSealCredentials(ctx, "run-both", "", "team1", "webhook:cfg-1", "review-pr", "", nil, nil, nil, model.RouteView{}, nil, store.RunTrustDefault, nil, nil, nil); err != nil {
+	if _, err := p.resolveAndSealCredentials(ctx, "run-both", "", "team1", "webhook:cfg-1", "review-pr", "", nil, nil, nil, model.RouteView{}, nil, store.RunTrustDefault, nil, nil, nil, boundaryDerived); err != nil {
 		t.Fatal(err)
 	}
 	if log := buf.String(); !strings.Contains(log, "its workload audience [other-bot] does not name bot review-pr and its repository audience [acme/x] does not name repository acme/y") {

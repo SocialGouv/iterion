@@ -122,7 +122,7 @@ func TestCredentialPreviewMatchesSealedBundleUnderRefusedPinnedKey(t *testing.T)
 			}
 			pinned := derivePinnedProviders(model.RouteView{Workflow: wf})
 			ctx := store.WithTenant(t.Context(), poolTeam)
-			res, err := p.resolveAndSealCredentials(ctx, "oracle-run", poolOrg, poolTeam, spec.OwnerID, spec.Context.BotID, "", wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustDefault, pinned, nil, nil)
+			res, err := p.resolveAndSealCredentials(ctx, "oracle-run", poolOrg, poolTeam, spec.OwnerID, spec.Context.BotID, "", wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustDefault, pinned, nil, nil, boundaryDerived)
 			if err != nil {
 				t.Fatal(err)
 			}

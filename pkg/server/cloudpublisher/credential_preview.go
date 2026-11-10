@@ -520,8 +520,14 @@ func (p *Publisher) previewCredentials(ctx context.Context, spec runview.Credent
 	// the launch's own composer over the fills predicted here, and RESTORED
 	// immediately: the live fallback door runs BEFORE the ladder, so the door
 	// block below must answer on the authored program, as it does live.
+	// The content boundary the launch would stamp (ADR-131 §4), through the
+	// launch's own predicate over the fills predicted here: the ladder and
+	// the door below screen on it as the launch's do.
+	_, gwKey := x.api[secrets.ProviderOpenAICompatible]
+	_, gwPinned := x.pinnedAPI[secrets.ProviderOpenAICompatible]
+	previewTeamGateway := teamGatewayBoundary(previewView, gwKey || gwPinned)
 	restoreRoutes := snapshotFallbackRoutes(wf)
-	composePolicyLadder(wf, previewView, spec.LLMRoutePolicy, model.AllowedProviderSet(previewView.AllowedProviders), spec.Launch.Vars, doorServesMetadata(x, spec.Launch.Trust.AmbientLLMRefused()), nil)
+	composePolicyLadder(wf, previewView, spec.LLMRoutePolicy, model.AllowedProviderSet(previewView.AllowedProviders), spec.Launch.Vars, doorServesMetadata(x, spec.Launch.Trust.AmbientLLMRefused()), previewTeamGateway, nil)
 	previewRoutes := attributedRoutes(previewView)
 	restoreRoutes()
 	posture := p.unfundedPostureFor(wf, sovereignPreview, envFunded, spec.Launch.Trust, runnerPool)
@@ -587,7 +593,7 @@ func (p *Publisher) previewCredentials(ctx context.Context, spec runview.Credent
 	// and a policy whose ladder can dispatch a missing kind.
 	if !envFunded && metadataHoldsDefault(x) && !x.poolGranted &&
 		spec.LLMRoutePolicy != nil && len(spec.LLMRoutePolicy.Triggers) > 0 && len(spec.LLMRoutePolicy.PairOrder) > 0 && p.credPool != nil && !sharedTiersBlocked {
-		wants, _, ok := doorWantsFor(spec.LLMRoutePolicy, previewView, spec.Launch.Vars, doorServesMetadata(x, spec.Launch.Trust.AmbientLLMRefused()))
+		wants, _, ok := doorWantsFor(spec.LLMRoutePolicy, previewView, spec.Launch.Vars, doorServesMetadata(x, spec.Launch.Trust.AmbientLLMRefused()), previewTeamGateway)
 		if !ok {
 			x.out.Pool.DoorReason = "no_dispatchable_wants"
 		} else {

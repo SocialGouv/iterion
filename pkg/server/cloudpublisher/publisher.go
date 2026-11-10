@@ -649,7 +649,11 @@ var errUntrustedRequiresSecrets = errors.New("untrusted workspace cannot be give
 // bundle. It is a required parameter rather than a field read from somewhere
 // convenient precisely so a future caller cannot omit it: the compiler asks
 // every call site who wrote the code this bundle is about to be handed to.
-func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID, tenantID, ownerID, botID, runnerPool string, wf *ir.Workflow, keyOverrides, secretOverrides map[string]string, view model.RouteView, launchVars map[string]string, trust store.RunTrust, pinnedProviders []string, routePolicy *store.RunLLMRoutePolicy, poolAttachment *store.RunPoolAttachment) (credResolution, error) {
+// boundary is required for the same reason: whether this resolution derives
+// the run's content boundary (a launch) or replays the one the run froze (a
+// resume) decides the bundle's ambient refusal and the ladder's screen
+// (content_boundary.go).
+func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID, tenantID, ownerID, botID, runnerPool string, wf *ir.Workflow, keyOverrides, secretOverrides map[string]string, view model.RouteView, launchVars map[string]string, trust store.RunTrust, pinnedProviders []string, routePolicy *store.RunLLMRoutePolicy, poolAttachment *store.RunPoolAttachment, boundary boundarySource) (credResolution, error) {
 	// The launch-frozen pinned set (store.Run.PinnedProviders), passed in
 	// rather than derived here: the resume path must replay the launch's
 	// answer, not re-derive it from a source that may have moved. Only the
@@ -742,9 +746,9 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	// return below), so the runner derives the same refusal from the
 	// message's trust (store.RunTrust.AmbientLLMRefused — this predicate)
 	// whether or not a bundle arrives (#3126). A trusted run keeps whatever
-	// the credential tiers decided (ADR-131 §7 stamps a run to its own
-	// credentials regardless of trust; this adds the untrusted case, it
-	// never clears one).
+	// the credential tiers decided (ADR-131 §7 stamps a run held to its
+	// team's gateway regardless of trust, where its content boundary is
+	// decided below; this adds the untrusted case, it never clears one).
 	if trust.AmbientLLMRefused() {
 		bundle.AmbientLLMRefused = true
 	}
@@ -783,6 +787,9 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	// provider in BOTH channels needs per-channel stamps (schema 27's
 	// vocabulary) before it can meter honestly — PR-C' owns that.
 	apiKeyFPs := map[secrets.Provider]string{}
+	// The key row that filled each slot, beside its stamp: the content
+	// boundary names the gateway slot's (ADR-131 §4).
+	apiKeyIDs := newSealedKeyIDs()
 	// The capped keys every tier seals, by fingerprint, for the admission
 	// step after the walk (cred_slots.go); narrowed to the stamp at the end.
 	wants := credSlotWants{}
@@ -921,7 +928,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 							continue
 						}
 						setAPIKey(&bundle, prov, string(r.Plaintext), r.BaseURL, r.Fingerprint, false)
-						noteSealedAPIKey(apiKeyFPs, wants, prov, r.Fingerprint, r.MaxConcurrentRuns, r.Name)
+						noteSealedAPIKey(apiKeyFPs, apiKeyIDs, wants, prov, sealedKey{id: r.KeyID, fingerprint: r.Fingerprint, max: r.MaxConcurrentRuns, name: r.Name})
 						usedIDs = append(usedIDs, r.KeyID)
 					}
 					p.warnRefusedPins(ctx, runID, tenantID, botID, overrides, resolved, withheld, allowed, pairRefusals, policy.sealableSlot)
@@ -1150,7 +1157,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 				//    neither takes a stranger's donation while either is available.
 				//    Fills per WIRE FAMILY like the platform tier, so an org key can
 				//    never shadow a credential the team already holds in another shape.
-				p.fillFromOrg(ctx, runID, orgID, tenantID, botID, audienceBotID, withheld, &bundle, apiKeyFPs, wants, skips, skippedAPIKeys, skippedForfaits, pinnedSet, policy, orgNative)
+				p.fillFromOrg(ctx, runID, orgID, tenantID, botID, audienceBotID, withheld, &bundle, apiKeyFPs, apiKeyIDs, wants, skips, skippedAPIKeys, skippedForfaits, pinnedSet, policy, orgNative)
 
 			case credentialTierPool:
 				// 5a. ATTACHED pool (ADR-164): the resolved attachment names one
@@ -1160,7 +1167,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 				//     (ADR-131 §5 amended). Law 1 lives inside: the pool never
 				//     touches a slot an explicit tier sealed.
 				if poolAttachment != nil && poolAttachment.PoolID != "" {
-					p.acquireFromAttachedPools(ctx, runID, orgID, tenantID, ownerID, botID, view, poolAttachment, &bundle, apiKeyFPs, wants, skips, skippedAPIKeys, skippedForfaits, policy, &res)
+					p.acquireFromAttachedPools(ctx, runID, orgID, tenantID, ownerID, botID, view, poolAttachment, &bundle, apiKeyFPs, apiKeyIDs, wants, skips, skippedAPIKeys, skippedForfaits, policy, &res)
 					return nil
 				}
 				// 5. Mutualised pool — the LAST resort, and only for a run that has no
@@ -1224,7 +1231,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 									fp = secrets.FingerprintSHA256(string(grant.Payload))
 								}
 								setAPIKey(&bundle, prov, string(grant.Payload), "", fp, false)
-								noteSealedAPIKey(apiKeyFPs, wants, prov, fp, grant.KeyMaxConcurrentRuns, grant.KeyName)
+								noteSealedAPIKey(apiKeyFPs, apiKeyIDs, wants, prov, sealedKey{id: grant.KeyID, fingerprint: fp, max: grant.KeyMaxConcurrentRuns, name: grant.KeyName})
 								// The lent key's row lives in the DONOR's tenant: the
 								// runner's metering bump must reach it without the run's
 								// tenant filter.
@@ -1255,7 +1262,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 				//    run runs on its donor — filling alongside would outrank the lent
 				//    credential while still consuming the donor's quota and slot.
 				if res.grant == nil {
-					p.fillFromPlatform(ctx, runID, orgID, tenantID, botID, audienceBotID, withheld, &bundle, skippedAPIKeys, apiKeyFPs, wants, skips, skippedForfaits, pinnedSet, policy, platformNative)
+					p.fillFromPlatform(ctx, runID, orgID, tenantID, botID, audienceBotID, withheld, &bundle, skippedAPIKeys, apiKeyFPs, apiKeyIDs, wants, skips, skippedForfaits, pinnedSet, policy, platformNative)
 				}
 
 			case credentialTierRestore:
@@ -1309,7 +1316,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 					natives := map[restoreTier]*tierNative{restoreTierOrg: orgNative, restoreTierPlatform: platformNative}
 					restoreKey := func(prov secrets.Provider, sk skippedAPIKey, outcome sealOutcome) {
 						pinnedOnly := fillAPIKeySlotAs(&bundle, taken, prov, sk.plaintext, sk.baseURL, sk.fingerprint, outcome)
-						noteSealedAPIKey(apiKeyFPs, wants, prov, sk.fingerprint, sk.maxConcurrentRuns, sk.name)
+						noteSealedAPIKey(apiKeyFPs, apiKeyIDs, wants, prov, sealedKey{id: sk.keyID, fingerprint: sk.fingerprint, max: sk.maxConcurrentRuns, name: sk.name})
 						if sk.platform {
 							bundle.PlatformSourced[string(prov)] = true
 						}
@@ -1464,6 +1471,30 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	}
 	res.skippedReopensAt = skips.earliest
 
+	// The run's content boundary (ADR-131 §4), decided HERE: after the tier
+	// walk, the last step that may seal the gateway key (the door never
+	// lends one, the pool and the door refuse it by name), and before the
+	// door and the ladder, which both compose crossings the boundary
+	// refuses. A launch derives it from the view the walk read — the gateway
+	// routes it attributed — and the bundle it sealed; a resume replays the
+	// frozen stamp. Written by applyTo at launch; the bundle's ambient
+	// refusal and the two screens below read the same value.
+	res.contentBoundary = boundary.resolve(func() *store.RunContentBoundary {
+		held, baseURL := sealedGatewayKey(bundle)
+		return derivedContentBoundary(teamGatewayBoundary(view, held), apiKeyIDs.of(secrets.ProviderOpenAICompatible), baseURL)
+	})
+	teamGateway := res.contentBoundary.TeamGateway()
+	// ADR-131 §7, the ambient stamp's second fact: a run held to its team's
+	// gateway carries it whatever its trust — the same decision as the stamp
+	// on the run document (derived at launch, replayed at resume), so the two
+	// carriages never disagree. Set here, as the boundary is decided and
+	// before any return below, beside ADR-162's untrusted arm set as the
+	// bundle was built; neither clears it, and a trusted own_keys run keeps
+	// what the tiers decided.
+	if teamGateway {
+		bundle.AmbientLLMRefused = true
+	}
+
 	// The routing fallback door (ADR-121 § Delivery 2, slice 5): a run
 	// that holds its own credential can still have a policy ladder whose
 	// rungs name a kind the bundle lacks — those rungs would drop at
@@ -1474,7 +1505,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	// untouched: this runs only after it declined (res.grant == nil), and
 	// never on an env-funded run or an empty bundle (the pool tier's own
 	// condition — a run with nothing acquires through it, not the door).
-	doorGrantSealed, doorReleased := p.acquireDoorGrant(ctx, runID, orgID, tenantID, ownerID, botID, view, routePolicy, launchVars, &bundle, res.grant, envFunded, runnerPool != "" || sovereign, trust, apiKeyFPs, wants, policy.sealableSlot)
+	doorGrantSealed, doorReleased := p.acquireDoorGrant(ctx, runID, orgID, tenantID, ownerID, botID, view, routePolicy, launchVars, &bundle, res.grant, envFunded, runnerPool != "" || sovereign, trust, apiKeyFPs, apiKeyIDs, wants, policy.sealableSlot, teamGateway)
 	if doorReleased != nil {
 		res.releasedGrants = append(res.releasedGrants, doorReleased)
 	}
@@ -1485,7 +1516,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	// held pairs in policy order, landed on the program the derivations below
 	// judge. envFunded above already read the PRE-ladder program: what it
 	// decided (acquire nothing) is what makes the selection idle.
-	if stages := composePolicyLadder(wf, view, routePolicy, allowed, launchVars, doorServes(bundle, trust.AmbientLLMRefused()), func(refusal string) {
+	if stages := composePolicyLadder(wf, view, routePolicy, allowed, launchVars, doorServes(bundle, trust.AmbientLLMRefused()), teamGateway, func(refusal string) {
 		if p.logger != nil {
 			p.logger.Info("cloudpublisher: %s (run=%s)", refusal, runID)
 		}
@@ -1668,7 +1699,14 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	if refusal := unfundedRefusalFor(tenantID, attributed, bundleFunding(bundle, posture), !holdsDefaultLLMCredential(bundle), posture); refusal != nil {
 		return res, refusal
 	}
-	if noLLMCred && len(bundle.GenericSecrets) == 0 {
+	// A run held to its team's gateway seals its bundle even with nothing in
+	// it: the ambient refusal travels there and nowhere else, and without it
+	// the runner would serve the run's gateway routes from the pod's
+	// environment — the operator's gateway, the crossing the boundary exists
+	// to refuse. A launch never reaches this with nothing (team_gateway needs
+	// the sealed key); a resume replaying the stamp may, when the team's key
+	// is gone since.
+	if noLLMCred && len(bundle.GenericSecrets) == 0 && !teamGateway {
 		return res, nil
 	}
 
@@ -1807,6 +1845,13 @@ type credResolution struct {
 	// (cred_slots.go). Narrowed like fingerprints: a key sealed for a route
 	// the run never takes holds no slot.
 	credSlots []credSlotWant
+	// contentBoundary is the run's content boundary (ADR-131 §4,
+	// content_boundary.go): derived by a launch's walk — team_gateway or an
+	// explicit own_keys — or the frozen stamp a resume replays. Nil only when
+	// the resolution never walked (no sealing configured, no tenant) or
+	// replays a run stamped before the producer. A LAUNCH fact: applyTo
+	// writes it, stamp() never carries it (see applyTo).
+	contentBoundary *store.RunContentBoundary
 }
 
 // stamp is the run-document form of the resolution.
@@ -1819,12 +1864,6 @@ func (c credResolution) stamp() store.RunCredStamp {
 	return s
 }
 
-// applyTo writes the resolution onto an IN-MEMORY run document — the launch
-// path's counterpart to RunStore.SetRunCredStamp, which the resume path
-// takes. Both go through stamp(), so a fact added to the resolution cannot
-// reach one path and silently miss the other; that unit is the whole promise
-// of RunCredStamp, and assigning the fields one by one here is what would
-// break it.
 // poolLease disambiguates "no pool lease serves this attempt" — the
 // publication plumbing (PoolGrantless, SupersedeRun, the rollback's
 // reopen, publishInstant) reads THIS, never the whole-bundle grant alone:
@@ -1849,11 +1888,25 @@ func (c credResolution) poolAttemptID() string {
 	return ""
 }
 
+// applyTo writes the resolution onto an IN-MEMORY run document — the launch
+// path's counterpart to RunStore.SetRunCredStamp, which the resume path
+// takes. Both go through stamp(), so a fact a resume RE-RESOLVES cannot
+// reach one path and silently miss the other; that unit is the whole promise
+// of RunCredStamp, and assigning those fields one by one here is what would
+// break it.
+//
+// One field is a launch fact and deliberately outside stamp(): the content
+// boundary (ADR-131 §4). It is frozen when the launch derives it and the
+// resume replays the document's bytes — SubmitResume passes the stored stamp
+// back in (boundaryFrozen) and publishes prior.ContentBoundary — so no
+// re-resolution may write it: putting it in stamp() would let a resume move a
+// running run onto whichever answer its walk gives today.
 func (c credResolution) applyTo(r *store.Run) {
 	s := c.stamp()
 	r.CredFingerprints = s.Fingerprints
 	r.CredentialTiers = s.Tiers
 	r.SkippedCredReopensAt = s.SkippedReopensAt
+	r.ContentBoundary = c.contentBoundary
 	// Both stores clear the model-idle marker on a stamp — a re-resolution
 	// is a fresh attempt. At launch the document is new and the marker is
 	// already nil, so this changes nothing today; it is here so the
@@ -2148,7 +2201,7 @@ func setOAuthCredential(bundle *secrets.RunBundle, kind string, payload []byte, 
 //
 // botID is the run's raw bot id, the key the budget floor matches;
 // audienceBotID is its canonical spelling, read by the BYOK audience only.
-func (p *Publisher) fillFromPlatform(ctx context.Context, runID, orgID, tenantID, botID, audienceBotID string, withheld *audienceWithholdings, bundle *secrets.RunBundle, skippedAPIKeys skippedAPIKeys, apiKeyFPs map[secrets.Provider]string, wants credSlotWants, skips *skipTracker, skippedForfaits skippedForfaits, pinned map[string]bool, policy sharedTierPolicy, native *tierNative) {
+func (p *Publisher) fillFromPlatform(ctx context.Context, runID, orgID, tenantID, botID, audienceBotID string, withheld *audienceWithholdings, bundle *secrets.RunBundle, skippedAPIKeys skippedAPIKeys, apiKeyFPs map[secrets.Provider]string, apiKeyIDs sealedKeyIDs, wants credSlotWants, skips *skipTracker, skippedForfaits skippedForfaits, pinned map[string]bool, policy sharedTierPolicy, native *tierNative) {
 	if p.sealer == nil {
 		return
 	}
@@ -2289,7 +2342,7 @@ func (p *Publisher) fillFromPlatform(ctx context.Context, runID, orgID, tenantID
 						}
 						pinnedOnly := fillAPIKeySlotAs(bundle, taken, prov, string(r.Plaintext), r.BaseURL, r.Fingerprint, outcome)
 						bundle.PlatformSourced[string(prov)] = true
-						noteSealedAPIKey(apiKeyFPs, wants, prov, r.Fingerprint, r.MaxConcurrentRuns, r.Name)
+						noteSealedAPIKey(apiKeyFPs, apiKeyIDs, wants, prov, sealedKey{id: r.KeyID, fingerprint: r.Fingerprint, max: r.MaxConcurrentRuns, name: r.Name})
 						usedIDs = append(usedIDs, r.KeyID)
 						if pinnedOnly {
 							p.logger.Info("cloudpublisher: platform credential used run=%s slot=%s (pinned route only — %s)", runID, prov, routeOnlyWhy(familyTaken, policy))
@@ -3555,7 +3608,11 @@ func doorServes(bundle secrets.RunBundle, untrusted bool) func(_, credential str
 // before returning — no Policy-flagged fallback exists outside the real
 // ladder block, so the strip restores the program byte-exactly, which is
 // what lets a read-only preview run it.
-func doorWantsFor(routePolicy *store.RunLLMRoutePolicy, view model.RouteView, launchVars map[string]string, serves func(_, credential string) bool) (wants []credpool.Credential, unmapped []string, ok bool) {
+//
+// teamGateway is the run's content boundary (ADR-131 §4): the probe screens
+// like the real ladder, so a kind only a node routed to the team's gateway
+// would carry is never asked of a donor.
+func doorWantsFor(routePolicy *store.RunLLMRoutePolicy, view model.RouteView, launchVars map[string]string, serves func(_, credential string) bool, teamGateway bool) (wants []credpool.Credential, unmapped []string, ok bool) {
 	wf := view.Workflow
 	// The tenant's allowlist (ADR-129 §5) bounds the door like every other
 	// builder of rescue routes: a pair whose credential the list excludes
@@ -3599,7 +3656,7 @@ func doorWantsFor(routePolicy *store.RunLLMRoutePolicy, view model.RouteView, la
 		}, func(n ir.LLMNode) string {
 			ov := view.Overrides.ForNode(n.NodeID(), n.NodeKind())
 			return ov.Backend
-		}, llmroute.ResolveClasses(routePolicy.ModelClasses))
+		}, llmroute.ResolveClasses(routePolicy.ModelClasses), teamGateway)
 		stripped := false
 		for _, n := range wf.Nodes {
 			agent, ok := n.(*ir.AgentNode)
@@ -3668,8 +3725,10 @@ func (p *Publisher) acquireDoorGrant(
 	sharedTiersBlocked bool,
 	trust store.RunTrust,
 	apiKeyFPs map[secrets.Provider]string,
+	apiKeyIDs sealedKeyIDs,
 	slotWants credSlotWants,
 	sealable func(slot string) bool,
+	teamGateway bool,
 ) (*credpool.Grant, *credpool.Grant) {
 	if p.credPool == nil || routePolicy == nil || view.Workflow == nil || len(routePolicy.Triggers) == 0 || len(routePolicy.PairOrder) == 0 {
 		return nil, nil
@@ -3686,7 +3745,7 @@ func (p *Publisher) acquireDoorGrant(
 		return nil, nil
 	}
 
-	wants, unmapped, ok := doorWantsFor(routePolicy, view, launchVars, doorServes(*bundle, trust.AmbientLLMRefused()))
+	wants, unmapped, ok := doorWantsFor(routePolicy, view, launchVars, doorServes(*bundle, trust.AmbientLLMRefused()), teamGateway)
 	if p.logger != nil {
 		for _, slot := range unmapped {
 			p.logger.Info("cloudpublisher: fallback door skips run %s — pair slot %q matches no pool credential kind", runID, slot)
@@ -3749,7 +3808,7 @@ func (p *Publisher) acquireDoorGrant(
 				fp = secrets.FingerprintSHA256(string(grant.Payload))
 			}
 			setAPIKey(bundle, prov, string(grant.Payload), "", fp, false)
-			noteSealedAPIKey(apiKeyFPs, slotWants, prov, fp, grant.KeyMaxConcurrentRuns, grant.KeyName)
+			noteSealedAPIKey(apiKeyFPs, apiKeyIDs, slotWants, prov, sealedKey{id: grant.KeyID, fingerprint: fp, max: grant.KeyMaxConcurrentRuns, name: grant.KeyName})
 			bundle.PoolSourced[string(prov)] = true
 			sealed = true
 		}
@@ -3975,7 +4034,7 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 	// The repository this launch serves rides the context into the walk:
 	// a key restricted to repositories is spent only for one of them.
 	ctx = secrets.WithLaunchRepo(ctx, spec.ProjectPath)
-	creds, err := p.resolveAndSealCredentials(ctx, runID, orgID, tenantID, ownerID, spec.BotID, runnerPool, wf, spec.KeyOverrides, spec.SecretOverrides, launchView, spec.Vars, spec.Trust, r.PinnedProviders, spec.LLMRoutePolicy, spec.PoolAttachment)
+	creds, err := p.resolveAndSealCredentials(ctx, runID, orgID, tenantID, ownerID, spec.BotID, runnerPool, wf, spec.KeyOverrides, spec.SecretOverrides, launchView, spec.Vars, spec.Trust, r.PinnedProviders, spec.LLMRoutePolicy, spec.PoolAttachment, boundaryDerived)
 	// A donor's admission is consumed the moment it is granted. Armed BEFORE
 	// the error check: resolveAndSealCredentials can fail AFTER acquiring —
 	// sealing the bundle, persisting it — and still returns the grant. Every
@@ -4659,7 +4718,10 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 	// (launchVarsAsStrings keeps texts only).
 	resumeView := model.RouteViewForDispatch(wf, buildModelOverridesFromRun(prior.ModelOverrides), runFallbackEntriesFromRun(prior.Fallback), prior.Inputs)
 	secretsCtx = secrets.WithLaunchRepo(secretsCtx, prior.ProjectPath)
-	creds, secretsErr := p.resolveAndSealCredentials(secretsCtx, spec.RunID, priorOrgID, prior.TenantID, prior.OwnerID, prior.BotID, prior.RunnerPool, wf, prior.KeyOverrides, prior.SecretOverrides, resumeView, launchVarsAsStrings(prior.Inputs), prior.Trust, prior.PinnedProviders, prior.LLMRoutePolicy, prior.PoolAttachment)
+	// The run's content boundary replays as the launch froze it (ADR-131
+	// §4): the bundle this resume seals carries the ambient refusal, and the
+	// ladder screens, on the stamp the message replays beside it.
+	creds, secretsErr := p.resolveAndSealCredentials(secretsCtx, spec.RunID, priorOrgID, prior.TenantID, prior.OwnerID, prior.BotID, prior.RunnerPool, wf, prior.KeyOverrides, prior.SecretOverrides, resumeView, launchVarsAsStrings(prior.Inputs), prior.Trust, prior.PinnedProviders, prior.LLMRoutePolicy, prior.PoolAttachment, boundaryFrozen(prior.ContentBoundary))
 	grant = creds.poolLease()
 	releasedGrants = creds.releasedGrants
 	if len(creds.grants) > 1 {
@@ -5662,7 +5724,7 @@ func (p *Publisher) closedAtMargin(ctx context.Context, marginPct float64) func(
 // it. Sealed grants append to res.grants; res.grant stays the FIRST
 // sealed one, the whole-bundle semantics' answer (platform skip, budget
 // clamp, poolLease).
-func (p *Publisher) acquireFromAttachedPools(ctx context.Context, runID, orgID, tenantID, ownerID, botID string, view model.RouteView, att *store.RunPoolAttachment, bundle *secrets.RunBundle, apiKeyFPs map[secrets.Provider]string, wants credSlotWants, skips *skipTracker, skippedAPIKeys skippedAPIKeys, skippedForfaits skippedForfaits, policy sharedTierPolicy, res *credResolution) {
+func (p *Publisher) acquireFromAttachedPools(ctx context.Context, runID, orgID, tenantID, ownerID, botID string, view model.RouteView, att *store.RunPoolAttachment, bundle *secrets.RunBundle, apiKeyFPs map[secrets.Provider]string, apiKeyIDs sealedKeyIDs, wants credSlotWants, skips *skipTracker, skippedAPIKeys skippedAPIKeys, skippedForfaits skippedForfaits, policy sharedTierPolicy, res *credResolution) {
 	if p.credPool == nil {
 		return
 	}
@@ -5785,7 +5847,7 @@ func (p *Publisher) acquireFromAttachedPools(ctx context.Context, runID, orgID, 
 						fp = secrets.APIKeyFingerprint(prov, string(grant.Payload), grant.BaseURL)
 					}
 					setAPIKey(bundle, prov, string(grant.Payload), grant.BaseURL, fp, false)
-					noteSealedAPIKey(apiKeyFPs, wants, prov, fp, grant.KeyMaxConcurrentRuns, grant.KeyName)
+					noteSealedAPIKey(apiKeyFPs, apiKeyIDs, wants, prov, sealedKey{id: grant.KeyID, fingerprint: fp, max: grant.KeyMaxConcurrentRuns, name: grant.KeyName})
 					bundle.PoolSourced[string(prov)] = true
 					sealed = true
 				}
@@ -5795,7 +5857,7 @@ func (p *Publisher) acquireFromAttachedPools(ctx context.Context, runID, orgID, 
 					fp = secrets.FingerprintSHA256(string(grant.Payload))
 				}
 				setAPIKey(bundle, prov, string(grant.Payload), "", fp, false)
-				noteSealedAPIKey(apiKeyFPs, wants, prov, fp, grant.KeyMaxConcurrentRuns, grant.KeyName)
+				noteSealedAPIKey(apiKeyFPs, apiKeyIDs, wants, prov, sealedKey{id: grant.KeyID, fingerprint: fp, max: grant.KeyMaxConcurrentRuns, name: grant.KeyName})
 				bundle.PoolSourced[string(prov)] = true
 				sealed = true
 			}
