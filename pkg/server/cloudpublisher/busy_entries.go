@@ -17,11 +17,15 @@ import (
 // margin (near_limit). Each clears with time, as a team key at its
 // max_concurrent_runs clears when one of its runs ends — and the walk
 // answers that key with the capacity class (ErrCredentialAtCapacity, the
-// admission's refusal), so a refusal whose every named provider only such an
-// entry holds answers the same class (UnfundedProvidersError.Busy): the retry
+// admission's refusal), so a refusal such entries alone keep from starting
+// answers the same class (UnfundedProvidersError.Busy, Waits): the retry
 // sweeper asks again on the slot cadence, free of charge, until the run's
 // max_wait, an operator is answered 429, and the sentence says the entry is
-// busy rather than asking for a credential that exists.
+// busy rather than asking for a credential that exists. Which refusals such
+// entries alone keep from starting depends on the arm: the deployment knob's
+// starts with one funded provider, so one busy entry for any provider it names
+// is enough; a strict arm's (llm_fallback=none, team_gateway) needs every
+// provider it names held by one.
 //
 // The other pool states are absences a wait does not cure: a paused entry, an
 // unhealthy one (its credential failing or gone), one whose pledge's bot
@@ -34,9 +38,10 @@ import (
 //
 // And a pool that lends one credential per run — the legacy pool, whose
 // broker grants the first want that serves — funds at most one provider
-// however many of its busy entries free: a refusal naming two or more
-// providers that only its busy entries hold does not wait (busyFor's
-// oneGrant, UnfundedProvidersError.OneGrant).
+// however many of its busy entries free: a strict arm's refusal naming two or
+// more providers that only its busy entries hold does not wait (busyFor's
+// oneGrant, UnfundedProvidersError.OneGrant). The knob's does: one grant
+// starts the run.
 
 // busyEntry is one busy pool entry, named for the sentence.
 type busyEntry struct {

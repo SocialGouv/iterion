@@ -390,14 +390,19 @@ func (p *Publisher) unfundedPostureFor(wf *ir.Workflow, sovereign, teamGateway, 
 // the sentence never claims no tier holds what one does. routes.primary is
 // the attributed set's decided primary routes (attributedRoutes), the content
 // boundary's strict set. busy names, per provider, the pool entries that
-// exist for the launch but could not serve it now (busy_entries.go): a
-// refusal whose every named provider only such an entry holds is a wait
-// (UnfundedProvidersError.Waits), whichever arm refused — unless two or more
-// of them are held only by a pool lending one credential per run.
+// exist for the launch but could not serve it now (busy_entries.go): whether
+// the refusal waits for them (UnfundedProvidersError.Waits) is read on the
+// arm that refused — the knob's refusal ends with one funded provider, a
+// strict arm's with every one, and only a strict arm's can be left unfunded
+// by a pool lending one credential per run (OneGrant).
 func unfundedRefusalFor(tenant string, routes routeAttribution, funded map[string]bool, holdsNothing bool, posture unfundedPosture, heldOut map[string]string, busy busyProviders) *UnfundedProvidersError {
 	refusal := unfundedRefusalArm(tenant, routes, funded, holdsNothing, posture, heldOut)
 	if refusal != nil {
-		refusal.Busy, refusal.OneGrant = busy.busyFor(refusal.Providers)
+		var oneGrant []string
+		refusal.Busy, oneGrant = busy.busyFor(refusal.Providers)
+		if !refusal.Knob {
+			refusal.OneGrant = oneGrant
+		}
 	}
 	return refusal
 }
@@ -466,7 +471,9 @@ func unfundedRefusalArm(tenant string, routes routeAttribution, funded map[strin
 		// run start — the other route's failure is the run's to report. Only
 		// a run whose EVERY attributed provider is unfunded cannot start at
 		// all.
-		return newUnfundedProvidersError(tenant, unfunded, sites, heldOut, false)
+		refusal := newUnfundedProvidersError(tenant, unfunded, sites, heldOut, false)
+		refusal.Knob = true
+		return refusal
 	}
 	// The sovereign policy arms the same refusal STRICTLY, without the
 	// deployment knob: under llm_fallback=none every provider a route names
@@ -533,8 +540,8 @@ func teamGatewayTolerated(attributed []string, sites, primary map[string][]strin
 // posture refused — so a reader answers with errors.As instead of parsing the
 // sentence: a caller that reconstructs "which provider" from the message is a
 // second, weaker parser of this decision. Unwraps to runview.ErrNoLLMCredential,
-// which every existing reader already matches with errors.Is — or, when every
-// provider it names is held only by a busy pool entry (Waits), to
+// which every existing reader already matches with errors.Is — or, when busy
+// pool entries are all that stand between it and the run's start (Waits), to
 // ErrCredentialAtCapacity, the class a team key at its max_concurrent_runs
 // answers: a wait, not a credential to provision.
 type UnfundedProvidersError struct {
@@ -551,7 +558,7 @@ type UnfundedProvidersError struct {
 	// Untrusted marks the untrusted (fork-lane) arm: the run spends the
 	// team's own vendor API keys alone — no shared tier is sealed into a
 	// pool run, the runner's environment is refused and a forfait cannot
-	// cross its sandbox. It answers before the two others, so it carries the
+	// cross its sandbox. It answers before the others, so it carries the
 	// run's remedy whatever else is armed.
 	Untrusted bool
 	// Gateway lists, on the untrusted arm, the sites whose route rides the
@@ -576,6 +583,12 @@ type UnfundedProvidersError struct {
 	WireDefault []string
 	// Pool is the runner pool the untrusted run is stamped to ("" unknown).
 	Pool string
+	// Knob marks the deployment knob's arm (ITERION_CLOUD_REQUIRE_LLM_CREDENTIAL),
+	// the permissive one: it refuses only a run whose EVERY attributed
+	// provider is unfunded, so one funded provider lets the same request
+	// start. The strict arms (Sovereign, TeamGateway) need every provider
+	// they name funded.
+	Knob bool
 	// TeamGateway marks the content boundary's arm: the run is held to its
 	// team's gateway, so no environment fallback funds an unfunded route.
 	// Its sentence names the boundary unless Sovereign says more.
@@ -594,22 +607,39 @@ type UnfundedProvidersError struct {
 	// its slot, its day or the attachment's draw cap is spent, it cools.
 	// Empty for a provider nothing busy holds.
 	Busy map[string][]string
-	// OneGrant names the providers, two or more, that only busy entries of a
-	// pool lending one credential per run hold (the credential pool, whose
-	// broker grants the first want that serves): however many of its entries
-	// free, it funds one of them. Empty otherwise.
+	// OneGrant names the providers, two or more, of a strict arm's refusal
+	// that only busy entries of a pool lending one credential per run hold
+	// (the credential pool, whose broker grants the first want that serves):
+	// however many of its entries free, it funds one of them, and the strict
+	// arm needs them all. Empty otherwise, and on the knob's refusal, which
+	// one grant ends.
 	OneGrant []string
 }
 
-// Waits reports whether every provider the refusal names is held by a busy
-// pool entry: nothing is missing, the run waits for an entry to free. A
-// refusal naming one provider nothing holds does not wait — no wait cures it
-// — nor one naming several that a pool lending one credential per run alone
-// holds (OneGrant): that wait ends in the refusal of all but one — nor an
-// untrusted refusal that also names a route class no credential lifts (a
-// gateway, deferred, unattributed or wire-default site).
+// Waits reports whether busy pool entries are all that stand between the
+// refusal and the run's start: the same request succeeds once they free. The
+// reading follows the arm. The knob's refusal (Knob) ends with one funded
+// provider, so it waits when ANY provider it names is held by a busy entry —
+// whichever frees, the pool that holds it funds that provider. A strict arm's
+// ends only with every provider it names funded, so it waits when EVERY one
+// is held by a busy entry — a provider nothing holds is missing, no wait cures
+// it — and not when two or more of them are held only by a pool lending one
+// credential per run (OneGrant): that wait ends in the refusal of all but one.
+// An untrusted refusal that also names a route class no credential lifts (a
+// gateway, deferred, unattributed or wire-default site) never waits.
 func (e *UnfundedProvidersError) Waits() bool {
-	if len(e.Providers) == 0 || len(e.OneGrant) > 1 || len(e.Gateway)+len(e.Deferred)+len(e.Unattributed)+len(e.WireDefault) > 0 {
+	if len(e.Providers) == 0 || len(e.Gateway)+len(e.Deferred)+len(e.Unattributed)+len(e.WireDefault) > 0 {
+		return false
+	}
+	if e.Knob {
+		for _, prov := range e.Providers {
+			if len(e.Busy[prov]) > 0 {
+				return true
+			}
+		}
+		return false
+	}
+	if len(e.OneGrant) > 1 {
 		return false
 	}
 	for _, prov := range e.Providers {
@@ -631,6 +661,10 @@ func (e *UnfundedProvidersError) Unwrap() error {
 }
 
 func (e *UnfundedProvidersError) Error() string {
+	if e.Waits() && e.Knob {
+		return fmt.Sprintf("cloudpublisher: %v: no provider the LLM routes of this run name is funded for tenant %s — %s; one funded provider lets the run start (ITERION_CLOUD_REQUIRE_LLM_CREDENTIAL), and a pool entry that would fund one exists but is busy now: the run waits for it, the same request succeeds once an entry frees (another run ends, its day or its window resets)",
+			ErrCredentialAtCapacity, e.Tenant, e.namedList())
+	}
 	if e.Waits() {
 		held := ""
 		if e.TeamGateway {

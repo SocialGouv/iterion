@@ -471,9 +471,10 @@ func legacyRoutes(nodes ...string) *ir.Workflow {
 }
 
 // The legacy pool lends ONE credential per run (the broker grants the first
-// want that serves). A refusal naming two providers that only its busy
-// entries hold is no wait: once both free, the pool grants one and the same
-// launch is refused for the other. It is refused as unfunded, its sentence
+// want that serves). A strict arm's refusal (these team_gateway runs')
+// naming two providers that only its busy entries hold is no wait: once both
+// free, the pool grants one and the same launch is refused for the other. The
+// knob's refusal, which one grant ends, waits (busy_wait_guarantee_test.go). It is refused as unfunded, its sentence
 // saying why. And the preview notes a legacy candidate only when the pool
 // selects nothing, as the walk notes a skip only on the pool's abstention:
 // with the anthropic donor free and the openai donor held, the walk grants the

@@ -199,14 +199,18 @@ on `resume`, `answer-human`, an async answer's auto-resume and a host event
 alike — and the WebSocket answer fails with that code. A pool entry the run
 needs that exists but is busy now (another run holds its slot, its day's runs
 or the attachment's draw cap are spent, its window cools) is the same wait:
-the publisher's refusal of a run whose every unfunded provider only such an
-entry holds unwraps to `ErrCredentialAtCapacity` (a launch refused on one is
-answered 429 with the same code), where a provider nothing holds stays the
-422 `NO_LLM_CREDENTIAL` refusal. An entry that would refuse the launch once
-free — its pledge serving another bot, its credential gone or expired, its
-lent row's audiences excluding the launch — holds nothing for it, and two
-providers only the legacy pool's busy entries hold are no wait: that pool
-lends one credential per run.
+the publisher's refusal unwraps to `ErrCredentialAtCapacity` (a launch
+refused on one is answered 429 with the same code) when such entries alone
+keep the run from starting, and stays the 422 `NO_LLM_CREDENTIAL` refusal
+otherwise. Under `ITERION_CLOUD_REQUIRE_LLM_CREDENTIAL`, where one funded
+provider starts the run, one such entry for any provider the refusal names is
+enough. Under a `team_gateway` boundary every provider it names must have one
+— a provider nothing holds keeps the refusal unfunded — and two providers only
+the legacy pool's busy entries hold are no wait: that pool lends one
+credential per run. `llm_fallback: none` consults no pool, so its refusal
+never waits. An entry that would refuse the launch once free — its pledge
+serving another bot, its credential gone or expired, its lent row's audiences
+excluding the launch — holds nothing for it.
 
 The ledger never becomes a second truth. A holder is free when its run
 stops counting under the two rules below, and a refusal re-reads the row's
