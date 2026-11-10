@@ -33,7 +33,12 @@ The isolation chain, in the order a run meets it:
    pool its fork-lane config names, not its team's mapping (ADR-162 Q3,
    [webhooks.md](webhooks.md#fork-lane-pool)): a mapped team's lane must
    name the team's own pool, an unmapped team's a pool no team holds, and
-   a resume re-judges both (`ErrForkLanePool`).
+   a resume re-judges both (`ErrForkLanePool`). The shared-tier rule above
+   holds for a fork run in full, so **a fork run is funded by its team's own
+   API keys alone** (no forfait either: it cannot cross the run's sandbox):
+   the launch gate refuses one those keys cannot fund, typed
+   (`fork_run_unfunded`), before the org or the outside author is metered
+   ([webhooks.md](webhooks.md#fork-lane-funding)).
 4. **Per-pool topology**: one run stream + one DLQ stream + one durable
    consumer per pool (`ITERION_RUNS_POOL_<p>` / `iterion-runners-pool-<p>`),
    created and reconciled by the server (immediate pass + a 30 s tick,

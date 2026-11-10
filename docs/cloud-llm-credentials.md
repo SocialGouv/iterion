@@ -223,6 +223,16 @@ operator owns ([oauth-forfait.md](oauth-forfait.md#what-a-forfait-is-and-is-not)
   because the runner may still fund it from its env. Turn it on when the
   runner deployment carries no ambient LLM env — then a credential-less
   run can never start, and refusing it early is free information.
+- **An untrusted (fork-lane) run is always refused when its team's own
+  API keys do not fund it**, knob or not: it runs on its lane's pool, so
+  no shared tier is sealed into it (D13); the runner refuses its env and a
+  forfait cannot cross its sandbox (ADR-162 decision 7). The rule is the
+  `llm_fallback: none` one — strict per attributed provider, and a run the
+  walk can attribute nothing of refused when it holds no key — with the
+  forfaits not counted and an env-funded (`openai_compatible`-only)
+  program refused too. The launch gate asks it before metering
+  (`fork_run_unfunded`, [webhooks.md](webhooks.md#fork-lane-funding)), the
+  publisher at publish, and the credential preview prints it.
 
 ## Ingestion gate — what a `400` on provisioning means
 
@@ -280,10 +290,13 @@ key's identity folds its URL in) always travel with the key. The runner reads th
 (`Credentials.GatewayCredentialForRoute`) and honours `AmbientLLMRefused` — the run's
 LLM routes spend these credentials only — from #2005 PR-B'2; the walk sets them from
 PR-C'. An UNTRUSTED run (ADR-162 decision 7) is refused the pod's environment whether
-or not a bundle arrives: the publisher stamps every bundle it seals for one, and seals
-none for a run no tier funds, so the runner derives the same refusal from the queue
-message's trust — `store.RunTrust.AmbientLLMRefused`, the one predicate both sides
-read (#3126).
+or not a bundle arrives: the publisher stamps every bundle it seals for one, and an
+untrusted run can still reach a runner with none (a publisher that seals nothing, a run
+that calls no model, a route the walk cannot attribute), so the runner derives the same
+refusal from the queue message's trust — `store.RunTrust.AmbientLLMRefused`, the one
+predicate both sides read (#3126). A fork run whose model routes its team's own API
+keys cannot fund is refused before that: at the launch gate before it is metered, and at
+publish ([webhooks.md](webhooks.md#fork-lane-funding)).
 
 A refusal answers `400` with the reason, and leaves a trace an operator can
 find after the fact: a `Warn` in the server log and an audit event naming the
