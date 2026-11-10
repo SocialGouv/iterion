@@ -41,13 +41,16 @@ import (
 type fakeForkForge struct {
 	mu sync.Mutex
 
-	login      string            // WhoAmI's answer ("" → named no login)
-	whoErr     error             // WhoAmI's refusal
-	perms      map[string]string // login → CollaboratorPermission answer
-	permErr    error             // CollaboraboratorPermission's refusal
-	pr         forge.PullRef     // GetPullRequest's answer
-	prErr      error             // GetPullRequest's refusal
-	notes      []string          // CommentIssue bodies, in order
+	login   string            // WhoAmI's answer ("" → named no login)
+	whoErr  error             // WhoAmI's refusal
+	perms   map[string]string // login → CollaboratorPermission answer
+	permErr error             // CollaboraboratorPermission's refusal
+	pr      forge.PullRef     // GetPullRequest's answer
+	prErr   error             // GetPullRequest's refusal
+	// getPR, when set, answers GetPullRequest instead of pr/prErr — the seam
+	// a row uses to put the REAL forge client's decoding behind the gesture.
+	getPR      func(ctx context.Context, repo string, number int) (forge.PullRef, error)
+	notes      []string // CommentIssue bodies, in order
 	commentErr error
 }
 
@@ -66,6 +69,9 @@ func (f *fakeForkForge) CollaboratorPermission(ctx context.Context, repo, user s
 }
 
 func (f *fakeForkForge) GetPullRequest(ctx context.Context, repo string, number int) (forge.PullRef, error) {
+	if f.getPR != nil {
+		return f.getPR(ctx, repo, number)
+	}
 	if f.prErr != nil {
 		return forge.PullRef{}, f.prErr
 	}
@@ -385,6 +391,37 @@ func TestForkGesture_RefusalRows(t *testing.T) {
 			name:       "hold label blocks the gesture",
 			labels:     []string{"hold-review"},
 			wantReason: "hold label",
+		},
+		{
+			// The pull request names no head commit: the gesture pins the
+			// commit it admits, so the row is the gesture's own — not the
+			// tail's later "no admitted commit" refusal of the same input.
+			name:       "no head commit",
+			mutate:     func(fx *forkGestureFixture) { p := forkForkPR(); p.HeadSHA = ""; fx.forge.pr = p },
+			wantReason: "names no head commit",
+		},
+		{
+			// The loop guard's three arms (decision 2: the note the lane
+			// posts must never re-trigger it). The bot's own identity
+			// unreadable: refused, naming the forge's own error — never
+			// passed on to the permission check.
+			name:       "loop guard: the bot's identity is unreadable",
+			mutate:     func(fx *forkGestureFixture) { fx.forge.whoErr = errors.New("identity service 503") },
+			wantReason: loopGuardUnevaluable + ": identity service 503",
+		},
+		{
+			name:       "loop guard: the forge names no login",
+			mutate:     func(fx *forkGestureFixture) { fx.forge.login = "" },
+			wantReason: loopGuardUnevaluable + ": the forge named no login",
+		},
+		{
+			// The comment was written by the identity the lane speaks as —
+			// the Q1 note echoing back, matched case-insensitively. That
+			// identity holds write (it is the bot's installation), so without
+			// the guard the permission check would admit it.
+			name:       "loop guard: the bot's own comment",
+			mutate:     func(fx *forkGestureFixture) { fx.forge.login = "Maintainer" },
+			wantReason: "self comment (loop-guard)",
 		},
 	}
 	for i, r := range rows {
@@ -986,6 +1023,17 @@ func TestForkGesture_TheRealLauncherStampsTheSubjectOnTheSpec(t *testing.T) {
 	}
 	if spec.RepoSHAExpected != forkForkPR().HeadSHA {
 		t.Fatalf("spec.RepoSHAExpected = %q, want the admitted head commit — the pin and the subject are one guarantee (the runner compares before it charges)", spec.RepoSHAExpected)
+	}
+	// Decision 4's floor on the routing pre-flights: an untrusted launch
+	// certifies NO operator-decided var names (trustedVarNamesFor). The
+	// fixture's config carries an operator layer (gate_context), so a launch
+	// certifying it would let a payload-derived var of the same name read as
+	// operator-decided at RouteViewForLaunch.
+	//
+	// Mutation: trustedVarNamesFor returns trustedVarNames(m) whatever the
+	// trust → the spec certifies [gate_context] (red on this assertion).
+	if len(spec.TrustedVarNames) != 0 {
+		t.Fatalf("spec.TrustedVarNames = %v, want none — the base repository's operator layer certifies nothing on a run whose code it did not write", spec.TrustedVarNames)
 	}
 	// Both budgets metered on the way in, exactly as the stubbed twin
 	// already proved — the real lane changes nothing there.

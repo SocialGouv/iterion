@@ -165,6 +165,14 @@ func assertNothingMetered(t *testing.T, c *orgusage.MemoryCounter) {
 // launch's admission stamped (ADR-162 decision 5's durable carriers).
 func seedForkResumeRun(t *testing.T, s *Server, rs *store.FilesystemRunStore, runID string, status store.RunStatus) {
 	t.Helper()
+	seedForkResumeRunAs(t, s, rs, runID, status, string(forkResumeSubject))
+}
+
+// seedForkResumeRunAs is seedForkResumeRun with the author subject the
+// document carries named by the caller ("" for a fork document that names
+// none — a write that lost it, or one older than the field).
+func seedForkResumeRunAs(t *testing.T, s *Server, rs *store.FilesystemRunStore, runID string, status store.RunStatus, subject string) {
+	t.Helper()
 	const source = "workflow fork_review:\n  entry: done\n"
 	logicalPath := filepath.Join(s.cfg.WorkDir, "fork_review.bot")
 	if err := os.WriteFile(logicalPath, []byte(source), 0o644); err != nil {
@@ -189,7 +197,7 @@ func seedForkResumeRun(t *testing.T, s *Server, rs *store.FilesystemRunStore, ru
 	r.BotID = "review-pr"
 	r.ProjectPath = "acme/widgets"
 	r.Trust = store.RunTrustFork
-	r.ForkAuthorSubject = string(forkResumeSubject)
+	r.ForkAuthorSubject = subject
 	if err := rs.SaveRun(ctx, r); err != nil {
 		t.Fatalf("SaveRun: %v", err)
 	}
