@@ -26,7 +26,15 @@ import (
 //   - either fail-closed requirement removed → its refusal row renders;
 //   - iterion.poolSandbox ignoring the pool's key → every opt-in/opt-out row;
 //   - the ConfigMap's image guard reading the release-wide flag alone → the
-//     digest row renders an unpinned sandbox: auto image for the opted-in pool.
+//     digest row renders an unpinned sandbox: auto image for the opted-in pool;
+//   - the opted-out pool's automountServiceAccountToken dropped → "a pool
+//     opts out" reads a mounted token;
+//   - the opted-in literal ITERION_SANDBOX_DEFAULT dropped → "a pool opts in"
+//     loses it; ITERION_SANDBOX_DEFAULT dropped from the owned names → its
+//     conflict row renders;
+//   - iterion.poolSandbox reading the map through sprig default, or not
+//     ranging its keys → the falsy and misspelled rows of "the flag is a
+//     boolean" render.
 func TestChartRenderPoolSandbox(t *testing.T) {
 	const alpha, solo = "iterion-runner-pool-alpha", "iterion-runner-pool-solo"
 	pools := []string{"-f", "testdata/values-pools.yaml"}
@@ -83,6 +91,15 @@ func TestChartRenderPoolSandbox(t *testing.T) {
 		if got := fmt.Sprint(in["ITERION_SANDBOX_HOST_STATE"]["value"]); got != "none" {
 			t.Fatalf("the opted-in pool's ITERION_SANDBOX_HOST_STATE = %q, want none — the driver has no host filesystem to bind", got)
 		}
+		// The global-default tier, over a release that set it to none for
+		// everyone else: a bot declaring no `sandbox:` block resolves through it.
+		withDefaultNone := manifests(t, mustRender(t, slices.Concat(pools, operatorRBAC, []string{
+			"--set", "runnerPools[0].sandbox.enabled=true",
+			"--set", "config.extraEnv.ITERION_SANDBOX_DEFAULT=none",
+		})...))
+		if got, ok := poolContainer(t, withDefaultNone, alpha)["ITERION_SANDBOX_DEFAULT"]; !ok || fmt.Sprint(got["value"]) != "auto" {
+			t.Fatalf("the opted-in pool's ITERION_SANDBOX_DEFAULT = %v (present=%v), want the literal auto over the ConfigMap's none", got, ok)
+		}
 		// The other pool and the shared runner keep the release's posture.
 		out := poolContainer(t, docs, solo)
 		for _, name := range append(slices.Clone(downward), "ITERION_SANDBOX_OVERRIDE", "ITERION_SANDBOX_HOST_STATE", "ITERION_SANDBOX_K8S_REQUESTS_CPU") {
@@ -114,6 +131,17 @@ func TestChartRenderPoolSandbox(t *testing.T) {
 		out := poolContainer(t, docs, solo)
 		if got, ok := out["ITERION_SANDBOX_OVERRIDE"]; !ok || fmt.Sprint(got["value"]) != "none" {
 			t.Fatalf("the opted-out pool's ITERION_SANDBOX_OVERRIDE = %v (present=%v), want the literal none", got, ok)
+		}
+		// Every job of the opted-out pool runs in its own pod, under the
+		// ServiceAccount the release binds to the sandbox Role: no token.
+		if find(docs, "RoleBinding", "iterion-sandbox") == nil {
+			t.Fatal("premise lost: the release-wide sandbox renders no RoleBinding for the shared ServiceAccount")
+		}
+		if got := podSpec(t, docs, "Deployment", solo)["automountServiceAccountToken"]; got != false {
+			t.Fatalf("the opted-out pool's automountServiceAccountToken = %v, want false — its in-pod runs would read a token bound to the sandbox Role", got)
+		}
+		if got, ok := podSpec(t, docs, "Deployment", alpha)["automountServiceAccountToken"]; ok {
+			t.Fatalf("the pool that follows the release-wide sandbox renders automountServiceAccountToken=%v — its driver needs the token", got)
 		}
 		for _, name := range downward {
 			if _, ok := out[name]; ok {
@@ -152,11 +180,21 @@ func TestChartRenderPoolSandbox(t *testing.T) {
 				"--set", "runnerPools[0].env." + key + "=auto",
 			})...)
 		}
+		mustRefuse(t, "runnerPools[alpha].env.ITERION_SANDBOX_DEFAULT conflicts", slices.Concat(pools, operatorRBAC, []string{
+			"--set", "runnerPools[0].sandbox.enabled=true",
+			"--set", "runnerPools[0].env.ITERION_SANDBOX_DEFAULT=none",
+		})...)
 		mustRefuse(t, "runnerPools[solo].env.ITERION_SANDBOX_OVERRIDE conflicts", slices.Concat(pools, []string{
 			"--set", "runner.sandbox.enabled=true",
 			"--set", "runnerPools[1].sandbox.enabled=false",
 			"--set", "runnerPools[1].env.ITERION_SANDBOX_OVERRIDE=none",
 		})...)
+		// A falsy non-map, and a misspelled key, are refused rather than read
+		// as "unset" — the pool would follow the release with no refusal.
+		mustRefuse(t, "runnerPools[alpha].sandbox must be a map", slices.Concat(pools, []string{"--set", "runnerPools[0].sandbox=false"})...)
+		for _, key := range []string{"enable", "Enabled"} {
+			mustRefuse(t, "runnerPools[alpha].sandbox."+key+" is not a key", slices.Concat(pools, []string{"--set", "runnerPools[0].sandbox." + key + "=true"})...)
+		}
 	})
 
 	t.Run("requireDigest reaches the sandbox: auto image a sandboxed pool reads from the ConfigMap", func(t *testing.T) {

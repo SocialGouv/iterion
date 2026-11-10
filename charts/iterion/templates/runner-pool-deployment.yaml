@@ -20,7 +20,12 @@
 {{- $ownSandbox := ne $sandbox $releaseSandbox }}
 {{- $poolEnv := $pool.env | default dict }}
 {{- if $ownSandbox }}
-{{- range $key := list "ITERION_SANDBOX_OVERRIDE" "ITERION_SANDBOX_HOST_STATE" }}
+{{- $owned := list "ITERION_SANDBOX_OVERRIDE" "ITERION_SANDBOX_HOST_STATE" }}
+{{- if $sandbox }}
+{{- /* The opted-in pool also owns the global-default tier: a bot declaring no `sandbox:` block (review-pr declares none) resolves through it, so a `none` there would run every such bot in-pod. */ -}}
+{{- $owned = append $owned "ITERION_SANDBOX_DEFAULT" }}
+{{- end }}
+{{- range $key := $owned }}
 {{- if hasKey $poolEnv $key }}
 {{- fail (printf "runnerPools[%s].env.%s conflicts with runnerPools[%s].sandbox.enabled, which decides it on this pool — drop the env entry" $pool.name $key $pool.name) }}
 {{- end }}
@@ -29,7 +34,7 @@
 {{- if and $sandbox (not $.Values.runner.sandbox.enabled) }}
 {{- /* Fail closed until ADR-154's pool shape (#2965) renders what a sandboxed pool needs beside the flag: its own ServiceAccount and Role, the pool label on its siblings, and its standing NetworkPolicy. */ -}}
 {{- if $.Values.serviceAccount.create }}
-{{- fail (printf "runnerPools[%s].sandbox.enabled: the pool would resolve the kubernetes sandbox where the release does not provision it, and the chart renders the sandbox Role only under runner.sandbox.enabled (runner-rbac.yaml) — the pool runs under the shared ServiceAccount %q, which then holds no grant, so every sandboxed run would fail at its first kubectl apply. The pool's own ServiceAccount and Role are ADR-154 decision 2 (#2965), not rendered yet: bring the ServiceAccount and bind the sandbox driver's grants to it yourself (serviceAccount.create=false, docs/cloud-deployment.md § Sovereign runner pools), or leave the pool's sandbox off" $pool.name (include "iterion.serviceAccountName" $)) }}
+{{- fail (printf "runnerPools[%s].sandbox.enabled: the pool would resolve the kubernetes sandbox where the release does not provision it, and the chart renders the sandbox Role only under runner.sandbox.enabled (runner-rbac.yaml) — the pool runs under the shared ServiceAccount %q, which then holds no grant, so every sandboxed run would fail at its first kubectl apply. The pool's own ServiceAccount and Role are ADR-154 decision 2 (#2965), not rendered yet. Leave the pool's sandbox off until it lands, or sandbox the whole release (runner.sandbox.enabled). The only interim this chart admits — serviceAccount.create=false with the sandbox driver's grants bound to the shared account by hand — hands those grants (every Secret of the namespace, pods/exec on any pod, NetworkPolicy create/delete) to EVERY pod of the release that mounts that account: docs/cloud-deployment.md § Sovereign runner pools says which, and what it costs" $pool.name (include "iterion.serviceAccountName" $)) }}
 {{- end }}
 {{- if $.Values.networkPolicy.enabled }}
 {{- fail (printf "runnerPools[%s].sandbox.enabled with networkPolicy.enabled: the release-wide NetworkPolicy selects this pool's runner pods and admits only the server and metrics ports, so a sandbox sibling cannot reach its runner's per-run egress proxy and every sandboxed run times out. The pool's standing policy that admits its own siblings is ADR-154 decision 3 (#2965), not rendered yet: set networkPolicy.enabled=false and bring the pool's policy yourself (docs/cloud-deployment.md § NetworkPolicy egress), or leave the pool's sandbox off" $pool.name) }}
@@ -84,6 +89,14 @@ spec:
         {{- end }}
     spec:
       serviceAccountName: {{ include "iterion.serviceAccountName" $ }}
+      {{- if and $ownSandbox (not $sandbox) }}
+      # runnerPools[].sandbox.enabled=false under a release-wide sandbox: this
+      # pool runs every job in its own pod, while the shared ServiceAccount is
+      # bound release-wide to the sandbox Role (runner-rbac.yaml). Nothing on
+      # it calls the API — the override disables the sandbox driver and its
+      # orphan reaper — so the pod mounts no token a run could read.
+      automountServiceAccountToken: false
+      {{- end }}
       {{- with $.Values.runner.priorityClassName }}
       priorityClassName: {{ . }}
       {{- end }}
@@ -173,6 +186,11 @@ spec:
               value: ""
             - name: ITERION_SANDBOX_HOST_STATE
               value: "none"
+            # The global-default tier too: a bot that declares no `sandbox:`
+            # block resolves through it, and the shared ConfigMap's
+            # config.extraEnv may set it to none for the rest of the release.
+            - name: ITERION_SANDBOX_DEFAULT
+              value: "auto"
             {{- end }}
             {{- else if $ownSandbox }}
             # runnerPools[].sandbox.enabled=false: this pool opts out of the

@@ -355,15 +355,20 @@ runner:
 # kubernetes sandbox (or opts out of it) on its own, with the release-wide
 # flag left as it is — so the fork review lane's pool can sandbox every run
 # without moving every trusted `sandbox:` bot of the deployment into sibling
-# pods. A boolean only. Turning a pool's sandbox ON where the release-wide
-# flag is off FAILS the render until the pool shape of ADR-154 (#2965) lands:
-# that pool needs a sandbox Role this chart renders only under
-# runner.sandbox.enabled (bring the ServiceAccount and its bindings:
-# serviceAccount.create=false), and under networkPolicy.enabled the
-# release-wide policy closes its runner's egress proxy to its siblings
-# (networkPolicy.enabled=false, the pool's policy brought by the operator).
-# The pool's env block cannot also spell ITERION_SANDBOX_OVERRIDE or
-# ITERION_SANDBOX_HOST_STATE when its flag differs from the release's.
+# pods. A boolean only, and `enabled` is the map's only key. Turning a
+# pool's sandbox ON where the release-wide flag is off FAILS the render until
+# the pool shape of ADR-154 (#2965) lands: that pool needs a sandbox Role
+# this chart renders only under runner.sandbox.enabled, and under
+# networkPolicy.enabled the release-wide policy closes its runner's egress
+# proxy to its siblings. The interim (serviceAccount.create=false with the
+# sandbox grants bound to the SHARED account, networkPolicy.enabled=false)
+# hands those grants to every pod of the release that mounts the account —
+# read docs/cloud-deployment.md § Sovereign runner pools before taking it.
+# An opted-out pool (false under a release-wide true) mounts no
+# ServiceAccount token. The pool's env block cannot also spell
+# ITERION_SANDBOX_OVERRIDE or ITERION_SANDBOX_HOST_STATE when its flag
+# differs from the release's, nor ITERION_SANDBOX_DEFAULT on an opted-in
+# pool (pinned to auto there).
 runnerPools: []
 #  - name: honorabilite
 #    replicas: 1
