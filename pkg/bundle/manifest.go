@@ -709,6 +709,13 @@ const (
 // forge's Actions permission.
 const ForgeScopeActions = "actions"
 
+// DispatchWorkflowVar is the launch var naming the workflow file a bot
+// declaring ForgeScopeActions dispatches. The server binds the dispatch grant
+// to its value on the schedule row, which only an operator writes (the
+// schedule create and PATCH routes, team admin): a manifest that declares the
+// scope never supplies it (validateDispatchWorkflowDefault).
+const DispatchWorkflowVar = "workflow"
+
 var (
 	knownForgeScopeKeys = map[string]bool{
 		"pull_requests":     true,
@@ -1259,6 +1266,9 @@ func decodeManifest(body []byte, srcLabel string) (*Manifest, error) {
 	if err := validateInvocations(m.Invocations); err != nil {
 		return nil, fmt.Errorf("bundle: manifest %s: %w", srcLabel, err)
 	}
+	if err := validateDispatchWorkflowDefault(&m); err != nil {
+		return nil, fmt.Errorf("bundle: manifest %s: %w", srcLabel, err)
+	}
 	if err := validateChatSurface(m.Chat); err != nil {
 		return nil, fmt.Errorf("bundle: manifest %s: %w", srcLabel, err)
 	}
@@ -1558,6 +1568,36 @@ func validateForgeRequirements(f *ForgeRequirements) error {
 		case "", AuthorScopeShared, AuthorScopeExclusive:
 		default:
 			return fmt.Errorf("forge.webhook.author_scope: unknown value %q (known: %s, %s)", scope, AuthorScopeShared, AuthorScopeExclusive)
+		}
+	}
+	return nil
+}
+
+// validateDispatchWorkflowDefault refuses an invocation default_vars naming
+// DispatchWorkflowVar in a manifest that declares the actions scope.
+// Provisioning stamps a schedule invocation's default_vars onto the schedule
+// row, and a bot row is written by roles below the team admin who owns the
+// schedule — so a default there would let the bot's author, not the
+// operator, choose the workflow every tick dispatches. A keepalive's
+// default_vars are refused alike: the same author, the same row.
+func validateDispatchWorkflowDefault(m *Manifest) error {
+	if m.Forge == nil {
+		return nil
+	}
+	if _, declared := m.Forge.TokenScopes[ForgeScopeActions]; !declared {
+		return nil
+	}
+	for idx, inv := range m.Invocations {
+		var defaults map[string]string
+		switch {
+		case inv.Schedule != nil:
+			defaults = inv.Schedule.DefaultVars
+		case inv.Keepalive != nil:
+			defaults = inv.Keepalive.DefaultVars
+		}
+		if _, ok := defaults[DispatchWorkflowVar]; ok {
+			return fmt.Errorf("invocations[%d]: default_vars names %q, the workflow the %s scope dispatches — an operator names it on the schedule row; a manifest never supplies it",
+				idx, DispatchWorkflowVar, ForgeScopeActions)
 		}
 	}
 	return nil

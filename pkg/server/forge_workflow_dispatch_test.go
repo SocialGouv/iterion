@@ -54,6 +54,9 @@ type fakeDispatchForge struct {
 	// workflows maps a workflow file to whether it declares
 	// workflow_dispatch; a file absent here does not exist.
 	workflows map[string]bool
+	// dispatchFault makes the dispatch POST fail after the write: "drop"
+	// closes the connection unanswered, "502" answers a server error.
+	dispatchFault string
 
 	tokens     map[string]mintedTokenRecord
 	mints      []mintedTokenRecord
@@ -131,6 +134,22 @@ func newFakeDispatchForge(t *testing.T) *fakeDispatchForge {
 		f.mu.Unlock()
 		reply(w, http.StatusCreated, map[string]any{"token": tok, "expires_at": "2099-01-01T00:00:00Z", "permissions": req.Permissions})
 	})
+	// The installation's live grant, App-JWT authenticated: what the health
+	// view, the refresh route and the pre-mint re-read see.
+	mux.HandleFunc("GET /api/v3/app/installations/{id}", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		f.requests = append(f.requests, "installation")
+		granted := maps.Clone(f.granted)
+		f.mu.Unlock()
+		if r.PathValue("id") != "42" || !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {
+			reply(w, http.StatusNotFound, map[string]any{"message": "Not Found"})
+			return
+		}
+		reply(w, http.StatusOK, map[string]any{
+			"id": 42, "account": map[string]any{"login": "acme"},
+			"html_url": "https://github.example/organizations/acme/settings/installations/42", "permissions": granted,
+		})
+	})
 	mux.HandleFunc("GET /api/v3/repos/{owner}/{repo}", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		f.requests = append(f.requests, "repo")
@@ -153,6 +172,7 @@ func newFakeDispatchForge(t *testing.T) *fakeDispatchForge {
 		branch, known := f.repos[r.PathValue("repo")]
 		dispatchable, exists := f.workflows[r.PathValue("file")]
 		extra := f.branches
+		fault := f.dispatchFault
 		f.mu.Unlock()
 		rec, ok := token(r)
 		if !ok {
@@ -181,7 +201,8 @@ func newFakeDispatchForge(t *testing.T) *fakeDispatchForge {
 			reply(w, http.StatusUnprocessableEntity, map[string]any{"message": "Invalid request.\n\n\"ref\" wasn't supplied."})
 			return
 		}
-		if ref != branch && !extra[ref] {
+		// A branch short or fully qualified, as GitHub accepts it.
+		if short := strings.TrimPrefix(ref, "refs/heads/"); short != branch && !extra[short] {
 			reply(w, http.StatusUnprocessableEntity, map[string]any{"message": "No ref found for: " + ref})
 			return
 		}
@@ -192,6 +213,17 @@ func newFakeDispatchForge(t *testing.T) *fakeDispatchForge {
 		f.mu.Lock()
 		f.dispatches = append(f.dispatches, dispatchRecord{Repo: r.PathValue("owner") + "/" + r.PathValue("repo"), Workflow: r.PathValue("file"), Ref: ref})
 		f.mu.Unlock()
+		switch fault {
+		case "drop":
+			conn, _, err := http.NewResponseController(w).Hijack()
+			if err == nil {
+				_ = conn.Close()
+			}
+			return
+		case "502":
+			reply(w, http.StatusBadGateway, map[string]any{"message": "Server Error"})
+			return
+		}
 		w.WriteHeader(http.StatusNoContent)
 	})
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -384,8 +416,8 @@ func TestWorkflowDispatch_AScheduleOfTheShippedBotDispatchesWithAPerCallNarrowTo
 		t.Errorf("workflow_url = %q, want %q", out.WorkflowURL, want)
 	}
 	mints, dispatches, _ := w.f.snapshot()
-	if len(dispatches) != 1 || dispatches[0] != (dispatchRecord{Repo: "acme/widgets", Workflow: "renovate.yml", Ref: "main"}) {
-		t.Fatalf("forge dispatches = %+v, want exactly renovate.yml on acme/widgets@main", dispatches)
+	if len(dispatches) != 1 || dispatches[0] != (dispatchRecord{Repo: "acme/widgets", Workflow: "renovate.yml", Ref: "refs/heads/main"}) {
+		t.Fatalf("forge dispatches = %+v, want exactly renovate.yml on acme/widgets@refs/heads/main (the branch, never a same-named tag)", dispatches)
 	}
 	if len(mints) != 1 {
 		t.Fatalf("mints = %+v, want exactly one, for this call", mints)
@@ -715,11 +747,12 @@ func TestWorkflowDispatch_ARunThatDoesNotHoldTheGrantIsRefused(t *testing.T) {
 	w.assertForgeUntouched(t)
 }
 
-// A connection KNOWN to lack Actions: Read and write fails before the mint,
-// naming the permission to grant — the forgeSecurityTokenMinter precedent.
+// A connection KNOWN to lack Actions: Read and write — stored, and live when
+// re-read — fails before the mint, naming the permission to grant: the
+// forgeSecurityTokenMinter precedent. The one forge call is the live read.
 //
 // Mutation witnessed: the pre-mint grant check removed → the mint is asked
-// (and 422s) → red on "no mint".
+// (and 422s) → red on "only the live grant read".
 func TestWorkflowDispatch_AKnownNarrowGrantFailsBeforeTheMintNamingThePermission(t *testing.T) {
 	w := newDispatchWorld(t)
 	narrow := maps.Clone(w.conn.GrantedPermissions)
@@ -737,7 +770,58 @@ func TestWorkflowDispatch_AKnownNarrowGrantFailsBeforeTheMintNamingThePermission
 	if code != http.StatusForbidden || out.Code != dispatchRefusedPermission || !strings.Contains(out.Reason, "Actions: Read and write") {
 		t.Fatalf("dispatch on an installation without Actions = %d %s, want 403 %s naming 'Actions: Read and write'", code, raw, dispatchRefusedPermission)
 	}
-	w.assertForgeUntouched(t)
+	if _, _, requests := w.f.snapshot(); !slices.Equal(requests, []string{"installation"}) {
+		t.Fatalf("the forge was called %v, want only the live grant read — no mint, no dispatch", requests)
+	}
+}
+
+// An owner approving Actions on the forge AFTER the install is honoured at the
+// next dispatch: the stored grant lacking it is re-read live and synced, not
+// answered "add the permission" for a step already taken (#3130's own
+// sequence). The connection record carries the live grant afterwards.
+//
+// Mutation witnessed: installationGrants answering from the stored grant
+// alone (no live re-read) → 403 workflow_dispatch_permission_missing → red.
+func TestWorkflowDispatch_AnApprovalAfterTheInstallIsReadLive(t *testing.T) {
+	w := newDispatchWorld(t)
+	stale := maps.Clone(w.conn.GrantedPermissions)
+	delete(stale, "actions")
+	conn := w.conn
+	conn.GrantedPermissions = stale
+	if err := w.s.forgeConnections.Update(context.Background(), conn); err != nil {
+		t.Fatal(err)
+	}
+	token, _ := w.scheduleGrant(t, "workflow-kick", "run-approved", store.RunTrustDefault)
+	code, out, raw := w.dispatch(t, token, "run-approved", "acme/widgets", "renovate.yml")
+	if code != http.StatusOK || !out.Dispatched {
+		t.Fatalf("dispatch after the owner approved Actions = %d %s, want 200 dispatched", code, raw)
+	}
+	got, err := w.s.forgeConnections.Get(context.Background(), "team1", "conn1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !grantsActionsWrite(got.GrantedPermissions) {
+		t.Fatalf("the connection's stored grant after the live read = %v, want it synced to carry actions:write", got.GrantedPermissions)
+	}
+}
+
+// The security-read minter shares the re-read: a stored grant lacking
+// Dependabot alerts, approved since on the forge, mints.
+//
+// Mutation witnessed: forgeSecurityTokenMinter's check reading
+// conn.GrantedPermissions alone → ErrPermissionsNotGranted → red.
+func TestForgeSecurityTokenMinter_AnApprovalAfterTheInstallIsReadLive(t *testing.T) {
+	w := newDispatchWorld(t)
+	w.f.mu.Lock()
+	w.f.granted["vulnerability_alerts"] = "read"
+	w.f.mu.Unlock()
+	tok, _, err := w.s.forgeSecurityTokenMinter(context.Background(), w.conn)
+	if err != nil || tok == "" {
+		t.Fatalf("security-read mint after the owner approved Dependabot alerts = (%q, %v), want a token", tok, err)
+	}
+	if _, _, requests := w.f.snapshot(); !slices.Equal(requests, []string{"installation", "mint"}) {
+		t.Fatalf("the forge was called %v, want the live grant read then the mint", requests)
+	}
 }
 
 // What the forge refuses comes back typed, with its own reason: an unknown
@@ -936,18 +1020,20 @@ func (failingLoadStore) LoadRun(context.Context, string) (*store.Run, error) {
 }
 
 // A run store that cannot answer says nothing about the run: the dispatch
-// answers 503 rather than refusing the run as a stranger to its grant, and
-// nothing reaches the forge.
+// answers 503 workflow_dispatch_unavailable rather than refusing the run as a
+// stranger to its grant, and nothing reaches the forge.
 //
-// Mutation witnessed: the store-failure branch removed → the read failure is
-// answered 403 workflow_dispatch_run_not_grant_holder → red.
+// Mutations witnessed: the store-failure branch removed → the read failure is
+// answered 403 workflow_dispatch_run_not_grant_holder → red;
+// dispatchUnavailable respelled → red on error_code.
 func TestWorkflowDispatch_AStoreThatCannotAnswerIsNotARefusalOfTheRun(t *testing.T) {
 	w := newDispatchWorld(t)
 	token, _ := w.scheduleGrant(t, "workflow-kick", "run-blind", store.RunTrustDefault)
 	w.s.cfg.Store = failingLoadStore{w.runs}
-	code, out, raw := w.dispatch(t, token, "run-blind", "acme/widgets", "renovate.yml")
-	if code != http.StatusServiceUnavailable || out.Code == dispatchRefusedRun {
-		t.Fatalf("dispatch over a store that cannot answer = %d %s, want 503 and no verdict about the run", code, raw)
+	code, out, raw := w.postDispatch(t, token, `{"run_id":"run-blind","repo":"acme/widgets","workflow":"renovate.yml"}`)
+	// The wire spelling, not the constant.
+	if code != http.StatusServiceUnavailable || out["error_code"] != "workflow_dispatch_unavailable" {
+		t.Fatalf("dispatch over a store that cannot answer = %d %s, want 503 error_code workflow_dispatch_unavailable and no verdict about the run", code, raw)
 	}
 	w.assertForgeUntouched(t)
 	if c := w.claims(t, token); len(c) != 0 {

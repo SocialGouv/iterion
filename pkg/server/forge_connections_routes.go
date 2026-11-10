@@ -263,6 +263,34 @@ func (s *Server) syncGrantedPermissions(ctx context.Context, conn forge.Connecti
 	}
 }
 
+// installationGrants is the pre-mint check of a dedicated token profile:
+// whether conn's installation grants what holds asks of a permission set. The
+// stored grant answers when it already holds; otherwise the installation's
+// LIVE grant is re-read and synced onto the connection first. An owner
+// approves a permission on the forge long after the install, and the stored
+// copy moves only when something reads the installation live — a refusal
+// read from it alone would name, as the fix, a step already taken.
+//
+// A connection recorded before grants were (no stored set) answers true: the
+// mint decides, and its 422 is typed forge.ErrPermissionsNotGranted. A live
+// read that fails is returned as is, never taken for a verdict either way.
+func (s *Server) installationGrants(ctx context.Context, conn forge.Connection, holds func(granted map[string]string) bool) (bool, error) {
+	if len(conn.GrantedPermissions) == 0 || holds(conn.GrantedPermissions) {
+		return true, nil
+	}
+	cfg, _, err := s.githubAppConfigForConnection(ctx, conn)
+	if err != nil {
+		return false, err
+	}
+	inst, err := forgegithub.InstallationInfo(ctx, s.forgeHTTPClient(),
+		forgegithub.APIBaseFor(conn.BaseURL()), cfg, conn.InstallationID, time.Now().UTC())
+	if err != nil {
+		return false, fmt.Errorf("forge: the stored grant of connection %s lacks the permission and the installation's live grant could not be re-read: %w", conn.ID, err)
+	}
+	s.syncGrantedPermissions(ctx, conn, inst.Permissions, inst.Login)
+	return len(inst.Permissions) == 0 || holds(inst.Permissions), nil
+}
+
 // missingDeliveryFor is the ONE place that decides whether a connection's
 // absent delivery grants are a defect worth reporting. A watch-only connection
 // has none on purpose — naming them would tell an operator to "fix" the very

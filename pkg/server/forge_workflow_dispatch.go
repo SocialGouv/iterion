@@ -46,9 +46,11 @@ const forgeDispatchWorkflowPath = "/api/v1/forge/dispatch-workflow"
 
 // dispatchWorkflowVar is the launch var naming the workflow file a dispatch
 // bot starts. The schedule lane binds the grant to the value on the schedule
-// row — the operator's own, written by a team admin — so the run can dispatch
-// that file and no other, whatever its own inputs say.
-const dispatchWorkflowVar = "workflow"
+// row — the operator's own, written by a team admin through the schedule
+// routes; a manifest declaring the scope cannot default it
+// (bundle.DispatchWorkflowVar) — so the run can dispatch that file and no
+// other, whatever its own inputs say.
+const dispatchWorkflowVar = bundle.DispatchWorkflowVar
 
 // The typed codes the dispatch endpoint answers with — what a bot reads from
 // the `code` (or, on a 5xx, `error_code`) field, a log line greps for and a
@@ -365,25 +367,26 @@ func (s *Server) workflowDispatcherFor(ctx context.Context, conn forge.Connectio
 // ONE workflow dispatch: forgegithub.WorkflowDispatchInstallationPermissions
 // ({actions: write, metadata: read}), narrowed to the one repository. It
 // follows forgeSecurityTokenMinter: a dedicated permission set, never the
-// runtime or management set, and a grant KNOWN to lack the permission fails
-// before the mint with the remediation named. An unknown grant set (a
-// connection recorded before grants were) still attempts the mint, whose 422
-// is typed forge.ErrPermissionsNotGranted.
+// runtime or management set, and a grant KNOWN to lack the permission — the
+// stored one, and the live one re-read when the stored one lacks it
+// (installationGrants) — fails before the mint with the remediation named. An
+// unknown grant set (a connection recorded before grants were) still attempts
+// the mint, whose 422 is typed forge.ErrPermissionsNotGranted.
 func (s *Server) forgeWorkflowDispatchTokenMinter(ctx context.Context, conn forge.Connection, repo string) (string, error) {
 	if err := workflowDispatchSupported(conn); err != nil {
 		return "", err
 	}
-	if len(conn.GrantedPermissions) > 0 {
-		switch conn.GrantedPermissions[forgegithub.PermissionActions] {
-		case "write", "admin":
-		default:
-			org := conn.InstallationAccount
-			if org == "" {
-				org = conn.AccountLogin
-			}
-			return "", fmt.Errorf("%w: the installation for %q lacks 'Actions: Read and write' — add the permission on the GitHub App, have an org admin approve the pending request, then retry",
-				forge.ErrPermissionsNotGranted, org)
+	granted, err := s.installationGrants(ctx, conn, grantsActionsWrite)
+	if err != nil {
+		return "", err
+	}
+	if !granted {
+		org := conn.InstallationAccount
+		if org == "" {
+			org = conn.AccountLogin
 		}
+		return "", fmt.Errorf("%w: the installation for %q lacks 'Actions: Read and write' (its live grant was re-read) — add the permission on the GitHub App, have an org admin approve the pending request, then retry",
+			forge.ErrPermissionsNotGranted, org)
 	}
 	name := shortRepoName(repo)
 	if name == "" {
@@ -400,6 +403,17 @@ func (s *Server) forgeWorkflowDispatchTokenMinter(ctx context.Context, conn forg
 			Permissions:  forgegithub.WorkflowDispatchInstallationPermissions(),
 		})
 	return tok, err
+}
+
+// grantsActionsWrite reports whether an installation grant carries Actions:
+// Read and write — what the dispatch token asks for.
+func grantsActionsWrite(granted map[string]string) bool {
+	switch granted[forgegithub.PermissionActions] {
+	case "write", "admin":
+		return true
+	default:
+		return false
+	}
 }
 
 // scheduledDispatchGrant mints the publish grant of a repo-bound schedule's

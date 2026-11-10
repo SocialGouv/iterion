@@ -142,8 +142,10 @@ func assertBindingRefusal(t *testing.T, what string, code int, out map[string]an
 // Mutations witnessed: the pullRequestGrant call in handleForgePublishReview
 // replaced by the raw lookup → the review reaches the recording forge → red
 // (and the source scan below reddens); NoPullRequest dropped from
-// scheduledDispatchGrant's grant → red; the json tag of NoPullRequest set to
-// "-" → the valkey arm reads the grant back unbound → red.
+// scheduledDispatchGrant's grant → red. The valkey arm's binding rides the
+// key namespace, not the JSON body (a json:"-" tag on NoPullRequest leaves
+// both arms green): TestValkeyGrantStore_AnUnboundGrantIsInvisibleToAnOlderBuild
+// and TestValkeyGrantStore_TheUnboundNamespaceBindsWhateverTheBodySays witness it.
 func TestScheduleGrant_AReviewIsRefusedBeforeAnyForgeCall(t *testing.T) {
 	for _, backend := range []string{"memory", "valkey"} {
 		t.Run(backend, func(t *testing.T) {
@@ -270,8 +272,8 @@ func TestScheduleGrant_StillDispatchesItsWorkflow(t *testing.T) {
 	if dcode != http.StatusOK || !dout.Dispatched || dout.Ref != "main" {
 		t.Fatalf("dispatch with the schedule grant = %d %s, want 200 dispatched on main", dcode, draw)
 	}
-	if _, dispatches, _ := w.f.snapshot(); len(dispatches) != 1 || dispatches[0] != (dispatchRecord{Repo: "acme/widgets", Workflow: "renovate.yml", Ref: "main"}) {
-		t.Fatalf("forge dispatches = %+v, want exactly renovate.yml on acme/widgets@main", dispatches)
+	if _, dispatches, _ := w.f.snapshot(); len(dispatches) != 1 || dispatches[0] != (dispatchRecord{Repo: "acme/widgets", Workflow: "renovate.yml", Ref: "refs/heads/main"}) {
+		t.Fatalf("forge dispatches = %+v, want exactly renovate.yml on acme/widgets@refs/heads/main", dispatches)
 	}
 	if calls := rec.snapshot(); len(calls) != 0 {
 		t.Fatalf("the publish surface's forge was called %v by a dispatch", calls)

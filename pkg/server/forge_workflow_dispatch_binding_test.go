@@ -265,9 +265,9 @@ func TestPullRequestGrant_AStoreThatCannotAnswerMintsNoGesture(t *testing.T) {
 }
 
 // scheduledKickServer is a cloud-shaped server whose catalogue holds the
-// given bundles, launching through a recording publisher, with team t1's
-// GitHub connection c1 and its integration i1 on acme/widgets.
-func scheduledKickServer(t *testing.T, bundles map[string]map[string]string) (*Server, func(botID string) runview.LaunchSpec) {
+// given bundles, launching through the returned recording publisher, with
+// team t1's GitHub connection c1 and its integration i1 on acme/widgets.
+func scheduledKickServer(t *testing.T, bundles map[string]map[string]string) (*Server, func(botID string) runview.LaunchSpec, *spinePublisher) {
 	t.Helper()
 	pub := &spinePublisher{}
 	s := newForgeTestServer(t)
@@ -312,7 +312,7 @@ func scheduledKickServer(t *testing.T, bundles map[string]map[string]string) (*S
 		}
 		return pub.lastSpec()
 	}
-	return s, fire
+	return s, fire, pub
 }
 
 // The tick reads the capability from the bundle it launches: a team row that
@@ -323,7 +323,7 @@ func scheduledKickServer(t *testing.T, bundles map[string]map[string]string) (*S
 // botManifestFor's answer instead of lb.Manifest → the shadow's run holds a
 // dispatch grant → red.
 func TestLaunchScheduledBot_TheGrantFollowsTheBundleTheTickLaunches(t *testing.T) {
-	s, fire := scheduledKickServer(t, map[string]map[string]string{
+	s, fire, _ := scheduledKickServer(t, map[string]map[string]string{
 		"kick": {"main.bot": spineProbeBot, "manifest.yaml": kickProbeManifest},
 	})
 	if spec := fire("kick"); spec.Vars[forgePublishVarToken] == "" {
@@ -351,13 +351,99 @@ const kickWideManifest = "name: kick-wide\nversion: 0.1.0\nschema_version: 1\nfo
 // Mutation witnessed: scheduledDispatchGrant minting the manifest's gestures
 // beside the dispatch → red.
 func TestLaunchScheduledBot_TheScheduleGrantCarriesTheDispatchOnly(t *testing.T) {
-	s, fire := scheduledKickServer(t, map[string]map[string]string{
+	s, fire, _ := scheduledKickServer(t, map[string]map[string]string{
 		"kick-wide": {"main.bot": spineProbeBot, "manifest.yaml": kickWideManifest},
 	})
 	spec := fire("kick-wide")
 	g, ok := s.forgePublishTokens.lookup(spec.Vars[forgePublishVarToken])
 	if !ok || !slices.Equal(g.Capabilities, []string{publishCapDispatchWorkflow}) || g.DispatchWorkflow != "renovate.yml" {
 		t.Fatalf("schedule grant of a manifest declaring every scope = (%+v, %v), want exactly [%s] bound to renovate.yml", g, ok, publishCapDispatchWorkflow)
+	}
+}
+
+// A tick whose launch is proven not to have started leaves no grant behind:
+// the one minted for it is revoked with the metered slot, not left live until
+// its TTL for nothing to hold.
+//
+// Mutation witnessed: launchScheduledBot's revokeUnlaunchedGrant(minted)
+// muted → the grant outlives the refused launch → red.
+func TestLaunchScheduledBot_ALaunchThatNeverStartedRevokesItsGrant(t *testing.T) {
+	s, _, pub := scheduledKickServer(t, map[string]map[string]string{
+		"kick": {"main.bot": spineProbeBot, "manifest.yaml": kickProbeManifest},
+	})
+	pub.mu.Lock()
+	pub.err = errors.New("cloudpublisher: queue unavailable")
+	pub.mu.Unlock()
+	err := s.launchScheduledBot(spineCtx(t), cloudsched.ScheduledBot{
+		ID: "sb-kick", TenantID: "t1", BotID: "kick", Cron: "* * * * *", RepoIntegrationID: "i1",
+		Vars: map[string]string{"workflow": "renovate.yml"}, NextFireAt: time.Now().UTC(),
+	})
+	if err == nil || runview.RunMayHaveStarted(err) {
+		t.Fatalf("launchScheduledBot = %v, want the run service's refusal of a launch that never started", err)
+	}
+	tok := pub.lastSpec().Vars[forgePublishVarToken]
+	if tok == "" {
+		t.Fatal("the refused launch carried no grant — the fixture has nothing to revoke")
+	}
+	if g, ok := s.forgePublishTokens.lookup(tok); ok {
+		t.Fatalf("the grant of a launch that never started is still live (%+v) — nothing holds it", g)
+	}
+}
+
+// A run of ANOTHER tenant recording the grant's token — a leaked bearer on a
+// trusted run of team2 — never dispatches team1's workflow: runOwnsGrant's
+// tenancy half, answered typed, before any forge call and before the claim.
+//
+// Mutation witnessed: the handler's runOwnsGrant call narrowed to its trust
+// half (!run.Trust.Trusted()) → team2's run dispatches → red.
+func TestWorkflowDispatch_ARunOfAnotherTenantNeverDispatches(t *testing.T) {
+	w := newDispatchWorld(t)
+	token, _ := w.scheduleGrant(t, "workflow-kick", "run-team2", store.RunTrustDefault)
+	run, err := w.runs.LoadRun(context.Background(), "run-team2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run.TenantID = "team2"
+	if err := w.runs.SaveRun(context.Background(), run); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := w.runs.LoadRun(store.WithoutTenantFilter(context.Background()), "run-team2"); err != nil || got.TenantID != "team2" || !got.Trust.Trusted() {
+		t.Fatalf("the fixture's run = (%+v, %v), want a trusted run of team2 — only its tenancy may refuse it", got, err)
+	}
+	code, out, raw := w.dispatch(t, token, "run-team2", "acme/widgets", "renovate.yml")
+	if code != http.StatusForbidden || out.Code != grantTenantMismatchReason || out.Dispatched {
+		t.Fatalf("dispatch by another tenant's run = %d %s, want 403 %s", code, raw, grantTenantMismatchReason)
+	}
+	w.assertForgeUntouched(t)
+	if c := w.claims(t, token); len(c) != 0 {
+		t.Errorf("another tenant's run left claims %v on the grant", c)
+	}
+}
+
+// A dispatch POST the forge took but did not answer — the connection
+// dropped, or its edge answered a 5xx — is 502 workflow_dispatch_unconfirmed:
+// whether the workflow was queued is unknown, so the answer is neither a
+// dispatch nor a refusal, and never retryable.
+//
+// Mutations witnessed: dispatchUnconfirmed respelled, or swapped for another
+// code at its use → red on error_code (both rows); the GitHub client's 5xx
+// branch removed → the 502 row answers 422
+// workflow_dispatch_refused_by_forge → red.
+func TestWorkflowDispatch_AnUnansweredDispatchIsUnconfirmed(t *testing.T) {
+	for _, fault := range []string{"drop", "502"} {
+		t.Run(fault, func(t *testing.T) {
+			w := newDispatchWorld(t)
+			w.f.mu.Lock()
+			w.f.dispatchFault = fault
+			w.f.mu.Unlock()
+			token, _ := w.scheduleGrant(t, "workflow-kick", "run-lost", store.RunTrustDefault)
+			code, out, raw := w.postDispatch(t, token, `{"run_id":"run-lost","repo":"acme/widgets","workflow":"renovate.yml"}`)
+			// The wire spelling, not the constant: a respelled code ships to
+			// every bot and log line that greps for it.
+			if code != http.StatusBadGateway || out["error_code"] != "workflow_dispatch_unconfirmed" || out["retryable"] != false {
+				t.Fatalf("dispatch the forge did not answer (%s) = %d %s, want 502 error_code workflow_dispatch_unconfirmed and retryable false", fault, code, raw)
+			}
+		})
 	}
 }
 

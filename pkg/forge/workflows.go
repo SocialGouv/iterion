@@ -39,7 +39,8 @@ type WorkflowDispatch struct {
 // A refusal the forge ANSWERED — the workflow does not exist, it declares no
 // manual trigger, the ref is unknown, the credential lacks the grant — is an
 // error wrapping ErrWorkflowNotDispatched: nothing was queued. Any other
-// error (no answer, a redirected write) leaves the outcome unknown.
+// error (no answer, a redirected write, a server-side 5xx) leaves the outcome
+// unknown.
 type WorkflowDispatcher interface {
 	DispatchWorkflow(ctx context.Context, repo, workflow, ref string) (WorkflowDispatch, error)
 }

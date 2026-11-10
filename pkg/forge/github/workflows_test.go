@@ -7,6 +7,7 @@ import (
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 
@@ -16,7 +17,9 @@ import (
 // dispatchAPI is GitHub's dispatch surface as strict as the real one: the
 // default branch from GET /repos/{owner}/{repo}, 204 on a dispatch, 404 on an
 // unknown workflow, 422 on an unknown ref or a workflow without a
-// workflow_dispatch trigger.
+// workflow_dispatch trigger. A branch is accepted short or fully qualified,
+// as GitHub accepts it. edge.yml stands for an edge failing after the write:
+// 502.
 type dispatchAPI struct {
 	mu       sync.Mutex
 	requests []string
@@ -45,11 +48,14 @@ func newDispatchAPI(t *testing.T) (*dispatchAPI, *httptest.Server) {
 		api.mu.Lock()
 		api.requests = append(api.requests, "POST "+r.PathValue("file"))
 		api.mu.Unlock()
+		ref, _ := body["ref"].(string)
 		switch {
+		case r.PathValue("file") == "edge.yml":
+			reply(w, http.StatusBadGateway, "Server Error")
 		case r.PathValue("file") == "nope.yml":
 			reply(w, http.StatusNotFound, "Not Found")
-		case body["ref"] != "trunk" && body["ref"] != "release":
-			reply(w, http.StatusUnprocessableEntity, "No ref found for: "+body["ref"].(string))
+		case strings.TrimPrefix(ref, "refs/heads/") != "trunk" && strings.TrimPrefix(ref, "refs/heads/") != "release":
+			reply(w, http.StatusUnprocessableEntity, "No ref found for: "+ref)
 		case r.PathValue("file") == "ci.yml":
 			reply(w, http.StatusUnprocessableEntity, "Workflow does not have 'workflow_dispatch' trigger")
 		default:
@@ -66,14 +72,19 @@ func newDispatchAPI(t *testing.T) (*dispatchAPI, *httptest.Server) {
 
 func TestDispatchWorkflow(t *testing.T) {
 	ctx := context.Background()
+	// The default branch goes on the wire fully qualified: a short name is
+	// ambiguous with a tag of the same name.
+	//
+	// Mutation witnessed: the default branch sent short (wireRef = ref) →
+	// the body reads {ref: trunk} → red.
 	t.Run("an empty ref is the default branch, read from the forge", func(t *testing.T) {
 		api, srv := newDispatchAPI(t)
 		res, err := New(srv.Client(), srv.URL, "tok").DispatchWorkflow(ctx, "acme/widgets", "renovate.yml", "")
 		if err != nil || res.Ref != "trunk" {
 			t.Fatalf("DispatchWorkflow = (%+v, %v), want dispatched on trunk", res, err)
 		}
-		if len(api.got) != 1 || !maps.Equal(api.got[0], map[string]any{"ref": "trunk"}) {
-			t.Fatalf("dispatch bodies = %v, want exactly {ref: trunk} — no inputs", api.got)
+		if len(api.got) != 1 || !maps.Equal(api.got[0], map[string]any{"ref": "refs/heads/trunk"}) {
+			t.Fatalf("dispatch bodies = %v, want exactly {ref: refs/heads/trunk} — the branch, never a same-named tag, and no inputs", api.got)
 		}
 	})
 	t.Run("a named ref is dispatched as named", func(t *testing.T) {
@@ -104,6 +115,18 @@ func TestDispatchWorkflow(t *testing.T) {
 		_, err := New(srv.Client(), srv.URL, "tok").DispatchWorkflow(ctx, "acme/widgets", "dir/x.yml", "trunk")
 		if !errors.Is(err, forge.ErrWorkflowNotDispatched) || len(api.requests) != 0 {
 			t.Fatalf("DispatchWorkflow(dir/x.yml) = %v after %v, want a refusal and no request", err, api.requests)
+		}
+	})
+	// A 5xx is an answer but not a verdict: the edge may fail after the
+	// backend queued the run, so it never claims nothing was queued.
+	//
+	// Mutation witnessed: the 5xx branch removed → the 502 wraps
+	// ErrWorkflowNotDispatched → red.
+	t.Run("a forge 5xx leaves the outcome unknown", func(t *testing.T) {
+		_, srv := newDispatchAPI(t)
+		_, err := New(srv.Client(), srv.URL, "tok").DispatchWorkflow(ctx, "acme/widgets", "edge.yml", "")
+		if err == nil || errors.Is(err, forge.ErrWorkflowNotDispatched) {
+			t.Fatalf("DispatchWorkflow answered 502 = %v, want an error that does NOT claim nothing was queued", err)
 		}
 	})
 	// No answer is not a refusal: the forge may have queued the run.
