@@ -5,8 +5,12 @@
 package server
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"net/http"
+	"sort"
+	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/identity"
 	"github.com/SocialGouv/iterion/pkg/platformcfg"
@@ -77,6 +81,23 @@ func (s *Server) handleAdminSetTeamRunnerPool(w http.ResponseWriter, r *http.Req
 			httpError(w, http.StatusConflict, "runner pool %q is already held by team %q (%s) — one team per pool; unmap that team first", pool, holder.Slug, holder.ID)
 			return
 		}
+		// The same invariant from the fork lane's side (ADR-162 Q3): an
+		// unmapped team's fork-lane config runs its untrusted runs on the
+		// pool it names, and the runner admits a stamped run on its pool
+		// alone. Mapping another team here would put that lane's queued,
+		// running and redelivered fork runs — their code and their team's
+		// sealed keys — on this team's sovereign pods, and refuse the lane's
+		// every next gesture. The config is immutable, so the remedy is to
+		// recreate it naming another pool before this mapping.
+		lanes, err := s.forkLanesNamingPool(r.Context(), teamID, pool)
+		if err != nil {
+			httpError(w, http.StatusInternalServerError, "%v", err)
+			return
+		}
+		if len(lanes) > 0 {
+			httpError(w, http.StatusConflict, "runner pool %q is the fork-lane pool of %s — that lane's untrusted runs execute there, and mapping team %s onto it would put them on its sovereign pods; recreate those fork-lane webhooks naming another pool first", pool, strings.Join(lanes, ", "), teamID)
+			return
+		}
 	}
 	updated, err := s.authStore().PatchTeam(r.Context(), teamID, identity.TeamPatch{RunnerPool: &pool})
 	if err != nil {
@@ -107,6 +128,44 @@ func (s *Server) handleAdminSetTeamRunnerPool(w http.ResponseWriter, r *http.Req
 		})
 	}
 	writeJSON(w, toTeamSummaryView(updated))
+}
+
+// forkLanesNamingPool lists, sorted, the fork-lane webhook configs of every
+// team but teamID whose runs execute on pool (webhooks.Config.ForkLanePool),
+// each rendered "webhook config <id> (team <id>)". Every team is walked, page
+// by page, and a disabled config counts: it can be re-enabled, and its pool
+// cannot be edited. No webhook store wired means no fork lane exists.
+func (s *Server) forkLanesNamingPool(ctx context.Context, teamID, pool string) ([]string, error) {
+	if s.webhookConfigs == nil || pool == "" {
+		return nil, nil
+	}
+	const pageSize = 1000
+	var lanes []string
+	for offset := 0; ; offset += pageSize {
+		teams, err := s.authStore().ListTeams(ctx, identity.Page{Offset: offset, Limit: pageSize})
+		if err != nil {
+			return nil, fmt.Errorf("list teams: %w", err)
+		}
+		for _, tm := range teams {
+			if tm.ID == teamID {
+				continue
+			}
+			cfgs, err := s.webhookConfigs.ListByTenant(ctx, tm.ID)
+			if err != nil {
+				return nil, fmt.Errorf("list team %s's webhook configs: %w", tm.ID, err)
+			}
+			for _, c := range cfgs {
+				if c.ForkLane && c.ForkLanePool == pool {
+					lanes = append(lanes, fmt.Sprintf("webhook config %s (team %s)", c.ID, tm.ID))
+				}
+			}
+		}
+		if len(teams) < pageSize {
+			break
+		}
+	}
+	sort.Strings(lanes)
+	return lanes, nil
 }
 
 // handleAdminSetTeamLLMFallback sets (or resets) a team's credential-fallback
