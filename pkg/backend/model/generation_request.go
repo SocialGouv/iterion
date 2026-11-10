@@ -201,10 +201,24 @@ func buildRequest(opts GenerationOptions, messages []api.Message, extraTools []a
 		// extraTools. Not "one turn" though — GenerateObjectDirect re-asks
 		// once on a schema-invalid answer with a byte-identical prefix, and a
 		// claw schema re-ask runs tool-less by construction (executor_reask
-		// clears ToolDefs). So the trade is: the happy path saves ~0.25x of
-		// the tail, a re-asked answer loses the ~0.9x it would have read.
-		// Which way that nets depends on the schema-failure rate, which is
-		// not measured here; the happy path is taken to be the common one.
+		// clears ToolDefs). So marking is a bet on a second turn arriving.
+		//
+		// MEASURED against the real API (claude-haiku-4-5, a 32 KB corpus
+		// behind a short posture — the production shape; two identical
+		// requests per arm):
+		//
+		//	tail unmarked:  input 8488, write 0,    read 0     (both calls)
+		//	tail marked:    input  329, write 8159, read 0     (call 1)
+		//	                input  329, write 0,    read 8159  (call 2)
+		//
+		// The corpus is 96% of the billed prefix, and block 0 alone is far
+		// below the minimum cacheable prefix (512-4096 tokens by model), so
+		// the unmarked arm caches NOTHING despite its own marker. Over two
+		// turns marking saves 31%; on a request with no second turn it costs
+		// 24%. Break-even: a second turn must arrive better than ~22% of the
+		// time — which is why a schema re-ask, far rarer than that, does not
+		// earn the marker, and why the gate is keyed on the loop rather than
+		// on the presence of a corpus worth caching.
 		//
 		// Where a second turn IS possible, the prompt cache covers a prefix
 		// up to and INCLUDING a marked block, so a block sitting after the
