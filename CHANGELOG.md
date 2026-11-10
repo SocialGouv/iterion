@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [5.17.2](https://github.com/SocialGouv/iterion/compare/v5.17.1...v5.17.2) (2026-11-10)
+
+### Bug Fixes
+
+* **claw:** close the system prefix with a cache breakpoint ([#3132](https://github.com/SocialGouv/iterion/issues/3132)) ([7ecff9d](https://github.com/SocialGouv/iterion/commit/7ecff9d0b24a5f0332308ad21ff08f73df088b92)), references [docs/merge-policy.md#a-parked-gate-decided-2026-11-10](https://github.com/docs/merge-policy.md/issues/a-parked-gate-decided-2026-11-10)
+
+    <details><summary>why</summary>
+
+    The prompt cache covers a prefix up to and including a marked block, so a system block appended after the last `cache_control` marker is re-billed at full input price on every tool turn. The claw backend marks block [0] (posture + the node's task) and then appends the ambient-context corpus with no marker; the memory blocks re-mark the tail, but only where a node declares `memory:`. On a claw node without it that corpus was never cached — and `ambient.Workspace` is both the zero value and the…
+
+    </details>
+
 ## [5.17.1](https://github.com/SocialGouv/iterion/compare/v5.17.0...v5.17.1) (2026-11-10)
 
 ### Bug Fixes
