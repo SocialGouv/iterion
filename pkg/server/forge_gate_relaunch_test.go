@@ -180,6 +180,103 @@ func TestGateRelaunch(t *testing.T) {
 		}
 	})
 
+	// The #49/#68 shape (#3127): a review parked on z.ai's weekly wall is
+	// offered to the reconciler while its arming is still settling — the
+	// engine has written failed_resumable on USAGE_LIMIT_BLOCKED, the runner's
+	// post-engine steps have not yet armed the retry. Counted dead, it was
+	// relaunched ("review_died"): two runs per head cycling into the same
+	// wall, and the head's one relaunch spent on a quota, not a review.
+	seedParkedRun := func(t *testing.T, s *Server, continuation store.ContinuationState) string {
+		t.Helper()
+		id, err := store.GenerateRunID()
+		if err != nil {
+			t.Fatal(err)
+		}
+		run, err := s.cfg.Store.CreateRun(context.Background(), id, "dep_update_guard", deadInputs)
+		if err != nil {
+			t.Fatal(err)
+		}
+		run.BotID = botID
+		run.Status = store.RunStatusFailedResumable
+		run.FailureCode = store.FailureUsageLimitBlocked
+		run.Error = `node "security_audit" execution failed: 429 · [1310] Weekly Limit Exhausted. Your limit will reset at 2026-11-14 17:24:00`
+		if err := s.cfg.Store.SaveRun(context.Background(), run); err != nil {
+			t.Fatal(err)
+		}
+		if continuation != "" {
+			// The runner's own writer of a continuation, same status.
+			if _, err := s.cfg.Store.UpdateRunOutcome(context.Background(), run.ID, store.RunStatusFailedResumable, "",
+				store.RunOutcomeMeta{Code: store.FailureUsageLimitBlocked, Continuation: continuation},
+				[]store.RunStatus{store.RunStatusFailedResumable}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		got, err := s.cfg.Store.LoadRun(context.Background(), run.ID)
+		if err != nil || got.FailureCode != store.FailureUsageLimitBlocked || got.ContinuationState != continuation {
+			t.Fatalf("seeded park reads back as %+v (%v), want USAGE_LIMIT_BLOCKED with continuation %q", got, err, continuation)
+		}
+		return run.ID
+	}
+	notDead := func(t *testing.T, w world) {
+		t.Helper()
+		if *w.launched != 0 {
+			t.Fatalf("launched %d runs — a run parked on its usage window is not dead, and a second review would only meet the same wall", *w.launched)
+		}
+		if w.gc.setCalls != 0 {
+			t.Errorf("posted %d statuses — no synthetic failure for a review that is waiting, not dead", w.gc.setCalls)
+		}
+		if _, err := w.s.webhookDeliveries.GetByIdempotencyKey(context.Background(), relaunchIdem); err == nil {
+			t.Error("the head's relaunch claim was written — a quota wall must not spend the head's one relaunch")
+		}
+	}
+	// The sweep tick lands between the engine's write and the runner's
+	// arming: the outcome event that follows the arming is the next offer.
+	t.Run("a run parked on a usage window is not dead while its arming settles", func(t *testing.T) {
+		w := build(t, nil)
+		runID := seedParkedRun(t, w.s, "")
+		if err := w.s.reconcileGateForRunID(context.Background(), runID, gateTriggerSweep); err != nil {
+			t.Fatalf("reconcile: %v", err)
+		}
+		notDead(t, w)
+	})
+	// A park whose arming could not be persisted is handed back to the queue
+	// (redelivery_pending): a continuation the runner stated, on every path.
+	t.Run("a usage park pending redelivery is not dead", func(t *testing.T) {
+		w := build(t, nil)
+		runID := seedParkedRun(t, w.s, store.ContinuationRedeliveryPending)
+		for _, via := range []string{gateTriggerEvent, gateTriggerSweep} {
+			if err := w.s.reconcileGateForRunID(context.Background(), runID, via); err != nil {
+				t.Fatalf("reconcile (%s): %v", via, err)
+			}
+		}
+		notDead(t, w)
+	})
+	// The runner states the continuation before it fires the outcome event, so
+	// an unknown one ON the event is a lane that never states it: nothing
+	// will wake that run, and it is repaired as it always was.
+	t.Run("a usage failure the outcome event finds unsettled is dead", func(t *testing.T) {
+		w := build(t, nil)
+		runID := seedParkedRun(t, w.s, "")
+		if err := w.s.reconcileGateForRun(context.Background(), terminalEvent(runID)); err != nil {
+			t.Fatalf("reconcile: %v", err)
+		}
+		if *w.launched != 1 {
+			t.Fatalf("launched %d runs, want 1 — a run no lane will resume must not hold the gate", *w.launched)
+		}
+	})
+	// The boundary: once the park is settled final (the attempt budget spent,
+	// the retry abandoned) nothing will wake the run, and it is dead.
+	t.Run("a usage park settled final is dead and relaunched", func(t *testing.T) {
+		w := build(t, nil)
+		runID := seedParkedRun(t, w.s, store.ContinuationFinal)
+		if err := w.s.reconcileGateForRun(context.Background(), terminalEvent(runID)); err != nil {
+			t.Fatalf("reconcile: %v", err)
+		}
+		if *w.launched != 1 {
+			t.Fatalf("launched %d runs, want 1 — a park nothing will resume must not hold the gate forever", *w.launched)
+		}
+	})
+
 	// The natural second-death sequence: the first death posted the synthetic
 	// failure and spent the head's one relaunch; now another run of the same
 	// bot dies on the head. The marker must not read as "already posted" for
