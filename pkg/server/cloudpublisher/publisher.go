@@ -3706,13 +3706,7 @@ func doorWantsFor(routePolicy *store.RunLLMRoutePolicy, view model.RouteView, la
 	sandboxed := runtime.WorkflowSandboxActive(wf, "", "")
 	landed := map[string]bool{}
 	for _, st := range missing {
-		_ = ir.ApplyPolicyLadder(wf, []ir.PolicyLadderStage{st}, sandboxed, launchVars, func(n ir.LLMNode) string {
-			ov := view.Overrides.ForNode(n.NodeID(), n.NodeKind())
-			if ov.Model != "" {
-				return ir.ExpandEnvWithDefault(ov.Model)
-			}
-			return ir.ExpandEnvWithDefault(n.GetLLMFields().Model)
-		}, func(n ir.LLMNode) string {
+		_ = ir.ApplyPolicyLadder(wf, []ir.PolicyLadderStage{st}, sandboxed, launchVars, view.Overrides.LadderRoute, func(n ir.LLMNode) string {
 			ov := view.Overrides.ForNode(n.NodeID(), n.NodeKind())
 			return ov.Backend
 		}, llmroute.ResolveClasses(routePolicy.ModelClasses), teamGateway)

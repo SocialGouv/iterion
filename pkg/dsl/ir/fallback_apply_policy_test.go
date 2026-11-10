@@ -28,9 +28,7 @@ func TestApplyPolicyLadder(t *testing.T) {
 	}
 
 	w := mk("claude-opus-5-5", "")
-	refusals := ApplyPolicyLadder(w, stages, false, nil, func(n LLMNode) string {
-		return n.GetLLMFields().Model
-	}, nil, llmroute.ResolveClasses(nil), false)
+	refusals := ApplyPolicyLadder(w, stages, false, nil, nil, nil, llmroute.ResolveClasses(nil), false)
 	node := w.Nodes["implement"].(*AgentNode)
 	if len(node.Fallbacks) != 1 {
 		t.Fatalf("stages = %d (%+v), refusals = %v — want 1 (the claw crossing is refused: the node has no permission gate or claw-eligible toolset), refusals naming it", len(node.Fallbacks), node.Fallbacks, refusals)
@@ -57,7 +55,7 @@ func TestApplyPolicyLadder(t *testing.T) {
 	wn := wOp.Nodes["implement"].(*AgentNode)
 	wn.Fallbacks = append(wn.Fallbacks, Fallback{Name: RunFallbackName, Backend: "claude_code", Model: "claude-opus-5-5", RunStage: 0, RunStageSet: true})
 	opStages := stages[:1] // the claude_code crossing only: the claw stage needs a permission gate this node does not carry
-	if refusals := ApplyPolicyLadder(wOp, opStages, false, nil, func(n LLMNode) string { return n.GetLLMFields().Model }, nil, llmroute.ResolveClasses(nil), false); len(refusals) != 0 {
+	if refusals := ApplyPolicyLadder(wOp, opStages, false, nil, nil, nil, llmroute.ResolveClasses(nil), false); len(refusals) != 0 {
 		t.Fatalf("operator-armed node refused the ladder: %v", refusals)
 	}
 	if got := len(wn.Fallbacks); got != 2 {
@@ -74,7 +72,7 @@ func TestApplyPolicyLadder(t *testing.T) {
 		LLMFields: LLMFields{Backend: "claude_code", Model: "claude-opus-5-5"},
 		Fallbacks: []Fallback{{Name: "authored", Backend: "claude_code", Model: "claude-opus-5-5"}},
 	}
-	if refusals := ApplyPolicyLadder(w2, stages, false, nil, func(n LLMNode) string { return n.GetLLMFields().Model }, nil, llmroute.ResolveClasses(nil), false); len(refusals) != 0 {
+	if refusals := ApplyPolicyLadder(w2, stages, false, nil, nil, nil, llmroute.ResolveClasses(nil), false); len(refusals) != 0 {
 		t.Fatalf("an authored node screened = %v, want silence (the author vetted where it may go)", refusals)
 	}
 	if got := len(w2.Nodes["implement"].(*AgentNode).Fallbacks); got != 1 {
@@ -83,7 +81,7 @@ func TestApplyPolicyLadder(t *testing.T) {
 
 	// A node whose model maps nothing for the pair skips the stage, named.
 	w3 := mk("", "")
-	refusals = ApplyPolicyLadder(w3, stages, false, nil, func(n LLMNode) string { return "" }, nil, llmroute.ResolveClasses(nil), false)
+	refusals = ApplyPolicyLadder(w3, stages, false, nil, func(n LLMNode) (string, string) { return "", "" }, nil, llmroute.ResolveClasses(nil), false)
 	if got := len(w3.Nodes["implement"].(*AgentNode).Fallbacks); got != 0 {
 		t.Fatalf("modelless stages emitted: %d", got)
 	}
@@ -114,7 +112,7 @@ func TestApplyPolicyLadder_SessionContract(t *testing.T) {
 
 	// Cross-backend on a session node: refused, named.
 	w := mkSession("claude_code", "claude-opus-5-5", SessionInherit)
-	refusals := ApplyPolicyLadder(w, stages, false, nil, func(n LLMNode) string { return n.GetLLMFields().Model }, nil, llmroute.ResolveClasses(nil), false)
+	refusals := ApplyPolicyLadder(w, stages, false, nil, nil, nil, llmroute.ResolveClasses(nil), false)
 	if len(refusals) != 1 || !strings.Contains(refusals[0], "session") {
 		t.Fatalf("refusals = %v, want the session-continuity refusal naming the crossing", refusals)
 	}
@@ -126,7 +124,7 @@ func TestApplyPolicyLadder_SessionContract(t *testing.T) {
 	// (the dispatch keeps it; ADR-087 §3's rebuild-and-evict applies only
 	// to cross-backend falls, which the screen refuses here).
 	w2 := mkSession("claw", "anthropic/claude-opus-5-5", SessionInherit)
-	refusals = ApplyPolicyLadder(w2, stages, false, nil, func(n LLMNode) string { return n.GetLLMFields().Model }, nil, llmroute.ResolveClasses(nil), false)
+	refusals = ApplyPolicyLadder(w2, stages, false, nil, nil, nil, llmroute.ResolveClasses(nil), false)
 	if len(refusals) != 0 {
 		t.Fatalf("same-backend refused: %v", refusals)
 	}
@@ -138,7 +136,7 @@ func TestApplyPolicyLadder_SessionContract(t *testing.T) {
 	// node overridden to claude_code refuses the claw stage on its
 	// session — the DSL field alone would have passed it unscreened.
 	w3 := mkSession("claw", "anthropic/claude-opus-5-5", SessionInherit)
-	refusals = ApplyPolicyLadder(w3, stages, false, nil, func(n LLMNode) string { return n.GetLLMFields().Model }, func(n LLMNode) string {
+	refusals = ApplyPolicyLadder(w3, stages, false, nil, nil, func(n LLMNode) string {
 		return "claude_code"
 	}, llmroute.ResolveClasses(nil), false)
 	if len(refusals) != 1 || !strings.Contains(refusals[0], "session") {
@@ -159,7 +157,7 @@ func TestApplyPolicyLadder_ClassOverrideBites(t *testing.T) {
 	}
 	stages := []PolicyLadderStage{{Harness: "codex", Credential: "chatgpt_forfait", On: []string{"usage_window"}}}
 	w := mk("claude-opus-5-5")
-	if r := ApplyPolicyLadder(w, stages, false, nil, func(n LLMNode) string { return n.GetLLMFields().Model }, nil, llmroute.ResolveClasses(nil), false); len(r) != 0 {
+	if r := ApplyPolicyLadder(w, stages, false, nil, nil, nil, llmroute.ResolveClasses(nil), false); len(r) != 0 {
 		t.Fatalf("the shipped-table crossing refused: %v", r)
 	}
 	if got := w.Nodes["implement"].(*AgentNode).Fallbacks[0].Model; got != "gpt-6-sol" {
@@ -170,7 +168,7 @@ func TestApplyPolicyLadder_ClassOverrideBites(t *testing.T) {
 	// it, and the shipped cell would not.
 	w2 := mk("claude-opus-5-5")
 	overridden := llmroute.ResolveClasses(map[string]map[string]string{"top": {"openai": "gpt-6-astra"}})
-	if r := ApplyPolicyLadder(w2, stages, false, nil, func(n LLMNode) string { return n.GetLLMFields().Model }, nil, overridden, false); len(r) != 0 {
+	if r := ApplyPolicyLadder(w2, stages, false, nil, nil, nil, overridden, false); len(r) != 0 {
 		t.Fatalf("the overridden crossing refused: %v", r)
 	}
 	if got := w2.Nodes["implement"].(*AgentNode).Fallbacks[0].Model; got != "gpt-6-astra" {
@@ -202,13 +200,13 @@ func TestApplyPolicyLadder_CrossHarnessThirdState(t *testing.T) {
 	// OFF (the default): the cross-backend crossing is refused — the
 	// existing byte-identical contract.
 	w := mkSess("claude-opus-5-5")
-	if r := ApplyPolicyLadder(w, stages(""), false, nil, func(n LLMNode) string { return n.GetLLMFields().Model }, nil, tbl, false); len(r) != 1 {
+	if r := ApplyPolicyLadder(w, stages(""), false, nil, nil, nil, tbl, false); len(r) != 1 {
 		t.Fatalf("off: refusals = %v, want the session refusal", r)
 	}
 	// The ACTIVE modes land the stage on the same node.
 	for _, mode := range []string{"reuse", "restart"} {
 		w2 := mkSess("claude-opus-5-5")
-		if r := ApplyPolicyLadder(w2, stages(mode), false, nil, func(n LLMNode) string { return n.GetLLMFields().Model }, nil, tbl, false); len(r) != 0 {
+		if r := ApplyPolicyLadder(w2, stages(mode), false, nil, nil, nil, tbl, false); len(r) != 0 {
 			t.Fatalf("%s: refused = %v, want the stage to land (the third state)", mode, r)
 		}
 		got := w2.Nodes["implement"].(*AgentNode).Fallbacks[0]
@@ -224,7 +222,7 @@ func TestApplyPolicyLadder_CrossHarnessThirdState(t *testing.T) {
 	// the screen.
 	w3 := mkSess("claude-opus-5-5")
 	w3.Nodes["implement"].(*AgentNode).Tools = nil
-	if r := ApplyPolicyLadder(w3, stages("restart"), false, nil, func(n LLMNode) string { return n.GetLLMFields().Model }, nil, tbl, false); len(r) == 0 || !strings.Contains(r[0], "tools") {
+	if r := ApplyPolicyLadder(w3, stages("restart"), false, nil, nil, nil, tbl, false); len(r) == 0 || !strings.Contains(r[0], "tools") {
 		t.Fatalf("the undeclared-tools crossing landed under restart: %v — the screen must stand under every posture", r)
 	}
 
@@ -262,11 +260,10 @@ func TestApplyPolicyLadder_TheTeamGatewayBoundaryHoldsTheGatewayNode(t *testing.
 		}}
 	}
 	stages := []PolicyLadderStage{{Harness: "claw", Credential: "openai_key", On: []string{"usage_window"}}}
-	model := func(n LLMNode) string { return n.GetLLMFields().Model }
 	rungs := func(w *Workflow, id string) []Fallback { return w.Nodes[id].(*AgentNode).Fallbacks }
 
 	open := mk()
-	if r := ApplyPolicyLadder(open, stages, false, nil, model, nil, llmroute.ResolveClasses(nil), false); len(r) != 0 {
+	if r := ApplyPolicyLadder(open, stages, false, nil, nil, nil, llmroute.ResolveClasses(nil), false); len(r) != 0 {
 		t.Fatalf("unstamped: refusals = %v, want the crossing to land on both nodes", r)
 	}
 	if got := rungs(open, "gw"); len(got) != 1 || got[0].Model != "openai/gpt-6-sol" {
@@ -274,7 +271,7 @@ func TestApplyPolicyLadder_TheTeamGatewayBoundaryHoldsTheGatewayNode(t *testing.
 	}
 
 	held := mk()
-	r := ApplyPolicyLadder(held, stages, false, nil, model, nil, llmroute.ResolveClasses(nil), true)
+	r := ApplyPolicyLadder(held, stages, false, nil, nil, nil, llmroute.ResolveClasses(nil), true)
 	if got := rungs(held, "gw"); len(got) != 0 {
 		t.Fatalf("stamped gateway node rungs = %+v, want none: its content stays on the team's gateway", got)
 	}

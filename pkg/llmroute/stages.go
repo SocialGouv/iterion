@@ -78,7 +78,7 @@ func StageModel(harness, credential, nodeModel string, classes ClassTable, teamG
 	if nodeModel == "" {
 		return "", false, ReasonNoMapping
 	}
-	if teamGateway && gatewayRoute(nodeModel) {
+	if teamGateway && GatewayRoute(nodeModel) {
 		return "", false, ReasonContentBoundary
 	}
 	family, bare := modelFamily(nodeModel)
@@ -167,13 +167,20 @@ const ReasonNoMapping = "has no delivery-1 model mapping"
 // it: the boundary is the run's, frozen at launch.
 const ReasonContentBoundary = "is refused for a node routed to the team's gateway: the run's content boundary (team_gateway) holds its content there, and a crossing would carry it to a vendor credential"
 
-// gatewayRoute reports whether a node model is a route to the gateway: its
+// ReasonContentBoundaryUndecided is the stage-skip reason for a node whose
+// route the screen's reading cannot decide — a `{{vars.*}}` span no vars
+// view answers — on a run held to the team's gateway: the run decides the
+// route at dispatch, it may be the gateway's, and a crossing mapped from
+// the template text would carry the node's content to a vendor credential.
+const ReasonContentBoundaryUndecided = "is refused for a node whose route this reading cannot decide: the run's content boundary (team_gateway) holds a gateway-routed node's content there, and the route dispatch resolves may be the gateway's"
+
+// GatewayRoute reports whether a model spec is a route to the gateway: its
 // routing prefix — everything before the first slash, read case-blind and
 // trimmed, the walk's own reading (model.rawGatewayPrefix) — is the
 // gateway's, whatever follows. Read generously on purpose: under the
 // boundary, a spelling dispatch might not serve is still a node its author
 // meant for the gateway, and the refusal is the safe answer.
-func gatewayRoute(nodeModel string) bool {
+func GatewayRoute(nodeModel string) bool {
 	prefix, _, routed := strings.Cut(strings.TrimSpace(nodeModel), "/")
 	return routed && strings.EqualFold(strings.TrimSpace(prefix), ProviderOpenAICompatible)
 }

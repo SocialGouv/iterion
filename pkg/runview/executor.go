@@ -554,13 +554,7 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 	// node's own model, and the stage's On carries the resolved policy's
 	// trigger set — the chain's default set would stop the auth-typed
 	// failure the launch-time selection exists to fall through.
-	policyRefusals := ir.ApplyPolicyLadder(spec.Workflow, spec.PolicyLadder, sandboxedHere, spec.Vars, func(n ir.LLMNode) string {
-		ov := overrides.ForNode(n.NodeID(), n.NodeKind())
-		if ov.Model != "" {
-			return ir.ExpandEnvWithDefault(ov.Model)
-		}
-		return ir.ExpandEnvWithDefault(n.GetLLMFields().Model)
-	}, func(n ir.LLMNode) string {
+	policyRefusals := ir.ApplyPolicyLadder(spec.Workflow, spec.PolicyLadder, sandboxedHere, spec.Vars, overrides.LadderRoute, func(n ir.LLMNode) string {
 		// The dispatch reads the override backend FIRST — the screen reads
 		// the same, or a cross-backend crossing crosses a session-bearing
 		// node unscreened (the review's F2).
@@ -714,6 +708,10 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 		model.WithRetryPolicy(retryPolicy),
 		model.WithLLMRouteTriggers(spec.LLMRouteTriggers),
 		model.WithAllowedProviders(spec.LLMProviders),
+		// The ladder screen above read the spec's vars; dispatch reads the
+		// vars the engine pushes (a resume restores the launch's after this
+		// build), so the boundary holds a gateway-routed node at dispatch too.
+		model.WithContentBoundary(spec.ContentBoundary),
 		model.WithEventHooks(hooks),
 		model.WithToolRegistry(toolReg),
 		model.WithClawReadScope(readScope),

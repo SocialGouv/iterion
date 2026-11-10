@@ -137,18 +137,22 @@ func (e *ClawExecutor) chainNeedsGateway(node ir.Node, detected string) bool {
 		if el.Skip || el.Backend != "" {
 			continue
 		}
-		m := el.Model
-		if m == "" {
-			m = base
-		}
-		if modelroute.Parse(m).Gateway() {
-			return true
-		}
-		if strings.EqualFold(strings.TrimSpace(el.Provider), modelroute.OpenAICompatible) {
+		if elementNamesGateway(el, base) {
 			return true
 		}
 	}
 	return false
+}
+
+// elementNamesGateway reports whether one chain element is a gateway route:
+// its own model, or the node's baseline it inherits, routes to the gateway,
+// or its provider hint is the gateway's.
+func elementNamesGateway(el chainElement, base string) bool {
+	m := el.Model
+	if m == "" {
+		m = base
+	}
+	return modelroute.Parse(m).Gateway() || strings.EqualFold(strings.TrimSpace(el.Provider), modelroute.OpenAICompatible)
 }
 
 // EffectiveBackendName exposes the exact runtime resolution to safety checks.
@@ -246,8 +250,13 @@ func (e *ClawExecutor) resolveChain(node ir.Node) []chainElement {
 // the chain read needs).
 func (e *ClawExecutor) resolveChainUnder(node ir.Node, nodeBackend string) []chainElement {
 	chain := e.resolveProviderChain(node)
+	heldOnGateway := e.teamGateway && e.ownRouteNamesGateway(node, chain)
 	for _, fb := range nodeFallbacks(node) {
 		if !e.fallbackWhenActive(node.NodeID(), fb) {
+			continue
+		}
+		if fb.Policy && heldOnGateway {
+			e.warnBoundaryDrop(node.NodeID())
 			continue
 		}
 		// The route joins the chain in the folded form parseProviderChain
@@ -273,6 +282,38 @@ func (e *ClawExecutor) resolveChainUnder(node ir.Node, nodeBackend string) []cha
 		chain = append(chain, el)
 	}
 	return dedupeChain(e.dropForbidden(node, chain), nodeBackend, e.baselineModel(node))
+}
+
+// ownRouteNamesGateway reports whether the node's own route — the elements
+// of its `provider:` chain, each inheriting the node's resolved baseline
+// model — goes to the team's gateway: the dispatch reading of the route the
+// policy-ladder screen classifies (ir.PolicyLadderReading), taken here over
+// the vars dispatch resolves.
+func (e *ClawExecutor) ownRouteNamesGateway(node ir.Node, chain []chainElement) bool {
+	base := e.baselineModel(node)
+	for _, el := range chain {
+		if elementNamesGateway(el, base) {
+			return true
+		}
+	}
+	return false
+}
+
+// warnBoundaryDrop names, once per node, the policy rungs the content
+// boundary keeps off a gateway-routed node at dispatch.
+func (e *ClawExecutor) warnBoundaryDrop(nodeID string) {
+	e.rerouteWarnMu.Lock()
+	defer e.rerouteWarnMu.Unlock()
+	if e.boundaryWarned[nodeID] {
+		return
+	}
+	if e.boundaryWarned == nil {
+		e.boundaryWarned = map[string]bool{}
+	}
+	e.boundaryWarned[nodeID] = true
+	if e.logger != nil {
+		e.logger.Warn("[%s] policy ladder rungs dropped at dispatch: the node's route goes to the team's gateway and the run's content boundary (team_gateway) holds its content there", nodeID)
+	}
 }
 
 // EffectiveFallbackBackends reports the backends a node's `fallbacks:` routes

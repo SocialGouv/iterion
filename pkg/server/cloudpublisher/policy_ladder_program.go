@@ -94,13 +94,7 @@ func composePolicyLadder(wf *ir.Workflow, view model.RouteView, routePolicy *sto
 		ov := view.Overrides.ForNode(n.NodeID(), n.NodeKind())
 		return ov.Backend
 	}))
-	report(ir.ApplyPolicyLadder(wf, stages, sandboxed, launchVars, func(n ir.LLMNode) string {
-		ov := view.Overrides.ForNode(n.NodeID(), n.NodeKind())
-		if ov.Model != "" {
-			return ir.ExpandEnvWithDefault(ov.Model)
-		}
-		return ir.ExpandEnvWithDefault(n.GetLLMFields().Model)
-	}, func(n ir.LLMNode) string {
+	report(ir.ApplyPolicyLadder(wf, stages, sandboxed, launchVars, view.Overrides.LadderRoute, func(n ir.LLMNode) string {
 		ov := view.Overrides.ForNode(n.NodeID(), n.NodeKind())
 		return ov.Backend
 	}, llmroute.ResolveClasses(routePolicy.ModelClasses), teamGateway))
