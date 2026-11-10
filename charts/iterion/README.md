@@ -85,7 +85,10 @@ groups:
   run-completion callbacks (`X-Iterion-Signature`). Empty = unsigned
   (previous behaviour).
 - **`config.orgDefaults.*`** — new platform-wide launch limits; all
-  default to 0 (unlimited), so upgrades are behaviour-neutral until set.
+  default to 0 (unlimited), so upgrades are behaviour-neutral until set —
+  except the fork review lane's `forkAuthorRunQuota` /
+  `forkAuthorCostCapUsd`, unset by default, where unset means the server's
+  20 runs / $20 per contributor and `unbounded` opens the bound.
 - **Replicas are spread by default** — every server, runner and pool pod
   template now carries a soft hostname anti-affinity and a soft
   `topologySpreadConstraints`, both selecting the workload's OWN labels

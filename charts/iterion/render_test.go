@@ -1983,3 +1983,41 @@ func TestChartRenderTrustedProxies(t *testing.T) {
 		}
 	})
 }
+
+// TestChartRenderForkAuthorBound: the fork review lane's per-contributor
+// bound (ADR-162 Q4) reaches the server through the same `config.orgDefaults`
+// block as the org's own limits. Unset renders no key, so the server ships
+// its 20 runs / $20; a value the operator wrote — a cap, the `unbounded`
+// hatch, even a 0 the server refuses at boot — is carried as written, never
+// dropped in silence for the default to replace.
+//
+// Mutation: remove the two fork-author keys from templates/configmap.yaml →
+// the written rows render no key (red on their own assertion).
+func TestChartRenderForkAuthorBound(t *testing.T) {
+	const runsKey, usdKey = "ITERION_ORG_DEFAULT_FORK_AUTHOR_RUN_QUOTA", "ITERION_ORG_DEFAULT_FORK_AUTHOR_COST_CAP_USD"
+	t.Run("unset renders no key — the server ships its perimeter", func(t *testing.T) {
+		cm := must(t, manifests(t, mustRender(t, "-f", "values-prod.yaml")), "ConfigMap", "iterion-config")
+		for _, key := range []string{runsKey, usdKey} {
+			if got := dig(cm, "data", key); got != nil {
+				t.Errorf("%s = %v, want absent: unset is the server's default bound", key, got)
+			}
+		}
+	})
+	for _, row := range []struct {
+		name, values, wantRuns, wantUSD string
+	}{
+		{"a written cap is carried", "config:\n  orgDefaults:\n    forkAuthorRunQuota: 5\n    forkAuthorCostCapUsd: 2.5\n", "5", "2.5"},
+		{"the hatch is carried", "config:\n  orgDefaults:\n    forkAuthorRunQuota: unbounded\n    forkAuthorCostCapUsd: unbounded\n", "unbounded", "unbounded"},
+		{"a written 0 is carried for the server to refuse", "config:\n  orgDefaults:\n    forkAuthorRunQuota: 0\n    forkAuthorCostCapUsd: 0\n", "0", "0"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			cm := must(t, manifests(t, mustRender(t, "-f", "values-prod.yaml", "-f", valuesFile(t, row.values))), "ConfigMap", "iterion-config")
+			if got := fmt.Sprint(dig(cm, "data", runsKey)); got != row.wantRuns {
+				t.Errorf("%s = %q, want %q", runsKey, got, row.wantRuns)
+			}
+			if got := fmt.Sprint(dig(cm, "data", usdKey)); got != row.wantUSD {
+				t.Errorf("%s = %q, want %q", usdKey, got, row.wantUSD)
+			}
+		})
+	}
+}
