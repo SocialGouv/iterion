@@ -396,8 +396,10 @@ func (p *Publisher) gatewayKeyHold(ctx context.Context, tenantID, orgID, ownerID
 // attachment's draw caps say now. The walk's draw decides with the run's own
 // identity (a resume's open lease and its day's unit are its own, which a
 // RunID-blind preview counts against it): an entry that cannot serve then
-// leaves the gateway slot empty, said by name, instead of the probe moving
-// the run onto the pod's gateway. A launch whose repository is unknown (the
+// leaves the gateway slot empty and is named — refused under a frozen
+// team_gateway, left to the pod's gateway outside it
+// (gatewayRoutes.unsealedNote) — never decided by a read that does not know
+// the run. A launch whose repository is unknown (the
 // preview's) reports an entry its row's repository audience alone keeps out
 // (gatewayRoutes.repoOnly), never reads it absent.
 func (p *Publisher) attachedGatewayHold(ctx context.Context, orgID, tenantID, ownerID, slot string, probe gatewayProbe) (hold gatewayHold, decided bool) {

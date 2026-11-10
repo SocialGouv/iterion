@@ -13,9 +13,12 @@
 // TestSubmitResume_ReplaysTheFrozenTeamGatewayBoundary alone; the hold-out
 // arm dropped → W23's untrusted-var and fork rows; launchSealedGateway always
 // false → W23's pool row; the own_keys stamp naming no sealed key → W23's pool
-// row; the probe reading availability → W24's draw-capped launch and its
-// preview; the unsealed demotion off → W24's knob row and the platform row;
-// the attached arm without repoOnly → W25.
+// row; the probe reading availability → W24's draw-capped row (and W21); the
+// unsealed demotion off → W24's knob row and the platform row; the preview's
+// demotion off → W24's preview assert; the attached arm reading paused,
+// unhealthy and bot-filtered entries as there → W24's three status rows; a
+// deleted entry row read as an unread one → W24's deleted-row row; the
+// attached arm without repoOnly → W25.
 
 package cloudpublisher
 
@@ -362,6 +365,60 @@ func TestGatewayKey_AnAttributedRouteNoTierSealsIsNamedAndLeftToTheEnvironment(t
 		}
 		if previewWarning(preview, named) == "" || previewWarning(preview, "The live launch refuses") != "" {
 			t.Fatalf("the preview does not mirror the launch (the entry named, no refusal): %v", preview.Warnings)
+		}
+	})
+	for _, row := range []struct {
+		name  string
+		shape func(*credpool.Pledge)
+	}{
+		{"a paused entry lends nothing", func(p *credpool.Pledge) { p.Enabled = false }},
+		{"an unhealthy entry lends nothing", func(p *credpool.Pledge) { p.Health = credpool.HealthAuthFailed }},
+		{"an entry its pledge's bot filter refuses lends nothing", func(p *credpool.Pledge) { p.Bots = []string{"review-pr"} }},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			f := newAttachedFixture(t)
+			pl, err := f.pledges.Get(context.Background(), gatewayEntryPledge())
+			if err != nil {
+				t.Fatalf("get gateway pledge: %v", err)
+			}
+			row.shape(&pl)
+			if err := f.pledges.Upsert(context.Background(), pl); err != nil {
+				t.Fatalf("upsert gateway pledge: %v", err)
+			}
+			var buf bytes.Buffer
+			f.pub.logger = iterlog.New(iterlog.LevelInfo, &buf)
+			ctx := secrets.WithLaunchRepo(store.WithTenant(context.Background(), poolTeam), gwRepo)
+			wf := gatewayOnlyWorkflow()
+			if _, err := f.pub.resolveAndSealCredentials(ctx, "run-gw-24s", poolOrg, poolTeam, "requester", "docs-refresh", "", wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustDefault, nil, nil, frozenAttachment("pool-att"), boundaryDerived); err != nil {
+				t.Fatalf("launch: %v", err)
+			}
+			if !strings.Contains(buf.String(), envFundedLine) {
+				t.Fatalf("an entry the pool's eligibility refuses attributed the gateway route (log:\n%s)", buf.String())
+			}
+		})
+	}
+	t.Run("a busy entry whose key row was deleted lends nothing", func(t *testing.T) {
+		f := newAttachedFixture(t)
+		limitGatewayEntry(t, f, credpool.Limits{MaxConcurrentRuns: 1})
+		var buf bytes.Buffer
+		f.pub.logger = iterlog.New(iterlog.LevelInfo, &buf)
+		ctx := secrets.WithLaunchRepo(store.WithTenant(context.Background(), poolTeam), gwRepo)
+		resolve := func(runID string) (credResolution, error) {
+			wf := gatewayOnlyWorkflow()
+			return f.pub.resolveAndSealCredentials(ctx, runID, poolOrg, poolTeam, "requester", "docs-refresh", "", wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustDefault, nil, nil, frozenAttachment("pool-att"), boundaryDerived)
+		}
+		if _, err := resolve("run-gw-24h"); err != nil {
+			t.Fatalf("the holding run's launch: %v", err)
+		}
+		if err := f.apiKeys.Delete(store.WithTenant(context.Background(), poolTeam), "key-gw"); err != nil {
+			t.Fatalf("delete the entry's key row: %v", err)
+		}
+		buf.Reset()
+		if _, err := resolve("run-gw-24d"); err != nil {
+			t.Fatalf("launch: %v", err)
+		}
+		if !strings.Contains(buf.String(), envFundedLine) || strings.Contains(buf.String(), "could not be read") {
+			t.Fatalf("an entry whose key row is gone is read as holding a gateway key: the run must be env-funded with no unread note (log:\n%s)", buf.String())
 		}
 	})
 	t.Run("a platform key while a pool grant serves the run", func(t *testing.T) {
