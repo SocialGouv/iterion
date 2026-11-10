@@ -1222,13 +1222,14 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 								p.logger.Warn("cloudpublisher: run %s — pool grant for an openai_compatible key REFUSED: a gateway key authenticates against its own tenant's endpoint and is never lent; the lease is released", runID)
 							} else if policy.sealableSlot(slotOfProvider(prov)) {
 								// The lent key's own audit identity — the donor record's
-								// stamp, falling back to the hash the runner derives for a
-								// record stored before stamping — so the GRANTED line, the
-								// run-document stamp and the metering-time last_used_at
-								// bump all name the donor's key, not an unstamped slot.
+								// stamp, falling back to the identity the runner derives
+								// for a record stored before stamping (APIKeyFingerprint,
+								// the one helper) — so the GRANTED line, the run-document
+								// stamp and the metering-time last_used_at bump all name
+								// the donor's key, not an unstamped slot.
 								fp := grant.Fingerprint
 								if fp == "" {
-									fp = secrets.FingerprintSHA256(string(grant.Payload))
+									fp = secrets.APIKeyFingerprint(prov, string(grant.Payload), "")
 								}
 								setAPIKey(&bundle, prov, string(grant.Payload), "", fp, false)
 								noteSealedAPIKey(apiKeyFPs, apiKeyIDs, wants, prov, sealedKey{id: grant.KeyID, fingerprint: fp, max: grant.KeyMaxConcurrentRuns, name: grant.KeyName})
@@ -3828,7 +3829,7 @@ func (p *Publisher) acquireDoorGrant(
 		} else if sealable(slotOfProvider(prov)) {
 			fp := grant.Fingerprint
 			if fp == "" {
-				fp = secrets.FingerprintSHA256(string(grant.Payload))
+				fp = secrets.APIKeyFingerprint(prov, string(grant.Payload), "")
 			}
 			setAPIKey(bundle, prov, string(grant.Payload), "", fp, false)
 			noteSealedAPIKey(apiKeyFPs, apiKeyIDs, slotWants, prov, sealedKey{id: grant.KeyID, fingerprint: fp, max: grant.KeyMaxConcurrentRuns, name: grant.KeyName})
@@ -5882,7 +5883,7 @@ func (p *Publisher) acquireFromAttachedPools(ctx context.Context, runID, orgID, 
 			} else if policy.sealableSlot(slotOfProvider(prov)) {
 				fp := grant.Fingerprint
 				if fp == "" {
-					fp = secrets.FingerprintSHA256(string(grant.Payload))
+					fp = secrets.APIKeyFingerprint(prov, string(grant.Payload), "")
 				}
 				setAPIKey(bundle, prov, string(grant.Payload), "", fp, false)
 				noteSealedAPIKey(apiKeyFPs, apiKeyIDs, wants, prov, sealedKey{id: grant.KeyID, fingerprint: fp, max: grant.KeyMaxConcurrentRuns, name: grant.KeyName})

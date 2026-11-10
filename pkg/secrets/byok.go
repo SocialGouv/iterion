@@ -799,12 +799,9 @@ func checkApiKeyAADID(id string) error {
 // stamps what the server stamped: the server's fingerprint travels in the
 // bundle beside a gateway key (RunBundle.APIKeyFingerprints), and a key
 // met without one is recomputed here from the URL the bundle pairs it
-// with (pkg/runner loop_credentials.go). The pool and fallback-door
-// fallbacks still hash the plaintext alone (cloudpublisher) and move onto
-// this helper with #2005 PR-C' — harmless until then: they refuse a
-// gateway key by name instead of sealing one — the vocabulary is pinned by
-// cloudpublisher's provider-coverage test, the pool lane's refusal by
-// TestPoolGatewayRefusal_Drift.
+// with (pkg/runner loop_credentials.go). The pool tiers and the fallback
+// door identify a lent key whose donor record carries no stamp the same way
+// (cloudpublisher).
 func APIKeyFingerprint(p Provider, secret, baseURL string) string {
 	if p == ProviderOpenAICompatible {
 		return FingerprintSHA256(string(p) + "\x00" + baseURL + "\x00" + secret)
