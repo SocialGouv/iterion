@@ -20,7 +20,9 @@ import (
 // returns a cleanup func that performs LOCAL hygiene (wipes the
 // in-memory plaintext keys + removes the OAuth temp dirs) at the call
 // site. When no bundle is attached, returns the original ctx unchanged —
-// a team_gateway stamp aside (below).
+// except for a run the pod's environment must not fund: an untrusted run
+// (store.RunTrust.AmbientLLMRefused) or one stamped team_gateway, whose
+// context carries the ambient refusal instead (both below).
 //
 // The cleanup func runs on every executeRun return. Removal of the
 // *persistent* sealed bundle from the store is intentionally NOT part
