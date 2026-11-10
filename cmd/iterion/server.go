@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"os"
 	"os/signal"
@@ -160,8 +161,9 @@ their settings).`,
 // the perimeter against an outside party rather than operator
 // convenience — an unset value is a number, and the escape hatch is
 // the explicit `unbounded` (the literal string, on either env var,
-// which resolves to no cap).
-func orgLimitDefaultsFromEnv() server.OrgLimitDefaults {
+// which resolves to no cap). Any other value that is not a positive
+// number is refused at boot (forkBoundEnvInt), 0 included.
+func orgLimitDefaultsFromEnv() (server.OrgLimitDefaults, error) {
 	intEnv := func(key string) int {
 		n, err := strconv.Atoi(os.Getenv(key))
 		if err != nil || n < 0 {
@@ -176,40 +178,71 @@ func orgLimitDefaultsFromEnv() server.OrgLimitDefaults {
 	if f, err := strconv.ParseFloat(os.Getenv("ITERION_ORG_DEFAULT_MONTHLY_COST_CAP_USD"), 64); err == nil && f > 0 {
 		d.MonthlyCostCapUSD = f
 	}
-	d.ForkAuthorRunQuota = boundEnvInt("ITERION_ORG_DEFAULT_FORK_AUTHOR_RUN_QUOTA", 20)
-	d.ForkAuthorCostCapUSD = boundEnvFloat("ITERION_ORG_DEFAULT_FORK_AUTHOR_COST_CAP_USD", 20)
-	return d
+	var err error
+	if d.ForkAuthorRunQuota, err = forkBoundEnvInt(forkAuthorRunQuotaEnv, defaultForkAuthorRunQuota); err != nil {
+		return server.OrgLimitDefaults{}, err
+	}
+	if d.ForkAuthorCostCapUSD, err = forkBoundEnvFloat(forkAuthorCostCapEnv, defaultForkAuthorCostCapUSD); err != nil {
+		return server.OrgLimitDefaults{}, err
+	}
+	return d, nil
 }
 
-// boundEnvInt / boundEnvFloat read a fork-author bound knob: the literal
-// `unbounded` (case-insensitive) resolves to 0 — no cap, the explicit escape
-// hatch — and an unset, invalid or negative value resolves to the shipped
-// default, because the bound is a perimeter and its unset state is a number,
-// never "open".
-func boundEnvInt(key string, def int) int {
-	if strings.EqualFold(strings.TrimSpace(os.Getenv(key)), "unbounded") {
-		return 0
-	}
-	n, err := strconv.Atoi(strings.TrimSpace(os.Getenv(key)))
-	if err != nil || n < 0 || strings.TrimSpace(os.Getenv(key)) == "" {
-		return def
-	}
-	return n
-}
+// The fork review lane's per-contributor bound knobs (ADR-162 Q4) and the
+// values the platform ships when they are unset.
+const (
+	forkAuthorRunQuotaEnv       = "ITERION_ORG_DEFAULT_FORK_AUTHOR_RUN_QUOTA"
+	forkAuthorCostCapEnv        = "ITERION_ORG_DEFAULT_FORK_AUTHOR_COST_CAP_USD"
+	defaultForkAuthorRunQuota   = 20
+	defaultForkAuthorCostCapUSD = 20.0
+	forkBoundUnbounded          = "unbounded"
+)
 
-func boundEnvFloat(key string, def float64) float64 {
-	if strings.EqualFold(strings.TrimSpace(os.Getenv(key)), "unbounded") {
-		return 0
-	}
+// forkBoundEnvInt / forkBoundEnvFloat read a fork-author bound knob. Unset
+// resolves to the shipped default, because the bound is a perimeter and its
+// unset state is a number, never "open". The literal `unbounded`
+// (case-insensitive) resolves to 0 — no cap, the ONE spelling of the escape
+// hatch. A positive number is the cap. Everything else is refused, typed, at
+// boot: a 0 would be a second, implicit spelling of `unbounded` (the
+// neighbouring ITERION_ORG_DEFAULT_* knobs read 0 as "no limit", so an
+// operator setting it by analogy would open the perimeter without meaning
+// to), and a negative or unparseable value is a typo the default must not
+// silently replace.
+func forkBoundEnvInt(key string, def int) (int, error) {
 	raw := strings.TrimSpace(os.Getenv(key))
-	if raw == "" {
-		return def
+	switch {
+	case raw == "":
+		return def, nil
+	case strings.EqualFold(raw, forkBoundUnbounded):
+		return 0, nil
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n <= 0 {
+		return 0, forkBoundEnvError(key, raw)
+	}
+	return n, nil
+}
+
+func forkBoundEnvFloat(key string, def float64) (float64, error) {
+	raw := strings.TrimSpace(os.Getenv(key))
+	switch {
+	case raw == "":
+		return def, nil
+	case strings.EqualFold(raw, forkBoundUnbounded):
+		return 0, nil
 	}
 	f, err := strconv.ParseFloat(raw, 64)
-	if err != nil || f < 0 {
-		return def
+	if err != nil || !(f > 0) || math.IsInf(f, 0) {
+		return 0, forkBoundEnvError(key, raw)
 	}
-	return f
+	return f, nil
+}
+
+// errForkBoundEnv types the boot refusal of a fork-author bound knob.
+var errForkBoundEnv = errors.New("server: invalid fork-author bound")
+
+func forkBoundEnvError(key, raw string) error {
+	return fmt.Errorf("%w: %s=%q — set a positive number (the per-contributor cap), the literal %q (no cap), or leave it unset (the shipped default); 0 is not a spelling of unbounded", errForkBoundEnv, key, raw, forkBoundUnbounded)
 }
 
 // trustedProxyWarning names what a trusted-proxy list costs a deployment
@@ -748,6 +781,10 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
+	orgDefaults, err := orgLimitDefaultsFromEnv()
+	if err != nil {
+		return err
+	}
 
 	srv := server.New(server.Config{
 		Port:        serverOpts.port,
@@ -848,7 +885,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		ConfigShares:                stores.configShares,
 		OrgUsage:                    stores.orgUsage,
 		CredUsage:                   stores.credUsage,
-		OrgDefaults:                 orgLimitDefaultsFromEnv(),
+		OrgDefaults:                 orgDefaults,
 		CredPoolBroker:              credBroker,
 		CredPoolPools:               stores.credPools,
 		CredPoolAttachments:         stores.credAttachments,

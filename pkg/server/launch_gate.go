@@ -39,8 +39,9 @@ type OrgLimitDefaults struct {
 	// the explicit `unbounded` escape hatch; 0 inherits THIS default; and
 	// this default itself resolves from
 	// ITERION_ORG_DEFAULT_FORK_AUTHOR_{RUN_QUOTA,COST_CAP_USD}, which
-	// accepts the literal `unbounded` as 0 (no cap). 0 after the ladder
-	// means no cap — AllowRun's own convention.
+	// accepts the literal `unbounded` as 0 (no cap) and refuses the boot on
+	// any other non-positive value. 0 after the ladder means no cap —
+	// AllowRun's own convention.
 	ForkAuthorRunQuota   int
 	ForkAuthorCostCapUSD float64
 }
