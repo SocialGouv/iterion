@@ -3,6 +3,70 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [5.17.0](https://github.com/SocialGouv/iterion/compare/v5.16.0...v5.17.0) (2026-11-10)
+
+### Features
+
+* **bots:** workflow-kick — dispatch one workflow of the repository on a schedule ([a72be5d](https://github.com/SocialGouv/iterion/commit/a72be5d260d78b66fc8a9bb5846a2133d60160ad)), references [#3130](https://github.com/SocialGouv/iterion/issues/3130) [#3130](https://github.com/SocialGouv/iterion/issues/3130) [#1585](https://github.com/SocialGouv/iterion/issues/1585)
+
+    <details><summary>why</summary>
+
+    Kicky is one deterministic tool node, no LLM: it POSTs {run_id, repo, workflow} to the dispatch endpoint its grant names, reports what the server answered with its run link, and ends WORKFLOW_NOT_DISPATCHED with the server's typed code otherwise (NO_DISPATCH_GRANT when no grant was bound, NO_WORKFLOW when the schedule names none). The bearer reaches the program through its environment, never its command line; redirects are refused. repo defaults to the checkout's origin.
+
+    </details>
+* **forge:** a workflow-dispatch capability and its GitHub client ([7cc005e](https://github.com/SocialGouv/iterion/commit/7cc005e03b2019e8a738b79f64115b4a1c6de8e6)), references [#3130](https://github.com/SocialGouv/iterion/issues/3130) [#1585](https://github.com/SocialGouv/iterion/issues/1585)
+
+    <details><summary>why</summary>
+
+    forge.WorkflowDispatcher dispatches one workflow file of a repository (workflow_dispatch) — the external trigger for a forge cron that does not fire reliably. The GitHub AdminClient implements it: an empty ref is the repository's default branch, read from the forge; no inputs are sent. A refusal the forge answered (404 unknown workflow, 422 unknown ref or no workflow_dispatch trigger, a withheld grant) wraps forge.ErrWorkflowNotDispatched; a transport failure does not, since the forge may have…
+
+    </details>
+* **server,bundle,store:** the actions scope mints a dispatch capability the publish surface serves ([8588745](https://github.com/SocialGouv/iterion/commit/8588745af610e3c68c88140b0f0f6723ca9317b7)), references [#3130](https://github.com/SocialGouv/iterion/issues/3130) [#1585](https://github.com/SocialGouv/iterion/issues/1585)
+
+    <details><summary>why</summary>
+
+    A bot opts in per manifest: forge.token_scopes actions: write mints dispatch_workflow into its run's publish grant, like approvals/merge/ reviewers mint the merge-gate gestures; a bot that does not declare it never holds the capability, and the connection's managed token (RuntimePermissionsFor) is unchanged — no run, fork lanes included, ever carries the Actions permission (operator decision, 10/11).
+
+    </details>
+
+### Bug Fixes
+
+* **bots:** workflow-kick ends NO_WORKFLOW when its schedule names none ([b47555a](https://github.com/SocialGouv/iterion/commit/b47555aa7ec448fefb26198a45eb8480a22766ce)), references [#3130](https://github.com/SocialGouv/iterion/issues/3130) [#1585](https://github.com/SocialGouv/iterion/issues/1585)
+
+    <details><summary>why</summary>
+
+    `workflow: string` had no default, so an unset var reached the command as the literal {{vars.workflow}}, passed the NO_WORKFLOW guard and was POSTed. It defaults to "" now, and the guard runs before the grant check: the server mints no grant for a schedule naming no workflow, so the actionable code comes first. A 5xx answer (reduced to its error_code at the server's boundary) reports its code and says the reason is in the server log.
+
+    </details>
+* **bots:** workflow-kick floors on the uncut release ([4e7d471](https://github.com/SocialGouv/iterion/commit/4e7d4712c4535b5393516cd54d25e783ae109258)), references [#3130](https://github.com/SocialGouv/iterion/issues/3130) [#1585](https://github.com/SocialGouv/iterion/issues/1585)
+
+    <details><summary>why</summary>
+
+    The manifest floored on ">= 5.16.0", a release already cut without the dispatch capability: a v5.16.0 server would refuse the bundle on its strict decode ("unknown scope actions") instead of the version refusal the floor exists to give. The floor is now ">= next", which the cut's release-floors hook rewrites to the release that ships the lane.
+
+    </details>
+* **server,forge,bundle:** close the dispatch lane's round-2 findings ([27491aa](https://github.com/SocialGouv/iterion/commit/27491aa4f969105c113bada1c329e546649f1e92)), references [#3130](https://github.com/SocialGouv/iterion/issues/3130) [#1585](https://github.com/SocialGouv/iterion/issues/1585)
+
+    <details><summary>why</summary>
+
+    Mutations, each red on its own assertion, then restored byte-identical: installationGrants answering from the stored grant alone; the security minter reading conn.GrantedPermissions alone; the dispatch pre-mint check removed; runOwnsGrant narrowed to !run.Trust.Trusted(); revokeUnlaunchedGrant(minted) muted; dispatchUnconfirmed respelled and swapped for dispatchRefusedCredential at its use; dispatchUnavailable respelled; the GitHub 5xx branch removed (client and server witnesses); the default…
+
+    </details>
+* **server:** a schedule grant is bound to no pull request ([7fb81dd](https://github.com/SocialGouv/iterion/commit/7fb81dd0da50d53c188394107a5e3f6724146157)), references [#3130](https://github.com/SocialGouv/iterion/issues/3130) [#1585](https://github.com/SocialGouv/iterion/issues/1585)
+
+    <details><summary>why</summary>
+
+    The grant a repo-bound schedule mints for the workflow dispatch carried, like every publish grant, the implicit power to post a review and the merge-gate commit status on any pull request of its repository: a schedule run could have painted revi/review green on any head.
+
+    </details>
+* **server:** bind the dispatch grant to its schedule's workflow, its launched bundle and one claim ([a8159eb](https://github.com/SocialGouv/iterion/commit/a8159eb4b7c85aefbcd9092cea60d9516777b74b)), references [#3130](https://github.com/SocialGouv/iterion/issues/3130) [#1585](https://github.com/SocialGouv/iterion/issues/1585)
+
+    <details><summary>why</summary>
+
+    Review round 1 of the workflow-dispatch lane. The schedule grant now:
+
+    </details>
+
 ## [5.16.0](https://github.com/SocialGouv/iterion/compare/v5.15.1...v5.16.0) (2026-11-10)
 
 ### Features
