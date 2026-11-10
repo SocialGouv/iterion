@@ -737,7 +737,10 @@ const (
 	// over, and the takeover holds no lease of its own, so a report of the
 	// takeover must never charge this lease (ReportAttempt stays silent).
 	OutcomeSupersededGrantless = "superseded_grantless"
-	// OutcomeNotLaunched — the grant was returned; the run never started.
+	// OutcomeNotLaunched — the grant was returned: the run never started on
+	// it, or its attempt was parked before settling (a captured release —
+	// an earlier delivery's interim spend stays booked, its run unit is
+	// given back all the same, #3151).
 	OutcomeNotLaunched = "not_launched"
 )
 

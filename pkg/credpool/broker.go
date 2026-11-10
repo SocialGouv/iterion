@@ -1503,7 +1503,7 @@ func (b *Broker) releaseLease(ctx context.Context, lease Lease) {
 	if lease.AttachmentID != "" && lease.AttConsumedRunUnit {
 		b.releaseReservation(ctx, AttachmentLedgerID(lease.AttachmentID), lease.AcquiredAt)
 	}
-	b.logger.Info("credpool: run %s never launched — returned donor %s's admission", lease.RunID, lease.DonorID)
+	b.logger.Info("credpool: run %s released its lease — returned donor %s's admission", lease.RunID, lease.DonorID)
 }
 
 // Outcome is what a finished attempt reports back to the pool.
@@ -1900,9 +1900,9 @@ func (b *Broker) settleLease(ctx context.Context, lease Lease, rawOut Outcome, a
 }
 
 // addInterimCost records an interim report's spend on the lease and says
-// whether it charges: a lease its attempt already settled (a racing final
-// closed it before this write) stays silent, like any reported lease — the
-// lost CAS re-reads it. A store error records nothing on the lease but
+// whether it charges: a lease closed by a path that books nothing more
+// before this write (a racing final, a release, the sweeper) stays silent,
+// like any reported lease — the lost CAS re-reads it. A store error records nothing on the lease but
 // still charges: the ledger is the donor's truth, the lease their trail.
 func (b *Broker) addInterimCost(ctx context.Context, lease Lease, costUSD float64) (settleOutcome, error) {
 	landed, err := b.leases.AddCost(ctx, lease.ID, costUSD)
@@ -2229,8 +2229,9 @@ func interimCharges(l Lease, attemptPublishedAt time.Time) bool {
 	return false
 }
 
-// returnedUnused reports a lease closed because its grant was given back
-// before the run launched on it.
+// returnedUnused reports a lease closed because its grant was given back:
+// before the run launched on it, or — a captured release of a parked
+// attempt — after an earlier delivery's interim charged it (#3151).
 func returnedUnused(l Lease) bool {
 	return l.Closed && l.Outcome == OutcomeNotLaunched
 }

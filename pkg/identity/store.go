@@ -176,8 +176,8 @@ const (
 // row. Consecutive pages therefore overlap (the repeats are dropped), so a
 // team that existed when the walk started is missed only when more than
 // allTeamsOverlap earlier teams are deleted between two page reads; a team
-// created mid-walk is read only if it sorts past the walk's position. On
-// an error the teams read so far come back with it.
+// created mid-walk is read only if it sorts at or past the next page's
+// first row. On an error the teams read so far come back with it.
 func AllTeams(ctx context.Context, st interface {
 	ListTeams(context.Context, Page) ([]Team, error)
 }) ([]Team, error) {

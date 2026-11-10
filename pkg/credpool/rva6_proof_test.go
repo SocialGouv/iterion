@@ -398,9 +398,9 @@ func TestPoolReview6_G6_aReturnedSiblingNeverCarriesTheAttRow(t *testing.T) {
 	}
 }
 
-// seqHookLeases runs a sequence of hooks, one per Close (any but a
-// supersede's or a release's) or stamp of the named lease, right before it
-// reaches the store. Not re-entrant: a CAS a hook makes on the same lease
+// seqHookLeases runs a sequence of hooks, one per Close (any but an
+// acquisition's plain supersede, OutcomeSuperseded, or a release's) or
+// stamp of the named lease, right before it reaches the store. Not re-entrant: a CAS a hook makes on the same lease
 // does not consume the next hook.
 type seqHookLeases struct {
 	*MemoryLeaseStore
@@ -510,9 +510,10 @@ func TestPoolReview6_G8_anInterimRacingAFinalStillBooksTheAttRow(t *testing.T) {
 
 // G9 — a captured release of an attempt that already RAN (an earlier
 // delivery's interim charged its lease; the final delivery is parked and
-// its DLQ copy lost) gives the run unit back, its spend staying booked: the
-// run's resume reserves one unit again — one unit for the run, the renewal
-// doctrine's count — and is served even on a one-run-a-day entry.
+// its DLQ copy lost) gives the run unit back, its spend staying booked:
+// with no other run in between, the run's resume reserves one unit again —
+// one unit for the run — and is served even on a one-run-a-day entry. (A
+// run that takes the refunded unit first is #3151.)
 func TestPoolReview6_G9_theResumeAfterACapturedReleaseOfARunThatRan(t *testing.T) {
 	for _, interim := range []bool{false, true} {
 		t.Run(map[bool]string{false: "no interim", true: "an interim charged the lease"}[interim], func(t *testing.T) {
