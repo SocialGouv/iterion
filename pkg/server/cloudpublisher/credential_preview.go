@@ -86,7 +86,7 @@ func (p *Publisher) previewCredentials(ctx context.Context, spec runview.Credent
 			Candidates: []runview.CredentialPreviewCandidate{}, Wires: []runview.CredentialPreviewWire{},
 			Pool:     runview.CredentialPreviewPool{Reason: "credentials_present", Wants: []string{}},
 			Warnings: []string{"Observation only: no secret was opened, no provider was probed, and no capacity was reserved. Selected slots assume successful materialization and admission; model routing decides which slot is spent. Alternatives show current metadata, not a guaranteed future grant.", "Runner environment credentials and required workflow secrets are outside this preview."}},
-		api: map[secrets.Provider]int{}, pinnedAPI: map[secrets.Provider]int{}, oauth: map[string]int{}, skippedAPI: map[secrets.Provider][]int{}, skippedOAuth: map[string][]int{}, accountGroups: map[string]string{}, floorHeld: map[int]bool{},
+		api: map[secrets.Provider]int{}, pinnedAPI: map[secrets.Provider]int{}, oauth: map[string]int{}, skippedAPI: map[secrets.Provider][]int{}, skippedOAuth: map[string][]int{}, accountGroups: map[string]string{}, floorHeld: map[int]bool{}, busy: busyProviders{},
 	}
 	x.orgID = p.orgIDForTeam(ctx, spec.Context.TeamID)
 	// The same canonicalisation the live walk applies, or the preview would
@@ -321,6 +321,7 @@ func (p *Publisher) previewCredentials(ctx context.Context, spec runview.Credent
 				}
 				if active {
 					x.out.Pool.Reason = string(pool.Reason)
+					noteBusyCandidates(x.busy, "the attached pool "+spec.PoolAttachment.PoolID+"'s", pool.Candidates)
 				}
 				for rank, d := range pool.Candidates {
 					c := runview.CredentialPreviewCandidate{Tier: "pool", Rank: rank, Source: string(d.Source), Provider: d.Ref, Wire: secrets.WireFamily(d.Ref), Label: "Key pool " + spec.PoolAttachment.PoolID, State: string(d.Status), Reason: d.Reason, Conditional: true, Windows: []runview.CredentialPreviewWindow{}, Capacity: &runview.CredentialPreviewCapacity{LiveRuns: d.LiveRuns, MaxConcurrentRuns: d.MaxConcurrentRuns, RemainingUSD: d.RemainingUSD}}
@@ -368,6 +369,7 @@ func (p *Publisher) previewCredentials(ctx context.Context, spec runview.Credent
 			}
 			if active {
 				x.out.Pool.Reason = string(pool.Reason)
+				noteBusyCandidates(x.busy, "the credential pool's", pool.Candidates)
 			}
 			for rank, d := range pool.Candidates {
 				c := runview.CredentialPreviewCandidate{Tier: "pool", Rank: rank, Source: string(d.Source), Provider: d.Ref, Wire: secrets.WireFamily(d.Ref), Label: "Shared pool credential", State: string(d.Status), Reason: d.Reason, Conditional: true, Windows: []runview.CredentialPreviewWindow{}, Capacity: &runview.CredentialPreviewCapacity{LiveRuns: d.LiveRuns, MaxConcurrentRuns: d.MaxConcurrentRuns, RemainingUSD: d.RemainingUSD}}
@@ -546,7 +548,7 @@ func (p *Publisher) previewCredentials(ctx context.Context, spec runview.Credent
 		previewRoutes = previewRoutes.gatewayToEnvironment()
 	}
 	posture := p.unfundedPostureFor(wf, sovereignPreview, previewTeamGateway, envFunded, spec.Launch.Trust, runnerPool)
-	refusal := unfundedRefusalFor(spec.Context.TeamID, previewRoutes, metadataFunding(x, posture), !metadataHoldsDefault(x), posture, gateway.heldOut())
+	refusal := unfundedRefusalFor(spec.Context.TeamID, previewRoutes, metadataFunding(x, posture), !metadataHoldsDefault(x), posture, gateway.heldOut(), x.busy)
 	if refusal == nil && posture.TeamGateway {
 		if tolerated := teamGatewayTolerated(previewRoutes.providers, previewRoutes.pins, previewRoutes.primary, metadataFunding(x, posture)); tolerated != "" {
 			x.warn("The run is held to its team's gateway (team_gateway) and no credential it carries funds " + tolerated + " — a rescue route fires only once its node's own route failed, and the runner's pod expands an env dial with its own environment; a call that lands there answers the ambient refusal.")
@@ -755,6 +757,10 @@ type credentialPreview struct {
 	skippedOAuth  map[string][]int
 	accountGroups map[string]string
 	poolGranted   bool
+	// busy is the walk's busy-entry reading of the consulted pools'
+	// candidates (noteBusyCandidates): the refusal it predicts waits where
+	// the launch's would.
+	busy busyProviders
 	// pinned are the providers a route of the previewed launch NAMES. A
 	// shared tier may fund one of them even on a wire family another slot
 	// already fills, so the preview has to apply the same exception or it

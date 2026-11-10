@@ -375,7 +375,7 @@ func TestAcquireFromPool_LogsWarnWithReasonOnAbstention(t *testing.T) {
 		// forever. The signal is the terminal "no credential" Warn.
 		buf := bufFor(t)
 		p := &Publisher{logger: iterlog.New(iterlog.LevelDebug, buf)}
-		if g, _ := p.acquireFromPool(context.Background(), "run-1", "org", "team", "user", "bot", model.RouteView{Workflow: &ir.Workflow{}}, nil); g != nil {
+		if g, _ := p.acquireFromPool(context.Background(), "run-1", "org", "team", "user", "bot", model.RouteView{Workflow: &ir.Workflow{}}, nil, nil); g != nil {
 			t.Fatalf("nil broker must not grant, got %+v", g)
 		}
 		log := buf.String()
@@ -399,7 +399,7 @@ func TestAcquireFromPool_LogsWarnWithReasonOnAbstention(t *testing.T) {
 		if err := f.pools.Upsert(context.Background(), pool); err != nil {
 			t.Fatalf("disable pool: %v", err)
 		}
-		if g, _ := f.pub.acquireFromPool(context.Background(), "run-np", poolOrg, poolTeam, "u", "bot", model.RouteView{Workflow: &ir.Workflow{}}, nil); g != nil {
+		if g, _ := f.pub.acquireFromPool(context.Background(), "run-np", poolOrg, poolTeam, "u", "bot", model.RouteView{Workflow: &ir.Workflow{}}, nil, nil); g != nil {
 			t.Fatalf("disabled pool must not grant, got %+v", g)
 		}
 		log := buf.String()
@@ -426,7 +426,7 @@ func TestAcquireFromPool_LogsWarnWithReasonOnAbstention(t *testing.T) {
 				LLMFields: ir.LLMFields{Model: "fake-provider/some-model"},
 			},
 		}}
-		g, _ := f.pub.acquireFromPool(context.Background(), "run-2", poolOrg, poolTeam, "u", "bot", model.RouteView{Workflow: wf}, nil)
+		g, _ := f.pub.acquireFromPool(context.Background(), "run-2", poolOrg, poolTeam, "u", "bot", model.RouteView{Workflow: wf}, nil, nil)
 		if g == nil {
 			t.Fatalf("unknown pin must fail open and take the donor; got no grant. log:\n%s", buf.String())
 		}
@@ -446,7 +446,7 @@ func TestAcquireFromPool_LogsWarnWithReasonOnAbstention(t *testing.T) {
 		pledge.Enabled = false
 		_ = f.pledges.Upsert(context.Background(), pledge)
 
-		if g, _ := f.pub.acquireFromPool(context.Background(), "run-3", poolOrg, poolTeam, "u", "bot", model.RouteView{Workflow: &ir.Workflow{}}, nil); g != nil {
+		if g, _ := f.pub.acquireFromPool(context.Background(), "run-3", poolOrg, poolTeam, "u", "bot", model.RouteView{Workflow: &ir.Workflow{}}, nil, nil); g != nil {
 			t.Fatalf("no eligible pledge must not grant, got %+v", g)
 		}
 		log := buf.String()

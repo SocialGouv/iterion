@@ -876,7 +876,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	// is read AT that moment — the line's level follows whether the walk
 	// ended up owing this run a credential, which only its end knows.
 	defer func() { pairRefusals.warn(p, runID, llmCredentialOwed(bundle, wf, envFunded)) }()
-	res := credResolution{}
+	res := credResolution{busy: busyProviders{}}
 	err = walkCredentialTiers(func() bool { return holdsDefaultLLMCredential(bundle) },
 		func() bool { return res.grant != nil || len(res.grants) > 0 },
 		func() bool { return poolAttachment != nil && poolAttachment.PoolID != "" },
@@ -1196,7 +1196,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 				//    reading: a gateway key funds the gateway routes alone, so it
 				//    leaves a vendor route the pool may still serve.
 				if poolAttachment == nil && !holdsDefaultLLMCredential(bundle) {
-					grant, released := p.acquireFromPool(ctx, runID, orgID, tenantID, ownerID, botID, view, bundle.PinnedAPIKeys)
+					grant, released := p.acquireFromPool(ctx, runID, orgID, tenantID, ownerID, botID, view, bundle.PinnedAPIKeys, res.busy)
 					if released != nil {
 						// Released for its lent key's audience: the acquisition
 						// superseded a previous lease all the same, so the
@@ -1746,7 +1746,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	// contradict the launch it describes — a refusal left outside it is a
 	// refusal no view mirrors.
 	posture := p.unfundedPostureFor(wf, sovereign, teamGateway, envFunded, trust, runnerPool)
-	if refusal := unfundedRefusalFor(tenantID, attributed, bundleFunding(bundle, posture), !holdsDefaultLLMCredential(bundle), posture, gateway.heldOut()); refusal != nil {
+	if refusal := unfundedRefusalFor(tenantID, attributed, bundleFunding(bundle, posture), !holdsDefaultLLMCredential(bundle), posture, gateway.heldOut(), res.busy); refusal != nil {
 		return res, refusal
 	}
 	// What the boundary's strict arm leaves unrefused is said: a provider only
@@ -1831,6 +1831,10 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 // it carries the donor's remaining allowance, which must become the run's
 // own cost ceiling.
 type credResolution struct {
+	// busy is the pool entries the walk met that exist for the launch but
+	// could not serve it now, per provider (busy_entries.go): a refusal
+	// whose every named provider only such an entry holds is a wait.
+	busy busyProviders
 	// Ladder is the adaptive-routing policy's computed fallback stages
 	// (ADR-121 §1) — the pairs the sealed bundle serves, in policy order.
 	// The caller composes them onto the RunMessage beside the operator's
@@ -3417,7 +3421,7 @@ func withoutFundedProviders(wants []credpool.Credential, funded func(provider st
 // credential (platform tier) or fail at the LLM call, both worth a line an
 // operator can grep instead of half a day of investigation on a path that
 // decides who pays (#654).
-func (p *Publisher) acquireFromPool(ctx context.Context, runID, orgID, tenantID, ownerID, botID string, view model.RouteView, pinned map[secrets.Provider]string) (granted, released *credpool.Grant) {
+func (p *Publisher) acquireFromPool(ctx context.Context, runID, orgID, tenantID, ownerID, botID string, view model.RouteView, pinned map[secrets.Provider]string, busy busyProviders) (granted, released *credpool.Grant) {
 	if p.credPool == nil {
 		// No pool at all — a static configuration fact. Debug, not Warn:
 		// pkg/log forwards Warn to the error tracker's breadcrumbs, and a
@@ -3495,7 +3499,9 @@ func (p *Publisher) acquireFromPool(ctx context.Context, runID, orgID, tenantID,
 			// A pool EXISTS and refused: which pools opened, how many
 			// pledges of a wanted kind were walked, and what state held
 			// each one out (paused / unhealthy / out_of_hours /
-			// bot_filtered / cooling / exhausted / serving).
+			// bot_filtered / cooling / exhausted / serving). An entry only
+			// unavailable now is noted for the refusals (busy_entries.go).
+			p.noteBusySkips(ctx, busy, "the credential pool's", nd, botID)
 			p.logger.Warn("cloudpublisher: credential pool declined run %s — reason=%s pools_enabled=%d pools_admitted=%d pledges_considered=%d skips=%s wants=%s",
 				runID, nd.Reason, nd.PoolsEnabled, nd.PoolsAdmitted, nd.PledgesConsidered, pledgeSkipSummary(nd.Skips), wantsSummary(wants))
 			return nil, nil
@@ -5902,6 +5908,10 @@ func (p *Publisher) acquireFromAttachedPools(ctx context.Context, runID, orgID, 
 						skips.note(s.ReopenAt)
 					}
 				}
+				// An entry only unavailable now (busy, its day or the
+				// attachment's draw cap spent, cooling) is noted: a refusal
+				// it alone leaves unfunded is a wait (busy_entries.go).
+				p.noteBusySkips(ctx, res.busy, "the attached pool "+att.PoolID+"'s", nd, botID)
 				p.logger.Info("cloudpublisher: run %s — attached pool %s abstained on slot %s: %v", runID, att.PoolID, slot, err)
 			} else {
 				p.logger.Warn("cloudpublisher: run %s — attached pool acquire failed on slot %s: %v", runID, slot, err)

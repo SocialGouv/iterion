@@ -196,7 +196,13 @@ delivery back to prepared and asks again one probe interval out
 (`wait_until` on the receipt), spending none of its action budget, up to its
 TTL; an operator is answered 429 with `error_code: credential_at_capacity` —
 on `resume`, `answer-human`, an async answer's auto-resume and a host event
-alike — and the WebSocket answer fails with that code.
+alike — and the WebSocket answer fails with that code. A pool entry the run
+needs that exists but is busy now (another run holds its slot, its day's runs
+or the attachment's draw cap are spent, its window cools) is the same wait:
+the publisher's refusal of a run whose every unfunded provider only such an
+entry holds unwraps to `ErrCredentialAtCapacity` (a launch refused on one is
+answered 429 with the same code), where a provider nothing holds stays the
+422 `NO_LLM_CREDENTIAL` refusal.
 
 The ledger never becomes a second truth. A holder is free when its run
 stops counting under the two rules below, and a refusal re-reads the row's

@@ -55,6 +55,10 @@ const (
 type PledgeSkip struct {
 	PledgeID string
 	Status   Status
+	// Credential is the wanted kind the pledge was judged for — its own
+	// (Source, Ref): an abstention over several wants says which provider
+	// each declining entry would have served.
+	Credential Credential
 	// ReopenAt is the reset instant a NEAR_LIMIT skip arms the durable
 	// usage-window retry on (the skipTracker's reopen). Zero elsewhere.
 	ReopenAt time.Time
@@ -553,18 +557,18 @@ func (b *Broker) acquireKind(ctx context.Context, pool Pool, candidates []Pledge
 		req.holdLease = req.HoldOnSwitch && (p.ID == req.PreferPledgeID || rankedDeclined || bestSkipped(p.Priority))
 		grant, status, capped, err := b.tryPledge(ctx, pool, p, req, now)
 		if errors.Is(err, errScopeDrawCapped) {
-			skips = append(skips, PledgeSkip{PledgeID: p.ID, Status: status})
+			skips = append(skips, PledgeSkip{PledgeID: p.ID, Status: status, Credential: want})
 			return nil, skips, nil
 		}
 		if err != nil {
 			b.logger.Warn("credpool: pledge %s unusable for run %s: %v", p.ID, req.RunID, err)
-			skips = append(skips, PledgeSkip{PledgeID: p.ID, Status: StatusUnhealthy})
+			skips = append(skips, PledgeSkip{PledgeID: p.ID, Status: StatusUnhealthy, Credential: want})
 			continue
 		}
 		if grant != nil {
 			return grant, skips, nil
 		}
-		skips = append(skips, PledgeSkip{PledgeID: p.ID, Status: status})
+		skips = append(skips, PledgeSkip{PledgeID: p.ID, Status: status, Credential: want})
 		// The held entry moved ahead of the ordinary order declining is no
 		// switch OFF the natural first choice that serves next.
 		movedPreferred := preferredMoved && p.ID == req.PreferPledgeID
@@ -595,7 +599,7 @@ func eligiblePledges(candidates []Pledge, req Request, want Credential, now time
 		// fallback rung's. Named so "why did nobody serve this door
 		// consult" reads as consent, not as paused or cooling.
 		if req.FallbackOnly && !p.FallbackUse {
-			skips = append(skips, PledgeSkip{PledgeID: p.ID, Status: StatusNoFallbackConsent})
+			skips = append(skips, PledgeSkip{PledgeID: p.ID, Status: StatusNoFallbackConsent, Credential: want})
 			continue
 		}
 		if ok, status := p.AvailableForLaunch(now, req.BotID); ok {
@@ -607,13 +611,13 @@ func eligiblePledges(candidates []Pledge, req Request, want Credential, now time
 			if req.ClosedAtMargin != nil {
 				reopenAt, near := req.ClosedAtMargin(p)
 				if near {
-					skips = append(skips, PledgeSkip{PledgeID: p.ID, Status: StatusNearLimit, ReopenAt: reopenAt})
+					skips = append(skips, PledgeSkip{PledgeID: p.ID, Status: StatusNearLimit, ReopenAt: reopenAt, Credential: want})
 					continue
 				}
 			}
 			eligible = append(eligible, p)
 		} else {
-			skips = append(skips, PledgeSkip{PledgeID: p.ID, Status: status})
+			skips = append(skips, PledgeSkip{PledgeID: p.ID, Status: status, Credential: want})
 		}
 	}
 	return eligible, skips

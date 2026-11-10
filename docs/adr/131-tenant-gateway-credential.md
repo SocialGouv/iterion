@@ -128,7 +128,12 @@ A replay reads that record, never the probe, to decide the gateway routes
 slot sealable whatever the probe reads now — an attached entry whose RunID-blind preview
 counts the run's own open lease or day's unit against it, a key deleted since — so the
 walk asks every tier and a slot it cannot fill is refused by name by the boundary's
-strict arm, never published as a dead attempt. A stamp that records no gateway key
+strict arm, never published as a dead attempt. A slot whose pool entry exists but is busy
+now (another run holds it, its day or the attachment's draw cap is spent, it cools) is
+refused in the capacity class a team key at its `max_concurrent_runs` answers
+(`UnfundedProvidersError.Busy`, `ErrCredentialAtCapacity`): the retry sweeper waits for it
+for free on the slot cadence until `max_wait`, an operator is answered 429; a refusal
+naming one provider nothing holds stays `ErrNoLLMCredential`. A stamp that records no gateway key
 (`own_keys` naming none, or a run stamped before the producer) seals none on a replay: a
 var the launch read late and the resume reads decided, a key created since, a fork's
 `NewInputs` re-routing a node — the routes ride the runner's environment gateway as at

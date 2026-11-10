@@ -389,8 +389,21 @@ func (p *Publisher) unfundedPostureFor(wf *ir.Workflow, sovereign, teamGateway, 
 // seal (gatewayRoutes.heldOut): a refusal naming that provider carries it, so
 // the sentence never claims no tier holds what one does. routes.primary is
 // the attributed set's decided primary routes (attributedRoutes), the content
-// boundary's strict set.
-func unfundedRefusalFor(tenant string, routes routeAttribution, funded map[string]bool, holdsNothing bool, posture unfundedPosture, heldOut map[string]string) *UnfundedProvidersError {
+// boundary's strict set. busy names, per provider, the pool entries that
+// exist for the launch but could not serve it now (busy_entries.go): a
+// refusal whose every named provider only such an entry holds is a wait
+// (UnfundedProvidersError.Waits), whichever arm refused.
+func unfundedRefusalFor(tenant string, routes routeAttribution, funded map[string]bool, holdsNothing bool, posture unfundedPosture, heldOut map[string]string, busy busyProviders) *UnfundedProvidersError {
+	refusal := unfundedRefusalArm(tenant, routes, funded, holdsNothing, posture, heldOut)
+	if refusal != nil {
+		refusal.Busy = busy.busyFor(refusal.Providers)
+	}
+	return refusal
+}
+
+// unfundedRefusalArm is unfundedRefusalFor's decision: which arm refuses, and
+// what it names.
+func unfundedRefusalArm(tenant string, routes routeAttribution, funded map[string]bool, holdsNothing bool, posture unfundedPosture, heldOut map[string]string) *UnfundedProvidersError {
 	attributed, sites, primary := routes.providers, routes.pins, routes.primary
 	if posture.Untrusted {
 		holdsNothing = true
@@ -502,7 +515,10 @@ func teamGatewayTolerated(attributed []string, sites, primary map[string][]strin
 // posture refused — so a reader answers with errors.As instead of parsing the
 // sentence: a caller that reconstructs "which provider" from the message is a
 // second, weaker parser of this decision. Unwraps to runview.ErrNoLLMCredential,
-// which every existing reader already matches with errors.Is.
+// which every existing reader already matches with errors.Is — or, when every
+// provider it names is held only by a busy pool entry (Waits), to
+// ErrCredentialAtCapacity, the class a team key at its max_concurrent_runs
+// answers: a wait, not a credential to provision.
 type UnfundedProvidersError struct {
 	// Tenant is the team the launch resolved credentials for.
 	Tenant string
@@ -555,11 +571,49 @@ type UnfundedProvidersError struct {
 	// that did not seal, and why (the gateway probe's note): the key, or the
 	// tier read as holding one. Empty when no tier held anything for it.
 	HeldOut map[string]string
+	// Busy maps a named provider to the pool entries that exist for the
+	// launch but could not serve it now (busy_entries.go): another run holds
+	// its slot, its day or the attachment's draw cap is spent, it cools.
+	// Empty for a provider nothing busy holds.
+	Busy map[string][]string
 }
 
-func (e *UnfundedProvidersError) Unwrap() error { return runview.ErrNoLLMCredential }
+// Waits reports whether every provider the refusal names is held by a busy
+// pool entry: nothing is missing, the run waits for an entry to free. A
+// refusal naming one provider nothing holds does not wait — no wait cures it
+// — nor does an untrusted refusal that also names a route class no credential
+// lifts (a gateway, deferred, unattributed or wire-default site).
+func (e *UnfundedProvidersError) Waits() bool {
+	if len(e.Providers) == 0 || len(e.Gateway)+len(e.Deferred)+len(e.Unattributed)+len(e.WireDefault) > 0 {
+		return false
+	}
+	for _, prov := range e.Providers {
+		if len(e.Busy[prov]) == 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// Unwrap is the refusal's class: a wait (Waits) is ErrCredentialAtCapacity,
+// which the retry sweeper defers for free and an operator surface answers
+// 429; anything else is runview.ErrNoLLMCredential.
+func (e *UnfundedProvidersError) Unwrap() error {
+	if e.Waits() {
+		return ErrCredentialAtCapacity
+	}
+	return runview.ErrNoLLMCredential
+}
 
 func (e *UnfundedProvidersError) Error() string {
+	if e.Waits() {
+		held := ""
+		if e.TeamGateway {
+			held = " (the run is held to its team's gateway, content boundary team_gateway, ADR-131 §4: no environment fallback serves it meanwhile)"
+		}
+		return fmt.Sprintf("cloudpublisher: %v: every credential this run lacks for tenant %s exists but is busy now%s — %s; the run waits for it: the same request succeeds once an entry frees (another run ends, its day or its window resets)",
+			ErrCredentialAtCapacity, e.Tenant, held, strings.Join(e.namedProviders(), "; "))
+	}
 	if e.Untrusted {
 		pool := "its fork lane's runner pool"
 		if e.Pool != "" {
@@ -630,6 +684,9 @@ func (e *UnfundedProvidersError) namedProviders() []string {
 		entry := prov
 		if sites := e.Sites[prov]; len(sites) > 0 {
 			entry = fmt.Sprintf("%s (named by %s)", prov, strings.Join(sites, ", "))
+		}
+		if busy := e.Busy[prov]; len(busy) > 0 {
+			entry += " — busy now: " + strings.Join(busy, ", ")
 		}
 		if held := e.HeldOut[prov]; held != "" {
 			entry += " — " + held
