@@ -215,13 +215,28 @@ import (
 // serving auxiliary gateway spend off the team's boundary, failing open on
 // the pod. It rejects: its window is [27, 29]. MinSchemaVersion stays 27 —
 // the fence is the maximum that rises; raising the minimum would force a
-// drain of v27–v29 messages for no added safety (a v27–v29 message carries
-// no stamp because its publisher wrote none, which is the unstamped reading
-// the new runner applies). Runners and pools roll FIRST, the server after:
-// with the minimum unchanged a new runner admits every trusted message the
-// old server still publishes (the v29 rule above still parks an untrusted
-// message older than v29), and an old runner never sees a v30 message.
+// drain of v27–v29 messages for no added safety. A v27–v29 publisher never
+// DERIVES a stamp, but its resume replays the run document's frozen one: a
+// v29 replica still serving mid-rollout (or a server rolled back) resuming a
+// run a v30 replica stamped team_gateway publishes a pre-v30 message
+// carrying the stamp over a bundle walked by the old rules — no gateway key
+// sealed, no AmbientLLMRefused — whose gateway routes would fall to the
+// pod's environment. Validate parks a message older than
+// ContentBoundaryProducerSchemaVersion carrying team_gateway as a version
+// mismatch, so a resume from an upgraded server recovers it; every other
+// v27–v29 message carries own_keys or no stamp, the readings the new runner
+// applies. Runners and pools roll FIRST, the server after: with the minimum
+// unchanged a new runner admits every trusted message the old server still
+// publishes (the v29 rule above still parks an untrusted message older than
+// v29), and an old runner never sees a v30 message.
 const SchemaVersion = 30
+
+// ContentBoundaryProducerSchemaVersion is the first wire version whose
+// publisher seals a team_gateway run's gateway key and arms its
+// AmbientLLMRefused on the stamp's decision: a message older than it that
+// carries team_gateway is a stale replica's replay of a frozen stamp over an
+// old-rules bundle, and Validate parks it.
+const ContentBoundaryProducerSchemaVersion = 30
 
 // ForkAuthorSubjectSchemaVersion is the first wire version that carries
 // RunMessage.ForkAuthorSubject: an untrusted message older than it cannot
@@ -430,7 +445,9 @@ type RunMessage struct {
 	// ContentBoundary mirrors the run document's frozen content boundary
 	// (ADR-131 §4) so the claiming runner knows which credential class
 	// funds the run without a second store read: the publisher stamps it at
-	// launch and replays the document's stamp on resume (v29). Nil on a
+	// launch (ContentBoundaryProducerSchemaVersion) and replays the
+	// document's stamp on resume (since v28, before any producer existed —
+	// Validate parks a pre-producer replay of team_gateway). Nil on a
 	// message whose run predates the producer, or whose resolution never
 	// walked; a nil pointer serialises as absent.
 	ContentBoundary *store.RunContentBoundary `json:"content_boundary,omitempty"`
@@ -730,6 +747,14 @@ func (m *RunMessage) Validate() error {
 	// server, whose gate meters the author, recovers it.
 	if m.V < ForkAuthorSubjectSchemaVersion && !m.Trust.Trusted() {
 		return fmt.Errorf("%w: a v%d message carries trust %q but predates the fork author subject (v%d) — parked for a resume from an upgraded server rather than run with the author's bound unenforced", ErrSchemaVersion, m.V, string(m.Trust), ForkAuthorSubjectSchemaVersion)
+	}
+	// A message older than the stamp's producer replays a team_gateway stamp
+	// it did not derive (a stale replica resuming a run an upgraded one
+	// stamped) over a bundle sealed by the old rules: no gateway key, no
+	// ambient refusal, so the run's gateway routes would spend the pod's
+	// environment. Parked as a version mismatch, like the rule above.
+	if m.V < ContentBoundaryProducerSchemaVersion && m.ContentBoundary.TeamGateway() {
+		return fmt.Errorf("%w: a v%d message carries the team_gateway content boundary but predates its producer (v%d) — parked for a resume from an upgraded server rather than run with the run's gateway unsealed and the pod's environment admitted", ErrSchemaVersion, m.V, ContentBoundaryProducerSchemaVersion)
 	}
 	// The pool name is grammar-checked, not tenant-checked, and only when
 	// set: an empty pool is the shared default (pre-v22 messages included),

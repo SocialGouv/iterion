@@ -342,8 +342,9 @@ func TestSchemaVersionConstant(t *testing.T) {
 // TestValidate_DualAcceptWindow pins the explicit compatibility window.
 // At v30 the window is [27, 30]: a v27 message lacks the wire-carried
 // BotSourceTier (#1959) but its publisher already stamped the run document,
-// so the floor re-reads it from there; a v27, v28 or v29 message carries no
-// content boundary because its publisher wrote none — the unstamped reading.
+// so the floor re-reads it from there; a v27, v28 or v29 message carrying no
+// content boundary is the unstamped reading (one replaying team_gateway parks:
+// TestRunMessage_ATeamGatewayMessageOlderThanTheProducerParks).
 // Refusals remain TRANSIENT ErrSchemaVersion.
 func TestValidate_DualAcceptWindow(t *testing.T) {
 	base := func(v int) *RunMessage {

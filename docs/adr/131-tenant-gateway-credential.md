@@ -147,13 +147,21 @@ tier, ADR-162's fork-author subject). §4's and the Delivery's "`SchemaVersion`
 27", §10's "schema 27" and the Consequences' "schema 26 fences them" read 30. A
 stale runner that dropped the stamp would serve auxiliary gateway spend off the
 team's boundary, so it must reject — it does, its window is [27, 29].
-`MinSchemaVersion` stays 27: the fence is the maximum that rises, and a v27 to
-v29 message carries no stamp because its publisher wrote none, which is the
-unstamped reading; raising the minimum would force a drain for no added safety.
-Runners and pools roll first, the server after (§10): with the minimum unchanged
-no trusted message parks in either direction; the v29 rule still parks an
-untrusted message older than v29 (docs/cloud-queue-schema-rollout.md, v29 and
-v30).
+`MinSchemaVersion` stays 27: the fence is the maximum that rises; raising the
+minimum would force a drain for no added safety. A v27 to v29 publisher never
+derives a stamp, but its resume replays the document's frozen one (the carriage
+is PR-B'2's): an old server replica still serving mid-rollout, or a server
+rolled back, that resumes a run a v30 replica stamped `team_gateway` publishes a
+pre-v30 message carrying the stamp over a bundle walked by the old rules — no
+gateway key, no `AmbientLLMRefused`. `Validate` parks such a message as a
+version mismatch (`ContentBoundaryProducerSchemaVersion`), and the runner reads
+the message's stamp as the ambient refusal whatever the bundle says, an empty
+bundle included; every other v27 to v29 message carries `own_keys` or no stamp,
+the readings the v30 runner applies. Runners and pools roll first, the server
+after (§10): with the minimum unchanged no trusted message parks except that
+stale replay, which a resume from an upgraded server recovers; the v29 rule
+still parks an untrusted message older than v29
+(docs/cloud-queue-schema-rollout.md, v29 and v30).
 
 ### The pin's exclusivity (#2005 PR-C', same date)
 
