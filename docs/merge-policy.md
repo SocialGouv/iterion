@@ -265,8 +265,20 @@ gate.** What it owes:
    pushed after they ran invalidates them. Less obvious and more dangerous:
    `strict_required_status_checks_policy` is **false** on this ruleset, so a
    green set computed against an older `main` stays green and GitHub neither
-   re-runs nor flags it. If `main` advanced since the checks ran, re-push to
-   refresh the merge ref or take the queue.
+   re-runs nor flags it. Re-pushing refreshes the merge ref, but it does not
+   converge here: `main` advances every 20–40 minutes on a busy day — the release
+   bot pushes with no PR at all — so a CI cycle finishes behind the tip it was
+   chasing, and the queue, which would settle it, is the thing the parked gate
+   closed. So **build the integrated tree locally and run the gate on it**: a
+   fresh worktree on `origin/main`, `git merge --no-ff` each branch going in, then
+   the gate members the diffs touch. That tests the merge ref, which the non-strict
+   policy never does. Measured on 2026-11-10 with four branches: `main` had
+   re-pinned `docs/merge-gate.md` in the reading golden and one branch changed the
+   **adjacent** line (`docs/merge-policy.md`), so the hunks overlapped — green
+   apart, conflicting combined. Resolve a golden conflict by regenerating it
+   (`git checkout --ours`, then `corpus-reading --write`, then check only your own
+   files moved), never by picking a side; and note `rerere` will offer a replay
+   from the train merge that is not valid for a rebase.
 4. **The trailers, greppable** — `Adversarial-Rounds:` / `Adversarial-Model:`
    (the reviewer marked **self** when the loop was a self-review), plus
    `Gate-Bypass: revi/review parked (quota) — #<pr>` in the squash body, since
