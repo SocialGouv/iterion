@@ -25,7 +25,6 @@ package llmroute
 
 import (
 	"fmt"
-	"path"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/backend/backendcaps"
@@ -398,18 +397,23 @@ func ConsumesProviderHint(backend string) (chains, single bool) {
 // provider value as a pin at its dispatch chokepoint — the value-aware
 // half of ConsumesProviderHint. claude_code walks every step and refuses
 // an unfunded hint loudly at dispatch, so any validated value is
-// honoured; claw acts on the hint at exactly one switch (its registry's
-// force-Anthropic-direct branch, wired to the model twin) and ignores
-// every other value there — the spend then follows the default
-// precedence, the silent misroute a policy pin must not certify. Kept
-// local to avoid importing the model executor; the drift test lives
-// in projections_test.go.
+// honoured; claw acts on two values — `anthropic` at its registry's
+// force-Anthropic-direct branch, `openai_compatible` at the gateway
+// crossing check, which serves the gateway model the hint names and
+// refuses any other model loudly — and ignores every other value: the
+// spend then follows the default precedence, the silent misroute a policy
+// pin must not certify. Kept local to avoid importing the model executor;
+// the drift test lives in projections_test.go.
 func HonoursProviderHintValue(backend, provider string) bool {
 	switch backend {
 	case HarnessClaudeCode:
 		return true
 	case HarnessClaw:
-		return strings.ToLower(strings.TrimSpace(provider)) == "anthropic"
+		switch strings.ToLower(strings.TrimSpace(provider)) {
+		case "anthropic", ProviderOpenAICompatible:
+			return true
+		}
+		return false
 	default:
 		return false
 	}
@@ -507,9 +511,35 @@ func validateOverride(o Override) error {
 	if strings.ContainsAny(sel, ".$") {
 		return fmt.Errorf("selector %q — a '.' or '$' would poison the provenance key overrides.<selector>.<field>, persisted as a BSON document", sel)
 	}
-	if strings.ContainsAny(sel, "*?[") {
-		if _, err := path.Match(sel, ""); err != nil {
-			return fmt.Errorf("selector %q is not a valid glob: %v", sel, err)
+	parsed, err := ParseSelector(sel)
+	if err != nil {
+		return err
+	}
+	switch parsed.Class {
+	case SelectorRoute, SelectorSupervisor:
+		// The bot dimension the scoped classes owe (ADR-132 §2, D21): a
+		// node id or a supervisor name collides across bots, so a cell
+		// with no bot re-pins every same-named route or supervisor of
+		// every bot the level reaches.
+		if parsed.Bot == "" {
+			return fmt.Errorf("selector %q names no bot — a route-scoped or supervisor selector carries its bot (<bot>/%s): node ids and supervisor names collide across bots, so a cell without one would re-pin every bot's same-named site (write \"*/%s\" to mean every bot)", sel, sel, sel)
+		}
+	}
+	switch parsed.Class {
+	case SelectorRoute:
+		// The route-field guard: a `fallbacks:` route carries backend,
+		// model and provider; its effort is the node's. A pin on a field
+		// the route lacks is a silent no-op.
+		if o.Effort != "" {
+			return fmt.Errorf("selector %q pins effort %q on a fallbacks: route — a route runs at its node's reasoning effort and carries none of its own, so the pin would do nothing; pin the node instead", sel, o.Effort)
+		}
+	case SelectorSupervisor:
+		// A supervisor declares a model and nothing else: its evaluator
+		// runs in process on claw and routes on the spec's own prefix.
+		for _, f := range []struct{ name, v string }{{"backend", o.Backend}, {"provider", o.Provider}, {"effort", o.Effort}} {
+			if f.v != "" {
+				return fmt.Errorf("selector %q pins %s %q on a supervisor — a supervisor names a model only (its evaluator runs in process on claw and routes on the spec's prefix), so the pin would do nothing", sel, f.name, f.v)
+			}
 		}
 	}
 	pinned := 0
@@ -564,6 +594,13 @@ func validateOverride(o Override) error {
 				if !HonoursProviderHintValue(o.Backend, s) {
 					return fmt.Errorf("provider %q names %q on backend %q — this harness acts on none of this value at its routing chokepoint, so the gate would certify a pin the harness silently ignores; the spend would follow the default precedence", o.Provider, s, o.Backend)
 				}
+			}
+			// The gateway hint pins the gateway: every backend's dispatch
+			// refuses it beside a model that is not a gateway route
+			// (refuseGatewayCrossing). One cell holding both is a pin no
+			// dispatch serves.
+			if s == ProviderOpenAICompatible && o.Model != "" && !IsGatewayModel(o.Model) {
+				return fmt.Errorf("provider %q names %q beside model %q — the gateway hint serves gateway models only (%s/<gateway model id>), and dispatch refuses this pair on every backend", o.Provider, s, o.Model, ProviderOpenAICompatible)
 			}
 		}
 	}

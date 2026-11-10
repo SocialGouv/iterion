@@ -34,7 +34,7 @@ import (
 // after dispatch.
 func refuseGatewayCrossing(backend, hint, model string) error {
 	h := strings.ToLower(strings.TrimSpace(hint))
-	hintGateway := h == modelroute.OpenAICompatible
+	hintGateway := clawPairsGatewayHint(h)
 	gateway := modelroute.Parse(model).Gateway()
 	switch {
 	case gateway && h != "" && h != "auto" && !hintGateway:

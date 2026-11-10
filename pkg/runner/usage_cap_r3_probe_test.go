@@ -54,7 +54,7 @@ func TestR3Probe_LateVarPinNeverParksOnTheReadingEnv(t *testing.T) {
 	if got := model.ResolveRoutingFieldWith(view.Vars, view.LateVars, "{{vars.m}}"); got != "{{vars.m}}" {
 		t.Fatalf("the field reading resolved a late name to %q — the view's own doctrine broken", got)
 	}
-	specs := supervise.SpecsFromWorkflow(wf, view.Vars, nil)
+	specs := supervise.SpecsFromWorkflow(wf, view.Vars, model.ModelOverrides{}, nil)
 	if len(specs) != 1 || specs[0].Model != "anthropic/claude-opus-5-5" {
 		t.Fatalf("the raw view resolved no pin (%v) — the probe does not exercise the divergence", specs)
 	}

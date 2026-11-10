@@ -1789,7 +1789,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	// the bundle is sealed. A nil fold (no stores, no fresh feed) leaves
 	// the field absent and the runner at the operator floor.
 	if p.priceFeedEffective != nil {
-		bundle.GatewayPriceFeed = p.priceFeedEffective(ctx, orgID, tenantID, model.RouteGatewayModelIDs(wf))
+		bundle.GatewayPriceFeed = p.priceFeedEffective(ctx, orgID, tenantID, model.RouteGatewayModelIDs(wf, view.Overrides))
 	}
 
 	// ADR-123: the bundle seals under a fresh per-run DEK that travels in

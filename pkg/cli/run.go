@@ -559,7 +559,7 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 	}
 
 	if superviseHub != nil {
-		stop := startCLISupervisors(ctx, superviseHub, s, runID, wf, eng.ResolveVars(inputs), logger)
+		stop := startCLISupervisors(ctx, superviseHub, s, runID, wf, eng.ResolveVars(inputs), executorOverrides(executor), logger)
 		defer stop()
 	}
 
@@ -581,9 +581,19 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 // store handle as the engine, so the inbox doorbell stays in lockstep).
 // Returns a stop func to drain them when the run ends. The kill switch
 // was already resolved where the hub was created.
-func startCLISupervisors(ctx context.Context, hub *supervise.EventHub, s store.RunStore, runID string, wf *ir.Workflow, vars map[string]any, logger *iterlog.Logger) func() {
+func startCLISupervisors(ctx context.Context, hub *supervise.EventHub, s store.RunStore, runID string, wf *ir.Workflow, vars map[string]any, overrides model.ModelOverrides, logger *iterlog.Logger) func() {
 	inj := &supervise.StoreInjector{Store: s}
-	return supervise.StartDeclared(ctx, hub, inj, runID, supervise.SpecsFromWorkflow(wf, vars, logger), logger)
+	return supervise.StartDeclared(ctx, hub, inj, runID, supervise.SpecsFromWorkflow(wf, vars, overrides, logger), logger)
+}
+
+// executorOverrides is the override list the run's executor dispatches with
+// — what a `supervisor:<name>` pin and the watched routes read — or none for
+// an executor that carries no model overrides (a test double).
+func executorOverrides(exec runtime.NodeExecutor) model.ModelOverrides {
+	if e, ok := exec.(interface{ ModelOverrides() model.ModelOverrides }); ok {
+		return e.ModelOverrides()
+	}
+	return model.ModelOverrides{}
 }
 
 // teeRunLog defers to store.TeeRunLog so the dispatcher and any

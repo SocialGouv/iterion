@@ -10,7 +10,6 @@ import (
 	anthropicprovider "github.com/SocialGouv/claw-code-go/pkg/api/providers/anthropic"
 
 	"github.com/SocialGouv/iterion/pkg/backend/credroute"
-	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 )
@@ -202,7 +201,7 @@ func anthropicDirectEnvCredentials(ctx context.Context, modelID string) (anthrop
 // the env's. It reads the environment ctx carries (the #2808 seam): the
 // crossing judges the forfait on the env it forwards from.
 func runCredentialBaseURL(ctx context.Context, spec, hint string) string {
-	if HonoursProviderHintValue(delegate.BackendClaw, hint) && !GLMOnAnthropicWire(spec) {
+	if clawForcesAnthropicDirect(hint) && !GLMOnAnthropicWire(spec) {
 		return ""
 	}
 	return envGetenv(ctx, "ANTHROPIC_BASE_URL")

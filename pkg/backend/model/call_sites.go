@@ -195,7 +195,7 @@ func CallSites(v RouteView, backendOf func(ir.Node) string) []CallSite {
 		}
 		out = append(out, CallSite{
 			ID: SupervisorSiteID(sup.Name, i), Kind: SiteSupervisor, Name: sup.Name,
-			Backend: delegate.BackendClaw, Legs: []credroute.Leg{{}}, Model: strings.TrimSpace(ir.ExpandEnvWithDefault(v.field(sup.Model))),
+			Backend: delegate.BackendClaw, Legs: []credroute.Leg{{}}, Model: strings.TrimSpace(ir.ExpandEnvWithDefault(v.field(v.Overrides.EffectiveSupervisorModel(sup)))),
 			Role: credroute.RoleSupervisor, Host: true, Rescue: true,
 		})
 	}
@@ -304,6 +304,7 @@ func (v RouteView) fallbackSites(n ir.Node, node CallSite) []CallSite {
 	}
 	var out []CallSite
 	for i, fb := range gf.GetFallbacks() {
+		fb = v.Overrides.EffectiveFallback(n.NodeID(), i, fb)
 		if fb.Action == ir.FallbackActionSkip || !FallbackWhenActive(v.DecidedVars(), n.NodeID(), fb, nil) {
 			continue
 		}

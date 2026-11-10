@@ -250,7 +250,7 @@ func containerSpend(ctx context.Context, env map[string]string, facts crossingFa
 	}
 	switch provider {
 	case "anthropic":
-		direct := HonoursProviderHintValue(delegate.BackendClaw, hint)
+		direct := clawForcesAnthropicDirect(hint)
 		var w anthropicEnvWalk
 		switch {
 		case direct && !modelServedByZAI(modelID):

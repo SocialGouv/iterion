@@ -3,6 +3,7 @@ package model
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -114,7 +115,7 @@ func TestRouteGatewayModelIDs(t *testing.T) {
 		{Name: "f2"}, // inherits the node's model
 	}
 	wf := &ir.Workflow{Nodes: map[string]ir.Node{"review": node}}
-	ids := RouteGatewayModelIDs(wf)
+	ids := RouteGatewayModelIDs(wf, ModelOverrides{})
 	want := map[string]bool{"glm-5.3": true, "gpt-oss-120b": true}
 	if len(ids) != len(want) {
 		t.Fatalf("ids %v, want exactly %v", ids, want)
@@ -124,7 +125,27 @@ func TestRouteGatewayModelIDs(t *testing.T) {
 			t.Fatalf("unexpected id %q in %v", id, ids)
 		}
 	}
-	if RouteGatewayModelIDs(nil) != nil {
+	if RouteGatewayModelIDs(nil, ModelOverrides{}) != nil {
 		t.Fatal("a nil workflow yielded ids")
+	}
+}
+
+// The ids the run's pins send ride along: a node pin (and the route that
+// inherits it), a route-scoped pin, a supervisor pin.
+func TestRouteGatewayModelIDs_ReadsThePins(t *testing.T) {
+	node := &ir.AgentNode{}
+	node.ID = "review"
+	node.Model = "anthropic/claude-opus-5-5"
+	node.Fallbacks = []ir.Fallback{{Name: "glm", Model: "glm-5.3", Provider: "zai"}, {Name: "same"}}
+	wf := &ir.Workflow{Nodes: map[string]ir.Node{"review": node}, Supervisors: []*ir.Supervisor{{Name: "pacer", Model: "anthropic/claude-opus-5-5"}}}
+	o := OverridesFrom([]OverrideEntry{
+		{Selector: "review", Model: modelroute.OpenAICompatible + "/node"},
+		{Selector: "review#glm", Model: modelroute.OpenAICompatible + "/route"},
+		{Selector: "supervisor:pacer", Model: modelroute.OpenAICompatible + "/sup"},
+	})
+	ids := RouteGatewayModelIDs(wf, o)
+	slices.Sort(ids)
+	if want := []string{"node", "route", "sup"}; !slices.Equal(ids, want) {
+		t.Fatalf("ids = %v, want %v", ids, want)
 	}
 }

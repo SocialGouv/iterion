@@ -12,6 +12,7 @@
 package cloudpublisher
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"os"
@@ -26,7 +27,11 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 	"github.com/SocialGouv/iterion/pkg/dsl/unit"
 	"github.com/SocialGouv/iterion/pkg/dsl/unit/unittest"
+	"github.com/SocialGouv/iterion/pkg/llmroute"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/runview"
+	"github.com/SocialGouv/iterion/pkg/secrets"
+	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/supervise"
 )
 
@@ -147,7 +152,7 @@ func reviReadersUnder(t *testing.T, wf *ir.Workflow, view model.RouteView) reviW
 
 // reviSupervisorSpecs is the supervisors' runtime reading of wf under view.
 func reviSupervisorSpecs(wf *ir.Workflow, view model.RouteView) []supervise.Spec {
-	return supervise.SpecsFromWorkflow(wf, view.DecidedVars(), iterlog.Nop())
+	return supervise.SpecsFromWorkflow(wf, view.DecidedVars(), view.Overrides, iterlog.Nop())
 }
 
 // TestReviShippedBots_DefaultLaunchReadsWhatOriginMainRead pins the default
@@ -184,5 +189,202 @@ func TestReviShippedBots_DefaultLaunchReadsWhatOriginMainRead(t *testing.T) {
 	// The golden is a statement about real routes, not an empty file.
 	if w := got["review-pr"].Walk; !slices.Contains(w.Providers, "anthropic") || !slices.Contains(w.Providers, "zai") {
 		t.Fatalf("review-pr's default walk names %v — the golden fixture is not reading the shipped bot", w.Providers)
+	}
+}
+
+// reviGatewayCellsJSON is the routing block a product writes on its forge
+// integration (PATCH /api/teams/{id}/forge/repo-bots/{integration_id},
+// `routing`) — or on its team's routing policy — so that every LLM site of
+// the shipped Revi pair, the pacers and the GLM rescues included, runs on
+// claw against the team's own gateway model. Each node cell fixes the three
+// fields the walk reads (backend, provider, model): the provider cell
+// collapses the slot's own `provider:` dial, so no `${ITERION_VIBE_*}` text
+// is read on any route. Every cell names its bot, so a co-enabled bot's
+// same-named node stays its own.
+const reviGatewayCellsJSON = `{
+  "overrides": [
+    {"selector": "review-pr/converge", "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
+    {"selector": "review-pr/converge_gpt", "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
+    {"selector": "review-pr/reviewer_claude", "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
+    {"selector": "review-pr/reviewer_claude_glance", "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
+    {"selector": "review-pr/reviewer_gpt", "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
+    {"selector": "review-pr/reviewer_gpt_glance", "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
+    {"selector": "review-pr/converge#glm", "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
+    {"selector": "review-pr/reviewer_claude#glm", "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
+    {"selector": "review-pr/reviewer_claude_glance#glm", "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
+    {"selector": "review-pr/supervisor:pacer", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
+    {"selector": "review-pr/supervisor:pacer_gpt", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
+    {"selector": "revi-converse/converse_agent", "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
+    {"selector": "revi-converse/converse_agent#glm", "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"}
+  ]
+}`
+
+// reviGatewayModelID is the one model every cell pins.
+const reviGatewayModelID = "openai_compatible/scaleway/deepseek-v4.1-flash"
+
+// reviPrimarySites are each bot's primary LLM sites — the node routes the
+// strict team_gateway refusal reads (DecidedPrimary).
+var reviPrimarySites = map[string][]string{
+	"review-pr":     {"converge", "converge_gpt", "reviewer_claude", "reviewer_claude_glance", "reviewer_gpt", "reviewer_gpt_glance"},
+	"revi-converse": {"converse_agent"},
+}
+
+// reviRescueAndSupervisorSites are each bot's other LLM sites: the GLM
+// rescues and the pacers.
+var reviRescueAndSupervisorSites = map[string][]string{
+	"review-pr":     {"converge#glm", "reviewer_claude#glm", "reviewer_claude_glance#glm", "supervisor:pacer", "supervisor:pacer_gpt"},
+	"revi-converse": {"converse_agent#glm"},
+}
+
+// reviGatewayPolicy is the block above as a launch resolves it at level
+// `source`: validated by the write surfaces' own validator, folded by the
+// production fold, snapshotted the way resolveRunLLMRoutePolicy stores it.
+func reviGatewayPolicy(t *testing.T, source string) *store.RunLLMRoutePolicy {
+	t.Helper()
+	var block llmroute.Policy
+	if err := json.Unmarshal([]byte(reviGatewayCellsJSON), &block); err != nil {
+		t.Fatalf("the block is not a routing policy: %v", err)
+	}
+	if err := llmroute.Validate(block); err != nil {
+		t.Fatalf("llmroute.Validate refused the activation block: %v", err)
+	}
+	resolved, sources := llmroute.Resolve(llmroute.Layer{Source: source, Policy: block})
+	out := &store.RunLLMRoutePolicy{PairOrder: resolved.PairOrder, Triggers: resolved.Triggers, Sources: sources}
+	for _, o := range resolved.Overrides {
+		out.Overrides = append(out.Overrides, store.RunLLMRouteOverride{Selector: o.Selector, Backend: o.Backend, Model: o.Model, Provider: o.Provider, Effort: o.Effort})
+	}
+	return out
+}
+
+// reviGatewayView is the publisher's attributed reading of bot under pol:
+// the launch's own fold of the cells for that bot, read the way the
+// credential walk reads it once a team key holds the gateway slot.
+func reviGatewayView(t *testing.T, bot string, wf *ir.Workflow, pol *store.RunLLMRoutePolicy) model.RouteView {
+	t.Helper()
+	view := model.RouteViewForLaunch(wf, buildModelOverrides(runview.EffectiveModelOverrides(nil, pol, bot)), nil, map[string]string(nil), nil)
+	view.GatewayKeyFunded = true
+	return view
+}
+
+// TestReviShippedBots_EveryCellDecidesItsRouteOnTheTeamGateway is the
+// operator's activation (2026-11-10) read on the bots this repo ships, at
+// the integration level and at the team level: under the block, the walk
+// names the gateway alone, decides every primary site from the cells (the
+// slots' `${ITERION_VIBE_*}` dials are read nowhere), defers and widens
+// nowhere, and every reader downstream — the call sites the admission keys,
+// the supervisors' runtime specs — sends the gateway model on claw.
+func TestReviShippedBots_EveryCellDecidesItsRouteOnTheTeamGateway(t *testing.T) {
+	for _, level := range []string{llmroute.SourceWebhook, llmroute.SourceTeam} {
+		pol := reviGatewayPolicy(t, level)
+		for _, bot := range reviBots {
+			t.Run(level+"/"+bot, func(t *testing.T) {
+				freezeCatalogBotDials(t, bot)
+				wf := compileShippedBot(t, bot)
+				view := reviGatewayView(t, bot, wf, pol)
+				walk := model.EffectiveProviders(view, walkProviderSet)
+				if !slices.Equal(walk.Providers, []string{"openai_compatible"}) {
+					t.Errorf("walk names %v, want [openai_compatible] alone (pins: %v)", walk.Providers, walk.Pins)
+				}
+				if len(walk.Unknown) != 0 || !walk.NarrowSafe || len(walk.UnattributedSites) != 0 {
+					t.Errorf("walk widened: unknown=%v narrow_safe=%v unattributed=%v", walk.Unknown, walk.NarrowSafe, walk.UnattributedSites)
+				}
+				if walk.EnvDeferred || len(walk.DeferredSites) != 0 {
+					t.Errorf("walk defers to the environment: env_deferred=%v deferred_sites=%v — a cell fixing backend, provider and model decides the route", walk.EnvDeferred, walk.DeferredSites)
+				}
+				if got := walk.DecidedPrimary["openai_compatible"]; !slices.Equal(got, reviPrimarySites[bot]) {
+					t.Errorf("decided primaries = %v, want every primary site %v", got, reviPrimarySites[bot])
+				}
+				pinned := walk.Pins["openai_compatible"]
+				for _, site := range append(slices.Clone(reviPrimarySites[bot]), reviRescueAndSupervisorSites[bot]...) {
+					if !slices.Contains(pinned, site) {
+						t.Errorf("site %q is not pinned to the gateway (pins: %v)", site, walk.Pins)
+					}
+				}
+				for _, s := range model.CallSites(view, nil) {
+					if s.Model != reviGatewayModelID || s.Backend != "claw" {
+						t.Errorf("call site %q sends %q on %q, want %q on claw", s.ID, s.Model, s.Backend, reviGatewayModelID)
+					}
+					for _, leg := range s.Legs {
+						if leg.Provider != "" && leg.Provider != "openai_compatible" {
+							t.Errorf("call site %q walks leg %+v outside the gateway", s.ID, leg)
+						}
+					}
+				}
+				for _, spec := range reviSupervisorSpecs(wf, view) {
+					if spec.Model != reviGatewayModelID {
+						t.Errorf("supervisor %q evaluates on %q, want %q", spec.Name, spec.Model, reviGatewayModelID)
+					}
+				}
+			})
+		}
+	}
+}
+
+// TestReviShippedBots_TheTeamGatewayKeySealsAndStampsTheBoundary drives the
+// public entry (SubmitLaunch) with each shipped Revi bot under the block, on
+// a publisher whose platform tier holds the two vendor keys the cells move
+// away from and whose team holds its own gateway key: the walk attributes
+// the routes to that key, the bundle seals it and no vendor key, the run is
+// stamped team_gateway, and the wire carries the bot's own cells.
+func TestReviShippedBots_TheTeamGatewayKeySealsAndStampsTheBoundary(t *testing.T) {
+	pol := reviGatewayPolicy(t, llmroute.SourceWebhook)
+	for _, bot := range reviBots {
+		t.Run(bot, func(t *testing.T) {
+			freezeCatalogBotDials(t, bot)
+			wf := compileShippedBot(t, bot)
+			f := newReviAcceptanceFixture(t)
+			var keyID string
+			seedGatewayKey(t, f.pub.apiKeys, f.pub.sealer, "team1", func(k *secrets.ApiKey) { keyID = k.ID })
+			dir := catalogBotDir(t, bot)
+			src, err := os.ReadFile(filepath.Join(dir, "main.bot"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			spec := runview.LaunchSpec{
+				FilePath:       filepath.Join(dir, "main.bot"),
+				Source:         string(src),
+				BundleDir:      dir,
+				BotID:          bot,
+				LLMRoutePolicy: pol,
+				ModelOverrides: runview.EffectiveModelOverrides(nil, pol, bot),
+			}
+			ctx := store.WithIdentity(context.Background(), "team1", "webhook:cfg-1")
+			runID := "run-revi-cells-" + bot
+			if _, err := f.pub.SubmitLaunch(ctx, runID, spec, wf, &runview.CompiledSource{Hash: "hash"}); err != nil {
+				t.Fatalf("SubmitLaunch = %v (log:\n%s)", err, f.logs.String())
+			}
+			if len(f.published) != 1 {
+				t.Fatalf("published %d messages, want 1", len(f.published))
+			}
+			msg := f.published[0]
+			run, err := f.runs.LoadRun(ctx, runID)
+			if err != nil {
+				t.Fatalf("LoadRun: %v", err)
+			}
+			if !run.ContentBoundary.TeamGateway() || run.ContentBoundary.KeyID != keyID {
+				t.Errorf("content boundary = %+v, want team_gateway naming key %s (log:\n%s)", run.ContentBoundary, keyID, f.logs.String())
+			}
+			b := openGatewayBundleOn(t, f.pub, runID, "", credResolution{secretsRef: msg.SecretsRef, dek: msg.BundleDEK})
+			if b.APIKeys[secrets.ProviderOpenAICompatible] != gwTeamKey {
+				t.Errorf("bundle gateway slot = %q, want the team's key sealed", b.APIKeys[secrets.ProviderOpenAICompatible])
+			}
+			if !b.AmbientLLMRefused {
+				t.Errorf("a team_gateway run's bundle does not refuse the pod's environment")
+			}
+			// The stamp is what the run SPENDS (the bundle keeps the shared
+			// tier's default credentials beside it, by design): the team's
+			// gateway key, and none of the platform's vendor keys.
+			if !slices.Equal(run.CredFingerprints, []string{gwFingerprint}) {
+				t.Errorf("run cred_fingerprints = %v, want the team gateway key's alone (log:\n%s)", run.CredFingerprints, f.logs.String())
+			}
+			for _, row := range msg.ModelOverrides {
+				if strings.Contains(row.Selector, "/") {
+					t.Errorf("wire row %+v still carries a bot dimension — the fold resolves it", row)
+				}
+			}
+			if want := len(reviPrimarySites[bot]) + len(reviRescueAndSupervisorSites[bot]); len(msg.ModelOverrides) != want {
+				t.Errorf("wire carries %d rows, want this bot's %d cells: %+v", len(msg.ModelOverrides), want, msg.ModelOverrides)
+			}
+		})
 	}
 }

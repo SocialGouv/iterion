@@ -254,7 +254,10 @@ func (e *ClawExecutor) resolveChain(node ir.Node) []chainElement {
 func (e *ClawExecutor) resolveChainUnder(node ir.Node, nodeBackend string) []chainElement {
 	chain := e.resolveProviderChain(node)
 	heldOnGateway := e.teamGateway && e.ownRouteNamesGateway(node)
-	for _, fb := range nodeFallbacks(node) {
+	for i, fb := range nodeFallbacks(node) {
+		// A route-scoped rule pins the route's own fields (ADR-132 §2,
+		// D21) — the reading the launch walk certified.
+		fb = e.modelOverrides.EffectiveFallback(node.NodeID(), i, fb)
 		if !e.fallbackWhenActive(node.NodeID(), fb) {
 			continue
 		}

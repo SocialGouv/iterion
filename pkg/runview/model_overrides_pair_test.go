@@ -119,7 +119,7 @@ func TestFoldSourcedOverridesCarriesTheOriginBesideEachEntry(t *testing.T) {
 		Overrides: []store.RunLLMRouteOverride{{Selector: "work", Backend: "claw"}},
 	}
 	rows := []ModelOverrideEntry{{Selector: "work", Provider: "zai"}}
-	got := foldSourcedOverrides(rows, pol)
+	got := foldSourcedOverrides(rows, pol, "")
 	want := []sourcedOverrideEntry{
 		{ModelOverrideEntry: ModelOverrideEntry{Selector: "work", Backend: "claw"}, origin: originPolicy},
 		{ModelOverrideEntry: rows[0], origin: originLaunch},
@@ -143,7 +143,7 @@ func TestComposedPairFindingsWalkSortedNodeOrder(t *testing.T) {
 			{Selector: "*", Backend: "claw"},
 			{Selector: "*", Provider: "zai"},
 		},
-	})
+	}, "")
 	findings := composedPairFindings(wf, sourced)
 	if len(findings) != 2 {
 		t.Fatalf("findings = %d, want one per node", len(findings))
@@ -166,7 +166,7 @@ func TestScreenPolicyOverridesWarnsOnTheComposedPair(t *testing.T) {
 	if err := os.WriteFile(path, []byte(splitPairBot), 0o644); err != nil {
 		t.Fatalf("write bot: %v", err)
 	}
-	warnings, err := ScreenPolicyOverrides(path, splitPairBot, "", "", pol)
+	warnings, err := ScreenPolicyOverrides(path, splitPairBot, "", "", "", pol)
 	if err != nil {
 		t.Fatalf("screen: %v", err)
 	}
@@ -191,7 +191,7 @@ func TestComposedPairFindingsWalksTheLLMRouter(t *testing.T) {
 			{Selector: "router", Backend: "claw"},
 			{Selector: "router", Provider: "zai"},
 		},
-	})
+	}, "")
 	findings := composedPairFindings(wf, sourced)
 	if len(findings) != 1 || findings[0].id != "pick" {
 		t.Fatalf("findings = %+v, want the llm-mode router judged", findings)

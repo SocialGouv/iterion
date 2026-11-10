@@ -283,9 +283,11 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 		// for every launch-shaped entry, so the order exists in exactly
 		// one place: a cell folded in after the screen would reach past a
 		// guard the launcher's own override cannot.
-		if err := foldAndScreen(wf, &spec); err != nil {
+		warnings, err := foldAndScreen(wf, &spec)
+		if err != nil {
 			return nil, err
 		}
+		logZeroMatchOnce(s.logger, warnings)
 		if err := validateRoutingPolicyForLaunch(spec.RoutingPolicy, wf); err != nil {
 			return nil, err
 		}
@@ -486,19 +488,27 @@ func (s *Service) hookEventObservers(extra []func(store.Event)) []func(store.Eve
 // after the screen would reach past a guard the launcher's own override
 // cannot, and an entry that skipped the fold would show the operator a
 // preview of a launch shape that is not the launch's.
-func foldAndScreen(wf *ir.Workflow, spec *LaunchSpec) error {
-	sourced := foldSourcedOverrides(spec.ModelOverrides, spec.LLMRoutePolicy)
+//
+// The warnings are the policy cells written for the launch's bot by name
+// that reach nothing in it (ADR-132 §2's zero-match warning): the launch
+// paths log each once per process (logZeroMatchOnce), the preview shows
+// them every time.
+func foldAndScreen(wf *ir.Workflow, spec *LaunchSpec) ([]string, error) {
+	sourced := foldSourcedOverrides(spec.ModelOverrides, spec.LLMRoutePolicy, spec.BotID)
 	spec.ModelOverrides = plainModelOverrideEntries(sourced)
 	if findings := composedPairFindings(wf, sourced); len(findings) > 0 {
 		f := findings[0]
-		return fmt.Errorf("runview: model overrides for %s %q: %w", f.kind, f.id, f.err)
+		return nil, fmt.Errorf("runview: model overrides for %s: %w", f.subject(), f.err)
 	}
 	if spec.RefuseUndecidedRoutingFields {
 		if err := refuseUndecidedRoutingFields(wf, spec); err != nil {
-			return err
+			return nil, err
 		}
 	}
-	return ValidateModelOverridePermissions(wf, toModelOverrides(spec.ModelOverrides), spec.Permission)
+	if err := ValidateModelOverridePermissions(wf, toModelOverrides(spec.ModelOverrides), spec.Permission); err != nil {
+		return nil, err
+	}
+	return zeroMatchWarnings(wf, spec.LLMRoutePolicy, spec.BotID), nil
 }
 
 // startInProcess compiles + builds + spawns a run in this process. It is
@@ -542,9 +552,11 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 	// the SAME shared body (foldAndScreen): the permission screen below
 	// must see the policy's cells, and the folded list is what
 	// BuildExecutor executes with and the run doc stamps.
-	if err := foldAndScreen(wf, &spec); err != nil {
+	foldWarnings, err := foldAndScreen(wf, &spec)
+	if err != nil {
 		return nil, err
 	}
+	logZeroMatchOnce(s.logger, foldWarnings)
 	// The tenant's providers lock holds on this lane too (#2665 item 7):
 	// the publisher's gate, read before it seals, is read here before the
 	// executor is built.
@@ -1761,13 +1773,13 @@ func (s *Service) spawnRun(
 		if run, err := s.store.LoadRun(sctx, runID); err == nil && run.Inputs != nil {
 			spawnVars = run.Inputs
 		}
-		stopSupervisors := s.startDeclaredSupervisors(ctx, runID, wf, eng.ResolveVars(spawnVars), runLogger, ex.supervisors)
+		stopSupervisors := s.startDeclaredSupervisors(ctx, runID, wf, eng.ResolveVars(spawnVars), ModelOverridesFromRun(modelOverrides), runLogger, ex.supervisors)
 		defer stopSupervisors()
 
 		// Spawn the Session-board curation coordinator (opt-in via
 		// ITERION_SESSION_BOARD). No-op when disabled — the deterministic
 		// task-list board (Phase 1) runs in the studio regardless.
-		stopBoard := s.startSessionBoard(ctx, runID, runName, supervise.WorkflowNamesGateway(wf), runLogger)
+		stopBoard := s.startSessionBoard(ctx, runID, runName, supervise.WorkflowNamesGateway(wf, ModelOverridesFromRun(modelOverrides)), runLogger)
 		defer stopBoard()
 
 		bodyErr := body(ctx, sctx, eng)

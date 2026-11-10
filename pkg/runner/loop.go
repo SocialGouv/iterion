@@ -3138,7 +3138,7 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 		// serves its supervisor, the pod's money does not, and a spec no
 		// credential funds is dropped by name rather than refused at every
 		// evaluation. The pre-flight meters this same list.
-		specs := runview.FundedSupervisorSpecs(ctx, supervise.SpecsFromWorkflow(wf, engine.ResolveVars(spawnVars), runLogger), msg.ContentBoundary, msg.RunnerPool, runLogger)
+		specs := runview.FundedSupervisorSpecs(ctx, supervise.SpecsFromWorkflow(wf, engine.ResolveVars(spawnVars), modelOverridesFromMsg(msg.ModelOverrides), runLogger), msg.ContentBoundary, msg.RunnerPool, runLogger)
 		// F12: a supervisor's evaluations are the run's money — each one
 		// books its tokens on its own route (source supervisor:<name>), the
 		// same route totals recordCredentialSpend meters per credential at

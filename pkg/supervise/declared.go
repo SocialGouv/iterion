@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/backend/modelroute"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -106,7 +107,13 @@ func ParseMonitorSpecs(specs []string) ([]Monitor, error) {
 // model pin resolves its {{vars.name}} references against it, the same
 // values the nodes beside which the supervisor spawns see. nil resolves
 // nothing — the estimate paths that hold no run.
-func SpecsFromWorkflow(wf *ir.Workflow, vars map[string]any, logger *iterlog.Logger) []Spec {
+//
+// overrides is the run's folded override list (ADR-129 §6): a
+// `supervisor:<name>` pin replaces the declaration's model, and the routes
+// the supervisor watches — the hint and the gateway screen below — are read
+// as the run dispatches them, node and route-scoped pins included. The zero
+// value reads the declarations as written.
+func SpecsFromWorkflow(wf *ir.Workflow, vars map[string]any, overrides model.ModelOverrides, logger *iterlog.Logger) []Spec {
 	if wf == nil {
 		return nil
 	}
@@ -129,16 +136,16 @@ func SpecsFromWorkflow(wf *ir.Workflow, vars map[string]any, logger *iterlog.Log
 			}
 			monitors = append(monitors, parsed...)
 		}
-		model := resolveModelVarsRefs(sup.Model, vars)
+		pin := resolveModelVarsRefs(overrides.EffectiveSupervisorModel(sup), vars)
 		hint := ""
-		if model == "" {
-			hint = providerHintFromWatched(wf, sup.Watches)
+		if pin == "" {
+			hint = providerHintFromWatched(wf, sup.Watches, overrides)
 		}
 		specs = append(specs, Spec{
 			Name:           sup.Name,
-			Model:          model,
+			Model:          pin,
 			ProviderHint:   hint,
-			GatewayWatched: gatewayWatched(wf, sup.Watches),
+			GatewayWatched: gatewayWatched(wf, sup.Watches, overrides),
 			System:         system,
 			Watches:        sup.Watches,
 			Monitors:       monitors,
@@ -218,11 +225,28 @@ func renderScalar(v any) string {
 // list and so reads every route the workflow may take (#2099: the same class
 // as ErrGatewayWatchNeedsPin, the same conservative reading of an unexpanded
 // {{…}} reference).
-func WorkflowNamesGateway(wf *ir.Workflow) bool {
+func WorkflowNamesGateway(wf *ir.Workflow, overrides model.ModelOverrides) bool {
 	if wf == nil {
 		return false
 	}
-	return gatewayWatched(wf, nil)
+	return gatewayWatched(wf, nil, overrides)
+}
+
+// overriddenFields is a node's routing fields as the run dispatches them:
+// each field a node-scoped override pins replaces the node's own, a provider
+// pin collapsing the node's chain (the executor's precedence).
+func overriddenFields(f ir.LLMFields, id string, kind ir.NodeKind, overrides model.ModelOverrides) ir.LLMFields {
+	ov := overrides.ForNode(id, kind)
+	if ov.Backend != "" {
+		f.Backend = ov.Backend
+	}
+	if ov.Model != "" {
+		f.Model = ov.Model
+	}
+	if ov.Provider != "" {
+		f.Provider = ov.Provider
+	}
+	return f
 }
 
 // gatewayWatched reports whether any route this supervisor may observe can
@@ -233,7 +257,7 @@ func WorkflowNamesGateway(wf *ir.Workflow) bool {
 // An unexpanded `{{…}}` COUNTS as gateway: the conservative side refuses
 // supervision that would otherwise silently pick a vendor default for a
 // gateway node's content.
-func gatewayWatched(wf *ir.Workflow, watches []string) bool {
+func gatewayWatched(wf *ir.Workflow, watches []string, overrides model.ModelOverrides) bool {
 	ids := watches
 	if len(ids) == 0 {
 		for id := range wf.Nodes {
@@ -248,11 +272,12 @@ func gatewayWatched(wf *ir.Workflow, watches []string) bool {
 		}
 		switch nn := node.(type) {
 		case ir.LLMNode:
-			f := nn.GetLLMFields()
+			f := overriddenFields(*nn.GetLLMFields(), id, nn.NodeKind(), overrides)
 			if maybeGatewayRoute(f.Model) || providerChainNamesGateway(f.Provider) {
 				return true
 			}
-			for _, fb := range nn.GetFallbacks() {
+			for i, fb := range nn.GetFallbacks() {
+				fb = overrides.EffectiveFallback(id, i, fb)
 				if maybeGatewayRoute(fb.Model) || providerChainNamesGateway(fb.Provider) {
 					return true
 				}
@@ -261,7 +286,8 @@ func gatewayWatched(wf *ir.Workflow, watches []string) bool {
 			if nn.RouterMode != ir.RouterLLM {
 				continue
 			}
-			if maybeGatewayRoute(nn.Model) || providerChainNamesGateway(nn.Provider) {
+			f := overriddenFields(nn.LLMFields, id, nn.NodeKind(), overrides)
+			if maybeGatewayRoute(f.Model) || providerChainNamesGateway(f.Provider) {
 				return true
 			}
 		}
@@ -318,7 +344,7 @@ func maybeGatewayRoute(route string) bool {
 // hint. A supervisor with no watches supervises the whole run, so its
 // hint derives from ALL the workflow's agent/judge nodes (sorted for
 // determinism — Nodes is a map).
-func providerHintFromWatched(wf *ir.Workflow, watches []string) string {
+func providerHintFromWatched(wf *ir.Workflow, watches []string, overrides model.ModelOverrides) string {
 	ids := watches
 	if len(ids) == 0 {
 		for id := range wf.Nodes {
@@ -331,12 +357,12 @@ func providerHintFromWatched(wf *ir.Workflow, watches []string) string {
 		if !ok {
 			continue
 		}
-		var llm *ir.LLMFields
+		var llm ir.LLMFields
 		switch n := node.(type) {
 		case *ir.AgentNode:
-			llm = &n.LLMFields
+			llm = overriddenFields(n.LLMFields, id, n.NodeKind(), overrides)
 		case *ir.JudgeNode:
-			llm = &n.LLMFields
+			llm = overriddenFields(n.LLMFields, id, n.NodeKind(), overrides)
 		default:
 			continue
 		}

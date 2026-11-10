@@ -18,12 +18,23 @@ import (
 // with the same three refusals naming the two entries (and their levels)
 // that produced the pair.
 
-// composedPairFinding is one LLM node whose composed (backend, provider)
-// pair the gate refuses.
+// composedPairFinding is one LLM node — or one of its `fallbacks:` routes —
+// whose composed (backend, provider) pair the gate refuses.
 type composedPairFinding struct {
 	kind ir.NodeKind
 	id   string
-	err  error
+	// route is the route's site key (`node#name`) for a route's pair, ""
+	// for the node's own.
+	route string
+	err   error
+}
+
+// subject names the finding's site for a sentence.
+func (f composedPairFinding) subject() string {
+	if f.route != "" {
+		return fmt.Sprintf("%s %q, fallbacks: route %q", f.kind, f.id, f.route)
+	}
+	return fmt.Sprintf("%s %q", f.kind, f.id)
 }
 
 // composedPairFindings walks the workflow's LLM nodes over the sourced
@@ -54,20 +65,69 @@ func composedPairFindings(wf *ir.Workflow, folded []sourcedOverrideEntry) []comp
 	var findings []composedPairFinding
 	for _, id := range ids {
 		res, backendSrc, providerSrc := overrides.ForNodeFieldSources(id, wf.Nodes[id].NodeKind())
-		if res.Backend == "" || res.Provider == "" {
+		if res.Backend != "" && res.Provider != "" {
+			err := llmroute.ValidateComposedPair(
+				res.Backend,
+				foldedEntryOrigin(folded, backendSrc, res.Backend, func(e ModelOverrideEntry) string { return e.Backend }),
+				res.Provider,
+				foldedEntryOrigin(folded, providerSrc, res.Provider, func(e ModelOverrideEntry) string { return e.Provider }),
+			)
+			if err != nil {
+				findings = append(findings, composedPairFinding{kind: wf.Nodes[id].NodeKind(), id: id, err: err})
+			}
+		}
+		findings = append(findings, routePairFindings(wf.Nodes[id], overrides, res.Backend, backendSrc, folded)...)
+	}
+	return findings
+}
+
+// routePairFindings is the composed-pair check on a node's authored
+// `fallbacks:` routes: a route-scoped cell's provider beside the backend
+// the route runs on when an override decided it — the route cell's own,
+// else, for a route that names no backend of its own, the node's
+// overridden backend (nodeBackend, written by nodeBackendSrc's rule).
+func routePairFindings(node ir.Node, overrides model.ModelOverrides, nodeBackend string, nodeBackendSrc model.FieldSource, folded []sourcedOverrideEntry) []composedPairFinding {
+	gf, ok := node.(interface{ GetFallbacks() []ir.Fallback })
+	if !ok {
+		return nil
+	}
+	var out []composedPairFinding
+	for i, fb := range gf.GetFallbacks() {
+		if fb.RunStageSet || fb.Policy {
+			continue
+		}
+		ov := overrides.ForRoute(node.NodeID(), i, fb.Name)
+		if ov.Provider == "" {
+			continue
+		}
+		site := model.FieldSource{Selector: routeSiteKey(node.NodeID(), i, fb.Name)}
+		backend, backendSrc := ov.Backend, site
+		if backend == "" && fb.Backend == "" {
+			backend, backendSrc = nodeBackend, nodeBackendSrc
+		}
+		if backend == "" {
 			continue
 		}
 		err := llmroute.ValidateComposedPair(
-			res.Backend,
-			foldedEntryOrigin(folded, backendSrc, res.Backend, func(e ModelOverrideEntry) string { return e.Backend }),
-			res.Provider,
-			foldedEntryOrigin(folded, providerSrc, res.Provider, func(e ModelOverrideEntry) string { return e.Provider }),
+			backend,
+			foldedEntryOrigin(folded, backendSrc, backend, func(e ModelOverrideEntry) string { return e.Backend }),
+			ov.Provider,
+			foldedEntryOrigin(folded, site, ov.Provider, func(e ModelOverrideEntry) string { return e.Provider }),
 		)
 		if err != nil {
-			findings = append(findings, composedPairFinding{kind: wf.Nodes[id].NodeKind(), id: id, err: err})
+			out = append(out, composedPairFinding{kind: node.NodeKind(), id: node.NodeID(), route: site.Selector, err: err})
 		}
 	}
-	return findings
+	return out
+}
+
+// routeSiteKey is a route's site key — the selector a route-scoped cell
+// names it by: `node#name`, its index when the author named none.
+func routeSiteKey(nodeID string, index int, name string) string {
+	if name != "" {
+		return nodeID + llmroute.SelectorRouteSeparator + name
+	}
+	return fmt.Sprintf("%s%s%d", nodeID, llmroute.SelectorRouteSeparator, index)
 }
 
 // foldedEntryOrigin names the folded entry a won field came from: the
@@ -94,7 +154,7 @@ func composedPairWarnings(wf *ir.Workflow, folded []sourcedOverrideEntry) []stri
 	}
 	out := make([]string, 0, len(findings))
 	for _, f := range findings {
-		out = append(out, fmt.Sprintf("the routing block composes %s %q onto a pair the launch gate refuses: %v", f.kind, f.id, f.err))
+		out = append(out, fmt.Sprintf("the routing block composes %s onto a pair the launch gate refuses: %v", f.subject(), f.err))
 	}
 	return out
 }

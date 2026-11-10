@@ -49,7 +49,7 @@ func ValidateModelOverridePermissions(wf *ir.Workflow, overrides model.ModelOver
 // save time, not at the first delivery after it. NOT an enforcement — a
 // bot enabled after the write is never screened, and the launch refusal
 // above stays the gate.
-func ScreenPolicyOverrides(path, source, bundleDir, bundleEntry string, pol *store.RunLLMRoutePolicy) ([]string, error) {
+func ScreenPolicyOverrides(path, source, bundleDir, bundleEntry, botID string, pol *store.RunLLMRoutePolicy) ([]string, error) {
 	if pol == nil || len(pol.Overrides) == 0 {
 		return nil, nil
 	}
@@ -62,7 +62,7 @@ func ScreenPolicyOverrides(path, source, bundleDir, bundleEntry string, pol *sto
 	if wf == nil {
 		return nil, nil
 	}
-	sourced := foldSourcedOverrides(nil, pol)
+	sourced := foldSourcedOverrides(nil, pol, botID)
 	overrides := toModelOverrides(plainModelOverrideEntries(sourced))
 	var warnings []string
 	for _, node := range wf.Nodes {
@@ -80,6 +80,12 @@ func ScreenPolicyOverrides(path, source, bundleDir, bundleEntry string, pol *sto
 		}
 	}
 	warnings = append(warnings, composedPairWarnings(wf, sourced)...)
+	// The zero-match half of ADR-132 §2's guards, at the surface that can
+	// still fix the typo: a cell written for this bot by name that reaches
+	// nothing in it — every time it is screened, not once per process.
+	for _, sel := range unmatchedPolicyCells(wf, pol, botID) {
+		warnings = append(warnings, zeroMatchWarning(botID, sel))
+	}
 	return warnings, nil
 }
 

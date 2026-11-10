@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -257,7 +258,7 @@ func TestPoolGuardCallSitesArePinned(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(loop), "runview.FundedSupervisorSpecs(ctx, supervise.SpecsFromWorkflow(wf, engine.ResolveVars(spawnVars), runLogger), msg.ContentBoundary, msg.RunnerPool, runLogger)") {
+	if !strings.Contains(string(loop), "runview.FundedSupervisorSpecs(ctx, supervise.SpecsFromWorkflow(wf, engine.ResolveVars(spawnVars), modelOverridesFromMsg(msg.ModelOverrides), runLogger), msg.ContentBoundary, msg.RunnerPool, runLogger)") {
 		t.Fatal("the runner pod no longer filters declared supervisors by the frozen pool stamp (D12)")
 	}
 }
@@ -296,14 +297,14 @@ func TestStartDeclaredSupervisorsRefusePoolRunContent(t *testing.T) {
 		{Name: "gateway", Model: "openai_compatible/glm-5.2"},
 		{Name: "auto"},
 	}}
-	svc.startDeclaredSupervisors(ctx, runID, wf, nil, logger, "")
+	svc.startDeclaredSupervisors(ctx, runID, wf, nil, model.ModelOverrides{}, logger, "")
 	if len(captured) != 1 || captured[0].Name != "gateway" {
 		t.Fatalf("pool run: %d specs reached StartDeclared (%v), want only gateway", len(captured), captured)
 	}
 
 	// Control: the same workflow on an unstamped run starts all three.
 	seedGuardRun(t, st, ctx, "run-sup-site-unstamped", "")
-	svc.startDeclaredSupervisors(ctx, "run-sup-site-unstamped", wf, nil, logger, "")
+	svc.startDeclaredSupervisors(ctx, "run-sup-site-unstamped", wf, nil, model.ModelOverrides{}, logger, "")
 	if len(captured) != 3 {
 		t.Fatalf("unstamped control: %d specs reached StartDeclared, want 3", len(captured))
 	}

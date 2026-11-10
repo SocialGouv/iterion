@@ -937,7 +937,7 @@ func (s *Server) routingBlastRadiusWarnings(ctx context.Context, teamID string, 
 		// launch lanes that defer lb.Cleanup(): a stored bot's bundle lives
 		// in a temp dir, and a screen that skips the collection leaks one
 		// directory per screened bot per spoken routing write.
-		reasons, serr := runview.ScreenPolicyOverrides(lb.Path, lb.Source, lb.BundleDir, lb.BundleEntry, snapshot)
+		reasons, serr := runview.ScreenPolicyOverrides(lb.Path, lb.Source, lb.BundleDir, lb.BundleEntry, botID, snapshot)
 		lb.Cleanup()
 		if serr != nil {
 			warnings = append(warnings, fmt.Sprintf("routing: bot %q could not be screened (%v); its launches are screened at launch time only", botID, serr))

@@ -228,7 +228,7 @@ func supervisorParityMeter(t *testing.T, ctx context.Context, row credparity.Row
 		Nodes:       map[string]ir.Node{},
 		Supervisors: []*ir.Supervisor{{Name: parityRowSupervisor, Model: row.Node.Model}},
 	}
-	spawned := runview.FundedSupervisorSpecs(ctx, supervise.SpecsFromWorkflow(wf, nil, iterlog.Nop()), msg.ContentBoundary, msg.RunnerPool, iterlog.Nop())
+	spawned := runview.FundedSupervisorSpecs(ctx, supervise.SpecsFromWorkflow(wf, nil, model.ModelOverrides{}, iterlog.Nop()), msg.ContentBoundary, msg.RunnerPool, iterlog.Nop())
 	if (len(spawned) == 1) == row.Want.Refused() {
 		t.Errorf("the spawn keeps %d supervisor(s) for a row whose Want is %+v — it keeps the specs the resolver funds", len(spawned), row.Want)
 	}
