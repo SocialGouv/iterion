@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [5.17.1](https://github.com/SocialGouv/iterion/compare/v5.17.0...v5.17.1) (2026-11-10)
+
+### Bug Fixes
+
+* **credpool,server,studio:** key pools follow-ups (2) — settle on the lease found, the attempt id in the run message, the studio attaches a pool (ADR-164) ([#3152](https://github.com/SocialGouv/iterion/issues/3152)) ([2d173a5](https://github.com/SocialGouv/iterion/commit/2d173a555a153039983169b344c5b1c09d154e78)), closes [#3147](https://github.com/SocialGouv/iterion/issues/3147) [3122/#3123](https://github.com/SocialGouv/iterion/issues/3123), references [#3151](https://github.com/SocialGouv/iterion/issues/3151)
+
+    <details><summary>why</summary>
+
+    Local adversarial loop (Revi paused on quota until 14/11): 2 reviewers, then 1, then the closing H-10 — no high or critical; every guard mutation-checked; CI all green (mongo-conformance, race, test, studio). Admin lane, operator's decision.
+
+    </details>
+
 ## [5.17.0](https://github.com/SocialGouv/iterion/compare/v5.16.0...v5.17.0) (2026-11-10)
 
 ### Features
