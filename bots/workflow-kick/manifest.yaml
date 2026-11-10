@@ -67,7 +67,8 @@ launch:
   hidden: [forge_dispatch_url, forge_publish_token]
 
 ## The dispatch capability (the `actions` scope) and the dispatch endpoint
-## (forge_dispatch_url) ship in this release: a build below it refuses the
-## scope at its strict manifest decode and mints no dispatch grant.
+## (forge_dispatch_url) ship in the release this lands in — `next` until it
+## is cut, when release-floors writes its number: a build below it refuses
+## the scope at its strict manifest decode and mints no dispatch grant.
 requires:
-  iterion: ">= 5.16.0"
+  iterion: ">= next"
