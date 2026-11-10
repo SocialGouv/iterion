@@ -359,7 +359,13 @@ func (s *Server) reconcileGateForRunID(ctx context.Context, runID, via string) e
 		return nil
 	}
 
-	grant, ok := s.forgePublishTokens.lookup(token)
+	// The repair posts a commit status on the pull request the run names: a
+	// grant bound to none (a scheduled run's, whatever pr_url its vars carry)
+	// speaks for no head of it.
+	grant, ok, err := s.pullRequestGrant(token)
+	if err != nil {
+		return abstain("%v", err)
+	}
 	if !ok {
 		// The grant outlives the longest retry wait by construction
 		// (forgePublishDefaultTTL), so reaching here means the run sat dead
@@ -396,7 +402,10 @@ func (s *Server) reconcileGateForRunID(ctx context.Context, runID, via string) e
 		// in hand predates the replay, and the refusal check below would
 		// otherwise be blind to what THIS pass just learned — parking the
 		// run on a reversible settlement for hours with the answer in hand.
-		fresh, found := s.forgePublishTokens.lookup(token)
+		fresh, found, err := s.pullRequestGrant(token)
+		if err != nil {
+			return abstain("%v", err)
+		}
 		if !found {
 			return abstain("its publish grant expired or was revoked mid-repair")
 		}

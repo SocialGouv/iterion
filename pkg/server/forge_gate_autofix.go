@@ -172,7 +172,14 @@ func (s *Server) autofixForRunID(ctx context.Context, runID, via string) error {
 	if token == "" || prURL == "" || gateCtx == "" || reviewed == "" || runGateDisabled(run) {
 		return nil
 	}
-	grant, ok := s.forgePublishTokens.lookup(token)
+	// The fixer is launched onto the pull request the run names: a grant bound
+	// to none (a scheduled run's, whatever pr_url its vars carry) bounds no
+	// launch onto one.
+	grant, ok, err := s.pullRequestGrant(token)
+	if err != nil {
+		s.logWarn("gate auto-fix: run %s: %v — refusing", runID, err)
+		return nil
+	}
 	if !ok {
 		return nil
 	}

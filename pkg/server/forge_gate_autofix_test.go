@@ -149,6 +149,26 @@ func TestAutofixRefusesWhatItMust(t *testing.T) {
 			because: "the grant is what bounds this to a repo the team actually connected",
 		},
 		{
+			// Mutation witnessed: the pullRequestGrant call in autofixForRunID
+			// replaced by the raw lookup → the fixer launches → red.
+			name: "the run's grant is bound to no pull request",
+			inputs: map[string]any{
+				"pr_url": prURL, "gate_context": gateNm, "head_sha": head,
+				forgePublishVarToken: "schedule-token",
+			},
+			botID: "reviewer-bot",
+			tune: func(s *Server, _ *forge.RepoIntegration, _ *webhooks.Config) {
+				// The record scheduledDispatchGrant mints (#3130).
+				if err := s.forgePublishTokens.Register("schedule-token", ForgePublishGrant{
+					TeamID: team, ConnectionID: "c1", Repo: repo,
+					Capabilities: []string{publishCapDispatchWorkflow}, NoPullRequest: true,
+				}); err != nil {
+					panic(err)
+				}
+			},
+			because: "a scheduled run's grant bounds no launch onto a pull request, whatever pr_url its vars carry",
+		},
+		{
 			name: "the pr_url points outside the grant's repo",
 			inputs: map[string]any{
 				"pr_url": "https://github.com/attacker/elsewhere/pull/1", "gate_context": gateNm,

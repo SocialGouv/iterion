@@ -73,7 +73,11 @@ func (s *Server) handleForgePullRequest(w http.ResponseWriter, r *http.Request) 
 		httpError(w, http.StatusNotFound, "forge publishing is not enabled on this server (no forge connections wired)")
 		return
 	}
-	grant, ok := s.forgePublishTokens.lookup(token)
+	grant, ok, err := s.pullRequestGrant(token)
+	if err != nil {
+		s.refuseUnboundGrant(w, r, "pull-request read", err)
+		return
+	}
 	if !ok {
 		httpError(w, http.StatusUnauthorized, "unknown or expired run token")
 		return

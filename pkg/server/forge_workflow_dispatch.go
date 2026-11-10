@@ -365,17 +365,21 @@ func (s *Server) forgeWorkflowDispatchTokenMinter(ctx context.Context, conn forg
 // before.
 //
 // The grant is bound to the schedule's integration — its team, connection
-// and repository — and carries ONLY publishCapDispatchWorkflow: the
-// merge-gate gestures answer a reviewed pull request, which a schedule does
-// not name. vars is never mutated: a copy carries the grant.
+// and repository — carries ONLY publishCapDispatchWorkflow, and is bound to
+// no pull request (NoPullRequest): a schedule names none, so the review, the
+// merge-gate commit status, the verdict gestures, the pull-request read, the
+// delivery preflight and the server's gate repairs all refuse it, typed,
+// before any forge call (pullRequestGrant). The dispatch endpoint is the one
+// surface it reaches.
+// vars is never mutated: a copy carries the grant.
 //
 // Two shapes launch without a grant, said in the log, and the bot answers its
 // own typed "no dispatch endpoint bound": a schedule that names no
 // integration (it cannot be bound to a repository), and a dispatch the
 // operator disarmed with forge_publish_mutations set to anything but "true"
 // — on the integration's launch vars or on the schedule row. A disarmed bot
-// is minted nothing rather than a capability-less grant, which would hand
-// the run the grant's review and status power for no use.
+// is minted nothing: a grant with no capability and no pull request serves no
+// surface at all.
 func (s *Server) scheduledDispatchGrant(ctx context.Context, sb cloudsched.ScheduledBot, vars map[string]string) (map[string]string, mintedGrant, error) {
 	if s.forgePublishTokens == nil || s.forgeConnections == nil {
 		return vars, "", nil
@@ -417,5 +421,9 @@ func (s *Server) scheduledDispatchGrant(ctx context.Context, sb cloudsched.Sched
 	if out == nil {
 		out = map[string]string{}
 	}
-	return s.registerRunGrant(sb.TenantID, sb.BotID, conn, hostOfURL(conn.BaseURL()), integ.RepoFullName, []string{publishCapDispatchWorkflow}, out, base)
+	return s.registerRunGrant(ForgePublishGrant{
+		TeamID: sb.TenantID, Bot: strings.TrimSpace(sb.BotID), ConnectionID: conn.ID, Repo: integ.RepoFullName,
+		Capabilities:  []string{publishCapDispatchWorkflow},
+		NoPullRequest: true,
+	}, hostOfURL(conn.BaseURL()), out, base)
 }

@@ -79,7 +79,11 @@ func (s *Server) gateNoticeTarget(ctx context.Context, run *store.Run, what stri
 	if strings.TrimSpace(runInputString(run, "gate_context")) == "" || runGateDisabled(run) {
 		return gateNoticeTarget{}, false
 	}
-	grant, ok := s.forgePublishTokens.lookup(token)
+	grant, ok, err := s.pullRequestGrant(token)
+	if err != nil {
+		s.gateNoticeDebug(run, what, "%v", err)
+		return gateNoticeTarget{}, false
+	}
 	if !ok {
 		s.gateNoticeDebug(run, what, "its publish grant is expired or revoked")
 		return gateNoticeTarget{}, false
