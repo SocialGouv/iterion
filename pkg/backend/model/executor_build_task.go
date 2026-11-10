@@ -2073,7 +2073,9 @@ func (e *ClawExecutor) assembleEffectiveTools(f backendFields, backendName strin
 	// declared `interaction:` already has a union — the ask_user append above
 	// is deliberately unguarded on claw — so there the grant does fire, and a
 	// node that declared neither gets nothing. `tools: []` reads here exactly
-	// like no line at all, which is the one place the two part ways.
+	// like no line at all — the union is what this guard sees, and that is the
+	// one place where the author's declaration and the running union come
+	// apart (toolcatalog.ToolsDeclared is what keeps them distinct elsewhere).
 	// claude_code orchestrates via its native mechanism and needs no append.
 	// A sandboxed node keeps the grant: the runner registers `agent` in the
 	// container.

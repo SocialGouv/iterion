@@ -928,10 +928,12 @@ agent campaign:
   ## a subagent runner at each of claw's hosts, so clawRefusedBuiltins is
   ## empty and C159 fires for nothing — the old note here was wrong about the
   ## WHY. It was right about the route, for another reason: this node declares
-  ## no `tools:`, so on claw its whole surface is the engine's own appends
-  ## (ask_user, the board pair, agent, todo_write) and its subagents select
-  ## from that same set — no file and no shell tool, hence no survey, no fix
-  ## and no commit. `claude_code` stays the route that can do this node's job.
+  ## no `tools:`, so on claw its surface is only what the engine appends —
+  ## ask_user, the four board tools, agent, todo_write — and its subagents
+  ## select from that same set. With auto-memory off, the default, that means
+  ## no file and no shell tool: no survey, no fix, no commit. `--auto-memory
+  ## on` adds read_file/write_file/glob, which buys the survey and the fix but
+  ## never the commit. `claude_code` stays the route that can do the whole job.
   reasoning_effort: "${ITERION_DOC_ALIGN_EFFORT_CLAUDE:-ultracode}"
   interaction: human
 
