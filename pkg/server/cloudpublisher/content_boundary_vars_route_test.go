@@ -45,6 +45,9 @@ func TestContentBoundary_TheLadderReadsAVarsTemplatedGatewayNodeByItsRoute(t *te
 	p, buf := gatewayKeyPublisher(t)
 	seedGatewayKey(t, p.apiKeys, p.sealer, "team1", nil)
 	seedKey(t, p.apiKeys, p.sealer, "team1", secrets.ProviderOpenAI, "sk-openai-team")
+	// The vendor node's own route is funded: a team_gateway run refuses an
+	// unfunded route by name at launch.
+	seedKey(t, p.apiKeys, p.sealer, "team1", secrets.ProviderAnthropic, "sk-ant-team")
 	wf := varsGatewayWorkflow(false)
 	view := model.RouteViewForLaunch(wf, model.ModelOverrides{}, nil, map[string]string(nil), nil)
 	creds, err := p.resolveAndSealCredentials(gatewayLaunchCtx(), "run-cb-vars", "", "team1", "owner1", gwBot, "", wf, nil, nil, view, nil, store.RunTrustDefault, nil, ladderPolicy(), nil, boundaryDerived)
