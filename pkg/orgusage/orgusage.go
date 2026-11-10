@@ -158,5 +158,24 @@ func CostToMillis(usd float64) int64 {
 	return int64(math.Round(usd * 1000))
 }
 
+// CostCapMillis converts a dollar CAP into the millidollars the counter
+// enforces, and reports false when the conversion cannot carry it as a cap.
+// AllowRun applies a cost cap only when maxCostMillis > 0, so CostToMillis of
+// a value below half a millidollar (0) or past what int64 millidollars hold
+// (+Inf, 1e300 — Go's float-to-int conversion is then implementation-defined,
+// negative on amd64) reads as NO cap: an implicit "unbounded". NaN and
+// non-positive values report false too. A setting whose positive value is a
+// perimeter refuses what this refuses rather than open it in silence.
+func CostCapMillis(usd float64) (int64, bool) {
+	if !(usd > 0) {
+		return 0, false
+	}
+	m := math.Round(usd * 1000)
+	if m < 1 || m >= math.MaxInt64 {
+		return 0, false
+	}
+	return int64(m), true
+}
+
 // millisToCost converts back for the read view.
 func millisToCost(m int64) float64 { return float64(m) / 1000 }

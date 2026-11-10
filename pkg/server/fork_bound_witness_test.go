@@ -131,6 +131,34 @@ func TestGateLaunch_TheOrgLadderOfTheForkAuthorBound(t *testing.T) {
 		}
 	})
 
+	// A positive dollar cap CostToMillis cannot carry reaches AllowRun as "no
+	// cap": refused at the PATCH, nothing written, so the default still binds.
+	// Mutation: drop applyForkAuthorCostCap's CostCapMillis refusal → the
+	// PATCH persists the value and the gate admits $100 of spend.
+	for _, body := range []string{`{"fork_author_cost_cap_usd":0.0004}`, `{"fork_author_cost_cap_usd":1e300}`} {
+		t.Run("a dollar cap the counter cannot enforce is refused: "+body, func(t *testing.T) {
+			s, c, ctx := newGate(t, OrgLimitDefaults{ForkAuthorRunQuota: 20, ForkAuthorCostCapUSD: 20})
+			w := httptest.NewRecorder()
+			s.handleAdminUpdateOrg(w, orgReq(superAdminCtx(), http.MethodPatch, "/api/admin/orgs/t1", body, "t1"))
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("PATCH %s: code=%d body=%s, want 400 — the value is an implicit unbounded", body, w.Code, w.Body.String())
+			}
+			o, err := s.authStore().GetOrg(context.Background(), "t1")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if o.ForkAuthorCostCapUSD != 0 {
+				t.Fatalf("persisted fork_author_cost_cap_usd = %v after a refused PATCH, want 0", o.ForkAuthorCostCapUSD)
+			}
+			if err := c.AddSpend(context.Background(), author, time.Now().UTC(), 100, 0, 0, 0); err != nil {
+				t.Fatal(err)
+			}
+			if d := admit(t, s, ctx); d == nil || d.reason != denyForkAuthorCost {
+				t.Fatalf("denial = %+v, want %q — the platform's $20 still binds", d, denyForkAuthorCost)
+			}
+		})
+	}
+
 	t.Run("0 inherits the platform default", func(t *testing.T) {
 		s, _, ctx := newGate(t, OrgLimitDefaults{ForkAuthorRunQuota: 1, ForkAuthorCostCapUSD: 20})
 		if runs, _ := patchOrgForkBound(t, s, `{"fork_author_run_quota":0}`); runs != 0 {

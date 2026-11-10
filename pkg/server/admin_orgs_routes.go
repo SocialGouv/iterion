@@ -246,6 +246,21 @@ func applyForkAuthorBound[T int | float64](w http.ResponseWriter, p *T, dst *T, 
 	return true
 }
 
+// applyForkAuthorCostCap is applyForkAuthorBound for the dollar cap, which
+// also refuses — 400, nothing written — a positive value the counter cannot
+// enforce as a cap (orgusage.CostCapMillis): one that rounds to no
+// millidollar, or one past int64 millidollars, reaches AllowRun as "no cap",
+// a second spelling of the `unbounded` hatch the operator did not write.
+func applyForkAuthorCostCap(w http.ResponseWriter, p *float64, dst *float64, field string) bool {
+	if p != nil && *p > 0 {
+		if _, ok := orgusage.CostCapMillis(*p); !ok {
+			httpError(w, http.StatusBadRequest, "%s %v is not a cap the usage counter can enforce (it rounds to no millidollar, or past what it holds) — set at least 0.001, 0 to inherit the platform default, or -1 for unbounded", field, *p)
+			return false
+		}
+	}
+	return applyForkAuthorBound(w, p, dst, field)
+}
+
 // ---- handlers ----
 
 func (s *Server) handleAdminListOrgs(w http.ResponseWriter, r *http.Request) {
@@ -387,7 +402,7 @@ func (s *Server) handleAdminUpdateOrg(w http.ResponseWriter, r *http.Request) {
 	if !applyForkAuthorBound(w, req.ForkAuthorRunQuota, &o.ForkAuthorRunQuota, "fork_author_run_quota") {
 		return
 	}
-	if !applyForkAuthorBound(w, req.ForkAuthorCostCapUSD, &o.ForkAuthorCostCapUSD, "fork_author_cost_cap_usd") {
+	if !applyForkAuthorCostCap(w, req.ForkAuthorCostCapUSD, &o.ForkAuthorCostCapUSD, "fork_author_cost_cap_usd") {
 		return
 	}
 	o.UpdatedAt = time.Now().UTC()

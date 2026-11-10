@@ -15,7 +15,9 @@ import (
 // boot instead of opening the perimeter or being silently replaced.
 //
 // Mutations: the shipped default 20 → 0 (the unset row reds); drop the
-// `unbounded` arm (the hatch rows red); accept n == 0 (the "0" rows red).
+// `unbounded` arm (the hatch rows red); accept n == 0 (the "0 runs" row
+// reds); drop the dollar knob's CostCapMillis refusal (the "0 dollars",
+// sub-millidollar, vanishing, inf, past-int64 and NaN rows red).
 func TestOrgLimitDefaultsFromEnv_TheForkAuthorBoundShipsAPerimeter(t *testing.T) {
 	for _, row := range []struct {
 		name     string
@@ -34,6 +36,15 @@ func TestOrgLimitDefaultsFromEnv_TheForkAuthorBoundShipsAPerimeter(t *testing.T)
 		{name: "0 dollars is refused, not a second unbounded", set: true, runs: "20", usd: "0", refused: true},
 		{name: "a negative cap is refused", set: true, runs: "-1", usd: "20", refused: true},
 		{name: "a typo is refused, never silently replaced by the default", set: true, runs: "twenty", usd: "20", refused: true},
+		// The dollar knob's values that parse as positive (or as no number
+		// at all) yet reach AllowRun as "no cap" through CostToMillis: each is
+		// an implicit unbounded, refused like 0.
+		{name: "a sub-millidollar cap is refused, it rounds to no cap", set: true, runs: "20", usd: "0.0004", refused: true},
+		{name: "a vanishing cap is refused", set: true, runs: "20", usd: "1e-9", refused: true},
+		{name: "inf is refused", set: true, runs: "20", usd: "inf", refused: true},
+		{name: "a cap past int64 millidollars is refused", set: true, runs: "20", usd: "1e300", refused: true},
+		{name: "NaN is refused", set: true, runs: "20", usd: "NaN", refused: true},
+		{name: "one millidollar is a cap", set: true, runs: "20", usd: "0.001", wantRuns: 20, wantUSD: 0.001},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			t.Setenv(forkAuthorRunQuotaEnv, row.runs)

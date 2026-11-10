@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
 	"net"
 	"os"
 	"os/signal"
@@ -232,7 +231,14 @@ func forkBoundEnvFloat(key string, def float64) (float64, error) {
 		return 0, nil
 	}
 	f, err := strconv.ParseFloat(raw, 64)
-	if err != nil || !(f > 0) || math.IsInf(f, 0) {
+	if err != nil {
+		return 0, forkBoundEnvError(key, raw)
+	}
+	// One predicate for every value the counter cannot enforce as a cap —
+	// 0 and negatives, NaN, inf, a sub-millidollar amount that rounds to 0,
+	// one past int64 millidollars: each would read as "no cap" in AllowRun,
+	// a second spelling of `unbounded`.
+	if _, ok := orgusage.CostCapMillis(f); !ok {
 		return 0, forkBoundEnvError(key, raw)
 	}
 	return f, nil
@@ -242,7 +248,7 @@ func forkBoundEnvFloat(key string, def float64) (float64, error) {
 var errForkBoundEnv = errors.New("server: invalid fork-author bound")
 
 func forkBoundEnvError(key, raw string) error {
-	return fmt.Errorf("%w: %s=%q — set a positive number (the per-contributor cap), the literal %q (no cap), or leave it unset (the shipped default); 0 is not a spelling of unbounded", errForkBoundEnv, key, raw, forkBoundUnbounded)
+	return fmt.Errorf("%w: %s=%q — set a positive number (the per-contributor cap; a dollar cap of at least one millidollar, 0.001), the literal %q (no cap), or leave it unset (the shipped default); 0 is not a spelling of unbounded", errForkBoundEnv, key, raw, forkBoundUnbounded)
 }
 
 // trustedProxyWarning names what a trusted-proxy list costs a deployment
