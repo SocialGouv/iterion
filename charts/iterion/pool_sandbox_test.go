@@ -24,6 +24,8 @@ import (
 //     ConfigMap's ITERION_SANDBOX_OVERRIDE=none ("a pool opts in"), the
 //     opted-out pool loses its override ("a pool opts out");
 //   - either fail-closed requirement removed → its refusal row renders;
+//   - the named-account requirement removed → the `default` ServiceAccount
+//     row renders;
 //   - iterion.poolSandbox ignoring the pool's key → every opt-in/opt-out row;
 //   - the ConfigMap's image guard reading the release-wide flag alone → the
 //     digest row renders an unpinned sandbox: auto image for the opted-in pool;
@@ -39,9 +41,9 @@ func TestChartRenderPoolSandbox(t *testing.T) {
 	const alpha, solo = "iterion-runner-pool-alpha", "iterion-runner-pool-solo"
 	pools := []string{"-f", "testdata/values-pools.yaml"}
 	// The shape the fail-closed requirements admit until #2965: the operator
-	// brings the ServiceAccount (and its bindings) and the release-wide
+	// brings a NAMED ServiceAccount (and its bindings) and the release-wide
 	// NetworkPolicy is off (the chart default).
-	operatorRBAC := []string{"--set", "serviceAccount.create=false"}
+	operatorRBAC := []string{"--set", "serviceAccount.create=false", "--set", "serviceAccount.name=iterion-operator"}
 	poolContainer := func(t *testing.T, docs []map[string]any, name string) map[string]map[string]any {
 		t.Helper()
 		return envMap(dig(podSpec(t, docs, "Deployment", name), "containers", "0"))
@@ -162,6 +164,15 @@ func TestChartRenderPoolSandbox(t *testing.T) {
 		// under runner.sandbox.enabled, so the pool's token holds no grant.
 		mustRefuse(t, "#2965", append(slices.Clone(pools), "--set", "runnerPools[0].sandbox.enabled=true")...)
 		mustRefuse(t, "serviceAccount.create=false", append(slices.Clone(pools), "--set", "runnerPools[0].sandbox.enabled=true")...)
+		// The interim with no account named mounts the namespace's `default`
+		// ServiceAccount: the grants bound to it would reach every pod of the
+		// namespace that names none, so the chart asks for the dedicated one.
+		unnamed := slices.Concat(pools, []string{"--set", "serviceAccount.create=false", "--set", "runnerPools[0].sandbox.enabled=true"})
+		mustRefuse(t, "the namespace's `default` ServiceAccount", unnamed...)
+		docs := manifests(t, mustRender(t, slices.Concat(pools, operatorRBAC, []string{"--set", "runnerPools[0].sandbox.enabled=true"})...))
+		if got := podSpec(t, docs, "Deployment", alpha)["serviceAccountName"]; got != "iterion-operator" {
+			t.Fatalf("the opted-in pool runs under %v, want the named account iterion-operator", got)
+		}
 	})
 
 	t.Run("fail closed until #2965: the release-wide NetworkPolicy closes the pool runner's proxy", func(t *testing.T) {
