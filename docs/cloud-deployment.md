@@ -192,23 +192,47 @@ the release moves. This is the fork review lane's pool
 sandboxed, without moving every trusted `sandbox:` bot of the deployment
 into sibling pods. The pool renders the sandbox's downward-API env and,
 where its flag differs from the release-wide one, its own literals over
-the shared ConfigMap: an empty `ITERION_SANDBOX_OVERRIDE` and
-`ITERION_SANDBOX_HOST_STATE=none` to opt in, `ITERION_SANDBOX_OVERRIDE=none`
-to opt out. Until ADR-154's pool shape lands (#2965: the pool's own
-ServiceAccount and Role, the `iterion.io/runner-pool` label on its
-siblings, its standing NetworkPolicy), turning a pool's sandbox ON where
-the release-wide flag is off **fails the render** in two cases:
+the shared ConfigMap: an empty `ITERION_SANDBOX_OVERRIDE`,
+`ITERION_SANDBOX_HOST_STATE=none` and `ITERION_SANDBOX_DEFAULT=auto` (a bot
+declaring no `sandbox:` block — `review-pr` declares none — resolves
+through that tier) to opt in; `ITERION_SANDBOX_OVERRIDE=none` and
+`automountServiceAccountToken: false` to opt out — the opted-out pool runs
+every job in its own pod while the release binds the shared ServiceAccount
+to the sandbox Role, and nothing on it calls the API (the override disables
+the driver and its orphan reaper). The pool's env block cannot spell the
+names its flag owns. The `sandbox` key takes `enabled` alone: any other key,
+or a value that is not a map, fails the render rather than leaving the pool
+on the release's posture.
+
+Until ADR-154's pool shape lands (#2965: the pool's own ServiceAccount and
+Role, the `iterion.io/runner-pool` label on its siblings, its standing
+NetworkPolicy), turning a pool's sandbox ON where the release-wide flag is
+off **fails the render** in two cases — and so does it with the chart's
+defaults and under the prod values: a sandboxed fork pool is #2965's, not
+this flag's alone.
 
 - `serviceAccount.create` — the chart renders the sandbox Role only under
   `runner.sandbox.enabled`, so the pool's token would hold no grant and
-  every sandboxed run would fail at its first `kubectl apply`. Bring the
-  ServiceAccount (`serviceAccount.create: false`) and bind it the sandbox
-  driver's verbs yourself (the rules of `runner-rbac.yaml`); the binding
-  reaches every pod that mounts that account, which is ADR-154's measured
-  residual.
+  every sandboxed run would fail at its first `kubectl apply`. The pool
+  runs under the release's shared ServiceAccount, so the only interim the
+  chart admits — `serviceAccount.create: false`, the sandbox driver's
+  verbs (the rules of `runner-rbac.yaml`) bound to that account by hand —
+  hands them to **every pod of the release that mounts it**: the shared
+  runner, which under a release-wide `runner.sandbox.enabled: false` runs
+  EVERY trusted run in its own pod, and every other pool. Each of those
+  runs then holds a token that lists and reads every Secret of the
+  namespace (the auth ring, the platform LLM keys, every pool's gateway
+  Secret), execs into any pod (the fork run's sandbox included) and
+  deletes NetworkPolicies (a fork run's per-run policy, after its start
+  probe passed). That is wider than sandboxing the whole release
+  (`runner.sandbox.enabled`, Q3's rejected option B), whose runs execute
+  in siblings that mount no token — it is not ADR-154's measured residual,
+  which was measured on a release that sandboxes its runs. Prefer leaving
+  the pool's sandbox off until #2965, or the release-wide flag.
 - `networkPolicy.enabled` — [below](#networkpolicy-egress): the
   release-wide policy closes the pool runner's egress proxy to its
-  siblings. Turn the release-wide policy off and bring the pool's own.
+  siblings. The interim is the release-wide policy off — the cost Q3
+  rejected option B for — and the pool's own policy brought by hand.
 
 ## Prerequisites
 
@@ -414,10 +438,14 @@ gateway credential — fails at its first egress. No value opens it:
 port's rule only. On such a cluster, either keep `networkPolicy.enabled`
 off for the release that runs sandboxes, or run the sandbox with a
 no-proxy posture (`network: open`, no inspected secret, no gateway
-credential). A pool's own sandbox (`runnerPools[].sandbox.enabled`) is
-refused at render under `networkPolicy.enabled` for this reason: a fork
-run always needs the proxy (ADR-162 decision 7), and the pool's standing
-policy that admits its siblings to its runner pods is #2965's.
+credential). A fork run always needs the proxy (ADR-162 decision 7), so
+**no sandboxed fork pool works under `networkPolicy.enabled` until #2965**
+renders the pool's standing policy that admits its siblings to its runner
+pods. A pool turning its own sandbox on (`runnerPools[].sandbox.enabled`)
+is refused at render there; a pool that FOLLOWS a release-wide
+`runner.sandbox.enabled` is not — the chart cannot tell which pool is the
+fork lane's — and every fork run on it is metered, passes its start probe,
+then fails at its first egress.
 
 The server port's ingress is scoped the same way (#2804): name your
 ingress controller's namespaces in `networkPolicy.ingress.controllerNamespaces`

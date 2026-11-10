@@ -1620,7 +1620,9 @@ iterion sandbox doctor                 # report driver + capabilities
   spawning a sibling sandbox pod. The Helm chart sets this
   automatically whenever `runner.sandbox.enabled` is false; a
   `runnerPools[]` entry's own `sandbox.enabled` decides it for that
-  pool alone (an empty literal lifts it, `none` sets it — see
+  pool alone (an empty literal lifts it — with `ITERION_SANDBOX_DEFAULT`
+  pinned to `auto` there, so a bot declaring no `sandbox:` block is
+  sandboxed too — and `none` sets it — see
   [cloud-deployment.md](cloud-deployment.md#sovereign-runner-pools)).
 
 ### Precedence (highest → lowest)

@@ -198,7 +198,8 @@ to a team and by the caller's role in it.
 | Per-repository quota | `budget_floor` platform settings (`repo_quotas`) | n/a — runtime-mutable, no env default | `repo_quota_exceeded` | 402 |
 | Fork review lane: one contributor's monthly run quota (ADR-162) | `Org.ForkAuthorRunQuota` | `ITERION_ORG_DEFAULT_FORK_AUTHOR_RUN_QUOTA` (default **20**) | `fork_author_run_quota_exceeded` | 402 |
 | Fork review lane: one contributor's monthly LLM cost cap (ADR-162) | `Org.ForkAuthorCostCapUSD` | `ITERION_ORG_DEFAULT_FORK_AUTHOR_COST_CAP_USD` (default **$20**) | `fork_author_cost_cap_exceeded` | 402 |
-| Fork review lane: the run is unfunded — the team holds no API key of its own for a provider the bot pins | n/a — the team's BYOK keys | n/a — not configurable | `fork_run_unfunded` | 422 |
+| Fork review lane: the run is unfunded — the team holds no vendor API key of its own for a provider the bot pins, or a route rides the gateway or is decided on the runner | n/a — the team's BYOK keys | n/a — not configurable | `fork_run_unfunded` | 422 |
+| Fork review lane: the lane's pool is refused by the fork lane's pool rule | n/a — the team's pool mapping | n/a — not configurable | `fork_lane_pool_refused` | 422 |
 
 The two fork review lane rows are the one place this table's "zero means no
 limit" convention is inverted, deliberately (ADR-162 Q4): that bound is the
@@ -229,14 +230,18 @@ retry sweeper).
 
 Before it meters anything, the gate also asks whether the fork run can be
 funded at all: a fork run is pool-stamped, so it spends only its team's own
-API keys (no shared tier, no runner env, no forfait —
-[webhooks.md](webhooks.md#fork-lane-funding)). A run those keys cannot fund
-is refused `fork_run_unfunded` (422, the publisher's sentence naming each
-unfunded provider as `detail`) with neither the org's counter nor the
-author's bound charged — on the gesture's delivery, the debounce flush, the
-durable retry and every gated resume; the retry sweeper abandons it. A
-judge that cannot answer is `fork_funding_unreadable`, a 503 the surface may
-retry.
+vendor API keys, on routes decided before the run (no shared tier, no
+runner env, no forfait, no gateway route, no `${…}` dial the pool's runner
+expands — [webhooks.md](webhooks.md#fork-lane-funding)). A run those keys
+cannot fund is refused `fork_run_unfunded` (422, the publisher's sentence
+naming each refused route site as `detail`) with neither the org's counter
+nor the author's bound charged — on the gesture's delivery, the debounce
+flush, the durable retry and every gated resume; the retry sweeper abandons
+it. The same judge answers the fork lane's pool rule first
+(`fork_lane_pool_refused`, 422) and a program that cannot be built
+(`fork_funding_unjudgeable`, 422 — the bot is gone, its source no longer
+compiles), both abandoned by the retry sweeper; a judge that cannot answer
+is `fork_funding_unreadable`, a 503 the surface may retry.
 
 A run built FROM a fork run is that author's spend too: a sub-bot child
 (`CreateChildRun`), a fork of the run (`POST /api/runs/{id}/fork`) and a

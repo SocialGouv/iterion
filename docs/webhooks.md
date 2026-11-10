@@ -530,8 +530,8 @@ Every row, what ships and what does not yet:
 | **#874 4b** — fork code must not execute the TARGET repo's toolchain/config (`repo_devbox: off`, sandbox `network: allowlist`) | **floored (U5)** | `resolveRepoDevbox(override, workflow, trust)` answers false for every untrusted workspace, the repo's devcontainer is not read, and the sandbox network policy floors to the credential's own host |
 | **#874 5 beyond the gate context** — the base repo's project settings not honoured (launch vars, hold labels), plus the per-contributor bound | **floored (U6)** | `applyWebhookVarLayers` layers NEITHER `cfg.LaunchVars` NOR `cfg.OperatorLaunchVars` onto an untrusted target (and no routing gate is narrowed through the repo's vars — `trustedVarNames` stays empty); the hold label BLOCKS the gesture (Q2); and the per-contributor bound is metered by the launch gate on `orgusage.ForkAuthorSubject`, runs and dollars, beside the org's own quota (decision 5) |
 | **The pod's own money** — an untrusted run spends only the credentials sealed for it (decision 7) | **floored (#3126)** | the publisher stamps `AmbientLLMRefused` on every untrusted run's bundle, and the runner derives the same refusal from the run's wire trust when no bundle was sealed at all (`store.RunTrust.AmbientLLMRefused`, one predicate both sides read): every fallback to the pod's environment answers a typed refusal |
-| **What funds it** — the team's own API keys alone: a pool-stamped fork run is sealed no shared tier (ADR-154 D13), the runner refuses its env and a forfait cannot cross its sandbox (decision 7) | **floored (U7 part 1)** | the launch gate's funding arm refuses a fork run those keys cannot fund, typed (`fork_run_unfunded`), BEFORE the org's counter or the author's bound moves — on the gesture's delivery, the debounce flush, the durable retry and every gated resume; the judge is the publisher's own unfunded decision — [funding a fork run](#fork-lane-funding) |
-| **Where it runs** — only through the publisher, on a pool whose sandbox resolves active (decision 10, Q3) | **ships (U7 part 1)** | the fork-lane config names its pool (`fork_lane_pool`, required at creation, immutable) and the publisher stamps it as the run's `RunnerPool` on every carrier — [the lane's pool](#fork-lane-pool); the chart's `runnerPools[].sandbox.enabled` sandboxes that pool alone |
+| **What funds it** — the team's own vendor API keys alone, on routes decided before the run: a pool-stamped fork run is sealed no shared tier (ADR-154 D13), the runner refuses its env and a forfait cannot cross its sandbox (decision 7) | **floored (U7 part 1)** | the launch gate's funding arm refuses a fork run those keys cannot fund, typed (`fork_run_unfunded`), BEFORE the org's counter or the author's bound moves — a provider no team key funds, a route riding the `openai_compatible` gateway, a route the pool's runner decides itself (an `${…}` dial, a late var) — on the gesture's delivery, the debounce flush, the durable retry and every gated resume; the judge is the publisher's own unfunded decision — [funding a fork run](#fork-lane-funding) |
+| **Where it runs** — only through the publisher, on a pool whose sandbox resolves active (decision 10, Q3) | **the pool ships (U7 part 1); its sandbox waits on #2965** | the fork-lane config names its pool (`fork_lane_pool`, required at creation, immutable) and the publisher stamps it as the run's `RunnerPool` on every carrier — [the lane's pool](#fork-lane-pool). The chart's `runnerPools[].sandbox.enabled` is the flag that would sandbox that pool alone, but with the chart's defaults (`serviceAccount.create`) and under the prod values (`networkPolicy.enabled`) turning it on FAILS the render until #2965 renders the pool's ServiceAccount, Role and standing policy; until then the operator brings them by hand ([cloud-deployment.md](cloud-deployment.md#sovereign-runner-pools), at the cost it names), and a pool deployed without its sandbox refuses every fork run at the runner (`untrusted_without_sandbox`) |
 | **The pool's boundary** — its own ServiceAccount and Role, the pool label on its sandbox siblings, its standing NetworkPolicy (ADR-154 decisions 1–3) | **not yet: #2965** | until it lands the chart REFUSES a pool sandbox where the release does not provision one, under `serviceAccount.create` and under `networkPolicy.enabled` ([cloud-deployment.md](cloud-deployment.md#sovereign-runner-pools)) |
 | **The CNI enforces NetworkPolicy** on the cloud cluster (matryoshka) | **not yet: the operator's gesture** | verified before the pool is enabled; the sandbox start probe (U5) then witnesses it per run, and refuses a run on a CNI that applies the policy as a no-op |
 | **The live proof** — one `review-pr` run on a lab repository's fork pull request, through a real delivery, sandboxed under the prod values (`networkPolicy.enabled: true`) with the start probe passing | **not yet** | owes #2965 and the CNI gesture first; its cost goes in its commit |
@@ -696,8 +696,10 @@ that replays a real GitHub delivery through the handler on a fake forge:
 | Stale SHA | `fork gesture: the gesture pinned … but the pull request's head is …` | a new head needs a new gesture |
 | Bad args | `fork gesture: /revi takes an optional commit SHA to pin, nothing else …` | prose is not a pin |
 | No pool | `fork lane names no runner pool — …` | the config was stored before `fork_lane_pool` existed; a fork run executes only on the pool its lane names, so the launch tail refuses it BEFORE either budget is metered (the durable retry exhausts the row, the board branch writes no card — the same precondition) |
-| Unfunded | `fork_run_unfunded` (`launch_error`, HTTP 422 with the publisher's sentence as `detail`) | the team holds no API key of its own for a provider the bot's routes pin — the shared tiers, the runner's env and a forfait fund no fork run ([funding a fork run](#fork-lane-funding)); refused BEFORE either budget is metered, and the durable retry keeps the row retryable, since provisioning a key cures it |
-| Funding undecided | `fork_funding_unreadable` (`launch_error`, 503) | the funding judge could not answer — a credential store read failed, a tier's metadata was unreadable, the bot did not resolve; fail-closed, retryable |
+| Unfunded | `fork_run_unfunded` (`launch_error`, HTTP 422 with the publisher's sentence as `detail`) | the team holds no vendor API key of its own for a provider the bot's routes pin, or a route rides the `openai_compatible` gateway, or a route is decided on the runner (an `${…}` dial, a late var) — the shared tiers, the runner's env and a forfait fund no fork run ([funding a fork run](#fork-lane-funding)); refused BEFORE either budget is metered |
+| Pool refused | `fork_lane_pool_refused` (`launch_error`, 422) | the lane's pool fails the fork lane's pool rule now — the team was mapped to a sovereign pool since the lane was created, or another team holds the pool ([the lane's pool](#fork-lane-pool)); judged with the funding, BEFORE either budget is metered, permanent |
+| Program unjudgeable | `fork_funding_unjudgeable` (`launch_error`, 422) | the program the run would execute cannot be built — the bot is gone from its catalog, its source no longer compiles, the launch funnel refuses an input; permanent |
+| Funding undecided | `fork_funding_unreadable` (`launch_error`, 503) | the funding judge could not answer — a credential store read failed, a tier's metadata was unreadable, the pool registry did not route the pool; fail-closed, retryable |
 
 A fork-lane config serves the gesture and nothing else: every OTHER entry it
 has — an issue label, a zero-touch open — composes a trusted target, and
@@ -712,6 +714,7 @@ The bound's own refusals (denial tokens `fork_author_run_quota_exceeded`,
 `fork_author_cost_cap_exceeded`, and the fail-closed arms
 `fork_team_unreadable` / `fork_org_unreadable` / `fork_metering_unavailable`
 / `fork_metering_error`) and the funding arm's (`fork_run_unfunded`,
+`fork_lane_pool_refused`, `fork_funding_unjudgeable`,
 `fork_funding_unreadable`) arrive through the launch gate's standard denial
 envelope — see [quotas-and-limits.md](quotas-and-limits.md) — whichever
 surface entered (delivery, debounce flush, retry sweeper).
@@ -739,26 +742,50 @@ refused too. Each refusal is `ErrForkLanePool`, before anything is persisted
 or published, and the retry sweeper abandons a resume refused with it (it is
 permanent, like a pool remap); a store that cannot say who holds the pool
 refuses as the transient it is. The pool then crosses the registry's routing
-gate like every pool (registered, `active`).
+gate like every pool (registered, `active`). The launch gate asks the same
+rule and the same routing gate BEFORE it meters (the funding judge reads
+them first): a gesture, a durable retry or a resume whose pool the rule now
+refuses is `fork_lane_pool_refused` (422) with neither budget charged.
 
 Because the pool IS a pool, ADR-154's pool semantics apply to a fork run in
 full: the publisher consults no shared credential tier for it (D13 — the
 org's and the platform's keys are never sealed into a pool run), so the lane
-spends the team's own API key or gateway credential, and the pool pod's own
+spends the team's own vendor API keys — no tier seals a team gateway
+credential into a pool run until #2005 PR-C' — and the pool pod's own
 gateway credential is the ambient env decision 7 refuses.
 
 ### <a name="fork-lane-funding"></a>Funding a fork run — the team's own keys
 
-**A team that enables the fork lane must hold its own LLM API key** for
-every provider the lane's bot pins (`review-pr`'s model routes): a key of
-the team's BYOK tier — a provider key, or one stored with its gateway base
-URL. Nothing else funds a fork run:
+**A team that enables the fork lane must hold its own vendor LLM API key**
+for every provider the lane's bot pins: a provider key of the team's BYOK
+tier. A key stored with a gateway base URL (`openai_compatible`) funds no
+fork run yet — no tier seals a team gateway credential into a pool-stamped
+run until #2005 PR-C'. Nothing else funds a fork run:
 
 | Funding | Why it does not fund a fork run |
 |---|---|
 | The org's shared keys, a contributor pool, the platform's keys | a fork run is pool-stamped, and D13 seals no shared tier into a pool run — the pool pod never holds anyone else's key |
 | The runner's environment — its vendor keys, its pool's `openai_compatible` gateway | decision 7's ambient refusal: an untrusted run spends only what was sealed for it, so a route riding the runner's gateway alone is refused too |
 | A connected forfait (Claude, ChatGPT) | the sandbox's egress proxy substitutes a bearer placeholder toward the credential's host and cannot hold an OAuth credential and its refresh flow (`credroute.ErrCrossingRefused`) |
+
+**And the routes must be decided before the run.** The judge reads the
+bot's routes in the server; the run takes them on the lane's pool, so two
+route classes are refused whatever the team holds, each named by the
+route sites in the refusal:
+
+| Route | Why the judge refuses it |
+|---|---|
+| One riding the `openai_compatible` gateway (a literal `openai_compatible/…` model, a gateway hint, or a dial this server expands to one) | nothing funds it on a fork run: the pool's gateway is the refused environment, and no team gateway credential is sealed into a pool run until #2005 PR-C' |
+| One the runner decides itself: a routing field — the provider (or its override), the model, the backend — that reads an `${…}` dial, or a run var the launch leaves undecided | the pool's runner expands the dial with ITS environment, whose env block pins the routing dials ahead of the platform record ([sovereign-pools.md](sovereign-pools.md#routing-dials-the-pools-env-block-is-pinned)) — the route this server reads is not the one the run takes, and a verdict on it would admit, and meter, a run the runner then refuses ambient |
+
+`review-pr` reads EVERY route through an `${ITERION_VIBE_*}` dial — its
+nodes, its supervisors, its rescue route — so a fork gesture of
+`review-pr` is refused `fork_run_unfunded` until a run's settings arrive
+frozen at claim ([ADR-132](adr/132-a-run-reads-no-environment.md)). A bot
+whose routes are literal, or whose nodes the integration's routing
+overrides pin (provider, model and backend — [ADR-129](adr/129-per-integration-typed-routing-overrides.md)),
+is judged on those literal routes; a supervisor or an authored rescue
+route has no override cell and reads the bot's own text.
 
 **Refused before anything is metered.** The launch gate asks a funding judge
 for every untrusted subject, after its own refusals and BEFORE its first
@@ -769,9 +796,12 @@ gated resume of a fork run — the runs API, its WS answer twin, the retry
 sweeper (`resumeLaunchSubject`'s `forkResumeFunding`, so a team that removed
 its key since the launch is refused at the resume). The refusal is typed:
 `fork_run_unfunded`, a 422 whose `detail` is the publisher's own sentence
-naming each unfunded provider and the route that pins it; the retry sweeper
-abandons a resume refused with it, and a judge that cannot answer refuses as
-`fork_funding_unreadable` (503, retryable).
+naming each unfunded provider, gateway route and runner-decided route by its site; the
+retry sweeper abandons a resume refused with it. The judge answers the
+lane's pool rule first (`fork_lane_pool_refused`, 422, permanent), a program
+that cannot be built is `fork_funding_unjudgeable` (422, permanent — the bot
+is gone, its source no longer compiles), and a judge that cannot answer
+refuses as `fork_funding_unreadable` (503, retryable).
 
 **One decision, read three ways.** The judge is the publisher's own unfunded
 decision (`unfundedRefusalFor`'s untrusted arm), read through the credential
@@ -795,10 +825,13 @@ runner's ambient refusal instead.
 resolve a sandbox. The runner does — `admitRun` refuses an untrusted run
 whose sandbox does not resolve active (`untrusted_without_sandbox`), and the
 sandbox start probe refuses one on a non-enforcing CNI — so a pool deployed
-without its sandbox refuses every fork run, typed, at the runner. The chart's
-`runnerPools[].sandbox.enabled` is what sandboxes that pool alone
+without its sandbox refuses every fork run, typed, at the runner, after the
+gate metered it. The chart's `runnerPools[].sandbox.enabled` is the flag
+that sandboxes that pool alone
 ([cloud-deployment.md](cloud-deployment.md#sovereign-runner-pools)), with the
-render refusals that hold until #2965.
+render refusals that hold until #2965 — and a pool that follows a
+release-wide sandbox under `networkPolicy.enabled` fails every fork run at
+its first egress, for want of the same standing policy.
 
 ### PR auto-lane: review, not mutate (Revi vs Billy)
 
