@@ -3,8 +3,12 @@ package cloudpublisher
 import (
 	"context"
 	"maps"
+	"math"
+	"strings"
 	"testing"
+	"time"
 
+	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/credpool"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/runview"
@@ -171,5 +175,88 @@ func TestCredPlanStamp_aLeaselessRunPublishesNone(t *testing.T) {
 	}
 	if msg.CredPlan != nil {
 		t.Fatalf("CredPlan = %v, want none — a run no lease serves publishes no plan", msg.CredPlan)
+	}
+}
+
+// envDialReviewWorkflow is review-pr's routing shape on the default runner:
+// every routing field an env dial with a vendor default (narrow-safe, env
+// deferred), two reviewers on two vendors. The dials are unset in the test
+// process, so the publisher reads their defaults.
+func envDialReviewWorkflow() *ir.Workflow {
+	return &ir.Workflow{Nodes: map[string]ir.Node{
+		"reviewer_claude": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "reviewer_claude"}, LLMFields: ir.LLMFields{Backend: "${PLAN_ENV_UNSET_BACKEND_CLAUDE:-claude_code}", Model: "${PLAN_ENV_UNSET_MODEL_CLAUDE:-claude-opus-5}", Provider: "${PLAN_ENV_UNSET_PROVIDER_CLAUDE:-anthropic}"}, Tools: []string{}},
+		"reviewer_gpt":    &ir.AgentNode{BaseNode: ir.BaseNode{ID: "reviewer_gpt"}, LLMFields: ir.LLMFields{Backend: "${PLAN_ENV_UNSET_BACKEND_GPT:-claw}", Model: "${PLAN_ENV_UNSET_MODEL_GPT:-openai/gpt-6-sol}"}, Tools: []string{}},
+	}}
+}
+
+// An env-dial run an attached pool serves side by side — the claude forfait
+// and an openai key, two leases of one attempt — is planned, so the runner's
+// fine table splits the attempt by credential and the donors are booked the
+// attempt's cost once between them. Without a plan the broker books the whole
+// attempt on EVERY lease (the coarse doctrine): two donors charged 1.00 each
+// for an attempt that cost 1.00. The fine table is built here as the runner
+// builds it from the plan (fineFingerprintSpend: each node's spend on its
+// plan row's fingerprint). Mutant: CredentialPlan nil on an EnvDeferred walk
+// → the plan assert, and the total books 2.00.
+func TestCredPlanStamp_anEnvDialRunServedSideBySideBooksTheAttemptOnce(t *testing.T) {
+	f := newAttachedFixture(t)
+	ctx := context.Background()
+	k := secrets.ApiKey{ID: "key-oa", TenantID: poolTeam, ScopeTeamID: poolTeam, ScopeUserID: "lender-oa", Provider: secrets.ProviderOpenAI, Name: "lent openai",
+		Fingerprint: secrets.APIKeyFingerprint(secrets.ProviderOpenAI, "sk-openai-lent", "")}
+	sealed, err := secrets.SealAPIKeyFor(f.sealer, k, []byte("sk-openai-lent"))
+	if err != nil {
+		t.Fatalf("seal: %v", err)
+	}
+	k.SealedSecret = sealed
+	if err := f.apiKeys.Create(ctx, k); err != nil {
+		t.Fatalf("seed lent openai key: %v", err)
+	}
+	if err := f.pledges.Upsert(ctx, credpool.Pledge{ID: credpool.PledgeID("lender-oa", credpool.SourceAPIKey, string(secrets.ProviderOpenAI)), PoolID: "pool-att", UserID: "lender-oa",
+		Credential: credpool.Credential{Source: credpool.SourceAPIKey, Ref: string(secrets.ProviderOpenAI), KeyID: "key-oa"},
+		Enabled:    true, Health: credpool.HealthOK, Priority: 3}); err != nil {
+		t.Fatalf("pledge: %v", err)
+	}
+	wf := envDialReviewWorkflow()
+	if walk := model.EffectiveProviders(model.RouteView{Workflow: envDialReviewWorkflow()}, walkProviderSet); !walk.NarrowSafe || !walk.EnvDeferred {
+		t.Fatalf("test premise: want a narrow-safe env-deferred walk, got %+v", walk)
+	}
+	_, creds := f.resolveAttached(t, "run-env-plan", wf, frozenAttachment("pool-att"))
+	if len(creds.grants) != 2 {
+		t.Fatalf("fixture: grants = %d, want the forfait and the openai key side by side", len(creds.grants))
+	}
+	byNode := map[string]float64{"reviewer_claude": 0.40, "reviewer_gpt": 0.60}
+	spend := map[string]float64{}
+	for key, fp := range creds.plan {
+		node, _, _ := strings.Cut(key, model.PlanKeySep)
+		spend[fp] += byNode[node]
+	}
+	for _, g := range creds.grants {
+		if _, planned := spend[g.Fingerprint]; !planned {
+			t.Fatalf("plan = %v names no row for the lent credential %s (%s): the runner builds no fine table without one", creds.plan, g.Fingerprint, g.Credential)
+		}
+	}
+	var fine []credpool.FingerprintSpend
+	for fp, cost := range spend {
+		fine = append(fine, credpool.FingerprintSpend{Fingerprint: fp, CostUSD: cost})
+	}
+	var publishedAt time.Time
+	for _, g := range creds.grants {
+		if g.AcquiredAt.After(publishedAt) {
+			publishedAt = g.AcquiredAt
+		}
+	}
+	if err := f.pub.credPool.ReportAttempt(ctx, "run-env-plan", publishedAt.Add(5*time.Millisecond), credpool.Outcome{CostUSD: 1.0, ByFingerprint: fine}); err != nil {
+		t.Fatalf("report: %v", err)
+	}
+	leases, err := f.leases.ListByRun(ctx, "run-env-plan")
+	if err != nil {
+		t.Fatalf("leases: %v", err)
+	}
+	total := 0.0
+	for _, l := range leases {
+		total += l.CostUSD
+	}
+	if math.Abs(total-1.0) > 1e-9 {
+		t.Fatalf("the donors of a 1.00 attempt were booked %.2f between them — every lease charged the whole attempt", total)
 	}
 }
