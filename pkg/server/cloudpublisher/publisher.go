@@ -356,6 +356,14 @@ var ErrPoolRemapped = errors.New("cloudpublisher: the run's runner pool no longe
 // is not this error — it refuses as the transient it is.
 var ErrPoolNotRouted = errors.New("cloudpublisher: the runner-pool registry does not route this pool")
 
+// errPoolInTransition marks, beside ErrPoolNotRouted, a pool the registry
+// knows in a lifecycle state the operator moves through — provisioning
+// (topology up, runners not yet consuming) or draining. The refusal is
+// decided, but the next state change cures it with no edit to whatever named
+// the pool, so a reader that treats a decided refusal as permanent (the fork
+// lane's, routesForTrust) keeps this one transient.
+var errPoolInTransition = errors.New("the pool is in a lifecycle transition")
+
 // poolRoutes decides whether a team's frozen pool may route right now: the
 // registry must know the pool AND its state must be active (the operator's
 // explicit "runners for this pool are deployed and consuming" — plan v2.1
@@ -381,7 +389,11 @@ func (p *Publisher) poolRoutes(ctx context.Context, pool string) error {
 		if rec.Pools[i].Name != pool {
 			continue
 		}
-		if rec.Pools[i].State != platformcfg.RunnerPoolActive {
+		switch rec.Pools[i].State {
+		case platformcfg.RunnerPoolActive:
+		case platformcfg.RunnerPoolProvisioning, platformcfg.RunnerPoolDraining:
+			return fmt.Errorf("%w (%w): runner pool %q is %q — routing requires state %q (the operator flips it when the pool's runners are deployed and consuming)", ErrPoolNotRouted, errPoolInTransition, pool, rec.Pools[i].State, platformcfg.RunnerPoolActive)
+		default:
 			return fmt.Errorf("%w: runner pool %q is %q — routing requires state %q (the operator flips it when the pool's runners are deployed and consuming)", ErrPoolNotRouted, pool, rec.Pools[i].State, platformcfg.RunnerPoolActive)
 		}
 		return nil
@@ -4790,7 +4802,10 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 		TenantID: prior.TenantID,
 		OrgID:    priorOrgID,
 		OwnerID:  prior.OwnerID,
-		// The FROZEN pool stamp, verified equal to the current mapping above.
+		// The FROZEN pool stamp, judged above by resumePoolRefusal: a trusted
+		// run's stamp equals its team's current mapping; an untrusted run's
+		// is its fork lane's pool, re-judged by the lane's pool rule
+		// (forkLanePoolRefusal), never compared with the team's mapping.
 		RunnerPool: prior.RunnerPool,
 		// The FROZEN gateway stamp, replayed exactly as the prior document
 		// froze it: the credential that funded the launch funds the resume.

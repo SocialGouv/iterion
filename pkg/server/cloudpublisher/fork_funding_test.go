@@ -430,14 +430,18 @@ func TestResumeFundingRefusal_AForkRunWhoseTeamLostItsKeyIsRefused(t *testing.T)
 // Mutations, each seen red and restored byte-identical:
 //   - FundingRefusal no longer reading launchRunnerPool → "a team mapped to
 //     another pool" and "a pool another team holds" admit;
-//   - FundingRefusal no longer asking the registry's routing gate → "a pool
-//     the registry does not know", "a pool not active" and "a registry that
-//     cannot be read" admit;
+//   - FundingRefusal no longer asking the registry's routing gate → every
+//     registry row admits;
 //   - routesForTrust no longer typing the registry's decided refusal → "a
-//     pool the registry does not know" and "a pool not active" answer the
+//     pool the registry does not know" and "a disabled pool" answer the
 //     untyped (transient) refusal;
 //   - routesForTrust typing every registry error → "a registry that cannot
 //     be read" answers ErrForkLanePool (a blip read as permanent);
+//   - routesForTrust typing a pool in transition (the errPoolInTransition
+//     carve-out dropped) → "a draining pool" and "a provisioning pool"
+//     answer ErrForkLanePool, their parked runs abandoned;
+//   - poolRoutes marking every non-active state in transition → "a disabled
+//     pool" answers the transient refusal;
 //   - ResumeFundingRefusal no longer asking resumePoolRefusal → "the team was
 //     mapped since the launch" admits.
 func TestFundingJudges_TheForkLanePoolRuleAnswersBeforeTheFundingWalk(t *testing.T) {
@@ -458,14 +462,23 @@ func TestFundingJudges_TheForkLanePoolRuleAnswersBeforeTheFundingWalk(t *testing
 		registry RunnerPoolResolver
 		typed    bool
 		naming   string
+		// notRouted: the registry's transient decided refusal
+		// (ErrPoolNotRouted, untyped for the fork lane).
+		notRouted bool
 	}{
 		{name: "a team mapped to another pool", mapped: map[string]string{"team1": "t-sov"}, lanePool: "forks", typed: true},
 		{name: "a pool another team holds", mapped: map[string]string{"team2": "forks"}, lanePool: "forks", typed: true},
 		// The config names the pool and is immutable: a definitive refusal,
 		// never the retryable blip.
 		{name: "a pool the registry does not know", lanePool: "unregistered", typed: true, naming: `"unregistered"`},
-		{name: "a pool not active", lanePool: "forks", typed: true, naming: `"draining"`,
+		{name: "a disabled pool", lanePool: "forks", typed: true, naming: `"disabled"`,
+			registry: fakePoolRegistry{rec: &platformcfg.RunnerPools{Pools: []platformcfg.RunnerPool{{Name: "forks", State: platformcfg.RunnerPoolDisabled}}}}},
+		// A lifecycle step the operator moves through: refused, but as the
+		// transient a trusted run meets — the next state change cures it.
+		{name: "a draining pool", lanePool: "forks", naming: `"draining"`, notRouted: true,
 			registry: fakePoolRegistry{rec: &platformcfg.RunnerPools{Pools: []platformcfg.RunnerPool{{Name: "forks", State: platformcfg.RunnerPoolDraining}}}}},
+		{name: "a provisioning pool", lanePool: "forks", naming: `"provisioning"`, notRouted: true,
+			registry: fakePoolRegistry{rec: &platformcfg.RunnerPools{Pools: []platformcfg.RunnerPool{{Name: "forks", State: platformcfg.RunnerPoolProvisioning}}}}},
 		{name: "a registry that cannot be read", lanePool: "forks", naming: "registry unreachable",
 			registry: fakePoolRegistry{err: errors.New("registry unreachable")}},
 	} {
@@ -485,6 +498,9 @@ func TestFundingJudges_TheForkLanePoolRuleAnswersBeforeTheFundingWalk(t *testing
 			}
 			if row.naming != "" && !strings.Contains(err.Error(), row.naming) {
 				t.Fatalf("FundingRefusal = %v, want the registry's refusal naming %s", err, row.naming)
+			}
+			if row.notRouted && !errors.Is(err, ErrPoolNotRouted) {
+				t.Fatalf("FundingRefusal = %v, want the transient ErrPoolNotRouted", err)
 			}
 		})
 	}

@@ -98,13 +98,17 @@ func (p *Publisher) forkLanePoolRefusal(ctx context.Context, tenantID, teamPool,
 // judge alike. For an untrusted run the registry's DECIDED refusal
 // (ErrPoolNotRouted) is the fork lane's own: the run's pool is the one its
 // fork-lane config names, and the config is immutable, so every gesture,
-// durable retry and resume would meet the same answer — a misspelled or
-// never-activated pool is refused as ErrForkLanePool (definitive, never the
-// retryable registry blip), naming the remedy. A registry that cannot be read
-// stays the transient it is.
+// durable retry and resume would meet the same answer — a misspelled,
+// never-registered or disabled pool is refused as ErrForkLanePool
+// (definitive, never the retryable registry blip), naming the remedy. A pool
+// the registry holds provisioning or draining is not that answer: the
+// operator's next lifecycle step cures it with no edit to the config, so it
+// stays the transient ErrPoolNotRouted a trusted run meets — a parked fork
+// run is re-armed, not abandoned. A registry that cannot be read stays the
+// transient it is.
 func (p *Publisher) routesForTrust(ctx context.Context, pool string, trust store.RunTrust) error {
 	err := p.poolRoutes(ctx, pool)
-	if err != nil && !trust.Trusted() && errors.Is(err, ErrPoolNotRouted) {
+	if err != nil && !trust.Trusted() && errors.Is(err, ErrPoolNotRouted) && !errors.Is(err, errPoolInTransition) {
 		return fmt.Errorf("%w: %w — a fork-lane config's pool cannot be edited: register the pool and set it active, or recreate the fork-lane webhook naming a pool the registry routes", ErrForkLanePool, err)
 	}
 	return err
