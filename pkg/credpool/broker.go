@@ -976,18 +976,21 @@ func (b *Broker) tryPledge(ctx context.Context, pool Pool, p Pledge, req Request
 		// first run all that remains), which is busy, not exhausted. A
 		// full concurrency slot set is busy too.
 		capped := deny == DenyRunsPerDay
-		// A runs/day refusal caused by the run's OWN earlier unit on this
-		// entry (an attempt its resume superseded — a non-admission, so the
-		// resume reserves anew) is no exhaustion of the entry for this run:
-		// whether the late report or the resume lands first must not decide
-		// a hold.
-		if deny == DenyRunsPerDay {
-			for _, l := range prev {
-				if l.PledgeID == p.ID && l.ConsumedRunUnit && !returnedUnused(l) {
-					b.logger.Debug("credpool: pledge %s runs/day refusal of run %s is its own earlier unit — busy, not exhausted", p.ID, req.RunID)
-					return nil, StatusServing, false, nil
-				}
+		// The run's OWN earlier unit on this entry — an attempt its resume
+		// superseded, which a late report can still stamp into an admission
+		// — is no exhaustion of the entry for this run: whether the late
+		// report or the resume lands first must not decide a hold. An
+		// ABANDONED unit never becomes an admission, so it is no own unit.
+		ownUnit := false
+		for _, l := range prev {
+			if l.PledgeID == p.ID && l.ConsumedRunUnit && !returnedUnused(l) && l.Outcome != OutcomeAbandoned {
+				ownUnit = true
+				break
 			}
+		}
+		if deny == DenyRunsPerDay && ownUnit {
+			b.logger.Debug("credpool: pledge %s runs/day refusal of run %s is its own earlier unit — busy, not exhausted", p.ID, req.RunID)
+			return nil, StatusServing, false, nil
 		}
 		// A busy entry whose allowance is ALSO spent is exhausted: the
 		// ledgers check concurrency first, so read the usage the refusal
@@ -995,7 +998,7 @@ func (b *Broker) tryPledge(ctx context.Context, pool Pool, p Pledge, req Request
 		if deny == DenyConcurrency {
 			if day, week, uerr := b.ledger.Usage(ctx, p.ID, now); uerr == nil {
 				runs := day.Runs + 1
-				if readmitting {
+				if readmitting || ownUnit {
 					runs = 0
 				}
 				capped = p.Limits.Deny(runs, day.CostUSD, week.CostUSD) != DenyNone
@@ -1722,20 +1725,24 @@ func (b *Broker) ReportAttempt(ctx context.Context, runID string, attemptPublish
 			}
 		}
 	}
-	// The att: row books on the FIRST lease whose settlement actually
-	// charged (its CAS won), starting from the booker: a lease another
-	// path already settled (an abandon sweep, a lost CAS) books nothing,
-	// and the row must not be left unbooked behind it.
-	attBooked := false
-	for _, i := range bookerFirst(len(settling), booker) {
+	// The lease that carries the att: row is chosen from the leases'
+	// STATES — the first, booker first, not closed by a path no report
+	// books on — so every report of the attempt (a redelivery, a cancel
+	// racing a finish) picks the same one and its CAS books the row once.
+	order := bookerFirst(len(settling), booker)
+	attLease := -1
+	for _, i := range order {
+		if !closedWithoutBooking(settling[i], attemptPublishedAt) {
+			attLease = i
+			break
+		}
+	}
+	for _, i := range order {
 		l := settling[i]
-		if attBooked && out.ByFingerprint == nil {
+		if i != attLease && out.ByFingerprint == nil {
 			l.AttachmentID = ""
 		}
-		charged, err := b.settleLease(ctx, l, out, attemptPublishedAt, now, runID)
-		if charged {
-			attBooked = true
-		}
+		_, err := b.settleLease(ctx, l, out, attemptPublishedAt, now, runID)
 		if err != nil {
 			if i > 0 {
 				err = fmt.Errorf("credpool: settle sibling lease %s: %w", l.ID, err)
@@ -2011,6 +2018,23 @@ func bookerFirst(n, booker int) []int {
 		}
 	}
 	return order
+}
+
+// closedWithoutBooking reports a lease closed by a path no report books
+// on: swept as abandoned, returned unused, or the grantless takeover's own
+// report of its publication.
+func closedWithoutBooking(l Lease, attemptPublishedAt time.Time) bool {
+	if !l.Closed {
+		return false
+	}
+	switch l.Outcome {
+	case OutcomeAbandoned, OutcomeNotLaunched:
+		return true
+	case OutcomeSupersededGrantless:
+		return l.SupersededByPublishedAt != nil &&
+			l.SupersededByPublishedAt.Truncate(time.Millisecond).Equal(attemptPublishedAt.Truncate(time.Millisecond))
+	}
+	return false
 }
 
 // returnedUnused reports a lease closed because its grant was given back
