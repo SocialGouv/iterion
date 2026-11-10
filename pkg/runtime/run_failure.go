@@ -315,6 +315,14 @@ func (e *Engine) failRunErrWithCheckpoint(rs *runState, nodeID string, origErr e
 		// Only on this branch: the fallthrough below goes through
 		// failRunWithCheckpoint, which captures for itself.
 		e.captureFailureBoundary(rs, nodeID)
+		// A stop on a usage window parks the run until the window reopens;
+		// the span since the last booking only met the wall, so it leaves
+		// the duration budget BEFORE the checkpoint a resume reads its carry
+		// from is built.
+		var refunded time.Duration
+		if rtErr.Code == ErrCodeUsageLimitBlocked {
+			refunded = rs.budget.refundSpanSinceBooking()
+		}
 		cp := buildCheckpoint(rs, nodeID)
 		remedy := RemedyOf(rtErr)
 		if storeErr := e.recordFailureResumable(ctx, rs.runID, cp, remedy.Annotate(rtErr.Message), rtErr.Code); storeErr != nil {
@@ -328,6 +336,11 @@ func (e *Engine) failRunErrWithCheckpoint(rs *runState, nodeID string, origErr e
 			"error":     rtErr.Message,
 			"code":      string(rtErr.Code),
 			"resumable": true,
+		}
+		if refunded > 0 {
+			// What the operator reads on the timeline: this attempt's
+			// minutes did not count against max_duration.
+			data["duration_refunded_ms"] = refunded.Milliseconds()
 		}
 		remedy.Record(data)
 		if err := e.emit(ctx, rs.runID, store.EventRunFailed, nodeID, data); err != nil {

@@ -71,6 +71,22 @@ type SharedBudget struct {
 	// report in full. Their tokens and cost reached the counters above as a
 	// lower bound at most, so neither ceiling sees all of them.
 	unreportedCalls int
+
+	// booked is the budget's reading at its last booking, or at the start of
+	// this attempt (construction, Restore): what a stop on a provider usage
+	// window compares against to tell a span that only met the wall from one
+	// that did work (refundSpanSinceBooking).
+	booked budgetBooking
+}
+
+// budgetBooking is one reading of the counters and of the clock.
+type budgetBooking struct {
+	elapsed         time.Duration
+	tokens          int
+	cost            float64
+	iterations      int
+	unpricedTokens  int
+	unreportedCalls int
 }
 
 const (
@@ -303,6 +319,52 @@ func (b *SharedBudget) Restore(tokens int, cost float64, iterations int, elapsed
 	if elapsed > 0 {
 		b.startedAt = b.clockNow().Add(-elapsed)
 	}
+	b.markBookedLocked()
+}
+
+// markBookedLocked records the budget's reading as of now: the attempt's
+// start, or a booking that just landed.
+func (b *SharedBudget) markBookedLocked() {
+	b.booked = budgetBooking{
+		elapsed:         b.elapsed(),
+		tokens:          b.tokensUsed,
+		cost:            b.costUsed,
+		iterations:      b.iterationsUsed,
+		unpricedTokens:  b.unpricedTokens,
+		unreportedCalls: b.unreportedCalls,
+	}
+}
+
+// refundSpanSinceBooking hands back to the duration budget the span since the
+// last booking — the time the run spent meeting a provider usage window and
+// nothing else — and reports it. It refunds nothing when anything was booked
+// since (a node finished, a call spent tokens or went unreported): that span
+// did work, and its minutes are the run's.
+//
+// Called on a stop on a usage window only. Such a run parks and is resumed
+// once the window reopens; a resume that re-hits the wall spends no token and
+// finishes no node, so without the refund every one of those attempts burnt
+// the run's active minutes — twelve zero-token attempts took a review to
+// "budget hard limit reached: duration at 90%" days before its window
+// reopened (#3127). The wait between attempts was never counted; this is the
+// part of each attempt that only re-met the wall.
+func (b *SharedBudget) refundSpanSinceBooking() time.Duration {
+	if b == nil {
+		return 0
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.tokensUsed != b.booked.tokens || b.costUsed != b.booked.cost ||
+		b.iterationsUsed != b.booked.iterations || b.unpricedTokens != b.booked.unpricedTokens ||
+		b.unreportedCalls != b.booked.unreportedCalls {
+		return 0
+	}
+	span := b.elapsed() - b.booked.elapsed
+	if span <= 0 {
+		return 0
+	}
+	b.startedAt = b.startedAt.Add(span)
+	return span
 }
 
 // budgetCheckResult holds the outcome of a single dimension check.
@@ -382,6 +444,7 @@ func (b *SharedBudget) recordUsage(spend nodeSpend, countIteration bool) []budge
 		b.unpricedTokens += tokens
 		b.unpricedNodes++
 	}
+	b.markBookedLocked()
 
 	checks := b.checkLocked()
 	if w, ok := b.unpricedWarningLocked(); ok {
@@ -417,6 +480,7 @@ func (b *SharedBudget) noteUnreported(n int) []budgetCheckResult {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.unreportedCalls += n
+	b.markBookedLocked()
 	if w, ok := b.unreportedWarningLocked(); ok {
 		return []budgetCheckResult{w}
 	}
