@@ -205,7 +205,7 @@ func TestThePoolBlockReachesTheLaunchFold(t *testing.T) {
 		s, _ := newTeamForkServer(t, pub)
 		wirePoolFold(t, s)
 		if _, err := s.launchWebhookBot(boundedCtx(t), webhookLaunch(nil, ""), webhooks.Config{ID: "wh-1", TenantID: "t1", Pool: bound},
-			"probe", map[string]string{}, "", "", "acme/repo", nil, nil, store.RunTrustDefault, "", ""); err != nil {
+			"probe", map[string]string{}, "", "", "acme/repo", nil, nil, store.RunTrustDefault, "", "", ""); err != nil {
 			t.Fatalf("launchWebhookBot = %v", err)
 		}
 		got := pub.only(t).PoolAttachment
@@ -219,7 +219,7 @@ func TestThePoolBlockReachesTheLaunchFold(t *testing.T) {
 		s, _ := newTeamForkServer(t, pub)
 		wirePoolFold(t, s)
 		if _, err := s.launchWebhookBot(boundedCtx(t), webhookLaunch(nil, ""), webhooks.Config{ID: "wh-1", TenantID: "t1"},
-			"probe", map[string]string{}, "", "", "acme/repo", nil, nil, store.RunTrustDefault, "", ""); err != nil {
+			"probe", map[string]string{}, "", "", "acme/repo", nil, nil, store.RunTrustDefault, "", "", ""); err != nil {
 			t.Fatalf("launchWebhookBot = %v", err)
 		}
 		if got := pub.only(t).PoolAttachment; got != nil {

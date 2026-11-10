@@ -27,7 +27,7 @@ func rvaDirectLaneAttachment(t *testing.T, cfg webhooks.Config) *store.RunPoolAt
 	wirePoolFold(t, s)
 	rvaSeedTeamAttachment(t, s)
 	if _, err := s.launchWebhookBot(boundedCtx(t), webhookLaunch(nil, ""), cfg,
-		"probe", map[string]string{}, "", "", "acme/repo", nil, nil, store.RunTrustDefault, "", ""); err != nil {
+		"probe", map[string]string{}, "", "", "acme/repo", nil, nil, store.RunTrustDefault, "", "", ""); err != nil {
 		t.Fatalf("launchWebhookBot = %v", err)
 	}
 	return pub.only(t).PoolAttachment
@@ -177,7 +177,7 @@ func TestPoolCardLanes_WebhookPreviewMatchesTheLaunchPoolAttachment(t *testing.T
 	var out runview.CredentialPreview
 	_ = json.Unmarshal(w.Body.Bytes(), &out)
 	ctx := store.WithIdentity(auth.WithIdentity(t.Context(), auth.Identity{UserID: "webhook:hook", TeamID: "t1", Kind: auth.KindWebhook}), "t1", "webhook:hook")
-	if _, err := s.launchWebhookBot(ctx, webhookLaunch(nil, ""), cfg, "probe", applyWebhookVarLayers(map[string]string{}, cfg), "", "", "", nil, nil, store.RunTrustDefault, "", ""); err != nil {
+	if _, err := s.launchWebhookBot(ctx, webhookLaunch(nil, ""), cfg, "probe", applyWebhookVarLayers(map[string]string{}, cfg, store.RunTrustDefault), "", "", "", nil, nil, store.RunTrustDefault, "", "", ""); err != nil {
 		t.Fatal(err)
 	}
 	t.Logf("preview spec: %s ; launch spec: %s", rvaDescribe(pub.preview.PoolAttachment), rvaDescribe(pub.launched.PoolAttachment))

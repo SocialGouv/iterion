@@ -77,7 +77,7 @@ func TestPoolForgeReview_CardLaneDropsTheIntegrationsPoolBlock(t *testing.T) {
 			seedTeamPoolAttachment(t, ds)
 			cfg := webhooks.Config{ID: "wh1", TenantID: "t1", Provider: webhooks.ProviderGitHub, Enabled: true, BotIDs: []string{"probe"}, Pool: tc.block}
 			if _, err := ds.launchWebhookBot(boundedCtx(t), webhookLaunch(nil, ""), cfg,
-				"probe", map[string]string{}, "", "", "acme/repo", nil, nil, store.RunTrustDefault, "", ""); err != nil {
+				"probe", map[string]string{}, "", "", "acme/repo", nil, nil, store.RunTrustDefault, "", "", ""); err != nil {
 				t.Fatalf("launchWebhookBot = %v", err)
 			}
 			direct := directPub.only(t).PoolAttachment
@@ -148,7 +148,7 @@ func TestPoolForgeReview_WebhookPreviewIgnoresTheConfigsPoolBlock(t *testing.T) 
 		t.Fatalf("preview=%d %s", w.Code, w.Body.String())
 	}
 	ctx := store.WithIdentity(auth.WithIdentity(t.Context(), auth.Identity{UserID: "webhook:hook", TeamID: "t1", Kind: auth.KindWebhook}), "t1", "webhook:hook")
-	if _, err := s.launchWebhookBot(ctx, webhookLaunch(nil, ""), cfg, "probe", applyWebhookVarLayers(map[string]string{}, cfg), "", "", "", nil, nil, store.RunTrustDefault, "", ""); err != nil {
+	if _, err := s.launchWebhookBot(ctx, webhookLaunch(nil, ""), cfg, "probe", applyWebhookVarLayers(map[string]string{}, cfg, store.RunTrustDefault), "", "", "", nil, nil, store.RunTrustDefault, "", "", ""); err != nil {
 		t.Fatal(err)
 	}
 	t.Logf("preview pool attachment: %+v", pub.preview.PoolAttachment)
