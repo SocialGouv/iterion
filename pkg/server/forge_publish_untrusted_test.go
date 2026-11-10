@@ -98,12 +98,12 @@ func TestInjectForgePublishVars_RefusesAnUntrustedLaunch(t *testing.T) {
 		// copied here: a hand-copied list drifts the same way the strip did.
 		var mintedKeys []string
 		for k := range minted {
-			if strings.HasPrefix(k, "forge_publish") || strings.HasPrefix(k, "forge_pr_state") || strings.HasPrefix(k, "forge_delivery") {
+			if strings.HasPrefix(k, "forge_publish") || strings.HasPrefix(k, "forge_pr_state") || strings.HasPrefix(k, "forge_delivery") || strings.HasPrefix(k, "forge_dispatch") {
 				mintedKeys = append(mintedKeys, k)
 			}
 		}
-		if len(mintedKeys) < 4 {
-			t.Fatalf("the trusted mint produced %v — expected at least 4 grant vars, so this test would not notice one surviving", mintedKeys)
+		if len(mintedKeys) < len(store.ServerMintedLaunchVars) {
+			t.Fatalf("the trusted mint produced %v — expected every server-minted var, so this test would not notice one surviving", mintedKeys)
 		}
 		carried := prVars()
 		for _, k := range mintedKeys {

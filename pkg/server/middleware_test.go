@@ -52,6 +52,8 @@ func TestIsPublicPathRunTokenSurfaces(t *testing.T) {
 		{"/api/v1/forge/publish-review", true},
 		{"/api/v1/forge/delivery-preflight", true},
 		{"/api/v1/forge/delivery-preflightX", false},
+		{forgeDispatchWorkflowPath, true},
+		{forgeDispatchWorkflowPath + "X", false},
 		{"/api/v1/mcp/board", true},
 		{"/api/v1/mcp/board/tools", true},
 		{"/api/v1/mcp/runs", true},

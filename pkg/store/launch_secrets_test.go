@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"os"
 	"reflect"
+	"slices"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -340,5 +342,25 @@ func TestServerMintedSecretEnv_SkipsAWithdrawal(t *testing.T) {
 	}
 	if _, ok := os.LookupEnv(envName); ok {
 		t.Error("an empty carriage value was left in the environment")
+	}
+}
+
+// Every server-minted launch var is either the bearer (a secret var) or an
+// endpoint it is presented to (an endpoint var), and nothing else: the run's
+// secret guard scopes the bearer to the endpoint vars' hosts, so an endpoint
+// left off that list is one the egress gate refuses the grant toward — the
+// dispatch endpoint (#3130) is the latest to join.
+func TestServerMintedLaunchVarsAreTheBearerAndItsEndpoints(t *testing.T) {
+	var union []string
+	union = append(union, ServerMintedSecretVars...)
+	union = append(union, ServerMintedEndpointVars[:]...)
+	sort.Strings(union)
+	want := append([]string(nil), ServerMintedLaunchVars[:]...)
+	sort.Strings(want)
+	if !reflect.DeepEqual(union, want) {
+		t.Fatalf("secret vars ∪ endpoint vars = %v, want exactly the minted vars %v", union, want)
+	}
+	if !slices.Contains(ServerMintedEndpointVars[:], ForgeDispatchURLVar) {
+		t.Fatalf("%s is not an endpoint var", ForgeDispatchURLVar)
 	}
 }

@@ -107,3 +107,21 @@ func TestForgeRequirements_SecretNameDefault(t *testing.T) {
 		t.Errorf("explicit secret: want gl_pat, got %q", got)
 	}
 }
+
+// The actions scope is the workflow-dispatch opt-in (#3130): accepted at
+// every level like the other scopes, and named — with every other scope —
+// in the refusal an unknown one draws, so the message cannot lag the set
+// validation accepts.
+func TestLoadManifest_AcceptsTheActionsScopeAndNamesEveryScopeOnARefusal(t *testing.T) {
+	m, err := LoadManifest(writeManifestForTest(t, "name: kick\nschema_version: 1\nforge:\n  token_scopes:\n    actions: write\n"))
+	if err != nil {
+		t.Fatalf("a manifest declaring actions: write = %v, want accepted", err)
+	}
+	if got := m.Forge.TokenScopes[ForgeScopeActions]; got != "write" {
+		t.Fatalf("token_scopes[%s] = %q, want write", ForgeScopeActions, got)
+	}
+	_, err = LoadManifest(writeManifestForTest(t, "name: bad\nschema_version: 1\nforge:\n  token_scopes:\n    deploy: write\n"))
+	for _, scope := range knownForgeScopeNames() {
+		errContains(t, err, scope)
+	}
+}
