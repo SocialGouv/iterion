@@ -130,4 +130,5 @@ workflow workflow_kick:
     max_duration: "5m"
 
   kick -> done when dispatched
+
   kick -> not_dispatched when not dispatched
