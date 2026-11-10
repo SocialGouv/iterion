@@ -11,13 +11,17 @@
 // record → W15 and W6; the probe not opening the held key → W16's two
 // undecryptable rows; the refusal without the held-key note → W16's sovereign
 // and degraded rows; the env-funded line without it → W15 and W16's first
-// row.
+// row. The launch's unfunded posture blind to the team_gateway boundary →
+// W17, W17b; the preview's → W17's preview assert; the boundary's arm after
+// the knob → W17b. The preview's probe told it knows the repository → W18;
+// the repo-restricted key left unlisted → W18's candidate assert.
 
 package cloudpublisher
 
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -226,5 +230,50 @@ func TestGatewayKey_AReplayedTeamGatewayRefusalNamesTheBoundaryOverTheKnob(t *te
 	}
 	if msg := err.Error(); strings.Contains(msg, "unset ITERION_CLOUD_REQUIRE_LLM_CREDENTIAL") {
 		t.Fatalf("refusal %q offers the environment fallback a team_gateway run is refused", msg)
+	}
+}
+
+// W18 (B4 of the round-1 review): a preview that knows no repository (a
+// personal source, a webhook whose allowlist is a pattern or several
+// repositories) of a decided gateway program whose team gateway key is
+// restricted to repositories does not state that no tier holds a key serving
+// it — every launch on the key's repository seals it and is held to the
+// team's gateway. The env-funded answer is conditional, and the key is listed
+// with its repo_filtered reason. The control: a preview naming the key's
+// repository selects it.
+func TestGatewayKey_ARepoLessPreviewSaysTheEnvFundedAnswerIsConditional(t *testing.T) {
+	p, _ := gatewayKeyPublisher(t)
+	seedGatewayKey(t, p.apiKeys, p.sealer, "team1", func(k *secrets.ApiKey) { k.Repos = []string{gwRepo} })
+	preview, err := previewReadOnly(p).PreviewCredentials(store.WithTenant(context.Background(), "team1"), previewSpec("team1", "owner1"), gatewayOnlyWorkflow())
+	if err != nil {
+		t.Fatalf("preview: %v", err)
+	}
+	conditional := false
+	for _, w := range preview.Warnings {
+		if strings.Contains(w, "no credential tier this launch consults holds a gateway key serving it") {
+			t.Fatalf("the repo-less preview states unconditionally that no tier holds a gateway key: %q", w)
+		}
+		if strings.Contains(w, "team gateway") && strings.Contains(w, "repositories this preview does not know") {
+			conditional = true
+		}
+	}
+	if !conditional {
+		t.Fatalf("the preview does not say its env-funded answer depends on the launch's repository: %v", preview.Warnings)
+	}
+	listed := false
+	for _, c := range preview.Candidates {
+		if c.Provider == string(secrets.ProviderOpenAICompatible) && c.State == "repo_filtered" && strings.Contains(c.Reason, "none is known to this preview") && !c.Selected {
+			listed = true
+		}
+	}
+	if !listed {
+		t.Fatalf("the repo-restricted gateway key is not listed with its repo_filtered reason: %+v", preview.Candidates)
+	}
+	control, err := previewReadOnly(p).PreviewCredentials(gatewayLaunchCtx(), previewSpec("team1", "owner1"), gatewayOnlyWorkflow())
+	if err != nil {
+		t.Fatalf("preview (control): %v", err)
+	}
+	if got := selectedDescriptions(control); !slices.Contains(got, "team:api_key:openai_compatible") {
+		t.Fatalf("control: a preview naming the key's repository selected %v, want the gateway key", got)
 	}
 }

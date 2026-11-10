@@ -159,7 +159,11 @@ func (p *Publisher) previewCredentials(ctx context.Context, spec runview.Credent
 	// derivation below reads, exactly as the launch's walk does — and the
 	// gateway slot seals for no candidate of a run that rides no gateway
 	// route, the gate the live walk joins to the same policy.
-	gateway := p.gatewayRouting(x.ctx, previewView, spec.Context.TeamID, x.orgID, spec.OwnerID, previewBotID, sovereignPreview, pooledPreview, gatewayProbe{lists: x.policy, allowed: x.allowed})
+	// A preview that names no repository does not know the launch's (the
+	// source may serve several, or a pattern): a gateway key its repository
+	// audience alone keeps out is reported, never read as absent.
+	gateway := p.gatewayRouting(x.ctx, previewView, spec.Context.TeamID, x.orgID, spec.OwnerID, previewBotID, sovereignPreview, pooledPreview,
+		gatewayProbe{lists: x.policy, allowed: x.allowed, repoUnknown: secrets.LaunchRepoFromContext(x.ctx) == ""})
 	previewView, envFunded := gateway.view, gateway.envFunded
 	x.policy = x.policy.withGatewaySlot(gateway.sealable)
 	if sovereignPreview && !envFunded {
@@ -175,12 +179,19 @@ func (p *Publisher) previewCredentials(ctx context.Context, spec runview.Credent
 		x.warn("The run is untrusted (fork lane) and executes on its lane's runner pool: the shared tiers (org, pool, platform) are not consulted, the runner's environment is refused and a forfait cannot cross its sandbox — only the team's own vendor API keys fund it, on routes decided before the run (no gateway route, no ${…} dial or late var the pool's runner resolves itself), and any other route refuses the launch before it is metered.")
 	}
 	switch {
+	case envFunded && gateway.repoOnly != nil:
+		// The answer depends on the repository the launch will name: on one
+		// the key lists, it seals and the run is held to the team's gateway.
+		x.conditional("Every model route of this run rides the runner's openai_compatible gateway unless the launch's repository is one a gateway key names: " + repoOnlyGatewayKey(gateway.repoOnly) + " — a launch on one of them seals it and the run is held to the team's gateway (team_gateway); on any other no credential is acquired for it.")
+		x.addRepoOnlyGatewayKey(gateway.repoOnly, spec.OwnerID)
 	case envFunded && gateway.note != "":
 		x.out.Warnings = append(x.out.Warnings, "Every model route of this run rides the runner's openai_compatible gateway: "+gateway.note+" — no credential is acquired for it.")
 	case envFunded:
 		x.out.Warnings = append(x.out.Warnings, "Every model route of this run rides the runner's openai_compatible gateway, and no credential tier this launch consults holds a gateway key serving it: no credential is acquired for it.")
 	case gateway.note != "" && !gateway.view.GatewayKeyFunded:
 		x.warn("The run's openai_compatible routes ride the runner's environment gateway: " + gateway.note + ".")
+	case gateway.repoOnly != nil && !gateway.view.GatewayKeyFunded:
+		x.warn("The run's openai_compatible routes ride the runner's environment gateway unless the launch's repository is one a gateway key names: " + repoOnlyGatewayKey(gateway.repoOnly) + ".")
 	}
 	if !envFunded {
 		if pooledPreview && !untrustedPreview {
@@ -1124,6 +1135,34 @@ func (x *credentialPreview) windows(ctx context.Context, c *runview.CredentialPr
 		c.Reason = "No fresh usage-window observation; the launch assumes availability."
 	}
 	return false, false
+}
+
+// repoOnlyGatewayKey names a gateway key only its repository audience keeps
+// from a preview that knows no repository. The key's own repository list
+// stays out, as the candidate's reason keeps it out: a shared-tier key's
+// repositories are its owner's to know.
+func repoOnlyGatewayKey(h *heldGatewayKey) string {
+	return fmt.Sprintf("the %s tier's gateway key %q (%s) is restricted to repositories this preview does not know", h.tier, h.key.Name, h.key.ID)
+}
+
+// addRepoOnlyGatewayKey lists that key for an env-funded preview, whose tier
+// walk is skipped: the repo_filtered state and reason apiStage gives a key
+// its repository audience keeps out, not consulted, conditional on the
+// launch's repository.
+func (x *credentialPreview) addRepoOnlyGatewayKey(h *heldGatewayKey, owner string) {
+	k := h.key
+	c := runview.CredentialPreviewCandidate{Tier: h.tier, Source: "api_key", Provider: string(k.Provider), Wire: secrets.WireFamily(string(k.Provider)),
+		Label: k.Name, State: string(credpool.StatusRepoFiltered), Selection: "not_consulted", Conditional: true, Windows: []runview.CredentialPreviewWindow{},
+		Reason: " This key's repository audience does not name " + previewLaunchRepo("") + ". A launch on a repository it names seals it; on any other the run rides the runner's gateway."}
+	switch {
+	case h.tier == "tenant" && k.ScopeUserID == owner && owner != "":
+		c.Tier = "user"
+	case h.tier == "tenant":
+		c.Tier = "team"
+	default:
+		c.Label = "Shared " + h.tier + " API key"
+	}
+	x.add(c)
 }
 
 // previewLaunchRepo names the repository a preview was asked for. A preview

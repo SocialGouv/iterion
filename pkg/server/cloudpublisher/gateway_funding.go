@@ -51,6 +51,19 @@ type gatewayRoutes struct {
 	// the env-funded line, and the unfunded refusal of an attributed route
 	// that sealed nothing (heldOut).
 	note string
+	// repoOnly is a gateway key a consulted tier holds that only its
+	// repository audience keeps from a launch whose repository is UNKNOWN
+	// (the preview's: a personal source, a pattern or several repositories,
+	// gatewayProbe.repoUnknown) — a launch on a repository it names seals
+	// it, any other rides the runner's gateway. nil on a launch, which
+	// always knows its repository.
+	repoOnly *heldGatewayKey
+}
+
+// heldGatewayKey is a gateway key the probe held, with the tier it lives in.
+type heldGatewayKey struct {
+	tier string
+	key  secrets.ApiKey
 }
 
 // heldOut is the note keyed by the provider the unfunded refusal names: what
@@ -78,6 +91,10 @@ type gatewayProbe struct {
 	// walk opens it (secrets.OpenApiKey); nil assumes it opens — the
 	// preview's posture: it opens no secret and assumes materialization.
 	opens func(secrets.ApiKey) error
+	// repoUnknown marks a probe whose launch repository is not known (the
+	// preview's, when it names none): a key its repository audience alone
+	// keeps out is reported (gatewayRoutes.repoOnly), never read as absent.
+	repoUnknown bool
 }
 
 // gatewayRouting is ADR-131 §5's one answer about a run's gateway routes,
@@ -131,6 +148,7 @@ func (p *Publisher) gatewayRouting(ctx context.Context, view model.RouteView, te
 		sealable:  attributed || undecidedOnPool,
 		mayRide:   routed || undecidedOnPool,
 		note:      hold.note,
+		repoOnly:  hold.repoOnly,
 	}
 }
 
@@ -138,8 +156,9 @@ func (p *Publisher) gatewayRouting(ctx context.Context, view model.RouteView, te
 // gateway key that funds the run, and the note naming what it held that
 // cannot (gatewayRoutes.note).
 type gatewayHold struct {
-	funds bool
-	note  string
+	funds    bool
+	note     string
+	repoOnly *heldGatewayKey
 }
 
 // gatewayKeyHold answers "the team holds a gateway key that funds the run"
@@ -173,6 +192,7 @@ func (p *Publisher) gatewayKeyHold(ctx context.Context, tenantID, orgID, ownerID
 	repo := secrets.LaunchRepoFromContext(ctx)
 	slot := slotOfProvider(secrets.ProviderOpenAICompatible)
 	unopened := ""
+	var repoOnly *heldGatewayKey
 	// visit answers for one tier: decided reports that the tier settles the
 	// probe (a key that funds the run, the lists holding the slot out, or a
 	// list that failed); otherwise the walk moves to the next tier, as the
@@ -187,7 +207,13 @@ func (p *Publisher) gatewayKeyHold(ctx context.Context, tenantID, orgID, ownerID
 		}
 		for _, c := range secrets.OrderedAPIKeyCandidates(visible, userID, []secrets.Provider{secrets.ProviderOpenAICompatible}, nil) {
 			k := c.Key
-			if !k.ServesBotForLaunch(audienceBotID) || !k.ServesRepoForLaunch(repo) {
+			if !k.ServesBotForLaunch(audienceBotID) {
+				continue
+			}
+			if !k.ServesRepoForLaunch(repo) {
+				if probe.repoUnknown && repo == "" && repoOnly == nil {
+					repoOnly = &heldGatewayKey{tier: tier, key: k}
+				}
 				continue
 			}
 			held := fmt.Sprintf("the %s tier's gateway key %q (%s) serves this launch", tier, k.Name, k.ID)
@@ -222,5 +248,5 @@ func (p *Publisher) gatewayKeyHold(ctx context.Context, tenantID, orgID, ownerID
 			}
 		}
 	}
-	return gatewayHold{note: unopened}
+	return gatewayHold{note: unopened, repoOnly: repoOnly}
 }
