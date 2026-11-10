@@ -63,7 +63,14 @@ that exist. The lane's blocking proof replaces the PR's:
    directory — a bypass that cannot be grepped is a bypass that did not happen.
 5. **The witnesses, post-hoc.** The GitHub CI still fires on every push to
    `main`; a cancelled or missing witness run is NOT success in the landing
-   record; a red `main` outranks every other work until green.
+   record; a red `main` outranks every other work until green. **Do not read the
+   run for your exact sha** — `tests.yml` holds
+   `concurrency: ${{ github.workflow }}-${{ github.ref }}` with
+   `cancel-in-progress: true`, so on `main` the next commit cancels your run and
+   that cancellation means nothing about your change (measured 2026-11-10: 15 of
+   the last 30 `main` runs cancelled). The witness is the first run that
+   **completes** on a `main` tip containing your commit
+   (`git merge-base --is-ancestor <sha> <tip>`).
 
 Courtesies that are duties: warn the sessions with PRs in flight before the
 first push of a wave (a direct push invalidates their merge groups), and warn
