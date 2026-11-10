@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [5.18.0](https://github.com/SocialGouv/iterion/compare/v5.17.2...v5.18.0) (2026-11-10)
+
+### Features
+
+* **studio,docs,cli:** a compact cloud setup prompt, featured on iterion.cloud only ([#3157](https://github.com/SocialGouv/iterion/issues/3157)) ([f438b96](https://github.com/SocialGouv/iterion/commit/f438b96d5892e6cd005cc2be3e68ab7c4813fae0)), references [#3149](https://github.com/SocialGouv/iterion/issues/3149) [#1429](https://github.com/SocialGouv/iterion/issues/1429)
+
+    <details><summary>why</summary>
+
+    feat(studio,docs,cli): a compact cloud setup prompt, featured on iterion.cloud only
+
+    </details>
+
 ## [5.17.2](https://github.com/SocialGouv/iterion/compare/v5.17.1...v5.17.2) (2026-11-10)
 
 ### Bug Fixes
