@@ -23,6 +23,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/server/cloudpublisher"
 	"github.com/SocialGouv/iterion/pkg/store"
+	mongostore "github.com/SocialGouv/iterion/pkg/store/mongo"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
 )
 
@@ -438,6 +439,116 @@ func TestHandleResumeRun_AForkRunWhoseTeamLostItsKeyIsRefusedBeforeMetering(t *t
 			t.Fatalf("charged %v, want the org's subject and the author's", got)
 		}
 	})
+}
+
+// unfundedForkResume is the resume rig of the two other gated resume
+// carriers: the real publisher behind the run service, the fork run of
+// seedFundedForkRun, the gate's charges recorded — and, under the team, only
+// a platform key, which funds no fork run (funded: the team's own key).
+func unfundedForkResume(t *testing.T, funded bool) (*Server, *forkFundingRig, *chargeRecorder, *orgusage.MemoryCounter, context.Context) {
+	t.Helper()
+	s := newOrgTestServer(t)
+	s.cfg.WorkDir = t.TempDir()
+	counter := orgusage.NewMemoryCounter()
+	rec := &chargeRecorder{Counter: counter}
+	s.orgUsage = rec
+	ctx := seedGate(t, s, gateSpec{id: "t1"})
+	rig := newForkFundingRig(t, s)
+	seedFundedForkRun(t, s, rig.rs)
+	if funded {
+		rig.seedKey(t, "t1")
+	} else {
+		rig.seedKey(t, secrets.PlatformTenantID)
+	}
+	return s, rig, rec, counter, ctx
+}
+
+// The retry sweeper's resume of a fork run is judged by the same funding
+// judge before it meters: a fork run whose team lost its own key since the
+// launch is refused unmetered, and its retry ABANDONED — fork_run_unfunded is
+// permanent until someone provisions a key. With the key back, the same
+// retry is admitted, metered on both counters and resumed.
+//
+// Mutation: resumeDueRetry's subject stripped of its funding judge
+// (`subj.Funding = nil` after resumeLaunchSubject) → the retry is metered on
+// the org and the author and handed to the resumer (red on the abandon and
+// the uncharged assertions).
+func TestSweepDueRetries_AnUnfundedForkRunIsRefusedBeforeMetering(t *testing.T) {
+	due := func() mongostore.RetryDueRef {
+		ref := dueRef("run-fork", time.Now().UTC().Add(-time.Minute))
+		ref.TenantID, ref.OwnerID = "t1", "u1"
+		return ref
+	}
+	// A run under retry is failed_resumable, the status the sweeper resumes.
+	retryable := func(t *testing.T, s *Server, rig *forkFundingRig) {
+		t.Helper()
+		r, err := rig.rs.LoadRun(context.Background(), "run-fork")
+		if err != nil {
+			t.Fatal(err)
+		}
+		r.Status = store.RunStatusFailedResumable
+		if err := rig.rs.SaveRun(context.Background(), r); err != nil {
+			t.Fatal(err)
+		}
+		s.cfg.Store = rig.rs
+	}
+	t.Run("the team lost its key: abandoned, nothing metered", func(t *testing.T) {
+		s, rig, rec, counter, _ := unfundedForkResume(t, false)
+		retryable(t, s, rig)
+		st := newFakeRetryStore()
+		st.claimWins["run-fork"] = true
+		resumer := &fakeResumer{}
+		s.resumeDueRetry(context.Background(), st, resumer, due())
+		if reason, ok := st.abandoned["run-fork"]; !ok || !strings.Contains(reason, denyForkRunUnfunded) {
+			t.Fatalf("abandoned=%v re-armed=%v, want the retry abandoned naming %s", st.abandoned, st.rearmed, denyForkRunUnfunded)
+		}
+		assertUncharged(t, rec, counter, forkGestureAuthor)
+		if len(resumer.calls) != 0 {
+			t.Fatalf("the sweeper resumed %d time(s) a fork run its team cannot fund", len(resumer.calls))
+		}
+	})
+	t.Run("the key is back: the retry is metered and resumed", func(t *testing.T) {
+		s, rig, rec, _, _ := unfundedForkResume(t, true)
+		retryable(t, s, rig)
+		st := newFakeRetryStore()
+		st.claimWins["run-fork"] = true
+		resumer := &fakeResumer{}
+		s.resumeDueRetry(context.Background(), st, resumer, due())
+		if len(resumer.calls) != 1 {
+			t.Fatalf("resumer calls=%d abandoned=%v re-armed=%v, want the funded fork run resumed", len(resumer.calls), st.abandoned, st.rearmed)
+		}
+		if got := rec.charges(); len(got) != 2 {
+			t.Fatalf("charged %v, want the org's subject and the author's", got)
+		}
+	})
+}
+
+// The WS answer twin, the gated surface that resumes a paused_waiting_human
+// run: a fork run whose team lost its own key is refused with
+// fork_run_unfunded before the answer meters anything, and nothing reaches the
+// publisher.
+//
+// Mutation: handleAnswer's subject stripped of its funding judge
+// (`subj.Funding = nil` after resumeLaunchSubject) → the answer is metered
+// before anything refuses it (red on the error code and the uncharged
+// assertion).
+func TestRunsWS_HandleAnswer_AnUnfundedForkRunIsRefusedBeforeMetering(t *testing.T) {
+	s, rig, rec, counter, ctx := unfundedForkResume(t, false)
+	id, _ := auth.FromContext(ctx)
+	c := &runConn{server: s, runID: "run-fork", sendCh: make(chan []byte, 8), closed: make(chan struct{}),
+		tenantID: id.TeamID, userID: id.UserID, identity: id}
+	payload, err := json.Marshal(map[string]any{"answers": map[string]any{"q": "a"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.handleAnswer(runWSEnvelope{Type: wsTypeAnswer, AckID: "a", Payload: payload})
+	if got := firstWSError(t, c).Code; got != denyForkRunUnfunded {
+		t.Fatalf("error code = %q, want %q — a fork run its team cannot fund is refused before the answer meters", got, denyForkRunUnfunded)
+	}
+	assertUncharged(t, rec, counter, forkGestureAuthor)
+	if n := len(rig.published()); n != 0 {
+		t.Fatalf("published %d resume(s)", n)
+	}
 }
 
 // A fork run whose program can no longer be built — its bot file is gone —
