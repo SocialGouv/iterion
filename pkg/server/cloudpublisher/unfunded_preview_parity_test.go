@@ -138,7 +138,7 @@ func TestResolve_LLMFallbackNone_APolicyLadderRungDoesNotDisarmTheRefusal(t *tes
 		// The premise, stated through the producer the launch reads: on the
 		// pre-ladder set EVERY attributed provider is unfunded, which is
 		// exactly what the knob refuses.
-		if r := unfundedRefusalFor("team1", routeAttribution{providers: compiled.Providers, pins: compiled.Pins}, funded, false, unfundedPosture{Knob: true}, nil); r == nil {
+		if r := unfundedRefusalFor("team1", routeAttribution{providers: compiled.Providers, pins: compiled.Pins, primary: compiled.DecidedPrimary}, funded, false, unfundedPosture{Knob: true}, nil); r == nil {
 			t.Fatalf("premise lost: the pre-ladder set %v no longer refuses under the knob, so this test cannot see the ordering it names", compiled.Providers)
 		}
 		if err != nil {
@@ -290,7 +290,7 @@ func TestCredentialPreview_JudgesTheProgramThePolicyLadderComposed(t *testing.T)
 	// The premise, stated through the producer both surfaces read: on the
 	// AUTHORED program the knob's rule refuses. Without it this witness
 	// cannot see the stage it judges.
-	if r := unfundedRefusalFor("team1", routeAttribution{providers: authored.Providers, pins: authored.Pins},
+	if r := unfundedRefusalFor("team1", routeAttribution{providers: authored.Providers, pins: authored.Pins, primary: authored.DecidedPrimary},
 		fundedProviderSet([]secrets.Provider{secrets.ProviderZAI}, nil, unfundedPosture{}), false, unfundedPosture{Knob: true}, nil); r == nil {
 		t.Fatalf("premise lost: the authored set %v no longer refuses under the knob", authored.Providers)
 	}

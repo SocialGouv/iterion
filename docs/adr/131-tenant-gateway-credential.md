@@ -122,10 +122,14 @@ never re-derives them. `RunBundle.AmbientLLMRefused` is armed on the same value 
 derived at launch, the frozen one at resume — ORed with ADR-162's untrusted arm,
 never clearing it; a resume replaying `team_gateway` seals its bundle even with
 nothing in it, so the refusal keeps its carriage when the team's key is gone. The same
-value arms the unfunded refusal strictly: a `team_gateway` run's route nothing in the
-bundle funds can only die at the runner, so it is refused by name at launch (or resume)
-whatever `ITERION_CLOUD_REQUIRE_LLM_CREDENTIAL` says, with the boundary's own sentence
-(`UnfundedProvidersError.TeamGateway`); the preview mirrors it.
+value arms the unfunded refusal strictly: a `team_gateway` run's node whose own decided
+route (`model.ProviderResolution.DecidedPrimary`: a primary route reading neither the
+environment nor an undecided var) nothing in the bundle funds can only die at the runner,
+so it is refused by name at launch (or resume) whatever `ITERION_CLOUD_REQUIRE_LLM_CREDENTIAL`
+says, with the boundary's own sentence (`UnfundedProvidersError.TeamGateway`); the
+preview mirrors it. A provider only a rescue route (`fallbacks:`, the run-level chain)
+or an env dial (`${DIAL:-…}`, which the runner's pod expands with its own environment)
+names is warned about by name, never refused (`teamGatewayTolerated`).
 
 Under `team_gateway` the policy ladder lands no stage on a node whose route goes to
 the gateway: `llmroute.StageModel` refuses it with `ReasonContentBoundary`, since the

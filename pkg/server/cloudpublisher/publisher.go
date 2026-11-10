@@ -1737,6 +1737,13 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	if refusal := unfundedRefusalFor(tenantID, attributed, bundleFunding(bundle, posture), !holdsDefaultLLMCredential(bundle), posture, gateway.heldOut()); refusal != nil {
 		return res, refusal
 	}
+	// What the boundary's strict arm leaves unrefused is said: a provider only
+	// a rescue route or an env dial names, which nothing the run carries funds.
+	if posture.TeamGateway && p.logger != nil {
+		if tolerated := teamGatewayTolerated(attributed.providers, attributed.pins, attributed.primary, bundleFunding(bundle, posture)); tolerated != "" {
+			p.logger.Warn("cloudpublisher: run %s is held to its team's gateway (team_gateway) and no credential it carries funds %s — a rescue route fires only once its node's own route failed, and the runner's pod expands an env dial with its own environment; a call that lands there answers the ambient refusal", runID, tolerated)
+		}
+	}
 	// A run held to its team's gateway seals its bundle even with nothing in
 	// it: the ambient refusal travels there and nowhere else, and without it
 	// the runner would serve the run's gateway routes from the pod's

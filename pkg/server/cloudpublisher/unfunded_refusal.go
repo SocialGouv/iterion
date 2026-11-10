@@ -73,6 +73,10 @@ type routeAttribution struct {
 	// runner refuses ambient.
 	wireReads map[string][]string
 	sites     map[string][]string
+	// primary is the subset of providers a decided primary route names
+	// (model.ProviderResolution.DecidedPrimary), with those sites: the set
+	// the content boundary's strict arm refuses on.
+	primary map[string][]string
 }
 
 // untrustedUnattributed are the unattributed sites the untrusted arm names on
@@ -177,7 +181,7 @@ func (r routeAttribution) decidedProviders() []string {
 func attributedRoutes(view model.RouteView) routeAttribution {
 	res := model.EffectiveProviders(view, walkProviderSet)
 	return routeAttribution{providers: res.Providers, pins: res.Pins, gateway: res.GatewaySites, deferred: res.DeferredSites,
-		unattributed: res.UnattributedSites, wireReads: res.WireDefaultSites, sites: res.Sites}
+		unattributed: res.UnattributedSites, wireReads: res.WireDefaultSites, sites: res.Sites, primary: res.DecidedPrimary}
 }
 
 // fundedProviderSet is what "funded" MEANS for the refusals below and for
@@ -290,12 +294,13 @@ type unfundedPosture struct {
 	// Pool is the runner pool the run is stamped to, named by the untrusted
 	// refusal's sentence ("" when the stamp is not known).
 	Pool string
-	// TeamGateway arms the content boundary's, strict per provider too: a
-	// run held to its team's gateway (ADR-131 §4) carries AmbientLLMRefused,
-	// so every environment fallback of it answers a typed refusal — the pod's
-	// env funds none of its routes, and the knob's tolerance of an unfunded
-	// route ("the env may fund it") does not hold for it. Its route nothing
-	// in the bundle funds could only die at the runner.
+	// TeamGateway arms the content boundary's, strict per provider on the
+	// decided primary routes: a run held to its team's gateway (ADR-131 §4)
+	// carries AmbientLLMRefused, so every environment fallback of it answers a
+	// typed refusal — the pod's env funds none of its routes, and the knob's
+	// tolerance of an unfunded route ("the env may fund it") does not hold for
+	// it. A node's decided route nothing in the bundle funds could only die at
+	// the runner.
 	TeamGateway bool
 }
 
@@ -348,9 +353,11 @@ func (p *Publisher) unfundedPostureFor(wf *ir.Workflow, sovereign, teamGateway, 
 //
 // heldOut names, per provider, what a consulted tier held for it that did not
 // seal (gatewayRoutes.heldOut): a refusal naming that provider carries it, so
-// the sentence never claims no tier holds what one does.
+// the sentence never claims no tier holds what one does. routes.primary is
+// the attributed set's decided primary routes (attributedRoutes), the content
+// boundary's strict set.
 func unfundedRefusalFor(tenant string, routes routeAttribution, funded map[string]bool, holdsNothing bool, posture unfundedPosture, heldOut map[string]string) *UnfundedProvidersError {
-	attributed, sites := routes.providers, routes.pins
+	attributed, sites, primary := routes.providers, routes.pins, routes.primary
 	if posture.Untrusted {
 		holdsNothing = true
 		for prov := range funded {
@@ -392,17 +399,25 @@ func unfundedRefusalFor(tenant string, routes routeAttribution, funded map[strin
 		return nil
 	}
 	// The content boundary first: under team_gateway the environment the
-	// knob's sentence offers is refused, so no unfunded provider is
-	// tolerated and the sentence names the boundary.
+	// knob's sentence offers is refused, so a node's DECIDED primary route
+	// nothing funds is refused by name, the sentence naming the boundary. A
+	// provider only a rescue route or an env dial names is not (the caller
+	// warns, teamGatewayTolerated): a rescue fires only once its node's
+	// funded route failed, and the runner's pod expands a dial with its own
+	// environment — a runner pool's to the gateway the sealed pair funds. The
+	// knob, whose sentence offers the environment, stays out of a
+	// team_gateway run.
 	if posture.TeamGateway {
-		refusal := newUnfundedProvidersError(tenant, unfunded, sites, heldOut, posture.Sovereign)
-		refusal.TeamGateway = true
-		return refusal
-	}
-	// The deployment knob stays permissive: one funded provider lets the run
-	// start — the other route's failure is the run's to report. Only a run
-	// whose EVERY attributed provider is unfunded cannot start at all.
-	if posture.Knob && len(unfunded) == len(attributed) {
+		if strict := unfundedAmong(sortedProviders(primary), funded); len(strict) > 0 {
+			refusal := newUnfundedProvidersError(tenant, strict, primary, heldOut, posture.Sovereign)
+			refusal.TeamGateway = true
+			return refusal
+		}
+	} else if posture.Knob && len(unfunded) == len(attributed) {
+		// The deployment knob stays permissive: one funded provider lets the
+		// run start — the other route's failure is the run's to report. Only
+		// a run whose EVERY attributed provider is unfunded cannot start at
+		// all.
 		return newUnfundedProvidersError(tenant, unfunded, sites, heldOut, false)
 	}
 	// The sovereign policy arms the same refusal STRICTLY, without the
@@ -414,6 +429,36 @@ func unfundedRefusalFor(tenant string, routes routeAttribution, funded map[strin
 		return newUnfundedProvidersError(tenant, unfunded, sites, heldOut, true)
 	}
 	return nil
+}
+
+// sortedProviders lists a provider → sites map's providers, sorted.
+func sortedProviders(m map[string][]string) []string {
+	out := make([]string, 0, len(m))
+	for p := range m {
+		out = append(out, p)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// teamGatewayTolerated names what the content boundary's strict arm leaves
+// unrefused on a team_gateway run: each unfunded provider no decided primary
+// route names — only a rescue route or an env dial does — with the sites
+// naming it. "" when there is none. The launch warns it, the preview mirrors
+// the warning.
+func teamGatewayTolerated(attributed []string, sites, primary map[string][]string, funded map[string]bool) string {
+	var named []string
+	for _, prov := range unfundedAmong(attributed, funded) {
+		if _, strict := primary[prov]; strict {
+			continue
+		}
+		entry := prov
+		if at := sites[prov]; len(at) > 0 {
+			entry = fmt.Sprintf("%s (named by %s)", prov, strings.Join(at, ", "))
+		}
+		named = append(named, entry)
+	}
+	return strings.Join(named, "; ")
 }
 
 // UnfundedProvidersError is the typed refusal of a launch whose attributed
@@ -522,7 +567,7 @@ func (e *UnfundedProvidersError) Error() string {
 	}
 	named := e.namedProviders()
 	if e.TeamGateway && !e.Sovereign {
-		return fmt.Sprintf("cloudpublisher: %v: this run is held to its team's gateway (content boundary team_gateway, ADR-131 §4) — every environment fallback of it is refused, so every provider a route names must be funded by a credential the run carries; provision one for tenant %s: %s",
+		return fmt.Sprintf("cloudpublisher: %v: this run is held to its team's gateway (content boundary team_gateway, ADR-131 §4) — every environment fallback of it is refused, so every provider a node's own decided route names must be funded by a credential the run carries; provision one for tenant %s: %s",
 			runview.ErrNoLLMCredential, e.Tenant, strings.Join(named, "; "))
 	}
 	if e.Sovereign {

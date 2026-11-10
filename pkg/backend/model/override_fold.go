@@ -139,6 +139,17 @@ type ProviderResolution struct {
 	// pruned, never refused. Populated only when an allowlist is in force;
 	// sorted, deduplicated.
 	ForbiddenPrimary map[string][]string
+	// DecidedPrimary maps a provider of Providers to the sites of the
+	// PRIMARY node routes that name it with a DECIDED text: the node's own
+	// chain, an interaction generation, a Verified Action's recovery rungs, a
+	// human node's generation — whose provider and model read neither the
+	// environment (`${…}`: the runner's pod expands it with its own) nor an
+	// undecided var (`{{…}}`). A rescue route (`node#name`, the run-level
+	// chain's `run-fallback#<stage>`) and a supervisor are outside it. The
+	// content boundary's strict refusal reads it: a team_gateway run's
+	// decided primary route that nothing in its bundle funds can only die at
+	// the runner. Sorted, deduplicated.
+	DecidedPrimary map[string][]string
 	// Unreadable lists the routes the walk could not read while an
 	// allowlist was in force — a `{{vars.*}}` or empty-`${…}` field, a
 	// prefix-less model, a hint outside the vocabulary, a model-calling
@@ -373,7 +384,7 @@ func EffectiveProviders(v RouteView, known map[string]bool) ProviderResolution {
 		}
 		seenAnyLLM = true
 		acc.backend, acc.backendLate = "", false
-		acc.site = "supervisor:" + sup.Name
+		acc.site = supervisorSitePrefix + sup.Name
 		acc.resolveDirect(v.field(sup.Model), "")
 	}
 	if !seenAnyLLM {
@@ -400,6 +411,9 @@ func EffectiveProviders(v RouteView, known map[string]bool) ProviderResolution {
 	}
 	return acc.result()
 }
+
+// supervisorSitePrefix opens a supervisor's walk site (`supervisor:<name>`).
+const supervisorSitePrefix = "supervisor:"
 
 // fallbackSite names the walk site a route was read at — the key a pin is
 // recorded under (ProviderResolution.Pins): the node's id for its own
@@ -462,7 +476,9 @@ type providerAccumulator struct {
 	allowed          map[string]bool
 	forbidden        map[string][]string
 	forbiddenPrimary map[string][]string
-	unreadable       []UnreadableRoute
+	// decidedPrimary collects ProviderResolution.DecidedPrimary at endRoute.
+	decidedPrimary map[string][]string
+	unreadable     []UnreadableRoute
 	// route is the route being read (beginRoute/endRoute): its outside
 	// hints, whether an allowed one served, and the wire-default reads it
 	// may commit.
@@ -503,6 +519,12 @@ type routeRead struct {
 	outside []string
 	inside  bool
 	wire    []string
+	// named are the providers the route recorded (hint); deferred marks a
+	// route whose provider or model text reads the environment or an
+	// undecided var (envDeferred) — what it names is this process's
+	// expansion, not the runner's word.
+	named    []string
+	deferred bool
 }
 
 func (a *providerAccumulator) result() ProviderResolution {
@@ -565,6 +587,7 @@ func (a *providerAccumulator) result() ProviderResolution {
 		}
 		res.WireDefaultSites[site] = append([]string{}, sortedSiteSet(slots)...)
 	}
+	res.DecidedPrimary = sortedDedupSites(a.decidedPrimary)
 	sort.Strings(res.Providers)
 	sort.Strings(res.Unknown)
 	sort.Strings(res.EnvFunded)
@@ -677,6 +700,9 @@ func resolveRouteBackend(override, node, wfDefault string) (backend string, from
 // runner expands it to is not this process's word.
 func (a *providerAccumulator) envDeferred(field string, parts ...string) {
 	for _, part := range parts {
+		if (strings.Contains(part, "{{") || strings.Contains(part, "${")) && a.route != nil {
+			a.route.deferred = true
+		}
 		if strings.Contains(part, "{{") {
 			a.envSeen = true
 			a.widen()
@@ -722,6 +748,14 @@ func (a *providerAccumulator) endRoute() {
 		}
 		for _, p := range r.outside {
 			a.forbiddenPrimary[p] = appendSite(a.forbiddenPrimary[p], r.site)
+		}
+	}
+	if r.primary && !r.deferred && !strings.HasPrefix(r.site, supervisorSitePrefix) {
+		for _, p := range r.named {
+			if a.decidedPrimary == nil {
+				a.decidedPrimary = map[string][]string{}
+			}
+			a.decidedPrimary[p] = appendSite(a.decidedPrimary[p], r.site)
 		}
 	}
 	if len(a.allowed) == 0 || r.inside || len(r.outside) == 0 {
@@ -1108,6 +1142,9 @@ func (a *providerAccumulator) hint(raw string) bool {
 		a.providers[h] = true
 		a.pin(h)
 		a.recordSiteProvider(h)
+		if a.route != nil {
+			a.route.named = append(a.route.named, h)
+		}
 		ff, seen := a.forfaitFirst[h]
 		a.forfaitFirst[h] = (!seen || ff) && delegate.ForfaitFirst(a.backend, h)
 		if a.route != nil {

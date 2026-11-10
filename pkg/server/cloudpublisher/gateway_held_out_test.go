@@ -14,7 +14,9 @@
 // row. The launch's unfunded posture blind to the team_gateway boundary →
 // W17, W17b; the preview's → W17's preview assert; the boundary's arm after
 // the knob → W17b. The preview's probe told it knows the repository → W18;
-// the repo-restricted key left unlisted → W18's candidate assert.
+// the repo-restricted key left unlisted → W18's candidate assert. The
+// boundary's strict arm read over the whole attributed set → W20's three rows;
+// the launch's tolerated warning, or the preview's, silenced → W20.
 
 package cloudpublisher
 
@@ -362,4 +364,72 @@ func runviewPreviewSpecAttached() runview.CredentialPreviewSpec {
 	spec := previewSpec(poolTeam, "requester")
 	spec.PoolAttachment = frozenAttachment("pool-att")
 	return spec
+}
+
+// W20 (Y-2 of the round-2 review): the content boundary's strict arm refuses
+// a team_gateway run for a node's DECIDED primary route nothing funds (W17),
+// never for a provider only a rescue route or an env dial names: a rescue
+// fires only once its node's own route failed, and the runner's pod expands
+// a `${DIAL:-vendor/…}` with its own environment — a runner pool's to the
+// gateway the sealed pair funds. The run launches team_gateway, the launch
+// warns naming the provider and its site, and the preview mirrors the warning
+// instead of a refusal.
+func TestGatewayKey_ATeamGatewayRunsRescueAndEnvDialRoutesAreWarnedNotRefused(t *testing.T) {
+	envDial := func() *ir.Workflow {
+		return &ir.Workflow{Nodes: map[string]ir.Node{
+			"gw":     &ir.AgentNode{BaseNode: ir.BaseNode{ID: "gw"}, LLMFields: ir.LLMFields{Backend: "claw", Model: "openai_compatible/team/m"}, Tools: []string{}},
+			"review": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "review"}, LLMFields: ir.LLMFields{Backend: "${W20_UNSET_DIAL_BACKEND:-claw}", Model: "${W20_UNSET_DIAL_MODEL:-anthropic/claude-opus-5}"}, Tools: []string{}},
+		}}
+	}
+	rescue := func() *ir.Workflow {
+		return &ir.Workflow{Nodes: map[string]ir.Node{
+			"gw": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "gw"}, LLMFields: ir.LLMFields{Backend: "claw", Model: "openai_compatible/team/m"}, Tools: []string{}},
+			"review": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "review"}, LLMFields: ir.LLMFields{Backend: "claw", Model: "anthropic/claude-opus-5"}, Tools: []string{},
+				Fallbacks: []ir.Fallback{{Name: "rescue", Backend: "claw", Model: "openai/gpt-6-sol"}}},
+		}}
+	}
+	for _, row := range []struct {
+		name       string
+		wf         func() *ir.Workflow
+		runnerPool string
+		anthropic  bool
+		tolerated  string
+	}{
+		{"an env dial under a runner pool", envDial, "pool-a", false, "anthropic (named by review)"},
+		{"an env dial on the default runner", envDial, "", false, "anthropic (named by review)"},
+		{"a rescue route", rescue, "", true, "openai (named by review#rescue)"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			p, buf := gatewayKeyPublisher(t)
+			seedGatewayKey(t, p.apiKeys, p.sealer, "team1", nil)
+			if row.anthropic {
+				seedKey(t, p.apiKeys, p.sealer, "team1", secrets.ProviderAnthropic, "sk-ant-team")
+			}
+			wf := row.wf()
+			creds, err := p.resolveAndSealCredentials(gatewayLaunchCtx(), "run-gw-20", "", "team1", "owner1", gwBot, row.runnerPool, wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustDefault, nil, nil, nil, boundaryDerived)
+			if err != nil {
+				t.Fatalf("resolveAndSealCredentials = %v, want the team_gateway run launched (log:\n%s)", err, buf.String())
+			}
+			b := openGatewayBundleOn(t, p, "run-gw-20", row.runnerPool, creds)
+			if !creds.contentBoundary.TeamGateway() || b.APIKeys[secrets.ProviderOpenAICompatible] == "" || !b.AmbientLLMRefused {
+				t.Fatalf("fixture: boundary=%+v gateway sealed=%v ambient=%v, want a team_gateway launch", creds.contentBoundary, b.APIKeys[secrets.ProviderOpenAICompatible] != "", b.AmbientLLMRefused)
+			}
+			if !strings.Contains(buf.String(), "no credential it carries funds "+row.tolerated) {
+				t.Fatalf("the launch does not name the tolerated %s (log:\n%s)", row.tolerated, buf.String())
+			}
+			if row.runnerPool != "" {
+				return
+			}
+			preview, perr := previewReadOnly(p).PreviewCredentials(gatewayLaunchCtx(), previewSpec("team1", "owner1"), row.wf())
+			if perr != nil {
+				t.Fatalf("preview: %v", perr)
+			}
+			if w := previewWarning(preview, "The live launch refuses"); w != "" {
+				t.Fatalf("the preview predicts a refusal the launch does not make: %s", w)
+			}
+			if previewWarning(preview, "no credential it carries funds "+row.tolerated) == "" {
+				t.Fatalf("the preview does not mirror the launch's warning naming %s: %v", row.tolerated, preview.Warnings)
+			}
+		})
+	}
 }

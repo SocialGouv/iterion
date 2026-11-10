@@ -515,3 +515,33 @@ func TestEffectiveProviders_EnvTemplatedRoutesWidenAndAreNeverEnvFunded(t *testi
 		})
 	}
 }
+
+// DecidedPrimary names the providers a node's PRIMARY route decides by its
+// own text: a literal route (own chain, interaction generation) is in, a
+// route reading the environment (`${DIAL:-…}`, the runner's pod expands it)
+// or an undecided var is out, and so are a rescue (`fallbacks:`, the
+// run-level chain) and a supervisor — the strict refusal of a team_gateway
+// run reads this set, so a provider only those name is never refused.
+func TestEffectiveProviders_DecidedPrimaryNamesTheDecidedPrimaryRoutesOnly(t *testing.T) {
+	literal := agentWith("literal", "", "anthropic/claude-opus-5")
+	literal.Fallbacks = []ir.Fallback{{Name: "rescue", Model: "openai/gpt-6-sol"}}
+	wf := &ir.Workflow{
+		Nodes: map[string]ir.Node{
+			"literal": literal,
+			"dial":    agentWith("dial", "", "${DECIDED_PRIMARY_UNSET_DIAL:-zai/glm-5.3}"),
+			"late":    agentWith("late", "", "{{vars.model}}"),
+		},
+		Supervisors: []*ir.Supervisor{{Name: "watch", Model: "xai/grok-5"}},
+	}
+	v := RouteView{Workflow: wf, RunFallbacks: []FallbackEntry{{Model: "bedrock/claude-opus-5"}}, LateVars: map[string]bool{"model": true}}
+	res := EffectiveProviders(v, knownForTest)
+	for _, p := range []string{"anthropic", "openai", "zai", "xai", "bedrock"} {
+		if !slices.Contains(res.Providers, p) {
+			t.Fatalf("test premise: the walk records %q, got %v", p, res.Providers)
+		}
+	}
+	want := map[string][]string{"anthropic": {"literal"}}
+	if len(res.DecidedPrimary) != len(want) || !slices.Equal(res.DecidedPrimary["anthropic"], want["anthropic"]) {
+		t.Fatalf("DecidedPrimary = %v, want %v: an env dial, an undecided var, a rescue, the run-level chain and a supervisor name no decided primary route", res.DecidedPrimary, want)
+	}
+}
