@@ -137,6 +137,11 @@ func TestPlanAdmissionMismatch_AStaleProducerParkNamesTheServerRemedy(t *testing
 	teamGateway.ContentBoundary = &store.RunContentBoundary{Kind: store.ContentBoundaryTeamGateway}
 	fork := base(queue.ForkAuthorSubjectSchemaVersion - 1)
 	fork.Trust = store.RunTrustFork
+	// Both rules fire: the remedy is the later producer's version, and
+	// the message names both decisions it predates.
+	both := base(queue.ForkAuthorSubjectSchemaVersion - 1)
+	both.Trust = store.RunTrustFork
+	both.ContentBoundary = &store.RunContentBoundary{Kind: store.ContentBoundaryTeamGateway}
 	future := base(queue.SchemaVersion + 1)
 	for _, row := range []struct {
 		name      string
@@ -146,12 +151,21 @@ func TestPlanAdmissionMismatch_AStaleProducerParkNamesTheServerRemedy(t *testing
 	}{
 		{"team_gateway before its producer", teamGateway, fmt.Sprintf("resume this run from a server replica that publishes v%d or later", queue.ContentBoundaryProducerSchemaVersion), "once the runner fleet accepts"},
 		{"untrusted before the fork author subject", fork, fmt.Sprintf("resume this run from a server replica that publishes v%d or later", queue.ForkAuthorSubjectSchemaVersion), "once the runner fleet accepts"},
+		{"untrusted and team_gateway before both producers", both, fmt.Sprintf("resume this run from a server replica that publishes v%d or later", queue.ContentBoundaryProducerSchemaVersion), fmt.Sprintf("publishes v%d or later", queue.ForkAuthorSubjectSchemaVersion)},
 		{"a version the fleet does not speak (control)", future, "once the runner fleet accepts", "server replica that publishes"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			err := row.msg.Validate()
 			if !errors.Is(err, queue.ErrSchemaVersion) {
 				t.Fatalf("fixture: Validate = %v, want a schema version mismatch", err)
+			}
+			var stale *queue.StaleProducerError
+			if errors.As(err, &stale) && row.msg.ContentBoundary.TeamGateway() && !row.msg.Trust.Trusted() {
+				for _, decision := range []string{"fork author subject", "team_gateway content boundary"} {
+					if !strings.Contains(err.Error(), decision) {
+						t.Fatalf("Validate = %q, want every decision the message predates named (%q missing)", err, decision)
+					}
+				}
 			}
 			plan := planAdmissionMismatch(admissionMismatchSchema, err, 0, queue.Envelope{V: row.msg.V, RunID: "r1"}, 5, 5)
 			if !strings.Contains(plan.parkedRunError, row.want) || strings.Contains(plan.parkedRunError, row.forbidden) {

@@ -738,7 +738,7 @@ var ErrSchemaVersion = errors.New("queue: schema version")
 // so it parks like every version mismatch.
 type StaleProducerError struct {
 	V    int // the message's wire version
-	Want int // the first wire version whose publisher makes the decision
+	Want int // the first wire version whose publisher makes every decision the message needs
 	msg  string
 }
 
@@ -746,8 +746,25 @@ func (e *StaleProducerError) Error() string { return e.msg }
 
 func (e *StaleProducerError) Unwrap() error { return ErrSchemaVersion }
 
-func staleProducer(v, want int, format string, args ...any) error {
-	return &StaleProducerError{V: v, Want: want, msg: ErrSchemaVersion.Error() + ": " + fmt.Sprintf(format, args...)}
+// staleRule is one stale-producer rule that fired: the version whose
+// publisher makes the decision, and the sentence naming it.
+type staleRule struct {
+	want int
+	text string
+}
+
+// staleProducer is the mismatch of every rule that fired: Want is the
+// highest of their versions — a replica publishing a lower one is still
+// stale for another rule — and the sentence names each decision the message
+// predates, in rule order.
+func staleProducer(v int, rules []staleRule) error {
+	want := 0
+	texts := make([]string, 0, len(rules))
+	for _, r := range rules {
+		want = max(want, r.want)
+		texts = append(texts, r.text)
+	}
+	return &StaleProducerError{V: v, Want: want, msg: ErrSchemaVersion.Error() + ": " + strings.Join(texts, "; and ")}
 }
 
 // Validate enforces the invariants a runner must rely on before
@@ -765,6 +782,9 @@ func (m *RunMessage) Validate() error {
 	if m.RunID == "" {
 		return fmt.Errorf("queue: RunID required")
 	}
+	// The stale-producer rules, every one judged: a message breaking two
+	// is parked under both, and its remedy names the later producer.
+	var stale []staleRule
 	// A message older than the fork author subject cannot carry it, so an
 	// UNTRUSTED one would run with the author's per-contributor dollar bound
 	// unenforced: a server replica still on v28 mid-rollout republishing the
@@ -772,7 +792,7 @@ func (m *RunMessage) Validate() error {
 	// mismatch — transient, never Termed — so a resume from an upgraded
 	// server, whose gate meters the author, recovers it.
 	if m.V < ForkAuthorSubjectSchemaVersion && !m.Trust.Trusted() {
-		return staleProducer(m.V, ForkAuthorSubjectSchemaVersion, "a v%d message carries trust %q but predates the fork author subject (v%d) — parked for a resume from an upgraded server rather than run with the author's bound unenforced", m.V, string(m.Trust), ForkAuthorSubjectSchemaVersion)
+		stale = append(stale, staleRule{ForkAuthorSubjectSchemaVersion, fmt.Sprintf("a v%d message carries trust %q but predates the fork author subject (v%d) — parked for a resume from an upgraded server rather than run with the author's bound unenforced", m.V, string(m.Trust), ForkAuthorSubjectSchemaVersion)})
 	}
 	// A message older than the stamp's producer replays a team_gateway stamp
 	// it did not derive (a stale replica resuming a run an upgraded one
@@ -780,7 +800,10 @@ func (m *RunMessage) Validate() error {
 	// ambient refusal, so the run's gateway routes would spend the pod's
 	// environment. Parked as a version mismatch, like the rule above.
 	if m.V < ContentBoundaryProducerSchemaVersion && m.ContentBoundary.TeamGateway() {
-		return staleProducer(m.V, ContentBoundaryProducerSchemaVersion, "a v%d message carries the team_gateway content boundary but predates its producer (v%d) — parked for a resume from an upgraded server rather than run with the run's gateway unsealed and the pod's environment admitted", m.V, ContentBoundaryProducerSchemaVersion)
+		stale = append(stale, staleRule{ContentBoundaryProducerSchemaVersion, fmt.Sprintf("a v%d message carries the team_gateway content boundary but predates its producer (v%d) — parked for a resume from an upgraded server rather than run with the run's gateway unsealed and the pod's environment admitted", m.V, ContentBoundaryProducerSchemaVersion)})
+	}
+	if len(stale) > 0 {
+		return staleProducer(m.V, stale)
 	}
 	// The pool name is grammar-checked, not tenant-checked, and only when
 	// set: an empty pool is the shared default (pre-v22 messages included),
