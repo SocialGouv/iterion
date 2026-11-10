@@ -26,22 +26,30 @@ func seedGatewayKey(t *testing.T, keys secrets.ApiKeyStore, sealer secrets.Seale
 	return k
 }
 
-// A gateway key is storable but no run spends it until the walk learns the
-// provider (#2005 PR-C'). A webhook pin on one would be dropped at launch
-// without a word, so the write refuses it — the operator's explicit choice
-// is never replaced in silence. PR-C' lifts this refusal.
-func TestValidateKeyOverrides_RefusesAGatewayKeyUntilTheWalkSpendsIt(t *testing.T) {
+// ADR-131 §6, the write half of the gateway pin: the walk spends a team's
+// gateway key (#2005 PR-C'), so a webhook pin on one is admitted at write like
+// a pin on any key of the team. Its exclusivity is the launch's to enforce —
+// a pinned gateway key that is deleted, withheld by an audience or
+// undecryptable when the run walks refuses the launch by name
+// (pkg/server/cloudpublisher's TestGatewayPin_ABrokenPinRefusesTheLaunchByName).
+// The spendability arm still applies to it: a user-scoped gateway key is
+// invisible to the lane's synthetic actor, so the write is still where that
+// pin is refused.
+func TestValidateKeyOverrides_AdmitsAGatewayKeyPin(t *testing.T) {
 	sealer, _ := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 	keys := secrets.NewMemoryApiKeyStore()
 	k := seedGatewayKey(t, keys, sealer, "t1", "")
 	s := &Server{apiKeys: keys}
 	ctx := store.WithTenant(t.Context(), "t1")
-	err := s.validateKeyOverrides(ctx, "t1", webhookActor("wh-gw"), map[string]string{"openai_compatible": k.ID})
-	if err == nil || !strings.Contains(err.Error(), "no run spends yet") {
-		t.Fatalf("a pin on a gateway key = %v, want a refusal naming the inert state", err)
+	if err := s.validateKeyOverrides(ctx, "t1", webhookActor("wh-gw"), map[string]string{"openai_compatible": k.ID}); err != nil {
+		t.Fatalf("a pin on the team's gateway key refused at write: %v", err)
 	}
-	// The guard is about the provider, not about this key: a vendor key
-	// of the tenant still pins.
+	personal := seedGatewayKey(t, keys, sealer, "t1", "u1")
+	err := s.validateKeyOverrides(ctx, "t1", webhookActor("wh-gw"), map[string]string{"openai_compatible": personal.ID})
+	if err == nil || !strings.Contains(err.Error(), "not spendable by this lane") {
+		t.Fatalf("a pin on a user-scoped gateway key = %v, want the spendability refusal", err)
+	}
+	// The vendor control: a vendor key of the tenant pins as it always did.
 	vendor := secrets.ApiKey{ID: secrets.NewApiKeyID(), TenantID: "t1", ScopeTeamID: "t1", Provider: secrets.ProviderAnthropic, Name: "ant", CreatedAt: time.Now().UTC()}
 	if err := keys.Create(ctx, vendor); err != nil {
 		t.Fatal(err)

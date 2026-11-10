@@ -1471,6 +1471,17 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	}
 	res.skippedReopensAt = skips.earliest
 
+	// ADR-131 §6: a pin on a gateway key is exclusive (gateway_pin.go). Asked
+	// HERE: after the tier walk — every tier that could fill the gateway slot
+	// has had its turn, and an env-funded run's walk consulted none — and
+	// before the content boundary is derived from what sealed, so a refused
+	// pin stamps no boundary on a key the operator did not name. Returned
+	// WITH res: a pool grant the walk acquired must reach the caller's
+	// release.
+	if refusal := p.gatewayPinRefusal(ctx, tenantID, ownerID, audienceBotID, keyOverrides, gateway.mayRide, bundle, apiKeyIDs, policy, allowed); refusal != nil {
+		return res, refusal
+	}
+
 	// The run's content boundary (ADR-131 §4), decided HERE: after the tier
 	// walk, the last step that may seal the gateway key (the door never
 	// lends one, the pool and the door refuse it by name), and before the
@@ -2911,6 +2922,11 @@ func (p *Publisher) evaluateCredentialWindows(ctx context.Context, readings []us
 // warnRefusedPins says out loud that a PINNED key is one the provider is
 // currently refusing.
 //
+// Its fate lines are a vendor pin's: a gateway pin is exclusive (ADR-131 §6)
+// — honoured, idle on a run that rides no gateway route, or refused by name
+// at the walk's end (gatewayPinRefusal) — never warned about and walked past.
+// The usage-evidence line below still speaks for an honoured gateway pin.
+//
 // The pin bypasses the evidence predicate by design — the operator named
 // that key, and honouring the pin over the optimisation is what keeps the
 // predicate an optimisation. But the bypass is silent: the only trace of a
@@ -2967,6 +2983,13 @@ func (p *Publisher) warnRefusedPins(ctx context.Context, runID, tenantID, botID 
 		}
 	}
 	for prov, keyID := range overrides {
+		// A gateway pin's fate is not a warning: it is exclusive (ADR-131 §6),
+		// so gatewayPinRefusal refuses the launch by name when the run may
+		// ride the gateway, and a run that rides none has no use for the key
+		// — its slot is out for that reason, which no frozen list caused.
+		if prov == secrets.ProviderOpenAICompatible {
+			continue
+		}
 		switch {
 		case withheld.holds(keyID):
 			p.logger.Warn(

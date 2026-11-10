@@ -27,6 +27,14 @@ type gatewayRoutes struct {
 	// always-proxied and keeps a subbot out of its parent's sandbox, all for
 	// a key no route spends.
 	sealable bool
+	// mayRide: the run may ride a gateway route once a key funds it — a
+	// decided gateway route on the keyed reading, or a route the walk cannot
+	// decide — whatever the probe found. It differs from sealable on one
+	// shape only: a decided gateway route no tier holds a key for, which the
+	// unkeyed reading leaves to the pod's environment. A gateway pin governs
+	// every run this names (gatewayPinRefusal): a pinned key the probe cannot
+	// see is no reason for the pod's gateway to serve the routes in its place.
+	mayRide bool
 }
 
 // gatewayRouting is ADR-131 §5's one answer about a run's gateway routes,
@@ -55,13 +63,15 @@ type gatewayRoutes struct {
 // slot included.
 func (p *Publisher) gatewayRouting(ctx context.Context, view model.RouteView, tenantID, orgID, ownerID, audienceBotID string, sovereign, pooled bool) gatewayRoutes {
 	if view.Workflow == nil {
-		return gatewayRoutes{view: view, sealable: true}
+		return gatewayRoutes{view: view, sealable: true, mayRide: true}
 	}
 	gw := string(secrets.ProviderOpenAICompatible)
 	keyed := view
 	keyed.GatewayKeyFunded = true
 	walk := model.EffectiveProviders(keyed, walkProviderSet)
-	attributed := slices.Contains(walk.Providers, gw) &&
+	routed := slices.Contains(walk.Providers, gw)
+	mayRide := routed || !walk.NarrowSafe || walk.EnvDeferred
+	attributed := routed &&
 		((sovereign && !pooled) || p.gatewayKeyHeld(ctx, tenantID, orgID, ownerID, audienceBotID, sovereign || pooled))
 	if !attributed {
 		keyed, walk = view, model.EffectiveProviders(view, walkProviderSet)
@@ -70,6 +80,7 @@ func (p *Publisher) gatewayRouting(ctx context.Context, view model.RouteView, te
 		view:      keyed,
 		envFunded: walk.OnlyEnvFunded(),
 		sealable:  slices.Contains(walk.Providers, gw) || !walk.NarrowSafe || walk.EnvDeferred,
+		mayRide:   mayRide,
 	}
 }
 

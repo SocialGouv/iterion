@@ -133,3 +133,24 @@ Runners and pools roll first, the server after (§10): with the minimum unchange
 no trusted message parks in either direction; the v29 rule still parks an
 untrusted message older than v29 (docs/cloud-queue-schema-rollout.md, v29 and
 v30).
+
+### The pin's exclusivity (#2005 PR-C', same date)
+
+§6's pin lands; the Delivery's write-time guard is lifted. `validateKeyOverrides` admits a
+pin on an `openai_compatible` key like a pin on any key of the team — its spendability arm
+stays, so a user-scoped gateway key is still refused under the lane's synthetic actor. The
+exclusivity is ONE chokepoint in the walk (`gatewayPinRefusal`), asked after the tier walk and
+before the content boundary is derived: when a run that may ride a gateway route
+(`gatewayRoutes.mayRide` — a decided gateway route on the keyed reading, or an undecided
+route, whatever the probe found) carries a gateway pin, its gateway slot must hold the very
+key the pin names, or the launch is refused with `GatewayPinRefusedError` naming the key and
+why: missing (deleted), withheld by its bot or repository audience, invisible to the launch's
+identity, undecryptable, or held out by the run's providers allowlist or frozen pair order.
+It reads what the walk SEALED, so the shapes the walk would otherwise end in — the team's
+other gateway key, a shared tier's, an attached pool's entry, or an env-funded run whose
+walk consulted no tier once the pinned key was out of the probe's sight — are all refused
+the same way. A resume replays the run's pins through the same walk and is held to the same
+rule. A run that rides no gateway route leaves the pin idle. `warnRefusedPins` keeps its
+warn-only lines for vendor pins and says nothing of a gateway pin's fate. The rule holds
+wherever a pin reaches the walk (the webhook lane, the trigger spine, a resume); §6's lane
+stamps for the scheduled and board lanes stay PR-R's.

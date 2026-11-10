@@ -98,7 +98,7 @@ One document per key, sealed at rest. [pkg/secrets/byok.go](../pkg/secrets/byok.
 | `tenant_id` | the tenant the row is stored under: the team, or a reserved sentinel — `orgtier:<org id>` for an org's shared keys, `platform:` for the deployment's. Every store read but `GetOwned` is tenant-filtered (fail-closed) |
 | `scope_team` | the team the key belongs to |
 | `scope_user` | set ⇒ user-scoped (personal); empty ⇒ **org-wide** |
-| `provider` | `anthropic` \| `openai` \| `bedrock` \| `vertex` \| `azure` \| `openrouter` \| `xai` \| `zai` \| `moonshot` \| `openai_compatible` ([`Provider`](../pkg/secrets/byok.go)) — `openai_compatible` is a tenant-owned gateway (ADR-131): the record carries its base URL; until the walk learns the provider (#2005 PR-C') such a key is storable but never sealed into a run, and from then on a run holding the key spends it |
+| `provider` | `anthropic` \| `openai` \| `bedrock` \| `vertex` \| `azure` \| `openrouter` \| `xai` \| `zai` \| `moonshot` \| `openai_compatible` ([`Provider`](../pkg/secrets/byok.go)) — `openai_compatible` is a tenant-owned gateway (ADR-131): the record carries its base URL, and the credential walk seals the key with it for a run that may ride a gateway route (ADR-131 §5); a webhook pin on one is exclusive ([§6](#per-webhook-key-override)) |
 | `base_url` | gateway root of an `openai_compatible` key (https only, input and stored value each at most 2048 bytes; canonical at write: host lower-cased and in punycode, no default port, no trailing `/v1`, path of ASCII letters, digits and `-._~:@/`; literal non-public addresses, a host written as a number in any base, single-label hosts, reserved and container names — judged after the host is converted — whitespace, non-printable characters and percent-escapes refused; refused on every other provider — on update even blank, on create an empty value is the absent field); not secret, but the seal binds it: a row repointed in the store opens nowhere, and a `base_url` change through the API is a rotation — the secret is re-sent and sealed under the new URL; the stored secret is never re-sealed for a host its holder did not prove it for |
 | `repos` | repository audience: the forge's full path of one repository per entry (`owner/repo`, `group/sub/project`; lower-cased, `.git` dropped; a URL, a host, a glob, an empty or dot segment is refused — such an entry would silently fund nothing); empty admits every repository; checked in `Resolve` before the pin exemption, from the repository the launch stamps on the walk (`WithLaunchRepo`), and a launch that names no repository cannot spend a restricted key. **Where it stops:** the webhook lane, the HTTP repo-targeted launch, the trigger spine (`repo` of the event, asserted by its emitter), resume and fork name a repository; the scheduled, board and pipeline lanes do not yet (#2005 PR-R), so they never spend a restricted key, and a personal-source preview names none; a pledged key is served by the pledge's own rules, as for `bots`; the forfait tiers are not gated. A host prefix (`github.com/o/r`) is not told apart from a sub-group path and funds nothing until fixed — the preview shows it withheld. Operator intent, not an authorisation boundary: the generic webhook's caller asserts `project_path`, the trigger emitter asserts `repo` |
 | `name` | human label |
@@ -421,9 +421,11 @@ stop the excluded run: it walks down to the next key, the org tier, the pool,
 the platform key, and finally the runner pod's ambient env. The bill moves, and
 possibly the vendor. So the publisher logs each withholding once per run, naming
 the key, the audience that refused (bot or repository: the cause travels with
-the withheld key, `secrets.AudienceRefusal`) and what it refused — and a **pin** the audience refuses
+the withheld key, `secrets.AudienceRefusal`) and what it refused — and a vendor **pin** the audience refuses
 gets its own line, because a pin does not lift an audience and losing silently
-is the failure `warnRefusedPins` exists to prevent.
+is the failure `warnRefusedPins` exists to prevent. A gateway pin the audience
+refuses does not walk down at all: the launch is refused by name
+([exclusive](#per-webhook-key-override), ADR-131 §6).
 
 **Where to read it**, precisely, because "the acquisition trace" means two
 surfaces and neither is the run's own event log:
@@ -626,13 +628,30 @@ Mongo clears rewrite that pin map's subdocument under a version CAS
 instead of `unset`-ing a path that would match nothing, so a legacy name
 cannot leave a dead pin standing behind a silent 204 either.
 
-**A pin is honoured or refused, never ignored.** Two shapes would be
-honoured by nobody: a provider the walk does not spend yet (the
-`openai_compatible` gateway, until #2005 PR-C') and a key the launching
-identity cannot see (a user-scoped key under a machine lane's synthetic
-actor). Both are refused where they are WRITTEN, because neither leaves a
-trace downstream — `Resolve` reports the keys it withholds, and an
-invisible key never becomes a candidate to withhold.
+**A pin is honoured or refused, never ignored.** One shape would be
+honoured by nobody: a key the launching identity cannot see (a user-scoped
+key under a machine lane's synthetic actor). It is refused where it is
+WRITTEN, because it leaves no trace downstream — `Resolve` reports the keys
+it withholds, and an invisible key never becomes a candidate to withhold.
+
+**A pin on a gateway key is exclusive** (ADR-131 §6). The write admits an
+`openai_compatible` key like any key of the team; at the walk, the gateway
+slot of a run that may ride a gateway route holds the very key the pin
+names, or the launch — or the resume — is refused by name
+(`cloudpublisher.GatewayPinRefusedError`: the key id and why — deleted,
+withheld by its bot or repository audience, invisible to the launch's
+identity, undecryptable, or held out by the run's providers allowlist or
+frozen pair order). Nothing else pays those routes in its place: not the
+team's other gateway key, not a shared tier's or an attached pool's, not the
+runner pod's environment. One chokepoint decides it after the tier walk
+(`gatewayPinRefusal`), reading what the walk sealed, so the env-funded run —
+whose walk consults no tier once the pinned key is out of sight — is held to
+it too. A run that rides no gateway route leaves the pin idle. A vendor pin
+keeps its warn-only contract (`warnRefusedPins`): a withheld or dropped one
+is said, and the run spends the walk's next key. The rule holds wherever a
+pin reaches the walk — the webhook lane, the trigger spine and a resume; the
+scheduled and board lanes rebuilding the pin from the integration's webhook
+are #2005 PR-R's.
 
 **A pin bypasses the refusal skip, and says so.** The evidence predicate is
 consulted in Pass 2 only: an operator who names a key gets that key, even

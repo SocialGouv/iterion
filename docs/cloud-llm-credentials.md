@@ -290,9 +290,14 @@ a run whose every route rides the gateway is served from the deployment's enviro
 as before. An env-templated route (`${DIAL:-…}`) is never attributed to the key, but
 the key is sealed all the same and claw's dispatch prefers it to the pod's gateway.
 Under `none` a gateway route nothing of the team's own funds is refused by name, a
-pool-stamped run excepted. A webhook pin on a gateway key is still refused at write
-until the pin is made exclusive at launch (ADR-131 §6); the legacy pool and the
-fallback door never lend one.
+pool-stamped run excepted. A webhook pin on a gateway key is exclusive (ADR-131 §6):
+admitted at write like any key of the team, it fills the gateway slot of every run
+that may ride a gateway route, or the launch (or resume) is refused by name — the key
+deleted, withheld by an audience, invisible to the launch's identity, undecryptable or
+held out by a frozen list (`cloudpublisher.GatewayPinRefusedError`) — never served by
+the team's other gateway key, a shared tier or the pod's environment; a run that
+rides no gateway route leaves the pin idle. The legacy pool and the fallback door
+never lend one.
 Moving a key's `base_url` is a rotation — the secret is re-sent and sealed under the
 new URL — so a mutator who never held the secret cannot redirect it. In the sealed run
 bundle the key is ONE credential with its URL: `RunBundle.APIBaseURLs` beside

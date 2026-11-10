@@ -234,10 +234,14 @@ func (pol sharedTierPolicy) sealableSlot(slot string) bool {
 	if pol.gatewayOut(slot) {
 		return false
 	}
-	if pol.slotSealable == nil {
-		return true
-	}
-	return pol.slotSealable(slot)
+	return pol.listsAdmit(slot)
+}
+
+// listsAdmit answers the run's frozen lists alone — the routing pair order
+// and the providers allowlist — without the gateway answer: whether a slot
+// the run rides may seal at all.
+func (pol sharedTierPolicy) listsAdmit(slot string) bool {
+	return pol.slotSealable == nil || pol.slotSealable(slot)
 }
 
 // sealableHeldSlot is the seal gate for a credential the walk HOLDS: the
