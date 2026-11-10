@@ -20,8 +20,8 @@ type gatewayRoutes struct {
 	// it — the walk acquires nothing.
 	envFunded bool
 	// sealable: a tier may seal the gateway slot for the run
-	// (sharedTierPolicy.withGatewaySlot) — the operator's arbitration of
-	// #2005 PR-C' round 1, in two arms. The run ATTRIBUTES a gateway route
+	// (sharedTierPolicy.withGatewaySlot) — the operator's arbitration (ADR-131
+	// §5's seal rule), in two arms. The run ATTRIBUTES a gateway route
 	// to a key (a decided `openai_compatible/…` route under the keyed
 	// view); or some route is one the walk cannot decide — not narrow-safe,
 	// or deferring to the runner's environment (a `${DIAL:-vendor/…}` the
@@ -117,9 +117,9 @@ type gatewayProbe struct {
 // a credential tier the walk consults holds a gateway key serving this launch
 // that can seal for the run (gatewayKeyHold: the run's frozen lists admit the
 // slot and the key opens), or when the team's sovereign posture
-// (llm_fallback=none) owes them one outside a runner pool: such a team's gateway route that
-// nothing of its own funds is refused by name, never served by the pod's
-// environment. A pool-stamped run without a key keeps the env-funded reading
+// (llm_fallback=none) owes them one outside a runner pool: such a team's
+// gateway route that nothing of its own funds is refused by name, never
+// served by the pod's environment. A pool-stamped run without a key keeps the env-funded reading
 // — its pod's gateway is the team's own. Otherwise the view is returned
 // unchanged and the run is env-funded exactly when every route rides the
 // gateway, as before.

@@ -9,8 +9,8 @@ import (
 	"github.com/SocialGouv/iterion/pkg/secrets"
 )
 
-// A lent API key keeps its own audiences (B7 of the #2005 PR-C' round-1
-// review). secrets.Resolve treats a key row's Bots and Repos as a GATE — no
+// A lent API key keeps its own audiences: the pledge's and the key row's
+// intersect (docs/byok.md). secrets.Resolve treats a key row's Bots and Repos as a GATE — no
 // pin and no restore hands the key to a bot or a repository its operator did
 // not name — but the broker opens a lent row by id and checks ownership,
 // provider and expiry only, and a credpool.Request names no repository at
