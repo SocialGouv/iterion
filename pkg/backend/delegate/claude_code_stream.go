@@ -3,6 +3,7 @@ package delegate
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"math"
@@ -1598,6 +1599,43 @@ func classifyRateLimit(text string, now time.Time) (kind string, window usagecap
 		return RateLimitKindUsageWindow, usagecap.WindowSevenDay, parseResetHint(text, now)
 	}
 	return RateLimitKindUsageWindow, "", parseResetHint(text, now)
+}
+
+// RateLimitedFromRefusal types a provider refusal from its own words, filed by
+// the one definition every producer shares (classifyRateLimit): a usage WINDOW
+// (waiting is the cure, its reset parsed when the words name one), an account
+// refusal (a spend ceiling, a fair-usage restriction — filed as a window that
+// names no reset), or a plain throttle. A backend that receives the words on
+// a channel of its own — a CLI's result text, a facade's HTTP 429 — types them
+// here, so no backend files a window its own way: backend parity on the one
+// fact the usage park, the chain reading and the pool all key on.
+func RateLimitedFromRefusal(provider, detail string, now time.Time) *ErrRateLimited {
+	kind, _, resetAt := classifyRateLimit(detail, now)
+	return &ErrRateLimited{Provider: provider, Detail: detail, Kind: kind, ResetAt: resetAt}
+}
+
+// IsAccountRefusal reports a usage-window refusal of the ACCOUNT rather than
+// of a metered window: its money ceiling ("your org's monthly spend limit") or
+// its request rate (a fair-usage restriction). Neither names a reset, and
+// waiting is not what cures it — a human raises the ceiling, or the provider
+// relents on a clock nobody announced. Read from the refusal's own words
+// (ErrRateLimited.Detail, or the rendering of a refusal whose type did not
+// survive) through the definitions classifyRateLimit files those refusals
+// under, so the two cannot disagree.
+func IsAccountRefusal(err error) bool {
+	if err == nil {
+		return false
+	}
+	text := err.Error()
+	var rl *ErrRateLimited
+	if errors.As(err, &rl) {
+		if rl.Kind != RateLimitKindUsageWindow {
+			return false
+		}
+		text = rl.Detail
+	}
+	lower := strings.ToLower(text)
+	return isAccountRefusalText(lower) || isSpendLimitText(lower)
 }
 
 // isAccountRefusalText reports whether already-lowercased text carries an

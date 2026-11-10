@@ -1263,11 +1263,5 @@ func piRateLimited(msg string) error {
 	// The window is dropped here: pi/claw refusals have no meter consumer
 	// (usageBackendForKind maps only the claude_code forfait), and this
 	// helper has no hook to record through.
-	kind, _, resetAt := classifyRateLimit(msg, time.Now())
-	return &ErrRateLimited{
-		Provider: BackendPi,
-		Kind:     kind,
-		ResetAt:  resetAt,
-		Detail:   msg,
-	}
+	return RateLimitedFromRefusal(BackendPi, msg, time.Now())
 }

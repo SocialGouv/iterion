@@ -216,6 +216,14 @@ func classifyStreamEventError(msg string) error {
 	if delegate.MatchesNetworkSignature(msg) || matchesStreamTransportMarker(msg) {
 		return &APIError{Message: "stream error: " + msg, IsRetryable: true}
 	}
+	// A provider's usage-window refusal on an Anthropic-wire error frame
+	// carries only the provider's words ("Usage limit reached for 5 hour.
+	// Your limit will reset at …"). Typed as the frame it is — no status, not
+	// retried — so the claw boundary reads it as the window it names
+	// (clawUsageWindow), as it reads the same refusal on an HTTP 429.
+	if delegate.RateLimitedFromRefusal("", msg, time.Now()).Kind == delegate.RateLimitKindUsageWindow {
+		return &APIError{Message: "stream error: " + msg}
+	}
 	return fmt.Errorf("stream error: %s", msg)
 }
 

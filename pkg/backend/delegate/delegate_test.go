@@ -325,6 +325,7 @@ func TestCodexTerminalFailure(t *testing.T) {
 	authText := "Error: unexpected status 401 Unauthorized"
 	rateText := "Error: unexpected status 429 rate limit exceeded"
 	bareUsageText := "You've hit your usage limit. Try again later."
+	envelopedUsageText := "Error: unexpected status 429 Too Many Requests: You've hit your usage limit. Upgrade to Pro or try again in 3 days."
 	bareQuotaText := "Quota exceeded. Check your plan and billing details."
 	bareCapacityText := "Selected model is at capacity. Please retry later."
 	bareDemandText := "We're currently experiencing high demand. Please retry shortly."
@@ -349,24 +350,30 @@ func TestCodexTerminalFailure(t *testing.T) {
 		wantError     bool
 		wantTransient bool
 		wantRateLimit bool
+		// wantWindow: the refusal is typed a usage WINDOW (waiting is the
+		// cure, the run parks), read from its words by the definition every
+		// backend shares (RateLimitedFromRefusal) — never a nameless throttle
+		// that the in-node backoff retries and the chain reading ignores.
+		wantWindow bool
 	}{
-		{"empty result with disconnected stderr", &codexsdk.ResultMessage{Result: &empty}, "stream disconnected", true, true, false},
-		{"empty result with transport errno on stderr", &codexsdk.ResultMessage{Result: &empty}, resetByPeer, true, true, false},
-		{"crash dump quoting prose signature is deterministic", &codexsdk.ResultMessage{Result: &empty}, corruptRollout, false, false, false},
-		{"network error text cannot satisfy string schema", &codexsdk.ResultMessage{Result: &errText}, "", true, true, false},
-		{"auth error fails without formatting", &codexsdk.ResultMessage{Result: &authText}, "", true, false, false},
-		{"rate limit is typed", &codexsdk.ResultMessage{Result: &rateText}, "", true, false, true},
-		{"bare usage limit is typed", &codexsdk.ResultMessage{Result: &bareUsageText}, "", true, false, true},
-		{"bare quota notice is typed", &codexsdk.ResultMessage{Result: &bareQuotaText}, "", true, false, true},
-		{"bare capacity notice is typed", &codexsdk.ResultMessage{Result: &bareCapacityText}, "", true, false, true},
-		{"bare high-demand notice is typed", &codexsdk.ResultMessage{Result: &bareDemandText}, "", true, false, true},
-		{"valid result ignores unrelated stderr", &codexsdk.ResultMessage{Result: &valid}, "diagnostic", false, false, false},
-		{"discussion of recovered network error is valid", &codexsdk.ResultMessage{Result: &discussion}, "", false, false, false},
-		{"ordinary failed-tests summary is valid", &codexsdk.ResultMessage{Result: &failedTests}, "", false, false, false},
-		{"ordinary error-prefixed discussion is valid", &codexsdk.ResultMessage{Result: &errorDiscussion}, "", false, false, false},
-		{"ordinary quota discussion is valid", &codexsdk.ResultMessage{Result: &quotaDiscussion}, "", false, false, false},
-		{"structured result survives stale stderr", &codexsdk.ResultMessage{Result: &empty, StructuredOutput: map[string]any{"ok": true}}, "stream disconnected", false, false, false},
-		{"structured result wins over error-like text", &codexsdk.ResultMessage{Result: &errText, StructuredOutput: map[string]any{"summary": "Error: stream disconnected"}}, "", false, false, false},
+		{"empty result with disconnected stderr", &codexsdk.ResultMessage{Result: &empty}, "stream disconnected", true, true, false, false},
+		{"empty result with transport errno on stderr", &codexsdk.ResultMessage{Result: &empty}, resetByPeer, true, true, false, false},
+		{"crash dump quoting prose signature is deterministic", &codexsdk.ResultMessage{Result: &empty}, corruptRollout, false, false, false, false},
+		{"network error text cannot satisfy string schema", &codexsdk.ResultMessage{Result: &errText}, "", true, true, false, false},
+		{"auth error fails without formatting", &codexsdk.ResultMessage{Result: &authText}, "", true, false, false, false},
+		{"rate limit is typed", &codexsdk.ResultMessage{Result: &rateText}, "", true, false, true, false},
+		{"bare usage limit is typed a window", &codexsdk.ResultMessage{Result: &bareUsageText}, "", true, false, true, true},
+		{"enveloped usage limit is typed a window", &codexsdk.ResultMessage{Result: &envelopedUsageText}, "", true, false, true, true},
+		{"bare quota notice is typed", &codexsdk.ResultMessage{Result: &bareQuotaText}, "", true, false, true, false},
+		{"bare capacity notice is typed", &codexsdk.ResultMessage{Result: &bareCapacityText}, "", true, false, true, false},
+		{"bare high-demand notice is typed", &codexsdk.ResultMessage{Result: &bareDemandText}, "", true, false, true, false},
+		{"valid result ignores unrelated stderr", &codexsdk.ResultMessage{Result: &valid}, "diagnostic", false, false, false, false},
+		{"discussion of recovered network error is valid", &codexsdk.ResultMessage{Result: &discussion}, "", false, false, false, false},
+		{"ordinary failed-tests summary is valid", &codexsdk.ResultMessage{Result: &failedTests}, "", false, false, false, false},
+		{"ordinary error-prefixed discussion is valid", &codexsdk.ResultMessage{Result: &errorDiscussion}, "", false, false, false, false},
+		{"ordinary quota discussion is valid", &codexsdk.ResultMessage{Result: &quotaDiscussion}, "", false, false, false, false},
+		{"structured result survives stale stderr", &codexsdk.ResultMessage{Result: &empty, StructuredOutput: map[string]any{"ok": true}}, "stream disconnected", false, false, false, false},
+		{"structured result wins over error-like text", &codexsdk.ResultMessage{Result: &errText, StructuredOutput: map[string]any{"summary": "Error: stream disconnected"}}, "", false, false, false, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -378,9 +385,12 @@ func TestCodexTerminalFailure(t *testing.T) {
 			if transient != tt.wantTransient {
 				t.Errorf("transient = %v, want %v (err=%v)", transient, tt.wantTransient, err)
 			}
-			_, rateLimited := err.(*ErrRateLimited)
+			rl, rateLimited := err.(*ErrRateLimited)
 			if rateLimited != tt.wantRateLimit {
 				t.Errorf("rateLimited = %v, want %v (err=%v)", rateLimited, tt.wantRateLimit, err)
+			}
+			if window := rateLimited && rl.Kind == RateLimitKindUsageWindow; window != tt.wantWindow {
+				t.Errorf("usage window = %v, want %v (err=%v)", window, tt.wantWindow, err)
 			}
 		})
 	}

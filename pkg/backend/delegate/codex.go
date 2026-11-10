@@ -680,13 +680,16 @@ func codexTerminalFailure(rm *codexsdk.ResultMessage, stderr string, redact func
 	if rm.Result != nil {
 		resultText = strings.TrimSpace(*rm.Result)
 	}
+	// Typed through the shared reading of the provider's words, so a plan
+	// window ("you've hit your usage limit") parks like every other
+	// backend's while a capacity or throttle notice stays transient.
 	if isCodexBareLimitNotice(resultText) {
-		return &ErrRateLimited{Provider: BackendCodex, Detail: resultText}
+		return RateLimitedFromRefusal(BackendCodex, resultText, time.Now())
 	}
 	if resultText != "" && hasCodexTerminalErrorEnvelope(resultText) {
 		lower := strings.ToLower(resultText)
 		if isCodexRateLimitError(lower) {
-			return &ErrRateLimited{Provider: BackendCodex, Detail: resultText}
+			return RateLimitedFromRefusal(BackendCodex, resultText, time.Now())
 		}
 		if isCodexTerminalNetworkError(lower) {
 			return &ErrTransient{Provider: BackendCodex, Reason: "network", Detail: resultText}

@@ -244,6 +244,9 @@ func NewClawBackend(registry *Registry, hk EventHooks, retry RetryPolicy, opts .
 // and an MCP server this launcher may not start for a sandboxed run).
 func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result delegate.Result, err error) {
 	defer func() {
+		// The one exit both placements return through (in process, and the
+		// sandboxed runner's relayed provider error).
+		err = clawUsageWindow(err, time.Now())
 		if err == nil && task.SessionSlot != "" {
 			result.SessionID = task.SessionID
 			result.SessionFingerprint = clawSessionFingerprint(task.Model)
@@ -806,13 +809,71 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 	return res, genErr
 }
 
+// clawUsageWindow types a provider's usage-window refusal that reached the
+// claw path as an HTTP 429 — a *api.APIError in process or relayed by the
+// sandboxed runner, or a stream error event's *APIError — into the
+// *delegate.ErrRateLimited every other backend raises for it. The z.ai facade
+// refuses its 5-hour and weekly windows that way ("[1308][Usage limit reached
+// for 5 hour. Your limit will reset at …]", "[1310][Weekly/Monthly Limit
+// Exhausted. …]"), and a bare 429 is a throttle to every reader downstream:
+// the in-node carve-out kept retrying it, the fallback walk filed it as an
+// exhausted transient, the classifier answered RATE_LIMITED, and the run never
+// parked on the window — nor did an exhausted chain holding it (#3032).
+//
+// The words are read here, at the boundary that holds them, through the
+// shared definition (delegate.RateLimitedFromRefusal); a 429 that names no
+// window — a throttle — is returned unchanged, and so is anything else. A
+// stream error frame is read when it carries no HTTP status too: an
+// OpenAI-wire frame names the facade's own code ("1308", "1310") where a
+// status would be, an Anthropic-wire frame names none, and either frame's
+// words are the provider's refusal, never model prose. The original error
+// rides as the refusal's Cause.
+func clawUsageWindow(err error, now time.Time) error {
+	if err == nil || delegate.IsUsageWindow(err) {
+		return err
+	}
+	var detail string
+	var httpErr *api.APIError
+	var streamErr *APIError
+	switch {
+	case errors.As(err, &httpErr):
+		if httpErr.StatusCode != 429 {
+			return err
+		}
+		detail = httpErr.Message
+		if strings.TrimSpace(detail) == "" {
+			detail = httpErr.Body
+		}
+	case errors.As(err, &streamErr):
+		// A frame's "status" is whatever code it named: an HTTP status, or
+		// the facade's own (1308, 1310), which no HTTP reading can hold. Only
+		// an HTTP status other than 429 is no window.
+		if s := streamErr.StatusCode; s != 429 && s >= 100 && s <= 599 {
+			return err
+		}
+		detail = streamErr.Message
+	default:
+		return err
+	}
+	refusal := delegate.RateLimitedFromRefusal(delegate.BackendClaw, strings.TrimSpace(detail), now)
+	if refusal.Kind != delegate.RateLimitKindUsageWindow {
+		return err
+	}
+	refusal.Cause = err
+	return refusal
+}
+
 // ---------------------------------------------------------------------------
 // Retry
 // ---------------------------------------------------------------------------
 
 func (b *ClawBackend) retryLoop(ctx context.Context, nodeID string, fn func() (delegate.Result, error)) (delegate.Result, error) {
 	result, err := fn()
-	for attempt := 1; err != nil && isRetryable(err); attempt++ {
+	// A usage window is not retried in the node: the 429 it arrives as is
+	// retryable to the transport, but the window shuts for hours, and every
+	// re-issue within seconds only meets it again. The node stops on it and
+	// the run parks (clawUsageWindow types it at Execute's exit).
+	for attempt := 1; err != nil && isRetryable(err) && !delegate.IsUsageWindow(clawUsageWindow(err, time.Now())); attempt++ {
 		// Error-adaptive budget: a connectivity failure gets the larger
 		// transient budget to ride out a brief outage.
 		maxAttempts := b.retry.effectiveMaxAttempts(err)

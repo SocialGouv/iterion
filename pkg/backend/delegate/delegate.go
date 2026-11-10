@@ -1735,7 +1735,17 @@ type ErrRateLimited struct {
 	// the call would spend precisely the quota the cap exists to protect,
 	// and the provider would answer it perfectly happily.
 	SelfImposed bool
+	// Cause is the error the refusal was read from when a boundary typed it
+	// after the fact — claw's HTTP 429 or stream error event, whose words
+	// name a usage window (model.clawUsageWindow). Nil for a refusal raised
+	// as this type. Unwrapped, so the status a retry event reports stays
+	// readable under the typed refusal.
+	Cause error
 }
+
+// Unwrap exposes the error the refusal was typed from, nil when it was
+// raised as this type.
+func (e *ErrRateLimited) Unwrap() error { return e.Cause }
 
 // ErrRateLimited.Kind values.
 const (

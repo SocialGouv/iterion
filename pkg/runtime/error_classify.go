@@ -27,8 +27,10 @@ func ClassifyError(err error) ErrorCode {
 	}
 	// Before the RuntimeError code: a route of the chain may carry its own
 	// RuntimeError, and errors.As must not let that one route decide for
-	// the others. A usage window on any route decides first — the run waits
-	// for it to reopen, whatever the other routes met.
+	// the others. A usage window waiting cures, on any route, decides first —
+	// the run waits for it to reopen, whatever the other routes met (an
+	// account refusal parks the same way, unless a route found a dead
+	// credential: chainWaitsOnUsageWindow).
 	if chainWaitsOnUsageWindow(err) {
 		return ErrCodeUsageLimitBlocked
 	}
@@ -222,6 +224,17 @@ func ClassifyError(err error) ErrorCode {
 	// instead of falling to the 1-shot ExecutionFailed retry.
 	if matchesAuthFailed(msg) {
 		return ErrCodeAuthFailed
+	}
+	// A usage-window refusal whose TYPE did not survive a hop — a layer that
+	// formatted with %v, a runner's text relay — read from the marker the
+	// typed refusal prints (delegate.UsageWindowInFlattenedError): the same
+	// last-resort reading the runner arms its usage park on, so a route that
+	// carries it decides an exhausted chain the way its typed form does, and
+	// a node that fails on it parks rather than spending a retry on a wall.
+	// After the credential needles: a refusal quoting both is the
+	// credential's to answer, as its typed forms are read above.
+	if delegate.UsageWindowInFlattenedError(msg) {
+		return ErrCodeUsageLimitBlocked
 	}
 	// The out-of-process host (the claw runner) flattens the typed error
 	// above into text before it reaches here, so the wording is read too
