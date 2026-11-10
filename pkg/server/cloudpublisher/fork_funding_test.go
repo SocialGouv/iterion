@@ -40,10 +40,49 @@ const envDialBot = "agent draft:\n  model: \"${ITERION_FORK_FUNDING_PROBE_MODEL:
 // test sets it), beside a funded vendor route.
 const envGatewayDialBot = "agent draft:\n  model: \"anthropic/claude-opus-5\"\n  backend: \"claw\"\n\nagent second:\n  model: \"${ITERION_FORK_FUNDING_PROBE_GATEWAY:-anthropic/claude-opus-5}\"\n  backend: \"claw\"\n\nworkflow main:\n  draft -> second\n  second -> done\n"
 
+// unattributedBesideVendorBot names a vendor route the team's OpenAI key
+// funds beside a claude_code route with no model: the walk attributes the
+// second to no provider, and on the runner it reads the anthropic wire's
+// default slots.
+const unattributedBesideVendorBot = "agent draft:\n  model: \"openai/gpt-5.4-mini\"\n  backend: \"claw\"\n\nagent second:\n  backend: \"claude_code\"\n\nworkflow main:\n  draft -> second\n  second -> done\n"
+
+// bareClaudeCodeBot is a claude_code route on a prefix-less model: the walk
+// attributes it to no provider.
+const bareClaudeCodeBot = "agent draft:\n  model: \"claude-opus-5\"\n  backend: \"claude_code\"\n\nworkflow main:\n  draft -> done\n"
+
+// offWireClaudeCodeBot pins claude_code to a provider off the anthropic wire:
+// the walk names openai, while the delegate reads the wire's default slots.
+const offWireClaudeCodeBot = "agent draft:\n  model: \"gpt-5.4-mini\"\n  provider: \"openai\"\n  backend: \"claude_code\"\n\nworkflow main:\n  draft -> done\n"
+
+// backendlessOpenAIBot names no backend: the runner picks one (its
+// ITERION_DEFAULT_BACKEND, its credential detection), so the route may read
+// the anthropic wire's default slots.
+const backendlessOpenAIBot = "agent draft:\n  model: \"openai/gpt-5.4-mini\"\n\nworkflow main:\n  draft -> done\n"
+
+// prefixedClaudeCodeBot is a claude_code route on a provider prefix: it names
+// anthropic and reads the wire's default slots.
+const prefixedClaudeCodeBot = "agent draft:\n  model: \"anthropic/claude-opus-5\"\n  backend: \"claude_code\"\n\nworkflow main:\n  draft -> done\n"
+
+// glmClaudeCodeBot is a hint-less GLM id on claude_code: it names zai and
+// reads every wire slot but zai's.
+const glmClaudeCodeBot = "agent draft:\n  model: \"glm-5.3\"\n  backend: \"claude_code\"\n\nworkflow main:\n  draft -> done\n"
+
 // seedTeamAnthropic gives team1 its own anthropic key.
 func seedTeamAnthropic(t *testing.T, p *Publisher) {
 	t.Helper()
 	seedKeyFP(t, p.apiKeys, p.sealer, "team1", secrets.ProviderAnthropic, "sk-ant-team", "fp-ant-team")
+}
+
+// seedTeamOpenAI gives team1 its own openai key.
+func seedTeamOpenAI(t *testing.T, p *Publisher) {
+	t.Helper()
+	seedKeyFP(t, p.apiKeys, p.sealer, "team1", secrets.ProviderOpenAI, "sk-oai-team", "fp-oai-team")
+}
+
+// seedTeamZAI gives team1 its own z.ai key.
+func seedTeamZAI(t *testing.T, p *Publisher) {
+	t.Helper()
+	seedKeyFP(t, p.apiKeys, p.sealer, "team1", secrets.ProviderZAI, "sk-zai-team", "fp-zai-team")
 }
 
 // forkFundingPublisher is the real publisher over in-memory stores: team1
@@ -104,8 +143,14 @@ func forkFundingSpec(trust store.RunTrust) runview.CredentialPreviewSpec {
 //   - the untrusted arm reading every attributed provider instead of the
 //     decided ones → "a routing dial on a team holding nothing" names a key
 //     to provision;
-//   - the unattributable sentence back to offering a gateway credential →
-//     "an unattributable program" names it.
+//   - the untrusted arm ignoring the unattributed sites → the three
+//     unattributed rows admit (the program holding nothing falls to the
+//     Unattributable arm, red on its wording);
+//   - unfundedWireDefault answering nothing → the two unfunded wire-default
+//     rows admit;
+//   - unfundedWireDefault's slot leg dropped → "a slot it reads" is refused;
+//   - unfundedWireDefault's named-provider leg dropped → "a GLM id its
+//     team's z.ai key serves" is refused.
 func TestFundingRefusal_AForkRunSpendsItsTeamsOwnKeysAlone(t *testing.T) {
 	t.Setenv("ITERION_FORK_FUNDING_PROBE_GATEWAY", "openai_compatible/glm-5.3")
 	for _, row := range []struct {
@@ -173,7 +218,50 @@ func TestFundingRefusal_AForkRunSpendsItsTeamsOwnKeysAlone(t *testing.T) {
 			name:    "an unattributable program on a team holding nothing",
 			bot:     unattributableBot,
 			seed:    func(*testing.T, *Publisher) {},
-			refused: true, wantInRefusal: "a gateway credential funds no fork run until #2005 PR-C'",
+			refused: true, wantInRefusal: "the routes of draft name no provider this launch can read",
+		},
+		{
+			name:    "an unattributed route beside a vendor route the team's key funds is refused",
+			bot:     unattributedBesideVendorBot,
+			seed:    seedTeamOpenAI,
+			refused: true, wantInRefusal: "the routes of second name no provider this launch can read",
+			notInRefusal: "provision a team API key for",
+		},
+		{
+			name:    "a prefix-less claude_code model is refused, though the team's Anthropic key would serve it",
+			bot:     bareClaudeCodeBot,
+			seed:    seedTeamAnthropic,
+			refused: true, wantInRefusal: "the routes of draft name no provider this launch can read",
+		},
+		{
+			name:    "a claude_code route pinned off the wire reads a wire default the team holds no key for",
+			bot:     offWireClaudeCodeBot,
+			seed:    seedTeamOpenAI,
+			refused: true, wantInRefusal: "the routes of draft (anthropic, moonshot, zai) may spend the anthropic wire's default credential",
+		},
+		{
+			name:    "a route whose backend the runner picks reads a wire default the team holds no key for",
+			bot:     backendlessOpenAIBot,
+			seed:    seedTeamOpenAI,
+			refused: true, wantInRefusal: "the routes of draft (anthropic, moonshot, zai) may spend the anthropic wire's default credential",
+		},
+		{
+			name: "a wire-default route is funded by a slot it reads",
+			bot:  offWireClaudeCodeBot,
+			seed: func(t *testing.T, p *Publisher) {
+				seedTeamOpenAI(t, p)
+				seedTeamAnthropic(t, p)
+			},
+		},
+		{
+			name: "a claude_code route on a provider prefix the team's key funds",
+			bot:  prefixedClaudeCodeBot,
+			seed: seedTeamAnthropic,
+		},
+		{
+			name: "a GLM id its team's z.ai key serves",
+			bot:  glmClaudeCodeBot,
+			seed: seedTeamZAI,
 		},
 	} {
 		t.Run(row.name, func(t *testing.T) {
@@ -196,7 +284,7 @@ func TestFundingRefusal_AForkRunSpendsItsTeamsOwnKeysAlone(t *testing.T) {
 					t.Fatalf("refusal %q, want it naming %q and the lane's pool", err, row.wantInRefusal)
 				}
 				if row.notInRefusal != "" && strings.Contains(err.Error(), row.notInRefusal) {
-					t.Fatalf("refusal %q names %q — a provider only a deferred route names is not one the run spends", err, row.notInRefusal)
+					t.Fatalf("refusal %q names %q — the refusal names only what the run cannot fund", err, row.notInRefusal)
 				}
 			}
 			// The trusted control: the same team, stores and program fund a
@@ -247,28 +335,45 @@ func TestResolveAndSeal_AnUnfundedUntrustedRunIsRefusedAtPublish(t *testing.T) {
 	}
 }
 
-// The publish-time floor of the same two route classes: a fork run whose
-// team's own key funds its vendor route but which ALSO rides the gateway, or
-// reads a routing dial the pool's runner expands, is refused at publish and
-// seals nothing — the bundle a runner would then refuse ambient after the
-// gate metered it. The trusted control on the same stores seals.
+// The publish-time floor of the same route classes: a fork run whose team's
+// own key funds its vendor route but which ALSO rides the gateway, reads a
+// routing dial the pool's runner expands, takes a route the walk cannot
+// attribute, or reads a wire default its team holds no slot of, is refused at
+// publish and seals nothing — the bundle a runner would then refuse ambient
+// after the gate metered it. The trusted control on the same stores seals.
 //
-// Mutation: the untrusted arm ignoring routes.gateway and routes.deferred →
-// both rows seal a bundle (red on the refusal assertion).
+// Mutations, each red on its own rows (the refusal assertion) and restored
+// byte-identical:
+//   - the untrusted arm ignoring routes.gateway and routes.deferred → the
+//     gateway and dial rows seal a bundle;
+//   - the untrusted arm ignoring the unattributed sites → the two
+//     unattributed rows seal;
+//   - unfundedWireDefault answering nothing → the two wire-default rows seal.
 func TestResolveAndSeal_AForkRunsGatewayOrDeferredRouteIsRefusedAtPublish(t *testing.T) {
-	for _, row := range []struct{ name, bot string }{
-		{"a gateway route beside a funded vendor route", gatewayBesideVendorBot},
-		{"a routing dial the pool's runner expands", envDialBot},
+	gatewayOrDeferred := func(r *UnfundedProvidersError) bool { return len(r.Gateway)+len(r.Deferred) > 0 }
+	unattributed := func(r *UnfundedProvidersError) bool { return len(r.Unattributed) > 0 }
+	wireDefault := func(r *UnfundedProvidersError) bool { return len(r.WireDefault) > 0 }
+	for _, row := range []struct {
+		name, bot string
+		seed      func(t *testing.T, p *Publisher)
+		class     func(*UnfundedProvidersError) bool
+	}{
+		{"a gateway route beside a funded vendor route", gatewayBesideVendorBot, seedTeamAnthropic, gatewayOrDeferred},
+		{"a routing dial the pool's runner expands", envDialBot, seedTeamAnthropic, gatewayOrDeferred},
+		{"an unattributed route beside a funded vendor route", unattributedBesideVendorBot, seedTeamOpenAI, unattributed},
+		{"a prefix-less claude_code model", bareClaudeCodeBot, seedTeamAnthropic, unattributed},
+		{"a claude_code route pinned off the wire", offWireClaudeCodeBot, seedTeamOpenAI, wireDefault},
+		{"a route whose backend the runner picks", backendlessOpenAIBot, seedTeamOpenAI, wireDefault},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			p := forkFundingPublisher(t)
-			seedTeamAnthropic(t, p)
+			row.seed(t, p)
 			wf := compileTestSource(t, row.bot)
 			ctx := store.WithTenant(context.Background(), "team1")
 			res, err := p.resolveAndSealCredentials(ctx, "run-fork-routes", "org1", "team1", "owner1", "review-pr", "forks", wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustFork, nil, nil, nil)
 			var refusal *UnfundedProvidersError
-			if !errors.As(err, &refusal) || !refusal.Untrusted || len(refusal.Gateway)+len(refusal.Deferred) == 0 {
-				t.Fatalf("resolveAndSealCredentials = %v, want the typed untrusted refusal naming the gateway or deferred route", err)
+			if !errors.As(err, &refusal) || !refusal.Untrusted || !row.class(refusal) {
+				t.Fatalf("resolveAndSealCredentials = %v, want the typed untrusted refusal naming the row's route class", err)
 			}
 			if res.secretsRef != "" {
 				t.Fatalf("a refused fork run sealed a bundle (ref=%q)", res.secretsRef)

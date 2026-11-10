@@ -179,6 +179,21 @@ type ProviderResolution struct {
 	// (`{{vars.…}}`). Whatever this walk recorded for such a site is this
 	// process's expansion, not the runner's word. Sorted.
 	DeferredSites []string
+	// UnattributedSites lists the sites at which the walk widened — every
+	// route that flips NarrowSafe false: a prefix-less model, an `auto` or
+	// empty step, a hint outside the vocabulary, a `${…}` that expands to
+	// nothing here, a `{{vars.…}}` the view left late, a model-calling node
+	// that exposes no LLM fields (a subbot, whose child bot this walk never
+	// reads), a supervisor with no model. Recorded with or without an
+	// allowlist: NarrowSafe says THAT some route may spend anything, this
+	// says WHICH. Sorted.
+	UnattributedSites []string
+	// WireDefaultSites maps each site whose route may read an anthropic-wire
+	// slot as the run's DEFAULT credential to the slots it may read — the
+	// per-site reading AnthropicWireDefaultReads is the union of, committed
+	// under the same rules (a pruned route reads nothing, a slot outside
+	// the allowlist is read by no route). Each list sorted.
+	WireDefaultSites map[string][]string
 }
 
 // OnlyEnvFunded reports whether the run's every LLM route is an
@@ -271,8 +286,8 @@ func EffectiveProviders(v RouteView, known map[string]bool) ProviderResolution {
 			if ir.NodeUsesLLM(n) {
 				// Spends, but exposes nothing to resolve.
 				seenAnyLLM = true
-				acc.narrowSafe = false
 				acc.site = n.NodeID()
+				acc.widen()
 				acc.unreadableAt(fieldlessSite, "")
 			}
 			continue
@@ -439,10 +454,13 @@ type providerAccumulator struct {
 	// backendLate: the backend of the route about to be read is decided at
 	// dispatch (routeBackendLate) — set beside backend, read by deferAt.
 	backendLate bool
-	// gatewaySites / deferredSites: ProviderResolution.GatewaySites and
-	// DeferredSites.
-	gatewaySites  map[string]bool
-	deferredSites map[string]bool
+	// gatewaySites / deferredSites / unattributedSites:
+	// ProviderResolution.GatewaySites, DeferredSites and UnattributedSites.
+	gatewaySites      map[string]bool
+	deferredSites     map[string]bool
+	unattributedSites map[string]bool
+	// wireSites: ProviderResolution.WireDefaultSites, per site a slot set.
+	wireSites map[string]map[string]bool
 }
 
 // routeRead is one route mid-read: the site it lives at, whether it is a
@@ -512,6 +530,13 @@ func (a *providerAccumulator) result() ProviderResolution {
 	}
 	res.GatewaySites = sortedSiteSet(a.gatewaySites)
 	res.DeferredSites = sortedSiteSet(a.deferredSites)
+	res.UnattributedSites = sortedSiteSet(a.unattributedSites)
+	for site, slots := range a.wireSites {
+		if res.WireDefaultSites == nil {
+			res.WireDefaultSites = make(map[string][]string, len(a.wireSites))
+		}
+		res.WireDefaultSites[site] = sortedSiteSet(slots)
+	}
 	sort.Strings(res.Providers)
 	sort.Strings(res.Unknown)
 	sort.Strings(res.EnvFunded)
@@ -626,14 +651,14 @@ func (a *providerAccumulator) envDeferred(field string, parts ...string) {
 	for _, part := range parts {
 		if strings.Contains(part, "{{") {
 			a.envSeen = true
-			a.narrowSafe = false
+			a.widen()
 			a.unreadableAt(field, part)
 			return
 		}
 		if strings.Contains(part, "${") {
 			a.envSeen = true
 			if strings.TrimSpace(ir.ExpandEnvWithDefault(part)) == "" {
-				a.narrowSafe = false
+				a.widen()
 				a.unreadableAt(field, part)
 			}
 			return
@@ -681,8 +706,29 @@ func (a *providerAccumulator) endRoute() {
 				a.wireDefault = map[string]bool{}
 			}
 			a.wireDefault[slot] = true
+			if a.wireSites == nil {
+				a.wireSites = map[string]map[string]bool{}
+			}
+			if a.wireSites[r.site] == nil {
+				a.wireSites[r.site] = map[string]bool{}
+			}
+			a.wireSites[r.site][slot] = true
 		}
 	}
+}
+
+// widen marks the route being read as one the walk cannot attribute: the run
+// may spend anything there (NarrowSafe false), and its site joins
+// UnattributedSites — a caller that must refuse such a route names it.
+func (a *providerAccumulator) widen() {
+	a.narrowSafe = false
+	if a.site == "" {
+		return
+	}
+	if a.unattributedSites == nil {
+		a.unattributedSites = map[string]bool{}
+	}
+	a.unattributedSites[a.site] = true
 }
 
 // unreadableAt records a route the walk cannot read while an allowlist is
@@ -775,7 +821,7 @@ func (a *providerAccumulator) resolveNode(node ir.Node, fields *ir.LLMFields, ov
 		// widen, as hint() on the override did before the gateway
 		// classification existed. Falling through would let the node's own
 		// chain narrow an answer the override deferred.
-		a.narrowSafe = false
+		a.widen()
 		a.unreadableAt("provider", prov)
 		return
 	}
@@ -917,7 +963,7 @@ func (a *providerAccumulator) chainDecides(raw, mdl string) bool {
 		return false
 	}
 	if unresolved {
-		a.narrowSafe = false
+		a.widen()
 		a.unreadableAt("provider", raw)
 	}
 	for _, h := range hints {
@@ -984,7 +1030,7 @@ func (a *providerAccumulator) prefixOrWiden(mdl string) {
 			a.envFunded[p] = true
 			a.gatewayAt()
 			if !rawGatewayPrefix(mdl) {
-				a.narrowSafe = false
+				a.widen()
 			}
 			return
 		}
@@ -996,7 +1042,7 @@ func (a *providerAccumulator) prefixOrWiden(mdl string) {
 	// names: the walk cannot say what the route spends, and under an
 	// allowlist a lock that cannot be checked must not pass (the run would
 	// ride whatever the serving pod's ambient precedence funds).
-	a.narrowSafe = false
+	a.widen()
 	a.unreadableAt("model", mdl)
 }
 
@@ -1007,7 +1053,7 @@ func (a *providerAccumulator) hint(raw string) bool {
 	h := strings.ToLower(strings.TrimSpace(ir.ExpandEnvWithDefault(raw)))
 	switch {
 	case h == "" || h == "auto":
-		a.narrowSafe = false
+		a.widen()
 		return false
 	case a.known[h]:
 		if len(a.allowed) > 0 && !a.allowed[h] {
@@ -1025,7 +1071,7 @@ func (a *providerAccumulator) hint(raw string) bool {
 		return true
 	default:
 		a.unknown[h] = true
-		a.narrowSafe = false
+		a.widen()
 		a.unreadableAt("provider", h)
 		return false
 	}

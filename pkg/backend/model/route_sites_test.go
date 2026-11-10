@@ -112,3 +112,124 @@ func TestEffectiveProvidersGatewayAndDeferredSites(t *testing.T) {
 		})
 	}
 }
+
+// UnattributedSites names WHERE the walk widened — the sites a caller that
+// must refuse an unattributable route (the untrusted funding judge) names —
+// with or without an allowlist. One row per widening site of the walk, each
+// isolated beside a literal vendor route that must stay out.
+//
+// Mutation, seen red and restored byte-identical: widen() no longer recording
+// the site (narrowSafe flipped, nothing named) → every widening row loses its
+// site while NarrowSafe still reads false.
+func TestEffectiveProvidersUnattributedSites(t *testing.T) {
+	known := map[string]bool{"anthropic": true, "openai": true, "zai": true, "moonshot": true}
+	agent := func(id, backend, provider, model string) *ir.AgentNode {
+		return &ir.AgentNode{BaseNode: ir.BaseNode{ID: id}, LLMFields: ir.LLMFields{Backend: backend, Provider: provider, Model: model}}
+	}
+	vendor := agent("literal", "claw", "", "anthropic/claude-opus-5")
+	wfOf := func(nodes ...ir.Node) *ir.Workflow {
+		wf := &ir.Workflow{Nodes: map[string]ir.Node{vendor.ID: vendor}}
+		for _, n := range nodes {
+			wf.Nodes[n.NodeID()] = n
+		}
+		return wf
+	}
+	for _, tc := range []struct {
+		name string
+		view RouteView
+		want []string
+	}{
+		{name: "literal vendor routes only",
+			view: RouteView{Workflow: wfOf(agent("draft", "claw", "openai", "openai/gpt-6"))}},
+		{name: "a claude_code route with no model",
+			view: RouteView{Workflow: wfOf(agent("draft", "claude_code", "", ""))},
+			want: []string{"draft"}},
+		{name: "a claude_code route with a prefix-less model",
+			view: RouteView{Workflow: wfOf(agent("draft", "claude_code", "", "claude-opus-5"))},
+			want: []string{"draft"}},
+		{name: "an auto provider step",
+			view: RouteView{Workflow: wfOf(agent("draft", "claude_code", "auto", "claude-opus-5"))},
+			want: []string{"draft"}},
+		{name: "a hint outside the vocabulary",
+			view: RouteView{Workflow: wfOf(agent("draft", "claw", "mistral", "mistral/large"))},
+			want: []string{"draft"}},
+		{name: "an env model that expands to nothing here",
+			view: RouteView{Workflow: wfOf(agent("draft", "claw", "", "${ROUTE_SITES_UNSET_EMPTY_MODEL}"))},
+			want: []string{"draft"}},
+		{name: "a model from a late run var",
+			view: RouteView{Workflow: wfOf(agent("draft", "claw", "", "{{vars.model}}")), LateVars: map[string]bool{"model": true}},
+			want: []string{"draft"}},
+		{name: "a subbot, whose child bot the walk never reads",
+			view: RouteView{Workflow: wfOf(&ir.SubbotNode{BaseNode: ir.BaseNode{ID: "child"}})},
+			want: []string{"child"}},
+		{name: "a supervisor with no model",
+			view: func() RouteView {
+				wf := wfOf()
+				wf.Supervisors = []*ir.Supervisor{{Name: "watch"}}
+				return RouteView{Workflow: wf}
+			}(),
+			want: []string{"supervisor:watch"}},
+		{name: "an authored rescue that pins nothing",
+			view: RouteView{Workflow: wfOf(&ir.AgentNode{
+				BaseNode:  ir.BaseNode{ID: "draft"},
+				LLMFields: ir.LLMFields{Backend: "claw", Model: "anthropic/claude-opus-5"},
+				Fallbacks: []ir.Fallback{{Name: "bare", Backend: "claude_code"}},
+			})},
+			want: []string{"draft#bare"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			res := EffectiveProviders(tc.view, known)
+			if !slices.Equal(res.UnattributedSites, tc.want) {
+				t.Errorf("UnattributedSites = %v, want %v", res.UnattributedSites, tc.want)
+			}
+			if res.NarrowSafe != (len(tc.want) == 0) {
+				t.Errorf("NarrowSafe = %v with UnattributedSites %v — a widened walk names where", res.NarrowSafe, res.UnattributedSites)
+			}
+		})
+	}
+}
+
+// WireDefaultSites is AnthropicWireDefaultReads per site: which route may
+// spend which anthropic-wire slot as the run's default credential. One row
+// per reading of noteWireDefault, each beside a claw/openai route that reads
+// no wire default and must stay out.
+//
+// Mutation, seen red and restored byte-identical: endRoute committing the
+// union alone (no per-site record) → every reading row loses its site.
+func TestEffectiveProvidersWireDefaultSites(t *testing.T) {
+	known := map[string]bool{"anthropic": true, "openai": true, "zai": true, "moonshot": true}
+	agent := func(id, backend, provider, model string) *ir.AgentNode {
+		return &ir.AgentNode{BaseNode: ir.BaseNode{ID: id}, LLMFields: ir.LLMFields{Backend: backend, Provider: provider, Model: model}}
+	}
+	offWire := agent("offwire", "claw", "", "openai/gpt-6")
+	all := []string{"anthropic", "moonshot", "zai"}
+	for _, tc := range []struct {
+		name string
+		node *ir.AgentNode
+		want []string
+	}{
+		{name: "a claude_code route pinned to a wire provider reads no default",
+			node: agent("draft", "claude_code", "anthropic", "claude-opus-5")},
+		{name: "a claude_code route on a provider prefix reads every slot",
+			node: agent("draft", "claude_code", "", "anthropic/claude-opus-5"), want: all},
+		{name: "a claude_code route hinted off the wire reads every slot",
+			node: agent("draft", "claude_code", "openai", "gpt-6"), want: all},
+		{name: "a hint-less GLM id on claude_code reads every slot but zai",
+			node: agent("draft", "claude_code", "", "glm-5.3"), want: []string{"anthropic", "moonshot"}},
+		{name: "a claw route on the anthropic wire reads its two slots",
+			node: agent("draft", "claw", "", "anthropic/claude-opus-5"), want: []string{"anthropic", "zai"}},
+		{name: "a route whose backend no field names reads what either would",
+			node: agent("draft", "", "", "openai/gpt-6"), want: all},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			wf := &ir.Workflow{Nodes: map[string]ir.Node{offWire.ID: offWire, tc.node.ID: tc.node}}
+			res := EffectiveProviders(RouteView{Workflow: wf}, known)
+			if got := res.WireDefaultSites[tc.node.ID]; !slices.Equal(got, tc.want) {
+				t.Errorf("WireDefaultSites[%s] = %v, want %v", tc.node.ID, got, tc.want)
+			}
+			if got, ok := res.WireDefaultSites[offWire.ID]; ok {
+				t.Errorf("WireDefaultSites[%s] = %v — a claw route on openai reads no wire default", offWire.ID, got)
+			}
+		})
+	}
+}

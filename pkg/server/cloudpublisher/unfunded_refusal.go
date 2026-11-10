@@ -28,8 +28,10 @@ import (
 // `ProviderResolution.Providers` is the sound LOWER BOUND for it — every name
 // in it is named by some RESOLVED route, so refusing an unfunded one is never
 // a guess. The unattributable routes keep the compromise they are owed: they
-// contribute no name, so they are never refused, and `spend.pinned` stays nil
-// for the stamp and the tiers where nil rightly means "may spend anything".
+// contribute no name, so no provider refusal names them, and `spend.pinned`
+// stays nil for the stamp and the tiers where nil rightly means "may spend
+// anything". The untrusted posture alone refuses them, by SITE
+// (ProviderResolution.UnattributedSites): its runner decides what they spend.
 
 // routeAttribution is the walk's reading the unfunded decision judges, read
 // through the same walk and vocabulary the pool's wants derivation and the
@@ -54,6 +56,85 @@ type routeAttribution struct {
 	// posture refuses them — its runner is a pool whose env block this
 	// process cannot read.
 	deferred []string
+	// unattributed are the sites the walk could not attribute to a provider
+	// (ProviderResolution.UnattributedSites): whatever such a route spends,
+	// the runner decides it. Only the untrusted posture refuses them.
+	unattributed []string
+	// wireReads maps each site whose route may read an anthropic-wire slot
+	// as the run's default credential to those slots
+	// (ProviderResolution.WireDefaultSites), and sites maps each site to the
+	// providers its routes name (ProviderResolution.Sites): what the untrusted
+	// posture reads to tell a wire-default route its team funds from one the
+	// runner refuses ambient.
+	wireReads map[string][]string
+	sites     map[string][]string
+}
+
+// untrustedUnattributed are the unattributed sites the untrusted arm names on
+// their own: a deferred site is already named, with its own remedy.
+func (r routeAttribution) untrustedUnattributed() []string {
+	deferred := siteSet(r.deferred)
+	out := make([]string, 0, len(r.unattributed))
+	for _, site := range r.unattributed {
+		if !deferred[site] {
+			out = append(out, site)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// unfundedWireDefault lists, rendered `site (slot, …)` and sorted, the sites
+// whose route may spend an anthropic-wire slot as the run's DEFAULT credential
+// — a claude_code route that pins no anthropic-wire provider, a route whose
+// backend the runner picks — while funding holds none of the slots it may read
+// and no anthropic-wire provider it names. On the runner such a route walks
+// the wire's slot order over the run's sealed keys and, finding none, is
+// refused ambient (the claude_code delegate's ambientStampRefusal). A site
+// already refused — gateway, deferred, unattributed, or naming a provider in
+// unfunded — answers through its own remedy.
+func (r routeAttribution) unfundedWireDefault(funded map[string]bool, unfunded []string) []string {
+	refused := siteSet(r.gateway)
+	for site := range siteSet(r.deferred) {
+		refused[site] = true
+	}
+	for _, site := range r.unattributed {
+		refused[site] = true
+	}
+	for _, prov := range unfunded {
+		for _, site := range r.pins[prov] {
+			refused[site] = true
+		}
+	}
+	var out []string
+	for site, slots := range r.wireReads {
+		if refused[site] || len(slots) == 0 {
+			continue
+		}
+		held := false
+		for _, slot := range slots {
+			held = held || funded[slot]
+		}
+		for _, prov := range r.sites[site] {
+			held = held || (secrets.WireFamily(prov) == secrets.WireFamilyAnthropic && funded[prov])
+		}
+		if !held {
+			out = append(out, fmt.Sprintf("%s (%s)", site, strings.Join(slots, ", ")))
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// siteSet is a site list as a set.
+func siteSet(sites []string) map[string]bool {
+	set := make(map[string]bool, len(sites))
+	for _, site := range sites {
+		set[site] = true
+	}
+	return set
 }
 
 // decidedProviders are the providers some route NOT in deferred names —
@@ -84,7 +165,8 @@ func (r routeAttribution) decidedProviders() []string {
 // attributedRoutes reads a program's routeAttribution.
 func attributedRoutes(view model.RouteView) routeAttribution {
 	res := model.EffectiveProviders(view, knownPoolProviders)
-	return routeAttribution{providers: res.Providers, pins: res.Pins, gateway: res.GatewaySites, deferred: res.DeferredSites}
+	return routeAttribution{providers: res.Providers, pins: res.Pins, gateway: res.GatewaySites, deferred: res.DeferredSites,
+		unattributed: res.UnattributedSites, wireReads: res.WireDefaultSites, sites: res.Sites}
 }
 
 // fundedProviderSet is what "funded" MEANS for the refusals below and for
@@ -169,7 +251,7 @@ type unfundedPosture struct {
 	// typed refusal, and a forfait cannot cross its sandbox (ADR-162
 	// decision 7). The team's own vendor API keys are all that funds it.
 	//
-	// Two route classes are refused whatever the team holds. A gateway
+	// Three route classes are refused whatever the team holds. A gateway
 	// route: the gateway it rides IS that refused environment, and no tier
 	// seals a gateway credential into a pool-stamped run until #2005 PR-C'
 	// (an env-funded program does not lift the posture either). A deferred
@@ -177,7 +259,20 @@ type unfundedPosture struct {
 	// with ITS environment, whose env block pins the routing dials ahead of
 	// the platform record (sovereign-pools.md § Routing dials), so the
 	// route this process reads is not the one the run takes, and a verdict
-	// on it would admit, and meter, a run its runner then refuses.
+	// on it would admit, and meter, a run its runner then refuses. An
+	// unattributed route — a prefix-less model, an `auto` or unknown step,
+	// a subbot whose child bot the walk never reads, a supervisor with no
+	// model: the walk names no provider for it, so no verdict says the
+	// team's keys fund it. The cost is stated: a claude_code route with a
+	// bare model that the team's Anthropic key would serve is refused too,
+	// and the remedy — pin its provider — is one routing override.
+	//
+	// A fourth class is judged per site: a route that may spend an
+	// anthropic-wire slot as the run's default credential (a claude_code
+	// route that pins no wire provider, a route whose backend the runner
+	// picks) is funded only when the team holds one of the slots it may read
+	// or a wire provider it names — what the runner's slot-order walk serves
+	// before it refuses the route ambient.
 	Untrusted bool
 	// Pool is the runner pool the run is stamped to, named by the untrusted
 	// refusal's sentence ("" when the stamp is not known).
@@ -231,15 +326,19 @@ func unfundedRefusalFor(tenant string, routes routeAttribution, funded map[strin
 		// of them, not a provider the run spends: the refusal names those
 		// routes to pin, never a key to provision for it.
 		unfunded = unfundedAmong(routes.decidedProviders(), funded)
-	}
-	if posture.Untrusted && (len(unfunded) > 0 || len(routes.gateway) > 0 || len(routes.deferred) > 0) {
-		// The untrusted arm answers for every route class it cannot fund at
-		// once — an unfunded provider, a gateway route, a deferred route —
-		// so the remedy it names is the whole of it.
-		refusal := newUnfundedProvidersError(tenant, unfunded, sites, posture.Sovereign)
-		refusal.Untrusted, refusal.Pool = true, posture.Pool
-		refusal.Gateway, refusal.Deferred = routes.gateway, routes.deferred
-		return refusal
+		unattributed := routes.untrustedUnattributed()
+		wire := routes.unfundedWireDefault(funded, unfunded)
+		if len(unfunded) > 0 || len(routes.gateway) > 0 || len(routes.deferred) > 0 || len(unattributed) > 0 || len(wire) > 0 {
+			// The untrusted arm answers for every route class it cannot fund
+			// at once — an unfunded provider, a gateway route, a deferred
+			// route, an unattributed route, an unfunded wire-default read —
+			// so the remedy it names is the whole of it.
+			refusal := newUnfundedProvidersError(tenant, unfunded, sites, posture.Sovereign)
+			refusal.Untrusted, refusal.Pool = true, posture.Pool
+			refusal.Gateway, refusal.Deferred = routes.gateway, routes.deferred
+			refusal.Unattributed, refusal.WireDefault = unattributed, wire
+			return refusal
+		}
 	}
 	if len(unfunded) == 0 {
 		// The attribution compromise, stated on the attributed set: a
@@ -307,6 +406,15 @@ type UnfundedProvidersError struct {
 	// environment, or a late run var — so no verdict this process reaches is
 	// the route the run takes. Sorted.
 	Deferred []string
+	// Unattributed lists, on the untrusted arm, the sites whose route the walk
+	// could not attribute to a provider (a deferred site excluded: it is
+	// named in Deferred). Sorted.
+	Unattributed []string
+	// WireDefault lists, on the untrusted arm, the sites whose route may spend
+	// an anthropic-wire slot as the run's default credential while the team
+	// holds none of the slots it may read, each rendered `site (slot, …)`.
+	// Sorted.
+	WireDefault []string
 	// Pool is the runner pool the untrusted run is stamped to ("" unknown).
 	Pool string
 	// Unattributable marks the strict arm that names NO provider: the walk
@@ -340,6 +448,14 @@ func (e *UnfundedProvidersError) Error() string {
 		if len(e.Deferred) > 0 {
 			remedies = append(remedies, fmt.Sprintf("the routes of %s are decided on the runner — an ${…} dial the pool's runner expands with its own environment, whose env block pins the routing dials ahead of the platform record, or a run var this launch leaves undecided — so no verdict reached before the run is the route it takes: give them literal routes (the integration's routing overrides pin a node's provider, model and backend) until a run's settings arrive frozen at claim (ADR-132)",
 				strings.Join(e.Deferred, ", ")))
+		}
+		if len(e.Unattributed) > 0 {
+			remedies = append(remedies, fmt.Sprintf("the routes of %s name no provider this launch can read — a model with no provider/ prefix, an auto, empty or unknown provider step, a subbot whose child bot is not read here, a supervisor with no model — so the pool's runner decides what they spend: pin each to a vendor provider the team holds an API key for (a `provider:` hint or a provider/ model prefix; the integration's routing overrides pin a node's provider, model and backend)",
+				strings.Join(e.Unattributed, ", ")))
+		}
+		if len(e.WireDefault) > 0 {
+			remedies = append(remedies, fmt.Sprintf("the routes of %s may spend the anthropic wire's default credential — a claude_code route that pins no anthropic-wire provider, or a route whose backend the runner picks — and the team holds an API key for none of the slots listed: provision one, or pin the route's backend and provider",
+				strings.Join(e.WireDefault, ", ")))
 		}
 		return fmt.Sprintf("cloudpublisher: %v: tenant %s's untrusted (fork-lane) run on %s spends the team's own vendor API keys alone — %s; %s",
 			runview.ErrNoLLMCredential, e.Tenant, pool, why, strings.Join(remedies, "; and "))

@@ -20,8 +20,10 @@ import (
 // key); the runner refuses its pod's environment; and a forfait cannot cross
 // its sandbox. Its team's own vendor API keys are all that funds it — no
 // tier seals a team gateway credential into a pool run until #2005 PR-C' —
-// and only on routes decided before the run: a gateway route, or an `${…}`
-// dial the pool's runner expands with its own environment, is refused. A
+// and only on routes decided before the run: a gateway route, an `${…}` dial
+// the pool's runner expands with its own environment, a route the walk
+// cannot attribute to a provider, and an anthropic-wire default read the
+// team holds no slot of are refused. A
 // team funded only by shared keys would otherwise have every gesture metered
 // on the org's budget and the outside author's bound, then refused at
 // publish or at the runner.
