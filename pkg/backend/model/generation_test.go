@@ -1763,6 +1763,30 @@ func TestBuildRequest_AOneShotRequestTakesNoSystemMarker(t *testing.T) {
 				MaxSteps:     1,
 			},
 		},
+		{
+			// The production shape with workspace memory on: posture,
+			// ambient corpus, memory index, autoload. A predicate keyed on
+			// the BLOCK COUNT instead of on the caller's loop passes the
+			// two-block cases above and marks this one.
+			name: "the four-block memory shape, still one-shot",
+			opts: GenerationOptions{
+				Model: "claude-sonnet-4-6",
+				SystemBlocks: []api.ContentBlock{
+					{Type: "text", Text: "the operating posture and the node's task"},
+					{Type: "text", Text: "<project_instructions>AGENTS.md…</project_instructions>"},
+					{Type: "text", Text: "<workspace_memory_index>…</workspace_memory_index>"},
+					{Type: "text", Text: "<workspace_memory>…</workspace_memory>"},
+				},
+			},
+		},
+		{
+			name: "a negative step budget reads as the default, not as one-shot",
+			opts: GenerationOptions{
+				Model:        "claude-sonnet-4-6",
+				SystemBlocks: blocks,
+				MaxSteps:     -1,
+			},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -181,14 +181,30 @@ func buildRequest(opts GenerationOptions, messages []api.Message, extraTools []a
 			}
 		}
 		// The system prefix ends on a cache breakpoint, like the tools array
-		// below — but ONLY for a request a second turn can reuse. The cache
-		// writes at ~1.25x and reads at ~0.1x, so the break-even is two
-		// requests: marking a prefix nothing will read again costs ~0.25x of
-		// it and buys nothing. `opts.Tools` is the discriminator because it
-		// is what GenerateTextDirect loops over; the structured path nils it
-		// and hands its synthetic tool through extraTools for ONE turn, and a
-		// node with no tools answers in one turn too (the loop breaks on the
-		// first reply that carries no tool_use).
+		// below — but ONLY where a later request reuses it. The cache writes
+		// at ~1.25x and reads at a fraction (~0.1x, lower on the newer
+		// models), so the break-even is two requests and extending a written
+		// prefix over bytes nothing reads again costs ~0.25x of THEM.
+		//
+		// This gate decides the TAIL only, and the tail is where the bytes
+		// are: the corpus runs to clawAmbientMaxBytes. It does not decide the
+		// other two markers on the same request, which are unconditional and
+		// older than it — block 0, set by the claw backend for every node,
+		// and the last tool below. So a one-shot request still writes its
+		// posture and its tools array; what it no longer does is drag the
+		// corpus into that write.
+		//
+		// `opts.Tools` is the discriminator because it is the slice
+		// GenerateTextDirect loops over: a node with no tools answers in one
+		// turn (the loop breaks on the first reply carrying no tool_use), and
+		// the structured path nils it, handing its synthetic tool through
+		// extraTools. Not "one turn" though — GenerateObjectDirect re-asks
+		// once on a schema-invalid answer with a byte-identical prefix, and a
+		// claw schema re-ask runs tool-less by construction (executor_reask
+		// clears ToolDefs). So the trade is: the happy path saves ~0.25x of
+		// the tail, a re-asked answer loses the ~0.9x it would have read.
+		// Which way that nets depends on the schema-failure rate, which is
+		// not measured here; the happy path is taken to be the common one.
 		//
 		// Where a second turn IS possible, the prompt cache covers a prefix
 		// up to and INCLUDING a marked block, so a block sitting after the
@@ -210,7 +226,10 @@ func buildRequest(opts GenerationOptions, messages []api.Message, extraTools []a
 		// across nodes. Making it run-invariant means emitting the corpus
 		// BEFORE the posture, which reorders what the model reads first and
 		// is a behaviour change, not a cost one.
-		multiTurn := len(opts.Tools) > 0 && (opts.MaxSteps == 0 || opts.MaxSteps > 1)
+		// `<= 0` means "take the default", which is what every consumer of
+		// MaxSteps reads it as; `== 0` would have called a negative budget
+		// one-shot while the loop ran it ten times.
+		multiTurn := len(opts.Tools) > 0 && (opts.MaxSteps <= 0 || opts.MaxSteps > 1)
 		if lastServed >= 0 && multiTurn {
 			blocks[lastServed].CacheControl = api.EphemeralCacheControl()
 		}
