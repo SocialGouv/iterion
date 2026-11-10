@@ -179,7 +179,7 @@ func (s *Server) resumeDueRetry(ctx context.Context, retryStore store.RunRetrySt
 	// blip is not the end of a paid run's retry. Nil (the store could not
 	// answer) is an unknown trust, refused as transient the same way: the
 	// run behind the retry row may be a fork run.
-	subj := resumeLaunchSubject(run)
+	subj := s.resumeLaunchSubject(run)
 	adm, deny := s.gateLaunch(retryLaunchCtx(runCtx, ref), subj)
 	if deny != nil {
 		if retryDenialIsTransient(deny.reason) {
@@ -418,12 +418,16 @@ func retryDenialIsTransient(reason string) bool {
 	// reached — and its ceilings refill monthly like the org's. None of
 	// them is the end of a paid run's retry; re-arming costs an attempt
 	// and the blip resolves.
-	case denyForkTeamUnreadable, denyForkOrgUnreadable, denyForkMeteringUnavailable, denyForkMeteringError, denyForkAuthorRuns, denyForkAuthorCost:
+	case denyForkTeamUnreadable, denyForkOrgUnreadable, denyForkMeteringUnavailable, denyForkMeteringError, denyForkAuthorRuns, denyForkAuthorCost, denyForkFundingUnreadable:
 		return true
 	// A run document the sweeper could not read is a store blip too: the
 	// next pass reads it again and judges the trust it names.
 	case denyResumeRunUnreadable:
 		return true
+	// denyForkRunUnfunded is NOT here: a fork run its team's own keys no
+	// longer fund is refused identically on every cycle until someone
+	// provisions a key, so the retry is abandoned with the reason and the
+	// operator's resume wakes the run once the key exists.
 	default:
 		return false
 	}

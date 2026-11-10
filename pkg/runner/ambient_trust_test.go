@@ -16,14 +16,15 @@ import (
 // ADR-162 decision 7, #3126: an untrusted run spends only the credentials
 // sealed for it — the pod's environment (the deployment's money: a vendor
 // key, the pool's gateway) answers a typed refusal. The publisher's stamp
-// rides the sealed bundle, and the publisher seals NO bundle for an untrusted
-// run no tier funds (resolveAndSealCredentials returns before sealing when
-// it holds no LLM credential and no generic secret, and an untrusted run is
-// never handed a generic secret) — the probe
-// TestResolveAndSeal_AnUnfundedUntrustedRunShipsNoBundle pins that shape on
-// the real publisher. So the refusal travels with the run itself: the runner
-// derives it from the wire's trust (store.RunTrust.AmbientLLMRefused, the
-// predicate the publisher's stamp reads too), with or without a bundle.
+// rides the sealed bundle, and an untrusted run can reach a runner with NO
+// bundle: the publisher refuses one whose model routes its team's own keys
+// cannot fund (the untrusted arm of unfundedRefusalFor), but a publisher that
+// seals nothing at all, a run that calls no model, or a route the walk cannot
+// attribute leaves the runner without a bundle to read the stamp from (an
+// untrusted run is never handed a generic secret either). So the refusal
+// travels with the run itself: the runner derives it from the wire's trust
+// (store.RunTrust.AmbientLLMRefused, the predicate the publisher's stamp
+// reads too), with or without a bundle.
 //
 // Driven on the real path from the wire message the publisher produces to
 // the model registry the claw executor resolves through: injectCredentials

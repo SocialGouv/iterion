@@ -219,7 +219,7 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `pkg/runshell` | spawns interactive post-mortem shells in preserved run worktrees (the studio's "Open shell" on a failed run). | — |
 | `pkg/runtime` | — conflict handling for the deferred squash merge. | `AmbiguousEffect`, `CapabilityDenial`, `Compactor`, `EffectiveBackendResolver`, `EffectiveFallbackResolver`, `EffectiveToolSurfaceResolver`, `InventedValues`, `NodeExecutor`, `OutputCorrector`, `OutputCorrectorWithUsage`, `ReviewCompanion`, `SecretScrubber`, `UndecidedRouteReporter` |
 | `pkg/runtime/recovery` | defines typed recovery recipes that decide what to do when a node fails. | `Recipe` |
-| `pkg/runview` | — agent-driven merge-conflict resolution. | `CredentialPreviewer`, `LaunchPublisher`, `RunLoader` |
+| `pkg/runview` | — agent-driven merge-conflict resolution. | `CredentialFundingJudge`, `CredentialPreviewer`, `LaunchPublisher`, `RunLoader` |
 | `pkg/runview/runstream` | the store-agnostic run-streaming seam (ADR-053): one Source per store delivers BOTH the structured event timeline and the raw log bytes of any run… | `EventSubscription`, `LogSubscription`, `Source` |
 | `pkg/runwatch` | persists the link between a failed target run and the conversational assistant run that will inspect it. | `Store` |
 | `pkg/sandbox` | defines the iterion sandboxing abstraction. | `Builder`, `Driver`, `HostRun`, `ImageEnvScreener`, `PreparedSpec`, `ProcessIsolated`, `ProxiedRun`, `ProxyConfigurer`, `Run`, `SchedulingPolicyReporter`, `SecretFileRefresher`, `StartedEnvReader`, `WorkspaceExporter`, `WorkspaceFileRefresher`, `WorkspaceHeadCapturer` |

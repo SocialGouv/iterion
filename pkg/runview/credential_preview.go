@@ -154,6 +154,21 @@ type CredentialPreviewer interface {
 
 var ErrCredentialPreviewUnavailable = errors.New("credential preview is unavailable")
 
+// CredentialFundingJudge is the publisher's unfunded verdict asked BEFORE a
+// launch or a resume is metered — the credential preview's own decision,
+// returned as an error instead of printed as a warning: nil when the run
+// starts, an error wrapping ErrNoLLMCredential when the live launch would
+// refuse it, ErrCredentialPreviewUnavailable when the publisher seals no
+// credential (and so decides nothing). The launch gate's funding arm reads
+// it for an untrusted subject (ADR-162 decision 7, ADR-154 D13): a fork run
+// spends the team's own API keys alone, and a gesture metered for a run the
+// publisher refuses is a unit the outside author and the org paid for
+// nothing.
+type CredentialFundingJudge interface {
+	FundingRefusal(context.Context, CredentialPreviewSpec, *ir.Workflow) error
+	ResumeFundingRefusal(context.Context, *store.Run, *ir.Workflow) error
+}
+
 // PreviewCredentials compiles exactly as Launch does, but never creates a run,
 // snapshot, reservation, probe, or secret bundle.
 func (s *Service) PreviewCredentials(ctx context.Context, spec CredentialPreviewSpec) (CredentialPreview, error) {
@@ -161,9 +176,81 @@ func (s *Service) PreviewCredentials(ctx context.Context, spec CredentialPreview
 	if !ok {
 		return CredentialPreview{}, ErrCredentialPreviewUnavailable
 	}
-	wf, _, _, err := compileForLaunch(spec.Launch.FilePath, spec.Launch.Source, spec.Launch.BundleDir, spec.Launch.BundleEntry, s.effectiveWorkDir(spec.Launch.WorkDir), spec.Launch.Trust)
+	wf, spec, previewWarnings, err := s.compileCredentialPreview(spec)
 	if err != nil {
 		return CredentialPreview{}, err
+	}
+	out, err := p.PreviewCredentials(ctx, spec, wf)
+	if err != nil {
+		return CredentialPreview{}, err
+	}
+	out.Warnings = append(out.Warnings, previewWarnings...)
+	return out, nil
+}
+
+// FundingRefusal is the publisher's funding verdict on the launch spec
+// describes, compiled and folded exactly as PreviewCredentials (and so as
+// Launch) compiles and folds it: the gate refuses on the program the launch
+// would judge, never on a second reading of it.
+func (s *Service) FundingRefusal(ctx context.Context, spec CredentialPreviewSpec) error {
+	j, ok := s.publisher.(CredentialFundingJudge)
+	if !ok {
+		return ErrCredentialPreviewUnavailable
+	}
+	wf, spec, _, err := s.compileCredentialPreview(spec)
+	if err != nil {
+		return err
+	}
+	return j.FundingRefusal(ctx, spec, wf)
+}
+
+// ResumeFundingRefusal is the publisher's funding verdict on resuming the run
+// spec names, on the workflow Resume would compile: the run document read
+// first, a bare spec's source re-derived by the server's filler, the shared
+// bundle and the bundle directory resolved, compiled under the run's own
+// trust — then judged by the publisher against the run's frozen program.
+func (s *Service) ResumeFundingRefusal(ctx context.Context, spec ResumeSpec) error {
+	j, ok := s.publisher.(CredentialFundingJudge)
+	if !ok {
+		return ErrCredentialPreviewUnavailable
+	}
+	if spec.RunID == "" {
+		return errors.New("runview: resume funding: run_id is required")
+	}
+	r, err := s.store.LoadRun(ctx, spec.RunID)
+	if err != nil {
+		return err
+	}
+	if spec.FilePath == "" {
+		spec.FilePath = r.FilePath
+	}
+	if s.resumeFiller != nil && spec.Source == "" && spec.BundleDir == "" && spec.BotBundle == nil {
+		cleanup, ferr := s.resumeFiller(ctx, r, &spec)
+		if ferr != nil {
+			return fmt.Errorf("runview: resolve resume source: %w", ferr)
+		}
+		if cleanup != nil {
+			defer cleanup()
+		}
+	}
+	if _, err := resolveSharedResumeSpec(r, &spec); err != nil {
+		return err
+	}
+	spec.BundleDir = resumeBundleDir(r, spec)
+	wf, _, _, err := compileForLaunch(spec.FilePath, spec.Source, spec.BundleDir, spec.BundleEntry, s.effectiveWorkDir(r.WorkDir), r.Trust)
+	if err != nil {
+		return err
+	}
+	return j.ResumeFundingRefusal(ctx, r, wf)
+}
+
+// compileCredentialPreview is the one compile-and-fold every reading of a
+// would-be launch crosses — the preview and the funding judge alike — so
+// neither can judge a program the other does not.
+func (s *Service) compileCredentialPreview(spec CredentialPreviewSpec) (*ir.Workflow, CredentialPreviewSpec, []string, error) {
+	wf, _, _, err := compileForLaunch(spec.Launch.FilePath, spec.Launch.Source, spec.Launch.BundleDir, spec.Launch.BundleEntry, s.effectiveWorkDir(spec.Launch.WorkDir), spec.Launch.Trust)
+	if err != nil {
+		return nil, spec, nil, err
 	}
 	// The SAME unknown-input refusal the launch funnel applies (#1757): a
 	// preview over a var no var of the workflow declares would answer for a
@@ -176,7 +263,7 @@ func (s *Service) PreviewCredentials(ctx context.Context, spec CredentialPreview
 	if unknown := ir.UnknownInputNames(wf, spec.Launch.Vars); len(unknown) > 0 {
 		if _, refused := platformcfg.SplitEngineInjectedInputs(unknown); len(refused) > 0 {
 			if !spec.Launch.AllowUnknownInputs {
-				return CredentialPreview{}, fmt.Errorf("credential preview input %s names no var of the workflow (declared: %s)",
+				return nil, spec, nil, fmt.Errorf("credential preview input %s names no var of the workflow (declared: %s)",
 					strings.Join(refused, ", "), strings.Join(ir.DeclaredVarNames(wf), ", "))
 			}
 			previewWarnings = append(previewWarnings, fmt.Sprintf("Input %s name(s) no var of the workflow — riding on the operator's opt-out (declared: %s).", strings.Join(refused, ", "), strings.Join(ir.DeclaredVarNames(wf), ", ")))
@@ -204,12 +291,7 @@ func (s *Service) PreviewCredentials(ctx context.Context, spec CredentialPreview
 	// shared body with the two launch entries (foldAndScreen), so the
 	// order exists in exactly one place.
 	if err := foldAndScreen(wf, &spec.Launch); err != nil {
-		return CredentialPreview{}, err
+		return nil, spec, nil, err
 	}
-	out, err := p.PreviewCredentials(ctx, spec, wf)
-	if err != nil {
-		return CredentialPreview{}, err
-	}
-	out.Warnings = append(out.Warnings, previewWarnings...)
-	return out, nil
+	return wf, spec, previewWarnings, nil
 }

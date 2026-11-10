@@ -449,17 +449,37 @@ func New(cfg Config) (*Publisher, error) {
 	if cfg.MongoColl == nil {
 		return nil, fmt.Errorf("cloudpublisher: MongoColl is required for queue_position computation")
 	}
+	p := newPublisher(cfg)
+	p.nats = cfg.NATS
+	p.publishRun = func(ctx context.Context, msg *queue.RunMessage) error {
+		_, err := cfg.NATS.PublishRun(ctx, msg)
+		return err
+	}
+	p.cancelRun = cfg.NATS.CancelRun
+	p.maxPayload = cfg.NATS.MaxPayload
+	return p, nil
+}
+
+// NewForTesting builds a Publisher over cfg without the NATS connection and
+// the Mongo queue collection New requires, handing every RunMessage to
+// publish instead. It exists for the witnesses of OTHER packages that must
+// drive the real publisher behind their carriers — the launch gate's funding
+// arm (pkg/server) asks this publisher's own unfunded decision, and a double
+// gentler or stricter than it would prove nothing about the decision it
+// stands in for. Production wiring goes through New.
+func NewForTesting(cfg Config, publish func(context.Context, *queue.RunMessage) error) *Publisher {
+	p := newPublisher(cfg)
+	p.publishRun = publish
+	return p
+}
+
+// newPublisher maps cfg onto a Publisher, the queue transport left to the
+// caller.
+func newPublisher(cfg Config) *Publisher {
 	if cfg.Logger == nil {
 		cfg.Logger = iterlog.New(iterlog.LevelInfo, nil)
 	}
 	return &Publisher{
-		nats: cfg.NATS,
-		publishRun: func(ctx context.Context, msg *queue.RunMessage) error {
-			_, err := cfg.NATS.PublishRun(ctx, msg)
-			return err
-		},
-		cancelRun:            cfg.NATS.CancelRun,
-		maxPayload:           cfg.NATS.MaxPayload,
 		store:                cfg.Store,
 		runs:                 cfg.MongoColl,
 		logger:               cfg.Logger,
@@ -485,7 +505,7 @@ func New(cfg Config) (*Publisher, error) {
 		identity:             cfg.Identity,
 		pools:                cfg.RunnerPools,
 		requireLLMCredential: cfg.RequireLLMCredential,
-	}, nil
+	}
 }
 
 // allKnownProviders is the static set the publisher tries to resolve
@@ -1576,8 +1596,8 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	// reads this same producer, so the view it shows an operator cannot
 	// contradict the launch it describes — a refusal left outside it is a
 	// refusal no view mirrors.
-	posture := p.unfundedPostureFor(wf, sovereign, envFunded)
-	if refusal := unfundedRefusalFor(tenantID, attributed, attributedSites, bundleFunding(bundle), noLLMCred, posture); refusal != nil {
+	posture := p.unfundedPostureFor(wf, sovereign, envFunded, trust, runnerPool)
+	if refusal := unfundedRefusalFor(tenantID, attributed, attributedSites, bundleFunding(bundle, posture), noLLMCred, posture); refusal != nil {
 		return res, refusal
 	}
 	if noLLMCred && len(bundle.GenericSecrets) == 0 {

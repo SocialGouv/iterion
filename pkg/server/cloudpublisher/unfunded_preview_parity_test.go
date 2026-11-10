@@ -118,7 +118,7 @@ func TestResolve_LLMFallbackNone_APolicyLadderRungDoesNotDisarmTheRefusal(t *tes
 		// The team holds the zai key the policy's pair is HELD by — so the
 		// rung is a route this run may really spend when the window closes.
 		seedKeyFP(t, p.apiKeys, p.sealer, "team1", secrets.ProviderZAI, "sk-zai-team", "fp-zai-team")
-		funded := fundedProviderSet([]secrets.Provider{secrets.ProviderZAI}, nil)
+		funded := fundedProviderSet([]secrets.Provider{secrets.ProviderZAI}, nil, unfundedPosture{})
 
 		compiled := model.EffectiveProviders(model.RouteView{Workflow: compileTestSource(t, twoRoutesBot)}, knownPoolProviders)
 		wf, creds, err := resolveWithRouting(t, p, twoRoutesBot, zaiLadderPolicy())
@@ -291,7 +291,7 @@ func TestCredentialPreview_JudgesTheProgramThePolicyLadderComposed(t *testing.T)
 	// AUTHORED program the knob's rule refuses. Without it this witness
 	// cannot see the stage it judges.
 	if r := unfundedRefusalFor("team1", authored.Providers, authored.Pins,
-		fundedProviderSet([]secrets.Provider{secrets.ProviderZAI}, nil), false, unfundedPosture{Knob: true}); r == nil {
+		fundedProviderSet([]secrets.Provider{secrets.ProviderZAI}, nil, unfundedPosture{}), false, unfundedPosture{Knob: true}); r == nil {
 		t.Fatalf("premise lost: the authored set %v no longer refuses under the knob", authored.Providers)
 	}
 
@@ -522,7 +522,7 @@ func TestCredentialPreview_HoldsOnlyThePairsItsOwnMetadataServes(t *testing.T) {
 	composePolicyLadder(probe, probeView, forfaitLadderPolicy(), nil, nil, func(_, _ string) bool { return true }, nil)
 	probeProvs, probeSites := attributedRoutes(probeView)
 	if r := unfundedRefusalFor("team1", probeProvs, probeSites,
-		fundedProviderSet([]secrets.Provider{secrets.ProviderAnthropic}, nil), false, unfundedPosture{Sovereign: true}); r == nil {
+		fundedProviderSet([]secrets.Provider{secrets.ProviderAnthropic}, nil, unfundedPosture{}), false, unfundedPosture{Sovereign: true}); r == nil {
 		t.Fatalf("premise lost: holding every pair the policy lists no longer names an unfunded provider (attributed=%v) — this witness cannot see the held-pair predicate", probeProvs)
 	}
 
@@ -566,8 +566,8 @@ func TestMetadataFunding_TwinsTheBundleReadingChannelForChannel(t *testing.T) {
 		OAuthCredentials: map[string][]byte{string(secrets.OAuthKindClaudeCode): []byte("blob")},
 	}
 
-	got := metadataFunding(x)
-	if want := bundleFunding(bundle); !reflect.DeepEqual(got, want) {
+	got := metadataFunding(x, unfundedPosture{})
+	if want := bundleFunding(bundle, unfundedPosture{}); !reflect.DeepEqual(got, want) {
 		t.Fatalf("metadataFunding = %v, bundleFunding of the equivalent bundle = %v — the two sources answer one reading or the preview's verdict stops being the launch's", got, want)
 	}
 	// Named, so a reading that lost a channel on BOTH sides at once is still

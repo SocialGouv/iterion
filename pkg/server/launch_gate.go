@@ -138,6 +138,20 @@ const (
 	// loses (ADR-162 decision 8). A 503 the surface may retry: the retry
 	// sweeper re-arms it (retryDenialIsTransient).
 	denyResumeRunUnreadable = "resume_run_unreadable"
+	// denyForkRunUnfunded: the fork run this untrusted subject would start
+	// is one the publisher refuses for want of a credential — its team holds
+	// no API key of its own for a provider the bot's routes pin (the shared
+	// tiers are never sealed into a pool run, the runner's env and a forfait
+	// are refused). A 422, like the launch API's own ErrNoLLMCredential:
+	// only the team provisioning a key cures it, and the retry sweeper
+	// abandons rather than re-arms.
+	denyForkRunUnfunded = "fork_run_unfunded"
+	// denyForkFundingUnreadable: the funding judge could not answer (a store
+	// read failed, a tier's metadata was unreadable, the bot did not
+	// resolve). A fail-closed 503 the surface may retry, like the lane's
+	// other unreadable arms: an untrusted launch is not metered on a verdict
+	// nobody reached.
+	denyForkFundingUnreadable = "fork_funding_unreadable"
 )
 
 // launchExemptPrincipal reports whether a principal launches with no human
@@ -276,6 +290,20 @@ type launchSubject struct {
 	// (denyResumeRunUnreadable) — an unknown trust loses (ADR-162 decision
 	// 8). Only resumeLaunchSubject(nil) sets it.
 	TrustUnknown bool
+	// Funding judges whether the run an UNTRUSTED subject would start is
+	// funded, asked by gateLaunch after its refusals and BEFORE anything is
+	// metered (gateForkFunding). A fork run spends its team's own API keys
+	// alone (ADR-154 D13 on its lane's pool, ADR-162 decision 7 on its
+	// sandbox), and the judge is the publisher's own unfunded decision read
+	// through the credential preview — so a team funded only by shared keys
+	// is refused typed (denyForkRunUnfunded) instead of metering the org and
+	// the outside author for a run the publisher refuses. The fork lane's
+	// tail sets it (webhookForkFunding) for the gesture, the debounce flush
+	// and the durable retry; resumeLaunchSubject sets it for every gated
+	// resume. Nil on every trusted subject, and on a launch built from a
+	// fork run, whose publish-time refusal answers instead and refunds the
+	// gate (runMayExist).
+	Funding func(context.Context) error
 }
 
 // resumeLaunchSubject builds the admission subject of a RESUME from the run
@@ -294,11 +322,19 @@ type launchSubject struct {
 // the one read the gate's subject came from. Whatever a surface admitted
 // rides its ResumeSpec (gateAdmitted), and the run service refuses a resume
 // whose admission does not name the trust of the document it re-enters.
-func resumeLaunchSubject(run *store.Run) launchSubject {
+//
+// An untrusted run's subject also carries its funding judge
+// (forkResumeFunding): a fork run whose team lost its own key since the
+// launch is refused before the resume meters either counter.
+func (s *Server) resumeLaunchSubject(run *store.Run) launchSubject {
 	if run == nil {
 		return launchSubject{ExistingRun: true, TrustUnknown: true}
 	}
-	return launchSubject{ExistingRun: true, BotID: run.BotID, Repo: run.ProjectPath}.withStoredTrust(run.Trust, run.ForkAuthorSubject)
+	subj := launchSubject{ExistingRun: true, BotID: run.BotID, Repo: run.ProjectPath}.withStoredTrust(run.Trust, run.ForkAuthorSubject)
+	if !run.Trust.Trusted() {
+		subj.Funding = s.forkResumeFunding(run)
+	}
+	return subj
 }
 
 // withStoredTrust stamps a trust and a stored fork author subject — read off
@@ -546,6 +582,15 @@ func (s *Server) gateLaunch(ctx context.Context, subj launchSubject) (*launchAdm
 			reason: denyOrgSuspended,
 			detail: "org cannot launch runs (suspended or read-only)",
 		}
+	}
+	// The fork run's funding, the last refusal before anything is metered:
+	// every arm below either refuses or charges (the repository's and the
+	// concurrency ceilings read, the rate bucket and the monthly counters
+	// spend), so a run the publisher would refuse for want of a credential
+	// is refused HERE, with both the org's counter and the author's bound
+	// untouched (ADR-162 decision 7, ADR-154 D13).
+	if d := s.gateForkFunding(ctx, subj); d != nil {
+		return nil, d
 	}
 	now := time.Now().UTC()
 	floor := s.budgetFloorPolicy(ctx)

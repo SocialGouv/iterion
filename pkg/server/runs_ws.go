@@ -901,7 +901,7 @@ func (c *runConn) handleAnswer(env runWSEnvelope) {
 	if c.server.runs != nil {
 		runMeta, loadErr = c.server.runs.LoadRunCtx(c.authCtx(), c.runID)
 		if loadErr == nil && runMeta != nil {
-			subj = resumeLaunchSubject(runMeta)
+			subj = c.server.resumeLaunchSubject(runMeta)
 		}
 	}
 	adm, d := c.server.gateLaunch(auth.WithIdentity(c.authCtx(), c.identity), subj)

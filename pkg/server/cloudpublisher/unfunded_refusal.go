@@ -9,6 +9,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/secrets"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // The unfunded-provider refusals, and the walk reading they are built on.
@@ -57,10 +58,20 @@ func attributedRoutes(view model.RouteView) ([]string, map[string][]string) {
 // doorServes / doorServesMetadata motif), the reading does not: a second copy
 // of it is where one surface would start disagreeing with the other about
 // what a funded provider is.
-func fundedProviderSet(apiSlots []secrets.Provider, oauthKinds []string) map[string]bool {
+//
+// The posture is part of the reading for ONE channel: under the untrusted
+// posture a forfait funds nothing. The sandbox's egress proxy substitutes a
+// bearer placeholder toward its credential's host and cannot hold an OAuth
+// credential and its refresh flow, so the run's admission refuses the node
+// that would spend one (ADR-162 decision 7, credroute.ErrCrossingRefused) —
+// counting it here would admit, and meter, a run its runner refuses.
+func fundedProviderSet(apiSlots []secrets.Provider, oauthKinds []string, posture unfundedPosture) map[string]bool {
 	funded := make(map[string]bool, len(apiSlots)+len(oauthKinds))
 	for _, prov := range apiSlots {
 		funded[strings.ToLower(string(prov))] = true
+	}
+	if posture.Untrusted {
+		return funded
 	}
 	for _, kind := range oauthKinds {
 		if prov := providerOfOAuthKind(kind); prov != "" {
@@ -72,12 +83,12 @@ func fundedProviderSet(apiSlots []secrets.Provider, oauthKinds []string) map[str
 
 // bundleFunding is fundedProviderSet on a SEALED bundle: the launch's own
 // reading, the one its refusals are computed on.
-func bundleFunding(bundle secrets.RunBundle) map[string]bool {
+func bundleFunding(bundle secrets.RunBundle, posture unfundedPosture) map[string]bool {
 	kinds := make([]string, 0, len(bundle.OAuthCredentials))
 	for kind := range bundle.OAuthCredentials {
 		kinds = append(kinds, kind)
 	}
-	return fundedProviderSet(fundedAPIKeySlots(bundle), kinds)
+	return fundedProviderSet(fundedAPIKeySlots(bundle), kinds, posture)
 }
 
 // unfundedAmong lists the providers of provs that funding holds nothing for,
@@ -96,34 +107,62 @@ func unfundedAmong(provs []string, funded map[string]bool) []string {
 	return out
 }
 
-// unfundedPosture is the ARMING of the two refusals, read once per surface:
-// the deployment knob (ITERION_CLOUD_REQUIRE_LLM_CREDENTIAL) and the team's
-// sovereign `llm_fallback: none`. A run that cannot call a model spends
-// nothing, and an env-funded run acquires nothing and answers to no team
-// policy — so the arming, like the decision, has one producer.
+// unfundedPosture is the ARMING of the refusals, read once per surface: the
+// deployment knob (ITERION_CLOUD_REQUIRE_LLM_CREDENTIAL), the team's
+// sovereign `llm_fallback: none`, and the run's own trust. A run that cannot
+// call a model spends nothing, and an env-funded run acquires nothing and
+// answers to no team policy — so the arming, like the decision, has one
+// producer.
 type unfundedPosture struct {
 	// Knob arms the deployment's refusal, permissive by design.
 	Knob bool
 	// Sovereign arms the team policy's, strict per provider.
 	Sovereign bool
+	// Untrusted arms the refusal of an untrusted (fork-lane) run, strict per
+	// provider like the sovereign one, by construction rather than by
+	// policy: the run executes on its lane's pool, so no shared tier (org,
+	// pool, platform) is sealed into it (ADR-154 D13); the runner's
+	// environment — its vendor keys and its pool's gateway — answers a
+	// typed refusal, and a forfait cannot cross its sandbox (ADR-162
+	// decision 7). The team's own API keys are all that funds it. An
+	// env-funded program does not lift it: the gateway such a route rides
+	// IS that refused environment, and the walk acquires nothing for it.
+	Untrusted bool
+	// Pool is the runner pool the run is stamped to, named by the untrusted
+	// refusal's sentence ("" when the stamp is not known).
+	Pool string
 }
 
-func (p *Publisher) unfundedPostureFor(wf *ir.Workflow, sovereign, envFunded bool) unfundedPosture {
+func (p *Publisher) unfundedPostureFor(wf *ir.Workflow, sovereign, envFunded bool, trust store.RunTrust, runnerPool string) unfundedPosture {
 	usesLLM := wf != nil && wf.UsesLLM()
 	return unfundedPosture{
 		Knob:      p.requireLLMCredential && usesLLM,
 		Sovereign: sovereign && !envFunded && usesLLM,
+		Untrusted: trust.AmbientLLMRefused() && usesLLM,
+		Pool:      runnerPool,
 	}
 }
 
-// unfundedRefusalFor is THE unfunded decision, all three arms of it: the
+// unfundedRefusalFor is THE unfunded decision, every arm of it: the
 // providers of attributed that funding holds nothing for, judged by the armed
-// postures in the launch's own order — the deployment knob first, then the
-// sovereign policy — and, where no NAME is left to refuse, the sovereign
-// policy's refusal of a run it can attribute nothing of while the team holds
-// nothing at all (holdsNothing: the launch's `!holdsLLMCredential(bundle)`,
-// the preview's metadata twin). The FIRST refusal answers for the run, nil
-// meaning "this run starts".
+// postures in the launch's own order — the untrusted posture first, then the
+// deployment knob, then the sovereign policy — and, where no NAME is left to
+// refuse, the strict postures' refusal of a run they can attribute nothing of
+// while the run holds nothing at all (holdsNothing: the launch's
+// `!holdsLLMCredential(bundle)`, the preview's metadata twin). The FIRST
+// refusal answers for the run, nil meaning "this run starts".
+//
+// The untrusted posture answers first because its remedy is the only true
+// one for that run: the knob's sentence offers the runner's environment as a
+// way out, and an untrusted run is refused that environment. Under it,
+// holding nothing means holding nothing that FUNDS — a sealed forfait is not
+// funding there (fundedProviderSet), so the funded set itself is the answer.
+//
+// The pre-metering refusal of a fork run (the launch gate's funding arm, in
+// pkg/server) reads this producer through the credential preview
+// (Publisher.FundingRefusal, Publisher.ResumeFundingRefusal), so the gate
+// that refuses before metering, the preview that mirrors it and the launch
+// that would refuse at publish judge one decision.
 //
 // The launch RETURNS it and the credential preview PRINTS it, through this
 // one producer and its one sentence: a surface that re-derived either would
@@ -131,6 +170,9 @@ func (p *Publisher) unfundedPostureFor(wf *ir.Workflow, sovereign, envFunded boo
 // where the launch starts and to stay silent where it refuses (#2485). An arm
 // kept outside this producer is exactly that silence, for that arm alone.
 func unfundedRefusalFor(tenant string, attributed []string, sites map[string][]string, funded map[string]bool, holdsNothing bool, posture unfundedPosture) *UnfundedProvidersError {
+	if posture.Untrusted {
+		holdsNothing = len(funded) == 0
+	}
 	unfunded := unfundedAmong(attributed, funded)
 	if len(unfunded) == 0 {
 		// The attribution compromise, stated on the attributed set: a
@@ -141,10 +183,15 @@ func unfundedRefusalFor(tenant string, attributed []string, sites map[string][]s
 		// compromise for those routes; the ones the walk DID read are decided
 		// by name below, and this arm is reachable only where that decision
 		// found nothing to refuse — the launch's own order.
-		if posture.Sovereign && len(attributed) == 0 && holdsNothing {
-			return &UnfundedProvidersError{Tenant: tenant, Sovereign: true, Unattributable: true}
+		if (posture.Sovereign || posture.Untrusted) && len(attributed) == 0 && holdsNothing {
+			return &UnfundedProvidersError{Tenant: tenant, Sovereign: posture.Sovereign, Untrusted: posture.Untrusted, Pool: posture.Pool, Unattributable: true}
 		}
 		return nil
+	}
+	if posture.Untrusted {
+		refusal := newUnfundedProvidersError(tenant, unfunded, sites, posture.Sovereign)
+		refusal.Untrusted, refusal.Pool = true, posture.Pool
+		return refusal
 	}
 	// The deployment knob stays permissive: one funded provider lets the run
 	// start — the other route's failure is the run's to report. Only a run
@@ -182,21 +229,55 @@ type UnfundedProvidersError struct {
 	// Sovereign marks the `llm_fallback: none` arm — the team's own
 	// credentials are the only funding — as opposed to the deployment knob.
 	Sovereign bool
-	// Unattributable marks the sovereign arm that names NO provider: the
-	// walk could attribute none of this workflow's routes and the team holds
-	// nothing of its own, so Providers and Sites are empty by construction.
+	// Untrusted marks the untrusted (fork-lane) arm: the run spends the
+	// team's own API keys alone — no shared tier is sealed into a pool run,
+	// the runner's environment is refused and a forfait cannot cross its
+	// sandbox. It answers before the two others, so it carries the run's
+	// remedy whatever else is armed.
+	Untrusted bool
+	// Pool is the runner pool the untrusted run is stamped to ("" unknown).
+	Pool string
+	// Unattributable marks the strict arm that names NO provider: the walk
+	// could attribute none of this workflow's routes and the run holds
+	// nothing that funds it, so Providers and Sites are empty by
+	// construction.
 	Unattributable bool
 }
 
 func (e *UnfundedProvidersError) Unwrap() error { return runview.ErrNoLLMCredential }
 
 func (e *UnfundedProvidersError) Error() string {
+	if e.Untrusted {
+		pool := "its fork lane's runner pool"
+		if e.Pool != "" {
+			pool = fmt.Sprintf("runner pool %q", e.Pool)
+		}
+		why := "no shared tier (org, pool, platform) is sealed into a pool run (ADR-154 D13), the runner's environment and its gateway are refused, and a forfait cannot cross the run's sandbox (ADR-162 decision 7)"
+		if e.Unattributable {
+			return fmt.Sprintf("cloudpublisher: %v: tenant %s's untrusted (fork-lane) run on %s holds no API key of the team's own, and no model route of this workflow names a provider one could fund — %s; provision a team API key (with its gateway base URL where the team uses one) for the provider the bot's routes pin",
+				runview.ErrNoLLMCredential, e.Tenant, pool, why)
+		}
+		return fmt.Sprintf("cloudpublisher: %v: tenant %s's untrusted (fork-lane) run on %s spends the team's own API keys alone — %s; provision a team API key for: %s",
+			runview.ErrNoLLMCredential, e.Tenant, pool, why, strings.Join(e.namedProviders(), "; "))
+	}
 	// The arm that names NO provider: nothing to walk, and the remedy is a
 	// credential or a pinned route rather than a provider to provision.
 	if e.Unattributable {
 		return fmt.Sprintf("cloudpublisher: %v: tenant %s runs with llm_fallback=none and holds no credential of its own, and this workflow's model routes cannot be attributed to a provider — provision a team credential, or pin a model route the policy can check",
 			runview.ErrNoLLMCredential, e.Tenant)
 	}
+	named := e.namedProviders()
+	if e.Sovereign {
+		return fmt.Sprintf("cloudpublisher: %v: tenant %s runs with llm_fallback=none — no shared tier (org, pool, platform) is consulted, so every provider a route names must hold a credential of the team's own; provision: %s",
+			runview.ErrNoLLMCredential, e.Tenant, strings.Join(named, "; "))
+	}
+	return fmt.Sprintf("cloudpublisher: %v: every provider the LLM routes of this run name is unfunded — no tier (byok, oauth-forfait, pool, platform) holds a credential for %s; provision one for tenant %s, or unset ITERION_CLOUD_REQUIRE_LLM_CREDENTIAL to let the runner fall back to its env",
+		runview.ErrNoLLMCredential, strings.Join(named, "; "), e.Tenant)
+}
+
+// namedProviders renders each refused provider with the route sites that
+// named it, in the refusal's sorted order.
+func (e *UnfundedProvidersError) namedProviders() []string {
 	named := make([]string, 0, len(e.Providers))
 	for _, prov := range e.Providers {
 		if sites := e.Sites[prov]; len(sites) > 0 {
@@ -205,12 +286,7 @@ func (e *UnfundedProvidersError) Error() string {
 		}
 		named = append(named, prov)
 	}
-	if e.Sovereign {
-		return fmt.Sprintf("cloudpublisher: %v: tenant %s runs with llm_fallback=none — no shared tier (org, pool, platform) is consulted, so every provider a route names must hold a credential of the team's own; provision: %s",
-			runview.ErrNoLLMCredential, e.Tenant, strings.Join(named, "; "))
-	}
-	return fmt.Sprintf("cloudpublisher: %v: every provider the LLM routes of this run name is unfunded — no tier (byok, oauth-forfait, pool, platform) holds a credential for %s; provision one for tenant %s, or unset ITERION_CLOUD_REQUIRE_LLM_CREDENTIAL to let the runner fall back to its env",
-		runview.ErrNoLLMCredential, strings.Join(named, "; "), e.Tenant)
+	return named
 }
 
 // newUnfundedProvidersError builds the refusal, keeping only the sites of the

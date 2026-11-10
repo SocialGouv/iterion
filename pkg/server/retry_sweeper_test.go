@@ -406,18 +406,20 @@ func TestCircuitRetryDelaySpreadsRunsAndHonorsOriginalHorizon(t *testing.T) {
 // never abandoned on one (the sweeper's abandonRetry).
 //
 // Mutation: narrow the fork case of retryDenialIsTransient to
-// denyForkTeamUnreadable → the five other fork tokens red, each by name.
+// denyForkTeamUnreadable → the six other fork tokens red, each by name.
 func TestSweepDueRetries_TransientDenialReArms(t *testing.T) {
 	for _, reason := range []string{
 		denyMonthlyRunQuota, denyMonthlyCostCap, denyConcurrencyCap, denyLaunchRateLimited, denyRepoQuota,
 		denyForkTeamUnreadable, denyForkOrgUnreadable, denyForkMeteringUnavailable, denyForkMeteringError,
-		denyForkAuthorRuns, denyForkAuthorCost, denyResumeRunUnreadable,
+		denyForkAuthorRuns, denyForkAuthorCost, denyResumeRunUnreadable, denyForkFundingUnreadable,
 	} {
 		if !retryDenialIsTransient(reason) {
 			t.Errorf("%s classified permanent — the run would be dropped for a condition that clears itself", reason)
 		}
 	}
-	for _, reason := range []string{denyOrgSuspended, denyNoWorkspace, "some_future_code"} {
+	// An unfunded fork run is refused identically on every cycle until a
+	// key is provisioned: abandoned, and the operator's resume wakes it.
+	for _, reason := range []string{denyOrgSuspended, denyNoWorkspace, denyForkRunUnfunded, "some_future_code"} {
 		if retryDenialIsTransient(reason) {
 			t.Errorf("%s classified transient — it needs a human, and re-arming would loop forever", reason)
 		}

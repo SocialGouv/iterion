@@ -1294,9 +1294,14 @@ func (s *Server) prepareWebhookTarget(
 	// the gate meters the per-contributor bound from it, and every arm of
 	// it that would admit a launch unmetered refuses an untrusted subject
 	// instead of failing open.
+	//
+	// A fork target carries its funding judge too (webhookForkFunding): the
+	// gate refuses, typed and before either counter moves, a fork run its
+	// team's own keys cannot fund.
 	adm, d := s.gateLaunch(ctx, launchSubject{
 		BotID: botID, Repo: meta.ProjectPath, ReplacingRunIDs: predecessors,
 		Trust: t.Trust, ForkAuthor: t.ForkAuthor,
+		Funding: s.webhookForkFunding(cfg, meta, t),
 	})
 	// The admission composed the author's metering subject (org id, else
 	// team id — the same id the org budget metered on). Stamped back onto

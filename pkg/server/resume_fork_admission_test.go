@@ -483,7 +483,7 @@ func TestResumeLaunchSubject_AnUnreadRunIsAnUnknownTrustTheGateRefuses(t *testin
 		{"local mode", &Server{}, context.Background()},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			adm, d := row.s.gateLaunch(row.ctx, resumeLaunchSubject(nil))
+			adm, d := row.s.gateLaunch(row.ctx, row.s.resumeLaunchSubject(nil))
 			if d == nil {
 				adm.rollback(nil)
 				t.Fatal("an unread run was admitted — its trust is unknown, and a fork run behind it would re-enter unmetered")
@@ -714,7 +714,7 @@ func TestGateLaunch_TheUnmeteredBypassesRefuseAForkRunsResume(t *testing.T) {
 	t.Run("local mode on a fork run's resume subject", func(t *testing.T) {
 		run := &store.Run{ID: "run-fork", BotID: "review-pr", ProjectPath: "acme/widgets",
 			Trust: store.RunTrustFork, ForkAuthorSubject: string(forkResumeSubject)}
-		adm, d := (&Server{}).gateLaunch(context.Background(), resumeLaunchSubject(run))
+		adm, d := (&Server{}).gateLaunch(context.Background(), (&Server{}).resumeLaunchSubject(run))
 		if d == nil {
 			adm.rollback(nil)
 			t.Fatal("local mode admitted a fork run's resume — it meters nothing, so an untrusted subject is refused")

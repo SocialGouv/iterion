@@ -24,8 +24,62 @@ import (
 // calls Resolve, Acquire, a sealer, a provider probe, or a persistence method.
 // The selected slots assume materialization succeeds; unknowns stay explicit.
 func (p *Publisher) PreviewCredentials(ctx context.Context, spec runview.CredentialPreviewSpec, wf *ir.Workflow) (runview.CredentialPreview, error) {
+	out, _, err := p.previewCredentials(ctx, spec, wf, launchPreviewProgram(spec, wf))
+	return out, err
+}
+
+// previewProgram is the program a preview judges: the route view its walk
+// reads and the pinned set its seal decisions take. A launch derives both
+// from the spec (launchPreviewProgram); a resume replays its run document's
+// — the dispatch view over the run's own inputs and the launch-frozen pinned
+// set — exactly as SubmitResume hands them to the walk.
+type previewProgram struct {
+	view   model.RouteView
+	pinned []string
+}
+
+// launchPreviewProgram is the program a launch that has not happened yet
+// reads. The view reads the run's vars by provenance, exactly as the live
+// launch will (the parity doctrine): declared defaults narrow the gate,
+// launch values only where the spec pins them, a late name leaves the route
+// undecided (ADR-129 §4). The same allowlist the live launch will enforce:
+// the pinned set, pool wants and candidates read the PRUNED set, so the
+// preview never shows a credential for a provider the tenant forbids
+// (ADR-129 §5). The pinned set is the derivation the launch stamps on the
+// run document, derived fresh: a preview describes a launch that has not
+// happened, so there is no frozen set to replay — it answers for the
+// program as it reads NOW.
+func launchPreviewProgram(spec runview.CredentialPreviewSpec, wf *ir.Workflow) previewProgram {
+	view := model.RouteViewForLaunch(wf, buildModelOverrides(spec.Launch.ModelOverrides), runFallbackEntries(spec.Launch.Fallback), spec.Launch.Vars, spec.Launch.TrustedVarNames)
+	view.AllowedProviders = policyProviders(spec.LLMRoutePolicy)
+	return previewProgram{view: view, pinned: derivePinnedProviders(view)}
+}
+
+// previewVerdict is the live launch's unfunded refusal as the preview reads
+// it on the fills it predicts, nil when the launch starts, and whether those
+// fills are whole: a tier whose metadata could not be read may hold the very
+// credential that funds a route the refusal names.
+type previewVerdict struct {
+	refusal     *UnfundedProvidersError
+	conditional bool
+}
+
+// err is the verdict as the funding judges return it: the refusal itself,
+// typed, when every tier answered; an undecided verdict when one did not —
+// never the refusal, which a reader would take for the decision it is not.
+func (v previewVerdict) err() error {
+	if v.refusal == nil {
+		return nil
+	}
+	if v.conditional {
+		return fmt.Errorf("cloudpublisher: whether this run is funded is undecided — a credential tier's metadata could not be read, and on the tiers that answered the live launch would refuse: %s", v.refusal.Error())
+	}
+	return v.refusal
+}
+
+func (p *Publisher) previewCredentials(ctx context.Context, spec runview.CredentialPreviewSpec, wf *ir.Workflow, prog previewProgram) (runview.CredentialPreview, previewVerdict, error) {
 	if p.runSecrets == nil || p.sealer == nil || spec.Context.TeamID == "" {
-		return runview.CredentialPreview{}, runview.ErrCredentialPreviewUnavailable
+		return runview.CredentialPreview{}, previewVerdict{}, runview.ErrCredentialPreviewUnavailable
 	}
 	x := &credentialPreview{
 		p: p, ctx: store.WithTenant(ctx, spec.Context.TeamID),
@@ -39,21 +93,8 @@ func (p *Publisher) PreviewCredentials(ctx context.Context, spec runview.Credent
 	// The same canonicalisation the live walk applies, or the preview would
 	// answer for a spelling the launch never uses.
 	previewBotID := botregistry.NormalizeName(spec.Context.BotID)
-	// The launch view reads the run's vars by provenance, exactly as the
-	// live launch will (the parity doctrine): declared defaults narrow the
-	// gate, launch values only where the spec pins them, a late name leaves
-	// the route undecided (ADR-129 §4).
-	previewView := model.RouteViewForLaunch(wf, buildModelOverrides(spec.Launch.ModelOverrides), runFallbackEntries(spec.Launch.Fallback), spec.Launch.Vars, spec.Launch.TrustedVarNames)
-	// The same allowlist the live launch will enforce (the parity doctrine):
-	// the preview's pinned set, pool wants and candidates read the PRUNED
-	// set, so it never shows a credential for a provider the tenant forbids
-	// (ADR-129 §5).
-	previewView.AllowedProviders = policyProviders(spec.LLMRoutePolicy)
-	// The same derivation the launch stamps on the run document. Derived
-	// fresh here on purpose: a preview describes a launch that has not
-	// happened, so there is no frozen set to replay — it answers for the
-	// program as it reads NOW, which is what the operator is about to run.
-	x.pinned = pinnedProviderSet(derivePinnedProviders(previewView))
+	previewView := prog.view
+	x.pinned = pinnedProviderSet(prog.pinned)
 	// Same predicate as the live fill (#2038): an env-funded run acquires no
 	// LLM credential, so the preview shows no candidate and reads no tier.
 	envFunded := wf != nil && model.EffectiveProviders(previewView, knownPoolProviders).OnlyEnvFunded()
@@ -93,29 +134,43 @@ func (p *Publisher) PreviewCredentials(ctx context.Context, spec runview.Credent
 			x.warn("The team runs with llm_fallback=none: the shared tiers (org, pool, platform) are not consulted, and a route nothing of the team's own funds refuses the launch.")
 		}
 	}
-	// The team's runner-pool mapping, through the launch's own reader (D13):
-	// a pool team's launch consults NO shared tier — a pool pod would hold
-	// other tenants' credentials — so a preview blind to the mapping predicts
-	// fills the launch never acquires, and the verdict it mirrors below is
-	// computed on them. Read like the policy above: unconditionally, and a
-	// failed read warns instead of refusing, since the preview observes.
+	// The run's runner pool, through the launch's own reader (D13): a pool
+	// run consults NO shared tier — a pool pod would hold other tenants'
+	// credentials — so a preview blind to it predicts fills the launch never
+	// acquires, and the verdict it mirrors below is computed on them. A
+	// trusted run's pool is its team's mapping, read like the policy above:
+	// unconditionally, and a failed read warns instead of refusing, since
+	// the preview observes. An untrusted run's is the pool its fork lane
+	// names, never its team's mapping (forkLanePoolRefusal), and it is
+	// pooled whatever the name: the launch refuses an untrusted run that
+	// names none, so no untrusted run is ever funded by a shared tier.
+	untrustedPreview := !spec.Launch.Trust.Trusted()
 	pooledPreview := false
-	runnerPool, perr := p.runnerPoolForTeam(ctx, spec.Context.TeamID)
-	switch {
-	case perr != nil:
-		x.warn("The team's runner-pool mapping could not be read; the live launch refuses on this error and this preview is conditional.")
-	case runnerPool != "":
-		pooledPreview = true
+	runnerPool := ""
+	if untrustedPreview {
+		pooledPreview, runnerPool = true, spec.Launch.ForkLanePool
+	} else {
+		mapped, perr := p.runnerPoolForTeam(ctx, spec.Context.TeamID)
+		switch {
+		case perr != nil:
+			x.warn("The team's runner-pool mapping could not be read; the live launch refuses on this error and this preview is conditional.")
+		case mapped != "":
+			pooledPreview, runnerPool = true, mapped
+		}
 	}
 	// The launch's own `runnerPool != "" || sovereign`: ONE expression for the
 	// two postures that block the shared tiers, read by every site below that
 	// mirrors one — the tier walk, the fallback door, and therefore the
 	// unfunded verdict those fills feed.
 	sharedTiersBlocked := sovereignPreview || pooledPreview
+	blocked := blockedPosture(sovereignPreview, runnerPool, untrustedPreview)
+	if untrustedPreview {
+		x.warn("The run is untrusted (fork lane) and executes on its lane's runner pool: the shared tiers (org, pool, platform) are not consulted, the runner's environment is refused and a forfait cannot cross its sandbox — only the team's own API keys fund it, and a route none of them funds refuses the launch before it is metered.")
+	}
 	if envFunded {
 		x.out.Warnings = append(x.out.Warnings, "Every model route of this run rides the runner's openai_compatible gateway: no credential is acquired for it.")
 	} else {
-		if pooledPreview {
+		if pooledPreview && !untrustedPreview {
 			x.warn(fmt.Sprintf("The team is mapped to runner pool %q: the shared tiers (org, pool, platform) are not consulted — only the team's own credentials fund this run.", runnerPool))
 		}
 		tenantOwners := []string{spec.OwnerID}
@@ -177,7 +232,7 @@ func (p *Publisher) PreviewCredentials(ctx context.Context, spec runview.Credent
 			x.oauthStage("team", secrets.OrgOwnerKey(spec.Context.TeamID), usagecap.TenantScope(spec.Context.TeamID), false, true)
 		case credentialTierOrg:
 			if sharedTiersBlocked {
-				x.warn("Org tier not consulted: " + blockedPosture(sovereignPreview, runnerPool) + ".")
+				x.warn("Org tier not consulted: " + blocked + ".")
 				return nil
 			}
 			if p.orgCredentialAudience(ctx, x.orgID, spec.Context.TeamID) {
@@ -196,7 +251,7 @@ func (p *Publisher) PreviewCredentials(ctx context.Context, spec runview.Credent
 			}
 		case credentialTierPool:
 			if sharedTiersBlocked {
-				x.warn("Pool not consulted: " + blockedPosture(sovereignPreview, runnerPool) + ".")
+				x.warn("Pool not consulted: " + blocked + ".")
 				x.out.Pool.Reason = blockedPoolReason(sovereignPreview)
 				return nil
 			}
@@ -320,7 +375,7 @@ func (p *Publisher) PreviewCredentials(ctx context.Context, spec runview.Credent
 			}
 		case credentialTierPlatform:
 			if sharedTiersBlocked {
-				x.warn("Platform tier not consulted: " + blockedPosture(sovereignPreview, runnerPool) + ".")
+				x.warn("Platform tier not consulted: " + blocked + ".")
 				return nil
 			}
 			if p.platformAudienceAllows(ctx, "", x.orgID, spec.Context.TeamID) {
@@ -441,7 +496,7 @@ func (p *Publisher) PreviewCredentials(ctx context.Context, spec runview.Credent
 		}
 		return nil
 	}); err != nil {
-		return runview.CredentialPreview{}, err
+		return runview.CredentialPreview{}, previewVerdict{}, err
 	}
 	// The unfunded refusals are the live launch's, observed here BY NAME (the
 	// preview never refuses): the SAME arming, the SAME decision and the
@@ -465,7 +520,8 @@ func (p *Publisher) PreviewCredentials(ctx context.Context, spec runview.Credent
 	composePolicyLadder(wf, previewView, spec.LLMRoutePolicy, model.AllowedProviderSet(previewView.AllowedProviders), spec.Launch.Vars, doorServesMetadata(x), nil)
 	previewAttributed, previewSites := attributedRoutes(previewView)
 	restoreRoutes()
-	refusal := unfundedRefusalFor(spec.Context.TeamID, previewAttributed, previewSites, metadataFunding(x), metadataHoldsNothing(x), p.unfundedPostureFor(wf, sovereignPreview, envFunded))
+	posture := p.unfundedPostureFor(wf, sovereignPreview, envFunded, spec.Launch.Trust, runnerPool)
+	refusal := unfundedRefusalFor(spec.Context.TeamID, previewAttributed, previewSites, metadataFunding(x, posture), metadataHoldsNothing(x), posture)
 	wires := map[string][]string{}
 	selectSlot := func(i int) {
 		c := &x.out.Candidates[i]
@@ -550,7 +606,7 @@ func (p *Publisher) PreviewCredentials(ctx context.Context, spec runview.Credent
 			}
 		}
 	}
-	return x.out, nil
+	return x.out, previewVerdict{refusal: refusal, conditional: x.fillsConditional}, nil
 }
 
 // blockedPoolReason is the pool block's reason code when a posture keeps
@@ -564,16 +620,22 @@ func blockedPoolReason(sovereign bool) string {
 	return "runner_pool"
 }
 
-// blockedPosture names, for an operator's remedy, which of the two postures
+// blockedPosture names, for an operator's remedy, which of the postures
 // keeps the shared tiers out of this run — they can hold at once, and they
 // are not remedied the same way: a policy is the team's to change, a pool
-// mapping the platform's.
-func blockedPosture(sovereign bool, runnerPool string) string {
+// mapping the platform's, and an untrusted run's pool is its fork lane's,
+// which no setting moves.
+func blockedPosture(sovereign bool, runnerPool string, untrusted bool) string {
 	reasons := make([]string, 0, 2)
 	if sovereign {
 		reasons = append(reasons, "the team runs with llm_fallback=none")
 	}
-	if runnerPool != "" {
+	switch {
+	case untrusted && runnerPool != "":
+		reasons = append(reasons, fmt.Sprintf("the run is untrusted and executes on its fork lane's runner pool %q", runnerPool))
+	case untrusted:
+		reasons = append(reasons, "the run is untrusted and executes on its fork lane's runner pool")
+	case runnerPool != "":
 		reasons = append(reasons, fmt.Sprintf("the team is mapped to runner pool %q", runnerPool))
 	}
 	return strings.Join(reasons, ", and ")
@@ -615,7 +677,7 @@ func metadataHoldsNothing(x *credentialPreview) bool {
 // separates the two surfaces is the funding they can SEE (a sealed bundle
 // against predicted candidates, the doorServes / doorServesMetadata motif),
 // never a second reading of what funded means.
-func metadataFunding(x *credentialPreview) map[string]bool {
+func metadataFunding(x *credentialPreview, posture unfundedPosture) map[string]bool {
 	slots := make([]secrets.Provider, 0, len(x.api)+len(x.pinnedAPI))
 	for prov := range x.api {
 		slots = append(slots, prov)
@@ -630,7 +692,7 @@ func metadataFunding(x *credentialPreview) map[string]bool {
 	for kind := range x.oauth {
 		kinds = append(kinds, kind)
 	}
-	return fundedProviderSet(slots, kinds)
+	return fundedProviderSet(slots, kinds, posture)
 }
 
 type credentialPreview struct {

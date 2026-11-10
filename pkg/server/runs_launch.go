@@ -1062,7 +1062,7 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 	if s.runs != nil {
 		gateMeta, gateMetaErr = s.runs.LoadRunCtx(r.Context(), id)
 		if gateMetaErr == nil && gateMeta != nil {
-			subj = resumeLaunchSubject(gateMeta)
+			subj = s.resumeLaunchSubject(gateMeta)
 		}
 	}
 	adm, d := s.gateLaunch(r.Context(), subj)
