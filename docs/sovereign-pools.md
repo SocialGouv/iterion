@@ -41,7 +41,8 @@ The isolation chain, in the order a run meets it:
    the org or the outside author is metered — and refuses every route the
    pool's runner decides itself, since the pool's env block pins the
    routing dials ([below](#routing-dials-the-pools-env-block-is-pinned))
-   where the server cannot read them ([webhooks.md](webhooks.md#fork-lane-funding)).
+   where the server cannot read them, and every route the server cannot
+   attribute to a provider ([webhooks.md](webhooks.md#fork-lane-funding)).
 4. **Per-pool topology**: one run stream + one DLQ stream + one durable
    consumer per pool (`ITERION_RUNS_POOL_<p>` / `iterion-runners-pool-<p>`),
    created and reconciled by the server (immediate pass + a 30 s tick,

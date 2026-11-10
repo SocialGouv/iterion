@@ -215,8 +215,11 @@ this flag's alone.
   `runner.sandbox.enabled`, so the pool's token would hold no grant and
   every sandboxed run would fail at its first `kubectl apply`. The pool
   runs under the release's shared ServiceAccount, so the only interim the
-  chart admits — `serviceAccount.create: false`, the sandbox driver's
-  verbs (the rules of `runner-rbac.yaml`) bound to that account by hand —
+  chart admits — `serviceAccount.create: false` with a dedicated account
+  named in `serviceAccount.name` (the chart refuses the empty name, which
+  mounts the namespace's `default` account and would hand the grants to
+  every pod of the namespace that names none), the sandbox driver's verbs
+  (the rules of `runner-rbac.yaml`) bound to that account by hand —
   hands them to **every pod of the release that mounts it**: the shared
   runner, which under a release-wide `runner.sandbox.enabled: false` runs
   EVERY trusted run in its own pod, and every other pool. Each of those
