@@ -95,9 +95,6 @@ func (p *Publisher) previewCredentials(ctx context.Context, spec runview.Credent
 	previewBotID := botregistry.NormalizeName(spec.Context.BotID)
 	previewView := prog.view
 	x.pinned = pinnedProviderSet(prog.pinned)
-	// Same predicate as the live fill (#2038): an env-funded run acquires no
-	// LLM credential, so the preview shows no candidate and reads no tier.
-	envFunded := wf != nil && model.EffectiveProviders(previewView, knownPoolProviders).OnlyEnvFunded()
 	// The live resolution's own policy snapshot and tier probes (read-only
 	// store reads, like every other stage here) — and the launch's
 	// RESOLVED routing policy whitelists the slots exactly as the launch
@@ -130,9 +127,6 @@ func (p *Publisher) previewCredentials(ctx context.Context, spec runview.Credent
 		x.warn("The team's llm_fallback policy could not be read; the live launch refuses on this error and this preview is conditional.")
 	case policy == identity.LLMFallbackNone:
 		sovereignPreview = true
-		if !envFunded {
-			x.warn("The team runs with llm_fallback=none: the shared tiers (org, pool, platform) are not consulted, and a route nothing of the team's own funds refuses the launch.")
-		}
 	}
 	// The run's runner pool, through the launch's own reader (D13): a pool
 	// run consults NO shared tier — a pool pod would hold other tenants'
@@ -158,6 +152,15 @@ func (p *Publisher) previewCredentials(ctx context.Context, spec runview.Credent
 			pooledPreview, runnerPool = true, mapped
 		}
 	}
+	// The live fill's own answer (#2038 under ADR-131 §5, gatewayRouting): a
+	// run whose every route rides the gateway and whose consulted tiers hold
+	// no gateway key serving it is env-funded — no candidate, no tier read;
+	// a held key attributes the gateway routes to it on the view every
+	// derivation below reads, exactly as the launch's walk does.
+	previewView, envFunded := p.gatewayRouting(x.ctx, previewView, spec.Context.TeamID, x.orgID, spec.OwnerID, previewBotID, sovereignPreview, pooledPreview)
+	if sovereignPreview && !envFunded {
+		x.warn("The team runs with llm_fallback=none: the shared tiers (org, pool, platform) are not consulted, and a route nothing of the team's own funds refuses the launch.")
+	}
 	// The launch's own `runnerPool != "" || sovereign`: ONE expression for the
 	// two postures that block the shared tiers, read by every site below that
 	// mirrors one — the tier walk, the fallback door, and therefore the
@@ -168,7 +171,7 @@ func (p *Publisher) previewCredentials(ctx context.Context, spec runview.Credent
 		x.warn("The run is untrusted (fork lane) and executes on its lane's runner pool: the shared tiers (org, pool, platform) are not consulted, the runner's environment is refused and a forfait cannot cross its sandbox — only the team's own vendor API keys fund it, on routes decided before the run (no gateway route, no ${…} dial or late var the pool's runner resolves itself), and any other route refuses the launch before it is metered.")
 	}
 	if envFunded {
-		x.out.Warnings = append(x.out.Warnings, "Every model route of this run rides the runner's openai_compatible gateway: no credential is acquired for it.")
+		x.out.Warnings = append(x.out.Warnings, "Every model route of this run rides the runner's openai_compatible gateway, and no credential tier this launch consults holds a gateway key serving it: no credential is acquired for it.")
 	} else {
 		if pooledPreview && !untrustedPreview {
 			x.warn(fmt.Sprintf("The team is mapped to runner pool %q: the shared tiers (org, pool, platform) are not consulted — only the team's own credentials fund this run.", runnerPool))
@@ -668,13 +671,20 @@ func doorServesMetadata(x *credentialPreview, untrusted bool) func(_, credential
 	}
 }
 
-// metadataHoldsNothing is `!holdsLLMCredential(bundle)` on the fills this
+// metadataHoldsNothing is holdsNothingForUnattributedRoutes on the fills this
 // preview PREDICTS: the sovereign refusal of a run nothing of the team's
 // funds and no route of which the walk can attribute reads it, and it is the
 // same twinning as metadataFunding below — a different SOURCE for the same
 // question, never a different question.
 func metadataHoldsNothing(x *credentialPreview) bool {
-	return len(x.api)+len(x.pinnedAPI)+len(x.oauth) == 0
+	slots := make([]secrets.Provider, 0, len(x.api)+len(x.pinnedAPI))
+	for prov := range x.api {
+		slots = append(slots, prov)
+	}
+	for prov := range x.pinnedAPI {
+		slots = append(slots, prov)
+	}
+	return holdsNothingForUnattributedRoutes(slots, len(x.oauth))
 }
 
 // metadataFunding is bundleFunding on the fills this preview PREDICTS: what

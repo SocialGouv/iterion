@@ -84,9 +84,11 @@ type ProviderResolution struct {
 	// lends — so the caller can say WHICH pin made it widen. Sorted.
 	Unknown []string
 	// EnvFunded lists the gateway-served prefixes the walk read
-	// (openai_compatible/…) — spend from the deployment's environment, not
-	// from a credential. It does NOT force NarrowSafe false: the route
-	// acquires no credential, so narrowing to the named providers is exact
+	// (openai_compatible/…) that no sealed key funds — spend from the
+	// deployment's environment, not from a credential. A gateway route the
+	// view attributes to a key (RouteView.GatewayKeyFunded) is in Providers
+	// instead. It does NOT force NarrowSafe false: the route acquires no
+	// credential, so narrowing to the named providers is exact
 	// (OnlyEnvFunded is the predicate the publisher spends). Sorted.
 	EnvFunded []string
 	// ForfaitFirst lists the providers of Providers whose EVERY route runs on
@@ -141,11 +143,11 @@ type ProviderResolution struct {
 	// envFundedOnly reports whether every LLM route the walk read resolved
 	// to the openai_compatible gateway — a route whose credential the
 	// RUNNER's environment funds, never the bundle. A route that resolved
-	// to any bundle-funded provider, a route that could not resolve (an
-	// "auto", an empty ${VAR}, a name the vocabulary does not know, a
-	// model-answering node without fields), and a run with no LLM route at
-	// all, all read false.
-
+	// to any bundle-funded provider (a gateway route the view attributes to
+	// a sealed key included), a route that could not resolve (an "auto", an
+	// empty ${VAR}, a name the vocabulary does not know, a model-answering
+	// node without fields), and a run with no LLM route at all, all read
+	// false.
 	envFundedOnly bool
 	// AnthropicWireDefaultReads lists the anthropic-wire key slots some route
 	// may spend as the run's DEFAULT credential — through the delegates'
@@ -167,7 +169,9 @@ type ProviderResolution struct {
 	// model, a gateway hint over one, or an env-templated model that expanded
 	// to one here: the routes EnvFunded names the prefix of. Such a route
 	// acquires no credential from the bundle; the runner's environment funds
-	// it. A gateway route the allowlist pruned is not one. Sorted.
+	// it. A gateway route the allowlist pruned is not one, nor is one a
+	// sealed key funds (RouteView.GatewayKeyFunded): that route names the
+	// openai_compatible provider in Providers instead. Sorted.
 	GatewaySites []string
 	// DeferredSites lists the sites whose route is decided by the process
 	// that DISPATCHES it rather than by this reading: a deciding routing
@@ -201,9 +205,9 @@ type ProviderResolution struct {
 }
 
 // OnlyEnvFunded reports whether the run's every LLM route is an
-// openai_compatible route — the gateway the runner's environment funds — so
-// the resolution acquires no LLM credential for it. See
-// ProviderResolution.envFundedOnly.
+// openai_compatible route the runner's environment funds — no sealed key
+// does (RouteView.GatewayKeyFunded) — so the resolution acquires no LLM
+// credential for it. See ProviderResolution.envFundedOnly.
 func (r ProviderResolution) OnlyEnvFunded() bool { return r.envFundedOnly }
 
 // EffectiveProviders is the walk every "which providers does this run
@@ -231,7 +235,7 @@ func EffectiveProviders(v RouteView, known map[string]bool) ProviderResolution {
 	if wf == nil || len(known) == 0 {
 		return ProviderResolution{}
 	}
-	acc := &providerAccumulator{known: known, providers: map[string]bool{}, unknown: map[string]bool{}, forfaitFirst: map[string]bool{}, pins: map[string][]string{}, narrowSafe: true, vars: v.Vars, late: v.LateVars, allowed: AllowedProviderSet(v.AllowedProviders)}
+	acc := &providerAccumulator{known: known, providers: map[string]bool{}, unknown: map[string]bool{}, forfaitFirst: map[string]bool{}, pins: map[string][]string{}, narrowSafe: true, vars: v.Vars, late: v.LateVars, allowed: AllowedProviderSet(v.AllowedProviders), gatewayKeyFunded: v.GatewayKeyFunded}
 	gateVars := v.gateVars()
 	seenAnyLLM := false
 	// A run-level fallback stage naming no backend runs on each node's own,
@@ -465,6 +469,18 @@ type providerAccumulator struct {
 	unattributedSites map[string]bool
 	// wireSites: ProviderResolution.WireDefaultSites, per site a slot set.
 	wireSites map[string]map[string]bool
+	// gatewayKeyFunded is RouteView.GatewayKeyFunded: a decided gateway
+	// route spends a sealed key (gatewayKeyed).
+	gatewayKeyFunded bool
+}
+
+// gatewayKeyed reports whether a DECIDED gateway route records the
+// openai_compatible provider (RouteView.GatewayKeyFunded) — only where the
+// caller's vocabulary knows that provider: the pool's does not, and there the
+// route keeps its env-funded reading rather than becoming a name the walk
+// cannot resolve, which would widen the pool's wants to everything.
+func (a *providerAccumulator) gatewayKeyed() bool {
+	return a.gatewayKeyFunded && a.known[modelroute.OpenAICompatible]
 }
 
 // routeRead is one route mid-read: the site it lives at, whether it is a
@@ -963,8 +979,9 @@ func (a *providerAccumulator) noteWireDefault(chain, mdl string) {
 // mdl is the route's effective model: an openai_compatible hint is only the
 // gateway route when the model carries the gateway prefix — a bare model
 // behind the hint spends a process-held credential (the backends that do not
-// honour the hint), so it widens as an unknown name, and OnlyEnvFunded reads
-// false.
+// honour the hint), so it widens as an unknown name, whatever the caller's
+// vocabulary, and OnlyEnvFunded reads false. A gateway route a sealed key
+// funds (gatewayKeyed) records the provider like any vendor hint.
 func (a *providerAccumulator) chainDecides(raw, mdl string) bool {
 	hints, unresolved := chainHints(raw)
 	if len(hints) == 0 {
@@ -975,18 +992,23 @@ func (a *providerAccumulator) chainDecides(raw, mdl string) bool {
 		a.unreadableAt("provider", raw)
 	}
 	for _, h := range hints {
-		if h == modelroute.OpenAICompatible && rawGatewayPrefix(mdl) {
-			if len(a.allowed) > 0 && !a.allowed[modelroute.OpenAICompatible] {
+		if h == modelroute.OpenAICompatible {
+			switch {
+			case !rawGatewayPrefix(mdl):
+				a.unknownHint(h)
+			case len(a.allowed) > 0 && !a.allowed[modelroute.OpenAICompatible]:
 				a.forbid(modelroute.OpenAICompatible)
-				continue
-			}
-			a.gatewayAt()
-			if a.route != nil {
-				// The gateway step is an allowed server: it marks the route
-				// servable inside the list, the same way hint() does for a
-				// vendor step — a mixed chain refuses only when NO step
-				// inside the list holds.
-				a.route.inside = true
+			case a.gatewayKeyed():
+				a.hint(h)
+			default:
+				a.gatewayAt()
+				if a.route != nil {
+					// The gateway step is an allowed server: it marks the
+					// route servable inside the list, the same way hint()
+					// does for a vendor step — a mixed chain refuses only
+					// when NO step inside the list holds.
+					a.route.inside = true
+				}
 			}
 			continue
 		}
@@ -1018,18 +1040,25 @@ func (a *providerAccumulator) prefixOrWiden(mdl string) {
 	}
 	if p := providerFromModelPrefix(mdl); p != "" {
 		if p == modelroute.OpenAICompatible {
-			// The gateway route: its credential is the runner's environment,
-			// so it names no bundle slot, and it is never a reason to widen
-			// (narrowing to the named providers is exact — the route
-			// acquires no credential). Named in EnvFunded for the caller;
-			// it is what OnlyEnvFunded is true OF. An env-TEMPLATED model
-			// may expand to the gateway here and to a vendor on the runner,
-			// so it widens (envDeferred covers the empty expansion; this
-			// branch covers the resolved one). Under an allowlist the
-			// gateway is a provider like any other: outside the list, the
-			// route is pruned.
+			// The gateway route. Under an allowlist the gateway is a
+			// provider like any other: outside the list, the route is
+			// pruned. A literal gateway route a sealed key funds
+			// (gatewayKeyed, ADR-131 §5) names the gateway's bundle slot,
+			// pinned at its site like any provider. Otherwise its
+			// credential is the runner's environment: it names no bundle
+			// slot and is never a reason to widen (narrowing to the named
+			// providers is exact — the route acquires no credential); it is
+			// named in EnvFunded for the caller, and it is what
+			// OnlyEnvFunded is true OF. An env-TEMPLATED model may expand to
+			// the gateway here and to a vendor on the runner, so it widens
+			// and is never key-funded (envDeferred covers the empty
+			// expansion; this branch covers the resolved one).
 			if len(a.allowed) > 0 && !a.allowed[modelroute.OpenAICompatible] {
 				a.forbid(modelroute.OpenAICompatible)
+				return
+			}
+			if rawGatewayPrefix(mdl) && a.gatewayKeyed() {
+				a.hint(p)
 				return
 			}
 			if a.envFunded == nil {
@@ -1078,11 +1107,18 @@ func (a *providerAccumulator) hint(raw string) bool {
 		}
 		return true
 	default:
-		a.unknown[h] = true
-		a.widen()
-		a.unreadableAt("provider", h)
+		a.unknownHint(h)
 		return false
 	}
+}
+
+// unknownHint records a name the walk cannot resolve to a provider it may
+// attribute: Unknown, the fail-open widen, and — under an allowlist — an
+// unreadable route.
+func (a *providerAccumulator) unknownHint(h string) {
+	a.unknown[h] = true
+	a.widen()
+	a.unreadableAt("provider", h)
 }
 
 // pin records WHERE the provider just recorded was named — the site the

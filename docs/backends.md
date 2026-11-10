@@ -1509,6 +1509,23 @@ proves `openai_compatible/…` specs in the cloud model catalog
 model: the id is the gateway's own naming. A key restricted to bots or
 repositories proves nothing there ([models.md](models.md)).
 
+In the cloud, that key funds the team's gateway routes (ADR-131 §5). When a
+credential tier the launch consults — the team's own, then the org's and the
+platform's unless the team is sovereign or pool-mapped — holds a gateway key
+serving the launch's bot and repository, the credential walk seals it with its
+base URL and endpoint-aware fingerprint, and the run's literal
+`openai_compatible/…` routes spend it, never the runner's environment; a capped
+key still decides it, the run then parks on it. With no such key, a run whose
+every route rides the gateway is env-funded as before. An env-templated route
+(`${DIAL:-…}`) is never attributed to the key — what the runner expands it to
+is not the publisher's word — but the key is sealed all the same, and claw's
+dispatch prefers it to the pod's gateway. Under `llm_fallback=none` a gateway
+route nothing of the team's own funds is refused by name, a pool-stamped run
+excepted. The routing pair `claw+openai_compatible_key` is a seal-whitelist
+entry of the pair order, never a fallback rung; a run frozen before the entry
+existed replays its order as stored and says once what it held out. The
+legacy pool and the fallback door never lend a gateway key.
+
 The team's default gateway model is a routing decision, not a field of the
 key: an override cell on selector `*` pinning
 `openai_compatible/<provider>/<model>`, the gateway's id verbatim (ADR-122):

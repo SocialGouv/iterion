@@ -314,11 +314,16 @@ func TestCredResolution_poolLease(t *testing.T) {
 }
 
 // TestWantForSlot_totalOverTheVocabulary: the inverse of the sealing maps
-// covers the CLOSED pair vocabulary — both forfaits, every known provider
-// key, nothing else.
+// covers the pool's CLOSED vocabulary — both forfaits, every provider key a
+// pool may lend, nothing else. The gateway slot is the WALK's and never the
+// pool's (ADR-131 §5): it maps no want, and the want order names no gateway
+// key — the journey-wire of the vocabulary split, since widening the walk's
+// list without carving the pool's makes the pool ask donors for a gateway
+// key.
 // Mutant: any mapping arm flipped to false (or a provider dropped) → this
 // test reds; the exhaustiveness is what keeps a rung from arming silently
-// for nothing after a vocabulary extension.
+// for nothing after a vocabulary extension. wantForSlot or poolWantOrder
+// reading the walk's list (allKnownProviders) → the gateway rows red.
 func TestWantForSlot_totalOverTheVocabulary(t *testing.T) {
 	w, ok := wantForSlot(llmroute.CredClaudeForfait)
 	if !ok || w != (credpool.Credential{Source: credpool.SourceOAuth, Ref: string(secrets.OAuthKindClaudeCode)}) {
@@ -328,10 +333,18 @@ func TestWantForSlot_totalOverTheVocabulary(t *testing.T) {
 	if !ok || w != (credpool.Credential{Source: credpool.SourceOAuth, Ref: string(secrets.OAuthKindCodex)}) {
 		t.Fatalf("chatgpt_forfait → %+v ok=%v, want the codex OAuth want", w, ok)
 	}
-	for _, prov := range allKnownProviders {
+	for _, prov := range model.KnownPoolProviders {
 		w, ok := wantForSlot(slotOfProvider(prov))
 		if !ok || w != (credpool.Credential{Source: credpool.SourceAPIKey, Ref: string(prov)}) {
 			t.Fatalf("%s → %+v ok=%v, want the provider's api_key want", prov, w, ok)
+		}
+	}
+	if w, ok := wantForSlot(slotOfProvider(secrets.ProviderOpenAICompatible)); ok {
+		t.Fatalf("openai_compatible_key → %+v: the gateway slot maps a pool want — the door would ask a donor for a gateway key", w)
+	}
+	for _, w := range poolWantOrder {
+		if w.Source == credpool.SourceAPIKey && w.Ref == string(secrets.ProviderOpenAICompatible) {
+			t.Fatalf("poolWantOrder = %v names the gateway key: a run that pins nothing would ask the pool for one", poolWantOrder)
 		}
 	}
 	if _, ok := wantForSlot("pool"); ok {

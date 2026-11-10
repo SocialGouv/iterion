@@ -815,13 +815,13 @@ func TestPairOrder_ADoublyRefusedPinNamesBothKnobs(t *testing.T) {
 // TestDefaultPairOrderCoversEverySealableSlot checks the default against
 // hand-written slot literals, while the slots that reach the gate are
 // DERIVED here, from allKnownProviders through slotOfProvider and the OAuth
-// kinds through slotOfKind. The day a provider joins the walk (#2005 PR-C'
-// does exactly that for the gateway, whose slot llmroute's own vocabulary
-// refuses — pkg/llmroute's TestGatewayPairStaysOutOfTheWhitelistUntilThe...)
-// the §5 record would note it under the SHIPPED DEFAULT, and the line would
-// fire at warn claiming a fresh launch resolves a list that refuses the slot
-// just as much. Derived, never listed: this reds in the package that depends
-// on the claim, the day the walk's vocabulary grows.
+// kinds through slotOfKind. A provider joining the walk without its slot in
+// the default (#2005 PR-C' joined the gateway, whose seal-whitelist pair the
+// default names — pkg/llmroute's TestGatewayPairIsASealWhitelistEntryNeverARung)
+// would be noted by the §5 record under the SHIPPED DEFAULT, and the line
+// would fire at warn claiming a fresh launch resolves a list that refuses the
+// slot just as much. Derived, never listed: this reds in the package that
+// depends on the claim, the day the walk's vocabulary grows.
 func TestPairOrder_TheWalksSlotVocabularyIsNamedByTheShippedDefault(t *testing.T) {
 	slots := make([]string, 0, len(allKnownProviders)+2)
 	for _, prov := range allKnownProviders {

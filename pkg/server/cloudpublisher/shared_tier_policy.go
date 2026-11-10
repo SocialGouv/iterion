@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/credpool"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/llmroute"
@@ -88,15 +89,16 @@ func slotOfKind(kind string) string {
 }
 
 // wantForSlot is the INVERSE of the sealing maps above (slotOfKind /
-// slotOfProvider): the policy slot a fallback rung names → the pool
-// credential that would fund it. Built FROM those tables by reversal — a
-// hand-written switch would be a fourth copy of a vocabulary that already
-// agrees three ways (llmroute's validated pairs, allKnownProviders,
-// poolWantOrder) — and total over the CLOSED vocabulary: an unmapped slot
-// refuses (ok=false) rather than inventing a want, and the derivation
-// NAMES it in the door's log — a vocabulary extension that forgets the
-// inverse is visible, never silent (TestWantForSlot_totalOverTheVocabulary
-// pins the coverage).
+// slotOfProvider), restricted to what a POOL may lend: the policy slot a
+// fallback rung names → the pool credential that would fund it. Built FROM
+// those tables by reversal — a hand-written switch would be a fourth copy of
+// a vocabulary that already agrees three ways (llmroute's validated pairs,
+// model.KnownPoolProviders, poolWantOrder) — and total over the pool's
+// CLOSED vocabulary: an unmapped slot (the gateway's, which no pool want
+// names — ADR-131 §5) refuses (ok=false) rather than inventing a want, and
+// the derivation NAMES it in the door's log — a vocabulary extension that
+// forgets the inverse is visible, never silent
+// (TestWantForSlot_totalOverTheVocabulary pins the coverage).
 func wantForSlot(slot string) (credpool.Credential, bool) {
 	switch slot {
 	case llmroute.CredClaudeForfait:
@@ -105,9 +107,9 @@ func wantForSlot(slot string) (credpool.Credential, bool) {
 		return credpool.Credential{Source: credpool.SourceOAuth, Ref: string(secrets.OAuthKindCodex)}, true
 	}
 	if prov, ok := strings.CutSuffix(slot, "_key"); ok {
-		// allKnownProviders is the same list slotOfProvider's inputs come
-		// from — the reversal stays inside one vocabulary.
-		for _, known := range allKnownProviders {
+		// The pool's vocabulary is the list poolWantOrder's keys come from —
+		// the reversal stays inside one vocabulary.
+		for _, known := range model.KnownPoolProviders {
 			if secrets.Provider(prov) == known {
 				return credpool.Credential{Source: credpool.SourceAPIKey, Ref: prov}, true
 			}
@@ -118,8 +120,9 @@ func wantForSlot(slot string) (credpool.Credential, bool) {
 
 // providerOfSlot is the provider hint whose credential the policy slot
 // seals — the inverse of slotOfProvider/slotOfKind, built from the same
-// vocabularies (allKnownProviders, the forfait kinds' providers). "" for a
-// slot no provider maps to.
+// vocabularies (allKnownProviders — the WALK's, the gateway included, so a
+// providers allowlist naming openai_compatible admits its slot — and the
+// forfait kinds' providers). "" for a slot no provider maps to.
 func providerOfSlot(slot string) string {
 	if prov, ok := strings.CutSuffix(slot, "_key"); ok {
 		for _, known := range allKnownProviders {

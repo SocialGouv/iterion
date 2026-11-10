@@ -282,10 +282,17 @@ two gateways is two identities. Any key may carry a `repos` audience (`owner/rep
 it is checked in the credential walk before a webhook pin, and a launch that names no
 repository cannot spend a restricted key. Every tier may hold a gateway key — team,
 personal, org (shared through the org audience) and platform — and `llm_fallback=none`
-keeps a sovereign team on its own for every route the walk resolves. Until the walk
-learns the provider (#2005 PR-C'), a gateway key is storable but never sealed into a
-run: a gateway route is still served from the deployment's environment, `none`
-included; a webhook pin on such a key is refused at write; the pool never lends one.
+keeps a sovereign team on its own for every route the walk resolves. The walk spends
+the key (ADR-131 §5): when a tier the launch consults holds a gateway key serving the
+launch's bot and repository, the run's literal `openai_compatible/…` routes are funded
+by it — the walk seals the pair — and the run is no longer env-funded; with no such key
+a run whose every route rides the gateway is served from the deployment's environment
+as before. An env-templated route (`${DIAL:-…}`) is never attributed to the key, but
+the key is sealed all the same and claw's dispatch prefers it to the pod's gateway.
+Under `none` a gateway route nothing of the team's own funds is refused by name, a
+pool-stamped run excepted. A webhook pin on a gateway key is still refused at write
+until the pin is made exclusive at launch (ADR-131 §6); the legacy pool and the
+fallback door never lend one.
 Moving a key's `base_url` is a rotation — the secret is re-sent and sealed under the
 new URL — so a mutator who never held the secret cannot redirect it. In the sealed run
 bundle the key is ONE credential with its URL: `RunBundle.APIBaseURLs` beside

@@ -307,22 +307,45 @@ func TestSlotSealable(t *testing.T) {
 	}
 }
 
-// ADR-131 §5 promises a frozen PRE-UPGRADE pair order "replayed as stored
-// with one named warning". The gateway slot is what would make a stored
-// list pre-upgrade, and today it is outside BOTH the shipped default and
-// the vocabulary a tenant's own order may name: no run can freeze a list
-// the gateway upgrade widens, so the clause has no gateway leg to warn
-// about. The day PR-C' (#2005) widens the vocabulary this reds, and the
-// obligation lands with it at the owner site — the seal whitelist
-// (*Publisher).resolveAndSealCredentials builds from the run document's
-// frozen pair order.
-func TestGatewayPairStaysOutOfTheWhitelistUntilTheReplayWarningLands(t *testing.T) {
-	const gatewaySlot = "openai_compatible_key"
-	if SlotSealable(DefaultPairOrder, gatewaySlot) {
-		t.Errorf("SlotSealable(DefaultPairOrder, %q) = true: the shipped default names the gateway slot, so every run frozen before it replays a pre-upgrade list — ADR-131 §5 owes its one named warning (#2914), emitted where the whitelist is built from the run doc's frozen pair order (pkg/server/cloudpublisher/publisher.go, resolveAndSealCredentials)", gatewaySlot)
+// ADR-131 §5: the gateway slot joins the shipped default and the policy
+// vocabulary as a SEAL-WHITELIST entry, never a ladder rung. Sealable under
+// the default — a run launched today seals its team's gateway key — and
+// SealOnly, the predicate the ladder composer drops the pair on, true for
+// that slot alone: every other slot the default names orders a rung. A run
+// frozen BEFORE the entry existed replays its list as stored and says so
+// once; that half is witnessed at the owner site, where the whitelist is
+// built from the run document's frozen pair order
+// (pkg/server/cloudpublisher, TestGatewayKey_AFrozenPreUpgradeOrderReplaysAsStoredAndSaysSoOnce).
+// Mutants: SealOnly answering false for the gateway → the first assertion
+// reds; answering true for every slot → the loop reds on anthropic_key.
+func TestGatewayPairIsASealWhitelistEntryNeverARung(t *testing.T) {
+	if !SlotSealable(DefaultPairOrder, gatewaySlot) {
+		t.Fatalf("SlotSealable(DefaultPairOrder, %q) = false: the shipped default must name the gateway slot, or no launch ever seals a team's gateway key", gatewaySlot)
 	}
-	if validCredential(gatewaySlot) {
-		t.Errorf("validCredential(%q) = true: the policy vocabulary accepts the gateway slot, so a tenant can freeze an order naming it — ADR-131 §5 owes its one named warning (#2914) at the same site (pkg/server/cloudpublisher/publisher.go, resolveAndSealCredentials)", gatewaySlot)
+	if !validCredential(gatewaySlot) {
+		t.Fatalf("validCredential(%q) = false: the policy vocabulary refuses the slot the default names", gatewaySlot)
+	}
+	if !SealOnly(gatewaySlot) {
+		t.Fatalf("SealOnly(%q) = false: the gateway pair would become a ladder stage the moment a run seals its key", gatewaySlot)
+	}
+	for _, pair := range DefaultPairOrder {
+		_, c, err := ParsePair(pair)
+		if err != nil {
+			t.Fatalf("default order entry %q: %v", pair, err)
+		}
+		if c != gatewaySlot && SealOnly(c) {
+			t.Errorf("SealOnly(%q) = true: a rung slot of the default would never order a stage", c)
+		}
+	}
+	// The structural half the composer relies on: no harness maps a node
+	// model onto the gateway slot, so even a stage that slipped through
+	// would drop on every node.
+	for _, h := range []string{HarnessClaw, HarnessClaudeCode, HarnessCodex} {
+		for _, mdl := range []string{"openai_compatible/scaleway/glm-5.3", "anthropic/claude-opus-5", "gpt-6-sol"} {
+			if got, ok, _ := StageModel(h, gatewaySlot, mdl, ClassTable{}); ok {
+				t.Errorf("StageModel(%s, %s, %s) = %q: the gateway slot must map no stage", h, gatewaySlot, mdl, got)
+			}
+		}
 	}
 }
 

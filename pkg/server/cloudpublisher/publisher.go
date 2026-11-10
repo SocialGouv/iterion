@@ -557,9 +557,14 @@ func newPublisher(cfg Config) *Publisher {
 }
 
 // allKnownProviders is the static set the publisher tries to resolve
-// for every run. Providers without a configured key are simply
-// omitted from the bundle; the runner falls back to env or surfaces
-// "no credentials" at the LLM call site.
+// for every run — the WALK's vocabulary (model.KnownRoutingProviders), the
+// openai_compatible gateway included: every tier fills, restores and reports
+// over it, and a gateway key travels as the pair its resolution carries (key,
+// canonical URL, endpoint-aware fingerprint). Providers without a configured
+// key are simply omitted from the bundle; the runner falls back to env or
+// surfaces "no credentials" at the LLM call site. What a POOL may be asked
+// for is the other list (model.KnownPoolProviders: poolWantOrder,
+// wantForSlot).
 var allKnownProviders = model.KnownRoutingProviders
 
 func genericSecretNamesForWorkflow(wf *ir.Workflow) []string {
@@ -662,7 +667,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	if allowed != nil {
 		view.AllowedProviders = policyProviders(routePolicy)
 		if view.Workflow != nil {
-			walk := model.EffectiveProviders(view, knownPoolProviders)
+			walk := model.EffectiveProviders(view, walkProviderSet)
 			if err := model.AllowlistRefusal(walk, routePolicy.Sources[llmroute.FieldProviders]); err != nil {
 				return credResolution{}, err
 			}
@@ -744,16 +749,22 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 		bundle.AmbientLLMRefused = true
 	}
 
-	// #2038: a run whose every LLM route is an openai_compatible route is
-	// funded by the RUNNER's environment — the walk acquires nothing for it:
-	// no BYOK, org or platform key, no forfait, no pool lease, no restore.
-	// Generic `secrets:` still resolve (their tier below is not skipped).
-	// An env-dependent route counts as UNRESOLVED, never env-funded: ${ROUTE}
-	// may resolve to the gateway on the publisher and to Anthropic on the
-	// runner. The same is true, one level up, of a var the publisher's OWN
-	// environment decided (RouteView.LateVars): the walk reads the run's
-	// vars through the view, and a late name leaves the route undecided.
-	envFunded := view.Workflow != nil && model.EffectiveProviders(view, knownPoolProviders).OnlyEnvFunded()
+	// #2038 under ADR-131 §5: a run whose every LLM route is an
+	// openai_compatible route NO tier this walk consults holds a gateway key
+	// for is funded by the RUNNER's environment — the walk acquires nothing
+	// for it: no BYOK, org or platform key, no forfait, no pool lease, no
+	// restore. Generic `secrets:` still resolve (their tier below is not
+	// skipped). When a tier does hold one serving this launch — or the
+	// sovereign posture owes the routes one — the gateway routes are
+	// attributed to the key on the view every derivation below reads
+	// (gatewayRouting, the preview's own answer too), and the walk seals it.
+	// An env-dependent route counts as UNRESOLVED, never env-funded nor
+	// key-funded: ${ROUTE} may resolve to the gateway on the publisher and to
+	// Anthropic on the runner. The same is true, one level up, of a var the
+	// publisher's OWN environment decided (RouteView.LateVars): the walk
+	// reads the run's vars through the view, and a late name leaves the route
+	// undecided.
+	view, envFunded := p.gatewayRouting(ctx, view, tenantID, orgID, ownerID, audienceBotID, sovereign, runnerPool != "")
 
 	// Refused-but-only keys, per provider AND per tier, remembered across
 	// the tiers for the restore step — the api-key twin of skippedForfaits
@@ -1599,7 +1610,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	credentialOwed := llmCredentialOwed(bundle, wf, envFunded)
 	if envFunded {
 		if p.logger != nil {
-			p.logger.Info("cloudpublisher: run %s is env-funded — every model route rides the runner's openai_compatible gateway; no LLM credential acquired", runID)
+			p.logger.Info("cloudpublisher: run %s is env-funded — every model route rides the runner's openai_compatible gateway and no credential tier this launch consults holds a gateway key serving it; no LLM credential acquired", runID)
 		}
 	} else if credentialOwed {
 		tiersConsulted := "byok, oauth-forfait, org, pool, platform"
@@ -1630,7 +1641,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	// the rungs' providers are the door's, and those are the rows the
 	// broker books on.
 	if res.poolLease() != nil && view.Workflow != nil {
-		res.plan = model.CredentialPlan(model.EffectiveProviders(view, knownPoolProviders), bundle)
+		res.plan = model.CredentialPlan(model.EffectiveProviders(view, walkProviderSet), bundle)
 	}
 	// ALL THREE arms through ONE producer (unfundedRefusalFor): the deployment
 	// knob stays permissive — one funded provider lets the run start, the
@@ -1645,7 +1656,8 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	// contradict the launch it describes — a refusal left outside it is a
 	// refusal no view mirrors.
 	posture := p.unfundedPostureFor(wf, sovereign, envFunded, trust, runnerPool)
-	if refusal := unfundedRefusalFor(tenantID, attributed, bundleFunding(bundle, posture), noLLMCred, posture); refusal != nil {
+	holdsNothing := holdsNothingForUnattributedRoutes(fundedAPIKeySlots(bundle), len(bundle.OAuthCredentials))
+	if refusal := unfundedRefusalFor(tenantID, attributed, bundleFunding(bundle, posture), holdsNothing, posture); refusal != nil {
 		return res, refusal
 	}
 	if noLLMCred && len(bundle.GenericSecrets) == 0 {
@@ -1885,14 +1897,15 @@ func (s spendable) allows(provider string) bool {
 	return s.pinned[provider]
 }
 
-// spendableProviders reads the run's resolved routes through the same
-// walk and vocabulary the pool's wants derivation uses (wantsFor), so the
-// two surfaces can never disagree on what a run may spend. Both read the
-// same RouteView: the run's vars by provenance, so a templated route the
-// launch's declared defaults decide narrows here exactly as it resolves at
-// dispatch (ADR-129 §4).
+// spendableProviders reads the run's resolved routes through the same walk
+// the pool's wants derivation uses (wantsFor), under the WALK's vocabulary:
+// the two surfaces disagree on exactly one name, by design — a gateway route
+// a sealed key funds is spent by the run (its key's fingerprint is stamped)
+// and lent by no pool. Both read the same RouteView: the run's vars by
+// provenance, so a templated route the launch's declared defaults decide
+// narrows here exactly as it resolves at dispatch (ADR-129 §4).
 func spendableProviders(view model.RouteView) spendable {
-	res := model.EffectiveProviders(view, knownPoolProviders)
+	res := model.EffectiveProviders(view, walkProviderSet)
 	if !res.NarrowSafe || len(res.Providers) == 0 {
 		return spendable{}
 	}
@@ -1924,9 +1937,8 @@ func pinnedProviderSet(pinned []string) map[string]bool {
 }
 
 // derivePinnedProviders reads the run's routes through the SAME walk and
-// vocabulary the pool's wants derivation and the run-doc fingerprint stamp
-// use (model.EffectiveProviders / knownPoolProviders), so the three
-// surfaces cannot disagree about what a run targets.
+// vocabulary the run-doc fingerprint stamp uses (model.EffectiveProviders /
+// walkProviderSet), so the two cannot disagree about what a run targets.
 //
 // It reads `Providers` and deliberately ignores NarrowSafe, which is where
 // it differs from spendableProviders next door: that one NARROWS a request
@@ -1938,7 +1950,7 @@ func pinnedProviderSet(pinned []string) map[string]bool {
 // nothing, so the slot it needed stays unfillable and its node is refused
 // by name, which is this feature's safe direction.
 func derivePinnedProviders(view model.RouteView) []string {
-	return model.EffectiveProviders(view, knownPoolProviders).Providers
+	return model.EffectiveProviders(view, walkProviderSet).Providers
 }
 
 // fillAPIKeySlot puts a resolved key in the bundle and reports whether it
@@ -2345,13 +2357,15 @@ func restoreTierOf(org, platform bool) restoreTier {
 // runs natively on the Claude Code CLI, drawing on a plan its lender has
 // already paid for. Metered keys come last on purpose — spending one costs
 // its lender real money per token, so it is the option of last resort even
-// among donations.
+// among donations. The keys are the POOL's vocabulary
+// (model.KnownPoolProviders): the gateway is no want of this order — an
+// attached pool brings it in through the attachment alone (ADR-164).
 var poolWantOrder = func() []credpool.Credential {
 	out := []credpool.Credential{
 		{Source: credpool.SourceOAuth, Ref: string(secrets.OAuthKindClaudeCode)},
 		{Source: credpool.SourceOAuth, Ref: string(secrets.OAuthKindCodex)},
 	}
-	for _, prov := range allKnownProviders {
+	for _, prov := range model.KnownPoolProviders {
 		out = append(out, credpool.Credential{Source: credpool.SourceAPIKey, Ref: string(prov)})
 	}
 	return out
@@ -3122,10 +3136,19 @@ func launchVarsAsStrings(inputs map[string]any) map[string]string {
 	return out
 }
 
-// knownPoolProviders is the provider vocabulary the wants derivation
-// resolves against — derived from allKnownProviders so the two cannot
-// drift. A hint outside it names a pin the pool cannot serve by name.
-var knownPoolProviders = model.KnownProviderSet()
+// walkProviderSet is the WALK's vocabulary as the set EffectiveProviders
+// takes — allKnownProviders, the gateway included. Every reading that decides
+// what the run spends and who funds it reads it: the env-funded predicate,
+// the allowlist gate, the attributed set the unfunded refusals name, the
+// run-doc stamp's narrowing, the pinned set, the fine plan and the restore's
+// last park point.
+var walkProviderSet = model.KnownProviderSet()
+
+// poolProviderSet is the POOL's vocabulary (model.KnownPoolProviderSet): the
+// wants derivation resolves against it, so a hint outside it names a pin the
+// pool cannot serve by name, and a gateway route — key-funded or not — names
+// nothing the pool lends.
+var poolProviderSet = model.KnownPoolProviderSet()
 
 // policyProviders is the run's frozen allowlist (ADR-129 §5) exactly as
 // the launch stamped it: nil when the launch carried no routing policy or
@@ -3185,8 +3208,18 @@ func allowlistedPairs(pairs []string, allowed map[string]bool) []string {
 // donation it needs. A run whose cross-family reviewer pins openai but
 // whose implementer pins nothing keeps the claude_code forfait in its
 // wants, and a typo in a provider hint costs a Warn, never the pool tier.
+//
+// The walk reads the POOL's vocabulary, under which a gateway route names
+// nothing — key-funded or not (RouteView.GatewayKeyFunded) — so a run whose
+// EVERY route rides the gateway is not a run that "pins nothing": it asks
+// for nothing at all (ADR-131 §5). Read through its empty provider list
+// alone, it would take the full order and the pool would lend every slot to
+// a run that spends none of them.
 func wantsFor(view model.RouteView) ([]credpool.Credential, model.ProviderResolution) {
-	res := model.EffectiveProviders(view, knownPoolProviders)
+	res := model.EffectiveProviders(view, poolProviderSet)
+	if res.OnlyEnvFunded() {
+		return nil, res
+	}
 	if !res.NarrowSafe || len(res.Providers) == 0 {
 		return poolWantOrder, res
 	}
@@ -3207,7 +3240,7 @@ func wantsFor(view model.RouteView) ([]credpool.Credential, model.ProviderResolu
 // slot as the run's DEFAULT credential rather than as a key its hint or spec
 // names — what the restore's last park point is for.
 func mayReadWireDefault(view model.RouteView, prov secrets.Provider) bool {
-	return readsWireDefault(model.EffectiveProviders(view, knownPoolProviders), prov)
+	return readsWireDefault(model.EffectiveProviders(view, walkProviderSet), prov)
 }
 
 // readsWireDefault is mayReadWireDefault on a resolution already walked (the
@@ -3273,6 +3306,13 @@ func (p *Publisher) acquireFromPool(ctx context.Context, runID, orgID, tenantID,
 				runID, providersSummary(res.Providers))
 			return nil
 		}
+	}
+	if len(wants) == 0 && res.OnlyEnvFunded() {
+		// Every route rides the gateway — a key the team holds, held out of
+		// this bundle (a frozen pair order that predates it), or the pod's
+		// own: nothing the pool lends serves it (ADR-131 §5).
+		p.logger.Info("cloudpublisher: credential pool NOT CONSULTED for run %s — every model route rides the openai_compatible gateway, which no pool lends", runID)
+		return nil
 	}
 	if len(wants) == 0 {
 		// Every route resolved to a KNOWN provider the pool never lends.

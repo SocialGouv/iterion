@@ -58,3 +58,26 @@ gateway lending path); `openai_compatible` stays out of `DefaultPairOrder` and
 postures coexist, and the tests pinning them (the lendability refusal, the provider-coverage
 walk, the whitelist closure) pass unchanged — they pin the legacy half; the attached half is
 pinned by the attached-tier suite. PR: #3114.
+
+## Amendment — 2026-11-10: the walk spends a team's gateway key (#2005 PR-C')
+
+§5's walk lands. The provider vocabulary is two lists, one derivation:
+`model.KnownRoutingProviders` is `model.KnownPoolProviders` plus `openai_compatible`.
+The credential walk, its funding refusals, the allowlist gate and the preview read the
+first; the pool wants, the legacy pool and the fallback door read the second. "The team
+holds a gateway key" is a lazy probe of the tiers the walk consults (the team's own;
+the org's and the platform's unless the team is sovereign or pool-mapped), under the
+audiences `secrets.Resolve` applies and without the usability predicate. Its answer
+rides `model.RouteView.GatewayKeyFunded`, under which a decided gateway route records
+the `openai_compatible` provider pinned at its site; an env-templated route stays
+undecided (ADR-129 §4). Under `none` the sovereign posture attributes the gateway
+routes outside a runner pool, so the unfunded refusal names the one nothing of the
+team's own funds. The 2026-11-08 amendment's "`openai_compatible` stays out of
+`DefaultPairOrder` and `KnownRoutingProviders`" is superseded: `claw+openai_compatible_key`
+closes the default as a seal-whitelist entry (`llmroute.SealOnly` — the ladder
+composer drops it, `StageModel` maps it nowhere), and the walk's vocabulary names the
+provider. The pool's does not, so an attached pool still brings the gateway want in
+through the attachment alone, and law 1 holds: a team key fills the slot first. The
+frozen pre-upgrade list is `store.RunLLMRoutePolicy.PairOrder` (its twin
+`store.Run.PinnedProviders` is frozen beside it), replayed as stored on a resume; its
+one named warning is `pairOrderRefusals`.

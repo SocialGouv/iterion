@@ -34,6 +34,19 @@ type RouteView struct {
 	// the run's FROZEN routing policy (store.RunLLMRoutePolicy.Providers),
 	// never from a re-resolution.
 	AllowedProviders []string
+	// GatewayKeyFunded says the run's DECIDED gateway routes — a literal
+	// `openai_compatible/…` model — spend a sealed openai_compatible key
+	// rather than the runner's environment (ADR-131 §5). The cloud publisher
+	// sets it when a credential tier its walk consults holds a gateway key
+	// serving the launch, or when the team's posture owes those routes one
+	// (llm_fallback=none outside a runner pool). Under it the walk records
+	// such a route as the openai_compatible provider, pinned at its site,
+	// wherever the caller's vocabulary knows that provider; a vocabulary that
+	// does not (the pool's) keeps the route env-funded, never an unknown name
+	// to widen on. An env-templated model stays undecided whatever the field
+	// says (ADR-129 §4): what the runner expands it to is not this process's
+	// word. False is the reading every caller made before the producer.
+	GatewayKeyFunded bool
 }
 
 // RouteViewForLaunch is the publisher-side reading: the workflow's declared

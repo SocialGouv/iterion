@@ -463,22 +463,15 @@ func TestProviderOfSlot_TotalOverThePairVocabulary(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ParsePair(%q): %v", pair, err)
 		}
-		// The one named exception: the gateway slot is in the pair order
-		// for the seal whitelist while the walk vocabulary
-		// (allKnownProviders) does not name its provider, so no tier seals
-		// a gateway key and no allowlist has a gateway pair to drop. The
-		// exception lasts exactly as long as that state: once the walk
-		// names the provider, providerOfSlot maps the slot and this guard
-		// reds until the exception goes and the check below covers it.
-		if c == slotOfProvider(secrets.ProviderOpenAICompatible) {
-			if got := providerOfSlot(c); got != "" {
-				t.Errorf("providerOfSlot(%q) = %q — the walk vocabulary names the gateway: drop this exception so the totality check covers the slot", c, got)
-			}
-			continue
-		}
 		if providerOfSlot(c) == "" {
 			t.Errorf("providerOfSlot(%q) = \"\" — map the slot or name the exception; under an allowlist its pairs are dropped from ladder, door and seal in silence", c)
 		}
+	}
+	// The gateway slot maps like any key slot now that the walk vocabulary
+	// names its provider (ADR-131 §5): a providers allowlist that lists
+	// openai_compatible admits the team's gateway key to the seal.
+	if got := providerOfSlot(slotOfProvider(secrets.ProviderOpenAICompatible)); got != string(secrets.ProviderOpenAICompatible) {
+		t.Errorf("providerOfSlot(openai_compatible_key) = %q, want openai_compatible", got)
 	}
 	if got := providerOfSlot(llmroute.CredClaudeForfait); got != string(secrets.ProviderAnthropic) {
 		t.Errorf("providerOfSlot(claude_forfait) = %q, want anthropic", got)

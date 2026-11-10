@@ -219,6 +219,13 @@ func SlotSealable(order []string, credential string) bool {
 	return false
 }
 
+// SealOnly reports whether a credential slot rides the pair order for the
+// seal whitelist alone and orders no ladder rung — the gateway slot (ADR-131
+// §5): a gateway route is the node's own spec, never a crossing's target, so
+// StageModel maps it on no harness, and the ladder composer drops the pair
+// before it becomes a stage the run message would carry.
+func SealOnly(credential string) bool { return credential == gatewaySlot }
+
 // HeldPairs returns the policy's pair order filtered to pairs the SEALED
 // BUNDLE serves — a sealNone outcome is not held: no channel, no rung.
 // The bundle reading is injected so the function stays pure:

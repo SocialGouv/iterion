@@ -109,13 +109,17 @@ func TestResolve_LLMFallbackNone_ToolOnlyRunUnaffected(t *testing.T) {
 	}
 }
 
-// An env-funded run (every route rides the runner's gateway) is untouched.
-func TestResolve_LLMFallbackNone_EnvFundedRunUnaffected(t *testing.T) {
+// A gateway route under "none" is a route like any other (ADR-131 §5): the
+// runner pod's gateway is not the team's own, so with no gateway key of the
+// team's and no runner pool the launch is refused by name. The pool-stamped
+// and keyed shapes: TestGatewayKey_TheSovereignPostureOwesTheGatewayRoutesAKey.
+func TestResolve_LLMFallbackNone_GatewayRouteNeedsTheTeamsOwnKey(t *testing.T) {
 	p, _ := llmFallbackPublisher(t, map[string]string{"team1": "none"})
 
 	gatewayBot := "agent draft:\n  model: \"openai_compatible/glm-5.2\"\n  backend: \"claw\"\n\nworkflow main:\n  draft -> done\n"
-	if err := resolvePolicy(t, p, gatewayBot); err != nil {
-		t.Fatalf("resolveAndSealCredentials = %v, want nil — an env-funded run acquires no credential", err)
+	err := resolvePolicy(t, p, gatewayBot)
+	if !errors.Is(err, runview.ErrNoLLMCredential) || !strings.Contains(err.Error(), "openai_compatible (named by draft)") {
+		t.Fatalf("resolveAndSealCredentials = %v, want the sovereign refusal naming openai_compatible at draft", err)
 	}
 }
 

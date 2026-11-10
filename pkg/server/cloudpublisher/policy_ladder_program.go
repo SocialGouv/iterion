@@ -45,9 +45,16 @@ func composePolicyLadder(wf *ir.Workflow, view model.RouteView, routePolicy *sto
 	}
 	stages := make([]ir.PolicyLadderStage, 0, len(held))
 	for _, pair := range held {
-		if h, c, err := llmroute.ParsePair(pair); err == nil {
+		// A seal-whitelist entry (the gateway pair, ADR-131 §5) is HELD once
+		// the walk seals its key, and orders no rung: as a stage it would ride
+		// the run message only to drop on every node (StageModel maps it on no
+		// harness), each drop a refusal event.
+		if h, c, err := llmroute.ParsePair(pair); err == nil && !llmroute.SealOnly(c) {
 			stages = append(stages, ir.PolicyLadderStage{Harness: h, Credential: c, On: routePolicy.Triggers, CrossHarness: routePolicy.CrossHarness})
 		}
+	}
+	if len(stages) == 0 {
+		return nil
 	}
 	report := func(refusals []string) {
 		if refused == nil {

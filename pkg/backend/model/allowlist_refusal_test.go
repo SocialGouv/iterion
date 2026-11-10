@@ -30,7 +30,7 @@ func TestAllowlistRefusal_UnreadableFirstThenForbiddenPrimary(t *testing.T) {
 	}
 }
 
-// The vocabulary is one list, lower-cased as the walk reads it.
+// The walk's vocabulary is its list, lower-cased as the walk reads it.
 func TestKnownProviderSet_IsTheLowerCasedVocabulary(t *testing.T) {
 	t.Parallel()
 	set := KnownProviderSet()
