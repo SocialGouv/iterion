@@ -91,10 +91,12 @@ func TestIsPublicUnicast(t *testing.T) {
 		{"2002:808:808::1", true},    // 8.8.8.8
 		{"2003::1", true},
 
-		// IPv4 blocks no Internet host sits in (RFC 6890), refused whole:
-		// the reserved Class E 240.0.0.0/4 (reused for cluster pod and
-		// Service ranges; the limited broadcast at its top), benchmarking
-		// 198.18.0.0/15 (RFC 2544; the fake-IP range of DNS proxies), the
+		// IPv4 blocks no Internet host sits in (RFC 6890), refused whole as
+		// the address a host IS: the reserved Class E 240.0.0.0/4 (the
+		// limited broadcast at its top) and benchmarking 198.18.0.0/15
+		// (RFC 2544) — both admitted as a name's answer, where meshes and
+		// fake-IP DNS proxies answer from them
+		// (TestReservedBlocks_RefusedLiteralAdmittedAsAnAnswer) — and the
 		// IETF protocol assignments 192.0.0.0/24 (192.0.0.192 is Oracle
 		// Cloud Classic's metadata). Both edges refused, the public
 		// neighbours on either side not.
@@ -407,12 +409,14 @@ func (r *recordingResolver) LookupIPAddr(_ context.Context, host string) ([]net.
 // public address (every answer is judged), and a dial through SafeTransport.
 // Which strictness each caller passes is witnessed in the caller's own
 // package, through its production constructor; the gateway credential's
-// write door judges IsPublicUnicast alone, with no lift.
+// write door judges IsPublicUnicast alone, with no lift. The reserved Class E
+// and benchmarking blocks are admitted as a name's answer
+// (TestReservedBlocks_RefusedLiteralAdmittedAsAnAnswer).
 func TestNewClasses_RefusedStrictAdmittedLifted(t *testing.T) {
 	// The IPv4-compatible class is no sample: no strictness admits it
 	// (TestResolvePublicHostWith_IPv4CompatibleRefusedAtEveryStrictness).
 	samples := []string{"100.64.0.1", "64:ff9b::7f00:1", "64:ff9b:1::a00:1", "2002:7f00:1::",
-		"240.0.0.1", "198.18.0.1", "192.0.0.192", "168.63.129.16", "::ffff:0:7f00:1", "fec0::1"}
+		"192.0.0.192", "168.63.129.16", "::ffff:0:7f00:1", "fec0::1"}
 	ctx := context.Background()
 	// A canceled context stops the dial before any packet: an error that is
 	// not the guard's refusal is the dialer's cancellation.
@@ -497,5 +501,51 @@ func TestSafeTransport_PinsNoProxy(t *testing.T) {
 	tr, ok := c.Transport.(*http.Transport)
 	if !ok || tr.Proxy != nil {
 		t.Fatal("SafeClient's transport must pin Proxy nil like SafeTransport")
+	}
+}
+
+// The reserved Class E block and the benchmarking block are refused for a
+// LITERAL host — no Internet host has such an address — and admitted as a
+// resolver's answer for a name: a service mesh answers public names with VIPs
+// it allocates from Class E (Istio's DNS proxying: 240.240.0.0/16), a fake-IP
+// DNS proxy answers every name from 198.18.0.0/15, so in such a cluster
+// api.openai.com resolves there. The other blocks the guard refuses stay
+// refused as answers, and so do the limited broadcast and a transition address
+// carrying one of the two blocks (judged as a literal: no mesh or fake-IP
+// proxy answers with one). Lifted, every form is admitted.
+func TestReservedBlocks_RefusedLiteralAdmittedAsAnAnswer(t *testing.T) {
+	ctx := context.Background()
+	canceled, cancel := context.WithCancel(ctx)
+	cancel()
+	for _, addr := range []string{"240.240.0.5", "240.0.0.1", "255.255.255.254", "198.18.0.5", "198.19.255.254"} {
+		for _, strict := range []bool{true, false} {
+			_, litErr := ResolvePublicHostWith(ctx, answering(), addr, strict)
+			checkErr := CheckHost(addr, strict)
+			_, dialErr := SafeTransport(strict).DialContext(canceled, "tcp", net.JoinHostPort(addr, "443"))
+			ans, ansErr := ResolvePublicHostWith(ctx, answering(addr), "api.openai.com", strict)
+			if ansErr != nil || !ans.Equal(net.ParseIP(addr)) {
+				t.Errorf("strict=%v: api.openai.com answered %s = %v, %v; want the answer admitted", strict, addr, ans, ansErr)
+			}
+			if !strict {
+				if litErr != nil || checkErr != nil || !errors.Is(dialErr, context.Canceled) {
+					t.Errorf("lifted: literal %s = %v / CheckHost %v / dial %v; want it admitted", addr, litErr, checkErr, dialErr)
+				}
+				continue
+			}
+			for _, got := range []struct {
+				form string
+				err  error
+			}{{"literal", litErr}, {"CheckHost", checkErr}, {"dial", dialErr}} {
+				if !errors.Is(got.err, ErrNotPublic) {
+					t.Errorf("strict: %s %s = %v, want refused as not public", got.form, addr, got.err)
+				}
+			}
+		}
+	}
+	for _, addr := range []string{"192.0.0.170", "192.0.0.192", "fec0::1", "::ffff:0:7f00:1", "168.63.129.16",
+		"255.255.255.255", "64:ff9b::f0f0:5", "2002:c612:5::", "::ffff:0:f0f0:5", "100.64.0.1", "10.0.0.1"} {
+		if _, err := ResolvePublicHostWith(ctx, answering(addr), "api.openai.com", true); !errors.Is(err, ErrNotPublic) {
+			t.Errorf("strict: api.openai.com answered %s = %v, want refused as not public", addr, err)
+		}
 	}
 }

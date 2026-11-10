@@ -7,16 +7,17 @@
 //
 // The guard blocks the conventional SSRF categories — loopback, private
 // (RFC1918 / ULA), link-local, multicast, unspecified — plus the ranges it
-// lists (the shared CGNAT space, the reserved Class E block, benchmarking,
-// the IETF protocol assignments, the deprecated IPv4-compatible and
-// site-local blocks, the NAT64 local-use prefix), a NAT64 well-known, 6to4
-// or SIIT-translated address whose embedded IPv4 address it blocks, and the
-// cloud metadata endpoints. Under
-// strict it refuses the names no public host carries (ReservedName: a single
-// label, the names a cluster, a cloud, a container or a workstation
-// reserves) before any lookup, and looks every other name up absolute. The
-// address set is these lists, not every range IANA marks not globally
-// reachable.
+// lists (the shared CGNAT space, the IETF protocol assignments, the
+// deprecated IPv4-compatible and site-local blocks, the NAT64 local-use
+// prefix), a NAT64 well-known, 6to4 or SIIT-translated address whose
+// embedded IPv4 address it blocks, and the cloud metadata endpoints. Two
+// more blocks — the reserved Class E block and benchmarking — are refused
+// for a literal host and admitted as a resolver's answer for a name
+// (answerOnlyPrefixes). Under strict it refuses the names no public host
+// carries (ReservedName: a single label, the names a cluster, a cloud, a
+// container or a workstation reserves) before any lookup, and looks every
+// other name up absolute. The address set is these lists, not every range
+// IANA marks not globally reachable.
 package httpdial
 
 import (
@@ -30,14 +31,16 @@ import (
 	"time"
 )
 
-// IsPublicUnicast reports whether ip is safe to dial from a cloud pod context.
-// It refuses what net.IP's own predicates name (loopback, unspecified,
-// multicast, link-local, private), the ranges in nonPublicPrefixes, an
-// address of a v4Embeddings prefix whose embedded IPv4 address it refuses,
-// and the AWS/GCP/Azure/Alibaba metadata endpoints with Azure's WireServer.
-// An IPv4-mapped address
-// is judged as the IPv4 address it maps. The set is these lists, not every
-// range IANA marks not globally reachable.
+// IsPublicUnicast reports whether ip is safe to dial from a cloud pod context
+// as the address a host IS — a literal in a URL or a host field. It refuses
+// what net.IP's own predicates name (loopback, unspecified, multicast,
+// link-local, private), the ranges in nonPublicPrefixes and
+// answerOnlyPrefixes, an address of a v4Embeddings prefix whose embedded IPv4
+// address it refuses, and the AWS/GCP/Azure/Alibaba metadata endpoints with
+// Azure's WireServer. An IPv4-mapped address is judged as the IPv4 address it
+// maps. The set is these lists, not every range IANA marks not globally
+// reachable. A resolver's answer for a name is judged by ResolvePublicHost,
+// which admits answerOnlyPrefixes.
 func IsPublicUnicast(ip net.IP) bool {
 	if ip == nil {
 		return false
@@ -47,7 +50,7 @@ func IsPublicUnicast(ip net.IP) bool {
 		ip.IsPrivate() || ip.IsInterfaceLocalMulticast() {
 		return false
 	}
-	if inNonPublicPrefix(ip) {
+	if inNonPublicPrefix(ip) || answerOnly(ip) {
 		return false
 	}
 	if v4, ok := embeddedIPv4(ip); ok && !IsPublicUnicast(v4) {
@@ -65,26 +68,68 @@ func IsPublicUnicast(ip net.IP) bool {
 	return true
 }
 
-// nonPublicPrefixes are refused whole, beside net.IP's own predicates. The
-// shared address space serves carrier NAT, overlay networks and cluster pod
-// ranges. Three more IPv4 blocks hold no Internet host (RFC 6890): the
-// reserved Class E block, which clusters reuse for pod and Service ranges
-// (the limited broadcast sits at its top), the benchmarking block, which
-// fake-IP DNS proxies answer from, and the IETF protocol assignments, where
-// a cloud has put its metadata (192.0.0.192). The deprecated site-local
-// block is a site's own space. The two IPv4-carrying IPv6 blocks are refused
-// whatever address they carry: the deprecated IPv4-compatible form, which
-// no host is written in and which a reader that maps it delivers to the
-// IPv4 address it carries, and the NAT64 local-use prefix, whose operator
-// picks the prefix length and so where the IPv4 address sits.
+// nonPublicPrefixes are refused whole, literal or answer, beside net.IP's own
+// predicates. The shared address space serves carrier NAT, overlay networks
+// and cluster pod ranges. The IETF protocol assignments hold no Internet host
+// (RFC 6890), and a cloud has put its metadata there (192.0.0.192). The
+// deprecated site-local block is a site's own space. The two IPv4-carrying
+// IPv6 blocks are refused whatever address they carry: the deprecated
+// IPv4-compatible form, which no host is written in and which a reader that
+// maps it delivers to the IPv4 address it carries, and the NAT64 local-use
+// prefix, whose operator picks the prefix length and so where the IPv4
+// address sits.
 var nonPublicPrefixes = []netip.Prefix{
 	netip.MustParsePrefix("100.64.0.0/10"),  // shared address space, CGNAT (RFC 6598)
-	netip.MustParsePrefix("240.0.0.0/4"),    // reserved, Class E (RFC 1112 §4), limited broadcast included
-	netip.MustParsePrefix("198.18.0.0/15"),  // benchmarking (RFC 2544)
 	netip.MustParsePrefix("192.0.0.0/24"),   // IETF protocol assignments (RFC 6890 §2.2.2)
 	netip.MustParsePrefix("fec0::/10"),      // site-local (RFC 3879, deprecated)
 	ipv4CompatiblePrefix,                    // IPv4-compatible (RFC 4291 §2.5.5.1, deprecated)
 	netip.MustParsePrefix("64:ff9b:1::/48"), // NAT64 local-use prefix (RFC 8215)
+}
+
+// answerOnlyPrefixes hold no Internet host (RFC 6890), so a literal host in
+// them is refused, but a resolver may answer a public name from them: a
+// service mesh allocates the VIPs it answers names with from the reserved
+// Class E block (Istio's DNS proxying, 240.240.0.0/16), and a fake-IP DNS
+// proxy answers every name from the benchmarking block — in such a cluster
+// every public host resolves there, and the dial reaches the mesh's or the
+// proxy's forwarder. ResolvePublicHost admits them as a name's answer, at a
+// known cost: a cluster that puts its own pod or Service ranges in Class E
+// is reachable through a name whose DNS answers there. The limited
+// broadcast 255.255.255.255 at the top of Class E is no unicast address, and
+// a transition address carrying one of these blocks (v4Embeddings) is judged
+// as a literal: neither is a mesh's or a proxy's answer.
+var answerOnlyPrefixes = []netip.Prefix{
+	netip.MustParsePrefix("240.0.0.0/4"),   // reserved, Class E (RFC 1112 §4)
+	netip.MustParsePrefix("198.18.0.0/15"), // benchmarking (RFC 2544)
+}
+
+// limitedBroadcast is refused in both forms (answerOnlyPrefixes).
+var limitedBroadcast = netip.AddrFrom4([4]byte{255, 255, 255, 255})
+
+// answerOnly reports whether ip — an IPv4-mapped address judged as the IPv4
+// address it maps — falls in answerOnlyPrefixes.
+func answerOnly(ip net.IP) bool {
+	addr, ok := netip.AddrFromSlice(ip)
+	if !ok {
+		return false
+	}
+	addr = addr.Unmap()
+	for _, p := range answerOnlyPrefixes {
+		if p.Contains(addr) {
+			return true
+		}
+	}
+	return false
+}
+
+// isPublicAnswer is IsPublicUnicast for a resolver's answer: an address of
+// answerOnlyPrefixes is admitted, the limited broadcast is not.
+func isPublicAnswer(ip net.IP) bool {
+	if answerOnly(ip) {
+		addr, _ := netip.AddrFromSlice(ip)
+		return addr.Unmap() != limitedBroadcast
+	}
+	return IsPublicUnicast(ip)
 }
 
 // ipv4CompatiblePrefix is the deprecated IPv4-compatible block (RFC 4291
@@ -186,7 +231,8 @@ type HostResolver interface {
 // strict, every resolved IP must be public unicast — any private/shared/
 // link-local/loopback/multicast/metadata hit (or a name no public host
 // carries, ReservedName) refuses, wrapping ErrNotPublic — and the name is
-// looked up absolute. When non-strict, the first resolved address is
+// looked up absolute; a name's answer may sit in answerOnlyPrefixes, a
+// literal host may not. When non-strict, the first resolved address is
 // returned regardless (loopback-bound local mode embedding the user's own
 // dev servers). At every strictness a name with an empty label and an
 // IPv4-compatible address are refused (CheckHost). A name is judged without
@@ -223,7 +269,7 @@ func ResolvePublicHostWith(ctx context.Context, res HostResolver, host string, s
 		return nil, fmt.Errorf("httpdial: resolve %q: no addresses", host)
 	}
 	for _, a := range addrs {
-		if err := checkAddress(a.IP, strict, "resolved address"); err != nil {
+		if err := checkAddress(a.IP, strict, true); err != nil {
 			return nil, err
 		}
 	}
@@ -242,7 +288,7 @@ func CheckHost(host string, strict bool) error {
 		return errors.New("httpdial: empty host")
 	}
 	if ip := net.ParseIP(host); ip != nil {
-		return checkAddress(ip, strict, "address")
+		return checkAddress(ip, strict, false)
 	}
 
 	// A name is judged in one spelling: one trailing dot is the absolute
@@ -304,18 +350,23 @@ func ReservedNames() string {
 	return strings.Join(reservedNames, ", ") + ", *" + strings.Join(reservedSuffixes, ", *")
 }
 
-// checkAddress is the guard's verdict on one address — what names it in the
-// refusal, a literal "address" or a "resolved address". An IPv4-compatible
-// address is refused at every strictness, no hatch lifting it: no host is
-// written in that deprecated form, and a reader that maps it reaches the
-// IPv4 address it carries — ::127.0.0.1 is 127.0.0.1's loopback. Under
-// strict, an address that is not public unicast is refused, wrapping
-// ErrNotPublic.
-func checkAddress(ip net.IP, strict bool, what string) error {
+// checkAddress is the guard's verdict on one address — a literal host, or a
+// resolver's answer for a name (answer), which the refusal names "resolved
+// address". An IPv4-compatible address is refused at every strictness, no
+// hatch lifting it: no host is written in that deprecated form, and a reader
+// that maps it reaches the IPv4 address it carries — ::127.0.0.1 is
+// 127.0.0.1's loopback. Under strict, an address that is not public unicast
+// is refused, wrapping ErrNotPublic: IsPublicUnicast for a literal,
+// isPublicAnswer for an answer.
+func checkAddress(ip net.IP, strict, answer bool) error {
+	what, public := "address", IsPublicUnicast
+	if answer {
+		what, public = "resolved address", isPublicAnswer
+	}
 	if v4, ok := ipv4Compatible(ip); ok {
 		return fmt.Errorf("httpdial: %s %s is IPv4-compatible (it carries %s), a deprecated form refused at every strictness", what, ip, v4)
 	}
-	if strict && !IsPublicUnicast(ip) {
+	if strict && !public(ip) {
 		return notPublic("httpdial: %s %s is not a public unicast IP", what, ip)
 	}
 	return nil

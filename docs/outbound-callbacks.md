@@ -126,12 +126,18 @@ attacker-influenced. Before delivering, iterion vets it
 - scheme must be `http` or `https`;
 - the host must resolve **exclusively** to public-unicast addresses —
   loopback, link-local, RFC-1918 private ranges, the shared CGNAT space
-  (`100.64.0.0/10`), the reserved, benchmarking and IETF-protocol IPv4
-  blocks (`240.0.0.0/4`, `198.18.0.0/15`, `192.0.0.0/24`), site-local
-  `fec0::/10`, cloud-metadata endpoints (e.g. `169.254.169.254`, Azure's
-  `168.63.129.16`) and the IPv6 transition addresses that carry one of
-  them (NAT64, 6to4, SIIT `::ffff:0:a.b.c.d`; the NAT64 local-use prefix
+  (`100.64.0.0/10`), the IETF-protocol IPv4 block (`192.0.0.0/24`),
+  site-local `fec0::/10`, cloud-metadata endpoints (e.g. `169.254.169.254`,
+  Azure's `168.63.129.16`) and the IPv6 transition addresses that carry one
+  of them (NAT64, 6to4, SIIT `::ffff:0:a.b.c.d`; the NAT64 local-use prefix
   `64:ff9b:1::/48` whole) are refused;
+- the reserved and benchmarking IPv4 blocks (`240.0.0.0/4`,
+  `198.18.0.0/15`) are refused for a host written as such an address, and
+  admitted as the DNS answer for a name: a service mesh answers public names
+  with VIPs from the first (Istio's DNS proxying uses `240.240.0.0/16`), a
+  fake-IP DNS proxy answers from the second. The limited broadcast
+  `255.255.255.255`, and a transition address carrying either block, stay
+  refused;
 - names no public host carries are refused before any lookup: a single
   label (`localhost`, a Service's short name), `kubernetes.default`, and
   every name under `.svc`, `.cluster.local`, `.internal` (e.g.
