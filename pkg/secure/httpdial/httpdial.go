@@ -12,8 +12,10 @@
 // prefix), a NAT64 well-known, 6to4 or SIIT-translated address whose
 // embedded IPv4 address it blocks, and the cloud metadata endpoints. Two
 // more blocks — the reserved Class E block and benchmarking — are refused
-// for a literal host and admitted as a resolver's answer for a name
-// (answerOnlyPrefixes). Under strict it refuses the names no public host
+// whole for a literal host and as a resolver's answer for a name, except one
+// /16 of each a resolver may answer a name from (answerOnlyPrefixes): Istio's
+// DNS auto-allocation pool and Clash's default fake-IP range. Under strict it
+// refuses the names no public host
 // carries (ReservedName: a single label, the names a cluster, a cloud, a
 // container or a workstation reserves) before any lookup, and looks every
 // other name up absolute. The address set is these lists, not every range
@@ -35,7 +37,7 @@ import (
 // as the address a host IS — a literal in a URL or a host field. It refuses
 // what net.IP's own predicates name (loopback, unspecified, multicast,
 // link-local, private), the ranges in nonPublicPrefixes and
-// answerOnlyPrefixes, an address of a v4Embeddings prefix whose embedded IPv4
+// reservedPrefixes, an address of a v4Embeddings prefix whose embedded IPv4
 // address it refuses, and the AWS/GCP/Azure/Alibaba metadata endpoints with
 // Azure's WireServer. An IPv4-mapped address is judged as the IPv4 address it
 // maps. The set is these lists, not every range IANA marks not globally
@@ -50,7 +52,7 @@ func IsPublicUnicast(ip net.IP) bool {
 		ip.IsPrivate() || ip.IsInterfaceLocalMulticast() {
 		return false
 	}
-	if inNonPublicPrefix(ip) || answerOnly(ip) {
+	if inNonPublicPrefix(ip) || inPrefixes(ip, reservedPrefixes) {
 		return false
 	}
 	if v4, ok := embeddedIPv4(ip); ok && !IsPublicUnicast(v4) {
@@ -86,35 +88,45 @@ var nonPublicPrefixes = []netip.Prefix{
 	netip.MustParsePrefix("64:ff9b:1::/48"), // NAT64 local-use prefix (RFC 8215)
 }
 
-// answerOnlyPrefixes hold no Internet host (RFC 6890), so a literal host in
-// them is refused, but a resolver may answer a public name from them: a
-// service mesh allocates the VIPs it answers names with from the reserved
-// Class E block (Istio's DNS proxying, 240.240.0.0/16), and a fake-IP DNS
-// proxy answers every name from the benchmarking block — in such a cluster
-// every public host resolves there, and the dial reaches the mesh's or the
-// proxy's forwarder. ResolvePublicHost admits them as a name's answer, at a
-// known cost: a cluster that puts its own pod or Service ranges in Class E
-// is reachable through a name whose DNS answers there. The limited
-// broadcast 255.255.255.255 at the top of Class E is no unicast address, and
-// a transition address carrying one of these blocks (v4Embeddings) is judged
-// as a literal: neither is a mesh's or a proxy's answer.
-var answerOnlyPrefixes = []netip.Prefix{
+// reservedPrefixes hold no Internet host (RFC 6890): a literal host in them
+// is refused whole, and so is a resolver's answer outside answerOnlyPrefixes.
+// Class E is where GKE puts Pod and Service secondary ranges beside
+// 100.64.0.0/10, and 198.19.0.0/16 is one of the two ranges EKS custom
+// networking recommends for pod subnets (the other is 100.64.0.0/10): a name
+// answering there reaches a cluster's own pods or Services. Refusing only the
+// literal would cost an attacker nothing — a public wildcard DNS name (sslip.io,
+// nip.io) answers any address its label spells.
+var reservedPrefixes = []netip.Prefix{
 	netip.MustParsePrefix("240.0.0.0/4"),   // reserved, Class E (RFC 1112 §4)
 	netip.MustParsePrefix("198.18.0.0/15"), // benchmarking (RFC 2544)
 }
 
-// limitedBroadcast is refused in both forms (answerOnlyPrefixes).
-var limitedBroadcast = netip.AddrFrom4([4]byte{255, 255, 255, 255})
+// answerOnlyPrefixes are the two /16s of reservedPrefixes a resolver's answer
+// for a name is admitted from, because a resolver inside a cluster or on a
+// workstation answers names there: Istio's DNS proxy answers a ServiceEntry host declared without
+// addresses (and not a wildcard) with a VIP auto-allocated from 240.240.0.0/16,
+// and a fake-IP DNS proxy answers every name from its fake-IP range, Clash's
+// default being 198.18.0.0/16 — the dial then reaches the mesh's or the proxy's
+// forwarder. The cost is a cluster whose own pod or Service ranges sit in one
+// of these two /16s: a name answering there reaches them from every strict
+// dial, the read primitives included (the studio preview proxy and the cloud
+// connector client hand the response back). A literal host in them stays
+// refused, and so does a transition address carrying one (v4Embeddings, judged
+// as a literal: no mesh or fake-IP proxy answers with one).
+var answerOnlyPrefixes = []netip.Prefix{
+	netip.MustParsePrefix("240.240.0.0/16"), // Istio DNS auto-allocation pool
+	netip.MustParsePrefix("198.18.0.0/16"),  // Clash's default fake-IP range
+}
 
-// answerOnly reports whether ip — an IPv4-mapped address judged as the IPv4
-// address it maps — falls in answerOnlyPrefixes.
-func answerOnly(ip net.IP) bool {
+// inPrefixes reports whether ip — an IPv4-mapped address judged as the IPv4
+// address it maps — falls in one of prefixes.
+func inPrefixes(ip net.IP, prefixes []netip.Prefix) bool {
 	addr, ok := netip.AddrFromSlice(ip)
 	if !ok {
 		return false
 	}
 	addr = addr.Unmap()
-	for _, p := range answerOnlyPrefixes {
+	for _, p := range prefixes {
 		if p.Contains(addr) {
 			return true
 		}
@@ -123,13 +135,9 @@ func answerOnly(ip net.IP) bool {
 }
 
 // isPublicAnswer is IsPublicUnicast for a resolver's answer: an address of
-// answerOnlyPrefixes is admitted, the limited broadcast is not.
+// answerOnlyPrefixes is admitted.
 func isPublicAnswer(ip net.IP) bool {
-	if answerOnly(ip) {
-		addr, _ := netip.AddrFromSlice(ip)
-		return addr.Unmap() != limitedBroadcast
-	}
-	return IsPublicUnicast(ip)
+	return inPrefixes(ip, answerOnlyPrefixes) || IsPublicUnicast(ip)
 }
 
 // ipv4CompatiblePrefix is the deprecated IPv4-compatible block (RFC 4291

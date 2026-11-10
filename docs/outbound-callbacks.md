@@ -132,12 +132,20 @@ attacker-influenced. Before delivering, iterion vets it
   of them (NAT64, 6to4, SIIT `::ffff:0:a.b.c.d`; the NAT64 local-use prefix
   `64:ff9b:1::/48` whole) are refused;
 - the reserved and benchmarking IPv4 blocks (`240.0.0.0/4`,
-  `198.18.0.0/15`) are refused for a host written as such an address, and
-  admitted as the DNS answer for a name: a service mesh answers public names
-  with VIPs from the first (Istio's DNS proxying uses `240.240.0.0/16`), a
-  fake-IP DNS proxy answers from the second. The limited broadcast
-  `255.255.255.255`, and a transition address carrying either block, stay
-  refused;
+  `198.18.0.0/15`) are refused whole for a host written as such an address,
+  and refused as the DNS answer for a name except two `/16`s a resolver in a
+  cluster or on a workstation answers names from: `240.240.0.0/16`, the pool
+  Istio's DNS proxy auto-allocates VIPs from for a ServiceEntry host declared
+  without addresses (and not a wildcard), and `198.18.0.0/16`, Clash's default
+  fake-IP range. The rest stays refused as an answer because clusters put
+  their own addresses there — GKE puts Pod and Service ranges in Class E, EKS
+  custom networking recommends `198.19.0.0/16` for pod subnets — and a public
+  wildcard DNS name (`240.0.0.10.sslip.io`) answers any address its label
+  spells. The cost of the two admitted `/16`s is a cluster whose own pod or
+  Service ranges sit in one of them: a name answering there reaches them
+  through every strict dial, including the two that hand the response back,
+  the studio preview proxy and the cloud connector client. A transition
+  address carrying either block stays refused;
 - names no public host carries are refused before any lookup: a single
   label (`localhost`, a Service's short name), `kubernetes.default`, and
   every name under `.svc`, `.cluster.local`, `.internal` (e.g.

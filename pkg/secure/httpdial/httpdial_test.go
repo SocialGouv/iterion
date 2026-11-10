@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -94,8 +95,8 @@ func TestIsPublicUnicast(t *testing.T) {
 		// IPv4 blocks no Internet host sits in (RFC 6890), refused whole as
 		// the address a host IS: the reserved Class E 240.0.0.0/4 (the
 		// limited broadcast at its top) and benchmarking 198.18.0.0/15
-		// (RFC 2544) — both admitted as a name's answer, where meshes and
-		// fake-IP DNS proxies answer from them
+		// (RFC 2544) — one /16 of each admitted as a name's answer, where
+		// Istio's DNS proxy and Clash's fake-IP DNS answer from them
 		// (TestReservedBlocks_RefusedLiteralAdmittedAsAnAnswer) — and the
 		// IETF protocol assignments 192.0.0.0/24 (192.0.0.192 is Oracle
 		// Cloud Classic's metadata). Both edges refused, the public
@@ -409,8 +410,8 @@ func (r *recordingResolver) LookupIPAddr(_ context.Context, host string) ([]net.
 // public address (every answer is judged), and a dial through SafeTransport.
 // Which strictness each caller passes is witnessed in the caller's own
 // package, through its production constructor; the gateway credential's
-// write door judges IsPublicUnicast alone, with no lift. The reserved Class E
-// and benchmarking blocks are admitted as a name's answer
+// write door judges IsPublicUnicast alone, with no lift. One /16 of the
+// reserved Class E and benchmarking blocks each is admitted as a name's answer
 // (TestReservedBlocks_RefusedLiteralAdmittedAsAnAnswer).
 func TestNewClasses_RefusedStrictAdmittedLifted(t *testing.T) {
 	// The IPv4-compatible class is no sample: no strictness admits it
@@ -505,30 +506,40 @@ func TestSafeTransport_PinsNoProxy(t *testing.T) {
 }
 
 // The reserved Class E block and the benchmarking block are refused for a
-// LITERAL host — no Internet host has such an address — and admitted as a
-// resolver's answer for a name: a service mesh answers public names with VIPs
-// it allocates from Class E (Istio's DNS proxying: 240.240.0.0/16), a fake-IP
-// DNS proxy answers every name from 198.18.0.0/15, so in such a cluster
-// api.openai.com resolves there. The other blocks the guard refuses stay
-// refused as answers, and so do the limited broadcast and a transition address
-// carrying one of the two blocks (judged as a literal: no mesh or fake-IP
-// proxy answers with one). Lifted, every form is admitted.
+// LITERAL host — no Internet host has such an address — and two /16s of them
+// are admitted as a resolver's answer for a name: Istio's DNS auto-allocation
+// pool (240.240.0.0/16), the VIPs it answers a ServiceEntry host with, and
+// Clash's default fake-IP range (198.18.0.0/16), from which a fake-IP DNS
+// proxy answers every name. The rest of the two blocks stays refused as an
+// answer: Class E outside Istio's pool is where GKE puts Pod and Service
+// ranges, 198.19.0.0/16 is where EKS custom networking puts pod subnets, and
+// a public wildcard DNS name (sslip.io, nip.io) answers any address its label
+// spells — the literal refusal alone would cost an attacker nothing. The
+// other blocks the guard refuses stay refused as answers, and so do the
+// limited broadcast and a transition address carrying one of the two blocks
+// (judged as a literal: no mesh or fake-IP proxy answers with one). Lifted,
+// every form is admitted.
 func TestReservedBlocks_RefusedLiteralAdmittedAsAnAnswer(t *testing.T) {
 	ctx := context.Background()
 	canceled, cancel := context.WithCancel(ctx)
 	cancel()
-	for _, addr := range []string{"240.240.0.5", "240.0.0.1", "255.255.255.254", "198.18.0.5", "198.19.255.254"} {
+	admittedAnswers := []string{"240.240.0.1", "240.240.0.5", "240.240.255.254", "198.18.0.1", "198.18.0.5", "198.18.255.255"}
+	refusedAnswers := []string{"240.0.0.1", "240.0.0.10", "240.239.255.255", "240.241.0.0", "255.255.255.254", "198.19.0.0", "198.19.0.10", "198.19.255.254"}
+	for _, addr := range append(slices.Clone(admittedAnswers), refusedAnswers...) {
+		admitted := slices.Contains(admittedAnswers, addr)
+		// A public wildcard DNS name answers the address its label spells.
+		name := addr + ".sslip.io"
 		for _, strict := range []bool{true, false} {
 			_, litErr := ResolvePublicHostWith(ctx, answering(), addr, strict)
 			checkErr := CheckHost(addr, strict)
 			_, dialErr := SafeTransport(strict).DialContext(canceled, "tcp", net.JoinHostPort(addr, "443"))
-			ans, ansErr := ResolvePublicHostWith(ctx, answering(addr), "api.openai.com", strict)
-			if ansErr != nil || !ans.Equal(net.ParseIP(addr)) {
-				t.Errorf("strict=%v: api.openai.com answered %s = %v, %v; want the answer admitted", strict, addr, ans, ansErr)
-			}
+			ans, ansErr := ResolvePublicHostWith(ctx, answering(addr), name, strict)
 			if !strict {
 				if litErr != nil || checkErr != nil || !errors.Is(dialErr, context.Canceled) {
 					t.Errorf("lifted: literal %s = %v / CheckHost %v / dial %v; want it admitted", addr, litErr, checkErr, dialErr)
+				}
+				if ansErr != nil || !ans.Equal(net.ParseIP(addr)) {
+					t.Errorf("lifted: %s answered %s = %v, %v; want the answer admitted", name, addr, ans, ansErr)
 				}
 				continue
 			}
@@ -539,6 +550,12 @@ func TestReservedBlocks_RefusedLiteralAdmittedAsAnAnswer(t *testing.T) {
 				if !errors.Is(got.err, ErrNotPublic) {
 					t.Errorf("strict: %s %s = %v, want refused as not public", got.form, addr, got.err)
 				}
+			}
+			switch {
+			case admitted && (ansErr != nil || !ans.Equal(net.ParseIP(addr))):
+				t.Errorf("strict: %s answered %s = %v, %v; want the answer admitted (a mesh VIP or a fake-IP proxy's answer)", name, addr, ans, ansErr)
+			case !admitted && !errors.Is(ansErr, ErrNotPublic):
+				t.Errorf("strict: %s answered %s = %v, %v; want the answer refused as not public", name, addr, ans, ansErr)
 			}
 		}
 	}
