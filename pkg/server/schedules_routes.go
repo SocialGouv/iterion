@@ -13,6 +13,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/cloudsched"
+	"github.com/SocialGouv/iterion/pkg/credpool"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/llmroute"
 	"github.com/SocialGouv/iterion/pkg/retrypolicy"
@@ -227,6 +228,9 @@ func (s *Server) handleCreateSchedule(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, "%s", poolErr.Error())
 		return
 	}
+	if !s.schedulePoolBindingAdmitted(w, r, id, teamID, createPool) {
+		return
+	}
 	now := s.scheduleNow()
 	sb := cloudsched.ScheduledBot{
 		ID:              uuid.NewString(),
@@ -407,6 +411,9 @@ func (s *Server) handleUpdateSchedule(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, "%s", poolErr.Error())
 		return
 	}
+	if !s.schedulePoolBindingAdmitted(w, r, id, teamID, patchPool) {
+		return
+	}
 	clearPool := patchPool == nil && poolSpoke
 	// Same merge-then-validate for the retry policy: a patch touching one
 	// retry field must not be able to leave the row incoherent.
@@ -531,4 +538,29 @@ func (s *Server) handleDeleteSchedule(w http.ResponseWriter, r *http.Request) {
 	}
 	s.auditTenant(r, teamID, "schedule.deleted", "schedule", sb.ID, map[string]any{"bot_id": sb.BotID})
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// schedulePoolBindingAdmitted gates a schedule write that binds a LIVE pool
+// behind the org's provisioning review, as the repo-bots API does: a
+// recurring unattended run drawing a shared pool is exactly what an org
+// requiring approval reviews. A schedule has no parking lane, so an org
+// that would review the binding refuses it here (409) — an org admin binds
+// it, or the binding rides an integration through the repo-bots API. An
+// opt-out block binds nothing and needs no review. Writes the refusal and
+// returns false when the write must not proceed.
+func (s *Server) schedulePoolBindingAdmitted(w http.ResponseWriter, r *http.Request, id auth.Identity, teamID string, pool *credpool.Binding) bool {
+	if pool == nil || !pool.Enabled {
+		return true
+	}
+	gateOrg, err := s.provisionOrgRequiringApproval(r.Context(), id, teamID, true)
+	if err != nil {
+		httpError(w, http.StatusServiceUnavailable, "provision-approval gate unavailable: %v", err)
+		return false
+	}
+	if gateOrg != "" {
+		httpError(w, http.StatusConflict,
+			"this org reviews shared-pool bindings: an org admin binds pool %q on this schedule, or bind it through the repo-bots API (/api/teams/{id}/forge/repo-bots), which queues it for an org admin", pool.PoolID)
+		return false
+	}
+	return true
 }

@@ -954,10 +954,22 @@ func (b *Broker) tryPledge(ctx context.Context, pool Pool, p Pledge, req Request
 			b.releaseReservation(ctx, AttachmentLedgerID(req.AttachmentID), now)
 		}
 		b.logger.Debug("credpool: pledge %s declined run %s (%s)", p.ID, req.RunID, deny)
-		// capped: the entry declined on its own allowance (runs/day, $/day,
-		// $/week) — whatever the display status says about promised spend —
-		// as opposed to a full concurrency slot set, which only means busy.
-		return nil, deny.skipStatus(live), deny != DenyConcurrency, nil
+		// capped: the entry declined because its allowance is EXHAUSTED —
+		// runs/day always (consumed at admission), a $ ceiling only when the
+		// spend is real: with runs in flight the ceiling may be met by
+		// allowance merely PROMISED to them (shareAcrossSlots hands the
+		// first run all that remains), which is busy, not exhausted. A
+		// full concurrency slot set is busy too.
+		capped := deny == DenyRunsPerDay
+		if deny == DenyCostPerDay || deny == DenyCostPerWeek {
+			capped = live.Runs == 0
+			if !capped {
+				if day, week, uerr := b.ledger.Usage(ctx, p.ID, now); uerr == nil {
+					capped = p.Limits.Deny(0, day.CostUSD, week.CostUSD) != DenyNone
+				}
+			}
+		}
+		return nil, deny.skipStatus(live), capped, nil
 	}
 
 	// From here on, any failure must give back whatever was consumed.
@@ -1654,13 +1666,13 @@ func (b *Broker) ReportAttempt(ctx context.Context, runID string, attemptPublish
 			}
 		}
 	}
-	// A COARSE share (no per-credential split, or a lease with no
-	// fingerprint to slice by) cannot attribute the attempt: ONE lease
-	// that served books it whole — the attempt's own, or, when that one
-	// was returned unused, the first sibling that was not — and every
-	// other lease settles its state with no spend and no condition.
-	// Booking the whole attempt on every sibling charged each donor and the
-	// borrower's att: row once per sealed slot.
+	// A COARSE report (no per-credential split) cannot attribute the
+	// attempt, and the doctrine is conservative-on-ignore: EVERY lease of
+	// the attempt books it whole and takes its condition — a donor's cap
+	// bites early rather than never, and a failing credential is parked
+	// whichever slot it served. Only the BORROWER's att: draw row books the
+	// attempt once: on one lease that served — the attempt's own, or, when
+	// that one was returned unused, the first sibling that was not.
 	booker := 0
 	if returnedUnused(settling[0]) {
 		for i := 1; i < len(settling); i++ {
@@ -1671,11 +1683,10 @@ func (b *Broker) ReportAttempt(ctx context.Context, runID string, attemptPublish
 		}
 	}
 	for i, l := range settling {
-		lo := out
-		if i != booker && (out.ByFingerprint == nil || l.Fingerprint == "") {
-			lo = out.withoutSpend()
+		if i != booker && out.ByFingerprint == nil {
+			l.AttachmentID = ""
 		}
-		if err := b.settleLease(ctx, l, lo, attemptPublishedAt, now, runID); err != nil {
+		if err := b.settleLease(ctx, l, out, attemptPublishedAt, now, runID); err != nil {
 			if i > 0 {
 				err = fmt.Errorf("credpool: settle sibling lease %s: %w", l.ID, err)
 			}
@@ -1939,24 +1950,17 @@ type FingerprintSpend struct {
 	AggregateTokens int64
 }
 
-// effectiveCharge resolves what THIS lease books from the report: with a
-// fine table, only the slice matching the lease credential's fingerprint
-// (zero when the fallback never fired on it); without one, the coarse
-// whole-attempt charge. The condition and cooldown fields ride unchanged —
-// they describe the credential's health, not its bill.
 // returnedUnused reports a lease closed because its grant was given back
 // before the run launched on it.
 func returnedUnused(l Lease) bool {
 	return l.Closed && l.Outcome == OutcomeNotLaunched
 }
 
-// withoutSpend is the outcome a sibling of a coarse report settles with:
-// its lifecycle (interim or final) kept, its spend and its condition
-// dropped — the report cannot say which credential spent or failed.
-func (out Outcome) withoutSpend() Outcome {
-	return Outcome{Interim: out.Interim}
-}
-
+// effectiveCharge resolves what THIS lease books from the report: with a
+// fine table, only the slice matching the lease credential's fingerprint
+// (zero when the fallback never fired on it); without one, the coarse
+// whole-attempt charge. The condition and cooldown fields ride unchanged —
+// they describe the credential's health, not its bill.
 func (out Outcome) effectiveCharge(fingerprint string) Outcome {
 	if out.ByFingerprint == nil {
 		return out
