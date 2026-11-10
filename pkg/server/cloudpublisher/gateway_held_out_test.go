@@ -173,3 +173,58 @@ func TestGatewayKey_AHeldKeyThatCannotSealIsNamed(t *testing.T) {
 		}
 	})
 }
+
+// W17 (B2 of the round-1 review): a MIXED run held to its team's gateway
+// (team_gateway: AmbientLLMRefused armed, every environment fallback refused)
+// whose vendor route nothing in the bundle funds can only die at the runner —
+// the permissive knob's reason to tolerate an unfunded route ("the pod's env
+// may fund it") is false for it. It is refused by name at launch, knob on or
+// off, with the boundary's own sentence, and the preview mirrors the refusal.
+func TestGatewayKey_ATeamGatewayRunsUnfundedVendorRouteIsRefusedByName(t *testing.T) {
+	wf := mixedGatewayWorkflow()
+	for _, knob := range []bool{false, true} {
+		p, buf := gatewayKeyPublisher(t)
+		p.requireLLMCredential = knob
+		seedGatewayKey(t, p.apiKeys, p.sealer, "team1", nil)
+		_, err := resolveGatewayRun(t, p, "run-gw-17", wf, nil)
+		var refusal *UnfundedProvidersError
+		if !errors.As(err, &refusal) {
+			t.Fatalf("knob=%v: resolveAndSealCredentials = %v, want the team_gateway run refused naming its unfunded vendor route (log:\n%s)", knob, err, buf.String())
+		}
+		if !refusal.TeamGateway || refusal.Sovereign || len(refusal.Providers) != 1 || refusal.Providers[0] != "anthropic" {
+			t.Fatalf("knob=%v: refusal = %+v, want the team_gateway arm naming anthropic alone", knob, refusal)
+		}
+		if msg := err.Error(); !strings.Contains(msg, "team_gateway") || strings.Contains(msg, "unset ITERION_CLOUD_REQUIRE_LLM_CREDENTIAL") {
+			t.Fatalf("knob=%v: refusal %q must say the run is held to its gateway, never offer the environment the boundary refuses", knob, msg)
+		}
+		if knob {
+			continue
+		}
+		preview, perr := previewReadOnly(p).PreviewCredentials(gatewayLaunchCtx(), previewSpec("team1", "owner1"), wf)
+		if perr != nil {
+			t.Fatalf("preview: %v", perr)
+		}
+		if want := "The live launch refuses: " + err.Error(); previewWarning(preview, want) == "" {
+			t.Fatalf("the preview does not mirror the launch's refusal.\n want: %s\n got: %v", want, preview.Warnings)
+		}
+	}
+}
+
+// W17b: the boundary's arm outranks the knob's — a resume replaying
+// team_gateway whose gateway key is gone since leaves EVERY attributed route
+// unfunded, and the refusal still names the boundary rather than offering the
+// environment fallback the replayed ambient refusal forbids.
+func TestGatewayKey_AReplayedTeamGatewayRefusalNamesTheBoundaryOverTheKnob(t *testing.T) {
+	p, buf := gatewayKeyPublisher(t)
+	p.requireLLMCredential = true
+	wf := mixedGatewayWorkflow()
+	frozen := boundaryFrozen(&store.RunContentBoundary{Kind: store.ContentBoundaryTeamGateway, KeyID: "key-gone", GatewayHost: "gw.example"})
+	_, err := p.resolveAndSealCredentials(gatewayLaunchCtx(), "run-gw-17b", "", "team1", "owner1", gwBot, "", wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustDefault, nil, nil, nil, frozen)
+	var refusal *UnfundedProvidersError
+	if !errors.As(err, &refusal) || !refusal.TeamGateway {
+		t.Fatalf("resolveAndSealCredentials = %v, want the team_gateway arm (log:\n%s)", err, buf.String())
+	}
+	if msg := err.Error(); strings.Contains(msg, "unset ITERION_CLOUD_REQUIRE_LLM_CREDENTIAL") {
+		t.Fatalf("refusal %q offers the environment fallback a team_gateway run is refused", msg)
+	}
+}

@@ -336,6 +336,9 @@ func TestContentBoundary_TheLadderLandsNoVendorCrossingOnAGatewayNode(t *testing
 				seedGatewayKey(t, p.apiKeys, p.sealer, "team1", nil)
 			}
 			seedKey(t, p.apiKeys, p.sealer, "team1", secrets.ProviderOpenAI, "sk-openai-team")
+			// The vendor node's own route is funded: under team_gateway an
+			// unfunded route is refused at launch (no env fallback serves it).
+			seedKey(t, p.apiKeys, p.sealer, "team1", secrets.ProviderAnthropic, "sk-ant-team")
 			wf := mixedGatewayWorkflow()
 			creds := resolveBoundaryRun(t, p, "run-cb-6", "", wf, store.RunTrustDefault, ladderPolicy())
 			if creds.contentBoundary.TeamGateway() != row.teamGateway {

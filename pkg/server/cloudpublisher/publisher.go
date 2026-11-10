@@ -1713,19 +1713,20 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	if res.poolLease() != nil && view.Workflow != nil {
 		res.plan = model.CredentialPlan(model.EffectiveProviders(view, walkProviderSet), bundle)
 	}
-	// ALL THREE arms through ONE producer (unfundedRefusalFor): the deployment
+	// EVERY arm through ONE producer (unfundedRefusalFor): the deployment
 	// knob stays permissive — one funded provider lets the run start, the
 	// other route's failure is the run's to report — the sovereign policy
-	// refuses every unfunded provider a route names, and it refuses a
-	// workflow the walk can attribute NOTHING of when the team holds nothing
-	// at all. Env-funded runs acquire nothing and answer to no team policy;
+	// and the team_gateway boundary (whose ambient refusal leaves the pod's
+	// env funding nothing) refuse every unfunded provider a route names, and
+	// the sovereign policy refuses a workflow the walk can attribute NOTHING
+	// of when the team holds nothing at all. Env-funded runs acquire nothing and answer to no team policy;
 	// an unattributable route stays unrefused, contributing no name. What
 	// #2485 changed is the SET the first two read: the attributed providers,
 	// which an unattributable route no longer empties. The credential preview
 	// reads this same producer, so the view it shows an operator cannot
 	// contradict the launch it describes — a refusal left outside it is a
 	// refusal no view mirrors.
-	posture := p.unfundedPostureFor(wf, sovereign, envFunded, trust, runnerPool)
+	posture := p.unfundedPostureFor(wf, sovereign, teamGateway, envFunded, trust, runnerPool)
 	if refusal := unfundedRefusalFor(tenantID, attributed, bundleFunding(bundle, posture), !holdsDefaultLLMCredential(bundle), posture, gateway.heldOut()); refusal != nil {
 		return res, refusal
 	}

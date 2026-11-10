@@ -1544,7 +1544,9 @@ auxiliaries included), the server-side helpers and the supervisors refuse the
 run's auxiliary specs, and the routing ladder lands no crossing on a node routed
 to the gateway — `claw+openai_key` or codex would carry that node's content to
 a vendor credential — nor asks a donor for one; the run's vendor-routed nodes
-keep theirs.
+keep theirs. Since no environment fallback serves it, a `team_gateway` run
+whose route nothing in its bundle funds is refused by name at launch (and at
+resume), with or without `ITERION_CLOUD_REQUIRE_LLM_CREDENTIAL`.
 
 The team's default gateway model is a routing decision, not a field of the
 key: an override cell on selector `*` pinning

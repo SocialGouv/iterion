@@ -536,7 +536,7 @@ func (p *Publisher) previewCredentials(ctx context.Context, spec runview.Credent
 	composePolicyLadder(wf, previewView, spec.LLMRoutePolicy, model.AllowedProviderSet(previewView.AllowedProviders), spec.Launch.Vars, doorServesMetadata(x, spec.Launch.Trust.AmbientLLMRefused()), previewTeamGateway, nil)
 	previewRoutes := attributedRoutes(previewView)
 	restoreRoutes()
-	posture := p.unfundedPostureFor(wf, sovereignPreview, envFunded, spec.Launch.Trust, runnerPool)
+	posture := p.unfundedPostureFor(wf, sovereignPreview, previewTeamGateway, envFunded, spec.Launch.Trust, runnerPool)
 	refusal := unfundedRefusalFor(spec.Context.TeamID, previewRoutes, metadataFunding(x, posture), !metadataHoldsDefault(x), posture, gateway.heldOut())
 	wires := map[string][]string{}
 	selectSlot := func(i int) {

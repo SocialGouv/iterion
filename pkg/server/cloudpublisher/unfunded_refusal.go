@@ -263,9 +263,11 @@ type unfundedPosture struct {
 	// decision 7). The team's own vendor API keys are all that funds it.
 	//
 	// Three route classes are refused whatever the team holds. A gateway
-	// route: the gateway it rides IS that refused environment, and no tier
-	// seals a gateway credential into a pool-stamped run until #2005 PR-C'
-	// (an env-funded program does not lift the posture either). A deferred
+	// route the runner's environment funds: the gateway it rides IS that
+	// refused environment (an env-funded program does not lift the posture
+	// either); a gateway route the team's own sealed gateway key funds
+	// (model.RouteView.GatewayKeyFunded) names the openai_compatible
+	// provider instead, judged by name like a vendor route. A deferred
 	// route — an `${…}` dial, a late run var: the pool's runner expands it
 	// with ITS environment, whose env block pins the routing dials ahead of
 	// the platform record (sovereign-pools.md § Routing dials), so the
@@ -288,15 +290,28 @@ type unfundedPosture struct {
 	// Pool is the runner pool the run is stamped to, named by the untrusted
 	// refusal's sentence ("" when the stamp is not known).
 	Pool string
+	// TeamGateway arms the content boundary's, strict per provider too: a
+	// run held to its team's gateway (ADR-131 §4) carries AmbientLLMRefused,
+	// so every environment fallback of it answers a typed refusal — the pod's
+	// env funds none of its routes, and the knob's tolerance of an unfunded
+	// route ("the env may fund it") does not hold for it. Its route nothing
+	// in the bundle funds could only die at the runner.
+	TeamGateway bool
 }
 
-func (p *Publisher) unfundedPostureFor(wf *ir.Workflow, sovereign, envFunded bool, trust store.RunTrust, runnerPool string) unfundedPosture {
+// unfundedPostureFor arms the refusals for one run: sovereign is the team's
+// llm_fallback=none, teamGateway the run's content boundary (derived at
+// launch, frozen at resume — the value the bundle's ambient refusal reads),
+// trust the run's own (store.RunTrust.AmbientLLMRefused arms the untrusted
+// posture) and runnerPool the pool it is stamped to.
+func (p *Publisher) unfundedPostureFor(wf *ir.Workflow, sovereign, teamGateway, envFunded bool, trust store.RunTrust, runnerPool string) unfundedPosture {
 	usesLLM := wf != nil && wf.UsesLLM()
 	return unfundedPosture{
-		Knob:      p.requireLLMCredential && usesLLM,
-		Sovereign: sovereign && !envFunded && usesLLM,
-		Untrusted: trust.AmbientLLMRefused() && usesLLM,
-		Pool:      runnerPool,
+		Knob:        p.requireLLMCredential && usesLLM,
+		Sovereign:   sovereign && !envFunded && usesLLM,
+		Untrusted:   trust.AmbientLLMRefused() && usesLLM,
+		Pool:        runnerPool,
+		TeamGateway: teamGateway && !envFunded && usesLLM,
 	}
 }
 
@@ -376,6 +391,14 @@ func unfundedRefusalFor(tenant string, routes routeAttribution, funded map[strin
 		}
 		return nil
 	}
+	// The content boundary first: under team_gateway the environment the
+	// knob's sentence offers is refused, so no unfunded provider is
+	// tolerated and the sentence names the boundary.
+	if posture.TeamGateway {
+		refusal := newUnfundedProvidersError(tenant, unfunded, sites, heldOut, posture.Sovereign)
+		refusal.TeamGateway = true
+		return refusal
+	}
 	// The deployment knob stays permissive: one funded provider lets the run
 	// start — the other route's failure is the run's to report. Only a run
 	// whose EVERY attributed provider is unfunded cannot start at all.
@@ -419,9 +442,10 @@ type UnfundedProvidersError struct {
 	// run's remedy whatever else is armed.
 	Untrusted bool
 	// Gateway lists, on the untrusted arm, the sites whose route rides the
-	// openai_compatible gateway: nothing funds one on a fork run (the
-	// runner's gateway is the refused environment, and no tier seals a team
-	// gateway credential into a pool run until #2005 PR-C'). Sorted.
+	// openai_compatible gateway the runner's environment funds: nothing funds
+	// one on a fork run (the runner's gateway is the refused environment, and
+	// no gateway key of the team's own is sealed for it — a route that key
+	// funds names the openai_compatible provider instead). Sorted.
 	Gateway []string
 	// Deferred lists, on the untrusted arm, the sites whose route the pool's
 	// runner decides — an `${…}` dial expanded with the pool's own
@@ -439,6 +463,10 @@ type UnfundedProvidersError struct {
 	WireDefault []string
 	// Pool is the runner pool the untrusted run is stamped to ("" unknown).
 	Pool string
+	// TeamGateway marks the content boundary's arm: the run is held to its
+	// team's gateway, so no environment fallback funds an unfunded route.
+	// Its sentence names the boundary unless Sovereign says more.
+	TeamGateway bool
 	// Unattributable marks the strict arm that names NO provider: the walk
 	// could attribute none of this workflow's routes and the run holds
 	// nothing that funds it, so Providers and Sites are empty by
@@ -460,7 +488,7 @@ func (e *UnfundedProvidersError) Error() string {
 		}
 		why := "no shared tier (org, pool, platform) is sealed into a pool run (ADR-154 D13), the runner's environment and its gateway are refused, and a forfait cannot cross the run's sandbox (ADR-162 decision 7)"
 		if e.Unattributable {
-			return fmt.Sprintf("cloudpublisher: %v: tenant %s's untrusted (fork-lane) run on %s holds no API key of the team's own, and no model route of this workflow names a provider one could fund — %s; pin the bot's routes to a vendor provider and provision the team's API key for it (a gateway credential funds no fork run until #2005 PR-C')",
+			return fmt.Sprintf("cloudpublisher: %v: tenant %s's untrusted (fork-lane) run on %s holds no API key of the team's own, and no model route of this workflow names a provider one could fund — %s; pin the bot's routes to a vendor provider and provision the team's API key for it (a gateway key funds only the gateway routes it is attributed, never an unattributed one)",
 				runview.ErrNoLLMCredential, e.Tenant, pool, why)
 		}
 		remedies := make([]string, 0, 3)
@@ -468,7 +496,7 @@ func (e *UnfundedProvidersError) Error() string {
 			remedies = append(remedies, "provision a team API key for: "+strings.Join(e.namedProviders(), "; "))
 		}
 		if len(e.Gateway) > 0 {
-			remedies = append(remedies, fmt.Sprintf("the routes of %s ride the openai_compatible gateway, which funds no fork run — the runner's gateway is the refused environment and no team gateway credential is sealed into a pool run until #2005 PR-C': route them to a vendor provider the team holds an API key for",
+			remedies = append(remedies, fmt.Sprintf("the routes of %s ride the openai_compatible gateway, which funds no fork run on the runner's environment — the runner's gateway is the refused environment, and no gateway key of the team's own is sealed for them: provision the team's gateway key for this bot and repository, or route them to a vendor provider the team holds an API key for",
 				strings.Join(e.Gateway, ", ")))
 		}
 		if len(e.Deferred) > 0 {
@@ -493,6 +521,10 @@ func (e *UnfundedProvidersError) Error() string {
 			runview.ErrNoLLMCredential, e.Tenant)
 	}
 	named := e.namedProviders()
+	if e.TeamGateway && !e.Sovereign {
+		return fmt.Sprintf("cloudpublisher: %v: this run is held to its team's gateway (content boundary team_gateway, ADR-131 §4) — every environment fallback of it is refused, so every provider a route names must be funded by a credential the run carries; provision one for tenant %s: %s",
+			runview.ErrNoLLMCredential, e.Tenant, strings.Join(named, "; "))
+	}
 	if e.Sovereign {
 		return fmt.Sprintf("cloudpublisher: %v: tenant %s runs with llm_fallback=none — no shared tier (org, pool, platform) is consulted, so every provider a route names must hold a credential of the team's own; provision: %s",
 			runview.ErrNoLLMCredential, e.Tenant, strings.Join(named, "; "))
