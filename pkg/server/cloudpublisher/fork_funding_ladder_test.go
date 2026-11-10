@@ -2,6 +2,7 @@ package cloudpublisher
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/backend/model"
@@ -99,5 +100,40 @@ func TestFundingRefusal_AForkRunLandsNoForfaitRung(t *testing.T) {
 				t.Fatalf("trusted control: ladder %+v carries no forfait stage — the fixture must hold a forfait pair the trusted run lands", ctrl.Ladder)
 			}
 		})
+	}
+}
+
+// A claude_code route hinted off the wire, under a providers allowlist that
+// admits no anthropic-wire provider: the route still walks the wire's default
+// on the runner and finds no slot it may spend (none is ever sealed), so it is
+// refused before metering and at publish, named with its allowlist reason.
+// The trusted control on the same stores and policy starts.
+//
+// Mutations, each seen red and restored byte-identical:
+//   - endRoute no longer committing the empty site → the judge admits and
+//     the publish seals;
+//   - unfundedWireDefault skipping an empty slot list → the same.
+func TestFundingRefusal_AnAllowlistLeavingAWireRouteNoSlotRefusesTheForkRun(t *testing.T) {
+	p := forkFundingPublisher(t)
+	seedTeamOpenAI(t, p)
+	wf := compileTestSource(t, offWireClaudeCodeBot)
+	ctx := store.WithTenant(context.Background(), "team1")
+	policy := &store.RunLLMRoutePolicy{Providers: []string{"openai"}, PairOrder: []string{llmroute.Pair(llmroute.HarnessClaw, "openai_key")}}
+
+	spec := forkFundingSpec(store.RunTrustFork)
+	spec.LLMRoutePolicy = policy
+	err := p.FundingRefusal(ctx, spec, wf)
+	var refusal *UnfundedProvidersError
+	if !errors.As(err, &refusal) || !refusal.Untrusted || len(refusal.WireDefault) != 1 || refusal.WireDefault[0] != "draft (no slot the providers allowlist admits)" {
+		t.Fatalf("FundingRefusal = %v, want the untrusted refusal naming draft's wire-default read the allowlist leaves empty", err)
+	}
+	res, err := p.resolveAndSealCredentials(ctx, "run-fork-allowlist", "org1", "team1", "owner1", "review-pr", "forks", wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustFork, nil, policy, nil)
+	if !errors.As(err, &refusal) || len(refusal.WireDefault) != 1 || res.secretsRef != "" {
+		t.Fatalf("resolveAndSealCredentials = (ref %q, %v), want the wire-default refusal and nothing sealed", res.secretsRef, err)
+	}
+	ctrlSpec := forkFundingSpec(store.RunTrustDefault)
+	ctrlSpec.LLMRoutePolicy = policy
+	if cerr := p.FundingRefusal(ctx, ctrlSpec, wf); cerr != nil {
+		t.Fatalf("trusted control: FundingRefusal = %v, want nil", cerr)
 	}
 }

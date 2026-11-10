@@ -192,7 +192,11 @@ type ProviderResolution struct {
 	// slot as the run's DEFAULT credential to the slots it may read — the
 	// per-site reading AnthropicWireDefaultReads is the union of, committed
 	// under the same rules (a pruned route reads nothing, a slot outside
-	// the allowlist is read by no route). Each list sorted.
+	// the allowlist is read by no route). A surviving route whose every slot
+	// the allowlist excludes maps to an EMPTY list, never to no entry: it
+	// still walks the wire's default on the runner, finds no slot it may
+	// spend, and is refused there — a funding reader must see it. Each list
+	// sorted.
 	WireDefaultSites map[string][]string
 }
 
@@ -535,7 +539,7 @@ func (a *providerAccumulator) result() ProviderResolution {
 		if res.WireDefaultSites == nil {
 			res.WireDefaultSites = make(map[string][]string, len(a.wireSites))
 		}
-		res.WireDefaultSites[site] = sortedSiteSet(slots)
+		res.WireDefaultSites[site] = append([]string{}, sortedSiteSet(slots)...)
 	}
 	sort.Strings(res.Providers)
 	sort.Strings(res.Unknown)
@@ -679,7 +683,9 @@ func (a *providerAccumulator) beginRoute(primary bool) {
 // re-routed). The route's staged wire-default reads commit only if it
 // survives — an allowlisted route that named only outside providers never
 // runs, so it reads no default — and only the slots the allowlist admits:
-// a slot outside the list is spent by no route of this run.
+// a slot outside the list is spent by no route of this run. The SITE commits
+// with the route whatever the list leaves of its slots
+// (ProviderResolution.WireDefaultSites).
 func (a *providerAccumulator) endRoute() {
 	r := a.route
 	a.route = nil
@@ -695,6 +701,14 @@ func (a *providerAccumulator) endRoute() {
 		}
 	}
 	if len(a.allowed) == 0 || r.inside || len(r.outside) == 0 {
+		if len(r.wire) > 0 {
+			if a.wireSites == nil {
+				a.wireSites = map[string]map[string]bool{}
+			}
+			if a.wireSites[r.site] == nil {
+				a.wireSites[r.site] = map[string]bool{}
+			}
+		}
 		for _, slot := range r.wire {
 			// A slot the allowlist excludes is spent by no route of this
 			// run — the dispatch filter drops its elements and the seal
@@ -706,12 +720,6 @@ func (a *providerAccumulator) endRoute() {
 				a.wireDefault = map[string]bool{}
 			}
 			a.wireDefault[slot] = true
-			if a.wireSites == nil {
-				a.wireSites = map[string]map[string]bool{}
-			}
-			if a.wireSites[r.site] == nil {
-				a.wireSites[r.site] = map[string]bool{}
-			}
 			a.wireSites[r.site][slot] = true
 		}
 	}

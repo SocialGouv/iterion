@@ -233,3 +233,38 @@ func TestEffectiveProvidersWireDefaultSites(t *testing.T) {
 		})
 	}
 }
+
+// Under a providers allowlist a surviving route keeps its wire-default SITE
+// whatever the list leaves of its slots: a claude_code route hinted off the
+// wire still walks the wire's default on the runner, so a funding reader must
+// see it even when the list admits none of its slots (an empty entry), while
+// the union a seal reads (AnthropicWireDefaultReads) keeps only admitted
+// slots.
+//
+// Mutation: endRoute committing the site only with an admitted slot (the
+// pre-commit of the empty entry removed) → "admits none of its slots" loses
+// its entry, red.
+func TestEffectiveProvidersWireDefaultSitesUnderAnAllowlist(t *testing.T) {
+	known := map[string]bool{"anthropic": true, "openai": true, "zai": true, "moonshot": true}
+	node := &ir.AgentNode{BaseNode: ir.BaseNode{ID: "draft"}, LLMFields: ir.LLMFields{Backend: "claude_code", Provider: "openai", Model: "gpt-6"}}
+	wf := &ir.Workflow{Nodes: map[string]ir.Node{node.ID: node}}
+	for _, tc := range []struct {
+		name    string
+		allowed []string
+		want    []string
+	}{
+		{name: "an allowlist that admits none of its slots", allowed: []string{"openai"}, want: []string{}},
+		{name: "an allowlist that admits one of its slots", allowed: []string{"openai", "zai"}, want: []string{"zai"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			res := EffectiveProviders(RouteView{Workflow: wf, AllowedProviders: tc.allowed}, known)
+			got, ok := res.WireDefaultSites[node.ID]
+			if !ok || !slices.Equal(got, tc.want) {
+				t.Fatalf("WireDefaultSites[%s] = %v (present %v), want %v present", node.ID, got, ok, tc.want)
+			}
+			if !slices.Equal(res.AnthropicWireDefaultReads, tc.want) {
+				t.Fatalf("AnthropicWireDefaultReads = %v, want %v — the seal's union keeps only admitted slots", res.AnthropicWireDefaultReads, tc.want)
+			}
+		})
+	}
+}

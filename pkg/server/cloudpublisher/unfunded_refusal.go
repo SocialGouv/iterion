@@ -92,8 +92,10 @@ func (r routeAttribution) untrustedUnattributed() []string {
 // backend the runner picks — while funding holds none of the slots it may read
 // and no anthropic-wire provider it names. On the runner such a route walks
 // the wire's slot order over the run's sealed keys and, finding none, is
-// refused ambient (the claude_code delegate's ambientStampRefusal). A site
-// already refused — gateway, deferred, unattributed, or naming a provider in
+// refused ambient (the claude_code delegate's ambientStampRefusal). A route
+// whose every slot the providers allowlist excludes reads an empty list and is
+// refused the same way: no slot it may spend is ever sealed. A site already
+// refused — gateway, deferred, unattributed, or naming a provider in
 // unfunded — answers through its own remedy.
 func (r routeAttribution) unfundedWireDefault(funded map[string]bool, unfunded []string) []string {
 	refused := siteSet(r.gateway)
@@ -110,7 +112,7 @@ func (r routeAttribution) unfundedWireDefault(funded map[string]bool, unfunded [
 	}
 	var out []string
 	for site, slots := range r.wireReads {
-		if refused[site] || len(slots) == 0 {
+		if refused[site] {
 			continue
 		}
 		held := false
@@ -120,7 +122,11 @@ func (r routeAttribution) unfundedWireDefault(funded map[string]bool, unfunded [
 		for _, prov := range r.sites[site] {
 			held = held || (secrets.WireFamily(prov) == secrets.WireFamilyAnthropic && funded[prov])
 		}
-		if !held {
+		switch {
+		case held:
+		case len(slots) == 0:
+			out = append(out, site+" (no slot the providers allowlist admits)")
+		default:
 			out = append(out, fmt.Sprintf("%s (%s)", site, strings.Join(slots, ", ")))
 		}
 	}
@@ -454,7 +460,7 @@ func (e *UnfundedProvidersError) Error() string {
 				strings.Join(e.Unattributed, ", ")))
 		}
 		if len(e.WireDefault) > 0 {
-			remedies = append(remedies, fmt.Sprintf("the routes of %s may spend the anthropic wire's default credential — a claude_code route that pins no anthropic-wire provider, or a route whose backend the runner picks — and the team holds an API key for none of the slots listed: provision one, or pin the route's backend and provider",
+			remedies = append(remedies, fmt.Sprintf("the routes of %s may spend the anthropic wire's default credential — a claude_code route that pins no anthropic-wire provider, or a route whose backend the runner picks — and the team holds an API key for none of the slots listed, or the providers allowlist admits none: provision one the allowlist admits, or pin the route's backend and provider",
 				strings.Join(e.WireDefault, ", ")))
 		}
 		return fmt.Sprintf("cloudpublisher: %v: tenant %s's untrusted (fork-lane) run on %s spends the team's own vendor API keys alone — %s; %s",
