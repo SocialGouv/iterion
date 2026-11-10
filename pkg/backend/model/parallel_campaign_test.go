@@ -175,6 +175,7 @@ var serialFamily = map[string]string{
 	"resolve_chain_test.go":                    "Setenv",
 	"review_merge_mcp_test.go":                 "Setenv",
 	"route_view_dispatch_test.go":              "Setenv",
+	"route_sites_test.go":                      "Setenv",
 	"route_view_test.go":                       "Setenv",
 	"routing_template_test.go":                 "Setenv",
 	"secretguard_minted_test.go":               "Setenv",

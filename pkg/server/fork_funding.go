@@ -9,6 +9,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/llmroute"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/secrets"
+	"github.com/SocialGouv/iterion/pkg/server/cloudpublisher"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
 )
@@ -17,10 +18,18 @@ import (
 // ADR-154 D13). A fork run executes on its lane's pool, so the publisher
 // seals no shared tier into it (no org key, no contributor pool, no platform
 // key); the runner refuses its pod's environment; and a forfait cannot cross
-// its sandbox. Its team's own API keys — a provider key, or one with its
-// gateway base URL — are all that funds it. A team funded only by shared keys
-// would otherwise have every gesture metered on the org's budget and the
-// outside author's bound, then refused at publish or at the runner.
+// its sandbox. Its team's own vendor API keys are all that funds it — no
+// tier seals a team gateway credential into a pool run until #2005 PR-C' —
+// and only on routes decided before the run: a gateway route, or an `${…}`
+// dial the pool's runner expands with its own environment, is refused. A
+// team funded only by shared keys would otherwise have every gesture metered
+// on the org's budget and the outside author's bound, then refused at
+// publish or at the runner.
+//
+// The judge also answers the fork lane's POOL rule first, as the launch and
+// the resume do (a team mapped since, a pool another team holds, a pool the
+// registry does not route): a refusal the publisher would reach after the
+// gate charged is reached before it.
 //
 // The judge is the publisher's own unfunded decision read through the
 // credential preview (runview.CredentialFundingJudge), on the program the
@@ -45,6 +54,10 @@ func (s *Server) gateForkFunding(ctx context.Context, subj launchSubject) *launc
 		return nil
 	case errors.Is(err, runview.ErrNoLLMCredential):
 		return &launchDenial{status: http.StatusUnprocessableEntity, reason: denyForkRunUnfunded, detail: err.Error()}
+	case errors.Is(err, cloudpublisher.ErrForkLanePool):
+		return &launchDenial{status: http.StatusUnprocessableEntity, reason: denyForkLanePoolRefused, detail: err.Error()}
+	case errors.Is(err, runview.ErrFundingUnjudgeable):
+		return &launchDenial{status: http.StatusUnprocessableEntity, reason: denyForkFundingUnjudgeable, detail: err.Error()}
 	default:
 		return s.forkClosedDenial(denyForkFundingUnreadable,
 			fmt.Sprintf("whether this fork run is funded could not be judged: %v — an untrusted launch is not metered on a verdict nobody reached", err))
@@ -72,7 +85,7 @@ func (s *Server) webhookForkFunding(cfg webhooks.Config, meta webhookEventMeta, 
 			return fmt.Errorf("resolve bot %q: %w", t.BotID, err)
 		}
 		if lb == nil {
-			return fmt.Errorf("bot %q not found", t.BotID)
+			return fmt.Errorf("%w: bot %q not found", runview.ErrFundingUnjudgeable, t.BotID)
 		}
 		defer lb.Cleanup()
 		routePolicy, err := s.resolveRunLLMRoutePolicy(ctx, cfg.TenantID, t.BotID, llmroute.Layer{
@@ -127,7 +140,12 @@ func (s *Server) forkResumeFunding(run *store.Run) func(context.Context) error {
 		spec := runview.ResumeSpec{RunID: run.ID, FilePath: run.FilePath}
 		cleanup, err := s.resumeSourceFiller(ctx, run, &spec)
 		if err != nil {
-			return fmt.Errorf("resolve the run's resume source: %w", err)
+			// The retry sweeper's own reading of the same failure: a store
+			// blip re-arms, a bot gone from its catalog will never resolve.
+			if errors.Is(err, errResumeResolveTransient) {
+				return fmt.Errorf("resolve the run's resume source: %w", err)
+			}
+			return fmt.Errorf("%w: resolve the run's resume source: %w", runview.ErrFundingUnjudgeable, err)
 		}
 		if cleanup != nil {
 			defer cleanup()

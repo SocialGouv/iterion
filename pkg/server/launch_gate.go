@@ -152,6 +152,20 @@ const (
 	// other unreadable arms: an untrusted launch is not metered on a verdict
 	// nobody reached.
 	denyForkFundingUnreadable = "fork_funding_unreadable"
+	// denyForkFundingUnjudgeable: the funding judge cannot be asked because
+	// the program the run would execute cannot be built — the bot is gone
+	// from its catalog, its source no longer compiles, the launch funnel
+	// refuses an input (runview.ErrFundingUnjudgeable). A 422: every attempt
+	// is refused identically, so the retry sweeper abandons rather than
+	// re-arms, and the API does not tell its caller to retry.
+	denyForkFundingUnjudgeable = "fork_funding_unjudgeable"
+	// denyForkLanePoolRefused: the fork run's runner pool is refused by the
+	// fork lane's pool rule (cloudpublisher.ErrForkLanePool) — its team is
+	// mapped to another pool since the lane was created, another team holds
+	// the pool, the pool is not a pool name. Judged with the funding, before
+	// anything is metered; a 422 the retry sweeper abandons, like the
+	// publisher's own refusal of the same rule.
+	denyForkLanePoolRefused = "fork_lane_pool_refused"
 )
 
 // launchExemptPrincipal reports whether a principal launches with no human

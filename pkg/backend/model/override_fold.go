@@ -162,6 +162,23 @@ type ProviderResolution struct {
 	// either would. A route the walk cannot resolve (NarrowSafe false) may
 	// read any. Sorted.
 	AnthropicWireDefaultReads []string
+	// GatewaySites lists the sites (Pins' site keys) whose route this walk
+	// read as the openai_compatible gateway — a literal `openai_compatible/…`
+	// model, a gateway hint over one, or an env-templated model that expanded
+	// to one here: the routes EnvFunded names the prefix of. Such a route
+	// acquires no credential from the bundle; the runner's environment funds
+	// it. A gateway route the allowlist pruned is not one. Sorted.
+	GatewaySites []string
+	// DeferredSites lists the sites whose route is decided by the process
+	// that DISPATCHES it rather than by this reading: a deciding routing
+	// field — the provider override (or, without one, the node's provider
+	// chain), the effective model, the backend the route runs on — that
+	// reads the environment (`${…}`, which the runner expands with its OWN
+	// environment and settings overlay; a runner pool's env block pins its
+	// names ahead of the platform record) or a run var this view left late
+	// (`{{vars.…}}`). Whatever this walk recorded for such a site is this
+	// process's expansion, not the runner's word. Sorted.
+	DeferredSites []string
 }
 
 // OnlyEnvFunded reports whether the run's every LLM route is an
@@ -198,6 +215,9 @@ func EffectiveProviders(v RouteView, known map[string]bool) ProviderResolution {
 	acc := &providerAccumulator{known: known, providers: map[string]bool{}, unknown: map[string]bool{}, forfaitFirst: map[string]bool{}, pins: map[string][]string{}, narrowSafe: true, vars: v.Vars, late: v.LateVars, allowed: AllowedProviderSet(v.AllowedProviders)}
 	gateVars := v.gateVars()
 	seenAnyLLM := false
+	// A run-level fallback stage naming no backend runs on each node's own,
+	// so it is late wherever some node's backend is.
+	anyNodeBackendLate := false
 	for _, n := range wf.Nodes {
 		fields, ok := llmFieldsOf(n)
 		if !ok {
@@ -208,7 +228,7 @@ func EffectiveProviders(v RouteView, known map[string]bool) ProviderResolution {
 				// backend, and no override cell (executeHumanLLMWithSpend
 				// never consults ForNode).
 				seenAnyLLM = true
-				acc.backend = ""
+				acc.backend, acc.backendLate = "", false
 				acc.site = n.NodeID()
 				acc.resolveDirect(v.field(mdl), "")
 				continue
@@ -224,7 +244,7 @@ func EffectiveProviders(v RouteView, known map[string]bool) ProviderResolution {
 					// Rung 3 is a DIRECT generation on the spec (the
 					// registry, rung 3 never consults ForNode): the human
 					// arm's reading, at the rung's own site.
-					acc.backend = ""
+					acc.backend, acc.backendLate = "", false
 					acc.site = n.NodeID() + "#self_repair"
 					acc.resolveDirect(spec, "")
 				}
@@ -242,6 +262,7 @@ func EffectiveProviders(v RouteView, known map[string]bool) ProviderResolution {
 						b = ""
 					}
 					acc.backend = b
+					acc.backendLate = routeBackendLate(v.field(ov.Backend), "", v.field(wf.DefaultBackend))
 					acc.site = n.NodeID() + agentRecoverySiteSuffix
 					acc.resolveNode(syn, &syn.LLMFields, v.Overrides)
 				}
@@ -264,7 +285,9 @@ func EffectiveProviders(v RouteView, known map[string]bool) ProviderResolution {
 			// the forfait-first accounting.
 			nodeBackend = ""
 		}
-		acc.backend = nodeBackend
+		nodeBackendLate := routeBackendLate(v.field(ov.Backend), v.field(fields.Backend), v.field(wf.DefaultBackend))
+		anyNodeBackendLate = anyNodeBackendLate || nodeBackendLate
+		acc.backend, acc.backendLate = nodeBackend, nodeBackendLate
 		acc.site = n.NodeID()
 		acc.resolveNode(n, fields, v.Overrides)
 		// `interaction: llm|llm_or_human` answers the node's questions
@@ -274,7 +297,7 @@ func EffectiveProviders(v RouteView, known map[string]bool) ProviderResolution {
 		// backend's forfait-first declaration covers it.
 		if inf, ok := n.(interface{ GetInteractionFields() *ir.InteractionFields }); ok {
 			if f := inf.GetInteractionFields(); f != nil && (f.Interaction == ir.InteractionLLM || f.Interaction == ir.InteractionLLMOrHuman) {
-				acc.backend = ""
+				acc.backend, acc.backendLate = "", false
 				acc.site = n.NodeID() + interactionSiteSuffix
 				acc.resolveDirect(v.field(f.InteractionModel), v.field(fields.Model))
 			}
@@ -293,14 +316,14 @@ func EffectiveProviders(v RouteView, known map[string]bool) ProviderResolution {
 				if !FallbackWhenActive(gateVars, n.NodeID(), fb, nil) {
 					continue
 				}
-				acc.backend = nodeBackend
+				acc.backend, acc.backendLate = nodeBackend, nodeBackendLate
 				acc.site = fallbackSite(n.NodeID(), i, fb.Name)
 				if strings.TrimSpace(fb.Backend) != "" {
 					b, fromEnv := resolveRouteBackend("", v.field(fb.Backend), "")
 					if fromEnv {
 						b = ""
 					}
-					acc.backend = b
+					acc.backend, acc.backendLate = b, routeBackendLate("", v.field(fb.Backend), "")
 				}
 				acc.resolveRoute(v.field(fb.Provider), v.field(fb.Model))
 			}
@@ -318,7 +341,7 @@ func EffectiveProviders(v RouteView, known map[string]bool) ProviderResolution {
 			continue
 		}
 		seenAnyLLM = true
-		acc.backend = ""
+		acc.backend, acc.backendLate = "", false
 		acc.site = "supervisor:" + sup.Name
 		acc.resolveDirect(v.field(sup.Model), "")
 	}
@@ -340,6 +363,7 @@ func EffectiveProviders(v RouteView, known map[string]bool) ProviderResolution {
 			b = ""
 		}
 		acc.backend = b
+		acc.backendLate = routeBackendLate("", v.field(fb.Backend), "") || (strings.TrimSpace(fb.Backend) == "" && anyNodeBackendLate)
 		acc.site = fmt.Sprintf("%s#%d", ir.RunFallbackName, i)
 		acc.resolveRoute(v.field(fb.Provider), v.field(fb.Model))
 	}
@@ -412,6 +436,13 @@ type providerAccumulator struct {
 	// hints, whether an allowed one served, and the wire-default reads it
 	// may commit.
 	route *routeRead
+	// backendLate: the backend of the route about to be read is decided at
+	// dispatch (routeBackendLate) — set beside backend, read by deferAt.
+	backendLate bool
+	// gatewaySites / deferredSites: ProviderResolution.GatewaySites and
+	// DeferredSites.
+	gatewaySites  map[string]bool
+	deferredSites map[string]bool
 }
 
 // routeRead is one route mid-read: the site it lives at, whether it is a
@@ -479,11 +510,75 @@ func (a *providerAccumulator) result() ProviderResolution {
 		res.ForbiddenPrimary = sortedDedupSites(a.forbiddenPrimary)
 		res.Unreadable = sortDedupUnreadable(a.unreadable)
 	}
+	res.GatewaySites = sortedSiteSet(a.gatewaySites)
+	res.DeferredSites = sortedSiteSet(a.deferredSites)
 	sort.Strings(res.Providers)
 	sort.Strings(res.Unknown)
 	sort.Strings(res.EnvFunded)
 	sort.Strings(res.ForfaitFirst)
 	return res
+}
+
+// sortedSiteSet is a site set's sorted keys, nil when empty.
+func sortedSiteSet(set map[string]bool) []string {
+	if len(set) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(set))
+	for site := range set {
+		out = append(out, site)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// readLate reports whether a routing field's text is resolved by the
+// process that dispatches the route rather than by this reading: an
+// environment expansion (`${…}`) the runner performs with its own
+// environment, or a `{{…}}` span the view left as written (a late var).
+func readLate(v string) bool {
+	return strings.Contains(v, "${") || strings.Contains(v, "{{")
+}
+
+// routeBackendLate reports whether the backend a route runs on is decided at
+// dispatch: the first of override, node and workflow default that would
+// decide it (resolveRouteBackend's precedence) — or any source read before
+// it that reads the environment, since the runner may expand that one to a
+// backend where this process expanded nothing — is read late.
+func routeBackendLate(override, node, wfDefault string) bool {
+	for _, raw := range []string{override, node, wfDefault} {
+		if readLate(raw) {
+			return true
+		}
+		if strings.TrimSpace(raw) != "" {
+			return false
+		}
+	}
+	return false
+}
+
+// deferAt records the site being read in DeferredSites when the route's
+// backend, or any of its deciding fields, is read late.
+func (a *providerAccumulator) deferAt(fields ...string) {
+	late := a.backendLate
+	for _, f := range fields {
+		late = late || readLate(f)
+	}
+	if !late {
+		return
+	}
+	if a.deferredSites == nil {
+		a.deferredSites = map[string]bool{}
+	}
+	a.deferredSites[a.site] = true
+}
+
+// gatewayAt records the site being read in GatewaySites.
+func (a *providerAccumulator) gatewayAt() {
+	if a.gatewaySites == nil {
+		a.gatewaySites = map[string]bool{}
+	}
+	a.gatewaySites[a.site] = true
 }
 
 // routeBackend is the backend a route runs on, as far as a launch can read
@@ -662,6 +757,13 @@ func (a *providerAccumulator) resolveNode(node ir.Node, fields *ir.LLMFields, ov
 	a.envDeferred("provider", prov)
 	a.envDeferred("provider", chain)
 	a.envDeferred("model", m)
+	// The deciding fields alone: a provider override collapses the chain,
+	// so the chain's own text decides nothing then.
+	if strings.TrimSpace(ov.Provider) != "" {
+		a.deferAt(prov, m)
+	} else {
+		a.deferAt(chain, m)
+	}
 	if strings.TrimSpace(ov.Provider) != "" {
 		a.noteWireDefault(prov, m)
 		if a.chainDecides(prov, m) {
@@ -726,6 +828,7 @@ func (a *providerAccumulator) resolveRoute(provider, mdl string) {
 	defer a.endRoute()
 	a.envDeferred("provider", provider)
 	a.envDeferred("model", mdl)
+	a.deferAt(provider, mdl)
 	a.noteWireDefault(provider, mdl)
 	if a.chainDecides(provider, mdl) {
 		a.prefixSlotForClaw(mdl)
@@ -745,6 +848,7 @@ func (a *providerAccumulator) resolveDirect(interactionModel, nodeModel string) 
 		mdl = nodeModel
 	}
 	a.envDeferred("model", mdl, nodeModel)
+	a.deferAt(mdl)
 	a.prefixOrWiden(mdl)
 }
 
@@ -755,8 +859,7 @@ func (a *providerAccumulator) resolveDirect(interactionModel, nodeModel string) 
 func (a *providerAccumulator) noteWireDefault(chain, mdl string) {
 	// Read late — from the environment (the runner expands it with its own)
 	// or from the run's vars at dispatch: what it will say is unknown here.
-	late := func(v string) bool { return strings.Contains(v, "${") || strings.Contains(v, "{{") }
-	envRead := late(chain) || late(mdl)
+	envRead := readLate(chain) || readLate(mdl)
 	m := strings.TrimSpace(ir.ExpandEnvWithDefault(mdl))
 	glm := GLMOnAnthropicWire(m)
 	read := func(slots ...string) {
@@ -821,7 +924,10 @@ func (a *providerAccumulator) chainDecides(raw, mdl string) bool {
 		if h == modelroute.OpenAICompatible && rawGatewayPrefix(mdl) {
 			if len(a.allowed) > 0 && !a.allowed[modelroute.OpenAICompatible] {
 				a.forbid(modelroute.OpenAICompatible)
-			} else if a.route != nil {
+				continue
+			}
+			a.gatewayAt()
+			if a.route != nil {
 				// The gateway step is an allowed server: it marks the route
 				// servable inside the list, the same way hint() does for a
 				// vendor step — a mixed chain refuses only when NO step
@@ -876,6 +982,7 @@ func (a *providerAccumulator) prefixOrWiden(mdl string) {
 				a.envFunded = map[string]bool{}
 			}
 			a.envFunded[p] = true
+			a.gatewayAt()
 			if !rawGatewayPrefix(mdl) {
 				a.narrowSafe = false
 			}

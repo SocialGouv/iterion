@@ -263,6 +263,98 @@ func TestForkGesture_TheDurableRetryOfAnUnfundedForkRowIsRefusedBeforeMetering(t
 	}
 }
 
+// A bot whose route reads a routing dial — review-pr's own shape — is
+// refused before metering even on a team whose own key funds the vendor
+// route this server expands the dial to: the lane's pool runner expands it
+// with the pool's env block, which this server cannot read. The same team
+// and program on a literal route is admitted (the "holding its own key" row
+// above).
+//
+// Mutation: the publisher's untrusted arm ignoring routes.deferred → the
+// gesture is accepted (202), metered and published.
+func TestForkGesture_ARoutingDialIsRefusedBeforeMetering(t *testing.T) {
+	fx, rig, rec := forkFundingGesture(t)
+	const dialBot = "agent draft:\n  model: \"${ITERION_FORK_GESTURE_PROBE_MODEL:-anthropic/claude-opus-5}\"\n  backend: \"claw\"\n\nworkflow review_pr:\n  worktree: none\n  entry: draft\n  draft -> done\n"
+	if err := os.WriteFile(filepath.Join(fx.s.cfg.WorkDir, "bots", "review-pr.bot"), []byte(dialBot), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rig.seedKey(t, "t1")
+	w := fx.replay(t, 4211, "/revi")
+	if w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Body.String(), denyForkRunUnfunded) || !strings.Contains(w.Body.String(), "decided on the runner") {
+		t.Fatalf("code=%d body=%s, want 422 naming %s and the deferred route", w.Code, w.Body.String(), denyForkRunUnfunded)
+	}
+	assertUncharged(t, rec, fx.counter, forkGestureAuthor)
+	if n := len(rig.published()); n != 0 {
+		t.Fatalf("published %d run(s) for a fork gesture whose route the pool's runner decides", n)
+	}
+}
+
+// A fork gesture whose bot no longer compiles is refused at the gate as the
+// PERMANENT condition it is — fork_funding_unjudgeable, a 422 — never the
+// retryable 503 of a judge that could not read a store, and nothing metered.
+//
+// Mutation: runview's FundingRefusal returning the compile error unwrapped →
+// the gate answers fork_funding_unreadable (503).
+//
+// And a bot gone from the catalog altogether is the same permanent refusal.
+// Mutation: webhookForkFunding's not-found arm returned bare → 503.
+func TestForkGesture_ABotThatNoLongerCompilesIsRefusedAsPermanent(t *testing.T) {
+	for _, row := range []struct {
+		name  string
+		write func(t *testing.T, path string)
+	}{
+		{"its source no longer compiles", func(t *testing.T, path string) {
+			if err := os.WriteFile(path, []byte("agent draft:\n  model: \"anthropic/claude-opus-5\"\n\nworkflow review_pr:\n  entry: missing_node\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"it is gone from the catalog", func(t *testing.T, path string) {
+			if err := os.Remove(path); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			fx, rig, rec := forkFundingGesture(t)
+			row.write(t, filepath.Join(fx.s.cfg.WorkDir, "bots", "review-pr.bot"))
+			rig.seedKey(t, "t1")
+			w := fx.replay(t, 4231, "/revi")
+			if w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Body.String(), denyForkFundingUnjudgeable) {
+				t.Fatalf("code=%d body=%s, want 422 naming %s", w.Code, w.Body.String(), denyForkFundingUnjudgeable)
+			}
+			assertUncharged(t, rec, fx.counter, forkGestureAuthor)
+		})
+	}
+}
+
+// The fork lane's pool rule answers before metering too: a team mapped to a
+// sovereign pool since its lane was created is refused typed — permanent,
+// never the transient 503 — with neither counter charged and nothing
+// published. Its team holds its own key, so the refusal is the pool's alone.
+//
+// Mutations, each seen red and restored byte-identical:
+//   - the publisher's FundingRefusal no longer judging the lane's pool →
+//     the gesture is metered, then refused at publish (the charge record
+//     sees both subjects);
+//   - gateForkFunding no longer mapping ErrForkLanePool → the transient
+//     fork_funding_unreadable 503 answers.
+func TestForkGesture_APoolTheLaneMayNoLongerNameIsRefusedBeforeMetering(t *testing.T) {
+	fx, rig, rec := forkFundingGesture(t)
+	rig.seedKey(t, "t1")
+	sov := "t-sov"
+	if _, err := fx.s.authStore().PatchTeam(context.Background(), "t1", identity.TeamPatch{RunnerPool: &sov}); err != nil {
+		t.Fatal(err)
+	}
+	w := fx.replay(t, 4221, "/revi")
+	if w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Body.String(), denyForkLanePoolRefused) {
+		t.Fatalf("code=%d body=%s, want 422 naming %s", w.Code, w.Body.String(), denyForkLanePoolRefused)
+	}
+	assertUncharged(t, rec, fx.counter, forkGestureAuthor)
+	if n := len(rig.published()); n != 0 {
+		t.Fatalf("published %d run(s) on a pool the lane may not name", n)
+	}
+}
+
 // seedFundedForkRun persists a paused fork run of team t1 on the lane's
 // pool whose one model route pins anthropic, in the rig's run store and the
 // server's working directory.
@@ -346,6 +438,70 @@ func TestHandleResumeRun_AForkRunWhoseTeamLostItsKeyIsRefusedBeforeMetering(t *t
 			t.Fatalf("charged %v, want the org's subject and the author's", got)
 		}
 	})
+}
+
+// A fork run whose program can no longer be built — its bot file is gone —
+// is refused at the resume gate as the PERMANENT condition it is: a 422
+// naming fork_funding_unjudgeable, never the retryable 503 a store blip
+// answers, and nothing metered.
+//
+// Mutation: runview's ResumeFundingRefusal returning the compile error
+// unwrapped → the gate answers fork_funding_unreadable (503).
+func TestHandleResumeRun_AForkRunWhoseProgramIsGoneIsRefusedAsPermanent(t *testing.T) {
+	s := newOrgTestServer(t)
+	s.cfg.WorkDir = t.TempDir()
+	counter := orgusage.NewMemoryCounter()
+	rec := &chargeRecorder{Counter: counter}
+	s.orgUsage = rec
+	ctx := seedGate(t, s, gateSpec{id: "t1"})
+	rig := newForkFundingRig(t, s)
+	seedFundedForkRun(t, s, rig.rs)
+	rig.seedKey(t, "t1")
+	if err := os.Remove(filepath.Join(s.cfg.WorkDir, "review_pr.bot")); err != nil {
+		t.Fatal(err)
+	}
+	w := httptest.NewRecorder()
+	s.handleResumeRun(w, orgReq(ctx, http.MethodPost, "/api/runs/run-fork/resume", `{}`, "run-fork"))
+	if w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Body.String(), denyForkFundingUnjudgeable) {
+		t.Fatalf("code=%d body=%s, want 422 naming %s", w.Code, w.Body.String(), denyForkFundingUnjudgeable)
+	}
+	assertUncharged(t, rec, counter, forkGestureAuthor)
+	if n := len(rig.published()); n != 0 {
+		t.Fatalf("published %d resume(s)", n)
+	}
+}
+
+// The cloud twin: the stored bot a fork run launched from is gone, so its
+// resume source never resolves — the retry sweeper's own "a bot removed from
+// the catalog will never resolve" — and the gate refuses it as permanent.
+//
+// Mutation: forkResumeFunding no longer classifying a non-transient filler
+// failure (every failure returned bare) → fork_funding_unreadable (503).
+func TestHandleResumeRun_AForkRunWhoseStoredBotIsGoneIsRefusedAsPermanent(t *testing.T) {
+	s := newOrgTestServer(t)
+	s.cfg.WorkDir = t.TempDir()
+	counter := orgusage.NewMemoryCounter()
+	rec := &chargeRecorder{Counter: counter}
+	s.orgUsage = rec
+	ctx := seedGate(t, s, gateSpec{id: "t1"})
+	rig := newForkFundingRig(t, s)
+	seedFundedForkRun(t, s, rig.rs)
+	rig.seedKey(t, "t1")
+	r, err := rig.rs.LoadRun(context.Background(), "run-fork")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.BotSourceTenant = "t1"
+	if err := rig.rs.SaveRun(context.Background(), r); err != nil {
+		t.Fatal(err)
+	}
+	s.cfg.Mode = "cloud"
+	w := httptest.NewRecorder()
+	s.handleResumeRun(w, orgReq(ctx, http.MethodPost, "/api/runs/run-fork/resume", `{}`, "run-fork"))
+	if w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Body.String(), denyForkFundingUnjudgeable) {
+		t.Fatalf("code=%d body=%s, want 422 naming %s", w.Code, w.Body.String(), denyForkFundingUnjudgeable)
+	}
+	assertUncharged(t, rec, counter, forkGestureAuthor)
 }
 
 // The credential preview of a fork-lane webhook answers for the fork lane's

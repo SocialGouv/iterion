@@ -383,6 +383,36 @@ func (p *Publisher) poolRoutes(ctx context.Context, pool string) error {
 	return fmt.Errorf("cloudpublisher: team is mapped to runner pool %q but the registry does not know it — refusing", pool)
 }
 
+// resumePoolRefusal is the pool rule a resume answers to, read by
+// SubmitResume and by the pre-metering ResumeFundingRefusal alike. A resume
+// follows the run's FROZEN pool stamp, never the team's current mapping: the
+// run's checkpoint, bundle and sealed credentials were bound to the pool it
+// launched on, and silently following a re-mapping would move them across
+// the boundary the stamp exists to hold. The current mapping is still read
+// (fail closed) to NAME the disagreement; a deliberate move is a new launch.
+// An untrusted run's stamp is its fork lane's pool, not its team's mapping:
+// it follows the rule its launch crossed, re-judged now — a team mapped
+// since, or a pool another team has taken, refuses it. Then the dispatch
+// gate the launch carries: a pool-stamped resume routes only when its pool
+// is registry-active.
+func (p *Publisher) resumePoolRefusal(ctx context.Context, prior *store.Run) error {
+	currentPool, err := p.runnerPoolForTeam(ctx, prior.TenantID)
+	if err != nil {
+		return err
+	}
+	if prior.Trust.Trusted() {
+		if currentPool != prior.RunnerPool {
+			return fmt.Errorf("%w: run %s is bound to runner pool %q but its team is now mapped to %q — resume refused; relaunch the run on the new pool (a pool move is a new launch, never a re-stamp)", ErrPoolRemapped, prior.ID, prior.RunnerPool, currentPool)
+		}
+	} else if err := p.forkLanePoolRefusal(ctx, prior.TenantID, currentPool, prior.RunnerPool); err != nil {
+		return fmt.Errorf("cloudpublisher: resume of run %s refused: %w", prior.ID, err)
+	}
+	if err := p.poolRoutes(ctx, prior.RunnerPool); err != nil {
+		return fmt.Errorf("cloudpublisher: resume of run %s refused: %w", prior.ID, err)
+	}
+	return nil
+}
+
 // runnerPoolForTeam names the runner pool the team is CURRENTLY mapped to,
 // reading the team FRESH — never the 5-min org cache: a mapping is a
 // security boundary, and a stale "unmapped" answer would route the run
@@ -1575,7 +1605,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	// contributes no name of its own. The credential preview reads it at the
 	// same stage, through the same composer, or it judges a program this
 	// launch does not.
-	attributed, attributedSites := attributedRoutes(view)
+	attributed := attributedRoutes(view)
 	// The fine plan rides ONLY a pool-served run: it is the producer the
 	// lease's fine booking slices by, and a lease-less run has no consumer
 	// for it. Derived from the same post-ladder walk the refusal reads —
@@ -1597,7 +1627,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	// contradict the launch it describes — a refusal left outside it is a
 	// refusal no view mirrors.
 	posture := p.unfundedPostureFor(wf, sovereign, envFunded, trust, runnerPool)
-	if refusal := unfundedRefusalFor(tenantID, attributed, attributedSites, bundleFunding(bundle, posture), noLLMCred, posture); refusal != nil {
+	if refusal := unfundedRefusalFor(tenantID, attributed, bundleFunding(bundle, posture), noLLMCred, posture); refusal != nil {
 		return res, refusal
 	}
 	if noLLMCred && len(bundle.GenericSecrets) == 0 {
@@ -4523,31 +4553,8 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 	secretsCtx := store.WithTenant(ctx, prior.TenantID)
 	secretsCtx = store.WithOwner(secretsCtx, prior.OwnerID)
 	priorOrgID := p.orgIDForTeam(ctx, prior.TenantID)
-	// A resume follows the run's FROZEN pool stamp, never the team's current
-	// mapping: the run's checkpoint, bundle and sealed credentials were bound
-	// to the pool it launched on, and silently following a re-mapping would
-	// move them across the boundary the stamp exists to hold. The current
-	// mapping is still read (fail closed) to NAME the disagreement; a
-	// deliberate move is a new launch.
-	currentPool, err := p.runnerPoolForTeam(ctx, prior.TenantID)
-	if err != nil {
+	if err := p.resumePoolRefusal(ctx, prior); err != nil {
 		return err
-	}
-	if prior.Trust.Trusted() {
-		if currentPool != prior.RunnerPool {
-			return fmt.Errorf("%w: run %s is bound to runner pool %q but its team is now mapped to %q — resume refused; relaunch the run on the new pool (a pool move is a new launch, never a re-stamp)", ErrPoolRemapped, spec.RunID, prior.RunnerPool, currentPool)
-		}
-	} else if err := p.forkLanePoolRefusal(ctx, prior.TenantID, currentPool, prior.RunnerPool); err != nil {
-		// An untrusted run's frozen stamp is its fork lane's pool, not its
-		// team's mapping: the resume follows it under the rule the launch
-		// crossed, re-judged now — a team mapped since, or a pool another
-		// team has taken, refuses it.
-		return fmt.Errorf("cloudpublisher: resume of run %s refused: %w", spec.RunID, err)
-	}
-	// Same dispatch gate the launch carries: a pool-stamped resume routes
-	// only when its pool is registry-active, exactly like a launch.
-	if err := p.poolRoutes(ctx, prior.RunnerPool); err != nil {
-		return fmt.Errorf("cloudpublisher: resume of run %s refused: %w", spec.RunID, err)
 	}
 	// prior.PinnedProviders, never a fresh derivation: a resume re-resolves
 	// its source, so re-deriving would let a program the launch never

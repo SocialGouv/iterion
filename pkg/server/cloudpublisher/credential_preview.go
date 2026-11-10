@@ -165,7 +165,7 @@ func (p *Publisher) previewCredentials(ctx context.Context, spec runview.Credent
 	sharedTiersBlocked := sovereignPreview || pooledPreview
 	blocked := blockedPosture(sovereignPreview, runnerPool, untrustedPreview)
 	if untrustedPreview {
-		x.warn("The run is untrusted (fork lane) and executes on its lane's runner pool: the shared tiers (org, pool, platform) are not consulted, the runner's environment is refused and a forfait cannot cross its sandbox — only the team's own API keys fund it, and a route none of them funds refuses the launch before it is metered.")
+		x.warn("The run is untrusted (fork lane) and executes on its lane's runner pool: the shared tiers (org, pool, platform) are not consulted, the runner's environment is refused and a forfait cannot cross its sandbox — only the team's own vendor API keys fund it, on routes decided before the run (no gateway route, no ${…} dial or late var the pool's runner resolves itself), and any other route refuses the launch before it is metered.")
 	}
 	if envFunded {
 		x.out.Warnings = append(x.out.Warnings, "Every model route of this run rides the runner's openai_compatible gateway: no credential is acquired for it.")
@@ -518,10 +518,10 @@ func (p *Publisher) previewCredentials(ctx context.Context, spec runview.Credent
 	// block below must answer on the authored program, as it does live.
 	restoreRoutes := snapshotFallbackRoutes(wf)
 	composePolicyLadder(wf, previewView, spec.LLMRoutePolicy, model.AllowedProviderSet(previewView.AllowedProviders), spec.Launch.Vars, doorServesMetadata(x), nil)
-	previewAttributed, previewSites := attributedRoutes(previewView)
+	previewRoutes := attributedRoutes(previewView)
 	restoreRoutes()
 	posture := p.unfundedPostureFor(wf, sovereignPreview, envFunded, spec.Launch.Trust, runnerPool)
-	refusal := unfundedRefusalFor(spec.Context.TeamID, previewAttributed, previewSites, metadataFunding(x, posture), metadataHoldsNothing(x), posture)
+	refusal := unfundedRefusalFor(spec.Context.TeamID, previewRoutes, metadataFunding(x, posture), metadataHoldsNothing(x), posture)
 	wires := map[string][]string{}
 	selectSlot := func(i int) {
 		c := &x.out.Candidates[i]

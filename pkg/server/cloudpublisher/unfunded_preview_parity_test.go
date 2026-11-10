@@ -138,7 +138,7 @@ func TestResolve_LLMFallbackNone_APolicyLadderRungDoesNotDisarmTheRefusal(t *tes
 		// The premise, stated through the producer the launch reads: on the
 		// pre-ladder set EVERY attributed provider is unfunded, which is
 		// exactly what the knob refuses.
-		if r := unfundedRefusalFor("team1", compiled.Providers, compiled.Pins, funded, false, unfundedPosture{Knob: true}); r == nil {
+		if r := unfundedRefusalFor("team1", routeAttribution{providers: compiled.Providers, pins: compiled.Pins}, funded, false, unfundedPosture{Knob: true}); r == nil {
 			t.Fatalf("premise lost: the pre-ladder set %v no longer refuses under the knob, so this test cannot see the ordering it names", compiled.Providers)
 		}
 		if err != nil {
@@ -290,7 +290,7 @@ func TestCredentialPreview_JudgesTheProgramThePolicyLadderComposed(t *testing.T)
 	// The premise, stated through the producer both surfaces read: on the
 	// AUTHORED program the knob's rule refuses. Without it this witness
 	// cannot see the stage it judges.
-	if r := unfundedRefusalFor("team1", authored.Providers, authored.Pins,
+	if r := unfundedRefusalFor("team1", routeAttribution{providers: authored.Providers, pins: authored.Pins},
 		fundedProviderSet([]secrets.Provider{secrets.ProviderZAI}, nil, unfundedPosture{}), false, unfundedPosture{Knob: true}); r == nil {
 		t.Fatalf("premise lost: the authored set %v no longer refuses under the knob", authored.Providers)
 	}
@@ -520,10 +520,10 @@ func TestCredentialPreview_HoldsOnlyThePairsItsOwnMetadataServes(t *testing.T) {
 	probe := compileTestSource(t, anthropicPinnedBot)
 	probeView := model.RouteView{Workflow: probe}
 	composePolicyLadder(probe, probeView, forfaitLadderPolicy(), nil, nil, func(_, _ string) bool { return true }, nil)
-	probeProvs, probeSites := attributedRoutes(probeView)
-	if r := unfundedRefusalFor("team1", probeProvs, probeSites,
+	probeRoutes := attributedRoutes(probeView)
+	if r := unfundedRefusalFor("team1", probeRoutes,
 		fundedProviderSet([]secrets.Provider{secrets.ProviderAnthropic}, nil, unfundedPosture{}), false, unfundedPosture{Sovereign: true}); r == nil {
-		t.Fatalf("premise lost: holding every pair the policy lists no longer names an unfunded provider (attributed=%v) — this witness cannot see the held-pair predicate", probeProvs)
+		t.Fatalf("premise lost: holding every pair the policy lists no longer names an unfunded provider (attributed=%v) — this witness cannot see the held-pair predicate", probeRoutes.providers)
 	}
 
 	spec := previewSpec("team1", "owner1")

@@ -3,6 +3,7 @@ package cloudpublisher
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
@@ -25,6 +26,14 @@ import (
 // launch (FundingRefusal) or the live resume (ResumeFundingRefusal) judges.
 // A second judgement of funding here would be a gate free to admit what the
 // publisher refuses, or to refuse what it seals.
+//
+// An untrusted run's POOL is judged first, by the launch's and the resume's
+// own rule (forkLanePoolRefusal, then the registry's routing gate): the gate
+// that asks these judges before metering would otherwise admit, and meter, a
+// run the publisher then refuses for its pool — a team mapped since its lane
+// was created, a pool another team holds, a pool the registry does not
+// route — and the durable retry would meter and refund it again on every
+// attempt.
 
 // The launch gate reaches both judges through the run service, which holds
 // this publisher as its LaunchPublisher.
@@ -38,6 +47,15 @@ var _ runview.CredentialFundingJudge = (*Publisher)(nil)
 // when this publisher seals no credential at all — the live walk decides
 // nothing there either. Nothing is acquired, sealed, probed or persisted.
 func (p *Publisher) FundingRefusal(ctx context.Context, spec runview.CredentialPreviewSpec, wf *ir.Workflow) error {
+	if !spec.Launch.Trust.Trusted() {
+		pool, err := p.launchRunnerPool(ctx, spec.Context.TeamID, spec.Launch.Trust, spec.Launch.ForkLanePool)
+		if err != nil {
+			return err
+		}
+		if err := p.poolRoutes(ctx, pool); err != nil {
+			return fmt.Errorf("cloudpublisher: the fork lane's runner pool does not route: %w", err)
+		}
+	}
 	_, verdict, err := p.previewCredentials(ctx, spec, wf, launchPreviewProgram(spec, wf))
 	if err != nil {
 		return err
@@ -55,6 +73,10 @@ func (p *Publisher) FundingRefusal(ctx context.Context, spec runview.CredentialP
 func (p *Publisher) ResumeFundingRefusal(ctx context.Context, prior *store.Run, wf *ir.Workflow) error {
 	if prior == nil {
 		return errors.New("cloudpublisher: resume funding: no run document to judge")
+	}
+	// SubmitResume's own pool rule, before the funding walk.
+	if err := p.resumePoolRefusal(ctx, prior); err != nil {
+		return err
 	}
 	view := model.RouteViewForDispatch(wf, buildModelOverridesFromRun(prior.ModelOverrides), runFallbackEntriesFromRun(prior.Fallback), prior.Inputs)
 	view.AllowedProviders = policyProviders(prior.LLMRoutePolicy)

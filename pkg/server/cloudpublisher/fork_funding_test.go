@@ -27,6 +27,25 @@ import (
 // env-funded program (#2038) the walk acquires nothing for.
 const gatewayOnlyBot = "agent draft:\n  model: \"openai_compatible/glm-5.3\"\n  backend: \"claw\"\n\nworkflow main:\n  draft -> done\n"
 
+// gatewayBesideVendorBot names a vendor route the team's key funds beside a
+// gateway route: not env-funded, so only the gateway arm can see it.
+const gatewayBesideVendorBot = "agent draft:\n  model: \"anthropic/claude-opus-5\"\n  backend: \"claw\"\n\nagent second:\n  model: \"openai_compatible/glm-5.3\"\n  backend: \"claw\"\n\nworkflow main:\n  draft -> second\n  second -> done\n"
+
+// envDialBot reads its model from a routing dial, review-pr's shape: this
+// process expands it to a vendor route the team's key funds, while a fork
+// pool's runner expands it with the pool's own env block.
+const envDialBot = "agent draft:\n  model: \"${ITERION_FORK_FUNDING_PROBE_MODEL:-anthropic/claude-opus-5}\"\n  backend: \"claw\"\n\nworkflow main:\n  draft -> done\n"
+
+// envGatewayDialBot reads a dial this process expands to the gateway (the
+// test sets it), beside a funded vendor route.
+const envGatewayDialBot = "agent draft:\n  model: \"anthropic/claude-opus-5\"\n  backend: \"claw\"\n\nagent second:\n  model: \"${ITERION_FORK_FUNDING_PROBE_GATEWAY:-anthropic/claude-opus-5}\"\n  backend: \"claw\"\n\nworkflow main:\n  draft -> second\n  second -> done\n"
+
+// seedTeamAnthropic gives team1 its own anthropic key.
+func seedTeamAnthropic(t *testing.T, p *Publisher) {
+	t.Helper()
+	seedKeyFP(t, p.apiKeys, p.sealer, "team1", secrets.ProviderAnthropic, "sk-ant-team", "fp-ant-team")
+}
+
 // forkFundingPublisher is the real publisher over in-memory stores: team1
 // belongs to org1, whose shared credentials every team of the org may spend.
 func forkFundingPublisher(t *testing.T) *Publisher {
@@ -38,8 +57,8 @@ func forkFundingPublisher(t *testing.T) *Publisher {
 	var buf bytes.Buffer
 	return &Publisher{apiKeys: secrets.NewMemoryApiKeyStore(), oauthForfait: secrets.NewMemoryOAuthStore(),
 		usageCaps: usagecap.NewMemStore(), runSecrets: secrets.NewMemoryRunSecretsStore(), sealer: sealer,
-		logger: iterlog.New(iterlog.LevelInfo, &buf),
-		identity: &fakeTeamResolver{orgs: map[string]string{"team1": "org1"},
+		logger: iterlog.New(iterlog.LevelInfo, &buf), pools: activeRegistry("forks"),
+		identity: &fakeTeamResolver{orgs: map[string]string{"team1": "org1"}, runnerPool: map[string]string{},
 			orgDocs: map[string]identity.Org{"org1": {ID: "org1", CredentialAudience: identity.CredentialAudience{AllTeams: true}}}}}
 }
 
@@ -77,14 +96,25 @@ func forkFundingSpec(trust store.RunTrust) runview.CredentialPreviewSpec {
 //   - fundedProviderSet counting a forfait under the untrusted posture →
 //     "a forfait" admits, alone;
 //   - the untrusted arm exempting an env-funded program (`&& !envFunded`) →
-//     "an env-funded program" admits, alone.
+//     "an env-funded program" admits, alone;
+//   - the untrusted arm ignoring routes.gateway → the two gateway rows admit
+//     ("an env-funded program" falls to the unattributable sentence, red on
+//     its wording);
+//   - the untrusted arm ignoring routes.deferred → "a routing dial" admits;
+//   - the untrusted arm reading every attributed provider instead of the
+//     decided ones → "a routing dial on a team holding nothing" names a key
+//     to provision;
+//   - the unattributable sentence back to offering a gateway credential →
+//     "an unattributable program" names it.
 func TestFundingRefusal_AForkRunSpendsItsTeamsOwnKeysAlone(t *testing.T) {
+	t.Setenv("ITERION_FORK_FUNDING_PROBE_GATEWAY", "openai_compatible/glm-5.3")
 	for _, row := range []struct {
 		name          string
 		bot           string
 		seed          func(t *testing.T, p *Publisher)
 		refused       bool
 		wantInRefusal string
+		notInRefusal  string
 	}{
 		{
 			name:    "a team funded only by the org and the platform is refused",
@@ -109,12 +139,41 @@ func TestFundingRefusal_AForkRunSpendsItsTeamsOwnKeysAlone(t *testing.T) {
 			refused: true, wantInRefusal: "a forfait cannot cross the run's sandbox",
 		},
 		{
-			name: "an env-funded program is refused: its gateway is the refused environment",
-			bot:  gatewayOnlyBot,
-			seed: func(t *testing.T, p *Publisher) {
-				seedKeyFP(t, p.apiKeys, p.sealer, "team1", secrets.ProviderAnthropic, "sk-ant-team", "fp-ant-team")
-			},
-			refused: true, wantInRefusal: "no model route of this workflow names a provider one could fund",
+			name:    "an env-funded program is refused: its gateway is the refused environment",
+			bot:     gatewayOnlyBot,
+			seed:    seedTeamAnthropic,
+			refused: true, wantInRefusal: "the routes of draft ride the openai_compatible gateway",
+		},
+		{
+			name:    "a gateway route beside a funded vendor route is refused",
+			bot:     gatewayBesideVendorBot,
+			seed:    seedTeamAnthropic,
+			refused: true, wantInRefusal: "the routes of second ride the openai_compatible gateway",
+		},
+		{
+			name:    "a routing dial this process expands to the gateway is refused as both",
+			bot:     envGatewayDialBot,
+			seed:    seedTeamAnthropic,
+			refused: true, wantInRefusal: "the routes of second ride the openai_compatible gateway",
+		},
+		{
+			name:    "a routing dial the pool's runner expands is refused, though this process reads a funded vendor",
+			bot:     envDialBot,
+			seed:    seedTeamAnthropic,
+			refused: true, wantInRefusal: "the routes of draft are decided on the runner",
+		},
+		{
+			name:    "a routing dial on a team holding nothing names the dial, not a key to provision",
+			bot:     envDialBot,
+			seed:    func(*testing.T, *Publisher) {},
+			refused: true, wantInRefusal: "the routes of draft are decided on the runner",
+			notInRefusal: "provision a team API key for",
+		},
+		{
+			name:    "an unattributable program on a team holding nothing",
+			bot:     unattributableBot,
+			seed:    func(*testing.T, *Publisher) {},
+			refused: true, wantInRefusal: "a gateway credential funds no fork run until #2005 PR-C'",
 		},
 	} {
 		t.Run(row.name, func(t *testing.T) {
@@ -135,6 +194,9 @@ func TestFundingRefusal_AForkRunSpendsItsTeamsOwnKeysAlone(t *testing.T) {
 				}
 				if !strings.Contains(err.Error(), row.wantInRefusal) || !strings.Contains(err.Error(), `runner pool "forks"`) {
 					t.Fatalf("refusal %q, want it naming %q and the lane's pool", err, row.wantInRefusal)
+				}
+				if row.notInRefusal != "" && strings.Contains(err.Error(), row.notInRefusal) {
+					t.Fatalf("refusal %q names %q — a provider only a deferred route names is not one the run spends", err, row.notInRefusal)
 				}
 			}
 			// The trusted control: the same team, stores and program fund a
@@ -185,6 +247,40 @@ func TestResolveAndSeal_AnUnfundedUntrustedRunIsRefusedAtPublish(t *testing.T) {
 	}
 }
 
+// The publish-time floor of the same two route classes: a fork run whose
+// team's own key funds its vendor route but which ALSO rides the gateway, or
+// reads a routing dial the pool's runner expands, is refused at publish and
+// seals nothing — the bundle a runner would then refuse ambient after the
+// gate metered it. The trusted control on the same stores seals.
+//
+// Mutation: the untrusted arm ignoring routes.gateway and routes.deferred →
+// both rows seal a bundle (red on the refusal assertion).
+func TestResolveAndSeal_AForkRunsGatewayOrDeferredRouteIsRefusedAtPublish(t *testing.T) {
+	for _, row := range []struct{ name, bot string }{
+		{"a gateway route beside a funded vendor route", gatewayBesideVendorBot},
+		{"a routing dial the pool's runner expands", envDialBot},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			p := forkFundingPublisher(t)
+			seedTeamAnthropic(t, p)
+			wf := compileTestSource(t, row.bot)
+			ctx := store.WithTenant(context.Background(), "team1")
+			res, err := p.resolveAndSealCredentials(ctx, "run-fork-routes", "org1", "team1", "owner1", "review-pr", "forks", wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustFork, nil, nil, nil)
+			var refusal *UnfundedProvidersError
+			if !errors.As(err, &refusal) || !refusal.Untrusted || len(refusal.Gateway)+len(refusal.Deferred) == 0 {
+				t.Fatalf("resolveAndSealCredentials = %v, want the typed untrusted refusal naming the gateway or deferred route", err)
+			}
+			if res.secretsRef != "" {
+				t.Fatalf("a refused fork run sealed a bundle (ref=%q)", res.secretsRef)
+			}
+			ctrl, cerr := p.resolveAndSealCredentials(ctx, "run-trusted-routes", "org1", "team1", "owner1", "review-pr", "", wf, nil, nil, model.RouteView{Workflow: wf}, nil, store.RunTrustDefault, nil, nil, nil)
+			if cerr != nil || ctrl.secretsRef == "" {
+				t.Fatalf("trusted control: resolveAndSealCredentials = (ref %q, %v), want a sealed bundle — the fixture must fund a trusted run", ctrl.secretsRef, cerr)
+			}
+		})
+	}
+}
+
 // A fork run's resume is judged on its FROZEN program, trust and pool stamp:
 // a team that lost its own key since the launch is refused before the resume
 // is metered, and the same run resumes once the key is back.
@@ -213,6 +309,79 @@ func TestResumeFundingRefusal_AForkRunWhoseTeamLostItsKeyIsRefused(t *testing.T)
 		p := forkFundingPublisher(t)
 		seedKeyFP(t, p.apiKeys, p.sealer, "team1", secrets.ProviderAnthropic, "sk-ant-team", "fp-ant-team")
 		if err := p.ResumeFundingRefusal(context.Background(), prior, wf); err != nil {
+			t.Fatalf("ResumeFundingRefusal = %v, want nil", err)
+		}
+	})
+}
+
+// The fork lane's POOL rule answers in the funding judges too, before the
+// funding walk: the gate asks them before metering, so a pool the launch or
+// the resume would refuse at publish — after the gate charged — is refused
+// there instead. Each row's team holds its own key (the run is funded), so
+// the refusal is the pool's alone; each control is the same fixture on the
+// lane's own pool.
+//
+// Mutations, each seen red and restored byte-identical:
+//   - FundingRefusal no longer reading launchRunnerPool → "a team mapped to
+//     another pool" and "a pool another team holds" admit;
+//   - FundingRefusal no longer asking poolRoutes → "a pool the registry does
+//     not route" admits;
+//   - ResumeFundingRefusal no longer asking resumePoolRefusal → "the team was
+//     mapped since the launch" admits.
+func TestFundingJudges_TheForkLanePoolRuleAnswersBeforeTheFundingWalk(t *testing.T) {
+	ctx := store.WithTenant(context.Background(), "team1")
+	wf := compileTestSource(t, anthropicPinnedBot)
+	funded := func(t *testing.T, mapped map[string]string) *Publisher {
+		p := forkFundingPublisher(t)
+		seedTeamAnthropic(t, p)
+		for team, pool := range mapped {
+			p.identity.(*fakeTeamResolver).runnerPool[team] = pool
+		}
+		return p
+	}
+	for _, row := range []struct {
+		name     string
+		mapped   map[string]string
+		lanePool string
+		typed    bool
+	}{
+		{name: "a team mapped to another pool", mapped: map[string]string{"team1": "t-sov"}, lanePool: "forks", typed: true},
+		{name: "a pool another team holds", mapped: map[string]string{"team2": "forks"}, lanePool: "forks", typed: true},
+		{name: "a pool the registry does not route", lanePool: "unregistered"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			p := funded(t, row.mapped)
+			spec := forkFundingSpec(store.RunTrustFork)
+			spec.Launch.ForkLanePool = row.lanePool
+			err := p.FundingRefusal(ctx, spec, wf)
+			if err == nil || errors.Is(err, runview.ErrNoLLMCredential) {
+				t.Fatalf("FundingRefusal = %v, want the pool's refusal", err)
+			}
+			if errors.Is(err, ErrForkLanePool) != row.typed {
+				t.Fatalf("FundingRefusal = %v, ErrForkLanePool=%v, want %v", err, errors.Is(err, ErrForkLanePool), row.typed)
+			}
+			if !row.typed && !strings.Contains(err.Error(), `"unregistered"`) {
+				t.Fatalf("FundingRefusal = %v, want the registry's refusal naming the pool", err)
+			}
+		})
+	}
+	t.Run("control: the lane's own pool, unheld and active", func(t *testing.T) {
+		if err := funded(t, nil).FundingRefusal(ctx, forkFundingSpec(store.RunTrustFork), wf); err != nil {
+			t.Fatalf("FundingRefusal = %v, want nil", err)
+		}
+	})
+	prior := &store.Run{
+		ID: "run-fork", TenantID: "team1", OwnerID: "owner1", BotID: "review-pr",
+		Trust: store.RunTrustFork, RunnerPool: "forks", PinnedProviders: []string{"anthropic"},
+	}
+	t.Run("the team was mapped since the launch: the resume is refused", func(t *testing.T) {
+		err := funded(t, map[string]string{"team1": "t-sov"}).ResumeFundingRefusal(context.Background(), prior, wf)
+		if !errors.Is(err, ErrForkLanePool) {
+			t.Fatalf("ResumeFundingRefusal = %v, want ErrForkLanePool", err)
+		}
+	})
+	t.Run("control: the resume on its frozen, unheld pool", func(t *testing.T) {
+		if err := funded(t, nil).ResumeFundingRefusal(context.Background(), prior, wf); err != nil {
 			t.Fatalf("ResumeFundingRefusal = %v, want nil", err)
 		}
 	})

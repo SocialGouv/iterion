@@ -419,7 +419,9 @@ func TestSweepDueRetries_TransientDenialReArms(t *testing.T) {
 	}
 	// An unfunded fork run is refused identically on every cycle until a
 	// key is provisioned: abandoned, and the operator's resume wakes it.
-	for _, reason := range []string{denyOrgSuspended, denyNoWorkspace, denyForkRunUnfunded, "some_future_code"} {
+	// Nor is a fork run whose program cannot be built, or whose pool the
+	// lane's rule refuses: both answer identically on every cycle.
+	for _, reason := range []string{denyOrgSuspended, denyNoWorkspace, denyForkRunUnfunded, denyForkFundingUnjudgeable, denyForkLanePoolRefused, "some_future_code"} {
 		if retryDenialIsTransient(reason) {
 			t.Errorf("%s classified transient — it needs a human, and re-arming would loop forever", reason)
 		}

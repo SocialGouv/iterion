@@ -154,6 +154,14 @@ type CredentialPreviewer interface {
 
 var ErrCredentialPreviewUnavailable = errors.New("credential preview is unavailable")
 
+// ErrFundingUnjudgeable marks a funding verdict nobody can reach because the
+// program the launch or the resume would run cannot be built: a bot gone
+// from its catalog, a source that no longer compiles, an input or an
+// override the launch funnel refuses. PERMANENT, unlike a store or metadata
+// read that failed: the same subject is refused identically on every
+// attempt, so a surface abandons it rather than re-arming it.
+var ErrFundingUnjudgeable = errors.New("the run's program cannot be built, so whether it is funded cannot be judged")
+
 // CredentialFundingJudge is the publisher's unfunded verdict asked BEFORE a
 // launch or a resume is metered — the credential preview's own decision,
 // returned as an error instead of printed as a warning: nil when the run
@@ -199,7 +207,7 @@ func (s *Service) FundingRefusal(ctx context.Context, spec CredentialPreviewSpec
 	}
 	wf, spec, _, err := s.compileCredentialPreview(spec)
 	if err != nil {
-		return err
+		return fmt.Errorf("%w: %w", ErrFundingUnjudgeable, err)
 	}
 	return j.FundingRefusal(ctx, spec, wf)
 }
@@ -234,12 +242,12 @@ func (s *Service) ResumeFundingRefusal(ctx context.Context, spec ResumeSpec) err
 		}
 	}
 	if _, err := resolveSharedResumeSpec(r, &spec); err != nil {
-		return err
+		return fmt.Errorf("%w: %w", ErrFundingUnjudgeable, err)
 	}
 	spec.BundleDir = resumeBundleDir(r, spec)
 	wf, _, _, err := compileForLaunch(spec.FilePath, spec.Source, spec.BundleDir, spec.BundleEntry, s.effectiveWorkDir(r.WorkDir), r.Trust)
 	if err != nil {
-		return err
+		return fmt.Errorf("%w: %w", ErrFundingUnjudgeable, err)
 	}
 	return j.ResumeFundingRefusal(ctx, r, wf)
 }
