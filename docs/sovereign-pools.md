@@ -29,7 +29,11 @@ The isolation chain, in the order a run meets it:
 3. **The frozen stamp**: the run document and the wire message carry the
    pool from launch. Resume follows the frozen stamp and refuses a
    re-mapping (`ErrPoolRemapped` — a pool move is a new launch). Forks and
-   subbot children inherit the stamp.
+   subbot children inherit the stamp. An untrusted run's stamp is the
+   pool its fork-lane config names, not its team's mapping (ADR-162 Q3,
+   [webhooks.md](webhooks.md#fork-lane-pool)): a mapped team's lane must
+   name the team's own pool, an unmapped team's a pool no team holds, and
+   a resume re-judges both (`ErrForkLanePool`).
 4. **Per-pool topology**: one run stream + one DLQ stream + one durable
    consumer per pool (`ITERION_RUNS_POOL_<p>` / `iterion-runners-pool-<p>`),
    created and reconciled by the server (immediate pass + a 30 s tick,

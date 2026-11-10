@@ -1618,7 +1618,10 @@ iterion sandbox doctor                 # report driver + capabilities
   `iterion-runner-devbox` image), so a bot's sandbox block — written
   for local runs — executes directly in the runner pod instead of
   spawning a sibling sandbox pod. The Helm chart sets this
-  automatically whenever `runner.sandbox.enabled` is false.
+  automatically whenever `runner.sandbox.enabled` is false; a
+  `runnerPools[]` entry's own `sandbox.enabled` decides it for that
+  pool alone (an empty literal lifts it, `none` sets it — see
+  [cloud-deployment.md](cloud-deployment.md#sovereign-runner-pools)).
 
 ### Precedence (highest → lowest)
 

@@ -279,7 +279,11 @@ half short; the publisher writes its key maps through one chokepoint
 key's identity folds its URL in) always travel with the key. The runner reads the pair
 (`Credentials.GatewayCredentialForRoute`) and honours `AmbientLLMRefused` — the run's
 LLM routes spend these credentials only — from #2005 PR-B'2; the walk sets them from
-PR-C'.
+PR-C'. An UNTRUSTED run (ADR-162 decision 7) is refused the pod's environment whether
+or not a bundle arrives: the publisher stamps every bundle it seals for one, and seals
+none for a run no tier funds, so the runner derives the same refusal from the queue
+message's trust — `store.RunTrust.AmbientLLMRefused`, the one predicate both sides
+read (#3126).
 
 A refusal answers `400` with the reason, and leaves a trace an operator can
 find after the fact: a `Warn` in the server log and an audit event naming the

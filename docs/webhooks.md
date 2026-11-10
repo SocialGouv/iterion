@@ -520,13 +520,20 @@ capabilities rather than inheriting them.
 | Executing a tree nobody approved | the runner compares the fetched commit against the one the admission pinned (`RepoSHAExpected`), after the fetch and before the checkout | the run is refused, naming both commits |
 | The pull request's hand-offs, both ways: an untrusted run is seeded with no earlier run's `review` or `review_ledger`, and its own artifacts seed no later consumer — the fixer reads a `review` as `prior_review` and pushes commits (#1639) | `stampHandoffs` takes the launched run's trust and seeds an untrusted target with nothing; `realWebhookHandoff` skips a producing run that is not trusted | none: a hand-off miss is silent by design, and the consumer starts from its default |
 
-**And what the admission half adds.** That table is the enforcement floor;
-#874's remaining two constraints landed with the gesture (ADR-162 U6):
+**And what the admission and the deployment add.** That table is the
+enforcement floor; #874's remaining two constraints landed with the gesture
+(ADR-162 U6), and where a fork run executes landed with U7's first part.
+Every row, what ships and what does not yet:
 
-| #874 constraint | State | Where |
+| Constraint | State | Where |
 |---|---|---|
-| **4b** — fork code must not execute the TARGET repo's toolchain/config (`repo_devbox: off`, sandbox `network: allowlist`) | **floored (U5)** | `resolveRepoDevbox(override, workflow, trust)` answers false for every untrusted workspace, the repo's devcontainer is not read, and the sandbox network policy floors to the credential's own host |
-| **5 beyond the gate context** — the base repo's project settings not honoured (launch vars, hold labels), plus the per-contributor bound | **floored (U6)** | `applyWebhookVarLayers` layers NEITHER `cfg.LaunchVars` NOR `cfg.OperatorLaunchVars` onto an untrusted target (and no routing gate is narrowed through the repo's vars — `trustedVarNames` stays empty); the hold label BLOCKS the gesture (Q2); and the per-contributor bound is metered by the launch gate on `orgusage.ForkAuthorSubject`, runs and dollars, beside the org's own quota (decision 5) |
+| **#874 4b** — fork code must not execute the TARGET repo's toolchain/config (`repo_devbox: off`, sandbox `network: allowlist`) | **floored (U5)** | `resolveRepoDevbox(override, workflow, trust)` answers false for every untrusted workspace, the repo's devcontainer is not read, and the sandbox network policy floors to the credential's own host |
+| **#874 5 beyond the gate context** — the base repo's project settings not honoured (launch vars, hold labels), plus the per-contributor bound | **floored (U6)** | `applyWebhookVarLayers` layers NEITHER `cfg.LaunchVars` NOR `cfg.OperatorLaunchVars` onto an untrusted target (and no routing gate is narrowed through the repo's vars — `trustedVarNames` stays empty); the hold label BLOCKS the gesture (Q2); and the per-contributor bound is metered by the launch gate on `orgusage.ForkAuthorSubject`, runs and dollars, beside the org's own quota (decision 5) |
+| **The pod's own money** — an untrusted run spends only the credentials sealed for it (decision 7) | **floored (#3126)** | the publisher stamps `AmbientLLMRefused` on every untrusted run's bundle, and the runner derives the same refusal from the run's wire trust when no bundle was sealed at all (`store.RunTrust.AmbientLLMRefused`, one predicate both sides read): every fallback to the pod's environment answers a typed refusal |
+| **Where it runs** — only through the publisher, on a pool whose sandbox resolves active (decision 10, Q3) | **ships (U7 part 1)** | the fork-lane config names its pool (`fork_lane_pool`, required at creation, immutable) and the publisher stamps it as the run's `RunnerPool` on every carrier — [the lane's pool](#fork-lane-pool); the chart's `runnerPools[].sandbox.enabled` sandboxes that pool alone |
+| **The pool's boundary** — its own ServiceAccount and Role, the pool label on its sandbox siblings, its standing NetworkPolicy (ADR-154 decisions 1–3) | **not yet: #2965** | until it lands the chart REFUSES a pool sandbox where the release does not provision one, under `serviceAccount.create` and under `networkPolicy.enabled` ([cloud-deployment.md](cloud-deployment.md#sovereign-runner-pools)) |
+| **The CNI enforces NetworkPolicy** on the cloud cluster (matryoshka) | **not yet: the operator's gesture** | verified before the pool is enabled; the sandbox start probe (U5) then witnesses it per run, and refuses a run on a CNI that applies the policy as a no-op |
+| **The live proof** — one `review-pr` run on a lab repository's fork pull request, through a real delivery, sandboxed under the prod values (`networkPolicy.enabled: true`) with the start probe passing | **not yet** | owes #2965 and the CNI gesture first; its cost goes in its commit |
 
 **Lane kinds are disjoint.** `webhooks.Config.ForkLane` makes a config a lane
 KIND, not a permission. The check sits at the launch tail
@@ -552,6 +559,15 @@ route refuses a CHANGE of it on an existing config (a restatement of the
 stored value is a no-op): flipping the kind under a config would re-read its
 parked debounce targets as the other kind and re-interpret the per-author
 budget's rows.
+
+A fork-lane config also names **its pool** at creation: `fork_lane_pool`,
+REQUIRED with `fork_lane` and refused without it (and refused on an ordinary
+config, and when it is not a pool name — the registry's grammar), immutable
+afterwards on the same terms — the PATCH route refuses a change or a clear
+(409), a restatement is a no-op. A new pool under a live config would split
+the lane across two pools: the in-flight runs resume on the pool their
+documents froze, the next ones would launch on the other. See
+[the lane's pool](#fork-lane-pool).
 
 **An opt-in is a GESTURE, not a record.** The admission is a
 maintainer `/command` on the pull request, authorised by the commenter's live
@@ -654,6 +670,8 @@ public-base fork:
 delivery row (200/filtered — a 4xx would teach the forge to disable the
 hook). Each row has a witness in
 [pkg/server/webhooks_fork_gesture_test.go](../pkg/server/webhooks_fork_gesture_test.go)
+(the last one in
+[pkg/server/webhooks_fork_lane_pool_test.go](../pkg/server/webhooks_fork_lane_pool_test.go))
 that replays a real GitHub delivery through the handler on a fake forge:
 
 | Row | Reason (stable shape) | Refused because |
@@ -676,6 +694,7 @@ that replays a real GitHub delivery through the handler on a fake forge:
 | No head commit | `fork gesture: the pull request names no head commit …` | the gesture pins the commit it admits; a pin against nothing disables the runner's comparison |
 | Stale SHA | `fork gesture: the gesture pinned … but the pull request's head is …` | a new head needs a new gesture |
 | Bad args | `fork gesture: /revi takes an optional commit SHA to pin, nothing else …` | prose is not a pin |
+| No pool | `fork lane names no runner pool — …` | the config was stored before `fork_lane_pool` existed; a fork run executes only on the pool its lane names, so the launch tail refuses it BEFORE either budget is metered (the durable retry exhausts the row, the board branch writes no card — the same precondition) |
 
 A fork-lane config serves the gesture and nothing else: every OTHER entry it
 has — an issue label, a zero-touch open — composes a trusted target, and
@@ -692,6 +711,46 @@ The bound's own refusals (denial tokens `fork_author_run_quota_exceeded`,
 / `fork_metering_error`) arrive through the launch gate's standard denial
 envelope — see [quotas-and-limits.md](quotas-and-limits.md) — whichever
 surface entered (delivery, debounce flush, retry sweeper).
+
+### <a name="fork-lane-pool"></a>Where a fork run executes — the lane's pool
+
+A fork run executes only through the publisher, on a runner whose sandbox
+resolves active on an enforcing driver (ADR-162 decision 10) — in the cloud,
+the dedicated pool its fork-lane config names (Q3), a pool of ADR-154's
+registry. The pool travels with the run, never re-derived:
+
+| Carrier | What it does with the pool |
+|---|---|
+| The gesture's launch, the debounce flush, the delivery's durable retry | the launch tail hands the config's `fork_lane_pool` to the run service (`LaunchSpec.ForkLanePool`) for an untrusted target, nothing for a trusted one; the retry re-reads the config |
+| A launch built FROM a fork run (`parent_run_id`, a delegation's `source_run_id`) | inherits the source run's frozen pool with its trust and author; two sources on two pools, or a launch naming another pool, are refused |
+| The publisher's launch | stamps the pool as the run's `RunnerPool` on the document and the queue message, so the run lands on that pool's stream alone and its pod's admission (msg ≡ doc ≡ pod) holds |
+| A resume, a usage-window retry, a forked child, a sub-bot child | follow the frozen stamp; the resume re-judges it under the rule below |
+
+**The rule** (`cloudpublisher.forkLanePoolRefusal`, at the launch and at every
+resume): an untrusted run names a pool, a pool name; a team mapped to a
+sovereign pool runs everything there, so its fork lane must name THAT pool;
+an unmapped team's lane names a pool no team holds — another team's pool is
+that team's sovereign boundary. A trusted launch naming a lane pool is
+refused too. Each refusal is `ErrForkLanePool`, before anything is persisted
+or published, and the retry sweeper abandons a resume refused with it (it is
+permanent, like a pool remap); a store that cannot say who holds the pool
+refuses as the transient it is. The pool then crosses the registry's routing
+gate like every pool (registered, `active`).
+
+Because the pool IS a pool, ADR-154's pool semantics apply to a fork run in
+full: the publisher consults no shared credential tier for it (D13 — the
+org's and the platform's keys are never sealed into a pool run), so the lane
+spends the team's own API key or gateway credential, and the pool pod's own
+gateway credential is the ambient env decision 7 refuses.
+
+**What the server does not know**: whether the named pool's runners actually
+resolve a sandbox. The runner does — `admitRun` refuses an untrusted run
+whose sandbox does not resolve active (`untrusted_without_sandbox`), and the
+sandbox start probe refuses one on a non-enforcing CNI — so a pool deployed
+without its sandbox refuses every fork run, typed, at the runner. The chart's
+`runnerPools[].sandbox.enabled` is what sandboxes that pool alone
+([cloud-deployment.md](cloud-deployment.md#sovereign-runner-pools)), with the
+render refusals that hold until #2965.
 
 ### PR auto-lane: review, not mutate (Revi vs Billy)
 

@@ -184,6 +184,32 @@ Draining follows the shared runner contract (lame-duck
 `terminationGracePeriodSeconds`): scale the pool's Deployment down and
 its in-flight run finishes or checkpoints within the window.
 
+**A pool's own sandbox** (`runnerPools[].sandbox.enabled`, ADR-162 Q3):
+unset, the pool follows `runner.sandbox.enabled`; set, it resolves the
+kubernetes sandbox — or opts out of it — on its own, and nothing else of
+the release moves. This is the fork review lane's pool
+([webhooks.md](webhooks.md#fork-lane-pool)): every run on it is
+sandboxed, without moving every trusted `sandbox:` bot of the deployment
+into sibling pods. The pool renders the sandbox's downward-API env and,
+where its flag differs from the release-wide one, its own literals over
+the shared ConfigMap: an empty `ITERION_SANDBOX_OVERRIDE` and
+`ITERION_SANDBOX_HOST_STATE=none` to opt in, `ITERION_SANDBOX_OVERRIDE=none`
+to opt out. Until ADR-154's pool shape lands (#2965: the pool's own
+ServiceAccount and Role, the `iterion.io/runner-pool` label on its
+siblings, its standing NetworkPolicy), turning a pool's sandbox ON where
+the release-wide flag is off **fails the render** in two cases:
+
+- `serviceAccount.create` — the chart renders the sandbox Role only under
+  `runner.sandbox.enabled`, so the pool's token would hold no grant and
+  every sandboxed run would fail at its first `kubectl apply`. Bring the
+  ServiceAccount (`serviceAccount.create: false`) and bind it the sandbox
+  driver's verbs yourself (the rules of `runner-rbac.yaml`); the binding
+  reaches every pod that mounts that account, which is ADR-154's measured
+  residual.
+- `networkPolicy.enabled` — [below](#networkpolicy-egress): the
+  release-wide policy closes the pool runner's egress proxy to its
+  siblings. Turn the release-wide policy off and bring the pool's own.
+
 ## Prerequisites
 
 | Component | Requirement |
@@ -388,7 +414,10 @@ gateway credential — fails at its first egress. No value opens it:
 port's rule only. On such a cluster, either keep `networkPolicy.enabled`
 off for the release that runs sandboxes, or run the sandbox with a
 no-proxy posture (`network: open`, no inspected secret, no gateway
-credential).
+credential). A pool's own sandbox (`runnerPools[].sandbox.enabled`) is
+refused at render under `networkPolicy.enabled` for this reason: a fork
+run always needs the proxy (ADR-162 decision 7), and the pool's standing
+policy that admits its siblings to its runner pods is #2965's.
 
 The server port's ingress is scoped the same way (#2804): name your
 ingress controller's namespaces in `networkPolicy.ingress.controllerNamespaces`
