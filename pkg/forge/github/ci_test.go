@@ -394,3 +394,52 @@ func TestGitHubGetPullRequest_ForkAdmissionFields(t *testing.T) {
 		})
 	}
 }
+
+// TestGitHubGetPullRequest_AnUnidentifiedAuthorStaysUnidentified: the fork
+// lane's per-contributor bound keys on the author's NUMERIC id and refuses a
+// pull request that names none ("no numeric author id"). That refusal is only
+// live if the REAL client leaves the id empty when GitHub's answer carries
+// none — a user object without an id, a null user (a deleted account renders
+// as the ghost user, but the field is nullable), or an id of 0. Decoded into a
+// bare int64 each of them read as "0", a key every unidentified author would
+// share.
+//
+// Mutation: render the id with strconv.FormatInt of a zero-valued int (the
+// int64 decode) → every row reads "0" (red on its own assertion).
+func TestGitHubGetPullRequest_AnUnidentifiedAuthorStaysUnidentified(t *testing.T) {
+	for _, row := range []struct {
+		name string
+		user any
+	}{
+		{name: "a user without an id", user: map[string]any{"login": "alice"}},
+		{name: "a null user", user: nil},
+		{name: "an id of zero", user: map[string]any{"login": "alice", "id": 0}},
+		{name: "a null id", user: map[string]any{"login": "alice", "id": nil}},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"number": 5, "title": "t", "state": "open",
+					"head": map[string]any{
+						"ref": "feature", "sha": "deadbeef",
+						"repo": map[string]any{"full_name": "alice/fork", "clone_url": "https://github.com/alice/fork.git"},
+					},
+					"base": map[string]any{"ref": "main", "repo": map[string]any{"clone_url": "https://github.com/o/r.git", "visibility": "public"}},
+					"user": row.user,
+				})
+			}))
+			defer srv.Close()
+			c := &AdminClient{HTTP: srv.Client(), APIBase: srv.URL, Token: "t"}
+			pr, err := c.GetPullRequest(context.Background(), "o/r", 5)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if pr.HeadSHA != "deadbeef" {
+				t.Fatalf("HeadSHA = %q — the answer was not decoded, so this row proves nothing", pr.HeadSHA)
+			}
+			if pr.AuthorID != "" {
+				t.Fatalf("AuthorID = %q, want empty — an author the answer does not identify must stay unidentified, never metered on a shared key", pr.AuthorID)
+			}
+		})
+	}
+}

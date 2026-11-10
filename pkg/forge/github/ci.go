@@ -74,7 +74,10 @@ type githubPull struct {
 	} `json:"base"`
 	User struct {
 		Login string `json:"login"`
-		ID    int64  `json:"id"`
+		// A pointer, so an answer that omits the id (or a null user) stays
+		// distinguishable from a real one: decoded into an int64 it read as
+		// user 0, a key every id-less pull request would then share.
+		ID *int64 `json:"id"`
 	} `json:"user"`
 	MergedAt  *time.Time `json:"merged_at"`
 	CreatedAt time.Time  `json:"created_at"`
@@ -98,7 +101,7 @@ func (gp githubPull) toRef() forge.PullRef {
 		HeadCloneURL:     gp.Head.Repo.CloneURL,
 		HeadRepoDeclared: gp.Head.RepoDeclared,
 		Author:           gp.User.Login,
-		AuthorID:         strconv.FormatInt(gp.User.ID, 10),
+		AuthorID:         githubUserID(gp.User.ID),
 		BaseCloneURL:     gp.Base.Repo.CloneURL,
 		BaseVisibility:   baseVisibility(gp.Base.Repo.Visibility, gp.Base.Repo.Private),
 		Draft:            gp.Draft,
@@ -106,6 +109,18 @@ func (gp githubPull) toRef() forge.PullRef {
 		UpdatedAt:        gp.UpdatedAt,
 		LinkedIssues:     forge.ParseIssueRefs(false, gp.Title, gp.Body),
 	}
+}
+
+// githubUserID renders a GitHub account id, or "" when the answer named none.
+// GitHub account ids are positive, so an absent id, a null user and an id of
+// 0 are the same fact — the author is not identified — and stay EMPTY: the
+// fork lane keys its per-contributor bound on this id and refuses an empty
+// one, where a "0" would meter every id-less pull request on one shared key.
+func githubUserID(id *int64) string {
+	if id == nil || *id <= 0 {
+		return ""
+	}
+	return strconv.FormatInt(*id, 10)
 }
 
 // baseVisibility resolves the base repository's visibility from the two

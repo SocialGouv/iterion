@@ -1258,3 +1258,45 @@ func TestGitLabWebhook_AProvenSameRepoHeadStillLaunches(t *testing.T) {
 		t.Fatalf("code=%d calls=%d — a proven same-repo MR must keep its ordinary review", w.Code, calls)
 	}
 }
+
+// TestGitLabWebhook_AForkWhosePathMatchesTheBaseIsRefused: the ordinary MR
+// lane on a payload whose project IDS name two projects while the source's
+// path compares equal to the base's (case-insensitively). The ids are the
+// project, the path is a name: the head is a fork's, refused with the fork
+// wording, never admitted as a trusted same-repo head.
+//
+// Mutation: drop the id refutation from gitlab.Parsed.SameRepoAsBase → the
+// lane launches the fork as trusted (red on its own assertion).
+func TestGitLabWebhook_AForkWhosePathMatchesTheBaseIsRefused(t *testing.T) {
+	s := newWebhookTestServer(t)
+	var calls int
+	s.webhookLaunchBot = func(context.Context, string, map[string]string, string, string, string, map[string]string, map[string]string) (string, error) {
+		calls++
+		return "run-x", nil
+	}
+	cfg := glConfig()
+	body := `{
+  "object_kind": "merge_request",
+  "project": {"id": 42, "path_with_namespace": "acme/widgets", "git_http_url": "https://gitlab.com/acme/widgets.git"},
+  "object_attributes": {"source_project_id": 9, "target_project_id": 42, "iid": 12, "action": "open",
+    "source_branch": "feature/z", "target_branch": "main",
+    "title": "Same name, other project", "url": "https://gitlab.com/acme/widgets/-/merge_requests/12",
+    "last_commit": {"id": "sha12"},
+    "source": {"id": 9, "path_with_namespace": "Acme/Widgets", "git_http_url": "https://gitlab.com/Acme/Widgets.git"}}
+}`
+	w := httptest.NewRecorder()
+	s.handleGitLabWebhook(w, glReq(gitlabCtx(cfg), body, gitlab.EventHeaderMergeRequest))
+	if calls != 0 {
+		t.Fatalf("an MR from another project (ids 9 ≠ 42) launched %d run(s) as trusted — its path matching the base's by name proves nothing", calls)
+	}
+	if w.Code != http.StatusOK {
+		t.Fatalf("code=%d — a refusal is a 200/filtered verdict", w.Code)
+	}
+	rowsOut, err := s.webhookDeliveries.ListByWebhook(context.Background(), cfg.TenantID, cfg.ID, 10)
+	if err != nil || len(rowsOut) != 1 {
+		t.Fatalf("rows=%+v err=%v, want the refusal recorded", rowsOut, err)
+	}
+	if !strings.Contains(rowsOut[0].Error, "fork MR") {
+		t.Fatalf("reason = %q, want the fork wording", rowsOut[0].Error)
+	}
+}
