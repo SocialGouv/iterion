@@ -8,6 +8,14 @@ the lane is closed: `task check` alone does not replace race, vendor and Mongo
 conformance checks. The separate [incident bypass](../../merge-policy.md#the-fast-lane-for-an-incident-fix-and-its-exact-procedure)
 retains its own requirements.
 
+A **parked `revi/review`** is its own, narrower opening and does not go through
+this runbook: when the gate is paused on an exhausted LLM quota and every other
+required check is green on the PR, the operator merges THAT PR with the parked
+gate bypassed — no push to main, no train, because the required set ran on CI
+instead of being reproduced locally. What it still owes is the converged local
+adversarial loop standing in for the reviewer, and the trailers that make the
+bypass greppable: [the parked-gate merge](../../merge-policy.md#a-parked-gate-decided-2026-11-10).
+
 ## Prepare a fresh worktree
 
 Use a [dedicated worktree](worktrees.md), confirm its branch and base SHA, and

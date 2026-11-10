@@ -221,6 +221,44 @@ sparingly; the queue is the default path. Non-admins must go through a PR + the
 queue.
 For reviewed chantier work, the [operator direct-landing lane](#the-operator-direct-landing-lane-decided-2026-10-22) generalises this bypass — and owes it what a hotfix does not: the train, the locally reproduced gate and the greppable trailers.
 
+### A parked gate (decided 2026-11-10)
+
+`revi/review` can stay `PENDING` for days without anything being wrong with the
+pull request: `iterion-forge-core` posts a `<!-- iterion:gate-paused -->`
+comment — "Review paused — the LLM provider's quota is exhausted" — naming a
+**dated automatic resume** and the upstream error. Measured on 2026-11-10: a
+429 `[1310] Weekly/Monthly Limit Exhausted` on the reviewer node parked the run
+for ~103 h while every other required check was green. Read that comment before
+concluding anything about the PR, and before pushing again: a new push restarts
+the review sooner but lands on the same exhausted quota.
+
+**The operator (admin) may merge that pull request, bypassing the parked gate.**
+This is a narrower bypass than the direct-landing lane above and its proof is
+stronger where it counts: the required set did not need local reproduction
+because it **actually ran on CI**. Only `revi/review` is substituted. It owes:
+
+1. **Every other required check green, read as a set** — `gh pr checks`, not the
+   one you are waiting for; `test`, `race` and its shards, `vendor-check`,
+   `mongo-conformance`, `golangci`, `brand`. Queued, cancelled or missing is not
+   success.
+2. **A converged local adversarial loop in place of the gate**, per
+   [the loop](agents/workflow/adversarial-review-loop.md): rounds until no
+   unassumed high/critical finding stands, each fix re-attacked. This is the
+   condition, not a courtesy — it is the only thing standing where the reviewer
+   would have stood.
+3. **The checks belong to the head being merged.** A commit pushed after they
+   ran invalidates them; re-read them at the merged SHA.
+4. **The trailers, greppable** — `Adversarial-Rounds:` / `Adversarial-Model:`,
+   the reviewer marked **self** when the loop was a self-review, and the parked
+   gate named in the merge so the bypass can be grepped afterwards.
+
+What it does **not** license: merging while another required check is red or
+unresolved, skipping the loop because the diff looks small, or reading the pause
+as a verdict. Nor is a parked gate a reason to re-route the reviewer's own
+backend under pressure — that is deployment configuration
+([sovereign pools](sovereign-pools.md)), decided outside an incident, and
+`bots/review-pr` is the gate every tenant repository leans on.
+
 ### The fast lane for an incident fix, and its exact procedure
 
 The queue is a single writer with one lane: a green incident fix waits behind

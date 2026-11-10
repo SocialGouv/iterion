@@ -62,6 +62,9 @@ that exist. The lane's blocking proof replaces the PR's:
    `main`; a cancelled or missing witness run is NOT success in the landing
    record; a red `main` outranks every other work until green.
 
+A gate **parked on quota** opens a narrower bypass:
+[parked gate](../../merge-policy.md#a-parked-gate-decided-2026-11-10).
+
 Courtesies that are duties: warn the sessions with PRs in flight before the
 first push of a wave (a direct push invalidates their merge groups), and warn
 sessions with unpushed branches (each `main` advance costs them a rebase).
