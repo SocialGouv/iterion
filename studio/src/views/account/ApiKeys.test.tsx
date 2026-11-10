@@ -42,13 +42,14 @@ it("shows a gateway key's endpoint and repository audience, and survives a row w
   expect(screen.getByText("legacy")).toBeTruthy();
 });
 
-it("says a gateway key is inert while the walk does not spend it, only for that provider", async () => {
+it("says what a gateway key funds, only for that provider", async () => {
   setup();
   await screen.findByText("pliage");
   fireEvent.click(screen.getByRole("button", { name: "Add key" }));
-  expect(screen.queryByText(/no run spends it yet/)).toBeNull();
+  expect(screen.queryByText(/funds the gateway routes/)).toBeNull();
   const provider = screen.getByRole("combobox") as HTMLSelectElement;
   fireEvent.change(provider, { target: { value: "openai_compatible" } });
-  expect(screen.getByText(/no run spends it yet/)).toBeTruthy();
+  expect(screen.getByText(/funds the gateway routes/)).toBeTruthy();
+  expect(screen.queryByText(/no run spends it yet/)).toBeNull();
   expect(screen.getByPlaceholderText(/Gateway base URL/)).toBeTruthy();
 });

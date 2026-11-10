@@ -16,20 +16,17 @@ import { errorMessage } from "@/lib/errorHints";
 // can come back to, not a blank the form has to interpret.
 const NO_PIN = "";
 
-// A gateway key is storable but no run spends it yet (#2005 PR-C'), and
-// pkg/server's validateKeyOverrides REFUSES a pin on one. Offering it would
-// hand the operator a save that cannot succeed.
-const UNPINNABLE_PROVIDER = "openai_compatible";
-
 // pinnableKeys are the team keys an override may name: one entry per provider
 // the team actually holds a key for, grouped so the picker of a provider can
 // never show another provider's key — which is the refusal
 // validateKeyOverrides answers ("api key %q is for provider %q"), made
-// impossible instead of reported.
+// impossible instead of reported. A gateway key (openai_compatible) is
+// pinnable like any other; its pin is exclusive at launch (ADR-131 §6): a run
+// that may ride a gateway route is refused when the pinned key is not the one
+// its walk seals.
 export function pinnableKeys(keys: ApiKeyView[]): Map<string, ApiKeyView[]> {
   const byProvider = new Map<string, ApiKeyView[]>();
   for (const k of keys) {
-    if (k.provider === UNPINNABLE_PROVIDER) continue;
     const bucket = byProvider.get(k.provider);
     if (bucket) bucket.push(k);
     else byProvider.set(k.provider, [k]);

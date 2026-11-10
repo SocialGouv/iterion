@@ -51,9 +51,10 @@ type RunBundle struct {
 	// A gateway key never travels without its URL: SealRunBundle refuses
 	// the pair one half short, and a reader that finds the key with no URL
 	// gets a typed error (Credentials.GatewayCredentialForRoute), never
-	// "use the environment's gateway". The URL is not secret. Absent on
-	// every bundle a server before #2005 PR-C' seals, so an older runner
-	// decodes such a bundle unchanged.
+	// "use the environment's gateway". The URL is not secret. Absent on a
+	// bundle that seals no gateway key (every vendor-only bundle), which
+	// therefore decodes byte for byte as one sealed before the field
+	// existed.
 	APIBaseURLs       map[Provider]string `json:"api_base_urls,omitempty"`
 	PinnedAPIBaseURLs map[Provider]string `json:"pinned_api_base_urls,omitempty"`
 	// APIKeyFingerprints carries the server-computed audit identity of

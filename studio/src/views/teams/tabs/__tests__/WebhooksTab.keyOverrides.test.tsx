@@ -144,7 +144,7 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("WebhooksTab — the key_overrides editor", () => {
-  it("offers each provider only its own keys, and never a key no run can spend", async () => {
+  it("offers each provider only its own keys, the gateway's included", async () => {
     const dialog = await openPins();
 
     const anthropic = await within(dialog).findByLabelText<HTMLSelectElement>(
@@ -161,9 +161,14 @@ describe("WebhooksTab — the key_overrides editor", () => {
       false,
     );
 
-    // A gateway key is storable and no run spends it yet (#2005 PR-C'), so
-    // pkg/server refuses the pin: the dialog offers no picker for it at all.
-    expect(within(dialog).queryByLabelText("Key for openai_compatible")).toBeNull();
+    // A gateway key is pinnable (ADR-131 §6): it gets a picker of its own,
+    // offering the gateway key and no vendor key.
+    const gateway = within(dialog).getByLabelText<HTMLSelectElement>(
+      "Key for openai_compatible",
+    );
+    const gatewayOptions = [...gateway.options].map((o) => o.textContent ?? "");
+    expect(gatewayOptions.some((o) => o.includes("pliage gateway"))).toBe(true);
+    expect(gatewayOptions.some((o) => o.includes("anthropic team"))).toBe(false);
   });
 
   it("sends key_overrides on the wire, and only the pins that are set", async () => {

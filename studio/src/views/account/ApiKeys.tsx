@@ -224,8 +224,9 @@ export default function ApiKeysPanel({ team, platform = false }: Props) {
           {draft.provider === "openai_compatible" && (
             <>
               <InlineBanner tone="info" layout="inline">
-                A gateway key is stored, listed and audited, but no run spends it yet: the
-                credential walk learns this provider in a later release (#2005).
+                A gateway key funds the gateway routes (openai_compatible/…) of the runs
+                whose bot and repository it serves: the credential walk seals it with this
+                base URL.
               </InlineBanner>
               <Input
                 size="md"

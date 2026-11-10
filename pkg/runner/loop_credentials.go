@@ -104,10 +104,10 @@ func (r *Runner) injectCredentials(ctx context.Context, msg *queue.RunMessage) (
 	// keep the fingerprint-less meter they always had.
 	// The server's own fingerprint travels in the bundle for a gateway key
 	// (RunBundle.APIKeyFingerprints): its identity folds its base URL in.
-	// Absent — every vendor key, and every bundle sealed before #2005
-	// PR-C' — the runner recomputes the identity the server would have
-	// stamped: sha256 of the secret for a vendor key, the URL-folded form
-	// for a gateway key met with its URL.
+	// Absent — every vendor key, and a bundle sealed by a server that
+	// predates the field — the runner recomputes the identity the server
+	// would have stamped: sha256 of the secret for a vendor key, the
+	// URL-folded form for a gateway key met with its URL.
 	fingerprints := map[string]string{}
 	stamped := func(prov secrets.Provider, key, baseURL string) string {
 		if fp := bundle.APIKeyFingerprints[prov]; fp != "" {
