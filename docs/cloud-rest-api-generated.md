@@ -225,6 +225,7 @@ registered by `board_forge.go`, `local_secrets_routes.go`, `notifications_routes
 | `GET` | `/api/forge/github/orgs/start` | session | yes |
 | `GET` | `/api/forge/oauth/callback` | open | yes |
 | `POST` | `/api/v1/forge/delivery-preflight` | open | no |
+| `POST` | `/api/v1/forge/dispatch-workflow` | open | no |
 | `POST` | `/api/v1/forge/publish-review` | open | no |
 | `GET` | `/api/v1/forge/pull-request` | open | no |
 

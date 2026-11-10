@@ -47,6 +47,7 @@ The bundles under `bots/`, then the skills they carry.
 | `whats-next` | 🧭 Nexie | Conversational co-CTO. | 0.3.11 |
 | `whole-improve-loop` | 🌍 Willy | Whole-codebase improvement CAMPAIGN on one axis — one capable agent, its natural flow, minimal framing. | 2.5.5 |
 | `wiki-gen` | 📖 Wikky | Wiki generator — one capable agent builds and incrementally maintains a navigable, Open-Knowledge-Format wiki for whatever repository it… | 1.0.7 |
+| `workflow-kick` | ⏱️ Kicky | Dispatches one GitHub Actions workflow of the target repository on a schedule — the external trigger for a workflow whose own `schedule:`… | 0.1.0 |
 
 ## Skills
 
