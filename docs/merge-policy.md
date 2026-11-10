@@ -223,41 +223,74 @@ For reviewed chantier work, the [operator direct-landing lane](#the-operator-dir
 
 ### A parked gate (decided 2026-11-10)
 
-`revi/review` can stay `PENDING` for days without anything being wrong with the
-pull request: `iterion-forge-core` posts a `<!-- iterion:gate-paused -->`
-comment — "Review paused — the LLM provider's quota is exhausted" — naming a
-**dated automatic resume** and the upstream error. Measured on 2026-11-10: a
-429 `[1310] Weekly/Monthly Limit Exhausted` on the reviewer node parked the run
-for ~103 h while every other required check was green. Read that comment before
-concluding anything about the PR, and before pushing again: a new push restarts
-the review sooner but lands on the same exhausted quota.
+`revi/review` can stay `PENDING` for days with nothing wrong with the pull
+request: `iterion-forge-core[bot]` posts a `<!-- iterion:gate-paused -->`
+comment naming a **dated automatic resume** and the upstream error. Measured on
+2026-11-10 (#3132): a 429 `[1310] Weekly/Monthly Limit Exhausted` on the
+reviewer node parked the run for ~103 h while the other six required checks
+were green. Read that comment before concluding anything about the PR, and
+before pushing again — a push restarts the review sooner but lands on the same
+exhausted quota.
 
-**The operator (admin) may merge that pull request, bypassing the parked gate.**
-This is a narrower bypass than the direct-landing lane above and its proof is
-stronger where it counts: the required set did not need local reproduction
-because it **actually ran on CI**. Only `revi/review` is substituted. It owes:
+**The first move is not this bypass.** It is the one
+[review-and-merge.md](agents/workflow/review-and-merge.md#a-parked-gate-is-a-rerouting-signal-not-a-wait)
+names: identify the blocked credential and **lend a live one** at runtime
+(`iterion remote admin llm oauth set …`, no redeploy), which needs the
+operator's explicit go. This bypass is for when that is unavailable or refused.
+Re-shaping the *pools* under pressure is a different act — deployment
+configuration ([sovereign pools](sovereign-pools.md)), decided outside an
+incident.
 
-1. **Every other required check green, read as a set** — `gh pr checks`, not the
-   one you are waiting for; `test`, `race` and its shards, `vendor-check`,
-   `mongo-conformance`, `golangci`, `brand`. Queued, cancelled or missing is not
-   success.
-2. **A converged local adversarial loop in place of the gate**, per
-   [the loop](agents/workflow/adversarial-review-loop.md): rounds until no
-   unassumed high/critical finding stands, each fix re-attacked. This is the
-   condition, not a courtesy — it is the only thing standing where the reviewer
-   would have stood.
-3. **The checks belong to the head being merged.** A commit pushed after they
-   ran invalidates them; re-read them at the merged SHA.
-4. **The trailers, greppable** — `Adversarial-Rounds:` / `Adversarial-Model:`,
-   the reviewer marked **self** when the loop was a self-review, and the parked
-   gate named in the merge so the bypass can be grepped afterwards.
+**Then the operator (admin) may merge that pull request, bypassing the parked
+gate.** What it owes:
 
-What it does **not** license: merging while another required check is red or
-unresolved, skipping the loop because the diff looks small, or reading the pause
-as a verdict. Nor is a parked gate a reason to re-route the reviewer's own
-backend under pressure — that is deployment configuration
-([sovereign pools](sovereign-pools.md)), decided outside an incident, and
-`bots/review-pr` is the gate every tenant repository leans on.
+1. **The other six required checks green, read as a SET** — `gh pr checks`, not
+   the one you are waiting on. The required set is exactly `test`, `race`,
+   `vendor-check`, `mongo-conformance`, `golangci`, `brand` and `revi/review`
+   (ruleset 18857412); the legs behind the two aggregators (`test-unit`,
+   `test-e2e`, `studio`, `race-shard (n)`) are deliberately **not** required and
+   are where the work is. Queued, cancelled, missing **or skipped** is not
+   success: a job skipped by a job-level `if:` reports SUCCESS, so a required
+   check that never ran satisfies the gate
+   ([tests.yml](../.github/workflows/tests.yml) says so of the Homebrew-tap
+   skip, which five required checks carry).
+2. **A converged local adversarial loop**, per
+   [the loop](agents/workflow/adversarial-review-loop.md). It stands in for the
+   gate **with a measured residual**: of 8 logged gate verdicts, 4 found a class
+   the converged internal rounds had skirted. So the residual is assumed
+   explicitly in the merge, and it is **not assumable on a wide diff** — there,
+   wait for the window or lend a credential, as the incident lane scopes itself
+   the same way ("reckless when it is a wide refactor", below).
+3. **The checks belong to the head AND to the base being merged.** A commit
+   pushed after they ran invalidates them. Less obvious and more dangerous:
+   `strict_required_status_checks_policy` is **false** on this ruleset, so a
+   green set computed against an older `main` stays green and GitHub neither
+   re-runs nor flags it. If `main` advanced since the checks ran, re-push to
+   refresh the merge ref or take the queue.
+4. **The trailers, greppable** — `Adversarial-Rounds:` / `Adversarial-Model:`
+   (the reviewer marked **self** when the loop was a self-review), plus
+   `Gate-Bypass: revi/review parked (quota) — #<pr>` in the squash body, since
+   an ungreppable bypass is a bypass that did not happen.
+5. **Verify what landed, and stop a reviver.** As for any admin merge:
+   `git diff --stat` the landed tree against what you reviewed, and check
+   `iterion remote runs list` for a parked review run that a redelivery
+   re-claimed after the close
+   ([the known gap](merge-gate.md#a-paused-review-says-so-on-the-pr)).
+
+**What this bypass gives up, stated plainly.** The required set ran on real CI,
+on the merge ref as of its run — that is its strength over a locally reproduced
+gate. What it does not have is the queue's one unique guarantee: the rebuild
+against **current** `main` and against the entries ahead of it, which is what
+closes the semantic inter-PR conflict class (two PRs each green against
+`main`-at-branch-time that break `main` combined — regenerated artefacts such as
+the reading golden being the most frequent shape). On that axis this bypass is
+weaker than both the queue and the direct-landing lane's train.
+
+**What it does not license**: merging while another required check is red,
+skipped or unresolved; skipping the loop because the diff looks small; or
+reading the pause as a verdict. And `bots/review-pr` is the gate the tenant
+repositories that require its context lean on — a parked gate is a reason to
+lend it a credential, never to quietly lower what it guards.
 
 ### The fast lane for an incident fix, and its exact procedure
 
@@ -527,6 +560,8 @@ contract — the exhaustive local gate, the converged adversarial loop, the
 post-hoc CI witness, the red-`main` priority, and the duty to warn sessions
 with queued PRs or unpushed branches — lives in
 [the review-and-merge page](agents/workflow/review-and-merge.md#the-operator-direct-landing-lane-decided-2026-10-22).
-Every existing PR keeps the queue and its `revi/review` blocking gate; the
+Every existing PR keeps the queue and its `revi/review` blocking gate — save
+where [a parked gate](#a-parked-gate-decided-2026-11-10) opens the narrower
+admin merge; the
 lane is the admin bypass generalised from hotfixes to reviewed chantier work,
 and its bypass is greppable in the trailers by design.

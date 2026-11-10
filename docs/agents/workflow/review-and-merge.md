@@ -3,7 +3,9 @@
 Every change lands through a pull request whose `revi/review` gate is green.
 The documented exceptions are the admin bypass below — which allows a direct
 push to `main`, not just a queue skip — the **operator direct-landing lane**
-(§ below, decided 2026-10-22), and the release bot, whose
+(§ below, decided 2026-10-22), the **admin merge a parked gate opens**
+(§ [A parked gate is a rerouting signal](#a-parked-gate-is-a-rerouting-signal-not-a-wait),
+decided 2026-11-10), and the release bot, whose
 `chore: release` commits land on `main` with no PR and no gate.
 The loop is:
 
@@ -38,7 +40,8 @@ The loop is:
 For operator-led chantiers where the queue's wall clock is the bottleneck, the
 operator (admin) may land a change **without a PR**, by push to `main`. This
 amends the sentence above for that lane only — every existing PR keeps
-`revi/review` as its blocking gate, and the queue keeps serialising the PRs
+`revi/review` as its blocking gate, save where a parked gate opens the admin
+merge (§ below), and the queue keeps serialising the PRs
 that exist. The lane's blocking proof replaces the PR's:
 
 1. **The gate, locally reproduced.** The full required-check set a workflow
@@ -61,9 +64,6 @@ that exist. The lane's blocking proof replaces the PR's:
 5. **The witnesses, post-hoc.** The GitHub CI still fires on every push to
    `main`; a cancelled or missing witness run is NOT success in the landing
    record; a red `main` outranks every other work until green.
-
-A gate **parked on quota** opens a narrower bypass:
-[parked gate](../../merge-policy.md#a-parked-gate-decided-2026-11-10).
 
 Courtesies that are duties: warn the sessions with PRs in flight before the
 first push of a wave (a direct push invalidates their merge groups), and warn
@@ -144,8 +144,15 @@ request is fine — the credential is not. Waiting for the window to reset is th
    operator's explicit go, with the exact command in the question.
 3. **Keep the review pressure locally.** Run the
    [local adversarial loop](adversarial-review-loop.md) on a forfait you hold
-   while the gate is parked; it does NOT replace the required status — the
-   merge still waits for a real `revi/review` verdict.
+   while the gate is parked. By itself it does NOT replace the required status:
+   the merge waits for a real `revi/review` verdict. The one exception is the
+   **narrower admin merge a parked gate opens** (operator arbitration,
+   2026-11-10) — once that loop has CONVERGED, and with the other six required
+   checks green: its conditions, its measured residual and the queue guarantee
+   it gives up are in
+   [the parked gate](../../merge-policy.md#a-parked-gate-decided-2026-11-10).
+   Steps 1 and 2 stay the first moves; this is for when they are unavailable
+   or refused.
 
 
 ## Billy, and the release path

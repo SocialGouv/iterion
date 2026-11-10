@@ -50,7 +50,8 @@ not invisible success. Record machine effects in the [flake register](../testing
    operator-authorized **self-review + admin bypass** records that it is self
    review, its mutations and residual findings; it is not a fabricated peer
    review or Revi verdict. It does not waive the local gate or train. Existing
-   PRs still owe `revi/review` under the normal merge contract.
+   PRs still owe `revi/review` under the normal merge contract, save where a
+   parked gate opens the narrower admin merge (below).
 3. **Integrate before taking the verdict.** Rebase onto current `origin/main`
    in the integration branch. Run the complete local gate on that integrated
    tree, retaining each member's log, exit code, SHA and machine class. Never

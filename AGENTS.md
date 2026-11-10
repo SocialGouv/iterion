@@ -35,7 +35,7 @@ interactive sessions).
 ## Non-negotiables
 
 - **Review loop.** Every change lands reviewed: a PR whose `revi/review` gate
-  is green, or the operator's admin-only lane, which a parked gate opens — local full gate + train +
+  is green, or the operator's admin-only direct-landing lane — local full gate + train +
   converged loop, push to `main`, CI as witness ([merge and
   gate](docs/agents/workflow/review-and-merge.md)). Findings decide the next
   round, the budget caps it, you fix them, and reviewed work carries
