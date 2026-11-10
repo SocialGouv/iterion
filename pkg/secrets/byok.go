@@ -242,13 +242,31 @@ func BaseURLNamesZAI(baseURL string) bool {
 // with `XAI_BASE_URL` when pointing at a proxy or regional endpoint.
 const XAIDefaultBaseURL = "https://api.x.ai"
 
+// knownProviders is the one list of accepted providers: Valid reads it, and
+// the CLI help and ParseProvider's refusal print it, so a provider added here
+// is accepted and advertised in the same change. The order is the display
+// order.
+var knownProviders = []Provider{
+	ProviderAnthropic, ProviderOpenAI, ProviderXAI, ProviderZAI,
+	ProviderMoonshot, ProviderOpenRouter, ProviderBedrock, ProviderVertex,
+	ProviderAzure, ProviderOpenAICompatible,
+}
+
+// ProviderIDs returns the wire id of every known provider, in display order.
+func ProviderIDs() []string {
+	ids := make([]string, len(knownProviders))
+	for i, p := range knownProviders {
+		ids[i] = string(p)
+	}
+	return ids
+}
+
 // Valid reports whether p is one of the known providers.
 func (p Provider) Valid() bool {
-	switch p {
-	case ProviderAnthropic, ProviderOpenAI, ProviderBedrock,
-		ProviderVertex, ProviderAzure, ProviderOpenRouter, ProviderXAI,
-		ProviderZAI, ProviderMoonshot, ProviderOpenAICompatible:
-		return true
+	for _, k := range knownProviders {
+		if p == k {
+			return true
+		}
 	}
 	return false
 }
@@ -1484,7 +1502,7 @@ func NewApiKeyID() string {
 func ParseProvider(s string) (Provider, error) {
 	p := Provider(strings.ToLower(strings.TrimSpace(s)))
 	if !p.Valid() {
-		return "", fmt.Errorf("unknown provider %q", s)
+		return "", fmt.Errorf("unknown provider %q (known: %s)", s, strings.Join(ProviderIDs(), ", "))
 	}
 	return p, nil
 }

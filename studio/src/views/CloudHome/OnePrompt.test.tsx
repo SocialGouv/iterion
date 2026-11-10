@@ -2,13 +2,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
-import OnePrompt from "@/views/CloudHome/OnePrompt";
+import OnePrompt, { SETUP_PROMPT } from "@/views/CloudHome/OnePrompt";
 
 // The block a visitor pastes is the product of this section: the guards
 // assert on what is RENDERED, not on the exported constant — a JSX refactor
 // that drops the block (or a copy edit that renames it into a comment) stays
-// red here. The full four-way parity of the prompt copies is
-// scripts/prompt-parity.sh, run by `task prompt:parity`.
+// red here. The parity of the prompt's two copies (this page, the docs
+// walkthrough) is scripts/prompt-parity.sh, run by `task prompt:parity`.
 describe("the one-prompt onboarding section of the product home", () => {
   afterEach(() => cleanup());
 
@@ -21,11 +21,12 @@ describe("the one-prompt onboarding section of the product home", () => {
       "iterion remote login https://iterion.cloud",
     );
     // The funding step: a visitor already covered by the pool needs no key,
-    // so the block must say the credential is conditional, not mandatory,
-    // and name the wire ids the CLI actually accepts.
-    expect(container.textContent).toContain("already funded");
-    expect(container.textContent).toContain("wire ids");
-    expect(container.textContent).toContain("moonshot");
+    // so the block says the credential is optional, and a key it does store
+    // travels through the environment, never through the chat.
+    expect(container.textContent).toContain("An LLM key is optional");
+    expect(container.textContent).toContain("--from-env <VAR>");
+    // The prompt ends on the next step the agent offers, not on a stop.
+    expect(container.textContent).toContain("propose a next step");
   });
 
   it("names the section for the cloud onboarding, not a generic quickstart", () => {
@@ -60,7 +61,10 @@ describe("the one-prompt onboarding section of the product home", () => {
     });
     const { container } = render(<OnePrompt />);
     const displayed = container.querySelector("pre")?.textContent ?? "";
-    expect(displayed).toContain("iterion remote login");
+    // The block shows the constant scripts/prompt-parity.sh compares with the
+    // docs walkthrough, and nothing beside it: text added around it in the
+    // component would reach the clipboard unchecked by the parity.
+    expect(displayed).toBe(SETUP_PROMPT);
     fireEvent.click(screen.getByRole("button", { name: /cloud setup prompt/i }));
     await waitFor(() => expect(writeText).toHaveBeenCalledWith(displayed));
   });

@@ -7,7 +7,7 @@
  *   3. `<sdk-package>/bin/iterion[.exe]` (slot for the optional auto-installer)
  *   4. `iterion[.exe]` on `PATH`
  *
- * Mirrors the platform detection in `docs/install.sh`.
+ * Mirrors the platform detection in `docs/public/install.sh`.
  */
 
 import { access, constants } from "node:fs/promises";

@@ -691,7 +691,7 @@ tasks:
       - task: map:check
 
   prompt:parity:
-    desc: Fail if the cloud setup prompt drifted apart across README, the docs pages and the studio landing
+    desc: Fail if the cloud setup prompt drifted apart between the studio landing and the docs walkthrough
     cmds:
       - ./scripts/prompt-parity.sh
 

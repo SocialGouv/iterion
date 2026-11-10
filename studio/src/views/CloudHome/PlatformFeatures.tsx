@@ -82,7 +82,7 @@ export default function PlatformFeatures() {
           <p className="ch-eyebrow">THE AGENT CONTROL PLANE.</p>
           <h2 id="ch-control-heading">Let it run.<br /><span>Keep the reins.</span></h2>
         </div>
-        <p>Supervise the work. Carry context forward.<br />Measure results and keep control.</p>
+        <p>Supervise the work. Carry context forward. <br />Measure results and keep control. <br />What Kubernetes is to containers, Iterion is to agents.</p>
       </div>
       <div className="ch-highlight-grid">
         {highlights.map(({ label, title, description, icon: Icon, href, link }) => (

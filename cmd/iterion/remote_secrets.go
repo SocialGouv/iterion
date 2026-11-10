@@ -2,8 +2,10 @@ package main
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/cli"
+	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/spf13/cobra"
 )
 
@@ -219,7 +221,7 @@ func init() {
 		c.Flags().StringVar(&remoteSecretFromEnv, "from-env", "", "Read the value from this environment variable")
 		c.Flags().StringVar(&remoteSecretFromFile, "from-file", "", "Read the value from this file")
 	}
-	remoteAPIKeysCreateCmd.Flags().StringVar(&remoteAPIKeyProvider, "provider", "", "LLM provider (anthropic|openai|…)")
+	remoteAPIKeysCreateCmd.Flags().StringVar(&remoteAPIKeyProvider, "provider", "", "LLM provider: "+strings.Join(secrets.ProviderIDs(), "|")+" (moonshot = Kimi)")
 	remoteAPIKeysCreateCmd.Flags().StringVar(&remoteAPIKeyName, "name", "", "Key display name")
 	remoteAPIKeysCreateCmd.Flags().BoolVar(&remoteAPIKeyDefault, "default", false, "Make this the provider's default key")
 	remoteAPIKeysCreateCmd.Flags().StringVar(&remoteAPIKeyBaseURL, "base-url", "", "Gateway root for provider openai_compatible (https, no /v1); refused on other providers")
