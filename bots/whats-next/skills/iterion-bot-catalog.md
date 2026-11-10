@@ -396,6 +396,7 @@ dispatcher routes on it), never the persona.
 | Nexie | `whats-next` (this bot) | steer |
 | Willy | `whole-improve-loop` | harden |
 | Wikky | `wiki-gen` | document |
+| Kicky | `workflow-kick` | operate |
 
 ## Bot reference
 
@@ -1559,6 +1560,36 @@ the run, a source silent for too long is announced on the sinks.
 - **Tags**: security, scheduled, ships-code
 - **Vars**: `allow_private_sources` (bool), `config_path` (string), `dry_run` (bool), `fetch_timeout_secs` (int), `inventory_path` (string), `kev_max_age_days` (int), `max_alerts_per_run` (int), `max_version_lookups` (int), `max_version_seconds` (int), `mode` (string), `observe_window_days` (int), `scratch_dir` (string), `source_stale_hours` (int), `state_commit` (bool), `state_dir` (string), `workspace_dir` (string)
 - **Path**: `bots/vuln-watch/main.bot`
+
+### `workflow-kick` — Kicky
+
+Dispatches one GitHub Actions workflow of the target repository on a
+schedule — the external trigger for a workflow whose own `schedule:`
+cron GitHub fires late or not at all. One deterministic tool node, zero
+LLM: it asks the iterion server to dispatch the named workflow file
+(`workflow_dispatch`) on the repository's default branch and reports
+what the forge answered, with a link to its run.
+
+The bot holds no forge credential for this: its manifest declares the
+`actions` scope, which mints the dispatch capability into the run's
+publish grant, and the server dispatches with a GitHub App installation
+token minted for that one call ({actions: write, metadata: read},
+narrowed to the one repository). Refused, typed, before any forge call:
+a repository other than the grant's, a file name that is not a plain
+`*.yml`/`*.yaml`, an untrusted run, a non-GitHub-App connection, and a
+second dispatch of the same workflow by the same run.
+
+- **Use when**:
+  Enable on a repository integration whose CI workflow must run on a
+  dependable cadence — typically a self-hosted Renovate (`renovate.yml`)
+  whose security updates must reach a pull request within the hour.
+  Requires the workflow to declare `workflow_dispatch`, and the GitHub App
+  behind the connection to hold `Actions: Read and write` (an org owner
+  approves it). Set the schedule's `workflow` var to the file name. It
+  edits nothing and posts nothing; it only starts the workflow.
+- **Tags**: scheduled, deps, tooling
+- **Vars**: `forge_dispatch_url` (string), `forge_publish_token` (string), `repo` (string), `workflow` (string, required)
+- **Path**: `bots/workflow-kick/main.bot`
 
 ### Steer — judge the direction, converse
 
