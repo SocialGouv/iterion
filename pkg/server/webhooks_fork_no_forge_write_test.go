@@ -73,7 +73,7 @@ func TestLaunchWebhookTarget_AnUntrustedLaunchMakesNoForgeWrite(t *testing.T) {
 	}
 
 	ordinary := webhooks.Config{ID: "wh1", TenantID: "team1", Provider: webhooks.ProviderGitHub}
-	forkLane := webhooks.Config{ID: "wh1", TenantID: "team1", Provider: webhooks.ProviderGitHub, ForkLane: true}
+	forkLane := webhooks.Config{ID: "wh1", TenantID: "team1", Provider: webhooks.ProviderGitHub, ForkLane: true, ForkLanePool: "forks"}
 
 	// The witness: the SAME vars, the same gate client, on a trusted launch —
 	// a status IS posted. Without it, zero below could just mean the fixture

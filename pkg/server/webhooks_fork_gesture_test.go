@@ -166,6 +166,7 @@ func newForkGestureFixture(t *testing.T) *forkGestureFixture {
 	s.orgUsage = counter
 	cfg, pt := ghConfig(t, s)
 	cfg.ForkLane = true
+	cfg.ForkLanePool = "forks"
 	cfg.HoldLabels = []string{"hold-review"}
 	cfg.OperatorLaunchVars = map[string]string{"gate_context": "acme/required-check"}
 	fx := &forkGestureFixture{s: s, cfg: cfg, pt: pt, counter: counter, runIDFor: func() string { return "run-9" }}
@@ -508,6 +509,7 @@ func TestForkGesture_IssueSurfaceAndProviderRefusals(t *testing.T) {
 		s.orgUsage = orgusage.NewMemoryCounter()
 		cfg, _ := ghConfig(t, s)
 		cfg.ForkLane = true
+		cfg.ForkLanePool = "forks"
 		cfg.Provider = webhooks.ProviderForgejo
 		var launched int
 		s.webhookLaunchBot = func(context.Context, string, map[string]string, string, string, string, map[string]string, map[string]string) (string, error) {
@@ -609,7 +611,7 @@ func TestForkLane_IsGithubOnlyAtCreation(t *testing.T) {
 	// Github accepts, and the row carries the lane kind.
 	w := httptest.NewRecorder()
 	s.handleCreateWebhook(w, whReq(ctx, "POST", "/api/teams/t1/webhooks",
-		`{"name":"fork reviews","provider":"github","bot_ids":["review-pr"],"fork_lane":true}`, "t1", ""))
+		`{"name":"fork reviews","provider":"github","bot_ids":["review-pr"],"fork_lane":true,"fork_lane_pool":"forks"}`, "t1", ""))
 	if w.Code != http.StatusCreated {
 		t.Fatalf("github: code=%d body=%s", w.Code, w.Body.String())
 	}
@@ -666,7 +668,7 @@ func TestForkLane_IsImmutableOnPatch(t *testing.T) {
 	// And a fork-lane config cannot be flipped OFF either.
 	w = httptest.NewRecorder()
 	s.handleCreateWebhook(w, whReq(ctx, "POST", "/api/teams/t1/webhooks",
-		`{"name":"fork","provider":"github","bot_ids":["review-pr"],"fork_lane":true}`, "t1", ""))
+		`{"name":"fork","provider":"github","bot_ids":["review-pr"],"fork_lane":true,"fork_lane_pool":"forks"}`, "t1", ""))
 	if w.Code != http.StatusCreated {
 		t.Fatalf("fork create: code=%d body=%s", w.Code, w.Body.String())
 	}
@@ -804,7 +806,7 @@ func TestForkLaunch_UnreadableTeamRefusesOnTheDeliverySurface(t *testing.T) {
 		return "run-1", nil
 	}
 	ctx := auth.WithIdentity(context.Background(), auth.Identity{UserID: "u", TeamID: "t1", Role: identity.RoleMember, Kind: auth.KindWebhook})
-	cfg := webhooks.Config{ID: "wh1", TenantID: "t1", Provider: webhooks.ProviderGitHub, ForkLane: true}
+	cfg := webhooks.Config{ID: "wh1", TenantID: "t1", Provider: webhooks.ProviderGitHub, ForkLane: true, ForkLanePool: "forks"}
 	meta := webhookEventMeta{ProjectPath: "acme/widgets", SubjectID: "pr:7", Kind: "issue_comment"}
 	target := forgeLaunchTarget{
 		IdemKey: "idem-unreadable", BotID: "review-pr",
@@ -857,7 +859,7 @@ func TestForkLaunch_AnUnreadableOrgRefusesOnTheDeliverySurface(t *testing.T) {
 		return "run-1", nil
 	}
 	ctx := auth.WithIdentity(context.Background(), auth.Identity{UserID: "u", TeamID: "t1", Role: identity.RoleMember, Kind: auth.KindWebhook})
-	cfg := webhooks.Config{ID: "wh1", TenantID: "t1", Provider: webhooks.ProviderGitHub, ForkLane: true}
+	cfg := webhooks.Config{ID: "wh1", TenantID: "t1", Provider: webhooks.ProviderGitHub, ForkLane: true, ForkLanePool: "forks"}
 	meta := webhookEventMeta{ProjectPath: "acme/widgets", SubjectID: "pr:7", Kind: "issue_comment"}
 	target := forgeLaunchTarget{
 		IdemKey: "idem-org-unreadable", BotID: "review-pr",
@@ -1023,6 +1025,14 @@ func TestForkGesture_TheRealLauncherStampsTheSubjectOnTheSpec(t *testing.T) {
 	}
 	if spec.RepoSHAExpected != forkForkPR().HeadSHA {
 		t.Fatalf("spec.RepoSHAExpected = %q, want the admitted head commit — the pin and the subject are one guarantee (the runner compares before it charges)", spec.RepoSHAExpected)
+	}
+	// The lane's pool (ADR-162 Q3): the publisher stamps it as the run's
+	// RunnerPool, so the fork run lands on that pool alone.
+	//
+	// Mutation: drop ForkLanePool from launchWebhookBot's spec → "" (red
+	// here; the publisher would then refuse the launch after the gate).
+	if spec.ForkLanePool != "forks" {
+		t.Fatalf("spec.ForkLanePool = %q, want the config's \"forks\" — the publisher stamps the run's pool from it", spec.ForkLanePool)
 	}
 	// Decision 4's floor on the routing pre-flights: an untrusted launch
 	// certifies NO operator-decided var names (trustedVarNamesFor). The

@@ -1530,7 +1530,12 @@ func (s *Server) launchWebhookBot(ctx context.Context, from launchOrigin, cfg we
 		// subject the one that gate charged (stamped back onto the target
 		// before webhookLauncherFor hands it here). The run service holds
 		// the launch to them (CheckLaunchAdmitted).
-		Admitted:        &runview.GateAdmission{Trust: trust, ForkAuthorSubject: forkAuthorSubject},
+		Admitted: &runview.GateAdmission{Trust: trust, ForkAuthorSubject: forkAuthorSubject},
+		// The pool the fork lane names (ADR-162 Q3): an untrusted run
+		// executes there and nowhere else — the publisher stamps it as the
+		// run's RunnerPool on the document and the wire. A trusted launch
+		// names none and keeps its team's mapping.
+		ForkLanePool:    forkLanePoolFor(cfg, trust),
 		KeyOverrides:    keyOverrides,
 		SecretOverrides: secretOverrides,
 		// A webhook-launched run is often the one an author is waiting on,

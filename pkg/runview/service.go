@@ -270,6 +270,14 @@ type LaunchSpec struct {
 	// untrusted launch on a nil or a different admission
 	// (CheckLaunchAdmitted). Nil on every surface that crossed no gate.
 	Admitted *GateAdmission
+	// ForkLanePool is the runner pool an UNTRUSTED launch executes on
+	// (ADR-162 Q3 and decision 10): the pool its fork-lane config names, or
+	// the pool the untrusted run it is launched from was stamped with
+	// (inheritSourceTrust). The cloud publisher stamps it as the run's
+	// RunnerPool — the document and the wire — so a fork run lands on that
+	// pool alone, and refuses an untrusted launch that names none. Empty on
+	// every trusted launch, whose pool is its team's mapping.
+	ForkLanePool string
 	// ProjectPath is the stable forge slug ("group/project") the run
 	// targets, persisted on the run so the studio can filter/group runs
 	// by repository and the runner's spend meter (repoForSpend) can charge

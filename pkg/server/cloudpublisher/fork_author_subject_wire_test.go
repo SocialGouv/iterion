@@ -32,6 +32,8 @@ func TestSubmitLaunchAndResume_TheForkAuthorSubjectRidesDocumentAndWire(t *testi
 	var published []*queue.RunMessage
 	p := &Publisher{
 		store: st,
+		// The fork lane's pool (ADR-162 Q3), registry-active.
+		pools: activeRegistry("forks"),
 		publishRun: func(_ context.Context, msg *queue.RunMessage) error {
 			published = append(published, msg)
 			return nil
@@ -48,6 +50,7 @@ func TestSubmitLaunchAndResume_TheForkAuthorSubjectRidesDocumentAndWire(t *testi
 		Trust:             store.RunTrustFork,
 		RepoSHAExpected:   "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
 		ForkAuthorSubject: subject,
+		ForkLanePool:      "forks",
 	}
 	if _, err := p.SubmitLaunch(ctx, "run-fork", spec, wf, &runview.CompiledSource{Hash: "hash"}); err != nil {
 		t.Fatalf("SubmitLaunch: %v", err)
@@ -128,6 +131,7 @@ func TestSubmitResume_AnUntrustedPriorRepublishesOnlyOnItsOwnAdmission(t *testin
 		published := &[]*queue.RunMessage{}
 		p := &Publisher{
 			store: st,
+			pools: activeRegistry("forks"),
 			publishRun: func(_ context.Context, msg *queue.RunMessage) error {
 				*published = append(*published, msg)
 				return nil
@@ -137,6 +141,7 @@ func TestSubmitResume_AnUntrustedPriorRepublishesOnlyOnItsOwnAdmission(t *testin
 		if _, err := p.SubmitLaunch(ctx, "run-fork", runview.LaunchSpec{
 			FilePath: "fork_review.bot", Source: "workflow fork_review:\n  entry: done\n", BotID: "review-pr",
 			Trust: store.RunTrustFork, RepoSHAExpected: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef", ForkAuthorSubject: subject,
+			ForkLanePool: "forks",
 		}, &ir.Workflow{Name: "fork_review"}, &runview.CompiledSource{Hash: "hash"}); err != nil {
 			t.Fatalf("SubmitLaunch: %v", err)
 		}

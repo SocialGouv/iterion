@@ -458,3 +458,107 @@ func TestLaunch_ARunLaunchedFromAForkRunIsItsAuthorsSpend(t *testing.T) {
 		})
 	}
 }
+
+// poolCapturingPublisher records the fork-lane pool a launch was published
+// with — what the cloud publisher stamps as the run's RunnerPool.
+type poolCapturingPublisher struct {
+	trustCapturingPublisher
+	pool string
+}
+
+func (p *poolCapturingPublisher) SubmitLaunch(ctx context.Context, runID string, spec LaunchSpec, wf *ir.Workflow, src *CompiledSource) (LaunchSubmission, error) {
+	p.mu.Lock()
+	p.pool = spec.ForkLanePool
+	p.mu.Unlock()
+	return p.trustCapturingPublisher.SubmitLaunch(ctx, runID, spec, wf, src)
+}
+
+// TestLaunch_ARunLaunchedFromAForkRunExecutesOnItsPool: a run launched FROM
+// a fork run executes the fork's code, so it executes where the fork lane put
+// its source (ADR-162 Q3) — the source's frozen RunnerPool becomes the
+// launch's ForkLanePool, which the publisher stamps. A trusted source hands
+// no pool over (a trusted run executes on its team's mapping), and a launch
+// that already names another pool is refused: one run executes on one pool.
+//
+// Mutations: drop the pool carry from inheritSourceTrust → the fork rows
+// publish with no pool (red on their own assertion), which the publisher
+// would then refuse after the gate metered the author; drop either
+// one-pool comparison (the spec's, the two sources') → its refused row
+// publishes.
+func TestLaunch_ARunLaunchedFromAForkRunExecutesOnItsPool(t *testing.T) {
+	const author = "forkauthor|t1|github|4242"
+	for _, row := range []struct {
+		name       string
+		trust      store.RunTrust
+		sourcePool string
+		specPool   string
+		secondPool string
+		via        func(spec *LaunchSpec)
+		want       string
+		refused    bool
+	}{
+		{name: "a fork parent", trust: store.RunTrustFork, sourcePool: "forks", via: func(s *LaunchSpec) { s.ParentRunID = "source" }, want: "forks"},
+		{name: "a fork delegation source", trust: store.RunTrustFork, sourcePool: "forks", via: func(s *LaunchSpec) {
+			s.Delegation = &store.RunDelegation{SourceRunID: "source", Kind: "run_failure"}
+		}, want: "forks"},
+		{name: "a trusted parent hands no pool over", trust: store.RunTrustDefault, sourcePool: "sovereign", via: func(s *LaunchSpec) { s.ParentRunID = "source" }},
+		{name: "another pool is refused", trust: store.RunTrustFork, sourcePool: "forks", specPool: "elsewhere",
+			via: func(s *LaunchSpec) { s.ParentRunID = "source" }, refused: true},
+		{name: "two sources on two pools are refused", trust: store.RunTrustFork, sourcePool: "forks", secondPool: "elsewhere",
+			via: func(s *LaunchSpec) {
+				s.ParentRunID = "source"
+				s.Delegation = &store.RunDelegation{SourceRunID: "source-2", Kind: "run_failure"}
+			}, refused: true},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			dir := t.TempDir()
+			botPath := filepath.Join(dir, "source_trust.bot")
+			if err := os.WriteFile(botPath, []byte(sourceTrustBot), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			pub := &poolCapturingPublisher{}
+			svc, err := NewService(dir, WithLogger(iterlog.Nop()), WithLaunchPublisher(pub))
+			if err != nil {
+				t.Fatal(err)
+			}
+			r := storetest.SeedParentRun(t, svc.store, "source")
+			r.Trust = row.trust
+			r.RunnerPool = row.sourcePool
+			if !row.trust.Trusted() {
+				r.ForkAuthorSubject = author
+			}
+			if err := svc.store.SaveRun(context.Background(), r); err != nil {
+				t.Fatal(err)
+			}
+			if row.secondPool != "" {
+				r2 := storetest.SeedParentRun(t, svc.store, "source-2")
+				r2.Trust, r2.ForkAuthorSubject, r2.RunnerPool = row.trust, author, row.secondPool
+				if err := svc.store.SaveRun(context.Background(), r2); err != nil {
+					t.Fatal(err)
+				}
+			}
+			spec := LaunchSpec{FilePath: botPath, ForkLanePool: row.specPool,
+				Admitted: &GateAdmission{Trust: row.trust, ForkAuthorSubject: r.ForkAuthorSubject}}
+			row.via(&spec)
+			_, err = svc.Launch(context.Background(), spec)
+			if row.refused {
+				if err == nil || !strings.Contains(err.Error(), "one run executes on one pool") {
+					t.Fatalf("Launch = %v, want the two-pool refusal", err)
+				}
+				if pub.launched {
+					t.Fatal("a launch naming two pools was published")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Launch: %v", err)
+			}
+			if !pub.launched {
+				t.Fatal("nothing was published — this row proves nothing")
+			}
+			if pub.pool != row.want {
+				t.Fatalf("published with fork-lane pool %q, want %q", pub.pool, row.want)
+			}
+		})
+	}
+}

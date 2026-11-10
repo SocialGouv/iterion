@@ -303,6 +303,23 @@ type Config struct {
 	// budget's rows, which were written under the kind it carried.
 	ForkLane bool `bson:"fork_lane,omitempty" json:"fork_lane,omitempty"`
 
+	// ForkLanePool names the runner pool every run of a fork-lane config
+	// executes on (ADR-162 Q3 and decision 10): a pool of ADR-154's
+	// registry whose runners resolve the kubernetes sandbox for every run.
+	// The launch stamps it onto the run (runview.LaunchSpec.ForkLanePool →
+	// the run document's and the queue message's RunnerPool), so a fork run
+	// lands on that pool alone and every resume, retry and forked child
+	// follows the frozen stamp.
+	//
+	// SET AT CREATION, REQUIRED THERE AND IMMUTABLE, like ForkLane itself:
+	// the creation refuses a fork-lane config without it and an ordinary
+	// config with it, and the PATCH route refuses a change — moving the pool
+	// under a config would split one lane's runs across two pools. A
+	// fork-lane config stored without one (created before the field) is
+	// refused at the launch tail, typed, before anything is metered
+	// (webhookProvenanceRefusal).
+	ForkLanePool string `bson:"fork_lane_pool,omitempty" json:"fork_lane_pool,omitempty"`
+
 	// ForgeBaseURL, when set, pins the forge instance this webhook's bot
 	// token may call back to (e.g. "https://gitlab.example.com"). The
 	// inbound payload's MR-URL host must match it or the delivery is

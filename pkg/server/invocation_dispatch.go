@@ -174,7 +174,7 @@ func (s *Server) dispatchInvocation(
 		// config never cards a same-repo target, whichever of its entries —
 		// a /command, an issue label, a zero-touch open — asks, and an
 		// ordinary config never cards a fork one.
-		if reason := webhookProvenanceRefusal(cfg.ForkLane, prov.Trust, prov.ExpectedSHA); reason != "" {
+		if reason := webhookProvenanceRefusal(cfg, prov.Trust, prov.ExpectedSHA); reason != "" {
 			s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusFiltered, payloadHash, srcIP, reason)
 			if s.logger != nil {
 				s.logger.Warn("webhooks: %s/%s refused for %s: %s", cfg.Provider, meta.ProjectPath, route.BotID, reason)

@@ -59,6 +59,7 @@ func TestForkLaneConfig_AnIssueLabelNeverCardsATrustedTarget(t *testing.T) {
 			}
 			cfg, pt := issueConfig(t, s)
 			cfg.ForkLane = true
+			cfg.ForkLanePool = "forks"
 
 			w := httptest.NewRecorder()
 			s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), ghLabeledIssue, prforge.EventHeaderIssues, pt))

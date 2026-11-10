@@ -209,6 +209,11 @@ type RunnerPoolResolver interface {
 type TeamResolver interface {
 	GetTeam(ctx context.Context, id string) (identity.Team, error)
 	GetOrg(ctx context.Context, id string) (identity.Org, error)
+	// GetTeamByRunnerPool answers which team holds a pool (identity.Store's
+	// one-team-per-pool accessor, ErrNotFound when none): the fork lane's
+	// pool rule reads it, because a fork run must not land on another
+	// team's sovereign pool (forkLanePoolRefusal).
+	GetTeamByRunnerPool(ctx context.Context, pool string) (identity.Team, error)
 }
 
 // Publisher is a runview.LaunchPublisher backed by NATS + Mongo.
@@ -3679,7 +3684,10 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 	// would only fail at runner pickup. An identity-store error refuses the
 	// launch too: an unknown mapping must fail closed, not land on the
 	// shared pool.
-	runnerPool, err := p.runnerPoolForTeam(ctx, tenantID)
+	// An untrusted launch executes on the pool its fork lane names instead
+	// (ADR-162 Q3, decision 10) — refused, typed, when it names none or one
+	// the team's mapping or another team's sovereignty forbids.
+	runnerPool, err := p.launchRunnerPool(ctx, tenantID, spec.Trust, spec.ForkLanePool)
 	if err != nil {
 		return runview.LaunchSubmission{}, err
 	}
@@ -4503,8 +4511,16 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 	if err != nil {
 		return err
 	}
-	if currentPool != prior.RunnerPool {
-		return fmt.Errorf("%w: run %s is bound to runner pool %q but its team is now mapped to %q — resume refused; relaunch the run on the new pool (a pool move is a new launch, never a re-stamp)", ErrPoolRemapped, spec.RunID, prior.RunnerPool, currentPool)
+	if prior.Trust.Trusted() {
+		if currentPool != prior.RunnerPool {
+			return fmt.Errorf("%w: run %s is bound to runner pool %q but its team is now mapped to %q — resume refused; relaunch the run on the new pool (a pool move is a new launch, never a re-stamp)", ErrPoolRemapped, spec.RunID, prior.RunnerPool, currentPool)
+		}
+	} else if err := p.forkLanePoolRefusal(ctx, prior.TenantID, currentPool, prior.RunnerPool); err != nil {
+		// An untrusted run's frozen stamp is its fork lane's pool, not its
+		// team's mapping: the resume follows it under the rule the launch
+		// crossed, re-judged now — a team mapped since, or a pool another
+		// team has taken, refuses it.
+		return fmt.Errorf("cloudpublisher: resume of run %s refused: %w", spec.RunID, err)
 	}
 	// Same dispatch gate the launch carries: a pool-stamped resume routes
 	// only when its pool is registry-active, exactly like a launch.

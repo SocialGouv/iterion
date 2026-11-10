@@ -29,6 +29,18 @@ func (f fakePoolTeamResolver) GetTeam(context.Context, string) (identity.Team, e
 	return f.team, f.err
 }
 
+// GetTeamByRunnerPool answers from the one fixed team: it holds pool when
+// it is mapped to it, nobody does otherwise.
+func (f fakePoolTeamResolver) GetTeamByRunnerPool(_ context.Context, pool string) (identity.Team, error) {
+	if f.err != nil {
+		return identity.Team{}, f.err
+	}
+	if pool != "" && f.team.RunnerPool == pool {
+		return f.team, nil
+	}
+	return identity.Team{}, identity.ErrNotFound
+}
+
 func (f fakePoolTeamResolver) GetOrg(context.Context, string) (identity.Org, error) {
 	return identity.Org{}, errors.New("not used by these tests")
 }

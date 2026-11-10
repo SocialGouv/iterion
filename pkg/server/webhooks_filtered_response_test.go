@@ -31,7 +31,7 @@ func TestWebhookTail_AFilteredRefusalAnswers200AndDoesNotPanic(t *testing.T) {
 	}{
 		{
 			name: "lane-kind mismatch",
-			cfg:  webhooks.Config{ID: "wh1", TenantID: "t1", Provider: webhooks.ProviderGitHub, ForkLane: true},
+			cfg:  webhooks.Config{ID: "wh1", TenantID: "t1", Provider: webhooks.ProviderGitHub, ForkLane: true, ForkLanePool: "forks"},
 			target: forgeLaunchTarget{
 				IdemKey: "idem-f1", BotID: "review-pr",
 				Vars: map[string]string{"pr_url": "https://github.com/o/r/pull/7"},
@@ -39,7 +39,7 @@ func TestWebhookTail_AFilteredRefusalAnswers200AndDoesNotPanic(t *testing.T) {
 		},
 		{
 			name: "untrusted launch with no admitted commit",
-			cfg:  webhooks.Config{ID: "wh1", TenantID: "t1", Provider: webhooks.ProviderGitHub, ForkLane: true},
+			cfg:  webhooks.Config{ID: "wh1", TenantID: "t1", Provider: webhooks.ProviderGitHub, ForkLane: true, ForkLanePool: "forks"},
 			target: forgeLaunchTarget{
 				IdemKey: "idem-f2", BotID: "review-pr", Trust: store.RunTrustFork,
 				Vars: map[string]string{"pr_url": "https://github.com/o/r/pull/7"},

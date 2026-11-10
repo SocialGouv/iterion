@@ -375,16 +375,28 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 // author's spend, and an untrusted run with no subject is refused on every
 // gated resume. Two sources naming two different authors are refused — one
 // run meters one author's bound, and picking either is a guess.
+//
+// It hands its runner pool over too (ADR-162 Q3): the new run executes the
+// fork's code, so it runs where the fork lane put the source — the pool the
+// publisher stamps on the launch (LaunchSpec.ForkLanePool). Two untrusted
+// sources on two pools, or a launch already naming another pool, are refused:
+// one run executes on one pool.
 func (s *Service) inheritSourceTrust(ctx context.Context, spec *LaunchSpec) error {
 	delegationSource := ""
 	if spec.Delegation != nil {
 		delegationSource = spec.Delegation.SourceRunID
 	}
-	inherited, err := s.LaunchSourceAdmission(ctx, spec.ParentRunID, delegationSource)
+	inherited, pool, err := s.launchSourceFacts(ctx, spec.ParentRunID, delegationSource)
 	if err != nil {
 		return err
 	}
 	spec.Trust = spec.Trust.Lowest(inherited.Trust)
+	if pool != "" {
+		if spec.ForkLanePool != "" && spec.ForkLanePool != pool {
+			return fmt.Errorf("runview: the launch's untrusted source runs execute on runner pool %q, and the launch already names %q — one run executes on one pool", pool, spec.ForkLanePool)
+		}
+		spec.ForkLanePool = pool
+	}
 	if inherited.ForkAuthorSubject == "" {
 		return nil
 	}
@@ -408,7 +420,18 @@ func (s *Service) inheritSourceTrust(ctx context.Context, spec *LaunchSpec) erro
 // (store.ErrChildParentUnreadable), and two untrusted sources metering two
 // different authors are refused as well.
 func (s *Service) LaunchSourceAdmission(ctx context.Context, parentRunID, delegationSourceRunID string) (GateAdmission, error) {
+	adm, _, err := s.launchSourceFacts(ctx, parentRunID, delegationSourceRunID)
+	return adm, err
+}
+
+// launchSourceFacts is LaunchSourceAdmission's reading plus the runner pool
+// an untrusted source was stamped with — the facts a launch built from other
+// runs inherits, read off their documents once. The pool is "" when no
+// untrusted source carries one; two untrusted sources on two pools are
+// refused.
+func (s *Service) launchSourceFacts(ctx context.Context, parentRunID, delegationSourceRunID string) (GateAdmission, string, error) {
 	var out GateAdmission
+	pool := ""
 	for _, src := range []struct{ role, id string }{
 		{"parent_run_id", parentRunID},
 		{"delegation source run", delegationSourceRunID},
@@ -418,18 +441,27 @@ func (s *Service) LaunchSourceAdmission(ctx context.Context, parentRunID, delega
 		}
 		r, err := s.store.LoadRun(ctx, src.id)
 		if err != nil {
-			return GateAdmission{}, fmt.Errorf("runview: %w: the launch's %s %q: %w", store.ErrChildParentUnreadable, src.role, src.id, err)
+			return GateAdmission{}, "", fmt.Errorf("runview: %w: the launch's %s %q: %w", store.ErrChildParentUnreadable, src.role, src.id, err)
 		}
 		out.Trust = out.Trust.Lowest(r.Trust)
-		if r.Trust.Trusted() || r.ForkAuthorSubject == "" {
+		if r.Trust.Trusted() {
+			continue
+		}
+		if r.RunnerPool != "" {
+			if pool != "" && pool != r.RunnerPool {
+				return GateAdmission{}, "", fmt.Errorf("runview: the launch's %s %q executes on runner pool %q, and its other source on %q — one run executes on one pool", src.role, src.id, r.RunnerPool, pool)
+			}
+			pool = r.RunnerPool
+		}
+		if r.ForkAuthorSubject == "" {
 			continue
 		}
 		if out.ForkAuthorSubject != "" && out.ForkAuthorSubject != r.ForkAuthorSubject {
-			return GateAdmission{}, fmt.Errorf("runview: the launch's %s %q is metered on fork author %q, and its other source on %q — one run meters one author's bound", src.role, src.id, r.ForkAuthorSubject, out.ForkAuthorSubject)
+			return GateAdmission{}, "", fmt.Errorf("runview: the launch's %s %q is metered on fork author %q, and its other source on %q — one run meters one author's bound", src.role, src.id, r.ForkAuthorSubject, out.ForkAuthorSubject)
 		}
 		out.ForkAuthorSubject = r.ForkAuthorSubject
 	}
-	return out, nil
+	return out, pool, nil
 }
 
 // hookEventObservers builds ExecutorSpec.EventObservers for every

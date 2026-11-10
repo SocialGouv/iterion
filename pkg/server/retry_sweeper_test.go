@@ -759,6 +759,34 @@ func TestSweepDueRetries_APoolRemapAbandonsInsteadOfReArming(t *testing.T) {
 	// (auth store + org resolution wired) — deferred to P1b, which wires it.
 }
 
+// The fork lane's pool rule is a PERMANENT refusal on the same terms as a
+// pool remap (ADR-162 Q3): an untrusted run whose frozen pool its team's
+// mapping or another team's sovereignty now forbids is refused identically
+// every cycle, so the sweeper abandons it with the refusal's own words.
+// Mutation: drop the ErrForkLanePool branch → the retry is re-armed (red on
+// the abandon assertion).
+func TestSweepDueRetries_AForkLanePoolRefusalAbandonsInsteadOfReArming(t *testing.T) {
+	st := newFakeRetryStore()
+	st.claimWins["run-a"] = true
+	resumer := &fakeResumer{failing: fmt.Errorf("cloudpublisher: resume of run %s refused: %w: team %s is mapped to the sovereign pool %q, and its untrusted run names %q",
+		"run-a", cloudpublisher.ErrForkLanePool, "t1", "sovereign", "forks")}
+	s := newRetrySweeperServer(t, st, resumer)
+
+	at := time.Now().UTC().Add(-time.Minute)
+	s.sweepDueRetries(context.Background(), &fakeRetryLister{refs: []mongostore.RetryDueRef{dueRef("run-a", at)}}, resumer, time.Now().UTC())
+
+	reason, ok := st.abandoned["run-a"]
+	if !ok {
+		t.Fatalf("a fork-lane pool refusal must ABANDON the retry, got abandoned=%v re-armed=%v", st.abandoned, st.rearmed)
+	}
+	if !strings.Contains(reason, "sovereign") {
+		t.Fatalf("the abandon reason %q does not carry the refusal's own words", reason)
+	}
+	if len(st.rearmed) != 0 {
+		t.Fatalf("a fork-lane pool refusal must never be re-armed: %v", st.rearmed)
+	}
+}
+
 // A run whose last failure left an effect undecided is final for automation:
 // its stale armed retry is disarmed, never resumed — a resume could repeat a
 // call that already took effect, or run a node beside a command still running.

@@ -13,6 +13,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/internal/storekit"
+	"github.com/SocialGouv/iterion/pkg/queue"
 	"github.com/SocialGouv/iterion/pkg/schedgate"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
@@ -93,6 +94,29 @@ type webhookConfigReq struct {
 	// below refuses any change, so a value present on the request is
 	// honoured only when it restates the stored one.
 	ForkLane *bool `json:"fork_lane,omitempty"`
+	// ForkLanePool names the runner pool every run of the fork lane executes
+	// on (ADR-162 Q3, decision 10). Required at creation with fork_lane,
+	// refused without it, IMMUTABLE afterwards on the same terms as
+	// fork_lane: the PATCH arm honours it only as a restatement.
+	ForkLanePool *string `json:"fork_lane_pool,omitempty"`
+}
+
+// forkLanePoolCreationRefusal is the creation's word on fork_lane_pool: a
+// fork-lane config names the pool its runs execute on, an ordinary config
+// names none, and the name is a pool name. "" admits. The pool's registry
+// state, and whether a team other than this one holds it, are judged where
+// the run is published (cloudpublisher's fork-lane pool rule), because both
+// can move after the config is created.
+func forkLanePoolCreationRefusal(forkLane bool, pool string) string {
+	switch {
+	case forkLane && pool == "":
+		return "fork_lane requires fork_lane_pool: the runner pool every run of the lane executes on — a pool whose runners resolve the kubernetes sandbox for every run (ADR-162 decision 10). It is set at creation only and immutable afterwards"
+	case !forkLane && pool != "":
+		return "fork_lane_pool names the runner pool of a fork-lane config, and this config is not one (fork_lane is not set): an ordinary config's runs execute on their team's own mapping"
+	case pool != "" && !queue.ValidPoolName(pool):
+		return fmt.Sprintf("fork_lane_pool %q is not a runner pool name (1–31 chars [a-z0-9-], alphanumeric at both ends — the registry's grammar)", pool)
+	}
+	return ""
 }
 
 // forkLaneProviderRefusal is the typed creation refusal for a fork-lane
@@ -309,6 +333,17 @@ func (s *Server) handleCreateWebhook(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, "%s", forkLaneProviderRefusal(provider).Error())
 		return
 	}
+	// The lane's pool is set HERE or never (ADR-162 Q3): a fork-lane config
+	// created without one could never launch — the field is immutable — and
+	// would sit enabled swallowing every gesture as a filtered row.
+	forkLanePool := ""
+	if req.ForkLanePool != nil {
+		forkLanePool = strings.TrimSpace(*req.ForkLanePool)
+	}
+	if reason := forkLanePoolCreationRefusal(req.ForkLane != nil && *req.ForkLane, forkLanePool); reason != "" {
+		httpError(w, http.StatusBadRequest, "%s", reason)
+		return
+	}
 	wildcard := req.WildcardBots != nil && *req.WildcardBots
 	botIDs, wildcard, err := normalizeBotScope(req.BotIDs, wildcard)
 	if err != nil {
@@ -388,6 +423,7 @@ func (s *Server) handleCreateWebhook(w http.ResponseWriter, r *http.Request) {
 	if req.ForkLane != nil {
 		cfg.ForkLane = *req.ForkLane
 	}
+	cfg.ForkLanePool = forkLanePool
 	// HMAC-mode webhooks need the minted plaintext sealed at rest so a
 	// later request can recompute HMAC(body) — the operator pastes the
 	// same iwh_ value into the forge's "secret" field.
@@ -597,6 +633,15 @@ func (s *Server) handleUpdateWebhook(w http.ResponseWriter, r *http.Request) {
 	if req.ForkLane != nil && *req.ForkLane != cfg.ForkLane {
 		httpError(w, http.StatusConflict,
 			"fork_lane is immutable on an existing webhook: flipping the lane kind would re-read its parked debounce targets as the other kind and re-interpret the per-author budget's rows — delete and recreate the webhook instead")
+		return
+	}
+	// The lane's pool is immutable on the same terms: moving it would split
+	// one lane's runs across two pools, the in-flight ones resuming on the
+	// pool their documents froze and the next ones launching on the other.
+	// A restatement is a no-op, as for fork_lane.
+	if req.ForkLanePool != nil && strings.TrimSpace(*req.ForkLanePool) != cfg.ForkLanePool {
+		httpError(w, http.StatusConflict,
+			"fork_lane_pool is immutable on an existing webhook: the lane's runs are stamped with the pool at launch and every resume follows that stamp, so a new pool would split the lane across two — delete and recreate the webhook instead")
 		return
 	}
 	// An explicit overlap clear IS a deliberate gesture, and it must be a

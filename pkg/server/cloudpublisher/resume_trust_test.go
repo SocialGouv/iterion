@@ -58,6 +58,8 @@ func TestSubmitResume_CarriesTrustAndWithholdsSecretsOnTheSecondAttempt(t *testi
 		p := &Publisher{
 			store: st, genericSecrets: genericStore, botBindings: bindingStore,
 			runSecrets: runSecrets, sealer: sealer,
+			// The fork lane's pool (ADR-162 Q3), registry-active.
+			pools: activeRegistry("forks"),
 			publishRun: func(_ context.Context, msg *queue.RunMessage) error {
 				published = append(published, msg)
 				return nil
@@ -74,6 +76,9 @@ func TestSubmitResume_CarriesTrustAndWithholdsSecretsOnTheSecondAttempt(t *testi
 			RepoRef:  "refs/pull/7/head",
 			BotID:    "review-pr",
 			Trust:    trust,
+		}
+		if !trust.Trusted() {
+			spec.ForkLanePool = "forks"
 		}
 		if _, err := p.SubmitLaunch(ctx, "run-resume", spec, wf, &runview.CompiledSource{Hash: "hash"}); err != nil {
 			t.Fatalf("SubmitLaunch: %v", err)
@@ -99,7 +104,7 @@ func TestSubmitResume_CarriesTrustAndWithholdsSecretsOnTheSecondAttempt(t *testi
 			if err != nil {
 				t.Fatalf("RunSecrets.Get: %v", err)
 			}
-			if bundle, err = secrets.OpenRunBundle(mustDEKSealer(t, resume.BundleDEK), rec.TenantID, "", "run-resume", rec.KeyID, rec.SealedBundle); err != nil {
+			if bundle, err = secrets.OpenRunBundle(mustDEKSealer(t, resume.BundleDEK), rec.TenantID, resume.RunnerPool, "run-resume", rec.KeyID, rec.SealedBundle); err != nil {
 				t.Fatalf("OpenRunBundle: %v", err)
 			}
 		}

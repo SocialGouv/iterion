@@ -143,6 +143,9 @@ func TestLaunchWebhookTarget_AnUntrustedTargetIsLaunchedWithoutAHandoff(t *testi
 		}
 		ctx := auth.WithIdentity(context.Background(), auth.Identity{UserID: "u", TeamID: "t1", Role: identity.RoleMember, Kind: auth.KindWebhook})
 		cfg := webhooks.Config{ID: "wh1", TenantID: "t1", Provider: webhooks.ProviderGitHub, ForkLane: forkLane}
+		if forkLane {
+			cfg.ForkLanePool = "forks"
+		}
 		meta := webhookEventMeta{ProjectPath: "o/r", SubjectID: "pr:7", Kind: "pull_request"}
 		target := forgeLaunchTarget{
 			IdemKey: "idem-handoff-" + string(trust),

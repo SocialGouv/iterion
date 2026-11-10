@@ -1221,7 +1221,7 @@ func (s *Server) prepareWebhookTarget(
 	// retry and the board branch of dispatchInvocation cross too — the board
 	// branch before it writes any card, since a Ready card is a launch that
 	// never reaches this line.
-	if reason := webhookProvenanceRefusal(cfg.ForkLane, t.Trust, t.ExpectedSHA); reason != "" {
+	if reason := webhookProvenanceRefusal(cfg, t.Trust, t.ExpectedSHA); reason != "" {
 		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusFiltered, payloadHash, srcIP, reason)
 		if s.logger != nil {
 			s.logger.Warn("webhooks: %s/%s %s refused for %s: %s", cfg.Provider, meta.ProjectPath, meta.SubjectID, botID, reason)
@@ -1600,7 +1600,7 @@ func (t forgeLaunchTarget) forkAuthorSubject() string {
 // tracking card would outlive the tail's refusal). "" admits; otherwise the
 // refusal's wording.
 //
-// Two facts, in order:
+// Three facts, in order:
 //
 //   - Lane disjointness, both directions. A fork-lane config launching a
 //     trusted target would run a repository's own work with the fork lane's
@@ -1618,16 +1618,40 @@ func (t forgeLaunchTarget) forkAuthorSubject() string {
 //   - An untrusted launch carries the commit its admission proved. The
 //     runner's comparison is a no-op on an empty pin, so the two facts are
 //     only a guarantee together.
-func webhookProvenanceRefusal(cfgForkLane bool, trust store.RunTrust, expectedSHA string) string {
-	if (cfgForkLane && !trust.IsFork()) || (!cfgForkLane && !trust.Trusted()) {
-		return forkLaneMismatchRefusal(cfgForkLane, trust)
+//   - A fork-lane config names the runner pool its runs execute on
+//     (ADR-162 Q3 and decision 10: only through the publisher, on a runner
+//     whose sandbox resolves active). A config stored before the field
+//     existed names none, and its fork launch is refused here, before either
+//     budget is metered — the publisher would refuse it too, after the gate.
+func webhookProvenanceRefusal(cfg webhooks.Config, trust store.RunTrust, expectedSHA string) string {
+	if (cfg.ForkLane && !trust.IsFork()) || (!cfg.ForkLane && !trust.Trusted()) {
+		return forkLaneMismatchRefusal(cfg.ForkLane, trust)
 	}
 	if !trust.Trusted() && strings.TrimSpace(expectedSHA) == "" {
 		return "untrusted launch carries no admitted commit (trust=" + string(trust) +
 			"): the ref it would fetch is one its author can move, and an empty pin disables the runner's comparison entirely"
 	}
+	if cfg.ForkLane && strings.TrimSpace(cfg.ForkLanePool) == "" {
+		return forkLaneNoPoolRefusal
+	}
 	return ""
 }
+
+// forkLanePoolFor is the pool a webhook launch names for its run: the
+// fork-lane config's own for an untrusted target, none for a trusted one —
+// whose pool is its team's mapping, decided where the run is published. The
+// provenance precondition has already refused an untrusted target on an
+// ordinary config and a fork-lane config without a pool.
+func forkLanePoolFor(cfg webhooks.Config, trust store.RunTrust) string {
+	if trust.Trusted() {
+		return ""
+	}
+	return strings.TrimSpace(cfg.ForkLanePool)
+}
+
+// forkLaneNoPoolRefusal is the delivery-row reason of a fork launch on a
+// fork-lane config that names no runner pool.
+const forkLaneNoPoolRefusal = "fork lane names no runner pool — a fork run executes only on the pool its fork-lane config names, whose runners resolve the kubernetes sandbox for every run (ADR-162 decision 10), and this config predates fork_lane_pool, which is set at creation only: delete and recreate the webhook naming the pool"
 
 // forkLaneMismatchRefusal words the launch tail's lane-disjointness refusal.
 // It exists as its own helper, beside forkGuardRefusal, because the two

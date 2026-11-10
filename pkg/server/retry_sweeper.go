@@ -283,6 +283,14 @@ func (s *Server) resumeDueRetry(ctx context.Context, retryStore store.RunRetrySt
 				"auto-retry abandoned: the team's runner-pool mapping moved past the run's frozen pool — relaunch the run on the new pool")
 			return
 		}
+		// The fork lane's pool rule is permanent on the same terms: an
+		// untrusted run that names no pool, or a pool its team's mapping or
+		// another team's sovereignty now forbids, is refused identically on
+		// every cycle. It leaves before any publish too (one refund, above).
+		if errors.Is(err, cloudpublisher.ErrForkLanePool) {
+			s.abandonRetry(runCtx, retryStore, ref, fmt.Sprintf("auto-retry abandoned: %v", err))
+			return
+		}
 		// A review family nothing serves any more is permanent for the same
 		// reason: the run's inputs are frozen at launch, so every cycle
 		// replays the same pin against the same absent credential, flipping

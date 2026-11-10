@@ -61,6 +61,7 @@ func TestDispatchInvocation_RefusesProvenanceTheBoardCardCannotCarry(t *testing.
 		s := newServer(t)
 		forkCfg := cfg
 		forkCfg.ForkLane = true
+		forkCfg.ForkLanePool = "forks"
 		rec, launched := dispatch(t, s, forkCfg, string(bundle.ExecutionBoard), launchProvenance{
 			Trust: store.RunTrustFork, ExpectedSHA: "deadbeef",
 			ForkAuthor: &webhooks.ForkAuthorRef{Provider: "github", AuthorID: "4242"},
@@ -95,6 +96,7 @@ func TestDispatchInvocation_RefusesProvenanceTheBoardCardCannotCarry(t *testing.
 		// and not that one.
 		forkCfg := cfg
 		forkCfg.ForkLane = true
+		forkCfg.ForkLanePool = "forks"
 		launched := 0
 		s.webhookLaunchBot = func(context.Context, string, map[string]string, string, string, string, map[string]string, map[string]string) (string, error) {
 			launched++

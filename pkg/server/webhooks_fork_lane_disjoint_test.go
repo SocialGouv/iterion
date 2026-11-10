@@ -62,6 +62,9 @@ func TestLaunchWebhookTarget_RefusesALaneKindMismatch(t *testing.T) {
 			}
 			ctx := auth.WithIdentity(context.Background(), auth.Identity{UserID: "u", TeamID: "t1", Role: identity.RoleMember, Kind: auth.KindWebhook})
 			cfg := webhooks.Config{ID: "wh1", TenantID: "t1", Provider: webhooks.ProviderGitHub, ForkLane: c.forkLane}
+			if c.forkLane {
+				cfg.ForkLanePool = "forks"
+			}
 			meta := webhookEventMeta{ProjectPath: "o/r", SubjectID: "pr:7", Kind: "pull_request"}
 			// The vars a REAL target carries. reviewPRVars always sets
 			// pr_url, and an earlier revision of the grant withdrawal turned
@@ -159,7 +162,7 @@ func TestLaunchWebhookTarget_TrustPredicateAndPinCoupling(t *testing.T) {
 	// branch wrote that hazard down as a comment; it has to be a check.
 	t.Run("an untrusted launch with no admitted commit is refused", func(t *testing.T) {
 		s, ctx, _, launched := newCase(t)
-		cfg := webhooks.Config{ID: "wh1", TenantID: "t1", Provider: webhooks.ProviderGitHub, ForkLane: true}
+		cfg := webhooks.Config{ID: "wh1", TenantID: "t1", Provider: webhooks.ProviderGitHub, ForkLane: true, ForkLanePool: "forks"}
 		target := forgeLaunchTarget{
 			IdemKey: "idem-nopin", BotID: "review-pr", Vars: vars(),
 			Trust: store.RunTrustFork, ExpectedSHA: "   ", // blank reads as absent everywhere
@@ -176,7 +179,7 @@ func TestLaunchWebhookTarget_TrustPredicateAndPinCoupling(t *testing.T) {
 	// And the pairing that MUST work, or the lane cannot exist.
 	t.Run("a fork lane with a pinned commit launches", func(t *testing.T) {
 		s, ctx, _, launched := newCase(t)
-		cfg := webhooks.Config{ID: "wh1", TenantID: "t1", Provider: webhooks.ProviderGitHub, ForkLane: true}
+		cfg := webhooks.Config{ID: "wh1", TenantID: "t1", Provider: webhooks.ProviderGitHub, ForkLane: true, ForkLanePool: "forks"}
 		target := forgeLaunchTarget{
 			IdemKey: "idem-ok", BotID: "review-pr", Vars: vars(),
 			Trust: store.RunTrustFork, ExpectedSHA: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
