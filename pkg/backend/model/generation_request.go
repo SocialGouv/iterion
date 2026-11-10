@@ -172,11 +172,80 @@ func buildRequest(opts GenerationOptions, messages []api.Message, extraTools []a
 		blocks := make([]api.ContentBlock, len(opts.SystemBlocks))
 		copy(blocks, opts.SystemBlocks)
 		systemTexts := make([]string, 0, len(blocks))
+		lastServed := -1
 		for i := range blocks {
 			blocks[i].Text = screen(blocks[i].Text)
 			if blocks[i].Type == "text" && strings.TrimSpace(blocks[i].Text) != "" {
 				systemTexts = append(systemTexts, blocks[i].Text)
+				lastServed = i
 			}
+		}
+		// The system prefix ends on a cache breakpoint, like the tools array
+		// below — but ONLY where a later request reuses it. The cache writes
+		// at ~1.25x and reads at a fraction (~0.1x, lower on the newer
+		// models), so the break-even is two requests and extending a written
+		// prefix over bytes nothing reads again costs ~0.25x of THEM.
+		//
+		// This gate decides the TAIL only, and the tail is where the bytes
+		// are: the corpus runs to clawAmbientMaxBytes. It does not decide the
+		// other two markers on the same request, which are unconditional and
+		// older than it — block 0, set by the claw backend for every node,
+		// and the last tool below. So a one-shot request still writes its
+		// posture and its tools array; what it no longer does is drag the
+		// corpus into that write.
+		//
+		// `opts.Tools` is the discriminator because it is the slice
+		// GenerateTextDirect loops over: a node with no tools answers in one
+		// turn (the loop breaks on the first reply carrying no tool_use), and
+		// the structured path nils it, handing its synthetic tool through
+		// extraTools. Not "one turn" though — GenerateObjectDirect re-asks
+		// once on a schema-invalid answer with a byte-identical prefix, and a
+		// claw schema re-ask runs tool-less by construction (executor_reask
+		// clears ToolDefs). So marking is a bet on a second turn arriving.
+		//
+		// MEASURED against the real API (claude-haiku-4-5, a 32 KB corpus
+		// behind a short posture — the production shape; two identical
+		// requests per arm):
+		//
+		//	tail unmarked:  input 8488, write 0,    read 0     (both calls)
+		//	tail marked:    input  329, write 8159, read 0     (call 1)
+		//	                input  329, write 0,    read 8159  (call 2)
+		//
+		// The corpus is 96% of the billed prefix, and block 0 alone is far
+		// below the minimum cacheable prefix (512-4096 tokens by model), so
+		// the unmarked arm caches NOTHING despite its own marker. Over two
+		// turns marking saves 31%; on a request with no second turn it costs
+		// 24%. Break-even: a second turn must arrive better than ~22% of the
+		// time — which is why a schema re-ask, far rarer than that, does not
+		// earn the marker, and why the gate is keyed on the loop rather than
+		// on the presence of a corpus worth caching.
+		//
+		// Where a second turn IS possible, the prompt cache covers a prefix
+		// up to and INCLUDING a marked block, so a block sitting after the
+		// last marker is re-billed at full input price every turn: the
+		// ambient-context block (clawAmbientSystemContext, appended after the
+		// system prompt's own marker) is that block on every claw node whose
+		// policy includes the workspace — the default — and it carries the
+		// repository's whole instruction corpus, bounded at
+		// clawAmbientMaxBytes. Marking the tail HERE is the one point every
+		// composer crosses, so a caller that appends a block owes no re-mark
+		// of its own (the memory blocks carry one, memory_tools.go, which
+		// this makes redundant rather than wrong). An unserved block — empty,
+		// or emptied by the model boundary's screen — never takes the marker:
+		// it would spend a breakpoint (4 per request) on bytes no model reads.
+		//
+		// The prefix this closes is still per-NODE, since the posture and the
+		// node's task sit in block 0 ahead of the shared corpus: the entry is
+		// written once per node and read by that node's later turns, not
+		// across nodes. Making it run-invariant means emitting the corpus
+		// BEFORE the posture, which reorders what the model reads first and
+		// is a behaviour change, not a cost one.
+		// `<= 0` means "take the default", which is what every consumer of
+		// MaxSteps reads it as; `== 0` would have called a negative budget
+		// one-shot while the loop ran it ten times.
+		multiTurn := len(opts.Tools) > 0 && (opts.MaxSteps <= 0 || opts.MaxSteps > 1)
+		if lastServed >= 0 && multiTurn {
+			blocks[lastServed].CacheControl = api.EphemeralCacheControl()
 		}
 		req.SystemBlocks = blocks
 		req.System = strings.Join(systemTexts, "\n\n")

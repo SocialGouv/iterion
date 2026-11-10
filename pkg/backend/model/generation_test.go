@@ -1638,6 +1638,196 @@ func TestBuildRequest_MirrorsMultipleSystemBlocksInOrder(t *testing.T) {
 	}
 }
 
+// TestBuildRequest_MarksTheLastServedSystemBlock reddens when the system
+// prefix stops being closed by a breakpoint: the prompt cache covers a prefix
+// up to and including a marked block, so the block a composer appends AFTER
+// the system prompt's own marker — the ambient-context corpus every claw node
+// receives under the default policy — is re-billed on every tool turn unless
+// the tail carries one. The blank trailing block is the second half of the
+// contract: a breakpoint (4 per request) is not spent on bytes no model reads.
+func TestBuildRequest_MarksTheLastServedSystemBlock(t *testing.T) {
+	opts := GenerationOptions{
+		Model: "claude-sonnet-4-6",
+		// A tool loop: the only shape a second turn can reuse the prefix in.
+		Tools: []GenerationTool{{Name: "bash", Description: "run"}},
+		SystemBlocks: []api.ContentBlock{
+			{
+				Type:         "text",
+				Text:         "the operating posture and the node's task",
+				CacheControl: api.EphemeralCacheControl(),
+			},
+			// What clawAmbientSystemContext appends: no marker of its own.
+			{Type: "text", Text: "<project_instructions>AGENTS.md…</project_instructions>"},
+			{Type: "text", Text: "  "},
+		},
+	}
+
+	req, err := buildRequest(opts, []api.Message{{Role: "user"}}, nil, nil)
+	if err != nil {
+		t.Fatalf("buildRequest: %v", err)
+	}
+	if len(req.SystemBlocks) != 3 {
+		t.Fatalf("SystemBlocks len = %d, want 3", len(req.SystemBlocks))
+	}
+	if req.SystemBlocks[1].CacheControl == nil {
+		t.Error("the appended ambient block closes the system prefix: want an ephemeral marker, got none")
+	} else if req.SystemBlocks[1].CacheControl.Type != "ephemeral" {
+		t.Errorf("SystemBlocks[1].CacheControl.Type = %q, want ephemeral", req.SystemBlocks[1].CacheControl.Type)
+	}
+	if req.SystemBlocks[2].CacheControl != nil {
+		t.Error("a blank block serves no model: it must not spend a breakpoint")
+	}
+	// The caller's own marker is left where it put it, so a request that
+	// shares only the posture still hits on that shorter prefix.
+	if req.SystemBlocks[0].CacheControl == nil {
+		t.Error("the caller's marker on the first block must survive")
+	}
+	// Anthropic admits 4 breakpoints per request, and the tools array takes
+	// one of its own (marked below in buildRequest).
+	marks := 0
+	for _, b := range req.SystemBlocks {
+		if b.CacheControl != nil {
+			marks++
+		}
+	}
+	if marks > 3 {
+		t.Errorf("system breakpoints = %d, want at most 3 so the tools array keeps one", marks)
+	}
+}
+
+// TestBuildRequest_SingleSystemBlockTakesExactlyOneMarker is the one-block
+// shape the claw backend builds when a node's policy excludes the workspace
+// (ambient_context: none). It carries NO caller marker on purpose: with one,
+// the assertion would witness what the caller wrote rather than what
+// buildRequest does, and no mutation of this function could redden it.
+func TestBuildRequest_SingleSystemBlockTakesExactlyOneMarker(t *testing.T) {
+	opts := GenerationOptions{
+		Model: "claude-sonnet-4-6",
+		Tools: []GenerationTool{{Name: "bash", Description: "run"}},
+		SystemBlocks: []api.ContentBlock{{
+			Type: "text",
+			Text: "the operating posture and the node's task",
+		}},
+	}
+	req, err := buildRequest(opts, []api.Message{{Role: "user"}}, nil, nil)
+	if err != nil {
+		t.Fatalf("buildRequest: %v", err)
+	}
+	if len(req.SystemBlocks) != 1 {
+		t.Fatalf("SystemBlocks len = %d, want 1", len(req.SystemBlocks))
+	}
+	marks := 0
+	for _, b := range req.SystemBlocks {
+		if b.CacheControl != nil {
+			marks++
+		}
+	}
+	if marks != 1 {
+		t.Errorf("system breakpoints = %d, want exactly 1 (the tail, not spent twice)", marks)
+	}
+}
+
+// TestBuildRequest_AOneShotRequestTakesNoSystemMarker is the sign witness. The
+// cache writes at ~1.25x and reads at ~0.1x, so marking a prefix no second
+// request will read COSTS ~0.25x of it. Two shapes are one-shot and must stay
+// unmarked: a node with no tools (the loop breaks on the first reply carrying
+// no tool_use) and the structured path, which nils opts.Tools and hands its
+// synthetic tool through extraTools for a single turn.
+func TestBuildRequest_AOneShotRequestTakesNoSystemMarker(t *testing.T) {
+	blocks := []api.ContentBlock{
+		{Type: "text", Text: "the operating posture and the node's task"},
+		{Type: "text", Text: "<project_instructions>AGENTS.md…</project_instructions>"},
+	}
+	cases := []struct {
+		name  string
+		opts  GenerationOptions
+		extra []api.Tool
+		cheap *api.ToolChoice
+	}{
+		{
+			name: "no tools at all",
+			opts: GenerationOptions{Model: "claude-sonnet-4-6", SystemBlocks: blocks},
+		},
+		{
+			name:  "structured output: tools nil, synthetic tool via extraTools",
+			opts:  GenerationOptions{Model: "claude-sonnet-4-6", SystemBlocks: blocks},
+			extra: []api.Tool{{Name: "structured_output"}},
+			cheap: &api.ToolChoice{Type: "tool", Name: "structured_output"},
+		},
+		{
+			name: "a tool loop bounded to a single step",
+			opts: GenerationOptions{
+				Model:        "claude-sonnet-4-6",
+				SystemBlocks: blocks,
+				Tools:        []GenerationTool{{Name: "bash", Description: "run"}},
+				MaxSteps:     1,
+			},
+		},
+		{
+			// The production shape with workspace memory on: posture,
+			// ambient corpus, memory index, autoload. A predicate keyed on
+			// the BLOCK COUNT instead of on the caller's loop passes the
+			// two-block cases above and marks this one.
+			name: "the four-block memory shape, still one-shot",
+			opts: GenerationOptions{
+				Model: "claude-sonnet-4-6",
+				SystemBlocks: []api.ContentBlock{
+					{Type: "text", Text: "the operating posture and the node's task"},
+					{Type: "text", Text: "<project_instructions>AGENTS.md…</project_instructions>"},
+					{Type: "text", Text: "<workspace_memory_index>…</workspace_memory_index>"},
+					{Type: "text", Text: "<workspace_memory>…</workspace_memory>"},
+				},
+			},
+		},
+		{
+			name: "a negative step budget reads as the default, not as one-shot",
+			opts: GenerationOptions{
+				Model:        "claude-sonnet-4-6",
+				SystemBlocks: blocks,
+				MaxSteps:     -1,
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req, err := buildRequest(tc.opts, []api.Message{{Role: "user"}}, tc.extra, tc.cheap)
+			if err != nil {
+				t.Fatalf("buildRequest: %v", err)
+			}
+			for i, b := range req.SystemBlocks {
+				if b.CacheControl != nil {
+					t.Errorf("SystemBlocks[%d] carries a marker: a one-shot request pays the write and never reads it", i)
+				}
+			}
+		})
+	}
+}
+
+// TestBuildRequest_UnservedSystemBlocksTakeNoMarker covers the all-blank
+// shape: nothing is served, so nothing is marked and the request still builds.
+func TestBuildRequest_UnservedSystemBlocksTakeNoMarker(t *testing.T) {
+	opts := GenerationOptions{
+		Model: "claude-sonnet-4-6",
+		Tools: []GenerationTool{{Name: "bash", Description: "run"}},
+		SystemBlocks: []api.ContentBlock{
+			{Type: "text", Text: ""},
+			{Type: "text", Text: "\n\t "},
+		},
+	}
+	req, err := buildRequest(opts, []api.Message{{Role: "user"}}, nil, nil)
+	if err != nil {
+		t.Fatalf("buildRequest: %v", err)
+	}
+	for i, b := range req.SystemBlocks {
+		if b.CacheControl != nil {
+			t.Errorf("SystemBlocks[%d] is unserved and must take no marker", i)
+		}
+	}
+	if req.System != "" {
+		t.Errorf("System = %q, want empty", req.System)
+	}
+}
+
 func TestBuildRequest_FallsBackToSystemString(t *testing.T) {
 	opts := GenerationOptions{
 		Model:  "claude-sonnet-4-6",
