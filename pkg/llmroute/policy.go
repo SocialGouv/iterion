@@ -25,7 +25,6 @@ package llmroute
 
 import (
 	"fmt"
-	"path"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/backend/backendcaps"
@@ -398,18 +397,25 @@ func ConsumesProviderHint(backend string) (chains, single bool) {
 // provider value as a pin at its dispatch chokepoint — the value-aware
 // half of ConsumesProviderHint. claude_code walks every step and refuses
 // an unfunded hint loudly at dispatch, so any validated value is
-// honoured; claw acts on the hint at exactly one switch (its registry's
-// force-Anthropic-direct branch, wired to the model twin) and ignores
-// every other value there — the spend then follows the default
-// precedence, the silent misroute a policy pin must not certify. Kept
-// local to avoid importing the model executor; the drift test lives
-// in projections_test.go.
+// honoured; claw acts on two values — `anthropic` at its registry's
+// force-Anthropic-direct branch, `openai_compatible` at the gateway
+// crossing check, which serves the gateway model the hint names and
+// refuses any other model loudly, a model condition the launch enforces on
+// the elements a run's cells compose (runview's gateway crossing check) —
+// and ignores every other value: the
+// spend then follows the default precedence, the silent misroute a policy
+// pin must not certify. Kept local to avoid importing the model executor;
+// the drift test lives in projections_test.go.
 func HonoursProviderHintValue(backend, provider string) bool {
 	switch backend {
 	case HarnessClaudeCode:
 		return true
 	case HarnessClaw:
-		return strings.ToLower(strings.TrimSpace(provider)) == "anthropic"
+		switch strings.ToLower(strings.TrimSpace(provider)) {
+		case "anthropic", ProviderOpenAICompatible:
+			return true
+		}
+		return false
 	default:
 		return false
 	}
@@ -451,10 +457,26 @@ type overrideCell struct {
 }
 
 var overrideCells = []overrideCell{
-	{"backend", func(o Override) string { return o.Backend }, func(o *Override, v string) { o.Backend = v }},
-	{"model", func(o Override) string { return o.Model }, func(o *Override, v string) { o.Model = v }},
-	{"provider", func(o Override) string { return o.Provider }, func(o *Override, v string) { o.Provider = v }},
-	{"effort", func(o Override) string { return o.Effort }, func(o *Override, v string) { o.Effort = v }},
+	{OverrideFieldBackend, func(o Override) string { return o.Backend }, func(o *Override, v string) { o.Backend = v }},
+	{OverrideFieldModel, func(o Override) string { return o.Model }, func(o *Override, v string) { o.Model = v }},
+	{OverrideFieldProvider, func(o Override) string { return o.Provider }, func(o *Override, v string) { o.Provider = v }},
+	{OverrideFieldEffort, func(o Override) string { return o.Effort }, func(o *Override, v string) { o.Effort = v }},
+}
+
+// The fields of an override cell, as its provenance key names them
+// (OverrideCellKey).
+const (
+	OverrideFieldBackend  = "backend"
+	OverrideFieldModel    = "model"
+	OverrideFieldProvider = "provider"
+	OverrideFieldEffort   = "effort"
+)
+
+// OverrideCellKey is the provenance key Resolve records an override cell's
+// level under: overrides.<selector>.<field>, the selector as the level
+// wrote it.
+func OverrideCellKey(selector, field string) string {
+	return FieldOverrides + "." + selector + "." + field
 }
 
 // providerHintTokens splits a provider cell into its tokens, keeping the
@@ -495,8 +517,9 @@ func providerHintTokens(raw string) []providerHintToken {
 // validateOverride checks one entry: the selector's syntax, each pinned
 // value's vocabulary, and that the entry pins SOMETHING — ModelOverrides.add
 // drops an empty entry silently, which at a write surface is a typo that
-// looks like it landed.
-func validateOverride(o Override) error {
+// looks like it landed. gatewayModels adds the write surfaces' gateway-model
+// rule (gatewayHintModels).
+func validateOverride(o Override, gatewayModels bool) error {
 	sel := strings.TrimSpace(o.Selector)
 	if sel == "" {
 		return fmt.Errorf("selector is empty")
@@ -507,10 +530,22 @@ func validateOverride(o Override) error {
 	if strings.ContainsAny(sel, ".$") {
 		return fmt.Errorf("selector %q — a '.' or '$' would poison the provenance key overrides.<selector>.<field>, persisted as a BSON document", sel)
 	}
-	if strings.ContainsAny(sel, "*?[") {
-		if _, err := path.Match(sel, ""); err != nil {
-			return fmt.Errorf("selector %q is not a valid glob: %v", sel, err)
+	parsed, err := ParseSelector(sel)
+	if err != nil {
+		return err
+	}
+	switch parsed.Class {
+	case SelectorRoute, SelectorSupervisor:
+		// The bot dimension the scoped classes owe (ADR-132 §2, D21): a
+		// node id or a supervisor name collides across bots, so a cell
+		// with no bot re-pins every same-named route or supervisor of
+		// every bot the level reaches.
+		if parsed.Bot == "" {
+			return fmt.Errorf("selector %q names no bot — a route-scoped or supervisor selector carries its bot (<bot>/%s): node ids and supervisor names collide across bots, so a cell without one would re-pin every bot's same-named site (write \"*/%s\" to mean every bot)", sel, sel, sel)
 		}
+	}
+	if err := classFieldRule(parsed, sel, o.Backend, o.Provider, o.Effort); err != nil {
+		return err
 	}
 	pinned := 0
 	for _, c := range overrideCells {
@@ -565,12 +600,42 @@ func validateOverride(o Override) error {
 					return fmt.Errorf("provider %q names %q on backend %q — this harness acts on none of this value at its routing chokepoint, so the gate would certify a pin the harness silently ignores; the spend would follow the default precedence", o.Provider, s, o.Backend)
 				}
 			}
+			if gatewayModels && s == ProviderOpenAICompatible {
+				if err := gatewayHintModels(o, t); err != nil {
+					return err
+				}
+			}
 		}
 	}
 	if pinned == 0 {
 		return fmt.Errorf("selector %q pins nothing — an entry that pins no field would be dropped silently at the fold, so the typo would look like it landed", sel)
 	}
 	return nil
+}
+
+// gatewayHintModels judges a gateway-hint step against the models the
+// cell itself writes. Dispatch refuses the gateway hint beside a model
+// that is not a gateway route on every backend
+// (model.GatewayCrossingRefusal), and a step dispatches its own model —
+// the `openai_compatible:<model>` half — else the cell's. The cell's
+// `model` is judged even beside a step carrying its own gateway model: on
+// a node cell it is the model the node's routes naming none inherit, so a
+// cell naming the gateway hint pins a gateway model. A model this cell
+// leaves to another cell or to the bot is the launch's to judge on the
+// composed element (runview's gateway crossing check), never this entry's.
+// It is a write surface's rule (Validate): the launch's reading of a stored
+// layer (ValidateStored) leaves the whole crossing to that check.
+func gatewayHintModels(o Override, t providerHintToken) error {
+	if t.hasModel && !IsGatewayModel(t.modelRaw) {
+		return fmt.Errorf("provider %q names %q — the gateway hint serves gateway models only (%s/<gateway model id>), and dispatch refuses the step's own model %q on every backend", o.Provider, t.stepRaw, ProviderOpenAICompatible, t.modelRaw)
+	}
+	if o.Model == "" || IsGatewayModel(o.Model) {
+		return nil
+	}
+	if t.hasModel {
+		return fmt.Errorf("provider %q names %q beside model %q — the gateway hint serves gateway models only (%s/<gateway model id>): a cell naming it pins a gateway model", o.Provider, t.stepRaw, o.Model, ProviderOpenAICompatible)
+	}
+	return fmt.Errorf("provider %q names %q beside model %q — the gateway hint serves gateway models only (%s/<gateway model id>), and dispatch refuses this step on every backend", o.Provider, t.step, o.Model, ProviderOpenAICompatible)
 }
 
 // ValidateComposedPair cross-checks the (backend, provider) pair the
@@ -615,6 +680,32 @@ func ValidateComposedPair(backend, backendFrom, provider, providerFrom string) e
 // the offending field. An UNSET field (empty) is legal at any single level
 // — inherit is the norm; only values that are set must be well-formed.
 func Validate(p Policy) error {
+	return validatePolicy(p, true)
+}
+
+// ValidateStored is the launch's reading of a stored layer: Validate
+// without the two rules a write surface adds to the fold's own reading.
+// The gateway-model rule (gatewayHintModels) pre-checks one entry for the
+// crossing dispatch refuses (model.GatewayCrossingRefusal); the launch
+// judges the crossing itself, per site, on the element the folded cells
+// compose (runview's gateway crossing check). A record a write surface now
+// refuses for a gateway step dispatch never builds — the tail of a claw
+// chain — or for a cell that reaches none of the launched bot's nodes
+// therefore refuses no launch, and one dispatch does build is refused for
+// the bot it reaches, naming the cell. The every-bot spelling rule refuses
+// `x` beside `*/x` on one field; the fold decides that pair (at one level
+// `x`, the cell that answered the site before `*/` reached every bot), so a
+// stored level holding both — written when `*/x` was a glob no node id
+// matched — refuses no launch.
+// Every other rule holds: a record the fold cannot read refuses the launch.
+func ValidateStored(p Policy) error {
+	return validatePolicy(p, false)
+}
+
+// validatePolicy reads p with the fold's rules; write adds the write
+// surfaces' two: the gateway-model rule (validateOverride) and `*/x` and
+// `x` as one selector on a field.
+func validatePolicy(p Policy, write bool) error {
 	// An explicit empty list is refused, not honored: it would read as
 	// "the run may occupy nothing" / "no trigger may fire" on one read and
 	// as "inherit" after a record round-trip (omitempty erases it) — two
@@ -686,21 +777,32 @@ func Validate(p Policy) error {
 		return fmt.Errorf("llmroute: cross_harness %q — want %q, %q or %q", p.CrossHarness, CrossHarnessOff, CrossHarnessReuse, CrossHarnessRestart)
 	}
 	for _, o := range p.Overrides {
-		if err := validateOverride(o); err != nil {
+		if err := validateOverride(o, write); err != nil {
 			return fmt.Errorf("llmroute: overrides: %w", err)
 		}
 	}
-	seenCell := map[string]bool{}
+	// One cell per (selector, field): Resolve keeps the first of two. At
+	// the write gate `*/x` and `x` both reach every bot (Selector.MatchBot),
+	// so they are one selector there: keyed on the target. A stored level
+	// holding both is read — the fold decides the pair (ValidateStored).
+	seenCell := map[string]string{}
 	for _, o := range p.Overrides {
+		selector := o.Selector
+		if sel, err := ParseSelector(o.Selector); write && err == nil && sel.MatchBot(BotIdentity{}) == BotMatchAll {
+			selector = sel.Target
+		}
 		for _, cell := range overrideCells {
 			if cell.get(o) == "" {
 				continue
 			}
-			key := o.Selector + "\x00" + cell.name
-			if seenCell[key] {
-				return fmt.Errorf("llmroute: overrides pins %s.%s twice — the later would silently win", o.Selector, cell.name)
+			key := selector + "\x00" + cell.name
+			if written, seen := seenCell[key]; seen {
+				if written != o.Selector {
+					return fmt.Errorf("llmroute: overrides pins %s.%s and %s.%s — %q and %q are one selector (a `*/` bot part reaches every bot, as no bot part does), and at one level a launch keeps the one without a bot part (%q), whichever was meant: pin the field on one of them", written, cell.name, o.Selector, cell.name, written, o.Selector, selector)
+				}
+				return fmt.Errorf("llmroute: overrides pins %s.%s twice — the fold would silently keep the first", o.Selector, cell.name)
 			}
-			seenCell[key] = true
+			seenCell[key] = o.Selector
 		}
 	}
 	if p.Providers != nil && len(p.Providers) == 0 {
@@ -777,6 +879,34 @@ const (
 	SourceDefault  = "default"
 	SourceCeiling  = "platform_ceiling"
 )
+
+// sourceRanks places the labels of the layers a launch resolves on the
+// precedence line resolveRunLLMRoutePolicy stacks them in, nearest the
+// launch first: the run's own layer, a binding (webhook, schedule,
+// trigger), the bot's manifest, the team, the org, the platform record,
+// the env dials.
+var sourceRanks = map[string]int{
+	SourceRun:      0,
+	SourceWebhook:  1,
+	SourceSchedule: 1,
+	SourceTrigger:  1,
+	SourceBot:      2,
+	SourceTeam:     3,
+	SourceOrg:      4,
+	SourcePlatform: 5,
+	SourceEnv:      6,
+}
+
+// SourceRank reports a layer label's place on the precedence line — 0 is
+// the run's own layer, a higher rank a level farther from the launch. ok is
+// false for a label no launch layer carries ("default", a lock's stamp, an
+// unknown word). The launch fold reads a cell's rank from its provenance
+// (OverrideCellKey) to decide between two cells that reach one site, so the
+// launch refuses a layer list out of this order.
+func SourceRank(label string) (rank int, ok bool) {
+	rank, ok = sourceRanks[label]
+	return rank, ok
+}
 
 // Resolve overlays layers FIELD BY FIELD, highest priority first, and
 // reports which layer won each field.
@@ -985,7 +1115,7 @@ func Resolve(layers ...Layer) (Policy, map[string]string) {
 			out.Overrides = append(out.Overrides, ov)
 		}
 		for k, s := range cellSrc {
-			src[FieldOverrides+"."+k.selector+"."+k.field] = s
+			src[OverrideCellKey(k.selector, k.field)] = s
 		}
 	}
 	if _, locked := lockedFrom[FieldOverrides]; locked && ovCells == 0 {

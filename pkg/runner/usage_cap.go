@@ -977,11 +977,11 @@ func preflightSupervisors(ctx context.Context, wf *ir.Workflow, msg *queue.RunMe
 		return nil
 	}
 	funded := map[string]supervise.Spec{}
-	for _, spec := range runview.FundedSupervisorSpecs(ctx, supervise.SpecsFromWorkflow(wf, vars, logger), msg.ContentBoundary, msg.RunnerPool, logger) {
+	for _, spec := range runview.FundedSupervisorSpecs(ctx, supervise.SpecsFromWorkflow(wf, vars, modelOverridesFromMsg(msg.ModelOverrides), logger), msg.ContentBoundary, msg.RunnerPool, logger) {
 		funded[spec.Name] = spec
 	}
 	var out []supervisorRoute
-	for _, site := range model.CallSites(model.RouteView{Workflow: wf, Vars: vars}, nil) {
+	for _, site := range model.CallSites(model.RouteView{Workflow: wf, Overrides: modelOverridesFromMsg(msg.ModelOverrides), Vars: vars}, nil) {
 		if site.Kind != model.SiteSupervisor {
 			continue
 		}

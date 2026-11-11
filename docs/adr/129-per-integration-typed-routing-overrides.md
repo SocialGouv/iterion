@@ -271,11 +271,22 @@ The rest of the validation, with the refusal naming the offending field:
   assertion inside `package llmroute` is an import cycle.
 - `providers` entries are known providers or `openai_compatible`; an empty list is refused (a level
   that must forbid everything has no run to make — the honest spelling is to refuse the bot).
-- two cells with the same (selector, field) **within one level** are refused: the later would
-  silently win. Across levels that is the fold's job, and the fold says who won.
+- two cells with the same (selector, field) **within one level** are refused: the fold would
+  silently keep the first. Across levels that is the fold's job, and the fold says who won. (Amended
+  2026-11-11: the write gate takes `*/x` and `x` as one selector here — both reach every bot,
+  ADR-132 D21. A stored record holding both on one field is read at launch
+  (`llmroute.ValidateStored`) and the fold decides the pair: at that level `x` wins, the cell that
+  routed the site when `*/x` was a glob no node id matched.)
 
 A record carrying a block the fold cannot read refuses the **launch**, naming the level and the
 field — `route_resolve.go:96` already does this for every layer, and the new fields inherit it.
+(Amended 2026-11-11: the launch reads a stored layer with `llmroute.ValidateStored`, the write gate
+without its gateway-model rule — a gateway step or cell model that is not a gateway route is a
+dispatch verdict, not a reading one, and the launch judges it per node on the composed element, so
+one bot's dead step never refuses every launch of the level. The platform-credentials PUT reads the
+stored block it does not replace the same way, so that block never refuses an edit of the record's
+other fields; a block the request supplies meets the write gate — a launch's own `llm_routing` and
+the credential preview's included, refused 400 at the request (`validateRequestRouting`).)
 
 ### 4. One reading of a routing field, and vars that narrow the gate only by PROVENANCE
 
@@ -439,7 +450,13 @@ and the studio dropdown both record `"*"` (`splitSelectorValue`, :206-210). So a
 button, on exactly the nodes this feature exists to pin — philosophy §1's "never silently replace an
 operator's explicit choice". `modelOverrideRule` therefore gains a layer `rank`, `ForNode` compares
 `(rank, score)` lexicographically, and `MergeOver` stamps `o`'s rows one rank above `base`'s. Eight
-lines, one file, and the stated line becomes true for every selector pair.
+lines, one file, and the stated line becomes true for every selector pair. (Amended 2026-11-11: it
+does between `MergeOver`'s two layers — a CLI resume's flags over the rows its run recorded
+(`TestMergeOver_TheTopLayerWinsAtEverySelectorPair`). The launch's fold of the policy's cells under
+its own rows, below, carries no rank across the wire: a launch row wins a cell on the same selector
+and a launch `*` row overrides its field in every node cell, but a cell on a more specific node
+selector than a launch row other than `*` still wins the field both pin — a `reviewer_claude` cell
+beats a `reviewer_*` launch row (`TestEffectiveModelOverrides_AMoreSpecificCellBeatsALaunchGlobRow`).)
 
 The launch folds the two into **one** list at a named helper — `runview.EffectiveModelOverrides(launchRows, policy)` —
 called by **both** launch-shaped entries: `Service.Launch` (`service_launch.go:221`, :320) and
@@ -452,7 +469,16 @@ candidates, pool wants and warnings for credentials the launch never acquires, a
 would stay green over the wrong surface.
 
 That one list is what is stamped on the run document, what rides `queue.RunMessage.ModelOverrides`,
-what both resumes replay, and what every pre-flight reads. No reader anywhere learns a second input;
+what every resume replays — the cloud runner's, the CLI's and the in-process one, whose supervisors
+and session board read the rows its executor dispatches with — and what every pre-flight reads. A
+subbot child is a run of its own bot: it folds the root run's frozen snapshot again for that bot
+(`runview.FoldForSubbotChild`), under the root's own launch rows, and the parent's list does not
+travel. Those raw launch rows — the launch body's or the CLI's, before any cell folded in — ride the
+run document beside the list (`store.Run.LaunchModelOverrides`, stamped at launch, carried by a fork,
+never re-derived): the subbot children of the run's tree are their one reader. A document written before the field
+records none: when its snapshot froze no override cell its folded list is its launch rows, which its children fold; with
+cells the two cannot be split, so the run log warns the rows no cell explains and no child folds them
+(`runview.SubbotRootLaunchRows`, every lane). No reader anywhere learns a second input;
 philosophy §5's "never a second source of truth" is honoured by folding once rather than by teaching
 seven readers to fold.
 
@@ -720,3 +746,79 @@ than re-polarized, so there is no string knob left to fail open.
 ## Amendment 2026-10-21 — the acceptance run is team-funded
 
 §4's "an env-funded run stays provable through a var — which is #2005's shape exactly" and §7's "is classified env-funded, and seals nothing" predate the operator's decision of 2026-10-21 ([ADR-131](131-tenant-gateway-credential.md)). From #2005 PR-C' on (§5), the acceptance run holds the team's `openai_compatible` key, is classified team-funded, and seals exactly that key with its base URL; from PR-R on (§8), override cells gain the selector class `supervisor:<name>` so an integration can pin a supervisor's route beside its nodes. Until those land, the acceptance run is env-funded as §4 and §7 say, and selectors stay as `policy.go` lists them.
+
+## Amendment 2026-11-10 — cells reach routes and supervisors, and a claw cell may pin the gateway hint
+
+The operator's decision of 2026-11-10 (every product team routes its Revi onto its own gateway key
+through this record's cells, not through env dials nor bot edits) met three limits of the shipped
+shape. All three are closed in `feat/routing-cells-node-selectors`; what the code does:
+
+- **Selectors** (ADR-132 §2 D21, ADR-131 §8). §3's selector vocabulary gains `<node>#<route>` — an
+  authored `fallbacks:` route, by the site key the walk records it under — and `supervisor:<name>`,
+  each behind an optional bot dimension `<bot>/` that is REQUIRED on those two forms
+  (`llmroute.ParseSelector`, `validateOverride`). The bot dimension resolves at the one launch fold
+  (`runview.policyOverrideEntries`, keyed on `LaunchSpec.BotID` and `LaunchSpec.BotManifestName`): a
+  cell for another bot drops, one for this bot folds as its bare target. On one target the more
+  specific bot part wins — no bot part and `*/` < a glob < the manifest name < the bot id — then the
+  level the cell's provenance names (`llmroute.SourceRank`; `resolveRunLLMRoutePolicy` refuses a
+  layer list out of that order), then a cell over its every-bot spelling (`x` over `*/x`), then the
+  written selector first in byte order, which no other level moves; `*/x` and `x` are one selector
+  to the write gate, refused on one field of one level like any duplicate (§3), and a stored record
+  holding both folds, `x` keeping the field it answered before `*/x` reached every bot. A bot's
+  manifest writes no cell (§1: `bundle.RoutingSpec` carries no `overrides`); its
+  `locks: [overrides]` vetoes the binding's and the run's cells. A launch's own rows carry no bot
+  dimension and obey the same per-class field rules (`llmroute.ValidateLaunchRow`). The snapshot and its provenance keys
+  (`overrides.<selector>.<field>`) keep the selector as the level wrote it; the folded list — §6's
+  one list, unchanged on the wire — carries this bot's. A subbot child folds the snapshot its root run
+  froze at launch again, for its own bot — its bundle's slug and manifest name, the identity a
+  top-level launch of that bundle carries (`runview.SubbotChildBotIdentity`) — through the same body
+  and screens (`runview.FoldForSubbotChild`, cloud and in-process lanes alike): a cell for the
+  parent's bot does not reach the child, one for the child's does, and the parent's folded list does
+  not reach it. The root run's own launch rows (`store.Run.LaunchModelOverrides`, bot-free) fold on
+  top for every child of the tree, as at the root; the CLI hands a child its launch flags, a CLI
+  resume the run's recorded launch rows under its own flags. The snapshot's bot level is the root
+  run's — the launched bot's — manifest `routing:` block. A child's document records the root's
+  snapshot and launch rows, so a child resumed on its own replays them; on the CLI, which folds no
+  policy, it records the root's launch rows as its rows too, never a resume's flags, which are that
+  attempt's alone on a child's document as on the root's. A launch `*` row shadows node cells only.
+  §5's "may not drop or replace a node's `fallbacks:` routes" narrows: a route cell re-pins an
+  authored route's `backend`, `model` and `provider` and keeps the author's gate, triggers, name and
+  action (`ModelOverrides.EffectiveFallback`); it never drops a route nor adds one. A route cell's
+  `backend` meets the screens §5 names for an added route — C176's crossings and C135's
+  unresolvable tools (`ir.RouteCrossingReasons`, `ir.RouteToolsUnresolvableReason`, the compiler's own
+  bodies) — at launch on the folded list (`runview.screenModelOverridePermissions`: an arm that reads a
+  node backend a slot dial decides is read on the dial's default and warned), at BuildExecutor on the
+  dispatching process's own reading (`runview.ValidateModelOverridePermissions`), warned at the
+  integration's write screen.
+- **The walk reads what dispatch reads.** §4's walk read a node's own `provider:` chain through
+  `envDeferred` even when a provider override collapses it at dispatch (`chainReading.providerField`):
+  an `${…}` dial there deferred the route and an empty-default one (`${ITERION_VIBE_PROVIDER_GPT:-}`)
+  widened it, under a cell that had fixed backend, provider and model. The collapsed chain is now read
+  nowhere (`providerAccumulator.resolveNode`), so a cell fixing every field the walk reads decides the
+  route — `DecidedPrimary`, no `EnvDeferred`, the gateway attributed to the team's key. The card lanes'
+  shape check (`refuseUndecidedRoutingFields`) judges the field the override pins, not the node's.
+- **§3's provider rule beside claw.** "claw honours a single-value `anthropic` hint" and §7's "a `claw`
+  cell may carry no `provider:` of its own" are superseded: claw acts on `anthropic` (its
+  force-Anthropic-direct switch, now `model.clawForcesAnthropicDirect` alone) and on
+  `openai_compatible` (the gateway crossing check, `GatewayCrossingRefusal`, which serves the gateway
+  model the hint names and refuses any other model loudly), so `HonoursProviderHintValue(claw, ·)`
+  admits both, in both twins. That honour is model-conditional. A cell holding `provider:
+  openai_compatible` beside a model it writes that is not `openai_compatible/…` — its `model`, or a
+  step's own `openai_compatible:<model>` — is refused at write; a model left to another cell or to
+  the bot is judged at launch on the composed element (below). This is the cell that moves a slot
+  whose own hint names a vendor (Revi's `${ITERION_VIBE_PROVIDER_CLAUDE:-anthropic}`) onto the gateway:
+  a provider cell replaces the slot's chain. `claude_code` + a gateway model stays refused at dispatch
+  (backend parity) — and at launch when an override composes it, warned at write; an authored-only
+  pair stays C186's.
+- **The launch judges the elements the cells compose.** `runview.gatewayCrossingFindings` rebuilds,
+  per node provider step and per authored route, the (backend, hint, model) element dispatch builds
+  from the folded list and the bot, and judges it with dispatch's rule (`model.GatewayCrossingRefusal`,
+  whose refusal names the fields its arm read). A refusal one of whose read fields an override wrote
+  refuses the launch, naming each field's origin; a field a slot dial decides is read on its default
+  and warned; the write screen warns on both.
+
+§7's acceptance line therefore holds for the shipped Revi pair, still dialled: the activation block
+(`docs/backends.md`, the gateway section) decides every route on the gateway
+(`TestReviShippedBots_EveryCellDecidesItsRouteOnTheTeamGateway`), the team's key seals and the run is
+stamped `team_gateway` (`TestReviShippedBots_TheTeamGatewayKeySealsAndStampsTheBoundary`), and a run no
+cell reaches reads byte for byte what it read before (`TestReviShippedBots_DefaultLaunchReadsWhatOriginMainRead`).

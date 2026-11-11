@@ -14,11 +14,13 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/backend/ambient"
 	"github.com/SocialGouv/iterion/pkg/backend/detect"
+	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/dsl/workflowfile"
 	gitlib "github.com/SocialGouv/iterion/pkg/git"
+	"github.com/SocialGouv/iterion/pkg/llmroute"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/platformcfg"
 	"github.com/SocialGouv/iterion/pkg/reviewtopology"
@@ -283,9 +285,11 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 		// for every launch-shaped entry, so the order exists in exactly
 		// one place: a cell folded in after the screen would reach past a
 		// guard the launcher's own override cannot.
-		if err := foldAndScreen(wf, &spec); err != nil {
+		warnings, err := foldAndScreenLaunch(wf, &spec, "")
+		if err != nil {
 			return nil, err
 		}
+		logZeroMatchOnce(s.logger, warnings)
 		if err := validateRoutingPolicyForLaunch(spec.RoutingPolicy, wf); err != nil {
 			return nil, err
 		}
@@ -478,27 +482,87 @@ func (s *Service) hookEventObservers(extra []func(store.Event)) []func(store.Eve
 
 // foldAndScreen folds the resolved routing policy's override cells under
 // the launch's own rows, refuses the (backend, provider) pair the
-// per-field composition can assemble from two entries (#2637), refuses a
-// routing field the launch's vars cannot decide on the card lanes'
-// shape (#2665), and runs the permission screen on the FOLDED list —
+// per-field composition can assemble from two entries (#2637) and the
+// element dispatch refuses as a gateway crossing (gatewayCrossingFindings),
+// refuses a routing field the launch's vars cannot decide on the card
+// lanes' shape (#2665), and runs the permission and route crossing screen
+// (screenModelOverridePermissions, ValidateModelOverridePermissions' launch
+// reading) on the FOLDED list —
 // one body for every launch-shaped entry (cloud, local, preview), so the
 // fold-before-screen order exists in exactly one place: a cell folded in
 // after the screen would reach past a guard the launcher's own override
 // cannot, and an entry that skipped the fold would show the operator a
 // preview of a launch shape that is not the launch's.
-func foldAndScreen(wf *ir.Workflow, spec *LaunchSpec) error {
-	sourced := foldSourcedOverrides(spec.ModelOverrides, spec.LLMRoutePolicy)
+//
+// The launch's own rows are judged by the selector grammar first
+// (llmroute.ValidateLaunchRow): a row with a bot dimension, or pinning a
+// field its class does not carry, refuses the launch rather than folding
+// into a pin nothing honours. The rows the fold read stay on the spec as
+// LaunchModelOverrides — the raw rows a launch stamps on its document for
+// the subbot children of its tree.
+//
+// runBackend is the launch's run-level backend when this process
+// dispatches the run under it (startInProcess: BuildExecutor hands it to
+// model.WithDefaultBackend, which replaces the workflow's
+// `default_backend:`), "" on a lane whose runner reads the .bot's default
+// (the cloud runner never reads LaunchSpec.Backend): the screens judge the
+// workflow as that dispatch reads it (withRunDefaultBackend).
+//
+// The warnings are the gateway crossings a slot dial decides at the
+// runner, the route crossings read on a node backend dial's default, then
+// the policy cells written for the launch's bot by name that
+// reach nothing in it (ADR-132 §2's zero-match warning): the launch paths
+// log each once per process (logZeroMatchOnce), the preview shows them
+// every time. A launch of its own rows adds the rows that reach nothing
+// (foldAndScreenLaunch); a subbot child folds its root's rows through this
+// body alone.
+func foldAndScreen(wf *ir.Workflow, spec *LaunchSpec, runBackend string) ([]string, error) {
+	wf = withRunDefaultBackend(wf, runBackend)
+	for _, r := range spec.ModelOverrides {
+		if err := llmroute.ValidateLaunchRow(r.Selector, r.Backend, r.Provider, r.Effort); err != nil {
+			return nil, fmt.Errorf("runview: model_overrides: %w", err)
+		}
+	}
+	bot := launchBotIdentity(spec)
+	spec.LaunchModelOverrides = slices.Clone(spec.ModelOverrides)
+	sourced := foldSourcedOverrides(spec.ModelOverrides, spec.LLMRoutePolicy, bot)
 	spec.ModelOverrides = plainModelOverrideEntries(sourced)
-	if findings := composedPairFindings(wf, sourced); len(findings) > 0 {
-		f := findings[0]
-		return fmt.Errorf("runview: model overrides for %s %q: %w", f.kind, f.id, f.err)
+	// A finding a slot dial decides at the runner warns; the first decided
+	// one refuses.
+	var warnings []string
+	for _, f := range composedPairFindings(wf, sourced, runBackend, bot, spec.LLMRoutePolicy) {
+		if f.undecided {
+			warnings = append(warnings, "the launch's override cells "+f.sentence())
+			continue
+		}
+		return nil, fmt.Errorf("runview: model overrides for %s: %w", f.subject(), f.err)
 	}
 	if spec.RefuseUndecidedRoutingFields {
 		if err := refuseUndecidedRoutingFields(wf, spec); err != nil {
-			return err
+			return nil, err
 		}
 	}
-	return ValidateModelOverridePermissions(wf, toModelOverrides(spec.ModelOverrides), spec.Permission)
+	screenWarnings, err := screenModelOverridePermissions(wf, toModelOverrides(spec.ModelOverrides), spec.Permission)
+	if err != nil {
+		return nil, err
+	}
+	warnings = append(warnings, screenWarnings...)
+	return append(warnings, zeroMatchWarnings(wf, spec.LLMRoutePolicy, bot)...), nil
+}
+
+// foldAndScreenLaunch is foldAndScreen for a launch of its own rows — the
+// cloud and in-process launches and the preview — warning, after its
+// warnings, on each row that reaches nothing in wf
+// (unreachedLaunchRowWarnings). A subbot child folds its root's rows
+// through foldAndScreen alone: a root row names the root's sites as well as
+// a child's, so one that pins nothing in a child is no typo.
+func foldAndScreenLaunch(wf *ir.Workflow, spec *LaunchSpec, runBackend string) ([]string, error) {
+	rows := slices.Clone(spec.ModelOverrides)
+	warnings, err := foldAndScreen(wf, spec, runBackend)
+	if err != nil {
+		return nil, err
+	}
+	return append(warnings, unreachedLaunchRowWarnings(wf, rows, launchBotIdentity(spec))...), nil
 }
 
 // startInProcess compiles + builds + spawns a run in this process. It is
@@ -542,9 +606,11 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 	// the SAME shared body (foldAndScreen): the permission screen below
 	// must see the policy's cells, and the folded list is what
 	// BuildExecutor executes with and the run doc stamps.
-	if err := foldAndScreen(wf, &spec); err != nil {
+	foldWarnings, err := foldAndScreenLaunch(wf, &spec, spec.Backend)
+	if err != nil {
 		return nil, err
 	}
+	logZeroMatchOnce(s.logger, foldWarnings)
 	// The tenant's providers lock holds on this lane too (#2665 item 7):
 	// the publisher's gate, read before it seals, is read here before the
 	// executor is built.
@@ -736,7 +802,7 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 		spec.AttachmentPromote, spec.Preset, RunModelOverrides(spec.ModelOverrides),
 		spec.ParentRunID,
 		precreateInputs,
-		launchExtras{workDir: workDir, dailyCap: spec.DailyCap, source: spec.SourceRef, routingPolicy: spec.RoutingPolicy, routePolicy: spec.LLMRoutePolicy, poolAttachment: spec.PoolAttachment, onOutcome: spec.OnOutcome, observers: spec.ExtraObservers, loopBudgetGuard: spec.LoopBudgetGuard, supervisors: spec.Supervisors, budgetAsk: spec.Budget, executionContext: ctxContract, permission: spec.Permission, worktreeBaseCommit: spec.WorktreeBaseCommit, botOrigin: spec.BotOrigin, delegation: spec.Delegation, budgetOverrides: rawBudget, compiled: cs, botSourceTier: spec.BotSourceTier},
+		launchExtras{workDir: workDir, dailyCap: spec.DailyCap, source: spec.SourceRef, routingPolicy: spec.RoutingPolicy, routePolicy: spec.LLMRoutePolicy, launchRows: RunModelOverrides(spec.LaunchModelOverrides), poolAttachment: spec.PoolAttachment, onOutcome: spec.OnOutcome, observers: spec.ExtraObservers, loopBudgetGuard: spec.LoopBudgetGuard, supervisors: spec.Supervisors, budgetAsk: spec.Budget, executionContext: ctxContract, permission: spec.Permission, worktreeBaseCommit: spec.WorktreeBaseCommit, botOrigin: spec.BotOrigin, delegation: spec.Delegation, budgetOverrides: rawBudget, compiled: cs, botSourceTier: spec.BotSourceTier},
 		s.store,
 		func(ctx, _ context.Context, eng *runtime.Engine) error {
 			return eng.Run(ctx, runID, inputs)
@@ -1446,7 +1512,7 @@ func (s *Service) spawnRun(
 	launchBundle *bundle.Bundle,
 	fin finalizationOpts,
 	cb callbackOpts,
-	executor runtime.NodeExecutor,
+	executor *model.ClawExecutor,
 	runLogger *iterlog.Logger,
 	timeout time.Duration,
 	force bool,
@@ -1679,6 +1745,11 @@ func (s *Service) spawnRun(
 	if len(modelOverrides) > 0 {
 		opts = append(opts, runtime.WithModelOverrides(modelOverrides))
 	}
+	// The launch's raw rows, for the subbot children of the run's tree
+	// (FoldForSubbotChild). Empty on resume, leaving the launch's intact.
+	if len(ex.launchRows) > 0 {
+		opts = append(opts, runtime.WithLaunchModelOverrides(ex.launchRows))
+	}
 	if ex.routingPolicy != nil {
 		opts = append(opts, runtime.WithRoutingPolicy(ex.routingPolicy))
 	}
@@ -1761,13 +1832,17 @@ func (s *Service) spawnRun(
 		if run, err := s.store.LoadRun(sctx, runID); err == nil && run.Inputs != nil {
 			spawnVars = run.Inputs
 		}
-		stopSupervisors := s.startDeclaredSupervisors(ctx, runID, wf, eng.ResolveVars(spawnVars), runLogger, ex.supervisors)
+		// The supervisors and the session board below read the overrides
+		// the executor dispatches with — on a resume, the run document's
+		// folded rows (resumeExecutorSpec) — never modelOverrides, the
+		// launch-only stamp that is nil on a resume.
+		stopSupervisors := s.startDeclaredSupervisors(ctx, runID, wf, eng.ResolveVars(spawnVars), executor.ModelOverrides(), runLogger, ex.supervisors)
 		defer stopSupervisors()
 
 		// Spawn the Session-board curation coordinator (opt-in via
 		// ITERION_SESSION_BOARD). No-op when disabled — the deterministic
 		// task-list board (Phase 1) runs in the studio regardless.
-		stopBoard := s.startSessionBoard(ctx, runID, runName, supervise.WorkflowNamesGateway(wf), runLogger)
+		stopBoard := s.startSessionBoard(ctx, runID, runName, supervise.WorkflowNamesGateway(wf, executor.ModelOverrides()), runLogger)
 		defer stopBoard()
 
 		bodyErr := body(ctx, sctx, eng)
@@ -1885,6 +1960,10 @@ type launchExtras struct {
 	// run document (#2665 item 7), for a local resume to replay. Nil on a
 	// resume, whose document carries it already.
 	routePolicy *store.RunLLMRoutePolicy
+	// launchRows mirrors LaunchSpec.LaunchModelOverrides on a LAUNCH: the
+	// launch's raw rows the engine stamps on the run document. Nil on a
+	// resume, whose document carries them already.
+	launchRows []store.RunModelOverride
 	// onOutcome mirrors LaunchSpec.OnOutcome: fired once in the run
 	// goroutine with the terminal body error before Done closes, so a
 	// blocking caller reads the same typed error engine.Run returned.
@@ -2255,4 +2334,20 @@ func resumeBundleDir(r *store.Run, spec ResumeSpec) string {
 		return r.BundlePath
 	}
 	return ""
+}
+
+// withRunDefaultBackend is wf as a dispatch under a run-level backend reads
+// it: runBackend replaces the workflow's `default_backend:` — it does not
+// chain to it, so a run-level `auto` falls through to the environment and
+// detection, as model.WithDefaultBackend does — and a node's own
+// `backend:` keeps priority. wf itself when runBackend is empty. A shallow
+// copy: the node map is shared, so a route a screen materialises
+// (ApplyRunFallback, ApplyPolicyLadder) lands on the nodes the engine runs.
+func withRunDefaultBackend(wf *ir.Workflow, runBackend string) *ir.Workflow {
+	if wf == nil || strings.TrimSpace(runBackend) == "" {
+		return wf
+	}
+	run := *wf
+	run.DefaultBackend = runBackend
+	return &run
 }

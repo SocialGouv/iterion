@@ -7,6 +7,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/backend/credroute"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
+	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/sessionboard"
@@ -122,14 +123,14 @@ func (s *Service) InjectOnce(ctx context.Context, runID, nodeID, text, deliveryI
 // before the run goroutine exits. A no-op when the workflow declares
 // none, or when the kill switch (override → ITERION_SUPERVISORS → on)
 // says off — the skip is logged by the shared gate.
-func (s *Service) startDeclaredSupervisors(ctx context.Context, runID string, wf *ir.Workflow, vars map[string]any, logger *iterlog.Logger, override string) (stop func()) {
+func (s *Service) startDeclaredSupervisors(ctx context.Context, runID string, wf *ir.Workflow, vars map[string]any, overrides model.ModelOverrides, logger *iterlog.Logger, override string) (stop func()) {
 	if wf == nil || len(wf.Supervisors) == 0 {
 		return func() {}
 	}
 	if !supervise.DeclaredEnabledOrWarn(override, len(wf.Supervisors), logger) {
 		return func() {}
 	}
-	specs := supervise.SpecsFromWorkflow(wf, vars, logger)
+	specs := supervise.SpecsFromWorkflow(wf, vars, overrides, logger)
 	pool, err := s.frozenPoolStamp(ctx, runID)
 	if err != nil {
 		// The stamp is unreadable: the surface stays OFF rather than guess
@@ -247,8 +248,9 @@ func (s *Service) SessionBoard(runID string) (sessionboard.Spec, error) {
 // the deterministic task-list board (Phase 1) is always on in the studio
 // and needs nothing here.
 //
-// gatewayWatched is supervise.WorkflowNamesGateway(wf), computed by the
-// caller which holds the compiled workflow: a gateway-served session refuses
+// gatewayWatched is supervise.WorkflowNamesGateway over the compiled
+// workflow and the overrides the run's executor dispatches with, computed by
+// the caller which holds both: a gateway-served session refuses
 // curation through a vendor default (#2099) — the sessionboard twin of
 // supervise.ErrGatewayWatchNeedsPin.
 func (s *Service) startSessionBoard(ctx context.Context, runID, botID string, gatewayWatched bool, logger *iterlog.Logger) (stop func()) {

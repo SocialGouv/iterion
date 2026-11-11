@@ -7,7 +7,9 @@ import (
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
+	"github.com/SocialGouv/iterion/pkg/backend/modelroute"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/llmroute"
 )
 
 // NodeModelOverride is the resolved launch-time override for a single node:
@@ -183,7 +185,7 @@ type FieldSource struct {
 // beats a more specific rule of a lower one (the precedence line), while
 // rules of the same layer keep the specificity ordering.
 func (o ModelOverrides) ForNode(id string, kind ir.NodeKind) NodeModelOverride {
-	out, _, _ := o.ForNodeFieldSources(id, kind)
+	out, _ := o.ForNodeFieldSources(id, kind)
 	return out
 }
 
@@ -204,13 +206,19 @@ func (o ModelOverrides) LadderRoute(n ir.LLMNode) (model, provider string) {
 	return model, provider
 }
 
+// NodeFieldSources names, per routing field, the rule that won it on a node
+// (ForNodeFieldSources). A zero FieldSource: no rule set the field.
+type NodeFieldSources struct {
+	Backend, Model, Provider FieldSource
+}
+
 // ForNodeFieldSources resolves exactly as ForNode and additionally names,
-// for the fields the composed-pair check reads (backend, provider), the
-// rule that won each. ONE walk: ForNode delegates here, so the pair's
-// provenance and the resolution it names cannot drift (#2637).
-func (o ModelOverrides) ForNodeFieldSources(id string, kind ir.NodeKind) (NodeModelOverride, FieldSource, FieldSource) {
+// for the fields the launch's composed checks read (backend, model,
+// provider), the rule that won each. ONE walk: ForNode delegates here, so
+// a check's provenance and the resolution it names cannot drift (#2637).
+func (o ModelOverrides) ForNodeFieldSources(id string, kind ir.NodeKind) (NodeModelOverride, NodeFieldSources) {
 	var out NodeModelOverride
-	var backendSrc, providerSrc FieldSource
+	var src NodeFieldSources
 	type best struct{ rank, score int }
 	// Seeded below every rank: a rule's rank is a layer, and a producer
 	// BELOW the DSL layer stamps -1 — a rule is never dropped for its
@@ -227,20 +235,21 @@ func (o ModelOverrides) ForNodeFieldSources(id string, kind ir.NodeKind) (NodeMo
 		}
 		if r.Backend != "" && takes(r.rank, score, bb) {
 			out.Backend, bb = r.Backend, best{r.rank, score}
-			backendSrc = FieldSource{Selector: r.selector}
+			src.Backend = FieldSource{Selector: r.selector}
 		}
 		if r.Model != "" && takes(r.rank, score, bm) {
 			out.Model, bm = r.Model, best{r.rank, score}
+			src.Model = FieldSource{Selector: r.selector}
 		}
 		if r.Provider != "" && takes(r.rank, score, bp) {
 			out.Provider, bp = r.Provider, best{r.rank, score}
-			providerSrc = FieldSource{Selector: r.selector}
+			src.Provider = FieldSource{Selector: r.selector}
 		}
 		if r.Effort != "" && takes(r.rank, score, be) {
 			out.Effort, be = r.Effort, best{r.rank, score}
 		}
 	}
-	return out, backendSrc, providerSrc
+	return out, src
 }
 
 // ConsumesProviderHint reports how a backend consumes the per-node provider
@@ -267,26 +276,141 @@ func ConsumesProviderHint(backend string) (chains, single bool) {
 // half of ConsumesProviderHint. claude_code walks every step of the chain
 // it is given and refuses an unfunded hint loudly at dispatch
 // (facadeHintRefusal), so any validated value is honoured. claw acts on
-// the hint at exactly one switch — the registry's force-Anthropic-direct
-// branch, wired to THIS predicate so the gate and the runtime read one
-// function — and ignores every other value there, letting the spend
-// follow the default precedence: the silent misroute a policy pin must
-// not certify. The routing policy's local twin (pkg/llmroute)
-// drift-tests against this function.
+// the hint at two switches, each wired to its own half of THIS predicate
+// so the gate and the runtime read one function: the registry's
+// force-Anthropic-direct branch (clawForcesAnthropicDirect) and the
+// gateway crossing check (clawPairsGatewayHint, read by
+// GatewayCrossingRefusal), which serves the gateway model the hint names
+// and refuses any other model loudly. That honour is model-conditional:
+// the launch enforces the model half on the elements a run's override
+// cells compose (runview's gateway crossing check), dispatch on every
+// element it builds. Every other value claw ignores,
+// letting the spend follow the default precedence: the silent misroute a
+// policy pin must not certify. The routing policy's local twin
+// (pkg/llmroute) drift-tests against this function.
 func HonoursProviderHintValue(backend, provider string) bool {
 	switch backend {
 	case delegate.BackendClaudeCode:
 		return true
 	case delegate.BackendClaw:
-		return strings.ToLower(strings.TrimSpace(provider)) == "anthropic"
+		return clawForcesAnthropicDirect(provider) || clawPairsGatewayHint(provider)
 	default:
 		return false
 	}
 }
 
+// clawForcesAnthropicDirect reports whether a provider hint forces claw's
+// anthropic arm onto Anthropic-direct — the registry's one force switch
+// (#1718): the z.ai synthesis is skipped and the run's Anthropic key or
+// forfait is sent to api.anthropic.com.
+func clawForcesAnthropicDirect(provider string) bool {
+	return strings.ToLower(strings.TrimSpace(provider)) == "anthropic"
+}
+
+// clawPairsGatewayHint reports whether a provider hint is the gateway's,
+// which GatewayCrossingRefusal pairs with the model on every backend: beside
+// an `openai_compatible/…` spec it names the provider claw already derives
+// from the prefix, beside any other spec the element is refused.
+func clawPairsGatewayHint(provider string) bool {
+	return strings.ToLower(strings.TrimSpace(provider)) == modelroute.OpenAICompatible
+}
+
+// ForRoute resolves what the route-scoped selectors pin on one of a node's
+// authored `fallbacks:` routes (ADR-132 §2, D21): the rules whose selector
+// is the route's site key — `node#name`, `node#<index>` for a route the
+// author named none (fallbackSite), the key ProviderResolution.Pins records
+// it under. Backend, model and provider: a route runs at its node's effort.
+// The (rank, later-wins) resolution of ForNode; the space has one
+// specificity, the exact key. A node-scoped rule never reaches a route — a
+// route pins its own fields, and the one a node cell fills is the model a
+// route that names none inherits (baselineModel).
+func (o ModelOverrides) ForRoute(nodeID string, index int, name string) NodeModelOverride {
+	ov := o.forExactKey(fallbackSite(nodeID, index, name))
+	ov.Effort = ""
+	return ov
+}
+
+// ForSupervisor resolves the model a `supervisor:<name>` selector pins on a
+// declared supervisor (ADR-131 §8): "" when no rule names it. A supervisor
+// declares a model and nothing else.
+func (o ModelOverrides) ForSupervisor(name string) string {
+	if name == "" {
+		return ""
+	}
+	return o.forExactKey(llmroute.SelectorSupervisorPrefix + name).Model
+}
+
+// EffectiveFallback is an authored `fallbacks:` route as the run's
+// route-scoped rules pin it: each pinned field replaces the route's own,
+// every other field — its gate, triggers, name, action — stays the
+// author's. The ONE reading of a pinned route: the walk, dispatch's chain,
+// the call-site enumeration, the supervisors' gateway screen and the
+// launch's route and gateway crossing screens (runview) read the route
+// through it. index is the route's position in the node's
+// `fallbacks:` list, the key of a route the author named none.
+func (o ModelOverrides) EffectiveFallback(nodeID string, index int, fb ir.Fallback) ir.Fallback {
+	if fb.RunStageSet || fb.Policy {
+		// A launch-time stage or a policy rung is no authored route: it is
+		// pinned where it is written (the launch's chain, the ladder).
+		return fb
+	}
+	ov := o.ForRoute(nodeID, index, fb.Name)
+	if ov.Backend != "" {
+		fb.Backend = ov.Backend
+	}
+	if ov.Model != "" {
+		fb.Model = ov.Model
+	}
+	if ov.Provider != "" {
+		fb.Provider = ov.Provider
+	}
+	return fb
+}
+
+// EffectiveSupervisorModel is a declared supervisor's model as the run's
+// rules pin it: the `supervisor:<name>` pin, else the declaration's own.
+func (o ModelOverrides) EffectiveSupervisorModel(sup *ir.Supervisor) string {
+	if sup == nil {
+		return ""
+	}
+	if m := o.ForSupervisor(sup.Name); m != "" {
+		return m
+	}
+	return sup.Model
+}
+
+// forExactKey resolves the rules whose selector is exactly key, per field:
+// the higher rank wins, the later rule a tie.
+func (o ModelOverrides) forExactKey(key string) NodeModelOverride {
+	var out NodeModelOverride
+	const unset = math.MinInt
+	bb, bm, bp, be := unset, unset, unset, unset
+	for _, r := range o.rules {
+		if r.selector != key {
+			continue
+		}
+		if r.Backend != "" && r.rank >= bb {
+			out.Backend, bb = r.Backend, r.rank
+		}
+		if r.Model != "" && r.rank >= bm {
+			out.Model, bm = r.Model, r.rank
+		}
+		if r.Provider != "" && r.rank >= bp {
+			out.Provider, bp = r.Provider, r.rank
+		}
+		if r.Effort != "" && r.rank >= be {
+			out.Effort, be = r.Effort, r.rank
+		}
+	}
+	return out
+}
+
 // selectorScore returns a specificity score (higher = more specific) and
 // whether the selector matches the node. Ordering: "*" < kind keyword < glob
-// (by literal length) < exact id.
+// (by literal length) < exact id. A route-scoped or supervisor selector
+// matches no node by construction — a node id is an identifier, which holds
+// neither the `#` nor the `:` those selectors carry — and pins its own site
+// (ForRoute, ForSupervisor).
 func selectorScore(selector, id string, kind ir.NodeKind) (int, bool) {
 	switch selector {
 	case "*":
@@ -354,6 +478,11 @@ func splitSelectorValue(arg string) (selector, value string, err error) {
 // model or backend name (host state this process cannot enumerate), the effort
 // levels are a closed set that reaches the provider verbatim, so a typo has to
 // die at the flag rather than on the run's first node.
+//
+// The selector is judged by the grammar a routing cell obeys
+// (llmroute.ValidateLaunchRow): a flag reaches its own run, so it names no
+// bot, and it pins only a field its class carries — no --effort-for on a
+// `<node>#<route>`, no --backend on a `supervisor:<name>`.
 func ParseModelOverrides(modelFlags, backendFlags, effortFlags []string) (ModelOverrides, error) {
 	var o ModelOverrides
 	for _, m := range modelFlags {
@@ -361,11 +490,17 @@ func ParseModelOverrides(modelFlags, backendFlags, effortFlags []string) (ModelO
 		if err != nil {
 			return o, fmt.Errorf("--model: %w", err)
 		}
+		if err := llmroute.ValidateLaunchRow(sel, "", "", ""); err != nil {
+			return o, fmt.Errorf("--model: %w", err)
+		}
 		o.SetModel(sel, val)
 	}
 	for _, b := range backendFlags {
 		sel, val, err := splitSelectorValue(b)
 		if err != nil {
+			return o, fmt.Errorf("--backend: %w", err)
+		}
+		if err := llmroute.ValidateLaunchRow(sel, val, "", ""); err != nil {
 			return o, fmt.Errorf("--backend: %w", err)
 		}
 		o.SetBackend(sel, val)
@@ -378,7 +513,69 @@ func ParseModelOverrides(modelFlags, backendFlags, effortFlags []string) (ModelO
 		if !ir.ValidReasoningEfforts[val] {
 			return o, fmt.Errorf("--effort-for: %q is not a reasoning effort", val)
 		}
+		if err := llmroute.ValidateLaunchRow(sel, "", "", val); err != nil {
+			return o, fmt.Errorf("--effort-for: %w", err)
+		}
 		o.SetEffort(sel, val)
 	}
 	return o, nil
+}
+
+// SelectorReaches reports whether a bot-free selector — the spelling a run's
+// folded override list carries — reaches anything in wf: an LLM node's own
+// route (agent, judge, an llm-mode router) or a tool's rung-4 recovery
+// agent (forEachOverriddenNode) for a node selector, an authored
+// `fallbacks:` route for a route-scoped one, a declared supervisor for a
+// supervisor one. The zero-match warning reads it: a cell written for a bot
+// by name that reaches nothing in it is a typo nothing else would name.
+func SelectorReaches(wf *ir.Workflow, selector string) bool {
+	if wf == nil {
+		return false
+	}
+	if strings.HasPrefix(selector, llmroute.SelectorSupervisorPrefix) {
+		name := strings.TrimPrefix(selector, llmroute.SelectorSupervisorPrefix)
+		for _, sup := range wf.Supervisors {
+			if sup != nil && sup.Name == name {
+				return true
+			}
+		}
+		return false
+	}
+	if strings.Contains(selector, llmroute.SelectorRouteSeparator) {
+		for id, n := range wf.Nodes {
+			gf, ok := n.(interface{ GetFallbacks() []ir.Fallback })
+			if !ok {
+				continue
+			}
+			for i, fb := range gf.GetFallbacks() {
+				if !fb.RunStageSet && !fb.Policy && fallbackSite(id, i, fb.Name) == selector {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	reached := false
+	forEachOverriddenNode(wf, func(id string, kind ir.NodeKind) {
+		if _, ok := selectorScore(selector, id, kind); ok {
+			reached = true
+		}
+	})
+	return reached
+}
+
+// forEachOverriddenNode calls fn with the (id, kind) of every node dispatch
+// resolves a node override for (ForNode): each node with LLM fields of its
+// own, and each tool's rung-4 recovery agent `<tool>__recover` — the
+// synthetic agent dispatch runs when the tool's ladder reaches rung 4
+// (ir.ToolRecoveryAgentRung), and only then.
+func forEachOverriddenNode(wf *ir.Workflow, fn func(id string, kind ir.NodeKind)) {
+	for id, n := range wf.Nodes {
+		if _, ok := llmFieldsOf(n); ok {
+			fn(id, n.NodeKind())
+		}
+		if _, _, agentRung := recoveryRungsOf(n); agentRung {
+			fn(agentRecoveryNodeID(id), ir.NodeAgent)
+		}
+	}
 }

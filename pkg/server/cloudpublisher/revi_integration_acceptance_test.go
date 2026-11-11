@@ -32,7 +32,11 @@
 // which today covers only revi-converse's `backend:`); or point the three
 // `ITERION_VIBE_PROVIDER_*` dials at the tenant's own gateway, which reaches
 // it without editing a `.bot` — and gives the tenant's answer to every bot
-// reading those dials, not to Revi alone.
+// reading those dials, not to Revi alone. A third road needs neither: cells
+// that fix EVERY field the walk reads — backend, provider and model on each
+// slot (a provider cell collapses the slot's own hint), the route-scoped and
+// supervisor selectors on the rescues and the pacers — decide every route
+// from the record (revi_routing_cells_test.go, on the shipped bots).
 //
 // Mutants: the policy's override cells dropped at the fold
 // (runview.policyOverrideEntries) → the launch no longer resolves the
@@ -120,9 +124,9 @@ func reviShapedBot(converseHint string) string {
 // no write surface would accept.
 //
 // `pinned` names the slots the integration re-points; every one of them is
-// pinned to `claw` + the team's gateway model, which is the only spelling
-// `llmroute.Validate` accepts for that harness — claw derives the provider
-// from the model prefix and refuses a `provider:` cell it would ignore.
+// pinned to `claw` + the team's gateway model and no `provider:` cell — the
+// shape whose limits the refusals below state (a slot's own hint survives a
+// cell that pins no provider).
 func integrationRoutingPolicy(t *testing.T, pinned ...string) *store.RunLLMRoutePolicy {
 	t.Helper()
 	cell := llmroute.Policy{Providers: []string{"openai_compatible"}}
@@ -152,27 +156,31 @@ func integrationRoutingPolicy(t *testing.T, pinned ...string) *store.RunLLMRoute
 	return out
 }
 
-// TestReviIntegrationAcceptance_AClawCellPinsNoProviderHint is the reason
-// the pins above carry `backend` + `model` and no `provider` cell: claw
-// derives the provider from the model prefix and acts on no other hint at
-// its routing chokepoint, so the write surface REFUSES a `claw` +
-// `openai_compatible` cell rather than let the gate certify a pin the
-// harness ignores. The gateway spelling an operator can actually write for
-// that harness is the model prefix — which is what the acceptance fixture
-// writes.
-func TestReviIntegrationAcceptance_AClawCellPinsNoProviderHint(t *testing.T) {
-	refused := llmroute.Policy{Overrides: []llmroute.Override{{
+// TestReviIntegrationAcceptance_AClawCellMayPinTheGatewayHint: claw acts on
+// two provider values — `anthropic` at its registry's force-direct switch,
+// `openai_compatible` at the gateway crossing check, which serves the gateway
+// model the hint names and refuses any other model loudly — so a `claw` cell
+// may pin `provider: openai_compatible` beside the gateway model. That is the
+// spelling that re-points a slot whose own `provider:` hint names a vendor
+// (the shipped claude slots' `${ITERION_VIBE_PROVIDER_CLAUDE:-anthropic}`):
+// a provider cell collapses the node's chain. Refused: the gateway hint beside
+// a model that is not a gateway route (dispatch refuses that pair on every
+// backend), and a value claw ignores (`zai`).
+func TestReviIntegrationAcceptance_AClawCellMayPinTheGatewayHint(t *testing.T) {
+	accepted := llmroute.Policy{Overrides: []llmroute.Override{{
 		Selector: "converge", Backend: llmroute.HarnessClaw,
 		Model: reviGatewayModel, Provider: "openai_compatible",
 	}}}
-	if err := llmroute.Validate(refused); err == nil {
-		t.Fatal("llmroute.Validate accepted a claw cell pinning an openai_compatible provider hint — the gate would certify a pin claw ignores")
-	}
-	accepted := llmroute.Policy{Overrides: []llmroute.Override{{
-		Selector: "converge", Backend: llmroute.HarnessClaw, Model: reviGatewayModel,
-	}}}
 	if err := llmroute.Validate(accepted); err != nil {
-		t.Fatalf("llmroute.Validate = %v, want nil — backend + the gateway model prefix is the spelling the acceptance pins use", err)
+		t.Fatalf("llmroute.Validate = %v, want nil — claw serves the gateway model its gateway hint names", err)
+	}
+	for _, refused := range []llmroute.Override{
+		{Selector: "converge", Backend: llmroute.HarnessClaw, Model: "anthropic/claude-opus-5-5", Provider: "openai_compatible"},
+		{Selector: "converge", Backend: llmroute.HarnessClaw, Model: reviGatewayModel, Provider: "zai"},
+	} {
+		if err := llmroute.Validate(llmroute.Policy{Overrides: []llmroute.Override{refused}}); err == nil {
+			t.Errorf("llmroute.Validate accepted %+v — a pin no claw dispatch serves", refused)
+		}
 	}
 }
 
@@ -239,7 +247,7 @@ func (f *reviAcceptanceFixture) launch(t *testing.T, runID, src string, pol *sto
 		Source:         src,
 		BotID:          "review-pr",
 		LLMRoutePolicy: pol,
-		ModelOverrides: runview.EffectiveModelOverrides(nil, pol),
+		ModelOverrides: runview.EffectiveModelOverrides(nil, pol, llmroute.BotIdentity{}),
 	}
 	ctx := store.WithIdentity(context.Background(), "team1", "webhook:cfg-1")
 	_, err := f.pub.SubmitLaunch(ctx, runID, spec, wf, &runview.CompiledSource{Hash: "hash"})
@@ -472,9 +480,11 @@ func envDialNames(source string) []string {
 // ships are REFUSED. The pins cannot rescue them: the two gpt slots' dial
 // carries an EMPTY default, so the walk cannot read it (§4 rule 1), and the
 // four claude slots' dial reads its own default `anthropic` hint, which IS
-// the route (§5, "refused, never re-routed"); the one spelling that could
-// re-point that hint — a `claw` cell carrying `provider: openai_compatible`
-// — is what the write surface refuses (the sibling test above).
+// the route (§5, "refused, never re-routed"). A cell that pins no provider
+// cannot re-point a slot's own hint; the cell that can — `claw` +
+// `provider: openai_compatible` + the gateway model, which collapses the
+// node's chain — is witnessed on the shipped bots themselves
+// (revi_routing_cells_test.go).
 //
 // So a tenant that locks `providers:` gets every Revi run refused today on a
 // deployment whose `bot_vars` and pod environment answer none of these
@@ -510,7 +520,7 @@ func TestReviIntegrationAcceptance_TheShippedSlotsAreRefused(t *testing.T) {
 	// keep the `anthropic` their surviving hint names, and both gpt slots
 	// are unreadable. The launch can only name the first.
 	wf := compileTestSource(t, reviShippedBot)
-	view := model.RouteViewForLaunch(wf, buildModelOverrides(runview.EffectiveModelOverrides(nil, pol)), nil, map[string]string(nil), nil)
+	view := model.RouteViewForLaunch(wf, buildModelOverrides(runview.EffectiveModelOverrides(nil, pol, llmroute.BotIdentity{})), nil, map[string]string(nil), nil)
 	view.AllowedProviders = policyProviders(pol)
 	walk := model.EffectiveProviders(view, walkProviderSet)
 	if walk.OnlyEnvFunded() {

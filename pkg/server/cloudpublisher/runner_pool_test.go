@@ -326,7 +326,7 @@ func TestContentBoundaryTravelsBesideThePoolStamp(t *testing.T) {
 			"RunnerPool: prior.RunnerPool", "ContentBoundary: prior.ContentBoundary"},
 		{"fork", laneBody(t, forkSrc, "fork.go", "func (s *Service) Fork("),
 			"child.RunnerPool = parent.RunnerPool", "child.ContentBoundary = parent.ContentBoundary"},
-		{"subbot", laneBody(t, subbotSrc, "subbot.go", "func (r *Runner) subbotRunnerFor("),
+		{"subbot", laneBody(t, subbotSrc, "subbot.go", "func (r *Runner) subbotRunnerUnder("),
 			"runtime.WithRunnerPool(child.RunnerPool)", "runtime.WithContentBoundary(child.ContentBoundary)"},
 	}
 	for _, lane := range lanes {

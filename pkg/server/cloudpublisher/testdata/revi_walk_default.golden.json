@@ -1,0 +1,419 @@
+{
+  "revi-converse": {
+    "walk": {
+      "Providers": [
+        "anthropic",
+        "zai"
+      ],
+      "NarrowSafe": true,
+      "EnvDeferred": true,
+      "Unknown": null,
+      "EnvFunded": null,
+      "ForfaitFirst": [
+        "anthropic"
+      ],
+      "Pins": {
+        "anthropic": [
+          "converse_agent"
+        ],
+        "zai": [
+          "converse_agent#glm"
+        ]
+      },
+      "Sites": {
+        "converse_agent": [
+          "anthropic"
+        ],
+        "converse_agent#glm": [
+          "zai"
+        ]
+      },
+      "Forbidden": null,
+      "ForbiddenPrimary": null,
+      "DecidedPrimary": null,
+      "Unreadable": null,
+      "AnthropicWireDefaultReads": [
+        "anthropic",
+        "moonshot",
+        "zai"
+      ],
+      "GatewaySites": null,
+      "DeferredSites": [
+        "converse_agent",
+        "converse_agent#glm"
+      ],
+      "UnattributedSites": null,
+      "WireDefaultSites": {
+        "converse_agent": [
+          "anthropic",
+          "moonshot",
+          "zai"
+        ],
+        "converse_agent#glm": [
+          "anthropic",
+          "moonshot",
+          "zai"
+        ]
+      }
+    },
+    "only_env_funded": false,
+    "call_sites": [
+      {
+        "id": "converse_agent",
+        "kind": "node",
+        "backend": "claude_code",
+        "legs": [
+          {
+            "Provider": "anthropic",
+            "Model": ""
+          }
+        ],
+        "model": "claude-opus-5-5",
+        "role": "node",
+        "host": false,
+        "rescue": false
+      },
+      {
+        "id": "converse_agent#glm",
+        "kind": "fallback",
+        "backend": "claude_code",
+        "legs": [
+          {
+            "Provider": "zai",
+            "Model": ""
+          }
+        ],
+        "model": "${ITERION_VIBE_MODEL_CLAUDE_FALLBACK:-glm-5.3}",
+        "role": "node",
+        "host": false,
+        "rescue": true
+      }
+    ],
+    "supervisors": null
+  },
+  "review-pr": {
+    "walk": {
+      "Providers": [
+        "anthropic",
+        "openai",
+        "zai"
+      ],
+      "NarrowSafe": false,
+      "EnvDeferred": true,
+      "Unknown": null,
+      "EnvFunded": null,
+      "ForfaitFirst": null,
+      "Pins": {
+        "anthropic": [
+          "converge",
+          "reviewer_claude",
+          "reviewer_claude_glance",
+          "supervisor:pacer"
+        ],
+        "openai": [
+          "converge_gpt",
+          "reviewer_gpt",
+          "reviewer_gpt_glance",
+          "supervisor:pacer_gpt"
+        ],
+        "zai": [
+          "converge#glm",
+          "reviewer_claude#glm",
+          "reviewer_claude_glance#glm"
+        ]
+      },
+      "Sites": {
+        "converge": [
+          "anthropic"
+        ],
+        "converge#glm": [
+          "zai"
+        ],
+        "converge_gpt": [
+          "openai"
+        ],
+        "reviewer_claude": [
+          "anthropic"
+        ],
+        "reviewer_claude#glm": [
+          "zai"
+        ],
+        "reviewer_claude_glance": [
+          "anthropic"
+        ],
+        "reviewer_claude_glance#glm": [
+          "zai"
+        ],
+        "reviewer_gpt": [
+          "openai"
+        ],
+        "reviewer_gpt_glance": [
+          "openai"
+        ],
+        "supervisor:pacer": [
+          "anthropic"
+        ],
+        "supervisor:pacer_gpt": [
+          "openai"
+        ]
+      },
+      "Forbidden": null,
+      "ForbiddenPrimary": null,
+      "DecidedPrimary": null,
+      "Unreadable": null,
+      "AnthropicWireDefaultReads": [
+        "anthropic",
+        "moonshot",
+        "zai"
+      ],
+      "GatewaySites": null,
+      "DeferredSites": [
+        "converge",
+        "converge#glm",
+        "converge_gpt",
+        "reviewer_claude",
+        "reviewer_claude#glm",
+        "reviewer_claude_glance",
+        "reviewer_claude_glance#glm",
+        "reviewer_gpt",
+        "reviewer_gpt_glance",
+        "supervisor:pacer",
+        "supervisor:pacer_gpt"
+      ],
+      "UnattributedSites": [
+        "converge_gpt",
+        "reviewer_gpt",
+        "reviewer_gpt_glance"
+      ],
+      "WireDefaultSites": {
+        "converge": [
+          "anthropic",
+          "moonshot",
+          "zai"
+        ],
+        "converge#glm": [
+          "anthropic",
+          "moonshot",
+          "zai"
+        ],
+        "converge_gpt": [
+          "anthropic",
+          "moonshot",
+          "zai"
+        ],
+        "reviewer_claude": [
+          "anthropic",
+          "moonshot",
+          "zai"
+        ],
+        "reviewer_claude#glm": [
+          "anthropic",
+          "moonshot",
+          "zai"
+        ],
+        "reviewer_claude_glance": [
+          "anthropic",
+          "moonshot",
+          "zai"
+        ],
+        "reviewer_claude_glance#glm": [
+          "anthropic",
+          "moonshot",
+          "zai"
+        ],
+        "reviewer_gpt": [
+          "anthropic",
+          "moonshot",
+          "zai"
+        ],
+        "reviewer_gpt_glance": [
+          "anthropic",
+          "moonshot",
+          "zai"
+        ]
+      }
+    },
+    "only_env_funded": false,
+    "call_sites": [
+      {
+        "id": "converge",
+        "kind": "node",
+        "backend": "claude_code",
+        "legs": [
+          {
+            "Provider": "anthropic",
+            "Model": ""
+          }
+        ],
+        "model": "claude-opus-5-5",
+        "role": "node",
+        "host": false,
+        "rescue": false
+      },
+      {
+        "id": "converge#glm",
+        "kind": "fallback",
+        "backend": "claude_code",
+        "legs": [
+          {
+            "Provider": "zai",
+            "Model": ""
+          }
+        ],
+        "model": "${ITERION_VIBE_MODEL_CLAUDE_FALLBACK:-glm-5.3}",
+        "role": "node",
+        "host": false,
+        "rescue": true
+      },
+      {
+        "id": "converge_gpt",
+        "kind": "node",
+        "backend": "claw",
+        "legs": [
+          {
+            "Provider": "",
+            "Model": ""
+          }
+        ],
+        "model": "openai/gpt-6-sol",
+        "role": "node",
+        "host": false,
+        "rescue": false
+      },
+      {
+        "id": "reviewer_claude",
+        "kind": "node",
+        "backend": "claude_code",
+        "legs": [
+          {
+            "Provider": "anthropic",
+            "Model": ""
+          }
+        ],
+        "model": "claude-opus-5-5",
+        "role": "node",
+        "host": false,
+        "rescue": false
+      },
+      {
+        "id": "reviewer_claude#glm",
+        "kind": "fallback",
+        "backend": "claude_code",
+        "legs": [
+          {
+            "Provider": "zai",
+            "Model": ""
+          }
+        ],
+        "model": "${ITERION_VIBE_MODEL_CLAUDE_FALLBACK:-glm-5.3}",
+        "role": "node",
+        "host": false,
+        "rescue": true
+      },
+      {
+        "id": "reviewer_claude_glance",
+        "kind": "node",
+        "backend": "claude_code",
+        "legs": [
+          {
+            "Provider": "anthropic",
+            "Model": ""
+          }
+        ],
+        "model": "claude-opus-5-5",
+        "role": "node",
+        "host": false,
+        "rescue": false
+      },
+      {
+        "id": "reviewer_claude_glance#glm",
+        "kind": "fallback",
+        "backend": "claude_code",
+        "legs": [
+          {
+            "Provider": "zai",
+            "Model": ""
+          }
+        ],
+        "model": "${ITERION_VIBE_MODEL_CLAUDE_FALLBACK:-glm-5.3}",
+        "role": "node",
+        "host": false,
+        "rescue": true
+      },
+      {
+        "id": "reviewer_gpt",
+        "kind": "node",
+        "backend": "claw",
+        "legs": [
+          {
+            "Provider": "",
+            "Model": ""
+          }
+        ],
+        "model": "openai/gpt-6-astra",
+        "role": "node",
+        "host": false,
+        "rescue": false
+      },
+      {
+        "id": "reviewer_gpt_glance",
+        "kind": "node",
+        "backend": "claw",
+        "legs": [
+          {
+            "Provider": "",
+            "Model": ""
+          }
+        ],
+        "model": "openai/gpt-6-luna",
+        "role": "node",
+        "host": false,
+        "rescue": false
+      },
+      {
+        "id": "supervisor:pacer",
+        "kind": "supervisor",
+        "backend": "claw",
+        "legs": [
+          {
+            "Provider": "",
+            "Model": ""
+          }
+        ],
+        "model": "anthropic/claude-opus-5-5",
+        "role": "supervisor",
+        "host": true,
+        "rescue": true
+      },
+      {
+        "id": "supervisor:pacer_gpt",
+        "kind": "supervisor",
+        "backend": "claw",
+        "legs": [
+          {
+            "Provider": "",
+            "Model": ""
+          }
+        ],
+        "model": "openai/gpt-6-sol",
+        "role": "supervisor",
+        "host": true,
+        "rescue": true
+      }
+    ],
+    "supervisors": [
+      {
+        "name": "pacer",
+        "model": "${ITERION_VIBE_MODEL_SUPERVISOR:-anthropic/claude-opus-5-5}",
+        "provider_hint": "",
+        "gateway_watched": false
+      },
+      {
+        "name": "pacer_gpt",
+        "model": "${ITERION_VIBE_MODEL_SUPERVISOR_GPT:-openai/gpt-6-sol}",
+        "provider_hint": "",
+        "gateway_watched": false
+      }
+    ]
+  }
+}

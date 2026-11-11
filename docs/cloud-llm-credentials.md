@@ -1044,7 +1044,14 @@ to that same policy:
 
 - **`overrides`** — per-node routing cells. One entry is
   `{selector, backend, model, provider, effort}`, the selector an exact node
-  id, an id glob, a kind keyword (`agent`, `judge`, `router`) or `*`. Values
+  id, an id glob, a kind keyword (`agent`, `judge`, `router`) or `*` — or,
+  since ADR-132 D21, a node's `fallbacks:` route (`<node>#<route>`) or a
+  supervisor (`supervisor:<name>`), each optionally prefixed by the bot it is
+  for — its bot id or manifest name, or a glob over either (`review-pr/…`;
+  required on the route and supervisor forms; `*/` reaches every launch, one
+  naming no bot included; a launch's own model_overrides carry no prefix) — the
+  grammar and its guards in
+  [backends.md](backends.md#the-openai-compatible-gateway-openai_compatible). Values
   are **literals**: `llmroute.Validate` refuses a cell containing `{{` or
   `${`, naming the field — a pin the launch pre-flights cannot read is a pin
   the tenancy gate cannot certify. `effort` re-targets the node's reasoning
@@ -1100,7 +1107,11 @@ entries — the cloud lane (`Service.Launch`), the in-process lane
 (`startInProcess`, which serves a local launch and the scheduler's start of a
 previously-queued root) and the credential preview (`PreviewCredentials`) —
 and **before** the permission screen: a cell folded in after it would reach
-past a guard the launcher's own override cannot. The DETACHED local runner
+past a guard the launcher's own override cannot. That screen reads node and
+route cells alike — a route cell's `backend` meets the compiler's route
+refusals (C176, C135) there — and the fold also judges every (backend,
+hint, model) element the cells compose with dispatch's gateway rule
+([backends.md](backends.md#the-openai-compatible-gateway-openai_compatible)). The DETACHED local runner
 (`ITERION_RUNS_DETACHED=1`), driven by `iterion run`, has no counterpart: it
 folds nothing, screens nothing and stamps no folded list, and says so for the
 override CELLS only — the launch's `model_overrides` and the
@@ -1116,7 +1127,10 @@ the run document for a local resume to replay), and this lane sends none —
 the local-parity limit ADR-129 §8 states. The folded
 list is what the run document stamps, what the queue message carries, what
 every pre-flight reads and what a resume replays instead of re-folding
-(`TestResume_ReplaysTheFoldedRowsNotThePolicy`), so no reader re-derives a pin
+(`TestResume_ReplaysTheFoldedRowsNotThePolicy`) — an in-process resume's
+supervisors and session board included, which read the rows the resumed
+executor dispatches with (`TestResume_SupervisorsReadTheRunsFoldedRows`,
+`TestResume_SessionBoardWatchesTheGatewayRoute`) — so no reader re-derives a pin
 from a record that has moved since.
 Precedence, end to end:
 
@@ -1125,8 +1139,29 @@ Precedence, end to end:
 
 The launch wins that line at the two shapes ONE flat list can express: the
 SAME selector (the launch's rows sit after the policy's, and the later rule
-wins a tie), and a `*` row, which shadows every policy cell on that field
-outright. The residual the fold's own comment names: a policy cell on a MORE
+wins a tie), and a `*` row, which shadows every policy NODE cell on that
+field outright (a route or supervisor cell is reached by no node row, so no
+`*` row shadows it). The bot dimension resolves in the same fold, keyed on
+the launch's bot id and the manifest name of the bundle it serves: a cell
+for another bot drops, one for this bot folds as its bare target; on one
+target the more specific bot part wins (no bot part and `*/` < a glob < the
+manifest name < the bot id), then the nearer level, read from the cell's
+provenance (`llmroute.SourceRank`). A subbot child folds its root run's
+frozen snapshot again for its own bot — its bundle's slug and manifest name
+(`runview.SubbotChildBotIdentity`) — through the same body and screens
+(`runview.FoldForSubbotChild`, on the cloud runner and in-process alike): a
+cell for the parent's bot does not reach the child, one for the child's
+does, the parent's folded rows never travel, and the root's own launch rows
+(`store.Run.LaunchModelOverrides`, the raw rows before any cell) fold on top,
+bot-free, so a `team_gateway` launch's `*` row keeps the child on the
+gateway (`TestSubbotChildFoldsTheRoutingPolicyForItsOwnBot`,
+`TestSubbotChildFoldsTheRootRunsLaunchRows`,
+`TestSubbotChildUnderATeamGatewayLaunchRowStaysOnTheGateway`). The walk reads
+no subbot child's site: a cell that moves only a child's node onto the
+gateway seals the team's gateway key when a route the walk reads uses it, or
+on a runner pool; elsewhere that call rides the runner's environment
+gateway, and the runner warns naming the pinned sites
+(`TestSubbotChildGatewayPinWithoutASealedGatewayKeyIsWarned`). The residual the fold's own comment names: a policy cell on a MORE
 SPECIFIC selector than any launch row pinning the same field still wins that
 field on specificity inside the folded list — carrying the layer across the
 wire would take ranks on the wire twins — so a launcher states a field-wide

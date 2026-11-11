@@ -35,7 +35,7 @@ func clearGatewayEnv(t *testing.T) {
 
 // TestRefuseGatewayCrossing_RefusesACrossingInBothDirections is the witness
 // for gateway_routing.go's parity rule, over its five behaviours. Mutation
-// that must redden it: make refuseGatewayCrossing return nil unconditionally
+// that must redden it: make GatewayCrossingRefusal return nil unconditionally
 // — every wantErr row then fails on its own assertion, and every nil row is
 // the guard against the opposite mutation (refuse everything).
 func TestRefuseGatewayCrossing_RefusesACrossingInBothDirections(t *testing.T) {
@@ -98,15 +98,15 @@ func TestRefuseGatewayCrossing_RefusesACrossingInBothDirections(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			err := refuseGatewayCrossing(tc.backend, tc.hint, tc.model)
+			err := GatewayCrossingRefusal(tc.backend, tc.hint, tc.model)
 			if !tc.wantErr {
 				if err != nil {
-					t.Fatalf("refuseGatewayCrossing(%q, %q, %q) = %v, want nil", tc.backend, tc.hint, tc.model, err)
+					t.Fatalf("GatewayCrossingRefusal(%q, %q, %q) = %v, want nil", tc.backend, tc.hint, tc.model, err)
 				}
 				return
 			}
 			if err == nil {
-				t.Fatalf("refuseGatewayCrossing(%q, %q, %q) = nil, want a refusal", tc.backend, tc.hint, tc.model)
+				t.Fatalf("GatewayCrossingRefusal(%q, %q, %q) = nil, want a refusal", tc.backend, tc.hint, tc.model)
 			}
 			for _, frag := range tc.wantNamed {
 				if !strings.Contains(err.Error(), frag) {
@@ -122,7 +122,7 @@ func TestRefuseGatewayCrossing_RefusesACrossingInBothDirections(t *testing.T) {
 // seam dispatchChain's walk routes on. Mutations that must redden it:
 //   - delete the builder's checkGatewayEnv call → the env-less element
 //     builds cleanly and the first subtest's "want an error" fails;
-//   - delete the builder's refuseGatewayCrossing call → the crossing
+//   - delete the builder's GatewayCrossingRefusal call → the crossing
 //     element builds cleanly and the second subtest's "another wire"
 //     fragment goes missing.
 func TestElementBuilder_RefusedGatewayElementIsABuildError(t *testing.T) {
@@ -150,7 +150,7 @@ func TestElementBuilder_RefusedGatewayElementIsABuildError(t *testing.T) {
 			})
 		_, _, _, err := build(context.Background(), 0, chainElement{Provider: "anthropic", Model: "openai_compatible/m"}, "")
 		if err == nil {
-			t.Fatal("a gateway element carrying a vendor hint built cleanly — the builder's refuseGatewayCrossing is gone")
+			t.Fatal("a gateway element carrying a vendor hint built cleanly — the builder's GatewayCrossingRefusal is gone")
 		}
 		if !strings.Contains(err.Error(), "another wire") || !strings.Contains(err.Error(), "anthropic") {
 			t.Errorf("build error %q does not say the hint names another wire", err)
@@ -879,4 +879,33 @@ func TestForwardableProviderEnv_GatewayPairBeatsTheEnvGateway(t *testing.T) {
 			}
 		}
 	})
+}
+
+// TestGatewayCrossingRefusal_NamesTheFieldsItsArmRead pins the fact the
+// refusal carries for a launch screen: which fields of the element the
+// refusing arm read. The two-wire and route-to-nowhere arms read the hint
+// and the model; the backend arm reads the backend and whichever of the
+// hint and the model named the gateway.
+func TestGatewayCrossingRefusal_NamesTheFieldsItsArmRead(t *testing.T) {
+	for _, tc := range []struct {
+		name                 string
+		backend, hint, model string
+		want                 GatewayCrossingError
+	}{
+		{"vendor hint beside a gateway model", "claw", "anthropic", "openai_compatible/m", GatewayCrossingError{Hint: true, Model: true}},
+		{"gateway hint beside a vendor model", "claw", "openai_compatible", "anthropic/claude-x", GatewayCrossingError{Hint: true, Model: true}},
+		{"gateway model off claw, no hint", "claude_code", "", "openai_compatible/m", GatewayCrossingError{Backend: true, Model: true}},
+		{"gateway model and hint off claw", "claude_code", "openai_compatible", "openai_compatible/m", GatewayCrossingError{Backend: true, Hint: true, Model: true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var gce *GatewayCrossingError
+			if err := GatewayCrossingRefusal(tc.backend, tc.hint, tc.model); !errors.As(err, &gce) {
+				t.Fatalf("GatewayCrossingRefusal = %v, want a *GatewayCrossingError", err)
+			}
+			if gce.Backend != tc.want.Backend || gce.Hint != tc.want.Hint || gce.Model != tc.want.Model {
+				t.Errorf("read backend=%v hint=%v model=%v, want backend=%v hint=%v model=%v",
+					gce.Backend, gce.Hint, gce.Model, tc.want.Backend, tc.want.Hint, tc.want.Model)
+			}
+		})
+	}
 }

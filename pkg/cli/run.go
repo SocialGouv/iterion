@@ -163,6 +163,15 @@ type RunOptions struct {
 	// --effort-for). Model, backend and effort are one decision, so the
 	// selector machinery is shared; an invalid level is a flag error.
 	EffortFor []string
+	// recordedLaunchRows are the launch rows a resume reads off the run
+	// document (runview.SubbotRootLaunchRows): the subbot children of a
+	// resumed run fold the flags above over them, as the resumed run folds
+	// its flags over its own recorded rows. Nil on a launch.
+	recordedLaunchRows []store.RunModelOverride
+	// resumed marks the options a resume hands its subbot runner: the flags
+	// above are that attempt's, and the tree's launch rows are
+	// recordedLaunchRows (treeLaunchRows).
+	resumed bool
 	// AutoResume is the bounded run-level auto-resume budget N
 	// (`--auto-resume`, env ITERION_AUTO_RESUME; default 0 = off). When the
 	// run exits failed_resumable with a retryable cause, the CLI waits
@@ -559,7 +568,7 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 	}
 
 	if superviseHub != nil {
-		stop := startCLISupervisors(ctx, superviseHub, s, runID, wf, eng.ResolveVars(inputs), logger)
+		stop := startCLISupervisors(ctx, superviseHub, s, runID, wf, eng.ResolveVars(inputs), executorOverrides(executor), logger)
 		defer stop()
 	}
 
@@ -581,9 +590,19 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 // store handle as the engine, so the inbox doorbell stays in lockstep).
 // Returns a stop func to drain them when the run ends. The kill switch
 // was already resolved where the hub was created.
-func startCLISupervisors(ctx context.Context, hub *supervise.EventHub, s store.RunStore, runID string, wf *ir.Workflow, vars map[string]any, logger *iterlog.Logger) func() {
+func startCLISupervisors(ctx context.Context, hub *supervise.EventHub, s store.RunStore, runID string, wf *ir.Workflow, vars map[string]any, overrides model.ModelOverrides, logger *iterlog.Logger) func() {
 	inj := &supervise.StoreInjector{Store: s}
-	return supervise.StartDeclared(ctx, hub, inj, runID, supervise.SpecsFromWorkflow(wf, vars, logger), logger)
+	return supervise.StartDeclared(ctx, hub, inj, runID, supervise.SpecsFromWorkflow(wf, vars, overrides, logger), logger)
+}
+
+// executorOverrides is the override list the run's executor dispatches with
+// — what a `supervisor:<name>` pin and the watched routes read — or none for
+// an executor that carries no model overrides (a test double).
+func executorOverrides(exec runtime.NodeExecutor) model.ModelOverrides {
+	if e, ok := exec.(interface{ ModelOverrides() model.ModelOverrides }); ok {
+		return e.ModelOverrides()
+	}
+	return model.ModelOverrides{}
 }
 
 // teeRunLog defers to store.TeeRunLog so the dispatcher and any
@@ -657,7 +676,7 @@ func buildRunExecutor(
 	if opts.Executor != nil {
 		return opts.Executor, nil
 	}
-	modelOverrides, err := model.ParseModelOverrides(opts.ModelFor, opts.BackendFor, opts.EffortFor)
+	modelOverrides, err := opts.launchRows()
 	if err != nil {
 		return nil, err
 	}
@@ -811,10 +830,7 @@ func subbotRunnerForCLI(parentPath, storeDir string, s store.RunStore, logger *i
 		// parked below re-attaches instead of spawning fresh.
 		runview.RecordSubbotChild(ctx, s, req, childRunID, logger)
 
-		bundleName := runview.BundleNameForPath(childPath)
-		if childBundle != nil && childBundle.Manifest != nil {
-			bundleName = childBundle.Manifest.Name
-		}
+		childBotID, _ := runview.SubbotChildBotIdentity(childPath, childBundle)
 		// The child's engine below is built with WithSharedSandbox and
 		// neither sandbox tier: this executor must not predict from the
 		// PARENT's flags.
@@ -838,7 +854,7 @@ func subbotRunnerForCLI(parentPath, storeDir string, s store.RunStore, logger *i
 			// workdir when the parent passed one, else at the process cwd —
 			// the same two cases its screen must probe.
 			req.WorkDir, nil,
-			runview.ResolveBotID("", bundleName, childPath), nil)
+			childBotID, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -915,6 +931,18 @@ func subbotRunnerForCLI(parentPath, storeDir string, s store.RunStore, logger *i
 		// and the studio's engine options get.
 		if tracker := runview.WorkspaceTrackerFor(storeDir); tracker != nil {
 			childOpts = append(childOpts, runtime.WithWorkspaceTracker(tracker))
+		}
+		// The child's document records the rows its root's document records
+		// (treeLaunchRows), byte for byte, as its launch rows and as its
+		// rows: this lane folds no routing policy, so the root's launch rows
+		// are the child's fold, as the cloud and in-process children record
+		// theirs. A resume of the child on its own then runs its nodes on
+		// them and hands them to its own children, under that resume's
+		// flags. A resume's flags are that attempt's alone, on the child's
+		// document as on the root's, which keeps its launch rows across a
+		// resume.
+		if rows, rerr := childRunOpts.treeLaunchRows(); rerr == nil && len(rows) > 0 {
+			childOpts = append(childOpts, runtime.WithModelOverrides(rows), runtime.WithLaunchModelOverrides(rows))
 		}
 		childEng := runtime.New(childWf, s, childExec, childOpts...)
 		// Unlike the studio's in-process runner (runview.subbotRunnerFor, which
@@ -995,10 +1023,11 @@ func buildEngine(
 	//
 	// The flags were already parsed (and any error surfaced) when the
 	// executor was built, so a parse failure here cannot be new.
-	if ov, err := model.ParseModelOverrides(opts.ModelFor, opts.BackendFor, opts.EffortFor); err == nil {
-		if rows := runModelOverrideRows(ov); len(rows) > 0 {
-			base = append(base, runtime.WithModelOverrides(rows))
-		}
+	// No routing policy folds on this lane (ADR-129 §8), so the flags are
+	// both the rows the run executes with and its raw launch rows — the
+	// ones a later `iterion resume` hands the run's subbot children.
+	if rows, err := opts.treeLaunchRows(); err == nil && len(rows) > 0 {
+		base = append(base, runtime.WithModelOverrides(rows), runtime.WithLaunchModelOverrides(rows))
 	}
 
 	// nil logger: buildRunExecutor resolved the same tier a moment ago with
@@ -1195,6 +1224,32 @@ func ParseAnswersFile(path string) (map[string]any, error) {
 // key this bot's memory on a name that changes with every edit to the bundle.
 func bundleManifestName(b *bundle.Bundle) string {
 	return b.Name()
+}
+
+// launchRows is the run's launch rows as a child of its tree folds them:
+// the --model / --backend / --effort-for flags over the rows a resume
+// recorded (recordedLaunchRows), each field the flags pin winning.
+func (o RunOptions) launchRows() (model.ModelOverrides, error) {
+	flags, err := model.ParseModelOverrides(o.ModelFor, o.BackendFor, o.EffortFor)
+	if err != nil {
+		return model.ModelOverrides{}, err
+	}
+	return flags.MergeOver(runview.ModelOverridesFromRun(o.recordedLaunchRows)), nil
+}
+
+// treeLaunchRows is the tree's launch rows as its root's document records
+// them (runtime.WithLaunchModelOverrides): a launch's flags, or the rows a
+// resume read off the root's document — never a resume's flags, which are
+// that attempt's alone.
+func (o RunOptions) treeLaunchRows() ([]store.RunModelOverride, error) {
+	if o.resumed {
+		return o.recordedLaunchRows, nil
+	}
+	flags, err := model.ParseModelOverrides(o.ModelFor, o.BackendFor, o.EffortFor)
+	if err != nil {
+		return nil, err
+	}
+	return runModelOverrideRows(flags), nil
 }
 
 // runModelOverrideRows converts parsed CLI override directives into the

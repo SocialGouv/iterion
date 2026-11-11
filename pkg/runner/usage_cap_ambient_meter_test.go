@@ -937,7 +937,7 @@ func TestTheSupervisorIsReadUnderTheHintItResolvesWith(t *testing.T) {
 		wf.Supervisors = []*ir.Supervisor{{Name: "pacer", Model: pin}}
 		return wf
 	}
-	specs := supervise.SpecsFromWorkflow(supervised(""), nil, nil)
+	specs := supervise.SpecsFromWorkflow(supervised(""), nil, model.ModelOverrides{}, nil)
 	if len(specs) != 1 || specs[0].ProviderHint != "anthropic" {
 		t.Fatalf("bench: the unpinned supervisor carries %+v, want the watched node's family as its hint — its evaluator resolves under it", specs)
 	}

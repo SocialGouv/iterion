@@ -1,11 +1,15 @@
 package runview
 
 import (
+	"bytes"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/backend/model"
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/llmroute"
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/queue"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -14,10 +18,10 @@ import (
 // back as the launch typed them, and a nil snapshot folds the same.
 func TestEffectiveModelOverrides_NilPolicyIsIdentity(t *testing.T) {
 	rows := []ModelOverrideEntry{{Selector: "judge", Backend: "claw"}}
-	if got := EffectiveModelOverrides(rows, nil); !reflect.DeepEqual(got, rows) {
+	if got := EffectiveModelOverrides(rows, nil, llmroute.BotIdentity{}); !reflect.DeepEqual(got, rows) {
 		t.Fatalf("nil policy changed the rows: %+v", got)
 	}
-	if got := EffectiveModelOverrides(rows, &store.RunLLMRoutePolicy{}); !reflect.DeepEqual(got, rows) {
+	if got := EffectiveModelOverrides(rows, &store.RunLLMRoutePolicy{}, llmroute.BotIdentity{}); !reflect.DeepEqual(got, rows) {
 		t.Fatalf("empty policy changed the rows: %+v", got)
 	}
 }
@@ -33,7 +37,7 @@ func TestEffectiveModelOverrides_PolicyCellsSitUnderTheLaunchRows(t *testing.T) 
 		},
 	}
 	launch := []ModelOverrideEntry{{Selector: "judge", Backend: "codex"}}
-	got := EffectiveModelOverrides(launch, pol)
+	got := EffectiveModelOverrides(launch, pol, llmroute.BotIdentity{})
 	var judgeBackend string
 	var gptModel string
 	for _, e := range got {
@@ -81,7 +85,7 @@ func TestEffectiveModelOverrides_LaunchStarShadowsThePolicyCell(t *testing.T) {
 			}
 			// The same-field shadow: the exact-id policy cell is dropped
 			// outright, the launch's "*" row is all that remains.
-			got := EffectiveModelOverrides([]ModelOverrideEntry{tc.star}, pol)
+			got := EffectiveModelOverrides([]ModelOverrideEntry{tc.star}, pol, llmroute.BotIdentity{})
 			if !reflect.DeepEqual(got, []ModelOverrideEntry{tc.star}) {
 				t.Errorf("a * row on %s left the policy cell alive: folded = %+v, want the launch row alone", tc.field, got)
 			}
@@ -91,7 +95,7 @@ func TestEffectiveModelOverrides_LaunchStarShadowsThePolicyCell(t *testing.T) {
 				if other.field == tc.field {
 					continue
 				}
-				got := EffectiveModelOverrides([]ModelOverrideEntry{other.star}, pol)
+				got := EffectiveModelOverrides([]ModelOverrideEntry{other.star}, pol, llmroute.BotIdentity{})
 				if !reflect.DeepEqual(got, []ModelOverrideEntry{cell, other.star}) {
 					t.Errorf("a * row on %s dropped the %s cell: folded = %+v, want the cell plus the row", other.field, tc.field, got)
 				}
@@ -114,7 +118,7 @@ func TestEffectiveModelOverrides_LaunchStarShadowsOneFieldOfAComposedCell(t *tes
 		Effort:   "low",
 	}
 	star := ModelOverrideEntry{Selector: "*", Backend: "claude_code"}
-	got := EffectiveModelOverrides([]ModelOverrideEntry{star}, &store.RunLLMRoutePolicy{Overrides: []store.RunLLMRouteOverride{composed}})
+	got := EffectiveModelOverrides([]ModelOverrideEntry{star}, &store.RunLLMRoutePolicy{Overrides: []store.RunLLMRouteOverride{composed}}, llmroute.BotIdentity{})
 	want := []ModelOverrideEntry{
 		{Selector: "work", Model: "anthropic/claude-opus-4-8", Provider: "anthropic", Effort: "low"},
 		star,
@@ -156,5 +160,78 @@ func TestOverrideTwinsStayFieldIdentical(t *testing.T) {
 	policyCell := twinFields(t, llmroute.Override{})
 	if !reflect.DeepEqual(cell, policyCell) {
 		t.Errorf("store.RunLLMRouteOverride fields = %v, want llmroute.Override's %v", cell, policyCell)
+	}
+}
+
+// The fold's stated residual, as docs/backends.md and ADR-129 §6 state the
+// precedence: a launch row wins a cell on the same selector and a `*` row
+// overrides its field in every node cell, but a cell on a more specific node
+// selector than a launch row other than `*` still wins the field both pin —
+// a `reviewer_claude` cell beats a `reviewer_*` launch row.
+func TestEffectiveModelOverrides_AMoreSpecificCellBeatsALaunchGlobRow(t *testing.T) {
+	const gw = "openai_compatible/scaleway/deepseek-v4.1-flash"
+	pol := &store.RunLLMRoutePolicy{Overrides: []store.RunLLMRouteOverride{{Selector: "review-pr/reviewer_claude", Model: gw}}}
+	bot := llmroute.BotIdentity{ID: "review-pr-pool", Name: "review-pr"}
+	for _, tc := range []struct {
+		row  string
+		want string
+	}{
+		{"reviewer_*", gw},
+		{"reviewer_claude", "anthropic/claude-opus-5-5"},
+		{"*", "anthropic/claude-opus-5-5"},
+	} {
+		t.Run(tc.row, func(t *testing.T) {
+			folded := EffectiveModelOverrides([]ModelOverrideEntry{{Selector: tc.row, Model: "anthropic/claude-opus-5-5"}}, pol, bot)
+			if got := toModelOverrides(folded).ForNode("reviewer_claude", ir.NodeAgent).Model; got != tc.want {
+				t.Fatalf("reviewer_claude model under a %q launch row = %q, want %q (folded %+v)", tc.row, got, tc.want, folded)
+			}
+		})
+	}
+}
+
+// SubbotRootLaunchRows reads a root document's raw launch rows, and on a
+// document that predates them its folded rows when no override cell can
+// be among them. Rows no cell explains on a document whose policy froze
+// cells are warned by selector and never handed to a child.
+func TestSubbotRootLaunchRows(t *testing.T) {
+	act := store.RunModelOverride{Selector: "act", Model: "openai/gpt-6-sol"}
+	review := store.RunModelOverride{Selector: "review", Model: "openai/gpt-5.5-mini"}
+	cells := func(sel ...string) *store.RunLLMRoutePolicy {
+		pol := &store.RunLLMRoutePolicy{}
+		for _, s := range sel {
+			pol.Overrides = append(pol.Overrides, store.RunLLMRouteOverride{Selector: s, Model: "openai/gpt-5.5-mini"})
+		}
+		return pol
+	}
+	for _, tc := range []struct {
+		name   string
+		root   *store.Run
+		want   []store.RunModelOverride
+		warned []string
+	}{
+		{"no document", nil, nil, nil},
+		{"the raw rows recorded", &store.Run{LaunchModelOverrides: []store.RunModelOverride{act}, ModelOverrides: []store.RunModelOverride{review, act}, LLMRoutePolicy: cells("review")}, []store.RunModelOverride{act}, nil},
+		{"no policy", &store.Run{ModelOverrides: []store.RunModelOverride{act}}, []store.RunModelOverride{act}, nil},
+		{"a providers list alone", &store.Run{ModelOverrides: []store.RunModelOverride{act}, LLMRoutePolicy: &store.RunLLMRoutePolicy{Providers: []string{"openai"}}}, []store.RunModelOverride{act}, nil},
+		{"every row a cell", &store.Run{ModelOverrides: []store.RunModelOverride{review}, LLMRoutePolicy: cells("review")}, nil, nil},
+		{"a bot-scoped cell explains its bare target", &store.Run{ModelOverrides: []store.RunModelOverride{act}, LLMRoutePolicy: cells("parent/act")}, nil, nil},
+		{"a row no cell explains", &store.Run{ID: "run-legacy", ModelOverrides: []store.RunModelOverride{review, act}, LLMRoutePolicy: cells("review")}, nil, []string{`"act"`}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			got := SubbotRootLaunchRows(tc.root, iterlog.New(iterlog.LevelWarn, &buf))
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("rows = %+v, want %+v", got, tc.want)
+			}
+			logged := buf.String()
+			if warned := strings.Contains(logged, "cannot be told from the cells"); warned != (len(tc.warned) > 0) {
+				t.Fatalf("warned = %v, want %v (log %q)", warned, len(tc.warned) > 0, logged)
+			}
+			for _, sel := range tc.warned {
+				if !strings.Contains(logged, sel) || !strings.Contains(logged, `"run-legacy"`) || strings.Contains(logged, `"review"`) {
+					t.Fatalf("log = %q, want the root run and %s named, and not the cell's \"review\"", logged, sel)
+				}
+			}
+		})
 	}
 }

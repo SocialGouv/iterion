@@ -186,7 +186,8 @@ type launchRunRequest struct {
 	// (ADR-121, pkg/llmroute): the launcher's own opinion, folded as the
 	// HEAD layer — the seat whose explicit lock may reopen strict (the
 	// ADR's "only the launcher, for their own run, through an explicit
-	// lock"). Optional; validated with the rest of the chain.
+	// lock"). Optional; it meets the write gate at the request
+	// (validateRequestRouting), then folds with the rest of the chain.
 	LLMRouting *llmroute.Policy `json:"llm_routing,omitempty"`
 	// RoutingPolicy is the launch-frozen outcome contract: what
 	// "success" and "blocked" mean for this run (bot-DSL expressions
@@ -383,6 +384,15 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "invalid run_source: %v", err)
 		span.SetStatus(codes.Error, "invalid run source")
+		return
+	}
+	// The launch's own routing block is one the request supplies: it meets
+	// the write gate here, on the caller's payload alone, before admission
+	// meters a slot — the launch reads every layer, this one included, with
+	// the stored rule only (resolveRunLLMRoutePolicy).
+	if err := validateRequestRouting("llm_routing", req.LLMRouting); err != nil {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "%v", err)
+		span.SetStatus(codes.Error, "invalid llm_routing")
 		return
 	}
 	if req.FilePath == "" && req.Source == "" && req.BotID == "" {

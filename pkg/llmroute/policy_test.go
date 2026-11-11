@@ -861,6 +861,66 @@ func TestValidateOverrides_Vocabulary(t *testing.T) {
 	}
 }
 
+// everyBotSpellingCases are the cells a level may write beside a node
+// cell's every-bot spelling: `*/x` and `x` both reach every bot
+// (Selector.MatchBot), so on one field they are one selector to the write
+// gate (writeRefusal, "" = accepted) — and at one level the launch fold
+// keeps the one without a bot part. A launch reads a stored level
+// holding both (storedRefusal ""); an exact duplicate stays refused by
+// both rules. Another field, or a bot part that names a bot or a glob
+// over one, is another cell.
+var everyBotSpellingCases = []struct {
+	name          string
+	cells         []Override
+	writeRefusal  string
+	storedRefusal string
+}{
+	{"x then */x on one field", []Override{{Selector: "work", Backend: HarnessClaw}, {Selector: "*/work", Backend: HarnessCodex}},
+		`"work" and "*/work" are one selector (a ` + "`*/`" + ` bot part reaches every bot, as no bot part does), and at one level a launch keeps the one without a bot part ("work")`, ""},
+	{"*/x then x on one field", []Override{{Selector: "*/work", Model: "openai/gpt-5.5"}, {Selector: "work", Model: "openai/gpt-5.4"}},
+		`"*/work" and "work" are one selector (a ` + "`*/`" + ` bot part reaches every bot, as no bot part does), and at one level a launch keeps the one without a bot part ("work")`, ""},
+	{"*/* beside *", []Override{{Selector: "*", Effort: "low"}, {Selector: "*/*", Effort: "high"}},
+		`"*" and "*/*" are one selector (a ` + "`*/`" + ` bot part reaches every bot, as no bot part does), and at one level a launch keeps the one without a bot part ("*")`, ""},
+	{"x twice on one field", []Override{{Selector: "work", Backend: HarnessClaw}, {Selector: "work", Backend: HarnessCodex}},
+		"pins work.backend twice — the fold would silently keep the first", "pins work.backend twice — the fold would silently keep the first"},
+	{"*/x twice on one field", []Override{{Selector: "*/work", Model: "openai/gpt-5.5"}, {Selector: "*/work", Model: "openai/gpt-5.4"}},
+		"pins */work.model twice", "pins */work.model twice"},
+	{"x and */x on two fields", []Override{{Selector: "work", Backend: HarnessClaw}, {Selector: "*/work", Model: "openai/gpt-5.5"}}, "", ""},
+	{"a bot's x beside x", []Override{{Selector: "review-pr/work", Backend: HarnessClaw}, {Selector: "work", Backend: HarnessCodex}}, "", ""},
+	{"a glob's x beside */x", []Override{{Selector: "rev*/work", Backend: HarnessClaw}, {Selector: "*/work", Backend: HarnessCodex}}, "", ""},
+}
+
+func checkEveryBotSpelling(t *testing.T, rule string, validate func(Policy) error, name string, cells []Override, refused string) {
+	t.Helper()
+	err := validate(Policy{Overrides: cells})
+	switch {
+	case refused == "" && err != nil:
+		t.Errorf("%s(%s) refused: %v", rule, name, err)
+	case refused != "" && (err == nil || !strings.Contains(err.Error(), refused)):
+		t.Errorf("%s(%s) = %v, want a refusal naming %s", rule, name, err, refused)
+	}
+}
+
+// The write gate refuses a level writing `x` and `*/x` on one field, as it
+// refuses an exact duplicate, naming the cell the launch would keep.
+func TestValidateOverrides_ACellAndItsEveryBotSpellingAreOneSelectorAtWrite(t *testing.T) {
+	for _, tc := range everyBotSpellingCases {
+		checkEveryBotSpelling(t, "Validate", Validate, tc.name, tc.cells, tc.writeRefusal)
+	}
+}
+
+// A launch reads a stored level holding `x` and `*/x` on one field: the
+// fold decides the pair (cellOutranks), so the record refuses no launch of
+// its level — a `*/x` written before the bot dimension existed was a glob
+// that matched nothing, and the write gate admitted it beside `x`. An exact
+// duplicate stays refused by both rules, as it was before the bot
+// dimension.
+func TestValidateOverrides_AStoredLevelHoldingACellAndItsEveryBotSpellingIsRead(t *testing.T) {
+	for _, tc := range everyBotSpellingCases {
+		checkEveryBotSpelling(t, "ValidateStored", ValidateStored, tc.name, tc.cells, tc.storedRefusal)
+	}
+}
+
 // The lock vocabulary accepts the two new fields.
 func TestValidateOverrides_LockVocabulary(t *testing.T) {
 	if err := Validate(Policy{Locks: []string{FieldOverrides, FieldProviders}}); err != nil {

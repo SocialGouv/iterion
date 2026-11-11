@@ -1,6 +1,7 @@
 package supervise
 
 import (
+	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"testing"
 	"time"
 
@@ -69,7 +70,7 @@ func TestSpecsFromWorkflow(t *testing.T) {
 			},
 		}},
 	}
-	specs := SpecsFromWorkflow(wf, nil, nil)
+	specs := SpecsFromWorkflow(wf, nil, model.ModelOverrides{}, nil)
 	if len(specs) != 1 {
 		t.Fatalf("SpecsFromWorkflow returned %d specs; want 1", len(specs))
 	}
@@ -102,16 +103,16 @@ func TestSpecsFromWorkflowResolvesModelVars(t *testing.T) {
 			Model:   "{{vars.m}}",
 		}},
 	}
-	specs := SpecsFromWorkflow(wf, map[string]any{"m": "anthropic/claude-haiku-4-5"}, nil)
+	specs := SpecsFromWorkflow(wf, map[string]any{"m": "anthropic/claude-haiku-4-5"}, model.ModelOverrides{}, nil)
 	if len(specs) != 1 || specs[0].Model != "anthropic/claude-haiku-4-5" {
 		t.Fatalf("the pin did not resolve: %+v", specs)
 	}
 	// No map (the estimate paths hold no run): the pin stays as written.
-	if specs = SpecsFromWorkflow(wf, nil, nil); specs[0].Model != "{{vars.m}}" {
+	if specs = SpecsFromWorkflow(wf, nil, model.ModelOverrides{}, nil); specs[0].Model != "{{vars.m}}" {
 		t.Fatalf("a nil map must leave the pin: %q", specs[0].Model)
 	}
 	// A var the map does not hold stays literal.
-	if specs = SpecsFromWorkflow(wf, map[string]any{}, nil); specs[0].Model != "{{vars.m}}" {
+	if specs = SpecsFromWorkflow(wf, map[string]any{}, model.ModelOverrides{}, nil); specs[0].Model != "{{vars.m}}" {
 		t.Fatalf("an unheld var must stay literal: %q", specs[0].Model)
 	}
 	// A var resolving empty is an unset pin: the provider hint derives.
@@ -125,7 +126,7 @@ func TestSpecsFromWorkflowResolvesModelVars(t *testing.T) {
 			Model:   "{{vars.m}}",
 		}},
 	}
-	specs = SpecsFromWorkflow(wf2, map[string]any{"m": ""}, nil)
+	specs = SpecsFromWorkflow(wf2, map[string]any{"m": ""}, model.ModelOverrides{}, nil)
 	if len(specs) != 1 || specs[0].Model != "" || specs[0].ProviderHint != "anthropic" {
 		t.Fatalf("an empty resolution must derive the hint: %+v", specs)
 	}
@@ -152,7 +153,7 @@ func TestSpecsFromWorkflowRendersScalarsLikeTheExecutor(t *testing.T) {
 		"plain string": {map[string]any{"m": "anthropic/claude-haiku-4-5"}, "anthropic/claude-haiku-4-5"},
 		"json object":  {map[string]any{"m": map[string]any{"a": 1}}, `{"a":1}`},
 	} {
-		specs := SpecsFromWorkflow(wf, vars.vars, nil)
+		specs := SpecsFromWorkflow(wf, vars.vars, model.ModelOverrides{}, nil)
 		if len(specs) != 1 || specs[0].Model != vars.want {
 			t.Errorf("%s: rendered %q, want %q", name, specs[0].Model, vars.want)
 		}

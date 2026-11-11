@@ -1396,6 +1396,15 @@ type Run struct {
 	// re-read it instead of re-deriving the pins from a policy that may
 	// have changed since, and the studio Overview shows what it says.
 	ModelOverrides []RunModelOverride `json:"model_overrides,omitempty" bson:"model_overrides,omitempty"`
+	// LaunchModelOverrides holds the launch's own override rows as the
+	// launch body (or the CLI's flags) wrote them, before the routing
+	// policy's cells folded in — bot-free (llmroute.ValidateLaunchRow). A
+	// subbot child of this run's tree folds them again on top of the
+	// policy's cells for its own bot (runview.FoldForSubbotChild), so a
+	// launch row reaches every child while a cell folded for the parent's
+	// bot never does. Stamped once at launch, carried by a fork, and never
+	// re-derived: a resume leaves it as the launch wrote it.
+	LaunchModelOverrides []RunModelOverride `json:"launch_model_overrides,omitempty" bson:"launch_model_overrides,omitempty"`
 	// Fallback captures the launch-time run-level fallback chain (CLI
 	// `--fallback` / HTTP `fallback`) — the resume path's replay source,
 	// same doctrine as the budget ask: cloud resumes are often unattended

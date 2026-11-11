@@ -1,6 +1,19 @@
 package runview
 
-import "github.com/SocialGouv/iterion/pkg/store"
+import (
+	"fmt"
+	"math"
+	"sort"
+	"strconv"
+	"strings"
+	"sync"
+
+	"github.com/SocialGouv/iterion/pkg/backend/model"
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/llmroute"
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/store"
+)
 
 // The ONE launch fold of the routing policy's override cells under the
 // launch's own model_overrides (ADR-129 §6). The ADR's precedence line:
@@ -31,6 +44,26 @@ import "github.com/SocialGouv/iterion/pkg/store"
 // A local (CLI) launch resolves no policy at all — its other levels are
 // server records (ADR-129 §8, the stated limit) — so its overrides stay
 // flags-only and the helper is a no-op there (nil policy).
+//
+// The bot dimension (ADR-132 §2, D21) resolves HERE, the one place a
+// launch's bot and its policy cells meet — a subbot child's included: it
+// folds its root run's snapshot again for its own bot (FoldForSubbotChild),
+// through the same body. A cell `<bot>/<target>` whose bot
+// part reaches neither the launch's bot id (LaunchSpec.BotID) nor the
+// manifest name of the bundle it serves (LaunchSpec.BotManifestName) drops;
+// one that does folds as its bare target — the spelling every reader
+// downstream matches. Among the cells reaching one site, the node target's
+// specificity decides first (ForNode, in the folded list), then the bot
+// part — unscoped and `*/` (every bot) < a glob < the manifest name < the
+// bot id (llmroute.BotMatch) — then the level whose provenance names it
+// nearer the launch (llmroute.SourceRank), then, at one level, a cell over
+// its every-bot spelling (`x` over `*/x`), then the written selector first
+// in byte order (cellOutranks). Of two cells with the same bot match on the
+// same target and field, the one that ranks lower drops; the folded list
+// carries the rest lowest first (entryOutranks), so on one node score the
+// later rule ForNode takes is the one that ranks higher — two targets of
+// equal specificity included. The snapshot keeps the cells as the levels
+// wrote them; the folded list is this bot's.
 
 // overrideOrigin names the layer that wrote a folded override entry —
 // the level half of the composed-pair refusal's naming (#2637).
@@ -43,12 +76,47 @@ const (
 	originLaunch overrideOrigin = "the launch's own override row"
 )
 
-// sourcedOverrideEntry is one folded entry beside the layer that wrote
+// sourcedOverrideEntry is one folded entry beside the record that wrote
 // it. The flat []ModelOverrideEntry list stays every wire shape; the
-// origin lives only inside the launch's validation walk.
+// origin lives only inside the launch's validation walk. A policy cell
+// keeps the selector its level wrote — the bot part the fold stripped
+// included — and, per field, the level that wrote it (the snapshot's
+// provenance label), so a refusal names the record an operator edits.
 type sourcedOverrideEntry struct {
 	ModelOverrideEntry
 	origin overrideOrigin
+	// written is a policy cell's selector as its level wrote it; "" for a
+	// launch row, which the fold keeps as written.
+	written string
+	// levels maps a policy cell's field name to the provenance label of
+	// the level that wrote it (llmroute.Source*); nil for a launch row and
+	// for a snapshot built without provenance.
+	levels map[string]string
+}
+
+// describe names the record one field of a folded entry came from: a
+// launch row by its selector; a policy cell by the selector its level
+// wrote and that level (levelName), when the snapshot records it.
+func (e sourcedOverrideEntry) describe(field string) string {
+	if e.origin != originPolicy || e.written == "" {
+		return fmt.Sprintf("%s %q", e.origin, e.Selector)
+	}
+	if level := e.levels[field]; level != "" {
+		return fmt.Sprintf("%s %q written at level %s", e.origin, e.written, levelName(level))
+	}
+	return fmt.Sprintf("%s %q", e.origin, e.written)
+}
+
+// levelName renders a level's provenance label as a refusal names it. The
+// integration's level carries the label "webhook" (llmroute.SourceWebhook)
+// while the operator writes it as the forge integration's routing block,
+// so it names that record beside the label; the other labels read as their
+// level's own name (team, org, platform, …).
+func levelName(label string) string {
+	if label == llmroute.SourceWebhook {
+		return strconv.Quote(label) + " (the integration's routing block)"
+	}
+	return strconv.Quote(label)
 }
 
 // EffectiveModelOverrides folds the resolved routing policy's override
@@ -58,8 +126,85 @@ type sourcedOverrideEntry struct {
 func EffectiveModelOverrides(
 	launchRows []ModelOverrideEntry,
 	pol *store.RunLLMRoutePolicy,
+	bot llmroute.BotIdentity,
 ) []ModelOverrideEntry {
-	return plainModelOverrideEntries(foldSourcedOverrides(launchRows, pol))
+	return plainModelOverrideEntries(foldSourcedOverrides(launchRows, pol, bot))
+}
+
+// FoldForSubbotChild is the launch fold for a subbot child, the second
+// caller of foldAndScreen's one body. A child is a run of its own bot: the
+// root run's own launch rows (store.Run.LaunchModelOverrides, bot-free) fold
+// on top of the routing policy the root froze at launch, whose cells fold
+// for the child's bot (SubbotChildBotIdentity: its bundle's slug and
+// manifest name) — through the fold and the
+// screens a launch meets, a refusal naming "the launch's own override row"
+// or the policy cell it read — and the zero-match warnings log once per
+// process. The parent's folded list never reaches the child: its bot
+// dimension resolved for the parent's bot. No policy and no launch row fold
+// to no row.
+func FoldForSubbotChild(wf *ir.Workflow, rootPolicy *store.RunLLMRoutePolicy, rootLaunchRows []store.RunModelOverride, bot llmroute.BotIdentity, permission string, logger *iterlog.Logger) ([]ModelOverrideEntry, error) {
+	spec := &LaunchSpec{BotID: bot.ID, BotManifestName: bot.Name, ModelOverrides: ModelOverrideEntriesFromRun(rootLaunchRows), LLMRoutePolicy: rootPolicy, Permission: permission}
+	warnings, err := foldAndScreen(wf, spec, "")
+	if err != nil {
+		return nil, err
+	}
+	logZeroMatchOnce(logger, warnings)
+	if len(spec.ModelOverrides) == 0 {
+		return nil, nil
+	}
+	return spec.ModelOverrides, nil
+}
+
+// SubbotRootLaunchRows is the raw launch rows the root run of a subbot tree
+// recorded, the rows every child of the tree folds (FoldForSubbotChild):
+// its document's LaunchModelOverrides. A document written before that field
+// existed — a run launched, paused or queued before the deploy that added
+// it, or a fork of one — records none, and its folded ModelOverrides is
+// then its launch rows when its routing policy froze no override cell: the
+// fold of no cell is the identity. On a document that records the field,
+// the same condition leaves both lists empty. When the policy froze cells,
+// the folded list mixes them, folded for the root's own bot, with the
+// launch's rows, and the two cannot be split: the rows no cell's selector
+// explains — its written spelling or its bare target — are warned on
+// logger, naming the root run, and no row reaches a child. A launch row on
+// a selector a cell also wrote reads as that cell and goes unwarned.
+func SubbotRootLaunchRows(root *store.Run, logger *iterlog.Logger) []store.RunModelOverride {
+	if root == nil {
+		return nil
+	}
+	if len(root.LaunchModelOverrides) > 0 {
+		return root.LaunchModelOverrides
+	}
+	if root.LLMRoutePolicy == nil || len(root.LLMRoutePolicy.Overrides) == 0 {
+		return root.ModelOverrides
+	}
+	written := map[string]bool{}
+	for _, c := range root.LLMRoutePolicy.Overrides {
+		written[c.Selector] = true
+		if sel, err := llmroute.ParseSelector(c.Selector); err == nil {
+			written[sel.Target] = true
+		}
+	}
+	var unsplit []string
+	for _, r := range root.ModelOverrides {
+		if !written[r.Selector] {
+			unsplit = append(unsplit, strconv.Quote(r.Selector))
+		}
+	}
+	if len(unsplit) > 0 && logger != nil {
+		logger.Warn("subbot: root run %q records no raw launch rows (its document predates them) and its routing policy froze override cells, so its folded rows %s cannot be told from the cells folded for its own bot — no subbot child of its tree folds them", root.ID, strings.Join(unsplit, ", "))
+	}
+	return nil
+}
+
+// launchBotIdentity is the bot a launch folds the policy's cells for: its
+// bot id, and the manifest name of the bundle it serves.
+func launchBotIdentity(spec *LaunchSpec) llmroute.BotIdentity {
+	name := strings.TrimSpace(spec.BotManifestName)
+	if name == spec.BotID {
+		name = ""
+	}
+	return llmroute.BotIdentity{ID: spec.BotID, Name: name}
 }
 
 // plainModelOverrideEntries drops the origins: the wire shape the launch
@@ -80,8 +225,9 @@ func plainModelOverrideEntries(sourced []sourcedOverrideEntry) []ModelOverrideEn
 func foldSourcedOverrides(
 	launchRows []ModelOverrideEntry,
 	pol *store.RunLLMRoutePolicy,
+	bot llmroute.BotIdentity,
 ) []sourcedOverrideEntry {
-	policy := policyOverrideEntries(pol)
+	policy := policyOverrideEntries(pol, bot)
 	// A launch row pinning a field on "*" shadows every policy cell on
 	// that field: the launcher's canonical gesture (a dropdown / bare flag
 	// records "*") must beat a more specific policy selector on score
@@ -102,6 +248,15 @@ func foldSourcedOverrides(
 	hadShadow := shadow.backend || shadow.model || shadow.provider || shadow.effort
 	out := make([]sourcedOverrideEntry, 0, len(policy)+len(launchRows))
 	for _, o := range policy {
+		if scopedTarget(o.Selector) {
+			// A route-scoped or supervisor cell pins a site no node row
+			// reaches: the launch's "*" re-targets nodes, never a route's
+			// own fields nor a supervisor's model, so it shadows nothing
+			// here. A launch row on the same scoped selector still wins
+			// the tie (it sits after).
+			out = append(out, o)
+			continue
+		}
 		if shadow.backend {
 			o.Backend = ""
 		}
@@ -117,7 +272,7 @@ func foldSourcedOverrides(
 		if hadShadow && o.Backend == "" && o.Model == "" && o.Provider == "" && o.Effort == "" {
 			continue // the cell is fully shadowed
 		}
-		out = append(out, sourcedOverrideEntry{ModelOverrideEntry: o, origin: originPolicy})
+		out = append(out, o)
 	}
 	for _, r := range launchRows {
 		out = append(out, sourcedOverrideEntry{ModelOverrideEntry: r, origin: originLaunch})
@@ -127,20 +282,327 @@ func foldSourcedOverrides(
 
 // policyOverrideEntries adapts the resolved snapshot's cells onto the
 // launch-entry shape — the "a tiny adapter per site" doctrine
-// (pkg/backend/model/override_fold.go's OverrideEntry).
-func policyOverrideEntries(pol *store.RunLLMRoutePolicy) []ModelOverrideEntry {
+// (pkg/backend/model/override_fold.go's OverrideEntry) — each entry
+// remembering the selector its level wrote and each field's level
+// (sourcedOverrideEntry), for the refusals that name it.
+//
+// The bot dimension resolves here (see the file header): a cell whose bot
+// part does not reach bot drops; the others fold as their bare targets, one
+// cell per (bot match, target, field) — the level nearest the launch, then
+// a cell over its every-bot spelling, then the written selector first in
+// byte order (cellOutranks). Each folded entry is one written cell's fields
+// of one level, the fields it lost to a higher-ranked cell dropped, ordered
+// by bot match, least specific first, then by entryOutranks, lowest first;
+// a cell left with no field folds no entry. A selector the grammar cannot
+// read stays as written among the every-bot cells — it matches nothing; the
+// launch chokepoint (llmroute.ValidateStored at resolveRunLLMRoutePolicy)
+// refuses such a record before any fold. Two cells one level writes as `x`
+// and `*/x` on one field fold here, which the write gate refuses: same bot
+// match, same target, same level, so cellOutranks keeps `x`, whichever the
+// record lists first.
+func policyOverrideEntries(pol *store.RunLLMRoutePolicy, bot llmroute.BotIdentity) []sourcedOverrideEntry {
 	if pol == nil {
 		return nil
 	}
-	out := make([]ModelOverrideEntry, 0, len(pol.Overrides))
+	type folded struct {
+		match   llmroute.BotMatch
+		written string
+		entry   ModelOverrideEntry
+	}
+	type cellKey struct {
+		match         llmroute.BotMatch
+		target, field string
+	}
+	type holder struct {
+		level   int
+		written string
+		at      int
+	}
+	cells := make([]folded, 0, len(pol.Overrides))
+	held := map[cellKey]holder{}
 	for _, o := range pol.Overrides {
-		out = append(out, ModelOverrideEntry{
-			Selector: o.Selector,
+		match := llmroute.BotMatchAll
+		target := o.Selector
+		if sel, err := llmroute.ParseSelector(o.Selector); err == nil {
+			match = sel.MatchBot(bot)
+			if match == llmroute.BotMatchNone {
+				continue
+			}
+			target = sel.Target
+		}
+		at := len(cells)
+		cells = append(cells, folded{match: match, written: o.Selector, entry: ModelOverrideEntry{
+			Selector: target,
 			Backend:  o.Backend,
 			Model:    o.Model,
 			Provider: o.Provider,
 			Effort:   o.Effort,
-		})
+		}})
+		for _, field := range overrideEntryFields {
+			if *field.of(&cells[at].entry) == "" {
+				continue
+			}
+			level := cellLevel(pol.Sources, o.Selector, field.name)
+			k := cellKey{match, target, field.name}
+			if h, ok := held[k]; ok {
+				if !cellOutranks(level, o.Selector, h.level, h.written) {
+					*field.of(&cells[at].entry) = ""
+					continue
+				}
+				*field.of(&cells[h.at].entry) = ""
+			}
+			held[k] = holder{level: level, written: o.Selector, at: at}
+		}
+	}
+	// One folded entry per cell and level: a cell whose fields two levels
+	// wrote competes at each. On one node score ForNode takes the later
+	// rule, so the list orders the entries the way a site ranks them, the
+	// lowest first — the bot match, then entryOutranks — and two targets of
+	// equal specificity (two globs as literal) decide as two cells on one
+	// target do, never by the snapshot's order.
+	type piece struct {
+		match   llmroute.BotMatch
+		level   int
+		written string
+		entry   ModelOverrideEntry
+	}
+	var pieces []piece
+	for _, c := range cells {
+		first := len(pieces)
+		for _, field := range overrideEntryFields {
+			value := *field.of(&c.entry)
+			if value == "" {
+				continue
+			}
+			level := cellLevel(pol.Sources, c.written, field.name)
+			at := first
+			for at < len(pieces) && pieces[at].level != level {
+				at++
+			}
+			if at == len(pieces) {
+				pieces = append(pieces, piece{match: c.match, level: level, written: c.written, entry: ModelOverrideEntry{Selector: c.entry.Selector}})
+			}
+			*field.of(&pieces[at].entry) = value
+		}
+	}
+	sort.SliceStable(pieces, func(i, j int) bool {
+		if pieces[i].match != pieces[j].match {
+			return pieces[i].match < pieces[j].match
+		}
+		return entryOutranks(pieces[j].level, pieces[j].written, pieces[i].level, pieces[i].written)
+	})
+	out := make([]sourcedOverrideEntry, 0, len(pieces))
+	for _, p := range pieces {
+		out = append(out, sourcedOverrideEntry{ModelOverrideEntry: p.entry, origin: originPolicy, written: p.written, levels: cellLevels(pol.Sources, p.written, p.entry)})
 	}
 	return out
+}
+
+// cellOutranks reports whether a cell written as written at level wins a
+// field over another cell of the same bot match on the same target: the
+// level nearer the launch, then, at one level, a cell over its every-bot
+// spelling — `x` over `*/x`, the cell that answered the site before `*/`
+// reached every bot (it was a node glob no id matched) — then the written
+// selector first in byte order (entryOutranks). Only a stored record holds
+// `x` and `*/x` on one field of one level: the write gate refuses the pair
+// (llmroute.Validate), the launch reads it (llmroute.ValidateStored).
+func cellOutranks(level int, written string, otherLevel int, otherWritten string) bool {
+	if level == otherLevel {
+		switch {
+		case otherWritten == everyBotSpelling(written):
+			return true
+		case written == everyBotSpelling(otherWritten):
+			return false
+		}
+	}
+	return entryOutranks(level, written, otherLevel, otherWritten)
+}
+
+// entryOutranks orders the folded entries of one bot match, the higher
+// later: the level nearer the launch, then, at one level, the written
+// selector first in byte order. The snapshot's order is the order Resolve
+// first met each selector across every level, which a nearer level moves by
+// writing any field of one of them; the written selector is a key no other
+// level moves. It is cellOutranks without the every-bot spelling rule,
+// which byte order does not compose with into one order (`*/x` < `a` <
+// `x`, and `x` over `*/x`); the list needs none: a cell and its every-bot
+// spelling hold no common field once cellOutranks decided each, so their
+// order in the list decides nothing.
+func entryOutranks(level int, written string, otherLevel int, otherWritten string) bool {
+	if level != otherLevel {
+		return level < otherLevel
+	}
+	return written < otherWritten
+}
+
+// everyBotSpelling is a selector's spelling with the every-bot part:
+// `*/x` for `x`.
+func everyBotSpelling(selector string) string {
+	return "*" + llmroute.SelectorBotSeparator + selector
+}
+
+// cellLevels maps each field a folded cell still pins to the provenance
+// label of the level that wrote it; nil when the snapshot records none.
+func cellLevels(sources map[string]string, written string, e ModelOverrideEntry) map[string]string {
+	var out map[string]string
+	for _, field := range overrideEntryFields {
+		if *field.of(&e) == "" {
+			continue
+		}
+		if label := sources[llmroute.OverrideCellKey(written, field.name)]; label != "" {
+			if out == nil {
+				out = map[string]string{}
+			}
+			out[field.name] = label
+		}
+	}
+	return out
+}
+
+// overrideEntryField is the accessor of the field overrideEntryFields
+// names name.
+func overrideEntryField(name string) func(*ModelOverrideEntry) *string {
+	for _, field := range overrideEntryFields {
+		if field.name == name {
+			return field.of
+		}
+	}
+	panic(fmt.Sprintf("runview: no override entry field %q", name))
+}
+
+// overrideEntryFields names the fields of a folded entry the way a cell's
+// provenance key names them.
+var overrideEntryFields = []struct {
+	name string
+	of   func(*ModelOverrideEntry) *string
+}{
+	{llmroute.OverrideFieldBackend, func(e *ModelOverrideEntry) *string { return &e.Backend }},
+	{llmroute.OverrideFieldModel, func(e *ModelOverrideEntry) *string { return &e.Model }},
+	{llmroute.OverrideFieldProvider, func(e *ModelOverrideEntry) *string { return &e.Provider }},
+	{llmroute.OverrideFieldEffort, func(e *ModelOverrideEntry) *string { return &e.Effort }},
+}
+
+// unrankedLevel is the level of a cell whose provenance names no ranked
+// layer — a snapshot built without llmroute.Resolve: after every ranked
+// level, and equal among themselves, so the written selector decides
+// between two of them (cellOutranks).
+const unrankedLevel = math.MaxInt
+
+// cellLevel reads the level that wrote one field of one cell, as a rank on
+// the precedence line (llmroute.SourceRank): lower is nearer the launch.
+func cellLevel(sources map[string]string, selector, field string) int {
+	if rank, ok := llmroute.SourceRank(sources[llmroute.OverrideCellKey(selector, field)]); ok {
+		return rank
+	}
+	return unrankedLevel
+}
+
+// scopedTarget reports whether a bot-free selector reaches a route or a
+// supervisor rather than nodes.
+func scopedTarget(selector string) bool {
+	sel, err := llmroute.ParseSelector(selector)
+	return err == nil && sel.Class != llmroute.SelectorNode
+}
+
+// unmatchedPolicyCells lists the policy cells written for bot BY NAME — its
+// id or its manifest name — whose target reaches nothing in wf
+// (model.SelectorReaches): the zero-match warning ADR-132 §2 owes, a typo'd
+// selector matches nothing and nothing else would say so. A cell scoped by
+// a glob, or reaching every bot, that matches nothing in this bot is the
+// fold's ordinary reach, not a typo. Sorted as the policy lists them; each
+// selector once.
+func unmatchedPolicyCells(wf *ir.Workflow, pol *store.RunLLMRoutePolicy, bot llmroute.BotIdentity) []string {
+	if wf == nil || pol == nil {
+		return nil
+	}
+	var out []string
+	seen := map[string]bool{}
+	for _, o := range pol.Overrides {
+		sel, err := llmroute.ParseSelector(o.Selector)
+		if err != nil || sel.MatchBot(bot) < llmroute.BotMatchName || seen[o.Selector] {
+			continue
+		}
+		seen[o.Selector] = true
+		if !model.SelectorReaches(wf, sel.Target) {
+			out = append(out, o.Selector)
+		}
+	}
+	return out
+}
+
+// zeroMatchWarning renders one unmatched cell as the warning a launch logs
+// and the write screen returns, naming the spelling the cell reached the
+// bot by.
+func zeroMatchWarning(bot llmroute.BotIdentity, selector string) string {
+	named := fmt.Sprintf("%q", bot.ID)
+	if sel, err := llmroute.ParseSelector(selector); err == nil && sel.MatchBot(bot) == llmroute.BotMatchName {
+		named = fmt.Sprintf("%q (the manifest name of %q)", bot.Name, bot.ID)
+	}
+	return fmt.Sprintf("routing: override cell %q names bot %s, and its target matches no node, fallbacks: route or supervisor of that bot — the cell pins nothing (a typo, or a site the bot no longer declares)", selector, named)
+}
+
+// unreachedLaunchRowWarnings names each of a launch's own rows whose
+// selector reaches nothing in wf (model.SelectorReaches) — the row is
+// admitted (the grammar holds) and pins no site of the run. A workflow with
+// a subbot node folds the row into every child (FoldForSubbotChild), where
+// it pins a site the child declares; a workflow with none holds a typo.
+func unreachedLaunchRowWarnings(wf *ir.Workflow, rows []ModelOverrideEntry, bot llmroute.BotIdentity) []string {
+	if wf == nil || len(rows) == 0 {
+		return nil
+	}
+	subject := "this launch's workflow"
+	if bot.ID != "" {
+		subject = fmt.Sprintf("bot %q", bot.ID)
+	}
+	why := "a typo, or a site the workflow does not declare"
+	if declaresSubbotNode(wf) {
+		why = "it still folds into every subbot child, where it pins a site the child declares"
+	}
+	var out []string
+	seen := map[string]bool{}
+	for _, r := range rows {
+		if seen[r.Selector] || model.SelectorReaches(wf, r.Selector) {
+			continue
+		}
+		seen[r.Selector] = true
+		out = append(out, fmt.Sprintf("routing: the launch's own override row %q matches no node, fallbacks: route or supervisor of %s — the row pins nothing here (%s)", r.Selector, subject, why))
+	}
+	return out
+}
+
+// declaresSubbotNode reports whether wf runs a subbot child: a run of its
+// own bot, which folds the root's launch rows and the cells written for
+// that bot (FoldForSubbotChild).
+func declaresSubbotNode(wf *ir.Workflow) bool {
+	for _, n := range wf.Nodes {
+		if n.NodeKind() == ir.NodeSubbot {
+			return true
+		}
+	}
+	return false
+}
+
+// zeroMatchWarnings is unmatchedPolicyCells rendered as warnings.
+func zeroMatchWarnings(wf *ir.Workflow, pol *store.RunLLMRoutePolicy, bot llmroute.BotIdentity) []string {
+	var out []string
+	for _, sel := range unmatchedPolicyCells(wf, pol, bot) {
+		out = append(out, zeroMatchWarning(bot, sel))
+	}
+	return out
+}
+
+// zeroMatchWarned holds the warnings a launch already logged in this
+// process — each names its bot and selector, so the warning is once per
+// name, not once per run.
+var zeroMatchWarned sync.Map
+
+// logZeroMatchOnce logs each zero-match warning the first time this
+// process meets it.
+func logZeroMatchOnce(logger *iterlog.Logger, warnings []string) {
+	for _, w := range warnings {
+		if _, dup := zeroMatchWarned.LoadOrStore(w, true); dup || logger == nil {
+			continue
+		}
+		logger.Warn("%s", w)
+	}
 }

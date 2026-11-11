@@ -43,11 +43,16 @@ func refuseUndecidedRoutingFields(wf *ir.Workflow, spec *LaunchSpec) error {
 	for _, id := range ids {
 		node := wf.Nodes[id]
 		fields := routingFieldsOf(node)
+		// The field dispatch reads: an override pins it (a provider
+		// override collapses the node's chain), so the node's own text —
+		// whatever its template — decides nothing then, and the pin's is
+		// what is judged.
+		ov := view.Overrides.ForNode(id, node.NodeKind())
 		for _, f := range []struct{ name, raw string }{
-			{"backend", fields.Backend},
-			{"model", fields.Model},
-			{"provider", fields.Provider},
-			{"effort", fields.ReasoningEffort},
+			{"backend", firstSet(ov.Backend, fields.Backend)},
+			{"model", firstSet(ov.Model, fields.Model)},
+			{"provider", firstSet(ov.Provider, fields.Provider)},
+			{"effort", firstSet(ov.Effort, fields.ReasoningEffort)},
 		} {
 			if f.raw == "" {
 				continue
@@ -71,4 +76,12 @@ func routingFieldsOf(node ir.Node) *ir.LLMFields {
 		return &r.LLMFields
 	}
 	return nil
+}
+
+// firstSet is the override's value when it pins one, else the node's own.
+func firstSet(override, own string) string {
+	if override != "" {
+		return override
+	}
+	return own
 }

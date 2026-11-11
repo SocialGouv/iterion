@@ -3,6 +3,7 @@ package supervise
 import (
 	"context"
 	"errors"
+	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"strings"
 	"testing"
 
@@ -120,7 +121,7 @@ func TestGatewayWatched_ReadsTheWatchedRoutes(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			assertWatchedDialsFrozen(t, tc.wf)
-			if got := gatewayWatched(tc.wf, tc.watches); got != tc.want {
+			if got := gatewayWatched(tc.wf, tc.watches, model.ModelOverrides{}); got != tc.want {
 				t.Errorf("gatewayWatched = %v, want %v", got, tc.want)
 			}
 		})
@@ -157,19 +158,48 @@ func TestGatewayWatch_TheRefusalNamesTheRemedy(t *testing.T) {
 // no watch list — the session board's curation (#2099): nil-safe, and the
 // same verdict as a supervisor watching every node.
 func TestWorkflowNamesGateway(t *testing.T) {
-	if WorkflowNamesGateway(nil) {
+	if WorkflowNamesGateway(nil, model.ModelOverrides{}) {
 		t.Error("a nil workflow names the gateway")
 	}
 	gw := &ir.Workflow{Nodes: map[string]ir.Node{
 		"a": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "a"}, LLMFields: ir.LLMFields{Model: "openai_compatible/team/m"}},
 	}}
-	if !WorkflowNamesGateway(gw) {
+	if !WorkflowNamesGateway(gw, model.ModelOverrides{}) {
 		t.Error("a gateway-served workflow reads false")
 	}
 	vendor := &ir.Workflow{Nodes: map[string]ir.Node{
 		"a": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "a"}, LLMFields: ir.LLMFields{Model: "anthropic/claude-opus-5"}},
 	}}
-	if WorkflowNamesGateway(vendor) {
+	if WorkflowNamesGateway(vendor, model.ModelOverrides{}) {
 		t.Error("a vendor-only workflow names the gateway")
+	}
+}
+
+// The supervisor reads the routes the run DISPATCHES: a node pin, a
+// route-scoped pin moving a watched node's rescue onto the gateway, and a
+// `supervisor:<name>` pin on its own model — the folded override list, not
+// the declarations as written.
+func TestSpecsFromWorkflow_ReadsTheRunsOverrides(t *testing.T) {
+	wf := &ir.Workflow{
+		Nodes: map[string]ir.Node{
+			"rev": &ir.JudgeNode{BaseNode: ir.BaseNode{ID: "rev"}, LLMFields: ir.LLMFields{Backend: "claude_code", Model: "claude-opus-5-5", Provider: "anthropic"},
+				Fallbacks: []ir.Fallback{{Name: "glm", Model: "glm-5.3", Provider: "zai"}}},
+		},
+		Supervisors: []*ir.Supervisor{{Name: "pacer", Watches: []string{"rev"}}},
+	}
+	if specs := SpecsFromWorkflow(wf, nil, model.ModelOverrides{}, nil); specs[0].GatewayWatched || specs[0].ProviderHint != "anthropic" || specs[0].Model != "" {
+		t.Fatalf("declarations as written: %+v, want a vendor-watched, anthropic-hinted, unpinned pacer", specs[0])
+	}
+	route := model.OverridesFrom([]model.OverrideEntry{{Selector: "rev#glm", Model: "openai_compatible/scaleway/glm-5.3"}})
+	if specs := SpecsFromWorkflow(wf, nil, route, nil); !specs[0].GatewayWatched {
+		t.Fatalf("a rescue the run pins to the gateway is not watched as one: %+v", specs[0])
+	}
+	node := model.OverridesFrom([]model.OverrideEntry{{Selector: "rev", Backend: "claw", Provider: "openai_compatible", Model: "openai_compatible/x"}})
+	if specs := SpecsFromWorkflow(wf, nil, node, nil); !specs[0].GatewayWatched || specs[0].ProviderHint == "anthropic" {
+		t.Fatalf("a node the run pins to the gateway is read as written: %+v", specs[0])
+	}
+	sup := model.OverridesFrom([]model.OverrideEntry{{Selector: "supervisor:pacer", Model: "openai_compatible/x"}})
+	if specs := SpecsFromWorkflow(wf, nil, sup, nil); specs[0].Model != "openai_compatible/x" || specs[0].ProviderHint != "" {
+		t.Fatalf("the pacer's pin did not replace its model: %+v", specs[0])
 	}
 }

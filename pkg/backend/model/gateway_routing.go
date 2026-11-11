@@ -17,7 +17,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/modelroute"
 )
 
-// refuseGatewayCrossing is the parity rule for OpenAI-compatible gateway
+// GatewayCrossingRefusal is the parity rule for OpenAI-compatible gateway
 // routes: a gateway model or a gateway provider hint is claw-only, from
 // BOTH directions. It is judged on the element as RESOLVED — the chain's
 // overrides and expansions have already spoken, so this sees the backend
@@ -31,16 +31,24 @@ import (
 //
 // Callers turn the refusal into a BUILD failure, so a refused element walks
 // the chain like any other unresolvable one instead of killing the node
-// after dispatch.
-func refuseGatewayCrossing(backend, hint, model string) error {
+// after dispatch. The launch's gateway crossing check (runview) judges the
+// elements a run's override cells compose with this same function. A
+// refusal is a *GatewayCrossingError naming the fields its arm read.
+func GatewayCrossingRefusal(backend, hint, model string) error {
 	h := strings.ToLower(strings.TrimSpace(hint))
-	hintGateway := h == modelroute.OpenAICompatible
+	hintGateway := clawPairsGatewayHint(h)
 	gateway := modelroute.Parse(model).Gateway()
 	switch {
 	case gateway && h != "" && h != "auto" && !hintGateway:
-		return fmt.Errorf("model %q is served by an OpenAI-compatible gateway, but the route's provider hint %q names another wire — drop the hint, or route the node to the claw backend, which serves gateway routes", model, hint)
+		return &GatewayCrossingError{
+			msg:  fmt.Sprintf("model %q is served by an OpenAI-compatible gateway, but the route's provider hint %q names another wire — drop the hint, or route the node to the claw backend, which serves gateway routes", model, hint),
+			Hint: true, Model: true,
+		}
 	case !gateway && hintGateway:
-		return fmt.Errorf("provider hint %q serves gateway models, but model %q is not a gateway route — use %s/<gateway model id>", hint, model, modelroute.OpenAICompatible)
+		return &GatewayCrossingError{
+			msg:  fmt.Sprintf("provider hint %q serves gateway models, but model %q is not a gateway route — use %s/<gateway model id>", hint, model, modelroute.OpenAICompatible),
+			Hint: true, Model: true,
+		}
 	}
 	if !gateway && !hintGateway {
 		return nil
@@ -48,8 +56,24 @@ func refuseGatewayCrossing(backend, hint, model string) error {
 	if backendServesGatewayRoute(backend) {
 		return nil
 	}
-	return fmt.Errorf("backend %q cannot serve an OpenAI-compatible gateway route — gateway models run on the claw backend", backend)
+	return &GatewayCrossingError{
+		msg:     fmt.Sprintf("backend %q cannot serve an OpenAI-compatible gateway route — gateway models run on the claw backend", backend),
+		Backend: true, Hint: hintGateway, Model: gateway,
+	}
 }
+
+// GatewayCrossingError is GatewayCrossingRefusal's refusal. Backend, Hint
+// and Model report which fields of the element the refusing arm read: the
+// two-wire and route-to-nowhere arms read the hint and the model, the
+// backend arm reads the backend and whichever of the two named the
+// gateway. A screen judging a composed element reads them to say which of
+// those fields a launch override wrote.
+type GatewayCrossingError struct {
+	msg                  string
+	Backend, Hint, Model bool
+}
+
+func (e *GatewayCrossingError) Error() string { return e.msg }
 
 // backendServesGatewayRoute is the backend half of the parity rule above,
 // on its own so the AUTO-SELECTION can consult it too (executor_resolve.go):

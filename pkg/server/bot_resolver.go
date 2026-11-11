@@ -12,6 +12,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/botsource"
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/dsl/workflowfile"
+	"github.com/SocialGouv/iterion/pkg/llmroute"
 	"github.com/SocialGouv/iterion/pkg/platformcfg"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -155,8 +156,8 @@ func (lb *launchBot) Stamp(spec *runview.LaunchSpec) {
 	lb.StampBundle(spec)
 }
 
-// StampBundle stamps the compile dir, the runner ref and the tier that served
-// the launch, for callers that resolved path/source separately (the studio
+// StampBundle stamps the compile dir, the runner ref, the tier that served
+// the launch and the served manifest's name, for callers that resolved path/source separately (the studio
 // derives an absolute path first). Nil-safe.
 func (lb *launchBot) StampBundle(spec *runview.LaunchSpec) {
 	if lb == nil {
@@ -166,6 +167,26 @@ func (lb *launchBot) StampBundle(spec *runview.LaunchSpec) {
 	spec.BundleEntry = lb.BundleEntry
 	spec.BotBundle = lb.Ref
 	spec.BotSourceTier = lb.Tier()
+	spec.BotManifestName = lb.manifestName()
+}
+
+// manifestName is the served manifest's name, the second spelling the
+// routing cells' bot dimension reaches this bot by (a team fork keeps its
+// catalogue bot's name under its own slug): "" when the manifest names
+// none, or names the bot id itself.
+func (lb *launchBot) manifestName() string {
+	if lb == nil || lb.Manifest == nil {
+		return ""
+	}
+	if name := strings.TrimSpace(lb.Manifest.Name); name != lb.BotID {
+		return name
+	}
+	return ""
+}
+
+// botIdentity is the bot a launch of lb folds the routing cells for.
+func (lb *launchBot) botIdentity() llmroute.BotIdentity {
+	return llmroute.BotIdentity{ID: lb.BotID, Name: lb.manifestName()}
 }
 
 // stampResumeBundle is StampBundle for a ResumeSpec: the same bundle facts,

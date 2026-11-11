@@ -13,8 +13,9 @@ import (
 
 // A fork child carries its parent's launch-frozen credential frame — the
 // four fields every resume replays beside the content boundary: the key
-// pins, the routing policy, the pinned providers and the attached pool — on
-// the repo-targeted arm and the local one alike. The resume half (the child
+// pins, the routing policy, the pinned providers and the attached pool —
+// and the override rows it executed with, folded and raw, on the
+// repo-targeted arm and the local one alike. The resume half (the child
 // seals the pinned gateway key) is
 // cloudpublisher.TestFork_TheChildsResumeSealsThePinnedGatewayKey.
 func TestFork_CarriesTheLaunchFrozenCredentialFrame(t *testing.T) {
@@ -47,6 +48,8 @@ func TestFork_CarriesTheLaunchFrozenCredentialFrame(t *testing.T) {
 			parent.LLMRoutePolicy = &store.RunLLMRoutePolicy{Providers: []string{"openai_compatible"}, PairOrder: []string{"claw+openai_compatible_key"}}
 			parent.PinnedProviders = []string{"openai_compatible"}
 			parent.PoolAttachment = &store.RunPoolAttachment{PoolID: "pool-1"}
+			parent.ModelOverrides = []store.RunModelOverride{{Selector: "step1", Backend: "claw", Provider: "openai_compatible", Model: "openai_compatible/team/m"}}
+			parent.LaunchModelOverrides = []store.RunModelOverride{{Selector: "*", Effort: "high"}}
 			parent.Status = store.RunStatusCancelled
 			parent.Checkpoint = &store.Checkpoint{NodeID: "step1", ArtifactsKnown: true}
 			if err := st.SaveRun(ctx, parent); err != nil {
@@ -83,6 +86,12 @@ func TestFork_CarriesTheLaunchFrozenCredentialFrame(t *testing.T) {
 			}
 			if !reflect.DeepEqual(child.PoolAttachment, parent.PoolAttachment) {
 				t.Errorf("child pool_attachment = %+v, want the parent's %+v", child.PoolAttachment, parent.PoolAttachment)
+			}
+			if !reflect.DeepEqual(child.ModelOverrides, parent.ModelOverrides) {
+				t.Errorf("child model_overrides = %+v, want the parent's %+v — every resume replays them", child.ModelOverrides, parent.ModelOverrides)
+			}
+			if !reflect.DeepEqual(child.LaunchModelOverrides, parent.LaunchModelOverrides) {
+				t.Errorf("child launch_model_overrides = %+v, want the parent's %+v", child.LaunchModelOverrides, parent.LaunchModelOverrides)
 			}
 		})
 	}

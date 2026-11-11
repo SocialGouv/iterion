@@ -202,6 +202,13 @@ func (s *Service) Fork(ctx context.Context, spec ForkSpec) (*ForkResult, error) 
 	child.LLMRoutePolicy = parent.LLMRoutePolicy
 	child.PinnedProviders = slices.Clone(parent.PinnedProviders)
 	child.PoolAttachment = parent.PoolAttachment
+	// The override rows the parent executed with — its launch rows folded
+	// over its routing policy's cells — are what every resume replays and
+	// what the resume's walk reads, so the child dispatches and seals as the
+	// parent did. The raw launch rows ride beside them for the subbot
+	// children of the child's tree.
+	child.ModelOverrides = slices.Clone(parent.ModelOverrides)
+	child.LaunchModelOverrides = slices.Clone(parent.LaunchModelOverrides)
 	if spec.ForkName != "" {
 		child.Name = spec.ForkName
 	} else {

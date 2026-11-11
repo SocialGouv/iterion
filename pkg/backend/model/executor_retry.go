@@ -554,6 +554,12 @@ func providerFallbackEligible(backendName string) bool {
 	return backendcaps.Offers(backendName, backendcaps.ProviderChain)
 }
 
+// WalksProviderChain reports whether dispatch walks a node's hint-only
+// `provider:` chain on backend, or trims it to its head
+// (collapseHintOnlyChain). A screen that rebuilds the elements dispatch
+// builds reads it, so it judges the steps dispatch sends and no other.
+func WalksProviderChain(backend string) bool { return providerFallbackEligible(backend) }
+
 // sessionResumeBackends are the backends that actually CONSUME
 // Task.SessionID to resume a conversation. Membership is a property of
 // the code, verified per backend, not a guess:
@@ -1015,7 +1021,7 @@ func (e *ClawExecutor) newElementBuilder(
 		// is served from must resolve — judged HERE, at build time, so a
 		// refused element walks the chain like any other unresolvable one
 		// instead of failing the node after dispatch (gateway_routing.go).
-		if err := refuseGatewayCrossing(bn, task.ProviderHint, task.Model); err != nil {
+		if err := GatewayCrossingRefusal(bn, task.ProviderHint, task.Model); err != nil {
 			return "", nil, nil, fmt.Errorf("model: node %q: %w", nodeID, err)
 		}
 		if modelroute.Parse(task.Model).Gateway() {

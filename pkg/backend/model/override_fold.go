@@ -352,6 +352,9 @@ func EffectiveProviders(v RouteView, known map[string]bool) ProviderResolution {
 		// to spend an anthropic credential, or the route is unreachable.
 		if gf, ok := n.(interface{ GetFallbacks() []ir.Fallback }); ok {
 			for i, fb := range gf.GetFallbacks() {
+				// A route-scoped rule pins the route's own fields (ADR-132
+				// §2, D21): the walk reads the route dispatch builds.
+				fb = v.Overrides.EffectiveFallback(n.NodeID(), i, fb)
 				if fb.Action == ir.FallbackActionSkip {
 					continue // executes nothing
 				}
@@ -388,7 +391,7 @@ func EffectiveProviders(v RouteView, known map[string]bool) ProviderResolution {
 		seenAnyLLM = true
 		acc.backend, acc.backendLate = "", false
 		acc.site = supervisorSitePrefix + sup.Name
-		acc.resolveDirect(v.field(sup.Model), "")
+		acc.resolveDirect(v.field(v.Overrides.EffectiveSupervisorModel(sup)), "")
 	}
 	if !seenAnyLLM {
 		// Nothing spends: nothing to narrow on, and nothing unresolved.
@@ -875,8 +878,18 @@ func (a *providerAccumulator) resolveNode(node ir.Node, fields *ir.LLMFields, ov
 	prov := a.field(ov.Provider)
 	chain := a.field(fields.Provider)
 	m := a.field(mdl)
-	a.envDeferred("provider", prov)
-	a.envDeferred("provider", chain)
+	// The fields dispatch reads, and only those: a provider override
+	// collapses the node's own `provider:` chain (chainReading.providerField),
+	// so the chain's text — an env dial, an undecided var — decides nothing
+	// and defers nothing. A provider cell decides the credential reading on
+	// its literals and the model's; whether the node's backend can serve
+	// the route it names is the launch's gateway crossing check
+	// (runview), never this walk's.
+	if strings.TrimSpace(ov.Provider) != "" {
+		a.envDeferred("provider", prov)
+	} else {
+		a.envDeferred("provider", chain)
+	}
 	a.envDeferred("model", m)
 	// The deciding fields alone: a provider override collapses the chain,
 	// so the chain's own text decides nothing then.

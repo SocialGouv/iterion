@@ -420,6 +420,13 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 			BackendFor:      opts.BackendFor,
 			Fallback:        opts.Fallback,
 			EffortFor:       opts.EffortFor,
+			// The run's launch rows, as its launch recorded them
+			// (runview.SubbotRootLaunchRows, a document that predates the raw
+			// rows included): a child folds this attempt's flags over them,
+			// never the run's folded rows (whose cells were folded for this
+			// run's bot), and its document records them without the flags.
+			recordedLaunchRows: runview.SubbotRootLaunchRows(r, logger),
+			resumed:            true,
 		})),
 	)...)
 
@@ -481,7 +488,7 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 	if superviseHub != nil {
 		// The stored inputs re-resolve for the spawn: a supervisor model
 		// pin reads the same resolved vars the resumed run's nodes see.
-		stop := startCLISupervisors(ctx, superviseHub, s, opts.RunID, wf, eng.ResolveVars(r.Inputs), logger)
+		stop := startCLISupervisors(ctx, superviseHub, s, opts.RunID, wf, eng.ResolveVars(r.Inputs), executorOverrides(executor), logger)
 		defer stop()
 	}
 

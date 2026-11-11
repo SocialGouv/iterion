@@ -9,7 +9,7 @@ import (
 
 // The OpenAI-compatible gateway diagnostics. An `openai_compatible/<id>`
 // model is a claw-only route: the executor refuses the crossing per chain
-// element at build time (refuseGatewayCrossing,
+// element at build time (GatewayCrossingRefusal,
 // pkg/backend/model/gateway_routing.go). C184 is that rule's compile-time
 // mirror for the routes whose text is decidable as written.
 const (
@@ -23,14 +23,16 @@ const (
 // provider hint that names a vendor wire. It walks the same shapes the
 // executor's chain does: an agent or judge node's primary route and each
 // `fallbacks:` entry, and an `mode: llm` router. The runtime judgement is
-// mirrored field by field (refuseGatewayCrossing): the hint arm first — a
+// mirrored field by field (GatewayCrossingRefusal): the hint arm first — a
 // gateway model borrows no vendor's wire — then the backend arm, where "",
 // `claw` and `auto` all resolve to claw and stay silent.
 //
 // It is a WARNING, not the runtime's refusal: a bot that compiles today
 // must keep compiling, and the executor already fails the element loud at
 // dispatch (the route walks the chain like any unresolvable one) — C184
-// only moves the sentence from the first run to `iterion validate`.
+// only moves the sentence from the first run to `iterion validate`. An
+// element a launch's routing cells compose is the launch's to judge, with
+// the runtime's own rule (runview's gateway crossing check).
 //
 // Silent by construction, because nothing there names a backend: a human
 // node's `interaction: llm` companion route and a supervisor's model are
@@ -99,7 +101,7 @@ func isLiteralGatewayModel(model string) bool {
 	return modelroute.Parse(model).Gateway()
 }
 
-// gatewayHintConflict mirrors the hint arm of refuseGatewayCrossing: a
+// gatewayHintConflict mirrors the hint arm of GatewayCrossingRefusal: a
 // gateway model beside a provider hint that names a vendor wire is two
 // wires on one element. The field is read as the chain reads it — split
 // into elements (splitProviderChain), each possibly `hint:model`
@@ -122,7 +124,7 @@ func gatewayHintConflict(provider string) (string, bool) {
 	return "", false
 }
 
-// gatewayBackendConflict mirrors the backend arm of refuseGatewayCrossing:
+// gatewayBackendConflict mirrors the backend arm of GatewayCrossingRefusal:
 // only "", `claw` and `auto` resolve to claw; any other NAMED backend
 // cannot serve a gateway route. The return is the message's subject —
 // "" when the backend stays silent (unnamed, claw-resolving, or a

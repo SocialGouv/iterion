@@ -190,6 +190,11 @@ type LaunchSpec struct {
 	// the folded list. Within the launch's own rows, specificity rules as
 	// before.
 	ModelOverrides []ModelOverrideEntry
+	// LaunchModelOverrides is the launch's own rows as ModelOverrides held
+	// them before the fold: foldAndScreen records them here, and the launch
+	// stamps them on the run document (store.Run.LaunchModelOverrides) for
+	// the subbot children of the run's tree. A caller never sets it.
+	LaunchModelOverrides []ModelOverrideEntry
 	// RoutingPolicy is the launch-frozen outcome contract (validated
 	// and hashed by the HTTP layer); persisted on the run doc and
 	// replayed from it on resume.
@@ -285,10 +290,17 @@ type LaunchSpec struct {
 	// the inbound webhooks, the repo-targeted POST /api/runs, and the
 	// board dispatcher (#2371, D33); empty otherwise.
 	ProjectPath string
-	// BotID is the bot bundle name (e.g. "review-pr") this run launches.
-	// The cloud publisher uses it to resolve bot-secret bindings during
-	// credential sealing. Empty for plain .bot launches.
+	// BotID is the id of the bot this run launches: a catalogue bot's
+	// name ("review-pr"), a team or platform bot's slug
+	// ("review-pr-pool"). The cloud publisher uses it to resolve
+	// bot-secret bindings during credential sealing; memory, pledges and
+	// the BYOK audience key on it too. Empty for plain .bot launches.
 	BotID string
+	// BotManifestName is the manifest name of the bundle the launch serves
+	// — the second spelling the routing cells' bot dimension reaches the
+	// bot by (a team fork keeps its catalogue bot's name under its own
+	// slug). Never an identity key: the launch fold alone reads it.
+	BotManifestName string
 	// BundleDir, when set, is the launch-materialized directory of a resolved
 	// cloud bundle (catalog, team bot or platform override): compile merges
 	// its prompts/ into the AST exactly like a baked bundle's, so they
@@ -438,6 +450,19 @@ func ModelOverridesFromRun(rows []store.RunModelOverride) model.ModelOverrides {
 		out[i] = model.OverrideEntry{Selector: e.Selector, Backend: e.Backend, Model: e.Model, Provider: e.Provider, Effort: e.Effort}
 	}
 	return model.OverridesFrom(out)
+}
+
+// ModelOverrideEntriesFromRun reads persisted rows back as launch entries,
+// the inverse of RunModelOverrides.
+func ModelOverrideEntriesFromRun(rows []store.RunModelOverride) []ModelOverrideEntry {
+	if len(rows) == 0 {
+		return nil
+	}
+	out := make([]ModelOverrideEntry, len(rows))
+	for i, r := range rows {
+		out[i] = ModelOverrideEntry{Selector: r.Selector, Backend: r.Backend, Model: r.Model, Provider: r.Provider, Effort: r.Effort}
+	}
+	return out
 }
 
 // RunModelOverrides converts the launch entries into the persisted

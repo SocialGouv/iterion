@@ -589,6 +589,27 @@ func WithModelOverrides(o []store.RunModelOverride) EngineOption {
 	return func(e *Engine) { e.modelOverrides = o }
 }
 
+// WithLaunchModelOverrides records the launch's own override rows as the
+// launch wrote them, before the routing policy's cells folded in, so the
+// engine persists them on the run record (store.Run.LaunchModelOverrides):
+// every subbot child of the run's tree folds them again for its own bot.
+// Empty on resume (not re-supplied), so the persisted value is left
+// untouched — see engine_run.go.
+func WithLaunchModelOverrides(o []store.RunModelOverride) EngineOption {
+	return func(e *Engine) { e.launchModelOverrides = o }
+}
+
+// WithLLMRoutePolicy records the routing-policy snapshot the run's tree
+// froze at launch (store.Run.LLMRoutePolicy) so the engine persists it on
+// the run record. A subbot child's engine is handed its root run's: a
+// resume of the child on its own replays the root's providers allowlist
+// from its document, and the child's own children fold the root's snapshot
+// when the resumed child is the top of their tree. Nil on resume (not
+// re-supplied), so the persisted value is left untouched.
+func WithLLMRoutePolicy(p *store.RunLLMRoutePolicy) EngineOption {
+	return func(e *Engine) { e.llmRoutePolicy = p }
+}
+
 // WithBudgetOverrides records the raw run-level budget intent. Enforcement is
 // wired separately by mutating the workflow before Engine construction; this
 // option makes that intent durable for later resumes. The value is copied so

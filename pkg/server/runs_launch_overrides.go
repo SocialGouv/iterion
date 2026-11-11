@@ -7,6 +7,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/llmroute"
 	"github.com/SocialGouv/iterion/pkg/runview"
 )
 
@@ -15,11 +16,17 @@ import (
 // Model names are host state that this process cannot enumerate (a valid spec
 // may be one the curated list has never heard of). Backend and effort names,
 // however, are closed engine enums. Reject typos before they reach the first
-// node of a run the operator has already paid to start.
+// node of a run the operator has already paid to start. The selector is
+// judged by the grammar a routing cell obeys (llmroute.ValidateLaunchRow):
+// a launch's rows carry no bot dimension, and pin only the fields their
+// class carries.
 func validateModelOverrides(entries []runview.ModelOverrideEntry) error {
 	for _, e := range entries {
 		if strings.TrimSpace(e.Selector) == "" {
 			return fmt.Errorf("model_overrides: an entry has an empty selector")
+		}
+		if err := llmroute.ValidateLaunchRow(e.Selector, e.Backend, e.Provider, e.Effort); err != nil {
+			return fmt.Errorf("model_overrides: %w", err)
 		}
 		if e.Backend != "" && !validModelBackendNames[e.Backend] {
 			return fmt.Errorf(

@@ -1078,7 +1078,7 @@ func (r *Registry) resolveSpend(ctx context.Context, spec string) (api.APIClient
 	// a typed refusal when NOTHING can fund the route, so the fall-through
 	// can no longer build the unauthenticated client whose every call 401s
 	// (#687's shape) without naming z.ai.
-	if providerName == "anthropic" && HonoursProviderHintValue(delegate.BackendClaw, providerHintFromContext(ctx)) {
+	if providerName == "anthropic" && clawForcesAnthropicDirect(providerHintFromContext(ctx)) {
 		if !modelServedByZAI(modelID) {
 			return r.resolveAnthropicDirect(ctx, modelID)
 		}

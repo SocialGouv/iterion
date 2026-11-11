@@ -748,7 +748,12 @@ that drives it, and how hard it is asked to think.
 - **HTTP** — `POST /api/runs` accepts `model_overrides: [{selector, model,
   backend, effort}]`. An `effort` outside
   `none|low|medium|high|xhigh|max|ultracode` is a 400 at admission, since the value
-  reaches the provider verbatim.
+  reaches the provider verbatim. The selector carries no bot part (a
+  `<bot>/` prefix is a 400): a `<node>#<route>` row pins backend, model and
+  one provider hint, a `supervisor:<name>` row a model only, and `effort` on
+  a route, a `,` chain, a stray `,`, a `hint:model` step or a `${…}`/`{{…}}`
+  template in a route's `provider`, or `backend`/`provider` on a supervisor
+  is a 400.
 
 The **effort** override outranks both the node's static `reasoning_effort:`
 and a dynamic `_reasoning_effort` edge mapping, matching how model and backend
@@ -1342,7 +1347,10 @@ crossing on a tools-less node is **dropped with a warning**, never
 silently taken — and what makes it visible to the three pre-run
 analyses (sandbox bind-mount, parallel-branch admission, the
 `fan_out_each` guard). Without that, a flag could reach exactly the
-crossings the compiler refuses in the `.bot`.
+crossings the compiler refuses in the `.bot`. A routing cell that re-pins
+an authored route's `backend` (`<bot>/<node>#<route>`, below) meets the
+compiler's crossing refusals (C176, C135) through the same predicates, and
+is refused at launch.
 
 The screen reads a node's backend the way the run itself will: a
 `${VAR:-default}` dial by the launching process's environment, and a
@@ -1586,16 +1594,202 @@ fallbacks: the gateway never serves it. A cell pinning `backend: claw` as
 well moves a node whose only obstacle is its CLI backend, and claw keeps
 only the tools the node declares. A node with both a CLI backend and a
 vendor hint — review-pr's claude slots and revi-converse's agent run
-`claude_code` with `provider: anthropic` by default — cannot be moved by
-cells at all: a cell never clears a hint, and a provider pinned beside
-`backend: claw` may only be `anthropic` (any other is refused at write when
-one cell holds both, at launch when two do). A bot with such nodes
-therefore takes cells narrower than `*`, naming the nodes the gateway can
-serve. The fold decides per selector and field
-([ADR-129](adr/129-per-integration-typed-routing-overrides.md)): a bot's own
-`routing:` cell or an integration's on the same selector wins over the
-team's, a more specific selector wins wherever it is written, and the
-launch's own model overrides win over every cell.
+`claude_code` with `provider: anthropic` by default — moves only under a
+cell that also pins the provider: a model cell never clears a hint, but a
+`provider` cell REPLACES the node's whole `provider:` chain, dial included,
+and beside `backend: claw` it may be `anthropic` or `openai_compatible`.
+Claw acts on those two values and on no other — `anthropic` at its
+force-Anthropic-direct switch, `openai_compatible` at the gateway crossing
+check, which serves the gateway model the hint names and refuses any other
+model loudly — so any other value beside claw is refused (at write when one
+cell holds both, at launch when two do), and `openai_compatible` beside a
+model that is not `openai_compatible/…` is refused at write when the cell
+writes that model — its `model`, or a node chain step's own
+`openai_compatible:<model>`. A stored record that holds one is still read at
+launch (`llmroute.ValidateStored`), and so is the platform record's stored
+block by a platform-credentials PUT that does not replace it, so the record's
+other fields stay editable: the launch judges the element per node,
+below, so it refuses only a launch whose dispatch builds it (a claw chain's
+tail is built only when the run's provider allowlist drops the steps ahead
+of it).
+A `claude_code` route is still refused a gateway model at dispatch, whatever
+the cells say. The launch rebuilds every element dispatch builds from the
+folded cells — each node's provider steps dispatch sends (the run's provider
+allowlist drops a step first, then a backend that does not walk a hint-only
+chain sends the head left: claw, and an unnamed one, which the runner
+resolves to claw for a chain that needs the gateway) and each `fallbacks:`
+route the allowlist keeps, the model from a step, a cell or the bot — and
+judges it with dispatch's own gateway rule (`GatewayCrossingRefusal`): a
+gateway route on a literal non-claw backend (the node's own `backend: claude_code` included), a vendor
+hint beside a gateway model, the gateway hint beside a model that is not a
+gateway route. When a cell or a launch row wrote one of the fields that
+refusal reads, the launch refuses it, naming each field and where it came from — a
+launch row by its selector, a cell by the selector its level wrote (bot part
+included) and that level (`written at level "team"`; an integration's cell
+reads `written at level "webhook" (the integration's routing block)`, the
+label its provenance carries) — and, where the field
+to change is one the bot wrote, what the cell can pin instead: `"backend":
+"claw"` beside a backend that cannot serve the gateway, `"provider":
+"openai_compatible"` (with `"backend": "claw"` where the backend cannot serve
+it) beside a vendor hint the bot wrote next to the cell's gateway model — in
+a cell on the route (`<bot>/<node>#<route>`) when the hint is a route's own
+and the model came from a node cell; the integration's write screen warns
+instead. A field a slot dial decides is
+the runner's: the launch reads the dial's default and warns — unless
+dispatch refuses the element whatever a model dial expands to, a gateway
+route and any other model alike (the gateway hint a cell pins on a literal
+`claude_code` node), which the launch refuses. A crossing the
+bot writes alone stays C186's and dispatch's, unless the launch is what
+builds the step: a cell's backend that walks the provider chain the bot's own
+backend collapses to its head, or the allowlist dropping the steps ahead of
+it — the launch refuses it then, naming what built it. The cell that moves such a node onto the gateway is
+therefore `{"backend": "claw", "provider": "openai_compatible", "model":
+"openai_compatible/<provider>/<model>"}` on that node: it fixes every field
+the launch walk reads, so the walk DECIDES the route from the cell — the
+node's own `${…}` dials are read nowhere, the route counts among the run's
+decided primaries, and the credential walk attributes it to the team's key
+(sealed, `team_gateway` stamped). A cell that leaves the provider to a
+node's dial leaves the route to the environment that expands it. The fold
+decides per selector and field
+([ADR-129](adr/129-per-integration-typed-routing-overrides.md)): among the
+cells that reach one site, the node target's specificity decides first, then
+the bot part (below), then the level — an integration's cell wins over the
+team's on the same selector, and on two node selectors as specific (`*iew`
+and `rev*` on `review`) too — then, at one level, a cell over its every-bot
+spelling (`x` over `*/x`, below), then the selector first in byte order. A
+bot's manifest writes no cell: its `routing:` block carries no `overrides`
+(`bundle.RoutingSpec`; a manifest naming the key fails to decode), and its
+`locks: [overrides]` vetoes every cell an integration, a schedule, a trigger
+or the launch's own `llm_routing` writes, leaving each site to the team's,
+org's and platform's cells. A launch's own row
+wins a cell on the same selector, and a launch `*` row overrides its fields
+in every node cell; a cell on a more specific node selector than a launch
+row other than `*` still wins the fields both pin (a `reviewer_claude` cell
+beats a `reviewer_*` launch row).
+
+A cell reaches more than a node's own route
+([ADR-132](adr/132-a-run-reads-no-environment.md) §2, D21):
+
+```
+selector := [ <bot> "/" ] <target>
+<target> := "*" | agent | judge | router | <node id> | <node glob>
+          | <node id> "#" <route>       one `fallbacks:` route of that node
+          | "supervisor:" <name>        one declared supervisor
+```
+
+- `<bot>` is the bot the cell is for — its bot id (a catalogue bot's name,
+  `review-pr`; a team or platform bot's slug, `review-pr-pool`), the
+  manifest name of the bundle the launch serves (`review-pr`, which a team
+  fork keeps), or a glob over either. The match is exact: case and `-`/`_`
+  count. A node cell may omit it (it then reaches the same-named node of
+  every bot the record reaches); a route-scoped or supervisor cell MUST carry
+  it, since node ids and supervisor names collide across bots — `*/…` spells
+  "every bot" on purpose: `*/x` and `x` are one selector, and both reach a
+  launch that names no bot — a block written with both on one field is
+  refused at write as one that pins it twice, a launch's own `llm_routing`
+  included (it meets the write gate at the request). The launch resolves it: a cell
+  for another bot drops, a cell for this bot folds as its bare target. On
+  one target the
+  more specific bot part wins — no bot part and `*/` < a glob < the manifest
+  name < the bot id — and at the same bot part the nearer level's cell
+  (platform < org < team < integration, schedule or trigger < run; a bot's
+  manifest writes none, above); two globs of one level reaching the bot tie,
+  and the one first in byte order wins (`*-pool/x` over `review-*/x`),
+  whatever another level writes on either. A stored team, org, platform or
+  integration record holding `x` and `*/x` on one field — written when `*/x`
+  was a node glob no id matched — is read at launch
+  (`llmroute.ValidateStored`), and `x`, the cell that routed the site then,
+  keeps the field at that level in either listing order. A subbot child is a run of its own bot, the bot a
+  top-level launch of its bundle would be: its slug — the bundle's
+  directory, the name a catalogue or a snapshot collection files it under — and its manifest name, on every lane. It folds
+  the snapshot its root run froze at launch again for that bot, so a cell for
+  the parent's bot does not reach it and a cell for the child's does; the
+  root run's own launch rows fold on top, bot-free, for every child of the
+  tree as at the root (an `act` row reaches the child's `act`). The parent's
+  folded rows never reach a child. The snapshot's bot level is the root (the
+  launched) bot's manifest `routing:` block — a child's own manifest block is
+  not read. A child's document records the root's snapshot and launch rows,
+  so a child resumed on its own replays the root's providers allowlist and
+  its own children fold what the root froze. A root document that predates
+  the raw launch rows hands its children its folded rows when its snapshot
+  froze no override cell; when it froze cells the run log warns the rows no
+  cell explains, and no child folds them. The launch's credential walk
+  reads no subbot child's site: a cell that moves a child's node onto the
+  gateway is honoured at the child's dispatch, but seals the team's gateway
+  key only when a route the walk reads uses it too, or on a runner pool —
+  elsewhere the child's gateway call rides the runner's environment gateway,
+  and the cloud runner warns on the parent's run log, naming the pinned
+  sites. Teaching the walk a child's sites is a follow-up.
+- `<node id>#<route>` names an authored `fallbacks:` route by the key the
+  walk records it under: its name (`reviewer_claude#glm`), or its index when
+  the author named none (`converge#0`). It pins `backend`, `model` and
+  `provider`, which replace the route's own; `effort` is refused (a route
+  runs at its node's). Its `provider` is one literal hint: dispatch sends a
+  route's provider whole, so a `,` chain (the node's `fallbacks:` list is the
+  route chain), a stray `,` (`zai,` reaches dispatch as `zai,`, a hint no
+  harness knows) or a `hint:model` step (write the model in `model`) is
+  refused, at write and in a launch's own row, and so is a template in a
+  launch's own row (the runner would send its expansion whole). A pinned `backend` meets the compiler's route
+  refusals — C176's permission gate, claw⇄CLI tools inversion and session
+  continuity, and C135's unresolvable tools — against the node's backend as
+  dispatch reads it, the node cell's first: refused at launch, warned at the
+  integration's write screen. A node backend a slot dial decides is the
+  runner's: the launch reads the arms that read the node's backend (tools
+  inversion, session continuity) on the dial's default and warns, and the
+  executor build refuses on the dispatching process's own reading; the gate
+  and C135 read the route's backend alone and refuse at launch whatever the
+  dial says. A tools-inversion or session refusal names the remedy a cell
+  can write: move the node with the route, a cell on the node pinning the
+  same backend. A launch's `--fallback` stage and a policy
+  rung are not authored routes and are never reached.
+- `supervisor:<name>` pins a supervisor's `model` — nothing else, a
+  supervisor declares nothing else — on every lane, an in-process resume
+  included (its supervisors read the rows the resumed executor dispatches
+  with). Note that a `team_gateway` run starts no supervisor at all
+  (`runview.FundedSupervisorSpecs`), pinned or not.
+- A launch's `*` row shadows node cells only, never a route or supervisor
+  cell. A launch's own rows carry no bot part: a `<bot>/` prefix is refused,
+  and so is a field the row's class does not carry (`effort` on a route,
+  anything but `model` on a supervisor).
+- A cell naming its bot by id or manifest name whose target matches nothing
+  in that bot — no LLM node, no tool's rung-4 recovery agent
+  `<tool>__recover`, no route, no supervisor — is warned, at the
+  integration's write screen and once per name at launch. The integration's
+  write screen also warns for a cell whose bot part reaches none of its
+  enabled bots by id or manifest name, naming them: no enabled bot's own
+  launch folds it — a typo, or a bot not enabled on the integration —
+  unless a subbot child of an enabled bot runs as that bot, a reach the
+  warning names only for the enabled bots whose workflow declares a subbot
+  node or that the screen could not resolve or compile.
+
+Moving every site of the shipped Revi pair onto a team's gateway is then,
+on the forge integration (or the team's policy):
+
+```json
+{"overrides": [
+  {"selector": "review-pr/converge",               "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
+  {"selector": "review-pr/converge_gpt",           "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
+  {"selector": "review-pr/reviewer_claude",        "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
+  {"selector": "review-pr/reviewer_claude_glance", "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
+  {"selector": "review-pr/reviewer_gpt",           "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
+  {"selector": "review-pr/reviewer_gpt_glance",    "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
+  {"selector": "review-pr/converge#glm",               "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
+  {"selector": "review-pr/reviewer_claude#glm",        "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
+  {"selector": "review-pr/reviewer_claude_glance#glm", "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
+  {"selector": "review-pr/supervisor:pacer",     "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
+  {"selector": "review-pr/supervisor:pacer_gpt", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
+  {"selector": "revi-converse/converse_agent",     "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"},
+  {"selector": "revi-converse/converse_agent#glm", "backend": "claw", "provider": "openai_compatible", "model": "openai_compatible/scaleway/deepseek-v4.1-flash"}
+]}
+```
+
+— witnessed on the shipped bots by
+`TestReviShippedBots_EveryCellDecidesItsRouteOnTheTeamGateway` (the walk
+names the gateway alone, every primary decided) and
+`TestReviShippedBots_TheTeamGatewayKeySealsAndStampsTheBoundary` (the key
+sealed, `team_gateway` stamped) and
+`TestReviShippedBots_TheActivationBlockPassesTheLaunchScreens` (every launch
+screen admits it, the write screen warns nothing), `pkg/server/cloudpublisher`.
 
 Both writes REPLACE the record's whole routing policy (`null` clears it), so
 operator tooling reads, edits and writes back: GET the record; pin the model

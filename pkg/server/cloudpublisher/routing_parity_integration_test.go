@@ -145,7 +145,7 @@ func launchSpecFor(pol *store.RunLLMRoutePolicy) runview.LaunchSpec {
 		Source:          templatedRoutingBot,
 		BotID:           "review-pr",
 		LLMRoutePolicy:  pol,
-		ModelOverrides:  runview.EffectiveModelOverrides(nil, pol),
+		ModelOverrides:  runview.EffectiveModelOverrides(nil, pol, llmroute.BotIdentity{}),
 		Vars:            parityLaunchVars,
 		TrustedVarNames: []string{"revi_backend", "revi_model"},
 	}

@@ -78,7 +78,7 @@ func (e *ClawExecutor) resolveBackendName(node ir.Node) string {
 // the node's chain cannot run on. A node whose chain carries an
 // OpenAI-compatible gateway route — a gateway `model:`, a gateway provider
 // hint, in any position — can only be served by claw, which is exactly what
-// refuseGatewayCrossing refuses every other backend for at task build.
+// GatewayCrossingRefusal refuses every other backend for at task build.
 // Detection that ignores it concretises claude_code on any machine with the
 // `claude` CLI (the common operator machine), and a chain whose gateway
 // element sits in SECOND position is worse than the head case: the head
@@ -254,7 +254,10 @@ func (e *ClawExecutor) resolveChain(node ir.Node) []chainElement {
 func (e *ClawExecutor) resolveChainUnder(node ir.Node, nodeBackend string) []chainElement {
 	chain := e.resolveProviderChain(node)
 	heldOnGateway := e.teamGateway && e.ownRouteNamesGateway(node)
-	for _, fb := range nodeFallbacks(node) {
+	for i, fb := range nodeFallbacks(node) {
+		// A route-scoped rule pins the route's own fields (ADR-132 §2,
+		// D21) — the reading the launch walk certified.
+		fb = e.modelOverrides.EffectiveFallback(node.NodeID(), i, fb)
 		if !e.fallbackWhenActive(node.NodeID(), fb) {
 			continue
 		}

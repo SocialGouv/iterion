@@ -185,8 +185,9 @@ migrates them into the record.
 ### 2. Where each setting lives
 
 **Routing per slot** — model, backend, provider, effort: the routing policy's typed `overrides`
-cells, at the levels ADR-129 shipped (platform < org < team < shipped bot < binding < run), folded
-by the one chokepoint, snapshotted and replayed as ADR-121 already does. ADR-129 §8 said "the
+cells, at the levels ADR-129 shipped (platform < org < team < shipped bot < binding < run; the
+shipped bot writes no cell — its manifest `routing:` block carries no `overrides`, ADR-129 §1 —
+and its `locks: [overrides]` vetoes the binding's and the run's), folded by the one chokepoint, snapshotted and replayed as ADR-121 already does. ADR-129 §8 said "the
 platform level of `overrides` is the successor of the `${ITERION_VIBE_*}` dials, and nothing is
 removed to say so" — this record removes them. The mapping rule is by REACH, not by name: a dial
 whose reach is deployment-wide (every bot reading `ITERION_VIBE_MODEL_CLAUDE`) maps to a
@@ -599,3 +600,82 @@ of §6 finds the shipped shape without the decision being rewritten after approv
 sequencing: §7 forbids de-dialling before the pools' pins exist as records, and that write happens
 on the operator's go, on targets outside this repository. The wave's arbitration box carries the
 question (ARB-13).
+
+## Implementation disposition — D21's route-scoped cells, and the supervisor selector (2026-11-10)
+
+D21 shipped in `feat/routing-cells-node-selectors`, with ADR-131 §8's `supervisor:<name>` beside it
+(the operator's activation of 2026-11-10 needs both: Revi's pacers and its GLM rescues). Grammar:
+`[<bot>/]<target>`, `<target>` one of the node selectors, `<node>#<route>`, `supervisor:<name>`
+(`llmroute.ParseSelector`). Where §2 left a choice open, the option it leans to was taken and is
+stated here:
+
+- **The bot dimension** reaches the bot by its launch identity (`LaunchSpec.BotID`: the name a
+  catalogue bot launches under — §7's `rgaa-audit/…` — or a stored bot's slug) OR by the manifest
+  name of the bundle the launch serves (`LaunchSpec.BotManifestName`, which a team fork keeps under
+  its own slug: `review-pr/…` reaches `review-pr-pool`), matched exactly or as a `path.Match` glob
+  over either (`llmroute.Selector.MatchBot`; operator decision of 2026-11-11). It is REQUIRED on a
+  route-scoped and on a supervisor cell (§2's guard; supervisor names collide across bots the same
+  way) and OPTIONAL on a node cell, whose stored records predate it. `*/…` is the greppable spelling
+  of "every bot": `*/x` and `x` are one selector, both reaching a launch that names no bot, so a
+  block written with both on one field pins it twice and the write gate refuses it
+  (`llmroute.Validate`) — a launch's own `llm_routing` included, at the request. A stored `*/x`
+  was, before this disposition, a node glob no node id matched; it now reaches every bot's `x`, and
+  a stored record holding it beside `x` on one field is read at launch (`llmroute.ValidateStored`):
+  at that level `x` keeps the field it alone used to answer. Among cells reaching one site, the node target's specificity decides first ("a more specific
+  selector wins wherever it is written"), then the bot part — no bot part and `*/` < a glob < the
+  manifest name < the bot id (`llmroute.BotMatch`) — then the level each cell's provenance names
+  (`llmroute.SourceRank`, env < platform < org < team < bot < binding < run; the launch refuses a
+  layer list out of that order; a bot's manifest names none, its `routing:` block carrying no
+  `overrides`), and at one level a cell over its every-bot spelling (`x` over `*/x`), then the
+  written selector first in byte order — a key no other level moves, which the snapshot's order is
+  not (`runview.policyOverrideEntries`).
+  A subbot child's identity is its own, and the same on every lane (`runview.SubbotChildBotIdentity`):
+  the slug of the bundle it compiled from — the directory a catalogue or a snapshot collection files
+  it under, the bot id a top-level launch of that bundle carries — and that bundle's manifest name.
+  It folds the root run's frozen snapshot again for that identity (`runview.FoldForSubbotChild`), so
+  the parent's bot dimension never decides a child's cells; the root's own launch rows, bot-free,
+  fold on top for every child of the tree.
+- **A launch's own rows** (the API body's `model_overrides`, the CLI's `--model`/`--backend`/
+  `--effort-for`) carry no bot dimension and obey the same per-class field rules
+  (`llmroute.ValidateLaunchRow`): a `<bot>/` prefix, an `effort` or a provider that is not one hint
+  on a route, or a `backend`/`provider` on a supervisor is refused at admission, at the CLI flag and
+  at the launch fold, never on a resume's replay of persisted rows.
+- **The route-field guard** is enforced as a refusal of `effort` on a route-scoped cell (a route runs
+  at its node's effort, so the pin would be a silent no-op), which implies §2's "at least one route
+  field", and of a route `provider` that is not one hint: dispatch sends a route's provider whole,
+  so a `,` chain (the node's `fallbacks:` list is the route chain), a stray `,` (`zai,` reaches
+  dispatch as `zai,`) or a `hint:model` step (the model belongs in `model`) would be a pin no harness
+  reads. A route's `provider` is a literal on a launch's own row as on a cell: the runner would send
+  a template's expansion whole. A supervisor cell pins `model` only.
+- **The zero-match warning** fires for a cell that names the run's bot BY ID OR MANIFEST NAME and
+  whose target matches nothing in it — a target is an LLM node, a tool's rung-4 recovery agent
+  `<tool>__recover`, an authored route or a supervisor (a glob or an unscoped cell matching nothing is
+  the fold's ordinary reach): at the integration write screen (`runview.ScreenPolicyOverrides`, per
+  enabled bot, each judged by its resolved id and manifest name) and once per (bot, selector) per
+  process at launch. A launch's own row (the API body's `model_overrides`, the preview's) whose
+  selector matches nothing in the run's workflow is warned the same way at launch, naming the row: as
+  a typo, or — in a workflow with a subbot node — as a row that still folds into every child; a
+  child's fold of its root's rows warns on none, a root row naming the root's sites too. The integration write screen also warns for a cell whose bot part reaches none
+  of the enabled bots by id or manifest name, naming them, as a typo or a bot not enabled on the
+  integration — and, as a condition, a subbot child that runs as the cell's bot, for the enabled
+  bots whose workflow declares a subbot node (`runview.ScreenPolicyOverrides` reports it) or that the
+  screen could not resolve or compile (it does not resolve the children). The match counts are NOT
+  recorded in the provenance map: the
+  snapshot's `Sources` is a persisted `field → level` map, and a count there is a schema change this
+  slice does not make — named follow-up.
+- **One reading of a pinned route or supervisor**, `ModelOverrides.EffectiveFallback` /
+  `EffectiveSupervisorModel`, read by the walk, dispatch's chain, `CallSites` (admission and the
+  usage-cap pre-flight), `supervise.SpecsFromWorkflow` (every spawn and the pre-flight) with its
+  gateway screen, the launch's composed checks — the (backend, provider) pair, the gateway crossing
+  check over each composed (backend, hint, model) element, and the route crossing screen that holds a
+  route cell's `backend` to C176/C135 (`runview.routeCellCrossings`) — and the price-feed narrowing.
+  A launch `--fallback` stage and a policy rung are not authored routes and are never reached.
+
+§7's sequencing is unchanged and not acted on: no dial is removed, no record is written. One fact it
+must now carry: the cells that move every Revi site to a team's gateway fix provider as well as model
+and backend — a cell that leaves the provider to a slot's dial leaves the route to the pod that
+expands it (ADR-129's 2026-11-10 amendment), a gateway cell that leaves the model to a dial is warned,
+and one that leaves a literal `claude_code` backend in place is refused at launch (dispatch refuses
+the gateway there). And a `team_gateway` run still starts no supervisor
+(`runview.FundedSupervisorSpecs`, ADR-131's arbitration), pinned or not: the supervisor cells keep the
+gate's reading of the run gateway-only, they do not make a pacer run there.

@@ -231,7 +231,7 @@ func (s *Store) DeleteRun(ctx context.Context, id string) error {
 	// instead of silently resurrecting the run. Reaped by runs prune.
 	now := time.Now().UTC()
 	tomb := bson.M{"$set": bson.M{"deleted_at": now, "status": "deleted", "updated_at": now},
-		"$unset": bson.M{"checkpoint": "", "inputs": "", "launch_env": "", "model_overrides": "",
+		"$unset": bson.M{"checkpoint": "", "inputs": "", "launch_env": "", "model_overrides": "", "launch_model_overrides": "",
 			"budget": "", "loop_overrides": "", "budget_raises": "", "attachments": "",
 			// A tombstone watches nothing.
 			"watched_issue_ids": ""}}

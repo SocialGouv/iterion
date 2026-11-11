@@ -33,7 +33,8 @@ type CredentialPreviewRequest struct {
 	// LLMRouting is the RUN level of the adaptive-routing policy the
 	// caller is about to launch with (ADR-121) — folded as the HEAD
 	// Launcher layer so the preview's whitelist answers the launch the
-	// operator shapes, not the launch the defaults would make. Optional.
+	// operator shapes, not the launch the defaults would make. Optional;
+	// it meets the write gate the launch's own field meets.
 	LLMRouting *llmroute.Policy `json:"llm_routing,omitempty"`
 	// Vars is the launch's own --var-style map the caller is about to
 	// launch with — the personal lane's operator-owned values, read the
@@ -296,10 +297,12 @@ func (s *Service) compileCredentialPreview(spec CredentialPreviewSpec) (*ir.Work
 	// Service.Launch, so a fold in Launch alone would leave the preview
 	// deriving candidates, pool wants and warnings from the unfolded set —
 	// the operator shown credentials the launch never acquires. One
-	// shared body with the two launch entries (foldAndScreen), so the
-	// order exists in exactly one place.
-	if err := foldAndScreen(wf, &spec.Launch); err != nil {
+	// shared body with the two launch entries (foldAndScreenLaunch), so
+	// the order exists in exactly one place.
+	foldWarnings, err := foldAndScreenLaunch(wf, &spec.Launch, "")
+	if err != nil {
 		return nil, spec, nil, err
 	}
+	previewWarnings = append(previewWarnings, foldWarnings...)
 	return wf, spec, previewWarnings, nil
 }

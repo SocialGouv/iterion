@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/llmroute"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -119,9 +120,9 @@ func TestFoldSourcedOverridesCarriesTheOriginBesideEachEntry(t *testing.T) {
 		Overrides: []store.RunLLMRouteOverride{{Selector: "work", Backend: "claw"}},
 	}
 	rows := []ModelOverrideEntry{{Selector: "work", Provider: "zai"}}
-	got := foldSourcedOverrides(rows, pol)
+	got := foldSourcedOverrides(rows, pol, llmroute.BotIdentity{})
 	want := []sourcedOverrideEntry{
-		{ModelOverrideEntry: ModelOverrideEntry{Selector: "work", Backend: "claw"}, origin: originPolicy},
+		{ModelOverrideEntry: ModelOverrideEntry{Selector: "work", Backend: "claw"}, origin: originPolicy, written: "work"},
 		{ModelOverrideEntry: rows[0], origin: originLaunch},
 	}
 	if !reflect.DeepEqual(got, want) {
@@ -143,8 +144,8 @@ func TestComposedPairFindingsWalkSortedNodeOrder(t *testing.T) {
 			{Selector: "*", Backend: "claw"},
 			{Selector: "*", Provider: "zai"},
 		},
-	})
-	findings := composedPairFindings(wf, sourced)
+	}, llmroute.BotIdentity{})
+	findings := composedPairFindings(wf, sourced, "", llmroute.BotIdentity{}, nil)
 	if len(findings) != 2 {
 		t.Fatalf("findings = %d, want one per node", len(findings))
 	}
@@ -166,7 +167,7 @@ func TestScreenPolicyOverridesWarnsOnTheComposedPair(t *testing.T) {
 	if err := os.WriteFile(path, []byte(splitPairBot), 0o644); err != nil {
 		t.Fatalf("write bot: %v", err)
 	}
-	warnings, err := ScreenPolicyOverrides(path, splitPairBot, "", "", pol)
+	warnings, _, err := ScreenPolicyOverrides(path, splitPairBot, "", "", llmroute.BotIdentity{}, pol)
 	if err != nil {
 		t.Fatalf("screen: %v", err)
 	}
@@ -191,8 +192,8 @@ func TestComposedPairFindingsWalksTheLLMRouter(t *testing.T) {
 			{Selector: "router", Backend: "claw"},
 			{Selector: "router", Provider: "zai"},
 		},
-	})
-	findings := composedPairFindings(wf, sourced)
+	}, llmroute.BotIdentity{})
+	findings := composedPairFindings(wf, sourced, "", llmroute.BotIdentity{}, nil)
 	if len(findings) != 1 || findings[0].id != "pick" {
 		t.Fatalf("findings = %+v, want the llm-mode router judged", findings)
 	}
@@ -200,7 +201,7 @@ func TestComposedPairFindingsWalksTheLLMRouter(t *testing.T) {
 	deterministic := &ir.RouterNode{}
 	deterministic.ID = "pick"
 	wf.Nodes["pick"] = deterministic
-	if findings := composedPairFindings(wf, sourced); len(findings) != 0 {
+	if findings := composedPairFindings(wf, sourced, "", llmroute.BotIdentity{}, nil); len(findings) != 0 {
 		t.Fatalf("a deterministic router was judged: %+v", findings)
 	}
 }

@@ -515,7 +515,7 @@ func (r *EngineRunner) Dispatch(ctx context.Context, spec DispatchSpec) error {
 			// the config and the issue's bot args may have moved between
 			// attempts, and a supervisor pin reading the new values would
 			// diverge from the nodes it watches.
-			if stopSup := r.spawnSupervisors(ctx, superviseHub, spec.RunID, spec.Vars, runLogger, eng, s); stopSup != nil {
+			if stopSup := r.spawnSupervisors(ctx, superviseHub, spec.RunID, spec.Vars, exec.ModelOverrides(), runLogger, eng, s); stopSup != nil {
 				defer stopSup()
 			}
 		}
@@ -537,7 +537,7 @@ func (r *EngineRunner) Dispatch(ctx context.Context, spec DispatchSpec) error {
 		r.logger.Info("%s", inj.Summary())
 	}
 	if superviseHub != nil {
-		if stopSup := r.spawnSupervisors(ctx, superviseHub, spec.RunID, spec.Vars, runLogger, eng, s); stopSup != nil {
+		if stopSup := r.spawnSupervisors(ctx, superviseHub, spec.RunID, spec.Vars, exec.ModelOverrides(), runLogger, eng, s); stopSup != nil {
 			defer stopSup()
 		}
 	}
@@ -550,13 +550,13 @@ func (r *EngineRunner) Dispatch(ctx context.Context, spec DispatchSpec) error {
 // eng.Resume replays), the launch ones before it exists — so a pin reads
 // the same values its watched nodes resolve. Returns the spawn's stop
 // func, or nil when the workflow declares no supervisor.
-func (r *EngineRunner) spawnSupervisors(ctx context.Context, hub *supervise.EventHub, runID string, launchVars map[string]any, runLogger *iterlog.Logger, eng *runtime.Engine, st store.RunStore) func() {
+func (r *EngineRunner) spawnSupervisors(ctx context.Context, hub *supervise.EventHub, runID string, launchVars map[string]any, overrides model.ModelOverrides, runLogger *iterlog.Logger, eng *runtime.Engine, st store.RunStore) func() {
 	vars := launchVars
 	if run, err := st.LoadRun(ctx, runID); err == nil && run.Inputs != nil {
 		vars = run.Inputs
 	}
 	return supervise.StartDeclared(ctx, hub, &supervise.StoreInjector{Store: st},
-		runID, supervise.SpecsFromWorkflow(r.workflow, eng.ResolveVars(vars), runLogger), runLogger)
+		runID, supervise.SpecsFromWorkflow(r.workflow, eng.ResolveVars(vars), overrides, runLogger), runLogger)
 }
 
 // dispatchViaService (ADR-046) runs a fresh dispatch through the shared

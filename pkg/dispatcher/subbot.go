@@ -127,10 +127,7 @@ func subbotRunnerForDispatch(parentPath, storeDir, workDir string, s store.RunSt
 			logger.Warn("subbot child %s: run lock unavailable (%v) — the orphan reaper may misjudge it as dead mid-flight", childRunID, lerr)
 		}
 
-		bundleName := runview.BundleNameForPath(childPath)
-		if childBundle != nil && childBundle.Manifest != nil {
-			bundleName = childBundle.Manifest.Name
-		}
+		childBotID, _ := runview.SubbotChildBotIdentity(childPath, childBundle)
 		// A subbot is a run of its own, with its own guard: BuildExecutor
 		// installs it on the handle it is given, so the child owes a fork —
 		// on the parent's handle the child's matcher would replace the
@@ -153,7 +150,7 @@ func subbotRunnerForDispatch(parentPath, storeDir, workDir string, s store.RunSt
 			// CLI and studio runners do. Without it the executor falls back to
 			// the child workflow's name and the same subbot ends up with two
 			// memory spaces depending on which surface launched the parent.
-			BotID: runview.ResolveBotID("", bundleName, childPath),
+			BotID: childBotID,
 			// Sans ce liant, un message adressé à l'enfant depuis le board est
 			// accepté, persisté `queued`, et jamais délivré : un silence, pas
 			// une erreur. Le parent le câble, le studio aussi.

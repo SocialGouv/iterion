@@ -204,6 +204,8 @@ type Engine struct {
 	mergeStrategy          string                    // worktree finalization: "squash" (default) or "merge" (FF); set via WithMergeStrategy
 	autoMerge              bool                      // worktree finalization: when true, apply mergeStrategy at end of run; otherwise leave merge_status=pending for UI; set via WithAutoMerge
 	modelOverrides         []store.RunModelOverride  // launch-time per-node/-group model/backend pins, persisted display-only on the run so the studio Overview shows what it launched with; set via WithModelOverrides
+	launchModelOverrides   []store.RunModelOverride  // the launch's own raw override rows, before the routing policy folded in, persisted for the subbot children of the run's tree; set via WithLaunchModelOverrides
+	llmRoutePolicy         *store.RunLLMRoutePolicy  // the routing-policy snapshot the run's tree froze at launch, persisted on the run doc (a subbot child records its root's); set via WithLLMRoutePolicy
 	routingPolicy          *store.RoutingPolicy      // launch-frozen outcome contract, persisted on the run doc (same replay-from-doc doctrine as the model pins); set via WithRoutingPolicy
 	budgetAsk              *ir.BudgetOverrides       // the operator's launch-time budget ask, persisted verbatim on the run doc as the resume path's replay source (same doctrine as the model pins); set via WithBudgetAsk
 	validateOutputs        bool                      // when true, reject runtime schema mismatches instead of warning
