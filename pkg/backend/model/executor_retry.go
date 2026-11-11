@@ -850,10 +850,12 @@ type ErrChainExhausted struct {
 // backend, the model spec and the provider it served under
 // (servingProvider), the claude_code session label (Source,
 // delegate.Result.SessionFingerprint) and the credential keys its call
-// resolved (Credential, delegate.Result.Credential — ADR-161 decision 8). The
-// zero value of a field is unknown: a route that failed to build ran nothing,
-// a route skipped on a remembered cooldown made no call, and a backend whose
-// credential arm has not landed reports no keys.
+// resolved (Credential, delegate.Result.Credential — ADR-161 decision 8). A
+// route skipped on a remembered cooldown made no call: it names the session
+// label and keys of the call that armed the cooldown, whose verdict it
+// carries (routeCooldown). The zero value of a field is unknown: a route that
+// failed to build ran nothing, and a backend whose credential arm has not
+// landed reports no keys.
 type ChainRoute struct {
 	Backend    string
 	Model      string
@@ -1354,7 +1356,10 @@ func (e *ClawExecutor) dispatchChain(
 					// run-level durable retry or credential-pool donor rest.
 					if cd.Cause != nil {
 						causes = append(causes, cd.Cause)
-						routes = append(routes, ChainRoute{Backend: backendName, Model: task.Model, Provider: servingProvider(backendName, task)})
+						routes = append(routes, ChainRoute{
+							Backend: backendName, Model: task.Model, Provider: servingProvider(backendName, task),
+							Source: cd.Source, Credential: cd.Credential,
+						})
 					}
 					// No call ran on this dispatch, hence there is no failed
 					// attempt to roll back. Keep the last-good durable slot for
@@ -1554,6 +1559,7 @@ func (e *ClawExecutor) dispatchChain(
 				cd = ac
 			}
 		}
+		cd.Source, cd.Credential = result.SessionFingerprint, result.Credential
 		e.routeCooldowns.record(key, cd, e.cooldownNow())
 		if !fallbackRemains {
 			break

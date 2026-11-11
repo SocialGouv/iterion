@@ -654,6 +654,67 @@ func TestErrChainExhaustedNamesTheRouteOfEveryCause(t *testing.T) {
 	}
 }
 
+// TestErrChainExhaustedNamesTheCredentialOfASkippedRoute: a route skipped on
+// a remembered cooldown makes no call, but the verdict it carries is the one
+// the call that armed the cooldown met — so it names THAT call's session label
+// and credential keys. A skip that named none left the verdict to the
+// credential plan's prediction or to nobody, and a dead lent key skipped on
+// its run-long auth cooldown was then cleared by another route's verdict
+// (#3032). Both cooldowns a skip can ride: an auth refusal on a policy run
+// whose triggers arm it, and a usage window that named its reset.
+func TestErrChainExhaustedNamesTheCredentialOfASkippedRoute(t *testing.T) {
+	t.Parallel()
+	lentKey := credroute.Spend{Channel: credroute.ChannelRunKey, Slot: "zai", Fingerprint: "fp-lent-zai"}
+	for _, tc := range []struct {
+		name     string
+		triggers []string
+		refusal  error
+	}{
+		{"auth cooldown", []string{"auth"}, &delegate.ErrAuthFailed{Provider: "zai", Detail: "401 invalid api key"}},
+		{"usage window cooldown", nil, &delegate.ErrRateLimited{Provider: "zai", Kind: delegate.RateLimitKindUsageWindow,
+			Detail: "[1308][Usage limit reached for 5 hour.]", ResetAt: time.Now().Add(5 * time.Hour)}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			key := &backendScriptedBackend{name: delegate.BackendClaw, credential: lentKey, fail: tc.refusal}
+			subscription := &backendScriptedBackend{name: delegate.BackendClaudeCode, session: "anthropic-oauth"}
+			reg := delegate.NewRegistry()
+			reg.Register(delegate.BackendClaw, key)
+			reg.Register(delegate.BackendClaudeCode, subscription)
+			e := newFallbackExecutor(reg, EventHooks{})
+			e.llmRouteTriggers = tc.triggers
+			chain := []chainElement{{Label: "key", Provider: "zai"}, {Label: "subscription", Backend: delegate.BackendClaudeCode}}
+			build := e.newElementBuilder("review", delegate.BackendClaw, nil,
+				func(_ context.Context, bn string) (*delegate.Task, error) {
+					return &delegate.Task{NodeID: "review"}, nil
+				})
+			// n1: the key is refused, the subscription serves — the chain
+			// succeeds and the refusal is remembered.
+			if _, err := e.dispatchChain(context.Background(), "review", chain, "claude-opus-5", build); err != nil {
+				t.Fatalf("first dispatch = %v, want the subscription to serve after the key's refusal", err)
+			}
+			calls := len(key.tasks)
+			// n2: the key is skipped on the cooldown, the subscription meets
+			// its window — the chain is exhausted.
+			subscription.fail = usageWindowErr()
+			_, err := e.dispatchChain(context.Background(), "review", chain, "claude-opus-5", build)
+			if len(key.tasks) != calls {
+				t.Fatalf("the key ran %d more time(s) on the second dispatch — the premise is a route skipped on its cooldown", len(key.tasks)-calls)
+			}
+			var exhausted *ErrChainExhausted
+			if !errors.As(err, &exhausted) || len(exhausted.Errs) != 2 {
+				t.Fatalf("second dispatch = %v, want a two-cause ErrChainExhausted (the skipped key's remembered refusal, the subscription's window)", err)
+			}
+			if route := exhausted.Route(0); route.Backend != delegate.BackendClaw || route.Credential != lentKey {
+				t.Fatalf("the skipped key's verdict names route %+v, want the claw route on the credential its refusal was met on %+v — a skip naming no keys is placed on the plan's guess or on nobody", route, lentKey)
+			}
+			if route := exhausted.Route(1); route.Backend != delegate.BackendClaudeCode || route.Source != "anthropic-oauth" {
+				t.Fatalf("the window's verdict names route %+v, want the claude_code session on the subscription", route)
+			}
+		})
+	}
+}
+
 // TestChainStopsWhenNoRemainingRouteAccepts: `on:` is a per-route
 // filter. When the only remaining route refuses the category, the walk
 // ends rather than burning a route that cannot help.

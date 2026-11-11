@@ -1100,31 +1100,45 @@ func routeWindowReopensAt(route map[string]any) time.Time {
 }
 
 // verdictFingerprintLocked names the credential one route of a chain spent,
-// for its verdict: the route's own credential keys (ADR-161 decision 8), or —
-// for a route whose backend reports none — the credential plan's row for the
-// node and the route's provider, the join its spend books by
-// (fingerprintFor). placed is false when neither names one: the verdict may be
-// any credential's, the lease's included. An env-funded route
-// (planRouteFundedByEnv) is placed on nobody — no lease lends the
-// environment's credential. Called under m.mu.
+// for its verdict, in the order its spend joins the plan (fingerprintFor) —
+// one step stricter, since a verdict moves a lease where a spend only books
+// on it:
+//
+//   - the route's own credential keys (ADR-161 decision 8) — the run slot
+//     they name, or nobody for a spend on no slot of the run's;
+//   - for a route without them, a label that says the call rode the
+//     environment (the structured-output recovery's call, a claude_code
+//     session on the pod's ambient anthropic env): nobody, whatever the plan
+//     predicted;
+//   - the credential plan's row for the node and the route's provider — a
+//     gateway route included: the walk records a row for one only when a
+//     sealed key funds it (ADR-131 §5);
+//   - a gateway route the plan names no row for: nobody — the environment
+//     funds it (planRouteFundedByEnv).
+//
+// placed is false when none of these names one: the route may have spent
+// any credential, the lease's included. Called under m.mu.
 func (m *metricsEmitter) verdictFingerprintLocked(nodeID string, route routeKey, provider string) (fp string, placed bool) {
-	if planRouteFundedByEnv(route) {
-		return "", true
-	}
 	if route.credential.Channel != "" {
 		return ownFingerprint(route.credential), true
 	}
-	if len(m.credPlan) == 0 || nodeID == "" || route.backend == "" {
-		return "", false
+	if route.source == hostExtractionSource || (route.backend == delegate.BackendClaudeCode && route.source == "anthropic-env") {
+		return "", true
 	}
-	if provider == "" {
-		provider = planProviderFor(route)
+	if len(m.credPlan) > 0 && nodeID != "" && route.backend != "" {
+		if provider == "" {
+			provider = planProviderFor(route)
+		}
+		if provider != "" {
+			if fp = m.credPlan[nodeID+model.PlanKeySep+provider]; fp != "" {
+				return fp, true
+			}
+		}
 	}
-	if provider == "" {
-		return "", false
+	if planRouteFundedByEnv(route) {
+		return "", true
 	}
-	fp = m.credPlan[nodeID+model.PlanKeySep+provider]
-	return fp, fp != ""
+	return "", false
 }
 
 // fineConditions is the attempt's fine condition table for the pool report

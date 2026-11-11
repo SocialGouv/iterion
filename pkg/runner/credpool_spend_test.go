@@ -625,3 +625,109 @@ type chainExecutor struct{ chain *model.ErrChainExhausted }
 func (e chainExecutor) Execute(context.Context, ir.Node, map[string]any) (map[string]any, error) {
 	return nil, fmt.Errorf("model: node %q: %w", "agent", e.chain)
 }
+
+// A gateway route whose call reports no credential keys (a backend whose arm
+// has not landed, a verdict whose keys never reached the walk) is placed the
+// way its spend joins the plan: on the row the plan names for the node's
+// gateway route — the walk records one only when a sealed key funds the
+// gateway (ADR-131 §5) — and on nobody when it names none, the environment
+// funding the route. In both orders of [the gateway route → dead, the team's
+// subscription → a five-hour window]:
+//
+//   - the plan names the lease for the gateway: the lease is the dead
+//     credential. Placed on nobody, it took the table's ConditionOK and its
+//     auth-failure count was cleared, a dead key kept in rotation;
+//   - the plan names no gateway row: the dead gateway is the environment's,
+//     and the lease the plan names for the subscription rests on its window.
+//
+// A label that says the call rode the environment outranks the plan's
+// prediction: a claude_code session on the pod's ambient anthropic env that
+// was refused is nobody's, even where the plan names the lease for anthropic
+// — the lease met nothing, and the other route's window is the team key's.
+func TestRecordPoolSpend_aKeylessGatewayVerdictIsTheLeaseThePlanNames(t *testing.T) {
+	reset := time.Now().UTC().Add(5 * time.Hour).Truncate(time.Second)
+	gateway := model.ChainRoute{Backend: delegate.BackendClaw, Model: "openai_compatible/qwen3", Provider: "openai_compatible"}
+	subscription := model.ChainRoute{Backend: delegate.BackendClaudeCode, Model: "claude-sonnet-4-5", Source: "anthropic-oauth"}
+	dead := &delegate.ErrAuthFailed{Provider: "openai_compatible", Detail: "401 invalid api key"}
+	window := &delegate.ErrRateLimited{Provider: "anthropic", Kind: delegate.RateLimitKindUsageWindow,
+		Detail: "Claude usage limit reached", ResetAt: reset}
+	ambient := model.ChainRoute{Backend: delegate.BackendClaudeCode, Model: "claude-sonnet-4-5", Provider: "anthropic", Source: "anthropic-env"}
+	teamKey := model.ChainRoute{Backend: delegate.BackendClaw, Model: "zai/glm-5.3", Provider: "zai",
+		Credential: credroute.Spend{Channel: credroute.ChannelRunKey, Slot: "zai", Fingerprint: "fp-team-zai"}}
+	for _, tc := range []struct {
+		name     string
+		plan     map[string]string
+		routes   []model.ChainRoute
+		errs     []error
+		wantDead bool
+		// wantUntouched: the lease met nothing — no auth failure, no rest.
+		wantUntouched bool
+	}{
+		{"ambient session, ambient first", map[string]string{"agent|anthropic": donorFingerprint},
+			[]model.ChainRoute{ambient, teamKey}, []error{dead, window}, false, true},
+		{"ambient session, team key first", map[string]string{"agent|anthropic": donorFingerprint},
+			[]model.ChainRoute{teamKey, ambient}, []error{window, dead}, false, true},
+		{"lease on the gateway, gateway first", map[string]string{"agent|openai_compatible": donorFingerprint, "agent|anthropic": "fp-team-anthropic"},
+			[]model.ChainRoute{gateway, subscription}, []error{dead, window}, true, false},
+		{"lease on the gateway, subscription first", map[string]string{"agent|openai_compatible": donorFingerprint, "agent|anthropic": "fp-team-anthropic"},
+			[]model.ChainRoute{subscription, gateway}, []error{window, dead}, true, false},
+		{"env-funded gateway, gateway first", map[string]string{"agent|anthropic": donorFingerprint},
+			[]model.ChainRoute{gateway, subscription}, []error{dead, window}, false, false},
+		{"env-funded gateway, subscription first", map[string]string{"agent|anthropic": donorFingerprint},
+			[]model.ChainRoute{subscription, gateway}, []error{window, dead}, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newPoolHarness(t, credpool.Limits{MaxUSDPerDay: 10})
+			ctx := context.Background()
+			usage := newMetricsEmitter(&recordingEmitter{}, metrics.New(), tc.plan, nil)
+			st, err := store.New(t.TempDir())
+			if err != nil {
+				t.Fatalf("store: %v", err)
+			}
+			wf := &ir.Workflow{
+				Name:  "gateway_route_verdict",
+				Entry: "agent",
+				Nodes: map[string]ir.Node{
+					"agent": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "agent"}},
+					"done":  &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+				},
+				Edges: []*ir.Edge{{From: "agent", To: "done"}},
+			}
+			chain := &model.ErrChainExhausted{Chain: "routes", Errs: tc.errs, Routes: tc.routes}
+			eng := runtime.New(wf, st, chainExecutor{chain: chain},
+				runtime.WithEventObserver(usage.observe),
+				runtime.WithRecoveryDispatch(recovery.Dispatch(recovery.DefaultRecipes())),
+				runtime.WithWorkDir(t.TempDir()))
+			execErr := eng.Run(ctx, "run-1", map[string]any{})
+			var rt *runtime.RuntimeError
+			if !errors.As(execErr, &rt) || rt.Code != runtime.ErrCodeUsageLimitBlocked {
+				t.Fatalf("run ended on %v, want the chain's USAGE_LIMIT_BLOCKED — the premise of this witness", execErr)
+			}
+
+			h.runner.recordPoolSpend(&queue.RunMessage{RunID: "run-1", TenantID: "team-1", CredPlan: tc.plan}, usage, execErr, false)
+
+			p, err := h.pledges.Get(ctx, donorPledgeID())
+			if err != nil {
+				t.Fatalf("pledge: %v", err)
+			}
+			if tc.wantDead {
+				if p.ConsecutiveAuthFailures == 0 {
+					t.Fatalf("auth failures = 0 (cooldown until %v) — the plan names this lease for the gateway route whose credential was refused; placed on nobody, the dead key stays in rotation", p.CooldownUntil)
+				}
+				return
+			}
+			if p.ConsecutiveAuthFailures != 0 {
+				t.Fatalf("auth failures = %d — the refused route was the environment's (an env-funded gateway, an ambient session); the lease met no rejection", p.ConsecutiveAuthFailures)
+			}
+			if tc.wantUntouched {
+				if p.CooldownUntil != nil {
+					t.Fatalf("cooldown = %v, want none — the window was the team key's, and the lease met nothing", p.CooldownUntil)
+				}
+				return
+			}
+			if want := reset.Add(time.Minute); p.CooldownUntil == nil || !p.CooldownUntil.Equal(want) {
+				t.Fatalf("cooldown = %v, want the lease rested until just past its own window's reset at %s", p.CooldownUntil, reset.Format(time.RFC3339))
+			}
+		})
+	}
+}
