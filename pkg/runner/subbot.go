@@ -11,8 +11,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/botregistry"
 	"github.com/SocialGouv/iterion/pkg/bundle"
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/errtrack"
 	"github.com/SocialGouv/iterion/pkg/llmroute"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -282,14 +284,14 @@ func (r *Runner) subbotRunnerUnder(tree *subbotRoot, msg *queue.RunMessage, pare
 			return nil, fmt.Errorf("subbot %q (bot %q): %w", req.Source, childBotID, err)
 		}
 		// The launch's credential walk reads no subbot child's site (a subbot
-		// node is unattributed to it), so a fold that pins a child's site onto
+		// node is unattributed to it), so a fold that puts a child's site on
 		// the gateway seals the team's gateway key only when a route the walk
 		// reads uses it too, or on a runner pool. Without that key in the
 		// run's sealed credentials the child's gateway call rides the runner's
 		// environment gateway: said here, where it happens.
-		if pinned := gatewayPinnedSelectors(childRows); len(pinned) > 0 {
+		if pinned := gatewayPinnedSites(childWf, childRows); len(pinned) > 0 {
 			if creds, _ := secrets.CredentialsFromContext(ctx); creds.APIKeyForRoute(secrets.ProviderOpenAICompatible) == "" {
-				runLogger.Warn("subbot %q (bot %q): the routing fold pins %s onto the OpenAI-compatible gateway, but the launch's credential walk seals no gateway key for a subbot child and the run's sealed credentials hold none — the call rides the runner's environment gateway (a parent route on the gateway, or a runner pool, seals the team's key)", req.Source, childBotID, strings.Join(pinned, ", "))
+				runLogger.Warn("subbot %q (bot %q): the routing fold puts site %s on the OpenAI-compatible gateway, but the launch's credential walk seals no gateway key for a subbot child and the run's sealed credentials hold none — the call rides the runner's environment gateway (a parent route on the gateway, or a runner pool, seals the team's key)", req.Source, childBotID, strings.Join(pinned, ", "))
 			}
 		}
 		childRunID, err := store.GenerateRunID()
@@ -530,19 +532,38 @@ func (r *Runner) subbotRunnerUnder(tree *subbotRoot, msg *queue.RunMessage, pare
 	}
 }
 
-// gatewayPinnedSelectors lists, quoted, the selectors of the folded rows
-// that pin a site onto the OpenAI-compatible gateway: a gateway model, or
-// the gateway hint in the provider field (a chain's step included).
-func gatewayPinnedSelectors(rows []runview.ModelOverrideEntry) []string {
+// gatewayPinnedSites lists, quoted and in model.CallSites order, the
+// child's model-calling sites the fold puts on the OpenAI-compatible
+// gateway: a leg of the site that, under the folded rows, sends the gateway
+// hint (a chain's step included) or a gateway model the same leg of the
+// authored site — the site under no row — does not send. The judge is the
+// resolution at the site, as dispatch reads it, never a row alone: a row
+// another row outranks there decides nothing and names nothing, and a site
+// authored on the gateway that no row moves stays the authored workflow's.
+func gatewayPinnedSites(wf *ir.Workflow, rows []runview.ModelOverrideEntry) []string {
+	if wf == nil || len(rows) == 0 {
+		return nil
+	}
+	authored := map[string]model.CallSite{}
+	for _, s := range model.CallSites(model.RouteView{Workflow: wf}, nil) {
+		authored[s.ID] = s
+	}
+	gatewayHint := func(h string) bool {
+		return strings.EqualFold(strings.TrimSpace(h), llmroute.ProviderOpenAICompatible)
+	}
 	var out []string
-	for _, r := range rows {
-		pinned := llmroute.IsGatewayModel(r.Model)
-		for _, step := range strings.Split(r.Provider, ",") {
-			hint, _, _ := strings.Cut(step, ":")
-			pinned = pinned || strings.EqualFold(strings.TrimSpace(hint), llmroute.ProviderOpenAICompatible)
-		}
-		if pinned {
-			out = append(out, strconv.Quote(r.Selector))
+	for _, s := range model.CallSites(model.RouteView{Workflow: wf, Overrides: runview.ModelOverridesFromRun(runview.RunModelOverrides(rows))}, nil) {
+		was := authored[s.ID]
+		for i, leg := range s.Legs {
+			var wasHint string
+			if i < len(was.Legs) {
+				wasHint = was.Legs[i].Provider
+			}
+			spec := s.LegSpec(i, s.Model)
+			if (gatewayHint(leg.Provider) && !gatewayHint(wasHint)) || (llmroute.IsGatewayModel(spec) && spec != was.LegSpec(i, was.Model)) {
+				out = append(out, strconv.Quote(s.ID))
+				break
+			}
 		}
 	}
 	return out

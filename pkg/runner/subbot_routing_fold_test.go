@@ -485,21 +485,29 @@ func TestSubbotChildDocumentRecordsTheRootsRouting(t *testing.T) {
 
 // The launch's credential walk reads no subbot child's site, so a cell that
 // moves only a child's site onto the gateway seals no gateway key by
-// itself. The runner says so where it bites — a child fold pinning the
-// gateway under sealed credentials that hold no gateway key — and stays
-// quiet when the key is there.
+// itself. The runner says so where it bites — a child fold putting a site
+// on the gateway under sealed credentials that hold no gateway key — and
+// stays quiet when the key is there. The judge is the site as dispatch
+// resolves it: a gateway cell a launch row outranks there moves nothing,
+// and a row that leaves a site authored on the gateway where it was puts
+// nothing there.
 func TestSubbotChildGatewayPinWithoutASealedGatewayKeyIsWarned(t *testing.T) {
 	const gw = "openai_compatible/scaleway/deepseek-v4.1-flash"
 	gwChild := strings.Replace(agentChildBot(""), `"claude-sonnet-4-5"`, `"`+gw+`"`, 1)
+	gwHintChild := strings.Replace(gwChild, `  model:`, "  backend: \"claw\"\n  provider: \"openai_compatible\"\n  model:", 1)
 	for _, tc := range []struct {
 		name, childBot string
 		cell           store.RunLLMRouteOverride
+		launch         []store.RunModelOverride
 		keyed, warned  bool
 	}{
-		{"a model cell, no gateway key", agentChildBot(""), store.RunLLMRouteOverride{Selector: "child/act", Backend: "claw", Model: gw}, false, true},
-		{"a provider cell on a gateway node, no gateway key", gwChild, store.RunLLMRouteOverride{Selector: "child/act", Backend: "claw", Provider: "openai_compatible"}, false, true},
-		{"a model cell, the gateway key sealed", agentChildBot(""), store.RunLLMRouteOverride{Selector: "child/act", Backend: "claw", Model: gw}, true, false},
-		{"a vendor cell", agentChildBot(""), modelCell("child/act"), false, false},
+		{"a model cell, no gateway key", agentChildBot(""), store.RunLLMRouteOverride{Selector: "child/act", Backend: "claw", Model: gw}, nil, false, true},
+		{"a provider cell on a gateway node, no gateway key", gwChild, store.RunLLMRouteOverride{Selector: "child/act", Backend: "claw", Provider: "openai_compatible"}, nil, false, true},
+		{"a model cell, the gateway key sealed", agentChildBot(""), store.RunLLMRouteOverride{Selector: "child/act", Backend: "claw", Model: gw}, nil, true, false},
+		{"a vendor cell", agentChildBot(""), modelCell("child/act"), nil, false, false},
+		{"a gateway cell a launch row outranks at its site", agentChildBot(""), store.RunLLMRouteOverride{Selector: "child/act", Backend: "claw", Provider: "openai_compatible", Model: gw},
+			[]store.RunModelOverride{{Selector: "act", Backend: "claw", Provider: "anthropic", Model: "claude-sonnet-4-5"}}, false, false},
+		{"an effort cell on a node authored on the gateway hint and model", gwHintChild, store.RunLLMRouteOverride{Selector: "child/act", Effort: "low"}, nil, false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("OPENAI_API_KEY", "")
@@ -516,6 +524,7 @@ func TestSubbotChildGatewayPinWithoutASealedGatewayKeyIsWarned(t *testing.T) {
 			msg := &queue.RunMessage{RunID: "run-parent", TenantID: "t1", OwnerID: "u1", BotID: "parent"}
 			p := storetest.SeedParentRun(t, st, msg.RunID)
 			p.LLMRoutePolicy = &store.RunLLMRoutePolicy{Overrides: []store.RunLLMRouteOverride{tc.cell}}
+			p.LaunchModelOverrides = tc.launch
 			if err := st.SaveRun(store.WithIdentity(context.Background(), "_test", "_test"), p); err != nil {
 				t.Fatal(err)
 			}
