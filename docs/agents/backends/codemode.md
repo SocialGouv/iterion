@@ -10,7 +10,7 @@ back is what the script chose to return.
 This page is the operational half — what is built, what is not, and the
 contract anything new has to honour.
 
-## What is built, as of 2026-11-10
+## What is built, as of 2026-11-11
 
 Exactly one piece: **the door**. `toolDispatcher` in
 [pkg/backend/model/generation_toolexec.go](../../../pkg/backend/model/generation_toolexec.go)
@@ -75,29 +75,50 @@ and the limits are applied before the interpreter exists — `RLIMIT_AS` /
 non-dumpable, a parent-death signal, and Landlock in deny-all where the kernel
 offers it.
 
-**We already own the host half.** claw-code-go — first-party, vendored, and
-being folded into this tree — executes model-authored JavaScript today:
-`internal/runtime/workflow.go` runs a prelude and then the script on a goja
-runtime over a `goja_nodejs` event loop, with a resolve/reject bridge and caps
-(512 KiB of source, 15/60 minutes, 200 `agent()` calls). No iterion node can
-reach it: `workflow` is a claw tool iterion does not advertise.
+**We already own the host half, and less of it than it looks.** claw-code-go —
+first-party, vendored, and being folded into this tree — executes
+model-authored JavaScript today: `internal/runtime/workflow.go` runs a prelude
+and then the script on a goja runtime over a `goja_nodejs` event loop, with a
+resolve/reject bridge and caps (512 KiB of source, 15/60 minutes, 200 `agent()`
+calls). No iterion node can reach it: `workflow` is a claw tool iterion does
+not advertise. Three differences are the whole of CM-1's work:
 
-Two differences are the whole of CM-1's work, so read them before writing any:
-that host binds **`agent`**, so its scripts orchestrate sub-agents and never
-touch the node's tools; and it runs **in process**, so its caps are exactly the
-engine-level ones F19 says are unenforceable. CM-1 moves that machinery into a
-child process under kernel limits and swaps `agent` for a `tools.*` binding
-backed by `dispatch`. A seam that crosses claw is improved in its `.works/`
-worktree and bumped — never forked here.
+- That host binds **`agent`**, so its scripts orchestrate sub-agents and never
+  touch the node's tools. CM-1 swaps it for a `tools.*` binding behind
+  `dispatch`.
+- **The binding list is not the surface.** `eventloop.NewEventLoop()` also
+  installs `require`, `console` and the timers by default — measured, `typeof
+  require` is `function`, and `require('<path>.json')` reads and parses a file
+  off the host filesystem. So "no Go object is reflected in" and "no timers, so
+  a script is deterministic" are properties CM-1 **builds**; what it inherits
+  has a filesystem read primitive.
+- It runs **in process**, so its caps are the engine-level ones F19 calls
+  unenforceable — and worse: on a regexp2 bomb `eventloop.Stop()`, deferred
+  before the timeout select, blocks (measured over 8 s), so the function that
+  decided "timed out" cannot return. A `for(;;){}` loop *is* preempted, and
+  that is the only arm claw's own timeout test covers.
+
+**And "move" cannot mean "import."** `executeWorkflow` and its prelude are
+unexported in claw's `internal/runtime`, and iterion imports zero `internal/`
+paths from claw. So CM-1 opens on a scoping call: claw grows an exported
+script-host package in its `.works/` worktree and iterion bumps, or iterion
+writes the host with claw's file as reference text. A seam that crosses claw is
+improved there and bumped — never forked here.
 
 `GOMEMLIMIT` is a GC target. It is not a cap, and it is not an answer here.
 
 Where Landlock is missing on an in-pod runner, codemode is granted only to a
-node that **already** holds a `class:shell` tool — it adds no filesystem reach
-that node lacks — and is otherwise refused as `codemode_unavailable`. That
-fallback is a judgement about filesystem reach only: a shell tool is bounded by
-its own timeout, a script by the bounds above, so if the bench cannot hold the
-memory axis without Landlock the fallback becomes a refusal.
+node that **already** holds a `class:shell` tool, and is otherwise refused as
+`codemode_unavailable`. Two corrections to the reasoning that wrote that rule:
+Landlock costs nothing to adopt — `golang.org/x/sys/unix` is already a direct,
+vendored dependency carrying the syscalls and every constant, no cgo — and it
+is **not filesystem-only**. ABI 4's `LANDLOCK_ACCESS_NET_CONNECT_TCP`, also
+already vendored, lets the child deny its own TCP connect unprivileged. So
+where Landlock is present a script holds a network guarantee a shell tool does
+not, and where it is absent it loses one: the fallback is re-argued against the
+bench's numbers, not against the shell comparison alone. And nothing in this
+repository mentions gVisor or `runsc` — no part of the confinement comes from a
+runtime class here.
 
 ## The cloud posture, which is not the one people assume
 
@@ -106,6 +127,12 @@ Production runs are **not** sandboxed. `charts/iterion/values.yaml` ships
 `ITERION_SANDBOX_OVERRIDE: "none"`, saying why: *"pod is the isolation
 boundary"*. So the script host, the bash a node already holds and the runner
 are siblings in one pod under one uid.
+
+In that posture `__script-host` is also the **first** credential-less child
+iterion spawns: the `__claw-runner` precedent is started only when a run is
+sandboxed, which production never is. ADR-029 is the template for the IPC and
+the hidden-subcommand convention, not for the spawn — and `SysProcAttr` carries
+no rlimit field, so the child applies its own limits after `exec`.
 
 Two named topologies: **in-pod** is the default and the one that must be proven
 first; **sibling pod** is the stronger form and a deployment choice, not a
