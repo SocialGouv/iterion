@@ -52,13 +52,14 @@ import (
 // unconfined thread — which is exactly how a mutant that dropped the Landlock
 // net rights appeared to re-enable exec.
 const (
-	escapeHelperEnv   = "ITERION_SCRIPTHOST_ESCAPE_HELPER"
-	escapeTargetEnv   = "ITERION_SCRIPTHOST_ESCAPE_TARGET"
-	escapeConnectEnv  = "ITERION_SCRIPTHOST_ESCAPE_CONNECT"
-	escapeWriteEnv    = "ITERION_SCRIPTHOST_ESCAPE_WRITE"
-	escapeLimitsEnv   = "ITERION_SCRIPTHOST_ESCAPE_LIMITS"
-	escapeHardDataEnv = "ITERION_SCRIPTHOST_ESCAPE_HARD_DATA"
-	noLandlockEscape  = "ITERION_CODEMODE_ALLOW_NO_LANDLOCK"
+	escapeHelperEnv     = "ITERION_SCRIPTHOST_ESCAPE_HELPER"
+	escapeTargetEnv     = "ITERION_SCRIPTHOST_ESCAPE_TARGET"
+	escapeConnectEnv    = "ITERION_SCRIPTHOST_ESCAPE_CONNECT"
+	escapeWriteEnv      = "ITERION_SCRIPTHOST_ESCAPE_WRITE"
+	escapeLimitsEnv     = "ITERION_SCRIPTHOST_ESCAPE_LIMITS"
+	escapeHardDataEnv   = "ITERION_SCRIPTHOST_ESCAPE_HARD_DATA"
+	noLandlockEscape    = "ITERION_CODEMODE_ALLOW_NO_LANDLOCK"
+	noLandlockNetEscape = "ITERION_CODEMODE_ALLOW_NO_LANDLOCK_NET"
 
 	escapeReportBegin = "ESCAPE-REPORT-BEGIN"
 	escapeReportEnd   = "ESCAPE-REPORT-END"
@@ -506,16 +507,40 @@ func truncate(s string, n int) string {
 	return s[:n] + "\n…truncated"
 }
 
+// armVerdict is what an arm that depends on a Landlock right may conclude.
+type armVerdict int
+
+const (
+	armProve        armVerdict = iota // the kernel offers the right: assert it
+	armSkipOnRecord                   // it does not, and the lane said so out loud
+	armFailLoud                       // it does not, and nobody recorded that
+)
+
+// landlockArmVerdict is the ONE decision behind both gates below, separated so
+// it has a witness: on a kernel that offers what an arm needs, every branch
+// but armProve is unreachable, and an unreachable branch is an untested one.
+// The CI lane depends on this being right — its runners answer ABI 1.
+func landlockArmVerdict(abi, need int, onRecord bool) armVerdict {
+	switch {
+	case abi >= need:
+		return armProve
+	case onRecord:
+		return armSkipOnRecord
+	default:
+		return armFailLoud
+	}
+}
+
 // requireLandlock fails, loudly and with the way out, where the kernel offers
 // no Landlock. It does not skip: the filesystem and network guarantees
 // codemode promises come from Landlock alone, so a lane that cannot test them
 // must say so rather than report green.
 func requireLandlock(t *testing.T, abi int) {
 	t.Helper()
-	if abi > 0 {
+	switch landlockArmVerdict(abi, 1, os.Getenv(noLandlockEscape) == "1") {
+	case armProve:
 		return
-	}
-	if os.Getenv(noLandlockEscape) == "1" {
+	case armSkipOnRecord:
 		t.Skipf("%s=1: this lane is on record as unable to prove the filesystem and network bounds. "+
 			"Everything codemode promises about files and sockets is UNTESTED here; only the CPU and "+
 			"memory bounds were exercised", noLandlockEscape)
@@ -572,10 +597,23 @@ func TestAConfinedChildCannotConnect(t *testing.T) {
 	report := escapeBaseline(t)
 	requireLandlock(t, report.LandlockABI)
 
-	if report.LandlockABI < 4 {
+	// The network rights arrive at ABI 4 (kernel 6.7). Below that a confined
+	// script host CAN open a TCP connection, and the fallback that grants
+	// codemode only to a node already holding a class:shell tool is about
+	// FILESYSTEM reach and does not cover it. A lane on such a kernel must be
+	// ON RECORD rather than quietly green — measured on this repo's ARC
+	// runners 2026-11-11: ABI 1, so the filesystem, exec and every-thread
+	// bounds are proven there and this one is not.
+	switch landlockArmVerdict(report.LandlockABI, 4, os.Getenv(noLandlockNetEscape) == "1") {
+	case armSkipOnRecord:
+		t.Skipf("%s=1: Landlock ABI %d has no network rights, so this lane does not test whether a "+
+			"confined script host can open a TCP connection — and on this run it could (%+v)",
+			noLandlockNetEscape, report.LandlockABI, report.Connect)
+	case armFailLoud:
 		t.Fatalf("Landlock ABI %d has no network rights (they arrive at 4), so a script host on this "+
-			"kernel can open a TCP connection. The fallback that grants codemode only to a node already "+
-			"holding a class:shell tool is about FILESYSTEM reach and does not cover this.", report.LandlockABI)
+			"kernel can open a TCP connection. Run this suite on a 6.7+ kernel, or set %s=1 in the lane "+
+			"to record that it proves the filesystem bounds and not the network one.",
+			report.LandlockABI, noLandlockNetEscape)
 	}
 	if !report.CouldConnectBefore {
 		t.Fatal("the helper could not reach the listener BEFORE confining: this arm proves nothing")
@@ -808,5 +846,32 @@ func TestConfineResolvesTheTimezoneBeforeTheFilesystemCloses(t *testing.T) {
 	}
 	if resp.Value != `"1970-01-01T00:00:00.000Z|0"` {
 		t.Errorf("the child formatted %s, want the UTC instant and a zero offset", resp.Value)
+	}
+}
+
+// The decision both Landlock gates make, on the kernels this repo meets: a
+// developer's 6.8 (ABI 4), the ARC runners' ABI 1, and a kernel with none.
+// Every branch but armProve is unreachable through the real syscalls here.
+func TestAnArmConcludesOnlyWhatItsKernelOffers(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name      string
+		abi, need int
+		onRecord  bool
+		want      armVerdict
+	}{
+		{"ABI 4 proves the filesystem", 4, 1, false, armProve},
+		{"ABI 4 proves the network", 4, 4, false, armProve},
+		{"ABI 1 proves the filesystem", 1, 1, false, armProve},
+		{"ABI 1 cannot prove the network, and nobody said so", 1, 4, false, armFailLoud},
+		{"ABI 1 cannot prove the network, and the lane is on record", 1, 4, true, armSkipOnRecord},
+		{"no Landlock at all, unrecorded", 0, 1, false, armFailLoud},
+		{"no Landlock at all, on record", 0, 1, true, armSkipOnRecord},
+		{"a newer ABI still proves what an older right needs", 6, 4, false, armProve},
+	} {
+		if got := landlockArmVerdict(tc.abi, tc.need, tc.onRecord); got != tc.want {
+			t.Errorf("%s: verdict %d, want %d", tc.name, got, tc.want)
+		}
 	}
 }

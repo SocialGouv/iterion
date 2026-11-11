@@ -399,20 +399,39 @@ func TestTheChildReclampsAgainstThePlatformCeiling(t *testing.T) {
 // The posture verdict's CALL SITE. The function has a unit test, but removing
 // the CALL left the whole suite green: every other arm either uses the
 // shipping CGO_ENABLED=0 binary (which confines every thread) or passes the
-// allowance. This test is the one that goes through the refusing path, using
-// the fact that the test binary is cgo-linked and therefore cannot confine
-// more than one thread.
-func TestAChildThatCannotConfineTheProcessRefusesToRunAScript(t *testing.T) {
+// allowance.
+//
+// It reads the posture the child REPORTS and asserts the verdict that posture
+// earns, because which side the environment lands on is not this test's to
+// choose: a cgo-linked test binary cannot drive its own threads and must be
+// refused, while on a runner where it can — measured on this repo's ARC
+// runners, where the same binary reported AllThreads=true — the script runs.
+// Asserting one of the two would have been asserting the machine.
+func TestTheVerdictMatchesThePostureTheChildReports(t *testing.T) {
 	t.Parallel()
 
-	resp := childWithRequest(t, Request{Script: "1+1"}) // no allowance
-	if resp.Refusal != RefusalUnavailable {
-		t.Fatalf("a cgo-linked child that can confine only one thread ran the script anyway: %+v\n"+
-			"If this child reports AllThreads=true, the test binary stopped being cgo-linked and this "+
-			"arm needs another way to reach the refusing branch.", resp)
+	// With the allowance, the child always runs and always reports.
+	vouched := childWithRequest(t, Request{
+		Script:                       "1+1",
+		AllowSingleThreadConfinement: true,
+		AllowWithoutLandlock:         true,
+	})
+	if vouched.Confinement == nil {
+		t.Fatal("the child reported no confinement, so its posture is unobservable")
 	}
-	if !strings.Contains(resp.Message, "allow_single_thread_confinement") {
-		t.Errorf("the refusal does not name its escape hatch: %q", resp.Message)
+	weak := !vouched.Confinement.AllThreads || vouched.Confinement.LandlockABI == 0
+
+	// Without it, the verdict must follow that posture.
+	plain := childWithRequest(t, Request{Script: "1+1"})
+	switch {
+	case weak && plain.Refusal != RefusalUnavailable:
+		t.Errorf("the child's posture is weak (%+v) and it ran the script anyway: %+v",
+			vouched.Confinement, plain)
+	case weak && !strings.Contains(plain.Message, "allow_"):
+		t.Errorf("the refusal does not name an escape hatch: %q", plain.Message)
+	case !weak && !plain.OK():
+		t.Errorf("the child confines every thread under a Landlock ruleset (%+v) and refused anyway: %+v",
+			vouched.Confinement, plain)
 	}
 }
 
