@@ -694,8 +694,9 @@ func Validate(p Policy) error {
 // therefore refuses no launch, and one dispatch does build is refused for
 // the bot it reaches, naming the cell. The every-bot spelling rule refuses
 // `x` beside `*/x` on one field; the fold decides that pair (at one level
-// the selector first in byte order), so a stored level holding both —
-// written when `*/x` was a glob no node id matched — refuses no launch.
+// `x`, the cell that answered the site before `*/` reached every bot), so a
+// stored level holding both — written when `*/x` was a glob no node id
+// matched — refuses no launch.
 // Every other rule holds: a record the fold cannot read refuses the launch.
 func ValidateStored(p Policy) error {
 	return validatePolicy(p, false)
@@ -797,7 +798,7 @@ func validatePolicy(p Policy, write bool) error {
 			key := selector + "\x00" + cell.name
 			if written, seen := seenCell[key]; seen {
 				if written != o.Selector {
-					return fmt.Errorf("llmroute: overrides pins %s.%s and %s.%s — %q and %q are one selector (a `*/` bot part reaches every bot, as no bot part does), and at one level a launch keeps the one first in byte order (%q), whichever was meant: pin the field on one of them", written, cell.name, o.Selector, cell.name, written, o.Selector, min(written, o.Selector))
+					return fmt.Errorf("llmroute: overrides pins %s.%s and %s.%s — %q and %q are one selector (a `*/` bot part reaches every bot, as no bot part does), and at one level a launch keeps the one without a bot part (%q), whichever was meant: pin the field on one of them", written, cell.name, o.Selector, cell.name, written, o.Selector, selector)
 				}
 				return fmt.Errorf("llmroute: overrides pins %s.%s twice — the fold would silently keep the first", o.Selector, cell.name)
 			}

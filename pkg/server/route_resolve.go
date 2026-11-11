@@ -114,7 +114,9 @@ func (s *Server) resolveRunLLMRoutePolicy(ctx context.Context, teamID, botID str
 	// gateway-model rule a write surface adds is not a reading rule: the
 	// launch judges that crossing per node on the composed element
 	// (llmroute.ValidateStored), so one dead step of one bot's node never
-	// refuses every launch of the level.
+	// refuses every launch of the level. A block the launch request itself
+	// carries met the write gate at its request seam
+	// (validateRequestRouting) before it reached this list.
 	for _, l := range layers {
 		if err := llmroute.ValidateStored(l.Policy); err != nil {
 			return nil, fmt.Errorf("llmroute: refusing launch: %s routing policy: %w", l.Source, err)

@@ -33,7 +33,8 @@ type CredentialPreviewRequest struct {
 	// LLMRouting is the RUN level of the adaptive-routing policy the
 	// caller is about to launch with (ADR-121) — folded as the HEAD
 	// Launcher layer so the preview's whitelist answers the launch the
-	// operator shapes, not the launch the defaults would make. Optional.
+	// operator shapes, not the launch the defaults would make. Optional;
+	// it meets the write gate the launch's own field meets.
 	LLMRouting *llmroute.Policy `json:"llm_routing,omitempty"`
 	// Vars is the launch's own --var-style map the caller is about to
 	// launch with — the personal lane's operator-owned values, read the

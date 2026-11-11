@@ -1653,10 +1653,15 @@ node's dial leaves the route to the environment that expands it. The fold
 decides per selector and field
 ([ADR-129](adr/129-per-integration-typed-routing-overrides.md)): among the
 cells that reach one site, the node target's specificity decides first, then
-the bot part (below), then the level — a bot's own `routing:` cell or an
-integration's wins over the team's on the same selector, and on two node
-selectors as specific (`*iew` and `rev*` on `review`) too — then, at one
-level, the selector first in byte order. A launch's own row
+the bot part (below), then the level — an integration's cell wins over the
+team's on the same selector, and on two node selectors as specific (`*iew`
+and `rev*` on `review`) too — then, at one level, a cell over its every-bot
+spelling (`x` over `*/x`, below), then the selector first in byte order. A
+bot's manifest writes no cell: its `routing:` block carries no `overrides`
+(`bundle.RoutingSpec`; a manifest naming the key fails to decode), and its
+`locks: [overrides]` vetoes every cell an integration, a schedule, a trigger
+or the launch's own `llm_routing` writes, leaving each site to the team's,
+org's and platform's cells. A launch's own row
 wins a cell on the same selector, and a launch `*` row overrides its fields
 in every node cell; a cell on a more specific node selector than a launch
 row other than `*` still wins the fields both pin (a `reviewer_claude` cell
@@ -1681,19 +1686,20 @@ selector := [ <bot> "/" ] <target>
   it, since node ids and supervisor names collide across bots — `*/…` spells
   "every bot" on purpose: `*/x` and `x` are one selector, and both reach a
   launch that names no bot — a block written with both on one field is
-  refused at write as one that pins it twice. The launch resolves it: a cell
+  refused at write as one that pins it twice, a launch's own `llm_routing`
+  included (it meets the write gate at the request). The launch resolves it: a cell
   for another bot drops, a cell for this bot folds as its bare target. On
   one target the
   more specific bot part wins — no bot part and `*/` < a glob < the manifest
   name < the bot id — and at the same bot part the nearer level's cell
-  (platform < org < team < the bot's manifest < integration, schedule or
-  trigger < run); two globs of one level reaching the bot tie, and the one
-  first in byte order wins (`*-pool/x` over `review-*/x`), whatever another
-  level writes on either. So do `x` and `*/x` in a block the launch reads
-  that holds both on one field — a stored team, org, platform or integration
-  record the write gate would now refuse, or a launch's own `llm_routing`,
-  which meets no write gate (`llmroute.ValidateStored` reads them): `*/x`
-  wins at that level. A subbot child is a run of its own bot, the bot a
+  (platform < org < team < integration, schedule or trigger < run; a bot's
+  manifest writes none, above); two globs of one level reaching the bot tie,
+  and the one first in byte order wins (`*-pool/x` over `review-*/x`),
+  whatever another level writes on either. A stored team, org, platform or
+  integration record holding `x` and `*/x` on one field — written when `*/x`
+  was a node glob no id matched — is read at launch
+  (`llmroute.ValidateStored`), and `x`, the cell that routed the site then,
+  keeps the field at that level in either listing order. A subbot child is a run of its own bot, the bot a
   top-level launch of its bundle would be: its slug — the bundle's
   directory, the name a catalogue or a snapshot collection files it under — and its manifest name, on every lane. It folds
   the snapshot its root run froze at launch again for that bot, so a cell for

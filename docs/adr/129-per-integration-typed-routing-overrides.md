@@ -275,8 +275,8 @@ The rest of the validation, with the refusal naming the offending field:
   silently keep the first. Across levels that is the fold's job, and the fold says who won. (Amended
   2026-11-11: the write gate takes `*/x` and `x` as one selector here — both reach every bot,
   ADR-132 D21. A stored record holding both on one field is read at launch
-  (`llmroute.ValidateStored`) and the fold decides the pair: at that level `*/x`, first in byte
-  order, wins.)
+  (`llmroute.ValidateStored`) and the fold decides the pair: at that level `x` wins, the cell that
+  routed the site when `*/x` was a glob no node id matched.)
 
 A record carrying a block the fold cannot read refuses the **launch**, naming the level and the
 field — `route_resolve.go:96` already does this for every layer, and the new fields inherit it.
@@ -285,7 +285,8 @@ without its gateway-model rule — a gateway step or cell model that is not a ga
 dispatch verdict, not a reading one, and the launch judges it per node on the composed element, so
 one bot's dead step never refuses every launch of the level. The platform-credentials PUT reads the
 stored block it does not replace the same way, so that block never refuses an edit of the record's
-other fields; a block the request supplies meets the write gate.)
+other fields; a block the request supplies meets the write gate — a launch's own `llm_routing` and
+the credential preview's included, refused 400 at the request (`validateRequestRouting`).)
 
 ### 4. One reading of a routing field, and vars that narrow the gate only by PROVENANCE
 
@@ -760,10 +761,12 @@ shape. All three are closed in `feat/routing-cells-node-selectors`; what the cod
   cell for another bot drops, one for this bot folds as its bare target. On one target the more
   specific bot part wins — no bot part and `*/` < a glob < the manifest name < the bot id — then the
   level the cell's provenance names (`llmroute.SourceRank`; `resolveRunLLMRoutePolicy` refuses a
-  layer list out of that order), then the written selector first in byte order, which no other
-  level moves; `*/x` and `x` are one selector to the write gate, refused on one field of one level
-  like any duplicate (§3), and a stored record holding both folds, `*/x` first in byte order. A
-  launch's own rows carry no bot
+  layer list out of that order), then a cell over its every-bot spelling (`x` over `*/x`), then the
+  written selector first in byte order, which no other level moves; `*/x` and `x` are one selector
+  to the write gate, refused on one field of one level like any duplicate (§3), and a stored record
+  holding both folds, `x` keeping the field it answered before `*/x` reached every bot. A bot's
+  manifest writes no cell (§1: `bundle.RoutingSpec` carries no `overrides`); its
+  `locks: [overrides]` vetoes the binding's and the run's cells. A launch's own rows carry no bot
   dimension and obey the same per-class field rules (`llmroute.ValidateLaunchRow`). The snapshot and its provenance keys
   (`overrides.<selector>.<field>`) keep the selector as the level wrote it; the folded list — §6's
   one list, unchanged on the wire — carries this bot's. A subbot child folds the snapshot its root run

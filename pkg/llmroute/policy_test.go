@@ -865,7 +865,7 @@ func TestValidateOverrides_Vocabulary(t *testing.T) {
 // cell's every-bot spelling: `*/x` and `x` both reach every bot
 // (Selector.MatchBot), so on one field they are one selector to the write
 // gate (writeRefusal, "" = accepted) — and at one level the launch fold
-// keeps the selector first in byte order. A launch reads a stored level
+// keeps the one without a bot part. A launch reads a stored level
 // holding both (storedRefusal ""); an exact duplicate stays refused by
 // both rules. Another field, or a bot part that names a bot or a glob
 // over one, is another cell.
@@ -876,11 +876,11 @@ var everyBotSpellingCases = []struct {
 	storedRefusal string
 }{
 	{"x then */x on one field", []Override{{Selector: "work", Backend: HarnessClaw}, {Selector: "*/work", Backend: HarnessCodex}},
-		`"work" and "*/work" are one selector (a ` + "`*/`" + ` bot part reaches every bot, as no bot part does), and at one level a launch keeps the one first in byte order ("*/work")`, ""},
+		`"work" and "*/work" are one selector (a ` + "`*/`" + ` bot part reaches every bot, as no bot part does), and at one level a launch keeps the one without a bot part ("work")`, ""},
 	{"*/x then x on one field", []Override{{Selector: "*/work", Model: "openai/gpt-5.5"}, {Selector: "work", Model: "openai/gpt-5.4"}},
-		`"*/work" and "work" are one selector (a ` + "`*/`" + ` bot part reaches every bot, as no bot part does), and at one level a launch keeps the one first in byte order ("*/work")`, ""},
+		`"*/work" and "work" are one selector (a ` + "`*/`" + ` bot part reaches every bot, as no bot part does), and at one level a launch keeps the one without a bot part ("work")`, ""},
 	{"*/* beside *", []Override{{Selector: "*", Effort: "low"}, {Selector: "*/*", Effort: "high"}},
-		`"*" and "*/*" are one selector (a ` + "`*/`" + ` bot part reaches every bot, as no bot part does), and at one level a launch keeps the one first in byte order ("*")`, ""},
+		`"*" and "*/*" are one selector (a ` + "`*/`" + ` bot part reaches every bot, as no bot part does), and at one level a launch keeps the one without a bot part ("*")`, ""},
 	{"x twice on one field", []Override{{Selector: "work", Backend: HarnessClaw}, {Selector: "work", Backend: HarnessCodex}},
 		"pins work.backend twice — the fold would silently keep the first", "pins work.backend twice — the fold would silently keep the first"},
 	{"*/x twice on one field", []Override{{Selector: "*/work", Model: "openai/gpt-5.5"}, {Selector: "*/work", Model: "openai/gpt-5.4"}},

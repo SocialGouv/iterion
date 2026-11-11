@@ -56,10 +56,11 @@ import (
 // specificity decides first (ForNode, in the folded list), then the bot
 // part — unscoped and `*/` (every bot) < a glob < the manifest name < the
 // bot id (llmroute.BotMatch) — then the level whose provenance names it
-// nearer the launch (llmroute.SourceRank), then, at one level, the written
-// selector first in byte order (cellOutranks). Of two cells with the same
-// bot match on the same target and field, the one that ranks lower drops;
-// the folded list carries the rest lowest first, so on one node score the
+// nearer the launch (llmroute.SourceRank), then, at one level, a cell over
+// its every-bot spelling (`x` over `*/x`), then the written selector first
+// in byte order (cellOutranks). Of two cells with the same bot match on the
+// same target and field, the one that ranks lower drops; the folded list
+// carries the rest lowest first (entryOutranks), so on one node score the
 // later rule ForNode takes is the one that ranks higher — two targets of
 // equal specificity included. The snapshot keeps the cells as the levels
 // wrote them; the folded list is this bot's.
@@ -288,16 +289,17 @@ func foldSourcedOverrides(
 // The bot dimension resolves here (see the file header): a cell whose bot
 // part does not reach bot drops; the others fold as their bare targets, one
 // cell per (bot match, target, field) — the level nearest the launch, then
-// the written selector first in byte order (cellOutranks). Each folded
-// entry is one written cell's fields of one level, the fields it lost to a
-// higher-ranked cell dropped, ordered by bot match, least specific first,
-// then by cellOutranks, lowest first; a cell left with no field folds no
-// entry. A selector the grammar cannot read stays as written among the
-// every-bot cells — it matches nothing; the launch chokepoint
-// (llmroute.ValidateStored at resolveRunLLMRoutePolicy) refuses such a
-// record before any fold. Two cells one level writes as `x` and `*/x` on
-// one field fold here, which the write gate refuses: same bot match, same
-// target, same level, so cellOutranks keeps `*/x`, first in byte order.
+// a cell over its every-bot spelling, then the written selector first in
+// byte order (cellOutranks). Each folded entry is one written cell's fields
+// of one level, the fields it lost to a higher-ranked cell dropped, ordered
+// by bot match, least specific first, then by entryOutranks, lowest first;
+// a cell left with no field folds no entry. A selector the grammar cannot
+// read stays as written among the every-bot cells — it matches nothing; the
+// launch chokepoint (llmroute.ValidateStored at resolveRunLLMRoutePolicy)
+// refuses such a record before any fold. Two cells one level writes as `x`
+// and `*/x` on one field fold here, which the write gate refuses: same bot
+// match, same target, same level, so cellOutranks keeps `x`, whichever the
+// record lists first.
 func policyOverrideEntries(pol *store.RunLLMRoutePolicy, bot llmroute.BotIdentity) []sourcedOverrideEntry {
 	if pol == nil {
 		return nil
@@ -355,7 +357,7 @@ func policyOverrideEntries(pol *store.RunLLMRoutePolicy, bot llmroute.BotIdentit
 	// One folded entry per cell and level: a cell whose fields two levels
 	// wrote competes at each. On one node score ForNode takes the later
 	// rule, so the list orders the entries the way a site ranks them, the
-	// lowest first — the bot match, then cellOutranks — and two targets of
+	// lowest first — the bot match, then entryOutranks — and two targets of
 	// equal specificity (two globs as literal) decide as two cells on one
 	// target do, never by the snapshot's order.
 	type piece struct {
@@ -387,7 +389,7 @@ func policyOverrideEntries(pol *store.RunLLMRoutePolicy, bot llmroute.BotIdentit
 		if pieces[i].match != pieces[j].match {
 			return pieces[i].match < pieces[j].match
 		}
-		return cellOutranks(pieces[j].level, pieces[j].written, pieces[i].level, pieces[i].written)
+		return entryOutranks(pieces[j].level, pieces[j].written, pieces[i].level, pieces[i].written)
 	})
 	out := make([]sourcedOverrideEntry, 0, len(pieces))
 	for _, p := range pieces {
@@ -397,17 +399,46 @@ func policyOverrideEntries(pol *store.RunLLMRoutePolicy, bot llmroute.BotIdentit
 }
 
 // cellOutranks reports whether a cell written as written at level wins a
-// field over another cell of the same bot match that reaches the same node
-// as specifically: the level nearer the launch, then, at one level, the
-// written selector first in byte order. The snapshot's order is the order
-// Resolve first met each selector across every level, which a nearer level
-// moves by writing any field of one of them; the written selector is a key
-// no other level moves.
+// field over another cell of the same bot match on the same target: the
+// level nearer the launch, then, at one level, a cell over its every-bot
+// spelling — `x` over `*/x`, the cell that answered the site before `*/`
+// reached every bot (it was a node glob no id matched) — then the written
+// selector first in byte order (entryOutranks). Only a stored record holds
+// `x` and `*/x` on one field of one level: the write gate refuses the pair
+// (llmroute.Validate), the launch reads it (llmroute.ValidateStored).
 func cellOutranks(level int, written string, otherLevel int, otherWritten string) bool {
+	if level == otherLevel {
+		switch {
+		case otherWritten == everyBotSpelling(written):
+			return true
+		case written == everyBotSpelling(otherWritten):
+			return false
+		}
+	}
+	return entryOutranks(level, written, otherLevel, otherWritten)
+}
+
+// entryOutranks orders the folded entries of one bot match, the higher
+// later: the level nearer the launch, then, at one level, the written
+// selector first in byte order. The snapshot's order is the order Resolve
+// first met each selector across every level, which a nearer level moves by
+// writing any field of one of them; the written selector is a key no other
+// level moves. It is cellOutranks without the every-bot spelling rule,
+// which byte order does not compose with into one order (`*/x` < `a` <
+// `x`, and `x` over `*/x`); the list needs none: a cell and its every-bot
+// spelling hold no common field once cellOutranks decided each, so their
+// order in the list decides nothing.
+func entryOutranks(level int, written string, otherLevel int, otherWritten string) bool {
 	if level != otherLevel {
 		return level < otherLevel
 	}
 	return written < otherWritten
+}
+
+// everyBotSpelling is a selector's spelling with the every-bot part:
+// `*/x` for `x`.
+func everyBotSpelling(selector string) string {
+	return "*" + llmroute.SelectorBotSeparator + selector
 }
 
 // cellLevels maps each field a folded cell still pins to the provenance

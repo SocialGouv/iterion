@@ -587,8 +587,9 @@ func TestResolveRunLLMRoutePolicy_AStoredDeadGatewayStepFoldsAtLaunch(t *testing
 // A stored team level holding a node cell and its every-bot spelling on one
 // field — `work` and `*/work`, which a request writing the block is refused
 // as one selector — folds at launch instead of refusing every launch of the
-// team: at one level the fold keeps the selector first in byte order
-// (`*/work`), whichever the record lists first.
+// team: at one level the fold keeps `work`, the cell that routed the node
+// before `*/` reached every bot (it was a glob no node id matched),
+// whichever the record lists first.
 func TestResolveRunLLMRoutePolicy_AStoredLevelHoldingACellAndItsEveryBotSpellingFolds(t *testing.T) {
 	s := newOrgTestServer(t)
 	if _, err := s.authStore().CreateTeam(context.Background(), identity.Team{
@@ -627,8 +628,8 @@ func TestResolveRunLLMRoutePolicy_AStoredLevelHoldingACellAndItsEveryBotSpelling
 			for _, e := range folded {
 				rows = append(rows, store.RunModelOverride{Selector: e.Selector, Backend: e.Backend, Model: e.Model, Provider: e.Provider, Effort: e.Effort})
 			}
-			if b := runview.ModelOverridesFromRun(rows).ForNode("work", ir.NodeAgent).Backend; b != everyBot.Backend {
-				t.Fatalf("work backend = %q, want %q, the team's %q (first in byte order) (folded %+v)", b, everyBot.Backend, everyBot.Selector, folded)
+			if b := runview.ModelOverridesFromRun(rows).ForNode("work", ir.NodeAgent).Backend; b != unscoped.Backend {
+				t.Fatalf("work backend = %q, want %q, the team's %q, the spelling without a bot part (folded %+v)", b, unscoped.Backend, unscoped.Selector, folded)
 			}
 		})
 	}

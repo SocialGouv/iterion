@@ -215,8 +215,21 @@ func TestRefuseUndecidedRoutingFields_ACellDecidesTheFieldItPins(t *testing.T) {
 // so the snapshot carries the per-cell provenance the fold reads.
 func precedenceSnapshot(t *testing.T, layers ...llmroute.Layer) *store.RunLLMRoutePolicy {
 	t.Helper()
+	return readSnapshot(t, llmroute.Validate, layers...)
+}
+
+// storedSnapshot is precedenceSnapshot over layers read the way a launch
+// reads stored records (llmroute.ValidateStored), which take a cell beside
+// its every-bot spelling on one field.
+func storedSnapshot(t *testing.T, layers ...llmroute.Layer) *store.RunLLMRoutePolicy {
+	t.Helper()
+	return readSnapshot(t, llmroute.ValidateStored, layers...)
+}
+
+func readSnapshot(t *testing.T, validate func(llmroute.Policy) error, layers ...llmroute.Layer) *store.RunLLMRoutePolicy {
+	t.Helper()
 	for _, l := range layers {
-		if err := llmroute.Validate(l.Policy); err != nil {
+		if err := validate(l.Policy); err != nil {
 			t.Fatalf("layer %s refused: %v", l.Source, err)
 		}
 	}
@@ -355,6 +368,77 @@ func TestFold_ASameLevelTieIsDecidedByNoOtherLevel(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// A stored level holding a node cell and its every-bot spelling on one
+// field — `work` and `*/work`, one selector to the write gate, read at
+// launch (llmroute.ValidateStored) — folds the field to `work`, the cell
+// that routed the node when `*/work` was a glob no node id matched: in
+// either listing order, whatever a nearer level writes on another field of
+// either, for a bot or for a launch naming none. The level still decides
+// first: a nearer level's `*/work` wins the field over the team's `work`.
+func TestFold_ACellBeatsItsEveryBotSpellingAtOneLevel(t *testing.T) {
+	unscoped := llmroute.Override{Selector: "work", Backend: "claw"}
+	everyBot := llmroute.Override{Selector: "*/work", Backend: "claude_code"}
+	for _, order := range []struct {
+		name  string
+		cells []llmroute.Override
+	}{
+		{"work listed first", []llmroute.Override{unscoped, everyBot}},
+		{"*/work listed first", []llmroute.Override{everyBot, unscoped}},
+	} {
+		for _, nearer := range []struct {
+			name  string
+			cells []llmroute.Override
+		}{
+			{"team alone", nil},
+			{"the integration's effort on work", []llmroute.Override{{Selector: unscoped.Selector, Effort: "high"}}},
+			{"the integration's effort on */work", []llmroute.Override{{Selector: everyBot.Selector, Effort: "high"}}},
+		} {
+			for _, bot := range []llmroute.BotIdentity{{ID: "review-pr"}, {}} {
+				t.Run(order.name+", "+nearer.name+", bot "+bot.ID, func(t *testing.T) {
+					layers := []llmroute.Layer{precedenceLayer(llmroute.SourceTeam, order.cells...)}
+					if nearer.cells != nil {
+						layers = append([]llmroute.Layer{precedenceLayer(llmroute.SourceWebhook, nearer.cells...)}, layers...)
+					}
+					snap := storedSnapshot(t, layers...)
+					got := toModelOverrides(EffectiveModelOverrides(nil, snap, bot)).ForNode("work", ir.NodeAgent)
+					if got.Backend != unscoped.Backend {
+						t.Errorf("work backend = %q, want %q, the team's %q, the spelling without a bot part; snapshot order %v", got.Backend, unscoped.Backend, unscoped.Selector, snapshotSelectors(snap))
+					}
+					if nearer.cells != nil && got.Effort != "high" {
+						t.Errorf("work effort = %q, want the integration's high", got.Effort)
+					}
+				})
+			}
+		}
+	}
+	snap := storedSnapshot(t,
+		precedenceLayer(llmroute.SourceWebhook, everyBot),
+		precedenceLayer(llmroute.SourceTeam, unscoped),
+	)
+	if got := toModelOverrides(EffectiveModelOverrides(nil, snap, llmroute.BotIdentity{ID: "review-pr"})).ForNode("work", ir.NodeAgent).Backend; got != everyBot.Backend {
+		t.Errorf("work backend = %q, want %q, the integration's %q over the team's %q: the level decides first", got, everyBot.Backend, everyBot.Selector, unscoped.Selector)
+	}
+}
+
+// The folded list orders two targets of equal specificity by byte order
+// alone (entryOutranks), never by the every-bot spelling rule, which byte
+// order does not compose with into one order: a level writing `*/rev*`'s
+// backend, `rev*`'s model and `*iew`'s backend keeps `*/rev*`'s backend on
+// node `review` (`*/rev*` before `*iew` in byte order), in the order the
+// level lists them — the order in which a sort reading the rule would
+// carry `*iew` after `*/rev*`.
+func TestFold_TheFoldedListOrdersByByteOrderBesideAnEveryBotSpelling(t *testing.T) {
+	snap := precedenceSnapshot(t, precedenceLayer(llmroute.SourceTeam,
+		llmroute.Override{Selector: "*/rev*", Backend: "claw"},
+		llmroute.Override{Selector: "rev*", Model: "openai/gpt-5.5"},
+		llmroute.Override{Selector: "*iew", Backend: "claude_code"},
+	))
+	got := toModelOverrides(EffectiveModelOverrides(nil, snap, llmroute.BotIdentity{ID: "b"})).ForNode("review", ir.NodeAgent)
+	if got.Backend != "claw" || got.Model != "openai/gpt-5.5" {
+		t.Errorf("review = %+v, want backend claw (`*/rev*` first in byte order over `*iew`) and rev*'s model; folded %+v", got, EffectiveModelOverrides(nil, snap, llmroute.BotIdentity{ID: "b"}))
 	}
 }
 

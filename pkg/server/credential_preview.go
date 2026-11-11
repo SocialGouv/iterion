@@ -71,6 +71,13 @@ func (s *Server) handleCredentialPreview(w http.ResponseWriter, r *http.Request)
 		// silently dropped.
 		spec.Launch.Vars = req.Vars
 		spec.Launch.TrustedVarNames = trustedVarNames(req.Vars)
+		// The caller's run level meets the write gate the launch it
+		// mirrors applies to the same field: a block the launch refuses
+		// previews as refused, never as a whitelist.
+		if err := validateRequestRouting("llm_routing", req.LLMRouting); err != nil {
+			httpError(w, http.StatusBadRequest, "%v", err)
+			return
+		}
 		if req.LLMRouting != nil {
 			routeLayers = append(routeLayers, llmroute.Layer{Source: llmroute.SourceRun, Launcher: true, Policy: *req.LLMRouting})
 		}

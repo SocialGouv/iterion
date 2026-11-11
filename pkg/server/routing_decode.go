@@ -68,3 +68,22 @@ func decodeRoutingBlock(raw json.RawMessage, locks routingLockPosture) (*llmrout
 	}
 	return &block, true, nil
 }
+
+// validateRequestRouting is the write gate a launch-shaped request's own
+// routing block meets (ADR-129 §3: a block the request supplies meets the
+// write gate): llmroute.Validate, the rule decodeRoutingBlock applies to
+// every block a write surface stores. The launch then reads it with the
+// other layers (resolveRunLLMRoutePolicy), whose rule is the stored one
+// (llmroute.ValidateStored) — the reading of records no request of this
+// launch wrote. The seams: POST /api/runs and the credential preview's
+// personal lane, each body's `llm_routing`; the refusal names field, and
+// each seam answers it 400. A nil block is no block.
+func validateRequestRouting(field string, block *llmroute.Policy) error {
+	if block == nil {
+		return nil
+	}
+	if err := llmroute.Validate(*block); err != nil {
+		return fmt.Errorf("%s: %w", field, err)
+	}
+	return nil
+}

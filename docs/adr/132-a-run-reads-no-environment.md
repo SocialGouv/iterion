@@ -185,8 +185,9 @@ migrates them into the record.
 ### 2. Where each setting lives
 
 **Routing per slot** — model, backend, provider, effort: the routing policy's typed `overrides`
-cells, at the levels ADR-129 shipped (platform < org < team < shipped bot < binding < run), folded
-by the one chokepoint, snapshotted and replayed as ADR-121 already does. ADR-129 §8 said "the
+cells, at the levels ADR-129 shipped (platform < org < team < shipped bot < binding < run; the
+shipped bot writes no cell — its manifest `routing:` block carries no `overrides`, ADR-129 §1 —
+and its `locks: [overrides]` vetoes the binding's and the run's), folded by the one chokepoint, snapshotted and replayed as ADR-121 already does. ADR-129 §8 said "the
 platform level of `overrides` is the successor of the `${ITERION_VIBE_*}` dials, and nothing is
 removed to say so" — this record removes them. The mapping rule is by REACH, not by name: a dial
 whose reach is deployment-wide (every bot reading `ITERION_VIBE_MODEL_CLAUDE`) maps to a
@@ -617,15 +618,17 @@ stated here:
   way) and OPTIONAL on a node cell, whose stored records predate it. `*/…` is the greppable spelling
   of "every bot": `*/x` and `x` are one selector, both reaching a launch that names no bot, so a
   block written with both on one field pins it twice and the write gate refuses it
-  (`llmroute.Validate`). A stored `*/x` was, before this disposition, a node glob no node id
-  matched; it now reaches every bot's `x`, and a stored record holding it beside `x` on one field
-  is read at launch (`llmroute.ValidateStored`): at that level `*/x`, first in byte order, wins the
-  field `x` alone used to answer. Among cells reaching one site, the node target's specificity decides first ("a more specific
+  (`llmroute.Validate`) — a launch's own `llm_routing` included, at the request. A stored `*/x`
+  was, before this disposition, a node glob no node id matched; it now reaches every bot's `x`, and
+  a stored record holding it beside `x` on one field is read at launch (`llmroute.ValidateStored`):
+  at that level `x` keeps the field it alone used to answer. Among cells reaching one site, the node target's specificity decides first ("a more specific
   selector wins wherever it is written"), then the bot part — no bot part and `*/` < a glob < the
   manifest name < the bot id (`llmroute.BotMatch`) — then the level each cell's provenance names
   (`llmroute.SourceRank`, env < platform < org < team < bot < binding < run; the launch refuses a
-  layer list out of that order), and at one level the written selector first in byte order — a
-  key no other level moves, which the snapshot's order is not (`runview.policyOverrideEntries`).
+  layer list out of that order; a bot's manifest names none, its `routing:` block carrying no
+  `overrides`), and at one level a cell over its every-bot spelling (`x` over `*/x`), then the
+  written selector first in byte order — a key no other level moves, which the snapshot's order is
+  not (`runview.policyOverrideEntries`).
   A subbot child's identity is its own, and the same on every lane (`runview.SubbotChildBotIdentity`):
   the slug of the bundle it compiled from — the directory a catalogue or a snapshot collection files
   it under, the bot id a top-level launch of that bundle carries — and that bundle's manifest name.
