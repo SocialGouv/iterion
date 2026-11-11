@@ -69,3 +69,39 @@ func TestLaunchJudgesTheProviderStepsDispatchBuilds(t *testing.T) {
 		})
 	}
 }
+
+// A gateway model a cell pins beside a vendor hint the bot wrote names two
+// wires; the refusal names what the cell can write — the gateway hint, and
+// the claw backend where the element's backend cannot serve a gateway
+// route — and the cell written that way launches.
+func TestLaunchRefusalNamesTheCellsRemedyForABotHintBesideACellGatewayModel(t *testing.T) {
+	route := "  fallbacks:\n    glm:\n      model: \"glm-5.3\"\n      provider: \"zai\"\n"
+	clawBot := strings.Replace(chainHeadBot, "  tools: [read_file]\n", "  tools: [read_file]\n"+route, 1)
+	for _, tc := range []struct {
+		name, src, remedy string
+		fixed             store.RunLLMRouteOverride
+	}{
+		{"a claw route", clawBot, `pin "provider": "openai_compatible" in the cell`,
+			store.RunLLMRouteOverride{Selector: "gwhint/work#glm", Provider: "openai_compatible", Model: gatewayTestModel}},
+		{"a route on a claude_code node", gatewayHintBot, `pin "provider": "openai_compatible" and "backend": "claw" in the cell`,
+			store.RunLLMRouteOverride{Selector: "gwhint/work#glm", Backend: "claw", Provider: "openai_compatible", Model: gatewayTestModel}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pub, err := launchGatewayBot(t, "gwhint", tc.src, []store.RunLLMRouteOverride{{Selector: "gwhint/work#glm", Model: gatewayTestModel}}, nil)
+			requireRefusal(t, pub, err, `"work#glm"`, "names another wire", `provider "zai" from the route's own provider field`, tc.remedy)
+			pub, err = launchGatewayBot(t, "gwhint", tc.src, []store.RunLLMRouteOverride{tc.fixed}, nil)
+			requireAdmitted(t, pub, err)
+		})
+	}
+	// The gateway hint the bot wrote beside a cell's vendor model: the hint
+	// is already the gateway's, dispatch's own remedy (a gateway model)
+	// stands, and no hint is named.
+	t.Run("the bot's gateway hint beside a cell's vendor model", func(t *testing.T) {
+		src := strings.NewReplacer("  system: p\n", "  provider: \"openai_compatible\"\n  system: p\n", `model: "anthropic/claude-opus-5"`, `model: "`+gatewayTestModel+`"`).Replace(chainHeadBot)
+		pub, err := launchGatewayBot(t, "gwhint", src, []store.RunLLMRouteOverride{{Selector: "gwhint/work", Model: "anthropic/claude-sonnet-5"}}, nil)
+		requireRefusal(t, pub, err, "is not a gateway route", "use openai_compatible/<gateway model id>")
+		if err != nil && strings.Contains(err.Error(), `pin "provider"`) {
+			t.Errorf("error = %q names a hint remedy beside the gateway hint itself", err)
+		}
+	})
+}

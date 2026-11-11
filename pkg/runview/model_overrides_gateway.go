@@ -207,8 +207,10 @@ func (s gatewaySite) dialTexts() string {
 
 // causedRefusal is dispatch's refusal of el when an override field takes
 // part in it: the arm that refused read a field an override entry wrote.
-// The refusal carries the provenance of every field the arm read and, for
-// the backend arm on a backend the bot wrote, the remedy.
+// The refusal carries the provenance of every field the arm read and the
+// remedy a cell can write where dispatch's own names a field the bot wrote:
+// the claw backend for the backend arm, the gateway hint for a vendor hint
+// beside a cell's gateway model.
 func causedRefusal(el gatewayElement) error {
 	err := model.GatewayCrossingRefusal(el.backend.value, el.hint.value, el.model.value)
 	if err == nil {
@@ -238,8 +240,19 @@ func causedRefusal(el gatewayElement) error {
 		return nil
 	}
 	msg := fmt.Sprintf("%v (%s)", err, strings.Join(names, "; "))
-	if gce.Backend && !el.backend.fromOverride() {
+	switch {
+	case gce.Backend && !el.backend.fromOverride():
 		msg += ` — pin "backend": "claw" in the cell, the backend that serves gateway routes`
+	case gce.Hint && !el.hint.fromOverride() && llmroute.IsGatewayModel(el.model.value):
+		// A vendor hint the bot wrote beside a gateway model a cell wrote:
+		// a cell cannot drop a field, it pins the hint a gateway model
+		// pairs with — and claw where the element's backend cannot serve
+		// the gateway.
+		if model.GatewayCrossingRefusal(el.backend.value, llmroute.ProviderOpenAICompatible, el.model.value) == nil {
+			msg += ` — pin "provider": "openai_compatible" in the cell, the hint a gateway model pairs with`
+		} else {
+			msg += ` — pin "provider": "openai_compatible" and "backend": "claw" in the cell, the hint a gateway model pairs with and the backend that serves it`
+		}
 	}
 	return errors.New(msg)
 }

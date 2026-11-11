@@ -1617,7 +1617,11 @@ hint beside a gateway model, the gateway hint beside a model that is not a
 gateway route. When a cell or a launch row wrote one of the fields that
 refusal reads, the launch refuses it, naming each field and where it came from — a
 launch row by its selector, a cell by the selector its level wrote (bot part
-included) and that level (`written at level "team"`); the
+included) and that level (`written at level "team"`) — and, where the field
+to change is one the bot wrote, what the cell can pin instead: `"backend":
+"claw"` beside a backend that cannot serve the gateway, `"provider":
+"openai_compatible"` (with `"backend": "claw"` where the backend cannot serve
+it) beside a vendor hint the bot wrote next to the cell's gateway model; the
 integration's write screen warns instead. A field a slot dial decides is
 the runner's: the launch reads the dial's default and warns — unless
 dispatch refuses the element whatever a model dial expands to, a gateway
