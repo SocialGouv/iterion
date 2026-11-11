@@ -294,8 +294,10 @@ func foldSourcedOverrides(
 // then by cellOutranks, lowest first; a cell left with no field folds no
 // entry. A selector the grammar cannot read stays as written among the
 // every-bot cells — it matches nothing; the launch chokepoint
-// (llmroute.Validate at resolveRunLLMRoutePolicy) refuses such a record
-// before any fold.
+// (llmroute.ValidateStored at resolveRunLLMRoutePolicy) refuses such a
+// record before any fold. Two cells one level writes as `x` and `*/x` on
+// one field fold here, which the write gate refuses: same bot match, same
+// target, same level, so cellOutranks keeps `*/x`, first in byte order.
 func policyOverrideEntries(pol *store.RunLLMRoutePolicy, bot llmroute.BotIdentity) []sourcedOverrideEntry {
 	if pol == nil {
 		return nil

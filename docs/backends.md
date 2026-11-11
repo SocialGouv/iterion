@@ -1680,18 +1680,22 @@ selector := [ <bot> "/" ] <target>
   every bot the record reaches); a route-scoped or supervisor cell MUST carry
   it, since node ids and supervisor names collide across bots — `*/…` spells
   "every bot" on purpose: `*/x` and `x` are one selector, and both reach a
-  launch that names no bot — a record writing both on one field is refused
-  as one that pins it twice. The launch resolves it: a cell for another bot
-  drops, a cell for this bot folds as its bare target. On one target the
+  launch that names no bot — a block written with both on one field is
+  refused at write as one that pins it twice. The launch resolves it: a cell
+  for another bot drops, a cell for this bot folds as its bare target. On
+  one target the
   more specific bot part wins — no bot part and `*/` < a glob < the manifest
   name < the bot id — and at the same bot part the nearer level's cell
   (platform < org < team < the bot's manifest < integration, schedule or
   trigger < run); two globs of one level reaching the bot tie, and the one
   first in byte order wins (`*-pool/x` over `review-*/x`), whatever another
-  level writes on either. A subbot child is a run
-  of its own bot, the bot a top-level launch of its bundle would be: its
-  slug — the bundle's directory, the name a catalogue or a snapshot
-  collection files it under — and its manifest name, on every lane. It folds
+  level writes on either. So do `x` and `*/x` in a block the launch reads
+  that holds both on one field — a stored team, org, platform or integration
+  record the write gate would now refuse, or a launch's own `llm_routing`,
+  which meets no write gate (`llmroute.ValidateStored` reads them): `*/x`
+  wins at that level. A subbot child is a run of its own bot, the bot a
+  top-level launch of its bundle would be: its slug — the bundle's
+  directory, the name a catalogue or a snapshot collection files it under — and its manifest name, on every lane. It folds
   the snapshot its root run froze at launch again for that bot, so a cell for
   the parent's bot does not reach it and a cell for the child's does; the
   root run's own launch rows fold on top, bot-free, for every child of the

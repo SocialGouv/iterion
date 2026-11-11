@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/identity"
 	"github.com/SocialGouv/iterion/pkg/llmroute"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -580,5 +581,55 @@ func TestResolveRunLLMRoutePolicy_AStoredDeadGatewayStepFoldsAtLaunch(t *testing
 	})
 	if _, err := s.resolveRunLLMRoutePolicy(context.Background(), "team1", ""); err == nil || !strings.Contains(err.Error(), "team routing policy") {
 		t.Fatalf("resolve = %v, want an unreadable team record to refuse the launch", err)
+	}
+}
+
+// A stored team level holding a node cell and its every-bot spelling on one
+// field — `work` and `*/work`, which a request writing the block is refused
+// as one selector — folds at launch instead of refusing every launch of the
+// team: at one level the fold keeps the selector first in byte order
+// (`*/work`), whichever the record lists first.
+func TestResolveRunLLMRoutePolicy_AStoredLevelHoldingACellAndItsEveryBotSpellingFolds(t *testing.T) {
+	s := newOrgTestServer(t)
+	if _, err := s.authStore().CreateTeam(context.Background(), identity.Team{
+		ID: "team1", Name: "team1", Slug: "team1", CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("seed team: %v", err)
+	}
+	factory, _ := routingPolicyStores()
+	s.routingPolicyStoreFor = factory
+	unscoped := llmroute.Override{Selector: "work", Backend: "claw"}
+	everyBot := llmroute.Override{Selector: "*/work", Backend: "claude_code"}
+	for _, tc := range []struct {
+		name  string
+		cells []llmroute.Override
+	}{
+		{"work listed first", []llmroute.Override{unscoped, everyBot}},
+		{"*/work listed first", []llmroute.Override{everyBot, unscoped}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			raw, err := json.Marshal(llmroute.Policy{Overrides: tc.cells})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, _, rerr := decodeRoutingBlock(raw, routingLocksAllowed); rerr == nil || !strings.Contains(rerr.err.Error(), "are one selector") {
+				t.Fatalf("decodeRoutingBlock = %v, want the write gate to refuse the pair as one selector", rerr)
+			}
+			putRoutingPolicyRecord(t, factory(platformcfg.TeamRoutingPolicyID("team1")), &platformcfg.RoutingPolicyRecord{
+				Policy: &llmroute.Policy{Overrides: tc.cells},
+			})
+			got, err := s.resolveRunLLMRoutePolicy(context.Background(), "team1", "review-pr")
+			if err != nil {
+				t.Fatalf("resolve refused the team level for the pair: %v", err)
+			}
+			folded := runview.EffectiveModelOverrides(nil, got, launchBotIdentityFor("review-pr"))
+			rows := make([]store.RunModelOverride, 0, len(folded))
+			for _, e := range folded {
+				rows = append(rows, store.RunModelOverride{Selector: e.Selector, Backend: e.Backend, Model: e.Model, Provider: e.Provider, Effort: e.Effort})
+			}
+			if b := runview.ModelOverridesFromRun(rows).ForNode("work", ir.NodeAgent).Backend; b != everyBot.Backend {
+				t.Fatalf("work backend = %q, want %q, the team's %q (first in byte order) (folded %+v)", b, everyBot.Backend, everyBot.Selector, folded)
+			}
+		})
 	}
 }

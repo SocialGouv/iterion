@@ -684,20 +684,27 @@ func Validate(p Policy) error {
 }
 
 // ValidateStored is the launch's reading of a stored layer: Validate
-// without the gateway-model rule (gatewayHintModels). That rule pre-checks
-// one entry for the crossing dispatch refuses (model.GatewayCrossingRefusal);
-// the launch judges the crossing itself, per site, on the element the
-// folded cells compose (runview's gateway crossing check). A record a write
-// surface now refuses for a gateway step dispatch never builds — the tail
-// of a claw chain — or for a cell that reaches none of the launched bot's
-// nodes therefore refuses no launch, and one dispatch does build is refused
-// for the bot it reaches, naming the cell. Every other rule holds: a record
-// the fold cannot read refuses the launch.
+// without the two rules a write surface adds to the fold's own reading.
+// The gateway-model rule (gatewayHintModels) pre-checks one entry for the
+// crossing dispatch refuses (model.GatewayCrossingRefusal); the launch
+// judges the crossing itself, per site, on the element the folded cells
+// compose (runview's gateway crossing check). A record a write surface now
+// refuses for a gateway step dispatch never builds — the tail of a claw
+// chain — or for a cell that reaches none of the launched bot's nodes
+// therefore refuses no launch, and one dispatch does build is refused for
+// the bot it reaches, naming the cell. The every-bot spelling rule refuses
+// `x` beside `*/x` on one field; the fold decides that pair (at one level
+// the selector first in byte order), so a stored level holding both —
+// written when `*/x` was a glob no node id matched — refuses no launch.
+// Every other rule holds: a record the fold cannot read refuses the launch.
 func ValidateStored(p Policy) error {
 	return validatePolicy(p, false)
 }
 
-func validatePolicy(p Policy, gatewayModels bool) error {
+// validatePolicy reads p with the fold's rules; write adds the write
+// surfaces' two: the gateway-model rule (validateOverride) and `*/x` and
+// `x` as one selector on a field.
+func validatePolicy(p Policy, write bool) error {
 	// An explicit empty list is refused, not honored: it would read as
 	// "the run may occupy nothing" / "no trigger may fire" on one read and
 	// as "inherit" after a record round-trip (omitempty erases it) — two
@@ -769,16 +776,18 @@ func validatePolicy(p Policy, gatewayModels bool) error {
 		return fmt.Errorf("llmroute: cross_harness %q — want %q, %q or %q", p.CrossHarness, CrossHarnessOff, CrossHarnessReuse, CrossHarnessRestart)
 	}
 	for _, o := range p.Overrides {
-		if err := validateOverride(o, gatewayModels); err != nil {
+		if err := validateOverride(o, write); err != nil {
 			return fmt.Errorf("llmroute: overrides: %w", err)
 		}
 	}
-	// One cell per (selector, field). `*/x` and `x` both reach every bot
-	// (Selector.MatchBot), so they are one selector: keyed on the target.
+	// One cell per (selector, field): Resolve keeps the first of two. At
+	// the write gate `*/x` and `x` both reach every bot (Selector.MatchBot),
+	// so they are one selector there: keyed on the target. A stored level
+	// holding both is read — the fold decides the pair (ValidateStored).
 	seenCell := map[string]string{}
 	for _, o := range p.Overrides {
 		selector := o.Selector
-		if sel, err := ParseSelector(o.Selector); err == nil && sel.MatchBot(BotIdentity{}) == BotMatchAll {
+		if sel, err := ParseSelector(o.Selector); write && err == nil && sel.MatchBot(BotIdentity{}) == BotMatchAll {
 			selector = sel.Target
 		}
 		for _, cell := range overrideCells {
@@ -788,9 +797,9 @@ func validatePolicy(p Policy, gatewayModels bool) error {
 			key := selector + "\x00" + cell.name
 			if written, seen := seenCell[key]; seen {
 				if written != o.Selector {
-					return fmt.Errorf("llmroute: overrides pins %s.%s and %s.%s — %q and %q are one selector (a `*/` bot part reaches every bot, as no bot part does), so the later would silently win", written, cell.name, o.Selector, cell.name, written, o.Selector)
+					return fmt.Errorf("llmroute: overrides pins %s.%s and %s.%s — %q and %q are one selector (a `*/` bot part reaches every bot, as no bot part does), and at one level a launch keeps the one first in byte order (%q), whichever was meant: pin the field on one of them", written, cell.name, o.Selector, cell.name, written, o.Selector, min(written, o.Selector))
 				}
-				return fmt.Errorf("llmroute: overrides pins %s.%s twice — the later would silently win", o.Selector, cell.name)
+				return fmt.Errorf("llmroute: overrides pins %s.%s twice — the fold would silently keep the first", o.Selector, cell.name)
 			}
 			seenCell[key] = o.Selector
 		}

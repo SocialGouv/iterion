@@ -271,9 +271,12 @@ The rest of the validation, with the refusal naming the offending field:
   assertion inside `package llmroute` is an import cycle.
 - `providers` entries are known providers or `openai_compatible`; an empty list is refused (a level
   that must forbid everything has no run to make — the honest spelling is to refuse the bot).
-- two cells with the same (selector, field) **within one level** are refused: the later would
-  silently win. Across levels that is the fold's job, and the fold says who won. (Amended
-  2026-11-11: `*/x` and `x` are one selector here — both reach every bot, ADR-132 D21.)
+- two cells with the same (selector, field) **within one level** are refused: the fold would
+  silently keep the first. Across levels that is the fold's job, and the fold says who won. (Amended
+  2026-11-11: the write gate takes `*/x` and `x` as one selector here — both reach every bot,
+  ADR-132 D21. A stored record holding both on one field is read at launch
+  (`llmroute.ValidateStored`) and the fold decides the pair: at that level `*/x`, first in byte
+  order, wins.)
 
 A record carrying a block the fold cannot read refuses the **launch**, naming the level and the
 field — `route_resolve.go:96` already does this for every layer, and the new fields inherit it.
@@ -758,8 +761,9 @@ shape. All three are closed in `feat/routing-cells-node-selectors`; what the cod
   specific bot part wins — no bot part and `*/` < a glob < the manifest name < the bot id — then the
   level the cell's provenance names (`llmroute.SourceRank`; `resolveRunLLMRoutePolicy` refuses a
   layer list out of that order), then the written selector first in byte order, which no other
-  level moves; `*/x` and `x` are one selector, refused twice on one field of one level like any
-  duplicate (§3). A launch's own rows carry no bot
+  level moves; `*/x` and `x` are one selector to the write gate, refused on one field of one level
+  like any duplicate (§3), and a stored record holding both folds, `*/x` first in byte order. A
+  launch's own rows carry no bot
   dimension and obey the same per-class field rules (`llmroute.ValidateLaunchRow`). The snapshot and its provenance keys
   (`overrides.<selector>.<field>`) keep the selector as the level wrote it; the folded list — §6's
   one list, unchanged on the wire — carries this bot's. A subbot child folds the snapshot its root run

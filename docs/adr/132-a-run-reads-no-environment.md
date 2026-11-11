@@ -616,9 +616,11 @@ stated here:
   route-scoped and on a supervisor cell (§2's guard; supervisor names collide across bots the same
   way) and OPTIONAL on a node cell, whose stored records predate it. `*/…` is the greppable spelling
   of "every bot": `*/x` and `x` are one selector, both reaching a launch that names no bot, so a
-  level writing both on one field pins it twice and is refused (`llmroute.Validate`). A stored
-  `*/x` was, before this disposition, a node glob no node id matched; it now reaches every bot's
-  `x`. Among cells reaching one site, the node target's specificity decides first ("a more specific
+  block written with both on one field pins it twice and the write gate refuses it
+  (`llmroute.Validate`). A stored `*/x` was, before this disposition, a node glob no node id
+  matched; it now reaches every bot's `x`, and a stored record holding it beside `x` on one field
+  is read at launch (`llmroute.ValidateStored`): at that level `*/x`, first in byte order, wins the
+  field `x` alone used to answer. Among cells reaching one site, the node target's specificity decides first ("a more specific
   selector wins wherever it is written"), then the bot part — no bot part and `*/` < a glob < the
   manifest name < the bot id (`llmroute.BotMatch`) — then the level each cell's provenance names
   (`llmroute.SourceRank`, env < platform < org < team < bot < binding < run; the launch refuses a
