@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/backend/model"
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/llmroute"
 	"github.com/SocialGouv/iterion/pkg/queue"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -156,5 +157,31 @@ func TestOverrideTwinsStayFieldIdentical(t *testing.T) {
 	policyCell := twinFields(t, llmroute.Override{})
 	if !reflect.DeepEqual(cell, policyCell) {
 		t.Errorf("store.RunLLMRouteOverride fields = %v, want llmroute.Override's %v", cell, policyCell)
+	}
+}
+
+// The fold's stated residual, as docs/backends.md states the precedence: a
+// launch row wins a cell on the same selector and a `*` row overrides its
+// field in every node cell, but a cell on a more specific node selector than
+// a launch row other than `*` still wins the field both pin — a
+// `reviewer_claude` cell beats a `reviewer_*` launch row.
+func TestEffectiveModelOverrides_AMoreSpecificCellBeatsALaunchGlobRow(t *testing.T) {
+	const gw = "openai_compatible/scaleway/deepseek-v4.1-flash"
+	pol := &store.RunLLMRoutePolicy{Overrides: []store.RunLLMRouteOverride{{Selector: "review-pr/reviewer_claude", Model: gw}}}
+	bot := llmroute.BotIdentity{ID: "review-pr-pool", Name: "review-pr"}
+	for _, tc := range []struct {
+		row  string
+		want string
+	}{
+		{"reviewer_*", gw},
+		{"reviewer_claude", "anthropic/claude-opus-5-5"},
+		{"*", "anthropic/claude-opus-5-5"},
+	} {
+		t.Run(tc.row, func(t *testing.T) {
+			folded := EffectiveModelOverrides([]ModelOverrideEntry{{Selector: tc.row, Model: "anthropic/claude-opus-5-5"}}, pol, bot)
+			if got := toModelOverrides(folded).ForNode("reviewer_claude", ir.NodeAgent).Model; got != tc.want {
+				t.Fatalf("reviewer_claude model under a %q launch row = %q, want %q (folded %+v)", tc.row, got, tc.want, folded)
+			}
+		})
 	}
 }

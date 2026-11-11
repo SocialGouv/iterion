@@ -455,7 +455,10 @@ That one list is what is stamped on the run document, what rides `queue.RunMessa
 what every resume replays — the cloud runner's, the CLI's and the in-process one, whose supervisors
 and session board read the rows its executor dispatches with — and what every pre-flight reads. A
 subbot child is a run of its own bot: it folds the root run's frozen snapshot again for that bot
-(`runview.FoldForSubbotChild`), and the parent's list does not travel. No reader anywhere learns a second input;
+(`runview.FoldForSubbotChild`), under the root's own launch rows, and the parent's list does not
+travel. Those raw launch rows — the launch body's or the CLI's, before any cell folded in — ride the
+run document beside the list (`store.Run.LaunchModelOverrides`, stamped at launch, carried by a fork,
+never re-derived): the subbot children of the run's tree are their one reader. No reader anywhere learns a second input;
 philosophy §5's "never a second source of truth" is honoured by folding once rather than by teaching
 seven readers to fold.
 
@@ -742,10 +745,15 @@ shape. All three are closed in `feat/routing-cells-node-selectors`; what the cod
   dimension and obey the same per-class field rules (`llmroute.ValidateLaunchRow`). The snapshot and its provenance keys
   (`overrides.<selector>.<field>`) keep the selector as the level wrote it; the folded list — §6's
   one list, unchanged on the wire — carries this bot's. A subbot child folds the snapshot its root run
-  froze at launch again, for its own bot id and manifest name, through the same body and screens
-  (`runview.FoldForSubbotChild`, cloud and in-process lanes alike): a cell for the parent's bot does
-  not reach the child, one for the child's does; neither the parent's folded list nor its own launch
-  rows reach it. The snapshot's bot level is the parent's manifest `routing:` block. A launch `*` row shadows node cells only.
+  froze at launch again, for its own bot — its bundle's slug and manifest name, the identity a
+  top-level launch of that bundle carries (`runview.SubbotChildBotIdentity`) — through the same body
+  and screens (`runview.FoldForSubbotChild`, cloud and in-process lanes alike): a cell for the
+  parent's bot does not reach the child, one for the child's does, and the parent's folded list does
+  not reach it. The root run's own launch rows (`store.Run.LaunchModelOverrides`, bot-free) fold on
+  top for every child of the tree, as at the root; the CLI hands a child its launch flags, a CLI
+  resume the run's recorded launch rows under its own flags. The snapshot's bot level is the root
+  run's — the launched bot's — manifest `routing:` block. A child's document records the root's
+  snapshot and launch rows, so a child resumed on its own replays them. A launch `*` row shadows node cells only.
   §5's "may not drop or replace a node's `fallbacks:` routes" narrows: a route cell re-pins an
   authored route's `backend`, `model` and `provider` and keeps the author's gate, triggers, name and
   action (`ModelOverrides.EffectiveFallback`); it never drops a route nor adds one. A route cell's

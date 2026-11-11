@@ -620,11 +620,14 @@ stated here:
   `x`. Among cells reaching one site, the node target's specificity decides first ("a more specific
   selector wins wherever it is written"), then the bot part — no bot part and `*/` < a glob < the
   manifest name < the bot id (`llmroute.BotMatch`) — then the level each cell's provenance names
-  (`llmroute.SourceRank`, run < binding < bot < team < org < platform < env; the launch refuses a
+  (`llmroute.SourceRank`, env < platform < org < team < bot < binding < run; the launch refuses a
   layer list out of that order), the first written breaking a tie (`runview.policyOverrideEntries`).
-  A subbot child's identity is its own: the bot id its run carries (`runview.ResolveBotID` over the
-  child bundle) and its manifest name. It folds the root run's frozen snapshot again for that
-  identity (`runview.FoldForSubbotChild`), so the parent's bot dimension never decides a child's cells.
+  A subbot child's identity is its own, and the same on every lane (`runview.SubbotChildBotIdentity`):
+  the slug of the bundle it compiled from — the directory a catalogue or a snapshot collection files
+  it under, the bot id a top-level launch of that bundle carries — and that bundle's manifest name.
+  It folds the root run's frozen snapshot again for that identity (`runview.FoldForSubbotChild`), so
+  the parent's bot dimension never decides a child's cells; the root's own launch rows, bot-free,
+  fold on top for every child of the tree.
 - **A launch's own rows** (the API body's `model_overrides`, the CLI's `--model`/`--backend`/
   `--effort-for`) carry no bot dimension and obey the same per-class field rules
   (`llmroute.ValidateLaunchRow`): a `<bot>/` prefix, an `effort` on a route or a `backend`/`provider`
@@ -639,7 +642,9 @@ stated here:
   the fold's ordinary reach): at the integration write screen (`runview.ScreenPolicyOverrides`, per
   enabled bot, each judged by its resolved id and manifest name) and once per (bot, selector) per
   process at launch. The integration write screen also warns for a cell whose bot part reaches none
-  of the enabled bots by id or manifest name, naming them. The match counts are NOT recorded in the provenance map: the
+  of the enabled bots by id or manifest name, naming them and the one reach such a cell keeps — a
+  subbot child of an enabled bot that runs as the cell's bot (the screen does not resolve the
+  children). The match counts are NOT recorded in the provenance map: the
   snapshot's `Sources` is a persisted `field → level` map, and a count there is a schema change this
   slice does not make — named follow-up.
 - **One reading of a pinned route or supervisor**, `ModelOverrides.EffectiveFallback` /

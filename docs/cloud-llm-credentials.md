@@ -1147,12 +1147,21 @@ for another bot drops, one for this bot folds as its bare target; on one
 target the more specific bot part wins (no bot part and `*/` < a glob < the
 manifest name < the bot id), then the nearer level, read from the cell's
 provenance (`llmroute.SourceRank`). A subbot child folds its root run's
-frozen snapshot again for its own bot (`runview.FoldForSubbotChild`, the same
-body and screens, on the cloud runner and in-process alike): a cell for the
-parent's bot does not reach the child, one for the child's does, and neither
-the parent's folded rows nor its launch rows travel
-(`TestSubbotChildFoldsTheRoutingPolicyForItsOwnBot`,
-`TestSubbotChildDoesNotInheritTheParentsLaunchRows`). The residual the fold's own comment names: a policy cell on a MORE
+frozen snapshot again for its own bot — its bundle's slug and manifest name
+(`runview.SubbotChildBotIdentity`) — through the same body and screens
+(`runview.FoldForSubbotChild`, on the cloud runner and in-process alike): a
+cell for the parent's bot does not reach the child, one for the child's
+does, the parent's folded rows never travel, and the root's own launch rows
+(`store.Run.LaunchModelOverrides`, the raw rows before any cell) fold on top,
+bot-free, so a `team_gateway` launch's `*` row keeps the child on the
+gateway (`TestSubbotChildFoldsTheRoutingPolicyForItsOwnBot`,
+`TestSubbotChildFoldsTheRootRunsLaunchRows`,
+`TestSubbotChildUnderATeamGatewayLaunchRowStaysOnTheGateway`). The walk reads
+no subbot child's site: a cell that moves only a child's node onto the
+gateway seals the team's gateway key when a route the walk reads uses it, or
+on a runner pool; elsewhere that call rides the runner's environment
+gateway, and the runner warns naming the pinned sites
+(`TestSubbotChildGatewayPinWithoutASealedGatewayKeyIsWarned`). The residual the fold's own comment names: a policy cell on a MORE
 SPECIFIC selector than any launch row pinning the same field still wins that
 field on specificity inside the folded list — carrying the layer across the
 wire would take ranks on the wire twins — so a launcher states a field-wide

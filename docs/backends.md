@@ -1611,7 +1611,9 @@ gateway rule (`GatewayCrossingRefusal`): a gateway route on a literal
 non-claw backend (the node's own `backend: claude_code` included), a vendor
 hint beside a gateway model, the gateway hint beside a model that is not a
 gateway route. When a cell or a launch row wrote one of the fields that
-refusal reads, the launch refuses it, naming each field and where it came from; the
+refusal reads, the launch refuses it, naming each field and where it came from — a
+launch row by its selector, a cell by the selector its level wrote (bot part
+included) and that level (`written at level "team"`); the
 integration's write screen warns instead. A field a slot dial decides is
 the runner's: the launch reads the dial's default and warns. A crossing the
 bot writes alone stays C186's and dispatch's. The cell that moves such a node onto the gateway is
@@ -1626,8 +1628,11 @@ decides per selector and field
 ([ADR-129](adr/129-per-integration-typed-routing-overrides.md)): among the
 cells that reach one site, the node target's specificity decides first, then
 the bot part (below), then the level — a bot's own `routing:` cell or an
-integration's wins over the team's on the same selector — and the launch's
-own model overrides win over every cell.
+integration's wins over the team's on the same selector. A launch's own row
+wins a cell on the same selector, and a launch `*` row overrides its fields
+in every node cell; a cell on a more specific node selector than a launch
+row other than `*` still wins the fields both pin (a `reviewer_claude` cell
+beats a `reviewer_*` launch row).
 
 A cell reaches more than a node's own route
 ([ADR-132](adr/132-a-run-reads-no-environment.md) §2, D21):
@@ -1651,13 +1656,26 @@ selector := [ <bot> "/" ] <target>
   drops, a cell for this bot folds as its bare target. On one target the
   more specific bot part wins — no bot part and `*/` < a glob < the manifest
   name < the bot id — and at the same bot part the nearer level's cell
-  (run < integration, schedule or trigger < the bot's manifest < team < org
-  < platform), the first written breaking a tie. A subbot child is a run of
-  its own bot: it folds the snapshot its root run froze at launch again, for
-  its own bot id and manifest name, so a cell for the parent's bot does not
-  reach it and a cell for the child's does; the parent's folded rows and its
-  launch rows never reach a child. The snapshot's bot level is the launched
-  bot's manifest `routing:` block — a child's own manifest block is not read.
+  (platform < org < team < the bot's manifest < integration, schedule or
+  trigger < run), the first written breaking a tie. A subbot child is a run
+  of its own bot, the bot a top-level launch of its bundle would be: its
+  slug — the bundle's directory, the name a catalogue or a snapshot
+  collection files it under — and its manifest name, on every lane. It folds
+  the snapshot its root run froze at launch again for that bot, so a cell for
+  the parent's bot does not reach it and a cell for the child's does; the
+  root run's own launch rows fold on top, bot-free, for every child of the
+  tree as at the root (an `act` row reaches the child's `act`). The parent's
+  folded rows never reach a child. The snapshot's bot level is the root (the
+  launched) bot's manifest `routing:` block — a child's own manifest block is
+  not read. A child's document records the root's snapshot and launch rows,
+  so a child resumed on its own replays the root's providers allowlist and
+  its own children fold what the root froze. The launch's credential walk
+  reads no subbot child's site: a cell that moves a child's node onto the
+  gateway is honoured at the child's dispatch, but seals the team's gateway
+  key only when a route the walk reads uses it too, or on a runner pool —
+  elsewhere the child's gateway call rides the runner's environment gateway,
+  and the cloud runner warns on the parent's run log, naming the pinned
+  sites. Teaching the walk a child's sites is a follow-up.
 - `<node id>#<route>` names an authored `fallbacks:` route by the key the
   walk records it under: its name (`reviewer_claude#glm`), or its index when
   the author named none (`converge#0`). It pins `backend`, `model` and
@@ -1682,8 +1700,8 @@ selector := [ <bot> "/" ] <target>
   `<tool>__recover`, no route, no supervisor — is warned, at the
   integration's write screen and once per name at launch. The integration's
   write screen also warns for a cell whose bot part reaches none of its
-  enabled bots by id or manifest name, naming them: no launch of that
-  integration folds it.
+  enabled bots by id or manifest name, naming them: no enabled bot's own
+  launch folds it, only a subbot child of one that runs as that bot.
 
 Moving every site of the shipped Revi pair onto a team's gateway is then,
 on the forge integration (or the team's policy):
