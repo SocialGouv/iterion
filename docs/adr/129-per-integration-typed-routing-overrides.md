@@ -731,8 +731,12 @@ shape. All three are closed in `feat/routing-cells-node-selectors`; what the cod
   authored `fallbacks:` route, by the site key the walk records it under — and `supervisor:<name>`,
   each behind an optional bot dimension `<bot>/` that is REQUIRED on those two forms
   (`llmroute.ParseSelector`, `validateOverride`). The bot dimension resolves at the one launch fold
-  (`runview.policyOverrideEntries`, keyed on `LaunchSpec.BotID`): a cell for another bot drops, one
-  for this bot folds as its bare target after the unscoped cells. The snapshot and its provenance keys
+  (`runview.policyOverrideEntries`, keyed on `LaunchSpec.BotID` and `LaunchSpec.BotManifestName`): a
+  cell for another bot drops, one for this bot folds as its bare target. On one target the more
+  specific bot part wins — no bot part and `*/` < a glob < the manifest name < the bot id — then the
+  level the cell's provenance names (`llmroute.SourceRank`; `resolveRunLLMRoutePolicy` refuses a
+  layer list out of that order), the first written breaking a tie. A launch's own rows carry no bot
+  dimension and obey the same per-class field rules (`llmroute.ValidateLaunchRow`). The snapshot and its provenance keys
   (`overrides.<selector>.<field>`) keep the selector as the level wrote it; the folded list — §6's
   one list, unchanged on the wire — carries this bot's. A launch `*` row shadows node cells only.
 - **The walk reads what dispatch reads.** §4's walk read a node's own `provider:` chain through

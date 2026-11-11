@@ -608,20 +608,35 @@ D21 shipped in `feat/routing-cells-node-selectors`, with ADR-131 §8's `supervis
 (`llmroute.ParseSelector`). Where §2 left a choice open, the option it leans to was taken and is
 stated here:
 
-- **The bot dimension** is the bot's launch identity (`LaunchSpec.BotID`, the manifest name the
-  catalogue launches under — §7's `rgaa-audit/…`), matched exactly or as a `path.Match` glob. It is
-  REQUIRED on a route-scoped and on a supervisor cell (§2's guard; supervisor names collide across
-  bots the same way) and OPTIONAL on a node cell, whose stored records predate it. `*/…` is the
-  greppable spelling of "every bot". Among cells reaching one node, the node target's specificity
-  decides first and the bot-scoped cell wins the tie — "a more specific selector wins wherever it is
-  written".
+- **The bot dimension** reaches the bot by its launch identity (`LaunchSpec.BotID`: the name a
+  catalogue bot launches under — §7's `rgaa-audit/…` — or a stored bot's slug) OR by the manifest
+  name of the bundle the launch serves (`LaunchSpec.BotManifestName`, which a team fork keeps under
+  its own slug: `review-pr/…` reaches `review-pr-pool`), matched exactly or as a `path.Match` glob
+  over either (`llmroute.Selector.MatchBot`; operator decision of 2026-11-11). It is REQUIRED on a
+  route-scoped and on a supervisor cell (§2's guard; supervisor names collide across bots the same
+  way) and OPTIONAL on a node cell, whose stored records predate it. `*/…` is the greppable spelling
+  of "every bot": `*/x` and `x` are one selector, both reaching a launch that names no bot. A stored
+  `*/x` was, before this disposition, a node glob no node id matched; it now reaches every bot's
+  `x`. Among cells reaching one site, the node target's specificity decides first ("a more specific
+  selector wins wherever it is written"), then the bot part — no bot part and `*/` < a glob < the
+  manifest name < the bot id (`llmroute.BotMatch`) — then the level each cell's provenance names
+  (`llmroute.SourceRank`, run < binding < bot < team < org < platform < env; the launch refuses a
+  layer list out of that order), the first written breaking a tie (`runview.policyOverrideEntries`).
+- **A launch's own rows** (the API body's `model_overrides`, the CLI's `--model`/`--backend`/
+  `--effort-for`) carry no bot dimension and obey the same per-class field rules
+  (`llmroute.ValidateLaunchRow`): a `<bot>/` prefix, an `effort` on a route or a `backend`/`provider`
+  on a supervisor is refused at admission, at the CLI flag and at the launch fold, never on a
+  resume's replay of persisted rows.
 - **The route-field guard** is enforced as a refusal of `effort` on a route-scoped cell (a route runs
   at its node's effort, so the pin would be a silent no-op), which implies §2's "at least one route
   field". A supervisor cell pins `model` only.
-- **The zero-match warning** fires for a cell that names the run's bot BY NAME and whose target
-  matches nothing in it (a glob or an unscoped cell matching nothing is the fold's ordinary reach): at
-  the integration write screen (`runview.ScreenPolicyOverrides`, per enabled bot) and once per
-  (bot, selector) per process at launch. The match counts are NOT recorded in the provenance map: the
+- **The zero-match warning** fires for a cell that names the run's bot BY ID OR MANIFEST NAME and
+  whose target matches nothing in it — a target is an LLM node, a tool's rung-4 recovery agent
+  `<tool>__recover`, an authored route or a supervisor (a glob or an unscoped cell matching nothing is
+  the fold's ordinary reach): at the integration write screen (`runview.ScreenPolicyOverrides`, per
+  enabled bot, each judged by its resolved id and manifest name) and once per (bot, selector) per
+  process at launch. The integration write screen also warns for a cell whose bot part reaches none
+  of the enabled bots by id or manifest name, naming them. The match counts are NOT recorded in the provenance map: the
   snapshot's `Sources` is a persisted `field → level` map, and a count there is a schema change this
   slice does not make — named follow-up.
 - **One reading of a pinned route or supervisor**, `ModelOverrides.EffectiveFallback` /

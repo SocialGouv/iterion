@@ -1047,7 +1047,9 @@ to that same policy:
   id, an id glob, a kind keyword (`agent`, `judge`, `router`) or `*` — or,
   since ADR-132 D21, a node's `fallbacks:` route (`<node>#<route>`) or a
   supervisor (`supervisor:<name>`), each optionally prefixed by the bot it is
-  for (`review-pr/…`; required on the route and supervisor forms) — the
+  for — its bot id or manifest name, or a glob over either (`review-pr/…`;
+  required on the route and supervisor forms; `*/` reaches every launch, one
+  naming no bot included; a launch's own model_overrides carry no prefix) — the
   grammar and its guards in
   [backends.md](backends.md#the-openai-compatible-gateway-openai_compatible). Values
   are **literals**: `llmroute.Validate` refuses a cell containing `{{` or
@@ -1133,8 +1135,11 @@ SAME selector (the launch's rows sit after the policy's, and the later rule
 wins a tie), and a `*` row, which shadows every policy NODE cell on that
 field outright (a route or supervisor cell is reached by no node row, so no
 `*` row shadows it). The bot dimension resolves in the same fold, keyed on
-the launch's bot: a cell for another bot drops, one for this bot folds as
-its bare target after the unscoped cells. The residual the fold's own comment names: a policy cell on a MORE
+the launch's bot id and the manifest name of the bundle it serves: a cell
+for another bot drops, one for this bot folds as its bare target; on one
+target the more specific bot part wins (no bot part and `*/` < a glob < the
+manifest name < the bot id), then the nearer level, read from the cell's
+provenance (`llmroute.SourceRank`). The residual the fold's own comment names: a policy cell on a MORE
 SPECIFIC selector than any launch row pinning the same field still wins that
 field on specificity inside the folded list — carrying the layer across the
 wire would take ranks on the wire twins — so a launcher states a field-wide

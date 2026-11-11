@@ -181,8 +181,8 @@ Launch-time graph overrides:
 
 | Flag | Meaning |
 |---|---|
-| `--model selector=model` | Override by node id, id glob, or kind (`agent`/`judge`); repeatable. A bare model targets all LLM nodes. |
-| `--backend selector=backend` | Same selector rules for a supported backend; repeatable. `claw`/`claude_code` are in the default auto-selection order; Codex, `pi`, Kimi and Grok are explicit opt-ins. |
+| `--model selector=model` | Override by node id, id glob, or kind (`agent`/`judge`), a node's `fallbacks:` route (`<node>#<route>`) or a supervisor (`supervisor:<name>`); repeatable. A bare model targets all LLM nodes. A `<bot>/` prefix is refused: a flag reaches its own run. |
+| `--backend selector=backend` | Same selector rules for a supported backend; repeatable. A `supervisor:` selector is refused (a supervisor names a model only), as is `--effort-for` on a `<node>#<route>` (a route runs at its node's effort). `claw`/`claude_code` are in the default auto-selection order; Codex, `pi`, Kimi and Grok are explicit opt-ins. |
 | `--fallback <backend>:<model>` | Run-level fallback route taken when an agent node's primary fails, e.g. `claw:openai/gpt-5.5`. Applies only to agent nodes that declare no `fallbacks:` of their own, never to judges, and uses the default trigger set (`usage_window`, `unavailable`) — author a `fallbacks:` block for anything finer. See [ADR-087](adr/087-cross-backend-model-fallback-chain.md). |
 | `--max-cost-usd`, `--max-duration`, `--max-tokens`, `--max-iterations`, `--max-parallel-branches` | Override non-zero workflow budget fields. |
 | `--loop-budget-guard on\|off` | Decline a loop back-edge the remaining budget cannot fund, so the run leaves through its own exit path with the work it banked instead of dying mid-iteration. Empty inherits the loop clause `guard:` then the workflow `loop_budget_guard:` then `ITERION_LOOP_BUDGET_GUARD`; default on. |

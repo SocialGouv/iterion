@@ -748,7 +748,10 @@ that drives it, and how hard it is asked to think.
 - **HTTP** — `POST /api/runs` accepts `model_overrides: [{selector, model,
   backend, effort}]`. An `effort` outside
   `none|low|medium|high|xhigh|max|ultracode` is a 400 at admission, since the value
-  reaches the provider verbatim.
+  reaches the provider verbatim. The selector carries no bot part (a
+  `<bot>/` prefix is a 400): a `<node>#<route>` row pins backend, model and
+  provider, a `supervisor:<name>` row a model only, and `effort` on a route
+  or `backend`/`provider` on a supervisor is a 400.
 
 The **effort** override outranks both the node's static `reasoning_effort:`
 and a dynamic `_reasoning_effort` edge mapping, matching how model and backend
@@ -1606,10 +1609,11 @@ decided primaries, and the credential walk attributes it to the team's key
 (sealed, `team_gateway` stamped). A cell that leaves the provider to a
 node's dial leaves the route to the environment that expands it. The fold
 decides per selector and field
-([ADR-129](adr/129-per-integration-typed-routing-overrides.md)): a bot's own
-`routing:` cell or an integration's on the same selector wins over the
-team's, a more specific selector wins wherever it is written, and the
-launch's own model overrides win over every cell.
+([ADR-129](adr/129-per-integration-typed-routing-overrides.md)): among the
+cells that reach one site, the node target's specificity decides first, then
+the bot part (below), then the level — a bot's own `routing:` cell or an
+integration's wins over the team's on the same selector — and the launch's
+own model overrides win over every cell.
 
 A cell reaches more than a node's own route
 ([ADR-132](adr/132-a-run-reads-no-environment.md) §2, D21):
@@ -1621,13 +1625,20 @@ selector := [ <bot> "/" ] <target>
           | "supervisor:" <name>        one declared supervisor
 ```
 
-- `<bot>` is the bot the cell is for — its manifest name (`review-pr`), or a
-  glob over it. A node cell may omit it (it then reaches the same-named node
-  of every bot the record reaches); a route-scoped or supervisor cell MUST
-  carry it, since node ids and supervisor names collide across bots —
-  `*/…` spells "every bot" on purpose. The launch resolves it: a cell for
-  another bot drops, a cell for this bot folds as its bare target, after
-  every unscoped cell, so on the same node target the bot-scoped cell wins.
+- `<bot>` is the bot the cell is for — its bot id (a catalogue bot's name,
+  `review-pr`; a team or platform bot's slug, `review-pr-pool`), the
+  manifest name of the bundle the launch serves (`review-pr`, which a team
+  fork keeps), or a glob over either. The match is exact: case and `-`/`_`
+  count. A node cell may omit it (it then reaches the same-named node of
+  every bot the record reaches); a route-scoped or supervisor cell MUST carry
+  it, since node ids and supervisor names collide across bots — `*/…` spells
+  "every bot" on purpose: `*/x` and `x` are one selector, and both reach a
+  launch that names no bot. The launch resolves it: a cell for another bot
+  drops, a cell for this bot folds as its bare target. On one target the
+  more specific bot part wins — no bot part and `*/` < a glob < the manifest
+  name < the bot id — and at the same bot part the nearer level's cell
+  (run < integration, schedule or trigger < the bot's manifest < team < org
+  < platform), the first written breaking a tie.
 - `<node id>#<route>` names an authored `fallbacks:` route by the key the
   walk records it under: its name (`reviewer_claude#glm`), or its index when
   the author named none (`converge#0`). It pins `backend`, `model` and
@@ -1638,9 +1649,16 @@ selector := [ <bot> "/" ] <target>
   supervisor declares nothing else. Note that a `team_gateway` run starts no
   supervisor at all (`runview.FundedSupervisorSpecs`), pinned or not.
 - A launch's `*` row shadows node cells only, never a route or supervisor
-  cell. A cell naming its bot by name whose target matches nothing in that
-  bot is warned — at the integration's write screen and once per name at
-  launch.
+  cell. A launch's own rows carry no bot part: a `<bot>/` prefix is refused,
+  and so is a field the row's class does not carry (`effort` on a route,
+  anything but `model` on a supervisor).
+- A cell naming its bot by id or manifest name whose target matches nothing
+  in that bot — no LLM node, no tool's rung-4 recovery agent
+  `<tool>__recover`, no route, no supervisor — is warned, at the
+  integration's write screen and once per name at launch. The integration's
+  write screen also warns for a cell whose bot part reaches none of its
+  enabled bots by id or manifest name, naming them: no launch of that
+  integration folds it.
 
 Moving every site of the shipped Revi pair onto a team's gateway is then,
 on the forge integration (or the team's policy):
