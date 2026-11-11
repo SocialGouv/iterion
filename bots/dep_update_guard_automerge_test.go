@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -82,6 +83,18 @@ func TestDepUpdateGuardArmAutomerge(t *testing.T) {
 		return pr
 	}
 
+	// rollup is what the stub answers to the check-rollup query: the contexts
+	// on the head commit (nil answers a null rollup, which reads as
+	// unreadable) and the commit they are about ("" = the served head).
+	var rollup struct {
+		nodes []map[string]any
+		oid   string
+	}
+	withRollup := func(t *testing.T, oid string, nodes ...map[string]any) {
+		t.Helper()
+		rollup.nodes, rollup.oid = nodes, oid
+		t.Cleanup(func() { rollup.nodes, rollup.oid = nil, "" })
+	}
 	// runWith drives the node against a stub forge holding `pr`. A non-empty
 	// armErr makes the auto-merge mutation fail with that message, and `after`
 	// (when set) is the state served on any read that follows — the flip a
@@ -121,6 +134,19 @@ func TestDepUpdateGuardArmAutomerge(t *testing.T) {
 				return
 			}
 			switch {
+			case strings.Contains(body.Query, "statusCheckRollup"):
+				oid := rollup.oid
+				if oid == "" {
+					oid, _ = state["headRefOid"].(string)
+				}
+				var sc any
+				if rollup.nodes != nil {
+					sc = map[string]any{"contexts": map[string]any{
+						"pageInfo": map[string]any{"hasNextPage": false}, "nodes": rollup.nodes}}
+				}
+				_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"repository": map[string]any{
+					"pullRequest": map[string]any{"commits": map[string]any{"nodes": []any{
+						map[string]any{"commit": map[string]any{"oid": oid, "statusCheckRollup": sc}}}}}}}})
 			// Ordered before the arming case deliberately, even though the two
 			// names do not collide as substrings ("disable" carries no
 			// "enable"): the reader should not have to verify that to know
@@ -224,10 +250,21 @@ func TestDepUpdateGuardArmAutomerge(t *testing.T) {
 						t.Errorf("PR read does not request arming ownership (%s): %s", field, body.Query)
 					}
 				}
+				// A state carrying __next is served once, then replaced by
+				// it: the pull request settling between two reads.
+				served := map[string]any{}
+				for k, v := range state {
+					if k != "__next" {
+						served[k] = v
+					}
+				}
+				if nx, ok := state["__next"].(map[string]any); ok {
+					state = nx
+				}
 				_ = json.NewEncoder(w).Encode(map[string]any{
 					"data": map[string]any{
 						"viewer":     map[string]any{"login": botLogin},
-						"repository": map[string]any{"pullRequest": state},
+						"repository": map[string]any{"pullRequest": served},
 					},
 				})
 			}
@@ -238,17 +275,19 @@ func TestDepUpdateGuardArmAutomerge(t *testing.T) {
 			"{{vars.arm_automerge}}": "True",
 			// Legacy node input: missing refs render as null (the Python shim
 			// maps it to None). W1-W3 override this with the new-launch default.
-			"{{vars.respect_human_arming}}": "null",
-			"{{vars.automerge_method}}":     `"squash"`,
-			"{{input.pr_url}}":              `"https://github.com/acme/widgets/pull/7"`,
-			"{{input.verdict}}":             `"committed"`,
-			"{{input.gate_posted}}":         "True",
-			"{{input.gate_state}}":          `"success"`,
-			"{{input.gate_sha}}":            `"d34db33f"`,
-			"{{input.audited_sha}}":         `"d34db33f"`,
-			"{{input.committed_sha}}":       `""`,
-			"{{vars.gate_enabled}}":         "True",
-			"{{secrets.forge_token.path}}":  `"ghs_test"`,
+			"{{vars.respect_human_arming}}":  "null",
+			"{{vars.automerge_method}}":      `"squash"`,
+			"{{input.pr_url}}":               `"https://github.com/acme/widgets/pull/7"`,
+			"{{input.verdict}}":              `"committed"`,
+			"{{input.gate_posted}}":          "True",
+			"{{input.gate_state}}":           `"success"`,
+			"{{input.gate_sha}}":             `"d34db33f"`,
+			"{{input.audited_sha}}":          `"d34db33f"`,
+			"{{input.committed_sha}}":        `""`,
+			"{{vars.gate_enabled}}":          "True",
+			"{{secrets.forge_token.path}}":   `"ghs_test"`,
+			"{{vars.automerge_on_unstable}}": `"merge"`,
+			"{{vars.automerge_settle_s}}":    "600",
 		}
 		for k, v := range subs {
 			base[k] = v
@@ -992,6 +1031,108 @@ func TestDepUpdateGuardArmAutomerge(t *testing.T) {
 		})
 	}
 
+	// UNSTABLE: mergeable, every REQUIRED check passing, a non-required one
+	// failing or still running. GitHub refuses to arm it as it refuses CLEAN —
+	// nothing required is left to wait for — and the bot used to leave it
+	// there, green and unarmed, until a human acted.
+	const unstableRefusal = "Pull request Pull request is in unstable status"
+	unstablePR := withState(map[string]any{"mergeStateStatus": "UNSTABLE"})
+	optionalRed := map[string]any{"__typename": "CheckRun", "name": "cloud-e2e", "status": "COMPLETED", "conclusion": "FAILURE", "isRequired": false}
+	requiredGreen := map[string]any{"__typename": "StatusContext", "context": "test", "state": "SUCCESS", "isRequired": true}
+	mergedOn := func(calls []call) []any {
+		var oids []any
+		for _, c := range calls {
+			if strings.Contains(c.query, "mergePullRequest") {
+				oids = append(oids, c.vars["oid"])
+			}
+		}
+		return oids
+	}
+
+	// Mutation: revert to the message-only `"clean status" not in …: raise`
+	// with a CLEAN-only ready() -> no mergePullRequest.
+	t.Run("UNSTABLE, failing context not required: arm refused, merges pinned to the reviewed head", func(t *testing.T) {
+		withRollup(t, "", optionalRed, requiredGreen)
+		res, calls, _ := runWith(t, nil, unstablePR, unstableRefusal, nil)
+		if got := mergedOn(calls); len(got) != 1 || got[0] != "d34db33f" {
+			t.Fatalf("want exactly one merge pinned to the reviewed head d34db33f, got %v (%v)", got, res)
+		}
+		if res["armed"] != true || !strings.Contains(res["reason"].(string), "cloud-e2e") {
+			t.Errorf("want armed, the non-passing context named, got %v", res)
+		}
+	})
+
+	// Mutation: drop the isRequired filter -> it merges past a required check.
+	t.Run("UNSTABLE with a REQUIRED context not passing: merges nothing", func(t *testing.T) {
+		withRollup(t, "", optionalRed, map[string]any{"__typename": "StatusContext", "context": "test", "state": "PENDING", "isRequired": true})
+		res, calls, _ := runWith(t, nil, unstablePR, unstableRefusal, nil)
+		if len(mergedOn(calls)) != 0 || res["armed"] != false {
+			t.Fatalf("merged past a required check: %v", res)
+		}
+		if reason := res["reason"].(string); !strings.Contains(reason, "REQUIRED") || !strings.Contains(reason, "test") {
+			t.Errorf("the refusal must name the required context, got %q", reason)
+		}
+	})
+
+	for _, tc := range []struct {
+		name  string
+		oid   string
+		nodes []map[string]any
+	}{
+		{"a null rollup", "", nil},
+		{"a context whose requiredness is not stated", "", []map[string]any{{"__typename": "CheckRun", "name": "cloud-e2e", "status": "COMPLETED", "conclusion": "FAILURE"}}},
+		// Mutation: drop the rollup's commit-oid check -> it judges the
+		// checks of a head this run never audited.
+		{"a rollup about another commit", "0ther5ha", []map[string]any{optionalRed}},
+	} {
+		t.Run("UNSTABLE, "+tc.name+": merges nothing", func(t *testing.T) {
+			withRollup(t, tc.oid, tc.nodes...)
+			res, calls, _ := runWith(t, nil, unstablePR, unstableRefusal, nil)
+			if len(mergedOn(calls)) != 0 || res["armed"] != false {
+				t.Fatalf("merged on a rollup it could not read whole: %v", res)
+			}
+		})
+	}
+
+	// Mutation: remove the settle loop -> the flip case is refused.
+	t.Run("wait mode: UNSTABLE, then CLEAN on the next read, merges", func(t *testing.T) {
+		withRollup(t, "", optionalRed, requiredGreen)
+		after := withState(map[string]any{"mergeStateStatus": "UNSTABLE", "__next": withState(map[string]any{"mergeStateStatus": "CLEAN"})})
+		res, calls, _ := runWith(t, map[string]string{"{{vars.automerge_on_unstable}}": `"wait"`, "{{vars.automerge_settle_s}}": "1"},
+			blocked, unstableRefusal, after)
+		if got := mergedOn(calls); len(got) != 1 || got[0] != "d34db33f" || res["armed"] != true {
+			t.Fatalf("want the settled pull request merged pinned, got merges %v (%v)", got, res)
+		}
+	})
+
+	t.Run("wait mode: still UNSTABLE past automerge_settle_s refuses, naming the contexts", func(t *testing.T) {
+		withRollup(t, "", optionalRed, requiredGreen)
+		res, calls, _ := runWith(t, map[string]string{"{{vars.automerge_on_unstable}}": `"wait"`, "{{vars.automerge_settle_s}}": "1"},
+			unstablePR, unstableRefusal, nil)
+		if len(mergedOn(calls)) != 0 || res["armed"] != false {
+			t.Fatalf("merged a pull request that never settled: %v", res)
+		}
+		if reason := res["reason"].(string); !strings.Contains(reason, "cloud-e2e") || !strings.Contains(reason, "automerge_settle_s") {
+			t.Errorf("the refusal must name the contexts and the bound, got %q", reason)
+		}
+	})
+
+	// A node input from before the var renders null: the historical refusal.
+	t.Run("an unset UNSTABLE policy merges nothing", func(t *testing.T) {
+		withRollup(t, "", optionalRed, requiredGreen)
+		res, calls, _ := runWith(t, map[string]string{"{{vars.automerge_on_unstable}}": "null"}, unstablePR, unstableRefusal, nil)
+		if len(mergedOn(calls)) != 0 || res["armed"] != false {
+			t.Fatalf("an unset policy merged: %v", res)
+		}
+	})
+
+	t.Run("the default UNSTABLE policy is merge", func(t *testing.T) {
+		v := compilePlanPhaseBot(t, "dep-update-guard").Vars["automerge_on_unstable"]
+		if v == nil || !v.HasDefault || v.Default != "merge" || !slices.Equal(v.EnumValues, []string{"merge", "wait"}) {
+			t.Fatalf("automerge_on_unstable must be the enum merge|wait defaulting to merge, got %+v", v)
+		}
+	})
+
 	// Every green verdict arms, pinned; `carried` is the identical change's
 	// audit carried onto this head. Mutation: remove 'carried' from the green
 	// set -> the carried row refuses.
@@ -1057,6 +1198,13 @@ func assertValidGraphQL(q string) string {
 	}
 	if strings.Count(q, "{") != strings.Count(q, "}") {
 		return "unbalanced braces"
+	}
+	// The API rejects a bare isRequired: it needs the pull request it is
+	// asked about.
+	for _, at := range regexp.MustCompile(`isRequired\b`).FindAllStringIndex(q, -1) {
+		if !regexp.MustCompile(`^isRequired\(\s*pullRequest(Number|Id):\s*\$[A-Za-z_]`).MatchString(q[at[0]:]) {
+			return "isRequired without its pullRequestNumber/pullRequestId argument"
+		}
 	}
 	return ""
 }

@@ -118,6 +118,17 @@ vars:
   respect_human_arming: bool = true
   ## Merge method asked for when arming. Must be one the repo allows.
   automerge_method: string [enum: "squash", "merge", "rebase"] = "squash"
+  ## What to do when GitHub refuses to arm because the pull request is
+  ## UNSTABLE — mergeable, every REQUIRED check passing, a non-required one
+  ## failing or still running. "merge" merges the audited commit, pinned to
+  ## it, which is what an arming placed earlier would have done (auto-merge
+  ## waits on required checks only). "wait" re-reads for at most
+  ## automerge_settle_s and merges only once the forge reports CLEAN. A
+  ## required check that is not passing, or a rollup that cannot be read
+  ## whole, merges nothing under either policy.
+  automerge_on_unstable: string [enum: "merge", "wait"] = "merge"
+  ## The bound on the "wait" policy above, in seconds.
+  automerge_settle_s: int = 600
   ## GATE CONTINUITY. A synchronize launch first asks whether the head
   ## carries the SAME change an earlier green verdict was about (identity
   ## contract v1: the verbatim patch-id of merge-base..head, folded with
@@ -2688,12 +2699,17 @@ print(json.dumps({'degraded': degraded or gate_degraded, 'banner': banner}))
 ##     queue repo that a merge-now-first ordering could never have landed).
 ##   - the base has a merge queue and arming was refused → enqueuePullRequest
 ##     pinned to the exact head we reviewed (expectedHeadOid).
-##   - no queue and the forge refused to arm because the PR is CLEAN
-##     ("Pull request is in clean status" — mergeable, every commit status
-##     passing, nothing left to wait for) → mergePullRequest pinned to the
-##     exact head we reviewed. Since the audit takes longer than CI, this is
-##     the ordinary no-queue case: without it the bot would arm nothing and
-##     merge nothing, ever.
+##   - no queue and arming was refused → the pull request is READ AGAIN and
+##     its state, never the refusal's wording, decides. CLEAN (mergeable,
+##     every commit status passing, nothing left to wait for) →
+##     mergePullRequest pinned to the exact head we reviewed. Since the audit
+##     takes longer than CI, this is the ordinary no-queue case: without it
+##     the bot would arm nothing and merge nothing, ever. UNSTABLE (every
+##     REQUIRED check passing, another one failing or running) → the check
+##     rollup is read with each context's isRequired: a required one not
+##     passing, or a rollup not read whole, merges nothing; otherwise
+##     `automerge_on_unstable` decides — "merge" pinned now, or "wait" for
+##     CLEAN within `automerge_settle_s`. Anything else is the refusal.
 ## There is deliberately no path to PUT /pulls/{n}/merge: that merges
 ## whatever the state, bypassing every pending check, which is precisely what
 ## this bot exists to prevent. expectedHeadOid is the equivalent guarantee on
@@ -2701,7 +2717,7 @@ print(json.dumps({'degraded': degraded or gate_degraded, 'banner': banner}))
 ## enqueue).
 tool arm_automerge:
   script: |
-    import json, os, re, urllib.request, urllib.error
+    import json, os, re, time, urllib.request, urllib.error
     null = None; true = True; false = False  # JSON-literal shim for missing refs
     enabled = {{vars.arm_automerge}}
     respect_human_arming = {{vars.respect_human_arming}}
@@ -2715,6 +2731,8 @@ tool arm_automerge:
     committed_sha = {{input.committed_sha}}
     gate_on = {{vars.gate_enabled}}
     token_ref = {{secrets.forge_token.path}}
+    on_unstable = {{vars.automerge_on_unstable}}
+    settle_s = {{vars.automerge_settle_s}}
 
     def s(x):
         return (x or "").strip() if isinstance(x, str) else ("" if x is None else str(x).strip())
@@ -2884,6 +2902,16 @@ tool arm_automerge:
     enqueue_mut = ("mutation(@id: ID!, @oid: GitObjectID!) { "
                    "enqueuePullRequest(input: { pullRequestId: @id, expectedHeadOid: @oid }) "
                    "{ clientMutationId } }").replace("@", at)
+    # What UNSTABLE is made of: every context on the head commit, and whether
+    # the base's rules REQUIRE it for this pull request. isRequired takes the
+    # pull request as an argument; the API rejects it bare.
+    rollup_q = ("query(@owner: String!, @name: String!, @number: Int!) { "
+                "repository(owner: @owner, name: @name) { "
+                "pullRequest(number: @number) { commits(last: 1) { nodes { commit { oid "
+                "statusCheckRollup { contexts(first: 100) { pageInfo { hasNextPage } nodes { __typename "
+                "... on StatusContext { context state isRequired(pullRequestNumber: @number) } "
+                "... on CheckRun { name status conclusion isRequired(pullRequestNumber: @number) } "
+                "} } } } } } } } }").replace("@", at)
 
     bot_login = ""
 
@@ -2986,6 +3014,100 @@ tool arm_automerge:
     def ready(pr):
         return s(pr.get("mergeStateStatus")).upper() == "CLEAN" and \
                s(pr.get("mergeable")).upper() == "MERGEABLE"
+
+    # UNSTABLE: mergeable, every REQUIRED check passing, some other check
+    # failing or still running. GitHub refuses to arm it just as it refuses
+    # CLEAN — nothing required is left to wait for.
+    def unstable(pr):
+        return s(pr.get("mergeStateStatus")).upper() == "UNSTABLE" and \
+               s(pr.get("mergeable")).upper() == "MERGEABLE"
+
+    def named(contexts):
+        more = len(contexts) - 8
+        return ", ".join(contexts[:8]) + (" and " + str(more) + " more" if more > 0 else "")
+
+    def not_passing(pin):
+        # (required, optional): the names of the contexts not passing on the
+        # vouched head, split by whether the base requires them. None when
+        # the rollup is about another commit, runs past one page, or carries a
+        # context whose kind or requiredness it does not state: what cannot
+        # be read whole merges nothing.
+        data = graphql(rollup_q, {"owner": owner, "name": repo, "number": num})
+        nodes = ((((data.get("repository") or {}).get("pullRequest") or {}).get("commits") or {}).get("nodes")) or []
+        if len(nodes) != 1 or not isinstance(nodes[0], dict):
+            return None
+        commit = nodes[0].get("commit") or {}
+        if not same_commit(s(commit.get("oid")), pin):
+            return None
+        contexts = (commit.get("statusCheckRollup") or {}).get("contexts") or {}
+        if (contexts.get("pageInfo") or {}).get("hasNextPage") or not isinstance(contexts.get("nodes"), list):
+            return None
+        required, optional = [], []
+        for c in contexts["nodes"]:
+            if not isinstance(c, dict):
+                return None
+            kind = s(c.get("__typename"))
+            if kind == "StatusContext":
+                name, ok = s(c.get("context")), s(c.get("state")).upper() == "SUCCESS"
+            elif kind == "CheckRun":
+                name = s(c.get("name"))
+                ok = s(c.get("status")).upper() == "COMPLETED" and \
+                    s(c.get("conclusion")).upper() in ("SUCCESS", "NEUTRAL", "SKIPPED")
+            else:
+                return None
+            if ok:
+                continue
+            if c.get("isRequired") is True:
+                required.append(name)
+            elif c.get("isRequired") is False:
+                optional.append(name)
+            else:
+                return None
+        return sorted(required), sorted(optional)
+
+    def settle_unstable(pr, why):
+        # A refusal on an UNSTABLE pull request. A required context that is
+        # not passing, or a rollup that cannot be read whole, merges nothing.
+        # Otherwise the policy decides: "merge" merges the vouched head now —
+        # what an arming placed earlier would have done, auto-merge waiting
+        # on required checks only; "wait" re-reads until the forge reports
+        # CLEAN, for at most automerge_settle_s.
+        refused = "auto-merge request refused: " + why + " | "
+        pin = vouched_sha(pr, "merge")
+        split = not_passing(pin)
+        if split is None:
+            out(False, refused + "the pull request is UNSTABLE and the check rollup on " + pin[:12] +
+                       " could not be read whole - merging nothing")
+        if split[0]:
+            out(False, refused + "a REQUIRED check is not passing on " + pin[:12] + ": " + named(split[0]))
+        policy = s(on_unstable).lower()
+        if policy == "merge":
+            merge_now(pr, "merged: GitHub refused to arm an UNSTABLE pull request whose required checks all "
+                          "pass (automerge_on_unstable=merge); not passing, none of them required: " + named(split[1]))
+        if policy != "wait":
+            out(False, refused + "automerge_on_unstable=" + (policy or "(unset)") + " is neither merge nor wait")
+        try:
+            limit = max(0.0, float(settle_s or 0))
+        except (TypeError, ValueError):
+            limit = 0.0
+        deadline = time.monotonic() + limit
+        while True:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                out(False, refused + "still UNSTABLE after automerge_settle_s=" + (s(settle_s) or "0") +
+                           "s (automerge_on_unstable=wait); not passing: " + named(split[1]))
+            time.sleep(min(30.0, left))
+            pr = read_pr()
+            pin = vouched_sha(pr, "merge")
+            if ready(pr):
+                merge_now(pr, "merged: the pull request settled CLEAN within automerge_settle_s")
+            if not unstable(pr):
+                out(False, refused + "the pull request left UNSTABLE for " +
+                           (s(pr.get("mergeStateStatus")) or "an unknown state") + " while settling")
+            split = not_passing(pin)
+            if split is None or split[0]:
+                out(False, refused + "a REQUIRED check stopped passing, or the rollup could not be read whole, "
+                           "while settling on " + pin[:12])
 
     def arming_owner(pr):
         return s(((pr.get("autoMergeRequest") or {}).get("enabledBy") or {}).get("login"))
@@ -3113,15 +3235,19 @@ tool arm_automerge:
                     out(True, "already in the merge queue")
                 enqueue_now(pr, "enqueued: the merge queue decides from here "
                                 "(arming was refused: " + str(arm_err)[:120] + ")")
-            # No queue: the one refusal that means "nothing left to wait for"
-            # is the CLEAN state. The state can flip between the read above
-            # and this call, so re-read rather than trusting the first answer.
-            if "clean status" not in str(arm_err).lower():
+            # A transport failure is not a refusal: it reports as one.
+            if isinstance(arm_err, urllib.error.HTTPError):
                 raise
+            # No queue. The refusal is classified by RE-READING the pull
+            # request, never by its message alone: the state can flip between
+            # the read above and this call, and GitHub words the two states
+            # that leave nothing to wait for — CLEAN and UNSTABLE — alike.
             pr = read_pr()
-            if not ready(pr):
-                out(False, "auto-merge request refused: " + str(arm_err))
-            merge_now(pr, "merged: the forge reported every required check already green")
+            if ready(pr):
+                merge_now(pr, "merged: the forge reported every required check already green")
+            if unstable(pr):
+                settle_unstable(pr, str(arm_err))
+            out(False, "auto-merge request refused: " + str(arm_err))
         out(True, "")
     except urllib.error.HTTPError as e:
         detail = ""
