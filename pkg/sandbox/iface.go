@@ -118,6 +118,18 @@ type Run interface {
 	// For container drivers, Command rewrites the invocation to a
 	// `docker exec` / `kubectl exec` form and forwards Cwd/Env via
 	// the runtime-native flags so the inner process sees them.
+	//
+	// ExecOpts.Env is the environment of the process INSIDE the sandbox.
+	// The returned Cmd.Env belongs to the HOST transport process. A driver
+	// may already populate it with inherited client settings and private
+	// transport data. Callers must preserve that environment: pass workload
+	// values through ExecOpts.Env, and append any host-only additions to
+	// cmd.Environ() (or to an already populated cmd.Env). Replacing Cmd.Env
+	// with os.Environ(), a new slice or the workload environment drops the
+	// driver's transport data even when the resulting process still starts.
+	// Command itself starts no process. Callers may attach StdinPipe after
+	// requesting KeepStdinOpen; drivers must not consume that input stream
+	// to prepare another part of the transport.
 	Command(ctx context.Context, cmd []string, opts ExecOpts) *exec.Cmd
 
 	// Exec is a convenience wrapper around [Run.Command] +
