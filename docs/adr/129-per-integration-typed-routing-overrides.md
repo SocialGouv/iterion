@@ -276,6 +276,10 @@ The rest of the validation, with the refusal naming the offending field:
 
 A record carrying a block the fold cannot read refuses the **launch**, naming the level and the
 field — `route_resolve.go:96` already does this for every layer, and the new fields inherit it.
+(Amended 2026-11-11: the launch reads a stored layer with `llmroute.ValidateStored`, the write gate
+without its gateway-model rule — a gateway step or cell model that is not a gateway route is a
+dispatch verdict, not a reading one, and the launch judges it per node on the composed element, so
+one bot's dead step never refuses every launch of the level.)
 
 ### 4. One reading of a routing field, and vars that narrow the gate only by PROVENANCE
 

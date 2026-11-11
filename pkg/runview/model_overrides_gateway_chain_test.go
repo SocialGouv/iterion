@@ -105,3 +105,20 @@ func TestLaunchRefusalNamesTheCellsRemedyForABotHintBesideACellGatewayModel(t *t
 		}
 	})
 }
+
+// A stored cell the write gate refuses for a gateway step on a model that
+// is not a gateway route folds at launch (llmroute.ValidateStored) and is
+// judged per node on the elements dispatch builds: a claw chain sends its
+// head alone, so the dead tail refuses nothing; claude_code walks the chain
+// and builds the tail, which every dispatch refuses — refused, naming the
+// cell; a bot with no such node is not refused for it.
+func TestLaunchJudgesAStoredDeadGatewayStepPerNode(t *testing.T) {
+	cells := []store.RunLLMRouteOverride{{Selector: "work", Provider: "zai,openai_compatible:scaleway/deepseek-v4.1-flash"}}
+	pub, err := launchGatewayBot(t, "gwhint", chainHeadBot, cells, nil)
+	requireAdmitted(t, pub, err)
+	claudeCode := strings.Replace(chainHeadBot, `backend: "claw"`, `backend: "claude_code"`, 1)
+	pub, err = launchGatewayBot(t, "gwhint", claudeCode, cells, nil)
+	requireRefusal(t, pub, err, `agent "work"`, `model "scaleway/deepseek-v4.1-flash" is not a gateway route`, `the routing policy's override cell "work"`)
+	pub, err = launchGatewayBot(t, "gwhint", strings.NewReplacer("agent work:", "agent draft:", "entry: work", "entry: draft", "work -> done", "draft -> done").Replace(chainHeadBot), cells, nil)
+	requireAdmitted(t, pub, err)
+}

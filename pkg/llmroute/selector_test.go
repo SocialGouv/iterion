@@ -237,3 +237,32 @@ func TestValidate_ARouteProviderIsOneHint(t *testing.T) {
 		t.Errorf("control ValidateLaunchRow(dial) = %v, want accepted", err)
 	}
 }
+
+// The gateway-model rule is a write surface's: Validate refuses a gateway
+// step on a model that is not a gateway route, and a gateway hint beside
+// such a cell model, while ValidateStored — the launch's reading of a
+// stored layer — leaves that crossing to the launch's per-node judge and
+// keeps every reading rule.
+func TestValidateStored_LeavesTheGatewayModelRuleToTheLaunch(t *testing.T) {
+	for _, o := range []llmroute.Override{
+		{Selector: "work", Provider: "zai,openai_compatible:scaleway/deepseek-v4.1-flash"},
+		{Selector: "work", Provider: "openai_compatible", Model: "anthropic/claude-opus-5-5"},
+	} {
+		p := llmroute.Policy{Overrides: []llmroute.Override{o}}
+		if err := llmroute.Validate(p); err == nil || !strings.Contains(err.Error(), "the gateway hint serves gateway models only") {
+			t.Errorf("Validate(%+v) = %v, want the write surface's gateway-model refusal", o, err)
+		}
+		if err := llmroute.ValidateStored(p); err != nil {
+			t.Errorf("ValidateStored(%+v) = %v, want the stored cell read", o, err)
+		}
+	}
+	for _, o := range []llmroute.Override{
+		{Selector: "work", Provider: "zai,nosuch"},
+		{Selector: "work"},
+		{Selector: "copilot/reflect#claude", Provider: "zai,anthropic"},
+	} {
+		if err := llmroute.ValidateStored(llmroute.Policy{Overrides: []llmroute.Override{o}}); err == nil {
+			t.Errorf("ValidateStored(%+v) = nil, want a record the fold cannot read refused", o)
+		}
+	}
+}

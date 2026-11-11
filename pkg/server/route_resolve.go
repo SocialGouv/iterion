@@ -110,9 +110,13 @@ func (s *Server) resolveRunLLMRoutePolicy(ctx context.Context, teamID, botID str
 	// naming the level and the field. Records can carry hand-edited or
 	// rolling-deploy values no write path ever validated (the subscription
 	// and webhook records have no validated write surface today); silently
-	// folding garbage would route the run somewhere nobody wrote.
+	// folding garbage would route the run somewhere nobody wrote. The
+	// gateway-model rule a write surface adds is not a reading rule: the
+	// launch judges that crossing per node on the composed element
+	// (llmroute.ValidateStored), so one dead step of one bot's node never
+	// refuses every launch of the level.
 	for _, l := range layers {
-		if err := llmroute.Validate(l.Policy); err != nil {
+		if err := llmroute.ValidateStored(l.Policy); err != nil {
 			return nil, fmt.Errorf("llmroute: refusing launch: %s routing policy: %w", l.Source, err)
 		}
 	}

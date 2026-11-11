@@ -517,8 +517,9 @@ func providerHintTokens(raw string) []providerHintToken {
 // validateOverride checks one entry: the selector's syntax, each pinned
 // value's vocabulary, and that the entry pins SOMETHING — ModelOverrides.add
 // drops an empty entry silently, which at a write surface is a typo that
-// looks like it landed.
-func validateOverride(o Override) error {
+// looks like it landed. gatewayModels adds the write surfaces' gateway-model
+// rule (gatewayHintModels).
+func validateOverride(o Override, gatewayModels bool) error {
 	sel := strings.TrimSpace(o.Selector)
 	if sel == "" {
 		return fmt.Errorf("selector is empty")
@@ -599,7 +600,7 @@ func validateOverride(o Override) error {
 					return fmt.Errorf("provider %q names %q on backend %q — this harness acts on none of this value at its routing chokepoint, so the gate would certify a pin the harness silently ignores; the spend would follow the default precedence", o.Provider, s, o.Backend)
 				}
 			}
-			if s == ProviderOpenAICompatible {
+			if gatewayModels && s == ProviderOpenAICompatible {
 				if err := gatewayHintModels(o, t); err != nil {
 					return err
 				}
@@ -622,6 +623,8 @@ func validateOverride(o Override) error {
 // cell naming the gateway hint pins a gateway model. A model this cell
 // leaves to another cell or to the bot is the launch's to judge on the
 // composed element (runview's gateway crossing check), never this entry's.
+// It is a write surface's rule (Validate): the launch's reading of a stored
+// layer (ValidateStored) leaves the whole crossing to that check.
 func gatewayHintModels(o Override, t providerHintToken) error {
 	if t.hasModel && !IsGatewayModel(t.modelRaw) {
 		return fmt.Errorf("provider %q names %q — the gateway hint serves gateway models only (%s/<gateway model id>), and dispatch refuses the step's own model %q on every backend", o.Provider, t.stepRaw, ProviderOpenAICompatible, t.modelRaw)
@@ -677,6 +680,24 @@ func ValidateComposedPair(backend, backendFrom, provider, providerFrom string) e
 // the offending field. An UNSET field (empty) is legal at any single level
 // — inherit is the norm; only values that are set must be well-formed.
 func Validate(p Policy) error {
+	return validatePolicy(p, true)
+}
+
+// ValidateStored is the launch's reading of a stored layer: Validate
+// without the gateway-model rule (gatewayHintModels). That rule pre-checks
+// one entry for the crossing dispatch refuses (model.GatewayCrossingRefusal);
+// the launch judges the crossing itself, per site, on the element the
+// folded cells compose (runview's gateway crossing check). A record a write
+// surface now refuses for a gateway step dispatch never builds — the tail
+// of a claw chain — or for a cell that reaches none of the launched bot's
+// nodes therefore refuses no launch, and one dispatch does build is refused
+// for the bot it reaches, naming the cell. Every other rule holds: a record
+// the fold cannot read refuses the launch.
+func ValidateStored(p Policy) error {
+	return validatePolicy(p, false)
+}
+
+func validatePolicy(p Policy, gatewayModels bool) error {
 	// An explicit empty list is refused, not honored: it would read as
 	// "the run may occupy nothing" / "no trigger may fire" on one read and
 	// as "inherit" after a record round-trip (omitempty erases it) — two
@@ -748,7 +769,7 @@ func Validate(p Policy) error {
 		return fmt.Errorf("llmroute: cross_harness %q — want %q, %q or %q", p.CrossHarness, CrossHarnessOff, CrossHarnessReuse, CrossHarnessRestart)
 	}
 	for _, o := range p.Overrides {
-		if err := validateOverride(o); err != nil {
+		if err := validateOverride(o, gatewayModels); err != nil {
 			return fmt.Errorf("llmroute: overrides: %w", err)
 		}
 	}

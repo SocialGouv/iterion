@@ -93,10 +93,10 @@ func TestValidateComposedPair_KeepsTheHonouredPairs(t *testing.T) {
 // The premise the composed check rests on: the per-entry write gate
 // admits each half alone — which is exactly the split it certifies blind.
 func TestValidateOverride_AdmitsEachHalfOfASplitPair(t *testing.T) {
-	if err := validateOverride(Override{Selector: "work", Backend: "claw"}); err != nil {
+	if err := validateOverride(Override{Selector: "work", Backend: "claw"}, true); err != nil {
 		t.Fatalf("the backend half was refused on its own: %v", err)
 	}
-	if err := validateOverride(Override{Selector: "work", Provider: "zai"}); err != nil {
+	if err := validateOverride(Override{Selector: "work", Provider: "zai"}, true); err != nil {
 		t.Fatalf("the provider half was refused on its own: %v", err)
 	}
 }

@@ -542,3 +542,43 @@ func TestResolveRunLLMRoutePolicy_RefusesLayersOutOfRankOrder(t *testing.T) {
 // launchBotIdentityFor is the identity a launch of a catalogue bot folds
 // under: its id is its manifest name.
 func launchBotIdentityFor(id string) llmroute.BotIdentity { return llmroute.BotIdentity{ID: id} }
+
+// A stored record a write surface now refuses for its gateway-model rule
+// — a gateway step on a model that is not a gateway route, which dispatch
+// never serves — still folds at launch: the launch judges that crossing
+// per site on the element dispatch builds (runview's gateway crossing
+// check), so a claw node, which sends the chain's head alone, launches,
+// and a launch of a bot with no such node is not refused for another
+// bot's dead step. A record the fold cannot read still refuses.
+func TestResolveRunLLMRoutePolicy_AStoredDeadGatewayStepFoldsAtLaunch(t *testing.T) {
+	s := newOrgTestServer(t)
+	seedOrg(t, s, "org1", "org1")
+	if _, err := s.authStore().CreateTeam(context.Background(), identity.Team{
+		ID: "team1", Name: "team1", Slug: "team1", OrgID: "org1", CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("seed team: %v", err)
+	}
+	factory, _ := routingPolicyStores()
+	s.routingPolicyStoreFor = factory
+	dead := llmroute.Override{Selector: "work", Provider: "zai,openai_compatible:scaleway/deepseek-v4.1-flash"}
+	if err := llmroute.Validate(llmroute.Policy{Overrides: []llmroute.Override{dead}}); err == nil {
+		t.Fatal("the write gate admits the dead gateway step — the fixture no longer isolates the launch reading")
+	}
+	putRoutingPolicyRecord(t, factory(platformcfg.TeamRoutingPolicyID("team1")), &platformcfg.RoutingPolicyRecord{
+		Policy: &llmroute.Policy{Overrides: []llmroute.Override{dead}},
+	})
+	got, err := s.resolveRunLLMRoutePolicy(context.Background(), "team1", "")
+	if err != nil {
+		t.Fatalf("resolve refused the team level for a dead gateway step: %v", err)
+	}
+	if len(got.Overrides) != 1 || got.Overrides[0].Provider != dead.Provider {
+		t.Fatalf("overrides = %+v, want the stored cell folded as written", got.Overrides)
+	}
+
+	putRoutingPolicyRecord(t, factory(platformcfg.TeamRoutingPolicyID("team1")), &platformcfg.RoutingPolicyRecord{
+		Policy: &llmroute.Policy{Overrides: []llmroute.Override{{Selector: "work", Provider: "zai,nosuch"}}},
+	})
+	if _, err := s.resolveRunLLMRoutePolicy(context.Background(), "team1", ""); err == nil || !strings.Contains(err.Error(), "team routing policy") {
+		t.Fatalf("resolve = %v, want an unreadable team record to refuse the launch", err)
+	}
+}
