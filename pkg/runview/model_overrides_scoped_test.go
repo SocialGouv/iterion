@@ -162,7 +162,7 @@ func TestComposedPair_ARouteCellComposesWithTheNodesBackend(t *testing.T) {
 		{Selector: "w/work", Backend: "codex"},
 		{Selector: "w/work#glm", Provider: "zai"},
 	}}, llmroute.BotIdentity{ID: "w"})
-	findings := composedPairFindings(wf, sourced)
+	findings := composedPairFindings(wf, sourced, "")
 	if len(findings) != 1 || findings[0].route != "work#glm" || !strings.Contains(findings[0].err.Error(), "codex") {
 		t.Fatalf("findings = %+v, want the glm route's composed codex+zai pair", findings)
 	}
@@ -401,12 +401,12 @@ func TestFoldAndScreen_RefusesALaunchRowTheGrammarCannotHonour(t *testing.T) {
 		{Selector: "supervisor:pacer", Backend: "claw"},
 	} {
 		spec := &LaunchSpec{BotID: "scoped", ModelOverrides: []ModelOverrideEntry{row}}
-		if _, err := foldAndScreen(wf, spec); err == nil {
+		if _, err := foldAndScreen(wf, spec, ""); err == nil {
 			t.Errorf("foldAndScreen accepted the launch row %+v", row)
 		}
 	}
 	spec := &LaunchSpec{BotID: "scoped", ModelOverrides: []ModelOverrideEntry{{Selector: "work#glm", Model: "zai/glm-5.3"}, {Selector: "supervisor:pacer", Model: "anthropic/claude-opus-5"}}}
-	if _, err := foldAndScreen(wf, spec); err != nil {
+	if _, err := foldAndScreen(wf, spec, ""); err != nil {
 		t.Errorf("foldAndScreen refused honoured launch rows: %v", err)
 	}
 }

@@ -148,7 +148,7 @@ func TestLaunchAdmitsAGatewayHintBesideADialModelAndWarns(t *testing.T) {
 	if cerr != nil {
 		t.Fatal(cerr)
 	}
-	warnings, ferr := foldAndScreen(wf, &LaunchSpec{FilePath: path, Source: src, BotID: "gwhint", LLMRoutePolicy: &store.RunLLMRoutePolicy{Overrides: cells}})
+	warnings, ferr := foldAndScreen(wf, &LaunchSpec{FilePath: path, Source: src, BotID: "gwhint", LLMRoutePolicy: &store.RunLLMRoutePolicy{Overrides: cells}}, "")
 	if ferr != nil {
 		t.Fatalf("foldAndScreen: %v", ferr)
 	}

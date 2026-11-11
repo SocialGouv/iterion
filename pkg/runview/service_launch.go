@@ -285,7 +285,7 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 		// for every launch-shaped entry, so the order exists in exactly
 		// one place: a cell folded in after the screen would reach past a
 		// guard the launcher's own override cannot.
-		warnings, err := foldAndScreen(wf, &spec)
+		warnings, err := foldAndScreen(wf, &spec, "")
 		if err != nil {
 			return nil, err
 		}
@@ -501,13 +501,21 @@ func (s *Service) hookEventObservers(extra []func(store.Event)) []func(store.Eve
 // LaunchModelOverrides — the raw rows a launch stamps on its document for
 // the subbot children of its tree.
 //
+// runBackend is the launch's run-level backend when this process
+// dispatches the run under it (startInProcess: BuildExecutor hands it to
+// model.WithDefaultBackend, which replaces the workflow's
+// `default_backend:`), "" on a lane whose runner reads the .bot's default
+// (the cloud runner never reads LaunchSpec.Backend): the screens judge the
+// workflow as that dispatch reads it (withRunDefaultBackend).
+//
 // The warnings are the gateway crossings a slot dial decides at the
 // runner, the route crossings read on a node backend dial's default, then
 // the policy cells written for the launch's bot by name that
 // reach nothing in it (ADR-132 §2's zero-match warning): the launch paths
 // log each once per process (logZeroMatchOnce), the preview shows them
 // every time.
-func foldAndScreen(wf *ir.Workflow, spec *LaunchSpec) ([]string, error) {
+func foldAndScreen(wf *ir.Workflow, spec *LaunchSpec, runBackend string) ([]string, error) {
+	wf = withRunDefaultBackend(wf, runBackend)
 	for _, r := range spec.ModelOverrides {
 		if err := llmroute.ValidateLaunchRow(r.Selector, r.Backend, r.Provider, r.Effort); err != nil {
 			return nil, fmt.Errorf("runview: model_overrides: %w", err)
@@ -520,7 +528,7 @@ func foldAndScreen(wf *ir.Workflow, spec *LaunchSpec) ([]string, error) {
 	// A finding a slot dial decides at the runner warns; the first decided
 	// one refuses.
 	var warnings []string
-	for _, f := range composedPairFindings(wf, sourced) {
+	for _, f := range composedPairFindings(wf, sourced, runBackend) {
 		if f.undecided {
 			warnings = append(warnings, "the launch's override cells "+f.sentence())
 			continue
@@ -581,7 +589,7 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 	// the SAME shared body (foldAndScreen): the permission screen below
 	// must see the policy's cells, and the folded list is what
 	// BuildExecutor executes with and the run doc stamps.
-	foldWarnings, err := foldAndScreen(wf, &spec)
+	foldWarnings, err := foldAndScreen(wf, &spec, spec.Backend)
 	if err != nil {
 		return nil, err
 	}
@@ -2309,4 +2317,20 @@ func resumeBundleDir(r *store.Run, spec ResumeSpec) string {
 		return r.BundlePath
 	}
 	return ""
+}
+
+// withRunDefaultBackend is wf as a dispatch under a run-level backend reads
+// it: runBackend replaces the workflow's `default_backend:` — it does not
+// chain to it, so a run-level `auto` falls through to the environment and
+// detection, as model.WithDefaultBackend does — and a node's own
+// `backend:` keeps priority. wf itself when runBackend is empty. A shallow
+// copy: the node map is shared, so a route a screen materialises
+// (ApplyRunFallback, ApplyPolicyLadder) lands on the nodes the engine runs.
+func withRunDefaultBackend(wf *ir.Workflow, runBackend string) *ir.Workflow {
+	if wf == nil || strings.TrimSpace(runBackend) == "" {
+		return wf
+	}
+	run := *wf
+	run.DefaultBackend = runBackend
+	return &run
 }

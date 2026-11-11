@@ -145,7 +145,7 @@ func TestComposedPairFindingsWalkSortedNodeOrder(t *testing.T) {
 			{Selector: "*", Provider: "zai"},
 		},
 	}, llmroute.BotIdentity{})
-	findings := composedPairFindings(wf, sourced)
+	findings := composedPairFindings(wf, sourced, "")
 	if len(findings) != 2 {
 		t.Fatalf("findings = %d, want one per node", len(findings))
 	}
@@ -193,7 +193,7 @@ func TestComposedPairFindingsWalksTheLLMRouter(t *testing.T) {
 			{Selector: "router", Provider: "zai"},
 		},
 	}, llmroute.BotIdentity{})
-	findings := composedPairFindings(wf, sourced)
+	findings := composedPairFindings(wf, sourced, "")
 	if len(findings) != 1 || findings[0].id != "pick" {
 		t.Fatalf("findings = %+v, want the llm-mode router judged", findings)
 	}
@@ -201,7 +201,7 @@ func TestComposedPairFindingsWalksTheLLMRouter(t *testing.T) {
 	deterministic := &ir.RouterNode{}
 	deterministic.ID = "pick"
 	wf.Nodes["pick"] = deterministic
-	if findings := composedPairFindings(wf, sourced); len(findings) != 0 {
+	if findings := composedPairFindings(wf, sourced, ""); len(findings) != 0 {
 		t.Fatalf("a deterministic router was judged: %+v", findings)
 	}
 }

@@ -128,7 +128,7 @@ func EffectiveModelOverrides(
 // to no row.
 func FoldForSubbotChild(wf *ir.Workflow, rootPolicy *store.RunLLMRoutePolicy, rootLaunchRows []store.RunModelOverride, bot llmroute.BotIdentity, permission string, logger *iterlog.Logger) ([]ModelOverrideEntry, error) {
 	spec := &LaunchSpec{BotID: bot.ID, BotManifestName: bot.Name, ModelOverrides: ModelOverrideEntriesFromRun(rootLaunchRows), LLMRoutePolicy: rootPolicy, Permission: permission}
-	warnings, err := foldAndScreen(wf, spec)
+	warnings, err := foldAndScreen(wf, spec, "")
 	if err != nil {
 		return nil, err
 	}

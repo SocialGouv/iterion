@@ -298,7 +298,7 @@ func (s *Service) compileCredentialPreview(spec CredentialPreviewSpec) (*ir.Work
 	// the operator shown credentials the launch never acquires. One
 	// shared body with the two launch entries (foldAndScreen), so the
 	// order exists in exactly one place.
-	foldWarnings, err := foldAndScreen(wf, &spec.Launch)
+	foldWarnings, err := foldAndScreen(wf, &spec.Launch, "")
 	if err != nil {
 		return nil, spec, nil, err
 	}

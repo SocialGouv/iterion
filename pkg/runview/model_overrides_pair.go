@@ -48,8 +48,10 @@ func (f composedPairFinding) subject() string {
 // fold and returns every node — and every authored route — whose composed
 // pair is refused, then every element the gateway crossing check refuses
 // (gatewayCrossingFindings). Node order is sorted: the same launch must
-// read the same refusal, whichever map iteration found it first.
-func composedPairFindings(wf *ir.Workflow, folded []sourcedOverrideEntry) []composedPairFinding {
+// read the same refusal, whichever map iteration found it first. wf is the
+// workflow as the run dispatches it (withRunDefaultBackend); runBackend
+// names the run-level backend that replaced its default, "" for none.
+func composedPairFindings(wf *ir.Workflow, folded []sourcedOverrideEntry, runBackend string) []composedPairFinding {
 	if wf == nil || len(folded) == 0 {
 		return nil
 	}
@@ -70,7 +72,7 @@ func composedPairFindings(wf *ir.Workflow, folded []sourcedOverrideEntry) []comp
 		}
 		findings = append(findings, routePairFindings(wf.Nodes[id], overrides, res.Backend, src.Backend, folded)...)
 	}
-	return append(findings, gatewayCrossingFindings(wf, overrides, folded)...)
+	return append(findings, gatewayCrossingFindings(wf, overrides, folded, runBackend)...)
 }
 
 // overrideSiteNodeIDs is, sorted, every node whose LLM call a launch
@@ -192,7 +194,7 @@ func foldedEntryOrigin(folded []sourcedOverrideEntry, src model.FieldSource, val
 // composedPairWarnings renders the findings as the write-surface screen's
 // WARNING lines (C1xx posture): the launch refusal stays the gate.
 func composedPairWarnings(wf *ir.Workflow, folded []sourcedOverrideEntry) []string {
-	findings := composedPairFindings(wf, folded)
+	findings := composedPairFindings(wf, folded, "")
 	if len(findings) == 0 {
 		return nil
 	}

@@ -91,7 +91,7 @@ func resumeFixture(t *testing.T, src string) (*Service, string, *ir.Workflow, st
 func launchFoldRows(t *testing.T, wf *ir.Workflow, botID string, cells ...store.RunLLMRouteOverride) []store.RunModelOverride {
 	t.Helper()
 	spec := &LaunchSpec{BotID: botID, LLMRoutePolicy: &store.RunLLMRoutePolicy{Overrides: cells}}
-	if _, err := foldAndScreen(wf, spec); err != nil {
+	if _, err := foldAndScreen(wf, spec, ""); err != nil {
 		t.Fatalf("launch fold: %v", err)
 	}
 	rows := RunModelOverrides(spec.ModelOverrides)

@@ -213,7 +213,7 @@ func causedRefusal(el gatewayElement) error {
 
 // gatewayCrossingFindings judges every element the folded overrides
 // compose, per node (its provider chain's steps) and per authored route.
-func gatewayCrossingFindings(wf *ir.Workflow, overrides model.ModelOverrides, folded []sourcedOverrideEntry) []composedPairFinding {
+func gatewayCrossingFindings(wf *ir.Workflow, overrides model.ModelOverrides, folded []sourcedOverrideEntry, runBackend string) []composedPairFinding {
 	var out []composedPairFinding
 	for _, id := range overrideSiteNodeIDs(wf) {
 		node := wf.Nodes[id]
@@ -228,7 +228,7 @@ func gatewayCrossingFindings(wf *ir.Workflow, overrides model.ModelOverrides, fo
 			}
 			return foldedEntryOrigin(folded, fs, value, field)
 		}
-		backend := nodeGatewayBackend(wf, fields, res.Backend, origin(src.Backend, res.Backend, llmroute.OverrideFieldBackend))
+		backend := nodeGatewayBackend(wf, fields, runBackend, res.Backend, origin(src.Backend, res.Backend, llmroute.OverrideFieldBackend))
 		provider := gatewayField{value: fields.Provider, botSource: "the node's own provider field"}
 		if res.Provider != "" {
 			provider = gatewayField{value: res.Provider, origin: origin(src.Provider, res.Provider, llmroute.OverrideFieldProvider)}
@@ -273,17 +273,22 @@ func gatewayCrossingFindings(wf *ir.Workflow, overrides model.ModelOverrides, fo
 
 // nodeGatewayBackend is the backend a node's elements inherit, in
 // dispatch's precedence: the override, else the node's own `backend:`, else
-// the workflow's `default_backend:` — a field that falls through ("",
-// `auto`) passing to the next. "" when none names one: the runner's
-// environment or its detection decides, and detection picks claw for a
-// chain that needs the gateway.
-func nodeGatewayBackend(wf *ir.Workflow, fields *ir.LLMFields, override, overrideOrigin string) gatewayField {
+// the run's default — the launch's run-level backend when one replaces the
+// workflow's (runBackend), else the workflow's `default_backend:` — a field
+// that falls through ("", `auto`) passing to the next. "" when none names
+// one: the runner's environment or its detection decides, and detection
+// picks claw for a chain that needs the gateway.
+func nodeGatewayBackend(wf *ir.Workflow, fields *ir.LLMFields, runBackend, override, overrideOrigin string) gatewayField {
 	if override != "" {
 		return gatewayField{value: override, origin: overrideOrigin}
 	}
+	runDefault := gatewayField{value: wf.DefaultBackend, botSource: "the workflow's default_backend field"}
+	if strings.TrimSpace(runBackend) != "" {
+		runDefault = gatewayField{value: runBackend, botSource: "the launch's run-level backend"}
+	}
 	for _, f := range []gatewayField{
 		{value: fields.Backend, botSource: "the node's own backend field"},
-		{value: wf.DefaultBackend, botSource: "the workflow's default_backend field"},
+		runDefault,
 	} {
 		f.value = strings.TrimSpace(f.value)
 		if !ir.BackendFallsThrough(f.value) {

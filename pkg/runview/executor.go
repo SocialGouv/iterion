@@ -441,7 +441,11 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 	if spec.RunID == "" {
 		return nil, fmt.Errorf("runview: run ID is required")
 	}
-	if err := ValidateModelOverridePermissions(spec.Workflow, spec.ModelOverrides, spec.Permission); err != nil {
+	// The screens read the node's backend the way this executor dispatches
+	// it: a run-level backend replaces the workflow's default
+	// (model.WithDefaultBackend below).
+	runWF := withRunDefaultBackend(spec.Workflow, spec.Backend)
+	if err := ValidateModelOverridePermissions(runWF, spec.ModelOverrides, spec.Permission); err != nil {
 		return nil, err
 	}
 	// Every plane builds its executor here — the CLI, the launch API, a
@@ -542,7 +546,7 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 		flooredWorkflow(spec), spec.SandboxOverride, spec.SandboxDefault,
 		runtime.EngineRepoRoot(spec.sandboxProbeRoot()), spec.SandboxDrivers)
 	overrides := spec.ModelOverrides
-	fallbackRefusals := ir.ApplyRunFallback(spec.Workflow, spec.RunFallback, sandboxedHere, spec.Vars, func(n ir.LLMNode) string {
+	fallbackRefusals := ir.ApplyRunFallback(runWF, spec.RunFallback, sandboxedHere, spec.Vars, func(n ir.LLMNode) string {
 		ov := overrides.ForNode(n.NodeID(), n.NodeKind())
 		return ov.Backend
 	})
@@ -554,7 +558,7 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 	// node's own model, and the stage's On carries the resolved policy's
 	// trigger set — the chain's default set would stop the auth-typed
 	// failure the launch-time selection exists to fall through.
-	policyRefusals := ir.ApplyPolicyLadder(spec.Workflow, spec.PolicyLadder, sandboxedHere, spec.Vars, overrides.LadderRoute, func(n ir.LLMNode) string {
+	policyRefusals := ir.ApplyPolicyLadder(runWF, spec.PolicyLadder, sandboxedHere, spec.Vars, overrides.LadderRoute, func(n ir.LLMNode) string {
 		// The dispatch reads the override backend FIRST — the screen reads
 		// the same, or a cross-backend crossing crosses a session-bearing
 		// node unscreened (the review's F2).

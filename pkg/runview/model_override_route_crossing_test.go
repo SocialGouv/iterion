@@ -127,7 +127,7 @@ func TestValidateModelOverridePermissions_ARouteCellMeetsTheCompilersCrossingScr
 				t.Fatalf("the inheriting bot must compile: %v", err)
 			}
 			pol := routeCrossingSnapshot(t, tc.cell)
-			_, ferr := foldAndScreen(wf, &LaunchSpec{FilePath: path, Source: tc.inherits, BotID: "tb", LLMRoutePolicy: pol})
+			_, ferr := foldAndScreen(wf, &LaunchSpec{FilePath: path, Source: tc.inherits, BotID: "tb", LLMRoutePolicy: pol}, "")
 			if ferr == nil {
 				t.Fatalf("the launch admitted a route cell the compiler refuses as %s (%s)", tc.diag, tc.reason)
 			}
@@ -174,7 +174,7 @@ func TestValidateModelOverridePermissions_ARouteNoCellRepinsIsNotJudged(t *testi
 		t.Fatalf("compile: %v", err)
 	}
 	pol := routeCrossingSnapshot(t, llmroute.Override{Selector: "tb/x", Model: "claude-sonnet-5"})
-	if _, ferr := foldAndScreen(wf, &LaunchSpec{FilePath: path, Source: tc.inherits, BotID: "tb", LLMRoutePolicy: pol}); ferr != nil {
+	if _, ferr := foldAndScreen(wf, &LaunchSpec{FilePath: path, Source: tc.inherits, BotID: "tb", LLMRoutePolicy: pol}, ""); ferr != nil {
 		t.Fatalf("launch refused %v — no cell re-pins the route's backend", ferr)
 	}
 }
@@ -267,7 +267,7 @@ func TestRouteCellCrossing_ADialedNodeBackendIsTheRunnersToDecide(t *testing.T) 
 					t.Fatalf("the bot must compile: %v", err)
 				}
 				spec := &LaunchSpec{FilePath: path, Source: tc.src, BotID: "tb", LLMRoutePolicy: pol}
-				warnings, ferr := foldAndScreen(wf, spec)
+				warnings, ferr := foldAndScreen(wf, spec, "")
 				if tc.decided {
 					if ferr == nil || !strings.Contains(ferr.Error(), tc.reason) {
 						t.Fatalf("launch env %s=%q: err = %v, want a refusal naming %q — this arm does not read the dial", dial, env, ferr, tc.reason)

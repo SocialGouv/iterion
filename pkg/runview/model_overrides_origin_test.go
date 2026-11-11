@@ -23,7 +23,7 @@ func TestComposedPairRefusalNamesTheWrittenCellAndItsLevel(t *testing.T) {
 	for _, o := range resolved.Overrides {
 		pol.Overrides = append(pol.Overrides, store.RunLLMRouteOverride{Selector: o.Selector, Backend: o.Backend, Model: o.Model, Provider: o.Provider, Effort: o.Effort})
 	}
-	_, err := foldAndScreen(mustCompileFold(t, splitPairBot), &LaunchSpec{BotID: "review-pr-pool", BotManifestName: "review-pr", LLMRoutePolicy: pol})
+	_, err := foldAndScreen(mustCompileFold(t, splitPairBot), &LaunchSpec{BotID: "review-pr-pool", BotManifestName: "review-pr", LLMRoutePolicy: pol}, "")
 	if err == nil {
 		t.Fatal("precondition: the composed (claw, zai) pair is refused")
 	}
@@ -50,7 +50,7 @@ func TestComposedPairRefusalNamesALaunchRowAsWritten(t *testing.T) {
 	_, err := foldAndScreen(mustCompileFold(t, splitPairBot), &LaunchSpec{
 		BotID: "review-pr-pool", LLMRoutePolicy: pol,
 		ModelOverrides: []ModelOverrideEntry{{Selector: "work", Provider: "zai"}},
-	})
+	}, "")
 	if err == nil {
 		t.Fatal("precondition: the composed (claw, zai) pair is refused")
 	}
