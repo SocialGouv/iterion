@@ -1107,7 +1107,11 @@ entries — the cloud lane (`Service.Launch`), the in-process lane
 (`startInProcess`, which serves a local launch and the scheduler's start of a
 previously-queued root) and the credential preview (`PreviewCredentials`) —
 and **before** the permission screen: a cell folded in after it would reach
-past a guard the launcher's own override cannot. The DETACHED local runner
+past a guard the launcher's own override cannot. That screen reads node and
+route cells alike — a route cell's `backend` meets the compiler's route
+refusals (C176, C135) there — and the fold also judges every (backend,
+hint, model) element the cells compose with dispatch's gateway rule
+([backends.md](backends.md#the-openai-compatible-gateway-openai_compatible)). The DETACHED local runner
 (`ITERION_RUNS_DETACHED=1`), driven by `iterion run`, has no counterpart: it
 folds nothing, screens nothing and stamps no folded list, and says so for the
 override CELLS only — the launch's `model_overrides` and the

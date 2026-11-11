@@ -214,7 +214,7 @@ The pin exists because the record is a fleet-wide dial written for the
 shared runners: a model id pinned there for the shared fleet's vendor would
 otherwise reach a pool pod whose provider hint and rescue model name its
 gateway — every route of the chain then crosses a gateway id with a vendor
-hint, the dispatch refuses each at build (`refuseGatewayCrossing`), and the
+hint, the dispatch refuses each at build (`GatewayCrossingRefusal`), and the
 pool runs nothing. A pinned name the pod leaves empty resolves to the .bot
 default, not to the record.
 

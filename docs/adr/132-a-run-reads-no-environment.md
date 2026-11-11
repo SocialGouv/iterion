@@ -642,12 +642,16 @@ stated here:
 - **One reading of a pinned route or supervisor**, `ModelOverrides.EffectiveFallback` /
   `EffectiveSupervisorModel`, read by the walk, dispatch's chain, `CallSites` (admission and the
   usage-cap pre-flight), `supervise.SpecsFromWorkflow` (every spawn and the pre-flight) with its
-  gateway screen, the composed-pair check and the price-feed narrowing. A launch `--fallback` stage
-  and a policy rung are not authored routes and are never reached.
+  gateway screen, the launch's composed checks — the (backend, provider) pair, the gateway crossing
+  check over each composed (backend, hint, model) element, and the route crossing screen that holds a
+  route cell's `backend` to C176/C135 (`runview.routeCellCrossings`) — and the price-feed narrowing.
+  A launch `--fallback` stage and a policy rung are not authored routes and are never reached.
 
 §7's sequencing is unchanged and not acted on: no dial is removed, no record is written. One fact it
 must now carry: the cells that move every Revi site to a team's gateway fix provider as well as model
 and backend — a cell that leaves the provider to a slot's dial leaves the route to the pod that
-expands it (ADR-129's 2026-11-10 amendment). And a `team_gateway` run still starts no supervisor
+expands it (ADR-129's 2026-11-10 amendment), a gateway cell that leaves the model to a dial is warned,
+and one that leaves a literal `claude_code` backend in place is refused at launch (dispatch refuses
+the gateway there). And a `team_gateway` run still starts no supervisor
 (`runview.FundedSupervisorSpecs`, ADR-131's arbitration), pinned or not: the supervisor cells keep the
 gate's reading of the run gateway-only, they do not make a pacer run there.

@@ -739,6 +739,13 @@ shape. All three are closed in `feat/routing-cells-node-selectors`; what the cod
   dimension and obey the same per-class field rules (`llmroute.ValidateLaunchRow`). The snapshot and its provenance keys
   (`overrides.<selector>.<field>`) keep the selector as the level wrote it; the folded list — §6's
   one list, unchanged on the wire — carries this bot's. A launch `*` row shadows node cells only.
+  §5's "may not drop or replace a node's `fallbacks:` routes" narrows: a route cell re-pins an
+  authored route's `backend`, `model` and `provider` and keeps the author's gate, triggers, name and
+  action (`ModelOverrides.EffectiveFallback`); it never drops a route nor adds one. A route cell's
+  `backend` meets the screens §5 names for an added route — C176's crossings and C135's
+  unresolvable tools (`ir.RouteCrossingReasons`, `ir.RouteToolsUnresolvableReason`, the compiler's own
+  bodies) — at launch on the folded list (`runview.ValidateModelOverridePermissions`, so BuildExecutor
+  too), warned at the integration's write screen.
 - **The walk reads what dispatch reads.** §4's walk read a node's own `provider:` chain through
   `envDeferred` even when a provider override collapses it at dispatch (`chainReading.providerField`):
   an `${…}` dial there deferred the route and an empty-default one (`${ITERION_VIBE_PROVIDER_GPT:-}`)
@@ -749,12 +756,22 @@ shape. All three are closed in `feat/routing-cells-node-selectors`; what the cod
 - **§3's provider rule beside claw.** "claw honours a single-value `anthropic` hint" and §7's "a `claw`
   cell may carry no `provider:` of its own" are superseded: claw acts on `anthropic` (its
   force-Anthropic-direct switch, now `model.clawForcesAnthropicDirect` alone) and on
-  `openai_compatible` (the gateway crossing check, `refuseGatewayCrossing`, which serves the gateway
+  `openai_compatible` (the gateway crossing check, `GatewayCrossingRefusal`, which serves the gateway
   model the hint names and refuses any other model loudly), so `HonoursProviderHintValue(claw, ·)`
-  admits both, in both twins. A cell holding `provider: openai_compatible` beside a model that is not
-  `openai_compatible/…` is refused at write. This is the cell that moves a slot whose own hint names a
-  vendor (Revi's `${ITERION_VIBE_PROVIDER_CLAUDE:-anthropic}`) onto the gateway: a provider cell
-  replaces the slot's chain. `claude_code` + a gateway model stays refused at dispatch (backend parity).
+  admits both, in both twins. That honour is model-conditional. A cell holding `provider:
+  openai_compatible` beside a model it writes that is not `openai_compatible/…` — its `model`, or a
+  step's own `openai_compatible:<model>` — is refused at write; a model left to another cell or to
+  the bot is judged at launch on the composed element (below). This is the cell that moves a slot
+  whose own hint names a vendor (Revi's `${ITERION_VIBE_PROVIDER_CLAUDE:-anthropic}`) onto the gateway:
+  a provider cell replaces the slot's chain. `claude_code` + a gateway model stays refused at dispatch
+  (backend parity) — and at launch when an override composes it, warned at write; an authored-only
+  pair stays C186's.
+- **The launch judges the elements the cells compose.** `runview.gatewayCrossingFindings` rebuilds,
+  per node provider step and per authored route, the (backend, hint, model) element dispatch builds
+  from the folded list and the bot, and judges it with dispatch's rule (`model.GatewayCrossingRefusal`,
+  whose refusal names the fields its arm read). A refusal one of whose read fields an override wrote
+  refuses the launch, naming each field's origin; a field a slot dial decides is read on its default
+  and warned; the write screen warns on both.
 
 §7's acceptance line therefore holds for the shipped Revi pair, still dialled: the activation block
 (`docs/backends.md`, the gateway section) decides every route on the gateway

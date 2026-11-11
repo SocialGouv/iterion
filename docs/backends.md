@@ -1345,7 +1345,10 @@ crossing on a tools-less node is **dropped with a warning**, never
 silently taken — and what makes it visible to the three pre-run
 analyses (sandbox bind-mount, parallel-branch admission, the
 `fan_out_each` guard). Without that, a flag could reach exactly the
-crossings the compiler refuses in the `.bot`.
+crossings the compiler refuses in the `.bot`. A routing cell that re-pins
+an authored route's `backend` (`<bot>/<node>#<route>`, below) meets the
+compiler's crossing refusals (C176, C135) through the same predicates, and
+is refused at launch.
 
 The screen reads a node's backend the way the run itself will: a
 `${VAR:-default}` dial by the launching process's environment, and a
@@ -1598,9 +1601,20 @@ force-Anthropic-direct switch, `openai_compatible` at the gateway crossing
 check, which serves the gateway model the hint names and refuses any other
 model loudly — so any other value beside claw is refused (at write when one
 cell holds both, at launch when two do), and `openai_compatible` beside a
-model that is not `openai_compatible/…` is refused at write. A
-`claude_code` route is still refused a gateway model at dispatch, whatever
-the cells say. The cell that moves such a node onto the gateway is
+model that is not `openai_compatible/…` is refused at write when the cell
+writes that model — its `model`, or a step's own `openai_compatible:<model>`.
+A `claude_code` route is still refused a gateway model at dispatch, whatever
+the cells say. The launch rebuilds every element dispatch builds from the
+folded cells — each node's provider steps and each `fallbacks:` route, the
+model from a step, a cell or the bot — and judges it with dispatch's own
+gateway rule (`GatewayCrossingRefusal`): a gateway route on a literal
+non-claw backend (the node's own `backend: claude_code` included), a vendor
+hint beside a gateway model, the gateway hint beside a model that is not a
+gateway route. When a cell or a launch row wrote one of the fields that
+refusal reads, the launch refuses it, naming each field and where it came from; the
+integration's write screen warns instead. A field a slot dial decides is
+the runner's: the launch reads the dial's default and warns. A crossing the
+bot writes alone stays C186's and dispatch's. The cell that moves such a node onto the gateway is
 therefore `{"backend": "claw", "provider": "openai_compatible", "model":
 "openai_compatible/<provider>/<model>"}` on that node: it fixes every field
 the launch walk reads, so the walk DECIDES the route from the cell — the
@@ -1643,8 +1657,12 @@ selector := [ <bot> "/" ] <target>
   walk records it under: its name (`reviewer_claude#glm`), or its index when
   the author named none (`converge#0`). It pins `backend`, `model` and
   `provider`, which replace the route's own; `effort` is refused (a route
-  runs at its node's). A launch's `--fallback` stage and a policy rung are
-  not authored routes and are never reached.
+  runs at its node's). A pinned `backend` meets the compiler's route
+  refusals — C176's permission gate, claw⇄CLI tools inversion and session
+  continuity, and C135's unresolvable tools — against the node's backend as
+  dispatch reads it, the node cell's first: refused at launch, warned at the
+  integration's write screen. A launch's `--fallback` stage and a policy
+  rung are not authored routes and are never reached.
 - `supervisor:<name>` pins a supervisor's `model` — nothing else, a
   supervisor declares nothing else. Note that a `team_gateway` run starts no
   supervisor at all (`runview.FundedSupervisorSpecs`), pinned or not.
@@ -1685,7 +1703,9 @@ on the forge integration (or the team's policy):
 `TestReviShippedBots_EveryCellDecidesItsRouteOnTheTeamGateway` (the walk
 names the gateway alone, every primary decided) and
 `TestReviShippedBots_TheTeamGatewayKeySealsAndStampsTheBoundary` (the key
-sealed, `team_gateway` stamped), `pkg/server/cloudpublisher`.
+sealed, `team_gateway` stamped) and
+`TestReviShippedBots_TheActivationBlockPassesTheLaunchScreens` (every launch
+screen admits it, the write screen warns nothing), `pkg/server/cloudpublisher`.
 
 Both writes REPLACE the record's whole routing policy (`null` clears it), so
 operator tooling reads, edits and writes back: GET the record; pin the model
