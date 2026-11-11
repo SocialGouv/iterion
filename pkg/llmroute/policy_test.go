@@ -861,6 +861,38 @@ func TestValidateOverrides_Vocabulary(t *testing.T) {
 	}
 }
 
+// `*/x` and `x` both reach every bot (Selector.MatchBot): one selector, so a
+// level writing both on one field pins it twice, like an exact duplicate —
+// at the write gate and at a launch's reading of a stored layer. Another
+// field, or a bot part that names a bot or a glob over one, is another cell.
+func TestValidateOverrides_ACellAndItsEveryBotSpellingAreOneSelector(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		cells   []Override
+		refused string
+	}{
+		{"x then */x on one field", []Override{{Selector: "work", Backend: HarnessClaw}, {Selector: "*/work", Backend: HarnessCodex}}, `"work" and "*/work" are one selector`},
+		{"*/x then x on one field", []Override{{Selector: "*/work", Model: "openai/gpt-5.5"}, {Selector: "work", Model: "openai/gpt-5.4"}}, `"*/work" and "work" are one selector`},
+		{"*/* beside *", []Override{{Selector: "*", Effort: "low"}, {Selector: "*/*", Effort: "high"}}, `"*" and "*/*" are one selector`},
+		{"x and */x on two fields", []Override{{Selector: "work", Backend: HarnessClaw}, {Selector: "*/work", Model: "openai/gpt-5.5"}}, ""},
+		{"a bot's x beside x", []Override{{Selector: "review-pr/work", Backend: HarnessClaw}, {Selector: "work", Backend: HarnessCodex}}, ""},
+		{"a glob's x beside */x", []Override{{Selector: "rev*/work", Backend: HarnessClaw}, {Selector: "*/work", Backend: HarnessCodex}}, ""},
+	} {
+		for _, validate := range []struct {
+			name string
+			fn   func(Policy) error
+		}{{"Validate", Validate}, {"ValidateStored", ValidateStored}} {
+			err := validate.fn(Policy{Overrides: tc.cells})
+			switch {
+			case tc.refused == "" && err != nil:
+				t.Errorf("%s(%s) refused: %v", validate.name, tc.name, err)
+			case tc.refused != "" && (err == nil || !strings.Contains(err.Error(), tc.refused)):
+				t.Errorf("%s(%s) = %v, want a refusal naming %s", validate.name, tc.name, err, tc.refused)
+			}
+		}
+	}
+}
+
 // The lock vocabulary accepts the two new fields.
 func TestValidateOverrides_LockVocabulary(t *testing.T) {
 	if err := Validate(Policy{Locks: []string{FieldOverrides, FieldProviders}}); err != nil {

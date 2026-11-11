@@ -167,7 +167,7 @@ func TestScreenPolicyOverridesWarnsOnTheComposedPair(t *testing.T) {
 	if err := os.WriteFile(path, []byte(splitPairBot), 0o644); err != nil {
 		t.Fatalf("write bot: %v", err)
 	}
-	warnings, err := ScreenPolicyOverrides(path, splitPairBot, "", "", llmroute.BotIdentity{}, pol)
+	warnings, _, err := ScreenPolicyOverrides(path, splitPairBot, "", "", llmroute.BotIdentity{}, pol)
 	if err != nil {
 		t.Fatalf("screen: %v", err)
 	}

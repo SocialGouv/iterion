@@ -136,7 +136,7 @@ func TestValidateModelOverridePermissions_ARouteCellMeetsTheCompilersCrossingScr
 					t.Errorf("launch refusal = %q, want it to name %q", ferr, want)
 				}
 			}
-			warnings, werr := ScreenPolicyOverrides(path, tc.inherits, "", "", llmroute.BotIdentity{ID: "tb"}, pol)
+			warnings, _, werr := ScreenPolicyOverrides(path, tc.inherits, "", "", llmroute.BotIdentity{ID: "tb"}, pol)
 			if werr != nil {
 				t.Fatalf("the write screen errored: %v", werr)
 			}

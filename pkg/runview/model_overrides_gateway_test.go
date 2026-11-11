@@ -67,7 +67,7 @@ func screenGatewayBot(t *testing.T, src string, cells []store.RunLLMRouteOverrid
 	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	warnings, err := ScreenPolicyOverrides(path, src, "", "", botIdentityFor("gwhint"), &store.RunLLMRoutePolicy{Overrides: cells})
+	warnings, _, err := ScreenPolicyOverrides(path, src, "", "", botIdentityFor("gwhint"), &store.RunLLMRoutePolicy{Overrides: cells})
 	if err != nil {
 		t.Fatalf("the write screen must not refuse a stored cell: %v", err)
 	}

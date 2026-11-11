@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
@@ -916,7 +917,7 @@ func (s *Server) writeProvisionResult(w http.ResponseWriter, r *http.Request, te
 // Each bot is screened as its launch folds it — its resolved id and the
 // manifest name of the bundle it serves — and a cell scoped to a bot that
 // neither spelling of any enabled bot reaches is warned too: no enabled
-// bot's own launch folds it, only a subbot child that runs as that bot.
+// bot's own launch folds it (unreachedBotCellWarnings).
 func (s *Server) routingBlastRadiusWarnings(ctx context.Context, teamID string, botIDs []string, block *llmroute.Policy) []string {
 	if block == nil || len(block.Overrides) == 0 {
 		return nil
@@ -932,6 +933,10 @@ func (s *Server) routingBlastRadiusWarnings(ctx context.Context, teamID string, 
 	}
 	var warnings []string
 	bots := make([]llmroute.BotIdentity, 0, len(botIDs))
+	// subbotHosts are the enabled bots a subbot child may run under: the
+	// ones whose workflow declares a subbot node, and the ones the screen
+	// could not resolve or compile.
+	var subbotHosts []string
 	for _, botID := range botIDs {
 		lb, err := s.resolveBotSource(ctx, teamID, botID)
 		if err != nil {
@@ -940,6 +945,7 @@ func (s *Server) routingBlastRadiusWarnings(ctx context.Context, teamID string, 
 			// enforcement, and this warning tells the operator which bot
 			// the screen could not judge.
 			bots = append(bots, llmroute.BotIdentity{ID: botID})
+			subbotHosts = append(subbotHosts, botID)
 			warnings = append(warnings, fmt.Sprintf("routing: bot %q could not be resolved for the blast-radius screen (%v); its launches are screened at launch time only", botID, err))
 			continue
 		}
@@ -949,29 +955,33 @@ func (s *Server) routingBlastRadiusWarnings(ctx context.Context, teamID string, 
 		// launch lanes that defer lb.Cleanup(): a stored bot's bundle lives
 		// in a temp dir, and a screen that skips the collection leaks one
 		// directory per screened bot per spoken routing write.
-		reasons, serr := runview.ScreenPolicyOverrides(lb.Path, lb.Source, lb.BundleDir, lb.BundleEntry, bot, snapshot)
+		reasons, declaresSubbot, serr := runview.ScreenPolicyOverrides(lb.Path, lb.Source, lb.BundleDir, lb.BundleEntry, bot, snapshot)
 		lb.Cleanup()
 		if serr != nil {
+			subbotHosts = append(subbotHosts, botID)
 			warnings = append(warnings, fmt.Sprintf("routing: bot %q could not be screened (%v); its launches are screened at launch time only", botID, serr))
 			continue
+		}
+		if declaresSubbot {
+			subbotHosts = append(subbotHosts, botID)
 		}
 		for _, reason := range reasons {
 			warnings = append(warnings, fmt.Sprintf("routing: bot %q: %s", botID, reason))
 		}
 	}
-	return append(warnings, unreachedBotCellWarnings(block, bots)...)
+	return append(warnings, unreachedBotCellWarnings(block, bots, subbotHosts)...)
 }
 
 // unreachedBotCellWarnings names each cell of block whose bot part reaches
 // none of bots by bot id or manifest name (llmroute.Selector.MatchBot):
 // written at an integration, such a cell is folded by no enabled bot's own
-// launch — a typo, a bot not enabled here, a spelling the bot does not
-// answer to, or a bot that runs here only as a subbot child of an enabled
-// one, which folds the cell for its own bot (runview.FoldForSubbotChild).
-// The screen does not resolve the enabled bots' children, so the warning
-// names that reach instead of judging it. A cell reaching every bot (no bot
+// launch — a typo, a bot not enabled here, or a spelling the bot does not
+// answer to. A subbot child runs as its own bot and folds the cell for it
+// (runview.FoldForSubbotChild), so when subbotHosts names enabled bots a
+// child may run under, the warning adds that reach as a condition: the
+// screen does not resolve the children. A cell reaching every bot (no bot
 // part, `*/`) is never one.
-func unreachedBotCellWarnings(block *llmroute.Policy, bots []llmroute.BotIdentity) []string {
+func unreachedBotCellWarnings(block *llmroute.Policy, bots []llmroute.BotIdentity, subbotHosts []string) []string {
 	named := make([]string, 0, len(bots))
 	for _, b := range bots {
 		if b.Name != "" {
@@ -983,6 +993,14 @@ func unreachedBotCellWarnings(block *llmroute.Policy, bots []llmroute.BotIdentit
 	enabled := strings.Join(named, ", ")
 	if enabled == "" {
 		enabled = "none enabled"
+	}
+	child := ""
+	if len(subbotHosts) > 0 {
+		hosts := make([]string, len(subbotHosts))
+		for i, h := range subbotHosts {
+			hosts[i] = strconv.Quote(h)
+		}
+		child = fmt.Sprintf(", unless a subbot child of %s runs as that bot (its bundle's slug or manifest name)", strings.Join(hosts, " or "))
 	}
 	var out []string
 	for _, o := range block.Overrides {
@@ -998,7 +1016,7 @@ func unreachedBotCellWarnings(block *llmroute.Policy, bots []llmroute.BotIdentit
 			}
 		}
 		if !reached {
-			out = append(out, fmt.Sprintf("routing: override cell %q is scoped to bot %q, which reaches none of this integration's enabled bots (%s) by bot id or manifest name — no enabled bot's own launch folds it; it reaches only a subbot child of one whose bundle answers to that name (its slug or manifest name)", o.Selector, sel.Bot, enabled))
+			out = append(out, fmt.Sprintf("routing: override cell %q is scoped to bot %q, which reaches none of this integration's enabled bots (%s) by bot id or manifest name — no enabled bot's own launch folds it: a typo, or a bot not enabled on this integration%s", o.Selector, sel.Bot, enabled, child))
 		}
 	}
 	return out

@@ -38,6 +38,15 @@ func TestComposedPairRefusalNamesTheWrittenCellAndItsLevel(t *testing.T) {
 	if strings.Contains(err.Error(), `override cell "work"`) {
 		t.Errorf("refusal = %v, names the bare target \"work\", which no record holds", err)
 	}
+	// The integration's level carries the provenance label "webhook", which
+	// the refusal names beside the record an operator edits; a level whose
+	// label is its record's name carries no gloss.
+	if !strings.Contains(err.Error(), `written at level "webhook" (the integration's routing block)`) {
+		t.Errorf("refusal = %v\nwant the integration's level named as its routing block", err)
+	}
+	if strings.Contains(err.Error(), `written at level "team" (`) {
+		t.Errorf("refusal = %v\nglosses the team's level, whose label names its record", err)
+	}
 }
 
 // A launch row is named as the launch wrote it, beside a cell named by its

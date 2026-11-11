@@ -453,7 +453,7 @@ func TestReviShippedBots_TheActivationBlockPassesTheLaunchScreens(t *testing.T) 
 			if err != nil {
 				t.Fatal(err)
 			}
-			warnings, err := runview.ScreenPolicyOverrides(path, string(src), dir, "", llmroute.BotIdentity{ID: bot}, pol)
+			warnings, _, err := runview.ScreenPolicyOverrides(path, string(src), dir, "", llmroute.BotIdentity{ID: bot}, pol)
 			if err != nil || len(warnings) != 0 {
 				t.Fatalf("write screen = (%q, %v), want the activation block screened clean", warnings, err)
 			}

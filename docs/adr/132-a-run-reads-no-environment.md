@@ -615,13 +615,15 @@ stated here:
   over either (`llmroute.Selector.MatchBot`; operator decision of 2026-11-11). It is REQUIRED on a
   route-scoped and on a supervisor cell (§2's guard; supervisor names collide across bots the same
   way) and OPTIONAL on a node cell, whose stored records predate it. `*/…` is the greppable spelling
-  of "every bot": `*/x` and `x` are one selector, both reaching a launch that names no bot. A stored
+  of "every bot": `*/x` and `x` are one selector, both reaching a launch that names no bot, so a
+  level writing both on one field pins it twice and is refused (`llmroute.Validate`). A stored
   `*/x` was, before this disposition, a node glob no node id matched; it now reaches every bot's
   `x`. Among cells reaching one site, the node target's specificity decides first ("a more specific
   selector wins wherever it is written"), then the bot part — no bot part and `*/` < a glob < the
   manifest name < the bot id (`llmroute.BotMatch`) — then the level each cell's provenance names
   (`llmroute.SourceRank`, env < platform < org < team < bot < binding < run; the launch refuses a
-  layer list out of that order), the first written breaking a tie (`runview.policyOverrideEntries`).
+  layer list out of that order), and at one level the written selector first in byte order — a
+  key no other level moves, which the snapshot's order is not (`runview.policyOverrideEntries`).
   A subbot child's identity is its own, and the same on every lane (`runview.SubbotChildBotIdentity`):
   the slug of the bundle it compiled from — the directory a catalogue or a snapshot collection files
   it under, the bot id a top-level launch of that bundle carries — and that bundle's manifest name.
@@ -649,9 +651,11 @@ stated here:
   selector matches nothing in the run's workflow is warned the same way at launch, naming the row: as
   a typo, or — in a workflow with a subbot node — as a row that still folds into every child; a
   child's fold of its root's rows warns on none, a root row naming the root's sites too. The integration write screen also warns for a cell whose bot part reaches none
-  of the enabled bots by id or manifest name, naming them and the one reach such a cell keeps — a
-  subbot child of an enabled bot that runs as the cell's bot (the screen does not resolve the
-  children). The match counts are NOT recorded in the provenance map: the
+  of the enabled bots by id or manifest name, naming them, as a typo or a bot not enabled on the
+  integration — and, as a condition, a subbot child that runs as the cell's bot, for the enabled
+  bots whose workflow declares a subbot node (`runview.ScreenPolicyOverrides` reports it) or that the
+  screen could not resolve or compile (it does not resolve the children). The match counts are NOT
+  recorded in the provenance map: the
   snapshot's `Sources` is a persisted `field → level` map, and a count there is a schema change this
   slice does not make — named follow-up.
 - **One reading of a pinned route or supervisor**, `ModelOverrides.EffectiveFallback` /

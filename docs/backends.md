@@ -1625,7 +1625,9 @@ hint beside a gateway model, the gateway hint beside a model that is not a
 gateway route. When a cell or a launch row wrote one of the fields that
 refusal reads, the launch refuses it, naming each field and where it came from — a
 launch row by its selector, a cell by the selector its level wrote (bot part
-included) and that level (`written at level "team"`) — and, where the field
+included) and that level (`written at level "team"`; an integration's cell
+reads `written at level "webhook" (the integration's routing block)`, the
+label its provenance carries) — and, where the field
 to change is one the bot wrote, what the cell can pin instead: `"backend":
 "claw"` beside a backend that cannot serve the gateway, `"provider":
 "openai_compatible"` (with `"backend": "claw"` where the backend cannot serve
@@ -1652,7 +1654,9 @@ decides per selector and field
 ([ADR-129](adr/129-per-integration-typed-routing-overrides.md)): among the
 cells that reach one site, the node target's specificity decides first, then
 the bot part (below), then the level — a bot's own `routing:` cell or an
-integration's wins over the team's on the same selector. A launch's own row
+integration's wins over the team's on the same selector, and on two node
+selectors as specific (`*iew` and `rev*` on `review`) too — then, at one
+level, the selector first in byte order. A launch's own row
 wins a cell on the same selector, and a launch `*` row overrides its fields
 in every node cell; a cell on a more specific node selector than a launch
 row other than `*` still wins the fields both pin (a `reviewer_claude` cell
@@ -1676,12 +1680,15 @@ selector := [ <bot> "/" ] <target>
   every bot the record reaches); a route-scoped or supervisor cell MUST carry
   it, since node ids and supervisor names collide across bots — `*/…` spells
   "every bot" on purpose: `*/x` and `x` are one selector, and both reach a
-  launch that names no bot. The launch resolves it: a cell for another bot
+  launch that names no bot — a record writing both on one field is refused
+  as one that pins it twice. The launch resolves it: a cell for another bot
   drops, a cell for this bot folds as its bare target. On one target the
   more specific bot part wins — no bot part and `*/` < a glob < the manifest
   name < the bot id — and at the same bot part the nearer level's cell
   (platform < org < team < the bot's manifest < integration, schedule or
-  trigger < run), the first written breaking a tie. A subbot child is a run
+  trigger < run); two globs of one level reaching the bot tie, and the one
+  first in byte order wins (`*-pool/x` over `review-*/x`), whatever another
+  level writes on either. A subbot child is a run
   of its own bot, the bot a top-level launch of its bundle would be: its
   slug — the bundle's directory, the name a catalogue or a snapshot
   collection files it under — and its manifest name, on every lane. It folds
@@ -1740,7 +1747,10 @@ selector := [ <bot> "/" ] <target>
   integration's write screen and once per name at launch. The integration's
   write screen also warns for a cell whose bot part reaches none of its
   enabled bots by id or manifest name, naming them: no enabled bot's own
-  launch folds it, only a subbot child of one that runs as that bot.
+  launch folds it — a typo, or a bot not enabled on the integration —
+  unless a subbot child of an enabled bot runs as that bot, a reach the
+  warning names only for the enabled bots whose workflow declares a subbot
+  node or that the screen could not resolve or compile.
 
 Moving every site of the shipped Revi pair onto a team's gateway is then,
 on the forge integration (or the team's policy):

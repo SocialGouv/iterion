@@ -773,17 +773,26 @@ func validatePolicy(p Policy, gatewayModels bool) error {
 			return fmt.Errorf("llmroute: overrides: %w", err)
 		}
 	}
-	seenCell := map[string]bool{}
+	// One cell per (selector, field). `*/x` and `x` both reach every bot
+	// (Selector.MatchBot), so they are one selector: keyed on the target.
+	seenCell := map[string]string{}
 	for _, o := range p.Overrides {
+		selector := o.Selector
+		if sel, err := ParseSelector(o.Selector); err == nil && sel.MatchBot(BotIdentity{}) == BotMatchAll {
+			selector = sel.Target
+		}
 		for _, cell := range overrideCells {
 			if cell.get(o) == "" {
 				continue
 			}
-			key := o.Selector + "\x00" + cell.name
-			if seenCell[key] {
+			key := selector + "\x00" + cell.name
+			if written, seen := seenCell[key]; seen {
+				if written != o.Selector {
+					return fmt.Errorf("llmroute: overrides pins %s.%s and %s.%s — %q and %q are one selector (a `*/` bot part reaches every bot, as no bot part does), so the later would silently win", written, cell.name, o.Selector, cell.name, written, o.Selector)
+				}
 				return fmt.Errorf("llmroute: overrides pins %s.%s twice — the later would silently win", o.Selector, cell.name)
 			}
-			seenCell[key] = true
+			seenCell[key] = o.Selector
 		}
 	}
 	if p.Providers != nil && len(p.Providers) == 0 {

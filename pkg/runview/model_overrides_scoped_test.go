@@ -108,7 +108,7 @@ func TestZeroMatch_ACellNamingTheBotThatReachesNothingIsWarned(t *testing.T) {
 	if err := os.WriteFile(path, []byte(scopedScreenBot), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	warnings, err := ScreenPolicyOverrides(path, scopedScreenBot, "", "", llmroute.BotIdentity{ID: "scoped"}, pol)
+	warnings, _, err := ScreenPolicyOverrides(path, scopedScreenBot, "", "", llmroute.BotIdentity{ID: "scoped"}, pol)
 	if err != nil {
 		t.Fatalf("screen: %v", err)
 	}
@@ -294,7 +294,8 @@ func TestFold_BotScopedPrecedence_BotPartThenLevel(t *testing.T) {
 			precedenceLayer(llmroute.SourcePlatform, ov("review-pr/converge", "EXACT")),
 		}, "review-pr", node, "EXACT"},
 		{"a glob beats */ and an unscoped cell", []llmroute.Layer{
-			precedenceLayer(llmroute.SourceWebhook, ov("converge", "UNSCOPED"), ov("*/converge", "STAR")),
+			precedenceLayer(llmroute.SourceWebhook, ov("converge", "UNSCOPED")),
+			precedenceLayer(llmroute.SourceTeam, ov("*/converge", "STAR")),
 			precedenceLayer(llmroute.SourcePlatform, ov("rev*/converge", "GLOB")),
 		}, "review-pr", node, "GLOB"},
 		{"a binding's exact supervisor cell beats the team's */ cell", []llmroute.Layer{
@@ -312,6 +313,107 @@ func TestFold_BotScopedPrecedence_BotPartThenLevel(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Two cells of one level with the same bot match on one target and field —
+// two globs over the bot's names — tie on the level, and the written
+// selector first in byte order wins: a key no other level moves. The
+// snapshot lists its selectors in the order Resolve first met them across
+// every level, so a nearer level writing another field on one of them, or
+// the level listing them the other way, would otherwise move the winner.
+func TestFold_ASameLevelTieIsDecidedByNoOtherLevel(t *testing.T) {
+	fork := llmroute.BotIdentity{ID: "review-pr-pool", Name: "review-pr"}
+	byName := llmroute.Override{Selector: "review-*/work", Backend: "claude_code"}
+	bySlug := llmroute.Override{Selector: "*-pool/work", Backend: "claw"} // sorts first: '*' < 'r'
+	for _, order := range []struct {
+		name  string
+		cells []llmroute.Override
+	}{
+		{"name glob written first", []llmroute.Override{byName, bySlug}},
+		{"slug glob written first", []llmroute.Override{bySlug, byName}},
+	} {
+		for _, nearer := range []struct {
+			name  string
+			cells []llmroute.Override
+		}{
+			{"team alone", nil},
+			{"the integration's effort on the name glob", []llmroute.Override{{Selector: byName.Selector, Effort: "high"}}},
+			{"the integration's effort on the slug glob", []llmroute.Override{{Selector: bySlug.Selector, Effort: "high"}}},
+		} {
+			t.Run(order.name+", "+nearer.name, func(t *testing.T) {
+				layers := []llmroute.Layer{precedenceLayer(llmroute.SourceTeam, order.cells...)}
+				if nearer.cells != nil {
+					layers = append([]llmroute.Layer{precedenceLayer(llmroute.SourceWebhook, nearer.cells...)}, layers...)
+				}
+				snap := precedenceSnapshot(t, layers...)
+				got := toModelOverrides(EffectiveModelOverrides(nil, snap, fork)).ForNode("work", ir.NodeAgent)
+				if got.Backend != "claw" {
+					t.Errorf("work backend = %q, want claw, the team's %q (first in byte order); snapshot order %v", got.Backend, bySlug.Selector, snapshotSelectors(snap))
+				}
+				if nearer.cells != nil && got.Effort != "high" {
+					t.Errorf("work effort = %q, want the integration's high", got.Effort)
+				}
+			})
+		}
+	}
+}
+
+// Two cells on DIFFERENT targets of equal specificity — two node globs as
+// literal, `*iew` and `rev*` on node `review` — decide by the bot part,
+// then the level, then the written selector first in byte order, as two
+// cells on one target do: the nearer level wins whichever selector it
+// wrote, and at one level neither the order the level wrote them in nor a
+// nearer level writing another field on one of them moves the winner. A
+// cell whose fields two levels wrote competes field by field at each one.
+func TestFold_AnEqualSpecificityTieAcrossTargetsGoesToTheNearerLevel(t *testing.T) {
+	bot := llmroute.BotIdentity{ID: "b"}
+	cell := func(sel, backend, effort string) llmroute.Override {
+		return llmroute.Override{Selector: sel, Backend: backend, Effort: effort}
+	}
+	for _, tc := range []struct {
+		name   string
+		layers []llmroute.Layer
+		want   string
+	}{
+		{"the integration's *iew over the team's rev*", []llmroute.Layer{
+			precedenceLayer(llmroute.SourceWebhook, cell("*iew", "claw", "")),
+			precedenceLayer(llmroute.SourceTeam, cell("rev*", "claude_code", "")),
+		}, "claw"},
+		{"the integration's rev* over the team's *iew", []llmroute.Layer{
+			precedenceLayer(llmroute.SourceWebhook, cell("rev*", "claw", "")),
+			precedenceLayer(llmroute.SourceTeam, cell("*iew", "claude_code", "")),
+		}, "claw"},
+		{"one level, *iew written first", []llmroute.Layer{
+			precedenceLayer(llmroute.SourceTeam, cell("*iew", "claw", ""), cell("rev*", "claude_code", "")),
+		}, "claw"},
+		{"one level, rev* written first", []llmroute.Layer{
+			precedenceLayer(llmroute.SourceTeam, cell("rev*", "claude_code", ""), cell("*iew", "claw", "")),
+		}, "claw"},
+		{"one level, the integration's effort on rev*", []llmroute.Layer{
+			precedenceLayer(llmroute.SourceWebhook, cell("rev*", "", "high")),
+			precedenceLayer(llmroute.SourceTeam, cell("*iew", "claw", ""), cell("rev*", "claude_code", "")),
+		}, "claw"},
+		{"a cell two levels wrote competes at each", []llmroute.Layer{
+			precedenceLayer(llmroute.SourceWebhook, cell("*iew", "", "high"), cell("rev*", "claw", "")),
+			precedenceLayer(llmroute.SourceTeam, cell("*iew", "claude_code", "")),
+		}, "claw"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			snap := precedenceSnapshot(t, tc.layers...)
+			got := toModelOverrides(EffectiveModelOverrides(nil, snap, bot)).ForNode("review", ir.NodeAgent)
+			if got.Backend != tc.want {
+				t.Errorf("review backend = %q, want %q; snapshot order %v, folded %+v", got.Backend, tc.want, snapshotSelectors(snap), EffectiveModelOverrides(nil, snap, bot))
+			}
+		})
+	}
+}
+
+func snapshotSelectors(pol *store.RunLLMRoutePolicy) []string {
+	out := make([]string, 0, len(pol.Overrides))
+	for _, o := range pol.Overrides {
+		out = append(out, o.Selector)
+	}
+	return out
 }
 
 // A glob, a literal or a route cell scoped to a bot never reaches a launch
@@ -363,7 +465,7 @@ func TestZeroMatch_ARecoveryAgentCellReachesItsRung(t *testing.T) {
 			t.Fatal(err)
 		}
 		pol := &store.RunLLMRoutePolicy{Overrides: []store.RunLLMRouteOverride{{Selector: selector, Model: "zai/glm-5.3"}}}
-		warnings, err := ScreenPolicyOverrides(path, src, "", "", botIdentityFor("vabot"), pol)
+		warnings, _, err := ScreenPolicyOverrides(path, src, "", "", botIdentityFor("vabot"), pol)
 		if err != nil {
 			t.Fatalf("screen %s: %v", selector, err)
 		}

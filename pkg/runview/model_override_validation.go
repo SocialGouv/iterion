@@ -179,23 +179,25 @@ func routeCellCrossings(wf *ir.Workflow, overrides model.ModelOverrides, runPerm
 // that would refuse a co-enabled bot's webhook delivery must say so at
 // save time, not at the first delivery after it. NOT an enforcement — a
 // bot enabled after the write is never screened, and the launch refusal
-// above stays the gate.
-func ScreenPolicyOverrides(path, source, bundleDir, bundleEntry string, bot llmroute.BotIdentity, pol *store.RunLLMRoutePolicy) ([]string, error) {
+// above stays the gate. declaresSubbot reports whether the screened
+// workflow declares a subbot node — a child of it runs as its own bot and
+// folds the cells written for that bot (FoldForSubbotChild); a policy with
+// no override cell is not screened and reports none.
+func ScreenPolicyOverrides(path, source, bundleDir, bundleEntry string, bot llmroute.BotIdentity, pol *store.RunLLMRoutePolicy) (warnings []string, declaresSubbot bool, err error) {
 	if pol == nil || len(pol.Overrides) == 0 {
-		return nil, nil
+		return nil, false, nil
 	}
 	// A save-time screen that executes nothing: no run, no workspace — the
 	// plugin `{{workspace}}` placeholders stay unresolved (#1800).
 	wf, _, _, err := compileForLaunch(path, source, bundleDir, bundleEntry, "", AnalysisTrust)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if wf == nil {
-		return nil, nil
+		return nil, false, nil
 	}
 	sourced := foldSourcedOverrides(nil, pol, bot)
 	overrides := toModelOverrides(plainModelOverrideEntries(sourced))
-	var warnings []string
 	for _, node := range wf.Nodes {
 		llm, ok := node.(ir.LLMNode)
 		if !ok {
@@ -219,7 +221,7 @@ func ScreenPolicyOverrides(path, source, bundleDir, bundleEntry string, bot llmr
 	// its manifest name) that reaches nothing in it — every time it is
 	// screened, not once per process.
 	warnings = append(warnings, zeroMatchWarnings(wf, pol, bot)...)
-	return warnings, nil
+	return warnings, declaresSubbotNode(wf), nil
 }
 
 func firstPermission(values ...string) string {

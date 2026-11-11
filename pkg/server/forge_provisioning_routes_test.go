@@ -393,18 +393,40 @@ func TestPatchForgeIntegration_RoutingIsNotItsSurface(t *testing.T) {
 	}
 }
 
+// screenProbeSubbotHost is a bot whose workflow declares a subbot node: a
+// child of it runs as its own bot and folds a cell for that bot.
+const screenProbeSubbotHost = `
+schema vout:
+  ok: bool
+
+subbot run_child:
+  source: "../golden-master/main.bot"
+  output: vout
+
+workflow subbot_host:
+  entry: run_child
+  run_child -> done
+`
+
 // The write screen judges the bots the integration launches as they
 // launch: a team fork answers to its slug AND to its manifest name, a cell
 // scoped to a bot that neither spelling reaches is warned — naming the
-// enabled bots and the subbot child reach it keeps — and a cell naming the
-// fork's manifest name whose target matches nothing in it is a zero-match
-// typo.
+// enabled bots, as a typo or a bot not enabled here, and a subbot child
+// only of an enabled bot whose workflow declares a subbot node — and a cell
+// naming the fork's manifest name whose target matches nothing in it is a
+// zero-match typo.
 func TestRepoBotsScreen_ACellReachingNoEnabledBotIsWarned(t *testing.T) {
 	s := newForgeTestServer(t)
 	s.botSources = botsource.NewMemoryStore()
 	if _, err := s.botSources.Create(store.WithTenant(context.Background(), "t1"), botsource.BotSource{
 		TenantID: "t1", Slug: "review-pr-pool", Origin: "forked:review-pr",
 		Files: map[string]string{botsource.MainBotFile: screenProbeBot, "manifest.yaml": "name: review-pr\nschema_version: 1\n"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.botSources.Create(store.WithTenant(context.Background(), "t1"), botsource.BotSource{
+		TenantID: "t1", Slug: "subbot-host",
+		Files: map[string]string{botsource.MainBotFile: screenProbeSubbotHost},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -430,10 +452,44 @@ func TestRepoBotsScreen_ACellReachingNoEnabledBotIsWarned(t *testing.T) {
 	if len(reachNone) != 1 || !strings.Contains(reachNone[0], `"revi-converse/converse_agent"`) || !strings.Contains(reachNone[0], `"review-pr-pool"`) {
 		t.Fatalf("reach-none warnings = %v, want one for revi-converse/converse_agent naming the enabled review-pr-pool (all: %v)", reachNone, warnings)
 	}
-	// A subbot child of an enabled bot folds a cell for its own bot: the
-	// warning names that reach instead of saying no launch folds the cell.
-	if strings.Contains(reachNone[0], "no launch of this integration folds it") || !strings.Contains(reachNone[0], "only a subbot child") {
-		t.Fatalf("reach-none warning = %q, want it to name the subbot child reach, never that no launch folds the cell", reachNone[0])
+	// No enabled bot declares a subbot node: nothing folds the cell for an
+	// enabled bot, and the warning claims no child reach.
+	if !strings.Contains(reachNone[0], "a typo, or a bot not enabled on this integration") || strings.Contains(reachNone[0], "subbot") {
+		t.Fatalf("reach-none warning = %q, want a typo or a bot not enabled here, and no subbot child reach (no enabled bot declares a subbot node)", reachNone[0])
+	}
+	// An enabled bot declaring a subbot node: a child of it folds a cell
+	// for its own bot, so the warning names that reach as a condition, and
+	// names that bot alone.
+	hosted := s.routingBlastRadiusWarnings(context.Background(), "t1", []string{"review-pr-pool", "subbot-host"}, block)
+	var hostedNone []string
+	for _, w := range hosted {
+		if strings.Contains(w, "reaches none of this integration's enabled bots") {
+			hostedNone = append(hostedNone, w)
+		}
+	}
+	if len(hostedNone) != 1 || !strings.Contains(hostedNone[0], `unless a subbot child of "subbot-host" runs as that bot`) || strings.Contains(hostedNone[0], `child of "review-pr-pool"`) {
+		t.Fatalf("reach-none warnings = %v, want one naming a subbot child of subbot-host alone (all: %v)", hostedNone, hosted)
+	}
+	// An enabled bot the screen cannot resolve, or cannot compile, may
+	// declare one: the condition names it beside its own could-not-be-
+	// screened warning.
+	if _, err := s.botSources.Create(store.WithTenant(context.Background(), "t1"), botsource.BotSource{
+		TenantID: "t1", Slug: "broken-host",
+		Files: map[string]string{botsource.MainBotFile: "workflow broken:\n  entry: nowhere\n"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, unscreened := range []string{"ghost", "broken-host"} {
+		got := s.routingBlastRadiusWarnings(context.Background(), "t1", []string{"review-pr-pool", unscreened}, block)
+		var none []string
+		for _, w := range got {
+			if strings.Contains(w, "reaches none of this integration's enabled bots") {
+				none = append(none, w)
+			}
+		}
+		if len(none) != 1 || !strings.Contains(none[0], `unless a subbot child of "`+unscreened+`" runs as that bot`) || !strings.Contains(strings.Join(got, "\n"), `bot "`+unscreened+`" could not be`) {
+			t.Fatalf("warnings = %v, want the unscreened %s warned and named as a bot a subbot child may run under", got, unscreened)
+		}
 	}
 	if !strings.Contains(joined, `"review-pr/wrok"`) || !strings.Contains(joined, "matches no node") {
 		t.Fatalf("warnings = %v, want the zero-match typo review-pr/wrok, a cell naming the fork's manifest name", warnings)

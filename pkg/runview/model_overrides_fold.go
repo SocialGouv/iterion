@@ -3,6 +3,7 @@ package runview
 import (
 	"fmt"
 	"math"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -54,13 +55,14 @@ import (
 // downstream matches. Among the cells reaching one site, the node target's
 // specificity decides first (ForNode, in the folded list), then the bot
 // part — unscoped and `*/` (every bot) < a glob < the manifest name < the
-// bot id (llmroute.BotMatch) — then the level: of two cells with the same
-// bot match on the same target and field, the one whose provenance names
-// the level nearer the launch (llmroute.SourceRank) folds and the other
-// drops, the first written winning a tie of level. The folded list
-// carries each bot-match class in turn, least specific first, so on one
-// node score the later — more specific — class wins. The snapshot keeps
-// the cells as the levels wrote them; the folded list is this bot's.
+// bot id (llmroute.BotMatch) — then the level whose provenance names it
+// nearer the launch (llmroute.SourceRank), then, at one level, the written
+// selector first in byte order (cellOutranks). Of two cells with the same
+// bot match on the same target and field, the one that ranks lower drops;
+// the folded list carries the rest lowest first, so on one node score the
+// later rule ForNode takes is the one that ranks higher — two targets of
+// equal specificity included. The snapshot keeps the cells as the levels
+// wrote them; the folded list is this bot's.
 
 // overrideOrigin names the layer that wrote a folded override entry —
 // the level half of the composed-pair refusal's naming (#2637).
@@ -93,15 +95,27 @@ type sourcedOverrideEntry struct {
 
 // describe names the record one field of a folded entry came from: a
 // launch row by its selector; a policy cell by the selector its level
-// wrote and that level, when the snapshot records it.
+// wrote and that level (levelName), when the snapshot records it.
 func (e sourcedOverrideEntry) describe(field string) string {
 	if e.origin != originPolicy || e.written == "" {
 		return fmt.Sprintf("%s %q", e.origin, e.Selector)
 	}
 	if level := e.levels[field]; level != "" {
-		return fmt.Sprintf("%s %q written at level %q", e.origin, e.written, level)
+		return fmt.Sprintf("%s %q written at level %s", e.origin, e.written, levelName(level))
 	}
 	return fmt.Sprintf("%s %q", e.origin, e.written)
+}
+
+// levelName renders a level's provenance label as a refusal names it. The
+// integration's level carries the label "webhook" (llmroute.SourceWebhook)
+// while the operator writes it as the forge integration's routing block,
+// so it names that record beside the label; the other labels read as their
+// level's own name (team, org, platform, …).
+func levelName(label string) string {
+	if label == llmroute.SourceWebhook {
+		return strconv.Quote(label) + " (the integration's routing block)"
+	}
+	return strconv.Quote(label)
 }
 
 // EffectiveModelOverrides folds the resolved routing policy's override
@@ -274,10 +288,11 @@ func foldSourcedOverrides(
 // The bot dimension resolves here (see the file header): a cell whose bot
 // part does not reach bot drops; the others fold as their bare targets, one
 // cell per (bot match, target, field) — the level nearest the launch, then
-// the first written — grouped by bot match, least specific first, each
-// group in snapshot order. Each folded entry stays one written cell, with
-// the fields it lost to a nearer cell blanked; an entry left with no field
-// drops. A selector the grammar cannot read stays as written among the
+// the written selector first in byte order (cellOutranks). Each folded
+// entry is one written cell's fields of one level, the fields it lost to a
+// higher-ranked cell dropped, ordered by bot match, least specific first,
+// then by cellOutranks, lowest first; a cell left with no field folds no
+// entry. A selector the grammar cannot read stays as written among the
 // every-bot cells — it matches nothing; the launch chokepoint
 // (llmroute.Validate at resolveRunLLMRoutePolicy) refuses such a record
 // before any fold.
@@ -294,7 +309,11 @@ func policyOverrideEntries(pol *store.RunLLMRoutePolicy, bot llmroute.BotIdentit
 		match         llmroute.BotMatch
 		target, field string
 	}
-	type holder struct{ level, at int }
+	type holder struct {
+		level   int
+		written string
+		at      int
+	}
 	cells := make([]folded, 0, len(pol.Overrides))
 	held := map[cellKey]holder{}
 	for _, o := range pol.Overrides {
@@ -322,26 +341,71 @@ func policyOverrideEntries(pol *store.RunLLMRoutePolicy, bot llmroute.BotIdentit
 			level := cellLevel(pol.Sources, o.Selector, field.name)
 			k := cellKey{match, target, field.name}
 			if h, ok := held[k]; ok {
-				if level >= h.level {
+				if !cellOutranks(level, o.Selector, h.level, h.written) {
 					*field.of(&cells[at].entry) = ""
 					continue
 				}
 				*field.of(&cells[h.at].entry) = ""
 			}
-			held[k] = holder{level: level, at: at}
+			held[k] = holder{level: level, written: o.Selector, at: at}
 		}
 	}
-	out := make([]sourcedOverrideEntry, 0, len(cells))
-	for match := llmroute.BotMatchAll; match <= llmroute.BotMatchID; match++ {
-		for _, c := range cells {
-			e := c.entry
-			if c.match != match || (e.Backend == "" && e.Model == "" && e.Provider == "" && e.Effort == "") {
+	// One folded entry per cell and level: a cell whose fields two levels
+	// wrote competes at each. On one node score ForNode takes the later
+	// rule, so the list orders the entries the way a site ranks them, the
+	// lowest first — the bot match, then cellOutranks — and two targets of
+	// equal specificity (two globs as literal) decide as two cells on one
+	// target do, never by the snapshot's order.
+	type piece struct {
+		match   llmroute.BotMatch
+		level   int
+		written string
+		entry   ModelOverrideEntry
+	}
+	var pieces []piece
+	for _, c := range cells {
+		first := len(pieces)
+		for _, field := range overrideEntryFields {
+			value := *field.of(&c.entry)
+			if value == "" {
 				continue
 			}
-			out = append(out, sourcedOverrideEntry{ModelOverrideEntry: e, origin: originPolicy, written: c.written, levels: cellLevels(pol.Sources, c.written, e)})
+			level := cellLevel(pol.Sources, c.written, field.name)
+			at := first
+			for at < len(pieces) && pieces[at].level != level {
+				at++
+			}
+			if at == len(pieces) {
+				pieces = append(pieces, piece{match: c.match, level: level, written: c.written, entry: ModelOverrideEntry{Selector: c.entry.Selector}})
+			}
+			*field.of(&pieces[at].entry) = value
 		}
 	}
+	sort.SliceStable(pieces, func(i, j int) bool {
+		if pieces[i].match != pieces[j].match {
+			return pieces[i].match < pieces[j].match
+		}
+		return cellOutranks(pieces[j].level, pieces[j].written, pieces[i].level, pieces[i].written)
+	})
+	out := make([]sourcedOverrideEntry, 0, len(pieces))
+	for _, p := range pieces {
+		out = append(out, sourcedOverrideEntry{ModelOverrideEntry: p.entry, origin: originPolicy, written: p.written, levels: cellLevels(pol.Sources, p.written, p.entry)})
+	}
 	return out
+}
+
+// cellOutranks reports whether a cell written as written at level wins a
+// field over another cell of the same bot match that reaches the same node
+// as specifically: the level nearer the launch, then, at one level, the
+// written selector first in byte order. The snapshot's order is the order
+// Resolve first met each selector across every level, which a nearer level
+// moves by writing any field of one of them; the written selector is a key
+// no other level moves.
+func cellOutranks(level int, written string, otherLevel int, otherWritten string) bool {
+	if level != otherLevel {
+		return level < otherLevel
+	}
+	return written < otherWritten
 }
 
 // cellLevels maps each field a folded cell still pins to the provenance
@@ -387,7 +451,8 @@ var overrideEntryFields = []struct {
 
 // unrankedLevel is the level of a cell whose provenance names no ranked
 // layer — a snapshot built without llmroute.Resolve: after every ranked
-// level, and equal among themselves, so the first written wins.
+// level, and equal among themselves, so the written selector decides
+// between two of them (cellOutranks).
 const unrankedLevel = math.MaxInt
 
 // cellLevel reads the level that wrote one field of one cell, as a rank on
@@ -457,11 +522,8 @@ func unreachedLaunchRowWarnings(wf *ir.Workflow, rows []ModelOverrideEntry, bot 
 		subject = fmt.Sprintf("bot %q", bot.ID)
 	}
 	why := "a typo, or a site the workflow does not declare"
-	for _, n := range wf.Nodes {
-		if n.NodeKind() == ir.NodeSubbot {
-			why = "it still folds into every subbot child, where it pins a site the child declares"
-			break
-		}
+	if declaresSubbotNode(wf) {
+		why = "it still folds into every subbot child, where it pins a site the child declares"
 	}
 	var out []string
 	seen := map[string]bool{}
@@ -473,6 +535,18 @@ func unreachedLaunchRowWarnings(wf *ir.Workflow, rows []ModelOverrideEntry, bot 
 		out = append(out, fmt.Sprintf("routing: the launch's own override row %q matches no node, fallbacks: route or supervisor of %s — the row pins nothing here (%s)", r.Selector, subject, why))
 	}
 	return out
+}
+
+// declaresSubbotNode reports whether wf runs a subbot child: a run of its
+// own bot, which folds the root's launch rows and the cells written for
+// that bot (FoldForSubbotChild).
+func declaresSubbotNode(wf *ir.Workflow) bool {
+	for _, n := range wf.Nodes {
+		if n.NodeKind() == ir.NodeSubbot {
+			return true
+		}
+	}
+	return false
 }
 
 // zeroMatchWarnings is unmatchedPolicyCells rendered as warnings.
