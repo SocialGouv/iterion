@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [5.21.1](https://github.com/SocialGouv/iterion/compare/v5.21.0...v5.21.1) (2026-11-11)
+
+### Bug Fixes
+
+* **model:** a third-party MCP wildcard splices its tools in a stable order ([#3171](https://github.com/SocialGouv/iterion/issues/3171)) ([45004a4](https://github.com/SocialGouv/iterion/commit/45004a44f36e3127422c828ba7a2671e019bf3ed)), closes [#3132](https://github.com/SocialGouv/iterion/issues/3132), references [docs/merge-policy.md#a-parked-gate-decided-2026-11-10](https://github.com/docs/merge-policy.md/issues/a-parked-gate-decided-2026-11-10)
+
+    <details><summary>why</summary>
+
+    A node holding an `mcp.<server>.*` wildcard had a tools prefix whose order changed **between calls on an unchanged tree**. That silently gave back part of the prompt-cache win measured in #3132.
+
+    </details>
+
 ## [5.21.0](https://github.com/SocialGouv/iterion/compare/v5.20.0...v5.21.0) (2026-11-11)
 
 ### Features
