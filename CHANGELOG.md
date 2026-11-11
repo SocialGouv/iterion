@@ -3,6 +3,119 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [5.21.0](https://github.com/SocialGouv/iterion/compare/v5.20.0...v5.21.0) (2026-11-11)
+
+### Features
+
+* **retrypolicy:** one usage window every automatic re-launcher reads ([0486575](https://github.com/SocialGouv/iterion/commit/04865752e48ff27e5c4c333e90f0e00b60ebd8ff)), references [bko#82](https://github.com/bko/issues/82) [#3127](https://github.com/SocialGouv/iterion/issues/3127) [#3032](https://github.com/SocialGouv/iterion/issues/3032) [#1585](https://github.com/SocialGouv/iterion/issues/1585)
+
+    <details><summary>why</summary>
+
+    bko#82 parked at 03:58Z on z.ai's weekly [1310] wall: the pull-request notice promised a resume at 17:25Z on 14/11, and the sweeper's pull-forward probe relaunched the run at 04:14, 04:58 and 05:59Z, each attempt USAGE_LIMIT_BLOCKED, each a pod and ten of the run's active minutes.
+
+    </details>
+* **server:** probe a usage window once per credential, release its runs on the answer ([4b001f6](https://github.com/SocialGouv/iterion/commit/4b001f635a75f334a2212295a306506809b2464f)), references [#3127](https://github.com/SocialGouv/iterion/issues/3127) [#3032](https://github.com/SocialGouv/iterion/issues/3032) [#1585](https://github.com/SocialGouv/iterion/issues/1585)
+
+    <details><summary>why</summary>
+
+    The operator's decision on the pull-forward probe before a dated wall (2026-11-10): keep the hourly probe, paid once per credential window instead of once per parked run. Off-by-default probing before the window is replaced.
+
+    </details>
+
+### Bug Fixes
+
+* **runner,credpool,model,runtime:** a chain verdict is the credential's its route spent ([886f8df](https://github.com/SocialGouv/iterion/commit/886f8dfa7f0f47da1a08f27620c9a71e9632aa65)), references [#3127](https://github.com/SocialGouv/iterion/issues/3127) [#3032](https://github.com/SocialGouv/iterion/issues/3032) [#1585](https://github.com/SocialGouv/iterion/issues/1585)
+
+    <details><summary>why</summary>
+
+    Since the chain's route verdicts reached pool health, a dead credential on ANY route of an exhausted chain counted against every lease of the attempt: the runner never recorded whose credential a verdict was about, so it guessed. A chain [the donor's lent subscription -> a five-hour window, the team's z.ai key -> dead] parked on the window, and the healthy donor was counted an auth failure instead of rested on its window — evicted after two runs, and granted straight into its wall in between.…
+
+    </details>
+* **runner,model:** a skipped route's verdict is the credential its refusal met ([4251b15](https://github.com/SocialGouv/iterion/commit/4251b1588fe819161d3bdf673621c14bd2d9022a)), references [#3032](https://github.com/SocialGouv/iterion/issues/3032) [#3127](https://github.com/SocialGouv/iterion/issues/3127) [#3032](https://github.com/SocialGouv/iterion/issues/3032) [#1585](https://github.com/SocialGouv/iterion/issues/1585)
+
+    <details><summary>why</summary>
+
+    A route skipped on a remembered cooldown made no call, so its chain route named no credential keys, and the runner placed its verdict on the plan's prediction or on nobody. Worse, the environment rule ran before the plan: a keyless gateway route was placed on nobody even where the plan names the lent gateway key that funds it (ADR-131 §5). With any other verdict of the attempt placed, that lease took ConditionOK and its auth-failure count was cleared: a dead lent key stayed in rotation, and a…
+
+    </details>
+* **runner:** a chain parks on its first-reopening route, a dead donor stays dead ([169792c](https://github.com/SocialGouv/iterion/commit/169792c4eaa00d8bc46c7dd6e32dbf88ea890848)), references [#3127](https://github.com/SocialGouv/iterion/issues/3127) [#3032](https://github.com/SocialGouv/iterion/issues/3032) [#3127](https://github.com/SocialGouv/iterion/issues/3127) [#3032](https://github.com/SocialGouv/iterion/issues/3032) [#1585](https://github.com/SocialGouv/iterion/issues/1585)
+
+    <details><summary>why</summary>
+
+    Review round 1 on the runner's reading of a usage park (#3127, #3032):
+
+    </details>
+* **runtime:** a subbot's work stays on the parent's max_duration ([afa1cee](https://github.com/SocialGouv/iterion/commit/afa1cee111b501401e25c5059c6b2e1271b62de5)), references [#3127](https://github.com/SocialGouv/iterion/issues/3127) [#3032](https://github.com/SocialGouv/iterion/issues/3032) [#1585](https://github.com/SocialGouv/iterion/issues/1585)
+
+    <details><summary>why</summary>
+
+    The refund on a usage-window stop handed back the whole span since the last booking (review round 1). Executor-less nodes never book, and a failed subbot returns no output, so a subbot whose child worked fifty minutes and then met the wall — or succeeded before the next node met it — left those minutes off the parent's duration cap, cycle after cycle (4h10m of child work under a 120m cap carried as 10m).
+
+    </details>
+* **runtime:** a usage window on any route decides an exhausted chain ([fe44228](https://github.com/SocialGouv/iterion/commit/fe44228686aaaf6ea61b6c46d98b741839dc5935)), references [#3127](https://github.com/SocialGouv/iterion/issues/3127) [#3032](https://github.com/SocialGouv/iterion/issues/3032) [#1585](https://github.com/SocialGouv/iterion/issues/1585)
+
+    <details><summary>why</summary>
+
+    An exhausted fallback chain that met a provider usage window on one route and a dead credential on another was classified AUTH_FAILED: errors.As over ErrChainExhausted.Unwrap() []error found the first ErrAuthFailed of the set wherever it sat, so the run paused for a human on what was a five-hour wait (ten Vetty runs on 2026-11-03, about fifteen hours each).
+
+    </details>
+* **runtime:** a usage window parks the run whichever backend refused it ([9ed58fb](https://github.com/SocialGouv/iterion/commit/9ed58fb1f4d075176aacd2bf56e798850c5a7c29)), references [#3032](https://github.com/SocialGouv/iterion/issues/3032) [#3127](https://github.com/SocialGouv/iterion/issues/3127) [#3032](https://github.com/SocialGouv/iterion/issues/3032) [#1585](https://github.com/SocialGouv/iterion/issues/1585)
+
+    <details><summary>why</summary>
+
+    Backend parity on the usage window (#3032, review round 1). The chain reading and the single-route classification keyed on a typed *delegate.ErrRateLimited{Kind: usage_window}, which only claude_code, pi and the operator's cap raised:
+
+    </details>
+* **runtime:** minutes that only met a usage window leave max_duration ([5efa7de](https://github.com/SocialGouv/iterion/commit/5efa7deecb31fcb26f0601091015a69af37a31d1)), references [#3127](https://github.com/SocialGouv/iterion/issues/3127) [#3032](https://github.com/SocialGouv/iterion/issues/3032) [#1585](https://github.com/SocialGouv/iterion/issues/1585)
+
+    <details><summary>why</summary>
+
+    The wait between attempts was never counted, but every resume of a parked run re-met the wall at zero tokens and still spent ~10 active minutes: Revi Egapro 01a1c307 died on "budget hard limit reached: duration at 90%" after twelve such attempts, days before its window reopened.
+
+    </details>
+* **server,runner,store:** a window's canary got through when its runner says so ([8193d67](https://github.com/SocialGouv/iterion/commit/8193d672821406b9eb2d7aa8801371b8b3c4ff11)), references [#3127](https://github.com/SocialGouv/iterion/issues/3127) [#3127](https://github.com/SocialGouv/iterion/issues/3127) [#3032](https://github.com/SocialGouv/iterion/issues/3032) [#1585](https://github.com/SocialGouv/iterion/issues/1585)
+
+    <details><summary>why</summary>
+
+    The credential window released every wait parked on it once its canary "got through", and read that off the canary's status and the age of its pull: running more than an hour after the pull, finished, or at a human gate. A canary queued an hour before its pod started, served on another credential, or held behind a credential's cap runs past the marker's TTL without having asked the wall anything; read as got-through, it sent every wait of the window into a wall nothing showed fell, the #3127…
+
+    </details>
+* **server,store:** a run released on its window's answer is no probe's guess ([711c384](https://github.com/SocialGouv/iterion/commit/711c384ecc91a0527855d42eb746e90681208069)), references [#3127](https://github.com/SocialGouv/iterion/issues/3127) [#3032](https://github.com/SocialGouv/iterion/issues/3032) [#1585](https://github.com/SocialGouv/iterion/issues/1585)
+
+    <details><summary>why</summary>
+
+    A release was a probe pull, so every reader of the probe marker read it as a speculative probe. A transient refusal of a released run's resume (a mass release is what trips the tenant's concurrency cap or launch rate) went down the probe's stand-down and was put back on the provider's announced instant, days away, although its window's canary had just got past the wall; the answer that released it could not release it again. A released resume deferred past the marker's TTL (the shared circuit)…
+
+    </details>
+* **server,store:** the credential window is the wall's, the window never outlives its arming ([a915c1f](https://github.com/SocialGouv/iterion/commit/a915c1fc907d658b43a685b186c451d72c0faeac)), references [#3127](https://github.com/SocialGouv/iterion/issues/3127) [#3127](https://github.com/SocialGouv/iterion/issues/3127) [#3032](https://github.com/SocialGouv/iterion/issues/3032) [#1585](https://github.com/SocialGouv/iterion/issues/1585)
+
+    <details><summary>why</summary>
+
+    Review round 1 on the usage window every re-launcher reads and on the credential probe (#3127):
+
+    </details>
+* **server:** a released resume that failed for good stands down to its date ([ed767c4](https://github.com/SocialGouv/iterion/commit/ed767c44e9212441a26c2f708b42b709b2a4b18a)), references [#3127](https://github.com/SocialGouv/iterion/issues/3127) [#3032](https://github.com/SocialGouv/iterion/issues/3032)
+
+    <details><summary>why</summary>
+
+    A run released on its credential window's answer whose resume failed was re-armed on the ordinary 15-minute backoff whatever the cause (backOffReleasedRetry). For a refusal that clears on its own — the admission gate's deferral, a stored bot that did not resolve for a store blip — that is the point: a mass release trips the tenant's cap, which frees in minutes. For any other cause it is a loop until the provider's announced instant: a bot redeployed under the run fails its resume identically…
+
+    </details>
+* **server:** a review parked on a usage window is not dead to the gate ([6b28930](https://github.com/SocialGouv/iterion/commit/6b28930d12cc9fbfdff9cabf2aa304ff338ccdbc)), references [#49](https://github.com/SocialGouv/iterion/issues/49) [#68](https://github.com/SocialGouv/iterion/issues/68) [#3127](https://github.com/SocialGouv/iterion/issues/3127) [#3032](https://github.com/SocialGouv/iterion/issues/3032) [#1585](https://github.com/SocialGouv/iterion/issues/1585)
+
+    <details><summary>why</summary>
+
+    At 15:14Z on 2026-11-10 the gate reconciler relaunched buildkit-operator #49 and #68 ("review_died") while their runs were parked on z.ai's [1310] wall: the engine writes failed_resumable / USAGE_LIMIT_BLOCKED before the runner's post-engine steps arm the retry, and a sweep tick in that gap saw no armed retry. Two runs per head then cycled into the same wall, and the head's one relaunch was spent on a quota.
+
+    </details>
+* **server:** one reading of a review that will resume, bounded in time ([0cf4b5e](https://github.com/SocialGouv/iterion/commit/0cf4b5e9a6445b22bb48de073b89ddc257b702de)), references [#3127](https://github.com/SocialGouv/iterion/issues/3127) [#3127](https://github.com/SocialGouv/iterion/issues/3127) [#3032](https://github.com/SocialGouv/iterion/issues/3032) [#1585](https://github.com/SocialGouv/iterion/issues/1585)
+
+    <details><summary>why</summary>
+
+    Review round 1 on the gate's "is this run dead" question (#3127):
+
+    </details>
+
 ## [5.20.0](https://github.com/SocialGouv/iterion/compare/v5.19.0...v5.20.0) (2026-11-10)
 
 ### Features
