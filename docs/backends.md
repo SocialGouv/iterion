@@ -1619,7 +1619,10 @@ refusal reads, the launch refuses it, naming each field and where it came from â
 launch row by its selector, a cell by the selector its level wrote (bot part
 included) and that level (`written at level "team"`); the
 integration's write screen warns instead. A field a slot dial decides is
-the runner's: the launch reads the dial's default and warns. A crossing the
+the runner's: the launch reads the dial's default and warns â€” unless
+dispatch refuses the element whatever a model dial expands to, a gateway
+route and any other model alike (the gateway hint a cell pins on a literal
+`claude_code` node), which the launch refuses. A crossing the
 bot writes alone stays C186's and dispatch's. The cell that moves such a node onto the gateway is
 therefore `{"backend": "claw", "provider": "openai_compatible", "model":
 "openai_compatible/<provider>/<model>"}` on that node: it fixes every field

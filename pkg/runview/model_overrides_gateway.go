@@ -116,7 +116,8 @@ func normalizedHint(f gatewayField) gatewayField {
 
 // judge returns the site's first element dispatch refuses, as a finding
 // body: the refusal with the provenance of the fields its arm read.
-// undecided reports a refusal judged on a dial's default.
+// undecided reports a refusal judged on a dial's default; an element
+// dispatch refuses whatever its model dial expands to is decided.
 func (s gatewaySite) judge() (undecided bool, err error) {
 	// Decided: a field a dial decides is read as the value that refuses
 	// nothing on its own — a backend "" serves a gateway route, a hint ""
@@ -129,7 +130,13 @@ func (s gatewaySite) judge() (undecided bool, err error) {
 		decided.provider = gatewayField{origin: s.provider.origin, botSource: s.provider.botSource}
 	}
 	for _, el := range decided.elements() {
-		if el.model.value == "" || undecidedText(el.model.value) {
+		if el.model.value == "" {
+			continue
+		}
+		if undecidedText(el.model.value) {
+			if err := refusedWhateverTheModel(el); err != nil {
+				return false, err
+			}
 			continue
 		}
 		if err := causedRefusal(el); err != nil {
@@ -156,6 +163,32 @@ func (s gatewaySite) judge() (undecided bool, err error) {
 		}
 	}
 	return false, nil
+}
+
+// gatewayModelProbe and otherModelProbe stand for every value a model
+// dial may expand to, in the two classes GatewayCrossingRefusal tells
+// apart: a gateway route, and any other model.
+const (
+	gatewayModelProbe = llmroute.ProviderOpenAICompatible + "/<gateway model id>"
+	otherModelProbe   = "<a model that is not a gateway route>"
+)
+
+// refusedWhateverTheModel judges an element whose model a dial decides at
+// the runner: dispatch refuses it whatever the dial expands to when it
+// refuses a gateway route and any other model alike, each refusal caused
+// by a field an override wrote (causedRefusal). The refusal names both.
+func refusedWhateverTheModel(el gatewayElement) error {
+	gateway, other := el, el
+	gateway.model.value, other.model.value = gatewayModelProbe, otherModelProbe
+	gatewayErr := causedRefusal(gateway)
+	if gatewayErr == nil {
+		return nil
+	}
+	otherErr := causedRefusal(other)
+	if otherErr == nil {
+		return nil
+	}
+	return fmt.Errorf("dispatch refuses this element whatever %s expands to — a gateway route: %v; any other model: %v", el.model.describe("model"), gatewayErr, otherErr)
 }
 
 // dialTexts names the site's fields a dial decides, as written.

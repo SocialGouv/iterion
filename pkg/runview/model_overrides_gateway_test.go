@@ -266,3 +266,25 @@ func TestLaunchRefusesAStepOrAChainOnARouteRow(t *testing.T) {
 		[]ModelOverrideEntry{{Selector: "work", Provider: "zai,anthropic"}})
 	requireAdmitted(t, pub, err)
 }
+
+// A gateway hint a cell pins beside a model a dial decides, on a literal
+// claude_code node: dispatch refuses a gateway expansion (the backend
+// cannot serve one) and any other (the gateway hint serves gateway models
+// only), so the launch refuses whatever the dial says. On claw a gateway
+// expansion serves: the launch admits and warns on the dial's default.
+func TestLaunchRefusesAGatewayHintRefusedWhateverTheModelDialSays(t *testing.T) {
+	src := strings.Replace(gatewayHintBot, `model: "claude-opus-5"`, `model: "${PROBE_GW_MODEL:-claude-opus-5}"`, 1)
+	cells := []store.RunLLMRouteOverride{{Selector: "gwhint/work", Provider: "openai_compatible"}}
+	pub, err := launchGatewayBot(t, "gwhint", src, cells, nil)
+	requireRefusal(t, pub, err, `agent "work"`, `whatever model "${PROBE_GW_MODEL:-claude-opus-5}"`, "cannot serve an OpenAI-compatible gateway route", "is not a gateway route", `the routing policy's override cell "gwhint/work"`)
+
+	claw := strings.Replace(src, `backend: "claude_code"`, `backend: "claw"`, 1)
+	pub, err = launchGatewayBot(t, "gwhint", claw, cells, nil)
+	requireAdmitted(t, pub, err)
+
+	// A cell pinning claude_code with no gateway hint: a gateway expansion
+	// is refused, any other model serves — the dial decides, the launch
+	// admits.
+	pub, err = launchGatewayBot(t, "gwhint", src, []store.RunLLMRouteOverride{{Selector: "gwhint/work", Backend: "claude_code"}}, nil)
+	requireAdmitted(t, pub, err)
+}
