@@ -396,8 +396,9 @@ func TestPatchForgeIntegration_RoutingIsNotItsSurface(t *testing.T) {
 // The write screen judges the bots the integration launches as they
 // launch: a team fork answers to its slug AND to its manifest name, a cell
 // scoped to a bot that neither spelling reaches is warned — naming the
-// enabled bots — and a cell naming the fork's manifest name whose target
-// matches nothing in it is a zero-match typo.
+// enabled bots and the subbot child reach it keeps — and a cell naming the
+// fork's manifest name whose target matches nothing in it is a zero-match
+// typo.
 func TestRepoBotsScreen_ACellReachingNoEnabledBotIsWarned(t *testing.T) {
 	s := newForgeTestServer(t)
 	s.botSources = botsource.NewMemoryStore()
@@ -428,6 +429,11 @@ func TestRepoBotsScreen_ACellReachingNoEnabledBotIsWarned(t *testing.T) {
 	}
 	if len(reachNone) != 1 || !strings.Contains(reachNone[0], `"revi-converse/converse_agent"`) || !strings.Contains(reachNone[0], `"review-pr-pool"`) {
 		t.Fatalf("reach-none warnings = %v, want one for revi-converse/converse_agent naming the enabled review-pr-pool (all: %v)", reachNone, warnings)
+	}
+	// A subbot child of an enabled bot folds a cell for its own bot: the
+	// warning names that reach instead of saying no launch folds the cell.
+	if strings.Contains(reachNone[0], "no launch of this integration folds it") || !strings.Contains(reachNone[0], "only a subbot child") {
+		t.Fatalf("reach-none warning = %q, want it to name the subbot child reach, never that no launch folds the cell", reachNone[0])
 	}
 	if !strings.Contains(joined, `"review-pr/wrok"`) || !strings.Contains(joined, "matches no node") {
 		t.Fatalf("warnings = %v, want the zero-match typo review-pr/wrok, a cell naming the fork's manifest name", warnings)

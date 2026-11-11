@@ -915,8 +915,8 @@ func (s *Server) writeProvisionResult(w http.ResponseWriter, r *http.Request, te
 //
 // Each bot is screened as its launch folds it — its resolved id and the
 // manifest name of the bundle it serves — and a cell scoped to a bot that
-// neither spelling of any enabled bot reaches is warned too: no launch of
-// this integration folds it.
+// neither spelling of any enabled bot reaches is warned too: no enabled
+// bot's own launch folds it, only a subbot child that runs as that bot.
 func (s *Server) routingBlastRadiusWarnings(ctx context.Context, teamID string, botIDs []string, block *llmroute.Policy) []string {
 	if block == nil || len(block.Overrides) == 0 {
 		return nil
@@ -964,9 +964,13 @@ func (s *Server) routingBlastRadiusWarnings(ctx context.Context, teamID string, 
 
 // unreachedBotCellWarnings names each cell of block whose bot part reaches
 // none of bots by bot id or manifest name (llmroute.Selector.MatchBot):
-// written at an integration, such a cell is folded by no launch of it — a
-// typo, a bot not enabled here, or a spelling the bot does not answer to.
-// A cell reaching every bot (no bot part, `*/`) is never one.
+// written at an integration, such a cell is folded by no enabled bot's own
+// launch — a typo, a bot not enabled here, a spelling the bot does not
+// answer to, or a bot that runs here only as a subbot child of an enabled
+// one, which folds the cell for its own bot (runview.FoldForSubbotChild).
+// The screen does not resolve the enabled bots' children, so the warning
+// names that reach instead of judging it. A cell reaching every bot (no bot
+// part, `*/`) is never one.
 func unreachedBotCellWarnings(block *llmroute.Policy, bots []llmroute.BotIdentity) []string {
 	named := make([]string, 0, len(bots))
 	for _, b := range bots {
@@ -994,7 +998,7 @@ func unreachedBotCellWarnings(block *llmroute.Policy, bots []llmroute.BotIdentit
 			}
 		}
 		if !reached {
-			out = append(out, fmt.Sprintf("routing: override cell %q is scoped to bot %q, which reaches none of this integration's enabled bots (%s) by bot id or manifest name — no launch of this integration folds it", o.Selector, sel.Bot, enabled))
+			out = append(out, fmt.Sprintf("routing: override cell %q is scoped to bot %q, which reaches none of this integration's enabled bots (%s) by bot id or manifest name — no enabled bot's own launch folds it; it reaches only a subbot child of one whose bundle answers to that name (its slug or manifest name)", o.Selector, sel.Bot, enabled))
 		}
 	}
 	return out
