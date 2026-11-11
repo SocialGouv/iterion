@@ -46,6 +46,9 @@ type credFleet struct {
 type fleetPull struct {
 	runID string
 	at    time.Time
+	// released marks a release (ReleaseRunRetry): a pull on a window's
+	// answer, not a canary.
+	released bool
 }
 
 func (p fleetPull) String() string { return p.runID + "@" + p.at.Format("15:04") }
@@ -170,7 +173,7 @@ func (f *credFleet) ReleaseRunRetry(ctx context.Context, id string, expectedAfte
 	ok, err := f.twin(id).ReleaseRunRetry(ctx, id, expectedAfter, releaseAt, releasedBy)
 	if ok {
 		f.mu.Lock()
-		f.pulled = append(f.pulled, fleetPull{runID: id, at: f.now})
+		f.pulled = append(f.pulled, fleetPull{runID: id, at: f.now, released: true})
 		f.mu.Unlock()
 	}
 	return ok, err

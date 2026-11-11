@@ -216,7 +216,7 @@ func (s *Server) resumeDueRetry(ctx context.Context, retryStore store.RunRetrySt
 	adm, deny := s.gateLaunch(retryLaunchCtx(runCtx, ref), subj)
 	if deny != nil {
 		if retryDenialIsTransient(deny.reason) {
-			s.reArmRetry(runCtx, retryStore, ref, fmt.Errorf("admission deferred: %s", deny.reason))
+			s.reArmRetry(runCtx, retryStore, ref, fmt.Errorf("%w: %s", errRetryAdmissionDeferred, deny.reason))
 			return
 		}
 		s.abandonRetry(runCtx, retryStore, ref, fmt.Sprintf("auto-retry abandoned: %s", deny.reason))
@@ -564,22 +564,51 @@ func (s *Server) reArmRetry(ctx context.Context, retryStore store.RunRetryStore,
 	s.warnf("retry sweeper: run %s: resume failed (%v) — retrying at %s", ref.ID, cause, at.Format(time.RFC3339))
 }
 
+// errRetryAdmissionDeferred marks a resume the admission gate refused for a
+// reason expected to clear on its own (retryDenialIsTransient): a concurrency
+// cap, a launch rate, a monthly ceiling, a counter or a run document that did
+// not answer.
+var errRetryAdmissionDeferred = errors.New("admission deferred")
+
+// releasedRetryRefusalIsTransient reports a refusal of a released run's resume
+// that clears on its own and was decided before anything was published: the
+// admission gate's deferral (errRetryAdmissionDeferred) and a stored bot that
+// did not resolve for a store blip (errResumeResolveTransient). Those are the
+// transient causes reArmRetry is handed; the shared circuit and a credential's
+// slot cap defer the row before it gets there (DelayRunRetry, which keeps the
+// release). A Resume error is not one: the bot redeployed under the run and
+// its workflow hash moved, which fails identically on every cycle, or a
+// publish that may have landed (runview.RunMayHaveStarted), whose admission
+// the resume kept.
+func releasedRetryRefusalIsTransient(cause error) bool {
+	return errors.Is(cause, errRetryAdmissionDeferred) || errors.Is(cause, errResumeResolveTransient)
+}
+
 // backOffReleasedRetry re-arms a RELEASED row (RunRetryState.Released) whose
-// resume did not start for a transient reason on the ordinary backoff, free of
-// charge, and reports true — which tells reArmRetry its own paths must not
-// run.
+// resume was refused for a transient reason (releasedRetryRefusalIsTransient)
+// on the ordinary backoff, free of charge, and reports true — which tells
+// reArmRetry its own paths must not run.
 //
-// The stand-down built for a probe is the wrong settlement here: it puts the
-// provider's announced instant back, days away, on a run whose window's probe
-// has just proved the wall fell — and the answer that released it cannot
-// release it again (releaseCredentialWindow skips a wait pulled since). A mass
-// release is the likeliest thing to trip the tenant's concurrency cap or its
-// launch rate, so the runs it moves would sit out the whole wall behind a cap
-// that frees in minutes. The charged re-arm is wrong too: every refusal would
-// spend an attempt, and a cap held for an hour retires the run. So the row
-// keeps its release — the marker and the answer that wrote it — and comes back
-// one backoff later, as often as the refusal lasts; the announced instant
-// bounds that, past it the row is an ordinary due retry.
+// The stand-down built for a probe is the wrong settlement for such a refusal:
+// it puts the provider's announced instant back, days away, on a run whose
+// window's probe has just proved the wall fell — and the answer that released
+// it cannot release it again (releaseCredentialWindow skips a wait pulled
+// since). A mass release is the likeliest thing to trip the tenant's
+// concurrency cap or its launch rate, so the runs it moves would sit out the
+// whole wall behind a cap that frees in minutes. The charged re-arm is wrong
+// too: every refusal would spend an attempt, and a cap held for an hour
+// retires the run. So the row keeps its release — the marker and the answer
+// that wrote it — and comes back one backoff later, as often as the refusal
+// lasts; the announced instant bounds that, past it the row is an ordinary due
+// retry.
+//
+// Any other failure is no refusal that clears in minutes, and the row takes the
+// probe's stand-down after that ONE failure: the announced instant comes back,
+// free, and the window's probes and the date decide from there. A resume
+// against a workflow whose hash moved fails identically every quarter hour,
+// and one whose publish may have landed keeps the admission it metered: on the
+// backoff, a released run would repeat either until its date — four days of
+// them under a weekly wall.
 //
 // The decision reads the row the scan listed, and the CAS is the armed instant
 // that scan read: every write that consumes the marker moves retry_after, so a
@@ -587,7 +616,7 @@ func (s *Server) reArmRetry(ctx context.Context, retryStore store.RunRetryStore,
 // someone else moved, left to them.
 func (s *Server) backOffReleasedRetry(ctx context.Context, retryStore store.RunRetryStore, ref mongostore.RetryDueRef, cause error) bool {
 	now := s.retryNow()
-	if !ref.RetryState.Released(now) {
+	if !ref.RetryState.Released(now) || !releasedRetryRefusalIsTransient(cause) {
 		return false
 	}
 	at := now.Add(retryReenqueueBackoff)
