@@ -533,6 +533,11 @@ prompt commit_system:
        auth from the skill. Confirm the push succeeded (check the exit
        code / re-query the remote ref).
     5. Never force-push. Never push to the base branch. Never merge.
+    6. On a REJECTED push (non-fast-forward: the branch moved under you),
+       never pull, never rebase, never merge the remote in: the alignment
+       was verified on the head this run read, not on the new one. Report
+       pushed=false and say the push was rejected; the next run takes the
+       new head.
 
   Emit `commit_output`: committed, pushed, sha, message, summary (incl.
   the push result — branch + whether the remote accepted it).
@@ -3163,43 +3168,91 @@ tool arm_automerge:
 ## file align claims. `carried` is read negated on purpose: a reading that
 ## is missing — a run resumed from a checkpoint older than the probe — is
 ## not carried, so it holds. Who committed the head plays no part.
-## Resolve the commit agent's report against the actual repository. A short
-## echo of prepare.head_sha is still the same commit, never an alignment.
+## commit_probe — did THIS run put a new commit on the pull request's branch?
+## Read from git, never from the commit agent's account: the candidate is
+## the workspace HEAD, and it counts only when (1) it is not the audited
+## commit and descends from it, (2) the remote branch holds exactly it — the
+## push evidence, read with `git ls-remote` — and (3) the agent's report is
+## empty or resolves to it. A report the agent left empty or odd no longer
+## pins the verdict to the head this run moved away from (the server then
+## refuses it as "head moved" onto the run's own push); a report that names
+## another commit still refuses, and so does a head rebased onto a moved
+## branch — it was never verified on that base. The forge token reaches
+## git through its environment (GIT_CONFIG_COUNT/KEY/VALUE), never argv,
+## and nothing git says is printed.
 tool commit_probe:
   script: |
-    import json, os, re, subprocess
+    import base64, json, os, re, subprocess, time, urllib.parse
     null = None; true = True; false = False
     ws = {{vars.workspace_dir}}
     reported = {{input.sha}}
     prepared = {{input.head_sha}}
+    token_ref = {{secrets.forge_token.path}}
     def text(value):
         return value.strip().lower() if isinstance(value, str) else ""
     def emit(sha, reason):
         print(json.dumps({"sha": sha, "moved": bool(sha), "reason": reason}))
         raise SystemExit(0)
     reported, prepared = text(reported), text(prepared)
-    if not ws or not re.fullmatch(r"[0-9a-f]{7,64}", reported) or not re.fullmatch(r"[0-9a-f]{7,64}", prepared):
-        emit("", "no resolvable commit report or audited head")
+    if not ws or not re.fullmatch(r"[0-9a-f]{7,64}", prepared):
+        emit("", "no audited head to measure the workspace against")
+    if reported and not re.fullmatch(r"[0-9a-f]{7,64}", reported):
+        emit("", "the commit report names no commit id")
     # Match align_probe's repository/index/object-store isolation.
     drop = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
             "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR", "GIT_NAMESPACE",
             "GIT_LITERAL_PATHSPECS", "GIT_GLOB_PATHSPECS", "GIT_NOGLOB_PATHSPECS",
             "GIT_ICASE_PATHSPECS")
     genv = {k: v for k, v in os.environ.items() if k not in drop}
-    def git(*args):
-        return subprocess.run(["git", "-C", ws, *args], capture_output=True, timeout=60, env=genv)
+    genv["GIT_TERMINAL_PROMPT"] = "0"
+    def git(*args, env=None):
+        return subprocess.run(["git", "-C", ws, *args], capture_output=True, timeout=60, env=env or genv)
     def resolve(value):
         p = git("rev-parse", "--verify", "--end-of-options", value + "^{commit}")
         return p.stdout.decode().strip() if p.returncode == 0 else ""
+    def remote_env():
+        # The token as an http.extraHeader for the origin's host, appended
+        # after the entries the sandbox already set (safe.directory).
+        env = dict(genv)
+        tref = token_ref.strip() if isinstance(token_ref, str) else ""
+        token = (open(tref).read().strip() if os.path.exists(tref) else tref) if tref else ""
+        url = git("remote", "get-url", "origin").stdout.decode().strip()
+        if url.startswith("https://") and token:
+            n = int(env.get("GIT_CONFIG_COUNT") or "0")
+            host = urllib.parse.urlsplit(url).netloc.rsplit("@", 1)[-1]
+            env["GIT_CONFIG_KEY_%d" % n] = "http.https://" + host + "/.extraHeader"
+            env["GIT_CONFIG_VALUE_%d" % n] = "Authorization: Basic " + base64.b64encode(("oauth2:" + token).encode()).decode()
+            env["GIT_CONFIG_COUNT"] = str(n + 1)
+        return env
     try:
-        candidate, base, tip = resolve(reported), resolve(prepared), resolve("HEAD")
-        if not candidate or not base or candidate != tip or candidate == base:
-            emit("", "the reported commit is not a new workspace head")
-        if git("merge-base", "--is-ancestor", base, candidate).returncode != 0:
-            emit("", "the reported head is not descended from the audited commit")
-        emit(candidate, "git confirms a new workspace head descended from the audited commit")
-    except (OSError, subprocess.SubprocessError, UnicodeError):
-        emit("", "git could not establish a new commit")
+        tip, base = resolve("HEAD"), resolve(prepared)
+        if not tip or not base or tip == base:
+            emit("", "the workspace head did not move from the audited commit")
+        if reported and resolve(reported) != tip:
+            emit("", "the commit report names " + reported[:12] + ", which is not the workspace head")
+        if git("merge-base", "--is-ancestor", base, tip).returncode != 0:
+            emit("", "the workspace head is not descended from the audited commit")
+        branch = git("symbolic-ref", "--quiet", "--short", "HEAD").stdout.decode().strip()
+        if not branch:
+            emit("", "the workspace head is on no branch, so no push of it can be read")
+        held = ""
+        env = remote_env()
+        for attempt in (1, 2):
+            p = git("ls-remote", "origin", "refs/heads/" + branch, env=env)
+            if p.returncode == 0:
+                for line in p.stdout.decode().splitlines():
+                    fields = line.split("\t")
+                    if len(fields) == 2 and fields[1] == "refs/heads/" + branch:
+                        held = fields[0].strip().lower()
+                break
+            if attempt == 1:
+                time.sleep(2)
+        if held != tip:
+            emit("", "origin/" + branch + " holds " + (held[:12] or "nothing readable") + ", not the workspace head " +
+                     tip[:12] + ": no push of it is in evidence")
+        emit(tip, "git confirms a new head descended from the audited commit, and origin/" + branch + " holds it")
+    except (OSError, ValueError, subprocess.SubprocessError, UnicodeError):
+        emit("", "git could not establish a new pushed commit")
   language: py
   input: commit_probe_input
   output: commit_probe_output
