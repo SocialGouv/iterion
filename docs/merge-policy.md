@@ -254,13 +254,17 @@ gate.** What it owes:
    check that never ran satisfies the gate
    ([tests.yml](../.github/workflows/tests.yml) says so of the Homebrew-tap
    skip, which five required checks carry).
-2. **A converged local adversarial loop**, per
-   [the loop](agents/workflow/adversarial-review-loop.md). It stands in for the
-   gate **with a measured residual**: of 8 logged gate verdicts, 4 found a class
-   the converged internal rounds had skirted. So the residual is assumed
-   explicitly in the merge, and it is **not assumable on a wide diff** — there,
-   wait for the window or lend a credential, as the incident lane scopes itself
-   the same way ("reckless when it is a wide refactor", below).
+2. **A local adversarial loop, and the trailer says which kind.** At the bar
+   [the loop](agents/workflow/adversarial-review-loop.md) states — a round on
+   the diff, each finding AND its proposed fix verified independently, a
+   bounded closing round on the corrections — it carries the gate's own weight
+   (operator arbitration, 2026-11-11), and nothing is being traded away.
+   **Below the bar it stands in with a measured residual**: of 8 logged gate
+   verdicts, 4 found a class the converged internal rounds had skirted, and
+   those rounds were below it. That residual is assumed explicitly in the
+   merge, and it is **not assumable on a wide diff** — there, reach the bar,
+   wait for the window, or lend a credential, as the incident lane scopes
+   itself the same way ("reckless when it is a wide refactor", below).
 3. **The checks belong to the head AND to the base being merged.** A commit
    pushed after they ran invalidates them. Less obvious and more dangerous:
    `strict_required_status_checks_policy` is **false** on this ruleset, so a
