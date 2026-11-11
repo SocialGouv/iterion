@@ -149,7 +149,7 @@ func (c *compiler) validateFallbacks(w *Workflow) {
 			c.checkFallbackAction(kind, id, fb, i == len(fbs)-1)
 			c.checkFallbackWhen(w, kind, id, i, fb)
 			c.checkFallbackTriggers(kind, id, fb)
-			c.checkFallbackCrossing(kind, id, fb, nn, nodeBackend, w.Permission, EffectiveAskRules(nn, w))
+			c.checkFallbackCrossing(w, kind, id, fb, nn, nodeBackend)
 		}
 	}
 }
@@ -357,10 +357,11 @@ func (c *compiler) checkFallbackTriggers(kind, id string, fb Fallback) {
 }
 
 // checkFallbackCrossing validates what the route changes about the
-// node's capabilities, using the same predicates the launch-time
-// run-level route is screened by — so an operator cannot reach through
-// `--fallback` a crossing the compiler refuses in the .bot.
-func (c *compiler) checkFallbackCrossing(kind, id string, fb Fallback, nn LLMNode, nodeBackend, workflowPermission string, askRules []string) {
+// node's capabilities through RouteCrossingReasons — the body the launch
+// screens run too, on a run-level `--fallback` stage (ApplyRunFallback) and
+// on a route a routing cell re-pins (runview) — so an operator cannot reach
+// through either a crossing the compiler refuses in the .bot.
+func (c *compiler) checkFallbackCrossing(w *Workflow, kind, id string, fb Fallback, nn LLMNode, nodeBackend string) {
 	// The route's backend, read as the run reads it: a dial's default is
 	// the route this chain takes, and screening only the literal spelling
 	// left every dialled route unscreened.
@@ -369,27 +370,7 @@ func (c *compiler) checkFallbackCrossing(kind, id string, fb Fallback, nn LLMNod
 		return
 	}
 	label := fallbackLabel(fb)
-
-	// The permission gate is the anti-prompt-injection boundary. Whether
-	// a ROUTE can enforce it is a property of the route's own backend,
-	// so this check does NOT depend on the node's backend being
-	// statically knowable — the auto-resolved shape is the shipped
-	// default and must not escape it.
-	if reason := UngatedCrossingReasonForAskRules(routeBackend, EffectivePermission(nn.GetPermission(), workflowPermission), askRules); reason != "" {
-		c.errorfAt(DiagFallbackUnsafeCross, id, "",
-			"%s %q: fallback %s %s", kind, id, label, reason)
-	}
-
-	// The remaining checks compare the two backends, so they need the
-	// node's own to be knowable.
-	if nodeBackend == "" {
-		return
-	}
-	if reason := toolsInversionReason(nodeBackend, routeBackend, nn.GetTools()); reason != "" {
-		c.errorfAt(DiagFallbackUnsafeCross, id, "",
-			"%s %q: fallback %s %s", kind, id, label, reason)
-	}
-	if reason := sessionContinuityCrossingReason(nn.GetSession(), nodeBackend, routeBackend); reason != "" {
+	for _, reason := range RouteCrossingReasons(nn, w, nodeBackend, routeBackend, EffectivePermission(nn.GetPermission(), w.Permission)) {
 		c.errorfAt(DiagFallbackUnsafeCross, id, "",
 			"%s %q: fallback %s %s", kind, id, label, reason)
 	}
@@ -399,11 +380,40 @@ func (c *compiler) checkFallbackCrossing(kind, id string, fb Fallback, nn LLMNod
 	// the crossing, and it applies to the node's own backend too.
 
 	// Reasoning effort degrades rather than misleads, so it warns.
+	if nodeBackend == "" {
+		return
+	}
 	if effort := nn.GetLLMFields().ReasoningEffort; effort != "" && !reasoningEffortBackends[routeBackend] {
 		c.warnfAt(DiagFallbackDrift, id, "",
 			"%s %q: fallback %s runs on backend %q, which has no reasoning-effort dial; the node's reasoning_effort: %s is ignored on that route",
 			kind, id, label, routeBackend, effort)
 	}
+}
+
+// RouteCrossingReasons is C176's verdict on one route of a node: why the
+// route's backend may not serve it, one reason per refused crossing, nil
+// when it may. permission is the gate in force for the node, resolved by
+// the caller (the compiler's node-then-workflow reading, or a launch's
+// run-level override first).
+//
+// The permission gate is the anti-prompt-injection boundary. Whether a
+// ROUTE can enforce it is a property of the route's own backend, so that
+// check does NOT depend on the node's backend being statically knowable —
+// the auto-resolved shape is the shipped default and must not escape it.
+// The claw⇄CLI tools inversion and the session-continuity crossing compare
+// the two backends, so they need both: an empty one skips them.
+func RouteCrossingReasons(nn LLMNode, w *Workflow, nodeBackend, routeBackend, permission string) []string {
+	var out []string
+	if reason := UngatedCrossingReasonForAskRules(routeBackend, permission, EffectiveAskRules(nn, w)); reason != "" {
+		out = append(out, reason)
+	}
+	if reason := toolsInversionReason(nodeBackend, routeBackend, nn.GetTools()); reason != "" {
+		out = append(out, reason)
+	}
+	if reason := sessionContinuityCrossingReason(nn.GetSession(), nodeBackend, routeBackend); reason != "" {
+		out = append(out, reason)
+	}
+	return out
 }
 
 // EffectivePermission resolves a node's gate mode: its own override

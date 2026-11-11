@@ -481,9 +481,11 @@ func (s *Service) hookEventObservers(extra []func(store.Event)) []func(store.Eve
 
 // foldAndScreen folds the resolved routing policy's override cells under
 // the launch's own rows, refuses the (backend, provider) pair the
-// per-field composition can assemble from two entries (#2637), refuses a
-// routing field the launch's vars cannot decide on the card lanes'
-// shape (#2665), and runs the permission screen on the FOLDED list —
+// per-field composition can assemble from two entries (#2637) and the
+// element dispatch refuses as a gateway crossing (gatewayCrossingFindings),
+// refuses a routing field the launch's vars cannot decide on the card
+// lanes' shape (#2665), and runs the permission and route crossing screen
+// (ValidateModelOverridePermissions) on the FOLDED list —
 // one body for every launch-shaped entry (cloud, local, preview), so the
 // fold-before-screen order exists in exactly one place: a cell folded in
 // after the screen would reach past a guard the launcher's own override
@@ -495,10 +497,11 @@ func (s *Service) hookEventObservers(extra []func(store.Event)) []func(store.Eve
 // field its class does not carry, refuses the launch rather than folding
 // into a pin nothing honours.
 //
-// The warnings are the policy cells written for the launch's bot by name
-// that reach nothing in it (ADR-132 §2's zero-match warning): the launch
-// paths log each once per process (logZeroMatchOnce), the preview shows
-// them every time.
+// The warnings are the gateway crossings a slot dial decides at the
+// runner, then the policy cells written for the launch's bot by name that
+// reach nothing in it (ADR-132 §2's zero-match warning): the launch paths
+// log each once per process (logZeroMatchOnce), the preview shows them
+// every time.
 func foldAndScreen(wf *ir.Workflow, spec *LaunchSpec) ([]string, error) {
 	for _, r := range spec.ModelOverrides {
 		if err := llmroute.ValidateLaunchRow(r.Selector, r.Backend, r.Provider, r.Effort); err != nil {
@@ -508,8 +511,14 @@ func foldAndScreen(wf *ir.Workflow, spec *LaunchSpec) ([]string, error) {
 	bot := launchBotIdentity(spec)
 	sourced := foldSourcedOverrides(spec.ModelOverrides, spec.LLMRoutePolicy, bot)
 	spec.ModelOverrides = plainModelOverrideEntries(sourced)
-	if findings := composedPairFindings(wf, sourced); len(findings) > 0 {
-		f := findings[0]
+	// A finding a slot dial decides at the runner warns; the first decided
+	// one refuses.
+	var warnings []string
+	for _, f := range composedPairFindings(wf, sourced) {
+		if f.undecided {
+			warnings = append(warnings, "the launch's override cells "+f.sentence())
+			continue
+		}
 		return nil, fmt.Errorf("runview: model overrides for %s: %w", f.subject(), f.err)
 	}
 	if spec.RefuseUndecidedRoutingFields {
@@ -520,7 +529,7 @@ func foldAndScreen(wf *ir.Workflow, spec *LaunchSpec) ([]string, error) {
 	if err := ValidateModelOverridePermissions(wf, toModelOverrides(spec.ModelOverrides), spec.Permission); err != nil {
 		return nil, err
 	}
-	return zeroMatchWarnings(wf, spec.LLMRoutePolicy, bot), nil
+	return append(warnings, zeroMatchWarnings(wf, spec.LLMRoutePolicy, bot)...), nil
 }
 
 // startInProcess compiles + builds + spawns a run in this process. It is

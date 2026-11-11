@@ -881,8 +881,10 @@ func (a *providerAccumulator) resolveNode(node ir.Node, fields *ir.LLMFields, ov
 	// The fields dispatch reads, and only those: a provider override
 	// collapses the node's own `provider:` chain (chainReading.providerField),
 	// so the chain's text — an env dial, an undecided var — decides nothing
-	// and defers nothing. A cell fixing the backend, the provider and the
-	// model decides the route on its literals alone.
+	// and defers nothing. A provider cell decides the credential reading on
+	// its literals and the model's; whether the node's backend can serve
+	// the route it names is the launch's gateway crossing check
+	// (runview), never this walk's.
 	if strings.TrimSpace(ov.Provider) != "" {
 		a.envDeferred("provider", prov)
 	} else {

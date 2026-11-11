@@ -400,7 +400,9 @@ func ConsumesProviderHint(backend string) (chains, single bool) {
 // honoured; claw acts on two values — `anthropic` at its registry's
 // force-Anthropic-direct branch, `openai_compatible` at the gateway
 // crossing check, which serves the gateway model the hint names and
-// refuses any other model loudly — and ignores every other value: the
+// refuses any other model loudly, a model condition the launch enforces on
+// the elements a run's cells compose (runview's gateway crossing check) —
+// and ignores every other value: the
 // spend then follows the default precedence, the silent misroute a policy
 // pin must not certify. Kept local to avoid importing the model executor;
 // the drift test lives in projections_test.go.
@@ -597,12 +599,10 @@ func validateOverride(o Override) error {
 					return fmt.Errorf("provider %q names %q on backend %q — this harness acts on none of this value at its routing chokepoint, so the gate would certify a pin the harness silently ignores; the spend would follow the default precedence", o.Provider, s, o.Backend)
 				}
 			}
-			// The gateway hint pins the gateway: every backend's dispatch
-			// refuses it beside a model that is not a gateway route
-			// (refuseGatewayCrossing). One cell holding both is a pin no
-			// dispatch serves.
-			if s == ProviderOpenAICompatible && o.Model != "" && !IsGatewayModel(o.Model) {
-				return fmt.Errorf("provider %q names %q beside model %q — the gateway hint serves gateway models only (%s/<gateway model id>), and dispatch refuses this pair on every backend", o.Provider, s, o.Model, ProviderOpenAICompatible)
+			if s == ProviderOpenAICompatible {
+				if err := gatewayHintModels(o, t); err != nil {
+					return err
+				}
 			}
 		}
 	}
@@ -610,6 +610,29 @@ func validateOverride(o Override) error {
 		return fmt.Errorf("selector %q pins nothing — an entry that pins no field would be dropped silently at the fold, so the typo would look like it landed", sel)
 	}
 	return nil
+}
+
+// gatewayHintModels judges a gateway-hint step against the models the
+// cell itself writes. Dispatch refuses the gateway hint beside a model
+// that is not a gateway route on every backend
+// (model.GatewayCrossingRefusal), and a step dispatches its own model —
+// the `openai_compatible:<model>` half — else the cell's. The cell's
+// `model` is judged even beside a step carrying its own gateway model: on
+// a node cell it is the model the node's routes naming none inherit, so a
+// cell naming the gateway hint pins a gateway model. A model this cell
+// leaves to another cell or to the bot is the launch's to judge on the
+// composed element (runview's gateway crossing check), never this entry's.
+func gatewayHintModels(o Override, t providerHintToken) error {
+	if t.hasModel && !IsGatewayModel(t.modelRaw) {
+		return fmt.Errorf("provider %q names %q — the gateway hint serves gateway models only (%s/<gateway model id>), and dispatch refuses the step's own model %q on every backend", o.Provider, t.stepRaw, ProviderOpenAICompatible, t.modelRaw)
+	}
+	if o.Model == "" || IsGatewayModel(o.Model) {
+		return nil
+	}
+	if t.hasModel {
+		return fmt.Errorf("provider %q names %q beside model %q — the gateway hint serves gateway models only (%s/<gateway model id>): a cell naming it pins a gateway model", o.Provider, t.stepRaw, o.Model, ProviderOpenAICompatible)
+	}
+	return fmt.Errorf("provider %q names %q beside model %q — the gateway hint serves gateway models only (%s/<gateway model id>), and dispatch refuses this step on every backend", o.Provider, t.step, o.Model, ProviderOpenAICompatible)
 }
 
 // ValidateComposedPair cross-checks the (backend, provider) pair the

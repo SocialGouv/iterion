@@ -1015,7 +1015,7 @@ func (e *ClawExecutor) newElementBuilder(
 		// is served from must resolve — judged HERE, at build time, so a
 		// refused element walks the chain like any other unresolvable one
 		// instead of failing the node after dispatch (gateway_routing.go).
-		if err := refuseGatewayCrossing(bn, task.ProviderHint, task.Model); err != nil {
+		if err := GatewayCrossingRefusal(bn, task.ProviderHint, task.Model); err != nil {
 			return "", nil, nil, fmt.Errorf("model: node %q: %w", nodeID, err)
 		}
 		if modelroute.Parse(task.Model).Gateway() {

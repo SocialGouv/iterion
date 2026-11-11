@@ -185,7 +185,7 @@ type FieldSource struct {
 // beats a more specific rule of a lower one (the precedence line), while
 // rules of the same layer keep the specificity ordering.
 func (o ModelOverrides) ForNode(id string, kind ir.NodeKind) NodeModelOverride {
-	out, _, _ := o.ForNodeFieldSources(id, kind)
+	out, _ := o.ForNodeFieldSources(id, kind)
 	return out
 }
 
@@ -206,13 +206,19 @@ func (o ModelOverrides) LadderRoute(n ir.LLMNode) (model, provider string) {
 	return model, provider
 }
 
+// NodeFieldSources names, per routing field, the rule that won it on a node
+// (ForNodeFieldSources). A zero FieldSource: no rule set the field.
+type NodeFieldSources struct {
+	Backend, Model, Provider FieldSource
+}
+
 // ForNodeFieldSources resolves exactly as ForNode and additionally names,
-// for the fields the composed-pair check reads (backend, provider), the
-// rule that won each. ONE walk: ForNode delegates here, so the pair's
-// provenance and the resolution it names cannot drift (#2637).
-func (o ModelOverrides) ForNodeFieldSources(id string, kind ir.NodeKind) (NodeModelOverride, FieldSource, FieldSource) {
+// for the fields the launch's composed checks read (backend, model,
+// provider), the rule that won each. ONE walk: ForNode delegates here, so
+// a check's provenance and the resolution it names cannot drift (#2637).
+func (o ModelOverrides) ForNodeFieldSources(id string, kind ir.NodeKind) (NodeModelOverride, NodeFieldSources) {
 	var out NodeModelOverride
-	var backendSrc, providerSrc FieldSource
+	var src NodeFieldSources
 	type best struct{ rank, score int }
 	// Seeded below every rank: a rule's rank is a layer, and a producer
 	// BELOW the DSL layer stamps -1 — a rule is never dropped for its
@@ -229,20 +235,21 @@ func (o ModelOverrides) ForNodeFieldSources(id string, kind ir.NodeKind) (NodeMo
 		}
 		if r.Backend != "" && takes(r.rank, score, bb) {
 			out.Backend, bb = r.Backend, best{r.rank, score}
-			backendSrc = FieldSource{Selector: r.selector}
+			src.Backend = FieldSource{Selector: r.selector}
 		}
 		if r.Model != "" && takes(r.rank, score, bm) {
 			out.Model, bm = r.Model, best{r.rank, score}
+			src.Model = FieldSource{Selector: r.selector}
 		}
 		if r.Provider != "" && takes(r.rank, score, bp) {
 			out.Provider, bp = r.Provider, best{r.rank, score}
-			providerSrc = FieldSource{Selector: r.selector}
+			src.Provider = FieldSource{Selector: r.selector}
 		}
 		if r.Effort != "" && takes(r.rank, score, be) {
 			out.Effort, be = r.Effort, best{r.rank, score}
 		}
 	}
-	return out, backendSrc, providerSrc
+	return out, src
 }
 
 // ConsumesProviderHint reports how a backend consumes the per-node provider
@@ -273,8 +280,11 @@ func ConsumesProviderHint(backend string) (chains, single bool) {
 // so the gate and the runtime read one function: the registry's
 // force-Anthropic-direct branch (clawForcesAnthropicDirect) and the
 // gateway crossing check (clawPairsGatewayHint, read by
-// refuseGatewayCrossing), which serves the gateway model the hint names
-// and refuses any other model loudly. Every other value claw ignores,
+// GatewayCrossingRefusal), which serves the gateway model the hint names
+// and refuses any other model loudly. That honour is model-conditional:
+// the launch enforces the model half on the elements a run's override
+// cells compose (runview's gateway crossing check), dispatch on every
+// element it builds. Every other value claw ignores,
 // letting the spend follow the default precedence: the silent misroute a
 // policy pin must not certify. The routing policy's local twin
 // (pkg/llmroute) drift-tests against this function.
@@ -298,7 +308,7 @@ func clawForcesAnthropicDirect(provider string) bool {
 }
 
 // clawPairsGatewayHint reports whether a provider hint is the gateway's,
-// which refuseGatewayCrossing pairs with the model on every backend: beside
+// which GatewayCrossingRefusal pairs with the model on every backend: beside
 // an `openai_compatible/…` spec it names the provider claw already derives
 // from the prefix, beside any other spec the element is refused.
 func clawPairsGatewayHint(provider string) bool {
@@ -334,8 +344,9 @@ func (o ModelOverrides) ForSupervisor(name string) string {
 // route-scoped rules pin it: each pinned field replaces the route's own,
 // every other field — its gate, triggers, name, action — stays the
 // author's. The ONE reading of a pinned route: the walk, dispatch's chain,
-// the call-site enumeration and the supervisors' gateway screen read the
-// route through it. index is the route's position in the node's
+// the call-site enumeration, the supervisors' gateway screen and the
+// launch's route and gateway crossing screens (runview) read the route
+// through it. index is the route's position in the node's
 // `fallbacks:` list, the key of a route the author named none.
 func (o ModelOverrides) EffectiveFallback(nodeID string, index int, fb ir.Fallback) ir.Fallback {
 	if fb.RunStageSet || fb.Policy {

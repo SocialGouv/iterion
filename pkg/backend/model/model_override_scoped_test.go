@@ -129,7 +129,7 @@ func TestEffectiveProviders_ACellFixingEveryFieldDecidesTheRoute(t *testing.T) {
 }
 
 // The gateway hint on claw: the gate counts it honoured — claw's dispatch
-// pairs it with the model (refuseGatewayCrossing) — while the registry's
+// pairs it with the model (GatewayCrossingRefusal) — while the registry's
 // force-Anthropic-direct switch stays the anthropic hint's alone, so a
 // gateway hint never sends an Anthropic credential to the direct wire.
 func TestClawHonoursTheGatewayHintWithoutForcingAnthropicDirect(t *testing.T) {
@@ -144,13 +144,13 @@ func TestClawHonoursTheGatewayHintWithoutForcingAnthropicDirect(t *testing.T) {
 	if got := runCredentialBaseURL(ctx, "anthropic/claude-opus-5-5", "openai_compatible"); got != "https://facade.example" {
 		t.Fatalf("runCredentialBaseURL under the gateway hint = %q, want the env's base URL (no direct-wire switch)", got)
 	}
-	if err := refuseGatewayCrossing(delegate.BackendClaw, "openai_compatible", scopedGateway); err != nil {
+	if err := GatewayCrossingRefusal(delegate.BackendClaw, "openai_compatible", scopedGateway); err != nil {
 		t.Fatalf("claw + gateway hint + gateway model refused: %v", err)
 	}
-	if err := refuseGatewayCrossing(delegate.BackendClaw, "openai_compatible", "anthropic/claude-opus-5-5"); err == nil {
+	if err := GatewayCrossingRefusal(delegate.BackendClaw, "openai_compatible", "anthropic/claude-opus-5-5"); err == nil {
 		t.Fatal("claw + gateway hint + vendor model served — the pin would be ignored")
 	}
-	if err := refuseGatewayCrossing(delegate.BackendClaudeCode, "openai_compatible", scopedGateway); err == nil {
+	if err := GatewayCrossingRefusal(delegate.BackendClaudeCode, "openai_compatible", scopedGateway); err == nil {
 		t.Fatal("claude_code served a gateway route — the parity refusal is gone")
 	}
 }

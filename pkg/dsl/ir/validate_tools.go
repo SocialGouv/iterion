@@ -502,6 +502,15 @@ func unresolvableToolsReason(routeBackend string, tools []string, mcpVisible boo
 		routeBackend, quoteJoin(unresolvable))
 }
 
+// RouteToolsUnresolvableReason is C135's blocking verdict on one route's
+// backend for a node's declared tools, "" when the route may serve them:
+// unresolvableToolsReason over the node's own MCP wiring, the reading
+// ApplyRunFallback screens a `--fallback` stage with. A launch screen of a
+// route a routing cell re-pins reads it too.
+func RouteToolsUnresolvableReason(w *Workflow, nn LLMNode, routeBackend string) string {
+	return unresolvableToolsReason(routeBackend, nn.GetTools(), mcpWiringVisible(w, nn))
+}
+
 // quoteJoin renders names as `"a", "b"` for a diagnostic.
 func quoteJoin(names []string) string {
 	quoted := make([]string, len(names))

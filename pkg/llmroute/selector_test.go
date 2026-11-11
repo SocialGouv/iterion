@@ -102,9 +102,12 @@ func TestSelector_TheBotDimension(t *testing.T) {
 			t.Errorf("%q.MatchBot(%+v) = %v, want %v", tc.sel, tc.bot, got, tc.want)
 		}
 	}
-	if !(llmroute.BotMatchNone < llmroute.BotMatchAll && llmroute.BotMatchAll < llmroute.BotMatchGlob &&
-		llmroute.BotMatchGlob < llmroute.BotMatchName && llmroute.BotMatchName < llmroute.BotMatchID) {
-		t.Error("the bot matches are not ordered every bot < glob < manifest name < bot id")
+	order := []llmroute.BotMatch{llmroute.BotMatchNone, llmroute.BotMatchAll, llmroute.BotMatchGlob, llmroute.BotMatchName, llmroute.BotMatchID}
+	for i := 1; i < len(order); i++ {
+		if order[i-1] >= order[i] {
+			t.Error("the bot matches are not ordered every bot < glob < manifest name < bot id")
+			break
+		}
 	}
 	s, _ := llmroute.ParseSelector("review-pr/reviewer_claude#glm")
 	if s.Target != "reviewer_claude#glm" || s.Class != llmroute.SelectorRoute || s.Node != "reviewer_claude" || s.Route != "glm" {
@@ -154,5 +157,46 @@ func TestValidateLaunchRow(t *testing.T) {
 		if err := llmroute.ValidateLaunchRow(tc.sel, tc.backend, tc.provider, tc.effort); err != nil {
 			t.Errorf("ValidateLaunchRow(%q, %q, %q, %q) = %v, want accepted", tc.sel, tc.backend, tc.provider, tc.effort, err)
 		}
+	}
+}
+
+// A cell naming the gateway hint names gateway models only, and a step's
+// own model (`openai_compatible:<model>`) is the model THAT step
+// dispatches: it is judged too, not only the cell's `model`.
+func TestValidate_TheGatewayHintJudgesEachStepsOwnModel(t *testing.T) {
+	for _, o := range []llmroute.Override{
+		{Selector: "x/n", Backend: "claw", Provider: "openai_compatible:claude-opus-5-5"},
+		{Selector: "x/n", Backend: "claw", Provider: "openai_compatible:claude-opus-5-5", Model: selectorGateway},
+		{Selector: "x/n#r", Provider: "openai_compatible:glm-5.3"},
+	} {
+		err := llmroute.Validate(llmroute.Policy{Overrides: []llmroute.Override{o}})
+		if err == nil || !strings.Contains(err.Error(), "gateway hint serves gateway models only") {
+			t.Errorf("Validate(%+v) = %v, want a refusal naming the step's non-gateway model", o, err)
+			continue
+		}
+		_, stepModel, _ := strings.Cut(o.Provider, ":")
+		if !strings.Contains(err.Error(), stepModel) {
+			t.Errorf("Validate(%+v) = %v, want the refusal to name the step's model %q", o, err, stepModel)
+		}
+	}
+	// A step carrying its own gateway model is served on claw.
+	ok := llmroute.Override{Selector: "x/n", Backend: "claw", Provider: "openai_compatible:" + selectorGateway, Model: selectorGateway}
+	if err := llmroute.Validate(llmroute.Policy{Overrides: []llmroute.Override{ok}}); err != nil {
+		t.Errorf("Validate(%+v) = %v, want accepted", ok, err)
+	}
+}
+
+// A gateway step that carries its own gateway model, beside a cell `model`
+// that is not a gateway route, stays refused — the cell's model is the one
+// the node's routes naming no model inherit — and the refusal does not
+// claim that dispatch refuses the step, which serves it.
+func TestValidate_AGatewayStepBesideANonGatewayCellModelStaysRefused(t *testing.T) {
+	o := llmroute.Override{Selector: "x/n", Backend: "claw", Provider: "openai_compatible:" + selectorGateway, Model: "anthropic/claude-opus-5-5"}
+	err := llmroute.Validate(llmroute.Policy{Overrides: []llmroute.Override{o}})
+	if err == nil || !strings.Contains(err.Error(), "anthropic/claude-opus-5-5") {
+		t.Fatalf("Validate(%+v) = %v, want a refusal naming the cell's non-gateway model", o, err)
+	}
+	if strings.Contains(err.Error(), "dispatch refuses") {
+		t.Errorf("Validate(%+v) = %v — the step carries its own gateway model, which dispatch serves", o, err)
 	}
 }

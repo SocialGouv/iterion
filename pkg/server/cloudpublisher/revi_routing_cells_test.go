@@ -434,3 +434,42 @@ func TestReviShippedBots_AnIntegrationPinBeatsATeamWideStarDefault(t *testing.T)
 		t.Fatal("no converge call site — the fixture no longer names the node this witness pins")
 	}
 }
+
+// TestReviShippedBots_TheActivationBlockPassesTheLaunchScreens drives the
+// block through runview.Service.Launch — the fold and every launch screen
+// (composed pair, gateway crossing, route crossing, permission) before the
+// publisher — and through the integration write screen: the documented
+// activation on the bots this repo ships is admitted and draws no warning.
+func TestReviShippedBots_TheActivationBlockPassesTheLaunchScreens(t *testing.T) {
+	pol := reviGatewayPolicy(t, llmroute.SourceWebhook)
+	for _, bot := range reviBots {
+		t.Run(bot, func(t *testing.T) {
+			freezeCatalogBotDials(t, bot)
+			f := newReviAcceptanceFixture(t)
+			seedGatewayKey(t, f.pub.apiKeys, f.pub.sealer, "team1", nil)
+			dir := catalogBotDir(t, bot)
+			path := filepath.Join(dir, "main.bot")
+			src, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			warnings, err := runview.ScreenPolicyOverrides(path, string(src), dir, "", llmroute.BotIdentity{ID: bot}, pol)
+			if err != nil || len(warnings) != 0 {
+				t.Fatalf("write screen = (%q, %v), want the activation block screened clean", warnings, err)
+			}
+			svc, err := runview.NewService(t.TempDir(), runview.WithLogger(iterlog.Nop()), runview.WithLaunchPublisher(f.pub))
+			if err != nil {
+				t.Fatalf("NewService: %v", err)
+			}
+			ctx := store.WithIdentity(context.Background(), "team1", "webhook:cfg-1")
+			if _, err := svc.Launch(ctx, runview.LaunchSpec{
+				FilePath: path, Source: string(src), BundleDir: dir, BotID: bot, LLMRoutePolicy: pol,
+			}); err != nil {
+				t.Fatalf("Launch = %v (log:\n%s)", err, f.logs.String())
+			}
+			if len(f.published) != 1 {
+				t.Fatalf("published %d messages, want 1", len(f.published))
+			}
+		})
+	}
+}

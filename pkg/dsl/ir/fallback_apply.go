@@ -119,16 +119,9 @@ func ApplyRunFallback(w *Workflow, routes []Fallback, sandboxed bool, vars map[s
 				refusals = append(refusals, fmt.Sprintf(
 					"agent %q: run-level fallback stage %d %s", nn.NodeID(), stage+1, reason))
 			}
-			if reason := UngatedCrossingReasonForAskRules(routeBackend, perm, EffectiveAskRules(nn, w)); reason != "" {
-				refuse(reason)
-				continue
-			}
-			if reason := toolsInversionReason(screenBackend, routeBackend, nn.GetTools()); reason != "" {
-				refuse(reason)
-				continue
-			}
-			if reason := sessionContinuityCrossingReason(nn.GetSession(), screenBackend, routeBackend); reason != "" {
-				refuse(reason)
+			// C176's verdict on the stage, the compiler's own body.
+			if reasons := RouteCrossingReasons(nn, w, screenBackend, routeBackend, perm); len(reasons) > 0 {
+				refuse(reasons[0])
 				continue
 			}
 			// Refused only on what C135 would BLOCK — a name the compiler can
@@ -137,7 +130,7 @@ func ApplyRunFallback(w *Workflow, routes []Fallback, sandboxed bool, vars map[s
 			// tool whose catalog is merged after compilation, and dropping an
 			// operator's explicit route on that guess is worse than taking it.
 			// Same tiering as the diagnostic — see toolDiagReporter.
-			if reason := unresolvableToolsReason(routeBackend, nn.GetTools(), mcpWiringVisible(w, n)); reason != "" {
+			if reason := RouteToolsUnresolvableReason(w, nn, routeBackend); reason != "" {
 				refuse(reason)
 				continue
 			}
