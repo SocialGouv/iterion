@@ -496,7 +496,9 @@ func (s *Service) hookEventObservers(extra []func(store.Event)) []func(store.Eve
 // The launch's own rows are judged by the selector grammar first
 // (llmroute.ValidateLaunchRow): a row with a bot dimension, or pinning a
 // field its class does not carry, refuses the launch rather than folding
-// into a pin nothing honours.
+// into a pin nothing honours. The rows the fold read stay on the spec as
+// LaunchModelOverrides — the raw rows a launch stamps on its document for
+// the subbot children of its tree.
 //
 // The warnings are the gateway crossings a slot dial decides at the
 // runner, then the policy cells written for the launch's bot by name that
@@ -510,6 +512,7 @@ func foldAndScreen(wf *ir.Workflow, spec *LaunchSpec) ([]string, error) {
 		}
 	}
 	bot := launchBotIdentity(spec)
+	spec.LaunchModelOverrides = slices.Clone(spec.ModelOverrides)
 	sourced := foldSourcedOverrides(spec.ModelOverrides, spec.LLMRoutePolicy, bot)
 	spec.ModelOverrides = plainModelOverrideEntries(sourced)
 	// A finding a slot dial decides at the runner warns; the first decided
@@ -770,7 +773,7 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 		spec.AttachmentPromote, spec.Preset, RunModelOverrides(spec.ModelOverrides),
 		spec.ParentRunID,
 		precreateInputs,
-		launchExtras{workDir: workDir, dailyCap: spec.DailyCap, source: spec.SourceRef, routingPolicy: spec.RoutingPolicy, routePolicy: spec.LLMRoutePolicy, poolAttachment: spec.PoolAttachment, onOutcome: spec.OnOutcome, observers: spec.ExtraObservers, loopBudgetGuard: spec.LoopBudgetGuard, supervisors: spec.Supervisors, budgetAsk: spec.Budget, executionContext: ctxContract, permission: spec.Permission, worktreeBaseCommit: spec.WorktreeBaseCommit, botOrigin: spec.BotOrigin, delegation: spec.Delegation, budgetOverrides: rawBudget, compiled: cs, botSourceTier: spec.BotSourceTier},
+		launchExtras{workDir: workDir, dailyCap: spec.DailyCap, source: spec.SourceRef, routingPolicy: spec.RoutingPolicy, routePolicy: spec.LLMRoutePolicy, launchRows: RunModelOverrides(spec.LaunchModelOverrides), poolAttachment: spec.PoolAttachment, onOutcome: spec.OnOutcome, observers: spec.ExtraObservers, loopBudgetGuard: spec.LoopBudgetGuard, supervisors: spec.Supervisors, budgetAsk: spec.Budget, executionContext: ctxContract, permission: spec.Permission, worktreeBaseCommit: spec.WorktreeBaseCommit, botOrigin: spec.BotOrigin, delegation: spec.Delegation, budgetOverrides: rawBudget, compiled: cs, botSourceTier: spec.BotSourceTier},
 		s.store,
 		func(ctx, _ context.Context, eng *runtime.Engine) error {
 			return eng.Run(ctx, runID, inputs)
@@ -1713,6 +1716,11 @@ func (s *Service) spawnRun(
 	if len(modelOverrides) > 0 {
 		opts = append(opts, runtime.WithModelOverrides(modelOverrides))
 	}
+	// The launch's raw rows, for the subbot children of the run's tree
+	// (FoldForSubbotChild). Empty on resume, leaving the launch's intact.
+	if len(ex.launchRows) > 0 {
+		opts = append(opts, runtime.WithLaunchModelOverrides(ex.launchRows))
+	}
 	if ex.routingPolicy != nil {
 		opts = append(opts, runtime.WithRoutingPolicy(ex.routingPolicy))
 	}
@@ -1923,6 +1931,10 @@ type launchExtras struct {
 	// run document (#2665 item 7), for a local resume to replay. Nil on a
 	// resume, whose document carries it already.
 	routePolicy *store.RunLLMRoutePolicy
+	// launchRows mirrors LaunchSpec.LaunchModelOverrides on a LAUNCH: the
+	// launch's raw rows the engine stamps on the run document. Nil on a
+	// resume, whose document carries them already.
+	launchRows []store.RunModelOverride
 	// onOutcome mirrors LaunchSpec.OnOutcome: fired once in the run
 	// goroutine with the terminal body error before Done closes, so a
 	// blocking caller reads the same typed error engine.Run returned.

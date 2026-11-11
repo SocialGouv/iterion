@@ -61,6 +61,13 @@ workflow child:
 // run whose document froze pol, and returns the child's error.
 func runInProcessSubbotFold(t *testing.T, childDir, childBot string, extra map[string]string, pol *store.RunLLMRoutePolicy, stamped *[]store.RunModelOverride) error {
 	t.Helper()
+	return runInProcessSubbotFoldWithLaunchRows(t, childDir, childBot, extra, pol, nil, stamped)
+}
+
+// runInProcessSubbotFoldWithLaunchRows is runInProcessSubbotFold under a
+// root run whose document also records launchRows, its raw launch rows.
+func runInProcessSubbotFoldWithLaunchRows(t *testing.T, childDir, childBot string, extra map[string]string, pol *store.RunLLMRoutePolicy, launchRows []store.RunModelOverride, stamped *[]store.RunModelOverride) error {
+	t.Helper()
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("TMPDIR", t.TempDir())
 	t.Setenv("ITERION_ORPHAN_RECONCILE_INTERVAL", "0")
@@ -87,6 +94,7 @@ func runInProcessSubbotFold(t *testing.T, childDir, childBot string, extra map[s
 		t.Fatal(err)
 	}
 	root.LLMRoutePolicy = pol
+	root.LaunchModelOverrides = launchRows
 	if err := svc.store.SaveRun(ctx, root); err != nil {
 		t.Fatal(err)
 	}
@@ -183,5 +191,40 @@ func TestInProcessSubbotChildDocumentStampsItsFoldedRows(t *testing.T) {
 	want := []store.RunModelOverride{{Selector: "act", Model: "openai/gpt-6-sol"}}
 	if !reflect.DeepEqual(stamped, want) {
 		t.Fatalf("child document rows = %+v, want its fold %+v", stamped, want)
+	}
+}
+
+// The root run's raw launch rows fold for an in-process child, bot-free, on
+// top of the policy's cells for the child's bot — the cloud runner's rule.
+func TestInProcessSubbotChildFoldsTheRootRunsLaunchRows(t *testing.T) {
+	launch := []store.RunModelOverride{{Selector: "act", Model: "openai/gpt-6-sol"}}
+	for _, tc := range []struct {
+		name string
+		pol  *store.RunLLMRoutePolicy
+	}{
+		{"no policy", nil},
+		{"over a child cell", &store.RunLLMRoutePolicy{Overrides: []store.RunLLMRouteOverride{{Selector: "child/act", Model: "openai/gpt-5.5-mini"}}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := runInProcessSubbotFoldWithLaunchRows(t, "child", subbotFoldAgent, nil, tc.pol, launch, nil)
+			var named []string
+			for _, m := range []string{"gpt-6-sol", "gpt-5.5-mini", "claude-sonnet-4-5"} {
+				if strings.Contains(err.Error(), m) {
+					named = append(named, m)
+				}
+			}
+			if len(named) != 1 || named[0] != "gpt-6-sol" {
+				t.Fatalf("child dispatched on %q, want the root run's launch row gpt-6-sol (child error: %v)", named, err)
+			}
+		})
+	}
+}
+
+// A grandchild folds the root's launch rows too: the recursion carries them.
+func TestInProcessSubbotGrandchildFoldsTheRootsLaunchRows(t *testing.T) {
+	launch := []store.RunModelOverride{{Selector: "act", Model: "openai/gpt-6-sol"}}
+	err := runInProcessSubbotFoldWithLaunchRows(t, "mid", subbotFoldMid, map[string]string{"grandchild": subbotFoldAgent}, nil, launch, nil)
+	if !dispatchedGPT(t, err) {
+		t.Fatalf("the root run's launch row did not reach the grandchild (error: %v)", err)
 	}
 }

@@ -190,6 +190,11 @@ type LaunchSpec struct {
 	// the folded list. Within the launch's own rows, specificity rules as
 	// before.
 	ModelOverrides []ModelOverrideEntry
+	// LaunchModelOverrides is the launch's own rows as ModelOverrides held
+	// them before the fold: foldAndScreen records them here, and the launch
+	// stamps them on the run document (store.Run.LaunchModelOverrides) for
+	// the subbot children of the run's tree. A caller never sets it.
+	LaunchModelOverrides []ModelOverrideEntry
 	// RoutingPolicy is the launch-frozen outcome contract (validated
 	// and hashed by the HTTP layer); persisted on the run doc and
 	// replayed from it on resume.
@@ -445,6 +450,19 @@ func ModelOverridesFromRun(rows []store.RunModelOverride) model.ModelOverrides {
 		out[i] = model.OverrideEntry{Selector: e.Selector, Backend: e.Backend, Model: e.Model, Provider: e.Provider, Effort: e.Effort}
 	}
 	return model.OverridesFrom(out)
+}
+
+// ModelOverrideEntriesFromRun reads persisted rows back as launch entries,
+// the inverse of RunModelOverrides.
+func ModelOverrideEntriesFromRun(rows []store.RunModelOverride) []ModelOverrideEntry {
+	if len(rows) == 0 {
+		return nil
+	}
+	out := make([]ModelOverrideEntry, len(rows))
+	for i, r := range rows {
+		out[i] = ModelOverrideEntry{Selector: r.Selector, Backend: r.Backend, Model: r.Model, Provider: r.Provider, Effort: r.Effort}
+	}
+	return out
 }
 
 // RunModelOverrides converts the launch entries into the persisted

@@ -4030,6 +4030,10 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		// studio Overview reads the pins from the run doc, and the resume
 		// path replays them onto its RunMessage from here.
 		ModelOverrides: runModelOverrides(spec.ModelOverrides),
+		// The launch's raw rows, before the policy folded in: what every
+		// subbot child of the run's tree folds again for its own bot (the
+		// runner reads them off this document). Never re-derived on resume.
+		LaunchModelOverrides: runModelOverrides(spec.LaunchModelOverrides),
 		// Cap. 3 sharding fields — propagate to the persisted Run so
 		// studio surfaces can render the parent/child relationship,
 		// and onto the published RunMessage below so the runner pod

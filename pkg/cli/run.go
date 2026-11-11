@@ -163,6 +163,11 @@ type RunOptions struct {
 	// --effort-for). Model, backend and effort are one decision, so the
 	// selector machinery is shared; an invalid level is a flag error.
 	EffortFor []string
+	// recordedLaunchRows are the launch rows a resume reads off the run
+	// document (store.Run.LaunchModelOverrides): the subbot children of a
+	// resumed run fold the flags above over them, as the resumed run folds
+	// its flags over its own recorded rows. Nil on a launch.
+	recordedLaunchRows model.ModelOverrides
 	// AutoResume is the bounded run-level auto-resume budget N
 	// (`--auto-resume`, env ITERION_AUTO_RESUME; default 0 = off). When the
 	// run exits failed_resumable with a retryable cause, the CLI waits
@@ -667,7 +672,7 @@ func buildRunExecutor(
 	if opts.Executor != nil {
 		return opts.Executor, nil
 	}
-	modelOverrides, err := model.ParseModelOverrides(opts.ModelFor, opts.BackendFor, opts.EffortFor)
+	modelOverrides, err := opts.launchRows()
 	if err != nil {
 		return nil, err
 	}
@@ -1005,9 +1010,12 @@ func buildEngine(
 	//
 	// The flags were already parsed (and any error surfaced) when the
 	// executor was built, so a parse failure here cannot be new.
+	// No routing policy folds on this lane (ADR-129 §8), so the flags are
+	// both the rows the run executes with and its raw launch rows — the
+	// ones a later `iterion resume` hands the run's subbot children.
 	if ov, err := model.ParseModelOverrides(opts.ModelFor, opts.BackendFor, opts.EffortFor); err == nil {
 		if rows := runModelOverrideRows(ov); len(rows) > 0 {
-			base = append(base, runtime.WithModelOverrides(rows))
+			base = append(base, runtime.WithModelOverrides(rows), runtime.WithLaunchModelOverrides(rows))
 		}
 	}
 
@@ -1205,6 +1213,17 @@ func ParseAnswersFile(path string) (map[string]any, error) {
 // key this bot's memory on a name that changes with every edit to the bundle.
 func bundleManifestName(b *bundle.Bundle) string {
 	return b.Name()
+}
+
+// launchRows is the run's launch rows as a child of its tree folds them:
+// the --model / --backend / --effort-for flags over the rows a resume
+// recorded (recordedLaunchRows), each field the flags pin winning.
+func (o RunOptions) launchRows() (model.ModelOverrides, error) {
+	flags, err := model.ParseModelOverrides(o.ModelFor, o.BackendFor, o.EffortFor)
+	if err != nil {
+		return model.ModelOverrides{}, err
+	}
+	return flags.MergeOver(o.recordedLaunchRows), nil
 }
 
 // runModelOverrideRows converts parsed CLI override directives into the

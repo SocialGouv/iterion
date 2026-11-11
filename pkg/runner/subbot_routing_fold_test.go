@@ -2,9 +2,12 @@ package runner
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -13,6 +16,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/queue"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/runview"
+	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/store/storetest"
 )
@@ -22,7 +26,8 @@ import (
 // own fold and screens, and the child's executor dispatches with that fold.
 // A cell scoped to the parent's bot does not reach the child, one scoped to
 // the child's bot does, an unscoped cell and `*/x` still do; the parent's
-// folded rows and its own launch rows do not travel.
+// folded rows do not travel. The root run's own launch rows — the raw rows
+// its document records — fold on top, for every child of the tree.
 //
 // The observable is the child's dispatch: its agent `act` runs claw on
 // claude-sonnet-4-5, and a cell pinning it to openai/gpt-6-sol makes the
@@ -65,6 +70,13 @@ func wireRows(launchRows []runview.ModelOverrideEntry, pol *store.RunLLMRoutePol
 // child's error. seedParent=false leaves the root run's document absent.
 func runSubbotFoldFixture(t *testing.T, childDir, childBot string, extra map[string]string, pol *store.RunLLMRoutePolicy, msgRows []queue.ModelOverride, seedParent bool) error {
 	t.Helper()
+	return runSubbotFoldFixtureWithLaunchRows(t, childDir, childBot, extra, pol, nil, msgRows, seedParent)
+}
+
+// runSubbotFoldFixtureWithLaunchRows is runSubbotFoldFixture under a root
+// run whose document also records launchRows, its raw launch rows.
+func runSubbotFoldFixtureWithLaunchRows(t *testing.T, childDir, childBot string, extra map[string]string, pol *store.RunLLMRoutePolicy, launchRows []store.RunModelOverride, msgRows []queue.ModelOverride, seedParent bool) error {
+	t.Helper()
 	t.Setenv("OPENAI_API_KEY", "")
 	r, _ := subbotTestRunner(t)
 	dir := t.TempDir()
@@ -78,6 +90,7 @@ func runSubbotFoldFixture(t *testing.T, childDir, childBot string, extra map[str
 	if seedParent {
 		p := storetest.SeedParentRun(t, r.cfg.Store, msg.RunID)
 		p.LLMRoutePolicy = pol
+		p.LaunchModelOverrides = launchRows
 		if err := r.cfg.Store.SaveRun(store.WithIdentity(context.Background(), "_test", "_test"), p); err != nil {
 			t.Fatal(err)
 		}
@@ -147,13 +160,65 @@ func TestSubbotGrandchildFoldsTheRootRunsPolicy(t *testing.T) {
 	}
 }
 
-// The parent's own launch rows apply to the run they launched: a child
-// folds the policy alone.
-func TestSubbotChildDoesNotInheritTheParentsLaunchRows(t *testing.T) {
-	launch := []runview.ModelOverrideEntry{{Selector: "act", Model: "openai/gpt-6-sol"}}
-	err := runSubbotFoldFixture(t, "child", agentChildBot(""), nil, nil, wireRows(launch, nil, "parent"), true)
+// dispatchedModel names the one model of models the child's error names —
+// the model its agent dispatched on.
+func dispatchedModel(t *testing.T, err error, models ...string) string {
+	t.Helper()
+	var named []string
+	for _, m := range models {
+		if strings.Contains(err.Error(), m) {
+			named = append(named, m)
+		}
+	}
+	if len(named) != 1 {
+		t.Fatalf("precondition: the child's error names exactly one of %q, got %q: %v", models, named, err)
+	}
+	return named[0]
+}
+
+// The root run's raw launch rows — what its document records, never the
+// folded list its message carries — fold for the child, bot-free: a row on
+// `act` reaches the child's `act`. The message's rows here are a policy
+// fold for the parent's bot (`parent/act` → gpt-5.5-mini); a child reading
+// them would dispatch on that model instead.
+func TestSubbotChildFoldsTheRootRunsLaunchRows(t *testing.T) {
+	launch := []store.RunModelOverride{{Selector: "act", Model: "openai/gpt-6-sol"}}
+	parentPol := &store.RunLLMRoutePolicy{Overrides: []store.RunLLMRouteOverride{{Selector: "parent/act", Model: "openai/gpt-5.5-mini"}}}
+	err := runSubbotFoldFixtureWithLaunchRows(t, "child", agentChildBot(""), nil, nil, launch, wireRows(nil, parentPol, "parent"), true)
+	if got := dispatchedModel(t, err, "gpt-6-sol", "gpt-5.5-mini", "claude-sonnet-4-5"); got != "gpt-6-sol" {
+		t.Fatalf("child dispatched on %s, want the root run's launch row gpt-6-sol (child error: %v)", got, err)
+	}
+}
+
+// A launch row is the launch's own word: on the same selector it outranks
+// the policy cell scoped to the child's bot, as it outranks a cell at the
+// root.
+func TestSubbotChildLaunchRowOutranksAChildCell(t *testing.T) {
+	launch := []store.RunModelOverride{{Selector: "act", Model: "openai/gpt-6-sol"}}
+	pol := &store.RunLLMRoutePolicy{Overrides: []store.RunLLMRouteOverride{{Selector: "child/act", Model: "openai/gpt-5.5-mini"}}}
+	err := runSubbotFoldFixtureWithLaunchRows(t, "child", agentChildBot(""), nil, pol, launch, nil, true)
+	if got := dispatchedModel(t, err, "gpt-6-sol", "gpt-5.5-mini", "claude-sonnet-4-5"); got != "gpt-6-sol" {
+		t.Fatalf("child dispatched on %s, want the launch row's gpt-6-sol over the child cell's gpt-5.5-mini (child error: %v)", got, err)
+	}
+}
+
+// A policy cell folded for the PARENT's bot never travels as a launch row:
+// the root's document holds no launch row, its message holds the parent's
+// fold, and the child stays on its authored model.
+func TestSubbotChildReadsNoParentFoldAsALaunchRow(t *testing.T) {
+	parentPol := &store.RunLLMRoutePolicy{Overrides: []store.RunLLMRouteOverride{{Selector: "parent/act", Model: "openai/gpt-6-sol"}}}
+	err := runSubbotFoldFixtureWithLaunchRows(t, "child", agentChildBot(""), nil, parentPol, nil, wireRows(nil, parentPol, "parent"), true)
 	if reachedGPT(t, err) {
-		t.Fatalf("the parent's launch row reached the child bot (child error: %v)", err)
+		t.Fatalf("a cell folded for the parent's bot reached the child (child error: %v)", err)
+	}
+}
+
+// A grandchild folds the ROOT run's launch rows as a child does.
+func TestSubbotGrandchildFoldsTheRootsLaunchRows(t *testing.T) {
+	launch := []store.RunModelOverride{{Selector: "act", Model: "openai/gpt-6-sol"}}
+	err := runSubbotFoldFixtureWithLaunchRows(t, "mid", subbotFoldMidBot, map[string]string{"grandchild": agentChildBot("")}, nil, launch, nil, true)
+	if !reachedGPT(t, err) {
+		t.Fatalf("the root run's launch row did not reach the grandchild (error: %v)", err)
 	}
 }
 
@@ -221,5 +286,64 @@ func TestSubbotChildDocumentStampsItsFoldedRows(t *testing.T) {
 	want := []store.RunModelOverride{{Selector: "act", Model: "openai/gpt-6-sol"}}
 	if !reflect.DeepEqual(child.ModelOverrides, want) {
 		t.Fatalf("child document rows = %+v, want its fold %+v", child.ModelOverrides, want)
+	}
+}
+
+// A team_gateway root launched with a `*` row pinning every agent onto the
+// team's gateway keeps its subbot child's content on that gateway: the row
+// folds for the child, whose agent is authored on a vendor model. Both wires
+// are local recorders, so the observable is which one the child's agent
+// calls — never the network.
+func TestSubbotChildUnderATeamGatewayLaunchRowStaysOnTheGateway(t *testing.T) {
+	var mu sync.Mutex
+	var gwHits, vendorHits []string
+	recorder := func(hits *[]string) *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			mu.Lock()
+			*hits = append(*hits, r.URL.Path)
+			mu.Unlock()
+			http.Error(w, "recorder", http.StatusTeapot)
+		}))
+	}
+	gw, vendor := recorder(&gwHits), recorder(&vendorHits)
+	defer gw.Close()
+	defer vendor.Close()
+	t.Setenv("ITERION_LLM_ENDPOINT_ALLOW_PRIVATE", "1")
+	t.Setenv("OPENAI_API_KEY", "")
+	t.Setenv("OPENAI_BASE_URL", vendor.URL)
+
+	r, st := subbotTestRunner(t)
+	dir := t.TempDir()
+	parentDir := filepath.Join(dir, "parent")
+	writeSubbotFixture(t, parentDir, "main.bot", subbotFoldParentBot)
+	writeSubbotFixture(t, filepath.Join(dir, "child"), "main.bot", "prompt usr:\n  Go.\n\n"+strings.Replace(agentChildBot("  user: usr\n"), `"claude-sonnet-4-5"`, `"openai/gpt-6-sol"`, 1))
+	msg := &queue.RunMessage{RunID: "run-parent", TenantID: "t1", OwnerID: "u1", BotID: "parent",
+		ContentBoundary: &store.RunContentBoundary{Kind: store.ContentBoundaryTeamGateway, GatewayHost: strings.TrimPrefix(gw.URL, "http://")},
+	}
+	p := storetest.SeedParentRun(t, st, msg.RunID)
+	p.LaunchModelOverrides = []store.RunModelOverride{{Selector: "*", Backend: "claw", Provider: "openai_compatible", Model: "openai_compatible/scaleway/deepseek-v4.1-flash"}}
+	if err := st.SaveRun(store.WithIdentity(context.Background(), "_test", "_test"), p); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	ctx = secrets.WithCredentials(ctx, secrets.Credentials{
+		APIKeys: map[secrets.Provider]string{
+			secrets.ProviderOpenAI:           "sk-test-vendor",
+			secrets.ProviderOpenAICompatible: "sk-test-gateway",
+		},
+		APIBaseURLs:    map[secrets.Provider]string{secrets.ProviderOpenAICompatible: gw.URL},
+		AmbientRefused: true,
+	})
+	_, cerr := r.subbotRunnerFor(msg, parentDir, dir, iterlog.Nop())(ctx, runtime.SubbotRequest{
+		Source: "../child/main.bot", ParentRunID: msg.RunID, NodeID: "run_ticket", ReattachKey: "run_ticket",
+	})
+	if cerr == nil {
+		t.Fatal("precondition: both recorders refuse, so the child fails")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(gwHits) == 0 || len(vendorHits) != 0 {
+		t.Fatalf("child calls: gateway %q, vendor %q — want the gateway only (child error: %v)", gwHits, vendorHits, cerr)
 	}
 }

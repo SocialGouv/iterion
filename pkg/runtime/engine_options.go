@@ -589,6 +589,16 @@ func WithModelOverrides(o []store.RunModelOverride) EngineOption {
 	return func(e *Engine) { e.modelOverrides = o }
 }
 
+// WithLaunchModelOverrides records the launch's own override rows as the
+// launch wrote them, before the routing policy's cells folded in, so the
+// engine persists them on the run record (store.Run.LaunchModelOverrides):
+// every subbot child of the run's tree folds them again for its own bot.
+// Empty on resume (not re-supplied), so the persisted value is left
+// untouched — see engine_run.go.
+func WithLaunchModelOverrides(o []store.RunModelOverride) EngineOption {
+	return func(e *Engine) { e.launchModelOverrides = o }
+}
+
 // WithBudgetOverrides records the raw run-level budget intent. Enforcement is
 // wired separately by mutating the workflow before Engine construction; this
 // option makes that intent durable for later resumes. The value is copied so

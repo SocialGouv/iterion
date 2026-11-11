@@ -169,7 +169,8 @@ func resolveSubbotSource(source, parentDir string, botsPaths []string) (string, 
 // locally only. Mirrors runview.subbotRunnerFor: resolve the child .bot,
 // compile it, build a child executor under the SAME message (credentials,
 // sandbox and run-level stamps travel; the model override rows are the root
-// run's routing policy folded again for the child's own bot), run it in the
+// run's launch rows over its routing policy, folded again for the child's own
+// bot), run it in the
 // parent's EFFECTIVE workdir (the per-run worktree, when the parent swapped
 // to one), and hand back the child's terminal output. Children carry the parent linkage so the studio
 // folds them into the parent's card, re-attach across a pod restart through
@@ -178,11 +179,15 @@ func (r *Runner) subbotRunnerFor(msg *queue.RunMessage, parentDir, workDir strin
 	return r.subbotRunnerUnder(nil, msg, parentDir, workDir, runLogger, snapshotRoot...)
 }
 
-// subbotRoot is the routing-policy snapshot the run the queue delivered —
-// the root of a subbot tree — froze at launch: every child of the tree folds
-// it for its own bot (runview.FoldForSubbotChild). A child's document carries
-// no policy, so the snapshot travels down the recursion.
-type subbotRoot struct{ policy *store.RunLLMRoutePolicy }
+// subbotRoot is what the run the queue delivered — the root of a subbot
+// tree — froze at launch: its routing-policy snapshot and its own raw launch
+// rows, read from its document. Every child of the tree folds them for its
+// own bot (runview.FoldForSubbotChild); they travel down the recursion, so a
+// grandchild reads the root's, never its parent's.
+type subbotRoot struct {
+	policy     *store.RunLLMRoutePolicy
+	launchRows []store.RunModelOverride
+}
 
 // subbotRunnerUnder is subbotRunnerFor below a known root; tree is nil at the
 // top of the tree, where msg is the root run's message.
@@ -254,10 +259,11 @@ func (r *Runner) subbotRunnerUnder(tree *subbotRoot, msg *queue.RunMessage, pare
 		// behind. The parent's own launch overrides are NOT replayed — a
 		// child budgets itself from its .bot, as it does in-process.
 		applyCloudBudgetCeiling(childWf, runLogger)
-		// The child's override rows: the root run's routing policy folded for
-		// the child's own bot, screened before any child run is recorded. The
+		// The child's override rows: the root run's launch rows over its
+		// routing policy folded for the child's own bot, both read from the
+		// root's document, screened before any child run is recorded. The
 		// parent's rows (msg.ModelOverrides) folded the policy for the
-		// parent's bot and carry its launch rows: they never reach the child.
+		// parent's bot: they never reach the child.
 		manifestName := runview.BundleNameForPath(childPath)
 		childBotID := runview.ResolveBotID("", manifestName, childPath)
 		root := tree
@@ -266,9 +272,9 @@ func (r *Runner) subbotRunnerUnder(tree *subbotRoot, msg *queue.RunMessage, pare
 			if lerr != nil {
 				return nil, fmt.Errorf("subbot %q: the routing policy of root run %q cannot be read, so child bot %q cannot fold it: %w", req.Source, msg.RunID, childBotID, lerr)
 			}
-			root = &subbotRoot{policy: rootRun.LLMRoutePolicy}
+			root = &subbotRoot{policy: rootRun.LLMRoutePolicy, launchRows: rootRun.LaunchModelOverrides}
 		}
-		childRows, err := runview.FoldForSubbotChild(childWf, root.policy, childBotID, manifestName, msg.Permission, runLogger)
+		childRows, err := runview.FoldForSubbotChild(childWf, root.policy, root.launchRows, childBotID, manifestName, msg.Permission, runLogger)
 		if err != nil {
 			return nil, fmt.Errorf("subbot %q (bot %q): %w", req.Source, childBotID, err)
 		}

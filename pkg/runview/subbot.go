@@ -84,17 +84,20 @@ func manageSubbotChild(mgr *Manager, parent context.Context, childRunID string, 
 // engine options (broker publish, alerting, board MCP) so their run consoles
 // are live in the studio, plus the parent linkage via WithParentRunID — which
 // is what folds them into the parent's pipeline-board card. The child's model
-// override rows are its root run's routing policy folded for the child's own
-// bot (FoldForSubbotChild), never the parent's rows.
+// override rows are its root run's launch rows over its routing policy folded
+// for the child's own bot (FoldForSubbotChild), never the parent's rows.
 func (s *Service) subbotRunnerFor(parentPath string, runLogger *iterlog.Logger) runtime.SubbotRunner {
 	return s.subbotRunnerUnder(nil, parentPath, runLogger)
 }
 
-// subbotRoot is the routing-policy snapshot the run a subbot tree hangs from
-// froze at launch: every child of the tree folds it for its own bot
-// (FoldForSubbotChild). A child's document carries no policy, so the
-// snapshot travels down the recursion.
-type subbotRoot struct{ policy *store.RunLLMRoutePolicy }
+// subbotRoot is what the run a subbot tree hangs from froze at launch: its
+// routing-policy snapshot and its own raw launch rows. Every child of the
+// tree folds them for its own bot (FoldForSubbotChild); they travel down
+// the recursion, so a grandchild reads the root's, never its parent's.
+type subbotRoot struct {
+	policy     *store.RunLLMRoutePolicy
+	launchRows []store.RunModelOverride
+}
 
 // subbotRunnerUnder is subbotRunnerFor below a known root; tree is nil at
 // the top of the tree, where the request's parent is the root.
@@ -168,14 +171,15 @@ func (s *Service) subbotRunnerUnder(tree *subbotRoot, parentPath string, runLogg
 			bundleName = childBundle.Manifest.Name
 		}
 		childBotID := ResolveBotID("", bundleName, childPath)
-		// The child's override rows: the root run's routing policy folded
-		// for the child's own bot, screened before any child run is
-		// recorded. At the top of the tree the parent read above is the root.
+		// The child's override rows: the root run's launch rows over its
+		// routing policy folded for the child's own bot, screened before any
+		// child run is recorded. At the top of the tree the parent read
+		// above is the root.
 		root := tree
 		if root == nil {
-			root = &subbotRoot{policy: parentRun.LLMRoutePolicy}
+			root = &subbotRoot{policy: parentRun.LLMRoutePolicy, launchRows: parentRun.LaunchModelOverrides}
 		}
-		childRows, err := FoldForSubbotChild(childWf, root.policy, childBotID, bundleName, "", runLogger)
+		childRows, err := FoldForSubbotChild(childWf, root.policy, root.launchRows, childBotID, bundleName, "", runLogger)
 		if err != nil {
 			return nil, fmt.Errorf("subbot %q (bot %q): %w", req.Source, childBotID, err)
 		}
