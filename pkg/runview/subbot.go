@@ -238,8 +238,16 @@ func (s *Service) subbotRunnerUnder(tree *subbotRoot, parentPath string, runLogg
 			// to the child WORKFLOW's name, and the same subbot bundle ends up
 			// with two memory spaces depending on which surface launched the
 			// parent.
-			BotID:           childBotID,
-			ModelOverrides:  toModelOverrides(childRows),
+			BotID:          childBotID,
+			ModelOverrides: toModelOverrides(childRows),
+			// The child dispatches under the providers allowlist its root
+			// froze, as the root does (startInProcess), as the cloud child
+			// does (its message is a copy of the root's), and as a lone
+			// resume of the child does (resumeExecutorSpec reads the root's
+			// policy off the child's document). root.policy travels down the
+			// recursion, so a grandchild dispatches under it too; nil — a
+			// root with no list — leaves the child ungated, as its root.
+			LLMProviders:    root.policy.ProviderAllowlist(),
 			BoardRegister:   s.boardRegister,
 			BoardRevoke:     s.boardRevoke,
 			LocalSecrets:    s.localSecrets,

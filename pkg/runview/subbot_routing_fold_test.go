@@ -2,6 +2,7 @@ package runview
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -56,6 +57,9 @@ workflow child:
   entry: act
   act -> done
 `
+
+// subbotFoldAgentOnOpenAI is subbotFoldAgent authored on an OpenAI model.
+var subbotFoldAgentOnOpenAI = strings.Replace(subbotFoldAgent, `"claude-sonnet-4-5"`, `"openai/gpt-6-sol"`, 1)
 
 // runInProcessSubbotFold runs the parent's subbot node once, under a root
 // run whose document froze pol, and returns the child's error.
@@ -346,5 +350,100 @@ func TestInProcessSubbotChildDocumentRecordsTheRootsRouting(t *testing.T) {
 	}
 	if !reflect.DeepEqual(child.LaunchModelOverrides, launch) {
 		t.Fatalf("child document launch rows = %+v, want the root's %+v", child.LaunchModelOverrides, launch)
+	}
+}
+
+// An in-process subbot child dispatches under the providers allowlist its
+// root froze, as the root, the cloud child and a lone resume of the child
+// do: whatever names the out-of-list provider — the child's own .bot, a root
+// launch row, a policy cell for the child's bot — the dispatch refuses it
+// before any call, at every depth of the tree.
+func TestInProcessSubbotChildDispatchesUnderTheRootsProviderAllowlist(t *testing.T) {
+	for _, tc := range []struct {
+		name, childDir, child string
+		extra                 map[string]string
+		cells                 []store.RunLLMRouteOverride
+		launch                []store.RunModelOverride
+	}{
+		{name: "authored", childDir: "child", child: subbotFoldAgentOnOpenAI},
+		{name: "launch row", childDir: "child", child: subbotFoldAgent, launch: []store.RunModelOverride{{Selector: "act", Model: "openai/gpt-6-sol"}}},
+		{name: "policy cell", childDir: "child", child: subbotFoldAgent, cells: []store.RunLLMRouteOverride{{Selector: "child/act", Model: "openai/gpt-6-sol"}}},
+		{name: "grandchild authored", childDir: "mid", child: subbotFoldMid, extra: map[string]string{"grandchild": subbotFoldAgentOnOpenAI}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pol := &store.RunLLMRoutePolicy{Providers: []string{"anthropic"}, Overrides: tc.cells}
+			err := runInProcessSubbotFoldWithLaunchRows(t, tc.childDir, tc.child, tc.extra, pol, tc.launch, nil)
+			if !strings.Contains(err.Error(), "outside this run's provider allowlist (anthropic)") {
+				t.Fatalf("the child dispatched outside its root's allowlist [anthropic]: %v", err)
+			}
+		})
+	}
+}
+
+// The public path that brings a subbot under a providers list: a run
+// launched under the team's list [anthropic] with no subbot node, its .bot
+// edited to add one whose child is authored on OpenAI, then force-resumed.
+// The resume screens no allowlist, so the child's own dispatch is the guard:
+// the child's document names the allowlist refusal, never a call on
+// openai/gpt-6-sol.
+func TestInProcessForceResumedSubbotChildDispatchesUnderTheRootsProviderAllowlist(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("TMPDIR", t.TempDir())
+	t.Setenv("ITERION_ORPHAN_RECONCILE_INTERVAL", "0")
+	t.Setenv("OPENAI_API_KEY", "")
+	const gateOnly = `schema gate_out:
+  approved: bool
+
+prompt gate_prompt:
+  Approve?
+
+human gate:
+  instructions: gate_prompt
+  output: gate_out
+  interaction: human
+
+workflow parent:
+  entry: gate
+  gate -> done when approved
+  gate -> fail when not approved
+`
+	gateThenSubbot := strings.Replace(strings.Replace(gateOnly, "workflow parent:", "schema vout:\n  ok: bool\n\nsubbot run_child:\n  source: \"../child/main.bot\"\n  output: vout\n\nworkflow parent:", 1),
+		"gate -> done when approved", "gate -> run_child when approved\n  run_child -> done", 1)
+	dir := t.TempDir()
+	parentPath := filepath.Join(dir, "parent", "main.bot")
+	writeFile(t, filepath.Join(dir, "parent"), "main.bot", gateOnly)
+	writeFile(t, filepath.Join(dir, "child"), "main.bot", subbotFoldAgentOnOpenAI)
+	svc, err := NewService(filepath.Join(dir, "store"), WithLogger(iterlog.Nop()), WithWorkDir(dir), WithSandboxDefault("none"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stopService(t, svc)
+	ctx := context.Background()
+	res, err := svc.Launch(ctx, LaunchSpec{FilePath: parentPath, LLMRoutePolicy: teamProviders("anthropic")})
+	if err != nil {
+		t.Fatalf("launch: %v", err)
+	}
+	awaitRunCompletion(t, res.Done, "launch pass")
+	if r, err := svc.store.LoadRun(ctx, res.RunID); err != nil || r.Status != store.RunStatusPausedWaitingHuman {
+		t.Fatalf("precondition: the launch parks on its gate (run %+v, err %v)", r, err)
+	}
+	if err := os.WriteFile(parentPath, []byte(gateThenSubbot), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rres, err := svc.Resume(ctx, ResumeSpec{RunID: res.RunID, FilePath: parentPath, Force: true, Answers: map[string]any{"approved": true}})
+	if err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	awaitRunCompletion(t, rres.Done, "resume pass")
+	ids, err := svc.store.ListChildRuns(ctx, res.RunID)
+	if err != nil || len(ids) != 1 {
+		t.Fatalf("precondition: the resumed run spawned one child (ids %v, err %v)", ids, err)
+	}
+	child, err := svc.store.LoadRun(ctx, ids[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(child.Error, "outside this run's provider allowlist (anthropic)") {
+		t.Fatalf("the force-resumed child dispatched outside its root's allowlist [anthropic]: status %s, error %q", child.Status, child.Error)
 	}
 }
