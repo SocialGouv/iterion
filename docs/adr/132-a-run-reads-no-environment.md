@@ -636,8 +636,10 @@ stated here:
 - **The route-field guard** is enforced as a refusal of `effort` on a route-scoped cell (a route runs
   at its node's effort, so the pin would be a silent no-op), which implies §2's "at least one route
   field", and of a route `provider` that is not one hint: dispatch sends a route's provider whole,
-  so a `,` chain (the node's `fallbacks:` list is the route chain) or a `hint:model` step (the model
-  belongs in `model`) would be a pin no harness reads. A supervisor cell pins `model` only.
+  so a `,` chain (the node's `fallbacks:` list is the route chain), a stray `,` (`zai,` reaches
+  dispatch as `zai,`) or a `hint:model` step (the model belongs in `model`) would be a pin no harness
+  reads. A route's `provider` is a literal on a launch's own row as on a cell: the runner would send
+  a template's expansion whole. A supervisor cell pins `model` only.
 - **The zero-match warning** fires for a cell that names the run's bot BY ID OR MANIFEST NAME and
   whose target matches nothing in it — a target is an LLM node, a tool's rung-4 recovery agent
   `<tool>__recover`, an authored route or a supervisor (a glob or an unscoped cell matching nothing is

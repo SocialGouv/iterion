@@ -231,10 +231,62 @@ func TestValidate_ARouteProviderIsOneHint(t *testing.T) {
 			t.Errorf("control Validate(%+v) = %v, want accepted", cell, err)
 		}
 	}
-	// A dial's `:-` is no step: the runner expands it, and a write surface
-	// refuses the non-literal on its own terms.
-	if err := llmroute.ValidateLaunchRow("reflect#claude", "", "${ITERION_PROBE_P:-openai_compatible}", ""); err != nil {
-		t.Errorf("control ValidateLaunchRow(dial) = %v, want accepted", err)
+	// A dial's `:-` is no step: a route row's template is refused as a
+	// non-literal (TestValidateLaunchRow_ARouteRowProviderIsALiteral), never
+	// misread as a hint:model step.
+	if err := llmroute.ValidateLaunchRow("reflect#claude", "", "${ITERION_PROBE_P:-openai_compatible}", ""); err == nil || strings.Contains(err.Error(), "hint:model step") {
+		t.Errorf("control ValidateLaunchRow(dial) = %v, want the literal refusal, not a step", err)
+	}
+}
+
+// A stray ',' on a route pin reaches dispatch inside the hint ("zai,"),
+// which no harness knows and the allowlist drop compares whole: the write
+// gate, the launch's reading of a stored layer and a launch's own row
+// refuse it and name the one hint to write. A node pin keeps it: dispatch
+// splits a node chain and drops the empty step.
+func TestValidate_AStrayCommaOnARouteIsNoHint(t *testing.T) {
+	for _, tc := range []struct{ backend, provider, model, want string }{
+		{"", "zai,", "", `write "provider": "zai"`},
+		{"", ",zai", "", `write "provider": "zai"`},
+		{"", "zai, ,", "", `write "provider": "zai"`},
+		{"claw", "openai_compatible,", selectorGateway, `write "provider": "openai_compatible"`},
+	} {
+		cell := llmroute.Override{Selector: "copilot/reflect#claude", Backend: tc.backend, Provider: tc.provider, Model: tc.model}
+		for name, validate := range map[string]func(llmroute.Policy) error{"Validate": llmroute.Validate, "ValidateStored": llmroute.ValidateStored} {
+			err := validate(llmroute.Policy{Overrides: []llmroute.Override{cell}})
+			if err == nil || !strings.Contains(err.Error(), "a route's provider is one hint") || !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("cell %s(%+v) = %v, want the one-hint refusal naming %q", name, cell, err, tc.want)
+			}
+		}
+		err := llmroute.ValidateLaunchRow("reflect#claude", tc.backend, tc.provider, "")
+		if err == nil || !strings.Contains(err.Error(), "a route's provider is one hint") || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("row ValidateLaunchRow(reflect#claude, %q) = %v, want the one-hint refusal naming %q", tc.provider, err, tc.want)
+		}
+	}
+	if err := llmroute.ValidateLaunchRow("reflect#claude", "", ",", ""); err == nil || !strings.Contains(err.Error(), "a route's provider is one hint") {
+		t.Errorf("row ValidateLaunchRow(reflect#claude, \",\") = %v, want the one-hint refusal", err)
+	}
+	if err := llmroute.Validate(llmroute.Policy{Overrides: []llmroute.Override{{Selector: "copilot/judge", Backend: "claude_code", Provider: "zai,"}}}); err != nil {
+		t.Errorf("control node cell zai, = %v, want accepted", err)
+	}
+	if err := llmroute.ValidateLaunchRow("judge", "", "zai,", ""); err != nil {
+		t.Errorf("control node row zai, = %v, want accepted", err)
+	}
+}
+
+// A launch row's route provider is a literal: the runner expands a
+// template and sends the result whole, so a launch could certify no one
+// hint. A node row's template stays the runner's: dispatch splits a node
+// chain.
+func TestValidateLaunchRow_ARouteRowProviderIsALiteral(t *testing.T) {
+	for _, p := range []string{"${ITERION_PROBE_P:-zai,anthropic}", "${ITERION_PROBE_P:-zai:glm-5.3}", "${ITERION_PROBE_P:-openai_compatible}", "{{vars.p}}"} {
+		err := llmroute.ValidateLaunchRow("reflect#claude", "", p, "")
+		if err == nil || !strings.Contains(err.Error(), "is a LITERAL") || !strings.Contains(err.Error(), `"reflect#claude"`) {
+			t.Errorf("row ValidateLaunchRow(reflect#claude, %q) = %v, want the literal refusal", p, err)
+		}
+	}
+	if err := llmroute.ValidateLaunchRow("reflect", "", "${ITERION_PROBE_P:-zai,anthropic}", ""); err != nil {
+		t.Errorf("control node row dial = %v, want accepted", err)
 	}
 }
 

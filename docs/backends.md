@@ -751,8 +751,9 @@ that drives it, and how hard it is asked to think.
   reaches the provider verbatim. The selector carries no bot part (a
   `<bot>/` prefix is a 400): a `<node>#<route>` row pins backend, model and
   one provider hint, a `supervisor:<name>` row a model only, and `effort` on
-  a route, a `,` chain or a `hint:model` step in a route's `provider`, or
-  `backend`/`provider` on a supervisor is a 400.
+  a route, a `,` chain, a stray `,`, a `hint:model` step or a `${…}`/`{{…}}`
+  template in a route's `provider`, or `backend`/`provider` on a supervisor
+  is a 400.
 
 The **effort** override outranks both the node's static `reasoning_effort:`
 and a dynamic `_reasoning_effort` edge mapping, matching how model and backend
@@ -1697,10 +1698,12 @@ selector := [ <bot> "/" ] <target>
   walk records it under: its name (`reviewer_claude#glm`), or its index when
   the author named none (`converge#0`). It pins `backend`, `model` and
   `provider`, which replace the route's own; `effort` is refused (a route
-  runs at its node's). Its `provider` is one hint: dispatch sends a route's
-  provider whole, so a `,` chain (the node's `fallbacks:` list is the route
-  chain) or a `hint:model` step (write the model in `model`) is refused, at
-  write and in a launch's own row. A pinned `backend` meets the compiler's route
+  runs at its node's). Its `provider` is one literal hint: dispatch sends a
+  route's provider whole, so a `,` chain (the node's `fallbacks:` list is the
+  route chain), a stray `,` (`zai,` reaches dispatch as `zai,`, a hint no
+  harness knows) or a `hint:model` step (write the model in `model`) is
+  refused, at write and in a launch's own row, and so is a template in a
+  launch's own row (the runner would send its expansion whole). A pinned `backend` meets the compiler's route
   refusals — C176's permission gate, claw⇄CLI tools inversion and session
   continuity, and C135's unresolvable tools — against the node's backend as
   dispatch reads it, the node cell's first: refused at launch, warned at the

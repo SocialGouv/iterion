@@ -89,3 +89,22 @@ func TestValidateModelOverrides_RefusesRowsTheGrammarCannotHonour(t *testing.T) 
 		}
 	}
 }
+
+// A route row's provider is one literal hint: a stray ',' rides the hint
+// whole to dispatch, and a template expands to a value the launch never
+// judged — both a 400 naming the row. A node row keeps the stray ',':
+// dispatch splits a node chain and drops the empty step.
+func TestValidateModelOverrides_RefusesAStrayCommaOrATemplateOnARouteRow(t *testing.T) {
+	for p, want := range map[string]string{
+		"zai,":                        "a route's provider is one hint",
+		"${R3V_UNSET:-zai,anthropic}": "is a LITERAL",
+	} {
+		err := validateModelOverrides([]runview.ModelOverrideEntry{{Selector: "converge#glm", Provider: p}})
+		if err == nil || !strings.Contains(err.Error(), want) || !strings.Contains(err.Error(), `"converge#glm"`) {
+			t.Errorf("validateModelOverrides(converge#glm, provider %q) = %v, want a refusal naming the row and %q", p, err, want)
+		}
+	}
+	if err := validateModelOverrides([]runview.ModelOverrideEntry{{Selector: "converge", Provider: "zai,"}}); err != nil {
+		t.Errorf("validateModelOverrides refused the node row converge zai,: %v", err)
+	}
+}

@@ -267,6 +267,18 @@ func TestLaunchRefusesAStepOrAChainOnARouteRow(t *testing.T) {
 	requireAdmitted(t, pub, err)
 }
 
+// A stray ',' on a route row is no hint ("zai," reaches dispatch whole),
+// and a template on one is no literal: the launch refuses both, naming the
+// row. A node row keeps the stray ',': dispatch splits a node chain.
+func TestLaunchRefusesAStrayCommaOrATemplateOnARouteRow(t *testing.T) {
+	pub, err := launchGatewayBot(t, "gwhint", gatewayHintBot, nil, []ModelOverrideEntry{{Selector: "work#glm", Provider: "zai,"}})
+	requireRefusal(t, pub, err, `"work#glm"`, "a route's provider is one hint", `write "provider": "zai"`)
+	pub, err = launchGatewayBot(t, "gwhint", gatewayHintBot, nil, []ModelOverrideEntry{{Selector: "work#glm", Provider: "${R3V_UNSET:-zai,anthropic}"}})
+	requireRefusal(t, pub, err, `"work#glm"`, "is a LITERAL")
+	pub, err = launchGatewayBot(t, "gwhint", gatewayHintBot, nil, []ModelOverrideEntry{{Selector: "work", Provider: "zai,"}})
+	requireAdmitted(t, pub, err)
+}
+
 // A gateway hint a cell pins beside a model a dial decides, on a literal
 // claude_code node: dispatch refuses a gateway expansion (the backend
 // cannot serve one) and any other (the gateway hint serves gateway models

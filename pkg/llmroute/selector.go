@@ -208,21 +208,26 @@ func classFieldRule(parsed Selector, sel, backend, provider, effort string) erro
 // hint. Dispatch sends a `fallbacks:` route's provider whole (the
 // executor's resolveChainUnder): a `,` chain is never walked — the node's
 // `fallbacks:` list is the route chain — and a `hint:model` step is never
-// split, so no harness acts on such a value. A value carrying a `${…}` or
-// `{{…}}` reference is the runner's to expand (a `${P:-x}` holds a ':'
-// that is no step); a write surface refuses it as a non-literal.
+// split, so no harness acts on such a value — a stray `,` included:
+// "zai," reaches dispatch as "zai,", a hint no harness knows and the
+// allowlist drop compares whole. A value carrying a `${…}` or `{{…}}`
+// reference is left to the literal rule of its surface (validateOverride
+// for a cell, ValidateLaunchRow for a row): a `${P:-x}` holds a ':' that is
+// no step.
 func routeProviderIsOneHint(sel, provider string) error {
 	if strings.Contains(provider, "${") || strings.Contains(provider, "{{") {
 		return nil
 	}
 	tokens := providerHintTokens(provider)
 	switch {
-	case len(tokens) > 1:
+	case len(tokens) > 1 || (len(tokens) == 0 && strings.Contains(provider, ",")):
 		return fmt.Errorf("selector %q pins provider %q on a fallbacks: route — a route's provider is one hint, sent whole at dispatch and never walked as a chain (the node's fallbacks: list is the route chain); pin one hint", sel, provider)
 	case len(tokens) == 1 && tokens[0].hasModel && tokens[0].modelRaw != "":
 		return fmt.Errorf("selector %q pins provider %q on a fallbacks: route — a route's provider is one hint, sent whole at dispatch and never split into a hint:model step; write \"provider\": %q and \"model\": %q", sel, provider, tokens[0].raw, tokens[0].modelRaw)
 	case len(tokens) == 1 && tokens[0].hasModel:
 		return fmt.Errorf("selector %q pins provider %q on a fallbacks: route — a route's provider is one hint, sent whole at dispatch and never split into a hint:model step; write \"provider\": %q", sel, provider, tokens[0].raw)
+	case len(tokens) == 1 && strings.Contains(provider, ","):
+		return fmt.Errorf("selector %q pins provider %q on a fallbacks: route — a route's provider is one hint, sent whole at dispatch, where a ',' is part of the hint and separates nothing; write \"provider\": %q", sel, provider, tokens[0].raw)
 	}
 	return nil
 }
@@ -241,6 +246,13 @@ func ValidateLaunchRow(selector, backend, provider, effort string) error {
 	}
 	if parsed.Bot != "" {
 		return fmt.Errorf("selector %q names bot %q — a launch's own rows reach its own run; drop the prefix (a bot-scoped cell belongs in a routing record or llm_routing)", selector, parsed.Bot)
+	}
+	// A route row's provider is a literal, as a cell's is (validateOverride):
+	// dispatch sends a route's expanded provider whole, so a template would
+	// reach it as a value no launch judged. A node row keeps its template:
+	// dispatch splits a node chain step by step.
+	if parsed.Class == SelectorRoute && (strings.Contains(provider, "${") || strings.Contains(provider, "{{")) {
+		return fmt.Errorf("selector %q pins provider %q on a fallbacks: route — a route row's provider is a LITERAL: the runner expands a template and sends the result whole, so the launch could certify no one hint; write the hint", selector, provider)
 	}
 	return classFieldRule(parsed, selector, backend, provider, effort)
 }
