@@ -7,11 +7,6 @@ import (
 	"strconv"
 )
 
-// raceInstrumented says this test binary carries ThreadSanitizer. The binary
-// is also the child (see TestMain), so its instrumentation is charged to the
-// bounds the child applies to itself.
-const raceInstrumented = true
-
 // childMemoryFloor is what a race-instrumented child needs just to start.
 // ThreadSanitizer's allocations count against RLIMIT_DATA, so a test's memory
 // bound has to clear them before the script runs at all.

@@ -147,7 +147,7 @@ func (h Host) Run(ctx context.Context, src string, want Limits) (Response, error
 	if _, err := proc.KillProcessGroup(cmd); err != nil {
 		// Not fatal and not silent: the verdict below is still the script's,
 		// but a group that refused the signal is worth the stderr line.
-		stderr.WriteString(fmt.Sprintf("\nscripthost: killing the child's process group: %v", err))
+		fmt.Fprintf(&stderr, "\nscripthost: killing the child's process group: %v", err)
 	}
 
 	// A response that arrived is the verdict, whatever the exit status said:
@@ -244,7 +244,7 @@ func deathToRefusal(e deathEvidence) (Response, error) {
 	if e.stdoutCut {
 		return Refuse(RefusalResultBytes,
 			"the script host wrote more than the %d bytes this parent will buffer, so its answer was cut. %s",
-			int64(e.limits.ResultBytes)+stdoutSlack, evidence), nil
+			e.limits.ResultBytes+stdoutSlack, evidence), nil
 	}
 
 	// (5) Signalled, with nothing naming a bound. Genuinely undecidable from a

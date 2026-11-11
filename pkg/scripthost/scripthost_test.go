@@ -68,7 +68,7 @@ func TestTheClockAndThePRNGAreTheHostsToChoose(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := epoch.UnixMilli(); int64(v.ToInteger()) != want {
+	if want := epoch.UnixMilli(); v.ToInteger() != want {
 		t.Errorf("Date.now() = %d, want the fixed epoch %d", v.ToInteger(), want)
 	}
 
