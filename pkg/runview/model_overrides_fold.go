@@ -44,7 +44,9 @@ import (
 // flags-only and the helper is a no-op there (nil policy).
 //
 // The bot dimension (ADR-132 §2, D21) resolves HERE, the one place a
-// launch's bot and its policy cells meet: a cell `<bot>/<target>` whose bot
+// launch's bot and its policy cells meet — a subbot child's included: it
+// folds its root run's snapshot again for its own bot (FoldForSubbotChild),
+// through the same body. A cell `<bot>/<target>` whose bot
 // part reaches neither the launch's bot id (LaunchSpec.BotID) nor the
 // manifest name of the bundle it serves (LaunchSpec.BotManifestName) drops;
 // one that does folds as its bare target — the spelling every reader
@@ -88,6 +90,27 @@ func EffectiveModelOverrides(
 	bot llmroute.BotIdentity,
 ) []ModelOverrideEntry {
 	return plainModelOverrideEntries(foldSourcedOverrides(launchRows, pol, bot))
+}
+
+// FoldForSubbotChild is the launch fold for a subbot child, the second
+// caller of foldAndScreen's one body. A child is a run of its own bot: the
+// routing policy its root run froze at launch folds again for the child's
+// bot id and manifest name, through the fold and the screens a launch meets,
+// and the zero-match warnings log once per process. The parent's folded list
+// never reaches the child — its bot dimension resolved for the parent's bot —
+// nor do the parent's own launch rows: a launch row applies to the run it
+// launched. A nil policy folds to no row.
+func FoldForSubbotChild(wf *ir.Workflow, rootPolicy *store.RunLLMRoutePolicy, botID, manifestName, permission string, logger *iterlog.Logger) ([]ModelOverrideEntry, error) {
+	spec := &LaunchSpec{BotID: botID, BotManifestName: manifestName, LLMRoutePolicy: rootPolicy, Permission: permission}
+	warnings, err := foldAndScreen(wf, spec)
+	if err != nil {
+		return nil, err
+	}
+	logZeroMatchOnce(logger, warnings)
+	if len(spec.ModelOverrides) == 0 {
+		return nil, nil
+	}
+	return spec.ModelOverrides, nil
 }
 
 // launchBotIdentity is the bot a launch folds the policy's cells for: its

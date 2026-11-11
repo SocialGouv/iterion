@@ -3851,6 +3851,25 @@ func splitMsgFallback(entries queue.RunFallback) (operator []ir.Fallback, ladder
 	return operator, ladder
 }
 
+// wireModelOverrides is modelOverridesFromWire's inverse for a folded entry
+// list: the rows a subbot child's message carries.
+func wireModelOverrides(entries []runview.ModelOverrideEntry) []queue.ModelOverride {
+	if len(entries) == 0 {
+		return nil
+	}
+	out := make([]queue.ModelOverride, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, queue.ModelOverride{
+			Selector: e.Selector,
+			Backend:  e.Backend,
+			Model:    e.Model,
+			Provider: e.Provider,
+			Effort:   e.Effort,
+		})
+	}
+	return out
+}
+
 // modelOverridesFromMsg adapts the wire pins onto model.OverridesFrom —
 // the one fold runview's launch entries and the publisher's launch/resume
 // entries also go through, so a cloud run resolves per-node models

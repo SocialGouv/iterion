@@ -83,8 +83,22 @@ func manageSubbotChild(mgr *Manager, parent context.Context, childRunID string, 
 // return the child's terminal-node output. Children inherit the service's
 // engine options (broker publish, alerting, board MCP) so their run consoles
 // are live in the studio, plus the parent linkage via WithParentRunID — which
-// is what folds them into the parent's pipeline-board card.
+// is what folds them into the parent's pipeline-board card. The child's model
+// override rows are its root run's routing policy folded for the child's own
+// bot (FoldForSubbotChild), never the parent's rows.
 func (s *Service) subbotRunnerFor(parentPath string, runLogger *iterlog.Logger) runtime.SubbotRunner {
+	return s.subbotRunnerUnder(nil, parentPath, runLogger)
+}
+
+// subbotRoot is the routing-policy snapshot the run a subbot tree hangs from
+// froze at launch: every child of the tree folds it for its own bot
+// (FoldForSubbotChild). A child's document carries no policy, so the
+// snapshot travels down the recursion.
+type subbotRoot struct{ policy *store.RunLLMRoutePolicy }
+
+// subbotRunnerUnder is subbotRunnerFor below a known root; tree is nil at
+// the top of the tree, where the request's parent is the root.
+func (s *Service) subbotRunnerUnder(tree *subbotRoot, parentPath string, runLogger *iterlog.Logger) runtime.SubbotRunner {
 	if runLogger == nil {
 		// A fork of the service logger, never the service logger itself:
 		// the matcher a run installs lands on the handle it is given, and
@@ -149,6 +163,22 @@ func (s *Service) subbotRunnerFor(parentPath string, runLogger *iterlog.Logger) 
 		if err := runtime.RefuseUnlandableSubbotLanding(req, childWf.Worktree, s.store.Root()); err != nil {
 			return nil, err
 		}
+		bundleName := BundleNameForPath(childPath)
+		if childBundle != nil && childBundle.Manifest != nil {
+			bundleName = childBundle.Manifest.Name
+		}
+		childBotID := ResolveBotID("", bundleName, childPath)
+		// The child's override rows: the root run's routing policy folded
+		// for the child's own bot, screened before any child run is
+		// recorded. At the top of the tree the parent read above is the root.
+		root := tree
+		if root == nil {
+			root = &subbotRoot{policy: parentRun.LLMRoutePolicy}
+		}
+		childRows, err := FoldForSubbotChild(childWf, root.policy, childBotID, bundleName, "", runLogger)
+		if err != nil {
+			return nil, fmt.Errorf("subbot %q (bot %q): %w", req.Source, childBotID, err)
+		}
 		childRunID, err := store.GenerateRunID()
 		if err != nil {
 			return nil, err
@@ -163,10 +193,6 @@ func (s *Service) subbotRunnerFor(parentPath string, runLogger *iterlog.Logger) 
 		// active pass returns (before any park below).
 		managedCtx, pauseOpts, releaseChild := manageSubbotChild(s.manager, ctx, childRunID, runLogger)
 
-		bundleName := BundleNameForPath(childPath)
-		if childBundle != nil && childBundle.Manifest != nil {
-			bundleName = childBundle.Manifest.Name
-		}
 		// A subbot is a run of its own and resolves its own `action:` nodes:
 		// the child's catalog is the SERVICE's workspace, not the child
 		// bundle's directory, since the project tier belongs to the checkout
@@ -212,7 +238,8 @@ func (s *Service) subbotRunnerFor(parentPath string, runLogger *iterlog.Logger) 
 			// to the child WORKFLOW's name, and the same subbot bundle ends up
 			// with two memory spaces depending on which surface launched the
 			// parent.
-			BotID:           ResolveBotID("", bundleName, childPath),
+			BotID:           childBotID,
+			ModelOverrides:  toModelOverrides(childRows),
 			BoardRegister:   s.boardRegister,
 			BoardRevoke:     s.boardRevoke,
 			LocalSecrets:    s.localSecrets,
@@ -260,6 +287,12 @@ func (s *Service) subbotRunnerFor(parentPath string, runLogger *iterlog.Logger) 
 		}
 		opts := s.engineOptions(childLogger, hash, childPath, "", childFin, launchExtras{}, childBundle)
 		opts = append(opts, runtime.WithWorkDir(childWorkDir))
+		// The child's document stamps the rows it runs with, as a launch's
+		// does: the studio shows them and a resume of the child replays them
+		// (resumeExecutorSpec).
+		if len(childRows) > 0 {
+			opts = append(opts, runtime.WithModelOverrides(RunModelOverrides(childRows)))
+		}
 		opts = append(opts,
 			runtime.WithParentRunID(req.ParentRunID),
 			runtime.WithParentNodeID(req.NodeID),
@@ -274,7 +307,7 @@ func (s *Service) subbotRunnerFor(parentPath string, runLogger *iterlog.Logger) 
 			// Recursive wiring so a child that itself declares subbot nodes can
 			// run them (grandchild sources resolve relative to the CHILD's dir);
 			// the ctx-carried depth keeps the recursion bounded.
-			runtime.WithSubbotRunner(s.subbotRunnerFor(childPath, childLogger)),
+			runtime.WithSubbotRunner(s.subbotRunnerUnder(root, childPath, childLogger)),
 			runtime.WithOnNodeFinished(func(ctx context.Context, runID, nodeID string, out map[string]any) {
 				capture.Record(nodeID, out)
 				s.stampWatchedFromOutput(ctx, runID, nodeID, out)
