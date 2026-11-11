@@ -528,7 +528,7 @@ func foldAndScreen(wf *ir.Workflow, spec *LaunchSpec, runBackend string) ([]stri
 	// A finding a slot dial decides at the runner warns; the first decided
 	// one refuses.
 	var warnings []string
-	for _, f := range composedPairFindings(wf, sourced, runBackend) {
+	for _, f := range composedPairFindings(wf, sourced, runBackend, bot, spec.LLMRoutePolicy) {
 		if f.undecided {
 			warnings = append(warnings, "the launch's override cells "+f.sentence())
 			continue

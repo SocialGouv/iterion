@@ -7,6 +7,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/llmroute"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // The composed-pair check (#2637). The per-entry write gate
@@ -50,9 +51,13 @@ func (f composedPairFinding) subject() string {
 // (gatewayCrossingFindings). Node order is sorted: the same launch must
 // read the same refusal, whichever map iteration found it first. wf is the
 // workflow as the run dispatches it (withRunDefaultBackend); runBackend
-// names the run-level backend that replaced its default, "" for none.
-func composedPairFindings(wf *ir.Workflow, folded []sourcedOverrideEntry, runBackend string) []composedPairFinding {
-	if wf == nil || len(folded) == 0 {
+// names the run-level backend that replaced its default, "" for none; bot
+// is the launch's bot and pol its resolved policy, whose provider allowlist
+// dispatch drops by — so an allowlist alone, no entry folded, still has the
+// elements it makes dispatch build judged.
+func composedPairFindings(wf *ir.Workflow, folded []sourcedOverrideEntry, runBackend string, bot llmroute.BotIdentity, pol *store.RunLLMRoutePolicy) []composedPairFinding {
+	allowlist := launchGatewayAllowlist(pol)
+	if wf == nil || (len(folded) == 0 && allowlist.set == nil) {
 		return nil
 	}
 	overrides := toModelOverrides(plainModelOverrideEntries(folded))
@@ -72,7 +77,7 @@ func composedPairFindings(wf *ir.Workflow, folded []sourcedOverrideEntry, runBac
 		}
 		findings = append(findings, routePairFindings(wf.Nodes[id], overrides, res.Backend, src.Backend, folded)...)
 	}
-	return append(findings, gatewayCrossingFindings(wf, overrides, folded, runBackend)...)
+	return append(findings, gatewayCrossingFindings(wf, overrides, folded, runBackend, bot, allowlist)...)
 }
 
 // overrideSiteNodeIDs is, sorted, every node whose LLM call a launch
@@ -193,8 +198,8 @@ func foldedEntryOrigin(folded []sourcedOverrideEntry, src model.FieldSource, val
 
 // composedPairWarnings renders the findings as the write-surface screen's
 // WARNING lines (C1xx posture): the launch refusal stays the gate.
-func composedPairWarnings(wf *ir.Workflow, folded []sourcedOverrideEntry) []string {
-	findings := composedPairFindings(wf, folded, "")
+func composedPairWarnings(wf *ir.Workflow, folded []sourcedOverrideEntry, bot llmroute.BotIdentity, pol *store.RunLLMRoutePolicy) []string {
+	findings := composedPairFindings(wf, folded, "", bot, pol)
 	if len(findings) == 0 {
 		return nil
 	}

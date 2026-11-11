@@ -130,15 +130,11 @@ func (c chainReading) dropForbidden(node ir.Node, chain []chainElement) []chainE
 	out := make([]chainElement, 0, len(chain))
 	dropped := false
 	for _, el := range chain {
-		p := strings.ToLower(strings.TrimSpace(el.Provider))
-		if p == "" {
-			m := el.Model
-			if m == "" {
-				m = base
-			}
-			p = providerOfModelSpec(m)
+		m := el.Model
+		if m == "" {
+			m = base
 		}
-		if p != "" && !c.allowed[p] {
+		if AllowlistDrops(c.allowed, el.Provider, m) {
 			dropped = true
 			continue
 		}
@@ -148,6 +144,24 @@ func (c chainReading) dropForbidden(node ir.Node, chain []chainElement) []chainE
 		return chain
 	}
 	return out
+}
+
+// AllowlistDrops reports whether dispatch's allowlist drop (dropForbidden)
+// drops a chain element sending hint beside model — the element's own
+// model, else the node's baseline — under allowed (AllowedProviderSet; nil
+// drops nothing): the hint names the provider, else the provider the model
+// spends (providerOfModelSpec); an element naming neither is kept. A launch
+// screen that rebuilds the elements dispatch builds reads it, so it drops
+// what dispatch drops before it collapses a chain.
+func AllowlistDrops(allowed map[string]bool, hint, model string) bool {
+	if allowed == nil {
+		return false
+	}
+	p := strings.ToLower(strings.TrimSpace(hint))
+	if p == "" {
+		p = providerOfModelSpec(model)
+	}
+	return p != "" && !allowed[p]
 }
 
 // Legs is the chain dispatch walks for node under v (ADR-161 decision 2):

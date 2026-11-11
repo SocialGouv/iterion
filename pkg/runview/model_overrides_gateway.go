@@ -8,6 +8,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/llmroute"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // The gateway crossing check. Dispatch judges every chain element it
@@ -26,7 +27,11 @@ import (
 //     on the dial's default text and warned, at launch and at write — the
 //     pod's environment may serve it;
 //   - a crossing no override field takes part in is the bot's own (C186 at
-//     compile, the build refusal at dispatch): this check adds nothing.
+//     compile, the build refusal at dispatch): this check adds nothing —
+//     unless this launch builds an element the bot's own reading never does
+//     (an override backend that walks the chain the bot's backend collapses,
+//     or the run's provider allowlist dropping the steps ahead of it): the
+//     launch is then what builds it, and it refuses as for an override field.
 
 // gatewayField is one field of a composed element and who wrote it.
 type gatewayField struct {
@@ -36,6 +41,8 @@ type gatewayField struct {
 	origin string
 	// botSource says where the bot wrote it, for a value no entry wrote.
 	botSource string
+	// routePin marks a value a route-scoped entry (`<node>#<route>`) wrote.
+	routePin bool
 }
 
 func (f gatewayField) fromOverride() bool { return f.origin != "" }
@@ -57,6 +64,51 @@ func undecidedText(v string) bool {
 // gatewayElement is one chain element as dispatch builds it.
 type gatewayElement struct {
 	backend, hint, model gatewayField
+	// routeCell is the selector a cell names the element's route by
+	// (`<bot>/<node>#<route>`); "" on a node's own element.
+	routeCell string
+	// builtBy names what makes dispatch build an element the bot's own
+	// reading never builds; "" when the bot's reading builds it.
+	builtBy string
+}
+
+// gatewayAllowlist is the run's provider allowlist as dispatch's drop reads
+// it (model.AllowlistDrops), and the level that set it.
+type gatewayAllowlist struct {
+	set   map[string]bool
+	level string
+}
+
+// launchGatewayAllowlist is the allowlist a launch under pol dispatches
+// with (ExecutorSpec.LLMProviders and the runner read pol's list).
+func launchGatewayAllowlist(pol *store.RunLLMRoutePolicy) gatewayAllowlist {
+	set := model.AllowedProviderSet(pol.ProviderAllowlist())
+	if set == nil {
+		return gatewayAllowlist{}
+	}
+	return gatewayAllowlist{set: set, level: pol.Sources[llmroute.FieldProviders]}
+}
+
+// drops reports whether dispatch drops el under the list. A model a dial
+// decides beside no hint keeps the element: the runner's expansion names
+// the provider the drop reads. (A provider a dial decides never reaches
+// here: judge reads the elements of a dialed provider under no list, or on
+// its default.)
+func (a gatewayAllowlist) drops(el gatewayElement) bool {
+	if a.set == nil || (el.hint.value == "" && undecidedText(el.model.value)) {
+		return false
+	}
+	return model.AllowlistDrops(a.set, el.hint.value, el.model.value)
+}
+
+// promoted names the list as what makes dispatch send a step behind the
+// bot's head.
+func (a gatewayAllowlist) promoted() string {
+	level := a.level
+	if level == "" {
+		level = "unknown"
+	}
+	return fmt.Sprintf("the provider allowlist (%s level) drops the steps ahead of it", level)
 }
 
 // gatewaySite is one call site's composed fields before dispatch splits
@@ -66,18 +118,31 @@ type gatewayElement struct {
 // hint.
 type gatewaySite struct {
 	route string
+	// routeCell is the selector a cell names the route by; "" on a node's
+	// own site.
+	routeCell string
 	// chain marks the node's primary, whose provider is a chain of
 	// `hint[:model]` steps; a route's provider is one hint.
 	chain                   bool
 	backend, provider, base gatewayField
+	// botBackend is the backend the node's elements inherit under no
+	// override: whether the bot's own reading collapses its chain.
+	botBackend gatewayField
+	allowlist  gatewayAllowlist
 }
 
-// elements builds the site's elements from its field values.
+// elements builds the site's elements from its field values, in
+// dispatch's order: the steps, the allowlist's drop (dropForbidden), then
+// the collapse of a hint-only chain (collapseHintOnlyChain).
 func (s gatewaySite) elements() []gatewayElement {
 	if !s.chain {
-		return []gatewayElement{{backend: s.backend, hint: normalizedHint(s.provider), model: s.base}}
+		el := gatewayElement{backend: s.backend, hint: normalizedHint(s.provider), model: s.base, routeCell: s.routeCell}
+		if s.allowlist.drops(el) {
+			return nil
+		}
+		return []gatewayElement{el}
 	}
-	var out []gatewayElement
+	var steps []gatewayElement
 	for _, token := range strings.Split(s.provider.value, ",") {
 		token = strings.TrimSpace(token)
 		if token == "" {
@@ -88,6 +153,27 @@ func (s gatewaySite) elements() []gatewayElement {
 		if stepModel != "" {
 			el.model = gatewayField{value: stepModel, origin: s.provider.origin, botSource: "a step of " + s.provider.botSource}
 		}
+		steps = append(steps, el)
+	}
+	if len(steps) == 0 {
+		steps = append(steps, gatewayElement{backend: s.backend, hint: gatewayField{origin: s.provider.origin, botSource: s.provider.botSource}, model: s.base})
+	}
+	// The bot's own reading sends its head alone when its backend does not
+	// walk the chain; a backend a dial decides may walk it.
+	botCollapses := !undecidedText(s.botBackend.value) && !model.WalksProviderChain(s.botBackend.value)
+	var out []gatewayElement
+	for i, el := range steps {
+		if s.allowlist.drops(el) {
+			continue
+		}
+		if i > 0 && botCollapses {
+			switch {
+			case model.WalksProviderChain(s.backend.value):
+				el.builtBy = s.backend.describe("backend") + ", which walks the provider chain the bot's own backend collapses to its head"
+			case len(out) == 0:
+				el.builtBy = s.allowlist.promoted()
+			}
+		}
 		out = append(out, el)
 	}
 	// A backend that does not walk a hint-only chain sends its head alone
@@ -97,9 +183,6 @@ func (s gatewaySite) elements() []gatewayElement {
 	// every backend builds.
 	if len(out) > 1 && !model.WalksProviderChain(s.backend.value) {
 		out = out[:1]
-	}
-	if len(out) == 0 {
-		out = append(out, gatewayElement{backend: s.backend, hint: gatewayField{origin: s.provider.origin, botSource: s.provider.botSource}, model: s.base})
 	}
 	return out
 }
@@ -128,6 +211,8 @@ func (s gatewaySite) judge() (undecided bool, err error) {
 	}
 	if undecidedText(decided.provider.value) {
 		decided.provider = gatewayField{origin: s.provider.origin, botSource: s.provider.botSource}
+		// The steps the dial expands to decide what the allowlist drops.
+		decided.allowlist = gatewayAllowlist{}
 	}
 	for _, el := range decided.elements() {
 		if el.model.value == "" {
@@ -149,7 +234,7 @@ func (s gatewaySite) judge() (undecided bool, err error) {
 	// A dial decides a field at the runner: its default text is the
 	// reading this launch can name.
 	dial := s
-	for _, f := range []*gatewayField{&dial.backend, &dial.provider, &dial.base} {
+	for _, f := range []*gatewayField{&dial.backend, &dial.provider, &dial.base, &dial.botBackend} {
 		if undecidedText(f.value) {
 			f.value = strings.TrimSpace(ir.ExpandWithDefault(f.value, func(string) string { return "" }))
 		}
@@ -206,11 +291,14 @@ func (s gatewaySite) dialTexts() string {
 }
 
 // causedRefusal is dispatch's refusal of el when an override field takes
-// part in it: the arm that refused read a field an override entry wrote.
-// The refusal carries the provenance of every field the arm read and the
-// remedy a cell can write where dispatch's own names a field the bot wrote:
-// the claw backend for the backend arm, the gateway hint for a vendor hint
-// beside a cell's gateway model.
+// part in it — the arm that refused read a field an override entry wrote —
+// or when this launch builds an element the bot's own reading never does
+// (el.builtBy). The refusal carries the provenance of every field the arm
+// read, what built the element, and the remedy a cell can write where
+// dispatch's own names a field the bot wrote: the claw backend for the
+// backend arm, the gateway hint for a vendor hint beside a cell's gateway
+// model — on a route's own hint, in a cell on that route unless a route
+// cell wrote the model.
 func causedRefusal(el gatewayElement) error {
 	err := model.GatewayCrossingRefusal(el.backend.value, el.hint.value, el.model.value)
 	if err == nil {
@@ -232,14 +320,20 @@ func causedRefusal(el gatewayElement) error {
 			names = append(names, f.field.describe(f.name))
 		}
 	}
-	caused := false
+	cellCaused := false
 	for _, f := range read {
-		caused = caused || f.fromOverride()
+		cellCaused = cellCaused || f.fromOverride()
 	}
-	if !caused {
+	if !cellCaused && el.builtBy == "" {
 		return nil
 	}
+	if el.builtBy != "" {
+		names = append(names, el.builtBy)
+	}
 	msg := fmt.Sprintf("%v (%s)", err, strings.Join(names, "; "))
+	if !cellCaused {
+		return errors.New(msg)
+	}
 	switch {
 	case gce.Backend && !el.backend.fromOverride():
 		msg += ` — pin "backend": "claw" in the cell, the backend that serves gateway routes`
@@ -247,19 +341,26 @@ func causedRefusal(el gatewayElement) error {
 		// A vendor hint the bot wrote beside a gateway model a cell wrote:
 		// a cell cannot drop a field, it pins the hint a gateway model
 		// pairs with — and claw where the element's backend cannot serve
-		// the gateway.
+		// the gateway. A route's own hint is pinned by a cell on the route:
+		// a node cell's hint never reaches a route.
+		where := "in the cell"
+		if el.routeCell != "" && !el.model.routePin {
+			where = fmt.Sprintf("in a cell on the route (%q)", el.routeCell)
+		}
 		if model.GatewayCrossingRefusal(el.backend.value, llmroute.ProviderOpenAICompatible, el.model.value) == nil {
-			msg += ` — pin "provider": "openai_compatible" in the cell, the hint a gateway model pairs with`
+			msg += ` — pin "provider": "openai_compatible" ` + where + `, the hint a gateway model pairs with`
 		} else {
-			msg += ` — pin "provider": "openai_compatible" and "backend": "claw" in the cell, the hint a gateway model pairs with and the backend that serves it`
+			msg += ` — pin "provider": "openai_compatible" and "backend": "claw" ` + where + `, the hint a gateway model pairs with and the backend that serves it`
 		}
 	}
 	return errors.New(msg)
 }
 
 // gatewayCrossingFindings judges every element the folded overrides
-// compose, per node (its provider chain's steps) and per authored route.
-func gatewayCrossingFindings(wf *ir.Workflow, overrides model.ModelOverrides, folded []sourcedOverrideEntry, runBackend string) []composedPairFinding {
+// compose, per node (its provider chain's steps) and per authored route,
+// under the run's provider allowlist; bot names the launch's bot for the
+// route cell a remedy names.
+func gatewayCrossingFindings(wf *ir.Workflow, overrides model.ModelOverrides, folded []sourcedOverrideEntry, runBackend string, bot llmroute.BotIdentity, allowlist gatewayAllowlist) []composedPairFinding {
 	var out []composedPairFinding
 	for _, id := range overrideSiteNodeIDs(wf) {
 		node := wf.Nodes[id]
@@ -283,7 +384,8 @@ func gatewayCrossingFindings(wf *ir.Workflow, overrides model.ModelOverrides, fo
 		if res.Model != "" {
 			base = gatewayField{value: res.Model, origin: origin(src.Model, res.Model, llmroute.OverrideFieldModel)}
 		}
-		sites := []gatewaySite{{chain: true, backend: backend, provider: provider, base: base}}
+		botBackend := nodeGatewayBackend(wf, fields, runBackend, "", "")
+		sites := []gatewaySite{{chain: true, backend: backend, provider: provider, base: base, botBackend: botBackend, allowlist: allowlist}}
 		for _, r := range authoredRoutes(node, overrides) {
 			if r.authored.Action == ir.FallbackActionSkip {
 				continue
@@ -295,10 +397,11 @@ func gatewayCrossingFindings(wf *ir.Workflow, overrides model.ModelOverrides, fo
 				f := gatewayField{value: value, botSource: "the route's own " + field + " field"}
 				if pinned != "" {
 					f.origin = origin(site, pinned, field)
+					f.routePin = true
 				}
 				return f
 			}
-			rs := gatewaySite{route: r.site, backend: backend, base: base}
+			rs := gatewaySite{route: r.site, routeCell: routeCellSelector(bot, r.site), backend: backend, base: base, allowlist: allowlist}
 			if r.effective.Backend != "" {
 				rs.backend = routeField(r.effective.Backend, r.pin.Backend, llmroute.OverrideFieldBackend)
 			}
@@ -315,6 +418,20 @@ func gatewayCrossingFindings(wf *ir.Workflow, overrides model.ModelOverrides, fo
 		}
 	}
 	return out
+}
+
+// routeCellSelector is the selector a cell of bot names a route site by:
+// the bot's id, else its manifest name, else `*` — the spelling that
+// reaches a launch naming no bot.
+func routeCellSelector(bot llmroute.BotIdentity, site string) string {
+	name := bot.ID
+	if name == "" {
+		name = bot.Name
+	}
+	if name == "" {
+		name = "*"
+	}
+	return name + llmroute.SelectorBotSeparator + site
 }
 
 // nodeGatewayBackend is the backend a node's elements inherit, in

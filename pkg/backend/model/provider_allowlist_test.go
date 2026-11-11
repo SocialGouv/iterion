@@ -577,3 +577,41 @@ func TestProviders_UnreadableRefusalNamesTheRealRemedy(t *testing.T) {
 		t.Errorf("fieldless message = %q, want the same escape hatch the generic branch names", fieldless)
 	}
 }
+
+// Dispatch drops the forbidden elements before it collapses a hint-only
+// chain: under [openai_compatible] a claw node's chain
+// "anthropic,openai_compatible" sends its second step, which a claw chain
+// with no list never sends. The launch's gateway check rebuilds the
+// elements in this order (runview's gatewaySite.elements, AllowlistDrops).
+func TestDispatchDropsBeforeItCollapsesAHintOnlyChain(t *testing.T) {
+	node := chainAgentNode("work", delegate.BackendClaw, "anthropic,openai_compatible", nil)
+	node.Model = "anthropic/claude-opus-5"
+	for _, tc := range []struct {
+		allow []string
+		want  string
+	}{{nil, "anthropic"}, {[]string{"openai_compatible"}, "openai_compatible"}} {
+		e := &ClawExecutor{allowedProviders: AllowedProviderSet(tc.allow)}
+		chain := collapseHintOnlyChain(e.resolveChain(node), delegate.BackendClaw)
+		if len(chain) != 1 || chain[0].Provider != tc.want {
+			t.Errorf("allowlist %v: claw sends %+v, want the one step %q", tc.allow, chain, tc.want)
+		}
+	}
+	allowed := AllowedProviderSet([]string{"openai_compatible"})
+	for _, tc := range []struct {
+		hint, model string
+		drops       bool
+	}{
+		{"anthropic", "openai_compatible/x", true},
+		{"openai_compatible", "anthropic/claude-opus-5", false},
+		{"", "anthropic/claude-opus-5", true},
+		{"", "claude-opus-5", false},
+		{"", "", false},
+	} {
+		if got := AllowlistDrops(allowed, tc.hint, tc.model); got != tc.drops {
+			t.Errorf("AllowlistDrops(%q, %q) = %v, want %v", tc.hint, tc.model, got, tc.drops)
+		}
+	}
+	if AllowlistDrops(nil, "anthropic", "") {
+		t.Error("no list drops an element")
+	}
+}

@@ -1610,13 +1610,15 @@ launch (`llmroute.ValidateStored`), and so is the platform record's stored
 block by a platform-credentials PUT that does not replace it, so the record's
 other fields stay editable: the launch judges the element per node,
 below, so it refuses only a launch whose dispatch builds it (a claw chain's
-tail is never built).
+tail is built only when the run's provider allowlist drops the steps ahead
+of it).
 A `claude_code` route is still refused a gateway model at dispatch, whatever
 the cells say. The launch rebuilds every element dispatch builds from the
-folded cells — each node's provider steps dispatch sends (a backend that does
-not walk a hint-only chain sends the head alone: claw, and an unnamed one,
-which the runner resolves to claw for a chain that needs the gateway) and
-each `fallbacks:` route, the model from a step, a cell or the bot — and
+folded cells — each node's provider steps dispatch sends (the run's provider
+allowlist drops a step first, then a backend that does not walk a hint-only
+chain sends the head left: claw, and an unnamed one, which the runner
+resolves to claw for a chain that needs the gateway) and each `fallbacks:`
+route the allowlist keeps, the model from a step, a cell or the bot — and
 judges it with dispatch's own gateway rule (`GatewayCrossingRefusal`): a
 gateway route on a literal non-claw backend (the node's own `backend: claude_code` included), a vendor
 hint beside a gateway model, the gateway hint beside a model that is not a
@@ -1627,13 +1629,18 @@ included) and that level (`written at level "team"`) — and, where the field
 to change is one the bot wrote, what the cell can pin instead: `"backend":
 "claw"` beside a backend that cannot serve the gateway, `"provider":
 "openai_compatible"` (with `"backend": "claw"` where the backend cannot serve
-it) beside a vendor hint the bot wrote next to the cell's gateway model; the
-integration's write screen warns instead. A field a slot dial decides is
+it) beside a vendor hint the bot wrote next to the cell's gateway model — in
+a cell on the route (`<bot>/<node>#<route>`) when the hint is a route's own
+and the model came from a node cell; the integration's write screen warns
+instead. A field a slot dial decides is
 the runner's: the launch reads the dial's default and warns — unless
 dispatch refuses the element whatever a model dial expands to, a gateway
 route and any other model alike (the gateway hint a cell pins on a literal
 `claude_code` node), which the launch refuses. A crossing the
-bot writes alone stays C186's and dispatch's. The cell that moves such a node onto the gateway is
+bot writes alone stays C186's and dispatch's, unless the launch is what
+builds the step: a cell's backend that walks the provider chain the bot's own
+backend collapses to its head, or the allowlist dropping the steps ahead of
+it — the launch refuses it then, naming what built it. The cell that moves such a node onto the gateway is
 therefore `{"backend": "claw", "provider": "openai_compatible", "model":
 "openai_compatible/<provider>/<model>"}` on that node: it fixes every field
 the launch walk reads, so the walk DECIDES the route from the cell — the

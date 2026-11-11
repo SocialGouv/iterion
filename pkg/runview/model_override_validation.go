@@ -213,7 +213,7 @@ func ScreenPolicyOverrides(path, source, bundleDir, bundleEntry string, bot llmr
 	for _, crossing := range routeCellCrossings(wf, overrides, "", false) {
 		warnings = append(warnings, "the routing block re-pins a route onto a crossing the compiler refuses: "+crossing.sentence)
 	}
-	warnings = append(warnings, composedPairWarnings(wf, sourced)...)
+	warnings = append(warnings, composedPairWarnings(wf, sourced, bot, pol)...)
 	// The zero-match half of ADR-132 §2's guards, at the surface that can
 	// still fix the typo: a cell written for this bot by name (its id or
 	// its manifest name) that reaches nothing in it — every time it is

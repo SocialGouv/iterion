@@ -162,7 +162,7 @@ func TestComposedPair_ARouteCellComposesWithTheNodesBackend(t *testing.T) {
 		{Selector: "w/work", Backend: "codex"},
 		{Selector: "w/work#glm", Provider: "zai"},
 	}}, llmroute.BotIdentity{ID: "w"})
-	findings := composedPairFindings(wf, sourced, "")
+	findings := composedPairFindings(wf, sourced, "", llmroute.BotIdentity{}, nil)
 	if len(findings) != 1 || findings[0].route != "work#glm" || !strings.Contains(findings[0].err.Error(), "codex") {
 		t.Fatalf("findings = %+v, want the glm route's composed codex+zai pair", findings)
 	}
