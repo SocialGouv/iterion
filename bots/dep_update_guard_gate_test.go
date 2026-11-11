@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/SocialGouv/iterion/internal/gittest"
@@ -156,6 +157,8 @@ func TestDepUpdateGuardGateVerdict(t *testing.T) {
 			"{{vars.base_ref}}":            `"main"`,
 			"{{input.head_sha}}":           `""`,
 			"{{input.head_id}}":            `""`,
+			"{{vars.continuity}}":          "True",
+			"{{vars.carry_max_age_h}}":     "72",
 		} {
 			if ref == "{{input.audited_sha}}" && len(pinOverride) > 0 {
 				val = strconv.Quote(pinOverride[0])
@@ -565,6 +568,8 @@ func TestDepUpdateGuardGateVerdict(t *testing.T) {
 			"{{vars.base_ref}}":            `"main"`,
 			"{{input.head_sha}}":           `""`,
 			"{{input.head_id}}":            `""`,
+			"{{vars.continuity}}":          "True",
+			"{{vars.carry_max_age_h}}":     "72",
 		} {
 			body = strings.ReplaceAll(body, ref, val)
 		}
@@ -634,6 +639,8 @@ func TestDepUpdateGuardGateVerdict(t *testing.T) {
 			"{{vars.base_ref}}":            `"main"`,
 			"{{input.head_sha}}":           `""`,
 			"{{input.head_id}}":            `""`,
+			"{{vars.continuity}}":          "True",
+			"{{vars.carry_max_age_h}}":     "72",
 		} {
 			body = strings.ReplaceAll(body, ref, val)
 		}
@@ -812,6 +819,8 @@ func runFeedback(t *testing.T, forge *feedbackForge, over map[string]string, env
 		"{{vars.base_ref}}":            `"main"`,
 		"{{input.head_sha}}":           `""`,
 		"{{input.head_id}}":            `""`,
+		"{{vars.continuity}}":          "True",
+		"{{vars.carry_max_age_h}}":     "72",
 	}
 	for k, v := range over {
 		subs[k] = v
@@ -1103,15 +1112,25 @@ func newRepinFixture(t *testing.T) repinFixture {
 // with the forge reporting `head`.
 func (fx repinFixture) repin(t *testing.T, f *feedbackForge, verdict string, env ...string) (map[string]any, map[string]any) {
 	t.Helper()
+	return fx.repinWith(t, f, verdict, nil, env...)
+}
+
+// repinWith is repin with extra script substitutions (a var the operator pins).
+func (fx repinFixture) repinWith(t *testing.T, f *feedbackForge, verdict string, over map[string]string, env ...string) (map[string]any, map[string]any) {
+	t.Helper()
 	f.t, f.base = t, "main"
 	if f.gitRoot == "" {
 		f.gitRoot = fx.origin.gitRoot()
 	}
-	return runFeedback(t, f, map[string]string{
+	subs := map[string]string{
 		"{{input.audited_sha}}": quoted(fx.x), "{{input.head_sha}}": quoted(fx.x),
 		"{{input.head_id}}": quoted(fx.id), "{{input.verdict}}": quoted(verdict),
 		"{{vars.workspace_dir}}": quoted(fx.ws),
-	}, env...)
+	}
+	for k, v := range over {
+		subs[k] = v
+	}
+	return runFeedback(t, f, subs, env...)
 }
 
 func pinOf(p map[string]any) string {
@@ -1133,7 +1152,10 @@ func pinOf(p map[string]any) string {
 // head cases paint over a verdict about that head); compute the new head's
 // identity in the workspace instead of from the forge (the workspace case);
 // let the scratch repository read the global git config (the url-rewrite
-// case fetches a base the forge never had).
+// case fetches a base the forge never had); parse only Bot-authored markers
+// again (the User-authored hold on another head is painted over); drop the
+// continuity, the carry_max_age_h or the age term of the switch (that
+// switch's case is repinned).
 func TestDepUpdateGuardRepinsAGreenOntoAPureRebase(t *testing.T) {
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 not on PATH")
@@ -1172,6 +1194,43 @@ func TestDepUpdateGuardRepinsAGreenOntoAPureRebase(t *testing.T) {
 		}
 	})
 
+	// The operator's switches govern the repin exactly as they govern
+	// continuity's carry: `continuity` off (the /vetty command, an operator
+	// pin) or carry_max_age_h at 0 carries nothing, on either path. Mutation:
+	// drop either term of the switch (that case is repinned).
+	for _, sw := range []struct{ name, ref, val, says string }{
+		{"continuity off", "{{vars.continuity}}", "False", "continuity is off"},
+		{"carry_max_age_h=0", "{{vars.carry_max_age_h}}", "0", "carry_max_age_h is 0"},
+	} {
+		t.Run(sw.name+": a pure rebase is not repinned", func(t *testing.T) {
+			fx := newRepinFixture(t)
+			f := &feedbackForge{head: fx.same}
+			p, res := fx.repinWith(t, f, "clean", map[string]string{sw.ref: sw.val})
+			if pinOf(p) != fx.x || res["verdict"] != "clean" {
+				t.Fatalf("%s still carried the verdict onto %s: pin %s verdict %v", sw.name, fx.same[:12], pinOf(p), res["verdict"])
+			}
+			if summary, _ := res["summary"].(string); !strings.Contains(summary, sw.says) {
+				t.Errorf("the run does not name the switch that stopped the repin: %q", summary)
+			}
+		})
+	}
+
+	// A carried verdict keeps its ORIGINAL audit's clock across a repin too.
+	// Mutation: drop the age term of the switch -> the stale carry moves.
+	t.Run("a carried verdict whose original audit is past carry_max_age_h is not repinned", func(t *testing.T) {
+		fx := newRepinFixture(t)
+		old := time.Now().UTC().Add(-100 * time.Hour).Format("2006-01-02T15:04:05Z")
+		p, res := fx.repinWith(t, &feedbackForge{head: fx.same}, "carried", map[string]string{
+			"{{input.origin_sha}}": quoted(strings.Repeat("0a", 20)), "{{input.origin_at}}": quoted(old),
+		})
+		if pinOf(p) != fx.x || res["verdict"] != "carried" {
+			t.Fatalf("a carry past its age was carried onto %s: pin %s verdict %v", fx.same[:12], pinOf(p), res["verdict"])
+		}
+		if summary, _ := res["summary"].(string); !strings.Contains(summary, "older than carry_max_age_h") {
+			t.Errorf("the run does not say the original audit is too old: %q", summary)
+		}
+	})
+
 	t.Run("a hold is never moved", func(t *testing.T) {
 		fx := newRepinFixture(t)
 		f := &feedbackForge{head: fx.same}
@@ -1206,6 +1265,22 @@ func TestDepUpdateGuardRepinsAGreenOntoAPureRebase(t *testing.T) {
 			},
 			statuses: func(fx repinFixture) map[string][]map[string]any {
 				return map[string][]map[string]any{fx.same: {gateStatus("failure", "build/tests not green after alignment"+stamp(fx), reviewURL(2))}}
+			},
+		},
+		{
+			// Vetty's own hold on ANOTHER head of the change, published as a
+			// PAT connection's User: the repin, which cannot name the App,
+			// vetoes on it exactly as continuity does.
+			name: "a User-authored hold on another head of the same change",
+			reviews: func(fx repinFixture) []map[string]any {
+				y1 := strings.Repeat("1", 40)
+				return []map[string]any{
+					vettyReview(1, vettyLogin, gateMarker(fx.x, fx.id, "clean", fx.x, "2026-11-10T08:00:00Z")),
+					userReview(2, "acme-pat-user", vettyID, gateMarker(y1, fx.id, "hold_unstable", y1, "2026-11-10T09:00:00Z")),
+				}
+			},
+			statuses: func(fx repinFixture) map[string][]map[string]any {
+				return map[string][]map[string]any{strings.Repeat("1", 40): {gateStatus("failure", "build/tests not green after alignment"+stamp(fx), reviewURL(2))}}
 			},
 		},
 		{
@@ -1345,6 +1420,7 @@ func TestDepUpdateGuardRepinFetchCarriesTheTokenByEnvironment(t *testing.T) {
 		"{{run.url}}":                `""`, "{{run.id}}": `"01a0dep"`, "{{vars.gate_enabled}}": "True",
 		"{{vars.gate_context}}": `"vetty/deps"`, "{{vars.base_ref}}": `"main"`,
 		"{{input.head_sha}}": quoted(fx.x), "{{input.head_id}}": quoted(fx.id),
+		"{{vars.continuity}}": "True", "{{vars.carry_max_age_h}}": "72",
 	} {
 		body = strings.ReplaceAll(body, ref, val)
 	}

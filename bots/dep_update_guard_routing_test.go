@@ -229,6 +229,22 @@ func TestDepUpdateGuardVerdictRouting(t *testing.T) {
 	if want := []string{"else -> security_audit", "when already_gated -> continuity_standby", "when carry -> post_feedback"}; !slices.Equal(outs, want) {
 		t.Errorf("continuity's edges are %q, want exactly %q", outs, want)
 	}
+	// The standby hands arm_automerge the verdict on record for the head — a
+	// full audit's clean or committed stays what it is. Mutation: map the
+	// constant 'carried' again.
+	standby, ok := cr.Workflow.Nodes["continuity_standby"].(*ir.ComputeNode)
+	if !ok {
+		t.Fatalf("continuity_standby is %T, want a compute node", cr.Workflow.Nodes["continuity_standby"])
+	}
+	standbyVerdict := ""
+	for _, e := range standby.Exprs {
+		if e.Key == "verdict" {
+			standbyVerdict = e.Raw
+		}
+	}
+	if standbyVerdict != "outputs.continuity.gated_verdict" {
+		t.Errorf("continuity_standby's verdict is %q, want the head's recorded verdict outputs.continuity.gated_verdict", standbyVerdict)
+	}
 
 	// The commit agent's nothing-to-commit summary is published on the clean
 	// comment, ahead of "Nothing left to align.": it has to be true on the

@@ -64,8 +64,9 @@ preflight_standdown (compute)         the one refusal that publishes nothing: no
                                       FORGE_PREFLIGHT_UNAVAILABLE
 commit         (agent)                commit + push the alignment onto the PR branch
 commit_probe   (tool, deterministic) the workspace HEAD as ONE commit on the head
-                                      prepare read, held by origin (ls-remote), and
-                                      named by the report when it names a commit
+                                      prepare read, held by the repository pr_url
+                                      names (ls-remote), and named by the report
+                                      when it names a commit
 commit_check   (compute, GATE)        decides from commit_probe and align_probe's
                                       readings — never from the agents' summaries:
                                       committed | clean | hold_lost_alignment
@@ -85,11 +86,16 @@ reads Git with repository-redirection variables removed and replace refs and
 grafts switched off. It takes the candidate from the workspace HEAD, accepts it
 only as ONE commit whose only parent is the audited revision — a commit someone
 else pushed meanwhile, rebased or merged under the alignment, would otherwise
-ride on a verdict that never saw it — that `origin`'s branch holds (`git
-ls-remote`, the forge token in git's environment); a report that names a commit
-id must name that same commit, and one that names none ("pushed", "N/A") is set
-aside. The published verdict and auto-merge pin use that full id. The commit
-agent is told to make exactly one commit. A failed proof counts as no commit,
+ride on a verdict that never saw it — that the branch holds in the repository
+`pr_url` names (`git ls-remote` from a scratch repository, system and global
+config cut off, the forge token in git's environment: the workspace's remote
+and the url rewrites are the agents' to write; only a local run with no
+`pr_url`, which publishes nothing, reads the workspace's `origin`); a report
+that names a commit id must name that same commit, and one that names none
+("pushed", "N/A") is set aside. The published verdict and auto-merge pin use
+that full id. The commit agent is told to make exactly one commit, and pushes
+with the token in git's environment (the skill's recipe), never in a URL or on
+a command line. A failed proof counts as no commit,
 preserving the existing lost-alignment decision. A refusal can
 disarm or dequeue only while the PR head still matches this run's revision;
 a stale run leaves a newer revision's commitment in place. Forge takedowns
@@ -142,7 +148,11 @@ identity** — contract v1: the `git patch-id --verbatim` of
 `merge-base(base_ref, head)..head`, every diff knob pinned on the command line
 (`--no-renames --full-index --unified=3 --diff-algorithm=myers -O/dev/null`, no
 external diff or textconv, system and global config cut off), folded with the
-`base_ref` name. Only the commit objects decide: replace refs and grafts are
+modes, status and path of every changed entry (`git diff --raw`, blob ids left
+out) and the `base_ref` name. patch-id alone hashes no path for an entry with
+no `---`/`+++` lines — a mode change, an empty file, a binary — that follows a
+binary one, so two different changes would share an id without the listing.
+Only the commit objects decide: replace refs and grafts are
 switched off, and attributes are read from the empty tree, so neither a
 `.gitattributes` in the change nor the repository the id is computed in moves
 it. A rebase that leaves the hunks and their three context lines alone keeps
@@ -167,9 +177,8 @@ comment". `post_feedback` ends the status note with ` · pid1:<id>` (within
 GitHub's 140 characters on every verdict) and writes the review's **last line**
 as `<!-- vetty-gate/v1 sha=… id=… verdict=… origin=… origin_at=… -->`; the
 opener is defused wherever an agent-written section carries it. `continuity`
-reads the pull request, this App's reviews and the forge's combined status on
-every sha a marker names **and on the head**, and decides by predicates over
-sets:
+reads the pull request, its reviews and the forge's combined status on every
+sha a marker names **and on the head**, and decides by predicates over sets:
 
 - **any** verdict on the same change that is not green, any status stamped with
   it that is not green, or a red status on the head itself (stamped or not — a
@@ -178,9 +187,10 @@ sets:
   whose review failed to post while its status landed; such a marker-less hold
   on ANOTHER head of the change is not found — that would take the pull
   request's force-push timeline);
-- this head carries an eligible green → `already_gated`: `continuity_standby`
-  hands `arm_automerge` the head, which renews the arming pinned to it, and
-  nothing is published;
+- this head carries an eligible green whose ORIGINAL audit is younger than
+  `carry_max_age_h` → `already_gated`: `continuity_standby` hands
+  `arm_automerge` the head and the verdict on record for it, the arming is
+  renewed pinned to it, and nothing is published;
 - another head carries an eligible green whose ORIGINAL audit is younger than
   `carry_max_age_h` → the verdict `carried`, published on this head with the
   origin travelling (a chain of carries never extends the age);
@@ -191,10 +201,15 @@ sets:
 Eligible means this App's review names the sha and the id, and the forge's one
 status for the context on that sha is green, ends with the same stamp and links
 that review. A review is this App's when its author is the identity the run
-token speaks as — by user id, since REST and GraphQL spell a bot's login
-differently (`slug[bot]` / `slug`), or by login. Where the forge token is not
-the publishing App (a PAT beside an App connection) no review is this App's,
-and nothing is carried: the full audit. GitHub-only; a history not
+token speaks as — by user id whenever the viewer has one (REST and GraphQL
+spell a bot's login differently, `slug[bot]` / `slug`); by login only when it
+has none, and then only a Bot spelled `slug[bot]`, since a user account can
+register any other spelling. Authorship decides eligibility, never a veto: a
+marker vetoes whoever wrote it, so Vetty's own holds published by a user (a
+PAT connection) are read, and an outsider's marker can only force the full
+audit. Where the forge token is not the publishing App (a PAT beside an App
+connection) no review is this App's, and nothing is carried: the full audit.
+GitHub-only; a history not
 read whole, or any read that fails, is the full audit, said so in the reason.
 Neither the carry nor the standby path holds a node that can call a model, by
 the engine's own `ir.NodeUsesLLM`.
@@ -223,23 +238,30 @@ the new head after that read still supersedes the carry, and only a hold
 landing in the second between the read and the publish is overwritten — a
 window only a compare-and-set on the publish endpoint would close. After a
 repin, `arm_automerge` vouches the gate against the head the verdict was
-carried onto and arms it.
+carried onto and arms it. The repin obeys the same switches as `continuity`:
+`continuity` off, `carry_max_age_h` at 0, or a carried verdict whose original
+audit is past `carry_max_age_h` publishes as before, and the summary says which.
 
 The `/vetty` command pins `continuity: "false"`, so a human gesture always buys
 a full audit; an operator pin of `continuity` in the integration's
-`launch_vars` wins on both lanes.
+`launch_vars` wins on both lanes, and on the repin.
 
 **Auto-merge on UNSTABLE.** GitHub refuses to arm a pull request whose required
 checks all pass while another check fails or still runs (`UNSTABLE`), as it
 refuses `CLEAN`. A refused arming is classified by re-reading the pull request:
 `CLEAN` merges pinned as before; `UNSTABLE` reads the check rollup with each
-context's `isRequired` — a required context not passing, or a rollup not read
-whole, merges nothing; otherwise `automerge_on_unstable` decides (`merge`:
-pinned now, what an earlier arming would have done; `wait`: only once the forge
-reports `CLEAN` within `automerge_settle_s`). A `carried` verdict built nothing
-on its tree, so it always waits for `CLEAN`, whatever the policy. A repository
-that does not allow auto-merge gets no merge in place of the refused arming.
-Every head change re-arms through the carry and standby paths at no LLM cost.
+context's `isRequired` — a required context not passing, a base that requires
+no check at all (UNSTABLE then says nothing about the build; a required gate
+context counts), or a rollup not read whole, merges nothing; otherwise
+`automerge_on_unstable` decides (`merge`: pinned now, what an earlier arming
+would have done; `wait`: only once the forge reports `CLEAN` within
+`automerge_settle_s`). The policy governs that refusal only: an arming GitHub
+accepts — a required check still running when the run arms — merges once the
+REQUIRED checks pass, whatever a check the repo does not require says. Every
+green verdict follows the same rule, `carried` included, so CI timing never
+decides how a verdict is merged. A repository that does not allow auto-merge
+gets no merge in place of the refused arming. Every head change re-arms
+through the carry and standby paths at no LLM cost.
 
 Workflow block: `entry: prepare`; budget `max_parallel_branches: 1`,
 `max_duration: "4h"`, `max_cost_usd: 25`; `sandbox.image:
@@ -266,10 +288,10 @@ overridable via `VETTY_MODEL_*` / `VETTY_EFFORT_*` env vars.
 | `arm_automerge` | bool | `false` | Opt-in: on a green verdict with a landed green gate, ask the forge to merge once ITS required checks pass |
 | `automerge_method` | string (enum: `squash`, `merge`, `rebase`) | `"squash"` | Merge method asked for when arming; must be one the repo allows |
 | `respect_human_arming` | bool | `true` | Preserve another actor's arming, on a refusal and on a replacement |
-| `automerge_on_unstable` | string (enum: `merge`, `wait`) | `"merge"` | On an UNSTABLE pull request whose required checks all pass: merge the audited head now, or wait for CLEAN |
+| `automerge_on_unstable` | string (enum: `merge`, `wait`) | `"merge"` | When GitHub refuses to arm an UNSTABLE pull request whose required checks all pass: merge the audited head now, or wait for CLEAN |
 | `automerge_settle_s` | int | `600` | The bound on the `wait` policy, in seconds |
-| `continuity` | bool | `true` | Carry the gate onto a head whose change a green verdict already covers; the `/vetty` command pins it false |
-| `carry_max_age_h` | int | `72` | Age past which a green verdict is no longer carried, measured from the original audit; `0` turns carrying off |
+| `continuity` | bool | `true` | Reuse a green verdict on a head whose change it already covers (carry, renewal, repin); the `/vetty` command pins it false |
+| `carry_max_age_h` | int | `72` | Age past which a green verdict is no longer reused, measured from the original audit; `0` turns every reuse off |
 | `forge_publish_url` | string | `""` | Deterministic forge-publish grant, injected by the iterion server at launch; empty → direct comment, no gate |
 | `forge_publish_token` | string | `""` | Token for the publish endpoint above (server-injected) |
 | `forge_delivery_preflight_url` | string | `""` | Read-only delivery-permission proof endpoint (server-injected on the same launch); empty → a workflow-touching alignment is refused rather than pushed |

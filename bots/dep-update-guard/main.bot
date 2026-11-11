@@ -100,14 +100,15 @@ vars:
   ## AUTO-MERGE ARMING (opt-in, OFF by default so the catalog behaviour is
   ## unchanged). When true AND the verdict is green AND the gate landed green,
   ## Vetty asks the forge to merge the PR *once its own required checks pass*.
-  ## It never merges past a REQUIRED check. While checks are pending it only
-  ## arms auto-merge, handing the decision to the repo's required checks. Once
-  ## the forge itself reports the PR clean — the state where it refuses to arm
-  ## at all — Vetty merges the audited commit, and only that one; with every
-  ## required check passing and another one red or still running (UNSTABLE),
-  ## `automerge_on_unstable` decides — except for a `carried` verdict, which
-  ## built nothing here and is merged directly only once the forge reports
-  ## CLEAN. The
+  ## It never merges past a REQUIRED check. While a required check is pending
+  ## it only arms auto-merge, handing the decision to the repo's required
+  ## checks: the forge then merges once THOSE pass, whatever a check the repo
+  ## does not require says. Only where the forge refuses to arm — nothing
+  ## required is left to wait for — does Vetty merge the audited commit itself,
+  ## and only that one: at once when the forge reports the PR clean; when every
+  ## required check passes and another one is red or still running (UNSTABLE),
+  ## as `automerge_on_unstable` says, and never on a base that requires no
+  ## check. Every green verdict, `carried` included, follows the same rule. The
   ## immediate-merge REST endpoint is deliberately never used: it merges
   ## whatever the state, which is the opposite of the guarantee this bot exists
   ## to provide.
@@ -128,8 +129,10 @@ vars:
   ## it, which is what an arming placed earlier would have done (auto-merge
   ## waits on required checks only). "wait" re-reads for at most
   ## automerge_settle_s and merges only once the forge reports CLEAN. A
-  ## required check that is not passing, or a rollup that cannot be read
-  ## whole, merges nothing under either policy.
+  ## required check that is not passing, a base that requires no check, or a
+  ## rollup that cannot be read whole merges nothing under either policy. It
+  ## applies only to that refusal: an arming the forge accepts merges once
+  ## the required checks pass.
   automerge_on_unstable: string [enum: "merge", "wait"] = "merge"
   ## The bound on the "wait" policy above, in seconds.
   automerge_settle_s: int = 600
@@ -139,11 +142,14 @@ vars:
   ## base_ref). If so the gate is carried with no LLM call, or the head is
   ## already gated and only the arming is renewed. The /vetty command pins
   ## this false, so a human gesture always buys a full audit; an operator
-  ## pin of it in the integration's launch_vars wins on both lanes.
+  ## pin of it in the integration's launch_vars wins on both lanes. Off, no
+  ## verdict is reused anywhere: no carry, no renewal, no repin at publish.
   continuity: bool = true
-  ## The age past which a green verdict is no longer carried, measured from
+  ## The age past which a green verdict is no longer reused — carried onto
+  ## another head, renewed on its own, or repinned at publish — measured from
   ## the ORIGINAL audit (a chain of carries never extends it): advisories
-  ## published after that audit are owed a fresh look. 0 turns carrying off.
+  ## published after that audit are owed a fresh look. 0 turns every reuse
+  ## off.
   carry_max_age_h: int = 72
   ## Deterministic forge publish grant — INJECTED BY THE ITERION SERVER at
   ## launch when the run's team has a forge connection covering pr_url's
@@ -528,8 +534,9 @@ prompt commit_system:
 
   Read `.claude/skills/dependency-pr-guard.md` ("Committing & pushing
   back") for the exact, forge-agnostic git incantation using the
-  `forge_token` file (set the authenticated push URL from the token; do
-  NOT print the token).
+  `forge_token` file: the token reaches git through its environment as an
+  Authorization header, never in a URL and never on a command line. Do
+  NOT print the token.
 
   PROCEDURE:
     1. `git status --porcelain` — enumerate the dirty files. If there is
@@ -628,8 +635,12 @@ schema continuity_output:
   ## about the identical change on another head, and no verdict about that
   ## change holds, nor any red on this head.
   carry: bool
-  ## already_gated: this head itself carries an eligible green verdict.
+  ## already_gated: this head itself carries an eligible green verdict whose
+  ## original audit is younger than carry_max_age_h.
   already_gated: bool
+  ## gated_verdict: on already_gated, the verdict this head carries (clean,
+  ## committed or carried); empty otherwise.
+  gated_verdict: string
   ## origin_sha / origin_at: the ORIGINAL audit the carried verdict descends
   ## from, and when it was published (RFC 3339, UTC).
   origin_sha: string
@@ -1156,7 +1167,24 @@ tool continuity:
             if not pid:
                 v = git(["version"]).stdout.decode().strip() or "this git"
                 return "", "no change identity: " + v + " cannot compute patch-id --verbatim (git 2.39 or later)"
-            digest = hashlib.sha256(b"vetty-change/v1\0" + base_ref.encode() + b"\0" + pid.encode()).hexdigest()
+            # patch-id hashes no path for a section with no ---/+++ lines (a
+            # mode change, an empty file, a binary) that follows a binary one.
+            # The modes, the status and the path of EVERY changed entry are
+            # folded in from the raw listing, blob ids left out: a rebase that
+            # moves a changed file's base content elsewhere keeps the id.
+            r = git(["diff", "--raw", "-z", "--no-abbrev", "--no-renames", "--no-relative",
+                     "--ignore-submodules=none", "-O" + os.devnull, mb, head, "--"])
+            entries = r.stdout.split(b"\0") if r.returncode == 0 else []
+            if not entries or entries.pop() != b"" or len(entries) % 2:
+                return "", "no change identity: the changed paths of " + mb[:12] + ".." + head[:12] + " cannot be read"
+            listing = b""
+            for meta, path in zip(entries[0::2], entries[1::2]):
+                f = meta.split(b" ")
+                if len(f) != 5 or not f[0].startswith(b":") or not path:
+                    return "", "no change identity: the changed paths of " + mb[:12] + ".." + head[:12] + " cannot be read"
+                listing += f[0][1:] + b" " + f[1] + b" " + f[4] + b"\t" + path + b"\0"
+            digest = hashlib.sha256(b"vetty-change/v1\0" + base_ref.encode() + b"\0" + pid.encode() + b"\0" +
+                                    listing).hexdigest()
             return "pid1:" + digest[:24], "patch-id of " + mb[:12] + ".." + head[:12]
         except (OSError, subprocess.SubprocessError, UnicodeError) as e:
             return "", "no change identity: git could not run (" + type(e).__name__ + ")"
@@ -1168,8 +1196,8 @@ tool continuity:
     def s(x):
         return (x or "").strip() if isinstance(x, str) else ("" if x is None else str(x).strip())
 
-    def out(reason, carry=False, already=False, origin="", origin_at="", change_id=""):
-        print(json.dumps({"carry": bool(carry), "already_gated": bool(already),
+    def out(reason, carry=False, already=False, origin="", origin_at="", change_id="", gated=""):
+        print(json.dumps({"carry": bool(carry), "already_gated": bool(already), "gated_verdict": gated,
                           "origin_sha": origin, "origin_at": origin_at, "change_id": change_id,
                           "reason": reason}))
         raise SystemExit(0)
@@ -1232,9 +1260,14 @@ tool continuity:
     # AND on the head — and decides over SETS, never over an order: the
     # reviews arrive in whatever order the forge pages them. `call(path)`
     # returns (json, Link header) and raises on a failed read. `me` is the
-    # (login, id) the run token speaks as: a review is this App's when either
-    # matches, the id first, because REST and GraphQL spell a bot's login
-    # differently. Returns (veto, eligible). veto says why no green may be
+    # (login, id) the run token speaks as, and it decides ONLY which verdicts
+    # are this App's: by user id whenever the viewer has one, by login only
+    # when it has none — and then only a Bot spelled `slug[bot]`, because a
+    # user account can register any other spelling. It never decides a veto:
+    # a marker vetoes whoever wrote it (the safe direction), so a caller that
+    # cannot name the App vetoes exactly as one that can, and Vetty's own
+    # verdicts published by a user (a PAT connection) are read. Returns
+    # (veto, eligible). veto says why no green may be
     # carried onto `head`: a history not read whole, a verdict on this change
     # that is not green, a status stamped with this change that is not green,
     # or a red status on the head itself — a carry never paints over one.
@@ -1259,15 +1292,19 @@ tool continuity:
             return "the review history runs past " + str(pages) + " pages, so it cannot be read whole", []
         login, uid = me
         uid = uid if isinstance(uid, int) and not isinstance(uid, bool) else None
+        bot = text(login).casefold()
+        if bot and not bot.endswith("[bot]"):
+            bot += "[bot]"
         marks = []
         for r in reviews:
             if not isinstance(r, dict):
                 continue
             user = r.get("user") if isinstance(r.get("user"), dict) else {}
             rid = user.get("id") if isinstance(user.get("id"), int) and not isinstance(user.get("id"), bool) else None
-            own = (uid is not None and rid == uid) or (bool(login) and text(user.get("login")).casefold() == login.casefold())
-            if not own and text(user.get("type")) != "Bot":
-                continue
+            if uid is not None:
+                own = rid == uid
+            else:
+                own = bool(bot) and text(user.get("type")) == "Bot" and text(user.get("login")).casefold() == bot
             lines = text(r.get("body")).splitlines()
             mk = marker.fullmatch(lines[-1].strip()) if lines else None
             if mk:
@@ -1331,23 +1368,21 @@ tool continuity:
                 change_id=pid)
         # Whose reviews are this App's: the identity the run token speaks as,
         # the one the server publishes under on the same installation. Only
-        # those can make a verdict eligible; any bot's marker can still veto.
+        # those can make a verdict eligible; any author's marker can veto.
         viewer = call("/graphql", json.dumps({"query": "query { viewer { login databaseId } }"}).encode("utf-8"))[0]
         who = (viewer.get("data") or {}).get("viewer") or {}
         veto, good = gate_history(call, owner, repo, num, pid, gctx, head, (s(who.get("login")), who.get("databaseId")))
         if veto:
             out(veto + ": " + FULL, change_id=pid)
-        mine = [k for k in good if k["sha"] == head]
-        if mine:
-            k = max(mine, key=lambda k: (k["origin_at"], k["origin"], k["url"]))
-            out("this head already carries a green " + gctx + " for its change (" + pid + ", " + k["verdict"] +
-                "): the arming is renewed, nothing is re-audited", already=True,
-                origin=k["origin"], origin_at=k["origin_at"], change_id=pid)
         if not good:
             out("no green " + gctx + " for this change (" + pid + ") is on record: " + FULL, change_id=pid)
+        # Every reuse of a verdict — renewing the arming on this head's own
+        # green, and carrying one onto it — is bounded by the age of the
+        # ORIGINAL audit: an advisory published after it is owed a fresh look.
         limit = float(max_age_h or 0)
         if limit <= 0:
-            out("carry_max_age_h is " + (s(max_age_h) or "unset") + ", so no verdict is carried: " + FULL, change_id=pid)
+            out("carry_max_age_h is " + (s(max_age_h) or "unset") + ", so no verdict is carried or renewed: " + FULL,
+                change_id=pid)
         now = time.time()
         fresh = []
         for k in good:
@@ -1357,6 +1392,12 @@ tool continuity:
                 continue
             if -1.0 <= age_h <= limit:
                 fresh.append(k)
+        mine = [k for k in fresh if k["sha"] == head]
+        if mine:
+            k = max(mine, key=lambda k: (k["origin_at"], k["origin"], k["verdict"], k["url"]))
+            out("this head already carries a green " + gctx + " for its change (" + pid + ", " + k["verdict"] +
+                "): the arming is renewed, nothing is re-audited", already=True,
+                origin=k["origin"], origin_at=k["origin_at"], change_id=pid, gated=k["verdict"])
         if not fresh:
             out("every green verdict on this change (" + pid + ") is older than carry_max_age_h=" + s(max_age_h) +
                 "h, measured from the original audit: " + FULL, change_id=pid)
@@ -2244,7 +2285,7 @@ except Exception:
 ## JSON `null` literal, so `null/true/false` are shimmed to Python.
 tool post_feedback:
   script: |
-    import base64, json, os, re, subprocess, tempfile, time, urllib.parse, urllib.request, urllib.error
+    import base64, calendar, json, os, re, subprocess, tempfile, time, urllib.parse, urllib.request, urllib.error
     null = None; true = True; false = False  # JSON-literal shim for missing refs
     pr_url = {{input.pr_url}}
     verdict = {{input.verdict}}
@@ -2272,6 +2313,8 @@ tool post_feedback:
     base_ref = {{vars.base_ref}}
     head_sha = {{input.head_sha}}
     head_id = {{input.head_id}}
+    continuity_on = {{vars.continuity}}
+    carry_max_age_h = {{vars.carry_max_age_h}}
 
     def s(x):
         return (x or "").strip() if isinstance(x, str) else ("" if x is None else str(x).strip())
@@ -2362,7 +2405,24 @@ tool post_feedback:
             if not pid:
                 v = git(["version"]).stdout.decode().strip() or "this git"
                 return "", "no change identity: " + v + " cannot compute patch-id --verbatim (git 2.39 or later)"
-            digest = hashlib.sha256(b"vetty-change/v1\0" + base_ref.encode() + b"\0" + pid.encode()).hexdigest()
+            # patch-id hashes no path for a section with no ---/+++ lines (a
+            # mode change, an empty file, a binary) that follows a binary one.
+            # The modes, the status and the path of EVERY changed entry are
+            # folded in from the raw listing, blob ids left out: a rebase that
+            # moves a changed file's base content elsewhere keeps the id.
+            r = git(["diff", "--raw", "-z", "--no-abbrev", "--no-renames", "--no-relative",
+                     "--ignore-submodules=none", "-O" + os.devnull, mb, head, "--"])
+            entries = r.stdout.split(b"\0") if r.returncode == 0 else []
+            if not entries or entries.pop() != b"" or len(entries) % 2:
+                return "", "no change identity: the changed paths of " + mb[:12] + ".." + head[:12] + " cannot be read"
+            listing = b""
+            for meta, path in zip(entries[0::2], entries[1::2]):
+                f = meta.split(b" ")
+                if len(f) != 5 or not f[0].startswith(b":") or not path:
+                    return "", "no change identity: the changed paths of " + mb[:12] + ".." + head[:12] + " cannot be read"
+                listing += f[0][1:] + b" " + f[1] + b" " + f[4] + b"\t" + path + b"\0"
+            digest = hashlib.sha256(b"vetty-change/v1\0" + base_ref.encode() + b"\0" + pid.encode() + b"\0" +
+                                    listing).hexdigest()
             return "pid1:" + digest[:24], "patch-id of " + mb[:12] + ".." + head[:12]
         except (OSError, subprocess.SubprocessError, UnicodeError) as e:
             return "", "no change identity: git could not run (" + type(e).__name__ + ")"
@@ -2378,9 +2438,14 @@ tool post_feedback:
     # AND on the head — and decides over SETS, never over an order: the
     # reviews arrive in whatever order the forge pages them. `call(path)`
     # returns (json, Link header) and raises on a failed read. `me` is the
-    # (login, id) the run token speaks as: a review is this App's when either
-    # matches, the id first, because REST and GraphQL spell a bot's login
-    # differently. Returns (veto, eligible). veto says why no green may be
+    # (login, id) the run token speaks as, and it decides ONLY which verdicts
+    # are this App's: by user id whenever the viewer has one, by login only
+    # when it has none — and then only a Bot spelled `slug[bot]`, because a
+    # user account can register any other spelling. It never decides a veto:
+    # a marker vetoes whoever wrote it (the safe direction), so a caller that
+    # cannot name the App vetoes exactly as one that can, and Vetty's own
+    # verdicts published by a user (a PAT connection) are read. Returns
+    # (veto, eligible). veto says why no green may be
     # carried onto `head`: a history not read whole, a verdict on this change
     # that is not green, a status stamped with this change that is not green,
     # or a red status on the head itself — a carry never paints over one.
@@ -2405,15 +2470,19 @@ tool post_feedback:
             return "the review history runs past " + str(pages) + " pages, so it cannot be read whole", []
         login, uid = me
         uid = uid if isinstance(uid, int) and not isinstance(uid, bool) else None
+        bot = text(login).casefold()
+        if bot and not bot.endswith("[bot]"):
+            bot += "[bot]"
         marks = []
         for r in reviews:
             if not isinstance(r, dict):
                 continue
             user = r.get("user") if isinstance(r.get("user"), dict) else {}
             rid = user.get("id") if isinstance(user.get("id"), int) and not isinstance(user.get("id"), bool) else None
-            own = (uid is not None and rid == uid) or (bool(login) and text(user.get("login")).casefold() == login.casefold())
-            if not own and text(user.get("type")) != "Bot":
-                continue
+            if uid is not None:
+                own = rid == uid
+            else:
+                own = bool(bot) and text(user.get("type")) == "Bot" and text(user.get("login")).casefold() == bot
             lines = text(r.get("body")).splitlines()
             mk = marker.fullmatch(lines[-1].strip()) if lines else None
             if mk:
@@ -2576,9 +2645,26 @@ tool post_feedback:
     # about the commit it read, and nothing else. The gate history is read
     # last, right before the publish; the server orders decisions by the time
     # it receives them, so a hold published on the new head after this read
-    # still supersedes the carry.
+    # still supersedes the carry. The operator's switches govern this carry
+    # exactly as they govern continuity's: `continuity` off (the /vetty
+    # command, or an operator pin) or carry_max_age_h at 0 carries nothing,
+    # and a carried verdict whose ORIGINAL audit is older than
+    # carry_max_age_h is not carried further.
+    try:
+        limit_h = float(carry_max_age_h or 0)
+    except (TypeError, ValueError):
+        limit_h = 0.0
+    reuse_off = ""
+    if not bool(continuity_on):
+        reuse_off = "continuity is off for this launch"
+    elif limit_h <= 0:
+        reuse_off = "carry_max_age_h is " + (s(carry_max_age_h) or "unset")
+    elif origin_when and (time.time() - calendar.timegm(time.strptime(origin_when, "%Y-%m-%dT%H:%M:%SZ"))) / 3600.0 > limit_h:
+        reuse_off = "the original audit (" + origin_when + ") is older than carry_max_age_h=" + s(carry_max_age_h) + "h"
     repinned_from, repin_note = "", ""
-    if change_id and s(verdict) in GREEN and on_github and read_token():
+    if change_id and s(verdict) in GREEN and on_github and reuse_off:
+        repin_note = "no repin: " + reuse_off
+    elif change_id and s(verdict) in GREEN and on_github and read_token():
         owner, repo, num = pull_ref.group(2), pull_ref.group(3), pull_ref.group(4)
         try:
             pull = call("/repos/%s/%s/pulls/%s" % (owner, repo, num))[0]
@@ -2677,9 +2763,7 @@ tool post_feedback:
                       "committed here. The build on this base is the repo's own CI's to prove."}.get(s(verdict), "")
     did = (s(commit_summary) + " " if s(commit_summary) else "") + did + \
         " **Vetty never merges past a required check** — whether this lands is the repo's own required checks' " \
-        "decision (a check the repo does not require follows `automerge_on_unstable`; a carried verdict, which " \
-        "built nothing here, is merged directly only once every check passes), and only the exact commit " \
-        "reported above can be merged."
+        "decision, and only the exact commit reported above can be merged."
     section("What Vetty did", did)
     # The run that wrote this comment: the reader's way to the steps, the
     # models and the cost behind the verdict, and the way into the platform
@@ -3258,9 +3342,10 @@ tool arm_automerge:
         return ", ".join(contexts[:8]) + (" and " + str(more) + " more" if more > 0 else "")
 
     def not_passing(pin):
-        # (required, optional): the names of the contexts not passing on the
-        # vouched head, split by whether the base requires them. None when
-        # the rollup is about another commit, runs past one page, or carries a
+        # (required, optional, passing_required): the names of the contexts
+        # not passing on the vouched head, split by whether the base requires
+        # them, and the names of the required ones that pass. None when the
+        # rollup is about another commit, runs past one page, or carries a
         # context whose kind or requiredness it does not state: what cannot
         # be read whole merges nothing.
         data = graphql(rollup_q, {"owner": owner, "name": repo, "number": num})
@@ -3273,7 +3358,7 @@ tool arm_automerge:
         contexts = (commit.get("statusCheckRollup") or {}).get("contexts") or {}
         if (contexts.get("pageInfo") or {}).get("hasNextPage") or not isinstance(contexts.get("nodes"), list):
             return None
-        required, optional = [], []
+        required, optional, passing = [], [], []
         for c in contexts["nodes"]:
             if not isinstance(c, dict):
                 return None
@@ -3287,6 +3372,9 @@ tool arm_automerge:
             else:
                 return None
             if ok:
+                # Counted only when the base states it requires it.
+                if c.get("isRequired") is True:
+                    passing.append(name)
                 continue
             if c.get("isRequired") is True:
                 required.append(name)
@@ -3294,15 +3382,20 @@ tool arm_automerge:
                 optional.append(name)
             else:
                 return None
-        return sorted(required), sorted(optional)
+        return sorted(required), sorted(optional), sorted(passing)
 
     def settle_unstable(pr, why):
         # A refusal on an UNSTABLE pull request. A required context that is
-        # not passing, or a rollup that cannot be read whole, merges nothing.
-        # Otherwise the policy decides: "merge" merges the vouched head now —
-        # what an arming placed earlier would have done, auto-merge waiting
-        # on required checks only; "wait" re-reads until the forge reports
-        # CLEAN, for at most automerge_settle_s.
+        # not passing, or a rollup that cannot be read whole, merges nothing;
+        # so does a base that requires no check at all, where UNSTABLE says
+        # nothing about the build (the gate context counts when the base
+        # requires it). Otherwise the policy decides, for every green verdict
+        # alike: "merge" merges the vouched head now — what an arming placed
+        # earlier would have done, auto-merge waiting on required checks
+        # only; "wait" re-reads until the forge reports CLEAN, for at most
+        # automerge_settle_s. The policy is reached ONLY through this refusal:
+        # an arming the forge accepts, while a required check still runs,
+        # merges once the required checks pass, whatever another check says.
         refused = "auto-merge request refused: " + why + " | "
         pin = vouched_sha(pr, "merge")
         split = not_passing(pin)
@@ -3311,10 +3404,10 @@ tool arm_automerge:
                        " could not be read whole - merging nothing")
         if split[0]:
             out(False, refused + "a REQUIRED check is not passing on " + pin[:12] + ": " + named(split[0]))
-        # A carried verdict built nothing on this tree: the build on the new
-        # base is the repo's CI's to prove, so a check still red or running
-        # is never merged past, whatever the policy says.
-        policy = "wait" if s(verdict) == "carried" else s(on_unstable).lower()
+        if not split[2]:
+            out(False, refused + "the base requires no check on " + pin[:12] + ", so UNSTABLE says nothing "
+                       "about the build - merging nothing; not passing: " + named(split[1]))
+        policy = s(on_unstable).lower()
         if policy == "merge":
             merge_now(pr, "merged: GitHub refused to arm an UNSTABLE pull request whose required checks all "
                           "pass (automerge_on_unstable=merge); not passing, none of them required: " + named(split[1]))
@@ -3540,24 +3633,32 @@ tool arm_automerge:
 ## only parent is the audited commit — the alignment, and nothing else: a
 ## commit someone else pushed meanwhile, pulled or rebased under the
 ## alignment, or a merge of the remote, would otherwise ride on a verdict
-## that never saw it — (2) the remote branch holds exactly it — the push
+## that never saw it — (2) the forge's branch holds exactly it — the push
 ## evidence, read with `git ls-remote` — and (3) the agent's report, when it
 ## names a commit id at all, resolves to it. A report the agent left empty,
 ## or wrote without a commit id ("pushed", "N/A"), no longer pins the verdict
 ## to the head this run moved away from (the server then refuses it as "head
 ## moved" onto the run's own push): git is the evidence. A report that names
 ## another commit still refuses. Replace refs and grafts are switched off for
-## every reading. The forge token reaches git through its environment
-## (GIT_CONFIG_COUNT/KEY/VALUE), never argv, and nothing git says is
-## printed.
+## every reading. The push evidence is read from the repository pr_url names,
+## from a scratch repository this node creates, with system and global config
+## cut off: the workspace's remote, its url rewrites and the global ones are
+## the agents' to write, and would otherwise name a repository of their
+## choosing. Only a run with no pull request URL — a local one, which
+## publishes nothing — reads the workspace's `origin`. The forge token
+## reaches git through its environment (GIT_CONFIG_COUNT/KEY/VALUE), never
+## argv, and nothing git says is printed.
 tool commit_probe:
   script: |
-    import base64, json, os, re, subprocess, time, urllib.parse
+    import base64, json, os, re, subprocess, tempfile, time, urllib.parse
     null = None; true = True; false = False
     ws = {{vars.workspace_dir}}
+    pr_url = {{vars.pr_url}}
     reported = {{input.sha}}
     prepared = {{input.head_sha}}
     token_ref = {{secrets.forge_token.path}}
+    # Where the forge serves a GitHub repository over git.
+    GITHUB_GIT = "https://github.com/"
     def text(value):
         return value.strip().lower() if isinstance(value, str) else ""
     def emit(sha, reason):
@@ -3580,18 +3681,27 @@ tool commit_probe:
     genv = {k: v for k, v in os.environ.items() if k not in drop}
     genv.update({"GIT_TERMINAL_PROMPT": "0", "GIT_NO_REPLACE_OBJECTS": "1",
                  "GIT_GRAFT_FILE": os.path.join(os.devnull, "no-grafts")})
-    def git(*args, env=None):
-        return subprocess.run(["git", "-C", ws, *args], capture_output=True, timeout=60, env=env or genv)
+    def git(*args):
+        return subprocess.run(["git", "-C", ws, *args], capture_output=True, timeout=60, env=genv)
     def resolve(value):
         p = git("rev-parse", "--verify", "--end-of-options", value + "^{commit}")
         return p.stdout.decode().strip() if p.returncode == 0 else ""
-    def remote_env():
-        # The token as an http.extraHeader for the origin's host, appended
+    pr = pr_url.strip() if isinstance(pr_url, str) else ""
+    def forge_remote():
+        # The repository the pull request lives in, named from pr_url alone:
+        # GitHub and GHES (/pull/N), Forgejo and Gitea (/pulls/N), GitLab
+        # (/-/merge_requests/N). "" when pr_url names no pull request.
+        m = re.match(r"(https?)://([^/?#@]+)/(.+?)/(?:-/)?(?:pull|pulls|merge_requests)/[0-9]+(?:[/?#]|$)", pr)
+        if not m:
+            return ""
+        root = GITHUB_GIT if m.group(2).lower() == "github.com" else m.group(1) + "://" + m.group(2) + "/"
+        return root + m.group(3) + ".git"
+    def with_token(env, url):
+        # The token as an http.extraHeader for the remote's host, appended
         # after the entries the sandbox already set (safe.directory).
-        env = dict(genv)
+        env = dict(env)
         tref = token_ref.strip() if isinstance(token_ref, str) else ""
         token = (open(tref).read().strip() if os.path.exists(tref) else tref) if tref else ""
-        url = git("remote", "get-url", "origin").stdout.decode().strip()
         if url.startswith("https://") and token:
             n = int(env.get("GIT_CONFIG_COUNT") or "0")
             host = urllib.parse.urlsplit(url).netloc.rsplit("@", 1)[-1]
@@ -3599,6 +3709,40 @@ tool commit_probe:
             env["GIT_CONFIG_VALUE_%d" % n] = "Authorization: Basic " + base64.b64encode(("oauth2:" + token).encode()).decode()
             env["GIT_CONFIG_COUNT"] = str(n + 1)
         return env
+    def held_by(argv_of, env, branch):
+        # The commit the remote's branch holds, "" when it cannot be read.
+        for attempt in (1, 2):
+            p = subprocess.run(argv_of("refs/heads/" + branch), capture_output=True, timeout=60, env=env)
+            if p.returncode == 0:
+                for line in p.stdout.decode().splitlines():
+                    fields = line.split("\t")
+                    if len(fields) == 2 and fields[1] == "refs/heads/" + branch:
+                        return fields[0].strip().lower()
+                return ""
+            if attempt == 1:
+                time.sleep(2)
+        return ""
+    def remote_head(branch):
+        # (where, held): the remote read and the commit its branch holds.
+        if not pr:
+            # A local run: no pull request, nothing published, the host's own
+            # git configuration and credentials.
+            origin = git("remote", "get-url", "origin").stdout.decode().strip()
+            return "origin", held_by(lambda ref: ["git", "-C", ws, "ls-remote", "origin", ref],
+                                     with_token(genv, origin), branch)
+        url = forge_remote()
+        if not url:
+            return "no repository (pr_url names no pull request)", ""
+        env = {k: v for k, v in genv.items()
+               if k not in ("GIT_CONFIG", "GIT_CONFIG_PARAMETERS", "GIT_ASKPASS", "SSH_ASKPASS")}
+        env.update({"GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull})
+        env = with_token(env, url)
+        with tempfile.TemporaryDirectory(prefix="vetty-probe-") as scratch:
+            if subprocess.run(["git", "init", "-q", "--bare", scratch], capture_output=True, timeout=60,
+                              env=env).returncode != 0:
+                return "the pull request's repository", ""
+            return "the pull request's repository", held_by(
+                lambda ref: ["git", "-C", scratch, "-c", "http.followRedirects=false", "ls-remote", url, ref], env, branch)
     try:
         tip, base = resolve("HEAD"), resolve(prepared)
         if not tip or not base or tip == base:
@@ -3614,22 +3758,12 @@ tool commit_probe:
         branch = git("symbolic-ref", "--quiet", "--short", "HEAD").stdout.decode().strip()
         if not branch:
             emit("", "the workspace head is on no branch, so no push of it can be read")
-        held = ""
-        env = remote_env()
-        for attempt in (1, 2):
-            p = git("ls-remote", "origin", "refs/heads/" + branch, env=env)
-            if p.returncode == 0:
-                for line in p.stdout.decode().splitlines():
-                    fields = line.split("\t")
-                    if len(fields) == 2 and fields[1] == "refs/heads/" + branch:
-                        held = fields[0].strip().lower()
-                break
-            if attempt == 1:
-                time.sleep(2)
+        where, held = remote_head(branch)
         if held != tip:
-            emit("", "origin/" + branch + " holds " + (held[:12] or "nothing readable") + ", not the workspace head " +
-                     tip[:12] + ": no push of it is in evidence")
-        emit(tip, "git confirms one new commit on top of the audited one, and origin/" + branch + " holds it" + aside)
+            emit("", "branch " + branch + " on " + where + " holds " + (held[:12] or "nothing readable") +
+                     ", not the workspace head " + tip[:12] + ": no push of it is in evidence")
+        emit(tip, "git confirms one new commit on top of the audited one, and branch " + branch + " on " + where +
+                  " holds it" + aside)
     except (OSError, ValueError, subprocess.SubprocessError, UnicodeError):
         emit("", "git could not establish a new pushed commit")
   language: py
@@ -3638,13 +3772,14 @@ tool commit_probe:
 
 ## continuity_standby — what arm_automerge needs when this head is already
 ## gated: the head carries a green gate for its change, so the arming is
-## renewed pinned to it and nothing is published. `carried` stands for the
-## green verdict on record; the gate is this head's own, so every sha is it.
+## renewed pinned to it and nothing is published. The verdict is the one on
+## record for this head (clean, committed or carried); the gate is this
+## head's own, so every sha is it.
 compute continuity_standby:
   output: automerge_input
   expr:
     pr_url: "vars.pr_url"
-    verdict: "'carried'"
+    verdict: "outputs.continuity.gated_verdict"
     gate_posted: "true"
     gate_state: "'success'"
     gate_sha: "outputs.prepare.head_sha"

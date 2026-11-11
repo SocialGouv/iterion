@@ -159,9 +159,13 @@ func (forge *armingPinForge) handler(t *testing.T) http.HandlerFunc {
 			oid, _ := forge.served["headRefOid"].(string)
 			var sc any
 			if forge.optionalRed {
+				// The required gate context passes; only a check the base
+				// does not require is red.
 				sc = map[string]any{"contexts": map[string]any{"pageInfo": map[string]any{"hasNextPage": false},
 					"nodes": []any{map[string]any{"__typename": "CheckRun", "name": "cloud-e2e", "status": "COMPLETED",
-						"conclusion": "FAILURE", "isRequired": false}}}}
+						"conclusion": "FAILURE", "isRequired": false},
+						map[string]any{"__typename": "StatusContext", "context": "vetty/deps", "state": "SUCCESS",
+							"isRequired": true}}}}
 			}
 			forge.mu.Unlock()
 			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"repository": map[string]any{

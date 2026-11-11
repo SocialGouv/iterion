@@ -1273,29 +1273,46 @@ func TestDepUpdateGuardArmAutomerge(t *testing.T) {
 		})
 	}
 
-	// A carried verdict built nothing on this tree. Mutation: drop the
-	// carried override in settle_unstable -> the default "merge" policy
-	// merges it past a red check the repo does not require.
-	t.Run("a carried verdict on an UNSTABLE pull request waits for CLEAN, whatever the policy", func(t *testing.T) {
-		withRollup(t, "", optionalRed, requiredGreen)
-		res, calls, _ := runWith(t, map[string]string{"{{input.verdict}}": `"carried"`, "{{vars.automerge_settle_s}}": "1"},
-			unstablePR, unstableRefusal, nil)
-		if len(mergedOn(calls)) != 0 || res["armed"] != false {
-			t.Fatalf("a carried head was merged past a red check: %v", res)
-		}
-		if reason := res["reason"].(string); !strings.Contains(reason, "still UNSTABLE") {
-			t.Errorf("the refusal must say the pull request never settled, got %q", reason)
-		}
-	})
-	t.Run("a carried verdict merges once the pull request settles CLEAN", func(t *testing.T) {
-		withRollup(t, "", optionalRed, requiredGreen)
-		after := withState(map[string]any{"mergeStateStatus": "UNSTABLE", "__next": withState(map[string]any{"mergeStateStatus": "CLEAN"})})
-		res, calls, _ := runWith(t, map[string]string{"{{input.verdict}}": `"carried"`, "{{vars.automerge_settle_s}}": "1"},
-			blocked, unstableRefusal, after)
-		if got := mergedOn(calls); len(got) != 1 || got[0] != "d34db33f" || res["armed"] != true {
-			t.Fatalf("want the settled carried head merged pinned, got merges %v (%v)", got, res)
-		}
-	})
+	// The policy is one rule for every green verdict. An arming the forge
+	// accepts while a required check still runs lets GitHub merge once the
+	// REQUIRED checks pass, whatever a non-required check says, for every
+	// verdict; a refused arming on UNSTABLE follows the same rule, so CI
+	// timing never decides which of the two a verdict gets. Mutation: give
+	// `carried` its own policy in settle_unstable -> the carried row refuses.
+	for _, verdict := range depUpdateGuardGreenVerdicts {
+		t.Run("verdict "+verdict+" on an UNSTABLE pull request follows automerge_on_unstable", func(t *testing.T) {
+			withRollup(t, "", optionalRed, requiredGreen)
+			res, calls, _ := runWith(t, map[string]string{"{{input.verdict}}": `"` + verdict + `"`, "{{vars.automerge_settle_s}}": "1"},
+				unstablePR, unstableRefusal, nil)
+			if got := mergedOn(calls); len(got) != 1 || got[0] != "d34db33f" || res["armed"] != true {
+				t.Fatalf("a %s verdict did not follow the default merge policy: merges %v (%v)", verdict, got, res)
+			}
+		})
+	}
+
+	// A base that requires no check: UNSTABLE says nothing about the build,
+	// and GitHub could not have been asked to wait on anything. Mutation: drop
+	// the required-and-passing condition -> it merges past a red or running
+	// check on a repository that gates nothing.
+	for _, tc := range []struct {
+		name  string
+		nodes []map[string]any
+	}{
+		{"a red check, nothing required", []map[string]any{optionalRed}},
+		{"a red check beside a passing one, nothing required", []map[string]any{optionalRed,
+			{"__typename": "StatusContext", "context": "lint", "state": "SUCCESS", "isRequired": false}}},
+	} {
+		t.Run("UNSTABLE, "+tc.name+": merges nothing", func(t *testing.T) {
+			withRollup(t, "", tc.nodes...)
+			res, calls, _ := runWith(t, nil, unstablePR, unstableRefusal, nil)
+			if len(mergedOn(calls)) != 0 || res["armed"] != false {
+				t.Fatalf("merged an UNSTABLE pull request whose base requires no check: %v", res)
+			}
+			if reason := res["reason"].(string); !strings.Contains(reason, "requires no check") {
+				t.Errorf("the refusal must say the base requires no check, got %q", reason)
+			}
+		})
+	}
 
 	t.Run("the default UNSTABLE policy is merge", func(t *testing.T) {
 		v := compilePlanPhaseBot(t, "dep-update-guard").Vars["automerge_on_unstable"]

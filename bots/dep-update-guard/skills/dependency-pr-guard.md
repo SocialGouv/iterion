@@ -159,23 +159,31 @@ commands.
 ## 5. Committing & pushing back (token auth, forge-agnostic)
 
 Commit ONLY the alignment files onto the CURRENT (PR) branch and push to
-`origin`. Authenticate with the `forge_token` file — never print it:
+`origin`. Authenticate with the `forge_token` file — never print it. The
+token reaches git through its ENVIRONMENT, as an `Authorization` header:
+never in a URL and never on a command line, where every process in the
+sandbox — the bumped package's install scripts included — can read it:
 
 ```sh
-TOKEN="$(cat "$FORGE_TOKEN")"           # path is in $FORGE_TOKEN (secret mount)
 BRANCH="$(git rev-parse --abbrev-ref HEAD)"
 REMOTE="$(git remote get-url origin)"   # https://<host>/<owner>/<repo>(.git)
-HOST="$(printf '%s' "$REMOTE" | sed -E 's#https?://([^/]+)/.*#\1#')"
+HOST="$(printf '%s' "$REMOTE" | sed -E 's#https?://([^/@]+@)?([^/]+)/.*#\2#')"
 PATHPART="$(printf '%s' "$REMOTE" | sed -E 's#https?://[^/]+/##')"
-# GitHub App / PAT use x-access-token; GitLab uses oauth2; Forgejo a username.
-git -c credential.helper= \
-    push "https://x-access-token:${TOKEN}@${HOST}/${PATHPART}" "HEAD:${BRANCH}"
+# GitHub App / PAT use x-access-token; GitLab uses oauth2; Forgejo token.
+# The token file's PATH is in $FORGE_TOKEN (secret mount); printf is a shell
+# builtin, so the token itself never becomes a process argument.
+N="${GIT_CONFIG_COUNT:-0}"
+export "GIT_CONFIG_KEY_${N}=http.https://${HOST}/.extraHeader"
+export "GIT_CONFIG_VALUE_${N}=Authorization: Basic $(printf 'x-access-token:%s' "$(cat "$FORGE_TOKEN")" | base64 | tr -d '\n')"
+export GIT_CONFIG_COUNT="$((N + 1))"
+git -c credential.helper= push "https://${HOST}/${PATHPART}" "HEAD:${BRANCH}"
 ```
 
-For GitLab swap the user to `oauth2:${TOKEN}`; for Forgejo/Gitea
-`token:${TOKEN}` or `<user>:${TOKEN}`. Match the repo's commit convention
-(`git log --oneline -20`); prefer `chore(deps): align code for <pkg> <old>
-→ <new>`. Never force-push, never push to the base branch, never merge.
+For GitLab swap the user to `oauth2`; for Forgejo/Gitea `token` or your
+username — always inside the header, never in the URL. Match the repo's
+commit convention (`git log --oneline -20`); prefer `chore(deps): align
+code for <pkg> <old> → <new>`. Never force-push, never push to the base
+branch, never merge.
 
 ## 6. Posting the comment (forge REST + token)
 

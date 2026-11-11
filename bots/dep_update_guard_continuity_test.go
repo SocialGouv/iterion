@@ -123,6 +123,21 @@ func commitTree(t *testing.T, ws, parent, msg string, files map[string][]byte) s
 	return gittest.Run(t, ws, "rev-parse", "HEAD")
 }
 
+// commitModes is commitTree that also sets the executable bit on the
+// already-tracked paths in `executable`.
+func commitModes(t *testing.T, ws, parent, msg string, files map[string][]byte, executable ...string) string {
+	t.Helper()
+	commitTree(t, ws, parent, msg+" (content)", files)
+	for _, p := range executable {
+		if err := os.Chmod(filepath.Join(ws, p), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		gittest.Run(t, ws, "add", p)
+	}
+	gittest.Run(t, ws, "commit", "-q", "--amend", "--allow-empty", "-m", msg)
+	return gittest.Run(t, ws, "rev-parse", "HEAD")
+}
+
 // TestDepUpdateGuardChangeIdentityContract pins identity contract v1 on real
 // git: what must keep the id (a pure rebase) and what must change it
 // (anything that can change the meaning of the change). Each case on its own
@@ -132,7 +147,8 @@ func commitTree(t *testing.T, ws, parent, msg string, files map[string][]byte) s
 // --verbatim -> --stable (the re-indent case); drop -O<devnull> (the
 // diff.orderFile case); drop base_ref from the hash (the base_ref case); drop
 // GIT_NO_REPLACE_OBJECTS (the replace-ref case); drop GIT_GRAFT_FILE (the
-// graft case); drop GIT_ATTR_SOURCE and attr.tree (the .gitattributes case).
+// graft case); drop GIT_ATTR_SOURCE and attr.tree (the .gitattributes case);
+// drop the raw listing from the digest (the entry-after-a-binary cases).
 func TestDepUpdateGuardChangeIdentityContract(t *testing.T) {
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 not on PATH")
@@ -234,6 +250,47 @@ func TestDepUpdateGuardChangeIdentityContract(t *testing.T) {
 		gittest.Run(t, ws, "config", "diff.orderFile", order)
 		if got := id(t, ws, x); got != before {
 			t.Errorf("diff.orderFile moved the id from %s to %s", before, got)
+		}
+	})
+
+	// patch-id hashes no path for a section that carries no ---/+++ lines (a
+	// mode change, an empty file, a binary) when it follows a binary one: the
+	// path, the modes and the status of every changed entry are folded into
+	// the id from the raw listing. Each pair below is two different changes
+	// that differ ONLY in the path of the entry right after a binary.
+	t.Run("the entry after a binary keeps its path in the id", func(t *testing.T) {
+		bin := func(b byte) []byte { return []byte{0, 1, 2, 3, 0, b} }
+		for _, tc := range []struct {
+			name string
+			a, b func(t *testing.T, ws, base string) string
+		}{
+			{"a mode change", func(t *testing.T, ws, base string) string {
+				return commitModes(t, ws, base, "binary + chmod a", map[string][]byte{"logo.bin": bin('n')}, "scripts/a.sh")
+			}, func(t *testing.T, ws, base string) string {
+				return commitModes(t, ws, base, "binary + chmod b", map[string][]byte{"logo.bin": bin('n')}, "scripts/b.sh")
+			}},
+			{"an empty file added", func(t *testing.T, ws, base string) string {
+				return commitTree(t, ws, base, "binary + empty a", map[string][]byte{"logo.bin": bin('n'), "m/a.txt": {}})
+			}, func(t *testing.T, ws, base string) string {
+				return commitTree(t, ws, base, "binary + empty b", map[string][]byte{"logo.bin": bin('n'), "m/b.txt": {}})
+			}},
+			{"a second binary", func(t *testing.T, ws, base string) string {
+				return commitTree(t, ws, base, "two binaries a", map[string][]byte{"logo.bin": bin('n'), "m/a.bin": bin('z')})
+			}, func(t *testing.T, ws, base string) string {
+				return commitTree(t, ws, base, "two binaries b", map[string][]byte{"logo.bin": bin('n'), "m/b.bin": bin('z')})
+			}},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				ws := t.TempDir()
+				gittest.InitRepo(t, ws)
+				base := commitTree(t, ws, "HEAD", "base", map[string][]byte{
+					"logo.bin": bin('o'), "scripts/a.sh": []byte("#!/bin/sh\n"), "scripts/b.sh": []byte("#!/bin/sh\n"),
+				})
+				gittest.Run(t, ws, "branch", "-f", "main", base)
+				if x, y := id(t, ws, tc.a(t, ws, base)), id(t, ws, tc.b(t, ws, base)); x == y {
+					t.Errorf("two changes that differ in the path after a binary share the id %s", x)
+				}
+			})
 		}
 	})
 
@@ -448,6 +505,15 @@ func vettyReview(n int, author, marker string) map[string]any {
 		"body": body, "html_url": reviewURL(n)}
 }
 
+// userReview is a review a USER account wrote, marker on its last line: the
+// shape Vetty's own verdicts take on a PAT connection, and the shape anyone
+// can post on a public pull request.
+func userReview(n int, login string, uid int, marker string) map[string]any {
+	r := vettyReview(n, login, marker)
+	r["user"] = map[string]any{"login": login, "type": "User", "id": uid}
+	return r
+}
+
 func gateStatus(state, description, target string) map[string]any {
 	return map[string]any{"context": "vetty/deps", "state": state, "description": description, "target_url": target}
 }
@@ -535,7 +601,13 @@ func utcAgo(d time.Duration) string {
 // login term (a green another bot vouches for); drop the id term (the App
 // spelled without [bot]); stop reading the head's own status, or drop the
 // red-on-the-head rule (a hold with no marker on this head, an unstamped red
-// on this head).
+// on this head); parse only Bot-authored or own markers again (a User's hold
+// on the same change); match by login when the viewer has an id (a user
+// spelled like the App); drop the Bot-type or the `[bot]`-spelling term of
+// the login fallback (a non-Bot spelled `slug[bot]`; the App's bot for a
+// viewer spelled `slug`); decide already_gated before the age bound (the
+// head's own stale green, carry_max_age_h=0 renewing); leave gated_verdict
+// out of the already_gated answer (the two already-gated cases).
 func TestDepUpdateGuardContinuityDecides(t *testing.T) {
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 not on PATH")
@@ -588,10 +660,38 @@ func TestDepUpdateGuardContinuityDecides(t *testing.T) {
 			reviews:  []map[string]any{greenOn(1, fx.x, "clean", fx.x, fresh), greenOn(2, fx.y, "carried", fx.x, fresh)},
 			statuses: map[string][]map[string]any{fx.x: greenStatus(1), fx.y: greenStatus(2)},
 			check: func(t *testing.T, res map[string]any, _ []string) {
-				if res["already_gated"] != true || res["carry"] == true {
-					t.Errorf("want already_gated, got %v", res)
+				if res["already_gated"] != true || res["carry"] == true || res["gated_verdict"] != "carried" {
+					t.Errorf("want already_gated on the head's carried verdict, got %v", res)
 				}
 			},
+		},
+		{
+			// The verdict on record travels to the standby: a full audit's
+			// committed stays committed.
+			name:     "a head gated by its own full audit hands on that verdict",
+			reviews:  []map[string]any{greenOn(1, fx.y, "committed", fx.y, fresh)},
+			statuses: map[string][]map[string]any{fx.y: greenStatus(1)},
+			check: func(t *testing.T, res map[string]any, _ []string) {
+				if res["already_gated"] != true || res["gated_verdict"] != "committed" {
+					t.Errorf("want already_gated with gated_verdict committed, got %v", res)
+				}
+			},
+		},
+		{
+			// The age bound governs every reuse of a verdict: renewing the
+			// arming on a reopened pull request whose own green is days old
+			// would skip the advisories published since.
+			name:     "the head's own green older than carry_max_age_h is audited again",
+			reviews:  []map[string]any{greenOn(1, fx.y, "clean", fx.y, utcAgo(100*time.Hour))},
+			statuses: map[string][]map[string]any{fx.y: greenStatus(1)},
+			check:    wantNoCarry("older than carry_max_age_h"),
+		},
+		{
+			name:     "carry_max_age_h=0 renews nothing either",
+			reviews:  []map[string]any{greenOn(1, fx.y, "clean", fx.y, fresh)},
+			statuses: map[string][]map[string]any{fx.y: greenStatus(1)},
+			over:     map[string]string{"{{vars.carry_max_age_h}}": "0"},
+			check:    wantNoCarry("carry_max_age_h is 0"),
 		},
 		{
 			name: "a hold on the same change vetoes the carry",
@@ -603,6 +703,59 @@ func TestDepUpdateGuardContinuityDecides(t *testing.T) {
 			check: func(t *testing.T, res map[string]any, _ []string) {
 				if res["carry"] == true || !strings.Contains(res["reason"].(string), "hold_unstable") {
 					t.Errorf("a hold on the identical change must veto every carry, got %v", res)
+				}
+			},
+		},
+		{
+			// A marker vetoes whoever wrote it — the safe direction: on a PAT
+			// connection Vetty's own holds are User-authored, and a caller
+			// that cannot name the App must veto exactly as one that can.
+			name: "a hold on the same change by a USER account vetoes the carry",
+			reviews: []map[string]any{
+				greenOn(1, fx.x, "clean", fx.x, fresh),
+				userReview(2, "acme-pat-user", 777, gateMarker(other, fx.id, "hold_unstable", other, fresh)),
+			},
+			statuses: map[string][]map[string]any{fx.x: greenStatus(1)},
+			check: func(t *testing.T, res map[string]any, _ []string) {
+				if res["carry"] == true || !strings.Contains(res["reason"].(string), "hold_unstable") {
+					t.Errorf("a User-authored hold on the identical change must veto every carry, got %v", res)
+				}
+			},
+		},
+		{
+			// The viewer has a user id: ownership is that id, never a login a
+			// user account can register.
+			name:     "a USER account spelled like the App is not the App when the viewer has an id",
+			reviews:  []map[string]any{userReview(1, strings.TrimSuffix(vettyLogin, "[bot]"), 777, gateMarker(fx.x, fx.id, "clean", fx.x, fresh))},
+			statuses: map[string][]map[string]any{fx.x: greenStatus(1)},
+			viewer:   map[string]any{"login": strings.TrimSuffix(vettyLogin, "[bot]"), "databaseId": vettyID},
+			check:    wantNoCarry("no green"),
+		},
+		{
+			// No id for the viewer: the login decides, and only for a Bot
+			// spelled `slug[bot]` — a user account can take the bare slug.
+			name:     "with no viewer id, a USER account spelled like the App is not the App",
+			reviews:  []map[string]any{userReview(1, strings.TrimSuffix(vettyLogin, "[bot]"), 777, gateMarker(fx.x, fx.id, "clean", fx.x, fresh))},
+			statuses: map[string][]map[string]any{fx.x: greenStatus(1)},
+			viewer:   map[string]any{"login": strings.TrimSuffix(vettyLogin, "[bot]")},
+			check:    wantNoCarry("no green"),
+		},
+		{
+			// The spelling alone is not the App: the author must be a Bot.
+			name:     "with no viewer id, a non-Bot author spelled `slug[bot]` is not the App",
+			reviews:  []map[string]any{userReview(1, vettyLogin, 777, gateMarker(fx.x, fx.id, "clean", fx.x, fresh))},
+			statuses: map[string][]map[string]any{fx.x: greenStatus(1)},
+			viewer:   map[string]any{"login": strings.TrimSuffix(vettyLogin, "[bot]")},
+			check:    wantNoCarry("no green"),
+		},
+		{
+			name:     "with no viewer id, the App's bot named `slug[bot]` for a viewer spelled `slug` is the App",
+			reviews:  []map[string]any{greenOn(1, fx.x, "clean", fx.x, fresh)},
+			statuses: map[string][]map[string]any{fx.x: greenStatus(1)},
+			viewer:   map[string]any{"login": strings.TrimSuffix(vettyLogin, "[bot]")},
+			check: func(t *testing.T, res map[string]any, _ []string) {
+				if res["carry"] != true {
+					t.Errorf("the App's own review was not recognised by its bot login: %v", res)
 				}
 			},
 		},

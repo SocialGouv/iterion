@@ -338,12 +338,13 @@ holds the PR. A gate that only ever goes green has not been observed to gate.
 A new commit, not a rebase. With `review_on_sync` on, Vetty (2.12.0) carries
 its gate across a **pure rebase** with no LLM call: its `continuity` node
 compares the change identity of the new head (the `patch-id --verbatim` of
-`merge-base..head`, folded with `base_ref`) against the identity stamped on
+`merge-base..head`, folded with the changed paths and modes and with
+`base_ref`) against the identity stamped on
 its earlier verdicts, and publishes the green verdict `carried` on the new head
 — or, when the head already carries its own green, only renews the arming. Any
 verdict on the same change that is not green, and any red already on the new
 head, vetoes the carry, and a green older than `carry_max_age_h` (72 h, from
-the original audit) is audited again. An audit that finishes after the rebase
+the original audit) is audited again, on the new head and on its own. An audit that finishes after the rebase
 is repinned onto the new head under the same veto, the new head's identity
 read from the forge, never from the workspace its agents ran in.
 So "the gate went green again on its own" after a rebase is the gate working;
