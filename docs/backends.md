@@ -1691,7 +1691,14 @@ selector := [ <bot> "/" ] <target>
   refusals — C176's permission gate, claw⇄CLI tools inversion and session
   continuity, and C135's unresolvable tools — against the node's backend as
   dispatch reads it, the node cell's first: refused at launch, warned at the
-  integration's write screen. A launch's `--fallback` stage and a policy
+  integration's write screen. A node backend a slot dial decides is the
+  runner's: the launch reads the arms that read the node's backend (tools
+  inversion, session continuity) on the dial's default and warns, and the
+  executor build refuses on the dispatching process's own reading; the gate
+  and C135 read the route's backend alone and refuse at launch whatever the
+  dial says. A tools-inversion or session refusal names the remedy a cell
+  can write: move the node with the route, a cell on the node pinning the
+  same backend. A launch's `--fallback` stage and a policy
   rung are not authored routes and are never reached.
 - `supervisor:<name>` pins a supervisor's `model` — nothing else, a
   supervisor declares nothing else — on every lane, an in-process resume

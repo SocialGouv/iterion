@@ -3,6 +3,7 @@ package runview
 import (
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/backend/model"
@@ -17,12 +18,46 @@ import (
 // route onto a crossing the compiler refuses for the same route written in
 // the .bot (routeCellCrossings).
 //
-// BuildExecutor is the common choke point for CLI launch/resume, local Studio
-// and the cloud runner. The cloud publisher also calls this before queueing so
-// the operator gets a synchronous admission error rather than a remotely
-// failed run. The backend predicates are shared with C176, C135 and
-// --fallback.
+// It is the dispatching process's verdict: BuildExecutor calls it on every
+// plane — CLI launch/resume, local Studio, the cloud runner — and a node
+// backend a slot dial decides is read on this process's environment. The
+// launch, which may run on another process than the one that dispatches,
+// reads the same screen through screenModelOverridePermissions. The
+// backend predicates are shared with C176, C135 and --fallback.
 func ValidateModelOverridePermissions(wf *ir.Workflow, overrides model.ModelOverrides, runPermission string) error {
+	if err := refuseUngatedNodeOverride(wf, overrides, runPermission); err != nil {
+		return err
+	}
+	if found := routeCellCrossings(wf, overrides, runPermission, true); len(found) > 0 {
+		return fmt.Errorf("runview: %s", found[0].sentence)
+	}
+	return nil
+}
+
+// screenModelOverridePermissions is the launch's reading of the same
+// screen (foldAndScreen): a node override that ungates its node, and a
+// route crossing whose verdict reads no node backend a dial decides,
+// refuse; a crossing read on the default of a node backend dial — the
+// runner expands it, on its own environment — is returned as a warning,
+// and BuildExecutor refuses it on the dispatching process's reading.
+func screenModelOverridePermissions(wf *ir.Workflow, overrides model.ModelOverrides, runPermission string) ([]string, error) {
+	if err := refuseUngatedNodeOverride(wf, overrides, runPermission); err != nil {
+		return nil, err
+	}
+	var warnings []string
+	for _, c := range routeCellCrossings(wf, overrides, runPermission, false) {
+		if c.undecided {
+			warnings = append(warnings, "the launch's override cells re-pin a route onto a crossing the compiler refuses unless the runner's environment decides a dial otherwise: "+c.sentence)
+			continue
+		}
+		return nil, fmt.Errorf("runview: %s", c.sentence)
+	}
+	return warnings, nil
+}
+
+// refuseUngatedNodeOverride refuses the first node override whose backend
+// cannot gate the node's effective ask-rules.
+func refuseUngatedNodeOverride(wf *ir.Workflow, overrides model.ModelOverrides, runPermission string) error {
 	if wf == nil || overrides.Empty() {
 		return nil
 	}
@@ -40,10 +75,27 @@ func ValidateModelOverridePermissions(wf *ir.Workflow, overrides model.ModelOver
 			return fmt.Errorf("runview: model override for %s %q %s", llm.NodeKind(), llm.NodeID(), reason)
 		}
 	}
-	if found := routeCellCrossings(wf, overrides, runPermission); len(found) > 0 {
-		return fmt.Errorf("runview: %s", found[0])
-	}
 	return nil
+}
+
+// routeCrossing is one refused route crossing. undecided marks a verdict
+// read on the default of the node backend dial the dispatching process
+// expands.
+type routeCrossing struct {
+	sentence  string
+	undecided bool
+}
+
+// nodeBackendDial is the dial text a node's backend reads, "" when none:
+// its own `backend:`, else the `default_backend:` it falls through to.
+func nodeBackendDial(nodeBackend, workflowDefault string) string {
+	if undecidedText(nodeBackend) {
+		return nodeBackend
+	}
+	if ir.BackendFallsThrough(nodeBackend) && undecidedText(workflowDefault) {
+		return workflowDefault
+	}
+	return ""
 }
 
 // routeCellCrossings is C176's verdict (ir.RouteCrossingReasons) and C135's
@@ -53,18 +105,32 @@ func ValidateModelOverridePermissions(wf *ir.Workflow, overrides model.ModelOver
 // compiler judges the same route written in the .bot: the route's
 // backend against the gate in force, and against the node's backend as
 // dispatch reads it, the node override first (a cell moving node and route
-// together crosses nothing), else the run's reading of the node's field.
-// One sentence per refused crossing, nodes in id order.
-func routeCellCrossings(wf *ir.Workflow, overrides model.ModelOverrides, runPermission string) []string {
-	var out []string
+// together crosses nothing).
+//
+// Without a node override, atDispatch reads the node's field on this
+// process's environment (ir.RunNodeBackendName) — the dispatching
+// process's word. A launch (atDispatch false) reads the source
+// (ir.SourceNodeBackendName, a dial's default): an arm that reads the
+// node's backend through a dial is undecided there, while the gate and
+// C135, which read only the route's backend, stay decided. One crossing
+// per refused reason, nodes in id order.
+func routeCellCrossings(wf *ir.Workflow, overrides model.ModelOverrides, runPermission string, atDispatch bool) []routeCrossing {
+	var out []routeCrossing
 	for _, id := range overrideSiteNodeIDs(wf) {
 		llm, ok := wf.Nodes[id].(ir.LLMNode)
 		if !ok {
 			continue
 		}
+		f := llm.GetLLMFields()
 		nodeBackend := overrides.ForNode(id, llm.NodeKind()).Backend
+		dial := ""
 		if nodeBackend == "" {
-			nodeBackend = ir.RunNodeBackendName(llm.GetLLMFields().Backend, wf.DefaultBackend)
+			if atDispatch {
+				nodeBackend = ir.RunNodeBackendName(f.Backend, wf.DefaultBackend)
+			} else {
+				nodeBackend = ir.SourceNodeBackendName(f.Backend, wf.DefaultBackend)
+				dial = nodeBackendDial(f.Backend, wf.DefaultBackend)
+			}
 		}
 		permission := firstPermission(runPermission, llm.GetPermission(), wf.Permission, os.Getenv("ITERION_PERMISSION"))
 		for _, r := range authoredRoutes(llm, overrides) {
@@ -72,12 +138,29 @@ func routeCellCrossings(wf *ir.Workflow, overrides model.ModelOverrides, runPerm
 				continue
 			}
 			routeBackend := r.effective.Backend
-			reasons := ir.RouteCrossingReasons(llm, wf, nodeBackend, routeBackend, permission)
-			if reason := ir.RouteToolsUnresolvableReason(wf, llm, routeBackend); reason != "" {
-				reasons = append(reasons, reason)
+			sentence := func(reason string) string {
+				return fmt.Sprintf("model override for %s %q, fallbacks: route %q %s", llm.NodeKind(), id, r.site, reason)
 			}
-			for _, reason := range reasons {
-				out = append(out, fmt.Sprintf("model override for %s %q, fallbacks: route %q %s", llm.NodeKind(), id, r.site, reason))
+			// The arms that read no node backend: decided whatever a dial
+			// expands to.
+			decided := ir.RouteCrossingReasons(llm, wf, "", routeBackend, permission)
+			if reason := ir.RouteToolsUnresolvableReason(wf, llm, routeBackend); reason != "" {
+				decided = append(decided, reason)
+			}
+			for _, reason := range decided {
+				out = append(out, routeCrossing{sentence: sentence(reason)})
+			}
+			// The arms that read the node's backend.
+			for _, reason := range ir.RouteCrossingReasons(llm, wf, nodeBackend, routeBackend, permission) {
+				if slices.Contains(decided, reason) {
+					continue
+				}
+				c := routeCrossing{sentence: sentence(reason) + fmt.Sprintf(" — or move the node with the route: a cell on node %q pinning backend %q", llm.NodeID(), routeBackend)}
+				if dial != "" {
+					c.sentence += fmt.Sprintf(" (read on the default of the node's backend dial %q, which the runner expands)", dial)
+					c.undecided = true
+				}
+				out = append(out, c)
 			}
 		}
 	}
@@ -127,8 +210,8 @@ func ScreenPolicyOverrides(path, source, bundleDir, bundleEntry string, bot llmr
 			warnings = append(warnings, fmt.Sprintf("the routing block moves %s %q onto a backend that cannot gate it: %s", llm.NodeKind(), llm.NodeID(), reason))
 		}
 	}
-	for _, crossing := range routeCellCrossings(wf, overrides, "") {
-		warnings = append(warnings, "the routing block re-pins a route onto a crossing the compiler refuses: "+crossing)
+	for _, crossing := range routeCellCrossings(wf, overrides, "", false) {
+		warnings = append(warnings, "the routing block re-pins a route onto a crossing the compiler refuses: "+crossing.sentence)
 	}
 	warnings = append(warnings, composedPairWarnings(wf, sourced)...)
 	// The zero-match half of ADR-132 §2's guards, at the surface that can

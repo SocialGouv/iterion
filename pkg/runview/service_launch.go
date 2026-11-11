@@ -486,7 +486,8 @@ func (s *Service) hookEventObservers(extra []func(store.Event)) []func(store.Eve
 // element dispatch refuses as a gateway crossing (gatewayCrossingFindings),
 // refuses a routing field the launch's vars cannot decide on the card
 // lanes' shape (#2665), and runs the permission and route crossing screen
-// (ValidateModelOverridePermissions) on the FOLDED list —
+// (screenModelOverridePermissions, ValidateModelOverridePermissions' launch
+// reading) on the FOLDED list —
 // one body for every launch-shaped entry (cloud, local, preview), so the
 // fold-before-screen order exists in exactly one place: a cell folded in
 // after the screen would reach past a guard the launcher's own override
@@ -501,7 +502,8 @@ func (s *Service) hookEventObservers(extra []func(store.Event)) []func(store.Eve
 // the subbot children of its tree.
 //
 // The warnings are the gateway crossings a slot dial decides at the
-// runner, then the policy cells written for the launch's bot by name that
+// runner, the route crossings read on a node backend dial's default, then
+// the policy cells written for the launch's bot by name that
 // reach nothing in it (ADR-132 §2's zero-match warning): the launch paths
 // log each once per process (logZeroMatchOnce), the preview shows them
 // every time.
@@ -530,9 +532,11 @@ func foldAndScreen(wf *ir.Workflow, spec *LaunchSpec) ([]string, error) {
 			return nil, err
 		}
 	}
-	if err := ValidateModelOverridePermissions(wf, toModelOverrides(spec.ModelOverrides), spec.Permission); err != nil {
+	screenWarnings, err := screenModelOverridePermissions(wf, toModelOverrides(spec.ModelOverrides), spec.Permission)
+	if err != nil {
 		return nil, err
 	}
+	warnings = append(warnings, screenWarnings...)
 	return append(warnings, zeroMatchWarnings(wf, spec.LLMRoutePolicy, bot)...), nil
 }
 

@@ -759,8 +759,10 @@ shape. All three are closed in `feat/routing-cells-node-selectors`; what the cod
   action (`ModelOverrides.EffectiveFallback`); it never drops a route nor adds one. A route cell's
   `backend` meets the screens §5 names for an added route — C176's crossings and C135's
   unresolvable tools (`ir.RouteCrossingReasons`, `ir.RouteToolsUnresolvableReason`, the compiler's own
-  bodies) — at launch on the folded list (`runview.ValidateModelOverridePermissions`, so BuildExecutor
-  too), warned at the integration's write screen.
+  bodies) — at launch on the folded list (`runview.screenModelOverridePermissions`: an arm that reads a
+  node backend a slot dial decides is read on the dial's default and warned), at BuildExecutor on the
+  dispatching process's own reading (`runview.ValidateModelOverridePermissions`), warned at the
+  integration's write screen.
 - **The walk reads what dispatch reads.** §4's walk read a node's own `provider:` chain through
   `envDeferred` even when a provider override collapses it at dispatch (`chainReading.providerField`):
   an `${…}` dial there deferred the route and an empty-default one (`${ITERION_VIBE_PROVIDER_GPT:-}`)
