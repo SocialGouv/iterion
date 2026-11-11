@@ -450,11 +450,19 @@ and pulled a fresh canary within the hour:
   restarted one pick the same run — and the canary walks the window, so a run
   whose resume never reaches the provider (a refusal before publish, its
   tenant's quota) does not take every probe;
-- when the canary gets past the wall — it has run longer than a refused
-  resume takes to come back (the marker's TTL, 1 h), reached a human gate, or
-  finished — every other run parked on the same credentials **before** the
-  canary was pulled is released in the same pass (`run.retry.released` on the
-  audit trail, naming the canary). A release is a pull that records its
+- when the canary gets past the wall — its runner records the instant a
+  call on one of the wall's credentials was served
+  (`retry_state.probe_answered_at`, consumed with the marker) — every other
+  run parked on the same credentials **before** the canary was pulled is
+  released in the pass that reads it (`run.retry.released` on the audit
+  trail, naming the canary). Only that record answers: a canary whose pod
+  started late, whose resume re-resolved onto another credential or that a
+  cap held runs without asking the wall anything, and once its pull is older
+  than the marker's TTL (1 h) it answers nothing — the window's next canary
+  asks again, one pod later. A runner that cannot place a call on a
+  credential (no credential keys, no plan row: claude_code, pi and codex on a
+  publication without a credential plan) records no answer; its window then
+  releases nobody and is probed one run per floor. A release is a pull that records its
   answer (`retry_state.released_by`, consumed with the marker): a run whose
   resume still meets the wall is re-armed on its announced instant, free —
   but a release is no probe's guess. The window no longer holds the run
@@ -472,16 +480,19 @@ and pulled a fresh canary within the hour:
 Everything is read from the run records — the pace is the latest pull any of
 the window's rows carries (`last_probe_at`), the budget the pulls its rows carry,
 summed (`probe_count`, per wall — summed because the canary walks the window,
-releases included), the answer the state of the run the pull marked
-(`probe_from`) — and every write is the store's compare-and-swap, so
+releases included), the answer what the runner recorded on the run the pull
+marked (`probe_from`) — and every write is the store's compare-and-swap, so
 the sweeper on every replica takes the same decision and a restart does not
 probe twice. The cost is one pod per credential per floor, not one per parked
 run. The window key is the whole sealed set, because the record does not say
-which credential refused: a run that sealed a second credential beside the
-walled one is probed in a window of its own — one more pod, never a run
-released on another credential's answer. A run whose record names no
-credential (ambient credentials) has no window to be probed through and waits
-for its date.
+which credential refused, and the answer is a call served on any of them:
+two runs of one set walled on different members answer for each other — one
+released on the other member's answer meets its own wall again and is
+re-armed free on its announced instant, a pod counted on the window's budget.
+A run that sealed a second credential beside the walled one is probed in a
+window of its own: one more canary. A run whose record names no credential
+(ambient credentials) has no window to be probed through and waits for its
+date.
 
 A wait whose window is unreadable or already passed (a skipped credential
 that has reopened, a legacy row with no wall) is probed on its own, as before.

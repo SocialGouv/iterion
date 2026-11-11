@@ -442,16 +442,22 @@ A donor's credential is never returned by any of these — it stays sealed in
   can meet a usage window on one route and a dead credential on another, and
   the node then parks on the window (#3032). Each route verdict on
   `node_recovery` names the route it is about — its backend, provider,
-  session label and credential keys — and the runner places it on the
-  credential that route spent (the keys, or the credential plan's row), the
-  way it books the route's spend. The report carries that table
+  session label and credential keys; a route skipped on a remembered cooldown
+  names those of the call that armed the cooldown, whose verdict it carries —
+  and the runner places it on the credential that route spent, in the order
+  it books the route's spend: the keys, else nobody for a call that rode the
+  pod's environment (an ambient session), else the credential plan's row — a
+  gateway route included, which the plan names when a sealed key funds it —
+  else nobody for a gateway the environment funds. The report carries that table
   (`Outcome.Conditions`), and each lease takes its own credential's row: a
   donor whose subscription met the window rests on it while the dead team key
   beside it takes no donor down, in either order of the walk. A verdict the
   runner cannot place keeps the coarse answer — a dead credential anywhere in
   the attempt counts for every lease — so a dead donor is never rested on a
   window and handed back still dead. Guarded by
-  `TestRecordPoolSpend_theDonorTakesTheVerdictOfItsOwnRoute`.
+  `TestRecordPoolSpend_theDonorTakesTheVerdictOfItsOwnRoute`,
+  `TestRecordPoolSpend_aKeylessGatewayVerdictIsTheLeaseThePlanNames` and
+  `TestErrChainExhaustedNamesTheCredentialOfASkippedRoute`.
 - **The spend signal must be live.** Delegate backends only report cost
   because `DelegateInfo.CostUSD` rides the `delegate_finished` event into
   the runner's per-run totals. If a future change drops that field, every
