@@ -242,7 +242,7 @@ func (s *Server) standDownProbedRetry(ctx context.Context, retryStore store.RunR
 	// backoff — while a pull whose resume the circuit deferred for longer than
 	// store.ProbeMarkerTTL still has the provider's word to put back, and
 	// settling such a row would destroy it for good.
-	marker := run.RetryState.AnnouncedProbeFrom(time.Now().UTC())
+	marker := run.RetryState.AnnouncedProbeFrom(s.retryNow())
 	if marker == nil {
 		return false
 	}

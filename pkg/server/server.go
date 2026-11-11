@@ -438,6 +438,12 @@ type Server struct {
 	// lookback window by (test seam — a test cannot wait an hour to reach the
 	// last pass over a run). nil → time.Now().UTC().
 	gateClock func() time.Time
+	// retryClock overrides the wall clock the retry sweeper decides by — the
+	// instant of its passes and every decision inside them: the window hold,
+	// who pays for a resume, the re-arm's backoff (test seam — a test walks a
+	// usage-window wait across the days its wall stands). nil →
+	// time.Now().UTC().
+	retryClock func() time.Time
 	// gateSweepTick overrides the merge-gate sweep cadence (test seam — an
 	// election test cannot wait a minute per pass). Zero → the configured one.
 	gateSweepTick time.Duration

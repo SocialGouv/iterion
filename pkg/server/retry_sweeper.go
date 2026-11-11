@@ -84,12 +84,22 @@ func (s *Server) runRetrySweeper(ctx context.Context, lister retryDueLister) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			s.sweepDueRetries(ctx, lister, s.runs, time.Now().UTC())
+			s.sweepDueRetries(ctx, lister, s.runs, s.retryNow())
 			// Second pass, after the due one: what it pulls forward is
 			// resumed by the due pass on the next tick, never here.
-			s.sweepRetryProbes(ctx, lister, time.Now().UTC())
+			s.sweepRetryProbes(ctx, lister, s.retryNow())
 		}
 	}
+}
+
+// retryNow is the instant the retry sweeper decides by: the wall clock, read
+// at each decision rather than once per pass (a pass that resumes five runs
+// spends real time publishing them), or the clock a test set (retryClock).
+func (s *Server) retryNow() time.Time {
+	if s != nil && s.retryClock != nil {
+		return s.retryClock().UTC()
+	}
+	return time.Now().UTC()
 }
 
 // sweepDueRetries performs one pass. Extracted (with an injectable clock)
@@ -176,8 +186,8 @@ func (s *Server) resumeDueRetry(ctx context.Context, retryStore store.RunRetrySt
 	// operator's per-run escape hatch (EnvRetryProbeBeforeWindow). A run
 	// released on that probe's answer (retry_probe_credential.go) is let
 	// through however old its pull: the window no longer holds it at all.
-	if run != nil && !ref.RetryState.ProbeInFlight(time.Now().UTC()) {
-		if notBefore, waits := retrypolicy.UsageWindowNotBefore(run, time.Now().UTC()); waits {
+	if run != nil && !ref.RetryState.ProbeInFlight(s.retryNow()) {
+		if notBefore, waits := retrypolicy.UsageWindowNotBefore(run, s.retryNow()); waits {
 			s.deferToUsageWindow(runCtx, retryStore, ref, run, notBefore)
 			return
 		}
@@ -217,7 +227,7 @@ func (s *Server) resumeDueRetry(ctx context.Context, retryStore store.RunRetrySt
 	// must be abandoned now, and a retry re-armed for another transient reason
 	// must not be held behind an unrelated provider window.
 	if key := retrycoord.Key(run); key != "" {
-		decisionNow := time.Now().UTC()
+		decisionNow := s.retryNow()
 		circuit, circuitErr := retrycoord.Open(runCtx, s.cfg.Store, key, decisionNow)
 		if circuitErr != nil {
 			s.warnf("retry sweeper: run %s: cannot read retry circuit (%v) — proceeding with the per-run retry", ref.ID, circuitErr)
@@ -358,7 +368,7 @@ func (s *Server) resumeDueRetry(ctx context.Context, retryStore store.RunRetrySt
 	// an ordinary billable launch. So is a RELEASE's: it follows an answer
 	// that the wall fell and is expected to do real work
 	// (RunRetryState.SpeculativeProbeInFlight).
-	if ref.RetryState.SpeculativeProbeInFlight(time.Now().UTC()) {
+	if ref.RetryState.SpeculativeProbeInFlight(s.retryNow()) {
 		adm.rollback(s.logger)
 	}
 
@@ -537,7 +547,7 @@ func (s *Server) reArmRetry(ctx context.Context, retryStore store.RunRetryStore,
 		return
 	}
 	maxAttempts := s.retryMaxAttempts(ctx, ref.ID)
-	at := time.Now().UTC().Add(retryReenqueueBackoff)
+	at := s.retryNow().Add(retryReenqueueBackoff)
 	// The re-arm brings no news about the provider's window: the resume
 	// FAILED, so the row keeps the wall it is on (and its probe ledger).
 	scheduled, _, err := retryStore.ScheduleRunRetry(ctx, ref.ID, at, time.Time{}, retryReason(ref), retryCode(ref), maxAttempts)
@@ -576,7 +586,7 @@ func (s *Server) reArmRetry(ctx context.Context, retryStore store.RunRetryStore,
 // row whose CAS still holds still carries the release. A lost CAS is a row
 // someone else moved, left to them.
 func (s *Server) backOffReleasedRetry(ctx context.Context, retryStore store.RunRetryStore, ref mongostore.RetryDueRef, cause error) bool {
-	now := time.Now().UTC()
+	now := s.retryNow()
 	if !ref.RetryState.Released(now) {
 		return false
 	}
@@ -734,7 +744,7 @@ func (s *Server) deferToUsageWindow(ctx context.Context, retryStore store.RunRet
 // the resume's rollback put the run back around it, so a row an operator
 // resumed or another pass settled in between is left to whoever moved it.
 func (s *Server) deferCredSlotRetry(ctx context.Context, retryStore store.RunRetryStore, ref mongostore.RetryDueRef, run *store.Run, cause error) {
-	now := time.Now().UTC()
+	now := s.retryNow()
 	pol := retryPolicyForSweeper(run)
 	anchor := ref.RetryAfter()
 	if ref.RetryState != nil && ref.RetryState.ScheduledAt != nil {
