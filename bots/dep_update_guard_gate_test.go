@@ -1,6 +1,7 @@
 package bots
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -8,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -152,6 +154,8 @@ func TestDepUpdateGuardGateVerdict(t *testing.T) {
 			"{{input.origin_at}}":          `""`,
 			"{{vars.workspace_dir}}":       `""`,
 			"{{vars.base_ref}}":            `"main"`,
+			"{{input.head_sha}}":           `""`,
+			"{{input.head_id}}":            `""`,
 		} {
 			if ref == "{{input.audited_sha}}" && len(pinOverride) > 0 {
 				val = strconv.Quote(pinOverride[0])
@@ -559,6 +563,8 @@ func TestDepUpdateGuardGateVerdict(t *testing.T) {
 			"{{input.origin_at}}":          `""`,
 			"{{vars.workspace_dir}}":       `""`,
 			"{{vars.base_ref}}":            `"main"`,
+			"{{input.head_sha}}":           `""`,
+			"{{input.head_id}}":            `""`,
 		} {
 			body = strings.ReplaceAll(body, ref, val)
 		}
@@ -626,6 +632,8 @@ func TestDepUpdateGuardGateVerdict(t *testing.T) {
 			"{{input.origin_at}}":          `""`,
 			"{{vars.workspace_dir}}":       `""`,
 			"{{vars.base_ref}}":            `"main"`,
+			"{{input.head_sha}}":           `""`,
+			"{{input.head_id}}":            `""`,
 		} {
 			body = strings.ReplaceAll(body, ref, val)
 		}
@@ -709,22 +717,28 @@ func runURLLit(page, override string) string {
 	return `"` + page + `"`
 }
 
-// feedbackForge is the server's publish endpoint plus the one GitHub read
-// post_feedback makes (the pull request, for the repin).
+// feedbackForge is the server's publish endpoint plus the GitHub reads
+// post_feedback makes for a repin: the pull request, its reviews, and the
+// combined status on a sha. gitRoot, when set, is where the script's
+// explicit git URL points instead of https://github.com/.
 type feedbackForge struct {
-	t       *testing.T
-	mu      sync.Mutex
-	head    string // the head GET pulls/7 reports; "" answers 404
-	base    string
-	payload map[string]any
-	reads   []string
+	t        *testing.T
+	mu       sync.Mutex
+	head     string // the head GET pulls/7 reports; "" answers 404
+	base     string
+	reviews  []map[string]any
+	statuses map[string][]map[string]any
+	gitRoot  string
+	payload  map[string]any
+	reads    []string
 }
 
 func (f *feedbackForge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	switch r.URL.Path {
-	case "/api/v1/forge/publish-review":
+	const prefix = "/repos/acme/widgets/"
+	switch {
+	case r.URL.Path == "/api/v1/forge/publish-review":
 		var p map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
 			f.t.Errorf("decode publish payload: %v", err)
@@ -739,20 +753,38 @@ func (f *feedbackForge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"published": true, "review_url": "https://github.com/acme/widgets/pull/7#pullrequestreview-1",
 			"gate_posted": gate != nil, "gate_state": state, "gate_sha": gate["audited_sha"],
 		})
-	case "/repos/acme/widgets/pulls/7":
+	case r.Method != http.MethodGet:
+		f.t.Errorf("post_feedback wrote to the forge API: %s %s — it reads only", r.Method, r.URL.Path)
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	case r.URL.Path == prefix+"pulls/7":
 		f.reads = append(f.reads, r.URL.Path)
 		if f.head == "" {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"head": map[string]any{"sha": f.head}, "base": map[string]any{"ref": f.base}})
+	case r.URL.Path == prefix+"pulls/7/reviews":
+		f.reads = append(f.reads, r.URL.Path)
+		reviews := f.reviews
+		if reviews == nil {
+			reviews = []map[string]any{}
+		}
+		_ = json.NewEncoder(w).Encode(reviews)
+	case strings.HasPrefix(r.URL.Path, prefix+"commits/") && strings.HasSuffix(r.URL.Path, "/status"):
+		f.reads = append(f.reads, r.URL.Path)
+		sha := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, prefix+"commits/"), "/status")
+		st := f.statuses[sha]
+		if st == nil {
+			st = []map[string]any{}
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"sha": sha, "statuses": st, "total_count": len(st)})
 	default:
 		f.t.Errorf("post_feedback called %s %s", r.Method, r.URL.Path)
 		w.WriteHeader(http.StatusNotFound)
 	}
 }
 
-// runFeedback drives post_feedback against a feedbackForge, in a workspace.
+// runFeedback drives post_feedback against a feedbackForge.
 func runFeedback(t *testing.T, forge *feedbackForge, over map[string]string, env ...string) (map[string]any, map[string]any) {
 	t.Helper()
 	srv := httptest.NewServer(forge)
@@ -778,6 +810,8 @@ func runFeedback(t *testing.T, forge *feedbackForge, over map[string]string, env
 		"{{vars.gate_context}}":        `"vetty/deps"`,
 		"{{vars.workspace_dir}}":       `""`,
 		"{{vars.base_ref}}":            `"main"`,
+		"{{input.head_sha}}":           `""`,
+		"{{input.head_id}}":            `""`,
 	}
 	for k, v := range over {
 		subs[k] = v
@@ -786,10 +820,15 @@ func runFeedback(t *testing.T, forge *feedbackForge, over map[string]string, env
 	for ref, val := range subs {
 		body = strings.ReplaceAll(body, ref, val)
 	}
-	if !strings.Contains(body, `"https://api.github.com"`) {
-		t.Fatal("post_feedback no longer names the GitHub API the stub stands in for")
+	for _, url := range []string{`"https://api.github.com"`, `"https://github.com/"`} {
+		if strings.Count(body, url) != 1 {
+			t.Fatalf("post_feedback names %s %d times, want once: the stub stands in for it", url, strings.Count(body, url))
+		}
 	}
 	body = strings.ReplaceAll(body, `"https://api.github.com"`, `"`+srv.URL+`"`)
+	if forge.gitRoot != "" {
+		body = strings.ReplaceAll(body, `"https://github.com/"`, quoted(forge.gitRoot))
+	}
 	if strings.Contains(body, "{{") {
 		t.Fatalf("unsubstituted ref: %s", firstRef(body))
 	}
@@ -824,18 +863,45 @@ func quoted(s string) string {
 
 var markerLine = regexp.MustCompile(`^<!-- vetty-gate/v1 sha=([0-9a-f]{40}) id=(pid1:[0-9a-f]{24}) verdict=([a-z_]+) origin=([0-9a-f]{40}) origin_at=([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z) -->$`)
 
+// forgeOrigin is a bare repository standing in for the forge's git
+// endpoint: <root>/acme/widgets.git, served as file://<root>/.
+type forgeOrigin struct {
+	root, dir string
+}
+
+func newForgeOrigin(t *testing.T) forgeOrigin {
+	t.Helper()
+	root := t.TempDir()
+	dir := filepath.Join(root, "acme", "widgets.git")
+	if err := os.MkdirAll(filepath.Dir(dir), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	gittest.Run(t, root, "init", "-q", "--bare", dir)
+	gittest.Run(t, dir, "config", "maintenance.auto", "false")
+	gittest.Run(t, dir, "config", "gc.auto", "0")
+	gittest.Run(t, dir, "config", "uploadpack.allowAnySHA1InWant", "true")
+	return forgeOrigin{root: root, dir: dir}
+}
+
+// gitRoot is what the script's explicit forge URL is pointed at.
+func (o forgeOrigin) gitRoot() string { return "file://" + o.root + "/" }
+
 // TestDepUpdateGuardGateCarriesItsChangeIdentity pins the half of gate
 // continuity post_feedback owns: the fact travels WITH the gate. The note
 // ends with the change identity of the pinned revision, within GitHub's 140
 // runes on every verdict; the review's last line is the marker continuity
 // reads; a marker an agent writes into a section is defused; and the two
-// copies of the identity contract are one.
+// copies of the identity contract are one. The identity of the head prepare
+// read is continuity's — computed before any agent ran — and the identity of
+// the alignment this run pushed is read from the forge, never the workspace.
 //
 // Mutations (main.bot `post_feedback`) and the case each reddens: put the
 // stamp before the note, or drop it on holds (the per-verdict case); stamp a
 // pin that is not a full commit id (the bad-pin case); drop the
 // neutralisation (the planted-marker case); edit a flag in one copy of the
-// identity block only (the parity case).
+// identity block only (the parity case); stamp head_id on every pin, the
+// pushed alignment included, or read the alignment's identity from the forge
+// when continuity identified nothing (the alignment case).
 func TestDepUpdateGuardGateCarriesItsChangeIdentity(t *testing.T) {
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 not on PATH")
@@ -857,7 +923,11 @@ func TestDepUpdateGuardGateCarriesItsChangeIdentity(t *testing.T) {
 	}
 	origin := strings.Repeat("0a", 20)
 	originAt := "2026-11-10T08:00:00Z"
-	inWS := map[string]string{"{{vars.workspace_dir}}": quoted(ws), "{{input.audited_sha}}": quoted(x)}
+	// The head prepare read is x, and continuity identified it.
+	inWS := map[string]string{
+		"{{input.audited_sha}}": quoted(x), "{{input.head_sha}}": quoted(x),
+		"{{input.head_id}}": quoted(id),
+	}
 	with := func(over map[string]string) map[string]string {
 		m := map[string]string{}
 		for k, v := range inWS {
@@ -889,7 +959,7 @@ func TestDepUpdateGuardGateCarriesItsChangeIdentity(t *testing.T) {
 				over["{{input.origin_sha}}"], over["{{input.origin_at}}"] = quoted(origin), quoted(originAt)
 				wantOrigin = origin
 			}
-			p, _ := runFeedback(t, &feedbackForge{t: t}, with(over))
+			p, res := runFeedback(t, &feedbackForge{t: t}, with(over))
 			note, _ := gateOf(p)["note"].(string)
 			if !strings.HasSuffix(note, " · "+id) {
 				t.Errorf("the note does not END with the change identity %s: %q", id, note)
@@ -915,6 +985,9 @@ func TestDepUpdateGuardGateCarriesItsChangeIdentity(t *testing.T) {
 			if strings.Count(summary, "<!-- vetty-gate") != 1 {
 				t.Errorf("the review carries %d markers, want exactly the last line", strings.Count(summary, "<!-- vetty-gate"))
 			}
+			if res["pinned_sha"] != x {
+				t.Errorf("pinned_sha = %v, want the pin %s", res["pinned_sha"], x[:12])
+			}
 		})
 	}
 
@@ -931,6 +1004,13 @@ func TestDepUpdateGuardGateCarriesItsChangeIdentity(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("the head read with no identity from continuity is not stamped", func(t *testing.T) {
+		p, _ := runFeedback(t, &feedbackForge{t: t}, with(map[string]string{"{{input.head_id}}": `null`}))
+		if note, _ := gateOf(p)["note"].(string); strings.Contains(note, "pid1:") {
+			t.Errorf("a verdict was stamped with an identity nobody computed before the agents ran: %q", note)
+		}
+	})
 
 	t.Run("a carried verdict that cannot name its origin is not stamped", func(t *testing.T) {
 		p, _ := runFeedback(t, &feedbackForge{t: t}, with(map[string]string{"{{input.verdict}}": `"carried"`}))
@@ -952,12 +1032,46 @@ func TestDepUpdateGuardGateCarriesItsChangeIdentity(t *testing.T) {
 			t.Errorf("the planted text was dropped instead of defused:\n%s", summary)
 		}
 	})
+
+	// The did_commit edge pins the alignment this run pushed. The agents ran
+	// in the workspace with a shell, so its identity is read from the forge:
+	// the stamp is the id of the commit the forge holds, whatever the
+	// workspace says.
+	t.Run("the pushed alignment is identified from the forge", func(t *testing.T) {
+		o := newForgeOrigin(t)
+		c := commitTree(t, ws, x, "align", map[string][]byte{"code.txt": []byte("aligned\n")})
+		gittest.Run(t, ws, "push", "-q", o.dir, base+":refs/heads/main", c+":refs/heads/renovate/bump")
+		want, why := changeIdentity(t, ws, "main", "main", c)
+		if want == "" || want == id {
+			t.Fatalf("fixture: the alignment has no identity of its own (%q, %s)", want, why)
+		}
+		p, res := runFeedback(t, &feedbackForge{t: t, gitRoot: o.gitRoot()}, with(map[string]string{
+			"{{input.verdict}}": `"committed"`, "{{input.audited_sha}}": quoted(c),
+		}))
+		note, _ := gateOf(p)["note"].(string)
+		if !strings.HasSuffix(note, " · "+want) {
+			t.Errorf("the pushed alignment %s was stamped %q, want its own identity %s (summary: %v)", c[:12], note, want, res["summary"])
+		}
+		// No identity for the head read means the audit's scope was not the
+		// true change (a degraded prepare): the alignment on top of it is
+		// not stamped either, however well the forge identifies it.
+		p, _ = runFeedback(t, &feedbackForge{t: t, gitRoot: o.gitRoot()}, with(map[string]string{
+			"{{input.verdict}}": `"committed"`, "{{input.audited_sha}}": quoted(c), "{{input.head_id}}": `""`,
+		}))
+		if note, _ := gateOf(p)["note"].(string); strings.Contains(note, "pid1:") {
+			t.Errorf("an alignment on a head continuity could not identify was stamped: %q", note)
+		}
+	})
 }
 
-// repinFixture: a clone taken while the pull request's head was X, on the
-// base as it was then; the forge has since moved the base and the head.
+// repinFixture: the forge as it stands when an audit of X finishes — the
+// base moved, and the pull request's head with it. `same` is X rebased onto
+// the new base, `other` another change on it. id is X's identity as
+// continuity computed it before any agent ran.
 type repinFixture struct {
-	ws, x, same, other string
+	ws, x, same, other, base1 string
+	id                        string
+	origin                    forgeOrigin
 }
 
 func newRepinFixture(t *testing.T) repinFixture {
@@ -969,56 +1083,69 @@ func newRepinFixture(t *testing.T) repinFixture {
 	base1 := commitTree(t, seed, base0, "base moves", map[string][]byte{"other.txt": []byte("two\n")})
 	same := commitTree(t, seed, base1, "bump, rebased", map[string][]byte{"deps.yaml": depsYAML(map[int]string{20: "key20: v99"})})
 	other := commitTree(t, seed, base1, "another bump", map[string][]byte{"deps.yaml": depsYAML(map[int]string{20: "key20: v77"})})
-	origin := filepath.Join(t.TempDir(), "origin.git")
-	gittest.Run(t, seed, "init", "-q", "--bare", origin)
-	gittest.Run(t, origin, "config", "maintenance.auto", "false")
-	gittest.Run(t, origin, "config", "gc.auto", "0")
-	gittest.Run(t, seed, "push", "-q", origin, base0+":refs/heads/main", x+":refs/heads/renovate/bump")
+	o := newForgeOrigin(t)
+	gittest.Run(t, seed, "push", "-q", o.dir, base0+":refs/heads/main", x+":refs/heads/renovate/bump")
 	ws := filepath.Join(t.TempDir(), "ws")
-	gittest.Run(t, filepath.Dir(ws), "clone", "-q", "--no-tags", origin, ws)
+	gittest.Run(t, filepath.Dir(ws), "clone", "-q", "--no-tags", o.dir, ws)
 	gittest.Run(t, ws, "config", "maintenance.auto", "false")
 	gittest.Run(t, ws, "config", "gc.auto", "0")
 	gittest.Run(t, ws, "switch", "-q", "--detach", x)
-	// The forge moves on after the clone.
-	gittest.Run(t, seed, "push", "-q", "--force", origin, base1+":refs/heads/main", same+":refs/heads/same", other+":refs/heads/other")
-	if _, err := gittest.Try(ws, "cat-file", "-e", same); err == nil {
-		t.Fatal("fixture: the workspace already holds the moved head, so the repin's fetch would prove nothing")
+	id, why := changeIdentity(t, ws, "main", "main", x)
+	if id == "" {
+		t.Fatalf("fixture: X has no identity: %s", why)
 	}
-	return repinFixture{ws: ws, x: x, same: same, other: other}
+	// The forge moves on after the clone.
+	gittest.Run(t, seed, "push", "-q", "--force", o.dir, base1+":refs/heads/main", same+":refs/heads/same", other+":refs/heads/other")
+	return repinFixture{ws: ws, x: x, same: same, other: other, base1: base1, id: id, origin: o}
+}
+
+// repin runs post_feedback for an audit of X whose verdict is `verdict`,
+// with the forge reporting `head`.
+func (fx repinFixture) repin(t *testing.T, f *feedbackForge, verdict string, env ...string) (map[string]any, map[string]any) {
+	t.Helper()
+	f.t, f.base = t, "main"
+	if f.gitRoot == "" {
+		f.gitRoot = fx.origin.gitRoot()
+	}
+	return runFeedback(t, f, map[string]string{
+		"{{input.audited_sha}}": quoted(fx.x), "{{input.head_sha}}": quoted(fx.x),
+		"{{input.head_id}}": quoted(fx.id), "{{input.verdict}}": quoted(verdict),
+		"{{vars.workspace_dir}}": quoted(fx.ws),
+	}, env...)
+}
+
+func pinOf(p map[string]any) string {
+	g, _ := p["gate"].(map[string]any)
+	s, _ := g["audited_sha"].(string)
+	return s
 }
 
 // TestDepUpdateGuardRepinsAGreenOntoAPureRebase pins arm 1b: an audit that
 // finishes after a rebase moved the head publishes `carried` on the new head
-// when — and only when — the new head carries the identical change against
-// the base's current tip, and the verdict is green. A hold is never moved.
+// when — and only when — the verdict is green, the new head carries the
+// identical change as the FORGE holds it, and the new head's own gate
+// history vetoes nothing. A hold is never moved.
 //
-// Mutations (main.bot `post_feedback`): drop the head_id == pin_id
-// comparison (the different-change case pins a head nobody audited); allow
-// the repin for holds (the hold case moves a hold).
+// Mutations (main.bot `post_feedback`) and the case each reddens: drop the
+// head_id == change_id comparison (the different-change case pins a head
+// nobody audited); allow the repin for holds (the hold case moves a hold);
+// skip the gate-history read (the hold-on-the-new-head and red-on-the-new-
+// head cases paint over a verdict about that head); compute the new head's
+// identity in the workspace instead of from the forge (the workspace case);
+// let the scratch repository read the global git config (the url-rewrite
+// case fetches a base the forge never had).
 func TestDepUpdateGuardRepinsAGreenOntoAPureRebase(t *testing.T) {
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 not on PATH")
 	}
-	pinOf := func(p map[string]any) string {
-		g, _ := p["gate"].(map[string]any)
-		s, _ := g["audited_sha"].(string)
-		return s
-	}
-	run := func(t *testing.T, fx repinFixture, head, verdict string) (*feedbackForge, map[string]any, map[string]any) {
-		t.Helper()
-		f := &feedbackForge{t: t, head: head, base: "main"}
-		p, res := runFeedback(t, f, map[string]string{
-			"{{vars.workspace_dir}}": quoted(fx.ws), "{{input.audited_sha}}": quoted(fx.x),
-			"{{input.verdict}}": quoted(verdict),
-		})
-		return f, p, res
-	}
 
 	t.Run("moved to a pure rebase: the verdict is carried onto the new head", func(t *testing.T) {
 		fx := newRepinFixture(t)
-		_, p, res := run(t, fx, fx.same, "clean")
-		if pinOf(p) != fx.same || res["verdict"] != "carried" {
-			t.Fatalf("want the payload pinned to %s as carried, got pin %s verdict %v", fx.same[:12], pinOf(p), res["verdict"])
+		f := &feedbackForge{head: fx.same}
+		p, res := fx.repin(t, f, "clean")
+		if pinOf(p) != fx.same || res["verdict"] != "carried" || res["pinned_sha"] != fx.same {
+			t.Fatalf("want the payload pinned to %s as carried, got pin %s verdict %v pinned_sha %v (%v)",
+				fx.same[:12], pinOf(p), res["verdict"], res["pinned_sha"], res["summary"])
 		}
 		note, _ := p["gate"].(map[string]any)["note"].(string)
 		if !strings.Contains(note, "carried from "+fx.x[:12]) {
@@ -1027,14 +1154,19 @@ func TestDepUpdateGuardRepinsAGreenOntoAPureRebase(t *testing.T) {
 		summary, _ := p["summary"].(string)
 		lines := strings.Split(strings.TrimRight(summary, "\n"), "\n")
 		m := markerLine.FindStringSubmatch(lines[len(lines)-1])
-		if m == nil || m[1] != fx.same || m[3] != "carried" || m[4] != fx.x {
+		if m == nil || m[1] != fx.same || m[2] != fx.id || m[3] != "carried" || m[4] != fx.x {
 			t.Errorf("the marker must name the new head, the carried verdict and the audited origin, got %v", m)
+		}
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		if !slices.Contains(f.reads, "/repos/acme/widgets/commits/"+fx.same+"/status") {
+			t.Errorf("the repin never read the new head's own status (reads %v): a hold on it would be painted over", f.reads)
 		}
 	})
 
 	t.Run("moved to a different change: pinned to the audited commit, as before", func(t *testing.T) {
 		fx := newRepinFixture(t)
-		_, p, res := run(t, fx, fx.other, "clean")
+		p, res := fx.repin(t, &feedbackForge{head: fx.other}, "clean")
 		if pinOf(p) != fx.x || res["verdict"] != "clean" {
 			t.Fatalf("a different change was certified: pin %s verdict %v, want %s clean", pinOf(p), res["verdict"], fx.x[:12])
 		}
@@ -1042,7 +1174,8 @@ func TestDepUpdateGuardRepinsAGreenOntoAPureRebase(t *testing.T) {
 
 	t.Run("a hold is never moved", func(t *testing.T) {
 		fx := newRepinFixture(t)
-		f, p, res := run(t, fx, fx.same, "hold_unstable")
+		f := &feedbackForge{head: fx.same}
+		p, res := fx.repin(t, f, "hold_unstable")
 		if pinOf(p) != fx.x || res["verdict"] != "hold_unstable" {
 			t.Fatalf("a hold was moved: pin %s verdict %v", pinOf(p), res["verdict"])
 		}
@@ -1052,4 +1185,205 @@ func TestDepUpdateGuardRepinsAGreenOntoAPureRebase(t *testing.T) {
 			t.Errorf("a hold asked the forge for the head (%v): it has no repin to decide", f.reads)
 		}
 	})
+
+	// The new head's own audit can finish FIRST with a hold. A repin
+	// published after it would supersede it, so the repin reads the new
+	// head's gate history and stands down — the reviews served in both
+	// orders, the answer the same.
+	stamp := func(fx repinFixture) string { return " · " + fx.id }
+	for _, tc := range []struct {
+		name     string
+		reviews  func(fx repinFixture) []map[string]any
+		statuses func(fx repinFixture) map[string][]map[string]any
+	}{
+		{
+			name: "a hold on the new head, with its marker",
+			reviews: func(fx repinFixture) []map[string]any {
+				return []map[string]any{
+					vettyReview(1, vettyLogin, gateMarker(fx.x, fx.id, "clean", fx.x, "2026-11-10T08:00:00Z")),
+					vettyReview(2, vettyLogin, gateMarker(fx.same, fx.id, "hold_unstable", fx.same, "2026-11-10T09:00:00Z")),
+				}
+			},
+			statuses: func(fx repinFixture) map[string][]map[string]any {
+				return map[string][]map[string]any{fx.same: {gateStatus("failure", "build/tests not green after alignment"+stamp(fx), reviewURL(2))}}
+			},
+		},
+		{
+			name:    "a red on the new head, with no marker",
+			reviews: func(repinFixture) []map[string]any { return nil },
+			statuses: func(fx repinFixture) map[string][]map[string]any {
+				return map[string][]map[string]any{fx.same: {gateStatus("failure", "supply-chain risk: the bump was not applied"+stamp(fx), "")}}
+			},
+		},
+	} {
+		t.Run(tc.name+": not repinned", func(t *testing.T) {
+			fx := newRepinFixture(t)
+			for _, order := range []string{"served", "reversed"} {
+				reviews := slices.Clone(tc.reviews(fx))
+				if order == "reversed" {
+					slices.Reverse(reviews)
+				}
+				p, res := fx.repin(t, &feedbackForge{head: fx.same, reviews: reviews, statuses: tc.statuses(fx)}, "clean")
+				if pinOf(p) != fx.x || res["verdict"] != "clean" {
+					t.Errorf("%s: a green was repinned over a verdict about the new head: pin %s verdict %v (%v)",
+						order, pinOf(p), res["verdict"], res["summary"])
+				}
+				if summary, _ := res["summary"].(string); !strings.Contains(summary, "not repinned onto "+fx.same[:12]) {
+					t.Errorf("%s: the run does not say why it did not repin: %q", order, summary)
+				}
+			}
+		})
+	}
+
+	// The agents ran in the workspace with a shell and the forge token: its
+	// refs, replace objects and config are theirs. A local base moved onto
+	// an unaudited commit makes a head that stacks the same bump on it read
+	// as the audited change there — and a replace ref makes any head read as
+	// any other. The new head's identity is the forge's, never the
+	// workspace's.
+	t.Run("the workspace the agents ran in carries nothing: a moved local base, a replace ref", func(t *testing.T) {
+		fx := newRepinFixture(t)
+		seed := t.TempDir()
+		gittest.InitRepo(t, seed)
+		gittest.Run(t, seed, "fetch", "-q", fx.origin.dir, "refs/heads/main:refs/forge/main")
+		unaudited := commitTree(t, seed, fx.base1, "unaudited", map[string][]byte{"other.txt": []byte("payload\n")})
+		z := commitTree(t, seed, unaudited, "bump on it", map[string][]byte{"deps.yaml": depsYAML(map[int]string{20: "key20: v99"})})
+		gittest.Run(t, seed, "push", "-q", fx.origin.dir, z+":refs/heads/z")
+		gittest.Run(t, fx.ws, "fetch", "-q", "origin", "refs/heads/z:refs/agent/z", fx.same, fx.other)
+		gittest.Run(t, fx.ws, "branch", "-f", "main", unaudited)
+		gittest.Run(t, fx.ws, "replace", fx.other, fx.same)
+		for _, head := range []string{z, fx.other} {
+			p, res := fx.repin(t, &feedbackForge{head: head}, "clean")
+			if pinOf(p) != fx.x || res["verdict"] != "clean" {
+				t.Errorf("a head the workspace dressed as the audited change (%s) was certified: pin %s verdict %v",
+					head[:12], pinOf(p), res["verdict"])
+			}
+		}
+	})
+
+	// A url rewrite in the global git config — a file the agents can write —
+	// would fetch the base from a repository of their choosing: there, a
+	// malicious base makes the new head look like the audited change.
+	t.Run("a global url rewrite fetches nothing from elsewhere", func(t *testing.T) {
+		fx := newRepinFixture(t)
+		seed := t.TempDir()
+		gittest.InitRepo(t, seed)
+		gittest.Run(t, seed, "fetch", "-q", fx.origin.dir, "refs/heads/main:refs/forge/main")
+		evilBase := commitTree(t, seed, fx.base1, "unaudited", map[string][]byte{"other.txt": []byte("payload\n")})
+		z := commitTree(t, seed, evilBase, "bump on it", map[string][]byte{"deps.yaml": depsYAML(map[int]string{20: "key20: v99"})})
+		gittest.Run(t, seed, "push", "-q", fx.origin.dir, z+":refs/heads/z")
+		evil := newForgeOrigin(t)
+		gittest.Run(t, seed, "push", "-q", evil.dir, evilBase+":refs/heads/main", z+":refs/heads/z")
+		global := filepath.Join(t.TempDir(), "gitconfig")
+		gittest.Run(t, seed, "config", "--file", global, "url."+evil.gitRoot()+".insteadOf", fx.origin.gitRoot())
+		p, res := fx.repin(t, &feedbackForge{head: z}, "clean", "GIT_CONFIG_GLOBAL="+global)
+		if pinOf(p) != fx.x || res["verdict"] != "clean" {
+			t.Fatalf("a base fetched from a rewritten URL certified %s: pin %s verdict %v", z[:12], pinOf(p), res["verdict"])
+		}
+	})
+}
+
+// TestDepUpdateGuardRepinFetchCarriesTheTokenByEnvironment: the repin's
+// fetch from the forge needs the token, and it reaches git through its
+// ENVIRONMENT — never its argv, never the node's output. The forge's git
+// endpoint is a TLS server that records what git sends; a git shim records
+// every argv.
+//
+// Mutations (main.bot `post_feedback`): pass the header as `-c
+// http.extraHeader=…` on the command line (the argv assertion reddens); drop
+// the header (the server assertion reddens).
+func TestDepUpdateGuardRepinFetchCarriesTheTokenByEnvironment(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not on PATH")
+	}
+	const token = "ghs_repinSecretToken1234567890"
+	var mu sync.Mutex
+	var auth []string
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		auth = append(auth, r.Header.Get("Authorization"))
+		mu.Unlock()
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer srv.Close()
+
+	fx := newRepinFixture(t)
+	tokenPath := filepath.Join(t.TempDir(), "forge_token")
+	if err := os.WriteFile(tokenPath, []byte(token+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	real, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	shim, argv := t.TempDir(), filepath.Join(t.TempDir(), "argv.log")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> " + argv + "\nexec " + real + " \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(shim, "git"), []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	var env []string
+	for _, kv := range gittest.Env() {
+		name := strings.ToUpper(strings.SplitN(kv, "=", 2)[0])
+		if strings.HasSuffix(name, "_PROXY") || name == "PATH" {
+			continue
+		}
+		env = append(env, kv)
+	}
+	env = append(env, "PATH="+shim+string(os.PathListSeparator)+os.Getenv("PATH"), "GIT_SSL_NO_VERIFY=1")
+
+	f := &feedbackForge{t: t, head: fx.same, base: "main", gitRoot: srv.URL + "/"}
+	srvAPI := httptest.NewServer(f)
+	defer srvAPI.Close()
+	body := toolScript(t, depUpdateGuardBot, "post_feedback")
+	for ref, val := range map[string]string{
+		"{{input.pr_url}}": `"https://github.com/acme/widgets/pull/7"`, "{{input.verdict}}": `"clean"`,
+		"{{input.audit_summary}}": `""`, "{{input.cves}}": `""`, "{{input.malware_signals}}": `""`,
+		"{{input.align_summary}}": `""`, "{{input.validate_summary}}": `""`, "{{input.escalation}}": `""`,
+		"{{input.commit_summary}}": `""`, "{{input.audited_sha}}": quoted(fx.x), "{{input.origin_sha}}": `""`,
+		"{{input.origin_at}}": `""`, "{{secrets.forge_token.path}}": quoted(tokenPath),
+		"{{vars.forge_publish_url}}": quoted(srvAPI.URL + "/api/v1/forge/publish-review"),
+		"{{run.url}}":                `""`, "{{run.id}}": `"01a0dep"`, "{{vars.gate_enabled}}": "True",
+		"{{vars.gate_context}}": `"vetty/deps"`, "{{vars.base_ref}}": `"main"`,
+		"{{input.head_sha}}": quoted(fx.x), "{{input.head_id}}": quoted(fx.id),
+	} {
+		body = strings.ReplaceAll(body, ref, val)
+	}
+	body = strings.ReplaceAll(body, `"https://api.github.com"`, quoted(srvAPI.URL))
+	body = strings.ReplaceAll(body, `"https://github.com/"`, quoted(f.gitRoot))
+	if strings.Contains(body, "{{") {
+		t.Fatalf("unsubstituted ref: %s", firstRef(body))
+	}
+	path := filepath.Join(t.TempDir(), "feedback.py")
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("python3", path)
+	cmd.Env = append(env, secretguard.PlaceholderForName(store.ForgePublishTokenVar)+"=run-token")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("post_feedback failed: %v (out %q)", err, out)
+	}
+	if pinOf(f.payload) != fx.x {
+		t.Errorf("a forge that refused every read let the verdict move: pin %s", pinOf(f.payload))
+	}
+	mu.Lock()
+	seen := slices.Clone(auth)
+	mu.Unlock()
+	encoded := base64.StdEncoding.EncodeToString([]byte("oauth2:" + token))
+	if !slices.Contains(seen, "Basic "+encoded) {
+		t.Errorf("the forge's git endpoint never received the token as an Authorization header (saw %q)", seen)
+	}
+	logged, err := os.ReadFile(argv)
+	if err != nil {
+		t.Fatalf("the git shim recorded nothing: %v", err)
+	}
+	if !strings.Contains(string(logged), "fetch") {
+		t.Fatalf("the shim did not see the repin's fetch:\n%s", logged)
+	}
+	if strings.Contains(string(logged), token) || strings.Contains(string(logged), encoded) {
+		t.Errorf("the forge token reached git's argv:\n%s", logged)
+	}
+	if strings.Contains(string(out), token) || strings.Contains(string(out), encoded) {
+		t.Errorf("the forge token reached the node's output: %s", out)
+	}
 }

@@ -16,7 +16,7 @@ import (
 // TestDepUpdateGuardArmAutomerge pins the one node in the fleet that can end
 // with code merged into a default branch. Two properties carry all the weight:
 //
-//   - it never merges past a check. Which of the three forge calls it makes
+//   - it never merges past a REQUIRED check. Which of the three forge calls it makes
 //     is the forge's own answer, and arming is always tried first (on a
 //     merge-queue base it is "merge when ready" — the only door a queue
 //     leaves open): auto-merge while there is anything left to wait for; on
@@ -86,14 +86,21 @@ func TestDepUpdateGuardArmAutomerge(t *testing.T) {
 	// rollup is what the stub answers to the check-rollup query: the contexts
 	// on the head commit (nil answers a null rollup, which reads as
 	// unreadable) and the commit they are about ("" = the served head).
+	// hasNext says the contexts run past the page; then, when set, is what
+	// every read after the first answers — a check flipping mid-settle.
 	var rollup struct {
-		nodes []map[string]any
-		oid   string
+		nodes   []map[string]any
+		oid     string
+		hasNext bool
+		then    []map[string]any
+		reads   int
 	}
 	withRollup := func(t *testing.T, oid string, nodes ...map[string]any) {
 		t.Helper()
 		rollup.nodes, rollup.oid = nodes, oid
-		t.Cleanup(func() { rollup.nodes, rollup.oid = nil, "" })
+		t.Cleanup(func() {
+			rollup.nodes, rollup.oid, rollup.hasNext, rollup.then, rollup.reads = nil, "", false, nil, 0
+		})
 	}
 	// runWith drives the node against a stub forge holding `pr`. A non-empty
 	// armErr makes the auto-merge mutation fail with that message, and `after`
@@ -139,10 +146,15 @@ func TestDepUpdateGuardArmAutomerge(t *testing.T) {
 				if oid == "" {
 					oid, _ = state["headRefOid"].(string)
 				}
+				nodes := rollup.nodes
+				if rollup.reads > 0 && rollup.then != nil {
+					nodes = rollup.then
+				}
+				rollup.reads++
 				var sc any
-				if rollup.nodes != nil {
+				if nodes != nil {
 					sc = map[string]any{"contexts": map[string]any{
-						"pageInfo": map[string]any{"hasNextPage": false}, "nodes": rollup.nodes}}
+						"pageInfo": map[string]any{"hasNextPage": rollup.hasNext}, "nodes": nodes}}
 				}
 				_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"repository": map[string]any{
 					"pullRequest": map[string]any{"commits": map[string]any{"nodes": []any{
@@ -174,6 +186,15 @@ func TestDepUpdateGuardArmAutomerge(t *testing.T) {
 				}
 				if body.Variables["oid"] != state["headRefOid"] {
 					t.Errorf("arming pinned to %v, want the reviewed head %v", body.Variables["oid"], state["headRefOid"])
+				}
+				if code, _ := state["__armHTTP"].(int); code != 0 {
+					// A transport failure, not a GraphQL refusal.
+					if after != nil {
+						state = after
+					}
+					w.WriteHeader(code)
+					_, _ = w.Write([]byte(`{"message":"upstream failure"}`))
+					return
 				}
 				if armErr != "" {
 					if after != nil {
@@ -251,12 +272,19 @@ func TestDepUpdateGuardArmAutomerge(t *testing.T) {
 					}
 				}
 				// A state carrying __next is served once, then replaced by
-				// it: the pull request settling between two reads.
+				// it: the pull request settling between two reads. Every
+				// "__" key is the stub's own, never a pull request field;
+				// __autoMergeAllowed is the repository's switch (on unless
+				// a state says otherwise).
 				served := map[string]any{}
 				for k, v := range state {
-					if k != "__next" {
+					if !strings.HasPrefix(k, "__") {
 						served[k] = v
 					}
+				}
+				allowed := any(true)
+				if v, ok := state["__autoMergeAllowed"]; ok {
+					allowed = v
 				}
 				if nx, ok := state["__next"].(map[string]any); ok {
 					state = nx
@@ -264,7 +292,7 @@ func TestDepUpdateGuardArmAutomerge(t *testing.T) {
 				_ = json.NewEncoder(w).Encode(map[string]any{
 					"data": map[string]any{
 						"viewer":     map[string]any{"login": botLogin},
-						"repository": map[string]any{"pullRequest": served},
+						"repository": map[string]any{"autoMergeAllowed": allowed, "pullRequest": served},
 					},
 				})
 			}
@@ -448,7 +476,7 @@ func TestDepUpdateGuardArmAutomerge(t *testing.T) {
 		const full = "a11gned0c0ffee0c0ffee0c0ffee0c0ffee0c0ff"
 		res, calls, _ := runWith(t, map[string]string{
 			"{{input.gate_sha}}":      `"` + full + `"`,
-			"{{input.audited_sha}}":   `"d34db33f"`,
+			"{{input.audited_sha}}":   `"a11gned0"`,
 			"{{input.committed_sha}}": `"a11gned0"`,
 		}, withState(map[string]any{"mergeStateStatus": "CLEAN", "headRefOid": full}), cleanRefusal, nil)
 		if !queried(calls, "mergePullRequest") {
@@ -465,7 +493,7 @@ func TestDepUpdateGuardArmAutomerge(t *testing.T) {
 		const full = "a11gne0c0ffee0c0ffee0c0ffee0c0ffee0c0fff"
 		res, calls, _ := runWith(t, map[string]string{
 			"{{input.gate_sha}}":      `"` + full + `"`,
-			"{{input.audited_sha}}":   `"d34db33f"`,
+			"{{input.audited_sha}}":   `"a11gne"`,
 			"{{input.committed_sha}}": `"a11gne"`,
 		}, withState(map[string]any{"mergeStateStatus": "CLEAN", "headRefOid": full}), cleanRefusal, nil)
 		if queried(calls, "mergePullRequest") {
@@ -476,11 +504,12 @@ func TestDepUpdateGuardArmAutomerge(t *testing.T) {
 		}
 	})
 
-	// When the bot pushed an alignment, THAT is the commit it vouches for.
+	// When the bot pushed an alignment, THAT is the commit it vouches for:
+	// post_feedback pinned the verdict to it, and audited_sha is that pin.
 	t.Run("aligned bump: merges the commit it pushed", func(t *testing.T) {
 		res, calls, _ := runWith(t, map[string]string{
 			"{{input.gate_sha}}":      `"a11gned0"`,
-			"{{input.audited_sha}}":   `"d34db33f"`,
+			"{{input.audited_sha}}":   `"a11gned0"`,
 			"{{input.committed_sha}}": `"a11gned0"`,
 		}, withState(map[string]any{"mergeStateStatus": "CLEAN", "headRefOid": "a11gned0"}), cleanRefusal, nil)
 		if !queried(calls, "mergePullRequest") {
@@ -488,6 +517,32 @@ func TestDepUpdateGuardArmAutomerge(t *testing.T) {
 		}
 		if res["armed"] != true {
 			t.Fatalf("want merged, got %v", res)
+		}
+	})
+
+	// A repin carried the verdict onto the head a pure rebase produced, after
+	// this run had pushed its alignment: the gate is on the new head, and
+	// post_feedback's pin (audited_sha) says so. Mutation: let committed_sha
+	// outrank audited_sha again -> the run refuses the head it just gated,
+	// with a reason that reads as a fault.
+	t.Run("a repinned verdict arms the head it was carried onto", func(t *testing.T) {
+		res, calls, _ := runWith(t, map[string]string{
+			"{{input.verdict}}":       `"carried"`,
+			"{{input.gate_sha}}":      `"d34db33f"`,
+			"{{input.audited_sha}}":   `"d34db33f"`,
+			"{{input.committed_sha}}": `"a11gned0"`,
+		}, blocked, "", nil)
+		if res["armed"] != true {
+			t.Fatalf("the head the verdict was repinned onto was not armed: %v", res)
+		}
+		armed := false
+		for _, c := range calls {
+			if strings.Contains(c.query, "enablePullRequestAutoMerge") && c.vars["oid"] == "d34db33f" {
+				armed = true
+			}
+		}
+		if !armed {
+			t.Error("no arming pinned to the repinned head was sent")
 		}
 	})
 
@@ -1084,6 +1139,10 @@ func TestDepUpdateGuardArmAutomerge(t *testing.T) {
 		// Mutation: drop the rollup's commit-oid check -> it judges the
 		// checks of a head this run never audited.
 		{"a rollup about another commit", "0ther5ha", []map[string]any{optionalRed}},
+		// Mutation: skip a context of an unknown kind instead of refusing
+		// -> it merges past a check it cannot read.
+		{"a context of a kind it does not know", "", []map[string]any{optionalRed,
+			{"__typename": "FutureCheck", "name": "license", "isRequired": true}}},
 	} {
 		t.Run("UNSTABLE, "+tc.name+": merges nothing", func(t *testing.T) {
 			withRollup(t, tc.oid, tc.nodes...)
@@ -1123,6 +1182,118 @@ func TestDepUpdateGuardArmAutomerge(t *testing.T) {
 		res, calls, _ := runWith(t, map[string]string{"{{vars.automerge_on_unstable}}": "null"}, unstablePR, unstableRefusal, nil)
 		if len(mergedOn(calls)) != 0 || res["armed"] != false {
 			t.Fatalf("an unset policy merged: %v", res)
+		}
+	})
+
+	// Mutation: drop the hasNextPage check -> it merges on the first page of
+	// contexts, past whatever the next one holds.
+	t.Run("UNSTABLE, a rollup past one page: merges nothing", func(t *testing.T) {
+		withRollup(t, "", optionalRed, requiredGreen)
+		rollup.hasNext = true
+		res, calls, _ := runWith(t, nil, unstablePR, unstableRefusal, nil)
+		if len(mergedOn(calls)) != 0 || res["armed"] != false {
+			t.Fatalf("merged on a rollup it read one page of: %v", res)
+		}
+	})
+
+	waitFor1s := map[string]string{"{{vars.automerge_on_unstable}}": `"wait"`, "{{vars.automerge_settle_s}}": "1"}
+	// Mutation: drop the re-vouch inside the settle loop -> the refusal no
+	// longer says the branch moved. The rollup stays about the audited head,
+	// so only the re-vouch sees the move.
+	t.Run("wait mode: the head moves while settling: merges nothing, says the branch moved", func(t *testing.T) {
+		withRollup(t, "d34db33f", optionalRed, requiredGreen)
+		after := withState(map[string]any{"mergeStateStatus": "UNSTABLE",
+			"__next": withState(map[string]any{"mergeStateStatus": "UNSTABLE", "headRefOid": "0ther5ha"})})
+		res, calls, _ := runWith(t, waitFor1s, blocked, unstableRefusal, after)
+		if len(mergedOn(calls)) != 0 || res["armed"] != false {
+			t.Fatalf("merged while the head moved: %v", res)
+		}
+		if reason := res["reason"].(string); !strings.Contains(reason, "branch moved") {
+			t.Errorf("the refusal must say the branch moved, got %q", reason)
+		}
+	})
+	// Mutation: drop the loop's 'left UNSTABLE' exit -> it waits out the
+	// bound and says it is still UNSTABLE.
+	t.Run("wait mode: the pull request leaves UNSTABLE while settling: merges nothing, says so", func(t *testing.T) {
+		withRollup(t, "", optionalRed, requiredGreen)
+		after := withState(map[string]any{"mergeStateStatus": "UNSTABLE",
+			"__next": withState(map[string]any{"mergeStateStatus": "BLOCKED"})})
+		res, calls, _ := runWith(t, waitFor1s, blocked, unstableRefusal, after)
+		if len(mergedOn(calls)) != 0 || res["armed"] != false {
+			t.Fatalf("merged a pull request that left UNSTABLE: %v", res)
+		}
+		if reason := res["reason"].(string); !strings.Contains(reason, "left UNSTABLE for BLOCKED") {
+			t.Errorf("the refusal must say the pull request left UNSTABLE, got %q", reason)
+		}
+	})
+	// Mutation: drop the loop's required re-check -> it waits out the bound
+	// and says it is still UNSTABLE, never that a required check broke.
+	t.Run("wait mode: a required check stops passing while settling: merges nothing, says so", func(t *testing.T) {
+		withRollup(t, "", optionalRed, requiredGreen)
+		rollup.then = []map[string]any{optionalRed,
+			{"__typename": "StatusContext", "context": "test", "state": "FAILURE", "isRequired": true}}
+		after := withState(map[string]any{"mergeStateStatus": "UNSTABLE",
+			"__next": withState(map[string]any{"mergeStateStatus": "UNSTABLE"})})
+		res, calls, _ := runWith(t, waitFor1s, blocked, unstableRefusal, after)
+		if len(mergedOn(calls)) != 0 || res["armed"] != false {
+			t.Fatalf("merged past a required check that broke while settling: %v", res)
+		}
+		if reason := res["reason"].(string); !strings.Contains(reason, "REQUIRED check stopped passing") {
+			t.Errorf("the refusal must name the broken required check, got %q", reason)
+		}
+	})
+
+	// A transport failure is not a refusal. Mutation: drop the HTTPError
+	// re-raise -> the failure is classified by re-reading, and a CLEAN pull
+	// request is merged on it.
+	t.Run("arming fails in transport on a CLEAN pull request: reported, merges nothing", func(t *testing.T) {
+		res, calls, _ := runWith(t, nil, withState(map[string]any{"mergeStateStatus": "CLEAN", "__armHTTP": 502}), "", nil)
+		if len(mergedOn(calls)) != 0 || res["armed"] != false {
+			t.Fatalf("a transport failure was turned into a merge: %v", res)
+		}
+		if reason := res["reason"].(string); !strings.Contains(reason, "forge HTTP 502") {
+			t.Errorf("the transport failure must be reported as such, got %q", reason)
+		}
+	})
+
+	// The repository's own switch. Mutation: drop the autoMergeAllowed check
+	// -> a repository whose owner switched auto-merge off gets the merge
+	// Vetty makes in its place.
+	for _, state := range []string{"CLEAN", "UNSTABLE"} {
+		t.Run("a repository that does not allow auto-merge, "+state+": merges nothing", func(t *testing.T) {
+			withRollup(t, "", optionalRed, requiredGreen)
+			pr := withState(map[string]any{"mergeStateStatus": state, "__autoMergeAllowed": false})
+			res, calls, _ := runWith(t, nil, pr, "Pull request Auto merge is not allowed for this repository", nil)
+			if len(mergedOn(calls)) != 0 || res["armed"] != false {
+				t.Fatalf("merged on a repository that does not allow auto-merge: %v", res)
+			}
+			if reason := res["reason"].(string); !strings.Contains(reason, "does not allow auto-merge") {
+				t.Errorf("the refusal must name the repository's switch, got %q", reason)
+			}
+		})
+	}
+
+	// A carried verdict built nothing on this tree. Mutation: drop the
+	// carried override in settle_unstable -> the default "merge" policy
+	// merges it past a red check the repo does not require.
+	t.Run("a carried verdict on an UNSTABLE pull request waits for CLEAN, whatever the policy", func(t *testing.T) {
+		withRollup(t, "", optionalRed, requiredGreen)
+		res, calls, _ := runWith(t, map[string]string{"{{input.verdict}}": `"carried"`, "{{vars.automerge_settle_s}}": "1"},
+			unstablePR, unstableRefusal, nil)
+		if len(mergedOn(calls)) != 0 || res["armed"] != false {
+			t.Fatalf("a carried head was merged past a red check: %v", res)
+		}
+		if reason := res["reason"].(string); !strings.Contains(reason, "still UNSTABLE") {
+			t.Errorf("the refusal must say the pull request never settled, got %q", reason)
+		}
+	})
+	t.Run("a carried verdict merges once the pull request settles CLEAN", func(t *testing.T) {
+		withRollup(t, "", optionalRed, requiredGreen)
+		after := withState(map[string]any{"mergeStateStatus": "UNSTABLE", "__next": withState(map[string]any{"mergeStateStatus": "CLEAN"})})
+		res, calls, _ := runWith(t, map[string]string{"{{input.verdict}}": `"carried"`, "{{vars.automerge_settle_s}}": "1"},
+			blocked, unstableRefusal, after)
+		if got := mergedOn(calls); len(got) != 1 || got[0] != "d34db33f" || res["armed"] != true {
+			t.Fatalf("want the settled carried head merged pinned, got merges %v (%v)", got, res)
 		}
 	})
 

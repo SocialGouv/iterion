@@ -6,8 +6,9 @@ branch). It audits the bump for supply-chain risk, aligns the consuming code to
 any breaking change, proves the tree with a deterministic build/test gate,
 commits the alignment back onto the PR branch, and posts one review comment
 carrying the verdict — optionally as a commit status that can be a required
-check. It never merges past a check: unless `arm_automerge` is enabled, the
-merge stays a human call, and even then only the audited commit is merged.
+check. It never merges past a required check: unless `arm_automerge` is
+enabled, the merge stays a human call, and even then only the audited commit is
+merged.
 
 Stack-agnostic by construction: no ecosystem or package manager is enumerated in
 the DSL. The per-stack knowledge lives in the skills
@@ -32,8 +33,8 @@ prepare        (tool, deterministic)  diff base_ref..HEAD, classify the changed
 continuity     (tool, deterministic)  is this head's change one a green verdict
                                       already covers? carry → post_feedback
                                       (`carried`); already gated →
-                                      continuity_standby → arm_automerge; head
-                                      moved since prepare → done; else → audit
+                                      continuity_standby → arm_automerge; else
+                                      (a head moved since prepare included) → audit
 security_audit (agent, read-only)     malware, typosquats, compromised-maintainer
                                       signals, CVEs introduced vs resolved
 audit_gate     (compute, GATE)        only `safe` proceeds; else → hold_security
@@ -62,9 +63,9 @@ preflight_standdown (compute)         the one refusal that publishes nothing: no
                                       take a previous pass's arming down, run ends
                                       FORGE_PREFLIGHT_UNAVAILABLE
 commit         (agent)                commit + push the alignment onto the PR branch
-commit_probe   (tool, deterministic) the workspace HEAD, descended from the head
+commit_probe   (tool, deterministic) the workspace HEAD as ONE commit on the head
                                       prepare read, held by origin (ls-remote), and
-                                      named by the report when there is one
+                                      named by the report when it names a commit
 commit_check   (compute, GATE)        decides from commit_probe and align_probe's
                                       readings — never from the agents' summaries:
                                       committed | clean | hold_lost_alignment
@@ -72,18 +73,24 @@ post_feedback  (tool, deterministic)  compose + POST the verdict comment (and th
                                       commit status) over the forge REST API — no LLM;
                                       stamps the change identity, and repins a green
                                       verdict onto a head that moved by a pure rebase
+                                      (identity read from the forge, gate history
+                                      vetoing)
 feedback_health(tool, deterministic)  anti-façade check that the comment/gate landed
 arm_automerge  (tool, deterministic)  opt-in; arm auto-merge, or merge the audited sha
 done
 ```
 
 A short or malformed commit report cannot certify an alignment: `commit_probe`
-reads Git with repository-redirection variables removed. It takes the candidate
-from the workspace HEAD, accepts it only as a strict descendant of the audited
-revision that `origin`'s branch holds (`git ls-remote`, the forge token in git's
-environment), and a non-empty report must name that same commit; the published
-verdict and auto-merge pin use that full id. A failed proof counts as
-no commit, preserving the existing lost-alignment decision. A refusal can
+reads Git with repository-redirection variables removed and replace refs and
+grafts switched off. It takes the candidate from the workspace HEAD, accepts it
+only as ONE commit whose only parent is the audited revision — a commit someone
+else pushed meanwhile, rebased or merged under the alignment, would otherwise
+ride on a verdict that never saw it — that `origin`'s branch holds (`git
+ls-remote`, the forge token in git's environment); a report that names a commit
+id must name that same commit, and one that names none ("pushed", "N/A") is set
+aside. The published verdict and auto-merge pin use that full id. The commit
+agent is told to make exactly one commit. A failed proof counts as no commit,
+preserving the existing lost-alignment decision. A refusal can
 disarm or dequeue only while the PR head still matches this run's revision;
 a stale run leaves a newer revision's commitment in place. Forge takedowns
 have no atomic head precondition, so a head changing after this last read is
@@ -135,11 +142,25 @@ identity** — contract v1: the `git patch-id --verbatim` of
 `merge-base(base_ref, head)..head`, every diff knob pinned on the command line
 (`--no-renames --full-index --unified=3 --diff-algorithm=myers -O/dev/null`, no
 external diff or textconv, system and global config cut off), folded with the
-`base_ref` name. A rebase that leaves the hunks and their three context lines
-alone keeps it; a conflict always touches one of them, so it changes it.
-`--stable` is not used: it strips whitespace and reads a re-indented YAML block
-as the same change. A git older than 2.39 (no `--verbatim`), no merge-base, or
-a degraded `prepare` has no identity, and the run takes the full audit.
+`base_ref` name. Only the commit objects decide: replace refs and grafts are
+switched off, and attributes are read from the empty tree, so neither a
+`.gitattributes` in the change nor the repository the id is computed in moves
+it. A rebase that leaves the hunks and their three context lines alone keeps
+it; a conflict always touches one of them, so it changes it. `--stable` is not
+used: it strips whitespace and reads a re-indented YAML block as the same
+change. A git older than 2.39 (no `--verbatim`), no merge-base, or a degraded
+`prepare` has no identity, and the run takes the full audit. On git older than
+2.40 the empty-tree attribute source is not honoured, so a repository whose
+`.gitattributes` changes diff output gets ids that do not match across
+repositories, and carries nothing (the full audit, never a wrong carry).
+
+`continuity` computes the head's identity first, before any agent runs and on
+every answer — the `/vetty` opt-out included — and `post_feedback` stamps that
+identity on a verdict pinned to the head prepare read. The alignment a run
+pushes, and a head a repin moves to, are identified from the **forge** instead
+(below): the agents ran in the workspace with a shell and the forge token, and
+its refs, replace objects, grafts, config and object store are theirs to
+rewrite.
 
 The fact travels **with the gate**, never from run artifacts or "the latest
 comment". `post_feedback` ends the status note with ` · pid1:<id>` (within
@@ -147,24 +168,36 @@ GitHub's 140 characters on every verdict) and writes the review's **last line**
 as `<!-- vetty-gate/v1 sha=… id=… verdict=… origin=… origin_at=… -->`; the
 opener is defused wherever an agent-written section carries it. `continuity`
 reads the pull request, this App's reviews and the forge's combined status on
-every sha a marker names, and decides by predicates over sets:
+every sha a marker names **and on the head**, and decides by predicates over
+sets:
 
-- **any** verdict on the same change that is not green → full audit (unanimity
-  veto — it covers the hold whose gate was refused for a moved head);
+- **any** verdict on the same change that is not green, any status stamped with
+  it that is not green, or a red status on the head itself (stamped or not — a
+  carry never paints over one) → full audit (unanimity veto — it covers the hold
+  whose gate was refused for a moved head, and, on the head itself, the hold
+  whose review failed to post while its status landed; such a marker-less hold
+  on ANOTHER head of the change is not found — that would take the pull
+  request's force-push timeline);
 - this head carries an eligible green → `already_gated`: `continuity_standby`
   hands `arm_automerge` the head, which renews the arming pinned to it, and
   nothing is published;
 - another head carries an eligible green whose ORIGINAL audit is younger than
   `carry_max_age_h` → the verdict `carried`, published on this head with the
   origin travelling (a chain of carries never extends the age);
-- the forge head is no longer the one `prepare` read → done (that head has its
-  own delivery); anything else → the full audit.
+- anything else — a forge head that is no longer the one `prepare` read
+  included: nothing says that head has a delivery of its own — → the full
+  audit.
 
 Eligible means this App's review names the sha and the id, and the forge's one
 status for the context on that sha is green, ends with the same stamp and links
-that review. GitHub-only; a history not read whole, or any read that fails, is
-the full audit, said so in the reason. Neither the carry nor the standby path
-holds an LLM node.
+that review. A review is this App's when its author is the identity the run
+token speaks as — by user id, since REST and GraphQL spell a bot's login
+differently (`slug[bot]` / `slug`), or by login. Where the forge token is not
+the publishing App (a PAT beside an App connection) no review is this App's,
+and nothing is carried: the full audit. GitHub-only; a history not
+read whole, or any read that fails, is the full audit, said so in the reason.
+Neither the carry nor the standby path holds a node that can call a model, by
+the engine's own `ir.NodeUsesLLM`.
 
 `carried` certifies the supply-chain audit and alignment of an **identical
 change**, not a build of this tree: its note says *this base is built by the
@@ -176,13 +209,21 @@ ignore line numbers — that is what lets a rebase pass — so a hunk re-applied
 elsewhere with the same three context lines is the same change.
 
 `post_feedback` also **repins**: when a green audit finishes after a rebase
-moved the head, and the new head is identity-equal against the base's current
-tip (fetched with the token in git's environment), the verdict is published
-there as `carried`, its origin the commit actually audited. A hold is never
-moved, and any other new head is published to as before — and refused by the
-server for the moved head. `arm_automerge` does not arm on a repin (the gate
-and the audited head disagree); the new head's own synchronize run finds it
-already gated and arms it.
+moved the head, the new head's identity is computed in a scratch repository the
+node creates and fills from the forge alone — an explicit URL, system and
+global config cut off, the base branch as the forge holds it now, the token in
+git's environment — and, when it equals the audited change's and the new head's
+own gate history vetoes nothing (the same predicate, one shared block), the
+verdict is published there as `carried`, its origin the commit actually
+audited. A hold is never moved, and any other new head is published to as
+before — and refused by the server for the moved head; the run's summary says
+why it did not repin. The history is read last, right before the publish: the
+server orders decisions by the time it receives them, so a hold published on
+the new head after that read still supersedes the carry, and only a hold
+landing in the second between the read and the publish is overwritten — a
+window only a compare-and-set on the publish endpoint would close. After a
+repin, `arm_automerge` vouches the gate against the head the verdict was
+carried onto and arms it.
 
 The `/vetty` command pins `continuity: "false"`, so a human gesture always buys
 a full audit; an operator pin of `continuity` in the integration's
@@ -195,8 +236,10 @@ refuses `CLEAN`. A refused arming is classified by re-reading the pull request:
 context's `isRequired` — a required context not passing, or a rollup not read
 whole, merges nothing; otherwise `automerge_on_unstable` decides (`merge`:
 pinned now, what an earlier arming would have done; `wait`: only once the forge
-reports `CLEAN` within `automerge_settle_s`). Every head change re-arms through
-the carry and standby paths at no LLM cost.
+reports `CLEAN` within `automerge_settle_s`). A `carried` verdict built nothing
+on its tree, so it always waits for `CLEAN`, whatever the policy. A repository
+that does not allow auto-merge gets no merge in place of the refused arming.
+Every head change re-arms through the carry and standby paths at no LLM cost.
 
 Workflow block: `entry: prepare`; budget `max_parallel_branches: 1`,
 `max_duration: "4h"`, `max_cost_usd: 25`; `sandbox.image:

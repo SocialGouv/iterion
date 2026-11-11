@@ -30,23 +30,33 @@ const (
 	depUpdateGuardBot = "dep-update-guard/main.bot"
 	identityOpen      = "# >>> vetty-change-identity/v1"
 	identityClose     = "# <<< vetty-change-identity/v1"
-	// The App the stub forge says the run token speaks as.
+	historyOpen       = "# >>> vetty-gate-history/v1"
+	historyClose      = "# <<< vetty-gate-history/v1"
+	// The App the stub forge says the run token speaks as, and its user id.
 	vettyLogin = "acme-vetty[bot]"
+	vettyID    = 4242
 )
 
 // identityBlock extracts the identity contract block a node carries.
 func identityBlock(t *testing.T, node string) string {
 	t.Helper()
+	return sentinelBlock(t, node, identityOpen, identityClose)
+}
+
+// sentinelBlock extracts the text a node carries between two sentinels,
+// both included, each present exactly once.
+func sentinelBlock(t *testing.T, node, open, closing string) string {
+	t.Helper()
 	script := toolScript(t, depUpdateGuardBot, node)
-	if strings.Count(script, identityOpen) != 1 || strings.Count(script, identityClose) != 1 {
-		t.Fatalf("%s carries %d opening and %d closing identity sentinels, want exactly one of each",
-			node, strings.Count(script, identityOpen), strings.Count(script, identityClose))
+	if strings.Count(script, open) != 1 || strings.Count(script, closing) != 1 {
+		t.Fatalf("%s carries %d %q and %d %q sentinels, want exactly one of each",
+			node, strings.Count(script, open), open, strings.Count(script, closing), closing)
 	}
-	i, j := strings.Index(script, identityOpen), strings.Index(script, identityClose)
+	i, j := strings.Index(script, open), strings.Index(script, closing)
 	if j < i {
-		t.Fatalf("%s: the identity sentinels are out of order", node)
+		t.Fatalf("%s: the %q sentinels are out of order", node, open)
 	}
-	return script[i : j+len(identityClose)]
+	return script[i : j+len(closing)]
 }
 
 // changeIdentity runs the contract block continuity carries — the code
@@ -120,7 +130,9 @@ func commitTree(t *testing.T, ws, parent, msg string, files map[string][]byte) s
 //
 // Mutations (main.bot, both copies of the block) and the case each reddens:
 // --verbatim -> --stable (the re-indent case); drop -O<devnull> (the
-// diff.orderFile case); drop base_ref from the hash (the base_ref case).
+// diff.orderFile case); drop base_ref from the hash (the base_ref case); drop
+// GIT_NO_REPLACE_OBJECTS (the replace-ref case); drop GIT_GRAFT_FILE (the
+// graft case); drop GIT_ATTR_SOURCE and attr.tree (the .gitattributes case).
 func TestDepUpdateGuardChangeIdentityContract(t *testing.T) {
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 not on PATH")
@@ -235,6 +247,60 @@ func TestDepUpdateGuardChangeIdentityContract(t *testing.T) {
 		}
 	})
 
+	// Only the commit objects decide. What a repository layers over them —
+	// a replace ref, a graft, a .gitattributes — is local state, and the id
+	// is compared across repositories: a workspace and the scratch repository
+	// post_feedback fills from the forge.
+	t.Run("a replace ref does not move the id", func(t *testing.T) {
+		ws, base := fixture(t)
+		x := commitTree(t, ws, base, "bump", map[string][]byte{"deps.yaml": depsYAML(bump)})
+		other := commitTree(t, ws, base, "another bump", map[string][]byte{"deps.yaml": depsYAML(map[int]string{20: "key20: v77"})})
+		before := id(t, ws, other)
+		gittest.Run(t, ws, "replace", other, x)
+		if got := id(t, ws, other); got != before {
+			t.Errorf("a replace ref made %s read as %s: id %s, want %s", other[:12], x[:12], got, before)
+		}
+	})
+	t.Run("a graft does not move the id", func(t *testing.T) {
+		ws, base := fixture(t)
+		x := commitTree(t, ws, base, "bump", map[string][]byte{"deps.yaml": depsYAML(bump)})
+		moved := commitTree(t, ws, base, "base moves", map[string][]byte{"other.txt": []byte("two\n")})
+		gittest.Run(t, ws, "branch", "-f", "main", moved)
+		before := id(t, ws, x)
+		// Grafted onto the moved base, x's merge-base would become that base
+		// and its diff would revert the base's change.
+		grafts := filepath.Join(gittest.Run(t, ws, "rev-parse", "--absolute-git-dir"), "info", "grafts")
+		if err := os.MkdirAll(filepath.Dir(grafts), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(grafts, []byte(x+" "+moved+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if got := id(t, ws, x); got != before {
+			t.Errorf("a graft re-parented %s: id %s, want %s", x[:12], got, before)
+		}
+	})
+	t.Run("a .gitattributes in the tree does not move the id across repositories", func(t *testing.T) {
+		ws := t.TempDir()
+		gittest.InitRepo(t, ws)
+		base := commitTree(t, ws, "HEAD", "base", map[string][]byte{
+			"deps.yaml": depsYAML(nil), ".gitattributes": []byte("deps.yaml -diff\n"),
+		})
+		gittest.Run(t, ws, "branch", "-f", "main", base)
+		x := commitTree(t, ws, base, "bump", map[string][]byte{"deps.yaml": depsYAML(bump)})
+		inWorkspace := id(t, ws, x)
+		// A bare repository holding the same commits and no checkout: the
+		// shape of the one post_feedback fills from the forge.
+		bare := filepath.Join(t.TempDir(), "scratch.git")
+		gittest.Run(t, filepath.Dir(bare), "init", "-q", "--bare", bare)
+		gittest.Run(t, bare, "fetch", "-q", ws, base+":refs/vetty/base", x+":refs/vetty/head")
+		inScratch, why := changeIdentity(t, bare, "main", "refs/vetty/base", x)
+		if inScratch == "" || inScratch != inWorkspace {
+			t.Errorf("the same commits got %s in the workspace and %q in a bare repository (%s): the tree's attributes moved the id",
+				inWorkspace, inScratch, why)
+		}
+	})
+
 	t.Run("no merge-base, no identity", func(t *testing.T) {
 		ws, _ := fixture(t)
 		gittest.Run(t, ws, "switch", "-q", "--orphan", "unrelated")
@@ -310,7 +376,9 @@ type contForge struct {
 	reviews  []map[string]any
 	endless  bool // every reviews page says rel="next"
 	statuses map[string][]map[string]any
-	seen     []string
+	// viewer answers GraphQL's `viewer`; nil is the App as REST spells it.
+	viewer map[string]any
+	seen   []string
 }
 
 func (f *contForge) requests() []string {
@@ -332,7 +400,11 @@ func (f *contForge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	const prefix = "/repos/acme/widgets/"
 	switch {
 	case r.Method == http.MethodPost && r.URL.Path == "/graphql":
-		_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"viewer": map[string]any{"login": vettyLogin}}})
+		viewer := f.viewer
+		if viewer == nil {
+			viewer = map[string]any{"login": vettyLogin, "databaseId": vettyID}
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"viewer": viewer}})
 	case r.URL.Path == prefix+"pulls/7":
 		_ = json.NewEncoder(w).Encode(map[string]any{"head": map[string]any{"sha": f.head}, "base": map[string]any{"ref": f.baseRef}})
 	case r.URL.Path == prefix+"pulls/7/reviews":
@@ -363,11 +435,16 @@ func reviewURL(n int) string {
 }
 
 // vettyReview is a review as post_feedback publishes it: the comment, the
-// footer, and the marker on the last line.
+// footer, and the marker on the last line. The App's own reviews carry its
+// user id; any other author another one.
 func vettyReview(n int, author, marker string) map[string]any {
 	body := "**✅ Safe bump — nothing left to align**\n\n## What Vetty did\nNothing left to align.\n\n" +
 		"_🤖 [iterion](https://iterion.cloud) — Vetty, deterministic feedback._\n\n" + marker
-	return map[string]any{"id": n, "user": map[string]any{"login": author, "type": "Bot"},
+	uid := 9000 + n
+	if author == vettyLogin {
+		uid = vettyID
+	}
+	return map[string]any{"id": n, "user": map[string]any{"login": author, "type": "Bot", "id": uid},
 		"body": body, "html_url": reviewURL(n)}
 }
 
@@ -427,13 +504,13 @@ func runContinuity(t *testing.T, ws, head string, forge http.Handler, over map[s
 		t.Fatalf("continuity output is not continuity_output JSON: %v (%q)", err, raw)
 	}
 	exclusive := 0
-	for _, k := range []string{"carry", "already_gated", "stale"} {
+	for _, k := range []string{"carry", "already_gated"} {
 		if res[k] == true {
 			exclusive++
 		}
 	}
 	if exclusive > 1 {
-		t.Fatalf("continuity answered more than one of carry/already_gated/stale: %v", res)
+		t.Fatalf("continuity answered both carry and already_gated: %v", res)
 	}
 	if s, _ := res["reason"].(string); s == "" {
 		t.Fatalf("continuity omitted its reason: %v", res)
@@ -449,12 +526,16 @@ func utcAgo(d time.Duration) string {
 // stub forge, every case with the reviews served in BOTH orders: the answer
 // is a predicate over sets, so it must not move.
 //
-// Mutations (main.bot `continuity`) and the case each reddens: delete the
-// unanimity veto (a hold on the same change); drop target_url == html_url
-// (a status linking another review); drop the age comparison (an expired
-// origin); read the first marker found instead of the last line (a marker
-// planted above the footer); treat a capped page walk as whole (an endless
-// history); drop the own-identity term (a green another bot vouches for).
+// Mutations (main.bot, the gate-history block, both copies) and the case
+// each reddens: delete the unanimity veto (a hold on the same change); drop
+// target_url == html_url (a status linking another review); drop the age
+// comparison in continuity (an expired origin); read the first marker found
+// instead of the last line (a marker planted above the footer); treat a
+// capped page walk as whole (an endless history); drop the own-identity
+// login term (a green another bot vouches for); drop the id term (the App
+// spelled without [bot]); stop reading the head's own status, or drop the
+// red-on-the-head rule (a hold with no marker on this head, an unstamped red
+// on this head).
 func TestDepUpdateGuardContinuityDecides(t *testing.T) {
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 not on PATH")
@@ -478,6 +559,7 @@ func TestDepUpdateGuardContinuityDecides(t *testing.T) {
 		reviews  []map[string]any
 		statuses map[string][]map[string]any
 		endless  bool
+		viewer   map[string]any
 		over     map[string]string
 		check    func(t *testing.T, res map[string]any, reads []string)
 	}{
@@ -575,13 +657,60 @@ func TestDepUpdateGuardContinuityDecides(t *testing.T) {
 			check:    wantNoCarry("carry_max_age_h is 0"),
 		},
 		{
-			name:     "the head moved since prepare: done, the newer head has its own delivery",
+			// Nothing says the newer head has a delivery of its own (a launch
+			// on `opened` with review_on_sync off has none): the head read
+			// is audited, and post_feedback repins only an identical change.
+			name:     "the head moved since prepare: the full audit of the head read",
 			head:     other,
 			reviews:  []map[string]any{greenOn(1, fx.x, "clean", fx.x, fresh)},
 			statuses: map[string][]map[string]any{fx.x: greenStatus(1)},
+			check:    wantNoCarry("the head moved since prepare"),
+		},
+		{
+			// The review POST can fail while the gate still lands: the hold
+			// is then a stamped red with no marker. On the head it is read.
+			name:    "a stamped hold with no marker on this head vetoes the carry",
+			reviews: []map[string]any{greenOn(1, fx.x, "clean", fx.x, fresh)},
+			statuses: map[string][]map[string]any{
+				fx.x: greenStatus(1),
+				fx.y: {gateStatus("failure", "supply-chain risk: the bump was not applied"+stamp, "")},
+			},
+			check: wantNoCarry("for this same change"),
+		},
+		{
+			name:    "a red on this head with no stamp vetoes the carry: a carry never paints over one",
+			reviews: []map[string]any{greenOn(1, fx.x, "clean", fx.x, fresh)},
+			statuses: map[string][]map[string]any{
+				fx.x: greenStatus(1),
+				fx.y: {gateStatus("failure", "review refused to certify", "")},
+			},
+			check: wantNoCarry("never paints over"),
+		},
+		{
+			// The control for the two above: the run's own in-flight claim
+			// is what a launch leaves on the head, and it vetoes nothing.
+			name:    "a pending claim on this head does not veto",
+			reviews: []map[string]any{greenOn(1, fx.x, "clean", fx.x, fresh)},
+			statuses: map[string][]map[string]any{
+				fx.x: greenStatus(1),
+				fx.y: {gateStatus("pending", "review in progress", "")},
+			},
 			check: func(t *testing.T, res map[string]any, _ []string) {
-				if res["stale"] != true || res["carry"] == true {
-					t.Errorf("want stale, got %v", res)
+				if res["carry"] != true {
+					t.Errorf("an in-flight claim on the head vetoed the carry: %v", res)
+				}
+			},
+		},
+		{
+			// REST spells the App's bot `slug[bot]`; GraphQL's viewer may say
+			// `slug`. The user id is the same account either way.
+			name:     "the run token's viewer spells the App without [bot]: the id still names it",
+			reviews:  []map[string]any{greenOn(1, fx.x, "clean", fx.x, fresh)},
+			statuses: map[string][]map[string]any{fx.x: greenStatus(1)},
+			viewer:   map[string]any{"login": strings.TrimSuffix(vettyLogin, "[bot]"), "databaseId": vettyID},
+			check: func(t *testing.T, res map[string]any, _ []string) {
+				if res["carry"] != true {
+					t.Errorf("the App's own review was not recognised by its id: %v", res)
 				}
 			},
 		},
@@ -661,7 +790,8 @@ func TestDepUpdateGuardContinuityDecides(t *testing.T) {
 				if tc.base != "" {
 					base = tc.base
 				}
-				forge := &contForge{t: t, head: head, baseRef: base, reviews: reviews, endless: tc.endless, statuses: tc.statuses}
+				forge := &contForge{t: t, head: head, baseRef: base, reviews: reviews, endless: tc.endless,
+					statuses: tc.statuses, viewer: tc.viewer}
 				res := runContinuity(t, fx.ws, fx.y, forge, tc.over)
 				t.Run(order, func(t *testing.T) { tc.check(t, res, forge.requests()) })
 				outs = append(outs, res)
@@ -691,7 +821,9 @@ func wantNoCarry(reason string) func(t *testing.T, res map[string]any, reads []s
 //
 // Mutations: delete the context_vars line from the /vetty invocation, or
 // flip the var's default (the manifest half reddens); remove the early `if
-// not bool(enabled)` exit in continuity (the behaviour half reddens).
+// not bool(enabled)` exit in continuity (the behaviour half reddens); move
+// the identity computation after that exit (the full audit /vetty buys is
+// published unstamped, so no later rebase can carry it).
 func TestDepUpdateGuardCommandForcesAFullAudit(t *testing.T) {
 	m, err := bundle.LoadManifest(filepath.Join("dep-update-guard", bundle.ManifestFile))
 	if err != nil {
@@ -735,8 +867,11 @@ func TestDepUpdateGuardCommandForcesAFullAudit(t *testing.T) {
 	}
 	off := &contForge{t: t, head: fx.y, baseRef: "main", reviews: reviews, statuses: statuses}
 	res := runContinuity(t, fx.ws, fx.y, off, map[string]string{"{{vars.continuity}}": "false"})
-	if res["carry"] == true || res["already_gated"] == true || res["stale"] == true {
+	if res["carry"] == true || res["already_gated"] == true {
 		t.Errorf("continuity=false still short-circuited the audit: %v", res)
+	}
+	if res["change_id"] != fx.id {
+		t.Errorf("continuity=false computed no identity (%v): the full audit it buys would publish unstamped", res["change_id"])
 	}
 	if reason, _ := res["reason"].(string); !strings.Contains(reason, "continuity is off") || !strings.Contains(reason, "full audit") {
 		t.Errorf("the reason must name the full-audit request, got %q", reason)
@@ -747,14 +882,17 @@ func TestDepUpdateGuardCommandForcesAFullAudit(t *testing.T) {
 }
 
 // TestDepUpdateGuardContinuityPathSpendsNoTokens walks the compiled graph
-// from continuity along its carry and already_gated edges: every node they
-// can reach is a tool or a compute node (a terminal aside), so a carry and a
-// standby cost 0 LLM tokens and are immune to a provider's quota wall; and
-// both reach arm_automerge, which renews the arming pinned to the new head.
+// from continuity along its carry and already_gated edges: no node they can
+// reach can call a model, by the engine's own predicate (ir.NodeUsesLLM — a
+// tool node whose recovery ladder has an agent or self-repair rung counts),
+// so a carry and a standby cost 0 LLM tokens and are immune to a provider's
+// quota wall; and both reach arm_automerge, which renews the arming pinned
+// to the new head.
 //
 // Mutations: route `continuity -> security_audit when carry`, or insert an
-// agent on either path (an LLM node is reached); route `continuity_standby ->
-// done` (arm_automerge is not reached).
+// agent on either path (an LLM node is reached); give feedback_health a
+// recovery ladder with an agent rung (a tool node that can call a model);
+// route `continuity_standby -> done` (arm_automerge is not reached).
 func TestDepUpdateGuardContinuityPathSpendsNoTokens(t *testing.T) {
 	wf := compilePlanPhaseBot(t, "dep-update-guard")
 	if _, ok := wf.Nodes["continuity"].(*ir.ToolNode); !ok {
@@ -784,17 +922,18 @@ func TestDepUpdateGuardContinuityPathSpendsNoTokens(t *testing.T) {
 					continue
 				}
 				seen[id] = true
-				switch n := wf.Nodes[id].(type) {
-				case *ir.ToolNode, *ir.ComputeNode:
+				n := wf.Nodes[id]
+				switch {
+				case n == nil && (id == "done" || id == "fail"):
+					continue
+				case n == nil:
+					t.Fatalf("the %s path reaches %q, which is no node", cond, id)
+				case ir.NodeUsesLLM(n):
+					t.Errorf("the %s path reaches %q, a %T that can call a model", cond, id, n)
+				}
+				switch n.(type) {
 				case *ir.DoneNode, *ir.FailNode:
 					continue
-				case nil:
-					if id == "done" || id == "fail" {
-						continue
-					}
-					t.Fatalf("the %s path reaches %q, which is no node", cond, id)
-				default:
-					t.Errorf("the %s path reaches %q, a %T: a node that can call a model", cond, id, n)
 				}
 				for _, e := range out[id] {
 					queue = append(queue, e.To)
@@ -809,5 +948,17 @@ func TestDepUpdateGuardContinuityPathSpendsNoTokens(t *testing.T) {
 				t.Errorf("the %s path never reaches arm_automerge (reached %v): the arming is not renewed on the new head", cond, reached)
 			}
 		})
+	}
+}
+
+// TestDepUpdateGuardGateHistoryHasOneText: continuity and post_feedback
+// decide over the same gate history with the same predicate — the veto that
+// keeps continuity from carrying a verdict keeps post_feedback from
+// repinning one. Mutation: edit either copy of the block alone.
+func TestDepUpdateGuardGateHistoryHasOneText(t *testing.T) {
+	a := sentinelBlock(t, "continuity", historyOpen, historyClose)
+	b := sentinelBlock(t, "post_feedback", historyOpen, historyClose)
+	if a != b {
+		t.Errorf("the gate-history block differs between continuity and post_feedback: a repin would follow another rule than a carry")
 	}
 }

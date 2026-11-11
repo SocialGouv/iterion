@@ -60,14 +60,16 @@ func runCommitProbe(t *testing.T, ws, prepared, reported, tokenPath string, env 
 }
 
 // TestDepUpdateGuardCommitProbeReadsGit: a new commit counts only when git
-// says so — the workspace HEAD, a strict descendant of the audited commit,
-// held by the remote branch — and the agent's report, when it gives one,
-// names that same commit.
+// says so — the workspace HEAD, ONE commit whose only parent is the audited
+// commit, held by the remote branch — and the agent's report, when it names
+// a commit id, names that same commit.
 //
 // Mutations (main.bot `commit_probe`): drop the remote == local HEAD
 // comparison (the unpushed case certifies a commit the PR does not carry);
 // restore the report-first exit on an empty report (the pushed-but-
-// unreported case is refused again).
+// unreported case is refused again); refuse a report that names no commit
+// id instead of setting it aside (the odd-report case); test only that the
+// audited commit is an ancestor (the someone-else's-commit cases).
 func TestDepUpdateGuardCommitProbeReadsGit(t *testing.T) {
 	read := func(t *testing.T, ws, prepared, reported string, extra ...string) commitProbeResult {
 		t.Helper()
@@ -114,6 +116,17 @@ func TestDepUpdateGuardCommitProbeReadsGit(t *testing.T) {
 			t.Fatalf("a pushed alignment with no report was not certified: %+v", got)
 		}
 	})
+	// A report with no commit id in it says nothing git cannot: refusing on
+	// it pinned the verdict to the head the run's own push moved away from,
+	// and the server refused that as "head moved".
+	for _, reported := range []string{"N/A", "unknown", "pushed", "commit abc1234"} {
+		t.Run("pushed, a report naming no commit id is set aside/"+reported, func(t *testing.T) {
+			got := read(t, ws, prepared, reported)
+			if !got.Moved || got.SHA != aligned || !strings.Contains(got.Reason, "set aside") {
+				t.Fatalf("a pushed alignment with the report %q was not certified on the git evidence: %+v", reported, got)
+			}
+		})
+	}
 	foreign := t.TempDir()
 	foreignHead := gittest.InitRepo(t, foreign)
 	t.Run("ambient repository redirection is ignored", func(t *testing.T) {
@@ -137,8 +150,9 @@ func TestDepUpdateGuardCommitProbeReadsGit(t *testing.T) {
 	// between, so this run's commit is not what the pull request carries.
 	sibling := strings.TrimSpace(gittest.Run(t, ws, "commit-tree", "-p", prepared, "-m", "someone else", prepared+"^{tree}"))
 	gittest.Run(t, ws, "push", "-q", "--force", "origin", sibling+":refs/heads/main")
+	gittest.Run(t, ws, "reset", "-q", "--hard", aligned)
 	t.Run("the remote holds another commit: no evidence", func(t *testing.T) {
-		if got := read(t, ws, prepared, ""); got.Moved || got.SHA != "" {
+		if got := read(t, ws, prepared, ""); got.Moved || got.SHA != "" || !strings.Contains(got.Reason, "no push") {
 			t.Fatalf("a head the remote does not hold was certified: %+v", got)
 		}
 	})
@@ -156,6 +170,46 @@ func TestDepUpdateGuardCommitProbeReadsGit(t *testing.T) {
 			t.Fatalf("an unreadable repository certified a commit: %+v", got)
 		}
 	})
+
+	// The alignment is ONE commit on the audited head. Anything else that
+	// descends from it and that the remote holds — a commit someone else
+	// pushed meanwhile, pulled or rebased under the alignment, a merge of
+	// it, a second commit — would ride on a verdict that never saw it. Each
+	// case is pushed, so only the one-commit rule can refuse it.
+	for _, tc := range []struct {
+		name  string
+		build func(t *testing.T, ws, audited, foreign string)
+	}{
+		{"the alignment rebased onto a commit someone else pushed", func(t *testing.T, ws, _, foreign string) {
+			gittest.Run(t, ws, "reset", "-q", "--hard", foreign)
+			gittest.Run(t, ws, "commit", "--allow-empty", "-m", "alignment, rebased")
+		}},
+		{"the alignment with a commit someone else pushed merged in", func(t *testing.T, ws, _, foreign string) {
+			gittest.Run(t, ws, "commit", "--allow-empty", "-m", "alignment")
+			gittest.Run(t, ws, "merge", "-q", "--no-edit", "--no-ff", foreign)
+		}},
+		{"two commits on the audited head", func(t *testing.T, ws, _, _ string) {
+			gittest.Run(t, ws, "commit", "--allow-empty", "-m", "alignment")
+			gittest.Run(t, ws, "commit", "--allow-empty", "-m", "and more")
+		}},
+	} {
+		t.Run("pushed, not one commit on the audited head: "+tc.name, func(t *testing.T) {
+			origin := filepath.Join(t.TempDir(), "origin.git")
+			ws := t.TempDir()
+			gittest.InitRepo(t, ws)
+			gittest.Run(t, ws, "init", "-q", "--bare", origin)
+			gittest.Run(t, origin, "config", "maintenance.auto", "false")
+			gittest.Run(t, ws, "remote", "add", "origin", origin)
+			gittest.Run(t, ws, "commit", "--allow-empty", "-m", "dependency bump")
+			audited := strings.TrimSpace(gittest.Run(t, ws, "rev-parse", "HEAD"))
+			foreign := strings.TrimSpace(gittest.Run(t, ws, "commit-tree", "-p", audited, "-m", "someone else", audited+"^{tree}"))
+			tc.build(t, ws, audited, foreign)
+			gittest.Run(t, ws, "push", "-q", "origin", "HEAD:refs/heads/main")
+			if got := read(t, ws, audited, ""); got.Moved || got.SHA != "" || !strings.Contains(got.Reason, "ONE commit") {
+				t.Fatalf("a head that is not one commit on the audited one was certified: %+v", got)
+			}
+		})
+	}
 }
 
 // TestDepUpdateGuardCommitProbeTokenTravelsByEnvironment: the push evidence
@@ -262,6 +316,13 @@ func TestDepUpdateGuardCommitEvidenceReachesEveryConsumer(t *testing.T) {
 		}
 		if edge.From == "feedback_health" && edge.To == "arm_automerge" && mappings["committed_sha"] != "{{outputs.commit_probe.sha}}" {
 			t.Fatal("arming reads an unverified commit report")
+		}
+		// The revision arming vouches for is the one post_feedback pinned
+		// the verdict to — after a repin, the head the green was carried
+		// onto. Mutation: map prepare.head_sha again -> a repinned run
+		// refuses to arm the head it just gated.
+		if edge.From == "feedback_health" && edge.To == "arm_automerge" && mappings["audited_sha"] != "{{outputs.post_feedback.pinned_sha}}" {
+			t.Fatalf("arming vouches for %q, not the revision post_feedback pinned", mappings["audited_sha"])
 		}
 	}
 	if commitEdges != 1 || probeEdges != 1 {

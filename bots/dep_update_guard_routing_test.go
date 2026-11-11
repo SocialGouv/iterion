@@ -1,6 +1,7 @@
 package bots
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -212,6 +213,21 @@ func TestDepUpdateGuardVerdictRouting(t *testing.T) {
 	}
 	if !sawCarry || !sawAudit {
 		t.Errorf("continuity must carry to post_feedback (%v) and fall through to security_audit (%v)", sawCarry, sawAudit)
+	}
+	// Exactly three ways out: carry, already_gated, and the full audit.
+	// A fourth — ending the run on a head that moved since prepare — leaves
+	// that head with no check and no diagnosis wherever nothing else
+	// launches on it (review_on_sync off). Mutation: route `continuity ->
+	// done when stale`.
+	var outs []string
+	for _, e := range cr.Workflow.Edges {
+		if e.From == "continuity" {
+			outs = append(outs, edgeGuard(e)+" -> "+e.To)
+		}
+	}
+	slices.Sort(outs)
+	if want := []string{"else -> security_audit", "when already_gated -> continuity_standby", "when carry -> post_feedback"}; !slices.Equal(outs, want) {
+		t.Errorf("continuity's edges are %q, want exactly %q", outs, want)
 	}
 
 	// The commit agent's nothing-to-commit summary is published on the clean

@@ -23,7 +23,7 @@ import (
 // just one. (`TestCatalogInputReadsAreMappedByAnIncomingEdge` only proves SOME
 // edge maps a read field, which is the weaker property.)
 //
-// Mutation that must redden it: drop `audited_sha` from any one of the six
+// Mutation that must redden it: drop `audited_sha` from any one of the
 // `-> post_feedback` edges in bots/dep-update-guard/main.bot.
 func TestDepUpdateGuardEveryFeedbackEdgePinsTheAuditedSHA(t *testing.T) {
 	const (
@@ -80,6 +80,23 @@ func TestDepUpdateGuardEveryFeedbackEdgePinsTheAuditedSHA(t *testing.T) {
 		if !strings.Contains(pin, wantRef) {
 			t.Errorf("edge %s -> %s (%s) pins %q to %s, want a reference to %s — %s",
 				e.From, e.To, edgeGuard(e), pinField, pin, wantRef, why)
+		}
+		// The stamp's source. head_sha / head_id are the head prepare read
+		// and the identity continuity gave it before any agent ran, on EVERY
+		// edge: post_feedback stamps head_id only on a pin equal to head_sha,
+		// so a pasted value would stamp a revision with another's identity.
+		// Mutation: map head_id from anything else, or drop it from one edge.
+		mapped := map[string]string{}
+		for _, m := range e.With {
+			mapped[m.Key] = strings.Trim(strings.TrimSpace(m.Raw), `"`)
+		}
+		for key, want := range map[string]string{
+			"head_sha": "{{outputs.prepare.head_sha}}",
+			"head_id":  "{{outputs.continuity.change_id}}",
+		} {
+			if mapped[key] != want {
+				t.Errorf("edge %s -> %s (%s) maps %s = %q, want %s", e.From, e.To, edgeGuard(e), key, mapped[key], want)
+			}
 		}
 	}
 

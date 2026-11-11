@@ -4,7 +4,7 @@ Reactive security + alignment guard for automated dependency-update PRs
 (Dependabot / Renovate): audit the bump (supply-chain + CVE), align the
 consuming code, prove the tree with the deterministic verify gate,
 commit onto the PR branch, post the verdict comment. Never merges past a
-check — and only ever the commit it audited. See
+required check — and only ever the commit it audited. See
 [bots/dep-update-guard/](../../bots/dep-update-guard/).
 
 ## 2026-11-11 — 2.12.0: the gate follows a pure rebase, and re-arms on UNSTABLE (#3128) — no live run yet
@@ -22,18 +22,22 @@ check — and only ever the commit it audited. See
     contract v1 (`patch-id --verbatim` of merge-base..head, diff knobs and path
     order pinned, folded with `base_ref`), then the gate history read from the
     forge — this App's reviews, the last-line `vetty-gate/v1` marker each
-    carries, and the combined status on every sha they name. Unanimity veto;
-    `already_gated` → `continuity_standby` → `arm_automerge`; a fresh eligible
-    green → the new verdict `carried`; a moved head → done.
+    carries, and the combined status on every sha they name and on the head.
+    Unanimity veto (a red on the head included); `already_gated` →
+    `continuity_standby` → `arm_automerge`; a fresh eligible green → the new
+    verdict `carried`; anything else, a moved head included → the full audit.
   - `post_feedback` stamps ` · pid1:<id>` on the note and writes the marker as
     the review's last line; it repins a green verdict onto a head that moved by
-    a pure rebase (never a hold).
+    a pure rebase (never a hold), the new head's identity read from the forge
+    in a scratch repository and its gate history vetoing, then arms it.
   - `commit_probe` reads the candidate from git and the push evidence from
-    `git ls-remote` (a pushed alignment the agent left unreported no longer
-    pins the verdict to the head it moved away from).
+    `git ls-remote`: one commit on the audited head, a report with no commit id
+    set aside (a pushed alignment the agent left unreported no longer pins the
+    verdict to the head it moved away from).
   - `arm_automerge` re-reads a refused arming: CLEAN as before, UNSTABLE by
     the check rollup's `isRequired` and `automerge_on_unstable` (merge, the
-    default).
+    default; a `carried` verdict always waits for CLEAN); a repository that
+    does not allow auto-merge gets no merge in its place.
 - Measured, on git 2.43 and 2.55 in scratch repositories (the witnesses in
   `bots/dep_update_guard_continuity_test.go`): a base move in another file or
   15 lines away keeps the id; a base edit on a context line changes it; a YAML

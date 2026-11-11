@@ -341,8 +341,11 @@ compares the change identity of the new head (the `patch-id --verbatim` of
 `merge-base..head`, folded with `base_ref`) against the identity stamped on
 its earlier verdicts, and publishes the green verdict `carried` on the new head
 — or, when the head already carries its own green, only renews the arming. Any
-verdict on the same change that is not green vetoes the carry, and a green
-older than `carry_max_age_h` (72 h, from the original audit) is audited again.
+verdict on the same change that is not green, and any red already on the new
+head, vetoes the carry, and a green older than `carry_max_age_h` (72 h, from
+the original audit) is audited again. An audit that finishes after the rebase
+is repinned onto the new head under the same veto, the new head's identity
+read from the forge, never from the workspace its agents ran in.
 So "the gate went green again on its own" after a rebase is the gate working;
 the build on the new base is the repository's required checks', which run on
 every head. The verdict set Vetty publishes is now eight — `carried` is the
@@ -371,8 +374,9 @@ Which is why the preflight's agreement 7 sharpens its wording once
 And the launch var is only **half** the gesture. The other half is the
 repository's own **Allow auto-merge**: the bot arms a PR through
 `enablePullRequestAutoMerge`, which GitHub refuses outright while that setting
-is off, so an armed bot on a repository that forbids auto-merge merges nothing
-and reports nothing to read. A repository created without it has it off —
+is off, so an armed bot on a repository that forbids auto-merge merges nothing:
+Vetty reads the setting back and never turns that refusal into a merge of its
+own, and its reason names it. A repository created without it has it off —
 GitHub's default — so this is a gesture, not a box already ticked:
 
 ```

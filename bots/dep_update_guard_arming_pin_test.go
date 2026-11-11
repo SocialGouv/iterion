@@ -187,7 +187,7 @@ func (forge *armingPinForge) handler(t *testing.T) http.HandlerFunc {
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"data": map[string]any{
 					"viewer":     map[string]any{"login": "acme-vetty[bot]"},
-					"repository": map[string]any{"pullRequest": served},
+					"repository": map[string]any{"autoMergeAllowed": true, "pullRequest": served},
 				},
 			})
 		}
