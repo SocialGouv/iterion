@@ -424,8 +424,9 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 			// (runview.SubbotRootLaunchRows, a document that predates the raw
 			// rows included): a child folds this attempt's flags over them,
 			// never the run's folded rows (whose cells were folded for this
-			// run's bot).
-			recordedLaunchRows: runview.ModelOverridesFromRun(runview.SubbotRootLaunchRows(r, logger)),
+			// run's bot), and its document records them without the flags.
+			recordedLaunchRows: runview.SubbotRootLaunchRows(r, logger),
+			resumed:            true,
 		})),
 	)...)
 

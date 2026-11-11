@@ -193,3 +193,45 @@ func TestResume_ASubbotChildOfARunWithoutRecordedLaunchRowsFoldsItsRows(t *testi
 		t.Fatalf("resumed child dispatched on %s, want the document's row gpt-6-sol (error: %v)", got, err)
 	}
 }
+
+// A CLI child's document records the rows its root's document records as
+// its rows too — this lane folds no policy, so they are the child's fold —
+// and `iterion resume` of the child on its own runs its nodes on them, as
+// a lone resume of a cloud or in-process child replays its fold.
+func TestResume_ASubbotChildResumedAloneRunsTheRootsLaunchRows(t *testing.T) {
+	tr := newLaunchRowsTree(t)
+	r := tr.launch(t, "launch-rows-lone-1", "act=openai/gpt-6-sol")
+	child := tr.child(t, r.ID)
+	tr.unblock(t)
+	p2, _ := newTestPrinter(cli.OutputHuman)
+	err := cli.RunResumeWithFile(context.Background(), tr.childPath, cli.ResumeOptions{RunID: child.ID, StoreDir: tr.storeDir, Force: true}, p2)
+	if got := dispatched(t, err, "gpt-6-sol", "claude-sonnet-4-5"); got != "gpt-6-sol" {
+		t.Fatalf("the child resumed alone dispatched on %s, want the root's launch row gpt-6-sol (error: %v)", got, err)
+	}
+	if want := []store.RunModelOverride{{Selector: "act", Model: "openai/gpt-6-sol"}}; !reflect.DeepEqual(child.ModelOverrides, want) {
+		t.Fatalf("child rows = %+v, want the root's launch rows %+v", child.ModelOverrides, want)
+	}
+}
+
+// A resume's flags are that attempt's alone: they outrank the recorded rows
+// for the children the attempt spawns, and neither the root's document nor
+// a child's records them — the child's records the root's launch rows,
+// byte for byte, never the flags merged over them as one flat list.
+func TestResume_ASubbotChildDocumentRecordsTheRootsLaunchRowsNotTheAttemptsFlags(t *testing.T) {
+	tr := newLaunchRowsTree(t)
+	r := tr.launch(t, "launch-rows-flags-1", "act=openai/gpt-6-sol")
+	tr.unblock(t)
+	p2, _ := newTestPrinter(cli.OutputHuman)
+	err := cli.RunResumeWithFile(context.Background(), tr.parentPath, cli.ResumeOptions{RunID: r.ID, StoreDir: tr.storeDir, ModelFor: []string{"*=openai/gpt-5.5-mini"}}, p2)
+	if got := dispatched(t, err, "gpt-6-sol", "gpt-5.5-mini", "claude-sonnet-4-5"); got != "gpt-5.5-mini" {
+		t.Fatalf("the attempt's child dispatched on %s, want the attempt's flag gpt-5.5-mini over the recorded row (error: %v)", got, err)
+	}
+	want := []store.RunModelOverride{{Selector: "act", Model: "openai/gpt-6-sol"}}
+	if root := tr.load(t, r.ID); !reflect.DeepEqual(root.LaunchModelOverrides, want) || !reflect.DeepEqual(root.ModelOverrides, want) {
+		t.Fatalf("root document rows %+v, launch rows %+v, want both its launch's %+v", root.ModelOverrides, root.LaunchModelOverrides, want)
+	}
+	child := tr.child(t, r.ID)
+	if !reflect.DeepEqual(child.LaunchModelOverrides, want) || !reflect.DeepEqual(child.ModelOverrides, want) {
+		t.Fatalf("child document rows %+v, launch rows %+v, want both the root's launch rows %+v", child.ModelOverrides, child.LaunchModelOverrides, want)
+	}
+}

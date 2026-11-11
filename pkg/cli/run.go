@@ -164,10 +164,14 @@ type RunOptions struct {
 	// selector machinery is shared; an invalid level is a flag error.
 	EffortFor []string
 	// recordedLaunchRows are the launch rows a resume reads off the run
-	// document (store.Run.LaunchModelOverrides): the subbot children of a
+	// document (runview.SubbotRootLaunchRows): the subbot children of a
 	// resumed run fold the flags above over them, as the resumed run folds
 	// its flags over its own recorded rows. Nil on a launch.
-	recordedLaunchRows model.ModelOverrides
+	recordedLaunchRows []store.RunModelOverride
+	// resumed marks the options a resume hands its subbot runner: the flags
+	// above are that attempt's, and the tree's launch rows are
+	// recordedLaunchRows (treeLaunchRows).
+	resumed bool
 	// AutoResume is the bounded run-level auto-resume budget N
 	// (`--auto-resume`, env ITERION_AUTO_RESUME; default 0 = off). When the
 	// run exits failed_resumable with a retryable cause, the CLI waits
@@ -928,12 +932,17 @@ func subbotRunnerForCLI(parentPath, storeDir string, s store.RunStore, logger *i
 		if tracker := runview.WorkspaceTrackerFor(storeDir); tracker != nil {
 			childOpts = append(childOpts, runtime.WithWorkspaceTracker(tracker))
 		}
-		// The child's document records the tree's launch rows — the flags
-		// over a resume's recorded rows, already parsed by buildRunExecutor
-		// above — so a resume of the child on its own hands them to its own
-		// children.
-		if rows, rerr := childRunOpts.launchRows(); rerr == nil {
-			childOpts = append(childOpts, runtime.WithLaunchModelOverrides(runModelOverrideRows(rows)))
+		// The child's document records the rows its root's document records
+		// (treeLaunchRows), byte for byte, as its launch rows and as its
+		// rows: this lane folds no routing policy, so the root's launch rows
+		// are the child's fold, as the cloud and in-process children record
+		// theirs. A resume of the child on its own then runs its nodes on
+		// them and hands them to its own children, under that resume's
+		// flags. A resume's flags are that attempt's alone, on the child's
+		// document as on the root's, which keeps its launch rows across a
+		// resume.
+		if rows, rerr := childRunOpts.treeLaunchRows(); rerr == nil && len(rows) > 0 {
+			childOpts = append(childOpts, runtime.WithModelOverrides(rows), runtime.WithLaunchModelOverrides(rows))
 		}
 		childEng := runtime.New(childWf, s, childExec, childOpts...)
 		// Unlike the studio's in-process runner (runview.subbotRunnerFor, which
@@ -1017,10 +1026,8 @@ func buildEngine(
 	// No routing policy folds on this lane (ADR-129 §8), so the flags are
 	// both the rows the run executes with and its raw launch rows — the
 	// ones a later `iterion resume` hands the run's subbot children.
-	if ov, err := model.ParseModelOverrides(opts.ModelFor, opts.BackendFor, opts.EffortFor); err == nil {
-		if rows := runModelOverrideRows(ov); len(rows) > 0 {
-			base = append(base, runtime.WithModelOverrides(rows), runtime.WithLaunchModelOverrides(rows))
-		}
+	if rows, err := opts.treeLaunchRows(); err == nil && len(rows) > 0 {
+		base = append(base, runtime.WithModelOverrides(rows), runtime.WithLaunchModelOverrides(rows))
 	}
 
 	// nil logger: buildRunExecutor resolved the same tier a moment ago with
@@ -1227,7 +1234,22 @@ func (o RunOptions) launchRows() (model.ModelOverrides, error) {
 	if err != nil {
 		return model.ModelOverrides{}, err
 	}
-	return flags.MergeOver(o.recordedLaunchRows), nil
+	return flags.MergeOver(runview.ModelOverridesFromRun(o.recordedLaunchRows)), nil
+}
+
+// treeLaunchRows is the tree's launch rows as its root's document records
+// them (runtime.WithLaunchModelOverrides): a launch's flags, or the rows a
+// resume read off the root's document — never a resume's flags, which are
+// that attempt's alone.
+func (o RunOptions) treeLaunchRows() ([]store.RunModelOverride, error) {
+	if o.resumed {
+		return o.recordedLaunchRows, nil
+	}
+	flags, err := model.ParseModelOverrides(o.ModelFor, o.BackendFor, o.EffortFor)
+	if err != nil {
+		return nil, err
+	}
+	return runModelOverrideRows(flags), nil
 }
 
 // runModelOverrideRows converts parsed CLI override directives into the

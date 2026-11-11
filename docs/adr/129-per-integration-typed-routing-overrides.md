@@ -760,7 +760,9 @@ shape. All three are closed in `feat/routing-cells-node-selectors`; what the cod
   top for every child of the tree, as at the root; the CLI hands a child its launch flags, a CLI
   resume the run's recorded launch rows under its own flags. The snapshot's bot level is the root
   run's — the launched bot's — manifest `routing:` block. A child's document records the root's
-  snapshot and launch rows, so a child resumed on its own replays them. A launch `*` row shadows node cells only.
+  snapshot and launch rows, so a child resumed on its own replays them; on the CLI, which folds no
+  policy, it records the root's launch rows as its rows too, never a resume's flags, which are that
+  attempt's alone on a child's document as on the root's. A launch `*` row shadows node cells only.
   §5's "may not drop or replace a node's `fallbacks:` routes" narrows: a route cell re-pins an
   authored route's `backend`, `model` and `provider` and keeps the author's gate, triggers, name and
   action (`ModelOverrides.EffectiveFallback`); it never drops a route nor adds one. A route cell's
