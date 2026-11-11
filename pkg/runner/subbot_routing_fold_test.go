@@ -616,8 +616,8 @@ func TestSubbotChildOfALegacyRootDocWithoutCellsStaysOnTheGateway(t *testing.T) 
 
 // runSubbotUnderARootDocWithoutLaunchRows runs the child once under a root
 // document that froze pol and records docRows as its folded rows, and no
-// raw launch row; it returns the child's error and the run log's warnings.
-func runSubbotUnderARootDocWithoutLaunchRows(t *testing.T, pol *store.RunLLMRoutePolicy, docRows []store.RunModelOverride) (error, string) {
+// raw launch row; it returns the run log's warnings and the child's error.
+func runSubbotUnderARootDocWithoutLaunchRows(t *testing.T, pol *store.RunLLMRoutePolicy, docRows []store.RunModelOverride) (string, error) {
 	t.Helper()
 	t.Setenv("OPENAI_API_KEY", "")
 	r, st := subbotTestRunner(t)
@@ -641,7 +641,7 @@ func runSubbotUnderARootDocWithoutLaunchRows(t *testing.T, pol *store.RunLLMRout
 	if err == nil {
 		t.Fatal("precondition: the child's claw leg fails offline (no credential)")
 	}
-	return err, buf.String()
+	return buf.String(), err
 }
 
 // A document launched today with no launch row records none either, and
@@ -657,7 +657,7 @@ func TestSubbotChildReadsNoParentFoldFromTheRootDocsRows(t *testing.T) {
 	if len(docRows) == 0 {
 		t.Fatal("precondition: the parent's fold holds the parent/act cell")
 	}
-	err, logs := runSubbotUnderARootDocWithoutLaunchRows(t, pol, docRows)
+	logs, err := runSubbotUnderARootDocWithoutLaunchRows(t, pol, docRows)
 	if reachedGPT(t, err) {
 		t.Fatalf("a cell folded for the parent's bot reached the child through the root document's folded rows (child error: %v)", err)
 	}
@@ -673,7 +673,7 @@ func TestSubbotChildReadsNoParentFoldFromTheRootDocsRows(t *testing.T) {
 func TestSubbotChildOfALegacyRootDocWithCellsWarnsItsUnsplitRows(t *testing.T) {
 	pol := &store.RunLLMRoutePolicy{Overrides: []store.RunLLMRouteOverride{{Selector: "review", Model: "openai/gpt-5.5-mini"}}}
 	docRows := []store.RunModelOverride{{Selector: "review", Model: "openai/gpt-5.5-mini"}, {Selector: "act", Model: "openai/gpt-6-sol"}}
-	err, logs := runSubbotUnderARootDocWithoutLaunchRows(t, pol, docRows)
+	logs, err := runSubbotUnderARootDocWithoutLaunchRows(t, pol, docRows)
 	if reachedGPT(t, err) {
 		t.Fatalf("a row that cannot be told from the cells was guessed into the child (child error: %v)", err)
 	}
