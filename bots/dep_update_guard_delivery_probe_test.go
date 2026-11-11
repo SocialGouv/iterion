@@ -861,7 +861,7 @@ func TestDepUpdateGuardProbesDeliveryBeforePushing(t *testing.T) {
 	for _, ex := range stand.Exprs {
 		standExprs[ex.Key] = ex.Raw
 	}
-	for _, green := range []string{"clean", "committed"} {
+	for _, green := range depUpdateGuardGreenVerdicts {
 		if strings.Contains(standExprs["verdict"], green) {
 			t.Errorf("the stand-down hands arm_automerge the verdict %s — arm_automerge arms on %q, so the bump would merge without the alignment", standExprs["verdict"], green)
 		}

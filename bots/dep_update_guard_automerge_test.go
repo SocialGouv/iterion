@@ -992,6 +992,27 @@ func TestDepUpdateGuardArmAutomerge(t *testing.T) {
 		})
 	}
 
+	// Every green verdict arms, pinned; `carried` is the identical change's
+	// audit carried onto this head. Mutation: remove 'carried' from the green
+	// set -> the carried row refuses.
+	for _, verdict := range depUpdateGuardGreenVerdicts {
+		t.Run("verdict "+verdict+" is green: arms pinned", func(t *testing.T) {
+			res, calls, _ := run(t, map[string]string{"{{input.verdict}}": `"` + verdict + `"`})
+			if res["armed"] != true {
+				t.Fatalf("a %s verdict with a green gate must arm: %v", verdict, res)
+			}
+			armed := false
+			for _, c := range calls {
+				if strings.Contains(c.query, "enablePullRequestAutoMerge") && c.vars["oid"] == "d34db33f" {
+					armed = true
+				}
+			}
+			if !armed {
+				t.Errorf("no arming pinned to the reviewed head was sent for %s", verdict)
+			}
+		})
+	}
+
 	t.Run("a clean bump arms too", func(t *testing.T) {
 		// "clean" (safe bump, nothing to align) is as green as "committed" —
 		// it must not need a code change to be mergeable.

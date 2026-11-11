@@ -8,6 +8,10 @@
 ##
 ##   prepare        (tool)     compute the bump diff vs base; list the
 ##                             changed dependency manifests/lockfiles.
+##   continuity     (tool)     DETERMINISTIC: is this head's change one a
+##                             green verdict already covers (a pure rebase,
+##                             or the alignment's own push)? Then carry the
+##                             gate, or renew the arming, with no LLM call.
 ##   security_audit (agent)    supply-chain audit of the bump: malware,
 ##                             typosquats, compromised-maintainer
 ##                             signals, CVEs introduced vs resolved.
@@ -114,6 +118,18 @@ vars:
   respect_human_arming: bool = true
   ## Merge method asked for when arming. Must be one the repo allows.
   automerge_method: string [enum: "squash", "merge", "rebase"] = "squash"
+  ## GATE CONTINUITY. A synchronize launch first asks whether the head
+  ## carries the SAME change an earlier green verdict was about (identity
+  ## contract v1: the verbatim patch-id of merge-base..head, folded with
+  ## base_ref). If so the gate is carried with no LLM call, or the head is
+  ## already gated and only the arming is renewed. The /vetty command pins
+  ## this false, so a human gesture always buys a full audit; an operator
+  ## pin of it in the integration's launch_vars wins on both lanes.
+  continuity: bool = true
+  ## The age past which a green verdict is no longer carried, measured from
+  ## the ORIGINAL audit (a chain of carries never extends it): advisories
+  ## published after that audit are owed a fresh look. 0 turns carrying off.
+  carry_max_age_h: int = 72
   ## Deterministic forge publish grant — INJECTED BY THE ITERION SERVER at
   ## launch when the run's team has a forge connection covering pr_url's
   ## repo. Declaring them here is the whole opt-in (undeclared launch vars
@@ -577,6 +593,33 @@ schema prepare_output:
   ## verdict are all statements ABOUT this commit and no other.
   head_sha: string
 
+schema continuity_input:
+  ## head_sha: prepare.head_sha, the head whose change is identified.
+  head_sha: string
+  ## degraded: prepare could not diff against the true base, so no change
+  ## identity exists.
+  degraded: bool
+
+## What the gate history says about this head's change. At most one of
+## carry / already_gated / stale is true; none of them means the full audit.
+schema continuity_output:
+  ## carry: an eligible green verdict, younger than carry_max_age_h, was
+  ## about the identical change on another head, and no verdict about that
+  ## change holds.
+  carry: bool
+  ## already_gated: this head itself carries an eligible green verdict.
+  already_gated: bool
+  ## stale: the forge head is no longer the one prepare read; that newer
+  ## head has its own delivery.
+  stale: bool
+  ## origin_sha / origin_at: the ORIGINAL audit the carried verdict descends
+  ## from, and when it was published (RFC 3339, UTC).
+  origin_sha: string
+  origin_at: string
+  ## change_id: this head's identity ("pid1:<24 hex>"), empty when none.
+  change_id: string
+  reason: string
+
 schema audit_input:
   bump_summary: string
   dep_files: string[]
@@ -740,6 +783,11 @@ schema feedback_input:
   ## An empty pin posts UNPINNED rather than failing, so a forgotten edge is
   ## silent: `dep_update_guard_gate_test.go` refuses one.
   audited_sha: string
+  ## origin_sha / origin_at: on the carry edge, the original audit the
+  ## carried verdict descends from. Empty elsewhere: an audit is its own
+  ## origin, published now.
+  origin_sha: string
+  origin_at: string
 
 schema feedback_output:
   ## verdict echoed back: the graph stamps it per-edge as a literal, so a
@@ -963,6 +1011,287 @@ print(json.dumps({'is_empty': len(files)==0 and not degraded, 'dep_files': dep,
                   'head_sha': head_sha}))
 "`
   output: prepare_output
+
+## continuity — the first decision after `prepare`, and DETERMINISTIC (no
+## LLM): is this head's change one a green verdict already covers? A rebase
+## of a gated pull request re-presents the same change on a new base; a full
+## audit of it costs an LLM pass and says nothing new about the supply chain.
+##
+## It reads, never writes: the change identity of the head (identity
+## contract v1, below), then the forge — the pull request (its head must
+## still be the one prepare read, its base still base_ref), the reviews this
+## App published and the last-line marker each carries, and the forge's own
+## combined status on every sha a marker names. The fact travels with the
+## gate, so nothing is read from run artifacts or from "the latest comment".
+## GitHub-only; any other forge, any read that fails, any history not read
+## whole is the full audit, said so in the reason.
+##
+## Its three answers are mutually exclusive. `carry` publishes the verdict
+## `carried` on this head; `already_gated` renews the arming only; `stale`
+## ends the run, the newer head having its own delivery. Neither the carry
+## nor the already-gated path holds an LLM node
+## (dep_update_guard_continuity_test.go walks them).
+tool continuity:
+  script: |
+    import calendar, json, os, re, time, urllib.request, urllib.error
+    null = None; true = True; false = False  # JSON-literal shim for missing refs
+    ws = {{vars.workspace_dir}}
+    base_ref = {{vars.base_ref}}
+    pr_url = {{vars.pr_url}}
+    enabled = {{vars.continuity}}
+    max_age_h = {{vars.carry_max_age_h}}
+    gate_on = {{vars.gate_enabled}}
+    gate_context = {{vars.gate_context}}
+    token_ref = {{secrets.forge_token.path}}
+    head_sha = {{input.head_sha}}
+    degraded = {{input.degraded}}
+
+    # >>> vetty-change-identity/v1
+    # Byte-identical in `continuity` and `post_feedback`: the id one stamps is
+    # the id the other compares (dep_update_guard_continuity_test.go pins the
+    # two copies). The identity of the change a head carries is the verbatim
+    # patch-id of merge-base(base_rev, sha)..sha, every diff knob pinned on the
+    # command line, folded with the base_ref NAME so a retargeted pull request
+    # never matches. A rebase that leaves the hunks and their three context
+    # lines alone keeps it; a conflict always touches one of them, so it
+    # changes it. --verbatim, not --stable: --stable strips whitespace and
+    # reads a re-indented YAML block as the same change. Returns (id, reason);
+    # the id is empty when no identity exists, and the reason says why.
+    def change_identity(ws, base_ref, base_rev, sha):
+        import hashlib, subprocess
+        # Variables that point git at another repository or object store, or
+        # inject diff settings this contract pins. GIT_CONFIG_COUNT stays: the
+        # sandbox carries safe.directory there, and the flags below override
+        # every diff setting it could hold.
+        drop = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
+                "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR", "GIT_NAMESPACE",
+                "GIT_LITERAL_PATHSPECS", "GIT_GLOB_PATHSPECS", "GIT_NOGLOB_PATHSPECS",
+                "GIT_ICASE_PATHSPECS", "GIT_EXTERNAL_DIFF", "GIT_DIFF_OPTS", "GIT_CONFIG",
+                "GIT_CONFIG_PARAMETERS", "GIT_ATTR_SOURCE")
+        env = dict((k, v) for k, v in os.environ.items() if k not in drop)
+        env.update({"GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull,
+                    "GIT_ATTR_NOSYSTEM": "1", "GIT_TERMINAL_PROMPT": "0", "LC_ALL": "C"})
+        def git(args, data=None):
+            return subprocess.run(["git", "-C", ws, "-c", "core.quotePath=true",
+                                   "-c", "core.attributesFile=" + os.devnull,
+                                   "-c", "diff.suppressBlankEmpty=false"] + args,
+                                  input=data, capture_output=True, timeout=120, env=env)
+        def commit(rev):
+            p = git(["rev-parse", "--verify", "--quiet", "--end-of-options", rev + "^{commit}"])
+            return p.stdout.decode().strip() if p.returncode == 0 else ""
+        try:
+            if not ws or not base_ref or not base_rev or not sha:
+                return "", "no change identity: the workspace, the base or the head is missing"
+            head, base = commit(sha), commit(base_rev)
+            if not head or not base:
+                return "", "no change identity: " + (base_rev if head else sha[:12]) + " does not resolve to a commit"
+            p = git(["merge-base", base, head])
+            mb = p.stdout.decode().strip()
+            if p.returncode != 0 or not mb:
+                return "", "no change identity: no merge-base between " + base_rev + " and " + head[:12]
+            # The path order is pinned (-O with an empty order file overrides
+            # diff.orderFile): a binary section makes the patch-id sum depend on
+            # the order of the files around it.
+            p = git(["diff", "--no-color", "--no-ext-diff", "--no-textconv", "--no-renames",
+                     "--full-index", "--unified=3", "--inter-hunk-context=0",
+                     "--diff-algorithm=myers", "--indent-heuristic", "--no-relative",
+                     "--ignore-submodules=none", "--submodule=short",
+                     "--src-prefix=a/", "--dst-prefix=b/", "-O" + os.devnull, mb, head, "--"])
+            if p.returncode != 0:
+                return "", "no change identity: git diff " + mb[:12] + ".." + head[:12] + " failed"
+            if not p.stdout:
+                return "", "no change identity: " + head[:12] + " changes nothing against its base"
+            q = git(["patch-id", "--verbatim"], p.stdout)
+            pid = (q.stdout.decode().split() + [""])[0] if q.returncode == 0 else ""
+            if not pid:
+                v = git(["version"]).stdout.decode().strip() or "this git"
+                return "", "no change identity: " + v + " cannot compute patch-id --verbatim (git 2.39 or later)"
+            digest = hashlib.sha256(b"vetty-change/v1\0" + base_ref.encode() + b"\0" + pid.encode()).hexdigest()
+            return "pid1:" + digest[:24], "patch-id of " + mb[:12] + ".." + head[:12]
+        except (OSError, subprocess.SubprocessError, UnicodeError) as e:
+            return "", "no change identity: git could not run (" + type(e).__name__ + ")"
+    # <<< vetty-change-identity/v1
+
+    # The verdicts a gate can carry. A carry is green itself, so a chain of
+    # carries stays carriable, bounded by the ORIGINAL audit's age.
+    GREEN = ("clean", "committed", "carried")
+    # The last line of every review post_feedback publishes with a gate. Only
+    # the LAST line is read: post_feedback writes it after the footer and
+    # neutralises the opener anywhere in the sections an agent wrote.
+    MARKER = re.compile(r"<!-- vetty-gate/v1 sha=([0-9a-f]{40}) id=(pid1:[0-9a-f]{24}) verdict=([a-z_]+) "
+                        r"origin=([0-9a-f]{40}) origin_at=([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z) -->")
+    API = "https://api.github.com"
+    # A review history longer than this is not read whole, and a history not
+    # read whole carries nothing: an unread page may hold the hold that vetoes.
+    REVIEW_PAGES = 10
+    FULL = "full audit"
+
+    def s(x):
+        return (x or "").strip() if isinstance(x, str) else ("" if x is None else str(x).strip())
+
+    def out(reason, carry=False, already=False, stale=False, origin="", origin_at="", change_id=""):
+        print(json.dumps({"carry": bool(carry), "already_gated": bool(already), "stale": bool(stale),
+                          "origin_sha": origin, "origin_at": origin_at, "change_id": change_id,
+                          "reason": reason}))
+        raise SystemExit(0)
+
+    # The opt-out comes first and reads nothing: a human gesture buys a full
+    # audit without the forge being asked anything.
+    if not bool(enabled):
+        out("continuity is off for this launch (the /vetty command, or an operator pin): " + FULL)
+    head = s(head_sha).lower()
+    if not re.fullmatch(r"[0-9a-f]{40}", head):
+        out("prepare read no full head commit id: " + FULL)
+    if bool(degraded):
+        out("prepare could not diff against the true base, so the change has no identity: " + FULL)
+    if not bool(gate_on):
+        out("the merge gate is off, so there is no gate to carry: " + FULL)
+    gctx = s(gate_context) or "vetty/deps"
+    m = re.match(r"https?://([^/]+)/([^/]+)/([^/]+)/(?:pull|pulls)/([0-9]+)(?:[/?#]|$)", s(pr_url))
+    if not m or m.group(1).lower() != "github.com":
+        where = re.match(r"https?://([^/?#]+)", s(pr_url))
+        out("continuity is GitHub-only; " + (where.group(1) if where else "a run with no pull request URL") +
+            " runs the " + FULL)
+    owner, repo, num = m.group(2), m.group(3), m.group(4)
+    token = ""
+    tref = s(token_ref)
+    if tref:
+        token = (open(tref).read().strip() if os.path.exists(tref) else tref)
+    if not token:
+        out("no forge_token is bound, so the gate history cannot be read: " + FULL)
+
+    class _NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, *args, **kwargs):
+            return None
+
+    opener = urllib.request.build_opener(_NoRedirect())
+
+    def call(path, body=None):
+        req = urllib.request.Request(
+            API + path, data=body, method="POST" if body is not None else "GET",
+            headers={"Authorization": "Bearer " + token, "Accept": "application/vnd.github+json",
+                     "Content-Type": "application/json", "User-Agent": "vetty-dep-update-guard"})
+        with opener.open(req, timeout=30) as resp:
+            return json.loads(resp.read().decode("utf-8")), resp.headers.get("Link") or ""
+
+    def epoch(stamp):
+        return calendar.timegm(time.strptime(stamp, "%Y-%m-%dT%H:%M:%SZ"))
+
+    # Every decision below is a predicate over SETS (markers, statuses), never
+    # an order: the reviews arrive in whatever order the forge pages them, and
+    # the answer must not depend on it. Where one element is named, it is the
+    # least or the greatest under a stable key.
+    try:
+        pull = call("/repos/%s/%s/pulls/%s" % (owner, repo, num))[0]
+        forge_head = s((pull.get("head") or {}).get("sha")).lower()
+        forge_base = s((pull.get("base") or {}).get("ref"))
+        if not forge_head:
+            out("the forge reported no head for the pull request: " + FULL)
+        if forge_head != head:
+            out("the head moved since prepare read " + head[:12] + " (it is now " + forge_head[:12] +
+                "); that head has its own delivery", stale=True)
+        if forge_base != s(base_ref):
+            out("the pull request targets " + (forge_base or "(no base)") + ", not " + s(base_ref) + ": " + FULL)
+        pid, why = change_identity(ws, s(base_ref), s(base_ref), head)
+        if not pid:
+            out(why + ": " + FULL)
+        # Whose reviews are this App's: the identity the run token speaks as,
+        # the one the server publishes under on the same installation. Only
+        # those can make a verdict eligible; any bot's marker can still veto.
+        viewer = call("/graphql", json.dumps({"query": "query { viewer { login } }"}).encode("utf-8"))[0]
+        me = s(((viewer.get("data") or {}).get("viewer") or {}).get("login")).casefold()
+        reviews, whole = [], False
+        for page in range(1, REVIEW_PAGES + 1):
+            batch, link = call("/repos/%s/%s/pulls/%s/reviews?per_page=100&page=%d" % (owner, repo, num, page))
+            if not isinstance(batch, list):
+                out("the review history is unreadable: " + FULL, change_id=pid)
+            reviews.extend(batch)
+            if 'rel="next"' not in link:
+                whole = True
+                break
+        if not whole:
+            out("the review history runs past " + str(REVIEW_PAGES) + " pages, so it cannot be read whole: " + FULL,
+                change_id=pid)
+        marks = []
+        for r in reviews:
+            if not isinstance(r, dict):
+                continue
+            user = r.get("user") or {}
+            own = bool(me) and s(user.get("login")).casefold() == me
+            if not own and s(user.get("type")) != "Bot":
+                continue
+            lines = s(r.get("body")).splitlines()
+            mk = MARKER.fullmatch(lines[-1].strip()) if lines else None
+            if mk:
+                marks.append({"sha": mk.group(1), "id": mk.group(2), "verdict": mk.group(3),
+                              "origin": mk.group(4), "origin_at": mk.group(5), "own": own,
+                              "url": s(r.get("html_url"))})
+        same = sorted((k for k in marks if k["id"] == pid),
+                      key=lambda k: (k["sha"], k["verdict"], k["origin_at"], k["origin"], k["url"]))
+        # Unanimity: one verdict on this change that is not green vetoes every
+        # carry, whatever greens sit beside it. It covers the hold whose gate the
+        # server refused because the head moved under it.
+        held = [k for k in same if k["verdict"] not in GREEN]
+        if held:
+            out("a verdict on this same change (" + pid + ") holds: " + held[0]["verdict"] + " on " +
+                held[0]["sha"][:12] + ", and a carry needs every verdict on it green: " + FULL, change_id=pid)
+        stamp = " · " + pid
+        statuses = {}
+        for sha in sorted(set(k["sha"] for k in same)):
+            combined = call("/repos/%s/%s/commits/%s/status?per_page=100" % (owner, repo, sha))[0]
+            entry = None
+            for st in (combined.get("statuses") or []):
+                if isinstance(st, dict) and s(st.get("context")) == gctx:
+                    entry = st
+                    break
+            statuses[sha] = entry
+            if entry and s(entry.get("description")).endswith(stamp) and s(entry.get("state")) != "success":
+                out("the " + gctx + " status on " + sha[:12] + " for this same change (" + pid + ") is " +
+                    (s(entry.get("state")) or "unset") + ": " + FULL, change_id=pid)
+        # Eligible: this App's review names the sha and the id, the forge's one
+        # status for the context on that sha is green, ends with the same stamp,
+        # and links that very review. A copy of a real green onto another sha of
+        # the same id is harmless: it is exactly a carry.
+        def eligible(k):
+            st = statuses.get(k["sha"])
+            return (k["own"] and k["verdict"] in GREEN and st is not None and bool(k["url"])
+                    and s(st.get("state")) == "success" and s(st.get("description")).endswith(stamp)
+                    and s(st.get("target_url")) == k["url"])
+        good = [k for k in same if eligible(k)]
+        mine = [k for k in good if k["sha"] == head]
+        if mine:
+            k = max(mine, key=lambda k: (k["origin_at"], k["origin"], k["url"]))
+            out("this head already carries a green " + gctx + " for its change (" + pid + ", " + k["verdict"] +
+                "): the arming is renewed, nothing is re-audited", already=True,
+                origin=k["origin"], origin_at=k["origin_at"], change_id=pid)
+        if not good:
+            out("no green " + gctx + " for this change (" + pid + ") is on record: " + FULL, change_id=pid)
+        limit = float(max_age_h or 0)
+        if limit <= 0:
+            out("carry_max_age_h is " + (s(max_age_h) or "unset") + ", so no verdict is carried: " + FULL, change_id=pid)
+        now = time.time()
+        fresh = []
+        for k in good:
+            try:
+                age_h = (now - epoch(k["origin_at"])) / 3600.0
+            except (ValueError, OverflowError):
+                continue
+            if -1.0 <= age_h <= limit:
+                fresh.append(k)
+        if not fresh:
+            out("every green verdict on this change (" + pid + ") is older than carry_max_age_h=" + s(max_age_h) +
+                "h, measured from the original audit: " + FULL, change_id=pid)
+        k = max(fresh, key=lambda k: (k["origin_at"], k["origin"], k["sha"]))
+        out("identical change (" + pid + "): the supply-chain audit of " + k["origin"][:12] + " (" + k["origin_at"] +
+            ") is carried from the green verdict on " + k["sha"][:12] + "; the build on this base is the repo's CI's to prove",
+            carry=True, origin=k["origin"], origin_at=k["origin_at"], change_id=pid)
+    except urllib.error.HTTPError as e:
+        out("the gate history could not be read (forge HTTP " + str(e.code) + ": " + str(e.reason)[:120] + "): " + FULL)
+    except Exception as e:
+        out("the gate history could not be read (" + type(e).__name__ + ": " + str(e)[:160] + "): " + FULL)
+  language: py
+  input: continuity_input
+  output: continuity_output
 
 ## align_probe — what `align` left behind, read by git right after it
 ## returns. `applied` is the agent saying it edited; two readings decide
@@ -1834,7 +2163,7 @@ except Exception:
 ## JSON `null` literal, so `null/true/false` are shimmed to Python.
 tool post_feedback:
   script: |
-    import json, os, re, urllib.request, urllib.error
+    import base64, json, os, re, subprocess, time, urllib.parse, urllib.request, urllib.error
     null = None; true = True; false = False  # JSON-literal shim for missing refs
     pr_url = {{input.pr_url}}
     verdict = {{input.verdict}}
@@ -1857,6 +2186,10 @@ tool post_feedback:
     pub_token = os.environ.get("__ITERION_SECRET_forge_publish_token__", "")
     gate_enabled = {{vars.gate_enabled}}
     gate_context = {{vars.gate_context}}
+    origin_sha = {{input.origin_sha}}
+    origin_at = {{input.origin_at}}
+    ws = {{vars.workspace_dir}}
+    base_ref = {{vars.base_ref}}
 
     def s(x):
         return (x or "").strip() if isinstance(x, str) else ("" if x is None else str(x).strip())
@@ -1874,6 +2207,170 @@ tool post_feedback:
     if not s(pr_url):
         out(False, skipped_reason="no pr_url (local run)")
 
+    # >>> vetty-change-identity/v1
+    # Byte-identical in `continuity` and `post_feedback`: the id one stamps is
+    # the id the other compares (dep_update_guard_continuity_test.go pins the
+    # two copies). The identity of the change a head carries is the verbatim
+    # patch-id of merge-base(base_rev, sha)..sha, every diff knob pinned on the
+    # command line, folded with the base_ref NAME so a retargeted pull request
+    # never matches. A rebase that leaves the hunks and their three context
+    # lines alone keeps it; a conflict always touches one of them, so it
+    # changes it. --verbatim, not --stable: --stable strips whitespace and
+    # reads a re-indented YAML block as the same change. Returns (id, reason);
+    # the id is empty when no identity exists, and the reason says why.
+    def change_identity(ws, base_ref, base_rev, sha):
+        import hashlib, subprocess
+        # Variables that point git at another repository or object store, or
+        # inject diff settings this contract pins. GIT_CONFIG_COUNT stays: the
+        # sandbox carries safe.directory there, and the flags below override
+        # every diff setting it could hold.
+        drop = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
+                "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR", "GIT_NAMESPACE",
+                "GIT_LITERAL_PATHSPECS", "GIT_GLOB_PATHSPECS", "GIT_NOGLOB_PATHSPECS",
+                "GIT_ICASE_PATHSPECS", "GIT_EXTERNAL_DIFF", "GIT_DIFF_OPTS", "GIT_CONFIG",
+                "GIT_CONFIG_PARAMETERS", "GIT_ATTR_SOURCE")
+        env = dict((k, v) for k, v in os.environ.items() if k not in drop)
+        env.update({"GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull,
+                    "GIT_ATTR_NOSYSTEM": "1", "GIT_TERMINAL_PROMPT": "0", "LC_ALL": "C"})
+        def git(args, data=None):
+            return subprocess.run(["git", "-C", ws, "-c", "core.quotePath=true",
+                                   "-c", "core.attributesFile=" + os.devnull,
+                                   "-c", "diff.suppressBlankEmpty=false"] + args,
+                                  input=data, capture_output=True, timeout=120, env=env)
+        def commit(rev):
+            p = git(["rev-parse", "--verify", "--quiet", "--end-of-options", rev + "^{commit}"])
+            return p.stdout.decode().strip() if p.returncode == 0 else ""
+        try:
+            if not ws or not base_ref or not base_rev or not sha:
+                return "", "no change identity: the workspace, the base or the head is missing"
+            head, base = commit(sha), commit(base_rev)
+            if not head or not base:
+                return "", "no change identity: " + (base_rev if head else sha[:12]) + " does not resolve to a commit"
+            p = git(["merge-base", base, head])
+            mb = p.stdout.decode().strip()
+            if p.returncode != 0 or not mb:
+                return "", "no change identity: no merge-base between " + base_rev + " and " + head[:12]
+            # The path order is pinned (-O with an empty order file overrides
+            # diff.orderFile): a binary section makes the patch-id sum depend on
+            # the order of the files around it.
+            p = git(["diff", "--no-color", "--no-ext-diff", "--no-textconv", "--no-renames",
+                     "--full-index", "--unified=3", "--inter-hunk-context=0",
+                     "--diff-algorithm=myers", "--indent-heuristic", "--no-relative",
+                     "--ignore-submodules=none", "--submodule=short",
+                     "--src-prefix=a/", "--dst-prefix=b/", "-O" + os.devnull, mb, head, "--"])
+            if p.returncode != 0:
+                return "", "no change identity: git diff " + mb[:12] + ".." + head[:12] + " failed"
+            if not p.stdout:
+                return "", "no change identity: " + head[:12] + " changes nothing against its base"
+            q = git(["patch-id", "--verbatim"], p.stdout)
+            pid = (q.stdout.decode().split() + [""])[0] if q.returncode == 0 else ""
+            if not pid:
+                v = git(["version"]).stdout.decode().strip() or "this git"
+                return "", "no change identity: " + v + " cannot compute patch-id --verbatim (git 2.39 or later)"
+            digest = hashlib.sha256(b"vetty-change/v1\0" + base_ref.encode() + b"\0" + pid.encode()).hexdigest()
+            return "pid1:" + digest[:24], "patch-id of " + mb[:12] + ".." + head[:12]
+        except (OSError, subprocess.SubprocessError, UnicodeError) as e:
+            return "", "no change identity: git could not run (" + type(e).__name__ + ")"
+    # <<< vetty-change-identity/v1
+
+    # The verdicts a gate may carry onto another head of the same change.
+    GREEN = ("clean", "committed", "carried")
+    FULL_SHA = re.compile(r"[0-9a-f]{40}")
+    GITHUB_API = "https://api.github.com"
+
+    def read_token():
+        tref = s(token_ref)
+        if not tref:
+            return ""
+        return (open(tref).read().strip() if os.path.exists(tref) else tref)
+
+    # What the gate stamps: the change identity of the revision this verdict is
+    # pinned to, read from the workspace. Only a FULL commit id is stamped, and
+    # only on a gate this run can publish; a pin that cannot be read, or a change
+    # with no identity, publishes as before with no stamp and no marker, and so
+    # can never be carried.
+    pin_sha = s(audited_sha).lower()
+    origin = s(origin_sha).lower() if FULL_SHA.fullmatch(s(origin_sha).lower()) else ""
+    origin_when = s(origin_at) if re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z", s(origin_at)) else ""
+    publish_gate = bool(gate_enabled) and bool(s(pub_url)) and bool(s(pub_token))
+    change_id = ""
+    if publish_gate and FULL_SHA.fullmatch(pin_sha):
+        change_id = change_identity(s(ws), s(base_ref), s(base_ref), pin_sha)[0]
+
+    # REPIN (green verdicts only). A push that lands while the audit runs moves
+    # the head, and the server refuses a verdict pinned to the old one. When the
+    # new head carries the IDENTICAL change against the base's current tip — a
+    # pure rebase — the verdict is published there as `carried`, its origin the
+    # commit actually audited. Anything else publishes exactly as before, pinned
+    # to the audited commit, and is refused for the moved head. A hold is never
+    # moved: it is a statement about the commit it read, and nothing else.
+    def forge_pull():
+        m = re.match(r"https?://([^/]+)/([^/]+)/([^/]+)/(?:pull|pulls)/([0-9]+)(?:[/?#]|$)", s(pr_url))
+        token = read_token()
+        if not m or m.group(1).lower() != "github.com" or not token:
+            return "", ""
+        class _Stay(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, *args, **kwargs):
+                return None
+        req = urllib.request.Request(
+            GITHUB_API + "/repos/%s/%s/pulls/%s" % (m.group(2), m.group(3), m.group(4)),
+            headers={"Authorization": "Bearer " + token, "Accept": "application/vnd.github+json",
+                     "User-Agent": "vetty-dep-update-guard"})
+        try:
+            with urllib.request.build_opener(_Stay()).open(req, timeout=30) as resp:
+                pull = json.loads(resp.read().decode("utf-8"))
+            head = s((pull.get("head") or {}).get("sha")).lower()
+            return (head if FULL_SHA.fullmatch(head) else ""), s((pull.get("base") or {}).get("ref"))
+        except Exception:
+            return "", ""
+
+    def fetch_rev(rev):
+        # One object from origin, resolved through FETCH_HEAD so no ref of the
+        # workspace is written. The token reaches git through its ENVIRONMENT
+        # (GIT_CONFIG_COUNT/KEY/VALUE, appended after the entries the sandbox
+        # already set), never through argv, and nothing git says is printed.
+        drop = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
+                "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR", "GIT_NAMESPACE")
+        env = dict((k, v) for k, v in os.environ.items() if k not in drop)
+        env["GIT_TERMINAL_PROMPT"] = "0"
+        try:
+            url = subprocess.run(["git", "-C", s(ws), "remote", "get-url", "origin"], capture_output=True,
+                                 timeout=30, env=env).stdout.decode().strip()
+            token = read_token()
+            if url.startswith("https://") and token:
+                n = int(env.get("GIT_CONFIG_COUNT") or "0")
+                parts = urllib.parse.urlsplit(url)
+                env["GIT_CONFIG_KEY_%d" % n] = "http.https://" + parts.netloc.rsplit("@", 1)[-1] + "/.extraHeader"
+                env["GIT_CONFIG_VALUE_%d" % n] = "Authorization: Basic " + base64.b64encode(("oauth2:" + token).encode()).decode()
+                env["GIT_CONFIG_COUNT"] = str(n + 1)
+            p = subprocess.run(["git", "-C", s(ws), "-c", "http.followRedirects=false", "fetch", "--no-tags",
+                                "--quiet", "origin", rev], capture_output=True, timeout=180, env=env)
+            if p.returncode != 0:
+                return ""
+            p = subprocess.run(["git", "-C", s(ws), "rev-parse", "--verify", "--quiet", "FETCH_HEAD^{commit}"],
+                               capture_output=True, timeout=30, env=env)
+            got = p.stdout.decode().strip()
+            return got if p.returncode == 0 and FULL_SHA.fullmatch(got) else ""
+        except (OSError, ValueError, subprocess.SubprocessError, UnicodeError):
+            return ""
+
+    repinned_from = ""
+    branch_ok = re.fullmatch(r"[A-Za-z0-9._/-]+", s(base_ref)) and not s(base_ref).startswith("-") and ".." not in s(base_ref)
+    if change_id and s(verdict) in GREEN and branch_ok:
+        head_now, base_now = forge_pull()
+        if head_now and head_now != pin_sha and base_now == s(base_ref):
+            base_tip = fetch_rev("refs/heads/" + s(base_ref))
+            if base_tip and fetch_rev(head_now) == head_now:
+                pin_id = change_identity(s(ws), s(base_ref), base_tip, pin_sha)[0]
+                head_id = change_identity(s(ws), s(base_ref), base_tip, head_now)[0]
+                if head_id and head_id == pin_id:
+                    repinned_from = pin_sha
+                    if s(verdict) != "carried":
+                        origin, origin_when = pin_sha, time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+                    verdict = "carried"
+                    audited_sha, pin_sha, change_id = head_now, head_now, head_id
+    carried_from = (origin or repinned_from or pin_sha)[:12]
+
     badges = {
         "hold_security":  "\U0001F6D1 HOLD — supply-chain risk; not aligned/merged",
         "needs_decision": "\U0001F9ED Needs a human decision (architectural)",
@@ -1882,6 +2379,7 @@ tool post_feedback:
         "hold_delivery_permission": "\U0001F6D1 HOLD — this bump's alignment edits a workflow file, and the delivery permission for it was refused",
         "committed":      "✅ Aligned — code updated on this branch; review & merge",
         "clean":          "✅ Safe bump — nothing left to align",
+        "carried":        "✅ Carried — the identical change was audited; this base is built by the repo's CI",
     }
     parts = ["**" + badges.get(s(verdict), "ℹ️ Vetty review") + "**", ""]
     def section(title, body):
@@ -1930,7 +2428,15 @@ tool post_feedback:
                                        "and refresh its token, then re-run Vetty on this PR; a classic token "
                                        "short of a scope — reissue it as the refusal names, then re-run "
                                        "Vetty. Either way the alignment can also be applied by hand.",
-           "clean": "Nothing left to align."}.get(s(verdict), "")
+           "clean": "Nothing left to align.",
+           # A carry asserts the supply-chain audit and the alignment of an
+           # IDENTICAL change, never a build of this tree: the build on the
+           # new base is owed by the repo's own required checks.
+           "carried": ("Audited " + repinned_from[:12] + "; the head moved to " + pin_sha[:12] +
+                       " with the identical change, so the verdict is carried there. " if repinned_from else "") +
+                      "Carried the supply-chain audit of `" + carried_from + "` to this head: the change is " +
+                      "identical (" + (change_id or "no identity") + "), so nothing was re-audited, aligned or " +
+                      "committed here. The build on this base is the repo's own CI's to prove."}.get(s(verdict), "")
     did = (s(commit_summary) + " " if s(commit_summary) else "") + did + \
         " **Vetty never merges past a check** — whether this lands is the repo's own required checks' decision, " \
         "and only the exact commit reported above can be merged."
@@ -1966,14 +2472,17 @@ tool post_feedback:
         foot += " · run `" + s(run_id).replace(chr(96), "") + "`"
     foot += " — Vetty, deterministic feedback"
     parts.append(foot + "._")
-    body = "\n".join(parts)
+    # The marker's opener is defused wherever an agent-written section
+    # carries it: only the line this node writes LAST is a marker, and
+    # continuity reads nothing else.
+    body = re.sub(r"(?i)<!--(\s*)vetty-gate", r"&lt;!--\1vetty-gate", "\n".join(parts))
 
     # DETERMINISTIC gate verdict: a table over the verdict the graph already
     # computed from audit_gate / align_gate / validate_gate. Never a judgment
     # made here, and never a re-read of a model field. An unknown verdict is a
     # state we did not anticipate, so it BLOCKS — a gate that fails open is
     # worse than no gate.
-    GATE_BLOCKING = {"clean": 0, "committed": 0,
+    GATE_BLOCKING = {"clean": 0, "committed": 0, "carried": 0,
                      "hold_security": 1, "hold_unstable": 1, "needs_decision": 1,
                      "hold_lost_alignment": 1, "hold_delivery_permission": 1}
     gate_on = bool(gate_enabled)
@@ -1991,6 +2500,7 @@ tool post_feedback:
         "hold_lost_alignment": "the code alignment for this bump is missing from the branch",
         "hold_delivery_permission": "the alignment edits a GitHub workflow file and the delivery credential was refused the workflows permission",
         "needs_decision": "an architectural decision is pending a human",
+        "carried": "supply-chain audit carried from " + carried_from + ": identical change; this base is built by the repo's CI",
     }.get(s(verdict), "")
     if s(verdict) not in GATE_BLOCKING:
         gate_note = "unrecognised verdict " + (s(verdict) or "(empty)") + " - the gate fails closed"
@@ -2025,6 +2535,21 @@ tool post_feedback:
                 gate_note = (gate_note + " " if gate_note else "") + \
                             "(posted UNPINNED: this run reported " + repr(pin)[:48] + \
                             " as the audited commit, which is not a commit id)"
+            # The fact travels with the gate. The note ends with the change
+            # identity of the pinned revision (the server refuses a stale
+            # pin, so a status on X is a verdict about X), and the review's
+            # LAST line names the sha, the id, the verdict and the original
+            # audit — what continuity reads, and nothing else. Every note plus
+            # the stamp fits GitHub's 140 runes. A carried verdict that cannot
+            # name its original audit is published unstamped: stamping it as
+            # its own origin would restart the clock its age is measured on.
+            pinned = s(payload["gate"].get("audited_sha")).lower() == pin_sha
+            if change_id and pinned and (s(verdict) != "carried" or (origin and origin_when)):
+                gate_note = gate_note + " · " + change_id
+                payload["summary"] = body + "\n\n<!-- vetty-gate/v1 sha=" + pin_sha + " id=" + change_id + \
+                    " verdict=" + (s(verdict) if s(verdict) in GATE_BLOCKING else "unknown") + \
+                    " origin=" + (origin or pin_sha) + \
+                    " origin_at=" + (origin_when or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())) + " -->"
             if gate_note:
                 payload["gate"]["note"] = gate_note
         req = urllib.request.Request(
@@ -2227,7 +2752,9 @@ tool arm_automerge:
     # it - the forge goes on waiting for the checks either way. So the reason
     # is computed here and acted on once the forge is reachable.
     refusal = ""
-    if s(verdict) not in ("clean", "committed"):
+    # The green verdicts: `carried` is the identical change's audit carried
+    # onto this head by continuity or by post_feedback's repin.
+    if s(verdict) not in ("clean", "committed", "carried"):
         refusal = "verdict " + (s(verdict) or "(empty)") + " is not green"
     # The gate is what a repo makes required. Arming while it is missing would
     # merge on the strength of a verdict the PR never displayed.
@@ -2677,6 +3204,21 @@ tool commit_probe:
   input: commit_probe_input
   output: commit_probe_output
 
+## continuity_standby — what arm_automerge needs when this head is already
+## gated: the head carries a green gate for its change, so the arming is
+## renewed pinned to it and nothing is published. `carried` stands for the
+## green verdict on record; the gate is this head's own, so every sha is it.
+compute continuity_standby:
+  output: automerge_input
+  expr:
+    pr_url: "vars.pr_url"
+    verdict: "'carried'"
+    gate_posted: "true"
+    gate_state: "'success'"
+    gate_sha: "outputs.prepare.head_sha"
+    audited_sha: "outputs.prepare.head_sha"
+    committed_sha: "''"
+
 ## Deterministic gate: only `safe` proceeds to alignment; suspicious /
 ## malicious short-circuit to a HOLD comment (no code change).
 compute audit_gate:
@@ -2790,10 +3332,46 @@ workflow dep_update_guard:
     max_duration: "4h"
     max_cost_usd: 25
 
-  ## Nothing changed vs base → done (defensive). Otherwise audit.
+  ## Nothing changed vs base → done (defensive). Otherwise ask the gate
+  ## history whether this change is already judged, then audit.
   prepare -> done when is_empty
 
-  prepare -> security_audit when not is_empty with {
+  prepare -> continuity when not is_empty with {
+    head_sha: "{{outputs.prepare.head_sha}}",
+    degraded: "{{outputs.prepare.degraded}}",
+  }
+
+  ## The head moved since prepare read it: the newer head has its own
+  ## delivery, and an audit of this one would be refused at publish.
+  continuity -> done when stale
+
+  ## The identical change carries an eligible green verdict: publish
+  ## `carried` on this head, with no LLM call. The original audit travels
+  ## with it, so a chain of carries never extends its age.
+  continuity -> post_feedback when carry with {
+    pr_url: "{{vars.pr_url}}",
+    verdict: "carried",
+    align_summary: "Nothing was re-audited, aligned or built on this head: {{outputs.continuity.reason}}",
+    audited_sha: "{{outputs.prepare.head_sha}}",
+    origin_sha: "{{outputs.continuity.origin_sha}}",
+    origin_at: "{{outputs.continuity.origin_at}}",
+  }
+
+  ## This head is already gated green for its change: renew the arming,
+  ## pinned to it, and publish nothing.
+  continuity -> continuity_standby when already_gated
+
+  continuity_standby -> arm_automerge with {
+    pr_url: "{{outputs.continuity_standby.pr_url}}",
+    verdict: "{{outputs.continuity_standby.verdict}}",
+    gate_posted: "{{outputs.continuity_standby.gate_posted}}",
+    gate_state: "{{outputs.continuity_standby.gate_state}}",
+    gate_sha: "{{outputs.continuity_standby.gate_sha}}",
+    audited_sha: "{{outputs.continuity_standby.audited_sha}}",
+    committed_sha: "{{outputs.continuity_standby.committed_sha}}",
+  }
+
+  continuity -> security_audit else with {
     bump_summary: "{{outputs.prepare.bump_summary}}",
     dep_files: "{{outputs.prepare.dep_files}}",
     no_manifest: "{{outputs.prepare.no_manifest}}",

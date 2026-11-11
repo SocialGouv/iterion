@@ -6,12 +6,18 @@ import (
 	"net/http/httptest"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
+	"unicode/utf8"
 
+	"github.com/SocialGouv/iterion/internal/gittest"
 	"github.com/SocialGouv/iterion/pkg/backend/secretguard"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -142,6 +148,10 @@ func TestDepUpdateGuardGateVerdict(t *testing.T) {
 			"{{run.id}}":                   `"` + runID + `"`,
 			"{{vars.gate_enabled}}":        boolLit(gateEnabled),
 			"{{vars.gate_context}}":        `"` + gateContext + `"`,
+			"{{input.origin_sha}}":         `""`,
+			"{{input.origin_at}}":          `""`,
+			"{{vars.workspace_dir}}":       `""`,
+			"{{vars.base_ref}}":            `"main"`,
 		} {
 			if ref == "{{input.audited_sha}}" && len(pinOverride) > 0 {
 				val = strconv.Quote(pinOverride[0])
@@ -450,6 +460,9 @@ func TestDepUpdateGuardGateVerdict(t *testing.T) {
 	}{
 		{"clean", false},
 		{"committed", false},
+		// A carry is green: the identical change's audit, carried onto this
+		// head (by continuity, or by post_feedback's repin).
+		{"carried", false},
 		{"hold_security", true},
 		{"hold_unstable", true},
 		{"needs_decision", true},
@@ -488,6 +501,17 @@ func TestDepUpdateGuardGateVerdict(t *testing.T) {
 			}
 			if res["gate_state"] != wantState {
 				t.Errorf("gate_state = %v, want %s", res["gate_state"], wantState)
+			}
+		})
+	}
+
+	// The class rule: every verdict a reader elsewhere treats as green is a
+	// green gate here, or a carry would publish a red check.
+	for _, green := range depUpdateGuardGreenVerdicts {
+		t.Run("green verdict publishes a green gate/"+green, func(t *testing.T) {
+			if pub, _ := run(t, green, "iterion/review", true, ""); pub.Gate == nil || pub.Gate.BlockingCount != 0 ||
+				strings.Contains(pub.Gate.Note, "unrecognised verdict") {
+				t.Errorf("verdict %q is green to arm_automerge but not to the gate: %+v", green, pub.Gate)
 			}
 		})
 	}
@@ -531,6 +555,10 @@ func TestDepUpdateGuardGateVerdict(t *testing.T) {
 			"{{run.id}}":                   `"` + runID + `"`,
 			"{{vars.gate_enabled}}":        `True`,
 			"{{vars.gate_context}}":        `"iterion/review"`,
+			"{{input.origin_sha}}":         `""`,
+			"{{input.origin_at}}":          `""`,
+			"{{vars.workspace_dir}}":       `""`,
+			"{{vars.base_ref}}":            `"main"`,
 		} {
 			body = strings.ReplaceAll(body, ref, val)
 		}
@@ -594,6 +622,10 @@ func TestDepUpdateGuardGateVerdict(t *testing.T) {
 			"{{run.id}}":                   `"` + runID + `"`,
 			"{{vars.gate_enabled}}":        `True`,
 			"{{vars.gate_context}}":        `"iterion/review"`,
+			"{{input.origin_sha}}":         `""`,
+			"{{input.origin_at}}":          `""`,
+			"{{vars.workspace_dir}}":       `""`,
+			"{{vars.base_ref}}":            `"main"`,
 		} {
 			body = strings.ReplaceAll(body, ref, val)
 		}
@@ -675,4 +707,349 @@ func runURLLit(page, override string) string {
 		return override
 	}
 	return `"` + page + `"`
+}
+
+// feedbackForge is the server's publish endpoint plus the one GitHub read
+// post_feedback makes (the pull request, for the repin).
+type feedbackForge struct {
+	t       *testing.T
+	mu      sync.Mutex
+	head    string // the head GET pulls/7 reports; "" answers 404
+	base    string
+	payload map[string]any
+	reads   []string
+}
+
+func (f *feedbackForge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	switch r.URL.Path {
+	case "/api/v1/forge/publish-review":
+		var p map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
+			f.t.Errorf("decode publish payload: %v", err)
+		}
+		f.payload = p
+		gate, _ := p["gate"].(map[string]any)
+		state := "success"
+		if n, _ := gate["blocking_count"].(float64); n > 0 {
+			state = "failure"
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"published": true, "review_url": "https://github.com/acme/widgets/pull/7#pullrequestreview-1",
+			"gate_posted": gate != nil, "gate_state": state, "gate_sha": gate["audited_sha"],
+		})
+	case "/repos/acme/widgets/pulls/7":
+		f.reads = append(f.reads, r.URL.Path)
+		if f.head == "" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"head": map[string]any{"sha": f.head}, "base": map[string]any{"ref": f.base}})
+	default:
+		f.t.Errorf("post_feedback called %s %s", r.Method, r.URL.Path)
+		w.WriteHeader(http.StatusNotFound)
+	}
+}
+
+// runFeedback drives post_feedback against a feedbackForge, in a workspace.
+func runFeedback(t *testing.T, forge *feedbackForge, over map[string]string, env ...string) (map[string]any, map[string]any) {
+	t.Helper()
+	srv := httptest.NewServer(forge)
+	defer srv.Close()
+	subs := map[string]string{
+		"{{input.pr_url}}":             `"https://github.com/acme/widgets/pull/7"`,
+		"{{input.verdict}}":            `"clean"`,
+		"{{input.audit_summary}}":      `"audited"`,
+		"{{input.cves}}":               `""`,
+		"{{input.malware_signals}}":    `""`,
+		"{{input.align_summary}}":      `""`,
+		"{{input.validate_summary}}":   `""`,
+		"{{input.escalation}}":         `""`,
+		"{{input.commit_summary}}":     `""`,
+		"{{input.audited_sha}}":        `""`,
+		"{{input.origin_sha}}":         `""`,
+		"{{input.origin_at}}":          `""`,
+		"{{secrets.forge_token.path}}": `"ghs_test"`,
+		"{{vars.forge_publish_url}}":   `"` + srv.URL + `/api/v1/forge/publish-review"`,
+		"{{run.url}}":                  `"https://iterion.example/studio/runs/01a0dep"`,
+		"{{run.id}}":                   `"01a0dep"`,
+		"{{vars.gate_enabled}}":        `True`,
+		"{{vars.gate_context}}":        `"vetty/deps"`,
+		"{{vars.workspace_dir}}":       `""`,
+		"{{vars.base_ref}}":            `"main"`,
+	}
+	for k, v := range over {
+		subs[k] = v
+	}
+	body := toolScript(t, depUpdateGuardBot, "post_feedback")
+	for ref, val := range subs {
+		body = strings.ReplaceAll(body, ref, val)
+	}
+	if !strings.Contains(body, `"https://api.github.com"`) {
+		t.Fatal("post_feedback no longer names the GitHub API the stub stands in for")
+	}
+	body = strings.ReplaceAll(body, `"https://api.github.com"`, `"`+srv.URL+`"`)
+	if strings.Contains(body, "{{") {
+		t.Fatalf("unsubstituted ref: %s", firstRef(body))
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "feedback.py")
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("python3", path)
+	cmd.Dir = dir
+	cmd.Env = append(append(gittest.Env(), secretguard.PlaceholderForName(store.ForgePublishTokenVar)+"=run-token"), env...)
+	raw, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("post_feedback failed: %v (out %q)", err, raw)
+	}
+	var res map[string]any
+	if err := json.Unmarshal(raw, &res); err != nil {
+		t.Fatalf("post_feedback output is not feedback_output JSON: %v (%q)", err, raw)
+	}
+	forge.mu.Lock()
+	defer forge.mu.Unlock()
+	if forge.payload == nil {
+		t.Fatal("post_feedback published nothing")
+	}
+	return forge.payload, res
+}
+
+func quoted(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
+}
+
+var markerLine = regexp.MustCompile(`^<!-- vetty-gate/v1 sha=([0-9a-f]{40}) id=(pid1:[0-9a-f]{24}) verdict=([a-z_]+) origin=([0-9a-f]{40}) origin_at=([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z) -->$`)
+
+// TestDepUpdateGuardGateCarriesItsChangeIdentity pins the half of gate
+// continuity post_feedback owns: the fact travels WITH the gate. The note
+// ends with the change identity of the pinned revision, within GitHub's 140
+// runes on every verdict; the review's last line is the marker continuity
+// reads; a marker an agent writes into a section is defused; and the two
+// copies of the identity contract are one.
+//
+// Mutations (main.bot `post_feedback`) and the case each reddens: put the
+// stamp before the note, or drop it on holds (the per-verdict case); stamp a
+// pin that is not a full commit id (the bad-pin case); drop the
+// neutralisation (the planted-marker case); edit a flag in one copy of the
+// identity block only (the parity case).
+func TestDepUpdateGuardGateCarriesItsChangeIdentity(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not on PATH")
+	}
+	t.Run("the identity contract has one text", func(t *testing.T) {
+		if a, b := identityBlock(t, "continuity"), identityBlock(t, "post_feedback"); a != b {
+			t.Errorf("the identity block differs between continuity and post_feedback: the id one stamps is not the id the other compares")
+		}
+	})
+
+	ws := t.TempDir()
+	gittest.InitRepo(t, ws)
+	base := commitTree(t, ws, "HEAD", "base", map[string][]byte{"deps.yaml": depsYAML(nil)})
+	gittest.Run(t, ws, "branch", "-f", "main", base)
+	x := commitTree(t, ws, base, "bump", map[string][]byte{"deps.yaml": depsYAML(map[int]string{20: "key20: v99"})})
+	id, why := changeIdentity(t, ws, "main", "main", x)
+	if id == "" {
+		t.Fatalf("fixture has no identity: %s", why)
+	}
+	origin := strings.Repeat("0a", 20)
+	originAt := "2026-11-10T08:00:00Z"
+	inWS := map[string]string{"{{vars.workspace_dir}}": quoted(ws), "{{input.audited_sha}}": quoted(x)}
+	with := func(over map[string]string) map[string]string {
+		m := map[string]string{}
+		for k, v := range inWS {
+			m[k] = v
+		}
+		for k, v := range over {
+			m[k] = v
+		}
+		return m
+	}
+	gateOf := func(p map[string]any) map[string]any {
+		g, _ := p["gate"].(map[string]any)
+		if g == nil {
+			t.Fatalf("no gate in the payload: %v", p)
+		}
+		return g
+	}
+	lastLine := func(s string) string {
+		lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
+		return lines[len(lines)-1]
+	}
+
+	for _, verdict := range []string{"clean", "committed", "carried", "hold_security", "hold_unstable",
+		"needs_decision", "hold_lost_alignment", "hold_delivery_permission", "probably_fine"} {
+		t.Run("stamp and marker/"+verdict, func(t *testing.T) {
+			over := map[string]string{"{{input.verdict}}": quoted(verdict)}
+			wantOrigin := x
+			if verdict == "carried" {
+				over["{{input.origin_sha}}"], over["{{input.origin_at}}"] = quoted(origin), quoted(originAt)
+				wantOrigin = origin
+			}
+			p, _ := runFeedback(t, &feedbackForge{t: t}, with(over))
+			note, _ := gateOf(p)["note"].(string)
+			if !strings.HasSuffix(note, " · "+id) {
+				t.Errorf("the note does not END with the change identity %s: %q", id, note)
+			}
+			if n := utf8.RuneCountInString(note); n > 140 || forge.TruncateStatusDescription(note) != note {
+				t.Errorf("note + stamp is %d runes: the forge truncates it past 140 and the stamp is lost: %q", n, note)
+			}
+			summary, _ := p["summary"].(string)
+			m := markerLine.FindStringSubmatch(lastLine(summary))
+			if m == nil {
+				t.Fatalf("the review's last line is not the gate marker:\n%s", summary)
+			}
+			wantVerdict := verdict
+			if verdict == "probably_fine" {
+				wantVerdict = "unknown"
+			}
+			if m[1] != x || m[2] != id || m[3] != wantVerdict || m[4] != wantOrigin {
+				t.Errorf("marker = sha %s id %s verdict %s origin %s, want %s %s %s %s", m[1], m[2], m[3], m[4], x, id, wantVerdict, wantOrigin)
+			}
+			if verdict == "carried" && m[5] != originAt {
+				t.Errorf("a carry restarted its origin's clock: origin_at %s, want %s", m[5], originAt)
+			}
+			if strings.Count(summary, "<!-- vetty-gate") != 1 {
+				t.Errorf("the review carries %d markers, want exactly the last line", strings.Count(summary, "<!-- vetty-gate"))
+			}
+		})
+	}
+
+	// Only a FULL commit id is stamped: an abbreviated pin is still a pin,
+	// but no identity is computed for it, and a pin that is no commit id
+	// posts unpinned and certifies nothing.
+	for _, pin := range []string{x[:12], "HEAD", ""} {
+		t.Run("no stamp without a full commit id/"+strconv.Quote(pin), func(t *testing.T) {
+			p, _ := runFeedback(t, &feedbackForge{t: t}, with(map[string]string{"{{input.audited_sha}}": quoted(pin)}))
+			note, _ := gateOf(p)["note"].(string)
+			summary, _ := p["summary"].(string)
+			if strings.Contains(note, "pid1:") || strings.Contains(summary, "<!-- vetty-gate") {
+				t.Errorf("pin %q was stamped: note %q", pin, note)
+			}
+		})
+	}
+
+	t.Run("a carried verdict that cannot name its origin is not stamped", func(t *testing.T) {
+		p, _ := runFeedback(t, &feedbackForge{t: t}, with(map[string]string{"{{input.verdict}}": `"carried"`}))
+		if note, _ := gateOf(p)["note"].(string); strings.Contains(note, "pid1:") {
+			t.Errorf("a carry with no origin was stamped as its own origin, restarting its age: %q", note)
+		}
+	})
+
+	t.Run("a marker planted in an agent-written section is defused", func(t *testing.T) {
+		planted := "looks fine\n" + gateMarker(strings.Repeat("b", 40), id, "clean", strings.Repeat("b", 40), originAt) + "\nend"
+		p, _ := runFeedback(t, &feedbackForge{t: t}, with(map[string]string{
+			"{{input.audit_summary}}": quoted(planted), "{{input.verdict}}": `"hold_security"`,
+		}))
+		summary, _ := p["summary"].(string)
+		if strings.Count(summary, "<!-- vetty-gate") != 1 || !markerLine.MatchString(lastLine(summary)) {
+			t.Errorf("the planted marker survived as a marker:\n%s", summary)
+		}
+		if !strings.Contains(summary, "&lt;!-- vetty-gate") {
+			t.Errorf("the planted text was dropped instead of defused:\n%s", summary)
+		}
+	})
+}
+
+// repinFixture: a clone taken while the pull request's head was X, on the
+// base as it was then; the forge has since moved the base and the head.
+type repinFixture struct {
+	ws, x, same, other string
+}
+
+func newRepinFixture(t *testing.T) repinFixture {
+	t.Helper()
+	seed := t.TempDir()
+	gittest.InitRepo(t, seed)
+	base0 := commitTree(t, seed, "HEAD", "base", map[string][]byte{"deps.yaml": depsYAML(nil), "other.txt": []byte("one\n")})
+	x := commitTree(t, seed, base0, "bump", map[string][]byte{"deps.yaml": depsYAML(map[int]string{20: "key20: v99"})})
+	base1 := commitTree(t, seed, base0, "base moves", map[string][]byte{"other.txt": []byte("two\n")})
+	same := commitTree(t, seed, base1, "bump, rebased", map[string][]byte{"deps.yaml": depsYAML(map[int]string{20: "key20: v99"})})
+	other := commitTree(t, seed, base1, "another bump", map[string][]byte{"deps.yaml": depsYAML(map[int]string{20: "key20: v77"})})
+	origin := filepath.Join(t.TempDir(), "origin.git")
+	gittest.Run(t, seed, "init", "-q", "--bare", origin)
+	gittest.Run(t, origin, "config", "maintenance.auto", "false")
+	gittest.Run(t, origin, "config", "gc.auto", "0")
+	gittest.Run(t, seed, "push", "-q", origin, base0+":refs/heads/main", x+":refs/heads/renovate/bump")
+	ws := filepath.Join(t.TempDir(), "ws")
+	gittest.Run(t, filepath.Dir(ws), "clone", "-q", "--no-tags", origin, ws)
+	gittest.Run(t, ws, "config", "maintenance.auto", "false")
+	gittest.Run(t, ws, "config", "gc.auto", "0")
+	gittest.Run(t, ws, "switch", "-q", "--detach", x)
+	// The forge moves on after the clone.
+	gittest.Run(t, seed, "push", "-q", "--force", origin, base1+":refs/heads/main", same+":refs/heads/same", other+":refs/heads/other")
+	if _, err := gittest.Try(ws, "cat-file", "-e", same); err == nil {
+		t.Fatal("fixture: the workspace already holds the moved head, so the repin's fetch would prove nothing")
+	}
+	return repinFixture{ws: ws, x: x, same: same, other: other}
+}
+
+// TestDepUpdateGuardRepinsAGreenOntoAPureRebase pins arm 1b: an audit that
+// finishes after a rebase moved the head publishes `carried` on the new head
+// when — and only when — the new head carries the identical change against
+// the base's current tip, and the verdict is green. A hold is never moved.
+//
+// Mutations (main.bot `post_feedback`): drop the head_id == pin_id
+// comparison (the different-change case pins a head nobody audited); allow
+// the repin for holds (the hold case moves a hold).
+func TestDepUpdateGuardRepinsAGreenOntoAPureRebase(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not on PATH")
+	}
+	pinOf := func(p map[string]any) string {
+		g, _ := p["gate"].(map[string]any)
+		s, _ := g["audited_sha"].(string)
+		return s
+	}
+	run := func(t *testing.T, fx repinFixture, head, verdict string) (*feedbackForge, map[string]any, map[string]any) {
+		t.Helper()
+		f := &feedbackForge{t: t, head: head, base: "main"}
+		p, res := runFeedback(t, f, map[string]string{
+			"{{vars.workspace_dir}}": quoted(fx.ws), "{{input.audited_sha}}": quoted(fx.x),
+			"{{input.verdict}}": quoted(verdict),
+		})
+		return f, p, res
+	}
+
+	t.Run("moved to a pure rebase: the verdict is carried onto the new head", func(t *testing.T) {
+		fx := newRepinFixture(t)
+		_, p, res := run(t, fx, fx.same, "clean")
+		if pinOf(p) != fx.same || res["verdict"] != "carried" {
+			t.Fatalf("want the payload pinned to %s as carried, got pin %s verdict %v", fx.same[:12], pinOf(p), res["verdict"])
+		}
+		note, _ := p["gate"].(map[string]any)["note"].(string)
+		if !strings.Contains(note, "carried from "+fx.x[:12]) {
+			t.Errorf("the note does not name the commit actually audited: %q", note)
+		}
+		summary, _ := p["summary"].(string)
+		lines := strings.Split(strings.TrimRight(summary, "\n"), "\n")
+		m := markerLine.FindStringSubmatch(lines[len(lines)-1])
+		if m == nil || m[1] != fx.same || m[3] != "carried" || m[4] != fx.x {
+			t.Errorf("the marker must name the new head, the carried verdict and the audited origin, got %v", m)
+		}
+	})
+
+	t.Run("moved to a different change: pinned to the audited commit, as before", func(t *testing.T) {
+		fx := newRepinFixture(t)
+		_, p, res := run(t, fx, fx.other, "clean")
+		if pinOf(p) != fx.x || res["verdict"] != "clean" {
+			t.Fatalf("a different change was certified: pin %s verdict %v, want %s clean", pinOf(p), res["verdict"], fx.x[:12])
+		}
+	})
+
+	t.Run("a hold is never moved", func(t *testing.T) {
+		fx := newRepinFixture(t)
+		f, p, res := run(t, fx, fx.same, "hold_unstable")
+		if pinOf(p) != fx.x || res["verdict"] != "hold_unstable" {
+			t.Fatalf("a hold was moved: pin %s verdict %v", pinOf(p), res["verdict"])
+		}
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		if len(f.reads) != 0 {
+			t.Errorf("a hold asked the forge for the head (%v): it has no repin to decide", f.reads)
+		}
+	})
 }

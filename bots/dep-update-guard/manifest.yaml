@@ -411,6 +411,8 @@ invocations:
   - kind: command
     mode: direct
     command: { name: vetty, scope: pr, disambiguator: when_args_empty }
+    # A human gesture always buys a full audit: no carry, no standby.
+    context_vars: { continuity: "false" }
 
 ## Studio launch-form hierarchy: `primary` inputs render top-level in
 ## the declared order; `hidden` vars are dispatch/webhook plumbing kept

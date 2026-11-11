@@ -177,6 +177,43 @@ func TestDepUpdateGuardVerdictRouting(t *testing.T) {
 		t.Error("no edge routes a vanished alignment to hold_lost_alignment — it would be reported as a clean bump and merged")
 	}
 
+	// continuity decides before any LLM node, and its branches stamp what
+	// they observed: the carry edge publishes `carried`, pinned to the head
+	// prepare read, with the original audit travelling alongside; the else
+	// edge is the full audit.
+	var sawCarry, sawAudit bool
+	for _, e := range cr.Workflow.Edges {
+		if e.From == "prepare" && e.To == "security_audit" {
+			t.Errorf("prepare reaches security_audit directly: continuity is skipped and every rebase buys a full audit")
+		}
+		if e.From != "continuity" {
+			continue
+		}
+		mapped := map[string]string{}
+		for _, m := range e.With {
+			mapped[m.Key] = strings.Trim(m.Raw, `"`)
+		}
+		switch {
+		case e.Condition == "carry" && !e.Negated:
+			sawCarry = true
+			for key, want := range map[string]string{
+				"verdict":     "carried",
+				"audited_sha": "{{outputs.prepare.head_sha}}",
+				"origin_sha":  "{{outputs.continuity.origin_sha}}",
+				"origin_at":   "{{outputs.continuity.origin_at}}",
+			} {
+				if e.To != "post_feedback" || mapped[key] != want {
+					t.Errorf("continuity -> %s when carry maps %s = %q, want post_feedback with %q", e.To, key, mapped[key], want)
+				}
+			}
+		case e.IsElse:
+			sawAudit = e.To == "security_audit"
+		}
+	}
+	if !sawCarry || !sawAudit {
+		t.Errorf("continuity must carry to post_feedback (%v) and fall through to security_audit (%v)", sawCarry, sawAudit)
+	}
+
 	// The commit agent's nothing-to-commit summary is published on the clean
 	// comment, ahead of "Nothing left to align.": it has to be true on the
 	// pass whose head already carries an alignment (buildkit-operator#50).
