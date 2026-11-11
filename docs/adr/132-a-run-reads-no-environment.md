@@ -622,6 +622,9 @@ stated here:
   manifest name < the bot id (`llmroute.BotMatch`) — then the level each cell's provenance names
   (`llmroute.SourceRank`, run < binding < bot < team < org < platform < env; the launch refuses a
   layer list out of that order), the first written breaking a tie (`runview.policyOverrideEntries`).
+  A subbot child's identity is its own: the bot id its run carries (`runview.ResolveBotID` over the
+  child bundle) and its manifest name. It folds the root run's frozen snapshot again for that
+  identity (`runview.FoldForSubbotChild`), so the parent's bot dimension never decides a child's cells.
 - **A launch's own rows** (the API body's `model_overrides`, the CLI's `--model`/`--backend`/
   `--effort-for`) carry no bot dimension and obey the same per-class field rules
   (`llmroute.ValidateLaunchRow`): a `<bot>/` prefix, an `effort` on a route or a `backend`/`provider`

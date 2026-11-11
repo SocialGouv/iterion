@@ -1127,7 +1127,10 @@ the run document for a local resume to replay), and this lane sends none —
 the local-parity limit ADR-129 §8 states. The folded
 list is what the run document stamps, what the queue message carries, what
 every pre-flight reads and what a resume replays instead of re-folding
-(`TestResume_ReplaysTheFoldedRowsNotThePolicy`), so no reader re-derives a pin
+(`TestResume_ReplaysTheFoldedRowsNotThePolicy`) — an in-process resume's
+supervisors and session board included, which read the rows the resumed
+executor dispatches with (`TestResume_SupervisorsReadTheRunsFoldedRows`,
+`TestResume_SessionBoardWatchesTheGatewayRoute`) — so no reader re-derives a pin
 from a record that has moved since.
 Precedence, end to end:
 
@@ -1143,7 +1146,13 @@ the launch's bot id and the manifest name of the bundle it serves: a cell
 for another bot drops, one for this bot folds as its bare target; on one
 target the more specific bot part wins (no bot part and `*/` < a glob < the
 manifest name < the bot id), then the nearer level, read from the cell's
-provenance (`llmroute.SourceRank`). The residual the fold's own comment names: a policy cell on a MORE
+provenance (`llmroute.SourceRank`). A subbot child folds its root run's
+frozen snapshot again for its own bot (`runview.FoldForSubbotChild`, the same
+body and screens, on the cloud runner and in-process alike): a cell for the
+parent's bot does not reach the child, one for the child's does, and neither
+the parent's folded rows nor its launch rows travel
+(`TestSubbotChildFoldsTheRoutingPolicyForItsOwnBot`,
+`TestSubbotChildDoesNotInheritTheParentsLaunchRows`). The residual the fold's own comment names: a policy cell on a MORE
 SPECIFIC selector than any launch row pinning the same field still wins that
 field on specificity inside the folded list — carrying the layer across the
 wire would take ranks on the wire twins — so a launcher states a field-wide

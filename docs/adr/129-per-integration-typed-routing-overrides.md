@@ -452,7 +452,10 @@ candidates, pool wants and warnings for credentials the launch never acquires, a
 would stay green over the wrong surface.
 
 That one list is what is stamped on the run document, what rides `queue.RunMessage.ModelOverrides`,
-what both resumes replay, and what every pre-flight reads. No reader anywhere learns a second input;
+what every resume replays — the cloud runner's, the CLI's and the in-process one, whose supervisors
+and session board read the rows its executor dispatches with — and what every pre-flight reads. A
+subbot child is a run of its own bot: it folds the root run's frozen snapshot again for that bot
+(`runview.FoldForSubbotChild`), and the parent's list does not travel. No reader anywhere learns a second input;
 philosophy §5's "never a second source of truth" is honoured by folding once rather than by teaching
 seven readers to fold.
 
@@ -738,7 +741,11 @@ shape. All three are closed in `feat/routing-cells-node-selectors`; what the cod
   layer list out of that order), the first written breaking a tie. A launch's own rows carry no bot
   dimension and obey the same per-class field rules (`llmroute.ValidateLaunchRow`). The snapshot and its provenance keys
   (`overrides.<selector>.<field>`) keep the selector as the level wrote it; the folded list — §6's
-  one list, unchanged on the wire — carries this bot's. A launch `*` row shadows node cells only.
+  one list, unchanged on the wire — carries this bot's. A subbot child folds the snapshot its root run
+  froze at launch again, for its own bot id and manifest name, through the same body and screens
+  (`runview.FoldForSubbotChild`, cloud and in-process lanes alike): a cell for the parent's bot does
+  not reach the child, one for the child's does; neither the parent's folded list nor its own launch
+  rows reach it. The snapshot's bot level is the parent's manifest `routing:` block. A launch `*` row shadows node cells only.
   §5's "may not drop or replace a node's `fallbacks:` routes" narrows: a route cell re-pins an
   authored route's `backend`, `model` and `provider` and keeps the author's gate, triggers, name and
   action (`ModelOverrides.EffectiveFallback`); it never drops a route nor adds one. A route cell's

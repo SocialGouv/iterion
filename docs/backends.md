@@ -1652,7 +1652,12 @@ selector := [ <bot> "/" ] <target>
   more specific bot part wins — no bot part and `*/` < a glob < the manifest
   name < the bot id — and at the same bot part the nearer level's cell
   (run < integration, schedule or trigger < the bot's manifest < team < org
-  < platform), the first written breaking a tie.
+  < platform), the first written breaking a tie. A subbot child is a run of
+  its own bot: it folds the snapshot its root run froze at launch again, for
+  its own bot id and manifest name, so a cell for the parent's bot does not
+  reach it and a cell for the child's does; the parent's folded rows and its
+  launch rows never reach a child. The snapshot's bot level is the launched
+  bot's manifest `routing:` block — a child's own manifest block is not read.
 - `<node id>#<route>` names an authored `fallbacks:` route by the key the
   walk records it under: its name (`reviewer_claude#glm`), or its index when
   the author named none (`converge#0`). It pins `backend`, `model` and
@@ -1664,8 +1669,10 @@ selector := [ <bot> "/" ] <target>
   integration's write screen. A launch's `--fallback` stage and a policy
   rung are not authored routes and are never reached.
 - `supervisor:<name>` pins a supervisor's `model` — nothing else, a
-  supervisor declares nothing else. Note that a `team_gateway` run starts no
-  supervisor at all (`runview.FundedSupervisorSpecs`), pinned or not.
+  supervisor declares nothing else — on every lane, an in-process resume
+  included (its supervisors read the rows the resumed executor dispatches
+  with). Note that a `team_gateway` run starts no supervisor at all
+  (`runview.FundedSupervisorSpecs`), pinned or not.
 - A launch's `*` row shadows node cells only, never a route or supervisor
   cell. A launch's own rows carry no bot part: a `<bot>/` prefix is refused,
   and so is a field the row's class does not carry (`effort` on a route,
