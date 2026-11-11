@@ -34,12 +34,12 @@ interactive sessions).
 
 ## Non-negotiables
 
-- **Review loop.** Every change lands reviewed: a PR whose `revi/review` gate
-  is green, or the operator's admin-only direct-landing lane — local full gate + train +
-  converged loop, push to `main`, CI as witness ([merge and
+- **Review loop.** Every change lands reviewed, by one of three doors: a green
+  `revi/review`; a local loop at the parity bar its own page states; or the
+  operator's direct-landing lane — local gate + train, CI as witness ([merge and
   gate](docs/agents/workflow/review-and-merge.md)). Findings decide the next
-  round, the budget caps it, you fix them, and reviewed work carries
-  `Adversarial-Rounds:` / `Adversarial-Model:` trailers ([the loop](docs/agents/workflow/adversarial-review-loop.md)).
+  round, the budget caps it, and reviewed work carries `Adversarial-Rounds:` /
+  `Adversarial-Model:` trailers ([the loop](docs/agents/workflow/adversarial-review-loop.md)).
 - **Do not comment `/billy`** — the fixer is paused here
   ([why, and the re-arm](docs/agents/workflow/billy.md#billy-is-paused)).
 - **Never hand-edit `CHANGELOG.md`.** Bump `claw-code-go` only with

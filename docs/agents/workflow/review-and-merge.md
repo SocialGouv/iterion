@@ -149,14 +149,17 @@ request is fine — the credential is not. Waiting for the window to reset is th
    `iterion remote admin llm api-keys create --provider <p> --name <n>
    --from-env <VAR>`. Any credential write to a shared deployment waits for the
    operator's explicit go, with the exact command in the question.
-3. **Keep the review pressure locally.** Run the
+3. **Run the loop, and know what it buys.** The
    [local adversarial loop](adversarial-review-loop.md) on a forfait you hold
-   while the gate is parked. By itself it does NOT replace the required status:
-   the merge waits for a real `revi/review` verdict. The one exception is the
-   **narrower admin merge a parked gate opens** (operator arbitration,
-   2026-11-10) — once that loop has CONVERGED, and with the other six required
-   checks green: its conditions, its measured residual and the queue guarantee
-   it gives up are in
+   carries **the gate's own weight** once it reaches the bar that page states —
+   a round on the diff, each finding AND its proposed fix verified
+   independently, a bounded closing round on the corrections (operator
+   arbitration, 2026-11-11). At the bar the merge does not wait for
+   `revi/review`; below it the residual is assumed explicitly, and
+   `Adversarial-Rounds:` is where a reader sees which of the two happened.
+   `revi/review` stays a required context either way, so the merge is still the
+   admin one and still owes the other six checks green: its conditions and the
+   queue guarantee it gives up are in
    [the parked gate](../../merge-policy.md#a-parked-gate-decided-2026-11-10).
    Steps 1 and 2 stay the first moves; this is for when they are unavailable
    or refused.

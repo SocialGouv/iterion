@@ -169,13 +169,35 @@ round's finding.
 
 ## Where the loop meets the gate
 
-**The gate's verdict closes the loop, not the round that declares it done.** A
-sterile local round is the signal that it is time to push, never a stop
-criterion: rounds a "sterile" criterion called finished have been followed by
-real findings from the reviewer — the criterion counted rounds, the gate counts
-defects. Logged here: 8 gate verdicts, 0 false positives, **4 classes** the
-internal rounds had skirted, including a HIGH after a closure had been
-declared.
+**A loop that reaches the bar below carries the gate's weight.** Operator
+arbitration, 2026-11-11: such a loop is a verdict rather than a stand-in, and a
+change it has converged on lands without waiting for `revi/review`.
+
+The bar, because this parity is bought and not claimed:
+
+1. an adversarial round on the diff, by a reviewer whose posture is to break it;
+2. **each finding AND its proposed fix** verified independently — the fix is
+   refuted far more often than the finding, 366 against 70 in the loop journal;
+3. a bounded closing round on the corrections, because a round that applied a
+   product fix has not itself been read (H-10).
+
+**Below the bar there is no parity.** A single round, or one whose fixes nobody
+re-attacked, assumes the residual explicitly in the merge and says so in its
+trailer — `Adversarial-Rounds: 0` claims nothing, which is why it is written.
+
+**Equal weight is not interchangeability**, and the figures say so from both
+sides. Against rounds below the bar: 8 gate verdicts, 0 false positives, **4
+classes** the internal rounds had skirted, including a HIGH after a closure was
+declared — that measurement is why the bar exists. From the other side, on
+#3164: five independent verifiers rejected **4 of 5** proposed fixes, one of
+which widened two security bounds *while passing the entire suite*, and the
+closing round then found two defects in the corrections — a guard blind to the
+very thing it existed to catch, and a refusal message asserting what the guard
+never checks. A reviewer reading the diff cannot find those: they are defects
+in the guards and in the measurements, not in the change.
+
+So a sterile round is still not a stop criterion. What closes the loop is the
+bar, or the gate's verdict — never a round announcing that it found nothing.
 
 Revi's `questions` channel is non-blocking, and that is not permission to
 ignore it: each question is **executed** (≤ 5 min) before any decision, and
