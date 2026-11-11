@@ -893,6 +893,20 @@ type RunRetryState struct {
 	// meets-the-wall-again path treats both alike: either re-arms free on the
 	// announced instant (ProbeInFlight).
 	ReleasedBy string `json:"released_by,omitempty" bson:"released_by,omitempty"`
+	// ProbeAnsweredAt is the instant the runner saw the wall this row's
+	// marker sets aside fall: in an attempt that followed the pull, a model
+	// call booked on one of the wall's credentials (WallCredentials) was
+	// served — it spent tokens or money on that credential
+	// (RunProbeAnswerStore.AnswerRunProbe). It is the answer a probe of the
+	// credential window gives — the canary's, or a released run's — and the
+	// one the sweeper releases the window's other waits on: a fact the
+	// runner records, never one inferred from the run's status or from how
+	// long ago it was pulled. A run that started late, ran on another
+	// credential or was held behind a cap answers nothing.
+	//
+	// It qualifies the marker like ReleasedBy: written only while ProbeFrom
+	// is held, consumed with it by every write that consumes it.
+	ProbeAnsweredAt *time.Time `json:"probe_answered_at,omitempty" bson:"probe_answered_at,omitempty"`
 }
 
 // Released reports a row pulled forward on its credential window's answer

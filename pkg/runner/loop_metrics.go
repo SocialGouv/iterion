@@ -128,6 +128,10 @@ type metricsEmitter struct {
 	unplacedVerdict  bool
 	unchainedVerdict bool
 
+	// probe answers the credential window's probe this attempt follows, when
+	// it follows one (watchProbeAnswer): nil otherwise.
+	probe *probeWatch
+
 	// missed accumulates the observations a STAMPED plan named nothing for,
 	// on the routes a plan is supposed to answer. Env-funded spend is
 	// excluded — the openai_compatible gateway and a claude_code session
@@ -702,6 +706,8 @@ func (m *metricsEmitter) observe(evt store.Event) {
 		}
 		route := routeKey{backend: backend, model: modelName, credential: observedCredential(evt.Data)}
 		m.bookObservationLocked(evt.NodeID, route, provider, costDelta, int64(inputT), int64(outputT), 0)
+		// A claw step is a call the provider served.
+		m.noteProbeAnswerLocked(evt.NodeID, route, provider, costDelta, int64(inputT)+int64(outputT))
 		if unreported, _ := evt.Data["usage_unreported"].(bool); unreported {
 			k := route
 			t := m.byRoute[k]
@@ -851,6 +857,12 @@ func (m *metricsEmitter) observeDelegate(evt store.Event) {
 			booked = append(booked, b)
 		}
 	}
+	// A FINISHED delegation's own route served it. The folded slices are
+	// the routes the chain abandoned, and a delegate_error's spend may end
+	// on the very refusal the probe is asking about: neither answers.
+	if evt.Type == store.EventDelegateFinished {
+		m.noteProbeAnswerLocked(evt.NodeID, delegateSliceRoute(own), own.provider, own.cost, int64(own.tokens))
+	}
 	// The re-ask's delegate event is booked: the enclosing attempt's
 	// steps verdict comes back for that attempt's own delegate event.
 	if reask, _ := evt.Data["reask"].(string); reask != "" {
@@ -974,6 +986,20 @@ func (m *metricsEmitter) bookDelegateSliceLocked(nodeID string, s delegateSlice)
 			s.cost = s.tokens * rate.inputUSDPerToken
 		}
 	}
+	m.runAggregateTokens += int64(s.tokens)
+	m.runCostUSD += s.cost
+	// The delegate reports ONE token count and no split. It goes to the
+	// aggregate counter rather than to input: a sum stays exact either way,
+	// and only this way does a reader of the public per-credential endpoint
+	// see "not split" instead of a confident, wrong input figure (#992).
+	m.bookObservationLocked(nodeID, delegateSliceRoute(s), s.provider, s.cost, 0, 0, int64(s.tokens))
+	return s, true
+}
+
+// delegateSliceRoute is the route key a delegate slice books under: the
+// claude_code session label is its source, the structured-output recovery's
+// call is hostExtractionSource.
+func delegateSliceRoute(s delegateSlice) routeKey {
 	var source string
 	if s.backend == delegate.BackendClaudeCode {
 		source = s.fingerprint
@@ -981,14 +1007,7 @@ func (m *metricsEmitter) bookDelegateSliceLocked(nodeID string, s delegateSlice)
 	if s.unstepped {
 		source = hostExtractionSource
 	}
-	m.runAggregateTokens += int64(s.tokens)
-	m.runCostUSD += s.cost
-	// The delegate reports ONE token count and no split. It goes to the
-	// aggregate counter rather than to input: a sum stays exact either way,
-	// and only this way does a reader of the public per-credential endpoint
-	// see "not split" instead of a confident, wrong input figure (#992).
-	m.bookObservationLocked(nodeID, routeKey{backend: s.backend, model: s.model, source: source, credential: s.credential}, s.provider, s.cost, 0, 0, int64(s.tokens))
-	return s, true
+	return routeKey{backend: s.backend, model: s.model, source: source, credential: s.credential}
 }
 
 // RunTotals snapshots the run's accumulated LLM consumption — what
@@ -1046,7 +1065,7 @@ type credVerdict struct {
 }
 
 // chainRouteVerdictLocked places one route verdict of an exhausted chain on
-// the credential its route spent (verdictFingerprintLocked). Only a verdict
+// the credential its route spent (routeCredentialLocked). Only a verdict
 // that changes a credential's availability is placed; a route the runner
 // cannot place marks the attempt's verdicts unplaced. Called under m.mu.
 func (m *metricsEmitter) chainRouteVerdictLocked(nodeID string, route map[string]any) {
@@ -1061,7 +1080,7 @@ func (m *metricsEmitter) chainRouteVerdictLocked(nodeID string, route map[string
 	if backend == delegate.BackendClaudeCode {
 		source, _ = route["fingerprint"].(string)
 	}
-	fp, placed := m.verdictFingerprintLocked(nodeID, routeKey{backend: backend, model: modelSpec, source: source, credential: observedCredential(route)}, provider)
+	fp, placed := m.routeCredentialLocked(nodeID, routeKey{backend: backend, model: modelSpec, source: source, credential: observedCredential(route)}, provider)
 	if !placed {
 		m.unplacedVerdict = true
 		return
@@ -1099,10 +1118,11 @@ func routeWindowReopensAt(route map[string]any) time.Time {
 	return time.Time{}
 }
 
-// verdictFingerprintLocked names the credential one route of a chain spent,
-// for its verdict, in the order its spend joins the plan (fingerprintFor) —
-// one step stricter, since a verdict moves a lease where a spend only books
-// on it:
+// routeCredentialLocked names the credential one route spent — for a chain
+// verdict (chainRouteVerdictLocked) and for a probe's answer
+// (noteProbeAnswerLocked) — in the order its spend joins the plan
+// (fingerprintFor), one step stricter, since a verdict moves a lease and an
+// answer releases a window where a spend only books:
 //
 //   - the route's own credential keys (ADR-161 decision 8) — the run slot
 //     they name, or nobody for a spend on no slot of the run's;
@@ -1118,7 +1138,7 @@ func routeWindowReopensAt(route map[string]any) time.Time {
 //
 // placed is false when none of these names one: the route may have spent
 // any credential, the lease's included. Called under m.mu.
-func (m *metricsEmitter) verdictFingerprintLocked(nodeID string, route routeKey, provider string) (fp string, placed bool) {
+func (m *metricsEmitter) routeCredentialLocked(nodeID string, route routeKey, provider string) (fp string, placed bool) {
 	if route.credential.Channel != "" {
 		return ownFingerprint(route.credential), true
 	}

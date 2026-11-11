@@ -33,8 +33,10 @@ import (
 //     (a transient refusal before publish, its tenant's quota) hands the next
 //     probe to another run instead of taking every one of them;
 //   - when the canary's resume gets past the wall (a hand top-up, a wall that
-//     fell early), releases every other run parked on the same credentials in
-//     the same pass;
+//     fell early) — the runner records it the moment a call on one of the
+//     wall's credentials is served (RunRetryState.ProbeAnsweredAt) —
+//     releases every other run parked on the same credentials in the same
+//     pass;
 //   - when it meets the wall again, moves nobody: the free re-arm puts the
 //     canary back on its announced instant and its pull stamp holds the
 //     window's pace for a floor.
@@ -44,9 +46,10 @@ import (
 // pull any of the window's rows carries (last_probe_at), the BUDGET the pulls
 // its rows carry on the walls they wait on, summed (probe_count, which belongs
 // to a wall — summed because the canary rotates, so no one row carries the
-// window's count), and a probe's ANSWER the state of the run it pulled —
-// found through the marker its pull left, read through its wall door
-// (RunRetryState.AnnouncedProbeFrom), which only an arming consumes. The
+// window's count), and a probe's ANSWER what the runner recorded on the run
+// it pulled (RunRetryState.ProbeAnsweredAt) — found through the marker its
+// pull left, read through its wall door (RunRetryState.AnnouncedProbeFrom),
+// which only an arming consumes. The
 // window itself is the credentials the wall was met on, copied by the paid
 // arming (RunRetryState.WallCredentials) — never the run's current stamp,
 // which the canary's own resume re-writes. Every write is the store's CAS on
@@ -90,7 +93,8 @@ type credentialWindow struct {
 	waits []mongostore.RetryDueRef
 	// probes are the runs a pull still marks while the wall it set aside is
 	// ahead (RunRetryState.AnnouncedProbeFrom): pulled forward and not yet
-	// re-armed. Their state is the answer of the probe.
+	// re-armed. What the runner recorded on them is the answer of the probe
+	// (answerOf).
 	probes []mongostore.RetryDueRef
 }
 
@@ -110,7 +114,7 @@ func credentialWindowsOf(rows []mongostore.RetryDueRef, now time.Time) []*creden
 			byKey[key] = w
 		}
 		// A pull whose set-aside wall is still ahead is a probe of the
-		// window: its run's state is the answer. Once that wall is behind
+		// window: its run's record is the answer. Once that wall is behind
 		// us the wait is over for every run on it, and no answer is owed.
 		if row.RetryState.AnnouncedProbeFrom(now) != nil {
 			w.probes = append(w.probes, row)
@@ -132,17 +136,20 @@ func credentialWindowsOf(rows []mongostore.RetryDueRef, now time.Time) []*creden
 type credentialProbeAnswer int
 
 const (
-	// probeUnanswered: the pulled run has not reached the provider yet, or
-	// may still meet the wall — its pull is younger than ProbeMarkerTTL and
-	// it is neither past the wall nor parked again.
+	// probeUnanswered: the pulled run may still answer — its pull is younger
+	// than ProbeMarkerTTL, it records no answer, and it is queued, running
+	// or parked again without its re-arm yet.
 	probeUnanswered credentialProbeAnswer = iota
-	// probeGotThrough: the pulled run is past the wall — it has run longer
-	// than a refused resume takes to come back, reached a human gate, or
-	// finished.
+	// probeGotThrough: the runner recorded that the wall fell
+	// (RunRetryState.ProbeAnsweredAt): a call of the attempt that followed
+	// the pull was served on one of the wall's credentials.
 	probeGotThrough
-	// probeNoAnswer: the pulled run ended in a way that says nothing about
-	// the wall (failed, cancelled, paused by an operator, a resume that never
-	// started). It still paces the window: its pull was spent.
+	// probeNoAnswer: the pulled run said nothing about the wall and is no
+	// longer expected to — it ended without an answer (on another
+	// credential, before any call), or its pull is older than
+	// ProbeMarkerTTL with none: its resume started late, re-resolved onto
+	// another credential, or waits behind a cap. It still paces the window:
+	// its pull was spent.
 	probeNoAnswer
 )
 
@@ -150,27 +157,30 @@ const (
 // here at all: the free re-arm consumes the marker, and the run is a wait of
 // the window again, its pull stamp holding the pace.
 //
+// Got through is a fact the runner records, never one read off the run's
+// status or the age of its pull: a canary queued an hour before its pod
+// started, served on another credential, or held behind a credential's cap
+// is running past the marker's TTL without having asked the wall anything,
+// and a release on that reading sends every wait of the window into a wall
+// nothing showed fell (#3127).
+//
 // A marker with no pull stamp answers nothing: PullRunRetry writes the pair in
 // one update, so only a row older than the stamp carries one, and the age of
 // its pull is unknown.
 func answerOf(row mongostore.RetryDueRef, now time.Time) credentialProbeAnswer {
-	if row.RetryState.LastProbeAt == nil {
+	rs := row.RetryState
+	if rs.LastProbeAt == nil {
 		return probeNoAnswer
 	}
-	young := now.Before(row.RetryState.LastProbeAt.Add(store.ProbeMarkerTTL))
-	switch row.Status {
-	case store.RunStatusFinished, store.RunStatusPausedWaitingHuman:
+	if rs.ProbeAnsweredAt != nil {
 		return probeGotThrough
-	case store.RunStatusRunning:
-		if young {
-			return probeUnanswered
-		}
-		return probeGotThrough
-	case store.RunStatusQueued, store.RunStatusFailedResumable:
-		if young {
-			return probeUnanswered
-		}
+	}
+	if !now.Before(rs.LastProbeAt.Add(store.ProbeMarkerTTL)) {
 		return probeNoAnswer
+	}
+	switch row.Status {
+	case store.RunStatusQueued, store.RunStatusRunning, store.RunStatusFailedResumable:
+		return probeUnanswered
 	default:
 		return probeNoAnswer
 	}
@@ -237,8 +247,9 @@ func (s *Server) sweepCredentialProbes(ctx context.Context, retryStore store.Run
 }
 
 // releaseCredentialWindow moves the window's waits when a probe of it got
-// past the wall, and reports how many it moved and whether a probe of the
-// window is still out (no new probe is taken while one is).
+// past the wall — its runner recorded the answer (answerOf) — and reports how
+// many it moved and whether a probe of the window is still out (no new probe
+// is taken while one is).
 //
 // A probe pulled at T answers for the waits parked at or before T and not
 // pulled since: a run that met the wall AFTER the pull carries newer news

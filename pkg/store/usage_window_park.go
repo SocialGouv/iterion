@@ -58,11 +58,15 @@ type UsageWindowPark struct {
 	//
 	// The record does not say WHICH sealed credential refused, so the key is
 	// the whole set: two runs share a window when they sealed the same
-	// credentials. A run that sealed a second credential beside the walled
-	// one waits in a window of its own — one more probe, never a run
-	// released on another credential's answer. Empty when the record names
-	// no credential (ambient credentials, a row armed before the field): no
-	// probe speaks for such a run, and it waits for its window.
+	// credentials, and a probe's answer is a call served on ANY of them
+	// (RunRetryState.ProbeAnsweredAt). Two runs of one set walled on
+	// different members therefore answer for each other: one released on
+	// the other member's answer meets its own wall again and is re-armed
+	// free on its announced instant — a pod, counted on the window's probe
+	// budget. A run that sealed a second credential beside the walled one
+	// waits in a window of its own: one more canary. Empty when the record
+	// names no credential (ambient credentials, a row armed before the
+	// field): no probe speaks for such a run, and it waits for its window.
 	Credential string
 }
 

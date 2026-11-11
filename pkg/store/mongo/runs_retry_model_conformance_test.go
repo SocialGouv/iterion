@@ -47,6 +47,9 @@ const (
 	// opRelease is the credential window's release, reached by its directed
 	// script only, for opScanCredential's reason.
 	opRelease retryOp = "ReleaseRunRetry"
+	// opAnswer is the runner's record of a probe's answer, reached by its
+	// directed script only, for opScanCredential's reason.
+	opAnswer retryOp = "AnswerRunProbe"
 	// conformBudget is the ATTEMPT budget an arming is refused past.
 	conformBudget = 4
 	// conformProbeBudget is the probe budget the scan's own bound uses. TWO,
@@ -79,6 +82,11 @@ var conformScripts = map[string][]retryOp{
 	// consumes the marker: a delay keeps both, a refused second release
 	// over the live marker, the free re-arm, the paid arming and the settle.
 	"release": {opSchedule, opRelease, opDelay, opRelease, opRearm, opRelease, opSchedule, opRelease, opClear, opSchedule, opRelease, opAbandon},
+	// The answer and the marker it qualifies: refused without a marker,
+	// landed once under one (a resume's clear and a delay keep it), refused
+	// a second time, and consumed by each write that consumes the marker —
+	// the free re-arm, the paid arming and the settle.
+	"answer": {opSchedule, opAnswer, opPull, opClear, opAnswer, opAnswer, opDelay, opRearm, opAnswer, opRelease, opAnswer, opSchedule, opPull, opAnswer, opAbandon, opAnswer},
 }
 
 // TestRunRetryProbeModel_AnswersWhatTheStoreAnswers walks 30 seeded random
@@ -123,6 +131,9 @@ func conformWantedStates() []string {
 		"credential scan refused the row",
 		"release landed",
 		"release refused over a live marker",
+		"answer landed",
+		"answer refused without a marker",
+		"answer refused over an answer",
 	}
 	for _, term := range probeScanTerms {
 		want = append(want, "probe scan refused the row on the "+term)
@@ -448,6 +459,12 @@ func noteConformance(seen map[string]int, op retryOp, got string, before *store.
 		seen["release landed"]++
 	case op == opRelease && got == "false" && before != nil && before.ProbeFrom != nil:
 		seen["release refused over a live marker"]++
+	case op == opAnswer && got == "true":
+		seen["answer landed"]++
+	case op == opAnswer && got == "false" && (before == nil || before.ProbeFrom == nil):
+		seen["answer refused without a marker"]++
+	case op == opAnswer && got == "false" && before.ProbeAnsweredAt != nil:
+		seen["answer refused over an answer"]++
 	case op == opRearm && got == "true":
 		seen["re-arm landed"]++
 	case op == opSchedule && strings.HasPrefix(got, "false"):
@@ -521,6 +538,13 @@ func applyRetryOp(ctx context.Context, real *Store, model *retryprobetest.Store,
 		}
 		ok, err := model.ReleaseRunRetry(ctx, runID, expected, at, by)
 		return fmt.Sprintf("%v", ok), err
+	case opAnswer:
+		if onStore {
+			ok, err := real.AnswerRunProbe(ctx, runID, at)
+			return fmt.Sprintf("%v", ok), err
+		}
+		ok, err := model.AnswerRunProbe(ctx, runID, at)
+		return fmt.Sprintf("%v", ok), err
 	case opRearm:
 		if onStore {
 			ok, err := real.RearmProbedRunRetry(ctx, runID, at, args.wall)
@@ -582,9 +606,9 @@ func describeConformRow(status store.RunStatus, continuation store.ContinuationS
 	if row == nil {
 		return fmt.Sprintf("status=%s continuation=%s retry_state=absent", status, continuation)
 	}
-	return fmt.Sprintf("status=%s continuation=%s retry_after=%s wall=%s probe_from=%s released_by=%q probe_count=%d attempts=%d reason=%s code=%s last_error=%q scheduled_at=%v claimed_at=%v last_probe_at=%v credential_window=%q",
+	return fmt.Sprintf("status=%s continuation=%s retry_after=%s wall=%s probe_from=%s released_by=%q probe_answered_at=%s probe_count=%d attempts=%d reason=%s code=%s last_error=%q scheduled_at=%v claimed_at=%v last_probe_at=%v credential_window=%q",
 		status, continuation,
-		conformInstant(row.RetryAfter), conformInstant(row.Wall), conformInstant(row.ProbeFrom), row.ReleasedBy, row.ProbeCount, row.Attempts,
+		conformInstant(row.RetryAfter), conformInstant(row.Wall), conformInstant(row.ProbeFrom), row.ReleasedBy, conformInstant(row.ProbeAnsweredAt), row.ProbeCount, row.Attempts,
 		row.Reason, row.Code, row.LastError,
 		row.ScheduledAt != nil, row.ClaimedAt != nil, row.LastProbeAt != nil, row.CredentialWindow())
 }

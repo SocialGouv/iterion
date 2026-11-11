@@ -120,8 +120,9 @@ func (s *Store) ScheduleRunRetry(ctx context.Context, runID string, at, wall tim
 		// The marker is CONSUMED by every arming — that is what makes the
 		// park after a probe charged normally — and the release that
 		// qualified it with it.
-		retryPath("probe_from"):  "$$REMOVE",
-		retryPath("released_by"): "$$REMOVE",
+		retryPath("probe_from"):        "$$REMOVE",
+		retryPath("released_by"):       "$$REMOVE",
+		retryPath("probe_answered_at"): "$$REMOVE",
 		// The credential window the wait belongs to: the credentials the
 		// attempt that met the wall sealed, read off the document in this
 		// same update — every resume re-stamps cred_fingerprints, and no
@@ -277,6 +278,29 @@ func (s *Store) ReleaseRunRetry(ctx context.Context, runID string, expectedAfter
 	return res.MatchedCount > 0, nil
 }
 
+// AnswerRunProbe records a probe's answer (store.RunProbeAnswerStore): the
+// marker's presence and the answer's absence are the filter, so an arming
+// that consumed the marker first wins and an attempt answers once.
+func (s *Store) AnswerRunProbe(ctx context.Context, runID string, at time.Time) (bool, error) {
+	filter := withTenantFilter(ctx, bson.M{
+		"_id":                          runID,
+		retryPath("probe_from"):        bson.M{"$exists": true},
+		retryPath("probe_answered_at"): bson.M{"$exists": false},
+	})
+	update := bson.M{
+		"$set": bson.M{
+			retryPath("probe_answered_at"): at.UTC(),
+			"updated_at":                   time.Now().UTC(),
+		},
+		"$inc": bson.M{"version": 1},
+	}
+	res, err := s.runs.UpdateOne(ctx, filter, versionRunUpdate(update))
+	if err != nil {
+		return false, fmt.Errorf("store/mongo: answer probe %s: %w", runID, err)
+	}
+	return res.MatchedCount > 0, nil
+}
+
 // RearmProbedRunRetry re-arms a probe-marked retry at `at` and consumes the
 // marker, without touching attempts — neither the counter nor the budget
 // filter. Both matter: a probe that charged an attempt would retire a run
@@ -300,10 +324,11 @@ func (s *Store) RearmProbedRunRetry(ctx context.Context, runID string, at, wall 
 		retryPath("probe_from"): bson.M{"$exists": true},
 	})
 	set := bson.M{
-		retryPath("retry_after"): at.UTC(),
-		retryPath("probe_from"):  "$$REMOVE",
-		retryPath("released_by"): "$$REMOVE",
-		retryPath("claimed_at"):  "$$REMOVE",
+		retryPath("retry_after"):       at.UTC(),
+		retryPath("probe_from"):        "$$REMOVE",
+		retryPath("released_by"):       "$$REMOVE",
+		retryPath("probe_answered_at"): "$$REMOVE",
+		retryPath("claimed_at"):        "$$REMOVE",
 		// The row was armed before the pull and stays armed: an
 		// outcome consumer deferring to retry_armed must not see a
 		// window where nothing is coming.
@@ -411,8 +436,9 @@ func (s *Store) AbandonRunRetry(ctx context.Context, runID, reason string, expec
 			// Nothing is armed, so there is no wait left to probe: a marker
 			// surviving here would make the next arming of a
 			// hand-resumed run free.
-			retryPath("probe_from"):  "",
-			retryPath("released_by"): "",
+			retryPath("probe_from"):        "",
+			retryPath("released_by"):       "",
+			retryPath("probe_answered_at"): "",
 		},
 		"$inc": bson.M{"version": 1},
 	}

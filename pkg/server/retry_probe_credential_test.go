@@ -23,7 +23,9 @@ import (
 // documents the passes write; the runner's side is the two writes it makes
 // after a probed resume: the free re-arm of a run that met the wall again
 // (RearmProbedRunRetry on the provider's announced instant, as
-// pkg/runner.armUsageWindowRetry does for a probe in flight), or a run that
+// pkg/runner.armUsageWindowRetry does for a probe in flight), or the answer
+// of a run whose call on the wall's credential was served
+// (AnswerRunProbe, as pkg/runner's probe watch records it), after which it
 // simply runs.
 
 // credFleet is N runs, each its own twin row, behind the store and the lister
@@ -281,6 +283,19 @@ func (f *credFleet) meetsTheWallAgain(t *testing.T, id string) {
 	}
 }
 
+// getsThrough is the runner's record of a probed resume that got past the
+// wall: a call on one of the wall's credentials was served, the attempt
+// answered the probe (store.RunProbeAnswerStore.AnswerRunProbe, at the
+// fleet's clock) and the run works on.
+func (f *credFleet) getsThrough(t *testing.T, id string) {
+	t.Helper()
+	tw := f.twin(id)
+	tw.Mutate(func(run *store.Run) { run.Status = store.RunStatusRunning })
+	if ok, err := tw.AnswerRunProbe(context.Background(), id, f.clock()); err != nil || !ok {
+		t.Fatalf("answer of %s = (%v, %v) — the fixture expected a probed resume", id, ok, err)
+	}
+}
+
 // credWorld is the server, the fleet and the clock, ticked a minute at a time.
 type credWorld struct {
 	t       *testing.T
@@ -403,30 +418,30 @@ func TestCredentialProbe_ACanaryThatMeetsTheWallMovesNobodyForAnHour(t *testing.
 	}
 }
 
-// The canary got past the wall — it has run longer than a refused resume
-// takes to come back: every other run parked on the same credentials is
-// released in the same pass.
+// The canary got past the wall — its runner recorded that a call on the
+// wall's credential was served: every other run parked on the same
+// credentials is released in the pass that reads the answer.
 func TestCredentialProbe_ACanaryPastTheWallReleasesTheOthersInOnePass(t *testing.T) {
 	w := newCredWorld(t)
 	wall := w.start.Add(4 * 24 * time.Hour)
 	for i, id := range []string{"run-a", "run-b", "run-c", "run-d"} {
 		w.f.park(id, []string{"fp-zai-weekly"}, w.start.Add(-time.Duration(40-i)*time.Minute), wall)
 	}
-	// The runner claims the canary and works: the wall fell (a hand top-up).
-	w.onResume = func(id string) {
-		w.f.twin(id).Mutate(func(run *store.Run) { run.Status = store.RunStatusRunning })
-	}
+	// The runner claims the canary, its first call is served: the wall fell
+	// (a hand top-up).
+	w.onResume = func(id string) { w.later(runnerAnswers, func() { w.f.getsThrough(t, id) }) }
 
-	w.run(0, store.ProbeMarkerTTL-time.Minute)
+	// Pulled at +0, resumed by the due pass at +1m, answered at +6m.
+	answer := runnerAnswers + time.Minute
+	w.run(0, answer-time.Minute)
 	if len(w.f.pulled) != 1 {
 		t.Fatalf("pulls before the canary's answer = %v, want the canary alone — a probe still out is not an answer", w.f.pulled)
 	}
-	answer := store.ProbeMarkerTTL
 	w.tick(answer)
 	released := w.f.pullsAt(w.start.Add(answer))
 	slices.Sort(released)
 	if want := []string{"run-b", "run-c", "run-d"}; !slices.Equal(released, want) {
-		t.Fatalf("released at +%s = %v, want %v in that one pass — the canary has run past the wall, so the window it waited on is open for every run parked on it",
+		t.Fatalf("released at +%s = %v, want %v in that one pass — the canary's call on the wall's credential was served, so the window it waited on is open for every run parked on it",
 			answer, released, want)
 	}
 	w.onResume = nil
@@ -442,19 +457,48 @@ func TestCredentialProbe_ACanaryPastTheWallReleasesTheOthersInOnePass(t *testing
 	}
 }
 
-// A canary that FINISHED is past the wall too, however soon: the release does
-// not wait for the marker's age.
+// A canary that answered and FINISHED at once releases the others in the pass
+// that reads it: the release does not wait for the marker's age.
 func TestCredentialProbe_ACanaryThatFinishedReleasesTheOthersAtOnce(t *testing.T) {
 	w := newCredWorld(t)
 	wall := w.start.Add(4 * 24 * time.Hour)
 	w.f.park("run-a", []string{"fp-zai-weekly"}, w.start.Add(-30*time.Minute), wall)
 	w.f.park("run-b", []string{"fp-zai-weekly"}, w.start.Add(-20*time.Minute), wall)
 	w.onResume = func(id string) {
+		w.f.getsThrough(t, id)
 		w.f.twin(id).Mutate(func(run *store.Run) { run.Status = store.RunStatusFinished })
 	}
 	w.run(0, 2*time.Minute)
 	if got := w.f.pullsAt(w.start.Add(time.Minute)); !slices.Equal(got, []string{"run-b"}) {
-		t.Fatalf("pulls at +1m = %v (all pulls %v), want run-b released in the pass that read the finished canary", got, w.f.pulled)
+		t.Fatalf("pulls at +1m = %v (all pulls %v), want run-b released in the pass that read the finished canary's answer", got, w.f.pulled)
+	}
+}
+
+// A canary that finished WITHOUT an answer — every call it made was served on
+// another credential, or it made none — says nothing about the wall: it
+// releases nobody, and the window is probed again a floor after its pull.
+func TestCredentialProbe_ACanaryThatFinishedWithoutAnAnswerReleasesNobody(t *testing.T) {
+	w := newCredWorld(t)
+	wall := w.start.Add(4 * 24 * time.Hour)
+	w.f.park("run-a", []string{"fp-zai-weekly"}, w.start.Add(-30*time.Minute), wall)
+	w.f.park("run-b", []string{"fp-zai-weekly"}, w.start.Add(-20*time.Minute), wall)
+	w.f.park("run-c", []string{"fp-zai-weekly"}, w.start.Add(-10*time.Minute), wall)
+	w.onResume = func(id string) {
+		if id == "run-a" {
+			w.f.twin(id).Mutate(func(run *store.Run) { run.Status = store.RunStatusFinished })
+			return
+		}
+		w.later(runnerAnswers, func() { w.f.meetsTheWallAgain(t, id) })
+	}
+	w.run(0, time.Hour)
+	if got := slices.Collect(func(yield func(string) bool) {
+		for _, p := range w.f.pulled {
+			if !yield(p.String()) {
+				return
+			}
+		}
+	}); !slices.Equal(got, []string{"run-a@" + w.start.Format("15:04"), "run-b@" + w.start.Add(time.Hour).Format("15:04")}) {
+		t.Fatalf("pulls in the first hour = %v, want run-a at +0 and run-b, the next canary, at +1h — a canary that finished on another credential released nobody", got)
 	}
 }
 
@@ -512,6 +556,7 @@ func TestCredentialProbe_ACanaryNeverReleasesAnotherCredentialsRun(t *testing.T)
 	w.f.park("kimi-2", []string{"fp-kimi"}, w.start.Add(-20*time.Minute), wall)
 	w.onResume = func(id string) {
 		if strings.HasPrefix(id, "zai") {
+			w.f.getsThrough(t, id)
 			w.f.twin(id).Mutate(func(run *store.Run) { run.Status = store.RunStatusFinished })
 			return
 		}
@@ -538,9 +583,8 @@ func TestCredentialProbe_AWaitParkedAfterThePullIsNotReleasedByIt(t *testing.T) 
 	w := newCredWorld(t)
 	wall := w.start.Add(4 * 24 * time.Hour)
 	w.f.park("run-a", []string{"fp-zai"}, w.start.Add(-30*time.Minute), wall)
-	w.onResume = func(id string) {
-		w.f.twin(id).Mutate(func(run *store.Run) { run.Status = store.RunStatusRunning })
-	}
+	// The canary answers at +12m: after run-late met the wall.
+	w.onResume = func(id string) { w.later(11*time.Minute, func() { w.f.getsThrough(t, id) }) }
 	w.run(0, 10*time.Minute)
 	w.f.park("run-late", []string{"fp-zai"}, w.start.Add(10*time.Minute), wall)
 	w.run(11*time.Minute, store.ProbeMarkerTTL+time.Minute)
@@ -626,6 +670,7 @@ func TestCredentialProbe_ARunReleasedOnAnAnswerIsNotReleasedAgainOnIt(t *testing
 	w.f.park("run-c", []string{"fp-zai"}, w.start.Add(-10*time.Minute), wall)
 	w.onResume = func(id string) {
 		if id == "run-a" {
+			w.f.getsThrough(t, id)
 			w.f.twin(id).Mutate(func(run *store.Run) { run.Status = store.RunStatusFinished })
 			return
 		}
@@ -725,8 +770,7 @@ func (w *credWorld) probePass(offset time.Duration) {
 
 // A probe still out is no answer, and no second probe of its window is taken
 // while it is — a floor shorter than the marker's TTL makes the difference.
-// The canary's pod runs and has not been running long enough to say it got
-// past the wall.
+// The canary's pod runs and has not answered yet.
 func TestCredentialProbe_AProbeStillRunningHoldsTheWindowsNextProbe(t *testing.T) {
 	t.Setenv(EnvRetryProbeFloor, "30m")
 	w := newCredWorld(t)
@@ -798,12 +842,14 @@ func TestCredentialProbe_TheLatestAnswerReleasesTheWaitsParkedBeforeIt(t *testin
 	probed := func(id string, pulledAt time.Time, status store.RunStatus) {
 		w.f.park(id, []string{"fp-zai"}, w.start.Add(-3*time.Hour), wall)
 		at := pulledAt.Truncate(time.Millisecond)
+		answered := at.Add(5 * time.Minute)
 		w.f.twin(id).Mutate(func(run *store.Run) {
 			run.Status = status
 			run.RetryState.RetryAfter = &at
 			run.RetryState.ProbeFrom = &announced
 			run.RetryState.LastProbeAt = &at
 			run.RetryState.ProbeCount = 1
+			run.RetryState.ProbeAnsweredAt = &answered
 		})
 	}
 	probed("probe-early", w.start.Add(-90*time.Minute), store.RunStatusRunning)
@@ -867,8 +913,10 @@ func TestCredentialProbe_APassThatReleasesTakesNoNewProbe(t *testing.T) {
 	// canary in the window's order — the one a new probe would take.
 	longAgo := w.start.Add(-3 * time.Hour).Truncate(time.Millisecond)
 	w.f.twin("run-b").Mutate(func(run *store.Run) { run.RetryState.LastProbeAt = &longAgo })
+	// The canary is resumed at +1m and answers in the pass at +1h, once the
+	// floor since its pull has run out.
 	w.onResume = func(id string) {
-		w.f.twin(id).Mutate(func(run *store.Run) { run.Status = store.RunStatusRunning })
+		w.later(store.ProbeMarkerTTL-time.Minute, func() { w.f.getsThrough(t, id) })
 	}
 	w.run(0, 10*time.Minute)
 	w.f.park("run-late", []string{"fp-zai"}, w.start.Add(10*time.Minute), wall)
@@ -897,14 +945,15 @@ func TestCredentialProbe_AReleasedRunRefusedOnTheTenantsCapComesBackWhenItFrees(
 	for i, id := range ids {
 		w.f.park(id, []string{"fp-zai"}, w.start.Add(-time.Duration(60-i)*time.Minute), wall)
 	}
-	// The canary finishes at once (a hand top-up); every released run works
-	// for half an hour, holding one of the tenant's slots.
+	// The canary gets through and finishes at once (a hand top-up); every
+	// released run gets through too and works for half an hour, holding one
+	// of the tenant's slots.
 	w.onResume = func(id string) {
+		w.f.getsThrough(t, id)
 		if id == "run-a" {
 			w.f.twin(id).Mutate(func(run *store.Run) { run.Status = store.RunStatusFinished })
 			return
 		}
-		w.f.twin(id).Mutate(func(run *store.Run) { run.Status = store.RunStatusRunning })
 		w.later(30*time.Minute, func() {
 			w.f.twin(id).Mutate(func(run *store.Run) { run.Status = store.RunStatusFinished })
 		})
@@ -935,6 +984,124 @@ func TestCredentialProbe_AReleasedRunRefusedOnTheTenantsCapComesBackWhenItFrees(
 		}
 		if got := w.f.twin(id).Row().Attempts; got != 1 {
 			t.Fatalf("run %s spent %d attempts, want the 1 its park spent — a cap refusing a released run is no attempt of its", id, got)
+		}
+	}
+}
+
+// The canary's resume sits queued for an hour (a runner-pool backlog): its pod
+// starts past the marker's TTL and meets the wall minutes later. Running past
+// the TTL is no answer — nothing it did asked the wall — so the window
+// releases nobody: its next canary, one floor after the pull, is the one
+// extra pod, and the two canaries meet the wall on their own.
+func TestCredentialProbe_ACanaryThatStartedLateIsNoAnswer(t *testing.T) {
+	w := newCredWorld(t)
+	wall := w.start.Add(4 * 24 * time.Hour)
+	for i, id := range []string{"run-a", "run-b", "run-c", "run-d"} {
+		w.f.park(id, []string{"fp-zai"}, w.start.Add(-time.Duration(40-i)*time.Minute), wall)
+	}
+	w.onResume = func(id string) {
+		if id == "run-a" {
+			// Resumed at +1m, its pod starts at +64m, meets the wall at +67m.
+			w.later(63*time.Minute, func() {
+				w.f.twin(id).Mutate(func(run *store.Run) { run.Status = store.RunStatusRunning })
+			})
+			w.later(66*time.Minute, func() { w.f.meetsTheWallAgain(t, id) })
+			return
+		}
+		w.later(runnerAnswers, func() { w.f.meetsTheWallAgain(t, id) })
+	}
+	w.run(0, 70*time.Minute)
+	want := []string{"run-a@" + w.start.Format("15:04"), "run-b@" + w.start.Add(time.Hour).Format("15:04")}
+	var got []string
+	for _, p := range w.f.pulled {
+		got = append(got, p.String())
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("pulls in 70 minutes = %v, want %v — run-a started past the marker's TTL and answered nothing; read as got-through, it released the window's waits into a wall nothing showed fell\nresumes: %v",
+			got, want, w.resumer.calls)
+	}
+}
+
+// The canary's resume re-resolves onto another credential (a team key, a free
+// pool slot) and works there past the marker's TTL: its calls were served on
+// a credential the wall never held, so it answers nothing about the wall, and
+// every wait of the window stays parked — the next canary asks again a floor
+// after the pull.
+func TestCredentialProbe_ACanaryServedOnAnotherCredentialReleasesNobody(t *testing.T) {
+	w := newCredWorld(t)
+	wall := w.start.Add(4 * 24 * time.Hour)
+	for i, id := range []string{"run-a", "run-b", "run-c"} {
+		w.f.park(id, []string{"fp-platform-zai"}, w.start.Add(-time.Duration(30-i)*time.Minute), wall)
+	}
+	w.resumer.restamp = func(id string) []string {
+		if id == "run-a" {
+			return []string{"fp-team-zai"}
+		}
+		return []string{"fp-platform-zai"}
+	}
+	w.onResume = func(id string) {
+		if id == "run-a" {
+			w.f.twin(id).Mutate(func(run *store.Run) { run.Status = store.RunStatusRunning })
+			return
+		}
+		w.later(runnerAnswers, func() { w.f.meetsTheWallAgain(t, id) })
+	}
+	w.run(0, 2*time.Hour)
+	for _, p := range w.f.pulled {
+		if row := w.f.twin(p.runID).Row(); row.ReleasedBy != "" {
+			t.Fatalf("run %s released at %s by %s — the canary ran on another credential and answered nothing about the wall\nall pulls: %v",
+				p.runID, p.at.Format("15:04"), row.ReleasedBy, w.f.pulled)
+		}
+	}
+	if got := w.f.pullsAt(w.start.Add(time.Hour)); !slices.Equal(got, []string{"run-b"}) {
+		t.Fatalf("pulls at +1h = %v (all pulls %v), want run-b, the window's next canary", got, w.f.pulled)
+	}
+}
+
+// An answer is consumed with the marker it qualifies. The canary got through,
+// worked, and parked again on a new wall after spending (the runner's paid
+// arming): when the window pulls it again, its old answer is not this pull's.
+// Read as one, it released a wait parked since on a wall nothing showed fell.
+func TestCredentialProbe_AnAnswerIsConsumedWithItsMarker(t *testing.T) {
+	w := newCredWorld(t)
+	wall := w.start.Add(4 * 24 * time.Hour)
+	w.f.park("run-a", []string{"fp-zai"}, w.start.Add(-30*time.Minute), wall)
+	// Its resume re-seals the same credential, which the paid arming copies.
+	w.resumer.restamp = func(string) []string { return []string{"fp-zai"} }
+	resumes := 0
+	w.onResume = func(id string) {
+		resumes++
+		if resumes > 1 {
+			w.later(runnerAnswers, func() { w.f.meetsTheWallAgain(t, id) })
+			return
+		}
+		w.later(runnerAnswers, func() { w.f.getsThrough(t, id) })
+		// It works, then meets the wall after spending: the paid arming.
+		w.later(9*time.Minute, func() {
+			tw := w.f.twin(id)
+			tw.Mutate(func(run *store.Run) {
+				run.Status = store.RunStatusFailedResumable
+				run.FailureCode = store.FailureUsageLimitBlocked
+			})
+			if ok, _, err := tw.ScheduleRunRetry(context.Background(), id, wall.Add(time.Minute), wall, store.RetryReasonUsageWindow, "USAGE_LIMIT_BLOCKED", 5); err != nil || !ok {
+				t.Fatalf("paid re-park of %s = (%v, %v)", id, ok, err)
+			}
+		})
+	}
+	w.run(0, 19*time.Minute)
+	// run-b was a canary once since run-a's pull, and parked again: run-a,
+	// pulled least recently, is the window's next canary.
+	w.f.park("run-b", []string{"fp-zai"}, w.start.Add(20*time.Minute), wall)
+	pulledB := w.start.Add(15 * time.Minute).Truncate(time.Millisecond)
+	w.f.twin("run-b").Mutate(func(run *store.Run) { run.RetryState.LastProbeAt = &pulledB })
+	w.run(20*time.Minute, 80*time.Minute)
+	if got := w.f.pullsAt(w.start.Add(75 * time.Minute)); !slices.Equal(got, []string{"run-a"}) {
+		t.Fatalf("pulls at +75m = %v (all pulls %v), want run-a pulled again — the premise of this witness", got, w.f.pulled)
+	}
+	for _, p := range w.f.pulled {
+		if p.runID == "run-b" {
+			t.Fatalf("run-b pulled at %s (released by %q) — run-a's answer belonged to its previous pull, consumed by its paid arming\nall pulls: %v",
+				p.at.Format("15:04"), w.f.twin("run-b").Row().ReleasedBy, w.f.pulled)
 		}
 	}
 }

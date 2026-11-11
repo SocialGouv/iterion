@@ -65,6 +65,7 @@ type Store struct {
 	// Observations, all monotonic.
 	Pulls           int
 	Releases        int
+	Answers         int
 	FreeRearms      int
 	PaidArmings     int
 	RefusedArmings  int
@@ -137,6 +138,7 @@ func copyRetryState(r *store.Run) *store.RunRetryState {
 	out.ProbeFrom = copyInstant(r.RetryState.ProbeFrom)
 	out.LastProbeAt = copyInstant(r.RetryState.LastProbeAt)
 	out.Wall = copyInstant(r.RetryState.Wall)
+	out.ProbeAnsweredAt = copyInstant(r.RetryState.ProbeAnsweredAt)
 	out.WallCredentials = slices.Clone(r.RetryState.WallCredentials)
 	return &out
 }
@@ -241,7 +243,7 @@ func (s *Store) ScheduleRunRetry(_ context.Context, _ string, at, wall time.Time
 	st.Reason, st.Code = reason, code
 	st.LastError = ""
 	st.ClaimedAt = nil
-	st.ProbeFrom, st.ReleasedBy = nil, ""
+	st.ProbeFrom, st.ReleasedBy, st.ProbeAnsweredAt = nil, "", nil
 	// The credentials the attempt that met the wall sealed, copied in the
 	// arming's own update (mongo: $ifNull of cred_fingerprints, an empty
 	// set when the run has none — which reads back as no credential).
@@ -354,6 +356,22 @@ func (s *Store) ReleaseRunRetry(_ context.Context, _ string, expectedAfter, rele
 	return true, nil
 }
 
+// AnswerRunProbe mirrors mongo.Store.AnswerRunProbe: the marker's PRESENCE
+// and the answer's ABSENCE are the filter, no status term, and the answer is
+// the instant the runner passes.
+func (s *Store) AnswerRunProbe(_ context.Context, _ string, at time.Time) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	st := s.run.RetryState
+	if st == nil || st.ProbeFrom == nil || st.ProbeAnsweredAt != nil {
+		return false, nil
+	}
+	st.ProbeAnsweredAt = bsonPtr(at)
+	s.run.UpdatedAt = bsonTime(s.now())
+	s.Answers++
+	return true, nil
+}
+
 // RearmProbedRunRetry mirrors mongo.Store.RearmProbedRunRetry: the marker's
 // PRESENCE and the status are the filter, attempts is untouched (neither the
 // counter nor a budget check), and the marker is consumed. A zero `wall`
@@ -376,7 +394,7 @@ func (s *Store) RearmProbedRunRetry(_ context.Context, _ string, at, wall time.T
 	}
 	moved := s.wallMoves(wall)
 	st.RetryAfter = bsonPtr(at)
-	st.ProbeFrom, st.ReleasedBy = nil, ""
+	st.ProbeFrom, st.ReleasedBy, st.ProbeAnsweredAt = nil, "", nil
 	st.ClaimedAt = nil
 	if !wall.IsZero() {
 		st.Wall = bsonPtr(wall)
@@ -447,7 +465,7 @@ func (s *Store) AbandonRunRetry(_ context.Context, _, reason string, expectedAft
 	// is absent, so this is the one operation here that materialises it.
 	st := s.state()
 	st.LastError = reason
-	st.RetryAfter, st.ProbeFrom, st.ReleasedBy = nil, nil, ""
+	st.RetryAfter, st.ProbeFrom, st.ReleasedBy, st.ProbeAnsweredAt = nil, nil, "", nil
 	s.run.ContinuationState = store.ContinuationFinal
 	s.run.UpdatedAt = bsonTime(s.now())
 	s.Abandons = append(s.Abandons, reason)

@@ -2868,6 +2868,10 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 		r.cfg.Logger.Warn("runner: load run for finalization replay %s: %v — falling back to engine defaults", msg.RunID, ferr)
 	}
 	finalCancel()
+	// The attempt that follows a pull answers its credential window's probe
+	// (probe_answer.go), from the record read before the engine runs.
+	r.armProbeAnswer(msg, usage, finalizationRun, runLogger)
+	defer usage.waitProbeAnswer()
 
 	engineOpts := []runtime.EngineOption{
 		runtime.WithLogger(runLogger),

@@ -113,6 +113,26 @@ type RunRetryStore interface {
 	AbandonRunRetry(ctx context.Context, runID, reason string, expectedAfter time.Time) (abandoned bool, err error)
 }
 
+// RunProbeAnswerStore is the runner's half of a credential window's probe
+// (RunRetryState.ProbeAnsweredAt): the attempt that followed a pull records
+// that the wall the pull set aside fell. A capability of its own, like
+// RunRetryStore, and hosted by the same store; callers MUST nil-check via
+// AsRunProbeAnswerStore.
+type RunProbeAnswerStore interface {
+	// AnswerRunProbe records that the wall a probe-marked row sets aside
+	// fell at `at`, iff the row holds the marker (probe_from) and carries no
+	// answer yet. answered=false with no error when it does not: an arming
+	// consumed the marker first, or an earlier call of the attempt answered.
+	// No status term: the run answering is running.
+	AnswerRunProbe(ctx context.Context, runID string, at time.Time) (answered bool, err error)
+}
+
+// AsRunProbeAnswerStore returns s as RunProbeAnswerStore when the backend
+// hosts durable retry state, or nil otherwise.
+func AsRunProbeAnswerStore(s RunStore) RunProbeAnswerStore {
+	return capability[RunProbeAnswerStore](s)
+}
+
 // AsRunRetryStore returns s as RunRetryStore when the backend can host
 // durable retry state, or nil otherwise. Callers MUST nil-check
 // (filesystem / local stores return nil).
