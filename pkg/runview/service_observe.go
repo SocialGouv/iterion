@@ -248,8 +248,9 @@ func (s *Service) SessionBoard(runID string) (sessionboard.Spec, error) {
 // the deterministic task-list board (Phase 1) is always on in the studio
 // and needs nothing here.
 //
-// gatewayWatched is supervise.WorkflowNamesGateway(wf), computed by the
-// caller which holds the compiled workflow: a gateway-served session refuses
+// gatewayWatched is supervise.WorkflowNamesGateway over the compiled
+// workflow and the overrides the run's executor dispatches with, computed by
+// the caller which holds both: a gateway-served session refuses
 // curation through a vendor default (#2099) — the sessionboard twin of
 // supervise.ErrGatewayWatchNeedsPin.
 func (s *Service) startSessionBoard(ctx context.Context, runID, botID string, gatewayWatched bool, logger *iterlog.Logger) (stop func()) {

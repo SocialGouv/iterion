@@ -14,6 +14,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/backend/ambient"
 	"github.com/SocialGouv/iterion/pkg/backend/detect"
+	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
@@ -1479,7 +1480,7 @@ func (s *Service) spawnRun(
 	launchBundle *bundle.Bundle,
 	fin finalizationOpts,
 	cb callbackOpts,
-	executor runtime.NodeExecutor,
+	executor *model.ClawExecutor,
 	runLogger *iterlog.Logger,
 	timeout time.Duration,
 	force bool,
@@ -1794,13 +1795,17 @@ func (s *Service) spawnRun(
 		if run, err := s.store.LoadRun(sctx, runID); err == nil && run.Inputs != nil {
 			spawnVars = run.Inputs
 		}
-		stopSupervisors := s.startDeclaredSupervisors(ctx, runID, wf, eng.ResolveVars(spawnVars), ModelOverridesFromRun(modelOverrides), runLogger, ex.supervisors)
+		// The supervisors and the session board below read the overrides
+		// the executor dispatches with — on a resume, the run document's
+		// folded rows (resumeExecutorSpec) — never modelOverrides, the
+		// launch-only stamp that is nil on a resume.
+		stopSupervisors := s.startDeclaredSupervisors(ctx, runID, wf, eng.ResolveVars(spawnVars), executor.ModelOverrides(), runLogger, ex.supervisors)
 		defer stopSupervisors()
 
 		// Spawn the Session-board curation coordinator (opt-in via
 		// ITERION_SESSION_BOARD). No-op when disabled — the deterministic
 		// task-list board (Phase 1) runs in the studio regardless.
-		stopBoard := s.startSessionBoard(ctx, runID, runName, supervise.WorkflowNamesGateway(wf, ModelOverridesFromRun(modelOverrides)), runLogger)
+		stopBoard := s.startSessionBoard(ctx, runID, runName, supervise.WorkflowNamesGateway(wf, executor.ModelOverrides()), runLogger)
 		defer stopBoard()
 
 		bodyErr := body(ctx, sctx, eng)
