@@ -95,6 +95,15 @@ workflow parent:
 	if want := []store.RunModelOverride{{Selector: "act", Model: "openai/gpt-6-sol"}}; !reflect.DeepEqual(r.LaunchModelOverrides, want) {
 		t.Fatalf("run launch rows = %+v, want the launch flags %+v", r.LaunchModelOverrides, want)
 	}
+	// The child's document records the tree's launch rows too: a resume of
+	// the child on its own hands them to its children.
+	childRun, err := s.LoadRun(context.Background(), r.SubbotChildren["run_child"])
+	if err != nil {
+		t.Fatalf("load the child run: %v", err)
+	}
+	if want := []store.RunModelOverride{{Selector: "act", Model: "openai/gpt-6-sol"}}; !reflect.DeepEqual(childRun.LaunchModelOverrides, want) {
+		t.Fatalf("child launch rows = %+v, want the tree's %+v", childRun.LaunchModelOverrides, want)
+	}
 
 	if err := os.Remove(marker); err != nil {
 		t.Fatalf("remove marker: %v", err)

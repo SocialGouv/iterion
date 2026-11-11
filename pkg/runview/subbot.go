@@ -293,6 +293,11 @@ func (s *Service) subbotRunnerUnder(tree *subbotRoot, parentPath string, runLogg
 		if len(childRows) > 0 {
 			opts = append(opts, runtime.WithModelOverrides(RunModelOverrides(childRows)))
 		}
+		// …and what the root froze: a resume of the child on its own replays
+		// the root's providers allowlist (resumeExecutorSpec), and the
+		// child's own children fold the root's snapshot and launch rows when
+		// the resumed child is the top of their tree.
+		opts = append(opts, runtime.WithLLMRoutePolicy(root.policy), runtime.WithLaunchModelOverrides(root.launchRows))
 		opts = append(opts,
 			runtime.WithParentRunID(req.ParentRunID),
 			runtime.WithParentNodeID(req.NodeID),

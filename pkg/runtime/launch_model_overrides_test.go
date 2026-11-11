@@ -54,3 +54,47 @@ func TestEngineKeepsTheLaunchRowsItWasNotHanded(t *testing.T) {
 		}
 	})
 }
+
+// The routing-policy snapshot a subbot child's engine is handed (its
+// root's) lands on the child's document, and an engine handed none — a
+// resume — keeps what the document holds.
+func TestEngineStampsTheRoutePolicyItIsHandedAndKeepsItOtherwise(t *testing.T) {
+	ctx := context.Background()
+	pol := &store.RunLLMRoutePolicy{Providers: []string{"openai"}}
+
+	t.Run("stamped by the option", func(t *testing.T) {
+		s := tmpStore(t)
+		if err := New(admissionWorkflow(), s, newStubExecutor(), WithLLMRoutePolicy(pol)).Run(ctx, "route-policy-stamped", nil); err != nil {
+			t.Fatal(err)
+		}
+		got, err := s.LoadRun(ctx, "route-policy-stamped")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.LLMRoutePolicy == nil || !reflect.DeepEqual(got.LLMRoutePolicy.Providers, pol.Providers) {
+			t.Fatalf("run policy = %+v, want the option's %+v", got.LLMRoutePolicy, pol)
+		}
+	})
+
+	t.Run("kept on a pickup without the option", func(t *testing.T) {
+		s := tmpStore(t)
+		run, err := s.CreateRun(ctx, "route-policy-kept", "admission", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		run.LLMRoutePolicy = pol
+		if err := s.SaveRun(ctx, run); err != nil {
+			t.Fatal(err)
+		}
+		if err := New(admissionWorkflow(), s, newStubExecutor(), WithModelOverrides([]store.RunModelOverride{{Selector: "*", Model: "m"}})).Run(ctx, run.ID, nil); err != nil {
+			t.Fatal(err)
+		}
+		got, err := s.LoadRun(ctx, run.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.LLMRoutePolicy == nil || !reflect.DeepEqual(got.LLMRoutePolicy.Providers, pol.Providers) {
+			t.Fatalf("run policy = %+v after a pickup, want the stamped %+v", got.LLMRoutePolicy, pol)
+		}
+	})
+}

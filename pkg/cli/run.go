@@ -928,6 +928,13 @@ func subbotRunnerForCLI(parentPath, storeDir string, s store.RunStore, logger *i
 		if tracker := runview.WorkspaceTrackerFor(storeDir); tracker != nil {
 			childOpts = append(childOpts, runtime.WithWorkspaceTracker(tracker))
 		}
+		// The child's document records the tree's launch rows — the flags
+		// over a resume's recorded rows, already parsed by buildRunExecutor
+		// above — so a resume of the child on its own hands them to its own
+		// children.
+		if rows, rerr := childRunOpts.launchRows(); rerr == nil {
+			childOpts = append(childOpts, runtime.WithLaunchModelOverrides(runModelOverrideRows(rows)))
+		}
 		childEng := runtime.New(childWf, s, childExec, childOpts...)
 		// Unlike the studio's in-process runner (runview.subbotRunnerFor, which
 		// registers the child with the run Manager for per-child studio

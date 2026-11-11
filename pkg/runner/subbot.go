@@ -445,6 +445,12 @@ func (r *Runner) subbotRunnerUnder(tree *subbotRoot, msg *queue.RunMessage, pare
 		if len(childRows) > 0 {
 			opts = append(opts, runtime.WithModelOverrides(runview.RunModelOverrides(childRows)))
 		}
+		// …and what the root froze: a resume of the child on its own replays
+		// the root's providers allowlist and seals under the root's policy, as
+		// the child's first pass ran under the root's message, and the
+		// child's own children fold the root's snapshot and launch rows when
+		// the resumed child is the top of their tree.
+		opts = append(opts, runtime.WithLLMRoutePolicy(root.policy), runtime.WithLaunchModelOverrides(root.launchRows))
 		// One bundle identity: the engine receives exactly what compiled.
 		opts = append(opts, runtime.WithBundle(childBundle))
 		// Plugin/library skills the LAUNCHING instance resolved: the pod's

@@ -292,3 +292,59 @@ func TestInProcessSubbotChildFoldsForItsBundlesSlugAndManifestName(t *testing.T)
 		}
 	}
 }
+
+// A child's document records what its root froze — the routing-policy
+// snapshot and the raw launch rows — so a resume of the child on its own
+// replays the root's providers allowlist (resumeExecutorSpec reads it off
+// the document) and the child's own children fold the root's snapshot and
+// rows when the resumed child is the top of their tree.
+func TestInProcessSubbotChildDocumentRecordsTheRootsRouting(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("TMPDIR", t.TempDir())
+	t.Setenv("ITERION_ORPHAN_RECONCILE_INTERVAL", "0")
+	t.Setenv("OPENAI_API_KEY", "")
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "parent"), "main.bot", subbotFoldParent)
+	writeFile(t, filepath.Join(dir, "child"), "main.bot", subbotFoldAgent)
+	svc, err := NewService(filepath.Join(dir, "store"), WithLogger(iterlog.Nop()), WithWorkDir(dir), WithSandboxDefault("none"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stopService(t, svc)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	const rootID = "run-parent"
+	if _, err := svc.store.CreateRun(ctx, rootID, "parent", nil); err != nil {
+		t.Fatal(err)
+	}
+	root, err := svc.store.LoadRun(ctx, rootID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pol := &store.RunLLMRoutePolicy{Providers: []string{"openai"}, Overrides: []store.RunLLMRouteOverride{{Selector: "child/act", Model: "openai/gpt-6-sol"}}}
+	launch := []store.RunModelOverride{{Selector: "*", Effort: "low"}}
+	root.LLMRoutePolicy = pol
+	root.LaunchModelOverrides = launch
+	if err := svc.store.SaveRun(ctx, root); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.subbotRunnerFor(filepath.Join(dir, "parent", "main.bot"), iterlog.Nop())(ctx, runtime.SubbotRequest{
+		Source: "../child/main.bot", ParentRunID: rootID, NodeID: "run_child", ReattachKey: "run_child", WorkDir: dir,
+	}); err == nil {
+		t.Fatal("precondition: the child's claw leg fails offline (no credential)")
+	}
+	parent, err := svc.store.LoadRun(ctx, rootID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	child, err := svc.store.LoadRun(ctx, parent.SubbotChildren["run_child"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := svc.resumeExecutorSpec(nil, child, iterlog.Nop(), "").LLMProviders; !reflect.DeepEqual(got, []string{"openai"}) {
+		t.Fatalf("a resume of the child replays providers %v, want the root's allowlist [openai] (child policy %+v)", got, child.LLMRoutePolicy)
+	}
+	if !reflect.DeepEqual(child.LaunchModelOverrides, launch) {
+		t.Fatalf("child document launch rows = %+v, want the root's %+v", child.LaunchModelOverrides, launch)
+	}
+}

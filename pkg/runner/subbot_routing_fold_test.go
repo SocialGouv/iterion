@@ -437,3 +437,48 @@ func TestSubbotChildOfANestedBundleWorkflowIsWarnedByItsIdentity(t *testing.T) {
 		t.Fatalf("child log = %q, want the zero-match warning naming libbot, the manifest name of the bundle lib", got)
 	}
 }
+
+// A child's document records what its root froze — the routing-policy
+// snapshot and the raw launch rows — so a resume of the child on its own
+// (after a human gate) replays the root's providers allowlist, and the
+// child's own children fold the root's snapshot and rows when the resumed
+// child is the top of their tree.
+func TestSubbotChildDocumentRecordsTheRootsRouting(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "")
+	r, st := subbotTestRunner(t)
+	dir := t.TempDir()
+	parentDir := filepath.Join(dir, "parent")
+	writeSubbotFixture(t, parentDir, "main.bot", subbotFoldParentBot)
+	writeSubbotFixture(t, filepath.Join(dir, "child"), "main.bot", agentChildBot(""))
+	pol := &store.RunLLMRoutePolicy{Providers: []string{"openai"}, Overrides: []store.RunLLMRouteOverride{modelCell("child/act")}}
+	launch := []store.RunModelOverride{{Selector: "*", Effort: "low"}}
+	msg := &queue.RunMessage{RunID: "run-parent", TenantID: "t1", OwnerID: "u1", BotID: "parent", LLMProviders: []string{"openai"}}
+	idCtx := store.WithIdentity(context.Background(), "_test", "_test")
+	p := storetest.SeedParentRun(t, st, msg.RunID)
+	p.LLMRoutePolicy = pol
+	p.LaunchModelOverrides = launch
+	if err := st.SaveRun(idCtx, p); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := r.subbotRunnerFor(msg, parentDir, dir, iterlog.Nop())(ctx, runtime.SubbotRequest{
+		Source: "../child/main.bot", ParentRunID: msg.RunID, NodeID: "run_ticket", ReattachKey: "run_ticket",
+	}); err == nil {
+		t.Fatal("precondition: the child's claw leg fails offline (no credential)")
+	}
+	parent, err := st.LoadRun(idCtx, msg.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	child, err := st.LoadRun(idCtx, parent.SubbotChildren["run_ticket"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(child.LLMRoutePolicy.ProviderAllowlist(), []string{"openai"}) || child.LLMRoutePolicy == nil || !reflect.DeepEqual(child.LLMRoutePolicy.Overrides, pol.Overrides) {
+		t.Fatalf("child document policy = %+v, want the root's snapshot %+v (a resume of the child replays its allowlist)", child.LLMRoutePolicy, pol)
+	}
+	if !reflect.DeepEqual(child.LaunchModelOverrides, launch) {
+		t.Fatalf("child document launch rows = %+v, want the root's %+v", child.LaunchModelOverrides, launch)
+	}
+}
