@@ -188,21 +188,26 @@ branch, never merge.
 ## 6. Posting the comment (forge REST + token)
 
 Post ONE PR comment via the forge REST API (no host `gh`/`glab` — use
-the token directly so it works in the sandbox). Detect the forge from the
-PR URL host:
+the token directly so it works in the sandbox). The token travels as a
+header curl reads from its STDIN (`-H @-`), never on its command line,
+where every process in the sandbox — the bumped package's install scripts
+included — can read it; `printf` is a shell builtin, so the token never
+becomes a process argument. Detect the forge from the PR URL host:
 
 - **GitHub** `https://github.com/<owner>/<repo>/pull/<n>`:
   ```sh
-  curl -sS -X POST \
-    -H "Authorization: Bearer $(cat "$FORGE_TOKEN")" \
-    -H "Accept: application/vnd.github+json" \
-    "https://api.github.com/repos/<owner>/<repo>/issues/<n>/comments" \
-    -d "$(jq -nc --arg b "$BODY" '{body:$b}')"
+  printf 'Authorization: Bearer %s\n' "$(cat "$FORGE_TOKEN")" |
+    curl -sS -X POST -H @- \
+      -H "Accept: application/vnd.github+json" \
+      "https://api.github.com/repos/<owner>/<repo>/issues/<n>/comments" \
+      -d "$(jq -nc --arg b "$BODY" '{body:$b}')"
   ```
-  Re-fetch `GET …/issues/<n>/comments` and find your comment's `html_url`.
+  Re-fetch `GET …/issues/<n>/comments` the same way (the header on stdin)
+  and find your comment's `html_url`.
 - **GitLab** `…/-/merge_requests/<iid>`: `POST
   /api/v4/projects/<urlencoded path>/merge_requests/<iid>/notes` with
-  `PRIVATE-TOKEN: <token>` (or `Authorization: Bearer`), body `{ "body": … }`.
+  `PRIVATE-TOKEN: <token>` (or `Authorization: Bearer`) on curl's stdin as
+  above, body `{ "body": … }`.
   **Quick-action guard (mandatory):** GitLab runs `/merge`, `/approve`, …
   written at the start of a line of a note, with the posting account's
   rights — and the comment quotes an untrusted changelog. Escape first, the
@@ -215,7 +220,7 @@ PR URL host:
   ```
 - **Forgejo/Gitea** `…/pulls/<n>`: `POST
   /api/v1/repos/<owner>/<repo>/issues/<n>/comments` with
-  `Authorization: token <token>`.
+  `Authorization: token <token>` on curl's stdin as above.
 
 If `pr_url` is empty → post nothing (`posted: false`, reason "no pr_url").
 After posting, re-fetch to confirm and capture the comment URL — `posted`

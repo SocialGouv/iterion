@@ -1,8 +1,10 @@
 package bots
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -431,10 +433,13 @@ type contForge struct {
 	head     string
 	baseRef  string
 	reviews  []map[string]any
-	endless  bool // every reviews page says rel="next"
+	endless  bool // every reviews page says it has a next one
 	statuses map[string][]map[string]any
-	// viewer answers GraphQL's `viewer`; nil is the App as REST spells it.
+	// viewer answers GraphQL's `viewer`; nil is the App as GraphQL spells it.
 	viewer map[string]any
+	// rollup is the check rollup on the head; nil is CI the base requires,
+	// passing.
+	rollup []map[string]any
 	seen   []string
 }
 
@@ -447,39 +452,158 @@ func (f *contForge) requests() []string {
 func (f *contForge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.seen = append(f.seen, r.Method+" "+r.URL.RequestURI())
+	seen := r.Method + " " + r.URL.RequestURI()
+	if r.URL.Path == "/graphql" {
+		raw, _ := io.ReadAll(r.Body)
+		r.Body = io.NopCloser(bytes.NewReader(raw))
+		for _, kind := range []string{"reviews(", "statusCheckRollup", "viewer"} {
+			if strings.Contains(string(raw), kind) {
+				seen += " " + strings.TrimSuffix(kind, "(")
+				break
+			}
+		}
+	}
+	f.seen = append(f.seen, seen)
 	if got := r.Header.Get("Authorization"); got != "Bearer ghs_test" {
 		f.t.Errorf("continuity read the forge with Authorization %q, want the run token", got)
 	}
 	if r.Method != http.MethodGet && r.URL.Path != "/graphql" {
 		f.t.Errorf("continuity WROTE to the forge: %s %s — it reads only", r.Method, r.URL.Path)
 	}
-	const prefix = "/repos/acme/widgets/"
-	switch {
-	case r.Method == http.MethodPost && r.URL.Path == "/graphql":
-		viewer := f.viewer
-		if viewer == nil {
-			viewer = map[string]any{"login": vettyLogin, "databaseId": vettyID}
-		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"viewer": viewer}})
-	case r.URL.Path == prefix+"pulls/7":
-		_ = json.NewEncoder(w).Encode(map[string]any{"head": map[string]any{"sha": f.head}, "base": map[string]any{"ref": f.baseRef}})
-	case r.URL.Path == prefix+"pulls/7/reviews":
-		if f.endless {
-			w.Header().Set("Link", `<https://api.github.com/x?page=99>; rel="next"`)
-		}
-		_ = json.NewEncoder(w).Encode(f.reviews)
-	case strings.HasPrefix(r.URL.Path, prefix+"commits/") && strings.HasSuffix(r.URL.Path, "/status"):
-		sha := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, prefix+"commits/"), "/status")
-		st := f.statuses[sha]
-		if st == nil {
-			st = []map[string]any{}
-		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"sha": sha, "statuses": st, "total_count": len(st)})
-	default:
+	reads := gateReads{head: f.head, base: f.baseRef, reviews: f.reviews, endless: f.endless,
+		statuses: f.statuses, viewer: f.viewer, rollup: f.rollup}
+	if !reads.serve(f.t, w, r) {
 		f.t.Errorf("continuity asked the forge an unexpected %s %s", r.Method, r.URL.Path)
 		w.WriteHeader(http.StatusNotFound)
 	}
+}
+
+// gateReads is the GitHub surface the gate history and the check rollup are
+// read from, for the pull request acme/widgets#7: the pull request, its
+// reviews (REST-shaped here, served the way GraphQL spells them), the
+// statuses on each sha (the combined status, and the list carrying each
+// status's creator), the GraphQL viewer, and the check rollup on the head.
+type gateReads struct {
+	head, base string
+	reviews    []map[string]any
+	endless    bool
+	statuses   map[string][]map[string]any
+	viewer     map[string]any
+	rollup     []map[string]any
+}
+
+// ciRequiredGreen is a CI check the base requires, passing: the build a
+// carried verdict leans on.
+var ciRequiredGreen = map[string]any{"__typename": "CheckRun", "name": "ci/test", "status": "COMPLETED", "conclusion": "SUCCESS", "isRequired": true}
+
+// graphQLReview is a REST-shaped review as GraphQL serves it: the author's
+// login without `[bot]`, its databaseId, the review's url, and its edit
+// record (lastEditedAt / editor, null unless the review says otherwise).
+func graphQLReview(r map[string]any) map[string]any {
+	user, _ := r["user"].(map[string]any)
+	login, _ := user["login"].(string)
+	if user["type"] == "Bot" {
+		login = strings.TrimSuffix(login, "[bot]")
+	}
+	return map[string]any{
+		"url": r["html_url"], "body": r["body"], "lastEditedAt": r["lastEditedAt"], "editor": r["editor"],
+		"author": map[string]any{"__typename": user["type"], "login": login, "databaseId": user["id"]},
+	}
+}
+
+// statusEntry is a status as the list endpoint serves it: an id (stable per
+// sha and position unless set) and a creator (this App unless set).
+func statusEntry(sha string, i int, st map[string]any) map[string]any {
+	out := map[string]any{}
+	for k, v := range st {
+		out[k] = v
+	}
+	if _, ok := out["id"]; !ok {
+		var n int
+		for _, c := range sha {
+			n = n*31 + int(c)
+		}
+		out["id"] = 1_000_000 + (n&0xffff)*100 + i
+	}
+	if _, ok := out["creator"]; !ok {
+		out["creator"] = map[string]any{"login": vettyLogin, "id": vettyID, "type": "Bot"}
+	}
+	return out
+}
+
+// serve answers r when it is one of the reads; false when it is not.
+func (g gateReads) serve(t *testing.T, w http.ResponseWriter, r *http.Request) bool {
+	const prefix = "/repos/acme/widgets/"
+	switch {
+	case r.Method == http.MethodPost && r.URL.Path == "/graphql":
+		var q struct {
+			Query     string         `json:"query"`
+			Variables map[string]any `json:"variables"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&q); err != nil {
+			t.Errorf("decode GraphQL body: %v", err)
+		}
+		if msg := assertValidGraphQL(q.Query); strings.Contains(q.Query, "$") && msg != "" {
+			t.Errorf("invalid GraphQL sent: %s\nquery: %s", msg, q.Query)
+		}
+		switch {
+		case strings.Contains(q.Query, "reviews("):
+			nodes := []any{}
+			for _, rv := range g.reviews {
+				nodes = append(nodes, graphQLReview(rv))
+			}
+			info := map[string]any{"hasNextPage": false, "endCursor": nil}
+			if g.endless {
+				info = map[string]any{"hasNextPage": true, "endCursor": "next"}
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"repository": map[string]any{
+				"pullRequest": map[string]any{"reviews": map[string]any{"pageInfo": info, "nodes": nodes}}}}})
+		case strings.Contains(q.Query, "statusCheckRollup"):
+			nodes := g.rollup
+			if nodes == nil {
+				nodes = []map[string]any{ciRequiredGreen}
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"repository": map[string]any{
+				"pullRequest": map[string]any{"commits": map[string]any{"nodes": []any{map[string]any{"commit": map[string]any{
+					"oid": g.head, "statusCheckRollup": map[string]any{"contexts": map[string]any{
+						"pageInfo": map[string]any{"hasNextPage": false}, "nodes": nodes}}}}}}}}}})
+		case strings.Contains(q.Query, "viewer"):
+			viewer := g.viewer
+			if viewer == nil {
+				viewer = map[string]any{"login": strings.TrimSuffix(vettyLogin, "[bot]"), "databaseId": vettyID}
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"viewer": viewer}})
+		default:
+			return false
+		}
+	case r.Method != http.MethodGet:
+		return false
+	case r.URL.Path == prefix+"pulls/7":
+		if g.head == "" {
+			w.WriteHeader(http.StatusNotFound)
+			return true
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"head": map[string]any{"sha": g.head}, "base": map[string]any{"ref": g.base}})
+	case strings.HasPrefix(r.URL.Path, prefix+"commits/") && strings.HasSuffix(r.URL.Path, "/status"):
+		sha := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, prefix+"commits/"), "/status")
+		combined := []map[string]any{}
+		for i, st := range g.statuses[sha] {
+			e := statusEntry(sha, i, st)
+			delete(e, "creator") // the combined status names no creator
+			combined = append(combined, e)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"sha": sha, "statuses": combined, "total_count": len(combined)})
+	case strings.HasPrefix(r.URL.Path, prefix+"commits/") && strings.HasSuffix(r.URL.Path, "/statuses"):
+		sha := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, prefix+"commits/"), "/statuses")
+		listed := []map[string]any{}
+		for i, st := range g.statuses[sha] {
+			listed = append(listed, statusEntry(sha, i, st))
+		}
+		_ = json.NewEncoder(w).Encode(listed)
+	default:
+		return false
+	}
+	return true
 }
 
 func gateMarker(sha, id, verdict, origin, at string) string {
@@ -592,22 +716,25 @@ func utcAgo(d time.Duration) string {
 // stub forge, every case with the reviews served in BOTH orders: the answer
 // is a predicate over sets, so it must not move.
 //
-// Mutations (main.bot, the gate-history block, both copies) and the case
-// each reddens: delete the unanimity veto (a hold on the same change); drop
-// target_url == html_url (a status linking another review); drop the age
-// comparison in continuity (an expired origin); read the first marker found
-// instead of the last line (a marker planted above the footer); treat a
-// capped page walk as whole (an endless history); drop the own-identity
-// login term (a green another bot vouches for); drop the id term (the App
-// spelled without [bot]); stop reading the head's own status, or drop the
-// red-on-the-head rule (a hold with no marker on this head, an unstamped red
-// on this head); parse only Bot-authored or own markers again (a User's hold
-// on the same change); match by login when the viewer has an id (a user
-// spelled like the App); drop the Bot-type or the `[bot]`-spelling term of
-// the login fallback (a non-Bot spelled `slug[bot]`; the App's bot for a
-// viewer spelled `slug`); decide already_gated before the age bound (the
-// head's own stale green, carry_max_age_h=0 renewing); leave gated_verdict
-// out of the already_gated answer (the two already-gated cases).
+// Mutations (main.bot, the gate-history block, both copies, unless named)
+// and the case each reddens: delete the unanimity veto (a hold on the same
+// change); drop target_url == url (a status linking another review); drop
+// the age comparison in continuity (an expired origin); read the first
+// marker found instead of the last line (a marker planted above the footer);
+// treat a capped page walk as whole (an endless history); stop reading the
+// head's own status, or drop the red-on-the-head rule (a hold with no marker
+// on this head, an unstamped red on this head); parse only own markers again
+// (a User's hold on the same change); match by login instead of the user id
+// (a user spelled like the App); own anything when the viewer has no id (the
+// App's own review with no viewer id); drop the edit veto (the two edited App
+// reviews); veto on any author's edit (another author's edited review); drop
+// the stamped status's creator check (the renovate and PAT creators); take an
+// unreadable creator as the App's (the unreadable author); drop the build
+// check before a carry in continuity (the gate-only base, the unreadable
+// rollup); demand the required CI pass rather than exist (CI still running);
+// decide already_gated before the age bound (the head's own stale green,
+// carry_max_age_h=0 renewing); leave gated_verdict out of the already_gated
+// answer (the two already-gated cases).
 func TestDepUpdateGuardContinuityDecides(t *testing.T) {
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 not on PATH")
@@ -632,6 +759,7 @@ func TestDepUpdateGuardContinuityDecides(t *testing.T) {
 		statuses map[string][]map[string]any
 		endless  bool
 		viewer   map[string]any
+		rollup   []map[string]any
 		over     map[string]string
 		check    func(t *testing.T, res map[string]any, reads []string)
 	}{
@@ -732,30 +860,126 @@ func TestDepUpdateGuardContinuityDecides(t *testing.T) {
 			check:    wantNoCarry("no green"),
 		},
 		{
-			// No id for the viewer: the login decides, and only for a Bot
-			// spelled `slug[bot]` — a user account can take the bare slug.
-			name:     "with no viewer id, a USER account spelled like the App is not the App",
-			reviews:  []map[string]any{userReview(1, strings.TrimSuffix(vettyLogin, "[bot]"), 777, gateMarker(fx.x, fx.id, "clean", fx.x, fresh))},
-			statuses: map[string][]map[string]any{fx.x: greenStatus(1)},
-			viewer:   map[string]any{"login": strings.TrimSuffix(vettyLogin, "[bot]")},
-			check:    wantNoCarry("no green"),
-		},
-		{
-			// The spelling alone is not the App: the author must be a Bot.
-			name:     "with no viewer id, a non-Bot author spelled `slug[bot]` is not the App",
-			reviews:  []map[string]any{userReview(1, vettyLogin, 777, gateMarker(fx.x, fx.id, "clean", fx.x, fresh))},
-			statuses: map[string][]map[string]any{fx.x: greenStatus(1)},
-			viewer:   map[string]any{"login": strings.TrimSuffix(vettyLogin, "[bot]")},
-			check:    wantNoCarry("no green"),
-		},
-		{
-			name:     "with no viewer id, the App's bot named `slug[bot]` for a viewer spelled `slug` is the App",
+			// No id for the viewer: nothing is this App's, whatever the
+			// spellings — a login is never compared, so the App's own green
+			// carries nothing either.
+			name:     "with no viewer id, even the App's own review is not a source",
 			reviews:  []map[string]any{greenOn(1, fx.x, "clean", fx.x, fresh)},
 			statuses: map[string][]map[string]any{fx.x: greenStatus(1)},
 			viewer:   map[string]any{"login": strings.TrimSuffix(vettyLogin, "[bot]")},
+			check:    wantNoCarry("no user id"),
+		},
+		{
+			// A review edited after it was published no longer says what was
+			// published: anyone with write access can edit the App's review,
+			// and its author stays the App. It vetoes — here its verdict was
+			// green, its origin rejuvenated.
+			name: "an App review edited after it was created vetoes",
+			reviews: []map[string]any{func() map[string]any {
+				r := greenOn(1, fx.x, "clean", fx.x, fresh)
+				r["lastEditedAt"], r["editor"] = utcAgo(time.Minute), map[string]any{"login": "maintainer-alice"}
+				return r
+			}()},
+			statuses: map[string][]map[string]any{fx.x: greenStatus(1)},
+			check:    wantNoCarry("was edited after it was created"),
+		},
+		{
+			// The hold's marker deleted by an edit: the hold is gone from the
+			// text, and the edit itself vetoes.
+			name: "an App hold whose marker an edit deleted vetoes",
+			reviews: []map[string]any{
+				greenOn(1, fx.x, "clean", fx.x, fresh),
+				func() map[string]any {
+					r := vettyReview(2, vettyLogin, "")
+					r["lastEditedAt"] = utcAgo(time.Minute)
+					return r
+				}(),
+			},
+			statuses: map[string][]map[string]any{fx.x: greenStatus(1)},
+			check:    wantNoCarry("was edited after it was created"),
+		},
+		{
+			// The control: a review the App did NOT publish, edited, vetoes
+			// nothing by itself — humans edit their reviews.
+			name: "another author's edited review vetoes nothing",
+			reviews: []map[string]any{
+				greenOn(1, fx.x, "clean", fx.x, fresh),
+				func() map[string]any {
+					r := userReview(2, "maintainer-alice", 777, "")
+					r["lastEditedAt"] = utcAgo(time.Minute)
+					return r
+				}(),
+			},
+			statuses: map[string][]map[string]any{fx.x: greenStatus(1)},
 			check: func(t *testing.T, res map[string]any, _ []string) {
 				if res["carry"] != true {
-					t.Errorf("the App's own review was not recognised by its bot login: %v", res)
+					t.Errorf("another author's edit vetoed the carry: %v", res)
+				}
+			},
+		},
+		{
+			// The forge's current status for the context, stamped with this
+			// change and linking the App's review, but written by another
+			// identity: never a source, and a veto.
+			name:    "a stamped status another App wrote vetoes",
+			reviews: []map[string]any{greenOn(1, fx.x, "clean", fx.x, fresh)},
+			statuses: map[string][]map[string]any{fx.x: {func() map[string]any {
+				st := greenStatus(1)[0]
+				st["creator"] = map[string]any{"login": "renovate[bot]", "id": 29139614, "type": "Bot"}
+				return st
+			}()}},
+			check: wantNoCarry("another identity wrote it"),
+		},
+		{
+			name:    "a stamped status a PAT user wrote vetoes",
+			reviews: []map[string]any{greenOn(1, fx.x, "clean", fx.x, fresh)},
+			statuses: map[string][]map[string]any{fx.x: {func() map[string]any {
+				st := greenStatus(1)[0]
+				st["creator"] = map[string]any{"login": "acme-pat-user", "id": 777, "type": "User"}
+				return st
+			}()}},
+			check: wantNoCarry("another identity wrote it"),
+		},
+		{
+			name:    "a stamped status whose author cannot be read vetoes",
+			reviews: []map[string]any{greenOn(1, fx.x, "clean", fx.x, fresh)},
+			statuses: map[string][]map[string]any{fx.x: {func() map[string]any {
+				st := greenStatus(1)[0]
+				st["id"] = "not-a-status-id"
+				return st
+			}()}},
+			check: wantNoCarry("cannot be read"),
+		},
+		{
+			// A carried verdict attests no build: on a base that requires no
+			// check but the gate, nothing would build the head before it
+			// merged, so the full audit builds it.
+			name:     "a base that requires no check other than the gate carries nothing",
+			reviews:  []map[string]any{greenOn(1, fx.x, "clean", fx.x, fresh)},
+			statuses: map[string][]map[string]any{fx.x: greenStatus(1)},
+			rollup: []map[string]any{
+				{"__typename": "StatusContext", "context": "vetty/deps", "state": "PENDING", "isRequired": true},
+				{"__typename": "CheckRun", "name": "ci/test", "status": "IN_PROGRESS", "conclusion": nil, "isRequired": false},
+			},
+			check: wantNoCarry("attests no build"),
+		},
+		{
+			name:     "a check rollup that cannot be read whole carries nothing",
+			reviews:  []map[string]any{greenOn(1, fx.x, "clean", fx.x, fresh)},
+			statuses: map[string][]map[string]any{fx.x: greenStatus(1)},
+			rollup:   []map[string]any{{"__typename": "FutureCheck", "name": "ci/test", "isRequired": true}},
+			check:    wantNoCarry("could not be read whole"),
+		},
+		{
+			// Required CI still running is the build the carry leans on: the
+			// forge holds the merge to it.
+			name:     "CI the base requires, still running, is a build the carry leans on",
+			reviews:  []map[string]any{greenOn(1, fx.x, "clean", fx.x, fresh)},
+			statuses: map[string][]map[string]any{fx.x: greenStatus(1)},
+			rollup:   []map[string]any{{"__typename": "CheckRun", "name": "ci/test", "status": "QUEUED", "conclusion": nil, "isRequired": true}},
+			check: func(t *testing.T, res map[string]any, _ []string) {
+				if res["carry"] != true {
+					t.Errorf("required CI still running did not count as the build: %v", res)
 				}
 			},
 		},
@@ -893,7 +1117,7 @@ func TestDepUpdateGuardContinuityDecides(t *testing.T) {
 				wantNoCarry("cannot be read whole")(t, res, reads)
 				pages := 0
 				for _, r := range reads {
-					if strings.Contains(r, "/reviews") {
+					if strings.HasSuffix(r, "/graphql reviews") {
 						pages++
 					}
 				}
@@ -944,7 +1168,7 @@ func TestDepUpdateGuardContinuityDecides(t *testing.T) {
 					base = tc.base
 				}
 				forge := &contForge{t: t, head: head, baseRef: base, reviews: reviews, endless: tc.endless,
-					statuses: tc.statuses, viewer: tc.viewer}
+					statuses: tc.statuses, viewer: tc.viewer, rollup: tc.rollup}
 				res := runContinuity(t, fx.ws, fx.y, forge, tc.over)
 				t.Run(order, func(t *testing.T) { tc.check(t, res, forge.requests()) })
 				outs = append(outs, res)
@@ -1101,6 +1325,21 @@ func TestDepUpdateGuardContinuityPathSpendsNoTokens(t *testing.T) {
 				t.Errorf("the %s path never reaches arm_automerge (reached %v): the arming is not renewed on the new head", cond, reached)
 			}
 		})
+	}
+}
+
+// TestDepUpdateGuardRequiredChecksHaveOneText: continuity, post_feedback and
+// arm_automerge read the check rollup, and decide whether a check the base
+// requires builds a carried head, with one text — the rule that keeps
+// continuity from carrying is the one that keeps post_feedback from
+// publishing and arm_automerge from arming. Mutation: edit any copy alone.
+func TestDepUpdateGuardRequiredChecksHaveOneText(t *testing.T) {
+	const open, closing = "# >>> vetty-required-checks/v1", "# <<< vetty-required-checks/v1"
+	want := sentinelBlock(t, "continuity", open, closing)
+	for _, node := range []string{"post_feedback", "arm_automerge"} {
+		if got := sentinelBlock(t, node, open, closing); got != want {
+			t.Errorf("the required-checks block differs between continuity and %s: a carried head would meet another rule there", node)
+		}
 	}
 }
 

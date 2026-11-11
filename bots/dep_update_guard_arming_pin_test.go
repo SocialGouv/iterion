@@ -223,6 +223,7 @@ func (forge *armingPinForge) run(t *testing.T, script string) map[string]any {
 		"{{secrets.forge_token.path}}":   `"ghs_test"`,
 		"{{vars.automerge_on_unstable}}": `"merge"`,
 		"{{vars.automerge_settle_s}}":    "600",
+		"{{vars.gate_context}}":          `"vetty/deps"`,
 	} {
 		body = strings.ReplaceAll(body, ref, val)
 	}

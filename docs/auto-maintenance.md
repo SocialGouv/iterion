@@ -343,15 +343,20 @@ compares the change identity of the new head (the `patch-id --verbatim` of
 its earlier verdicts, and publishes the green verdict `carried` on the new head
 — or, when the head already carries its own green, only renews the arming. Any
 verdict on the same change that is not green, and any red already on the new
-head, vetoes the carry, and a green older than `carry_max_age_h` (72 h, from
-the original audit) is audited again, on the new head and on its own. An audit that finishes after the rebase
+head, vetoes the carry — so does a review of Vetty's edited after it was
+published, or its stamp on a status another identity wrote — and a green older
+than `carry_max_age_h` (72 h, from the original audit) is audited again, on the
+new head and on its own. A carry also needs a check the base REQUIRES other
+than the gate on the new head: on a base whose only required check is the gate,
+a carried head would merge with no build, so it is audited in full instead. An audit that finishes after the rebase
 is repinned onto the new head under the same veto, the new head's identity
 read from the forge, never from the workspace its agents ran in.
 So "the gate went green again on its own" after a rebase is the gate working;
 the build on the new base is the repository's required checks', which run on
 every head. The verdict set Vetty publishes is now eight — `carried` is the
-third green, beside `clean` and `committed` — and `/vetty` always buys a full
-audit. The mechanics and their limits are in
+third green, beside `clean` and `committed` — and `/vetty` buys a full audit
+unless the integration's `launch_vars` pin `continuity` (they win over the
+command's own). The mechanics and their limits are in
 [the bundle's README](../bots/dep-update-guard/README.md#gate-continuity--a-rebase-keeps-its-gate-with-no-llm-call).
 
 ### 8. Arm auto-merge — last

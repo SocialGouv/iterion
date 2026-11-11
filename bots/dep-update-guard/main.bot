@@ -108,7 +108,10 @@ vars:
   ## and only that one: at once when the forge reports the PR clean; when every
   ## required check passes and another one is red or still running (UNSTABLE),
   ## as `automerge_on_unstable` says, and never on a base that requires no
-  ## check. Every green verdict, `carried` included, follows the same rule. The
+  ## check. Every green verdict follows the same rule, and `carried` — an
+  ## identical change audited elsewhere, a head Vetty never built — needs one
+  ## more: a check the base requires OTHER than the gate on that head, or it
+  ## is neither armed nor merged. The
   ## immediate-merge REST endpoint is deliberately never used: it merges
   ## whatever the state, which is the opposite of the guarantee this bot exists
   ## to provide.
@@ -141,9 +144,12 @@ vars:
   ## contract v1: the verbatim patch-id of merge-base..head, folded with
   ## base_ref). If so the gate is carried with no LLM call, or the head is
   ## already gated and only the arming is renewed. The /vetty command pins
-  ## this false, so a human gesture always buys a full audit; an operator
-  ## pin of it in the integration's launch_vars wins on both lanes. Off, no
-  ## verdict is reused anywhere: no carry, no renewal, no repin at publish.
+  ## this false, so a human gesture buys a full audit — unless an operator
+  ## pins it in the integration's launch_vars: launch_vars win over the
+  ## command's own, on both lanes, so an operator pin of true makes /vetty
+  ## reuse a verdict too. Pin it false to turn every reuse off; leave it
+  ## unpinned to keep /vetty's full audit. Off, no verdict is reused
+  ## anywhere: no carry, no renewal, no repin at publish.
   continuity: bool = true
   ## The age past which a green verdict is no longer reused — carried onto
   ## another head, renewed on its own, or repinned at publish — measured from
@@ -1069,13 +1075,19 @@ print(json.dumps({'is_empty': len(files)==0 and not degraded, 'dep_files': dep,
 ## contract v1, below) — computed here, before any agent has run in the
 ## workspace, and the one post_feedback stamps on a verdict pinned to this
 ## head — then the forge: the pull request (its head must still be the one
-## prepare read, its base still base_ref), the reviews this App published
-## and the last-line marker each carries, and the forge's own combined
-## status on every sha a marker names and on the head. The fact travels with
-## the gate, so nothing is read from run artifacts or from "the latest
-## comment". GitHub-only; any other forge, any read that fails, any history
-## not read whole, a head that moved since prepare is the full audit, said
-## so in the reason.
+## prepare read, its base still base_ref), every review with its edit record
+## and the last-line marker each carries, the forge's own status for the gate
+## context on every sha a marker names and on the head, and who wrote it.
+## Only an unedited review this App published, whose status this App wrote,
+## is a source; an edited one, or a stamp another identity wrote, vetoes. The
+## fact travels with the gate, so nothing is read from run artifacts or from
+## "the latest comment". GitHub-only; any other forge, any read that fails,
+## any history not read whole, a head that moved since prepare is the full
+## audit, said so in the reason.
+##
+## A carried verdict attests no build, so a carry also needs a check the base
+## REQUIRES other than the gate on this head (the check rollup): the forge
+## then holds the merge to it. Without one, the full audit builds the head.
 ##
 ## Its two answers are mutually exclusive. `carry` publishes the verdict
 ## `carried` on this head; `already_gated` renews the arming only. Neither
@@ -1247,70 +1259,98 @@ tool continuity:
         with opener.open(req, timeout=30) as resp:
             return json.loads(resp.read().decode("utf-8")), resp.headers.get("Link") or ""
 
+    def gql(query, variables):
+        data = call("/graphql", json.dumps({"query": query, "variables": variables}).encode("utf-8"))[0]
+        if not isinstance(data, dict) or data.get("errors"):
+            raise ValueError("the GraphQL read answered errors")
+        return data.get("data") or {}
+
     def epoch(stamp):
         return calendar.timegm(time.strptime(stamp, "%Y-%m-%dT%H:%M:%SZ"))
 
     # >>> vetty-gate-history/v1
     # Byte-identical in `continuity` and `post_feedback`
-    # (dep_update_guard_continuity_test.go pins the two copies): the predicate
-    # that lets continuity carry a verdict onto a head is the one that lets
-    # post_feedback repin one there. It reads the gate history of ONE change
-    # on the pull request — the reviews, the last-line marker each carries,
-    # and the forge's one status for the context on every sha a marker names
-    # AND on the head — and decides over SETS, never over an order: the
-    # reviews arrive in whatever order the forge pages them. `call(path)`
-    # returns (json, Link header) and raises on a failed read. `me` is the
-    # (login, id) the run token speaks as, and it decides ONLY which verdicts
-    # are this App's: by user id whenever the viewer has one, by login only
-    # when it has none — and then only a Bot spelled `slug[bot]`, because a
-    # user account can register any other spelling. It never decides a veto:
-    # a marker vetoes whoever wrote it (the safe direction), so a caller that
-    # cannot name the App vetoes exactly as one that can, and Vetty's own
-    # verdicts published by a user (a PAT connection) are read. Returns
-    # (veto, eligible). veto says why no green may be
-    # carried onto `head`: a history not read whole, a verdict on this change
-    # that is not green, a status stamped with this change that is not green,
-    # or a red status on the head itself — a carry never paints over one.
-    # eligible lists this App's green verdicts on the change whose status the
-    # forge holds green, stamped with the change, and linking that review.
-    def gate_history(call, owner, repo, num, pid, gctx, head, me):
+    # (dep_update_guard_continuity_test.go pins the two copies): ONE reading
+    # of the gate history of ONE change on the pull request, and the predicate
+    # that lets continuity carry a verdict onto a head and post_feedback repin
+    # or publish one there. It reads, with the run token, who that token
+    # speaks as (the GraphQL viewer), every review with its edit record
+    # (GraphQL), the last-line marker each carries, and the forge's one status
+    # for the context on every sha a marker names AND on the head, with the
+    # identity that wrote it — and decides over SETS, never over an order: the
+    # forge pages reviews in whatever order it likes. `call(path)` is a REST
+    # read returning (json, Link header), `gql(query, variables)` a GraphQL
+    # read returning its data; both raise on a failed read.
+    #
+    # This App is the identity the run token speaks as — the server publishes
+    # the gate under the same installation — told by user id alone: REST and
+    # GraphQL spell a bot's login differently (`slug[bot]` / `slug`), and a
+    # user account can register any spelling. A token with no id owns
+    # nothing. A review this App published and somebody edited since — anyone
+    # with write access can, and the author stays the App — no longer says
+    # what was published: it vetoes, whatever it says now. A marker vetoes
+    # whoever wrote it, the safe direction. A status stamped with the change
+    # counts only when this App wrote it, and vetoes when anybody else did.
+    #
+    # Returns (veto, eligible). veto says why no green may be carried onto
+    # `head`: a history not read whole, an edited review of this App, a
+    # verdict on this change that is not green, a status stamped with it that
+    # is not green or not this App's, a red status on the head itself (a carry
+    # never paints over one). eligible lists this App's unedited green
+    # verdicts on the change whose status — written by this App — the forge
+    # holds green, stamped with the change and linking that review.
+    def gate_history(call, gql, owner, repo, num, pid, gctx, head):
         green = ("clean", "committed", "carried")
         marker = re.compile(r"<!-- vetty-gate/v1 sha=([0-9a-f]{40}) id=(pid1:[0-9a-f]{24}) verdict=([a-z_]+) "
                             r"origin=([0-9a-f]{40}) origin_at=([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z) -->")
         pages = 10
         def text(x):
             return x.strip() if isinstance(x, str) else ""
-        reviews = []
-        for page in range(1, pages + 1):
-            batch, link = call("/repos/%s/%s/pulls/%s/reviews?per_page=100&page=%d" % (owner, repo, num, page))
-            if not isinstance(batch, list):
+        def user_id(x):
+            return x if isinstance(x, int) and not isinstance(x, bool) else None
+        uid = user_id(((gql("query { viewer { login databaseId } }", {}).get("viewer")) or {}).get("databaseId"))
+        # The variable sigil is written @ and swapped at run time.
+        reviews_q = ("query(@owner: String!, @name: String!, @number: Int!, @after: String) { "
+                     "repository(owner: @owner, name: @name) { pullRequest(number: @number) { "
+                     "reviews(first: 100, after: @after) { pageInfo { hasNextPage endCursor } nodes { "
+                     "url body lastEditedAt editor { login } "
+                     "author { login ... on Bot { databaseId } ... on User { databaseId } } "
+                     "} } } } }").replace("@", chr(36))
+        reviews, after = [], None
+        for _ in range(pages):
+            got = (((gql(reviews_q, {"owner": owner, "name": repo, "number": int(num), "after": after})
+                     .get("repository") or {}).get("pullRequest") or {}).get("reviews"))
+            if not isinstance(got, dict) or not isinstance(got.get("nodes"), list):
                 return "the review history is unreadable", []
-            reviews.extend(batch)
-            if 'rel="next"' not in link:
+            reviews.extend(got["nodes"])
+            info = got.get("pageInfo") if isinstance(got.get("pageInfo"), dict) else {}
+            more, after = info.get("hasNextPage"), info.get("endCursor")
+            if more is False:
                 break
+            if more is not True or not text(after):
+                return "the review history is unreadable (a page names no next one)", []
         else:
             return "the review history runs past " + str(pages) + " pages, so it cannot be read whole", []
-        login, uid = me
-        uid = uid if isinstance(uid, int) and not isinstance(uid, bool) else None
-        bot = text(login).casefold()
-        if bot and not bot.endswith("[bot]"):
-            bot += "[bot]"
-        marks = []
+        marks, edited = [], []
         for r in reviews:
-            if not isinstance(r, dict):
-                continue
-            user = r.get("user") if isinstance(r.get("user"), dict) else {}
-            rid = user.get("id") if isinstance(user.get("id"), int) and not isinstance(user.get("id"), bool) else None
-            if uid is not None:
-                own = rid == uid
-            else:
-                own = bool(bot) and text(user.get("type")) == "Bot" and text(user.get("login")).casefold() == bot
+            if not isinstance(r, dict) or "lastEditedAt" not in r:
+                return "the review history is unreadable (a review without its edit record)", []
+            author = r.get("author") if isinstance(r.get("author"), dict) else {}
+            own = uid is not None and user_id(author.get("databaseId")) == uid
+            if own and r.get("lastEditedAt") is not None:
+                editor = r.get("editor") if isinstance(r.get("editor"), dict) else {}
+                edited.append((text(r.get("url")), text(r.get("lastEditedAt")), text(editor.get("login"))))
             lines = text(r.get("body")).splitlines()
             mk = marker.fullmatch(lines[-1].strip()) if lines else None
             if mk:
                 marks.append({"sha": mk.group(1), "id": mk.group(2), "verdict": mk.group(3),
                               "origin": mk.group(4), "origin_at": mk.group(5), "own": own,
-                              "url": text(r.get("html_url"))})
+                              "url": text(r.get("url"))})
+        if edited:
+            url, when, who = min(edited)
+            return ("a review this App published was edited after it was created (" + (url or "a review") + ", by " +
+                    (who or "an editor the forge does not name") + " at " + (when or "an unknown time") +
+                    "): the history no longer says what was published, and a tampered history carries nothing"), []
         same = sorted((k for k in marks if k["id"] == pid),
                       key=lambda k: (k["sha"], k["verdict"], k["origin_at"], k["origin"], k["url"]))
         # Unanimity: one verdict on this change that is not green vetoes every
@@ -1320,6 +1360,8 @@ tool continuity:
         if held:
             return ("a verdict on this same change (" + pid + ") holds: " + held[0]["verdict"] + " on " +
                     held[0]["sha"][:12] + ", and a carry needs every verdict on it green"), []
+        if uid is None:
+            return "the run token speaks as an identity with no user id, so no verdict or status can be told as this App's", []
         stamp = " · " + pid
         statuses = {}
         for sha in sorted(set([k["sha"] for k in same] + [head])):
@@ -1333,15 +1375,41 @@ tool continuity:
                 if isinstance(st, dict) and text(st.get("context")) == gctx:
                     statuses[sha] = st
                     break
+        # Who wrote the status the forge holds current: the combined status
+        # names it by id only, so it is found by that id in the commit's
+        # status list, which carries its creator. None when it cannot be.
+        def written_by(sha, st):
+            sid = user_id(st.get("id"))
+            if sid is None:
+                return None
+            for page in range(1, pages + 1):
+                listed, link = call("/repos/%s/%s/commits/%s/statuses?per_page=100&page=%d" % (owner, repo, sha, page))
+                if not isinstance(listed, list):
+                    return None
+                for x in listed:
+                    if isinstance(x, dict) and user_id(x.get("id")) == sid:
+                        return user_id((x.get("creator") if isinstance(x.get("creator"), dict) else {}).get("id"))
+                if 'rel="next"' not in link:
+                    return None
+            return None
         for sha in sorted(statuses):
             st = statuses[sha]
             if st is None:
                 continue
             state = text(st.get("state")) or "unset"
-            if text(st.get("description")).endswith(stamp) and state != "success":
+            stamped = text(st.get("description")).endswith(stamp)
+            if stamped and state != "success":
                 return "the " + gctx + " status on " + sha[:12] + " for this same change (" + pid + ") is " + state, []
             if sha == head and state not in ("success", "pending"):
                 return "the " + gctx + " status on this head (" + sha[:12] + ") is " + state + ", and a carry never paints over it", []
+            if stamped:
+                who = written_by(sha, st)
+                if who is None:
+                    return "the author of the " + gctx + " status on " + sha[:12] + " cannot be read", []
+                if who != uid:
+                    return ("the " + gctx + " status on " + sha[:12] + " carries this change's stamp (" + pid +
+                            ") but another identity wrote it (user id " + str(who) + "): only this App's stamp is a "
+                            "source, and a foreign one vetoes"), []
         def eligible(k):
             st = statuses.get(k["sha"])
             return (k["own"] and k["verdict"] in green and st is not None and bool(k["url"])
@@ -1349,6 +1417,82 @@ tool continuity:
                     and text(st.get("target_url")) == k["url"])
         return "", [k for k in same if eligible(k)]
     # <<< vetty-gate-history/v1
+    # >>> vetty-required-checks/v1
+    # Byte-identical in `continuity`, `post_feedback` and `arm_automerge`
+    # (dep_update_guard_continuity_test.go pins the three copies). The check
+    # rollup of the pull request's head, read with GraphQL — `gql(query,
+    # variables)` returns the data and raises on a failed read — as (required,
+    # optional, passing): the names of the contexts not passing on `pin`,
+    # split by whether the base requires them for this pull request, and the
+    # names of the required ones that pass. None when the rollup is about
+    # another commit than `pin`, runs past one page, or carries a context
+    # whose kind or requiredness it does not state: what cannot be read whole
+    # proves nothing. The variable sigil is written @ and swapped at run time.
+    def check_rollup(gql, owner, repo, num, pin):
+        def text(x):
+            return x.strip() if isinstance(x, str) else ""
+        q = ("query(@owner: String!, @name: String!, @number: Int!) { "
+             "repository(owner: @owner, name: @name) { "
+             "pullRequest(number: @number) { commits(last: 1) { nodes { commit { oid "
+             "statusCheckRollup { contexts(first: 100) { pageInfo { hasNextPage } nodes { __typename "
+             "... on StatusContext { context state isRequired(pullRequestNumber: @number) } "
+             "... on CheckRun { name status conclusion isRequired(pullRequestNumber: @number) } "
+             "} } } } } } } } }").replace("@", chr(36))
+        data = gql(q, {"owner": owner, "name": repo, "number": int(num)})
+        nodes = ((((data.get("repository") or {}).get("pullRequest") or {}).get("commits") or {}).get("nodes")) or []
+        if len(nodes) != 1 or not isinstance(nodes[0], dict):
+            return None
+        commit = nodes[0].get("commit") or {}
+        # The pin may be abbreviated (7 hex at least): the rollup's commit is
+        # compared on the common prefix.
+        oid, want = text(commit.get("oid")).lower(), text(pin).lower()
+        n = min(len(oid), len(want))
+        if n < 7 or oid[:n] != want[:n]:
+            return None
+        contexts = (commit.get("statusCheckRollup") or {}).get("contexts") or {}
+        if (contexts.get("pageInfo") or {}).get("hasNextPage") or not isinstance(contexts.get("nodes"), list):
+            return None
+        required, optional, passing = [], [], []
+        for c in contexts["nodes"]:
+            if not isinstance(c, dict):
+                return None
+            kind = text(c.get("__typename"))
+            if kind == "StatusContext":
+                name, ok = text(c.get("context")), text(c.get("state")).upper() == "SUCCESS"
+            elif kind == "CheckRun":
+                name = text(c.get("name"))
+                ok = text(c.get("status")).upper() == "COMPLETED" and \
+                    text(c.get("conclusion")).upper() in ("SUCCESS", "NEUTRAL", "SKIPPED")
+            else:
+                return None
+            if ok:
+                # Counted only when the base states it requires it.
+                if c.get("isRequired") is True:
+                    passing.append(name)
+                continue
+            if c.get("isRequired") is True:
+                required.append(name)
+            elif c.get("isRequired") is False:
+                optional.append(name)
+            else:
+                return None
+        return sorted(required), sorted(optional), sorted(passing)
+    # A carried verdict attests no build: the build of the identical change on
+    # this base is owed by a check the base REQUIRES other than the gate's own
+    # context — the forge then holds every merge of the pull request to it.
+    # "" when such a check is on `pin`, in any state: an arming or an enqueue
+    # waits for it to pass, and CLEAN or UNSTABLE means it passed. Otherwise
+    # the refusal, naming the gate context.
+    def build_owed(rollup, gctx, pin):
+        if rollup is None:
+            return ("the check rollup on " + pin[:12] + " could not be read whole, so nothing says a check the base "
+                    "requires other than the gate (" + gctx + ") builds this carried change")
+        required, _, passing = rollup
+        if [c for c in required + passing if c != gctx]:
+            return ""
+        return ("a carried verdict attests no build, and the base requires no check other than the gate (" + gctx +
+                ") on " + pin[:12] + ": nothing would build this head before it merges")
+    # <<< vetty-required-checks/v1
     # Every decision below is a predicate over SETS, never an order. Where one
     # element is named, it is the least or the greatest under a stable key.
     try:
@@ -1366,12 +1510,7 @@ tool continuity:
         if forge_base != s(base_ref):
             out("the pull request targets " + (forge_base or "(no base)") + ", not " + s(base_ref) + ": " + FULL,
                 change_id=pid)
-        # Whose reviews are this App's: the identity the run token speaks as,
-        # the one the server publishes under on the same installation. Only
-        # those can make a verdict eligible; any author's marker can veto.
-        viewer = call("/graphql", json.dumps({"query": "query { viewer { login databaseId } }"}).encode("utf-8"))[0]
-        who = (viewer.get("data") or {}).get("viewer") or {}
-        veto, good = gate_history(call, owner, repo, num, pid, gctx, head, (s(who.get("login")), who.get("databaseId")))
+        veto, good = gate_history(call, gql, owner, repo, num, pid, gctx, head)
         if veto:
             out(veto + ": " + FULL, change_id=pid)
         if not good:
@@ -1401,6 +1540,12 @@ tool continuity:
         if not fresh:
             out("every green verdict on this change (" + pid + ") is older than carry_max_age_h=" + s(max_age_h) +
                 "h, measured from the original audit: " + FULL, change_id=pid)
+        # A carried verdict attests no build: it is published only where the
+        # base requires a check other than the gate on this head, which the
+        # forge then holds the merge to. Otherwise the full audit builds it.
+        owed = build_owed(check_rollup(gql, owner, repo, num, head), gctx, head)
+        if owed:
+            out(owed + ": " + FULL, change_id=pid)
         k = max(fresh, key=lambda k: (k["origin_at"], k["origin"], k["sha"]))
         out("identical change (" + pid + "): the supply-chain audit of " + k["origin"][:12] + " (" + k["origin_at"] +
             ") is carried from the green verdict on " + k["sha"][:12] + "; the build on this base is the repo's CI's to prove",
@@ -2430,65 +2575,87 @@ tool post_feedback:
 
     # >>> vetty-gate-history/v1
     # Byte-identical in `continuity` and `post_feedback`
-    # (dep_update_guard_continuity_test.go pins the two copies): the predicate
-    # that lets continuity carry a verdict onto a head is the one that lets
-    # post_feedback repin one there. It reads the gate history of ONE change
-    # on the pull request — the reviews, the last-line marker each carries,
-    # and the forge's one status for the context on every sha a marker names
-    # AND on the head — and decides over SETS, never over an order: the
-    # reviews arrive in whatever order the forge pages them. `call(path)`
-    # returns (json, Link header) and raises on a failed read. `me` is the
-    # (login, id) the run token speaks as, and it decides ONLY which verdicts
-    # are this App's: by user id whenever the viewer has one, by login only
-    # when it has none — and then only a Bot spelled `slug[bot]`, because a
-    # user account can register any other spelling. It never decides a veto:
-    # a marker vetoes whoever wrote it (the safe direction), so a caller that
-    # cannot name the App vetoes exactly as one that can, and Vetty's own
-    # verdicts published by a user (a PAT connection) are read. Returns
-    # (veto, eligible). veto says why no green may be
-    # carried onto `head`: a history not read whole, a verdict on this change
-    # that is not green, a status stamped with this change that is not green,
-    # or a red status on the head itself — a carry never paints over one.
-    # eligible lists this App's green verdicts on the change whose status the
-    # forge holds green, stamped with the change, and linking that review.
-    def gate_history(call, owner, repo, num, pid, gctx, head, me):
+    # (dep_update_guard_continuity_test.go pins the two copies): ONE reading
+    # of the gate history of ONE change on the pull request, and the predicate
+    # that lets continuity carry a verdict onto a head and post_feedback repin
+    # or publish one there. It reads, with the run token, who that token
+    # speaks as (the GraphQL viewer), every review with its edit record
+    # (GraphQL), the last-line marker each carries, and the forge's one status
+    # for the context on every sha a marker names AND on the head, with the
+    # identity that wrote it — and decides over SETS, never over an order: the
+    # forge pages reviews in whatever order it likes. `call(path)` is a REST
+    # read returning (json, Link header), `gql(query, variables)` a GraphQL
+    # read returning its data; both raise on a failed read.
+    #
+    # This App is the identity the run token speaks as — the server publishes
+    # the gate under the same installation — told by user id alone: REST and
+    # GraphQL spell a bot's login differently (`slug[bot]` / `slug`), and a
+    # user account can register any spelling. A token with no id owns
+    # nothing. A review this App published and somebody edited since — anyone
+    # with write access can, and the author stays the App — no longer says
+    # what was published: it vetoes, whatever it says now. A marker vetoes
+    # whoever wrote it, the safe direction. A status stamped with the change
+    # counts only when this App wrote it, and vetoes when anybody else did.
+    #
+    # Returns (veto, eligible). veto says why no green may be carried onto
+    # `head`: a history not read whole, an edited review of this App, a
+    # verdict on this change that is not green, a status stamped with it that
+    # is not green or not this App's, a red status on the head itself (a carry
+    # never paints over one). eligible lists this App's unedited green
+    # verdicts on the change whose status — written by this App — the forge
+    # holds green, stamped with the change and linking that review.
+    def gate_history(call, gql, owner, repo, num, pid, gctx, head):
         green = ("clean", "committed", "carried")
         marker = re.compile(r"<!-- vetty-gate/v1 sha=([0-9a-f]{40}) id=(pid1:[0-9a-f]{24}) verdict=([a-z_]+) "
                             r"origin=([0-9a-f]{40}) origin_at=([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z) -->")
         pages = 10
         def text(x):
             return x.strip() if isinstance(x, str) else ""
-        reviews = []
-        for page in range(1, pages + 1):
-            batch, link = call("/repos/%s/%s/pulls/%s/reviews?per_page=100&page=%d" % (owner, repo, num, page))
-            if not isinstance(batch, list):
+        def user_id(x):
+            return x if isinstance(x, int) and not isinstance(x, bool) else None
+        uid = user_id(((gql("query { viewer { login databaseId } }", {}).get("viewer")) or {}).get("databaseId"))
+        # The variable sigil is written @ and swapped at run time.
+        reviews_q = ("query(@owner: String!, @name: String!, @number: Int!, @after: String) { "
+                     "repository(owner: @owner, name: @name) { pullRequest(number: @number) { "
+                     "reviews(first: 100, after: @after) { pageInfo { hasNextPage endCursor } nodes { "
+                     "url body lastEditedAt editor { login } "
+                     "author { login ... on Bot { databaseId } ... on User { databaseId } } "
+                     "} } } } }").replace("@", chr(36))
+        reviews, after = [], None
+        for _ in range(pages):
+            got = (((gql(reviews_q, {"owner": owner, "name": repo, "number": int(num), "after": after})
+                     .get("repository") or {}).get("pullRequest") or {}).get("reviews"))
+            if not isinstance(got, dict) or not isinstance(got.get("nodes"), list):
                 return "the review history is unreadable", []
-            reviews.extend(batch)
-            if 'rel="next"' not in link:
+            reviews.extend(got["nodes"])
+            info = got.get("pageInfo") if isinstance(got.get("pageInfo"), dict) else {}
+            more, after = info.get("hasNextPage"), info.get("endCursor")
+            if more is False:
                 break
+            if more is not True or not text(after):
+                return "the review history is unreadable (a page names no next one)", []
         else:
             return "the review history runs past " + str(pages) + " pages, so it cannot be read whole", []
-        login, uid = me
-        uid = uid if isinstance(uid, int) and not isinstance(uid, bool) else None
-        bot = text(login).casefold()
-        if bot and not bot.endswith("[bot]"):
-            bot += "[bot]"
-        marks = []
+        marks, edited = [], []
         for r in reviews:
-            if not isinstance(r, dict):
-                continue
-            user = r.get("user") if isinstance(r.get("user"), dict) else {}
-            rid = user.get("id") if isinstance(user.get("id"), int) and not isinstance(user.get("id"), bool) else None
-            if uid is not None:
-                own = rid == uid
-            else:
-                own = bool(bot) and text(user.get("type")) == "Bot" and text(user.get("login")).casefold() == bot
+            if not isinstance(r, dict) or "lastEditedAt" not in r:
+                return "the review history is unreadable (a review without its edit record)", []
+            author = r.get("author") if isinstance(r.get("author"), dict) else {}
+            own = uid is not None and user_id(author.get("databaseId")) == uid
+            if own and r.get("lastEditedAt") is not None:
+                editor = r.get("editor") if isinstance(r.get("editor"), dict) else {}
+                edited.append((text(r.get("url")), text(r.get("lastEditedAt")), text(editor.get("login"))))
             lines = text(r.get("body")).splitlines()
             mk = marker.fullmatch(lines[-1].strip()) if lines else None
             if mk:
                 marks.append({"sha": mk.group(1), "id": mk.group(2), "verdict": mk.group(3),
                               "origin": mk.group(4), "origin_at": mk.group(5), "own": own,
-                              "url": text(r.get("html_url"))})
+                              "url": text(r.get("url"))})
+        if edited:
+            url, when, who = min(edited)
+            return ("a review this App published was edited after it was created (" + (url or "a review") + ", by " +
+                    (who or "an editor the forge does not name") + " at " + (when or "an unknown time") +
+                    "): the history no longer says what was published, and a tampered history carries nothing"), []
         same = sorted((k for k in marks if k["id"] == pid),
                       key=lambda k: (k["sha"], k["verdict"], k["origin_at"], k["origin"], k["url"]))
         # Unanimity: one verdict on this change that is not green vetoes every
@@ -2498,6 +2665,8 @@ tool post_feedback:
         if held:
             return ("a verdict on this same change (" + pid + ") holds: " + held[0]["verdict"] + " on " +
                     held[0]["sha"][:12] + ", and a carry needs every verdict on it green"), []
+        if uid is None:
+            return "the run token speaks as an identity with no user id, so no verdict or status can be told as this App's", []
         stamp = " · " + pid
         statuses = {}
         for sha in sorted(set([k["sha"] for k in same] + [head])):
@@ -2511,15 +2680,41 @@ tool post_feedback:
                 if isinstance(st, dict) and text(st.get("context")) == gctx:
                     statuses[sha] = st
                     break
+        # Who wrote the status the forge holds current: the combined status
+        # names it by id only, so it is found by that id in the commit's
+        # status list, which carries its creator. None when it cannot be.
+        def written_by(sha, st):
+            sid = user_id(st.get("id"))
+            if sid is None:
+                return None
+            for page in range(1, pages + 1):
+                listed, link = call("/repos/%s/%s/commits/%s/statuses?per_page=100&page=%d" % (owner, repo, sha, page))
+                if not isinstance(listed, list):
+                    return None
+                for x in listed:
+                    if isinstance(x, dict) and user_id(x.get("id")) == sid:
+                        return user_id((x.get("creator") if isinstance(x.get("creator"), dict) else {}).get("id"))
+                if 'rel="next"' not in link:
+                    return None
+            return None
         for sha in sorted(statuses):
             st = statuses[sha]
             if st is None:
                 continue
             state = text(st.get("state")) or "unset"
-            if text(st.get("description")).endswith(stamp) and state != "success":
+            stamped = text(st.get("description")).endswith(stamp)
+            if stamped and state != "success":
                 return "the " + gctx + " status on " + sha[:12] + " for this same change (" + pid + ") is " + state, []
             if sha == head and state not in ("success", "pending"):
                 return "the " + gctx + " status on this head (" + sha[:12] + ") is " + state + ", and a carry never paints over it", []
+            if stamped:
+                who = written_by(sha, st)
+                if who is None:
+                    return "the author of the " + gctx + " status on " + sha[:12] + " cannot be read", []
+                if who != uid:
+                    return ("the " + gctx + " status on " + sha[:12] + " carries this change's stamp (" + pid +
+                            ") but another identity wrote it (user id " + str(who) + "): only this App's stamp is a "
+                            "source, and a foreign one vetoes"), []
         def eligible(k):
             st = statuses.get(k["sha"])
             return (k["own"] and k["verdict"] in green and st is not None and bool(k["url"])
@@ -2547,18 +2742,102 @@ tool post_feedback:
             return ""
         return (open(tref).read().strip() if os.path.exists(tref) else tref)
 
-    def call(path):
-        # A read of the GitHub REST API with the run's forge token: never a
-        # write, never a redirect followed.
+    def call(path, body=None):
+        # A read of the GitHub API with the run's forge token — a REST GET, or
+        # a GraphQL query POSTed with `body` — never a write, never a redirect
+        # followed.
         class _Stay(urllib.request.HTTPRedirectHandler):
             def redirect_request(self, *args, **kwargs):
                 return None
         req = urllib.request.Request(
-            GITHUB_API + path,
+            GITHUB_API + path, data=body, method="POST" if body is not None else "GET",
             headers={"Authorization": "Bearer " + read_token(), "Accept": "application/vnd.github+json",
-                     "User-Agent": "vetty-dep-update-guard"})
+                     "Content-Type": "application/json", "User-Agent": "vetty-dep-update-guard"})
         with urllib.request.build_opener(_Stay()).open(req, timeout=30) as resp:
             return json.loads(resp.read().decode("utf-8")), resp.headers.get("Link") or ""
+
+    def gql(query, variables):
+        data = call("/graphql", json.dumps({"query": query, "variables": variables}).encode("utf-8"))[0]
+        if not isinstance(data, dict) or data.get("errors"):
+            raise ValueError("the GraphQL read answered errors")
+        return data.get("data") or {}
+
+    # >>> vetty-required-checks/v1
+    # Byte-identical in `continuity`, `post_feedback` and `arm_automerge`
+    # (dep_update_guard_continuity_test.go pins the three copies). The check
+    # rollup of the pull request's head, read with GraphQL — `gql(query,
+    # variables)` returns the data and raises on a failed read — as (required,
+    # optional, passing): the names of the contexts not passing on `pin`,
+    # split by whether the base requires them for this pull request, and the
+    # names of the required ones that pass. None when the rollup is about
+    # another commit than `pin`, runs past one page, or carries a context
+    # whose kind or requiredness it does not state: what cannot be read whole
+    # proves nothing. The variable sigil is written @ and swapped at run time.
+    def check_rollup(gql, owner, repo, num, pin):
+        def text(x):
+            return x.strip() if isinstance(x, str) else ""
+        q = ("query(@owner: String!, @name: String!, @number: Int!) { "
+             "repository(owner: @owner, name: @name) { "
+             "pullRequest(number: @number) { commits(last: 1) { nodes { commit { oid "
+             "statusCheckRollup { contexts(first: 100) { pageInfo { hasNextPage } nodes { __typename "
+             "... on StatusContext { context state isRequired(pullRequestNumber: @number) } "
+             "... on CheckRun { name status conclusion isRequired(pullRequestNumber: @number) } "
+             "} } } } } } } } }").replace("@", chr(36))
+        data = gql(q, {"owner": owner, "name": repo, "number": int(num)})
+        nodes = ((((data.get("repository") or {}).get("pullRequest") or {}).get("commits") or {}).get("nodes")) or []
+        if len(nodes) != 1 or not isinstance(nodes[0], dict):
+            return None
+        commit = nodes[0].get("commit") or {}
+        # The pin may be abbreviated (7 hex at least): the rollup's commit is
+        # compared on the common prefix.
+        oid, want = text(commit.get("oid")).lower(), text(pin).lower()
+        n = min(len(oid), len(want))
+        if n < 7 or oid[:n] != want[:n]:
+            return None
+        contexts = (commit.get("statusCheckRollup") or {}).get("contexts") or {}
+        if (contexts.get("pageInfo") or {}).get("hasNextPage") or not isinstance(contexts.get("nodes"), list):
+            return None
+        required, optional, passing = [], [], []
+        for c in contexts["nodes"]:
+            if not isinstance(c, dict):
+                return None
+            kind = text(c.get("__typename"))
+            if kind == "StatusContext":
+                name, ok = text(c.get("context")), text(c.get("state")).upper() == "SUCCESS"
+            elif kind == "CheckRun":
+                name = text(c.get("name"))
+                ok = text(c.get("status")).upper() == "COMPLETED" and \
+                    text(c.get("conclusion")).upper() in ("SUCCESS", "NEUTRAL", "SKIPPED")
+            else:
+                return None
+            if ok:
+                # Counted only when the base states it requires it.
+                if c.get("isRequired") is True:
+                    passing.append(name)
+                continue
+            if c.get("isRequired") is True:
+                required.append(name)
+            elif c.get("isRequired") is False:
+                optional.append(name)
+            else:
+                return None
+        return sorted(required), sorted(optional), sorted(passing)
+    # A carried verdict attests no build: the build of the identical change on
+    # this base is owed by a check the base REQUIRES other than the gate's own
+    # context — the forge then holds every merge of the pull request to it.
+    # "" when such a check is on `pin`, in any state: an arming or an enqueue
+    # waits for it to pass, and CLEAN or UNSTABLE means it passed. Otherwise
+    # the refusal, naming the gate context.
+    def build_owed(rollup, gctx, pin):
+        if rollup is None:
+            return ("the check rollup on " + pin[:12] + " could not be read whole, so nothing says a check the base "
+                    "requires other than the gate (" + gctx + ") builds this carried change")
+        required, _, passing = rollup
+        if [c for c in required + passing if c != gctx]:
+            return ""
+        return ("a carried verdict attests no build, and the base requires no check other than the gate (" + gctx +
+                ") on " + pin[:12] + ": nothing would build this head before it merges")
+    # <<< vetty-required-checks/v1
 
     def forge_identity(sha):
         # The change identity of `sha`, for a revision the AGENTS could have
@@ -2633,23 +2912,37 @@ tool post_feedback:
         else:
             change_id, id_note = forge_identity(pin_sha)
 
-    # REPIN (green verdicts only). A push that lands while the audit runs moves
-    # the head, and the server refuses a verdict pinned to the old one. When the
-    # new head carries the IDENTICAL change — its identity read from the forge,
-    # never from the workspace — and its own gate history vetoes nothing (the
-    # unanimity rule continuity applies: no verdict on this change that is not
-    # green, no red on that head), the verdict is published there as
-    # `carried`, its origin the commit actually audited. Anything else
-    # publishes exactly as before, pinned to the audited commit, and is
-    # refused for the moved head. A hold is never moved: it is a statement
-    # about the commit it read, and nothing else. The gate history is read
-    # last, right before the publish; the server orders decisions by the time
-    # it receives them, so a hold published on the new head after this read
-    # still supersedes the carry. The operator's switches govern this carry
-    # exactly as they govern continuity's: `continuity` off (the /vetty
-    # command, or an operator pin) or carry_max_age_h at 0 carries nothing,
-    # and a carried verdict whose ORIGINAL audit is older than
-    # carry_max_age_h is not carried further.
+    # REUSE (green verdicts only). A verdict this run did not audit on the
+    # revision it is published on — `carried` from continuity, or a green
+    # repinned below onto a head the audit never read — is published only
+    # when the gate history, read again RIGHT before the publish, still
+    # vetoes nothing about that revision's change (one reading, the block
+    # continuity decides with), and a check the base requires other than the
+    # gate builds that revision: a carried verdict attests no build. The
+    # history is read at publish time because the one continuity read can
+    # be minutes old — hours on a resumed run — and a hold published on any
+    # head of the change since then vetoes every later carry. A carry
+    # continuity decided that the rule no longer lets through is withdrawn:
+    # nothing is published, the run's gate claim stays unanswered, and the
+    # reason says why. The server orders decisions by
+    # the time it receives them, so a hold published after this read still
+    # supersedes the carry; only one landing in the second between the read
+    # and the publish is overwritten, a window only a compare-and-set on the
+    # publish endpoint would close.
+    #
+    # REPIN. A push that lands while the audit runs moves the head, and the
+    # server refuses a verdict pinned to the old one. When the new head
+    # carries the IDENTICAL change — its identity read from the forge, never
+    # from the workspace — and the rule above lets a carry onto it, the
+    # verdict is published there as `carried`, its origin the commit actually
+    # audited. Anything else publishes exactly as before, pinned to the
+    # audited commit, and is refused for the moved head. A hold is never
+    # moved: it is a statement about the commit it read, and nothing else.
+    #
+    # The operator's switches govern every reuse exactly as they govern
+    # continuity's: `continuity` off (the /vetty command, or an operator pin)
+    # or carry_max_age_h at 0 reuses nothing, and a carried verdict whose
+    # ORIGINAL audit is older than carry_max_age_h is not reused.
     try:
         limit_h = float(carry_max_age_h or 0)
     except (TypeError, ValueError):
@@ -2661,10 +2954,27 @@ tool post_feedback:
         reuse_off = "carry_max_age_h is " + (s(carry_max_age_h) or "unset")
     elif origin_when and (time.time() - calendar.timegm(time.strptime(origin_when, "%Y-%m-%dT%H:%M:%SZ"))) / 3600.0 > limit_h:
         reuse_off = "the original audit (" + origin_when + ") is older than carry_max_age_h=" + s(carry_max_age_h) + "h"
+    gctx = s(gate_context) or "vetty/deps"
+
+    def carry_vetoed(owner, repo, num, pid, onto):
+        # Why a green verdict may not be published as carried onto `onto`,
+        # "" when it may.
+        veto, _ = gate_history(call, gql, owner, repo, num, pid, gctx, onto)
+        return veto or build_owed(check_rollup(gql, owner, repo, num, onto), gctx, onto)
+
+    # The carry continuity decided must still hold at publish time.
+    withdrawn = ""
+    if publish_gate and s(verdict) == "carried":
+        if not (change_id and origin and origin_when):
+            withdrawn = "the carried verdict names no change identity or no original audit"
+        elif reuse_off:
+            withdrawn = reuse_off
+        elif not on_github or not read_token():
+            withdrawn = "the gate history cannot be read again (a GitHub pull request and a forge_token are needed)"
     repinned_from, repin_note = "", ""
     if change_id and s(verdict) in GREEN and on_github and reuse_off:
         repin_note = "no repin: " + reuse_off
-    elif change_id and s(verdict) in GREEN and on_github and read_token():
+    elif change_id and s(verdict) in GREEN and on_github and read_token() and not withdrawn:
         owner, repo, num = pull_ref.group(2), pull_ref.group(3), pull_ref.group(4)
         try:
             pull = call("/repos/%s/%s/pulls/%s" % (owner, repo, num))[0]
@@ -2679,7 +2989,7 @@ tool post_feedback:
                     repin_note = "not repinned onto " + head_now[:12] + ": " + \
                                  (why if not head_id else "it carries another change (" + head_id + ")")
                 else:
-                    veto, _ = gate_history(call, owner, repo, num, head_id, s(gate_context) or "vetty/deps", head_now, ("", None))
+                    veto = carry_vetoed(owner, repo, num, head_id, head_now)
                     if veto:
                         repin_note = "not repinned onto " + head_now[:12] + ": " + veto
                     else:
@@ -2693,6 +3003,20 @@ tool post_feedback:
             repin_note = "not repinned: the forge answered HTTP " + str(e.code)
         except Exception as e:
             repin_note = "not repinned: the forge could not be read (" + type(e).__name__ + ")"
+    # A carry continuity decided and no repin moved: read again before it is
+    # published on the head it was decided for.
+    if publish_gate and s(verdict) == "carried" and not repinned_from and not withdrawn:
+        owner, repo, num = pull_ref.group(2), pull_ref.group(3), pull_ref.group(4)
+        try:
+            withdrawn = carry_vetoed(owner, repo, num, change_id, pin_sha)
+        except urllib.error.HTTPError as e:
+            withdrawn = "the gate history could not be read again (forge HTTP " + str(e.code) + ")"
+        except Exception as e:
+            withdrawn = "the gate history could not be read again (" + type(e).__name__ + ")"
+    if withdrawn:
+        out(False, skipped_reason="the carried verdict was withdrawn before publishing: " + withdrawn,
+            summary="verdict=carried withdrawn, nothing published: " + withdrawn,
+            gate_skipped_reason="the carried verdict was withdrawn before publishing: " + withdrawn)
     carried_from = (origin or repinned_from or pin_sha)[:12]
 
     badges = {
@@ -3019,6 +3343,15 @@ print(json.dumps({'degraded': degraded or gate_degraded, 'banner': banner}))
 ##     passing, or a rollup not read whole, merges nothing; otherwise
 ##     `automerge_on_unstable` decides — "merge" pinned now, or "wait" for
 ##     CLEAN within `automerge_settle_s`. Anything else is the refusal.
+## A `carried` verdict attests no build — Vetty audited an identical change
+## elsewhere and never built this head — so before any of the three it needs
+## a check the base REQUIRES other than the gate on the vouched head. Every
+## door then holds the merge to that check: an arming and a queue wait for it,
+## CLEAN and UNSTABLE mean it passed. With none — a base that requires only
+## the gate — a carried head is neither armed nor merged, whatever the
+## forge's state, and a commitment an earlier pass left on it is taken down.
+## A `clean` or `committed` verdict is Vetty's own build of the commit it
+## pins (the deterministic verify), so its gate is that build's witness.
 ## There is deliberately no path to PUT /pulls/{n}/merge: that merges
 ## whatever the state, bypassing every pending check, which is precisely what
 ## this bot exists to prevent. expectedHeadOid is the equivalent guarantee on
@@ -3042,6 +3375,7 @@ tool arm_automerge:
     token_ref = {{secrets.forge_token.path}}
     on_unstable = {{vars.automerge_on_unstable}}
     settle_s = {{vars.automerge_settle_s}}
+    gate_context = {{vars.gate_context}}
 
     def s(x):
         return (x or "").strip() if isinstance(x, str) else ("" if x is None else str(x).strip())
@@ -3213,16 +3547,82 @@ tool arm_automerge:
     enqueue_mut = ("mutation(@id: ID!, @oid: GitObjectID!) { "
                    "enqueuePullRequest(input: { pullRequestId: @id, expectedHeadOid: @oid }) "
                    "{ clientMutationId } }").replace("@", at)
-    # What UNSTABLE is made of: every context on the head commit, and whether
-    # the base's rules REQUIRE it for this pull request. isRequired takes the
-    # pull request as an argument; the API rejects it bare.
-    rollup_q = ("query(@owner: String!, @name: String!, @number: Int!) { "
-                "repository(owner: @owner, name: @name) { "
-                "pullRequest(number: @number) { commits(last: 1) { nodes { commit { oid "
-                "statusCheckRollup { contexts(first: 100) { pageInfo { hasNextPage } nodes { __typename "
-                "... on StatusContext { context state isRequired(pullRequestNumber: @number) } "
-                "... on CheckRun { name status conclusion isRequired(pullRequestNumber: @number) } "
-                "} } } } } } } } }").replace("@", at)
+    # >>> vetty-required-checks/v1
+    # Byte-identical in `continuity`, `post_feedback` and `arm_automerge`
+    # (dep_update_guard_continuity_test.go pins the three copies). The check
+    # rollup of the pull request's head, read with GraphQL — `gql(query,
+    # variables)` returns the data and raises on a failed read — as (required,
+    # optional, passing): the names of the contexts not passing on `pin`,
+    # split by whether the base requires them for this pull request, and the
+    # names of the required ones that pass. None when the rollup is about
+    # another commit than `pin`, runs past one page, or carries a context
+    # whose kind or requiredness it does not state: what cannot be read whole
+    # proves nothing. The variable sigil is written @ and swapped at run time.
+    def check_rollup(gql, owner, repo, num, pin):
+        def text(x):
+            return x.strip() if isinstance(x, str) else ""
+        q = ("query(@owner: String!, @name: String!, @number: Int!) { "
+             "repository(owner: @owner, name: @name) { "
+             "pullRequest(number: @number) { commits(last: 1) { nodes { commit { oid "
+             "statusCheckRollup { contexts(first: 100) { pageInfo { hasNextPage } nodes { __typename "
+             "... on StatusContext { context state isRequired(pullRequestNumber: @number) } "
+             "... on CheckRun { name status conclusion isRequired(pullRequestNumber: @number) } "
+             "} } } } } } } } }").replace("@", chr(36))
+        data = gql(q, {"owner": owner, "name": repo, "number": int(num)})
+        nodes = ((((data.get("repository") or {}).get("pullRequest") or {}).get("commits") or {}).get("nodes")) or []
+        if len(nodes) != 1 or not isinstance(nodes[0], dict):
+            return None
+        commit = nodes[0].get("commit") or {}
+        # The pin may be abbreviated (7 hex at least): the rollup's commit is
+        # compared on the common prefix.
+        oid, want = text(commit.get("oid")).lower(), text(pin).lower()
+        n = min(len(oid), len(want))
+        if n < 7 or oid[:n] != want[:n]:
+            return None
+        contexts = (commit.get("statusCheckRollup") or {}).get("contexts") or {}
+        if (contexts.get("pageInfo") or {}).get("hasNextPage") or not isinstance(contexts.get("nodes"), list):
+            return None
+        required, optional, passing = [], [], []
+        for c in contexts["nodes"]:
+            if not isinstance(c, dict):
+                return None
+            kind = text(c.get("__typename"))
+            if kind == "StatusContext":
+                name, ok = text(c.get("context")), text(c.get("state")).upper() == "SUCCESS"
+            elif kind == "CheckRun":
+                name = text(c.get("name"))
+                ok = text(c.get("status")).upper() == "COMPLETED" and \
+                    text(c.get("conclusion")).upper() in ("SUCCESS", "NEUTRAL", "SKIPPED")
+            else:
+                return None
+            if ok:
+                # Counted only when the base states it requires it.
+                if c.get("isRequired") is True:
+                    passing.append(name)
+                continue
+            if c.get("isRequired") is True:
+                required.append(name)
+            elif c.get("isRequired") is False:
+                optional.append(name)
+            else:
+                return None
+        return sorted(required), sorted(optional), sorted(passing)
+    # A carried verdict attests no build: the build of the identical change on
+    # this base is owed by a check the base REQUIRES other than the gate's own
+    # context — the forge then holds every merge of the pull request to it.
+    # "" when such a check is on `pin`, in any state: an arming or an enqueue
+    # waits for it to pass, and CLEAN or UNSTABLE means it passed. Otherwise
+    # the refusal, naming the gate context.
+    def build_owed(rollup, gctx, pin):
+        if rollup is None:
+            return ("the check rollup on " + pin[:12] + " could not be read whole, so nothing says a check the base "
+                    "requires other than the gate (" + gctx + ") builds this carried change")
+        required, _, passing = rollup
+        if [c for c in required + passing if c != gctx]:
+            return ""
+        return ("a carried verdict attests no build, and the base requires no check other than the gate (" + gctx +
+                ") on " + pin[:12] + ": nothing would build this head before it merges")
+    # <<< vetty-required-checks/v1
 
     bot_login = ""
     auto_merge_allowed = None
@@ -3342,47 +3742,9 @@ tool arm_automerge:
         return ", ".join(contexts[:8]) + (" and " + str(more) + " more" if more > 0 else "")
 
     def not_passing(pin):
-        # (required, optional, passing_required): the names of the contexts
-        # not passing on the vouched head, split by whether the base requires
-        # them, and the names of the required ones that pass. None when the
-        # rollup is about another commit, runs past one page, or carries a
-        # context whose kind or requiredness it does not state: what cannot
-        # be read whole merges nothing.
-        data = graphql(rollup_q, {"owner": owner, "name": repo, "number": num})
-        nodes = ((((data.get("repository") or {}).get("pullRequest") or {}).get("commits") or {}).get("nodes")) or []
-        if len(nodes) != 1 or not isinstance(nodes[0], dict):
-            return None
-        commit = nodes[0].get("commit") or {}
-        if not same_commit(s(commit.get("oid")), pin):
-            return None
-        contexts = (commit.get("statusCheckRollup") or {}).get("contexts") or {}
-        if (contexts.get("pageInfo") or {}).get("hasNextPage") or not isinstance(contexts.get("nodes"), list):
-            return None
-        required, optional, passing = [], [], []
-        for c in contexts["nodes"]:
-            if not isinstance(c, dict):
-                return None
-            kind = s(c.get("__typename"))
-            if kind == "StatusContext":
-                name, ok = s(c.get("context")), s(c.get("state")).upper() == "SUCCESS"
-            elif kind == "CheckRun":
-                name = s(c.get("name"))
-                ok = s(c.get("status")).upper() == "COMPLETED" and \
-                    s(c.get("conclusion")).upper() in ("SUCCESS", "NEUTRAL", "SKIPPED")
-            else:
-                return None
-            if ok:
-                # Counted only when the base states it requires it.
-                if c.get("isRequired") is True:
-                    passing.append(name)
-                continue
-            if c.get("isRequired") is True:
-                required.append(name)
-            elif c.get("isRequired") is False:
-                optional.append(name)
-            else:
-                return None
-        return sorted(required), sorted(optional), sorted(passing)
+        # What UNSTABLE is made of: every context on the vouched head, and
+        # whether the base's rules REQUIRE it for this pull request.
+        return check_rollup(graphql, owner, repo, num, pin)
 
     def settle_unstable(pr, why):
         # A refusal on an UNSTABLE pull request. A required context that is
@@ -3532,6 +3894,18 @@ tool arm_automerge:
         # gate_sha is ever produced, so EVERY pass would tear an arming down and
         # then refuse to replace it.
         pin = vouched_sha(pr, "arm")
+        # A carried verdict attests no build. Every door this run opens for
+        # it — the arming, the enqueue, and the merges made on CLEAN and
+        # UNSTABLE — opens below this line, and only where the base requires
+        # a check other than the gate on the vouched head: an arming or a
+        # queue waits for it to pass, and CLEAN or UNSTABLE means it passed.
+        # Otherwise the refusal, which takes down a commitment this run's
+        # earlier passes left on this revision.
+        if s(verdict) == "carried":
+            owed = build_owed(not_passing(pin), s(gate_context) or "vetty/deps", pin)
+            if owed:
+                stand_down(pr)
+                out(False, owed + " - neither armed nor merged")
         if pr.get("mergeQueueEntry"):
             out(True, "already in the merge queue")
         # An arming already on the PR is opaque - its expectedHeadOid cannot be
@@ -3639,8 +4013,8 @@ tool arm_automerge:
 ## or wrote without a commit id ("pushed", "N/A"), no longer pins the verdict
 ## to the head this run moved away from (the server then refuses it as "head
 ## moved" onto the run's own push): git is the evidence. A report that names
-## another commit still refuses. Replace refs and grafts are switched off for
-## every reading. The push evidence is read from the repository pr_url names,
+## another commit still refuses. Replace refs, grafts and the commit-graph
+## file are switched off for every reading of the workspace. The push evidence is read from the repository pr_url names,
 ## from a scratch repository this node creates, with system and global config
 ## cut off: the workspace's remote, its url rewrites and the global ones are
 ## the agents' to write, and would otherwise name a repository of their
@@ -3681,8 +4055,12 @@ tool commit_probe:
     genv = {k: v for k, v in os.environ.items() if k not in drop}
     genv.update({"GIT_TERMINAL_PROMPT": "0", "GIT_NO_REPLACE_OBJECTS": "1",
                  "GIT_GRAFT_FILE": os.path.join(os.devnull, "no-grafts")})
+    # The commit-graph file is the workspace's to write, and git reads parents
+    # from it before the commit object: switched off, so the parents are the
+    # ones the commit object names.
     def git(*args):
-        return subprocess.run(["git", "-C", ws, *args], capture_output=True, timeout=60, env=genv)
+        return subprocess.run(["git", "-C", ws, "-c", "core.commitGraph=false", *args],
+                              capture_output=True, timeout=60, env=genv)
     def resolve(value):
         p = git("rev-parse", "--verify", "--end-of-options", value + "^{commit}")
         return p.stdout.decode().strip() if p.returncode == 0 else ""

@@ -12,7 +12,9 @@ version: 2.12.0
 ## binary that follows a binary — and the base_ref name; --stable is
 ## whitespace-blind and reads a re-indented YAML block as the same change),
 ## then reads the gate history from the forge: the pull request, its reviews
-## and the forge's combined status on every sha they name and on the head. The identity contract
+## over GraphQL with their edit record, and the forge's status for the gate
+## context on every sha they name and on the head, with its creator read from
+## the commit's status list. The identity contract
 ## reads only the commit objects: replace refs and grafts off, attributes
 ## from the empty tree. The fact travels with the gate:
 ## post_feedback ends the status note with " · pid1:<id>" and writes the
@@ -27,18 +29,31 @@ version: 2.12.0
 ## younger than `carry_max_age_h` (72, from the ORIGINAL audit, so a chain of
 ## carries never extends it) → the new verdict `carried`, green, published on
 ## this head; anything else, a head that moved since `prepare` included → the
-## full audit. Eligible = this App's review (by user id whenever the viewer
-## has one, else only a Bot spelled `slug[bot]`), the status green, ending
-## with the same stamp and linking that review. GitHub-only,
+## full audit. Eligible = an unedited review this App published, by user id
+## only (the GraphQL viewer's against the author's; a viewer with no id owns
+## nothing), its status — written by this App, the creator's id against the
+## viewer's — green, ending with the same stamp and linking that review. A
+## review of this App edited after it was created (by anyone with write
+## access: its marker deleted, its origin_at rejuvenated, a marker appended),
+## or a stamped status another identity wrote, VETOES. GitHub-only,
 ## reads only, and every unread page, failed read or missing identity is the
 ## full audit. The carry and standby paths hold no node that can call a
 ## model (ir.NodeUsesLLM). The identity is computed before any agent runs,
 ## the opt-out included, and post_feedback stamps it.
 ## `carried` asserts the audit of an IDENTICAL change, never a build of this
-## tree: its note says the base is built by the repo's CI, whose required
-## checks run on the new head. The `/vetty` command now carries
-## `context_vars: {continuity: "false"}`: a human gesture always buys a full
-## audit (an operator pin of `continuity` wins on both lanes).
+## tree: its note says the base is built by the repo's CI, and every door
+## needs one — a carry, a repin and an arming of a carried head each need a
+## check the base REQUIRES other than the gate on that head (the check
+## rollup's isRequired, in any state: an arming waits for it, CLEAN and
+## UNSTABLE mean it passed; one shared block in continuity, post_feedback and
+## arm_automerge). On a base that requires only the gate, a carried head is
+## never armed nor merged, and the full audit builds it instead. A carry
+## continuity decided is read again at publish time: a hold on any head of
+## the change since, an edit, a foreign stamp, an origin past
+## carry_max_age_h, or no build check WITHDRAWS it (nothing published). The
+## `/vetty` command now carries `context_vars: {continuity: "false"}`: a human
+## gesture buys a full audit, unless an operator pins `continuity` in
+## launch_vars — those win over the command's own, on both lanes.
 ## REPIN: an audit that finishes after a rebase moved the head publishes
 ## `carried` on the new head when — and only when — the verdict is green,
 ## the new head is identity-equal as the FORGE holds it (a scratch
@@ -63,7 +78,10 @@ version: 2.12.0
 ## alignment the agent did not report is no longer pinned to the head it
 ## moved away from. commit_system: exactly one commit, a rejected push is
 ## never pulled or rebased over, and the skill's push recipe carries the
-## token in git's environment, never in a URL or argv. arm_automerge classifies a refused
+## token in git's environment, never in a URL or argv; its comment recipe
+## hands curl the token as a header on stdin, never argv. commit_probe reads
+## parents with replace refs, grafts and the commit-graph file switched off.
+## arm_automerge classifies a refused
 ## arming by RE-READING the pull request: CLEAN merges pinned as before;
 ## UNSTABLE reads the check rollup with each context's isRequired — a
 ## required context not passing, a base that requires no check, or a
@@ -485,7 +503,8 @@ invocations:
   - kind: command
     mode: direct
     command: { name: vetty, scope: pr, disambiguator: when_args_empty }
-    # A human gesture always buys a full audit: no carry, no standby.
+    # A human gesture buys a full audit — no carry, no standby — unless an
+    # operator pins `continuity` in launch_vars, which win over this.
     context_vars: { continuity: "false" }
 
 ## Studio launch-form hierarchy: `primary` inputs render top-level in

@@ -3,6 +3,7 @@ package bots
 import (
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -185,7 +186,10 @@ func TestDepUpdateGuardGateVerdict(t *testing.T) {
 		if err := json.Unmarshal(out, &res); err != nil {
 			t.Fatalf("post_feedback output is not feedback_output JSON: %v (%q)", err, out)
 		}
-		if gateEnabled && !seen {
+		// A carried verdict with nothing to vouch for it is withdrawn before
+		// any publish: that is the one shape allowed to reach no endpoint.
+		withdrawn := verdict == "carried" && strings.Contains(fmt.Sprint(res["skipped_reason"]), "withdrawn")
+		if gateEnabled && !seen && !withdrawn {
 			t.Fatal("the gate can only ride the server publish endpoint — a run token cannot post a status")
 		}
 		return got, res
@@ -467,9 +471,6 @@ func TestDepUpdateGuardGateVerdict(t *testing.T) {
 	}{
 		{"clean", false},
 		{"committed", false},
-		// A carry is green: the identical change's audit, carried onto this
-		// head (by continuity, or by post_feedback's repin).
-		{"carried", false},
 		{"hold_security", true},
 		{"hold_unstable", true},
 		{"needs_decision", true},
@@ -512,9 +513,29 @@ func TestDepUpdateGuardGateVerdict(t *testing.T) {
 		})
 	}
 
+	// A carried verdict is published only on a history read again at publish
+	// time, naming its identity and its original audit: this one names
+	// neither (no forge, no origin), so it is withdrawn — nothing is posted,
+	// and certainly no green gate. Its gate, once vouched for, is
+	// TestDepUpdateGuardGateCarriesItsChangeIdentity's.
+	t.Run("verdict=carried with nothing to vouch for it is withdrawn, never published", func(t *testing.T) {
+		pub, res := run(t, "carried", "iterion/review", true, "")
+		if pub.Gate != nil || res["posted"] != false || res["gate_posted"] != false {
+			t.Fatalf("a carried verdict nobody vouched for was published: %+v %v", pub.Gate, res)
+		}
+		if reason, _ := res["skipped_reason"].(string); !strings.Contains(reason, "withdrawn") || !strings.Contains(reason, "no change identity") {
+			t.Errorf("the run must say why the carry was withdrawn, got %q", reason)
+		}
+	})
+
 	// The class rule: every verdict a reader elsewhere treats as green is a
-	// green gate here, or a carry would publish a red check.
+	// green gate here, or a carry would publish a red check. `carried` is
+	// published only on a vouched history: its row is in
+	// TestDepUpdateGuardGateCarriesItsChangeIdentity.
 	for _, green := range depUpdateGuardGreenVerdicts {
+		if green == "carried" {
+			continue
+		}
 		t.Run("green verdict publishes a green gate/"+green, func(t *testing.T) {
 			if pub, _ := run(t, green, "iterion/review", true, ""); pub.Gate == nil || pub.Gate.BlockingCount != 0 ||
 				strings.Contains(pub.Gate.Note, "unrecognised verdict") {
@@ -725,9 +746,10 @@ func runURLLit(page, override string) string {
 }
 
 // feedbackForge is the server's publish endpoint plus the GitHub reads
-// post_feedback makes for a repin: the pull request, its reviews, and the
-// combined status on a sha. gitRoot, when set, is where the script's
-// explicit git URL points instead of https://github.com/.
+// post_feedback makes for a repin or a carry: the pull request, its reviews,
+// the statuses on a sha, the viewer and the check rollup (gateReads).
+// gitRoot, when set, is where the script's explicit git URL points instead
+// of https://github.com/.
 type feedbackForge struct {
 	t        *testing.T
 	mu       sync.Mutex
@@ -735,17 +757,18 @@ type feedbackForge struct {
 	base     string
 	reviews  []map[string]any
 	statuses map[string][]map[string]any
-	gitRoot  string
-	payload  map[string]any
-	reads    []string
+	// rollup is the check rollup on the head; nil is CI the base requires,
+	// passing.
+	rollup  []map[string]any
+	gitRoot string
+	payload map[string]any
+	reads   []string
 }
 
 func (f *feedbackForge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	const prefix = "/repos/acme/widgets/"
-	switch {
-	case r.URL.Path == "/api/v1/forge/publish-review":
+	if r.URL.Path == "/api/v1/forge/publish-review" {
 		var p map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
 			f.t.Errorf("decode publish payload: %v", err)
@@ -760,39 +783,30 @@ func (f *feedbackForge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"published": true, "review_url": "https://github.com/acme/widgets/pull/7#pullrequestreview-1",
 			"gate_posted": gate != nil, "gate_state": state, "gate_sha": gate["audited_sha"],
 		})
-	case r.Method != http.MethodGet:
-		f.t.Errorf("post_feedback wrote to the forge API: %s %s — it reads only", r.Method, r.URL.Path)
-		w.WriteHeader(http.StatusMethodNotAllowed)
-	case r.URL.Path == prefix+"pulls/7":
-		f.reads = append(f.reads, r.URL.Path)
-		if f.head == "" {
-			w.WriteHeader(http.StatusNotFound)
-			return
-		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"head": map[string]any{"sha": f.head}, "base": map[string]any{"ref": f.base}})
-	case r.URL.Path == prefix+"pulls/7/reviews":
-		f.reads = append(f.reads, r.URL.Path)
-		reviews := f.reviews
-		if reviews == nil {
-			reviews = []map[string]any{}
-		}
-		_ = json.NewEncoder(w).Encode(reviews)
-	case strings.HasPrefix(r.URL.Path, prefix+"commits/") && strings.HasSuffix(r.URL.Path, "/status"):
-		f.reads = append(f.reads, r.URL.Path)
-		sha := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, prefix+"commits/"), "/status")
-		st := f.statuses[sha]
-		if st == nil {
-			st = []map[string]any{}
-		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"sha": sha, "statuses": st, "total_count": len(st)})
-	default:
-		f.t.Errorf("post_feedback called %s %s", r.Method, r.URL.Path)
+		return
+	}
+	f.reads = append(f.reads, r.URL.Path)
+	reads := gateReads{head: f.head, base: f.base, reviews: f.reviews, statuses: f.statuses, rollup: f.rollup}
+	if !reads.serve(f.t, w, r) {
+		f.t.Errorf("post_feedback called %s %s — it only reads the forge API", r.Method, r.URL.Path)
 		w.WriteHeader(http.StatusNotFound)
 	}
 }
 
-// runFeedback drives post_feedback against a feedbackForge.
+// runFeedback drives post_feedback against a feedbackForge, and requires it
+// to publish.
 func runFeedback(t *testing.T, forge *feedbackForge, over map[string]string, env ...string) (map[string]any, map[string]any) {
+	t.Helper()
+	payload, res := runFeedbackOut(t, forge, over, env...)
+	if payload == nil {
+		t.Fatalf("post_feedback published nothing: %v", res)
+	}
+	return payload, res
+}
+
+// runFeedbackOut drives post_feedback against a feedbackForge: the publish
+// payload (nil when nothing was published) and the node's output.
+func runFeedbackOut(t *testing.T, forge *feedbackForge, over map[string]string, env ...string) (map[string]any, map[string]any) {
 	t.Helper()
 	srv := httptest.NewServer(forge)
 	defer srv.Close()
@@ -859,9 +873,6 @@ func runFeedback(t *testing.T, forge *feedbackForge, over map[string]string, env
 	}
 	forge.mu.Lock()
 	defer forge.mu.Unlock()
-	if forge.payload == nil {
-		t.Fatal("post_feedback published nothing")
-	}
 	return forge.payload, res
 }
 
@@ -963,12 +974,18 @@ func TestDepUpdateGuardGateCarriesItsChangeIdentity(t *testing.T) {
 		"needs_decision", "hold_lost_alignment", "hold_delivery_permission", "probably_fine"} {
 		t.Run("stamp and marker/"+verdict, func(t *testing.T) {
 			over := map[string]string{"{{input.verdict}}": quoted(verdict)}
-			wantOrigin := x
+			wantOrigin, wantAt := x, ""
+			// A carry is published on a history read again at publish time:
+			// the forge reports x as the head, nothing vetoes, and CI the
+			// base requires builds it.
+			f := &feedbackForge{t: t}
 			if verdict == "carried" {
-				over["{{input.origin_sha}}"], over["{{input.origin_at}}"] = quoted(origin), quoted(originAt)
+				wantAt = utcAgo(time.Hour)
+				over["{{input.origin_sha}}"], over["{{input.origin_at}}"] = quoted(origin), quoted(wantAt)
 				wantOrigin = origin
+				f.head, f.base = x, "main"
 			}
-			p, res := runFeedback(t, &feedbackForge{t: t}, with(over))
+			p, res := runFeedback(t, f, with(over))
 			note, _ := gateOf(p)["note"].(string)
 			if !strings.HasSuffix(note, " · "+id) {
 				t.Errorf("the note does not END with the change identity %s: %q", id, note)
@@ -988,8 +1005,15 @@ func TestDepUpdateGuardGateCarriesItsChangeIdentity(t *testing.T) {
 			if m[1] != x || m[2] != id || m[3] != wantVerdict || m[4] != wantOrigin {
 				t.Errorf("marker = sha %s id %s verdict %s origin %s, want %s %s %s %s", m[1], m[2], m[3], m[4], x, id, wantVerdict, wantOrigin)
 			}
-			if verdict == "carried" && m[5] != originAt {
-				t.Errorf("a carry restarted its origin's clock: origin_at %s, want %s", m[5], originAt)
+			if verdict == "carried" && m[5] != wantAt {
+				t.Errorf("a carry restarted its origin's clock: origin_at %s, want %s", m[5], wantAt)
+			}
+			// The class rule for `carried`: green to arm_automerge, green here
+			// (the other green verdicts are TestDepUpdateGuardGateVerdict's).
+			if verdict == "carried" {
+				if n, _ := gateOf(p)["blocking_count"].(float64); n != 0 || res["gate_state"] != "success" {
+					t.Errorf("a vouched carried verdict published a gate that is not green: %v / %v", gateOf(p), res)
+				}
 			}
 			if strings.Count(summary, "<!-- vetty-gate") != 1 {
 				t.Errorf("the review carries %d markers, want exactly the last line", strings.Count(summary, "<!-- vetty-gate"))
@@ -1021,10 +1045,16 @@ func TestDepUpdateGuardGateCarriesItsChangeIdentity(t *testing.T) {
 		}
 	})
 
-	t.Run("a carried verdict that cannot name its origin is not stamped", func(t *testing.T) {
-		p, _ := runFeedback(t, &feedbackForge{t: t}, with(map[string]string{"{{input.verdict}}": `"carried"`}))
-		if note, _ := gateOf(p)["note"].(string); strings.Contains(note, "pid1:") {
-			t.Errorf("a carry with no origin was stamped as its own origin, restarting its age: %q", note)
+	// Stamping it as its own origin would restart the clock its age is
+	// measured on; publishing it unstamped would certify a green nobody can
+	// trace. Mutation: drop the origin term of the withdrawal -> published.
+	t.Run("a carried verdict that cannot name its origin is withdrawn", func(t *testing.T) {
+		p, res := runFeedbackOut(t, &feedbackForge{t: t, head: x, base: "main"}, with(map[string]string{"{{input.verdict}}": `"carried"`}))
+		if p != nil {
+			t.Fatalf("a carry with no origin was published: %v", p)
+		}
+		if reason, _ := res["skipped_reason"].(string); !strings.Contains(reason, "no original audit") {
+			t.Errorf("the run must say the carry names no original audit, got %q", reason)
 		}
 	})
 
@@ -1217,17 +1247,24 @@ func TestDepUpdateGuardRepinsAGreenOntoAPureRebase(t *testing.T) {
 
 	// A carried verdict keeps its ORIGINAL audit's clock across a repin too.
 	// Mutation: drop the age term of the switch -> the stale carry moves.
-	t.Run("a carried verdict whose original audit is past carry_max_age_h is not repinned", func(t *testing.T) {
+	// Nor published at all: a carry decided before the age bound — a run
+	// resumed hours later — is withdrawn at publish time.
+	t.Run("a carried verdict whose original audit is past carry_max_age_h is neither repinned nor published", func(t *testing.T) {
 		fx := newRepinFixture(t)
 		old := time.Now().UTC().Add(-100 * time.Hour).Format("2006-01-02T15:04:05Z")
-		p, res := fx.repinWith(t, &feedbackForge{head: fx.same}, "carried", map[string]string{
-			"{{input.origin_sha}}": quoted(strings.Repeat("0a", 20)), "{{input.origin_at}}": quoted(old),
+		f := &feedbackForge{head: fx.same}
+		f.t, f.base, f.gitRoot = t, "main", fx.origin.gitRoot()
+		p, res := runFeedbackOut(t, f, map[string]string{
+			"{{input.audited_sha}}": quoted(fx.x), "{{input.head_sha}}": quoted(fx.x),
+			"{{input.head_id}}": quoted(fx.id), "{{input.verdict}}": `"carried"`,
+			"{{vars.workspace_dir}}": quoted(fx.ws),
+			"{{input.origin_sha}}":   quoted(strings.Repeat("0a", 20)), "{{input.origin_at}}": quoted(old),
 		})
-		if pinOf(p) != fx.x || res["verdict"] != "carried" {
-			t.Fatalf("a carry past its age was carried onto %s: pin %s verdict %v", fx.same[:12], pinOf(p), res["verdict"])
+		if p != nil {
+			t.Fatalf("a carry past its age was published: pin %s verdict %v", pinOf(p), res["verdict"])
 		}
-		if summary, _ := res["summary"].(string); !strings.Contains(summary, "older than carry_max_age_h") {
-			t.Errorf("the run does not say the original audit is too old: %q", summary)
+		if reason, _ := res["skipped_reason"].(string); !strings.Contains(reason, "older than carry_max_age_h") {
+			t.Errorf("the run does not say the original audit is too old: %q", reason)
 		}
 	})
 

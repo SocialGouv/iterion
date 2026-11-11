@@ -316,6 +316,7 @@ func TestDepUpdateGuardArmAutomerge(t *testing.T) {
 			"{{secrets.forge_token.path}}":   `"ghs_test"`,
 			"{{vars.automerge_on_unstable}}": `"merge"`,
 			"{{vars.automerge_settle_s}}":    "600",
+			"{{vars.gate_context}}":          `"vetty/deps"`,
 		}
 		for k, v := range subs {
 			base[k] = v
@@ -526,6 +527,9 @@ func TestDepUpdateGuardArmAutomerge(t *testing.T) {
 	// outrank audited_sha again -> the run refuses the head it just gated,
 	// with a reason that reads as a fault.
 	t.Run("a repinned verdict arms the head it was carried onto", func(t *testing.T) {
+		// A carried verdict is armed only where a check the base requires,
+		// other than the gate, builds the head: here CI, still running.
+		withRollup(t, "", map[string]any{"__typename": "CheckRun", "name": "ci/test", "status": "IN_PROGRESS", "conclusion": nil, "isRequired": true})
 		res, calls, _ := runWith(t, map[string]string{
 			"{{input.verdict}}":       `"carried"`,
 			"{{input.gate_sha}}":      `"d34db33f"`,
@@ -1326,6 +1330,9 @@ func TestDepUpdateGuardArmAutomerge(t *testing.T) {
 	// set -> the carried row refuses.
 	for _, verdict := range depUpdateGuardGreenVerdicts {
 		t.Run("verdict "+verdict+" is green: arms pinned", func(t *testing.T) {
+			// CI the base requires is still running: what a carried verdict
+			// leans on, and what the forge holds the arming to.
+			withRollup(t, "", map[string]any{"__typename": "CheckRun", "name": "ci/test", "status": "IN_PROGRESS", "conclusion": nil, "isRequired": true})
 			res, calls, _ := run(t, map[string]string{"{{input.verdict}}": `"` + verdict + `"`})
 			if res["armed"] != true {
 				t.Fatalf("a %s verdict with a green gate must arm: %v", verdict, res)
@@ -1341,6 +1348,57 @@ func TestDepUpdateGuardArmAutomerge(t *testing.T) {
 			}
 		})
 	}
+
+	// A carried verdict attests no build: Vetty audited an identical change
+	// elsewhere and never built this head. On a base that requires no check
+	// but the gate, nothing would build it before the forge merged it — so it
+	// is neither armed nor merged, at any door, and the run's own earlier
+	// arming on this revision is taken down. Mutation: drop the carried door
+	// before the arming in arm_automerge -> every row below arms or merges.
+	gateGreen := map[string]any{"__typename": "StatusContext", "context": "vetty/deps", "state": "SUCCESS", "isRequired": true}
+	for _, tc := range []struct {
+		name  string
+		pr    map[string]any
+		err   string
+		nodes []map[string]any
+	}{
+		{"BLOCKED on a human review: the arming would be accepted", withState(map[string]any{"mergeStateStatus": "BLOCKED"}), "", []map[string]any{gateGreen}},
+		{"CLEAN with no CI at all", withState(map[string]any{"mergeStateStatus": "CLEAN"}), cleanRefusal, []map[string]any{gateGreen}},
+		{"UNSTABLE, CI red and not required", unstablePR, unstableRefusal, []map[string]any{gateGreen, optionalRed}},
+		{"UNSTABLE, CI still running and not required", unstablePR, unstableRefusal, []map[string]any{gateGreen,
+			{"__typename": "CheckRun", "name": "ci/test", "status": "IN_PROGRESS", "conclusion": nil, "isRequired": false}}},
+		{"a rollup that cannot be read", withState(map[string]any{"mergeStateStatus": "CLEAN"}), cleanRefusal, nil},
+	} {
+		t.Run("a carried verdict on a base that requires only the gate, "+tc.name+": neither armed nor merged", func(t *testing.T) {
+			withRollup(t, "", tc.nodes...)
+			pr := withState(tc.pr)
+			pr["autoMergeRequest"] = map[string]any{"enabledAt": "2026-11-10T08:00:00Z", "enabledBy": map[string]any{"login": botLogin}}
+			res, calls, _ := runWith(t, map[string]string{"{{input.verdict}}": `"carried"`, "{{vars.respect_human_arming}}": "True"}, pr, tc.err, nil)
+			for _, door := range []string{"enablePullRequestAutoMerge", "mergePullRequest", "enqueuePullRequest"} {
+				if queried(calls, door) {
+					t.Errorf("a carried head no required check builds went through %s: %v", door, res)
+				}
+			}
+			if res["armed"] != false {
+				t.Fatalf("want a refusal, got %v", res)
+			}
+			if reason, _ := res["reason"].(string); !strings.Contains(reason, "vetty/deps") || !strings.Contains(reason, "carried") {
+				t.Errorf("the refusal must say a carried verdict attests no build and name the gate, got %q", reason)
+			}
+			if !queried(calls, "disablePullRequestAutoMerge") {
+				t.Errorf("the run's own arming on this revision was left standing: %v", res)
+			}
+		})
+	}
+	// The control: a required CI context that passes is the build the
+	// carried verdict leans on, and the pull request merges pinned.
+	t.Run("a carried verdict on a base that requires CI, CLEAN: merges pinned to the reviewed head", func(t *testing.T) {
+		withRollup(t, "", gateGreen, requiredGreen)
+		res, calls, _ := runWith(t, map[string]string{"{{input.verdict}}": `"carried"`}, withState(map[string]any{"mergeStateStatus": "CLEAN"}), cleanRefusal, nil)
+		if got := mergedOn(calls); len(got) != 1 || got[0] != "d34db33f" || res["armed"] != true {
+			t.Fatalf("want one merge pinned to d34db33f, got %v (%v)", got, res)
+		}
+	})
 
 	t.Run("a clean bump arms too", func(t *testing.T) {
 		// "clean" (safe bump, nothing to align) is as green as "committed" —

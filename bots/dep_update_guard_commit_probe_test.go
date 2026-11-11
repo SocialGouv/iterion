@@ -1,7 +1,11 @@
 package bots
 
 import (
+	"bytes"
+	"crypto/sha1" //nolint:gosec // git's commit-graph checksum is SHA-1 by format
 	"encoding/base64"
+	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -231,13 +235,14 @@ func TestDepUpdateGuardCommitProbeReadsGit(t *testing.T) {
 		})
 	}
 
-	// Replace refs and grafts are the workspace's to write: the one-commit
-	// rule reads the commit objects, never what is layered over them. The
-	// alignment sits on a commit someone else pushed and is dressed as one
-	// commit on the audited head. Mutations (main.bot commit_probe): drop
-	// GIT_NO_REPLACE_OBJECTS (the replace-ref case certifies), drop
-	// GIT_GRAFT_FILE (the graft case does).
-	for _, dress := range []string{"a replace ref", "a graft"} {
+	// Replace refs, grafts and the commit-graph file are the workspace's to
+	// write: the one-commit rule reads the commit objects, never what is
+	// layered over them. The alignment sits on a commit someone else pushed
+	// and is dressed as one commit on the audited head. Mutations (main.bot
+	// commit_probe): drop GIT_NO_REPLACE_OBJECTS (the replace-ref case
+	// certifies), drop GIT_GRAFT_FILE (the graft case does), drop `-c
+	// core.commitGraph=false` (the commit-graph case does).
+	for _, dress := range []string{"a replace ref", "a graft", "a commit-graph"} {
 		t.Run("pushed onto a foreign commit, dressed by "+dress+" as one commit on the audited head", func(t *testing.T) {
 			o := newForgeOrigin(t)
 			ws := t.TempDir()
@@ -264,6 +269,9 @@ func TestDepUpdateGuardCommitProbeReadsGit(t *testing.T) {
 				if err := os.WriteFile(grafts, []byte(c+" "+audited+"\n"), 0o600); err != nil {
 					t.Fatal(err)
 				}
+			case "a commit-graph":
+				gittest.Run(t, ws, "commit-graph", "write", "--reachable")
+				reparentInCommitGraph(t, ws, c, audited)
 			}
 			if seen := gittest.Run(t, ws, "rev-list", "--parents", "-n", "1", c); !strings.Contains(seen, c+" "+audited) {
 				t.Fatalf("fixture: %s does not dress %s as a child of the audited head: %q", dress, c[:12], seen)
@@ -561,6 +569,142 @@ func TestDepUpdateGuardPushRecipeCarriesTheTokenByEnvironment(t *testing.T) {
 		t.Errorf("the forge token reached git's argv:\n%s", logged)
 	}
 	if strings.Contains(string(out), token) || strings.Contains(string(out), encoded) {
+		t.Errorf("the forge token reached the recipe's output: %s", out)
+	}
+}
+
+// reparentInCommitGraph rewrites the workspace's commit-graph file so that it
+// records `parent` as the only parent of `commit` — what an agent with a
+// shell can do to the file git reads parents from before the commit object.
+// The format is git's (Documentation/gitformat-commit-graph.txt): a header,
+// a chunk table, the sorted OIDs (OIDL), and per commit its tree, two parent
+// positions and its generation (CDAT); the trailing checksum is recomputed.
+func reparentInCommitGraph(t *testing.T, ws, commit, parent string) {
+	t.Helper()
+	path := filepath.Join(gittest.Run(t, ws, "rev-parse", "--git-path", "objects/info/commit-graph"))
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(ws, path)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("fixture: no commit-graph was written: %v", err)
+	}
+	if len(raw) < 8 || string(raw[:4]) != "CGPH" || raw[5] != 1 {
+		t.Fatalf("fixture: not a SHA-1 commit-graph file (%q)", raw[:min(8, len(raw))])
+	}
+	chunks := int(raw[6])
+	offsets := map[string]int{}
+	var order []int
+	for i := 0; i <= chunks; i++ {
+		at := 8 + 12*i
+		off := int(binary.BigEndian.Uint64(raw[at+4 : at+12]))
+		offsets[string(raw[at:at+4])] = off
+		order = append(order, off)
+	}
+	oidl, cdat := offsets["OIDL"], offsets["CDAT"]
+	end := len(raw) - 20
+	for _, off := range order {
+		if off > oidl && off < end {
+			end = off
+		}
+	}
+	position := func(sha string) int {
+		want, err := hex.DecodeString(sha)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i := 0; oidl+20*(i+1) <= end; i++ {
+			if bytes.Equal(raw[oidl+20*i:oidl+20*(i+1)], want) {
+				return i
+			}
+		}
+		t.Fatalf("fixture: %s is not in the commit-graph", sha[:12])
+		return -1
+	}
+	entry := cdat + 36*position(commit)
+	binary.BigEndian.PutUint32(raw[entry+20:entry+24], uint32(position(parent)))
+	binary.BigEndian.PutUint32(raw[entry+24:entry+28], 0x70000000) // no second parent
+	sum := sha1.Sum(raw[:len(raw)-20])
+	copy(raw[len(raw)-20:], sum[:])
+	if err := os.Chmod(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestDepUpdateGuardCommentRecipeKeepsTheTokenOffArgv runs the GitHub comment
+// recipe the skill gives the agents — its own block, as written — with a curl
+// shim that records its argv and its stdin, and a jq shim: the token reaches
+// curl as a header on its STDIN, and never as a process argument, where every
+// process in the sandbox can read it.
+//
+// Mutation (skills/dependency-pr-guard.md §6): put the header back on the
+// command line (`-H "Authorization: Bearer $(cat …)"`) — the argv assertion
+// reddens, and so does the stdin one.
+func TestDepUpdateGuardCommentRecipeKeepsTheTokenOffArgv(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("dep-update-guard", "skills", "dependency-pr-guard.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc := string(raw)
+	start := strings.Index(doc, "## 6. Posting the comment")
+	if start < 0 {
+		t.Fatal("the skill no longer has its comment section")
+	}
+	section := doc[start:]
+	if end := strings.Index(section[1:], "\n## "); end >= 0 {
+		section = section[:end+1]
+	}
+	open := strings.Index(section, "```sh\n")
+	if open < 0 {
+		t.Fatal("the comment section carries no sh recipe")
+	}
+	recipe := section[open+len("```sh\n"):]
+	closing := strings.Index(recipe, "```")
+	if closing < 0 {
+		t.Fatal("the comment recipe is not closed")
+	}
+	recipe = recipe[:closing]
+	if !strings.Contains(recipe, "curl") || !strings.Contains(recipe, "api.github.com") {
+		t.Fatalf("the first recipe of the comment section is not the GitHub curl call:\n%s", recipe)
+	}
+
+	const token = "ghs_commentSecretToken1234567890"
+	tokenPath := filepath.Join(t.TempDir(), "forge_token")
+	if err := os.WriteFile(tokenPath, []byte(token+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	shim, logs := t.TempDir(), t.TempDir()
+	argv, stdin := filepath.Join(logs, "argv.log"), filepath.Join(logs, "stdin.log")
+	for name, body := range map[string]string{
+		"curl": "#!/bin/sh\nprintf '%s\\n' \"$*\" >> " + argv + "\ncat >> " + stdin + "\nprintf '{}'\n",
+		"jq":   "#!/bin/sh\nprintf '{\"body\":\"verdict\"}'\n",
+	} {
+		if err := os.WriteFile(filepath.Join(shim, name), []byte(body), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cmd := exec.Command("sh", "-c", recipe)
+	cmd.Env = []string{"PATH=" + shim + string(os.PathListSeparator) + os.Getenv("PATH"),
+		"FORGE_TOKEN=" + tokenPath, "BODY=verdict"}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("the recipe failed: %v (%s)", err, out)
+	}
+	called, err := os.ReadFile(argv)
+	if err != nil {
+		t.Fatalf("the curl shim recorded nothing: %v", err)
+	}
+	if strings.Contains(string(called), token) {
+		t.Errorf("the forge token reached curl's argv:\n%s", called)
+	}
+	fed, _ := os.ReadFile(stdin)
+	if !strings.Contains(string(fed), "Authorization: Bearer "+token) {
+		t.Errorf("curl was not handed the token as a header on its stdin (stdin %q, argv %q)", fed, called)
+	}
+	if strings.Contains(string(out), token) {
 		t.Errorf("the forge token reached the recipe's output: %s", out)
 	}
 }

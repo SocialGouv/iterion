@@ -177,9 +177,18 @@ comment". `post_feedback` ends the status note with ` · pid1:<id>` (within
 GitHub's 140 characters on every verdict) and writes the review's **last line**
 as `<!-- vetty-gate/v1 sha=… id=… verdict=… origin=… origin_at=… -->`; the
 opener is defused wherever an agent-written section carries it. `continuity`
-reads the pull request, its reviews and the forge's combined status on every
-sha a marker names **and on the head**, and decides by predicates over sets:
+reads the pull request, its reviews with their edit record (GraphQL), the
+forge's status for the gate context on every sha a marker names **and on the
+head**, and who wrote each, and decides by predicates over sets (one shared
+block, the one `post_feedback` decides with):
 
+- a review this App published and somebody edited since — anyone with write
+  access can edit it, and its author stays the App — → full audit, whatever it
+  says now: its marker deleted, its `origin_at` rejuvenated, a marker
+  appended. Edited reviews of other authors veto nothing by themselves;
+- a status stamped with this change that another identity wrote (another App,
+  a PAT user), or whose author cannot be read → full audit: only this App's
+  stamp is a source;
 - **any** verdict on the same change that is not green, any status stamped with
   it that is not green, or a red status on the head itself (stamped or not — a
   carry never paints over one) → full audit (unanimity veto — it covers the hold
@@ -192,23 +201,30 @@ sha a marker names **and on the head**, and decides by predicates over sets:
   `arm_automerge` the head and the verdict on record for it, the arming is
   renewed pinned to it, and nothing is published;
 - another head carries an eligible green whose ORIGINAL audit is younger than
-  `carry_max_age_h` → the verdict `carried`, published on this head with the
-  origin travelling (a chain of carries never extends the age);
+  `carry_max_age_h`, and the base requires a check other than the gate on this
+  head (the check rollup's `isRequired`, in any state) → the verdict
+  `carried`, published on this head with the origin travelling (a chain of
+  carries never extends the age). A base that requires nothing but the gate
+  would merge a carried head on the gate alone, with no build: the full audit
+  builds it instead;
 - anything else — a forge head that is no longer the one `prepare` read
   included: nothing says that head has a delivery of its own — → the full
   audit.
 
-Eligible means this App's review names the sha and the id, and the forge's one
-status for the context on that sha is green, ends with the same stamp and links
-that review. A review is this App's when its author is the identity the run
-token speaks as — by user id whenever the viewer has one (REST and GraphQL
-spell a bot's login differently, `slug[bot]` / `slug`); by login only when it
-has none, and then only a Bot spelled `slug[bot]`, since a user account can
-register any other spelling. Authorship decides eligibility, never a veto: a
-marker vetoes whoever wrote it, so Vetty's own holds published by a user (a
-PAT connection) are read, and an outsider's marker can only force the full
-audit. Where the forge token is not the publishing App (a PAT beside an App
-connection) no review is this App's, and nothing is carried: the full audit.
+Eligible means an unedited review this App published names the sha and the
+id, and the forge's one status for the context on that sha — written by this
+App — is green, ends with the same stamp and links that review. This App is
+the identity the run token speaks as, told by **user id alone** (REST and
+GraphQL spell a bot's login differently, `slug[bot]` / `slug`, and a user
+account can register any spelling): a review's author id against the GraphQL
+viewer's, a status's creator id — read from the commit's status list, since
+the combined status names no creator — against the same. A token whose viewer
+has no id owns nothing, and nothing is carried. Authorship decides
+eligibility, never a marker's veto: a marker vetoes whoever wrote it, so
+Vetty's own holds published by a user (a PAT connection) are read, and an
+outsider's marker can only force the full audit. Where the forge token is not
+the publishing App (a PAT beside an App connection) no review or stamped
+status is this App's, and nothing is carried: the full audit.
 GitHub-only; a history not
 read whole, or any read that fails, is the full audit, said so in the reason.
 Neither the carry nor the standby path holds a node that can call a model, by
@@ -216,8 +232,9 @@ the engine's own `ir.NodeUsesLLM`.
 
 `carried` certifies the supply-chain audit and alignment of an **identical
 change**, not a build of this tree: its note says *this base is built by the
-repo's CI*, and the build on the new base is owed by the repository's required
-checks, which run on every head. What it does not cover: a semantic break
+repo's CI*, and the build on the new base is owed by a check the repository
+REQUIRES other than the gate — which is why a carry, a repin and an arming of
+a carried head all need one on that head. What it does not cover: a semantic break
 between the change and the new base that CI does not exercise, and an advisory
 published after the original audit (bounded by `carry_max_age_h`). Patch-ids
 ignore line numbers — that is what lets a rebase pass — so a hunk re-applied
@@ -232,19 +249,28 @@ own gate history vetoes nothing (the same predicate, one shared block), the
 verdict is published there as `carried`, its origin the commit actually
 audited. A hold is never moved, and any other new head is published to as
 before — and refused by the server for the moved head; the run's summary says
-why it did not repin. The history is read last, right before the publish: the
-server orders decisions by the time it receives them, so a hold published on
-the new head after that read still supersedes the carry, and only a hold
-landing in the second between the read and the publish is overwritten — a
-window only a compare-and-set on the publish endpoint would close. After a
+why it did not repin. A carry `continuity` decided is held to the same rule at
+publish time: the gate history is read again right before the publish — the
+one `continuity` read can be minutes old, hours on a resumed run — and a hold
+published since on any head of the change, an edit, a foreign stamp, an origin
+past `carry_max_age_h`, or a base that no longer requires a check other than
+the gate **withdraws** the carry: nothing is published, the run's gate claim
+stays unanswered, and the reason says why. The server orders decisions by the
+time it receives them, so a hold published after that read still supersedes
+the carry, and only a hold landing in the second between the read and the
+publish is overwritten — a window only a compare-and-set on the publish
+endpoint would close. After a
 repin, `arm_automerge` vouches the gate against the head the verdict was
 carried onto and arms it. The repin obeys the same switches as `continuity`:
 `continuity` off, `carry_max_age_h` at 0, or a carried verdict whose original
 audit is past `carry_max_age_h` publishes as before, and the summary says which.
 
-The `/vetty` command pins `continuity: "false"`, so a human gesture always buys
-a full audit; an operator pin of `continuity` in the integration's
-`launch_vars` wins on both lanes, and on the repin.
+The `/vetty` command pins `continuity: "false"`, so a human gesture buys a full
+audit — unless an operator pins `continuity` in the integration's
+`launch_vars`: launch_vars win over the command's own, on both lanes and on
+the repin, so a pin of `true` makes `/vetty` reuse a verdict too. Pin it
+`false` to turn every reuse off; leave it unpinned to keep `/vetty`'s full
+audit.
 
 **Auto-merge on UNSTABLE.** GitHub refuses to arm a pull request whose required
 checks all pass while another check fails or still runs (`UNSTABLE`), as it
@@ -258,8 +284,14 @@ would have done; `wait`: only once the forge reports `CLEAN` within
 `automerge_settle_s`). The policy governs that refusal only: an arming GitHub
 accepts — a required check still running when the run arms — merges once the
 REQUIRED checks pass, whatever a check the repo does not require says. Every
-green verdict follows the same rule, `carried` included, so CI timing never
-decides how a verdict is merged. A repository that does not allow auto-merge
+green verdict follows the same rule, so CI timing never decides how a verdict
+is merged — and `carried` needs one more thing first: a check the base
+requires other than the gate on the vouched head, in any state (an arming and
+a queue wait for it to pass; CLEAN and UNSTABLE mean it passed). On a base that
+requires only the gate a carried head is neither armed nor merged, at any
+door, and an arming an earlier pass of this run's identity left on it is taken
+down. `clean` and `committed` need no such check: their gate is Vetty's own
+build of the commit it pins. A repository that does not allow auto-merge
 gets no merge in place of the refused arming. Every head change re-arms
 through the carry and standby paths at no LLM cost.
 
@@ -290,7 +322,7 @@ overridable via `VETTY_MODEL_*` / `VETTY_EFFORT_*` env vars.
 | `respect_human_arming` | bool | `true` | Preserve another actor's arming, on a refusal and on a replacement |
 | `automerge_on_unstable` | string (enum: `merge`, `wait`) | `"merge"` | When GitHub refuses to arm an UNSTABLE pull request whose required checks all pass: merge the audited head now, or wait for CLEAN |
 | `automerge_settle_s` | int | `600` | The bound on the `wait` policy, in seconds |
-| `continuity` | bool | `true` | Reuse a green verdict on a head whose change it already covers (carry, renewal, repin); the `/vetty` command pins it false |
+| `continuity` | bool | `true` | Reuse a green verdict on a head whose change it already covers (carry, renewal, repin); the `/vetty` command pins it false, and an operator pin in `launch_vars` wins over that on both lanes |
 | `carry_max_age_h` | int | `72` | Age past which a green verdict is no longer reused, measured from the original audit; `0` turns every reuse off |
 | `forge_publish_url` | string | `""` | Deterministic forge-publish grant, injected by the iterion server at launch; empty → direct comment, no gate |
 | `forge_publish_token` | string | `""` | Token for the publish endpoint above (server-injected) |
