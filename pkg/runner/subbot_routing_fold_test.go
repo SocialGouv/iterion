@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"bytes"
 	"context"
 	"net/http"
 	"net/http/httptest"
@@ -345,5 +346,94 @@ func TestSubbotChildUnderATeamGatewayLaunchRowStaysOnTheGateway(t *testing.T) {
 	defer mu.Unlock()
 	if len(gwHits) == 0 || len(vendorHits) != 0 {
 		t.Fatalf("child calls: gateway %q, vendor %q — want the gateway only (child error: %v)", gwHits, vendorHits, cerr)
+	}
+}
+
+// childLayout is one place a subbot child's .bot lives in its bundle: the
+// bundle's directory (its slug), its manifest name, and the files beside
+// it ("" is the agent child).
+type childLayout struct {
+	name, source, slug, manifest string
+	files                        map[string]string
+}
+
+func childLayouts() []childLayout {
+	return []childLayout{
+		{"nested workflow", "../lib/sub/x.bot", "lib", "libbot", map[string]string{"lib/manifest.yaml": "name: libbot\n", "lib/main.bot": "", "lib/sub/x.bot": ""}},
+		{"workflows export", "../kit/workflows/x.bot", "kit", "kitbot", map[string]string{"kit/manifest.yaml": "name: kitbot\n", "kit/main.bot": "", "kit/workflows/x.bot": ""}},
+		{"main.bot its manifest renames", "../cdir/main.bot", "cdir", "childbot", map[string]string{"cdir/manifest.yaml": "name: childbot\n", "cdir/main.bot": ""}},
+	}
+}
+
+// runSubbotLayoutFixture runs the parent's subbot node once on a child
+// laid out as lay, under a root run whose document froze pol, and returns
+// the child's error.
+func runSubbotLayoutFixture(t *testing.T, lay childLayout, pol *store.RunLLMRoutePolicy, logger *iterlog.Logger) error {
+	t.Helper()
+	t.Setenv("OPENAI_API_KEY", "")
+	r, st := subbotTestRunner(t)
+	dir := t.TempDir()
+	parentDir := filepath.Join(dir, "parent")
+	writeSubbotFixture(t, parentDir, "main.bot", strings.Replace(subbotTestParent, `source: "child.bot"`, `source: "`+lay.source+`"`, 1))
+	for rel, body := range lay.files {
+		if body == "" {
+			body = agentChildBot("")
+		}
+		writeSubbotFixture(t, filepath.Join(dir, filepath.Dir(rel)), filepath.Base(rel), body)
+	}
+	msg := &queue.RunMessage{RunID: "run-parent", TenantID: "t1", OwnerID: "u1", BotID: "parent"}
+	p := storetest.SeedParentRun(t, st, msg.RunID)
+	p.LLMRoutePolicy = pol
+	if err := st.SaveRun(store.WithIdentity(context.Background(), "_test", "_test"), p); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	_, err := r.subbotRunnerFor(msg, parentDir, dir, logger)(ctx, runtime.SubbotRequest{
+		Source: lay.source, ParentRunID: msg.RunID, NodeID: "run_ticket", ReattachKey: "run_ticket",
+	})
+	if err == nil {
+		t.Fatal("precondition: the child's claw leg fails offline (no credential)")
+	}
+	return err
+}
+
+// A cloud child is the bot a top-level launch of its bundle is — the
+// bundle's slug and its manifest name — wherever its .bot sits in that
+// bundle: a nested workflow, a workflows/ export, a main.bot its manifest
+// renames. The in-process lane reads the same identity
+// (runview.SubbotChildBotIdentity).
+func TestSubbotChildFoldsForItsBundlesSlugAndManifestName(t *testing.T) {
+	for _, lay := range childLayouts() {
+		for _, tc := range []struct {
+			sel   string
+			reach bool
+		}{
+			{lay.manifest + "/act", true},
+			{lay.slug + "/act", true},
+			{"parent/act", false},
+			{"act", true},
+		} {
+			t.Run(lay.name+"/"+tc.sel, func(t *testing.T) {
+				pol := &store.RunLLMRoutePolicy{Overrides: []store.RunLLMRouteOverride{modelCell(tc.sel)}}
+				err := runSubbotLayoutFixture(t, lay, pol, iterlog.Nop())
+				if got := reachedGPT(t, err); got != tc.reach {
+					t.Fatalf("cell %q reached the child bot = %v, want %v (child error: %v)", tc.sel, got, tc.reach, err)
+				}
+			})
+		}
+	}
+}
+
+// The zero-match warning names the child by the identity it folded for: a
+// typo'd cell spelled with a nested child's manifest name is warned, and
+// names the bundle's slug beside it.
+func TestSubbotChildOfANestedBundleWorkflowIsWarnedByItsIdentity(t *testing.T) {
+	var buf bytes.Buffer
+	sel := "libbot/nosuch_" + strings.ReplaceAll(t.Name(), "/", "_")
+	pol := &store.RunLLMRoutePolicy{Overrides: []store.RunLLMRouteOverride{modelCell(sel)}}
+	_ = runSubbotLayoutFixture(t, childLayouts()[0], pol, iterlog.New(iterlog.LevelWarn, &buf))
+	if got := buf.String(); !strings.Contains(got, `names bot "libbot" (the manifest name of "lib")`) {
+		t.Fatalf("child log = %q, want the zero-match warning naming libbot, the manifest name of the bundle lib", got)
 	}
 }

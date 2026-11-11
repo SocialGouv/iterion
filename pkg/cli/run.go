@@ -826,10 +826,7 @@ func subbotRunnerForCLI(parentPath, storeDir string, s store.RunStore, logger *i
 		// parked below re-attaches instead of spawning fresh.
 		runview.RecordSubbotChild(ctx, s, req, childRunID, logger)
 
-		bundleName := runview.BundleNameForPath(childPath)
-		if childBundle != nil && childBundle.Manifest != nil {
-			bundleName = childBundle.Manifest.Name
-		}
+		childBotID, _ := runview.SubbotChildBotIdentity(childPath, childBundle)
 		// The child's engine below is built with WithSharedSandbox and
 		// neither sandbox tier: this executor must not predict from the
 		// PARENT's flags.
@@ -853,7 +850,7 @@ func subbotRunnerForCLI(parentPath, storeDir string, s store.RunStore, logger *i
 			// workdir when the parent passed one, else at the process cwd —
 			// the same two cases its screen must probe.
 			req.WorkDir, nil,
-			runview.ResolveBotID("", bundleName, childPath), nil)
+			childBotID, nil)
 		if err != nil {
 			return nil, err
 		}

@@ -166,11 +166,7 @@ func (s *Service) subbotRunnerUnder(tree *subbotRoot, parentPath string, runLogg
 		if err := runtime.RefuseUnlandableSubbotLanding(req, childWf.Worktree, s.store.Root()); err != nil {
 			return nil, err
 		}
-		bundleName := BundleNameForPath(childPath)
-		if childBundle != nil && childBundle.Manifest != nil {
-			bundleName = childBundle.Manifest.Name
-		}
-		childBotID := ResolveBotID("", bundleName, childPath)
+		childBotID, childBot := SubbotChildBotIdentity(childPath, childBundle)
 		// The child's override rows: the root run's launch rows over its
 		// routing policy folded for the child's own bot, screened before any
 		// child run is recorded. At the top of the tree the parent read
@@ -179,7 +175,7 @@ func (s *Service) subbotRunnerUnder(tree *subbotRoot, parentPath string, runLogg
 		if root == nil {
 			root = &subbotRoot{policy: parentRun.LLMRoutePolicy, launchRows: parentRun.LaunchModelOverrides}
 		}
-		childRows, err := FoldForSubbotChild(childWf, root.policy, root.launchRows, childBotID, bundleName, "", runLogger)
+		childRows, err := FoldForSubbotChild(childWf, root.policy, root.launchRows, childBot, "", runLogger)
 		if err != nil {
 			return nil, fmt.Errorf("subbot %q (bot %q): %w", req.Source, childBotID, err)
 		}

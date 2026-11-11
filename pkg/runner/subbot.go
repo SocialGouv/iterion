@@ -264,8 +264,7 @@ func (r *Runner) subbotRunnerUnder(tree *subbotRoot, msg *queue.RunMessage, pare
 		// root's document, screened before any child run is recorded. The
 		// parent's rows (msg.ModelOverrides) folded the policy for the
 		// parent's bot: they never reach the child.
-		manifestName := runview.BundleNameForPath(childPath)
-		childBotID := runview.ResolveBotID("", manifestName, childPath)
+		childBotID, childBot := runview.SubbotChildBotIdentity(childPath, childBundle)
 		root := tree
 		if root == nil {
 			rootRun, lerr := r.cfg.Store.LoadRun(ctx, msg.RunID)
@@ -274,7 +273,7 @@ func (r *Runner) subbotRunnerUnder(tree *subbotRoot, msg *queue.RunMessage, pare
 			}
 			root = &subbotRoot{policy: rootRun.LLMRoutePolicy, launchRows: rootRun.LaunchModelOverrides}
 		}
-		childRows, err := runview.FoldForSubbotChild(childWf, root.policy, root.launchRows, childBotID, manifestName, msg.Permission, runLogger)
+		childRows, err := runview.FoldForSubbotChild(childWf, root.policy, root.launchRows, childBot, msg.Permission, runLogger)
 		if err != nil {
 			return nil, fmt.Errorf("subbot %q (bot %q): %w", req.Source, childBotID, err)
 		}

@@ -228,3 +228,67 @@ func TestInProcessSubbotGrandchildFoldsTheRootsLaunchRows(t *testing.T) {
 		t.Fatalf("the root run's launch row did not reach the grandchild (error: %v)", err)
 	}
 }
+
+// The in-process twin of the cloud runner's identity witness: a child is
+// the bot a top-level launch of its bundle is — its slug and its manifest
+// name — wherever its .bot sits in that bundle.
+func TestInProcessSubbotChildFoldsForItsBundlesSlugAndManifestName(t *testing.T) {
+	layouts := []struct {
+		name, source, slug, manifest string
+		files                        map[string]string
+	}{
+		{"nested workflow", "../lib/sub/x.bot", "lib", "libbot", map[string]string{"lib/manifest.yaml": "name: libbot\n", "lib/main.bot": subbotFoldAgent, "lib/sub/x.bot": subbotFoldAgent}},
+		{"workflows export", "../kit/workflows/x.bot", "kit", "kitbot", map[string]string{"kit/manifest.yaml": "name: kitbot\n", "kit/main.bot": subbotFoldAgent, "kit/workflows/x.bot": subbotFoldAgent}},
+		{"main.bot its manifest renames", "../cdir/main.bot", "cdir", "childbot", map[string]string{"cdir/manifest.yaml": "name: childbot\n", "cdir/main.bot": subbotFoldAgent}},
+	}
+	for _, lay := range layouts {
+		for _, tc := range []struct {
+			sel   string
+			reach bool
+		}{
+			{lay.manifest + "/act", true},
+			{lay.slug + "/act", true},
+			{"parent/act", false},
+		} {
+			t.Run(lay.name+"/"+tc.sel, func(t *testing.T) {
+				t.Setenv("HOME", t.TempDir())
+				t.Setenv("TMPDIR", t.TempDir())
+				t.Setenv("ITERION_ORPHAN_RECONCILE_INTERVAL", "0")
+				t.Setenv("OPENAI_API_KEY", "")
+				dir := t.TempDir()
+				writeFile(t, filepath.Join(dir, "parent"), "main.bot", strings.Replace(subbotFoldParent, `source: "../child/main.bot"`, `source: "`+lay.source+`"`, 1))
+				for rel, body := range lay.files {
+					writeFile(t, filepath.Join(dir, filepath.Dir(rel)), filepath.Base(rel), body)
+				}
+				svc, err := NewService(filepath.Join(dir, "store"), WithLogger(iterlog.Nop()), WithWorkDir(dir), WithSandboxDefault("none"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer stopService(t, svc)
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+				const rootID = "run-parent"
+				if _, err := svc.store.CreateRun(ctx, rootID, "parent", nil); err != nil {
+					t.Fatal(err)
+				}
+				root, err := svc.store.LoadRun(ctx, rootID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				root.LLMRoutePolicy = &store.RunLLMRoutePolicy{Overrides: []store.RunLLMRouteOverride{{Selector: tc.sel, Model: "openai/gpt-6-sol"}}}
+				if err := svc.store.SaveRun(ctx, root); err != nil {
+					t.Fatal(err)
+				}
+				_, runErr := svc.subbotRunnerFor(filepath.Join(dir, "parent", "main.bot"), iterlog.Nop())(ctx, runtime.SubbotRequest{
+					Source: lay.source, ParentRunID: rootID, NodeID: "run_child", ReattachKey: "run_child", WorkDir: dir,
+				})
+				if runErr == nil {
+					t.Fatal("precondition: the child's claw leg fails offline (no credential)")
+				}
+				if got := dispatchedGPT(t, runErr); got != tc.reach {
+					t.Fatalf("cell %q reached the child bot = %v, want %v (child error: %v)", tc.sel, got, tc.reach, runErr)
+				}
+			})
+		}
+	}
+}
