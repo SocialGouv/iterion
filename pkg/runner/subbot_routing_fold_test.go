@@ -482,3 +482,62 @@ func TestSubbotChildDocumentRecordsTheRootsRouting(t *testing.T) {
 		t.Fatalf("child document launch rows = %+v, want the root's %+v", child.LaunchModelOverrides, launch)
 	}
 }
+
+// The launch's credential walk reads no subbot child's site, so a cell that
+// moves only a child's site onto the gateway seals no gateway key by
+// itself. The runner says so where it bites — a child fold pinning the
+// gateway under sealed credentials that hold no gateway key — and stays
+// quiet when the key is there.
+func TestSubbotChildGatewayPinWithoutASealedGatewayKeyIsWarned(t *testing.T) {
+	const gw = "openai_compatible/scaleway/deepseek-v4.1-flash"
+	gwChild := strings.Replace(agentChildBot(""), `"claude-sonnet-4-5"`, `"`+gw+`"`, 1)
+	for _, tc := range []struct {
+		name, childBot string
+		cell           store.RunLLMRouteOverride
+		keyed, warned  bool
+	}{
+		{"a model cell, no gateway key", agentChildBot(""), store.RunLLMRouteOverride{Selector: "child/act", Backend: "claw", Model: gw}, false, true},
+		{"a provider cell on a gateway node, no gateway key", gwChild, store.RunLLMRouteOverride{Selector: "child/act", Backend: "claw", Provider: "openai_compatible"}, false, true},
+		{"a model cell, the gateway key sealed", agentChildBot(""), store.RunLLMRouteOverride{Selector: "child/act", Backend: "claw", Model: gw}, true, false},
+		{"a vendor cell", agentChildBot(""), modelCell("child/act"), false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("OPENAI_API_KEY", "")
+			t.Setenv("ITERION_LLM_ENDPOINT_ALLOW_PRIVATE", "1")
+			recorder := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				http.Error(w, "recorder", http.StatusTeapot)
+			}))
+			defer recorder.Close()
+			r, st := subbotTestRunner(t)
+			dir := t.TempDir()
+			parentDir := filepath.Join(dir, "parent")
+			writeSubbotFixture(t, parentDir, "main.bot", subbotFoldParentBot)
+			writeSubbotFixture(t, filepath.Join(dir, "child"), "main.bot", tc.childBot)
+			msg := &queue.RunMessage{RunID: "run-parent", TenantID: "t1", OwnerID: "u1", BotID: "parent"}
+			p := storetest.SeedParentRun(t, st, msg.RunID)
+			p.LLMRoutePolicy = &store.RunLLMRoutePolicy{Overrides: []store.RunLLMRouteOverride{tc.cell}}
+			if err := st.SaveRun(store.WithIdentity(context.Background(), "_test", "_test"), p); err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			if tc.keyed {
+				ctx = secrets.WithCredentials(ctx, secrets.Credentials{
+					APIKeys:     map[secrets.Provider]string{secrets.ProviderOpenAICompatible: "sk-test-gateway"},
+					APIBaseURLs: map[secrets.Provider]string{secrets.ProviderOpenAICompatible: recorder.URL},
+				})
+			}
+			var buf bytes.Buffer
+			_, _ = r.subbotRunnerFor(msg, parentDir, dir, iterlog.New(iterlog.LevelWarn, &buf))(ctx, runtime.SubbotRequest{
+				Source: "../child/main.bot", ParentRunID: msg.RunID, NodeID: "run_ticket", ReattachKey: "run_ticket",
+			})
+			warned := strings.Contains(buf.String(), "seals no gateway key for a subbot child")
+			if warned != tc.warned {
+				t.Fatalf("warned = %v, want %v (log: %q)", warned, tc.warned, buf.String())
+			}
+			if warned && !strings.Contains(buf.String(), `"act"`) {
+				t.Fatalf("the warning names no site: %q", buf.String())
+			}
+		})
+	}
+}
