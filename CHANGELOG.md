@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [5.23.0](https://github.com/SocialGouv/iterion/compare/v5.22.0...v5.23.0) (2026-11-11)
+
+### Features
+
+* **llmroute,runview,server:** routing cells reach every slot — node[#route](https://github.com/SocialGouv/iterion/issues/route) and supervisor selectors, a decided walk, the claw gateway hint ([#2005](https://github.com/SocialGouv/iterion/issues/2005)) ([#3176](https://github.com/SocialGouv/iterion/issues/3176)) ([ca54d88](https://github.com/SocialGouv/iterion/commit/ca54d88ef4433f3e648c26c674294e5d11d75811))
+
+    <details><summary>why</summary>
+
+    Revi (and any bot) routes every LLM slot of a run — nodes, named fallbacks: routes, supervisors — onto a team's own OpenAI-compatible gateway key through the DB routing cascade alone (ADR-129 cells, ADR-132 D21 selectors): the activation half of #2005.
+
+    </details>
+
 ## [5.22.0](https://github.com/SocialGouv/iterion/compare/v5.21.2...v5.22.0) (2026-11-11)
 
 ### Features
