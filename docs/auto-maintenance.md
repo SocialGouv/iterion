@@ -335,6 +335,21 @@ the pin stops being satisfiable.
 Push a new commit to an open PR and confirm the gate goes back to pending and
 holds the PR. A gate that only ever goes green has not been observed to gate.
 
+A new commit, not a rebase. With `review_on_sync` on, Vetty (2.12.0) carries
+its gate across a **pure rebase** with no LLM call: its `continuity` node
+compares the change identity of the new head (the `patch-id --verbatim` of
+`merge-base..head`, folded with `base_ref`) against the identity stamped on
+its earlier verdicts, and publishes the green verdict `carried` on the new head
+— or, when the head already carries its own green, only renews the arming. Any
+verdict on the same change that is not green vetoes the carry, and a green
+older than `carry_max_age_h` (72 h, from the original audit) is audited again.
+So "the gate went green again on its own" after a rebase is the gate working;
+the build on the new base is the repository's required checks', which run on
+every head. The verdict set Vetty publishes is now eight — `carried` is the
+third green, beside `clean` and `committed` — and `/vetty` always buys a full
+audit. The mechanics and their limits are in
+[the bundle's README](../bots/dep-update-guard/README.md#gate-continuity--a-rebase-keeps-its-gate-with-no-llm-call).
+
 ### 8. Arm auto-merge — last
 
 ```

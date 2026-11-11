@@ -7,6 +7,46 @@ commit onto the PR branch, post the verdict comment. Never merges past a
 check — and only ever the commit it audited. See
 [bots/dep-update-guard/](../../bots/dep-update-guard/).
 
+## 2026-11-11 — 2.12.0: the gate follows a pure rebase, and re-arms on UNSTABLE (#3128) — no live run yet
+
+- Status: **structurally validated, live pending.** Deterministic witnesses
+  only; no run on a real pull request. On buildkit-operator `review_on_sync`
+  stays off until the operator ships the 2.12.0 bundle — until then nothing
+  launches Vetty on a push, so `continuity` never runs there.
+- What changed, and why. Every rebase of a gated Renovate PR bought a full LLM
+  audit, and an audit in flight when the rebase landed was refused at publish
+  for the moved head (the reconciler then painted "review refused to certify …
+  comment the bot's command" red, and a human posted `/vetty`). The identical
+  change carried no machine-readable verdict a later run could find.
+  - `continuity` (tool, first decision after `prepare`): change identity
+    contract v1 (`patch-id --verbatim` of merge-base..head, diff knobs and path
+    order pinned, folded with `base_ref`), then the gate history read from the
+    forge — this App's reviews, the last-line `vetty-gate/v1` marker each
+    carries, and the combined status on every sha they name. Unanimity veto;
+    `already_gated` → `continuity_standby` → `arm_automerge`; a fresh eligible
+    green → the new verdict `carried`; a moved head → done.
+  - `post_feedback` stamps ` · pid1:<id>` on the note and writes the marker as
+    the review's last line; it repins a green verdict onto a head that moved by
+    a pure rebase (never a hold).
+  - `commit_probe` reads the candidate from git and the push evidence from
+    `git ls-remote` (a pushed alignment the agent left unreported no longer
+    pins the verdict to the head it moved away from).
+  - `arm_automerge` re-reads a refused arming: CLEAN as before, UNSTABLE by
+    the check rollup's `isRequired` and `automerge_on_unstable` (merge, the
+    default).
+- Measured, on git 2.43 and 2.55 in scratch repositories (the witnesses in
+  `bots/dep_update_guard_continuity_test.go`): a base move in another file or
+  15 lines away keeps the id; a base edit on a context line changes it; a YAML
+  re-indent changes it (it does not under `--stable`); other binary bytes
+  change it; a repository `diff.orderFile` does not; another `base_ref` does.
+- What the carry does NOT certify: a build of the new tree. The note says the
+  base is built by the repo's CI; the repo's required checks run on every head.
+- Lessons for next run: measure, per merge, full (LLM) runs against carry runs,
+  the publish `gate_error` "head moved" refusals, and `/vetty` deliveries; read
+  the bko delivery log for synchronize deliveries once `review_on_sync` is on.
+  The sandbox image's git must stay ≥ 2.39 (`--verbatim`); an older one carries
+  nothing and says why in the reason.
+
 ## 2026-09-17 — profile 2: a manifest-only bump judged safe, nothing to align, nothing to commit (run 01a0af9e-9697)
 
 - Status: **validated end to end** — `prepare` → `security_audit` (safe) → `align`

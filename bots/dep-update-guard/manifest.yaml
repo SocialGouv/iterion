@@ -1,7 +1,52 @@
 name: dep-update-guard
 display_name: Vetty
 icon: 💂
-version: 2.11.3
+version: 2.12.0
+## 2.12.0 — the gate follows a pure rebase, and the alignment's own push,
+## with no LLM call (#3128). A new tool node, `continuity`, decides first
+## after `prepare`: it computes the head's CHANGE IDENTITY (contract v1 —
+## the `patch-id --verbatim` of merge-base(base_ref, head)..head with every
+## diff knob pinned on the command line, the path order pinned, folded with
+## the base_ref name; --stable is whitespace-blind and reads a re-indented
+## YAML block as the same change), then reads the gate history from the
+## forge: the pull request, this App's reviews and the forge's combined
+## status on every sha they name. The fact travels with the gate:
+## post_feedback ends the status note with " · pid1:<id>" and writes the
+## review's LAST line as `<!-- vetty-gate/v1 sha= id= verdict= origin=
+## origin_at= -->`, defusing that opener anywhere an agent wrote. Decisions
+## are predicates over sets, never an order: ANY verdict on the same change
+## that is not green vetoes; the head's own eligible green → `already_gated`
+## (compute `continuity_standby` → arm_automerge, nothing published); another
+## head's eligible green younger than `carry_max_age_h` (72, from the
+## ORIGINAL audit, so a chain of carries never extends it) → the new verdict
+## `carried`, green, published on this head; a head that moved since
+## `prepare` → done. Eligible = this App's review, the status green, ending
+## with the same stamp and linking that review. GitHub-only, reads only,
+## and every unread page, failed read or missing identity is the full
+## audit. The carry and standby paths hold only tool and compute nodes.
+## `carried` asserts the audit of an IDENTICAL change, never a build of this
+## tree: its note says the base is built by the repo's CI, whose required
+## checks run on the new head. The `/vetty` command now carries
+## `context_vars: {continuity: "false"}`: a human gesture always buys a full
+## audit (an operator pin of `continuity` wins on both lanes).
+## REPIN: an audit that finishes after a rebase moved the head publishes
+## `carried` on the new head when — and only when — the verdict is green
+## and the new head is identity-equal against the base's current tip
+## (fetched, the token in git's environment); otherwise it publishes as
+## before and is refused for the moved head. A hold is never moved.
+## commit_probe takes the candidate from git (the workspace HEAD) and the
+## push evidence from `git ls-remote origin` (token in GIT_CONFIG_COUNT/
+## KEY/VALUE, never argv, never printed): a pushed alignment the agent did
+## not report is no longer pinned to the head it moved away from, and a
+## commit the remote does not hold is not certified. commit_system: a
+## rejected push is never pulled or rebased over. arm_automerge classifies
+## a refused arming by RE-READING the pull request: CLEAN merges pinned as
+## before; UNSTABLE reads the check rollup with each context's isRequired —
+## a required context not passing, or a rollup not read whole, merges
+## nothing; otherwise `automerge_on_unstable` ("merge", the default: pinned
+## now, what an earlier arming would have done; "wait": until CLEAN within
+## `automerge_settle_s`, 600). `carried` is green at every reader: the
+## badges, the gate table and note, arm_automerge's green set.
 ## 2.11.3 — the audit holds a bump only for a HIGH/CRITICAL it INTRODUCES.
 ## An advisory on both the old pin and the new version is REMAINING: the
 ## audit reports it with the release that fixes it and whether the bump's

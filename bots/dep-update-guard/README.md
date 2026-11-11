@@ -29,6 +29,11 @@ PRs (use Revi / `review-pr`), and **not** for proactively opening update PRs
 prepare        (tool, deterministic)  diff base_ref..HEAD, classify the changed
                                       dependency manifests/lockfiles; nothing
                                       changed → done
+continuity     (tool, deterministic)  is this head's change one a green verdict
+                                      already covers? carry → post_feedback
+                                      (`carried`); already gated →
+                                      continuity_standby → arm_automerge; head
+                                      moved since prepare → done; else → audit
 security_audit (agent, read-only)     malware, typosquats, compromised-maintainer
                                       signals, CVEs introduced vs resolved
 audit_gate     (compute, GATE)        only `safe` proceeds; else → hold_security
@@ -57,22 +62,27 @@ preflight_standdown (compute)         the one refusal that publishes nothing: no
                                       take a previous pass's arming down, run ends
                                       FORGE_PREFLIGHT_UNAVAILABLE
 commit         (agent)                commit + push the alignment onto the PR branch
-commit_probe   (tool, deterministic) git resolves the report to the full local HEAD;
-                                      it must descend from the head prepare read
+commit_probe   (tool, deterministic) the workspace HEAD, descended from the head
+                                      prepare read, held by origin (ls-remote), and
+                                      named by the report when there is one
 commit_check   (compute, GATE)        decides from commit_probe and align_probe's
                                       readings — never from the agents' summaries:
                                       committed | clean | hold_lost_alignment
 post_feedback  (tool, deterministic)  compose + POST the verdict comment (and the
-                                      commit status) over the forge REST API — no LLM
+                                      commit status) over the forge REST API — no LLM;
+                                      stamps the change identity, and repins a green
+                                      verdict onto a head that moved by a pure rebase
 feedback_health(tool, deterministic)  anti-façade check that the comment/gate landed
 arm_automerge  (tool, deterministic)  opt-in; arm auto-merge, or merge the audited sha
 done
 ```
 
 A short or malformed commit report cannot certify an alignment: `commit_probe`
-reads Git with repository-redirection variables removed. It accepts only the
-actual workspace HEAD as a strict descendant of the audited revision; the
-published verdict and auto-merge pin use that full id. A failed proof counts as
+reads Git with repository-redirection variables removed. It takes the candidate
+from the workspace HEAD, accepts it only as a strict descendant of the audited
+revision that `origin`'s branch holds (`git ls-remote`, the forge token in git's
+environment), and a non-empty report must name that same commit; the published
+verdict and auto-merge pin use that full id. A failed proof counts as
 no commit, preserving the existing lost-alignment decision. A refusal can
 disarm or dequeue only while the PR head still matches this run's revision;
 a stale run leaves a newer revision's commitment in place. Forge takedowns
@@ -81,9 +91,10 @@ still a race the forge API cannot close here.
 
 Code is committed **only** when the audit verdict is `safe` **and** the
 deterministic verify gate is green; a not-safe bump or a red build
-short-circuits to a hold comment. The seven verdicts are `hold_security`,
+short-circuits to a hold comment. The eight verdicts are `hold_security`,
 `needs_decision`, `hold_unstable`, `hold_lost_alignment`,
-`hold_delivery_permission`, `committed`, `clean`. The last hold is also typed on
+`hold_delivery_permission`, `committed`, `clean`, `carried` — the last three
+green. The last hold is also typed on
 the run (`FORGE_PERMISSION_DENIED`, the named `delivery_permission_denied` fail
 node) once the comment, the gate and `arm_automerge` have run. It needs an
 ANSWERED refusal — the preflight's verdict, or the forge API's scope list — and
@@ -92,7 +103,7 @@ does not hold — approve the delivery permissions, refresh its token, relaunch;
 classic token short of a scope — reissue it as the reason names, relaunch.
 
 A question **nobody answered** is a different refusal and reaches none of those
-seven: any shape of no-response — a refused or dropped connection, a timeout, a
+eight: any shape of no-response — a refused or dropped connection, a timeout, a
 status the endpoint never answers verdicts with, a body short, over-long,
 unparseable or missing the verdict fields — is asked once more after a pause and
 then ends the run `FORGE_PREFLIGHT_UNAVAILABLE` (the `delivery_preflight_unavailable`
@@ -115,6 +126,77 @@ quoting this run's reason and its cure
 An operator reads a red `<gate_context>` saying `review died (…)` — iterion's
 own lane closing a claim it opened, never a statement about the dependency PR
 author's credential.
+
+## Gate continuity — a rebase keeps its gate, with no LLM call
+
+A synchronize launch (the integration's `review_on_sync`) first runs
+`continuity`, which reads and never writes. It computes the head's **change
+identity** — contract v1: the `git patch-id --verbatim` of
+`merge-base(base_ref, head)..head`, every diff knob pinned on the command line
+(`--no-renames --full-index --unified=3 --diff-algorithm=myers -O/dev/null`, no
+external diff or textconv, system and global config cut off), folded with the
+`base_ref` name. A rebase that leaves the hunks and their three context lines
+alone keeps it; a conflict always touches one of them, so it changes it.
+`--stable` is not used: it strips whitespace and reads a re-indented YAML block
+as the same change. A git older than 2.39 (no `--verbatim`), no merge-base, or
+a degraded `prepare` has no identity, and the run takes the full audit.
+
+The fact travels **with the gate**, never from run artifacts or "the latest
+comment". `post_feedback` ends the status note with ` · pid1:<id>` (within
+GitHub's 140 characters on every verdict) and writes the review's **last line**
+as `<!-- vetty-gate/v1 sha=… id=… verdict=… origin=… origin_at=… -->`; the
+opener is defused wherever an agent-written section carries it. `continuity`
+reads the pull request, this App's reviews and the forge's combined status on
+every sha a marker names, and decides by predicates over sets:
+
+- **any** verdict on the same change that is not green → full audit (unanimity
+  veto — it covers the hold whose gate was refused for a moved head);
+- this head carries an eligible green → `already_gated`: `continuity_standby`
+  hands `arm_automerge` the head, which renews the arming pinned to it, and
+  nothing is published;
+- another head carries an eligible green whose ORIGINAL audit is younger than
+  `carry_max_age_h` → the verdict `carried`, published on this head with the
+  origin travelling (a chain of carries never extends the age);
+- the forge head is no longer the one `prepare` read → done (that head has its
+  own delivery); anything else → the full audit.
+
+Eligible means this App's review names the sha and the id, and the forge's one
+status for the context on that sha is green, ends with the same stamp and links
+that review. GitHub-only; a history not read whole, or any read that fails, is
+the full audit, said so in the reason. Neither the carry nor the standby path
+holds an LLM node.
+
+`carried` certifies the supply-chain audit and alignment of an **identical
+change**, not a build of this tree: its note says *this base is built by the
+repo's CI*, and the build on the new base is owed by the repository's required
+checks, which run on every head. What it does not cover: a semantic break
+between the change and the new base that CI does not exercise, and an advisory
+published after the original audit (bounded by `carry_max_age_h`). Patch-ids
+ignore line numbers — that is what lets a rebase pass — so a hunk re-applied
+elsewhere with the same three context lines is the same change.
+
+`post_feedback` also **repins**: when a green audit finishes after a rebase
+moved the head, and the new head is identity-equal against the base's current
+tip (fetched with the token in git's environment), the verdict is published
+there as `carried`, its origin the commit actually audited. A hold is never
+moved, and any other new head is published to as before — and refused by the
+server for the moved head. `arm_automerge` does not arm on a repin (the gate
+and the audited head disagree); the new head's own synchronize run finds it
+already gated and arms it.
+
+The `/vetty` command pins `continuity: "false"`, so a human gesture always buys
+a full audit; an operator pin of `continuity` in the integration's
+`launch_vars` wins on both lanes.
+
+**Auto-merge on UNSTABLE.** GitHub refuses to arm a pull request whose required
+checks all pass while another check fails or still runs (`UNSTABLE`), as it
+refuses `CLEAN`. A refused arming is classified by re-reading the pull request:
+`CLEAN` merges pinned as before; `UNSTABLE` reads the check rollup with each
+context's `isRequired` — a required context not passing, or a rollup not read
+whole, merges nothing; otherwise `automerge_on_unstable` decides (`merge`:
+pinned now, what an earlier arming would have done; `wait`: only once the forge
+reports `CLEAN` within `automerge_settle_s`). Every head change re-arms through
+the carry and standby paths at no LLM cost.
 
 Workflow block: `entry: prepare`; budget `max_parallel_branches: 1`,
 `max_duration: "4h"`, `max_cost_usd: 25`; `sandbox.image:
@@ -140,6 +222,11 @@ overridable via `VETTY_MODEL_*` / `VETTY_EFFORT_*` env vars.
 | `gate_context` | string | `"vetty/deps"` | The status context / name in the repo's required checks; share it per repo with any co-enabled reviewer |
 | `arm_automerge` | bool | `false` | Opt-in: on a green verdict with a landed green gate, ask the forge to merge once ITS required checks pass |
 | `automerge_method` | string (enum: `squash`, `merge`, `rebase`) | `"squash"` | Merge method asked for when arming; must be one the repo allows |
+| `respect_human_arming` | bool | `true` | Preserve another actor's arming, on a refusal and on a replacement |
+| `automerge_on_unstable` | string (enum: `merge`, `wait`) | `"merge"` | On an UNSTABLE pull request whose required checks all pass: merge the audited head now, or wait for CLEAN |
+| `automerge_settle_s` | int | `600` | The bound on the `wait` policy, in seconds |
+| `continuity` | bool | `true` | Carry the gate onto a head whose change a green verdict already covers; the `/vetty` command pins it false |
+| `carry_max_age_h` | int | `72` | Age past which a green verdict is no longer carried, measured from the original audit; `0` turns carrying off |
 | `forge_publish_url` | string | `""` | Deterministic forge-publish grant, injected by the iterion server at launch; empty → direct comment, no gate |
 | `forge_publish_token` | string | `""` | Token for the publish endpoint above (server-injected) |
 | `forge_delivery_preflight_url` | string | `""` | Read-only delivery-permission proof endpoint (server-injected on the same launch); empty → a workflow-touching alignment is refused rather than pushed |
@@ -170,7 +257,13 @@ Declared invocations (`manifest.yaml`):
 
 - **forge**, mode `direct` — `pull_request` on `opened` / `reopened`.
 - **command**, mode `direct` — `/vetty` in a PR note (`scope: pr`,
-  `disambiguator: when_args_empty`) re-runs the guard.
+  `disambiguator: when_args_empty`) re-runs the guard, with
+  `context_vars: {continuity: "false"}`: always a full audit.
+
+The forge lane's `[opened, reopened]` is recorded, not enforced
+(`pkg/webhooks/types.go`): a push reaches Vetty through the integration's
+`review_on_sync`, which is what lets `continuity` carry the gate across a
+rebase. Enforcing that list as written would silence the synchronize lane.
 
 The manifest's `forge:` block drives the studio Integrations auto-provisioner:
 webhook events `pull_request` + `pull_request_comment`; token scopes
