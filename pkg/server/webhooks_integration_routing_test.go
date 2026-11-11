@@ -6,10 +6,12 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/botsource"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/identity"
 	"github.com/SocialGouv/iterion/pkg/llmroute"
@@ -206,5 +208,54 @@ func TestTrustedVarNames_OnlyTheOperatorLayerNarrowsTheGate(t *testing.T) {
 		if got[name] {
 			t.Errorf("payload-derived %q is trusted — a routing field templated from it would hand the harness, model and credential choice to whoever wrote the delivery", name)
 		}
+	}
+}
+
+// A team fork keeps its catalog bot's manifest name under its own slug
+// (review-pr-pool serving `name: review-pr`): the integration's cells reach
+// it by either spelling, through the public webhook entry onto the queue
+// message, and a cell for another bot never does.
+func TestWebhookLane_ATeamForkIsReachedByItsManifestName(t *testing.T) {
+	for _, tc := range []struct{ name, selector string }{
+		{"manifest name", "review-pr/agent"},
+		{"slug", "review-pr-pool/agent"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newWebhookTestServer(t)
+			s.botSources = botsource.NewMemoryStore()
+			if _, err := s.botSources.Create(store.WithTenant(context.Background(), "t1"), botsource.BotSource{
+				TenantID: "t1", Slug: "review-pr-pool", Origin: "forked:review-pr",
+				Files: map[string]string{botsource.MainBotFile: integrationProbeBot, "manifest.yaml": "name: review-pr\nschema_version: 1\n"},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			rs, err := store.New(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			capture := &routingSpecCapture{}
+			s.runs = newTestRunviewService(t, "", runview.WithStore(rs), runview.WithLaunchPublisher(capture))
+			s.cfg.Store = fakeActiveStore{RunStore: rs}
+			cfg := webhooks.Config{
+				ID: "gnw", TenantID: "t1", Provider: webhooks.ProviderGeneric, Enabled: true,
+				BotIDs: []string{"review-pr-pool"},
+				Routing: &llmroute.Policy{Overrides: []llmroute.Override{
+					{Selector: tc.selector, Backend: "claw", Provider: "openai_compatible", Model: "openai_compatible/team-gateway"},
+					{Selector: "revi-converse/agent", Model: "openai_compatible/other-bot"},
+				}},
+			}
+			w := httptest.NewRecorder()
+			s.handleGenericWebhook(w, genReq(gitlabCtx(cfg), `{"bot":"review-pr-pool","vars":{},"idempotency_key":"evt-fork","repo_url":"https://example.com/x.git","repo_ref":"main"}`))
+			if w.Code != http.StatusAccepted {
+				t.Fatalf("the delivery did not launch: code=%d body=%s", w.Code, w.Body.String())
+			}
+			capture.mu.Lock()
+			spec := capture.spec
+			capture.mu.Unlock()
+			want := []runview.ModelOverrideEntry{{Selector: "agent", Backend: "claw", Provider: "openai_compatible", Model: "openai_compatible/team-gateway"}}
+			if !reflect.DeepEqual(spec.ModelOverrides, want) {
+				t.Fatalf("queue message of %q carries %+v, want the cell scoped to %q alone", spec.BotID, spec.ModelOverrides, tc.selector)
+			}
+		})
 	}
 }

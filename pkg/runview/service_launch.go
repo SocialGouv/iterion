@@ -19,6 +19,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/dsl/workflowfile"
 	gitlib "github.com/SocialGouv/iterion/pkg/git"
+	"github.com/SocialGouv/iterion/pkg/llmroute"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/platformcfg"
 	"github.com/SocialGouv/iterion/pkg/reviewtopology"
@@ -489,12 +490,23 @@ func (s *Service) hookEventObservers(extra []func(store.Event)) []func(store.Eve
 // cannot, and an entry that skipped the fold would show the operator a
 // preview of a launch shape that is not the launch's.
 //
+// The launch's own rows are judged by the selector grammar first
+// (llmroute.ValidateLaunchRow): a row with a bot dimension, or pinning a
+// field its class does not carry, refuses the launch rather than folding
+// into a pin nothing honours.
+//
 // The warnings are the policy cells written for the launch's bot by name
 // that reach nothing in it (ADR-132 §2's zero-match warning): the launch
 // paths log each once per process (logZeroMatchOnce), the preview shows
 // them every time.
 func foldAndScreen(wf *ir.Workflow, spec *LaunchSpec) ([]string, error) {
-	sourced := foldSourcedOverrides(spec.ModelOverrides, spec.LLMRoutePolicy, spec.BotID)
+	for _, r := range spec.ModelOverrides {
+		if err := llmroute.ValidateLaunchRow(r.Selector, r.Backend, r.Provider, r.Effort); err != nil {
+			return nil, fmt.Errorf("runview: model_overrides: %w", err)
+		}
+	}
+	bot := launchBotIdentity(spec)
+	sourced := foldSourcedOverrides(spec.ModelOverrides, spec.LLMRoutePolicy, bot)
 	spec.ModelOverrides = plainModelOverrideEntries(sourced)
 	if findings := composedPairFindings(wf, sourced); len(findings) > 0 {
 		f := findings[0]
@@ -508,7 +520,7 @@ func foldAndScreen(wf *ir.Workflow, spec *LaunchSpec) ([]string, error) {
 	if err := ValidateModelOverridePermissions(wf, toModelOverrides(spec.ModelOverrides), spec.Permission); err != nil {
 		return nil, err
 	}
-	return zeroMatchWarnings(wf, spec.LLMRoutePolicy, spec.BotID), nil
+	return zeroMatchWarnings(wf, spec.LLMRoutePolicy, bot), nil
 }
 
 // startInProcess compiles + builds + spawns a run in this process. It is

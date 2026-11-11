@@ -12,6 +12,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/llmroute"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/platformcfg"
+	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/trigger"
 )
@@ -479,3 +480,65 @@ func TestResolveRunLLMRoutePolicy_ProjectsOverridesAndProviders(t *testing.T) {
 		t.Fatalf("providers provenance = %q, want webhook", got.Sources[llmroute.FieldProviders])
 	}
 }
+
+// The integration's cell for its bot beats the team's every-bot `*/` cell on
+// the same route, read the way dispatch reads the folded list (ForRoute):
+// the bot's name outranks `*/` whatever the levels, and of two `*/`-ranked
+// cells the one the nearer level wrote folds.
+func TestResolveRunLLMRoutePolicy_AnIntegrationCellBeatsTheTeamsStarCell(t *testing.T) {
+	s := newOrgTestServer(t)
+	if _, err := s.authStore().CreateTeam(context.Background(), identity.Team{
+		ID: "team1", Name: "team1", Slug: "team1", CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("seed team: %v", err)
+	}
+	factory, _ := routingPolicyStores()
+	s.routingPolicyStoreFor = factory
+	putRoutingPolicyRecord(t, factory(platformcfg.TeamRoutingPolicyID("team1")), &platformcfg.RoutingPolicyRecord{
+		Policy: &llmroute.Policy{Overrides: []llmroute.Override{{Selector: "*/converge#glm", Model: "openai_compatible/TEAM"}}},
+	})
+	got, err := s.resolveRunLLMRoutePolicy(context.Background(), "team1", "review-pr", llmroute.Layer{
+		Source: llmroute.SourceWebhook,
+		Policy: llmroute.Policy{Overrides: []llmroute.Override{{Selector: "review-pr/converge#glm", Model: "openai_compatible/BINDING"}}},
+	})
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	folded := runview.EffectiveModelOverrides(nil, got, launchBotIdentityFor("review-pr"))
+	rows := make([]store.RunModelOverride, 0, len(folded))
+	for _, e := range folded {
+		rows = append(rows, store.RunModelOverride{Selector: e.Selector, Backend: e.Backend, Model: e.Model, Provider: e.Provider, Effort: e.Effort})
+	}
+	if m := runview.ModelOverridesFromRun(rows).ForRoute("converge", 0, "glm").Model; m != "openai_compatible/BINDING" {
+		t.Fatalf("converge#glm resolves %q, want the integration's cell (folded %+v, sources %v)", m, folded, got.Sources)
+	}
+}
+
+// The fold ranks a cell by the level its provenance names
+// (llmroute.SourceRank), so the layers a launch resolves must stand in that
+// order: a layer whose label has no rank, or one ranked above the layer
+// before it, refuses the launch instead of folding on a rank that lies.
+func TestResolveRunLLMRoutePolicy_RefusesLayersOutOfRankOrder(t *testing.T) {
+	s := newOrgTestServer(t)
+	for _, tc := range []struct {
+		name   string
+		higher []llmroute.Layer
+	}{
+		{"an unranked label", []llmroute.Layer{{Source: "binding"}}},
+		{"the run layer below the webhook's", []llmroute.Layer{{Source: llmroute.SourceWebhook}, {Source: llmroute.SourceRun, Launcher: true}}},
+		{"two binding layers", []llmroute.Layer{{Source: llmroute.SourceWebhook}, {Source: llmroute.SourceSchedule}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := s.resolveRunLLMRoutePolicy(context.Background(), "", "", tc.higher...); err == nil || !strings.Contains(err.Error(), "rank") {
+				t.Fatalf("resolve = %v, want a refusal naming the rank order", err)
+			}
+		})
+	}
+	if _, err := s.resolveRunLLMRoutePolicy(context.Background(), "", "", llmroute.Layer{Source: llmroute.SourceRun, Launcher: true}, llmroute.Layer{Source: llmroute.SourceWebhook}); err != nil {
+		t.Fatalf("run then webhook is the rank order, got %v", err)
+	}
+}
+
+// launchBotIdentityFor is the identity a launch of a catalogue bot folds
+// under: its id is its manifest name.
+func launchBotIdentityFor(id string) llmroute.BotIdentity { return llmroute.BotIdentity{ID: id} }

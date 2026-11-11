@@ -188,6 +188,7 @@ func (s *Server) handleCredentialPreview(w http.ResponseWriter, r *http.Request)
 	defer lb.Cleanup()
 	spec.Context.BotID = lb.BotID
 	spec.Launch.BotID = lb.BotID
+	spec.Launch.BotManifestName = lb.manifestName()
 	spec.Launch.FilePath = lb.Path
 	spec.Launch.Source = lb.Source
 	spec.Launch.BundleDir = lb.BundleDir

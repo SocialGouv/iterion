@@ -261,7 +261,7 @@ func reviGatewayPolicy(t *testing.T, source string) *store.RunLLMRoutePolicy {
 // credential walk reads it once a team key holds the gateway slot.
 func reviGatewayView(t *testing.T, bot string, wf *ir.Workflow, pol *store.RunLLMRoutePolicy) model.RouteView {
 	t.Helper()
-	view := model.RouteViewForLaunch(wf, buildModelOverrides(runview.EffectiveModelOverrides(nil, pol, bot)), nil, map[string]string(nil), nil)
+	view := model.RouteViewForLaunch(wf, buildModelOverrides(runview.EffectiveModelOverrides(nil, pol, llmroute.BotIdentity{ID: bot})), nil, map[string]string(nil), nil)
 	view.GatewayKeyFunded = true
 	return view
 }
@@ -346,7 +346,7 @@ func TestReviShippedBots_TheTeamGatewayKeySealsAndStampsTheBoundary(t *testing.T
 				BundleDir:      dir,
 				BotID:          bot,
 				LLMRoutePolicy: pol,
-				ModelOverrides: runview.EffectiveModelOverrides(nil, pol, bot),
+				ModelOverrides: runview.EffectiveModelOverrides(nil, pol, llmroute.BotIdentity{ID: bot}),
 			}
 			ctx := store.WithIdentity(context.Background(), "team1", "webhook:cfg-1")
 			runID := "run-revi-cells-" + bot
@@ -386,5 +386,51 @@ func TestReviShippedBots_TheTeamGatewayKeySealsAndStampsTheBoundary(t *testing.T
 				t.Errorf("wire carries %d rows, want this bot's %d cells: %+v", len(msg.ModelOverrides), want, msg.ModelOverrides)
 			}
 		})
+	}
+}
+
+// The activation block at the integration level, and the team's record
+// writing a team-wide `*/converge` default on a vendor model: the
+// integration's cell for review-pr is the more specific one (the bot's
+// name outranks `*/`), so converge stays on the gateway — at the walk that
+// seals the run and at the call site dispatch reads.
+func TestReviShippedBots_AnIntegrationPinBeatsATeamWideStarDefault(t *testing.T) {
+	var block llmroute.Policy
+	if err := json.Unmarshal([]byte(reviGatewayCellsJSON), &block); err != nil {
+		t.Fatal(err)
+	}
+	team := llmroute.Policy{Overrides: []llmroute.Override{{Selector: "*/converge", Backend: "claw", Model: "anthropic/claude-sonnet-5"}}}
+	for _, p := range []llmroute.Policy{block, team} {
+		if err := llmroute.Validate(p); err != nil {
+			t.Fatalf("validate: %v", err)
+		}
+	}
+	resolved, sources := llmroute.Resolve(
+		llmroute.Layer{Source: llmroute.SourceWebhook, Policy: block},
+		llmroute.Layer{Source: llmroute.SourceTeam, Policy: team},
+	)
+	pol := &store.RunLLMRoutePolicy{Sources: sources}
+	for _, o := range resolved.Overrides {
+		pol.Overrides = append(pol.Overrides, store.RunLLMRouteOverride{Selector: o.Selector, Backend: o.Backend, Model: o.Model, Provider: o.Provider, Effort: o.Effort})
+	}
+	freezeCatalogBotDials(t, "review-pr")
+	wf := compileShippedBot(t, "review-pr")
+	view := reviGatewayView(t, "review-pr", wf, pol)
+	walk := model.EffectiveProviders(view, walkProviderSet)
+	if !slices.Equal(walk.Providers, []string{llmroute.ProviderOpenAICompatible}) {
+		t.Errorf("walk providers = %v, want the gateway alone", walk.Providers)
+	}
+	found := false
+	for _, s := range model.CallSites(view, nil) {
+		if s.ID != "converge" {
+			continue
+		}
+		found = true
+		if s.Model != reviGatewayModelID || s.Backend != "claw" {
+			t.Errorf("converge sends %q on %q, want %q on claw — the team's */converge default beat the integration's review-pr/converge pin", s.Model, s.Backend, reviGatewayModelID)
+		}
+	}
+	if !found {
+		t.Fatal("no converge call site — the fixture no longer names the node this witness pins")
 	}
 }

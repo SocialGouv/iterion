@@ -392,3 +392,49 @@ func TestPatchForgeIntegration_RoutingIsNotItsSurface(t *testing.T) {
 		t.Fatalf("the sync toggle rewrote the routing block (now %+v) — a surface it does not own and a gate it does not pass", integ.Routing)
 	}
 }
+
+// The write screen judges the bots the integration launches as they
+// launch: a team fork answers to its slug AND to its manifest name, a cell
+// scoped to a bot that neither spelling reaches is warned — naming the
+// enabled bots — and a cell naming the fork's manifest name whose target
+// matches nothing in it is a zero-match typo.
+func TestRepoBotsScreen_ACellReachingNoEnabledBotIsWarned(t *testing.T) {
+	s := newForgeTestServer(t)
+	s.botSources = botsource.NewMemoryStore()
+	if _, err := s.botSources.Create(store.WithTenant(context.Background(), "t1"), botsource.BotSource{
+		TenantID: "t1", Slug: "review-pr-pool", Origin: "forked:review-pr",
+		Files: map[string]string{botsource.MainBotFile: screenProbeBot, "manifest.yaml": "name: review-pr\nschema_version: 1\n"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	block := &llmroute.Policy{Overrides: []llmroute.Override{
+		{Selector: "revi-converse/converse_agent", Model: "openai_compatible/x"},
+		{Selector: "review-pr/work", Model: "openai_compatible/x"},
+		{Selector: "review-pr-pool/work", Model: "openai_compatible/x"},
+		{Selector: "review-pr/wrok", Model: "openai_compatible/x"},
+		{Selector: "rev*/work", Model: "openai_compatible/x"},
+		{Selector: "*/work", Model: "openai_compatible/x"},
+	}}
+	if err := llmroute.Validate(*block); err != nil {
+		t.Fatal(err)
+	}
+	warnings := s.routingBlastRadiusWarnings(context.Background(), "t1", []string{"review-pr-pool"}, block)
+	joined := strings.Join(warnings, "\n")
+	var reachNone []string
+	for _, w := range warnings {
+		if strings.Contains(w, "reaches none of this integration's enabled bots") {
+			reachNone = append(reachNone, w)
+		}
+	}
+	if len(reachNone) != 1 || !strings.Contains(reachNone[0], `"revi-converse/converse_agent"`) || !strings.Contains(reachNone[0], `"review-pr-pool"`) {
+		t.Fatalf("reach-none warnings = %v, want one for revi-converse/converse_agent naming the enabled review-pr-pool (all: %v)", reachNone, warnings)
+	}
+	if !strings.Contains(joined, `"review-pr/wrok"`) || !strings.Contains(joined, "matches no node") {
+		t.Fatalf("warnings = %v, want the zero-match typo review-pr/wrok, a cell naming the fork's manifest name", warnings)
+	}
+	for _, quiet := range []string{`"review-pr/work"`, `"review-pr-pool/work"`, `"rev*/work"`, `"*/work"`} {
+		if strings.Contains(joined, quiet) {
+			t.Errorf("warnings name %s, which reaches the fork's work node: %v", quiet, warnings)
+		}
+	}
+}

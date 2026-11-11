@@ -366,3 +366,29 @@ func TestCredentialPreviewWebhookRefusesCallerVarsAndWarnsOnUnknownConfigVars(t 
 		t.Fatalf("warnings = %v, want the unknown-input ride-on naming the key", out.Warnings)
 	}
 }
+
+// The preview folds the cells a team fork's launch folds: the served
+// manifest's name rides the preview's launch shape beside the slug, so a
+// cell naming the catalogue bot the fork keeps the name of reaches it.
+func TestCredentialPreview_ATeamForkFoldsItsManifestNameCells(t *testing.T) {
+	s, rs := newTeamForkServer(t, &tierPublisher{})
+	row, err := s.botSources.GetBySlug(store.WithTenant(t.Context(), "t1"), "t1", "probe")
+	if err != nil {
+		t.Fatal(err)
+	}
+	row.Files[botsource.MainBotFile] = "agent TEAMFORK:\n  backend: claw\n  model: \"claude-opus-5\"\n\nworkflow tier_probe:\n  worktree: none\n  entry: TEAMFORK\n  TEAMFORK -> done\n"
+	row.Files["manifest.yaml"] = "name: catalog-probe\nschema_version: 1\n"
+	if _, err := s.botSources.Update(store.WithTenant(t.Context(), "t1"), row); err != nil {
+		t.Fatal(err)
+	}
+	pub := &credentialPreviewPublisher{}
+	s.runs = newTestRunviewService(t, "", runview.WithStore(rs), runview.WithLaunchPublisher(pub))
+	w := callCredentialPreview(s, `{"source":{"kind":"personal"},"bot_id":"probe","llm_routing":{"overrides":[{"selector":"catalog-probe/TEAMFORK","model":"openai_compatible/x"}]}}`, auth.Identity{UserID: "human", TeamID: "t1", Role: identity.RoleMember})
+	if w.Code != http.StatusOK {
+		t.Fatalf("preview = %d %s", w.Code, w.Body.String())
+	}
+	want := []runview.ModelOverrideEntry{{Selector: "TEAMFORK", Model: "openai_compatible/x"}}
+	if got := pub.preview.Launch.ModelOverrides; !reflect.DeepEqual(got, want) {
+		t.Fatalf("preview folded %+v, want the cell naming the fork's manifest name", got)
+	}
+}

@@ -247,7 +247,7 @@ func (f *reviAcceptanceFixture) launch(t *testing.T, runID, src string, pol *sto
 		Source:         src,
 		BotID:          "review-pr",
 		LLMRoutePolicy: pol,
-		ModelOverrides: runview.EffectiveModelOverrides(nil, pol, ""),
+		ModelOverrides: runview.EffectiveModelOverrides(nil, pol, llmroute.BotIdentity{}),
 	}
 	ctx := store.WithIdentity(context.Background(), "team1", "webhook:cfg-1")
 	_, err := f.pub.SubmitLaunch(ctx, runID, spec, wf, &runview.CompiledSource{Hash: "hash"})
@@ -520,7 +520,7 @@ func TestReviIntegrationAcceptance_TheShippedSlotsAreRefused(t *testing.T) {
 	// keep the `anthropic` their surviving hint names, and both gpt slots
 	// are unreadable. The launch can only name the first.
 	wf := compileTestSource(t, reviShippedBot)
-	view := model.RouteViewForLaunch(wf, buildModelOverrides(runview.EffectiveModelOverrides(nil, pol, "")), nil, map[string]string(nil), nil)
+	view := model.RouteViewForLaunch(wf, buildModelOverrides(runview.EffectiveModelOverrides(nil, pol, llmroute.BotIdentity{})), nil, map[string]string(nil), nil)
 	view.AllowedProviders = policyProviders(pol)
 	walk := model.EffectiveProviders(view, walkProviderSet)
 	if walk.OnlyEnvFunded() {

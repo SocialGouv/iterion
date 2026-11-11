@@ -455,10 +455,26 @@ type overrideCell struct {
 }
 
 var overrideCells = []overrideCell{
-	{"backend", func(o Override) string { return o.Backend }, func(o *Override, v string) { o.Backend = v }},
-	{"model", func(o Override) string { return o.Model }, func(o *Override, v string) { o.Model = v }},
-	{"provider", func(o Override) string { return o.Provider }, func(o *Override, v string) { o.Provider = v }},
-	{"effort", func(o Override) string { return o.Effort }, func(o *Override, v string) { o.Effort = v }},
+	{OverrideFieldBackend, func(o Override) string { return o.Backend }, func(o *Override, v string) { o.Backend = v }},
+	{OverrideFieldModel, func(o Override) string { return o.Model }, func(o *Override, v string) { o.Model = v }},
+	{OverrideFieldProvider, func(o Override) string { return o.Provider }, func(o *Override, v string) { o.Provider = v }},
+	{OverrideFieldEffort, func(o Override) string { return o.Effort }, func(o *Override, v string) { o.Effort = v }},
+}
+
+// The fields of an override cell, as its provenance key names them
+// (OverrideCellKey).
+const (
+	OverrideFieldBackend  = "backend"
+	OverrideFieldModel    = "model"
+	OverrideFieldProvider = "provider"
+	OverrideFieldEffort   = "effort"
+)
+
+// OverrideCellKey is the provenance key Resolve records an override cell's
+// level under: overrides.<selector>.<field>, the selector as the level
+// wrote it.
+func OverrideCellKey(selector, field string) string {
+	return FieldOverrides + "." + selector + "." + field
 }
 
 // providerHintTokens splits a provider cell into its tokens, keeping the
@@ -525,22 +541,8 @@ func validateOverride(o Override) error {
 			return fmt.Errorf("selector %q names no bot — a route-scoped or supervisor selector carries its bot (<bot>/%s): node ids and supervisor names collide across bots, so a cell without one would re-pin every bot's same-named site (write \"*/%s\" to mean every bot)", sel, sel, sel)
 		}
 	}
-	switch parsed.Class {
-	case SelectorRoute:
-		// The route-field guard: a `fallbacks:` route carries backend,
-		// model and provider; its effort is the node's. A pin on a field
-		// the route lacks is a silent no-op.
-		if o.Effort != "" {
-			return fmt.Errorf("selector %q pins effort %q on a fallbacks: route — a route runs at its node's reasoning effort and carries none of its own, so the pin would do nothing; pin the node instead", sel, o.Effort)
-		}
-	case SelectorSupervisor:
-		// A supervisor declares a model and nothing else: its evaluator
-		// runs in process on claw and routes on the spec's own prefix.
-		for _, f := range []struct{ name, v string }{{"backend", o.Backend}, {"provider", o.Provider}, {"effort", o.Effort}} {
-			if f.v != "" {
-				return fmt.Errorf("selector %q pins %s %q on a supervisor — a supervisor names a model only (its evaluator runs in process on claw and routes on the spec's prefix), so the pin would do nothing", sel, f.name, f.v)
-			}
-		}
+	if err := classFieldRule(parsed, sel, o.Backend, o.Provider, o.Effort); err != nil {
+		return err
 	}
 	pinned := 0
 	for _, c := range overrideCells {
@@ -815,6 +817,34 @@ const (
 	SourceCeiling  = "platform_ceiling"
 )
 
+// sourceRanks places the labels of the layers a launch resolves on the
+// precedence line resolveRunLLMRoutePolicy stacks them in, nearest the
+// launch first: the run's own layer, a binding (webhook, schedule,
+// trigger), the bot's manifest, the team, the org, the platform record,
+// the env dials.
+var sourceRanks = map[string]int{
+	SourceRun:      0,
+	SourceWebhook:  1,
+	SourceSchedule: 1,
+	SourceTrigger:  1,
+	SourceBot:      2,
+	SourceTeam:     3,
+	SourceOrg:      4,
+	SourcePlatform: 5,
+	SourceEnv:      6,
+}
+
+// SourceRank reports a layer label's place on the precedence line — 0 is
+// the run's own layer, a higher rank a level farther from the launch. ok is
+// false for a label no launch layer carries ("default", a lock's stamp, an
+// unknown word). The launch fold reads a cell's rank from its provenance
+// (OverrideCellKey) to decide between two cells that reach one site, so the
+// launch refuses a layer list out of this order.
+func SourceRank(label string) (rank int, ok bool) {
+	rank, ok = sourceRanks[label]
+	return rank, ok
+}
+
 // Resolve overlays layers FIELD BY FIELD, highest priority first, and
 // reports which layer won each field.
 //
@@ -1022,7 +1052,7 @@ func Resolve(layers ...Layer) (Policy, map[string]string) {
 			out.Overrides = append(out.Overrides, ov)
 		}
 		for k, s := range cellSrc {
-			src[FieldOverrides+"."+k.selector+"."+k.field] = s
+			src[OverrideCellKey(k.selector, k.field)] = s
 		}
 	}
 	if _, locked := lockedFrom[FieldOverrides]; locked && ovCells == 0 {

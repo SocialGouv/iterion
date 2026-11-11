@@ -285,10 +285,17 @@ type LaunchSpec struct {
 	// the inbound webhooks, the repo-targeted POST /api/runs, and the
 	// board dispatcher (#2371, D33); empty otherwise.
 	ProjectPath string
-	// BotID is the bot bundle name (e.g. "review-pr") this run launches.
-	// The cloud publisher uses it to resolve bot-secret bindings during
-	// credential sealing. Empty for plain .bot launches.
+	// BotID is the id of the bot this run launches: a catalogue bot's
+	// name ("review-pr"), a team or platform bot's slug
+	// ("review-pr-pool"). The cloud publisher uses it to resolve
+	// bot-secret bindings during credential sealing; memory, pledges and
+	// the BYOK audience key on it too. Empty for plain .bot launches.
 	BotID string
+	// BotManifestName is the manifest name of the bundle the launch serves
+	// — the second spelling the routing cells' bot dimension reaches the
+	// bot by (a team fork keeps its catalogue bot's name under its own
+	// slug). Never an identity key: the launch fold alone reads it.
+	BotManifestName string
 	// BundleDir, when set, is the launch-materialized directory of a resolved
 	// cloud bundle (catalog, team bot or platform override): compile merges
 	// its prompts/ into the AST exactly like a baked bundle's, so they

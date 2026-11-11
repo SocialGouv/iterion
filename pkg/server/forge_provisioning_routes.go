@@ -912,17 +912,26 @@ func (s *Server) writeProvisionResult(w http.ResponseWriter, r *http.Request, te
 // enforcement: a bot enabled after the write is never screened here, and
 // a more specific cell below the binding (the bot's manifest, the run
 // layer) can still win where this screen saw a crossing.
+//
+// Each bot is screened as its launch folds it — its resolved id and the
+// manifest name of the bundle it serves — and a cell scoped to a bot that
+// neither spelling of any enabled bot reaches is warned too: no launch of
+// this integration folds it.
 func (s *Server) routingBlastRadiusWarnings(ctx context.Context, teamID string, botIDs []string, block *llmroute.Policy) []string {
 	if block == nil || len(block.Overrides) == 0 {
 		return nil
 	}
-	snapshot := &store.RunLLMRoutePolicy{}
-	for _, o := range block.Overrides {
+	// The snapshot built the way a launch builds it (llmroute.Resolve), so
+	// the screen folds the cells the launch would fold.
+	resolved, sources := llmroute.Resolve(llmroute.Layer{Source: llmroute.SourceWebhook, Policy: *block})
+	snapshot := &store.RunLLMRoutePolicy{Sources: sources}
+	for _, o := range resolved.Overrides {
 		snapshot.Overrides = append(snapshot.Overrides, store.RunLLMRouteOverride{
 			Selector: o.Selector, Backend: o.Backend, Model: o.Model, Provider: o.Provider, Effort: o.Effort,
 		})
 	}
 	var warnings []string
+	bots := make([]llmroute.BotIdentity, 0, len(botIDs))
 	for _, botID := range botIDs {
 		lb, err := s.resolveBotSource(ctx, teamID, botID)
 		if err != nil {
@@ -930,14 +939,17 @@ func (s *Server) routingBlastRadiusWarnings(ctx context.Context, teamID string, 
 			// answer a silent all-clear: the launch refusal is the
 			// enforcement, and this warning tells the operator which bot
 			// the screen could not judge.
+			bots = append(bots, llmroute.BotIdentity{ID: botID})
 			warnings = append(warnings, fmt.Sprintf("routing: bot %q could not be resolved for the blast-radius screen (%v); its launches are screened at launch time only", botID, err))
 			continue
 		}
+		bot := lb.botIdentity()
+		bots = append(bots, bot)
 		// The screen owns what resolution materialized, exactly like the
 		// launch lanes that defer lb.Cleanup(): a stored bot's bundle lives
 		// in a temp dir, and a screen that skips the collection leaks one
 		// directory per screened bot per spoken routing write.
-		reasons, serr := runview.ScreenPolicyOverrides(lb.Path, lb.Source, lb.BundleDir, lb.BundleEntry, botID, snapshot)
+		reasons, serr := runview.ScreenPolicyOverrides(lb.Path, lb.Source, lb.BundleDir, lb.BundleEntry, bot, snapshot)
 		lb.Cleanup()
 		if serr != nil {
 			warnings = append(warnings, fmt.Sprintf("routing: bot %q could not be screened (%v); its launches are screened at launch time only", botID, serr))
@@ -947,5 +959,43 @@ func (s *Server) routingBlastRadiusWarnings(ctx context.Context, teamID string, 
 			warnings = append(warnings, fmt.Sprintf("routing: bot %q: %s", botID, reason))
 		}
 	}
-	return warnings
+	return append(warnings, unreachedBotCellWarnings(block, bots)...)
+}
+
+// unreachedBotCellWarnings names each cell of block whose bot part reaches
+// none of bots by bot id or manifest name (llmroute.Selector.MatchBot):
+// written at an integration, such a cell is folded by no launch of it — a
+// typo, a bot not enabled here, or a spelling the bot does not answer to.
+// A cell reaching every bot (no bot part, `*/`) is never one.
+func unreachedBotCellWarnings(block *llmroute.Policy, bots []llmroute.BotIdentity) []string {
+	named := make([]string, 0, len(bots))
+	for _, b := range bots {
+		if b.Name != "" {
+			named = append(named, fmt.Sprintf("%q [manifest %q]", b.ID, b.Name))
+			continue
+		}
+		named = append(named, fmt.Sprintf("%q", b.ID))
+	}
+	enabled := strings.Join(named, ", ")
+	if enabled == "" {
+		enabled = "none enabled"
+	}
+	var out []string
+	for _, o := range block.Overrides {
+		sel, err := llmroute.ParseSelector(o.Selector)
+		if err != nil || sel.MatchBot(llmroute.BotIdentity{}) == llmroute.BotMatchAll {
+			continue
+		}
+		reached := false
+		for _, b := range bots {
+			if sel.MatchBot(b) != llmroute.BotMatchNone {
+				reached = true
+				break
+			}
+		}
+		if !reached {
+			out = append(out, fmt.Sprintf("routing: override cell %q is scoped to bot %q, which reaches none of this integration's enabled bots (%s) by bot id or manifest name — no launch of this integration folds it", o.Selector, sel.Bot, enabled))
+		}
+	}
+	return out
 }

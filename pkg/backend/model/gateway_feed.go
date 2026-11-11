@@ -58,8 +58,20 @@ func RouteGatewayModelIDs(wf *ir.Workflow, overrides ModelOverrides) []string {
 		if spec, human := humanLLMModelOf(n); human {
 			add(spec)
 		}
+		// Rung 3 generates directly on the authored spec; rung 4 runs the
+		// synthetic agent `<tool>__recover`, whose model a node override
+		// reaching that id replaces, as at dispatch.
 		if spec, selfRepair, agentRung := recoveryRungsOf(n); selfRepair || agentRung {
-			add(spec)
+			if selfRepair {
+				add(spec)
+			}
+			if agentRung {
+				agentSpec := spec
+				if ov := overrides.ForNode(agentRecoveryNodeID(n.NodeID()), ir.NodeAgent); ov.Model != "" {
+					agentSpec = ov.Model
+				}
+				add(agentSpec)
+			}
 		}
 	}
 	for _, sup := range wf.Supervisors {

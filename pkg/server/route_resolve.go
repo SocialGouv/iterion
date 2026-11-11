@@ -88,6 +88,24 @@ func (s *Server) resolveRunLLMRoutePolicy(ctx context.Context, teamID, botID str
 	layers = append(layers, llmroute.Layer{Source: llmroute.SourcePlatform, Policy: platform})
 	layers = append(layers, llmroute.Layer{Source: llmroute.SourceEnv, Policy: llmroute.FromEnv()})
 
+	// The launch fold decides between two override cells that reach one
+	// site by the level each cell's provenance names (llmroute.SourceRank),
+	// so the layers stand on the precedence line in its order, one per
+	// rank: a label with no rank, or a layer at or above the rank of the
+	// one before it, would fold on a rank that does not say which layer
+	// Resolve heard first — the launch is refused instead.
+	prevRank := -1
+	for _, l := range layers {
+		rank, ok := llmroute.SourceRank(l.Source)
+		if !ok {
+			return nil, fmt.Errorf("llmroute: refusing launch: routing layer %q has no rank on the precedence line (llmroute.SourceRank)", l.Source)
+		}
+		if rank <= prevRank {
+			return nil, fmt.Errorf("llmroute: refusing launch: routing layer %q has rank %d after a layer of rank %d — the layers stand nearest the launch first, one per rank (llmroute.SourceRank)", l.Source, rank, prevRank)
+		}
+		prevRank = rank
+	}
+
 	// A layer that carries a block the fold cannot read refuses the LAUNCH,
 	// naming the level and the field. Records can carry hand-edited or
 	// rolling-deploy values no write path ever validated (the subscription

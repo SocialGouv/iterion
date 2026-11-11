@@ -65,34 +65,46 @@ func TestValidate_TheSelectorGrammar(t *testing.T) {
 	}
 }
 
-// The bot dimension reaches the bots it names: none = every bot, a name =
-// that bot, a glob = the names it matches; a launch naming no bot is reached
-// by no scoped cell. NamesBot is the exact-name half the zero-match warning
-// reads.
+// The bot dimension reaches a launch's bot by its id or by the manifest
+// name of the bundle it serves, exactly or by a glob over either; no bot
+// part and `*/` reach every bot, a launch naming none included. The match
+// ranks the reach, least specific first: every bot < glob < manifest name
+// < bot id. The comparison is exact: case and `-`/`_` count.
 func TestSelector_TheBotDimension(t *testing.T) {
+	fork := llmroute.BotIdentity{ID: "review-pr-pool", Name: "review-pr"}
 	for _, tc := range []struct {
-		sel, bot       string
-		reaches, named bool
+		sel  string
+		bot  llmroute.BotIdentity
+		want llmroute.BotMatch
 	}{
-		{"reviewer_claude", "review-pr", true, false},
-		{"reviewer_claude", "", true, false},
-		{"review-pr/reviewer_claude", "review-pr", true, true},
-		{"review-pr/reviewer_claude", "revi-converse", false, false},
-		{"review-pr/reviewer_claude", "", false, false},
-		{"revi*/x#glm", "revi-converse", true, false},
-		{"revi*/x#glm", "review-pr", true, false},
-		{"*/supervisor:pacer", "docs-refresh", true, false},
+		{"reviewer_claude", llmroute.BotIdentity{ID: "review-pr"}, llmroute.BotMatchAll},
+		{"reviewer_claude", llmroute.BotIdentity{}, llmroute.BotMatchAll},
+		{"*/reviewer_claude", llmroute.BotIdentity{}, llmroute.BotMatchAll},
+		{"*/reviewer_claude", fork, llmroute.BotMatchAll},
+		{"review-pr/reviewer_claude", llmroute.BotIdentity{ID: "review-pr"}, llmroute.BotMatchID},
+		{"review-pr/reviewer_claude", llmroute.BotIdentity{ID: "revi-converse"}, llmroute.BotMatchNone},
+		{"review-pr/reviewer_claude", llmroute.BotIdentity{}, llmroute.BotMatchNone},
+		{"review-pr/x", fork, llmroute.BotMatchName},
+		{"review-pr-pool/x", fork, llmroute.BotMatchID},
+		{"review-p?/x", fork, llmroute.BotMatchGlob},
+		{"*-pool/x", fork, llmroute.BotMatchGlob},
+		{"revi*/x#glm", llmroute.BotIdentity{ID: "revi-converse"}, llmroute.BotMatchGlob},
+		{"*/supervisor:pacer", llmroute.BotIdentity{ID: "docs-refresh"}, llmroute.BotMatchAll},
+		{"**/x", llmroute.BotIdentity{}, llmroute.BotMatchNone},
+		{"Review-PR/x", llmroute.BotIdentity{ID: "review-pr"}, llmroute.BotMatchNone},
+		{"review_pr/x", llmroute.BotIdentity{ID: "review-pr"}, llmroute.BotMatchNone},
 	} {
 		s, err := llmroute.ParseSelector(tc.sel)
 		if err != nil {
 			t.Fatalf("ParseSelector(%q): %v", tc.sel, err)
 		}
-		if got := s.ReachesBot(tc.bot); got != tc.reaches {
-			t.Errorf("%q.ReachesBot(%q) = %v, want %v", tc.sel, tc.bot, got, tc.reaches)
+		if got := s.MatchBot(tc.bot); got != tc.want {
+			t.Errorf("%q.MatchBot(%+v) = %v, want %v", tc.sel, tc.bot, got, tc.want)
 		}
-		if got := s.NamesBot(tc.bot); got != tc.named {
-			t.Errorf("%q.NamesBot(%q) = %v, want %v", tc.sel, tc.bot, got, tc.named)
-		}
+	}
+	if !(llmroute.BotMatchNone < llmroute.BotMatchAll && llmroute.BotMatchAll < llmroute.BotMatchGlob &&
+		llmroute.BotMatchGlob < llmroute.BotMatchName && llmroute.BotMatchName < llmroute.BotMatchID) {
+		t.Error("the bot matches are not ordered every bot < glob < manifest name < bot id")
 	}
 	s, _ := llmroute.ParseSelector("review-pr/reviewer_claude#glm")
 	if s.Target != "reviewer_claude#glm" || s.Class != llmroute.SelectorRoute || s.Node != "reviewer_claude" || s.Route != "glm" {
@@ -113,6 +125,34 @@ func TestIsGatewayModel_AgreesWithDispatch(t *testing.T) {
 	} {
 		if got, want := llmroute.IsGatewayModel(spec), modelroute.Parse(spec).Gateway(); got != want {
 			t.Errorf("IsGatewayModel(%q) = %v, dispatch reads %v", spec, got, want)
+		}
+	}
+}
+
+// A launch's own rows carry no bot dimension and obey the class field
+// rules a routing cell obeys; the shapes dispatch honours stay accepted.
+func TestValidateLaunchRow(t *testing.T) {
+	for _, tc := range []struct{ sel, backend, provider, effort, want string }{
+		{"review-pr/converge", "", "", "", `names bot "review-pr"`},
+		{"*/converge", "", "", "", `names bot "*"`},
+		{"converge#glm", "", "", "high", "effort"},
+		{"supervisor:pacer", "claw", "", "", "supervisor names a model only"},
+		{"supervisor:pacer", "", "anthropic", "", "supervisor names a model only"},
+		{"converge#*", "", "", "", "exactly"},
+	} {
+		if err := llmroute.ValidateLaunchRow(tc.sel, tc.backend, tc.provider, tc.effort); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("ValidateLaunchRow(%q, %q, %q, %q) = %v, want a refusal naming %q", tc.sel, tc.backend, tc.provider, tc.effort, err, tc.want)
+		}
+	}
+	for _, tc := range []struct{ sel, backend, provider, effort string }{
+		{"*", "claw", "zai", "high"},
+		{"agent", "", "", "high"},
+		{"reviewer_*", "codex", "", ""},
+		{"converge#glm", "claw", "openai_compatible", ""},
+		{"supervisor:pacer", "", "", ""},
+	} {
+		if err := llmroute.ValidateLaunchRow(tc.sel, tc.backend, tc.provider, tc.effort); err != nil {
+			t.Errorf("ValidateLaunchRow(%q, %q, %q, %q) = %v, want accepted", tc.sel, tc.backend, tc.provider, tc.effort, err)
 		}
 	}
 }

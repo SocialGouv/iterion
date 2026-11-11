@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -351,5 +352,32 @@ func TestBotScopedMemoryKeysOnTheBundleRuleNotTheTypedLabel(t *testing.T) {
 	}
 	if got := runview.ResolveBotID("", "", "standalone.bot"); got != "" {
 		t.Fatalf("ResolveBotID(\"\", \"\", \"standalone.bot\") = %q, want empty — a standalone file invents no identity", got)
+	}
+}
+
+// POST /api/runs stamps the served manifest's name beside the launched
+// slug (the studio's StampBundle-only path), so a team fork's run-level
+// cell naming the catalogue bot it forks reaches the fork's run.
+func TestRunsLaunch_ATeamForkFoldsItsManifestNameCells(t *testing.T) {
+	cap := &botidCapture{}
+	s, _, ctx := newBotidSplitServer(t, cap, "probe-bot", gateSpec{id: "t1"})
+	s.botSources = botsource.NewMemoryStore()
+	if _, err := s.botSources.Create(store.WithTenant(context.Background(), "t1"), botsource.BotSource{
+		TenantID: "t1", Slug: "probe-pool",
+		Files: map[string]string{botsource.MainBotFile: "workflow probe:\n  entry: done\n", "manifest.yaml": "name: probe-bot\nschema_version: 1\n"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rec := postLaunch(t, s, ctx, `{"bot_id":"probe-pool","llm_routing":{"overrides":[{"selector":"probe-bot/agent","model":"openai_compatible/x"}]}}`)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
+	}
+	spec := cap.only(t)
+	if spec.BotID != "probe-pool" || spec.BotManifestName != "probe-bot" {
+		t.Fatalf("spec identity = (%q, %q), want the slug and the served manifest's name", spec.BotID, spec.BotManifestName)
+	}
+	want := []runview.ModelOverrideEntry{{Selector: "agent", Model: "openai_compatible/x"}}
+	if !reflect.DeepEqual(spec.ModelOverrides, want) {
+		t.Fatalf("folded = %+v, want the cell naming the fork's manifest name", spec.ModelOverrides)
 	}
 }

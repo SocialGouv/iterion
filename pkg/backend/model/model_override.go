@@ -467,6 +467,11 @@ func splitSelectorValue(arg string) (selector, value string, err error) {
 // model or backend name (host state this process cannot enumerate), the effort
 // levels are a closed set that reaches the provider verbatim, so a typo has to
 // die at the flag rather than on the run's first node.
+//
+// The selector is judged by the grammar a routing cell obeys
+// (llmroute.ValidateLaunchRow): a flag reaches its own run, so it names no
+// bot, and it pins only a field its class carries — no --effort-for on a
+// `<node>#<route>`, no --backend on a `supervisor:<name>`.
 func ParseModelOverrides(modelFlags, backendFlags, effortFlags []string) (ModelOverrides, error) {
 	var o ModelOverrides
 	for _, m := range modelFlags {
@@ -474,11 +479,17 @@ func ParseModelOverrides(modelFlags, backendFlags, effortFlags []string) (ModelO
 		if err != nil {
 			return o, fmt.Errorf("--model: %w", err)
 		}
+		if err := llmroute.ValidateLaunchRow(sel, "", "", ""); err != nil {
+			return o, fmt.Errorf("--model: %w", err)
+		}
 		o.SetModel(sel, val)
 	}
 	for _, b := range backendFlags {
 		sel, val, err := splitSelectorValue(b)
 		if err != nil {
+			return o, fmt.Errorf("--backend: %w", err)
+		}
+		if err := llmroute.ValidateLaunchRow(sel, val, "", ""); err != nil {
 			return o, fmt.Errorf("--backend: %w", err)
 		}
 		o.SetBackend(sel, val)
@@ -491,6 +502,9 @@ func ParseModelOverrides(modelFlags, backendFlags, effortFlags []string) (ModelO
 		if !ir.ValidReasoningEfforts[val] {
 			return o, fmt.Errorf("--effort-for: %q is not a reasoning effort", val)
 		}
+		if err := llmroute.ValidateLaunchRow(sel, "", "", val); err != nil {
+			return o, fmt.Errorf("--effort-for: %w", err)
+		}
 		o.SetEffort(sel, val)
 	}
 	return o, nil
@@ -498,7 +512,8 @@ func ParseModelOverrides(modelFlags, backendFlags, effortFlags []string) (ModelO
 
 // SelectorReaches reports whether a bot-free selector — the spelling a run's
 // folded override list carries — reaches anything in wf: an LLM node's own
-// route (agent, judge, an llm-mode router) for a node selector, an authored
+// route (agent, judge, an llm-mode router) or a tool's rung-4 recovery
+// agent (forEachOverriddenNode) for a node selector, an authored
 // `fallbacks:` route for a route-scoped one, a declared supervisor for a
 // supervisor one. The zero-match warning reads it: a cell written for a bot
 // by name that reaches nothing in it is a typo nothing else would name.
@@ -515,8 +530,8 @@ func SelectorReaches(wf *ir.Workflow, selector string) bool {
 		}
 		return false
 	}
-	for id, n := range wf.Nodes {
-		if strings.Contains(selector, llmroute.SelectorRouteSeparator) {
+	if strings.Contains(selector, llmroute.SelectorRouteSeparator) {
+		for id, n := range wf.Nodes {
 			gf, ok := n.(interface{ GetFallbacks() []ir.Fallback })
 			if !ok {
 				continue
@@ -526,14 +541,30 @@ func SelectorReaches(wf *ir.Workflow, selector string) bool {
 					return true
 				}
 			}
-			continue
 		}
-		if _, ok := llmFieldsOf(n); !ok {
-			continue
+		return false
+	}
+	reached := false
+	forEachOverriddenNode(wf, func(id string, kind ir.NodeKind) {
+		if _, ok := selectorScore(selector, id, kind); ok {
+			reached = true
 		}
-		if _, ok := selectorScore(selector, id, n.NodeKind()); ok {
-			return true
+	})
+	return reached
+}
+
+// forEachOverriddenNode calls fn with the (id, kind) of every node dispatch
+// resolves a node override for (ForNode): each node with LLM fields of its
+// own, and each tool's rung-4 recovery agent `<tool>__recover` — the
+// synthetic agent dispatch runs when the tool's ladder reaches rung 4
+// (ir.ToolRecoveryAgentRung), and only then.
+func forEachOverriddenNode(wf *ir.Workflow, fn func(id string, kind ir.NodeKind)) {
+	for id, n := range wf.Nodes {
+		if _, ok := llmFieldsOf(n); ok {
+			fn(id, n.NodeKind())
+		}
+		if _, _, agentRung := recoveryRungsOf(n); agentRung {
+			fn(agentRecoveryNodeID(id), ir.NodeAgent)
 		}
 	}
-	return false
 }

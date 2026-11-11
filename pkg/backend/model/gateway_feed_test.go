@@ -149,3 +149,18 @@ func TestRouteGatewayModelIDs_ReadsThePins(t *testing.T) {
 		t.Fatalf("ids = %v, want %v", ids, want)
 	}
 }
+
+// The price feed's coarse walk names the model the rung-4 agent sends: a
+// cell re-pinning `<tool>__recover` onto a gateway route reaches it, as it
+// reaches dispatch.
+func TestRouteGatewayModelIDs_ACellReachesTheRecoveryAgent(t *testing.T) {
+	agent := &ir.RecoverySpec{MaxAgentAttempts: 1, Model: "openai/gpt-5.4-mini"}
+	wf := &ir.Workflow{Nodes: map[string]ir.Node{"t": recoveryToolWith("t", ir.PolicyRecover, agent)}}
+	for _, sel := range []string{"t__recover", "agent", "*"} {
+		var ov ModelOverrides
+		ov.SetModel(sel, "openai_compatible/scaleway/deepseek-v4.1-flash")
+		if got := RouteGatewayModelIDs(wf, ov); !slices.Contains(got, "scaleway/deepseek-v4.1-flash") {
+			t.Errorf("cell %q: RouteGatewayModelIDs = %v, want the gateway id the rung-4 agent sends", sel, got)
+		}
+	}
+}

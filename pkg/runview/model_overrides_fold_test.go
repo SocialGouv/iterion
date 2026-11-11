@@ -14,10 +14,10 @@ import (
 // back as the launch typed them, and a nil snapshot folds the same.
 func TestEffectiveModelOverrides_NilPolicyIsIdentity(t *testing.T) {
 	rows := []ModelOverrideEntry{{Selector: "judge", Backend: "claw"}}
-	if got := EffectiveModelOverrides(rows, nil, ""); !reflect.DeepEqual(got, rows) {
+	if got := EffectiveModelOverrides(rows, nil, llmroute.BotIdentity{}); !reflect.DeepEqual(got, rows) {
 		t.Fatalf("nil policy changed the rows: %+v", got)
 	}
-	if got := EffectiveModelOverrides(rows, &store.RunLLMRoutePolicy{}, ""); !reflect.DeepEqual(got, rows) {
+	if got := EffectiveModelOverrides(rows, &store.RunLLMRoutePolicy{}, llmroute.BotIdentity{}); !reflect.DeepEqual(got, rows) {
 		t.Fatalf("empty policy changed the rows: %+v", got)
 	}
 }
@@ -33,7 +33,7 @@ func TestEffectiveModelOverrides_PolicyCellsSitUnderTheLaunchRows(t *testing.T) 
 		},
 	}
 	launch := []ModelOverrideEntry{{Selector: "judge", Backend: "codex"}}
-	got := EffectiveModelOverrides(launch, pol, "")
+	got := EffectiveModelOverrides(launch, pol, llmroute.BotIdentity{})
 	var judgeBackend string
 	var gptModel string
 	for _, e := range got {
@@ -81,7 +81,7 @@ func TestEffectiveModelOverrides_LaunchStarShadowsThePolicyCell(t *testing.T) {
 			}
 			// The same-field shadow: the exact-id policy cell is dropped
 			// outright, the launch's "*" row is all that remains.
-			got := EffectiveModelOverrides([]ModelOverrideEntry{tc.star}, pol, "")
+			got := EffectiveModelOverrides([]ModelOverrideEntry{tc.star}, pol, llmroute.BotIdentity{})
 			if !reflect.DeepEqual(got, []ModelOverrideEntry{tc.star}) {
 				t.Errorf("a * row on %s left the policy cell alive: folded = %+v, want the launch row alone", tc.field, got)
 			}
@@ -91,7 +91,7 @@ func TestEffectiveModelOverrides_LaunchStarShadowsThePolicyCell(t *testing.T) {
 				if other.field == tc.field {
 					continue
 				}
-				got := EffectiveModelOverrides([]ModelOverrideEntry{other.star}, pol, "")
+				got := EffectiveModelOverrides([]ModelOverrideEntry{other.star}, pol, llmroute.BotIdentity{})
 				if !reflect.DeepEqual(got, []ModelOverrideEntry{cell, other.star}) {
 					t.Errorf("a * row on %s dropped the %s cell: folded = %+v, want the cell plus the row", other.field, tc.field, got)
 				}
@@ -114,7 +114,7 @@ func TestEffectiveModelOverrides_LaunchStarShadowsOneFieldOfAComposedCell(t *tes
 		Effort:   "low",
 	}
 	star := ModelOverrideEntry{Selector: "*", Backend: "claude_code"}
-	got := EffectiveModelOverrides([]ModelOverrideEntry{star}, &store.RunLLMRoutePolicy{Overrides: []store.RunLLMRouteOverride{composed}}, "")
+	got := EffectiveModelOverrides([]ModelOverrideEntry{star}, &store.RunLLMRoutePolicy{Overrides: []store.RunLLMRouteOverride{composed}}, llmroute.BotIdentity{})
 	want := []ModelOverrideEntry{
 		{Selector: "work", Model: "anthropic/claude-opus-4-8", Provider: "anthropic", Effort: "low"},
 		star,

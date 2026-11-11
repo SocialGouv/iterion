@@ -13,14 +13,16 @@ import (
 //	          | node-id "#" route          a node's `fallbacks:` route
 //	          | "supervisor:" name         a declared supervisor
 //
-// The bot dimension names the bot a cell reaches — its manifest name, the
-// launch's bot id (`review-pr`) — or a path.Match glob over it. Node ids are
-// bare per-workflow names that collide across bots, so a cell written at a
-// level every bot of a team folds (the team's record, an integration that
-// enables several bots) re-pins every same-named node unless it says whose.
+// The bot dimension names the bot a cell reaches: the launch's bot id (a
+// catalogue bot's name, a team or platform bot's slug — `review-pr-pool`),
+// the manifest name of the bundle the launch serves (`review-pr`, which a
+// team fork keeps), or a path.Match glob over either. Node ids are bare
+// per-workflow names that collide across bots, so a cell written at a level
+// every bot of a team folds (the team's record, an integration that enables
+// several bots) re-pins every same-named node unless it says whose.
 // Optional on a node cell, where records predate it; REQUIRED on a
 // route-scoped and on a supervisor cell, the classes D21 adds — `*/` is the
-// explicit spelling of "every bot".
+// explicit spelling of "every bot", the same reach as no bot part at all.
 //
 // The route part is the exact site key the walk records an authored route
 // under (model.ProviderResolution.Pins): the route's name, or its index when
@@ -52,8 +54,8 @@ const (
 
 // Selector is a parsed override selector.
 type Selector struct {
-	// Bot is the bot dimension: "" reaches every bot, otherwise a bot
-	// name or a path.Match glob over one.
+	// Bot is the bot dimension: "" and "*" reach every bot, otherwise a
+	// bot id or manifest name, or a path.Match glob over one (MatchBot).
 	Bot string
 	// Target is the selector without its bot dimension — the spelling a
 	// run's folded override list carries once the bot is resolved.
@@ -121,31 +123,100 @@ func ParseSelector(raw string) (Selector, error) {
 	return s, nil
 }
 
-// ReachesBot reports whether the selector's bot dimension reaches bot: a
-// selector without one reaches every bot; a glob reaches the names it
-// matches; an empty bot (a launch that names none — a plain `.bot` file) is
-// reached by no bot-scoped selector.
-func (s Selector) ReachesBot(bot string) bool {
-	if s.Bot == "" {
-		return true
+// BotIdentity is a launch's bot as the bot dimension reads it.
+type BotIdentity struct {
+	// ID is the launch's bot id: a catalogue bot's name, a stored bot's
+	// slug. "" for a launch that names no bot (a plain `.bot` file).
+	ID string
+	// Name is the manifest name of the bundle the launch serves — the
+	// second spelling a cell may name the bot by (a team fork keeps its
+	// catalogue bot's name under its own slug). "" when the manifest names
+	// none or names the ID itself.
+	Name string
+}
+
+// BotMatch is how a selector's bot dimension reaches a launch's bot,
+// ordered from no reach to the most specific: a cell of a higher match
+// wins a site over a cell of a lower one on the same target.
+type BotMatch int
+
+const (
+	// BotMatchNone: the cell is another bot's.
+	BotMatchNone BotMatch = iota
+	// BotMatchAll: no bot part, or `*/` — every bot, a launch naming none
+	// included.
+	BotMatchAll
+	// BotMatchGlob: a glob over the bot id or the manifest name.
+	BotMatchGlob
+	// BotMatchName: the manifest name, exactly.
+	BotMatchName
+	// BotMatchID: the bot id, exactly.
+	BotMatchID
+)
+
+// MatchBot reports how the selector's bot dimension reaches b. A launch
+// naming no bot is reached by the every-bot spellings alone; a glob that
+// matches the empty name reaches no such launch.
+func (s Selector) MatchBot(b BotIdentity) BotMatch {
+	switch {
+	case s.Bot == "" || s.Bot == "*":
+		return BotMatchAll
+	case b.ID == "" && b.Name == "":
+		return BotMatchNone
+	case s.Bot == b.ID:
+		return BotMatchID
+	case b.Name != "" && s.Bot == b.Name:
+		return BotMatchName
+	case globMatches(s.Bot, b.ID) || (b.Name != "" && globMatches(s.Bot, b.Name)):
+		return BotMatchGlob
 	}
-	if bot == "" {
-		return false
-	}
-	if s.Bot == bot {
-		return true
-	}
-	ok, err := path.Match(s.Bot, bot)
+	return BotMatchNone
+}
+
+func globMatches(pattern, name string) bool {
+	ok, err := path.Match(pattern, name)
 	return err == nil && ok
 }
 
-// NamesBot reports whether the selector's bot dimension names bot exactly —
-// no glob — the cells a zero-match warning speaks for: a cell written for
-// this bot by name whose target matches nothing in it is a typo, while a
-// glob or an unscoped cell matching nothing in one bot is the fold's
-// ordinary reach.
-func (s Selector) NamesBot(bot string) bool {
-	return s.Bot != "" && s.Bot == bot
+// classFieldRule refuses a pin on a field the selector's class does not
+// carry: a `fallbacks:` route runs at its node's reasoning effort, a
+// supervisor names a model only. A routing cell (validateOverride) and a
+// launch's own row (ValidateLaunchRow) pin the same sites, so they share
+// the rule.
+func classFieldRule(parsed Selector, sel, backend, provider, effort string) error {
+	switch parsed.Class {
+	case SelectorRoute:
+		if effort != "" {
+			return fmt.Errorf("selector %q pins effort %q on a fallbacks: route — a route runs at its node's reasoning effort and carries none of its own, so the pin would do nothing; pin the node instead", sel, effort)
+		}
+	case SelectorSupervisor:
+		// A supervisor's evaluator runs in process on claw and routes on
+		// the spec's own prefix.
+		for _, f := range []struct{ name, v string }{{"backend", backend}, {"provider", provider}, {"effort", effort}} {
+			if f.v != "" {
+				return fmt.Errorf("selector %q pins %s %q on a supervisor — a supervisor names a model only (its evaluator runs in process on claw and routes on the spec's prefix), so the pin would do nothing", sel, f.name, f.v)
+			}
+		}
+	}
+	return nil
+}
+
+// ValidateLaunchRow judges one of a launch's own override rows (the API
+// body's model_overrides, the CLI's --model/--backend/--effort-for) by the
+// selector grammar: a row reaches its own launch's run, so it carries no bot
+// dimension, and it obeys the per-class field rules a routing cell obeys.
+// The rest of a cell's checks stay the routing write surfaces': a launch's
+// rows compose with the folded cells, and the launch judges the composed
+// pairs on the folded list.
+func ValidateLaunchRow(selector, backend, provider, effort string) error {
+	parsed, err := ParseSelector(selector)
+	if err != nil {
+		return err
+	}
+	if parsed.Bot != "" {
+		return fmt.Errorf("selector %q names bot %q — a launch's own rows reach its own run; drop the prefix (a bot-scoped cell belongs in a routing record or llm_routing)", selector, parsed.Bot)
+	}
+	return classFieldRule(parsed, selector, backend, provider, effort)
 }
 
 // IsGatewayModel reports whether a model spec is a gateway route — the
