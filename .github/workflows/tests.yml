@@ -205,6 +205,21 @@ concurrency:
 # pinned against each other by TestSelfHostedRoutingExpressionsAgree in
 # internal/ciguard: one copy edited alone turns it red.
 
+# These runners' kernels offer Landlock ABI 1, which has no network rights —
+# they arrive at ABI 4 (kernel 6.7). So codemode's escape suite CANNOT prove
+# that a confined script host is unable to open a TCP connection here, and it
+# refuses to skip a bound silently: the lane has to say out loud what it does
+# not test. Measured 2026-11-11 on arc-runners: the filesystem, exec and
+# every-thread bounds ARE proven, the network one is not, and the connect a
+# confined child made succeeded.
+#
+# Workflow-level rather than per-step because four jobs run the Go suite and a
+# record on one of them is a record on none — `race-shard` found that the hard
+# way. It takes effect only BELOW the ABI an arm needs, so when the runners
+# move to a 6.7+ kernel the arm proves itself and this block can go.
+env:
+  ITERION_CODEMODE_ALLOW_NO_LANDLOCK_NET: "1"
+
 jobs:
   # ---- gated legs: the real work, one side each, aggregated by `test` ----
 
@@ -379,18 +394,6 @@ jobs:
         # while a test had run for only 9s (#2745). Allow 25m per package,
         # still bounded by the job's 30m including setup and live compilation.
         # Individual test deadlines and all assertions remain in force.
-        #
-        # This runner's kernel offers Landlock ABI 1, which has no network
-        # rights (they arrive at ABI 4), so codemode's escape suite CANNOT
-        # prove that a confined script host is unable to open a TCP
-        # connection here. Measured on this lane 2026-11-11: the filesystem,
-        # exec and every-thread bounds are proven, the network one is not, and
-        # the connect a confined child made succeeded. Recording it is the
-        # point — the suite refuses to skip a bound silently, so the lane says
-        # out loud what it does not test. Remove this when the runners move to
-        # a 6.7+ kernel; the arm then proves itself.
-        env:
-          ITERION_CODEMODE_ALLOW_NO_LANDLOCK_NET: "1"
         run: go test -mod=vendor -count=1 -timeout 1500s $(go list -mod=vendor ./... | grep -v '/e2e$')
 
       - name: Live e2e compile check
