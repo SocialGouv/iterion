@@ -296,9 +296,9 @@ func (s *Service) compileCredentialPreview(spec CredentialPreviewSpec) (*ir.Work
 	// Service.Launch, so a fold in Launch alone would leave the preview
 	// deriving candidates, pool wants and warnings from the unfolded set —
 	// the operator shown credentials the launch never acquires. One
-	// shared body with the two launch entries (foldAndScreen), so the
-	// order exists in exactly one place.
-	foldWarnings, err := foldAndScreen(wf, &spec.Launch, "")
+	// shared body with the two launch entries (foldAndScreenLaunch), so
+	// the order exists in exactly one place.
+	foldWarnings, err := foldAndScreenLaunch(wf, &spec.Launch, "")
 	if err != nil {
 		return nil, spec, nil, err
 	}

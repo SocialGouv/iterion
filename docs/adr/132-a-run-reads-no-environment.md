@@ -645,7 +645,10 @@ stated here:
   `<tool>__recover`, an authored route or a supervisor (a glob or an unscoped cell matching nothing is
   the fold's ordinary reach): at the integration write screen (`runview.ScreenPolicyOverrides`, per
   enabled bot, each judged by its resolved id and manifest name) and once per (bot, selector) per
-  process at launch. The integration write screen also warns for a cell whose bot part reaches none
+  process at launch. A launch's own row (the API body's `model_overrides`, the preview's) whose
+  selector matches nothing in the run's workflow is warned the same way at launch, naming the row: as
+  a typo, or — in a workflow with a subbot node — as a row that still folds into every child; a
+  child's fold of its root's rows warns on none, a root row naming the root's sites too. The integration write screen also warns for a cell whose bot part reaches none
   of the enabled bots by id or manifest name, naming them and the one reach such a cell keeps — a
   subbot child of an enabled bot that runs as the cell's bot (the screen does not resolve the
   children). The match counts are NOT recorded in the provenance map: the

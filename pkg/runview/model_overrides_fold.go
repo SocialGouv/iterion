@@ -443,6 +443,38 @@ func zeroMatchWarning(bot llmroute.BotIdentity, selector string) string {
 	return fmt.Sprintf("routing: override cell %q names bot %s, and its target matches no node, fallbacks: route or supervisor of that bot — the cell pins nothing (a typo, or a site the bot no longer declares)", selector, named)
 }
 
+// unreachedLaunchRowWarnings names each of a launch's own rows whose
+// selector reaches nothing in wf (model.SelectorReaches) — the row is
+// admitted (the grammar holds) and pins no site of the run. A workflow with
+// a subbot node folds the row into every child (FoldForSubbotChild), where
+// it pins a site the child declares; a workflow with none holds a typo.
+func unreachedLaunchRowWarnings(wf *ir.Workflow, rows []ModelOverrideEntry, bot llmroute.BotIdentity) []string {
+	if wf == nil || len(rows) == 0 {
+		return nil
+	}
+	subject := "this launch's workflow"
+	if bot.ID != "" {
+		subject = fmt.Sprintf("bot %q", bot.ID)
+	}
+	why := "a typo, or a site the workflow does not declare"
+	for _, n := range wf.Nodes {
+		if n.NodeKind() == ir.NodeSubbot {
+			why = "it still folds into every subbot child, where it pins a site the child declares"
+			break
+		}
+	}
+	var out []string
+	seen := map[string]bool{}
+	for _, r := range rows {
+		if seen[r.Selector] || model.SelectorReaches(wf, r.Selector) {
+			continue
+		}
+		seen[r.Selector] = true
+		out = append(out, fmt.Sprintf("routing: the launch's own override row %q matches no node, fallbacks: route or supervisor of %s — the row pins nothing here (%s)", r.Selector, subject, why))
+	}
+	return out
+}
+
 // zeroMatchWarnings is unmatchedPolicyCells rendered as warnings.
 func zeroMatchWarnings(wf *ir.Workflow, pol *store.RunLLMRoutePolicy, bot llmroute.BotIdentity) []string {
 	var out []string

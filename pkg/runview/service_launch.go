@@ -285,7 +285,7 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 		// for every launch-shaped entry, so the order exists in exactly
 		// one place: a cell folded in after the screen would reach past a
 		// guard the launcher's own override cannot.
-		warnings, err := foldAndScreen(wf, &spec, "")
+		warnings, err := foldAndScreenLaunch(wf, &spec, "")
 		if err != nil {
 			return nil, err
 		}
@@ -513,7 +513,9 @@ func (s *Service) hookEventObservers(extra []func(store.Event)) []func(store.Eve
 // the policy cells written for the launch's bot by name that
 // reach nothing in it (ADR-132 §2's zero-match warning): the launch paths
 // log each once per process (logZeroMatchOnce), the preview shows them
-// every time.
+// every time. A launch of its own rows adds the rows that reach nothing
+// (foldAndScreenLaunch); a subbot child folds its root's rows through this
+// body alone.
 func foldAndScreen(wf *ir.Workflow, spec *LaunchSpec, runBackend string) ([]string, error) {
 	wf = withRunDefaultBackend(wf, runBackend)
 	for _, r := range spec.ModelOverrides {
@@ -546,6 +548,21 @@ func foldAndScreen(wf *ir.Workflow, spec *LaunchSpec, runBackend string) ([]stri
 	}
 	warnings = append(warnings, screenWarnings...)
 	return append(warnings, zeroMatchWarnings(wf, spec.LLMRoutePolicy, bot)...), nil
+}
+
+// foldAndScreenLaunch is foldAndScreen for a launch of its own rows — the
+// cloud and in-process launches and the preview — warning, after its
+// warnings, on each row that reaches nothing in wf
+// (unreachedLaunchRowWarnings). A subbot child folds its root's rows
+// through foldAndScreen alone: a root row names the root's sites as well as
+// a child's, so one that pins nothing in a child is no typo.
+func foldAndScreenLaunch(wf *ir.Workflow, spec *LaunchSpec, runBackend string) ([]string, error) {
+	rows := slices.Clone(spec.ModelOverrides)
+	warnings, err := foldAndScreen(wf, spec, runBackend)
+	if err != nil {
+		return nil, err
+	}
+	return append(warnings, unreachedLaunchRowWarnings(wf, rows, launchBotIdentity(spec))...), nil
 }
 
 // startInProcess compiles + builds + spawns a run in this process. It is
@@ -589,7 +606,7 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 	// the SAME shared body (foldAndScreen): the permission screen below
 	// must see the policy's cells, and the folded list is what
 	// BuildExecutor executes with and the run doc stamps.
-	foldWarnings, err := foldAndScreen(wf, &spec, spec.Backend)
+	foldWarnings, err := foldAndScreenLaunch(wf, &spec, spec.Backend)
 	if err != nil {
 		return nil, err
 	}
