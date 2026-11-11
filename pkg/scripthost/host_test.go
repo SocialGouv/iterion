@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 )
@@ -36,17 +35,18 @@ func fakeChild(t *testing.T, script string) Host {
 	// duplicates the still-open write descriptor into the child, and execve
 	// refuses a file anyone holds for writing. Measured as a 2-in-10 flake
 	// before this loop, which is worse than no test at all.
+	// Any error is retried until the deadline, not only ETXTBSY: this loop
+	// doubles the suite's fork count, and `fork` under a pid-cgroup ceiling
+	// answers EAGAIN or ENOMEM — a resource shortage that would otherwise be
+	// reported as a broken file.
 	deadline := time.Now().Add(5 * time.Second)
+	var last error
 	for {
-		err := exec.Command(path, "--probe").Run()
-		if !errors.Is(err, syscall.ETXTBSY) {
-			if err != nil {
-				t.Fatalf("the fake child is not runnable: %v", err)
-			}
+		if last = exec.Command(path, "--probe").Run(); last == nil {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("the fake child stayed ETXTBSY for 5s")
+			t.Fatalf("the fake child did not become runnable within 5s; last attempt: %v", last)
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
@@ -173,9 +173,11 @@ func TestANativeRegexBombIsKilledByTheCPUBound(t *testing.T) {
 	if !strings.Contains(resp.Message, "CPU") {
 		t.Errorf("the refusal does not name the CPU bound: %q", resp.Message)
 	}
-	// Killed on CPU, not waited out: the wall bound here is a minute. And the
-	// bound is respected EXACTLY — equal soft and hard limits, so the kill
-	// lands at the operator's number rather than a second past it.
+	// Killed on CPU, not waited out: the wall bound here is a minute. The kill
+	// lands one second PAST the operator's number by design — the soft limit
+	// sits at it and the kernel's SIGKILL a second above, which is what makes
+	// the death attributable (see setCPUBound). An earlier version of this
+	// comment claimed the opposite, inside the witness meant to pin it.
 	if elapsed > 5*time.Second {
 		t.Errorf("the kill took %s — the CPU bound was not what stopped it", elapsed.Round(time.Second))
 	}
@@ -396,42 +398,49 @@ func TestTheChildReclampsAgainstThePlatformCeiling(t *testing.T) {
 	}
 }
 
-// The posture verdict's CALL SITE. The function has a unit test, but removing
-// the CALL left the whole suite green: every other arm either uses the
-// shipping CGO_ENABLED=0 binary (which confines every thread) or passes the
-// allowance.
+// The posture verdict's CALL SITE, asserted against a binary that really
+// cannot confine the process rather than against whichever binary the leg
+// happens to produce.
 //
-// It reads the posture the child REPORTS and asserts the verdict that posture
-// earns, because which side the environment lands on is not this test's to
-// choose: a cgo-linked test binary cannot drive its own threads and must be
-// refused, while on a runner where it can — measured on this repo's ARC
-// runners, where the same binary reported AllThreads=true — the script runs.
-// Asserting one of the two would have been asserting the machine.
-func TestTheVerdictMatchesThePostureTheChildReports(t *testing.T) {
+// The function has a unit test, but removing the CALL left the suite green.
+// Reading the test binary's own posture and branching did not fix that: on a
+// `CGO_ENABLED=0` leg — the shipping build, and CI's primary Go leg — the
+// posture is strong and the only assertion left was "the script ran", which a
+// child with no verdict call at all also satisfies. Measured: deleting the call
+// kept `CGO_ENABLED=0` green and reddened only the `-race` leg.
+//
+// So the refusing side gets its own child: the same iterion built WITH cgo,
+// where `AllThreadsSyscall` answers ENOTSUP and the bounds cover one thread.
+func TestABinaryThatCannotConfineTheProcessIsRefused(t *testing.T) {
 	t.Parallel()
 
-	// With the allowance, the child always runs and always reports.
-	vouched := childWithRequest(t, Request{
-		Script:                       "1+1",
-		AllowSingleThreadConfinement: true,
-		AllowWithoutLandlock:         true,
-	})
-	if vouched.Confinement == nil {
-		t.Fatal("the child reported no confinement, so its posture is unobservable")
-	}
-	weak := !vouched.Confinement.AllThreads || vouched.Confinement.LandlockABI == 0
+	h := Host{Binary: cgoBinary(t)}
 
-	// Without it, the verdict must follow that posture.
-	plain := childWithRequest(t, Request{Script: "1+1"})
-	switch {
-	case weak && plain.Refusal != RefusalUnavailable:
-		t.Errorf("the child's posture is weak (%+v) and it ran the script anyway: %+v",
-			vouched.Confinement, plain)
-	case weak && !strings.Contains(plain.Message, "allow_"):
-		t.Errorf("the refusal does not name an escape hatch: %q", plain.Message)
-	case !weak && !plain.OK():
-		t.Errorf("the child confines every thread under a Landlock ruleset (%+v) and refused anyway: %+v",
-			vouched.Confinement, plain)
+	resp, err := h.Run(context.Background(), "1+1", Limits{})
+	if err != nil {
+		t.Fatalf("host: %v", err)
+	}
+	if resp.Refusal != RefusalUnavailable {
+		t.Fatalf("a cgo-linked child, which cannot drive its own threads, ran the script anyway: %+v", resp)
+	}
+	if !strings.Contains(resp.Message, "allow_single_thread_confinement") {
+		t.Errorf("the refusal does not name its escape hatch: %q", resp.Message)
+	}
+	// And the posture it reported is the one that earned the refusal — not a
+	// refusal for some other reason that happens to share the code.
+	if resp.Confinement == nil || resp.Confinement.AllThreads {
+		t.Errorf("the refusal did not come from a single-thread confinement: %+v", resp.Confinement)
+	}
+
+	// With the allowance, the same binary runs — so the refusal above is the
+	// verdict's, not an inability to run at all.
+	withAllowance := Host{Binary: cgoBinary(t), AllowSingleThreadConfinement: true}
+	resp, err = withAllowance.Run(context.Background(), "1+1", Limits{})
+	if err != nil {
+		t.Fatalf("host: %v", err)
+	}
+	if !resp.OK() || resp.Value != "2" {
+		t.Errorf("the explicit allowance did not let the same binary run: %+v", resp)
 	}
 }
 

@@ -1,7 +1,9 @@
 package scripthost
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"strings"
 	"testing"
@@ -449,5 +451,91 @@ func TestAMalformedSeedIsRefused(t *testing.T) {
 	// No seed at all is allowed and draws one.
 	if _, err := resolveSeed(""); err != nil {
 		t.Errorf("an absent seed answered %v", err)
+	}
+}
+
+// THE order of deathToRefusal, which its own comment calls "the whole
+// correctness of this function" and which nothing checked: swapping the memory
+// and CPU branches left the entire suite green, while a probe showed the exact
+// catastrophe the comment names — a memory death reported as
+// `cpu_time_exceeded` with the parent still holding `runtime: out of memory`.
+//
+// The live arms cannot reach it: the memory bomb runs with a two-minute CPU
+// bound, so the CPU branch can never fire there. It needs a death where BOTH
+// conditions hold, which is why the evidence carries facts rather than a
+// process.
+func TestADeathIsReadInOrderOfEvidence(t *testing.T) {
+	const memoryMarker = "fatal error: runtime: out of memory"
+	limits, _ := Limits{CPU: time.Second, Wall: time.Minute, Memory: 128 << 20}.Clamp()
+
+	// Burned past the CPU bound AND carrying the runtime's memory marker: the
+	// positive identification must win over the threshold.
+	both := deathEvidence{
+		limits: limits, signalled: true, signal: 9,
+		burned: 2 * time.Second, stderrText: memoryMarker,
+	}
+	resp, err := deathToRefusal(both)
+	if err != nil {
+		t.Fatalf("a death that names a bound became a host error: %v", err)
+	}
+	if resp.Refusal != RefusalMemory {
+		t.Errorf("a memory death that had also burned its CPU budget gave %q: the CPU threshold "+
+			"outranked the runtime's own words, and an operator reading that raises the CPU bound forever",
+			resp.Refusal)
+	}
+
+	// The same, without the marker: now the CPU threshold is the best evidence.
+	onlyCPU := both
+	onlyCPU.stderrText = "killed"
+	resp, err = deathToRefusal(onlyCPU)
+	if err != nil {
+		t.Fatalf("host error: %v", err)
+	}
+	if resp.Refusal != RefusalCPUTime {
+		t.Errorf("a signalled death over the CPU bound gave %q, want %s", resp.Refusal, RefusalCPUTime)
+	}
+	// And it names BOTH numbers, because they differ on purpose.
+	for _, want := range []string{"1s bound the operator set", "kernel kills at 2s"} {
+		if !strings.Contains(resp.Message, want) {
+			t.Errorf("the CPU refusal does not say %q: %s", want, resp.Message)
+		}
+	}
+
+	for _, tc := range []struct {
+		name string
+		ev   deathEvidence
+		want string // a refusal code, or "" for a host error
+	}{
+		{"the caller's own deadline beats everything", deathEvidence{
+			limits: limits, callerErr: context.DeadlineExceeded, scriptErr: context.DeadlineExceeded,
+			signalled: true, burned: 2 * time.Second, stderrText: memoryMarker}, ""},
+		{"the caller's cancellation beats everything", deathEvidence{
+			limits: limits, callerErr: context.Canceled, signalled: true}, ""},
+		{"the script's wall bound beats the memory marker", deathEvidence{
+			limits: limits, scriptErr: context.DeadlineExceeded, stderrText: memoryMarker}, RefusalWallClock},
+		{"a cut stdout, under the CPU bound", deathEvidence{
+			limits: limits, signalled: true, burned: 10 * time.Millisecond, stdoutCut: true}, RefusalResultBytes},
+		{"signalled, nothing names a bound", deathEvidence{
+			limits: limits, signalled: true, signal: 9, burned: 10 * time.Millisecond}, RefusalHostDied},
+		{"a runtime crash is the host's, not the deployment's", deathEvidence{
+			limits: limits, stderrText: "SIGSEGV: segmentation violation"}, RefusalHostDied},
+		{"nothing at all is a broken deployment", deathEvidence{
+			limits: limits, waitErr: errors.New("exit status 127")}, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			resp, err := deathToRefusal(tc.ev)
+			if tc.want == "" {
+				if err == nil {
+					t.Fatalf("want a host error, got %+v", resp)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("want %s, got the host error %v", tc.want, err)
+			}
+			if resp.Refusal != tc.want {
+				t.Errorf("got %q, want %s (message: %s)", resp.Refusal, tc.want, resp.Message)
+			}
+		})
 	}
 }

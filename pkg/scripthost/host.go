@@ -157,11 +157,14 @@ func (h Host) Run(ctx context.Context, src string, want Limits) (Response, error
 		return resp, nil
 	}
 
+	signalled, signal := deathSignal(cmd)
 	return deathToRefusal(deathEvidence{
-		caller:     caller,
-		scriptCtx:  ctx,
-		cmd:        cmd,
+		callerErr:  caller.Err(),
+		scriptErr:  ctx.Err(),
 		limits:     limits,
+		signalled:  signalled,
+		signal:     signal,
+		burned:     burnedCPU(cmd),
 		waitErr:    waitErr,
 		stderrText: stderr.String(),
 		stdoutCut:  outCap.cut,
@@ -174,13 +177,23 @@ func (h Host) Run(ctx context.Context, src string, want Limits) (Response, error
 const wallGrace = 5 * time.Second
 
 // deathEvidence is everything the parent observed about a child that produced
-// no response. Gathered in one place so [deathToRefusal] is a pure function of
-// it and can be tested without a process.
+// no response.
+//
+// It carries FACTS rather than the *exec.Cmd they come from, which is what
+// makes [deathToRefusal] a pure function of it and testable without a process.
+// It held the command once, and the comment claimed the same testability while
+// the function reached into it — so the branch ORDER, which that function's own
+// comment calls "the whole correctness", had no witness at all: swapping the
+// memory and CPU branches left the entire suite green while a probe showed the
+// documented catastrophe (a memory death reported as `cpu_time_exceeded` with
+// the parent holding `runtime: out of memory`).
 type deathEvidence struct {
-	caller     context.Context
-	scriptCtx  context.Context
-	cmd        *exec.Cmd
+	callerErr  error // the CALLER's context error, if its own bound ended first
+	scriptErr  error // the parent's derived deadline, the script's wall bound
 	limits     Limits
+	signalled  bool
+	signal     syscall.Signal
+	burned     time.Duration
 	waitErr    error
 	stderrText string
 	stdoutCut  bool
@@ -203,21 +216,19 @@ func deathToRefusal(e deathEvidence) (Response, error) {
 
 	// (0) The CALLER's context, first: its cancellation is neither a script
 	// refusal nor a broken deployment, and the parent knows which one fired.
-	if err := e.caller.Err(); err != nil {
-		return Response{}, fmt.Errorf("scripthost: the caller's context ended before the script did: %w", err)
+	if e.callerErr != nil {
+		return Response{}, fmt.Errorf("scripthost: the caller's context ended before the script did: %w", e.callerErr)
 	}
 
 	// (1) The script's own wall bound — the parent's derived deadline, so the
 	// parent knows it first-hand. The message names the bound the operator
 	// set, not the internal grace it was given.
-	if errors.Is(e.scriptCtx.Err(), context.DeadlineExceeded) {
+	if errors.Is(e.scriptErr, context.DeadlineExceeded) {
 		return Refuse(RefusalWallClock,
 			"the script outlived its %s wall bound and neither it nor the interpreter yielded. "+
 				"A native regex or a tight native call cannot be interrupted — bound it with CPU time instead. %s",
 			e.limits.Wall, evidence), nil
 	}
-
-	signalled, signal := deathSignal(e.cmd)
 
 	// (2) A memory death announces itself: the Go runtime prints before dying.
 	// Positive identification, so it outranks every threshold below.
@@ -230,12 +241,17 @@ func deathToRefusal(e deathEvidence) (Response, error) {
 	// signalled, and it must have burned at least what it was allowed. The
 	// bound named is the one the kernel enforces — whole seconds — not the
 	// sub-second value a caller may have asked for.
-	if signalled && e.limits.CPU > 0 {
-		enforced := time.Duration(e.limits.CPUSeconds()) * time.Second
-		if burned := burnedCPU(e.cmd); burned >= enforced {
+	if e.signalled && e.limits.CPU > 0 {
+		asked := time.Duration(e.limits.CPUSeconds()) * time.Second
+		if e.burned >= asked {
+			// Both numbers, because they differ on purpose: the soft limit sits
+			// at what the operator asked for and the kernel's SIGKILL one
+			// second above it, which is what makes the death attributable.
+			// Naming only one left a reader unable to reconcile a 2.002s
+			// reading with a "1s" bound.
 			return Refuse(RefusalCPUTime,
-				"the script burned %s of CPU, at or over the %s the kernel enforces for its %s bound, and was killed",
-				burned.Round(time.Millisecond), enforced, e.limits.CPU), nil
+				"the script burned %s of CPU, over the %s bound the operator set; the kernel kills at %s",
+				e.burned.Round(time.Millisecond), e.limits.CPU, asked+time.Second), nil
 		}
 	}
 
@@ -252,11 +268,11 @@ func deathToRefusal(e deathEvidence) (Response, error) {
 	// signal — so it is reported as what it is rather than guessed at. The
 	// CPU it burned is part of the report: a reader comparing it to the bound
 	// is how the ambiguity gets resolved by a human.
-	if signalled {
+	if e.signalled {
 		return Refuse(RefusalHostDied,
 			"the script host was killed by %v after burning %s of CPU against a %s bound, and nothing "+
 				"names a bound; a cgroup memory kill and an external signal are indistinguishable here. %s",
-			signal, burnedCPU(e.cmd).Round(time.Millisecond),
+			e.signal, e.burned.Round(time.Millisecond),
 			time.Duration(e.limits.CPUSeconds())*time.Second, evidence), nil
 	}
 

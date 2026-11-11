@@ -150,8 +150,8 @@ func setBound(resource int, name string, want uint64) (uint64, error) {
 // verdict that flips at random is worse than one that costs a second.
 //
 // So the enforced ceiling is ceil(CPU)+1s where the environment allows it, the
-// refusal names that number, and [Applied.CPUSeconds] reports the soft bound
-// the operator asked for. Where a deployment's own hard limit equals the
+// refusal names BOTH numbers — the bound the operator set and the instant the
+// kernel kills at — and [Applied.CPUSeconds] reports the soft bound. Where a deployment's own hard limit equals the
 // request, the kill lands on the bound and the parent falls back to its honest
 // ambiguous verdict, which prints the burned CPU beside the bound.
 func setCPUBound(secs uint64) (uint64, error) {

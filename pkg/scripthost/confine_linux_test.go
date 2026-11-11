@@ -653,10 +653,12 @@ func TestAConfinedChildCannotExec(t *testing.T) {
 // before the fix: Confine returned LandlockABI 4 while a sibling thread read,
 // wrote, connected and exec'd without a refusal.
 //
-// The test binary is cgo-linked, so it cannot drive its own threads and this
-// arm reads the SINGLE-thread posture here; the process-wide guarantee is
-// asserted against the shipping CGO_ENABLED=0 artefact in
-// TestTheRealBinaryConfinesEveryThreadOfTheProcess.
+// Which posture this binary has is a property of the LEG, not a fact, so the
+// arm reads what Confine reported and asserts the consequence that posture
+// earns. The process-wide guarantee is asserted against the shipping
+// CGO_ENABLED=0 artefact in TestTheRealBinaryConfinesEveryThreadOfTheProcess,
+// and the refusal against a deliberately cgo-linked one in
+// TestABinaryThatCannotConfineTheProcessIsRefused.
 func TestASiblingThreadIsCoveredOnlyWhenEveryThreadIs(t *testing.T) {
 	t.Parallel()
 	report := escapeBaseline(t)

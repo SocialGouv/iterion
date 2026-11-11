@@ -139,14 +139,38 @@ Each is fixed, and each is why the arms now carry a premise and an error class:
   attempt now reports whether the kernel refused it for **permission**, and
   every arm asserts the same act succeeded before confinement.
 
-Where the kernel offers no Landlock the filesystem and network arms cannot run,
-and the suite **fails** rather than skipping — an untested bound is the one
-missing in production. The greppable way out is
-`ITERION_CODEMODE_ALLOW_NO_LANDLOCK=1`. Under `-race` the memory arm skips with
-its reason: ThreadSanitizer is charged to the same `RLIMIT_DATA` and exhausts it
-before the script does, so CI's non-race leg proves that one — and because the
-test binary is cgo-linked, the **process-wide** guarantee is measured against
-the shipping `CGO_ENABLED=0` artefact, which `TestMain` builds.
+## What each lane proves, and what it says it cannot
+
+A bound an arm cannot test is **named**, never absorbed by a skip: the suite
+fails loudly unless the lane is on record, and the record is an environment
+variable set in the workflow beside a comment saying what that lane does not
+test.
+
+- **No Landlock at all** — the filesystem and network arms cannot run.
+  `ITERION_CODEMODE_ALLOW_NO_LANDLOCK=1`.
+- **Landlock below ABI 4** — the network rights arrive there, so a confined
+  child can open a TCP connection and the arm cannot conclude.
+  `ITERION_CODEMODE_ALLOW_NO_LANDLOCK_NET=1`. **This repo's ARC runners answer
+  ABI 1** (measured 2026-11-11), so the record is set at `tests.yml`'s workflow
+  level — four jobs run the Go suite there and a record on one of them is a
+  record on none. Both variables are consulted only BELOW the ABI an arm needs,
+  so a runner that offers the right proves it and ignores them.
+
+So on CI the memory, CPU, wall-clock, recursion, filesystem, exec, credential
+and every-thread bounds are proven, and the TCP one is not.
+
+Two things the record used to get wrong about its own legs, both measured:
+
+- The memory arm does **not** skip under `-race`. Its child is the shipping
+  `CGO_ENABLED=0` binary that `TestMain` builds, which ThreadSanitizer never
+  reaches, so it is proven on every leg. The race floor
+  (`ITERION_SCRIPTHOST_RACE_FLOOR_MIB`) applies to the arms whose child IS the
+  instrumented test binary — the escape helper and the hand-built requests.
+- Whether the test binary is cgo-linked is a property of the LEG, not a fact:
+  `CGO_ENABLED=0` on CI's unit leg, 1 on its race shards. So the process-wide
+  guarantee is asserted against the shipping artefact, and its REFUSAL against
+  an iterion deliberately built with cgo — the one configuration in which a
+  child cannot drive its own threads.
 
 ## The two deliberate survivors
 
