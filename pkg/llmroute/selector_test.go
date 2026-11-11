@@ -160,14 +160,14 @@ func TestValidateLaunchRow(t *testing.T) {
 	}
 }
 
-// A cell naming the gateway hint names gateway models only, and a step's
-// own model (`openai_compatible:<model>`) is the model THAT step
-// dispatches: it is judged too, not only the cell's `model`.
+// A cell naming the gateway hint names gateway models only, and a node
+// chain step's own model (`openai_compatible:<model>`) is the model THAT
+// step dispatches: it is judged too, not only the cell's `model`. A route
+// pin carries no step (TestValidate_ARouteProviderIsOneHint).
 func TestValidate_TheGatewayHintJudgesEachStepsOwnModel(t *testing.T) {
 	for _, o := range []llmroute.Override{
 		{Selector: "x/n", Backend: "claw", Provider: "openai_compatible:claude-opus-5-5"},
 		{Selector: "x/n", Backend: "claw", Provider: "openai_compatible:claude-opus-5-5", Model: selectorGateway},
-		{Selector: "x/n#r", Provider: "openai_compatible:glm-5.3"},
 	} {
 		err := llmroute.Validate(llmroute.Policy{Overrides: []llmroute.Override{o}})
 		if err == nil || !strings.Contains(err.Error(), "gateway hint serves gateway models only") {
@@ -198,5 +198,42 @@ func TestValidate_AGatewayStepBesideANonGatewayCellModelStaysRefused(t *testing.
 	}
 	if strings.Contains(err.Error(), "dispatch refuses") {
 		t.Errorf("Validate(%+v) = %v — the step carries its own gateway model, which dispatch serves", o, err)
+	}
+}
+
+// A `fallbacks:` route's provider is one hint at dispatch, sent whole: the
+// write gate and a launch's own row refuse a `,` chain and a `hint:model`
+// step on a route pin, and keep both on a node pin, whose chain dispatch
+// walks step by step.
+func TestValidate_ARouteProviderIsOneHint(t *testing.T) {
+	for _, tc := range []struct{ backend, provider, want string }{
+		{"", "openai_compatible:" + selectorGateway, `"model": "` + selectorGateway + `"`},
+		{"claw", "anthropic:anthropic/claude-opus-5-5", `"provider": "anthropic"`},
+		{"", "zai,anthropic", "pin one hint"},
+		{"", "zai:", `write "provider": "zai"`},
+	} {
+		cell := llmroute.Override{Selector: "copilot/reflect#claude", Backend: tc.backend, Provider: tc.provider}
+		err := llmroute.Validate(llmroute.Policy{Overrides: []llmroute.Override{cell}})
+		if err == nil || !strings.Contains(err.Error(), "a route's provider is one hint") || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("cell Validate(%+v) = %v, want the one-hint refusal naming %q", cell, err, tc.want)
+		}
+		err = llmroute.ValidateLaunchRow("reflect#claude", tc.backend, tc.provider, "")
+		if err == nil || !strings.Contains(err.Error(), "a route's provider is one hint") || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("row ValidateLaunchRow(reflect#claude, %q, %q) = %v, want the one-hint refusal naming %q", tc.backend, tc.provider, err, tc.want)
+		}
+	}
+	for _, cell := range []llmroute.Override{
+		{Selector: "copilot/reflect#claude", Backend: "claw", Provider: "openai_compatible", Model: selectorGateway},
+		{Selector: "copilot/judge", Backend: "claude_code", Provider: "zai,anthropic"},
+		{Selector: "copilot/reflect", Backend: "claw", Provider: "openai_compatible:" + selectorGateway, Model: selectorGateway},
+	} {
+		if err := llmroute.Validate(llmroute.Policy{Overrides: []llmroute.Override{cell}}); err != nil {
+			t.Errorf("control Validate(%+v) = %v, want accepted", cell, err)
+		}
+	}
+	// A dial's `:-` is no step: the runner expands it, and a write surface
+	// refuses the non-literal on its own terms.
+	if err := llmroute.ValidateLaunchRow("reflect#claude", "", "${ITERION_PROBE_P:-openai_compatible}", ""); err != nil {
+		t.Errorf("control ValidateLaunchRow(dial) = %v, want accepted", err)
 	}
 }

@@ -65,6 +65,8 @@ func TestValidateModelOverrides_RefusesRowsTheGrammarCannotHonour(t *testing.T) 
 		{Selector: "supervisor:pacer", Backend: "claw"},
 		{Selector: "supervisor:pacer", Provider: "anthropic"},
 		{Selector: "converge#*", Model: "zai/glm-5.3"},
+		{Selector: "converge#glm", Provider: "zai,anthropic"},
+		{Selector: "converge#glm", Provider: "zai:glm-5.3"},
 	} {
 		err := validateModelOverrides([]runview.ModelOverrideEntry{e})
 		if err == nil {

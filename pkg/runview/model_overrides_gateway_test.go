@@ -250,3 +250,19 @@ func TestLaunchAdmitsAGatewayCellOnAnEnvDialedBackend(t *testing.T) {
 		t.Fatalf("write warnings = %q, want the backend dial named", warnings)
 	}
 }
+
+// A route sends its provider whole: a launch row pinning a `hint:model`
+// step or a `,` chain on a route is refused before the fold, where a node
+// row's steps stay its chain.
+func TestLaunchRefusesAStepOrAChainOnARouteRow(t *testing.T) {
+	for _, provider := range []string{"openai_compatible:" + gatewayTestModel, "zai,anthropic"} {
+		t.Run(provider, func(t *testing.T) {
+			pub, err := launchGatewayBot(t, "gwhint", gatewayHintBot, nil,
+				[]ModelOverrideEntry{{Selector: "work#glm", Provider: provider}})
+			requireRefusal(t, pub, err, `"work#glm"`, "a route's provider is one hint")
+		})
+	}
+	pub, err := launchGatewayBot(t, "gwhint", gatewayHintBot, nil,
+		[]ModelOverrideEntry{{Selector: "work", Provider: "zai,anthropic"}})
+	requireAdmitted(t, pub, err)
+}

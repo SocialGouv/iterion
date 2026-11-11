@@ -630,12 +630,14 @@ stated here:
   fold on top for every child of the tree.
 - **A launch's own rows** (the API body's `model_overrides`, the CLI's `--model`/`--backend`/
   `--effort-for`) carry no bot dimension and obey the same per-class field rules
-  (`llmroute.ValidateLaunchRow`): a `<bot>/` prefix, an `effort` on a route or a `backend`/`provider`
-  on a supervisor is refused at admission, at the CLI flag and at the launch fold, never on a
-  resume's replay of persisted rows.
+  (`llmroute.ValidateLaunchRow`): a `<bot>/` prefix, an `effort` or a provider that is not one hint
+  on a route, or a `backend`/`provider` on a supervisor is refused at admission, at the CLI flag and
+  at the launch fold, never on a resume's replay of persisted rows.
 - **The route-field guard** is enforced as a refusal of `effort` on a route-scoped cell (a route runs
   at its node's effort, so the pin would be a silent no-op), which implies §2's "at least one route
-  field". A supervisor cell pins `model` only.
+  field", and of a route `provider` that is not one hint: dispatch sends a route's provider whole,
+  so a `,` chain (the node's `fallbacks:` list is the route chain) or a `hint:model` step (the model
+  belongs in `model`) would be a pin no harness reads. A supervisor cell pins `model` only.
 - **The zero-match warning** fires for a cell that names the run's bot BY ID OR MANIFEST NAME and
   whose target matches nothing in it — a target is an LLM node, a tool's rung-4 recovery agent
   `<tool>__recover`, an authored route or a supervisor (a glob or an unscoped cell matching nothing is

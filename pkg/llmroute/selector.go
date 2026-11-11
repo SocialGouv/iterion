@@ -179,15 +179,18 @@ func globMatches(pattern, name string) bool {
 }
 
 // classFieldRule refuses a pin on a field the selector's class does not
-// carry: a `fallbacks:` route runs at its node's reasoning effort, a
-// supervisor names a model only. A routing cell (validateOverride) and a
-// launch's own row (ValidateLaunchRow) pin the same sites, so they share
-// the rule.
+// carry: a `fallbacks:` route runs at its node's reasoning effort and
+// takes one provider hint, a supervisor names a model only. A routing cell
+// (validateOverride) and a launch's own row (ValidateLaunchRow) pin the
+// same sites, so they share the rule.
 func classFieldRule(parsed Selector, sel, backend, provider, effort string) error {
 	switch parsed.Class {
 	case SelectorRoute:
 		if effort != "" {
 			return fmt.Errorf("selector %q pins effort %q on a fallbacks: route — a route runs at its node's reasoning effort and carries none of its own, so the pin would do nothing; pin the node instead", sel, effort)
+		}
+		if err := routeProviderIsOneHint(sel, provider); err != nil {
+			return err
 		}
 	case SelectorSupervisor:
 		// A supervisor's evaluator runs in process on claw and routes on
@@ -197,6 +200,29 @@ func classFieldRule(parsed Selector, sel, backend, provider, effort string) erro
 				return fmt.Errorf("selector %q pins %s %q on a supervisor — a supervisor names a model only (its evaluator runs in process on claw and routes on the spec's prefix), so the pin would do nothing", sel, f.name, f.v)
 			}
 		}
+	}
+	return nil
+}
+
+// routeProviderIsOneHint refuses a route pin whose provider is not one
+// hint. Dispatch sends a `fallbacks:` route's provider whole (the
+// executor's resolveChainUnder): a `,` chain is never walked — the node's
+// `fallbacks:` list is the route chain — and a `hint:model` step is never
+// split, so no harness acts on such a value. A value carrying a `${…}` or
+// `{{…}}` reference is the runner's to expand (a `${P:-x}` holds a ':'
+// that is no step); a write surface refuses it as a non-literal.
+func routeProviderIsOneHint(sel, provider string) error {
+	if strings.Contains(provider, "${") || strings.Contains(provider, "{{") {
+		return nil
+	}
+	tokens := providerHintTokens(provider)
+	switch {
+	case len(tokens) > 1:
+		return fmt.Errorf("selector %q pins provider %q on a fallbacks: route — a route's provider is one hint, sent whole at dispatch and never walked as a chain (the node's fallbacks: list is the route chain); pin one hint", sel, provider)
+	case len(tokens) == 1 && tokens[0].hasModel && tokens[0].modelRaw != "":
+		return fmt.Errorf("selector %q pins provider %q on a fallbacks: route — a route's provider is one hint, sent whole at dispatch and never split into a hint:model step; write \"provider\": %q and \"model\": %q", sel, provider, tokens[0].raw, tokens[0].modelRaw)
+	case len(tokens) == 1 && tokens[0].hasModel:
+		return fmt.Errorf("selector %q pins provider %q on a fallbacks: route — a route's provider is one hint, sent whole at dispatch and never split into a hint:model step; write \"provider\": %q", sel, provider, tokens[0].raw)
 	}
 	return nil
 }

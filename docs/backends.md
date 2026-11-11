@@ -750,8 +750,9 @@ that drives it, and how hard it is asked to think.
   `none|low|medium|high|xhigh|max|ultracode` is a 400 at admission, since the value
   reaches the provider verbatim. The selector carries no bot part (a
   `<bot>/` prefix is a 400): a `<node>#<route>` row pins backend, model and
-  provider, a `supervisor:<name>` row a model only, and `effort` on a route
-  or `backend`/`provider` on a supervisor is a 400.
+  one provider hint, a `supervisor:<name>` row a model only, and `effort` on
+  a route, a `,` chain or a `hint:model` step in a route's `provider`, or
+  `backend`/`provider` on a supervisor is a 400.
 
 The **effort** override outranks both the node's static `reasoning_effort:`
 and a dynamic `_reasoning_effort` edge mapping, matching how model and backend
@@ -1602,7 +1603,8 @@ check, which serves the gateway model the hint names and refuses any other
 model loudly — so any other value beside claw is refused (at write when one
 cell holds both, at launch when two do), and `openai_compatible` beside a
 model that is not `openai_compatible/…` is refused at write when the cell
-writes that model — its `model`, or a step's own `openai_compatible:<model>`.
+writes that model — its `model`, or a node chain step's own
+`openai_compatible:<model>`.
 A `claude_code` route is still refused a gateway model at dispatch, whatever
 the cells say. The launch rebuilds every element dispatch builds from the
 folded cells — each node's provider steps and each `fallbacks:` route, the
@@ -1680,7 +1682,10 @@ selector := [ <bot> "/" ] <target>
   walk records it under: its name (`reviewer_claude#glm`), or its index when
   the author named none (`converge#0`). It pins `backend`, `model` and
   `provider`, which replace the route's own; `effort` is refused (a route
-  runs at its node's). A pinned `backend` meets the compiler's route
+  runs at its node's). Its `provider` is one hint: dispatch sends a route's
+  provider whole, so a `,` chain (the node's `fallbacks:` list is the route
+  chain) or a `hint:model` step (write the model in `model`) is refused, at
+  write and in a launch's own row. A pinned `backend` meets the compiler's route
   refusals — C176's permission gate, claw⇄CLI tools inversion and session
   continuity, and C135's unresolvable tools — against the node's backend as
   dispatch reads it, the node cell's first: refused at launch, warned at the
