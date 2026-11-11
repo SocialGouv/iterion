@@ -628,9 +628,9 @@ func TestOpenCodeWitnessesReadNothingAboveTheirTempRoot(t *testing.T) {
 		t.Fatalf("an unpinned walk from %s does not refuse on the planted root %s: %v", probe, root, err)
 	}
 
-	cmd := exec.Command(os.Args[0], "-test.run=^TestOpenCode", "-test.skip=^"+regexp.QuoteMeta(t.Name())+"$", "-test.count=1", "-test.v") // #nosec G204 — re-executes this test binary
-	cmd.Env = append(os.Environ(), "TMPDIR="+tmp)
-	out, err := cmd.CombinedOutput()
+	out, err := fixtureTestOutput(t, []string{"-test.run=^TestOpenCode", "-test.skip=^" + regexp.QuoteMeta(t.Name()) + "$", "-test.count=1", "-test.v"}, func(cmd *exec.Cmd) {
+		cmd.Env = append(os.Environ(), "TMPDIR="+tmp)
+	})
 	if err != nil {
 		t.Fatalf("an opencode witness reads above its own temp root — pin it with hermeticWorkspace or hermeticTempRoot: %v\n%s", err, out)
 	}
