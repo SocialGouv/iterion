@@ -279,7 +279,9 @@ field — `route_resolve.go:96` already does this for every layer, and the new f
 (Amended 2026-11-11: the launch reads a stored layer with `llmroute.ValidateStored`, the write gate
 without its gateway-model rule — a gateway step or cell model that is not a gateway route is a
 dispatch verdict, not a reading one, and the launch judges it per node on the composed element, so
-one bot's dead step never refuses every launch of the level.)
+one bot's dead step never refuses every launch of the level. The platform-credentials PUT reads the
+stored block it does not replace the same way, so that block never refuses an edit of the record's
+other fields; a block the request supplies meets the write gate.)
 
 ### 4. One reading of a routing field, and vars that narrow the gate only by PROVENANCE
 

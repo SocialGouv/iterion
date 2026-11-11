@@ -682,12 +682,17 @@ func (p *PlatformCredentials) Allows(orgID, teamID string) bool {
 // nobody. That state is reachable by accident (enable enforcement, forget
 // the lists) and its symptom is every tenant-less run failing at its first
 // LLM call — a fleet-wide outage expressed as a config typo.
+//
+// The routing block is read as a launch reads a stored layer
+// (llmroute.ValidateStored): a record the launch folds blocks no edit of
+// the record's other fields. The write rule (llmroute.Validate) runs where a
+// request supplies the block — the server's routing decoder.
 func (p PlatformCredentials) Validate() error {
 	if p.FacadeDefault != nil && !FacadePolicy(*p.FacadeDefault).valid() {
 		return fmt.Errorf("platformcfg: facade_default %q — want auto, tier, never or always", *p.FacadeDefault)
 	}
 	if p.Routing != nil {
-		if err := llmroute.Validate(*p.Routing); err != nil {
+		if err := llmroute.ValidateStored(*p.Routing); err != nil {
 			return err
 		}
 	}

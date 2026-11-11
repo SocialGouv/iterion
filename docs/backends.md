@@ -1606,7 +1606,9 @@ cell holds both, at launch when two do), and `openai_compatible` beside a
 model that is not `openai_compatible/…` is refused at write when the cell
 writes that model — its `model`, or a node chain step's own
 `openai_compatible:<model>`. A stored record that holds one is still read at
-launch (`llmroute.ValidateStored`): the launch judges the element per node,
+launch (`llmroute.ValidateStored`), and so is the platform record's stored
+block by a platform-credentials PUT that does not replace it, so the record's
+other fields stay editable: the launch judges the element per node,
 below, so it refuses only a launch whose dispatch builds it (a claw chain's
 tail is never built).
 A `claude_code` route is still refused a gateway model at dispatch, whatever
