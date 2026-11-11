@@ -102,7 +102,9 @@ func launchFoldRows(t *testing.T, wf *ir.Workflow, botID string, cells ...store.
 }
 
 // resumePausedRun seeds a run paused past its last node, its document
-// carrying rows, and resumes it in-process.
+// carrying rows, and resumes it in-process. The resumed run keeps writing
+// its document after the caller has read what it observes, so the test
+// waits for the run goroutine to exit before the store's temp dir goes.
 func resumePausedRun(t *testing.T, svc *Service, botPath, hash, runID string, rows []store.RunModelOverride) {
 	t.Helper()
 	ctx := context.Background()
@@ -124,9 +126,11 @@ func resumePausedRun(t *testing.T, svc *Service, botPath, hash, runID string, ro
 	if err := svc.store.UpdateRunStatus(ctx, runID, store.RunStatusPausedOperator, "paused by operator"); err != nil {
 		t.Fatalf("UpdateRunStatus: %v", err)
 	}
-	if _, err := svc.Resume(ctx, ResumeSpec{RunID: runID, FilePath: botPath}); err != nil {
+	res, err := svc.Resume(ctx, ResumeSpec{RunID: runID, FilePath: botPath})
+	if err != nil {
 		t.Fatalf("resume %s: %v", runID, err)
 	}
+	t.Cleanup(func() { awaitRunDone(t, res.Done, runID) })
 }
 
 func resumeTestEnv(t *testing.T, supervisors, board string) {
