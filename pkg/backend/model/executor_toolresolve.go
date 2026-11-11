@@ -360,9 +360,24 @@ func (e *ClawExecutor) expandWildcards(ctx context.Context, node ir.Node, names 
 		if len(serverTools) == 0 {
 			e.logger.Warn("wildcard %q matched no tools (server %q may not be started or has no tools)", name, server)
 		}
+		// Sorted by name for prompt-cache stability, which the internal-family
+		// sibling below already does for the same reason. ListByServer ranges
+		// the registry's map and says its order is not guaranteed, and Go
+		// randomises that per iteration — so an unsorted splice reorders the
+		// tools array between two calls on an unchanged tree. The array's last
+		// element is where buildRequest puts the ephemeral cache breakpoint,
+		// so a reorder moves the breakpoint and the next turn re-bills the
+		// whole prefix instead of reading it.
+		//
+		// Sorted WITHIN the wildcard, never across the whole slice: the
+		// declared order of `tools:` is the author's and is preserved, so one
+		// wildcard's expansion cannot reshuffle the names around it.
+		qualified := make([]string, 0, len(serverTools))
 		for _, td := range serverTools {
-			expanded = append(expanded, td.QualifiedName)
+			qualified = append(qualified, td.QualifiedName)
 		}
+		sort.Strings(qualified)
+		expanded = append(expanded, qualified...)
 	}
 	return expanded, refused, nil
 }
