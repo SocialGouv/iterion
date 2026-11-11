@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [5.21.2](https://github.com/SocialGouv/iterion/compare/v5.21.1...v5.21.2) (2026-11-11)
+
+### Bug Fixes
+
+* **tool:** every registry listing is deterministic, at the one place the map is ranged ([#3172](https://github.com/SocialGouv/iterion/issues/3172)) ([9a95342](https://github.com/SocialGouv/iterion/commit/9a953426c260cfd028ced70ee489a59fce280c89)), references [#3171](https://github.com/SocialGouv/iterion/issues/3171) [#3171](https://github.com/SocialGouv/iterion/issues/3171) [#3171](https://github.com/SocialGouv/iterion/issues/3171) [#3153](https://github.com/SocialGouv/iterion/issues/3153) [docs/merge-policy.md#a-parked-gate-decided-2026-11-10](https://github.com/docs/merge-policy.md/issues/a-parked-gate-decided-2026-11-10)
+
+    <details><summary>why</summary>
+
+    `Registry.List`, `ListByOrigin` and `ListByServer` each ranged the registry's map and returned the result as it came. `List`'s own doc said "The order is not guaranteed", which understated it: Go randomises map iteration per iteration, so a listing disagreed with ITSELF across two calls on an unchanged registry.
+
+    </details>
+
 ## [5.21.1](https://github.com/SocialGouv/iterion/compare/v5.21.0...v5.21.1) (2026-11-11)
 
 ### Bug Fixes
