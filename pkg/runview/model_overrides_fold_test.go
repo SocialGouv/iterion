@@ -163,11 +163,11 @@ func TestOverrideTwinsStayFieldIdentical(t *testing.T) {
 	}
 }
 
-// The fold's stated residual, as docs/backends.md states the precedence: a
-// launch row wins a cell on the same selector and a `*` row overrides its
-// field in every node cell, but a cell on a more specific node selector than
-// a launch row other than `*` still wins the field both pin — a
-// `reviewer_claude` cell beats a `reviewer_*` launch row.
+// The fold's stated residual, as docs/backends.md and ADR-129 §6 state the
+// precedence: a launch row wins a cell on the same selector and a `*` row
+// overrides its field in every node cell, but a cell on a more specific node
+// selector than a launch row other than `*` still wins the field both pin —
+// a `reviewer_claude` cell beats a `reviewer_*` launch row.
 func TestEffectiveModelOverrides_AMoreSpecificCellBeatsALaunchGlobRow(t *testing.T) {
 	const gw = "openai_compatible/scaleway/deepseek-v4.1-flash"
 	pol := &store.RunLLMRoutePolicy{Overrides: []store.RunLLMRouteOverride{{Selector: "review-pr/reviewer_claude", Model: gw}}}

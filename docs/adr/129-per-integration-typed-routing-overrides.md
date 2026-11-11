@@ -446,7 +446,13 @@ and the studio dropdown both record `"*"` (`splitSelectorValue`, :206-210). So a
 button, on exactly the nodes this feature exists to pin — philosophy §1's "never silently replace an
 operator's explicit choice". `modelOverrideRule` therefore gains a layer `rank`, `ForNode` compares
 `(rank, score)` lexicographically, and `MergeOver` stamps `o`'s rows one rank above `base`'s. Eight
-lines, one file, and the stated line becomes true for every selector pair.
+lines, one file, and the stated line becomes true for every selector pair. (Amended 2026-11-11: it
+does between `MergeOver`'s two layers — a CLI resume's flags over the rows its run recorded
+(`TestMergeOver_TheTopLayerWinsAtEverySelectorPair`). The launch's fold of the policy's cells under
+its own rows, below, carries no rank across the wire: a launch row wins a cell on the same selector
+and a launch `*` row overrides its field in every node cell, but a cell on a more specific node
+selector than a launch row other than `*` still wins the field both pin — a `reviewer_claude` cell
+beats a `reviewer_*` launch row (`TestEffectiveModelOverrides_AMoreSpecificCellBeatsALaunchGlobRow`).)
 
 The launch folds the two into **one** list at a named helper — `runview.EffectiveModelOverrides(launchRows, policy)` —
 called by **both** launch-shaped entries: `Service.Launch` (`service_launch.go:221`, :320) and
