@@ -16,7 +16,7 @@ import (
 
 // launchLoggingWarnings drives Service.Launch on the bot at path under
 // rows and returns the service log's warnings.
-func launchLoggingWarnings(t *testing.T, bot, path, src string, rows []ModelOverrideEntry) (*stubLaunchPublisher, error, string) {
+func launchLoggingWarnings(t *testing.T, bot, path, src string, rows []ModelOverrideEntry) (*stubLaunchPublisher, string, error) {
 	t.Helper()
 	var buf bytes.Buffer
 	pub := &stubLaunchPublisher{}
@@ -25,7 +25,7 @@ func launchLoggingWarnings(t *testing.T, bot, path, src string, rows []ModelOver
 		t.Fatalf("NewService: %v", err)
 	}
 	_, launchErr := svc.Launch(context.Background(), LaunchSpec{FilePath: path, Source: src, BotID: bot, ModelOverrides: rows})
-	return pub, launchErr, buf.String()
+	return pub, buf.String(), launchErr
 }
 
 // A launch's own row the grammar admits and that reaches nothing in the
@@ -38,7 +38,7 @@ func TestLaunchWarnsOnALaunchRowThatReachesNothing(t *testing.T) {
 		{Selector: "supervisor:rowreach_pacr", Model: "anthropic/claude-sonnet-5"},
 		{Selector: "wo*k", Effort: "high"},
 	}
-	pub, err, log := launchLoggingWarnings(t, "gwhint", "gwhint.bot", gatewayHintBot, rows)
+	pub, log, err := launchLoggingWarnings(t, "gwhint", "gwhint.bot", gatewayHintBot, rows)
 	requireAdmitted(t, pub, err)
 	for _, sel := range []string{"rowreach_workk", "work#rowreach_gml", "supervisor:rowreach_pacr"} {
 		want := `the launch's own override row "` + sel + `" matches no node, fallbacks: route or supervisor of bot "gwhint" — the row pins nothing here (a typo, or a site the workflow does not declare)`
@@ -68,7 +68,7 @@ func TestALaunchRowThatReachesOnlyASubbotChildIsNamedSo(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "parent"), "main.bot", subbotFoldParent)
 	writeFile(t, filepath.Join(dir, "child"), "main.bot", subbotFoldAgent)
-	pub, err, log := launchLoggingWarnings(t, "parent", filepath.Join(dir, "parent", "main.bot"), subbotFoldParent, []ModelOverrideEntry{{Selector: "act", Model: "claude-opus-5"}})
+	pub, log, err := launchLoggingWarnings(t, "parent", filepath.Join(dir, "parent", "main.bot"), subbotFoldParent, []ModelOverrideEntry{{Selector: "act", Model: "claude-opus-5"}})
 	requireAdmitted(t, pub, err)
 	if want := `the launch's own override row "act" matches no node, fallbacks: route or supervisor of bot "parent" — the row pins nothing here (it still folds into every subbot child, where it pins a site the child declares)`; !strings.Contains(log, want) {
 		t.Errorf("service log = %q, want %q", log, want)
