@@ -467,11 +467,19 @@ and pulled a fresh canary within the hour:
   resume still meets the wall is re-armed on its announced instant, free —
   but a release is no probe's guess. The window no longer holds the run
   however late its resume comes (behind the shared circuit), its resume is
-  metered like any launch, and a transient refusal of it — a mass release is
-  what trips the tenant's concurrency cap or launch rate — re-arms it on the
-  ordinary 15-minute backoff, free (`run.retry.release_deferred`), instead of
-  the announced instant a probe's stand-down puts back: the answer that
-  released it cannot release it again;
+  metered like any launch, and a transient refusal of it — the admission
+  gate's deferral (a mass release is what trips the tenant's concurrency cap
+  or launch rate) or a stored bot that did not resolve for a store blip —
+  re-arms it on the ordinary 15-minute backoff, free
+  (`run.retry.release_deferred`), instead of the announced instant a probe's
+  stand-down puts back: the answer that released it cannot release it again.
+  Any other failure of that resume takes the stand-down after that one
+  failure: a bot redeployed under the run (its workflow hash moved) fails the
+  same way every quarter hour, and a publish that may have landed keeps the
+  admission it metered, so on the backoff either repeated until the date —
+  four days of them under a weekly wall. The announced instant is back, and
+  until it only the window's probes relaunch the run, one per floor within
+  the window's budget;
 - when the canary meets the wall again, nobody else moves: its free re-arm
   puts back the provider's instant, and its pull stamp paces the window for a
   floor. A run released on an answer is not released again on it, and the
