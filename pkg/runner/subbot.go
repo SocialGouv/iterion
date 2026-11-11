@@ -184,9 +184,10 @@ func (r *Runner) subbotRunnerFor(msg *queue.RunMessage, parentDir, workDir strin
 
 // subbotRoot is what the run the queue delivered — the root of a subbot
 // tree — froze at launch: its routing-policy snapshot and its own raw launch
-// rows, read from its document. Every child of the tree folds them for its
-// own bot (runview.FoldForSubbotChild); they travel down the recursion, so a
-// grandchild reads the root's, never its parent's.
+// rows, read from its document (runview.SubbotRootLaunchRows, a document
+// that predates the raw rows included). Every child of the tree folds them
+// for its own bot (runview.FoldForSubbotChild); they travel down the
+// recursion, so a grandchild reads the root's, never its parent's.
 type subbotRoot struct {
 	policy     *store.RunLLMRoutePolicy
 	launchRows []store.RunModelOverride
@@ -274,7 +275,7 @@ func (r *Runner) subbotRunnerUnder(tree *subbotRoot, msg *queue.RunMessage, pare
 			if lerr != nil {
 				return nil, fmt.Errorf("subbot %q: the routing policy of root run %q cannot be read, so child bot %q cannot fold it: %w", req.Source, msg.RunID, childBotID, lerr)
 			}
-			root = &subbotRoot{policy: rootRun.LLMRoutePolicy, launchRows: rootRun.LaunchModelOverrides}
+			root = &subbotRoot{policy: rootRun.LLMRoutePolicy, launchRows: runview.SubbotRootLaunchRows(rootRun, runLogger)}
 		}
 		childRows, err := runview.FoldForSubbotChild(childWf, root.policy, root.launchRows, childBot, msg.Permission, runLogger)
 		if err != nil {

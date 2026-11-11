@@ -541,3 +541,134 @@ func TestSubbotChildGatewayPinWithoutASealedGatewayKeyIsWarned(t *testing.T) {
 		})
 	}
 }
+
+// A root document written before store.Run.LaunchModelOverrides existed —
+// a run launched, paused or queued before the deploy that added it —
+// records no raw launch rows. When its routing policy froze no override
+// cell, its folded rows ARE its launch rows (the fold of no cell is the
+// identity), and its children fold them: a team_gateway root whose `*`
+// row pins the gateway keeps its child on the gateway, as the same root
+// launched today does (TestSubbotChildUnderATeamGatewayLaunchRowStaysOnTheGateway).
+func TestSubbotChildOfALegacyRootDocWithoutCellsStaysOnTheGateway(t *testing.T) {
+	var mu sync.Mutex
+	var gwHits, vendorHits []string
+	recorder := func(hits *[]string) *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			mu.Lock()
+			*hits = append(*hits, r.URL.Path)
+			mu.Unlock()
+			http.Error(w, "recorder", http.StatusTeapot)
+		}))
+	}
+	gw, vendor := recorder(&gwHits), recorder(&vendorHits)
+	defer gw.Close()
+	defer vendor.Close()
+	t.Setenv("ITERION_LLM_ENDPOINT_ALLOW_PRIVATE", "1")
+	t.Setenv("OPENAI_API_KEY", "")
+	t.Setenv("OPENAI_BASE_URL", vendor.URL)
+
+	r, st := subbotTestRunner(t)
+	dir := t.TempDir()
+	parentDir := filepath.Join(dir, "parent")
+	writeSubbotFixture(t, parentDir, "main.bot", subbotFoldParentBot)
+	writeSubbotFixture(t, filepath.Join(dir, "child"), "main.bot", "prompt usr:\n  Go.\n\n"+strings.Replace(agentChildBot("  user: usr\n"), `"claude-sonnet-4-5"`, `"openai/gpt-6-sol"`, 1))
+	row := store.RunModelOverride{Selector: "*", Backend: "claw", Provider: "openai_compatible", Model: "openai_compatible/scaleway/deepseek-v4.1-flash"}
+	msg := &queue.RunMessage{RunID: "run-parent", TenantID: "t1", OwnerID: "u1", BotID: "parent",
+		ModelOverrides:  []queue.ModelOverride{{Selector: row.Selector, Backend: row.Backend, Provider: row.Provider, Model: row.Model}},
+		ContentBoundary: &store.RunContentBoundary{Kind: store.ContentBoundaryTeamGateway, GatewayHost: strings.TrimPrefix(gw.URL, "http://")},
+	}
+	p := storetest.SeedParentRun(t, st, msg.RunID)
+	p.ModelOverrides = []store.RunModelOverride{row}
+	if err := st.SaveRun(store.WithIdentity(context.Background(), "_test", "_test"), p); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	ctx = secrets.WithCredentials(ctx, secrets.Credentials{
+		APIKeys: map[secrets.Provider]string{
+			secrets.ProviderOpenAI:           "sk-test-vendor",
+			secrets.ProviderOpenAICompatible: "sk-test-gateway",
+		},
+		APIBaseURLs:    map[secrets.Provider]string{secrets.ProviderOpenAICompatible: gw.URL},
+		AmbientRefused: true,
+	})
+	_, cerr := r.subbotRunnerFor(msg, parentDir, dir, iterlog.Nop())(ctx, runtime.SubbotRequest{
+		Source: "../child/main.bot", ParentRunID: msg.RunID, NodeID: "run_ticket", ReattachKey: "run_ticket",
+	})
+	if cerr == nil {
+		t.Fatal("precondition: both recorders refuse, so the child fails")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(gwHits) == 0 || len(vendorHits) != 0 {
+		t.Fatalf("child calls: gateway %q, vendor %q — want the gateway only (child error: %v)", gwHits, vendorHits, cerr)
+	}
+}
+
+// runSubbotUnderARootDocWithoutLaunchRows runs the child once under a root
+// document that froze pol and records docRows as its folded rows, and no
+// raw launch row; it returns the child's error and the run log's warnings.
+func runSubbotUnderARootDocWithoutLaunchRows(t *testing.T, pol *store.RunLLMRoutePolicy, docRows []store.RunModelOverride) (error, string) {
+	t.Helper()
+	t.Setenv("OPENAI_API_KEY", "")
+	r, st := subbotTestRunner(t)
+	dir := t.TempDir()
+	parentDir := filepath.Join(dir, "parent")
+	writeSubbotFixture(t, parentDir, "main.bot", subbotFoldParentBot)
+	writeSubbotFixture(t, filepath.Join(dir, "child"), "main.bot", agentChildBot(""))
+	msg := &queue.RunMessage{RunID: "run-parent", TenantID: "t1", OwnerID: "u1", BotID: "parent"}
+	p := storetest.SeedParentRun(t, st, msg.RunID)
+	p.LLMRoutePolicy = pol
+	p.ModelOverrides = docRows
+	if err := st.SaveRun(store.WithIdentity(context.Background(), "_test", "_test"), p); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	_, err := r.subbotRunnerFor(msg, parentDir, dir, iterlog.New(iterlog.LevelWarn, &buf))(ctx, runtime.SubbotRequest{
+		Source: "../child/main.bot", ParentRunID: msg.RunID, NodeID: "run_ticket", ReattachKey: "run_ticket",
+	})
+	if err == nil {
+		t.Fatal("precondition: the child's claw leg fails offline (no credential)")
+	}
+	return err, buf.String()
+}
+
+// A document launched today with no launch row records none either, and
+// its folded rows are its policy's cells folded for the ROOT's bot: they
+// never reach the child as launch rows, and the document is not warned as
+// one whose rows cannot be split.
+func TestSubbotChildReadsNoParentFoldFromTheRootDocsRows(t *testing.T) {
+	pol := &store.RunLLMRoutePolicy{Overrides: []store.RunLLMRouteOverride{{Selector: "parent/act", Model: "openai/gpt-6-sol"}}}
+	var docRows []store.RunModelOverride
+	for _, w := range wireRows(nil, pol, "parent") {
+		docRows = append(docRows, store.RunModelOverride{Selector: w.Selector, Backend: w.Backend, Provider: w.Provider, Model: w.Model, Effort: w.Effort})
+	}
+	if len(docRows) == 0 {
+		t.Fatal("precondition: the parent's fold holds the parent/act cell")
+	}
+	err, logs := runSubbotUnderARootDocWithoutLaunchRows(t, pol, docRows)
+	if reachedGPT(t, err) {
+		t.Fatalf("a cell folded for the parent's bot reached the child through the root document's folded rows (child error: %v)", err)
+	}
+	if strings.Contains(logs, "cannot be told from the cells") {
+		t.Fatalf("a document whose folded rows are all its cells is warned as one that cannot be split: %s", logs)
+	}
+}
+
+// A document that predates the raw launch rows and whose policy froze
+// cells mixes those cells, folded for the root's bot, with its launch rows:
+// the two cannot be split. The rows no cell explains are warned on the run
+// log, by selector, and none reaches the child.
+func TestSubbotChildOfALegacyRootDocWithCellsWarnsItsUnsplitRows(t *testing.T) {
+	pol := &store.RunLLMRoutePolicy{Overrides: []store.RunLLMRouteOverride{{Selector: "review", Model: "openai/gpt-5.5-mini"}}}
+	docRows := []store.RunModelOverride{{Selector: "review", Model: "openai/gpt-5.5-mini"}, {Selector: "act", Model: "openai/gpt-6-sol"}}
+	err, logs := runSubbotUnderARootDocWithoutLaunchRows(t, pol, docRows)
+	if reachedGPT(t, err) {
+		t.Fatalf("a row that cannot be told from the cells was guessed into the child (child error: %v)", err)
+	}
+	if !strings.Contains(logs, "cannot be told from the cells") || !strings.Contains(logs, `"act"`) || strings.Contains(logs, `"review"`) {
+		t.Fatalf("run log = %q, want one warning naming the unsplit row \"act\" and not the cell's \"review\"", logs)
+	}
+}

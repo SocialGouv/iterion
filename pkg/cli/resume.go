@@ -420,10 +420,12 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 			BackendFor:      opts.BackendFor,
 			Fallback:        opts.Fallback,
 			EffortFor:       opts.EffortFor,
-			// The run's launch rows, as its launch recorded them: a child
-			// folds this attempt's flags over them, never the run's folded
-			// rows (whose cells were folded for this run's bot).
-			recordedLaunchRows: runview.ModelOverridesFromRun(r.LaunchModelOverrides),
+			// The run's launch rows, as its launch recorded them
+			// (runview.SubbotRootLaunchRows, a document that predates the raw
+			// rows included): a child folds this attempt's flags over them,
+			// never the run's folded rows (whose cells were folded for this
+			// run's bot).
+			recordedLaunchRows: runview.ModelOverridesFromRun(runview.SubbotRootLaunchRows(r, logger)),
 		})),
 	)...)
 

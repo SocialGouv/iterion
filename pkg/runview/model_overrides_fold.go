@@ -3,6 +3,7 @@ package runview
 import (
 	"fmt"
 	"math"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -137,6 +138,48 @@ func FoldForSubbotChild(wf *ir.Workflow, rootPolicy *store.RunLLMRoutePolicy, ro
 		return nil, nil
 	}
 	return spec.ModelOverrides, nil
+}
+
+// SubbotRootLaunchRows is the raw launch rows the root run of a subbot tree
+// recorded, the rows every child of the tree folds (FoldForSubbotChild):
+// its document's LaunchModelOverrides. A document written before that field
+// existed — a run launched, paused or queued before the deploy that added
+// it, or a fork of one — records none, and its folded ModelOverrides is
+// then its launch rows when its routing policy froze no override cell: the
+// fold of no cell is the identity. On a document that records the field,
+// the same condition leaves both lists empty. When the policy froze cells,
+// the folded list mixes them, folded for the root's own bot, with the
+// launch's rows, and the two cannot be split: the rows no cell's selector
+// explains — its written spelling or its bare target — are warned on
+// logger, naming the root run, and no row reaches a child. A launch row on
+// a selector a cell also wrote reads as that cell and goes unwarned.
+func SubbotRootLaunchRows(root *store.Run, logger *iterlog.Logger) []store.RunModelOverride {
+	if root == nil {
+		return nil
+	}
+	if len(root.LaunchModelOverrides) > 0 {
+		return root.LaunchModelOverrides
+	}
+	if root.LLMRoutePolicy == nil || len(root.LLMRoutePolicy.Overrides) == 0 {
+		return root.ModelOverrides
+	}
+	written := map[string]bool{}
+	for _, c := range root.LLMRoutePolicy.Overrides {
+		written[c.Selector] = true
+		if sel, err := llmroute.ParseSelector(c.Selector); err == nil {
+			written[sel.Target] = true
+		}
+	}
+	var unsplit []string
+	for _, r := range root.ModelOverrides {
+		if !written[r.Selector] {
+			unsplit = append(unsplit, strconv.Quote(r.Selector))
+		}
+	}
+	if len(unsplit) > 0 && logger != nil {
+		logger.Warn("subbot: root run %q records no raw launch rows (its document predates them) and its routing policy froze override cells, so its folded rows %s cannot be told from the cells folded for its own bot — no subbot child of its tree folds them", root.ID, strings.Join(unsplit, ", "))
+	}
+	return nil
 }
 
 // launchBotIdentity is the bot a launch folds the policy's cells for: its

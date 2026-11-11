@@ -1683,7 +1683,10 @@ selector := [ <bot> "/" ] <target>
   launched) bot's manifest `routing:` block — a child's own manifest block is
   not read. A child's document records the root's snapshot and launch rows,
   so a child resumed on its own replays the root's providers allowlist and
-  its own children fold what the root froze. The launch's credential walk
+  its own children fold what the root froze. A root document that predates
+  the raw launch rows hands its children its folded rows when its snapshot
+  froze no override cell; when it froze cells the run log warns the rows no
+  cell explains, and no child folds them. The launch's credential walk
   reads no subbot child's site: a cell that moves a child's node onto the
   gateway is honoured at the child's dispatch, but seals the team's gateway
   key only when a route the walk reads uses it too, or on a runner pool —

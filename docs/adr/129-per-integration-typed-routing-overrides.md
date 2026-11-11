@@ -462,7 +462,10 @@ subbot child is a run of its own bot: it folds the root run's frozen snapshot ag
 (`runview.FoldForSubbotChild`), under the root's own launch rows, and the parent's list does not
 travel. Those raw launch rows — the launch body's or the CLI's, before any cell folded in — ride the
 run document beside the list (`store.Run.LaunchModelOverrides`, stamped at launch, carried by a fork,
-never re-derived): the subbot children of the run's tree are their one reader. No reader anywhere learns a second input;
+never re-derived): the subbot children of the run's tree are their one reader. A document written before the field
+records none: when its snapshot froze no override cell its folded list is its launch rows, which its children fold; with
+cells the two cannot be split, so the run log warns the rows no cell explains and no child folds them
+(`runview.SubbotRootLaunchRows`, every lane). No reader anywhere learns a second input;
 philosophy §5's "never a second source of truth" is honoured by folding once rather than by teaching
 seven readers to fold.
 

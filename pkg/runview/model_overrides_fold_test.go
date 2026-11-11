@@ -1,12 +1,15 @@
 package runview
 
 import (
+	"bytes"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/llmroute"
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/queue"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -181,6 +184,53 @@ func TestEffectiveModelOverrides_AMoreSpecificCellBeatsALaunchGlobRow(t *testing
 			folded := EffectiveModelOverrides([]ModelOverrideEntry{{Selector: tc.row, Model: "anthropic/claude-opus-5-5"}}, pol, bot)
 			if got := toModelOverrides(folded).ForNode("reviewer_claude", ir.NodeAgent).Model; got != tc.want {
 				t.Fatalf("reviewer_claude model under a %q launch row = %q, want %q (folded %+v)", tc.row, got, tc.want, folded)
+			}
+		})
+	}
+}
+
+// SubbotRootLaunchRows reads a root document's raw launch rows, and on a
+// document that predates them its folded rows when no override cell can
+// be among them. Rows no cell explains on a document whose policy froze
+// cells are warned by selector and never handed to a child.
+func TestSubbotRootLaunchRows(t *testing.T) {
+	act := store.RunModelOverride{Selector: "act", Model: "openai/gpt-6-sol"}
+	review := store.RunModelOverride{Selector: "review", Model: "openai/gpt-5.5-mini"}
+	cells := func(sel ...string) *store.RunLLMRoutePolicy {
+		pol := &store.RunLLMRoutePolicy{}
+		for _, s := range sel {
+			pol.Overrides = append(pol.Overrides, store.RunLLMRouteOverride{Selector: s, Model: "openai/gpt-5.5-mini"})
+		}
+		return pol
+	}
+	for _, tc := range []struct {
+		name   string
+		root   *store.Run
+		want   []store.RunModelOverride
+		warned []string
+	}{
+		{"no document", nil, nil, nil},
+		{"the raw rows recorded", &store.Run{LaunchModelOverrides: []store.RunModelOverride{act}, ModelOverrides: []store.RunModelOverride{review, act}, LLMRoutePolicy: cells("review")}, []store.RunModelOverride{act}, nil},
+		{"no policy", &store.Run{ModelOverrides: []store.RunModelOverride{act}}, []store.RunModelOverride{act}, nil},
+		{"a providers list alone", &store.Run{ModelOverrides: []store.RunModelOverride{act}, LLMRoutePolicy: &store.RunLLMRoutePolicy{Providers: []string{"openai"}}}, []store.RunModelOverride{act}, nil},
+		{"every row a cell", &store.Run{ModelOverrides: []store.RunModelOverride{review}, LLMRoutePolicy: cells("review")}, nil, nil},
+		{"a bot-scoped cell explains its bare target", &store.Run{ModelOverrides: []store.RunModelOverride{act}, LLMRoutePolicy: cells("parent/act")}, nil, nil},
+		{"a row no cell explains", &store.Run{ID: "run-legacy", ModelOverrides: []store.RunModelOverride{review, act}, LLMRoutePolicy: cells("review")}, nil, []string{`"act"`}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			got := SubbotRootLaunchRows(tc.root, iterlog.New(iterlog.LevelWarn, &buf))
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("rows = %+v, want %+v", got, tc.want)
+			}
+			logged := buf.String()
+			if warned := strings.Contains(logged, "cannot be told from the cells"); warned != (len(tc.warned) > 0) {
+				t.Fatalf("warned = %v, want %v (log %q)", warned, len(tc.warned) > 0, logged)
+			}
+			for _, sel := range tc.warned {
+				if !strings.Contains(logged, sel) || !strings.Contains(logged, `"run-legacy"`) || strings.Contains(logged, `"review"`) {
+					t.Fatalf("log = %q, want the root run and %s named, and not the cell's \"review\"", logged, sel)
+				}
 			}
 		})
 	}

@@ -91,7 +91,8 @@ func (s *Service) subbotRunnerFor(parentPath string, runLogger *iterlog.Logger) 
 }
 
 // subbotRoot is what the run a subbot tree hangs from froze at launch: its
-// routing-policy snapshot and its own raw launch rows. Every child of the
+// routing-policy snapshot and its own raw launch rows (SubbotRootLaunchRows,
+// a document that predates the raw rows included). Every child of the
 // tree folds them for its own bot (FoldForSubbotChild); they travel down
 // the recursion, so a grandchild reads the root's, never its parent's.
 type subbotRoot struct {
@@ -173,7 +174,7 @@ func (s *Service) subbotRunnerUnder(tree *subbotRoot, parentPath string, runLogg
 		// above is the root.
 		root := tree
 		if root == nil {
-			root = &subbotRoot{policy: parentRun.LLMRoutePolicy, launchRows: parentRun.LaunchModelOverrides}
+			root = &subbotRoot{policy: parentRun.LLMRoutePolicy, launchRows: SubbotRootLaunchRows(parentRun, runLogger)}
 		}
 		childRows, err := FoldForSubbotChild(childWf, root.policy, root.launchRows, childBot, "", runLogger)
 		if err != nil {

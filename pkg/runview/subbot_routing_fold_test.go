@@ -1,6 +1,7 @@
 package runview
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"path/filepath"
@@ -72,6 +73,17 @@ func runInProcessSubbotFold(t *testing.T, childDir, childBot string, extra map[s
 // root run whose document also records launchRows, its raw launch rows.
 func runInProcessSubbotFoldWithLaunchRows(t *testing.T, childDir, childBot string, extra map[string]string, pol *store.RunLLMRoutePolicy, launchRows []store.RunModelOverride, stamped *[]store.RunModelOverride) error {
 	t.Helper()
+	return runInProcessSubbotFoldUnder(t, childDir, childBot, extra, func(root *store.Run) {
+		root.LLMRoutePolicy = pol
+		root.LaunchModelOverrides = launchRows
+	}, iterlog.Nop(), stamped)
+}
+
+// runInProcessSubbotFoldUnder runs the parent's subbot node once, logging
+// on runLogger, under a root run whose document seed has shaped, and
+// returns the child's error.
+func runInProcessSubbotFoldUnder(t *testing.T, childDir, childBot string, extra map[string]string, seed func(root *store.Run), runLogger *iterlog.Logger, stamped *[]store.RunModelOverride) error {
+	t.Helper()
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("TMPDIR", t.TempDir())
 	t.Setenv("ITERION_ORPHAN_RECONCILE_INTERVAL", "0")
@@ -97,12 +109,11 @@ func runInProcessSubbotFoldWithLaunchRows(t *testing.T, childDir, childBot strin
 	if err != nil {
 		t.Fatal(err)
 	}
-	root.LLMRoutePolicy = pol
-	root.LaunchModelOverrides = launchRows
+	seed(root)
 	if err := svc.store.SaveRun(ctx, root); err != nil {
 		t.Fatal(err)
 	}
-	_, runErr := svc.subbotRunnerFor(filepath.Join(dir, "parent", "main.bot"), iterlog.Nop())(ctx, runtime.SubbotRequest{
+	_, runErr := svc.subbotRunnerFor(filepath.Join(dir, "parent", "main.bot"), runLogger)(ctx, runtime.SubbotRequest{
 		Source: "../" + childDir + "/main.bot", ParentRunID: rootID, NodeID: "run_child", ReattachKey: "run_child", WorkDir: dir,
 	})
 	if runErr == nil {
@@ -445,5 +456,37 @@ workflow parent:
 	}
 	if !strings.Contains(child.Error, "outside this run's provider allowlist (anthropic)") {
 		t.Fatalf("the force-resumed child dispatched outside its root's allowlist [anthropic]: status %s, error %q", child.Status, child.Error)
+	}
+}
+
+// A root document written before store.Run.LaunchModelOverrides existed
+// records no raw launch rows. With no override cell in its policy its
+// folded rows ARE its launch rows, and an in-process child folds them, as
+// on the cloud runner; with cells the two cannot be split, the run log
+// warns the rows no cell explains, and none reaches the child.
+func TestInProcessSubbotChildOfALegacyRootDocFoldsItsRows(t *testing.T) {
+	rows := []store.RunModelOverride{{Selector: "act", Model: "openai/gpt-6-sol"}}
+	for _, tc := range []struct {
+		name   string
+		pol    *store.RunLLMRoutePolicy
+		folded bool
+	}{
+		{"no cell", nil, true},
+		{"a providers list alone", &store.RunLLMRoutePolicy{Providers: []string{"openai"}}, true},
+		{"a cell beside the row", &store.RunLLMRoutePolicy{Overrides: []store.RunLLMRouteOverride{{Selector: "review", Model: "openai/gpt-5.5-mini"}}}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			err := runInProcessSubbotFoldUnder(t, "child", subbotFoldAgent, nil, func(root *store.Run) {
+				root.LLMRoutePolicy = tc.pol
+				root.ModelOverrides = rows
+			}, iterlog.New(iterlog.LevelWarn, &buf), nil)
+			if got := dispatchedGPT(t, err); got != tc.folded {
+				t.Fatalf("the root document's row reached the child = %v, want %v (child error: %v)", got, tc.folded, err)
+			}
+			if warned := strings.Contains(buf.String(), "cannot be told from the cells"); warned == tc.folded || (warned && !strings.Contains(buf.String(), `"act"`)) {
+				t.Fatalf("run log = %q, want a warning naming \"act\" exactly when the row cannot be split", buf.String())
+			}
+		})
 	}
 }
