@@ -72,12 +72,35 @@ const (
 	originLaunch overrideOrigin = "the launch's own override row"
 )
 
-// sourcedOverrideEntry is one folded entry beside the layer that wrote
+// sourcedOverrideEntry is one folded entry beside the record that wrote
 // it. The flat []ModelOverrideEntry list stays every wire shape; the
-// origin lives only inside the launch's validation walk.
+// origin lives only inside the launch's validation walk. A policy cell
+// keeps the selector its level wrote — the bot part the fold stripped
+// included — and, per field, the level that wrote it (the snapshot's
+// provenance label), so a refusal names the record an operator edits.
 type sourcedOverrideEntry struct {
 	ModelOverrideEntry
 	origin overrideOrigin
+	// written is a policy cell's selector as its level wrote it; "" for a
+	// launch row, which the fold keeps as written.
+	written string
+	// levels maps a policy cell's field name to the provenance label of
+	// the level that wrote it (llmroute.Source*); nil for a launch row and
+	// for a snapshot built without provenance.
+	levels map[string]string
+}
+
+// describe names the record one field of a folded entry came from: a
+// launch row by its selector; a policy cell by the selector its level
+// wrote and that level, when the snapshot records it.
+func (e sourcedOverrideEntry) describe(field string) string {
+	if e.origin != originPolicy || e.written == "" {
+		return fmt.Sprintf("%s %q", e.origin, e.Selector)
+	}
+	if level := e.levels[field]; level != "" {
+		return fmt.Sprintf("%s %q written at level %q", e.origin, e.written, level)
+	}
+	return fmt.Sprintf("%s %q", e.origin, e.written)
 }
 
 // EffectiveModelOverrides folds the resolved routing policy's override
@@ -173,7 +196,7 @@ func foldSourcedOverrides(
 			// own fields nor a supervisor's model, so it shadows nothing
 			// here. A launch row on the same scoped selector still wins
 			// the tie (it sits after).
-			out = append(out, sourcedOverrideEntry{ModelOverrideEntry: o, origin: originPolicy})
+			out = append(out, o)
 			continue
 		}
 		if shadow.backend {
@@ -191,7 +214,7 @@ func foldSourcedOverrides(
 		if hadShadow && o.Backend == "" && o.Model == "" && o.Provider == "" && o.Effort == "" {
 			continue // the cell is fully shadowed
 		}
-		out = append(out, sourcedOverrideEntry{ModelOverrideEntry: o, origin: originPolicy})
+		out = append(out, o)
 	}
 	for _, r := range launchRows {
 		out = append(out, sourcedOverrideEntry{ModelOverrideEntry: r, origin: originLaunch})
@@ -201,7 +224,9 @@ func foldSourcedOverrides(
 
 // policyOverrideEntries adapts the resolved snapshot's cells onto the
 // launch-entry shape — the "a tiny adapter per site" doctrine
-// (pkg/backend/model/override_fold.go's OverrideEntry).
+// (pkg/backend/model/override_fold.go's OverrideEntry) — each entry
+// remembering the selector its level wrote and each field's level
+// (sourcedOverrideEntry), for the refusals that name it.
 //
 // The bot dimension resolves here (see the file header): a cell whose bot
 // part does not reach bot drops; the others fold as their bare targets, one
@@ -213,13 +238,14 @@ func foldSourcedOverrides(
 // every-bot cells — it matches nothing; the launch chokepoint
 // (llmroute.Validate at resolveRunLLMRoutePolicy) refuses such a record
 // before any fold.
-func policyOverrideEntries(pol *store.RunLLMRoutePolicy, bot llmroute.BotIdentity) []ModelOverrideEntry {
+func policyOverrideEntries(pol *store.RunLLMRoutePolicy, bot llmroute.BotIdentity) []sourcedOverrideEntry {
 	if pol == nil {
 		return nil
 	}
 	type folded struct {
-		match llmroute.BotMatch
-		entry ModelOverrideEntry
+		match   llmroute.BotMatch
+		written string
+		entry   ModelOverrideEntry
 	}
 	type cellKey struct {
 		match         llmroute.BotMatch
@@ -239,7 +265,7 @@ func policyOverrideEntries(pol *store.RunLLMRoutePolicy, bot llmroute.BotIdentit
 			target = sel.Target
 		}
 		at := len(cells)
-		cells = append(cells, folded{match: match, entry: ModelOverrideEntry{
+		cells = append(cells, folded{match: match, written: o.Selector, entry: ModelOverrideEntry{
 			Selector: target,
 			Backend:  o.Backend,
 			Model:    o.Model,
@@ -262,17 +288,46 @@ func policyOverrideEntries(pol *store.RunLLMRoutePolicy, bot llmroute.BotIdentit
 			held[k] = holder{level: level, at: at}
 		}
 	}
-	out := make([]ModelOverrideEntry, 0, len(cells))
+	out := make([]sourcedOverrideEntry, 0, len(cells))
 	for match := llmroute.BotMatchAll; match <= llmroute.BotMatchID; match++ {
 		for _, c := range cells {
 			e := c.entry
 			if c.match != match || (e.Backend == "" && e.Model == "" && e.Provider == "" && e.Effort == "") {
 				continue
 			}
-			out = append(out, e)
+			out = append(out, sourcedOverrideEntry{ModelOverrideEntry: e, origin: originPolicy, written: c.written, levels: cellLevels(pol.Sources, c.written, e)})
 		}
 	}
 	return out
+}
+
+// cellLevels maps each field a folded cell still pins to the provenance
+// label of the level that wrote it; nil when the snapshot records none.
+func cellLevels(sources map[string]string, written string, e ModelOverrideEntry) map[string]string {
+	var out map[string]string
+	for _, field := range overrideEntryFields {
+		if *field.of(&e) == "" {
+			continue
+		}
+		if label := sources[llmroute.OverrideCellKey(written, field.name)]; label != "" {
+			if out == nil {
+				out = map[string]string{}
+			}
+			out[field.name] = label
+		}
+	}
+	return out
+}
+
+// overrideEntryField is the accessor of the field overrideEntryFields
+// names name.
+func overrideEntryField(name string) func(*ModelOverrideEntry) *string {
+	for _, field := range overrideEntryFields {
+		if field.name == name {
+			return field.of
+		}
+	}
+	panic(fmt.Sprintf("runview: no override entry field %q", name))
 }
 
 // overrideEntryFields names the fields of a folded entry the way a cell's

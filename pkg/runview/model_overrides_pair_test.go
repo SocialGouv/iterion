@@ -122,7 +122,7 @@ func TestFoldSourcedOverridesCarriesTheOriginBesideEachEntry(t *testing.T) {
 	rows := []ModelOverrideEntry{{Selector: "work", Provider: "zai"}}
 	got := foldSourcedOverrides(rows, pol, llmroute.BotIdentity{})
 	want := []sourcedOverrideEntry{
-		{ModelOverrideEntry: ModelOverrideEntry{Selector: "work", Backend: "claw"}, origin: originPolicy},
+		{ModelOverrideEntry: ModelOverrideEntry{Selector: "work", Backend: "claw"}, origin: originPolicy, written: "work"},
 		{ModelOverrideEntry: rows[0], origin: originLaunch},
 	}
 	if !reflect.DeepEqual(got, want) {

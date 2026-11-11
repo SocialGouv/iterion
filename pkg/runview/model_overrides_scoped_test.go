@@ -112,7 +112,15 @@ func TestZeroMatch_ACellNamingTheBotThatReachesNothingIsWarned(t *testing.T) {
 	if err != nil {
 		t.Fatalf("screen: %v", err)
 	}
-	joined := strings.Join(warnings, "\n")
+	// The zero-match warnings alone: the screen's other warnings (a gateway
+	// crossing on this claude_code bot) name the cell they read too.
+	var zeroMatch []string
+	for _, w := range warnings {
+		if strings.Contains(w, "matches no node") {
+			zeroMatch = append(zeroMatch, w)
+		}
+	}
+	joined := strings.Join(zeroMatch, "\n")
 	for _, want := range []string{`"scoped/work#gml"`, `"scoped/supervisor:pacr"`} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("screen warnings = %v, want one naming %s", warnings, want)

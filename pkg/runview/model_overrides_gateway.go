@@ -7,6 +7,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/llmroute"
 )
 
 // The gateway crossing check. Dispatch judges every chain element it
@@ -211,20 +212,20 @@ func gatewayCrossingFindings(wf *ir.Workflow, overrides model.ModelOverrides, fo
 			continue
 		}
 		res, src := overrides.ForNodeFieldSources(id, node.NodeKind())
-		origin := func(fs model.FieldSource, value string, field func(ModelOverrideEntry) string) string {
+		origin := func(fs model.FieldSource, value, field string) string {
 			if value == "" {
 				return ""
 			}
 			return foldedEntryOrigin(folded, fs, value, field)
 		}
-		backend := nodeGatewayBackend(wf, fields, res.Backend, origin(src.Backend, res.Backend, func(e ModelOverrideEntry) string { return e.Backend }))
+		backend := nodeGatewayBackend(wf, fields, res.Backend, origin(src.Backend, res.Backend, llmroute.OverrideFieldBackend))
 		provider := gatewayField{value: fields.Provider, botSource: "the node's own provider field"}
 		if res.Provider != "" {
-			provider = gatewayField{value: res.Provider, origin: origin(src.Provider, res.Provider, func(e ModelOverrideEntry) string { return e.Provider })}
+			provider = gatewayField{value: res.Provider, origin: origin(src.Provider, res.Provider, llmroute.OverrideFieldProvider)}
 		}
 		base := gatewayField{value: fields.Model, botSource: "the node's own model field"}
 		if res.Model != "" {
-			base = gatewayField{value: res.Model, origin: origin(src.Model, res.Model, func(e ModelOverrideEntry) string { return e.Model })}
+			base = gatewayField{value: res.Model, origin: origin(src.Model, res.Model, llmroute.OverrideFieldModel)}
 		}
 		sites := []gatewaySite{{chain: true, backend: backend, provider: provider, base: base}}
 		for _, r := range authoredRoutes(node, overrides) {
@@ -234,8 +235,8 @@ func gatewayCrossingFindings(wf *ir.Workflow, overrides model.ModelOverrides, fo
 			// The route as the run pins it (EffectiveFallback); a field the
 			// route names neither way is its node's.
 			site := model.FieldSource{Selector: r.site}
-			routeField := func(value, pinned, name string, field func(ModelOverrideEntry) string) gatewayField {
-				f := gatewayField{value: value, botSource: "the route's own " + name + " field"}
+			routeField := func(value, pinned, field string) gatewayField {
+				f := gatewayField{value: value, botSource: "the route's own " + field + " field"}
 				if pinned != "" {
 					f.origin = origin(site, pinned, field)
 				}
@@ -243,11 +244,11 @@ func gatewayCrossingFindings(wf *ir.Workflow, overrides model.ModelOverrides, fo
 			}
 			rs := gatewaySite{route: r.site, backend: backend, base: base}
 			if r.effective.Backend != "" {
-				rs.backend = routeField(r.effective.Backend, r.pin.Backend, "backend", func(e ModelOverrideEntry) string { return e.Backend })
+				rs.backend = routeField(r.effective.Backend, r.pin.Backend, llmroute.OverrideFieldBackend)
 			}
-			rs.provider = routeField(r.effective.Provider, r.pin.Provider, "provider", func(e ModelOverrideEntry) string { return e.Provider })
+			rs.provider = routeField(r.effective.Provider, r.pin.Provider, llmroute.OverrideFieldProvider)
 			if r.effective.Model != "" {
-				rs.base = routeField(r.effective.Model, r.pin.Model, "model", func(e ModelOverrideEntry) string { return e.Model })
+				rs.base = routeField(r.effective.Model, r.pin.Model, llmroute.OverrideFieldModel)
 			}
 			sites = append(sites, rs)
 		}

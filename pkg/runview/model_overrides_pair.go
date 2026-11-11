@@ -60,9 +60,9 @@ func composedPairFindings(wf *ir.Workflow, folded []sourcedOverrideEntry) []comp
 		if res.Backend != "" && res.Provider != "" {
 			err := llmroute.ValidateComposedPair(
 				res.Backend,
-				foldedEntryOrigin(folded, src.Backend, res.Backend, func(e ModelOverrideEntry) string { return e.Backend }),
+				foldedEntryOrigin(folded, src.Backend, res.Backend, llmroute.OverrideFieldBackend),
 				res.Provider,
-				foldedEntryOrigin(folded, src.Provider, res.Provider, func(e ModelOverrideEntry) string { return e.Provider }),
+				foldedEntryOrigin(folded, src.Provider, res.Provider, llmroute.OverrideFieldProvider),
 			)
 			if err != nil {
 				findings = append(findings, composedPairFinding{kind: wf.Nodes[id].NodeKind(), id: id, err: err})
@@ -152,9 +152,9 @@ func routePairFindings(node ir.Node, overrides model.ModelOverrides, nodeBackend
 		}
 		err := llmroute.ValidateComposedPair(
 			backend,
-			foldedEntryOrigin(folded, backendSrc, backend, func(e ModelOverrideEntry) string { return e.Backend }),
+			foldedEntryOrigin(folded, backendSrc, backend, llmroute.OverrideFieldBackend),
 			r.pin.Provider,
-			foldedEntryOrigin(folded, site, r.pin.Provider, func(e ModelOverrideEntry) string { return e.Provider }),
+			foldedEntryOrigin(folded, site, r.pin.Provider, llmroute.OverrideFieldProvider),
 		)
 		if err != nil {
 			out = append(out, composedPairFinding{kind: node.NodeKind(), id: node.NodeID(), route: r.site, err: err})
@@ -172,16 +172,18 @@ func routeSiteKey(nodeID string, index int, name string) string {
 	return fmt.Sprintf("%s%s%d", nodeID, llmroute.SelectorRouteSeparator, index)
 }
 
-// foldedEntryOrigin names the folded entry a won field came from: the
-// LAST entry matching (selector, value) — the later rule wins a tie, so
-// the last match is the rule ForNode picked. The shape fallback is
-// unreachable through the fold; it names no level rather than inventing
-// one.
-func foldedEntryOrigin(folded []sourcedOverrideEntry, src model.FieldSource, value string, field func(ModelOverrideEntry) string) string {
+// foldedEntryOrigin names the record a won field came from (the field
+// named by its llmroute.OverrideField* name): the LAST folded entry
+// matching (selector, value) — the later rule wins a tie, so the last
+// match is the rule ForNode picked — as the operator finds it to edit
+// (sourcedOverrideEntry.describe). The shape fallback is unreachable
+// through the fold; it names no level rather than inventing one.
+func foldedEntryOrigin(folded []sourcedOverrideEntry, src model.FieldSource, value, field string) string {
+	of := overrideEntryField(field)
 	for i := len(folded) - 1; i >= 0; i-- {
 		e := folded[i]
-		if src.Selector == e.Selector && field(e.ModelOverrideEntry) == value {
-			return fmt.Sprintf("%s %q", e.origin, e.Selector)
+		if src.Selector == e.Selector && *of(&e.ModelOverrideEntry) == value {
+			return e.describe(field)
 		}
 	}
 	return "an override entry"

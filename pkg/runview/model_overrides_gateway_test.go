@@ -107,14 +107,14 @@ func TestLaunchRefusesAGatewayHintBesideTheBotsNonGatewayModel(t *testing.T) {
 		pub, err := launchGatewayBot(t, "gwhint", gatewayHintBot, []store.RunLLMRouteOverride{
 			{Selector: "gwhint/work", Backend: "claw", Provider: "openai_compatible"},
 		}, nil)
-		requireRefusal(t, pub, err, `agent "work"`, "openai_compatible", `"claude-opus-5"`, `the routing policy's override cell "work"`)
+		requireRefusal(t, pub, err, `agent "work"`, "openai_compatible", `"claude-opus-5"`, `the routing policy's override cell "gwhint/work"`)
 	})
 	t.Run("route", func(t *testing.T) {
 		pub, err := launchGatewayBot(t, "gwhint", gatewayHintBot, []store.RunLLMRouteOverride{
 			{Selector: "gwhint/work", Backend: "claw", Provider: "openai_compatible", Model: gatewayTestModel},
 			{Selector: "gwhint/work#glm", Backend: "claw", Provider: "openai_compatible"},
 		}, nil)
-		requireRefusal(t, pub, err, `"work#glm"`, "openai_compatible", `"glm-5.3"`, `the routing policy's override cell "work#glm"`)
+		requireRefusal(t, pub, err, `"work#glm"`, "openai_compatible", `"glm-5.3"`, `the routing policy's override cell "gwhint/work#glm"`)
 	})
 }
 
