@@ -61,7 +61,9 @@ type gatewayElement struct {
 
 // gatewaySite is one call site's composed fields before dispatch splits
 // them into elements: a node's primary splits its provider chain into steps
-// (parseProviderChain), a route carries one hint.
+// (parseProviderChain) and sends them all on a backend that walks the chain,
+// the head alone on any other (collapseHintOnlyChain); a route carries one
+// hint.
 type gatewaySite struct {
 	route string
 	// chain marks the node's primary, whose provider is a chain of
@@ -87,6 +89,14 @@ func (s gatewaySite) elements() []gatewayElement {
 			el.model = gatewayField{value: stepModel, origin: s.provider.origin, botSource: "a step of " + s.provider.botSource}
 		}
 		out = append(out, el)
+	}
+	// A backend that does not walk a hint-only chain sends its head alone
+	// (collapseHintOnlyChain): the steps behind it are never built. An
+	// unnamed backend reads "" here and collapses too — the runner picks
+	// claw for a chain that needs the gateway, and the head is the one step
+	// every backend builds.
+	if len(out) > 1 && !model.WalksProviderChain(s.backend.value) {
+		out = out[:1]
 	}
 	if len(out) == 0 {
 		out = append(out, gatewayElement{backend: s.backend, hint: gatewayField{origin: s.provider.origin, botSource: s.provider.botSource}, model: s.base})

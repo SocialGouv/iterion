@@ -1607,10 +1607,12 @@ writes that model — its `model`, or a node chain step's own
 `openai_compatible:<model>`.
 A `claude_code` route is still refused a gateway model at dispatch, whatever
 the cells say. The launch rebuilds every element dispatch builds from the
-folded cells — each node's provider steps and each `fallbacks:` route, the
-model from a step, a cell or the bot — and judges it with dispatch's own
-gateway rule (`GatewayCrossingRefusal`): a gateway route on a literal
-non-claw backend (the node's own `backend: claude_code` included), a vendor
+folded cells — each node's provider steps dispatch sends (a backend that does
+not walk a hint-only chain sends the head alone: claw, and an unnamed one,
+which the runner resolves to claw for a chain that needs the gateway) and
+each `fallbacks:` route, the model from a step, a cell or the bot — and
+judges it with dispatch's own gateway rule (`GatewayCrossingRefusal`): a
+gateway route on a literal non-claw backend (the node's own `backend: claude_code` included), a vendor
 hint beside a gateway model, the gateway hint beside a model that is not a
 gateway route. When a cell or a launch row wrote one of the fields that
 refusal reads, the launch refuses it, naming each field and where it came from — a
