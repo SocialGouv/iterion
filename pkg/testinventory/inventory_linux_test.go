@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -98,7 +99,8 @@ func TestOne(t *testing.T) {}
 			deadline := time.After(30 * time.Second)
 			for {
 				status, err := os.ReadFile(fmt.Sprintf("/proc/%d/status", pid))
-				if os.IsNotExist(err) || (err == nil && bytes.Contains(status, []byte("State:\tZ"))) {
+				// The task can disappear after procfs opens its status file.
+				if os.IsNotExist(err) || errors.Is(err, syscall.ESRCH) || (err == nil && bytes.Contains(status, []byte("State:\tZ"))) {
 					break
 				}
 				if err != nil {
