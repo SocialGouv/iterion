@@ -732,13 +732,18 @@ func (h *storeHooks) usageSampleLocked(st *usageProgressState) map[string]any {
 			// top would double it, and the Anthropic 0.1x read multiplier
 			// misprices a rate the operator table publishes itself. Only
 			// cacheWrite stays additive: only Anthropic wires populate it
-			// today.
+			// today. Priced through the run's environment (h.ctx, the
+			// context the runner planted the run's feed table on), so a
+			// feed-priced gateway node samples at the table its dispatch
+			// resolved from, not at the runner's process floor.
 			totalTokens = st.in + st.out + st.cacheWrite
-			used = cost.EstimateUSDWithCache(st.model, st.in, st.out, st.cacheRead)
+			used = cost.EstimateUSDWithCacheInEnv(h.ctx, st.model, st.in, st.out, st.cacheRead)
 		} else {
 			// Anthropic accounting: cache reads and writes are exclusive of
 			// the input count — cache writes at 1.25x the input rate, cache
-			// reads at 0.1x (the standard Anthropic multipliers).
+			// reads at 0.1x (the standard Anthropic multipliers). No
+			// gateway route lands here (a gateway route speaks Chat
+			// Completions), so the vendor tables read no environment.
 			equivIn := st.in + st.cacheWrite + st.cacheWrite/4 + st.cacheRead/10
 			used = cost.EstimateUSD(st.model, equivIn, st.out)
 		}
