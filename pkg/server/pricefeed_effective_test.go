@@ -116,6 +116,11 @@ func TestPriceFeedEffectiveView(t *testing.T) {
 	if !strings.Contains(strings.Join(view.Warnings, "\n"), "broken") {
 		t.Fatalf("the fold's warning about the broken declaration is missing: %q", view.Warnings)
 	}
+	// The org's glm-5.3 answers whole over the platform's and states no
+	// window or output cap: the view says so, naming both levels.
+	if want := "price feed pliage (org org1) answers whole over feed pliage (platform) and leaves context_window, max_output_tokens unstated for 1 ids (glm-5.3)"; !strings.Contains(strings.Join(view.Warnings, "\n"), want) {
+		t.Fatalf("the shadowing warning is missing from the view: %q", view.Warnings)
+	}
 
 	if len(view.Models) != 4 {
 		t.Fatalf("the view reports %d ids, want the 4 requested: %s", len(view.Models), out)

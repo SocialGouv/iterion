@@ -455,3 +455,65 @@ func TestFoldOverBudgetKeepsDeclaredEfforts(t *testing.T) {
 		}
 	}
 }
+
+// A price entry answers WHOLE from one feed (ADR-122): the fold never
+// merges a window, an output cap or a cache price across feeds or
+// levels. When the winning entry leaves unstated a field the entry it
+// shadows states, the fold says so — one line per (winner, shadowed) pair
+// naming the ids and the fields — and keeps the winner whole. The
+// efforts stay the declaration's either way.
+func TestFoldWarnsWhenAWinningEntryLeavesShadowedFieldsUnstated(t *testing.T) {
+	const wire = "scaleway/deepseek-v4.1-flash"
+	now := time.Now()
+	declared := declaredFeed("pliage", `{"`+wire+`":{"context_window":256000,"max_output_tokens":32768,"input_usd_per_mtok":0.672,"output_usd_per_mtok":2.016,"cache_read_usd_per_mtok":0.1344,"reasoning_efforts":["low","high","xhigh","max"]}}`)
+	litellm := fetchedFeed("pliage-litellm")
+	pricesOnly := map[string]*StateRecord{"pliage-litellm": freshState("pliage-litellm", now, map[string]modelspecs.Spec{wire: {InputCostPerM: 0.7, OutputCostPerM: 2.1}})}
+	restated := map[string]*StateRecord{"pliage-litellm": freshState("pliage-litellm", now, map[string]modelspecs.Spec{wire: {ContextWindow: 256000, MaxOutputTokens: 32768, InputCostPerM: 0.7, OutputCostPerM: 2.1, CacheReadCostPerM: 0.14}})}
+	scope := func(states map[string]*StateRecord, feeds ...FeedConfig) ScopeState {
+		return ScopeState{Config: &ConfigRecord{UpdatedAt: now, Feeds: feeds}, States: states}
+	}
+	dropped := []string{"context_window", "max_output_tokens", "cache_read_usd_per_mtok"}
+	for _, tc := range []struct {
+		name    string
+		scopes  []ScopeState
+		winner  string
+		window  int
+		dropped []string
+	}{
+		{"a team's litellm over the platform's declaration", []ScopeState{scope(nil, declared), scope(pricesOnly, litellm)}, "pliage-litellm", 0, dropped},
+		{"an org's litellm over the platform's declaration", []ScopeState{scope(nil, declared), scope(pricesOnly, litellm), scope(nil, declaredFeed("team-decl", `{"other":{"input_usd_per_mtok":1,"output_usd_per_mtok":1}}`))}, "pliage-litellm", 0, dropped},
+		{"one level, the litellm feed listed first", []ScopeState{scope(pricesOnly, litellm, declared)}, "pliage-litellm", 0, dropped},
+		{"one level, the declaration listed first", []ScopeState{scope(pricesOnly, declared, litellm)}, "pliage", 256000, nil},
+		{"a team's litellm restating the fields", []ScopeState{scope(nil, declared), scope(restated, litellm)}, "pliage-litellm", 256000, nil},
+	} {
+		var warned []string
+		table := Fold(FoldConfig{Now: now, Warnf: func(f string, a ...any) { warned = append(warned, fmt.Sprintf(f, a...)) }}, tc.scopes...)
+		if table == nil {
+			t.Fatalf("[%s] nothing folded", tc.name)
+		}
+		entry := table.Entries[wire]
+		if entry.Feed != tc.winner || entry.Spec.ContextWindow != tc.window {
+			t.Fatalf("[%s] the entry answers from %q with window %d, want %q whole (window %d)", tc.name, entry.Feed, entry.Spec.ContextWindow, tc.winner, tc.window)
+		}
+		if tc.winner == "pliage-litellm" && tc.dropped != nil && (entry.Spec.MaxOutputTokens != 0 || entry.Spec.CacheReadCostPerM != 0) {
+			t.Fatalf("[%s] the winning entry was merged with the shadowed one: %+v", tc.name, entry.Spec)
+		}
+		if got := table.Efforts[wire].Feed; got != "pliage" {
+			t.Fatalf("[%s] the efforts answer from %q, want the declaration", tc.name, got)
+		}
+		if tc.dropped == nil {
+			if len(warned) != 0 {
+				t.Fatalf("[%s] the fold warned with nothing left unstated: %v", tc.name, warned)
+			}
+			continue
+		}
+		if len(warned) != 1 {
+			t.Fatalf("[%s] want one shadowing warning, got %v", tc.name, warned)
+		}
+		for _, want := range append([]string{"price feed pliage-litellm answers whole over feed pliage and leaves", wire}, tc.dropped...) {
+			if !strings.Contains(warned[0], want) {
+				t.Fatalf("[%s] the warning %q does not name %s", tc.name, warned[0], want)
+			}
+		}
+	}
+}

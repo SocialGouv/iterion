@@ -438,6 +438,10 @@ const DefaultBudget = 100 * 1024
 type ScopeState struct {
 	Config *ConfigRecord
 	States map[string]*StateRecord // feed name → state
+	// Label names the scope in the fold's warnings ("platform",
+	// "org <id>", "team <id>"): two levels may name a feed alike. Empty,
+	// a warning names the feed alone.
+	Label string
 }
 
 // Fold composes the effective table for one run, two fields folded
@@ -448,6 +452,14 @@ type ScopeState struct {
 //   - Entries: every priced entry (input and output price both above
 //     zero) of every answering feed, its accepted efforts stripped;
 //   - Efforts: every entry's accepted efforts, priced or not.
+//
+// A price entry answers WHOLE from one feed (ADR-122): its fields are
+// never merged across feeds or scopes. When the winning entry for an id
+// leaves unstated a field — the price pair, the window, the output cap,
+// the cache price or a flag — that an entry it shadows states (a later
+// feed's of the same scope, or a less specific scope's), the fold keeps
+// the winner whole and warns, one line per (winner, shadowed) feed pair
+// naming the ids and the fields.
 //
 // A fetched feed answers while its state is fresh (StateRecord.Fresh);
 // a stale one contributes nothing — it steps down to the operator floor,
@@ -482,7 +494,9 @@ func Fold(cfg FoldConfig, scopes ...ScopeState) *Table {
 		cfg.Budget = DefaultBudget
 	}
 	entries := map[string]Entry{}
+	entryScope := map[string]string{} // id → the label of the scope its entry answers from
 	efforts := map[string]EffortsEntry{}
+	shadows := shadowReport{}
 	for _, scope := range scopes {
 		if scope.Config == nil {
 			continue
@@ -518,25 +532,34 @@ func Fold(cfg FoldConfig, scopes ...ScopeState) *Table {
 					}
 					continue
 				}
-				if _, taken := scopeEntries[id]; taken {
-					continue
-				}
 				spec.ReasoningEfforts = nil
-				scopeEntries[id] = Entry{
+				entry := Entry{
 					Feed:        feed.Name,
 					RefreshedAt: answer.refreshedAt,
 					FreshFor:    answer.freshFor,
 					Spec:        spec,
 					Declared:    answer.declared,
 				}
+				if winner, taken := scopeEntries[id]; taken {
+					shadows.note(id, winner, scope.Label, entry, scope.Label)
+					continue
+				}
+				scopeEntries[id] = entry
 			}
 			if unpriced > 0 && cfg.Warnf != nil {
 				cfg.Warnf("price feed %s: %d entries carry no price pair — their windows, prices and flags do not answer and the operator table keeps those ids", feed.Name, unpriced)
 			}
 		}
-		maps.Copy(entries, scopeEntries)
+		for id, entry := range scopeEntries {
+			if shadowed, taken := entries[id]; taken {
+				shadows.note(id, entry, scope.Label, shadowed, entryScope[id])
+			}
+			entries[id] = entry
+			entryScope[id] = scope.Label
+		}
 		maps.Copy(efforts, scopeEfforts)
 	}
+	shadows.warn(cfg.Warnf)
 	if len(entries) == 0 && len(efforts) == 0 {
 		return nil
 	}
@@ -565,6 +588,112 @@ func Fold(cfg FoldConfig, scopes ...ScopeState) *Table {
 		cfg.Warnf("price feed: the folded table exceeds %d bytes even narrowed to the run's named ids — the run keeps the operator table (narrow the feed's source)", cfg.Budget)
 	}
 	return nil
+}
+
+// shadowReport collects, per (winning feed, shadowed feed) pair, the ids
+// where the winning price entry leaves unstated a field the entry it
+// shadows states — a later feed of the same level, or a less specific
+// level's answer. The winner answers whole (ADR-122): the report only
+// says what that drops.
+type shadowReport map[shadowPair]*shadowed
+
+// shadowPair is a (winning feed, shadowed feed) pair, each with the label
+// of its scope.
+type shadowPair struct{ winner, winnerScope, loser, loserScope string }
+
+type shadowed struct {
+	ids    []string
+	fields map[string]bool
+}
+
+// note records one id's shadowing when the winner leaves a field of the
+// shadowed entry unstated.
+func (r shadowReport) note(id string, winner Entry, winnerScope string, loser Entry, loserScope string) {
+	have := map[string]bool{}
+	for _, f := range statedFields(winner.Spec) {
+		have[f] = true
+	}
+	var dropped []string
+	for _, f := range statedFields(loser.Spec) {
+		if !have[f] {
+			dropped = append(dropped, f)
+		}
+	}
+	if len(dropped) == 0 {
+		return
+	}
+	key := shadowPair{winner.Feed, winnerScope, loser.Feed, loserScope}
+	s := r[key]
+	if s == nil {
+		s = &shadowed{fields: map[string]bool{}}
+		r[key] = s
+	}
+	s.ids = append(s.ids, id)
+	for _, f := range dropped {
+		s.fields[f] = true
+	}
+}
+
+// shadowIDsShown caps the ids one shadowing warning names.
+const shadowIDsShown = 5
+
+// warn says one line per (winner, shadowed) pair, sorted, the fields in
+// the format's order ahead of the ids, sorted and capped — a view that
+// truncates the line cuts ids before fields.
+func (r shadowReport) warn(warnf func(format string, args ...any)) {
+	if warnf == nil || len(r) == 0 {
+		return
+	}
+	keys := make([]shadowPair, 0, len(r))
+	for key := range r {
+		keys = append(keys, key)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		a, b := keys[i], keys[j]
+		return strings.Join([]string{a.winner, a.winnerScope, a.loser, a.loserScope}, "\x00") <
+			strings.Join([]string{b.winner, b.winnerScope, b.loser, b.loserScope}, "\x00")
+	})
+	for _, key := range keys {
+		s := r[key]
+		sort.Strings(s.ids)
+		shown := s.ids
+		more := ""
+		if len(shown) > shadowIDsShown {
+			more = fmt.Sprintf(" and %d more", len(shown)-shadowIDsShown)
+			shown = shown[:shadowIDsShown]
+		}
+		var fields []string
+		for _, f := range fieldOrder {
+			if s.fields[f] {
+				fields = append(fields, f)
+			}
+		}
+		winner := feedRef(key.winner, key.winnerScope)
+		warnf("price feed %s answers whole over feed %s and leaves %s unstated for %d ids (%s%s) — a price entry answers from one feed, never merged: restate them in %s, or the run answers without them",
+			winner, feedRef(key.loser, key.loserScope), strings.Join(fields, ", "), len(s.ids), strings.Join(shown, ", "), more, winner)
+	}
+}
+
+// feedRef names a feed in a warning, with its scope's label when it has
+// one.
+func feedRef(feed, scope string) string {
+	if scope == "" {
+		return feed
+	}
+	return feed + " (" + scope + ")"
+}
+
+// fieldOrder is the format's field order, the order a warning names
+// fields in.
+var fieldOrder = []string{"input_usd_per_mtok", "output_usd_per_mtok", "context_window", "max_output_tokens", "cache_read_usd_per_mtok", "reasoning", "tool_call", "temperature"}
+
+// statedFields names the fields a price entry states, efforts aside.
+func statedFields(spec modelspecs.Spec) []string {
+	var stated []string
+	if spec.InputCostPerM > 0 && spec.OutputCostPerM > 0 {
+		stated = append(stated, "input_usd_per_mtok", "output_usd_per_mtok")
+	}
+	return append(stated, unpricedFields(spec)...)
 }
 
 // feedAnswered is one feed's contribution to a fold: its entries and the

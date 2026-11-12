@@ -200,3 +200,23 @@ func TestResolveCatalog_TheFoldedTableAnswersForTheInvocation(t *testing.T) {
 		t.Fatalf("an id outside the feed table did not reach the operator table: %+v", other)
 	}
 }
+
+// Whole-entry precedence at the feed rung: a feed entry that prices an id
+// and states no window or output cap answers WHOLE over the operator
+// table's entry for that id — the operator's window and output cap are
+// not merged in.
+func TestResolveCatalog_AFeedEntryAnswersWholeOverTheOperatorTable(t *testing.T) {
+	ResetCatalogCaches()
+	t.Cleanup(ResetCatalogCaches)
+	get := mapGet(map[string]string{
+		CatalogModelsEnv: `{"glm-5.3":{"context_window":256000,"max_output_tokens":32768,"input_usd_per_mtok":0.672,"output_usd_per_mtok":2.016,"cache_read_usd_per_mtok":0.1344}}`,
+		FeedTableEnv:     feedTableJSON(t, "pliage-litellm", time.Minute, time.Hour, 0.7, 2.1),
+	})
+	res := ResolveCatalog("glm-5.3", nil, get)
+	if res.Source != SourceFeed("pliage-litellm") || res.Spec.InputCostPerM != 0.7 || res.Spec.OutputCostPerM != 2.1 {
+		t.Fatalf("the feed entry did not answer: %+v", res)
+	}
+	if res.Spec.ContextWindow != 0 || res.Spec.MaxOutputTokens != 0 || res.Spec.CacheReadCostPerM != 0 {
+		t.Fatalf("the operator table's fields were merged into the feed's answer: %+v", res.Spec)
+	}
+}

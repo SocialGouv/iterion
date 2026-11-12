@@ -1804,7 +1804,9 @@ no such stamp.
 ### What a gateway model costs and how big it is (ADR-122)
 
 The catalog resolves a gateway id with whole-entry precedence — fields are
-never merged across sources, and an answer carries its provenance:
+never merged across sources (a feed entry that prices an id without its
+window or output cap answers without them, over the operator table's),
+and an answer carries its provenance:
 
 1. The run's **price feed** (ADR-163, ADR-166), when the server folded
    one: an answering feed entry (a fetched feed's while fresh, a
@@ -1888,7 +1890,12 @@ run to the runner** — the operator table stays the floor.
   answer, not the entries a failing refresh keeps, not its status — and
   is due at once.
 - **Precedence.** An answering feed over the operator table (for the
-  ids it carries), team over org over platform. An entry without the
+  ids it carries), team over org over platform. A price entry answers
+  whole from one feed — prices, window, output cap, cache price and
+  flags, never merged across feeds or levels: a feed that prices an id
+  another feed declares restates the window, output cap and cache price,
+  or the run loses them, and the fold warns, naming both feeds, the ids
+  and the fields. An entry without the
   price pair does not travel as a price entry — it can never shadow a
   priced operator or catalog entry with an unpriced one. When a fresh
   feed and the operator table disagree on price, the sync says so: one

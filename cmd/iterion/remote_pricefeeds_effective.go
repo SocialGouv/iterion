@@ -24,10 +24,11 @@ var remotePriceFeedsEffectiveCmd = &cobra.Command{
 	Short: "Show the price-feed table a team's run reads, each answer with its source",
 	Long: `Show the team's effective price feed: the table a run launched now for
 the team carries — the platform, org and team levels folded, the more
-specific level answering per id and per field — and, per gateway id, the
-entry (prices, window, output cap, flags) and the accepted reasoning
-efforts a run reads, each named with its feed and level, then every feed
-that states the id.
+specific level answering per id — and, per gateway id, the entry
+(prices, window, output cap, flags, whole from one feed) and the accepted
+reasoning efforts a run reads, each named with its feed and level, then
+every feed that states the id, and the fold's warnings: one names a price
+entry that leaves unstated a field of the entry it shadows.
 
 --model narrows to the named ids (repeatable); without it, every id a level
 states. The runner's own env tables (OPENAI_COMPATIBLE_MODELS,

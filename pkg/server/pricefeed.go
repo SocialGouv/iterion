@@ -87,6 +87,7 @@ func foldPriceFeed(ctx context.Context, configs pricefeed.ConfigStore, states pr
 			continue
 		}
 		if state != nil {
+			state.Label = scope.what
 			answering = append(answering, *state)
 		}
 	}

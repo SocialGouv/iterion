@@ -41,8 +41,9 @@ var remotePriceFeedsCmd = &cobra.Command{
 	Short: "Manage the gateway price feeds (ADR-163)",
 	Long: `Manage the gateway price feeds: operator pricing and accepted reasoning
 efforts that live in the database (platform, org and team levels, the
-more specific level answering per id and per field) and ride the run
-bundle, the runner's env tables staying the fallback. Sources are
+more specific level answering per id — a price entry whole from one
+feed, the accepted efforts apart) and ride the run bundle, the runner's
+env tables staying the fallback. Sources are
 pluggable adapters — modelsdev, scaleway, litellm, exec (a command
 printing the feed-entry JSON on stdout) and declared (the table itself,
 stored in the feed's params: see declare). A fetched feed answers while

@@ -28,8 +28,13 @@ of truth; a platform `scaleway` feed is `CATALOG_PROVIDER`'s database seat.
 The operator table has a database twin: platform, org and team feeds
 (`price_feeds`, documents `platform`, `org:<id>`, `team:<id>`), folded at
 every launch and resume into the run bundle and planted on the run's
-environment. Team over org over platform, per id and per field; within a
-level, the first answering feed stating the field wins. A fetched feed (`modelsdev`, `scaleway`,
+environment. Team over org over platform, per id: within a level the
+first answering feed that prices an id wins its price entry, which answers
+WHOLE — prices, window, output cap, cache price and flags from that one
+feed, never merged (ADR-122); a feed that prices a declared id restates
+its window, output cap and cache price, or they are lost, and the fold
+warns. Accepted efforts fold apart by the same precedence, so a priced
+entry never erases a declared effort list. A fetched feed (`modelsdev`, `scaleway`,
 `litellm`, `exec`) refreshes on one elected replica and answers while fresh;
 a stale one steps down to the operator table. A `declared` feed is the
 operator's table stored in its config (`params.entries`): never fetched,
