@@ -90,8 +90,8 @@ func TestPriceFeedEffectiveView(t *testing.T) {
 
 	// The table is the publisher's: the same function, the same team,
 	// org and ids — whitespace aside, the same bytes.
-	sealed := EffectivePriceFeed(context.Background(), live.configs, live.states, "org1", "team-pf",
-		[]string{"glm-5.3", "Scaleway/DeepSeek-v4.1-flash", "kimi-k2", "unknown-x"}, nil)
+	sealed := PublisherPriceFeedEffective(live.configs, live.states, nil)(context.Background(), "org1", "team-pf",
+		[]string{"glm-5.3", "Scaleway/DeepSeek-v4.1-flash", "kimi-k2", "unknown-x"})
 	if sealed == nil {
 		t.Fatal("the publisher's fold answered no table")
 	}
@@ -306,7 +306,7 @@ func TestPriceFeedEffectiveViewListsAnOverBudgetTableAsEachRunNarrowsIt(t *testi
 			if view.OverBudget != nil {
 				t.Errorf("the view for one id flags over_budget %+v: its table is the run's", view.OverBudget)
 			}
-			sealed := EffectivePriceFeed(context.Background(), live.configs, live.states, "org1", "team-pf", []string{deepseek}, nil)
+			sealed := PublisherPriceFeedEffective(live.configs, live.states, nil)(context.Background(), "org1", "team-pf", []string{deepseek})
 			var gotTable, wantTable bytes.Buffer
 			if err := json.Compact(&gotTable, view.Table); err != nil {
 				t.Fatalf("the view's table is not JSON: %v (%.200s)", err, view.Table)
@@ -377,9 +377,9 @@ func TestPriceFeedEffectiveViewKeepsAReadErrorInTheServerLog(t *testing.T) {
 	}
 
 	var operator []string
-	EffectivePriceFeed(context.Background(), s.priceFeedConfigs, s.priceFeedStates, "", "team1", nil, func(format string, args ...any) {
+	PublisherPriceFeedEffective(s.priceFeedConfigs, s.priceFeedStates, func(format string, args ...any) {
 		operator = append(operator, fmt.Sprintf(format, args...))
-	})
+	})(context.Background(), "", "team1", nil)
 	if !strings.Contains(strings.Join(operator, "\n"), "platform unread — the operator table answers: "+internal) {
 		t.Errorf("the publisher's fold warns %q, want the platform level's read error", operator)
 	}

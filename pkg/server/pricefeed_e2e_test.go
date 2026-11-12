@@ -23,9 +23,11 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/pricefeed"
+	"github.com/SocialGouv/iterion/pkg/queue"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/secrets"
+	"github.com/SocialGouv/iterion/pkg/server/cloudpublisher"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -175,17 +177,33 @@ func marshalJSON(t *testing.T, v any) string {
 // from a PLATFORM declaration, and a twin run on a pool runner whose env
 // tables state the same values sends the same model, reasoning_effort and
 // max_tokens on the wire at the same cost; only the provenance differs.
-// The hops are the production ones: the super-admin's PUT through the
-// real route, the publisher's fold (EffectivePriceFeed over the named ids
-// the publisher walks), the sealed bundle's round trip, the runner's
-// bundle-to-context adapter for the table, the runner binary's credential
-// lookup, the executor every plane builds (runview.BuildExecutor) and the
-// engine; only the gateway is a loopback stub that records what it
-// received. The stub is the runner's env-funded gateway
-// (OPENAI_COMPATIBLE_BASE_URL / _API_KEY, which are no table): a sealed
-// team key refuses a loopback http base URL
-// (secrets.ValidateGatewayBaseURL), and which credential funds the call
-// is not what this proves.
+//
+// The launch is the production one: the super-admin's PUT through the
+// real route; the real publisher (cloudpublisher.NewForTesting, the queue
+// left out) launching on the default runner for a team that holds its
+// gateway key, its fold the one the server binary wires
+// (PublisherPriceFeedEffective over the stores the route wrote); the
+// sealed record the published message names, opened under the message's
+// per-run key, team, pool and run id as the runner opens it; the runner's
+// bundle-to-context adapter for the table; the runner binary's credential
+// lookup; the executor every plane builds (runview.BuildExecutor) and the
+// engine. The gateway is a loopback stub that records what it receives.
+//
+// Two legs are not driven here:
+//   - the runner's own open: injectCredentials is unexported in
+//     pkg/runner, so this test opens the record with the call it makes,
+//     plants the table through the adapter it calls, and plants no
+//     credential. pkg/runner's
+//     TestInjectCredentials_OpensThePublishersTeamGatewayLaunch hands the
+//     real publisher's message to injectCredentials;
+//   - the call funded by the sealed key: a sealed gateway key's base URL
+//     is https on a public host (secrets.ValidateGatewayBaseURL, asserted
+//     below on the stub's URLs), so the stub cannot be the team's gateway.
+//     The runner's env pair (OPENAI_COMPATIBLE_BASE_URL / _API_KEY, which
+//     are no table) funds the call here. The pkg/runner test shows the
+//     runner's open of such a launch carrying the sealed key, the ambient
+//     refusal of the pod's environment and the table, and the table
+//     answering the same efforts, window, output cap and prices there.
 func TestPriceFeedEndToEndRetiresThePool(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("TMPDIR", t.TempDir())
@@ -213,19 +231,26 @@ func TestPriceFeedEndToEndRetiresThePool(t *testing.T) {
 	}
 
 	gw := newRecordingGateway(t)
+	// A sealed gateway key refuses the stub as its base URL, in either
+	// scheme: the reason the env pair funds the call below.
+	for _, u := range []string{gw.srv.URL + "/v1", "https://" + gw.srv.Listener.Addr().String() + "/v1"} {
+		if _, err := secrets.ValidateGatewayBaseURL(u); err == nil {
+			t.Fatalf("a sealed gateway key accepts the loopback stub's base URL %s: fund the run with the team's key instead of the env pair", u)
+		}
+	}
 	t.Setenv("OPENAI_COMPATIBLE_BASE_URL", gw.srv.URL+"/v1")
 	t.Setenv("OPENAI_COMPATIBLE_API_KEY", "sk-runner-gateway")
 	wf := compileRetireBot(t)
-	named := model.RouteGatewayModelIDs(wf, model.ModelOverrides{})
 
-	// 2. The publisher's fold for the team, sealed in the run's bundle.
-	raw := EffectivePriceFeed(context.Background(), live.configs, live.states, "org1", "team-pf", named, nil)
-	if raw == nil {
+	// 2. The real publisher launches the run for the team; the runner
+	// opens the record its message names and plants the table.
+	runID, bundle := launchRetireRun(t, live, wf)
+	if bundle.GatewayPriceFeed == nil {
 		// Not fatal: the run below then shows what a default runner does
 		// without the declaration, assertion by assertion.
-		t.Error("the launch fold answered no table")
+		t.Error("the launch sealed no table")
 	}
-	feedRun := runRetireWorkflow(t, wf, gw, raw)
+	feedRun := runRetireWorkflow(t, compatgw.OverlayFeedTable(context.Background(), bundle.GatewayPriceFeed), wf, gw, runID)
 
 	// 3. What the gateway RECEIVED, and what the run recorded.
 	deep, glm := feedRun.bodies["scaleway/deepseek-v4.1-flash"], feedRun.bodies["glm-5.3"]
@@ -259,7 +284,7 @@ func TestPriceFeedEndToEndRetiresThePool(t *testing.T) {
 	compatgw.ResetCatalogCaches()
 	t.Setenv(compatgw.CatalogModelsEnv, retirePoolModels)
 	t.Setenv(compatgw.ReasoningEffortsEnv, retirePoolEfforts)
-	poolRun := runRetireWorkflow(t, wf, gw, nil)
+	poolRun := runRetireWorkflow(t, context.Background(), wf, gw, fmt.Sprintf("run-retire-pool-%d", time.Now().UnixNano()))
 	for id, body := range feedRun.bodies {
 		if poolRun.bodies[id] != body {
 			t.Errorf("%s: the wire differs between the declaration and the pool tables: %+v vs %+v", id, body, poolRun.bodies[id])
@@ -391,32 +416,100 @@ type retireRun struct {
 	sampled  map[string]float64
 }
 
-// runRetireWorkflow seals a bundle carrying the folded table (none when
-// raw is nil), opens it, plants it through the runner's adapter and runs
-// the workflow through the executor every plane builds.
-func runRetireWorkflow(t *testing.T, wf *ir.Workflow, gw *recordingGateway, raw json.RawMessage) retireRun {
-	t.Helper()
-	runID := fmt.Sprintf("run-retire-%d", time.Now().UnixNano())
-	dek, err := secrets.NewRunBundleDEK()
-	if err != nil {
-		t.Fatal(err)
-	}
-	sealer, err := secrets.NewAESGCMSealer(dek)
-	if err != nil {
-		t.Fatal(err)
-	}
-	sealed, keyID, err := secrets.SealRunBundle(sealer, "team-pf", "", runID, secrets.RunBundle{GatewayPriceFeed: raw})
-	if err != nil {
-		t.Fatal(err)
-	}
-	bundle, err := secrets.OpenRunBundle(sealer, "team-pf", "", runID, keyID, sealed)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// The runner's bundle-to-context step for the table: the one adapter
-	// injectCredentials calls.
-	ctx := compatgw.OverlayFeedTable(context.Background(), bundle.GatewayPriceFeed)
+// retireTeamKey and retireTeamURL are team-pf's gateway key and its base
+// URL, https on a public host as a sealed key's must be.
+const (
+	retireTeamKey = "sk-team-pf-gateway"
+	retireTeamURL = "https://gw.example"
+)
 
+// launchRetireRun launches wf for team-pf through the real publisher, the
+// team holding its gateway key and the publisher's fold the one the server
+// binary wires over the stores live's route wrote. It opens the sealed
+// record the published message names as the runner does: read under the
+// message's team, opened under the message's per-run key, team, pool and
+// run id. It answers the run id and the opened bundle.
+func launchRetireRun(t *testing.T, live *priceFeedLive, wf *ir.Workflow) (string, secrets.RunBundle) {
+	t.Helper()
+	ctx := context.Background()
+	sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	keys := secrets.NewMemoryApiKeyStore()
+	key := secrets.ApiKey{
+		ID: secrets.NewApiKeyID(), TenantID: "team-pf", ScopeTeamID: "team-pf",
+		Provider: secrets.ProviderOpenAICompatible, Name: "team-pf gateway", BaseURL: retireTeamURL,
+		Fingerprint: secrets.APIKeyFingerprint(secrets.ProviderOpenAICompatible, retireTeamKey, retireTeamURL),
+		CreatedAt:   time.Now().UTC(),
+	}
+	if key.SealedSecret, err = secrets.SealAPIKeyFor(sealer, key, []byte(retireTeamKey)); err != nil {
+		t.Fatal(err)
+	}
+	if err := keys.Create(ctx, key); err != nil {
+		t.Fatal(err)
+	}
+	runSecrets := secrets.NewMemoryRunSecretsStore()
+	runs, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	var published []*queue.RunMessage
+	pub := cloudpublisher.NewForTesting(cloudpublisher.Config{
+		Store: runs, ApiKeys: keys, RunSecrets: runSecrets, Sealer: sealer,
+		Identity:           live.s.authStore(),
+		Logger:             iterlog.New(iterlog.LevelError, io.Discard),
+		PriceFeedEffective: PublisherPriceFeedEffective(live.configs, live.states, t.Logf),
+	}, func(_ context.Context, msg *queue.RunMessage) error {
+		mu.Lock()
+		defer mu.Unlock()
+		published = append(published, msg)
+		return nil
+	})
+	runID := fmt.Sprintf("run-retire-%d", time.Now().UnixNano())
+	if _, err := pub.SubmitLaunch(store.WithIdentity(ctx, "team-pf", "u-pfviewer"), runID, runview.LaunchSpec{Source: retireBot}, wf, nil); err != nil {
+		t.Fatalf("the launch was refused: %v", err)
+	}
+	mu.Lock()
+	msgs := append([]*queue.RunMessage(nil), published...)
+	mu.Unlock()
+	if len(msgs) != 1 {
+		t.Fatalf("the launch published %d messages, want one", len(msgs))
+	}
+	msg := msgs[0]
+	if msg.RunnerPool != "" {
+		t.Fatalf("the launch landed on runner pool %q, want the default runner", msg.RunnerPool)
+	}
+	if msg.SecretsRef == "" {
+		t.Fatal("the launch sealed no bundle")
+	}
+	rec, err := runSecrets.Get(store.WithIdentity(ctx, msg.TenantID, msg.OwnerID), msg.SecretsRef)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.TenantID != msg.TenantID {
+		t.Fatalf("the record is sealed for team %q, the message names %q", rec.TenantID, msg.TenantID)
+	}
+	dekSealer, err := secrets.NewAESGCMSealer(msg.BundleDEK)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bundle, err := secrets.OpenRunBundle(dekSealer, msg.TenantID, msg.RunnerPool, msg.RunID, rec.KeyID, rec.SealedBundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := bundle.APIKeys[secrets.ProviderOpenAICompatible]; got != retireTeamKey {
+		t.Fatalf("the bundle seals gateway key %q, want team-pf's own", got)
+	}
+	return msg.RunID, bundle
+}
+
+// runRetireWorkflow runs wf as runID on ctx (the context the runner's
+// adapter planted the table on, or a bare one) through the executor every
+// plane builds.
+func runRetireWorkflow(t *testing.T, ctx context.Context, wf *ir.Workflow, gw *recordingGateway, runID string) retireRun {
+	t.Helper()
 	storeDir := t.TempDir()
 	st, err := store.New(storeDir)
 	if err != nil {

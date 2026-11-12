@@ -530,7 +530,7 @@ cdfbe2b65fa53b1394c469266af7f87827732037f49b33f1f80c0c1b80d6927c 595e61bbe990942
 69bc606d60bd4d231b5354267d47f7e917ff6ba424616c986f8ca89b7d7e0c1a 0b3685746d17be54fe3262fac40c731f173235ca779eb42f577b318c945572d0 ../../docs/adr/163-the-gateway-price-feed-syncs-into-the-database-and-rides-the-ipc.md
 8b6c147552000bfd667dbdfc5645d9886ed52a0ee08c4e9d11e79f626404a33f 9b0ec2510d12d2e5eef1d354977cdf8a6a2d91987e2c342c685d4500db19ab06 ../../docs/adr/164-configurable-key-pools-attach-per-scope-with-a-fallback-strategy.md
 fa47f842ff32b7ff596564df340532b4a03c8889252c946b16f8a60f314891d3 d86153b5c8541dcfab3e52b59af6039d376a521a92579fc08e33064e9ecaf755 ../../docs/adr/165-codemode-runs-the-models-code-in-a-child-process-behind-the-tool-door.md
-356eaadaaeda77faf0639f05ed10a111ef4e6d664fee37abbd0fa7f1b05d328b ccf8e88438dc4d373433236959a827cdb4ab19f87cf4f0bfc102ec3f05dd1c36 ../../docs/adr/166-model-capabilities-ride-the-price-feed.md
+e95c98a9ddc3b8fb5866c51e884cb89a51bb70afbfa3cfd881201d0426c688ef 9b0ec2510d12d2e5eef1d354977cdf8a6a2d91987e2c342c685d4500db19ab06 ../../docs/adr/166-model-capabilities-ride-the-price-feed.md
 436c3fd427e936515562097b2cee03c2cb676db247a83b5fcd00e3ac7f94a883 5068622b66724a989795892c52e962e98fd65e3afd6f8fdd320041089f79053b ../../docs/adr/README.md
 fbbbc44294a4c36f378d8eead10e4005362b9a0d50fc9fc7d1b004508fbd31cb 84e0c0eafaa95a34c293f278ac52e45ce537bab5e752a00e6959a13ae103b65a ../../docs/agents/README.md
 4d7e22a9d513d6adb32cfc966b231fa04ff376dcd3f4f299eea8be8695da8b78 2616b5d75f586c05356c554952405ade4621f9e72891a9c9677129bb96ef1a85 ../../docs/agents/backends/README.md

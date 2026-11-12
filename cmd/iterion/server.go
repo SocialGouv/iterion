@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -601,9 +600,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		// launch and resume from the feed stores above (platform, org and
 		// team documents); nil when no feed answers and the operator table
 		// is the floor.
-		PriceFeedEffective: func(ctx context.Context, orgID, teamID string, named []string) json.RawMessage {
-			return server.EffectivePriceFeed(ctx, stores.priceFeedConfigs, stores.priceFeedStates, orgID, teamID, named, logger.Warn)
-		},
+		PriceFeedEffective: server.PublisherPriceFeedEffective(stores.priceFeedConfigs, stores.priceFeedStates, logger.Warn),
 		SandboxImage: func(ctx context.Context) string {
 			return sandboxResolver.Get(ctx).EffectiveImage()
 		},

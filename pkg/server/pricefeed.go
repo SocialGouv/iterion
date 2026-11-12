@@ -52,6 +52,18 @@ func EffectivePriceFeed(ctx context.Context, configs pricefeed.ConfigStore, stat
 	return foldPriceFeed(ctx, configs, states, orgID, teamID, pricefeed.FoldConfig{Named: named, Warnf: warnf}, unread).encode(warnf)
 }
 
+// PublisherPriceFeedEffective is the publisher's price-feed fold
+// (cloudpublisher.Config.PriceFeedEffective) over the deployment's feed
+// stores: EffectivePriceFeed for the org and the team the publisher
+// passes, in that order, the run's named gateway ids narrowing an
+// over-budget table, its warnings to warnf. The server binary wires it,
+// and the pool-retirement E2E launches through it.
+func PublisherPriceFeedEffective(configs pricefeed.ConfigStore, states pricefeed.StateStore, warnf func(format string, args ...any)) func(ctx context.Context, orgID, teamID string, named []string) json.RawMessage {
+	return func(ctx context.Context, orgID, teamID string, named []string) json.RawMessage {
+		return EffectivePriceFeed(ctx, configs, states, orgID, teamID, named, warnf)
+	}
+}
+
 // priceFeedFold is one fold's read and answer: the levels it read, least
 // specific first, the instant it judged freshness at, and the table —
 // nil when no feed answers.
