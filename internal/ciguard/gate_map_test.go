@@ -153,14 +153,31 @@ func TestTheCIGateMapIsTotalAndHonest(t *testing.T) {
 		}
 	}
 
-	// 4. EVERY MEMBER IS A TASK THAT EXISTS. A member nobody defined makes
-	// `task <member>` fail at the runner with a message about the Taskfile,
-	// which reads as a red gate rather than as a broken map.
+	// 4. EVERY MEMBER IS A TASK THAT EXISTS, AND ONE THAT CANNOT GO GREEN
+	// WITHOUT RUNNING. A member nobody defined makes `task <member>` fail at
+	// the runner with a message about the Taskfile, which reads as a red gate
+	// rather than as a broken map.
+	//
+	// The second half is the one measured the hard way: `ignore_error: true`
+	// turns a failure into 0, and `status:`/`sources:` make go-task print
+	// "Task … is up to date" and exit 0 without running the command at all.
+	// The runner records that 0 and prints "green, and every required or
+	// staged context is covered" — the exact false green this whole file is
+	// about, reached by a legal one-line edit to a task rather than to the
+	// map. Held for EVERY member, not only the refusing ones, because that is
+	// where the green is claimed.
 	tasks := taskfileTaskNames(t)
+	shapes := taskfileShapes(t)
 	for name, job := range m.Jobs {
 		for _, mem := range job.Members {
 			if !tasks[mem] {
 				t.Errorf("job %q names member %q, which Taskfile.yml does not define", name, mem)
+				continue
+			}
+			if shapes[mem].canSkip {
+				t.Errorf("job %q names member %q, and that task carries `%s`: go-task can then answer 0 "+
+					"without the command having run or having failed, and the gate would report that as green",
+					name, mem, shapes[mem].skipKey)
 			}
 		}
 	}
@@ -286,12 +303,12 @@ func TestTheCIGateMapIsTotalAndHonest(t *testing.T) {
 	// over ten runs of the same tree. A member with `deps:` would make the
 	// gate flip between "red" and "refused" at random, and a verdict that
 	// depends on an order nothing guarantees is not a verdict.
-	singleCmd := taskfileShapes(t)
+
 	for _, mem := range m.RefusingMembers {
 		if !tasks[mem] {
 			t.Errorf("`refusing_members` holds %q, which Taskfile.yml does not define", mem)
 		}
-		if shape, ok := singleCmd[mem]; ok && !shape.oneFailurePath {
+		if shape, ok := shapes[mem]; ok && !shape.oneFailurePath {
 			t.Errorf("`refusing_members` holds %q, and %s (%d command(s), %d dep(s), delegates=%t): "+
 				"the runner then cannot tell a refusal from a red",
 				mem, shape.why(), shape.cmds, shape.deps, shape.delegates)
@@ -1153,6 +1170,18 @@ func mustWrite(t *testing.T, path, body string, mode os.FileMode) {
 type taskShape struct {
 	cmds, deps int
 	delegates  bool
+	// canSkip: go-task may answer 0 WITHOUT the command having run, or after
+	// throwing its failure away — `ignore_error: true` turns every non-zero
+	// into 0, and `status:`/`sources:` make it print "Task … is up to date"
+	// and exit 0. Measured on the pinned 3.48.0 against a member declared in
+	// `refusing_members`: both give `task -x` rc=0, the runner records 0 in
+	// its matrix, and the gate prints "green, and every required or staged
+	// context is covered" over a member whose failure it discarded or that it
+	// never ran. No member carries one today (`brand:check`, `build` and
+	// `studio:build` do, and none of them is a member — this slice is what
+	// took `brand:check` out of a row).
+	canSkip bool
+	skipKey string
 	// command is the task's single command, when it has exactly one and that
 	// one is a scalar — the text properties 6 and 7 match against a job's
 	// `run:`. Empty for a multi-command task, and for a delegation (a
@@ -1165,6 +1194,8 @@ type taskShape struct {
 
 func (s taskShape) why() string {
 	switch {
+	case s.canSkip:
+		return "`" + s.skipKey + "` lets go-task answer 0 without the command having failed"
 	case s.delegates:
 		return "its one command DELEGATES to another task, whose own deps decide the code"
 	case s.deps > 0:
@@ -1181,9 +1212,12 @@ func taskfileShapes(t *testing.T) map[string]taskShape {
 	t.Helper()
 	var doc struct {
 		Tasks map[string]struct {
-			Cmds []yaml.Node `yaml:"cmds"`
-			Cmd  yaml.Node   `yaml:"cmd"`
-			Deps []yaml.Node `yaml:"deps"`
+			Cmds        []yaml.Node `yaml:"cmds"`
+			Cmd         yaml.Node   `yaml:"cmd"`
+			Deps        []yaml.Node `yaml:"deps"`
+			IgnoreError bool        `yaml:"ignore_error"`
+			Status      []yaml.Node `yaml:"status"`
+			Sources     []yaml.Node `yaml:"sources"`
 		} `yaml:"tasks"`
 	}
 	if err := yaml.Unmarshal(mustRead(t, taskfilePath), &doc); err != nil {
@@ -1195,13 +1229,29 @@ func taskfileShapes(t *testing.T) map[string]taskShape {
 		if task.Cmd.Kind != 0 {
 			n++
 		}
-		// A `cmds:` entry that is a MAPPING is `- task: other`: one line, and
-		// another task's failure surface behind it.
+		// A `cmds:` entry that is a MAPPING delegates only when it carries a
+		// `task` key: `- cmd: <text>` and `- defer: <text>` are mappings too,
+		// and calling those a delegation is a false red whose message names a
+		// task that is not there.
 		delegates := false
 		for _, c := range task.Cmds {
-			if c.Kind == yaml.MappingNode {
-				delegates = true
+			if c.Kind != yaml.MappingNode {
+				continue
 			}
+			for i := 0; i+1 < len(c.Content); i += 2 {
+				if c.Content[i].Value == "task" {
+					delegates = true
+				}
+			}
+		}
+		canSkip, skipKey := false, ""
+		switch {
+		case task.IgnoreError:
+			canSkip, skipKey = true, "ignore_error"
+		case len(task.Status) > 0:
+			canSkip, skipKey = true, "status"
+		case len(task.Sources) > 0:
+			canSkip, skipKey = true, "sources"
 		}
 		command := ""
 		if n == 1 && !delegates {
@@ -1215,8 +1265,10 @@ func taskfileShapes(t *testing.T) map[string]taskShape {
 			cmds:           n,
 			deps:           len(task.Deps),
 			delegates:      delegates,
+			canSkip:        canSkip,
+			skipKey:        skipKey,
 			command:        command,
-			oneFailurePath: n == 1 && len(task.Deps) == 0 && !delegates,
+			oneFailurePath: n == 1 && len(task.Deps) == 0 && !delegates && !canSkip,
 		}
 	}
 	return shapes

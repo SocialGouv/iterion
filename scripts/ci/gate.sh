@@ -154,10 +154,14 @@ yq -e '[ select(has("refusing_members")) | .refusing_members | select(type != "!
 	say "none. Refusing is not a verdict."
 	exit 2
 }
-yq -e '[ (.refusing_members // [])[] | select(type != "!!str" or . == "") ] | length == 0' \
+# `test("^\\S+$")` and not merely non-empty: a trailing space makes the entry
+# match no member, so every refusal that member reports would be read as RED —
+# the inversion again, from one invisible character.
+yq -e '[ (.refusing_members // [])[] | select(type != "!!str" or (test("^\S+$") | not)) ] | length == 0' \
 	"$MAP" > /dev/null 2>&1 || {
-	say "ci:gate: a \`refusing_members\` entry in $MAP is not a non-empty string, so no member could"
-	say "ever match it. Refusing is not a verdict."
+	say "ci:gate: a \`refusing_members\` entry in $MAP is not a bare non-empty word (an empty string,"
+	say "or one with whitespace in it), so no member can ever match it and its refusals would read"
+	say "as red. Refusing is not a verdict."
 	exit 2
 }
 

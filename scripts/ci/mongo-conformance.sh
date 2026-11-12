@@ -19,7 +19,8 @@
 # Exit codes: 0 every invocation green · 1 at least one red (named, with its
 # log) · 2 a precondition refused, and the list is longer than it looks — each
 # path a machine that cannot judge rather than a tree that is broken, and all
-# of them greppable (`grep -c 'exit 2'`): python3 unable to read the job
+# of them greppable (`grep -cE '^[[:space:]]+exit 2'` — nine, where a plain
+# `grep -c 'exit 2'` counts ten by matching this sentence): python3 unable to read the job
 # (devbox pins none), the job's
 # shape not recognised, timeout(1) missing, docker missing, its daemon not
 # answering, the container refusing to start, mongod accepting no connection
@@ -113,8 +114,8 @@ command -v docker > /dev/null 2>&1 || {
 # cannot judge at all.
 # Bounded: a socket that accepts and then says nothing would hang this member
 # for as long as the operator is willing to wait, where every wait below has a
-# ceiling. 20 s is ~500x a warm `docker info` here (0.03 s measured, five
-# runs) — sized for a cold daemon, not for the usual case.
+# ceiling. A warm `docker info` here is 0.03 s (five runs), so 20 s is ~650x
+# it — sized for a cold daemon, not for the usual case.
 #
 # `timeout` is a HOST binary: devbox pins no coreutils, so it can be missing
 # (a BSD userland, a slim container image). Checked, because without this the
