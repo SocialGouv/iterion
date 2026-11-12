@@ -466,24 +466,25 @@ func (p *Publisher) runnerPoolForTeam(ctx context.Context, teamID string) (strin
 // — the same boundary discipline as the pool mapping above: a stale or
 // guessed answer would seal platform credentials into a sovereign team's
 // runs. A store error refuses (fail closed); so does an unknown value, which
-// is never read as the default.
-func (p *Publisher) llmFallbackForTeam(ctx context.Context, teamID string) (string, error) {
+// is never read as the default. The same read answers the team's org: ""
+// when no team row answers or the team has none.
+func (p *Publisher) llmFallbackForTeam(ctx context.Context, teamID string) (policy, orgID string, err error) {
 	if teamID == "" || p.identity == nil {
-		return "", nil
+		return "", "", nil
 	}
 	t, err := p.identity.GetTeam(ctx, teamID)
 	if errors.Is(err, identity.ErrNotFound) {
 		// A definitive answer: no team row, no policy — the platform
 		// default applies (the CI smoke launches under exactly this shape).
-		return "", nil
+		return "", "", nil
 	}
 	if err != nil {
-		return "", fmt.Errorf("cloudpublisher: resolve llm fallback for team %s: %w (refusing the launch — the policy must be known, never guessed)", teamID, err)
+		return "", "", fmt.Errorf("cloudpublisher: resolve llm fallback for team %s: %w (refusing the launch — the policy must be known, never guessed)", teamID, err)
 	}
 	if !identity.ValidLLMFallback(t.LLMFallback) {
-		return "", fmt.Errorf("cloudpublisher: team %s carries an unknown llm_fallback policy %q — refusing the launch (set a valid policy with PUT /api/admin/teams/%s/llm-fallback)", teamID, t.LLMFallback, teamID)
+		return "", "", fmt.Errorf("cloudpublisher: team %s carries an unknown llm_fallback policy %q — refusing the launch (set a valid policy with PUT /api/admin/teams/%s/llm-fallback)", teamID, t.LLMFallback, teamID)
 	}
-	return t.LLMFallback, nil
+	return t.LLMFallback, t.OrgID, nil
 }
 
 // New builds a Publisher.
@@ -706,7 +707,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	// after the caller's pool read: the policy rides the same boundary
 	// discipline, and the indexed _id read costs less than threading
 	// another parameter through every walk caller.
-	llmFallback, err := p.llmFallbackForTeam(ctx, tenantID)
+	llmFallback, teamOrgID, err := p.llmFallbackForTeam(ctx, tenantID)
 	if err != nil {
 		return credResolution{}, err
 	}
@@ -1788,8 +1789,18 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	// the next run without a deployment order. Not secret; sealed because
 	// the bundle is sealed. A nil fold (no stores, no fresh feed) leaves
 	// the field absent and the runner at the operator floor.
+	//
+	// The fold reads the org this resolution's fresh team read names, and
+	// orgID only when that read names none (no identity seam, no team row,
+	// an org-less team). orgID comes from a cached resolve that answers ""
+	// after a failed identity read as it does for an org-less team: folded
+	// under it, the org level's declarations would leave the run's table.
 	if p.priceFeedEffective != nil {
-		bundle.GatewayPriceFeed = p.priceFeedEffective(ctx, orgID, tenantID, model.RouteGatewayModelIDs(wf, view.Overrides))
+		foldOrgID := orgID
+		if teamOrgID != "" {
+			foldOrgID = teamOrgID
+		}
+		bundle.GatewayPriceFeed = p.priceFeedEffective(ctx, foldOrgID, tenantID, model.RouteGatewayModelIDs(wf, view.Overrides))
 	}
 
 	// ADR-123: the bundle seals under a fresh per-run DEK that travels in
