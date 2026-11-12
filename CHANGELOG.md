@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [5.28.0](https://github.com/SocialGouv/iterion/compare/v5.27.0...v5.28.0) (2026-11-12)
+
+### Features
+
+* **ci:** task ci:gate — the lane's definition, and the gate that says it is not met yet ([#3188](https://github.com/SocialGouv/iterion/issues/3188)) ([64eb2d5](https://github.com/SocialGouv/iterion/commit/64eb2d5d8e3c6d4e657b3cdae47a83c9379ff3ad)), references [#3187](https://github.com/SocialGouv/iterion/issues/3187)
+
+    <details><summary>why</summary>
+
+    The second half of #3156's option 1, over the two members #3187 wrote. The operator direct-landing lane's first blocking proof now has a definition in this tree instead of a name in a sentence.
+
+    </details>
+
 ## [5.27.0](https://github.com/SocialGouv/iterion/compare/v5.26.0...v5.27.0) (2026-11-12)
 
 ### Features
