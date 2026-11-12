@@ -48,6 +48,16 @@ They need a C compiler and bubblewrap on Linux amd64/arm64. Devbox supplies the
 Linux isolation tool. CI unit/race jobs use a namespace-capable VM by default,
 install Bubblewrap, and execute a read-only mount preflight before the suite.
 ARC pods refused that mount in PR #3189 despite having the binary installed.
+When Helm is installed, these jobs prepare the declared chart dependencies
+before testing; a VM-provided Helm otherwise executes render tests against
+missing archives. Repository-discovery diagnostics also differ with Git 2.56:
+a dangling gitfile is classified through the shared Git diagnostic helper,
+while authoring still refuses a surviving staged index and conservative
+cleanup preserves orphan worktrees. Diagnostic text embedded in a path must
+never turn an unreadable repository into a deletable orphan; the worktree
+classifier matches leading Git diagnostics, not substrings of filenames.
+The HTTP scratch-consent fixture explicitly uses `sandbox: none` so this
+consent proof does not depend on a VM pulling an unrelated sandbox image.
 `CI_NATIVE_EXEC_RUNNER` can select a qualified private runner; the global
 `CI_SELF_HOSTED=off` and fork/dependency-bot guards still force GitHub-hosted
 runners. This changes no cluster security profile. An absent tool

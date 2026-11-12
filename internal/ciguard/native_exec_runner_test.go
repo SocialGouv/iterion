@@ -58,11 +58,18 @@ func TestNativeExecRunnersPreserveTrustBoundaryAndProveMounts(t *testing.T) {
 		if job.RunsOn != expected {
 			t.Errorf("%s can lose its native mount capability or bypass the shared fork/bot/off guards", id)
 		}
-		found := 0
-		prerequisiteIndex, testIndex := -1, -1
+		found, helmFound := 0, 0
+		prerequisiteIndex, testIndex, helmIndex := -1, -1, -1
 		for index, step := range job.Steps {
 			if (id == "test-unit" && step.Name == "Unit tests") || (id == "race-shard" && step.Name == "Race tests (shard ${{ matrix.shard }} of 3)") {
 				testIndex = index
+			}
+			if step.Name == "Prepare installed Helm chart dependencies" {
+				helmFound++
+				helmIndex = index
+				if step.If != "" || step.Continue || step.Shell != "" || strings.TrimSpace(step.Run) != "if command -v helm >/dev/null 2>&1; then\n  sh scripts/chart-check-deps.sh charts/iterion\nfi" {
+					t.Errorf("%s can skip or forgive preparation of an installed Helm's dependencies", id)
+				}
 			}
 			if step.Name != "Native exec environment prerequisites" {
 				continue
@@ -75,6 +82,9 @@ func TestNativeExecRunnersPreserveTrustBoundaryAndProveMounts(t *testing.T) {
 			if strings.TrimSpace(step.Run) != "sudo apt-get update\nsudo apt-get install -y bubblewrap build-essential\nbwrap --version\nbwrap --die-with-parent --ro-bind / / --dev /dev --proc /proc /bin/true" {
 				t.Errorf("%s must execute the reviewed native prerequisite block unchanged", id)
 			}
+		}
+		if helmFound != 1 || testIndex < 0 || helmIndex >= testIndex {
+			t.Errorf("%s must prepare installed Helm's dependencies once before testing", id)
 		}
 		if found != 1 || testIndex < 0 || prerequisiteIndex >= testIndex {
 			t.Errorf("%s must have exactly one native mount preflight before its test step", id)
