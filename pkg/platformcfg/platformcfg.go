@@ -739,6 +739,11 @@ type RunnerPool struct {
 	// claim: wiring a reader reddens it, and the fix is to say here, and in
 	// docs/sovereign-pools.md, what the reader does.
 	ProvidersServed []string `bson:"providers_served,omitempty" json:"providers_served,omitempty"`
+	// GatewayBaseURL and ForgeHosts are static cluster-policy projections.
+	// They never replace a run's frozen content boundary or sealed URLs.
+	GatewayBaseURL string   `bson:"gateway_base_url,omitempty" json:"gateway_base_url,omitempty"`
+	ForgeHosts     []string `bson:"forge_hosts,omitempty" json:"forge_hosts,omitempty"`
+
 	// Note is free text for the operator (which team, which gateway).
 	Note string `bson:"note,omitempty" json:"note,omitempty"`
 	// State is the lifecycle. Entries are created provisioning and route
@@ -794,6 +799,9 @@ func (r *RunnerPools) Validate() error {
 			return fmt.Errorf("runner pool %q appears twice", p.Name)
 		}
 		seen[p.Name] = true
+		if err := p.ValidateHosts(); err != nil {
+			return fmt.Errorf("runner pool %q: %w", p.Name, err)
+		}
 		switch p.State {
 		case "", RunnerPoolProvisioning, RunnerPoolActive, RunnerPoolDraining, RunnerPoolDisabled:
 		default:

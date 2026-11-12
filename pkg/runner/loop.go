@@ -2448,27 +2448,6 @@ func (r *Runner) releasesRefusedResumes(msg *queue.RunMessage) bool {
 	return err == nil
 }
 
-// verdictFromStatuses is the statuses the runner's own verdict on msg moves
-// the run from. A resume the run is still queued for is left to the release
-// (releaseRefusedResume), which puts it back where it came from — a paused
-// run keeps its pending question: leftToRelease, and queued is not among
-// them. A resume whose run the queue no longer holds queued — a redelivery
-// after a nak, an orphan adopted and promoted, a launch redelivered as a
-// resume — takes the verdict, as a launch does.
-func (r *Runner) verdictFromStatuses(msg *queue.RunMessage) (from []store.RunStatus, leftToRelease bool) {
-	from = store.RunnerVerdictFromStatuses()
-	if !r.releasesRefusedResumes(msg) {
-		return from, false
-	}
-	kept := make([]store.RunStatus, 0, len(from))
-	for _, s := range from {
-		if s != store.RunStatusQueued {
-			kept = append(kept, s)
-		}
-	}
-	return kept, true
-}
-
 // outcomeSideEffectsFire reports whether a delivery ending on the plain
 // dispatch path (no park) is a FINAL disposition that must fire the
 // run-outcome side effects (completion webhook + run.<outcome> event). A
@@ -2592,8 +2571,9 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 	if err != nil {
 		if errors.Is(err, ErrIRUnloadable) {
 			r.failUnloadableIR(ctx, msg, err)
+			return err
 		}
-		return err
+		return r.refuseBeforeEngine(ctx, msg, "workflow", err)
 	}
 
 	// Launch-time budget overrides (studio Launch modal / API `budget`
@@ -2601,7 +2581,7 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 	// override can only lower the effective caps, never pierce the
 	// platform ceiling.
 	if err := applyBudgetOverrides(wf, msg.Budget, r.cfg.Logger); err != nil {
-		return err
+		return r.refuseBeforeEngine(ctx, msg, "budget", err)
 	}
 
 	// Multitenant safeguard: clamp the workflow budget to the platform's hard
@@ -2629,7 +2609,7 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 		// non-terminal outcomes precisely so a redelivery can re-fetch it.
 		// A run with no bundle at all (SecretsRef == "") still proceeds:
 		// injectCredentials returns nil for that legitimate case.
-		return fmt.Errorf("runner: credentials inject %s: %w", msg.RunID, credErr)
+		return r.refuseBeforeEngine(ctx, msg, "credentials", fmt.Errorf("runner: credentials inject %s: %w", msg.RunID, credErr))
 	}
 
 	// Usage cap, pre-flight. Placed after the credentials (which name the
@@ -2660,7 +2640,7 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 	// admitted commit. Refused here, at the branch that decides there is no
 	// repo workspace, because that is the only place the shape is visible.
 	if strings.TrimSpace(msg.RepoSHAExpected) != "" && strings.TrimSpace(msg.RepoURL) == "" {
-		return fmt.Errorf("runner: run %s: admitted for commit %s but carries no repository to clone — refusing rather than running with the pin unenforced", msg.RunID, msg.RepoSHAExpected)
+		return r.refuseBeforeEngine(ctx, msg, "repository_pin", fmt.Errorf("runner: run %s: admitted for commit %s but carries no repository to clone — refusing rather than running with the pin unenforced", msg.RunID, msg.RepoSHAExpected))
 	}
 	gitBase := ""
 	if strings.TrimSpace(msg.RepoURL) != "" {
@@ -2673,7 +2653,7 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 			r.cfg.Metrics.WorkspaceCloneDuration.Observe(time.Since(cloneStart).Seconds())
 		}
 		if derr != nil {
-			return fmt.Errorf("runner: prepare repo workspace for %s: %w", msg.RunID, derr)
+			return r.refuseBeforeEngine(ctx, msg, "workspace", fmt.Errorf("runner: prepare repo workspace for %s: %w", msg.RunID, derr))
 		}
 		workDir = repoDir
 		if baseline != "" {
@@ -2703,7 +2683,7 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 		if errors.Is(err, mcp.ErrWithdrawnMCPServer) {
 			r.recordTrustRefusal(ctx, msg, "mcp_servers", err)
 		}
-		return fmt.Errorf("runner: resolve MCP servers for %s: %w", msg.RunID, err)
+		return r.refuseBeforeEngine(ctx, msg, "mcp", fmt.Errorf("runner: resolve MCP servers for %s: %w", msg.RunID, err))
 	}
 	if wf.MCPPrepared != nil {
 		r.announceWithdrawnMCP(ctx, msg, wf.MCPPrepared.Withdrawn)
@@ -2836,7 +2816,7 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 	}
 	executor, usage, err := r.buildExecutor(ctx, msg, wf, workDir, runLogger, hookObservers, secretGuard)
 	if err != nil {
-		return err
+		return r.refuseBeforeEngine(ctx, msg, "executor", err)
 	}
 	if usageOut != nil {
 		*usageOut = usage
@@ -3015,7 +2995,7 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 	if msg.BotBundle != nil {
 		b, cleanupBundle, berr := r.materializeBotBundle(ctx, msg.BotBundle)
 		if berr != nil {
-			return fmt.Errorf("runner: bot bundle %s/%s@%d: %w", msg.BotBundle.TenantID, msg.BotBundle.Slug, msg.BotBundle.Version, berr)
+			return r.refuseBeforeEngine(ctx, msg, "bundle", fmt.Errorf("runner: bot bundle %s/%s@%d: %w", msg.BotBundle.TenantID, msg.BotBundle.Slug, msg.BotBundle.Version, berr))
 		}
 		defer cleanupBundle()
 		parentBundleDir = b.Dir
@@ -3175,6 +3155,7 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 			case !msg.AllowUnknownInputs:
 				runErr = fmt.Errorf("launch input %s names no var of the workflow (declared: %s) — re-launch, or pass allow_unknown_inputs to ride it",
 					strings.Join(refused, ", "), strings.Join(ir.DeclaredVarNames(wf), ", "))
+				runErr = r.refuseBeforeEngine(ctx, msg, "launch_inputs", runErr)
 				runLogger.Error("%s", runErr.Error())
 			default:
 				runLogger.Warn("launch input %s name(s) no var of the workflow — riding the launch on the operator's opt-out (declared: %s)",
@@ -3379,42 +3360,11 @@ func summariseDiagnostics(diags []ir.Diagnostic) string {
 // run_failed event carries the runner's version beside the workflow hash,
 // so the skew is readable from the run alone.
 func (r *Runner) failUnloadableIR(ctx context.Context, msg *queue.RunMessage, cause error) {
-	wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), parkStoreOpTimeout)
-	defer cancel()
-	idCtx := store.WithIdentity(wctx, msg.TenantID, msg.OwnerID)
-	// UpdateRunOutcome, not FailRunResumable: the latter assigns the
-	// checkpoint it is handed, and a resume delivery that lands on a stale
-	// image carries a checkpoint worth every node already paid for — a nil
-	// there would erase the anchor the aligned fleet resumes from. The
-	// expected set keeps the cancelled-wins guard: a run the operator
-	// cancelled meanwhile is not flipped back. A resume still queued goes
-	// back where it came from instead (verdictFromStatuses).
-	from, leftToRelease := r.verdictFromStatuses(msg)
-	changed, err := r.cfg.Store.UpdateRunOutcome(idCtx, msg.RunID, store.RunStatusFailedResumable, cause.Error(),
-		store.RunOutcomeMeta{Code: store.FailureIRUnloadable, Continuation: store.ContinuationFinal},
-		from)
-	switch {
-	case err != nil:
-		r.cfg.Logger.Warn("runner: run %s: could not record the unloadable IR: %v", msg.RunID, err)
-	case !changed && !leftToRelease:
-		r.cfg.Logger.Warn("runner: run %s: the unloadable-IR verdict was declined (status drifted) — the document does not carry IR_UNLOADABLE", msg.RunID)
-	}
-	if leftToRelease && !changed {
-		// The run goes back where it came from: no failure to announce, and
-		// processOne records the refusal there (run_retry_skipped).
-		return
-	}
-	if _, err := r.cfg.Store.AppendEvent(idCtx, msg.RunID, store.Event{
-		Type: store.EventRunFailed,
-		Data: map[string]any{
-			"code": string(store.FailureIRUnloadable), "error": cause.Error(),
-			"runner_version": appinfo.Version, "runner_commit": appinfo.Commit,
-			"workflow_hash": msg.WorkflowHash,
-			"hint":          "the IR was compiled by a server this runner cannot follow; align the runner with the server, then resume",
-		},
-	}); err != nil {
-		r.cfg.Logger.Warn("runner: run %s: could not emit run_failed for the unloadable IR: %v", msg.RunID, err)
-	}
+	r.recordPreEngineRefusal(ctx, msg, cause, preEngineVerdict{
+		Phase: "workflow_ir", Code: store.FailureIRUnloadable, Disposition: store.PreEngineFinalVerdict, FinalStatus: store.RunStatusFailedResumable,
+		Hint:    "the IR was compiled by a server this runner cannot follow; align the runner with the server, then resume",
+		Details: map[string]any{"workflow_hash": msg.WorkflowHash},
+	})
 }
 
 // applyBudgetOverrides folds launch-time budget overrides from the queue

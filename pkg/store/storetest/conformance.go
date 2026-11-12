@@ -88,6 +88,7 @@ func RunWithOpts(t *testing.T, factory Factory, opts Opts) {
 	t.Run("ArtifactVersionsMonotone", func(t *testing.T) { testArtifactVersions(t, factory(t)) })
 	t.Run("LockExclusivity", func(t *testing.T) { testLockExclusive(t, factory(t)) })
 	t.Run("CapabilitiesReported", func(t *testing.T) { testCapabilitiesReported(t, factory(t)) })
+	t.Run("PreEngineRefusal", func(t *testing.T) { RunPreEngineRefusalConformance(t, factory(t)) })
 	t.Run("UserMessagesInbox", func(t *testing.T) { testUserMessagesInbox(t, factory(t)) })
 	t.Run("WatchedIssues", func(t *testing.T) { testWatchedIssues(t, factory(t)) })
 	t.Run("AwaitAnswersWaits", func(t *testing.T) { RunAwaitAnswersWaitConformance(t, factory(t)) })

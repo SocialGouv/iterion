@@ -751,23 +751,9 @@ func (r *Runner) usageCapPreflight(ctx context.Context, wf *ir.Workflow, msg *qu
 	// conditions on failed_resumable, and a run stopped before its first
 	// node has never been marked anything. Without this the retry silently
 	// fails to arm and the run is acked into nothing.
-	if r.cfg.Store != nil {
-		sctx, scancel := context.WithTimeout(context.WithoutCancel(ctx), usageCapStoreTimeout)
-		defer scancel()
-		sctx = store.WithIdentity(sctx, msg.TenantID, msg.OwnerID)
-		if _, serr := r.cfg.Store.UpdateRunOutcome(sctx, msg.RunID, store.RunStatusFailedResumable,
-			d.Reason,
-			// Continuation deliberately unknown here: the arming
-			// decision happens later (armUsageWindowRetry), and three
-			// of its branches arm nothing — the document must not say
-			// retry_armed before a retry actually exists. Promotion to
-			// retry_armed lives with ScheduleRunRetry; demotion to
-			// final with AbandonRunRetry.
-			store.RunOutcomeMeta{Code: store.FailureUsageLimitBlocked},
-			[]store.RunStatus{store.RunStatusRunning, store.RunStatusQueued}); serr != nil && logger != nil {
-			logger.Warn("runner: usage-cap status flip for %s: %v", msg.RunID, serr)
-		}
-	}
+	r.recordPreEngineRefusal(ctx, msg, errors.New(d.Reason), preEngineVerdict{
+		Phase: "usage_cap", Code: store.FailureUsageLimitBlocked, Disposition: store.PreEngineUsagePark, Timeout: usageCapStoreTimeout,
+	})
 	return &delegate.ErrRateLimited{
 		Provider:    delegate.BackendClaudeCode,
 		Detail:      fmt.Sprintf("%s (not started)", d.Reason),

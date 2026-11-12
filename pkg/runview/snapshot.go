@@ -152,6 +152,8 @@ type RunHeader struct {
 	UpdatedAt  time.Time        `json:"updated_at"`
 	FinishedAt *time.Time       `json:"finished_at,omitempty"`
 	Error      string           `json:"error,omitempty"`
+	// PreEngineRefusal explains a refused delivery without inventing a failed status.
+	PreEngineRefusal *store.PreEngineRefusal `json:"pre_engine_refusal,omitempty"`
 	// FailureCode is Error's machine-readable classification (ADR-095);
 	// empty = unknown/legacy.
 	FailureCode store.FailureCode `json:"failure_code,omitempty"`
@@ -679,6 +681,7 @@ func (b *SnapshotBuilder) Snapshot() *RunSnapshot {
 		}
 	}
 	header := b.header
+	header.PreEngineRefusal = clonePreEngineRefusal(header.PreEngineRefusal)
 	header.Loops = b.buildLoopProgress()
 	header.BackendsUsed = b.buildBackendsUsed()
 	// Copied, not aliased: the clean-pass removal shifts the backing
@@ -1593,6 +1596,7 @@ func headerFromRun(r *store.Run) RunHeader {
 		UpdatedAt:            r.UpdatedAt,
 		FinishedAt:           r.FinishedAt,
 		Error:                r.Error,
+		PreEngineRefusal:     clonePreEngineRefusal(r.PreEngineRefusal),
 		FailureCode:          r.FailureCode,
 		EndReason:            r.EndReason,
 		Rewindable:           IsRewindableRun(r),

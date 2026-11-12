@@ -281,6 +281,7 @@ func summarizeRun(r *store.Run, active bool) RunSummary {
 		UpdatedAt:         r.UpdatedAt,
 		FinishedAt:        r.FinishedAt,
 		Error:             r.Error,
+		PreEngineRefusal:  clonePreEngineRefusal(r.PreEngineRefusal),
 		FailureCode:       r.FailureCode,
 		EndReason:         r.EndReason,
 		Active:            active,
@@ -304,6 +305,18 @@ func summarizeRun(r *store.Run, active bool) RunSummary {
 		RetryAfter:        retryAfterOf(r),
 		RetryAttempts:     retryAttemptsOf(r),
 	}
+}
+
+func clonePreEngineRefusal(source *store.PreEngineRefusal) *store.PreEngineRefusal {
+	if source == nil {
+		return nil
+	}
+	cloned := *source
+	if source.QueuedAt != nil {
+		at := *source.QueuedAt
+		cloned.QueuedAt = &at
+	}
+	return &cloned
 }
 
 func cloneRunSource(source *store.RunSource) *store.RunSource {

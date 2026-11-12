@@ -7693,6 +7693,18 @@ export interface components {
             strict?: boolean;
             triggers?: string[];
         };
+        PreEngineRefusal: {
+            code: string;
+            hint?: string;
+            message: string;
+            /** Format: date-time */
+            observed_at: string;
+            phase: string;
+            /** Format: date-time */
+            published_at?: string;
+            /** Format: date-time */
+            queued_at?: string;
+        };
         ProjectSyncConflict: {
             /** Format: date-time */
             at?: string;
@@ -7808,6 +7820,7 @@ export interface components {
             parent_node_id?: string;
             parent_run_id?: string;
             permission_mode?: string;
+            pre_engine_refusal?: components["schemas"]["PreEngineRefusal"];
             project_path?: string;
             queue_position?: number;
             rewindable?: boolean;
@@ -7920,6 +7933,7 @@ export interface components {
             name?: string;
             parent_node_id?: string;
             parent_run_id?: string;
+            pre_engine_refusal?: components["schemas"]["PreEngineRefusal"];
             project_path?: string;
             queue_position?: number;
             repo_root?: string;

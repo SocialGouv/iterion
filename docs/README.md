@@ -141,7 +141,7 @@ Start with the [Iterion Cloud overview](cloud-overview.md) for the event → que
 | [cloud-backup.md](cloud-backup.md) | Mongo/S3 backup and restore. |
 | [cloud-troubleshooting.md](cloud-troubleshooting.md) | Symptoms-first cloud troubleshooting. |
 | [cloud-public-exposure-checklist.md](cloud-public-exposure-checklist.md) | Pre-exposure security and reliability checklist. |
-| [sovereign-pools.md](sovereign-pools.md) | Sovereign runner pools: team→pool mapping, registry, per-pool topology, admission, server-surface refusals, and the admin surface. |
+| [sovereign-pools.md](sovereign-pools.md) | Sovereign runner pools: audited cutover and CLI, registry host projection, per-pool DLQ metrics, credential boundary and deployment residuals. |
 | [ci-performance-buildkit-operator.md](ci-performance-buildkit-operator.md) | BuildKit operator and CI-cache tuning. |
 
 ## Desktop

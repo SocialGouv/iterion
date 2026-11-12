@@ -1,5 +1,7 @@
 package store
 
+import "fmt"
+
 // This file is the canonical terminal-state contract for runs (ADR-095).
 //
 // Two things live here and nowhere else:
@@ -463,6 +465,45 @@ func (s RunStatus) CanOperatorResume() bool {
 // RequiresResumeAnswers: resuming this status needs the pending human
 // interaction answered first (`--answers-file`, the studio form).
 func (s RunStatus) RequiresResumeAnswers() bool { return s == RunStatusPausedWaitingHuman }
+
+// TeamCutoverInactiveStatuses returns the known states that cannot execute
+// until another admission. Unknown states never prove that a team is drained.
+func TeamCutoverInactiveStatuses() []RunStatus {
+	return []RunStatus{RunStatusPausedWaitingHuman, RunStatusPausedOperator,
+		RunStatusFailedResumable, RunStatusFailed, RunStatusFinished, RunStatusCancelled}
+}
+
+// TeamCutoverStatusAlive validates lifecycle metadata before a cutover read
+// treats it as evidence. Local runs may legitimately have no tenant.
+func TeamCutoverStatusAlive(status RunStatus) (bool, error) {
+	if status == RunStatusQueued || status == RunStatusRunning {
+		return true, nil
+	}
+	for _, inactive := range TeamCutoverInactiveStatuses() {
+		if status == inactive {
+			return false, nil
+		}
+	}
+	return false, fmt.Errorf("unknown run lifecycle status %q", status)
+}
+
+// IsPreEngineFailureVerdict names the two failure statuses a final delivery refusal may write.
+func (s RunStatus) IsPreEngineFailureVerdict() bool {
+	return s == RunStatusFailed || s == RunStatusFailedResumable
+}
+
+// PreEngineRefusalFromStatuses is the common eligibility set of both stores.
+// Usage retains its historical queued/running scope; final resume refusals
+// leave queued to the existing release owner.
+func PreEngineRefusalFromStatuses(q PreEngineRefusalRequest) []RunStatus {
+	if q.Disposition == PreEngineUsagePark {
+		return []RunStatus{RunStatusRunning, RunStatusQueued}
+	}
+	if q.LeaveQueued {
+		return []RunStatus{RunStatusRunning, RunStatusFailedResumable}
+	}
+	return RunnerVerdictFromStatuses()
+}
 
 // RunnerVerdictFromStatuses is the CAS set of the runner's own writes on a
 // run it claimed — the DLQ park and the unloadable-IR verdict: a claimed
