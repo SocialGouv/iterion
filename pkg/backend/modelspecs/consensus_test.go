@@ -134,3 +134,31 @@ func TestConsensusMaxOutputTokens(t *testing.T) {
 		t.Errorf("conflicting max output = %d, want 0 (unknown, not one publisher's cap)", got)
 	}
 }
+
+// Accepted efforts join the consensus-filtered fields: a bare id two
+// publishers answer with different effort lists answers none, never the
+// list of whichever publisher sorts first.
+func TestConsensusReasoningEfforts(t *testing.T) {
+	agree := map[string]Spec{
+		"alpha/deepseek-x": {ReasoningEfforts: []string{"low", "high"}},
+		"beta/deepseek-x":  {ReasoningEfforts: []string{"low", "high"}},
+	}
+	r := &Registry{}
+	r.indexLocked(agree)
+	if got := r.byModel["deepseek-x"].ReasoningEfforts; !reflect.DeepEqual(got, []string{"low", "high"}) {
+		t.Errorf("unanimous efforts = %v, want [low high]", got)
+	}
+
+	disagree := map[string]Spec{
+		"alpha/deepseek-x": {ReasoningEfforts: []string{"low", "high"}},
+		"beta/deepseek-x":  {ReasoningEfforts: []string{"low", "high", "max"}},
+	}
+	r2 := &Registry{}
+	r2.indexLocked(disagree)
+	if got := r2.byModel["deepseek-x"].ReasoningEfforts; got != nil {
+		t.Errorf("conflicting efforts = %v, want none (unknown, not one publisher's list)", got)
+	}
+	if got := r2.byFull["beta/deepseek-x"].ReasoningEfforts; len(got) != 3 {
+		t.Errorf("the qualified index altered a publisher's own list: %v", got)
+	}
+}

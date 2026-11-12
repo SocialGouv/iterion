@@ -35,6 +35,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -67,15 +68,23 @@ const (
 // 0 is "the aggregator had no price", not "free", and a MaxOutputTokens of 0 is
 // "no published cap figure", not "uncapped". consensusSpec zeroes any field the
 // publishers disagree on, so zero is a routine answer rather than an edge case.
+//
+// ReasoningEfforts is the list of reasoning_effort wire values the model
+// accepts, in ParseEffortLevels' vocabulary; nil is unstated, never "accepts
+// nothing". The aggregator parse (ParseModelsDev) never fills it, and
+// consensusSpec drops it where publishers disagree. It carries no bson tag:
+// the Mongo key is the driver's default `reasoningefforts`, an additive field
+// older binaries skip on decode.
 type Spec struct {
-	ContextWindow     int     `json:"context_window,omitempty"`
-	MaxOutputTokens   int     `json:"max_output_tokens,omitempty"`
-	InputCostPerM     float64 `json:"input_cost_per_m,omitempty"`
-	OutputCostPerM    float64 `json:"output_cost_per_m,omitempty"`
-	CacheReadCostPerM float64 `json:"cache_read_cost_per_m,omitempty"`
-	Reasoning         *bool   `json:"reasoning,omitempty"`
-	ToolCall          *bool   `json:"tool_call,omitempty"`
-	Temperature       *bool   `json:"temperature,omitempty"`
+	ContextWindow     int      `json:"context_window,omitempty"`
+	MaxOutputTokens   int      `json:"max_output_tokens,omitempty"`
+	InputCostPerM     float64  `json:"input_cost_per_m,omitempty"`
+	OutputCostPerM    float64  `json:"output_cost_per_m,omitempty"`
+	CacheReadCostPerM float64  `json:"cache_read_cost_per_m,omitempty"`
+	Reasoning         *bool    `json:"reasoning,omitempty"`
+	ToolCall          *bool    `json:"tool_call,omitempty"`
+	Temperature       *bool    `json:"temperature,omitempty"`
+	ReasoningEfforts  []string `json:"reasoning_efforts,omitempty"`
 }
 
 // cacheFile is the on-disk cache layout. FetchedAt drives TTL freshness so the
@@ -619,8 +628,8 @@ func (r *Registry) indexLocked(flat map[string]Spec) {
 
 // consensusSpec keeps only the fields every candidate agrees on. A single
 // candidate is returned as-is; where candidates differ the field is zeroed
-// (numbers) or nil'd (flags), which callers read as "the aggregator has no
-// answer" and leave the curated value in place.
+// (numbers) or nil'd (flags, effort lists), which callers read as "the
+// aggregator has no answer" and leave the curated value in place.
 func consensusSpec(specs []Spec) Spec {
 	if len(specs) == 0 {
 		return Spec{}
@@ -642,6 +651,9 @@ func consensusSpec(specs []Spec) Spec {
 		out.Reasoning = agreedFlag(out.Reasoning, s.Reasoning)
 		out.ToolCall = agreedFlag(out.ToolCall, s.ToolCall)
 		out.Temperature = agreedFlag(out.Temperature, s.Temperature)
+		if !slices.Equal(s.ReasoningEfforts, out.ReasoningEfforts) {
+			out.ReasoningEfforts = nil
+		}
 	}
 	return out
 }
