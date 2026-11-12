@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -250,15 +251,29 @@ func TestPriceFeedEndToEndRetiresThePool(t *testing.T) {
 		// without the declaration, assertion by assertion.
 		t.Error("the launch sealed no table")
 	}
+	// The default runner states no table: every answer below is the
+	// declaration's.
+	for _, name := range []string{compatgw.CatalogModelsEnv, compatgw.ReasoningEffortsEnv, compatgw.CatalogProviderEnv} {
+		if value, set := os.LookupEnv(name); set {
+			t.Fatalf("the default runner's environment sets %s=%q: the run would not prove the declaration alone", name, value)
+		}
+	}
 	feedRun := runRetireWorkflow(t, compatgw.OverlayFeedTable(context.Background(), bundle.GatewayPriceFeed), wf, gw, runID)
 
-	// 3. What the gateway RECEIVED, and what the run recorded.
+	// 3. What the gateway RECEIVED, and what the run recorded — for each id
+	// the declared values, none of them claw's own default (max_tokens
+	// 8192), so a value the table dropped reads as the default it fell to.
 	deep, glm := feedRun.bodies["scaleway/deepseek-v4.1-flash"], feedRun.bodies["glm-5.3"]
 	if deep.ReasoningEffort != "high" {
 		t.Errorf("the gateway received reasoning_effort %q for deepseek, want high (medium mapped by the platform declaration)", deep.ReasoningEffort)
 	}
-	if glm.MaxTokens != 16384 {
-		t.Errorf("the gateway received max_tokens %d for glm-5.3, want the declared max output 16384", glm.MaxTokens)
+	for id, want := range map[string]int{"scaleway/deepseek-v4.1-flash": 32768, "glm-5.3": 16384} {
+		if got := feedRun.bodies[id].MaxTokens; got != want {
+			t.Errorf("the gateway received max_tokens %d for %s, want the declared max output %d", got, id, want)
+		}
+	}
+	if glm.ReasoningEffort != "" {
+		t.Errorf("the gateway received reasoning_effort %q for glm-5.3, whose node asks none", glm.ReasoningEffort)
 	}
 	if adj := feedRun.adjusted["deep"]; adj["requested"] != "medium" || adj["applied"] != "high" || adj["source"] != "feed:pliage" {
 		t.Errorf("reasoning_effort_adjusted = %v, want medium -> high from feed:pliage", adj)
@@ -268,12 +283,23 @@ func TestPriceFeedEndToEndRetiresThePool(t *testing.T) {
 			t.Errorf("%s: _gateway_spec.source = %q, want feed:pliage", node, spec.Source)
 		}
 	}
-	if w := feedRun.specs["glm"].ContextWindow; w != 256000 {
-		t.Errorf("glm: _gateway_spec.context_window = %d, want 256000", w)
-	}
-	for _, node := range []string{"deep", "glm"} {
-		if feedRun.costs[node] <= 0 {
-			t.Errorf("%s: _cost_usd = %v, want a priced node", node, feedRun.costs[node])
+	// Each node's record carries its id's declared window, output cap and
+	// prices, and its cost is its usage at those prices: the stub reports
+	// 100000 prompt and 2000 completion tokens, none cached.
+	for node, want := range map[string]compatgw.ResolvedEnvRecord{
+		"deep": {ContextWindow: 256000, MaxOutputTokens: 32768, InputUSDPerMTok: 0.672, OutputUSDPerMTok: 2.016, CacheReadUSDPerMTok: 0.1344},
+		"glm":  {ContextWindow: 256000, MaxOutputTokens: 16384, InputUSDPerMTok: 2.01, OutputUSDPerMTok: 6.15},
+	} {
+		got := feedRun.specs[node]
+		if got.ContextWindow != want.ContextWindow || got.MaxOutputTokens != want.MaxOutputTokens || got.InputUSDPerMTok != want.InputUSDPerMTok ||
+			got.OutputUSDPerMTok != want.OutputUSDPerMTok || got.CacheReadUSDPerMTok != want.CacheReadUSDPerMTok {
+			t.Errorf("%s: _gateway_spec = window %d, max output %d, prices %v/%v cache %v; want the declaration's %d, %d, %v/%v cache %v", node,
+				got.ContextWindow, got.MaxOutputTokens, got.InputUSDPerMTok, got.OutputUSDPerMTok, got.CacheReadUSDPerMTok,
+				want.ContextWindow, want.MaxOutputTokens, want.InputUSDPerMTok, want.OutputUSDPerMTok, want.CacheReadUSDPerMTok)
+		}
+		wantCost := (100000*want.InputUSDPerMTok + 2000*want.OutputUSDPerMTok) / 1e6
+		if cost := feedRun.costs[node]; math.Abs(cost-wantCost) > 1e-9 {
+			t.Errorf("%s: _cost_usd = %v, want %v (100000 prompt and 2000 completion tokens at the declared prices)", node, cost, wantCost)
 		}
 		if feedRun.sampled[node] <= 0 {
 			t.Errorf("%s: no usage_progress sample carried a USD figure (%v)", node, feedRun.sampled[node])
@@ -303,14 +329,16 @@ func TestPriceFeedEndToEndRetiresThePool(t *testing.T) {
 	}
 }
 
-// retirePliage is the platform declaration: deepseek priced with its
-// accepted efforts, glm-5.3 priced with its window and max output.
-const retirePliage = `{"scaleway/deepseek-v4.1-flash":{"context_window":128000,"max_output_tokens":8192,"input_usd_per_mtok":0.6,"output_usd_per_mtok":2.4,"reasoning_efforts":["low","high","xhigh","max"]},"glm-5.3":{"context_window":256000,"max_output_tokens":16384,"input_usd_per_mtok":2.01,"output_usd_per_mtok":6.15}}`
+// retirePliage is the platform declaration: deepseek-v4.1-flash with its
+// accepted efforts, window, max output and prices (cache read included),
+// glm-5.3 priced with its window and max output — neither max output
+// claw's 8192 default.
+const retirePliage = `{"scaleway/deepseek-v4.1-flash":{"context_window":256000,"max_output_tokens":32768,"input_usd_per_mtok":0.672,"output_usd_per_mtok":2.016,"cache_read_usd_per_mtok":0.1344,"reasoning_efforts":["low","high","xhigh","max"]},"glm-5.3":{"context_window":256000,"max_output_tokens":16384,"input_usd_per_mtok":2.01,"output_usd_per_mtok":6.15}}`
 
 // retirePoolModels and retirePoolEfforts are the same facts as the
 // pool's two env tables.
 const (
-	retirePoolModels  = `{"scaleway/deepseek-v4.1-flash":{"context_window":128000,"max_output_tokens":8192,"input_usd_per_mtok":0.6,"output_usd_per_mtok":2.4},"glm-5.3":{"context_window":256000,"max_output_tokens":16384,"input_usd_per_mtok":2.01,"output_usd_per_mtok":6.15}}`
+	retirePoolModels  = `{"scaleway/deepseek-v4.1-flash":{"context_window":256000,"max_output_tokens":32768,"input_usd_per_mtok":0.672,"output_usd_per_mtok":2.016,"cache_read_usd_per_mtok":0.1344},"glm-5.3":{"context_window":256000,"max_output_tokens":16384,"input_usd_per_mtok":2.01,"output_usd_per_mtok":6.15}}`
 	retirePoolEfforts = `{"scaleway/deepseek-v4.1-flash":["low","high","xhigh","max"]}`
 )
 

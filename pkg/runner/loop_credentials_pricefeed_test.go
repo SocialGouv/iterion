@@ -136,7 +136,7 @@ func TestMetricsEmitterPricesGatewayThroughTheRunContext(t *testing.T) {
 // run's context carries the sealed key and base URL, the ambient refusal of
 // the pod's environment, and the table the fold answered — from which a
 // runner with no OPENAI_COMPATIBLE_* table answers deepseek's accepted
-// efforts and glm-5.3's window, output cap and prices from the declaration.
+// efforts and each id's window, output cap and prices from the declaration.
 func TestInjectCredentials_OpensThePublishersTeamGatewayLaunch(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("TMPDIR", t.TempDir())
@@ -181,7 +181,7 @@ func TestInjectCredentials_OpensThePublishersTeamGatewayLaunch(t *testing.T) {
 	platform := pricefeed.ScopeState{Label: "platform", Config: &pricefeed.ConfigRecord{UpdatedAt: time.Now().UTC(), Feeds: []pricefeed.FeedConfig{{
 		Name: "pliage", Type: pricefeed.TypeDeclared, Enabled: true,
 		Interval: pricefeed.D(30 * 24 * time.Hour), Timeout: pricefeed.D(time.Second),
-		Params: map[string]string{"entries": `{"scaleway/deepseek-v4.1-flash":{"context_window":128000,"max_output_tokens":8192,"input_usd_per_mtok":0.6,"output_usd_per_mtok":2.4,"reasoning_efforts":["low","high","xhigh","max"]},"glm-5.3":{"context_window":256000,"max_output_tokens":16384,"input_usd_per_mtok":2.01,"output_usd_per_mtok":6.15}}`},
+		Params: map[string]string{"entries": `{"scaleway/deepseek-v4.1-flash":{"context_window":256000,"max_output_tokens":32768,"input_usd_per_mtok":0.672,"output_usd_per_mtok":2.016,"cache_read_usd_per_mtok":0.1344,"reasoning_efforts":["low","high","xhigh","max"]},"glm-5.3":{"context_window":256000,"max_output_tokens":16384,"input_usd_per_mtok":2.01,"output_usd_per_mtok":6.15}}`},
 	}}}}
 	var mu sync.Mutex
 	var rawTable json.RawMessage
@@ -279,9 +279,14 @@ workflow w:
 	if values, source := compatgw.AcceptedEfforts(deepseek, get, t.Errorf); !slices.Equal(values, []string{"low", "high", "xhigh", "max"}) || source != compatgw.SourceFeed("pliage") {
 		t.Errorf("deepseek's accepted efforts = %v from %q, want the declaration's from feed:pliage", values, source)
 	}
-	res := compatgw.ResolveCatalog("glm-5.3", nil, get)
-	if res.Source != compatgw.SourceFeed("pliage") || res.Spec.ContextWindow != 256000 || res.Spec.MaxOutputTokens != 16384 ||
-		res.Spec.InputCostPerM != 2.01 || res.Spec.OutputCostPerM != 6.15 {
-		t.Errorf("glm-5.3 resolves %+v, want the declaration's window, output cap and prices from feed:pliage", res)
+	for id, want := range map[string]modelspecs.Spec{
+		deepseek:  {ContextWindow: 256000, MaxOutputTokens: 32768, InputCostPerM: 0.672, OutputCostPerM: 2.016, CacheReadCostPerM: 0.1344},
+		"glm-5.3": {ContextWindow: 256000, MaxOutputTokens: 16384, InputCostPerM: 2.01, OutputCostPerM: 6.15},
+	} {
+		res := compatgw.ResolveCatalog(id, nil, get)
+		if res.Source != compatgw.SourceFeed("pliage") || res.Spec.ContextWindow != want.ContextWindow || res.Spec.MaxOutputTokens != want.MaxOutputTokens ||
+			res.Spec.InputCostPerM != want.InputCostPerM || res.Spec.OutputCostPerM != want.OutputCostPerM || res.Spec.CacheReadCostPerM != want.CacheReadCostPerM {
+			t.Errorf("%s resolves %+v, want the declaration's window, output cap and prices %+v from feed:pliage", id, res, want)
+		}
 	}
 }
