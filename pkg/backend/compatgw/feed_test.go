@@ -251,3 +251,47 @@ func TestResolveCatalog_ADeclaredUnpricedRowAnswersAsThePoolsRowDid(t *testing.T
 		t.Fatalf("an unpriced row priced: pool %v, default runner %v", pool.Priced(), def.Priced())
 	}
 }
+
+// A declared row without the price pair never hides a price on the runner
+// either: when the rungs below the run table price the id — the operator
+// table, the catalog provider — their answer answers whole; when they state
+// it unpriced or not at all, the declared row answers, as the pool's row did.
+func TestResolveCatalog_ADeclaredUnpricedRowNeverHidesAPriceBelowIt(t *testing.T) {
+	ResetCatalogCaches()
+	t.Cleanup(ResetCatalogCaches)
+	const id = "gpt-oss-120b"
+	row := `{"context_window":131072,"max_output_tokens":16384}`
+	now := time.Now()
+	table := pricefeed.Fold(pricefeed.FoldConfig{Now: now}, pricefeed.ScopeState{Config: &pricefeed.ConfigRecord{UpdatedAt: now, Feeds: []pricefeed.FeedConfig{{
+		Name: "pliage", Type: pricefeed.TypeDeclared, Enabled: true, Interval: pricefeed.D(30 * 24 * time.Hour), Timeout: pricefeed.D(time.Second),
+		Params: map[string]string{"entries": `{"` + id + `":` + row + `}`},
+	}}}})
+	raw, err := json.Marshal(table)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap := ResolveCatalog(id, nil, mapGet(map[string]string{CatalogProviderEnv: "scaleway"})); snap.Source != SourceCatalogSnapshot || !snap.Priced() {
+		t.Fatalf("fixture: the snapshot answers %q priced=%v for %s, want a priced snapshot entry", snap.Source, snap.Priced(), id)
+	}
+	for _, tc := range []struct {
+		name   string
+		env    map[string]string
+		source string
+		priced bool
+	}{
+		{"the operator table prices it", map[string]string{CatalogModelsEnv: `{"` + id + `":{"context_window":65536,"input_usd_per_mtok":0.15,"output_usd_per_mtok":0.6}}`}, SourceOperator, true},
+		{"the catalog provider prices it", map[string]string{CatalogProviderEnv: "scaleway"}, SourceCatalogSnapshot, true},
+		{"the operator table states it unpriced", map[string]string{CatalogModelsEnv: `{"` + id + `":{"context_window":65536}}`, CatalogProviderEnv: "scaleway"}, SourceFeed("pliage"), false},
+		{"no table below", map[string]string{}, SourceFeed("pliage"), false},
+	} {
+		ResetCatalogCaches()
+		tc.env[FeedTableEnv] = string(raw)
+		res := ResolveCatalog(id, nil, mapGet(tc.env))
+		if res.Source != tc.source || res.Priced() != tc.priced {
+			t.Errorf("[%s] answers %q priced=%v (%+v), want %q priced=%v", tc.name, res.Source, res.Priced(), res.Spec, tc.source, tc.priced)
+		}
+		if res.Source == SourceFeed("pliage") && (res.Spec.ContextWindow != 131072 || res.Spec.MaxOutputTokens != 16384) {
+			t.Errorf("[%s] the declared row answers %+v, want its window and output cap", tc.name, res.Spec)
+		}
+	}
+}

@@ -522,9 +522,11 @@ func TestFoldWarnsWhenAWinningEntryLeavesShadowedFieldsUnstated(t *testing.T) {
 // did: a pool's row stating a window and an output cap without prices
 // declares as written and travels in Entries, unpriced, with no warning —
 // while a fetched feed's same entry still never travels (ADR-163: a
-// source listing an id it does not price says nothing about it). Listed
-// first in its level, the declared row answers whole over a feed that
-// prices the id, and the fold says the prices are left unstated.
+// source listing an id it does not price says nothing about it). A
+// declared row without the price pair never hides a price: listed first
+// in its level beside a feed that prices the id, it steps aside, the
+// priced entry answers whole, and the fold says which fields of the row
+// do not answer.
 func TestFoldADeclaredUnpricedRowAnswersWhole(t *testing.T) {
 	const id = "scaleway/qwen-unpriced"
 	now := time.Now()
@@ -556,10 +558,65 @@ func TestFoldADeclaredUnpricedRowAnswersWhole(t *testing.T) {
 	warned = nil
 	priced := map[string]*StateRecord{"scw": freshState("scw", now, map[string]modelspecs.Spec{id: {InputCostPerM: 0.3, OutputCostPerM: 1.2}})}
 	table = Fold(FoldConfig{Now: now, Warnf: warnf}, ScopeState{Config: &ConfigRecord{UpdatedAt: now, Feeds: []FeedConfig{declared, fetched}}, States: priced})
-	if e := table.Entries[id]; e.Feed != "pliage" || !SpecEqual(e.Spec, row) {
-		t.Fatalf("the declared row listed first answers %+v, want it whole", e)
+	if e := table.Entries[id]; e.Feed != "scw" || e.Declared || e.Spec.InputCostPerM != 0.3 {
+		t.Fatalf("beside a feed pricing the id, the declared row listed first answers %+v, want scw's priced entry whole", e)
 	}
-	if len(warned) != 1 || !strings.Contains(warned[0], "price feed pliage answers whole over feed scw and leaves input_usd_per_mtok, output_usd_per_mtok unstated") {
-		t.Fatalf("the row shadowing a price must say so: %v", warned)
+	if len(warned) != 1 || !strings.Contains(warned[0], "price feed pliage states context_window, max_output_tokens without the price pair for 1 ids ("+id+")") ||
+		!strings.Contains(warned[0], "the priced entry of feed scw answers them whole") {
+		t.Fatalf("the row stepping aside for a price must say so: %v", warned)
+	}
+}
+
+// A declared row without the price pair never hides a price below it
+// either: a more specific level's row — a flag beside its efforts, a
+// window alone, a pool's window and output cap — leaves the less specific
+// level's priced entry answering whole, warned naming both feeds with
+// their levels and the row's fields, while the row's efforts answer. Two
+// unpriced rows at two levels keep the more specific one, and a priced
+// row of a more specific level replaces an unpriced one below it.
+func TestFoldADeclaredUnpricedRowNeverHidesAPriceBelowIt(t *testing.T) {
+	const id = "scaleway/deepseek-v4.1-flash"
+	now := time.Now()
+	platform := ScopeState{Label: "platform", Config: &ConfigRecord{UpdatedAt: now, Feeds: []FeedConfig{
+		declaredFeed("pliage", `{"`+id+`":{"context_window":256000,"max_output_tokens":32768,"input_usd_per_mtok":0.672,"output_usd_per_mtok":2.016}}`),
+	}}}
+	for _, tc := range []struct {
+		name, row, fields string
+		efforts           bool
+	}{
+		{"a flag beside its efforts", `{"reasoning":true,"reasoning_efforts":["low","high","xhigh","max"]}`, "reasoning", true},
+		{"a window alone", `{"context_window":128000}`, "context_window", false},
+		{"a pool's window and output cap", `{"context_window":128000,"max_output_tokens":8192}`, "context_window, max_output_tokens", false},
+	} {
+		var warned []string
+		warnf := func(f string, a ...any) { warned = append(warned, fmt.Sprintf(f, a...)) }
+		team := ScopeState{Label: "team t1", Config: &ConfigRecord{UpdatedAt: now, Feeds: []FeedConfig{declaredFeed("mine", `{"`+id+`":`+tc.row+`}`)}}}
+		table := Fold(FoldConfig{Now: now, Warnf: warnf}, platform, team)
+		if e := table.Entries[id]; e.Feed != "pliage" || e.Spec.InputCostPerM != 0.672 || e.Spec.ContextWindow != 256000 {
+			t.Errorf("[%s] the team's unpriced row hides the platform's price: %+v", tc.name, e)
+		}
+		if got := table.Efforts[id]; tc.efforts != (got.Feed == "mine") {
+			t.Errorf("[%s] efforts answer %+v, want the team's: %v", tc.name, got, tc.efforts)
+		}
+		want := "price feed mine (team t1) states " + tc.fields + " without the price pair for 1 ids (" + id + ")"
+		if len(warned) != 1 || !strings.Contains(warned[0], want) || !strings.Contains(warned[0], "the priced entry of feed pliage (platform) answers them whole") {
+			t.Errorf("[%s] warnings %q, want one naming %q and pliage (platform)", tc.name, warned, want)
+		}
+	}
+
+	unpricedPlatform := ScopeState{Label: "platform", Config: &ConfigRecord{UpdatedAt: now, Feeds: []FeedConfig{declaredFeed("pliage", `{"`+id+`":{"context_window":256000}}`)}}}
+	unpricedTeam := ScopeState{Label: "team t1", Config: &ConfigRecord{UpdatedAt: now, Feeds: []FeedConfig{declaredFeed("mine", `{"`+id+`":{"context_window":128000}}`)}}}
+	if e := Fold(FoldConfig{Now: now}, unpricedPlatform, unpricedTeam).Entries[id]; e.Feed != "mine" || e.Spec.ContextWindow != 128000 {
+		t.Errorf("two unpriced rows: %+v, want the team's", e)
+	}
+	pricedTeam := ScopeState{Label: "team t1", Config: &ConfigRecord{UpdatedAt: now, Feeds: []FeedConfig{declaredFeed("mine", `{"`+id+`":{"input_usd_per_mtok":1,"output_usd_per_mtok":2}}`)}}}
+	if e := Fold(FoldConfig{Now: now}, unpricedPlatform, pricedTeam).Entries[id]; e.Feed != "mine" || e.Spec.InputCostPerM != 1 {
+		t.Errorf("a priced team row over an unpriced platform row: %+v, want the team's", e)
+	}
+	// A tenant's price is its runs' price, however low: the rule bars an
+	// unpriced row, not a cheap one.
+	cheapTeam := ScopeState{Label: "team t1", Config: &ConfigRecord{UpdatedAt: now, Feeds: []FeedConfig{declaredFeed("mine", `{"`+id+`":{"input_usd_per_mtok":1e-12,"output_usd_per_mtok":1e-12}}`)}}}
+	if e := Fold(FoldConfig{Now: now}, platform, cheapTeam).Entries[id]; e.Feed != "mine" || e.Spec.InputCostPerM != 1e-12 {
+		t.Errorf("a near-zero team price over the platform's: %+v, want the team's", e)
 	}
 }

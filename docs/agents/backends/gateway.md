@@ -41,8 +41,9 @@ a stale one steps down to the operator table. A level the fold cannot read
 retryably (`PRICE_FEED_UNREAD`, ADR-166 §4). A `declared` feed is the
 operator's table stored in its config (`params.entries`): never fetched,
 never stale. Its entries answer whole as the operator-table rows they
-copy — priced or not — and an entry stating only `reasoning_efforts`
-answers its efforts alone. The `_gateway_spec` record carries
+copy — priced or not, an unpriced one only where nothing prices the id
+(beside, below, or on the runner's env table) — and an entry stating only
+`reasoning_efforts` answers its efforts alone. The `_gateway_spec` record carries
 `"feed:<name>"` with its age.
 
 Commands: `iterion remote price-feeds list|set|delete|sync|declare

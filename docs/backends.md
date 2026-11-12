@@ -1905,7 +1905,8 @@ run to the runner** — the operator table stays the floor.
   or the run loses them, and the fold warns, naming both feeds, the ids
   and the fields. A fetched entry without the price pair does not
   travel as a price entry — it can never shadow a priced operator or
-  catalog entry with an unpriced one; a declared one does (below). When a fresh
+  catalog entry with an unpriced one; a declared one answers unpriced
+  only where nothing prices the id (below). When a fresh
   feed and the operator table disagree on price, the sync says so: one
   line per drifting id per refresh, naming both values.
 - **Sources** are adapters behind one seam — a new operator tariff
@@ -1937,7 +1938,12 @@ run to the runner** — the operator table stays the floor.
   operator-table row it copies did: priced, or stating a window, an
   output cap, a cache price or a flag without the price pair — which it
   answers unpriced, the answer a pool's `OPENAI_COMPATIBLE_MODELS` row
-  gave. An entry stating only `reasoning_efforts` answers its efforts
+  gave. A declared row without the price pair never hides a price: a
+  priced entry beside it (a later feed of its level) or below it (a
+  less specific level) — on the runner, a priced operator-table or
+  catalog-provider row — answers whole instead, the row's fields step
+  aside with a warning naming both feeds, and its efforts still answer.
+  An entry stating only `reasoning_efforts` answers its efforts
   alone; an entry stating nothing and an empty document are refused on
   write. A stored declaration that breaks a write rule steps
   down with a warning naming the feed, and its view reads `failing`.

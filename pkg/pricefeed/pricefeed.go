@@ -453,8 +453,9 @@ type ScopeState struct {
 //   - Entries: every priced entry (input and output price both above
 //     zero) of every answering feed, and every declared entry stating a
 //     window, an output cap, a cache price or a flag without the price
-//     pair — a declaration answers whole, as the operator-table row it
-//     copies did — its accepted efforts stripped;
+//     pair where no priced entry answers the id — a declaration answers
+//     whole, as the operator-table row it copies did — its accepted
+//     efforts stripped;
 //   - Efforts: every entry's accepted efforts, priced or not.
 //
 // A price entry answers WHOLE from one feed (ADR-122): its fields are
@@ -464,6 +465,14 @@ type ScopeState struct {
 // feed's of the same scope, or a less specific scope's), the fold keeps
 // the winner whole and warns, one line per (winner, shadowed) feed pair
 // naming the ids and the fields.
+//
+// A declared entry without the price pair never hides a price: where a
+// priced entry answers the same id beside it (a later feed of its scope)
+// or below it (a less specific scope's), the priced entry answers whole —
+// the declared entry's window, output cap, cache price and flags step
+// aside, warned one line per (declared feed, priced feed) pair naming the
+// ids and the fields, and its accepted efforts still answer. With no
+// priced entry for the id, it answers whole.
 //
 // A fetched feed answers while its state is fresh (StateRecord.Fresh);
 // a stale one contributes nothing — it steps down to the operator floor,
@@ -503,6 +512,7 @@ func Fold(cfg FoldConfig, scopes ...ScopeState) *Table {
 	entryScope := map[string]string{} // id → the label of the scope its entry answers from
 	efforts := map[string]EffortsEntry{}
 	shadows := shadowReport{}
+	asides := asideReport{}
 	for _, scope := range scopes {
 		if scope.Config == nil {
 			continue
@@ -533,10 +543,10 @@ func Fold(cfg FoldConfig, scopes ...ScopeState) *Table {
 					}
 				}
 				// A declared entry answers whole, priced or not, as the
-				// operator-table row it copies did; a fetched one answers
+				// operator-table row it copies did — unpriced, only where no
+				// priced entry answers the id (below); a fetched one answers
 				// only priced (ADR-163).
-				answers := spec.InputCostPerM > 0 && spec.OutputCostPerM > 0 ||
-					answer.declared && len(unpricedFields(spec)) > 0
+				answers := pricedSpec(spec) || answer.declared && len(unpricedFields(spec)) > 0
 				if !answers {
 					if len(spec.ReasoningEfforts) == 0 || len(unpricedFields(spec)) > 0 {
 						unpriced++
@@ -552,6 +562,11 @@ func Fold(cfg FoldConfig, scopes ...ScopeState) *Table {
 					Declared:    answer.declared,
 				}
 				if winner, taken := scopeEntries[id]; taken {
+					if !pricedSpec(winner.Spec) && pricedSpec(entry.Spec) {
+						asides.note(id, winner, scope.Label, entry, scope.Label)
+						scopeEntries[id] = entry
+						continue
+					}
 					shadows.note(id, winner, scope.Label, entry, scope.Label)
 					continue
 				}
@@ -563,6 +578,10 @@ func Fold(cfg FoldConfig, scopes ...ScopeState) *Table {
 		}
 		for id, entry := range scopeEntries {
 			if shadowed, taken := entries[id]; taken {
+				if pricedSpec(shadowed.Spec) && !pricedSpec(entry.Spec) {
+					asides.note(id, entry, scope.Label, shadowed, entryScope[id])
+					continue
+				}
 				shadows.note(id, entry, scope.Label, shadowed, entryScope[id])
 			}
 			entries[id] = entry
@@ -571,6 +590,7 @@ func Fold(cfg FoldConfig, scopes ...ScopeState) *Table {
 		maps.Copy(efforts, scopeEfforts)
 	}
 	shadows.warn(cfg.Warnf)
+	asides.warn(cfg.Warnf)
 	if len(entries) == 0 && len(efforts) == 0 {
 		return nil
 	}
@@ -655,6 +675,52 @@ func (r shadowReport) warn(warnf func(format string, args ...any)) {
 	if warnf == nil || len(r) == 0 {
 		return
 	}
+	for _, key := range sortedPairs(r) {
+		s := r[key]
+		shown, more := cappedIDs(s.ids)
+		winner := feedRef(key.winner, key.winnerScope)
+		warnf("price feed %s answers whole over feed %s and leaves %s unstated for %d ids (%s%s) — a price entry answers from one feed, never merged: restate them in %s, or the run answers without them",
+			winner, feedRef(key.loser, key.loserScope), strings.Join(orderedFields(s.fields), ", "), len(s.ids), strings.Join(shown, ", "), more, winner)
+	}
+}
+
+// asideReport collects, per (priced feed, declared feed) pair — keyed as a
+// shadowPair, the priced feed the winner — the ids where a declared entry
+// without the price pair steps aside for a priced entry beside or below
+// it, and the fields the declared entry states that do not answer.
+type asideReport map[shadowPair]*shadowed
+
+// note records one id where declared (unpriced) steps aside for priced.
+func (r asideReport) note(id string, declared Entry, declaredScope string, priced Entry, pricedScope string) {
+	key := shadowPair{priced.Feed, pricedScope, declared.Feed, declaredScope}
+	s := r[key]
+	if s == nil {
+		s = &shadowed{fields: map[string]bool{}}
+		r[key] = s
+	}
+	s.ids = append(s.ids, id)
+	for _, f := range unpricedFields(declared.Spec) {
+		s.fields[f] = true
+	}
+}
+
+// warn says one line per pair, sorted, the fields in the format's order
+// ahead of the ids, sorted and capped.
+func (r asideReport) warn(warnf func(format string, args ...any)) {
+	if warnf == nil || len(r) == 0 {
+		return
+	}
+	for _, key := range sortedPairs(r) {
+		s := r[key]
+		shown, more := cappedIDs(s.ids)
+		declared := feedRef(key.loser, key.loserScope)
+		warnf("price feed %s states %s without the price pair for %d ids (%s%s) — a declared entry never hides a price: the priced entry of feed %s answers them whole; state the price pair in %s to answer its fields",
+			declared, strings.Join(orderedFields(s.fields), ", "), len(s.ids), strings.Join(shown, ", "), more, feedRef(key.winner, key.winnerScope), declared)
+	}
+}
+
+// sortedPairs answers a report's pairs in a stable order.
+func sortedPairs[V any](r map[shadowPair]V) []shadowPair {
 	keys := make([]shadowPair, 0, len(r))
 	for key := range r {
 		keys = append(keys, key)
@@ -664,25 +730,34 @@ func (r shadowReport) warn(warnf func(format string, args ...any)) {
 		return strings.Join([]string{a.winner, a.winnerScope, a.loser, a.loserScope}, "\x00") <
 			strings.Join([]string{b.winner, b.winnerScope, b.loser, b.loserScope}, "\x00")
 	})
-	for _, key := range keys {
-		s := r[key]
-		sort.Strings(s.ids)
-		shown := s.ids
-		more := ""
-		if len(shown) > shadowIDsShown {
-			more = fmt.Sprintf(" and %d more", len(shown)-shadowIDsShown)
-			shown = shown[:shadowIDsShown]
-		}
-		var fields []string
-		for _, f := range fieldOrder {
-			if s.fields[f] {
-				fields = append(fields, f)
-			}
-		}
-		winner := feedRef(key.winner, key.winnerScope)
-		warnf("price feed %s answers whole over feed %s and leaves %s unstated for %d ids (%s%s) — a price entry answers from one feed, never merged: restate them in %s, or the run answers without them",
-			winner, feedRef(key.loser, key.loserScope), strings.Join(fields, ", "), len(s.ids), strings.Join(shown, ", "), more, winner)
+	return keys
+}
+
+// cappedIDs sorts ids and answers the first shadowIDsShown, with the
+// " and N more" tail when some are cut.
+func cappedIDs(ids []string) ([]string, string) {
+	sort.Strings(ids)
+	if len(ids) <= shadowIDsShown {
+		return ids, ""
 	}
+	return ids[:shadowIDsShown], fmt.Sprintf(" and %d more", len(ids)-shadowIDsShown)
+}
+
+// orderedFields names a field set in the format's order.
+func orderedFields(set map[string]bool) []string {
+	var fields []string
+	for _, f := range fieldOrder {
+		if set[f] {
+			fields = append(fields, f)
+		}
+	}
+	return fields
+}
+
+// pricedSpec reports whether a spec states the price pair: the input and
+// the output price both above zero.
+func pricedSpec(spec modelspecs.Spec) bool {
+	return spec.InputCostPerM > 0 && spec.OutputCostPerM > 0
 }
 
 // feedRef names a feed in a warning, with its scope's label when it has
@@ -701,7 +776,7 @@ var fieldOrder = []string{"input_usd_per_mtok", "output_usd_per_mtok", "context_
 // statedFields names the fields a price entry states, efforts aside.
 func statedFields(spec modelspecs.Spec) []string {
 	var stated []string
-	if spec.InputCostPerM > 0 && spec.OutputCostPerM > 0 {
+	if pricedSpec(spec) {
 		stated = append(stated, "input_usd_per_mtok", "output_usd_per_mtok")
 	}
 	return append(stated, unpricedFields(spec)...)
