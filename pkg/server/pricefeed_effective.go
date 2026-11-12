@@ -18,9 +18,12 @@ import (
 // The effective read model of a team's price feed (ADR-163): the table a
 // run launched now for the team seals — the publisher's own fold
 // (foldPriceFeed), at one instant, never a second one — and, per gateway
-// id, every level and feed that states it. Member-readable: the prices
-// and accepted efforts of the ids a team's runs dispatch are not secret,
-// and the feeds' params, where credentials live, are not in it.
+// id, every level and feed that states it. Member-readable: the folded
+// table is what every run of the team carries — sealed into its bundle,
+// crossed into its sandbox (ITERION_GATEWAY_PRICE_FEED) — and the
+// contributors add the shadowed feeds a team feed restates (ADR-166 §4).
+// The feeds' params, where credentials live, are not in it, nor is a
+// level's read error.
 
 // priceFeedRunnerEnvFallback is the view's word on the runner's own
 // environment tables (OPENAI_COMPATIBLE_MODELS,
@@ -28,6 +31,11 @@ import (
 // dispatches, the ids and fields the table leaves open, and the server
 // never reads them.
 const priceFeedRunnerEnvFallback = "not visible from the server"
+
+// priceFeedUnreadForMembers is the view's word on a level it could not
+// read: the read error names internal topology (a database's replica
+// set, its hosts), so it stays in the server log, as a 5xx's cause does.
+const priceFeedUnreadForMembers = "the server log names the cause"
 
 // priceFeedEffectiveView is the effective view's answer.
 type priceFeedEffectiveView struct {
@@ -38,14 +46,29 @@ type priceFeedEffectiveView struct {
 	// Scopes are the levels the fold read, least specific first.
 	Scopes []priceFeedEffectiveScope `json:"scopes"`
 	// Models reports the requested ids, in request order — or, with none
-	// requested, every id a level states, sorted.
+	// requested, every id a level states, sorted — each answering as a
+	// run naming it reads it.
 	Models []priceFeedEffectiveModel `json:"models"`
-	// Table is the table a run launched now for the team seals — the
-	// same value, encoding to the same bytes; null when no feed answers
-	// and the operator table is the floor.
-	Table             *pricefeed.Table `json:"table"`
-	Warnings          []string         `json:"warnings,omitempty"`
-	RunnerEnvFallback string           `json:"runner_env_fallback"`
+	// Table is the table a run launched now for the team seals — with
+	// requested ids, a run naming them — the same value, encoding to the
+	// same bytes; null when no feed answers and the operator table is the
+	// floor, or when the listing exceeds the run channel's byte budget
+	// (OverBudget).
+	Table *pricefeed.Table `json:"table"`
+	// OverBudget is set when the listing (no requested id) folds a table
+	// over the run channel's byte budget: no run seals it whole, each run
+	// sealing it narrowed to the gateway ids it names — which a request
+	// naming them shows.
+	OverBudget        *priceFeedEffectiveOverBudget `json:"over_budget,omitempty"`
+	Warnings          []string                      `json:"warnings,omitempty"`
+	RunnerEnvFallback string                        `json:"runner_env_fallback"`
+}
+
+// priceFeedEffectiveOverBudget is the listing's folded table size against
+// the run channel's byte budget (pricefeed.DefaultBudget).
+type priceFeedEffectiveOverBudget struct {
+	Bytes  int `json:"bytes"`
+	Budget int `json:"budget"`
 }
 
 // priceFeedEffectiveScope is one level as the fold read it.
@@ -55,7 +78,8 @@ type priceFeedEffectiveScope struct {
 	// Feeds are the level's enabled feeds, in config order — the order
 	// that decides between two of them stating one id.
 	Feeds []string `json:"feeds,omitempty"`
-	// Unread is the read error that stepped the level down.
+	// Unread is set when the level could not be read and stepped down:
+	// priceFeedUnreadForMembers, the read error itself in the server log.
 	Unread string `json:"unread,omitempty"`
 }
 
@@ -117,7 +141,21 @@ func (s *Server) handleGetTeamPriceFeedsEffective(w http.ResponseWriter, r *http
 	warnf := func(format string, args ...any) {
 		warnings = append(warnings, truncateFeedError(sanitizeFeedError(fmt.Sprintf(format, args...))))
 	}
-	fold := foldPriceFeed(r.Context(), s.priceFeedConfigs, s.priceFeedStates, team.OrgID, teamID, models, warnf)
+	// A level's read error goes to the server log; the member reads that
+	// the level stepped down.
+	unread := func(what string, err error) {
+		s.logger.Warn("price feed: effective view of team %s: %s unread: %v", teamID, what, err)
+		warnf("price feed: %s unread — the operator table answers; %s", what, priceFeedUnreadForMembers)
+	}
+	// Requested ids fold as a run naming them does. A listing names no
+	// run's ids: it folds unbounded, so every id answers as a run naming
+	// it reads it, and a table over the run channel's budget is flagged
+	// below rather than narrowed to no id.
+	cfg := pricefeed.FoldConfig{Named: models, Warnf: warnf}
+	if len(models) == 0 {
+		cfg.Budget = math.MaxInt
+	}
+	fold := foldPriceFeed(r.Context(), s.priceFeedConfigs, s.priceFeedStates, team.OrgID, teamID, cfg, unread)
 	view := priceFeedEffectiveView{
 		TeamID:            teamID,
 		OrgID:             team.OrgID,
@@ -125,9 +163,15 @@ func (s *Server) handleGetTeamPriceFeedsEffective(w http.ResponseWriter, r *http
 		RunnerEnvFallback: priceFeedRunnerEnvFallback,
 	}
 	// What the bundle would carry: the encoded table, or nothing when it
-	// does not encode (warned) — never a table the run would not seal.
-	if fold.encode(warnf) != nil {
-		view.Table = fold.table
+	// does not encode (warned) or no run seals it whole — never a table
+	// the run would not seal.
+	if raw := fold.encode(warnf); raw != nil {
+		if len(raw) > pricefeed.DefaultBudget {
+			view.OverBudget = &priceFeedEffectiveOverBudget{Bytes: len(raw), Budget: pricefeed.DefaultBudget}
+			warnf("price feed: the folded table is %d bytes, over the run channel's %d: a run seals it narrowed to the gateway ids it names — ?model= shows one", len(raw), pricefeed.DefaultBudget)
+		} else {
+			view.Table = fold.table
+		}
 	}
 	scopes, contributors := effectivePriceFeedContributors(fold)
 	view.Scopes = scopes
@@ -146,7 +190,7 @@ func effectivePriceFeedContributors(fold priceFeedFold) ([]priceFeedEffectiveSco
 	for _, read := range fold.scopes {
 		level := priceFeedEffectiveScope{Scope: read.scope.level, ID: read.scope.id}
 		if read.err != nil {
-			level.Unread = truncateFeedError(sanitizeFeedError(read.err.Error()))
+			level.Unread = priceFeedUnreadForMembers
 		}
 		if read.state != nil {
 			for _, feed := range read.state.Config.Feeds {

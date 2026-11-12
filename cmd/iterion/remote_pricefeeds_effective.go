@@ -30,8 +30,13 @@ reasoning efforts a run reads, each named with its feed and level, then
 every feed that states the id, and the fold's warnings: one names a price
 entry that leaves unstated a field of the entry it shadows.
 
---model narrows to the named ids (repeatable); without it, every id a level
-states. The runner's own env tables (OPENAI_COMPATIBLE_MODELS,
+--model narrows to the named ids (repeatable): the table a run naming them
+carries; without it, every id a level states, each answering as a run
+naming it reads it. When that listing's table exceeds the run channel's
+byte budget, no run carries it whole — a run carries it narrowed to the
+gateway ids it names — and effective says so: --model shows one. A level
+the server could not read reads unread; the server log names the cause.
+The runner's own env tables (OPENAI_COMPATIBLE_MODELS,
 OPENAI_COMPATIBLE_REASONING_EFFORTS) answer what no feed states; the server
 does not see them. --json prints the server's answer as sent.`,
 	Args: cobra.NoArgs,
@@ -61,14 +66,22 @@ does not see them. --json prints the server's answer as sent.`,
 // priceFeedEffectiveCLIView mirrors the server's effective view for the
 // CLI's decode.
 type priceFeedEffectiveCLIView struct {
-	TeamID            string                       `json:"team_id"`
-	OrgID             string                       `json:"org_id,omitempty"`
-	At                time.Time                    `json:"at"`
-	Scopes            []priceFeedEffectiveCLIScope `json:"scopes"`
-	Models            []priceFeedEffectiveCLIModel `json:"models"`
-	Table             *pricefeed.Table             `json:"table"`
-	Warnings          []string                     `json:"warnings,omitempty"`
-	RunnerEnvFallback string                       `json:"runner_env_fallback"`
+	TeamID            string                        `json:"team_id"`
+	OrgID             string                        `json:"org_id,omitempty"`
+	At                time.Time                     `json:"at"`
+	Scopes            []priceFeedEffectiveCLIScope  `json:"scopes"`
+	Models            []priceFeedEffectiveCLIModel  `json:"models"`
+	Table             *pricefeed.Table              `json:"table"`
+	OverBudget        *priceFeedEffectiveOverBudget `json:"over_budget,omitempty"`
+	Warnings          []string                      `json:"warnings,omitempty"`
+	RunnerEnvFallback string                        `json:"runner_env_fallback"`
+}
+
+// priceFeedEffectiveOverBudget is the listing's folded table size against
+// the run channel's byte budget.
+type priceFeedEffectiveOverBudget struct {
+	Bytes  int `json:"bytes"`
+	Budget int `json:"budget"`
 }
 
 type priceFeedEffectiveCLIScope struct {
@@ -123,7 +136,11 @@ func printPriceFeedEffective(p *cli.Printer, view priceFeedEffectiveCLIView) {
 		}
 		p.KV(label, feeds)
 	}
-	if view.Table == nil {
+	switch {
+	case view.OverBudget != nil:
+		p.Line("  the folded table is %d bytes, over the run channel's %d: no run seals it whole — a run seals it narrowed to the gateway ids it names, each id below answering as a run naming it reads it; --model ID shows the table a run naming ID seals",
+			view.OverBudget.Bytes, view.OverBudget.Budget)
+	case view.Table == nil:
 		p.Line("  no feed answers: a run carries no table")
 	}
 	for _, m := range view.Models {

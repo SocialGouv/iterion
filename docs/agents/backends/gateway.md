@@ -46,7 +46,7 @@ answers its efforts alone. The `_gateway_spec` record carries
 Commands: `iterion remote price-feeds list|set|delete|sync|declare
 [--platform|--org|--team]` (the platform level is super-admin) and
 `effective --team T [--model ID …]`, the table a run launched now for the
-team seals, each answer with its feed and level. The full contract —
+team (naming those ids) seals, each answer with its feed and level. The full contract —
 precedence, sources, declarations, drift — is
 [backends.md's price-feed section](../../backends.md#the-gateway-price-feed-auto-synced-operator-pricing-adr-163).
 

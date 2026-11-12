@@ -4,7 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -201,5 +204,183 @@ func TestPriceFeedEffectiveView(t *testing.T) {
 	}
 	if got := strings.Join(ids, " "); got != "glm-5.3 kimi-k2 scaleway/deepseek-v4.1-flash" {
 		t.Fatalf("the unfiltered view reports %q", got)
+	}
+}
+
+// bigDeclaration is a declared document over the run channel's byte
+// budget: n ids model-0000…, each priced or stating efforts alone, beside
+// scaleway/deepseek-v4.1-flash's accepted efforts.
+func bigDeclaration(n int, priced bool) string {
+	var b strings.Builder
+	b.WriteString(`{"scaleway/deepseek-v4.1-flash":{"reasoning_efforts":["low","high","xhigh","max"]}`)
+	for i := range n {
+		if priced {
+			fmt.Fprintf(&b, `,"model-%04d":{"input_usd_per_mtok":1,"output_usd_per_mtok":2,"context_window":128000}`, i)
+		} else {
+			fmt.Fprintf(&b, `,"model-%04d":{"reasoning_efforts":["low","high"]}`, i)
+		}
+	}
+	b.WriteString("}")
+	return b.String()
+}
+
+// A listing (no ?model=) whose folded table exceeds the run channel's byte
+// budget is a table no run seals whole: each run seals it narrowed to the
+// gateway ids its workflow names. The view says so — over_budget names the
+// size and the budget, the table is null, no line claims the operator
+// table or "0 named ids" as the run's outcome — and every id answers as a
+// run naming it reads it: the declaration's efforts, its prices. Asked
+// for one id, the view answers the table a run naming it seals, the very
+// bytes the publisher's fold seals for it. Two shapes: the efforts alone
+// over budget, and the prices over budget beside efforts that fit.
+func TestPriceFeedEffectiveViewListsAnOverBudgetTableAsEachRunNarrowsIt(t *testing.T) {
+	const deepseek = "scaleway/deepseek-v4.1-flash"
+	for _, tc := range []struct {
+		name   string
+		n      int
+		priced bool
+	}{
+		{"efforts alone over budget", 3000, false},
+		{"prices over budget", 1000, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			live := newPriceFeedLive(t)
+			putFeedDoc(t, live.configs, pricefeed.PlatformConfigDocID, declaredFeed("big", bigDeclaration(tc.n, tc.priced)))
+			const base = "/api/teams/team-pf/price-feeds/effective"
+
+			code, out := live.do(t, "GET", base, live.viewer, "")
+			if code != http.StatusOK {
+				t.Fatalf("the listing: %d %s", code, out)
+			}
+			var view struct {
+				priceFeedEffectiveWire
+				OverBudget *struct {
+					Bytes  int `json:"bytes"`
+					Budget int `json:"budget"`
+				} `json:"over_budget"`
+			}
+			if err := json.Unmarshal(out, &view); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if view.OverBudget == nil || view.OverBudget.Budget != pricefeed.DefaultBudget || view.OverBudget.Bytes <= pricefeed.DefaultBudget {
+				t.Errorf("over_budget = %+v, want the listing's size over the %d-byte budget", view.OverBudget, pricefeed.DefaultBudget)
+			}
+			if table := strings.TrimSpace(string(view.Table)); table != "" && table != "null" {
+				t.Errorf("the listing shows a table no run seals whole: %.200s…", table)
+			}
+			warnings := strings.Join(view.Warnings, "\n")
+			for _, claim := range []string{"the run keeps the operator table", "the run's 0 named"} {
+				if strings.Contains(warnings, claim) {
+					t.Errorf("a warning states %q as the run's outcome: %q", claim, view.Warnings)
+				}
+			}
+			if !strings.Contains(warnings, "a run seals it narrowed to the gateway ids it names") {
+				t.Errorf("no warning says how a run seals the table: %q", view.Warnings)
+			}
+			if len(view.Models) != tc.n+1 {
+				t.Fatalf("the listing reports %d ids, want %d", len(view.Models), tc.n+1)
+			}
+			byID := map[string]int{}
+			for i, m := range view.Models {
+				byID[m.ID] = i
+			}
+			if m := view.Models[byID[deepseek]]; m.Efforts == nil || m.Efforts.Feed != "big" || strings.Join(m.Efforts.Values, ",") != "low,high,xhigh,max" {
+				t.Errorf("%s answers efforts %+v, want the declaration's", deepseek, m.Efforts)
+			}
+			m := view.Models[byID["model-0007"]]
+			if tc.priced && (m.Entry == nil || m.Entry.Feed != "big" || m.Entry.Spec.InputCostPerM != 1) {
+				t.Errorf("model-0007 answers entry %+v, want the declaration's price", m.Entry)
+			}
+			if !tc.priced && (m.Efforts == nil || strings.Join(m.Efforts.Values, ",") != "low,high") {
+				t.Errorf("model-0007 answers efforts %+v, want the declaration's", m.Efforts)
+			}
+
+			code, out = live.do(t, "GET", base+"?model="+deepseek, live.viewer, "")
+			if code != http.StatusOK {
+				t.Fatalf("the view for one id: %d %s", code, out)
+			}
+			view.OverBudget, view.Table = nil, nil
+			if err := json.Unmarshal(out, &view); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if view.OverBudget != nil {
+				t.Errorf("the view for one id flags over_budget %+v: its table is the run's", view.OverBudget)
+			}
+			sealed := EffectivePriceFeed(context.Background(), live.configs, live.states, "org1", "team-pf", []string{deepseek}, nil)
+			var gotTable, wantTable bytes.Buffer
+			if err := json.Compact(&gotTable, view.Table); err != nil {
+				t.Fatalf("the view's table is not JSON: %v (%.200s)", err, view.Table)
+			}
+			if err := json.Compact(&wantTable, sealed); err != nil {
+				t.Fatalf("the sealed table is not JSON: %v", err)
+			}
+			if gotTable.String() != wantTable.String() || !strings.Contains(gotTable.String(), `"`+deepseek+`":{"feed":"big"`) {
+				t.Errorf("the view for one id answers %.300s…, want the sealed %.300s…", gotTable.String(), wantTable.String())
+			}
+		})
+	}
+}
+
+// failingConfigStore answers one document's read with a database error and
+// every other through the store it wraps.
+type failingConfigStore struct {
+	pricefeed.ConfigStore
+	docID string
+	err   error
+}
+
+func (f failingConfigStore) Get(ctx context.Context, docID string) (*pricefeed.ConfigRecord, error) {
+	if docID == f.docID {
+		return nil, f.err
+	}
+	return f.ConfigStore.Get(ctx, docID)
+}
+
+// A level the view cannot read steps down, and a member is told so without
+// the database's words: the scope reads the member text, the warning names
+// the level and points at the server log, and the server log carries the
+// read error whole. The publisher's fold of the same levels warns the
+// operator's log with the cause. The readable level still answers.
+func TestPriceFeedEffectiveViewKeepsAReadErrorInTheServerLog(t *testing.T) {
+	s, logs := priceFeedFixtureServer(t)
+	const internal = "server selection error: context deadline exceeded, current topology: { Type: ReplicaSetNoPrimary, Servers: [{ Addr: mongo-0.mongo.internal:27017 }] }"
+	mem := s.priceFeedConfigs
+	putFeedDoc(t, mem, pricefeed.TeamConfigDocID("team1"), declaredFeed("teamf", `{"glm-5.3":{"input_usd_per_mtok":3,"output_usd_per_mtok":9}}`))
+	s.priceFeedConfigs = failingConfigStore{ConfigStore: mem, docID: pricefeed.PlatformConfigDocID, err: errors.New(internal)}
+
+	w := httptest.NewRecorder()
+	s.handleGetTeamPriceFeedsEffective(w, priceFeedReq(asUser("u-teamviewer"), "GET", "/api/teams/team1/price-feeds/effective", ""))
+	if w.Code != http.StatusOK {
+		t.Fatalf("the view over an unread level: %d %s", w.Code, w.Body.String())
+	}
+	var view priceFeedEffectiveWire
+	if err := json.Unmarshal(w.Body.Bytes(), &view); err != nil {
+		t.Fatalf("decode: %v (%s)", err, w.Body.String())
+	}
+	if len(view.Scopes) == 0 || view.Scopes[0].Scope != "platform" || view.Scopes[0].Unread != priceFeedUnreadForMembers {
+		t.Errorf("the unread platform level reads %+v, want unread %q", view.Scopes, priceFeedUnreadForMembers)
+	}
+	var unreadLine string
+	for _, line := range view.Warnings {
+		if strings.Contains(line, "platform unread") {
+			unreadLine = line
+		}
+	}
+	if unreadLine == "" || strings.Contains(unreadLine, "mongo") || strings.Contains(unreadLine, "server selection") || !strings.Contains(unreadLine, priceFeedUnreadForMembers) {
+		t.Errorf("the warning on the unread level = %q (warnings %q), want it named and pointing at the server log, without the read error", unreadLine, view.Warnings)
+	}
+	if !strings.Contains(logs.String(), "mongo-0.mongo.internal:27017") || !strings.Contains(logs.String(), "team team1") {
+		t.Errorf("the server log does not carry the read error for team team1's view:\n%s", logs.String())
+	}
+	if len(view.Models) != 1 || view.Models[0].Entry == nil || view.Models[0].Entry.Feed != "teamf" {
+		t.Errorf("the readable team level does not answer: %+v", view.Models)
+	}
+
+	var operator []string
+	EffectivePriceFeed(context.Background(), s.priceFeedConfigs, s.priceFeedStates, "", "team1", nil, func(format string, args ...any) {
+		operator = append(operator, fmt.Sprintf(format, args...))
+	})
+	if !strings.Contains(strings.Join(operator, "\n"), "platform unread — the operator table answers: "+internal) {
+		t.Errorf("the publisher's fold warns %q, want the platform level's read error", operator)
 	}
 }

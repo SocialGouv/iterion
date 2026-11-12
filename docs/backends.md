@@ -1955,11 +1955,21 @@ run to the runner** — the operator table stays the floor.
 - **The effective view.** `GET /api/teams/{id}/price-feeds/effective`
   (`iterion remote price-feeds effective [--model ID …]`), readable by
   any team member, answers the table a run launched now for the team
-  seals — the publisher's own fold, at one instant — and, per id, the
+  seals — the publisher's own fold, at one instant; with `--model`, the
+  table a run naming those gateway ids seals — and, per id, the
   answering entry and efforts with their feed and level, every feed
-  that states the id, and the fold's warnings. The runner's env tables
-  are not in it: `runner_env_fallback` says they are not visible from
-  the server.
+  that states the id, and the fold's warnings. A listing (no `--model`)
+  whose folded table exceeds the run channel's byte budget is sealed
+  whole by no run: the view answers `over_budget` (its size and the
+  budget) and no table, each id answering as a run naming it reads it,
+  because a run seals the table narrowed to the gateway ids it names. A
+  level the view cannot read reads `unread` without the database's
+  error, which the server log carries. A member reads what every run of
+  the team carries — the folded table is sealed into the run's bundle
+  and crosses into its sandbox — plus each feed of each level that
+  states an id, the shadowed ones a team feed restates; never a feed's
+  params. The runner's env tables are not in it: `runner_env_fallback`
+  says they are not visible from the server.
 - **Provenance.** A feed-priced node's `_gateway_spec` carries
   `"source":"feed:<name>"` and `refreshed_at` — the record that answers
   which table priced the run also answers how fresh its word was. The

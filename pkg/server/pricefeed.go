@@ -40,8 +40,16 @@ const priceFeedReadTimeout = 2 * time.Second
 // serializes unchanged. The named ids are the run's own gateway models,
 // the narrowing fallback when the folded table exceeds the channel's
 // byte budget.
+//
+// A level whose read fails warns with the read error: this warning
+// reaches the operator's log, never a member.
 func EffectivePriceFeed(ctx context.Context, configs pricefeed.ConfigStore, states pricefeed.StateStore, orgID, teamID string, named []string, warnf func(format string, args ...any)) json.RawMessage {
-	return foldPriceFeed(ctx, configs, states, orgID, teamID, named, warnf).encode(warnf)
+	unread := func(what string, err error) {
+		if warnf != nil {
+			warnf("price feed: %s unread — the operator table answers: %v", what, err)
+		}
+	}
+	return foldPriceFeed(ctx, configs, states, orgID, teamID, pricefeed.FoldConfig{Named: named, Warnf: warnf}, unread).encode(warnf)
 }
 
 // priceFeedFold is one fold's read and answer: the levels it read, least
@@ -63,10 +71,12 @@ type priceFeedScopeRead struct {
 }
 
 // foldPriceFeed reads every level of one run's fold and folds them at
-// one instant — the one body the bundle's table (EffectivePriceFeed) and
-// the effective view (pricefeed_effective.go) both answer from, so the
-// view cannot show a table the run would not seal.
-func foldPriceFeed(ctx context.Context, configs pricefeed.ConfigStore, states pricefeed.StateStore, orgID, teamID string, named []string, warnf func(format string, args ...any)) priceFeedFold {
+// one instant by cfg, its Now set here — the one body the bundle's table
+// (EffectivePriceFeed) and the effective view (pricefeed_effective.go)
+// both answer from, so the view cannot show a table the run would not
+// seal. A level whose read fails steps down, and unread hears its read
+// error: each caller says it where its reader belongs.
+func foldPriceFeed(ctx context.Context, configs pricefeed.ConfigStore, states pricefeed.StateStore, orgID, teamID string, cfg pricefeed.FoldConfig, unread func(what string, err error)) priceFeedFold {
 	fold := priceFeedFold{now: time.Now()}
 	if configs == nil || states == nil {
 		return fold
@@ -79,10 +89,10 @@ func foldPriceFeed(ctx context.Context, configs pricefeed.ConfigStore, states pr
 		fold.scopes = append(fold.scopes, priceFeedScopeRead{scope: scope, state: state, err: err})
 		if err != nil {
 			// A feed that cannot be read is a feed that does not answer:
-			// the operator table prices the run and the warning names the
-			// scope — the ADR's step-down, not a launch refusal.
-			if warnf != nil {
-				warnf("price feed: %s unread — the operator table answers: %v", scope.what, err)
+			// the operator table prices the run and the caller's warning
+			// names the scope — the ADR's step-down, not a launch refusal.
+			if unread != nil {
+				unread(scope.what, err)
 			}
 			continue
 		}
@@ -92,7 +102,8 @@ func foldPriceFeed(ctx context.Context, configs pricefeed.ConfigStore, states pr
 		}
 	}
 	if len(answering) > 0 {
-		fold.table = pricefeed.Fold(pricefeed.FoldConfig{Now: fold.now, Named: named, Warnf: warnf}, answering...)
+		cfg.Now = fold.now
+		fold.table = pricefeed.Fold(cfg, answering...)
 	}
 	return fold
 }

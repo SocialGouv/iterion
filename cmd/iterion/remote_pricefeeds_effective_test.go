@@ -2,6 +2,8 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -74,5 +76,43 @@ func TestRemotePriceFeedsEffectiveRendersEachAnswerAndItsSource(t *testing.T) {
 	}
 	if view.TeamID != "team-pf" || len(view.Models) != 1 || view.Models[0].Entry == nil || view.Models[0].Entry.Feed != "team-tariffs" {
 		t.Fatalf("effective --json: %+v", view)
+	}
+}
+
+// A listing whose folded table exceeds the run channel's byte budget is
+// sealed whole by no run: effective says so — the size, the budget, how a
+// run seals it and the --model that shows one — never "no feed answers",
+// and still renders each id's answer. A listing no feed answers says that.
+func TestRemotePriceFeedsEffectiveSaysAnOverBudgetListingIsNarrowedPerRun(t *testing.T) {
+	live := newPriceFeedsLive(t)
+	var doc strings.Builder
+	doc.WriteString(`{"scaleway/deepseek-v4.1-flash":{"reasoning_efforts":["low","high","xhigh","max"]}`)
+	for i := range 3000 {
+		fmt.Fprintf(&doc, `,"model-%04d":{"reasoning_efforts":["low","high"]}`, i)
+	}
+	doc.WriteString("}")
+	live.seed(t, pricefeed.PlatformConfigDocID, declaredTestFeed("big", doc.String(), 30*24*time.Hour))
+
+	out, err := runPriceFeedsCommand(t, "remote", "price-feeds", "effective")
+	if err != nil {
+		t.Fatalf("effective: %v\n%s", err, out)
+	}
+	if strings.Contains(out, "no feed answers") {
+		t.Errorf("effective says no feed answers an over-budget listing:\n%.600s", out)
+	}
+	if !regexp.MustCompile(`the folded table is \d+ bytes, over the run channel's 102400: no run seals it whole — a run seals it narrowed to the gateway ids it names`).MatchString(out) || !strings.Contains(out, "--model ID") {
+		t.Errorf("effective does not say how a run seals an over-budget listing:\n%.600s", out)
+	}
+	if !strings.Contains(out, "low,high,xhigh,max — feed big (platform)") {
+		t.Errorf("effective does not render the listing's answers:\n%.600s", out)
+	}
+
+	live.seed(t, pricefeed.PlatformConfigDocID)
+	out, err = runPriceFeedsCommand(t, "remote", "price-feeds", "effective")
+	if err != nil {
+		t.Fatalf("effective over no feed: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "no feed answers: a run carries no table") {
+		t.Errorf("effective over no feed:\n%s", out)
 	}
 }

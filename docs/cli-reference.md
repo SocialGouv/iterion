@@ -842,7 +842,10 @@ flag is given.
   answers 409.
 
 `--dry-run` writes nothing. `effective` shows the table a run launched
-now for the team seals, each answer with its feed and level. `list`
+now for the team seals — with `--model`, a run naming those ids — each
+answer with its feed and level; a listing over the run channel's byte
+budget says no run seals it whole, each run sealing it narrowed to the ids
+it names. `list`
 prints a param longer than 120 bytes as its size. The full contract is
 in [backends.md](backends.md#the-gateway-price-feed-auto-synced-operator-pricing-adr-163).
 

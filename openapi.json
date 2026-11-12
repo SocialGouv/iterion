@@ -6964,6 +6964,21 @@
         ],
         "type": "object"
       },
+      "priceFeedEffectiveOverBudget": {
+        "properties": {
+          "budget": {
+            "type": "integer"
+          },
+          "bytes": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "bytes",
+          "budget"
+        ],
+        "type": "object"
+      },
       "priceFeedEffectiveScope": {
         "properties": {
           "feeds": {
@@ -7001,6 +7016,9 @@
           },
           "org_id": {
             "type": "string"
+          },
+          "over_budget": {
+            "$ref": "#/components/schemas/priceFeedEffectiveOverBudget"
           },
           "runner_env_fallback": {
             "type": "string"

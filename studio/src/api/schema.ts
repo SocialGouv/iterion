@@ -8946,6 +8946,10 @@ export interface components {
             entry?: components["schemas"]["PricefeedEntry"];
             id: string;
         };
+        priceFeedEffectiveOverBudget: {
+            budget: number;
+            bytes: number;
+        };
         priceFeedEffectiveScope: {
             feeds?: string[];
             id?: string;
@@ -8957,6 +8961,7 @@ export interface components {
             at: string;
             models: components["schemas"]["priceFeedEffectiveModel"][];
             org_id?: string;
+            over_budget?: components["schemas"]["priceFeedEffectiveOverBudget"];
             runner_env_fallback: string;
             scopes: components["schemas"]["priceFeedEffectiveScope"][];
             table?: components["schemas"]["Table"];
