@@ -286,8 +286,27 @@ func TestAMemoryBombIsKilledByTheMemoryBound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("host: %v", err)
 	}
-	if resp.Refusal != RefusalMemory {
-		t.Fatalf("a memory bomb gave %+v, want %s", resp, RefusalMemory)
+	// WHICH of the two verdicts a live bomb produces is a property of how
+	// starved the allocator was, not of the bound: measured on this box at a
+	// load average of 12, the same 128 MiB arm answered memory_exceeded on 4
+	// runs out of 5 and script_host_died with `SIGSEGV: segmentation
+	// violation` on the fifth. Asserting only the first made this arm a load
+	// meter, the same defect the sibling CPU arm carried with a hand-tuned
+	// wall-clock threshold.
+	//
+	// What this arm proves is what does NOT depend on the machine: the bomb
+	// was STOPPED. A child with no RLIMIT_DATA allocates its 400 MiB and
+	// returns a number, so the refusal is empty and this reddens — which is
+	// the mutant the arm exists for. That the verdict USES the runtime's words
+	// where it has them is a property of deathToRefusal, and it is pinned
+	// deterministically by TestADeathIsReadInOrderOfEvidence against a
+	// constructed stderr rather than against a live allocator.
+	if resp.Refusal != RefusalMemory && resp.Refusal != RefusalHostDied {
+		t.Fatalf("a memory bomb gave %+v, want %s or the honest %s — nothing stopped it",
+			resp, RefusalMemory, RefusalHostDied)
+	}
+	if resp.Refusal == RefusalHostDied && !strings.Contains(resp.Message, "memory bound") {
+		t.Errorf("the ambiguous verdict does not name the bound a reader would check: %q", resp.Message)
 	}
 
 	// And where the runtime does NOT name a cause, the verdict says so instead

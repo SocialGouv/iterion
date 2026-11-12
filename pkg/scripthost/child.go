@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"runtime"
 	"runtime/debug"
 	"time"
@@ -88,6 +89,26 @@ func RunChild(in io.Reader, out io.Writer) error {
 	}
 
 	vm := newRuntime(seed, epoch)
+
+	// The binding goes in AFTER the confinement, like the interpreter: a
+	// defect in it then meets a kernel that already refused. The descriptors
+	// it wraps were opened by the SPAWN, before Confine, which is why a
+	// deny-all ruleset leaves them usable — it stops opening, it does not
+	// revoke.
+	if req.ToolChannel {
+		if req.Proto != Proto {
+			return writeResponse(out, Refuse(RefusalUnavailable,
+				"the tool channel speaks protocol %d and this script host speaks %d: "+
+					"the parent and the child are not the same build", req.Proto, Proto))
+		}
+		bridge := newToolBridge(os.NewFile(fdToolReplies, "codemode-replies"),
+			os.NewFile(fdToolCalls, "codemode-calls"), limits)
+		if err := bridge.install(vm); err != nil {
+			return writeResponse(out, Refuse(RefusalUnavailable,
+				"the tool binding could not be installed: %v", err))
+		}
+	}
+
 	resp := runScript(vm, req.Script, limits.Wall, limits.ResultBytes)
 	resp.Confinement = &applied
 	return writeResponse(out, resp)

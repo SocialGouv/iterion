@@ -49,6 +49,40 @@ func NodeExecutableToolsFrom(ctx context.Context) (map[string]bool, bool) {
 	return set, ok
 }
 
+// ctxKeyExecutableToolFilter carries a narrowing a CALLER declared.
+type ctxKeyExecutableToolFilter struct{}
+
+// WithExecutableToolFilter declares that this caller may run only the tools
+// `keep` accepts, so a dispatch path pins the narrowed set rather than the
+// node's whole one.
+//
+// It exists because the node's set and the CALLER's set stopped being the same
+// thing. A script host composing calls on the node's behalf is withheld a
+// class of tools — the ones that pause the run, answer for the node, or are
+// exempt from the permission gate — and without this, tool_search would read
+// the unnarrowed pin and tell the script `ask_user` and `agent` are available
+// right before the server refused them. Two answers to one question, which is
+// how a model learns to retry a call that can never succeed.
+//
+// A FILTER rather than a second set, and read by the dispatch path rather than
+// written by the caller, so the node's set stays derived in ONE place: a
+// caller that pinned its own would be a second source of truth for what the
+// node can run.
+func WithExecutableToolFilter(ctx context.Context, keep func(string) bool) context.Context {
+	if keep == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, ctxKeyExecutableToolFilter{}, keep)
+}
+
+// ExecutableToolFilterFrom reads the caller's narrowing. The second return is
+// false when the caller declared none, which means the node's whole set — the
+// direct model loop's case, and the default.
+func ExecutableToolFilterFrom(ctx context.Context) (func(string) bool, bool) {
+	keep, ok := ctx.Value(ctxKeyExecutableToolFilter{}).(func(string) bool)
+	return keep, ok && keep != nil
+}
+
 // toolSearchResult mirrors claw's ToolSearchResult wire shape (the vendor's
 // struct is internal); the enrichment parses it and re-emits it with the
 // per-node detail beside the fields a reader already knows.

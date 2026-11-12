@@ -10,32 +10,72 @@ back is what the script chose to return.
 This page is the operational half — what is built, what is not, and the
 contract anything new has to honour.
 
-## What is built, as of 2026-11-11
+## What is built, as of 2026-11-12
 
-Two pieces. **The door**: `toolDispatcher` in
+Three pieces. **The door**: `toolDispatcher` in
 [pkg/backend/model/generation_toolexec.go](../../../pkg/backend/model/generation_toolexec.go)
 holds a node's dispatch state as a value and `dispatch(ctx, block)` *is*
 `executeOneTool`, so a nested call takes the pipeline the model's own loop
 takes — lifecycle hooks, the `allowed-tools:` command scope,
 `permission.Policy`, secret materialization, the events, the `tool_search` pin.
 
-And **the confined host**: [pkg/scripthost](../../../pkg/scripthost) plus the
+**The confined host**: [pkg/scripthost](../../../pkg/scripthost) plus the
 hidden `iterion __script-host` sub-command. A caller hands it JavaScript, it
 runs in a child process with an empty environment under kernel bounds, and one
-JSON document comes back. Its ten bounds, the kernel mechanism behind each and
-the witness that was seen to fail without it are in
+JSON document comes back. Its bounds, the kernel mechanism behind each and the
+witness that was seen to fail without it are in
 [codemode-confinement](codemode-confinement.md) — which also records the five
 statements measurement refuted, three of them in this page.
 
-**Nothing CONNECTS the two.** The host has no tool binding, so no node, no
-`.bot` and no model can reach it: there is no DSL attribute, no capability cell
-and no tool. That is deliberate — the whole content of this slice is the
-confinement, so it could be reviewed as confinement rather than as a feature.
-Treat any claim that codemode *works* as false until this section says
-otherwise. Epic [#3153](https://github.com/SocialGouv/iterion/issues/3153); the
-slice is [#3175](https://github.com/SocialGouv/iterion/issues/3175) and the
-in-pod bench that will declare it usable is
+**And the binding between them**: descriptors 3 and 4, newline-delimited JSON,
+one call in flight. The child writes a call, the parent dispatches it through
+`d.dispatch` and writes the result back; a script sees one host function,
+`call(name, input)`, blocking, because a bare `goja.Runtime` pumps no job queue
+and a promise it returned would never settle. `scriptToolServer` lives in
+`pkg/backend/model` because it must: the dispatcher, its context key and its
+fields are unexported, so a broker outside would need the funnel widened —
+which is giving the funnel a second door.
+
+Measured against the shipping `CGO_ENABLED=0` binary: a five-iteration loop
+crossed the pipe five times and returned **one** number — compose outside the
+model's context, return the distilled result.
+
+**No model can reach it yet.** There is no DSL attribute, no capability cell
+and no registered tool, so CM-1b is driven by its tests alone: the whole
+content of these slices is the confinement and the invariant, so they could be
+reviewed as those rather than as a feature. Treat any claim that codemode is
+*usable* as false until this section says otherwise. Epic
+[#3153](https://github.com/SocialGouv/iterion/issues/3153); the slices are
+[#3175](https://github.com/SocialGouv/iterion/issues/3175) and
+[#3182](https://github.com/SocialGouv/iterion/issues/3182), and the in-pod
+bench that will declare it usable is
 [#3155](https://github.com/SocialGouv/iterion/issues/3155).
+
+### Four decisions the binding owes its reviewers
+
+- **The script source keeps its `{{placeholders}}`.** The script host is in
+  `keepsPlaceholders`, so a model writing `{{SECRET}}` does not get the
+  cleartext substituted into the text that crosses the pipe into a child built
+  to hold no credential. Each nested call is materialised at **its own**
+  dispatch instead, with `rewrite.Off` set for that call alone rather than for
+  the whole script.
+- **The withheld set is a CLASS, not a list of names.** `permission.IsInfrastructureTool`
+  keys on the namespace and normalises every separator spelling, so the same
+  tool cannot be reached as `ask_user`, `askUser`, `mcp__iterion__ask_user` or
+  `mcp.iterion.ask_user`. Withheld: the pause family (a script cannot wait for
+  an operator), `send_user_message` (permission-exempt, so the call budget
+  would be its only bound), `structured_output` (it answers for the node), the
+  `mcp_iterion` control surface, `agent` (a sub-agent needs its own reserve) and
+  the script host itself.
+- **Discovery answers with the set the script will be served.** `dispatch`
+  applies a narrowing the caller declared, so `tool_search` cannot offer a
+  script a tool the server then refuses — two answers to one question is how a
+  model learns to retry a call that can never succeed. The filter is derived
+  from the predicate that refuses, so the two cannot drift.
+- **The call budget is the PARENT's.** The child counts too, to save a round
+  trip, but a child is what is being bounded and cannot be what bounds. An
+  over-budget call never reaches the server, so no hook fires and no permission
+  verdict is computed for it.
 
 ## The contract — a host dispatches with the context the dispatcher vouches for
 
@@ -86,35 +126,16 @@ and the limits are applied before the interpreter exists — `RLIMIT_AS` /
 non-dumpable, a parent-death signal, and Landlock in deny-all where the kernel
 offers it.
 
-**We already own the host half, and less of it than it looks.** claw-code-go —
-first-party, vendored, and being folded into this tree — executes
-model-authored JavaScript today: `internal/runtime/workflow.go` runs a prelude
-and then the script on a goja runtime over a `goja_nodejs` event loop, with a
-resolve/reject bridge and caps (512 KiB of source, 15/60 minutes, 200 `agent()`
-calls). No iterion node can reach it: `workflow` is a claw tool iterion does
-not advertise. Three differences are the whole of CM-1's work:
-
-- That host binds **`agent`**, so its scripts orchestrate sub-agents and never
-  touch the node's tools. CM-1 swaps it for a `tools.*` binding behind
-  `dispatch`.
-- **The binding list is not the surface.** `eventloop.NewEventLoop()` also
-  installs `require`, `console` and the timers by default — measured, `typeof
-  require` is `function`, and `require('<path>.json')` reads and parses a file
-  off the host filesystem. So "no Go object is reflected in" and "no timers, so
-  a script is deterministic" are properties CM-1 **builds**; what it inherits
-  has a filesystem read primitive.
-- It runs **in process**, so its caps are the engine-level ones F19 calls
-  unenforceable — and worse: on a regexp2 bomb `eventloop.Stop()`, deferred
-  before the timeout select, blocks (measured over 8 s), so the function that
-  decided "timed out" cannot return. A `for(;;){}` loop *is* preempted, and
-  that is the only arm claw's own timeout test covers.
-
-**And "move" cannot mean "import."** `executeWorkflow` and its prelude are
-unexported in claw's `internal/runtime`, and iterion imports zero `internal/`
-paths from claw. So CM-1 opens on a scoping call: claw grows an exported
-script-host package in its `.works/` worktree and iterion bumps, or iterion
-writes the host with claw's file as reference text. A seam that crosses claw is
-improved there and bumped — never forked here.
+**The binding list is not the surface**, which is why the host was written
+rather than borrowed. claw's own `internal/runtime/workflow.go` runs
+model-authored JavaScript on a `goja_nodejs` event loop, and
+`eventloop.NewEventLoop()` installs `require`, `console` and the timers by
+default — measured, `typeof require` is `function` and
+`require('<path>.json')` reads a file off the host filesystem. So "no Go object
+is reflected in" and "a script is deterministic" are properties
+[pkg/scripthost](../../../pkg/scripthost) **builds** on a bare `goja.New()`;
+they are not inherited. A seam that crosses claw is still improved in its
+`.works/` worktree and bumped — never forked here.
 
 `GOMEMLIMIT` is a GC target. It is not a cap, and it is not an answer here.
 

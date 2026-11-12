@@ -56,6 +56,19 @@ type Host struct {
 	// iterion's own builds are CGO_ENABLED=0, where it never arises.
 	AllowSingleThreadConfinement bool
 
+	// Tools, when set, is what a script's calls reach: the node's own tool
+	// dispatcher, behind the [ToolServer] seam.
+	//
+	// Nil is the honest default and not a degraded mode — it is what CM-1a
+	// shipped. A child whose parent has no tool server installs no binding at
+	// all, so a script that calls one gets "call is not defined" rather than a
+	// capability that exists and refuses.
+	//
+	// One Host still serves many scripts concurrently with this set: the
+	// channel and its pump are per-Run, and the server is asked one call at a
+	// time per script.
+	Tools ToolServer
+
 	// OnClamp, when set, is called with the requested and the actually applied
 	// bounds whenever [Limits.Clamp] reduced something.
 	//
@@ -104,6 +117,9 @@ func (h Host) Run(ctx context.Context, src string, want Limits) (Response, error
 		AllowWithoutLandlock: h.AllowWithoutLandlock,
 
 		AllowSingleThreadConfinement: h.AllowSingleThreadConfinement,
+
+		ToolChannel: h.Tools != nil,
+		Proto:       Proto,
 	})
 	if err != nil {
 		return Response{}, fmt.Errorf("scripthost: encoding the request: %w", err)
@@ -133,10 +149,32 @@ func (h Host) Run(ctx context.Context, src string, want Limits) (Response, error
 	outCap := &boundedWriter{to: &stdout, limit: int(limits.ResultBytes) + stdoutSlack}
 	cmd := command(ctx, binary, payload, outCap, &boundedWriter{to: &stderr, limit: MaxStderrBytes})
 
+	// The tool channel is opened BEFORE the spawn and its parent-side ends are
+	// closed AFTER it: a copy left open in the parent would keep the child's
+	// read end alive past the child's death, and the pump would then block on
+	// a channel nobody will ever write to again.
+	var channel *toolChannel
+	if h.Tools != nil {
+		channel, err = newToolChannel()
+		if err != nil {
+			return Response{}, err
+		}
+		defer channel.close()
+		channel.attach(cmd)
+	}
+
 	if err := cmd.Start(); err != nil {
 		return Response{}, fmt.Errorf("scripthost: starting %s %s: %w", binary, Subcommand, err)
 	}
+
+	join := func() serveVerdict { return serveVerdict{} }
+	if channel != nil {
+		channel.closeChildEnds()
+		join = pump(ctx, channel, h.Tools, limits)
+	}
+
 	waitErr := cmd.Wait()
+	serve := join()
 
 	// Inside the teardown window the primitive's own documentation requires:
 	// os/exec dispatches the armed Cancel only when the CONTEXT fires, so on
@@ -150,11 +188,30 @@ func (h Host) Run(ctx context.Context, src string, want Limits) (Response, error
 		fmt.Fprintf(&stderr, "\nscripthost: killing the child's process group: %v", err)
 	}
 
+	// The server aborting outranks every other reading, including a document.
+	// It is the one outcome that is neither the script's fault nor the host's:
+	// a tool whose verdict needs the operator cannot be answered inside a
+	// script, so the thing that must happen next — pause the run, ask — is the
+	// CALLER's, and it gets the server's own error rather than a refusal it
+	// would have to parse.
+	if errors.Is(serve.err, errScriptAborted) {
+		return Response{}, serve.err
+	}
+
 	// A response that arrived is the verdict, whatever the exit status said:
 	// the child writes its document and then exits, so a document means the
 	// script ran to a conclusion.
 	if resp, ok := decodeResponse(stdout.Bytes()); ok {
 		return resp, nil
+	}
+
+	// No document, and the channel had already failed: the channel error is
+	// what happened, and it is a HOST error — the two sides disagreed about
+	// the wire, or the pipe died under a call. Reported ahead of the death
+	// evidence because it is the more specific fact, and because the evidence
+	// below would otherwise read a channel failure as an unexplained crash.
+	if serve.err != nil {
+		return Response{}, serve.err
 	}
 
 	signalled, signal := deathSignal(cmd)
