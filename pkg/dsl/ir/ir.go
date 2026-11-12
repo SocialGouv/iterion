@@ -1528,9 +1528,10 @@ func (s *Secret) IsFile() bool {
 // HasInlineValue reports whether the declaration carries its own `value:`
 // expression. Such a secret is resolved by the run from that expression; a
 // stored secret, a bot binding or a launch override fills only a declaration
-// without one. The launch resolution, the required-secret gates and the
-// runtime materialisation all choose between the two sources through this
-// predicate.
+// without one. Both launch resolutions (the cloud publisher's and the local
+// store's, runview.StampLocalCredentials), both required-secret gates, the
+// sandbox file-secret mount and the secret guard choose between the two
+// sources through this predicate.
 func (s *Secret) HasInlineValue() bool {
 	return s != nil && strings.TrimSpace(s.Value) != ""
 }

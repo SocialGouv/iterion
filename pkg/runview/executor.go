@@ -351,9 +351,6 @@ type ExecutorSpec struct {
 // state directory. Used by both the CLI and the HTTP service so the
 // two transports stay aligned on tool policies, MCP auth, and
 // executor lifecycle.
-// declaredSecretNames returns the names of the workflow's declared
-// `secrets:` block — the only names a `{{secrets.X}}` reference can legally
-// use (compile-checked). Nil-safe.
 // StampLocalCredentials resolves the workflow's declared `secrets:` names
 // from the local sealed store and returns a context carrying them — the
 // in-process equivalent of the cloud runner's injectCredentials. Returns
@@ -380,7 +377,7 @@ func StampLocalCredentials(
 	if _, already := secrets.CredentialsFromContext(ctx); already {
 		return ctx, nil
 	}
-	creds, err := secrets.ResolveLocalCredentials(ctx, localSecrets, sealer, declaredSecretNames(wf), logger)
+	creds, err := secrets.ResolveLocalCredentials(ctx, localSecrets, sealer, storedSecretNames(wf), logger)
 	if err != nil {
 		return nil, fmt.Errorf("runview: resolve local secrets: %w", err)
 	}
@@ -400,12 +397,22 @@ func StampLocalCredentials(
 	return secrets.WithCredentials(ctx, creds), nil
 }
 
-func declaredSecretNames(wf *ir.Workflow) []string {
+// storedSecretNames returns the declared secret names the local store
+// fills: those declared without an inline `value:`, which the run resolves
+// from its own expression. The cloud publisher asks its store for the same
+// names (genericSecretNamesForWorkflow), so a declaration resolves to the
+// same source on either launch path — and a store entry named like an
+// inline-valued secret reaches neither the run nor a subbot child that
+// declares the name without a value. Nil-safe.
+func storedSecretNames(wf *ir.Workflow) []string {
 	if wf == nil || len(wf.Secrets) == 0 {
 		return nil
 	}
 	names := make([]string, 0, len(wf.Secrets))
-	for name := range wf.Secrets {
+	for name, s := range wf.Secrets {
+		if s.HasInlineValue() {
+			continue
+		}
 		names = append(names, name)
 	}
 	return names

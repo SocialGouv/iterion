@@ -1430,7 +1430,7 @@ with blocked lots requalified against the final tree.
   is a human decision recorded in the contract, and this bot's whole
   authority over it is measuring whether it advances.
 - **Tags**: programme
-- **Vars**: `escalation` (string), `governance` (string), `lot_max_passes` (int), `max_lots` (int), `plan_path` (string), `stagnation_stop` (int), `workspace_dir` (string)
+- **Vars**: `escalation` (string), `governance` (string), `lot_max_passes` (int), `lot_room_s` (int), `max_lots` (int), `plan_path` (string), `stagnation_stop` (int), `workspace_dir` (string)
 - **Path**: `bots/campaign/main.bot`
 
 ### `copilot` — Copi

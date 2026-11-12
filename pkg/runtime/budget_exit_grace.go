@@ -41,6 +41,12 @@ import (
 // exists to let through.
 const defaultBudgetExitGraceRatio = 0.1
 
+// DefaultBudgetExitGraceRatio is the exit grace a deployment grants when
+// ITERION_BUDGET_EXIT_GRACE is unset: the share of a cap a run may spend past
+// it to reach its exit. A run's duration therefore reaches its wall times
+// (1 + this ratio) by default — the figure a parent sizes a child's run by.
+const DefaultBudgetExitGraceRatio = defaultBudgetExitGraceRatio
+
 // budgetExitGraceRatio resolves the grace allowance:
 // ITERION_BUDGET_EXIT_GRACE → 0.1. `0` means the declared caps are
 // absolute (no grace) — the escape hatch for deployments where a cap

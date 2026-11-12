@@ -7,10 +7,11 @@ version: 0.7.1
 ## its own .bot — no launch override reaches it — and each gate command gets
 ## the contract's gate_timeout_s: a contract of three 14400 s commands
 ## outlived the 4h wall, and lot_verify was killed with no verdict. 12h holds
-## those three commands; the agent's pass, more suites or a repair pass on top
-## of them do not fit, and plan-contract.md now says to size the gate to the
-## wall. The cap funds the agent's passes, since the gate spends no tokens:
-## 30 $ for each of the five that campaign's lot_max_passes permits.
+## those three commands; the agent's pass, more suites, a repair pass or a
+## reanchor/extend replay on top of them do not fit, and plan-contract.md now
+## says to size the gate to the wall. The cap funds the agent's passes, since
+## the gate spends no tokens: the five that campaign's lot_max_passes permits,
+## at up to 26 $ each — the loop guard declines a repair at 90% of the cap.
 ## upgrade_campaign declares its whole native surface, spelled as claw
 ## built-ins: the claude_code spawn keeps exactly the tools it kept, and a
 ## launch route may now cross to claw on it — an operator's `--fallback` and a

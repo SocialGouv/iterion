@@ -85,6 +85,13 @@ const (
 	budgetHardThreshold    = 0.9 // refuse new node executions at 90% to limit concurrent overage
 )
 
+// BudgetHardThreshold is the share of a cap from which the engine starts no
+// node, and at which the loop guard declines a back-edge whose next iteration
+// would land. A workflow that sizes its own bounds — a gate that starts work
+// only where it can finish, a cap meant to fund N passes — sizes them against
+// this share, not against the cap.
+const BudgetHardThreshold = budgetHardThreshold
+
 // newSharedBudget creates a SharedBudget from an IR Budget definition.
 // Returns nil if budget is nil or has no enforceable limits.
 func newSharedBudget(b *ir.Budget, logger *iterlog.Logger) *SharedBudget {

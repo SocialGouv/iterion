@@ -368,14 +368,19 @@ lots:
 
 Every gate command also runs inside the lot's **run wall** — the bot's
 `max_duration`, 12h (a deployment's ceiling may lower it), which nothing
-raises when the campaign supervisor runs the lot. The agent's pass comes
-first, then each `exit_gate` command, each `suites` command and the oracle
-replay, each up to `gate_timeout_s`; a repair pass replays the agent and the
-whole gate. A gate the run wall cuts ends with no verdict at all: the run
-fails on its budget, with no `GATE_TIMEOUT` naming the command. Size the two
-walls together: the gate's commands times `gate_timeout_s`, plus the agent's
-pass, fit inside the run wall with room to spare; a gate that cannot is split
-across lots.
+raises when the campaign supervisor runs the lot — and no step of the lot
+starts past 90% of it. The agent's pass comes first, then each `exit_gate`
+command, each `suites` command and the oracle replay, each up to
+`gate_timeout_s`. Two paths run the whole gate again inside the same wall: a
+repair pass, which replays the agent and then the gate; and a gate that
+sends the lot to the net's `reanchor` or `extend` child (up to 1h, that
+child's own wall) and then judges the lot again. A gate the run wall cuts,
+or one it no longer lets start, ends with no verdict at all: the run fails
+on its budget, with no `GATE_TIMEOUT` naming the command. Size the two walls
+together: the agent's pass, the gate's commands times `gate_timeout_s`, a
+child's hour and that gate once more fit under 90% of the run wall; every
+repair pass needs the agent and the gate once more on top. A gate that
+cannot is split across lots.
 
 ## Re-anchoring a mutant is the NET's act, and this bot delegates it
 

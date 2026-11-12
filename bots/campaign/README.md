@@ -37,26 +37,33 @@ is over.
 
 ## What a campaign iteration does
 
-1. **run_lot** — one `modernize` child run (one lot, or a clean no-op).
-2. **observe** — everything re-read from git and files, never from the
+1. **lot_room** — a lot starts only where one can finish: while the
+   elapsed time plus `lot_room_s` stays under 90% of the campaign's wall.
+   The child budgets itself, runs in this run's sandbox and is never
+   interrupted, so a lot started later would end where the engine starts no
+   campaign node — observe refused, no handoff — and on Kubernetes the
+   shared sandbox pod dies at the wall plus 30 min. Otherwise the campaign
+   hands off (finalize). The first lot starts through it too.
+2. **run_lot** — one `modernize` child run (one lot, or a clean no-op).
+3. **observe** — everything re-read from git and files, never from the
    child's self-report: did HEAD move, how many consecutive still runs,
    is any lot still eligible, did the plan gain/lose/reshape lots
    (**contract extensions**), which ledger requests are pending.
-3. **steward** — extensions handled under the configured governance;
+4. **steward** — extensions handled under the configured governance;
    each pending request refused (wrong contract, malformed, dirty tree, a
    wall it cannot read) or executed under the observed-equals-announced
    criterion, the record and the counter-test under the lot's own
    `gate_timeout_s`, the counter-test's writes restored after it; journal
    row and escalation log appended **and committed**.
-4. **escalate** *(when configuration asks)* — a human node. The answer
+5. **escalate** *(when configuration asks)* — a human node. The answer
    edits nothing: an operator who wants to change the programme changes
    the **repository** and commits, exactly as a human supervisor did. The
    pause is the window; git carries the intervention.
-5. **loop_gate** — continue while something can still land: not
+6. **loop_gate** — continue while something can still land: not
    exhausted, fewer than `stagnation_stop` consecutive still runs, bounded
    by `max_lots` and the workflow budget (whose declined back-edge also
    exits through the handoff).
-6. **finalize** — on the committed tree only (the plan read at HEAD; a
+7. **finalize** — on the committed tree only (the plan read at HEAD; a
    working tree that differs from HEAD, index flags included, is reported
    as not judged): **requalification** of blocked lots (each distinct gate
    command played once on the final tree, each lot reading the run against
@@ -70,7 +77,7 @@ is over.
    its wall is a red the handoff names; a plan finalize cannot read is
    said, never counted as an empty programme. Handoff written and committed,
    its own files only, **extensions first**.
-7. **handoff_review** — a human closes every campaign, whatever the mode.
+8. **handoff_review** — a human closes every campaign, whatever the mode.
 
 ## Configuration (launch-time `--var`)
 
@@ -81,6 +88,7 @@ is over.
 | `max_lots` | `40` | Upper bound on child runs (the loop's fuel). |
 | `stagnation_stop` | `2` | Consecutive child runs without a new commit that end the campaign. |
 | `lot_max_passes` | `4` | Forwarded to the child: repair passes per lot. |
+| `lot_room_s` | `54000` | The campaign time one lot may take: lot_room starts a lot only while the elapsed time plus this stays under 90% of the wall. 15h = modernize's 12h wall, its 10% exit grace and one golden-master child (1.1h), plus 0.7h for observe and steward. Lower it for a contract whose lots are known to be short. |
 | `workspace_dir`, `plan_path` | `${PROJECT_DIR}`, `.modernize/plan.yaml` | Where the programme lives. |
 
 ```sh

@@ -130,3 +130,50 @@ func TestStampLocalCredentials_ReachesTheEngineContext(t *testing.T) {
 		t.Fatal("stamped credentials with no local store configured")
 	}
 }
+
+// TestStampLocalCredentials_ResolvesOnlyValuelessDeclarations holds the local
+// launch to the cloud publisher's rule: the store fills a declaration with no
+// inline `value:` and only those. An inline-valued secret resolves from its
+// own expression in the run, so a store entry of the same name must not ride
+// the run's credentials — a subbot child declaring that name without a value
+// would otherwise read the store's token locally and nothing on the cloud.
+func TestStampLocalCredentials_ResolvesOnlyValuelessDeclarations(t *testing.T) {
+	sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+	if err != nil {
+		t.Fatalf("sealer: %v", err)
+	}
+	memStore := secrets.NewMemoryGenericSecretStore()
+	for _, s := range []struct{ id, name, value string }{
+		{"sec-forge-token", "forge_token", "stored-forge-token"},
+		{"sec-deploy", "deploy_credential", "stored-deploy-credential"},
+	} {
+		sealed, err := secrets.SealGenericSecret(sealer, s.id, []byte(s.value))
+		if err != nil {
+			t.Fatalf("seal %s: %v", s.name, err)
+		}
+		if err := memStore.Create(context.Background(), secrets.GenericSecret{
+			ID: s.id, ScopeTeamID: secrets.LocalScopeTeam, Name: s.name, SealedSecret: sealed,
+		}); err != nil {
+			t.Fatalf("store %s: %v", s.name, err)
+		}
+	}
+
+	wf := &ir.Workflow{Name: "canary", Secrets: map[string]*ir.Secret{
+		"forge_token":       {As: "file", Value: "{{vars.tok}}"},
+		"deploy_credential": {As: "file", Optional: true},
+	}}
+	ctx, err := StampLocalCredentials(context.Background(), wf, memStore, sealer, nil)
+	if err != nil {
+		t.Fatalf("StampLocalCredentials: %v", err)
+	}
+	creds, ok := secrets.CredentialsFromContext(ctx)
+	if !ok {
+		t.Fatal("the returned context carries no credentials")
+	}
+	if got := creds.GenericSecret("forge_token"); got != "" {
+		t.Errorf("forge_token is declared with an inline value and still resolved from the store (%q) — the cloud launch resolves nothing for it, so a subbot child sharing the run's credentials reads a different token on each launch path", got)
+	}
+	if got := creds.GenericSecret("deploy_credential"); got != "stored-deploy-credential" {
+		t.Errorf("deploy_credential (no inline value) resolved to %q, want the stored value", got)
+	}
+}

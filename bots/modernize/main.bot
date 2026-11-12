@@ -3232,15 +3232,20 @@ workflow modernize:
   ## exit_gate command, the suites and the oracle, each under the contract's
   ## gate_timeout_s, and a lot_verify the wall kills leaves no verdict. 12h
   ## holds a contract measured at three commands of 14400 s, each run to its
-  ## wall. It does not also hold the agent's pass before them, more suites, or
-  ## a repair pass that replays both: no literal holds every contract, since
-  ## gate_timeout_s reaches 86400 s per command, so the contract sizes its gate
-  ## to this wall (plan-contract.md, `gate_timeout_s`).
+  ## wall. It does not also hold the agent's pass before them, more suites, a
+  ## repair pass that replays both, or a reanchor or extend child (up to 1h)
+  ## after which lot_verify runs the whole gate again: no literal holds every
+  ## contract, since gate_timeout_s reaches 86400 s per command, so the
+  ## contract sizes its gate to this wall (plan-contract.md, `gate_timeout_s`).
+  ## Campaign starts a lot only where this wall, its exit grace and one such
+  ## child still end before 90% of its own (campaign's lot_room).
   ##
   ## The cost cap bounds the lot's model spend, which is upgrade_campaign's
   ## alone: the gate's commands spend no tokens, and reanchor and extend are
-  ## subbots that budget themselves. 150 $ gives 30 $ to each agent pass
-  ## campaign's lot_max_passes 4 permits — the first, then one per repair.
+  ## subbots that budget themselves. 150 $ funds the five agent passes
+  ## campaign's lot_max_passes 4 permits — the first, then one per repair —
+  ## at up to 26 $ each: the loop guard declines a repair once the spend so
+  ## far plus the last pass's reaches 90% of the cap (135 $).
   ##
   ## Literals, not `${…}` dials: a run reads no environment (ADR-132). A
   ## direct launch overrides both (`--max-duration`, `--max-cost-usd`).

@@ -67,6 +67,14 @@ vars:
   stagnation_stop: int = 2
   ## Forwarded to the child: bounded repair loop per lot.
   lot_max_passes: int = 4
+  ## The campaign time one lot may take, in seconds: lot_room starts a lot
+  ## only while the elapsed time plus this room stays under 90% of the
+  ## campaign's wall. 54000 s = 15h: modernize's 12h wall and the 10% exit
+  ## grace past it (13.2h), one golden-master child its last gate routes to
+  ## (1h wall, 1.1h), and 0.7h for observe and steward to read the lot. A
+  ## steward's re-record runs under the contract's gate_timeout_s, outside
+  ## this room. Lower it for a contract whose lots are known to be short.
+  lot_room_s: int = 54000
 
 secrets:
   ## The forge credential of a repo-targeted cloud launch. The runner clones
@@ -156,6 +164,9 @@ schema answer_state:
 schema loop_state:
   proceed: bool
   reason: string
+
+schema room_state:
+  room: bool
 
 schema finalize_input:
   verify_path: string
@@ -1425,6 +1436,20 @@ compute loop_gate:
     proceed: "!outputs.observe.exhausted && outputs.observe.stagnant < vars.stagnation_stop"
     reason: "if(outputs.observe.exhausted, 'programme exhausted: no eligible lot remains', if(outputs.observe.stagnant >= vars.stagnation_stop, 'stagnation: consecutive child runs landed nothing', 'continue'))"
 
+## lot_room — start a lot only where one can finish. The child budgets
+## itself from its own .bot (modernize's 12h wall), runs in THIS run's
+## sandbox, and nothing interrupts it once started. A lot started late
+## therefore outlives what the campaign can still do: past 90% of the wall
+## the engine starts no campaign node, so observe is refused and the
+## campaign ends with no handoff; on Kubernetes the shared sandbox pod is
+## killed at the wall plus 30 min, mid-lot. Every lot starts through here,
+## the first one too; a wall with no room left for one hands off instead.
+## An unbounded wall (0) always has room.
+compute lot_room:
+  output: room_state
+  expr:
+    room: "run.max_duration_seconds <= 0 || run.elapsed_seconds + vars.lot_room_s < run.max_duration_seconds * 0.9"
+
 ## run_lot — the worker, one lot per child run.
 ##
 ## No `output:` is read from the child ON PURPOSE: the supervisor believes
@@ -1453,15 +1478,22 @@ workflow campaign:
   ## The child budgets itself (a subbot's budget does not compose with the
   ## parent's): this budget bounds the SUPERVISOR — its records, gates and
   ## bookkeeping — plus the campaign's wall clock, the one axis that counts
-  ## the children's time. The engine checks it before each campaign node and
-  ## never inside a running lot: a lot that outlasts it runs on to its own
-  ## wall, and observe is then refused.
+  ## the children's time. The wall also sets the deadline of the sandbox pod
+  ## the lots share on Kubernetes (the wall plus 30 min). The engine checks
+  ## it before each campaign node, never inside a running lot, so lot_room
+  ## starts a lot only while one still fits before 90% of it.
   budget:
     max_parallel_branches: 1
     max_duration: "48h"
     max_cost_usd: 25
 
-  preflight -> run_lot
+  preflight -> lot_room
+
+  lot_room -> run_lot when room
+
+  lot_room -> finalize when not room with {
+    verify_path: "{{outputs.preflight.verify_path}}"
+  }
 
   run_lot -> observe with {
     base: "{{outputs.preflight.campaign_base}}",
@@ -1503,7 +1535,7 @@ workflow campaign:
     verify_path: "{{outputs.preflight.verify_path}}"
   }
 
-  loop_gate -> run_lot as campaign_loop("{{vars.max_lots}}")
+  loop_gate -> lot_room as campaign_loop("{{vars.max_lots}}")
 
   loop_gate -> finalize with {
     verify_path: "{{outputs.preflight.verify_path}}"
