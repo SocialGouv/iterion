@@ -423,7 +423,14 @@ func runRetireWorkflow(t *testing.T, wf *ir.Workflow, gw *recordingGateway, raw 
 		t.Fatal(err)
 	}
 	workDir := t.TempDir()
-	exec, err := runview.BuildExecutor(runview.ExecutorSpec{Ctx: ctx, Workflow: wf, Store: st, RunID: runID, Logger: iterlog.Nop(), WorkDir: workDir})
+	// The run below executes with no sandbox (WithSandboxOverride("none")),
+	// so the spec says it knows the sandbox tiers and names its bot the way
+	// every launch surface does.
+	exec, err := runview.BuildExecutor(runview.ExecutorSpec{
+		Ctx: ctx, Workflow: wf, Store: st, RunID: runID, Logger: iterlog.Nop(), WorkDir: workDir,
+		BotID:           runview.ResolveBotID("pricefeed-e2e", "", ""),
+		SandboxOverride: "none", SandboxTiersKnown: true,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
