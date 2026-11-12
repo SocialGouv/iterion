@@ -1628,6 +1628,11 @@ func TestExecuteHandsTheDeadWorkToTheTurnHook(t *testing.T) {
 	if err := os.WriteFile(fake, []byte(fakeClaudeScripted), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	executeDeadWorkTurn(t, fake, dir)
+}
+
+func executeDeadWorkTurn(t *testing.T, fake, dir string) Result {
+	t.Helper()
 	scriptPath := filepath.Join(dir, "script")
 	script := []string{
 		lnInit("2.1.280"),
@@ -1655,15 +1660,29 @@ func TestExecuteHandsTheDeadWorkToTheTurnHook(t *testing.T) {
 	b := &ClaudeCodeBackend{Logger: iterlog.New(iterlog.LevelWarn, io.Discard)}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	if _, err := b.Execute(ctx, task); err != nil {
+	result, err := b.Execute(ctx, task)
+	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
-	if len(got.TerminatedBackgroundTasks) != 1 || !strings.Contains(got.TerminatedBackgroundTasks[0], "npm run dev") {
-		t.Fatalf("turn hook got %+v, want the server that died with the process", got)
+	// Execute joins protocol tasks with processes stopped by the node sweep.
+	// The expected task must survive that union on every publication surface.
+	const taskLabel = "npm run dev (local_bash, b1)"
+	count := 0
+	for _, label := range got.TerminatedBackgroundTasks {
+		if label == taskLabel {
+			count++
+		}
 	}
-	if entry := ledger.Terminated("s1"); len(entry) != 1 || !strings.Contains(entry[0], "npm run dev") {
-		t.Fatalf("ledger s1 = %v, want the server recorded", entry)
+	if got.SessionID != "s1" || count != 1 {
+		t.Fatalf("turn hook got %+v, want exactly one %q under s1", got, taskLabel)
 	}
+	if !slices.Equal(result.TerminatedBackgroundTasks, got.TerminatedBackgroundTasks) {
+		t.Fatalf("result = %v, turn hook = %v", result.TerminatedBackgroundTasks, got.TerminatedBackgroundTasks)
+	}
+	if entry := ledger.Terminated("s1"); !slices.Equal(entry, got.TerminatedBackgroundTasks) {
+		t.Fatalf("ledger s1 = %v, turn hook = %v", entry, got.TerminatedBackgroundTasks)
+	}
+	return result
 }
 
 func TestBackground_AFreshReportFromBeforeTheWrapUpIsNotKept(t *testing.T) {

@@ -778,3 +778,24 @@ func TestTheWrapperOfARespawnEndsThePreviousAttempt(t *testing.T) {
 		t.Fatal("the previous attempt still runs after the respawn's wrapper")
 	}
 }
+
+// A detached process survives SDK process-group cleanup and is stopped by the
+// node sweep. Its label joins the protocol task in hook, result and ledger.
+func TestExecuteDeadWorkTurnIncludesTheNodeSweep(t *testing.T) {
+	w := newNodeSessionWorld(t, strings.Replace(fakeClaudeScripted, "#!/bin/sh\n", "#!/bin/sh\n"+detachedLeftover, 1))
+	result := executeDeadWorkTurn(t, w.stand(), w.dir)
+	left := w.left()
+	if len(left) != 1 {
+		t.Fatalf("fixture recorded %v, want one detached process", left)
+	}
+	for _, pid := range left {
+		if processRuns(pid) {
+			t.Fatalf("owned process %d outlived the node", pid)
+		}
+		if !slices.ContainsFunc(result.TerminatedBackgroundTasks, func(label string) bool {
+			return strings.Contains(label, fmt.Sprintf("(pid %d)", pid))
+		}) {
+			t.Fatalf("owned process %d missing from result %v", pid, result.TerminatedBackgroundTasks)
+		}
+	}
+}
