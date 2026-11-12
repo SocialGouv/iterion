@@ -75,6 +75,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build (amd64, load, no push)
+        if: ${{ inputs.context != 'sandbox/finalize' || inputs.file != 'sandbox/finalize/Dockerfile' }}
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: ${{ inputs.context }}
@@ -85,6 +86,28 @@ jobs:
           build-args: ${{ inputs.build-args }}
           cache-from: type=gha,scope=${{ inputs.image-name }}-pr
           cache-to: type=gha,mode=max,scope=${{ inputs.image-name }}-pr
+
+      # A PR cannot consume the published app: its finalizer may require files
+      # introduced by this checkout. Link the app stage in one Bake graph;
+      # docker-container builders cannot read a local daemon tag implicitly.
+      - name: Qualify finalizer with candidate app (no push)
+        if: ${{ inputs.context == 'sandbox/finalize' && inputs.file == 'sandbox/finalize/Dockerfile' }}
+        env:
+          FINALIZER_BUILD_ARGS: ${{ inputs.build-args }}
+        run: |
+          python3 - <<'PYCODE'
+          import json, os
+          from pathlib import Path
+          args = dict(line.split("=", 1) for line in os.environ["FINALIZER_BUILD_ARGS"].splitlines() if line.strip())
+          graph = {"target": {
+              "app": {"context": ".", "dockerfile": "Dockerfile", "platforms": ["linux/amd64"]},
+              "final": {"context": "sandbox/finalize", "dockerfile": "Dockerfile",
+                        "platforms": ["linux/amd64"], "args": args,
+                        "contexts": {"iterion-bin": "target:app"}, "output": ["type=docker"]}
+          }}
+          Path(os.environ["RUNNER_TEMP"], "finalizer-candidate.json").write_text(json.dumps(graph))
+          PYCODE
+          docker buildx bake -f "$RUNNER_TEMP/finalizer-candidate.json" final
 
   # --------------------------------------------------------------------------
   # amd64 — built on the in-house buildkit-operator warm daemon, pushed to a

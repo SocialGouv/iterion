@@ -115,43 +115,29 @@ func TestCommand_SmallScriptKeepsArgvPath(t *testing.T) {
 // carry the script for the shell to READ, with nothing oversized left
 // on any argv — the host's or the pod's.
 func TestCommand_OversizedScriptWithCustomWorkDirStreamsTheScriptItself(t *testing.T) {
-	r := testRun()
+	r := transportRun(t)
 	big := strings.Repeat("y", sandbox.MaxInlineArgBytes+1)
-
-	cmd := r.Command(context.Background(), []string{"bash", "-c", big},
-		sandbox.ExecOpts{WorkDir: "/elsewhere", Env: map[string]string{"FOO": "bar baz"}})
-
-	assertStdinAnnounced(t, cmd)
-	for _, a := range cmd.Args {
-		if strings.Contains(a, big) {
-			t.Fatalf("oversized script leaked into host argv (E2BIG risk); arg len=%d", len(a))
+	cmd := r.Command(context.Background(), []string{"bash", "-c", big}, sandbox.ExecOpts{WorkDir: "/elsewhere", Env: map[string]string{"FOO": "bar baz"}})
+	control, in, _, _ := inspectTransport(t, cmd)
+	if !slicesContains(control.Argv, "--stdin") {
+		t.Fatal("client did not announce stdin")
+	}
+	for _, arg := range cmd.Args {
+		if strings.Contains(arg, big) {
+			t.Fatal("script leaked into host argv")
 		}
 	}
-	// The recipe's own shell reads it, so bash stays bash.
-	if n := len(cmd.Args); n < 2 || cmd.Args[n-2] != "bash" || cmd.Args[n-1] != "-s" {
-		t.Fatalf("argv must terminate with `bash -s`; got tail %v", cmd.Args[max(0, len(cmd.Args)-4):])
+	if len(in.Argv) != 2 || in.Argv[0] != "bash" || in.Argv[1] != "-s" {
+		t.Fatalf("target must read script from stdin: %q", in.Argv)
 	}
-
-	got := readStdin(t, cmd.Stdin)
-	if !strings.Contains(got, "/elsewhere") {
-		t.Errorf("payload must cd into the requested workdir; got %.120q", got)
+	if in.WorkDir == nil || *in.WorkDir != "/elsewhere" || in.Env["FOO"] != "bar baz" {
+		t.Fatalf("target workdir/environment lost: %+v", in)
 	}
-	if !strings.Contains(got, big) {
-		t.Error("payload must carry the recipe")
-	}
-	if !strings.Contains(got, "export 'FOO=bar baz'") {
-		t.Errorf("per-call env must survive as an export line; got %.200q", got)
-	}
-	// The regression itself: the payload must not hand the script to a
-	// nested shell as an argument, which is the execve the pod would
-	// then fail on.
-	if strings.Contains(got, "exec bash -c") || strings.Contains(got, "bash -c '") {
-		t.Errorf("payload re-embeds the script as an argv element — E2BIG merely relocated into the pod; got %.200q", got)
+	if got := readStdin(t, cmd.Stdin); got != big {
+		t.Fatal("stdin must contain the original script, without an argv wrapper")
 	}
 }
 
-// A caller that attached its own reader keeps it: the streaming path
-// must never clobber caller-provided stdin, whatever the script size.
 func TestCommand_CallerStdinWins(t *testing.T) {
 	r := testRun()
 	big := strings.Repeat("z", sandbox.MaxInlineArgBytes+1)

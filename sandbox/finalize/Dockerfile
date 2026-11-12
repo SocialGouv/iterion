@@ -27,6 +27,9 @@ USER root
 # Static (CGO_ENABLED=0, see the root Dockerfile go-builder) so it runs as-is
 # on the devbox/debian bases.
 COPY --from=iterion-bin /usr/local/bin/iterion /usr/local/bin/iterion
+COPY --from=iterion-bin --chown=0:0 --chmod=0555 /usr/local/libexec/iterion-execenv-guest /usr/local/libexec/iterion-execenv-guest
+COPY --from=iterion-bin --chown=0:0 --chmod=0555 /usr/local/libexec/iterion-execenv-capsule /usr/local/libexec/iterion-execenv-capsule
+RUN chmod 0755 /usr/local/libexec
 
 # Bake the LLM CLIs (claude_code) so claude_code-backed bots don't install them
 # per-run. The per-run path is `sudo npm install -g @anthropic-ai/claude-code`
@@ -44,3 +47,7 @@ RUN ln -sf /opt/iterion/llm-clis/node_modules/.bin/claude /usr/local/bin/claude 
 # env inherit from the base image.
 USER 1000
 WORKDIR /workspace
+
+# Execute the actual copied pair as the final non-root user on each architecture.
+RUN --mount=type=bind,source=execenv-smoke.sh,target=/tmp/execenv-smoke.sh \
+    sh /tmp/execenv-smoke.sh

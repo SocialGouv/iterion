@@ -1476,6 +1476,9 @@ func runAuthoringGit(ctx context.Context, workDir string, args ...string) (strin
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
 	if err != nil {
+		if gitlib.IsNotRepositoryDiagnostic(stderr.String()) {
+			err = errors.Join(err, gitlib.ErrNotGitRepo)
+		}
 		return "", fmt.Errorf("git %s: %w\n%s", strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
 	}
 	return string(out), nil

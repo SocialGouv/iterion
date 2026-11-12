@@ -231,7 +231,10 @@ jobs:
     # aggregator; carries the tap skip and nothing else — see the header.
     # A Homebrew tap update skips this leg: the header says why, and `brand` verifies it.
     if: "!startsWith(github.event.merge_group.head_commit.message || github.event.pull_request.title, 'chore(brew): update tap to ')"
-    runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || 'arc-runners' }}
+    # Nested read-only mount witnesses need a namespace-capable runner.
+    # ARC pods refuse that mount; a qualified private runner may override
+    # CI_NATIVE_EXEC_RUNNER. Fork/bot and global-off guards still win.
+    runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || vars.CI_NATIVE_EXEC_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 30
     env:
       CGO_ENABLED: "0"
@@ -377,6 +380,23 @@ jobs:
           include-hidden-files: true # the census lives under .iterion
           if-no-files-found: error
           retention-days: 30
+
+      - name: Prepare installed Helm chart dependencies
+        # Hosted VMs include Helm, so chart tests execute there as well as in
+        # helm-lint. Prepare the declared archives before either Go suite.
+        run: |
+          if command -v helm >/dev/null 2>&1; then
+            sh scripts/chart-check-deps.sh charts/iterion
+          fi
+
+      - name: Native exec environment prerequisites
+        # The native transport tests execute the real pair on a read-only mount.
+        # Missing isolation is a failure, not permission to skip the witness.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap build-essential
+          bwrap --version
+          bwrap --die-with-parent --ro-bind / / --dev /dev --proc /proc /bin/true
 
       - name: Unit tests
         # `./...` includes the e2e package, which has its own job (test-e2e)
@@ -636,7 +656,10 @@ jobs:
     # lesson: a matrix over runs-on diverges from its id silently).
     # A Homebrew tap update skips this leg: the header says why, and `brand` verifies it.
     if: "!startsWith(github.event.merge_group.head_commit.message || github.event.pull_request.title, 'chore(brew): update tap to ')"
-    runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || 'arc-runners' }}
+    # Nested read-only mount witnesses need a namespace-capable runner.
+    # ARC pods refuse that mount; a qualified private runner may override
+    # CI_NATIVE_EXEC_RUNNER. Fork/bot and global-off guards still win.
+    runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || vars.CI_NATIVE_EXEC_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 50
     env:
       CGO_ENABLED: "1"
@@ -686,6 +709,23 @@ jobs:
           echo "fa52a4e758c63d38299163fbdd1edfb4c4963247918bf9c1c5d31d84789eded4  /tmp/yq" | sha256sum -c -
           sudo install -m 0755 /tmp/yq /usr/local/bin/yq
           yq --version
+
+      - name: Prepare installed Helm chart dependencies
+        # Hosted VMs include Helm, so chart tests execute there as well as in
+        # helm-lint. Prepare the declared archives before either Go suite.
+        run: |
+          if command -v helm >/dev/null 2>&1; then
+            sh scripts/chart-check-deps.sh charts/iterion
+          fi
+
+      - name: Native exec environment prerequisites
+        # The native transport tests execute the real pair on a read-only mount.
+        # Missing isolation is a failure, not permission to skip the witness.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap build-essential
+          bwrap --version
+          bwrap --die-with-parent --ro-bind / / --dev /dev --proc /proc /bin/true
 
       - name: Race tests (shard ${{ matrix.shard }} of 3)
         # 1800s bounds a HANG, not a slow machine — the same bound the

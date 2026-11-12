@@ -19,6 +19,7 @@ import (
 	"time"
 
 	gitlib "github.com/SocialGouv/iterion/pkg/git"
+	"github.com/SocialGouv/iterion/pkg/internal/proc"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 )
@@ -436,12 +437,15 @@ func New() (sandbox.Driver, error) {
 	// named is the loud path; `iterion sandbox doctor` reads the same
 	// error through SchedulingPolicy.
 	sched, schedErr := schedulingFromEnv(os.Getenv)
+	transport, transportErr := loadExecTransportConfig()
 	return &Driver{
-		kubectl:   binPath,
-		namespace: namespace,
-		logger:    iterlog.New(iterlog.LevelInfo, io.Discard),
-		sched:     sched,
-		schedErr:  schedErr,
+		kubectl:      binPath,
+		namespace:    namespace,
+		logger:       iterlog.New(iterlog.LevelInfo, io.Discard),
+		sched:        sched,
+		schedErr:     schedErr,
+		transport:    transport,
+		transportErr: transportErr,
 	}, nil
 }
 
@@ -465,6 +469,12 @@ type Driver struct {
 	// failure it carries, surfaced by Start on every run.
 	sched    podScheduling
 	schedErr error
+
+	// The required Env transport is configured once, but a configuration error
+	// does not make the factory select a different driver: Env-empty commands
+	// remain usable. Env-required commands surface transportErr on their Cmd.
+	transport    execTransportConfig
+	transportErr error
 }
 
 // WithLogger returns a copy of the driver bound to a real logger.
@@ -942,25 +952,18 @@ func (r *Run) renderRefreshedSecret(name string, value []byte) ([]byte, error) {
 	return manifest, nil
 }
 
-// Command returns an *exec.Cmd that, when started, runs cmd inside
-// the sandbox pod via `kubectl exec`. Stdin/Stdout/Stderr on the
-// returned cmd are forwarded transparently by kubectl.
-//
-// Cwd defaults to the prepared workspace; [ExecOpts.WorkDir]
-// overrides per-call. Env vars are passed via env-prefixed argv
-// (`env KEY=val cmd ...`) because `kubectl exec` doesn't expose a
-// `--env` flag — the sandbox env established at pod creation time
-// is the base, and per-call envs are layered on top via the env
-// command.
-//
-// A payload too large to survive the kernel's MAX_ARG_STRLEN cap on a
-// single argv element (32 pages = 128 KiB, no ulimit raises it) is
-// streamed through stdin as `kubectl exec --stdin … -- <shell> -s`
-// instead. Both exec shapes below can take that route, but they cross
-// the cap for different reasons — see [resolveStreamPayload].
+// Command returns an *exec.Cmd that runs cmd inside the workload container.
+// Env-empty calls preserve the historical kubectl command. Calls with overrides
+// use the image's native environment capsule and the host relay; no workload
+// value becomes an argv entry or an environment setting of the kubectl client.
+// Native custom cwd/PWD semantics apply only to that required transport.
+// A caller owning stdin (including KeepStdinOpen) never loses it to a script.
 func (r *Run) Command(ctx context.Context, cmd []string, opts sandbox.ExecOpts) *exec.Cmd {
 	if len(cmd) == 0 {
 		return exec.CommandContext(ctx, "")
+	}
+	if len(opts.Env) != 0 {
+		return r.execEnvCommand(ctx, cmd, opts)
 	}
 
 	// Per-call cwd is realised by `cd <dir> && exec ...` — kubectl
@@ -1014,7 +1017,9 @@ func (r *Run) Command(ctx context.Context, cmd []string, opts sandbox.ExecOpts) 
 	default:
 		args = append(args, "sh", "-c", wrapped)
 	}
-	return r.cmdContext(ctx, args, streamPayload, opts)
+	c := r.cmdContext(ctx, args, streamPayload, opts)
+	proc.TerminateGroupOnCancel(c)
+	return c
 }
 
 // resolveStreamPayload returns the exact bytes to feed the in-pod shell
@@ -1798,3 +1803,6 @@ func podNameFor(runID string) string {
 	}
 	return n
 }
+
+// OwnsCommandCancellation covers both the native relay and plain kubectl.
+func (*Run) OwnsCommandCancellation() bool { return true }

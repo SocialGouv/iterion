@@ -87,6 +87,19 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
               -X github.com/SocialGouv/iterion/pkg/internal/appinfo.Commit=${COMMIT}" \
     -o /out/iterion ./cmd/iterion
 
+# The guest is a leaf: never load application packages before sanitization.
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -o /out/iterion-execenv-guest ./cmd/iterion-execenv-guest
+
+# The capsule has no libc or dynamic loader. Compile on TARGETPLATFORM;
+# TARGETARCH must agree with the compiler, including on native ARM CI workers.
+FROM --platform=$TARGETPLATFORM golang:1.27-bookworm@sha256:484ef6066fa69acb059fdfeda7ba2b8f7391f2ef6abc6f9b8411e669ebd56466 AS capsule-builder
+ARG TARGETARCH
+WORKDIR /src
+COPY native/execenv/capsule.c native/execenv/capsule.c
+COPY scripts/build-execenv-capsule.sh scripts/build-execenv-capsule.sh
+RUN sh scripts/build-execenv-capsule.sh "$TARGETARCH" /out/iterion-execenv-capsule
+
 # ---------------------------------------------------------------------
 # Stage 3 — Pinned LLM CLIs
 # ---------------------------------------------------------------------
@@ -253,12 +266,18 @@ RUN /usr/sbin/groupadd --system --gid 10001 iterion \
 RUN git config --system user.email "iterion-runner@bot.iterion.invalid" \
  && git config --system user.name "iterion-runner[bot]"
 
+COPY --from=go-builder --chown=0:0 --chmod=0555 /out/iterion-execenv-guest /usr/local/libexec/iterion-execenv-guest
+COPY --from=capsule-builder --chown=0:0 --chmod=0555 /out/iterion-execenv-capsule /usr/local/libexec/iterion-execenv-capsule
+RUN chmod 0755 /usr/local/libexec
+
 USER iterion
 WORKDIR /home/iterion
 
 # Exercise the final runtime, including its copied binaries, library closure
 # and non-root permissions. This runs on each architecture before publication.
 RUN node --version && claude --version && codex --version
+RUN --mount=type=bind,source=sandbox/finalize/execenv-smoke.sh,target=/tmp/execenv-smoke.sh \
+    sh /tmp/execenv-smoke.sh
 
 # Default exposed port matches the server bind. Helm chart overrides
 # via `--port`. /healthz and /readyz are served on the same port so

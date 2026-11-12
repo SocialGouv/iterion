@@ -302,6 +302,24 @@ func TestTheDriverDeclaresEveryEnvNameItsOwnStartSets(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			fromArgv := envNamesOfArgs(hostNetworkArgs(tc.info, nil))
+			if tc.info.ProxyEndpoint != "" {
+				file, err := proxyStartEnvFile(tc.info.ProxyEndpoint)
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = os.Remove(file) })
+				contents, err := os.ReadFile(file)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, line := range strings.Split(strings.TrimSuffix(string(contents), "\n"), "\n") {
+					name, _, ok := strings.Cut(line, "=")
+					if !ok {
+						t.Fatalf("invalid creation env file line: %q", line)
+					}
+					fromArgv = append(fromArgv, name)
+				}
+			}
 			if len(tc.info.ProxyCACert) > 0 {
 				caArgs, dirs, err := caInjectionArgs(tc.info)
 				t.Cleanup(func() { cleanupTempDirs(dirs) })

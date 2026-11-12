@@ -509,6 +509,9 @@ func TestWriteResumeError_ScratchLossNamesItsConsent(t *testing.T) {
 // — for a plain resume and for a forced one alike; accept_scratch_loss
 // resumes it, and the run's timeline says it went on without the scratch.
 func TestResumeRun_theScratchsLossNeedsItsOwnConsent(t *testing.T) {
+	// This proves consent and its timeline event, with no bank to restore.
+	// Keep the workflow unsandboxed: auto would pull an image on Docker hosts
+	// before reaching the same event and make this HTTP fixture host-dependent.
 	t.Setenv("ITERION_RUNS_DETACHED", "0")
 	srv, httpServer := newTestServer(t)
 	const source = `
@@ -524,6 +527,7 @@ human gate:
   interaction: human
 
 workflow scratch_consent:
+  sandbox: none
   entry: gate
   gate -> done when approved
   gate -> fail when not approved

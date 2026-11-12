@@ -313,10 +313,12 @@ func (s *Session) ensureStarted(ctx context.Context) error {
 	s.mcpCleanup = mcpCleanup
 
 	spOpts := spawnOptions{
-		Cwd:            s.cfg.cwd,
-		Env:            s.cfg.env,
-		StderrCallback: s.cfg.stderrCallback,
-		CommandBuilder: s.cfg.commandBuilder,
+		Cwd:                         s.cfg.cwd,
+		Env:                         s.cfg.env,
+		StderrCallback:              s.cfg.stderrCallback,
+		CommandBuilder:              s.cfg.commandBuilder,
+		PreserveCommandCancellation: s.cfg.preserveCommandCancellation,
+		ProcessStarted:              s.cfg.processStarted,
 		// Streaming Session: NDJSON user/control messages are written via
 		// proc.writeLine, so the child stdin must be a writable pipe.
 		OpenStdin: true,

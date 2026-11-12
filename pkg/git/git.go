@@ -37,6 +37,19 @@ const gitCommandTimeout = 30 * time.Second
 // neutral empty-state instead of a red error.
 var ErrNotGitRepo = errors.New("git: not a git repository")
 
+// IsNotRepositoryDiagnostic recognizes Git's C-locale repository-discovery
+// failures, including the distinct dangling-gitfile diagnostic in Git 2.56.
+// It classifies only the leading fatal diagnostic, never words in a path or
+// a later line. This says Git cannot read the repository; it does not prove
+// that its files or index may be discarded.
+func IsNotRepositoryDiagnostic(stderr string) bool {
+	line, _, _ := strings.Cut(strings.TrimSpace(stderr), "\n")
+	return line == "fatal: not a git repository" ||
+		strings.HasPrefix(line, "fatal: not a git repository:") ||
+		strings.HasPrefix(line, "fatal: not a git repository (") ||
+		strings.HasPrefix(line, "fatal: gitfile does not point to a valid repository: ")
+}
+
 // ErrUnknownRevision is returned when git rejects a revision/range that
 // no longer resolves in the repository (branch pruned, base commit
 // gc'd, checkout living elsewhere). Callers in the HTTP layer translate
@@ -255,7 +268,7 @@ func run(dir string, args ...string) ([]byte, error) {
 			return nil, fmt.Errorf("git %s: timed out after %s", strings.Join(args, " "), gitCommandTimeout)
 		}
 		msg := stderr.String()
-		if strings.Contains(msg, "not a git repository") {
+		if IsNotRepositoryDiagnostic(msg) {
 			return nil, ErrNotGitRepo
 		}
 		if strings.Contains(msg, "Invalid revision range") ||

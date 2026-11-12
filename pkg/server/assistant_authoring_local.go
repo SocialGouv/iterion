@@ -18,6 +18,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/SocialGouv/iterion/pkg/authoringlock"
+	gitlib "github.com/SocialGouv/iterion/pkg/git"
 )
 
 // A lock serializes the server's participating writers across processes and
@@ -433,7 +434,7 @@ func validateAuthoringGitExclusion(ctx context.Context, dir string) error {
 				// repository" from Git while its INDEX still names staged
 				// files — one restored HEAD line and the recovery is tracked
 				// again. Git cannot answer for it, so that one refuses.
-				if strings.Contains(err.Error(), "not a git repository") {
+				if errors.Is(err, gitlib.ErrNotGitRepo) {
 					if authoringGitIndexStagesFiles(filepath.Join(p, ".git")) {
 						return fmt.Errorf("verify authoring Git exclusion: %w (git cannot read this repository but its index still stages files)", err)
 					}

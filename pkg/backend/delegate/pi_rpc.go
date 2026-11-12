@@ -169,10 +169,11 @@ func (b *PiRPCBackend) Execute(ctx context.Context, task Task) (Result, error) {
 		// pi's session_start, which is where MCP bridging runs (10s per server
 		// by default), so container boot plus a few servers genuinely exceeds
 		// 30s.
-		RequestTimeout: piColdTimeout,
-		Env:            env,
-		Spawn:          b.spawner(task, binary, mark, mcpFile),
-		OnEvent:        collector.onEvent,
+		RequestTimeout:              piColdTimeout,
+		Env:                         env,
+		Spawn:                       b.spawner(task, binary, mark, mcpFile),
+		PreserveCommandCancellation: sandbox.OwnsCommandCancellation(task.Sandbox),
+		OnEvent:                     collector.onEvent,
 		OnStderr: func(line string) {
 			if b.Logger != nil {
 				b.Logger.Info("[%s#%d/%s:err] %s", task.NodeID, task.Iteration, BackendPi, line)

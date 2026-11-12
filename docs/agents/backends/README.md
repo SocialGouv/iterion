@@ -16,4 +16,5 @@ native harness. Leaves, one line each:
 | [codemode.md](codemode.md) | The model's code calling the node's own tools: the dispatcher door and its context contract, why confinement is kernel-side, and what is NOT built yet (ADR-165). |
 | [codemode-confinement.md](codemode-confinement.md) | The script host's ten bounds, the kernel mechanism behind each, the witness that was seen to fail without it, and the three statements measurement refuted. |
 | [sandbox.md](sandbox.md) | `SANDBOX_*` and `ATTACHMENT*` failures, host binds dropped or carried, changing what a node may execute. |
+| [exec-environment.md](exec-environment.md) | Kubernetes per-call environment transport, native image pair, operator controls and qualification. |
 | [prompt-engineering-dials.md](prompt-engineering-dials.md) | Authoring `cursor:` / `supervisor:` / ultracode. |

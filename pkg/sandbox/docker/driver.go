@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -507,12 +508,12 @@ func execEnvKeepsThePairOnTheArgv(k string) bool {
 // the host and cannot itself resolve host.docker.internal, so proxying
 // an MCP call would fail the connect. It also lets inner localhost-only
 // services (e.g. an inner devbox cache) bypass the proxy.
-// proxyEnvNames and noProxyEnvNames are the variables [hostNetworkArgs]
-// points at the per-run egress proxy. Both spellings, as the clone-guard
+// proxyEnvNames are written to the private [proxyStartEnvFile];
+// noProxyEnvNames are the exceptions [hostNetworkArgs] puts on argv. Both spellings, as the clone-guard
 // proxy sets them: curl, wget and git (libcurl) read only the lower-case
 // http_proxy for an http:// URL, and prefer the lower-case forms.
 //
-// Named once because two readers share them: the argv above, and
+// Named once because two readers share them: those creation channels, and
 // [Driver.StartEnvNames], which the image env screen asks what this
 // driver's own Start will set. A pair added here is declared there by
 // construction.
@@ -592,11 +593,6 @@ func (d *Driver) StartEnvNames(info sandbox.RunInfo) []string {
 
 func hostNetworkArgs(info sandbox.RunInfo, specEnv map[string]string) []string {
 	var args []string
-	if info.ProxyEndpoint != "" {
-		for _, k := range proxyEnvNames {
-			args = append(args, "--env", k+"="+info.ProxyEndpoint)
-		}
-	}
 	if info.ProxyEndpoint != "" || info.HostGatewayAlias {
 		// Both spellings get the union of what the spec carried under either,
 		// so an operator's exceptions survive and the two never disagree.
@@ -767,6 +763,25 @@ func (d *Driver) Start(ctx context.Context, prepared sandbox.PreparedSpec, info 
 	specEnvArgs, err := envArgs(p.spec.Env)
 	if err != nil {
 		return nil, err
+	}
+	if info.ProxyEndpoint != "" {
+		// The driver owns these four values. Do not leave an overridden
+		// copy on argv before the private file supplies the effective one.
+		filtered := specEnvArgs[:0]
+		for i := 0; i < len(specEnvArgs); i += 2 {
+			name, _, _ := strings.Cut(specEnvArgs[i+1], "=")
+			if slices.Contains(proxyEnvNames, name) {
+				continue
+			}
+			filtered = append(filtered, specEnvArgs[i], specEnvArgs[i+1])
+		}
+		specEnvArgs = filtered
+		proxyEnvPath, err := proxyStartEnvFile(info.ProxyEndpoint)
+		if err != nil {
+			return nil, err
+		}
+		defer os.Remove(proxyEnvPath)
+		args = append(args, "--env-file", proxyEnvPath)
 	}
 	args = append(args, specEnvArgs...)
 	args = append(args, hostNetworkArgs(info, p.spec.Env)...)

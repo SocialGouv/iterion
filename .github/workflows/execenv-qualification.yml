@@ -1,0 +1,61 @@
+name: Native exec environment qualification
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'Dockerfile'
+      - 'sandbox/finalize/**'
+      - 'native/execenv/**'
+      - 'pkg/sandbox/execenv/**'
+      - 'pkg/sandbox/kubernetes/exec_transport*'
+      - 'cmd/iterion-execenv-guest/**'
+      - 'scripts/build-execenv-capsule.sh'
+      - '.github/workflows/execenv-qualification.yml'
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  native-images:
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            arch: amd64
+            machine: x86_64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+            machine: aarch64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Require native architecture
+        run: test "$(uname -m)" = '${{ matrix.machine }}'
+      - name: Login for read-only image pulls
+        run: echo '${{ secrets.GITHUB_TOKEN }}' | docker login ghcr.io -u '${{ github.actor }}' --password-stdin
+      - name: Build app and exercise its final non-root user
+        run: |
+          docker build --platform linux/${{ matrix.arch }} \
+            --build-arg COMMIT="${GITHUB_SHA}" --build-arg VERSION=execenv-qualification \
+            --tag iterion-execenv-qualification:app .
+          docker image inspect iterion-execenv-qualification:app --format '{{.Id}} {{.Architecture}} {{.Config.User}}'
+      - name: Qualify every finalized sandbox under its final user
+        shell: bash
+        run: |
+          set -euo pipefail
+          for variant in slim full sec browser rgaa; do
+            base="ghcr.io/socialgouv/iterion-sandbox-${variant}-base:edge"
+            docker pull --platform linux/${{ matrix.arch }} "$base"
+            # Resolve mutable base tag once and retain the actual digest in logs.
+            digest=$(docker image inspect "$base" --format '{{index .RepoDigests 0}}')
+            echo "variant=$variant base=$digest"
+            docker build --platform linux/${{ matrix.arch }} \
+              --build-arg BASE="$digest" --build-arg ITERION_IMAGE=iterion-execenv-qualification:app \
+              --tag "iterion-execenv-qualification:$variant" sandbox/finalize
+            docker image inspect "iterion-execenv-qualification:$variant" --format '{{.Id}} {{.Architecture}} {{.Config.User}}'
+            docker image rm "iterion-execenv-qualification:$variant" "$base"
+          done

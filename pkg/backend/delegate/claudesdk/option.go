@@ -126,7 +126,9 @@ type config struct {
 	// exec.CommandContext invocation with a caller-supplied builder.
 	// Used by iterion's sandbox driver to route the claude CLI
 	// through `docker exec`. See [CommandBuilder] for the contract.
-	commandBuilder CommandBuilder
+	commandBuilder              CommandBuilder
+	preserveCommandCancellation bool
+	processStarted              func(*exec.Cmd)
 
 	// logf, when non-nil, receives the SDK's internal error diagnostics
 	// (control-protocol delivery failures and the like). See [WithLogf].
@@ -397,3 +399,14 @@ func applyOptions(opts []Option) *config {
 	}
 	return c
 }
+
+// WithPreservedCommandCancellation lets an explicit builder own its Cancel hook.
+// The builder must also own its command process group. Default spawning ignores it.
+func WithPreservedCommandCancellation(preserve bool) Option {
+	return func(c *config) { c.preserveCommandCancellation = preserve }
+}
+
+// WithProcessStarted observes a successful Start, after Cmd.Process is published.
+// It runs synchronously before stream readers start; the observer must not wait
+// for subprocess output. Failed starts never invoke it.
+func WithProcessStarted(f func(*exec.Cmd)) Option { return func(c *config) { c.processStarted = f } }

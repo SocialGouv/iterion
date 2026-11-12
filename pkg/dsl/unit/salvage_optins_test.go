@@ -820,6 +820,7 @@ func TestEveryReadingAPIIsListed(t *testing.T) {
 // a conversion through unsafe.Pointer reads any value as any other — a view
 // as the unit it wraps — and no type rule holds it.
 var unsafeFiles = map[string]string{
+	"pkg/sandbox/execenv/protocol/guest_linux.go":     "the NUL pathname pointer passed synchronously to faccessat2(AT_EMPTY_PATH) to check an already-open image file with effective credentials",
 	"pkg/server/assistant_authoring_local_windows.go": "the NT rename's FILE_RENAME_INFORMATION buffer (NtSetInformationFile)",
 	"pkg/authoringlock/platform_windows.go":           "the NT object attributes' Length (unsafe.Sizeof) and the ACL entry's SID read through unsafe.Pointer",
 	"pkg/cli/tty_darwin.go":                           "the terminal's ioctl (TIOCGETA) argument",
