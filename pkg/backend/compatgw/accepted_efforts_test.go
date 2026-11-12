@@ -142,12 +142,13 @@ func TestAcceptedEffortsStepsDownFromAnInvalidRunTableEntry(t *testing.T) {
 
 // The sandbox crossing writes the merged table under the name it already
 // crosses, so an OLDER sandbox image — whose route reads only the env
-// table, exact id — maps an effort by the run table: the node's exact
-// wire spelling (upper case included) and the normalized id answer the
-// feed's list, an env entry under any spelling of a feed id is replaced
-// by the feed's list, env entries for other ids survive, and an invalid
-// env entry does not cross. A NEW image reads the crossed feed table
-// first and lands on the same answer.
+// table, exact id, through its own frozen parser (olderImageEfforts) —
+// maps an effort by the run table: the node's exact wire spelling (upper
+// case included) and the normalized id answer the feed's list, an env
+// entry under any spelling of a feed id is replaced by the feed's list,
+// env entries for other ids survive, and an invalid env entry does not
+// cross. A NEW image reads the crossed feed table first and lands on the
+// same answer.
 func TestCrossingReasoningEffortsServesAnOlderSandbox(t *testing.T) {
 	ResetCatalogCaches()
 	t.Cleanup(ResetCatalogCaches)
@@ -163,14 +164,14 @@ func TestCrossingReasoningEffortsServesAnOlderSandbox(t *testing.T) {
 	old := mapGet(map[string]string{ReasoningEffortsEnv: crossed})
 	var oldWarn warnSink
 	for _, id := range []string{wire, "scaleway/deepseek-v4.1-flash", "SCALEWAY/DEEPSEEK-V4.1-FLASH"} {
-		if got := ReasoningEfforts(id, old, oldWarn.warn); !slices.Equal(got, pliageEfforts) {
+		if got := olderImageEfforts(id, old, oldWarn.warn); !slices.Equal(got, pliageEfforts) {
 			t.Errorf("an older sandbox reads %v for %q from the crossing %s, want the feed's %v", got, id, crossed, pliageEfforts)
 		}
 	}
-	if got := ReasoningEfforts("kimi-k2", old, oldWarn.warn); !slices.Equal(got, []string{"low", "medium"}) {
+	if got := olderImageEfforts("kimi-k2", old, oldWarn.warn); !slices.Equal(got, []string{"low", "medium"}) {
 		t.Errorf("an efforts-only feed id did not cross: %v (%s)", got, crossed)
 	}
-	if got := ReasoningEfforts("other/model", old, oldWarn.warn); !slices.Equal(got, []string{"low", "max"}) {
+	if got := olderImageEfforts("other/model", old, oldWarn.warn); !slices.Equal(got, []string{"low", "max"}) {
 		t.Errorf("an env entry for another id did not survive the crossing: %v (%s)", got, crossed)
 	}
 	if strings.Contains(crossed, "broken") || len(oldWarn.lines) != 0 {
@@ -203,7 +204,7 @@ func TestCrossingReasoningEffortsStepsDownFromAnInvalidRunTableEntry(t *testing.
 	var w warnSink
 	crossed := CrossingReasoningEfforts("scaleway/deepseek-v4.1-flash", host, w.warn)
 	old := mapGet(map[string]string{ReasoningEffortsEnv: crossed})
-	if got := ReasoningEfforts("scaleway/deepseek-v4.1-flash", old, w.warn); !slices.Equal(got, []string{"low", "max"}) {
+	if got := olderImageEfforts("scaleway/deepseek-v4.1-flash", old, w.warn); !slices.Equal(got, []string{"low", "max"}) {
 		t.Errorf("an older sandbox reads %v from the crossing %s, want the env list the host steps down to", got, crossed)
 	}
 	if hostValues, _ := AcceptedEfforts("scaleway/deepseek-v4.1-flash", host, w.warn); !slices.Equal(hostValues, []string{"low", "max"}) {
