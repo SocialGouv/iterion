@@ -1,10 +1,5 @@
-<<<<<<< HEAD
-62d1fd7d3f5853ef089c28ffb583cbcfa2ebde0ab32080d9c47d1f017890f12f f07775652f9f6bee85f6d2a0b32964c8a1335c8ea649c153f11f9d6f90f16bb1 ../../.github/ci-gate-map.yaml
-82f92080205faebe0e4b6c65d584ead09f7e58984f53fc6bb13c9d33942b3bd9 7370ff7bf48f724437cb8ed6d151b9076badfbe12839ac894f4fa469beaa9870 ../../.github/workflows/_build-image.yml
-=======
 8c0ae182878f1e294dc8bbec7e965f490f60a9c7271f4eeb6ec7d0a45f4990e8 ac73af1087c929064c336906752abaddf89d94d1cdb06ab0f0025a34dfbf10bf ../../.github/ci-gate-map.yaml
-45fcd0e9b239996775151e61f3c159449df7fd824feb2558a236127d44b415f3 9fbd78b48b44e304d1b9fcf55eea3d4c79f7afaae1ff1031101383099f4b825d ../../.github/workflows/_build-image.yml
->>>>>>> 21fd20a75 (fix(ci): three rows that misread their own job, and two runners that could not refuse)
+82f92080205faebe0e4b6c65d584ead09f7e58984f53fc6bb13c9d33942b3bd9 7370ff7bf48f724437cb8ed6d151b9076badfbe12839ac894f4fa469beaa9870 ../../.github/workflows/_build-image.yml
 df788df0f2d907a0138ce9a9eda52ee54ae2de0593ef67956f3a3fae53179aa7 461db79c4e4a1d740d910616736511e2b54c01ef4d4eb176205dd046bff94641 ../../.github/workflows/_finalize.yml
 c1bb9032a47a636098f5331e9fc98849925bb99e27bb2e02750026485b5b1d45 261af2fd345ea3b4ecdacd5c1a2db27ff539900d0e40b5150196a924cbd95bb2 ../../.github/workflows/a11y-advisory.yml
 7c5af5516c6ea455beabf91519bf4fbaa0578b70fc888c5009a684a858cec494 4acd418bb8a7c4dc8921712abd136fc41ecebe8652bb479c56d9e671c5afdebd ../../.github/workflows/arc-canary.yml
