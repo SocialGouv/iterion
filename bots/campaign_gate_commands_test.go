@@ -210,8 +210,29 @@ type finalizeRun struct {
 // finalizeOn runs the REAL finalize on a committed final tree holding the plan
 // and files; `after`, when given, then shapes the working tree the way a child
 // run could leave it. Finalize must answer: a crash leaves the campaign with
-// no handoff at all.
+// no handoff at all. The run has no wall, and the loop ended it.
 func finalizeOn(t *testing.T, plan string, files map[string]string, after func(ws string, git func(...string) string)) finalizeRun {
+	t.Helper()
+	return finalizeUnder(t, campaignClock{endedBy: "programme exhausted: no eligible lot remains"}, plan, files, after)
+}
+
+// campaignClock is the run a REAL campaign node script is rendered under: the
+// campaign's effective wall and the time it has spent, in seconds — a wall of
+// 0 is a run with none — and, for finalize, why the campaign ended.
+type campaignClock struct {
+	wall, elapsed float64
+	endedBy       string
+}
+
+// render substitutes the clock's run.* members as the engine renders them in
+// a script body: JSON numbers.
+func (c campaignClock) render(script string) string {
+	script = strings.ReplaceAll(script, "{{run.max_duration_seconds}}", strconv.FormatFloat(c.wall, 'f', -1, 64))
+	return strings.ReplaceAll(script, "{{run.elapsed_seconds}}", strconv.FormatFloat(c.elapsed, 'f', -1, 64))
+}
+
+// finalizeUnder is finalizeOn under a given clock.
+func finalizeUnder(t *testing.T, clock campaignClock, plan string, files map[string]string, after func(ws string, git func(...string) string)) finalizeRun {
 	t.Helper()
 	requireModernizeTools(t)
 	script := toolScript(t, "campaign/main.bot", "finalize")
@@ -229,6 +250,8 @@ func finalizeOn(t *testing.T, plan string, files map[string]string, after func(w
 	body := strings.ReplaceAll(script, "{{vars.workspace_dir}}", strconv.Quote(ws))
 	body = strings.ReplaceAll(body, "{{vars.plan_path}}", strconv.Quote(".modernize/plan.yaml"))
 	body = strings.ReplaceAll(body, "{{input.verify_path}}", strconv.Quote("sh verify.sh"))
+	body = strings.ReplaceAll(body, "{{input.ended_by}}", strconv.Quote(clock.endedBy))
+	body = clock.render(body)
 	if i := strings.Index(body, "{{"); i >= 0 {
 		t.Fatalf("unresolved template ref in finalize near %q", body[i:min(i+40, len(body))])
 	}

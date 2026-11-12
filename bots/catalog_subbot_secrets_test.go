@@ -13,18 +13,23 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/secretsink"
 )
 
-// A subbot child runs on its parent's credentials: the cloud runner builds the
-// child under the parent's message (pkg/runner/subbot.go, `child := *msg`) and
-// the in-process path keeps the credentials already stamped on the context
-// (runview.StampLocalCredentials). Those credentials are resolved at launch
-// from the PARENT's declarations only — the publisher asks the store for the
-// names the launched workflow declares WITHOUT an inline `value:`
-// (cloudpublisher genericSecretNamesForWorkflow, through
-// ir.Secret.HasInlineValue; a local launch asks its store for the same names,
-// runview.StampLocalCredentials), and a launch override fills one of those
-// names or nothing (secrets.ResolveGenericWithBindings). So a secret the child declares
-// reaches it only when its parent declares it too, valueless; otherwise the
-// child's declaration resolves to nothing on every run of the parent.
+// On the cloud a subbot child runs on its parent's credentials: the runner
+// builds the child under the parent's message (pkg/runner/subbot.go,
+// `child := *msg`). Those credentials are resolved at launch from the
+// PARENT's declarations only — the publisher asks the store for the names the
+// launched workflow declares WITHOUT an inline `value:` (cloudpublisher
+// genericSecretNamesForWorkflow, through ir.Secret.HasInlineValue), and a
+// launch override fills one of those names or nothing
+// (secrets.ResolveGenericWithBindings). So on the cloud a secret the child
+// declares reaches it only when its parent declares it too, valueless;
+// otherwise the child's declaration resolves to nothing on every cloud run of
+// the parent. A local in-process launch is not that rule: the child's executor
+// resolves the child's own declarations from the local store
+// (runview.BuildExecutor builds it from a context no credentials are stamped
+// on, and runview.StampLocalCredentials resolves them there), while a file
+// secret is mounted into the sandbox the child shares with its parent, from
+// the parent's run. The guard below holds the cloud rule — the one a deployed
+// run meets.
 //
 // For the forge credential the parent's declaration matters twice: the runner
 // clones a repo-targeted run's repository for the ROOT run, before any node,
@@ -37,7 +42,7 @@ import (
 // now declares the secret, or that names no pair of this tree, fails as loudly
 // as an unlisted gap. Keyed "<parent file> <subbot node> <secret>".
 var subbotSecretGaps = map[string]string{
-	"campaign/main.bot run_lot deploy_credential": "a lot's gate may judge a DEPLOYED application through $DEPLOY_CREDENTIAL, and under campaign that gate finds no credential and refuses; campaign's finalize re-runs the blocked lots' gates and exports none either. Declaring it hands every campaign run the team's platform credential — a credential-surface decision for the operator, kept visible here until it is taken",
+	"campaign/main.bot run_lot deploy_credential": "a lot's gate may judge a DEPLOYED application through $DEPLOY_CREDENTIAL, and under campaign that gate finds no credential and refuses; campaign's finalize re-runs the blocked lots' gates and exports none either. Declaring it hands every campaign run the team's platform credential — a credential-surface decision for the operator, kept visible here until it is taken. Campaign's README and plan-contract.md tell the operator and the contract author",
 }
 
 // TestEverySubbotChildSecretIsDeclaredByItsParent is the class guard: for
@@ -95,7 +100,7 @@ func TestEverySubbotChildSecretIsDeclaredByItsParent(t *testing.T) {
 						t.Errorf("subbotSecretGaps[%q] has no reason — a gap nobody explained is one nobody can close", key)
 					}
 				default:
-					t.Errorf("%s: subbot %q runs %s, which declares secret %q, and the parent declares no secret of that name — the launch resolves only the parent's declarations and the child runs on them, so the child's %q is empty on every run. Declare it in the parent, in the child's shape, or name the gap in subbotSecretGaps with its reason",
+					t.Errorf("%s: subbot %q runs %s, which declares secret %q, and the parent declares no secret of that name — a cloud launch resolves only the parent's declarations and the child runs on them, so the child's %q is empty on every cloud run. Declare it in the parent, in the child's shape, or name the gap in subbotSecretGaps with its reason",
 						path, id, src, name, name)
 				}
 			}

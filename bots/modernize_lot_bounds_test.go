@@ -3,8 +3,10 @@ package bots
 import (
 	"fmt"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -22,13 +24,14 @@ import (
 // budget, the room campaign keeps before it starts one, and the routes its
 // one agent may take when the provider it starts on hits its wall.
 
-// measuredGateCommands and measuredGateTimeout are the contract a lot was
-// measured on: three gate commands, each walled at gate_timeout_s 14400 by the
-// contract, and lot_verify killed by a 4h workflow wall before the third one
-// returned a verdict.
+// The lot the wall was measured on: three gate commands, each walled at
+// gate_timeout_s 14400 by the contract, and lot_verify killed by a 4h workflow
+// wall (measuredCutWall) while the third one ran — so the agent's pass and the
+// first two commands had returned inside those 4h.
 const (
 	measuredGateCommands = 3
 	measuredGateTimeout  = 14400 * time.Second
+	measuredCutWall      = 4 * time.Hour
 )
 
 // lotPassCostShare is the spend the cap funds for each agent pass of a lot.
@@ -75,20 +78,28 @@ func intVarDefault(t *testing.T, bot string, wf *ir.Workflow, name string) int64
 	return n
 }
 
-// TestModernizeLotWallHoldsTheMeasuredGateCommands holds the child's wall at
-// or above the measured contract's gate commands run end to end, each to its
-// gate_timeout_s: under campaign a subbot budgets itself from its own .bot —
-// no launch override and no parent budget reaches it — and a lot_verify the
-// wall cuts leaves the lot with no verdict at all.
+// TestModernizeLotWallHoldsTheMeasuredLot holds the child's wall to the lot it
+// was raised for, and to what its budget comment, its 0.7.1 note and
+// plan-contract.md say of it. Under campaign a subbot budgets itself from its
+// own .bot — no launch override and no parent budget reaches it — and
+// lot_verify must end before runtime.BudgetHardThreshold of the wall for its
+// verdict to land: past it no tool or agent node starts, so neither mark_done,
+// which writes `done`, nor a repair pass does; and a lot_verify the wall cuts
+// leaves no verdict at all.
 //
-// What this arithmetic does not hold, and no literal can: the agent pass that
-// precedes lot_verify inside the same wall, a `suites:` command beyond the
-// measured three, a repair pass, which replays the agent and the whole gate,
-// and a reanchor or extend child, after which lot_verify runs the whole gate
-// again. gate_timeout_s reaches 86400 s per command, so the contract sizes
-// its gate to the wall (plan-contract.md, `gate_timeout_s`). What the wall
-// asks of campaign, which starts the lot, is TestCampaignStartsALotOnlyWhereOneCanFinish's.
-func TestModernizeLotWallHoldsTheMeasuredGateCommands(t *testing.T) {
+// The measured lot ends its gate commands by measuredCutWall plus one
+// gate_timeout_s: everything before its third command returned inside the
+// wall that cut that command, and the third has its own wall. The wall holds
+// that, with room left for the suites and the oracle. It does not hold three
+// commands each run to its gate_timeout_s — those alone reach the threshold,
+// before the agent's pass is counted — and the documents say so: a wall that
+// does hold them makes that sentence false, and fails here until it is
+// rewritten. A repair pass, a reanchor or extend child and the gate replayed
+// after it hold under no literal (gate_timeout_s reaches 86400 s per
+// command): the contract sizes its gate to the wall (plan-contract.md). What
+// the wall asks of campaign, which starts the lot, is
+// TestCampaignStartsALotOnlyWhereOneCanFinish's.
+func TestModernizeLotWallHoldsTheMeasuredLot(t *testing.T) {
 	t.Parallel()
 	modernize := compileBot(t, "modernize")
 	if modernize == nil {
@@ -96,9 +107,14 @@ func TestModernizeLotWallHoldsTheMeasuredGateCommands(t *testing.T) {
 	}
 
 	lot := literalWall(t, "modernize", modernize.Budget)
-	if need := measuredGateCommands * measuredGateTimeout; lot < need {
-		t.Errorf("modernize's wall is %s: a contract of %d gate commands walled at %s each needs up to %s for those commands alone, and under campaign no launch override or parent budget reaches the child's wall",
-			lot, measuredGateCommands, measuredGateTimeout, need)
+	limit := time.Duration(runtime.BudgetHardThreshold * float64(lot))
+	if ends := measuredCutWall + measuredGateTimeout; ends >= limit {
+		t.Errorf("modernize's wall is %s: the measured lot's gate commands end by %s (all before the third inside the %s wall that cut it, then the third's %s), at or past %s (%.0f%% of the wall), from where neither mark_done nor a repair pass starts — the lot this wall was raised for lands no verdict",
+			lot, ends, measuredCutWall, measuredGateTimeout, limit, runtime.BudgetHardThreshold*100)
+	}
+	if walled := measuredGateCommands * measuredGateTimeout; walled < limit {
+		t.Errorf("modernize's wall is %s: %d gate commands run to their %s walls (%s) now end before %s (%.0f%% of it), where the budget comment, the 0.7.1 manifest note and plan-contract.md say this wall does not hold them — rewrite those figures, then this bound",
+			lot, measuredGateCommands, measuredGateTimeout, walled, limit, runtime.BudgetHardThreshold*100)
 	}
 }
 
@@ -146,17 +162,89 @@ func longestLot(t *testing.T) time.Duration {
 // nothing interrupts it once started: no budget check precedes a subbot node
 // and none runs inside it. So a lot started late ends where campaign can no
 // longer judge it — past runtime.BudgetHardThreshold of the wall the engine
-// starts no campaign node, so observe is refused and no handoff is written —
+// starts no tool node, so observe is refused and no handoff is written —
 // and on Kubernetes the sandbox pod, whose deadline is the wall plus 30 min,
 // is killed under it.
 //
 // Every edge into the lot comes from one compute gate, on one bool field of
 // it; that field's expression, evaluated as the engine evaluates it, admits a
-// start only where the longest lot still ends before the threshold — for
-// campaign's own wall and for the shorter ones a launch may set — admits the
-// first lot under campaign's wall, and never refuses a run with no wall.
+// start only where the longest lot, then observe and the steward's reserve,
+// still end before the threshold — for campaign's own wall and for the
+// shorter ones a launch may set — admits the first lot under campaign's wall,
+// and never refuses a run with no wall. What the steward's acts and
+// finalize's commands take is theirs to fit: a steward act that would end
+// inside the reserve is deferred (TestCampaignStewardDefersAnActTheWallCannotHold),
+// and finalize writes its handoff before the wall, cutting what would not
+// (TestCampaignFinalizeWritesItsHandoffBeforeTheWall).
 func TestCampaignStartsALotOnlyWhereOneCanFinish(t *testing.T) {
 	t.Parallel()
+	g := campaignLotGate(t)
+	admits := func(elapsed, wall time.Duration) bool {
+		t.Helper()
+		v := g.eval(t, g.field, elapsed, wall, 0)
+		ok, isBool := v.(bool)
+		if !isBool {
+			t.Fatalf("%s.%s is %v (%T), not a bool", g.id, g.field, v, v)
+		}
+		return ok
+	}
+
+	lot := longestLot(t)
+	afterLot := observeWalls + stewardReserve(t)
+	declared := literalWall(t, "campaign", g.campaign.Budget)
+	if !admits(0, declared) {
+		t.Errorf("%s refuses the first lot under campaign's own %s wall — the campaign hands off having run nothing", g.id, declared)
+	}
+	if !admits(1000*time.Hour, 0) {
+		t.Errorf("%s refuses a lot on a run with no wall (max_duration 0, unbounded) — no pod deadline and no budget threshold stand in its way", g.id)
+	}
+	for _, wall := range []time.Duration{declared, 30 * time.Hour, 20 * time.Hour, lot} {
+		limit := time.Duration(runtime.BudgetHardThreshold * float64(wall))
+		for elapsed := time.Duration(0); elapsed <= wall; elapsed += 30 * time.Second {
+			if !admits(elapsed, wall) {
+				continue
+			}
+			if end := elapsed + lot; end+afterLot >= limit {
+				t.Errorf("under a %s wall, %s starts a lot at %s: one that runs %s (modernize's wall and the exit grace, then one child) ends at %s, and observe (%s) and the steward's reserve (%s) take the campaign to %s, at or past %s (%.0f%% of the wall), from where campaign starts no tool node — finalize is refused, no handoff is written, and the sandbox pod dies at the wall plus 30 min",
+					wall, g.id, elapsed, lot, end, observeWalls, afterLot-observeWalls, end+afterLot, limit, runtime.BudgetHardThreshold*100)
+				break
+			}
+		}
+	}
+}
+
+// observeWalls bounds campaign's observe node, the first after a lot: four
+// commands (two git reads, two yq parses), each under a 60 s wall.
+const observeWalls = 4 * 60 * time.Second
+
+// stewardReserve reads RESERVE_S off campaign's steward script: the time the
+// steward keeps, after its last act, for its own journal commit and for
+// loop_gate, lot_room and finalize to start — before 90% of the wall, past
+// which none of them does. lot_room's room keeps it after every lot.
+func stewardReserve(t *testing.T) time.Duration {
+	t.Helper()
+	m := regexp.MustCompile(`(?m)^\s*RESERVE_S = (\d+)\s*$`).FindStringSubmatch(toolScript(t, "campaign/main.bot", "steward"))
+	if m == nil {
+		t.Fatal("campaign's steward declares no `RESERVE_S = <seconds>` — the time it keeps for the handoff to start is gone, and nothing bounds what follows a lot")
+	}
+	n, err := strconv.Atoi(m[1])
+	if err != nil {
+		t.Fatalf("steward RESERVE_S %q: %v", m[1], err)
+	}
+	return time.Duration(n) * time.Second
+}
+
+// lotGate is the compute gate every modernize lot of campaign starts through.
+type lotGate struct {
+	campaign  *ir.Workflow
+	id, field string
+	node      *ir.ComputeNode
+}
+
+// campaignLotGate finds the gate: every edge into the modernize subbot comes
+// from one compute node, on one bool field of it.
+func campaignLotGate(t *testing.T) lotGate {
+	t.Helper()
 	campaign := compileBot(t, "campaign")
 	if campaign == nil {
 		t.Fatal("campaign did not compile")
@@ -188,70 +276,161 @@ func TestCampaignStartsALotOnlyWhereOneCanFinish(t *testing.T) {
 	if !ok {
 		t.Fatalf("lots start from %q (%T), not from a compute gate this test can evaluate", gateID, campaign.Nodes[gateID])
 	}
-	var room *expr.AST
-	for _, ce := range gate.Exprs {
+	return lotGate{campaign: campaign, id: gateID, field: field, node: gate}
+}
+
+// eval evaluates one field of the gate as the engine does, at elapsed of a
+// wall (0: no wall), after `crossings` crossings of the campaign's loop, with
+// campaign's var defaults.
+func (g lotGate) eval(t *testing.T, field string, elapsed, wall time.Duration, crossings int64) any {
+	t.Helper()
+	var ast *expr.AST
+	for _, ce := range g.node.Exprs {
 		if ce.Key == field {
-			room = ce.AST
+			ast = ce.AST
 		}
 	}
-	if room == nil {
-		t.Fatalf("gate %s computes no %q", gateID, field)
+	if ast == nil {
+		t.Fatalf("gate %s computes no %q", g.id, field)
 	}
-	admits := func(elapsed, wall time.Duration) bool {
-		t.Helper()
-		ok, err := room.EvalBool(&expr.Context{
-			Run: func(path []string) any {
-				switch strings.Join(path, ".") {
-				case "elapsed_seconds":
-					return elapsed.Seconds()
-				case "max_duration_seconds":
-					return wall.Seconds()
-				}
+	v, err := ast.Eval(&expr.Context{
+		Run: func(path []string) any {
+			switch strings.Join(path, ".") {
+			case "elapsed_seconds":
+				return elapsed.Seconds()
+			case "max_duration_seconds":
+				return wall.Seconds()
+			}
+			return nil
+		},
+		Vars: func(path []string) any {
+			if len(path) != 1 {
 				return nil
-			},
-			Vars: func(path []string) any {
-				if len(path) != 1 {
-					return nil
-				}
-				return intVarDefault(t, "campaign", campaign, path[0])
-			},
-		})
-		if err != nil {
-			t.Fatalf("evaluating %s.%s at %s of %s: %v", gateID, field, elapsed, wall, err)
+			}
+			return intVarDefault(t, "campaign", g.campaign, path[0])
+		},
+		Loop: func(path []string) any {
+			if len(path) == 2 && path[1] == "iteration" {
+				return crossings
+			}
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("evaluating %s.%s at %s of %s: %v", g.id, field, elapsed, wall, err)
+	}
+	return v
+}
+
+// TestCampaignSaysWhyItStartsNoLot holds what the campaign tells an operator
+// whose wall leaves no room for a lot — a short --max-duration, a deployment
+// ceiling under campaign's 48h. The gate's `reason` agrees with its verdict
+// at every point the start test probes, and a refusal names whether any lot
+// ran, the figures it was judged on and the two levers; the refusal's edge
+// carries it to finalize as `ended_by`, and every edge into finalize says why
+// the campaign ended — the handoff and its notice open on it
+// (TestCampaignFinalizeSaysWhyTheCampaignEnded): a run with no room for its
+// first lot hands off a programme of zero lots, and says why.
+func TestCampaignSaysWhyItStartsNoLot(t *testing.T) {
+	t.Parallel()
+	g := campaignLotGate(t)
+	room := intVarDefault(t, "campaign", g.campaign, "lot_room_s")
+	reason := func(elapsed, wall time.Duration, crossings int64) string {
+		t.Helper()
+		v := g.eval(t, "reason", elapsed, wall, crossings)
+		s, ok := v.(string)
+		if !ok {
+			t.Fatalf("%s.reason is %v (%T), not a string", g.id, v, v)
 		}
-		return ok
+		return s
+	}
+	for _, wall := range []time.Duration{0, 48 * time.Hour, 20 * time.Hour, 30 * time.Minute} {
+		for elapsed := time.Duration(0); elapsed <= max(wall, time.Hour); elapsed += 10 * time.Minute {
+			admitted, _ := g.eval(t, g.field, elapsed, wall, 1).(bool)
+			if got := reason(elapsed, wall, 1); (got == "room for a lot") != admitted {
+				t.Errorf("at %s of a %s wall, %s.%s is %t and its reason reads %q — the reason restates the verdict, and the two disagree", elapsed, wall, g.id, g.field, admitted, got)
+			}
+		}
 	}
 
-	lot := longestLot(t)
-	declared := literalWall(t, "campaign", campaign.Budget)
-	if !admits(0, declared) {
-		t.Errorf("%s refuses the first lot under campaign's own %s wall — the campaign hands off having run nothing", gateID, declared)
+	first := reason(0, 30*time.Minute, 0)
+	for _, want := range []string{"NO LOT STARTED", fmt.Sprintf("lot_room_s (%d s", room), "(1620 s of 1800 s)", "--var lot_room_s=<seconds>", "--max-duration"} {
+		if !strings.Contains(first, want) {
+			t.Errorf("under a 30m wall the first lot is refused with %q, which does not say %q — the operator gets a handoff of zero lots and no cause", first, want)
+		}
 	}
-	if !admits(1000*time.Hour, 0) {
-		t.Errorf("%s refuses a lot on a run with no wall (max_duration 0, unbounded) — no pod deadline and no budget threshold stand in its way", gateID)
+	if later := reason(40*time.Hour, 48*time.Hour, 3); !strings.Contains(later, "no lot after the 3 this campaign ran") {
+		t.Errorf("a refusal after three lots reads %q — it must not claim no lot started", later)
 	}
-	for _, wall := range []time.Duration{declared, 30 * time.Hour, 20 * time.Hour, lot} {
-		limit := time.Duration(runtime.BudgetHardThreshold * float64(wall))
-		for elapsed := time.Duration(0); elapsed <= wall; elapsed += 30 * time.Second {
-			if !admits(elapsed, wall) {
-				continue
-			}
-			if end := elapsed + lot; end >= limit {
-				t.Errorf("under a %s wall, %s starts a lot at %s: one that runs %s (modernize's wall and the exit grace, then one child) ends at %s, at or past %s (%.0f%% of the wall), from where campaign starts no node — observe is refused, no handoff is written, and the sandbox pod dies at the wall plus 30 min",
-					wall, gateID, elapsed, lot, end, limit, runtime.BudgetHardThreshold*100)
-				break
+
+	refusals, intoFinalize := 0, 0
+	for _, e := range g.campaign.Edges {
+		if e.To != "finalize" {
+			continue
+		}
+		intoFinalize++
+		var ended *ir.DataMapping
+		for _, m := range e.With {
+			if m.Key == "ended_by" {
+				ended = m
 			}
 		}
+		if ended == nil || strings.TrimSpace(ended.Raw) == "" {
+			t.Errorf("edge %s -> finalize maps no ended_by — the handoff of a campaign ending there does not say why", e.From)
+			continue
+		}
+		if e.From == g.id && e.Condition == g.field && e.Negated {
+			refusals++
+			if want := "{{outputs." + g.id + ".reason}}"; ended.Raw != want {
+				t.Errorf("the refused-lot edge %s -> finalize maps ended_by %q, want %q — the figures and the levers stay in the gate's output", e.From, ended.Raw, want)
+			}
+		}
+	}
+	if refusals != 1 || intoFinalize < 4 {
+		t.Fatalf("found %d refused-lot edge(s) from %s and %d edge(s) into finalize — want 1 and at least 4: the walk no longer sees the campaign's exits", refusals, g.id, intoFinalize)
 	}
 }
 
+// forwardedMaxPasses is the max_passes campaign's modernize subbot hands its
+// child, read off the node's `with:` mapping: a literal, or one campaign var
+// at its default (lot_max_passes). Any other shape is one this bound cannot
+// price.
+func forwardedMaxPasses(t *testing.T, campaign *ir.Workflow) int64 {
+	t.Helper()
+	var lot *ir.SubbotNode
+	for _, n := range campaign.Nodes {
+		if sb, ok := n.(*ir.SubbotNode); ok && filepath.Base(filepath.Dir(sb.Source)) == "modernize" {
+			lot = sb
+		}
+	}
+	if lot == nil {
+		t.Fatal("campaign runs no modernize subbot — the passes it forwards have no node to be read from")
+	}
+	for _, m := range lot.With {
+		if m.Key != "max_passes" {
+			continue
+		}
+		raw := strings.TrimSpace(m.Raw)
+		if v := regexp.MustCompile(`^\{\{\s*vars\.([A-Za-z_][A-Za-z0-9_]*)\s*\}\}$`).FindStringSubmatch(raw); v != nil {
+			return intVarDefault(t, "campaign", campaign, v[1])
+		}
+		n, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil {
+			t.Fatalf("campaign's %s forwards max_passes %q, neither a literal nor one var — the passes a lot is given cannot be priced", lot.ID, m.Raw)
+		}
+		return n
+	}
+	t.Fatalf("campaign's %s forwards no max_passes — its lots take modernize's own default, which this bound must then read instead", lot.ID)
+	return 0
+}
+
 // TestModernizeLotCostCapFundsTheForwardedPasses holds the child's spend cap
-// to the agent passes campaign asks for (lot_max_passes, forwarded as
-// modernize's max_passes): the first pass and one repair pass per red gate the
-// loop permits, each costing lotPassCostShare, all funded under the loop
-// guard's threshold — and under campaign no launch override raises the
-// child's cap. A direct launch reads modernize's own max_passes, held the same
-// way.
+// to the agent passes campaign asks for (read off run_lot's `with:` mapping:
+// lot_max_passes, forwarded as modernize's max_passes): the first pass and
+// one repair pass per red gate the loop permits, each costing
+// lotPassCostShare, all funded under the loop guard's threshold — and under
+// campaign no launch override raises the child's cap. A direct launch reads
+// modernize's own max_passes, held the same way.
 func TestModernizeLotCostCapFundsTheForwardedPasses(t *testing.T) {
 	t.Parallel()
 	modernize := compileBot(t, "modernize")
@@ -267,7 +446,7 @@ func TestModernizeLotCostCapFundsTheForwardedPasses(t *testing.T) {
 		who   string
 		count int64
 	}{
-		{"campaign's lot_max_passes", intVarDefault(t, "campaign", campaign, "lot_max_passes")},
+		{"campaign's run_lot", forwardedMaxPasses(t, campaign)},
 		{"modernize's max_passes", intVarDefault(t, "modernize", modernize, "max_passes")},
 	} {
 		agentPasses := 1 + passes.count

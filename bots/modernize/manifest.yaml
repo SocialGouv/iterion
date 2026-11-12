@@ -5,21 +5,29 @@ version: 0.7.1
 ## 0.7.1 — a lot's wall is 12h and its spend cap 150 $ (they were 4h and
 ## 60 $). Under campaign this bot runs as a subbot, which budgets itself from
 ## its own .bot — no launch override reaches it — and each gate command gets
-## the contract's gate_timeout_s: a contract of three 14400 s commands
-## outlived the 4h wall, and lot_verify was killed with no verdict. 12h holds
-## those three commands; the agent's pass, more suites, a repair pass or a
-## reanchor/extend replay on top of them do not fit, and plan-contract.md now
-## says to size the gate to the wall. The cap funds the agent's passes, since
-## the gate spends no tokens: the five that campaign's lot_max_passes permits,
-## at up to 26 $ each — the loop guard declines a repair at 90% of the cap.
-## upgrade_campaign declares its whole native surface, spelled as claw
-## built-ins: the claude_code spawn keeps exactly the tools it kept, and a
-## launch route may now cross to claw on it — an operator's `--fallback` and a
-## routing-policy ladder stage both refused that crossing on the undeclared
-## list, which means every tool on claude_code and none on claw. On claw,
-## web_search resolves only where the deployment enables web search
-## (ITERION_WEB_SEARCH=on, or a search backend); elsewhere the claw route fails
-## at this node, naming the tool.
+## the contract's gate_timeout_s: a contract of three gate commands walled at
+## 14400 s each was cut by the 4h wall during its third, and lot_verify was
+## killed with no verdict. 12h holds that lot as measured: the agent's pass
+## and the first two commands returned inside the 4h, the third has its own
+## 14400 s, so the commands end by 8h — under 10.8h, 90% of the wall, past
+## which neither mark_done nor a repair pass starts. It does not hold three
+## commands each run to their 14400 s wall, which alone fill the 12h; nor a
+## repair pass or a reanchor/extend replay on top of the gate, and
+## plan-contract.md now says to size the gate to the wall. On a direct
+## Kubernetes launch the sandbox pod's deadline (the wall plus 30 min, 12.5h)
+## falls short of the ceiling the 10% exit grace lets a node reach (13.2h): a
+## node the grace admits past 12.5h dies with the pod. The cap funds the
+## agent's passes, since the gate spends no tokens: the five that campaign's
+## lot_max_passes permits, at up to 26 $ each — the loop guard declines a
+## repair at 90% of the cap. upgrade_campaign declares its whole native
+## surface, spelled as claw built-ins: the claude_code spawn keeps exactly the
+## tools it kept, and a launch route may now cross to claw on it — an
+## operator's `--fallback` and a routing-policy ladder stage both refused that
+## crossing on the undeclared list, which means every tool on claude_code and
+## none on claw. On claw, web_search resolves only where the deployment
+## enables web search (ITERION_WEB_SEARCH=on, or a search backend), which the
+## shipped chart does not: on a default deployment the claw route fails at
+## this node, naming the tool, until the runner is given one.
 ## 0.7.0 — the repository's own test suites are declared once, at the top of
 ## the contract (`suites:`), and run at every lot's gate
 ## once its exit_gate passed, under the same wall: `suites_passed` joins

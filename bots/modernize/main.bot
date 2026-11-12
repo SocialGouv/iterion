@@ -377,11 +377,12 @@ agent upgrade_campaign:
   ## claw each resolves to the built-in of the same capability. A name
   ## dropped here removes its tool on both backends. web_search registers on
   ## claw only where the deployment enables web search (ITERION_WEB_SEARCH=on,
-  ## or a search backend: SEARXNG_URL, SEARXNG_ENDPOINT, BRAVE_API_KEY).
-  ## Elsewhere the claw route fails at this node's tool resolution, naming
-  ## the tool, though the launch screens admit the stage: they read this
-  ## list, not the registry of the runner that builds the node. Dropping
-  ## web_search instead would withhold WebSearch on claude_code.
+  ## or a search backend: SEARXNG_URL, SEARXNG_ENDPOINT, BRAVE_API_KEY), and
+  ## the shipped chart sets none of them: on a default deployment the claw
+  ## route fails at this node's tool resolution, naming the tool, though the
+  ## launch screens admit the stage — they read this list, not the registry of
+  ## the runner that builds the node. Dropping web_search instead would
+  ## withhold WebSearch on claude_code.
   tools: [bash, read_file, glob, grep, write_file, file_edit, notebook_edit, agent, web_fetch, web_search, tool_search, todo_write, skill]
   skills: ["modernize-lots", "plan-contract"]
   reasoning_effort: "${ITERION_MODERNIZE_EFFORT:-high}"
@@ -3230,15 +3231,30 @@ workflow modernize:
   ## run_lot subbot: a subbot budgets itself from its own .bot, so neither the
   ## parent's budget nor a launch override reaches it. lot_verify runs every
   ## exit_gate command, the suites and the oracle, each under the contract's
-  ## gate_timeout_s, and a lot_verify the wall kills leaves no verdict. 12h
-  ## holds a contract measured at three commands of 14400 s, each run to its
-  ## wall. It does not also hold the agent's pass before them, more suites, a
-  ## repair pass that replays both, or a reanchor or extend child (up to 1h)
+  ## gate_timeout_s, after the agent's pass, and must end before 90% of the
+  ## wall (10.8h) for its verdict to land: past it no tool or agent node
+  ## starts, so neither mark_done, which writes `done`, nor a repair pass
+  ## does; a lot_verify the wall kills leaves no verdict at all. 12h holds
+  ## the lot it was raised for: a contract of three gate commands walled at
+  ## 14400 s each, cut by the 4h wall during its third — the agent's pass and
+  ## the first two returned inside those 4h, the third has its own 14400 s, so
+  ## the commands end by 8h, and 2.8h remain for the suites and the oracle.
+  ## It does not hold three commands each run to their 14400 s wall: those
+  ## alone fill the 12h, after an agent's pass. Nor a repair pass that
+  ## replays the agent and the gate, or a reanchor or extend child (up to 1h)
   ## after which lot_verify runs the whole gate again: no literal holds every
   ## contract, since gate_timeout_s reaches 86400 s per command, so the
-  ## contract sizes its gate to this wall (plan-contract.md, `gate_timeout_s`).
-  ## Campaign starts a lot only where this wall, its exit grace and one such
-  ## child still end before 90% of its own (campaign's lot_room).
+  ## contract sizes its gate to this wall (plan-contract.md,
+  ## `gate_timeout_s`). Campaign starts a lot only where this wall, its exit
+  ## grace and one such child still end before 90% of its own (campaign's
+  ## lot_room).
+  ##
+  ## On a direct launch on Kubernetes the sandbox pod's deadline is this wall
+  ## plus 30 min (12.5h), short of the ceiling the 10% exit grace lets a node
+  ## reach (13.2h): a node the grace admits past 12.5h — lot_verify after a
+  ## reanchor or extend child that ended past the wall — dies with the pod.
+  ## Under campaign the pod is campaign's, its deadline campaign's wall plus
+  ## 30 min.
   ##
   ## The cost cap bounds the lot's model spend, which is upgrade_campaign's
   ## alone: the gate's commands spend no tokens, and reanchor and extend are

@@ -69,11 +69,18 @@ vars:
   lot_max_passes: int = 4
   ## The campaign time one lot may take, in seconds: lot_room starts a lot
   ## only while the elapsed time plus this room stays under 90% of the
-  ## campaign's wall. 54000 s = 15h: modernize's 12h wall and the 10% exit
-  ## grace past it (13.2h), one golden-master child its last gate routes to
-  ## (1h wall, 1.1h), and 0.7h for observe and steward to read the lot. A
-  ## steward's re-record runs under the contract's gate_timeout_s, outside
-  ## this room. Lower it for a contract whose lots are known to be short.
+  ## campaign's wall, past which the engine starts no tool node, the
+  ## handoff's (finalize) included. 54000 s = 15h: modernize's 12h wall and
+  ## the 10% exit grace past it (13.2h), one golden-master child its last
+  ## gate routes to (1h wall, 1.1h), then 0.7h for the campaign to reach its
+  ## handoff: observe (four commands under 60 s walls) and the steward's
+  ## reserve (RESERVE_S, 30 min: its journal commit, then loop_gate, lot_room
+  ## and finalize starting). A steward act that would end inside that reserve
+  ## is deferred, and finalize cuts what the campaign's wall would and writes
+  ## the handoff either way. A wall with no room for one lot starts none, and the
+  ## handoff says so with these figures: a validation run under a short
+  ## --max-duration passes --var lot_room_s=<seconds> sized to its lot.
+  ## Lower it for a contract whose lots are known to be short.
   lot_room_s: int = 54000
 
 secrets:
@@ -167,9 +174,13 @@ schema loop_state:
 
 schema room_state:
   room: bool
+  reason: string
 
+## `ended_by` is why the campaign ended, as the edge that reached finalize
+## knows it: the handoff and its notice lead with it.
 schema finalize_input:
   verify_path: string
+  ended_by: string
 
 schema finalize_state:
   handoff_path: string
@@ -518,13 +529,15 @@ tool observe:
 ## diff equals the announced set EXACTLY. Then the full counter-test replays
 ## on the committed tree, and a red there reverts the act. Everything else
 ## becomes an escalation item, written and committed before anyone is asked
-## anything.
+## anything. An act the campaign's wall would not let end before the handoff
+## must start is deferred, never started: the request stays pending.
 tool steward:
   script: |
     import datetime
     import json
     import os
     import subprocess
+    import time
 
     # bool and json input fields render as JSON literals (true/false/null),
     # so the three JSON atoms need their Python names before interpolation.
@@ -550,6 +563,21 @@ tool steward:
     out = {"acts": 0, "escalations": [], "pause_required": False, "notice": ""}
     items = []
     now = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+
+    # The campaign's wall, as the engine holds the campaign to it: past 90% of
+    # it no tool node starts, finalize's included, and a campaign that reaches
+    # it here ends with no handoff. An act — the record, then the counter-test,
+    # each up to the lot's wall — starts only where it ends, at those walls,
+    # RESERVE_S before that point: the act's own git work, this node's journal
+    # commit, and loop_gate, lot_room and finalize starting. One that does not
+    # fit is deferred: named in the escalation log, left pending in the
+    # ledger for the next campaign, never refused. A run with no wall (0)
+    # defers nothing. lot_room_s keeps this reserve after every lot.
+    RESERVE_S = 1800
+    run_wall = float({{run.max_duration_seconds}} or 0)
+    handoff_by = None
+    if run_wall > 0:
+        handoff_by = time.monotonic() + run_wall * 0.9 - float({{run.elapsed_seconds}} or 0) - RESERVE_S
 
     def git(*args, timeout=120):
         return subprocess.run(["git", "-C", ws] + list(args),
@@ -773,6 +801,20 @@ tool steward:
                               "request_id": rid, "lot": req.get("lot"),
                               "detail": wall_defect})
                 continue
+            if handoff_by is not None and time.monotonic() + 2 * wall > handoff_by:
+                # `request`, not `request_id`: observe reads a logged
+                # request_id as a refusal and never acts on it again.
+                items.append({"ts": now, "type": "deferred_by_wall",
+                              "request": rid, "lot": req.get("lot"),
+                              "note": "the record and its counter-test take up to %ds (twice "
+                                      "the lot's wall of %ds), and %ds remain before the "
+                                      "campaign's handoff must start (90%% of its wall of %ds, "
+                                      "less %ds for this node and the handoff to start), past "
+                                      "which no tool node starts — the request stays pending for "
+                                      "the next campaign"
+                                      % (2 * wall, wall, max(0, int(handoff_by - time.monotonic())),
+                                         int(run_wall), RESERVE_S)})
+                continue
             code, log, _ = sh("%s --record" % verify_rel, wall)
             observed = changed_paths()
             if code != 0:
@@ -848,7 +890,9 @@ tool steward:
 
     # ── Pause policy — configuration applied to facts, in readable code ──
     needs_approval = any(i.get("disposition") == "pending_approval" for i in items)
-    other_items = [i for i in items if i.get("type") != "contract_extension"]
+    # A deferral asks the operator nothing: the request waits for the next
+    # campaign, and the handoff lists it.
+    other_items = [i for i in items if i.get("type") not in ("contract_extension", "deferred_by_wall")]
     out["pause_required"] = bool(
         needs_approval or (escalation == "interactive" and other_items))
     out["escalations"] = items
@@ -895,17 +939,21 @@ tool record_answer:
 ## lots (each DISTINCT gate command played once on the final tree, the
 ## verdict projected per lot — a lot blocked mid-programme often blocks on
 ## a cause the finished tree has closed); handoff written and committed,
-## extensions first.
+## why the campaign ended under its title, extensions first. The handoff
+## is written before the campaign's wall: a command the wall would outlive is
+## cut, and named as cut, not as a verdict.
 tool finalize:
   script: |
     import datetime
     import json
     import os
     import subprocess
+    import time
 
     ws = {{vars.workspace_dir}}
     plan_rel = {{vars.plan_path}}
     verify_rel = {{input.verify_path}}
+    ended_by = {{input.ended_by}}
     campaign_rel = os.path.join(".modernize", "campaign")
     campaign_dir = os.path.join(ws, campaign_rel)
     handoff_rel = os.path.join(campaign_rel, "handoff.md")
@@ -948,6 +996,44 @@ tool finalize:
         if code is None:
             tail = "timed out after %ds; last output:\n%s" % (timeout, tail)
         return code, tail, seconds
+
+    # The campaign's wall, as the engine holds this node to it: started under
+    # the wall, the node is killed at the wall; started past it, inside the
+    # exit grace, the run has no time of its own left. Every command below
+    # runs under its own wall or under what the campaign's wall leaves before
+    # the handoff must be written, whichever is shorter, so the handoff is
+    # written whatever the commands take — and a command the campaign's wall
+    # stopped is reported as that, never as a verdict on the tree. WRITE_S is
+    # the handoff's own time after the last command: the tree measured again
+    # (git status and ls-files, 420 s at their walls), HEAD read, the handoff
+    # written and committed (three git calls under 120 s walls). A run with no
+    # wall (0) stops nothing.
+    WRITE_S = 900
+    run_wall = float({{run.max_duration_seconds}} or 0)
+    write_by = None
+    if run_wall > 0:
+        write_by = time.monotonic() + max(0.0, run_wall - float({{run.elapsed_seconds}} or 0)) - WRITE_S
+
+    def run_cmd(cmd, wall):
+        """One command's run, under its own wall or what the campaign's wall
+        leaves, whichever is shorter: {rc, seconds, tail, wall, cut, started}.
+        `cut` is set when the campaign's wall stopped it — rc None then reads
+        as that, not as the command outliving its own wall — and `started`
+        is False when no time was left to start it at all."""
+        room = wall if write_by is None else min(wall, int(write_by - time.monotonic()))
+        if room <= 0:
+            return {"rc": None, "seconds": 0.0, "wall": wall, "cut": True, "started": False,
+                    "tail": "not started: the campaign's wall left no time for it"}
+        code, tail, seconds = sh(cmd, room)
+        return {"rc": code, "seconds": seconds, "wall": wall, "tail": tail,
+                "cut": code is None and room < wall, "started": True}
+
+    def cut_note(run):
+        """What the campaign's wall did to a run it stopped."""
+        if not run.get("started", True):
+            return "the campaign's wall left no time to start it"
+        return ("the campaign's wall cut it after %.0fs, under its own wall of %ds"
+                % (run["seconds"], run["wall"]))
 
     # History and the tree are read as committed and as on disk — by this
     # node's reads and by the commands it runs alike: a replace ref and the
@@ -1188,12 +1274,13 @@ tool finalize:
             for g in gates:
                 commands[g] = max(commands.get(g, 0), wall)
         for c, wall in commands.items():
-            code, log, seconds = sh(c, wall)
-            requal["commands"][c] = {"rc": code, "seconds": seconds, "wall": wall,
-                                     "tail": log[-400:]}
+            r = run_cmd(c, wall)
+            requal["commands"][c] = {"rc": r["rc"], "seconds": r["seconds"], "wall": wall,
+                                     "tail": r["tail"][-400:], "cut": r["cut"],
+                                     "started": r["started"]}
     left_by_gates = unlanded() if commands else []
 
-    suites_red = None
+    suites_red, suites_cut = None, None
     # Set when the suites ran green: what they left, and whether HEAD still
     # names the tree the handoff judges.
     left_by_suites, head_moved = [], False
@@ -1210,10 +1297,14 @@ tool finalize:
                           % "; ".join(left_by_gates[:10]))
     else:
         for c in suites:
-            code, log, seconds = sh(c, final_wall)
-            requal["suites"].append({"command": c, "rc": code, "seconds": seconds,
-                                     "tail": log[-400:]})
-            if code != 0:
+            r = run_cmd(c, final_wall)
+            requal["suites"].append({"command": c, "rc": r["rc"], "seconds": r["seconds"],
+                                     "wall": r["wall"], "tail": r["tail"][-400:], "cut": r["cut"],
+                                     "started": r["started"]})
+            if r["cut"]:
+                suites_cut = requal["suites"][-1]
+                break
+            if r["rc"] != 0:
                 suites_red = requal["suites"][-1]
                 break
         left_by_suites = unlanded()
@@ -1222,7 +1313,10 @@ tool finalize:
                           else "RED — `%s` %s" % (suites_red["command"],
                                                   "timed out" if suites_red["rc"] is None
                                                   else "exited %d" % suites_red["rc"]))
-        if suites_red is None and head_moved:
+        if suites_cut is not None:
+            suites_summary = ("NOT JUDGED: `%s`: %s."
+                              % (suites_cut["command"], cut_note(suites_cut)))
+        elif suites_red is None and head_moved:
             suites_summary = "NOT JUDGED: the suites moved HEAD."
         elif suites_red is None and left_by_suites:
             suites_summary = ("NOT JUDGED: the suites left a tree no landing carries (%s)."
@@ -1231,7 +1325,7 @@ tool finalize:
     # The gate judges COMMITTED trees only. A dirty tree at the end is
     # reported as exactly that — a verdict over a tree that exists nowhere
     # would be worth nothing.
-    verdict_line, oracle_state = "", "red"
+    verdict_line, oracle_state, oracle_run = "", "red", None
     if dirty:
         oracle_state = "unjudged"
         oracle_summary = ("NOT JUDGED: %d uncommitted change(s) at campaign "
@@ -1252,7 +1346,17 @@ tool finalize:
         oracle_state = "not run"
         oracle_summary = "NOT RUN: %s." % top_wall_defect
     else:
-        code, log, _ = sh(verify_rel, final_wall)
+        oracle_run = run_cmd(verify_rel, final_wall)
+    # An oracle the campaign's wall stopped delivered no verdict on the tree.
+    if oracle_run is not None and not oracle_run["started"]:
+        oracle_state = "not run"
+        oracle_summary = "NOT RUN: the campaign's wall left no time to start the oracle."
+    elif oracle_run is not None and oracle_run["cut"]:
+        oracle_state = "unjudged"
+        oracle_summary = ("NOT JUDGED: the campaign's wall cut the oracle after %.0fs, under "
+                          "its own wall of %ds." % (oracle_run["seconds"], oracle_run["wall"]))
+    elif oracle_run is not None:
+        code, log = oracle_run["rc"], oracle_run["tail"]
         out["oracle_green"] = code == 0
         oracle_state = "green" if code == 0 else "red"
         for line in reversed((log or "").splitlines()):
@@ -1282,7 +1386,10 @@ tool finalize:
 
             def past(run):
                 """Why a run is red for THIS lot: its exit, or a run longer
-                than the lot's own wall — lot_verify's GATE_TIMEOUT."""
+                than the lot's own wall — lot_verify's GATE_TIMEOUT. A run the
+                campaign's wall stopped is no verdict, red or green."""
+                if run.get("cut"):
+                    return ""
                 if run["rc"] is None:
                     return "timed out"
                 if run["rc"] != 0:
@@ -1291,8 +1398,12 @@ tool finalize:
                     return "ran %.1fs, past this lot's wall of %ds" % (run["seconds"], wall)
                 return ""
             reds = [(g, past(requal["commands"][g])) for g in gates if past(requal["commands"][g])]
+            cuts = [g for g in gates if requal["commands"][g].get("cut")]
             if reds:
                 requal["lots"][lid] = {"verdict": "still blocked (%s)" % reds[0][1], "red": reds[0][0]}
+            elif cuts:
+                requal["lots"][lid] = {"verdict": "NOT JUDGED — `%s`: %s — not requalifiable on "
+                                                  "this run" % (cuts[0], cut_note(requal["commands"][cuts[0]]))}
             elif suites is None:
                 requal["lots"][lid] = {"verdict": "%s — not requalifiable" % suites_defect}
             elif left_by_gates or left_by_suites:
@@ -1300,6 +1411,11 @@ tool finalize:
                                                   "carries — not requalifiable"}
             elif head_moved:
                 requal["lots"][lid] = {"verdict": "the suites moved HEAD — not requalifiable"}
+            elif suites_cut is not None:
+                requal["lots"][lid] = {"verdict": "NOT JUDGED — its gate is green, the repository's "
+                                                  "suites were not judged (`%s`: %s) — not "
+                                                  "requalifiable on this run"
+                                                  % (suites_cut["command"], cut_note(suites_cut))}
             elif suites and (suites_red is not None
                              or any(past(r) for r in requal["suites"])):
                 red = suites_red or next(r for r in requal["suites"] if past(r))
@@ -1338,6 +1454,8 @@ tool finalize:
 
     h = []
     h.append("# Campaign handoff — %s" % now)
+    h.append("")
+    h.append("Why the campaign ended: %s" % ended_by)
     h.append("")
     if plan_read:
         h.append("Final tree: `%s`. Programme: %d done, %d blocked, %d not "
@@ -1414,14 +1532,16 @@ tool finalize:
         % ("%d done, %d blocked" % (len(done), len(blocked)) if plan_read else "plan NOT READ",
            oracle_state, suites_state), "--", *mine)
 
+    # The closing review shows this notice: why the campaign ended leads it,
+    # so a campaign that ran no lot says so before any count reads as zero.
     if plan_read:
-        out["notice"] = ("%d done, %d blocked (%d requalify on the final tree), "
-                         "oracle %s, suites %s" % (len(done), len(blocked), out["requalified"],
-                                                   oracle_state, suites_state))
+        out["notice"] = ("ended: %s — %d done, %d blocked (%d requalify on the final tree), "
+                         "oracle %s, suites %s" % (ended_by, len(done), len(blocked),
+                                                   out["requalified"], oracle_state, suites_state))
     else:
-        out["notice"] = ("the plan at %s was not read (%s): lots_done, lots_blocked "
+        out["notice"] = ("ended: %s — the plan at %s was not read (%s): lots_done, lots_blocked "
                          "and requalified are unset, not zero; oracle %s"
-                         % (plan_rel, unread, oracle_state))
+                         % (ended_by, plan_rel, unread, oracle_state))
     print(json.dumps(out))
 
   language: py
@@ -1440,15 +1560,20 @@ compute loop_gate:
 ## itself from its own .bot (modernize's 12h wall), runs in THIS run's
 ## sandbox, and nothing interrupts it once started. A lot started late
 ## therefore outlives what the campaign can still do: past 90% of the wall
-## the engine starts no campaign node, so observe is refused and the
-## campaign ends with no handoff; on Kubernetes the shared sandbox pod is
+## the engine starts no tool node, so observe is refused and the campaign
+## ends with no handoff; on Kubernetes the shared sandbox pod is
 ## killed at the wall plus 30 min, mid-lot. Every lot starts through here,
-## the first one too; a wall with no room left for one hands off instead.
-## An unbounded wall (0) always has room.
+## the first one too; a wall with no room left for one hands off instead,
+## and `reason` — which the handoff opens on — says so with the figures and
+## the two levers: a wall that never had room for one lot starts none, which
+## no operator should have to infer from an empty journal. `reason` restates
+## `room`'s predicate (a field cannot read its sibling); the bots package
+## holds the two to agree. An unbounded wall (0) always has room.
 compute lot_room:
   output: room_state
   expr:
     room: "run.max_duration_seconds <= 0 || run.elapsed_seconds + vars.lot_room_s < run.max_duration_seconds * 0.9"
+    reason: "if(run.max_duration_seconds <= 0 || run.elapsed_seconds + vars.lot_room_s < run.max_duration_seconds * 0.9, 'room for a lot', if(loop.campaign_loop.iteration == 0, 'NO LOT STARTED', 'no lot after the ' + loop.campaign_loop.iteration + ' this campaign ran') + ': the elapsed time (' + floor(run.elapsed_seconds) + ' s) plus lot_room_s (' + vars.lot_room_s + ' s, the time one lot may take) reaches 90% of the campaign wall (' + floor(run.max_duration_seconds * 0.9) + ' s of ' + floor(run.max_duration_seconds) + ' s), past which the engine starts no tool node. Lots known to be shorter start under --var lot_room_s=<seconds>; a longer wall under --max-duration.')"
 
 ## run_lot — the worker, one lot per child run.
 ##
@@ -1492,7 +1617,8 @@ workflow campaign:
   lot_room -> run_lot when room
 
   lot_room -> finalize when not room with {
-    verify_path: "{{outputs.preflight.verify_path}}"
+    verify_path: "{{outputs.preflight.verify_path}}",
+    ended_by: "{{outputs.lot_room.reason}}",
   }
 
   run_lot -> observe with {
@@ -1523,7 +1649,8 @@ workflow campaign:
   }
 
   record_answer -> finalize when stop with {
-    verify_path: "{{outputs.preflight.verify_path}}"
+    verify_path: "{{outputs.preflight.verify_path}}",
+    ended_by: "an operator answered stop at an escalation",
   }
 
   record_answer -> loop_gate when not stop
@@ -1532,13 +1659,15 @@ workflow campaign:
   ## also serves loop exhaustion and the budget guard's declined back-edge —
   ## the campaign always leaves through its own handoff.
   loop_gate -> finalize when not proceed with {
-    verify_path: "{{outputs.preflight.verify_path}}"
+    verify_path: "{{outputs.preflight.verify_path}}",
+    ended_by: "{{outputs.loop_gate.reason}}",
   }
 
   loop_gate -> lot_room as campaign_loop("{{vars.max_lots}}")
 
   loop_gate -> finalize with {
-    verify_path: "{{outputs.preflight.verify_path}}"
+    verify_path: "{{outputs.preflight.verify_path}}",
+    ended_by: "the campaign loop took no lot after crossing {{loop.campaign_loop.iteration}} of {{loop.campaign_loop.max}} (max_lots): at max_lots the loop is spent; below it, its budget guard declined the next lot on the campaign's budget, and the run's events name the axis",
   }
 
   finalize -> handoff_review with {

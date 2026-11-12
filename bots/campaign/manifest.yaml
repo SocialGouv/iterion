@@ -11,10 +11,18 @@ version: 0.1.4
 ## campaign — reaches the forge through it. Local runs keep host-authenticated
 ## git. Every lot, the first included, starts through lot_room, which starts
 ## one only while the elapsed time plus `lot_room_s` (15h: modernize's 12h
-## wall, its exit grace and one golden-master child) stays under 90% of the
-## campaign's wall; otherwise the campaign hands off. A lot started later
-## outlived what the campaign could still do: observe was refused past 90%,
-## and on Kubernetes the shared sandbox pod died at the wall plus 30 min.
+## wall, its exit grace and one golden-master child, then 0.7h to reach the
+## handoff) stays under 90% of the campaign's wall; otherwise the campaign
+## hands off. A lot started later outlived what the campaign could still do:
+## observe was refused past 90%, and on Kubernetes the shared sandbox pod died
+## at the wall plus 30 min. A wall of 16h40m or less — a short validation
+## run, a deployment ceiling under the 48h — starts no lot at the default
+## `lot_room_s`: the handoff and its notice open on why the campaign ended,
+## here with the figures and the levers (`--var lot_room_s`, `--max-duration`).
+## The handoff is reached before the wall too: the steward defers a rebaseline
+## act that would not end 30 min before 90% of it (left pending for the next
+## campaign), and finalize runs each command under its own wall or what the
+## campaign's wall leaves, naming one it cut, and writes the handoff either way.
 ## 0.1.3 — finalize runs the repository's suites the contract declares
 ## (`suites:`, read the way modernize's lot_verify reads them) once on the
 ## final tree, reports them in the handoff, and requalifies a blocked lot only

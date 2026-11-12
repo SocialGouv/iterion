@@ -13,8 +13,14 @@ import (
 // stewardOn runs the REAL steward on a committed tree with one pending
 // rebaseline request, for lot L1 — `after`, when given, first shapes the
 // working tree the way a child run could leave it — and returns the
-// escalation items it wrote and the workspace.
+// escalation items it wrote and the workspace. The run has no wall.
 func stewardOn(t *testing.T, plan, verify string, after func(ws string, git func(...string) string)) ([]map[string]any, string, func(args ...string) string) {
+	t.Helper()
+	return stewardUnder(t, campaignClock{}, plan, verify, after)
+}
+
+// stewardUnder is stewardOn under a given clock.
+func stewardUnder(t *testing.T, clock campaignClock, plan, verify string, after func(ws string, git func(...string) string)) ([]map[string]any, string, func(args ...string) string) {
 	t.Helper()
 	requireModernizeTools(t)
 	script := toolScript(t, "campaign/main.bot", "steward")
@@ -41,6 +47,7 @@ func stewardOn(t *testing.T, plan, verify string, after func(ws string, git func
 	} {
 		script = strings.ReplaceAll(script, k, v)
 	}
+	script = clock.render(script)
 	if i := strings.Index(script, "{{"); i >= 0 {
 		t.Fatalf("unresolved template ref in steward near %q", script[i:min(i+40, len(script))])
 	}
@@ -221,4 +228,101 @@ func TestCampaignStewardRestoresWhatItsCounterTestWrote(t *testing.T) {
 	if _, err := os.Lstat(filepath.Join(ws, "probe.txt")); !os.IsNotExist(err) {
 		t.Fatalf("probe.txt survived: %v", err)
 	}
+}
+
+// TestCampaignStewardDefersAnActTheWallCannotHold: past 90% of the campaign's
+// wall no tool node starts, finalize's included, so an act — the record, then the
+// counter-test, each up to the lot's wall — starts only where it ends, at
+// those walls, the steward's reserve (RESERVE_S) before that point. One that
+// does not is deferred and nothing is recorded; the REAL observe of the next
+// campaign then finds the request still pending (a logged request_id is a
+// refusal it never acts on again). With one more second of room, the same
+// request is acted on.
+func TestCampaignStewardDefersAnActTheWallCannotHold(t *testing.T) {
+	t.Parallel()
+	verify := "#!/bin/sh\nif [ \"$1\" = --record ]; then echo 'STATUS 201' > .golden-master/refs/001.txt; fi\nexit 0\n"
+	plan := "version: 1\noracle:\n  refs_dir: .golden-master/refs\nlots:\n  - id: L1\n    title: t\n" +
+		"    status: done\n    rebaseline_allowed: true\n    gate_timeout_s: 600\n    exit_gate:\n      - \"true\"\n"
+	request := "\n<!-- iterion:rebaseline-request\n" +
+		`{"id": "R1", "lot": "L1", "expected_paths": [".golden-master/refs/001.txt"]}` + "\n-->\n"
+	withRequest := func(ws string, git func(...string) string) {
+		writeContract(t, ws, ".golden-master/ledger.md", "# ledger\n"+request)
+		git("add", ".golden-master/ledger.md")
+		git("commit", "-qm", "the request")
+	}
+	// The act takes up to 2 × 600 s. 90% of the wall less the reserve leaves
+	// `left` seconds when the steward starts.
+	const wall = 100000.0
+	under := func(left float64) campaignClock {
+		return campaignClock{wall: wall, elapsed: wall*0.9 - stewardReserve(t).Seconds() - left}
+	}
+	t.Run("an act that would end inside the reserve", func(t *testing.T) {
+		items, ws, git := stewardUnder(t, under(1199), plan, verify, withRequest)
+		if len(items) != 1 || items[0]["type"] != "deferred_by_wall" || items[0]["request"] != "R1" {
+			t.Fatalf("items %v: an act of up to 1200 s with 1199 s left before the handoff's reserve must be deferred, by name", items)
+		}
+		if _, refused := items[0]["request_id"]; refused {
+			t.Fatalf("the deferral logs a request_id (%v): observe reads that as a refusal, and the request is never acted on", items[0])
+		}
+		if note, _ := items[0]["note"].(string); !strings.Contains(note, "1200s") || !strings.Contains(note, "stays pending") {
+			t.Fatalf("the deferral note %q does not name the act's time and that the request stays pending", note)
+		}
+		if ledger := readContract(t, ws, ".golden-master/ledger.md"); strings.Contains(ledger, "iterion:rebaseline-act") {
+			t.Fatalf("an act was recorded past the room the wall left:\n%s", ledger)
+		}
+		if ref := readContract(t, ws, ".golden-master/refs/001.txt"); ref != "STATUS 200\n" {
+			t.Fatalf("the reference was re-recorded under a deferral: %q", ref)
+		}
+		if pending := campaignObservePending(t, ws, git); len(pending) != 1 || pending[0] != "R1" {
+			t.Fatalf("observe's pending requests after the deferral = %v, want [R1]: a deferred request is acted on by a later campaign", pending)
+		}
+	})
+	t.Run("an act that ends before it", func(t *testing.T) {
+		items, ws, _ := stewardUnder(t, under(1300), plan, verify, withRequest)
+		if len(items) != 0 || !strings.Contains(readContract(t, ws, ".golden-master/ledger.md"), "iterion:rebaseline-verdict") {
+			t.Fatalf("items %v: an act of up to 1200 s with 1300 s left must run", items)
+		}
+	})
+}
+
+// campaignObservePending runs the REAL observe on the workspace as the steward
+// left it and returns the ids of the requests it hands the next steward.
+func campaignObservePending(t *testing.T, ws string, git func(...string) string) []string {
+	t.Helper()
+	script := toolScript(t, "campaign/main.bot", "observe")
+	for k, v := range map[string]string{
+		"{{vars.workspace_dir}}": strconv.Quote(ws),
+		"{{vars.plan_path}}":     strconv.Quote(".modernize/plan.yaml"),
+		"{{input.base}}":         strconv.Quote(git("rev-parse", "HEAD")),
+		"{{input.ledger_path}}":  strconv.Quote(".golden-master/ledger.md"),
+	} {
+		script = strings.ReplaceAll(script, k, v)
+	}
+	if i := strings.Index(script, "{{"); i >= 0 {
+		t.Fatalf("unresolved template ref in observe near %q", script[i:min(i+40, len(script))])
+	}
+	p := filepath.Join(t.TempDir(), "observe.py")
+	if err := os.WriteFile(p, []byte(script), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var stderr strings.Builder
+	cmd := modernizeChild(t, "python3", p)
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("observe: %v (out %q, stderr %q)", err, out, stderr.String())
+	}
+	var state struct {
+		Pending []struct {
+			ID string `json:"id"`
+		} `json:"pending"`
+	}
+	if err := json.Unmarshal(out, &state); err != nil {
+		t.Fatalf("observe output is not JSON: %v (out %q)", err, out)
+	}
+	ids := make([]string, 0, len(state.Pending))
+	for _, r := range state.Pending {
+		ids = append(ids, r.ID)
+	}
+	return ids
 }
