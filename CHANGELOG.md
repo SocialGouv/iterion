@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [5.29.2](https://github.com/SocialGouv/iterion/compare/v5.29.1...v5.29.2) (2026-11-12)
+
+### Bug Fixes
+
+* **sandbox:** qualify sealed environment capsules under gVisor ([6e8fcca](https://github.com/SocialGouv/iterion/commit/6e8fcca45a87999f41b67577588b29a0da14d3c1)), closes [#3194](https://github.com/SocialGouv/iterion/issues/3194)
+
+    <details><summary>why</summary>
+
+    On gVisor, a native environment memfd reports one link, so the previous zero-link check refused Kubernetes execution before reading the invocation (`capsule: shape`, exit 125). Seal the captured environment against writes, growth and shrinkage, then verify the required seal bits instead of the runtime-specific link count. Extra restrictions such as kernel-provided NOEXEC remain accepted.
+
+    </details>
+
 ## [5.29.1](https://github.com/SocialGouv/iterion/compare/v5.29.0...v5.29.1) (2026-11-12)
 
 ### Bug Fixes
