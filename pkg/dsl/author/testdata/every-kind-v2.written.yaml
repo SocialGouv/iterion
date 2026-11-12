@@ -200,6 +200,7 @@ nodes:
     compress: on
     auto_memory: off
     ambient_context: none
+    codemode: on
     permission: ask
     allow: [Read(**)]
     ask: [Bash(git *)]
@@ -255,6 +256,7 @@ nodes:
     output: verdict
     reasoning_effort: high
     ambient_context: operator
+    codemode: off
     sandbox: none
   - router: split
     mode: fan_out_each
@@ -406,6 +408,7 @@ workflow:
   compress: on
   auto_memory: on
   ambient_context: all
+  codemode: on
   loop_budget_guard: on
   repo_devbox: off
   workspace_checkpoint: on

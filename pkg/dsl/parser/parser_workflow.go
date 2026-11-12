@@ -101,6 +101,12 @@ func (p *parser) parseWorkflowDecl() *ast.WorkflowDecl {
 			wd.AmbientContext = p.expectIdent()
 			p.skipNewlines()
 
+		case TokenCodemode:
+			p.next() // consume "codemode"
+			p.expect(TokenColon)
+			wd.Codemode = p.expectIdent()
+			p.skipNewlines()
+
 		case TokenLoopBudgetGuard:
 			p.next() // consume "loop_budget_guard"
 			p.expect(TokenColon)

@@ -366,6 +366,7 @@ agent reviewer:
   max_tokens: 12000
   reasoning_effort: high
   ambient_context: none   ## none|workspace|operator|all (default workspace, ADR-119)
+  codemode: off           ## on|off — nothing serves it yet; an explicit `on` warns C338
   timeout: "20m"
   readonly: true
   publish: review_artifact
@@ -384,6 +385,15 @@ Important property groups:
 | Scheduling | `await`, `needs`, and the workspace-safety assertion `readonly`. |
 | Backend-specific | `full_access` and `images` are honored by the Codex backend; other backends ignore them. |
 | Persistent context | `memory` and `cursors`. |
+
+`codemode: on | off` lets the model compose its tool calls as code the
+harness runs in a credential-less child, instead of one call per turn
+(ADR-165). Declared on the node or the workflow, with **no environment
+rung** — the switch reads no environment variable (ADR-132).
+**Nothing serves it yet**: the attribute is carried to the IR and read by
+no build, so the compiler warns **C338** on an explicit `on` and the node
+runs exactly as it did without the line. The slice that registers the
+tool removes that warning, not the attribute.
 
 `ambient_context: none | workspace | operator | all` picks what the node
 inherits from its surroundings besides its prompt (ADR-119): the
@@ -999,6 +1009,7 @@ workflow review:
   worktree: auto
   compress: on
   ambient_context: none
+  codemode: off
   permission: ask
   allow: ["Read(*)", "Grep(*)"]
   ask: ["Bash(git push:*)"]

@@ -40,16 +40,15 @@ Measured against the shipping `CGO_ENABLED=0` binary: a five-iteration loop
 crossed the pipe five times and returned **one** number — compose outside the
 model's context, return the distilled result.
 
-**No model can reach it yet.** There is no DSL attribute, no capability cell
-and no registered tool, so CM-1b is driven by its tests alone: the whole
-content of these slices is the confinement and the invariant, so they could be
-reviewed as those rather than as a feature. Treat any claim that codemode is
-*usable* as false until this section says otherwise. Epic
-[#3153](https://github.com/SocialGouv/iterion/issues/3153); the slices are
-[#3175](https://github.com/SocialGouv/iterion/issues/3175) and
-[#3182](https://github.com/SocialGouv/iterion/issues/3182), and the in-pod
-bench that will declare it usable is
-[#3155](https://github.com/SocialGouv/iterion/issues/3155).
+**No model can reach it yet, and the compiler says so.** `codemode: on|off`
+is declared on an agent, a judge and a workflow and carried to the IR — and
+read by nothing: no capability cell, no registered tool. The compiler warns
+**C338** on an explicit `on`, and such a node runs exactly as it did without
+the line. Treat any claim that codemode is *usable* as false until this
+section says otherwise; the slice that registers the tool deletes that
+warning, not the attribute. Epic
+[#3153](https://github.com/SocialGouv/iterion/issues/3153) (slices #3175,
+#3182, #3195); the in-pod bench that will declare it usable is #3155.
 
 ### Four decisions the binding owes its reviewers
 

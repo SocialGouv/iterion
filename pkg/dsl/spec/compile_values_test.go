@@ -25,6 +25,7 @@ var compileProbes = map[string]map[string]string{
 		"compress":             "agent a:\n  model: \"m\"\nworkflow w:\n  entry: a\n  compress: %s\n  a -> done\n",
 		"auto_memory":          "agent a:\n  model: \"m\"\nworkflow w:\n  entry: a\n  auto_memory: %s\n  a -> done\n",
 		"ambient_context":      "agent a:\n  model: \"m\"\nworkflow w:\n  entry: a\n  ambient_context: %s\n  a -> done\n",
+		"codemode":             "agent a:\n  model: \"m\"\nworkflow w:\n  entry: a\n  codemode: %s\n  a -> done\n",
 		"permission":           "agent a:\n  model: \"m\"\nworkflow w:\n  entry: a\n  permission: %s\n  a -> done\n",
 		"loop_budget_guard":    "agent a:\n  model: \"m\"\nworkflow w:\n  entry: a\n  loop_budget_guard: %s\n  a -> done\n",
 		"repo_devbox":          "agent a:\n  model: \"m\"\nworkflow w:\n  entry: a\n  repo_devbox: %s\n  a -> done\n",
@@ -36,6 +37,7 @@ var compileProbes = map[string]map[string]string{
 		"compress":        "agent a:\n  model: \"m\"\n  compress: %s\nworkflow w:\n  entry: a\n  a -> done\n",
 		"auto_memory":     "agent a:\n  model: \"m\"\n  auto_memory: %s\nworkflow w:\n  entry: a\n  a -> done\n",
 		"ambient_context": "agent a:\n  model: \"m\"\n  ambient_context: %s\nworkflow w:\n  entry: a\n  a -> done\n",
+		"codemode":        "agent a:\n  model: \"m\"\n  codemode: %s\nworkflow w:\n  entry: a\n  a -> done\n",
 		"permission":      "agent a:\n  model: \"m\"\n  permission: %s\nworkflow w:\n  entry: a\n  a -> done\n",
 	},
 	"judge": {
@@ -43,6 +45,7 @@ var compileProbes = map[string]map[string]string{
 		"compress":        "judge a:\n  model: \"m\"\n  compress: %s\nworkflow w:\n  entry: a\n  a -> done\n",
 		"auto_memory":     "judge a:\n  model: \"m\"\n  auto_memory: %s\nworkflow w:\n  entry: a\n  a -> done\n",
 		"ambient_context": "judge a:\n  model: \"m\"\n  ambient_context: %s\nworkflow w:\n  entry: a\n  a -> done\n",
+		"codemode":        "judge a:\n  model: \"m\"\n  codemode: %s\nworkflow w:\n  entry: a\n  a -> done\n",
 		"permission":      "judge a:\n  model: \"m\"\n  permission: %s\nworkflow w:\n  entry: a\n  a -> done\n",
 	},
 	"tool": {

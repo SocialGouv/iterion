@@ -948,6 +948,11 @@
           },
           "type": "array"
         },
+        "codemode": {
+          "description": "Let the model compose its tool calls as code the harness runs in a credential-less child, instead of one call per turn: on or off (ADR-165; C337/C338 while no build serves it)",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
         "command": {
           "description": "Executable that drives a CLI backend, overriding its default binary",
           "pattern": "^[^\\n\\r\\x85]*$",
@@ -1492,6 +1497,11 @@
             "type": "string"
           },
           "type": "array"
+        },
+        "codemode": {
+          "description": "Let the model compose its tool calls as code the harness runs in a credential-less child, instead of one call per turn: on or off (ADR-165; C337/C338 while no build serves it)",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
         },
         "command": {
           "description": "Executable that drives a CLI backend, overriding its default binary",
@@ -2606,6 +2616,11 @@
           },
           "type": "array"
         },
+        "codemode": {
+          "description": "Let the model compose its tool calls as code the harness runs in a credential-less child, instead of one call per turn: on or off (ADR-165; C337/C338 while no build serves it)",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
         "compaction": {
           "$ref": "#/$defs/v1.compaction",
           "description": "Default compaction thresholds"
@@ -3675,6 +3690,11 @@
           },
           "type": "array"
         },
+        "codemode": {
+          "description": "Let the model compose its tool calls as code the harness runs in a credential-less child, instead of one call per turn: on or off (ADR-165; C337/C338 while no build serves it)",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
         "command": {
           "description": "Executable that drives a CLI backend, overriding its default binary",
           "pattern": "^[^\\n\\r\\x85]*$",
@@ -4219,6 +4239,11 @@
             "type": "string"
           },
           "type": "array"
+        },
+        "codemode": {
+          "description": "Let the model compose its tool calls as code the harness runs in a credential-less child, instead of one call per turn: on or off (ADR-165; C337/C338 while no build serves it)",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
         },
         "command": {
           "description": "Executable that drives a CLI backend, overriding its default binary",
@@ -5332,6 +5357,11 @@
             "type": "string"
           },
           "type": "array"
+        },
+        "codemode": {
+          "description": "Let the model compose its tool calls as code the harness runs in a credential-less child, instead of one call per turn: on or off (ADR-165; C337/C338 while no build serves it)",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
         },
         "compaction": {
           "$ref": "#/$defs/v2.compaction",
