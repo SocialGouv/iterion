@@ -65,12 +65,12 @@ type Config struct {
 	NATS  *natsq.Conn
 	Store store.RunStore
 	// PriceFeedEffective answers the run's effective gateway price-feed
-	// table (ADR-163): the server-side fold over the org/team feed state,
-	// nil when no fresh feed answers. A func, not a store handle: the
-	// publisher never learns where feeds live, and the fold's precedence
-	// (fresh feed over operator floor, team over org) stays beside the
-	// stores that own it. Nil (local shape, no stores) means no feed and
-	// the operator table is the floor.
+	// table (ADR-163): the server-side fold over the platform, org and
+	// team feeds, nil when no feed answers. A func, not a store handle:
+	// the publisher never learns where feeds live, and the fold's
+	// precedence (an answering feed over the operator floor, team over
+	// org over platform) stays beside the stores that own it. Nil (local
+	// shape, no stores) means no feed and the operator table is the floor.
 	PriceFeedEffective func(ctx context.Context, orgID, teamID string, named []string) json.RawMessage
 	// MongoColl is the Mongo collection the publisher counts
 	// queued runs against (for queue_position computation). The
@@ -253,13 +253,13 @@ type Publisher struct {
 	pools                RunnerPoolResolver
 	requireLLMCredential bool
 	// priceFeedEffective answers the run's effective gateway price-feed
-	// table (ADR-163): the server-side fold over the org/team feed state,
-	// nil when no fresh feed answers. A func, not a store handle: the
-	// publisher never learns where feeds live, and the fold's precedence
-	// (fresh feed over operator floor, team over org) stays beside the
-	// stores that own it. Nil (local shape, no stores) means no feed and
-	// the operator table is the floor — the bundle then serializes
-	// exactly as before this field existed.
+	// table (ADR-163): the server-side fold over the platform, org and
+	// team feeds, nil when no feed answers. A func, not a store handle:
+	// the publisher never learns where feeds live, and the fold's
+	// precedence (an answering feed over the operator floor, team over
+	// org over platform) stays beside the stores that own it. Nil (local
+	// shape, no stores) means no feed and the operator table is the floor
+	// — the bundle then serializes exactly as before this field existed.
 	priceFeedEffective func(ctx context.Context, orgID, teamID string, named []string) json.RawMessage
 
 	// orgCache memoizes team → org id so the publish hot path doesn't

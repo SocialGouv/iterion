@@ -58,12 +58,13 @@ func (s *Server) priceFeedSyncPasses(ctx context.Context, health *lease.Health) 
 	}
 }
 
-// priceFeedSyncPass walks every scope's feeds and refreshes the due
-// ones, then derives every feed's live status and says the staleness
-// TRANSITION out loud — once per feed per transition, not per pass
-// (the ADR's loud-but-not-spammy bound). A failing fetch is the feed's
-// own error to carry in its state; it never fails the pass, because a
-// dead source must not end the elected term for every other feed.
+// priceFeedSyncPass walks every scope's feeds — the platform document's
+// with the tenants' — and refreshes the due ones, then derives every
+// fetched feed's live status and says the staleness TRANSITION out loud
+// — once per feed per transition, not per pass (the ADR's
+// loud-but-not-spammy bound). A failing fetch is the feed's own error to
+// carry in its state; it never fails the pass, because a dead source
+// must not end the elected term for every other feed.
 func (s *Server) priceFeedSyncPass(ctx context.Context, health *lease.Health) {
 	health.Observe(s.priceFeedSyncSweep(ctx))
 }
@@ -82,7 +83,11 @@ func (s *Server) priceFeedSyncSweep(ctx context.Context) lease.PassVerdict {
 			if ctx.Err() != nil {
 				return pass.Verdict()
 			}
-			if !feed.Enabled {
+			// A declaration answers from its config at every fold: there
+			// is nothing to refresh and no window to fall out of, so the
+			// pass neither reads a state under its name nor derives a
+			// staleness from one.
+			if !feed.Enabled || pricefeed.IsStatic(feed.Type) {
 				continue
 			}
 			stateID := pricefeed.StateDocID(docID, feed.Name)

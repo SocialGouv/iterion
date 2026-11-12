@@ -85,6 +85,9 @@ registered by `board_forge.go`, `local_secrets_routes.go`, `notifications_routes
 | `POST` | `/api/admin/orgs/{id}/status` | platform admin | yes |
 | `GET` | `/api/admin/orgs/{id}/teams` | platform admin | yes |
 | `GET` | `/api/admin/orgs/{id}/usage` | platform admin | yes |
+| `GET` | `/api/admin/price-feeds` | platform admin | yes |
+| `PUT` | `/api/admin/price-feeds` | platform admin | yes |
+| `POST` | `/api/admin/price-feeds/sync` | platform admin | yes |
 | `GET` | `/api/admin/runner-pools` | platform admin | yes |
 | `PUT` | `/api/admin/runner-pools` | platform admin | yes |
 | `GET` | `/api/admin/runs` | platform admin | yes |

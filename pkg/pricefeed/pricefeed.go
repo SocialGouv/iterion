@@ -2,15 +2,15 @@
 // that syncs into the database and rides the existing IPC, while the
 // operator table stays the floor.
 //
-// A feed is server-side, database-backed state at the org/team level of
-// the provider/model override cascade. Runners never fetch prices: the
-// server folds the effective table (answering feed entries first — a
-// fetched feed's while fresh, a declaration's always — the operator floor
-// below, and the models' accepted reasoning efforts in a map of their
-// own) and the answer travels with the run — sealed in
-// the bundle, planted on the run's environment under one name the
-// gateway catalog reads between the host IPC record and the operator
-// table (compatgw.FeedTableEnv).
+// A feed is server-side, database-backed state at the platform, org and
+// team levels of the provider/model override cascade. Runners never
+// fetch prices: the server folds the effective table (answering feed
+// entries first — a fetched feed's while fresh, a declaration's always —
+// the operator floor below, and the models' accepted reasoning efforts in
+// a map of their own) and the answer travels with the run — sealed in the
+// bundle, planted on the run's environment under one name the gateway
+// catalog reads between the host IPC record and the operator table
+// (compatgw.FeedTableEnv).
 //
 // The leaf discipline: this package imports modelspecs (the shared
 // Spec), credroute (the env overlay the runner plants) and nothing else
@@ -44,8 +44,9 @@ const (
 	TypeDeclared  = "declared"
 )
 
-// FeedConfig is one configured feed. It is tenant data: the operator's
-// declaration of WHERE the tariffs come from and HOW OFTEN they sync.
+// FeedConfig is one configured feed — a tenant's or, at the platform
+// level, the deployment's: the operator's declaration of WHERE the
+// tariffs come from and HOW OFTEN they sync.
 type FeedConfig struct {
 	Name     string            `json:"name" bson:"name"`
 	Type     string            `json:"type" bson:"type"`
@@ -61,8 +62,8 @@ type FeedConfig struct {
 // refusal (ADR-163 §2/§3).
 func (f FeedConfig) FreshFor() Duration { return 2 * f.Interval }
 
-// ConfigRecord is one tenant's feed list — one document per scope
-// (org or team), the twin of the routing-policy record.
+// ConfigRecord is one scope's feed list — one document per scope
+// (platform, org or team), the twin of the routing-policy record.
 type ConfigRecord struct {
 	Feeds     []FeedConfig `json:"feeds" bson:"feeds"`
 	UpdatedAt time.Time    `json:"updated_at" bson:"updated_at"`
@@ -80,6 +81,11 @@ const (
 	StateFailing = "failing"
 	// StateNever: no refresh has succeeded yet.
 	StateNever = "never"
+	// StateDeclared: a static feed (a declaration). Its answer is its
+	// config, read at every fold: it is never refreshed and never ages,
+	// so no state document decides it — DeriveStatus never answers it,
+	// the feed's view does.
+	StateDeclared = "declared"
 )
 
 // StateRecord is one feed's durable sync state, written by the elected
@@ -399,10 +405,10 @@ const DefaultBudget = 100 * 1024
 
 // ScopeState is one scope's contribution to the fold: its config
 // document and its fetched feeds' states. Scopes fold least-specific
-// first — org, then team: a team entry answers over an org entry for the
-// ids it carries, the direction the routing cascade already runs. A
-// static feed's entries are read from Config itself (its params), never
-// from States.
+// first — platform, then org, then team: a more specific scope's entry
+// answers over a less specific one's for the ids it carries, the
+// direction the routing cascade already runs. A static feed's entries
+// are read from Config itself (its params), never from States.
 type ScopeState struct {
 	Config *ConfigRecord
 	States map[string]*StateRecord // feed name → state

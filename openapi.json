@@ -3909,6 +3909,12 @@
           "reasoning": {
             "type": "boolean"
           },
+          "reasoning_efforts": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "temperature": {
             "type": "boolean"
           },
@@ -6880,6 +6886,10 @@
       },
       "priceFeedView": {
         "properties": {
+          "declared_at": {
+            "format": "date-time",
+            "type": "string"
+          },
           "entries": {
             "type": "integer"
           },
@@ -6903,22 +6913,6 @@
         "required": [
           "feed",
           "status"
-        ],
-        "type": "object"
-      },
-      "priceFeedsPutReq": {
-        "properties": {
-          "expected_updated_at": {
-            "format": "date-time",
-            "type": "string"
-          },
-          "feeds": {
-            "format": "byte",
-            "type": "string"
-          }
-        },
-        "required": [
-          "feeds"
         ],
         "type": "object"
       },
@@ -8553,6 +8547,98 @@
           }
         }
       ]
+    },
+    "/api/admin/price-feeds": {
+      "get": {
+        "description": "Super-admin only. The platform's feed list, folded below every org and team.",
+        "operationId": "getAdminPriceFeeds",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/priceFeedsView"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "401": {
+            "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
+          },
+          "403": {
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
+          }
+        },
+        "summary": "GET /api/admin/price-feeds",
+        "tags": [
+          "admin"
+        ]
+      },
+      "put": {
+        "description": "Super-admin only. Body {\"feeds\": [feed, ...] | null, \"expected_updated_at\": RFC3339 (optional CAS)}: the list replaces the platform's feed list, null clears it; audited as platform.price_feeds.updated.",
+        "operationId": "putAdminPriceFeeds",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/priceFeedsView"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "401": {
+            "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
+          },
+          "403": {
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
+          }
+        },
+        "summary": "PUT /api/admin/price-feeds",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/api/admin/price-feeds/sync": {
+      "post": {
+        "description": "Super-admin only. Forces one platform feed's refresh (name) or every enabled one's, answering what changed per id.",
+        "operationId": "postAdminPriceFeedsSync",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/priceFeedsSyncReq"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/priceFeedsSyncResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "401": {
+            "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
+          },
+          "403": {
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
+          }
+        },
+        "summary": "POST /api/admin/price-feeds/sync",
+        "tags": [
+          "admin"
+        ]
+      }
     },
     "/api/admin/runner-pools": {
       "get": {
@@ -11682,17 +11768,8 @@
         }
       ],
       "put": {
+        "description": "Org-admin only. Body {\"feeds\": [feed, ...] | null, \"expected_updated_at\": RFC3339 (optional CAS)}: the list replaces the org's feed list, null clears it.",
         "operationId": "putOrgsByIdPriceFeeds",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/priceFeedsPutReq"
-              }
-            }
-          },
-          "required": true
-        },
         "responses": {
           "200": {
             "content": {
@@ -17131,17 +17208,8 @@
         }
       ],
       "put": {
+        "description": "Team-admin only. Body {\"feeds\": [feed, ...] | null, \"expected_updated_at\": RFC3339 (optional CAS)}: the list replaces the team's feed list, null clears it.",
         "operationId": "putTeamsByIdPriceFeeds",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/priceFeedsPutReq"
-              }
-            }
-          },
-          "required": true
-        },
         "responses": {
           "200": {
             "content": {

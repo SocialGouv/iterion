@@ -460,8 +460,8 @@ func resolvedEnvRecord(get func(string) string) (ResolvedEnvRecord, bool) {
 		return rec, false
 	}
 	// Provenance is one of the four constants — or a named price feed's
-	// `feed:<name>`: the feed's name is tenant data, so this validates the
-	// PREFIX, not a list. A stale or forged value with a fabricated source
+	// `feed:<name>`: the feed's name is configured data, so this validates
+	// the PREFIX, not a list. A stale or forged value with a fabricated source
 	// must not pass as a record; a feed record without its age still
 	// answers, priced and provenance-carried, the age simply unknown.
 	switch rec.Source {

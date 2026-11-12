@@ -22,22 +22,24 @@ func priceFeedExecAllowed() bool {
 // The gateway price feed's server side (ADR-163): the effective-table
 // fold the publisher seals into every run bundle, and the refresh both
 // the elected reconciler (pricefeed_sync.go) and the manual trigger
-// (pricefeed_routes.go) run. Precedence everywhere: a FRESH feed entry
-// answers over the operator table for the ids it carries, the more
-// specific scope (team) over the less (org); a stale or failing feed
-// steps down with a warning, never a refusal.
+// (pricefeed_routes.go) run. Precedence everywhere: an answering feed
+// entry (a fetched feed's while fresh, a declaration's always) answers
+// over the operator table for the ids it carries, the more specific
+// scope over the less (team over org over platform); a stale or failing
+// feed steps down with a warning, never a refusal.
 
 // priceFeedReadTimeout bounds one scope's reads in the launch-path fold:
 // a slow database must not hold a launch, and a feed that cannot be read
 // steps down to the operator floor with a warning — never a refusal.
 const priceFeedReadTimeout = 2 * time.Second
 
-// EffectivePriceFeed folds one run's effective table — the org and team
-// feeds' fresh entries, team answering over org per id — and answers the
-// wire bytes the bundle seals. nil when no fresh feed answers: the
-// operator table is the floor and the bundle serializes unchanged. The
-// named ids are the run's own gateway models, the narrowing fallback
-// when the folded table exceeds the channel's byte budget.
+// EffectivePriceFeed folds one run's effective table — the platform's,
+// the org's and the team's answering feeds, the more specific scope
+// answering per id — and answers the wire bytes the bundle seals. nil
+// when no feed answers: the operator table is the floor and the bundle
+// serializes unchanged. The named ids are the run's own gateway models,
+// the narrowing fallback when the folded table exceeds the channel's
+// byte budget.
 func EffectivePriceFeed(ctx context.Context, configs pricefeed.ConfigStore, states pricefeed.StateStore, orgID, teamID string, named []string, warnf func(format string, args ...any)) json.RawMessage {
 	if configs == nil || states == nil {
 		return nil
@@ -45,16 +47,7 @@ func EffectivePriceFeed(ctx context.Context, configs pricefeed.ConfigStore, stat
 	readCtx, cancel := context.WithTimeout(ctx, priceFeedReadTimeout)
 	defer cancel()
 	var scopes []pricefeed.ScopeState
-	for _, scope := range []struct {
-		docID string
-		what  string
-	}{
-		{pricefeed.OrgConfigDocID(orgID), "org " + orgID},
-		{pricefeed.TeamConfigDocID(teamID), "team " + teamID},
-	} {
-		if scope.docID == "org:" || scope.docID == "team:" {
-			continue
-		}
+	for _, scope := range priceFeedFoldScopes(orgID, teamID) {
 		contrib, err := priceFeedScopeState(readCtx, configs, states, scope.docID)
 		if err != nil {
 			// A feed that cannot be read is a feed that does not answer:
@@ -84,6 +77,29 @@ func EffectivePriceFeed(ctx context.Context, configs pricefeed.ConfigStore, stat
 		return nil
 	}
 	return raw
+}
+
+// priceFeedScope is one level of the fold: its config document id and
+// the name warnings and views give it.
+type priceFeedScope struct {
+	level string // "platform" | "org" | "team"
+	id    string // the org or team id; "" for the platform
+	docID string
+	what  string
+}
+
+// priceFeedFoldScopes lists the levels one run's fold reads, least
+// specific first — the order pricefeed.Fold takes them in. The platform
+// is always read; an org or a team the run has none of is no level.
+func priceFeedFoldScopes(orgID, teamID string) []priceFeedScope {
+	scopes := []priceFeedScope{{level: "platform", docID: pricefeed.PlatformConfigDocID, what: "platform"}}
+	if orgID != "" {
+		scopes = append(scopes, priceFeedScope{level: "org", id: orgID, docID: pricefeed.OrgConfigDocID(orgID), what: "org " + orgID})
+	}
+	if teamID != "" {
+		scopes = append(scopes, priceFeedScope{level: "team", id: teamID, docID: pricefeed.TeamConfigDocID(teamID), what: "team " + teamID})
+	}
+	return scopes
 }
 
 // priceFeedScopeState reads one scope's config document and the states

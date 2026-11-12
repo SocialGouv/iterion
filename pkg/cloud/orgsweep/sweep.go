@@ -129,8 +129,8 @@ var orgScopedCollections = []string{
 var purgedByBespokeFilter = map[string]string{
 	"oauth_credentials":       "keyed by an owner in its own namespace (secrets.OrgOwnerKey / OrgTierOwnerKey), not by a tenant id",
 	"llm_routing_policies":    "composite _id (\"team:<id>\" / \"org:<id>\"), ADR-121 delivery 2",
-	"price_feeds":             "composite _id (\"team:<id>\" / \"org:<id>\"), ADR-163",
-	"price_feed_state":        "composite _id (\"<scope>:<id>/<feed>\"), purged by the scope prefix, ADR-163",
+	"price_feeds":             "composite _id (\"platform\" / \"org:<id>\" / \"team:<id>\"), ADR-163 — the platform doc is NOT an org row and stays",
+	"price_feed_state":        "composite _id (\"platform/<feed>\" / \"<scope>:<id>/<feed>\"), purged by the org: and team: scope prefixes, ADR-163 — the platform feeds' states stay",
 	"pool_attachments":        "composite _id (\"platform\" / \"org:<id>\" / \"team:<id>\" / \"bot:<team>/<bot>\"), purged by the scope prefix, ADR-164 — the platform doc is NOT an org row and stays",
 	"org_usage":               "composite _id (\"org|<id>|<month>\", \"forkauthor|<id>|…\"), purged by the id-prefix alternation",
 	"schedule_launch_intents": "the tenant rides the embedded schedule document (schedule.tenant_id), not a top-level field",
@@ -379,7 +379,9 @@ func (p *Purger) PurgeOrg(ctx context.Context, orgID string) (int64, error) {
 	}
 	// The gateway price feed's tenant state (ADR-163): the feed lists are
 	// composite _id documents like the routing policies above; the state
-	// documents key "<scope>/<feed>", reached by prefix.
+	// documents key "<scope>/<feed>", reached by prefix. The PLATFORM
+	// document ("platform") and its states ("platform/<feed>") are the
+	// deployment's own: no filter below names them.
 	deleted += p.deleteMany(ctx, pricefeed.ColConfigs,
 		bson.M{"_id": pricefeed.OrgConfigDocID(orgID)})
 	deleted += p.deleteMany(ctx, pricefeed.ColStates,

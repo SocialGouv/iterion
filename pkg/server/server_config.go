@@ -329,10 +329,11 @@ type Config struct {
 	// keeps the hardcoded/env defaults (local mode).
 	BotRolesSettings platformcfg.Store[platformcfg.BotRoles]
 	// PriceFeedConfigs / PriceFeedStates are the gateway price feed's
-	// tenant stores (ADR-163): one feed-list document per org/team, one
-	// state document per (scope, feed). Nil (local mode) disables the
-	// feed entirely — the operator table is the floor, the reconciler
-	// does not campaign, and the routes answer the empty view.
+	// stores (ADR-163): one feed-list document per scope (the platform,
+	// each org, each team), one state document per (scope, feed). Nil
+	// (local mode) disables the feed entirely — the operator table is the
+	// floor, the reconciler does not campaign, and the routes answer the
+	// empty view.
 	PriceFeedConfigs pricefeed.ConfigStore
 	PriceFeedStates  pricefeed.StateStore
 	// RunnerPoolsSettings is the sovereign-pool registry (#2029): which

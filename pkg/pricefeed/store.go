@@ -56,17 +56,26 @@ func cloneBool(b *bool) *bool {
 }
 
 // The feed's durable state (ADR-163 §7): one config document per scope
-// (org or team) — the tenant's declaration — and one state document per
-// (scope, feed) — the elected reconciler's answer. Composite ids carry
-// the scope the way the routing-policy records do, and org deletion
-// sweeps both collections by prefix (pkg/cloud/orgsweep).
+// (platform, org or team) — the deployment's or the tenant's declaration
+// — and one state document per (scope, feed) — the elected reconciler's
+// answer. Composite ids carry the scope the way the routing-policy
+// records do; org deletion sweeps the org's and its teams' documents of
+// both collections by id and prefix (pkg/cloud/orgsweep), and the
+// platform documents are no org's rows: they survive every org purge.
 
-// The Mongo collections. ColConfigs is tenant data, never a platform
-// family — the routing-policy precedent (platformcfg's store.go).
+// The Mongo collections. ColConfigs holds every scope's feed list, the
+// platform's included: one document shape, one reconciler walk, one CAS
+// and one route body for the three levels — so the platform level is a
+// document id here, not a platformcfg family.
 const (
 	ColConfigs = "price_feeds"
 	ColStates  = "price_feed_state"
 )
+
+// PlatformConfigDocID is the platform's feed-list document id: the
+// deployment's own feeds, folded below every org and team. Its fetched
+// feeds' state documents key "platform/<feed>" (StateDocID).
+const PlatformConfigDocID = "platform"
 
 // OrgConfigDocID is an org's feed-list document id.
 func OrgConfigDocID(orgID string) string { return "org:" + orgID }
