@@ -1806,8 +1806,9 @@ no such stamp.
 The catalog resolves a gateway id with whole-entry precedence — fields are
 never merged across sources, and an answer carries its provenance:
 
-1. The run's **price feed** (ADR-163), when the server folded one: a
-   fresh feed entry answers for the ids it carries, provenance
+1. The run's **price feed** (ADR-163, ADR-166), when the server folded
+   one: an answering feed entry (a fetched feed's while fresh, a
+   declaration's always) answers for the ids it carries, provenance
    `"source":"feed:<name>"` with the feed's `refreshed_at` beside it.
    Freshness is judged at the FOLD — the table that travels answers for
    the run's whole invocation. See
@@ -1839,7 +1840,10 @@ never merged across sources, and an answer carries its provenance:
    exact after lower-casing — no other prefix, suffix, vendor or
    cross-provider-consensus fallback exists. The operator table above stays
    exact too: key it by the id the gateway serves (`scaleway/glm-5.2`), or
-   its entry is passed over for the catalog's.
+   its entry is passed over for the catalog's. This name is a runner-side
+   fallback: its database seat is a platform feed of type `scaleway`
+   (ADR-166), which keys each entry both `scaleway/<id>` and `<id>` and
+   answers at rung 1.
 4. Otherwise unknown, said out loud: the node's `_gateway_spec` records
    `"source":"unknown"`, the estimator prices nothing, and compaction keeps
    the unknown-model floor.
@@ -1853,64 +1857,142 @@ closes that: **auto-synced operator pricing in the database, riding the
 run to the runner** — the operator table stays the floor.
 
 - **Where it lives.** A feed is server-side, database-backed state at
-  the org/team level (`price_feeds`, one document per scope; the sync
-  state in `price_feed_state`, one per feed). Runners never fetch
-  prices: at every launch and resume the server folds the effective
-  table — the org's and the team's fresh entries, the team answering
-  over the org per id, first feed of a scope's list winning within it —
-  and seals it in the run bundle (`RunBundle.GatewayPriceFeed`, bytes:
-  an older runner decodes the bundle unchanged). The runner plants it
+  the platform, org and team levels (`price_feeds`, one document per
+  scope — `platform`, `org:<id>`, `team:<id>`; the sync state in
+  `price_feed_state`, one per fetched feed). Runners never fetch prices:
+  at every launch and resume the server folds the effective table —
+  the platform's, the org's and the team's answering entries, the more
+  specific level answering per id, first feed of a level's list winning
+  within it — and seals it in the run bundle
+  (`RunBundle.GatewayPriceFeed`, bytes: an older runner decodes the
+  bundle unchanged). The runner plants it
   on the run's environment (`ITERION_GATEWAY_PRICE_FEED`, a
   host-written name a project `.env` cannot plant), where the catalog
   reads it between the host IPC record and the operator table; the
   sandbox crossing forwards it beside the record. No runner egress, no
   per-runner freshness drift, multi-replica safe by construction.
-- **Freshness is the fold's judgment.** The server judges each entry at
-  fold time (inside its window: `2 × interval`); the table that travels
+- **Freshness is the fold's judgment.** The server judges each fetched
+  entry at fold time (inside its window: `2 × interval`; a declaration
+  has no window); the table that travels
   answers for the run's whole invocation — the stamp at dispatch and
   every later meter read one answer, whatever the wall clock does
   mid-run. A resumed run is folded anew.
-- **Refresh.** One elected replica refreshes each enabled feed on its
-  own `interval` (bounded `timeout`, short backoff on failure). A feed
+- **Refresh.** One elected replica refreshes each enabled fetched feed
+  on its own `interval` (bounded `timeout`, short backoff on failure). A feed
   that has not refreshed successfully inside its window is **stale** —
   a first-class state, warned once on the transition (and again after
   every recovery), stepping down to the operator floor. Never a
   refusal: a launch with no readable feed state proceeds on the floor.
-- **Precedence.** Fresh feed over operator table (for the ids it
-  carries), team over org. An entry without the price pair does not
-  travel — it can never shadow a priced operator or catalog entry with
-  an unpriced one. When a fresh feed and the operator table disagree,
-  the sync says so: one line per drifting id per refresh, naming both
-  values.
+- **Precedence.** An answering feed over the operator table (for the
+  ids it carries), team over org over platform. An entry without the
+  price pair does not travel as a price entry — it can never shadow a
+  priced operator or catalog entry with an unpriced one. When a fresh
+  feed and the operator table disagree on price, the sync says so: one
+  line per drifting id per refresh, naming both values.
 - **Sources** are adapters behind one seam — a new operator tariff
   shape is configuration or a small script, never an engine `if`:
   `modelsdev` (the aggregator's shape, `provider` qualifier, optional
-  `url`), `scaleway` (that adapter with its qualifier pinned), `litellm`
-  (a proxy's `model_info` listing, per-token costs scaled to per-mtok),
-  and `exec` — a command printing the operator-table JSON on stdout
-  (no shell; `args` splits on spaces; stdout bounded; a descendant
-  holding the pipe cannot stall the sweep). The HTTP fetches dial
+  `url`), `scaleway` (that adapter with its qualifier pinned; every
+  entry keyed both `scaleway/<id>` and `<id>`), `litellm` (a proxy's
+  `model_info` listing, per-token costs scaled to per-mtok), `exec` — a
+  command printing the feed-entry JSON on stdout (the operator-table
+  shape plus `reasoning_efforts`; no shell; `args` splits on spaces;
+  stdout bounded; a descendant holding the pipe cannot stall the
+  sweep) — and `declared`, below. The HTTP fetches dial
   through the same public-unicast guard as the gateway's own client —
   `ITERION_LLM_ENDPOINT_ALLOW_PRIVATE=1`, the operator's export, is the
   one hatch. An `exec` feed is the PLATFORM operator's capability:
   super-admin configures it, and it executes only on a deployment that
   exports `ITERION_PRICE_FEED_EXEC=1` — a tenant admin cannot buy
   server-side command execution with a feed list.
+- **Declarations (ADR-166).** A feed of type `declared` is the
+  operator's own table, stored in its config: `params.entries` holds
+  the feed-entry JSON per gateway id — the operator-table fields plus
+  `reasoning_efforts`. It is never fetched and never stale: the fold
+  reads it from the config at every launch and resume, its entries
+  carry the config's `updated_at`, and the view reports it `declared`
+  with `declared_at` and its entry count (`interval`/`timeout` are
+  validated as for any feed and otherwise unused). An entry states the
+  price pair, or only `reasoning_efforts`; a window, output cap, cache
+  price or flag without the pair is refused on write, since it would
+  never answer. A stored declaration that breaks a write rule steps
+  down with a warning naming the feed, and its view reads `failing`.
+  A tenant admin declares at their own level; only `exec` is the
+  platform operator's.
+- **The platform level.** The deployment's own list is the
+  `platform` document, read and written by super-admins only
+  (`GET`/`PUT /api/admin/price-feeds`, `POST /api/admin/price-feeds/sync`,
+  CAS on `expected_updated_at`, audited `platform.price_feeds.updated`).
+  It folds below every org and team, so one list serves every product
+  that shares a gateway; an org purge leaves it in place.
 - **Manual sync.** `iterion remote price-feeds sync [feed] --team … |
-  --org …` forces one feed or every enabled one, answering what changed
-  per id (old → new). `list`, `set --file`, and `delete` manage the
-  list; `interval`/`timeout` are seconds. The view redacts token-shaped
-  source params (the list is member-readable; a litellm bearer is not).
+  --org … | --platform` forces one feed or every enabled one,
+  answering what changed per id (old → new). `list`, `set --file`,
+  `delete` and `declare` manage the list; `interval`/`timeout` are
+  seconds. The view redacts token-shaped source params (the list is
+  member-readable; a litellm bearer is not) and names them in
+  `redacted_params`: a list read and written back restates them.
+- **The effective view.** `GET /api/teams/{id}/price-feeds/effective`
+  (`iterion remote price-feeds effective [--model ID …]`), readable by
+  any team member, answers the table a run launched now for the team
+  seals — the publisher's own fold, at one instant — and, per id, the
+  answering entry and efforts with their feed and level, every feed
+  that states the id, and the fold's warnings. The runner's env tables
+  are not in it: `runner_env_fallback` says they are not visible from
+  the server.
 - **Provenance.** A feed-priced node's `_gateway_spec` carries
   `"source":"feed:<name>"` and `refreshed_at` — the record that answers
   which table priced the run also answers how fresh its word was. The
   meter prices through the same environment the dispatch resolved from
-  — the node's bill, the org's monthly cap and the credential ledger
-  read one table.
+  — the node's bill, the usage-progress samples a supervisor's
+  `cost_gt` monitor reads, the org's monthly cap and the credential
+  ledger read one table.
 - **Local runs** (`iterion run`, the local studio) have no feed: the
   operator table is the floor, exactly as before.
 
-Accepted reasoning efforts use a separate, optional variable:
+**Accepted reasoning efforts (ADR-166).** A gateway model accepts only
+some `reasoning_effort` values — `scaleway/deepseek-v4.1-flash` answers
+`medium` with HTTP 400 — so the runner maps the requested effort onto
+the model's accepted list before the request leaves. The list answers
+from the first of:
+
+1. **the run's feed table** — the `efforts` map the server folded beside
+   the price entries, keyed by the normalized id, provenance
+   `feed:<name>`. Efforts fold field by field: within a level the first
+   answering feed (a fetched one while fresh, a declaration always) that
+   lists an id's efforts wins them, priced or not; across levels, team over org over platform, per id. A feed that
+   prices an id never erases another feed's effort list, and an
+   efforts-only declaration never hides a price;
+2. **`OPENAI_COMPATIBLE_REASONING_EFFORTS`** — the runner's env table,
+   by exact wire id, provenance `env:OPENAI_COMPATIBLE_REASONING_EFFORTS`;
+3. nothing — the requested effort passes unchanged.
+
+The database seat is a feed entry's `reasoning_efforts` — a
+declaration's, or an `exec` feed's stdout. No `modelsdev`, `scaleway`,
+`litellm` or snapshot source lists efforts. A declaration states them
+alone or beside the price pair:
+
+```sh
+cat > pliage.json <<'EOF'
+{"scaleway/deepseek-v4.1-flash": {"reasoning_efforts": ["low", "high", "xhigh", "max"]},
+ "glm-5.3": {"context_window": 256000, "max_output_tokens": 16384,
+             "input_usd_per_mtok": 2.01, "output_usd_per_mtok": 6.15}}
+EOF
+iterion remote price-feeds declare pliage --platform --file pliage.json --dry-run
+iterion remote price-feeds declare pliage --platform --file pliage.json
+iterion remote price-feeds effective --team <team> --model scaleway/deepseek-v4.1-flash
+```
+
+`declare --models-file M --efforts-file E` takes a runner pool's two env
+tables as written. Each id's efforts land beside its prices (the two
+tables' spellings of an id match case-insensitively), and an id that
+only `E` names is declared by its efforts alone. A feed's list is
+strict: an empty list, a repeated level or a level outside the
+vocabulary refuses the write, naming the id. A run-table entry that the
+runner's vocabulary refuses (a newer server's level, a damaged value)
+warns `REASONING_EFFORTS_INVALID` and steps down to the env table.
+
+The env table stays the runner-side fallback:
 
 ```sh
 export OPENAI_COMPATIBLE_REASONING_EFFORTS='{"scaleway/deepseek-v4.1-flash":["low","high","xhigh","max"],"scaleway/glm-5.3":["low","high","max"]}'
@@ -1918,21 +2000,33 @@ export OPENAI_COMPATIBLE_REASONING_EFFORTS='{"scaleway/deepseek-v4.1-flash":["lo
 
 Keys are the exact gateway wire IDs. Values are trimmed and lowercased; accepted
 names are `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`. Integers
-1–100 are accepted as JSON numbers or strings. An invalid entry is ignored with
+1–100 are accepted as JSON numbers or strings — one vocabulary for the env
+table and the feed. In the env table, an invalid entry is ignored with
 `REASONING_EFFORTS_INVALID`, leaving the other entries and the pricing table
 usable; malformed JSON ignores only the effort mapping. An absent or empty list
 preserves existing behavior. This variable is independent of the strictly
 decoded `OPENAI_COMPATIBLE_MODELS`: old runners ignore it, so **no deployment
-order is required**. Do not add `reasoning_efforts` to the pricing table.
-There is no models.dev/snapshot effort mapping.
+order is required**. Do not add `reasoning_efforts` to the env pricing table,
+whose decoder refuses it; the feed-entry format is the one that carries it.
 
 The mapping applies to delegation, the human/interaction LLM stand-in and the
-cut-turn effort reduction, using the invocation's environment. It crosses the
-sandbox separately from the catalog. Named levels select the nearest accepted
+cut-turn effort reduction, using the invocation's environment. A sandboxed
+node's crossing writes the host's merged answer under
+`OPENAI_COMPATIBLE_REASONING_EFFORTS`: the env table's valid entries,
+overlaid by the run table's efforts under the normalized id, every env
+spelling of it and the node's own wire spelling — so a sandbox image older
+than the run table maps by the list the host maps by — or the explicit empty
+when neither table states anything. Named levels select the nearest accepted
 named level (ties prefer higher: `medium` → `high` above); integers compare with
 integers. When only the other representation is listed, its first value wins
 without guessing a numeric equivalent for a name. Executor adjustments emit
-`reasoning_effort_adjusted` and a warning with requested/applied values.
+`reasoning_effort_adjusted` — `requested`, `applied`, `source` (the table
+that listed the efforts) and `reason` — and a warning. The requested effort
+itself is the node's `reasoning_effort:`, an edge mapping, the launch
+override or a routing cell's `effort`; accepted efforts are a fact of the
+gateway, seated at the platform, org and team levels only. Gateway routes
+run on `claw` alone (C186 above): a CLI backend refuses a gateway route at
+dispatch, so it never reaches this mapping.
 
 `PROVIDER_REQUEST_INVALID` requires a typed provider HTTP 400 whose **message**
 names an operator request parameter: `reasoning_effort must be …`, `max_tokens`

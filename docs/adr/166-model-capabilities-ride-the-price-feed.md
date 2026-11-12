@@ -1,0 +1,102 @@
+# ADR-166 — Model capabilities ride the price feed: a declared source, a platform scope, accepted efforts folded per field; the runner's env tables are fallbacks
+
+- **Status**: Accepted — the operator decided it on 2026-11-12 (the extended price feed, over a `catalog:` block in the routing policy and over a narrower variant with no platform scope; no per-integration capability seat; a platform `scaleway` preset feed in place of `OPENAI_COMPATIBLE_CATALOG_PROVIDER`; a record of its own, ADR-163 keeping a pointer)
+- **Date**: 2026-11-12
+- **Deciders**: jo (architecture, the four arbitrations), Claude (three designs, two judges, the implementation)
+- **Extends**: [ADR-163](163-the-gateway-price-feed-syncs-into-the-database-and-rides-the-ipc.md) — the feed, its fold and its channel are the seat this record reuses; nothing of ADR-163 is reversed.
+- **Relates to**: [ADR-122](122-gateway-models-resolved-exactly.md) (the gateway catalog, whole-entry precedence, exact ids) · [ADR-121](121-adaptive-routing-policy.md) (the routing cells, where the requested effort lives) · [ADR-131](131-tenant-gateway-credential.md) (the team's gateway key, which seals the bundle the feed rides) · [ADR-164](164-configurable-key-pools-attach-per-scope-with-a-fallback-strategy.md) (a `platform` document beside the tenants' in one collection)
+- **Serves**: [#2906](https://github.com/SocialGouv/iterion/issues/2906) (provider/model configuration lives in the database); the retirement of the dedicated runner pools (honorabilite, egapro, vao)
+
+## Context
+
+A gateway route sends the node's `reasoning_effort` on the wire, and a gateway model accepts only some values: `scaleway/deepseek-v4.1-flash` takes `low`, `high`, `xhigh` and `max`, and answers `medium` with HTTP 400. Which values a model accepts was readable from one place only: `OPENAI_COMPATIBLE_REASONING_EFFORTS`, an env table of the runner process. The dedicated runner pools carried it in their deployment values; the default runner did not. A Revi review of DomiFa, run on the default runner, sent `medium` to deepseek-v4.1-flash and failed on that 400.
+
+The pools exist mostly to carry three env tables — `OPENAI_COMPATIBLE_MODELS` (prices, windows, output caps, flags), `OPENAI_COMPATIBLE_REASONING_EFFORTS` and `OPENAI_COMPATIBLE_CATALOG_PROVIDER`. Retiring them means each name gets a seat in the database, which is also the doctrine of #2906: the database is the seat of provider/model configuration, and the env tables are runner-side fallbacks.
+
+ADR-163 already built most of that seat. Its price feed stores org and team feed lists in the database, folds the effective table at every launch and resume, seals it in the run bundle, and the runner plants it where the gateway catalog reads it. Three things were missing:
+
+- **a field** for the accepted efforts;
+- **a way to state** what no tariff source publishes — an effort list, a window or a price written by hand, without a fetch, a script or a server-side exec;
+- **a level above the org**: the products that would share one gateway table sit in several orgs, and a per-org copy drifts.
+
+## Decision
+
+1. **One spec, one vocabulary.** `modelspecs.Spec` gains `ReasoningEfforts` — server-side feed state, never filled by the models.dev parse. `modelspecs.ParseEffortLevels` is the one effort vocabulary (`none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, integers 1–100; trimmed, lower-cased), read by the runner's tolerant env reader and by the feed's strict parser. The operator-table decoder `pricefeed.ParseEntries` (`OPENAI_COMPATIBLE_MODELS`) keeps refusing `reasoning_efforts`. `pricefeed.ParseFeedEntries` shares its body and accepts the field strictly: an empty list, a repeated level or a level outside the vocabulary is refused, naming the id. Both the `exec` source and the `declared` source below parse with it.
+
+2. **A `declared` source: the answer is its params.** A feed of type `declared` stores its table in `params.entries`: the operator-table JSON per gateway id, plus `reasoning_efforts`. It is a static source (`pricefeed.StaticSource`):
+   - the fold reads it from its config at every fold;
+   - the reconciler never fetches it (`Due` is false);
+   - it never goes stale, and its entries carry the config's `updated_at`;
+   - the view reports it `declared`, with its entry count and `declared_at`.
+
+   On write, an entry states the price pair, or only `reasoning_efforts`. A window, an output cap, a cache price or a flag without the price pair is refused: ADR-163's rule is that an unpriced entry never answers, so such an entry would sit there doing nothing. An empty document and an entry that states nothing are refused too. A stored declaration that breaks these rules steps down in the fold with a warning that names the feed, and the view reads it as `failing`. Declaring is not an exec capability: a tenant admin declares at their own scope, just as they can already point a `litellm` or `modelsdev` feed at any URL.
+
+3. **A platform scope.** The `price_feeds` collection gains a document `platform` — the deployment's own feed list, behind the super-admin routes `GET/PUT /api/admin/price-feeds` and `POST /api/admin/price-feeds/sync`. Writes use the same CAS as the org and team lists and are audited `platform.price_feeds.updated`. The fold reads platform, then org, then team. An org purge removes only the org's and its teams' documents (`org:`/`team:` ids and prefixes), so the platform document and its states (`platform/<feed>`) survive it.
+
+4. **Two maps on the run table, folded per field.** The table the bundle carries has two maps:
+   - `Entries` holds the priced entries (prices, window, output cap, flags), with any effort list stripped;
+   - `Efforts` maps an id to `{feed, values}`.
+
+   Each map folds by ADR-163's precedence: within a scope, the first answering feed that states the field for an id wins — a fetched feed while fresh, a declaration always; across scopes, the more specific scope replaces that id (team over org over platform). An id can come from one feed in one map and another feed in the other. So a fetched feed that prices an id never erases a declared effort list, and an efforts-only declaration never hides a price. `Entries` is always encoded (`{}` when empty), so an older runner, whose parser requires it, still plants an efforts-only table.
+
+5. **The runner reads the run table first, the env table only as a fallback.** `compatgw.AcceptedEfforts` answers a gateway id's accepted values and their source, in this order:
+   - the run table's `Efforts`, under the normalized id → `feed:<name>`;
+   - otherwise `OPENAI_COMPATIBLE_REASONING_EFFORTS`, by exact id → `env:OPENAI_COMPATIBLE_REASONING_EFFORTS`;
+   - otherwise nothing, and the requested effort passes through as before.
+
+   A run-table entry the vocabulary refuses warns `REASONING_EFFORTS_INVALID` and steps down to the env table. Every writer of an effort reads through the one mapping (`gatewayReasoningEffort`): delegation, the human/interaction stand-in and the turn after a cut at `max_tokens`. `TestEveryReasoningEffortWriterIsInventoried` (`pkg/backend/model`) keeps the list of those writers in a test. The `reasoning_effort_adjusted` event and its warning name the source.
+
+6. **The sandbox crossing carries the host's answer.** The crossing writes the host's merged table under `OPENAI_COMPATIBLE_REASONING_EFFORTS`, the name an older sandbox image reads: the env table's valid entries, with the run table's efforts laid over them under the normalized id, under every env spelling of that id, and under the node's exact wire spelling. When neither table states anything, the crossing writes the explicit empty. A sandbox image of this release reads the run table first, as the host does; an older image reads the crossed name by exact wire id. Either way it maps the effort with the list the host used.
+
+7. **Accepted efforts versus requested effort.** The accepted efforts are a fact about the gateway that serves an id. Their seats stop at the feed's scopes — platform, org, team — and there is no capability seat on a bot, a binding, a credential or an integration. The requested effort is the intent of the workflow or of the operator. It stays where it lives today: the node's `reasoning_effort:`, the launch override, an edge mapping, and the routing cells' `effort` across the six levels of ADR-121. Dispatch maps the request onto the accepted list: the nearest named level, ties going to more effort (`medium` → `high` when only `low` and `high` are on the list); integers compare only with integers.
+
+8. **The per-gateway path, kept open and not built.** Capabilities are keyed by the gateway wire id, not by the pair (gateway host, id). A team whose key points at another gateway serving the same id has a way out today: it declares its own team-level feed, which replaces the platform's answer for that id, field by field. If one scope ever needs two answers for one id, the extension stays inside this seat: a host qualifier in the same feed document and on the same run table, answering before the bare-id entry. That is an additive map an older runner ignores, the same shape `Efforts` took here. It would not be a new collection or a per-integration seat.
+
+9. **A `scaleway` preset feed replaces `OPENAI_COMPATIBLE_CATALOG_PROVIDER` as the seat.** The database answer to "this gateway's ids live under models.dev's `scaleway` key" is a platform feed of type `scaleway`. It keys every entry both as `scaleway/<id>` and as `<id>`, the two spellings `CATALOG_PROVIDER=scaleway` looked up. Placed after the declaration, it answers the ids the declaration leaves open. No typed `catalog_provider` field exists on the table.
+
+10. **The env tables are runner-side fallbacks, unchanged.** `OPENAI_COMPATIBLE_MODELS` answers below the run table in the catalog ladder (ADR-163). `OPENAI_COMPATIBLE_REASONING_EFFORTS` answers below the run table's efforts. `OPENAI_COMPATIBLE_CATALOG_PROVIDER` answers below both. Their names, decoders and tolerances do not change, and no env name is added.
+
+11. **A read model, and the operator's tools.** `GET /api/teams/{id}/price-feeds/effective` lets any member of the team read the effective table. It answers the table a run launched now for the team would seal: the same fold the publisher runs, at one instant. For each id it gives the answering entry and efforts with their feed and level, every feed that states the id, the fold's warnings, and `runner_env_fallback: "not visible from the server"`. The CLI covers the rest:
+    - `iterion remote price-feeds effective` reads that view;
+    - `declare` writes one declared feed after checking it with the server's parser and printing the per-id diff; `--models-file`/`--efforts-file` take a pool's two env tables exactly as written, and `--dry-run` prints without writing;
+    - `--platform` addresses the platform scope on every write.
+
+## Consequences
+
+- **Nothing new to operate.** There is no new collection, no new channel and no new env name. The cloud twin is ADR-163's: the `price_feeds` and `price_feed_state` Mongo stores and their memory twins. A declaration lives in its config's params. A fetched feed's state entries gain `reasoningefforts`, the driver's default key, which an older binary skips on decode.
+- **Mixed versions during a rollout.**
+  - An older server replica refuses a `declared` feed on write and folds no platform document and no declaration. The operator writes nothing until every replica runs the release.
+  - An older runner decodes the new table. Its priced entries answer, because the runner never judges freshness and the presence of an entry is the verdict; its efforts map is ignored and the runner's env table answers (`TestOldRunnerReadsTheNewTable`).
+  - An older sandbox image applies the database's list through the crossed name (`TestCrossingReasoningEffortsServesAnOlderSandbox`).
+- **The usage-progress sample prices through the run's context**, as the dispatch and the meter do. On a default runner with no env tables, a gateway node priced by the feed would otherwise sample at zero dollars, and a supervisor's `cost_gt` monitor would go blind once the pools retire.
+- **Keyed by wire id.** A team that serves an id from a gateway other than the platform's inherits the platform's list for that id until it declares its own.
+- **The preset feed is a fetched feed.** While stale it steps down. For as long as that lasts, the qualified lookup in the embedded snapshot that `CATALOG_PROVIDER` fell back on is gone, except on a runner that still sets the env name. Only priced entries answer, so an id that models.dev lists without prices must be declared.
+- **The views stay blind for now.** `/api/effort-capabilities` answers nothing for a gateway id. The model-capabilities view, the studio's effort picker and the cost preview do not read the tenant feed. These are a follow-up.
+- **The seal hole stays open.** A run that carries no credential and no generic secret, and is not held to its team's gateway, seals no bundle, so it carries no feed table. Its gateway routes are funded by the runner pod's environment and read only the runner's env tables. Closing this is a follow-up in two releases: the runner first, then the publisher.
+- **Prerequisites before a pool retires.** This is the operator's runbook, not code:
+  - this release runs on every server replica, on the default runners and on the sandbox images;
+  - a platform declaration covers every gateway id the products' routing cells name, with the values carried over from the pool's tables (`declare --platform --models-file … --efforts-file … --dry-run`), plus the `scaleway` preset where the pool set `CATALOG_PROVIDER`;
+  - `effective --team` answers `feed:<name>` for every one of those ids;
+  - every product run seals a bundle — a team gateway key (ADR-131) in place, given the seal hole above;
+  - the pool's dials are re-seated as routing cells;
+  - the pool's non-LLM environment (sandbox image, node selector, spread) has a seat, or equals the default runner's;
+  - the runs stamped on the pool are drained **before** the team is unmapped, because `ErrPoolRemapped` is permanent;
+  - pools retire one at a time, each scaled to zero for one release cycle before its entry is removed.
+- **The proof** is `TestPriceFeedEndToEndRetiresThePool` (`pkg/server`), deterministic and with no model spend. A super-admin's platform declaration goes through the real route, the publisher's fold, the sealed bundle, the runner's adapters and the executor, to a stub gateway that records what it receives. The default runner, with no `OPENAI_COMPATIBLE_*` table, sends `reasoning_effort: high` for a `medium` node and `max_tokens` from the declared output cap. It records `_gateway_spec.source = feed:pliage`, a priced cost and a priced usage sample. A twin run on a pool runner whose env tables state the same values sends the same model, `reasoning_effort` and `max_tokens` at the same cost; only the provenance differs.
+
+## Alternatives rejected
+
+- **A `catalog:` block in the routing policy**, six levels with locks. It would be a second database seat for facts ADR-163 already holds. A whole-document PUT from an older replica erases it permanently. It extends pricing authority to manifests and bindings, and its size is XL. It wins only if a bot or a binding must declare its own capabilities.
+- **Efforts inside `Entry.Spec`, under whole-entry precedence.** A feed that prices an id would erase the declared effort list.
+- **Efforts on the credential**, or any per-integration seat: refused by the operator. A capability is a fact of the gateway, and the escape hatch is a team-level declaration.
+- **A new `model_capabilities` collection.** It would need a second reconciler, CAS and set of routes for the same three scopes.
+- **`reasoning_efforts` inside `OPENAI_COMPATIBLE_MODELS`.** An older runner's strict decoder refuses the whole table, which would force a deployment order and lose every price on the way.
+- **A typed `catalog_provider` field on the table.** The preset feed is configuration of an adapter that already exists.
+- **No platform scope** (org and team only). The products span several orgs, so the table would become a copy per org, and the copies drift.
+
+## Not decided here
+
+- Locks on a platform declaration against team overrides — a later ADR, with llmroute's locks as the precedent.
+- Who owns the exchange rate behind a price. Prices are in USD per Mtok, and a tariff billed in another currency needs a rate that someone keeps current.
+- Keying by gateway host — only the path in Decision 8.
+- The retirement of each pool — the operator's runbook, under the prerequisites above.

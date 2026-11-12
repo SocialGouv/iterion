@@ -263,16 +263,16 @@ erDiagram
     string updated_by
   }
   price_feeds {
-    string _id PK "'team:<team id>' | 'org:<org id>'"
-    object[] feeds "ADR-163 - name, source type (modelsdev|scaleway|litellm|exec), params, enabled, interval, timeout"
+    string _id PK "'platform' | 'org:<org id>' | 'team:<team id>'"
+    object[] feeds "ADR-163 - name, source type (modelsdev|scaleway|litellm|exec|declared), params, enabled, interval, timeout - a declared feed's table IS params.entries (ADR-166)"
     datetime updated_at
     string updated_by
   }
   price_feed_state {
-    string _id PK "'<scope>:<id>/<feed name>'"
+    string _id PK "'platform/<feed name>' | '<scope>:<id>/<feed name>'"
     string feed
-    string status "ok | stale | failing | never - staleness is first-class, derived on read"
-    object entries "id -> window, prices, flags - the operator-table entry shape"
+    string status "ok | stale | failing | never - staleness is first-class, derived on read; a declared feed is judged by its config, not here"
+    object entries "id -> window, prices, flags, accepted efforts - the feed-entry shape"
     datetime refreshed_at
     int fresh_for_s "2 x the feed's interval"
     datetime last_attempt
@@ -305,7 +305,7 @@ erDiagram
 ```
 
 - **Four meters, four identities, and none substitutes for another.** Their tier vocabularies differ too: `credential_usage.tier` has four values because it merges a tenant's key and its subscription into `team`, where `runs.credential_tiers` keeps the publisher's five and holds `byok` and `oauth-forfait` apart.
-- **Five dotted edges in this block carry the parent id inside a composed string**: `usage_windows.key`, `org_usage._id`, `llm_routing_policies._id`, and — two more, ADR-163 — `price_feeds._id` and `price_feed_state._id`, the state document composing its scope's id with the feed name. No store joins on `orgs._id` or `teams._id`, so none of them is a key lookup. The solid edges are the ones whose field *is* the reference: `credential_usage.tenant_id` and `model_prefs.tenant_id`, both written verbatim, and `platform_credentials.teams`, an allow-list of team ids. The sixth dotted edge, `runner_pool`, is a pool name resolved in the `runner_pools` family.
+- **Five dotted edges in this block carry the parent id inside a composed string**: `usage_windows.key`, `org_usage._id`, `llm_routing_policies._id`, and — two more, ADR-163 — `price_feeds._id` and `price_feed_state._id`, the state document composing its scope's id with the feed name; their `platform` documents (ADR-166) name no org or team and survive every org purge. No store joins on `orgs._id` or `teams._id`, so none of them is a key lookup. The solid edges are the ones whose field *is* the reference: `credential_usage.tenant_id` and `model_prefs.tenant_id`, both written verbatim, and `platform_credentials.teams`, an allow-list of team ids. The sixth dotted edge, `runner_pool`, is a pool name resolved in the `runner_pools` family.
 - `org_usage`'s subject is a **team** id whenever the launch gate read the zero `Org` — an org-less team, or an org the gate could not read — so an `org|` subject is not proof of an org, and a meter row's owner is zero-or-one.
 - `usage_windows.key` carries five scope spellings — `platform`, `local`, `tenant:<id>`, `org:<id>` and the literal `account`. Three of its windows (`frequency`, `spend`, `auth`) are not provider windows at all.
 - `platform_settings` is **one collection, one document per family**. This page draws the four a run's funding and routing read — `platform_credentials`, `runner_pools`, `usage_caps` and `budget_floor`; the bot-facing families are drawn on [data-model-forge-bots.md](data-model-forge-bots.md). Sovereign runner pools are the `runner_pools` **family**, not a collection of their own.
