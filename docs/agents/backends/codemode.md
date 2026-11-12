@@ -12,19 +12,30 @@ contract anything new has to honour.
 
 ## What is built, as of 2026-11-11
 
-Exactly one piece: **the door**. `toolDispatcher` in
+Two pieces. **The door**: `toolDispatcher` in
 [pkg/backend/model/generation_toolexec.go](../../../pkg/backend/model/generation_toolexec.go)
 holds a node's dispatch state as a value and `dispatch(ctx, block)` *is*
 `executeOneTool`, so a nested call takes the pipeline the model's own loop
 takes — lifecycle hooks, the `allowed-tools:` command scope,
 `permission.Policy`, secret materialization, the events, the `tool_search` pin.
 
-**Nothing of the runtime exists.** There is no script host, no JS execution, no
-DSL attribute, no bound, no bench. A grep for `__script-host`, `tsdecl` or
-`toolindex` returns nothing, and the two occurrences of the word "codemode" in
-Go are comments pointing here. Treat any claim that codemode works as false
-until this section says otherwise. Epic [#3153](https://github.com/SocialGouv/iterion/issues/3153);
-the in-pod bench that will declare it usable is [#3155](https://github.com/SocialGouv/iterion/issues/3155).
+And **the confined host**: [pkg/scripthost](../../../pkg/scripthost) plus the
+hidden `iterion __script-host` sub-command. A caller hands it JavaScript, it
+runs in a child process with an empty environment under kernel bounds, and one
+JSON document comes back. Its ten bounds, the kernel mechanism behind each and
+the witness that was seen to fail without it are in
+[codemode-confinement](codemode-confinement.md) — which also records the five
+statements measurement refuted, three of them in this page.
+
+**Nothing CONNECTS the two.** The host has no tool binding, so no node, no
+`.bot` and no model can reach it: there is no DSL attribute, no capability cell
+and no tool. That is deliberate — the whole content of this slice is the
+confinement, so it could be reviewed as confinement rather than as a feature.
+Treat any claim that codemode *works* as false until this section says
+otherwise. Epic [#3153](https://github.com/SocialGouv/iterion/issues/3153); the
+slice is [#3175](https://github.com/SocialGouv/iterion/issues/3175) and the
+in-pod bench that will declare it usable is
+[#3155](https://github.com/SocialGouv/iterion/issues/3155).
 
 ## The contract — a host dispatches with the context the dispatcher vouches for
 

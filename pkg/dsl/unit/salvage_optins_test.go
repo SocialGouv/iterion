@@ -827,6 +827,7 @@ var unsafeFiles = map[string]string{
 	"pkg/cli/tty_windows.go":                          "the console mode's syscall argument",
 	"cmd/iterion-desktop/prgname_linux.go":            "the C string handed to g_set_prgname",
 	"cmd/iterion-desktop/window_icon_linux.go":        "the GTK window handle the icon is set on",
+	"pkg/scripthost/confine_linux.go":                 "the landlock_ruleset_attr handed to landlock_create_ruleset(2), which takes a struct pointer and its size",
 }
 
 // reflectPointerFiles are the production files that turn a reflect.Value

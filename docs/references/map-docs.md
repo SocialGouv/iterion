@@ -175,6 +175,7 @@ One row per page under `docs/`, ADRs included. An ADR's **status** is the column
 | [`docs/agents/README.md`](../agents/README.md) | Agent instructions — the tree | Doctrine specific to this repository: what to know before touching iterion, | — |
 | [`docs/agents/backends/README.md`](../agents/backends/README.md) | Backends and execution — the domain | Who runs the prompt, with which tools, and what the node keeps of its | — |
 | [`docs/agents/backends/backend-selection.md`](../agents/backends/backend-selection.md) | Backend selection — the seven wired backends | Read it when a node runs on the wrong backend or you wire a new one. | — |
+| [`docs/agents/backends/codemode-confinement.md`](../agents/backends/codemode-confinement.md) | Codemode confinement — the bounds, and what each one is proven by | The script host runs model-authored JavaScript in a child process that holds no | — |
 | [`docs/agents/backends/codemode.md`](../agents/backends/codemode.md) | Codemode — the model writes code that calls the node's own tools | One tool whose argument is JavaScript. | — |
 | [`docs/agents/backends/facade-substitution.md`](../agents/backends/facade-substitution.md) | Facade substitution — the served model is not the label | Read it when a `zai`/`moonshot` route answers with GLM/Kimi under a | — |
 | [`docs/agents/backends/fallbacks-and-parity.md`](../agents/backends/fallbacks-and-parity.md) | Fallbacks, schema re-ask and system-prompt parity | Read it when you write `fallbacks:`, hit C173/C176, a node acts "dumber" | — |

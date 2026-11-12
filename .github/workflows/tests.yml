@@ -205,6 +205,21 @@ concurrency:
 # pinned against each other by TestSelfHostedRoutingExpressionsAgree in
 # internal/ciguard: one copy edited alone turns it red.
 
+# These runners' kernels offer Landlock ABI 1, which has no network rights —
+# they arrive at ABI 4 (kernel 6.7). So codemode's escape suite CANNOT prove
+# that a confined script host is unable to open a TCP connection here, and it
+# refuses to skip a bound silently: the lane has to say out loud what it does
+# not test. Measured 2026-11-11 on arc-runners: the filesystem, exec and
+# every-thread bounds ARE proven, the network one is not, and the connect a
+# confined child made succeeded.
+#
+# Workflow-level rather than per-step because four jobs run the Go suite and a
+# record on one of them is a record on none — `race-shard` found that the hard
+# way. It takes effect only BELOW the ABI an arm needs, so when the runners
+# move to a 6.7+ kernel the arm proves itself and this block can go.
+env:
+  ITERION_CODEMODE_ALLOW_NO_LANDLOCK_NET: "1"
+
 jobs:
   # ---- gated legs: the real work, one side each, aggregated by `test` ----
 
