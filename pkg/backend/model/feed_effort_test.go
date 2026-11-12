@@ -3,6 +3,8 @@ package model
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"slices"
@@ -207,5 +209,60 @@ func TestForwardableProviderEnv_CrossesTheFeedEfforts(t *testing.T) {
 	}
 	if v, ok := env[compatgw.ReasoningEffortsEnv]; !ok || v != "" {
 		t.Fatalf("the effort table must cross as the explicit empty: %q %v", v, ok)
+	}
+}
+
+// A run whose gateway model is an env dial names no id for the fold's
+// narrowing. When a large priced feed pushes the folded table over the
+// channel's budget, the platform's declared efforts still reach the
+// dispatch: `medium` maps to `high` from feed:pliage, through the named
+// ids the publisher passes (RouteGatewayModelIDs) and the runner's own
+// bundle-to-context adapter.
+func TestFeedEffortsSurviveTheOverBudgetNarrowing(t *testing.T) {
+	unsetGatewayTables(t)
+	node := &ir.AgentNode{}
+	node.ID = "review"
+	node.Model = "${ITERION_FEED_EFFORT_DIAL:-openai_compatible/" + feedEffortWire + "}"
+	named := RouteGatewayModelIDs(&ir.Workflow{Nodes: map[string]ir.Node{"review": node}}, ModelOverrides{})
+
+	now := time.Now()
+	var big strings.Builder
+	big.WriteString("{")
+	for i := range 600 {
+		if i > 0 {
+			big.WriteString(",")
+		}
+		buf := make([]byte, 12)
+		if _, err := rand.Read(buf); err != nil {
+			t.Fatal(err)
+		}
+		big.WriteString(`"vendor/` + hex.EncodeToString(buf) + `":{"context_window":128000,"max_output_tokens":16384,"input_usd_per_mtok":0.3,"output_usd_per_mtok":1.2}`)
+	}
+	big.WriteString("}")
+	declared := func(name, entries string) pricefeed.ScopeState {
+		return pricefeed.ScopeState{Config: &pricefeed.ConfigRecord{UpdatedAt: now, Feeds: []pricefeed.FeedConfig{{
+			Name: name, Type: pricefeed.TypeDeclared, Enabled: true,
+			Interval: pricefeed.D(30 * 24 * time.Hour), Timeout: pricefeed.D(time.Second),
+			Params: map[string]string{"entries": entries},
+		}}}}
+	}
+	table := pricefeed.Fold(pricefeed.FoldConfig{Now: now, Named: named},
+		declared("pliage", `{"`+feedEffortWire+`":{"reasoning_efforts":["low","high","xhigh","max"]}}`),
+		declared("team-prices", big.String()),
+	)
+	if table == nil {
+		t.Fatalf("the over-budget fold answered nil for a run naming %v", named)
+	}
+	raw, err := json.Marshal(table)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(raw) > pricefeed.DefaultBudget {
+		t.Fatalf("the sealed table is %d bytes, over the %d budget", len(raw), pricefeed.DefaultBudget)
+	}
+	ctx := compatgw.OverlayFeedTable(context.Background(), raw)
+	applied, source := gatewayReasoningEffort(ctx, "openai_compatible/"+feedEffortWire, "medium", func(string, ...any) {})
+	if applied != "high" || source != compatgw.SourceFeed("pliage") {
+		t.Fatalf("the dispatch sent %q (source %q), want high from feed:pliage", applied, source)
 	}
 }

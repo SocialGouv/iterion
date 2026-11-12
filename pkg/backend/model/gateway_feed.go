@@ -11,13 +11,15 @@ import (
 // can name — the coarse walk the price-feed fold's narrowing fallback
 // reads (ADR-163). Coarse ON PURPOSE: it runs only when the folded table
 // exceeds the channel's byte budget, and an id it misses there prices at
-// the operator floor — the state every run had before the feed. Primary
-// chains, fallbacks, the human/interaction and recovery models ride
-// along; a templated name stays as written and matches nothing (its id
-// is not knowable at publish). The models are the ones the run sends:
-// overrides is the run's folded list, so a node pin, a route-scoped pin
-// and a supervisor pin name their gateway ids too — the declarations as
-// written are read where nothing pins them.
+// the operator floor — the state every run had before the feed — while
+// its accepted efforts still travel: the fold narrows prices first and
+// keeps every id's efforts unless they alone exceed the budget
+// (ADR-166). Primary chains, fallbacks, the human/interaction and
+// recovery models ride along; a templated name stays as written and
+// matches nothing (its id is not knowable at publish). The models are
+// the ones the run sends: overrides is the run's folded list, so a node
+// pin, a route-scoped pin and a supervisor pin name their gateway ids
+// too — the declarations as written are read where nothing pins them.
 func RouteGatewayModelIDs(wf *ir.Workflow, overrides ModelOverrides) []string {
 	if wf == nil {
 		return nil

@@ -39,6 +39,8 @@ ADR-163 already built most of that seat. Its price feed stores org and team feed
 
    Each map folds by ADR-163's precedence: within a scope, the first answering feed that states the field for an id wins — a fetched feed while fresh, a declaration always; across scopes, the more specific scope replaces that id (team over org over platform). An id can come from one feed in one map and another feed in the other. So a fetched feed that prices an id never erases a declared effort list, and an efforts-only declaration never hides a price. `Entries` is always encoded (`{}` when empty), so an older runner, whose parser requires it, still plants an efforts-only table.
 
+   A table over the channel's byte budget narrows its prices to the run's named gateway ids and keeps every id's efforts (`TestFoldOverBudgetKeepsDeclaredEfforts`). A price the narrowing drops steps down to the operator floor; a dropped effort list would send a level the gateway refuses, and a run whose model is an env dial names no id at all. Only when the efforts alone exceed the budget do both maps narrow to the named ids.
+
 5. **The runner reads the run table first, the env table only as a fallback.** `compatgw.AcceptedEfforts` answers a gateway id's accepted values and their source, in this order:
    - the run table's `Efforts`, under the normalized id → `feed:<name>`;
    - otherwise `OPENAI_COMPATIBLE_REASONING_EFFORTS`, by exact id → `env:OPENAI_COMPATIBLE_REASONING_EFFORTS`;

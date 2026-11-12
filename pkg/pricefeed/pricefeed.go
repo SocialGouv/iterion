@@ -439,10 +439,15 @@ type ScopeState struct {
 // its efforts answer.
 //
 // The result is nil only when both maps are empty, and fits
-// FoldConfig.Budget serialized. A table over budget is narrowed to the
-// run's NAMED ids (the workflow's own gateway models); a narrowed table
-// still over budget answers nil with a warning — the run keeps the
-// operator floor rather than a channel the kernel would refuse to exec.
+// FoldConfig.Budget serialized. A table over budget narrows its price
+// map to the run's NAMED ids (the workflow's own gateway models) and
+// keeps every id's accepted efforts: a dropped price steps down to the
+// operator floor, a dropped effort list would send a level the gateway
+// refuses — and a run whose model is an env dial names nothing. When
+// the efforts alone exceed the budget, both maps narrow to the named
+// ids; a table still over budget answers nil with a warning — the run
+// keeps the operator floor rather than a channel the kernel would
+// refuse to exec.
 func Fold(cfg FoldConfig, scopes ...ScopeState) *Table {
 	if cfg.Now.IsZero() {
 		cfg.Now = time.Now()
@@ -513,6 +518,16 @@ func Fold(cfg FoldConfig, scopes ...ScopeState) *Table {
 	if table.Fits(cfg.Budget) {
 		return table
 	}
+	// Prices narrow first: a price the narrowing drops steps down to the
+	// operator floor, an effort list it dropped would send a level the
+	// gateway refuses — and efforts come from declarations and exec
+	// feeds, a few bytes per id.
+	if pricesNarrowed := newTable(narrowEntries(entries, cfg.Named), efforts); (len(pricesNarrowed.Entries) > 0 || len(pricesNarrowed.Efforts) > 0) && pricesNarrowed.Fits(cfg.Budget) {
+		if cfg.Warnf != nil {
+			cfg.Warnf("price feed: the folded table exceeds %d bytes — prices narrowed to the run's %d named gateway ids, accepted efforts kept for all %d ids", cfg.Budget, len(pricesNarrowed.Entries), len(pricesNarrowed.Efforts))
+		}
+		return pricesNarrowed
+	}
 	narrowed := table.Narrow(cfg.Named)
 	if narrowed != nil && narrowed.Fits(cfg.Budget) {
 		if cfg.Warnf != nil {
@@ -565,6 +580,18 @@ func (t *Table) Fits(budget int) bool {
 	}
 	raw, err := json.Marshal(t)
 	return err == nil && len(raw) <= budget
+}
+
+// narrowEntries keeps the named ids (normalized) of a price map.
+func narrowEntries(entries map[string]Entry, named []string) map[string]Entry {
+	keep := map[string]Entry{}
+	for _, id := range named {
+		id = NormalizeID(id)
+		if e, ok := entries[id]; ok {
+			keep[id] = e
+		}
+	}
+	return keep
 }
 
 // Narrow keeps only the named ids (normalized), in both maps. An answer

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -386,4 +387,71 @@ func effortsLen(t *Table) int {
 		return -1
 	}
 	return len(t.Efforts)
+}
+
+// A table over budget narrows its PRICES to the run's named ids and keeps
+// the accepted efforts of every id: a price the narrowing drops steps
+// down to the operator floor, an effort list it dropped would send a
+// level the gateway refuses. A run whose gateway model comes from an env
+// dial (`${VAR:-…}`) names nothing, and still carries the platform's
+// declared efforts. The priced ids are random, so the budget is crossed
+// by bytes that do not compress or repeat.
+func TestFoldOverBudgetKeepsDeclaredEfforts(t *testing.T) {
+	const wire = "scaleway/deepseek-v4.1-flash"
+	now := time.Now()
+	platform := ScopeState{Config: &ConfigRecord{UpdatedAt: now, Feeds: []FeedConfig{
+		declaredFeed("pliage", `{"`+wire+`":{"reasoning_efforts":["low","high","xhigh","max"]}}`),
+	}}}
+	priced := map[string]modelspecs.Spec{}
+	var another string
+	for i := range 600 {
+		buf := make([]byte, 12)
+		if _, err := rand.Read(buf); err != nil {
+			t.Fatal(err)
+		}
+		id := "openrouter/" + hex.EncodeToString(buf)
+		if i == 0 {
+			another = id
+		}
+		priced[id] = modelspecs.Spec{ContextWindow: 131072, MaxOutputTokens: 16384, InputCostPerM: 0.3, OutputCostPerM: 1.2, CacheReadCostPerM: 0.03}
+	}
+	team := ScopeState{Config: &ConfigRecord{UpdatedAt: now, Feeds: []FeedConfig{fetchedFeed("models-dev")}},
+		States: map[string]*StateRecord{"models-dev": freshState("models-dev", now, priced)}}
+	if whole := Fold(FoldConfig{Now: now, Budget: 1 << 30}, platform, team); whole.Fits(DefaultBudget) {
+		t.Fatal("the whole table fits the default budget — the case does not cross it")
+	}
+	for _, tc := range []struct {
+		name  string
+		named []string
+	}{
+		{"an env dial names nothing", nil},
+		{"the run names another id", []string{another}},
+		{"the run names the id", []string{wire}},
+	} {
+		var warned []string
+		got := Fold(FoldConfig{Now: now, Named: tc.named, Warnf: func(f string, a ...any) { warned = append(warned, fmt.Sprintf(f, a...)) }}, platform, team)
+		if got == nil {
+			t.Fatalf("[%s] the over-budget fold answered nil — the platform's declared efforts for %s are gone (warnings %v)", tc.name, wire, warned)
+		}
+		if !got.Fits(DefaultBudget) {
+			t.Fatalf("[%s] the answer does not fit the budget", tc.name)
+		}
+		if e := got.Efforts[wire]; e.Feed != "pliage" || len(e.Values) != 4 {
+			t.Fatalf("[%s] efforts[%s] = %+v, want the platform declaration's four levels", tc.name, wire, got.Efforts)
+		}
+		for id := range got.Entries {
+			if !slices.Contains(tc.named, id) {
+				t.Fatalf("[%s] the narrowed price map carries %s, which the run did not name", tc.name, id)
+			}
+		}
+		if slices.Contains(tc.named, another) {
+			if _, ok := got.Entries[another]; !ok {
+				t.Fatalf("[%s] the named priced id %s was dropped", tc.name, another)
+			}
+		}
+		if len(warned) != 1 || !strings.Contains(warned[0], fmt.Sprintf("prices narrowed to the run's %d named gateway ids", len(got.Entries))) ||
+			!strings.Contains(warned[0], "accepted efforts kept for all 1 ids") {
+			t.Fatalf("[%s] the narrowing must warn once, counting prices and efforts apart: %v", tc.name, warned)
+		}
+	}
 }
