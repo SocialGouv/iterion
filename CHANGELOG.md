@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [5.29.0](https://github.com/SocialGouv/iterion/compare/v5.28.0...v5.29.0) (2026-11-12)
+
+### Features
+
+* **sandbox:** keep per-exec environment values off argv ([#3189](https://github.com/SocialGouv/iterion/issues/3189)) ([38a6205](https://github.com/SocialGouv/iterion/commit/38a62053191fdf7ed14d37158e4ab3d9eca11805)), closes [#2923](https://github.com/SocialGouv/iterion/issues/2923) [#2945](https://github.com/SocialGouv/iterion/issues/2945) [#2979](https://github.com/SocialGouv/iterion/issues/2979) [#3191](https://github.com/SocialGouv/iterion/issues/3191)
+
+    <details><summary>why</summary>
+
+    Docker container creation exposed the egress-proxy credential in argv, and Kubernetes exec exposed workload environment values even when an SDK reserved stdin. Container creation now passes proxy values through the host environment with name-only flags. Kubernetes exec uses a versioned native transport that preserves caller stdin and keeps workload overrides separate from the operator’s kubectl configuration.
+
+    </details>
+
 ## [5.28.0](https://github.com/SocialGouv/iterion/compare/v5.27.0...v5.28.0) (2026-11-12)
 
 ### Features
