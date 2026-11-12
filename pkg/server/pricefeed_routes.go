@@ -265,7 +265,7 @@ func redactFeedParams(params map[string]string) (map[string]string, []string) {
 	for k, v := range params {
 		lower := strings.ToLower(k)
 		if strings.Contains(lower, "token") || strings.Contains(lower, "key") || strings.Contains(lower, "secret") {
-			out[k] = "(redacted)"
+			out[k] = pricefeed.RedactedParamValue
 		} else {
 			out[k] = sanitizeFeedURL(v)
 		}

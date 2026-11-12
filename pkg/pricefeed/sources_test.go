@@ -173,6 +173,42 @@ func TestValidateFeedBounds(t *testing.T) {
 	}
 }
 
+// The view's redaction marker is never a param's value: a feed whose param
+// holds it — a token, a url, any param — is refused, naming the feed and
+// every param holding it, sorted. The same feed with the stored values
+// validates.
+func TestValidateFeedRefusesTheRedactionMarker(t *testing.T) {
+	gw := FeedConfig{Name: "gw", Type: TypeLiteLLM, Enabled: true, Interval: d(3600), Timeout: d(10),
+		Params: map[string]string{"url": "https://gw.example/model/info", "token": "sk-litellm-kept", "region": "fr-par"}}
+	if err := ValidateFeed(gw); err != nil {
+		t.Fatalf("the feed with its stored values refused: %v", err)
+	}
+	for _, tc := range []struct {
+		params []string
+		want   string
+	}{
+		{[]string{"token"}, `feed "gw": params token hold`},
+		{[]string{"url"}, `feed "gw": params url hold`},
+		{[]string{"token", "region"}, `feed "gw": params region, token hold`},
+	} {
+		bad := gw
+		bad.Params = map[string]string{}
+		for k, v := range gw.Params {
+			bad.Params[k] = v
+		}
+		for _, p := range tc.params {
+			bad.Params[p] = RedactedParamValue
+		}
+		err := ValidateFeed(bad)
+		if err == nil || !strings.Contains(err.Error(), tc.want) || !strings.Contains(err.Error(), RedactedParamValue) {
+			t.Errorf("params %v holding the marker: err %v, want a refusal containing %q and the marker", tc.params, err, tc.want)
+		}
+		if err := ValidateConfig(&ConfigRecord{Feeds: []FeedConfig{bad}}); err == nil {
+			t.Errorf("params %v holding the marker: the list validated", tc.params)
+		}
+	}
+}
+
 func TestDueAndBackoff(t *testing.T) {
 	now := time.Now()
 	feed := FeedConfig{Name: "f", Type: TypeExec, Interval: d(3600), Timeout: d(10)}

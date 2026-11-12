@@ -834,7 +834,9 @@ flag is given.
 
 - it checks the table locally with the server's parser;
 - it upserts the feed into the list it read (`--first` puts it ahead of
-  the level's other feeds);
+  the level's other feeds), and refuses a list holding a param the
+  server's view redacts, or a read answered by a server release older
+  than declared feeds;
 - it prints the per-id diff;
 - it writes the list back under the stamp it read, so a concurrent write
   answers 409.

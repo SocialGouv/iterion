@@ -1947,7 +1947,11 @@ run to the runner** — the operator table stays the floor.
   `delete` and `declare` manage the list; `interval`/`timeout` are
   seconds. The view redacts token-shaped source params (the list is
   member-readable; a litellm bearer is not) and names them in
-  `redacted_params`: a list read and written back restates them.
+  `redacted_params`: a list read and written back restates them. Every
+  scope's write refuses a list holding the marker `(redacted)` as a
+  param's value — a 400 naming the feed and the params — and `declare`
+  refuses a read answered by a release older than declared feeds, whose
+  view renders the redaction without naming it, and writes nothing.
 - **The effective view.** `GET /api/teams/{id}/price-feeds/effective`
   (`iterion remote price-feeds effective [--model ID …]`), readable by
   any team member, answers the table a run launched now for the team

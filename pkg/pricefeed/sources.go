@@ -400,11 +400,17 @@ const (
 	MaxTimeout  = 10 * time.Minute
 )
 
+// RedactedParamValue is the marker a member-readable feed view renders
+// in place of a credential-shaped param's value (pkg/server
+// redactFeedParams).
+const RedactedParamValue = "(redacted)"
+
 // ValidateFeed checks one feed config: the name's charset (it lands in
-// provenance strings and document ids), a registered source type, that
-// type's own params, and the cadence bounds. The timeout must not
-// exceed the interval — a fetch allowed to outlive its own period would
-// overlap the next attempt on the same feed.
+// provenance strings and document ids), a registered source type, no
+// param holding RedactedParamValue, that type's own params, and the
+// cadence bounds. The timeout must not exceed the interval — a fetch
+// allowed to outlive its own period would overlap the next attempt on
+// the same feed.
 func ValidateFeed(feed FeedConfig) error {
 	name := strings.TrimSpace(feed.Name)
 	if name == "" {
@@ -422,6 +428,18 @@ func ValidateFeed(feed FeedConfig) error {
 	src, ok := SourceFor(feed.Type)
 	if !ok {
 		return fmt.Errorf("feed %q: unknown source type %q (registered: %s)", name, feed.Type, strings.Join(SourceTypes(), ", "))
+	}
+	// A list read from the view and written back carries the marker where
+	// the credential was; stored, it would replace the credential.
+	var marked []string
+	for k, v := range feed.Params {
+		if v == RedactedParamValue {
+			marked = append(marked, k)
+		}
+	}
+	if len(marked) > 0 {
+		sortStrings(marked)
+		return fmt.Errorf("feed %q: params %s hold the view's redaction marker %q, not a value — a list read from the view and written back; restate the stored values", name, strings.Join(marked, ", "), RedactedParamValue)
 	}
 	if err := src.ValidateParams(feed.Params); err != nil {
 		return fmt.Errorf("feed %q: %w", name, err)

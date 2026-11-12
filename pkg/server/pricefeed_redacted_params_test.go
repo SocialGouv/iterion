@@ -3,8 +3,10 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -50,5 +52,48 @@ func TestPriceFeedViewNamesTheParamsItRedacts(t *testing.T) {
 		if !slices.Equal(f.RedactedParams, want[f.Feed.Name]) {
 			t.Errorf("feed %s: redacted_params %q, want %q", f.Feed.Name, f.RedactedParams, want[f.Feed.Name])
 		}
+	}
+}
+
+// Every write route refuses a list holding the view's redaction marker as a
+// param's value — the platform's, an org's and a team's — answering 400
+// that names the feed and the param, and leaves the stored credential as
+// it was. The same list with the stored value writes.
+func TestPriceFeedWriteRefusesTheRedactionMarker(t *testing.T) {
+	live := newPriceFeedLive(t)
+	stored := pricefeed.FeedConfig{Name: "gw", Type: pricefeed.TypeLiteLLM, Enabled: true,
+		Interval: pricefeed.D(time.Hour), Timeout: pricefeed.D(10 * time.Second),
+		Params: map[string]string{"url": "https://gw.example/model/info", "token": "sk-litellm-REAL-BEARER"}}
+	readBack := stored
+	readBack.Params = map[string]string{"url": stored.Params["url"], "token": pricefeed.RedactedParamValue}
+	for _, route := range []struct {
+		name, path, docID string
+		token             func() string
+	}{
+		{"platform", "/api/admin/price-feeds", pricefeed.PlatformConfigDocID, func() string { return live.root }},
+		{"org", "/api/orgs/org1/price-feeds", pricefeed.OrgConfigDocID("org1"), func() string { return live.orgAdmin }},
+		{"team", "/api/teams/team-pf/price-feeds", pricefeed.TeamConfigDocID("team-pf"), func() string { return live.orgAdmin }},
+	} {
+		t.Run(route.name, func(t *testing.T) {
+			ctx := context.Background()
+			if err := live.configs.Put(ctx, route.docID, &pricefeed.ConfigRecord{Feeds: []pricefeed.FeedConfig{stored}, UpdatedBy: "seed"}); err != nil {
+				t.Fatal(err)
+			}
+			before, err := live.configs.Get(ctx, route.docID)
+			if err != nil || before == nil {
+				t.Fatalf("read the seed: %v", err)
+			}
+			code, out := live.do(t, "PUT", route.path, route.token(), priceFeedPutFeedBody(readBack))
+			if code != http.StatusBadRequest || !strings.Contains(string(out), `feed \"gw\": params token hold`) {
+				t.Fatalf("a list holding the marker answered %d %s, want 400 naming feed gw and param token", code, out)
+			}
+			after, err := live.configs.Get(ctx, route.docID)
+			if err != nil || after == nil || after.Feeds[0].Params["token"] != "sk-litellm-REAL-BEARER" || !after.UpdatedAt.Equal(before.UpdatedAt) {
+				t.Fatalf("the refused write moved the stored record: %+v (err %v), was %+v", after, err, before)
+			}
+			if code, out := live.do(t, "PUT", route.path, route.token(), priceFeedPutFeedBody(stored)); code != http.StatusOK {
+				t.Fatalf("the list with the stored value answered %d %s", code, out)
+			}
+		})
 	}
 }

@@ -64,7 +64,11 @@ it read: a concurrent write answers 409, and a re-run shows the new diff.
 It refuses a feed of another type under the name, and another feed with a
 param the server's view redacts (a token, a credentialed URL — written back,
 the redaction would replace the value): replace the whole list with
-` + "`iterion remote price-feeds set`" + ` there.
+` + "`iterion remote price-feeds set`" + ` there. It refuses a read answered
+by a server release older than declared feeds — its view names none of the
+params it redacts — and writes nothing: retry once every replica runs this
+release. The server refuses any list holding the view's redaction marker
+"(redacted)" as a param's value, whichever command writes it.
 
 --dry-run prints the diff and the document, and writes nothing.`,
 	Args: cobra.ExactArgs(1),
@@ -194,7 +198,10 @@ type priceFeedDeclaration struct {
 // planPriceFeedDeclaration upserts declared into the scope's list as the
 // view rendered it. The other feeds are written back as read, so a list
 // holding a param the view redacts is refused: the redaction would be
-// stored over the value.
+// stored over the value. A view whose source vocabulary has no declared
+// type comes from a server release older than declared feeds, whose view
+// renders the redaction and names none of it (no redacted_params): that
+// read is refused whatever it holds.
 func planPriceFeedDeclaration(view priceFeedsCLIView, declared pricefeed.FeedConfig, first bool) (priceFeedDeclaration, error) {
 	var plan priceFeedDeclaration
 	static, ok := staticSource(pricefeed.TypeDeclared)
@@ -206,6 +213,10 @@ func planPriceFeedDeclaration(view priceFeedsCLIView, declared pricefeed.FeedCon
 		return plan, err
 	}
 	plan.next = next
+	if !slices.Contains(view.SourceTypes, pricefeed.TypeDeclared) {
+		return plan, fmt.Errorf("the server that answered the read registers no %s source (source types: %s): it predates declared feeds, and its view does not name the params it redacts — declare writes nothing; retry once every server replica runs this release",
+			pricefeed.TypeDeclared, strings.Join(view.SourceTypes, ", "))
+	}
 	at := -1
 	for i, f := range view.Feeds {
 		if f.Feed.Name == declared.Name {

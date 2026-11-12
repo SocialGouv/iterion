@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -33,6 +34,9 @@ type priceFeedsLive struct {
 
 	mu       sync.Mutex
 	requests []string
+	// front, when set, answers a request before the server does: true
+	// means it answered.
+	front func(w http.ResponseWriter, r *http.Request) bool
 }
 
 func newPriceFeedsLive(t *testing.T) *priceFeedsLive {
@@ -74,7 +78,11 @@ func newPriceFeedsLive(t *testing.T) *priceFeedsLive {
 		}
 		live.mu.Lock()
 		live.requests = append(live.requests, line)
+		front := live.front
 		live.mu.Unlock()
+		if front != nil && front(w, r) {
+			return
+		}
 		handler.ServeHTTP(w, r)
 	}))
 	t.Cleanup(hs.Close)
@@ -443,5 +451,124 @@ func TestRemotePriceFeedsDeclareTakesAPoolsUnpricedRow(t *testing.T) {
 	table := pricefeed.Fold(pricefeed.FoldConfig{}, pricefeed.ScopeState{Config: rec})
 	if e := table.Entries["scaleway/qwen-unpriced"]; e.Feed != "pliage" || e.Spec.ContextWindow != 131072 || e.Spec.MaxOutputTokens != 16384 || e.Spec.InputCostPerM != 0 {
 		t.Fatalf("the declared row folds as %+v, want the pool's window and output cap, unpriced", e)
+	}
+}
+
+// olderReplicaRedact is the redaction a replica older than declared feeds
+// applies to its view's params: a credential-shaped key's value replaced
+// by the marker, a URL stripped of its userinfo, query and fragment — and
+// no redacted_params naming them.
+func olderReplicaRedact(params map[string]string) map[string]string {
+	if params == nil {
+		return nil
+	}
+	out := make(map[string]string, len(params))
+	for k, v := range params {
+		lower := strings.ToLower(k)
+		if strings.Contains(lower, "token") || strings.Contains(lower, "key") || strings.Contains(lower, "secret") {
+			out[k] = "(redacted)"
+			continue
+		}
+		u, err := url.Parse(v)
+		if err != nil || u.Scheme == "" || u.Host == "" || (u.User == nil && u.RawQuery == "" && u.Fragment == "") {
+			out[k] = v
+			continue
+		}
+		stripped := *u
+		stripped.User, stripped.RawQuery, stripped.ForceQuery, stripped.Fragment, stripped.RawFragment = nil, "", false, "", ""
+		out[k] = stripped.String()
+	}
+	return out
+}
+
+// olderReplicaView renders docID's stored list the way a replica older
+// than declared feeds answers its GET: its view (no redacted_params, no
+// declared_at) and its source vocabulary, which has no declared type.
+func olderReplicaView(t *testing.T, configs *pricefeed.MemoryConfigStore, scope, docID string) []byte {
+	t.Helper()
+	type feedView struct {
+		Feed     pricefeed.FeedConfig `json:"feed"`
+		Status   string               `json:"status"`
+		FreshFor pricefeed.Duration   `json:"fresh_for,omitempty"`
+	}
+	view := struct {
+		Scope     string     `json:"scope"`
+		Origin    string     `json:"origin"`
+		Feeds     []feedView `json:"feeds"`
+		UpdatedAt *time.Time `json:"updated_at,omitempty"`
+		Sources   []string   `json:"source_types"`
+	}{Scope: scope, Origin: "default", Sources: []string{"exec", "litellm", "modelsdev", "scaleway"}}
+	rec, err := configs.Get(context.Background(), docID)
+	if err != nil {
+		t.Fatalf("the older replica's read: %v", err)
+	}
+	if rec != nil {
+		view.Origin = "db"
+		stamp := rec.UpdatedAt
+		view.UpdatedAt = &stamp
+		for _, f := range rec.Feeds {
+			v := feedView{Feed: f, Status: "never", FreshFor: f.FreshFor()}
+			v.Feed.Params = olderReplicaRedact(f.Params)
+			view.Feeds = append(view.Feeds, v)
+		}
+	}
+	raw, err := json.Marshal(view)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
+// A rolling deploy: declare's read of the scope's list is answered by a
+// replica older than declared feeds — it renders the redaction and names
+// none of it — and its write would reach a replica of this release over
+// the same store. declare refuses on that read and writes nothing; the
+// stored credential, a token or a credentialed URL, stays. A read from this
+// release's replica refuses the same lists through redacted_params.
+func TestRemotePriceFeedsDeclareRefusesAReadFromAnOlderReplica(t *testing.T) {
+	for _, tc := range []struct {
+		name, scopeFlag, scopeArg, scope, docID string
+		other                                   pricefeed.FeedConfig
+	}{
+		{"team litellm bearer", "--team", "team-pf", "team", pricefeed.TeamConfigDocID("team-pf"),
+			hourlyFeed("gw", pricefeed.TypeLiteLLM, map[string]string{"url": "https://gw.example/model/info", "token": "sk-litellm-REAL-BEARER"})},
+		{"team credentialed url", "--team", "team-pf", "team", pricefeed.TeamConfigDocID("team-pf"),
+			hourlyFeed("tariffs", pricefeed.TypeModelsDev, map[string]string{"provider": "scaleway", "url": "https://tariffs.example/api.json?token=REAL"})},
+		{"org litellm bearer", "--org", "org-pf", "org", pricefeed.OrgConfigDocID("org-pf"),
+			hourlyFeed("gw", pricefeed.TypeLiteLLM, map[string]string{"url": "https://gw.example/model/info", "token": "sk-litellm-REAL-BEARER"})},
+	} {
+		for _, older := range []bool{false, true} {
+			name := tc.name + map[bool]string{false: "/read from this release", true: "/read from an older replica"}[older]
+			t.Run(name, func(t *testing.T) {
+				live := newPriceFeedsLive(t)
+				before := live.seed(t, tc.docID, tc.other)
+				if older {
+					live.mu.Lock()
+					live.front = func(w http.ResponseWriter, r *http.Request) bool {
+						if r.Method != http.MethodGet || !strings.HasSuffix(r.URL.Path, "/price-feeds") {
+							return false
+						}
+						w.Header().Set("Content-Type", "application/json")
+						_, _ = w.Write(olderReplicaView(t, live.configs, tc.scope, tc.docID))
+						return true
+					}
+					live.mu.Unlock()
+				}
+				doc := writeTestFile(t, "pliage.json", newPliage)
+				out, err := runPriceFeedsCommand(t, "remote", "price-feeds", "declare", "pliage", tc.scopeFlag, tc.scopeArg, "--file", doc)
+				if err == nil {
+					t.Fatalf("declare over a read naming none of its redactions wrote: err=nil\n%s", out)
+				}
+				if older && !strings.Contains(err.Error(), "registers no declared source") {
+					t.Errorf("the refusal does not name the older replica: %v", err)
+				}
+				if n := live.puts(); n != 0 {
+					t.Errorf("the refused declaration sent %d PUT(s)", n)
+				}
+				if after := live.record(t, tc.docID); !reflect.DeepEqual(after, before) {
+					t.Fatalf("the stored list moved: %+v, was %+v", after, before)
+				}
+			})
+		}
 	}
 }
