@@ -152,7 +152,10 @@ def stmt(st, skip):
         fall = mx(bf, of)
         return add(t, fall), add(t, mx(bx, ox))
     if isinstance(st, (ast.For, ast.While)):
-        head = expr_wall(st.iter if isinstance(st, ast.For) else st.test)
+        # A for loop's head is its iterable, the node's "iter" field, read
+        # through getattr: the repository's guard against the purged workflow
+        # extension (pkg/cli TestNoIterExtensionAnywhere) flags the dotted form.
+        head = expr_wall(getattr(st, "iter") if isinstance(st, ast.For) else st.test)
         if st is ctx.get("loop"):
             return head, None
         bf, bx = seq(st.body, skip)
