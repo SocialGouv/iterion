@@ -7051,6 +7051,12 @@
           "last_error": {
             "type": "string"
           },
+          "redacted_params": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "refreshed_at": {
             "format": "date-time",
             "type": "string"

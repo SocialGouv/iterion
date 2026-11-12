@@ -8970,6 +8970,7 @@ export interface components {
             feed: components["schemas"]["FeedConfig"];
             fresh_for?: number;
             last_error?: string;
+            redacted_params?: string[];
             /** Format: date-time */
             refreshed_at?: string;
             status: string;

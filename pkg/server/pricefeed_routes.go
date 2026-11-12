@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 
@@ -40,13 +41,17 @@ func (s *Server) registerPriceFeedRoutes() {
 // answer is its config: status declared, its entry count and the
 // config's write stamp, no window.
 type priceFeedView struct {
-	Feed        pricefeed.FeedConfig `json:"feed"`
-	Status      string               `json:"status"` // ok | stale | failing | never | declared
-	Entries     int                  `json:"entries,omitempty"`
-	RefreshedAt *time.Time           `json:"refreshed_at,omitempty"`
-	DeclaredAt  *time.Time           `json:"declared_at,omitempty"`
-	FreshFor    pricefeed.Duration   `json:"fresh_for,omitempty"`
-	LastError   string               `json:"last_error,omitempty"`
+	Feed pricefeed.FeedConfig `json:"feed"`
+	// RedactedParams names, sorted, the params Feed.Params does not render
+	// as stored (redactFeedParams): a client that writes a read list back
+	// restates their values, or the PUT stores the redaction in their place.
+	RedactedParams []string           `json:"redacted_params,omitempty"`
+	Status         string             `json:"status"` // ok | stale | failing | never | declared
+	Entries        int                `json:"entries,omitempty"`
+	RefreshedAt    *time.Time         `json:"refreshed_at,omitempty"`
+	DeclaredAt     *time.Time         `json:"declared_at,omitempty"`
+	FreshFor       pricefeed.Duration `json:"fresh_for,omitempty"`
+	LastError      string             `json:"last_error,omitempty"`
 }
 
 // priceFeedsView is the scope's whole answer: the stored list with its
@@ -194,9 +199,11 @@ func (s *Server) writePriceFeedsView(w http.ResponseWriter, r *http.Request, sco
 
 // priceFeedViewOf folds one feed's config with its derived state. The
 // view is MEMBER-readable, the source params carry credentials (a
-// litellm token): token-shaped params render redacted and the stored
-// error truncates — the write path replaces the whole list, so a redacted
-// view never destroys data.
+// litellm token): token-shaped params render redacted, named in
+// RedactedParams, and the stored error truncates. The write path replaces
+// the whole list with what it receives, so a client that writes a read
+// list back restates every param RedactedParams names — `iterion remote
+// price-feeds declare` refuses to write a list holding one.
 //
 // A static feed (a declaration) is judged by its config alone, the way
 // the fold reads it: declared, stamped with the config's write, whatever
@@ -205,7 +212,7 @@ func (s *Server) writePriceFeedsView(w http.ResponseWriter, r *http.Request, sco
 // steps it down.
 func (s *Server) priceFeedViewOf(ctx context.Context, docID string, rec *pricefeed.ConfigRecord, feed pricefeed.FeedConfig) priceFeedView {
 	v := priceFeedView{Feed: feed, Status: pricefeed.StateNever, FreshFor: feed.FreshFor()}
-	v.Feed.Params = redactFeedParams(feed.Params)
+	v.Feed.Params, v.RedactedParams = redactFeedParams(feed.Params)
 	if src, ok := pricefeed.SourceFor(feed.Type); ok {
 		if static, ok := src.(pricefeed.StaticSource); ok {
 			v.FreshFor = 0
@@ -238,25 +245,31 @@ func (s *Server) priceFeedViewOf(ctx context.Context, docID string, rec *pricefe
 }
 
 // redactFeedParams replaces token-shaped values with a marker and
-// sanitises URL-shaped ones. Keyed on the key's and value's SHAPE, not a
-// list: token, api-token, bearer-key all read — and a URL carries its
+// sanitises URL-shaped ones, and names, sorted, the params whose rendering
+// differs from the stored value. Keyed on the key's and value's SHAPE, not
+// a list: token, api-token, bearer-key all read — and a URL carries its
 // own credentials (userinfo, a ?token= query) whatever its param name
 // (the gate's finding: `https://tariffs.example/feed?token=SECRET`
 // reached org members verbatim).
-func redactFeedParams(params map[string]string) map[string]string {
+func redactFeedParams(params map[string]string) (map[string]string, []string) {
 	if params == nil {
-		return nil
+		return nil, nil
 	}
 	out := make(map[string]string, len(params))
+	var redacted []string
 	for k, v := range params {
 		lower := strings.ToLower(k)
 		if strings.Contains(lower, "token") || strings.Contains(lower, "key") || strings.Contains(lower, "secret") {
 			out[k] = "(redacted)"
-			continue
+		} else {
+			out[k] = sanitizeFeedURL(v)
 		}
-		out[k] = sanitizeFeedURL(v)
+		if out[k] != v {
+			redacted = append(redacted, k)
+		}
 	}
-	return out
+	sort.Strings(redacted)
+	return out, redacted
 }
 
 // sanitizeFeedURL strips a URL-shaped value's userinfo and query — the
