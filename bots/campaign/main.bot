@@ -68,6 +68,20 @@ vars:
   ## Forwarded to the child: bounded repair loop per lot.
   lot_max_passes: int = 4
 
+secrets:
+  ## The forge credential of a repo-targeted cloud launch. The runner clones
+  ## the target repository for THIS run, before preflight, with the token the
+  ## launch resolves — and a launch resolves only the secrets the launched
+  ## bot declares: its forge_token override fills a declared name or
+  ## nothing. Undeclared, a private repository's clone runs credential-less
+  ## and fails on "could not read Username" before any node starts. run_lot's
+  ## modernize child runs on the credentials resolved HERE, so its own
+  ## declaration of the same secret reaches it through this one. optional:
+  ## local runs keep host-authenticated git.
+  forge_token:
+    as: file
+    optional: true
+
 ## ─── Prompts (for the two HUMAN nodes — no LLM reads these) ─────────
 prompt escalate_instructions:
   The campaign supervisor paused because the items under review need an

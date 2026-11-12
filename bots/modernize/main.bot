@@ -366,6 +366,20 @@ agent upgrade_campaign:
   output: campaign_output
   system: campaign_system
   user: campaign_user
+  ## The node's WHOLE native surface, declared so a route may cross to claw.
+  ## Undeclared, the list means every native tool on claude_code and NO tool
+  ## on claw, so the launch screens refuse every claw stage on this node — an
+  ## operator's `--fallback` and a routing-policy ladder stage alike — and a
+  ## lot that hits the provider's wall has no route past it. Each name is a
+  ## claw built-in and projects onto claude_code's native roster: there the
+  ## spawn keeps exactly the tools it keeps undeclared (the roster names no
+  ## declaration grants are withheld from every headless spawn anyway); on
+  ## claw each resolves to the built-in of the same capability. A name
+  ## dropped here removes its tool on both backends. web_search registers on
+  ## claw only where the deployment configures a search backend
+  ## (ITERION_WEB_SEARCH, SEARXNG_URL, BRAVE_API_KEY); elsewhere the claw
+  ## route fails at this node's tool resolution, naming the tool.
+  tools: [bash, read_file, glob, grep, write_file, file_edit, notebook_edit, agent, web_fetch, web_search, tool_search, todo_write, skill]
   skills: ["modernize-lots", "plan-contract"]
   reasoning_effort: "${ITERION_MODERNIZE_EFFORT:-high}"
 
@@ -3208,10 +3222,21 @@ workflow modernize:
   ## target's toolchain comes from ITS OWN devbox/devcontainer — this bundle
   ## declares only yq and python3, so the bot stays repo-agnostic. Every
   ## command it runs is declared in the target's own contract.
+  ##
+  ## The wall of ONE lot, and its only wall when campaign runs this bot as its
+  ## run_lot subbot: a subbot budgets itself from its own .bot, so neither the
+  ## parent's budget nor a launch override reaches it. lot_verify runs every
+  ## exit_gate command, the suites and the oracle, each under the contract's
+  ## gate_timeout_s; a contract measured at three commands of 14400 s needs
+  ## up to 12h for its gate alone, and a lot_verify the wall kills leaves no
+  ## verdict. The cost cap rises with the wall, so a lot given the time is not
+  ## stopped by a cap sized for a third of it. Literals, not `${…}` dials: a
+  ## run reads no environment (ADR-132). A direct launch overrides both
+  ## (`--max-duration`, `--max-cost-usd`).
   budget:
     max_parallel_branches: 1
-    max_duration: "4h"
-    max_cost_usd: 60
+    max_duration: "12h"
+    max_cost_usd: 150
 
   compaction:
     threshold: 0.9

@@ -1,7 +1,15 @@
 name: campaign
 display_name: Campy
 icon: 🧭
-version: 0.1.3
+version: 0.1.4
+## 0.1.4 — `forge_token` is declared, in modernize's shape (a file,
+## optional). A repo-targeted cloud launch resolves only the secrets the bot
+## declares, so its forge_token override had nothing to fill: the runner
+## cloned the private repository credential-less and the run never started
+## ("could not read Username"). The clone now authenticates with it, and
+## run_lot's modernize child — which runs on the credentials resolved for
+## campaign — reaches the forge through it. Local runs keep host-authenticated
+## git.
 ## 0.1.3 — finalize runs the repository's suites the contract declares
 ## (`suites:`, read the way modernize's lot_verify reads them) once on the
 ## final tree, reports them in the handoff, and requalifies a blocked lot only

@@ -1,7 +1,16 @@
 name: modernize
 display_name: Morphy
 icon: 🧱
-version: 0.7.0
+version: 0.7.1
+## 0.7.1 — a lot's wall is 12h and 150 $ (it was 4h and 60 $). Under campaign
+## this bot runs as a subbot, which budgets itself from its own .bot, and each
+## gate command gets the contract's gate_timeout_s: a contract of three
+## 14400 s commands outlived the 4h wall, and lot_verify was killed with no
+## verdict. upgrade_campaign declares its whole native surface, spelled as
+## claw built-ins: the claude_code spawn keeps exactly the tools it kept, and
+## a launch route may now cross to claw on it — an operator's `--fallback` and
+## a routing-policy ladder stage both refused that crossing on the undeclared
+## list, which means every tool on claude_code and none on claw.
 ## 0.7.0 — the repository's own test suites are declared once, at the top of
 ## the contract (`suites:`), and run at every lot's gate
 ## once its exit_gate passed, under the same wall: `suites_passed` joins
