@@ -259,11 +259,11 @@ func NormalizeID(id string) string { return strings.ToLower(strings.TrimSpace(id
 // ignored is worse than a refusal) — reasoning_efforts among them: accepted
 // efforts are not this table's field (a feed's entries carry them, and the
 // runner's env fallback has its own name, OPENAI_COMPATIBLE_REASONING_EFFORTS).
-// Prices arrive as a pair or not
-// at all, negatives are refused. compatgw's operator table parses through
-// this function; a feed's entries parse through ParseFeedEntries, the same
-// body with one more field. `what` names the source in the refusal — the env
-// name, a feed's command — so the operator is told where to fix.
+// Prices arrive as a pair or not at all, negatives are refused. compatgw's
+// operator table parses through this function; a feed's entries parse
+// through ParseFeedEntries, the same body with one more field. `what` names
+// the source in the refusal — the env name, a feed's command — so the
+// operator is told where to fix.
 func ParseEntries(raw, what string) (map[string]modelspecs.Spec, error) {
 	return parseEntries[operatorEntry](raw, what)
 }
