@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [5.25.0](https://github.com/SocialGouv/iterion/compare/v5.24.0...v5.25.0) (2026-11-12)
+
+### Features
+
+* **codemode:** the script host — a credential-less child under kernel bounds, with no tool binding ([#3179](https://github.com/SocialGouv/iterion/issues/3179)) ([a917c37](https://github.com/SocialGouv/iterion/commit/a917c371b3d8e8d8abc62a27401c10448dc35799)), references [#3175](https://github.com/SocialGouv/iterion/issues/3175) [#3153](https://github.com/SocialGouv/iterion/issues/3153)
+
+    <details><summary>why</summary>
+
+    CM-1a of the codemode epic (#3175, under #3153), following CM-2's dispatcher door (`d13f6391e`). `pkg/scripthost` plus the hidden `iterion __script-host`: a caller hands it JavaScript, it runs in a child process with an EMPTY environment under kernel bounds, and one JSON document comes back.
+
+    </details>
+
 ## [5.24.0](https://github.com/SocialGouv/iterion/compare/v5.23.0...v5.24.0) (2026-11-12)
 
 ### Features
