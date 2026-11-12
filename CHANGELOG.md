@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [5.24.0](https://github.com/SocialGouv/iterion/compare/v5.23.0...v5.24.0) (2026-11-12)
+
+### Features
+
+* **cloud:** guard pool cutovers and persist pre-engine refusals ([cda3bc8](https://github.com/SocialGouv/iterion/commit/cda3bc8adf054dfedead657b0a0e9fca56a3bce4)), closes [#3050](https://github.com/SocialGouv/iterion/issues/3050) [#2925](https://github.com/SocialGouv/iterion/issues/2925) [#2960](https://github.com/SocialGouv/iterion/issues/2960) [#2961](https://github.com/SocialGouv/iterion/issues/2961) [#2962](https://github.com/SocialGouv/iterion/issues/2962) [#2963](https://github.com/SocialGouv/iterion/issues/2963) [#2964](https://github.com/SocialGouv/iterion/issues/2964) [#3183](https://github.com/SocialGouv/iterion/issues/3183), references [#3021](https://github.com/SocialGouv/iterion/issues/3021) [#2967](https://github.com/SocialGouv/iterion/issues/2967) [#3052](https://github.com/SocialGouv/iterion/issues/3052)
+
+    <details><summary>why</summary>
+
+    Pool remapping now refuses teams with live or unclassifiable runs, and every pre-engine refusal uses one publication-fenced filesystem/Mongo recorder. Retry diagnostics preserve queued resume state; a final refusal becomes durable evidence for lifecycle readers. The pool registry, CLI administration, immutable per-pool DLQ metrics and rendered pool key-material checks complete this delivery.
+
+    </details>
+
 ## [5.23.0](https://github.com/SocialGouv/iterion/compare/v5.22.0...v5.23.0) (2026-11-11)
 
 ### Features
