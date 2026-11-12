@@ -34,13 +34,22 @@ pnpm` works without enable).
 
 ```bash
 task build             # build studio, sync embedded dispatcher bots, then ./iterion
-task lint              # gofmt + go vet + golangci-lint
+task lint              # go fmt (REWRITES source) + go vet + golangci-lint
+task ci:gofmt          # the reporting form: fails on an unformatted file, writes nothing
 task test              # all Go unit tests
 task test:e2e          # deterministic/stub E2E suite
 task test:goldens      # recorded bot-schema/invariant replays; no credentials
 task studio:check      # ESLint + TypeScript + Vitest
 task check             # lint + the free layer: unit, goldens, studio, pi extension, brand, DSL and map checks
 ```
+
+**A script that reads a task's exit code needs `task -x`.** Measured on the
+pinned go-task 3.48.0: a task whose command exits 2 makes `task` exit **201**,
+and so does one that exits 7 — every failure collapses into one number, so
+"exit 2 means a precondition refused" cannot survive the wrapper.
+`-x/--exit-code` passes the real code through. `scripts/ci/gate.sh` is the one
+caller that depends on this, and it is why `ci:gate` can tell a machine that
+cannot judge from a tree that is broken.
 
 `task --list` prints every task with its description. `task lint` runs a
 curated golangci-lint (`.golangci.yml`: errcheck, govet, ineffassign,

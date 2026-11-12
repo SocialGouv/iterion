@@ -52,11 +52,16 @@ that exist. The lane's blocking proof replaces the PR's:
    `internal/ciguard`'s `TestTheCIGateMapIsTotalAndHonest`. Exit codes are read
    per member, never piped, and the runner prints `ran N of N` against its own
    plan — two members of three cannot read as three.
-   **The lane is still CLOSED, and the gate is what says so.** It answers
-   **exit 3** — green members, incomplete coverage — while a required or
-   staged context has no member, and names it: today that is `fmt-check`
-   (expressible, unwritten). A verdict of 0 is what opens the lane; until then
-   `task ci:gate` is how you see the distance, not a proof you may land.
+   **Every required and staged context is now COVERED** — by a member, or,
+   for the two pure aggregators, by every leg's — so **exit 3**, green
+   members over incomplete coverage, is no longer the standing answer. What a
+   0 does NOT claim: the verdict NAMES the reached rows that are `partial`
+   (`brand`, plus the four legs `test` and `race` speak for), because a
+   member is not an equivalence and each row's `residual` says what it leaves
+   to CI. **A verdict of 0 satisfies this item and nothing else**: items 2 to
+   5 are still owed, a gate short of 0 is how you see the distance rather
+   than a proof you may land, and a green gate reads "every member passed",
+   never "CI can find nothing this did not run".
 2. **A converged local adversarial loop.** Per
    [the loop](adversarial-review-loop.md): rounds until no unassumed
    high/critical finding stands, the fixes re-attacked, the budget respected.

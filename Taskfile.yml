@@ -775,7 +775,7 @@ tasks:
       - go run -mod=vendor ./cmd/iterion map gen
 
   ci:gate:
-    desc: "The local gate the operator direct-landing lane asks for — runs the members `.github/ci-gate-map.yaml` names, reads each exit code separately, and reports `ran N of N` plus any REQUIRED context that has no member. Exit 3 means green-but-incomplete, which is not the lane's proof. `task ci:gate -- --list` prints the plan without running it"
+    desc: "The local gate the operator direct-landing lane asks for — runs the members `.github/ci-gate-map.yaml` names, reads each exit code separately, and reports `ran N of N`, any REQUIRED context with no member, and every reached row whose coverage is only `partial`. Exit 3 = green but incomplete, not the lane's proof; exit 2 = a precondition refused, either the runner's (no yq, a map it cannot trust) or a MEMBER's (`refusing_members`: no docker for mongo, a dirty vendor tree) — and a refusal is not a verdict. `task ci:gate -- --list` prints the plan without running it"
     cmds:
       - bash scripts/ci/gate.sh {{.CLI_ARGS}}
 
@@ -799,6 +799,11 @@ tasks:
     desc: "The local member of CI's `mongo-conformance` required check — a real one-member mongo:8.0 replica set (change streams + transactions), then BOTH `go test` invocations READ FROM the job itself rather than restated here. Needs docker; `ITERION_CI_GATE_EVIDENCE=<dir>` keeps the per-invocation logs and the exit-code matrix"
     cmds:
       - bash scripts/ci/mongo-conformance.sh
+
+  ci:gofmt:
+    desc: "The local member of the `gofmt (check)` step inside CI's `test-unit` job — which feeds the REQUIRED `test` aggregator, so an unformatted tracked file reddens a required context. Reports, never writes: `task fmt` would repair the defect CI fails on and then report green. The file list is `git ls-files`, not the job's `find .`, because find reaches `.works/`, `.repos/` and every registered worktree — the script says what that changes"
+    cmds:
+      - bash scripts/ci/gofmt-check.sh
 
   map:check:
     desc: Fail if a committed repository map is stale, or if the freshness gate cannot redden

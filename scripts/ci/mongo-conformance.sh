@@ -17,8 +17,16 @@
 # only the first would report a verdict for a job it had not finished.
 #
 # Exit codes: 0 every invocation green · 1 at least one red (named, with its
-# log) · 2 a precondition refused — docker missing, the replica set never
-# elected, the job's shape not recognised. A refusal is NOT a verdict.
+# log) · 2 a precondition refused, and the list is longer than it looks — each
+# path a machine that cannot judge rather than a tree that is broken, and all
+# of them greppable (`grep -cE '^[[:space:]]+exit 2'` — nine, where a plain
+# `grep -c 'exit 2'` counts ten by matching this sentence): yq missing, yq
+# unable to read the job, the job's
+# shape not recognised, timeout(1) missing, docker missing, its daemon not
+# answering, the container refusing to start, mongod accepting no connection
+# on the published port, the replica set never elected, the port unreachable
+# from this process, and the member not finishing its own plan.
+# A refusal is NOT a verdict.
 set -euo pipefail
 
 say() { printf '%s\n' "$*" >&2; }
@@ -31,58 +39,116 @@ PORT=27018
 EVIDENCE=${ITERION_CI_GATE_EVIDENCE:-$(mktemp -d)}
 mkdir -p "$EVIDENCE"
 
+# ---------------------------------------------------------------------------
+# The invocations, derived from the job. FIRST, before docker: deriving needs
+# no container, and a member that cannot tell what to run must say so on any
+# machine rather than only on one that could have run it.
+# ---------------------------------------------------------------------------
+# A YAML PARSER, never sed+grep over the file: the job's run block carries
+# shell line continuations, and reconstructing a command from a line-oriented
+# scan is how the second invocation got lost. `yq` does the parsing and `awk`
+# does the shell's own job of joining continuations — text work, once the YAML
+# is already a string.
+#
+# yq and not python3, measured: CI's `test-unit` runner has python3 WITHOUT
+# PyYAML (`ModuleNotFoundError: No module named 'yaml'`), so the python form
+# refused there — correctly, loudly, and uselessly. yq is pinned by devbox AND
+# installed by digest inside the very jobs that run these guards, for exactly
+# this reason. The two forms were compared line for line on this workflow
+# before the swap: byte-identical, both invocations, including the second one
+# that docs/development.md's regex cannot see.
+command -v yq > /dev/null 2>&1 || {
+	say "mongo-conformance: yq is not on PATH, and the invocations are READ from the job rather"
+	say "than restated here. devbox pins yq-go 4.53.3, the version the workflow installs by"
+	say "digest. Refusing is not a verdict."
+	exit 2
+}
+YQERR=$(mktemp)
+trap 'rm -f "$YQERR"' EXIT
+mapfile -t INVOCATIONS < <(
+	yq -r '.jobs["mongo-conformance"].steps[] | select(has("run")) | .run' "$WORKFLOW" 2> "$YQERR" |
+		awk '{
+			line = $0
+			# The shell joins a trailing backslash with the next line; so does this.
+			while (line ~ /\\[ \t]*$/) {
+				sub(/\\[ \t]*$/, "", line)
+				if ((getline nxt) <= 0) break
+				sub(/^[ \t]+/, "", nxt)
+				line = line " " nxt
+			}
+			sub(/^[ \t]+/, "", line); sub(/[ \t]+$/, "", line)
+			if (line ~ /^#/ || line !~ /go test/) next
+			gsub(/[ \t]+/, " ", line)
+			print line
+		}'
+)
+
+# The COUNT, never the status of a `||`. A `mapfile < <(cmd)` reports
+# mapfile's own success: the process substitution hides the reader's exit from
+# `set -e` and from `pipefail` alike, so a refusal computed inside it would be
+# thrown away, the loop below would run zero invocations, and `exit "$failed"`
+# would answer 0 — a REQUIRED context reporting green over nothing tested.
+# Measured on this file before the guard existed. It is the same shape
+# scripts/desktop/nix-pkgconfig-env.sh already uses after its own `mapfile`.
+[ "${#INVOCATIONS[@]}" -gt 0 ] || {
+	say "mongo-conformance: derived NO invocation from $WORKFLOW — either the job's shape changed"
+	say "(teach this member rather than guessing) or yq could not read it."
+	# yq's reason, CAPTURED rather than assumed: a reader that dies without
+	# writing anything would otherwise leave the refusal citing an explanation
+	# nobody printed.
+	if [ -s "$YQERR" ]; then
+		sed 's/^/  /' "$YQERR" >&2
+	else
+		say "  (yq printed no reason — it may have failed before reading: check its install)"
+	fi
+	say "Refusing is not a verdict: nothing was tested."
+	exit 2
+}
+
+say "mongo-conformance: ${#INVOCATIONS[@]} invocation(s) derived from $WORKFLOW"
+
 command -v docker > /dev/null 2>&1 || {
 	say "mongo-conformance: docker is not on PATH, and this member needs a real replica set"
 	say "(change streams and transactions). Refusing is not a verdict."
 	exit 2
 }
-
-# ---------------------------------------------------------------------------
-# The invocations, derived from the job.
-# ---------------------------------------------------------------------------
-# python3 rather than sed+grep: the job's run block is YAML with line
-# continuations, and reconstructing a command from a line-oriented scan is how
-# the second invocation got lost. Parsing the block and splitting on the
-# commands it contains keeps the member honest about what the job runs.
-mapfile -t INVOCATIONS < <(python3 -I - "$WORKFLOW" <<'PY'
-import re, sys, yaml
-
-doc = yaml.safe_load(open(sys.argv[1]))
-job = doc.get("jobs", {}).get("mongo-conformance")
-if job is None:
-    sys.exit("the workflow defines no mongo-conformance job")
-
-blocks = [s["run"] for s in job.get("steps", []) if isinstance(s, dict) and s.get("run")]
-# The harness step is the one that runs go test; the mongo start-up and the
-# failure diagnostics are not the gate.
-found = []
-for b in blocks:
-    # Join the shell's line continuations, drop comments, then split on the
-    # commands themselves.
-    joined = re.sub(r"\\\n\s*", " ", b)
-    for line in joined.splitlines():
-        line = line.strip()
-        if line.startswith("#") or "go test" not in line:
-            continue
-        found.append(re.sub(r"\s+", " ", line))
-if not found:
-    sys.exit("the mongo-conformance job runs no `go test`: its shape changed and this member "
-             "cannot derive what to run — teach it rather than guessing")
-print("\n".join(found))
-PY
-) || {
-	say "mongo-conformance: could not derive the invocations from $WORKFLOW (see above)."
+# The BINARY is not the service, and this is the frequent case rather than the
+# exotic one: a stopped daemon, a user outside the docker group, a rootless
+# daemon that was never started. Without this probe `docker run` fails under
+# `set -e` and the member exits 1 — "a member is red" — about a machine that
+# cannot judge at all.
+# Bounded: a socket that accepts and then says nothing would hang this member
+# for as long as the operator is willing to wait, where every wait below has a
+# ceiling. A warm `docker info` here is 0.03 s (five runs), so 20 s is ~650x
+# it — sized for a cold daemon, not for the usual case.
+#
+# `timeout` is a HOST binary: devbox pins no coreutils, so it can be missing
+# (a BSD userland, a slim container image). Checked, because without this the
+# absence arrives as "the daemon did not answer" with the real reason
+# swallowed by the redirection — a refusal pointing at the wrong thing.
+command -v timeout > /dev/null 2>&1 || {
+	say "mongo-conformance: timeout(1) is not on PATH, so the docker probe below cannot be bounded"
+	say "and a hung daemon would hang this member. devbox pins no coreutils; install one or run"
+	say "this where timeout exists. Refusing is not a verdict."
 	exit 2
 }
-
-say "mongo-conformance: ${#INVOCATIONS[@]} invocation(s) derived from $WORKFLOW"
+timeout 20 docker info > /dev/null 2>&1 || {
+	say "mongo-conformance: docker is on PATH but its daemon did not answer within 20 s (stopped,"
+	say "unreachable socket, or hung). Refusing is not a verdict."
+	exit 2
+}
 
 # ---------------------------------------------------------------------------
 # The replica set. Three details that each cost a session — see
 # docs/development.md; they are repeated as code, not as a comment pointing at
 # a comment.
 # ---------------------------------------------------------------------------
-cleanup() { docker rm -f "$CONTAINER" > /dev/null 2>&1 || true; }
+# Both, because a second `trap … EXIT` REPLACES the first: the earlier one
+# removed $YQERR, and installing this one alone would leak it.
+cleanup() {
+	docker rm -f "$CONTAINER" > /dev/null 2>&1 || true
+	rm -f "$YQERR"
+}
 trap cleanup EXIT
 
 cleanup
@@ -92,9 +158,16 @@ cleanup
 # suites create a fresh database with ~10 indexes per subtest, and a default
 # descriptor limit makes mongod die with "Too many open files" minutes in,
 # which the tests then report as "connection refused".
+# Guarded rather than left to `set -e`: an image this host cannot pull (no
+# network) or a port already taken is a machine that cannot judge, not a red
+# tree.
 docker run --rm -d --name "$CONTAINER" --ulimit nofile=131072:131072 \
 	-p "127.0.0.1:$PORT:$PORT" mongo:8.0 \
-	--replSet rs0 --bind_ip_all --port "$PORT" > /dev/null
+	--replSet rs0 --bind_ip_all --port "$PORT" > /dev/null || {
+	say "mongo-conformance: the mongo:8.0 container would not start (an image this host cannot"
+	say "pull, or port $PORT already taken). Refusing is not a verdict."
+	exit 2
+}
 
 # Wait for mongod to ACCEPT A CONNECTION before initiating. `docker run -d`
 # returns as soon as the container exists, not when the server is listening,
@@ -207,6 +280,15 @@ for inv in "${INVOCATIONS[@]}"; do
 done
 
 say ""
-say "mongo-conformance: ran $i of ${#INVOCATIONS[@]} invocation(s); matrix at $EVIDENCE/mongo-conformance.matrix"
+# Counted on the MATRIX, not on the loop variable: `i` is incremented inside
+# the body, so it could only ever equal the plan and the comparison below
+# would be decorative. The matrix holds one line per invocation whose exit
+# code was actually recorded.
+ran=$(wc -l < "$EVIDENCE/mongo-conformance.matrix")
+say "mongo-conformance: ran $ran of ${#INVOCATIONS[@]} invocation(s); matrix at $EVIDENCE/mongo-conformance.matrix"
 cat "$EVIDENCE/mongo-conformance.matrix" >&2
+if [ "$ran" -ne "${#INVOCATIONS[@]}" ]; then
+	say "mongo-conformance: ran $ran of ${#INVOCATIONS[@]} — the member did not finish its own plan."
+	exit 2
+fi
 exit "$failed"
