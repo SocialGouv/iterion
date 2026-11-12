@@ -37,6 +37,7 @@ const (
 	TypeScaleway  = "scaleway"
 	TypeLiteLLM   = "litellm"
 	TypeExec      = "exec"
+	TypeDeclared  = "declared"
 )
 
 // FeedConfig is one configured feed. It is tenant data: the operator's

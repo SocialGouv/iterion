@@ -222,8 +222,13 @@ func FormatDrift(d Drift) string {
 // Due reports whether a feed's next refresh attempt is due at now: a
 // feed refreshes every interval; one whose last attempt FAILED retries
 // on the short backoff, not the full period — a dead source behind a
-// 30-day interval would otherwise stay dead for a month.
+// 30-day interval would otherwise stay dead for a month. A static feed
+// (a declaration) is never due: its answer is its config, which the fold
+// reads directly.
 func Due(feed FeedConfig, state *StateRecord, now time.Time) bool {
+	if IsStatic(feed.Type) {
+		return false
+	}
 	if state == nil || state.LastAttempt.IsZero() {
 		return true
 	}

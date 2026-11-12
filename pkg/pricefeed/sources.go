@@ -116,6 +116,7 @@ func init() {
 	RegisterSource(TypeScaleway, modelsDevSource{provider: "scaleway"})
 	RegisterSource(TypeLiteLLM, liteLLMSource{})
 	RegisterSource(TypeExec, execSource{})
+	RegisterSource(TypeDeclared, declaredSource{})
 }
 
 // modelsDevSource reads a models.dev-shaped JSON table
