@@ -15,7 +15,8 @@ import (
 
 // The price feed's control surface (ADR-163 §5): the platform's, an
 // org's and a team's own feed list — CRUD with CAS — and the manual sync
-// that forces one feed or all of them, answering what changed per id.
+// that forces one feed or all of them, answering what changed per id;
+// beside them, a team's effective view (pricefeed_effective.go).
 // The routing-policy routes are the precedent: one document per scope,
 // super-admin / org-admin / team-admin managed, every write through
 // validation, a stale CAS loses as a loud 409.
@@ -30,6 +31,7 @@ func (s *Server) registerPriceFeedRoutes() {
 	s.mux.Handle("GET /api/teams/{id}/price-feeds", s.requireAuth(http.HandlerFunc(s.handleGetTeamPriceFeeds)))
 	s.mux.Handle("PUT /api/teams/{id}/price-feeds", s.requireAuth(http.HandlerFunc(s.handlePutTeamPriceFeeds)))
 	s.mux.Handle("POST /api/teams/{id}/price-feeds/sync", s.requireAuth(http.HandlerFunc(s.handleSyncTeamPriceFeeds)))
+	s.mux.Handle("GET /api/teams/{id}/price-feeds/effective", s.requireAuth(http.HandlerFunc(s.handleGetTeamPriceFeedsEffective)))
 }
 
 // priceFeedView is one feed's GET answer: the config as stored and the

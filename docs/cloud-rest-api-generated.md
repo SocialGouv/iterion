@@ -687,6 +687,7 @@ registered by `board_forge.go`, `local_secrets_routes.go`, `notifications_routes
 | `PUT` | `/api/teams/{id}/pool-attachment` | session | yes |
 | `GET` | `/api/teams/{id}/price-feeds` | session | yes |
 | `PUT` | `/api/teams/{id}/price-feeds` | session | yes |
+| `GET` | `/api/teams/{id}/price-feeds/effective` | session | yes |
 | `POST` | `/api/teams/{id}/price-feeds/sync` | session | yes |
 | `GET` | `/api/teams/{id}/provision-approvals` | session | yes |
 | `GET` | `/api/teams/{id}/routing-policy` | session | yes |

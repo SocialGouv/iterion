@@ -176,6 +176,13 @@ func routeSchemas() map[string]routeOp {
 			response:    priceFeedsView{},
 			description: "Team-admin only. Body {\"feeds\": [feed, ...] | null, \"expected_updated_at\": RFC3339 (optional CAS)}: the list replaces the team's feed list, null clears it.",
 		},
+		"GET /api/teams/{id}/price-feeds/effective": {
+			response:    priceFeedEffectiveView{},
+			description: "Member-readable. The team's effective price-feed table — the one a run launched now for the team seals, for the requested ids — and per gateway id the answering entry and accepted efforts beside every level and feed stating it, the fold's warnings, and a note that the runner's own environment tables are not visible from the server.",
+			query: []queryParam{
+				{name: "model", description: "A gateway model id to report (repeatable; compared lower-cased and trimmed). Absent reports every id a level states. The ids are also the fold's narrowing set, as a run naming them gets.", schemaType: "string"},
+			},
+		},
 		"POST /api/teams/{id}/price-feeds/sync": {
 			request:     priceFeedsSyncReq{},
 			response:    priceFeedsSyncResponse{},

@@ -1452,6 +1452,24 @@
         },
         "type": "object"
       },
+      "EffortsEntry": {
+        "properties": {
+          "feed": {
+            "type": "string"
+          },
+          "values": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "feed",
+          "values"
+        ],
+        "type": "object"
+      },
       "Entry": {
         "properties": {
           "backends": {
@@ -2987,38 +3005,30 @@
         },
         "type": "object"
       },
-      "PreEngineRefusal": {
+      "PricefeedEntry": {
         "properties": {
-          "code": {
+          "declared": {
+            "type": "boolean"
+          },
+          "feed": {
             "type": "string"
           },
-          "hint": {
-            "type": "string"
+          "fresh_for": {
+            "type": "integer"
           },
-          "message": {
-            "type": "string"
-          },
-          "observed_at": {
+          "refreshed_at": {
             "format": "date-time",
             "type": "string"
           },
-          "phase": {
-            "type": "string"
-          },
-          "published_at": {
-            "format": "date-time",
-            "type": "string"
-          },
-          "queued_at": {
-            "format": "date-time",
-            "type": "string"
+          "spec": {
+            "$ref": "#/components/schemas/Spec"
           }
         },
         "required": [
-          "phase",
-          "code",
-          "message",
-          "observed_at"
+          "feed",
+          "refreshed_at",
+          "fresh_for",
+          "spec"
         ],
         "type": "object"
       },
@@ -3400,9 +3410,6 @@
           "permission_mode": {
             "type": "string"
           },
-          "pre_engine_refusal": {
-            "$ref": "#/components/schemas/PreEngineRefusal"
-          },
           "project_path": {
             "type": "string"
           },
@@ -3753,9 +3760,6 @@
           },
           "parent_run_id": {
             "type": "string"
-          },
-          "pre_engine_refusal": {
-            "$ref": "#/components/schemas/PreEngineRefusal"
           },
           "project_path": {
             "type": "string"
@@ -4125,6 +4129,26 @@
         "required": [
           "feed",
           "status"
+        ],
+        "type": "object"
+      },
+      "Table": {
+        "properties": {
+          "efforts": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/EffortsEntry"
+            },
+            "type": "object"
+          },
+          "entries": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/PricefeedEntry"
+            },
+            "type": "object"
+          }
+        },
+        "required": [
+          "entries"
         ],
         "type": "object"
       },
@@ -6881,6 +6905,131 @@
           "ambient_context",
           "permission",
           "backend"
+        ],
+        "type": "object"
+      },
+      "priceFeedContributor": {
+        "properties": {
+          "answers_efforts": {
+            "type": "boolean"
+          },
+          "answers_entry": {
+            "type": "boolean"
+          },
+          "efforts": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "feed": {
+            "type": "string"
+          },
+          "scope": {
+            "type": "string"
+          },
+          "scope_id": {
+            "type": "string"
+          },
+          "spec": {
+            "$ref": "#/components/schemas/Spec"
+          }
+        },
+        "required": [
+          "scope",
+          "feed"
+        ],
+        "type": "object"
+      },
+      "priceFeedEffectiveModel": {
+        "properties": {
+          "contributors": {
+            "items": {
+              "$ref": "#/components/schemas/priceFeedContributor"
+            },
+            "type": "array"
+          },
+          "efforts": {
+            "$ref": "#/components/schemas/EffortsEntry"
+          },
+          "entry": {
+            "$ref": "#/components/schemas/PricefeedEntry"
+          },
+          "id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "priceFeedEffectiveScope": {
+        "properties": {
+          "feeds": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "id": {
+            "type": "string"
+          },
+          "scope": {
+            "type": "string"
+          },
+          "unread": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "scope"
+        ],
+        "type": "object"
+      },
+      "priceFeedEffectiveView": {
+        "properties": {
+          "at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "models": {
+            "items": {
+              "$ref": "#/components/schemas/priceFeedEffectiveModel"
+            },
+            "type": "array"
+          },
+          "org_id": {
+            "type": "string"
+          },
+          "runner_env_fallback": {
+            "type": "string"
+          },
+          "scopes": {
+            "items": {
+              "$ref": "#/components/schemas/priceFeedEffectiveScope"
+            },
+            "type": "array"
+          },
+          "table": {
+            "$ref": "#/components/schemas/Table"
+          },
+          "team_id": {
+            "type": "string"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "team_id",
+          "at",
+          "scopes",
+          "models",
+          "runner_env_fallback"
         ],
         "type": "object"
       },
@@ -17227,6 +17376,49 @@
           "teams"
         ]
       }
+    },
+    "/api/teams/{id}/price-feeds/effective": {
+      "get": {
+        "description": "Member-readable. The team's effective price-feed table — the one a run launched now for the team seals, for the requested ids — and per gateway id the answering entry and accepted efforts beside every level and feed stating it, the fold's warnings, and a note that the runner's own environment tables are not visible from the server.",
+        "operationId": "getTeamsByIdPriceFeedsEffective",
+        "parameters": [
+          {
+            "description": "A gateway model id to report (repeatable; compared lower-cased and trimmed). Absent reports every id a level states. The ids are also the fold's narrowing set, as a run naming them gets.",
+            "in": "query",
+            "name": "model",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/priceFeedEffectiveView"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "GET /api/teams/{id}/price-feeds/effective",
+        "tags": [
+          "teams"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
     },
     "/api/teams/{id}/price-feeds/sync": {
       "parameters": [

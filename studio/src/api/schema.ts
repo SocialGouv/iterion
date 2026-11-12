@@ -5399,6 +5399,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/teams/{id}/price-feeds/effective": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /**
+         * GET /api/teams/{id}/price-feeds/effective
+         * @description Member-readable. The team's effective price-feed table — the one a run launched now for the team seals, for the requested ids — and per gateway id the answering entry and accepted efforts beside every level and feed stating it, the fold's warnings, and a note that the runner's own environment tables are not visible from the server.
+         */
+        get: operations["getTeamsByIdPriceFeedsEffective"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/teams/{id}/price-feeds/sync": {
         parameters: {
             query?: never;
@@ -7275,6 +7297,10 @@ export interface components {
             max_runs_per_day?: number;
             max_usd_per_day?: number;
         };
+        EffortsEntry: {
+            feed: string;
+            values: string[];
+        };
         Entry: {
             backends?: string[];
             context_window: number;
@@ -7743,17 +7769,13 @@ export interface components {
             strict?: boolean;
             triggers?: string[];
         };
-        PreEngineRefusal: {
-            code: string;
-            hint?: string;
-            message: string;
+        PricefeedEntry: {
+            declared?: boolean;
+            feed: string;
+            fresh_for: number;
             /** Format: date-time */
-            observed_at: string;
-            phase: string;
-            /** Format: date-time */
-            published_at?: string;
-            /** Format: date-time */
-            queued_at?: string;
+            refreshed_at: string;
+            spec: components["schemas"]["Spec"];
         };
         ProjectSyncConflict: {
             /** Format: date-time */
@@ -7870,7 +7892,6 @@ export interface components {
             parent_node_id?: string;
             parent_run_id?: string;
             permission_mode?: string;
-            pre_engine_refusal?: components["schemas"]["PreEngineRefusal"];
             project_path?: string;
             queue_position?: number;
             rewindable?: boolean;
@@ -7983,7 +8004,6 @@ export interface components {
             name?: string;
             parent_node_id?: string;
             parent_run_id?: string;
-            pre_engine_refusal?: components["schemas"]["PreEngineRefusal"];
             project_path?: string;
             queue_position?: number;
             repo_root?: string;
@@ -8102,6 +8122,14 @@ export interface components {
             /** Format: date-time */
             refreshed_at?: string;
             status: string;
+        };
+        Table: {
+            efforts?: {
+                [key: string]: components["schemas"]["EffortsEntry"];
+            };
+            entries: {
+                [key: string]: components["schemas"]["PricefeedEntry"];
+            };
         };
         Token: {
             /** Format: date-time */
@@ -8902,6 +8930,38 @@ export interface components {
             backend: components["schemas"]["previewEffectiveKnob"];
             compress: components["schemas"]["previewEffectiveKnob"];
             permission: components["schemas"]["previewEffectiveKnob"];
+        };
+        priceFeedContributor: {
+            answers_efforts?: boolean;
+            answers_entry?: boolean;
+            efforts?: string[];
+            feed: string;
+            scope: string;
+            scope_id?: string;
+            spec?: components["schemas"]["Spec"];
+        };
+        priceFeedEffectiveModel: {
+            contributors?: components["schemas"]["priceFeedContributor"][];
+            efforts?: components["schemas"]["EffortsEntry"];
+            entry?: components["schemas"]["PricefeedEntry"];
+            id: string;
+        };
+        priceFeedEffectiveScope: {
+            feeds?: string[];
+            id?: string;
+            scope: string;
+            unread?: string;
+        };
+        priceFeedEffectiveView: {
+            /** Format: date-time */
+            at: string;
+            models: components["schemas"]["priceFeedEffectiveModel"][];
+            org_id?: string;
+            runner_env_fallback: string;
+            scopes: components["schemas"]["priceFeedEffectiveScope"][];
+            table?: components["schemas"]["Table"];
+            team_id: string;
+            warnings?: string[];
         };
         priceFeedView: {
             /** Format: date-time */
@@ -18216,6 +18276,31 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["priceFeedsView"];
+                };
+            };
+        };
+    };
+    getTeamsByIdPriceFeedsEffective: {
+        parameters: {
+            query?: {
+                /** @description A gateway model id to report (repeatable; compared lower-cased and trimmed). Absent reports every id a level states. The ids are also the fold's narrowing set, as a run naming them gets. */
+                model?: string;
+            };
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["priceFeedEffectiveView"];
                 };
             };
         };

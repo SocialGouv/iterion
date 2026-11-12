@@ -41,14 +41,42 @@ const priceFeedReadTimeout = 2 * time.Second
 // the narrowing fallback when the folded table exceeds the channel's
 // byte budget.
 func EffectivePriceFeed(ctx context.Context, configs pricefeed.ConfigStore, states pricefeed.StateStore, orgID, teamID string, named []string, warnf func(format string, args ...any)) json.RawMessage {
+	return foldPriceFeed(ctx, configs, states, orgID, teamID, named, warnf).encode(warnf)
+}
+
+// priceFeedFold is one fold's read and answer: the levels it read, least
+// specific first, the instant it judged freshness at, and the table —
+// nil when no feed answers.
+type priceFeedFold struct {
+	now    time.Time
+	scopes []priceFeedScopeRead
+	table  *pricefeed.Table
+}
+
+// priceFeedScopeRead is one level as the fold read it: its config and
+// fetched states (nil when the level holds no feed), or the read error
+// that stepped it down.
+type priceFeedScopeRead struct {
+	scope priceFeedScope
+	state *pricefeed.ScopeState
+	err   error
+}
+
+// foldPriceFeed reads every level of one run's fold and folds them at
+// one instant — the one body the bundle's table (EffectivePriceFeed) and
+// the effective view (pricefeed_effective.go) both answer from, so the
+// view cannot show a table the run would not seal.
+func foldPriceFeed(ctx context.Context, configs pricefeed.ConfigStore, states pricefeed.StateStore, orgID, teamID string, named []string, warnf func(format string, args ...any)) priceFeedFold {
+	fold := priceFeedFold{now: time.Now()}
 	if configs == nil || states == nil {
-		return nil
+		return fold
 	}
 	readCtx, cancel := context.WithTimeout(ctx, priceFeedReadTimeout)
 	defer cancel()
-	var scopes []pricefeed.ScopeState
+	var answering []pricefeed.ScopeState
 	for _, scope := range priceFeedFoldScopes(orgID, teamID) {
-		contrib, err := priceFeedScopeState(readCtx, configs, states, scope.docID)
+		state, err := priceFeedScopeState(readCtx, configs, states, scope.docID)
+		fold.scopes = append(fold.scopes, priceFeedScopeRead{scope: scope, state: state, err: err})
 		if err != nil {
 			// A feed that cannot be read is a feed that does not answer:
 			// the operator table prices the run and the warning names the
@@ -58,18 +86,23 @@ func EffectivePriceFeed(ctx context.Context, configs pricefeed.ConfigStore, stat
 			}
 			continue
 		}
-		if contrib != nil {
-			scopes = append(scopes, *contrib)
+		if state != nil {
+			answering = append(answering, *state)
 		}
 	}
-	if len(scopes) == 0 {
+	if len(answering) > 0 {
+		fold.table = pricefeed.Fold(pricefeed.FoldConfig{Now: fold.now, Named: named, Warnf: warnf}, answering...)
+	}
+	return fold
+}
+
+// encode answers the folded table's wire bytes; nil when no feed answers
+// or the table does not encode (warned).
+func (f priceFeedFold) encode(warnf func(format string, args ...any)) json.RawMessage {
+	if f.table == nil {
 		return nil
 	}
-	table := pricefeed.Fold(pricefeed.FoldConfig{Named: named, Warnf: warnf}, scopes...)
-	if table == nil {
-		return nil
-	}
-	raw, err := json.Marshal(table)
+	raw, err := json.Marshal(f.table)
 	if err != nil {
 		if warnf != nil {
 			warnf("price feed: the folded table does not encode: %v", err)
