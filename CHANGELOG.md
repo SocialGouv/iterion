@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [5.29.1](https://github.com/SocialGouv/iterion/compare/v5.29.0...v5.29.1) (2026-11-12)
+
+### Bug Fixes
+
+* **ci:** three rows that misread their own job, and two runners that could not refuse ([#3192](https://github.com/SocialGouv/iterion/issues/3192)) ([422131d](https://github.com/SocialGouv/iterion/commit/422131dd83bdcf16da18b14961d04e8d3b08c1d0))
+
+    <details><summary>why</summary>
+
+    Three rows of `.github/ci-gate-map.yaml` described a different job than the one they name, and the two runners that read that map could not tell "this machine cannot judge" from "the tree is broken".
+
+    </details>
+
 ## [5.29.0](https://github.com/SocialGouv/iterion/compare/v5.28.0...v5.29.0) (2026-11-12)
 
 ### Features
