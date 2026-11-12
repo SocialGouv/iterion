@@ -1903,7 +1903,10 @@ run to the runner** — the operator table stays the floor.
   flags, never merged across feeds or levels: a feed that prices an id
   another feed declares restates the window, output cap and cache price,
   or the run loses them, and the fold warns, naming both feeds, the ids
-  and the fields. A fetched entry without the price pair does not
+  and the fields. The publisher folds at every launch and resume, so
+  its log says each fold warning once per fold input on a replica — a
+  configuration write or a feed's refresh says it again — and the
+  effective view shows every warning at every read. A fetched entry without the price pair does not
   travel as a price entry — it can never shadow a priced operator or
   catalog entry with an unpriced one; a declared one answers unpriced
   only where nothing prices the id (below). When a fresh

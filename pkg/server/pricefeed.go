@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/SocialGouv/iterion/internal/envtrust"
@@ -82,7 +84,13 @@ func (e *PriceFeedUnreadError) Retryable() bool { return true }
 // no table; each read error reaches warnf — the operator's log, never a
 // member.
 func EffectivePriceFeed(ctx context.Context, configs pricefeed.ConfigStore, states pricefeed.StateStore, orgID, teamID string, named []string, warnf func(format string, args ...any)) (json.RawMessage, error) {
-	fold := foldPriceFeed(ctx, configs, states, orgID, teamID, pricefeed.FoldConfig{Named: named, Warnf: warnf})
+	return effectivePriceFeed(ctx, configs, states, orgID, teamID, named, warnf, nil)
+}
+
+// effectivePriceFeed is EffectivePriceFeed with its fold warnings passed
+// through once (nil: every warning at every fold).
+func effectivePriceFeed(ctx context.Context, configs pricefeed.ConfigStore, states pricefeed.StateStore, orgID, teamID string, named []string, warnf func(format string, args ...any), once *priceFeedWarnOnce) (json.RawMessage, error) {
+	fold := foldPriceFeed(ctx, configs, states, orgID, teamID, pricefeed.FoldConfig{Named: named, Warnf: warnf}, once)
 	if err := fold.unreadError(); err != nil {
 		if warnf != nil {
 			for _, read := range fold.scopes {
@@ -102,10 +110,77 @@ func EffectivePriceFeed(ctx context.Context, configs pricefeed.ConfigStore, stat
 // passes, in that order, the run's named gateway ids narrowing an
 // over-budget table, its warnings to warnf. The server binary wires it,
 // and the pool-retirement E2E launches through it.
+//
+// It folds at every launch and resume, and a layout ADR-166 recommends
+// warns at every fold (a declaration listed before a preset that states
+// flags it leaves unstated): each fold warning reaches warnf once per
+// distinct line and fold input on this replica (priceFeedWarnOnce), so a
+// line the operator has read does not bury the next one. A level's read
+// error reaches warnf at every refusal; the effective view shows every
+// warning at every read.
 func PublisherPriceFeedEffective(configs pricefeed.ConfigStore, states pricefeed.StateStore, warnf func(format string, args ...any)) func(ctx context.Context, orgID, teamID string, named []string) (json.RawMessage, error) {
+	once := &priceFeedWarnOnce{}
 	return func(ctx context.Context, orgID, teamID string, named []string) (json.RawMessage, error) {
-		return EffectivePriceFeed(ctx, configs, states, orgID, teamID, named, warnf)
+		return effectivePriceFeed(ctx, configs, states, orgID, teamID, named, warnf, once)
 	}
+}
+
+// priceFeedWarnOnceBound caps the lines priceFeedWarnOnce remembers; past
+// it the memory starts over, and each line may be said once more.
+const priceFeedWarnOnceBound = 4096
+
+// priceFeedWarnOnce passes each fold warning through once per (line, fold
+// input): the input is every level's config stamp and its fetched feeds'
+// refresh stamps, so a configuration change or a refresh says the line
+// again — the drift report's per-refresh bound (ADR-163) — and a fold over
+// the same input says nothing new.
+type priceFeedWarnOnce struct {
+	mu   sync.Mutex
+	said map[string]bool
+}
+
+// wrap answers warnf passing each line once for the fold input stamp.
+func (o *priceFeedWarnOnce) wrap(stamp string, warnf func(format string, args ...any)) func(format string, args ...any) {
+	return func(format string, args ...any) {
+		line := fmt.Sprintf(format, args...)
+		key := stamp + "\x00" + line
+		o.mu.Lock()
+		said := o.said[key]
+		if !said {
+			if o.said == nil || len(o.said) >= priceFeedWarnOnceBound {
+				o.said = map[string]bool{}
+			}
+			o.said[key] = true
+		}
+		o.mu.Unlock()
+		if !said {
+			warnf("%s", line)
+		}
+	}
+}
+
+// foldInputStamp names what one fold read: each level's config document
+// and its update stamp, and each fetched feed state's refresh stamp.
+func foldInputStamp(scopes []priceFeedScopeRead) string {
+	var b strings.Builder
+	for _, read := range scopes {
+		b.WriteString(read.scope.docID)
+		if read.state == nil {
+			b.WriteString("@none;")
+			continue
+		}
+		b.WriteString("@" + read.state.Config.UpdatedAt.UTC().Format(time.RFC3339Nano))
+		names := make([]string, 0, len(read.state.States))
+		for name := range read.state.States {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			b.WriteString("," + name + "@" + read.state.States[name].RefreshedAt.UTC().Format(time.RFC3339Nano))
+		}
+		b.WriteString(";")
+	}
+	return b.String()
 }
 
 // priceFeedFold is one fold's read and answer: the levels it read, least
@@ -132,8 +207,9 @@ type priceFeedScopeRead struct {
 // effective view (pricefeed_effective.go) both answer from, so the view
 // cannot show a table the run would not seal. A level whose read fails
 // carries its error in scopes and folds nothing: the run refuses it
-// (unreadError), the view reports it.
-func foldPriceFeed(ctx context.Context, configs pricefeed.ConfigStore, states pricefeed.StateStore, orgID, teamID string, cfg pricefeed.FoldConfig) priceFeedFold {
+// (unreadError), the view reports it. A non-nil once passes cfg.Warnf's
+// lines once per fold input.
+func foldPriceFeed(ctx context.Context, configs pricefeed.ConfigStore, states pricefeed.StateStore, orgID, teamID string, cfg pricefeed.FoldConfig, once *priceFeedWarnOnce) priceFeedFold {
 	fold := priceFeedFold{now: time.Now()}
 	if configs == nil || states == nil {
 		return fold
@@ -154,6 +230,9 @@ func foldPriceFeed(ctx context.Context, configs pricefeed.ConfigStore, states pr
 	}
 	if len(answering) > 0 {
 		cfg.Now = fold.now
+		if once != nil && cfg.Warnf != nil {
+			cfg.Warnf = once.wrap(foldInputStamp(fold.scopes), cfg.Warnf)
+		}
 		fold.table = pricefeed.Fold(cfg, answering...)
 	}
 	return fold

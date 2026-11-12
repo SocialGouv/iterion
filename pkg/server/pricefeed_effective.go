@@ -150,7 +150,7 @@ func (s *Server) handleGetTeamPriceFeedsEffective(w http.ResponseWriter, r *http
 	if len(models) == 0 {
 		cfg.Budget = math.MaxInt
 	}
-	fold := foldPriceFeed(r.Context(), s.priceFeedConfigs, s.priceFeedStates, team.OrgID, teamID, cfg)
+	fold := foldPriceFeed(r.Context(), s.priceFeedConfigs, s.priceFeedStates, team.OrgID, teamID, cfg, nil)
 	// A level's read error goes to the server log; the member reads that
 	// the level is unread, and that a run launched now is refused until it
 	// reads — the publisher's answer over the same fold.
