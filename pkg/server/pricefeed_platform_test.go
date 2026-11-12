@@ -350,7 +350,7 @@ func TestPriceFeedViewReportsADeclaration(t *testing.T) {
 	}
 
 	// A stored declaration the write rules refuse: failing, the refusal named.
-	broken := declaredFeed("pliage", `{"glm-5.3":{"context_window":256000}}`)
+	broken := declaredFeed("pliage", `{"glm-5.3":{}}`)
 	if err := s.priceFeedConfigs.Put(context.Background(), pricefeed.OrgConfigDocID("org1"), &pricefeed.ConfigRecord{Feeds: []pricefeed.FeedConfig{broken}}); err != nil {
 		t.Fatal(err)
 	}

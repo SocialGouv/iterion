@@ -220,3 +220,34 @@ func TestResolveCatalog_AFeedEntryAnswersWholeOverTheOperatorTable(t *testing.T)
 		t.Fatalf("the operator table's fields were merged into the feed's answer: %+v", res.Spec)
 	}
 }
+
+// A pool's OPENAI_COMPATIBLE_MODELS row stating a window and an output
+// cap without prices, declared as written, answers on a default runner
+// what it answered on the pool: the same spec, unpriced, only the
+// provenance differs (feed:pliage for operator).
+func TestResolveCatalog_ADeclaredUnpricedRowAnswersAsThePoolsRowDid(t *testing.T) {
+	ResetCatalogCaches()
+	t.Cleanup(ResetCatalogCaches)
+	const id = "scaleway/qwen-unpriced"
+	row := `{"context_window":131072,"max_output_tokens":16384}`
+	pool := ResolveCatalog(id, nil, mapGet(map[string]string{CatalogModelsEnv: `{"` + id + `":` + row + `}`}))
+	now := time.Now()
+	table := pricefeed.Fold(pricefeed.FoldConfig{Now: now}, pricefeed.ScopeState{Config: &pricefeed.ConfigRecord{UpdatedAt: now, Feeds: []pricefeed.FeedConfig{{
+		Name: "pliage", Type: pricefeed.TypeDeclared, Enabled: true, Interval: pricefeed.D(30 * 24 * time.Hour), Timeout: pricefeed.D(time.Second),
+		Params: map[string]string{"entries": `{"` + id + `":` + row + `}`},
+	}}}})
+	raw, err := json.Marshal(table)
+	if err != nil {
+		t.Fatal(err)
+	}
+	def := ResolveCatalog(id, nil, mapGet(map[string]string{FeedTableEnv: string(raw)}))
+	if pool.Source != SourceOperator || def.Source != SourceFeed("pliage") {
+		t.Fatalf("sources: pool %q, default runner %q", pool.Source, def.Source)
+	}
+	if !pricefeed.SpecEqual(pool.Spec, def.Spec) || def.Spec.ContextWindow != 131072 || def.Spec.MaxOutputTokens != 16384 {
+		t.Fatalf("the default runner answers %+v, the pool %+v", def.Spec, pool.Spec)
+	}
+	if pool.Priced() || def.Priced() {
+		t.Fatalf("an unpriced row priced: pool %v, default runner %v", pool.Priced(), def.Priced())
+	}
+}

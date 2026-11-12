@@ -347,21 +347,30 @@ func TestRemotePriceFeedsDeclareRefusesAFeedOfAnotherType(t *testing.T) {
 	}
 }
 
-// A document the declared source refuses, a bad feed name, and a malformed
-// set of input flags are refused before any request — the same parser the
-// server applies, run locally.
+// A document the declared source refuses — through --file or a pool's
+// tables — a bad feed name, and a malformed set of input flags are refused
+// before any request, by name: the same parser the server applies, run
+// locally.
 func TestRemotePriceFeedsDeclareValidatesBeforeAnyRequest(t *testing.T) {
-	windowOnly := writeTestFile(t, "window.json", `{"glm-5.3":{"context_window":256000}}`)
+	statesNothing := writeTestFile(t, "nothing.json", `{"glm-5.3":{}}`)
 	good := writeTestFile(t, "good.json", newPliage)
 	badEfforts := writeTestFile(t, "efforts.json", `{"glm-5.3":["low","turbo"]}`)
+	nothingRow := writeTestFile(t, "models-nothing.json", `{"glm-5.3":{}}`)
+	blankRow := writeTestFile(t, "models-blank.json", `{" ":{"input_usd_per_mtok":1,"output_usd_per_mtok":2}}`)
+	emptyEfforts := writeTestFile(t, "efforts-empty.json", `{"glm-5.3":[]}`)
+	repeatedEfforts := writeTestFile(t, "efforts-repeated.json", `{"glm-5.3":["high","HIGH"]}`)
 	for _, tc := range []struct {
 		name string
 		args []string
 		want string
 	}{
-		{"window without prices", []string{"pliage", "--file", windowOnly}, `"glm-5.3"`},
+		{"an entry stating nothing", []string{"pliage", "--file", statesNothing}, `"glm-5.3"`},
 		{"bad feed name", []string{"Pliage_1", "--file", good}, "Pliage_1"},
 		{"unknown effort level", []string{"pliage", "--efforts-file", badEfforts}, "turbo"},
+		{"a pool row stating nothing", []string{"pliage", "--models-file", nothingRow}, `"glm-5.3"] states nothing`},
+		{"a pool row with a blank id", []string{"pliage", "--models-file", blankRow}, "empty gateway id"},
+		{"an empty effort list", []string{"pliage", "--efforts-file", emptyEfforts}, "reasoning_efforts is empty"},
+		{"a repeated effort level", []string{"pliage", "--efforts-file", repeatedEfforts}, `repeats "high"`},
 		{"two inputs", []string{"pliage", "--file", good, "--models-file", good}, "file"},
 		{"no input", []string{"pliage"}, "file"},
 	} {
@@ -406,5 +415,33 @@ func TestRemotePriceFeedsDeclareRelaysTheServersRefusals(t *testing.T) {
 		if len(got) != 2 || !strings.HasPrefix(got[1], "PUT /api/teams/team-a/price-feeds ") || !strings.Contains(got[1], `"expected_updated_at":"2026-11-12T08:00:00Z"`) {
 			t.Fatalf("the write is not a CAS on the stamp read: %q", got)
 		}
+	}
+}
+
+// A pool's OPENAI_COMPATIBLE_MODELS table may state an id's window and
+// output cap without its prices: on the pool, that row answered them
+// unpriced. declare takes the table as written — the row lands in the
+// declaration whole, and the fold answers it as the pool did.
+func TestRemotePriceFeedsDeclareTakesAPoolsUnpricedRow(t *testing.T) {
+	live := newPriceFeedsLive(t)
+	models := writeTestFile(t, "models.json", `{
+  "scaleway/qwen-unpriced": {"context_window": 131072, "max_output_tokens": 16384},
+  "glm-5.3": {"context_window": 256000, "max_output_tokens": 16384, "input_usd_per_mtok": 2.01, "output_usd_per_mtok": 6.15}
+}`)
+	efforts := writeTestFile(t, "efforts.json", `{"scaleway/qwen-unpriced": ["low", "high"]}`)
+	if out, err := runPriceFeedsCommand(t, "remote", "price-feeds", "declare", "pliage", "--platform", "--models-file", models, "--efforts-file", efforts, "--dry-run"); err != nil {
+		t.Fatalf("--dry-run refused a pool's unpriced row: %v\n%s", err, out)
+	}
+	if out, err := runPriceFeedsCommand(t, "remote", "price-feeds", "declare", "pliage", "--platform", "--models-file", models, "--efforts-file", efforts); err != nil {
+		t.Fatalf("declare refused a pool's unpriced row: %v\n%s", err, out)
+	}
+	rec := live.record(t, pricefeed.PlatformConfigDocID)
+	want := modelspecs.Spec{ContextWindow: 131072, MaxOutputTokens: 16384, ReasoningEfforts: []string{"low", "high"}}
+	if got := declaredEntriesOf(t, rec.Feeds[0])["scaleway/qwen-unpriced"]; !reflect.DeepEqual(got, want) {
+		t.Fatalf("the unpriced row declared as %+v, want %+v", got, want)
+	}
+	table := pricefeed.Fold(pricefeed.FoldConfig{}, pricefeed.ScopeState{Config: rec})
+	if e := table.Entries["scaleway/qwen-unpriced"]; e.Feed != "pliage" || e.Spec.ContextWindow != 131072 || e.Spec.MaxOutputTokens != 16384 || e.Spec.InputCostPerM != 0 {
+		t.Fatalf("the declared row folds as %+v, want the pool's window and output cap, unpriced", e)
 	}
 }

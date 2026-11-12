@@ -69,7 +69,7 @@ func TestPriceFeedEffectiveView(t *testing.T) {
 		`{"glm-5.3":{"input_usd_per_mtok":2.5,"output_usd_per_mtok":7}}`))
 	putFeedDoc(t, live.configs, pricefeed.TeamConfigDocID("team-pf"),
 		declaredFeed("teamf", `{"kimi-k2":{"reasoning_efforts":["max"]}}`),
-		declaredFeed("broken", `{"glm-5.3":{"context_window":1}}`))
+		declaredFeed("broken", `{"glm-5.3":{}}`))
 
 	const base = "/api/teams/team-pf/price-feeds/effective"
 	query := "?model=glm-5.3&model=Scaleway/DeepSeek-v4.1-flash&model=kimi-k2&model=unknown-x"

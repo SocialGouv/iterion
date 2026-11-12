@@ -38,8 +38,9 @@ entry never erases a declared effort list. A fetched feed (`modelsdev`, `scalewa
 `litellm`, `exec`) refreshes on one elected replica and answers while fresh;
 a stale one steps down to the operator table. A `declared` feed is the
 operator's table stored in its config (`params.entries`): never fetched,
-never stale. Its entries state the price pair, or only
-`reasoning_efforts`. The `_gateway_spec` record carries
+never stale. Its entries answer whole as the operator-table rows they
+copy — priced or not — and an entry stating only `reasoning_efforts`
+answers its efforts alone. The `_gateway_spec` record carries
 `"feed:<name>"` with its age.
 
 Commands: `iterion remote price-feeds list|set|delete|sync|declare

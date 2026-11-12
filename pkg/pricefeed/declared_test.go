@@ -45,10 +45,10 @@ func TestDeclaredSourceIsStatic(t *testing.T) {
 }
 
 // What a declaration may state: a priced entry, an efforts-only entry,
-// or both. What it may not: nothing at all, or a window, an output cap, a
-// cache price or a capability flag without the price pair — an unpriced
-// entry never answers (ADR-163), so the refusal names the id and the two
-// remedies.
+// a window, an output cap, a cache price or a capability flag with or
+// without the price pair — whatever an operator-table row states — or
+// any of them together. What it may not: an empty document, or an entry
+// that states nothing; the refusal names the id.
 func TestDeclaredValidateParams(t *testing.T) {
 	src, _ := SourceFor(TypeDeclared)
 	for _, ok := range []string{
@@ -60,6 +60,8 @@ func TestDeclaredValidateParams(t *testing.T) {
 			t.Errorf("%s refused: %v", ok, err)
 		}
 	}
+	// A pool's OPENAI_COMPATIBLE_MODELS row may state a field without the
+	// price pair; declared as written, it answers whole (Fold).
 	for _, unpriced := range []struct{ field, raw string }{
 		{"context_window", `{"deepseek-x":{"context_window":128000}}`},
 		{"max_output_tokens", `{"deepseek-x":{"max_output_tokens":8192,"reasoning_efforts":["high"]}}`},
@@ -68,15 +70,8 @@ func TestDeclaredValidateParams(t *testing.T) {
 		{"tool_call", `{"deepseek-x":{"tool_call":false}}`},
 		{"temperature", `{"deepseek-x":{"temperature":true}}`},
 	} {
-		err := src.ValidateParams(declaredParams(unpriced.raw))
-		if err == nil {
-			t.Errorf("%s without the price pair validated", unpriced.field)
-			continue
-		}
-		for _, want := range []string{`"deepseek-x"`, unpriced.field, "input_usd_per_mtok", "output_usd_per_mtok", "reasoning_efforts"} {
-			if !strings.Contains(err.Error(), want) {
-				t.Errorf("%s without the price pair: refusal %q does not name %s", unpriced.field, err, want)
-			}
+		if err := src.ValidateParams(declaredParams(unpriced.raw)); err != nil {
+			t.Errorf("%s without the price pair refused: %v", unpriced.field, err)
 		}
 	}
 	for _, empty := range []string{"", "  ", "{}"} {
@@ -87,17 +82,23 @@ func TestDeclaredValidateParams(t *testing.T) {
 	if err := src.ValidateParams(map[string]string{}); err == nil {
 		t.Error("a declaration with no entries param validated")
 	}
-	if err := src.ValidateParams(declaredParams(`{"deepseek-x":{}}`)); err == nil || !strings.Contains(err.Error(), `"deepseek-x"`) || !strings.Contains(err.Error(), "states nothing") {
-		t.Errorf("an entry stating nothing validated or refused without naming it: %v", err)
+	for _, nothing := range []string{`{"deepseek-x":{}}`, `{"deepseek-x":null}`} {
+		if err := src.ValidateParams(declaredParams(nothing)); err == nil || !strings.Contains(err.Error(), `"deepseek-x"`) || !strings.Contains(err.Error(), "states nothing") {
+			t.Errorf("%s validated or refused without naming the id: %v", nothing, err)
+		}
 	}
 	if err := src.ValidateParams(declaredParams(`{"deepseek-x":{"reasoning_efforts":["hihg"]}}`)); err == nil || !strings.Contains(err.Error(), "params.entries") {
 		t.Errorf("an invalid effort level validated or refused without naming params.entries: %v", err)
 	}
-	// The same rule through the whole-feed validation a write route runs.
+	// The same rules through the whole-feed validation a write route runs.
 	feed := FeedConfig{Name: "pliage", Type: TypeDeclared, Enabled: true, Interval: d(30 * 86400), Timeout: d(1),
 		Params: declaredParams(`{"deepseek-x":{"context_window":128000}}`)}
+	if err := ValidateFeed(feed); err != nil {
+		t.Errorf("ValidateFeed refused an unpriced declared window: %v", err)
+	}
+	feed.Params = declaredParams(`{"deepseek-x":{}}`)
 	if err := ValidateFeed(feed); err == nil || !strings.Contains(err.Error(), `feed "pliage"`) {
-		t.Errorf("ValidateFeed accepted an unpriced declared window: %v", err)
+		t.Errorf("ValidateFeed accepted an entry stating nothing: %v", err)
 	}
 }
 
@@ -107,7 +108,7 @@ func TestDeclaredValidateParams(t *testing.T) {
 func TestDeclaredEntriesHoldTheWriteRules(t *testing.T) {
 	src, _ := SourceFor(TypeDeclared)
 	static := src.(StaticSource)
-	for _, bad := range []string{`{"deepseek-x":{"context_window":128000}}`, `{}`, `{"deepseek-x":{}}`} {
+	for _, bad := range []string{`{}`, `{"deepseek-x":{}}`} {
 		if got, err := static.Entries(declaredParams(bad)); err == nil {
 			t.Errorf("Entries(%s) answered %+v — a declaration the write rules refuse must not answer", bad, got)
 		}

@@ -214,7 +214,8 @@ func (e Entry) Fresh(now time.Time) bool {
 // without a second channel.
 //
 // Two maps, folded independently: Entries answers prices, windows and
-// flags; Efforts answers accepted reasoning efforts. An id may sit in
+// flags (a declared entry may answer a window unpriced); Efforts answers
+// accepted reasoning efforts. An id may sit in
 // either or both — a feed that prices an id and a declaration that only
 // lists its efforts each answer their own field. Entries is always
 // encoded, `{}` when empty: an older runner's parser requires it, so an
@@ -450,7 +451,10 @@ type ScopeState struct {
 // scopes the later (more specific) scope replaces the ids it carries:
 //
 //   - Entries: every priced entry (input and output price both above
-//     zero) of every answering feed, its accepted efforts stripped;
+//     zero) of every answering feed, and every declared entry stating a
+//     window, an output cap, a cache price or a flag without the price
+//     pair — a declaration answers whole, as the operator-table row it
+//     copies did — its accepted efforts stripped;
 //   - Efforts: every entry's accepted efforts, priced or not.
 //
 // A price entry answers WHOLE from one feed (ADR-122): its fields are
@@ -468,9 +472,11 @@ type ScopeState struct {
 // state document sits under its name; a declaration the write rules
 // refuse steps down with a warning naming the feed.
 //
-// An entry without the price pair never shadows the priced operator
-// table — or the catalog below it — with an unpriced answer: it stays in
-// the durable state, visible, and does not travel in Entries. One summary
+// A FETCHED entry without the price pair never shadows the priced
+// operator table — or the catalog below it — with an unpriced answer: it
+// stays in the durable state, visible, and does not travel in Entries
+// (ADR-163; a source listing an id it does not price says nothing about
+// it, while an operator's declared row says what it says). One summary
 // warning per feed per fold counts the unpriced entries whose window,
 // output cap, cache price or flags are thereby dropped (or that state
 // nothing); an entry whose only content is its efforts is not counted,
@@ -526,7 +532,12 @@ func Fold(cfg FoldConfig, scopes ...ScopeState) *Table {
 						scopeEfforts[id] = EffortsEntry{Feed: feed.Name, Values: slices.Clone(spec.ReasoningEfforts)}
 					}
 				}
-				if spec.InputCostPerM <= 0 || spec.OutputCostPerM <= 0 {
+				// A declared entry answers whole, priced or not, as the
+				// operator-table row it copies did; a fetched one answers
+				// only priced (ADR-163).
+				answers := spec.InputCostPerM > 0 && spec.OutputCostPerM > 0 ||
+					answer.declared && len(unpricedFields(spec)) > 0
+				if !answers {
 					if len(spec.ReasoningEfforts) == 0 || len(unpricedFields(spec)) > 0 {
 						unpriced++
 					}

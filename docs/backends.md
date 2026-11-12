@@ -1895,9 +1895,9 @@ run to the runner** — the operator table stays the floor.
   flags, never merged across feeds or levels: a feed that prices an id
   another feed declares restates the window, output cap and cache price,
   or the run loses them, and the fold warns, naming both feeds, the ids
-  and the fields. An entry without the
-  price pair does not travel as a price entry — it can never shadow a
-  priced operator or catalog entry with an unpriced one. When a fresh
+  and the fields. A fetched entry without the price pair does not
+  travel as a price entry — it can never shadow a priced operator or
+  catalog entry with an unpriced one; a declared one does (below). When a fresh
   feed and the operator table disagree on price, the sync says so: one
   line per drifting id per refresh, naming both values.
 - **Sources** are adapters behind one seam — a new operator tariff
@@ -1925,10 +1925,13 @@ run to the runner** — the operator table stays the floor.
   with `declared_at` and its entry count (`interval`/`timeout` are
   validated as for any feed and otherwise unused). A manual sync of a
   declaration judges it, reports it `declared` with its drift, and
-  writes no state. An entry states the
-  price pair, or only `reasoning_efforts`; a window, output cap, cache
-  price or flag without the pair is refused on write, since it would
-  never answer. A stored declaration that breaks a write rule steps
+  writes no state. A declared entry answers whole, as the
+  operator-table row it copies did: priced, or stating a window, an
+  output cap, a cache price or a flag without the price pair — which it
+  answers unpriced, the answer a pool's `OPENAI_COMPATIBLE_MODELS` row
+  gave. An entry stating only `reasoning_efforts` answers its efforts
+  alone; an entry stating nothing and an empty document are refused on
+  write. A stored declaration that breaks a write rule steps
   down with a warning naming the feed, and its view reads `failing`.
   A tenant admin declares at their own level; only `exec` is the
   platform operator's.

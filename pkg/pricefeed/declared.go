@@ -59,12 +59,12 @@ func (declaredSource) Entries(params map[string]string) (map[string]modelspecs.S
 }
 
 // declaredEntries parses and judges a declaration. Beyond the feed
-// format's own rules it refuses an empty document, an entry that states
-// nothing, and an entry that states a window, an output cap, a cache
-// price or a capability flag without the price pair: an unpriced entry
-// never answers (ADR-163 — the fold skips it), so such a declaration
-// would be silently inert. An entry stating only reasoning_efforts is
-// the one unpriced shape that answers: the efforts fold per field.
+// format's own rules it refuses an empty document and an entry that
+// states nothing. Every other entry answers: a declared entry answers
+// whole, as the operator-table row it copies did — priced, or stating a
+// window, an output cap, a cache price or a flag without the price pair
+// (Fold) — and an entry stating only reasoning_efforts answers its
+// efforts alone.
 func declaredEntries(params map[string]string) (map[string]modelspecs.Spec, error) {
 	what := "params." + DeclaredParamEntries
 	raw := strings.TrimSpace(params[DeclaredParamEntries])
@@ -79,18 +79,9 @@ func declaredEntries(params map[string]string) (map[string]modelspecs.Spec, erro
 		return nil, fmt.Errorf("%s declares no entry", what)
 	}
 	for _, id := range sortedIDs(entries) {
-		spec := entries[id]
-		if spec.InputCostPerM > 0 && spec.OutputCostPerM > 0 {
-			continue
+		if spec := entries[id]; len(statedFields(spec)) == 0 && len(spec.ReasoningEfforts) == 0 {
+			return nil, fmt.Errorf("%s[%q] states nothing: declare the price pair (input_usd_per_mtok, output_usd_per_mtok), a window, an output cap, reasoning_efforts, or any of them together", what, id)
 		}
-		stated := unpricedFields(spec)
-		if len(stated) == 0 {
-			if len(spec.ReasoningEfforts) > 0 {
-				continue
-			}
-			return nil, fmt.Errorf("%s[%q] states nothing: declare the price pair (input_usd_per_mtok, output_usd_per_mtok), reasoning_efforts, or both", what, id)
-		}
-		return nil, fmt.Errorf("%s[%q] states %s without the price pair — an unpriced entry never answers (ADR-163): state input_usd_per_mtok and output_usd_per_mtok beside it, or state only reasoning_efforts", what, id, strings.Join(stated, ", "))
 	}
 	return entries, nil
 }

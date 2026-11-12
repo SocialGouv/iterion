@@ -162,7 +162,7 @@ func TestFoldDeclarationNeverAges(t *testing.T) {
 func TestFoldStepsDownABrokenDeclaration(t *testing.T) {
 	now := time.Now()
 	cfg := &ConfigRecord{UpdatedAt: now, Feeds: []FeedConfig{
-		declaredFeed("broken", `{"glm-5.3":{"context_window":256000}}`),
+		declaredFeed("broken", `{"glm-5.3":{}}`),
 		fetchedFeed("scw"),
 	}}
 	states := map[string]*StateRecord{"scw": freshState("scw", now, map[string]modelspecs.Spec{"glm-5.3": {InputCostPerM: 1, OutputCostPerM: 2}})}
@@ -171,7 +171,7 @@ func TestFoldStepsDownABrokenDeclaration(t *testing.T) {
 	if table == nil || table.Entries["glm-5.3"].Feed != "scw" {
 		t.Fatalf("the scope's fetched feed did not answer beside a broken declaration: %+v", table)
 	}
-	if len(warned) != 1 || !strings.Contains(warned[0], "broken") || !strings.Contains(warned[0], "price pair") {
+	if len(warned) != 1 || !strings.Contains(warned[0], "broken") || !strings.Contains(warned[0], "states nothing") {
 		t.Fatalf("the broken declaration must warn once, naming the feed and the rule: %v", warned)
 	}
 }
@@ -515,5 +515,51 @@ func TestFoldWarnsWhenAWinningEntryLeavesShadowedFieldsUnstated(t *testing.T) {
 				t.Fatalf("[%s] the warning %q does not name %s", tc.name, warned[0], want)
 			}
 		}
+	}
+}
+
+// A declared entry answers WHOLE, as the operator-table row it copies
+// did: a pool's row stating a window and an output cap without prices
+// declares as written and travels in Entries, unpriced, with no warning —
+// while a fetched feed's same entry still never travels (ADR-163: a
+// source listing an id it does not price says nothing about it). Listed
+// first in its level, the declared row answers whole over a feed that
+// prices the id, and the fold says the prices are left unstated.
+func TestFoldADeclaredUnpricedRowAnswersWhole(t *testing.T) {
+	const id = "scaleway/qwen-unpriced"
+	now := time.Now()
+	row := modelspecs.Spec{ContextWindow: 131072, MaxOutputTokens: 16384}
+	declared := declaredFeed("pliage", `{"`+id+`":{"context_window":131072,"max_output_tokens":16384}}`)
+	var warned []string
+	warnf := func(f string, a ...any) { warned = append(warned, fmt.Sprintf(f, a...)) }
+
+	table := Fold(FoldConfig{Now: now, Warnf: warnf}, ScopeState{Config: &ConfigRecord{UpdatedAt: now, Feeds: []FeedConfig{declared}}})
+	if table == nil {
+		t.Fatal("a declared unpriced row folded to nothing")
+	}
+	if e := table.Entries[id]; e.Feed != "pliage" || !e.Declared || !SpecEqual(e.Spec, row) {
+		t.Fatalf("the declared row answers %+v, want pliage's window and output cap, unpriced", e)
+	}
+	if len(warned) != 0 {
+		t.Fatalf("a declared row warned: %v", warned)
+	}
+
+	fetched := fetchedFeed("scw")
+	states := map[string]*StateRecord{"scw": freshState("scw", now, map[string]modelspecs.Spec{id: row})}
+	if got := Fold(FoldConfig{Now: now, Warnf: warnf}, ScopeState{Config: &ConfigRecord{UpdatedAt: now, Feeds: []FeedConfig{fetched}}, States: states}); got != nil {
+		t.Fatalf("a fetched unpriced entry travelled: %+v", got)
+	}
+	if len(warned) != 1 || !strings.Contains(warned[0], "scw: 1 entries carry no price pair") {
+		t.Fatalf("the fetched unpriced entry must be counted: %v", warned)
+	}
+
+	warned = nil
+	priced := map[string]*StateRecord{"scw": freshState("scw", now, map[string]modelspecs.Spec{id: {InputCostPerM: 0.3, OutputCostPerM: 1.2}})}
+	table = Fold(FoldConfig{Now: now, Warnf: warnf}, ScopeState{Config: &ConfigRecord{UpdatedAt: now, Feeds: []FeedConfig{declared, fetched}}, States: priced})
+	if e := table.Entries[id]; e.Feed != "pliage" || !SpecEqual(e.Spec, row) {
+		t.Fatalf("the declared row listed first answers %+v, want it whole", e)
+	}
+	if len(warned) != 1 || !strings.Contains(warned[0], "price feed pliage answers whole over feed scw and leaves input_usd_per_mtok, output_usd_per_mtok unstated") {
+		t.Fatalf("the row shadowing a price must say so: %v", warned)
 	}
 }

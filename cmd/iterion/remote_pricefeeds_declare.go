@@ -50,9 +50,11 @@ The table comes from either
                     spellings of an id match case-insensitively), and an id
                     only E names is declared by its efforts alone.
 
-An entry states the price pair, or only reasoning_efforts: a window, an
-output cap or a flag without the prices would never answer, and is refused.
-The table becomes the feed's whole document.
+An entry answers whole, as the env table's row it copies did: priced or
+not — a window or an output cap without the prices answers unpriced — and
+an entry stating only reasoning_efforts answers its efforts alone. An
+entry stating nothing is refused. The table becomes the feed's whole
+document.
 
 declare reads the scope's list, replaces the named feed's document — its
 place, switch and cadence kept — or appends a new enabled feed (--first puts
