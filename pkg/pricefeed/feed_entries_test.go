@@ -98,11 +98,11 @@ func TestExecSourceReadsEfforts(t *testing.T) {
 func TestRefreshReportsAnEffortsChange(t *testing.T) {
 	prev := map[string]modelspecs.Spec{"deepseek-x": {InputCostPerM: 0.6, OutputCostPerM: 1.8, ReasoningEfforts: []string{"low"}}}
 	next := map[string]modelspecs.Spec{"deepseek-x": {InputCostPerM: 0.6, OutputCostPerM: 1.8, ReasoningEfforts: []string{"low", "high"}}}
-	if changes := diffEntries(prev, next); len(changes) != 1 || changes[0].ID != "deepseek-x" {
+	if changes := DiffEntries(prev, next); len(changes) != 1 || changes[0].ID != "deepseek-x" {
 		t.Fatalf("an effort-list change did not report: %+v", changes)
 	}
 	same := map[string]modelspecs.Spec{"deepseek-x": {InputCostPerM: 0.6, OutputCostPerM: 1.8, ReasoningEfforts: []string{"low"}}}
-	if changes := diffEntries(prev, same); len(changes) != 0 {
+	if changes := DiffEntries(prev, same); len(changes) != 0 {
 		t.Fatalf("an unchanged effort list reported as changed: %+v", changes)
 	}
 

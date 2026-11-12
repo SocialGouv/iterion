@@ -394,14 +394,14 @@ func TestRefreshUnchangedFlaggedEntriesAreNotChanges(t *testing.T) {
 	prev := &StateRecord{Feed: "f", Entries: mk(), RefreshedAt: time.Now(), FreshFor: d(7200)}
 	// An unchanged re-read (new pointers, same verdicts) reports nothing.
 	state := StateRecord{Entries: mk()}
-	changes := diffEntries(prev.Entries, state.Entries)
+	changes := DiffEntries(prev.Entries, state.Entries)
 	if len(changes) != 0 {
 		t.Fatalf("unchanged flagged entries reported as changed: %+v", changes)
 	}
 	// A REAL flag flip still reports.
 	flippedEntry := mk()["glm-5.3"]
 	flippedEntry.ToolCall = &yes
-	changes = diffEntries(prev.Entries, map[string]modelspecs.Spec{"glm-5.3": flippedEntry})
+	changes = DiffEntries(prev.Entries, map[string]modelspecs.Spec{"glm-5.3": flippedEntry})
 	if len(changes) != 1 || changes[0].ID != "glm-5.3" {
 		t.Fatalf("a real flag flip did not report: %+v", changes)
 	}

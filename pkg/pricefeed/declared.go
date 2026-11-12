@@ -30,9 +30,9 @@ func IsStatic(typ string) bool {
 	return static
 }
 
-// declaredParamEntries is the declared feed's one param: the entry
+// DeclaredParamEntries is the declared feed's one param: the entry
 // document, in ParseFeedEntries' format.
-const declaredParamEntries = "entries"
+const DeclaredParamEntries = "entries"
 
 // declaredSource is the operator's own table, stored in the feed config:
 // `params.entries` holds the operator-table JSON document plus
@@ -66,8 +66,8 @@ func (declaredSource) Entries(params map[string]string) (map[string]modelspecs.S
 // would be silently inert. An entry stating only reasoning_efforts is
 // the one unpriced shape that answers: the efforts fold per field.
 func declaredEntries(params map[string]string) (map[string]modelspecs.Spec, error) {
-	what := "params." + declaredParamEntries
-	raw := strings.TrimSpace(params[declaredParamEntries])
+	what := "params." + DeclaredParamEntries
+	raw := strings.TrimSpace(params[DeclaredParamEntries])
 	if raw == "" {
 		return nil, fmt.Errorf("%s is required: the declared table, e.g. {\"<gateway id>\": {\"input_usd_per_mtok\": F, \"output_usd_per_mtok\": F, \"reasoning_efforts\": [\"low\", \"high\"]}}", what)
 	}

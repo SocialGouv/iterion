@@ -107,7 +107,7 @@ func Refresh(ctx context.Context, feed FeedConfig, prev *StateRecord, operatorTa
 	state.Status = StateOK
 	outcome.Status = StateOK
 	outcome.RefreshedAt = now
-	outcome.Changes = diffEntries(prevEntries(prev), fetched)
+	outcome.Changes = DiffEntries(prevEntries(prev), fetched)
 	return state, outcome
 }
 
@@ -118,9 +118,9 @@ func prevEntries(prev *StateRecord) map[string]modelspecs.Spec {
 	return prev.Entries
 }
 
-// diffEntries lists the ids whose spec moved, added and removed — sorted
+// DiffEntries lists the ids whose spec moved, added and removed — sorted
 // by id, deterministic whatever map order ranged.
-func diffEntries(old, new map[string]modelspecs.Spec) []EntryChange {
+func DiffEntries(old, new map[string]modelspecs.Spec) []EntryChange {
 	if len(old) == 0 && len(new) == 0 {
 		return nil
 	}
