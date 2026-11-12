@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [5.26.0](https://github.com/SocialGouv/iterion/compare/v5.25.0...v5.26.0) (2026-11-12)
+
+### Features
+
+* **codemode:** the tool binding — a script reaches the node's own tools, and a nested call IS a direct call ([#3186](https://github.com/SocialGouv/iterion/issues/3186)) ([5864761](https://github.com/SocialGouv/iterion/commit/5864761272d39bca0b3bbaeef985992d28c76098)), references [#3182](https://github.com/SocialGouv/iterion/issues/3182) [#3153](https://github.com/SocialGouv/iterion/issues/3153)
+
+    <details><summary>why</summary>
+
+    CM-1b of the codemode epic (#3182, under #3153), on CM-1a's confined host (`a917c371b`) and CM-2's dispatcher door (`d13f6391e`). A script now calls the tools its node already declares: the child writes a call on descriptor 4, the parent dispatches it through `d.dispatch` and writes the result back on 3, and one JSON document still comes back at the end.
+
+    </details>
+
 ## [5.25.0](https://github.com/SocialGouv/iterion/compare/v5.24.0...v5.25.0) (2026-11-12)
 
 ### Features
