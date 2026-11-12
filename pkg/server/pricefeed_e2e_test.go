@@ -3,15 +3,30 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/compatgw"
 	"github.com/SocialGouv/iterion/pkg/backend/cost"
 	"github.com/SocialGouv/iterion/pkg/backend/credroute"
+	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/backend/modelroute"
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/pricefeed"
+	"github.com/SocialGouv/iterion/pkg/runtime"
+	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/secrets"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // The price feed's END-TO-END chain (ADR-163), deterministic, no model
@@ -152,4 +167,312 @@ func marshalJSON(t *testing.T, v any) string {
 		t.Fatal(err)
 	}
 	return string(raw)
+}
+
+// The pool-retirement proof (ADR-166), deterministic, no model spend: a
+// run on the DEFAULT runner — every OPENAI_COMPATIBLE_* table absent from
+// its process — maps its effort, sizes its output and prices its usage
+// from a PLATFORM declaration, and a twin run on a pool runner whose env
+// tables state the same values sends the same model, reasoning_effort and
+// max_tokens on the wire at the same cost; only the provenance differs.
+// The hops are the production ones: the super-admin's PUT through the
+// real route, the publisher's fold (EffectivePriceFeed over the named ids
+// the publisher walks), the sealed bundle's round trip, the runner's
+// bundle-to-context adapter for the table, the runner binary's credential
+// lookup, the executor every plane builds (runview.BuildExecutor) and the
+// engine; only the gateway is a loopback stub that records what it
+// received. The stub is the runner's env-funded gateway
+// (OPENAI_COMPATIBLE_BASE_URL / _API_KEY, which are no table): a sealed
+// team key refuses a loopback http base URL
+// (secrets.ValidateGatewayBaseURL), and which credential funds the call
+// is not what this proves.
+func TestPriceFeedEndToEndRetiresThePool(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("TMPDIR", t.TempDir())
+	t.Setenv("ITERION_HOME", t.TempDir())
+	t.Setenv("ITERION_LLM_ENDPOINT_ALLOW_PRIVATE", "1")
+	for _, name := range []string{
+		compatgw.CatalogModelsEnv, compatgw.ReasoningEffortsEnv, compatgw.CatalogProviderEnv,
+		compatgw.FeedTableEnv, compatgw.ResolvedEnvName,
+		"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy",
+	} {
+		t.Setenv(name, "")
+		if err := os.Unsetenv(name); err != nil {
+			t.Fatal(err)
+		}
+	}
+	compatgw.ResetCatalogCaches()
+	t.Cleanup(compatgw.ResetCatalogCaches)
+	// The runner binary installs the run-credentials lookup at boot.
+	t.Cleanup(model.SetCredentialsLookup(model.RunCredentialsLookup))
+
+	// 1. The super-admin declares the platform feed through the real route.
+	live := newPriceFeedLive(t)
+	if code, out := live.do(t, "PUT", "/api/admin/price-feeds", live.root, priceFeedPutFeedBody(declaredFeed("pliage", retirePliage))); code != http.StatusOK {
+		t.Fatalf("the platform declaration was refused: %d %s", code, out)
+	}
+
+	gw := newRecordingGateway(t)
+	t.Setenv("OPENAI_COMPATIBLE_BASE_URL", gw.srv.URL+"/v1")
+	t.Setenv("OPENAI_COMPATIBLE_API_KEY", "sk-runner-gateway")
+	wf := compileRetireBot(t)
+	named := model.RouteGatewayModelIDs(wf, model.ModelOverrides{})
+
+	// 2. The publisher's fold for the team, sealed in the run's bundle.
+	raw := EffectivePriceFeed(context.Background(), live.configs, live.states, "org1", "team-pf", named, nil)
+	if raw == nil {
+		// Not fatal: the run below then shows what a default runner does
+		// without the declaration, assertion by assertion.
+		t.Error("the launch fold answered no table")
+	}
+	feedRun := runRetireWorkflow(t, wf, gw, raw)
+
+	// 3. What the gateway RECEIVED, and what the run recorded.
+	deep, glm := feedRun.bodies["scaleway/deepseek-v4.1-flash"], feedRun.bodies["glm-5.3"]
+	if deep.ReasoningEffort != "high" {
+		t.Errorf("the gateway received reasoning_effort %q for deepseek, want high (medium mapped by the platform declaration)", deep.ReasoningEffort)
+	}
+	if glm.MaxTokens != 16384 {
+		t.Errorf("the gateway received max_tokens %d for glm-5.3, want the declared max output 16384", glm.MaxTokens)
+	}
+	if adj := feedRun.adjusted["deep"]; adj["requested"] != "medium" || adj["applied"] != "high" || adj["source"] != "feed:pliage" {
+		t.Errorf("reasoning_effort_adjusted = %v, want medium -> high from feed:pliage", adj)
+	}
+	for node, spec := range feedRun.specs {
+		if spec.Source != "feed:pliage" {
+			t.Errorf("%s: _gateway_spec.source = %q, want feed:pliage", node, spec.Source)
+		}
+	}
+	if w := feedRun.specs["glm"].ContextWindow; w != 256000 {
+		t.Errorf("glm: _gateway_spec.context_window = %d, want 256000", w)
+	}
+	for _, node := range []string{"deep", "glm"} {
+		if feedRun.costs[node] <= 0 {
+			t.Errorf("%s: _cost_usd = %v, want a priced node", node, feedRun.costs[node])
+		}
+		if feedRun.sampled[node] <= 0 {
+			t.Errorf("%s: no usage_progress sample carried a USD figure (%v)", node, feedRun.sampled[node])
+		}
+	}
+
+	// 4. The parity twin: the pool's env tables, no feed in the bundle.
+	compatgw.ResetCatalogCaches()
+	t.Setenv(compatgw.CatalogModelsEnv, retirePoolModels)
+	t.Setenv(compatgw.ReasoningEffortsEnv, retirePoolEfforts)
+	poolRun := runRetireWorkflow(t, wf, gw, nil)
+	for id, body := range feedRun.bodies {
+		if poolRun.bodies[id] != body {
+			t.Errorf("%s: the wire differs between the declaration and the pool tables: %+v vs %+v", id, body, poolRun.bodies[id])
+		}
+	}
+	for _, node := range []string{"deep", "glm"} {
+		if poolRun.costs[node] != feedRun.costs[node] || poolRun.sampled[node] != feedRun.sampled[node] {
+			t.Errorf("%s: cost %v / sample %v from the declaration, %v / %v from the pool tables", node, feedRun.costs[node], feedRun.sampled[node], poolRun.costs[node], poolRun.sampled[node])
+		}
+		if poolRun.specs[node].Source != compatgw.SourceOperator {
+			t.Errorf("%s: the pool twin's provenance is %q, want operator", node, poolRun.specs[node].Source)
+		}
+	}
+	if src := poolRun.adjusted["deep"]["source"]; src != compatgw.SourceReasoningEffortsEnv {
+		t.Errorf("the pool twin's effort source is %v, want %s", src, compatgw.SourceReasoningEffortsEnv)
+	}
+}
+
+// retirePliage is the platform declaration: deepseek priced with its
+// accepted efforts, glm-5.3 priced with its window and max output.
+const retirePliage = `{"scaleway/deepseek-v4.1-flash":{"context_window":128000,"max_output_tokens":8192,"input_usd_per_mtok":0.6,"output_usd_per_mtok":2.4,"reasoning_efforts":["low","high","xhigh","max"]},"glm-5.3":{"context_window":256000,"max_output_tokens":16384,"input_usd_per_mtok":2.01,"output_usd_per_mtok":6.15}}`
+
+// retirePoolModels and retirePoolEfforts are the same facts as the
+// pool's two env tables.
+const (
+	retirePoolModels  = `{"scaleway/deepseek-v4.1-flash":{"context_window":128000,"max_output_tokens":8192,"input_usd_per_mtok":0.6,"output_usd_per_mtok":2.4},"glm-5.3":{"context_window":256000,"max_output_tokens":16384,"input_usd_per_mtok":2.01,"output_usd_per_mtok":6.15}}`
+	retirePoolEfforts = `{"scaleway/deepseek-v4.1-flash":["low","high","xhigh","max"]}`
+)
+
+const retireBot = `agent deep:
+  backend: claw
+  model: "openai_compatible/scaleway/deepseek-v4.1-flash"
+  reasoning_effort: medium
+  user: "Review the change."
+
+agent glm:
+  backend: claw
+  model: "openai_compatible/glm-5.3"
+  user: "Summarize the review."
+
+workflow w:
+  worktree: none
+  sandbox: none
+  entry: deep
+  deep -> glm
+  glm -> done
+`
+
+func compileRetireBot(t *testing.T) *ir.Workflow {
+	t.Helper()
+	pr := parsertest.Parse("retire.bot", retireBot)
+	for _, d := range pr.Diagnostics {
+		if d.Severity == parser.SeverityError {
+			t.Fatalf("fixture does not parse: %s", d.Error())
+		}
+	}
+	cr := ir.Compile(pr.File)
+	for _, d := range cr.Diagnostics {
+		if d.Severity == ir.SeverityError {
+			t.Fatalf("fixture does not compile: %s", d.Error())
+		}
+	}
+	return cr.Workflow
+}
+
+// retireWire is the part of a chat-completions body the proof compares.
+type retireWire struct {
+	Model           string `json:"model"`
+	ReasoningEffort string `json:"reasoning_effort"`
+	MaxTokens       int    `json:"max_tokens"`
+}
+
+// recordingGateway is a loopback chat-completions endpoint: it records
+// each request's wire fields by model and answers one streamed text turn
+// reporting a usage large enough to clear the usage_progress USD floor.
+type recordingGateway struct {
+	srv  *httptest.Server
+	mu   sync.Mutex
+	seen map[string]retireWire
+}
+
+func newRecordingGateway(t *testing.T) *recordingGateway {
+	t.Helper()
+	g := &recordingGateway{seen: map[string]retireWire{}}
+	g.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/chat/completions") {
+			http.NotFound(w, r)
+			return
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("gateway: read body: %v", err)
+			return
+		}
+		var req retireWire
+		if err := json.Unmarshal(body, &req); err != nil {
+			t.Errorf("gateway: decode body: %v (%s)", err, body)
+			return
+		}
+		g.mu.Lock()
+		g.seen[req.Model] = req
+		g.mu.Unlock()
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, `data: {"choices":[{"index":0,"delta":{"role":"assistant","content":"done"}}]}`+"\n\n")
+		fmt.Fprint(w, `data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`+"\n\n")
+		fmt.Fprint(w, `data: {"choices":[],"usage":{"prompt_tokens":100000,"completion_tokens":2000}}`+"\n\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	t.Cleanup(g.srv.Close)
+	return g
+}
+
+func (g *recordingGateway) take() map[string]retireWire {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	out := g.seen
+	g.seen = map[string]retireWire{}
+	return out
+}
+
+// retireRun is what one run left: the wire per model, the effort
+// adjustment per node, and per node its `_gateway_spec`, `_cost_usd` and
+// the largest usage_progress USD figure.
+type retireRun struct {
+	bodies   map[string]retireWire
+	adjusted map[string]map[string]any
+	specs    map[string]compatgw.ResolvedEnvRecord
+	costs    map[string]float64
+	sampled  map[string]float64
+}
+
+// runRetireWorkflow seals a bundle carrying the folded table (none when
+// raw is nil), opens it, plants it through the runner's adapter and runs
+// the workflow through the executor every plane builds.
+func runRetireWorkflow(t *testing.T, wf *ir.Workflow, gw *recordingGateway, raw json.RawMessage) retireRun {
+	t.Helper()
+	runID := fmt.Sprintf("run-retire-%d", time.Now().UnixNano())
+	dek, err := secrets.NewRunBundleDEK()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sealer, err := secrets.NewAESGCMSealer(dek)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sealed, keyID, err := secrets.SealRunBundle(sealer, "team-pf", "", runID, secrets.RunBundle{GatewayPriceFeed: raw})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bundle, err := secrets.OpenRunBundle(sealer, "team-pf", "", runID, keyID, sealed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The runner's bundle-to-context step for the table: the one adapter
+	// injectCredentials calls.
+	ctx := compatgw.OverlayFeedTable(context.Background(), bundle.GatewayPriceFeed)
+
+	storeDir := t.TempDir()
+	st, err := store.New(storeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workDir := t.TempDir()
+	exec, err := runview.BuildExecutor(runview.ExecutorSpec{Ctx: ctx, Workflow: wf, Store: st, RunID: runID, Logger: iterlog.Nop(), WorkDir: workDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = exec.Close() })
+	if err := runtime.New(wf, st, exec, runtime.WithWorkDir(workDir), runtime.WithSandboxOverride("none")).Run(ctx, runID, nil); err != nil {
+		t.Fatalf("the run failed: %v", err)
+	}
+	events, err := st.LoadEvents(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := retireRun{
+		bodies:   gw.take(),
+		adjusted: map[string]map[string]any{},
+		specs:    map[string]compatgw.ResolvedEnvRecord{},
+		costs:    map[string]float64{},
+		sampled:  map[string]float64{},
+	}
+	for _, evt := range events {
+		switch evt.Type {
+		case store.EventReasoningEffortAdjusted:
+			run.adjusted[evt.NodeID] = evt.Data
+		case store.EventUsageProgress:
+			if used, _ := evt.Data["used"].(float64); used > run.sampled[evt.NodeID] {
+				run.sampled[evt.NodeID] = used
+			}
+		case store.EventNodeFinished:
+			out, _ := evt.Data["output"].(map[string]any)
+			if out == nil {
+				continue
+			}
+			rawSpec, err := json.Marshal(out["_gateway_spec"])
+			if err != nil {
+				t.Fatal(err)
+			}
+			var spec compatgw.ResolvedEnvRecord
+			if err := json.Unmarshal(rawSpec, &spec); err == nil {
+				run.specs[evt.NodeID] = spec
+			}
+			run.costs[evt.NodeID], _ = out["_cost_usd"].(float64)
+		}
+	}
+	for _, node := range []string{"deep", "glm"} {
+		if _, ok := run.specs[node]; !ok {
+			t.Fatalf("inert bench: node %s left no node_finished output (%d events)", node, len(events))
+		}
+	}
+	if len(run.bodies) != 2 {
+		t.Fatalf("inert bench: the gateway received %v, want one request per node", run.bodies)
+	}
+	return run
 }
