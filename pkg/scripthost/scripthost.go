@@ -131,6 +131,29 @@ type Limits struct {
 	// ResultBytes caps the encoded value the script returns. Enforced
 	// child-side, so an oversized result is refused where it is produced.
 	ResultBytes int64 `json:"result_bytes"`
+
+	// ToolCalls caps how many of the node's tools one script may call.
+	//
+	// Enforced PARENT-side, by the thing that cannot be lied to. The child
+	// counts as well, to refuse the next call without a round trip, but a
+	// child is what is being bounded: a child that under-reported its count
+	// would be served the budget it claimed. See serveToolCalls.
+	//
+	// It is not only a cost bound. Every dispatch fires the node's PreToolUse
+	// hooks — a subprocess each, where the node declares one — and may run its
+	// tool policy through a model-consulting checker, so a thousand calls is a
+	// thousand spawns and up to a thousand classifier calls. The number is
+	// what an operator meets as latency and spend long before it is a refusal.
+	ToolCalls int64 `json:"tool_calls"`
+
+	// ToolResultBytes caps ONE tool result handed back to a script, cut on a
+	// rune boundary and flagged as cut.
+	//
+	// Separate from ResultBytes, which bounds what the script RETURNS: the
+	// point of codemode is that a script may read far more than it reports, so
+	// the two bounds answer different questions and a single number would make
+	// one of them wrong.
+	ToolResultBytes int64 `json:"tool_result_bytes"`
 }
 
 // DefaultLimits is what a script runs under when nobody chose. The memory
@@ -144,6 +167,11 @@ func DefaultLimits() Limits {
 		Memory:      256 << 20,
 		ScriptBytes: 256 << 10,
 		ResultBytes: 1 << 20,
+		// Sixty-four calls is what a loop over a page of results costs, and
+		// well under where the per-dispatch hook and policy cost becomes the
+		// thing an operator notices.
+		ToolCalls:       64,
+		ToolResultBytes: 64 << 10,
 	}
 }
 
@@ -152,11 +180,13 @@ func DefaultLimits() Limits {
 // a value only the deployment may set.
 func Ceiling() Limits {
 	return Limits{
-		Wall:        10 * time.Minute,
-		CPU:         5 * time.Minute,
-		Memory:      2 << 30,
-		ScriptBytes: 4 << 20,
-		ResultBytes: 8 << 20,
+		Wall:            10 * time.Minute,
+		CPU:             5 * time.Minute,
+		Memory:          2 << 30,
+		ScriptBytes:     4 << 20,
+		ResultBytes:     8 << 20,
+		ToolCalls:       4096,
+		ToolResultBytes: 1 << 20,
 	}
 }
 
@@ -195,6 +225,9 @@ func (l Limits) Clamp() (Limits, bool) {
 		Memory:      clampInt(l.Memory, def.Memory, ceil.Memory),
 		ScriptBytes: clampInt(l.ScriptBytes, def.ScriptBytes, ceil.ScriptBytes),
 		ResultBytes: clampInt(l.ResultBytes, def.ResultBytes, ceil.ResultBytes),
+
+		ToolCalls:       clampInt(l.ToolCalls, def.ToolCalls, ceil.ToolCalls),
+		ToolResultBytes: clampInt(l.ToolResultBytes, def.ToolResultBytes, ceil.ToolResultBytes),
 	}, clamped
 }
 
@@ -263,6 +296,21 @@ type Request struct {
 	// this never arises; the `-race` test leg needs cgo, which is the one
 	// place it is set deliberately and on the record.
 	AllowSingleThreadConfinement bool `json:"allow_single_thread_confinement,omitempty"`
+
+	// ToolChannel says the parent opened the tool channel on descriptors 3 and
+	// 4 and will serve calls on it. Without it the child installs no binding,
+	// and a script that calls one gets a plain "call is not defined" — which is
+	// the honest answer for a host that was not given a tool server.
+	//
+	// It travels in the request, like every other posture flag, because the
+	// child's environment is empty by construction.
+	ToolChannel bool `json:"tool_channel,omitempty"`
+
+	// Proto is the tool-channel protocol version, meaningful only with
+	// ToolChannel. A child that does not know the number refuses rather than
+	// running a script whose capability it cannot serve: see [Proto] for the
+	// half of the handshake this cannot cover.
+	Proto int `json:"proto,omitempty"`
 }
 
 // Response is the single JSON document the child writes to its stdout. Exactly

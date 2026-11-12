@@ -215,9 +215,16 @@ func TestClampFillsTheUnsetAndCapsTheGreedy(t *testing.T) {
 		t.Errorf("an empty request gave %+v, want the defaults %+v", got, def)
 	}
 
+	// Every field, by hand, because this arm compares the WHOLE struct: a
+	// field left out here is clamped from zero, so the comparison would fail
+	// for a reason that is about this literal rather than about Clamp. The
+	// generic property — every field defaulted, ceilinged and reported — is
+	// pinned by reflection in TestEveryBoundIsDefaultedAndCeilinged, which a
+	// new field cannot slip past.
 	greedy := Limits{
 		Wall: time.Hour, CPU: time.Hour,
 		Memory: 1 << 40, ScriptBytes: 1 << 30, ResultBytes: 1 << 30,
+		ToolCalls: 1 << 20, ToolResultBytes: 1 << 30,
 	}
 	got, clamped = greedy.Clamp()
 	if !clamped {
@@ -230,7 +237,10 @@ func TestClampFillsTheUnsetAndCapsTheGreedy(t *testing.T) {
 	// Below the ceiling, the caller's choice survives untouched: a bound that
 	// quietly replaced an explicit value would be the defect philosophy 1
 	// names.
-	modest := Limits{Wall: time.Second, CPU: 2 * time.Second, Memory: 1 << 20, ScriptBytes: 10, ResultBytes: 20}
+	modest := Limits{
+		Wall: time.Second, CPU: 2 * time.Second, Memory: 1 << 20, ScriptBytes: 10, ResultBytes: 20,
+		ToolCalls: 7, ToolResultBytes: 512,
+	}
 	got, clamped = modest.Clamp()
 	if clamped {
 		t.Error("a request under every ceiling reported a clamp")

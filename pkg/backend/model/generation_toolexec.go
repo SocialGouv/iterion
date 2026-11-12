@@ -194,8 +194,22 @@ func (d *toolDispatcher) dispatch(ctx context.Context, tu toolUseBlock) (api.Con
 				"Dispatch with the context newToolDispatcher returned, or a descendant of it",
 			tu.Name), tu, d.onToolCall), nil
 	}
+	// The pin is the set THIS CALLER may run, which stopped being the node's
+	// whole set when a caller gained the ability to be narrowed: a script host
+	// is withheld the tools that pause the run, answer for the node, or are
+	// exempt from the permission gate. tool_search reads this pin, so without
+	// honouring the narrowing it would tell a script `ask_user` is available
+	// right before the server refused it — two answers to one question.
+	//
+	// The door applies a filter the caller DECLARED; it knows nothing about
+	// what a script is. A caller that pinned its own set instead would be a
+	// second source of truth for what the node can run.
+	keep, narrowed := tool.ExecutableToolFilterFrom(ctx)
 	names := make([]string, 0, len(d.toolMap))
 	for name := range d.toolMap {
+		if narrowed && !keep(name) {
+			continue
+		}
 		names = append(names, name)
 	}
 	ctx = tool.WithNodeExecutableTools(ctx, names)
@@ -776,10 +790,20 @@ func callWithContextRetry(ctx context.Context, client api.APIClient, opts Genera
 // executes — a question to the operator the run pauses on, a board issue or a
 // run query the store keeps and shows, the session's todo list written to disk.
 // Like claude_code's interception of ask_user, they see the placeholder form.
+//
+// The script host joins them, and for a reason that is the inverse of the
+// others': its input is not kept, it is a PROGRAM that in turn calls tools.
+// Each of those nested calls comes back through runToolExecution and is
+// materialised there, at its own dispatch, with rewrite.Off set for that call
+// alone. Materialising the script SOURCE instead would substitute the
+// cleartext value into the text that crosses the pipe into a child built to
+// hold no credential — the environment would still be empty and the claim
+// would still be false — and it would turn rewrite off for the whole script
+// rather than for the one call that names a secret.
 func keepsPlaceholders(name string) bool {
 	switch name {
 	case "ask_user", delegate.AskUserAsyncToolName, delegate.AwaitAnswersToolName, "todo_write",
-		MemoryWriteToolName, "privacy_filter":
+		MemoryWriteToolName, "privacy_filter", ScriptHostToolName:
 		return true
 	}
 	return strings.HasPrefix(canonicalMCPToolName(name), "mcp_iterion_")

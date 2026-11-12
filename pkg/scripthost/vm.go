@@ -116,6 +116,18 @@ func runScript(vm *goja.Runtime, src string, wall time.Duration, resultBytes int
 	if err != nil {
 		var interrupted *goja.InterruptedError
 		if errors.As(err, &interrupted) {
+			// An interrupt is how anything NON-SCRIPT stops a script, and the
+			// wall bound is no longer the only one: a broken tool channel
+			// interrupts too, precisely so no `catch` or `finally` can swallow
+			// it. The VALUE the interrupter posted is what says which — read
+			// it, rather than assuming the only interrupter is the timer.
+			// Assuming it reported a broken deployment as "the wall-clock
+			// bound elapsed", and an operator reading that raises the wall
+			// bound forever.
+			if chErr, ok := interrupted.Value().(error); ok && errors.Is(chErr, errToolChannelBroken) {
+				return Refuse(RefusalHostDied,
+					"the script was stopped because its tool channel failed: %s", chErr.Error())
+			}
 			return Refuse(RefusalWallClock, "script interrupted after %s: the wall-clock bound elapsed", wall)
 		}
 		// Matched on the type, because the message is a bare stack trace:
