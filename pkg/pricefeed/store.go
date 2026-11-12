@@ -3,6 +3,7 @@ package pricefeed
 import (
 	"context"
 	"maps"
+	"slices"
 	"sync"
 	"time"
 
@@ -32,13 +33,15 @@ func cloneStateRecord(rec *StateRecord) *StateRecord {
 		return nil
 	}
 	cp := *rec
-	// The capability flags are POINTERS: a shallow clone hands every
-	// reader the same *bool (round 2 caught the alias). Clone each.
+	// The capability flags are POINTERS and the accepted efforts a
+	// SLICE: a shallow clone hands every reader the same *bool and the
+	// same backing array. Clone each.
 	cp.Entries = make(map[string]modelspecs.Spec, len(rec.Entries))
 	for id, spec := range rec.Entries {
 		spec.Reasoning = cloneBool(spec.Reasoning)
 		spec.ToolCall = cloneBool(spec.ToolCall)
 		spec.Temperature = cloneBool(spec.Temperature)
+		spec.ReasoningEfforts = slices.Clone(spec.ReasoningEfforts)
 		cp.Entries[id] = spec
 	}
 	return &cp

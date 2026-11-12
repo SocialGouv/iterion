@@ -3,6 +3,7 @@ package pricefeed
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -154,16 +155,17 @@ func diffEntries(old, new map[string]modelspecs.Spec) []EntryChange {
 	return changes
 }
 
-// SpecEqual compares two specs BY VALUE, the capability flags
-// dereferenced: the struct's *bool fields make a plain != compare
-// POINTER addresses, so an unchanged models.dev entry (every refresh
-// allocating new pointers) reported as a change (the gate's finding).
+// SpecEqual compares two specs BY VALUE, field by field: the capability
+// flags dereferenced (a plain != on the *bool fields compares POINTER
+// addresses, and every refresh allocates new ones for the same verdicts)
+// and the accepted efforts element by element, in order.
 func SpecEqual(a, b modelspecs.Spec) bool {
 	if a.ContextWindow != b.ContextWindow || a.MaxOutputTokens != b.MaxOutputTokens ||
 		a.InputCostPerM != b.InputCostPerM || a.OutputCostPerM != b.OutputCostPerM || a.CacheReadCostPerM != b.CacheReadCostPerM {
 		return false
 	}
-	return boolPtrEqual(a.Reasoning, b.Reasoning) && boolPtrEqual(a.ToolCall, b.ToolCall) && boolPtrEqual(a.Temperature, b.Temperature)
+	return boolPtrEqual(a.Reasoning, b.Reasoning) && boolPtrEqual(a.ToolCall, b.ToolCall) && boolPtrEqual(a.Temperature, b.Temperature) &&
+		slices.Equal(a.ReasoningEfforts, b.ReasoningEfforts)
 }
 
 func boolPtrEqual(a, b *bool) bool {
@@ -177,13 +179,18 @@ func boolPtrEqual(a, b *bool) bool {
 // operator table disagree on price. Window and context windows can
 // legitimately differ (the feed's business may be the price alone); the
 // PRICE disagreement is the one that changes what a run is billed, so
-// that is the one surfaced.
+// that is the one surfaced. An entry without the price pair (a window or
+// an effort list alone) states no price and never answers one (Fold), so
+// it never drifts.
 func DriftReport(feed string, entries, operatorTable map[string]modelspecs.Spec) []Drift {
 	if len(entries) == 0 || len(operatorTable) == 0 {
 		return nil
 	}
 	ids := make([]string, 0, len(entries))
-	for id := range entries {
+	for id, e := range entries {
+		if e.InputCostPerM <= 0 || e.OutputCostPerM <= 0 {
+			continue
+		}
 		if _, op := operatorTable[NormalizeID(id)]; op {
 			ids = append(ids, id)
 		}

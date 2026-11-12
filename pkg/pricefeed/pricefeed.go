@@ -205,32 +205,104 @@ func ParseTable(raw string) *Table {
 // same normalization the operator table's parser applies.
 func NormalizeID(id string) string { return strings.ToLower(strings.TrimSpace(id)) }
 
-// ParseEntries is the ONE strict parser of the operator-table entry
-// JSON — `{"<gateway id>": {"context_window": N, "max_output_tokens": N,
-// "input_usd_per_mtok": F, "output_usd_per_mtok": F,
+// ParseEntries is the strict parser of the operator table —
+// OPENAI_COMPATIBLE_MODELS, `{"<gateway id>": {"context_window": N,
+// "max_output_tokens": N, "input_usd_per_mtok": F, "output_usd_per_mtok": F,
 // "cache_read_usd_per_mtok": F, "reasoning": B, "tool_call": B,
-// "temperature": B}}`. Unknown fields are refused (a typo'd price
-// silently ignored is worse than a refusal), prices arrive as a pair or
-// not at all, negatives are refused. compatgw's operator table parses
-// through this same function, so what an operator writes in
-// OPENAI_COMPATIBLE_MODELS and what an exec feed prints on stdout are
-// one format with one decoder. `what` names the source in the refusal —
-// the env name, a feed's command — so the operator is told where to fix.
+// "temperature": B}}`. Unknown fields are refused (a typo'd price silently
+// ignored is worse than a refusal) — reasoning_efforts among them: accepted
+// efforts are not this table's field (a feed's entries carry them, and the
+// runner's env fallback has its own name, OPENAI_COMPATIBLE_REASONING_EFFORTS).
+// Prices arrive as a pair or not
+// at all, negatives are refused. compatgw's operator table parses through
+// this function; a feed's entries parse through ParseFeedEntries, the same
+// body with one more field. `what` names the source in the refusal — the env
+// name, a feed's command — so the operator is told where to fix.
 func ParseEntries(raw, what string) (map[string]modelspecs.Spec, error) {
+	return parseEntries[operatorEntry](raw, what)
+}
+
+// ParseFeedEntries is the strict parser of a feed's entries — an exec
+// feed's stdout and a declared feed's document: the operator-table format
+// plus `"reasoning_efforts": [...]`, the model's accepted efforts in
+// modelspecs.ParseEffortLevels' vocabulary. Every ParseEntries rule holds;
+// on top, an effort list that is empty, null, repeats a level or names one
+// outside the vocabulary refuses, naming the id.
+func ParseFeedEntries(raw, what string) (map[string]modelspecs.Spec, error) {
+	return parseEntries[feedEntry](raw, what)
+}
+
+// operatorEntry is the operator table's field set.
+type operatorEntry struct {
+	ContextWindow       int     `json:"context_window"`
+	MaxOutputTokens     int     `json:"max_output_tokens"`
+	InputUSDPerMTok     float64 `json:"input_usd_per_mtok"`
+	OutputUSDPerMTok    float64 `json:"output_usd_per_mtok"`
+	CacheReadUSDPerMTok float64 `json:"cache_read_usd_per_mtok"`
+	Reasoning           *bool   `json:"reasoning"`
+	ToolCall            *bool   `json:"tool_call"`
+	Temperature         *bool   `json:"temperature"`
+}
+
+func (e operatorEntry) spec(what, id string) (modelspecs.Spec, error) {
+	if e.InputUSDPerMTok > 0 != (e.OutputUSDPerMTok > 0) {
+		return modelspecs.Spec{}, fmt.Errorf("%s[%q]: the prices arrive as a pair or not at all", what, id)
+	}
+	if e.InputUSDPerMTok < 0 || e.OutputUSDPerMTok < 0 || e.CacheReadUSDPerMTok < 0 {
+		return modelspecs.Spec{}, fmt.Errorf("%s[%q]: a price is negative", what, id)
+	}
+	return modelspecs.Spec{
+		ContextWindow:     e.ContextWindow,
+		MaxOutputTokens:   e.MaxOutputTokens,
+		InputCostPerM:     e.InputUSDPerMTok,
+		OutputCostPerM:    e.OutputUSDPerMTok,
+		CacheReadCostPerM: e.CacheReadUSDPerMTok,
+		Reasoning:         e.Reasoning,
+		ToolCall:          e.ToolCall,
+		Temperature:       e.Temperature,
+	}, nil
+}
+
+// feedEntry is a feed's field set: the operator table's plus the accepted
+// efforts. Absent reasoning_efforts leaves the spec's list nil (unstated).
+type feedEntry struct {
+	operatorEntry
+	ReasoningEfforts json.RawMessage `json:"reasoning_efforts"`
+}
+
+func (e feedEntry) spec(what, id string) (modelspecs.Spec, error) {
+	spec, err := e.operatorEntry.spec(what, id)
+	if err != nil || e.ReasoningEfforts == nil {
+		return spec, err
+	}
+	levels, err := modelspecs.ParseEffortLevels(e.ReasoningEfforts)
+	if err != nil {
+		return modelspecs.Spec{}, fmt.Errorf("%s[%q]: reasoning_efforts: %w", what, id, err)
+	}
+	if len(levels) == 0 {
+		return modelspecs.Spec{}, fmt.Errorf("%s[%q]: reasoning_efforts is empty — list the accepted levels, or drop the field to state none", what, id)
+	}
+	seen := make(map[string]bool, len(levels))
+	for _, level := range levels {
+		if seen[level] {
+			return modelspecs.Spec{}, fmt.Errorf("%s[%q]: reasoning_efforts repeats %q", what, id, level)
+		}
+		seen[level] = true
+	}
+	spec.ReasoningEfforts = levels
+	return spec, nil
+}
+
+// parseEntries is the one body both parsers share: a strict decode of one
+// whole document, then each entry through its field set's rules.
+func parseEntries[E interface {
+	spec(what, id string) (modelspecs.Spec, error)
+}](raw, what string) (map[string]modelspecs.Spec, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return map[string]modelspecs.Spec{}, nil
 	}
-	var entries map[string]struct {
-		ContextWindow       int     `json:"context_window"`
-		MaxOutputTokens     int     `json:"max_output_tokens"`
-		InputUSDPerMTok     float64 `json:"input_usd_per_mtok"`
-		OutputUSDPerMTok    float64 `json:"output_usd_per_mtok"`
-		CacheReadUSDPerMTok float64 `json:"cache_read_usd_per_mtok"`
-		Reasoning           *bool   `json:"reasoning"`
-		ToolCall            *bool   `json:"tool_call"`
-		Temperature         *bool   `json:"temperature"`
-	}
+	var entries map[string]E
 	dec := json.NewDecoder(strings.NewReader(raw))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&entries); err != nil {
@@ -239,36 +311,25 @@ func ParseEntries(raw, what string) (map[string]modelspecs.Spec, error) {
 	// One document, whole: trailing content after the first table (a
 	// script printing two tables, a pasted half-edit, a stray closing
 	// bracket — dec.More() alone misses those) refuses rather than
-	// silently serving the first half (rounds 3-4).
+	// silently serving the first half.
 	var extra json.RawMessage
 	if err := dec.Decode(&extra); err != io.EOF {
 		return nil, fmt.Errorf("%s carries content after the table", what)
 	}
 	table := map[string]modelspecs.Spec{}
 	for id, e := range entries {
-		if e.InputUSDPerMTok > 0 != (e.OutputUSDPerMTok > 0) {
-			return nil, fmt.Errorf("%s[%q]: the prices arrive as a pair or not at all", what, id)
-		}
-		if e.InputUSDPerMTok < 0 || e.OutputUSDPerMTok < 0 || e.CacheReadUSDPerMTok < 0 {
-			return nil, fmt.Errorf("%s[%q]: a price is negative", what, id)
+		spec, err := e.spec(what, id)
+		if err != nil {
+			return nil, err
 		}
 		// Two spellings that normalize to one key would hand the win to
 		// map iteration order — the same table parsing to two different
-		// price sets across processes (round 1's finding: 175k/249k
-		// split over 200k parses). A strict parser refuses the coin flip.
+		// price sets across processes. A strict parser refuses the coin
+		// flip.
 		if _, dup := table[NormalizeID(id)]; dup {
 			return nil, fmt.Errorf("%s: id %q collides with another spelling of %q after normalization — keep one spelling", what, id, NormalizeID(id))
 		}
-		table[NormalizeID(id)] = modelspecs.Spec{
-			ContextWindow:     e.ContextWindow,
-			MaxOutputTokens:   e.MaxOutputTokens,
-			InputCostPerM:     e.InputUSDPerMTok,
-			OutputCostPerM:    e.OutputUSDPerMTok,
-			CacheReadCostPerM: e.CacheReadUSDPerMTok,
-			Reasoning:         e.Reasoning,
-			ToolCall:          e.ToolCall,
-			Temperature:       e.Temperature,
-		}
+		table[NormalizeID(id)] = spec
 	}
 	return table, nil
 }

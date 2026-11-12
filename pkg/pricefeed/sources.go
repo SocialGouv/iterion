@@ -236,8 +236,9 @@ func (liteLLMSource) Fetch(ctx context.Context, params map[string]string) (map[s
 	return table, nil
 }
 
-// execSource runs an operator-supplied command and reads the operator
-// table's JSON shape on stdout — the adapter that makes a new operator
+// execSource runs an operator-supplied command and reads a feed's entry
+// JSON on stdout (ParseFeedEntries: the operator table's shape plus
+// reasoning_efforts) — the adapter that makes a new operator
 // "a small script, never an engine if" (ADR-163 §4). No shell, no
 // quoting: `command` is the binary, `args` splits on spaces (POSIX
 // simple-word spelling); a script that needs quoting is a script that
@@ -322,7 +323,7 @@ func (execSource) Fetch(ctx context.Context, params map[string]string) (map[stri
 	if readErr != nil {
 		return nil, fmt.Errorf("pricefeed: %s stdout: %w", command, readErr)
 	}
-	table, err := ParseEntries(string(stdout), command+" stdout")
+	table, err := ParseFeedEntries(string(stdout), command+" stdout")
 	if err != nil {
 		return nil, fmt.Errorf("pricefeed: %w", err)
 	}
