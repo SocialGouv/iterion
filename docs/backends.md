@@ -1908,7 +1908,11 @@ run to the runner** — the operator table stays the floor.
   catalog entry with an unpriced one; a declared one answers unpriced
   only where nothing prices the id (below). When a fresh
   feed and the operator table disagree on price, the sync says so: one
-  line per drifting id per refresh, naming both values.
+  line per drifting id per refresh, naming both values. A fetched
+  price that is not a finite number — a `litellm` per-token cost
+  scaled past what a number holds — fails its refresh, naming the id
+  and the field; one a state already holds is left out of the fold,
+  named, the rest of the table answering.
 - **Sources** are adapters behind one seam — a new operator tariff
   shape is configuration or a small script, never an engine `if`:
   `modelsdev` (the aggregator's shape, `provider` qualifier, optional

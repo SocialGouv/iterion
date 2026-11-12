@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"math"
 	"slices"
 	"sort"
 	"strconv"
@@ -542,6 +543,16 @@ func Fold(cfg FoldConfig, scopes ...ScopeState) *Table {
 						scopeEfforts[id] = EffortsEntry{Feed: feed.Name, Values: slices.Clone(spec.ReasoningEfforts)}
 					}
 				}
+				if field, value, bad := nonFinitePrice(spec); bad {
+					// A price no wire carries would leave the whole table
+					// unencodable: Refresh refuses one at the source; a state an
+					// older release stored is read here, its entry alone left
+					// out (its efforts answer above).
+					if cfg.Warnf != nil {
+						cfg.Warnf("price feed %s: entry %q: %s is %v, not a finite price — the entry does not answer", feedRef(feed.Name, scope.Label), id, field, value)
+					}
+					continue
+				}
 				// A declared entry answers whole, priced or not, as the
 				// operator-table row it copies did — unpriced, only where no
 				// priced entry answers the id (below); a fetched one answers
@@ -752,6 +763,25 @@ func orderedFields(set map[string]bool) []string {
 		}
 	}
 	return fields
+}
+
+// nonFinitePrice answers the first of a spec's prices that is NaN or ±Inf
+// — a number JSON cannot carry — with its field name; bad is false when
+// every price is finite.
+func nonFinitePrice(spec modelspecs.Spec) (field string, value float64, bad bool) {
+	for _, price := range []struct {
+		field string
+		value float64
+	}{
+		{"input_usd_per_mtok", spec.InputCostPerM},
+		{"output_usd_per_mtok", spec.OutputCostPerM},
+		{"cache_read_usd_per_mtok", spec.CacheReadCostPerM},
+	} {
+		if math.IsNaN(price.value) || math.IsInf(price.value, 0) {
+			return price.field, price.value, true
+		}
+	}
+	return "", 0, false
 }
 
 // pricedSpec reports whether a spec states the price pair: the input and

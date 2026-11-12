@@ -50,7 +50,9 @@ type Drift struct {
 // manual trigger call the same function; a concurrent double refresh
 // converges on the same source answer. The record it answers is stamped
 // with the feed's source type, and a prev stamped with another type is
-// read as no prev (StateRecord.Of).
+// read as no prev (StateRecord.Of). A fetched table holding a price that
+// is not a finite number fails the refresh, naming the id
+// (finiteEntries).
 //
 // The operator table (the SERVER's own reading of
 // OPENAI_COMPATIBLE_MODELS, passed by the caller — this package never
@@ -96,6 +98,9 @@ func Refresh(ctx context.Context, feed FeedConfig, prev *StateRecord, operatorTa
 	fetchCtx, cancel := context.WithTimeout(ctx, time.Duration(feed.Timeout))
 	defer cancel()
 	fetched, err := src.Fetch(fetchCtx, feed.Params)
+	if err == nil {
+		err = finiteEntries(fetched)
+	}
 	if err != nil {
 		state.Status = DeriveStatus(state.Entries, state.RefreshedAt, state.FreshFor, err.Error(), now)
 		state.LastError = err.Error()
@@ -115,6 +120,26 @@ func Refresh(ctx context.Context, feed FeedConfig, prev *StateRecord, operatorTa
 	outcome.RefreshedAt = now
 	outcome.Changes = DiffEntries(prevEntries(prev), fetched)
 	return state, outcome
+}
+
+// finiteEntries refuses a fetched table holding a price no wire can
+// carry — NaN or ±Inf, as a LiteLLM per-token cost scaled to per-mtok past
+// float64's range answers: stored, it would leave every fold naming the id
+// with a table that does not encode, its accepted efforts with it. It names
+// the first such id, sorted, so the refusal reads the same on every
+// refresh.
+func finiteEntries(entries map[string]modelspecs.Spec) error {
+	ids := make([]string, 0, len(entries))
+	for id := range entries {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		if field, value, bad := nonFinitePrice(entries[id]); bad {
+			return fmt.Errorf("pricefeed: entry %q: %s is %v, not a finite price — the source answered a number no table can carry", id, field, value)
+		}
+	}
+	return nil
 }
 
 func prevEntries(prev *StateRecord) map[string]modelspecs.Spec {
