@@ -281,6 +281,9 @@ type lotGate struct {
 	campaign  *ir.Workflow
 	id, field string
 	node      *ir.ComputeNode
+	// set holds the campaign vars a launch sets (`--var name=value`); every
+	// other var reads its default.
+	set map[string]int64
 }
 
 // campaignLotGate finds the gate: every edge into the modernize subbot comes
@@ -323,7 +326,7 @@ func campaignLotGate(t *testing.T) lotGate {
 
 // eval evaluates one field of the gate as the engine does, at elapsed of a
 // wall (0: no wall), after `crossings` crossings of the campaign's loop, with
-// campaign's var defaults.
+// g.set over campaign's var defaults.
 func (g lotGate) eval(t *testing.T, field string, elapsed, wall time.Duration, crossings int64) any {
 	t.Helper()
 	var ast *expr.AST
@@ -348,6 +351,9 @@ func (g lotGate) eval(t *testing.T, field string, elapsed, wall time.Duration, c
 		Vars: func(path []string) any {
 			if len(path) != 1 {
 				return nil
+			}
+			if v, ok := g.set[path[0]]; ok {
+				return v
 			}
 			return intVarDefault(t, "campaign", g.campaign, path[0])
 		},

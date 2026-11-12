@@ -99,8 +99,9 @@ func (g childRoom) eval(t *testing.T, field string, vars map[string]any) any {
 
 // lotVars is what campaign's run_lot hands its child at elapsed of a wall:
 // its `with:` mapping, each value one whole `{{run.*}}` or `{{vars.*}}`
-// reference resolved as the engine resolves it then.
-func lotVars(t *testing.T, campaign *ir.Workflow, lotID string, elapsed, wall time.Duration) map[string]any {
+// reference resolved as the engine resolves it then — a campaign var from
+// set when the launch sets it, else from its default.
+func lotVars(t *testing.T, campaign *ir.Workflow, lotID string, elapsed, wall time.Duration, set map[string]int64) map[string]any {
 	t.Helper()
 	lot := campaign.Nodes[lotID].(*ir.SubbotNode)
 	out := map[string]any{}
@@ -115,7 +116,10 @@ func lotVars(t *testing.T, campaign *ir.Workflow, lotID string, elapsed, wall ti
 		case ref == "run.max_duration_seconds":
 			out[m.Key] = wall.Seconds()
 		case strings.HasPrefix(ref, "vars."):
-			if d := campaign.Vars[strings.TrimPrefix(ref, "vars.")]; d != nil && d.HasDefault {
+			name := strings.TrimPrefix(ref, "vars.")
+			if v, ok := set[name]; ok {
+				out[m.Key] = v
+			} else if d := campaign.Vars[name]; d != nil && d.HasDefault {
 				out[m.Key] = d.Default
 			}
 		}
@@ -127,8 +131,10 @@ func lotVars(t *testing.T, campaign *ir.Workflow, lotID string, elapsed, wall ti
 // what run_lot passes it, says exactly what lot_room says over the
 // campaign's own clock, at every point TestCampaignStartsALotOnlyWhereOneCanFinish
 // probes — the resumed start is held to the bound the first one is — and its
-// notice restates its verdict. A direct launch, which passes no clock, is
-// never held.
+// notice restates its verdict. That holds for lot_room_s at its default and
+// set by the launch (the README's short-wall 2400, a 900 s lot): the escape
+// hatch that admits a lot at the first start admits it at a resumed one. A
+// direct launch, which passes no clock, is never held.
 func TestModernizeJudgesTheCampaignsRoomAsLotRoomDoes(t *testing.T) {
 	t.Parallel()
 	g := campaignLotGate(t)
@@ -139,20 +145,23 @@ func TestModernizeJudgesTheCampaignsRoomAsLotRoomDoes(t *testing.T) {
 			lotID = e.To
 		}
 	}
-	for _, wall := range []time.Duration{0, 48 * time.Hour, 30 * time.Hour, 20 * time.Hour, 30 * time.Minute} {
-		for elapsed := time.Duration(0); elapsed <= max(wall, time.Hour); elapsed += 5 * time.Minute {
-			parent, _ := g.eval(t, g.field, elapsed, wall, 1).(bool)
-			vars := lotVars(t, g.campaign, lotID, elapsed, wall)
-			got, ok := child.eval(t, "room", vars).(bool)
-			if !ok {
-				t.Fatalf("modernize's %s.room is not a bool over %v", child.node.ID, vars)
-			}
-			if got != parent {
-				t.Fatalf("at %s of a %s wall lot_room says room=%t and the child, over what run_lot passes it (%v), says %t — a lot a resume starts is not held to the bound lot_room holds the first one to",
-					elapsed, wall, parent, vars, got)
-			}
-			if notice, _ := child.eval(t, "notice", vars).(string); (notice == "room for a lot") != got {
-				t.Fatalf("at %s of a %s wall the child's room is %t and its notice reads %q — the notice restates the verdict", elapsed, wall, got, notice)
+	for _, set := range []map[string]int64{nil, {"lot_room_s": 2400}, {"lot_room_s": 900}} {
+		g.set = set
+		for _, wall := range []time.Duration{0, 48 * time.Hour, 30 * time.Hour, 20 * time.Hour, 30 * time.Minute} {
+			for elapsed := time.Duration(0); elapsed <= max(wall, time.Hour); elapsed += 5 * time.Minute {
+				parent, _ := g.eval(t, g.field, elapsed, wall, 1).(bool)
+				vars := lotVars(t, g.campaign, lotID, elapsed, wall, set)
+				got, ok := child.eval(t, "room", vars).(bool)
+				if !ok {
+					t.Fatalf("modernize's %s.room is not a bool over %v", child.node.ID, vars)
+				}
+				if got != parent {
+					t.Fatalf("at %s of a %s wall, launch vars %v, lot_room says room=%t and the child, over what run_lot passes it (%v), says %t — a lot a resume starts is not held to the bound lot_room holds the first one to",
+						elapsed, wall, set, parent, vars, got)
+				}
+				if notice, _ := child.eval(t, "notice", vars).(string); (notice == "room for a lot") != got {
+					t.Fatalf("at %s of a %s wall, launch vars %v, the child's room is %t and its notice reads %q — the notice restates the verdict", elapsed, wall, set, got, notice)
+				}
 			}
 		}
 	}
