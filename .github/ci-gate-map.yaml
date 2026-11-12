@@ -1,0 +1,232 @@
+# ci-gate-map — every job of .github/workflows/tests.yml, and what runs it here.
+#
+# ONE file, two readers: `scripts/ci/gate.sh` enumerates the members to run,
+# and `internal/ciguard`'s TestTheCIGateMapIsTotalAndHonest pins it against the
+# workflow and the Taskfile. Two literals in two places drift; one file with
+# two readers cannot.
+#
+# Keyed by JOB ID, never by line number and never by a prose transcription of a
+# job body. That is not a style preference: a five-way mapping of this workflow
+# was produced on 2026-11-12 in which four of five reports described a
+# `test-e2e` job that had ceased to exist twenty minutes earlier, and every
+# line offset they cited was off by three. A map whose rows are prose is stale
+# at the next commit.
+#
+# `disposition` — what EXISTS here, not what is possible:
+#   local         a member reproduces the job. Same tool, same flags, same scope.
+#   partial       a member covers part of it; `residual` says what is left.
+#   unwritten     expressible — the tool is here — but nobody has written it.
+#                 This label exists because `partial` with no member hid the
+#                 honest headline: two required contexts had NOTHING.
+#   unexpressible it cannot run on a developer's box, and `reason` says why.
+#
+# `required` — yes (in ruleset 18857412) · staged (in internal/ciguard's
+# requiredChecks, ahead of the ruleset) · pending (documented promotion) · no.
+#
+# `mutates` — the member rewrites tracked files. The runner orders those LAST,
+# so no member after one compiles against a tree it rewrote mid-run.
+#
+# `checks` — how many check runs the job produces (its matrix). The ruleset
+# keys on CONTEXTS, not on jobs: 19 jobs, 25 check runs.
+
+jobs:
+  # ---- the aggregators: they read their legs' results, nothing else ----
+  test:
+    required: yes
+    checks: 1
+    disposition: unexpressible
+    reason: >-
+      a pure aggregator — its only step reads test-unit, test-e2e and studio's
+      `result` from the workflow context and fails if any is not success. There
+      is nothing to reproduce: what it aggregates is those three legs, whose
+      own rows carry the members. Running their members IS running this.
+    aggregates: [test-unit, test-e2e, studio]
+
+  race:
+    required: yes
+    checks: 1
+    disposition: unexpressible
+    reason: the same shape, over race-shard alone.
+    aggregates: [race-shard]
+
+  # ---- the gated legs behind `test` ----
+  test-unit:
+    required: no
+    feeds: test
+    checks: 1
+    disposition: partial
+    members: [test, vet, "test:live:compile", "map:check", "dsl:check"]
+    residual: >-
+      the job's own `gofmt -l` step has no member at all (`task fmt` REWRITES,
+      it does not report, and .golangci.yml enables no formatter); CI runs
+      `-count=1` and `-timeout 1500s` under `CGO_ENABLED=0` while `task test`
+      runs neither flag and no CGO setting; CI exports `CI=true`, which turns a
+      skip into a hard failure at fourteen sites, and no Taskfile test task
+      sets it.
+
+  test-e2e:
+    required: no
+    feeds: test
+    checks: 4
+    disposition: partial
+    members: ["test:e2e"]
+    residual: >-
+      the job shards with `scripts/ci/testshards -tests ./e2e -n 4 -i <shard>`
+      and fails the shard if discovery itself failed; one local `task test:e2e`
+      covers the union of the four indices but exercises neither the splitter
+      nor that refusal (internal/ciguard's e2e_shards_test.go does).
+
+  studio:
+    required: no
+    feeds: test
+    checks: 1
+    disposition: partial
+    members: ["studio:check", "openapi:check:dry"]
+    residual: >-
+      `studio:deps` runs `corepack pnpm install --prefer-offline` where CI runs
+      `--frozen-lockfile`, so a stale pnpm-lock.yaml is green here and red
+      there; and `openapi:check:dry` judges the INDEX (`git show :openapi.json`)
+      while CI regenerates in place and diffs the worktree.
+
+  race-shard:
+    required: no
+    feeds: race
+    checks: 3
+    disposition: partial
+    members: ["test:race"]
+    residual: >-
+      `task test:race` is `-timeout 1200s` against the job's 2400s, carries no
+      `-count=1`, and runs the whole suite in one process rather than the
+      three shards; the job also pins yq by digest and builds the ultra11y
+      engine first.
+
+  # ---- the other required contexts ----
+  vendor-check:
+    required: yes
+    checks: 1
+    disposition: local
+    members: ["ci:vendor-check"]
+    mutates: true
+    equivalence: >-
+      the job's two steps in its order — `go mod verify`, then tidy + vendor +
+      `git diff --exit-code go.mod go.sum vendor/`. The member adds a
+      precondition the job does not need (a fresh checkout is never dirty) and
+      refuses rather than blaming a parallel session's work in progress.
+
+  mongo-conformance:
+    required: yes
+    checks: 1
+    disposition: local
+    members: ["ci:mongo-conformance"]
+    equivalence: >-
+      the same mongo:8.0 one-member replica set, and the job's `go test` lines
+      READ FROM the job rather than restated — both of them, including the
+      second that `docs/development.md`'s regex cannot see. Needs docker, and
+      refuses with exit 2 where this process cannot reach the published port.
+
+  golangci:
+    required: yes
+    checks: 1
+    disposition: local
+    members: ["ci:golangci"]
+    equivalence: >-
+      `golangci-lint run --timeout 10m`, the job's command verbatim, on the
+      version devbox pins (2.12.2 — the same the job installs by digest). NOT
+      `task lint`: that has `deps: [fmt, vet]` and `fmt` runs `go fmt ./...`,
+      which REWRITES tracked source. A member that repairs the defect CI fails
+      on, then reports green, is worse than no member.
+
+  brand:
+    required: yes
+    checks: 1
+    disposition: partial
+    members: ["brand:check"]
+    residual: >-
+      the job's og-image step shells a python3 heredoc (scripts/brand/og-check.sh)
+      and devbox.json ships 21 packages with no python, so that step runs on
+      whatever python the host happens to have — or not at all. Adding python
+      to devbox.json is the fix and it is not this slice.
+
+  fmt-check:
+    required: staged
+    checks: 1
+    disposition: unwritten
+    residual: >-
+      the job runs `gofmt -l` over a `find`-derived file list and fails on any
+      output. Expressible — gofmt is right here — but the CI form's `find .`
+      reaches `.works/` (2378 .go files, not gitignored) and `.repos/` in an
+      operator checkout, and misses 15 tracked files under nested modules in
+      e2e/fixtures/. The honest member is `git ls-files '*.go' | grep -v
+      '^vendor/'`, which is deliberately NOT byte-identical to CI.
+
+  # ---- advisory and informational ----
+  nats-conformance:
+    required: pending
+    checks: 1
+    disposition: unwritten
+    residual: >-
+      docs/merge-policy.md records it as a promotion an admin has not applied
+      to ruleset 18857412 yet; internal/ciguard's requiredChecks does not stage
+      it. Same docker shape as mongo-conformance (nats:2.14-alpine -js), so the
+      member is a sibling of one that now exists.
+
+  helm-lint:
+    required: no
+    checks: 1
+    disposition: partial
+    members: ["chart:check"]
+    residual: >-
+      the job runs `helm dependency update` first — without it nothing renders,
+      which is why `charts/iterion` is red on a developer box — and then checks
+      that a digest-pinned render pins the image by digest. It also pulls
+      sub-chart archives from the network.
+
+  cloud-e2e:
+    required: no
+    checks: 1
+    disposition: unexpressible
+    reason: >-
+      it builds the image, loads it into a kind cluster and installs the chart
+      (79-minute budget). A kind cluster on a developer box is a different
+      machine class, not a flag — and the job pins yq by digest and uses
+      unpinned third-party actions (helm/kind-action) whose versions no member
+      can match.
+
+  govulncheck:
+    required: no
+    checks: 1
+    disposition: unwritten
+    residual: expressible — govulncheck is a go run away — but it needs the vulnerability database over the network, and nobody wrote it.
+
+  desktop-vet-linux:
+    required: no
+    checks: 1
+    disposition: unwritten
+    residual: a `go vet` of the desktop tree with the wails tags; expressible, unwritten.
+
+  desktop-vet-cross:
+    required: no
+    checks: 2
+    disposition: unwritten
+    residual: >-
+      the same, under GOOS=windows and GOOS=darwin. Its check-run NAME carries
+      the matrix value (`desktop-vet-cross (darwin)`), which is why this map
+      counts contexts and not only jobs.
+
+  docs-links:
+    required: no
+    checks: 1
+    disposition: partial
+    members: ["docs:links"]
+    residual: the job compares head against base and is deliberately advisory (#1233); the member judges head alone.
+
+  docs-build:
+    required: no
+    checks: 1
+    disposition: unwritten
+    residual: >-
+      the Taskfile has docs:links and its two siblings, and NO docs:build —
+      the job's VitePress build has no member. Expressible (the studio's node
+      toolchain is right here) and unwritten. Noted rather than papered over
+      with `docs:links`, which checks a different thing: a link that resolves
+      is not a site that builds.
