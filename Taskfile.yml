@@ -774,6 +774,22 @@ tasks:
     cmds:
       - go run -mod=vendor ./cmd/iterion map gen
 
+  ci:gate:
+    desc: "The local gate the operator direct-landing lane asks for — runs the members `.github/ci-gate-map.yaml` names, reads each exit code separately, and reports `ran N of N` plus any REQUIRED context that has no member. Exit 3 means green-but-incomplete, which is not the lane's proof. `task ci:gate -- --list` prints the plan without running it"
+    cmds:
+      - bash scripts/ci/gate.sh {{.CLI_ARGS}}
+
+  ci:golangci:
+    desc: "The local member of CI's `golangci` required check — `golangci-lint run --timeout 10m`, the job's command verbatim. NOT `task lint`, which has `deps: [fmt, vet]` and whose `fmt` runs `go fmt ./...` and REWRITES tracked source: a member that repairs the defect CI fails on and then reports green is worse than no member"
+    env:
+      # Keyed on the worktree, like task lint's — golangci's default cache is
+      # keyed on absolute paths, so sibling worktrees of one repo poison each
+      # other's findings.
+      GOLANGCI_LINT_CACHE:
+        sh: 'top=$(git rev-parse --show-toplevel 2>/dev/null) || top=$PWD; h=$(printf %s "$top" | git hash-object --stdin 2>/dev/null | cut -c1-12); echo "${XDG_CACHE_HOME:-$HOME/.cache}/golangci-lint/${h:-shared}"'
+    cmds:
+      - golangci-lint run --timeout 10m
+
   ci:vendor-check:
     desc: "The local member of CI's `vendor-check` required check — go mod verify, then tidy+vendor and `git diff --exit-code`. It REWRITES go.mod, go.sum and vendor/, so it refuses a tree whose own paths are already dirty and must run LAST in any aggregate"
     cmds:

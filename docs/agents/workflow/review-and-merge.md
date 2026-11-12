@@ -46,11 +46,17 @@ that exist. The lane's blocking proof replaces the PR's:
 
 1. **The gate, locally reproduced.** The full required-check set a workflow
    job can express — everything but `revi/review`, which item 2 replaces —
-   runs locally. Its definition is `task ci:gate`, and the lane is CLOSED
-   until that stream lands: no direct landing before the checked-in
-   exhaustive mapping from `tests.yml` jobs to local members exists in this
-   tree (the mapping lives with the chantier's evidence until then). Exit
-   codes are read per member, never piped.
+   runs locally. Its definition is `task ci:gate`, over the checked-in map
+   [`.github/ci-gate-map.yaml`](../../../.github/ci-gate-map.yaml): one row per
+   `tests.yml` job, keyed by job id, read by the runner AND by
+   `internal/ciguard`'s `TestTheCIGateMapIsTotalAndHonest`. Exit codes are read
+   per member, never piped, and the runner prints `ran N of N` against its own
+   plan — two members of three cannot read as three.
+   **The lane is still CLOSED, and the gate is what says so.** It answers
+   **exit 3** — green members, incomplete coverage — while a required or
+   staged context has no member, and names it: today that is `fmt-check`
+   (expressible, unwritten). A verdict of 0 is what opens the lane; until then
+   `task ci:gate` is how you see the distance, not a proof you may land.
 2. **A converged local adversarial loop.** Per
    [the loop](adversarial-review-loop.md): rounds until no unassumed
    high/critical finding stands, the fixes re-attacked, the budget respected.
