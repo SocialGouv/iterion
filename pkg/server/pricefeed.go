@@ -176,15 +176,21 @@ const priceFeedExecEnv = "ITERION_PRICE_FEED_EXEC"
 // manual trigger execute, so a forced refresh and the next pass converge
 // on the same answer. The drift report runs on every successful refresh:
 // one line per drifting id per refresh, the "not per dispatch" bound.
+//
+// A static feed (a declaration) is judged and reported, never persisted:
+// its answer is its config, and a state document under its name would
+// outlive it — a fetched feed later written under the same name would
+// inherit the declaration's entries as its own retained, fresh word.
 func (s *Server) priceFeedRefresh(ctx context.Context, scopeDocID string, feed pricefeed.FeedConfig) (pricefeed.SyncOutcome, error) {
 	if feed.Type == pricefeed.TypeExec && !priceFeedExecAllowed() {
 		err := fmt.Errorf("exec price feeds are the platform operator's: export %s=1 in the deployment's environment to arm them (super-admin configures them)", priceFeedExecEnv)
 		stateID := pricefeed.StateDocID(scopeDocID, feed.Name)
 		// Staleness, not amnesia — the same rule Refresh's own failure
 		// path holds: a deployment restarted without the hatch keeps the
-		// last good entries, aging out visibly, instead of wiping them.
-		state := pricefeed.StateRecord{Feed: feed.Name, Status: pricefeed.StateFailing, LastAttempt: time.Now(), LastError: err.Error()}
-		if prev, getErr := s.priceFeedStates.Get(ctx, stateID); getErr == nil && prev != nil {
+		// last good entries, aging out visibly, instead of wiping them;
+		// a record another source type wrote is not this feed's to keep.
+		state := pricefeed.StateRecord{Feed: feed.Name, Type: feed.Type, Status: pricefeed.StateFailing, LastAttempt: time.Now(), LastError: err.Error()}
+		if prev, getErr := s.priceFeedStates.Get(ctx, stateID); getErr == nil && prev.Of(feed.Type) != nil {
 			state.Entries = prev.Entries
 			state.RefreshedAt = prev.RefreshedAt
 			state.FreshFor = prev.FreshFor
@@ -200,6 +206,18 @@ func (s *Server) priceFeedRefresh(ctx context.Context, scopeDocID string, feed p
 		// Malformed: the launch seam already refuses it loudly; drift
 		// compares against nothing rather than refusing the refresh.
 		operatorTable = nil
+	}
+	if src, ok := pricefeed.SourceFor(feed.Type); ok {
+		if static, ok := src.(pricefeed.StaticSource); ok {
+			entries, err := static.Entries(feed.Params)
+			if err != nil {
+				return pricefeed.SyncOutcome{Feed: feed.Name, Status: pricefeed.StateFailing, Error: sanitizeFeedError(err.Error())}, nil
+			}
+			for _, d := range pricefeed.DriftReport(feed.Name, entries, operatorTable) {
+				s.warnf("%s", pricefeed.FormatDrift(d))
+			}
+			return pricefeed.SyncOutcome{Feed: feed.Name, Status: pricefeed.StateDeclared}, nil
+		}
 	}
 	stateID := pricefeed.StateDocID(scopeDocID, feed.Name)
 	prev, err := s.priceFeedStates.Get(ctx, stateID)

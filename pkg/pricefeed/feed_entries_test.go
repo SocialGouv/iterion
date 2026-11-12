@@ -144,10 +144,10 @@ func TestMemoryStateStoreDoesNotAliasEfforts(t *testing.T) {
 }
 
 // The Mongo twin's encoding round-trips the effort lists under the
-// driver's default key — the document the state store writes is the
-// document it reads back.
+// driver's default key, and the source-type stamp — the document the
+// state store writes is the document it reads back.
 func TestMongoStateDocRoundTripsEfforts(t *testing.T) {
-	rec := StateRecord{Feed: "f", Status: StateOK, Entries: map[string]modelspecs.Spec{
+	rec := StateRecord{Feed: "f", Type: TypeLiteLLM, Status: StateOK, Entries: map[string]modelspecs.Spec{
 		"deepseek-x": {InputCostPerM: 0.6, OutputCostPerM: 1.8, ReasoningEfforts: []string{"low", "high"}},
 		"glm-5.3":    {InputCostPerM: 2, OutputCostPerM: 6},
 	}}
@@ -168,6 +168,9 @@ func TestMongoStateDocRoundTripsEfforts(t *testing.T) {
 	}
 	if back.ID != "org:o/f" {
 		t.Fatalf("the document id did not round-trip: %q", back.ID)
+	}
+	if back.Type != TypeLiteLLM {
+		t.Fatalf("the source-type stamp round-tripped as %q", back.Type)
 	}
 	if got := back.Entries["deepseek-x"].ReasoningEfforts; !reflect.DeepEqual(got, []string{"low", "high"}) {
 		t.Fatalf("efforts round-tripped as %v", got)

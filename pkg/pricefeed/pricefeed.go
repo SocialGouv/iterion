@@ -89,9 +89,12 @@ const (
 )
 
 // StateRecord is one feed's durable sync state, written by the elected
-// reconciler and by the manual sync endpoint (both idempotent).
+// reconciler and by the manual sync endpoint (both idempotent) for a
+// FETCHED feed only: a static feed (a declaration) writes none. Type
+// stamps the source type the record was written for (Of).
 type StateRecord struct {
 	Feed        string                     `json:"feed" bson:"feed"`
+	Type        string                     `json:"type,omitempty" bson:"type,omitempty"`
 	Status      string                     `json:"status" bson:"status"`
 	Entries     map[string]modelspecs.Spec `json:"entries,omitempty" bson:"entries,omitempty"`
 	RefreshedAt time.Time                  `json:"refreshed_at,omitempty" bson:"refreshed_at,omitempty"`
@@ -99,6 +102,19 @@ type StateRecord struct {
 	LastAttempt time.Time                  `json:"last_attempt,omitempty" bson:"last_attempt,omitempty"`
 	LastError   string                     `json:"last_error,omitempty" bson:"last_error,omitempty"`
 	UpdatedAt   time.Time                  `json:"updated_at" bson:"updated_at"`
+}
+
+// Of answers the record when it was written for a feed of source type
+// typ, nil otherwise. A state document is keyed by (scope, feed name)
+// alone, so a feed retyped under the same name finds its predecessor's
+// document there; that document is not the feed's word — not its answer,
+// not the entries a failing refresh retains, not its status. A record
+// with no stamp predates the stamp and counts as the feed's own.
+func (s *StateRecord) Of(typ string) *StateRecord {
+	if s == nil || (s.Type != "" && s.Type != typ) {
+		return nil
+	}
+	return s
 }
 
 // Fresh reports whether the record's entries are inside their freshness
@@ -552,7 +568,8 @@ type feedAnswered struct {
 
 // feedAnswer reads what one enabled feed answers at the fold's instant:
 // a static feed its config's params (declared, stamped with the config's
-// UpdatedAt, no window), a fetched feed its state while fresh.
+// UpdatedAt, no window), a fetched feed its own state (StateRecord.Of)
+// while fresh.
 func feedAnswer(cfg FoldConfig, scope ScopeState, feed FeedConfig) (feedAnswered, bool) {
 	if src, ok := SourceFor(feed.Type); ok {
 		if static, ok := src.(StaticSource); ok {
@@ -566,7 +583,7 @@ func feedAnswer(cfg FoldConfig, scope ScopeState, feed FeedConfig) (feedAnswered
 			return feedAnswered{specs: specs, refreshedAt: scope.Config.UpdatedAt, declared: true}, true
 		}
 	}
-	state := scope.States[feed.Name]
+	state := scope.States[feed.Name].Of(feed.Type)
 	if !state.Fresh(cfg.Now) {
 		return feedAnswered{}, false
 	}

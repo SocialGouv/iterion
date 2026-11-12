@@ -25,7 +25,7 @@ ADR-163 already built most of that seat. Its price feed stores org and team feed
 
 2. **A `declared` source: the answer is its params.** A feed of type `declared` stores its table in `params.entries`: the operator-table JSON per gateway id, plus `reasoning_efforts`. It is a static source (`pricefeed.StaticSource`):
    - the fold reads it from its config at every fold;
-   - the reconciler never fetches it (`Due` is false);
+   - the reconciler never fetches it (`Due` is false), and a manual sync judges it and writes no state document, so nothing under its name outlives it for a fetched feed that later takes the name;
    - it never goes stale, and its entries carry the config's `updated_at`;
    - the view reports it `declared`, with its entry count and `declared_at`.
 
@@ -65,7 +65,7 @@ ADR-163 already built most of that seat. Its price feed stores org and team feed
 
 ## Consequences
 
-- **Nothing new to operate.** There is no new collection, no new channel and no new env name. The cloud twin is ADR-163's: the `price_feeds` and `price_feed_state` Mongo stores and their memory twins. A declaration lives in its config's params. A fetched feed's state entries gain `reasoningefforts`, the driver's default key, which an older binary skips on decode.
+- **Nothing new to operate.** There is no new collection, no new channel and no new env name. The cloud twin is ADR-163's: the `price_feeds` and `price_feed_state` Mongo stores and their memory twins. A declaration lives in its config's params. A fetched feed's state entries gain `reasoningefforts`, the driver's default key, which an older binary skips on decode. A state gains `type`, the source type it was written for: a feed retyped under its name reads its predecessor's state as no state, and a record with no stamp, written by an older binary, counts as the feed's own.
 - **Mixed versions during a rollout.**
   - An older server replica refuses a `declared` feed on write and folds no platform document and no declaration. The operator writes nothing until every replica runs the release.
   - An older runner decodes the new table. Its priced entries answer, because the runner never judges freshness and the presence of an entry is the verdict; its efforts map is ignored and the runner's env table answers (`TestOldRunnerReadsTheNewTable`).

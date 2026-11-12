@@ -207,9 +207,11 @@ func (s *Server) writePriceFeedsView(w http.ResponseWriter, r *http.Request, sco
 //
 // A static feed (a declaration) is judged by its config alone, the way
 // the fold reads it: declared, stamped with the config's write, whatever
-// state document a manual sync left under its name; a stored declaration
-// the write rules refuse reads failing, the refusal named — the fold
-// steps it down.
+// state document an earlier fetched feed of that name left; a stored
+// declaration the write rules refuse reads failing, the refusal named —
+// the fold steps it down. A fetched feed reads only a state written for
+// its own source type (StateRecord.Of): a retyped feed reads never until
+// its first refresh.
 func (s *Server) priceFeedViewOf(ctx context.Context, docID string, rec *pricefeed.ConfigRecord, feed pricefeed.FeedConfig) priceFeedView {
 	v := priceFeedView{Feed: feed, Status: pricefeed.StateNever, FreshFor: feed.FreshFor()}
 	v.Feed.Params, v.RedactedParams = redactFeedParams(feed.Params)
@@ -233,7 +235,10 @@ func (s *Server) priceFeedViewOf(ctx context.Context, docID string, rec *pricefe
 		return v
 	}
 	state, err := s.priceFeedStates.Get(ctx, pricefeed.StateDocID(docID, feed.Name))
-	if err != nil || state == nil {
+	if err != nil {
+		return v
+	}
+	if state = state.Of(feed.Type); state == nil {
 		return v
 	}
 	v.Status = priceFeedDerivedStatus(state, time.Now())

@@ -514,8 +514,8 @@ func TestPriceFeedURLRedactionAndLateFailure(t *testing.T) {
 	if err != nil || outcome.Status != pricefeed.StateOK {
 		t.Fatalf("the base refresh failed: %+v err %v", outcome, err)
 	}
-	failing := pricefeed.FeedConfig{Name: feed.Name, Type: pricefeed.TypeExec, Enabled: true,
-		Interval: feed.Interval, Timeout: feed.Timeout, Params: map[string]string{"command": "/nonexistent"}}
+	failing := feed
+	failing.Params = map[string]string{"url": priceFeedDeadSource(t), "token": "tenant-litellm-bearer"}
 	lateOutcome, err := s.priceFeedRefresh(context.Background(), docID, failing)
 	if err != nil {
 		t.Fatal(err)

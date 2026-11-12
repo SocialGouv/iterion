@@ -1883,6 +1883,10 @@ run to the runner** — the operator table stays the floor.
   a first-class state, warned once on the transition (and again after
   every recovery), stepping down to the operator floor. Never a
   refusal: a launch with no readable feed state proceeds on the floor.
+  A state records the source type it was written for: a feed retyped
+  under its name reads its predecessor's state as no state — not its
+  answer, not the entries a failing refresh keeps, not its status — and
+  is due at once.
 - **Precedence.** An answering feed over the operator table (for the
   ids it carries), team over org over platform. An entry without the
   price pair does not travel as a price entry — it can never shadow a
@@ -1912,7 +1916,9 @@ run to the runner** — the operator table stays the floor.
   reads it from the config at every launch and resume, its entries
   carry the config's `updated_at`, and the view reports it `declared`
   with `declared_at` and its entry count (`interval`/`timeout` are
-  validated as for any feed and otherwise unused). An entry states the
+  validated as for any feed and otherwise unused). A manual sync of a
+  declaration judges it, reports it `declared` with its drift, and
+  writes no state. An entry states the
   price pair, or only `reasoning_efforts`; a window, output cap, cache
   price or flag without the pair is refused on write, since it would
   never answer. A stored declaration that breaks a write rule steps

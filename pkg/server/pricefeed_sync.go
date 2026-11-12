@@ -97,7 +97,7 @@ func (s *Server) priceFeedSyncSweep(ctx context.Context) lease.PassVerdict {
 				pass.FailedUnlessDone(ctx, err)
 				continue
 			}
-			s.warnPriceFeedTransition(docID, feed, state, now)
+			s.warnPriceFeedTransition(docID, feed, state.Of(feed.Type), now)
 			if !pricefeed.Due(feed, state, now) {
 				continue
 			}

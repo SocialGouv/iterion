@@ -10,9 +10,9 @@ import (
 
 // StaticSource is a source whose answer is its params: nothing to fetch,
 // nothing to age. The fold reads a static feed's entries from its config
-// at every fold (Fold), and the reconciler never refreshes one (Due).
-// Fetch answers the same entries, so a manual sync through Refresh reads
-// what the fold reads.
+// at every fold (Fold), the reconciler never refreshes one (Due), and a
+// manual sync judges its params and persists nothing — no state document
+// exists under a static feed's name for a fetched successor to inherit.
 type StaticSource interface {
 	Source
 	// Entries answers the feed's entries from its params alone, under

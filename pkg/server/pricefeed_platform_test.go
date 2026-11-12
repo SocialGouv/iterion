@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -306,9 +307,9 @@ func TestEffectivePriceFeedFoldsThePlatformScope(t *testing.T) {
 
 // A declaration answers from its config: the view says `declared`, counts
 // its entries and stamps it with the config's write — never a staleness
-// derived from a state document, which a manual sync may have left under
-// its name. A stored declaration the write rules refuse reads failing,
-// naming the refusal: the fold steps it down.
+// derived from a state document, which an earlier fetched feed of that
+// name may have left. A stored declaration the write rules refuse reads
+// failing, naming the refusal: the fold steps it down.
 func TestPriceFeedViewReportsADeclaration(t *testing.T) {
 	s, _ := priceFeedFixtureServer(t)
 	orgAdmin := asUser("u-orgadmin")
@@ -329,7 +330,7 @@ func TestPriceFeedViewReportsADeclaration(t *testing.T) {
 	}
 
 	// A state document aged past any window under the declaration's name
-	// (a manual sync's leftover) does not turn the declaration stale.
+	// (an earlier fetched feed's) does not turn the declaration stale.
 	if err := s.priceFeedStates.Put(context.Background(), pricefeed.StateDocID(pricefeed.OrgConfigDocID("org1"), "pliage"), &pricefeed.StateRecord{
 		Feed: "pliage", Status: pricefeed.StateOK,
 		Entries:     map[string]modelspecs.Spec{"glm-5.3": {InputCostPerM: 2.01, OutputCostPerM: 6.15}},
@@ -365,7 +366,7 @@ func TestPriceFeedViewReportsADeclaration(t *testing.T) {
 }
 
 // The reconciler never judges a declaration by a state document: an aged
-// state under a declared feed's name (a manual sync's leftover) neither
+// state under a declared feed's name (an earlier fetched feed's) neither
 // refreshes nor says a staleness transition — the fold reads the config.
 func TestPriceFeedSweepLeavesADeclarationAlone(t *testing.T) {
 	s, logs := priceFeedFixtureServer(t)
@@ -393,5 +394,197 @@ func TestPriceFeedSweepLeavesADeclarationAlone(t *testing.T) {
 	after, _ := s.priceFeedStates.Get(context.Background(), stateID)
 	if !after.UpdatedAt.Equal(before.UpdatedAt) {
 		t.Fatalf("the sweep refreshed a declaration: %+v", after)
+	}
+}
+
+// priceFeedDeadSource answers every request 401 — a litellm feed whose
+// source never answers.
+func priceFeedDeadSource(t *testing.T) string {
+	t.Helper()
+	dead := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+	}))
+	t.Cleanup(dead.Close)
+	return dead.URL + "/model/info"
+}
+
+// priceFeedScratchEnv gives the test its own HOME and TMPDIR, opens the
+// LLM private-endpoint hatch (the stub serves on loopback) and clears the
+// proxy environment, so the stub is dialed directly.
+func priceFeedScratchEnv(t *testing.T) {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("TMPDIR", t.TempDir())
+	t.Setenv("ITERION_LLM_ENDPOINT_ALLOW_PRIVATE", "1")
+	for _, name := range []string{"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"} {
+		t.Setenv(name, "")
+		if err := os.Unsetenv(name); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// A declaration's manual sync judges it, reports it `declared` with no
+// window, and persists nothing. A litellm feed later written under the
+// declaration's name, whose source never answers, then answers nothing
+// and reads failing — never the declaration's prices and efforts under a
+// fresh status. At the platform level (super-admin) and at an org's (its
+// admin): a tenant reaches the same path.
+func TestADeclaredFeedSyncPersistsNothing(t *testing.T) {
+	priceFeedScratchEnv(t)
+	dead := priceFeedDeadSource(t)
+	for _, sc := range []struct {
+		name, path, docID string
+		token             func(*priceFeedLive) string
+	}{
+		{"platform", "/api/admin/price-feeds", pricefeed.PlatformConfigDocID, func(l *priceFeedLive) string { return l.root }},
+		{"org", "/api/orgs/org1/price-feeds", pricefeed.OrgConfigDocID("org1"), func(l *priceFeedLive) string { return l.orgAdmin }},
+	} {
+		t.Run(sc.name, func(t *testing.T) {
+			live := newPriceFeedLive(t)
+			token := sc.token(live)
+			if code, out := live.do(t, "PUT", sc.path, token, priceFeedPutFeedBody(declaredFeed("pliage", pliageEntries))); code != http.StatusOK {
+				t.Fatalf("declare: %d %s", code, out)
+			}
+			code, out := live.do(t, "POST", sc.path+"/sync", token, `{}`)
+			var synced struct {
+				Results []pricefeed.SyncOutcome `json:"results"`
+			}
+			if err := json.Unmarshal(out, &synced); code != http.StatusOK || err != nil || len(synced.Results) != 1 {
+				t.Fatalf("the sync answered %d %s (%v)", code, out, err)
+			}
+			if got := synced.Results[0]; got.Feed != "pliage" || got.Status != pricefeed.StateDeclared || got.FreshFor != 0 || !got.RefreshedAt.IsZero() || len(got.Changes) != 0 {
+				t.Fatalf("a declaration's sync reports %+v, want declared, no window, nothing moved", got)
+			}
+			stateID := pricefeed.StateDocID(sc.docID, "pliage")
+			if state, err := live.states.Get(context.Background(), stateID); err != nil || state != nil {
+				t.Fatalf("the sync wrote a state under the declaration's name: %+v (err %v)", state, err)
+			}
+
+			litellm := pricefeed.FeedConfig{Name: "pliage", Type: pricefeed.TypeLiteLLM, Enabled: true,
+				Interval: pricefeed.D(time.Hour), Timeout: pricefeed.D(5 * time.Second), Params: map[string]string{"url": dead}}
+			if code, out := live.do(t, "PUT", sc.path, token, priceFeedPutFeedBody(litellm)); code != http.StatusOK {
+				t.Fatalf("replace by litellm: %d %s", code, out)
+			}
+			if code, out := live.do(t, "POST", sc.path+"/sync", token, `{"name":"pliage"}`); code != http.StatusOK || !strings.Contains(string(out), `"status":"failing"`) {
+				t.Fatalf("the dead litellm feed's sync answered %d %s, want failing", code, out)
+			}
+			if raw := EffectivePriceFeed(context.Background(), live.configs, live.states, "org1", "team-pf", nil, nil); raw != nil {
+				t.Fatalf("a never-fetched litellm feed seals the replaced declaration: %s", raw)
+			}
+			_, out = live.do(t, "GET", sc.path, token, "")
+			var view priceFeedsViewWire
+			if err := json.Unmarshal(out, &view); err != nil || len(view.Feeds) != 1 {
+				t.Fatalf("decode: %v (%s)", err, out)
+			}
+			if f := view.Feeds[0]; f.Status != pricefeed.StateFailing || f.Entries != 0 {
+				t.Fatalf("the litellm feed reads status %q with %d entries, want failing with none", f.Status, f.Entries)
+			}
+		})
+	}
+}
+
+// The exec gate's failing record keeps only entries the feed's own
+// source type wrote: a record a litellm feed of the same name left is
+// not retained, an unstamped one still is.
+func TestPriceFeedExecGateRetainsOnlyItsOwnTypesEntries(t *testing.T) {
+	s, _ := priceFeedFixtureServer(t)
+	t.Setenv(priceFeedExecEnv, "")
+	docID := pricefeed.OrgConfigDocID("org1")
+	stateID := pricefeed.StateDocID(docID, "pliage")
+	feed := pricefeed.FeedConfig{Name: "pliage", Type: pricefeed.TypeExec, Enabled: true, Interval: pricefeed.D(time.Hour), Timeout: pricefeed.D(time.Second),
+		Params: map[string]string{"command": "/nonexistent/iterion-feed"}}
+	for _, tc := range []struct {
+		stamp    string
+		retained int
+	}{
+		{pricefeed.TypeLiteLLM, 0},
+		{"", 1},
+		{pricefeed.TypeExec, 1},
+	} {
+		if err := s.priceFeedStates.Put(context.Background(), stateID, &pricefeed.StateRecord{
+			Feed: "pliage", Type: tc.stamp, Status: pricefeed.StateOK,
+			Entries:     map[string]modelspecs.Spec{"glm-5.3": {InputCostPerM: 2.01, OutputCostPerM: 6.15}},
+			RefreshedAt: time.Now(), FreshFor: pricefeed.D(2 * time.Hour), LastAttempt: time.Now(),
+		}); err != nil {
+			t.Fatal(err)
+		}
+		outcome, err := s.priceFeedRefresh(context.Background(), docID, feed)
+		if err != nil || outcome.Status != pricefeed.StateFailing {
+			t.Fatalf("the closed exec gate answered %+v (err %v)", outcome, err)
+		}
+		state, err := s.priceFeedStates.Get(context.Background(), stateID)
+		if err != nil || state == nil {
+			t.Fatalf("the gate wrote no record: %v", err)
+		}
+		if len(state.Entries) != tc.retained || state.Type != pricefeed.TypeExec {
+			t.Fatalf("over a record stamped %q the gate kept %d entries, stamped %q; want %d, stamped exec", tc.stamp, len(state.Entries), state.Type, tc.retained)
+		}
+	}
+}
+
+// The view reads a fetched feed's status from a record of its own source
+// type only: a fresh record another type wrote under the name reads
+// never, an unstamped one still answers.
+func TestPriceFeedViewReadsOnlyItsOwnTypesState(t *testing.T) {
+	s, _ := priceFeedFixtureServer(t)
+	orgAdmin := asUser("u-orgadmin")
+	const url = "/api/orgs/org1/price-feeds"
+	docID := pricefeed.OrgConfigDocID("org1")
+	feed := pricefeed.FeedConfig{Name: "pliage", Type: pricefeed.TypeExec, Enabled: true, Interval: pricefeed.D(time.Hour), Timeout: pricefeed.D(time.Second),
+		Params: map[string]string{"command": "/nonexistent/iterion-feed"}}
+	if err := s.priceFeedConfigs.Put(context.Background(), docID, &pricefeed.ConfigRecord{Feeds: []pricefeed.FeedConfig{feed}}); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		stamp, status string
+		entries       int
+	}{
+		{pricefeed.TypeLiteLLM, pricefeed.StateNever, 0},
+		{"", pricefeed.StateOK, 1},
+	} {
+		if err := s.priceFeedStates.Put(context.Background(), pricefeed.StateDocID(docID, "pliage"), &pricefeed.StateRecord{
+			Feed: "pliage", Type: tc.stamp, Status: pricefeed.StateOK,
+			Entries:     map[string]modelspecs.Spec{"glm-5.3": {InputCostPerM: 2.01, OutputCostPerM: 6.15}},
+			RefreshedAt: time.Now(), FreshFor: pricefeed.D(2 * time.Hour), LastAttempt: time.Now(),
+		}); err != nil {
+			t.Fatal(err)
+		}
+		w := httptest.NewRecorder()
+		s.handleGetOrgPriceFeeds(w, priceFeedReq(orgAdmin, "GET", url, ""))
+		var view priceFeedsViewWire
+		if err := json.Unmarshal(w.Body.Bytes(), &view); err != nil || len(view.Feeds) != 1 {
+			t.Fatalf("decode: %v (%s)", err, w.Body.String())
+		}
+		if f := view.Feeds[0]; f.Status != tc.status || f.Entries != tc.entries {
+			t.Fatalf("over a record stamped %q the view reads %q with %d entries, want %q with %d", tc.stamp, f.Status, f.Entries, tc.status, tc.entries)
+		}
+	}
+}
+
+// The sweep judges a fetched feed's staleness by a record of its own
+// source type only: a stale record another type left under the name says
+// no staleness transition for the retyped feed.
+func TestPriceFeedSweepJudgesOnlyItsOwnTypesState(t *testing.T) {
+	s, logs := priceFeedFixtureServer(t)
+	priceFeedScratchEnv(t)
+	docID := pricefeed.OrgConfigDocID("org1")
+	litellm := pricefeed.FeedConfig{Name: "pliage", Type: pricefeed.TypeLiteLLM, Enabled: true,
+		Interval: pricefeed.D(time.Hour), Timeout: pricefeed.D(5 * time.Second), Params: map[string]string{"url": priceFeedDeadSource(t)}}
+	if err := s.priceFeedConfigs.Put(context.Background(), docID, &pricefeed.ConfigRecord{Feeds: []pricefeed.FeedConfig{litellm}}); err != nil {
+		t.Fatal(err)
+	}
+	aged := time.Now().Add(-365 * 24 * time.Hour)
+	if err := s.priceFeedStates.Put(context.Background(), pricefeed.StateDocID(docID, "pliage"), &pricefeed.StateRecord{
+		Feed: "pliage", Type: pricefeed.TypeExec, Status: pricefeed.StateOK,
+		Entries:     map[string]modelspecs.Spec{"glm-5.3": {InputCostPerM: 2.01, OutputCostPerM: 6.15}},
+		RefreshedAt: aged, FreshFor: pricefeed.D(time.Hour), LastAttempt: aged,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	logs.Reset()
+	s.priceFeedSyncSweep(context.Background())
+	if strings.Contains(logs.String(), "freshness window") {
+		t.Fatalf("the sweep judged the litellm feed by an exec feed's record: %q", logs.String())
 	}
 }

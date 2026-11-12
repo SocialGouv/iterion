@@ -24,7 +24,7 @@ type EntryChange struct {
 // answers and what the reconciler records.
 type SyncOutcome struct {
 	Feed        string        `json:"feed"`
-	Status      string        `json:"status"` // ok | failing (staleness derives on read)
+	Status      string        `json:"status"` // ok | failing | declared (staleness derives on read)
 	RefreshedAt time.Time     `json:"refreshed_at,omitempty"`
 	FreshFor    Duration      `json:"fresh_for,omitempty"`
 	Error       string        `json:"error,omitempty"`
@@ -48,7 +48,9 @@ type Drift struct {
 // own timeout, normalize, diff against the previous state, and derive
 // the durable state. It is idempotent — the elected reconciler and the
 // manual trigger call the same function; a concurrent double refresh
-// converges on the same source answer.
+// converges on the same source answer. The record it answers is stamped
+// with the feed's source type, and a prev stamped with another type is
+// read as no prev (StateRecord.Of).
 //
 // The operator table (the SERVER's own reading of
 // OPENAI_COMPATIBLE_MODELS, passed by the caller — this package never
@@ -60,8 +62,12 @@ func Refresh(ctx context.Context, feed FeedConfig, prev *StateRecord, operatorTa
 	if now.IsZero() {
 		now = time.Now()
 	}
+	// A record written for another source type (the feed retyped under
+	// its name) is not this feed's: nothing of it is retained or diffed.
+	prev = prev.Of(feed.Type)
 	state := StateRecord{
 		Feed:        feed.Name,
+		Type:        feed.Type,
 		FreshFor:    feed.FreshFor(),
 		LastAttempt: now,
 	}
@@ -224,11 +230,15 @@ func FormatDrift(d Drift) string {
 // on the short backoff, not the full period — a dead source behind a
 // 30-day interval would otherwise stay dead for a month. A static feed
 // (a declaration) is never due: its answer is its config, which the fold
-// reads directly.
+// reads directly. A state written for another source type counts as no
+// attempt (StateRecord.Of).
 func Due(feed FeedConfig, state *StateRecord, now time.Time) bool {
 	if IsStatic(feed.Type) {
 		return false
 	}
+	// A record written for another source type says nothing about this
+	// feed's attempts: a retyped feed fetches on the next pass.
+	state = state.Of(feed.Type)
 	if state == nil || state.LastAttempt.IsZero() {
 		return true
 	}
