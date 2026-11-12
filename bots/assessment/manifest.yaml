@@ -5,11 +5,12 @@ version: 0.1.4
 ## 0.1.4 — plan-contract.md tells the contract author to size a lot's gate to
 ## the execution bot's run wall (modernize 0.7.1: 12h, which nothing raises
 ## when the campaign supervisor runs the lot): the agent's pass, the gate's
-## commands times `gate_timeout_s`, a reanchor or extend child and the gate
-## once more fit under 90% of it, and a gate that cannot is split across lots
-## — three commands allowed 14400 s each fill the 12h by themselves. It also
-## says that under the campaign supervisor a gate runs without
-## $DEPLOY_CREDENTIAL, which the supervisor does not declare.
+## commands times `gate_timeout_s` three times over and a reanchor and an
+## extend child (1.1h each at their exit grace) fit under 90% of it — one lot
+## may take both, the gate judging it again after each — and a gate that
+## cannot is split across lots; three commands allowed 14400 s each fill the
+## 12h by themselves. It also says that under the campaign supervisor a gate
+## runs without $DEPLOY_CREDENTIAL, which the supervisor does not declare.
 ## 0.1.3 — the drafted contract declares, in `suites:`, the repository's own
 ## test suites that pass on the starting tree; the execution bot runs them at
 ## every lot's gate. The contract lint refuses suites in a shape the gate

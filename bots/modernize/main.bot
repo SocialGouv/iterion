@@ -41,6 +41,15 @@ vars:
   ## human acts them — pending is loud by design, never a silent skip.
   extend: bool = true
   source_issue_ref: string = ""
+  ## The clock of the campaign that runs this bot as its lot, in seconds:
+  ## its elapsed time when it started this child, its wall, and the room
+  ## one lot may take (its lot_room_s). campaign's run_lot passes them each
+  ## time it starts a child, a resumed start included. campaign_room starts
+  ## the lot only while that elapsed time plus that room stays under 90% of
+  ## that wall. A direct launch passes no wall (0) and is not held to one.
+  campaign_elapsed_s: float = 0
+  campaign_wall_s: float = 0
+  campaign_lot_room_s: int = 0
 
 secrets:
   ## Forge access for the cloud clone/push on repo-targeted launches.
@@ -166,6 +175,11 @@ schema campaign_input:
 ## could only ever mislead a reader or cost a round-trip to emit.
 schema campaign_output:
   work_remaining: string
+
+## Whether the campaign running this lot can still finish one, and why not.
+schema campaign_room_state:
+  room: bool
+  notice: string
 
 ## What the plan reader extracts. `nothing_to_do` is what makes an already
 ## finished programme a no-op instead of an error.
@@ -3086,6 +3100,22 @@ tool mark_done:
   input: mark_input
   output: mark_state
 
+## campaign_room — under campaign, a lot starts only where the campaign can
+## still finish it. campaign's lot_room admits each lot on this predicate,
+## over the campaign's own clock. A resume of a campaign whose lot failed
+## re-runs run_lot and never lot_room: the fresh child is judged here, on
+## the clock run_lot passes at that start. With no room the child ends at
+## once, before the plan is read, with no lot taken and nothing written,
+## and the campaign hands off: lot_room refuses its next lot on the same
+## figures, if its loop's budget guard has not declined it first. `notice`
+## restates `room`'s predicate (a
+## field cannot read its sibling); the bots package holds the two to agree.
+compute campaign_room:
+  output: campaign_room_state
+  expr:
+    room: "vars.campaign_wall_s <= 0 || vars.campaign_elapsed_s + vars.campaign_lot_room_s < vars.campaign_wall_s * 0.9"
+    notice: "if(vars.campaign_wall_s <= 0 || vars.campaign_elapsed_s + vars.campaign_lot_room_s < vars.campaign_wall_s * 0.9, 'room for a lot', 'NO LOT TAKEN: the campaign elapsed time (' + floor(vars.campaign_elapsed_s) + ' s) plus its lot_room_s (' + vars.campaign_lot_room_s + ' s) reaches 90% of its wall (' + floor(vars.campaign_wall_s * 0.9) + ' s of ' + floor(vars.campaign_wall_s) + ' s): a lot started here outlives the campaign handoff')"
+
 ## work_gate lifts the reader's verdict into a routable bool.
 compute work_gate:
   output: plan_state
@@ -3220,7 +3250,7 @@ subbot extend:
 
 workflow modernize:
 
-  entry: plan_read
+  entry: campaign_room
 
   ## No `sandbox:` block (ADR-082): the platform sandboxes by default. The
   ## target's toolchain comes from ITS OWN devbox/devcontainer — this bundle
@@ -3232,22 +3262,26 @@ workflow modernize:
   ## parent's budget nor a launch override reaches it. lot_verify runs every
   ## exit_gate command, the suites and the oracle, each under the contract's
   ## gate_timeout_s, after the agent's pass, and must end before 90% of the
-  ## wall (10.8h) for its verdict to land: past it no tool or agent node
-  ## starts, so neither mark_done, which writes `done`, nor a repair pass
-  ## does; a lot_verify the wall kills leaves no verdict at all. 12h holds
+  ## wall (10.8h) for its verdict to land: from there until the wall the
+  ## engine refuses to start a tool or agent node, so neither mark_done,
+  ## which writes `done`, nor a repair pass starts; a lot_verify the wall
+  ## kills leaves no verdict at all. (Past the wall the exit grace admits a
+  ## node until 13.2h, which only a node after a child run past the wall
+  ## reaches — see below.) 12h holds
   ## the lot it was raised for: a contract of three gate commands walled at
   ## 14400 s each, cut by the 4h wall during its third — the agent's pass and
   ## the first two returned inside those 4h, the third has its own 14400 s, so
   ## the commands end by 8h, and 2.8h remain for the suites and the oracle.
   ## It does not hold three commands each run to their 14400 s wall: those
   ## alone fill the 12h, after an agent's pass. Nor a repair pass that
-  ## replays the agent and the gate, or a reanchor or extend child (up to 1h)
-  ## after which lot_verify runs the whole gate again: no literal holds every
+  ## replays the agent and the gate, or the reanchor and the extend child one
+  ## lot may take in turn (up to 1.1h each at their exit grace), after each of
+  ## which lot_verify runs the whole gate again: no literal holds every
   ## contract, since gate_timeout_s reaches 86400 s per command, so the
   ## contract sizes its gate to this wall (plan-contract.md,
   ## `gate_timeout_s`). Campaign starts a lot only where this wall, its exit
-  ## grace and one such child still end before 90% of its own (campaign's
-  ## lot_room).
+  ## grace and one such child still end before 90% of its own: its lot_room,
+  ## and this bot's campaign_room where a resumed campaign starts a lot.
   ##
   ## On a direct launch on Kubernetes the sandbox pod's deadline is this wall
   ## plus 30 min (12.5h), short of the ceiling the 10% exit grace lets a node
@@ -3273,6 +3307,11 @@ workflow modernize:
   compaction:
     threshold: 0.9
     preserve_recent: 8
+
+  ## Exhaustive pair on one bool: a direct launch always has room.
+  campaign_room -> plan_read when room
+
+  campaign_room -> done when not room
 
   plan_read -> work_gate
 

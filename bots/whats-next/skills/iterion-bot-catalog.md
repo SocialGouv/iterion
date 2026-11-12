@@ -1044,7 +1044,7 @@ redefine what judges it, because a golden master dies by re-baselining. The
   decision recorded in the contract, and the lot DAG in particular encodes
   compatibility knowledge that cannot be re-derived from the tree.
 - **Tags**: ships-code, upgrade
-- **Vars**: `extend` (bool), `max_passes` (int), `only_lot` (string), `plan_path` (string), `reanchor` (bool), `source_issue_ref` (string), `workspace_dir` (string)
+- **Vars**: `campaign_elapsed_s` (float), `campaign_lot_room_s` (int), `campaign_wall_s` (float), `extend` (bool), `max_passes` (int), `only_lot` (string), `plan_path` (string), `reanchor` (bool), `source_issue_ref` (string), `workspace_dir` (string)
 - **Path**: `bots/modernize/main.bot`
 
 ### `secured-renovacy` — Renovacy
@@ -1664,8 +1664,10 @@ added or reshaped in the plan) fall under a configured governance:
 accepted in flight and listed at the head of the final handoff (default),
 or paused for human approval every time. Other escalations either pause
 the run (interactive) or accumulate into the handoff (default) — and the
-campaign always ends on a committed handoff plus a human review node,
-with blocked lots requalified against the final tree.
+campaign ends on a committed handoff plus a human review node, with
+blocked lots requalified against the final tree. A lot whose child fails
+fails the campaign at that lot, resumable; its resume runs a lot only
+where one can still finish, and hands off otherwise.
 
 - **Use when**:
   Use to carry a WHOLE programme unattended once its two prerequisites

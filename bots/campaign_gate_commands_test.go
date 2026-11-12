@@ -234,6 +234,13 @@ func (c campaignClock) render(script string) string {
 // finalizeUnder is finalizeOn under a given clock.
 func finalizeUnder(t *testing.T, clock campaignClock, plan string, files map[string]string, after func(ws string, git func(...string) string)) finalizeRun {
 	t.Helper()
+	return finalizeUnderEnv(t, clock, plan, files, after, nil)
+}
+
+// finalizeUnderEnv is finalizeUnder with env appended to the script's
+// environment (a later key wins).
+func finalizeUnderEnv(t *testing.T, clock campaignClock, plan string, files map[string]string, after func(ws string, git func(...string) string), env []string) finalizeRun {
+	t.Helper()
 	requireModernizeTools(t)
 	script := toolScript(t, "campaign/main.bot", "finalize")
 	ws, _, git := modernizeRepo(t, plan)
@@ -261,6 +268,7 @@ func finalizeUnder(t *testing.T, clock campaignClock, plan string, files map[str
 	}
 	var stderr strings.Builder
 	cmd := modernizeChild(t, "python3", p)
+	cmd.Env = append(cmd.Env, env...)
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
 	if err != nil {

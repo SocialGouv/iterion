@@ -58,8 +58,9 @@ vars:
   ## the campaign keeps landing what it still can — and presents everything
   ## once, at the end.
   escalation: string [enum: "handoff", "interactive"] = "handoff"
-  ## Upper bound on child runs. The natural stops are the programme being
-  ## exhausted or the stagnation rule; this is the belt over those braces.
+  ## Upper bound on the campaign loop's crossings: at most max_lots + 1 child
+  ## runs, 0 for one. The natural stops are the programme being exhausted or
+  ## the stagnation rule; this is the belt over those braces.
   max_lots: int = 40
   ## Consecutive child runs without a single new commit that end the
   ## campaign. Two is the measured value: one still run can be a lot that
@@ -69,18 +70,22 @@ vars:
   lot_max_passes: int = 4
   ## The campaign time one lot may take, in seconds: lot_room starts a lot
   ## only while the elapsed time plus this room stays under 90% of the
-  ## campaign's wall, past which the engine starts no tool node, the
-  ## handoff's (finalize) included. 54000 s = 15h: modernize's 12h wall and
-  ## the 10% exit grace past it (13.2h), one golden-master child its last
-  ## gate routes to (1h wall, 1.1h), then 0.7h for the campaign to reach its
-  ## handoff: observe (four commands under 60 s walls) and the steward's
-  ## reserve (RESERVE_S, 30 min: its journal commit, then loop_gate, lot_room
-  ## and finalize starting). A steward act that would end inside that reserve
-  ## is deferred, and finalize cuts what the campaign's wall would and writes
-  ## the handoff either way. A wall with no room for one lot starts none, and the
-  ## handoff says so with these figures: a validation run under a short
-  ## --max-duration passes --var lot_room_s=<seconds> sized to its lot.
-  ## Lower it for a contract whose lots are known to be short.
+  ## campaign's wall, from which the engine refuses to start a tool node, the
+  ## handoff's (finalize) included; the child judges the same where it starts
+  ## (modernize's campaign_room). 54000 s = 15h: modernize's 12h wall and the
+  ## exit grace past it (13.2h), one golden-master child its last gate routes
+  ## to (1h wall, 1.1h), then 0.7h for the campaign to reach its handoff:
+  ## observe and the steward outside its acts, 1560 s at their commands'
+  ## walls. A steward act starts only where it, its git work and the journal
+  ## commit end before that point (RESERVE_S), and finalize cuts what the
+  ## campaign's wall would and writes the handoff either way. The exit grace
+  ## is the deployment's default 10% (ITERION_BUDGET_EXIT_GRACE): a wider one
+  ## lengthens the longest lot — 12h and 1h, each times one plus the grace —
+  ## and this must grow with it. A wall with no room for one lot starts none,
+  ## and the handoff says so with these figures: a validation run under a
+  ## short --max-duration sizes this to its lot plus those 1560 s (README,
+  ## "Configuration"). Lower it for a contract whose lots are known to be
+  ## short.
   lot_room_s: int = 54000
 
 secrets:
@@ -564,16 +569,19 @@ tool steward:
     items = []
     now = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
 
-    # The campaign's wall, as the engine holds the campaign to it: past 90% of
-    # it no tool node starts, finalize's included, and a campaign that reaches
-    # it here ends with no handoff. An act — the record, then the counter-test,
-    # each up to the lot's wall — starts only where it ends, at those walls,
-    # RESERVE_S before that point: the act's own git work, this node's journal
-    # commit, and loop_gate, lot_room and finalize starting. One that does not
-    # fit is deferred: named in the escalation log, left pending in the
-    # ledger for the next campaign, never refused. A run with no wall (0)
-    # defers nothing. lot_room_s keeps this reserve after every lot.
-    RESERVE_S = 1800
+    # The campaign's wall, as the engine holds the campaign to it: from 90% of
+    # it the engine refuses to start a tool node, finalize's included, and a
+    # campaign this node carries there ends with no handoff. An act — the
+    # record, then the counter-test, each up to the lot's wall — starts only
+    # where it ends, at those walls, RESERVE_S before that point: the act's
+    # own git work after them (1800 s at their walls), this node's journal
+    # commit (360 s), then loop_gate, lot_room and finalize starting. One that
+    # does not fit is deferred: named in the escalation log, left pending in
+    # the ledger for the next campaign, never refused; a campaign with a
+    # longer wall (--max-duration) acts on it. A run with no wall (0) defers
+    # nothing. What this node does outside its acts, lot_room_s keeps after
+    # every lot.
+    RESERVE_S = 2400
     run_wall = float({{run.max_duration_seconds}} or 0)
     handoff_by = None
     if run_wall > 0:
@@ -697,11 +705,21 @@ tool steward:
         # CREATED are removed one by one — never a recursive clean.
         # iterion's own tree under .claude/ (skills, plugin files, the settings
         # hooks it injects) is never the record's write, and never reverted here.
+        # The tracked ones are read in one call, whatever their number: the
+        # steward's reserve holds this node's git work at its walls, which a
+        # call per path would leave unbounded.
         git("checkout", "--", ".", ":(exclude).claude")
+        if not observed:
+            return
+        listed = git("ls-files", "-z", "--", *[":(literal)" + p for p in observed])
+        if listed.returncode != 0:
+            raise RuntimeError("git ls-files could not say which recorded paths are tracked, so "
+                               "the record's own files cannot be told apart: %s"
+                               % listed.stderr.strip()[-400:])
+        tracked = set(listed.stdout.split("\0"))
         for p in observed:
             full = os.path.join(ws, p)
-            ls = git("ls-files", "--error-unmatch", p)
-            if ls.returncode != 0 and os.path.isfile(full):
+            if p not in tracked and os.path.isfile(full):
                 os.remove(full)
 
     head_after_child = git("rev-parse", "HEAD").stdout.strip()
@@ -809,9 +827,11 @@ tool steward:
                               "note": "the record and its counter-test take up to %ds (twice "
                                       "the lot's wall of %ds), and %ds remain before the "
                                       "campaign's handoff must start (90%% of its wall of %ds, "
-                                      "less %ds for this node and the handoff to start), past "
-                                      "which no tool node starts — the request stays pending for "
-                                      "the next campaign"
+                                      "less %ds for the act's own git work, this node's journal "
+                                      "commit and the handoff to start), from "
+                                      "which the engine refuses to start a tool node — the request "
+                                      "stays pending for the next campaign, and a longer wall "
+                                      "(--max-duration) gives its act room"
                                       % (2 * wall, wall, max(0, int(handoff_by - time.monotonic())),
                                          int(run_wall), RESERVE_S)})
                 continue
@@ -1004,10 +1024,12 @@ tool finalize:
     # the handoff must be written, whichever is shorter, so the handoff is
     # written whatever the commands take — and a command the campaign's wall
     # stopped is reported as that, never as a verdict on the tree. WRITE_S is
-    # the handoff's own time after the last command: the tree measured again
-    # (git status and ls-files, 420 s at their walls), HEAD read, the handoff
-    # written and committed (three git calls under 120 s walls). A run with no
-    # wall (0) stops nothing.
+    # the handoff's own time after the last command, whichever the wall cut:
+    # the tree measured again once — after the gates, or after suites that
+    # started (git status and ls-files, 420 s at their walls) — HEAD read
+    # after the suites (120 s), the handoff added and committed (two git
+    # calls under 120 s walls): 780 s at most. A run with no wall (0) stops
+    # nothing.
     WRITE_S = 900
     run_wall = float({{run.max_duration_seconds}} or 0)
     write_by = None
@@ -1307,8 +1329,13 @@ tool finalize:
             if r["rc"] != 0:
                 suites_red = requal["suites"][-1]
                 break
-        left_by_suites = unlanded()
-        head_moved = git("rev-parse", "HEAD").stdout.strip() != head
+        # Suites the campaign's wall left no time to start left the tree as it
+        # was last measured — after the gates, or before any command when no
+        # gate ran: measuring it again would spend the time the handoff keeps
+        # for itself.
+        if any(r["started"] for r in requal["suites"]):
+            left_by_suites = unlanded()
+            head_moved = git("rev-parse", "HEAD").stdout.strip() != head
         suites_summary = ("GREEN — every command exited 0" if suites_red is None
                           else "RED — `%s` %s" % (suites_red["command"],
                                                   "timed out" if suites_red["rc"] is None
@@ -1559,21 +1586,31 @@ compute loop_gate:
 ## lot_room — start a lot only where one can finish. The child budgets
 ## itself from its own .bot (modernize's 12h wall), runs in THIS run's
 ## sandbox, and nothing interrupts it once started. A lot started late
-## therefore outlives what the campaign can still do: past 90% of the wall
-## the engine starts no tool node, so observe is refused and the campaign
-## ends with no handoff; on Kubernetes the shared sandbox pod is
-## killed at the wall plus 30 min, mid-lot. Every lot starts through here,
-## the first one too; a wall with no room left for one hands off instead,
-## and `reason` — which the handoff opens on — says so with the figures and
-## the two levers: a wall that never had room for one lot starts none, which
-## no operator should have to infer from an empty journal. `reason` restates
-## `room`'s predicate (a field cannot read its sibling); the bots package
-## holds the two to agree. An unbounded wall (0) always has room.
+## therefore outlives what the campaign can still do: from 90% of the wall
+## the engine refuses to start a tool node, so observe is refused and the
+## campaign ends with no handoff; on Kubernetes the shared sandbox pod is
+## killed at the wall plus 30 min, mid-lot. Every lot the campaign's edges
+## start passes here, the first one too; a wall with no room left for one
+## hands off instead, and `reason` — which the handoff opens on — says so
+## with the figures and the two levers: a wall that never had room for one
+## lot starts none, which no operator should have to infer from an empty
+## journal. A resume of a campaign whose lot failed re-runs run_lot, not
+## this node: the child judges the same predicate where it starts
+## (modernize's campaign_room, over the clock run_lot passes), so a lot that
+## no longer fits is not started there either. `reason` restates `room`'s
+## predicate (a field cannot read its sibling); the bots package holds the
+## two, and the child's, to agree. An unbounded wall (0) always has room.
+##
+## The wall read here is the run's live one, a live raise included. A
+## Kubernetes sandbox pod takes its deadline once, at its creation, from the
+## wall the run was launched with: a live raise past that wall does not move
+## it, and a lot this node admits on the raised wall dies with the pod. On
+## Kubernetes, a longer campaign is launched with its wall (--max-duration).
 compute lot_room:
   output: room_state
   expr:
     room: "run.max_duration_seconds <= 0 || run.elapsed_seconds + vars.lot_room_s < run.max_duration_seconds * 0.9"
-    reason: "if(run.max_duration_seconds <= 0 || run.elapsed_seconds + vars.lot_room_s < run.max_duration_seconds * 0.9, 'room for a lot', if(loop.campaign_loop.iteration == 0, 'NO LOT STARTED', 'no lot after the ' + loop.campaign_loop.iteration + ' this campaign ran') + ': the elapsed time (' + floor(run.elapsed_seconds) + ' s) plus lot_room_s (' + vars.lot_room_s + ' s, the time one lot may take) reaches 90% of the campaign wall (' + floor(run.max_duration_seconds * 0.9) + ' s of ' + floor(run.max_duration_seconds) + ' s), past which the engine starts no tool node. Lots known to be shorter start under --var lot_room_s=<seconds>; a longer wall under --max-duration.')"
+    reason: "if(run.max_duration_seconds <= 0 || run.elapsed_seconds + vars.lot_room_s < run.max_duration_seconds * 0.9, 'room for a lot', if(loop.campaign_loop.iteration == 0, 'NO LOT STARTED', 'no lot after the ' + loop.campaign_loop.iteration + ' this campaign ran') + ': the elapsed time (' + floor(run.elapsed_seconds) + ' s) plus lot_room_s (' + vars.lot_room_s + ' s, the time one lot may take) reaches 90% of the campaign wall (' + floor(run.max_duration_seconds * 0.9) + ' s of ' + floor(run.max_duration_seconds) + ' s), from which the engine refuses to start a tool node. Lots known to be shorter start under `--var lot_room_s=<seconds>`; a longer wall under `--max-duration`.')"
 
 ## run_lot — the worker, one lot per child run.
 ##
@@ -1582,12 +1619,19 @@ compute lot_room:
 ## node, exactly as it would be measured by a third party. No `isolated:`
 ## either — the child works on THIS checkout; that is what it is for, and
 ## the workspace-safety guard is right to serialise it.
+##
+## The campaign's clock travels with each start: the mapping renders when
+## run_lot runs, a resumed run_lot included, and the child's campaign_room
+## starts the lot only on lot_room's own predicate over these figures.
 subbot run_lot:
   source: "../modernize/main.bot"
   with {
     workspace_dir: "{{vars.workspace_dir}}",
     plan_path: "{{vars.plan_path}}",
     max_passes: "{{vars.lot_max_passes}}",
+    campaign_elapsed_s: "{{run.elapsed_seconds}}",
+    campaign_wall_s: "{{run.max_duration_seconds}}",
+    campaign_lot_room_s: "{{vars.lot_room_s}}",
   }
 
 ## ─── Workflow ──────────────────────────────────────────────────────
@@ -1603,10 +1647,12 @@ workflow campaign:
   ## The child budgets itself (a subbot's budget does not compose with the
   ## parent's): this budget bounds the SUPERVISOR — its records, gates and
   ## bookkeeping — plus the campaign's wall clock, the one axis that counts
-  ## the children's time. The wall also sets the deadline of the sandbox pod
-  ## the lots share on Kubernetes (the wall plus 30 min). The engine checks
-  ## it before each campaign node, never inside a running lot, so lot_room
-  ## starts a lot only while one still fits before 90% of it.
+  ## the children's time. The wall the run is launched with also sets the
+  ## deadline of the sandbox pod the lots share on Kubernetes (that wall plus
+  ## 30 min, fixed when the pod is created: a live raise does not move it).
+  ## The engine checks the wall before each campaign node, never inside a
+  ## running lot, so lot_room — and the child's campaign_room where a resume
+  ## starts a lot — starts one only while it still fits before 90% of it.
   budget:
     max_parallel_branches: 1
     max_duration: "48h"

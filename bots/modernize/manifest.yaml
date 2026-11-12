@@ -9,10 +9,11 @@ version: 0.7.1
 ## 14400 s each was cut by the 4h wall during its third, and lot_verify was
 ## killed with no verdict. 12h holds that lot as measured: the agent's pass
 ## and the first two commands returned inside the 4h, the third has its own
-## 14400 s, so the commands end by 8h — under 10.8h, 90% of the wall, past
-## which neither mark_done nor a repair pass starts. It does not hold three
-## commands each run to their 14400 s wall, which alone fill the 12h; nor a
-## repair pass or a reanchor/extend replay on top of the gate, and
+## 14400 s, so the commands end by 8h — under 10.8h, 90% of the wall, from
+## which until the wall neither mark_done nor a repair pass starts. It does
+## not hold three commands each run to their 14400 s wall, which alone fill
+## the 12h; nor a repair pass, nor the reanchor and the extend child one lot
+## may take in turn, each followed by the whole gate again, and
 ## plan-contract.md now says to size the gate to the wall. On a direct
 ## Kubernetes launch the sandbox pod's deadline (the wall plus 30 min, 12.5h)
 ## falls short of the ceiling the 10% exit grace lets a node reach (13.2h): a
@@ -27,7 +28,15 @@ version: 0.7.1
 ## none on claw. On claw, web_search resolves only where the deployment
 ## enables web search (ITERION_WEB_SEARCH=on, or a search backend), which the
 ## shipped chart does not: on a default deployment the claw route fails at
-## this node, naming the tool, until the runner is given one.
+## this node, naming the tool, until the runner is given one. Under
+## campaign, the lot starts only where the campaign can still finish it: the
+## entry node, campaign_room, applies campaign's lot_room predicate to the
+## clock campaign passes at each start (campaign_elapsed_s, campaign_wall_s,
+## campaign_lot_room_s), and with no room ends the run at once, no lot taken.
+## A resume of a campaign whose lot failed starts a fresh child without
+## passing lot_room, and that child took its lot whatever the time left, to
+## be cut past the campaign's handoff. A direct launch passes no clock and is
+## not held.
 ## 0.7.0 — the repository's own test suites are declared once, at the top of
 ## the contract (`suites:`), and run at every lot's gate
 ## once its exit_gate passed, under the same wall: `suites_passed` joins
@@ -182,7 +191,7 @@ invocations:
 
 launch:
   primary: [plan_path, only_lot, max_passes]
-  hidden: [source_issue_ref]
+  hidden: [source_issue_ref, campaign_elapsed_s, campaign_wall_s, campaign_lot_room_s]
 
 ## Profile 2 (`dsl: 2` at the head of main.bot): a runner older than the
 ## release that reads the profile would refuse the header as an unknown

@@ -1,6 +1,9 @@
 package bots
 
 import (
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -111,4 +114,50 @@ func TestCampaignFinalizeWritesItsHandoffBeforeTheWall(t *testing.T) {
 			t.Fatalf("the oracle did not run green with the whole wall ahead:\n%s", r.handoff)
 		}
 	})
+}
+
+// TestCampaignFinalizeMeasuresTheTreeOnceAfterACut: WRITE_S holds what
+// finalize does after the command the campaign's wall cut — the tree measured
+// again once, HEAD read, the handoff added and committed — at those calls'
+// walls. When the wall cuts a blocked lot's gate, the suites behind it never
+// start and leave the tree as the gates did: finalize measures it once, after
+// the gates, not a second time for suites that did not run. Counted on the
+// git calls the REAL finalize makes, through a git that logs them.
+func TestCampaignFinalizeMeasuresTheTreeOnceAfterACut(t *testing.T) {
+	t.Parallel()
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("git not on PATH")
+	}
+	bin := t.TempDir()
+	calls := filepath.Join(t.TempDir(), "git-calls.log")
+	wrapper := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '" + calls + "'\nexec '" + realGit + "' \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(bin, "git"), []byte(wrapper), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const wall = 100000.0
+	plan := strings.Replace(campaignSuitesPlan, "version: 1\n", "version: 1\ngate_timeout_s: 60\n", 1)
+	plan = strings.Replace(plan, "      - \"true\"\n", "      - \"sleep 30\"\n", 1)
+	r := finalizeUnderEnv(t, campaignClock{wall: wall, elapsed: wall - 900 - 5, endedBy: "x"}, plan,
+		map[string]string{"ci/test.sh": "#!/bin/sh\nexit 0\n"}, nil,
+		[]string{"PATH=" + bin + string(os.PathListSeparator) + os.Getenv("PATH")})
+	if l := handoffLine(r.handoff, "**L1**"); !strings.Contains(l, "the campaign's wall cut it after") {
+		t.Fatalf("L1 reads %q: the scenario needs the wall to cut its gate", l)
+	}
+	if l := handoffLine(r.handoff, "suites on the final tree"); !strings.Contains(l, "left no time to start it") {
+		t.Fatalf("the suites read %q: the scenario needs them never started", l)
+	}
+	raw, err := os.ReadFile(calls)
+	if err != nil {
+		t.Fatal(err)
+	}
+	statuses := 0
+	for _, l := range strings.Split(string(raw), "\n") {
+		if strings.Contains(l, " status --porcelain") {
+			statuses++
+		}
+	}
+	if statuses != 2 {
+		t.Fatalf("finalize read the tree's status %d times — once before its commands, once after the cut gate; a measurement for suites that never started spends the handoff's own time:\n%s", statuses, raw)
+	}
 }

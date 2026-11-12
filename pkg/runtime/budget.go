@@ -85,13 +85,15 @@ const (
 	budgetHardThreshold    = 0.9 // refuse new node executions at 90% to limit concurrent overage
 )
 
-// BudgetHardThreshold is the share of a cap from which the engine starts no
-// node it checks before running — an agent, a judge, a tool (a compute, a
-// subbot or a human node takes no such check) — and at which the loop guard
-// declines a back-edge whose next iteration would land. A workflow that sizes
-// its own bounds — a gate that starts work only where it can finish, a cap
-// meant to fund N passes — sizes them against this share, not against the
-// cap.
+// BudgetHardThreshold is the share of a cap from which, up to the cap, the
+// engine refuses to start a node it checks before running — an agent, a
+// judge, a tool (a compute, a subbot or a human node takes no such check) —
+// and at which the loop guard declines a back-edge whose next iteration would
+// land. Past the cap the exit grace admits a checked node again, up to the
+// cap times (1 + the grace ratio): a node reached after an unchecked one —
+// a subbot child — that ran past the cap. A workflow that sizes its own
+// bounds — a gate that starts work only where it can finish, a cap meant to
+// fund N passes — sizes them against this share, not against the cap.
 const BudgetHardThreshold = budgetHardThreshold
 
 // newSharedBudget creates a SharedBudget from an IR Budget definition.

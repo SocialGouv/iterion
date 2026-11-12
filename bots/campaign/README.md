@@ -40,9 +40,9 @@ is over.
 1. **lot_room** — a lot starts only where one can finish: while the
    elapsed time plus `lot_room_s` stays under 90% of the campaign's wall.
    The child budgets itself, runs in this run's sandbox and is never
-   interrupted, so a lot started later would end where the engine starts no
-   tool node — observe refused, no handoff — and on Kubernetes the
-   shared sandbox pod dies at the wall plus 30 min. Otherwise the campaign
+   interrupted, so a lot started later would end where the engine refuses
+   to start a tool node — observe refused, no handoff — and on Kubernetes
+   the shared sandbox pod dies at the wall plus 30 min. Otherwise the campaign
    hands off (finalize), and the handoff opens on why: no lot
    started (or none after the N this campaign ran), the elapsed time,
    `lot_room_s` and the wall it was judged on, and the two levers — a
@@ -51,6 +51,11 @@ is over.
    deployment ceiling under the 48h) starts none at the default
    `lot_room_s`.
 2. **run_lot** — one `modernize` child run (one lot, or a clean no-op).
+   It hands the child the campaign's clock, and the child's first node
+   (`campaign_room`) takes the lot only on lot_room's own predicate: a
+   campaign whose lot failed fails at run_lot, resumable, and its resume
+   starts a fresh child there, without passing lot_room — that child takes
+   no lot where lot_room would refuse one, and the campaign hands off.
 3. **observe** — everything re-read from git and files, never from the
    child's self-report: did HEAD move, how many consecutive still runs,
    is any lot still eligible, did the plan gain/lose/reshape lots
@@ -61,9 +66,12 @@ is over.
    criterion, the record and the counter-test under the lot's own
    `gate_timeout_s`, the counter-test's writes restored after it; journal
    row and escalation log appended **and committed**. An act that would not
-   end, at those walls, 30 min before 90% of the campaign's wall — past
-   which no tool node starts, the handoff's included — is deferred: logged,
-   left pending in the ledger for the next campaign, never refused.
+   end, at those walls, 40 min (`RESERVE_S`, which holds the act's own git
+   work and the journal commit at their walls) before 90% of the
+   campaign's wall — from which the engine refuses to start a tool node,
+   the handoff's included — is deferred: logged, left pending in the ledger
+   for the next campaign, never refused; a longer `--max-duration` gives it
+   room.
 5. **escalate** *(when configuration asks)* — a human node. The answer
    edits nothing: an operator who wants to change the programme changes
    the **repository** and commits, exactly as a human supervisor did. The
@@ -98,10 +106,10 @@ is over.
 |---|---|---|
 | `governance` | `bot` | Who approves **contract extensions**. `bot`: accepted in flight, listed at the head of the handoff for a human to re-take. `human`: every extension pauses the campaign, whatever the escalation mode — an unapproved extension shapes every lot after it. |
 | `escalation` | `handoff` | Other escalation items (refused/mismatched/red-gate requests, dirty tree). `handoff`: accumulate and present once at the end — a blocked lot no longer blocks its dependants, so the campaign keeps landing what it can. `interactive`: pause there and then. |
-| `max_lots` | `40` | Upper bound on child runs (the loop's fuel). |
+| `max_lots` | `40` | Upper bound on the loop's crossings (its fuel): at most `max_lots` + 1 child runs, `0` for one. |
 | `stagnation_stop` | `2` | Consecutive child runs without a new commit that end the campaign. |
 | `lot_max_passes` | `4` | Forwarded to the child: repair passes per lot. |
-| `lot_room_s` | `54000` | The campaign time one lot may take: lot_room starts a lot only while the elapsed time plus this stays under 90% of the wall. 15h = modernize's 12h wall, its 10% exit grace and one golden-master child (1.1h), then 0.7h for the campaign to reach its handoff: observe (four commands under 60 s walls) and the steward's 30-min reserve. Lower it for a contract whose lots are known to be short — and for any wall of 16h40m or less, which otherwise starts no lot. |
+| `lot_room_s` | `54000` | The campaign time one lot may take: lot_room starts a lot only while the elapsed time plus this stays under 90% of the wall, and the child judges the same where it starts. 15h = modernize's 12h wall and its exit grace (13.2h), one golden-master child (1.1h), then 0.7h for the campaign to reach its handoff: observe and the steward outside its acts take 1560 s at their commands' walls. The exit grace is the deployment's default 10% (`ITERION_BUDGET_EXIT_GRACE`): a wider one lengthens the longest lot (12h and 1h, each times one plus the grace) — raise this to match. Lower it for a contract whose lots are known to be short — and for any wall of 16h40m or less, which otherwise starts no lot. |
 | `workspace_dir`, `plan_path` | `${PROJECT_DIR}`, `.modernize/plan.yaml` | Where the programme lives. |
 
 ```sh
@@ -111,18 +119,35 @@ iterion run <path>/bots/campaign --sandbox none \
 ```
 
 A short wall — a validation run, a deployment whose ceiling is under
-campaign's 48h — sizes `lot_room_s` to its lot, or starts none: a 30-minute
-run whose one lot takes about 10 minutes, for instance,
+campaign's 48h — sizes `lot_room_s` to its lot plus the 1560 s observe and
+the steward take after it, or starts none. Two reserves do not move with
+it: a steward act needs twice its lot's `gate_timeout_s` plus `RESERVE_S`
+(40 min) before 90% of the wall, or it is deferred to the next campaign;
+and finalize's commands share what the wall leaves before `WRITE_S` (15
+min), its own time to write the handoff, and are cut, not judged, past it.
+A 2-hour run whose one lot takes at most 14 minutes, for instance:
 
 ```sh
-iterion run <path>/bots/campaign --sandbox none --max-duration 30m \
-  --var max_lots=1 --var lot_room_s=900
+iterion run <path>/bots/campaign --sandbox none --max-duration 2h \
+  --var max_lots=0 --var lot_room_s=2400
 ```
 
 `lot_room_s` is the operator's estimate of one lot, and nothing interrupts a
 child once started: a lot that outlives it runs on under its own 12h wall,
 and a campaign it carries past 90% of its wall ends with no handoff. Whenever
 lot_room refuses a lot, the handoff names the figures it judged.
+
+The wall lot_room reads is the run's live one, a live raise included. A
+Kubernetes sandbox pod takes its deadline once, when it is created, from
+the wall the run was launched with: a live raise past that wall does not
+move it, and a lot admitted on the raised wall dies with the pod. On
+Kubernetes, launch a longer campaign with its wall (`--max-duration`).
+
+A lot whose child fails — its gate refuses, it times out, its wall cuts
+it — fails the campaign at run_lot, resumable, with no handoff written
+yet. Resume it: the fresh child takes a lot where there is still room for
+one; where there is none it takes no lot, and the campaign writes its
+handoff.
 
 A contract whose `exit_gate` judges a deployed application through
 `$DEPLOY_CREDENTIAL` holds under a direct `modernize` launch, not under
