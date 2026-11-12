@@ -17,8 +17,15 @@
 # only the first would report a verdict for a job it had not finished.
 #
 # Exit codes: 0 every invocation green · 1 at least one red (named, with its
-# log) · 2 a precondition refused — docker missing, the replica set never
-# elected, the job's shape not recognised. A refusal is NOT a verdict.
+# log) · 2 a precondition refused, and the list is longer than it looks — each
+# path a machine that cannot judge rather than a tree that is broken, and all
+# of them greppable (`grep -c 'exit 2'`): python3 unable to read the job
+# (devbox pins none), the job's
+# shape not recognised, timeout(1) missing, docker missing, its daemon not
+# answering, the container refusing to start, mongod accepting no connection
+# on the published port, the replica set never elected, the port unreachable
+# from this process, and the member not finishing its own plan.
+# A refusal is NOT a verdict.
 set -euo pipefail
 
 say() { printf '%s\n' "$*" >&2; }
@@ -31,20 +38,18 @@ PORT=27018
 EVIDENCE=${ITERION_CI_GATE_EVIDENCE:-$(mktemp -d)}
 mkdir -p "$EVIDENCE"
 
-command -v docker > /dev/null 2>&1 || {
-	say "mongo-conformance: docker is not on PATH, and this member needs a real replica set"
-	say "(change streams and transactions). Refusing is not a verdict."
-	exit 2
-}
-
 # ---------------------------------------------------------------------------
-# The invocations, derived from the job.
+# The invocations, derived from the job. FIRST, before docker: deriving needs
+# no container, and a member that cannot tell what to run must say so on any
+# machine rather than only on one that could have run it.
 # ---------------------------------------------------------------------------
 # python3 rather than sed+grep: the job's run block is YAML with line
 # continuations, and reconstructing a command from a line-oriented scan is how
 # the second invocation got lost. Parsing the block and splitting on the
 # commands it contains keeps the member honest about what the job runs.
-mapfile -t INVOCATIONS < <(python3 -I - "$WORKFLOW" <<'PY'
+PYERR=$(mktemp)
+trap 'rm -f "$PYERR"' EXIT
+mapfile -t INVOCATIONS < <(python3 -I - "$WORKFLOW" 2> "$PYERR" <<'PY'
 import re, sys, yaml
 
 doc = yaml.safe_load(open(sys.argv[1]))
@@ -70,19 +75,74 @@ if not found:
              "cannot derive what to run — teach it rather than guessing")
 print("\n".join(found))
 PY
-) || {
-	say "mongo-conformance: could not derive the invocations from $WORKFLOW (see above)."
+)
+
+# The COUNT, never the status of the `||`. A `mapfile < <(python3 …)` reports
+# mapfile's own success: the process substitution hides python3's exit from
+# `set -e` and from `pipefail` alike, so the refusal this script computes and
+# prints would be thrown away, the loop below would run zero invocations, and
+# `exit "$failed"` would answer 0 — a REQUIRED context reporting green over
+# nothing tested. Measured on this file before the guard existed. python3 only
+# prints when it succeeds, so the count closes the class; it is the same shape
+# scripts/desktop/nix-pkgconfig-env.sh already uses after its own `mapfile`.
+[ "${#INVOCATIONS[@]}" -gt 0 ] || {
+	say "mongo-conformance: derived NO invocation from $WORKFLOW."
+	# The reason is python3's, CAPTURED rather than assumed: a wrapper that
+	# dies without writing anything would otherwise leave the refusal citing
+	# an explanation nobody printed.
+	if [ -s "$PYERR" ]; then
+		sed 's/^/  /' "$PYERR" >&2
+	else
+		say "  (python3 printed no reason — it may have failed before running: check its wrapper)"
+	fi
+	say "Refusing is not a verdict: nothing was tested."
 	exit 2
 }
 
 say "mongo-conformance: ${#INVOCATIONS[@]} invocation(s) derived from $WORKFLOW"
+
+command -v docker > /dev/null 2>&1 || {
+	say "mongo-conformance: docker is not on PATH, and this member needs a real replica set"
+	say "(change streams and transactions). Refusing is not a verdict."
+	exit 2
+}
+# The BINARY is not the service, and this is the frequent case rather than the
+# exotic one: a stopped daemon, a user outside the docker group, a rootless
+# daemon that was never started. Without this probe `docker run` fails under
+# `set -e` and the member exits 1 — "a member is red" — about a machine that
+# cannot judge at all.
+# Bounded: a socket that accepts and then says nothing would hang this member
+# for as long as the operator is willing to wait, where every wait below has a
+# ceiling. 20 s is ~500x a warm `docker info` here (0.03 s measured, five
+# runs) — sized for a cold daemon, not for the usual case.
+#
+# `timeout` is a HOST binary: devbox pins no coreutils, so it can be missing
+# (a BSD userland, a slim container image). Checked, because without this the
+# absence arrives as "the daemon did not answer" with the real reason
+# swallowed by the redirection — a refusal pointing at the wrong thing.
+command -v timeout > /dev/null 2>&1 || {
+	say "mongo-conformance: timeout(1) is not on PATH, so the docker probe below cannot be bounded"
+	say "and a hung daemon would hang this member. devbox pins no coreutils; install one or run"
+	say "this where timeout exists. Refusing is not a verdict."
+	exit 2
+}
+timeout 20 docker info > /dev/null 2>&1 || {
+	say "mongo-conformance: docker is on PATH but its daemon did not answer within 20 s (stopped,"
+	say "unreachable socket, or hung). Refusing is not a verdict."
+	exit 2
+}
 
 # ---------------------------------------------------------------------------
 # The replica set. Three details that each cost a session — see
 # docs/development.md; they are repeated as code, not as a comment pointing at
 # a comment.
 # ---------------------------------------------------------------------------
-cleanup() { docker rm -f "$CONTAINER" > /dev/null 2>&1 || true; }
+# Both, because a second `trap … EXIT` REPLACES the first: the earlier one
+# removed $PYERR, and installing this one alone would leak it.
+cleanup() {
+	docker rm -f "$CONTAINER" > /dev/null 2>&1 || true
+	rm -f "$PYERR"
+}
 trap cleanup EXIT
 
 cleanup
@@ -92,9 +152,16 @@ cleanup
 # suites create a fresh database with ~10 indexes per subtest, and a default
 # descriptor limit makes mongod die with "Too many open files" minutes in,
 # which the tests then report as "connection refused".
+# Guarded rather than left to `set -e`: an image this host cannot pull (no
+# network) or a port already taken is a machine that cannot judge, not a red
+# tree.
 docker run --rm -d --name "$CONTAINER" --ulimit nofile=131072:131072 \
 	-p "127.0.0.1:$PORT:$PORT" mongo:8.0 \
-	--replSet rs0 --bind_ip_all --port "$PORT" > /dev/null
+	--replSet rs0 --bind_ip_all --port "$PORT" > /dev/null || {
+	say "mongo-conformance: the mongo:8.0 container would not start (an image this host cannot"
+	say "pull, or port $PORT already taken). Refusing is not a verdict."
+	exit 2
+}
 
 # Wait for mongod to ACCEPT A CONNECTION before initiating. `docker run -d`
 # returns as soon as the container exists, not when the server is listening,
@@ -207,6 +274,15 @@ for inv in "${INVOCATIONS[@]}"; do
 done
 
 say ""
-say "mongo-conformance: ran $i of ${#INVOCATIONS[@]} invocation(s); matrix at $EVIDENCE/mongo-conformance.matrix"
+# Counted on the MATRIX, not on the loop variable: `i` is incremented inside
+# the body, so it could only ever equal the plan and the comparison below
+# would be decorative. The matrix holds one line per invocation whose exit
+# code was actually recorded.
+ran=$(wc -l < "$EVIDENCE/mongo-conformance.matrix")
+say "mongo-conformance: ran $ran of ${#INVOCATIONS[@]} invocation(s); matrix at $EVIDENCE/mongo-conformance.matrix"
 cat "$EVIDENCE/mongo-conformance.matrix" >&2
+if [ "$ran" -ne "${#INVOCATIONS[@]}" ]; then
+	say "mongo-conformance: ran $ran of ${#INVOCATIONS[@]} — the member did not finish its own plan."
+	exit 2
+fi
 exit "$failed"

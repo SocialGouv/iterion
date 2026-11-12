@@ -28,6 +28,23 @@
 #
 # `checks` — how many check runs the job produces (its matrix). The ruleset
 # keys on CONTEXTS, not on jobs: 19 jobs, 25 check runs.
+#
+# `inlined` — the one-command Taskfile tasks that are a `run:` of this job
+# BYTE FOR BYTE. Declared here because a row that argues an identity in prose
+# argues nothing: when the CI step gains a flag the identity dies in silence
+# and the row keeps claiming it. internal/ciguard holds this list and the set
+# it derives from the two files EQUAL, both directions — a new identity must
+# be declared (that is the class that made `fmt-check` read `unwritten` while
+# `task fmt:check` sat in the Taskfile), and a dead one reddens.
+# An entry is NOT a claim of membership: `helm-lint` names one it
+# deliberately does not run, and its `residual` says why.
+
+# The members that answer exit 2 for "a precondition refused — not a verdict",
+# so the runner can tell a machine that cannot judge from a tree that is
+# broken. Declared, never inferred from the code: plenty of tools spend 2 on a
+# real failure, and promoting those to "refused" is the one direction that
+# turns a red into a shrug.
+refusing_members: ["ci:gofmt", "ci:mongo-conformance", "ci:vendor-check"]
 
 jobs:
   # ---- the aggregators: they read their legs' results, nothing else ----
@@ -55,14 +72,23 @@ jobs:
     feeds: test
     checks: 1
     disposition: partial
-    members: [test, vet, "test:live:compile", "map:check", "dsl:check"]
+    members: [test, vet, "ci:gofmt", "test:live:compile", "map:check", "dsl:check"]
     residual: >-
-      the job's own `gofmt -l` step has no member at all (`task fmt` REWRITES,
-      it does not report, and .golangci.yml enables no formatter); CI runs
-      `-count=1` and `-timeout 1500s` under `CGO_ENABLED=0` while `task test`
-      runs neither flag and no CGO setting; CI exports `CI=true`, which turns a
-      skip into a hard failure at fourteen sites, and no Taskfile test task
-      sets it.
+      CI runs `-count=1` under `CGO_ENABLED=0` at `-timeout 1500s` over
+      everything but `./e2e`, while `task test` sets no `-count` and no CGO and
+      caps packages at `-timeout 1200s` — a LOWER ceiling — over `./...`; CI
+      exports `CI=true`, which turns a skip into a hard failure at fourteen
+      sites, and no Taskfile test task sets it. `ci:gofmt` covers the job's own
+      `gofmt -l` step with two deliberate differences its header argues: the
+      TRACKED file list rather than the job's `find`-derived one, and the
+      WORKTREE rather than the commit (a partially staged file is green here
+      and red there). Neither side pins gofmt itself: the job takes the version
+      `go.mod` names, devbox pins `go@1.26` (1.26.2 today), and gofmt's output
+      has changed across minors before. And the member is red where the job is
+      green in one measured place: `charts/iterion`'s render tests SKIP in this
+      job because it installs no helm, while devbox ships one — so locally
+      they run and fail until the sub-chart archives exist. `task chart:check`
+      (or `chart:dep-update`) fetches them, and it needs the network.
 
   test-e2e:
     required: no
@@ -129,6 +155,7 @@ jobs:
     checks: 1
     disposition: local
     members: ["ci:golangci"]
+    inlined: ["ci:golangci"]
     equivalence: >-
       `golangci-lint run --timeout 10m`, the job's command verbatim, on the
       version devbox pins (2.12.2 — the same the job installs by digest). NOT
@@ -140,24 +167,40 @@ jobs:
     required: yes
     checks: 1
     disposition: partial
-    members: ["brand:check"]
+    members: ["brand:positioning", "prompt:parity", "brand:og:check"]
+    inlined: ["brand:positioning", "prompt:parity", "brand:og:check"]
     residual: >-
-      the job's og-image step shells a python3 heredoc (scripts/brand/og-check.sh)
-      and devbox.json ships 21 packages with no python, so that step runs on
-      whatever python the host happens to have — or not at all. Adding python
-      to devbox.json is the fix and it is not this slice.
+      three of the job's four `run:` steps are those three tasks, byte for
+      byte. The REMAINING one — scripts/ci/tap-entry-check.sh, the verifier of
+      the Homebrew-tap skip — reads the EVENT: TAP_ONLY (the skip predicate,
+      evaluated by GitHub), the merge-group or pull-request shas, and a token to
+      diff a test merge against its first parent. Nothing local supplies those,
+      and internal/ciguard's tap_skip_test.go is what holds that step instead.
+      `brand:og:check` shells a python3 heredoc and devbox.json ships no
+      python, so that member runs on whatever python3 the host happens to have
+      — adding python to devbox.json is the fix, and it is not this slice. NOT
+      `task brand:check`: the job's own comment says it is deliberately not
+      that one (the asset-drift guard needs magick/pngquant/oxipng and is a
+      different cost), and a member that checks what the job does not check is
+      coverage of nothing — `task check` keeps it, which is where it belongs.
 
   fmt-check:
     required: staged
     checks: 1
-    disposition: unwritten
-    residual: >-
-      the job runs `gofmt -l` over a `find`-derived file list and fails on any
-      output. Expressible — gofmt is right here — but the CI form's `find .`
-      reaches `.works/` (2378 .go files, not gitignored) and `.repos/` in an
-      operator checkout, and misses 15 tracked files under nested modules in
-      e2e/fixtures/. The honest member is `git ls-files '*.go' | grep -v
-      '^vendor/'`, which is deliberately NOT byte-identical to CI.
+    disposition: local
+    members: ["fmt:check"]
+    inlined: ["fmt:check"]
+    equivalence: >-
+      the job's one `run:` step — `go run -mod=vendor ./cmd/iterion fmt --check
+      --baseline .fmt-refused bots examples` — IS the task's single command:
+      the job's own comment says so, and internal/ciguard's
+      TestTheInlinedTasksMatchTheirTaskfileEntry holds the two texts
+      byte-identical, so neither can gain a path or a flag alone.
+      It judges the shipped `.bot` corpus and NOTHING in Go: the repository has
+      two formatters, and the `gofmt -l` one is a step of `test-unit`, whose
+      row carries it. Reading this job as the Go formatter is what makes a map
+      claim a required context has no member while `task fmt:check` sits in
+      the Taskfile.
 
   # ---- advisory and informational ----
   nats-conformance:
@@ -175,11 +218,16 @@ jobs:
     checks: 1
     disposition: partial
     members: ["chart:check"]
+    inlined: ["chart:dep-update"]
     residual: >-
-      the job runs `helm dependency update` first — without it nothing renders,
-      which is why `charts/iterion` is red on a developer box — and then checks
-      that a digest-pinned render pins the image by digest. It also pulls
-      sub-chart archives from the network.
+      the job's first `run:` step is `helm dependency update charts/iterion`,
+      which is `task chart:dep-update` verbatim — declared in `inlined` so the
+      identity is held, NOT run as a member; the member calls
+      `scripts/chart-check-deps.sh`, which reconciles the archives against
+      Chart.yaml (an undeclared one pruned, a missing declared one fetched) —
+      so the fetch is covered in another form, and what is left is the network
+      pull itself and the job's check that a digest-pinned render pins the
+      image by digest.
 
   cloud-e2e:
     required: no
@@ -223,10 +271,13 @@ jobs:
   docs-build:
     required: no
     checks: 1
-    disposition: unwritten
+    disposition: partial
+    members: ["docs:links:test"]
+    inlined: ["docs:links:test"]
     residual: >-
-      the Taskfile has docs:links and its two siblings, and NO docs:build —
-      the job's VitePress build has no member. Expressible (the studio's node
-      toolchain is right here) and unwritten. Noted rather than papered over
-      with `docs:links`, which checks a different thing: a link that resolves
-      is not a site that builds.
+      the job's first `run:` step is `docs:links:test` byte for byte (the same
+      mirror TestTheInlinedTasksMatchTheirTaskfileEntry holds for fmt-check), so the
+      link checker's own suite has a member. The VitePress build does not:
+      there is no `docs:build`, and `docs:links` is not it — a link that
+      resolves is not a site that builds. Expressible (the studio's node
+      toolchain is right here) and unwritten.
