@@ -156,10 +156,9 @@ func TestANativeRegexBombIsKilledByTheCPUBound(t *testing.T) {
 	// stop it" for a child that had stopped it at 2 s.
 	h := testHost(t)
 
+	limits := Limits{CPU: time.Second, Wall: time.Minute, Memory: 256 << 20}
 	start := time.Now()
-	resp, err := h.Run(context.Background(),
-		`/(a+)+\1b$/.test('a'.repeat(40))`,
-		Limits{CPU: time.Second, Wall: time.Minute, Memory: 256 << 20})
+	resp, err := h.Run(context.Background(), `/(a+)+\1b$/.test('a'.repeat(40))`, limits)
 	elapsed := time.Since(start)
 	if err != nil {
 		t.Fatalf("host: %v", err)
@@ -173,13 +172,25 @@ func TestANativeRegexBombIsKilledByTheCPUBound(t *testing.T) {
 	if !strings.Contains(resp.Message, "CPU") {
 		t.Errorf("the refusal does not name the CPU bound: %q", resp.Message)
 	}
-	// Killed on CPU, not waited out: the wall bound here is a minute. The kill
-	// lands one second PAST the operator's number by design — the soft limit
-	// sits at it and the kernel's SIGKILL a second above, which is what makes
-	// the death attributable (see setCPUBound). An earlier version of this
-	// comment claimed the opposite, inside the witness meant to pin it.
-	if elapsed > 5*time.Second {
-		t.Errorf("the kill took %s — the CPU bound was not what stopped it", elapsed.Round(time.Second))
+	// Killed on CPU, not waited out. The kill lands one second PAST the
+	// operator's number by design — the soft limit sits at it and the kernel's
+	// SIGKILL a second above, which is what makes the death attributable (see
+	// setCPUBound).
+	//
+	// The threshold is DERIVED from the wall bound this arm set, never a
+	// hand-tuned constant, because wall time here measures the machine's LOAD
+	// and not the bound: the same two seconds of CPU took 2 s of wall clock on
+	// an idle box and 8 s on a shared ARC runner, which reddened a 5 s constant
+	// on CI while every assertion about the bound itself passed. Half the wall
+	// bound still separates the two outcomes this arm cares about — a kill at
+	// two seconds of CPU, against a script that ran to the 60 s wall because
+	// nothing bounded its CPU — and it tolerates a 15× load factor. The fact
+	// itself travels in the refusal code and in the message's two numbers, both
+	// asserted above; this is a belt over them, and it is the ONLY form a
+	// duration assertion may take in this package.
+	if elapsed >= limits.Wall/2 {
+		t.Errorf("the kill took %s, at least half the %s wall bound: the CPU bound was not what stopped it",
+			elapsed.Round(time.Second), limits.Wall)
 	}
 }
 
@@ -192,10 +203,9 @@ func TestTheParentsDeadlineStopsWhatTheInterpreterCannot(t *testing.T) {
 
 	h := testHost(t) // built before the clock starts — see the CPU-bound test
 
+	limits := Limits{Wall: time.Second, CPU: 5 * time.Minute, Memory: 256 << 20}
 	start := time.Now()
-	resp, err := h.Run(context.Background(),
-		`/(a+)+\1b$/.test('a'.repeat(40))`,
-		Limits{Wall: time.Second, CPU: 5 * time.Minute, Memory: 256 << 20})
+	resp, err := h.Run(context.Background(), `/(a+)+\1b$/.test('a'.repeat(40))`, limits)
 	elapsed := time.Since(start)
 	if err != nil {
 		t.Fatalf("host: %v", err)
@@ -214,8 +224,13 @@ func TestTheParentsDeadlineStopsWhatTheInterpreterCannot(t *testing.T) {
 	if !strings.Contains(resp.Message, "1s wall bound") {
 		t.Errorf("the refusal does not name the bound that was set: %q", resp.Message)
 	}
-	if elapsed > 20*time.Second {
-		t.Errorf("the parent's deadline took %s to fire", elapsed.Round(time.Second))
+	// Derived, like the CPU arm's: the premise measured on the pinned engine is
+	// that this script runs PAST 60 s of wall clock when nothing stops it, so
+	// twenty times the one-second bound still separates "the deadline fired"
+	// from "the script finished on its own" and tolerates a 20× load factor.
+	if elapsed >= 20*limits.Wall {
+		t.Errorf("the parent's deadline took %s to fire, twenty times its %s bound",
+			elapsed.Round(time.Second), limits.Wall)
 	}
 }
 
@@ -228,9 +243,9 @@ func TestAPreemptibleLoopIsStoppedByTheInterpreter(t *testing.T) {
 
 	h := testHost(t) // built before the clock starts — see the CPU-bound test
 
+	limits := Limits{Wall: 2 * time.Second, CPU: time.Minute, Memory: 256 << 20}
 	start := time.Now()
-	resp, err := h.Run(context.Background(), `for(;;){}`,
-		Limits{Wall: 2 * time.Second, CPU: time.Minute, Memory: 256 << 20})
+	resp, err := h.Run(context.Background(), `for(;;){}`, limits)
 	elapsed := time.Since(start)
 	if err != nil {
 		t.Fatalf("host: %v", err)
@@ -241,12 +256,18 @@ func TestAPreemptibleLoopIsStoppedByTheInterpreter(t *testing.T) {
 	if !strings.Contains(resp.Message, "script interrupted after") {
 		t.Errorf("the refusal came from the parent's deadline, not the child's interrupt: %q", resp.Message)
 	}
-	// And it was stopped by the CHILD at ~2 s, not by the parent at 2 s +
-	// wallGrace. Without this bound the wording check alone would pass on a
-	// child whose interrupt never fired.
-	if elapsed > 2*time.Second+wallGrace/2 {
-		t.Errorf("the loop ran %s, which is the parent's deadline rather than the child's interrupt",
-			elapsed.Round(time.Millisecond))
+	// And it was the CHILD that stopped it, not the parent at Wall+wallGrace.
+	// The discriminator is STRUCTURAL rather than a duration: only the child
+	// fills Confinement (child.go attaches the applied posture to every
+	// document it writes, refusals included), and a parent that kills a
+	// silent child synthesises its Response without one. An earlier version
+	// compared the elapsed time against the midpoint between the child's
+	// interrupt and the parent's deadline, which measures the machine's load —
+	// the sibling CPU arm reddened exactly that way on a shared runner, at 8 s
+	// for a bound it had honoured.
+	if resp.Confinement == nil {
+		t.Errorf("no confinement came back after %s: the document was synthesised by the parent, "+
+			"so the child's interrupt never fired", elapsed.Round(time.Millisecond))
 	}
 }
 
