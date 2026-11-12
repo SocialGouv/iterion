@@ -184,14 +184,26 @@ func foldInputStamp(scopes []priceFeedScopeRead) string {
 }
 
 // priceFeedFold is one fold's read and answer: the levels it read, least
-// specific first, the instant it judged freshness at, the table — nil
-// when no feed answers — and the level each id's entry and efforts answer
-// from (by the level's warning name, priceFeedScope.what).
+// specific first, the instant it judged freshness at, the levels that
+// answered as the fold took them, the table — nil when no feed answers —
+// and the level each id's entry and efforts answer from (by the level's
+// warning name, priceFeedScope.what).
 type priceFeedFold struct {
-	now      time.Time
-	scopes   []priceFeedScopeRead
-	table    *pricefeed.Table
-	answered pricefeed.Provenance
+	now       time.Time
+	scopes    []priceFeedScopeRead
+	answering []pricefeed.ScopeState
+	table     *pricefeed.Table
+	answered  pricefeed.Provenance
+}
+
+// refold folds the same levels at the same instant by cfg, without
+// warnings: the table another run's fold of them answers.
+func (f priceFeedFold) refold(cfg pricefeed.FoldConfig) *pricefeed.Table {
+	if len(f.answering) == 0 {
+		return nil
+	}
+	cfg.Now, cfg.Warnf = f.now, nil
+	return pricefeed.Fold(cfg, f.answering...)
 }
 
 // priceFeedScopeRead is one level as the fold read it: its config and
@@ -216,7 +228,6 @@ func foldPriceFeed(ctx context.Context, configs pricefeed.ConfigStore, states pr
 	if configs == nil || states == nil {
 		return fold
 	}
-	var answering []pricefeed.ScopeState
 	for _, scope := range priceFeedFoldScopes(orgID, teamID) {
 		readCtx, cancel := context.WithTimeout(ctx, priceFeedReadTimeout)
 		state, err := priceFeedScopeState(readCtx, configs, states, scope.docID)
@@ -227,15 +238,15 @@ func foldPriceFeed(ctx context.Context, configs pricefeed.ConfigStore, states pr
 		}
 		if state != nil {
 			state.Label = scope.what
-			answering = append(answering, *state)
+			fold.answering = append(fold.answering, *state)
 		}
 	}
-	if len(answering) > 0 {
+	if len(fold.answering) > 0 {
 		cfg.Now = fold.now
 		if once != nil && cfg.Warnf != nil {
 			cfg.Warnf = once.wrap(foldInputStamp(fold.scopes), cfg.Warnf)
 		}
-		fold.table, fold.answered = pricefeed.FoldProvenance(cfg, answering...)
+		fold.table, fold.answered = pricefeed.FoldProvenance(cfg, fold.answering...)
 	}
 	return fold
 }

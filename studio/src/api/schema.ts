@@ -8943,7 +8943,9 @@ export interface components {
         priceFeedEffectiveModel: {
             contributors?: components["schemas"]["priceFeedContributor"][];
             efforts?: components["schemas"]["EffortsEntry"];
+            efforts_named_only?: boolean;
             entry?: components["schemas"]["PricefeedEntry"];
+            entry_named_only?: boolean;
             id: string;
         };
         priceFeedEffectiveOverBudget: {

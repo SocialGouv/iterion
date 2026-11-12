@@ -227,8 +227,8 @@ func bigDeclaration(n int, priced bool) string {
 }
 
 // A listing (no ?model=) whose folded table exceeds the run channel's byte
-// budget is a table no run seals whole: each run seals it narrowed to the
-// gateway ids its workflow names. The view says so — over_budget names the
+// budget is a table no run seals whole: each run seals its own narrowing,
+// by the gateway ids its workflow names. The view says so — over_budget names the
 // size and the budget, the table is null, no line claims the operator
 // table or "0 named ids" as the run's outcome — and every id answers as a
 // run naming it reads it: the declaration's efforts, its prices. Asked
@@ -276,7 +276,7 @@ func TestPriceFeedEffectiveViewListsAnOverBudgetTableAsEachRunNarrowsIt(t *testi
 					t.Errorf("a warning states %q as the run's outcome: %q", claim, view.Warnings)
 				}
 			}
-			if !strings.Contains(warnings, "a run seals it narrowed to the gateway ids it names") {
+			if !strings.Contains(warnings, "each run seals its own narrowing — ?model= shows one") {
 				t.Errorf("no warning says how a run seals the table: %q", view.Warnings)
 			}
 			if len(view.Models) != tc.n+1 {

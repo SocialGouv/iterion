@@ -63,7 +63,7 @@ func TestPublisherPriceFeedEffectiveFoldsTheOrgAndTheTeamItIsGiven(t *testing.T)
 	mu.Lock()
 	defer mu.Unlock()
 	if !slices.ContainsFunc(warnings, func(w string) bool {
-		return strings.Contains(w, "prices narrowed to the run's 1 named gateway ids, accepted efforts kept for all 2 ids")
+		return strings.Contains(w, "prices narrowed to 1 ids — 1 the run names, 0 with accepted efforts, 0 declared — accepted efforts kept for all 2 ids")
 	}) {
 		t.Errorf("the narrowing reached no warning: %q", warnings)
 	}

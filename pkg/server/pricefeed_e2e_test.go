@@ -245,7 +245,7 @@ func TestPriceFeedEndToEndRetiresThePool(t *testing.T) {
 
 	// 2. The real publisher launches the run for the team; the runner
 	// opens the record its message names and plants the table.
-	runID, bundle := launchRetireRun(t, live, wf)
+	runID, bundle := launchRetireSource(t, live, retireBot, wf)
 	if bundle.GatewayPriceFeed == nil {
 		// Not fatal: the run below then shows what a default runner does
 		// without the declaration, assertion by assertion.
@@ -260,51 +260,8 @@ func TestPriceFeedEndToEndRetiresThePool(t *testing.T) {
 	}
 	feedRun := runRetireWorkflow(t, compatgw.OverlayFeedTable(context.Background(), bundle.GatewayPriceFeed), wf, gw, runID)
 
-	// 3. What the gateway RECEIVED, and what the run recorded — for each id
-	// the declared values, none of them claw's own default (max_tokens
-	// 8192), so a value the table dropped reads as the default it fell to.
-	deep, glm := feedRun.bodies["scaleway/deepseek-v4.1-flash"], feedRun.bodies["glm-5.3"]
-	if deep.ReasoningEffort != "high" {
-		t.Errorf("the gateway received reasoning_effort %q for deepseek, want high (medium mapped by the platform declaration)", deep.ReasoningEffort)
-	}
-	for id, want := range map[string]int{"scaleway/deepseek-v4.1-flash": 32768, "glm-5.3": 16384} {
-		if got := feedRun.bodies[id].MaxTokens; got != want {
-			t.Errorf("the gateway received max_tokens %d for %s, want the declared max output %d", got, id, want)
-		}
-	}
-	if glm.ReasoningEffort != "" {
-		t.Errorf("the gateway received reasoning_effort %q for glm-5.3, whose node asks none", glm.ReasoningEffort)
-	}
-	if adj := feedRun.adjusted["deep"]; adj["requested"] != "medium" || adj["applied"] != "high" || adj["source"] != "feed:pliage" {
-		t.Errorf("reasoning_effort_adjusted = %v, want medium -> high from feed:pliage", adj)
-	}
-	for node, spec := range feedRun.specs {
-		if spec.Source != "feed:pliage" {
-			t.Errorf("%s: _gateway_spec.source = %q, want feed:pliage", node, spec.Source)
-		}
-	}
-	// Each node's record carries its id's declared window, output cap and
-	// prices, and its cost is its usage at those prices: the stub reports
-	// 100000 prompt and 2000 completion tokens, none cached.
-	for node, want := range map[string]compatgw.ResolvedEnvRecord{
-		"deep": {ContextWindow: 256000, MaxOutputTokens: 32768, InputUSDPerMTok: 0.672, OutputUSDPerMTok: 2.016, CacheReadUSDPerMTok: 0.1344},
-		"glm":  {ContextWindow: 256000, MaxOutputTokens: 16384, InputUSDPerMTok: 2.01, OutputUSDPerMTok: 6.15},
-	} {
-		got := feedRun.specs[node]
-		if got.ContextWindow != want.ContextWindow || got.MaxOutputTokens != want.MaxOutputTokens || got.InputUSDPerMTok != want.InputUSDPerMTok ||
-			got.OutputUSDPerMTok != want.OutputUSDPerMTok || got.CacheReadUSDPerMTok != want.CacheReadUSDPerMTok {
-			t.Errorf("%s: _gateway_spec = window %d, max output %d, prices %v/%v cache %v; want the declaration's %d, %d, %v/%v cache %v", node,
-				got.ContextWindow, got.MaxOutputTokens, got.InputUSDPerMTok, got.OutputUSDPerMTok, got.CacheReadUSDPerMTok,
-				want.ContextWindow, want.MaxOutputTokens, want.InputUSDPerMTok, want.OutputUSDPerMTok, want.CacheReadUSDPerMTok)
-		}
-		wantCost := (100000*want.InputUSDPerMTok + 2000*want.OutputUSDPerMTok) / 1e6
-		if cost := feedRun.costs[node]; math.Abs(cost-wantCost) > 1e-9 {
-			t.Errorf("%s: _cost_usd = %v, want %v (100000 prompt and 2000 completion tokens at the declared prices)", node, cost, wantCost)
-		}
-		if feedRun.sampled[node] <= 0 {
-			t.Errorf("%s: no usage_progress sample carried a USD figure (%v)", node, feedRun.sampled[node])
-		}
-	}
+	// 3. What the gateway RECEIVED, and what the run recorded.
+	assertRetiredPoolRun(t, feedRun)
 
 	// 4. The parity twin: the pool's env tables, no feed in the bundle.
 	compatgw.ResetCatalogCaches()
@@ -326,6 +283,57 @@ func TestPriceFeedEndToEndRetiresThePool(t *testing.T) {
 	}
 	if src := poolRun.adjusted["deep"]["source"]; src != compatgw.SourceReasoningEffortsEnv {
 		t.Errorf("the pool twin's effort source is %v, want %s", src, compatgw.SourceReasoningEffortsEnv)
+	}
+}
+
+// assertRetiredPoolRun checks what the gateway received and what the run
+// recorded against retirePliage, as a default runner reads it from the
+// run's table: for each id the declared values, none of them claw's own
+// default (max_tokens 8192), so a value the table dropped reads as the
+// default it fell to.
+func assertRetiredPoolRun(t *testing.T, run retireRun) {
+	t.Helper()
+	deep, glm := run.bodies["scaleway/deepseek-v4.1-flash"], run.bodies["glm-5.3"]
+	if deep.ReasoningEffort != "high" {
+		t.Errorf("the gateway received reasoning_effort %q for deepseek, want high (medium mapped by the platform declaration)", deep.ReasoningEffort)
+	}
+	for id, want := range map[string]int{"scaleway/deepseek-v4.1-flash": 32768, "glm-5.3": 16384} {
+		if got := run.bodies[id].MaxTokens; got != want {
+			t.Errorf("the gateway received max_tokens %d for %s, want the declared max output %d", got, id, want)
+		}
+	}
+	if glm.ReasoningEffort != "" {
+		t.Errorf("the gateway received reasoning_effort %q for glm-5.3, whose node asks none", glm.ReasoningEffort)
+	}
+	if adj := run.adjusted["deep"]; adj["requested"] != "medium" || adj["applied"] != "high" || adj["source"] != "feed:pliage" {
+		t.Errorf("reasoning_effort_adjusted = %v, want medium -> high from feed:pliage", adj)
+	}
+	for node, spec := range run.specs {
+		if spec.Source != "feed:pliage" {
+			t.Errorf("%s: _gateway_spec.source = %q, want feed:pliage", node, spec.Source)
+		}
+	}
+	// Each node's record carries its id's declared window, output cap and
+	// prices, and its cost is its usage at those prices: the stub reports
+	// 100000 prompt and 2000 completion tokens, none cached.
+	for node, want := range map[string]compatgw.ResolvedEnvRecord{
+		"deep": {ContextWindow: 256000, MaxOutputTokens: 32768, InputUSDPerMTok: 0.672, OutputUSDPerMTok: 2.016, CacheReadUSDPerMTok: 0.1344},
+		"glm":  {ContextWindow: 256000, MaxOutputTokens: 16384, InputUSDPerMTok: 2.01, OutputUSDPerMTok: 6.15},
+	} {
+		got := run.specs[node]
+		if got.ContextWindow != want.ContextWindow || got.MaxOutputTokens != want.MaxOutputTokens || got.InputUSDPerMTok != want.InputUSDPerMTok ||
+			got.OutputUSDPerMTok != want.OutputUSDPerMTok || got.CacheReadUSDPerMTok != want.CacheReadUSDPerMTok {
+			t.Errorf("%s: _gateway_spec = window %d, max output %d, prices %v/%v cache %v; want the declaration's %d, %d, %v/%v cache %v", node,
+				got.ContextWindow, got.MaxOutputTokens, got.InputUSDPerMTok, got.OutputUSDPerMTok, got.CacheReadUSDPerMTok,
+				want.ContextWindow, want.MaxOutputTokens, want.InputUSDPerMTok, want.OutputUSDPerMTok, want.CacheReadUSDPerMTok)
+		}
+		wantCost := (100000*want.InputUSDPerMTok + 2000*want.OutputUSDPerMTok) / 1e6
+		if cost := run.costs[node]; math.Abs(cost-wantCost) > 1e-9 {
+			t.Errorf("%s: _cost_usd = %v, want %v (100000 prompt and 2000 completion tokens at the declared prices)", node, cost, wantCost)
+		}
+		if run.sampled[node] <= 0 {
+			t.Errorf("%s: no usage_progress sample carried a USD figure (%v)", node, run.sampled[node])
+		}
 	}
 }
 
@@ -363,7 +371,13 @@ workflow w:
 
 func compileRetireBot(t *testing.T) *ir.Workflow {
 	t.Helper()
-	pr := parsertest.Parse("retire.bot", retireBot)
+	return compileRetireSource(t, retireBot)
+}
+
+// compileRetireSource compiles a fixture bot's source.
+func compileRetireSource(t *testing.T, src string) *ir.Workflow {
+	t.Helper()
+	pr := parsertest.Parse("retire.bot", src)
 	for _, d := range pr.Diagnostics {
 		if d.Severity == parser.SeverityError {
 			t.Fatalf("fixture does not parse: %s", d.Error())
@@ -451,15 +465,15 @@ const (
 	retireTeamURL = "https://gw.example"
 )
 
-// launchRetireRun launches wf for team-pf through the real publisher, the
-// team holding its gateway key and the publisher's fold the one the server
-// binary wires over the stores live's route wrote. It opens the sealed
-// record the published message names as the runner does: read under the
-// message's team, opened under the message's per-run key, team, pool and
-// run id. It answers the run id and the opened bundle.
-func launchRetireRun(t *testing.T, live *priceFeedLive, wf *ir.Workflow) (string, secrets.RunBundle) {
+// launchRetireSource launches src, compiled as wf, for team-pf through
+// the real publisher, the team holding its gateway key and the publisher's
+// fold the one the server binary wires over the stores live's route wrote.
+// It opens the sealed record the published message names as the runner
+// does: read under the message's team, opened under the message's per-run
+// key, team, pool and run id. It answers the run id and the opened bundle.
+func launchRetireSource(t *testing.T, live *priceFeedLive, src string, wf *ir.Workflow) (string, secrets.RunBundle) {
 	t.Helper()
-	launch := submitRetireLaunch(t, live, wf, live.configs, live.states)
+	launch := submitRetireSourceLaunch(t, live, src, wf, live.configs, live.states)
 	if launch.err != nil {
 		t.Fatalf("the launch was refused: %v", launch.err)
 	}
@@ -484,10 +498,18 @@ type retireLaunch struct {
 	runSecrets *secrets.MemoryRunSecretsStore
 }
 
-// submitRetireLaunch launches wf for team-pf through the real publisher,
-// the team holding its gateway key and the publisher's fold the one the
-// server binary wires over configs and states.
+// submitRetireLaunch launches retireBot, compiled as wf, for team-pf
+// through the real publisher (submitRetireSourceLaunch).
 func submitRetireLaunch(t *testing.T, live *priceFeedLive, wf *ir.Workflow, configs pricefeed.ConfigStore, states pricefeed.StateStore) retireLaunch {
+	t.Helper()
+	return submitRetireSourceLaunch(t, live, retireBot, wf, configs, states)
+}
+
+// submitRetireSourceLaunch launches src, compiled as wf, for team-pf
+// through the real publisher, the team holding its gateway key and the
+// publisher's fold the one the server binary wires over configs and
+// states.
+func submitRetireSourceLaunch(t *testing.T, live *priceFeedLive, src string, wf *ir.Workflow, configs pricefeed.ConfigStore, states pricefeed.StateStore) retireLaunch {
 	t.Helper()
 	ctx := context.Background()
 	sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
@@ -525,7 +547,7 @@ func submitRetireLaunch(t *testing.T, live *priceFeedLive, wf *ir.Workflow, conf
 		return nil
 	})
 	runID := fmt.Sprintf("run-retire-%d", time.Now().UnixNano())
-	_, launch.err = pub.SubmitLaunch(store.WithIdentity(ctx, "team-pf", "u-pfviewer"), runID, runview.LaunchSpec{Source: retireBot}, wf, nil)
+	_, launch.err = pub.SubmitLaunch(store.WithIdentity(ctx, "team-pf", "u-pfviewer"), runID, runview.LaunchSpec{Source: src}, wf, nil)
 	mu.Lock()
 	launch.published = append([]*queue.RunMessage(nil), launch.published...)
 	mu.Unlock()

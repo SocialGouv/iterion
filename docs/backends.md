@@ -1984,7 +1984,11 @@ run to the runner** — the operator table stays the floor.
   whose folded table exceeds the run channel's byte budget is sealed
   whole by no run: the view answers `over_budget` (its size and the
   budget) and no table, each id answering as a run naming it reads it,
-  because a run seals the table narrowed to the gateway ids it names. A
+  because each run seals its own narrowing: the prices of the gateway
+  ids it names, then of the ids with accepted efforts and of the declared
+  ids as the budget allows, and every id's efforts while they fit.
+  `entry_named_only` / `efforts_named_only` mark an id's entry or efforts
+  that a run naming no gateway id (its model an env dial) does not seal. A
   level the view cannot read reads `unread` — a run launched now is
   refused until it reads — without the database's error, which the
   server log carries. A member reads what every run of

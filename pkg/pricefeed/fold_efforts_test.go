@@ -389,8 +389,9 @@ func effortsLen(t *Table) int {
 	return len(t.Efforts)
 }
 
-// A table over budget narrows its PRICES to the run's named ids and keeps
-// the accepted efforts of every id: a price the narrowing drops steps
+// A table over budget narrows a fetched feed's PRICES to the run's named
+// ids and keeps the accepted efforts of every id: a price the narrowing
+// drops steps
 // down to the operator floor, an effort list it dropped would send a
 // level the gateway refuses. A run whose gateway model comes from an env
 // dial (`${VAR:-…}`) names nothing, and still carries the platform's
@@ -449,7 +450,7 @@ func TestFoldOverBudgetKeepsDeclaredEfforts(t *testing.T) {
 				t.Fatalf("[%s] the named priced id %s was dropped", tc.name, another)
 			}
 		}
-		if len(warned) != 1 || !strings.Contains(warned[0], fmt.Sprintf("prices narrowed to the run's %d named gateway ids", len(got.Entries))) ||
+		if len(warned) != 1 || !strings.Contains(warned[0], fmt.Sprintf("prices narrowed to %d ids — %d the run names, 0 with accepted efforts, 0 declared", len(got.Entries), len(got.Entries))) ||
 			!strings.Contains(warned[0], "accepted efforts kept for all 1 ids") {
 			t.Fatalf("[%s] the narrowing must warn once, counting prices and efforts apart: %v", tc.name, warned)
 		}

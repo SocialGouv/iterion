@@ -58,6 +58,9 @@ func TestRemotePriceFeedsEffectiveRendersEachAnswerAndItsSource(t *testing.T) {
 	if !strings.Contains(out, "not visible from the server") {
 		t.Errorf("effective must relay the server's word on the runner's env fallback:\n%s", out)
 	}
+	if strings.Contains(out, "only a run naming it") {
+		t.Errorf("effective marks an answer of a table every run seals whole as named-only:\n%s", out)
+	}
 
 	// --json relays the server's answer whole.
 	out, err = runPriceFeedsCommand(t, "remote", "price-feeds", "effective", "--json", "--model", "glm-5.3")
@@ -100,11 +103,13 @@ func TestRemotePriceFeedsEffectiveSaysAnOverBudgetListingIsNarrowedPerRun(t *tes
 	if strings.Contains(out, "no feed answers") {
 		t.Errorf("effective says no feed answers an over-budget listing:\n%.600s", out)
 	}
-	if !regexp.MustCompile(`the folded table is \d+ bytes, over the run channel's 102400: no run seals it whole — a run seals it narrowed to the gateway ids it names`).MatchString(out) || !strings.Contains(out, "--model ID") {
+	if !regexp.MustCompile(`the folded table is \d+ bytes, over the run channel's 102400: no run seals it whole — a run seals the prices of the gateway ids it names, then of the ids with accepted efforts and of the declared ids as the budget allows`).MatchString(out) || !strings.Contains(out, "--model ID") {
 		t.Errorf("effective does not say how a run seals an over-budget listing:\n%.600s", out)
 	}
-	if !strings.Contains(out, "low,high,xhigh,max — feed big (platform)") {
-		t.Errorf("effective does not render the listing's answers:\n%.600s", out)
+	// The efforts alone exceed the budget: a run naming no id carries none,
+	// and effective marks them.
+	if !strings.Contains(out, "low,high,xhigh,max — feed big (platform) — only a run naming it") {
+		t.Errorf("effective does not render the listing's answers, marked as only a run naming each id carries them:\n%.600s", out)
 	}
 
 	live.seed(t, pricefeed.PlatformConfigDocID)

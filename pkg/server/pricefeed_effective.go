@@ -57,8 +57,8 @@ type priceFeedEffectiveView struct {
 	Table *pricefeed.Table `json:"table"`
 	// OverBudget is set when the listing (no requested id) folds a table
 	// over the run channel's byte budget: no run seals it whole, each run
-	// sealing it narrowed to the gateway ids it names — which a request
-	// naming them shows.
+	// sealing its own narrowing (pricefeed.Fold) — which a request naming
+	// its gateway ids shows.
 	OverBudget        *priceFeedEffectiveOverBudget `json:"over_budget,omitempty"`
 	Warnings          []string                      `json:"warnings,omitempty"`
 	RunnerEnvFallback string                        `json:"runner_env_fallback"`
@@ -89,10 +89,17 @@ type priceFeedEffectiveScope struct {
 // the table — each absent when no feed answers it — and every feed whose
 // word the fold would take at its level.
 type priceFeedEffectiveModel struct {
-	ID           string                  `json:"id"`
-	Entry        *pricefeed.Entry        `json:"entry,omitempty"`
-	Efforts      *pricefeed.EffortsEntry `json:"efforts,omitempty"`
-	Contributors []priceFeedContributor  `json:"contributors,omitempty"`
+	ID      string                  `json:"id"`
+	Entry   *pricefeed.Entry        `json:"entry,omitempty"`
+	Efforts *pricefeed.EffortsEntry `json:"efforts,omitempty"`
+	// EntryNamedOnly / EffortsNamedOnly are set when a run that names no
+	// gateway id — its model an env dial (`${…}`), which the publisher
+	// cannot read — seals no entry / no efforts for this id: the table
+	// exceeds the run channel's budget and its narrowing keeps them only
+	// for a run whose workflow names the id.
+	EntryNamedOnly   bool                   `json:"entry_named_only,omitempty"`
+	EffortsNamedOnly bool                   `json:"efforts_named_only,omitempty"`
+	Contributors     []priceFeedContributor `json:"contributors,omitempty"`
 }
 
 // priceFeedContributor is one feed stating an id, least specific level
@@ -173,14 +180,16 @@ func (s *Server) handleGetTeamPriceFeedsEffective(w http.ResponseWriter, r *http
 	if raw := fold.encode(warnf); raw != nil {
 		if len(raw) > pricefeed.DefaultBudget {
 			view.OverBudget = &priceFeedEffectiveOverBudget{Bytes: len(raw), Budget: pricefeed.DefaultBudget}
-			warnf("price feed: the folded table is %d bytes, over the run channel's %d: a run seals it narrowed to the gateway ids it names — ?model= shows one", len(raw), pricefeed.DefaultBudget)
+			warnf("price feed: the folded table is %d bytes, over the run channel's %d: each run seals its own narrowing — ?model= shows one", len(raw), pricefeed.DefaultBudget)
 		} else {
 			view.Table = fold.table
 		}
 	}
 	scopes, contributors := effectivePriceFeedContributors(fold)
 	view.Scopes = scopes
-	view.Models = effectivePriceFeedModels(fold, contributors, models)
+	// What a run naming no gateway id seals — its model an env dial — marks
+	// each answer such a run lacks.
+	view.Models = effectivePriceFeedModels(fold, contributors, models, fold.refold(pricefeed.FoldConfig{}))
 	view.Warnings = warnings
 	s.writeJSONFor(w, r, view)
 }
@@ -228,8 +237,10 @@ func effectivePriceFeedContributors(fold priceFeedFold) ([]priceFeedEffectiveSco
 }
 
 // effectivePriceFeedModels reports the requested ids, or every id the
-// table or a contributor carries when none is requested.
-func effectivePriceFeedModels(fold priceFeedFold, contributors map[string][]priceFeedContributor, requested []string) []priceFeedEffectiveModel {
+// table or a contributor carries when none is requested, each answer a
+// run naming no gateway id lacks marked against unnamed, the table such a
+// run seals.
+func effectivePriceFeedModels(fold priceFeedFold, contributors map[string][]priceFeedContributor, requested []string, unnamed *pricefeed.Table) []priceFeedEffectiveModel {
 	ids := requested
 	if len(ids) == 0 {
 		seen := map[string]bool{}
@@ -250,14 +261,34 @@ func effectivePriceFeedModels(fold priceFeedFold, contributors map[string][]pric
 		if fold.table != nil {
 			if entry, ok := fold.table.Entries[id]; ok {
 				m.Entry = &entry
+				m.EntryNamedOnly = !tableCarriesEntry(unnamed, id)
 			}
 			if efforts, ok := fold.table.Efforts[id]; ok {
 				m.Efforts = &efforts
+				m.EffortsNamedOnly = !tableCarriesEfforts(unnamed, id)
 			}
 		}
 		models = append(models, m)
 	}
 	return models
+}
+
+// tableCarriesEntry reports whether table carries an entry for id.
+func tableCarriesEntry(table *pricefeed.Table, id string) bool {
+	if table == nil {
+		return false
+	}
+	_, ok := table.Entries[id]
+	return ok
+}
+
+// tableCarriesEfforts reports whether table carries accepted efforts for id.
+func tableCarriesEfforts(table *pricefeed.Table, id string) bool {
+	if table == nil {
+		return false
+	}
+	_, ok := table.Efforts[id]
+	return ok
 }
 
 // answersEntry reports whether the table's entry for id is feed's at the

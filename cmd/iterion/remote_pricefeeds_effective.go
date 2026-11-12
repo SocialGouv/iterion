@@ -33,8 +33,12 @@ entry that leaves unstated a field of the entry it shadows.
 --model narrows to the named ids (repeatable): the table a run naming them
 carries; without it, every id a level states, each answering as a run
 naming it reads it. When that listing's table exceeds the run channel's
-byte budget, no run carries it whole — a run carries it narrowed to the
-gateway ids it names — and effective says so: --model shows one. A level
+byte budget, no run carries it whole — a run carries the prices of the
+gateway ids it names, then of the ids with accepted efforts and of the
+declared ids as the budget allows, and every id's efforts while they fit —
+and effective says so: --model shows one, and "only a run naming it" marks
+an entry or efforts a run naming no gateway id (a model set by an env
+dial) does not carry. A level
 the server could not read reads unread — a run launched now is refused
 until it reads; the server log names the cause.
 The runner's own env tables (OPENAI_COMPATIBLE_MODELS,
@@ -93,10 +97,12 @@ type priceFeedEffectiveCLIScope struct {
 }
 
 type priceFeedEffectiveCLIModel struct {
-	ID           string                             `json:"id"`
-	Entry        *pricefeed.Entry                   `json:"entry,omitempty"`
-	Efforts      *pricefeed.EffortsEntry            `json:"efforts,omitempty"`
-	Contributors []priceFeedEffectiveCLIContributor `json:"contributors,omitempty"`
+	ID               string                             `json:"id"`
+	Entry            *pricefeed.Entry                   `json:"entry,omitempty"`
+	Efforts          *pricefeed.EffortsEntry            `json:"efforts,omitempty"`
+	EntryNamedOnly   bool                               `json:"entry_named_only,omitempty"`
+	EffortsNamedOnly bool                               `json:"efforts_named_only,omitempty"`
+	Contributors     []priceFeedEffectiveCLIContributor `json:"contributors,omitempty"`
 }
 
 type priceFeedEffectiveCLIContributor struct {
@@ -139,8 +145,8 @@ func printPriceFeedEffective(p *cli.Printer, view priceFeedEffectiveCLIView) {
 	}
 	switch {
 	case view.OverBudget != nil:
-		p.Line("  the folded table is %d bytes, over the run channel's %d: no run seals it whole — a run seals it narrowed to the gateway ids it names, each id below answering as a run naming it reads it; --model ID shows the table a run naming ID seals",
-			view.OverBudget.Bytes, view.OverBudget.Budget)
+		p.Line("  the folded table is %d bytes, over the run channel's %d: no run seals it whole — a run seals the prices of the gateway ids it names, then of the ids with accepted efforts and of the declared ids as the budget allows; each id below answers as a run naming it reads it, %q marking what a run naming no id (a model set by an env dial) lacks; --model ID shows the table a run naming ID seals",
+			view.OverBudget.Bytes, view.OverBudget.Budget, priceFeedNamedOnlyMark)
 	case view.Table == nil:
 		p.Line("  no feed answers: a run carries no table")
 	}
@@ -176,6 +182,18 @@ func printPriceFeedEffective(p *cli.Printer, view priceFeedEffectiveCLIView) {
 	p.KV("runner env", view.RunnerEnvFallback+" — the runner's OPENAI_COMPATIBLE_MODELS and OPENAI_COMPATIBLE_REASONING_EFFORTS answer what no feed states")
 }
 
+// priceFeedNamedOnlyMark follows an entry or efforts a run naming no
+// gateway id does not seal (entry_named_only, efforts_named_only).
+const priceFeedNamedOnlyMark = "only a run naming it"
+
+// namedOnly appends the named-only mark to text when set.
+func namedOnly(text string, set bool) string {
+	if set {
+		return text + " — " + priceFeedNamedOnlyMark
+	}
+	return text
+}
+
 // effectiveEntryText renders the answering entry with its feed, level and
 // age.
 func effectiveEntryText(m priceFeedEffectiveCLIModel) string {
@@ -190,9 +208,9 @@ func effectiveEntryText(m priceFeedEffectiveCLIModel) string {
 		}
 	}
 	if m.Entry.Declared {
-		return text + ", declared"
+		return namedOnly(text+", declared", m.EntryNamedOnly)
 	}
-	return fmt.Sprintf("%s, refreshed %s, fresh for %ds", text, m.Entry.RefreshedAt.Format("2006-01-02 15:04:05"), secs(m.Entry.FreshFor))
+	return namedOnly(fmt.Sprintf("%s, refreshed %s, fresh for %ds", text, m.Entry.RefreshedAt.Format("2006-01-02 15:04:05"), secs(m.Entry.FreshFor)), m.EntryNamedOnly)
 }
 
 // effectiveEffortsText renders the answering efforts with their feed and level.
@@ -203,10 +221,11 @@ func effectiveEffortsText(m priceFeedEffectiveCLIModel) string {
 	text := strings.Join(m.Efforts.Values, ",") + " — feed " + m.Efforts.Feed
 	for _, c := range m.Contributors {
 		if c.AnswersEfforts {
-			return text + " (" + c.level() + ")"
+			text += " (" + c.level() + ")"
+			break
 		}
 	}
-	return text
+	return namedOnly(text, m.EffortsNamedOnly)
 }
 
 func init() {

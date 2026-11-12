@@ -6952,8 +6952,14 @@
           "efforts": {
             "$ref": "#/components/schemas/EffortsEntry"
           },
+          "efforts_named_only": {
+            "type": "boolean"
+          },
           "entry": {
             "$ref": "#/components/schemas/PricefeedEntry"
+          },
+          "entry_named_only": {
+            "type": "boolean"
           },
           "id": {
             "type": "string"
