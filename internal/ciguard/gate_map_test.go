@@ -959,6 +959,17 @@ func TestTheMongoMemberRefusesAJobItCannotDerive(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
+			// EVERY arm needs the member's own reader, not just the positive
+			// one: without yq the member refuses before deriving anything, so
+			// the negative arms would fail about the wrong refusal (measured —
+			// they did). CI's `test-unit` installs yq by digest precisely so
+			// guards like this one do not skip; a developer box without it
+			// skips, naming the binary it wanted.
+			if _, err := exec.LookPath("yq"); err != nil {
+				t.Skip("yq is not on PATH: the member reads the job through it, and this test is " +
+					"about what it derives — CI installs it by digest")
+			}
+
 			root := t.TempDir()
 			gittest.Run(t, root, "init", "-q")
 			mustMkdir(t, filepath.Join(root, ".github", "workflows"))

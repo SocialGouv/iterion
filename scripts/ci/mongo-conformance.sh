@@ -20,8 +20,8 @@
 # log) · 2 a precondition refused, and the list is longer than it looks — each
 # path a machine that cannot judge rather than a tree that is broken, and all
 # of them greppable (`grep -cE '^[[:space:]]+exit 2'` — nine, where a plain
-# `grep -c 'exit 2'` counts ten by matching this sentence): python3 unable to read the job
-# (devbox pins none), the job's
+# `grep -c 'exit 2'` counts ten by matching this sentence): yq missing, yq
+# unable to read the job, the job's
 # shape not recognised, timeout(1) missing, docker missing, its daemon not
 # answering, the container refusing to start, mongod accepting no connection
 # on the published port, the replica set never elected, the port unreachable
@@ -44,57 +44,62 @@ mkdir -p "$EVIDENCE"
 # no container, and a member that cannot tell what to run must say so on any
 # machine rather than only on one that could have run it.
 # ---------------------------------------------------------------------------
-# python3 rather than sed+grep: the job's run block is YAML with line
-# continuations, and reconstructing a command from a line-oriented scan is how
-# the second invocation got lost. Parsing the block and splitting on the
-# commands it contains keeps the member honest about what the job runs.
-PYERR=$(mktemp)
-trap 'rm -f "$PYERR"' EXIT
-mapfile -t INVOCATIONS < <(python3 -I - "$WORKFLOW" 2> "$PYERR" <<'PY'
-import re, sys, yaml
-
-doc = yaml.safe_load(open(sys.argv[1]))
-job = doc.get("jobs", {}).get("mongo-conformance")
-if job is None:
-    sys.exit("the workflow defines no mongo-conformance job")
-
-blocks = [s["run"] for s in job.get("steps", []) if isinstance(s, dict) and s.get("run")]
-# The harness step is the one that runs go test; the mongo start-up and the
-# failure diagnostics are not the gate.
-found = []
-for b in blocks:
-    # Join the shell's line continuations, drop comments, then split on the
-    # commands themselves.
-    joined = re.sub(r"\\\n\s*", " ", b)
-    for line in joined.splitlines():
-        line = line.strip()
-        if line.startswith("#") or "go test" not in line:
-            continue
-        found.append(re.sub(r"\s+", " ", line))
-if not found:
-    sys.exit("the mongo-conformance job runs no `go test`: its shape changed and this member "
-             "cannot derive what to run — teach it rather than guessing")
-print("\n".join(found))
-PY
+# A YAML PARSER, never sed+grep over the file: the job's run block carries
+# shell line continuations, and reconstructing a command from a line-oriented
+# scan is how the second invocation got lost. `yq` does the parsing and `awk`
+# does the shell's own job of joining continuations — text work, once the YAML
+# is already a string.
+#
+# yq and not python3, measured: CI's `test-unit` runner has python3 WITHOUT
+# PyYAML (`ModuleNotFoundError: No module named 'yaml'`), so the python form
+# refused there — correctly, loudly, and uselessly. yq is pinned by devbox AND
+# installed by digest inside the very jobs that run these guards, for exactly
+# this reason. The two forms were compared line for line on this workflow
+# before the swap: byte-identical, both invocations, including the second one
+# that docs/development.md's regex cannot see.
+command -v yq > /dev/null 2>&1 || {
+	say "mongo-conformance: yq is not on PATH, and the invocations are READ from the job rather"
+	say "than restated here. devbox pins yq-go 4.53.3, the version the workflow installs by"
+	say "digest. Refusing is not a verdict."
+	exit 2
+}
+YQERR=$(mktemp)
+trap 'rm -f "$YQERR"' EXIT
+mapfile -t INVOCATIONS < <(
+	yq -r '.jobs["mongo-conformance"].steps[] | select(has("run")) | .run' "$WORKFLOW" 2> "$YQERR" |
+		awk '{
+			line = $0
+			# The shell joins a trailing backslash with the next line; so does this.
+			while (line ~ /\\[ \t]*$/) {
+				sub(/\\[ \t]*$/, "", line)
+				if ((getline nxt) <= 0) break
+				sub(/^[ \t]+/, "", nxt)
+				line = line " " nxt
+			}
+			sub(/^[ \t]+/, "", line); sub(/[ \t]+$/, "", line)
+			if (line ~ /^#/ || line !~ /go test/) next
+			gsub(/[ \t]+/, " ", line)
+			print line
+		}'
 )
 
-# The COUNT, never the status of the `||`. A `mapfile < <(python3 …)` reports
-# mapfile's own success: the process substitution hides python3's exit from
-# `set -e` and from `pipefail` alike, so the refusal this script computes and
-# prints would be thrown away, the loop below would run zero invocations, and
-# `exit "$failed"` would answer 0 — a REQUIRED context reporting green over
-# nothing tested. Measured on this file before the guard existed. python3 only
-# prints when it succeeds, so the count closes the class; it is the same shape
+# The COUNT, never the status of a `||`. A `mapfile < <(cmd)` reports
+# mapfile's own success: the process substitution hides the reader's exit from
+# `set -e` and from `pipefail` alike, so a refusal computed inside it would be
+# thrown away, the loop below would run zero invocations, and `exit "$failed"`
+# would answer 0 — a REQUIRED context reporting green over nothing tested.
+# Measured on this file before the guard existed. It is the same shape
 # scripts/desktop/nix-pkgconfig-env.sh already uses after its own `mapfile`.
 [ "${#INVOCATIONS[@]}" -gt 0 ] || {
-	say "mongo-conformance: derived NO invocation from $WORKFLOW."
-	# The reason is python3's, CAPTURED rather than assumed: a wrapper that
-	# dies without writing anything would otherwise leave the refusal citing
-	# an explanation nobody printed.
-	if [ -s "$PYERR" ]; then
-		sed 's/^/  /' "$PYERR" >&2
+	say "mongo-conformance: derived NO invocation from $WORKFLOW — either the job's shape changed"
+	say "(teach this member rather than guessing) or yq could not read it."
+	# yq's reason, CAPTURED rather than assumed: a reader that dies without
+	# writing anything would otherwise leave the refusal citing an explanation
+	# nobody printed.
+	if [ -s "$YQERR" ]; then
+		sed 's/^/  /' "$YQERR" >&2
 	else
-		say "  (python3 printed no reason — it may have failed before running: check its wrapper)"
+		say "  (yq printed no reason — it may have failed before reading: check its install)"
 	fi
 	say "Refusing is not a verdict: nothing was tested."
 	exit 2
@@ -139,10 +144,10 @@ timeout 20 docker info > /dev/null 2>&1 || {
 # a comment.
 # ---------------------------------------------------------------------------
 # Both, because a second `trap … EXIT` REPLACES the first: the earlier one
-# removed $PYERR, and installing this one alone would leak it.
+# removed $YQERR, and installing this one alone would leak it.
 cleanup() {
 	docker rm -f "$CONTAINER" > /dev/null 2>&1 || true
-	rm -f "$PYERR"
+	rm -f "$YQERR"
 }
 trap cleanup EXIT
 
