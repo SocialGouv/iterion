@@ -45,7 +45,7 @@ func TestPublisherPriceFeedEffectiveFoldsTheOrgAndTheTeamItIsGiven(t *testing.T)
 		defer mu.Unlock()
 		warnings = append(warnings, fmt.Sprintf(format, args...))
 	})
-	raw := fold(context.Background(), "org1", "team1", []string{"wide-0007"})
+	raw := mustTable(t)(fold(context.Background(), "org1", "team1", []string{"wide-0007"}))
 	table := pricefeed.ParseTable(string(raw))
 	if table == nil {
 		t.Fatalf("the publisher's fold answered no table: %.200s", raw)

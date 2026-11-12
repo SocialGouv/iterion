@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -90,8 +91,8 @@ func TestPriceFeedEffectiveView(t *testing.T) {
 
 	// The table is the publisher's: the same function, the same team,
 	// org and ids — whitespace aside, the same bytes.
-	sealed := PublisherPriceFeedEffective(live.configs, live.states, nil)(context.Background(), "org1", "team-pf",
-		[]string{"glm-5.3", "Scaleway/DeepSeek-v4.1-flash", "kimi-k2", "unknown-x"})
+	sealed := mustTable(t)(PublisherPriceFeedEffective(live.configs, live.states, nil)(context.Background(), "org1", "team-pf",
+		[]string{"glm-5.3", "Scaleway/DeepSeek-v4.1-flash", "kimi-k2", "unknown-x"}))
 	if sealed == nil {
 		t.Fatal("the publisher's fold answered no table")
 	}
@@ -306,7 +307,7 @@ func TestPriceFeedEffectiveViewListsAnOverBudgetTableAsEachRunNarrowsIt(t *testi
 			if view.OverBudget != nil {
 				t.Errorf("the view for one id flags over_budget %+v: its table is the run's", view.OverBudget)
 			}
-			sealed := PublisherPriceFeedEffective(live.configs, live.states, nil)(context.Background(), "org1", "team-pf", []string{deepseek})
+			sealed := mustTable(t)(PublisherPriceFeedEffective(live.configs, live.states, nil)(context.Background(), "org1", "team-pf", []string{deepseek}))
 			var gotTable, wantTable bytes.Buffer
 			if err := json.Compact(&gotTable, view.Table); err != nil {
 				t.Fatalf("the view's table is not JSON: %v (%.200s)", err, view.Table)
@@ -336,11 +337,13 @@ func (f failingConfigStore) Get(ctx context.Context, docID string) (*pricefeed.C
 	return f.ConfigStore.Get(ctx, docID)
 }
 
-// A level the view cannot read steps down, and a member is told so without
+// A level the view cannot read is reported, and a member is told so without
 // the database's words: the scope reads the member text, the warning names
-// the level and points at the server log, and the server log carries the
-// read error whole. The publisher's fold of the same levels warns the
-// operator's log with the cause. The readable level still answers.
+// the level, says a run launched now is refused until it reads and points
+// at the server log, and the server log carries the read error whole. The
+// publisher's fold of the same levels refuses with the typed error naming
+// the level and not the cause, and warns the operator's log with the cause.
+// The readable level still answers in the view.
 func TestPriceFeedEffectiveViewKeepsAReadErrorInTheServerLog(t *testing.T) {
 	s, logs := priceFeedFixtureServer(t)
 	const internal = "server selection error: context deadline exceeded, current topology: { Type: ReplicaSetNoPrimary, Servers: [{ Addr: mongo-0.mongo.internal:27017 }] }"
@@ -366,8 +369,9 @@ func TestPriceFeedEffectiveViewKeepsAReadErrorInTheServerLog(t *testing.T) {
 			unreadLine = line
 		}
 	}
-	if unreadLine == "" || strings.Contains(unreadLine, "mongo") || strings.Contains(unreadLine, "server selection") || !strings.Contains(unreadLine, priceFeedUnreadForMembers) {
-		t.Errorf("the warning on the unread level = %q (warnings %q), want it named and pointing at the server log, without the read error", unreadLine, view.Warnings)
+	if unreadLine == "" || strings.Contains(unreadLine, "mongo") || strings.Contains(unreadLine, "server selection") || !strings.Contains(unreadLine, priceFeedUnreadForMembers) ||
+		!strings.Contains(unreadLine, "a run launched now is refused until it reads") {
+		t.Errorf("the warning on the unread level = %q (warnings %q), want it named, saying a launch is refused, and pointing at the server log, without the read error", unreadLine, view.Warnings)
 	}
 	if !strings.Contains(logs.String(), "mongo-0.mongo.internal:27017") || !strings.Contains(logs.String(), "team team1") {
 		t.Errorf("the server log does not carry the read error for team team1's view:\n%s", logs.String())
@@ -377,10 +381,17 @@ func TestPriceFeedEffectiveViewKeepsAReadErrorInTheServerLog(t *testing.T) {
 	}
 
 	var operator []string
-	PublisherPriceFeedEffective(s.priceFeedConfigs, s.priceFeedStates, func(format string, args ...any) {
+	raw, err := PublisherPriceFeedEffective(s.priceFeedConfigs, s.priceFeedStates, func(format string, args ...any) {
 		operator = append(operator, fmt.Sprintf(format, args...))
 	})(context.Background(), "", "team1", nil)
-	if !strings.Contains(strings.Join(operator, "\n"), "platform unread — the operator table answers: "+internal) {
+	var unread *PriceFeedUnreadError
+	if raw != nil || !errors.As(err, &unread) || !slices.Equal(unread.Levels, []string{"platform"}) || !unread.Retryable() || unread.Code() != PriceFeedUnreadErrorCode {
+		t.Fatalf("the publisher's fold answered %s, %v; want no table and a retryable *PriceFeedUnreadError naming the platform", raw, err)
+	}
+	if strings.Contains(err.Error(), "mongo") || strings.Contains(err.Error(), "server selection") {
+		t.Errorf("the refusal %q carries the read error, which names internal topology", err)
+	}
+	if !strings.Contains(strings.Join(operator, "\n"), "platform unread — the launch or resume folding it is refused: "+internal) {
 		t.Errorf("the publisher's fold warns %q, want the platform level's read error", operator)
 	}
 }

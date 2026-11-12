@@ -71,7 +71,9 @@ type Config struct {
 	// precedence (an answering feed over the operator floor, team over
 	// org over platform) stays beside the stores that own it. Nil (local
 	// shape, no stores) means no feed and the operator table is the floor.
-	PriceFeedEffective func(ctx context.Context, orgID, teamID string, named []string) json.RawMessage
+	// An error is a level the fold could not read: the launch or resume
+	// is refused with it (ADR-166 §4).
+	PriceFeedEffective func(ctx context.Context, orgID, teamID string, named []string) (json.RawMessage, error)
 	// MongoColl is the Mongo collection the publisher counts
 	// queued runs against (for queue_position computation). The
 	// caller passes it directly so the publisher doesn't have to
@@ -260,7 +262,8 @@ type Publisher struct {
 	// org over platform) stays beside the stores that own it. Nil (local
 	// shape, no stores) means no feed and the operator table is the floor
 	// — the bundle then serializes exactly as before this field existed.
-	priceFeedEffective func(ctx context.Context, orgID, teamID string, named []string) json.RawMessage
+	// An error refuses the launch or resume.
+	priceFeedEffective func(ctx context.Context, orgID, teamID string, named []string) (json.RawMessage, error)
 
 	// orgCache memoizes team → org id so the publish hot path doesn't
 	// add a Mongo read per launch (team/org membership changes are
@@ -1795,12 +1798,22 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	// an org-less team). orgID comes from a cached resolve that answers ""
 	// after a failed identity read as it does for an org-less team: folded
 	// under it, the org level's declarations would leave the run's table.
+	//
+	// A fold that could not read a level refuses, launch and resume alike,
+	// as the identity and pool reads above do: a table sealed without the
+	// level would carry none of its accepted efforts, and the gateway
+	// refuses a level the run then sends unmapped. The error keeps its
+	// type (retryable, PRICE_FEED_UNREAD) for the caller's answer.
 	if p.priceFeedEffective != nil {
 		foldOrgID := orgID
 		if teamOrgID != "" {
 			foldOrgID = teamOrgID
 		}
-		bundle.GatewayPriceFeed = p.priceFeedEffective(ctx, foldOrgID, tenantID, model.RouteGatewayModelIDs(wf, view.Overrides))
+		table, err := p.priceFeedEffective(ctx, foldOrgID, tenantID, model.RouteGatewayModelIDs(wf, view.Overrides))
+		if err != nil {
+			return res, fmt.Errorf("cloudpublisher: the price-feed fold of team %s: %w", tenantID, err)
+		}
+		bundle.GatewayPriceFeed = table
 	}
 
 	// ADR-123: the bundle seals under a fresh per-run DEK that travels in

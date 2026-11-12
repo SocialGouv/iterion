@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"regexp"
@@ -26,12 +27,48 @@ func priceFeedExecAllowed() bool {
 // entry (a fetched feed's while fresh, a declaration's always) answers
 // over the operator table for the ids it carries, the more specific
 // scope over the less (team over org over platform); a stale or failing
-// feed steps down with a warning, never a refusal.
+// feed steps down with a warning, never a refusal. A level the fold
+// cannot read is no answer at all: the launch or resume that folds it is
+// refused, retryably (PriceFeedUnreadError, ADR-166 §4).
 
-// priceFeedReadTimeout bounds one scope's reads in the launch-path fold:
-// a slow database must not hold a launch, and a feed that cannot be read
-// steps down to the operator floor with a warning — never a refusal.
+// priceFeedReadTimeout bounds one level's reads in the launch-path fold
+// (its config document and its fetched feeds' states): a slow database
+// must not hold a launch. Each level reads under its own deadline, so a
+// fold's worst case is one deadline per level, three levels; a level that
+// misses it is unread.
 const priceFeedReadTimeout = 2 * time.Second
+
+// PriceFeedUnreadErrorCode is the stable API code of a launch or resume
+// refused because the run's price-feed fold could not read a level.
+const PriceFeedUnreadErrorCode = "PRICE_FEED_UNREAD"
+
+// PriceFeedUnreadError is a fold that could not read every level it folds:
+// a config document or a fetched feed's state that did not answer, deadline
+// included. The run's table would lack the level's prices and accepted
+// efforts — an answer the server does not know, where a missing effort
+// list sends a level the gateway refuses — so the launch or resume that
+// folds it is refused, and the same request succeeds once the level reads.
+// The message names the levels and not the read errors, which name
+// internal topology (a database's replica set, its hosts): it travels to
+// whoever launched, and the fold's warnf carries the causes to the
+// operator's log. Err joins them for errors.Is and errors.As.
+type PriceFeedUnreadError struct {
+	// Levels names the unread levels, least specific first: "platform",
+	// "org <id>", "team <id>".
+	Levels []string
+	Err    error
+}
+
+func (e *PriceFeedUnreadError) Error() string {
+	return fmt.Sprintf("price feed: %s unread — the run's prices and accepted efforts must be known, never guessed; retry once it reads (the server log names the cause)", strings.Join(e.Levels, ", "))
+}
+
+func (e *PriceFeedUnreadError) Unwrap() error { return e.Err }
+
+// Code and Retryable let the launch and resume answers expose stable
+// machine-readable semantics.
+func (e *PriceFeedUnreadError) Code() string    { return PriceFeedUnreadErrorCode }
+func (e *PriceFeedUnreadError) Retryable() bool { return true }
 
 // EffectivePriceFeed folds one run's effective table — the platform's,
 // the org's and the team's answering feeds, the more specific scope
@@ -41,15 +78,22 @@ const priceFeedReadTimeout = 2 * time.Second
 // the narrowing fallback when the folded table exceeds the channel's
 // byte budget.
 //
-// A level whose read fails warns with the read error: this warning
-// reaches the operator's log, never a member.
-func EffectivePriceFeed(ctx context.Context, configs pricefeed.ConfigStore, states pricefeed.StateStore, orgID, teamID string, named []string, warnf func(format string, args ...any)) json.RawMessage {
-	unread := func(what string, err error) {
+// A level whose read fails answers a *PriceFeedUnreadError naming it and
+// no table; each read error reaches warnf — the operator's log, never a
+// member.
+func EffectivePriceFeed(ctx context.Context, configs pricefeed.ConfigStore, states pricefeed.StateStore, orgID, teamID string, named []string, warnf func(format string, args ...any)) (json.RawMessage, error) {
+	fold := foldPriceFeed(ctx, configs, states, orgID, teamID, pricefeed.FoldConfig{Named: named, Warnf: warnf})
+	if err := fold.unreadError(); err != nil {
 		if warnf != nil {
-			warnf("price feed: %s unread — the operator table answers: %v", what, err)
+			for _, read := range fold.scopes {
+				if read.err != nil {
+					warnf("price feed: %s unread — the launch or resume folding it is refused: %v", read.scope.what, read.err)
+				}
+			}
 		}
+		return nil, err
 	}
-	return foldPriceFeed(ctx, configs, states, orgID, teamID, pricefeed.FoldConfig{Named: named, Warnf: warnf}, unread).encode(warnf)
+	return fold.encode(warnf), nil
 }
 
 // PublisherPriceFeedEffective is the publisher's price-feed fold
@@ -58,8 +102,8 @@ func EffectivePriceFeed(ctx context.Context, configs pricefeed.ConfigStore, stat
 // passes, in that order, the run's named gateway ids narrowing an
 // over-budget table, its warnings to warnf. The server binary wires it,
 // and the pool-retirement E2E launches through it.
-func PublisherPriceFeedEffective(configs pricefeed.ConfigStore, states pricefeed.StateStore, warnf func(format string, args ...any)) func(ctx context.Context, orgID, teamID string, named []string) json.RawMessage {
-	return func(ctx context.Context, orgID, teamID string, named []string) json.RawMessage {
+func PublisherPriceFeedEffective(configs pricefeed.ConfigStore, states pricefeed.StateStore, warnf func(format string, args ...any)) func(ctx context.Context, orgID, teamID string, named []string) (json.RawMessage, error) {
+	return func(ctx context.Context, orgID, teamID string, named []string) (json.RawMessage, error) {
 		return EffectivePriceFeed(ctx, configs, states, orgID, teamID, named, warnf)
 	}
 }
@@ -75,37 +119,32 @@ type priceFeedFold struct {
 
 // priceFeedScopeRead is one level as the fold read it: its config and
 // fetched states (nil when the level holds no feed), or the read error
-// that stepped it down.
+// that left it unread.
 type priceFeedScopeRead struct {
 	scope priceFeedScope
 	state *pricefeed.ScopeState
 	err   error
 }
 
-// foldPriceFeed reads every level of one run's fold and folds them at
-// one instant by cfg, its Now set here — the one body the bundle's table
-// (EffectivePriceFeed) and the effective view (pricefeed_effective.go)
-// both answer from, so the view cannot show a table the run would not
-// seal. A level whose read fails steps down, and unread hears its read
-// error: each caller says it where its reader belongs.
-func foldPriceFeed(ctx context.Context, configs pricefeed.ConfigStore, states pricefeed.StateStore, orgID, teamID string, cfg pricefeed.FoldConfig, unread func(what string, err error)) priceFeedFold {
+// foldPriceFeed reads every level of one run's fold, each under its own
+// deadline, and folds the levels it read at one instant by cfg, its Now
+// set here — the one body the bundle's table (EffectivePriceFeed) and the
+// effective view (pricefeed_effective.go) both answer from, so the view
+// cannot show a table the run would not seal. A level whose read fails
+// carries its error in scopes and folds nothing: the run refuses it
+// (unreadError), the view reports it.
+func foldPriceFeed(ctx context.Context, configs pricefeed.ConfigStore, states pricefeed.StateStore, orgID, teamID string, cfg pricefeed.FoldConfig) priceFeedFold {
 	fold := priceFeedFold{now: time.Now()}
 	if configs == nil || states == nil {
 		return fold
 	}
-	readCtx, cancel := context.WithTimeout(ctx, priceFeedReadTimeout)
-	defer cancel()
 	var answering []pricefeed.ScopeState
 	for _, scope := range priceFeedFoldScopes(orgID, teamID) {
+		readCtx, cancel := context.WithTimeout(ctx, priceFeedReadTimeout)
 		state, err := priceFeedScopeState(readCtx, configs, states, scope.docID)
+		cancel()
 		fold.scopes = append(fold.scopes, priceFeedScopeRead{scope: scope, state: state, err: err})
 		if err != nil {
-			// A feed that cannot be read is a feed that does not answer:
-			// the operator table prices the run and the caller's warning
-			// names the scope — the ADR's step-down, not a launch refusal.
-			if unread != nil {
-				unread(scope.what, err)
-			}
 			continue
 		}
 		if state != nil {
@@ -118,6 +157,23 @@ func foldPriceFeed(ctx context.Context, configs pricefeed.ConfigStore, states pr
 		fold.table = pricefeed.Fold(cfg, answering...)
 	}
 	return fold
+}
+
+// unreadError answers the fold's unread levels as one
+// *PriceFeedUnreadError, nil when every level read.
+func (f priceFeedFold) unreadError() error {
+	var levels []string
+	var errs []error
+	for _, read := range f.scopes {
+		if read.err != nil {
+			levels = append(levels, read.scope.what)
+			errs = append(errs, fmt.Errorf("%s: %w", read.scope.what, read.err))
+		}
+	}
+	if len(levels) == 0 {
+		return nil
+	}
+	return &PriceFeedUnreadError{Levels: levels, Err: errors.Join(errs...)}
 }
 
 // encode answers the folded table's wire bytes; nil when no feed answers
@@ -160,10 +216,12 @@ func priceFeedFoldScopes(orgID, teamID string) []priceFeedScope {
 }
 
 // priceFeedScopeState reads one scope's config document and the states
-// of its feeds. A scope with no config document contributes nothing; a
-// config whose state read fails fails the scope (the caller warns and
-// steps the whole scope down), so partial outages degrade per scope
-// rather than half-folding.
+// of the feeds the fold reads them for: enabled fetched feeds. A
+// declaration answers from its config and writes no state (a state
+// document under its name is never its word), and a disabled feed does
+// not answer; neither costs a read that could leave the level unread. A
+// scope with no config document contributes nothing; any read that fails
+// fails the scope.
 func priceFeedScopeState(ctx context.Context, configs pricefeed.ConfigStore, states pricefeed.StateStore, docID string) (*pricefeed.ScopeState, error) {
 	rec, err := configs.Get(ctx, docID)
 	if err != nil {
@@ -174,9 +232,12 @@ func priceFeedScopeState(ctx context.Context, configs pricefeed.ConfigStore, sta
 	}
 	out := &pricefeed.ScopeState{Config: rec, States: map[string]*pricefeed.StateRecord{}}
 	for _, feed := range rec.Feeds {
+		if !feed.Enabled || pricefeed.IsStatic(feed.Type) {
+			continue
+		}
 		state, err := states.Get(ctx, pricefeed.StateDocID(docID, feed.Name))
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("feed %s state: %w", feed.Name, err)
 		}
 		if state != nil {
 			out.States[feed.Name] = state

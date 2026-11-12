@@ -78,8 +78,9 @@ type priceFeedEffectiveScope struct {
 	// Feeds are the level's enabled feeds, in config order — the order
 	// that decides between two of them stating one id.
 	Feeds []string `json:"feeds,omitempty"`
-	// Unread is set when the level could not be read and stepped down:
-	// priceFeedUnreadForMembers, the read error itself in the server log.
+	// Unread is set when the level could not be read — a run launched now
+	// is refused until it reads: priceFeedUnreadForMembers, the read error
+	// itself in the server log.
 	Unread string `json:"unread,omitempty"`
 }
 
@@ -141,12 +142,6 @@ func (s *Server) handleGetTeamPriceFeedsEffective(w http.ResponseWriter, r *http
 	warnf := func(format string, args ...any) {
 		warnings = append(warnings, truncateFeedError(sanitizeFeedError(fmt.Sprintf(format, args...))))
 	}
-	// A level's read error goes to the server log; the member reads that
-	// the level stepped down.
-	unread := func(what string, err error) {
-		s.logger.Warn("price feed: effective view of team %s: %s unread: %v", teamID, what, err)
-		warnf("price feed: %s unread — the operator table answers; %s", what, priceFeedUnreadForMembers)
-	}
 	// Requested ids fold as a run naming them does. A listing names no
 	// run's ids: it folds unbounded, so every id answers as a run naming
 	// it reads it, and a table over the run channel's budget is flagged
@@ -155,7 +150,16 @@ func (s *Server) handleGetTeamPriceFeedsEffective(w http.ResponseWriter, r *http
 	if len(models) == 0 {
 		cfg.Budget = math.MaxInt
 	}
-	fold := foldPriceFeed(r.Context(), s.priceFeedConfigs, s.priceFeedStates, team.OrgID, teamID, cfg, unread)
+	fold := foldPriceFeed(r.Context(), s.priceFeedConfigs, s.priceFeedStates, team.OrgID, teamID, cfg)
+	// A level's read error goes to the server log; the member reads that
+	// the level is unread, and that a run launched now is refused until it
+	// reads — the publisher's answer over the same fold.
+	for _, read := range fold.scopes {
+		if read.err != nil {
+			s.logger.Warn("price feed: effective view of team %s: %s unread: %v", teamID, read.scope.what, read.err)
+			warnf("price feed: %s unread — a run launched now is refused until it reads; %s", read.scope.what, priceFeedUnreadForMembers)
+		}
+	}
 	view := priceFeedEffectiveView{
 		TeamID:            teamID,
 		OrgID:             team.OrgID,

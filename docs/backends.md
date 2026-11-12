@@ -1884,7 +1884,15 @@ run to the runner** — the operator table stays the floor.
   that has not refreshed successfully inside its window is **stale** —
   a first-class state, warned once on the transition (and again after
   every recovery), stepping down to the operator floor. Never a
-  refusal: a launch with no readable feed state proceeds on the floor.
+  refusal: a launch whose feed has no state yet, or a stale one,
+  proceeds on the floor. A level the fold cannot READ is another
+  matter (ADR-166 §4): its config document, or an enabled fetched
+  feed's state, that the database does not answer within the level's
+  own 2 s deadline leaves an answer the server does not know, and the
+  launch or resume folding it is refused, retryably — `503`,
+  `error_code: PRICE_FEED_UNREAD`, `retryable: true`, the refusal
+  naming the level and the server log the cause. A declaration and a
+  disabled feed read no state.
   A state records the source type it was written for: a feed retyped
   under its name reads its predecessor's state as no state — not its
   answer, not the entries a failing refresh keeps, not its status — and
@@ -1963,8 +1971,9 @@ run to the runner** — the operator table stays the floor.
   whole by no run: the view answers `over_budget` (its size and the
   budget) and no table, each id answering as a run naming it reads it,
   because a run seals the table narrowed to the gateway ids it names. A
-  level the view cannot read reads `unread` without the database's
-  error, which the server log carries. A member reads what every run of
+  level the view cannot read reads `unread` — a run launched now is
+  refused until it reads — without the database's error, which the
+  server log carries. A member reads what every run of
   the team carries — the folded table is sealed into the run's bundle
   and crosses into its sandbox — plus each feed of each level that
   states an id, the shadowed ones a team feed restates; never a feed's

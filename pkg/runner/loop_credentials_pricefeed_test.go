@@ -185,16 +185,16 @@ func TestInjectCredentials_OpensThePublishersTeamGatewayLaunch(t *testing.T) {
 	}}}}
 	var mu sync.Mutex
 	var rawTable json.RawMessage
-	fold := func(_ context.Context, _, _ string, named []string) json.RawMessage {
+	fold := func(_ context.Context, _, _ string, named []string) (json.RawMessage, error) {
 		raw, err := json.Marshal(pricefeed.Fold(pricefeed.FoldConfig{Now: time.Now(), Named: named}, platform))
 		if err != nil {
 			t.Errorf("the fold does not encode: %v", err)
-			return nil
+			return nil, nil
 		}
 		mu.Lock()
 		defer mu.Unlock()
 		rawTable = raw
-		return raw
+		return raw, nil
 	}
 	runSecrets := secrets.NewMemoryRunSecretsStore()
 	runs, err := store.New(t.TempDir())

@@ -60,7 +60,7 @@ func TestPriceFeedEndToEndRunChain(t *testing.T) {
 	t.Setenv(compatgw.ResolvedEnvName, "")
 	t.Setenv(compatgw.FeedTableEnv, "")
 	compatgw.ResetCatalogCaches()
-	raw := EffectivePriceFeed(context.Background(), s.priceFeedConfigs, s.priceFeedStates, "org1", "team1", []string{"glm-5.3"}, nil)
+	raw := mustTable(t)(EffectivePriceFeed(context.Background(), s.priceFeedConfigs, s.priceFeedStates, "org1", "team1", []string{"glm-5.3"}, nil))
 	if raw == nil {
 		t.Fatal("the launch fold answered no table")
 	}
@@ -157,7 +157,7 @@ func TestPriceFeedEndToEndRunChain(t *testing.T) {
 	if err := s.priceFeedStates.Put(context.Background(), pricefeed.StateDocID(pricefeed.TeamConfigDocID("team1"), "scw"), agedState); err != nil {
 		t.Fatal(err)
 	}
-	if stale := EffectivePriceFeed(context.Background(), s.priceFeedConfigs, s.priceFeedStates, "org1", "team1", []string{"glm-5.3"}, nil); stale != nil {
+	if stale := mustTable(t)(EffectivePriceFeed(context.Background(), s.priceFeedConfigs, s.priceFeedStates, "org1", "team1", []string{"glm-5.3"}, nil)); stale != nil {
 		t.Fatalf("a fold over aged state answered a table: %s", stale)
 	}
 }
@@ -431,6 +431,36 @@ const (
 // run id. It answers the run id and the opened bundle.
 func launchRetireRun(t *testing.T, live *priceFeedLive, wf *ir.Workflow) (string, secrets.RunBundle) {
 	t.Helper()
+	launch := submitRetireLaunch(t, live, wf, live.configs, live.states)
+	if launch.err != nil {
+		t.Fatalf("the launch was refused: %v", launch.err)
+	}
+	if len(launch.published) != 1 {
+		t.Fatalf("the launch published %d messages, want one", len(launch.published))
+	}
+	msg := launch.published[0]
+	if msg.RunnerPool != "" {
+		t.Fatalf("the launch landed on runner pool %q, want the default runner", msg.RunnerPool)
+	}
+	if msg.SecretsRef == "" {
+		t.Fatal("the launch sealed no bundle")
+	}
+	return msg.RunID, launch.open(t, msg)
+}
+
+// retireLaunch is one launch through the real publisher: the messages it
+// published, its error, and the run-secrets store its bundles sealed into.
+type retireLaunch struct {
+	published  []*queue.RunMessage
+	err        error
+	runSecrets *secrets.MemoryRunSecretsStore
+}
+
+// submitRetireLaunch launches wf for team-pf through the real publisher,
+// the team holding its gateway key and the publisher's fold the one the
+// server binary wires over configs and states.
+func submitRetireLaunch(t *testing.T, live *priceFeedLive, wf *ir.Workflow, configs pricefeed.ConfigStore, states pricefeed.StateStore) retireLaunch {
+	t.Helper()
 	ctx := context.Background()
 	sealer, err := secrets.NewKeyRingSealer(map[string][]byte{"default": make([]byte, 32)}, "default")
 	if err != nil {
@@ -449,42 +479,38 @@ func launchRetireRun(t *testing.T, live *priceFeedLive, wf *ir.Workflow) (string
 	if err := keys.Create(ctx, key); err != nil {
 		t.Fatal(err)
 	}
-	runSecrets := secrets.NewMemoryRunSecretsStore()
+	launch := retireLaunch{runSecrets: secrets.NewMemoryRunSecretsStore()}
 	runs, err := store.New(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
 	var mu sync.Mutex
-	var published []*queue.RunMessage
 	pub := cloudpublisher.NewForTesting(cloudpublisher.Config{
-		Store: runs, ApiKeys: keys, RunSecrets: runSecrets, Sealer: sealer,
+		Store: runs, ApiKeys: keys, RunSecrets: launch.runSecrets, Sealer: sealer,
 		Identity:           live.s.authStore(),
 		Logger:             iterlog.New(iterlog.LevelError, io.Discard),
-		PriceFeedEffective: PublisherPriceFeedEffective(live.configs, live.states, t.Logf),
+		PriceFeedEffective: PublisherPriceFeedEffective(configs, states, t.Logf),
 	}, func(_ context.Context, msg *queue.RunMessage) error {
 		mu.Lock()
 		defer mu.Unlock()
-		published = append(published, msg)
+		launch.published = append(launch.published, msg)
 		return nil
 	})
 	runID := fmt.Sprintf("run-retire-%d", time.Now().UnixNano())
-	if _, err := pub.SubmitLaunch(store.WithIdentity(ctx, "team-pf", "u-pfviewer"), runID, runview.LaunchSpec{Source: retireBot}, wf, nil); err != nil {
-		t.Fatalf("the launch was refused: %v", err)
-	}
+	_, launch.err = pub.SubmitLaunch(store.WithIdentity(ctx, "team-pf", "u-pfviewer"), runID, runview.LaunchSpec{Source: retireBot}, wf, nil)
 	mu.Lock()
-	msgs := append([]*queue.RunMessage(nil), published...)
+	launch.published = append([]*queue.RunMessage(nil), launch.published...)
 	mu.Unlock()
-	if len(msgs) != 1 {
-		t.Fatalf("the launch published %d messages, want one", len(msgs))
-	}
-	msg := msgs[0]
-	if msg.RunnerPool != "" {
-		t.Fatalf("the launch landed on runner pool %q, want the default runner", msg.RunnerPool)
-	}
-	if msg.SecretsRef == "" {
-		t.Fatal("the launch sealed no bundle")
-	}
-	rec, err := runSecrets.Get(store.WithIdentity(ctx, msg.TenantID, msg.OwnerID), msg.SecretsRef)
+	return launch
+}
+
+// open reads the sealed record msg names as the runner does: under the
+// message's team, opened under the message's per-run key, team, pool and
+// run id.
+func (l retireLaunch) open(t *testing.T, msg *queue.RunMessage) secrets.RunBundle {
+	t.Helper()
+	ctx := context.Background()
+	rec, err := l.runSecrets.Get(store.WithIdentity(ctx, msg.TenantID, msg.OwnerID), msg.SecretsRef)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -502,7 +528,7 @@ func launchRetireRun(t *testing.T, live *priceFeedLive, wf *ir.Workflow) (string
 	if got := bundle.APIKeys[secrets.ProviderOpenAICompatible]; got != retireTeamKey {
 		t.Fatalf("the bundle seals gateway key %q, want team-pf's own", got)
 	}
-	return msg.RunID, bundle
+	return bundle
 }
 
 // runRetireWorkflow runs wf as runID on ctx (the context the runner's

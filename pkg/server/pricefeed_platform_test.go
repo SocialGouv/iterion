@@ -269,7 +269,7 @@ func TestEffectivePriceFeedFoldsThePlatformScope(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			raw := EffectivePriceFeed(context.Background(), s.priceFeedConfigs, s.priceFeedStates, "org1", "team1", nil, nil)
+			raw := mustTable(t)(EffectivePriceFeed(context.Background(), s.priceFeedConfigs, s.priceFeedStates, "org1", "team1", nil, nil))
 			table := pricefeed.ParseTable(string(raw))
 			if table == nil {
 				t.Fatalf("the fold answered no table: %s", raw)
@@ -469,7 +469,7 @@ func TestADeclaredFeedSyncPersistsNothing(t *testing.T) {
 			if code, out := live.do(t, "POST", sc.path+"/sync", token, `{"name":"pliage"}`); code != http.StatusOK || !strings.Contains(string(out), `"status":"failing"`) {
 				t.Fatalf("the dead litellm feed's sync answered %d %s, want failing", code, out)
 			}
-			if raw := EffectivePriceFeed(context.Background(), live.configs, live.states, "org1", "team-pf", nil, nil); raw != nil {
+			if raw := mustTable(t)(EffectivePriceFeed(context.Background(), live.configs, live.states, "org1", "team-pf", nil, nil)); raw != nil {
 				t.Fatalf("a never-fetched litellm feed seals the replaced declaration: %s", raw)
 			}
 			_, out = live.do(t, "GET", sc.path, token, "")

@@ -120,8 +120,13 @@ func NewMemoryConfigStore() *MemoryConfigStore {
 	return &MemoryConfigStore{configs: map[string]*ConfigRecord{}}
 }
 
-// Get answers one config document, nil when never written.
-func (m *MemoryConfigStore) Get(_ context.Context, docID string) (*ConfigRecord, error) {
+// Get answers one config document, nil when never written. A read under
+// an expired or cancelled ctx answers the ctx's error, as a database read
+// does: the fold's per-level deadline reads the same here as in Mongo.
+func (m *MemoryConfigStore) Get(ctx context.Context, docID string) (*ConfigRecord, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if rec, ok := m.configs[docID]; ok {
@@ -191,8 +196,12 @@ func NewMemoryStateStore() *MemoryStateStore {
 	return &MemoryStateStore{states: map[string]*StateRecord{}}
 }
 
-// Get answers one state document, nil when never written.
-func (m *MemoryStateStore) Get(_ context.Context, docID string) (*StateRecord, error) {
+// Get answers one state document, nil when never written; under an
+// expired or cancelled ctx, the ctx's error (MemoryConfigStore.Get).
+func (m *MemoryStateStore) Get(ctx context.Context, docID string) (*StateRecord, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if rec, ok := m.states[docID]; ok {

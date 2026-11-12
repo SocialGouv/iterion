@@ -36,7 +36,9 @@ its window, output cap and cache price, or they are lost, and the fold
 warns. Accepted efforts fold apart by the same precedence, so a priced
 entry never erases a declared effort list. A fetched feed (`modelsdev`, `scaleway`,
 `litellm`, `exec`) refreshes on one elected replica and answers while fresh;
-a stale one steps down to the operator table. A `declared` feed is the
+a stale one steps down to the operator table. A level the fold cannot read
+(a database error, or its own 2 s deadline) refuses the launch or resume,
+retryably (`PRICE_FEED_UNREAD`, ADR-166 §4). A `declared` feed is the
 operator's table stored in its config (`params.entries`): never fetched,
 never stale. Its entries answer whole as the operator-table rows they
 copy — priced or not — and an entry stating only `reasoning_efforts`

@@ -40,11 +40,11 @@ func TestPriceFeedFoldReadsTheOrgTheFreshTeamReadNames(t *testing.T) {
 			cfg := Config{
 				ApiKeys: base.apiKeys, OAuthForfait: base.oauthForfait, UsageCaps: usagecap.NewMemStore(),
 				RunSecrets: base.runSecrets, Sealer: base.sealer, Logger: base.logger,
-				PriceFeedEffective: func(_ context.Context, orgID, teamID string, named []string) json.RawMessage {
+				PriceFeedEffective: func(_ context.Context, orgID, teamID string, named []string) (json.RawMessage, error) {
 					mu.Lock()
 					defer mu.Unlock()
 					calls = append(calls, call{orgID, teamID, append([]string(nil), named...)})
-					return json.RawMessage(`{"entries":{}}`)
+					return json.RawMessage(`{"entries":{}}`), nil
 				},
 			}
 			if tc.identity != nil {
