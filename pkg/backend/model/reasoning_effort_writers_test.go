@@ -82,6 +82,8 @@ func TestEveryReasoningEffortWriterIsInventoried(t *testing.T) {
 	visited := 0
 	seen := map[string]bool{}
 	var offenders []string
+	var files []*ast.File
+	var names []string
 	for _, e := range entries {
 		name := e.Name()
 		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
@@ -98,15 +100,23 @@ func TestEveryReasoningEffortWriterIsInventoried(t *testing.T) {
 			t.Errorf("%s could not be parsed, so its writers were NOT inventoried: %v", name, perr)
 			continue
 		}
+		files = append(files, f)
+		names = append(names, name)
+	}
+	// A key spelled through a name — a constant or a variable bound to
+	// "reasoning_effort" anywhere in the package — is the effort key too.
+	keyNames := effortKeyNames(files)
+	for i, f := range files {
+		name := names[i]
 		for _, decl := range f.Decls {
 			fn, ok := decl.(*ast.FuncDecl)
 			if !ok {
-				if writesAnEffort(decl) {
+				if writesAnEffort(decl, keyNames) {
 					offenders = append(offenders, name+":<package scope>")
 				}
 				continue
 			}
-			if fn.Body == nil || !writesAnEffort(fn.Body) {
+			if fn.Body == nil || !writesAnEffort(fn.Body, keyNames) {
 				continue
 			}
 			key := name + ":" + fn.Name.Name
@@ -145,11 +155,50 @@ func TestEveryReasoningEffortWriterIsInventoried(t *testing.T) {
 	}
 }
 
+// effortKeyNames lists the identifiers the files bind to the
+// "reasoning_effort" string — a constant or a variable, declared at
+// package scope or in a function, or assigned. The walk resolves no
+// types, so a name is matched by its spelling in the whole package: a
+// writer indexing a map by one is a writer of the effort key.
+func effortKeyNames(files []*ast.File) map[string]bool {
+	names := map[string]bool{}
+	for _, f := range files {
+		ast.Inspect(f, func(node ast.Node) bool {
+			switch x := node.(type) {
+			case *ast.ValueSpec:
+				for i, name := range x.Names {
+					if i < len(x.Values) && isEffortLiteral(x.Values[i]) {
+						names[name.Name] = true
+					}
+				}
+			case *ast.AssignStmt:
+				for i, lhs := range x.Lhs {
+					if id, ok := lhs.(*ast.Ident); ok && i < len(x.Rhs) && isEffortLiteral(x.Rhs[i]) {
+						names[id.Name] = true
+					}
+				}
+			}
+			return true
+		})
+	}
+	return names
+}
+
+// isEffortLiteral reports whether e is the "reasoning_effort" string.
+func isEffortLiteral(e ast.Expr) bool {
+	lit, ok := e.(*ast.BasicLit)
+	if !ok || lit.Kind != token.STRING {
+		return false
+	}
+	s, err := strconv.Unquote(lit.Value)
+	return err == nil && s == "reasoning_effort"
+}
+
 // writesAnEffort reports whether n writes a reasoning effort: a call of
-// providerOptsForNode, an assignment to a "reasoning_effort" key or a
-// ProviderOptions / ReasoningEffort field, or a composite literal setting
-// one of them.
-func writesAnEffort(n ast.Node) bool {
+// providerOptsForNode, an assignment to a "reasoning_effort" key (the
+// literal or a name keyNames binds to it) or a ProviderOptions /
+// ReasoningEffort field, or a composite literal setting one of them.
+func writesAnEffort(n ast.Node, keyNames map[string]bool) bool {
 	found := false
 	ast.Inspect(n, func(node ast.Node) bool {
 		if found {
@@ -160,12 +209,12 @@ func writesAnEffort(n ast.Node) bool {
 			found = calleeName(x) == "providerOptsForNode"
 		case *ast.AssignStmt:
 			for _, lhs := range x.Lhs {
-				if isEffortTarget(lhs) {
+				if isEffortTarget(lhs, keyNames) {
 					found = true
 				}
 			}
 		case *ast.KeyValueExpr:
-			found = isEffortKey(x.Key)
+			found = isEffortKey(x.Key, keyNames)
 		}
 		return !found
 	})
@@ -173,11 +222,12 @@ func writesAnEffort(n ast.Node) bool {
 }
 
 // isEffortTarget reports whether an assignment's left side is an effort
-// carrier: m["reasoning_effort"], x.ProviderOptions, x.ReasoningEffort.
-func isEffortTarget(lhs ast.Expr) bool {
+// carrier: m["reasoning_effort"] (or m[k], k a name keyNames binds to it),
+// x.ProviderOptions, x.ReasoningEffort.
+func isEffortTarget(lhs ast.Expr, keyNames map[string]bool) bool {
 	switch x := lhs.(type) {
 	case *ast.IndexExpr:
-		return isEffortKey(x.Index)
+		return isEffortKey(x.Index, keyNames)
 	case *ast.SelectorExpr:
 		return x.Sel.Name == "ProviderOptions" || x.Sel.Name == "ReasoningEffort"
 	}
@@ -185,15 +235,14 @@ func isEffortTarget(lhs ast.Expr) bool {
 }
 
 // isEffortKey reports whether a composite-literal key or an index names an
-// effort carrier: the "reasoning_effort" string, or a ProviderOptions /
-// ReasoningEffort field.
-func isEffortKey(key ast.Expr) bool {
+// effort carrier: the "reasoning_effort" string, a name keyNames binds to
+// it, or a ProviderOptions / ReasoningEffort field.
+func isEffortKey(key ast.Expr, keyNames map[string]bool) bool {
 	switch k := key.(type) {
 	case *ast.BasicLit:
-		s, err := strconv.Unquote(k.Value)
-		return k.Kind == token.STRING && err == nil && s == "reasoning_effort"
+		return isEffortLiteral(k)
 	case *ast.Ident:
-		return k.Name == "ProviderOptions" || k.Name == "ReasoningEffort"
+		return k.Name == "ProviderOptions" || k.Name == "ReasoningEffort" || keyNames[k.Name]
 	}
 	return false
 }
@@ -208,4 +257,46 @@ func callsAny(n ast.Node, names map[string]bool) bool {
 		return !found
 	})
 	return found
+}
+
+// The walk sees an effort however its key is spelled: the literal, a
+// constant or a variable bound to "reasoning_effort" (in another file of
+// the package, or local), indexed in place, through an alias of
+// ProviderOptions, or as a composite-literal key. A key bound to another
+// string is no effort.
+func TestTheEffortWriterWalkSeesEveryKeySpelling(t *testing.T) {
+	t.Parallel()
+	const keys = `package model
+const effortKeyProbe = "reasoning_effort"
+const otherKeyProbe = "temperature"
+var effortVarProbe = "reasoning_effort"
+`
+	for _, tc := range []struct {
+		name, body string
+		writes     bool
+	}{
+		{"literal key", `opts.ProviderOptions["reasoning_effort"] = v`, true},
+		{"package constant, in place", `opts.ProviderOptions[effortKeyProbe] = v`, true},
+		{"package constant, through an alias", `po := opts.ProviderOptions; po[effortKeyProbe] = v`, true},
+		{"package variable", `po := map[string]any{}; po[effortVarProbe] = v; _ = po`, true},
+		{"local constant", `const k = "reasoning_effort"; po := map[string]any{}; po[k] = v; _ = po`, true},
+		{"local variable", `k := "reasoning_effort"; po := map[string]any{}; po[k] = v; _ = po`, true},
+		{"composite-literal key", `_ = map[string]any{effortKeyProbe: v}`, true},
+		{"another key", `po := map[string]any{}; po[otherKeyProbe] = v; _ = po`, false},
+	} {
+		src := "package model\nfunc probe(opts GenerationOptions, v string) { " + tc.body + " }\n"
+		var files []*ast.File
+		for i, text := range []string{keys, src} {
+			f, err := parser.ParseFile(token.NewFileSet(), "probe"+strconv.Itoa(i)+".go", text, 0)
+			if err != nil {
+				t.Fatalf("%s: %v", tc.name, err)
+			}
+			files = append(files, f)
+		}
+		keyNames := effortKeyNames(files)
+		fn := files[1].Decls[0].(*ast.FuncDecl)
+		if got := writesAnEffort(fn.Body, keyNames); got != tc.writes {
+			t.Errorf("%s: the walk saw writesAnEffort=%v, want %v", tc.name, got, tc.writes)
+		}
+	}
 }
