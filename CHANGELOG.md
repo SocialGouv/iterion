@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [5.27.0](https://github.com/SocialGouv/iterion/compare/v5.26.0...v5.27.0) (2026-11-12)
+
+### Features
+
+* **ci:** the two required checks that had no local member — vendor-check and mongo-conformance ([#3187](https://github.com/SocialGouv/iterion/issues/3187)) ([b39103e](https://github.com/SocialGouv/iterion/commit/b39103ebce0b3ecf5abde6981a86d75ca330fcaa)), references [#3156](https://github.com/SocialGouv/iterion/issues/3156)
+
+    <details><summary>why</summary>
+
+    #3156 by its option 1, the one the doctrine sets itself: `docs/agents/workflow/review-and-merge.md` says the operator direct-landing lane is CLOSED until "the full required-check set a workflow job can express" runs locally, as `task ci:gate`. Measured before this change, that sentence could not become true: of the six ruleset-required contexts, TWO had no local member at all — `grep -n 'mod tidy\|mod verify\|mod vendor' Taskfile.yml` returned nothing, and the single `mongo` in the whole…
+
+    </details>
+
 ## [5.26.0](https://github.com/SocialGouv/iterion/compare/v5.25.0...v5.26.0) (2026-11-12)
 
 ### Features
