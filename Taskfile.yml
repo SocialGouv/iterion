@@ -93,6 +93,16 @@ tasks:
     cmds:
       - go run -mod=vendor ./scripts/ci/testcaps {{.CLI_ARGS}}
 
+  claw:fold:plan:
+    desc: "Print the fold of claw-code-go into pkg/claw — the computed membership, the slices under the line cap, the switch and its residuals — writing nothing; pass -- -cap N or -json (docs/agents/backends/clawfold.md)"
+    cmds:
+      - go run -mod=vendor ./scripts/clawfold plan {{.CLI_ARGS}}
+
+  claw:fold:verify:
+    desc: "Replay the fold's per-file proofs on the tree — blob, exact inverse, rewritten lines only, mode; pass -- -slice K and the caps the plan was read with"
+    cmds:
+      - go run -mod=vendor ./scripts/clawfold verify {{.CLI_ARGS}}
+
   test:verbose:
     desc: Run all unit tests with verbose output
     deps: [templates:dispatch-bots]

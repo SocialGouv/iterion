@@ -175,6 +175,7 @@ One row per page under `docs/`, ADRs included. An ADR's **status** is the column
 | [`docs/agents/README.md`](../agents/README.md) | Agent instructions — the tree | Doctrine specific to this repository: what to know before touching iterion, | — |
 | [`docs/agents/backends/README.md`](../agents/backends/README.md) | Backends and execution — the domain | Who runs the prompt, with which tools, and what the node keeps of its | — |
 | [`docs/agents/backends/backend-selection.md`](../agents/backends/backend-selection.md) | Backend selection — the seven wired backends | Read it when a node runs on the wrong backend or you wire a new one. | — |
+| [`docs/agents/backends/clawfold.md`](../agents/backends/clawfold.md) | clawfold — folding claw-code-go into `pkg/claw`, with a proof per file | A move of ~140 k lines reviewed through one hash per file instead of trusted. | — |
 | [`docs/agents/backends/codemode-confinement.md`](../agents/backends/codemode-confinement.md) | Codemode confinement — the bounds, and what each one is proven by | The script host runs model-authored JavaScript in a child process that holds no | — |
 | [`docs/agents/backends/codemode.md`](../agents/backends/codemode.md) | Codemode — the model writes code that calls the node's own tools | One tool whose argument is JavaScript. | — |
 | [`docs/agents/backends/exec-environment.md`](../agents/backends/exec-environment.md) | Kubernetes execution environment transport | A Kubernetes command with a nonempty per-call `ExecOpts.Env` uses the native | — |
