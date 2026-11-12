@@ -774,6 +774,16 @@ tasks:
     cmds:
       - go run -mod=vendor ./cmd/iterion map gen
 
+  ci:vendor-check:
+    desc: "The local member of CI's `vendor-check` required check — go mod verify, then tidy+vendor and `git diff --exit-code`. It REWRITES go.mod, go.sum and vendor/, so it refuses a tree whose own paths are already dirty and must run LAST in any aggregate"
+    cmds:
+      - bash scripts/ci/vendor-check.sh
+
+  ci:mongo-conformance:
+    desc: "The local member of CI's `mongo-conformance` required check — a real one-member mongo:8.0 replica set (change streams + transactions), then BOTH `go test` invocations READ FROM the job itself rather than restated here. Needs docker; `ITERION_CI_GATE_EVIDENCE=<dir>` keeps the per-invocation logs and the exit-code matrix"
+    cmds:
+      - bash scripts/ci/mongo-conformance.sh
+
   map:check:
     desc: Fail if a committed repository map is stale, or if the freshness gate cannot redden
     cmds:
