@@ -43,6 +43,9 @@ __asm__(".global _start\n_start:\nmov x0, sp\nbl entry\n");
 #define O_CLOEXEC 02000000
 #define F_SETFD 2
 #define F_DUPFD_CLOEXEC 1030
+#define F_ADD_SEALS 1033
+#define CAPSULE_SEALS 15 /* SEAL | SHRINK | GROW | WRITE */
+#define MFD_CAPSULE_FLAGS 3 /* CLOEXEC | ALLOW_SEALING */
 #define AT_EMPTY_PATH 0x1000
 static long env_fd=-1, image_fd=-1, payload_fd=-1;
 static U length(const char *p) { U n=0; while(p[n]) n++; return n; }
@@ -79,10 +82,11 @@ static void append_fd(char *p,long fd) {
 }
 __attribute__((used,noreturn)) void entry(U *stack) {
  U argc=stack[0]; char **argv=(char **)(stack+1), **env=argv+argc+1;
- env_fd=above_stdio(call(SYS_MEMFD,(long)"iterion-execenv",1,0,0,0,0));
+ env_fd=above_stdio(call(SYS_MEMFD,(long)"iterion-execenv",MFD_CAPSULE_FLAGS,0,0,0,0));
  if(call(SYS_FCHMOD,env_fd,0600,0,0,0,0)<0) fail("mode");
  image_fd=above_stdio(call(SYS_OPENAT,AT_FDCWD,(long)"/proc/self/exe",O_PATH|O_CLOEXEC,0,0,0));
  for(char **p=env;*p;p++) write_all(env_fd,*p,length(*p)+1);
+ if(call(SYS_FCNTL,env_fd,F_ADD_SEALS,CAPSULE_SEALS,0,0,0)<0) fail("seal");
  if(call(SYS_SEEK,env_fd,0,0,0,0,0)<0) fail("seek");
  payload_fd=above_stdio(call(SYS_OPENAT,AT_FDCWD,(long)GUEST_PATH,O_PATH|O_CLOEXEC,0,0,0));
  char env_control[64]="IENV_NATIVE_ENV_FD=", image_control[64]="IENV_NATIVE_IMAGE_FD=";

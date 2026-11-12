@@ -4,7 +4,13 @@ A Kubernetes command with a nonempty per-call `ExecOpts.Env` uses the native
 capsule/guest pair. Overrides are invocation data; they do not become host
 `kubectl` configuration or shell text in its arguments. The capsule captures the
 actual pod process environment on each invocation, before the guest applies the
-overrides. An empty override map retains the historical command path.
+overrides. The capsule seals its captured memfd against writes, growth and
+shrinkage before handing it to the guest, which verifies the four required seal bits while accepting additional
+restrictions such as the kernel’s non-executable seal. The
+link count is not portable: gVisor reports one for a memfd where Linux reports
+zero. Ordinary files and incompletely sealed capsules refuse. Capsule and guest
+are shipped as a matching pair; the new guest refuses an unsealed old capsule.
+An empty override map retains the historical command path.
 
 The host is the real `iterion __exec-env-host-v1` entry, dispatched before application
 initialization. The guest is a separate Go leaf with only standard-library and

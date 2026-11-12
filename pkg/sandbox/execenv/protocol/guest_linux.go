@@ -127,19 +127,10 @@ func nativeDescriptors(environment []string) (*os.File, *os.File, error) {
 }
 
 func validateGuestChain(paths GuestPaths, envFile, imageFile *os.File) error {
-	st, err := envFile.Stat()
-	if err != nil {
-		return refused("capsule", "stat", err)
+	if err := validateEnvironmentCapsule(envFile); err != nil {
+		return err
 	}
-	raw, ok := st.Sys().(*syscall.Stat_t)
-	if !ok || !st.Mode().IsRegular() || st.Mode().Perm() != 0600 || raw.Nlink != 0 {
-		return refused("capsule", "shape", nil)
-	}
-	offset, err := envFile.Seek(0, io.SeekCurrent)
-	if err != nil || offset != 0 {
-		return refused("capsule", "offset", err)
-	}
-	if err = verifyImage(imageFile, paths.Capsule); err != nil {
+	if err := verifyImage(imageFile, paths.Capsule); err != nil {
 		return err
 	}
 	// Identity and effective-access checks do not require read permission on
@@ -151,6 +142,33 @@ func validateGuestChain(paths GuestPaths, envFile, imageFile *os.File) error {
 	self := os.NewFile(uintptr(selfFD), "executed payload")
 	defer self.Close()
 	return verifyImage(self, paths.Payload)
+}
+
+// validateEnvironmentCapsule checks immutable capture rather than st_nlink:
+// gVisor reports one link for a memfd, while Linux reports zero. An ordinary
+// tmpfs file starts with F_SEAL_SEAL and cannot acquire these content seals.
+func validateEnvironmentCapsule(file *os.File) error {
+	st, err := file.Stat()
+	if err != nil {
+		return refused("capsule", "stat", err)
+	}
+	if !st.Mode().IsRegular() || st.Mode().Perm() != 0600 {
+		return refused("capsule", "shape", nil)
+	}
+	const fGetSeals = 1034
+	const captureSeals = 15 // F_SEAL_SEAL | SHRINK | GROW | WRITE.
+	seals, _, errno := syscall.Syscall(syscall.SYS_FCNTL, file.Fd(), fGetSeals, 0)
+	if errno != 0 {
+		return refused("capsule", "seals", errno)
+	}
+	if seals&captureSeals != captureSeals {
+		return refused("capsule", "seals", nil)
+	}
+	offset, err := file.Seek(0, io.SeekCurrent)
+	if err != nil || offset != 0 {
+		return refused("capsule", "offset", err)
+	}
+	return nil
 }
 
 // verifyImage checks the actual descriptor against the build path, then checks
