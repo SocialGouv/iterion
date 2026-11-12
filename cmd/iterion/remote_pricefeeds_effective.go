@@ -35,7 +35,8 @@ carries; without it, every id a level states, each answering as a run
 naming it reads it. When that listing's table exceeds the run channel's
 byte budget, no run carries it whole — a run carries it narrowed to the
 gateway ids it names — and effective says so: --model shows one. A level
-the server could not read reads unread; the server log names the cause.
+the server could not read reads unread — a run launched now is refused
+until it reads; the server log names the cause.
 The runner's own env tables (OPENAI_COMPATIBLE_MODELS,
 OPENAI_COMPATIBLE_REASONING_EFFORTS) answer what no feed states; the server
 does not see them. --json prints the server's answer as sent.`,

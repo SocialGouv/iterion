@@ -1925,7 +1925,7 @@ run to the runner** — the operator table stays the floor.
   command printing the feed-entry JSON on stdout (the operator-table
   shape plus `reasoning_efforts`; no shell; `args` splits on spaces;
   stdout bounded; a descendant holding the pipe cannot stall the
-  sweep) — and `declared`, below. The HTTP fetches dial
+  sweep; an entry keyed by an id empty once trimmed fails the refresh) — and `declared`, below. The HTTP fetches dial
   through the same public-unicast guard as the gateway's own client —
   `ITERION_LLM_ENDPOINT_ALLOW_PRIVATE=1`, the operator's export, is the
   one hatch. An `exec` feed is the PLATFORM operator's capability:
