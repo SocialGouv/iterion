@@ -1,11 +1,13 @@
 package runview
 
 import (
+	"bytes"
 	"context"
 	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -131,32 +133,39 @@ func TestStampLocalCredentials_ReachesTheEngineContext(t *testing.T) {
 	}
 }
 
+// localStoreWith seals each entry into an in-memory local store.
+func localStoreWith(t *testing.T, sealer secrets.Sealer, entries ...secrets.GenericSecret) secrets.GenericSecretStore {
+	t.Helper()
+	memStore := secrets.NewMemoryGenericSecretStore()
+	for _, e := range entries {
+		sealed, err := secrets.SealGenericSecret(sealer, e.ID, []byte("stored-"+e.Name))
+		if err != nil {
+			t.Fatalf("seal %s: %v", e.Name, err)
+		}
+		e.ScopeTeamID, e.SealedSecret = secrets.LocalScopeTeam, sealed
+		if err := memStore.Create(context.Background(), e); err != nil {
+			t.Fatalf("store %s: %v", e.Name, err)
+		}
+	}
+	return memStore
+}
+
 // TestStampLocalCredentials_ResolvesOnlyValuelessDeclarations holds the local
 // launch to the cloud publisher's rule: the store fills a declaration with no
 // inline `value:` and only those. An inline-valued secret resolves from its
 // own expression in the run, so a store entry of the same name must not ride
-// the run's credentials — a subbot child declaring that name without a value
-// would otherwise read the store's token locally and nothing on the cloud.
+// the run's credentials: the cloud launch never resolves it, and on the cloud
+// a subbot child runs on its parent's credentials — a child declaring that
+// name without a value would read the store's token on one launch path and
+// nothing on the other.
 func TestStampLocalCredentials_ResolvesOnlyValuelessDeclarations(t *testing.T) {
 	sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
 	if err != nil {
 		t.Fatalf("sealer: %v", err)
 	}
-	memStore := secrets.NewMemoryGenericSecretStore()
-	for _, s := range []struct{ id, name, value string }{
-		{"sec-forge-token", "forge_token", "stored-forge-token"},
-		{"sec-deploy", "deploy_credential", "stored-deploy-credential"},
-	} {
-		sealed, err := secrets.SealGenericSecret(sealer, s.id, []byte(s.value))
-		if err != nil {
-			t.Fatalf("seal %s: %v", s.name, err)
-		}
-		if err := memStore.Create(context.Background(), secrets.GenericSecret{
-			ID: s.id, ScopeTeamID: secrets.LocalScopeTeam, Name: s.name, SealedSecret: sealed,
-		}); err != nil {
-			t.Fatalf("store %s: %v", s.name, err)
-		}
-	}
+	memStore := localStoreWith(t, sealer,
+		secrets.GenericSecret{ID: "sec-forge-token", Name: "forge_token"},
+		secrets.GenericSecret{ID: "sec-deploy", Name: "deploy_credential"})
 
 	wf := &ir.Workflow{Name: "canary", Secrets: map[string]*ir.Secret{
 		"forge_token":       {As: "file", Value: "{{vars.tok}}"},
@@ -171,9 +180,44 @@ func TestStampLocalCredentials_ResolvesOnlyValuelessDeclarations(t *testing.T) {
 		t.Fatal("the returned context carries no credentials")
 	}
 	if got := creds.GenericSecret("forge_token"); got != "" {
-		t.Errorf("forge_token is declared with an inline value and still resolved from the store (%q) — the cloud launch resolves nothing for it, so a subbot child sharing the run's credentials reads a different token on each launch path", got)
+		t.Errorf("forge_token is declared with an inline value and still resolved from the store (%q) — the cloud launch resolves nothing for it, so the run reads a different token on each launch path", got)
 	}
-	if got := creds.GenericSecret("deploy_credential"); got != "stored-deploy-credential" {
+	if got := creds.GenericSecret("deploy_credential"); got != "stored-deploy_credential" {
 		t.Errorf("deploy_credential (no inline value) resolved to %q, want the stored value", got)
+	}
+}
+
+// TestStampLocalCredentials_SaysWhatAnInlineValueShadows: a store entry an
+// inline-valued declaration shadows is not read — its value, nor the host
+// scope `iterion secret set --hosts` gave it, which the secret guard would
+// otherwise have narrowed the value's egress to. The launch says so, naming
+// the secret and the scope, instead of dropping the scope in silence; an
+// entry no inline value shadows is not named.
+func TestStampLocalCredentials_SaysWhatAnInlineValueShadows(t *testing.T) {
+	sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+	if err != nil {
+		t.Fatalf("sealer: %v", err)
+	}
+	memStore := localStoreWith(t, sealer,
+		secrets.GenericSecret{ID: "sec-api", Name: "api_key", AllowedHosts: []string{"api.example.com"}},
+		secrets.GenericSecret{ID: "sec-plain", Name: "plain_key"},
+		secrets.GenericSecret{ID: "sec-deploy", Name: "deploy_credential", AllowedHosts: []string{"deploy.example.com"}})
+	wf := &ir.Workflow{Name: "canary", Secrets: map[string]*ir.Secret{
+		"api_key":           {As: "env", Value: "${API_KEY}"},
+		"plain_key":         {As: "env", Value: "{{vars.k}}"},
+		"deploy_credential": {As: "file", Optional: true},
+	}}
+	var buf bytes.Buffer
+	if _, err := StampLocalCredentials(context.Background(), wf, memStore, sealer, iterlog.New(iterlog.LevelDebug, &buf)); err != nil {
+		t.Fatalf("StampLocalCredentials: %v", err)
+	}
+	logged := buf.String()
+	for _, want := range []string{`secret "api_key" is declared with an inline value`, "api.example.com", `secret "plain_key" is declared with an inline value`} {
+		if !strings.Contains(logged, want) {
+			t.Errorf("the launch log does not say %q:\n%s", want, logged)
+		}
+	}
+	if strings.Contains(logged, "deploy_credential") {
+		t.Errorf("the launch names deploy_credential, which no inline value shadows:\n%s", logged)
 	}
 }

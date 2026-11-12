@@ -381,6 +381,9 @@ func StampLocalCredentials(
 	if err != nil {
 		return nil, fmt.Errorf("runview: resolve local secrets: %w", err)
 	}
+	if err := warnShadowedStoreEntries(ctx, wf, localSecrets, logger); err != nil {
+		return nil, err
+	}
 	// Required-secret launch gate (parity with the cloud publisher): a
 	// non-`optional` declared secret with no inline value MUST resolve to
 	// a non-empty value. If it resolves to nothing, fail the launch here
@@ -401,9 +404,7 @@ func StampLocalCredentials(
 // fills: those declared without an inline `value:`, which the run resolves
 // from its own expression. The cloud publisher asks its store for the same
 // names (genericSecretNamesForWorkflow), so a declaration resolves to the
-// same source on either launch path — and a store entry named like an
-// inline-valued secret reaches neither the run nor a subbot child that
-// declares the name without a value. Nil-safe.
+// same source on either launch path. Nil-safe.
 func storedSecretNames(wf *ir.Workflow) []string {
 	if wf == nil || len(wf.Secrets) == 0 {
 		return nil
@@ -416,6 +417,44 @@ func storedSecretNames(wf *ir.Workflow) []string {
 		names = append(names, name)
 	}
 	return names
+}
+
+// warnShadowedStoreEntries names each local store entry an inline-valued
+// declaration shadows. The run resolves such a secret from its own `value:`
+// expression, on this launch path as on the cloud's, so the entry is not read
+// — its value, nor the host scope `iterion secret set --hosts` gave it, which
+// the secret guard would otherwise have narrowed the value's egress to. An
+// operator who set that scope learns it is inert here, rather than finding it
+// dropped. A store that cannot be listed fails the launch, as the resolution
+// above does.
+func warnShadowedStoreEntries(ctx context.Context, wf *ir.Workflow, store secrets.GenericSecretStore, logger *iterlog.Logger) error {
+	if wf == nil || logger == nil {
+		return nil
+	}
+	inline := map[string]bool{}
+	for name, s := range wf.Secrets {
+		if s.HasInlineValue() {
+			inline[name] = true
+		}
+	}
+	if len(inline) == 0 {
+		return nil
+	}
+	stored, err := store.ListByTeam(ctx, secrets.LocalScopeTeam, "")
+	if err != nil {
+		return fmt.Errorf("runview: list local secrets: %w", err)
+	}
+	for _, rec := range stored {
+		if !inline[rec.Name] {
+			continue
+		}
+		if len(rec.AllowedHosts) > 0 {
+			logger.Warn("secret %q is declared with an inline value, so the run resolves it from that expression: the local store's entry of the same name is not read, nor its host scope %v — the secret guard does not narrow the value's egress to those hosts. Declare `hosts:` on the secret to scope it, or drop its `value:` to read the stored one", rec.Name, rec.AllowedHosts)
+			continue
+		}
+		logger.Warn("secret %q is declared with an inline value, so the run resolves it from that expression: the local store's entry of the same name is not read. Drop the declaration's `value:` to read the stored one", rec.Name)
+	}
+	return nil
 }
 
 // requiredSecretNames returns the declared secret names that MUST resolve to a

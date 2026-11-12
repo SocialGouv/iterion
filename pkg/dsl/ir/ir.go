@@ -1530,8 +1530,11 @@ func (s *Secret) IsFile() bool {
 // stored secret, a bot binding or a launch override fills only a declaration
 // without one. Both launch resolutions (the cloud publisher's and the local
 // store's, runview.StampLocalCredentials), both required-secret gates, the
-// sandbox file-secret mount and the secret guard choose between the two
-// sources through this predicate.
+// sandbox file-secret mount (runtime.addSecretFileMounts) and the secret guard
+// choose between the two sources through this predicate. The cloud runner's
+// file writer for an unsandboxed pod (runner.materializeFileSecretsNoSandbox)
+// reads the resolved credentials alone, so an inline-valued `as: file` secret
+// is not written there.
 func (s *Secret) HasInlineValue() bool {
 	return s != nil && strings.TrimSpace(s.Value) != ""
 }
