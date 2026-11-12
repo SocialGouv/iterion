@@ -184,12 +184,14 @@ func foldInputStamp(scopes []priceFeedScopeRead) string {
 }
 
 // priceFeedFold is one fold's read and answer: the levels it read, least
-// specific first, the instant it judged freshness at, and the table —
-// nil when no feed answers.
+// specific first, the instant it judged freshness at, the table — nil
+// when no feed answers — and the level each id's entry and efforts answer
+// from (by the level's warning name, priceFeedScope.what).
 type priceFeedFold struct {
-	now    time.Time
-	scopes []priceFeedScopeRead
-	table  *pricefeed.Table
+	now      time.Time
+	scopes   []priceFeedScopeRead
+	table    *pricefeed.Table
+	answered pricefeed.Provenance
 }
 
 // priceFeedScopeRead is one level as the fold read it: its config and
@@ -233,7 +235,7 @@ func foldPriceFeed(ctx context.Context, configs pricefeed.ConfigStore, states pr
 		if once != nil && cfg.Warnf != nil {
 			cfg.Warnf = once.wrap(foldInputStamp(fold.scopes), cfg.Warnf)
 		}
-		fold.table = pricefeed.Fold(cfg, answering...)
+		fold.table, fold.answered = pricefeed.FoldProvenance(cfg, answering...)
 	}
 	return fold
 }

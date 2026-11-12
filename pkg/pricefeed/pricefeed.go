@@ -503,6 +503,23 @@ type ScopeState struct {
 // keeps the operator floor rather than a channel the kernel would
 // refuse to exec.
 func Fold(cfg FoldConfig, scopes ...ScopeState) *Table {
+	table, _ := FoldProvenance(cfg, scopes...)
+	return table
+}
+
+// Provenance names, per id, the scope whose feed answers the id's entry
+// and its accepted efforts in the table Fold answers — that scope's
+// Label, written where the fold decides it. A narrowing that drops an id
+// leaves its provenance: read it for the ids the table carries.
+type Provenance struct {
+	Entries map[string]string // id → the Label of the scope its entry answers from
+	Efforts map[string]string // id → the Label of the scope its efforts answer from
+}
+
+// FoldProvenance is Fold, answering beside the table the scope each id's
+// entry and efforts answer from: two feeds of one name at two levels,
+// stating the same word, are told apart by the level the fold took.
+func FoldProvenance(cfg FoldConfig, scopes ...ScopeState) (*Table, Provenance) {
 	if cfg.Now.IsZero() {
 		cfg.Now = time.Now()
 	}
@@ -512,6 +529,7 @@ func Fold(cfg FoldConfig, scopes ...ScopeState) *Table {
 	entries := map[string]Entry{}
 	entryScope := map[string]string{} // id → the label of the scope its entry answers from
 	efforts := map[string]EffortsEntry{}
+	effortsScope := map[string]string{} // id → the label of the scope its efforts answer from
 	shadows := shadowReport{}
 	asides := asideReport{}
 	for _, scope := range scopes {
@@ -599,15 +617,19 @@ func Fold(cfg FoldConfig, scopes ...ScopeState) *Table {
 			entryScope[id] = scope.Label
 		}
 		maps.Copy(efforts, scopeEfforts)
+		for id := range scopeEfforts {
+			effortsScope[id] = scope.Label
+		}
 	}
 	shadows.warn(cfg.Warnf)
 	asides.warn(cfg.Warnf)
+	provenance := Provenance{Entries: entryScope, Efforts: effortsScope}
 	if len(entries) == 0 && len(efforts) == 0 {
-		return nil
+		return nil, provenance
 	}
 	table := newTable(entries, efforts)
 	if table.Fits(cfg.Budget) {
-		return table
+		return table, provenance
 	}
 	// Prices narrow first: a price the narrowing drops steps down to the
 	// operator floor, an effort list it dropped would send a level the
@@ -617,19 +639,19 @@ func Fold(cfg FoldConfig, scopes ...ScopeState) *Table {
 		if cfg.Warnf != nil {
 			cfg.Warnf("price feed: the folded table exceeds %d bytes — prices narrowed to the run's %d named gateway ids, accepted efforts kept for all %d ids", cfg.Budget, len(pricesNarrowed.Entries), len(pricesNarrowed.Efforts))
 		}
-		return pricesNarrowed
+		return pricesNarrowed, provenance
 	}
 	narrowed := table.Narrow(cfg.Named)
 	if narrowed != nil && narrowed.Fits(cfg.Budget) {
 		if cfg.Warnf != nil {
 			cfg.Warnf("price feed: the folded table exceeds %d bytes — narrowed to the run's %d named gateway ids", cfg.Budget, len(narrowed.IDs()))
 		}
-		return narrowed
+		return narrowed, provenance
 	}
 	if cfg.Warnf != nil {
 		cfg.Warnf("price feed: the folded table exceeds %d bytes even narrowed to the run's named ids — the run keeps the operator table (narrow the feed's source)", cfg.Budget)
 	}
-	return nil
+	return nil, provenance
 }
 
 // shadowReport collects, per (winning feed, shadowed feed) pair, the ids

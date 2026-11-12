@@ -620,3 +620,39 @@ func TestFoldADeclaredUnpricedRowNeverHidesAPriceBelowIt(t *testing.T) {
 		t.Errorf("a near-zero team price over the platform's: %+v, want the team's", e)
 	}
 }
+
+// FoldProvenance names, per id, the scope each field of the table answers
+// from — per field, as the fold decides it: an entry the platform prices
+// and efforts the team states; an unpriced declared row of the team that
+// steps aside for the platform's price; the more specific of two like
+// answers. Its table is Fold's.
+func TestFoldProvenanceNamesTheScopeOfEachField(t *testing.T) {
+	now := time.Now()
+	platform := ScopeState{Label: "platform", Config: &ConfigRecord{UpdatedAt: now, Feeds: []FeedConfig{
+		declaredFeed("pliage", `{"deepseek-x":{"input_usd_per_mtok":0.6,"output_usd_per_mtok":2.4,"reasoning_efforts":["low","high"]},"glm-5.3":{"input_usd_per_mtok":2.01,"output_usd_per_mtok":6.15},"kimi-k2":{"input_usd_per_mtok":1,"output_usd_per_mtok":3,"reasoning_efforts":["max"]}}`),
+	}}}
+	team := ScopeState{Label: "team t1", Config: &ConfigRecord{UpdatedAt: now, Feeds: []FeedConfig{
+		declaredFeed("pliage", `{"deepseek-x":{"reasoning_efforts":["xhigh"]},"glm-5.3":{"context_window":256000},"kimi-k2":{"input_usd_per_mtok":1,"output_usd_per_mtok":3,"reasoning_efforts":["max"]}}`),
+	}}}
+	table, provenance := FoldProvenance(FoldConfig{Now: now}, platform, team)
+	if want := Fold(FoldConfig{Now: now}, platform, team); !reflect.DeepEqual(table, want) {
+		t.Fatalf("FoldProvenance's table %+v is not Fold's %+v", table, want)
+	}
+	for _, c := range []struct {
+		id, entry, efforts string
+	}{
+		{"deepseek-x", "platform", "team t1"},
+		{"glm-5.3", "platform", ""},
+		{"kimi-k2", "team t1", "team t1"},
+	} {
+		if got := provenance.Entries[c.id]; got != c.entry {
+			t.Errorf("%s: the entry answers from %q, want %q", c.id, got, c.entry)
+		}
+		if got := provenance.Efforts[c.id]; got != c.efforts {
+			t.Errorf("%s: the efforts answer from %q, want %q", c.id, got, c.efforts)
+		}
+	}
+	if got := table.Entries["glm-5.3"].Spec.InputCostPerM; got != 2.01 {
+		t.Errorf("glm-5.3's entry prices %v, want the platform's 2.01 (the team's unpriced row steps aside)", got)
+	}
+}

@@ -1978,8 +1978,9 @@ run to the runner** — the operator table stays the floor.
   any team member, answers the table a run launched now for the team
   seals — the publisher's own fold, at one instant; with `--model`, the
   table a run naming those gateway ids seals — and, per id, the
-  answering entry and efforts with their feed and level, every feed
-  that states the id, and the fold's warnings. A listing (no `--model`)
+  answering entry and efforts with their feed and level (the ones the
+  fold took: two feeds of one name at two levels are told apart), every
+  feed that states the id, and the fold's warnings. A listing (no `--model`)
   whose folded table exceeds the run channel's byte budget is sealed
   whole by no run: the view answers `over_budget` (its size and the
   budget) and no table, each id answering as a run naming it reads it,

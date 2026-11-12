@@ -116,3 +116,23 @@ func TestRemotePriceFeedsEffectiveSaysAnOverBudgetListingIsNarrowedPerRun(t *tes
 		t.Errorf("effective over no feed:\n%s", out)
 	}
 }
+
+// Two levels naming their feed alike and stating the same efforts: the run
+// reads the team's, and effective names the team as the level that answers.
+func TestRemotePriceFeedsEffectiveNamesTheMoreSpecificOfTwoLikeFeeds(t *testing.T) {
+	live := newPriceFeedsLive(t)
+	const efforts = `{"scaleway/deepseek-v4.1-flash":{"reasoning_efforts":["low","high","xhigh","max"]}}`
+	live.seed(t, pricefeed.PlatformConfigDocID, declaredTestFeed("pliage", efforts, 30*24*time.Hour))
+	live.seed(t, pricefeed.TeamConfigDocID("team-pf"), declaredTestFeed("pliage", efforts, 30*24*time.Hour))
+
+	out, err := runPriceFeedsCommand(t, "remote", "price-feeds", "effective", "--model", "scaleway/deepseek-v4.1-flash")
+	if err != nil {
+		t.Fatalf("effective: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "low,high,xhigh,max — feed pliage (team team-pf)") {
+		t.Errorf("effective does not name the team as the level that answers the efforts:\n%s", out)
+	}
+	if strings.Count(out, "(answers the efforts)") != 1 {
+		t.Errorf("effective marks %d contributors as answering the efforts, want one:\n%s", strings.Count(out, "(answers the efforts)"), out)
+	}
+}

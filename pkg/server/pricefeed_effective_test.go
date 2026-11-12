@@ -61,12 +61,13 @@ func putFeedDoc(t *testing.T, configs pricefeed.ConfigStore, docID string, feeds
 // the org resolved from the team, its table the very bytes the
 // publisher's fold seals for the same team and ids, and per id the
 // answering entry and efforts beside every level and feed stating it —
-// judged by value, so two feeds of one name at two levels are told
-// apart. The fold's warnings and the runner's unseen fallback ride along.
+// the one the fold took answering, so two feeds of one name at two levels
+// are told apart. The fold's warnings and the runner's unseen fallback
+// ride along.
 func TestPriceFeedEffectiveView(t *testing.T) {
 	live := newPriceFeedLive(t)
 	// The platform and the org both name their feed "pliage": the answer
-	// is told by value, never by the name.
+	// is told by the level the fold took it from, never by the name.
 	putFeedDoc(t, live.configs, "platform", declaredFeed("pliage",
 		`{"glm-5.3":{"context_window":256000,"max_output_tokens":16384,"input_usd_per_mtok":2.01,"output_usd_per_mtok":6.15},"scaleway/deepseek-v4.1-flash":{"reasoning_efforts":["low","high","xhigh","max"]},"kimi-k2":{"reasoning_efforts":["high"]}}`))
 	putFeedDoc(t, live.configs, pricefeed.OrgConfigDocID("org1"), declaredFeed("pliage",
@@ -393,5 +394,65 @@ func TestPriceFeedEffectiveViewKeepsAReadErrorInTheServerLog(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(operator, "\n"), "platform unread — the launch or resume folding it is refused: "+internal) {
 		t.Errorf("the publisher's fold warns %q, want the platform level's read error", operator)
+	}
+}
+
+// One contributor answers each of an id's entry and efforts: the one the
+// fold took, at the level it took it from. Two levels naming their feed
+// alike and stating the same word are two contributors, and only the more
+// specific one answers — the run reads the team's, whatever the platform
+// says. Two shapes: a declaration's efforts, and a fetched feed's entry
+// refreshed at the same instant at both levels. A later feed of the
+// answering level stating the id answers neither.
+func TestPriceFeedEffectiveViewNamesTheLevelThatAnswers(t *testing.T) {
+	const deepseek = "scaleway/deepseek-v4.1-flash"
+	live := newPriceFeedLive(t)
+	efforts := `{"` + deepseek + `":{"reasoning_efforts":["low","high","xhigh","max"]}}`
+	refreshed := time.Now().Add(-time.Minute).UTC()
+	for _, docID := range []string{pricefeed.PlatformConfigDocID, pricefeed.TeamConfigDocID("team-pf")} {
+		feeds := []pricefeed.FeedConfig{
+			declaredFeed("pliage", efforts),
+			{Name: "scw", Type: pricefeed.TypeExec, Enabled: true, Interval: pricefeed.D(time.Hour), Timeout: pricefeed.D(time.Second), Params: map[string]string{"command": "/nonexistent"}},
+		}
+		if docID != pricefeed.PlatformConfigDocID {
+			feeds = append(feeds, declaredFeed("extra", `{"`+deepseek+`":{"reasoning_efforts":["high"]},"glm-5.3":{"input_usd_per_mtok":3,"output_usd_per_mtok":9}}`))
+		}
+		putFeedDoc(t, live.configs, docID, feeds...)
+		if err := live.states.Put(context.Background(), pricefeed.StateDocID(docID, "scw"), &pricefeed.StateRecord{
+			Feed: "scw", Type: pricefeed.TypeExec, Status: pricefeed.StateOK,
+			Entries:     map[string]modelspecs.Spec{"glm-5.3": {ContextWindow: 256000, InputCostPerM: 2.01, OutputCostPerM: 6.15}},
+			RefreshedAt: refreshed, FreshFor: pricefeed.D(2 * time.Hour), LastAttempt: refreshed,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	code, out := live.do(t, "GET", "/api/teams/team-pf/price-feeds/effective?model="+deepseek+"&model=glm-5.3", live.viewer, "")
+	if code != http.StatusOK {
+		t.Fatalf("the view: %d %s", code, out)
+	}
+	var view priceFeedEffectiveWire
+	if err := json.Unmarshal(out, &view); err != nil {
+		t.Fatalf("decode: %v (%s)", err, out)
+	}
+	if len(view.Models) != 2 {
+		t.Fatalf("the view reports %d ids, want 2: %s", len(view.Models), out)
+	}
+	for _, m := range view.Models {
+		var answers []string
+		for _, c := range m.Contributors {
+			if c.AnswersEntry {
+				answers = append(answers, "entry:"+c.Scope+":"+c.Feed)
+			}
+			if c.AnswersEfforts {
+				answers = append(answers, "efforts:"+c.Scope+":"+c.Feed)
+			}
+		}
+		want := map[string]string{deepseek: "efforts:team:pliage", "glm-5.3": "entry:team:scw"}[m.ID]
+		if got := strings.Join(answers, " "); got != want {
+			t.Errorf("%s: the contributors that answer are %q, want only %q — the feed and the level the fold took", m.ID, got, want)
+		}
+		if len(m.Contributors) != 3 {
+			t.Errorf("%s: %d contributors, want the platform's, the team's like-named one and the team's later one", m.ID, len(m.Contributors))
+		}
 	}
 }

@@ -96,9 +96,10 @@ type priceFeedEffectiveModel struct {
 }
 
 // priceFeedContributor is one feed stating an id, least specific level
-// first. AnswersEntry / AnswersEfforts say whether its word EQUALS the
-// answer the run reads — by value, so two feeds of one name at two levels
-// are told apart.
+// first. AnswersEntry / AnswersEfforts say whether its word is the answer
+// the run reads: the feed the fold took, at the level it took it from
+// (pricefeed.Provenance) — two feeds of one name at two levels stating
+// the same word are told apart, one answering.
 type priceFeedContributor struct {
 	Scope          string           `json:"scope"`
 	ScopeID        string           `json:"scope_id,omitempty"`
@@ -211,11 +212,11 @@ func effectivePriceFeedContributors(fold priceFeedFold) ([]priceFeedEffectiveSco
 					if entry, ok := alone.Entries[id]; ok {
 						spec := entry.Spec
 						c.Spec = &spec
-						c.AnswersEntry = fold.table != nil && priceFeedEntryEqual(entry, fold.table.Entries[id])
+						c.AnswersEntry = fold.answersEntry(id, read.scope.what, feed.Name)
 					}
 					if efforts, ok := alone.Efforts[id]; ok {
 						c.Efforts = efforts.Values
-						c.AnswersEfforts = fold.table != nil && priceFeedEffortsEqual(efforts, fold.table.Efforts[id])
+						c.AnswersEfforts = fold.answersEfforts(id, read.scope.what, feed.Name)
 					}
 					byID[id] = append(byID[id], c)
 				}
@@ -259,14 +260,23 @@ func effectivePriceFeedModels(fold priceFeedFold, contributors map[string][]pric
 	return models
 }
 
-// priceFeedEntryEqual compares two folded entries by value: feed, age,
-// window and spec.
-func priceFeedEntryEqual(a, b pricefeed.Entry) bool {
-	return a.Feed == b.Feed && a.RefreshedAt.Equal(b.RefreshedAt) && a.FreshFor == b.FreshFor &&
-		a.Declared == b.Declared && pricefeed.SpecEqual(a.Spec, b.Spec)
+// answersEntry reports whether the table's entry for id is feed's at the
+// level named level: the table carries it (a narrowing may drop it) and
+// the fold took it there.
+func (f priceFeedFold) answersEntry(id, level, feed string) bool {
+	if f.table == nil {
+		return false
+	}
+	entry, ok := f.table.Entries[id]
+	return ok && entry.Feed == feed && f.answered.Entries[id] == level
 }
 
-// priceFeedEffortsEqual compares two folded efforts entries by value.
-func priceFeedEffortsEqual(a, b pricefeed.EffortsEntry) bool {
-	return a.Feed == b.Feed && slices.Equal(a.Values, b.Values)
+// answersEfforts reports whether the table's accepted efforts for id are
+// feed's at the level named level.
+func (f priceFeedFold) answersEfforts(id, level, feed string) bool {
+	if f.table == nil {
+		return false
+	}
+	efforts, ok := f.table.Efforts[id]
+	return ok && efforts.Feed == feed && f.answered.Efforts[id] == level
 }
