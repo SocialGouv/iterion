@@ -72,9 +72,12 @@ const (
 // ReasoningEfforts is the list of reasoning_effort wire values the model
 // accepts, in ParseEffortLevels' vocabulary; nil is unstated, never "accepts
 // nothing". The aggregator parse (ParseModelsDev) never fills it, and
-// consensusSpec drops it where publishers disagree. It carries no bson tag:
-// the Mongo key is the driver's default `reasoningefforts`, an additive field
-// older binaries skip on decode.
+// consensusSpec drops it where publishers disagree. It is server-side feed
+// state: a feed's entries fill it (pricefeed.ParseFeedEntries), and the run
+// table the server folds strips it from its price entries and carries the
+// efforts in a map of their own (pricefeed.Table.Efforts). It carries no
+// bson tag: the Mongo key is the driver's default `reasoningefforts`, an
+// additive field older binaries skip on decode.
 type Spec struct {
 	ContextWindow     int      `json:"context_window,omitempty"`
 	MaxOutputTokens   int      `json:"max_output_tokens,omitempty"`

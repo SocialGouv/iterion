@@ -4,8 +4,10 @@
 //
 // A feed is server-side, database-backed state at the org/team level of
 // the provider/model override cascade. Runners never fetch prices: the
-// server folds the effective table (fresh feed entries first, the
-// operator floor below) and the answer travels with the run — sealed in
+// server folds the effective table (answering feed entries first — a
+// fetched feed's while fresh, a declaration's always — the operator floor
+// below, and the models' accepted reasoning efforts in a map of their
+// own) and the answer travels with the run — sealed in
 // the bundle, planted on the run's environment under one name the
 // gateway catalog reads between the host IPC record and the operator
 // table (compatgw.FeedTableEnv).
@@ -21,6 +23,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -150,18 +154,34 @@ func (d *Duration) UnmarshalJSON(b []byte) error {
 }
 
 // Entry is one gateway id's folded answer: which feed carries it, how
-// fresh that feed's word is, and the spec itself.
+// fresh that feed's word is, and the spec itself. A declared entry (a
+// static feed's) carries the config's UpdatedAt as RefreshedAt and no
+// window: a declaration does not age. Its Spec never carries accepted
+// efforts — those ride in Table.Efforts.
 type Entry struct {
 	Feed        string          `json:"feed"`
 	RefreshedAt time.Time       `json:"refreshed_at"`
 	FreshFor    Duration        `json:"fresh_for"`
 	Spec        modelspecs.Spec `json:"spec"`
+	Declared    bool            `json:"declared,omitempty"`
 }
 
-// Fresh reports whether the entry's feed word is inside its window at
-// now. A reader past the window steps down to the operator floor — the
-// entry stays visible in the table, it stops ANSWERING.
+// EffortsEntry is one gateway id's accepted reasoning efforts on the run
+// table: the feed that stated them and the wire values, in the order the
+// feed listed them.
+type EffortsEntry struct {
+	Feed   string   `json:"feed"`
+	Values []string `json:"values"`
+}
+
+// Fresh reports whether the entry's feed word answers at now: a declared
+// entry always does; a fetched one while inside its window. A reader past
+// the window steps down to the operator floor — the entry stays visible
+// in the table, it stops ANSWERING.
 func (e Entry) Fresh(now time.Time) bool {
+	if e.Declared {
+		return true
+	}
 	return time.Duration(e.FreshFor) > 0 && !e.RefreshedAt.IsZero() &&
 		now.Sub(e.RefreshedAt) <= time.Duration(e.FreshFor)
 }
@@ -170,12 +190,32 @@ func (e Entry) Fresh(now time.Time) bool {
 // run, sealed in the bundle and planted on the run's environment. Every
 // entry carries its own feed and freshness, so per-id provenance rides
 // without a second channel.
+//
+// Two maps, folded independently: Entries answers prices, windows and
+// flags; Efforts answers accepted reasoning efforts. An id may sit in
+// either or both — a feed that prices an id and a declaration that only
+// lists its efforts each answer their own field. Entries is always
+// encoded, `{}` when empty: an older runner's parser requires it, so an
+// efforts-only table still plants (and its efforts map is ignored there).
 type Table struct {
-	Entries map[string]Entry `json:"entries"`
+	Entries map[string]Entry        `json:"entries"`
+	Efforts map[string]EffortsEntry `json:"efforts,omitempty"`
 }
 
-// Lookup answers one gateway id (already normalized: lower-cased,
-// trimmed) when a FRESH feed entry carries it.
+// newTable builds a table whose price map is never nil, so it encodes as
+// `{}`; an empty efforts map is omitted.
+func newTable(entries map[string]Entry, efforts map[string]EffortsEntry) *Table {
+	if entries == nil {
+		entries = map[string]Entry{}
+	}
+	if len(efforts) == 0 {
+		efforts = nil
+	}
+	return &Table{Entries: entries, Efforts: efforts}
+}
+
+// Lookup answers one gateway id (normalized here: lower-cased, trimmed)
+// when an entry that answers at now (Entry.Fresh) carries it.
 func (t *Table) Lookup(id string, now time.Time) (Entry, bool) {
 	if t == nil {
 		return Entry{}, false
@@ -187,17 +227,22 @@ func (t *Table) Lookup(id string, now time.Time) (Entry, bool) {
 	return e, true
 }
 
-// ParseTable decodes the wire shape. Malformed or empty input answers
-// nil: a garbage value degrades to the local sources, it never invents
-// one (the contract the IPC record already holds).
+// ParseTable decodes the wire shape: a table carrying prices, efforts or
+// both. Malformed or empty input — or neither map — answers nil: a
+// garbage value degrades to the local sources, it never invents one (the
+// contract the IPC record already holds). The answer's Entries is never
+// nil.
 func ParseTable(raw string) *Table {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return nil
 	}
 	var t Table
-	if err := json.Unmarshal([]byte(raw), &t); err != nil || t.Entries == nil {
+	if err := json.Unmarshal([]byte(raw), &t); err != nil || (t.Entries == nil && t.Efforts == nil) {
 		return nil
+	}
+	if t.Entries == nil {
+		t.Entries = map[string]Entry{}
 	}
 	return &t
 }
@@ -353,25 +398,45 @@ type FoldConfig struct {
 const DefaultBudget = 100 * 1024
 
 // ScopeState is one scope's contribution to the fold: its config
-// document and its feeds' states. Scopes fold least-specific first —
-// org, then team: a fresh team entry answers over a fresh org entry for
-// the ids it carries, the direction the routing cascade already runs.
+// document and its fetched feeds' states. Scopes fold least-specific
+// first — org, then team: a team entry answers over an org entry for the
+// ids it carries, the direction the routing cascade already runs. A
+// static feed's entries are read from Config itself (its params), never
+// from States.
 type ScopeState struct {
 	Config *ConfigRecord
 	States map[string]*StateRecord // feed name → state
 }
 
-// Fold composes the effective table for one run: every FRESH entry of
-// every enabled feed, first feed in the config order winning within a
-// scope, the later scope winning across them. Stale feeds contribute
-// nothing — they step down to the operator floor, which is not this
-// table's business.
+// Fold composes the effective table for one run, two fields folded
+// independently, each by the same precedence — within a scope the
+// config's FIRST enabled feed stating the field for an id wins it; across
+// scopes the later (more specific) scope replaces the ids it carries:
 //
-// The result fits FoldConfig.Budget serialized. A table over budget is
-// narrowed to the run's NAMED ids (the workflow's own gateway models);
-// a narrowed table still over budget answers nil with a warning — the
-// run keeps the operator floor rather than a channel the kernel would
-// refuse to exec.
+//   - Entries: every priced entry (input and output price both above
+//     zero) of every answering feed, its accepted efforts stripped;
+//   - Efforts: every entry's accepted efforts, priced or not.
+//
+// A fetched feed answers while its state is fresh (StateRecord.Fresh);
+// a stale one contributes nothing — it steps down to the operator floor,
+// which is not this table's business. A static feed (a declaration)
+// answers from its config at every fold, whatever its age and whatever
+// state document sits under its name; a declaration the write rules
+// refuse steps down with a warning naming the feed.
+//
+// An entry without the price pair never shadows the priced operator
+// table — or the catalog below it — with an unpriced answer: it stays in
+// the durable state, visible, and does not travel in Entries. One summary
+// warning per feed per fold counts the unpriced entries whose window,
+// output cap, cache price or flags are thereby dropped (or that state
+// nothing); an entry whose only content is its efforts is not counted,
+// its efforts answer.
+//
+// The result is nil only when both maps are empty, and fits
+// FoldConfig.Budget serialized. A table over budget is narrowed to the
+// run's NAMED ids (the workflow's own gateway models); a narrowed table
+// still over budget answers nil with a warning — the run keeps the
+// operator floor rather than a channel the kernel would refuse to exec.
 func Fold(cfg FoldConfig, scopes ...ScopeState) *Table {
 	if cfg.Now.IsZero() {
 		cfg.Now = time.Now()
@@ -380,74 +445,72 @@ func Fold(cfg FoldConfig, scopes ...ScopeState) *Table {
 		cfg.Budget = DefaultBudget
 	}
 	entries := map[string]Entry{}
+	efforts := map[string]EffortsEntry{}
 	for _, scope := range scopes {
 		if scope.Config == nil {
 			continue
 		}
 		// Each scope folds into its own answer first — the config's feed
 		// order IS that scope's precedence, and a silent map-order
-		// override would price an id at whichever feed ranged last —
-		// then the scope replaces the ids it carries on the scopes below:
-		// the team's feed answers over the org's, per id, the direction
-		// the routing cascade already runs.
+		// override would answer an id from whichever feed ranged last —
+		// then the scope replaces the ids it carries on the scopes below.
 		scopeEntries := map[string]Entry{}
+		scopeEfforts := map[string]EffortsEntry{}
 		for _, feed := range scope.Config.Feeds {
 			if !feed.Enabled {
 				continue
 			}
-			state := scope.States[feed.Name]
-			if !state.Fresh(cfg.Now) {
+			answer, ok := feedAnswer(cfg, scope, feed)
+			if !ok {
 				continue
 			}
 			unpriced := 0
-			for id, spec := range state.Entries {
+			for id, spec := range answer.specs {
 				id = NormalizeID(id)
 				if id == "" {
 					continue
 				}
-				// A price feed answers PRICES: an entry without the pair
-				// (a source that carries the id but not its tariffs) must
-				// never shadow the priced operator table — or the catalog
-				// below it — with an unpriced answer (round 1's HIGH:
-				// spend silently vanishing from metering and budgets).
-				// It stays in the durable state, visible and honest; it
-				// does not travel as the run's table. One SUMMARY line
-				// per feed per fold, never per id — the fold runs on
-				// every launch, and the ADR's watch is "not per
-				// dispatch" (round 2).
+				if len(spec.ReasoningEfforts) > 0 {
+					if _, taken := scopeEfforts[id]; !taken {
+						scopeEfforts[id] = EffortsEntry{Feed: feed.Name, Values: slices.Clone(spec.ReasoningEfforts)}
+					}
+				}
 				if spec.InputCostPerM <= 0 || spec.OutputCostPerM <= 0 {
-					unpriced++
+					if len(spec.ReasoningEfforts) == 0 || len(unpricedFields(spec)) > 0 {
+						unpriced++
+					}
 					continue
 				}
 				if _, taken := scopeEntries[id]; taken {
 					continue
 				}
+				spec.ReasoningEfforts = nil
 				scopeEntries[id] = Entry{
 					Feed:        feed.Name,
-					RefreshedAt: state.RefreshedAt,
-					FreshFor:    state.FreshFor,
+					RefreshedAt: answer.refreshedAt,
+					FreshFor:    answer.freshFor,
 					Spec:        spec,
+					Declared:    answer.declared,
 				}
 			}
 			if unpriced > 0 && cfg.Warnf != nil {
-				cfg.Warnf("price feed %s: %d entries carry no price pair — they do not answer and the operator table keeps those ids", feed.Name, unpriced)
+				cfg.Warnf("price feed %s: %d entries carry no price pair — their windows, prices and flags do not answer and the operator table keeps those ids", feed.Name, unpriced)
 			}
 		}
-		for id, e := range scopeEntries {
-			entries[id] = e
-		}
+		maps.Copy(entries, scopeEntries)
+		maps.Copy(efforts, scopeEfforts)
 	}
-	if len(entries) == 0 {
+	if len(entries) == 0 && len(efforts) == 0 {
 		return nil
 	}
-	table := &Table{Entries: entries}
+	table := newTable(entries, efforts)
 	if table.Fits(cfg.Budget) {
 		return table
 	}
 	narrowed := table.Narrow(cfg.Named)
 	if narrowed != nil && narrowed.Fits(cfg.Budget) {
 		if cfg.Warnf != nil {
-			cfg.Warnf("price feed: the folded table exceeds %d bytes — narrowed to the run's %d named gateway ids", cfg.Budget, len(narrowed.Entries))
+			cfg.Warnf("price feed: the folded table exceeds %d bytes — narrowed to the run's %d named gateway ids", cfg.Budget, len(narrowed.IDs()))
 		}
 		return narrowed
 	}
@@ -457,7 +520,39 @@ func Fold(cfg FoldConfig, scopes ...ScopeState) *Table {
 	return nil
 }
 
-// Fits reports whether the table serializes within budget.
+// feedAnswered is one feed's contribution to a fold: its entries and the
+// provenance every entry it answers carries.
+type feedAnswered struct {
+	specs       map[string]modelspecs.Spec
+	refreshedAt time.Time
+	freshFor    Duration
+	declared    bool
+}
+
+// feedAnswer reads what one enabled feed answers at the fold's instant:
+// a static feed its config's params (declared, stamped with the config's
+// UpdatedAt, no window), a fetched feed its state while fresh.
+func feedAnswer(cfg FoldConfig, scope ScopeState, feed FeedConfig) (feedAnswered, bool) {
+	if src, ok := SourceFor(feed.Type); ok {
+		if static, ok := src.(StaticSource); ok {
+			specs, err := static.Entries(feed.Params)
+			if err != nil {
+				if cfg.Warnf != nil {
+					cfg.Warnf("price feed %s: the declaration does not answer — %v", feed.Name, err)
+				}
+				return feedAnswered{}, false
+			}
+			return feedAnswered{specs: specs, refreshedAt: scope.Config.UpdatedAt, declared: true}, true
+		}
+	}
+	state := scope.States[feed.Name]
+	if !state.Fresh(cfg.Now) {
+		return feedAnswered{}, false
+	}
+	return feedAnswered{specs: state.Entries, refreshedAt: state.RefreshedAt, freshFor: state.FreshFor}, true
+}
+
+// Fits reports whether the table serializes within budget — both maps.
 func (t *Table) Fits(budget int) bool {
 	if t == nil {
 		return true
@@ -466,33 +561,43 @@ func (t *Table) Fits(budget int) bool {
 	return err == nil && len(raw) <= budget
 }
 
-// Narrow keeps only the named ids (normalized). An empty answer is nil:
-// narrowing to nothing is not a table.
+// Narrow keeps only the named ids (normalized), in both maps. An answer
+// carrying neither is nil: narrowing to nothing is not a table.
 func (t *Table) Narrow(named []string) *Table {
 	if t == nil || len(named) == 0 {
 		return nil
 	}
 	keep := map[string]Entry{}
+	keepEfforts := map[string]EffortsEntry{}
 	for _, id := range named {
-		if e, ok := t.Entries[NormalizeID(id)]; ok {
-			keep[NormalizeID(id)] = e
+		id = NormalizeID(id)
+		if e, ok := t.Entries[id]; ok {
+			keep[id] = e
+		}
+		if e, ok := t.Efforts[id]; ok {
+			keepEfforts[id] = e
 		}
 	}
-	if len(keep) == 0 {
+	if len(keep) == 0 && len(keepEfforts) == 0 {
 		return nil
 	}
-	return &Table{Entries: keep}
+	return newTable(keep, keepEfforts)
 }
 
-// IDs lists the table's ids, sorted — deterministic for tests and for
-// the drift reporter.
+// IDs lists the ids either map carries, each once, sorted —
+// deterministic for tests and for the fold's narrowing warning.
 func (t *Table) IDs() []string {
 	if t == nil {
 		return nil
 	}
-	ids := make([]string, 0, len(t.Entries))
+	ids := make([]string, 0, len(t.Entries)+len(t.Efforts))
 	for id := range t.Entries {
 		ids = append(ids, id)
+	}
+	for id := range t.Efforts {
+		if _, priced := t.Entries[id]; !priced {
+			ids = append(ids, id)
+		}
 	}
 	sort.Strings(ids)
 	return ids
