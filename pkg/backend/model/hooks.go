@@ -1807,7 +1807,7 @@ func NewStoreEventHooks(ctx context.Context, emitter EventEmitter, runID string,
 		OnDelegateRetry:      h.onDelegateRetry,
 		OnProviderFallback:   h.onProviderFallback,
 		OnReasoningEffortAdjusted: func(nodeID string, info ReasoningEffortAdjustment) {
-			h.emit(nodeID, store.EventReasoningEffortAdjusted, map[string]any{"model": info.Model, "requested": info.Requested, "applied": info.Applied, "reason": info.Reason})
+			h.emit(nodeID, store.EventReasoningEffortAdjusted, map[string]any{"model": info.Model, "requested": info.Requested, "applied": info.Applied, "source": info.Source, "reason": info.Reason})
 		},
 		OnSessionDegraded:   h.onSessionDegraded,
 		OnMCPServerDegraded: h.onMCPServerDegraded,

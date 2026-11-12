@@ -2,21 +2,32 @@ package model
 
 import (
 	"context"
-	"github.com/SocialGouv/iterion/pkg/backend/compatgw"
-	"github.com/SocialGouv/iterion/pkg/backend/modelroute"
+	"fmt"
 	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/SocialGouv/iterion/pkg/backend/compatgw"
+	"github.com/SocialGouv/iterion/pkg/backend/modelroute"
 )
 
-// routeReasoningEffort honors an explicit route matrix. An absent matrix
-// retains the backend's existing behavior. Equal distances prefer more effort.
+// routeReasoningEffort honors the route's accepted efforts
+// (compatgw.AcceptedEfforts: the run's feed table, then the runner's env
+// table). A route with no accepted list keeps the requested effort; a
+// substitution is warned and reported with the source that listed the
+// route's efforts. Equal distances prefer more effort.
 func (e *ClawExecutor) routeReasoningEffort(ctx context.Context, nodeID, spec, requested string) string {
-	applied := gatewayReasoningEffort(ctx, spec, requested, e.logger.Warn)
+	applied, source := gatewayReasoningEffort(ctx, spec, requested, e.logger.Warn)
 	if applied == requested {
 		return requested
 	}
-	info := ReasoningEffortAdjustment{Model: spec, Requested: requested, Applied: applied, Reason: "requested effort is absent from OPENAI_COMPATIBLE_REASONING_EFFORTS"}
+	info := ReasoningEffortAdjustment{
+		Model:     spec,
+		Requested: requested,
+		Applied:   applied,
+		Source:    source,
+		Reason:    fmt.Sprintf("requested effort is not among %s's accepted efforts (%s)", modelroute.Parse(spec).Wire, source),
+	}
 	e.logger.Warn("reasoning_effort_adjusted: node %q model %q requested=%s applied=%s reason=%s", nodeID, spec, requested, applied, info.Reason)
 	if e.hooks.OnReasoningEffortAdjusted != nil {
 		e.hooks.OnReasoningEffortAdjusted(nodeID, info)
@@ -24,25 +35,29 @@ func (e *ClawExecutor) routeReasoningEffort(ctx context.Context, nodeID, spec, r
 	return applied
 }
 
-// Gateway wire IDs are opaque. A named effort uses the nearest named level
-// (ties prefer more effort); integers compare only with integers. If an
-// operator lists only the other representation, its first value wins. No
-// undocumented conversion between a named level and a numeric budget is made.
-func gatewayReasoningEffort(ctx context.Context, spec, requested string, warn func(string, ...any)) string {
+// gatewayReasoningEffort maps a requested effort onto the gateway route's
+// accepted list, read through the invocation's environment
+// (compatgw.AcceptedEfforts), and answers the list's source ("" when no
+// list answered and the requested effort passes). Gateway wire IDs are
+// opaque. A named effort uses the nearest named level (ties prefer more
+// effort); integers compare only with integers. If an operator lists only
+// the other representation, its first value wins. No undocumented
+// conversion between a named level and a numeric budget is made.
+func gatewayReasoningEffort(ctx context.Context, spec, requested string, warn func(string, ...any)) (applied, source string) {
 	if requested == "" {
-		return requested
+		return requested, ""
 	}
 	route := modelroute.Parse(spec)
 	if !route.Gateway() {
-		return requested
+		return requested, ""
 	}
-	supported := compatgw.ReasoningEfforts(route.Wire, func(name string) string { return envGetenv(ctx, name) }, warn)
+	supported, source := compatgw.AcceptedEfforts(route.Wire, func(name string) string { return envGetenv(ctx, name) }, warn)
 	if len(supported) == 0 {
-		return requested
+		return requested, ""
 	}
 	normalized := strings.ToLower(strings.TrimSpace(wireEffort(requested)))
 	if slices.Contains(supported, normalized) {
-		return normalized
+		return normalized, source
 	}
 	target, numeric := effortPosition(normalized)
 	best := ""
@@ -64,9 +79,9 @@ func gatewayReasoningEffort(ctx context.Context, spec, requested string, warn fu
 		}
 	}
 	if best != "" {
-		return best
+		return best, source
 	}
-	return supported[0]
+	return supported[0], source
 }
 func effortPosition(value string) (int, bool) {
 	if n, err := strconv.Atoi(value); err == nil {

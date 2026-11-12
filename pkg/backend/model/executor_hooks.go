@@ -291,10 +291,14 @@ type TrustWithdrawalInfo struct {
 }
 
 // ReasoningEffortAdjustment records a route's explicit effort substitution.
+// Source names the table that listed the route's accepted efforts —
+// `feed:<name>` (the run's feed table) or
+// compatgw.SourceReasoningEffortsEnv (the runner's env table).
 type ReasoningEffortAdjustment struct {
 	Model     string
 	Requested string
 	Applied   string
+	Source    string
 	Reason    string
 }
 
