@@ -376,9 +376,12 @@ agent upgrade_campaign:
   ## declaration grants are withheld from every headless spawn anyway); on
   ## claw each resolves to the built-in of the same capability. A name
   ## dropped here removes its tool on both backends. web_search registers on
-  ## claw only where the deployment configures a search backend
-  ## (ITERION_WEB_SEARCH, SEARXNG_URL, BRAVE_API_KEY); elsewhere the claw
-  ## route fails at this node's tool resolution, naming the tool.
+  ## claw only where the deployment enables web search (ITERION_WEB_SEARCH=on,
+  ## or a search backend: SEARXNG_URL, SEARXNG_ENDPOINT, BRAVE_API_KEY).
+  ## Elsewhere the claw route fails at this node's tool resolution, naming
+  ## the tool, though the launch screens admit the stage: they read this
+  ## list, not the registry of the runner that builds the node. Dropping
+  ## web_search instead would withhold WebSearch on claude_code.
   tools: [bash, read_file, glob, grep, write_file, file_edit, notebook_edit, agent, web_fetch, web_search, tool_search, todo_write, skill]
   skills: ["modernize-lots", "plan-contract"]
   reasoning_effort: "${ITERION_MODERNIZE_EFFORT:-high}"
@@ -3227,12 +3230,20 @@ workflow modernize:
   ## run_lot subbot: a subbot budgets itself from its own .bot, so neither the
   ## parent's budget nor a launch override reaches it. lot_verify runs every
   ## exit_gate command, the suites and the oracle, each under the contract's
-  ## gate_timeout_s; a contract measured at three commands of 14400 s needs
-  ## up to 12h for its gate alone, and a lot_verify the wall kills leaves no
-  ## verdict. The cost cap rises with the wall, so a lot given the time is not
-  ## stopped by a cap sized for a third of it. Literals, not `${…}` dials: a
-  ## run reads no environment (ADR-132). A direct launch overrides both
-  ## (`--max-duration`, `--max-cost-usd`).
+  ## gate_timeout_s, and a lot_verify the wall kills leaves no verdict. 12h
+  ## holds a contract measured at three commands of 14400 s, each run to its
+  ## wall. It does not also hold the agent's pass before them, more suites, or
+  ## a repair pass that replays both: no literal holds every contract, since
+  ## gate_timeout_s reaches 86400 s per command, so the contract sizes its gate
+  ## to this wall (plan-contract.md, `gate_timeout_s`).
+  ##
+  ## The cost cap bounds the lot's model spend, which is upgrade_campaign's
+  ## alone: the gate's commands spend no tokens, and reanchor and extend are
+  ## subbots that budget themselves. 150 $ gives 30 $ to each agent pass
+  ## campaign's lot_max_passes 4 permits — the first, then one per repair.
+  ##
+  ## Literals, not `${…}` dials: a run reads no environment (ADR-132). A
+  ## direct launch overrides both (`--max-duration`, `--max-cost-usd`).
   budget:
     max_parallel_branches: 1
     max_duration: "12h"

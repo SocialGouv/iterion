@@ -423,7 +423,7 @@ func requiredSecretNames(wf *ir.Workflow) []string {
 	}
 	names := make([]string, 0, len(wf.Secrets))
 	for name, s := range wf.Secrets {
-		if s == nil || s.Optional || strings.TrimSpace(s.Value) != "" {
+		if s == nil || s.Optional || s.HasInlineValue() {
 			continue
 		}
 		names = append(names, name)

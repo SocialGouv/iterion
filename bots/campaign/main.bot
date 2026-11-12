@@ -1452,8 +1452,10 @@ workflow campaign:
 
   ## The child budgets itself (a subbot's budget does not compose with the
   ## parent's): this budget bounds the SUPERVISOR — its records, gates and
-  ## bookkeeping — plus the campaign's wall clock, which is the one axis
-  ## that does contain the children.
+  ## bookkeeping — plus the campaign's wall clock, the one axis that counts
+  ## the children's time. The engine checks it before each campaign node and
+  ## never inside a running lot: a lot that outlasts it runs on to its own
+  ## wall, and observe is then refused.
   budget:
     max_parallel_branches: 1
     max_duration: "48h"

@@ -366,6 +366,17 @@ lots:
     gate_timeout_s: 10800   # this lot's own wall
 ```
 
+Every gate command also runs inside the lot's **run wall** — the bot's
+`max_duration`, 12h (a deployment's ceiling may lower it), which nothing
+raises when the campaign supervisor runs the lot. The agent's pass comes
+first, then each `exit_gate` command, each `suites` command and the oracle
+replay, each up to `gate_timeout_s`; a repair pass replays the agent and the
+whole gate. A gate the run wall cuts ends with no verdict at all: the run
+fails on its budget, with no `GATE_TIMEOUT` naming the command. Size the two
+walls together: the gate's commands times `gate_timeout_s`, plus the agent's
+pass, fit inside the run wall with room to spare; a gate that cannot is split
+across lots.
+
 ## Re-anchoring a mutant is the NET's act, and this bot delegates it
 
 A lot may legitimately remove the thing a mutant hooks into. A security major

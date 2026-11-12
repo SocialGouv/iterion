@@ -1525,6 +1525,16 @@ func (s *Secret) IsFile() bool {
 	return s != nil && s.As == "file"
 }
 
+// HasInlineValue reports whether the declaration carries its own `value:`
+// expression. Such a secret is resolved by the run from that expression; a
+// stored secret, a bot binding or a launch override fills only a declaration
+// without one. The launch resolution, the required-secret gates and the
+// runtime materialisation all choose between the two sources through this
+// predicate.
+func (s *Secret) HasInlineValue() bool {
+	return s != nil && strings.TrimSpace(s.Value) != ""
+}
+
 // Grants reports whether the secret may reach sink: every sink when the
 // declaration names none, the named ones otherwise.
 func (s *Secret) Grants(sink string) bool {

@@ -17,10 +17,11 @@ import (
 // the in-process path keeps the credentials already stamped on the context
 // (runview.StampLocalCredentials). Those credentials are resolved at launch
 // from the PARENT's declarations only — the publisher asks the store for the
-// names the launched workflow declares (cloudpublisher
-// genericSecretNamesForWorkflow), and a launch override fills a declared name
-// or nothing (secrets.ResolveGenericWithBindings). So a secret the child
-// declares reaches it only when its parent declares it too; otherwise the
+// names the launched workflow declares WITHOUT an inline `value:`
+// (cloudpublisher genericSecretNamesForWorkflow, through
+// ir.Secret.HasInlineValue), and a launch override fills one of those names or
+// nothing (secrets.ResolveGenericWithBindings). So a secret the child declares
+// reaches it only when its parent declares it too, valueless; otherwise the
 // child's declaration resolves to nothing on every run of the parent.
 //
 // For the forge credential the parent's declaration matters twice: the runner
@@ -39,7 +40,8 @@ var subbotSecretGaps = map[string]string{
 
 // TestEverySubbotChildSecretIsDeclaredByItsParent is the class guard: for
 // every subbot node of every shipped workflow, every secret the child declares
-// is declared by the parent, or named in subbotSecretGaps with its reason.
+// is declared by the parent with no inline value — the only declaration the
+// launch fills — or named in subbotSecretGaps with its reason.
 func TestEverySubbotChildSecretIsDeclaredByItsParent(t *testing.T) {
 	t.Parallel()
 	pairs, declaring := 0, 0
@@ -77,8 +79,12 @@ func TestEverySubbotChildSecretIsDeclaredByItsParent(t *testing.T) {
 				if listed {
 					seen[key] = true
 				}
-				declared := parent.Secrets[name] != nil
+				own := parent.Secrets[name]
+				declared := own != nil && !own.HasInlineValue()
 				switch {
+				case own != nil && own.HasInlineValue():
+					t.Errorf("%s: subbot %q runs %s, which declares secret %q, and the parent declares it with an inline value (%q) — the launch resolves no stored secret, binding or override for a declaration that carries its own value, so the credential the launch was given never reaches either run. Declare it in the parent without `value:`, in the child's shape",
+						path, id, src, name, own.Value)
 				case declared && listed:
 					t.Errorf("%s: subbot %q's secret %q is declared by its parent and still listed in subbotSecretGaps (%q) — a stale entry tells the next reader a closed gap is open", path, id, name, why)
 				case declared:
@@ -107,7 +113,8 @@ func TestEverySubbotChildSecretIsDeclaredByItsParent(t *testing.T) {
 }
 
 // TestCampaignDeclaresTheCloneCredentialInItsChildsShape holds campaign's
-// forge_token to the shape the reasons above require of it: the runner's
+// forge_token to the shape the reasons above require of it: no inline value,
+// or the launch's forge_token override has nothing to fill; the runner's
 // clone-credential gate (refuseUngrantedCloneCredential) refuses a run whose
 // clone secret withholds the `file` sink; `optional` keeps a local run — host-
 // authenticated git, no stored token — admitted, as modernize's own
@@ -127,6 +134,9 @@ func TestCampaignDeclaresTheCloneCredentialInItsChildsShape(t *testing.T) {
 	}
 	if parent == nil {
 		t.Fatal("campaign declares no forge_token: a repo-targeted launch's forge_token override has nothing to fill, the runner clones a private repository credential-less, and run_lot's child never receives the credential it declares")
+	}
+	if parent.HasInlineValue() {
+		t.Errorf("campaign's forge_token carries an inline value (%q): the launch resolves no stored secret, binding or override for it, so a repo-targeted launch's forge_token never reaches the clone and the private repository is cloned credential-less", parent.Value)
 	}
 	if !parent.Grants(secretsink.File) {
 		t.Errorf("campaign's forge_token grants %v and withholds %q — the runner's clone-credential gate refuses the run before the clone", parent.Sinks, secretsink.File)

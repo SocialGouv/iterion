@@ -240,7 +240,7 @@ func declaredWorkflowSecrets(wf *ir.Workflow, vars map[string]string, generic ma
 	for _, name := range names {
 		s := wf.Secrets[name]
 		val := ""
-		if strings.TrimSpace(s.Value) != "" {
+		if s.HasInlineValue() {
 			val = resolveSecretValue(s.Value, vars)
 		} else if generic != nil {
 			val = generic[name]
