@@ -197,7 +197,11 @@ func isEffortLiteral(e ast.Expr) bool {
 // writesAnEffort reports whether n writes a reasoning effort: a call of
 // providerOptsForNode, an assignment to a "reasoning_effort" key (the
 // literal or a name keyNames binds to it) or a ProviderOptions /
-// ReasoningEffort field, or a composite literal setting one of them.
+// ReasoningEffort field, a composite literal setting one of them, the
+// address of either field taken (a setter's or a decoder's pointer), or
+// the ProviderOptions map handed to a call — maps.Copy, a decoder, a
+// setter whose key is a parameter — which may write it out of this walk's
+// sight; len and cap only read it.
 func writesAnEffort(n ast.Node, keyNames map[string]bool) bool {
 	found := false
 	ast.Inspect(n, func(node ast.Node) bool {
@@ -206,7 +210,7 @@ func writesAnEffort(n ast.Node, keyNames map[string]bool) bool {
 		}
 		switch x := node.(type) {
 		case *ast.CallExpr:
-			found = calleeName(x) == "providerOptsForNode"
+			found = calleeName(x) == "providerOptsForNode" || handsTheCarrier(x)
 		case *ast.AssignStmt:
 			for _, lhs := range x.Lhs {
 				if isEffortTarget(lhs, keyNames) {
@@ -215,10 +219,37 @@ func writesAnEffort(n ast.Node, keyNames map[string]bool) bool {
 			}
 		case *ast.KeyValueExpr:
 			found = isEffortKey(x.Key, keyNames)
+		case *ast.UnaryExpr:
+			found = x.Op == token.AND && isEffortField(x.X)
 		}
 		return !found
 	})
 	return found
+}
+
+// carrierReaders are the builtins handed the ProviderOptions map that
+// cannot write it.
+var carrierReaders = map[string]bool{"len": true, "cap": true}
+
+// handsTheCarrier reports whether a call is handed the ProviderOptions map
+// itself — a map is a reference, so the callee may write any key of it.
+func handsTheCarrier(call *ast.CallExpr) bool {
+	if fn, ok := call.Fun.(*ast.Ident); ok && carrierReaders[fn.Name] {
+		return false
+	}
+	for _, arg := range call.Args {
+		if sel, ok := arg.(*ast.SelectorExpr); ok && sel.Sel.Name == "ProviderOptions" {
+			return true
+		}
+	}
+	return false
+}
+
+// isEffortField reports whether e is a ProviderOptions or ReasoningEffort
+// field.
+func isEffortField(e ast.Expr) bool {
+	sel, ok := e.(*ast.SelectorExpr)
+	return ok && (sel.Sel.Name == "ProviderOptions" || sel.Sel.Name == "ReasoningEffort")
 }
 
 // isEffortTarget reports whether an assignment's left side is an effort
@@ -283,6 +314,12 @@ var effortVarProbe = "reasoning_effort"
 		{"local variable", `k := "reasoning_effort"; po := map[string]any{}; po[k] = v; _ = po`, true},
 		{"composite-literal key", `_ = map[string]any{effortKeyProbe: v}`, true},
 		{"another key", `po := map[string]any{}; po[otherKeyProbe] = v; _ = po`, false},
+		{"a field's address handed to a setter", `setString(&task.ReasoningEffort, v)`, true},
+		{"the carrier's address handed to a decoder", `_ = json.Unmarshal(raw, &opts.ProviderOptions)`, true},
+		{"the carrier handed to maps.Copy", `maps.Copy(opts.ProviderOptions, src)`, true},
+		{"the carrier handed to a setter, the key a parameter", `setKey(opts.ProviderOptions, k, v)`, true},
+		{"the carrier's length", `_ = len(opts.ProviderOptions)`, false},
+		{"the effort read as a value", `_ = fmt.Sprint(task.ReasoningEffort)`, false},
 	} {
 		src := "package model\nfunc probe(opts GenerationOptions, v string) { " + tc.body + " }\n"
 		var files []*ast.File
