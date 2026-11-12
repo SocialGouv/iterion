@@ -231,7 +231,10 @@ jobs:
     # aggregator; carries the tap skip and nothing else — see the header.
     # A Homebrew tap update skips this leg: the header says why, and `brand` verifies it.
     if: "!startsWith(github.event.merge_group.head_commit.message || github.event.pull_request.title, 'chore(brew): update tap to ')"
-    runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || 'arc-runners' }}
+    # Nested read-only mount witnesses need a namespace-capable runner.
+    # ARC pods refuse that mount; a qualified private runner may override
+    # CI_NATIVE_EXEC_RUNNER. Fork/bot and global-off guards still win.
+    runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || vars.CI_NATIVE_EXEC_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 30
     env:
       CGO_ENABLED: "0"
@@ -385,6 +388,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y bubblewrap build-essential
           bwrap --version
+          bwrap --die-with-parent --ro-bind / / --dev /dev --proc /proc /bin/true
 
       - name: Unit tests
         # `./...` includes the e2e package, which has its own job (test-e2e)
@@ -644,7 +648,10 @@ jobs:
     # lesson: a matrix over runs-on diverges from its id silently).
     # A Homebrew tap update skips this leg: the header says why, and `brand` verifies it.
     if: "!startsWith(github.event.merge_group.head_commit.message || github.event.pull_request.title, 'chore(brew): update tap to ')"
-    runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || 'arc-runners' }}
+    # Nested read-only mount witnesses need a namespace-capable runner.
+    # ARC pods refuse that mount; a qualified private runner may override
+    # CI_NATIVE_EXEC_RUNNER. Fork/bot and global-off guards still win.
+    runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || vars.CI_NATIVE_EXEC_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 50
     env:
       CGO_ENABLED: "1"
@@ -702,6 +709,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y bubblewrap build-essential
           bwrap --version
+          bwrap --die-with-parent --ro-bind / / --dev /dev --proc /proc /bin/true
 
       - name: Race tests (shard ${{ matrix.shard }} of 3)
         # 1800s bounds a HANG, not a slow machine — the same bound the

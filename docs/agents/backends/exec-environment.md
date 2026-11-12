@@ -45,7 +45,12 @@ then exercises all five finalized variants without publishing them.
 
 The portable Kubernetes tests build the actual CLI and pair from the checkout.
 They need a C compiler and bubblewrap on Linux amd64/arm64. Devbox supplies the
-Linux isolation tool; CI unit/race jobs install the prerequisite. An absent tool
+Linux isolation tool. CI unit/race jobs use a namespace-capable VM by default,
+install Bubblewrap, and execute a read-only mount preflight before the suite.
+ARC pods refused that mount in PR #3189 despite having the binary installed.
+`CI_NATIVE_EXEC_RUNNER` can select a qualified private runner; the global
+`CI_SELF_HOSTED=off` and fork/dependency-bot guards still force GitHub-hosted
+runners. This changes no cluster security profile. An absent tool
 on a supported platform is a failed proof, not a silent skip.
 `ITERION_TEST_BWRAP` may select an explicit test-only bubblewrap executable.
 Tests mount the pair read-only under `/opt` in a private namespace; they do not
