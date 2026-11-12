@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/SocialGouv/iterion/internal/gittest"
 	"gopkg.in/yaml.v3"
 )
 
@@ -274,28 +275,19 @@ func runGateWithStubTask(t *testing.T, red string) (output string, code int, mat
 	t.Helper()
 
 	root := t.TempDir()
-	// A real repository, because the script asks git for its top level.
-	for _, args := range [][]string{
-		{"init", "-q"},
-		{"config", "user.email", "guard@example.test"},
-		{"config", "user.name", "guard"},
-	} {
-		cmd := exec.Command("git", args...)
-		cmd.Dir = root
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, out)
-		}
-	}
-	if err := os.WriteFile(filepath.Join(root, "seed"), []byte("seed\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	for _, args := range [][]string{{"add", "seed"}, {"commit", "-qm", "seed"}} {
-		cmd := exec.Command("git", args...)
-		cmd.Dir = root
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, out)
-		}
-	}
+	// A real repository, because the script asks git for its top level — and
+	// built through internal/gittest, never a bare exec.Command("git", …).
+	// Since git 2.48 a writing command DETACHES `git maintenance run --auto`,
+	// which keeps writing under .git/objects after the command returned and
+	// races t.TempDir()'s removal. pkg/git's TestEveryTestGitCallerDisables-
+	// AutoMaintenance is what caught this file doing it, in CI, after the
+	// local run of three packages had not asked.
+	gittest.Run(t, root, "init", "-q")
+	gittest.Run(t, root, "config", "user.email", "guard@example.test")
+	gittest.Run(t, root, "config", "user.name", "guard")
+	mustWrite(t, filepath.Join(root, "seed"), "seed\n", 0o644)
+	gittest.Run(t, root, "add", "seed")
+	gittest.Run(t, root, "commit", "-qm", "seed")
 
 	mustMkdir(t, filepath.Join(root, ".github"))
 	mustMkdir(t, filepath.Join(root, "scripts", "ci"))
