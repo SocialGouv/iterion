@@ -38,10 +38,12 @@ func Prompt(ctx context.Context, prompt string, opts ...Option) (*ResultMessage,
 	}
 
 	spOpts := spawnOptions{
-		Cwd:            cfg.cwd,
-		Env:            cfg.env,
-		StderrCallback: cfg.stderrCallback,
-		CommandBuilder: cfg.commandBuilder,
+		Cwd:                         cfg.cwd,
+		Env:                         cfg.env,
+		StderrCallback:              cfg.stderrCallback,
+		CommandBuilder:              cfg.commandBuilder,
+		PreserveCommandCancellation: cfg.preserveCommandCancellation,
+		ProcessStarted:              cfg.processStarted,
 		// Unhooked one-shot Prompt(): the prompt is the last CLI argument,
 		// nothing is ever written to stdin. Leave it attached to /dev/null so
 		// the CLI doesn't emit "no stdin data received in 3s, ...".

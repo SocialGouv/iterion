@@ -26,12 +26,9 @@ import (
 // names a behavioral proof that executes the real caller. Delegates, wrappers
 // and the shared ExecCmd helper receive a driver-only nonce absent from the
 // ambient environment; Docker and noop exercise their real Command payload.
-// Kubernetes currently leaves Cmd.Env nil: its test proves ambient client vs
-// workload separation, while TestExecCmdPreservesDriverEnvironment proves the
-// shared buffered/streamed helper keeps a non-nil transport environment. An
-// os.Environ clobber at Kubernetes.Exec is currently equivalent, not a claimed
-// killed mutant. The process proofs detect pointer/closure clobbers without
-// having to model their syntax.
+// Kubernetes' native transport test checks the captured operator client and
+// environment separately from the workload envelope. The shared ExecCmd proof
+// exercises both buffered and streamed paths with a driver-only environment.
 // Changes to a known caller still owe their behavioral tests and review. Like
 // the compiler, modtypes does not read files excluded by platform/build tags;
 // other platform builds must run their corresponding inventory.
@@ -47,7 +44,7 @@ var commandEnvProofs = map[string]commandEnvProof{
 	"pkg/backend/delegate/claudesdk/claude.go:Prompt":                               {2, "pkg/backend/delegate/claudesdk:TestCommandBuilderPreservesDriverEnvironment"},
 	"pkg/backend/delegate/claudesdk/option.go:WithCommandBuilder":                   {2, "pkg/backend/delegate/claudesdk:TestCommandBuilderPreservesDriverEnvironment"},
 	"pkg/backend/delegate/claudesdk/process.go:resolveCLIPath":                      {1, "pkg/backend/delegate/claudesdk:TestCommandBuilderPreservesDriverEnvironment"},
-	"pkg/backend/delegate/claudesdk/process.go:spawnProcess":                        {2, "pkg/backend/delegate/claudesdk:TestCommandBuilderPreservesDriverEnvironment"},
+	"pkg/backend/delegate/claudesdk/process.go:spawnProcess":                        {3, "pkg/backend/delegate/claudesdk:TestCommandBuilderPreservesDriverEnvironment"},
 	"pkg/backend/delegate/claudesdk/session.go:(*Session).ensureStarted":            {2, "pkg/backend/delegate/claudesdk:TestCommandBuilderPreservesDriverEnvironment"},
 	"pkg/backend/delegate/cliagent.go:(*CLIAgentBackend).runOnce":                   {1, "pkg/backend/delegate:TestDelegateCommandPreservesDriverEnvironmentCLI"},
 	"pkg/backend/delegate/pi_rpc.go:(*PiRPCBackend).spawner":                        {1, "pkg/backend/delegate:TestDelegateCommandPreservesDriverEnvironmentPi"},
@@ -56,6 +53,7 @@ var commandEnvProofs = map[string]commandEnvProof{
 	"pkg/runtime/child_sandbox_resources.go:(*childPathRun).Command":                {1, "pkg/runtime:TestChildPathCommandPreservesDriverEnvironment"},
 	"pkg/sandbox/completion.go:(*Completion).sweepOnce":                             {1, "pkg/sandbox:TestCompletionSweepPreservesDriverEnvironment"},
 	"pkg/sandbox/docker/driver.go:(*Run).Exec":                                      {1, "pkg/sandbox/docker:TestExecPreservesDriverEnvironment"},
+	"pkg/sandbox/kubernetes/driver.go:(*Run).Command":                               {1, "pkg/sandbox/kubernetes:TestExecTransportCommandUsesCapturedProfileAndClient"},
 	"pkg/sandbox/kubernetes/driver.go:(*Run).Exec":                                  {1, "pkg/sandbox/kubernetes:TestExecPreservesDriverEnvironment"},
 	"pkg/sandbox/noop/noop.go:(*run).Exec":                                          {1, "pkg/sandbox/noop:TestExecPreservesDriverEnvironment"},
 }

@@ -270,7 +270,9 @@ type spawnOptions struct {
 	// directly: the builder is responsible for passing them through
 	// the runtime-native channels (e.g. `--workdir` / `--env` flags
 	// to `docker exec`).
-	CommandBuilder CommandBuilder
+	CommandBuilder              CommandBuilder
+	PreserveCommandCancellation bool
+	ProcessStarted              func(*exec.Cmd)
 	// OpenStdin opens a writable pipe to the child stdin (required by the
 	// streaming Session: NDJSON messages are written there). When false,
 	// cmd.Stdin is left nil so Go attaches /dev/null to the child stdin —
@@ -355,12 +357,19 @@ func spawnProcess(ctx context.Context, cliPath string, args []string, opts spawn
 	// …and make ctx cancellation reach that subtree, not just the leader:
 	// close() is the shutdown path, but it only runs once the read loop
 	// returns, which a descendant holding stdout can hold off indefinitely.
-	terminateGroupOnCancel(cmd)
+	if opts.CommandBuilder == nil || !opts.PreserveCommandCancellation {
+		terminateGroupOnCancel(cmd)
+	} else if cmd.Err == nil && cmd.Cancel == nil {
+		return nil, fmt.Errorf("claude: owned cancellation requires a Cancel hook")
+	}
 
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("claude: start: %w", err)
 	}
 	started = true
+	if opts.ProcessStarted != nil {
+		opts.ProcessStarted(cmd)
+	}
 
 	scanner := bufio.NewScanner(stdout)
 	// 10 MB buffer for large NDJSON lines.

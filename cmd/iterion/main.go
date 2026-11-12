@@ -21,6 +21,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/cli"
 	"github.com/SocialGouv/iterion/pkg/errtrack"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/sandbox/execenv"
 	"github.com/spf13/cobra"
 )
 
@@ -54,6 +55,9 @@ func init() {
 }
 
 func main() {
+	if handled, code := execenv.TryMain(os.Args, os.Stdin, os.Stdout, os.Stderr); handled {
+		os.Exit(code)
+	}
 	// The permission hook is the grok/kimi anti-prompt-injection
 	// boundary. Both CLIs spawn it with cwd = the gated workspace and
 	// re-execute it on every tool call; a timeout is an ALLOW. So this

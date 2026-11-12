@@ -1,6 +1,42 @@
 {
   "lockfile_version": "1",
   "packages": {
+    "bubblewrap@0.11.0": {
+      "last_modified": "2026-04-16T08:46:55Z",
+      "resolved": "github:NixOS/nixpkgs/b86751bc4085f48661017fa226dee99fab6c651b#bubblewrap",
+      "source": "devbox-search",
+      "version": "0.11.0",
+      "systems": {
+        "aarch64-linux": {
+          "outputs": [
+            {
+              "name": "out",
+              "path": "/nix/store/kkpr0gfmv4x9g9lgd7d8qxlyibwnlxb3-bubblewrap-0.11.0",
+              "default": true
+            },
+            {
+              "name": "dev",
+              "path": "/nix/store/gahfj90ml6hq5pbzdfy6wnsqy7klgnkh-bubblewrap-0.11.0-dev"
+            }
+          ],
+          "store_path": "/nix/store/kkpr0gfmv4x9g9lgd7d8qxlyibwnlxb3-bubblewrap-0.11.0"
+        },
+        "x86_64-linux": {
+          "outputs": [
+            {
+              "name": "out",
+              "path": "/nix/store/gr9l6ql3wg70idpqlqhnfdx81hak22c8-bubblewrap-0.11.0",
+              "default": true
+            },
+            {
+              "name": "dev",
+              "path": "/nix/store/5cra9hjwqr0970rcpyjfv8d946wby4xs-bubblewrap-0.11.0-dev"
+            }
+          ],
+          "store_path": "/nix/store/gr9l6ql3wg70idpqlqhnfdx81hak22c8-bubblewrap-0.11.0"
+        }
+      }
+    },
     "delve@latest": {
       "last_modified": "2026-04-23T13:07:47Z",
       "resolved": "github:NixOS/nixpkgs/01fbdeef22b76df85ea168fbfe1bfd9e63681b30#delve",

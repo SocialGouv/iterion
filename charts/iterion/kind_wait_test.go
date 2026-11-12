@@ -1086,11 +1086,36 @@ func TestChartKindWaitToolchainPinsYq(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var devbox struct {
-		Packages []string `json:"packages"`
+	var config struct {
+		Packages json.RawMessage `json:"packages"`
 	}
-	if err := json.Unmarshal(raw, &devbox); err != nil {
-		t.Fatalf("devbox.json could not be read as JSON with a packages list: %v", err)
+	if err := json.Unmarshal(raw, &config); err != nil {
+		t.Fatal(err)
+	}
+	var devbox struct{ Packages []string }
+	if err := json.Unmarshal(config.Packages, &devbox.Packages); err != nil {
+		// Devbox switches to its package-map syntax for platform-scoped tools.
+		// Preserve the same yq pin/lock/CI equality proof for both valid syntaxes.
+		var entries map[string]json.RawMessage
+		if err := json.Unmarshal(config.Packages, &entries); err != nil {
+			t.Fatalf("invalid Devbox packages: %v", err)
+		}
+		if value, exists := entries["yq-go"]; exists {
+			var version string
+			if err := json.Unmarshal(value, &version); err != nil {
+				var details struct {
+					Version string `json:"version"`
+				}
+				if err := json.Unmarshal(value, &details); err != nil {
+					t.Fatalf("invalid yq-go declaration: %v", err)
+				}
+				version = details.Version
+			}
+			if version == "" {
+				t.Fatal("yq-go has no version in Devbox package map")
+			}
+			devbox.Packages = append(devbox.Packages, "yq-go@"+version)
+		}
 	}
 	var pin string
 	for _, p := range devbox.Packages {

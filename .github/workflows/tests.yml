@@ -378,6 +378,14 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+      - name: Native exec environment prerequisites
+        # The native transport tests execute the real pair on a read-only mount.
+        # Missing isolation is a failure, not permission to skip the witness.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap build-essential
+          bwrap --version
+
       - name: Unit tests
         # `./...` includes the e2e package, which has its own job (test-e2e)
         # with its own budget; running it here too doubled the wall-clock AND
@@ -686,6 +694,14 @@ jobs:
           echo "fa52a4e758c63d38299163fbdd1edfb4c4963247918bf9c1c5d31d84789eded4  /tmp/yq" | sha256sum -c -
           sudo install -m 0755 /tmp/yq /usr/local/bin/yq
           yq --version
+
+      - name: Native exec environment prerequisites
+        # The native transport tests execute the real pair on a read-only mount.
+        # Missing isolation is a failure, not permission to skip the witness.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap build-essential
+          bwrap --version
 
       - name: Race tests (shard ${{ matrix.shard }} of 3)
         # 1800s bounds a HANG, not a slow machine — the same bound the

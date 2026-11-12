@@ -12,6 +12,7 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `cmd/corpus-reading` | Command corpus-reading checks, or rewrites, the committed corpus reading internal/mdcode's witness pins. | — |
 | `cmd/iterion` | Command iterion is the CLI for the iterion workflow engine. | — |
 | `cmd/iterion-desktop` | the Iterion Desktop binary. | — |
+| `cmd/iterion-execenv-guest` | — | — |
 | `cmd/iterion-live-status` | Command iterion-live-status is the entry point behind `task test:live:status`. | — |
 | `cmd/release-floors` | Command release-floors realigns the syntax-floor pins to the release being cut: release-it runs it with --apply from its before:git:beforeRelease… | — |
 | `cmd/render-gate` | Command render-gate reads a rendered Kubernetes manifest stream (`helm template`, `kustomize build`, an Argo CD manifest dump) and refuses every… | — |
@@ -222,9 +223,11 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `pkg/runview` | — agent-driven merge-conflict resolution. | `CredentialFundingJudge`, `CredentialPreviewer`, `LaunchPublisher`, `RunLoader` |
 | `pkg/runview/runstream` | the store-agnostic run-streaming seam (ADR-053): one Source per store delivers BOTH the structured event timeline and the raw log bytes of any run… | `EventSubscription`, `LogSubscription`, `Source` |
 | `pkg/runwatch` | persists the link between a failed target run and the conversational assistant run that will inspect it. | `Store` |
-| `pkg/sandbox` | defines the iterion sandboxing abstraction. | `Builder`, `Driver`, `HostRun`, `ImageEnvScreener`, `PreparedSpec`, `ProcessIsolated`, `ProxiedRun`, `ProxyConfigurer`, `Run`, `SchedulingPolicyReporter`, `SecretFileRefresher`, `StartedEnvReader`, `WorkspaceExporter`, `WorkspaceFileRefresher`, `WorkspaceHeadCapturer` |
+| `pkg/sandbox` | defines the iterion sandboxing abstraction. | `Builder`, `CommandCancellationOwner`, `Driver`, `HostRun`, `ImageEnvScreener`, `PreparedSpec`, `ProcessIsolated`, `ProxiedRun`, `ProxyConfigurer`, `Run`, `SchedulingPolicyReporter`, `SecretFileRefresher`, `StartedEnvReader`, `WorkspaceExporter`, `WorkspaceFileRefresher`, `WorkspaceHeadCapturer` |
 | `pkg/sandbox/devcontainer` | parses the subset of devcontainer.json fields iterion's sandbox driver consumes. | — |
 | `pkg/sandbox/docker` | implements the Docker/Podman sandbox driver. | — |
+| `pkg/sandbox/execenv` | owns the dedicated host relay, separate from the guest leaf. | — |
+| `pkg/sandbox/execenv/protocol` | owns the leaf wire contract shared by the host relay and the Linux guest. | — |
 | `pkg/sandbox/imageclass` | holds the operator-controlled vocabulary of stock sandbox image classes: the bare names a workflow's `sandbox: { image: … }` may declare instead of… | — |
 | `pkg/sandbox/kubernetes` | implements iterion's sandbox driver for cloud (in-cluster) deployments. | — |
 | `pkg/sandbox/netproxy` | implements iterion's HTTP CONNECT proxy that enforces the workflow's sandbox network policy. | `SecretRewriter` |

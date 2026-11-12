@@ -839,6 +839,7 @@ func (b *ClaudeCodeBackend) buildSpawnOptions(task Task) ([]claudesdk.Option, fu
 	// application when a builder is set.
 	if task.Sandbox != nil {
 		run := task.Sandbox
+		opts = append(opts, claudesdk.WithPreservedCommandCancellation(sandbox.OwnsCommandCancellation(run)))
 		// Record the in-container PID so the session end can actually
 		// terminate claude: killing the host-side `docker exec` client
 		// leaks the in-container process (native:221edac8 — leaked
@@ -2276,31 +2277,41 @@ func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, task Task, session
 		opts = append(opts, claudesdk.WithCLIPath(cliPath))
 	}
 
-	// Capture every spawned subprocess so promptWithTimeout can SIGKILL
-	// them if the SDK's read loop gets stuck and ctx cancellation alone
-	// fails to wake it. The CommandBuilder we install wraps either the
-	// sandbox-routing path or the default exec.CommandContext path; both
-	// arms collect the returned cmd into killables.
+	// Publish only successfully started commands to the watchdog: Cmd.Process
+	// is written by Start. Remember a timeout that precedes publication so a
+	// slow builder cannot launch a survivor after formatOutput has returned.
 	var killMu sync.Mutex
 	var killables []*exec.Cmd
-	captureCmd := func(cmd *exec.Cmd) {
-		if cmd == nil {
-			return
-		}
-		killMu.Lock()
-		killables = append(killables, cmd)
-		killMu.Unlock()
-	}
-	killAll := func() {
-		killMu.Lock()
-		defer killMu.Unlock()
-		for _, cmd := range killables {
-			if cmd == nil || cmd.Process == nil {
-				continue
-			}
+	killRequested := false
+	terminate := func(cmd *exec.Cmd) {
+		if sandbox.OwnsCommandCancellation(task.Sandbox) && cmd.Cancel != nil {
+			_ = cmd.Cancel()
+		} else {
 			_ = cmd.Process.Kill()
 		}
 	}
+	captureStarted := func(cmd *exec.Cmd) {
+		killMu.Lock()
+		cancelNow := killRequested
+		if !cancelNow {
+			killables = append(killables, cmd)
+		}
+		killMu.Unlock()
+		if cancelNow {
+			terminate(cmd)
+		}
+	}
+	killAll := func() {
+		killMu.Lock()
+		killRequested = true
+		commands := killables
+		killables = nil
+		killMu.Unlock()
+		for _, cmd := range commands {
+			terminate(cmd)
+		}
+	}
+	opts = append(opts, claudesdk.WithProcessStarted(captureStarted))
 
 	// The flag settings object perTaskSpawnOpts hands the spawn below. The
 	// builder finds it on argv and moves it, routing pin added, into a file.
@@ -2313,6 +2324,7 @@ func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, task Task, session
 		// it resumes the session inside the container (where the session file
 		// lives) rather than spawning a host claude that can't see it.
 		run := task.Sandbox
+		opts = append(opts, claudesdk.WithPreservedCommandCancellation(sandbox.OwnsCommandCancellation(run)))
 		// One exec ends the pass: it removes the settings file this spawn
 		// writes in the container, terminates the recorded CLI and stops what
 		// the pass left behind.
@@ -2335,7 +2347,6 @@ func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, task Task, session
 				Env:           env,
 				KeepStdinOpen: openStdin,
 			})
-			captureCmd(cmd)
 			return cmd
 		}))
 	} else {
@@ -2365,7 +2376,6 @@ func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, task Task, session
 			cmd.Env = hostSpawnEnv(env)
 			proc.SetWorkDir(cmd, cwd)
 			files.pinHost(cmd, flagSettings)
-			captureCmd(cmd)
 			fe.started()
 			return cmd
 		}))
@@ -2455,9 +2465,9 @@ func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, task Task, session
 // ctx.Done() in its internal ReadLine() loop — a stuck stream that
 // stops emitting bytes will block the goroutine indefinitely, leaking
 // the subprocess and pinning the host slot. The killCmd callback,
-// when non-nil, is invoked on ctx cancellation to SIGKILL whatever
-// subprocesses the SDK spawned via the caller's CommandBuilder. See
-// formatOutput for an example of how to wire the cmd capture.
+// when non-nil, is invoked on ctx cancellation to stop the published
+// subprocesses through their declared cancellation policy. See formatOutput
+// for post-Start publication and cancellation of a late successful start.
 func promptWithTimeout(ctx context.Context, prompt string, killCmd func(), opts ...claudesdk.Option) (*claudesdk.ResultMessage, error) {
 	type result struct {
 		rm  *claudesdk.ResultMessage

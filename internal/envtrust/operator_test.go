@@ -226,3 +226,15 @@ func TestGitTransportNameSeesTheFamilyTheBinaryReads(t *testing.T) {
 		}
 	}
 }
+
+func TestExecEnvWireNamespaceIsEngineOwned(t *testing.T) {
+	for _, suffix := range []string{"", "COUNT", "0", "999999", "FUTURE_FIELD"} {
+		name := "ITERION_EXECENV_" + "WIRE_" + suffix
+		if !InfraGradeName(name) || !OperatorGradeRefused(name) {
+			t.Errorf("private transport name %q may be forged", name)
+		}
+	}
+	if InfraGradeName("ITERION_EXECENV_" + "WIRELESS") {
+		t.Fatal("transport prefix refuses an unrelated sibling")
+	}
+}

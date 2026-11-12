@@ -153,8 +153,9 @@ const MaxInlineArgBytes = 100_000
 // argv to avoid E2BIG. Returns the script when so; "" otherwise.
 //
 // Conditions: cmd is exactly `["sh","-c", script]` or `["bash","-c",
-// script]`, no stdin is already attached (so a caller-provided reader
-// is never clobbered), and the script exceeds [MaxInlineArgBytes].
+// script]`, no stdin is attached or reserved through KeepStdinOpen (so the
+// caller's reader or later StdinPipe is never clobbered), and the script exceeds
+// [MaxInlineArgBytes].
 // Both shells are matched because internal callers emit both: the
 // tool-node executor runs recipes via `bash -c`, while RunPostCreate
 // and the claw bash builtin use `sh -c`. Any other shell or argv shape
@@ -170,7 +171,7 @@ func ShouldStreamScriptViaStdin(cmd []string, opts ExecOpts) string {
 	if len(cmd) != 3 || (cmd[0] != "sh" && cmd[0] != "bash") || cmd[1] != "-c" {
 		return ""
 	}
-	if opts.Stdin != nil {
+	if opts.Stdin != nil || opts.KeepStdinOpen {
 		return ""
 	}
 	if len(cmd[2]) <= MaxInlineArgBytes {

@@ -1,27 +1,31 @@
 {
   "$schema": "https://raw.githubusercontent.com/jetify-com/devbox/main/.schema/devbox.schema.json",
-  "packages": [
-    "delve@latest",
-    "go@1.26",
-    "go-task@latest",
-    "kubernetes-helm@latest",
-    "kubectl@latest",
-    "kind@latest",
-    "nodejs_24@latest",
-    "watchexec@latest",
-    "xorg.xorgserver@latest",
-    "xdotool@latest",
-    "imagemagick@latest",
-    "oxipng@latest",
-    "pngquant@latest",
-    "pkg-config@latest",
-    "gtk3@latest",
-    "webkitgtk_4_1@latest",
-    "golangci-lint@latest",
-    "jq@latest",
-    "git@2.55.0",
-    "yq-go@4.53.3"
-  ],
+  "packages": {
+    "delve":           "latest",
+    "go":              "1.26",
+    "go-task":         "latest",
+    "kubernetes-helm": "latest",
+    "kubectl":         "latest",
+    "kind":            "latest",
+    "nodejs_24":       "latest",
+    "watchexec":       "latest",
+    "xorg.xorgserver": "latest",
+    "xdotool":         "latest",
+    "imagemagick":     "latest",
+    "oxipng":          "latest",
+    "pngquant":        "latest",
+    "pkg-config":      "latest",
+    "gtk3":            "latest",
+    "webkitgtk_4_1":   "latest",
+    "golangci-lint":   "latest",
+    "jq":              "latest",
+    "git":             "2.55.0",
+    "yq-go":           "4.53.3",
+    "bubblewrap": {
+      "version":   "0.11.0",
+      "platforms": ["x86_64-linux", "aarch64-linux"]
+    }
+  },
   "shell": {
     "init_hook": [],
     "scripts":   {}
