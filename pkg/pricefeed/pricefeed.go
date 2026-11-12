@@ -295,9 +295,19 @@ func ParseEntries(raw, what string) (map[string]modelspecs.Spec, error) {
 // plus `"reasoning_efforts": [...]`, the model's accepted efforts in
 // modelspecs.ParseEffortLevels' vocabulary. Every ParseEntries rule holds;
 // on top, an effort list that is empty, null, repeats a level or names one
-// outside the vocabulary refuses, naming the id.
+// outside the vocabulary refuses, naming the id, and so does an id that
+// normalizes to nothing — the fold would drop it unsaid. ParseEntries
+// keeps accepting a blank id, as the runner always has: there it matches
+// no model.
 func ParseFeedEntries(raw, what string) (map[string]modelspecs.Spec, error) {
-	return parseEntries[feedEntry](raw, what)
+	table, err := parseEntries[feedEntry](raw, what)
+	if err != nil {
+		return nil, err
+	}
+	if _, blank := table[""]; blank {
+		return nil, fmt.Errorf("%s: an empty gateway id — key each entry by the id the gateway serves", what)
+	}
+	return table, nil
 }
 
 // operatorEntry is the operator table's field set.

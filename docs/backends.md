@@ -1994,7 +1994,9 @@ tables as written. Each id's efforts land beside its prices (the two
 tables' spellings of an id match case-insensitively), and an id that
 only `E` names is declared by its efforts alone. A feed's list is
 strict: an empty list, a repeated level or a level outside the
-vocabulary refuses the write, naming the id. A run-table entry that the
+vocabulary refuses the write, naming the id. A feed's id is too: one
+that is empty once trimmed refuses a declaration's write and an `exec`
+feed's refresh. A run-table entry that the
 runner's vocabulary refuses (a newer server's level, a damaged value)
 warns `REASONING_EFFORTS_INVALID` and steps down to the env table.
 

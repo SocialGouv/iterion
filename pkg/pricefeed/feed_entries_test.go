@@ -199,3 +199,36 @@ func TestDriftReportSkipsPricelessEntries(t *testing.T) {
 		t.Fatalf("only the priced disagreement is drift, got %+v", drift)
 	}
 }
+
+// A feed's id names the gateway model it answers: one that normalizes to
+// nothing would be dropped by the fold, so the feed parser — a
+// declaration's write and an exec feed's stdout — refuses it, naming the
+// source — and so does an exec feed's refresh. The operator table's
+// decoder keeps what it accepts on the runner: a blank id there matches
+// no model, as before.
+func TestParseFeedEntriesRefusesABlankID(t *testing.T) {
+	for _, raw := range []string{
+		`{"":{"reasoning_efforts":["high"]}}`,
+		`{"  ":{"input_usd_per_mtok":1,"output_usd_per_mtok":2}}`,
+	} {
+		_, err := ParseFeedEntries(raw, "params.entries")
+		if err == nil || !strings.Contains(err.Error(), "params.entries") || !strings.Contains(err.Error(), "empty gateway id") {
+			t.Errorf("%s: the feed parser answered %v, want a refusal naming the source and the empty id", raw, err)
+		}
+		if err := (declaredSource{}).ValidateParams(map[string]string{DeclaredParamEntries: raw}); err == nil {
+			t.Errorf("%s: a declaration with a blank id was accepted", raw)
+		}
+	}
+	if _, err := ParseEntries(`{"  ":{"input_usd_per_mtok":1,"output_usd_per_mtok":2}}`, "OPENAI_COMPATIBLE_MODELS"); err != nil {
+		t.Fatalf("the operator table's decoder refuses a blank id the runner accepts: %v", err)
+	}
+	script := filepath.Join(t.TempDir(), "tariffs.sh")
+	body := "#!/bin/sh\nprintf '%s' '{\" \":{\"input_usd_per_mtok\":0.6,\"output_usd_per_mtok\":1.8}}'\n"
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	src, _ := SourceFor(TypeExec)
+	if _, err := src.Fetch(context.Background(), map[string]string{"command": script}); err == nil || !strings.Contains(err.Error(), "empty gateway id") {
+		t.Fatalf("an exec feed printing a blank id refreshed: %v", err)
+	}
+}
