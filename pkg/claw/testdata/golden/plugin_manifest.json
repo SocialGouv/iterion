@@ -1,0 +1,27 @@
+{
+  "name": "test-plugin",
+  "version": "1.0.0",
+  "description": "A test plugin",
+  "permissions": ["read", "execute"],
+  "defaultEnabled": true,
+  "hooks": {
+    "PreToolUse": ["./guard.sh"],
+    "PostToolUse": [],
+    "PostToolUseFailure": []
+  },
+  "lifecycle": {
+    "Init": ["./setup.sh"],
+    "Shutdown": []
+  },
+  "tools": [
+    {
+      "name": "test-tool",
+      "description": "A test tool",
+      "inputSchema": {"type": "object", "properties": {"input": {"type": "string"}}},
+      "command": "echo",
+      "args": ["hello"],
+      "requiredPermission": "read-only"
+    }
+  ],
+  "commands": []
+}

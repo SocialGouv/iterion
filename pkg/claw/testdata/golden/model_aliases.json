@@ -1,0 +1,82 @@
+[
+  {
+    "alias": "opus",
+    "canonical": "claude-opus-5-5"
+  },
+  {
+    "alias": "opus-4-8",
+    "canonical": "claude-opus-4-8"
+  },
+  {
+    "alias": "opus-4-7",
+    "canonical": "claude-opus-4-7"
+  },
+  {
+    "alias": "opus-4-6",
+    "canonical": "claude-opus-4-6"
+  },
+  {
+    "alias": "sonnet",
+    "canonical": "claude-sonnet-5"
+  },
+  {
+    "alias": "sonnet-4-7",
+    "canonical": "claude-sonnet-4-7"
+  },
+  {
+    "alias": "sonnet-4-6",
+    "canonical": "claude-sonnet-4-6"
+  },
+  {
+    "alias": "haiku",
+    "canonical": "claude-haiku-4-5"
+  },
+  {
+    "alias": "claude-haiku-4-5-20251213",
+    "canonical": "claude-haiku-4-5"
+  },
+  {
+    "alias": "openai/gpt-5.5",
+    "canonical": "gpt-5.5"
+  },
+  {
+    "alias": "openai/gpt-5.4",
+    "canonical": "gpt-5.4"
+  },
+  {
+    "alias": "grok",
+    "canonical": "grok-3"
+  },
+  {
+    "alias": "grok-3",
+    "canonical": "grok-3"
+  },
+  {
+    "alias": "grok-mini",
+    "canonical": "grok-3-mini"
+  },
+  {
+    "alias": "grok-3-mini",
+    "canonical": "grok-3-mini"
+  },
+  {
+    "alias": "grok-2",
+    "canonical": "grok-2"
+  },
+  {
+    "alias": "claude-sonnet-4-6",
+    "canonical": "claude-sonnet-4-6"
+  },
+  {
+    "alias": "unknown-model",
+    "canonical": "unknown-model"
+  },
+  {
+    "alias": "",
+    "canonical": ""
+  },
+  {
+    "alias": "fable",
+    "canonical": "claude-fable-5-1"
+  }
+]

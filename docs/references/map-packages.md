@@ -123,6 +123,63 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `pkg/budgetfloor` | holds capacity back from unreserved work so a named workload keeps a shared credential longer — a PREFERENCE at admission, and deliberately not… | — |
 | `pkg/bundle` | implements the `.botz` archive format: a ZIP archive that packages an iterion workflow (`main.bot`) with adjacent resources (skills, prompts,… | — |
 | `pkg/bundlelint` | cross-checks a bot bundle's manifest.yaml against its compiled main.bot workflow, surfacing structural inconsistencies that neither the manifest… | — |
+| `pkg/claw/hooks` | — | `HookProgressReporter` |
+| `pkg/claw/internal/api` | — | `APIClient`, `ImageGenerator`, `Provider` |
+| `pkg/claw/internal/api/httputil` | holds tiny formatting helpers shared by every HTTP-based provider (openai, foundry, vertex, bedrock-on-HTTP, ...). | — |
+| `pkg/claw/internal/api/providers/anthropic` | implements the Anthropic direct API provider. | — |
+| `pkg/claw/internal/api/providers/bedrock` | implements the AWS Bedrock provider using the Anthropic "Messages" payload shape via InvokeModelWithResponseStream. | — |
+| `pkg/claw/internal/api/providers/foundry` | implements the Microsoft Azure AI Foundry / Azure OpenAI Service provider. | — |
+| `pkg/claw/internal/api/providers/moonshot` | implements the Moonshot provider: Kimi models reached through Moonshot's Anthropic-compatible endpoint. | — |
+| `pkg/claw/internal/api/providers/openai` | implements the api.Provider and api.APIClient interfaces for OpenAI's chat completions API with streaming support. | — |
+| `pkg/claw/internal/api/providers/openaiwire` | holds the wire-level JSON types shared by every provider that speaks the OpenAI Chat Completions protocol. | — |
+| `pkg/claw/internal/api/providers/vertex` | implements the Google Cloud Vertex AI provider for Anthropic models. | — |
+| `pkg/claw/internal/api/providers/zai` | implements the z.ai provider: GLM models reached through z.ai's Anthropic-compatible endpoint (the Coding Plan's /api/anthropic wire). | — |
+| `pkg/claw/internal/api/sseutil` | holds tiny helpers shared between providers that translate OpenAI-style SSE tool_call streams into the Anthropic-shaped api.StreamEvent vocabulary. | — |
+| `pkg/claw/internal/apikit` | provides API transport infrastructure: telemetry, error classification, retry logic, context-window preflight checks, proxy support, and prompt… | `TelemetrySink` |
+| `pkg/claw/internal/apikit/telemetry/otlpgrpc` | implements an OTLP/gRPC exporter for apikit.TelemetryEvent using the official OpenTelemetry SDK (sdk/log + otlploggrpc). | — |
+| `pkg/claw/internal/auth` | — multi-provider credential storage. | — |
+| `pkg/claw/internal/commands` | — | `ConfigSwitcher`, `PluginManagerProvider`, `SessionDirProvider`, `SessionManager`, `UsageTracker` |
+| `pkg/claw/internal/config` | — | `DiagnosticKind` |
+| `pkg/claw/internal/context` | — | — |
+| `pkg/claw/internal/hooks` | provides an in-process programmatic hook system for the claw-code-go runtime. | — |
+| `pkg/claw/internal/hooks/hookstesting` | provides test helpers for the hooks package. | — |
+| `pkg/claw/internal/lsp` | — | — |
+| `pkg/claw/internal/mcp` | — | `FlushWriter`, `Provider`, `ResourceClient`, `Transport` |
+| `pkg/claw/internal/mcp/oauth` | implements an OAuth 2.0 Authorization Code + PKCE broker for authenticated remote MCP servers, with an on-disk token cache. | — |
+| `pkg/claw/internal/permissions` | — | `Classifier`, `ClassifierLogger`, `PermissionPrompter` |
+| `pkg/claw/internal/plugins` | implements the plugin lifecycle: discovery via a remote marketplace, fetch + checksum verification, install/uninstall state on disk, and the slash… | `SignatureVerifier` |
+| `pkg/claw/internal/runtime` | — | — |
+| `pkg/claw/internal/runtime/lane` | implements lane-level event tracking, commit provenance, branch locking, and freshness analysis for multi-lane orchestration. | `GitRunner`, `LaneEventData` |
+| `pkg/claw/internal/runtime/task` | — | — |
+| `pkg/claw/internal/runtime/team` | — | — |
+| `pkg/claw/internal/runtime/trust` | implements centralized trust-prompt detection and resolution. | — |
+| `pkg/claw/internal/runtime/worker` | — | — |
+| `pkg/claw/internal/strutil` | provides small string helpers shared across packages. | — |
+| `pkg/claw/internal/testutil` | — | — |
+| `pkg/claw/internal/testutil/schematest` | supplies the offline schema guarantee to transport tests. | — |
+| `pkg/claw/internal/tools` | Ported from rust/crates/runtime/src/bash_validation.rs — pipeline and security gate extensions. | `Asker` |
+| `pkg/claw/internal/usage` | provides token usage tracking and best-effort cost estimation. | — |
+| `pkg/claw/pkg/api` | re-exports the internal/api surface via type aliases. | — |
+| `pkg/claw/pkg/api/commands` | exposes the `.claude/commands/` workspace-command convention on the public API surface, so an in-process embedder resolves a `/name` prompt the way… | — |
+| `pkg/claw/pkg/api/hooks` | the public façade over the internal lifecycle hooks runner. | — |
+| `pkg/claw/pkg/api/lsp` | the public façade over the internal LSP subsystem that backs the `lsp` tool. | — |
+| `pkg/claw/pkg/api/mcp` | the public façade over the internal MCP subsystem that backs the list_mcp_resources / read_mcp_resource / mcp_auth tools and the SSE/HTTP transports. | — |
+| `pkg/claw/pkg/api/mcp/oauth` | the public façade over the internal MCP OAuth broker. | — |
+| `pkg/claw/pkg/api/providers/anthropic` | re-exports the internal Anthropic provider via type alias. | — |
+| `pkg/claw/pkg/api/providers/bedrock` | re-exports the internal Bedrock provider via type alias. | — |
+| `pkg/claw/pkg/api/providers/foundry` | re-exports the internal Azure AI Foundry provider via type alias. | — |
+| `pkg/claw/pkg/api/providers/moonshot` | re-exports the internal Moonshot provider via type alias. | — |
+| `pkg/claw/pkg/api/providers/openai` | re-exports the internal OpenAI provider via type alias. | — |
+| `pkg/claw/pkg/api/providers/vertex` | re-exports the internal Vertex AI provider via type alias. | — |
+| `pkg/claw/pkg/api/task` | the public façade over the internal task subsystem that backs the task_* tools. | — |
+| `pkg/claw/pkg/api/team` | the public façade over the internal team subsystem that backs the team_* and cron_* tools. | — |
+| `pkg/claw/pkg/api/tools` | exposes a stable public-API surface over the built-in tool implementations that ship with claw-code-go. | — |
+| `pkg/claw/pkg/api/worker` | the public façade over the internal worker subsystem that backs the worker_* tools. | — |
+| `pkg/claw/pkg/apikit` | re-exports selected symbols from internal/apikit via type aliases. | — |
+| `pkg/claw/pkg/apikit/telemetry/otlpgrpc` | the public façade over the OTLP/gRPC log exporter implemented in internal/apikit/telemetry/otlpgrpc. | — |
+| `pkg/claw/pkg/permissions` | re-exports the internal permissions package via type aliases so external consumers (e.g. | — |
+| `pkg/claw/pkg/runtime` | re-exports selected provider factory functions from claw-code-go's internal runtime. | — |
+| `pkg/claw/plugin` | Package plugin: remote marketplace fetch + verify. | `Plugin` |
 | `pkg/cli` | implements the iterion command-line interface. | `ReliabilityRunSource` |
 | `pkg/clock` | provides a small Clock abstraction so time-dependent logic (notably the per-day spend-cap reset) can be driven by a fake clock in tests. | `Clock` |
 | `pkg/cloud/metrics` | centralises the Prometheus metrics exposed by the cloud-mode iterion server and runner pods. | — |

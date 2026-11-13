@@ -1,0 +1,1523 @@
+[
+  {
+    "name": "exclusiveMinimum-True",
+    "input": {
+      "minimum": 7,
+      "exclusiveMinimum": true
+    },
+    "want": {
+      "exclusiveMinimum": 7
+    },
+    "valid": [
+      8
+    ],
+    "invalid": [
+      7
+    ]
+  },
+  {
+    "name": "exclusiveMinimum-True-no-bound",
+    "input": {
+      "exclusiveMinimum": true
+    },
+    "want": {}
+  },
+  {
+    "name": "exclusiveMinimum-False",
+    "input": {
+      "minimum": 7,
+      "exclusiveMinimum": false
+    },
+    "want": {
+      "minimum": 7
+    },
+    "valid": [
+      8
+    ],
+    "invalid": [
+      6
+    ]
+  },
+  {
+    "name": "exclusiveMinimum-False-no-bound",
+    "input": {
+      "exclusiveMinimum": false
+    },
+    "want": {}
+  },
+  {
+    "name": "exclusiveMaximum-True",
+    "input": {
+      "maximum": 7,
+      "exclusiveMaximum": true
+    },
+    "want": {
+      "exclusiveMaximum": 7
+    },
+    "valid": [
+      6
+    ],
+    "invalid": [
+      7
+    ]
+  },
+  {
+    "name": "exclusiveMaximum-True-no-bound",
+    "input": {
+      "exclusiveMaximum": true
+    },
+    "want": {}
+  },
+  {
+    "name": "exclusiveMaximum-False",
+    "input": {
+      "maximum": 7,
+      "exclusiveMaximum": false
+    },
+    "want": {
+      "maximum": 7
+    },
+    "valid": [
+      6
+    ],
+    "invalid": [
+      8
+    ]
+  },
+  {
+    "name": "exclusiveMaximum-False-no-bound",
+    "input": {
+      "exclusiveMaximum": false
+    },
+    "want": {}
+  },
+  {
+    "name": "tuple",
+    "input": {
+      "type": "array",
+      "items": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "integer"
+        }
+      ],
+      "additionalItems": false
+    },
+    "want": {
+      "type": "array",
+      "prefixItems": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "integer"
+        }
+      ],
+      "items": false
+    },
+    "valid": [
+      [
+        "a",
+        1
+      ]
+    ],
+    "invalid": [
+      [
+        "a",
+        "b"
+      ],
+      [
+        "a",
+        1,
+        2
+      ]
+    ]
+  },
+  {
+    "name": "tuple-tail-schema",
+    "input": {
+      "items": [
+        {
+          "type": "string"
+        }
+      ],
+      "additionalItems": {
+        "type": "number"
+      }
+    },
+    "want": {
+      "prefixItems": [
+        {
+          "type": "string"
+        }
+      ],
+      "items": {
+        "type": "number"
+      }
+    },
+    "valid": [
+      [
+        "a",
+        2
+      ]
+    ],
+    "invalid": [
+      [
+        "a",
+        "b"
+      ]
+    ]
+  },
+  {
+    "name": "empty-tuple",
+    "input": {
+      "items": [],
+      "additionalItems": false
+    },
+    "want": {
+      "items": false
+    },
+    "valid": [
+      []
+    ],
+    "invalid": [
+      [
+        1
+      ]
+    ]
+  },
+  {
+    "name": "examples-None",
+    "input": {
+      "examples": null
+    },
+    "want": {}
+  },
+  {
+    "name": "examples-1",
+    "input": {
+      "examples": 1
+    },
+    "want": {}
+  },
+  {
+    "name": "examples-x",
+    "input": {
+      "examples": "x"
+    },
+    "want": {}
+  },
+  {
+    "name": "examples-{}",
+    "input": {
+      "examples": {}
+    },
+    "want": {}
+  },
+  {
+    "name": "examples-{'a': {'value': 'x'}}",
+    "input": {
+      "examples": {
+        "a": {
+          "value": "x"
+        }
+      }
+    },
+    "want": {}
+  },
+  {
+    "name": "examples-array",
+    "input": {
+      "examples": [
+        null,
+        {
+          "description": null
+        }
+      ]
+    },
+    "want": {
+      "examples": [
+        null,
+        {
+          "description": null
+        }
+      ]
+    }
+  },
+  {
+    "name": "null-child-properties",
+    "input": {
+      "properties": {
+        "a": null
+      }
+    },
+    "want": {
+      "properties": {
+        "a": {}
+      }
+    }
+  },
+  {
+    "name": "nested-null-properties",
+    "input": {
+      "properties": {
+        "a": {
+          "description": null,
+          "required": null
+        }
+      }
+    },
+    "want": {
+      "properties": {
+        "a": {}
+      }
+    }
+  },
+  {
+    "name": "wrong-kind-properties",
+    "input": {
+      "properties": []
+    },
+    "want": {}
+  },
+  {
+    "name": "null-child-patternProperties",
+    "input": {
+      "patternProperties": {
+        "a": null
+      }
+    },
+    "want": {
+      "patternProperties": {
+        "a": {}
+      }
+    }
+  },
+  {
+    "name": "nested-null-patternProperties",
+    "input": {
+      "patternProperties": {
+        "a": {
+          "description": null,
+          "required": null
+        }
+      }
+    },
+    "want": {
+      "patternProperties": {
+        "a": {}
+      }
+    }
+  },
+  {
+    "name": "wrong-kind-patternProperties",
+    "input": {
+      "patternProperties": []
+    },
+    "want": {}
+  },
+  {
+    "name": "null-child-$defs",
+    "input": {
+      "$defs": {
+        "a": null
+      }
+    },
+    "want": {
+      "$defs": {
+        "a": {}
+      }
+    }
+  },
+  {
+    "name": "nested-null-$defs",
+    "input": {
+      "$defs": {
+        "a": {
+          "description": null,
+          "required": null
+        }
+      }
+    },
+    "want": {
+      "$defs": {
+        "a": {}
+      }
+    }
+  },
+  {
+    "name": "wrong-kind-$defs",
+    "input": {
+      "$defs": []
+    },
+    "want": {}
+  },
+  {
+    "name": "null-child-definitions",
+    "input": {
+      "definitions": {
+        "a": null
+      }
+    },
+    "want": {
+      "definitions": {
+        "a": {}
+      }
+    }
+  },
+  {
+    "name": "nested-null-definitions",
+    "input": {
+      "definitions": {
+        "a": {
+          "description": null,
+          "required": null
+        }
+      }
+    },
+    "want": {
+      "definitions": {
+        "a": {}
+      }
+    }
+  },
+  {
+    "name": "wrong-kind-definitions",
+    "input": {
+      "definitions": []
+    },
+    "want": {}
+  },
+  {
+    "name": "null-child-dependentSchemas",
+    "input": {
+      "dependentSchemas": {
+        "a": null
+      }
+    },
+    "want": {
+      "dependentSchemas": {
+        "a": {}
+      }
+    }
+  },
+  {
+    "name": "nested-null-dependentSchemas",
+    "input": {
+      "dependentSchemas": {
+        "a": {
+          "description": null,
+          "required": null
+        }
+      }
+    },
+    "want": {
+      "dependentSchemas": {
+        "a": {}
+      }
+    }
+  },
+  {
+    "name": "wrong-kind-dependentSchemas",
+    "input": {
+      "dependentSchemas": []
+    },
+    "want": {}
+  },
+  {
+    "name": "null-child-dependencies",
+    "input": {
+      "dependencies": {
+        "a": null
+      }
+    },
+    "want": {
+      "dependentSchemas": {
+        "a": {}
+      }
+    }
+  },
+  {
+    "name": "nested-null-dependencies",
+    "input": {
+      "dependencies": {
+        "a": {
+          "description": null,
+          "required": null
+        }
+      }
+    },
+    "want": {
+      "dependentSchemas": {
+        "a": {}
+      }
+    }
+  },
+  {
+    "name": "wrong-kind-dependencies",
+    "input": {
+      "dependencies": []
+    },
+    "want": {}
+  },
+  {
+    "name": "null-child-allOf",
+    "input": {
+      "allOf": [
+        null,
+        {
+          "type": "string"
+        }
+      ]
+    },
+    "want": {
+      "allOf": [
+        {},
+        {
+          "type": "string"
+        }
+      ]
+    }
+  },
+  {
+    "name": "nested-null-allOf",
+    "input": {
+      "allOf": [
+        {
+          "description": null
+        }
+      ]
+    },
+    "want": {
+      "allOf": [
+        {}
+      ]
+    }
+  },
+  {
+    "name": "wrong-kind-allOf",
+    "input": {
+      "allOf": {}
+    },
+    "want": {}
+  },
+  {
+    "name": "empty-allOf",
+    "input": {
+      "allOf": []
+    },
+    "want": {}
+  },
+  {
+    "name": "null-child-anyOf",
+    "input": {
+      "anyOf": [
+        null,
+        {
+          "type": "string"
+        }
+      ]
+    },
+    "want": {
+      "anyOf": [
+        {},
+        {
+          "type": "string"
+        }
+      ]
+    }
+  },
+  {
+    "name": "nested-null-anyOf",
+    "input": {
+      "anyOf": [
+        {
+          "description": null
+        }
+      ]
+    },
+    "want": {
+      "anyOf": [
+        {}
+      ]
+    }
+  },
+  {
+    "name": "wrong-kind-anyOf",
+    "input": {
+      "anyOf": {}
+    },
+    "want": {}
+  },
+  {
+    "name": "empty-anyOf",
+    "input": {
+      "anyOf": []
+    },
+    "want": {
+      "not": {}
+    }
+  },
+  {
+    "name": "null-child-oneOf",
+    "input": {
+      "oneOf": [
+        null,
+        {
+          "type": "string"
+        }
+      ]
+    },
+    "want": {
+      "oneOf": [
+        {},
+        {
+          "type": "string"
+        }
+      ]
+    }
+  },
+  {
+    "name": "nested-null-oneOf",
+    "input": {
+      "oneOf": [
+        {
+          "description": null
+        }
+      ]
+    },
+    "want": {
+      "oneOf": [
+        {}
+      ]
+    }
+  },
+  {
+    "name": "wrong-kind-oneOf",
+    "input": {
+      "oneOf": {}
+    },
+    "want": {}
+  },
+  {
+    "name": "empty-oneOf",
+    "input": {
+      "oneOf": []
+    },
+    "want": {
+      "not": {}
+    }
+  },
+  {
+    "name": "null-child-prefixItems",
+    "input": {
+      "prefixItems": [
+        null,
+        {
+          "type": "string"
+        }
+      ]
+    },
+    "want": {
+      "prefixItems": [
+        {},
+        {
+          "type": "string"
+        }
+      ],
+      "items": {}
+    }
+  },
+  {
+    "name": "nested-null-prefixItems",
+    "input": {
+      "prefixItems": [
+        {
+          "description": null
+        }
+      ]
+    },
+    "want": {
+      "prefixItems": [
+        {}
+      ],
+      "items": {}
+    }
+  },
+  {
+    "name": "wrong-kind-prefixItems",
+    "input": {
+      "prefixItems": {}
+    },
+    "want": {}
+  },
+  {
+    "name": "empty-prefixItems",
+    "input": {
+      "prefixItems": []
+    },
+    "want": {}
+  },
+  {
+    "name": "null-child-items",
+    "input": {
+      "items": [
+        null,
+        {
+          "type": "string"
+        }
+      ]
+    },
+    "want": {
+      "prefixItems": [
+        {},
+        {
+          "type": "string"
+        }
+      ],
+      "items": {}
+    }
+  },
+  {
+    "name": "nested-null-items",
+    "input": {
+      "items": [
+        {
+          "description": null
+        }
+      ]
+    },
+    "want": {
+      "prefixItems": [
+        {}
+      ],
+      "items": {}
+    }
+  },
+  {
+    "name": "nested-null-items-object",
+    "input": {
+      "items": {
+        "description": null,
+        "required": null
+      }
+    },
+    "want": {
+      "items": {}
+    }
+  },
+  {
+    "name": "null-items",
+    "input": {
+      "items": null
+    },
+    "want": {
+      "items": {}
+    }
+  },
+  {
+    "name": "wrong-kind-items-scalar",
+    "input": {
+      "items": "x"
+    },
+    "want": {}
+  },
+  {
+    "name": "nested-null-additionalProperties-object",
+    "input": {
+      "additionalProperties": {
+        "description": null,
+        "required": null
+      }
+    },
+    "want": {
+      "additionalProperties": {}
+    }
+  },
+  {
+    "name": "null-additionalProperties",
+    "input": {
+      "additionalProperties": null
+    },
+    "want": {
+      "additionalProperties": {}
+    }
+  },
+  {
+    "name": "wrong-kind-additionalProperties-scalar",
+    "input": {
+      "additionalProperties": "x"
+    },
+    "want": {}
+  },
+  {
+    "name": "nested-null-not-object",
+    "input": {
+      "not": {
+        "description": null,
+        "required": null
+      }
+    },
+    "want": {
+      "not": {}
+    }
+  },
+  {
+    "name": "null-not",
+    "input": {
+      "not": null
+    },
+    "want": {
+      "not": {}
+    }
+  },
+  {
+    "name": "wrong-kind-not-scalar",
+    "input": {
+      "not": "x"
+    },
+    "want": {}
+  },
+  {
+    "name": "nested-null-if-object",
+    "input": {
+      "if": {
+        "description": null,
+        "required": null
+      }
+    },
+    "want": {
+      "if": {}
+    }
+  },
+  {
+    "name": "null-if",
+    "input": {
+      "if": null
+    },
+    "want": {
+      "if": {}
+    }
+  },
+  {
+    "name": "wrong-kind-if-scalar",
+    "input": {
+      "if": "x"
+    },
+    "want": {}
+  },
+  {
+    "name": "nested-null-then-object",
+    "input": {
+      "then": {
+        "description": null,
+        "required": null
+      }
+    },
+    "want": {
+      "then": {}
+    }
+  },
+  {
+    "name": "null-then",
+    "input": {
+      "then": null
+    },
+    "want": {
+      "then": {}
+    }
+  },
+  {
+    "name": "wrong-kind-then-scalar",
+    "input": {
+      "then": "x"
+    },
+    "want": {}
+  },
+  {
+    "name": "nested-null-else-object",
+    "input": {
+      "else": {
+        "description": null,
+        "required": null
+      }
+    },
+    "want": {
+      "else": {}
+    }
+  },
+  {
+    "name": "null-else",
+    "input": {
+      "else": null
+    },
+    "want": {
+      "else": {}
+    }
+  },
+  {
+    "name": "wrong-kind-else-scalar",
+    "input": {
+      "else": "x"
+    },
+    "want": {}
+  },
+  {
+    "name": "nested-null-propertyNames-object",
+    "input": {
+      "propertyNames": {
+        "description": null,
+        "required": null
+      }
+    },
+    "want": {
+      "propertyNames": {}
+    }
+  },
+  {
+    "name": "null-propertyNames",
+    "input": {
+      "propertyNames": null
+    },
+    "want": {
+      "propertyNames": {}
+    }
+  },
+  {
+    "name": "wrong-kind-propertyNames-scalar",
+    "input": {
+      "propertyNames": "x"
+    },
+    "want": {}
+  },
+  {
+    "name": "nested-null-contains-object",
+    "input": {
+      "contains": {
+        "description": null,
+        "required": null
+      }
+    },
+    "want": {
+      "contains": {}
+    }
+  },
+  {
+    "name": "null-contains",
+    "input": {
+      "contains": null
+    },
+    "want": {
+      "contains": {}
+    }
+  },
+  {
+    "name": "wrong-kind-contains-scalar",
+    "input": {
+      "contains": "x"
+    },
+    "want": {}
+  },
+  {
+    "name": "nested-null-unevaluatedProperties-object",
+    "input": {
+      "unevaluatedProperties": {
+        "description": null,
+        "required": null
+      }
+    },
+    "want": {
+      "unevaluatedProperties": {}
+    }
+  },
+  {
+    "name": "null-unevaluatedProperties",
+    "input": {
+      "unevaluatedProperties": null
+    },
+    "want": {
+      "unevaluatedProperties": {}
+    }
+  },
+  {
+    "name": "wrong-kind-unevaluatedProperties-scalar",
+    "input": {
+      "unevaluatedProperties": "x"
+    },
+    "want": {}
+  },
+  {
+    "name": "nested-null-unevaluatedItems-object",
+    "input": {
+      "unevaluatedItems": {
+        "description": null,
+        "required": null
+      }
+    },
+    "want": {
+      "unevaluatedItems": {}
+    }
+  },
+  {
+    "name": "null-unevaluatedItems",
+    "input": {
+      "unevaluatedItems": null
+    },
+    "want": {
+      "unevaluatedItems": {}
+    }
+  },
+  {
+    "name": "wrong-kind-unevaluatedItems-scalar",
+    "input": {
+      "unevaluatedItems": "x"
+    },
+    "want": {}
+  },
+  {
+    "name": "nested-null-contentSchema-object",
+    "input": {
+      "contentSchema": {
+        "description": null,
+        "required": null
+      }
+    },
+    "want": {
+      "contentSchema": {}
+    }
+  },
+  {
+    "name": "null-contentSchema",
+    "input": {
+      "contentSchema": null
+    },
+    "want": {
+      "contentSchema": {}
+    }
+  },
+  {
+    "name": "wrong-kind-contentSchema-scalar",
+    "input": {
+      "contentSchema": "x"
+    },
+    "want": {}
+  },
+  {
+    "name": "wrong-oneOf-string",
+    "input": {
+      "oneOf": "x"
+    },
+    "want": {}
+  },
+  {
+    "name": "dependencies",
+    "input": {
+      "dependencies": {
+        "a": [
+          "b"
+        ],
+        "c": {
+          "required": [
+            "d"
+          ]
+        }
+      }
+    },
+    "want": {
+      "dependentRequired": {
+        "a": [
+          "b"
+        ]
+      },
+      "dependentSchemas": {
+        "c": {
+          "required": [
+            "d"
+          ]
+        }
+      }
+    },
+    "valid": [
+      {},
+      {
+        "a": 1,
+        "b": 2,
+        "c": 1,
+        "d": 2
+      }
+    ],
+    "invalid": [
+      {
+        "a": 1
+      },
+      {
+        "c": 1
+      }
+    ]
+  },
+  {
+    "name": "dependencies-collision",
+    "input": {
+      "dependencies": {
+        "a": [
+          "b"
+        ],
+        "c": {
+          "required": [
+            "d"
+          ]
+        }
+      },
+      "dependentRequired": {
+        "a": [
+          "e"
+        ]
+      },
+      "dependentSchemas": {
+        "c": {
+          "required": [
+            "f"
+          ]
+        }
+      }
+    },
+    "valid": [
+      {
+        "a": 1,
+        "b": 2,
+        "e": 3,
+        "c": 1,
+        "d": 2,
+        "f": 3
+      }
+    ],
+    "invalid": [
+      {
+        "a": 1,
+        "e": 3
+      },
+      {
+        "c": 1,
+        "f": 3
+      },
+      {
+        "a": 1,
+        "b": 2
+      },
+      {
+        "c": 1,
+        "d": 2
+      }
+    ]
+  },
+  {
+    "name": "draft-04",
+    "input": {
+      "$schema": "http://json-schema.org/draft-04/schema#",
+      "type": "number",
+      "minimum": 2
+    },
+    "want": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "number",
+      "minimum": 2
+    },
+    "valid": [
+      2
+    ],
+    "invalid": [
+      1
+    ]
+  },
+  {
+    "name": "draft-07",
+    "input": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "number",
+      "minimum": 2
+    },
+    "want": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "number",
+      "minimum": 2
+    },
+    "valid": [
+      2
+    ],
+    "invalid": [
+      1
+    ]
+  },
+  {
+    "name": "draft04-id",
+    "input": {
+      "id": "https://example.test/root",
+      "definitions": {
+        "n": {
+          "type": "integer"
+        }
+      },
+      "$ref": "#/definitions/n"
+    },
+    "want": {
+      "$id": "https://example.test/root",
+      "definitions": {
+        "n": {
+          "type": "integer"
+        }
+      },
+      "$ref": "#/definitions/n"
+    },
+    "valid": [
+      1
+    ],
+    "invalid": [
+      "a"
+    ]
+  },
+  {
+    "name": "nullable",
+    "input": {
+      "type": "string",
+      "nullable": true
+    },
+    "want": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "valid": [
+      "a",
+      null
+    ],
+    "invalid": [
+      1
+    ]
+  },
+  {
+    "name": "nullable-enum",
+    "input": {
+      "type": "string",
+      "nullable": true,
+      "enum": [
+        "x"
+      ]
+    },
+    "want": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "enum": [
+        "x"
+      ]
+    },
+    "valid": [
+      "x"
+    ],
+    "invalid": [
+      null
+    ]
+  },
+  {
+    "name": "nullable-no-type",
+    "input": {
+      "nullable": true,
+      "enum": [
+        "x"
+      ]
+    },
+    "want": {
+      "enum": [
+        "x"
+      ]
+    },
+    "valid": [
+      "x"
+    ],
+    "invalid": [
+      null
+    ]
+  },
+  {
+    "name": "nullable-false",
+    "input": {
+      "type": "string",
+      "nullable": false
+    },
+    "want": {
+      "type": "string"
+    },
+    "valid": [
+      "x"
+    ],
+    "invalid": [
+      null
+    ]
+  },
+  {
+    "name": "invalid-keyword-values",
+    "input": {
+      "minimum": "x",
+      "exclusiveMaximum": {},
+      "multipleOf": 0,
+      "minItems": -1,
+      "maxLength": 1.5,
+      "uniqueItems": "yes",
+      "readOnly": [],
+      "format": {},
+      "required": [
+        "a",
+        "a"
+      ],
+      "dependentRequired": {
+        "a": null
+      },
+      "$anchor": "0bad",
+      "$id": "https://example.test/x#bad",
+      "type": "invalid",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "want": {
+      "dependentRequired": {},
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    }
+  },
+  {
+    "name": "opaque-data",
+    "input": {
+      "const": null,
+      "default": {
+        "type": null
+      },
+      "enum": [
+        null,
+        {
+          "items": null
+        }
+      ],
+      "examples": [
+        {
+          "required": null
+        }
+      ],
+      "x-extension": {
+        "anyOf": [
+          null
+        ]
+      }
+    },
+    "want": {
+      "const": null,
+      "default": {
+        "type": null
+      },
+      "enum": [
+        null,
+        {
+          "items": null
+        }
+      ],
+      "examples": [
+        {
+          "required": null
+        }
+      ],
+      "x-extension": {
+        "anyOf": [
+          null
+        ]
+      }
+    }
+  },
+  {
+    "name": "additionalItems-without-tuple",
+    "input": {
+      "items": {
+        "type": "string"
+      },
+      "additionalItems": []
+    },
+    "want": {
+      "items": {
+        "type": "string"
+      },
+      "additionalItems": []
+    }
+  },
+  {
+    "name": "tuple-pointer",
+    "input": {
+      "definitions": {
+        "tuple": {
+          "items": [
+            {
+              "type": "integer"
+            }
+          ],
+          "additionalItems": {
+            "type": "string"
+          }
+        }
+      },
+      "$ref": "#/definitions/tuple/items/0"
+    },
+    "valid": [
+      1
+    ],
+    "invalid": [
+      "x"
+    ]
+  },
+  {
+    "name": "tuple-tail-pointer",
+    "input": {
+      "definitions": {
+        "tuple": {
+          "items": [
+            {
+              "type": "integer"
+            }
+          ],
+          "additionalItems": {
+            "type": "string"
+          }
+        }
+      },
+      "$ref": "#/definitions/tuple/additionalItems"
+    },
+    "valid": [
+      "x"
+    ],
+    "invalid": [
+      1
+    ]
+  },
+  {
+    "name": "dependencies-pointer",
+    "input": {
+      "dependencies": {
+        "a": {
+          "type": "integer"
+        }
+      },
+      "$ref": "#/dependencies/a"
+    },
+    "valid": [
+      1
+    ],
+    "invalid": [
+      "x"
+    ]
+  },
+  {
+    "name": "escaped-pointer",
+    "input": {
+      "dependencies": {
+        "a/b~c": {
+          "type": "integer"
+        }
+      },
+      "$ref": "#/dependencies/a~1b~0c"
+    },
+    "valid": [
+      1
+    ],
+    "invalid": [
+      "x"
+    ]
+  },
+  {
+    "name": "draft04-anchor",
+    "input": {
+      "definitions": {
+        "n": {
+          "id": "#n",
+          "type": "integer"
+        }
+      },
+      "$ref": "#n"
+    },
+    "valid": [
+      1
+    ],
+    "invalid": [
+      "x"
+    ]
+  },
+  {
+    "name": "null-root",
+    "input": null,
+    "want": {}
+  },
+  {
+    "name": "false-schema",
+    "input": false,
+    "want": false,
+    "invalid": [
+      {},
+      null,
+      1
+    ]
+  },
+  {
+    "name": "true-schema",
+    "input": true,
+    "want": true,
+    "valid": [
+      {},
+      null,
+      1
+    ]
+  },
+  {
+    "name": "draft07-ref-siblings",
+    "input": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "definitions": {
+        "n": {
+          "type": "integer"
+        }
+      },
+      "$ref": "#/definitions/n",
+      "type": "string"
+    },
+    "valid": [
+      1
+    ],
+    "invalid": [
+      "x"
+    ]
+  },
+  {
+    "name": "custom-dialect-is-opaque",
+    "input": {
+      "$schema": "https://example.test/json-schema.org/draft-07/custom",
+      "type": "string",
+      "$ref": "#/$defs/t",
+      "$defs": {
+        "t": {
+          "type": "string"
+        }
+      }
+    },
+    "want": {
+      "$schema": "https://example.test/json-schema.org/draft-07/custom",
+      "type": "string",
+      "$ref": "#/$defs/t",
+      "$defs": {
+        "t": {
+          "type": "string"
+        }
+      }
+    },
+    "resources": {
+      "https://example.test/json-schema.org/draft-07/custom": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema"
+      }
+    }
+  }
+]

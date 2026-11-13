@@ -1,0 +1,11 @@
+const fs = require('fs');
+const {z} = require('zod');
+const {zodToJsonSchema} = require('zod-to-json-schema');
+const {Type} = require('@sinclair/typebox');
+const out = process.argv[2];
+const save = (name,v) => fs.writeFileSync(`${out}/${name}.json`, JSON.stringify(v,null,2)+'\n');
+save('zod-openapi3', zodToJsonSchema(z.object({timeout:z.number().gt(0).lte(300), query:z.string().nullable().optional()}), {target:'openApi3'}));
+save('typebox-tuple', Type.Object({point:Type.Tuple([Type.Number(),Type.Number()])}));
+const tool = require('./node_modules/playwright/lib/mcp/browser/tools/navigate.js').default.find(t=>t.schema.name==='browser_navigate');
+const {toMcpTool} = require('./node_modules/playwright/lib/mcp/sdk/tool.js');
+save('playwright-navigate', toMcpTool(tool.schema).inputSchema);

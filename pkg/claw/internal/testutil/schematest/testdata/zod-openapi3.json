@@ -1,0 +1,19 @@
+{
+  "type": "object",
+  "properties": {
+    "timeout": {
+      "type": "number",
+      "exclusiveMinimum": true,
+      "minimum": 0,
+      "maximum": 300
+    },
+    "query": {
+      "type": "string",
+      "nullable": true
+    }
+  },
+  "required": [
+    "timeout"
+  ],
+  "additionalProperties": false
+}
