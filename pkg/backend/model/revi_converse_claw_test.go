@@ -20,6 +20,7 @@ import (
 
 	"github.com/SocialGouv/claw-code-go/pkg/api"
 
+	"github.com/SocialGouv/iterion/internal/gittest"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/tool"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
@@ -192,9 +193,12 @@ func converseWorkspace(t *testing.T, home string, skill []byte) string {
 	ws := t.TempDir()
 	git := func(args ...string) {
 		t.Helper()
-		cmd := exec.Command("git", append([]string{"-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false"}, args...)...)
-		cmd.Dir = ws
-		cmd.Env = append(os.Environ(), "HOME="+home, "GIT_CONFIG_GLOBAL="+os.DevNull, "GIT_CONFIG_NOSYSTEM=1")
+		// gittest.Cmd refuses git's auto-maintenance (it would keep writing
+		// under .git/objects past the command and race t.TempDir()'s
+		// removal) and cuts the operator's config off; HOME stays the
+		// test's scratch home.
+		cmd := gittest.Cmd(ws, args...)
+		cmd.Env = append(cmd.Env, "HOME="+home)
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v\n%s", args, err, out)
 		}
