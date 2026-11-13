@@ -264,7 +264,16 @@ iterion run bots/review-pr/main.bot \
   folded into the review body`, not degraded; a published review with no
   fold (`partial` included) is `INLINE COMMENTS MISSING` (degraded); only a
   review that did not publish keeps `FORGE PUBLISH FAILED` and its auth
-  advice. An
+  advice. The gate counts what the review carries, not only converge's
+  own `total_findings`: `publish_review` reports `findings_in_review` (the
+  PR findings it put in the review, after the reviewer recovery, the merge
+  floor and the workspace-anomaly strip), `comments_sent` and
+  `findings_reclassified`, and a loss is judged against the larger count —
+  a converge count of 0 over findings the merge floor restored no longer
+  hides their loss. `INLINE COMMENTS MISSING` counts the inline comments
+  actually sent and names the findings that went into the body instead;
+  findings that all sit on uncommitted workspace entries read `FINDINGS
+  RECLASSIFIED` (degraded: the body lists them by title only). An
   HTTP 200 can also carry `body_missing=true` when inline comments landed
   but the summary note did not: this is `degraded=true`, with an explicit
   "review body did not land" banner and no claim that rejected anchors were

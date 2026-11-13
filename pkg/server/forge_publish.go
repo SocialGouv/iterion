@@ -635,7 +635,8 @@ type publishReviewResponse struct {
 	// Fallback is "" | "summary" | "partial" (see forge.ReviewResult: only
 	// "summary" promises every comment is in the body; "partial" is a
 	// shortfall that GitLab folds and GitHub/Forgejo do not). Summary mode
-	// reports "summary" whenever it folded comments into the body itself.
+	// reports "summary" when it folded every submitted comment into the body
+	// itself; one dropped as unanchorable withholds it (see dropped_comments).
 	Fallback string `json:"fallback,omitempty"`
 	// BodyMissing reports a partial success whose summary note did not land.
 	BodyMissing bool `json:"body_missing,omitempty"`
@@ -847,8 +848,11 @@ func (s *Server) handleForgePublishReview(w http.ResponseWriter, r *http.Request
 	// Summary mode folded the comments into the body above, so the provider
 	// saw none and reports no fallback. The fold is this handler's own and the
 	// response states it: a caller reading zero inline comments with no fold
-	// would take findings that sit in the review body for lost ones.
-	if mode == "summary" && len(req.Comments) > 0 {
+	// would take findings that sit in the review body for lost ones. "summary"
+	// says EVERY submitted comment is in the body, so a comment dropped as
+	// unanchorable (in neither the body nor inline, named in dropped_comments)
+	// withholds the claim.
+	if mode == "summary" && len(req.Comments) > 0 && len(droppedComments) == 0 {
 		res.Fallback = "summary"
 	}
 	if s.logger != nil {

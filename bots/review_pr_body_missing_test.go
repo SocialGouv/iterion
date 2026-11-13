@@ -262,12 +262,24 @@ type publishChainRequest struct {
 	Comments []json.RawMessage `json:"comments"`
 }
 
+// publishChain is one run of publish_review -> publish_health: the endpoint's
+// answer (status 0 is 200), converge's findings, the further publish_review
+// refs (reviewer arrays, threshold, workspace anomaly, mode) and converge's
+// own count as pr_gate passes it on ("" is the count of findings).
+type publishChain struct {
+	resp      map[string]any
+	status    int
+	findings  string
+	refs      map[string]string
+	gateTotal string
+}
+
 // runReviewPRPublishChain drives publish_review against an endpoint answering
-// resp, resolves every mapping of the compiled publish_review -> publish_health
-// edge against what it emitted (total_findings is the count of findings, the
-// fixture standing in for pr_gate), and runs publish_health on the result. It
-// returns the request publish_review sent, its publish_output and the verdict.
-func runReviewPRPublishChain(t *testing.T, resp map[string]any, findings, mode string) (publishChainRequest, map[string]any, bool, string) {
+// c.resp, resolves every mapping of the compiled publish_review ->
+// publish_health edge against what it emitted and what pr_gate passes on, and
+// runs publish_health on the result. It returns the request publish_review
+// sent, its publish_output and the verdict.
+func runReviewPRPublishChain(t *testing.T, c publishChain) (publishChainRequest, map[string]any, bool, string) {
 	t.Helper()
 	var mu sync.Mutex
 	var sent []byte
@@ -276,7 +288,10 @@ func runReviewPRPublishChain(t *testing.T, resp map[string]any, findings, mode s
 		mu.Lock()
 		sent = body
 		mu.Unlock()
-		_ = json.NewEncoder(w).Encode(resp)
+		if c.status != 0 {
+			w.WriteHeader(c.status)
+		}
+		_ = json.NewEncoder(w).Encode(c.resp)
 	}))
 	defer srv.Close()
 
@@ -284,12 +299,12 @@ func runReviewPRPublishChain(t *testing.T, resp map[string]any, findings, mode s
 		"vars.forge_publish_url":      srv.URL + "/api/v1/forge/publish-review",
 		"vars.forge_publish_token":    "run-token",
 		"input.pr_url":                "https://github.com/acme/widgets/pull/7",
-		"input.findings":              findings,
+		"input.findings":              c.findings,
 		"input.effective_review_mode": "mono",
 		"vars.gate_enabled":           "false",
 	}
-	if mode != "" {
-		refs["vars.pr_review_mode"] = mode
+	for k, v := range c.refs {
+		refs[k] = v
 	}
 	out, err := exec.Command("sh", "-c", renderReviewPRBodyHealthNode(t, "publish_review", refs)).Output()
 	if err != nil {
@@ -309,9 +324,13 @@ func runReviewPRPublishChain(t *testing.T, resp map[string]any, findings, mode s
 		t.Fatalf("output is not publish_output JSON: %v (%q)", err, out)
 	}
 
-	var parsed []any
-	if err := json.Unmarshal([]byte(findings), &parsed); err != nil {
-		t.Fatalf("fixture findings are not a JSON array: %v", err)
+	gateTotal := c.gateTotal
+	if gateTotal == "" {
+		var parsed []any
+		if err := json.Unmarshal([]byte(c.findings), &parsed); err != nil {
+			t.Fatalf("fixture findings are not a JSON array: %v", err)
+		}
+		gateTotal = fmt.Sprint(len(parsed))
 	}
 	u := unittest.Whole(unit.LoadDir("review-pr/main.bot"))
 	if u.Merged == nil {
@@ -321,7 +340,7 @@ func runReviewPRPublishChain(t *testing.T, resp map[string]any, findings, mode s
 	if cr.Workflow == nil {
 		t.Fatalf("review-pr: the bundle did not compile: %v", cr.Diagnostics)
 	}
-	upstream := map[string]string{"outputs.pr_gate.total_findings": fmt.Sprint(len(parsed))}
+	upstream := map[string]string{"outputs.pr_gate.total_findings": gateTotal}
 	for k, v := range published {
 		upstream["outputs.publish_review."+k] = fmt.Sprint(v)
 	}
@@ -363,10 +382,10 @@ func TestReviewPRPublishReviewPropagatesFallbackToHealth(t *testing.T) {
 		t.Skip("python3 not on PATH")
 	}
 	findings := `[{"file":"a.go","line":1,"title":"first finding","severity":"high"},{"file":"b.go","line":9,"title":"second finding","severity":"medium"}]`
-	_, published, degraded, banner := runReviewPRPublishChain(t, map[string]any{
+	_, published, degraded, banner := runReviewPRPublishChain(t, publishChain{resp: map[string]any{
 		"published": true, "provider": "github", "review_url": "https://forge/review/5149",
 		"comments_posted": 0, "suggestions_posted": 0, "verified": true, "fallback": "summary",
-	}, findings, "")
+	}, findings: findings})
 	if got, ok := published["fallback"].(string); !ok || got != "summary" {
 		t.Fatalf("publish_output must carry the endpoint's fallback structured, got %#v in %v", published["fallback"], published)
 	}
@@ -446,7 +465,11 @@ func TestReviewPRPublishChainReadsOnlyARealFold(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			req, published, degraded, banner := runReviewPRPublishChain(t, tc.resp, tc.findings, tc.mode)
+			chain := publishChain{resp: tc.resp, findings: tc.findings}
+			if tc.mode != "" {
+				chain.refs = map[string]string{"vars.pr_review_mode": tc.mode}
+			}
+			req, published, degraded, banner := runReviewPRPublishChain(t, chain)
 			if req.Mode != tc.wantMode || len(req.Comments) != tc.wantComments {
 				t.Fatalf("publish_review sent mode=%q with %d inline comment(s), want mode=%q with %d", req.Mode, len(req.Comments), tc.wantMode, tc.wantComments)
 			}
@@ -462,6 +485,109 @@ func TestReviewPRPublishChainReadsOnlyARealFold(t *testing.T) {
 			}
 			if tc.wantFallback == "partial" && strings.Contains(fmt.Sprint(published["summary"]), "folded into") {
 				t.Errorf("a shortfall must not be described as a fold: %q", published["summary"])
+			}
+			if degraded != tc.wantDegraded {
+				t.Errorf("degraded = %v, banner = %q; want degraded = %v", degraded, banner, tc.wantDegraded)
+			}
+			for _, part := range tc.wantBanner {
+				if !strings.Contains(banner, part) {
+					t.Errorf("banner = %q; want it to contain %q", banner, part)
+				}
+			}
+			for _, part := range tc.denyBanner {
+				if strings.Contains(banner, part) {
+					t.Errorf("banner = %q; must not contain %q", banner, part)
+				}
+			}
+		})
+	}
+}
+
+// publish_health judges a loss against what the review carries, not only
+// against converge's own count (pr_gate.total_findings). The merge floor
+// restores findings converge dropped -- converge answering [] with a count of
+// 0 is the shape it exists for -- so a converge count of 0 over two restored
+// findings that never landed read as "forge publish OK: 0 inline comment(s)".
+// The banner counts the inline comments actually sent, and findings the
+// anomaly strip moved out of the PR (the body lists them by title only) read
+// under their own name, not as comments to re-post.
+func TestReviewPRPublishHealthJudgesWhatTheReviewCarries(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not on PATH")
+	}
+	const reviewer = `[{"file":"a.go","line":1,"title":"FINDING-ONE","severity":"high","detail":"DETAIL-ONE"},{"file":"b.go","line":9,"title":"FINDING-TWO","severity":"medium","detail":"DETAIL-TWO"}]`
+	const mixed = `[{"file":"a.go","line":1,"title":"FINDING-ONE","severity":"high"},{"file":"","line":0,"title":"FINDING-TWO","severity":"medium"}]`
+	floor := map[string]string{"input.claude_findings": reviewer, "input.severity_threshold": "medium", "input.max_findings": "15"}
+	answer := func(fallback string) map[string]any {
+		m := map[string]any{
+			"published": true, "provider": "github", "review_url": "https://forge/review/7",
+			"comments_posted": 0, "suggestions_posted": 0, "verified": true, "gate_posted": false,
+		}
+		if fallback != "" {
+			m["fallback"] = fallback
+		}
+		return m
+	}
+	for _, tc := range []struct {
+		name         string
+		chain        publishChain
+		wantComments int
+		wantInReview string
+		wantDegraded bool
+		wantBanner   []string
+		denyBanner   []string
+	}{
+		{
+			name:         "findings the merge floor restored and that never landed are a loss",
+			chain:        publishChain{resp: answer("partial"), findings: `[]`, refs: floor, gateTotal: "0"},
+			wantComments: 2, wantInReview: "2", wantDegraded: true,
+			wantBanner: []string{"INLINE COMMENTS MISSING", "none of its 2 inline comment(s) did", "fallback=partial"},
+			denyBanner: []string{"forge publish OK", "auth"},
+		},
+		{
+			name: "findings the merge floor restored and whose publish failed are a failure",
+			chain: publishChain{resp: map[string]any{"published": false, "skipped_reason": "create pull review: HTTP 502"},
+				status: http.StatusBadGateway, findings: `[]`, refs: floor, gateTotal: "0"},
+			wantComments: 2, wantInReview: "2", wantDegraded: true,
+			wantBanner: []string{"FORGE PUBLISH FAILED", "2 finding(s) to post", "HTTP 502"},
+			denyBanner: []string{"forge publish OK"},
+		},
+		{
+			name:         "the banner counts the inline comments sent, and names the ones in the body",
+			chain:        publishChain{resp: answer("partial"), findings: mixed},
+			wantComments: 1, wantInReview: "2", wantDegraded: true,
+			wantBanner: []string{"INLINE COMMENTS MISSING", "none of its 1 inline comment(s) did", "1 more finding(s) without a diff anchor are in the review body"},
+			denyBanner: []string{"none of its 2", "forge publish OK", "auth"},
+		},
+		{
+			name: "findings reclassified as workspace anomaly read as reclassified, not as comments to re-post",
+			chain: publishChain{resp: answer(""), findings: reviewer,
+				refs: map[string]string{"input.workspace_anomaly": " M a.go\n M b.go"}},
+			wantComments: 0, wantInReview: "0", wantDegraded: true,
+			wantBanner: []string{"FINDINGS RECLASSIFIED", "all 2 finding(s)", "by title only"},
+			denyBanner: []string{"INLINE COMMENTS MISSING", "re-post", "forge publish OK", "auth"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req, published, degraded, banner := runReviewPRPublishChain(t, tc.chain)
+			if len(req.Comments) != tc.wantComments {
+				t.Fatalf("publish_review sent %d inline comment(s), want %d (summary %q)", len(req.Comments), tc.wantComments, req.Summary)
+			}
+			if got := fmt.Sprint(published["findings_in_review"]); got != tc.wantInReview {
+				t.Errorf("publish_output findings_in_review = %s, want %s (output %v)", got, tc.wantInReview, published)
+			}
+			if got := fmt.Sprint(published["comments_sent"]); got != fmt.Sprint(tc.wantComments) {
+				t.Errorf("publish_output comments_sent = %s, want %d", got, tc.wantComments)
+			}
+			if tc.chain.refs["input.workspace_anomaly"] != "" {
+				// The verdict rests on what the body carries for them: the
+				// titles, never the detail a fold would have published.
+				if !strings.Contains(req.Summary, "FINDING-ONE") || strings.Contains(req.Summary, "DETAIL-ONE") {
+					t.Fatalf("the anomaly section must list the reclassified finding by title only: %q", req.Summary)
+				}
+				if got := fmt.Sprint(published["findings_reclassified"]); got != "2" {
+					t.Errorf("publish_output findings_reclassified = %s, want 2", got)
+				}
 			}
 			if degraded != tc.wantDegraded {
 				t.Errorf("degraded = %v, banner = %q; want degraded = %v", degraded, banner, tc.wantDegraded)

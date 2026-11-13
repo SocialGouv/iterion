@@ -1,7 +1,19 @@
 name: review-pr
 display_name: Revi
 icon: 🔎
-version: 0.9.21
+version: 0.9.22
+## 0.9.22 — `publish_health` judges a loss against what the review carries.
+## It compared against converge's own `total_findings`, so converge at 0
+## over findings the merge floor restored read `forge publish OK: 0 inline
+## comment(s)` when they never landed (re-fetch shortfall) or the publish
+## failed (HTTP 502, no gate). `publish_output` now carries
+## `findings_in_review`, `comments_sent` and `findings_reclassified` on
+## every exit, mapped to `publish_health`, which takes the larger count;
+## `INLINE COMMENTS MISSING` counts the inline comments sent, and findings
+## all reclassified as workspace anomaly read `FINDINGS RECLASSIFIED`
+## (degraded, title only) instead of a request to re-post them. The server
+## withholds `fallback` `summary` in summary mode when it dropped a comment
+## as unanchorable (in neither the body nor inline).
 ## 0.9.21 — only `fallback` `summary` reads as a fold. `partial` with zero
 ## inline comments is, on GitHub and Forgejo, the re-fetch listing fewer
 ## comments than were sent — nothing folded — and read `forge publish OK`;

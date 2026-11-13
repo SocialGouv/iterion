@@ -20,7 +20,9 @@ import (
 // response must still say the findings are in the body, or a caller reading
 // zero inline comments takes them for lost. A fold the handler did not make
 // (nothing left to fold, or inline mode) is not claimed, and a provider's own
-// report passes through untouched.
+// report passes through untouched. "summary" says every submitted comment is
+// in the body, so a comment the handler dropped as unanchorable -- in neither
+// the body nor inline -- withholds it; dropped_comments names that one.
 func TestForgePublishReview_SummaryModeReportsItsFold(t *testing.T) {
 	for _, tc := range []struct {
 		name         string
@@ -28,12 +30,19 @@ func TestForgePublishReview_SummaryModeReportsItsFold(t *testing.T) {
 		providerFb   string
 		wantFallback string
 		wantFolded   bool
+		wantDropped  int
 	}{
 		{
 			name: "summary mode with comments reports the fold",
 			body: `{"pr_url": "https://github.com/o/r/pull/42", "summary": "sum", "mode": "summary",
 			        "comments": [{"path": "a.go", "line": 3, "body": "FINDING-ONE"}, {"path": "b.go", "line": 9, "body": "FINDING-TWO"}]}`,
 			wantFallback: "summary", wantFolded: true,
+		},
+		{
+			name: "summary mode with a comment dropped as unanchorable claims no fold",
+			body: `{"pr_url": "https://github.com/o/r/pull/42", "summary": "sum", "mode": "summary",
+			        "comments": [{"path": "a.go", "line": 3, "body": "FINDING-ONE"}, {"path": "b.go", "line": 0, "body": "FINDING-TWO"}]}`,
+			wantFallback: "", wantFolded: true, wantDropped: 1,
 		},
 		{
 			name:         "summary mode without comments folds nothing",
@@ -44,7 +53,7 @@ func TestForgePublishReview_SummaryModeReportsItsFold(t *testing.T) {
 			name: "summary mode whose comments were all unanchorable folds nothing",
 			body: `{"pr_url": "https://github.com/o/r/pull/42", "summary": "sum", "mode": "summary",
 			        "comments": [{"path": "", "line": 3, "body": "FINDING-ONE"}]}`,
-			wantFallback: "",
+			wantFallback: "", wantDropped: 1,
 		},
 		{
 			name: "inline mode keeps the provider's empty report",
@@ -76,12 +85,18 @@ func TestForgePublishReview_SummaryModeReportsItsFold(t *testing.T) {
 			if resp.Fallback != tc.wantFallback {
 				t.Errorf("response fallback = %q, want %q (response %s)", resp.Fallback, tc.wantFallback, w.Body.String())
 			}
+			if len(resp.DroppedComments) != tc.wantDropped {
+				t.Errorf("dropped_comments = %q, want %d entr(ies)", resp.DroppedComments, tc.wantDropped)
+			}
 			folded := strings.Contains(fake.in.Body, "FINDING-ONE")
 			if folded != tc.wantFolded {
 				t.Errorf("review body carries the findings = %v, want %v (body %q)", folded, tc.wantFolded, fake.in.Body)
 			}
-			if tc.wantFolded && (len(fake.in.Comments) != 0 || !strings.Contains(fake.in.Body, "FINDING-TWO")) {
-				t.Errorf("a summary fold posts every finding in the body and none inline: comments %+v, body %q", fake.in.Comments, fake.in.Body)
+			if tc.wantFolded && len(fake.in.Comments) != 0 {
+				t.Errorf("a summary fold posts no inline comment: %+v", fake.in.Comments)
+			}
+			if inBody := strings.Contains(fake.in.Body, "FINDING-TWO"); tc.wantFolded && inBody != (tc.wantDropped == 0) {
+				t.Errorf("FINDING-TWO in the body = %v; want it there exactly when nothing was dropped (body %q)", inBody, fake.in.Body)
 			}
 		})
 	}

@@ -258,6 +258,19 @@ schema publish_output:
   ## (a re-fetch shortfall). STRUCTURED, so publish_health can tell a review
   ## that carries its findings in the body from one that lost them.
   fallback: string
+  ## findings_in_review: the PR findings this node put in the review, inline
+  ## or in its body — after the reviewer recovery, the merge floor and the
+  ## workspace-anomaly strip, so it can exceed converge's own count. Carried
+  ## on every exit once the findings are read (0 before), published or not:
+  ## publish_health judges a loss against it.
+  findings_in_review: int
+  ## comments_sent: the inline comments in the request sent to the publish
+  ## endpoint (0 when no request was sent).
+  comments_sent: int
+  ## findings_reclassified: findings anchored on an uncommitted workspace
+  ## entry, moved out of the PR's findings into the body's anomaly section
+  ## by title only.
+  findings_reclassified: int
   ## skipped_reason: non-empty when nothing was published (e.g. unknown
   ## forge, CLI not authenticated, zero anchorable findings).
   skipped_reason: string
@@ -280,7 +293,15 @@ schema publish_health_input:
   ## Forgejo: a re-fetch shortfall, the body as submitted).
   fallback: string
   comments_posted: int
+  ## total_findings: converge's own count. A loss is judged against the
+  ## larger of it and what the review carries (findings_in_review plus
+  ## findings_reclassified): the merge floor restores findings converge
+  ## dropped, and its count of 0 must not hide their loss.
   total_findings: int
+  findings_in_review: int
+  ## comments_sent: what the "none of its N inline comment(s)" banner counts.
+  comments_sent: int
+  findings_reclassified: int
   skipped_reason: string
   review_url: string
   gate_requested: bool
