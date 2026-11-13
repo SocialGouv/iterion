@@ -632,11 +632,13 @@ type publishReviewResponse struct {
 	// Verified reports whether comments_posted was confirmed by a
 	// follow-up forge read, not assumed from the create call.
 	Verified bool `json:"verified"`
-	// Fallback is "" | "summary" | "partial" (see forge.ReviewResult: only
+	// Fallback is "" | "summary" | "partial", over the comments the caller
+	// SUBMITTED (see forge.ReviewResult for the provider's report: only
 	// "summary" promises every comment is in the body; "partial" is a
 	// shortfall that GitLab folds and GitHub/Forgejo do not). Summary mode
-	// reports "summary" when it folded every submitted comment into the body
-	// itself; one dropped as unanchorable withholds it (see dropped_comments).
+	// reports "summary" when it folded the comments into the body itself. A
+	// comment dropped as unanchorable (dropped_comments) is in neither the
+	// body nor inline, so any drop reports "partial", in every mode.
 	Fallback string `json:"fallback,omitempty"`
 	// BodyMissing reports a partial success whose summary note did not land.
 	BodyMissing bool `json:"body_missing,omitempty"`
@@ -845,14 +847,20 @@ func (s *Server) handleForgePublishReview(w http.ResponseWriter, r *http.Request
 		})
 		return
 	}
-	// Summary mode folded the comments into the body above, so the provider
-	// saw none and reports no fallback. The fold is this handler's own and the
-	// response states it: a caller reading zero inline comments with no fold
-	// would take findings that sit in the review body for lost ones. "summary"
-	// says EVERY submitted comment is in the body, so a comment dropped as
-	// unanchorable (in neither the body nor inline, named in dropped_comments)
-	// withholds the claim.
-	if mode == "summary" && len(req.Comments) > 0 && len(droppedComments) == 0 {
+	// The fallback describes the comments the CALLER submitted, and the
+	// provider saw only the ones kept. A comment dropped as unanchorable is in
+	// neither the body nor inline (dropped_comments names it), so fewer of the
+	// submitted comments are on the pull request than were submitted: that is
+	// "partial" in every mode, whatever the provider reported for the kept
+	// ones, never "summary" (every submitted comment in the body).
+	// Otherwise summary mode folded the comments into the body above, so the
+	// provider saw none and reports no fallback; the fold is this handler's
+	// own and the response states it, or a caller reading zero inline
+	// comments with no fold would take findings in the body for lost ones.
+	switch {
+	case len(droppedComments) > 0:
+		res.Fallback = "partial"
+	case mode == "summary" && len(req.Comments) > 0:
 		res.Fallback = "summary"
 	}
 	if s.logger != nil {

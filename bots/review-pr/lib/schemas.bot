@@ -255,7 +255,8 @@ schema publish_output:
   ## the server folded them in summary mode, or publish_review wrote them
   ## there because none had a diff anchor; "partial" when fewer landed than
   ## were sent — GitLab folds the missing ones, GitHub and Forgejo do not
-  ## (a re-fetch shortfall). STRUCTURED, so publish_health can tell a review
+  ## (a re-fetch shortfall) — and whenever the endpoint dropped a submitted
+  ## comment as unanchorable, in any mode. STRUCTURED, so publish_health can tell a review
   ## that carries its findings in the body from one that lost them.
   fallback: string
   ## findings_in_review: the PR findings this node put in the review, inline
@@ -264,8 +265,9 @@ schema publish_output:
   ## on every exit once the findings are read (0 before), published or not:
   ## publish_health judges a loss against it.
   findings_in_review: int
-  ## comments_sent: the inline comments in the request sent to the publish
-  ## endpoint (0 when no request was sent).
+  ## comments_sent: the inline comments in the request publish_review built
+  ## for the publish endpoint, whether or not the request went through (0 on
+  ## the exits before it builds one).
   comments_sent: int
   ## findings_reclassified: findings anchored on an uncommitted workspace
   ## entry, moved out of the PR's findings into the body's anomaly section
@@ -298,8 +300,13 @@ schema publish_health_input:
   ## findings_reclassified): the merge floor restores findings converge
   ## dropped, and its count of 0 must not hide their loss.
   total_findings: int
+  ## findings_in_review: unknown (absent, or an unresolved template from an
+  ## output of another review-pr version) is never read as 0: with no inline
+  ## comment landed and no fold, it is degraded, FINDINGS COUNT UNKNOWN.
   findings_in_review: int
-  ## comments_sent: what the "none of its N inline comment(s)" banner counts.
+  ## comments_sent: when nonzero, the count INLINE COMMENTS MISSING names;
+  ## at 0 that banner says no inline comment was sent and names the merge
+  ## step's count against what the review carries.
   comments_sent: int
   findings_reclassified: int
   skipped_reason: string

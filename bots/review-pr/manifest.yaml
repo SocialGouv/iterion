@@ -11,9 +11,14 @@ version: 0.9.22
 ## every exit, mapped to `publish_health`, which takes the larger count;
 ## `INLINE COMMENTS MISSING` counts the inline comments sent, and findings
 ## all reclassified as workspace anomaly read `FINDINGS RECLASSIFIED`
-## (degraded, title only) instead of a request to re-post them. The server
-## withholds `fallback` `summary` in summary mode when it dropped a comment
-## as unanchorable (in neither the body nor inline).
+## (degraded, title only) instead of a request to re-post them; with no
+## inline comment sent it names the merge step's count against what the
+## review carries. A `publish_output` without these counts (another
+## review-pr version's, on a resume) is never read as zero findings: with
+## nothing inline and no fold it reads `FINDINGS COUNT UNKNOWN` (degraded).
+## The server answers `fallback` `partial`, never `summary`, in every mode
+## once it dropped a submitted comment as unanchorable (in neither the body
+## nor inline).
 ## 0.9.21 — only `fallback` `summary` reads as a fold. `partial` with zero
 ## inline comments is, on GitHub and Forgejo, the re-fetch listing fewer
 ## comments than were sent — nothing folded — and read `forge publish OK`;

@@ -20,9 +20,14 @@ import (
 // response must still say the findings are in the body, or a caller reading
 // zero inline comments takes them for lost. A fold the handler did not make
 // (nothing left to fold, or inline mode) is not claimed, and a provider's own
-// report passes through untouched. "summary" says every submitted comment is
-// in the body, so a comment the handler dropped as unanchorable -- in neither
-// the body nor inline -- withholds it; dropped_comments names that one.
+// report passes through untouched -- unless the handler dropped a comment.
+// The fallback describes what the CALLER submitted, while the provider saw
+// only what was kept: a comment dropped as unanchorable is in neither the
+// body nor inline (dropped_comments names it), so fewer of the submitted
+// comments are on the pull request than were submitted. That is "partial" in
+// every mode, never "summary" -- not even when the provider folded every
+// comment it was given (GitHub's and Forgejo's 422 path, GitLab's zero
+// landed), and not "" when every kept one landed.
 func TestForgePublishReview_SummaryModeReportsItsFold(t *testing.T) {
 	for _, tc := range []struct {
 		name         string
@@ -39,10 +44,22 @@ func TestForgePublishReview_SummaryModeReportsItsFold(t *testing.T) {
 			wantFallback: "summary", wantFolded: true,
 		},
 		{
-			name: "summary mode with a comment dropped as unanchorable claims no fold",
+			name: "summary mode with a comment dropped as unanchorable is partial",
 			body: `{"pr_url": "https://github.com/o/r/pull/42", "summary": "sum", "mode": "summary",
 			        "comments": [{"path": "a.go", "line": 3, "body": "FINDING-ONE"}, {"path": "b.go", "line": 0, "body": "FINDING-TWO"}]}`,
-			wantFallback: "", wantFolded: true, wantDropped: 1,
+			wantFallback: "partial", wantFolded: true, wantDropped: 1,
+		},
+		{
+			name: "inline mode with a comment dropped is partial even when the provider folded the rest",
+			body: `{"pr_url": "https://github.com/o/r/pull/42", "summary": "sum", "mode": "inline",
+			        "comments": [{"path": "a.go", "line": 3, "body": "FINDING-ONE"}, {"path": "b.go", "line": 0, "body": "FINDING-TWO"}]}`,
+			providerFb: "summary", wantFallback: "partial", wantDropped: 1,
+		},
+		{
+			name: "inline mode with a comment dropped is partial even when every kept one landed",
+			body: `{"pr_url": "https://github.com/o/r/pull/42", "summary": "sum",
+			        "comments": [{"path": "a.go", "line": 3, "body": "FINDING-ONE"}, {"path": "", "line": 9, "body": "FINDING-TWO"}]}`,
+			wantFallback: "partial", wantDropped: 1,
 		},
 		{
 			name:         "summary mode without comments folds nothing",
@@ -50,10 +67,10 @@ func TestForgePublishReview_SummaryModeReportsItsFold(t *testing.T) {
 			wantFallback: "",
 		},
 		{
-			name: "summary mode whose comments were all unanchorable folds nothing",
+			name: "summary mode whose comments were all unanchorable folds nothing and is partial",
 			body: `{"pr_url": "https://github.com/o/r/pull/42", "summary": "sum", "mode": "summary",
 			        "comments": [{"path": "", "line": 3, "body": "FINDING-ONE"}]}`,
-			wantFallback: "", wantDropped: 1,
+			wantFallback: "partial", wantDropped: 1,
 		},
 		{
 			name: "inline mode keeps the provider's empty report",
@@ -97,6 +114,14 @@ func TestForgePublishReview_SummaryModeReportsItsFold(t *testing.T) {
 			}
 			if inBody := strings.Contains(fake.in.Body, "FINDING-TWO"); tc.wantFolded && inBody != (tc.wantDropped == 0) {
 				t.Errorf("FINDING-TWO in the body = %v; want it there exactly when nothing was dropped (body %q)", inBody, fake.in.Body)
+			}
+			if tc.wantDropped > 0 && strings.Contains(fake.in.Body, "FINDING-TWO") {
+				t.Errorf("the dropped comment reached the body, so it is not lost: %q", fake.in.Body)
+			}
+			for _, c := range fake.in.Comments {
+				if tc.wantDropped > 0 && strings.Contains(c.Body, "FINDING-TWO") {
+					t.Errorf("the dropped comment reached the provider inline, so it is not lost: %+v", c)
+				}
 			}
 		})
 	}

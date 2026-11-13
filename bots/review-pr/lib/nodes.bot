@@ -578,7 +578,8 @@ findings_parse_failed = False
 # floor add findings it dropped, and the anomaly strip moves findings out of
 # the PR into the body, by title only. findings_in_review counts the PR findings
 # this node puts in the review, inline or in its body; comments_sent the
-# inline comments in the request it sent; findings_reclassified the findings
+# inline comments in the request it built for the endpoint, whether or not the
+# request then went through; findings_reclassified the findings
 # the strip moved out. Set once known, so an earlier exit reports 0.
 findings_in_review = 0
 comments_sent = 0
@@ -1401,8 +1402,10 @@ import os, json, sys
 converge_total = int(os.environ.get('TOTAL', '0') or '0')
 posted = int(os.environ.get('POSTED', '0') or '0')
 def count(name):
-    # A count publish_review did not emit (an unmapped or unparseable input)
-    # is unknown, -1, never zero findings.
+    # A count publish_review did not emit (an unmapped input, which reaches
+    # this shell as its literal template, or an unparseable one) is unknown,
+    # -1, never zero findings: with nothing inline and no fold it is degraded
+    # under its own banner below, never read as a clean review.
     try:
         return int(str(os.environ.get(name, '')).strip())
     except ValueError:
@@ -1447,7 +1450,18 @@ folded = anchors_lost and published and not body_missing and fallback == 'summar
 # detail carries them either. Degraded, under its own name.
 reclassified_only = (anchors_lost and in_review == 0 and reclassified > 0
                      and converge_total <= reclassified)
-degraded = body_missing or (anchors_lost and not folded) or gate_missing or placeholder_refused
+# publish_review reported no count of the findings it put in the review (an
+# output from another review-pr version, on a resume across versions): what
+# it carried is unknown, so 0 inline comments with no fold cannot be read as
+# nothing to post - the merge floor may have restored findings converge did
+# not count. A published summary fold still says the findings are in the body.
+count_unknown = in_review < 0 and posted == 0 and not (published and fallback == 'summary')
+degraded = body_missing or (anchors_lost and not folded) or count_unknown or gate_missing or placeholder_refused
+def unknown_banner():
+    landed = ('the review landed with 0 inline comments and nothing reports them folded' if published
+              else 'the review did not publish (reason: ' + (skipped or 'none given') + ')')
+    return (chr(9888) + ' FINDINGS COUNT UNKNOWN: publish_review reported no count of the findings it published (likely an output from another review-pr version); '
+            + landed + '; the merge step counted ' + str(converge_total) + ' finding(s), which may not be all the review carried. Check the review on the PR; the board + markdown report still succeeded.')
 banners = []
 if placeholder_refused:
     banners.append(chr(9888) + ' REVIEW REFUSED: ' + skipped + '. Re-run the reviewers before publishing a verdict.')
@@ -1459,18 +1473,31 @@ if banners:
     banner = ' '.join(banners)
 elif folded:
     banner = 'forge publish OK: ' + str(in_review if in_review > 0 else total) + ' finding(s) folded into the review body (no inline comment landed); review: ' + (review_url or 'n/a')
+elif count_unknown and published:
+    banner = unknown_banner()
 elif reclassified_only and published:
     banner = chr(9888) + ' FINDINGS RECLASSIFIED: all ' + str(reclassified) + ' finding(s) were anchored on uncommitted workspace edits outside the PR diff; the review lists them by title only, with no inline comment and no detail. Check the workspace drift the review names; re-run on a clean checkout to review them as PR findings.'
 elif anchors_lost and published:
     reason = skipped or ('the forge holds fewer inline comments than were sent (fallback=partial)' if fallback == 'partial' else 'none given')
-    # The count is the inline comments actually sent; findings without a
-    # diff anchor went into the body instead and are named apart.
-    in_body = ''
-    if sent >= 0 and in_review > sent:
-        in_body = '; ' + str(in_review - sent) + ' more finding(s) without a diff anchor are in the review body'
-    banner = chr(9888) + ' INLINE COMMENTS MISSING: the review landed but none of its ' + str(sent if sent > 0 else total) + ' inline comment(s) did and nothing reports them folded (reason: ' + reason + in_body + '). Check the review on the PR; the board + markdown report still succeeded; re-run with the same pr_url to re-post the findings.'
+    if sent > 0:
+        # The count is the inline comments actually sent; findings without a
+        # diff anchor went into the body instead and are named apart.
+        in_body = ''
+        if in_review > sent:
+            in_body = '; ' + str(in_review - sent) + ' more finding(s) without a diff anchor are in the review body'
+        banner = chr(9888) + ' INLINE COMMENTS MISSING: the review landed but none of its ' + str(sent) + ' inline comment(s) did and nothing reports them folded (reason: ' + reason + in_body + '). Check the review on the PR; the board + markdown report still succeeded; re-run with the same pr_url to re-post the findings.'
+    else:
+        # Nothing was sent inline, so nothing can be re-posted: the merge step
+        # counted findings the review does not carry (a miscount, prose in its
+        # array, an unreadable answer with no reviewer to recover from).
+        carried = ''
+        if reclassified > 0:
+            carried = ' (' + str(reclassified) + ' reclassified as workspace anomaly, title only)'
+        banner = chr(9888) + ' INLINE COMMENTS MISSING: the review landed but no inline comment was sent: the merge step counted ' + str(converge_total) + ' finding(s) and the review carries ' + str(max(in_review, 0)) + ' of them in its body' + carried + ' (reason: ' + reason + '). Check the merge step output and the review on the PR; the board + markdown report still succeeded.'
 elif anchors_lost:
     banner = chr(9888) + ' FORGE PUBLISH FAILED: ' + str(total) + ' finding(s) to post but 0 inline comments landed on the PR (reason: ' + (skipped or 'none given') + '). The board + markdown report still succeeded; fix the forge CLI auth and re-run with the same pr_url to publish.'
+elif count_unknown:
+    banner = unknown_banner()
 else:
     banner = 'forge publish OK: ' + str(posted) + ' inline comment(s) posted; review: ' + (review_url or 'n/a')
 sys.stderr.write(banner + chr(10))

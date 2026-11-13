@@ -36,7 +36,7 @@ func TestReviewPRPublishHealthSeesALostGateOnEveryExit(t *testing.T) {
 		t.Helper()
 		vals := map[string]string{
 			"total_findings": "0", "comments_posted": "0", "published": "false",
-			"findings_in_review": "", "comments_sent": "", "findings_reclassified": "",
+			"findings_in_review": "0", "comments_sent": "0", "findings_reclassified": "0",
 			"review_url": "", "skipped_reason": "", "body_missing": "false", "fallback": "",
 			"gate_requested": "false", "gate_posted": "false", "gate_skipped_reason": "",
 		}

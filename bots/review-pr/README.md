@@ -259,7 +259,9 @@ iterion run bots/review-pr/main.bot \
   `publish_review` wrote them there because none had a diff anchor (no
   file:line, or HEAD moved). `partial` says fewer landed than were sent:
   GitLab folds the missing ones, GitHub and Forgejo do not (a re-fetch
-  shortfall), so with zero inline comments it is no fold. A published
+  shortfall), so with zero inline comments it is no fold; the endpoint
+  also answers `partial`, never `summary`, in any mode, once it dropped a
+  submitted comment as unanchorable (in neither the body nor inline). A published
   review whose body landed with a `summary` fold reads `forge publish OK …
   folded into the review body`, not degraded; a published review with no
   fold (`partial` included) is `INLINE COMMENTS MISSING` (degraded); only a
@@ -271,9 +273,14 @@ iterion run bots/review-pr/main.bot \
   `findings_reclassified`, and a loss is judged against the larger count —
   a converge count of 0 over findings the merge floor restored no longer
   hides their loss. `INLINE COMMENTS MISSING` counts the inline comments
-  actually sent and names the findings that went into the body instead;
-  findings that all sit on uncommitted workspace entries read `FINDINGS
-  RECLASSIFIED` (degraded: the body lists them by title only). An
+  actually sent and names the findings that went into the body instead,
+  or, when none was sent, the merge step's count against what the review
+  carries; findings that all sit on uncommitted workspace entries read
+  `FINDINGS RECLASSIFIED` (degraded: the body lists them by title only);
+  and a `publish_output` with no findings count (another review-pr
+  version's, on a resume) reads `FINDINGS COUNT UNKNOWN` (degraded) when
+  nothing landed inline and nothing reports a fold — never as zero
+  findings. An
   HTTP 200 can also carry `body_missing=true` when inline comments landed
   but the summary note did not: this is `degraded=true`, with an explicit
   "review body did not land" banner and no claim that rejected anchors were

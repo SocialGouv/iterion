@@ -234,6 +234,7 @@ func TestReviewPRPublishHealthFoldedFindings(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			degraded, banner := runReviewPRPublishHealth(t, map[string]string{
 				"input.total_findings": "2", "input.comments_posted": "0", "input.published": tc.published,
+				"input.findings_in_review": "2", "input.comments_sent": "2", "input.findings_reclassified": "0",
 				"input.body_missing": tc.bodyMissing, "input.fallback": tc.fallback,
 				"input.review_url": "https://forge/review/1", "input.skipped_reason": tc.skipped,
 				"input.gate_requested": "true", "input.gate_posted": "true",
@@ -598,6 +599,121 @@ func TestReviewPRPublishHealthJudgesWhatTheReviewCarries(t *testing.T) {
 				}
 			}
 			for _, part := range tc.denyBanner {
+				if strings.Contains(banner, part) {
+					t.Errorf("banner = %q; must not contain %q", banner, part)
+				}
+			}
+		})
+	}
+}
+
+// A publish_output with no findings count -- another review-pr version's, on a
+// resume across versions -- reaches publish_health as the literal template of
+// the unmapped input. An unknown count is never zero findings: read as 0, the
+// merge floor's restored findings behind a converge count of 0 that never
+// landed read "forge publish OK: 0 inline comment(s) posted". With nothing
+// inline and no fold, it is degraded under its own name; the refused,
+// body-missing and gate banners and the unpublished FAILED banner keep their
+// precedence. And when no inline comment was sent at all, the banner cannot
+// say N comments did not land: it names the merge step's count against what
+// the review carries.
+func TestReviewPRPublishHealthNeverReadsAnUnknownCountAsZero(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not on PATH")
+	}
+	unknown := map[string]string{
+		"input.findings_in_review":    "{{input.findings_in_review}}",
+		"input.comments_sent":         "{{input.comments_sent}}",
+		"input.findings_reclassified": "{{input.findings_reclassified}}",
+	}
+	known := func(inReview, sent, reclassified string) map[string]string {
+		return map[string]string{"input.findings_in_review": inReview, "input.comments_sent": sent, "input.findings_reclassified": reclassified}
+	}
+	for _, tc := range []struct {
+		name         string
+		counts       map[string]string
+		published    string
+		posted       string
+		fallback     string
+		total        string
+		skipped      string
+		gatePosted   string
+		wantDegraded bool
+		wantParts    []string
+		denyParts    []string
+	}{
+		{
+			name: "an unknown count over a published review with nothing inline is degraded", counts: unknown,
+			published: "true", posted: "0", fallback: "partial", total: "0", wantDegraded: true,
+			wantParts: []string{"FINDINGS COUNT UNKNOWN", "reported no count", "another review-pr version", "the review landed with 0 inline comments", "the merge step counted 0 finding(s)", "Check the review on the PR"},
+			denyParts: []string{"forge publish OK", "auth"},
+		},
+		{
+			name: "an unknown count takes its own banner over a converge count", counts: unknown,
+			published: "true", posted: "0", fallback: "", total: "2", wantDegraded: true,
+			wantParts: []string{"FINDINGS COUNT UNKNOWN", "the merge step counted 2 finding(s)"},
+			denyParts: []string{"INLINE COMMENTS MISSING", "forge publish OK"},
+		},
+		{
+			name: "an unknown count over a review that did not publish is degraded", counts: unknown,
+			published: "false", posted: "0", total: "0", skipped: "forge publish endpoint HTTP 502: bad gateway", wantDegraded: true,
+			wantParts: []string{"FINDINGS COUNT UNKNOWN", "the review did not publish", "HTTP 502"},
+			denyParts: []string{"forge publish OK"},
+		},
+		{
+			name: "an unpublished review with findings counted keeps the failure banner", counts: unknown,
+			published: "false", posted: "0", total: "2", skipped: "forge publish endpoint HTTP 502: bad gateway", wantDegraded: true,
+			wantParts: []string{"FORGE PUBLISH FAILED", "2 finding(s) to post"},
+			denyParts: []string{"FINDINGS COUNT UNKNOWN"},
+		},
+		{
+			name: "an unknown count under a summary fold is not a loss", counts: unknown,
+			published: "true", posted: "0", fallback: "summary", total: "0",
+			wantParts: []string{"forge publish OK"},
+			denyParts: []string{"UNKNOWN", "MISSING"},
+		},
+		{
+			name: "an unknown count with an inline comment landed is not a loss", counts: unknown,
+			published: "true", posted: "1", total: "0",
+			wantParts: []string{"forge publish OK: 1 inline comment(s) posted"},
+			denyParts: []string{"UNKNOWN"},
+		},
+		{
+			name: "the gate banner keeps its precedence over an unknown count", counts: unknown,
+			published: "true", posted: "0", total: "0", gatePosted: "false", wantDegraded: true,
+			wantParts: []string{"MERGE GATE NOT POSTED"},
+			denyParts: []string{"FINDINGS COUNT UNKNOWN", "forge publish OK"},
+		},
+		{
+			name: "no inline comment sent names the merge step's count, not comments to re-post", counts: known("0", "0", "1"),
+			published: "true", posted: "0", total: "2", wantDegraded: true,
+			wantParts: []string{"INLINE COMMENTS MISSING", "no inline comment was sent", "the merge step counted 2 finding(s)", "carries 0 of them", "1 reclassified as workspace anomaly"},
+			denyParts: []string{"none of its", "re-post", "forge publish OK"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			gateRequested, gatePosted := "false", "false"
+			if tc.gatePosted != "" {
+				gateRequested, gatePosted = "true", tc.gatePosted
+			}
+			refs := map[string]string{
+				"input.total_findings": tc.total, "input.comments_posted": tc.posted, "input.published": tc.published,
+				"input.body_missing": "false", "input.fallback": tc.fallback, "input.skipped_reason": tc.skipped,
+				"input.review_url": "https://forge/review/1", "input.gate_requested": gateRequested, "input.gate_posted": gatePosted,
+			}
+			for k, v := range tc.counts {
+				refs[k] = v
+			}
+			degraded, banner := runReviewPRPublishHealth(t, refs)
+			if degraded != tc.wantDegraded {
+				t.Errorf("degraded = %v, banner = %q; want degraded = %v", degraded, banner, tc.wantDegraded)
+			}
+			for _, part := range tc.wantParts {
+				if !strings.Contains(banner, part) {
+					t.Errorf("banner = %q; want it to contain %q", banner, part)
+				}
+			}
+			for _, part := range tc.denyParts {
 				if strings.Contains(banner, part) {
 					t.Errorf("banner = %q; must not contain %q", banner, part)
 				}
