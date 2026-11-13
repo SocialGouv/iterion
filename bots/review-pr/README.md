@@ -252,7 +252,13 @@ iterion run bots/review-pr/main.bot \
   comments the forge actually stored (falling back to a summary-only
   review when inline anchors are rejected — findings are folded into the
   body, never dropped), and a deterministic `publish_health` gate raises
-  a loud banner if findings existed but zero inline comments landed. An
+  a loud banner if findings existed but zero inline comments landed. The
+  endpoint's `fallback` (`summary`: every anchor refused and folded;
+  `partial`: the rest folded) travels structured to that gate: a published
+  review whose body landed with its findings folded reads `forge publish
+  OK … folded into the review body`, not degraded; a published review with
+  no reported fold is `INLINE COMMENTS MISSING` (degraded); only a review
+  that did not publish keeps `FORGE PUBLISH FAILED` and its auth advice. An
   HTTP 200 can also carry `body_missing=true` when inline comments landed
   but the summary note did not: this is `degraded=true`, with an explicit
   "review body did not land" banner and no claim that rejected anchors were

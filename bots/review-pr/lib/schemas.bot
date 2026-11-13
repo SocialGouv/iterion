@@ -248,6 +248,14 @@ schema publish_output:
   ## body_missing: inline comments landed but the summary body did not.
   ## Orthogonal to published and fallback: no folded content reached the PR.
   body_missing: bool
+  ## fallback: the forge layer's account of the inline anchors it refused
+  ## (forge.ReviewResult.Fallback): "" for a clean inline post (and on every
+  ## exit that reached no forge), "summary" when anchoring was rejected
+  ## wholesale and every comment was folded into the review body, "partial"
+  ## when some landed inline and the rest were folded. STRUCTURED, so
+  ## publish_health can tell a review that carries its findings in the body
+  ## from one that lost them.
+  fallback: string
   ## skipped_reason: non-empty when nothing was published (e.g. unknown
   ## forge, CLI not authenticated, zero anchorable findings).
   skipped_reason: string
@@ -264,6 +272,10 @@ schema publish_output:
 schema publish_health_input:
   published: bool
   body_missing: bool
+  ## fallback: publish_output.fallback. "summary" / "partial" on a published
+  ## review with a body is the forge saying the findings it refused inline
+  ## are in that body: a fold, not a lost publish.
+  fallback: string
   comments_posted: int
   total_findings: int
   skipped_reason: string
@@ -273,9 +285,10 @@ schema publish_health_input:
   gate_skipped_reason: string
 
 ## Deterministic anti-façade gate: degraded=true covers findings with no
-## inline comment, a missing review body, or a required gate that did not
-## land. A loud banner informs rather than hard-failing the run: the board
-## and report already succeeded upstream.
+## inline comment that the forge does not report folded into the review
+## body, a missing review body, or a required gate that did not land. A loud
+## banner informs rather than hard-failing the run: the board and report
+## already succeeded upstream.
 schema publish_health_output:
   degraded: bool
   banner: string

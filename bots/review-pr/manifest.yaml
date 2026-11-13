@@ -1,7 +1,17 @@
 name: review-pr
 display_name: Revi
 icon: 🔎
-version: 0.9.19
+version: 0.9.20
+## 0.9.20 — `publish_health` reads the forge's fold. A review the forge
+## published with every refused anchor folded into its body (`fallback`
+## `summary`/`partial`, body landed) raised "FORGE PUBLISH FAILED … fix the
+## forge CLI auth" over a PR that held both findings with their file:line
+## (SocialGouv/egapro #5149, #5157). `publish_output` now carries `fallback`
+## structured on every exit, mapped to `publish_health`: a reported fold is
+## `forge publish OK … folded into the review body`, not degraded; a
+## published review with no reported fold is `INLINE COMMENTS MISSING`
+## (degraded, no auth advice); only an unpublished review keeps the FAILED
+## banner.
 ## 0.9.19 — max_duration 120m → 180m: with the forge-native ticket lookup
 ## reachable (PR #3119), a PIC review explored its forge for 118 min and
 ## died at the 108-minute wall one node short of converge — the workload
