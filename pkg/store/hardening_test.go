@@ -147,6 +147,15 @@ func TestTeeRunLogHardening(t *testing.T) {
 	_ = closer.Close()
 
 	runDir := filepath.Join(root, "runs", "safe")
+	if runtime.GOOS == "windows" {
+		// Windows has no POSIX mode bits: os reports 0777/0666 for every
+		// writable entry whatever was asked, and the ACL inherited from the
+		// parent is what guards it.
+		if _, err := os.Stat(filepath.Join(runDir, "run.log")); err != nil {
+			t.Fatalf("stat run.log: %v", err)
+		}
+		return
+	}
 	if di, err := os.Stat(runDir); err != nil {
 		t.Fatalf("stat run dir: %v", err)
 	} else if di.Mode().Perm() != dirPerm {

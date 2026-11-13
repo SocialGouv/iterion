@@ -6,11 +6,27 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/internal/envtrust"
 )
+
+// tempDirEnvName is the variable os.TempDir reads on this platform: TMP on
+// Windows (GetTempPath), TMPDIR elsewhere.
+func tempDirEnvName() string {
+	if runtime.GOOS == "windows" {
+		return "TMP"
+	}
+	return "TMPDIR"
+}
+
+// rootDir is the root of the filesystem the temp dir is on, absolute: / ,
+// or C:\ on Windows, where \ alone is relative to the current drive.
+func rootDir() string {
+	return filepath.VolumeName(processTempDir) + string(filepath.Separator)
+}
 
 // Under `go test`, without ITERION_HOME, the iterion home is a path of this
 // test process under the temp dir it started with — never the operator's
@@ -95,7 +111,7 @@ func TestIterionHome_IgnoresAnITERION_HOMEInheritedFromTheOperator(t *testing.T)
 // fall back.
 func TestIterionHome_ProductionIsDotIterionOrAnError(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	t.Setenv(homeEnvName(), home)
 	if got, err := iterionHome("", liveEnvironment); err != nil || got != filepath.Join(home, StoreDirName) {
 		t.Fatalf("iterionHome(\"\") = %q, %v; want %q", got, err, filepath.Join(home, StoreDirName))
 	}
@@ -105,12 +121,12 @@ func TestIterionHome_ProductionIsDotIterionOrAnError(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("HOME", "relhome")
+	t.Setenv(homeEnvName(), "relhome")
 	if got, err := iterionHome("", liveEnvironment); err != nil || got != filepath.Join(cwd, "relhome", StoreDirName) {
 		t.Fatalf("relative HOME: iterionHome(\"\") = %q, %v; want %q", got, err, filepath.Join(cwd, "relhome", StoreDirName))
 	}
 
-	t.Setenv("HOME", "")
+	t.Setenv(homeEnvName(), "")
 	if got, err := iterionHome("", liveEnvironment); err == nil {
 		t.Fatalf("no home dir resolves, yet iterionHome(\"\") = %q with no error", got)
 	}
@@ -171,8 +187,8 @@ func TestTheProductionResolutionTakesNoTestBranch(t *testing.T) {
 	// HOME=/ is a home — /.iterion — for both resolutions: the inherited one
 	// joins the value rather than trimming it to nothing.
 	t.Setenv("ITERION_HOME", "")
-	t.Setenv(homeEnvName(), string(filepath.Separator))
-	rootHome := filepath.Join(string(filepath.Separator), StoreDirName)
+	t.Setenv(homeEnvName(), rootDir())
+	rootHome := filepath.Join(rootDir(), StoreDirName)
 	envtrust.ResetForTest()
 	t.Setenv(envtrust.EnvPlantedNames, "")
 	if got, err := resolveIterionHome(false, liveEnvironment); err != nil || got != rootHome {
@@ -229,6 +245,9 @@ func TestInheritedIterionHome_IgnoresAPlantedITERION_HOME(t *testing.T) {
 // and without one.
 func TestABuiltBinaryResolvesTheOperatorsHome(t *testing.T) {
 	bin := filepath.Join(t.TempDir(), "homeprobe")
+	if runtime.GOOS == "windows" {
+		bin += ".exe" // go build names it so, and exec finds nothing without it
+	}
 	build := exec.Command("go", "build", "-mod=vendor", "-o", bin, "./testdata/homeprobe")
 	build.Env = append(os.Environ(), "CGO_ENABLED=0")
 	if out, err := build.CombinedOutput(); err != nil {
@@ -354,23 +373,23 @@ func TestResolveIterionHomeAsInProductionForTests(t *testing.T) {
 	}
 	t.Run("home owned by the test", func(t *testing.T) {
 		home := t.TempDir()
-		t.Setenv("HOME", home)
+		t.Setenv(homeEnvName(), home)
 		ResolveIterionHomeAsInProductionForTests(t)
 		if got, err := IterionHome(); err != nil || got != filepath.Join(home, StoreDirName) {
 			t.Fatalf("IterionHome() = %q, %v; want %q", got, err, filepath.Join(home, StoreDirName))
 		}
 	})
 	t.Run("no home", func(t *testing.T) {
-		t.Setenv("HOME", "")
+		t.Setenv(homeEnvName(), "")
 		ResolveIterionHomeAsInProductionForTests(t)
 		if got, err := IterionHome(); err == nil {
 			t.Fatalf("no home dir resolves, yet IterionHome() = %q with no error", got)
 		}
 	})
 	t.Run("home turning foreign after the call", func(t *testing.T) {
-		t.Setenv("HOME", t.TempDir())
+		t.Setenv(homeEnvName(), t.TempDir())
 		ResolveIterionHomeAsInProductionForTests(t)
-		t.Setenv("HOME", "/nonexistent-operator/home")
+		t.Setenv(homeEnvName(), "/nonexistent-operator/home")
 		if got, err := IterionHome(); err == nil || !strings.Contains(err.Error(), "not a directory the test owns") {
 			t.Fatalf("a foreign HOME resolved to %q, %v; want the refusal", got, err)
 		}
@@ -384,7 +403,7 @@ func TestResolveIterionHomeAsInProductionForTests(t *testing.T) {
 		processIterionHome = "/operator/real/iterion-home"
 		t.Setenv("ITERION_HOME", processIterionHome)
 		home := t.TempDir()
-		t.Setenv("HOME", home)
+		t.Setenv(homeEnvName(), home)
 		ResolveIterionHomeAsInProductionForTests(t)
 		if got, err := IterionHome(); err != nil || got != filepath.Join(home, StoreDirName) {
 			t.Fatalf("with the operator's inherited ITERION_HOME, IterionHome() = %q, %v; want the test's %q", got, err, filepath.Join(home, StoreDirName))
@@ -422,7 +441,7 @@ func TestStrictlyInside(t *testing.T) {
 // GOTMPDIR is no root: it names wherever the working directory happens to be
 // at the check, which can sit above a home the test does not own.
 func TestOwnedByTheTest_HonoursGOTMPDIR(t *testing.T) {
-	gotmp := filepath.Join(string(filepath.Separator), "nonexistent-gotmp-root")
+	gotmp := filepath.Join(rootDir(), "nonexistent-gotmp-root")
 	home := filepath.Join(gotmp, "TestX1", "001")
 	if ownedByTheTest(home) {
 		t.Fatalf("%s is owned by the test before GOTMPDIR names its root — the case no longer isolates GOTMPDIR", home)
@@ -432,8 +451,8 @@ func TestOwnedByTheTest_HonoursGOTMPDIR(t *testing.T) {
 		t.Fatalf("a dir under GOTMPDIR %s is not owned by the test", gotmp)
 	}
 
-	t.Chdir(string(filepath.Separator))
-	t.Setenv("GOTMPDIR", strings.TrimPrefix(gotmp, string(filepath.Separator)))
+	t.Chdir(rootDir())
+	t.Setenv("GOTMPDIR", strings.TrimPrefix(gotmp, rootDir()))
 	if ownedByTheTest(home) {
 		t.Fatalf("the relative GOTMPDIR %q made %s the test's own", os.Getenv("GOTMPDIR"), home)
 	}
@@ -459,7 +478,7 @@ func TestIterionHome_TheFirstLookupOfAProcessCreatesNothing(t *testing.T) {
 	if os.Getenv(firstLookupChildEnv) == "1" {
 		decoy := os.Getenv(firstLookupDecoyEnv)
 		t.Setenv("ITERION_HOME", decoy)
-		t.Setenv("TMPDIR", t.TempDir())
+		t.Setenv(tempDirEnvName(), t.TempDir())
 		home, err := IterionHome()
 		if err != nil {
 			t.Fatalf("IterionHome: %v", err)
@@ -487,7 +506,7 @@ func TestIterionHome_TheFirstLookupOfAProcessCreatesNothing(t *testing.T) {
 	decoy := filepath.Join(cwd, "operator-iterion-home")
 	cmd := exec.Command(os.Args[0], "-test.run=^"+regexp.QuoteMeta(t.Name())+"$", "-test.count=1", "-test.v")
 	cmd.Dir = cwd
-	cmd.Env = append(os.Environ(), firstLookupChildEnv+"=1", "TMPDIR=reltmp", "ITERION_HOME="+decoy,
+	cmd.Env = append(os.Environ(), firstLookupChildEnv+"=1", tempDirEnvName()+"=reltmp", "ITERION_HOME="+decoy,
 		firstLookupDecoyEnv+"="+decoy, firstLookupParentEnv+"="+filepath.Join(cwd, "reltmp"))
 	out, err := cmd.CombinedOutput()
 	if err != nil {
