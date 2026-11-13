@@ -5,8 +5,14 @@ version: 0.1.7
 ## 0.1.7 — the converse agent declares its tools (bash, read_file, glob,
 ## grep): a routing cell that moves it to claw (the team gateway lanes) gave
 ## it NO tool, so it could neither read the diff nor post and answered a
-## placeholder. converse_health now flags a run that posted nothing without
-## a skipped_reason as degraded instead of reporting it healthy.
+## placeholder. Its tool loop is bounded at 60 steps, review-pr's
+## reviewer_claude bound: claw's default of 5 stopped short of the
+## forge-reply skill's VERIFY. converse_health reads a question as answered
+## only when the agent posted AND returned an http(s) reply_url on the PR's
+## host (it now receives pr_url): an unanswered question is always degraded
+## (its skipped_reason, when given, is the banner), and a claimed post whose
+## reply_url is not such a URL ("placeholder", another host) reads
+## UNVERIFIED instead of OK.
 ## 0.1.6 — every body it posts on a forge ends with the run that wrote it:
 ## the evidence behind the text, and the way into the platform for a reader
 ## meeting it on their own repository (AGENTS.md, docs/agents/bots/run-link.md)

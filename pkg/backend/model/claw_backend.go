@@ -225,6 +225,10 @@ func NewClawBackend(registry *Registry, hk EventHooks, retry RetryPolicy, opts .
 	return b
 }
 
+// DefaultClawToolMaxSteps bounds the tool loop of a claw node that names no
+// `tool_max_steps:`.
+const DefaultClawToolMaxSteps = 5
+
 // Execute implements delegate.Backend.
 //
 // Tokens and CostUSD cover requests made by this invocation, including its
@@ -629,7 +633,7 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 		applyAsyncAskExecs(task, opts.Tools)
 		maxSteps := task.ToolMaxSteps
 		if maxSteps <= 0 {
-			maxSteps = 5
+			maxSteps = DefaultClawToolMaxSteps
 		}
 		opts.MaxSteps = maxSteps
 		// A tool-equipped claw node is agentic by intent: it must ground its
