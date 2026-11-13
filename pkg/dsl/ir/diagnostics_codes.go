@@ -489,4 +489,8 @@ const (
 	DiagActionRetryOnNative DiagCode = "C335" // `retry:` on an action served by a native transport — the ladder's guards are HTTP-answer semantics, so the property is inert (warning)
 
 	DiagNativeVerbNotExposed DiagCode = "C336" // a native action (board.*) names a verb the native facade does not expose — every launch is refused at admission (warning)
+
+	DiagInvalidCodemode DiagCode = "C337" // codemode: value not one of on|off (error)
+
+	DiagCodemodeNoConsumer DiagCode = "C338" // `codemode: on` declared while no build serves it — the attribute is carried and documented, and nothing reads it yet: the slice that wires the tool deletes this code's emission, not the attribute (warning)
 )

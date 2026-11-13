@@ -482,6 +482,7 @@ type jsonAgentDecl struct {
 	Compress          string               `json:"compress,omitempty"`
 	AutoMemory        string               `json:"auto_memory,omitempty"`
 	AmbientContext    string               `json:"ambient_context,omitempty"`
+	Codemode          string               `json:"codemode,omitempty"`
 	Permission        string               `json:"permission,omitempty"`
 	Allow             []string             `json:"allow,omitempty"`
 	Ask               []string             `json:"ask,omitempty"`
@@ -533,6 +534,7 @@ type jsonJudgeDecl struct {
 	Compress          string               `json:"compress,omitempty"`
 	AutoMemory        string               `json:"auto_memory,omitempty"`
 	AmbientContext    string               `json:"ambient_context,omitempty"`
+	Codemode          string               `json:"codemode,omitempty"`
 	Permission        string               `json:"permission,omitempty"`
 	Allow             []string             `json:"allow,omitempty"`
 	Ask               []string             `json:"ask,omitempty"`
@@ -905,6 +907,7 @@ type jsonWorkflowDecl struct {
 	Compress            string               `json:"compress,omitempty"`
 	AutoMemory          string               `json:"auto_memory,omitempty"`
 	AmbientContext      string               `json:"ambient_context,omitempty"`
+	Codemode            string               `json:"codemode,omitempty"`
 	LoopBudgetGuard     string               `json:"loop_budget_guard,omitempty"`
 	RepoDevbox          string               `json:"repo_devbox,omitempty"`
 	WorkspaceCheckpoint string               `json:"workspace_checkpoint,omitempty"`
@@ -1572,6 +1575,7 @@ func agentToJSON(a *AgentDecl) *jsonAgentDecl {
 		Compress:          a.Compress,
 		AutoMemory:        a.AutoMemory,
 		AmbientContext:    a.AmbientContext,
+		Codemode:          a.Codemode,
 		Permission:        a.Permission,
 		Allow:             a.Allow,
 		Ask:               a.Ask,
@@ -1621,6 +1625,7 @@ func judgeToJSON(j *JudgeDecl) *jsonJudgeDecl {
 		Compress:          j.Compress,
 		AutoMemory:        j.AutoMemory,
 		AmbientContext:    j.AmbientContext,
+		Codemode:          j.Codemode,
 		Permission:        j.Permission,
 		Allow:             j.Allow,
 		Ask:               j.Ask,
@@ -1668,6 +1673,7 @@ func workflowToJSON(w *WorkflowDecl) *jsonWorkflowDecl {
 		Compress:            w.Compress,
 		AutoMemory:          w.AutoMemory,
 		AmbientContext:      w.AmbientContext,
+		Codemode:            w.Codemode,
 		LoopBudgetGuard:     w.LoopBudgetGuard,
 		RepoDevbox:          w.RepoDevbox,
 		WorkspaceCheckpoint: w.WorkspaceCheckpoint,
@@ -2406,6 +2412,7 @@ func agentFromJSON(ja *jsonAgentDecl) (*AgentDecl, error) {
 			Compress:          ja.Compress,
 			AutoMemory:        ja.AutoMemory,
 			AmbientContext:    ja.AmbientContext,
+			Codemode:          ja.Codemode,
 			Permission:        ja.Permission,
 			Allow:             ja.Allow,
 			Ask:               ja.Ask,
@@ -2469,6 +2476,7 @@ func judgeFromJSON(jj *jsonJudgeDecl) (*JudgeDecl, error) {
 			Compress:          jj.Compress,
 			AutoMemory:        jj.AutoMemory,
 			AmbientContext:    jj.AmbientContext,
+			Codemode:          jj.Codemode,
 			Permission:        jj.Permission,
 			Allow:             jj.Allow,
 			Ask:               jj.Ask,
@@ -2533,6 +2541,7 @@ func workflowFromJSON(jw *jsonWorkflowDecl) (*WorkflowDecl, error) {
 		Compress:            jw.Compress,
 		AutoMemory:          jw.AutoMemory,
 		AmbientContext:      jw.AmbientContext,
+		Codemode:            jw.Codemode,
 		LoopBudgetGuard:     jw.LoopBudgetGuard,
 		RepoDevbox:          jw.RepoDevbox,
 		WorkspaceCheckpoint: jw.WorkspaceCheckpoint,

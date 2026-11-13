@@ -88,6 +88,11 @@ func TestValueDiagnosticsCarryASourcePosition(t *testing.T) {
 		{"agent a:\n  model: \"m\"\n  backend: \"gemini\"\n  ambient_context: all\nworkflow w:\n  entry: a\n  a -> done\n", DiagAmbientContextNotEnforced, 4, 3, "ambient_context", 0, 0},
 		{"agent a:\n  model: \"m\"\n  backend: \"kimi\"\n  ambient_context: operator\nworkflow w:\n  entry: a\n  a -> done\n", DiagAmbientContextRefused, 4, 3, "ambient_context", 0, 0},
 		{"agent a:\n  model: \"m\"\n  backend: \"kimi\"\nworkflow w:\n  entry: a\n  ambient_context: operator\n  a -> done\n", DiagAmbientContextRefused, 1, 1, "", 0, 0},
+		// codemode: its own line when the node writes it (C337 invalid, C338
+		// nothing serves it); a value inherited from the workflow claims no
+		// property on the node, so the node header and an EMPTY property.
+		{"agent a:\n  model: \"m\"\n  codemode: zz\nworkflow w:\n  entry: a\n  a -> done\n", DiagInvalidCodemode, 3, 3, "codemode", 0, 0},
+		{"agent a:\n  model: \"m\"\n  codemode: on\nworkflow w:\n  entry: a\n  a -> done\n", DiagCodemodeNoConsumer, 3, 3, "codemode", 0, 0},
 		// The other node values: effort, posture and merge strategy, policy,
 		// a fail code, an action's retry, a wait's and an await's timeout.
 		{"agent a:\n  model: \"m\"\nhuman h:\n  interaction: review\n  posture: zz\nworkflow w:\n  entry: a\n  worktree: auto\n  a -> h\n  h -> done\n", DiagInvalidReviewGateValue, 5, 3, "posture", 0, 0},
@@ -124,6 +129,8 @@ func TestValueDiagnosticsCarryASourcePosition(t *testing.T) {
 		{"agent a:\n  model: \"m\"\n  permission: off\n  deny: [\"Read(**)\"]\nworkflow w:\n  entry: a\n  permission: ask\n  a -> done\n", DiagPermissionRulesNoGate, 4, 3, "deny", 0, 0},
 		// The workflow's ambient_context (C184 invalid, C185 nothing enforces it).
 		{fmt.Sprintf(wf, "ambient_context", "zz"), DiagInvalidAmbientContext, 5, 3, "ambient_context", 0, 0},
+		// codemode at the workflow level (C337 invalid, C338 nothing serves it).
+		{fmt.Sprintf(wf, "codemode", "zz"), DiagInvalidCodemode, 5, 3, "codemode", 0, 0},
 		{"agent a:\n  model: \"m\"\n  backend: \"gemini\"\nworkflow w:\n  entry: a\n  ambient_context: all\n  a -> done\n", DiagAmbientContextNotEnforced, 6, 3, "ambient_context", 0, 0},
 		// The sandbox block's other refusals (C044): inline without an image,
 		// image and build together, a host_state.

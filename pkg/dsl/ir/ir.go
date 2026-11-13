@@ -58,6 +58,7 @@ type Workflow struct {
 	Compress       string // compress output-compression mode: on|ultra|off ("" = unset)
 	AutoMemory     string // backend auto-memory (MEMORY.md) switch: on|off ("" = unset → off)
 	AmbientContext string // ambient context default for agent/judge nodes: none|workspace|operator|all ("" = unset)
+	Codemode       string // codemode tool loop default for agent/judge nodes: on|off, lowercased and trimmed at the carry ("" = unset → off; no environment rung, ADR-132)
 	// LoopBudgetGuard switches the back-edge affordability guard — the
 	// refusal to start a loop iteration the budget cannot fund: on|off
 	// ("" = unset → ITERION_LOOP_BUDGET_GUARD → on).
@@ -277,6 +278,7 @@ type AgentNode struct {
 	Compress         string // compress output-compression mode: on|ultra|off ("" = inherit)
 	AutoMemory       string // backend auto-memory (MEMORY.md) switch: on|off ("" = inherit workflow)
 	AmbientContext   string // ambient context inherited besides the prompt: none|workspace|operator|all ("" = inherit workflow)
+	Codemode         string // codemode tool loop: on|off, lowercased and trimmed at the carry ("" = inherit workflow)
 	Permission       string // permission gate mode override: off|ask|deny ("" = inherit workflow)
 	// PermissionAllow/Ask/Deny are the node's own permission rule lists.
 	// A non-empty list REPLACES the workflow list of the SAME kind; an
@@ -317,6 +319,7 @@ type JudgeNode struct {
 	Compress         string // compress output-compression mode: on|ultra|off ("" = inherit)
 	AutoMemory       string // backend auto-memory (MEMORY.md) switch: on|off ("" = inherit workflow)
 	AmbientContext   string // ambient context inherited besides the prompt: none|workspace|operator|all ("" = inherit workflow)
+	Codemode         string // codemode tool loop: on|off, lowercased and trimmed at the carry ("" = inherit workflow)
 	Permission       string // permission gate mode override: off|ask|deny ("" = inherit workflow)
 	// PermissionAllow/Ask/Deny are the node's own permission rule lists.
 	// A non-empty list REPLACES the workflow list of the SAME kind; an
@@ -748,6 +751,7 @@ type LLMNode interface {
 	GetCompress() string
 	GetAutoMemory() string
 	GetAmbientContext() string
+	GetCodemode() string
 	GetPermission() string
 	GetPermissionAllow() []string
 	GetPermissionAsk() []string
@@ -780,6 +784,7 @@ func (n *AgentNode) GetFallbacks() []Fallback                 { return n.Fallbac
 func (n *AgentNode) GetCompress() string                      { return n.Compress }
 func (n *AgentNode) GetAutoMemory() string                    { return n.AutoMemory }
 func (n *AgentNode) GetAmbientContext() string                { return n.AmbientContext }
+func (n *AgentNode) GetCodemode() string                      { return n.Codemode }
 func (n *AgentNode) GetPermission() string                    { return n.Permission }
 func (n *AgentNode) GetPermissionAllow() []string             { return n.PermissionAllow }
 func (n *AgentNode) GetPermissionAsk() []string               { return n.PermissionAsk }
@@ -806,6 +811,7 @@ func (n *JudgeNode) GetFallbacks() []Fallback                 { return n.Fallbac
 func (n *JudgeNode) GetCompress() string                      { return n.Compress }
 func (n *JudgeNode) GetAutoMemory() string                    { return n.AutoMemory }
 func (n *JudgeNode) GetAmbientContext() string                { return n.AmbientContext }
+func (n *JudgeNode) GetCodemode() string                      { return n.Codemode }
 func (n *JudgeNode) GetPermission() string                    { return n.Permission }
 func (n *JudgeNode) GetPermissionAllow() []string             { return n.PermissionAllow }
 func (n *JudgeNode) GetPermissionAsk() []string               { return n.PermissionAsk }

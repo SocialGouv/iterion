@@ -641,6 +641,72 @@ func (c *compiler) validateAmbientContext(w *Workflow) {
 	}
 }
 
+// normCodemode is what the IR's `Codemode` field is allowed to hold. The
+// compiler ACCEPTS `ON`, `On` and a padded ` on ` (validateCodemode lowercases
+// and trims before judging, as validateAutoMemory does), so carrying the
+// author's raw text into the IR would let a future consumer compare
+// `== "on"` and read a node the compiler told its author was ON as off. The
+// AST keeps the raw text — that is what the unparser and the author writer
+// round-trip — and the IR keeps the decided value.
+func normCodemode(v string) string { return strings.ToLower(strings.TrimSpace(v)) }
+
+// validateCodemode holds `codemode:` to on|off, and says — while nothing
+// serves it — that nothing serves it.
+//
+// C338 is this slice's honesty clause. The three pieces of codemode are in
+// the tree (the dispatcher door, the confined script host, its tool binding)
+// and no tool is registered on a node, so a `.bot` declaring `codemode: on`
+// gets exactly the behaviour it had before. Saying so at compile is what
+// separates a slice from a half-wiring: the precedents are C112 (parsed but
+// not enforced), C266 (inert, which reads as configured) and C332.
+// Philosophy 1 warns rather than rejects — the declaration stays legal, and
+// the slice that registers the tool deletes this emission, not the attribute.
+//
+// Only an EXPLICIT `on` warns, and that is validateAutoMemory's shape for the
+// same reason: a workflow default reaches every node, so warning per node
+// would bury the one line the author actually wrote. Once per DECLARED line,
+// then — which is once per expanded node of a `group` used twice, exactly as
+// ambient_context's C185 behaves, because that is group expansion and not
+// this check.
+func (c *compiler) validateCodemode(w *Workflow) {
+	norm := func(v string) string { return strings.ToLower(strings.TrimSpace(v)) }
+	valid := func(v string) bool {
+		switch norm(v) {
+		case "", "on", "off":
+			return true
+		}
+		return false
+	}
+	if !valid(w.Codemode) {
+		c.errorfAtProperty(DiagInvalidCodemode, "workflow", w.Name, "codemode",
+			"workflow %q has invalid codemode %q; valid values are on, off",
+			w.Name, w.Codemode)
+	} else if norm(w.Codemode) == "on" {
+		c.warnfAtProperty(DiagCodemodeNoConsumer, "workflow", w.Name, "codemode",
+			"workflow %q declares codemode: on and no build serves it yet; its nodes run exactly as they did without it",
+			w.Name)
+	}
+	for _, n := range w.Nodes {
+		nn, ok := n.(LLMNode)
+		if !ok {
+			continue
+		}
+		kind, value := nn.NodeKind().String(), nn.GetCodemode()
+		if !valid(value) {
+			c.errorfAtProperty(DiagInvalidCodemode, kind, n.NodeID(), "codemode",
+				"%s %q has invalid codemode %q; valid values are on, off",
+				kind, n.NodeID(), value)
+			continue
+		}
+		if norm(value) != "on" {
+			continue
+		}
+		c.warnfAtProperty(DiagCodemodeNoConsumer, kind, n.NodeID(), "codemode",
+			"%s %q declares codemode: on and no build serves it yet; the node runs exactly as it did without it",
+			kind, n.NodeID())
+	}
+}
+
 // ambientRoute is the node a declared ambient_context is checked for.
 type ambientRoute struct {
 	kind, node string
