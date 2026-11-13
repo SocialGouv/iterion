@@ -3,9 +3,11 @@ package store
 import (
 	"context"
 	"errors"
+	"net/netip"
 	"slices"
-	"strings"
 	"time"
+
+	"github.com/SocialGouv/iterion/pkg/secure/httpdial"
 )
 
 // CredSlotStore is the optional capability behind a credential's HARD
@@ -148,14 +150,23 @@ const gatewayCapacitySubjectPrefix = "gw:"
 // GatewayCapacitySubject is the capacity subject of a shared gateway: the
 // ledger row every alive run whose sealed key dials that host holds, whichever
 // team the key belongs to. host is the host the gateway client dials
-// (compatgw.Config.Host): no scheme, port or path. Hostnames compare without
-// case, so the subject is lower-cased, and two keys spelling one host
-// differently name one subject. An empty host names no subject and answers "".
+// (compatgw.Config.Host): no scheme, port or path.
+//
+// Two keys spelling one host differently name one subject: the host is folded
+// to the name a dial resolves (httpdial.CanonicalHost — punycode, lower case,
+// no trailing root dot), and an address literal to its canonical text, an
+// IPv4-mapped IPv6 address to its IPv4 form. A host with no dial name — empty,
+// or a non-ASCII spelling the IDN profile refuses — names no subject and
+// answers "".
 func GatewayCapacitySubject(host string) string {
-	if host == "" {
+	h := httpdial.CanonicalHost(host)
+	if addr, err := netip.ParseAddr(h); err == nil {
+		h = addr.Unmap().String()
+	}
+	if h == "" {
 		return ""
 	}
-	return gatewayCapacitySubjectPrefix + strings.ToLower(host)
+	return gatewayCapacitySubjectPrefix + h
 }
 
 // AwaitsCredSlotAdmission reports whether the run is queued for a resume

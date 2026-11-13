@@ -1976,10 +1976,10 @@ func (c credResolution) poolAttemptID() string {
 
 // applyTo writes the resolution onto an IN-MEMORY run document — the launch
 // path's counterpart to RunStore.SetRunCredStamp, which the resume path
-// takes. Both go through stamp(), so a fact a resume RE-RESOLVES cannot
-// reach one path and silently miss the other; that unit is the whole promise
-// of RunCredStamp, and assigning those fields one by one here is what would
-// break it.
+// takes. Both go through stamp(), and this path writes it with
+// RunCredStamp.Apply — the filesystem twin's own writer — so a fact a resume
+// RE-RESOLVES cannot reach one path and silently miss the other: that unit is
+// the whole promise of RunCredStamp.
 //
 // One field is a launch fact and deliberately outside stamp(): the content
 // boundary (ADR-131 §4). It is frozen when the launch derives it and the
@@ -1988,17 +1988,8 @@ func (c credResolution) poolAttemptID() string {
 // re-resolution may write it: putting it in stamp() would let a resume move a
 // running run onto whichever answer its walk gives today.
 func (c credResolution) applyTo(r *store.Run) {
-	s := c.stamp()
-	r.CredFingerprints = s.Fingerprints
-	r.CredentialTiers = s.Tiers
-	r.SkippedCredReopensAt = s.SkippedReopensAt
+	c.stamp().Apply(r)
 	r.ContentBoundary = c.contentBoundary
-	// Both stores clear the model-idle marker on a stamp — a re-resolution
-	// is a fresh attempt. At launch the document is new and the marker is
-	// already nil, so this changes nothing today; it is here so the
-	// in-memory twin cannot answer differently from the persisted one if it
-	// is ever applied to a loaded run.
-	r.LLMIdleSince = nil
 }
 
 // spendable answers "may a run with these routes spend a credential of

@@ -118,6 +118,7 @@ erDiagram
     string tenant_id FK "teams._id"
     string project_path "the forge slug"
     string[] cred_fingerprints "API-key AND OAuth fingerprints"
+    string[] capacity_subjects "shared capacities the sealed keys draw on - gw:host (ADR-167)"
     string[] credential_tiers "byok|oauth-forfait|org|pool|platform - NOT credusage's four"
     object llm_route_policy
     object content_boundary "kind team_gateway|own_keys, key_id, gateway_host - frozen at launch"
@@ -217,8 +218,8 @@ erDiagram
     datetime month_start
   }
   cred_slots {
-    string _id PK "credential fingerprint - one row per capped key"
-    object holders "{run_id, at}[] - the runs admitted under the key's hard cap"
+    string _id PK "credential fingerprint or capacity subject gw:host - one row per capped key or shared gateway"
+    object holders "{run_id, at}[] - the runs admitted under the key's or gateway's hard cap"
   }
   usage_windows {
     string _id PK "'<key>#<window>'"

@@ -22,6 +22,7 @@ import (
 
 	"github.com/SocialGouv/iterion/internal/envtrust"
 	"github.com/SocialGouv/iterion/pkg/internal/mongoutil"
+	"github.com/SocialGouv/iterion/pkg/secure/httpdial"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -800,7 +801,7 @@ const anthropicWireHost = "api.anthropic.com"
 // AnthropicForfaitWireOK reports whether a Claude subscription bearer may be
 // sent to baseURL. Only the real Anthropic API qualifies: an empty value (the
 // SDK default) or the host api.anthropic.com on https, however respelled — the
-// endpoint's canonical dial name decides (canonicalEndpointHost), so the
+// endpoint's canonical dial name decides (httpdial.CanonicalHost), so the
 // absolute-FQDN and internationalised spellings of Anthropic's own host are
 // the same wire, and a userinfo carrying that name over another host
 // ("https://api.anthropic.com@elsewhere/") is the other host it dials. The
@@ -831,7 +832,7 @@ func AnthropicForfaitWireOK(baseURL string) bool {
 	if u.Scheme != "https" {
 		return false // the wire is https: a plaintext scheme carries the account in the clear
 	}
-	return canonicalEndpointHost(u.Hostname()) == anthropicWireHost
+	return httpdial.CanonicalHost(u.Hostname()) == anthropicWireHost
 }
 
 // ClaudeCodeConfigDir returns the on-disk CLAUDE_CONFIG_DIR the Claude Code

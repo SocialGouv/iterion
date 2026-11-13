@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -155,11 +156,61 @@ func TestGatewayCapacitySubject(t *testing.T) {
 	for _, c := range []struct{ host, want string }{
 		{"litellm.example", "gw:litellm.example"},
 		{"LiteLLM.Example", "gw:litellm.example"},
+		// The absolute spelling dials the same name.
+		{"litellm.example.", "gw:litellm.example"},
+		{"LiteLLM.Example.", "gw:litellm.example"},
+		// An internationalised name and its punycode are one dial name.
+		{"bücher.example", "gw:xn--bcher-kva.example"},
+		{"xn--bcher-kva.example", "gw:xn--bcher-kva.example"},
+		{"BÜCHER.example", "gw:xn--bcher-kva.example"},
 		{"10.0.0.7", "gw:10.0.0.7"},
+		// Address literals fold to their canonical text.
+		{"2001:db8::1", "gw:2001:db8::1"},
+		{"2001:DB8:0:0:0:0:0:1", "gw:2001:db8::1"},
+		{"::ffff:10.0.0.7", "gw:10.0.0.7"},
+		// No dial name, no subject.
 		{"", ""},
+		{".", ""},
+		{"bü\u00a0cher.example", ""},
 	} {
 		if got := GatewayCapacitySubject(c.host); got != c.want {
 			t.Errorf("GatewayCapacitySubject(%q) = %q, want %q", c.host, got, c.want)
 		}
+	}
+}
+
+// Every field of RunCredStamp reaches the run document through Apply, the
+// writer the launch path and the filesystem twin of SetRunCredStamp share: a
+// field added to the stamp and forgotten there would stamp resumes on Mongo
+// and leave every launch unstamped. Each field is set alone, so one forgotten
+// assignment fails its own row whatever the others do.
+func TestRunCredStampApplyWritesEveryField(t *testing.T) {
+	at := time.Unix(1_700_000_000, 0).UTC()
+	typ := reflect.TypeOf(RunCredStamp{})
+	for i := 0; i < typ.NumField(); i++ {
+		f := typ.Field(i)
+		t.Run(f.Name, func(t *testing.T) {
+			var stamp RunCredStamp
+			v := reflect.ValueOf(&stamp).Elem().Field(i)
+			switch v.Interface().(type) {
+			case []string:
+				v.Set(reflect.ValueOf([]string{"value-" + f.Name}))
+			case *time.Time:
+				v.Set(reflect.ValueOf(&at))
+			default:
+				t.Fatalf("RunCredStamp.%s has type %s, which this guard does not fill — teach it", f.Name, f.Type)
+			}
+			var r Run
+			stamp.Apply(&r)
+			if reflect.DeepEqual(r, Run{}) {
+				t.Fatalf("Apply wrote nothing for RunCredStamp.%s — the launch path and the filesystem twin would drop it", f.Name)
+			}
+		})
+	}
+	// A re-stamp is a fresh attempt: the model-idle marker goes.
+	r := Run{LLMIdleSince: &at}
+	RunCredStamp{}.Apply(&r)
+	if r.LLMIdleSince != nil {
+		t.Fatal("Apply kept LLMIdleSince — both twins clear it on a stamp")
 	}
 }

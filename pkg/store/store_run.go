@@ -1254,11 +1254,7 @@ func (s *FilesystemRunStore) SetRunCredStamp(ctx context.Context, runID string, 
 	if err != nil {
 		return err
 	}
-	r.CredFingerprints = stamp.Fingerprints
-	r.CapacitySubjects = stamp.CapacitySubjects
-	r.CredentialTiers = stamp.Tiers
-	r.SkippedCredReopensAt = stamp.SkippedReopensAt
-	r.LLMIdleSince = nil
+	stamp.Apply(r)
 	return s.SaveRun(ctx, r)
 }
 
