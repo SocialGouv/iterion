@@ -217,6 +217,9 @@ func TestRunCredStampApplyWritesEveryField(t *testing.T) {
 			var r Run
 			stamp.Apply(&r)
 			got := reflect.ValueOf(&r).Elem().FieldByName(to)
+			if !got.IsValid() {
+				t.Fatalf("RunCredStamp.%s: this guard names Run.%s, which does not exist — fix the destination", f.Name, to)
+			}
 			if !reflect.DeepEqual(got.Interface(), v.Interface()) {
 				t.Fatalf("RunCredStamp.%s: Run.%s = %v after Apply, want %v", f.Name, to, got.Interface(), v.Interface())
 			}
@@ -233,5 +236,65 @@ func TestRunCredStampApplyWritesEveryField(t *testing.T) {
 	RunCredStamp{}.Apply(&r)
 	if r.LLMIdleSince != nil {
 		t.Fatal("Apply kept LLMIdleSince — both twins clear it on a stamp")
+	}
+}
+
+// The stamp as a launch writes it — every field at once, several values each
+// — over a zero run and over a run that already carries another resolution's
+// stamp, then an empty stamp over that run. Field by field alone (above), a
+// write conditional on another field, an append, a truncation or a skipped
+// clear all pass; here each fails its own destination.
+func TestRunCredStampApplyReplacesAndClearsTheWholeUnit(t *testing.T) {
+	at := time.Unix(1_700_000_000, 0).UTC()
+	old := time.Unix(1_600_000_000, 0).UTC()
+	dest := map[string]string{
+		"Fingerprints":     "CredFingerprints",
+		"CapacitySubjects": "CapacitySubjects",
+		"Tiers":            "CredentialTiers",
+		"SkippedReopensAt": "SkippedCredReopensAt",
+	}
+	full := RunCredStamp{
+		Fingerprints:     []string{"fp-a", "fp-b"},
+		CapacitySubjects: []string{"gw:a.example", "gw:b.example"},
+		Tiers:            []string{"tier-a", "tier-b"},
+		SkippedReopensAt: &at,
+	}
+	prev := Run{
+		CredFingerprints:     []string{"fp-old"},
+		CapacitySubjects:     []string{"gw:old.example"},
+		CredentialTiers:      []string{"tier-old"},
+		SkippedCredReopensAt: &old,
+		LLMIdleSince:         &old,
+	}
+	var empty Run
+	RunCredStamp{}.Apply(&empty)
+	for _, start := range []struct {
+		name string
+		run  Run
+	}{{"zero run", Run{}}, {"stamped run", prev}} {
+		r := start.run
+		full.Apply(&r)
+		sv := reflect.ValueOf(full)
+		for i := 0; i < sv.NumField(); i++ {
+			f := sv.Type().Field(i)
+			to, ok := dest[f.Name]
+			if !ok {
+				t.Fatalf("RunCredStamp.%s has no destination in this guard", f.Name)
+			}
+			got := reflect.ValueOf(r).FieldByName(to)
+			if !got.IsValid() {
+				t.Fatalf("this guard names Run.%s, which does not exist", to)
+			}
+			if !reflect.DeepEqual(got.Interface(), sv.Field(i).Interface()) {
+				t.Errorf("%s, whole stamp: Run.%s = %v, want %v", start.name, to, got.Interface(), sv.Field(i).Interface())
+			}
+		}
+		if r.LLMIdleSince != nil {
+			t.Errorf("%s, whole stamp: LLMIdleSince kept", start.name)
+		}
+		RunCredStamp{}.Apply(&r)
+		if !reflect.DeepEqual(r, empty) {
+			t.Errorf("%s: an empty stamp over a stamped run left %+v, want every destination cleared", start.name, r)
+		}
 	}
 }
