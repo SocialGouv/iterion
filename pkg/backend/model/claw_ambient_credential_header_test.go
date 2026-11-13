@@ -250,7 +250,7 @@ func TestAHeaderBlockWithNoCredentialCrossesUntouched(t *testing.T) {
 // The credential names are the names the PRODUCER uses: claw's own auth sets
 // them on the request, and the custom-header block is applied over it, so a
 // line of such a name stands in for the node's credential. Read back out of
-// the vendored CLI rather than restated — a provider claw gains, or an auth
+// claw's own source (pkg/claw) rather than restated — a provider claw gains, or an auth
 // header it starts sending, arrives covered by the strip or red here.
 //
 // Mutation: drop "x-api-key" from credheader's set and this test names it as
@@ -264,9 +264,9 @@ func TestTheCredentialHeaderNamesCoverClawsOwnAuthHeaders(t *testing.T) {
 	// of its own, and no custom header reaches it — the tool runs on the
 	// launcher with the launcher's credentials (webSearchLauncherEnv), and its
 	// requests never pass through Identity.Apply.
-	clawDir := filepath.Join(root, "vendor", "github.com", "SocialGouv", "claw-code-go", "internal", "api")
+	clawDir := filepath.Join(root, "pkg", "claw", "internal", "api")
 	if _, err := os.Stat(clawDir); err != nil {
-		t.Fatalf("the vendored claw API tree is not at %s (%v): the derivation has nothing to read", clawDir, err)
+		t.Fatalf("the claw API tree is not at %s (%v): the derivation has nothing to read", clawDir, err)
 	}
 	// Header.Set("<name>", <expression that mentions a credential>) — the
 	// shape every auth header of claw's providers is written in
@@ -302,10 +302,10 @@ func TestTheCredentialHeaderNamesCoverClawsOwnAuthHeaders(t *testing.T) {
 		return nil
 	})
 	if err != nil {
-		t.Fatalf("walking the vendored claw: %v", err)
+		t.Fatalf("walking claw's API tree: %v", err)
 	}
 	if len(found) == 0 {
-		t.Fatal("no auth header found in the vendored claw: the walk no longer matches its source, so a green verdict here proves nothing")
+		t.Fatal("no auth header found in claw's API tree: the walk no longer matches its source, so a green verdict here proves nothing")
 	}
 	for _, want := range []string{"authorization", "x-api-key"} {
 		if _, ok := found[want]; !ok {

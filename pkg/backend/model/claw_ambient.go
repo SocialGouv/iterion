@@ -8,9 +8,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	clawrt "github.com/SocialGouv/claw-code-go/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/backend/ambient"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
+	clawrt "github.com/SocialGouv/iterion/pkg/claw/pkg/runtime"
 )
 
 // clawAmbientMaxBytes lifts claw-code-go's 48 KiB memory cap: the cap
@@ -86,8 +86,7 @@ func clawAmbientSystemContext(task delegate.Task) string {
 // within each pass, not across them (ADR-119). The body is injected
 // import-free: @path references reach the node as text, where the same file
 // as CLAUDE.md expands them; teaching the loader's expansion machinery
-// AGENTS.md is the claw-code-go follow-up (its .works/ worktree, then
-// scripts/bump-claw.sh). Bounded by what the walk leaves of the block's one
+// AGENTS.md is a pkg/claw follow-up. Bounded by what the walk leaves of the block's one
 // budget, and read under the walk's own confinement: where the walk bounds
 // its workspace scope, an AGENTS.md — or a shadowing CLAUDE.md — that is
 // itself a link out of the boundary is not there, the loader's refusal of

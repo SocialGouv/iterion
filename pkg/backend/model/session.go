@@ -7,9 +7,9 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/SocialGouv/claw-code-go/pkg/api"
-	clawrt "github.com/SocialGouv/claw-code-go/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
+	"github.com/SocialGouv/iterion/pkg/claw/pkg/api"
+	clawrt "github.com/SocialGouv/iterion/pkg/claw/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 )
 

@@ -8,8 +8,8 @@ import (
 	"os"
 	"time"
 
-	"github.com/SocialGouv/claw-code-go/pkg/api"
-	openaiprovider "github.com/SocialGouv/claw-code-go/pkg/api/providers/openai"
+	"github.com/SocialGouv/iterion/pkg/claw/pkg/api"
+	openaiprovider "github.com/SocialGouv/iterion/pkg/claw/pkg/api/providers/openai"
 
 	"github.com/SocialGouv/iterion/pkg/secure/httpdial"
 )

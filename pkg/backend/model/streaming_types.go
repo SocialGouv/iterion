@@ -3,7 +3,7 @@ package model
 import (
 	"encoding/json"
 
-	"github.com/SocialGouv/claw-code-go/pkg/api"
+	"github.com/SocialGouv/iterion/pkg/claw/pkg/api"
 )
 
 // FinishReason indicates why generation stopped.

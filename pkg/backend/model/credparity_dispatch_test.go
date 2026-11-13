@@ -8,7 +8,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/SocialGouv/claw-code-go/pkg/api"
+	"github.com/SocialGouv/iterion/pkg/claw/pkg/api"
 
 	"github.com/SocialGouv/iterion/internal/credheader"
 	"github.com/SocialGouv/iterion/internal/credparity"

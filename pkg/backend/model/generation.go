@@ -8,9 +8,9 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/SocialGouv/claw-code-go/pkg/api"
-	"github.com/SocialGouv/claw-code-go/pkg/api/hooks"
-	"github.com/SocialGouv/claw-code-go/pkg/apikit"
+	"github.com/SocialGouv/iterion/pkg/claw/pkg/api"
+	"github.com/SocialGouv/iterion/pkg/claw/pkg/api/hooks"
+	"github.com/SocialGouv/iterion/pkg/claw/pkg/apikit"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/modelroute"

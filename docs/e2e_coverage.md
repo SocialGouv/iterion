@@ -7,8 +7,8 @@
 > the matrix cites rather than repeats.
 
 Where each iterion + claw-code-go feature is exercised. Scope is the
-combined codebase: iterion's workflow engine + claw-code-go (vendored
-via go.mod replace).
+combined codebase: iterion's workflow engine + the claw runtime
+(`pkg/claw`, folded from claw-code-go).
 
 ## Iterion live workflow tests (`task test:live`)
 
@@ -54,7 +54,7 @@ coverage beyond what's already in place.
 | Feature | Why no iterion live test |
 |---|---|
 | OAuth broker | Requires a real OAuth provider; iterion covers broker construction, auth-function validation, and MCP auth wiring, but does not run a live third-party OAuth flow in e2e fixtures. |
-| Plugin marketplace / installer / manager and `/store` command | Historical claw-code-go coverage is not present in this workspace, and iterion does not ship a marketplace integration or plugin installer surface to exercise in live workflows. |
+| Plugin marketplace / installer / manager and `/store` command | claw's own unit tests cover them (`pkg/claw/internal/plugins`, `pkg/claw/plugin`, and `pkg/claw/internal/commands` for `/store`), and iterion does not ship a marketplace integration or plugin installer surface to exercise in live workflows. |
 | OTLP exporter | Requires a real collector for an end-to-end live test. iterion server/runner wire OTLP/HTTP through `pkg/cloud/tracing` when `OTEL_EXPORTER_OTLP_ENDPOINT` or `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` is set; checked-in tests cover exporter setup and the benchmark OTLP observer path. |
 | CLAUDE.md auto-load | Historical claw TUI command-loader coverage is not present in this workspace. The behavior runs at claw TUI boot, not in an iterion workflow context; iterion uses its own command registry. |
 | Bedrock / Vertex / Foundry providers | Requires real cloud creds (AWS/GCP/Azure). Code paths are unit-tested with mocked SDK clients. |

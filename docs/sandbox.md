@@ -1227,7 +1227,7 @@ class gets one of two answers:
   plant by, ARB-122) answers it, the engine's own credential and route
   families answer the members that shape cannot see, and
   pkg/platformcfg's sweep walks every `ITERION_` name spelled as a
-  literal in the engine's Go source, in the vendored claw it links and
+  literal in the engine's Go source, the claw runtime (`pkg/claw`) included, and
   in the manifests it embeds — 416 names, 94 of them neutralised and 322
   reported — where a name whose side disagrees with the shape arrives
   red until a row carries the reason (#2859). A name the engine
@@ -2049,7 +2049,7 @@ client-identity settings, and the knobs its own loop reads
 host sets it. Those routing names are read by claw's own provider
 packages rather than by a provider table, which is why they were missing
 until #1804; `TestEveryVendoredProviderEnvNameIsDecided` derives them
-from the vendored claw the registry imports, so a provider claw gains
+from the claw source the registry imports (`pkg/claw`), so a provider claw gains
 arrives forwarded or red. The whole routing list — the endpoints plus
 the four names above and `CLAW_OPENAI_REASONING_SUMMARY` — crosses as
 explicit EMPTIES when the host leaves them unset, and the exec env
@@ -2339,7 +2339,7 @@ carries). The crossing's words stay as the detail of the error.
 >   (`sandbox: none` / `--sandbox none`) — a node-level `sandbox:` is not
 >   honoured at run time.
 >
-> A name nothing classifies — a claw bump's new tool — is refused, not
+> A name nothing classifies — a new claw tool — is refused, not
 > proxied: the default direction is the safe one. A name that merely
 > starts like an MCP tool (`mcp_bash`) is not one: the MCP rule needs a
 > server and a tool segment.

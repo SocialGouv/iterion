@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/SocialGouv/claw-code-go/pkg/permissions"
+	"github.com/SocialGouv/iterion/pkg/claw/pkg/permissions"
 )
 
 // ClassifierLogger is the minimal logging surface ClassifierChecker uses to

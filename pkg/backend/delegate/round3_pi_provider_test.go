@@ -5,8 +5,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/SocialGouv/claw-code-go/pkg/api"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate/pisdk"
+	"github.com/SocialGouv/iterion/pkg/claw/pkg/api"
 )
 
 func TestR3PiPreservesTyped400(t *testing.T) {

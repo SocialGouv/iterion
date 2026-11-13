@@ -22,9 +22,9 @@ import (
 // table carries. TestEveryEnvReadIsClassifiedForTheSandbox walks the reads of
 // THIS package and says so itself — "a variable another package reads under a
 // name it spells itself [is] that package's to forward (#1804)". This file is
-// that forwarding, and its guard: the names are DERIVED from the vendored
-// claw the registry imports, never hand-listed, so a provider claw gains
-// arrives classified or red.
+// that forwarding, and its guard: the names are DERIVED from the claw
+// source the registry imports (pkg/claw), never hand-listed, so a provider
+// claw gains arrives classified or red.
 //
 // The hole it closes: a sandboxed foundry node ran against claw's default
 // API version while the launcher's AZURE_OPENAI_API_VERSION stayed on the
@@ -32,9 +32,9 @@ import (
 // nothing said. Vertex was worse: GOOGLE_CLOUD_PROJECT unset in the
 // container is refused by name, so the node simply did not run.
 //
-// The derivation fails LOUDLY when a package disappears: vendor/ is being
-// pruned (ADR-142), and a pruned provider would otherwise shrink this list
-// in silence — the shape that makes a guard look green over nothing.
+// The derivation fails LOUDLY when a package disappears: a removed provider
+// would otherwise shrink this list in silence — the shape that makes a guard
+// look green over nothing.
 //
 // What it does not see, named rather than hidden: a name claw builds at run
 // time instead of spelling it (os.Environ, a name from a constant of its
@@ -80,7 +80,7 @@ var webSearchLauncherEnv = []string{"BRAVE_API_KEY", "SEARXNG_URL", "SEARXNG_END
 
 // clawWebSearchSource is the vendored file those names are read in: reading
 // them from it keeps the list honest against a rename, and against a prune.
-const clawWebSearchSource = "vendor/github.com/SocialGouv/claw-code-go/internal/tools/web_search.go"
+const clawWebSearchSource = "pkg/claw/internal/tools/web_search.go"
 
 // TestEveryVendoredProviderEnvNameIsDecided derives the env names claw's
 // provider packages read and requires each to be forwarded with its class, or
@@ -214,13 +214,22 @@ func TestASandboxedFoundryNodeCarriesTheLaunchersAzureRouting(t *testing.T) {
 	}
 }
 
-// vendoredProviderDirs derives, from the imports of registry.go, the vendored
-// claw provider directories whose env reads run inside the container: the
+// clawImportPrefix is the import path of the claw runtime, folded under
+// pkg/claw.
+const clawImportPrefix = "github.com/SocialGouv/iterion/pkg/claw/"
+
+// clawSourceDir is the directory of this module that holds importPath.
+func clawSourceDir(root, importPath string) string {
+	return filepath.Join(root, filepath.FromSlash(strings.TrimPrefix(importPath, "github.com/SocialGouv/iterion/")))
+}
+
+// vendoredProviderDirs derives, from the imports of registry.go, the claw
+// provider directories whose env reads run inside the container: the
 // re-exporting package the registry imports, and the internal package it
 // forwards to.
 func vendoredProviderDirs(t *testing.T, root string) (dirs []string, providers []string) {
 	t.Helper()
-	const providerPrefix = "github.com/SocialGouv/claw-code-go/"
+	const providerPrefix = clawImportPrefix
 	registry := filepath.Join(root, "pkg", "backend", "model", "registry.go")
 	seen := map[string]bool{}
 	var walkImports func(path string)
@@ -229,9 +238,9 @@ func vendoredProviderDirs(t *testing.T, root string) (dirs []string, providers [
 			return
 		}
 		seen[importPath] = true
-		dir := filepath.Join(root, "vendor", filepath.FromSlash(importPath))
+		dir := clawSourceDir(root, importPath)
 		if _, err := os.Stat(dir); err != nil {
-			t.Fatalf("claw's %s is imported but not vendored (%v): a prune took the package, and with it every env name it reads — decide the names it used to read before pruning it", importPath, err)
+			t.Fatalf("claw's %s is imported but absent from pkg/claw (%v): a removal took the package, and with it every env name it reads — decide the names it used to read before removing it", importPath, err)
 		}
 		dirs = append(dirs, dir)
 		for _, next := range importsOfDir(t, dir) {

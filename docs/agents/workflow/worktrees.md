@@ -68,9 +68,8 @@ of the primary checkout, so the test says "linked" where it is not.
   read, to each:
   `--store-dir "$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")/.iterion"`
   ([dogfood.md](dogfood.md)).
-- **Sibling clones** (`.works/claw-code-go`, `.repos/`) exist in the primary
-  checkout only. Reach them through the same expression;
-  `scripts/bump-claw.sh` does.
+- **Sibling clones** (`.repos/`, `.works/`) exist in the primary checkout
+  only. Reach them through the same expression; `clawfold` does.
 
 ## Traps (measured on this repo, 2026-10-01)
 

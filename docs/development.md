@@ -264,7 +264,7 @@ iterion/
 ├── scripts/ + tooling/      # generation, release, and verification helpers
 ├── internal/httpx/          # module-private HTTP utility
 ├── third_party/             # checked-in third-party source/assets
-└── vendor/                  # vendored Go modules, including claw-code-go
+└── vendor/                  # vendored Go modules
 ```
 
 The labels `schedule-related`, `cloud-related`, and `extensions/state` above are conceptual groupings, not literal directories; inspect `pkg/` for the individual packages. This keeps the map useful as packages evolve.
@@ -275,7 +275,6 @@ The labels `schedule-related`, `cloud-related`, and `extensions/state` above are
 - `pkg/server` registers the HTTP route table that generates `openapi.json`; `task openapi:check` guards the committed spec and studio types.
 - `bots/` is the editable full catalogue. `pkg/cli/templates/dispatch_bots/` is generated for the embedded zero-config subset; do not hand-maintain the copies.
 - Studio's production build is copied into `pkg/server/static` and embedded into the Go binary.
-- The module vendors [`claw-code-go`](https://github.com/SocialGouv/claw-code-go) for in-process multi-provider execution. Keep `go.mod`, `go.sum`, and `vendor/` consistent.
-- Bump the claw-code-go pin **only** with [`scripts/bump-claw.sh`](../scripts/bump-claw.sh): it pushes the claw commit if needed, then runs `go get @<sha>`, tidy, vendor, verify and commits. Never hand-write the pseudo-version — a locally computed, non-UTC timestamp fails `go mod verify` ("does not match version-control timestamp") and turns `vendor-check` red on `main` and on every PR merge ref (three times on 2026-07-11). claw-code-go is developed by this team (sibling worktrees under `.works/`): improving it while touching a seam that crosses it is in scope.
+- The in-process multi-provider runtime lives in `pkg/claw`, folded from [`claw-code-go`](https://github.com/SocialGouv/claw-code-go) and maintained here as first-party code ([the fold](agents/backends/clawfold.md)): change it like any other package. Keep `go.mod`, `go.sum`, and `vendor/` consistent.
 
 Before opening a change, run the gates your diff concerns (the narrower block above; `task check:fast` covers the cheap cross-cutting layer) and finish with `devbox run -- task check` when practical. Changes to OpenAPI, the SDK, Helm, desktop, or live-test declarations also need their domain-specific checks above.

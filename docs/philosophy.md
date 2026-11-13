@@ -314,7 +314,7 @@ So, concretely:
 ## Backend parity — claw ↔ claude_code *(pre-arbitrated)*
 
 `claw`
-(claw-code-go, the sibling repo) is meant to be feature-paritary with
+(the claw runtime, folded into `pkg/claw`) is meant to be feature-paritary with
 `claude_code`, and the two backends are meant to be **interchangeable** on
 the same node: `claude_code` is the more stable and mature harness today;
 `claw` reaches every provider the registry knows. This doctrine is an

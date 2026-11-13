@@ -430,14 +430,13 @@ plugin contribution surfaces:
 | hooks              | `hooks` ✅ shipped (claude_code) · ✅ bridged (claw) | plugin hooks idempotently merged into `.claude/settings.json`; claude_code fires them via `--setting-sources project`. claw bridges the same document (`registerSettingsHooks`, `pkg/backend/model/settings_hooks.go`) and runs the **`command`**-type entries of every event claw-code-go exports — `PreToolUse` / `PostToolUse` / `PostToolUseFailure` / `UserPromptSubmit` / `PreCompact` / `PostCompact` / `Stop` — on the in-process path AND the sandboxed one (the launcher ships the parsed document over the wire; the in-container runner registers it). Matcher semantics follow claude_code: a regex on the tool name for tool events, ignored (always fires) on `UserPromptSubmit`/`Stop`, and the compaction source on `PreCompact`/`PostCompact` — `"auto"` matches, `"manual"` never does (claw compacts only at the threshold). `UserPromptSubmit` fires once per operator prompt: the harness's nudge/recovery re-asks and resumed tool_result turns do not re-fire, and a blocked prompt fires no `Stop`. A hook payload is truncated at 100 KiB with an explicit marker (the kernel's per-arg limit would otherwise fail the exec — a silent fail-open on a screening hook). Two known edges, both deliberate: operator-chatbox messages injected mid-loop (the inbox drain) are NOT re-screened by `UserPromptSubmit` — only the node's own prompt is, a hook arming prompt-injection screening should know the channel exists; and a matcher left on `Stop`/`UserPromptSubmit` sees its hook ARMED where a strict regex reading would have killed it — the matcher is ignored (with a warning), never applied. `prompt`-type entries, events claw does not export (`SessionStart`, …), meaningless matchers and invalid regexes are all skipped **with a warning naming them**; a hook exiting non-zero (≠ 2), timing out or failing to exec is logged and continues; the forced context-overflow compaction fires no `PreCompact` by design |
 
 The principle: where claude_code has a native surface and claw does not (or they
-diverge), the gap is closed in **`.works/claw-code-go`** (the vendored claw
-source) so a plugin behaves identically on either backend, rather than papered
+diverge), the gap is closed in **`pkg/claw`** (claw's source, maintained in this
+tree) so a plugin behaves identically on either backend, rather than papered
 over with a claude_code-only adapter — **unless iterion is the capability's
 only real consumer**: the named-subagent resolver lives iterion-side
 (`pkg/backend/model/workspace_agents.go`, ARB-83), because iterion's
 `SubagentRunner` executes every spawn a workflow drives and claw's own loop
-serves none of them; a claw-side re-export for third-party embedders of
-claw-code-go is the bump lane's call. Adaptation bridges are acceptable as an
+serves none of them. Adaptation bridges are acceptable as an
 interim only when native parity is impractical.
 
 The `commands`, `agents`, and `hooks` manifest kinds are shipped today and all

@@ -1000,7 +1000,7 @@ func ambientSourceFingerprint(env map[string]string, sandboxed bool) string {
 
 // cloudSwitchOn is the value a cloud-provider switch carries to enter its mode:
 // claw's detectProvider compares each of them to it exactly
-// (vendor/github.com/SocialGouv/claw-code-go/internal/runtime/config.go), and
+// (pkg/claw/internal/runtime/config.go), and
 // every site in this tree that sets one sets it to this.
 const cloudSwitchOn = "1"
 

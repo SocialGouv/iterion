@@ -17,9 +17,10 @@ import (
 // routingSuffixes/routingPrefixes claims to be DERIVED from the readers in
 // this tree, not from one reviewer's list — this test makes the derivation
 // hold: it re-walks the sources the tree actually reads environment
-// variables in (first-party pkg/, internal/, cmd/, plus the two vendored
-// trees that read routing-shaped names — aws-sdk-go-v2's endpoint
-// machinery and the claw runtime), and every name the walk finds that
+// variables in (first-party pkg/ — the claw runtime under pkg/claw
+// included —, internal/, cmd/, plus the vendored trees that read
+// routing-shaped names — aws-sdk-go-v2's endpoint machinery and
+// sentry-go), and every name the walk finds that
 // LOOKS like it decides a route must read as routing-shaped. A reader the
 // inventory has no shape for arrives red here, the day it is written, not
 // the day a planted `.env` aims it.
@@ -42,7 +43,6 @@ func TestEveryRoutingShapedNameTheTreeReadsIsInTheClass(t *testing.T) {
 		filepath.Join(root, "pkg"),
 		filepath.Join(root, "internal"),
 		filepath.Join(root, "cmd"),
-		filepath.Join(root, "vendor", "github.com", "SocialGouv", "claw-code-go"),
 		filepath.Join(root, "vendor", "github.com", "aws", "aws-sdk-go-v2", "config"),
 		filepath.Join(root, "vendor", "github.com", "getsentry", "sentry-go"),
 	}

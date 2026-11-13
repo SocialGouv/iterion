@@ -3,7 +3,7 @@ package delegate
 import (
 	"encoding/json"
 
-	"github.com/SocialGouv/claw-code-go/pkg/api"
+	"github.com/SocialGouv/iterion/pkg/claw/pkg/api"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/ambient"

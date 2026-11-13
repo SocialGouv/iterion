@@ -3,8 +3,8 @@ package model
 import (
 	"fmt"
 
-	"github.com/SocialGouv/claw-code-go/pkg/api"
-	clawrt "github.com/SocialGouv/claw-code-go/pkg/runtime"
+	"github.com/SocialGouv/iterion/pkg/claw/pkg/api"
+	clawrt "github.com/SocialGouv/iterion/pkg/claw/pkg/runtime"
 )
 
 // toolPairSanitizeStats records structural repairs without retaining any

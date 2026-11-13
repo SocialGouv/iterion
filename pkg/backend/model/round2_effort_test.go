@@ -3,8 +3,8 @@ package model
 import (
 	"bytes"
 	"context"
-	"github.com/SocialGouv/claw-code-go/pkg/api"
 	"github.com/SocialGouv/iterion/pkg/backend/compatgw"
+	"github.com/SocialGouv/iterion/pkg/claw/pkg/api"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"strings"
 	"testing"
